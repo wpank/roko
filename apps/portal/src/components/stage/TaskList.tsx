@@ -9,9 +9,14 @@
  * or not (design §11); the Retry button appears only when onRetry is provided (the plan
  * header is the one Retry — see PlanView.tsx).
  * accepted_with_failures rows are amber and list their failing checks.
+ * Given its plan id, a task a Graph run holds for review gets a Review action that opens its
+ * ReviewPane.
  */
 
-import React, { useCallback } from 'react';
+import React, { useCallback, useMemo, useState } from 'react';
+import { useReviews } from '@/api/queries';
+import { ReviewPane } from '@/components/stage/ReviewPane';
+import { useDashboardStore } from '@/stores/dashboard';
 import type { TaskRowModel } from '@/lib/taskRows';
 import { StatusGlyph } from '@/components/primitives/StatusGlyph';
 import { MetricCell } from '@/components/primitives/MetricCell';
@@ -29,7 +34,21 @@ export interface TaskListProps {
   onSelectTask(id: string): void;
   /** When provided, a Retry button appears in the expanded detail of failed rows. */
   onRetry?(): void;
+  /** The rows' plan: with it, a task held for review gets a Review action. */
+  planId?: string;
 }
+
+/** A held task's Review action: whether its pane is open, and the toggle. */
+interface RowReview {
+  planId: string;
+  open: boolean;
+  onToggle(): void;
+}
+
+/** The phase of a task whose verified attempt waits for a review (roko-cli's AWAITING_APPROVAL_PHASE). */
+const AWAITING_APPROVAL = 'awaiting_approval';
+
+const NONE_HELD: ReadonlySet<string> = new Set();
 
 // ── Helpers ────────────────────────────────────────────────────────────────────
 
@@ -76,6 +95,14 @@ function ExpandedDetail({
         <pre className="whitespace-pre-wrap text-text-muted text-xs leading-relaxed">
           {row.description}
         </pre>
+      )}
+
+      {/* ── Blocked: the task that blocked it, and why ────────────────────── */}
+      {row.blocked !== null && (
+        <div className="flex flex-col gap-0.5">
+          <span className="rd-section">blocked</span>
+          <p className="text-xs text-text-muted whitespace-pre-wrap">{row.blocked}</p>
+        </div>
       )}
 
       {/* ── Failed: optional Retry button (the digest line is on the row) ── */}
@@ -197,11 +224,13 @@ function TaskRow({
   selected,
   onSelect,
   onRetry,
+  review,
 }: {
   row: TaskRowModel;
   selected: boolean;
   onSelect(): void;
   onRetry?(): void;
+  review?: RowReview;
 }) {
   const timeStr = formatSpan(row.time);
   const costStr = row.costUsd != null ? formatCost(row.costUsd) : null;
@@ -302,6 +331,40 @@ function TaskRow({
         </p>
       )}
 
+      {/* ── Blocked: which task blocked it, on the row itself ────────────── */}
+      {row.blocked !== null && (
+        <p
+          data-blocked=""
+          className="pl-6 text-xs font-mono text-text-muted truncate"
+          title={row.blocked}
+        >
+          {row.blocked}
+        </p>
+      )}
+
+      {/* ── Held for review: the Review action, and its pane ─────────────── */}
+      {review && (
+        <div className="pl-6">
+          <button
+            type="button"
+            data-action="review"
+            onClick={(e) => {
+              e.stopPropagation();
+              review.onToggle();
+            }}
+            className={cn(
+              'mt-1 inline-flex items-center rounded px-2 py-1 text-xs font-mono',
+              'border border-border-default text-text-muted hover:text-text-strong',
+            )}
+          >
+            Review: waits for approval
+          </button>
+          {review.open && (
+            <ReviewPane planId={review.planId} taskId={row.id} onDone={review.onToggle} />
+          )}
+        </div>
+      )}
+
       {/* ── Expanded detail ──────────────────────────────────────────────── */}
       {selected && (
         <ExpandedDetail row={row} onRetry={onRetry} />
@@ -318,7 +381,43 @@ function TaskRow({
  * Rows are rendered in the order provided (wave order, then input order within
  * each wave). Rows are never reordered here; that is the caller's responsibility.
  */
-export function TaskList({ rows, selectedTaskId, onSelectTask, onRetry }: TaskListProps) {
+export function TaskList(props: TaskListProps) {
+  return props.planId ? (
+    <ReviewableTaskList {...props} planId={props.planId} />
+  ) : (
+    <TaskRows {...props} held={NONE_HELD} />
+  );
+}
+
+/** Held tasks: those the live run shows awaiting approval, and those the reviews list. */
+function ReviewableTaskList(props: TaskListProps & { planId: string }) {
+  const { planId } = props;
+  const tasks = useDashboardStore((s) => s.run.tasks);
+  const running = useDashboardStore((s) => s.run.plans[planId]?.phase === 'running');
+  // Holds exist only while a run waits on them, so only a running plan asks.
+  const { data } = useReviews(planId, running);
+  const held = useMemo(() => {
+    const ids = new Set<string>();
+    for (const task of Object.values(tasks)) {
+      if (task.planId === planId && task.phase === AWAITING_APPROVAL) ids.add(task.taskId);
+    }
+    for (const review of data?.reviews ?? []) {
+      if (review.status === AWAITING_APPROVAL) ids.add(review.task_id);
+    }
+    return ids;
+  }, [tasks, data, planId]);
+  return <TaskRows {...props} held={held} />;
+}
+
+function TaskRows({
+  rows,
+  selectedTaskId,
+  onSelectTask,
+  onRetry,
+  planId,
+  held,
+}: TaskListProps & { held: ReadonlySet<string> }) {
+  const [reviewing, setReviewing] = useState<string | null>(null);
   const handleSelect = useCallback(
     (id: string) => () => {
       onSelectTask(id);
@@ -340,6 +439,15 @@ export function TaskList({ rows, selectedTaskId, onSelectTask, onRetry }: TaskLi
           selected={row.id === selectedTaskId}
           onSelect={handleSelect(row.id)}
           onRetry={onRetry}
+          review={
+            planId && held.has(row.id)
+              ? {
+                  planId,
+                  open: reviewing === row.id,
+                  onToggle: () => setReviewing((open) => (open === row.id ? null : row.id)),
+                }
+              : undefined
+          }
         />
       ))}
     </ol>

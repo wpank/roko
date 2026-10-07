@@ -2,31 +2,43 @@
 //!
 //! Every checkpoint run keeps `.roko/runs/<run_id>/manifest.json` beside its
 //! `attempts.jsonl`. It says which harness build, which config (by its
-//! secret-redacted fingerprint) and which invocations produced the run's
-//! records. [`RunManifests::open`] records an invocation, with the build
-//! and config it runs under, when a plan's run starts or resumes; a resume
-//! under another build or config marks the run's provenance mixed.
+//! secret-redacted fingerprint), which price snapshot (decision 2113) and
+//! which invocations produced the run's records. [`RunManifests::open`]
+//! records an invocation, with the build and config it runs under, when a
+//! plan's run starts or resumes; a resume under another build or config
+//! marks the run's provenance mixed.
 //! [`RunManifests::close`] records how the run ended and how many attempts it
-//! opened, settled and abandoned. A manifest that cannot be written is
-//! logged; it never stops a run.
+//! opened, settled and abandoned, and [`RunManifests::record_budget_raise`]
+//! who raised a plan's budget ceiling, and to what.
+//! [`RunManifests::write_census`] writes the run's `census.json` beside it:
+//! which learning components the dispatcher had (S01 §5.8). A manifest or
+//! census that cannot be written is logged; it never stops a run.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use roko_core::config::schema::RokoConfig;
+use roko_core::pricing_snapshot::PriceSnapshot;
 use roko_fs::RokoLayout;
 use roko_learn::telemetry::records::{
-    ConfigHashProvenance, HarnessProvenance, RunClosed, RunInvocation, WorkspaceProvenance,
-    b3_digest,
+    BudgetRaise, ConfigHashProvenance, HarnessProvenance, RunClosed, RunInvocation,
+    WorkspaceProvenance, b3_digest,
 };
-use roko_learn::telemetry::{AttemptTally, RunProvenanceManifest, TelemetryWriterStats};
+use roko_learn::telemetry::{
+    AttemptTally, CensusComponent, CensusReport, RunProvenanceManifest, TelemetryWriterStats,
+};
 use sha2::Digest as _;
 
 use crate::graph_checkpoint::GraphCheckpointStatus;
+use crate::graph_task_dispatch::{PlanBudgetRaise, WiringReport};
 
 /// `kind` of the manifests a Graph plan run writes.
 const PLAN_RUN_KIND: &str = "plan_run";
+
+/// The ablation flag of a run that holds learned state fixed (`[learning]
+/// frozen`, decision 2218).
+pub const LEARNING_FROZEN_FLAG: &str = "learning_frozen";
 
 /// The provenance every run of one plan-run invocation shares, and the runs
 /// it reopened.
@@ -39,16 +51,27 @@ pub struct RunManifests {
     workspace: WorkspaceProvenance,
     /// `sha256` of this process's command-line arguments.
     args_sha256: String,
+    /// The loops this process's runs switch off, which their manifests
+    /// record (`experiment.ablation_flags`).
+    ablation_flags: Vec<String>,
+    /// The price snapshot this process's runs cost at (decision 2113),
+    /// which their manifests record (`prices.snapshot_id`); `None` when no
+    /// snapshot could be read (`PriceSnapshot::shared` already warned).
+    price_snapshot_id: Option<String>,
     /// Records an earlier close of a run counted as dropped, per run this
     /// process reopened: its close adds them to its own.
     carried_drops: parking_lot::Mutex<HashMap<String, u64>>,
 }
 
 impl RunManifests {
-    /// Capture the harness build, the fingerprint of `config` and the commit
-    /// of the workspace at `workdir`, whose `.roko/runs` holds the manifests.
+    /// Capture the harness build, the fingerprint of `config`, the loops it
+    /// switches off and the commit of the workspace at `workdir`, whose
+    /// `.roko/runs` holds the manifests.
     #[must_use]
     pub fn capture(workdir: &Path, config: &RokoConfig) -> Self {
+        let config_frozen = config.learning.frozen;
+        let price_snapshot_id = PriceSnapshot::shared(&config.pricing, workdir)
+            .map(|snapshot| snapshot.id().to_string());
         let config = match roko_core::config::fingerprint(config) {
             Ok(fingerprint) => ConfigHashProvenance {
                 hash: fingerprint.hash,
@@ -63,14 +86,27 @@ impl RunManifests {
         let base_commit = git_output(workdir, &["rev-parse", "HEAD"])
             .map(|head| String::from_utf8_lossy(&head).trim().to_string())
             .filter(|head| !head.is_empty());
+        let mut ablation_flags = Vec::new();
+        if config_frozen {
+            ablation_flags.push(LEARNING_FROZEN_FLAG.to_string());
+        }
         Self {
             runs_dir: RokoLayout::for_project(workdir).runs_dir(),
             harness: harness_provenance(),
             config,
             workspace: WorkspaceProvenance { base_commit },
             args_sha256: args_sha256(),
+            ablation_flags,
+            price_snapshot_id,
             carried_drops: parking_lot::Mutex::default(),
         }
+    }
+
+    /// Record the digest of the θ M1 dispatches with at run open, which
+    /// every manifest these runs write carries (`config.params_digest`,
+    /// S06 T13); `None` without M1.
+    pub fn set_params_digest(&mut self, params_digest: Option<String>) {
+        self.config.params_digest = params_digest;
     }
 
     /// Record that run `run_id` of plan `plan_id` starts in this process: a
@@ -94,6 +130,15 @@ impl RunManifests {
         if !manifest.plan_ids.iter().any(|id| id == plan_id) {
             manifest.plan_ids.push(plan_id.to_string());
         }
+        // A frozen invocation marks the run frozen (decision 2218).
+        let flags = &mut manifest.experiment.ablation_flags;
+        for flag in &self.ablation_flags {
+            if !flags.contains(flag) {
+                flags.push(flag.clone());
+            }
+        }
+        // The price snapshot this invocation costs at (decision 2113).
+        manifest.prices.snapshot_id = self.price_snapshot_id.clone();
         if let Some(closed) = &manifest.closed {
             self.carried_drops
                 .lock()
@@ -126,6 +171,28 @@ impl RunManifests {
                 tracing::warn!(run_id, %error, "run manifest not written");
                 None
             }
+        }
+    }
+
+    /// Write run `run_id`'s `census.json` (S01 §5.8) from `wiring`, the
+    /// learning components of this process's dispatcher, stamped with this
+    /// harness build. Each start or resume rewrites it, since a resume may
+    /// run another build.
+    pub fn write_census(&self, run_id: &str, wiring: &WiringReport) {
+        let components = wiring
+            .components
+            .iter()
+            .map(|component| CensusComponent {
+                id: component.id.to_string(),
+                kind: component.kind.as_str().to_string(),
+                wired: component.wired,
+                detail: Some(component.detail.to_string()),
+            })
+            .collect();
+        let sha = &self.harness.sha;
+        let census = CensusReport::new(run_id, sha, self.harness.dirty, components);
+        if let Err(error) = census.store(&self.runs_dir.join(run_id)) {
+            tracing::warn!(run_id, %error, "run census not written");
         }
     }
 
@@ -168,6 +235,66 @@ impl RunManifests {
         });
         if let Err(error) = manifest.store(&run_dir) {
             tracing::warn!(run_id, %error, "run manifest not closed");
+        }
+    }
+
+    /// Record in run `run_id`'s manifest that `by` raised plan `plan_id`'s
+    /// budget ceiling (`raise`, backlog 2118).
+    pub fn record_budget_raise(
+        &self,
+        run_id: &str,
+        plan_id: &str,
+        raise: &PlanBudgetRaise,
+        by: &str,
+    ) {
+        let run_dir = self.runs_dir.join(run_id);
+        let mut manifest = match RunProvenanceManifest::load(&run_dir) {
+            Ok(Some(manifest)) => manifest,
+            Ok(None) => return,
+            Err(error) => {
+                tracing::warn!(
+                    run_id,
+                    %error,
+                    "run manifest unreadable; the budget raise is not in it"
+                );
+                return;
+            }
+        };
+        manifest.budget_raises.push(BudgetRaise {
+            at: now_iso(),
+            plan_id: plan_id.to_string(),
+            from_usd: raise.from_usd,
+            to_usd: raise.to_usd,
+            spent_usd: raise.spent_usd,
+            by: by.to_string(),
+        });
+        if let Err(error) = manifest.store(&run_dir) {
+            tracing::warn!(
+                run_id,
+                %error,
+                "run manifest not written; the budget raise is not in it"
+            );
+        }
+    }
+}
+
+/// Record in run `run_id`'s manifest under `workdir` where its request came
+/// from (backlog 9116): `http`, or `mcp:<client>` for a chat host. A server
+/// records it once the run returns; a run without a manifest, such as one
+/// that failed before it started, is left alone, and a manifest that cannot
+/// be read or written is logged.
+pub fn record_origin(workdir: &Path, run_id: &str, origin: &str) {
+    let run_dir = RokoLayout::for_project(workdir).runs_dir().join(run_id);
+    match RunProvenanceManifest::load(&run_dir) {
+        Ok(Some(mut manifest)) => {
+            manifest.origin = Some(origin.to_string());
+            if let Err(error) = manifest.store(&run_dir) {
+                tracing::warn!(run_id, %error, "run manifest not written; its origin is not in it");
+            }
+        }
+        Ok(None) => tracing::debug!(run_id, "run has no manifest to record its origin in"),
+        Err(error) => {
+            tracing::warn!(run_id, %error, "run manifest unreadable; its origin is not recorded");
         }
     }
 }
@@ -239,4 +366,60 @@ fn args_sha256() -> String {
 
 fn now_iso() -> String {
     chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A `[[model]]` row with every rate column, required and positive.
+    fn price_row(slug: &str) -> String {
+        format!(
+            "[[model]]\nslug = \"{slug}\"\nprovider = \"test\"\ninput = 1.0\n\
+             cache_read = 1.0\ncache_write_5m = 1.0\ncache_write_1h = 1.0\noutput = 1.0\n\
+             reasoning_in_output = true\nsource_url = \"https://example.test\"\n\
+             verified = \"test\"\n"
+        )
+    }
+
+    /// Write `<workdir>/config/prices/<date>.toml` with `id` and one model row.
+    fn write_price_snapshot(workdir: &Path, date: &str, id: &str) {
+        let dir = workdir.join("config").join("prices");
+        std::fs::create_dir_all(&dir).expect("create config/prices");
+        let text = format!(
+            "schema_version = \"roko.price_snapshot/1\"\nid = \"{id}\"\n\
+             fetched_at = \"2030-01-01\"\ncurrency = \"USD\"\nunit = \"per_1M_tokens\"\n{}",
+            price_row("manifest-test-model")
+        );
+        std::fs::write(dir.join(format!("{date}.toml")), text).expect("write a snapshot");
+    }
+
+    /// gap-76ea03 (decision 2113): the manifest records the price snapshot id a run costs at,
+    /// the one `[pricing] snapshot` pins, not whichever snapshot is newest when read back.
+    #[test]
+    fn run_manifest_records_the_price_snapshot_id() {
+        let workdir = tempfile::tempdir().expect("tempdir");
+        write_price_snapshot(workdir.path(), "2030-01-01", "prices-2030-01-01");
+        write_price_snapshot(workdir.path(), "2030-06-01", "prices-2030-06-01");
+
+        let mut config = RokoConfig::default();
+        config.pricing.snapshot = "prices-2030-01-01".to_string();
+        let manifests = RunManifests::capture(workdir.path(), &config);
+        assert!(
+            manifests.open("run-1", "plan-1").is_some(),
+            "the manifest should open"
+        );
+
+        let run_dir = RokoLayout::for_project(workdir.path())
+            .runs_dir()
+            .join("run-1");
+        let loaded = RunProvenanceManifest::load(&run_dir)
+            .expect("read the manifest")
+            .expect("the manifest exists");
+        assert_eq!(
+            loaded.prices.snapshot_id.as_deref(),
+            Some("prices-2030-01-01"),
+            "{loaded:?}"
+        );
+    }
 }

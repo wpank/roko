@@ -316,7 +316,6 @@ agent:write    POST, PUT, DELETE  /api/agents/*
 
 plan:write     POST, PUT, DELETE  /api/plans/*
                POST               /api/plans/*/run
-               POST, PUT, DELETE  /api/prd/*
 
 admin          *                  * (all routes, including:)
                                   /api/api-keys/*
@@ -870,7 +869,6 @@ fn role_to_grants(role: &WorkspaceRole) -> Vec<RouteGrant> {
         WorkspaceRole::Admin => vec![
             RouteGrant { methods: vec!["*".into()], path_pattern: "/api/agents/*".into() },
             RouteGrant { methods: vec!["*".into()], path_pattern: "/api/plans/*".into() },
-            RouteGrant { methods: vec!["*".into()], path_pattern: "/api/prd/*".into() },
             RouteGrant { methods: vec!["GET".into()], path_pattern: "/api/secrets/*".into() },
             RouteGrant { methods: vec!["GET".into(), "POST".into()], path_pattern: "/api/team/*".into() },
             RouteGrant { methods: vec!["GET".into()], path_pattern: "/api/config/*".into() },
@@ -879,7 +877,6 @@ fn role_to_grants(role: &WorkspaceRole) -> Vec<RouteGrant> {
         WorkspaceRole::Member => vec![
             RouteGrant { methods: vec!["*".into()], path_pattern: "/api/agents/*".into() },
             RouteGrant { methods: vec!["*".into()], path_pattern: "/api/plans/*".into() },
-            RouteGrant { methods: vec!["*".into()], path_pattern: "/api/prd/*".into() },
             RouteGrant { methods: vec!["GET".into()], path_pattern: "*".into() },
         ],
         WorkspaceRole::Viewer => vec![

@@ -147,14 +147,12 @@ The convergence to one engine was a hard-won lesson. Here is the timeline:
 - Checkpoint/resume: durable state after each task, resume from exact point
 - Immune Graph: five-stage verification screens all outputs before propagation
 - Graph fingerprinting: deterministic fingerprint for Activity resume matching
-- GuaranteedFinallyController: ensures cleanup cells run even on failure
 
 **Where implemented**: `crates/roko-graph/src/engine.rs` (GraphEngine),
 `crates/roko-graph/src/topo.rs` (topological sort and wave scheduling),
 `crates/roko-graph/src/budget.rs` (cost enforcement and atomic reservations),
 `crates/roko-graph/src/snapshot.rs` (checkpoint/resume),
-`crates/roko-graph/src/fingerprint.rs` (graph fingerprinting),
-`crates/roko-graph/src/finally.rs` (GuaranteedFinallyController).
+`crates/roko-graph/src/fingerprint.rs` (graph fingerprinting).
 
 ---
 
@@ -763,7 +761,7 @@ surfaces automatically.
 - The dream consolidation cycle exists because patterns extracted from completed plans
   improve future plans.
 
-**Where visible**: The self-hosting workflow (`roko prd idea -> draft -> plan -> run`)
+**Where visible**: The self-hosting workflow (`roko plan generate -> review -> roko run`)
 is documented in `CLAUDE.md` and `docs/v3/35-ARCHITECTURE.md`. The dogfood debrief
 (`tmp/dogfood-2026-08-13/DOGFOOD-DEBRIEF.md`) documents the first real self-hosting
 run and the bugs it exposed.

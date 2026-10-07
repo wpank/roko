@@ -22,8 +22,6 @@ pub struct StrategistInput {
     pub workspace_map: String,
     /// Cross-plan context (completed plan registry).
     pub cross_plan_context: String,
-    /// PRD2 specification extract.
-    pub prd2_extract: String,
     /// Current iteration number (1-based).
     pub iteration: u32,
     /// Prior review feedback (only for iteration 2+).
@@ -52,9 +50,9 @@ You are the Strategist. Your job is to analyze the plan and produce a brief + \
 structured task checklist.\n\
 \n\
 Rules:\n\
-1. Read the PRD2 files listed in the prd2 context before writing the brief.\n\
+1. Read the spec files the plan cites before writing the brief.\n\
 2. Verify that your task breakdown covers all spec requirements.\n\
-3. Flag any plan requirements that don't match the PRD2 spec.\n\
+3. Flag any plan requirements that don't match the spec.\n\
 4. If a decomposition section is present, align your execution order with those \
 steps — do not contradict them without calling out why.\n\
 5. Be concrete: reference specific files, types, and line numbers.\n\
@@ -80,9 +78,8 @@ impl RolePromptTemplate for StrategistTemplate {
     ) -> Vec<PromptSection> {
         let budget = adaptive_budget_for(AgentRole::Strategist, context_window_tokens);
         let workspace_map_cap = budget.workspace_map.min(12_000);
-        let prd2_cap = budget.prd2.min(8_000);
         let prior_reviews_cap = budget.plan.min(10_000);
-        let mut sections = Vec::with_capacity(10);
+        let mut sections = Vec::with_capacity(9);
 
         // 1. agents_instructions — System / Critical / Start
         sections.push(common::agents_instructions_section(&input.agents_md));
@@ -109,16 +106,7 @@ impl RolePromptTemplate for StrategistTemplate {
             .with_hard_cap(workspace_map_cap),
         );
 
-        // 4. prd2_extract — Session / High / Middle / hard_cap 8k
-        sections.push(
-            PromptSection::new("prd2_extract", truncate(&input.prd2_extract, prd2_cap))
-                .with_priority(SectionPriority::High)
-                .with_cache_layer(CacheLayer::Workspace)
-                .with_placement(Placement::Middle)
-                .with_hard_cap(prd2_cap),
-        );
-
-        // 5. cross_plan_context — Session / Normal / Middle / hard_cap 4k
+        // 4. cross_plan_context — Session / Normal / Middle / hard_cap 4k
         sections.push(
             PromptSection::new(
                 "cross_plan_context",
@@ -130,7 +118,7 @@ impl RolePromptTemplate for StrategistTemplate {
             .with_hard_cap(budget.context),
         );
 
-        // 6. decomposition — Session / Normal / Middle / hard_cap 12k (only when present)
+        // 5. decomposition — Session / Normal / Middle / hard_cap 12k (only when present)
         if let Some(ref decomp) = input.decomposition {
             sections.push(
                 PromptSection::new("decomposition", truncate(decomp, 12_000))
@@ -141,7 +129,7 @@ impl RolePromptTemplate for StrategistTemplate {
             );
         }
 
-        // 7. preflight — Session / Normal / Middle / hard_cap 5k (only when present)
+        // 6. preflight — Session / Normal / Middle / hard_cap 5k (only when present)
         if let Some(ref pf) = input.preflight {
             sections.push(
                 PromptSection::new("preflight", truncate(pf, 5_000))
@@ -152,7 +140,7 @@ impl RolePromptTemplate for StrategistTemplate {
             );
         }
 
-        // 8. ignored_tests — Session / Low / Middle / hard_cap 3k (only when present)
+        // 7. ignored_tests — Session / Low / Middle / hard_cap 3k (only when present)
         if let Some(ref tests) = input.ignored_tests {
             sections.push(
                 PromptSection::new("ignored_tests", truncate(tests, 3_000))
@@ -163,7 +151,7 @@ impl RolePromptTemplate for StrategistTemplate {
             );
         }
 
-        // 9. prior_reviews — Dynamic / High / End / hard_cap 10k (only on iteration 2+)
+        // 8. prior_reviews — Dynamic / High / End / hard_cap 10k (only on iteration 2+)
         if input.iteration > 1
             && let Some(ref reviews) = input.prior_reviews
         {
@@ -176,7 +164,7 @@ impl RolePromptTemplate for StrategistTemplate {
             );
         }
 
-        // 10. output_paths — System / High / End
+        // 9. output_paths — System / High / End
         // Tells the strategist where to write brief + tasks TOML.
         let output_text = format_output_instructions(input);
         sections.push(
@@ -262,7 +250,6 @@ mod tests {
             },
             workspace_map: "crates/roko-core/src/lib.rs\ncrates/roko-core/src/lifecycle.rs".into(),
             cross_plan_context: "plan-041: done\nplan-040: done".into(),
-            prd2_extract: "## PRD2\nGompertz: lambda(t) = ae^(bt).".into(),
             iteration: 2,
             prior_reviews: Some(
                 "[B-1] Missing error handling in compute_rate.\n\
@@ -282,8 +269,8 @@ mod tests {
         let template = StrategistTemplate;
         let sections = template.sections(&full_input());
 
-        // All 10 sections present
-        assert_eq!(sections.len(), 10);
+        // All 9 sections present
+        assert_eq!(sections.len(), 9);
 
         let names: Vec<&str> = sections.iter().map(|s| s.name.as_str()).collect();
         assert_eq!(
@@ -292,7 +279,6 @@ mod tests {
                 "agents_instructions",
                 "plan_spec",
                 "workspace_map",
-                "prd2_extract",
                 "cross_plan_context",
                 "decomposition",
                 "preflight",
@@ -309,21 +295,20 @@ mod tests {
         // Cache layers
         assert_eq!(sections[0].cache_layer, CacheLayer::Role);
         assert_eq!(sections[1].cache_layer, CacheLayer::Workspace);
-        assert_eq!(sections[8].cache_layer, CacheLayer::Volatile); // prior_reviews
-        assert_eq!(sections[9].cache_layer, CacheLayer::Role); // output_paths
+        assert_eq!(sections[7].cache_layer, CacheLayer::Volatile); // prior_reviews
+        assert_eq!(sections[8].cache_layer, CacheLayer::Role); // output_paths
 
         // Hard caps — strategist gets generous budgets
         assert_eq!(sections[1].hard_cap, Some(50_000)); // plan_spec
         assert_eq!(sections[2].hard_cap, Some(12_000)); // workspace_map
-        assert_eq!(sections[3].hard_cap, Some(8_000)); // prd2_extract
-        assert_eq!(sections[4].hard_cap, Some(4_000)); // cross_plan_context
-        assert_eq!(sections[5].hard_cap, Some(12_000)); // decomposition
-        assert_eq!(sections[6].hard_cap, Some(5_000)); // preflight
-        assert_eq!(sections[7].hard_cap, Some(3_000)); // ignored_tests
-        assert_eq!(sections[8].hard_cap, Some(10_000)); // prior_reviews
+        assert_eq!(sections[3].hard_cap, Some(4_000)); // cross_plan_context
+        assert_eq!(sections[4].hard_cap, Some(12_000)); // decomposition
+        assert_eq!(sections[5].hard_cap, Some(5_000)); // preflight
+        assert_eq!(sections[6].hard_cap, Some(3_000)); // ignored_tests
+        assert_eq!(sections[7].hard_cap, Some(10_000)); // prior_reviews
 
         // Output paths section contains write paths and remediation instruction
-        let output = &sections[9].content;
+        let output = &sections[8].content;
         assert!(output.contains("agent-lifecycle"));
         assert!(output.contains("brief.md"));
         assert!(output.contains("042-tasks.toml"));
@@ -358,7 +343,6 @@ mod tests {
             },
             workspace_map: "map".into(),
             cross_plan_context: "ctx".into(),
-            prd2_extract: "prd2".into(),
             iteration: 1,
             brief_write_path: "brief.md".into(),
             tasks_write_path: "tasks.toml".into(),
@@ -366,8 +350,8 @@ mod tests {
         };
         let sections = template.sections(&input);
 
-        // 6 base sections: agents, plan_spec, workspace_map, prd2, cross_plan_context, output_paths
-        assert_eq!(sections.len(), 6);
+        // 5 base sections: agents, plan_spec, workspace_map, cross_plan_context, output_paths
+        assert_eq!(sections.len(), 5);
         let names: Vec<&str> = sections.iter().map(|s| s.name.as_str()).collect();
         assert!(!names.contains(&"decomposition"));
         assert!(!names.contains(&"preflight"));

@@ -30,12 +30,14 @@
 //! [`AgentResultBridge`] that hides the provider for testing. Production
 //! callers wire in [`AgentDispatcherV2`]; tests can plug in a stub bridge.
 
+pub mod dry_run_planner;
 pub mod factory;
 pub mod model_routing;
 pub mod outcome;
 mod plugin_mcp;
 pub mod prompt_builder;
 pub mod prompt_cache;
+pub mod rung_probe;
 pub mod warm_pool;
 
 use std::collections::{HashMap, HashSet};
@@ -47,11 +49,13 @@ use roko_core::config::schema::RokoConfig;
 use roko_learn::cascade_router::CascadeRouter;
 use roko_learn::model_router::RoutingContext;
 use roko_learn::provider_health::ProviderHealthRegistry;
+use roko_learn::routing_log::RoutingDecisionLog;
 use tokio::sync::mpsc;
 
 pub use factory::SharedAgentFactory;
 pub use model_routing::{
-    LadderStartRung, ModelChoice, ModelChoiceSource, ModelRouter, RoutingInputs, RoutingLadder,
+    FallbackReason, LadderStartRung, ModelChoice, ModelChoiceSource, ModelRouter, RoutingInputs,
+    RoutingLadder,
 };
 pub use outcome::{AgentOutcome, RunnerDispatchError};
 pub use prompt_builder::{
@@ -65,6 +69,17 @@ pub use crate::dispatch_v2::AgentDispatchRequest;
 use crate::dispatch_v2::ProviderRuntime;
 use crate::dispatch_v2::{AgentDispatcherV2, CliProviderConfig, ProviderDispatchResolver};
 use crate::task_parser::TaskDef;
+
+/// Run `plan` as the fault-flag decision of `ctx`'s attempt (bug-9d23ed):
+/// the route and the prompt read each loop's flag as that one decision,
+/// which the attempt's decision records read again. A plan without an
+/// attempt key reads as it always has, each read a decision of its own.
+fn attempt_decision<T>(ctx: &DispatchContext, plan: impl FnOnce() -> T) -> T {
+    match &ctx.attempt_key {
+        Some(key) => roko_learn::loop_audit::faults::decision(&key.attempt_key(), plan),
+        None => plan(),
+    }
+}
 
 /// Durable prompt-experiment identity and root-workspace store location for
 /// one dispatch attempt.
@@ -111,8 +126,8 @@ pub struct DispatchContext {
     /// router entirely. Feedback writers tag the outcome as `forced = true`
     /// so the router's learned policy is not corrupted by operator overrides.
     pub force_backend: Option<String>,
-    /// Remaining USD budget for the plan; the router uses this to bias
-    /// toward cheaper models when the budget is nearly exhausted.
+    /// Remaining USD budget for the plan. Routing does not read it: no
+    /// routing bias is left (decision 3108).
     pub budget_remaining_usd: f64,
     /// Attempt number for this task (0 = first try, > 0 = retry).
     pub attempt: u32,
@@ -128,22 +143,19 @@ pub struct DispatchContext {
     /// Routing context for the CascadeRouter. Built at the dispatch site
     /// from task + runner state, threaded through to `RoutingInputs`.
     pub routing_context: Option<RoutingContext>,
-    /// Conductor routing bias from the live signal stream. When present,
-    /// the model router deprioritizes flagged models and biases toward
-    /// cheaper tiers, reflecting the conductor's reactive assessment of
-    /// the current run.
-    pub routing_bias: Option<roko_learn::cascade_router::RoutingBias>,
     /// Output files from each completed dependency task.
     /// Each entry is `(task_id, files)`. Injected into the system prompt
     /// so the agent knows what its predecessors already produced.
     pub dependency_outputs: Vec<(String, Vec<String>)>,
-    /// Pre-rendered error patterns from the shared in-memory store.
+    /// Pre-rendered error patterns from the shared in-memory store, with
+    /// their keys and entries.
     ///
     /// Populated by `GraphTaskDispatcher` from
-    /// `SharedAgentFactory::format_error_patterns_for_prompt` so that
-    /// agents dispatched later in the same plan run benefit from error
-    /// patterns discovered by earlier agents.
-    pub error_patterns_context: String,
+    /// `SharedAgentFactory::error_patterns_for_task`, the patterns keyed to
+    /// the task (backlog 4210), so that agents dispatched later in the same
+    /// plan run benefit from error patterns discovered by earlier agents. The
+    /// prompt's exposure record names each pattern by its key (gap-a40021).
+    pub error_patterns: factory::ErrorPatternSelection,
     /// Pre-computed workspace map (indented crate/src tree).
     ///
     /// When non-empty, `PromptContext::from_task` uses this value instead of
@@ -151,17 +163,34 @@ pub struct DispatchContext {
     /// Populated once per plan run by `GraphTaskDispatcher` via its
     /// `static_prompt_cache` field.
     pub cached_workspace_map: String,
-    /// Pre-computed workspace context (git state + crate descriptions).
+    /// Pre-computed crate descriptions of the workspace context, the part
+    /// every checkout of a run shares.
     ///
     /// When non-empty, `PromptContext::from_task` uses this value instead of
-    /// calling `generate_workspace_context` (which spawns `git` subprocesses
-    /// and reads Cargo.toml files) on the Tokio reactor thread.
+    /// reading the Cargo.toml files again, and adds the attempt checkout's
+    /// own branch and modified files to it (backlog 3110).
     pub cached_workspace_context: String,
-    /// Pre-computed C-Factor policy context.
-    ///
-    /// When non-empty, `PromptContext::from_task` uses this value instead of
-    /// reading `.roko/learn/c-factor.jsonl` on the Tokio reactor thread.
-    pub cached_cfactor_context: String,
+    /// The other plans running in the same working tree now, each with the
+    /// areas its tasks write (gap-c09fc7). Empty when the plan runs alone.
+    pub concurrent_plans: Vec<(String, Vec<String>)>,
+    /// The attempt this dispatch is: the unit of its route's exploration
+    /// draw (S02.P1-3). `None` outside Graph dispatch, and then the route
+    /// never explores.
+    pub attempt_key: Option<roko_learn::telemetry::AttemptKey>,
+    /// The arms of the attempt's chain (S02.P1-14), which prompt assembly
+    /// reads to withhold a loop's content (S02 L7). `None` outside Graph
+    /// dispatch, and then nothing is withheld.
+    pub arm_set: Option<std::sync::Arc<roko_learn::loop_audit::arm_set::ArmSet>>,
+    /// The start rung an active self-model chose for the attempt, an index
+    /// on its role's ladder (S04, 6130). `None` unless `[self_model] mode`
+    /// is active and its calibration gate holds; the router still draws it
+    /// through S03's route table.
+    pub self_model_rung: Option<usize>,
+    /// The plan's `[meta] skip_enrichment`: with it set, the prompt loads no
+    /// workspace map, `tasks.toml`, workspace context or plan brief,
+    /// whatever the execution policy and the task's `context_weight` say
+    /// (bug-19ae56).
+    pub skip_enrichment: bool,
 }
 
 // ─── Dispatcher facade ─────────────────────────────────────────────────
@@ -217,6 +246,17 @@ impl Dispatcher {
         self
     }
 
+    /// Route by `health` from now on ([`ModelRouter::replace_provider_health`]).
+    pub fn replace_provider_health(&mut self, health: Arc<ProviderHealthRegistry>) {
+        self.router.replace_provider_health(health);
+    }
+
+    /// The provider health registry routing reads, if any.
+    #[must_use]
+    pub fn provider_health(&self) -> Option<&Arc<ProviderHealthRegistry>> {
+        self.router.provider_health()
+    }
+
     /// Exclude models whose provider ID is in `providers`.
     ///
     /// Populated from `[routing] disabled_providers` in `roko.toml`.
@@ -239,6 +279,23 @@ impl Dispatcher {
         self
     }
 
+    /// Explore with probability `epsilon` on each route the cascade router
+    /// decides ([`ModelRouter::with_explore_epsilon`]).
+    #[must_use]
+    pub fn with_explore_epsilon(mut self, epsilon: f64) -> Self {
+        self.router = self.router.with_explore_epsilon(epsilon);
+        self
+    }
+
+    /// Fall back to `slug` when nothing else decides a route
+    /// ([`ModelRouter::with_default_slug`]): a workspace's `[agent]
+    /// default_model` (backlog 3107).
+    #[must_use]
+    pub fn with_default_slug(mut self, slug: impl Into<String>) -> Self {
+        self.router = self.router.with_default_slug(slug);
+        self
+    }
+
     /// Start tasks without an override or hint on their `[routing.ladder]`
     /// rung ([`ModelRouter::with_routing_ladder`]).
     #[must_use]
@@ -251,6 +308,26 @@ impl Dispatcher {
     #[must_use]
     pub fn routing_ladder(&self) -> Option<&RoutingLadder> {
         self.router.routing_ladder()
+    }
+
+    /// Route by `ladder` from now on, or by the router when it is `None`
+    /// ([`ModelRouter::replace_routing_ladder`]).
+    pub fn replace_routing_ladder(&mut self, ladder: Option<RoutingLadder>) {
+        self.router.replace_routing_ladder(ladder);
+    }
+
+    /// Weigh the durable knowledge `store` into the cascade router's pick
+    /// ([`ModelRouter::with_knowledge_store`]).
+    #[must_use]
+    pub fn with_knowledge_store(mut self, store: roko_neuro::KnowledgeStore) -> Self {
+        self.router = self.router.with_knowledge_store(store);
+        self
+    }
+
+    /// The knowledge store the inner [`ModelRouter`] weighs, if any.
+    #[must_use]
+    pub fn knowledge_store(&self) -> Option<&roko_neuro::KnowledgeStore> {
+        self.router.knowledge_store()
     }
 
     /// Read-only access to the prompt assembler -- exposed for bidder
@@ -283,16 +360,39 @@ impl Dispatcher {
         task: &TaskDef,
         ctx: &DispatchContext,
     ) -> Result<RunnerDispatchPlan, RunnerDispatchError> {
-        let inputs = RoutingInputs::from_task(task, ctx);
-        let choice = self.router.route(&inputs)?;
-        let prompt_ctx = PromptContext::from_task(task, ctx);
-        let assembled = self.prompt_assembler.assemble(task, &prompt_ctx)?;
-        Ok(RunnerDispatchPlan {
-            model: choice.model.clone(),
-            forced: choice.forced(),
-            source: choice.source,
-            prompt: assembled,
+        attempt_decision(ctx, || {
+            let inputs = RoutingInputs::from_task(task, ctx);
+            let excluded = self.trust_exclusion_count();
+            let (choice, mut decision) = self.router.decide(&inputs)?;
+            let trust_exclusions = self.trust_exclusions_since(excluded);
+            decision.task_id.clone_from(&task.id);
+            let prompt_ctx = PromptContext::from_task(task, ctx);
+            let assembled = self.prompt_assembler.assemble(task, &prompt_ctx)?;
+            Ok(RunnerDispatchPlan {
+                model: choice.model.clone(),
+                forced: choice.forced(),
+                source: choice.source,
+                prompt: assembled,
+                route_decision: Some(decision),
+                trust_exclusions,
+            })
         })
+    }
+
+    /// The routing decisions DP4 has made in the cascade router so far;
+    /// `None` without a cascade router.
+    fn trust_exclusion_count(&self) -> Option<u64> {
+        self.router
+            .cascade_arc()
+            .map(|router| router.trust_exclusion_count())
+    }
+
+    /// The routing decisions DP4 made since the cascade router's count
+    /// stood at `excluded` (gap-595e28). Routes planned at the same time
+    /// may each count the other's.
+    fn trust_exclusions_since(&self, excluded: Option<u64>) -> Option<u64> {
+        let count = self.trust_exclusion_count()?;
+        Some(count.saturating_sub(excluded.unwrap_or(count)))
     }
 
     /// Like [`plan`](Self::plan) but emits structured routing decision logs.
@@ -303,18 +403,23 @@ impl Dispatcher {
         task: &TaskDef,
         ctx: &DispatchContext,
         task_id: &str,
-        budget_pressure: bool,
     ) -> Result<RunnerDispatchPlan, RunnerDispatchError> {
-        let mut inputs = RoutingInputs::from_task(task, ctx);
-        inputs.budget_pressure = budget_pressure;
-        let choice = self.router.route_logged(&inputs, task_id)?;
-        let prompt_ctx = PromptContext::from_task(task, ctx);
-        let assembled = self.prompt_assembler.assemble(task, &prompt_ctx)?;
-        Ok(RunnerDispatchPlan {
-            model: choice.model.clone(),
-            forced: choice.forced(),
-            source: choice.source,
-            prompt: assembled,
+        attempt_decision(ctx, || {
+            let inputs = RoutingInputs::from_task(task, ctx);
+            let excluded = self.trust_exclusion_count();
+            let (choice, mut decision) = self.router.decide_logged(&inputs, task_id)?;
+            let trust_exclusions = self.trust_exclusions_since(excluded);
+            decision.task_id = task_id.to_string();
+            let prompt_ctx = PromptContext::from_task(task, ctx);
+            let assembled = self.prompt_assembler.assemble(task, &prompt_ctx)?;
+            Ok(RunnerDispatchPlan {
+                model: choice.model.clone(),
+                forced: choice.forced(),
+                source: choice.source,
+                prompt: assembled,
+                route_decision: Some(decision),
+                trust_exclusions,
+            })
         })
     }
 
@@ -379,6 +484,14 @@ pub struct RunnerDispatchPlan {
     pub source: ModelChoiceSource,
     /// Assembled prompt, allowlist, diagnostics.
     pub prompt: AssembledPrompt,
+    /// The route decision behind `model` (S01 §5.3), not yet keyed to an
+    /// attempt: Graph dispatch writes it to the run's `decisions.jsonl`.
+    pub route_decision: Option<RoutingDecisionLog>,
+    /// The routing decisions DP4 (S05 §4.6) made while the plan was routed,
+    /// by the cascade router's own count, which the attempt's verdict keeps
+    /// apart from its route row (gap-595e28); `None` without a cascade
+    /// router.
+    pub trust_exclusions: Option<u64>,
 }
 
 // ─── Provider bridge trait (async-trait friendly) ──────────────────────
@@ -516,6 +629,7 @@ mod tests {
             estimated_minutes: None,
             crates_touched: None,
             sequence: 0,
+            spec: Default::default(),
             hints: Default::default(),
         }
     }
@@ -533,12 +647,15 @@ mod tests {
             prompt_experiment: None,
             gate_feedback: None,
             routing_context: None,
-            routing_bias: None,
             dependency_outputs: Vec::new(),
-            error_patterns_context: String::new(),
+            error_patterns: Default::default(),
             cached_workspace_map: String::new(),
             cached_workspace_context: String::new(),
-            cached_cfactor_context: String::new(),
+            concurrent_plans: Vec::new(),
+            attempt_key: None,
+            arm_set: None,
+            self_model_rung: None,
+            skip_enrichment: false,
         }
     }
 
@@ -565,6 +682,35 @@ mod tests {
                 is_error: false,
             })
         }
+    }
+
+    /// backlog 3107: with `[agent] default_model` set (a `[models.*]` key,
+    /// resolved as failover resolves it) and no ladder, a task with no hint
+    /// and no routing context routes to that model, as the default.
+    #[tokio::test]
+    async fn router_default_follows_agent_default_model() {
+        let mut config = RokoConfig::default();
+        config.routing.ladder.enabled = false;
+        config.agent.default_model = "house-model".to_string();
+        let profile = roko_core::config::schema::ModelProfile {
+            provider: "house-cli".to_string(),
+            slug: "glm-5.1".to_string(),
+            ..Default::default()
+        };
+        config.models.insert("house-model".to_string(), profile);
+        let factory = SharedAgentFactory::new(Arc::new(config), None, None, None).await;
+        let mut task = make_task("t-default");
+        task.model_hint = None;
+        let workdir = tempfile::tempdir().expect("tempdir");
+        let ctx = DispatchContext {
+            workdir: workdir.path().to_path_buf(),
+            ..make_ctx()
+        };
+
+        let plan = factory.dispatcher().plan(&task, &ctx).expect("plan");
+
+        assert_eq!(plan.model.slug, "glm-5.1");
+        assert_eq!(plan.source, ModelChoiceSource::Default);
     }
 
     #[tokio::test]

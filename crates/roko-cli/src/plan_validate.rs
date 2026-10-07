@@ -5,15 +5,22 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context as _, Result, bail};
 use indexmap::IndexMap;
 use roko_cli::orchestrator::detect_cycle_nodes;
+use roko_cli::orchestrator::plan_discovery::{PlanDir, find_plan_dirs};
 use roko_core::AgentRole;
+use roko_core::WorkspaceKind;
 use roko_core::config::GatesConfig;
 use roko_core::config::routing::LadderConfig;
-use roko_core::config::schema::ModelProfile;
+use roko_core::config::schema::{ModelProfile, RokoConfig};
+use roko_core::task::TaskSpeedPriority;
 use roko_gate::AcceptanceContract;
 use serde::Serialize;
 use toml::Value;
 
-use roko_cli::task_parser::normalize_model_alias;
+use roko_cli::task_parser::{
+    CONTEXT_KEYS, META_KEYS, TASK_KEYS, TaskDef, VERIFY_KEYS, normalize_model_alias,
+    suggest_field_correction,
+};
+use roko_gate::spec_quality::ac_id;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize)]
 #[serde(rename_all = "lowercase")]
@@ -95,6 +102,10 @@ struct TaskSnapshot {
     has_files: bool,
     has_context_read_files: bool,
     has_verify_steps: bool,
+    /// Acceptance that something checks (decision 3205): criteria in
+    /// `acceptance` that a verify step `covers`, or a pinned `[task.accept]`
+    /// test. A typed `acceptance_contract` is not enforced at run time.
+    has_enforced_acceptance: bool,
     acceptance_contract: Option<Value>,
     has_required_parity_ledger_rows: bool,
     deferral_missing_fields: Vec<&'static str>,
@@ -137,6 +148,10 @@ fn validate_plans_dir_impl(
     let tasks_files = collect_tasks_files(dir)?;
     let plan_output_paths = collect_plan_output_paths(&tasks_files);
     let ladder = workdir.map(workspace_ladder);
+    // The `[profiles]` defaults the scratch_dir rule reads (9134).
+    let workspace_config = workdir
+        .and_then(|workdir| roko_core::config::loader::load_config_unified(workdir).ok())
+        .unwrap_or_default();
     let mut plans = Vec::with_capacity(tasks_files.len());
     let mut totals = Totals {
         plans_checked: tasks_files.len(),
@@ -183,6 +198,11 @@ fn validate_plans_dir_impl(
                     let diagnostics = ladder_diagnostics(&tasks_file, &plan.plan_id, ladder);
                     plan.diagnostics.extend(diagnostics);
                 }
+                let diagnostics = speed_priority_diagnostics(&tasks_file, &plan.plan_id);
+                plan.diagnostics.extend(diagnostics);
+                let diagnostics =
+                    scratch_dir_diagnostics(&tasks_file, &plan.plan_id, workdir, &workspace_config);
+                plan.diagnostics.extend(diagnostics);
             }
 
             let existing_crates = collect_workspace_package_names(workdir, "crates");
@@ -225,6 +245,10 @@ fn validate_plans_dir_impl(
     Ok(ValidationReport { plans, totals })
 }
 
+/// A line break in a diagnostic's message, indented to where `render_text`
+/// starts the message.
+const MESSAGE_INDENT: &str = "\n                 ";
+
 pub fn render_text(report: &ValidationReport) -> String {
     let mut out = String::new();
     let mut printed_plan = false;
@@ -241,12 +265,13 @@ pub fn render_text(report: &ValidationReport) -> String {
 
         let _ = writeln!(out, "{}", plan.path);
         for diagnostic in &plan.diagnostics {
+            // A message's later lines (PLAN_045's questions) sit under its first.
+            let message = diagnostic.message.replace('\n', MESSAGE_INDENT);
             let _ = writeln!(
                 out,
-                "  {:<5} {:<8} {}",
+                "  {:<5} {:<8} {message}",
                 diagnostic.severity.label(),
-                diagnostic.rule_id,
-                diagnostic.message
+                diagnostic.rule_id
             );
         }
     }
@@ -290,6 +315,101 @@ pub fn drop_unknown_rung(task: &mut toml::Table, ladder: &LadderConfig) -> Optio
         return None;
     }
     task.remove("rung")
+}
+
+/// backlog 3109 (decision 3108): `speed_priority = "latency"` asked the
+/// router for cheaper models through a routing bias that no longer exists,
+/// so a task that sets it gets a PLAN_047 warning that it routes nothing.
+fn speed_priority_diagnostics(
+    tasks_file: &roko_cli::task_parser::TasksFile,
+    plan_id: &str,
+) -> Vec<Diagnostic> {
+    tasks_file
+        .tasks
+        .iter()
+        .filter(|task| task.hints.speed_priority == Some(TaskSpeedPriority::Latency))
+        .map(|task| Diagnostic {
+            severity: Severity::Warning,
+            rule_id: "PLAN_047".to_string(),
+            plan_id: Some(plan_id.to_string()),
+            task_id: Some(task.id.clone()),
+            message: format!(
+                "task '{}' sets speed_priority = \"latency\", which has no effect on routing; \
+                 use `rung` to start it on a cheaper model",
+                task.id
+            ),
+        })
+        .collect()
+}
+
+/// 9134: a task whose attempts work in a scratch copy of its data
+/// (`workspace = "scratch_dir"`, its own or its domain profile's) names that
+/// data in `files` (PLAN_048), and none of it may be a path git tracks
+/// (PLAN_049): tracked files belong in a git worktree.
+fn scratch_dir_diagnostics(
+    tasks_file: &roko_cli::task_parser::TasksFile,
+    plan_id: &str,
+    workdir: &Path,
+    config: &RokoConfig,
+) -> Vec<Diagnostic> {
+    let mut diagnostics = Vec::new();
+    for task in &tasks_file.tasks {
+        if task.workspace_kind(config) != WorkspaceKind::ScratchDir {
+            continue;
+        }
+        let (rule_id, message) = if task.files.is_empty() {
+            (
+                "PLAN_048",
+                format!(
+                    "task '{}' works in a scratch_dir workspace but names no data in `files`",
+                    task.id
+                ),
+            )
+        } else {
+            let tracked = git_tracked(workdir, &task.files);
+            if tracked.is_empty() {
+                continue;
+            }
+            (
+                "PLAN_049",
+                format!(
+                    "task '{}' works in a scratch_dir workspace, but git tracks {}: tracked \
+                     files need a git_worktree workspace",
+                    task.id,
+                    tracked.join(", ")
+                ),
+            )
+        };
+        diagnostics.push(Diagnostic {
+            severity: Severity::Error,
+            rule_id: rule_id.to_string(),
+            plan_id: Some(plan_id.to_string()),
+            task_id: Some(task.id.clone()),
+            message,
+        });
+    }
+    diagnostics
+}
+
+/// Those of `paths` that name files git tracks in `workdir`: none when
+/// `workdir` is not a git checkout.
+fn git_tracked(workdir: &Path, paths: &[String]) -> Vec<String> {
+    paths
+        .iter()
+        .filter(|path| {
+            std::process::Command::new("git")
+                .args(["ls-files", "--error-unmatch", "--"])
+                .arg(path)
+                .current_dir(workdir)
+                .env_remove("GIT_DIR")
+                .env_remove("GIT_WORK_TREE")
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .status()
+                .is_ok_and(|status| status.success())
+        })
+        .cloned()
+        .collect()
 }
 
 /// gap-dbf2a6: a `rung` hint must name one of its task's ladder rungs, and a
@@ -414,7 +534,199 @@ pub fn render_rungs_text(rungs: &WorkspaceRungs) -> String {
     out
 }
 
-fn collect_tasks_files(dir: &Path) -> Result<Vec<PathBuf>> {
+/// Whether `command` negates a `grep` (`! grep -q TODO src/lib.rs`): such a
+/// step passes only while some text is absent (find-70edcb).
+fn negates_a_grep(command: &str) -> bool {
+    command.split(['\n', ';', '&', '|']).any(|part| {
+        part.trim_start().strip_prefix('!').is_some_and(|rest| {
+            let program = rest.split_whitespace().next().unwrap_or_default();
+            matches!(program, "grep" | "egrep" | "fgrep" | "rg")
+        })
+    })
+}
+
+/// 3206: one PLAN_043 warning per key of `parsed` that `plan run` does not
+/// read, naming its table, so `--strict` rejects it. The parser drops such a
+/// key without a word, which turns a precise spec into a vague one: R3's
+/// plans set `read_files` beside `files`, and no task got its context file.
+fn unknown_key_diagnostics(parsed: &Value, plan_id: &str) -> Vec<Diagnostic> {
+    let warning = |task_id: Option<String>, message: String| Diagnostic {
+        severity: Severity::Warning,
+        rule_id: "PLAN_043".to_string(),
+        plan_id: Some(plan_id.to_string()),
+        task_id,
+        message,
+    };
+    let mut diagnostics = Vec::new();
+    if let Some(meta) = parsed.get("meta").and_then(Value::as_table) {
+        for key in unknown_keys(meta, META_KEYS) {
+            let message = unknown_key_message("[meta]", key, META_KEYS);
+            diagnostics.push(warning(None, message));
+        }
+        for (index, step) in table_items(meta.get("verify")).enumerate() {
+            let owner = format!("[[meta.verify]] step {}", index + 1);
+            for key in unknown_keys(step, VERIFY_KEYS) {
+                let message = unknown_key_message(&owner, key, VERIFY_KEYS);
+                diagnostics.push(warning(None, message));
+            }
+        }
+    }
+    for (index, task) in table_items(parsed.get("task")).enumerate() {
+        let task_id = string_field(task.get("id"));
+        let label = task_id
+            .clone()
+            .unwrap_or_else(|| format!("task #{}", index + 1));
+        for key in unknown_keys(task, TASK_KEYS) {
+            let message = if CONTEXT_KEYS.contains(&key) {
+                format!(
+                    "task '{label}' sets `{key}` at the top level of [[task]], where plan run \
+                     ignores it; move it under [task.context]"
+                )
+            } else {
+                unknown_key_message(&format!("task '{label}' [[task]]"), key, TASK_KEYS)
+            };
+            diagnostics.push(warning(task_id.clone(), message));
+        }
+        if let Some(context) = task.get("context").and_then(Value::as_table) {
+            let owner = format!("task '{label}' [task.context]");
+            for key in unknown_keys(context, CONTEXT_KEYS) {
+                let message = unknown_key_message(&owner, key, CONTEXT_KEYS);
+                diagnostics.push(warning(task_id.clone(), message));
+            }
+        }
+        for (step_index, step) in table_items(task.get("verify")).enumerate() {
+            let owner = format!("task '{label}' verify step {}", step_index + 1);
+            for key in unknown_keys(step, VERIFY_KEYS) {
+                let message = unknown_key_message(&owner, key, VERIFY_KEYS);
+                diagnostics.push(warning(task_id.clone(), message));
+            }
+        }
+    }
+    diagnostics
+}
+
+/// 3208: PLAN_044 for a task whose verify steps name acceptance criteria in
+/// `covers`, by the ids the spec-quality score uses ([`ac_id`]): an error for
+/// an id its `acceptance` does not define, and a warning for a criterion no
+/// step covers. A task that uses no `covers` gets neither.
+fn covers_diagnostics(task: &TaskDef, plan_id: &str) -> Vec<Diagnostic> {
+    if task.verify.iter().all(|step| step.covers.is_empty()) {
+        return Vec::new();
+    }
+    let ids: Vec<String> = task
+        .acceptance
+        .iter()
+        .enumerate()
+        .map(|(index, item)| ac_id(item, index))
+        .collect();
+    let diagnostic = |severity, message| Diagnostic {
+        severity,
+        rule_id: "PLAN_044".to_string(),
+        plan_id: Some(plan_id.to_string()),
+        task_id: Some(task.id.clone()),
+        message,
+    };
+    let mut diagnostics = Vec::new();
+    let mut covered = BTreeSet::new();
+    for (index, step) in task.verify.iter().enumerate() {
+        for id in step.covers.iter().map(|id| id.trim()) {
+            if ids.iter().any(|known| known == id) {
+                covered.insert(id);
+                continue;
+            }
+            let defined = if ids.is_empty() {
+                "it has no acceptance criteria".to_string()
+            } else {
+                format!("its criteria are {}", ids.join(", "))
+            };
+            let message = format!(
+                "task '{}' verify step {} covers `{id}`, which is not one of its acceptance \
+                 criteria: {defined}",
+                task.id,
+                index + 1
+            );
+            diagnostics.push(diagnostic(Severity::Error, message));
+        }
+    }
+    for (id, item) in ids.iter().zip(&task.acceptance) {
+        if !covered.contains(id.as_str()) {
+            let message = format!(
+                "task '{}' acceptance criterion {id} is covered by no verify step: {item}",
+                task.id
+            );
+            diagnostics.push(diagnostic(Severity::Warning, message));
+        }
+    }
+    diagnostics
+}
+
+/// 3209: what PLAN_045 says about a task with open questions, one question
+/// per line, or `None` when it has none.
+fn open_questions_message(task: &TaskDef) -> Option<String> {
+    let questions: Vec<&str> = task
+        .spec
+        .open_questions
+        .iter()
+        .map(|question| question.trim())
+        .filter(|question| !question.is_empty())
+        .collect();
+    if questions.is_empty() {
+        return None;
+    }
+    let mut message = format!(
+        "task '{}' has open questions, so its plan cannot run; answer each in the spec, then \
+         delete it from open_questions:",
+        task.id
+    );
+    for question in questions {
+        message.push_str("\n- ");
+        message.push_str(question);
+    }
+    Some(message)
+}
+
+/// The keys of `table` that `known` does not list.
+fn unknown_keys<'a>(
+    table: &'a toml::map::Map<String, Value>,
+    known: &'a [&'a str],
+) -> impl Iterator<Item = &'a str> {
+    table
+        .keys()
+        .map(String::as_str)
+        .filter(move |key| !known.contains(key))
+}
+
+/// The tables of an array field: `[[task]]`, or a list of verify steps.
+fn table_items(value: Option<&Value>) -> impl Iterator<Item = &toml::map::Map<String, Value>> {
+    value
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_table)
+}
+
+/// What PLAN_043 says about `key` in `owner`, with the key it most likely
+/// means when one is close.
+fn unknown_key_message(owner: &str, key: &str, known: &[&str]) -> String {
+    let mut message = format!("{owner} has unknown key `{key}`, which plan run ignores");
+    if let Some(correction) = suggest_field_correction(key, known) {
+        let _ = write!(message, "; did you mean `{correction}`?");
+    }
+    message
+}
+
+/// The `tasks.toml` files of the plans under `dir`, sorted: `dir` itself
+/// when it is one, otherwise those of the plans `roko plan run` finds there
+/// ([`find_plan_dirs`]), so `plan validate` checks the plans that run
+/// (gap-9ed15e). `plan validate --spec-quality` lints the same set
+/// (gap-4b3bd5).
+///
+/// # Errors
+///
+/// Returns an error when `dir` does not exist, is a file other than
+/// `tasks.toml`, or cannot be read, and when two plans under it share a plan
+/// id.
+pub fn collect_tasks_files(dir: &Path) -> Result<Vec<PathBuf>> {
     if dir.is_file() {
         if dir.file_name().is_some_and(|name| name == "tasks.toml") {
             return Ok(vec![dir.to_path_buf()]);
@@ -432,37 +744,13 @@ fn collect_tasks_files(dir: &Path) -> Result<Vec<PathBuf>> {
         bail!("{} is not a directory", dir.display());
     }
 
-    let mut out = Vec::new();
-    collect_tasks_files_recursive(dir, &mut out)?;
-    out.sort();
-    Ok(out)
-}
-
-fn collect_tasks_files_recursive(dir: &Path, out: &mut Vec<PathBuf>) -> Result<()> {
-    let mut entries = std::fs::read_dir(dir)
-        .with_context(|| format!("read directory {}", dir.display()))?
-        .collect::<std::result::Result<Vec<_>, _>>()
-        .with_context(|| format!("read directory entries for {}", dir.display()))?;
-    entries.sort_by_key(|entry| entry.path());
-
-    for entry in entries {
-        let path = entry.path();
-        if path.is_dir() {
-            // Skip archived plans — they contain stale references to
-            // removed files/models and should not block active plan runs.
-            if path
-                .file_name()
-                .is_some_and(|name| name == "archive" || name == "archived")
-            {
-                continue;
-            }
-            collect_tasks_files_recursive(&path, out)?;
-        } else if path.is_file() && path.file_name().is_some_and(|name| name == "tasks.toml") {
-            out.push(path);
-        }
-    }
-
-    Ok(())
+    let plans =
+        find_plan_dirs(dir).with_context(|| format!("find the plans in {}", dir.display()))?;
+    Ok(plans
+        .into_iter()
+        .filter(PlanDir::has_tasks)
+        .map(|plan| plan.dir.join("tasks.toml"))
+        .collect())
 }
 
 fn validate_tasks_file(
@@ -508,6 +796,12 @@ fn validate_tasks_file(
         .get("meta")
         .and_then(Value::as_table)
         .is_some_and(is_architecture_queue_meta);
+    // 3212: only the plan itself can let its tasks end unverified.
+    let allow_unverified = parsed
+        .get("meta")
+        .and_then(|meta| meta.get("allow_unverified"))
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
 
     let mut diagnostics = Vec::new();
 
@@ -540,6 +834,45 @@ fn validate_tasks_file(
                             task.id,
                             fields.join(", ")
                         ),
+                    });
+                }
+            }
+            // find-70edcb: a verify step that passes only while some text is
+            // absent fails correct code that happens to contain it.
+            for task in &tasks_file.tasks {
+                for step in &task.verify {
+                    if !negates_a_grep(&step.command) {
+                        continue;
+                    }
+                    diagnostics.push(Diagnostic {
+                        severity: Severity::Warning,
+                        rule_id: "PLAN_042".to_string(),
+                        plan_id: Some(plan_id.clone()),
+                        task_id: Some(task.id.clone()),
+                        message: format!(
+                            "task '{}' verify step `{}` passes only while some text is absent, \
+                             so correct code that contains it fails; check what the code does \
+                             instead, with a test or a compile",
+                            task.id, step.command
+                        ),
+                    });
+                }
+            }
+            // 3208: a verify step names the acceptance criteria it checks.
+            for task in &tasks_file.tasks {
+                diagnostics.extend(covers_diagnostics(task, &plan_id));
+            }
+            // 3209: a task whose planner left open questions keeps its plan
+            // from running until the author answers them in the spec and
+            // deletes them.
+            for task in &tasks_file.tasks {
+                if let Some(message) = open_questions_message(task) {
+                    diagnostics.push(Diagnostic {
+                        severity: Severity::Error,
+                        rule_id: "PLAN_045".to_string(),
+                        plan_id: Some(plan_id.clone()),
+                        task_id: Some(task.id.clone()),
+                        message,
                     });
                 }
             }
@@ -598,6 +931,8 @@ fn validate_tasks_file(
             });
         }
     }
+    // 3206: `plan run` drops a key it does not read without a word.
+    diagnostics.extend(unknown_key_diagnostics(&parsed, &plan_id));
     let tasks = parsed
         .get("task")
         .and_then(Value::as_array)
@@ -669,24 +1004,53 @@ fn validate_tasks_file(
             });
         }
 
-        // gap-29a84b: a task that runs no verify step ends unverified, and a
-        // plan with an unverified task does not succeed. A warning, so
-        // `--strict` rejects it.
+        // gap-29a84b, 3212: a task that runs no verify step ends unverified,
+        // and a plan with an unverified task does not succeed. An error for
+        // every role, unless the plan sets `[meta] allow_unverified`; then a
+        // warning, which `--strict` rejects.
         if !task.has_verify_steps {
+            let (severity, remedy) = if allow_unverified {
+                (Severity::Warning, "")
+            } else {
+                (
+                    Severity::Error,
+                    "; give it a verify step, or set [meta] allow_unverified = true",
+                )
+            };
             diagnostics.push(Diagnostic {
-                severity: Severity::Warning,
+                severity,
                 rule_id: "PLAN_037".to_string(),
                 plan_id: Some(plan_id.clone()),
                 task_id: task.task_id.clone(),
                 message: format!(
                     "task '{}' has no verify steps: it can only end unverified, and then \
-                     its plan does not succeed",
+                     its plan does not succeed{remedy}",
                     task.label()
                 ),
             });
         }
 
         if let Some(contract_value) = &task.acceptance_contract {
+            // 3230 (decision 3205): the contract evaluator is retired. A
+            // contract still parses and its shape is still checked, but
+            // nothing enforces it at run time, so it warns when it is the
+            // task's only acceptance; beside checked acceptance it is only
+            // metadata, such as an architecture packet's parity rows
+            // (bug-ac2a51).
+            if !task.has_enforced_acceptance {
+                diagnostics.push(Diagnostic {
+                    severity: Severity::Warning,
+                    rule_id: "PLAN_046".to_string(),
+                    plan_id: Some(plan_id.clone()),
+                    task_id: task.task_id.clone(),
+                    message: format!(
+                        "task '{}' has an acceptance_contract, which is not enforced at run \
+                         time; state its criteria in `acceptance` with verify `covers`, or pin \
+                         a test with `[task.accept]`",
+                        task.label()
+                    ),
+                });
+            }
             match contract_value.clone().try_into::<AcceptanceContract>() {
                 Ok(contract) => {
                     let decision = contract.validate_contract();
@@ -954,6 +1318,7 @@ fn snapshot_task(ordinal: usize, task: &Value) -> TaskSnapshot {
                 .and_then(|accept| accept.get("files"))
                 .and_then(Value::as_array)
                 .is_some_and(|files| !files.is_empty()),
+        has_enforced_acceptance: table.is_some_and(has_enforced_acceptance),
         acceptance_contract: table
             .and_then(|table| table.get("acceptance_contract"))
             .cloned(),
@@ -1001,9 +1366,10 @@ fn validate_architecture_queue_task(
             "declares no executable verify steps",
         ),
         (
-            task.acceptance_contract.is_none(),
+            !task.has_enforced_acceptance,
             "PLAN_024",
-            "declares no typed acceptance_contract",
+            "declares no checked acceptance: criteria in `acceptance` that verify steps \
+             `covers`, or a pinned `[task.accept]` test",
         ),
         (
             !task.has_required_parity_ledger_rows,
@@ -1036,6 +1402,29 @@ fn validate_architecture_queue_task(
             ),
         });
     }
+}
+
+/// Whether a task's acceptance is checked (decision 3205): criteria in
+/// `acceptance` that a verify step `covers`, or a pinned `[task.accept]` test,
+/// which runs as a verify step (gap-d14a43).
+fn has_enforced_acceptance(table: &toml::map::Map<String, Value>) -> bool {
+    let non_empty = |value: Option<&Value>| {
+        value
+            .and_then(Value::as_array)
+            .is_some_and(|items| !items.is_empty())
+    };
+    let covered = non_empty(table.get("acceptance"))
+        && table
+            .get("verify")
+            .and_then(Value::as_array)
+            .is_some_and(|steps| steps.iter().any(|step| non_empty(step.get("covers"))));
+    let pinned = non_empty(
+        table
+            .get("accept")
+            .and_then(Value::as_table)
+            .and_then(|accept| accept.get("files")),
+    );
+    covered || pinned
 }
 
 fn has_required_parity_ledger_rows(table: &toml::map::Map<String, Value>) -> bool {
@@ -1827,10 +2216,11 @@ read_files = [
         );
     }
 
-    /// gap-29a84b: a task with no verify steps is a PLAN_037 warning, which
-    /// `plan validate --strict` rejects.
+    /// gap-29a84b, 3212: a task with no verify steps is a PLAN_037 error,
+    /// whatever its role; in a plan that sets `allow_unverified` it is a
+    /// warning, which `plan validate --strict` rejects.
     #[test]
-    fn task_without_verify_is_rejected_in_strict_mode() {
+    fn task_without_verify_is_an_error_unless_the_plan_allows_it() {
         let temp = TempDir::new().unwrap();
         let root = temp.path();
         fs::create_dir_all(root.join("plans/demo")).unwrap();
@@ -1868,6 +2258,25 @@ depends_on = ["T1"]
             .collect::<Vec<_>>();
         assert_eq!(unverifiable.len(), 1, "{report:?}");
         assert_eq!(unverifiable[0].task_id.as_deref(), Some("T2"));
+        assert_eq!(unverifiable[0].severity, Severity::Error);
+        assert_eq!(report.totals.errors, 1, "{report:?}");
+        assert_eq!(report.exit_code(false), 1, "an error without --strict");
+
+        let tasks = root.join("plans/demo/tasks.toml");
+        let content = fs::read_to_string(&tasks).unwrap();
+        let allowed = content.replace(
+            "plan = \"demo\"\n",
+            "plan = \"demo\"\nallow_unverified = true\n",
+        );
+        fs::write(&tasks, allowed).unwrap();
+        let report = validate_plans_dir(root.join("plans").as_path(), None).unwrap();
+        let unverifiable = report
+            .plans
+            .iter()
+            .flat_map(|plan| &plan.diagnostics)
+            .filter(|diag| diag.rule_id == "PLAN_037")
+            .collect::<Vec<_>>();
+        assert_eq!(unverifiable.len(), 1, "{report:?}");
         assert_eq!(unverifiable[0].severity, Severity::Warning);
         assert_eq!(report.totals.errors, 0, "{report:?}");
         assert_eq!(report.exit_code(false), 0, "a warning without --strict");
@@ -1984,6 +2393,138 @@ verify = [{ phase = "compile", command = "cargo check -p roko-cli" }]
         assert_eq!(report.exit_code(true), 1, "--strict rejects it");
     }
 
+    /// find-70edcb: a verify step that negates a grep is a PLAN_042 warning.
+    #[test]
+    fn a_negative_grep_verify_step_is_a_plan_042_warning() {
+        assert!(negates_a_grep("! grep -q TODO src/lib.rs"));
+        assert!(negates_a_grep("cargo check -p demo && ! rg unwrap src/"));
+        assert!(!negates_a_grep("grep -q 'pub fn run' src/lib.rs"));
+        assert!(!negates_a_grep("test ! -f src/old.rs"));
+
+        let temp = TempDir::new().unwrap();
+        let root = temp.path();
+        fs::create_dir_all(root.join("plans/demo")).unwrap();
+        fs::write(
+            root.join("plans/demo/tasks.toml"),
+            r#"
+[meta]
+plan = "demo"
+
+[[task]]
+id = "T1"
+title = "Remove the TODOs"
+role = "implementer"
+files = ["src/lib.rs"]
+depends_on = []
+verify = [{ phase = "structural", command = "! grep -q TODO src/lib.rs" }]
+"#,
+        )
+        .unwrap();
+
+        let report = validate_plans_dir(root.join("plans").as_path(), None).unwrap();
+
+        let negative = report
+            .plans
+            .iter()
+            .flat_map(|plan| &plan.diagnostics)
+            .filter(|diag| diag.rule_id == "PLAN_042")
+            .collect::<Vec<_>>();
+        assert_eq!(negative.len(), 1, "{report:?}");
+        assert_eq!(negative[0].severity, Severity::Warning);
+        assert_eq!(negative[0].task_id.as_deref(), Some("T1"));
+    }
+
+    /// 3208: a verify step's `covers` must name one of its task's acceptance
+    /// criteria (a PLAN_044 error), and a task that uses `covers` gets a
+    /// PLAN_044 warning for each criterion no step covers. A task without
+    /// `covers` gets neither.
+    #[test]
+    fn covers_must_name_an_acceptance_criterion() {
+        let temp = TempDir::new().unwrap();
+        let root = temp.path();
+        fs::create_dir_all(root.join("plans/demo")).unwrap();
+        fs::write(
+            root.join("plans/demo/tasks.toml"),
+            r#"
+[meta]
+plan = "demo"
+
+[[task]]
+id = "T1"
+title = "Retry limit"
+role = "implementer"
+files = ["src/config.rs"]
+depends_on = []
+acceptance = [
+  "AC1: a negative limit is rejected",
+  "the default limit is 3",
+  "AC7: the limit is logged",
+]
+
+[[task.verify]]
+phase = "test"
+command = "cargo test -p demo --lib retry"
+covers = ["AC1", "AC9"]
+
+[[task.verify]]
+phase = "test"
+command = "cargo test -p demo --lib config"
+covers = ["AC2"]
+
+[[task]]
+id = "T2"
+title = "Retry docs"
+role = "implementer"
+files = ["docs/retry.md"]
+depends_on = []
+acceptance = ["the docs name the limit"]
+verify = [{ phase = "structural", command = "grep -q limit docs/retry.md" }]
+"#,
+        )
+        .unwrap();
+
+        let report = validate_plans_dir(root.join("plans").as_path(), None).unwrap();
+
+        let covers = report
+            .plans
+            .iter()
+            .flat_map(|plan| &plan.diagnostics)
+            .filter(|diag| diag.rule_id == "PLAN_044")
+            .collect::<Vec<_>>();
+        assert_eq!(covers.len(), 2, "{report:?}");
+        assert_eq!(covers[0].severity, Severity::Error);
+        assert_eq!(covers[0].task_id.as_deref(), Some("T1"));
+        assert_eq!(
+            covers[0].message,
+            "task 'T1' verify step 1 covers `AC9`, which is not one of its acceptance criteria: \
+             its criteria are AC1, AC2, AC7"
+        );
+        assert_eq!(covers[1].severity, Severity::Warning);
+        assert_eq!(covers[1].task_id.as_deref(), Some("T1"));
+        assert_eq!(
+            covers[1].message,
+            "task 'T1' acceptance criterion AC7 is covered by no verify step: AC7: the limit is \
+             logged"
+        );
+        assert_eq!(report.totals.errors, 1, "{report:?}");
+    }
+
+    /// gap-9ed15e: `plan validate` checks the plans `plan run` finds: none
+    /// under `_meta/` or a dot-directory, and none nested in another plan.
+    #[test]
+    fn validate_reads_the_plans_that_discovery_finds() {
+        let temp = TempDir::new().unwrap();
+        let plans = temp.path().join("plans");
+        for dir in ["demo", "demo/nested", "_meta/notes", ".hidden/old"] {
+            fs::create_dir_all(plans.join(dir)).unwrap();
+            fs::write(plans.join(dir).join("tasks.toml"), "[meta]\nplan = \"x\"\n").unwrap();
+        }
+
+        let files = collect_tasks_files(&plans).unwrap();
+
+        assert_eq!(files, [plans.join("demo/tasks.toml")]);
+    }
+
     /// gap-0f3980: a hint that `plan run` parses but ignores is a PLAN_039
     /// warning naming it; a hint it acts on is not.
     #[test]
@@ -2023,9 +2564,9 @@ verify = [{ phase = "compile", command = "cargo check -p roko-cli" }]
         assert_eq!(unused[0].severity, Severity::Warning);
         assert_eq!(unused[0].task_id.as_deref(), Some("T1"));
         assert!(
-            unused[0].message.contains(
-                "sets quality_profile, tags, which plan run parses but does not act on yet"
-            ),
+            unused[0]
+                .message
+                .contains("sets tags, which plan run parses but does not act on yet"),
             "{report:?}"
         );
         assert_eq!(report.totals.errors, 0, "{report:?}");
@@ -2099,6 +2640,51 @@ model_hint = "claude-sonnet-4-6"
             .map(|diag| diag.rule_id)
             .collect();
         assert_eq!(rules, ["PLAN_040"]);
+    }
+
+    /// backlog 3109: a task with `speed_priority = "latency"` gets a PLAN_047
+    /// warning, since no routing bias reads it any more; other priorities and
+    /// tasks without one get none.
+    #[test]
+    fn latency_speed_priority_warns_that_it_routes_nothing() {
+        let tasks = roko_cli::task_parser::TasksFile::parse_str(
+            r#"
+[meta]
+plan = "demo"
+
+[[task]]
+id = "T1"
+title = "Fast turnaround"
+role = "implementer"
+speed_priority = "latency"
+
+[[task]]
+id = "T2"
+title = "Careful work"
+role = "implementer"
+speed_priority = "accuracy"
+
+[[task]]
+id = "T3"
+title = "No priority"
+role = "implementer"
+"#,
+        )
+        .unwrap();
+
+        let diagnostics = speed_priority_diagnostics(&tasks, "demo");
+        let found: Vec<(&str, Severity, Option<&str>)> = diagnostics
+            .iter()
+            .map(|diag| {
+                (
+                    diag.rule_id.as_str(),
+                    diag.severity,
+                    diag.task_id.as_deref(),
+                )
+            })
+            .collect();
+        assert_eq!(found, [("PLAN_047", Severity::Warning, Some("T1"))]);
+        assert!(diagnostics[0].message.contains("no effect on routing"));
     }
 
     /// gap-d14a43: `[task.accept]` problems are PLAN_038 errors, a hand copy
@@ -2454,6 +3040,7 @@ title = "One task"
             timeout_secs: 60,
             required,
             parallel_with: Vec::new(),
+            ..Default::default()
         };
         let gates = GatesConfig {
             custom_rungs: vec![

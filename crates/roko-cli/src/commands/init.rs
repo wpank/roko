@@ -152,15 +152,14 @@ pub fn render_init_template_for(cloud: bool, provider: InitProvider) -> Result<S
     }
 
     if cloud {
-        out.push_str("\n# Auto-register webhooks after deploy\n");
-        out.push_str("[[serve.deploy.webhooks]]\n");
-        out.push_str("provider = \"github\"\n");
-        out.push_str("owner = \"nunchi\"\n");
-        out.push_str("repo = \"roko\"\n\n");
-        out.push_str("[[serve.deploy.webhooks]]\n");
-        out.push_str("provider = \"github\"\n");
-        out.push_str("owner = \"nunchi\"\n");
-        out.push_str("repo = \"collaboration\"\n");
+        // A commented example: `roko deploy` registers a webhook on every
+        // configured repository, so the template must not name any.
+        out.push_str("\n# Auto-register webhooks after deploy: uncomment and name your own\n");
+        out.push_str("# repository (one table per repository).\n");
+        out.push_str("# [[serve.deploy.webhooks]]\n");
+        out.push_str("# provider = \"github\"\n");
+        out.push_str("# owner = \"<your-github-owner>\"\n");
+        out.push_str("# repo = \"<your-repo>\"\n");
     }
 
     Ok(out)
@@ -204,6 +203,7 @@ fn profile_gate_rungs(profile: Option<&str>) -> Vec<GateRungConfig> {
                 timeout_secs: 120,
                 required: true,
                 parallel_with: Vec::new(),
+                ..Default::default()
             },
             GateRungConfig {
                 name: "test".to_string(),
@@ -211,6 +211,7 @@ fn profile_gate_rungs(profile: Option<&str>) -> Vec<GateRungConfig> {
                 timeout_secs: 300,
                 required: true,
                 parallel_with: Vec::new(),
+                ..Default::default()
             },
             GateRungConfig {
                 name: "lint".to_string(),
@@ -218,6 +219,7 @@ fn profile_gate_rungs(profile: Option<&str>) -> Vec<GateRungConfig> {
                 timeout_secs: 120,
                 required: true,
                 parallel_with: Vec::new(),
+                ..Default::default()
             },
         ],
         Some("typescript") => vec![
@@ -227,6 +229,7 @@ fn profile_gate_rungs(profile: Option<&str>) -> Vec<GateRungConfig> {
                 timeout_secs: 120,
                 required: true,
                 parallel_with: Vec::new(),
+                ..Default::default()
             },
             GateRungConfig {
                 name: "test".to_string(),
@@ -234,6 +237,7 @@ fn profile_gate_rungs(profile: Option<&str>) -> Vec<GateRungConfig> {
                 timeout_secs: 300,
                 required: true,
                 parallel_with: Vec::new(),
+                ..Default::default()
             },
         ],
         _ => Vec::new(),
@@ -283,4 +287,42 @@ fn append_no_profile_gate_hint(out: &mut String) {
         "# Add [[gates.rungs]] entries under the [gates] table for custom validation commands.\n",
     );
     out.push_str("# Or rerun `roko init --profile rust` / `roko init --profile typescript`.\n");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 9306: `roko deploy` registers a webhook on every configured
+    /// repository, so neither `roko init --cloud` nor the example config may
+    /// name one. Both keep the webhook table as a commented example.
+    #[test]
+    fn cloud_init_template_names_no_third_party_repos() {
+        let cloud = render_init_template_for(true, InitProvider::ClaudeCli).expect("render");
+        let example = RokoConfig::example_toml();
+        for (name, text) in [("roko init --cloud", &cloud), ("example config", &example)] {
+            let config = RokoConfig::from_toml(text)
+                .unwrap_or_else(|err| panic!("{name}: does not parse: {err}"));
+            assert!(
+                config.serve.deploy.webhooks.is_empty(),
+                "{name}: registers deploy webhooks: {:?}",
+                config.serve.deploy.webhooks
+            );
+            assert!(
+                text.contains("# [[serve.deploy.webhooks]]"),
+                "{name}: lost the commented webhook example"
+            );
+            // The default worker image moves to the owner's registry in its
+            // own change (9341); no other line may name that account.
+            let third_party = text
+                .lines()
+                .filter(|line| line.to_ascii_lowercase().contains("nunchi"))
+                .filter(|line| !line.trim_start().starts_with("worker_image"))
+                .collect::<Vec<_>>();
+            assert!(
+                third_party.is_empty(),
+                "{name}: names a third-party account: {third_party:?}"
+            );
+        }
+    }
 }

@@ -277,7 +277,6 @@ and `"read"`.
 | `/api/agents` | `agent:write` |
 | `/relay` | `agent:write` |
 | `/api/plans` | `plan:write` |
-| `/api/prd` | `plan:write` |
 | `/api/terminal` | `terminal:write` |
 | `/ws/terminal` (GET too: the upgrade opens a shell) | `terminal:write` |
 | `/api/deployments` | `write` |

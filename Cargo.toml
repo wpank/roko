@@ -127,7 +127,11 @@ tokio-util = { version = "0.7", features = ["rt"] }
 
 # Serialization
 serde = { version = "1.0", features = ["derive"] }
-serde_json = "1"
+# `float_roundtrip`: every f64 parses back to the value that was written. Hash
+# chains and digests are re-checked from parsed JSON (the audit ledger's
+# record_hash, RFC 8785 canonical JSON), and the default parser can land a ulp
+# away on 17 significant digits (gap-940e44).
+serde_json = { version = "1", features = ["float_roundtrip"] }
 toml = "0.8"
 toml_edit = "0.22"
 indexmap = { version = "2", features = ["serde"] }
@@ -172,6 +176,8 @@ octocrab = "0.49"
 base64 = "0.22"
 hmac = "0.12"
 sha2 = "0.10"
+# Argon2id PHC strings for the showcase passphrase (S11 §4.3).
+argon2 = { version = "0.5", features = ["std"] }
 wasmi = { version = "0.46", features = ["extra-checks"] }
 tokio-tungstenite = { version = "0.26", features = ["rustls-tls-native-roots"] }
 tower = { version = "0.5", features = ["limit", "load-shed"] }

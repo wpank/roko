@@ -2,9 +2,6 @@
 # agent, prompt, and provider settings; this file only overrides what
 # the demo needs.
 
-[prd]
-auto_plan = false
-
 [agent]
 command = "echo"
 args = ["demo-stub"]
@@ -25,6 +22,3 @@ max_iterations = 1
 
 [timeouts]
 task_attempt_secs = 60
-
-[learning]
-replan_on_gate_failure = false

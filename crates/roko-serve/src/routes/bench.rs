@@ -26,9 +26,8 @@ use crate::bench::{
 use crate::error::ApiError;
 use crate::events::ServerEvent;
 use crate::state::{AppState, BenchRunHandle, MatrixRunHandle};
-use roko_agent::CostTable;
-use roko_core::Usage as CoreUsage;
 use roko_core::metric::{ConfigHash, TaskMetric};
+use roko_core::pricing_snapshot::{PriceSnapshot, TokenCounts};
 use roko_core::{Body, Kind, Signal, Verify};
 use roko_gate::{GatePayload, ShellGate};
 use roko_learn::baseline::compute_baseline;
@@ -235,8 +234,10 @@ async fn execute_bench_run(
     let mut _passed_count = 0usize;
     let mut _failed_count = 0usize;
 
-    // Build a CostTable from the live config for accurate cost estimation.
-    let cost_table = CostTable::from_config_with_defaults(&state.roko_config.load().models);
+    // Each task is priced at the price snapshot's row for the model that
+    // served it (3343): `[pricing] snapshot`, else the newest file in
+    // config/prices, else the built-in copy.
+    let snapshot = PriceSnapshot::shared(&state.roko_config.load().pricing, &state.workdir);
     // A Demo run's tokens and cost are simulated: it stays out of the index
     // (update_index_entry would add it) and out of regression checks.
     let simulated = overrides.strategy.is_simulated();
@@ -328,25 +329,36 @@ async fn execute_bench_run(
         // The status comes from the executed check alone, never from the
         // agent's report of success or from text in its output.
         let grade = grade_task(check.as_ref(), baseline, &dirs.workspace).await;
-        // Intentionally ignoring: best-effort removal of the graded workspace
+        // The graded workspace is kept, so its grade can be checked again
+        // (3343); the rest of the task's directory goes. A simulated run's
+        // workspace holds nothing an agent did.
+        let archive = if simulated {
+            None
+        } else {
+            archive_workspace(&state.workdir, &run_id, &dirs).await
+        };
+        // Intentionally ignoring: best-effort removal of the task's directory
         let _ = tokio::fs::remove_dir_all(&dirs.root).await;
+        let requested = overrides.model.clone().unwrap_or_default();
 
         let task_result = match result {
             Ok(run_result) => {
-                let (input_tokens, output_tokens) = run_result
-                    .usage
-                    .as_ref()
+                let usage = run_result.usage.as_ref();
+                let (input_tokens, output_tokens) = usage
                     .map(|u| (u.input_tokens, u.output_tokens))
                     .unwrap_or((0, 0));
-
-                let cost_usd = cost_table.calculate(
-                    overrides.model.as_deref().unwrap_or(""),
-                    &CoreUsage {
-                        input_tokens: input_tokens as u32,
-                        output_tokens: output_tokens as u32,
-                        ..CoreUsage::default()
-                    },
-                );
+                // Priced at the model that served the task, never the one
+                // asked for: no reported model, or no row for it, leaves the
+                // cost unknown.
+                let served = usage.and_then(|u| u.model.clone());
+                let tokens = TokenCounts {
+                    input: input_tokens,
+                    output: output_tokens,
+                    ..TokenCounts::default()
+                };
+                let priced = served
+                    .as_deref()
+                    .and_then(|model| snapshot.as_deref()?.price(model, &tokens));
                 let output_preview = run_result
                     .output_text
                     .as_ref()
@@ -370,15 +382,17 @@ async fn execute_bench_run(
                     task_name: task.name.clone(),
                     status: grade.status().into(),
                     duration_ms,
-                    model: overrides.model.clone().unwrap_or_default(),
+                    model: served.unwrap_or(requested),
                     tokens_in: input_tokens,
                     tokens_out: output_tokens,
-                    cost_usd,
+                    cost_usd: priced.map_or(0.0, |priced| priced.api_equiv_usd),
+                    cost_unknown: priced.is_none(),
                     gate_verdicts,
                     retries_used: 0,
                     output_preview,
                     error: None,
                     skip_reason: grade.skip_reason(),
+                    archive,
                 }
             }
             Err(e) => BenchTaskResult {
@@ -386,15 +400,17 @@ async fn execute_bench_run(
                 task_name: task.name.clone(),
                 status: grade.status().into(),
                 duration_ms,
-                model: overrides.model.clone().unwrap_or_default(),
+                model: requested,
                 tokens_in: 0,
                 tokens_out: 0,
                 cost_usd: 0.0,
+                cost_unknown: true,
                 gate_verdicts: grade.verdict().into_iter().collect(),
                 retries_used: 0,
                 output_preview: None,
                 error: Some(format!("{e}")),
                 skip_reason: grade.skip_reason(),
+                archive,
             },
         };
 
@@ -1278,6 +1294,88 @@ fn bench_task_metric(
     }
 }
 
+/// Most bytes of one graded workspace kept in the archive, its build
+/// directory left out; a larger workspace is not kept (3343).
+const ARCHIVE_MAX_BYTES: u64 = 64 * 1024 * 1024;
+
+/// What an archived workspace leaves out at its top: Cargo's build
+/// directory, which a re-check rebuilds.
+const ARCHIVE_SKIPPED_DIRS: &[&str] = &["target"];
+
+/// Keep the graded `dirs.workspace` under
+/// `<workdir>/.roko/bench/archives/<run_id>/<task dir>` and return that path
+/// relative to `workdir`; `None`, with a warning, when it is over
+/// [`ARCHIVE_MAX_BYTES`] or cannot be copied.
+async fn archive_workspace(
+    workdir: &std::path::Path,
+    run_id: &str,
+    dirs: &TaskDirs,
+) -> Option<String> {
+    let relative = PathBuf::from(".roko")
+        .join("bench")
+        .join("archives")
+        .join(run_id)
+        .join(dirs.root.file_name()?);
+    let destination = workdir.join(&relative);
+    let source = dirs.workspace.clone();
+    let copied =
+        tokio::task::spawn_blocking(move || copy_capped(&source, &destination, ARCHIVE_MAX_BYTES))
+            .await;
+    match copied {
+        Ok(Ok(())) => Some(relative.to_string_lossy().into_owned()),
+        Ok(Err(error)) => {
+            tracing::warn!(error = %error, run_id = %run_id, "graded bench workspace not archived");
+            None
+        }
+        Err(error) => {
+            tracing::warn!(error = %error, run_id = %run_id, "bench workspace archive task failed");
+            None
+        }
+    }
+}
+
+/// Copy the files under `source` to `destination`, leaving out
+/// [`ARCHIVE_SKIPPED_DIRS`] at its top and any symlink, when they total at
+/// most `max_bytes`; copy nothing otherwise.
+fn copy_capped(
+    source: &std::path::Path,
+    destination: &std::path::Path,
+    max_bytes: u64,
+) -> anyhow::Result<()> {
+    let mut files = Vec::new();
+    let mut total = 0_u64;
+    let mut pending = vec![source.to_path_buf()];
+    while let Some(dir) = pending.pop() {
+        let entries = std::fs::read_dir(&dir).with_context(|| format!("read {}", dir.display()))?;
+        for entry in entries {
+            let entry = entry?;
+            let kind = entry.file_type()?;
+            let skipped = ARCHIVE_SKIPPED_DIRS
+                .iter()
+                .any(|name| entry.file_name() == **name);
+            if kind.is_dir() && !(dir == source && skipped) {
+                pending.push(entry.path());
+            } else if kind.is_file() {
+                total += entry.metadata()?.len();
+                files.push(entry.path());
+            }
+        }
+    }
+    anyhow::ensure!(
+        total <= max_bytes,
+        "{total} bytes, over the {max_bytes}-byte cap"
+    );
+    for file in files {
+        let target = destination.join(file.strip_prefix(source)?);
+        if let Some(parent) = target.parent() {
+            std::fs::create_dir_all(parent)
+                .with_context(|| format!("create {}", parent.display()))?;
+        }
+        std::fs::copy(&file, &target).with_context(|| format!("copy {}", file.display()))?;
+    }
+    Ok(())
+}
+
 struct BenchWorkdirCleanup {
     path: PathBuf,
 }
@@ -2099,11 +2197,13 @@ mod tests {
             tokens_in: 100,
             tokens_out: 50,
             cost_usd: 0.01,
+            cost_unknown: false,
             gate_verdicts: Vec::new(),
             retries_used: 0,
             output_preview: None,
             error: None,
             skip_reason: None,
+            archive: None,
         }
     }
 
@@ -2150,18 +2250,195 @@ mod tests {
     }
 
     fn bench_state() -> (tempfile::TempDir, Arc<AppState>) {
+        bench_state_with(Arc::new(crate::runtime::NoOpRuntime))
+    }
+
+    fn bench_state_with(
+        runtime: Arc<dyn crate::runtime::CliRuntime>,
+    ) -> (tempfile::TempDir, Arc<AppState>) {
         let dir = tempfile::tempdir().expect("tempdir");
         let deploy_backend = Arc::from(
             crate::deploy::create_backend("manual", None, None, None).expect("manual backend"),
         );
         let state = AppState::new(
             dir.path().to_path_buf(),
-            Arc::new(crate::runtime::NoOpRuntime),
+            runtime,
             roko_core::config::schema::RokoConfig::default(),
             deploy_backend,
         )
         .expect("AppState::new");
         (dir, Arc::new(state))
+    }
+
+    /// A runtime that edits each task's workspace, leaves a build directory
+    /// in it, and reports `served` as the model that served the call.
+    struct ServedRuntime {
+        served: Option<&'static str>,
+    }
+
+    #[async_trait::async_trait]
+    impl crate::runtime::CliRuntime for ServedRuntime {
+        async fn run_once(
+            &self,
+            workdir: &std::path::Path,
+            _prompt: &str,
+        ) -> anyhow::Result<crate::runtime::RunResult> {
+            std::fs::write(workdir.join("AGENT_NOTES.md"), "edited by the agent\n")?;
+            let build = workdir.join("target").join("debug");
+            std::fs::create_dir_all(&build)?;
+            std::fs::write(build.join("build.bin"), [0_u8; 1024])?;
+            Ok(crate::runtime::RunResult {
+                success: true,
+                output_text: Some("done".to_string()),
+                usage: Some(crate::runtime::RunResultUsage {
+                    input_tokens: 1_000,
+                    output_tokens: 500,
+                    model: self.served.map(str::to_string),
+                }),
+                gate_results: Vec::new(),
+            })
+        }
+
+        fn session_status(&self, workdir: PathBuf) -> crate::runtime::SessionStatusInfo {
+            crate::runtime::SessionStatusInfo {
+                session_id: None,
+                workdir,
+                daemon_running: false,
+                signal_count: None,
+                episode_count: None,
+                last_episode_passed: None,
+            }
+        }
+
+        fn dashboard_scaffold(&self, _workdir: &std::path::Path) -> crate::runtime::DashboardInfo {
+            crate::runtime::DashboardInfo {
+                rendered: String::new(),
+            }
+        }
+    }
+
+    /// 3343: every graded workspace is kept under
+    /// `.roko/bench/archives/<run>/<task>`, without its build directory, and
+    /// the task's result names it; a workspace over the cap is not kept.
+    #[tokio::test]
+    async fn serve_bench_archives_graded_workspaces() {
+        let (_dir, state) = bench_state_with(Arc::new(ServedRuntime {
+            served: Some("gpt-5.4"),
+        }));
+        let run_id = run_smoke_bench(&state, "minimal", "gpt-oss-120b").await;
+        let run = bench::load_bench_run(&state.workdir, &run_id)
+            .await
+            .expect("load run")
+            .expect("run stored");
+        assert!(!run.results.is_empty());
+        for (idx, result) in run.results.iter().enumerate() {
+            let task_dir = TaskDirs::new(std::path::Path::new(""), idx, &result.task_id).root;
+            let expected = PathBuf::from(".roko")
+                .join("bench")
+                .join("archives")
+                .join(&run_id)
+                .join(task_dir);
+            let archive = result
+                .archive
+                .as_deref()
+                .expect("the workspace is archived");
+            assert_eq!(PathBuf::from(archive), expected);
+            let kept = state.workdir.join(archive);
+            let notes = std::fs::read_to_string(kept.join("AGENT_NOTES.md")).expect("agent edit");
+            assert_eq!(notes, "edited by the agent\n");
+            assert!(kept.join("Cargo.toml").is_file() && kept.join("src").join("lib.rs").is_file());
+            assert!(
+                !kept.join("target").exists(),
+                "the build directory is left out"
+            );
+        }
+        // The run's temporary directory is gone: only the archive keeps them.
+        let scratch = std::env::temp_dir().join(format!("roko-bench-{run_id}"));
+        assert!(!scratch.exists());
+
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let source = tmp.path().join("workspace");
+        std::fs::create_dir_all(source.join("src")).expect("source dir");
+        std::fs::write(source.join("src").join("lib.rs"), "pub fn f() {}\n").expect("lib.rs");
+        let error = copy_capped(&source, &tmp.path().join("small"), 10).expect_err("over the cap");
+        assert!(
+            error.to_string().contains("over the 10-byte cap"),
+            "{error}"
+        );
+        assert!(
+            !tmp.path().join("small").exists(),
+            "nothing is copied over the cap"
+        );
+    }
+
+    /// 3343: a task is priced at the price snapshot's row for the model that
+    /// served it, never the one asked for; with no served model, or one the
+    /// snapshot does not list, its cost is unknown.
+    #[tokio::test]
+    async fn serve_bench_prices_the_served_model() {
+        let tokens = TokenCounts {
+            input: 1_000,
+            output: 500,
+            ..TokenCounts::default()
+        };
+        let snapshot = PriceSnapshot::builtin().expect("built-in snapshot");
+        let served_usd = snapshot.price("gpt-5.4", &tokens).expect("gpt-5.4 row");
+        let requested_usd = snapshot
+            .price("gpt-oss-120b", &tokens)
+            .expect("gpt-oss-120b row");
+        assert!((served_usd.api_equiv_usd - requested_usd.api_equiv_usd).abs() > 1e-6);
+        let cases = [
+            (Some("gpt-5.4"), "gpt-5.4", served_usd.api_equiv_usd, false),
+            (Some("mystery-model-9"), "mystery-model-9", 0.0, true),
+            (None, "gpt-oss-120b", 0.0, true),
+        ];
+        for (served, model, cost_usd, cost_unknown) in cases {
+            let (_dir, state) = bench_state_with(Arc::new(ServedRuntime { served }));
+            let run_id = run_smoke_bench(&state, "minimal", "gpt-oss-120b").await;
+            let run = bench::load_bench_run(&state.workdir, &run_id)
+                .await
+                .expect("load run")
+                .expect("run stored");
+            assert!(!run.results.is_empty());
+            for result in &run.results {
+                assert_eq!(result.model, model, "{result:?}");
+                assert!((result.cost_usd - cost_usd).abs() < 1e-12, "{result:?}");
+                assert_eq!(result.cost_unknown, cost_unknown, "{result:?}");
+            }
+        }
+    }
+
+    /// 9319: a runtime that answers every task, with no gate result, passes
+    /// none. Its verdict is `unverified`; with no executed check every task
+    /// is skipped, the summary counts no pass and the index has no pass rate.
+    #[tokio::test]
+    async fn a_bench_run_without_gates_records_no_pass() {
+        let runtime = ServedRuntime {
+            served: Some("gpt-5.4"),
+        };
+        let scratch = tempfile::tempdir().expect("tempdir");
+        let answer = crate::runtime::CliRuntime::run_once(&runtime, scratch.path(), "Say hello.")
+            .await
+            .expect("answer");
+        assert_eq!(answer.verdict(), crate::state::RunState::Unverified);
+        let (_dir, state) = bench_state_with(Arc::new(runtime));
+        let run_id = run_smoke_bench(&state, "minimal", "gpt-5.4").await;
+
+        let run = bench::load_bench_run(&state.workdir, &run_id)
+            .await
+            .expect("load run")
+            .expect("run stored");
+        assert!(!run.results.is_empty());
+        let skipped = run.results.iter().filter(|r| r.skipped()).count();
+        assert_eq!(skipped, run.results.len(), "{:?}", run.results);
+        let summary = run.summary.as_ref().expect("summary");
+        assert_eq!((summary.passed, summary.skipped), (0, run.results.len()));
+        let entries = bench::load_index_entries(&state.workdir).await;
+        let entry = entries
+            .iter()
+            .find(|entry| entry.id == run_id)
+            .expect("indexed");
+        assert_eq!(entry.pass_rate, None);
     }
 
     /// Start a smoke-suite run through the handler, wait until it is done,

@@ -1,0 +1,22 @@
+# S07 §4.6, F1 pyconv-errors "after", written out as TSS v1 from the section's description. The error format is
+# only in the context file, so L3 (drop_context) makes the vague twin hard.
+[[task]]
+id = "F1-0011"
+title = "Raise a registered error on over-refund"
+goal = "Refunding more than was paid raises a registered `AppError` subclass."
+description = """Add the over-refund error to app/errors.py, next to the existing errors, and raise it from app/refunds.py. AC ids refer to the acceptance list."""
+non_goals = ["Do not change existing error codes"]
+acceptance = [
+  "AC1: an over-refund raises an `AppError` subclass",
+  "AC2: its code is registered once and documented in `docs/errors.md`",
+  "AC3: its message follows the existing format",
+]
+files = ["app/errors.py", "app/refunds.py", "docs/errors.md"]
+max_loc = 50
+[task.context]
+read_files = [{ path = "app/errors.py", why = "the existing error format and registry" }]
+[[task.verify]]
+phase = "test"
+command = "python3 -m unittest tests.visible.test_errors"
+covers = ["AC1", "AC2"]
+expect = "fail_on_base"

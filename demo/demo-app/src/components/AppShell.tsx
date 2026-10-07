@@ -31,23 +31,28 @@ export default function AppShell() {
   const location = useLocation();
   const help = useHelpOverlay();
 
-  // KeepAlive: once Demo is visited, keep it mounted (display:none when elsewhere)
-  const isDemo = location.pathname === '/demo';
+  // KeepAlive: once the scenario player (/lab/demo) is visited, keep it mounted
+  // (display:none) while other lab pages are open. It is retired from the showcase
+  // (S10 §4.4), so a showcase page unmounts it.
+  const inLab = location.pathname === '/lab' || location.pathname.startsWith('/lab/');
+  const isDemo = location.pathname === '/lab/demo';
   const demoVisitedRef = useRef(false);
   if (isDemo) demoVisitedRef.current = true;
+  else if (!inLab) demoVisitedRef.current = false;
 
   // Global keyboard shortcuts (E4/E5)
   const shortcuts = useMemo<ShortcutDef[]>(() => [
     { keys: '?', description: 'Show keyboard shortcuts', category: 'General', action: help.toggle },
     { keys: 'Ctrl+/', description: 'Show keyboard shortcuts', category: 'General', action: help.toggle },
     { keys: 'Escape', description: 'Close overlay / modal', category: 'General', action: help.close },
-    { keys: 'g d', description: 'Go to Dashboard', category: 'Navigation', action: () => navigate('/dashboard') },
-    { keys: 'g t', description: 'Go to Terminal', category: 'Navigation', action: () => navigate('/terminal') },
-    { keys: 'g b', description: 'Go to Bench', category: 'Navigation', action: () => navigate('/bench') },
-    { keys: 'g e', description: 'Go to Explorer', category: 'Navigation', action: () => navigate('/explorer') },
-    { keys: 'g m', description: 'Go to Demo', category: 'Navigation', action: () => navigate('/demo') },
-    { keys: 'g s', description: 'Go to Settings', category: 'Navigation', action: () => navigate('/settings') },
-    { keys: 'g p', description: 'Go to Builder', category: 'Navigation', action: () => navigate('/builder') },
+    { keys: 'g o', description: 'Go to the showcase overview', category: 'Navigation', action: () => navigate('/') },
+    { keys: 'g d', description: 'Go to Dashboard', category: 'Navigation', action: () => navigate('/lab/dashboard') },
+    { keys: 'g t', description: 'Go to Terminal', category: 'Navigation', action: () => navigate('/lab/terminal') },
+    { keys: 'g b', description: 'Go to Bench', category: 'Navigation', action: () => navigate('/lab/bench') },
+    { keys: 'g e', description: 'Go to Explorer', category: 'Navigation', action: () => navigate('/lab/explorer') },
+    { keys: 'g m', description: 'Go to Demo', category: 'Navigation', action: () => navigate('/lab/demo') },
+    { keys: 'g s', description: 'Go to Settings', category: 'Navigation', action: () => navigate('/lab/settings') },
+    { keys: 'g p', description: 'Go to Builder', category: 'Navigation', action: () => navigate('/lab/builder') },
   ], [help.toggle, help.close, navigate]);
 
   useKeyboardShortcuts(shortcuts);

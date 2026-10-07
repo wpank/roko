@@ -19,7 +19,6 @@ impl App {
                 Tab::Config => FocusZone::ConfigKeys,
                 Tab::Inspect => FocusZone::InspectTree,
                 Tab::Marketplace => FocusZone::MarketList,
-                Tab::Atelier => FocusZone::AtelierList,
                 Tab::Learning => FocusZone::LearningMetrics,
                 Tab::Providers => FocusZone::ProviderList,
                 _ => FocusZone::PlanTree,
@@ -30,7 +29,6 @@ impl App {
                 Tab::Config => FocusZone::ConfigValues,
                 Tab::Inspect => FocusZone::InspectDetail,
                 Tab::Marketplace => FocusZone::MarketDetail,
-                Tab::Atelier => FocusZone::AtelierDetail,
                 Tab::Learning => FocusZone::LearningDetail,
                 _ => FocusZone::RightPanel,
             },
@@ -137,14 +135,6 @@ impl App {
                     self.tui_state.marketplace_selected_job = next as usize;
                 }
             }
-            ScrollTarget::AtelierPrds => {
-                if !self.tui_state.atelier_prds.is_empty() {
-                    let max = self.tui_state.atelier_prds.len().saturating_sub(1);
-                    let next =
-                        (self.tui_state.atelier_selected_prd as i32 + delta).clamp(0, max as i32);
-                    self.tui_state.atelier_selected_prd = next as usize;
-                }
-            }
             ScrollTarget::Modal | ScrollTarget::None => {
                 // Modal scroll is handled by handle_mouse before reaching here.
                 // None is not scrollable.
@@ -177,19 +167,6 @@ impl App {
                     let next = (self.tui_state.marketplace_selected_job as i32 + delta)
                         .clamp(0, max as i32);
                     self.tui_state.marketplace_selected_job = next as usize;
-                }
-            }
-            // Atelier: route list selection vs. detail scroll based on focus (P6.3).
-            (Tab::Atelier, FocusZone::AtelierDetail) => {
-                let current = self.tui_state.atelier_detail_scroll as i32;
-                self.tui_state.atelier_detail_scroll = (current + delta).max(0) as usize;
-            }
-            (Tab::Atelier, _) => {
-                if !self.tui_state.atelier_prds.is_empty() {
-                    let max = self.tui_state.atelier_prds.len().saturating_sub(1);
-                    let next =
-                        (self.tui_state.atelier_selected_prd as i32 + delta).clamp(0, max as i32);
-                    self.tui_state.atelier_selected_prd = next as usize;
                 }
             }
             (_, FocusZone::PlanTree) => {
@@ -290,20 +267,6 @@ impl App {
                 if !self.tui_state.marketplace_jobs.is_empty() {
                     let max = self.tui_state.marketplace_jobs.len().saturating_sub(1);
                     self.tui_state.marketplace_selected_job = if offset == usize::MAX {
-                        max
-                    } else {
-                        offset.min(max)
-                    };
-                }
-            }
-            // Atelier: route Home/End to list or detail based on focus (P6.3).
-            (Tab::Atelier, FocusZone::AtelierDetail) => {
-                self.tui_state.atelier_detail_scroll = offset;
-            }
-            (Tab::Atelier, _) => {
-                if !self.tui_state.atelier_prds.is_empty() {
-                    let max = self.tui_state.atelier_prds.len().saturating_sub(1);
-                    self.tui_state.atelier_selected_prd = if offset == usize::MAX {
                         max
                     } else {
                         offset.min(max)
@@ -576,13 +539,6 @@ impl App {
                     let max = self.tui_state.marketplace_jobs.len().saturating_sub(1);
                     self.tui_state.marketplace_selected_job =
                         self.tui_state.marketplace_selected_job.min(max);
-                }
-            }
-            Tab::Atelier => {
-                if !self.tui_state.atelier_prds.is_empty() {
-                    let max = self.tui_state.atelier_prds.len().saturating_sub(1);
-                    self.tui_state.atelier_selected_prd =
-                        self.tui_state.atelier_selected_prd.min(max);
                 }
             }
             Tab::Inspect | Tab::Learning => {}

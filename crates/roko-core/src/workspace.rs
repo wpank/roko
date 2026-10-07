@@ -72,7 +72,6 @@ impl Workspace {
             &roko_dir.join("config"),
             &roko_dir.join("cache"),
             &roko_dir.join("learn"),
-            &roko_dir.join("prd"),
             &roko_dir.join("research"),
         ];
 
@@ -178,12 +177,6 @@ impl Workspace {
     #[must_use]
     pub fn config_path(&self) -> PathBuf {
         self.root.join("roko.toml")
-    }
-
-    /// `.roko/prd/` — PRD storage.
-    #[must_use]
-    pub fn prd_dir(&self) -> PathBuf {
-        self.root.join(".roko/prd")
     }
 
     /// `.roko/research/` — research artifacts.
@@ -303,7 +296,6 @@ mod tests {
         assert!(ws.config_dir().is_dir());
         assert!(ws.cache_dir().is_dir());
         assert!(ws.learn_dir().is_dir());
-        assert!(ws.prd_dir().is_dir());
         assert!(ws.research_dir().is_dir());
     }
 

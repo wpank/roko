@@ -1,11 +1,13 @@
 #!/usr/bin/env python3
-"""`vb`, the ViabilityBench driver (S08 §5.7). This item builds `run`, `estimate` and `materialize`.
+"""`vb`, the ViabilityBench driver (S08 §5.7): `run`, `estimate`, `materialize`, `campaign`, `ledger`, `report`
+and `replay`.
 
     vb run --experiment PILOT-A --stream pilot --arm cheap_direct --model gpt-oss-120b --seeds 1-3 \
            --allow-network --max-cost-usd 10 [--line BL0] [--limit N] [--proxy] [--disturbance SPEC.toml] \
            [--transcripts] [--keep-workdirs]
     vb estimate --stream pilot --arm cheap_direct --model gpt-oss-120b --seeds 1-3
     vb materialize --stream pilot --instance F1-l1-0001 --out DIR
+    vb campaign --manifest experiments/pilot_a.toml --dry-run        # an experiment's blocks (campaign.py)
 
 `vb run` runs every (task, seed) of a stream on one arm and one model, in a fresh workdir under `$VB_WORK` (default
 `~/vb-work/<run_id>/`), outside the repository. For each one it: materializes the task (`materialize`); runs the
@@ -16,6 +18,10 @@ files and never edits this one); commits the final tree as c_i without touching 
 (default `~/.roko-bench/viability`): `manifest.json`, `order-<seed>.json`, `records.jsonl`, `ledger.jsonl`,
 `archives/`, `private/` (task manifests and pristine bundles, never an agent's), `errors.jsonl` and, with
 `--transcripts`, `transcripts/`. Stream positions in records are 1-based.
+
+**The pre-registration lock** (S09 SC1, 3341). `vb run` of an experiment that runs only under the lock (LOG1, a live
+`E-` experiment, or one whose manifest says `requires_lock`: `campaign.requires_lock`) stops before anything else,
+with exit 2, unless the lock (`--lock`) exists, is committed and checks clean against S09 (`--prereg-spec`).
 
 **Network admission** (from `scripts/dev_benchmark.py`'s `execute`, W10 rec 14). A provider whose base URL is not a
 loopback address is a network provider. `vb run` calls one only with both `--allow-network` and an explicit
@@ -31,9 +37,9 @@ admission, so `--provider-url` never names a proxy started by hand: `vb run` sta
 
 **The metering proxy** (`faultproxy.py`, S08 T13). A billed run on a network provider always goes through it, and
 `--proxy` sends any other run through it too, such as an offline one on a stub. Once the run is admitted, `vb run`
-starts the proxy inside the driver's process with one upstream: the arm's provider, or the `--provider-url` that
-overrides it. The runners reach the model only through it: they get its loopback URL and no key, and it sends the
-provider's key. It logs every call to `<run_dir>/proxy.jsonl`, and before each task the driver sets its task to the
+starts the proxy inside the driver's process with one upstream per provider its models_allow rows use (3311: a
+ladder's rungs may span several), each the arm's own provider or the `--provider-url` that overrides all of them.
+The runners reach a model only through it: they get its loopback URL and no key, and it sends the provider's key. It logs every call to `<run_dir>/proxy.jsonl`, and before each task the driver sets its task to the
 task key, `<instance_id>.s<seed>`; the Roko arm finds its rows by that key (`run_roko`). Admission judges the
 provider's own URL, never the proxy's, so a network provider behind the loopback proxy still needs both flags. Before
 each task the driver also sets the task's caps in the proxy: the arm's input cap, the per-attempt cap for a runner
@@ -86,13 +92,14 @@ import stat
 import sys
 import tempfile
 import tomllib
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from types import ModuleType
 
 import agent_env
 import archive
+import campaign
 import caps
 import census
 import disturb
@@ -143,6 +150,7 @@ class Run:
     args: argparse.Namespace
     plan: Plan
     runner: ModuleType
+    arm: dict  # plan.arm, with every [providers.*] base_url proxied when this run is proxied (3311)
     endpoint: provider.Endpoint  # what the runners call: the plan's endpoint, or the proxy's in front of it
     chat: provider.ChatProvider
     book: ledger.Ledger
@@ -155,6 +163,7 @@ class Run:
     suite: dict
     proxy: faultproxy.FaultProxy | None = None
     disturbances: tuple[disturb.Disturbance, ...] = ()  # the H6 hooks this run applies (disturb.py)
+    credential_fingerprints: tuple[str, ...] = ()  # gap-3cfe4f: sha256-hex prefixes the census must not see exfiltrated
 
 
 @dataclass(frozen=True)
@@ -168,6 +177,9 @@ class Plan:
     endpoint: provider.Endpoint
     caps: caps.Caps
     worst_task_usd: float | None
+    # 3311: one endpoint per provider the arm's models_allow uses (keyed by provider name), for a ladder's several
+    # rungs; holds exactly `{endpoint.provider: endpoint}` for a one-model arm.
+    endpoints: dict[str, provider.Endpoint]
 
     @property
     def runs(self) -> int:
@@ -189,12 +201,14 @@ def main(argv: list[str] | None = None) -> int:
     forwarded = sys.argv[1:] if argv is None else argv
     if forwarded[:1] == ["report"]:
         return run_report(forwarded[1:])
+    if forwarded[:1] == ["replay"]:
+        return run_replay(forwarded[1:])
     args = _parser().parse_args(argv)
     args.argv = ["vb", *(sys.argv[1:] if argv is None else argv)]
     args.own_process = argv is None  # a script, not a call: `vb run` may start itself again (`agent_env.exec_scrubbed`)
     try:
         return args.handler(args)
-    except (DriverError, caps.CapError, ledger.PriceError) as err:
+    except (DriverError, caps.CapError, ledger.PriceError, campaign.CampaignError) as err:
         print(f"vb: {err}", file=sys.stderr)
         return 2
 
@@ -203,6 +217,12 @@ def run_report(argv: list[str]) -> int:
     """`vb report` (S08 §5.7) is `analysis/report.py`, which parses its own flags: argparse cannot pass them through."""
     sys.path.insert(0, str(layout.VB_ROOT / "analysis"))
     return importlib.import_module("report").main(argv)
+
+
+def run_replay(argv: list[str]) -> int:
+    """`vb replay` (S09 E6, 3354) is `analysis/replay_runner.py`, which parses its own flags."""
+    sys.path.insert(0, str(layout.VB_ROOT / "analysis"))
+    return importlib.import_module("replay_runner").main(argv)
 
 
 def admit(plan: Plan, *, allow_network: bool, max_cost_usd: float | None) -> None:
@@ -230,12 +250,21 @@ def make_plan(args: argparse.Namespace) -> Plan:
     if args.model not in allowed:
         raise DriverError(f"arm {arm['arm']['id']} allows {', '.join(allowed)}, not {args.model}")
     snapshot = ledger.load_snapshot(args.price_snapshot)
+    provider_url = getattr(args, "provider_url", None)
     row = snapshot.row(args.model)
-    endpoint = _endpoint(arm, row, getattr(args, "provider_url", None))
+    endpoint = _endpoint(arm, row, provider_url)
     arm_caps = caps.Caps.from_table(arm.get("caps", {}))
     instances = stream.instances[:args.limit] if args.limit else stream.instances
+    # 3311: a multi-model arm routes several models through the proxy, one endpoint per provider its models_allow
+    # rows name, and prices admission and reservations at the most expensive rung, so they stay conservative. A
+    # one-model arm has one row, so `rows`, `endpoints` and `worst_task_usd` below are exactly the single-model values.
+    rows = [snapshot.row(name) for name in allowed]
+    endpoints = {one.provider: one for one in (_endpoint(arm, row_, provider_url) for row_ in rows)}
+    worst_per_rung = [caps.worst_task_usd(arm_caps, row_) for row_ in rows]
+    worst_task_usd = None if any(one is None for one in worst_per_rung) else max(worst_per_rung)
     return Plan(arm=arm, stream=stream, model=args.model, seeds=parse_seeds(args.seeds), instances=instances,
-                snapshot=snapshot, endpoint=endpoint, caps=arm_caps, worst_task_usd=caps.worst_task_usd(arm_caps, row))
+                snapshot=snapshot, endpoint=endpoint, caps=arm_caps, worst_task_usd=worst_task_usd,
+                endpoints=endpoints)
 
 
 def load_arm(name: str) -> dict:
@@ -294,6 +323,11 @@ def cmd_estimate(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_campaign(args: argparse.Namespace) -> int:
+    """`vb campaign` (campaign.py), which gets this module rather than importing a second copy of it."""
+    return campaign.cmd_campaign(sys.modules[__name__], args)
+
+
 def cmd_materialize(args: argparse.Namespace) -> int:
     stream = load_stream(args.stream)
     if args.instance not in stream.instances:
@@ -312,6 +346,10 @@ def cmd_materialize(args: argparse.Namespace) -> int:
 
 
 def cmd_run(args: argparse.Namespace) -> int:
+    if campaign.requires_lock(args.experiment):  # before any plan, directory or call (module docstring)
+        refusal = campaign.lock_refusal(args.lock, args.prereg_spec)
+        if refusal:
+            raise DriverError(f"experiment {args.experiment} runs only under the pre-registration lock: {refusal}")
     plan = make_plan(args)
     admit(plan, allow_network=args.allow_network, max_cost_usd=args.max_cost_usd)
     if args.max_cost_usd is not None and (plan.worst_case_usd or 0) > args.max_cost_usd:
@@ -320,7 +358,7 @@ def cmd_run(args: argparse.Namespace) -> int:
     # A billed network run always meters through the proxy, which alone sends the provider's key (module docstring),
     # read from the driver-only key file (bug-979a06).
     proxied = args.proxy or (plan.arm["arm"]["billed"] and not plan.endpoint.offline)
-    keys = _provider_keys(args.key_file, plan.endpoint) if proxied else None
+    keys = _provider_keys(args.key_file, plan.endpoints.values()) if proxied else None
     if proxied and not plan.endpoint.offline and keys is None:
         raise DriverError(f"the metering proxy sends {plan.endpoint.provider}'s key, but the arm names no api_key_env, "
                           "since its client signs in by itself")
@@ -375,9 +413,22 @@ def cmd_run(args: argparse.Namespace) -> int:
                          price_snapshot_id=plan.snapshot.id)
     proxy = _start_proxy(plan, run_dir, keys=keys) if proxied else None
     endpoint = proxy.endpoint(plan.endpoint) if proxy else plan.endpoint
-    run = Run(args=args, plan=plan, runner=runner, endpoint=endpoint, chat=provider.OpenAICompatible(endpoint),
+    # 3311: hand the runner every provider's proxied URL through the arm dict's own [providers.*] tables, the only
+    # channel a runner has for more than the one endpoint on `ctx.endpoint`; `api_key_env` names a key, not its
+    # value, so it is unchanged (bug-979a06: the real key never reaches this dict either way).
+    arm = plan.arm
+    if proxy:
+        tables = {name: ({**table, "base_url": proxy.base_url(name)} if name in proxy.upstreams else table)
+                  for name, table in plan.arm.get("providers", {}).items()}
+        arm = {**plan.arm, "providers": tables}
+    fingerprints = tuple(dict.fromkeys(fp.strip().lower() for fp in args.credential_fingerprint if fp.strip()))
+    for fp in fingerprints:
+        if len(fp) < 8 or any(char not in "0123456789abcdef" for char in fp):
+            raise DriverError(f"--credential-fingerprint must be a sha256-hex prefix of at least 8 characters, not {fp!r}")
+    run = Run(args=args, plan=plan, runner=runner, arm=arm, endpoint=endpoint, chat=provider.OpenAICompatible(endpoint),
               book=book, secret_file=secret_file, run_dir=run_dir, work_dir=work_dir, run_id=run_id,
-              config_hash=config_hash, head=head, suite=suite, proxy=proxy, disturbances=disturbances)
+              config_hash=config_hash, head=head, suite=suite, proxy=proxy, disturbances=disturbances,
+              credential_fingerprints=fingerprints)
     written = 0
     try:
         with secret.tripwire(loaded, keys):  # the secret file and the key file at mode 000 while the tasks run
@@ -428,11 +479,11 @@ def _run_one(run: Run, instance_id: str, seed: int, stream_position: dict) -> bo
     wrapper = _verify_wrapper(run, key, task.manifest, env, position)
     swap = disturb.swap(run.disturbances, position)  # the model the proxy serves in place of the pin, if any
     ctx = harness.TaskContext(
-        experiment_id=args.experiment, run_id=run.run_id, arm=plan.arm, model=plan.model, endpoint=run.endpoint,
+        experiment_id=args.experiment, run_id=run.run_id, arm=run.arm, model=plan.model, endpoint=run.endpoint,
         provider=run.chat, snapshot=plan.snapshot, caps=limits, ledger=run.book, billed=plan.arm["arm"]["billed"],
         instance_id=instance_id, seed=seed, key=key, workdir=workdir, spec_text=task.spec_text, agent_env=env,
         visible_verify=tuple(task.manifest["visible_verify"]), files_in_scope=tuple(task.manifest["files_in_scope"]),
-        verify_wrapper=wrapper, model_swap=swap)
+        verify_wrapper=wrapper, model_swap=swap, deny=_agent_deny(run))
     if run.proxy:  # the proxy's rows for this task carry its key, which is how the Roko arm finds them
         held = getattr(run.runner, "PROXY_CAPS", ())  # the caps a runner's harness cannot hold itself
         run.proxy.configure(task=ctx.key, profile=disturb.profile(run.disturbances, position),
@@ -461,7 +512,8 @@ def _run_one(run: Run, instance_id: str, seed: int, stream_position: dict) -> bo
                                    pristine=task.pristine, family_dir=task.family_dir, secret_file=run.secret_file,
                                    completed=outcome.status == "completed", transcript_text=transcript_text,
                                    diff_text=archived.diff_text, scratch=private / "census",
-                                   env=agent_env.build(home=homes[1]))
+                                   env=agent_env.build(home=homes[1]),
+                                   credential_fingerprints=run.credential_fingerprints)
     except (archive.ArchiveError, repo.RepoError, OSError) as err:
         result = census.CensusResult(completion=int(outcome.status == "completed"), visible_clean=None, hidden=None,
                                      integrity=None, infra_error=f"archive or census failed: {err}")
@@ -491,11 +543,18 @@ def _run_one(run: Run, instance_id: str, seed: int, stream_position: dict) -> bo
     finally:
         _cleanup(args, [workdir, *homes, private / "final", private / "census"])
     cost, flakes = record["costs"]["api_equiv_usd"], record["visible"]["flakes"]
+    turns = sum(a.turns or 0 for a in outcome.attempts)  # an attempt's turns is None when its agent never reported it
     print(f"vb: {key} {record['execution']['status']} ({outcome.reason}) VS={record['vs']['label']} "
-          f"turns={sum(a.turns for a in outcome.attempts)} cost={'unknown' if cost is None else f'${cost:.4f}'}"
+          f"turns={turns} cost={'unknown' if cost is None else f'${cost:.4f}'}"
           + ("" if meter_usd is None else f" meter=${meter_usd:.4f}") + (f" flakes={len(flakes)}" if flakes else ""),
           file=sys.stderr)
     return True
+
+
+def _agent_deny(run: Run) -> tuple[Path, ...]:
+    """What every agent process is denied (`TaskContext.deny`, `common.sandbox`): the secret file, every file the
+    tripwire holds (the key file too), and the run's private task directories, every earlier task's included."""
+    return tuple(dict.fromkeys([run.secret_file, *(wire.path for wire in secret.tripwires()), run.run_dir / "private"]))
 
 
 def _verify_wrapper(run: Run, key: str, manifest: dict, env: dict[str, str], position: int) -> Path | None:
@@ -545,25 +604,28 @@ def _endpoint(arm: dict, row: dict | None, provider_url: str | None) -> provider
 
 
 def _start_proxy(plan: Plan, run_dir: Path, *, keys: Mapping[str, str] | None) -> faultproxy.FaultProxy:
-    """The metering proxy in front of the plan's endpoint, logging to `<run_dir>/proxy.jsonl` (module docstring).
-    `keys` (`_provider_keys`) maps the upstream's `api_key_env` to its key: the proxy sends it, and the runners'
-    endpoint names none."""
+    """The metering proxy in front of the plan's endpoint(s), logging to `<run_dir>/proxy.jsonl` (module docstring).
+    One upstream per provider `plan.endpoints` names (3311: a ladder's several rungs may span providers). `keys`
+    (`_provider_keys`) maps each upstream's `api_key_env` to its key: the proxy sends it, and the runners' endpoints
+    name none."""
     try:
-        return faultproxy.FaultProxy([faultproxy.Upstream.from_endpoint(plan.endpoint)], log_path=run_dir / PROXY_LOG,
-                                     snapshot=plan.snapshot, keys=keys,
+        upstreams = [faultproxy.Upstream.from_endpoint(endpoint) for endpoint in plan.endpoints.values()]
+        return faultproxy.FaultProxy(upstreams, log_path=run_dir / PROXY_LOG, snapshot=plan.snapshot, keys=keys,
                                      input_token_cap=plan.caps.input_tokens_per_task).start()
     except (faultproxy.ProxyError, OSError) as err:
         archive.remove_tree(run_dir)  # made by this run a moment ago; nothing has run
         raise DriverError(f"the metering proxy cannot start: {err}") from None
 
 
-def _provider_keys(value: Path | None, endpoint: provider.Endpoint) -> secret.ProviderKeys | None:
-    """The key file's keys when `endpoint` names one (bug-979a06), read into the driver's memory for the proxy; None
-    when it names none: an override URL never gets a key, and a CLI signs in by itself."""
-    if not endpoint.api_key_env:
+def _provider_keys(value: Path | None, endpoints: Iterable[provider.Endpoint]) -> secret.ProviderKeys | None:
+    """The key file's keys for every endpoint that names one (bug-979a06; 3311: a ladder needs one per provider its
+    rungs use), read into the driver's memory for the proxy; None when none names one: an override URL never gets a
+    key, and a CLI signs in by itself."""
+    needed = sorted({endpoint.api_key_env for endpoint in endpoints if endpoint.api_key_env})
+    if not needed:
         return None
     try:
-        return secret.load_keys(secret.resolve_keys(value), need=[endpoint.api_key_env])
+        return secret.load_keys(secret.resolve_keys(value), need=needed)
     except secret.SecretError as err:  # also say where a key sits that belongs in the file
         raise DriverError("; ".join([str(err), *secret.key_exposures()])) from None
 
@@ -737,10 +799,18 @@ def _parser() -> argparse.ArgumentParser:
     run.add_argument("--secret-file", type=Path, help="default: $VB_SECRET_FILE, then " + str(DEFAULT_SECRET_FILE))
     run.add_argument("--key-file", type=Path, help=f"provider keys, NAME=value; default: ${secret.KEYS_FILE_ENV}, then "
                      f"{secret.KEYS_DEFAULT_PATH}")
+    run.add_argument("--credential-fingerprint", action="append", default=[], metavar="HEX",
+                     help="gap-3cfe4f: a sha256-hex prefix (>= 8) of a credential the agent must not exfiltrate, e.g. "
+                     "the Claude Code login (run_cli.keychain_fingerprint computes it, token-free); repeatable. The "
+                     "census marks a run leak_suspected if a matching token appears in its transcript or output.")
     run.add_argument("--results", type=Path, help="default: $VB_RESULTS, then " + str(DEFAULT_RESULTS))
     run.add_argument("--work", type=Path, help="default: $VB_WORK, then " + str(DEFAULT_WORK))
     run.add_argument("--transcripts", action="store_true", help="keep transcripts in the run directory")
     run.add_argument("--keep-workdirs", action="store_true", help="keep workdirs and census exports")
+    run.add_argument("--lock", type=Path, default=campaign.DEFAULT_LOCK,
+                     help="the pre-registration lock a locked experiment needs (default: experiments/prereg.lock.json)")
+    run.add_argument("--prereg-spec", type=Path, default=campaign.DEFAULT_SPEC,
+                     help="S09, which the lock pins (default: the untracked spec in tmp/)")
     run.set_defaults(handler=cmd_run)
 
     estimate = commands.add_parser("estimate", help="print the plan and its worst-case cost", allow_abbrev=False)
@@ -755,6 +825,10 @@ def _parser() -> argparse.ArgumentParser:
     mat.add_argument("--private", help="where the manifest and pristine bundle go (default: OUT.private)")
     mat.set_defaults(handler=cmd_materialize)
     commands.add_parser("report", help="metrics.json and bundle checks (analysis/report.py; see vb report --help)")
+    run_campaign = commands.add_parser("campaign", help="validate, estimate and run an experiment manifest",
+                                       allow_abbrev=False)
+    campaign.add_arguments(run_campaign)
+    run_campaign.set_defaults(handler=cmd_campaign)
     return parser
 
 

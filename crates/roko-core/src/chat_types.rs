@@ -5,6 +5,9 @@ use std::collections::HashMap;
 
 use serde::{Deserialize, Serialize};
 
+use crate::config::model_registry::{
+    DEFAULT_CACHE_READ_MULTIPLIER, DEFAULT_CACHE_WRITE_MULTIPLIER,
+};
 use crate::tool::{ToolCall, ToolDef};
 use crate::{Body, Kind, Signal};
 
@@ -192,6 +195,8 @@ impl Usage {
     /// This is a no-op when `cost_usd` is already non-zero.  When
     /// `input_per_m` **and** `output_per_m` are both `None`, the cost stays
     /// at zero so the display layer can distinguish "unknown" from "free".
+    /// A missing cache price takes the shared default multiple of the input
+    /// price, as every other cost path does (bug-0c0747).
     pub fn fill_cost_from_pricing(
         &mut self,
         input_per_m: Option<f64>,
@@ -205,8 +210,8 @@ impl Usage {
         let (Some(inp), Some(out)) = (input_per_m, output_per_m) else {
             return; // no pricing data — leave at 0.0 so display shows "—"
         };
-        let cache_r = cache_read_per_m.unwrap_or(inp * 0.1);
-        let cache_w = cache_write_per_m.unwrap_or(inp * 1.25);
+        let cache_r = cache_read_per_m.unwrap_or(inp * DEFAULT_CACHE_READ_MULTIPLIER);
+        let cache_w = cache_write_per_m.unwrap_or(inp * DEFAULT_CACHE_WRITE_MULTIPLIER);
 
         let cost = (self.input_tokens as f64 * inp / 1_000_000.0)
             + (self.output_tokens as f64 * out / 1_000_000.0)
@@ -214,6 +219,17 @@ impl Usage {
             + (self.cache_create_tokens as f64 * cache_w / 1_000_000.0);
 
         self.cost_usd = cost as f32;
+    }
+
+    /// What the call would have cost with no prompt caching, at the
+    /// per-million prices `input_per_m` and `output_per_m`: every cached
+    /// token, read or written, billed as ordinary input.
+    #[must_use]
+    pub fn cost_without_cache(&self, input_per_m: f64, output_per_m: f64) -> f64 {
+        let input = f64::from(self.input_tokens)
+            + f64::from(self.cache_read_tokens)
+            + f64::from(self.cache_create_tokens);
+        (input * input_per_m + f64::from(self.output_tokens) * output_per_m) / 1_000_000.0
     }
 }
 
@@ -250,6 +266,24 @@ pub enum FinishReason {
     ToolCalls,
     ContentFilter,
     Error(String),
+}
+
+impl FinishReason {
+    /// The finish reason as text, in its one canonical form: `stop`,
+    /// `length`, `tool_calls`, `content_filter`, or an error's own reason.
+    /// `roko_agent::translate::normalize_finish_reason` reads it back. Every
+    /// place that writes a finish reason as text uses this, never the `Debug`
+    /// name (`Length`), which no finish-reason check matches (bug-e3940b).
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        match self {
+            Self::Stop => "stop",
+            Self::Length => "length",
+            Self::ToolCalls => "tool_calls",
+            Self::ContentFilter => "content_filter",
+            Self::Error(reason) => reason.as_str(),
+        }
+    }
 }
 
 /// Canonical provider-agnostic chat response.
@@ -303,7 +337,7 @@ impl ChatResponse {
         Signal::builder(Kind::AgentOutput)
             .body(Body::text(&self.content))
             .tag("model", self.metadata.model_used.as_deref().unwrap_or(""))
-            .tag("finish_reason", format!("{:?}", self.finish_reason))
+            .tag("finish_reason", self.finish_reason.as_str())
             .build()
     }
 }
@@ -573,5 +607,25 @@ mod tests {
             ..Usage::default()
         };
         assert!(!usage.has_known_cost());
+    }
+
+    /// A finish reason is written as its wire text, never its `Debug` name,
+    /// including in the signal a response becomes (bug-e3940b).
+    #[test]
+    fn finish_reason_text_is_the_wire_form() {
+        assert_eq!(FinishReason::Stop.as_str(), "stop");
+        assert_eq!(FinishReason::Length.as_str(), "length");
+        assert_eq!(FinishReason::ToolCalls.as_str(), "tool_calls");
+        assert_eq!(FinishReason::ContentFilter.as_str(), "content_filter");
+        assert_eq!(
+            FinishReason::Error("network_error".to_string()).as_str(),
+            "network_error"
+        );
+
+        let response = ChatResponse {
+            finish_reason: FinishReason::Length,
+            ..ChatResponse::default()
+        };
+        assert_eq!(response.to_signal().tag("finish_reason"), Some("length"));
     }
 }

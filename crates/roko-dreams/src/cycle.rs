@@ -22,6 +22,7 @@ use roko_core::{Body, Context as RokoContext, Kind, Signal};
 use roko_learn::{
     cfactor::{CFactor, CFactorRegression, detect_cfactor_regression},
     episode_logger::{Episode, EpisodeGateVerdict, EpisodeLogger, Usage, learnable_episodes},
+    hindsight::DEFAULT_ADJUSTMENTS_FILE,
     pattern_discovery::{CrossEpisodeConsolidationReport, CrossEpisodeConsolidator},
     playbook::{Playbook, PlaybookStep, PlaybookStore},
 };
@@ -404,6 +405,8 @@ pub struct DreamCycle {
     staging_buffer: StagingBuffer,
     /// Path to persist staging buffer state.
     staging_path: Option<PathBuf>,
+    /// The hindsight corrections replay applies (gap-b95d94).
+    adjustments_path: Option<PathBuf>,
     /// Per-phase budget tracker (DREAM-12).
     phase_tracker: Option<DreamBudgetTracker>,
 }
@@ -419,6 +422,7 @@ impl std::fmt::Debug for DreamCycle {
             .field("threat_simulation", &self.threat_simulation)
             .field("threat_severity_floor", &self.threat_severity_floor)
             .field("staging_buffer_len", &self.staging_buffer.len())
+            .field("adjustments_path", &self.adjustments_path)
             .field("phase_tracker", &self.phase_tracker.is_some())
             .finish()
     }
@@ -442,6 +446,12 @@ impl DreamCycle {
             .as_deref()
             .map(StagingBuffer::load_or_new)
             .unwrap_or_default();
+        // Hindsight corrections sit beside the learning logs:
+        // `.roko/learn/episode-adjustments.jsonl` for `.roko/episodes.jsonl`.
+        let adjustments_path = episode_store
+            .path()
+            .parent()
+            .map(|root| root.join("learn").join(DEFAULT_ADJUSTMENTS_FILE));
         Self {
             episode_store,
             knowledge_store,
@@ -452,8 +462,31 @@ impl DreamCycle {
             threat_severity_floor: 0.20,
             staging_buffer,
             staging_path,
+            adjustments_path,
             phase_tracker: None,
         }
+    }
+
+    /// The logged episodes a dream replays, with the workspace's hindsight
+    /// corrections applied: a success a later verify failure was blamed on
+    /// replays as a failure (gap-b95d94).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the episode log cannot be read.
+    pub async fn replay_episodes(&self) -> Result<Vec<Episode>> {
+        let mut episodes = EpisodeLogger::read_all_lossy(self.episode_store.path())
+            .await
+            .with_context(|| {
+                format!(
+                    "read episode log from {}",
+                    self.episode_store.path().display()
+                )
+            })?;
+        if let Some(path) = &self.adjustments_path {
+            roko_learn::hindsight::apply_adjustments_from(&mut episodes, path);
+        }
+        Ok(episodes)
     }
 
     /// Access the staging buffer for external inspection.
@@ -513,14 +546,7 @@ impl DreamCycle {
         budget: &mut Option<DreamBudget>,
     ) -> Result<DreamCycleReport> {
         let started_at = Utc::now();
-        let all_episodes = EpisodeLogger::read_all_lossy(self.episode_store.path())
-            .await
-            .with_context(|| {
-                format!(
-                    "read episode log from {}",
-                    self.episode_store.path().display()
-                )
-            })?;
+        let all_episodes = self.replay_episodes().await?;
         let total_episodes = all_episodes.len();
         let cutoff = self.last_dream_at;
         let (historical, mut batch) = match cutoff {
@@ -1791,7 +1817,9 @@ impl DreamDistillationCandidate {
             hdc_encoder_version: 0,
             access_count: 0,
             last_accessed: None,
+            contradiction_count: 0,
             activation_conditions: Vec::new(),
+            commit_batch: None,
         })
     }
 }
@@ -1956,7 +1984,9 @@ fn playbook_knowledge_entry(
         hdc_encoder_version: 0,
         access_count: 0,
         last_accessed: None,
+        contradiction_count: 0,
         activation_conditions: Vec::new(),
+        commit_batch: None,
     }
 }
 
@@ -2039,7 +2069,9 @@ fn build_regression_entry(cluster: &DreamCluster, created_at: DateTime<Utc>) -> 
         hdc_encoder_version: 0,
         access_count: 0,
         last_accessed: None,
+        contradiction_count: 0,
         activation_conditions: Vec::new(),
+        commit_batch: None,
     }
 }
 
@@ -2193,7 +2225,9 @@ fn generate_cross_domain_strategy_hypotheses(
             hdc_encoder_version: 0,
             access_count: 0,
             last_accessed: None,
+            contradiction_count: 0,
             activation_conditions: Vec::new(),
+            commit_batch: None,
         });
     }
 
@@ -2497,7 +2531,9 @@ fn build_mistake_insight_entry(
         hdc_encoder_version: 0,
         access_count: 0,
         last_accessed: None,
+        contradiction_count: 0,
         activation_conditions: Vec::new(),
+        commit_batch: None,
     }
 }
 
@@ -2564,7 +2600,9 @@ fn review_insights_from_heuristics(
             hdc_encoder_version: 0,
             access_count: 0,
             last_accessed: None,
+            contradiction_count: 0,
             activation_conditions: Vec::new(),
+            commit_batch: None,
             }
         })
         .collect()
@@ -2919,6 +2957,42 @@ mod tests {
             lines.push(serde_json::to_string(snapshot).expect("serialize c-factor snapshot"));
         }
         std::fs::write(path, lines.join("\n") + "\n").expect("write c-factor history");
+    }
+
+    /// gap-b95d94: dream replay reads a success that a later verify failure
+    /// was blamed on as a failure.
+    #[tokio::test]
+    async fn hindsight_retracts_everywhere_in_dream_replay() {
+        let tmp = TempDir::new().expect("tempdir");
+        let roko = tmp.path().join(".roko");
+        let logger = EpisodeLogger::new(roko.join("episodes.jsonl"));
+        let blamed = episode("ep-1", "plan-a", "docs", "claude-haiku-4-5", true, None);
+        let kept = episode("ep-2", "plan-a", "docs", "claude-haiku-4-5", true, None);
+        write_episode(&logger, &blamed).await;
+        write_episode(&logger, &kept).await;
+        let regression = roko_learn::hindsight::EpisodeAdjustment {
+            original_episode_id: blamed.id.clone(),
+            adjustment_kind: roko_learn::hindsight::AdjustmentKind::Regression,
+            old_value: json!(true),
+            new_value: json!(false),
+            reason: "a later verify failure blamed this task".to_string(),
+            timestamp: Utc::now(),
+        };
+        let adjustments = roko.join("learn").join(DEFAULT_ADJUSTMENTS_FILE);
+        roko_learn::hindsight::append_new_adjustments(&adjustments, &[regression]).expect("append");
+        let knowledge = Arc::new(KnowledgeStore::new(roko.join("knowledge.jsonl")));
+        let playbooks = Arc::new(PlaybookStore::new(roko.join("playbooks")));
+        let dispatcher = Arc::new(MockDispatcher {
+            response: String::new(),
+        });
+        let cycle = DreamCycle::new(Arc::new(logger), knowledge, playbooks, dispatcher);
+
+        let replayed = cycle.replay_episodes().await.expect("replay episodes");
+        let outcomes: Vec<(&str, Option<bool>)> = replayed
+            .iter()
+            .map(|ep| (ep.id.as_str(), ep.learning_success()))
+            .collect();
+        assert_eq!(outcomes, [("ep-1", Some(false)), ("ep-2", Some(true))]);
     }
 
     #[tokio::test]

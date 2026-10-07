@@ -10,15 +10,19 @@
 use thiserror::Error;
 
 pub mod agent;
+pub mod audit;
 pub mod authoring;
 pub mod budget;
 pub mod cache;
 pub mod chain;
 pub mod env_registry;
 pub mod execution;
+pub mod experiments;
 pub mod fingerprint;
 pub mod gates;
 pub mod graduation;
+pub mod harness_params;
+pub mod homeostasis;
 pub mod hot_reload;
 pub mod learning;
 pub mod loader;
@@ -30,7 +34,11 @@ pub mod provider;
 pub mod retrieval;
 pub mod routing;
 pub mod schema;
+pub mod sections;
+pub mod self_model;
 pub mod serve;
+pub mod showcase;
+pub mod spec_quality;
 pub mod subscriptions;
 pub mod timeouts;
 pub mod tools;
@@ -71,18 +79,19 @@ pub use schema::{
     GateMode, GateProfileConfig, GateRungConfig, GatesConfig, GeminiConfig, GhostTurnConfig,
     GithubWebhookConfig, GraduationConfig, GraduationPolicy, IterationLoopConfig, JwksProvider,
     LearningConfig, ModelProfile, PerplexityConfig, PipelineBandConfig, PipelineConfig,
-    PipelineReviewerMode, PlanFailurePolicy, PrdConfig, ProjectConfig, ProviderConfig,
-    ProviderRouting, RelayConfig, RepoConfig, ResourcesConfig, RetrievalConfig, RetrievalMode,
-    ReviewLoopConfig, RewardWeights, RokoConfig, RoleOverride, RoutingAlgorithm, RoutingConfig,
-    RoutingOverrides, RoutingRewardWeightsConfig, SafetySetting, SchedulerConfig,
-    SchedulerCronConfig, ServeAuthConfig, ServeConfig, ServeDeployConfig, ServeDeployWebhookConfig,
-    ServerConfig, SpecDriftConfig, StateHubConfig, StrategySpaceConfig, StuckPatternConfig,
-    SubscriptionConfig, SubscriptionFilterConfig, SubscriptionTrigger, TaskComplexity,
-    TestFailureBudgetConfig, TimeOverrunConfig, ToolProfileConfig, ToolsConfig, TracingConfig,
-    TuiConfig, ValidationConfig, WatcherConfig, WatcherPathConfig, WatcherThresholds,
-    WebhooksConfig, WorktreeCountConfig, builtin_profiles, resolve_profile,
+    PipelineReviewerMode, PlanFailurePolicy, ProjectConfig, ProviderConfig, ProviderRouting,
+    RelayConfig, RepoConfig, ResourcesConfig, RetrievalConfig, RetrievalMode, ReviewLoopConfig,
+    RewardWeights, RokoConfig, RoleOverride, RoutingAlgorithm, RoutingConfig, RoutingOverrides,
+    RoutingRewardWeightsConfig, SafetySetting, SchedulerConfig, SchedulerCronConfig,
+    ServeAuthConfig, ServeConfig, ServeDeployConfig, ServeDeployWebhookConfig, ServerConfig,
+    SpecDriftConfig, StateHubConfig, StrategySpaceConfig, StuckPatternConfig, SubscriptionConfig,
+    SubscriptionFilterConfig, SubscriptionTrigger, TaskComplexity, TestFailureBudgetConfig,
+    TimeOverrunConfig, ToolProfileConfig, ToolsConfig, TracingConfig, TuiConfig, ValidationConfig,
+    WatcherConfig, WatcherPathConfig, WatcherThresholds, WebhooksConfig, WorktreeCountConfig,
+    builtin_profiles, resolve_profile,
 };
 pub use serve::GitHubConfig;
+pub use spec_quality::{SpecQualityConfig, SpecQualityMode};
 
 /// Error returned when loading a `roko.toml` file from disk.
 #[derive(Debug, Error)]
@@ -324,6 +333,8 @@ mod load_config_tests {
                 max_concurrent: Some(8),
                 limits: None,
                 require_confirmation: false,
+                stream_usage: None,
+                billing: None,
             },
         );
         config.models.insert(

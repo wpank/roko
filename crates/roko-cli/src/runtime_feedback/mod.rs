@@ -35,19 +35,23 @@ use async_trait::async_trait;
 pub mod episodes;
 pub mod error_patterns;
 pub mod hindsight;
+pub mod homeostasis;
 pub mod knowledge;
 pub mod plan_completion;
 pub mod routing;
+pub mod self_model;
 pub mod verified_knowledge;
 
 pub use episodes::EpisodeSink;
 pub use error_patterns::ErrorPatternSink;
 pub use hindsight::HindsightSink;
+pub use homeostasis::HomeostasisSink;
 pub use knowledge::{KnowledgeIngestionSink, KnowledgeIngestor, NeuroKnowledgeIngestor};
-pub use plan_completion::{
-    DaimonPersistenceSink, DeltaConsolidationSink, DreamConsolidationSink, ThetaReflectionSink,
-};
+pub use plan_completion::{DaimonPersistenceSink, DreamConsolidationSink};
+#[cfg(feature = "cognitive-clock")]
+pub use plan_completion::{DeltaConsolidationSink, ThetaReflectionSink};
 pub use routing::RoutingObservationSink;
+pub use self_model::SelfModelOutcomeSink;
 pub use verified_knowledge::{VerifiedAttempt, VerifiedKnowledgeSink};
 
 use roko_learn::model_router::RoutingContext;

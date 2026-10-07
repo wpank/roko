@@ -495,12 +495,16 @@ records the loaded names (never values). Those files usually hold provider keys,
 processes do not inherit roko's environment wholesale (`roko_core::child_env`):
 
 - **Provider CLIs** (Claude, Codex, Gemini, Cursor, Hermes, OpenClaw, including `roko chat`)
-  keep their inherited environment minus known LLM provider keys other than their own, every
-  variable roko loaded from a `.env` file, and roko's own `ROKO_*` credentials. A CLI's own
-  credential (`ANTHROPIC_API_KEY` for `claude`, `OPENAI_API_KEY` for `codex`, ...) still
-  reaches it when it came from the shell roko started in, so subscription logins and exported
-  keys work as before. The provider's `api_key_env`, `[agent] env_passthrough`, and variables
-  an MCP config refers to as `${NAME}` are always kept.
+  and MCP servers keep their inherited environment minus known LLM provider keys other than
+  their own, every other variable whose name looks like a credential (a `KEY`, `TOKEN`,
+  `SECRET`, `PASSWORD` or `CREDENTIAL` segment: `GITHUB_TOKEN`, `AWS_SECRET_ACCESS_KEY`,
+  roko's own `ROKO_*` credentials), and every variable roko loaded from a `.env` file. A
+  CLI's own credential (`ANTHROPIC_API_KEY` for `claude`, `OPENAI_API_KEY` for `codex`, ...)
+  still reaches it when it came from the shell roko started in, so subscription logins and
+  exported keys work as before. The provider's `api_key_env`, `[agent] env_passthrough`, and
+  variables an MCP config refers to as `${NAME}` are always kept. A CLI that reads cloud
+  credentials itself needs them listed: Claude Code on Bedrock, for example, needs
+  `env_passthrough = ["AWS_*"]`. The stripped names, never their values, are logged at debug.
 - **Gate commands** (task `verify` steps, build/test/lint gates, auto-fix commands) start from
   an empty environment plus an allowlist: `PATH`, `HOME`, `USER`, `LOGNAME`, `SHELL`, `TERM`,
   `TMPDIR`, `TZ`, `CI`, locale (`LANG`, `LC_*`), `XDG_*`, toolchain and native-build settings
@@ -533,11 +537,22 @@ Available override fields: `model`, `backend`, `effort`, `temperament`, `context
 
 | Field | Type | Default | Description |
 |---|---|---|---|
-| `model` | String | `"claude-haiku-3-5"` | Model for data extraction |
-| `max_tokens` | u64 | `4096` | Output token limit |
-| `temperature` | f64 | `0.0` | Temperature (0 = deterministic) |
-| `strip_tool_calls` | bool | `true` | Remove tool calls from output |
-| `sanitize_input` | bool | `true` | Sanitize inputs before sending |
+| `model` | String | `"claude-haiku-4-5"` | Model for data extraction: a `[models.*]` key or a builtin slug |
+| `max_tokens` | u64 | 4096 | Output token limit |
+| `temperature` | f64 | 0.0 | Temperature (0 = deterministic) |
+| `strip_tool_calls` | bool | true | The data LLM gets no tools; `false` fails config loading |
+| `output_schema` | JSON | none | Keys the data LLM's JSON output must have (`required`) |
+| `sanitize_input` | bool | true | Strip known injection phrases before the call |
+| `timeout_ms` | u64 | 30000 | Time limit for one data-LLM call; a slower call withholds the content |
+| `max_input_bytes` | usize | 32768 | Most untrusted text one call is given; the rest is cut off |
+
+Leaving the section out turns the boundary off. With it set, the tool loops roko runs itself send
+the output of MCP, plugin, web-search, retrieval and network tools through the data LLM: those of
+every agent roko builds for an API provider (Anthropic, OpenAI-compatible, Gemini, Perplexity,
+Cerebras), and ACP's. The model sees only the extracted summary and facts, or a notice that they
+were withheld. CLI providers run their own tool loops, so it cannot cover them. The data model
+must be one roko calls over an API: if roko cannot build it, the agent fails to start, or the ACP
+turn fails, rather than run without the boundary.
 
 ### 8.5 `[[agents]]` -- agent definitions
 
@@ -674,7 +689,6 @@ Per-complexity overrides: `[routing.weights.mechanical]`, `[routing.weights.focu
 | `impact_timeout_ms` | u64 | `5000` | Timeout for changed-target analysis |
 | `compile_concurrency` | usize | `1` | Per-repository Cargo command ownership limit |
 | `env_passthrough` | Vec\<String\> | `[]` | Extra variables gate commands inherit beyond the allowlist, secret-looking or not: exact names or `PREFIX*` patterns, e.g. `["DATABASE_URL", "AWS_*"]` (see *Child process environments* under `[agent]`) |
-| `domain_gates` | HashMap | `{}` | Per-domain custom gate lists |
 | `rungs` | Vec\<GateRungConfig\> | `[]` | Custom gate rungs (alias: `custom_rungs`) |
 
 Custom rungs replace the built-in compile/lint/test defaults. Each rung is a `{ name, command, timeout_secs, required, parallel_with }` table. Legacy `[[gate]]` syntax is migrated to `[[gates.rungs]]` by `roko config migrate`.
@@ -738,8 +752,6 @@ set -- operator and author intent always take precedence.
 | `file_intel_max_entries` | usize | `15` | Max file intel entries per prompt |
 | `warning_max_entries` | usize | `5` | Max warning entries per prompt |
 | `replan_on_gate_failure` | bool | `true` | Trigger replan on gate failure |
-| `replan_max_per_plan` | u32 | `2` | Max replans per plan |
-| `replan_gate_attempts` | u32 | `3` | Gate attempts before replan |
 | `gate_threshold_flush_interval` | u64 | `10` | Gate observations between adaptive-threshold writes; zero normalizes to one |
 
 ### 8.14 `[demurrage]` -- signal decay
@@ -761,6 +773,7 @@ set -- operator and author intent always take precedence.
 | `dispatch_max_retries` | u32 | `5` | Max dispatch retry attempts for transient errors |
 | `warm_pool_size` | usize | `2` | Pre-spawned warm agent slots per role |
 | `warm_pool_idle_timeout_secs` | u64 | `300` | Idle timeout before a warm agent slot is reclaimed |
+| `allow_unguarded_agents_in_checkout` | bool | `false` | Let a Codex, Cursor or Gemini CLI agent take an attempt in the operator's shared checkout; by default failover passes them over there, since roko cannot guard their commands |
 
 **Restart required.** Runner configuration is read at plan start; changes take effect on the next plan execution.
 

@@ -1,4 +1,4 @@
-//! F10 Learning view -- cascade router & model routing insights.
+//! F9 Learning view -- cascade router & model routing insights.
 //!
 //! Layout:
 //!   Sub-view 1 (Route): cascade stage + per-model stats table

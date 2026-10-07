@@ -16,9 +16,11 @@ workspace = true
 # Run with: cargo test -p roko-agent --features integration
 # Requires real API keys (e.g. ZAI_API_KEY) to be set.
 integration = []
-# Enabled by roko-cli/chain. Gates chain-tool count assertions in
-# provider_parity tests (16 std vs 16 std + 17 chain).
-chain = []
+# Enabled by roko-cli/chain. Forwards to roko-std, as roko-serve/chain does,
+# so the 17 chain tool handlers join the catalog whose count the
+# provider_parity tests assert: 35 tools without chain (16 std + 19 GitHub
+# MCP), 52 with it.
+chain = ["roko-std/chain"]
 
 [dependencies]
 roko-core = { path = "../roko-core" }
@@ -30,6 +32,7 @@ tokio = { workspace = true, features = ["process", "io-util", "time", "sync", "r
 tokio-util = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
+sha2 = { workspace = true }
 reqwest = { workspace = true }
 chrono = { workspace = true }
 thiserror = { workspace = true }

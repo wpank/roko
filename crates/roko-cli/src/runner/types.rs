@@ -40,6 +40,9 @@ pub struct ControlCommand {
     /// Optional task identifier for task-scoped retry.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub task_id: Option<String>,
+    /// The new ceiling, in USD, of a [`ControlAction::RaiseBudget`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub budget_usd: Option<f64>,
 }
 
 /// Control actions that can be sent to a running plan executor.
@@ -54,6 +57,9 @@ pub enum ControlAction {
     Cancel,
     /// Retry failed tasks in a plan (optionally a specific task).
     Retry,
+    /// Raise the budget ceiling of a running plan (requires `plan_id`) to
+    /// `budget_usd` for the rest of its run (backlog 2118).
+    RaiseBudget,
 }
 
 impl ControlCommand {
@@ -2434,8 +2440,6 @@ pub struct RunConfig {
     pub daimon_state: Option<Arc<Mutex<roko_daimon::DaimonState>>>,
     /// MCP connector tracking registry.
     pub connector_registry: Option<Arc<std::sync::Mutex<roko_core::ConnectorRegistry>>>,
-    /// Agent feed tracking registry.
-    pub feed_registry: Option<Arc<std::sync::Mutex<roko_core::FeedRegistry>>>,
     /// Single feedback facade — receives every runner event and fans it
     /// out to the registered learning / knowledge / conductor / dream
     /// sinks. `None` means feedback is suppressed (tests, smoke runs).
@@ -2478,8 +2482,10 @@ pub struct RunConfig {
     /// and consumed by [`self.conductor`] during periodic supervision ticks
     /// (E08-T04). Must be `Some` when `conductor` is `Some`.
     pub conductor_ring: Option<super::conductor_adapter::ConductorRing>,
-    /// Optional GitHub operations override. Tests inject a mock here; normal
-    /// runs construct a live adapter from `[github]`, with a no-op fallback.
+    /// GitHub operations for the runner's GitHub workflow. Normal runs get
+    /// the live adapter when `[github]` turns that workflow on (`auto_pr`,
+    /// with the repository named and `GITHUB_TOKEN` set), and `None`
+    /// otherwise. Tests inject a mock here.
     pub github_ops: Option<Arc<dyn GitHubOps>>,
     /// Structured JSONL logger for plan execution events.
     /// When set, every `RunnerEvent` is serialized and flushed to the file.
@@ -2583,7 +2589,6 @@ impl RunConfig {
         let extension_chain = Arc::new(tokio::sync::Mutex::new(ext_chain));
         let connector_registry =
             Arc::new(std::sync::Mutex::new(roko_core::ConnectorRegistry::new()));
-        let feed_registry = Arc::new(std::sync::Mutex::new(roko_core::FeedRegistry::new()));
         let max_concurrent_tasks = roko_config
             .runner
             .max_concurrent_tasks
@@ -2593,13 +2598,25 @@ impl RunConfig {
         let plan_timeout_secs = effective_plan_timeout_secs(&roko_config);
         let daimon_state = Self::daimon_state_for_workdir(&workdir);
         let safety_layer = SafetyLayer::from_config(&roko_config);
+        // The Graph plan runner files its failed tasks' issues through this
+        // adapter (gap-cd51b7).
+        let github_ops = live_github_ops(&roko_config.github);
 
         // Build the conductor from the project's [conductor.watchers.*] config so
         // that watcher thresholds are live at runtime (not dead config). A shared
         // ConductorRing is created here and later passed into the ConductorRingSink
-        // registered on the feedback facade inside event_loop::run.
-        let conductor = roko_conductor::Conductor::from_config(&roko_config.conductor);
-        let conductor_ring = super::conductor_adapter::ConductorRing::new();
+        // registered on the feedback facade inside event_loop::run. `[conductor]
+        // supervise = false` builds neither (1210); the stall watchdog needs
+        // neither.
+        let (conductor, conductor_ring) = if roko_config.conductor.supervise {
+            let conductor = roko_conductor::Conductor::from_config(&roko_config.conductor);
+            (
+                Some(Arc::new(conductor)),
+                Some(super::conductor_adapter::ConductorRing::new()),
+            )
+        } else {
+            (None, None)
+        };
 
         // Construct a MetricRegistry so standard metrics (gate verdicts, agent
         // duration, LLM tokens, etc.) are tracked even when not running under
@@ -2651,7 +2668,6 @@ impl RunConfig {
             cascade_router: Some(cascade_router),
             daimon_state: Some(daimon_state),
             connector_registry: Some(connector_registry),
-            feed_registry: Some(feed_registry),
             output_sink: Arc::new(super::output_sink::NoopSink),
             batch_size: None,
             warm_cache: true,
@@ -2666,13 +2682,41 @@ impl RunConfig {
             metrics: Some(metrics),
             safety_layer,
             obs_sinks: None,
-            conductor: Some(Arc::new(conductor)),
-            conductor_ring: Some(conductor_ring),
-            github_ops: None,
+            conductor,
+            conductor_ring,
+            github_ops,
             structured_log: super::structured_log::StructuredLogger::noop(),
             screenshots: false,
             screenshot_interval_secs: 60,
             screenshot_dir: None,
+        }
+    }
+}
+
+/// The live GitHub adapter when `[github]` turns the runner's GitHub workflow
+/// on (`auto_pr`), else `None`. A workflow that cannot start, because the
+/// section names no repository or `GITHUB_TOKEN` is unset, is logged. The
+/// adapter's blocking HTTP client must not be built on an async runtime's
+/// thread (reqwest panics there in debug builds), so it is built on a thread
+/// of its own.
+fn live_github_ops(config: &roko_core::config::GitHubConfig) -> Option<Arc<dyn GitHubOps>> {
+    if !config.auto_pr {
+        return None;
+    }
+    let built = std::thread::scope(|scope| {
+        scope
+            .spawn(|| crate::github_ops_impl::LiveGitHubOps::from_config(config))
+            .join()
+    });
+    match built {
+        Ok(Ok(ops)) => Some(Arc::new(ops)),
+        Ok(Err(reason)) => {
+            tracing::warn!(%reason, "[github] auto_pr is on, but GitHub automation is off");
+            None
+        }
+        Err(_) => {
+            tracing::warn!("[github] auto_pr is on, but building the GitHub client panicked");
+            None
         }
     }
 }
@@ -2714,7 +2758,6 @@ impl Default for RunConfig {
             cascade_router: None,
             daimon_state: None,
             connector_registry: None,
-            feed_registry: None,
             feedback_facade: None,
             projection: None,
             http_event_sink: None,
@@ -2774,7 +2817,6 @@ impl std::fmt::Debug for RunConfig {
                 "connector_registry",
                 &self.connector_registry.as_ref().map(|_| ".."),
             )
-            .field("feed_registry", &self.feed_registry.as_ref().map(|_| ".."))
             .field(
                 "http_event_sink",
                 &self.http_event_sink.as_ref().map(|_| ".."),
@@ -3069,6 +3111,54 @@ mod tests {
 
         assert_eq!(config.timeout_secs, 30);
         assert_eq!(config.plan_timeout_secs, 77);
+    }
+
+    /// 1210: a plan run's conductor supervises by default (Will, 2026-10-02);
+    /// `[conductor] supervise = false` builds neither it nor its ring.
+    #[test]
+    fn run_config_builds_a_conductor_unless_supervise_is_off() {
+        let supervised = RunConfig::from_roko_config(
+            PathBuf::from("/tmp/work"),
+            PathBuf::from("/tmp/plan"),
+            RokoConfig::default(),
+        );
+        assert!(supervised.conductor.is_some());
+        assert!(supervised.conductor_ring.is_some());
+
+        let roko_config =
+            RokoConfig::from_toml("[conductor]\nsupervise = false\n").expect("parse roko.toml");
+        let unsupervised = RunConfig::from_roko_config(
+            PathBuf::from("/tmp/work"),
+            PathBuf::from("/tmp/plan"),
+            roko_config,
+        );
+        assert!(unsupervised.conductor.is_none());
+        assert!(unsupervised.conductor_ring.is_none());
+    }
+
+    /// gap-cd51b7: a run gets the live GitHub adapter only when `[github]`
+    /// turns `auto_pr` on, names its repository, and `GITHUB_TOKEN` is set.
+    #[test]
+    fn run_config_without_github_auto_pr_has_no_github_ops() {
+        let config = RunConfig::from_roko_config(
+            PathBuf::from("/tmp/work"),
+            PathBuf::from("/tmp/plan"),
+            RokoConfig::default(),
+        );
+        assert!(config.github_ops.is_none());
+
+        let repository = roko_core::config::GitHubConfig {
+            owner: Some("octo".to_string()),
+            repo: Some("roko".to_string()),
+            ..roko_core::config::GitHubConfig::default()
+        };
+        assert!(live_github_ops(&repository).is_none(), "auto_pr is off");
+        let no_repo = roko_core::config::GitHubConfig {
+            repo: None,
+            auto_pr: true,
+            ..repository
+        };
+        assert!(live_github_ops(&no_repo).is_none(), "no repository");
     }
 
     #[test]

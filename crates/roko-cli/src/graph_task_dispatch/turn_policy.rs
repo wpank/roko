@@ -30,10 +30,10 @@ pub(super) fn is_express_task(
     config.conductor.express_mode && task.tier_class() == roko_core::task::TaskTier::Mechanical
 }
 
-/// [`task_turn_limit_with`] without learned tier limits.
+/// [`task_turn_limit_with`] without learned tier limits or M1.
 #[cfg(test)]
 pub(super) fn task_turn_limit(config: &RokoConfig, task: &TaskDef, express_active: bool) -> u32 {
-    task_turn_limit_with(config, None, task, express_active)
+    task_turn_limit_with(config, None, task, express_active, 1.0)
 }
 
 /// Provider turn cap for one Graph task dispatch.
@@ -41,7 +41,8 @@ pub(super) fn task_turn_limit(config: &RokoConfig, task: &TaskDef, express_activ
 /// Every task gets its tier's `[pipeline.<tier>] max_turns` (unknown tiers
 /// read as focused, so the cap is never unbounded). With the workspace's
 /// `learned` tier limits and `[pipeline] learned_limits = "on"`, a tier with
-/// enough history gets its learned cap instead (gap-5a6e01). Express
+/// enough history gets its learned cap instead (gap-5a6e01). M1's B2 knob
+/// scales the tier's cap by `turn_cap_mult` (8126; 1.0 without M1). Express
 /// dispatch lowers the cap further to [`EXPRESS_MAX_TURNS`]. The provider
 /// adapter decides how the cap binds (`ProviderAdapter::turn_cap_enforcement`),
 /// and agent construction warns when a provider can treat it only as
@@ -51,11 +52,13 @@ pub(super) fn task_turn_limit_with(
     learned: Option<&LearnedTierLimits>,
     task: &TaskDef,
     express_active: bool,
+    turn_cap_mult: f64,
 ) -> u32 {
     let tier = task.tier_class();
     let tier_limit = learned
         .and_then(|learned| learned.applied(tier).max_turns)
         .unwrap_or_else(|| config.pipeline.max_turns_for_tier(tier));
+    let tier_limit = scaled_turns(tier_limit, turn_cap_mult);
     if express_active {
         tier_limit.min(EXPRESS_MAX_TURNS)
     } else {
@@ -63,8 +66,31 @@ pub(super) fn task_turn_limit_with(
     }
 }
 
+/// `turns` times M1's turn-cap multiplier `mult`, rounded, and never below
+/// one turn. A multiplier that is not a positive number leaves it as it is.
+fn scaled_turns(turns: u32, mult: f64) -> u32 {
+    if !(mult.is_finite() && mult > 0.0) {
+        return turns;
+    }
+    ((f64::from(turns) * mult).round() as u32).max(1)
+}
+
+impl GraphTaskDispatcher {
+    /// M1's B2 turn-cap multiplier for `task`'s next attempt (8126): the
+    /// `turn_cap_mult` of the θ its chain runs, 1 without M1.
+    pub(super) fn turn_cap_mult(
+        &self,
+        spec: &TaskExecutionSpec,
+        task: &TaskDef,
+        ctx: &CellContext,
+    ) -> f64 {
+        self.next_attempt_theta(spec, &task.id, ctx)
+            .map_or(1.0, |theta| theta.turn_cap_mult)
+    }
+}
+
 /// An attempt that stopped at its turn cap.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub(super) struct TurnCapRetry {
     /// Cap the stopped attempt ran with.
     pub(super) cap: u32,
@@ -131,6 +157,49 @@ pub(super) fn base_attempt_timeout_ms_with(
 }
 
 impl GraphTaskDispatcher {
+    /// Owe `retry` to `plan_id/task_id`'s next attempt, kept with the run's
+    /// retry state so a resumed run raises the cap as well (gap-34b2ed).
+    pub(super) fn keep_turn_cap_retry(&self, plan_id: &str, task_id: &str, retry: TurnCapRetry) {
+        let key = format!("{plan_id}/{task_id}");
+        self.turn_cap_retries.lock().insert(key, retry);
+        self.gate_retry_context
+            .set_turn_cap(plan_id, task_id, Some(retry));
+    }
+
+    /// The turn-cap retry owed to `plan_id/task_id`'s next attempt, which
+    /// takes it.
+    pub(super) fn take_turn_cap_retry(&self, plan_id: &str, task_id: &str) -> Option<TurnCapRetry> {
+        let key = format!("{plan_id}/{task_id}");
+        let retry = self.turn_cap_retries.lock().remove(&key);
+        if retry.is_some() {
+            let kept = &self.gate_retry_context;
+            kept.set_turn_cap(plan_id, task_id, None);
+        }
+        retry
+    }
+
+    /// Owe `plan_id/task_id`'s next attempt more time than `timeout_ms`, the
+    /// timeout its last attempt ran out of, kept with the run's retry state
+    /// so a resumed run escalates from it as well (gap-6f77a3).
+    pub(super) fn keep_timeout_retry(&self, plan_id: &str, task_id: &str, timeout_ms: u64) {
+        let key = format!("{plan_id}/{task_id}");
+        self.timeout_retries.lock().insert(key, timeout_ms);
+        self.gate_retry_context
+            .set_timeout(plan_id, task_id, Some(timeout_ms));
+    }
+
+    /// The timeout, in ms, that `plan_id/task_id`'s last attempt ran out of,
+    /// which its next attempt takes to escalate from.
+    pub(super) fn take_timeout_retry(&self, plan_id: &str, task_id: &str) -> Option<u64> {
+        let key = format!("{plan_id}/{task_id}");
+        let timeout_ms = self.timeout_retries.lock().remove(&key);
+        if timeout_ms.is_some() {
+            let kept = &self.gate_retry_context;
+            kept.set_timeout(plan_id, task_id, None);
+        }
+        timeout_ms
+    }
+
     /// The workspace's learned tier limits (gap-5a6e01), read on the first
     /// dispatch from the settled attempts under the feedback `runs_dir` and
     /// the tiers in its `costs_path`. None without a runs directory.
@@ -195,7 +264,7 @@ pub(super) fn attempt_failure_reason(class: &str, detail: &str) -> String {
 
 /// `text` when it fits in `max` bytes; otherwise its head and tail, cut at
 /// line breaks near the cut points, joined by `… N bytes omitted …`.
-fn head_and_tail(text: &str, max: usize) -> String {
+pub(super) fn head_and_tail(text: &str, max: usize) -> String {
     if text.len() <= max {
         return text.to_string();
     }
@@ -513,7 +582,7 @@ mod tests {
         let spec = make_spec(&focused);
 
         assert_eq!(
-            task_turn_limit_with(&config, Some(&learned), &focused, false),
+            task_turn_limit_with(&config, Some(&learned), &focused, false, 1.0),
             50
         );
         assert_eq!(
@@ -521,13 +590,13 @@ mod tests {
             500_000
         );
         assert_eq!(
-            task_turn_limit_with(&config, Some(&learned), &focused, true),
+            task_turn_limit_with(&config, Some(&learned), &focused, true, 1.0),
             EXPRESS_MAX_TURNS,
             "express still lowers the learned cap"
         );
         let mechanical = make_task_def("mechanical");
         assert_eq!(
-            task_turn_limit_with(&config, Some(&learned), &mechanical, false),
+            task_turn_limit_with(&config, Some(&learned), &mechanical, false, 1.0),
             40,
             "a tier without history keeps its configured cap"
         );
@@ -543,7 +612,7 @@ mod tests {
             config.pipeline.learned_limits = mode;
             let learned = LearnedTierLimits::from_attempts(&config, &attempts);
             assert_eq!(
-                task_turn_limit_with(&config, Some(&learned), &focused, false),
+                task_turn_limit_with(&config, Some(&learned), &focused, false, 1.0),
                 60
             );
             assert_eq!(
@@ -553,6 +622,18 @@ mod tests {
         }
         assert_eq!(task_turn_limit(&config, &focused, false), 60);
         assert_eq!(base_attempt_timeout_ms(&config, &spec), 600_000);
+        // M1's B2 multiplier scales the tier's cap (8126); express still
+        // caps it.
+        for (mult, cap) in [(0.75, 45), (1.0, 60), (1.5, 90)] {
+            assert_eq!(
+                task_turn_limit_with(&config, None, &focused, false, mult),
+                cap
+            );
+        }
+        assert_eq!(
+            task_turn_limit_with(&config, None, &focused, true, 1.5),
+            EXPRESS_MAX_TURNS
+        );
     }
 
     /// gap-5a6e01: dispatch learns its tier limits from the settled attempts
@@ -643,6 +724,45 @@ mod tests {
             base_attempt_timeout_ms(&config, &make_spec(&task)),
             2_700_000
         );
+    }
+
+    /// gap-6f77a3: the timeout an attempt ran out of is kept with the run's
+    /// retry state. A resumed process of the run escalates the task's next
+    /// attempt from it, and that attempt takes it; a fresh run starts from
+    /// the base timeout.
+    #[tokio::test]
+    async fn timeout_retries_survive_resume() {
+        use crate::graph_task_dispatch::tests::make_bare_dispatcher;
+
+        let temp = tempdir().expect("tempdir");
+        let kept = temp
+            .path()
+            .join(".roko/state/graph/plan/retry-feedback.json");
+
+        let first = make_bare_dispatcher(RokoConfig::default(), temp.path()).await;
+        first.attach_retry_feedback("plan", kept.clone(), "run-1");
+        first.keep_timeout_retry("plan", "T1", 600_000);
+        first.keep_timeout_retry("plan", "T2", 900_000);
+        drop(first);
+
+        // A fresh run of the plan ignores what an earlier run kept.
+        let fresh = make_bare_dispatcher(RokoConfig::default(), temp.path()).await;
+        fresh.attach_retry_feedback("plan", kept.clone(), "run-2");
+        assert_eq!(fresh.take_timeout_retry("plan", "T1"), None);
+        drop(fresh);
+
+        let resumed = make_bare_dispatcher(RokoConfig::default(), temp.path()).await;
+        resumed.attach_retry_feedback("plan", kept.clone(), "run-1");
+        assert_eq!(resumed.take_timeout_retry("plan", "T1"), Some(600_000));
+        assert_eq!(resumed.take_timeout_retry("plan", "T1"), None);
+        drop(resumed);
+
+        // The take is kept as well: T1 is owed nothing on the next resume,
+        // and T2 still is.
+        let again = make_bare_dispatcher(RokoConfig::default(), temp.path()).await;
+        again.attach_retry_feedback("plan", kept, "run-1");
+        assert_eq!(again.take_timeout_retry("plan", "T1"), None);
+        assert_eq!(again.take_timeout_retry("plan", "T2"), Some(900_000));
     }
 
     /// A fake Claude CLI that stops at its turn cap on the first call and

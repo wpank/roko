@@ -593,9 +593,8 @@ fn github_signal_kind(event_type: &str, payload: &Value) -> Option<Kind> {
             match action {
                 "opened" => Some(Kind::Custom(signal_kinds::GITHUB_PR_OPENED.into())),
                 "closed" if is_merged && head_ref.starts_with("plan/") => {
-                    // A plan/ branch merge: also emit PRD_PLAN_APPROVED for
-                    // backward compatibility.
-                    Some(Kind::Custom(signal_kinds::PRD_PLAN_APPROVED.into()))
+                    // A plan/ branch merge: the plan's work was approved.
+                    Some(Kind::Custom(signal_kinds::PLAN_APPROVED.into()))
                 }
                 "closed" if is_merged => Some(Kind::Custom(signal_kinds::GITHUB_PR_MERGED.into())),
                 "closed" => Some(Kind::Custom(signal_kinds::GITHUB_PR_CLOSED.into())),
@@ -796,7 +795,7 @@ mod tests {
             }),
         );
         assert!(
-            matches!(plan_approved.as_ref().map(Kind::as_str), Some(kind) if kind == signal_kinds::PRD_PLAN_APPROVED)
+            matches!(plan_approved.as_ref().map(Kind::as_str), Some(kind) if kind == signal_kinds::PLAN_APPROVED)
         );
     }
 

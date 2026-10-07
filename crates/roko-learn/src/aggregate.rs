@@ -53,10 +53,16 @@ pub fn compute_compounding_metrics(episodes: &[Episode]) -> AutocatalyticMetrics
             count as f64 / total as f64
         }
     };
+    // Graph episodes write `knowledge_used` on every attempt, as `false`
+    // when no knowledge entry was injected: only `true` counts.
     let knowledge_reuse = episodes
         .iter()
         .filter(|episode| {
-            episode.extra.contains_key("knowledge_used")
+            episode
+                .extra
+                .get("knowledge_used")
+                .and_then(serde_json::Value::as_bool)
+                .unwrap_or(false)
                 || episode
                     .extra
                     .get("playbook_hits")
@@ -171,28 +177,6 @@ pub fn compute_compounding_metrics(episodes: &[Episode]) -> AutocatalyticMetrics
         computed_at: Utc::now(),
         episode_window: total,
     }
-}
-
-/// Append one compounding snapshot as JSONL.
-///
-/// # Errors
-///
-/// Returns an error when the parent cannot be created, serialization fails,
-/// or the append cannot be committed.
-pub fn append_compounding_metrics(path: &Path, metrics: &AutocatalyticMetrics) -> io::Result<()> {
-    use std::io::Write;
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
-    let mut bytes = serde_json::to_vec(metrics)
-        .map_err(|error| io::Error::new(ErrorKind::InvalidData, error))?;
-    bytes.push(b'\n');
-    let mut file = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(path)?;
-    file.write_all(&bytes)?;
-    file.sync_data()
 }
 
 /// Incremental cursor for append-only JSONL files.
@@ -808,6 +792,22 @@ mod tests {
     }
 
     #[test]
+    fn knowledge_used_false_is_not_knowledge_reuse() {
+        // Graph episodes write the key on every attempt.
+        let mut injected = Episode::new("agent-a", "task-a");
+        injected
+            .extra
+            .insert("knowledge_used".into(), serde_json::Value::Bool(true));
+        let mut not_injected = Episode::new("agent-b", "task-b");
+        not_injected
+            .extra
+            .insert("knowledge_used".into(), serde_json::Value::Bool(false));
+
+        let metrics = compute_compounding_metrics(&[injected, not_injected]);
+        assert_eq!(metrics.knowledge_reuse_rate, 0.5);
+    }
+
+    #[test]
     fn cost_per_success_leaves_out_unmeasured_costs() {
         let mut measured = Episode::new("agent-a", "task-a");
         measured.success = true;
@@ -840,6 +840,8 @@ mod tests {
             cache_write_tokens: 0,
             cost_usd: 0.12,
             cost_usd_without_cache: 0.12,
+            api_equiv_usd: None,
+            price_snapshot_id: None,
             prompt_sections: Vec::new(),
             total_prompt_tokens: 0,
             system_prompt_tokens: 0,

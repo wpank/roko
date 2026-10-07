@@ -7,14 +7,13 @@ use crate::cascade_router::CascadeRouter;
 use crate::cfactor::CFactor;
 use crate::model_experiment::{ModelExperiment, ModelExperimentStore, ModelVariant};
 use crate::model_router::RoutingContext;
-use crate::prompt_experiment::ExperimentStatus;
 use crate::provider_health::{ErrorClass, ProviderHealthRegistry};
 use crate::routing_log::{RoutingDecisionMeta, RoutingLogger};
 use async_trait::async_trait;
 use chrono::Utc;
 use roko_agent::AgentResult;
 use roko_agent::gemini::{CodeExecutionResultPart, GroundingMetadata};
-use roko_core::agent::AgentRole;
+use roko_core::agent::{AgentRole, ModelTier};
 use roko_core::task::{TaskCategory, TaskComplexityBand};
 use roko_core::{
     BehavioralState, Body, DaimonPolicy, Kind, OperatingFrequency, Signal, Temperament,
@@ -186,24 +185,20 @@ fn experiment_override_for_active_model_experiment() {
     let ctx = default_ctx();
 
     let mut store = ModelExperimentStore::default();
-    store.register(ModelExperiment {
-        experiment_id: "impl-model-ab".into(),
-        description: "Override implementer implementation routing".into(),
-        role: Some("implementer".into()),
-        task_category: Some("implementation".into()),
-        variants: vec![ModelVariant {
+    let mut experiment = ModelExperiment::new(
+        "impl-model-ab",
+        "Override implementer implementation routing",
+        vec![ModelVariant {
             id: "override".into(),
             model_key: "override-model".into(),
             slug: "override-model-slug".into(),
             provider: "test-provider".into(),
         }],
-        stats: HashMap::new(),
-        status: ExperimentStatus::Running,
-        winner_id: None,
-        min_trials_per_variant: 1,
-        min_effect_size: 0.05,
-        created_at: "2026-04-11T00:00:00Z".into(),
-    });
+    );
+    experiment.role = Some("implementer".into());
+    experiment.task_category = Some("implementation".into());
+    experiment.min_trials_per_variant = 1;
+    store.register(experiment);
 
     let routed = cascade.route_with_experiments(&ctx, &store);
 
@@ -786,11 +781,17 @@ fn custom_role_table() {
     let mut table = HashMap::new();
     table.insert(AgentRole::Implementer, "gpt-5".to_string());
 
-    let cascade = CascadeRouter::new(test_slugs()).with_role_table(table);
+    let mut slugs = test_slugs();
+    slugs.push("gpt-5".to_string());
+    let cascade = CascadeRouter::new(slugs).with_role_table(table.clone());
     let ctx = default_ctx();
     let result = cascade.route(&ctx);
 
     assert_eq!(result.primary.slug, "gpt-5");
+
+    // An entry naming a model the router does not configure is skipped.
+    let cascade = CascadeRouter::new(test_slugs()).with_role_table(table);
+    assert_eq!(cascade.route(&ctx).primary.slug, "claude-sonnet-4-5");
 }
 
 #[test]
@@ -822,6 +823,7 @@ fn version_change_detection_transfers_weighted_stats_on_load() {
         stage_transitions: vec![],
         linucb_state: None,
         pareto_frontier: Vec::new(),
+        category_stats: HashMap::new(),
     };
     std::fs::write(&path, serde_json::to_string_pretty(&snapshot).unwrap()).unwrap();
 
@@ -845,6 +847,7 @@ fn version_change_detection_remaps_role_table_upgrade() {
         stage_transitions: vec![],
         linucb_state: None,
         pareto_frontier: Vec::new(),
+        category_stats: HashMap::new(),
     };
     std::fs::write(&path, serde_json::to_string_pretty(&snapshot).unwrap()).unwrap();
 
@@ -904,20 +907,134 @@ fn cascade_gemini_routes_configured_fast_standard_and_premium_models() {
     );
 }
 
+/// 9207: among several premium models, configuration order decides, not a
+/// built-in vendor preference.
 #[test]
-fn cascade_gemini_prefers_opus_for_premium_when_available() {
-    let cascade = CascadeRouter::new(vec![
+fn cascade_premium_role_takes_the_first_configured_premium_model() {
+    let mut slugs = vec![
         "gemini-2.5-flash-lite".to_string(),
         "gemini-2.5-flash".to_string(),
         "gemini-2.5-pro".to_string(),
         "gemini-3.1-pro-preview".to_string(),
         "claude-opus-4-6".to_string(),
-    ]);
+    ];
     let mut ctx = default_ctx();
     ctx.role = AgentRole::Architect;
 
-    let result = cascade.route(&ctx);
+    let result = CascadeRouter::new(slugs.clone()).route(&ctx);
+    assert_eq!(result.primary.slug, "gemini-3.1-pro-preview");
+
+    slugs.rotate_right(1);
+    let result = CascadeRouter::new(slugs).route(&ctx);
     assert_eq!(result.primary.slug, "claude-opus-4-6");
+}
+
+/// 9207: static routing picks among the configured models by tier and never
+/// names one the workspace did not configure. With no model there is no
+/// pick, and with no model of a role's tier the first configured one runs.
+#[test]
+fn static_route_never_names_an_unconfigured_model() {
+    let no_tiers = HashMap::new();
+    assert_eq!(static_slug_for_tier(&[], ModelTier::Fast, &no_tiers), None);
+    assert!(default_role_model_table(&[], &no_tiers).is_empty());
+
+    // Standard-tier models only: fast and premium roles get the first one.
+    let configured = vec!["glm-4-7".to_string(), "gpt-5-4-mini".to_string()];
+    let table = default_role_model_table(&configured, &no_tiers);
+    assert!(
+        table.values().all(|slug| configured.contains(slug)),
+        "{table:?}"
+    );
+    let cascade = CascadeRouter::new(configured.clone());
+    let mut ctx = default_ctx();
+    for role in [
+        AgentRole::Conductor,
+        AgentRole::Implementer,
+        AgentRole::Architect,
+        AgentRole::Researcher,
+    ] {
+        ctx.role = role;
+        let routed = cascade.route(&ctx).primary.slug;
+        assert!(configured.contains(&routed), "{role:?} routed to {routed}");
+    }
+    assert_eq!(
+        static_slug_for_tier(&configured, ModelTier::Premium, &no_tiers).as_deref(),
+        Some("glm-4-7")
+    );
+
+    // A configured tier map decides the pick.
+    let tiers = HashMap::from([("gpt-5-4-mini".to_string(), ModelTier::Fast)]);
+    assert_eq!(
+        static_slug_for_tier(&configured, ModelTier::Fast, &tiers).as_deref(),
+        Some("gpt-5-4-mini")
+    );
+}
+
+#[test]
+fn restored_role_entry_for_an_unconfigured_model_is_kept_but_not_routed() {
+    let dir = tempdir().unwrap();
+    let path = dir.path().join("cascade-router.json");
+    let snapshot = CascadeSnapshot {
+        model_slugs: vec!["gemini-2.5-pro".to_string()],
+        role_table: HashMap::from([(AgentRole::Implementer, "gemini-2.5-pro".to_string())]),
+        ..CascadeSnapshot::default()
+    };
+    std::fs::write(&path, serde_json::to_string_pretty(&snapshot).unwrap()).unwrap();
+
+    let configured = vec!["glm-4-7".to_string(), "gpt-5-4-mini".to_string()];
+    let router = CascadeRouter::load_or_new(&path, configured);
+    assert_eq!(router.route(&default_ctx()).primary.slug, "glm-4-7");
+
+    // A save keeps the entry for the processes that configure the model.
+    router.save(&path).unwrap();
+    let saved: CascadeSnapshot =
+        serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+    assert_eq!(
+        saved
+            .role_table
+            .get(&AgentRole::Implementer)
+            .map(String::as_str),
+        Some("gemini-2.5-pro")
+    );
+}
+
+#[test]
+fn model_tiers_repick_defaults_but_keep_learned_and_restored_entries() {
+    let slugs = vec!["cerebras-gptoss".to_string(), "glm-4-7".to_string()];
+    let mut models = indexmap::IndexMap::new();
+    for (slug, tier) in [
+        ("cerebras-gptoss", ModelTier::Fast),
+        ("glm-4-7", ModelTier::Standard),
+    ] {
+        let profile = roko_core::config::ModelProfile {
+            slug: slug.to_string(),
+            tier: Some(tier),
+            ..roko_core::config::ModelProfile::default()
+        };
+        models.insert(slug.to_string(), profile);
+    }
+    let ctx = default_ctx();
+
+    // By the slug heuristics both are standard models, so the implementer's
+    // default is the first one until the configured tiers re-pick it.
+    let mut fresh = CascadeRouter::new(slugs.clone());
+    assert_eq!(fresh.route(&ctx).primary.slug, "cerebras-gptoss");
+    fresh.set_model_tiers(&models);
+    assert_eq!(fresh.route(&ctx).primary.slug, "glm-4-7");
+
+    // An experiment's winner stays, even when it is the heuristic default.
+    let mut learned = CascadeRouter::new(slugs.clone());
+    learned.set_static_role_model(AgentRole::Implementer, "cerebras-gptoss");
+    learned.set_model_tiers(&models);
+    assert_eq!(learned.route(&ctx).primary.slug, "cerebras-gptoss");
+
+    // So does the winner a later process restores.
+    let dir = tempdir().unwrap();
+    let path = dir.path().join("cascade-router.json");
+    learned.save(&path).unwrap();
+    let mut restored = CascadeRouter::load_or_new(&path, slugs);
+    restored.set_model_tiers(&models);
+    assert_eq!(restored.route(&ctx).primary.slug, "cerebras-gptoss");
 }
 
 #[test]
@@ -1447,8 +1564,9 @@ fn perplexity_observations_include_citations_latency_and_total_cost() {
     assert_eq!(sonar.total_search_latency_ms, 1_200);
     assert!((sonar.avg_search_latency_ms - 1_200.0).abs() < 1e-9);
     assert_eq!(sonar.perplexity_requests, 1);
-    assert!((sonar.total_cost_usd - 0.0245).abs() < 1e-9);
-    assert!((sonar.avg_cost_usd - 0.0245).abs() < 1e-9);
+    // $0.0105 of tokens plus the low-tier $0.006 request fee (bug-e2b31a).
+    assert!((sonar.total_cost_usd - 0.0165).abs() < 1e-9);
+    assert!((sonar.avg_cost_usd - 0.0165).abs() < 1e-9);
 }
 
 #[test]
@@ -1719,6 +1837,49 @@ fn feedback_with_unknown_model_is_noop() {
 
 // ── P2-LRN-5: task_category awareness in stages 2-3 ─────────────────────────
 
+/// gap-b95d94: a hindsight relabel moves one credited success to a failure
+/// in the category and confidence stats; the trials stay.
+#[test]
+fn retract_success_moves_a_credited_success_to_a_failure() {
+    let cascade = CascadeRouter::new(test_slugs());
+    let mut ctx = default_ctx();
+    ctx.task_category = TaskCategory::Docs;
+    cascade.record_observation(&ctx, "claude-sonnet-4-5", 0.9, true);
+    let sonnet_docs = ("claude-sonnet-4-5".to_string(), "docs".to_string());
+    assert_eq!(
+        cascade.category_stats_snapshot().get(&sonnet_docs),
+        Some(&(1, 1))
+    );
+
+    cascade.retract_success("claude-sonnet-4-5", TaskCategory::Docs);
+
+    assert_eq!(
+        cascade.category_stats_snapshot().get(&sonnet_docs),
+        Some(&(1, 0))
+    );
+    let confidence = cascade.confidence_snapshot();
+    assert_eq!(confidence.get("claude-sonnet-4-5"), Some(&(1, 0)));
+}
+
+/// bug-583e50: a retraction of a success that an earlier run saved
+/// survives the save, though it leaves fewer successes than were loaded.
+#[test]
+fn a_saved_success_retracted_by_a_later_run_stays_retracted() {
+    let dir = tempdir().unwrap();
+    let path = dir.path().join("cascade-router.json");
+    let earlier = CascadeRouter::new(test_slugs());
+    earlier.record_observation(&default_ctx(), "claude-sonnet-4-5", 0.9, true);
+    earlier.save(&path).unwrap();
+
+    let later = CascadeRouter::load_or_new(&path, test_slugs());
+    later.retract_success("claude-sonnet-4-5", default_ctx().task_category);
+    later.save(&path).unwrap();
+
+    let reloaded = CascadeRouter::load_or_new(&path, test_slugs());
+    let confidence = reloaded.confidence_snapshot();
+    assert_eq!(confidence.get("claude-sonnet-4-5"), Some(&(1, 0)));
+}
+
 /// record_observation must populate category_stats so Stage 2
 /// confidence_scores can apply the per-category pass-rate delta.
 #[test]
@@ -1981,4 +2142,70 @@ fn save_replaces_an_unreadable_snapshot() {
         std::fs::read_to_string(dir.path().join("cascade-router.json.corrupted")).unwrap(),
         "{ not json"
     );
+}
+
+#[test]
+fn category_stats_survive_a_save() {
+    // bug-a6a3cd: the per-category counts behind Stage 2's pass-rate delta
+    // are saved and loaded, and routers that share the snapshot keep each
+    // other's counts.
+    let dir = tempdir().unwrap();
+    let path = dir.path().join("cascade-router.json");
+    let first = CascadeRouter::load_or_new(&path, test_slugs());
+    let second = CascadeRouter::load_or_new(&path, test_slugs());
+    for success in [true, true, false] {
+        first.record_category_outcome("claude-sonnet-4-5", TaskCategory::Research, success);
+    }
+    second.record_category_outcome("claude-sonnet-4-5", TaskCategory::Research, true);
+    second.record_category_outcome("claude-haiku-4-5", TaskCategory::Docs, false);
+    first.save(&path).unwrap();
+    second.save(&path).unwrap();
+    // Saving again adds nothing: the first save already wrote it all.
+    first.save(&path).unwrap();
+
+    let loaded = CascadeRouter::load_or_new(&path, test_slugs());
+    let stats = loaded.category_stats_snapshot();
+    let counts = |slug: &str, category: TaskCategory| {
+        stats
+            .get(&(slug.to_string(), category.label().to_string()))
+            .copied()
+    };
+    assert_eq!(
+        counts("claude-sonnet-4-5", TaskCategory::Research),
+        Some((4, 3))
+    );
+    assert_eq!(counts("claude-haiku-4-5", TaskCategory::Docs), Some((1, 0)));
+    assert_eq!(stats.len(), 2, "{stats:?}");
+}
+
+#[test]
+fn category_stats_merge_keeps_retractions() {
+    // bug-a6a3cd: a save adds the trials a router gained since its base and
+    // subtracts the successes a relabel retracted, keeping what other
+    // writers saved meanwhile.
+    let counts = |trials, successes| {
+        HashMap::from([(
+            "claude-sonnet-4-5".to_string(),
+            HashMap::from([(
+                TaskCategory::Research,
+                CategoryModelStats { trials, successes },
+            )]),
+        )])
+    };
+    let base = CascadeSnapshot {
+        category_stats: counts(4, 3),
+        ..CascadeSnapshot::default()
+    };
+    // One more trial, a failure, and one success retracted.
+    let current = CascadeSnapshot {
+        category_stats: counts(5, 2),
+        ..CascadeSnapshot::default()
+    };
+    let mut latest = CascadeSnapshot {
+        category_stats: counts(6, 5),
+        ..CascadeSnapshot::default()
+    };
+    merge_learning(&mut latest, &current, &base);
+    let merged = &latest.category_stats["claude-sonnet-4-5"][&TaskCategory::Research];
+    assert_eq!((merged.trials, merged.successes), (7, 4));
 }

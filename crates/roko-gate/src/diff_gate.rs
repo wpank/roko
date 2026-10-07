@@ -39,7 +39,7 @@ use std::time::Instant;
 
 const DEFAULT_MIN_ADDED: u32 = 1;
 
-fn default_forbidden_tokens() -> Vec<String> {
+pub(crate) fn default_forbidden_tokens() -> Vec<String> {
     vec![
         "todo!()".into(),
         "todo!".into(),

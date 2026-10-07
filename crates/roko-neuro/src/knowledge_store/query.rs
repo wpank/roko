@@ -109,6 +109,7 @@ impl KnowledgeStore {
         let entries = self.read_all()?;
         let mut scored = entries
             .into_iter()
+            .filter(|entry| self.visible(entry))
             .filter_map(|entry| {
                 let similarity = similarity_against_entry(fingerprint, &entry)?;
                 Some(KnowledgeSimilarityHit { entry, similarity })
@@ -147,7 +148,7 @@ impl KnowledgeStore {
     /// Returns an error if the backing file cannot be read.
     pub fn hot_entries(&self) -> Result<Vec<KnowledgeEntry>> {
         let mut entries = self.read_all()?;
-        entries.retain(is_hot);
+        entries.retain(|entry| is_hot(entry) && self.visible(entry));
         Ok(entries)
     }
 
@@ -222,10 +223,10 @@ impl KnowledgeStore {
         });
         hits.truncate(top_k);
 
-        // P2-29: HDC telemetry -- log query metrics for Lens/tracing consumption.
+        // P2-29: HDC telemetry -- log the result count and top similarity. No
+        // counter: nothing in production calls this (bug-aa8893).
         let top_score = hits.first().map(|h| h.total_score).unwrap_or(0.0);
         tracing::info!(
-            monotonic_counter.roko_hdc_queries_total = 1_u64,
             result_count = hits.len(),
             top_similarity = %format!("{top_score:.4}"),
             top_k,
@@ -383,7 +384,7 @@ impl KnowledgeStore {
         let mut scored: Vec<KnowledgeQueryHit> = entries
             .into_iter()
             .filter_map(|entry| {
-                if !is_hot(&entry) || !include(&entry) {
+                if !is_hot(&entry) || !self.visible(&entry) || !include(&entry) {
                     return None;
                 }
                 score_entry_for_query(entry, &topic_terms, &topic_norm, topic, now)

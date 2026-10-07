@@ -18,7 +18,6 @@ use crate::types::{ContentBlock, StopReason, ToolCallKind, ToolCallStatus};
 use super::knowledge_helpers::{emit_knowledge_card, query_dispatch_knowledge};
 use super::provenance::{build_provenance, render_provenance_card};
 use super::{CognitiveEvent, Result};
-use crate::runner::run_with_workflow_engine;
 
 // ── Slash command dispatch ───────────────────────────────────────────
 
@@ -83,46 +82,6 @@ pub(crate) async fn run_slash_command(
             require_args!("search", "<query>");
             vec!["research".into(), "search".into(), args.into()]
         }
-        "enhance-prd" => {
-            require_args!("enhance-prd", "<slug>");
-            vec![
-                "research".into(),
-                "enhance-prd".into(),
-                "--model".into(),
-                model_key.clone(),
-                args.into(),
-            ]
-        }
-
-        // ── Specification (PRD lifecycle) ──
-        "prd-idea" => {
-            require_args!("prd-idea", "<idea text>");
-            vec!["prd".into(), "idea".into(), args.into()]
-        }
-        "prd-draft" => {
-            require_args!("prd-draft", "<slug>");
-            vec![
-                "prd".into(),
-                "draft".into(),
-                "new".into(),
-                "--model".into(),
-                model_key.clone(),
-                args.into(),
-            ]
-        }
-        "prd-list" => vec!["prd".into(), "list".into()],
-        "prd-status" => vec!["prd".into(), "status".into()],
-        "prd-plan" => {
-            require_args!("prd-plan", "<slug>");
-            vec![
-                "prd".into(),
-                "plan".into(),
-                "--model".into(),
-                model_key.clone(),
-                args.into(),
-            ]
-        }
-        "prd-consolidate" => vec!["prd".into(), "consolidate".into()],
 
         // ── Planning ──
         "plan-list" => vec!["plan".into(), "list".into()],
@@ -146,19 +105,24 @@ pub(crate) async fn run_slash_command(
                 args.into(),
             ]
         }
+        "enhance-plan" => {
+            require_args!("enhance-plan", "<plan name>");
+            vec![
+                "research".into(),
+                "enhance-plan".into(),
+                "--model".into(),
+                model_key.clone(),
+                args.into(),
+            ]
+        }
         "plan-validate" => {
             let dir = if args.is_empty() { "plans/" } else { args };
             vec!["plan".into(), "validate".into(), dir.into()]
         }
         "plan-run" => {
-            let dir = if args.is_empty() { "plans/" } else { args };
-            vec![
-                "plan".into(),
-                "run".into(),
-                dir.into(),
-                "--model".into(),
-                model_key.clone(),
-            ]
+            // No pin to the chat's model: the plan's tasks route by role and
+            // tier through the ladder, and failover stays on (backlog 3106).
+            plan_run_cli_args(args)
         }
 
         // ── Implementation & Execution ──
@@ -168,25 +132,6 @@ pub(crate) async fn run_slash_command(
                 "run".into(),
                 "--model".into(),
                 model_key.clone(),
-                args.into(),
-            ]
-        }
-        "do" => {
-            require_args!("do", "<prompt>");
-            vec![
-                "do".into(),
-                "--model".into(),
-                model_key.clone(),
-                args.into(),
-            ]
-        }
-        "develop" => {
-            require_args!("develop", "<prompt>");
-            vec![
-                "develop".into(),
-                "--model".into(),
-                model_key.clone(),
-                "--yes".into(),
                 args.into(),
             ]
         }
@@ -427,46 +372,27 @@ Use the Workflow dropdown in the status bar to select, or:
                     .as_ref()
                     .map(render_provenance_card);
             let knowledge_context = knowledge.context_text();
-            if std::env::var_os("ROKO_ACP_LEGACY").is_some() {
-                return Ok(crate::runner::run_workflow_pipeline(
-                    session_id,
-                    args,
-                    knowledge_context,
-                    provenance_card,
-                    workdir,
-                    crate::runner::PipelineConfig {
-                        template: crate::pipeline::WorkflowTemplate::Express,
-                        max_iterations: 2,
-                        clippy_enabled: true,
-                        tests_enabled: true,
-                        review_strictness: "standard".to_string(),
-                        model_slug: model_key.clone(),
-                        mcp_config: None,
-                        sandbox_level: roko_core::config::schema::RunnerSandboxLevel::default(),
-                    },
-                    cancel_token,
-                    event_sender,
-                    shared_run,
-                )
-                .await?);
-            }
-
-            run_with_workflow_engine(
+            return Ok(crate::runner::run_workflow_pipeline(
                 session_id,
                 args,
+                knowledge_context,
+                provenance_card,
                 workdir,
-                "express",
-                crate::runner::GraphEngineOptions {
-                    model_key,
+                crate::runner::PipelineConfig {
+                    template: crate::pipeline::WorkflowTemplate::Express,
+                    max_iterations: 2,
+                    clippy_enabled: true,
+                    tests_enabled: true,
+                    review_strictness: "standard".to_string(),
+                    model_slug: model_key,
                     mcp_config: None,
-                    provenance_card,
-                    input_messages: Vec::new(),
-                    route: crate::runner::AcpWorkflowRoute::LegacyDefault,
+                    sandbox_level: roko_core::config::schema::RunnerSandboxLevel::default(),
                 },
+                cancel_token,
                 event_sender,
+                shared_run,
             )
-            .await?;
-            return Ok(());
+            .await?);
         }
         "full" => {
             require_args!("full", "<prompt>");
@@ -478,46 +404,27 @@ Use the Workflow dropdown in the status bar to select, or:
                     .as_ref()
                     .map(render_provenance_card);
             let knowledge_context = knowledge.context_text();
-            if std::env::var_os("ROKO_ACP_LEGACY").is_some() {
-                return Ok(crate::runner::run_workflow_pipeline(
-                    session_id,
-                    args,
-                    knowledge_context,
-                    provenance_card,
-                    workdir,
-                    crate::runner::PipelineConfig {
-                        template: crate::pipeline::WorkflowTemplate::Full,
-                        max_iterations: 2,
-                        clippy_enabled: true,
-                        tests_enabled: true,
-                        review_strictness: "standard".to_string(),
-                        model_slug: model_key.clone(),
-                        mcp_config: None,
-                        sandbox_level: roko_core::config::schema::RunnerSandboxLevel::default(),
-                    },
-                    cancel_token,
-                    event_sender,
-                    shared_run,
-                )
-                .await?);
-            }
-
-            run_with_workflow_engine(
+            return Ok(crate::runner::run_workflow_pipeline(
                 session_id,
                 args,
+                knowledge_context,
+                provenance_card,
                 workdir,
-                "full",
-                crate::runner::GraphEngineOptions {
-                    model_key,
+                crate::runner::PipelineConfig {
+                    template: crate::pipeline::WorkflowTemplate::Full,
+                    max_iterations: 2,
+                    clippy_enabled: true,
+                    tests_enabled: true,
+                    review_strictness: "standard".to_string(),
+                    model_slug: model_key,
                     mcp_config: None,
-                    provenance_card,
-                    input_messages: Vec::new(),
-                    route: crate::runner::AcpWorkflowRoute::LegacyDefault,
+                    sandbox_level: roko_core::config::schema::RunnerSandboxLevel::default(),
                 },
+                cancel_token,
                 event_sender,
+                shared_run,
             )
-            .await?;
-            return Ok(());
+            .await?);
         }
         "review-this" => {
             return run_shell_command(session_id, "git diff", workdir, cancel_token, event_sender)
@@ -553,27 +460,18 @@ Available commands (organized by Will's core loop):
   Research (foraging)
     /research <topic>  Deep research with citations (Perplexity)
     /search <query>    Quick web search
-    /enhance-prd <slug> Enrich a PRD with web research
-
-  Specification (PRD lifecycle)
-    /prd-idea <text>   Capture a work item idea
-    /prd-draft <slug>  Draft a new PRD
-    /prd-list          List all PRDs
-    /prd-status        PRD pipeline coverage report
-    /prd-plan <slug>   Generate plan from published PRD
-    /prd-consolidate   Scan PRDs for gaps and duplicates
 
   Planning
     /plan-list         List all plans
     /plan-show <name>  Show a specific plan
     /plan-generate     Generate plan from a prompt
+    /enhance-plan <name> Improve a plan with research
     /plan-validate     Lint tasks.toml without executing
     /plan-run [dir]    Execute a plan (orchestrate→gate→persist)
     /plan-resume [path] Resume an interrupted plan run
 
   Implementation & Execution
-    /run <prompt>      Single prompt → universal loop
-    /develop <prompt>  Full pipeline: scope → plan → execute → gate
+    /run <prompt>      One checked task, or a plan written first and then run
     /agents            List agents and their status
     /agent-chat <name> Interactive chat with a specific agent
     /agent-start <name> Start a named agent
@@ -590,7 +488,6 @@ Available commands (organized by Will's core loop):
   Research & Analysis
     /research <topic>  Deep research with citations (Perplexity)
     /search <query>    Quick web search
-    /enhance-prd <slug> Enrich a PRD with web research
     /analyze           Analyze execution data
 
   Affect / Mood
@@ -1258,12 +1155,27 @@ fn read_dream_status(workdir: &Path) -> String {
     out
 }
 
+/// The `roko` arguments of `/plan-run [dir] [flags]`: `plan run` on `dir`
+/// (`plans/` without one), with the words after it passed on as they are,
+/// so `--model <model>` still pins a model when asked. Nothing pins one
+/// otherwise (backlog 3106).
+pub(crate) fn plan_run_cli_args(args: &str) -> Vec<String> {
+    let mut words = args.split_whitespace().peekable();
+    let dir = words
+        .next_if(|word| !word.starts_with('-'))
+        .unwrap_or("plans/");
+    ["plan", "run", dir]
+        .into_iter()
+        .chain(words)
+        .map(str::to_string)
+        .collect()
+}
+
 /// Maps a Claude tool name to an ACP tool call kind.
 #[cfg(test)]
 pub(crate) fn tool_name_to_kind(name: &str) -> ToolCallKind {
     match name {
-        "Edit" | "MultiEdit" => ToolCallKind::Edit,
-        "Write" => ToolCallKind::Create,
+        "Edit" | "MultiEdit" | "Write" => ToolCallKind::Edit,
         "Bash" | "Terminal" => ToolCallKind::Terminal,
         _ => ToolCallKind::Other,
     }

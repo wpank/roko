@@ -1,12 +1,15 @@
 #!/bin/bash
-# Full self-hosting loop demo.
+# Full self-hosting loop demo: prompt -> plan -> jobs -> match -> run -> observe.
 # Usage: bash demo-full-loop.sh [serve-url]
-# Requires: roko serve running, agents seeded
+# Requires: roko serve running, agents seeded, a provider configured
 
 set -euo pipefail
 
 ROKO="${ROKO:-roko}"
 BASE="${1:-http://127.0.0.1:6677}/api"
+PROMPT="Wire knowledge store queries into matchmaking scoring"
+# The plan's directory name: the prompt's words, lowercased and joined by dashes.
+PLAN_DIR="plans/$(printf '%s' "$PROMPT" | tr '[:upper:]' '[:lower:]' | sed -E 's/[^a-z0-9]+/-/g; s/^-+//; s/-+$//')"
 
 pause() {
     echo ""
@@ -18,16 +21,17 @@ echo "════════════════════════�
 echo "  FULL SELF-HOSTING LOOP"
 echo "═══════════════════════════════════════════"
 
-# --- ACT 1: CAPTURE ---
+# --- ACT 1: PLAN ---
 
 echo ""
-echo "ACT 1: CAPTURE IDEAS"
-echo "────────────────────"
-$ROKO prd idea "Wire knowledge store queries into matchmaking scoring" 2>&1
-$ROKO prd idea "Add scheduled cold storage archival for stale signals" 2>&1
-$ROKO prd idea "Build dashboard form for agent creation with tool config" 2>&1
+echo "ACT 1: WRITE A PLAN FROM A PROMPT"
+echo "─────────────────────────────────"
+echo "roko plan generate \"$PROMPT\""
+$ROKO plan generate "$PROMPT" 2>&1
 echo ""
-$ROKO prd list 2>&1
+$ROKO plan validate "$PLAN_DIR" 2>&1
+echo ""
+$ROKO plan run "$PLAN_DIR" --dry-run 2>&1
 pause
 
 # --- ACT 2: JOBS ---
@@ -65,9 +69,21 @@ for c in d['candidates']:
 " 2>/dev/null || echo "   (matchmaking not available)"
 pause
 
-# --- ACT 4: OBSERVE ---
+# --- ACT 4: RUN ---
 
-echo "ACT 4: SYSTEM STATE"
+echo "ACT 4: RUN THE PLAN"
+echo "───────────────────"
+read -rp "  Run $PLAN_DIR now? This dispatches agents. [y/N] " answer < /dev/tty
+if [[ "$answer" == [yY] ]]; then
+    $ROKO run "$PLAN_DIR" 2>&1
+else
+    echo "   Skipped. Run it later with: roko run $PLAN_DIR"
+fi
+pause
+
+# --- ACT 5: OBSERVE ---
+
+echo "ACT 5: SYSTEM STATE"
 echo "───────────────────"
 echo "Health:"
 curl -sf "$BASE/health" | python3 -c "
@@ -103,9 +119,9 @@ echo "   Gate thresholds: $(test -f .roko/learn/gate-thresholds.json && echo 'pr
 
 echo ""
 echo "═══════════════════════════════════════════"
-echo "  Loop complete. Dashboard tabs to explore:"
+echo "  Loop complete. Places to explore:"
 echo ""
-echo "  Atelier:   PRDs, Plans, Research, Coding"
-echo "  Network:   Agents, Jobs, Learning, Swarm"
-echo "  Studio:    Overview, Live, Logs, Chat"
+echo "  roko dashboard:  F2 Plans, F3 Agents, F9 Learning"
+echo "  Portal:          the plan, its tasks.toml, Run"
+echo "  Network:         Agents, Jobs, Learning, Swarm"
 echo "═══════════════════════════════════════════"

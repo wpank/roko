@@ -1,11 +1,11 @@
 //! Verify (verification) and pipeline configuration sections.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 
 use serde::{Deserialize, Deserializer, Serialize};
 
 use super::agent::default_true;
-use crate::task::TaskTier;
+use crate::task::{TaskDomain, TaskTier};
 
 // ---- [gates] -------------------------------------------------------------
 
@@ -60,6 +60,10 @@ const fn default_sibling_settle_secs() -> u64 {
     600
 }
 
+const fn default_llm_judge_min_score() -> f32 {
+    0.8
+}
+
 /// Output-token cap of a Graph attempt whose role `[gates] max_output_tokens`
 /// does not list: about five times the largest attempt recorded so far.
 pub const DEFAULT_MAX_OUTPUT_TOKENS: u64 = 200_000;
@@ -101,13 +105,70 @@ const fn default_convergence_min_observations() -> u64 {
     50
 }
 
+/// What kind of check a gate rung is (`kind` in `[[gates.rungs]]`, 9119).
+///
+/// Plan tasks run `command`, `citations`, `judge`, `schema` and `confirm`
+/// rungs; a `receipt` rung checks an applied outbound effect (9132), and a
+/// task that must pass one is refused before its agent runs.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum RungKind {
+    /// A shell command, run under `sh -c`: it passes when it exits 0.
+    #[default]
+    Command,
+    /// Every DOI, arXiv id and URL the rung's artefacts cite resolves.
+    Citations,
+    /// A model judges the rung's artefacts against its rubric, quoting them
+    /// as its evidence. Advisory unless the rung says otherwise.
+    Judge,
+    /// The rung's artefacts validate against its schema.
+    Schema,
+    /// After an action, its target shows the effect the action claims.
+    Receipt,
+    /// The person the work is for confirms the outcome, through the task's
+    /// review hold (9137). Its `rubric` is the question to ask.
+    Confirm,
+}
+
+impl RungKind {
+    /// The kind's name in TOML.
+    #[must_use]
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Command => "command",
+            Self::Citations => "citations",
+            Self::Judge => "judge",
+            Self::Schema => "schema",
+            Self::Receipt => "receipt",
+            Self::Confirm => "confirm",
+        }
+    }
+
+    /// Whether this is the `command` kind.
+    #[must_use]
+    pub const fn is_command(&self) -> bool {
+        matches!(self, Self::Command)
+    }
+}
+
+impl std::fmt::Display for RungKind {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(self.label())
+    }
+}
+
 /// A single custom gate rung definition.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct GateRungConfig {
     /// Human-readable rung identifier (e.g. `"compile"`, `"lint"`, `"test"`).
     pub name: String,
-    /// Shell command executed by the gate runner. Runs under `sh -c`.
+    /// What kind of check the rung is; `command` when absent (9119).
+    #[serde(default, skip_serializing_if = "RungKind::is_command")]
+    pub kind: RungKind,
+    /// Shell command executed by the gate runner. Runs under `sh -c`. A
+    /// `command` rung needs one.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
     pub command: String,
     /// Maximum seconds the command may run before it is killed. Defaults to 120.
     #[serde(default = "default_gate_rung_timeout")]
@@ -118,16 +179,104 @@ pub struct GateRungConfig {
     /// Names of other rungs that may execute concurrently with this one.
     #[serde(default)]
     pub parallel_with: Vec<String>,
+    /// The files the rung checks: globs relative to the task's workspace. A
+    /// `citations`, `judge` or `schema` rung needs at least one.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub artefacts: Vec<String>,
+    /// A `schema` rung's schema file, relative to the task's workspace.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub schema: Option<String>,
+    /// A `judge` rung's rubric, or the question a `confirm` rung asks: its
+    /// text, or the path of a file holding it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rubric: Option<String>,
+    /// Whether the rung only advises: its verdict is recorded and never
+    /// fails the task. When unset, a `judge` rung advises and the other
+    /// kinds do not ([`Self::is_advisory`]).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub advisory: Option<bool>,
 }
 
 fn default_gate_rung_timeout() -> u64 {
     120
 }
 
+impl Default for GateRungConfig {
+    /// A required `command` rung with the default timeout, and no name or
+    /// command yet.
+    fn default() -> Self {
+        Self {
+            name: String::new(),
+            kind: RungKind::Command,
+            command: String::new(),
+            timeout_secs: default_gate_rung_timeout(),
+            required: true,
+            parallel_with: Vec::new(),
+            artefacts: Vec::new(),
+            schema: None,
+            rubric: None,
+            advisory: None,
+        }
+    }
+}
+
 impl GateRungConfig {
     pub fn timeout(&self) -> std::time::Duration {
         std::time::Duration::from_secs(self.timeout_secs)
     }
+
+    /// Whether the rung runs a shell command: a `command` rung that has one.
+    #[must_use]
+    pub fn runs_command(&self) -> bool {
+        self.kind.is_command() && !self.command.trim().is_empty()
+    }
+
+    /// Whether the rung only advises ([`Self::advisory`]); when unset, a
+    /// `judge` rung does and the other kinds do not.
+    #[must_use]
+    pub fn is_advisory(&self) -> bool {
+        self.advisory.unwrap_or(self.kind == RungKind::Judge)
+    }
+
+    /// Whether every change must pass the rung as a verify step: it is
+    /// required, does not only advise, and runs a command.
+    #[must_use]
+    pub fn is_required_step(&self) -> bool {
+        self.required && !self.is_advisory() && self.runs_command()
+    }
+
+    /// What the rung lacks for its kind: a `command` rung needs a command, a
+    /// `schema` rung a schema, and a `citations`, `judge` or `schema` rung
+    /// artefacts to check. Empty when it lacks nothing.
+    #[must_use]
+    pub fn problems(&self) -> Vec<String> {
+        let mut problems = Vec::new();
+        if self.kind.is_command() && self.command.trim().is_empty() {
+            problems.push("a command rung needs a command".to_string());
+        }
+        let schema = self.schema.as_deref().map_or("", str::trim);
+        if self.kind == RungKind::Schema && schema.is_empty() {
+            problems.push("a schema rung needs a schema".to_string());
+        }
+        let checks_artefacts = matches!(
+            self.kind,
+            RungKind::Citations | RungKind::Judge | RungKind::Schema
+        );
+        if checks_artefacts && self.artefacts.iter().all(|glob| glob.trim().is_empty()) {
+            problems.push(format!("a {} rung needs artefacts to check", self.kind));
+        }
+        problems
+    }
+}
+
+/// A verifier pack (`[gates.packs.<domain>]`, 9120): the rungs that verify
+/// the tasks of one work domain.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct GatePackConfig {
+    /// The pack's rungs, declared as `[[gates.rungs]]` entries are.
+    #[serde(default)]
+    pub rungs: Vec<GateRungConfig>,
 }
 
 /// Verify (verification) settings.
@@ -154,11 +303,13 @@ pub struct GatesConfig {
     /// and always hand failures directly to the agent.
     #[serde(default = "default_true")]
     pub cargo_fix_enabled: bool,
-    /// Write `EvalGenerator` test artifacts to `.roko/generated-tests/` before
-    /// each standard-tier Graph task dispatch.
+    /// Removed: `plan run` once wrote `EvalGenerator` test artifacts to
+    /// `.roko/generated-tests/`, inside the agent's workdir, before each
+    /// standard-tier Graph task dispatch. Audits author hidden tests in the
+    /// vault instead (S05 F2).
     ///
-    /// Defaults to `false`: `plan run` never executes these files. Only the
-    /// legacy Runner-v2 generated-test rung reads them.
+    /// Defaults to `false`. The key still parses, since configs set it, and
+    /// `plan run` and `roko config doctor` report it as inert.
     #[serde(default)]
     pub write_eval_artifacts: bool,
     /// Maximum time allowed for changed-target and Cargo metadata analysis.
@@ -192,6 +343,21 @@ pub struct GatesConfig {
     /// Default: `true`.
     #[serde(default = "default_true")]
     pub baseline_filter: bool,
+    /// Judge a Graph attempt once its verify steps all pass: the cheap helper
+    /// model scores the attempt's diff against its task through the
+    /// LLM-judge gate (gap-85f102). An attempt with no diff, or a run with no
+    /// helper model, is not judged. Default: `false`.
+    #[serde(default)]
+    pub llm_judge: bool,
+    /// Lowest judge score, in `[0, 1]`, that passes. Default: `0.8`.
+    #[serde(default = "default_llm_judge_min_score")]
+    pub llm_judge_min_score: f32,
+    /// Whether a judge score below `llm_judge_min_score`, or a judge that
+    /// cannot answer, fails the attempt like a failed verify step. Default:
+    /// `false`: the verdict is logged and recorded, and the attempt's verdict
+    /// stands.
+    #[serde(default)]
+    pub llm_judge_blocking: bool,
     /// Runaway-output guard for Graph task attempts: the most output tokens
     /// an attempt may report before it fails as a red flag, without running
     /// its verify steps. Keyed by task role, with `default` for roles not
@@ -221,15 +387,16 @@ pub struct GatesConfig {
     /// `roko_core::child_env`.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub env_passthrough: Vec<String>,
-    /// Per-domain gate overrides. Keys are domain labels (e.g. "research", "docs"),
-    /// values are shell commands to run as gates (e.g. `["shell:true"]`).
-    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
-    pub domain_gates: HashMap<String, Vec<String>>,
     /// Custom gate rungs. When non-empty, these replace the built-in defaults.
     /// `roko run` and every `roko plan run` task run the required ones as
     /// verify steps ([`Self::required_rungs`]).
     #[serde(default, rename = "rungs", alias = "custom_rungs")]
     pub custom_rungs: Vec<GateRungConfig>,
+    /// Verifier packs by work-domain label (`[gates.packs.<domain>]`, 9120):
+    /// the rungs a task of that domain faces in place of `rungs`
+    /// ([`Self::pack_for`]).
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub packs: BTreeMap<String, GatePackConfig>,
     /// Optional ceiling rung index. Rungs above this index are skipped.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_rung: Option<u8>,
@@ -238,9 +405,11 @@ pub struct GatesConfig {
     /// EMA decay factor for pass-rate tracking.
     ///
     /// Controls how quickly the exponential moving average adapts to new
-    /// observations. Smaller values weight recent observations more heavily.
-    /// Range: (0.0, 1.0). Default: 0.1 (the tuned spec value from
-    /// docs/04-verification/06-adaptive-thresholds.md).
+    /// observations. Larger values weight recent observations more heavily.
+    /// Range: (0.0, 1.0); a value outside it counts as the default
+    /// ([`Self::effective_ema_alpha`]). Default: 0.1 (the tuned spec value
+    /// from docs/04-verification/06-adaptive-thresholds.md). Graph plan runs
+    /// update `.roko/learn/gate-thresholds.json` with it.
     #[serde(default = "default_ema_alpha")]
     pub ema_alpha: f64,
 
@@ -300,11 +469,14 @@ impl Default for GatesConfig {
             compile_concurrency: default_compile_concurrency(),
             sibling_settle_secs: default_sibling_settle_secs(),
             baseline_filter: default_true(),
+            llm_judge: false,
+            llm_judge_min_score: default_llm_judge_min_score(),
+            llm_judge_blocking: false,
             max_output_tokens: HashMap::new(),
             diff_scope: DiffScope::Record,
             env_passthrough: Vec::new(),
-            domain_gates: HashMap::new(),
             custom_rungs: Vec::new(),
+            packs: BTreeMap::new(),
             max_rung: None,
             ema_alpha: default_ema_alpha(),
             adaptive_min_retries: default_min_retries(),
@@ -317,6 +489,17 @@ impl Default for GatesConfig {
 }
 
 impl GatesConfig {
+    /// The smoothing factor of the gate pass-rate EMAs: `ema_alpha` when it
+    /// lies in (0, 1), the default otherwise.
+    #[must_use]
+    pub fn effective_ema_alpha(&self) -> f64 {
+        if self.ema_alpha > 0.0 && self.ema_alpha < 1.0 {
+            self.ema_alpha
+        } else {
+            default_ema_alpha()
+        }
+    }
+
     /// Output-token cap of an attempt of `role` (`max_output_tokens`), or
     /// `None` when the cap is off.
     #[must_use]
@@ -337,42 +520,110 @@ impl GatesConfig {
     }
 
     /// The declared rungs every change must pass: `[[gates.rungs]]` entries
-    /// that are `required` and have a command. Empty when the workspace
-    /// declares none; the built-in defaults of [`Self::effective_rungs`] are
-    /// not declared rungs.
+    /// that are `required`, do not only advise, and run a command
+    /// ([`GateRungConfig::runs_command`]). Empty when the workspace declares
+    /// none; the built-in defaults of [`Self::effective_rungs`] are not
+    /// declared rungs.
     pub fn required_rungs(&self) -> impl Iterator<Item = &GateRungConfig> {
         self.custom_rungs
             .iter()
-            .filter(|rung| rung.required && !rung.command.trim().is_empty())
+            .filter(|rung| rung.is_required_step())
     }
 
-    /// Returns custom rungs if configured, otherwise built-in defaults (compile, lint, test).
+    /// What is wrong with the declared rungs ([`GateRungConfig::problems`]),
+    /// each with the rung's key, such as `gates.rungs.lint` or
+    /// `gates.packs.research.rungs.sources`.
+    #[must_use]
+    pub fn rung_problems(&self) -> Vec<(String, String)> {
+        let packs = self
+            .packs
+            .iter()
+            .map(|(label, pack)| (format!("gates.packs.{label}.rungs"), &pack.rungs));
+        let declared = std::iter::once(("gates.rungs".to_string(), &self.custom_rungs));
+        let mut problems = Vec::new();
+        for (key, rungs) in declared.chain(packs) {
+            for rung in rungs {
+                for problem in rung.problems() {
+                    problems.push((format!("{key}.{}", rung.name), problem));
+                }
+            }
+        }
+        problems
+    }
+
+    /// The rungs a task of work domain `domain` faces (9120): the pack
+    /// `[gates.packs.<label>]` declares for it; else `[[gates.rungs]]`, the
+    /// code pack, for a `code` task or one with no domain; else none, so a
+    /// task of another domain runs only its own verify steps rather than
+    /// the code ladder.
+    #[must_use]
+    pub fn pack_for(&self, domain: Option<&TaskDomain>) -> &[GateRungConfig] {
+        if let Some(pack) = domain.and_then(|domain| self.packs.get(domain.label())) {
+            return &pack.rungs;
+        }
+        match domain {
+            None | Some(TaskDomain::Code) => &self.custom_rungs,
+            Some(_) => &[],
+        }
+    }
+
+    /// The files rungs check artefacts against, as paths relative to a
+    /// task's workspace: every `schema` rung's schema and every `judge`
+    /// rung's rubric that may name a file, in `[[gates.rungs]]` and every
+    /// pack. An attempt that edits one tampers with its own check
+    /// (bug-d5d55f).
+    #[must_use]
+    pub fn rung_files(&self) -> Vec<String> {
+        let mut files: Vec<String> = self
+            .custom_rungs
+            .iter()
+            .chain(self.packs.values().flat_map(|pack| &pack.rungs))
+            .filter_map(|rung| match rung.kind {
+                RungKind::Schema => rung.schema.as_deref(),
+                // A rubric is its text or the path of a file holding it.
+                RungKind::Judge => rung.rubric.as_deref().filter(|text| !text.contains('\n')),
+                _ => None,
+            })
+            .map(str::trim)
+            .filter(|path| !path.is_empty())
+            .map(str::to_string)
+            .collect();
+        files.sort();
+        files.dedup();
+        files
+    }
+
+    /// The declared `command` rungs if the workspace declares rungs,
+    /// otherwise built-in defaults (compile, lint, test). Rungs of the other
+    /// kinds run no command, so they are not among them.
     #[must_use]
     pub fn effective_rungs(&self) -> Vec<GateRungConfig> {
         if self.has_custom_rungs() {
-            return self.custom_rungs.clone();
+            return self
+                .custom_rungs
+                .iter()
+                .filter(|rung| rung.kind.is_command())
+                .cloned()
+                .collect();
         }
         vec![
             GateRungConfig {
                 name: "compile".to_string(),
                 command: "cargo build --workspace".to_string(),
                 timeout_secs: 120,
-                required: true,
-                parallel_with: Vec::new(),
+                ..GateRungConfig::default()
             },
             GateRungConfig {
                 name: "lint".to_string(),
                 command: "cargo clippy --workspace --no-deps -- -D warnings".to_string(),
                 timeout_secs: 120,
-                required: true,
-                parallel_with: Vec::new(),
+                ..GateRungConfig::default()
             },
             GateRungConfig {
                 name: "test".to_string(),
                 command: "cargo test --workspace".to_string(),
                 timeout_secs: 300,
-                required: true,
-                parallel_with: Vec::new(),
+                ..GateRungConfig::default()
             },
         ]
     }
@@ -748,6 +999,104 @@ command = "  "
             .map(|rung| rung.name.as_str())
             .collect();
         assert_eq!(names, ["compile"]);
+    }
+
+    /// 9119: a rung's `kind` defaults to `command`. A `citations` rung with
+    /// artefacts parses and is valid, a `judge` rung advises by default, a
+    /// `schema` rung without a schema parses but fails validation, and an
+    /// unknown kind does not parse. Only the `command` rung is a verify step.
+    #[test]
+    fn rung_kind_defaults_to_command() {
+        use super::RungKind;
+
+        let cfg = RokoConfig::from_toml(
+            r#"
+[[gates.rungs]]
+name = "compile"
+command = "cargo check --workspace"
+
+[[gates.rungs]]
+name = "sources"
+kind = "citations"
+artefacts = ["report.md"]
+
+[[gates.rungs]]
+name = "rubric"
+kind = "judge"
+artefacts = ["report.md"]
+rubric = "Every claim cites a source."
+
+[[gates.rungs]]
+name = "table"
+kind = "schema"
+artefacts = ["data/*.json"]
+"#,
+        )
+        .expect("config parses");
+        let rungs = &cfg.gates.custom_rungs;
+        assert_eq!(rungs[0].kind, RungKind::Command);
+        assert!(rungs[0].problems().is_empty());
+        assert_eq!(rungs[1].kind, RungKind::Citations);
+        assert!(rungs[1].problems().is_empty());
+        assert!(!rungs[1].is_advisory());
+        assert!(rungs[2].is_advisory(), "a judge rung advises by default");
+        assert_eq!(rungs[3].problems(), ["a schema rung needs a schema"]);
+
+        let required: Vec<&str> = cfg
+            .gates
+            .required_rungs()
+            .map(|rung| rung.name.as_str())
+            .collect();
+        assert_eq!(required, ["compile"]);
+        assert_eq!(cfg.gates.effective_rungs().len(), 1);
+        let invalid: Vec<String> = crate::config::validate_invariants(&cfg)
+            .into_iter()
+            .filter(|result| result.invariant_id == 12)
+            .map(|result| result.config_path)
+            .collect();
+        assert_eq!(invalid, ["gates.rungs.table"]);
+
+        let unknown = RokoConfig::from_toml("[[gates.rungs]]\nname = \"x\"\nkind = \"vibes\"\n");
+        assert!(unknown.is_err(), "an unknown kind does not parse");
+    }
+
+    /// 9120: a task's work domain picks its pack. A task with no domain
+    /// faces `[[gates.rungs]]`, and so does a `code` task unless a `code`
+    /// pack is declared; a task of another domain without a pack faces no
+    /// rungs. Pack rungs are validated as declared rungs are.
+    #[test]
+    fn pack_for_picks_the_domains_pack() {
+        use super::GatePackConfig;
+        use crate::task::TaskDomain;
+
+        let mut cfg = RokoConfig::from_toml(
+            r#"
+[[gates.rungs]]
+name = "compile"
+command = "cargo check --workspace"
+
+[[gates.packs.research.rungs]]
+name = "sources"
+kind = "citations"
+"#,
+        )
+        .expect("config parses");
+        let names = |cfg: &RokoConfig, domain: Option<TaskDomain>| -> Vec<String> {
+            let rungs = cfg.gates.pack_for(domain.as_ref());
+            rungs.iter().map(|rung| rung.name.clone()).collect()
+        };
+        assert_eq!(names(&cfg, Some(TaskDomain::Research)), ["sources"]);
+        assert_eq!(names(&cfg, Some(TaskDomain::Code)), ["compile"]);
+        assert_eq!(names(&cfg, None), ["compile"]);
+        assert!(names(&cfg, Some(TaskDomain::Docs)).is_empty());
+        let problems = cfg.gates.rung_problems();
+        assert_eq!(problems.len(), 1, "{problems:?}");
+        assert_eq!(problems[0].0, "gates.packs.research.rungs.sources");
+
+        let code = GatePackConfig::default();
+        cfg.gates.packs.insert("code".to_string(), code);
+        assert!(names(&cfg, Some(TaskDomain::Code)).is_empty());
+        assert_eq!(names(&cfg, None), ["compile"]);
     }
 
     #[test]

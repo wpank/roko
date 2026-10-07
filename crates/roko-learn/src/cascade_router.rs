@@ -29,6 +29,7 @@ use parking_lot::Mutex;
 use roko_agent::AgentResult;
 use roko_core::DaimonPolicy;
 use roko_core::OperatingFrequency;
+#[cfg(feature = "active-inference")]
 use roko_core::agent::TaskRequirements;
 use roko_core::agent::{AgentRole, ModelSpec, ModelTier};
 use roko_core::config::schema::RewardWeights;
@@ -38,6 +39,7 @@ use std::collections::HashMap;
 use std::path::Path;
 use std::sync::Arc;
 
+#[cfg(feature = "active-inference")]
 use crate::active_inference::{BeliefState, select_tier as select_tier_with_belief};
 use crate::bayesian_confidence::BayesianConfidenceUpdater;
 // Re-export public types from cascade submodules so that
@@ -57,10 +59,11 @@ use crate::cascade::helpers::{
     cost_pressure_factor, default_latency_sla, default_role_model_table, estimate_total_cost_usd,
     fallback_chain_for_model, infer_shadow_routing_context, is_free_tier_gemini_model,
     low_confidence_tier_bonus, model_tier_rank, pareto_adjusted_alpha, pareto_cost_proxy,
-    pareto_latency_proxy, parse_agent_role, pick_available_static_slug, pick_tier_extreme,
-    routing_tier_bias_factor, select_with_hysteresis, shadow_quality_score, slug_to_tier,
-    slugs_match, stage_for_observations, target_tier_rank, temperament_exploration_multiplier,
-    temperament_tier_shift, thinking_filtered_candidates, thinking_preference,
+    pareto_latency_proxy, parse_agent_role, pick_tier_extreme, routing_tier_bias_factor,
+    select_with_hysteresis, shadow_quality_score, slug_to_tier, slugs_match,
+    stage_for_observations, static_slug_for_tier, target_tier_rank,
+    temperament_exploration_multiplier, temperament_tier_shift, thinking_filtered_candidates,
+    thinking_preference,
 };
 use crate::cascade::persistence::{
     CascadeSnapshot, PersistedModelStats, detect_version_changes, merge_learning,
@@ -81,7 +84,10 @@ use crate::model_router::{
 };
 use crate::pareto::{ModelObservation, compute_pareto_frontier};
 use crate::provider_health::ProviderHealthRegistry;
-use crate::routing_log::{CandidateEntry, RoutingDecisionLog, RoutingDecisionMeta, RoutingLogger};
+use crate::routing_log::{
+    CandidateEntry, ROUTE_DECISION_POINT, RouteProposals, RoutingDecisionLog, RoutingDecisionMeta,
+    RoutingLogger,
+};
 use crate::verdict_scorer::{VerdictHistory, VerdictRecord};
 
 // ─── CascadeRouter ──────────────────────────────────────────────────────────
@@ -98,6 +104,11 @@ pub struct CascadeRouter {
     pareto_frontier: Mutex<ParetoFrontierState>,
     /// Static role -> model table for stage 1.
     role_table: Mutex<HashMap<AgentRole, String>>,
+    /// Roles whose `role_table` entry is still the default [`Self::new`]
+    /// picked. [`Self::with_model_tiers`] re-picks only these: an entry
+    /// restored from a snapshot or set explicitly, such as an experiment's
+    /// winner, stays (9207).
+    default_roles: Mutex<std::collections::HashSet<AgentRole>>,
     /// Ordered list of model slugs tracked by the router.
     model_slugs: Vec<String>,
     /// Config-sourced tier map: slug → ModelTier from `roko.toml`.
@@ -134,12 +145,44 @@ pub struct CascadeRouter {
     /// appears in this list are filtered out before any health or scoring
     /// pass.  An empty list (the default) disables the filter.
     disabled_providers: Vec<String>,
+    /// DP4's routing trust from audit estimates (S05 §4.6): see
+    /// [`Self::set_audit_trust`].
+    audit_trust: Mutex<AuditTrust>,
     /// The persisted state this router last loaded or saved.
     ///
     /// [`Self::save`] writes only what the router learned since, merged into
     /// the snapshot on disk, so processes sharing the snapshot keep each
     /// other's observations (bug-9c88ac).
     baseline: Mutex<CascadeSnapshot>,
+    /// The L-route canary's preferences, canary category to model slug (S03
+    /// §4.7): read only inside a [`canary_scope`] for the category, never
+    /// persisted, and removed exactly ([`Self::remove_canary_route`]).
+    canary_routes: Mutex<HashMap<String, String>>,
+}
+
+thread_local! {
+    /// The canary category this thread routes for, inside a [`canary_scope`].
+    static CANARY_CATEGORY: std::cell::RefCell<Option<String>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// Run `route` as a route for the canary category `category` (S03 §4.7): a
+/// router with a canary preference for it ([`CascadeRouter::set_canary_route`])
+/// answers with that model on this thread. No other route reads one.
+pub fn canary_scope<T>(category: &str, route: impl FnOnce() -> T) -> T {
+    let outer = CANARY_CATEGORY.with(|current| current.replace(Some(category.to_string())));
+    let routed = route();
+    CANARY_CATEGORY.with(|current| *current.borrow_mut() = outer);
+    routed
+}
+
+/// What a guarded save's transaction returns: `decide`'s answer, and the
+/// snapshot written in place of the merge, if any.
+type Decided<R> = std::io::Result<(R, Option<CascadeSnapshot>)>;
+
+/// Swap the values behind two locks.
+fn swap_locked<T>(into: &Mutex<T>, from: &Mutex<T>) {
+    std::mem::swap(&mut *into.lock(), &mut *from.lock());
 }
 
 impl std::fmt::Debug for CascadeRouter {
@@ -148,6 +191,21 @@ impl std::fmt::Debug for CascadeRouter {
             .field("model_slugs", &self.model_slugs)
             .finish_non_exhaustive()
     }
+}
+
+/// Which learned state a [`CascadeRouter`] holds (S01 P0-10): its digest
+/// changes when, and only when, the router learns.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RouterStateDigest {
+    /// `b3:` BLAKE3 hex of the RFC 8785 canonical JSON of the learned state.
+    pub digest: String,
+    /// Observations the router has learned from.
+    pub n_obs: u64,
+    /// Version label, `cr:obs=<n_obs>`.
+    pub version: String,
+    /// Seconds since the router last learned. `None` while its snapshot
+    /// records no time of observation or save.
+    pub age_s: Option<u64>,
 }
 
 impl roko_core::Cell for CascadeRouter {
@@ -226,6 +284,110 @@ pub fn normalized_cost_and_latency(cost_usd: f64, duration_ms: u64) -> (f64, f64
     )
 }
 
+/// Layer of the per-attempt ε draw of a route the cascade router decides
+/// (S02.P1-3, decision 2203).
+pub const ROUTE_EXPLORE_LAYER: &str = "route.explore";
+
+/// Layer of the second, independent ε draw a route decision logs as
+/// `proposals.aa`, S03's A/A floor.
+pub const ROUTE_EXPLORE_AA_LAYER: &str = "route.explore.aa";
+
+/// An ε-greedy route among the eligible models around the cascade router's
+/// argmax (S02.P1-3).
+#[derive(Debug, Clone, PartialEq)]
+pub struct ExploredRoute {
+    /// The model the route runs.
+    pub chosen: String,
+    /// Whether the ε draw explored: `chosen` was drawn uniformly among the
+    /// eligible models, not taken as the argmax.
+    pub explored: bool,
+    /// The model a second, independent draw of the same policy chose
+    /// (`proposals.aa`).
+    pub aa: String,
+    /// Each eligible model's probability under the policy, in order.
+    pub propensities: Vec<(String, f64)>,
+}
+
+impl ExploredRoute {
+    /// The probability the policy gave `model`; 0 for one it cannot choose.
+    #[must_use]
+    pub fn propensity(&self, model: &str) -> f64 {
+        self.propensities
+            .iter()
+            .find(|(candidate, _)| candidate == model)
+            .map_or(0.0, |(_, p)| *p)
+    }
+}
+
+/// `epsilon` as a probability: within `[0, 1]`, NaN as 0.
+fn explore_probability(epsilon: f64) -> f64 {
+    if epsilon.is_nan() {
+        0.0
+    } else {
+        epsilon.clamp(0.0, 1.0)
+    }
+}
+
+/// The probability ε-greedy routing gives each of `eligible` (S02.P1-3):
+/// `(1 − ε)·1[argmax] + ε/k` over the `k` eligible models, so they sum to 1
+/// and none is below ε/k, with `argmax` one of them. ε = 0 puts all the
+/// mass on `argmax`.
+#[must_use]
+pub fn route_propensities(eligible: &[String], argmax: &str, epsilon: f64) -> Vec<(String, f64)> {
+    let epsilon = explore_probability(epsilon);
+    let share = epsilon / eligible.len().max(1) as f64;
+    eligible
+        .iter()
+        .map(|model| {
+            let greedy = if model == argmax { 1.0 - epsilon } else { 0.0 };
+            (model.clone(), greedy + share)
+        })
+        .collect()
+}
+
+/// The ε-greedy choice among `eligible` for the unit draw `u` in `[0, 1)`:
+/// `argmax` when `u ≥ ε`, else the eligible model at `⌊u/ε·k⌋`, so each is
+/// drawn with probability ε/k. Returns the model and whether the draw
+/// explored.
+#[must_use]
+pub fn explore_choice(eligible: &[String], argmax: &str, epsilon: f64, u: f64) -> (String, bool) {
+    let epsilon = explore_probability(epsilon);
+    if eligible.is_empty() || u >= epsilon {
+        return (argmax.to_string(), false);
+    }
+    let index = (u / epsilon * eligible.len() as f64) as usize;
+    (eligible[index.min(eligible.len() - 1)].clone(), true)
+}
+
+/// The ε-greedy route of attempt `key` among `eligible` around `argmax`,
+/// one of them (S02.P1-3): drawn on [`ROUTE_EXPLORE_LAYER`] with the
+/// attempt key as the unit, through the one assignment draw
+/// ([`crate::telemetry::assign::draw`]), and its A/A proposal drawn on
+/// [`ROUTE_EXPLORE_AA_LAYER`].
+#[must_use]
+pub fn explore_route(
+    eligible: &[String],
+    argmax: &str,
+    epsilon: f64,
+    run_seed: u64,
+    epoch: &str,
+    key: &crate::telemetry::AttemptKey,
+) -> ExploredRoute {
+    use crate::telemetry::assign::{AssignmentUnit, draw};
+
+    let unit = AssignmentUnit::Attempt.unit_key(key);
+    let u = draw(run_seed, ROUTE_EXPLORE_LAYER, epoch, &unit);
+    let (chosen, explored) = explore_choice(eligible, argmax, epsilon, u);
+    let u_aa = draw(run_seed, ROUTE_EXPLORE_AA_LAYER, epoch, &unit);
+    let (aa, _) = explore_choice(eligible, argmax, epsilon, u_aa);
+    ExploredRoute {
+        chosen,
+        explored,
+        aa,
+        propensities: route_propensities(eligible, argmax, epsilon),
+    }
+}
+
 impl CascadeRouter {
     /// Create a cascade router with the given model slugs.
     ///
@@ -237,7 +399,11 @@ impl CascadeRouter {
             !model_slugs.is_empty(),
             "CascadeRouter: need at least one model"
         );
-        let role_table = default_role_model_table(&model_slugs);
+        // Tiers come from the slug heuristics until `with_model_tiers` sets
+        // the configured ones and re-picks these defaults.
+        let role_table = default_role_model_table(&model_slugs, &HashMap::new());
+        let default_roles: std::collections::HashSet<AgentRole> =
+            role_table.keys().copied().collect();
         // Nothing is learned yet. The default role table is not a change
         // to persist over the entries other writers saved.
         let baseline = CascadeSnapshot {
@@ -249,6 +415,7 @@ impl CascadeRouter {
             confidence_stats: Mutex::new(HashMap::new()),
             pareto_frontier: Mutex::new(ParetoFrontierState::default()),
             role_table: Mutex::new(role_table),
+            default_roles: Mutex::new(default_roles),
             tier_map: HashMap::new(),
             model_slugs,
             stage_tracking: Mutex::new(StageTracking {
@@ -261,8 +428,48 @@ impl CascadeRouter {
             verdict_blend_weight: 0.2,
             cost_pressure_until: Mutex::new(None),
             disabled_providers: Vec::new(),
+            audit_trust: Mutex::new(AuditTrust::default()),
             baseline: Mutex::new(baseline),
+            canary_routes: Mutex::new(HashMap::new()),
         }
+    }
+
+    /// Send the canary category `category` to `slug`: the L-route canary's
+    /// preference (S03 §4.7), which only a route inside a [`canary_scope`]
+    /// for `category` reads. Returns how many canary preferences the router
+    /// holds, the canary's state version.
+    pub fn set_canary_route(&self, category: &str, slug: &str) -> usize {
+        let mut routes = self.canary_routes.lock();
+        routes.insert(category.to_string(), slug.to_string());
+        routes.len()
+    }
+
+    /// Remove `category`'s canary preference, and nothing else; whether it
+    /// had one.
+    pub fn remove_canary_route(&self, category: &str) -> bool {
+        self.canary_routes.lock().remove(category).is_some()
+    }
+
+    /// How many canary preferences the router holds.
+    #[must_use]
+    pub fn canary_route_count(&self) -> usize {
+        self.canary_routes.lock().len()
+    }
+
+    /// The canary's pick on this thread: the preferred model of the category
+    /// of the [`canary_scope`] this thread is in, if the router holds one.
+    #[must_use]
+    pub fn canary_route(&self) -> Option<CascadeModel> {
+        let category = CANARY_CATEGORY.with(|current| current.borrow().clone())?;
+        let slug = self.canary_routes.lock().get(&category).cloned()?;
+        let tier = slug_to_tier(&slug, &self.tier_map);
+        Some(CascadeModel {
+            primary: ModelSpec::from_slug(&slug),
+            fallback_chain: Vec::new(),
+            context_overflow_fallback: None,
+            latency_sla_ms: default_latency_sla(tier),
+            stage: self.current_stage(),
+        })
     }
 
     /// Set config-sourced tier assignments (builder pattern).
@@ -278,6 +485,7 @@ impl CascadeRouter {
             .values()
             .filter_map(|p| p.tier.map(|t| (p.slug.clone(), t)))
             .collect();
+        self.repick_default_roles();
         self
     }
 
@@ -290,6 +498,27 @@ impl CascadeRouter {
             .values()
             .filter_map(|p| p.tier.map(|t| (p.slug.clone(), t)))
             .collect();
+        self.repick_default_roles();
+    }
+
+    /// Re-pick, by the configured tiers, the role-table entries that still
+    /// hold the default [`Self::new`] picked by the slug heuristics; restored
+    /// and explicitly set entries stay. The baseline moves with them, so a
+    /// save does not take the default for a learned change (9207).
+    fn repick_default_roles(&mut self) {
+        let configured = default_role_model_table(&self.model_slugs, &self.tier_map);
+        let defaults = self.default_roles.get_mut();
+        let table = self.role_table.get_mut();
+        let baseline = self.baseline.get_mut();
+        for (role, slug) in configured {
+            if !defaults.contains(&role) {
+                continue;
+            }
+            if baseline.role_table.get(&role) == table.get(&role) {
+                baseline.role_table.insert(role, slug.clone());
+            }
+            table.insert(role, slug);
+        }
     }
 
     /// Resolve a model's tier, preferring config over heuristic.
@@ -301,17 +530,22 @@ impl CascadeRouter {
     #[must_use]
     pub fn with_role_table(mut self, table: HashMap<AgentRole, String>) -> Self {
         self.role_table = Mutex::new(table);
+        self.default_roles.get_mut().clear();
         self
     }
 
     /// Update the Stage 1 static role-to-model mapping for one role.
     pub fn set_static_role_model(&mut self, role: AgentRole, model_slug: impl Into<String>) {
+        self.default_roles.get_mut().remove(&role);
         self.role_table.lock().insert(role, model_slug.into());
     }
 
     /// Update the static role -> model table used during the cold-start stage.
     pub fn update_static_table(&self, role: AgentRole, model_slug: impl Into<String>) -> bool {
         let model_slug = model_slug.into();
+        // A learned entry is not a default to re-pick, even when it matches
+        // the current one (9207).
+        self.default_roles.lock().remove(&role);
         let mut role_table = self.role_table.lock();
         if role_table
             .get(&role)
@@ -588,7 +822,9 @@ impl CascadeRouter {
         }
     }
 
-    /// Select a tier using the active-inference belief state.
+    /// Select a tier using the active-inference belief state. Nothing calls
+    /// this, so it is parked behind `active-inference` (9225).
+    #[cfg(feature = "active-inference")]
     #[must_use]
     pub fn select_tier_with_active_inference(
         &self,
@@ -792,11 +1028,19 @@ impl CascadeRouter {
         }
 
         let _primary_hint = knowledge.hint_for(&route.primary.slug);
-        let frontier = self.current_pareto_frontier();
-        let linucb_scores: HashMap<_, _> = self
-            .ucb_scores(ctx, candidates, frontier.as_deref())
-            .into_iter()
-            .collect();
+        // Until LinUCB leaves its cold start, its scores only mark its own
+        // static pick (1.0 against 0.0), which no advice could outweigh and
+        // which need not be this route's pick: the advice alone then ranks
+        // the candidates.
+        let cold_start = stage_for_observations(self.total_observations()) == CascadeStage::Static;
+        let linucb_scores: HashMap<_, _> = if cold_start {
+            HashMap::new()
+        } else {
+            let frontier = self.current_pareto_frontier();
+            self.ucb_scores(ctx, candidates, frontier.as_deref())
+                .into_iter()
+                .collect()
+        };
 
         let adjusted_score = |slug: &str| {
             let base = linucb_scores
@@ -940,10 +1184,77 @@ impl CascadeRouter {
         latency_registry: Option<&crate::latency::LatencyRegistry>,
         latency_threshold_ms: Option<f64>,
     ) -> CascadeModel {
+        let route = self.health_scored_among(
+            ctx,
+            &self.model_slugs,
+            health,
+            model_providers,
+            latency_registry,
+            latency_threshold_ms,
+        );
+        route.unwrap_or_else(|| {
+            // All providers are circuit-open — route anyway so we don't stall.
+            tracing::warn!("all known providers are circuit-open; routing without health filter");
+            self.route(ctx)
+        })
+    }
+
+    /// [`Self::route_with_health_scored`] over the `eligible` models alone
+    /// (S02.P1-2): the caller masks the models that cannot run the task
+    /// before the health filter and the argmax, so the cascade picks the best
+    /// model that can. When every eligible model's provider is circuit-open,
+    /// it routes among them without the health filter. An empty `eligible`
+    /// routes over every model.
+    pub fn route_with_health_scored_among(
+        &self,
+        ctx: &RoutingContext,
+        eligible: &[String],
+        health: &ProviderHealthRegistry,
+        model_providers: &HashMap<String, String>,
+        latency_registry: Option<&crate::latency::LatencyRegistry>,
+        latency_threshold_ms: Option<f64>,
+    ) -> CascadeModel {
+        if eligible.is_empty() {
+            return self.route_with_health_scored(
+                ctx,
+                health,
+                model_providers,
+                latency_registry,
+                latency_threshold_ms,
+            );
+        }
+        let route = self.health_scored_among(
+            ctx,
+            eligible,
+            health,
+            model_providers,
+            latency_registry,
+            latency_threshold_ms,
+        );
+        route.unwrap_or_else(|| {
+            tracing::warn!(
+                "every eligible model's provider is circuit-open; routing among them without \
+                 health filter"
+            );
+            self.route_with_cfactor_among(ctx, eligible, None, None)
+        })
+    }
+
+    /// The health-scored route among `models`: `Open` providers excluded,
+    /// `HalfOpen` and slow ones demoted. `None` when no provider of `models`
+    /// is available.
+    fn health_scored_among(
+        &self,
+        ctx: &RoutingContext,
+        models: &[String],
+        health: &ProviderHealthRegistry,
+        model_providers: &HashMap<String, String>,
+        latency_registry: Option<&crate::latency::LatencyRegistry>,
+        latency_threshold_ms: Option<f64>,
+    ) -> Option<CascadeModel> {
         // Partition candidates into available (Closed/HalfOpen) and
         // unavailable (Open / hard-down), excluding disabled providers.
-        let available: Vec<String> = self
-            .model_slugs
+        let available: Vec<String> = models
             .iter()
             .filter(|slug| {
                 if self.is_provider_disabled(slug, model_providers) {
@@ -958,10 +1269,10 @@ impl CascadeRouter {
             .collect();
 
         if available.is_empty() {
-            // All providers are circuit-open — route anyway so we don't stall.
-            tracing::warn!("all known providers are circuit-open; routing without health filter");
-            return self.route(ctx);
+            return None;
         }
+        // DP4: leave out the models audits keep finding false greens from.
+        let available = self.filter_untrusted(&available, ctx.complexity);
 
         // Apply latency-based demotion: collect slugs whose provider p95
         // exceeds the threshold so we can filter them out of the preferred
@@ -1038,11 +1349,13 @@ impl CascadeRouter {
             .collect();
         route.fallback_chain.extend(extra_fallbacks);
 
-        route
+        Some(route)
     }
 
     /// Remove candidates whose provider is currently unhealthy or explicitly
-    /// disabled via `RoutingConfig::disabled_providers`.
+    /// disabled via `RoutingConfig::disabled_providers`, and then those
+    /// audit trust leaves out of standard-band work ([`Self::filter_untrusted`],
+    /// DP4).
     #[must_use]
     pub fn filter_unhealthy(
         &self,
@@ -1068,7 +1381,7 @@ impl CascadeRouter {
             .cloned()
             .collect();
         if !available.is_empty() {
-            return available;
+            return self.filter_untrusted(&available, TaskComplexityBand::Standard);
         }
 
         let snapshot = health.snapshot();
@@ -1277,6 +1590,24 @@ impl CascadeRouter {
             }
             CascadeStage::Ucb => self.route_ucb_among(ctx, candidates, cfactor, agent_id),
         }
+    }
+
+    /// Re-rank `route`, which another selector picked among `candidates`,
+    /// with knowledge `advice`: the knowledge step of
+    /// [`Self::route_with_knowledge_among`], for a route a health- or
+    /// bias-aware selector produced (reg-ff6e1a). A candidate that beats the
+    /// pick by more than 0.1 once the advice is counted replaces it. Before
+    /// the router has learned anything (its static stage), the advice alone
+    /// ranks the candidates.
+    #[must_use]
+    pub fn apply_knowledge_among(
+        &self,
+        ctx: &RoutingContext,
+        route: CascadeModel,
+        candidates: &[String],
+        advice: Option<&KnowledgeRoutingAdvice>,
+    ) -> CascadeModel {
+        self.apply_knowledge_to_route(ctx, route, candidates, advice)
     }
 
     /// Route a context through the cascade over a candidate subset with knowledge hints.
@@ -1675,6 +2006,46 @@ impl CascadeRouter {
         entry.trials += 1;
         if success {
             entry.successes += 1;
+        }
+    }
+
+    /// Retract one success credited to `model_slug` when its attempt
+    /// completed: a later verdict relabeled that attempt a failure
+    /// (hindsight, gap-b95d94). The success becomes a failure in `category`'s
+    /// stats and in the model's confidence stats, where every routing
+    /// outcome counts, an operator override's included. Trials are
+    /// unchanged, and a count with no success left stays as it is.
+    ///
+    /// The `LinUCB` bandit is exempt (bug-583e50). The success added the
+    /// dispatch-time context features to the arm's reward vector, scaled by
+    /// the reward that the arm's EWC regularizer let through at that moment.
+    /// The relabel has neither the features nor that effective reward, so
+    /// any subtraction would move the arm somewhere no observation put it.
+    /// The bandit keeps the attempt as it was settled.
+    pub fn retract_success(&self, model_slug: &str, category: TaskCategory) {
+        let mut cat = self.category_stats.lock();
+        if let Some(entry) = cat.get_mut(&(model_slug.to_string(), category)) {
+            entry.successes = entry.successes.saturating_sub(1);
+        }
+        drop(cat);
+        self.replay_retraction(model_slug);
+    }
+
+    /// Apply the confidence-stats half of [`Self::retract_success`]
+    /// (bug-583e50): the replay of a journaled retraction that names no task
+    /// category, as entries written before retractions named one. A replayed
+    /// retraction that names its category applies both halves. Does NOT
+    /// write a WAL entry.
+    pub fn replay_retraction(&self, model_slug: &str) {
+        let Some(slug) = self
+            .model_index_for_slug(model_slug)
+            .and_then(|model_idx| self.model_slugs.get(model_idx))
+        else {
+            return;
+        };
+        let mut stats = self.confidence_stats.lock();
+        if let Some(entry) = stats.get_mut(slug) {
+            entry.successes = entry.successes.saturating_sub(1);
         }
     }
 
@@ -2201,11 +2572,13 @@ impl CascadeRouter {
                 explanation
                     .candidates
                     .iter()
-                    .map(|candidate| CandidateEntry {
-                        model: candidate.slug.clone(),
-                        provider: log.provider_for_model(&candidate.slug),
-                        score: candidate.score,
-                        disqualified: log.disqualified_reason(&candidate.slug),
+                    .map(|candidate| {
+                        CandidateEntry::new(
+                            candidate.slug.clone(),
+                            log.provider_for_model(&candidate.slug),
+                            candidate.score,
+                            log.disqualified_reason(&candidate.slug),
+                        )
                     })
                     .collect::<Vec<_>>()
             })
@@ -2217,21 +2590,21 @@ impl CascadeRouter {
         {
             candidates.insert(
                 0,
-                CandidateEntry {
-                    model: selected_model.to_string(),
-                    provider: log.provider_for_model(selected_model),
-                    score: 1.0,
-                    disqualified: log.disqualified_reason(selected_model),
-                },
+                CandidateEntry::new(
+                    selected_model,
+                    log.provider_for_model(selected_model),
+                    1.0,
+                    log.disqualified_reason(selected_model),
+                ),
             );
         }
         if candidates.is_empty() {
-            candidates.push(CandidateEntry {
-                model: selected_model.to_string(),
-                provider: log.provider_for_model(selected_model),
-                score: 1.0,
-                disqualified: log.disqualified_reason(selected_model),
-            });
+            candidates.push(CandidateEntry::new(
+                selected_model,
+                log.provider_for_model(selected_model),
+                1.0,
+                log.disqualified_reason(selected_model),
+            ));
         }
 
         let record = RoutingDecisionLog {
@@ -2254,6 +2627,13 @@ impl CascadeRouter {
             source: None,
             default_model: None,
             propensity: None,
+            decision_point: ROUTE_DECISION_POINT.to_string(),
+            proposals: RouteProposals::default(),
+            fallback_reason: None,
+            influences: Vec::new(),
+            state: None,
+            arm_set: None,
+            audit: Default::default(),
         };
         log.append(&record)?;
         Ok(record)
@@ -2263,7 +2643,6 @@ impl CascadeRouter {
     ///
     /// Returns a map of `(model_slug, category_label) -> (trials, successes)`.
     /// Used for testing and introspection of the Stage 2 category-aware scoring.
-    #[cfg(test)]
     pub fn category_stats_snapshot(&self) -> HashMap<(String, String), (u64, u64)> {
         self.category_stats
             .lock()
@@ -2330,6 +2709,39 @@ impl CascadeRouter {
         serde_json::to_string_pretty(&snapshot).unwrap_or_default()
     }
 
+    /// Digest this router's learned state (S01 P0-10): the `b3:` BLAKE3 hex of
+    /// the RFC 8785 canonical JSON of its persisted snapshot, less what
+    /// changes without learning or does not survive a save and a load.
+    /// Canonical JSON sorts object keys, so the order in which the router's
+    /// maps were filled does not change the digest.
+    ///
+    /// Left out:
+    /// - `stage_transitions`, a log of stage changes with their wall-clock
+    ///   times (the stage follows from `total_observations`);
+    /// - `pareto_frontier`, a cache recomputed from the stats;
+    /// - `linucb_state.observations`, the arms' own counts, which a load does
+    ///   not restore (`total_observations` keeps the count).
+    #[must_use]
+    pub fn snapshot_digest(&self) -> RouterStateDigest {
+        let mut snapshot = self.persisted_snapshot();
+        snapshot.stage_transitions.clear();
+        snapshot.pareto_frontier.clear();
+        if let Some(linucb) = snapshot.linucb_state.as_mut() {
+            linucb.observations = 0;
+        }
+        let n_obs = snapshot.total_observations;
+        // The snapshot always serializes: `save` writes it.
+        let mut state = serde_json::to_value(&snapshot).unwrap_or_default();
+        quantize_floats(&mut state);
+        let canonical = roko_core::config::fingerprint::canonical_json(&state);
+        RouterStateDigest {
+            digest: crate::telemetry::records::b3_digest(canonical.as_bytes()),
+            n_obs,
+            version: format!("cr:obs={n_obs}"),
+            age_s: None,
+        }
+    }
+
     /// The router's state in its persisted form.
     fn persisted_snapshot(&self) -> CascadeSnapshot {
         let stage_transitions = self.stage_tracking.lock().transitions.clone();
@@ -2368,7 +2780,24 @@ impl CascadeRouter {
             stage_transitions,
             linucb_state: Some(self.linucb.export_linucb_snapshot()),
             pareto_frontier: self.pareto_frontier.lock().frontier.clone(),
+            category_stats: self.persisted_category_stats(),
         }
+    }
+
+    /// The per-(model, category) counts in their persisted form: by model,
+    /// then category (bug-a6a3cd).
+    fn persisted_category_stats(
+        &self,
+    ) -> HashMap<String, HashMap<TaskCategory, CategoryModelStats>> {
+        let mut by_model: HashMap<String, HashMap<TaskCategory, CategoryModelStats>> =
+            HashMap::new();
+        for ((slug, category), stats) in self.category_stats.lock().iter() {
+            by_model
+                .entry(slug.clone())
+                .or_default()
+                .insert(*category, stats.clone());
+        }
+        by_model
     }
 
     /// Save what this router has learned into the snapshot at `path`.
@@ -2406,6 +2835,92 @@ impl CascadeRouter {
         Ok(())
     }
 
+    /// [`Self::save`], deciding under the snapshot's lock what is written
+    /// (P21, 8136). `decide` gets the merged snapshot's bytes, as they would
+    /// be written, and returns its answer with the bytes of a snapshot to
+    /// write instead, or `None` to write the merge. A replacement is what
+    /// this router then holds too: what it learned since is dropped.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::save`]; an error of `decide`, or a replacement that is not
+    /// a snapshot, leaves the file as it was.
+    pub(crate) fn save_deciding<R>(
+        &self,
+        path: &Path,
+        decide: impl FnOnce(&[u8]) -> std::io::Result<(R, Option<Vec<u8>>)>,
+    ) -> Result<R, crate::error::LearnError> {
+        let mut baseline = self.baseline.lock();
+        let current = self.persisted_snapshot();
+        let mut decide = Some(decide);
+        let mut transaction = |latest: &mut CascadeSnapshot| -> Decided<R> {
+            merge_learning(latest, &current, &baseline);
+            let Some(decide) = decide.take() else {
+                return Err(std::io::Error::other("a guarded save decides once"));
+            };
+            let merged = serde_json::to_vec_pretty(latest)?;
+            let (answer, replacement) = decide(&merged)?;
+            let Some(bytes) = replacement else {
+                return Ok((answer, None));
+            };
+            let replaced: CascadeSnapshot = serde_json::from_slice(&bytes)?;
+            latest.clone_from(&replaced);
+            Ok((answer, Some(replaced)))
+        };
+        // A file that no longer parses is read before `decide` runs.
+        let mut saved = with_locked_json_transaction(path, &mut transaction);
+        let unreadable = saved
+            .as_ref()
+            .is_err_and(|error| error.kind() == std::io::ErrorKind::InvalidData);
+        if unreadable && Self::quarantine_unreadable_snapshot(path) {
+            saved = with_locked_json_transaction(path, &mut transaction);
+        }
+        let (answer, replaced) = saved.map_err(|source| crate::error::LearnError::Io {
+            path: path.display().to_string(),
+            source,
+        })?;
+        *baseline = match replaced {
+            Some(snapshot) => self.restore_learned(snapshot),
+            None => current,
+        };
+        Ok(answer)
+    }
+
+    /// Replace what this router has learned with the persisted JSON
+    /// `snapshot`, keeping its configuration, as a load of it would (P21,
+    /// 8136). Its next save adds only what it learns from here.
+    ///
+    /// # Errors
+    ///
+    /// The parse error when `snapshot` is not a router snapshot.
+    pub(crate) fn restore_learned_json(&self, snapshot: &[u8]) -> Result<(), serde_json::Error> {
+        let snapshot: CascadeSnapshot = serde_json::from_slice(snapshot)?;
+        let mut baseline = self.baseline.lock();
+        *baseline = self.restore_learned(snapshot);
+        Ok(())
+    }
+
+    /// Replace what this router has learned with `snapshot`, keeping its
+    /// configuration, as a load of `snapshot` sets it, and return the
+    /// baseline of its next save. The caller holds the baseline's lock.
+    fn restore_learned(&self, mut snapshot: CascadeSnapshot) -> CascadeSnapshot {
+        snapshot.name_legacy_arms();
+        let linucb_state = snapshot.linucb_state.clone();
+        let restored = Self::from_snapshot(snapshot, self.model_slugs.clone());
+        let total = restored.linucb.total_observations();
+        self.linucb.set_total_observations(total);
+        if let Some(state) = &linucb_state {
+            self.linucb.import_linucb_snapshot(state);
+        }
+        swap_locked(&self.confidence_stats, &restored.confidence_stats);
+        swap_locked(&self.pareto_frontier, &restored.pareto_frontier);
+        swap_locked(&self.role_table, &restored.role_table);
+        swap_locked(&self.default_roles, &restored.default_roles);
+        swap_locked(&self.stage_tracking, &restored.stage_tracking);
+        swap_locked(&self.category_stats, &restored.category_stats);
+        restored.baseline.lock().clone()
+    }
+
     fn from_snapshot(mut snapshot: CascadeSnapshot, model_slugs: Vec<String>) -> Self {
         snapshot.name_legacy_arms();
         let CascadeSnapshot {
@@ -2416,6 +2931,7 @@ impl CascadeRouter {
             stage_transitions,
             linucb_state,
             pareto_frontier,
+            category_stats,
         } = snapshot;
 
         let slugs = if model_slugs.is_empty() {
@@ -2467,7 +2983,14 @@ impl CascadeRouter {
         }
         if !role_table.is_empty() {
             let mut rt = router.role_table.lock();
+            let mut defaults = router.default_roles.lock();
             for (role, slug) in role_table {
+                // Restored as persisted, so the baseline matches the file
+                // and a save keeps entries other writers need. An entry
+                // naming a model this workspace does not configure, such as
+                // a default an older roko took from a built-in list, is
+                // skipped when routing (9207).
+                defaults.remove(&role);
                 rt.insert(role, remap_role_table_entry(slug, &version_changes));
             }
         }
@@ -2481,6 +3004,17 @@ impl CascadeRouter {
         if !pareto_frontier.is_empty() {
             let mut frontier_state = router.pareto_frontier.lock();
             frontier_state.frontier = pareto_frontier;
+        }
+
+        // Restore the per-category counts, under the slugs they were
+        // recorded for (bug-a6a3cd).
+        {
+            let mut restored = router.category_stats.lock();
+            for (slug, categories) in category_stats {
+                for (category, stats) in categories {
+                    restored.insert((slug.clone(), category), stats);
+                }
+            }
         }
 
         // The router has learned nothing yet. Its baseline keeps the counters
@@ -2573,6 +3107,21 @@ impl CascadeRouter {
 
     // ── Internal routing per stage ──────────────────────────────────────
 
+    /// The role's table entry when it names a configured model. A restored
+    /// entry can name a model this workspace does not configure: it stays in
+    /// the table, so a save keeps it, but no static route names it (9207).
+    fn configured_role_slug(&self, role: AgentRole) -> Option<String> {
+        self.role_table
+            .lock()
+            .get(&role)
+            .filter(|slug| {
+                self.model_slugs
+                    .iter()
+                    .any(|configured| slugs_match(configured, slug))
+            })
+            .cloned()
+    }
+
     fn route_static(
         &self,
         ctx: &RoutingContext,
@@ -2609,29 +3158,20 @@ impl CascadeRouter {
             );
         }
 
-        let default_slug = self
-            .model_slugs
-            .first()
-            .cloned()
-            .unwrap_or_else(|| "claude-sonnet-4-5".to_string());
+        // `new` asserts a configured model, so the pick always names one.
+        let role_tier = ctx.role.model_tier();
+        let default_slug =
+            static_slug_for_tier(&self.model_slugs, role_tier, &self.tier_map).unwrap_or_default();
+        let role_slug = self.configured_role_slug(ctx.role);
         let slug = if ctx.task_category == TaskCategory::Research {
             self.model_slugs
                 .iter()
                 .find(|s| slug_family(s) == Some("sonar"))
                 .cloned()
-                .unwrap_or_else(|| {
-                    self.role_table
-                        .lock()
-                        .get(&ctx.role)
-                        .cloned()
-                        .unwrap_or_else(|| default_slug.clone())
-                })
-        } else {
-            self.role_table
-                .lock()
-                .get(&ctx.role)
-                .cloned()
+                .or(role_slug)
                 .unwrap_or(default_slug)
+        } else {
+            role_slug.unwrap_or(default_slug)
         };
         let tier = slug_to_tier(&slug, &self.tier_map);
 
@@ -2675,37 +3215,23 @@ impl CascadeRouter {
             };
         }
 
-        let slug = self
+        // The role's table entry when it is a candidate, else the candidates'
+        // pick for the role's tier, else the router's own: a static route
+        // never names a model outside the configured ones (9207).
+        let role_tier = ctx.role.model_tier();
+        let selected_slug = self
             .role_table
             .lock()
             .get(&ctx.role)
+            .filter(|slug| {
+                candidates
+                    .iter()
+                    .any(|candidate| slugs_match(candidate, slug))
+            })
             .cloned()
-            .unwrap_or_else(|| "claude-sonnet-4-5".to_string());
-
-        let selected_slug = if candidates
-            .iter()
-            .any(|candidate| slugs_match(candidate, &slug))
-        {
-            slug
-        } else {
-            let tier_candidates: &[&str] = match ctx.role.model_tier() {
-                ModelTier::Fast => &["gemini-2.5-flash-lite", "claude-haiku-4-5"],
-                ModelTier::Premium => &[
-                    "claude-opus-4-6",
-                    "gemini-3.1-pro-preview",
-                    "gemini-2.5-pro",
-                ],
-                _ => &[
-                    "gemini-2.5-flash",
-                    "gemini-2.5-pro",
-                    "kimi-k2.5",
-                    "kimi-k2-thinking",
-                    "claude-sonnet-4-6",
-                    "claude-sonnet-4-5",
-                ],
-            };
-            pick_available_static_slug(candidates, tier_candidates)
-        };
+            .or_else(|| static_slug_for_tier(candidates, role_tier, &self.tier_map))
+            .or_else(|| static_slug_for_tier(&self.model_slugs, role_tier, &self.tier_map))
+            .unwrap_or_default();
         let selected = ModelSpec::from_slug(selected_slug);
         let tier = slug_to_tier(&selected.slug, &self.tier_map);
         let fallback_chain = fallback_chain_for_model(candidates, &selected.slug, &self.tier_map);
@@ -3396,6 +3922,210 @@ fn apply_provider_pass_rate(
     }
 }
 
+/// Each float of `value` as a string of 12 significant digits, so a router
+/// state that went through a save and a load has the digest it had before:
+/// serde_json's default parser can move a float by one ulp.
+fn quantize_floats(value: &mut serde_json::Value) {
+    match value {
+        serde_json::Value::Number(number) if number.is_f64() => {
+            if let Some(float) = number.as_f64() {
+                *value = serde_json::Value::String(format!("{float:.11e}"));
+            }
+        }
+        serde_json::Value::Array(items) => items.iter_mut().for_each(quantize_floats),
+        serde_json::Value::Object(map) => map.values_mut().for_each(quantize_floats),
+        _ => {}
+    }
+}
+
+// ─── DP4: routing trust from audit estimates (S05 §4.6) ──────────────────────
+
+/// The harness the cascade routes for, as audits name it.
+pub const AUDIT_HARNESS: &str = "roko";
+
+/// DP4 leaves a model out when its trust posterior puts more than this on a
+/// false-green rate above 2·θ_max.
+pub const TRUST_EXCLUDE_PROBABILITY: f64 = 0.9;
+
+/// One in this many routes an excluded model would have is let through, the
+/// 5% re-probe, so audits keep seeing it.
+pub const TRUST_PROBE_EVERY: u64 = 20;
+
+/// Exclusions a router keeps for [`CascadeRouter::trust_exclusions`].
+const TRUST_LOG_LIMIT: usize = 64;
+
+/// One routing decision DP4 made: a model left out by audit trust.
+#[derive(Debug, Clone, PartialEq)]
+pub struct TrustExclusion {
+    /// The model.
+    pub model: String,
+    /// The task's complexity band.
+    pub band: TaskComplexityBand,
+    /// P(θ > 2·θ_max) under the model's trust posterior.
+    pub probability: f64,
+}
+
+/// DP4's state in a router.
+#[derive(Debug, Default)]
+struct AuditTrust {
+    /// `[audit] theta_max`; nothing is left out while it is unset.
+    theta_max: Option<f64>,
+    /// M1 (S06) is on, and routing trust is its actuator: the router keeps
+    /// the estimates and leaves nothing out.
+    publish_only: bool,
+    /// Each model's trust estimate for roko's harness.
+    estimates: HashMap<String, roko_core::audit_types::TrustEstimate>,
+    /// Each model's routes left out so far, for the re-probe.
+    excluded: HashMap<String, u64>,
+    /// The latest exclusions, oldest first.
+    log: Vec<TrustExclusion>,
+    /// Every exclusion so far, which the log's limit does not cut.
+    decided: u64,
+}
+
+impl AuditTrust {
+    /// P(θ > 2·θ_max) for `slug`, when it passes
+    /// [`TRUST_EXCLUDE_PROBABILITY`] for a task of `band`, standard or above.
+    fn exclusion(&self, slug: &str, band: TaskComplexityBand) -> Option<f64> {
+        if self.publish_only || band < TaskComplexityBand::Standard {
+            return None;
+        }
+        let theta_max = self.theta_max?;
+        let probability = trust_exceedance(self.estimates.get(slug)?, 2.0 * theta_max);
+        (probability > TRUST_EXCLUDE_PROBABILITY).then_some(probability)
+    }
+
+    fn record(&mut self, exclusion: TrustExclusion) {
+        self.decided += 1;
+        if self.log.len() >= TRUST_LOG_LIMIT {
+            self.log.remove(0);
+        }
+        self.log.push(exclusion);
+    }
+}
+
+/// P(θ > `bound`) under `estimate`'s Beta posterior on the false-green rate.
+#[must_use]
+pub fn trust_exceedance(estimate: &roko_core::audit_types::TrustEstimate, bound: f64) -> f64 {
+    let bound = bound.clamp(0.0, 1.0);
+    let below = crate::self_model::prior::reg_inc_beta(estimate.alpha, estimate.beta, bound);
+    (1.0 - below).clamp(0.0, 1.0)
+}
+
+impl CascadeRouter {
+    /// DP4 (S05 §4.6): route by `estimates`, the latest audit trust
+    /// estimates from the vault, with `theta_max` from `[audit]`.
+    ///
+    /// Only roko's harness counts. With `publish_only`, when M1 (S06) is on
+    /// and routing trust is its actuator, the router keeps the estimates and
+    /// leaves nothing out.
+    pub fn set_audit_trust(
+        &self,
+        estimates: &[roko_core::audit_types::TrustEstimate],
+        theta_max: f64,
+        publish_only: bool,
+    ) {
+        let mut trust = self.audit_trust.lock();
+        trust.theta_max = Some(theta_max);
+        trust.publish_only = publish_only;
+        trust.estimates = estimates
+            .iter()
+            .filter(|estimate| estimate.harness == AUDIT_HARNESS)
+            .map(|estimate| (estimate.model.clone(), estimate.clone()))
+            .collect();
+    }
+
+    /// P(θ > 2·θ_max) for `slug` when DP4 leaves it out of a task of `band`:
+    /// the band is standard or above, M1 is off, and the probability passes
+    /// [`TRUST_EXCLUDE_PROBABILITY`]. `None` otherwise.
+    #[must_use]
+    pub fn trust_excludes(&self, slug: &str, band: TaskComplexityBand) -> Option<f64> {
+        self.audit_trust.lock().exclusion(slug, band)
+    }
+
+    /// DP4: `models`, in order, less those audits keep finding false greens
+    /// from, for a task of `band`.
+    ///
+    /// A model [`Self::trust_excludes`] is left out, but one route in
+    /// [`TRUST_PROBE_EVERY`] lets it through, and trust never empties a model
+    /// class (fast, standard, premium): a class whose models are all left out
+    /// keeps its most trusted one. Each exclusion is logged as a routing
+    /// decision and kept for [`Self::trust_exclusions`].
+    pub fn filter_untrusted(&self, models: &[String], band: TaskComplexityBand) -> Vec<String> {
+        let mut trust = self.audit_trust.lock();
+        let excluded: HashMap<&str, f64> = models
+            .iter()
+            .filter_map(|slug| Some((slug.as_str(), trust.exclusion(slug, band)?)))
+            .collect();
+        if excluded.is_empty() {
+            return models.to_vec();
+        }
+        let tiers: Vec<ModelTier> = models.iter().map(|slug| self.tier_for_slug(slug)).collect();
+        // Each class's most trusted excluded model, and the classes a trusted
+        // model keeps.
+        let mut spare: HashMap<ModelTier, (&str, f64)> = HashMap::new();
+        let mut covered: Vec<ModelTier> = Vec::new();
+        for (slug, tier) in models.iter().zip(&tiers) {
+            match excluded.get(slug.as_str()) {
+                Some(&probability) => {
+                    let best = spare.entry(*tier).or_insert((slug.as_str(), probability));
+                    if probability < best.1 {
+                        *best = (slug.as_str(), probability);
+                    }
+                }
+                None => covered.push(*tier),
+            }
+        }
+        let mut kept = Vec::with_capacity(models.len());
+        for (slug, tier) in models.iter().zip(&tiers) {
+            let Some(&probability) = excluded.get(slug.as_str()) else {
+                kept.push(slug.clone());
+                continue;
+            };
+            let spared = !covered.contains(tier)
+                && spare
+                    .get(tier)
+                    .is_some_and(|(best, _)| *best == slug.as_str());
+            let count = trust.excluded.entry(slug.clone()).or_default();
+            if !spared {
+                *count += 1;
+            }
+            if spared || count.is_multiple_of(TRUST_PROBE_EVERY) {
+                kept.push(slug.clone());
+                continue;
+            }
+            tracing::info!(
+                model = %slug,
+                band = band.label(),
+                probability,
+                "routing decision: audit trust leaves the model out (DP4)"
+            );
+            trust.record(TrustExclusion {
+                model: slug.clone(),
+                band,
+                probability,
+            });
+        }
+        kept
+    }
+
+    /// The latest routing decisions DP4 made, oldest first.
+    #[must_use]
+    pub fn trust_exclusions(&self) -> Vec<TrustExclusion> {
+        self.audit_trust.lock().log.clone()
+    }
+
+    /// How many routing decisions DP4 has made since the router was built,
+    /// one per model left out of one route. Dispatch counts those of each
+    /// attempt's routing on its verdict, apart from its route row, so that
+    /// the census can tell an exclusion lost before logging from none
+    /// (gap-595e28).
+    #[must_use]
+    pub fn trust_exclusion_count(&self) -> u64 {
+        self.audit_trust.lock().decided
+    }
+}
+
 #[cfg(test)]
 mod cascade_router_tests {
     use super::*;
@@ -3666,6 +4396,102 @@ mod cascade_router_tests {
             !route.primary.slug.is_empty(),
             "fallback route must return a non-empty slug"
         );
+    }
+
+    /// S02.P1-3: the ε-greedy propensities over the eligible models sum to
+    /// 1 and give each at least ε/k, the argmax 1 − ε + ε/k; the draw picks
+    /// each model with those odds; ε = 0 is a point mass on the argmax.
+    #[test]
+    fn route_propensities_sum_to_one_and_respect_epsilon() {
+        use crate::telemetry::AttemptKey;
+
+        let eligible: Vec<String> = ["model-a", "model-b", "model-c", "model-d"]
+            .map(String::from)
+            .to_vec();
+        let argmax = "model-b";
+        let k = eligible.len() as f64;
+        for epsilon in [0.0, 0.05, 0.1, 1.0] {
+            let propensities = route_propensities(&eligible, argmax, epsilon);
+            let total: f64 = propensities.iter().map(|(_, p)| p).sum();
+            assert!(
+                (total - 1.0).abs() < 1e-12,
+                "ε = {epsilon}: p sums to {total}"
+            );
+            for (model, p) in &propensities {
+                assert!(*p >= epsilon / k - 1e-12, "ε = {epsilon}: {model} has {p}");
+                let greedy = if model == argmax { 1.0 - epsilon } else { 0.0 };
+                assert!((p - (greedy + epsilon / k)).abs() < 1e-12, "{model}: {p}");
+            }
+        }
+        let point_mass = route_propensities(&eligible, argmax, 0.0);
+        let mass: Vec<f64> = point_mass.iter().map(|(_, p)| *p).collect();
+        assert_eq!(mass, [0.0, 1.0, 0.0, 0.0]);
+        let never = explore_choice(&eligible, argmax, 0.0, 0.0);
+        assert_eq!(never, (argmax.to_string(), false));
+
+        // Over many attempts the draw explores about ε of the time, and
+        // the argmax runs with its propensity.
+        let epsilon = 0.1;
+        let routes: Vec<ExploredRoute> = (1..=4_000)
+            .map(|attempt| {
+                let key = AttemptKey::new("run-explore", "plan", "task", attempt);
+                explore_route(&eligible, argmax, epsilon, 7, "2026-10-03", &key)
+            })
+            .collect();
+        let explored = routes.iter().filter(|route| route.explored).count() as f64;
+        assert!(
+            (explored / 4_000.0 - epsilon).abs() < 0.02,
+            "{explored} explored"
+        );
+        let on_argmax = routes.iter().filter(|route| route.chosen == argmax).count() as f64;
+        let expected = routes[0].propensity(argmax);
+        assert!(
+            (on_argmax / 4_000.0 - expected).abs() < 0.02,
+            "{on_argmax} on the argmax"
+        );
+        assert!(routes.iter().all(|route| eligible.contains(&route.aa)));
+    }
+
+    /// S02.P1-2: health-scored routing over the caller's eligible models
+    /// picks among them alone, also once every eligible provider is
+    /// circuit-open. An empty eligible set routes over every model.
+    #[test]
+    fn health_scored_routing_stays_among_eligible_models() {
+        use crate::provider_health::ErrorClass;
+
+        let slugs = vec!["claude-sonnet-4-5".into(), "gemini-2.5-flash".into()];
+        let router = CascadeRouter::new(slugs);
+        let ctx = health_routing_ctx();
+        let model_providers = two_provider_map();
+        let health = crate::provider_health::ProviderHealthRegistry::new();
+        let unmasked = router.route_with_health_scored(&ctx, &health, &model_providers, None, None);
+        let other = if unmasked.primary.slug == "gemini-2.5-flash" {
+            "claude-sonnet-4-5"
+        } else {
+            "gemini-2.5-flash"
+        };
+        let eligible = vec![other.to_string()];
+        let route = |health: &crate::provider_health::ProviderHealthRegistry| {
+            router.route_with_health_scored_among(
+                &ctx,
+                &eligible,
+                health,
+                &model_providers,
+                None,
+                None,
+            )
+        };
+        assert_eq!(route(&health).primary.slug, other);
+
+        for _ in 0..3 {
+            health.record_failure(&model_providers[other], ErrorClass::ServerError);
+        }
+        assert_eq!(route(&health).primary.slug, other, "an open circuit");
+
+        let all =
+            router.route_with_health_scored_among(&ctx, &[], &health, &model_providers, None, None);
+        let full = router.route_with_health_scored(&ctx, &health, &model_providers, None, None);
+        assert_eq!(all.primary.slug, full.primary.slug);
     }
 
     /// filter_unhealthy returns healthy candidates when available, and falls
@@ -4004,6 +4830,52 @@ mod cascade_router_tests {
             "higher-pass-rate google provider must be preferred over anthropic; got {}",
             route.primary.slug
         );
+    }
+
+    /// P0-10: equal learned state has one digest, however the router's maps
+    /// were filled and across a save and a load; one more observation
+    /// changes it.
+    #[test]
+    fn snapshot_digest_changes_iff_state_changes() {
+        let slugs = vec!["model-alpha".to_string(), "model-beta".to_string()];
+        let implementation = RoutingContext {
+            task_category: TaskCategory::Implementation,
+            ..RoutingContext::default()
+        };
+        let research = RoutingContext {
+            task_category: TaskCategory::Research,
+            ..RoutingContext::default()
+        };
+        // Two routers learn the same observations, each model's in the same
+        // order, and fill their maps in opposite orders.
+        let first = CascadeRouter::new(slugs.clone());
+        first.record_observation(&implementation, "model-alpha", 0.8, true);
+        first.record_observation(&research, "model-beta", 0.3, false);
+        let second = CascadeRouter::new(slugs.clone());
+        second.record_observation(&research, "model-beta", 0.3, false);
+        second.record_observation(&implementation, "model-alpha", 0.8, true);
+        let digest = first.snapshot_digest();
+        assert_eq!(second.snapshot_digest(), digest);
+        assert!(digest.digest.starts_with("b3:"), "{digest:?}");
+        assert_eq!((digest.n_obs, digest.version.as_str()), (2, "cr:obs=2"));
+        assert_eq!(digest.age_s, None);
+
+        // Reading the state, which refreshes its caches, leaves it alone.
+        let _ = first.explain_route(&implementation, None);
+        assert_eq!(first.snapshot_digest(), digest);
+
+        // A save and a load keep it.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("cascade-router.json");
+        first.save(&path).expect("save the router");
+        let loaded = CascadeRouter::load_or_new(&path, slugs);
+        assert_eq!(loaded.snapshot_digest(), digest);
+
+        // One more observation changes it.
+        first.record_observation(&implementation, "model-alpha", 0.8, true);
+        let learned = first.snapshot_digest();
+        assert_ne!(learned.digest, digest.digest);
+        assert_eq!(learned.n_obs, 3);
     }
 }
 
@@ -4641,5 +5513,88 @@ mod cost_control_integration_tests {
         assert_eq!(budget.record_cost(1_000_000.0, "task"), BudgetAction::Ok);
         assert_eq!(budget.record_cost(1_000_000.0, "session"), BudgetAction::Ok);
         assert_eq!(budget.record_cost(1_000_000.0, "day"), BudgetAction::Ok);
+    }
+}
+
+// ─── DP4 tests ───────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod audit_trust_tests {
+    use roko_core::audit_types::TrustEstimate;
+
+    use super::*;
+    use crate::provider_health::ProviderHealthRegistry;
+
+    fn trust(model: &str, theta: f64, n_eff: f64) -> TrustEstimate {
+        TrustEstimate::from_estimate(model, AUDIT_HARNESS, theta, n_eff)
+    }
+
+    /// DP4 (S05 §4.6): a model whose passes audits keep finding false is
+    /// left out of standard-band routing, but never out of its whole class,
+    /// and one route in twenty still lets it through.
+    #[test]
+    fn audit_trust_excludes_a_gaming_model_but_keeps_one_per_class() {
+        use TaskComplexityBand::{Fast, Standard};
+
+        // By the slug heuristics, glm-4.7 and kimi-k2 are standard models,
+        // claude-haiku-4-5 a fast one and claude-opus-4-1 a premium one.
+        let models: Vec<String> = ["glm-4.7", "kimi-k2", "claude-haiku-4-5", "claude-opus-4-1"]
+            .iter()
+            .map(ToString::to_string)
+            .collect();
+        let router = CascadeRouter::new(models.clone());
+        assert_eq!(router.tier_for_slug("claude-haiku-4-5"), ModelTier::Fast);
+        // Audits keep finding false greens in glm-4.7's and claude-haiku-4-5's
+        // passes, and none in kimi-k2's.
+        let gaming = [
+            trust("glm-4.7", 0.4, 50.0),
+            trust("kimi-k2", 0.0, 50.0),
+            trust("claude-haiku-4-5", 0.4, 50.0),
+        ];
+        router.set_audit_trust(&gaming, 0.05, false);
+        let excluded = router.trust_excludes("glm-4.7", Standard);
+        assert!(
+            excluded.is_some_and(|p| p > TRUST_EXCLUDE_PROBABILITY),
+            "{excluded:?}"
+        );
+        assert_eq!(router.trust_excludes("kimi-k2", Standard), None);
+        assert_eq!(router.trust_excludes("glm-4.7", Fast), None);
+
+        // glm-4.7 is left out of standard work; claude-haiku-4-5 stays, as
+        // the only fast model.
+        let kept = ["kimi-k2", "claude-haiku-4-5", "claude-opus-4-1"];
+        assert_eq!(router.filter_untrusted(&models, Standard), kept);
+        assert_eq!(router.filter_untrusted(&models, Fast), models);
+        let logged = router.trust_exclusions();
+        assert_eq!(logged.len(), 1);
+        assert_eq!(logged[0].model, "glm-4.7");
+        assert_eq!(logged[0].band, Standard);
+        // The health filter applies it too.
+        let health = ProviderHealthRegistry::new();
+        let healthy = router.filter_unhealthy(&models, &health, &HashMap::new());
+        assert_eq!(healthy, kept);
+
+        // One route in twenty lets glm-4.7 through: its routes 3 to 22.
+        let glm = "glm-4.7".to_string();
+        let probes = (0..TRUST_PROBE_EVERY)
+            .filter(|_| router.filter_untrusted(&models, Standard).contains(&glm))
+            .count();
+        assert_eq!(probes, 1);
+
+        // With both standard models gaming, the class keeps the more trusted.
+        let both = [trust("glm-4.7", 0.4, 50.0), trust("kimi-k2", 0.25, 40.0)];
+        router.set_audit_trust(&both, 0.05, false);
+        let kimi = router.trust_excludes("kimi-k2", Standard);
+        assert!(kimi.is_some(), "kimi-k2 is excluded too");
+        assert_eq!(router.filter_untrusted(&models, Standard), kept);
+
+        // Another harness's estimates do not count, and with M1 on DP4 only
+        // keeps the estimates.
+        let elsewhere = TrustEstimate::from_estimate("glm-4.7", "fd_claude", 0.4, 50.0);
+        router.set_audit_trust(&[elsewhere], 0.05, false);
+        assert_eq!(router.filter_untrusted(&models, Standard), models);
+        router.set_audit_trust(&gaming, 0.05, true);
+        assert_eq!(router.trust_excludes("glm-4.7", Standard), None);
+        assert_eq!(router.filter_untrusted(&models, Standard), models);
     }
 }

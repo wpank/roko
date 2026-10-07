@@ -27,7 +27,7 @@
 mod acceptance;
 pub use acceptance::{ReviewDiff, attempt_review_diff};
 mod cleanup;
-pub use cleanup::clear_stale_index_lock;
+pub use cleanup::{LEFTOVER_CHECKOUT_MIN_AGE, LeftoverCheckout, clear_stale_index_lock};
 mod creation_journal;
 mod git_ops;
 #[cfg(test)]
@@ -159,6 +159,30 @@ pub struct WorktreeHandle {
     /// Unix epoch milliseconds of last activity. Updated by
     /// [`WorktreeManager::touch`].
     pub last_active_ms: i64,
+    /// The commit the checkout was made from: for an attempt, its plan's
+    /// accepted tip or the configured base, resolved when the checkout was
+    /// created. An attempt's changes are diffed from it, so work its
+    /// siblings landed before it started is not counted as its own
+    /// (backlog 1124). A re-attached checkout reads it back from the record
+    /// its creation left in its administrative directory (bug-045773), and
+    /// is `None` only when that record is missing, as for a checkout an
+    /// older roko made.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub base_commit: Option<String>,
+}
+
+/// File in a checkout's administrative directory naming the commit the
+/// checkout was made from ([`WorktreeHandle::base_commit`]), which a
+/// re-attach reads back (bug-045773).
+const CHECKOUT_BASE_FILE: &str = "roko-base";
+
+/// The base commit recorded in the administrative directory `admin_dir`
+/// ([`CHECKOUT_BASE_FILE`]), when it holds a full object id.
+fn recorded_base_commit(admin_dir: &Path) -> Option<String> {
+    let recorded = std::fs::read_to_string(admin_dir.join(CHECKOUT_BASE_FILE)).ok()?;
+    let oid = recorded.trim();
+    let full = matches!(oid.len(), 40 | 64) && oid.bytes().all(|byte| byte.is_ascii_hexdigit());
+    full.then(|| oid.to_string())
 }
 
 /// Exact immutable commit accepted from a completed task attempt.
@@ -727,6 +751,7 @@ impl WorktreeManager {
             branch: branch.to_string(),
             created_at_ms: now_ms,
             last_active_ms: now_ms,
+            base_commit: Some(claim.marker.target_oid.clone()),
         };
 
         let conflict = {
@@ -745,6 +770,18 @@ impl WorktreeManager {
             // since the real winner owns the worktree now.
             let _ = self.git_remove(&handle.path, lifecycle).await;
             return Err(WorktreeError::AlreadyExists(id.to_string()));
+        }
+
+        // A later process that re-attaches the checkout reads its base back
+        // from here (bug-045773).
+        let base_record = claim.marker.admin_dir.join(CHECKOUT_BASE_FILE);
+        if let Err(error) = std::fs::write(base_record, format!("{}\n", claim.marker.target_oid)) {
+            tracing::warn!(
+                id,
+                %error,
+                "could not record the checkout's base commit; a re-attach diffs from the base \
+                 branch"
+            );
         }
 
         // G08: Copy isolated config directories into the new worktree so
@@ -1590,6 +1627,7 @@ impl WorktreeManager {
             branch,
             created_at_ms: mtime_ms.min(now_ms),
             last_active_ms: now_ms,
+            base_commit: recorded_base_commit(&admin_dir),
         };
 
         let mut guard = self.active.lock();

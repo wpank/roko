@@ -25,7 +25,11 @@ pub async fn health(State(state): State<Arc<AppState>>) -> (axum::http::StatusCo
     let uptime_secs = state.started_at.elapsed().as_secs();
     // Use try_read() to avoid blocking on RwLock contention during plan runs,
     // which caused health-check timeouts and false "SERVE OFFLINE" in the demo UI.
-    let active_plans = state.active_plans.try_read().map(|r| r.len()).unwrap_or(0);
+    let active_plans = state
+        .active_plans
+        .try_read()
+        .map(|plans| plans.values().filter(|plan| plan.is_live()).count())
+        .unwrap_or(0);
     let supervised = state.supervisor.count().await;
     let discovered = state
         .discovered_agents
@@ -278,7 +282,6 @@ fn dashboard_event_type(event: &roko_core::dashboard_snapshot::DashboardEvent) -
         DashboardEvent::GateThresholdsUpdated { .. } => "gate_thresholds_updated",
         DashboardEvent::AgentCompleted { .. } => "agent_completed",
         DashboardEvent::MarketplaceJobsUpdated { .. } => "marketplace_jobs_updated",
-        DashboardEvent::AtelierPrdsUpdated { .. } => "atelier_prds_updated",
         DashboardEvent::KnowledgeEntriesUpdated { .. } => "knowledge_entries_updated",
         DashboardEvent::EfficiencyTrendUpdated { .. } => "efficiency_trend_updated",
         DashboardEvent::JobExecutionStarted { .. } => "job_execution_started",
@@ -304,6 +307,11 @@ fn dashboard_event_type(event: &roko_core::dashboard_snapshot::DashboardEvent) -
         DashboardEvent::CriticalPathEtaUpdated { .. } => "critical_path_eta_updated",
         DashboardEvent::CostAnomaly { .. } => "cost_anomaly",
         DashboardEvent::CrossCutCascade { .. } => "cross_cut_cascade",
+        DashboardEvent::LoopHealth { .. } => "loop_health",
+        DashboardEvent::LoopTransition { .. } => "loop_transition",
+        DashboardEvent::EvUpdate { .. } => "ev.update",
+        DashboardEvent::M1Episode { .. } => "m1.episode",
+        DashboardEvent::SelfModelCalibration { .. } => "self_model.calibration",
         DashboardEvent::SnapshotRebased { .. } => "snapshot_rebased",
     }
 }

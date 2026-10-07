@@ -51,7 +51,9 @@ pub fn create_openai_compat_backend(
     poster: Arc<dyn HttpPoster>,
 ) -> Result<Arc<dyn LlmBackend>, AgentCreationError> {
     match provider.kind {
-        ProviderKind::OpenAiCompat => {
+        // The Hermes and OpenClaw harnesses speak the same chat completions
+        // protocol over HTTP (bug-02d5ad).
+        ProviderKind::OpenAiCompat | ProviderKind::Hermes | ProviderKind::OpenClaw => {
             let api_key = resolve_api_key(provider)?;
             let mut backend = OpenAiCompatBackend::new(api_key, model.slug.clone())
                 .with_provider_id(model.provider.clone())
@@ -67,6 +69,7 @@ pub fn create_openai_compat_backend(
                 )
                 .with_supports_vision(model.supports_vision)
                 .with_ttft_timeout_ms(provider.ttft_timeout_ms)
+                .with_stream_usage(provider.stream_usage.unwrap_or(true))
                 .with_poster(Box::new(SharedHttpPoster { inner: poster }))
                 .with_provider_kind(provider.kind);
             if let Some(ref env_var) = provider.api_key_env {
@@ -108,6 +111,7 @@ pub fn create_openai_compat_backend(
                 )
                 .with_supports_vision(model.supports_vision)
                 .with_ttft_timeout_ms(provider.ttft_timeout_ms)
+                .with_stream_usage(provider.stream_usage.unwrap_or(true))
                 .with_poster(Box::new(SharedHttpPoster { inner: poster }))
                 .with_provider_kind(ProviderKind::PerplexityApi);
             if let Some(ref env_var) = provider.api_key_env {
@@ -117,24 +121,21 @@ pub fn create_openai_compat_backend(
         }
         ProviderKind::CerebrasApi => {
             // Cerebras exposes an OpenAI-compatible chat completions surface.
-            // Small models need: temperature 0 for determinism, no parallel
-            // tool calls, and content normalization (empty string → null).
+            // Small models need: temperature 0 for determinism (the default
+            // `build_extra_body_params` gives them), no parallel tool calls,
+            // and content normalization (empty string → null).
             let api_key = resolve_api_key(provider)?;
             let base_url = provider
                 .base_url
                 .clone()
                 .unwrap_or_else(|| "https://api.cerebras.ai/v1".to_string());
-            let mut extra = build_extra_body_params(provider, model);
-            extra
-                .entry("temperature")
-                .or_insert(serde_json::Value::from(0));
             let mut backend = OpenAiCompatBackend::new(api_key, model.slug.clone())
                 .with_provider_id(model.provider.clone())
                 .with_base_url(base_url)
                 .with_timeout_ms(provider.timeout_ms.unwrap_or(DEFAULT_REQUEST_TIMEOUT_MS))
                 .with_max_tokens(max_tokens_for_model(model))
                 .with_extra_headers(provider.extra_headers.clone().unwrap_or_default())
-                .with_extra_body_params(extra)
+                .with_extra_body_params(build_extra_body_params(provider, model))
                 .with_skip_session_fields(true)
                 .with_disable_parallel_tool_calls(true)
                 .with_normalize_tool_call_content(true)
@@ -144,6 +145,7 @@ pub fn create_openai_compat_backend(
                 )
                 .with_supports_vision(model.supports_vision)
                 .with_ttft_timeout_ms(provider.ttft_timeout_ms)
+                .with_stream_usage(provider.stream_usage.unwrap_or(true))
                 .with_poster(Box::new(SharedHttpPoster { inner: poster }))
                 .with_provider_kind(ProviderKind::CerebrasApi);
             if let Some(ref env_var) = provider.api_key_env {
@@ -155,10 +157,6 @@ pub fn create_openai_compat_backend(
             Err(AgentCreationError::MissingConfig(
                 "Gemini tool-loop backend is not implemented yet".into(),
             ))
-        }
-        ProviderKind::Hermes | ProviderKind::OpenClaw => {
-            // Harness adapters use OpenAI-compat as their base HTTP transport.
-            create_openai_compat_backend(provider, model, poster)
         }
     }
 }
@@ -195,6 +193,7 @@ pub fn create_openai_compat_backend_with_limiter(
                         || should_use_max_completion_tokens(&model.slug),
                 )
                 .with_ttft_timeout_ms(provider.ttft_timeout_ms)
+                .with_stream_usage(provider.stream_usage.unwrap_or(true))
                 .with_poster(Box::new(SharedHttpPoster { inner: poster }))
                 .with_provider_kind(provider.kind)
                 .with_rate_limiter(rate_limiter);
@@ -205,17 +204,13 @@ pub fn create_openai_compat_backend_with_limiter(
             // temperature 0, no parallel tool calls, and content normalization.
             let api_key = resolve_api_key(provider)?;
             let base_url = base_url_for_tool_loop(provider);
-            let mut extra = build_extra_body_params(provider, model);
-            extra
-                .entry("temperature")
-                .or_insert(serde_json::Value::from(0));
             let backend = OpenAiCompatBackend::new(api_key, model.slug.clone())
                 .with_provider_id(model.provider.clone())
                 .with_base_url(base_url)
                 .with_timeout_ms(provider.timeout_ms.unwrap_or(DEFAULT_REQUEST_TIMEOUT_MS))
                 .with_max_tokens(max_tokens_for_model(model))
                 .with_extra_headers(provider.extra_headers.clone().unwrap_or_default())
-                .with_extra_body_params(extra)
+                .with_extra_body_params(build_extra_body_params(provider, model))
                 .with_skip_session_fields(true)
                 .with_disable_parallel_tool_calls(true)
                 .with_normalize_tool_call_content(true)
@@ -224,6 +219,7 @@ pub fn create_openai_compat_backend_with_limiter(
                         || should_use_max_completion_tokens(&model.slug),
                 )
                 .with_ttft_timeout_ms(provider.ttft_timeout_ms)
+                .with_stream_usage(provider.stream_usage.unwrap_or(true))
                 .with_poster(Box::new(SharedHttpPoster { inner: poster }))
                 .with_provider_kind(ProviderKind::CerebrasApi)
                 .with_rate_limiter(rate_limiter);
@@ -364,6 +360,8 @@ mod tests {
             max_concurrent: None,
             limits: None,
             require_confirmation: false,
+            stream_usage: None,
+            billing: None,
         }
     }
 
@@ -512,6 +510,93 @@ mod tests {
         assert_eq!(requests[0].body["tools"][0]["function"]["name"], "echo");
     }
 
+    /// bug-02d5ad: the Hermes and OpenClaw kinds get the chat completions
+    /// backend, where they used to recurse into this factory without end.
+    #[tokio::test]
+    async fn openai_compat_backend_for_hermes_and_openclaw_speaks_chat_completions() {
+        for kind in [ProviderKind::Hermes, ProviderKind::OpenClaw] {
+            let poster = Arc::new(MockPoster::new(
+                json!({
+                    "choices": [{
+                        "message": {
+                            "role": "assistant",
+                            "content": "done"
+                        }
+                    }]
+                })
+                .to_string(),
+            ));
+            let provider = ProviderConfig {
+                kind,
+                ..zai_provider()
+            };
+
+            let backend =
+                create_openai_compat_backend(&provider, &glm_5_1_profile(), poster.clone())
+                    .expect("create backend");
+            backend
+                .send_turn(
+                    &[json!({ "role": "user", "content": "hi" })],
+                    &RenderedTools::JsonArray(json!([])),
+                    &SessionState::default(),
+                )
+                .await
+                .expect("send turn");
+
+            let requests = poster.requests.lock().expect("requests lock");
+            assert_eq!(requests.len(), 1, "{kind:?}");
+            assert_eq!(
+                requests[0].url, "https://api.z.ai/api/paas/v4/chat/completions",
+                "{kind:?}"
+            );
+        }
+    }
+
+    /// backlog 2101: the factory's backend asks for usage on a streaming
+    /// request, unless the provider sets `stream_usage = false`.
+    #[tokio::test]
+    async fn provider_stream_usage_opt_out_reaches_the_request() {
+        for (stream_usage, asks) in [(None, true), (Some(false), false)] {
+            let (base_url, captured, handle) = spawn_chat_server("data: [DONE]\n\n".to_string());
+            let provider = ProviderConfig {
+                base_url: Some(base_url),
+                api_key_env: None,
+                stream_usage,
+                ..zai_provider()
+            };
+            let backend = create_openai_compat_backend(
+                &provider,
+                &glm_5_1_profile(),
+                Arc::new(MockPoster::new(String::new())),
+            )
+            .expect("create backend");
+            let _events = backend
+                .stream_turn(
+                    &[json!({ "role": "user", "content": "hi" })],
+                    &RenderedTools::JsonArray(json!([])),
+                    &SessionState::default(),
+                    &crate::tool_loop::TurnConfig::default(),
+                )
+                .await
+                .expect("stream turn");
+            handle.join().expect("server thread");
+
+            let request = captured
+                .lock()
+                .expect("capture lock")
+                .clone()
+                .expect("captured request");
+            let (_, body) = request.split_once("\r\n\r\n").expect("request body");
+            let body: Value = serde_json::from_str(body).expect("request body json");
+            assert_eq!(body["stream"], true, "{stream_usage:?}");
+            assert_eq!(
+                body.pointer("/stream_options/include_usage") == Some(&Value::Bool(true)),
+                asks,
+                "{stream_usage:?}: {body}"
+            );
+        }
+    }
+
     #[tokio::test]
     async fn create_tool_loop_backend_routes_gemini_native_models_to_generate_content() {
         let response = json!({
@@ -539,6 +624,8 @@ mod tests {
             max_concurrent: None,
             limits: None,
             require_confirmation: false,
+            stream_usage: None,
+            billing: None,
         };
         let model = ModelProfile {
             provider: "gemini".to_string(),
@@ -574,6 +661,8 @@ mod tests {
             cost_per_request: None,
             use_max_completion_tokens: false,
             tier: None,
+            temperature: None,
+            seed: None,
         };
         let backend = create_tool_loop_backend(
             &provider,

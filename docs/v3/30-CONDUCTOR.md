@@ -4,26 +4,51 @@
 > about its own pipeline -- the subsystem that watches execution unfold
 > and asks: is this going where I predicted?
 
-> **Implementation status (corrected 2026-09-29 at `7c556bc0a`): BUILT-UNWIRED.**
-> 12 watchers, circuit breaker, diagnosis engine, stuck detector, health monitor,
-> state machine, pattern detector, threshold learner, Yerkes-Dodson pressure
-> framework, and self-healing policy are built and unit-tested in `roko-conductor`.
-> None of them runs during plan execution. The Conductor's tick lived in the
-> Runner-v2 event loop, deleted on 2026-09-06 (`6b5da8616`). The Graph plan runner
-> still builds a `Conductor` from `[conductor]` config (`RunConfig::from_roko_config`
-> in `crates/roko-cli/src/runner/types.rs`), but `Conductor::evaluate_full` is called
-> only from tests (`crates/roko-cli/src/runner/conductor_adapter.rs`), so no watcher
-> fires, no intervention is taken and the plan circuit breaker never trips. The
-> `[conductor]` keys `max_agents`, `max_parallel_plans` and `plan_failure_policy` do
-> apply: the Graph plan runner reads them directly. The `ConductorBandit` learned
-> policy in `roko-learn` is not wired either; `WorstSeverityPolicy` is the default.
+> **Implementation status (corrected 2026-10-03 at `e55d4c20f`): PARTIAL. The plan-run
+> watchdog, on by default: `Restart` and `Fail` act, `Nudge` and `ForceAdvance` do not.**
+> Every Graph plan run supervises its running attempts with the Conductor, which the plan
+> host ticks every 5 s (`SUPERVISION_INTERVAL`; `GraphTaskDispatcher::with_conductor` and
+> `spawn_conductor_ticker` in `crates/roko-cli/src/graph_task_dispatch/supervision.rs`,
+> started by the Graph plan runner).
+> Each tick runs `Conductor::evaluate_full`, with the 13 watchers `Conductor::from_config`
+> builds, the plan circuit breaker and the pattern detector, over each running attempt's own
+> signals (its start, and the messages and tool calls of its live output), and acts on the
+> decision:
+>
+> - `Restart` cancels that attempt the way the stall watchdog does: it fails and retries under
+>   its task's `max_retries`, and when the next attempt ends the threshold learner learns
+>   whether the restart helped (`record_intervention_outcome`);
+> - `Fail` stops the run the way SIGTERM does, and the run's error names the watcher;
+> - `Nudge` and `ForceAdvance` are not carried out (gap-ebd656, held by decision 9236).
+>
+> When an attempt's own signals call for nothing, the Conductor evaluates them again with the
+> task's verify runs (gate verdicts and compile diagnostics, which `compile-fail-repeat` and
+> `test-failure-budget` compare across attempts). What it calls for then is advice only: it is
+> published as an advisory diagnosis and cancels nothing. Every intervention is published as a
+> dashboard diagnosis.
+>
+> `[conductor] supervise = false` (default `true`, 1210) turns the Conductor off, and the
+> stall watchdog (`crates/roko-cli/src/graph_task_dispatch/watchdog.rs`) keeps running: a
+> warning after `silence_timeout_secs` of agent silence (default 180), and a cancel and retry
+> after `task_stall_secs` (default 300). With both of those at 0 nothing supervises the run,
+> the Conductor included. Will's decision 9236 (2026-10-02) keeps the Conductor as this
+> watchdog, on by default, and parks only the parts the plan path never calls; at `e55d4c20f`
+> nothing is parked yet. Those parts are built and unit-tested in `roko-conductor`, but no plan
+> run calls them: the diagnosis engine, stuck detector, health monitor, phase state machine,
+> Yerkes-Dodson pressure framework and self-healing policy, and the `ConductorBandit` learned
+> policy in `roko-learn` (`WorstSeverityPolicy` decides). The `[conductor]` keys `max_agents`,
+> `max_parallel_plans` and `plan_failure_policy` apply as well: the Graph plan runner reads
+> them directly. The design sections below speak of twelve watchers; the thirteenth,
+> `retrieval-precision`, came later.
 
 ### Implementation sources
 
 | Surface | Authority | Shipped boundary |
 |---------|-----------|-----------------|
 | Conductor struct | `crates/roko-conductor/src/conductor.rs` | `Conductor`, `evaluate()`, `RoutingBias` |
-| 12 watchers | `crates/roko-conductor/src/watchers/` | All 12 watcher modules, each a `React` impl |
+| 13 watchers | `crates/roko-conductor/src/watchers/` | All 13 watcher modules, each a `React` impl (counted at `e55d4c20f`) |
+| Plan-run supervision | `crates/roko-cli/src/graph_task_dispatch/supervision.rs` | `GraphConductor`, `SUPERVISION_INTERVAL`, `spawn_conductor_ticker`; off with `[conductor] supervise = false` |
+| Stall watchdog | `crates/roko-cli/src/graph_task_dispatch/watchdog.rs` | `StallThresholds` (`silence_timeout_secs`, `task_stall_secs`); runs with or without the Conductor |
 | Circuit breaker | `crates/roko-conductor/src/circuit_breaker.rs` | `CircuitBreaker`, `HoltForecaster`, `ProactiveTripSignal` |
 | Interventions | `crates/roko-conductor/src/interventions.rs` | `Severity`, `WatcherOutput`, `InterventionPolicy`, `BanditPolicy` |
 | Diagnosis engine | `crates/roko-conductor/src/diagnosis.rs` | `DiagnosisEngine`, 20 `ErrorCategory`, 34 patterns, 9 `SuggestedIntervention` |
@@ -1158,7 +1183,7 @@ Sweller's cognitive load theory (1988) maps to LLM context windows:
 |---------------|----------------|--------|
 | Intrinsic load | Task complexity | Plan metadata |
 | Extraneous load | Irrelevant context | Stale docs, verbose error history |
-| Germane load | Productive scaffolding | PRD context, error digests, playbook rules |
+| Germane load | Productive scaffolding | Plan context, error digests, playbook rules |
 
 `intrinsic + extraneous + germane <= context_window_capacity`
 
@@ -1406,13 +1431,13 @@ coordination monitoring at every granularity (turn, task, plan, fleet).
 # Conductor crate compiles and tests pass
 cargo test -p roko-conductor
 
-# Watcher count matches (12 watchers)
+# Watcher count matches (13 watchers at e55d4c20f)
 grep -c "pub mod" crates/roko-conductor/src/watchers/mod.rs
-# Expected: 12
+# Expected: 13
 
 # All watcher modules exist
 ls crates/roko-conductor/src/watchers/*.rs | wc -l
-# Expected: 13 (12 watchers + mod.rs)
+# Expected: 14 (13 watchers + mod.rs)
 
 # Core re-exports are present
 grep "ConductorDecision\|CognitiveSignal\|ConductorEvaluation" \

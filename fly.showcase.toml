@@ -1,0 +1,55 @@
+# The replay-only showcase (S11 §4.6, F1): `flyctl deploy -c fly.showcase.toml`.
+#
+# The root fly.toml ("roko") is a separate app. This one builds the small showcase-replay image,
+# keeps state on the volume, and leaves stopping to the app: serve exits 0 after 20 idle minutes
+# (G10), `on-failure` leaves an exited Machine stopped, and the proxy starts it on the next
+# request. Secrets (the passphrase hash, the admin key) are Fly secrets, never this file.
+
+app = "roko-showcase"
+primary_region = "iad"
+kill_signal = "SIGTERM"
+kill_timeout = "30s"
+
+[build]
+  dockerfile = "Dockerfile"
+  build-target = "showcase-replay"
+
+[env]
+  RUST_LOG = "info"
+  ROKO_STATE_ROOT = "/data/.roko"
+  ROKO_SHOWCASE_PUBLIC_ORIGIN = "https://roko-showcase.fly.dev"
+
+[http_service]
+  internal_port = 6677
+  force_https = true
+  auto_stop_machines = "off"
+  auto_start_machines = true
+  min_machines_running = 0
+  [http_service.concurrency]
+    type = "requests"
+    soft_limit = 50
+    hard_limit = 100
+
+[[http_service.checks]]
+  interval = "30s"
+  timeout = "5s"
+  grace_period = "60s"
+  method = "GET"
+  path = "/health"
+
+[[restart]]
+  policy = "on-failure"
+  retries = 5
+
+[[vm]]
+  size = "shared-cpu-1x"
+  memory = "1gb"
+
+[[mounts]]
+  source = "roko_data"
+  destination = "/data"
+  initial_size = "20gb"
+  auto_extend_size_threshold = 80
+  auto_extend_size_increment = "10gb"
+  auto_extend_size_limit = "60gb"
+  snapshot_retention = 14

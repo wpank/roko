@@ -17,7 +17,7 @@ pub const MOCK_FIXTURE: &str = "mock-self-host-fixture";
 pub const SAMPLE_PLAN_ID: &str = "test-wire-xyz";
 
 const SAMPLE_PLAN_MARKDOWN: &str =
-    "# Plan: test-wire-xyz\n\nA single-task smoke-test plan generated from the PRD.\n";
+    "# Plan: test-wire-xyz\n\nA single-task smoke-test plan generated from a prompt.\n";
 
 const SAMPLE_TASKS_TOML: &str = r#"[meta]
 plan = "test-wire-xyz"
@@ -214,6 +214,27 @@ pub fn setup_sample_plan_workspace(workdir: &Path) {
     } else {
         format!("{existing}\n[agent]\n{mock_cmd_line}\n")
     };
+    // The smoke plan runs in the shared working tree, as it did before
+    // per-task worktrees became the default (gap-4ec59f).
+    let updated = if updated.contains("\nworktree_per_task = ") {
+        updated.replace("\nworktree_per_task = true", "\nworktree_per_task = false")
+    } else if updated.contains("\n[runner]\n") {
+        updated.replace("\n[runner]\n", "\n[runner]\nworktree_per_task = false\n")
+    } else {
+        format!("{updated}\n[runner]\nworktree_per_task = false\n")
+    };
+    // gap-0ee70b: these smoke plans are about the run, not the spec gate, so
+    // their checks are not proven red on the base first.
+    let updated = if updated.contains("\nred_on_base = ") {
+        updated.replace("\nred_on_base = true", "\nred_on_base = false")
+    } else if updated.contains("\n[spec_quality]\n") {
+        updated.replace(
+            "\n[spec_quality]\n",
+            "\n[spec_quality]\nred_on_base = false\n",
+        )
+    } else {
+        format!("{updated}\n[spec_quality]\nred_on_base = false\n")
+    };
     fs::write(&roko_toml, updated).expect("write roko.toml with mock claude");
 
     let plan_dir = workdir.join("plans").join(SAMPLE_PLAN_ID);
@@ -331,13 +352,15 @@ impl ScriptedPlanWorkspace {
     /// `tasks.toml` is `tasks_toml` with `{fixtures}` standing for the
     /// fixtures directory, committed with `.roko/` ignored. `roko.toml`
     /// routes every task to `fixtures/fake-claude.sh`, which runs
-    /// `agent_script`, through a `claude_cli` provider on model `scripted`.
-    /// It is written as root-level dotted keys, so `extra_config`, appended
-    /// to it, can add keys such as `agent.env_passthrough = [...]`.
-    /// `roko init` is not used: its template depends on this machine's PATH
-    /// and keys.
+    /// `agent_script`, through a `claude_cli` provider on model `scripted`,
+    /// and runs the tasks in the shared working tree, as these tests were
+    /// written for before per-task worktrees became the default (gap-4ec59f;
+    /// `--worktree-per-task` still turns them on). It is written as
+    /// root-level dotted keys, so `extra_config`, appended to it, can add keys
+    /// such as `agent.env_passthrough = [...]`. `roko init` is not used: its
+    /// template depends on this machine's PATH and keys.
     pub fn new(plan: &str, tasks_toml: &str, agent_script: &str, extra_config: &str) -> Self {
-        Self::create(plan, tasks_toml, extra_config, |root| {
+        Self::create(None, plan, tasks_toml, extra_config, |root| {
             let agent = root.join("fixtures").join("fake-claude.sh");
             write_executable(&agent, agent_script);
             agent
@@ -354,8 +377,39 @@ impl ScriptedPlanWorkspace {
         script: &Script,
         extra_config: &str,
     ) -> (Self, ScriptedProvider) {
+        Self::with_provider_under(None, plan, tasks_toml, script, extra_config)
+    }
+
+    /// [`Self::with_provider`], with the workspace under `/tmp` rather than
+    /// the platform's temp dir. On macOS that dir is deep enough that a run's
+    /// inject socket (`.roko/runtime/inject/<pid>.sock`) overflows the 104
+    /// bytes of a Unix socket path, and `roko plan pause` or `roko inject`
+    /// then finds no run listening (1224).
+    pub fn with_provider_at_short_path(
+        plan: &str,
+        tasks_toml: &str,
+        script: &Script,
+        extra_config: &str,
+    ) -> (Self, ScriptedProvider) {
+        Self::with_provider_under(
+            Some(Path::new("/tmp")),
+            plan,
+            tasks_toml,
+            script,
+            extra_config,
+        )
+    }
+
+    /// [`Self::with_provider`], with the workspace under `base` when given.
+    fn with_provider_under(
+        base: Option<&Path>,
+        plan: &str,
+        tasks_toml: &str,
+        script: &Script,
+        extra_config: &str,
+    ) -> (Self, ScriptedProvider) {
         let mut provider = None;
-        let workspace = Self::create(plan, tasks_toml, extra_config, |root| {
+        let workspace = Self::create(base, plan, tasks_toml, extra_config, |root| {
             let installed = ScriptedProvider::install(&root.join("provider"), script);
             let command = installed.command();
             provider = Some(installed);
@@ -364,15 +418,21 @@ impl ScriptedPlanWorkspace {
         (workspace, provider.expect("the provider is installed"))
     }
 
-    /// The workspace, with `install_agent(root)` putting the agent in place
-    /// and returning its command.
+    /// The workspace, under `base` when given, else the platform's temp dir,
+    /// with `install_agent(root)` putting the agent in place and returning
+    /// its command.
     fn create(
+        base: Option<&Path>,
         plan: &str,
         tasks_toml: &str,
         extra_config: &str,
         install_agent: impl FnOnce(&Path) -> PathBuf,
     ) -> Self {
-        let temp = tempfile::tempdir().expect("tempdir");
+        let temp = match base {
+            Some(base) => tempfile::tempdir_in(base),
+            None => tempfile::tempdir(),
+        }
+        .expect("tempdir");
         // Canonical, so paths roko prints and paths the test builds agree.
         let root = temp.path().canonicalize().expect("canonical tempdir");
         let repo = root.join("repo");
@@ -397,6 +457,8 @@ models.scripted.provider = "scripted-cli"
 models.scripted.slug = "claude-sonnet-4-6"
 models.scripted.context_window = 200000
 gates.cargo_fix_enabled = false
+runner.worktree_per_task = false
+spec_quality.red_on_base = false
 {extra_config}"#,
                 agent = agent.display().to_string()
             ),

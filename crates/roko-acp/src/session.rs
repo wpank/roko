@@ -378,6 +378,15 @@ pub struct AcpSession {
     /// Runtime-scoped configured RPM/TPM pool shared by ACP sessions.
     #[serde(skip, default)]
     pub(crate) provider_rate_limiter: Option<Arc<ProviderRateLimiter>>,
+    /// Requests that arrived while a prompt ran. The server answers them, in
+    /// arrival order, once the prompt finishes.
+    #[serde(skip, default)]
+    pub(crate) deferred_requests: Vec<crate::types::JsonRpcRequest>,
+    /// Set while the server runs this session's prompt beside its request loop.
+    /// That loop then reads stdin and routes the client's messages, so the
+    /// prompt must not read it too.
+    #[serde(skip, default)]
+    pub(crate) inbound_routed: bool,
 }
 
 fn default_true() -> bool {
@@ -433,6 +442,8 @@ impl AcpSession {
             accumulated_cost_usd: 0.0,
             provider_health_registry: None,
             provider_rate_limiter: None,
+            deferred_requests: Vec::new(),
+            inbound_routed: false,
         }
     }
 
@@ -485,6 +496,8 @@ impl AcpSession {
             accumulated_cost_usd: 0.0,
             provider_health_registry: None,
             provider_rate_limiter: None,
+            deferred_requests: Vec::new(),
+            inbound_routed: false,
         }
     }
 
@@ -1172,15 +1185,27 @@ impl SessionError {
     }
 }
 
+/// A session that a running prompt took out of the [`SessionManager`].
+#[derive(Debug, Clone)]
+struct TakenSession {
+    /// The session as it was when taken, for listings.
+    info: SessionInfo,
+    /// The manager's config generation when it was taken.
+    config_generation: u64,
+}
+
 /// In-memory store for ACP sessions.
 ///
-/// The ACP stdio handler currently owns this manager on a single request
-/// loop. If ACP gains concurrent transports, wrap it at the call site in
-/// `Arc<tokio::sync::RwLock<SessionManager>>` instead of splitting session
-/// state across tasks here.
+/// The ACP stdio handler owns this manager on its request loop. A running
+/// prompt owns its session: [`SessionManager::take_session`] hands it to the
+/// prompt's task and [`SessionManager::insert_session`] puts it back.
 #[derive(Debug, Clone)]
 pub struct SessionManager {
     sessions: HashMap<String, AcpSession>,
+    /// Sessions that a running prompt has taken out.
+    taken: HashMap<String, TakenSession>,
+    /// Counts config reloads, so that a session taken out during one catches up.
+    config_generation: u64,
     /// Working directory inherited from AcpConfig.
     pub workdir: PathBuf,
     /// Loaded roko.toml configuration.
@@ -1236,6 +1261,8 @@ impl SessionManager {
             build_provider_rate_limiter(&roko_config, &provider_health_registry);
         Self {
             sessions: HashMap::new(),
+            taken: HashMap::new(),
+            config_generation: 0,
             workdir,
             roko_config,
             config_sources: Vec::new(),
@@ -1249,6 +1276,7 @@ impl SessionManager {
     pub fn replace_roko_config(&mut self, roko_config: roko_core::config::schema::RokoConfig) {
         let providers_changed = self.roko_config.providers != roko_config.providers;
         self.roko_config = roko_config;
+        self.config_generation += 1;
         if providers_changed {
             self.provider_rate_limiter =
                 build_provider_rate_limiter(&self.roko_config, &self.provider_health_registry);
@@ -1335,6 +1363,54 @@ impl SessionManager {
         self.sessions.get(id)
     }
 
+    /// Removes a session, for a prompt to own while it runs. Listings show it
+    /// as it was until [`SessionManager::insert_session`] puts it back.
+    pub fn take_session(&mut self, id: &str) -> Option<AcpSession> {
+        let session = self.sessions.remove(id)?;
+        let taken = TakenSession {
+            info: session.info(),
+            config_generation: self.config_generation,
+        };
+        self.taken.insert(session.session_id.clone(), taken);
+        Some(session)
+    }
+
+    /// Puts back a session that [`SessionManager::take_session`] removed.
+    ///
+    /// Returns `true` when the config was reloaded while the session was out:
+    /// the reload then applies to it now, as
+    /// [`SessionManager::replace_roko_config`] applied it to the others.
+    pub fn insert_session(&mut self, mut session: AcpSession) -> bool {
+        let reloaded = self
+            .taken
+            .remove(&session.session_id)
+            .is_some_and(|taken| taken.config_generation != self.config_generation);
+        if reloaded {
+            session.revalidate_config_state(&self.roko_config);
+            session.attach_provider_runtime(
+                Arc::clone(&self.provider_health_registry),
+                Arc::clone(&self.provider_rate_limiter),
+            );
+        }
+        self.sessions.insert(session.session_id.clone(), session);
+        reloaded
+    }
+
+    /// Forgets a session that [`SessionManager::take_session`] removed and that
+    /// will not come back. Its last persisted copy can still be loaded.
+    pub fn forget_taken_session(&mut self, id: &str) {
+        self.taken.remove(id);
+    }
+
+    /// Takes the requests that arrived while a session's prompt ran, in arrival
+    /// order.
+    pub fn drain_deferred_requests(&mut self) -> Vec<crate::types::JsonRpcRequest> {
+        self.sessions
+            .values_mut()
+            .flat_map(|session| std::mem::take(&mut session.deferred_requests))
+            .collect()
+    }
+
     /// Returns a mutable reference to a known session.
     pub fn get_session_mut(&mut self, id: &str) -> Option<&mut AcpSession> {
         self.sessions.get_mut(id)
@@ -1344,6 +1420,7 @@ impl SessionManager {
     #[must_use]
     pub fn list_sessions(&self) -> SessionListResult {
         let mut sessions: Vec<_> = self.sessions.values().map(AcpSession::info).collect();
+        sessions.extend(self.taken.values().map(|taken| taken.info.clone()));
         sessions.sort_by(|left, right| {
             left.created_at
                 .cmp(&right.created_at)
@@ -1426,6 +1503,7 @@ impl SessionManager {
                 && let Ok(data) = std::fs::read_to_string(&path)
                 && let Ok(session) = serde_json::from_str::<AcpSession>(&data)
                 && !self.sessions.contains_key(&session.session_id)
+                && !self.taken.contains_key(&session.session_id)
             {
                 discovered.push(session);
             }
@@ -1437,6 +1515,7 @@ impl SessionManager {
     #[must_use]
     pub fn list_sessions_with_persisted(&self) -> SessionListResult {
         let mut sessions: Vec<_> = self.sessions.values().map(AcpSession::info).collect();
+        sessions.extend(self.taken.values().map(|taken| taken.info.clone()));
         // Include persisted sessions not in memory.
         for session in self.discover_persisted_sessions() {
             sessions.push(session.info());
@@ -1741,14 +1820,7 @@ fn slash_command(
 }
 
 const BARE_MODE_COMMANDS: &[&str] = &[
-    "status",
-    "doctor",
-    "config",
-    "help",
-    "research",
-    "search",
-    "enhance-prd",
-    "analyze",
+    "status", "doctor", "config", "help", "research", "search", "analyze",
 ];
 
 /// Auto-detect bare mode from workspace state.
@@ -1782,8 +1854,8 @@ fn bare_mode_allows_command(name: &str) -> bool {
 
 /// Build the list of available slash commands.
 ///
-/// In bare mode, commands that depend on Roko workspace state such as PRDs,
-/// plans, knowledge, dreams, and learning stores are hidden from IDE clients.
+/// In bare mode, commands that depend on Roko workspace state such as plans,
+/// knowledge, dreams, and learning stores are hidden from IDE clients.
 pub fn build_slash_commands(bare_mode: bool) -> Vec<SlashCommand> {
     let commands = vec![
         slash_command(
@@ -1823,49 +1895,7 @@ pub fn build_slash_commands(bare_mode: bool) -> Vec<SlashCommand> {
             "research",
             Some("search query"),
         ),
-        slash_command(
-            "enhance-prd",
-            "Enrich a PRD with web research",
-            "specification",
-            Some("PRD slug"),
-        ),
         slash_command("analyze", "Analyze execution data", "research", None),
-        slash_command(
-            "prd-idea",
-            "Capture a new work item idea",
-            "specification",
-            Some("idea description"),
-        ),
-        slash_command(
-            "prd-draft",
-            "Draft a new PRD from an idea",
-            "specification",
-            Some("slug for the new PRD"),
-        ),
-        slash_command(
-            "prd-list",
-            "List all PRDs and their status",
-            "specification",
-            None,
-        ),
-        slash_command(
-            "prd-status",
-            "PRD pipeline coverage report",
-            "specification",
-            None,
-        ),
-        slash_command(
-            "prd-plan",
-            "Generate implementation plan from a published PRD",
-            "specification",
-            Some("PRD slug"),
-        ),
-        slash_command(
-            "prd-consolidate",
-            "Scan PRDs for gaps and duplicates",
-            "specification",
-            None,
-        ),
         slash_command(
             "plan-list",
             "List all plans in the workspace",
@@ -1883,6 +1913,12 @@ pub fn build_slash_commands(bare_mode: bool) -> Vec<SlashCommand> {
             "Generate a plan from a prompt",
             "planning",
             Some("describe what to build..."),
+        ),
+        slash_command(
+            "enhance-plan",
+            "Improve a plan with research-backed task decomposition",
+            "planning",
+            Some("plan name under plans/"),
         ),
         slash_command(
             "plan-validate",
@@ -1904,21 +1940,9 @@ pub fn build_slash_commands(bare_mode: bool) -> Vec<SlashCommand> {
         ),
         slash_command(
             "run",
-            "Single prompt -> universal loop (compose->agent->gate->persist)",
-            "implementation",
-            Some("prompt text"),
-        ),
-        slash_command(
-            "do",
-            "Execute a task with roko do (agentic coding)",
+            "Run a prompt: one checked task, or a plan written first and then run",
             "implementation",
             Some("describe the task..."),
-        ),
-        slash_command(
-            "develop",
-            "Full development pipeline: scope -> plan -> execute -> gate",
-            "implementation",
-            Some("describe what to build..."),
         ),
         slash_command(
             "agents",
@@ -2634,6 +2658,33 @@ context_window = 8192
     }
 
     #[test]
+    fn bridge_under_load_taken_session_stays_listed_and_catches_up_with_a_reload() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let mut manager = SessionManager::new(
+            tmp.path().to_path_buf(),
+            config_with_provider_model("old-provider", "old-model"),
+        );
+        let id = manager.create_session(session_params("alpha")).session_id;
+        manager.persist_session(&id);
+
+        // A session out for a prompt is listed once, beside its copy on disk.
+        let session = manager.take_session(&id).expect("session");
+        let listed = manager.list_sessions_with_persisted().sessions;
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].session_id, id);
+        assert!(!manager.insert_session(session));
+
+        // A config reload while it is out applies once it is back.
+        let session = manager.take_session(&id).expect("session");
+        manager.replace_roko_config(config_with_provider_model("new-provider", "new-model"));
+        assert!(manager.insert_session(session));
+        let session = manager.get_session(&id).expect("session is back");
+        assert_eq!(session.config_state.provider, "new-provider");
+        assert_eq!(session.config_state.model, "new-model");
+        assert_eq!(manager.list_sessions().sessions.len(), 1);
+    }
+
+    #[test]
     fn missing_session_lookup_returns_none() {
         let manager = SessionManager::new(PathBuf::from("."), Default::default());
         assert!(manager.get_session("sess_missing").is_none());
@@ -2903,11 +2954,32 @@ context_window = 8192
             "knowledge-gc",
             "knowledge-backup",
             "audit",
-            "develop",
+            "enhance-plan",
         ] {
             assert!(
                 names.contains(&expected),
                 "missing slash command: {expected}"
+            );
+        }
+    }
+
+    #[test]
+    fn slash_commands_leave_out_the_removed_prd_and_do_commands() {
+        let commands = build_slash_commands(false);
+        for removed in [
+            "do",
+            "develop",
+            "enhance-prd",
+            "prd-idea",
+            "prd-draft",
+            "prd-list",
+            "prd-status",
+            "prd-plan",
+            "prd-consolidate",
+        ] {
+            assert!(
+                commands.iter().all(|c| c.name != removed),
+                "removed slash command still offered: {removed}"
             );
         }
     }

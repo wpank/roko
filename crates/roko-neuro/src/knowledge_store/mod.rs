@@ -7,6 +7,7 @@
 
 mod anti_pattern;
 mod backup;
+pub mod commit;
 mod crud;
 mod gc;
 pub mod memory_index;
@@ -17,11 +18,11 @@ pub(crate) mod scoring;
 mod tests;
 pub mod types;
 
-use std::collections::HashSet;
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, Weak};
 
 use anyhow::{Context, Result};
 use parking_lot::Mutex;
@@ -45,11 +46,93 @@ pub use types::{
     RESURRECTION_CONFIDENCE,
 };
 
+/// The batches this process's runs write (P21, 8137): every store in the
+/// process sees their uncommitted entries, which other processes' stores
+/// skip until the batches commit.
+static PROCESS_BATCHES: Mutex<BTreeSet<String>> = Mutex::new(BTreeSet::new());
+
+/// The write gate of each file this process's stores write, by
+/// [`gate_key`]: the knowledge store's (bug-c4f0ed), and the admission and
+/// heuristic logs' (bug-d81257). Every store of a file takes the same gate,
+/// so their read-modify-write cycles never interleave. A gate is dropped
+/// once no store holds it.
+static WRITE_GATES: Mutex<BTreeMap<PathBuf, Weak<Mutex<()>>>> = Mutex::new(BTreeMap::new());
+
+/// The write gate that every store of this process shares for the file at
+/// `path`.
+pub(crate) fn write_gate_for(path: &Path) -> Arc<Mutex<()>> {
+    let key = gate_key(path);
+    let mut gates = WRITE_GATES.lock();
+    if let Some(gate) = gates.get(&key).and_then(Weak::upgrade) {
+        return gate;
+    }
+    gates.retain(|_, gate| gate.strong_count() > 0);
+    let gate = Arc::new(Mutex::new(()));
+    gates.insert(key, Arc::downgrade(&gate));
+    gate
+}
+
+/// The file at `path` as the write gates know it: its canonical path, so
+/// that two spellings of one file share a gate. The part that does not
+/// exist yet joins its deepest existing ancestor's canonical path, so the
+/// key holds once the file is created.
+fn gate_key(path: &Path) -> PathBuf {
+    let absolute = std::path::absolute(path).unwrap_or_else(|_| path.to_path_buf());
+    let key = absolute.ancestors().find_map(|ancestor| {
+        let canonical = fs::canonicalize(ancestor).ok()?;
+        Some(canonical.join(absolute.strip_prefix(ancestor).ok()?))
+    });
+    key.unwrap_or(absolute)
+}
+
+/// A store's hold on its file for one read-modify-write cycle
+/// ([`KnowledgeStore::lock_writes`]). Dropping it releases the file's lock
+/// among processes, then this process's write gate.
+#[must_use = "the file is unlocked as soon as the guard drops"]
+pub struct WriteGuard<'a> {
+    /// The file's `.lock` sibling, locked exclusively; `None` when the lock
+    /// could not be taken, and the gate alone holds.
+    _file: Option<File>,
+    _gate: parking_lot::MutexGuard<'a, ()>,
+}
+
+impl<'a> WriteGuard<'a> {
+    /// Take `gate`, the write gate of the file at `path` that this
+    /// process's stores share, and then an exclusive lock on the file's
+    /// `.lock` sibling, which another process writing the file takes too.
+    /// The lock among processes is best-effort: when it cannot be taken, the
+    /// write goes on under the gate alone, with a warning.
+    pub(crate) fn hold(gate: &'a Mutex<()>, path: &Path) -> Self {
+        let gate = gate.lock();
+        let locked = path
+            .parent()
+            .map_or(Ok(()), fs::create_dir_all)
+            .and_then(|()| roko_fs::log_rotation::lock_jsonl(path));
+        let file = match locked {
+            Ok(file) => Some(file),
+            Err(error) => {
+                tracing::warn!(
+                    path = %path.display(),
+                    %error,
+                    "write without the file's lock among processes"
+                );
+                None
+            }
+        };
+        Self {
+            _file: file,
+            _gate: gate,
+        }
+    }
+}
+
 /// Persistent knowledge store backed by an append-only JSONL file.
 ///
-/// The store is cheap to clone: it holds the path and a process-local
-/// write gate so that concurrent maintenance operations never interleave
-/// file rewrites.
+/// The store is cheap to clone: it holds the path and the file's write
+/// gate, which every store of this process pointed at the file shares, so
+/// that concurrent writes never interleave file rewrites and none loses
+/// another's update (bug-c4f0ed). Each write also locks the file's `.lock`
+/// sibling, which other processes' stores lock too.
 ///
 /// When new entries overlap with existing entries (by tag and keyword
 /// similarity), the store emits [`KnowledgeConfirmationRecord`]s to a
@@ -59,8 +142,13 @@ pub use types::{
 pub struct KnowledgeStore {
     pub(crate) path: PathBuf,
     pub(crate) confirmations_path: PathBuf,
+    /// The file's write gate, shared by every store of this process
+    /// pointed at it.
     pub(crate) write_gate: Arc<Mutex<()>>,
     temporal_index: Option<Arc<Mutex<TemporalIndex>>>,
+    /// The run whose batch this store's ingests join, and whose
+    /// uncommitted entries its retrieval sees (P21, 8137).
+    commit_batch: Option<String>,
 }
 
 impl KnowledgeStore {
@@ -75,12 +163,47 @@ impl KnowledgeStore {
             .parent()
             .map(|parent| parent.join("knowledge-confirmations.jsonl"))
             .unwrap_or_else(|| PathBuf::from("knowledge-confirmations.jsonl"));
+        let write_gate = write_gate_for(&path);
         Self {
             path,
             confirmations_path,
-            write_gate: Arc::new(Mutex::new(())),
+            write_gate,
             temporal_index: None,
+            commit_batch: None,
         }
+    }
+
+    /// This store for the run `batch` (P21, 8137): the entries it ingests
+    /// carry `commit_batch = batch` until a guarded commit clears it
+    /// ([`commit::propose_batch`]). Every store of this process sees them;
+    /// other runs' retrieval skips every uncommitted entry.
+    #[must_use]
+    pub fn with_commit_batch(mut self, batch: impl Into<String>) -> Self {
+        let batch = batch.into();
+        PROCESS_BATCHES.lock().insert(batch.clone());
+        self.commit_batch = Some(batch);
+        self
+    }
+
+    /// The run whose batch this store's ingests join.
+    #[must_use]
+    pub fn commit_batch(&self) -> Option<&str> {
+        self.commit_batch.as_deref()
+    }
+
+    /// Whether this store's retrieval sees `entry`: a committed entry, or
+    /// one of a batch this process writes.
+    pub(crate) fn visible(&self, entry: &KnowledgeEntry) -> bool {
+        let Some(batch) = entry.commit_batch.as_deref() else {
+            return true;
+        };
+        self.commit_batch.as_deref() == Some(batch) || PROCESS_BATCHES.lock().contains(batch)
+    }
+
+    /// Stop seeing the uncommitted entries of `batch` from this process's
+    /// other stores: the batch has committed or rolled back.
+    pub(crate) fn release_batch(batch: &str) {
+        PROCESS_BATCHES.lock().remove(batch);
     }
 
     /// Construct a store from a `.roko/` root.
@@ -181,6 +304,19 @@ impl KnowledgeStore {
     }
 
     // ── I/O helpers ──────────────────────────────────────────────────
+
+    /// Hold this store's file for one read-modify-write cycle (bug-c4f0ed):
+    /// the write gate that this process's stores share for the file, and
+    /// then an exclusive lock on its `.lock` sibling, which another process
+    /// writing the file takes too (`roko serve` beside a run, or `roko
+    /// knowledge gc`). Every write method takes it; `roko knowledge restore`
+    /// holds it while it swaps the file (bug-d81257).
+    ///
+    /// The gate is not re-entrant: a caller holding the guard must not call
+    /// a write method of any store of the file, or it waits for itself.
+    pub fn lock_writes(&self) -> WriteGuard<'_> {
+        WriteGuard::hold(&self.write_gate, &self.path)
+    }
 
     /// Read all knowledge entries from the store.
     ///

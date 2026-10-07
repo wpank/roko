@@ -3,6 +3,37 @@
 
 use super::*;
 
+/// Take up to `max` events from `subscription`: what is left of its replay
+/// first, then live ones. Replay events past `max` wait for the next call.
+///
+/// Also returns how many live events the subscription lagged past (gap-633184).
+/// Those are counted, never dropped silently, but not recovered: the hub's
+/// replay ring keeps no more events than its broadcast channel does, so it no
+/// longer holds them either. Plan, task and gate state come back from the
+/// snapshot (RC-1, see `drain_state_events`); transcript lines do not.
+pub(super) fn take_state_events(
+    subscription: &mut crate::state_hub::StateHubSubscription,
+    max: usize,
+) -> (Vec<roko_core::DashboardEvent>, u64) {
+    use tokio::sync::broadcast::error::TryRecvError;
+
+    let from_replay = subscription.replay.len().min(max);
+    let mut events: Vec<_> = subscription
+        .replay
+        .drain(..from_replay)
+        .map(|envelope| envelope.payload)
+        .collect();
+    let mut dropped = 0;
+    while events.len() < max {
+        match subscription.live.try_recv() {
+            Ok(envelope) => events.push(envelope.payload),
+            Err(TryRecvError::Lagged(missed)) => dropped += missed,
+            Err(TryRecvError::Empty | TryRecvError::Closed) => break,
+        }
+    }
+    (events, dropped)
+}
+
 impl App {
     pub(super) fn drain_background_channels(&mut self) {
         const MAX_MESSAGES_PER_DRAIN: usize = 20;
@@ -189,8 +220,62 @@ impl App {
             &mut self.last_seen_plan_phases,
             &snapshot,
         );
+        self.offer_held_task(&snapshot);
         self.update_plan_completion_exit(&snapshot);
         self.render_dirty.insert(RenderDirty::SNAPSHOT);
+    }
+
+    /// Offer a task that `snapshot` shows awaiting approval, one a Graph run
+    /// holds for review, as the pending approval named `<plan>/<task>`, and
+    /// open the approval prompt when no other prompt is open. The offer, and
+    /// its prompt, go once that task no longer waits. An agent's own approval
+    /// request is never replaced.
+    pub(super) fn offer_held_task(&mut self, snapshot: &roko_core::DashboardSnapshot) {
+        use crate::graph_task_dispatch::AWAITING_APPROVAL_PHASE;
+
+        let mut waiting: Vec<(&str, &str)> = snapshot
+            .tasks
+            .values()
+            .filter(|task| task.phase == AWAITING_APPROVAL_PHASE)
+            .map(|task| (task.plan_id.as_str(), task.task_id.as_str()))
+            .collect();
+        waiting.sort_unstable();
+        let offered = self
+            .tui_state
+            .pending_approval
+            .as_ref()
+            .filter(|pending| pending.held_task)
+            .and_then(|pending| pending.approval_id.clone());
+        if let Some(offered) = offered
+            && !waiting
+                .iter()
+                .any(|(plan_id, task_id)| offered == format!("{plan_id}/{task_id}"))
+        {
+            self.tui_state.pending_approval = None;
+            if matches!(
+                self.tui_state.active_modal,
+                Some(ModalState::Approval { .. })
+            ) {
+                self.tui_state.active_modal = None;
+            }
+        }
+        if self.tui_state.pending_approval.is_some() {
+            return;
+        }
+        let Some((plan_id, task_id)) = waiting.first().copied() else {
+            return;
+        };
+        let offer = PendingApproval::for_held_task(plan_id, task_id);
+        if self.tui_state.active_modal.is_none() {
+            self.tui_state.active_modal = Some(ModalState::Approval {
+                role: offer.agent_id.clone(),
+                command: offer.command.clone(),
+            });
+        }
+        let message = format!("{plan_id}/{task_id} waits for a review: y approves, n rejects");
+        self.notifications
+            .push_back(super::super::modals::Notification::info(message));
+        self.tui_state.pending_approval = Some(offer);
     }
 
     /// Drain pending command acknowledgements from the executor and update
@@ -247,22 +332,12 @@ impl App {
         let Some(subscription) = self.state_events.as_mut() else {
             return;
         };
-        let mut events = Vec::new();
-        for envelope in subscription.replay.drain(..).take(MAX_EVENTS) {
-            events.push(envelope.payload);
-        }
-        while events.len() < MAX_EVENTS {
-            match subscription.live.try_recv() {
-                Ok(envelope) => events.push(envelope.payload),
-                Err(tokio::sync::broadcast::error::TryRecvError::Empty) => break,
-                Err(tokio::sync::broadcast::error::TryRecvError::Lagged(dropped)) => {
-                    self.tui_state.push_agent_chunk(
-                        "system",
-                        format!("[stream lagged: {dropped} StateHub events; snapshot resynced]"),
-                    );
-                }
-                Err(tokio::sync::broadcast::error::TryRecvError::Closed) => break,
-            }
+        let (events, dropped) = take_state_events(subscription, MAX_EVENTS);
+        if dropped > 0 {
+            self.tui_state.push_agent_chunk(
+                "system",
+                format!("[stream lagged: {dropped} StateHub events; snapshot resynced]"),
+            );
         }
         for event in events {
             // RC-1: Unified data model — the DashboardSnapshot (updated inside
@@ -311,111 +386,12 @@ impl App {
                 roko_core::DashboardEvent::AgentOutput {
                     agent_id, content, ..
                 } => {
-                    // Streaming text/tool records — handled below.
-                    // Each record is pushed into the canonical AgentOutputHistory
-                    // (P1-TUI-G4) so the structured semantic renderer sees typed
-                    // records rather than raw text.  The legacy agent_streams
-                    // chunk path is retained to keep the Live Stream panel alive.
-                    let Some(record) =
-                        content.strip_prefix(crate::runner::tui_bridge::STREAM_RECORD_PREFIX)
-                    else {
-                        // Non-prefixed line: push as plain text record.
-                        self.tui_state.push_agent_output_record(
-                            agent_id,
-                            super::super::state::OutputRecordKind::Text,
-                            content.clone(),
-                            None,
-                            None,
-                        );
-                        self.tui_state.push_agent_chunk(agent_id, content.clone());
-                        continue;
-                    };
-                    let Ok(record) = serde_json::from_str::<serde_json::Value>(record) else {
-                        continue;
-                    };
-                    let kind = record
-                        .get("kind")
-                        .and_then(serde_json::Value::as_str)
-                        .unwrap_or("text");
-                    let payload = record.get("payload").cloned().unwrap_or_default();
-                    match kind {
-                        "text" => {
-                            if let Some(text) =
-                                payload.get("text").and_then(serde_json::Value::as_str)
-                            {
-                                self.tui_state.push_agent_output_record(
-                                    agent_id,
-                                    super::super::state::OutputRecordKind::Text,
-                                    text.to_string(),
-                                    None,
-                                    None,
-                                );
-                                self.tui_state.push_agent_chunk(agent_id, text.to_string());
-                            }
-                        }
-                        "reasoning" => {
-                            if let Some(text) =
-                                payload.get("text").and_then(serde_json::Value::as_str)
-                            {
-                                self.tui_state.push_agent_output_record(
-                                    agent_id,
-                                    super::super::state::OutputRecordKind::Reasoning,
-                                    text.to_string(),
-                                    None,
-                                    None,
-                                );
-                                self.tui_state
-                                    .push_agent_chunk(agent_id, format!("[thinking] {text}"));
-                            }
-                        }
-                        "tool_start" => {
-                            let tool = payload
-                                .get("tool")
-                                .and_then(serde_json::Value::as_str)
-                                .unwrap_or("tool");
-                            let id = payload
-                                .get("tool_id")
-                                .and_then(serde_json::Value::as_str)
-                                .unwrap_or("");
-                            self.tui_state.push_agent_output_record(
-                                agent_id,
-                                super::super::state::OutputRecordKind::ToolCall,
-                                String::new(),
-                                if id.is_empty() {
-                                    None
-                                } else {
-                                    Some(id.to_string())
-                                },
-                                Some(tool.to_string()),
-                            );
-                            self.tui_state
-                                .push_agent_chunk(agent_id, format!("[tool ⏵ {tool} {id}]"));
-                        }
-                        "tool_result" => {
-                            let output = payload
-                                .get("output")
-                                .and_then(serde_json::Value::as_str)
-                                .unwrap_or("");
-                            let id = payload
-                                .get("tool_id")
-                                .and_then(serde_json::Value::as_str)
-                                .unwrap_or("");
-                            self.tui_state.push_agent_output_record(
-                                agent_id,
-                                super::super::state::OutputRecordKind::ToolResult,
-                                output.to_string(),
-                                if id.is_empty() {
-                                    None
-                                } else {
-                                    Some(id.to_string())
-                                },
-                                None,
-                            );
-                            self.tui_state
-                                .push_agent_chunk(agent_id, format!("[tool ✓ {id}]\n{output}"));
-                        }
-                        _ => {}
-                    }
+                    // Streaming text/tool records go into the canonical
+                    // AgentOutputHistory (P1-TUI-G4) exactly as a snapshot
+                    // backfill puts them there, so output seen live and the
+                    // same output replayed agree (gap-836ae9). The legacy
+                    // agent_streams chunks keep the Live Stream panel alive.
+                    self.tui_state.ingest_agent_output(agent_id, content);
                 }
                 roko_core::DashboardEvent::AgentTopologyUpdated { .. } => {
                     // Topology changes (node/edge additions and state transitions)
@@ -425,8 +401,14 @@ impl App {
                     // next animation tick (P3-TUI-1).
                     self.render_dirty.insert(RenderDirty::SNAPSHOT);
                 }
-                roko_core::DashboardEvent::AgentSpawned { .. }
-                | roko_core::DashboardEvent::AgentCompleted { .. } => {
+                roko_core::DashboardEvent::AgentSpawned { agent_id, .. } => {
+                    // A new attempt streams afresh: what it streams unscreened
+                    // shows until its screened transcript settles it
+                    // (bug-cc61a3). Lifecycle state comes from the snapshot.
+                    self.tui_state.agent_output_history.begin_attempt(agent_id);
+                    self.render_dirty.insert(RenderDirty::SNAPSHOT);
+                }
+                roko_core::DashboardEvent::AgentCompleted { .. } => {
                     // Agent lifecycle events are reflected in the snapshot;
                     // mark dirty for immediate redraw.
                     self.render_dirty.insert(RenderDirty::SNAPSHOT);
@@ -614,97 +596,7 @@ impl App {
 
             loop {
                 match client.try_recv() {
-                    Ok(StreamChunk::Connected) => {
-                        self.tui_state.mark_agent_stream_connected(&agent_id);
-                    }
-                    Ok(StreamChunk::Text(text)) => {
-                        // Push typed record into canonical history (P1-TUI-G4).
-                        self.tui_state.push_agent_output_record(
-                            &agent_id,
-                            super::super::state::OutputRecordKind::Text,
-                            text.clone(),
-                            None,
-                            None,
-                        );
-                        self.tui_state.push_agent_chunk(&agent_id, text);
-                    }
-                    Ok(StreamChunk::Reasoning(text)) => {
-                        self.tui_state.push_agent_output_record(
-                            &agent_id,
-                            super::super::state::OutputRecordKind::Reasoning,
-                            text.clone(),
-                            None,
-                            None,
-                        );
-                        self.tui_state
-                            .push_agent_chunk(&agent_id, format!("[reasoning] {text}"));
-                    }
-                    Ok(StreamChunk::ToolCall(tool_call)) => {
-                        // Extract name and id from the tool_call JSON for semantic record.
-                        let tool_name = tool_call
-                            .get("name")
-                            .or_else(|| tool_call.get("tool"))
-                            .and_then(serde_json::Value::as_str)
-                            .map(str::to_string);
-                        let tool_id = tool_call
-                            .get("tool_id")
-                            .or_else(|| tool_call.get("id"))
-                            .and_then(serde_json::Value::as_str)
-                            .map(str::to_string);
-                        self.tui_state.push_agent_output_record(
-                            &agent_id,
-                            super::super::state::OutputRecordKind::ToolCall,
-                            String::new(),
-                            tool_id,
-                            tool_name,
-                        );
-                        if let Ok(text) = serde_json::to_string(&tool_call) {
-                            self.tui_state
-                                .push_agent_chunk(&agent_id, format!("[tool_call] {text}"));
-                        }
-                    }
-                    Ok(StreamChunk::Usage(usage)) => {
-                        // Usage events are informational; push as system records.
-                        if let Ok(text) = serde_json::to_string(&usage) {
-                            self.tui_state.push_agent_output_record(
-                                &agent_id,
-                                super::super::state::OutputRecordKind::System,
-                                format!("[usage] {text}"),
-                                None,
-                                None,
-                            );
-                            self.tui_state
-                                .push_agent_chunk(&agent_id, format!("[usage] {text}"));
-                        }
-                    }
-                    Ok(StreamChunk::Error(error)) => {
-                        self.tui_state.push_agent_output_record(
-                            &agent_id,
-                            super::super::state::OutputRecordKind::Error,
-                            error.clone(),
-                            None,
-                            None,
-                        );
-                        self.tui_state
-                            .push_agent_chunk(&agent_id, format!("[error] {error}"));
-                    }
-                    Ok(StreamChunk::Done { session }) => {
-                        if let Some(session_id) = session {
-                            let msg = format!("[done] session {session_id}");
-                            self.tui_state.push_agent_output_record(
-                                &agent_id,
-                                super::super::state::OutputRecordKind::System,
-                                msg.clone(),
-                                None,
-                                None,
-                            );
-                            self.tui_state.push_agent_chunk(&agent_id, msg);
-                        }
-                        self.tui_state.mark_agent_stream_done(&agent_id);
-                    }
-                    Ok(StreamChunk::Disconnected) => {
-                        self.tui_state.mark_agent_stream_disconnected(&agent_id);
-                    }
+                    Ok(chunk) => self.tui_state.ingest_stream_chunk(&agent_id, chunk),
                     Err(tokio::sync::mpsc::error::TryRecvError::Empty) => break,
                     Err(tokio::sync::mpsc::error::TryRecvError::Disconnected) => {
                         self.tui_state.mark_agent_stream_disconnected(&agent_id);

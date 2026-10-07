@@ -1,19 +1,18 @@
-//! Agent execution helper for direct CLI flows such as PRD/research/plan generation.
+//! Agent execution helper for direct CLI flows such as research and plan generation.
 //!
-//! Used by `roko prd`, `roko research`, and `roko plan generate` to invoke
+//! Used by `roko research`, `roko plan generate` and `roko run --plan` to invoke
 //! an agent that can read/write files while preserving provider-aware routing,
 //! safety scoping, resume threading, and learning-episode persistence.
 
 use std::path::Path;
-use std::sync::Arc;
 use std::time::Instant;
 
 use crate::agent_config::{command_from_config, model_from_config};
 use crate::agent_episode::build_capture_episode;
 use crate::agent_spawn::{SpawnAgentSpec, spawn_agent_scoped};
 use crate::learning_helpers::{
-    capture_runtime_model_slugs, distillation_model_caller, provider_id_for_model,
-    record_persisted_provider_health, resolve_capture_model_slug,
+    capture_runtime_model_slugs, distillation_model_caller, install_capture_distillation,
+    provider_id_for_model, record_persisted_provider_outcome, resolve_capture_model_slug,
 };
 use anyhow::{Context as _, Result};
 use roko_core::agent::ProviderKind;
@@ -64,6 +63,13 @@ pub struct AgentCapture {
     /// Tokens and cost of the run. The cost is back-filled from model pricing
     /// when the provider reported tokens but no dollar amount.
     pub usage: Usage,
+    /// The run's tokens at API rates, at the price snapshot
+    /// `price_snapshot_id` names (`dispatch_v2::api_equiv`, gap-d10a97): what
+    /// the call is worth even when a subscription paid for it. `None` when
+    /// the snapshot does not price the model.
+    pub api_equiv_usd: Option<f64>,
+    /// The price snapshot behind `api_equiv_usd`.
+    pub price_snapshot_id: Option<String>,
     /// API slug of the model that ran.
     pub model: String,
     /// Configured provider id of the model, or its provider kind's label when
@@ -108,6 +114,19 @@ pub async fn run_agent_capture_logged(
         .map(|capture| (capture.exit_code, capture.output))
 }
 
+/// Like [`run_agent_logged`], but also record what the call cost through
+/// `spend`. The episode it persists carries no usage, so this is where the
+/// call's spend is recorded.
+pub async fn run_agent_logged_with_spend(
+    opts: AgentExecOpts<'_>,
+    episode: AgentExecEpisode<'_>,
+    spend: &crate::plan_authoring::AuthoringSpend,
+) -> Result<i32> {
+    let call = run_agent_capture_impl(opts, true, Some(episode)).await?;
+    spend.record(&call).await;
+    Ok(call.exit_code)
+}
+
 /// Run the configured direct agent path and return `(exit_code, output_text)`
 /// without echoing the agent's rendered output to stdout.
 pub async fn run_agent_capture_silent(opts: AgentExecOpts<'_>) -> Result<(i32, String)> {
@@ -120,6 +139,18 @@ pub async fn run_agent_capture_silent(opts: AgentExecOpts<'_>) -> Result<(i32, S
 /// reported, so the caller can account for what the run cost.
 pub async fn run_agent_capture_silent_with_usage(opts: AgentExecOpts<'_>) -> Result<AgentCapture> {
     run_agent_capture_impl(opts, false, None).await
+}
+
+/// Like [`run_agent_capture_silent`], but also record what the call cost
+/// through `spend`. The capture episode its caller persists carries no usage,
+/// so this is where the call's spend is recorded (bug-86ff56).
+pub async fn run_agent_capture_silent_recorded(
+    opts: AgentExecOpts<'_>,
+    spend: &crate::plan_authoring::AuthoringSpend,
+) -> Result<(i32, String)> {
+    let call = run_agent_capture_silent_with_usage(opts).await?;
+    spend.record(&call).await;
+    Ok((call.exit_code, call.output))
 }
 
 async fn run_agent_capture_impl(
@@ -285,15 +316,21 @@ async fn run_agent_capture_impl(
     }
 
     let mut usage = result.usage;
+    let snapshot = crate::dispatch_v2::pricing_snapshot(&routing_config.pricing, opts.workdir);
     crate::dispatch_v2::fill_usage_cost_from_pricing(
         &mut usage,
+        snapshot.as_deref(),
         resolved.profile.as_ref(),
         &resolved.slug,
     );
+    let (api_equiv_usd, price_snapshot_id) =
+        crate::dispatch_v2::api_equiv(&result, snapshot.as_deref(), &resolved.slug).unzip();
     Ok(AgentCapture {
         exit_code,
         output: rendered,
         usage,
+        api_equiv_usd,
+        price_snapshot_id,
         provider: provider_id_for_model(&routing_config, &model)
             .unwrap_or_else(|| resolved.provider_kind.label().to_string()),
         model: resolved.slug,
@@ -347,15 +384,7 @@ pub async fn persist_capture_episode(
         LearningRuntime::open_for_project_with_models(workdir, model_slugs).await
     }
     .map_err(|e| anyhow::anyhow!("open learning runtime: {e}"))?;
-    let distillation_workdir = workdir.to_path_buf();
-    let distillation_caller = distillation_model_caller(workdir);
-    runtime.set_episode_completion_hook(move |episode| {
-        roko_neuro::spawn_episode_distillation(
-            distillation_workdir.clone(),
-            episode,
-            Some(Arc::clone(&distillation_caller)),
-        );
-    });
+    install_capture_distillation(&mut runtime, workdir, distillation_model_caller(workdir));
 
     let mut completed = CompletedRunInput::from_episode(episode);
     completed.provider = (!provider.trim().is_empty()).then_some(provider.clone());
@@ -363,7 +392,8 @@ pub async fn persist_capture_episode(
         .record_completed_run(completed)
         .await
         .map_err(|e| anyhow::anyhow!("record learning feedback: {e}"))?;
-    record_persisted_provider_health(workdir, &provider, success)?;
+    // A failed run's output says why it failed (bug-9ca6d7).
+    record_persisted_provider_outcome(workdir, &provider, (!success).then_some(output))?;
     Ok(())
 }
 
@@ -444,6 +474,7 @@ pub fn classify_agent_crash(stderr: &str) -> AgentCrashClass {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::plan_authoring::AuthoringSpend;
     use roko_learn::episode_logger::EpisodeLogger;
     use tempfile::TempDir;
 
@@ -455,8 +486,8 @@ mod tests {
             tmp.path(),
             "claude",
             Some("claude-sonnet-4-6"),
-            "prd-plan-generate",
-            "prd:plan:demo",
+            "plan-generate",
+            "plan:generate:demo",
             "prompt body",
             "output body",
             true,
@@ -471,13 +502,13 @@ mod tests {
         assert_eq!(episodes.len(), 1);
         let episode = &episodes[0];
         assert_eq!(episode.agent_id, "claude");
-        assert_eq!(episode.task_id, "prd:plan:demo");
+        assert_eq!(episode.task_id, "plan:generate:demo");
         assert_eq!(episode.kind, "agent_turn");
         assert_eq!(episode.model, "claude-sonnet-4-6");
         assert!(episode.success);
         assert_eq!(
             episode.extra.get("task_kind"),
-            Some(&serde_json::json!("prd-plan-generate"))
+            Some(&serde_json::json!("plan-generate"))
         );
         assert_eq!(
             episode.extra.get("task_category"),
@@ -503,12 +534,9 @@ mod tests {
         );
     }
 
-    #[tokio::test]
-    async fn persist_capture_episode_resolves_model_key_to_slug_and_provider() {
-        let tmp = TempDir::new().expect("tempdir");
-        std::fs::write(
-            tmp.path().join("roko.toml"),
-            r#"
+    /// A workspace config whose model key `glm-mini` is `glm-5.1` on the
+    /// OpenAI-compatible provider `zai`.
+    const GLM_MINI_CONFIG: &str = r#"
 [agent]
 default_model = "glm-mini"
 command = "claude"
@@ -523,16 +551,19 @@ provider = "zai"
 slug = "glm-5.1"
 context_window = 131072
 tool_format = "openai_json"
-"#,
-        )
-        .expect("write roko.toml");
+"#;
+
+    #[tokio::test]
+    async fn persist_capture_episode_resolves_model_key_to_slug_and_provider() {
+        let tmp = TempDir::new().expect("tempdir");
+        std::fs::write(tmp.path().join("roko.toml"), GLM_MINI_CONFIG).expect("write roko.toml");
 
         persist_capture_episode(
             tmp.path(),
             "claude",
             Some("glm-mini"),
-            "prd-plan-generate",
-            "prd:plan:glm",
+            "plan-generate",
+            "plan:generate:glm",
             "prompt body",
             "output body",
             true,
@@ -582,26 +613,64 @@ tool_format = "openai_json"
         );
     }
 
+    /// bug-9ca6d7: a failed agent run records its provider's health under
+    /// the class the shared failure classifier reads from its output, the
+    /// one Graph dispatch's provider health uses, not `Unknown`. An
+    /// OpenAI-compatible 401 reaches it as "provider error: authentication
+    /// failed", an auth failure (bug-0b7695); text no rule names stays
+    /// unknown.
+    #[tokio::test]
+    async fn classified_failure_through_agent_exec_is_not_recorded_as_unknown() {
+        use roko_learn::provider_health::{ErrorClass, ProviderHealthRegistry};
+
+        for (output, class) in [
+            (
+                "agent error (zai): provider error: authentication failed",
+                ErrorClass::AuthFailure,
+            ),
+            ("HTTP 429 Too Many Requests", ErrorClass::RateLimit),
+            ("request timed out after 30s", ErrorClass::Timeout),
+            ("the agent stopped", ErrorClass::Unknown),
+        ] {
+            let tmp = TempDir::new().expect("tempdir");
+            std::fs::write(tmp.path().join("roko.toml"), GLM_MINI_CONFIG).expect("write roko.toml");
+
+            persist_capture_episode(
+                tmp.path(),
+                "claude",
+                Some("glm-mini"),
+                "plan-generate",
+                "plan:generate:glm",
+                "prompt body",
+                output,
+                false,
+                42,
+                None,
+            )
+            .await
+            .expect("persist capture episode");
+
+            let health_path = tmp.path().join(".roko/learn/provider-health.json");
+            let health = ProviderHealthRegistry::load_or_new(&health_path).get("zai");
+            let classes: Vec<ErrorClass> = health
+                .failure_window
+                .iter()
+                .map(|failure| failure.error_class)
+                .collect();
+            assert_eq!(classes, [class], "{output}");
+        }
+    }
+
     #[test]
     fn dispatch_surfaces_provide_episodes() {
-        let commands_prd =
-            std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/src/commands/prd.rs"))
-                .unwrap();
+        let pipeline = std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/src/plan_generate/pipeline.rs"
+        ))
+        .unwrap();
         assert!(
-            !commands_prd.contains("crate::commands::util::persist_capture_episode"),
-            "PRD commands must use roko_cli::agent_exec::persist_capture_episode"
-        );
-        assert!(
-            commands_prd.matches("persist_capture_episode").count()
-                >= commands_prd.matches("run_agent_capture_silent").count(),
-            "every silent PRD dispatch needs canonical episode persistence"
-        );
-
-        let prd_rs =
-            std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/src/prd.rs")).unwrap();
-        assert!(
-            prd_rs.contains("prd-plan-generate") && prd_rs.contains("persist_capture_episode"),
-            "generate_plan_from_prd_with_model must persist a prd-plan-generate episode"
+            pipeline.contains("\"plan-generate\"") && pipeline.contains("persist_capture_episode"),
+            "generate_plan must persist a plan-generate episode"
         );
     }
 
@@ -709,5 +778,274 @@ tool_format = "openai_json"
                 "{v:?} hint must not be empty"
             );
         }
+    }
+
+    /// What the fake planner charges per call. A power of two, so it survives
+    /// the provider usage's `f32` exactly.
+    const CALL_COST_USD: f64 = 0.0625;
+
+    const DEMO_PLAN: &str = r#"[meta]
+plan = "demo"
+total = 1
+done = 0
+status = "ready"
+max_parallel = 1
+
+[[task]]
+id = "T01"
+title = "Write the hello world program"
+description = "Create hello/main.rs, a Rust program that prints hello world."
+status = "ready"
+role = "implementer"
+tier = "focused"
+files = ["hello/main.rs"]
+depends_on = []
+
+[[task.verify]]
+phase = "structural"
+command = "test -f hello/main.rs"
+fail_msg = "hello/main.rs was not written"
+"#;
+
+    /// A workspace whose only model runs a fake Claude CLI: it answers every
+    /// prompt with [`DEMO_PLAN`] in a fenced toml block and reports
+    /// [`CALL_COST_USD`].
+    fn fake_planner_workspace() -> TempDir {
+        fake_planner_serving("claude-sonnet-4-6")
+    }
+
+    /// [`fake_planner_workspace`], with its model and fake CLI on `slug`.
+    fn fake_planner_serving(slug: &str) -> TempDir {
+        use std::os::unix::fs::PermissionsExt;
+
+        let workspace = TempDir::new().expect("workspace");
+        let text = format!("```toml\n{DEMO_PLAN}```\n");
+        let assistant = serde_json::json!({
+            "type": "assistant",
+            "message": {"content": [{"type": "text", "text": text}]},
+        });
+        let result = serde_json::json!({
+            "type": "result",
+            "subtype": "success",
+            "is_error": false,
+            "result": text,
+            "model": slug,
+            "total_cost_usd": CALL_COST_USD,
+            "usage": {"input_tokens": 1200, "output_tokens": 340},
+        });
+        let script = workspace.path().join("fake-claude");
+        std::fs::write(
+            &script,
+            format!("#!/bin/sh\ncat >/dev/null\ncat <<'JSON'\n{assistant}\n{result}\nJSON\n"),
+        )
+        .expect("write fake provider");
+        let mut permissions = std::fs::metadata(&script)
+            .expect("fake provider metadata")
+            .permissions();
+        permissions.set_mode(0o755);
+        std::fs::set_permissions(&script, permissions).expect("make fake provider executable");
+        std::fs::write(
+            workspace.path().join("roko.toml"),
+            format!(
+                r#"[agent]
+default_model = "fake-model"
+
+[providers.fake-cli]
+kind = "claude_cli"
+command = {script:?}
+
+[models.fake-model]
+provider = "fake-cli"
+slug = {slug:?}
+context_window = 200000
+
+# One planner call per generation: these tests count cost rows, and the
+# spec-quality gate would ask again for this minimal plan (3218).
+[spec_quality]
+mode = "off"
+"#,
+                script = script.display().to_string()
+            ),
+        )
+        .expect("write roko.toml");
+        workspace
+    }
+
+    /// The rows of `.roko/learn/costs.jsonl`, leaving out the background
+    /// distillation call's, which is recorded under its own role.
+    fn agent_cost_rows(workdir: &Path) -> Vec<serde_json::Value> {
+        std::fs::read_to_string(workdir.join(".roko").join("learn").join("costs.jsonl"))
+            .unwrap_or_default()
+            .lines()
+            .map(|line| serde_json::from_str::<serde_json::Value>(line).expect("JSONL row"))
+            .filter(|row| row["role"] != crate::learning_helpers::DISTILLATION_ROLE)
+            .collect()
+    }
+
+    /// bug-ac5432: a plan generation leaves one cost record for its one agent
+    /// call, carrying the reported cost. The generation episode adds no $0
+    /// row beside it.
+    #[tokio::test]
+    async fn plan_generation_writes_one_cost_record() {
+        let workspace = fake_planner_workspace();
+
+        let request = crate::plan_generate::PlanRequest::new(
+            crate::plan_generate::PlanSource::Text {
+                text: "# Demo\n\nPrint hello world.\n",
+                kind: "prompt",
+            },
+            "demo",
+            workspace.path(),
+        );
+        crate::plan_generate::generate_plan(request)
+            .await
+            .expect("generate plan");
+
+        let rows = agent_cost_rows(workspace.path());
+        assert_eq!(rows.len(), 1, "{rows:?}");
+        assert_eq!(rows[0]["cost_usd"], CALL_COST_USD);
+        assert_eq!(rows[0]["plan_id"], "demo");
+        assert_eq!(
+            rows[0]["task_id"],
+            crate::plan_authoring::GENERATION_SPEND_TASK_ID
+        );
+    }
+
+    /// bug-ac5432: `roko plan generate --from-backlog` runs its agent through
+    /// `run_agent_logged_with_spend`, which records the reported cost against
+    /// the plan, where it used to leave only a $0 row.
+    #[tokio::test]
+    async fn plan_generate_records_the_agent_spend() {
+        let workspace = fake_planner_workspace();
+        let spend =
+            crate::plan_authoring::AuthoringSpend::generation(workspace.path(), "demo", None);
+
+        let exit_code = run_agent_logged_with_spend(
+            AgentExecOpts {
+                prompt: "Plan the demo.",
+                workdir: workspace.path(),
+                model: Some("fake-model"),
+                effort: Some("high"),
+                system_prompt: None,
+                resume_session: None,
+                env_vars: &[],
+                role: Some("strategist"),
+                allowed_tools: None,
+            },
+            AgentExecEpisode {
+                task_kind: "plan-generate",
+                task_id: "plan:generate:backlog:7",
+            },
+            &spend,
+        )
+        .await
+        .expect("run agent");
+
+        assert_eq!(exit_code, 0);
+        let rows = agent_cost_rows(workspace.path());
+        assert_eq!(rows.len(), 1, "{rows:?}");
+        assert_eq!(rows[0]["cost_usd"], CALL_COST_USD);
+        assert_eq!(rows[0]["input_tokens"], 1200);
+        assert_eq!(rows[0]["plan_id"], "demo");
+    }
+
+    /// gap-d10a97: a plan-authoring call's cost row and efficiency event carry
+    /// the call's cost at API rates and the price snapshot that priced it, as
+    /// a Graph helper call's rows do.
+    #[tokio::test]
+    async fn plan_authoring_cost_row_carries_api_equiv_usd() {
+        use crate::plan_authoring::GENERATION_SPEND_TASK_ID;
+        use roko_core::pricing_snapshot::{PriceSnapshot, TokenCounts};
+
+        // A model the built-in price snapshot lists.
+        let workspace = fake_planner_serving("claude-sonnet-5");
+        let spend = AuthoringSpend::generation(workspace.path(), "demo", None);
+
+        let exit_code = run_agent_logged_with_spend(
+            AgentExecOpts {
+                prompt: "Plan the demo.",
+                workdir: workspace.path(),
+                model: Some("fake-model"),
+                effort: Some("high"),
+                system_prompt: None,
+                resume_session: None,
+                env_vars: &[],
+                role: Some("strategist"),
+                allowed_tools: None,
+            },
+            AgentExecEpisode {
+                task_kind: "plan-generate",
+                task_id: "plan:generate:demo",
+            },
+            &spend,
+        )
+        .await
+        .expect("run agent");
+
+        assert_eq!(exit_code, 0);
+        let snapshot = PriceSnapshot::builtin().expect("built-in price snapshot");
+        let tokens = TokenCounts {
+            input: 1200,
+            output: 340,
+            ..TokenCounts::default()
+        };
+        let expected = snapshot
+            .price("claude-sonnet-5", &tokens)
+            .expect("a price")
+            .api_equiv_usd;
+        let efficiency_log = workspace.path().join(".roko/learn/efficiency.jsonl");
+        let efficiency = std::fs::read_to_string(efficiency_log).expect("efficiency log");
+        let events = efficiency
+            .lines()
+            .map(|line| serde_json::from_str::<serde_json::Value>(line).expect("JSONL row"))
+            .filter(|row| row["task_id"] == GENERATION_SPEND_TASK_ID)
+            .collect::<Vec<_>>();
+        let rows = agent_cost_rows(workspace.path());
+        assert_eq!((rows.len(), events.len()), (1, 1), "{rows:?} {events:?}");
+        for row in rows.iter().chain(&events) {
+            let api_equiv_usd = row["api_equiv_usd"].as_f64().expect("api_equiv_usd");
+            assert!((api_equiv_usd - expected).abs() < 1e-12, "{row}");
+            assert_eq!(row["price_snapshot_id"], snapshot.id(), "{row}");
+        }
+    }
+
+    /// bug-86ff56: a one-off call, as `roko research` makes them, records the
+    /// reported cost under the operation's task and role, with no plan id.
+    #[tokio::test]
+    async fn research_calls_record_spend() {
+        let workspace = fake_planner_workspace();
+        let task_id = "research:topic:graph-engines";
+        let spend = AuthoringSpend::operation(workspace.path(), task_id, "researcher");
+
+        let (exit_code, _) = run_agent_capture_silent_recorded(
+            AgentExecOpts {
+                prompt: "Research graph engines.",
+                workdir: workspace.path(),
+                model: Some("fake-model"),
+                effort: None,
+                system_prompt: None,
+                resume_session: None,
+                env_vars: &[],
+                role: Some("researcher"),
+                allowed_tools: Some("Read,Write,Edit"),
+            },
+            &spend,
+        )
+        .await
+        .expect("run agent");
+
+        assert_eq!(exit_code, 0);
+        let rows = agent_cost_rows(workspace.path());
+        assert_eq!(rows.len(), 1, "{rows:?}");
+        assert_eq!(rows[0]["cost_usd"], CALL_COST_USD);
+        assert_eq!(rows[0]["role"], "researcher");
+        assert_eq!(rows[0]["plan_id"], "");
+        assert_eq!(rows[0]["task_id"], task_id);
+        let efficiency_log = workspace.path().join(".roko/learn/efficiency.jsonl");
+        let efficiency = std::fs::read_to_string(efficiency_log).expect("efficiency log");
+        assert!(
+            efficiency.contains(&format!("\"attempt_id\":\"{task_id}/a1\"")),
+            "{efficiency}"
+        );
     }
 }

@@ -24,6 +24,26 @@ pub struct UsageObservation {
     pub source: UsageSource,
     pub model: Option<String>,
     pub wall_ms: u64,
+    /// What the tokens cost at the rates of `price_snapshot_id`, priced by
+    /// the agent itself, model by model, for a CLI session that ran several
+    /// models (backlog 6105). `None` when the agent priced nothing, or the
+    /// snapshot does not list one of the models.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub api_equiv_usd: Option<f64>,
+    /// The same tokens with cache reads priced as uncached input.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub without_cache_usd: Option<f64>,
+    /// The price snapshot the agent priced the tokens against, set whenever
+    /// it did, even when one of the models had no price.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub price_snapshot_id: Option<String>,
+    /// How the CLI computed its own `cost_usd`: Claude Code's `costBasis`
+    /// (`list`, `managed` or `unknown`), the models' values joined by `,`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cost_basis: Option<String>,
+    /// The CLI's version, from its `system`/`init` event.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cli_version: Option<String>,
 }
 
 /// Provenance for a usage observation.
@@ -54,6 +74,7 @@ impl From<Usage> for UsageObservation {
             source: UsageSource::Unknown,
             model: None,
             wall_ms: usage.wall_ms,
+            ..Self::default()
         }
     }
 }

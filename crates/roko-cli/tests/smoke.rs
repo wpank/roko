@@ -293,6 +293,8 @@ printf '%s\n' '{{"type":"result","subtype":"success","is_error":false,"total_cos
         max_concurrent: None,
         limits: None,
         require_confirmation: false,
+        stream_usage: None,
+        billing: None,
     };
     let options = AgentOptions {
         safety_layer: None,
@@ -327,8 +329,11 @@ printf '%s\n' '{{"type":"result","subtype":"success","is_error":false,"total_cos
         trace_sink: None,
         metrics_sink: None,
         tool_correlation: None,
+        provenance_sink: None,
         max_turns: None,
         thinking: None,
+        data_llm: None,
+        pricing: roko_core::pricing_snapshot::PricingConfig::default(),
     };
 
     let agent = ClaudeCliAdapter

@@ -300,3 +300,58 @@ async fn hub_token_file_has_mode_0600_and_changes_per_run() {
     );
     second_shutdown.cancel();
 }
+
+// ── T8: a deep checkout still gets a socket (1224) ──────────────────────────
+
+/// 1224: a workspace whose socket path is longer than a Unix socket allows
+/// (104 bytes on macOS, 108 on Linux) still serves. The server binds in a
+/// short private directory and names it in `hub.sock.path`; a client follows
+/// the pointer, passes the token handshake and gets the snapshot. Shutdown
+/// removes the socket and the pointer.
+#[tokio::test]
+async fn hub_socket_binds_under_a_long_workspace_path() {
+    let root = tmp_workdir();
+    let workdir = root
+        .path()
+        .join("a-checkout-nested-deeply-enough".repeat(3))
+        .join("workspace");
+    std::fs::create_dir_all(&workdir).expect("create the deep workspace");
+    let home = hub_socket_path(&workdir);
+    assert!(home.as_os_str().len() > 110, "{}", home.display());
+    let hub = SharedStateHub::new_in_process();
+    hub.publish(DashboardEvent::PlanStarted {
+        plan_id: "deep-plan".to_string(),
+        tasks_total: 1,
+    });
+    let shutdown = CancellationToken::new();
+
+    let server = start_hub_ipc_server(hub, &workdir, shutdown.clone()).expect("bind IPC server");
+
+    let pointer = home.with_extension("sock.path");
+    let bound = std::fs::read_to_string(&pointer).expect("read the socket pointer");
+    let bound = std::path::PathBuf::from(bound.trim());
+    assert!(bound.as_os_str().len() < 104, "{}", bound.display());
+    let mode = std::fs::metadata(&bound)
+        .unwrap_or_else(|e| panic!("stat {}: {e}", bound.display()))
+        .permissions()
+        .mode();
+    assert_eq!(mode & 0o7777, 0o600, "socket permissions {mode:o}");
+    let mirror = timeout(Duration::from_secs(5), try_connect_hub_ipc(&workdir))
+        .await
+        .expect("connect did not time out")
+        .expect("the client follows the pointer and passes the handshake");
+    let snap = mirror.current_snapshot();
+    assert!(
+        snap.plans.contains_key("deep-plan"),
+        "got plans: {:?}",
+        snap.plans.keys().collect::<Vec<_>>()
+    );
+
+    shutdown.cancel();
+    timeout(Duration::from_secs(5), server)
+        .await
+        .expect("server task finished within 5 seconds")
+        .expect("server task did not panic");
+    assert!(!bound.exists(), "the socket is removed");
+    assert!(!pointer.exists(), "the pointer is removed");
+}

@@ -106,6 +106,7 @@ impl ApiUsage {
             source: UsageSource::ProviderReported,
             model,
             wall_ms,
+            ..UsageObservation::default()
         }
     }
 }
@@ -376,13 +377,19 @@ impl CursorAgent {
             return;
         }
 
-        if let Some(chunk) = parse_sse_line(line) {
-            let _ = tx.send(Ok(chunk)).await;
+        let events = parse_sse_line(line);
+        if !events.is_empty() {
+            // One chunk can carry several events (backlog 1110).
+            for event in events {
+                let _ = tx.send(Ok(event)).await;
+            }
             return;
         }
 
+        // A JSON chunk with nothing new (an empty delta) is not malformed.
         if let Some(data) = extract_sse_data(line)
             && !data.is_empty()
+            && serde_json::from_str::<Value>(data).is_err()
         {
             tracing::warn!("dropping malformed Cursor SSE frame: {}", data);
         }
@@ -403,7 +410,7 @@ impl CursorAgent {
             "choices": [{
                 "index": 0,
                 "message": message,
-                "finish_reason": finish_reason_to_wire(&response.finish_reason),
+                "finish_reason": response.finish_reason.as_str(),
             }],
             "usage": crate::translate::openai::usage_to_wire(&response.usage),
         });
@@ -441,6 +448,7 @@ impl CursorAgent {
             // No response named a served model (bug-2379dc).
             model: None,
             wall_ms,
+            ..UsageObservation::default()
         })
     }
 
@@ -606,16 +614,6 @@ impl Agent for CursorAgent {
     }
 }
 
-fn finish_reason_to_wire(finish_reason: &crate::chat_types::FinishReason) -> String {
-    match finish_reason {
-        crate::chat_types::FinishReason::Stop => "stop".to_string(),
-        crate::chat_types::FinishReason::Length => "length".to_string(),
-        crate::chat_types::FinishReason::ToolCalls => "tool_calls".to_string(),
-        crate::chat_types::FinishReason::ContentFilter => "content_filter".to_string(),
-        crate::chat_types::FinishReason::Error(reason) => reason.clone(),
-    }
-}
-
 fn extract_session(response: &Value) -> SessionState {
     SessionState {
         session_id: response
@@ -723,11 +721,13 @@ impl LlmBackend for CursorAgent {
                 Self::push_stream_line(&pending, &tx).await;
             }
 
-            // Ensure a Done event is always emitted.
+            // Ensure a Done event is always emitted. It names no reason:
+            // `unknown` never replaces a finish reason a chunk named, and a
+            // stream that named none does not read as `stop` (backlog 1111).
             if !sent_done {
                 let _ = tx
                     .send(Ok(StreamEvent::now(StreamEventKind::Done {
-                        finish_reason: "stop".to_string(),
+                        finish_reason: crate::streaming::UNKNOWN_FINISH_REASON.to_string(),
                     })))
                     .await;
             }

@@ -183,6 +183,9 @@ impl Verify for ShellGate {
         };
 
         let child_pid = child.id();
+        // An interrupted plan run stops the command with its agents
+        // (gap-b367bf).
+        let _registered = crate::cancel_safe_command::RegisteredCommand::new(child_pid);
         let stdout_pipe = child.stdout.take();
         let stderr_pipe = child.stderr.take();
         let line_sink = self.line_sink.clone();

@@ -4,6 +4,329 @@ use crate::*;
 use anyhow::Context as _;
 use std::collections::HashSet;
 
+// -----------------------------------------------------------------------
+// Learn: learning state + inspection
+// -----------------------------------------------------------------------
+
+#[derive(Debug, Subcommand)]
+pub(crate) enum LearnCmd {
+    /// Show all learning state (router, experiments, efficiency, episodes, reflexes).
+    All {
+        /// Working directory (default: cwd).
+        #[arg(long)]
+        workdir: Option<PathBuf>,
+    },
+    /// Show cascade router state.
+    #[command(alias = "router")]
+    Route {
+        /// Working directory (default: cwd).
+        #[arg(long)]
+        workdir: Option<PathBuf>,
+    },
+    /// Manage prompt A/B experiments (list, create, conclude, report).
+    Experiments {
+        /// Working directory (default: cwd).
+        #[arg(long)]
+        workdir: Option<PathBuf>,
+        /// Subcommand: list | create | conclude | report. Defaults to list.
+        #[command(subcommand)]
+        cmd: Option<ExperimentsSubCmd>,
+    },
+    /// Show efficiency metrics.
+    Efficiency {
+        /// Working directory (default: cwd).
+        #[arg(long)]
+        workdir: Option<PathBuf>,
+        /// Show at most N matching rows from the start (mutually exclusive with --tail).
+        #[arg(long, value_parser = clap::value_parser!(u32).range(1..=10_000), conflicts_with = "tail")]
+        limit: Option<u32>,
+        /// Show the last N matching rows in chronological order (mutually exclusive with --limit).
+        #[arg(long, value_parser = clap::value_parser!(u32).range(1..=10_000))]
+        tail: Option<u32>,
+        /// Only include entries at or after this RFC 3339 timestamp.
+        #[arg(long)]
+        since: Option<String>,
+        /// Filter by model slug (substring match).
+        #[arg(long)]
+        model: Option<String>,
+        /// Filter by plan ID (substring match).
+        #[arg(long)]
+        plan: Option<String>,
+        /// Filter by task ID (substring match).
+        #[arg(long)]
+        task: Option<String>,
+    },
+    /// Show episode summary.
+    Episodes {
+        /// Working directory (default: cwd).
+        #[arg(long)]
+        workdir: Option<PathBuf>,
+        /// Show at most N matching rows from the start (mutually exclusive with --tail).
+        #[arg(long, value_parser = clap::value_parser!(u32).range(1..=10_000), conflicts_with = "tail")]
+        limit: Option<u32>,
+        /// Show the last N matching rows in chronological order (mutually exclusive with --limit).
+        #[arg(long, value_parser = clap::value_parser!(u32).range(1..=10_000))]
+        tail: Option<u32>,
+        /// Only include entries at or after this RFC 3339 timestamp.
+        #[arg(long)]
+        since: Option<String>,
+        /// Filter by model slug (substring match).
+        #[arg(long)]
+        model: Option<String>,
+        /// Filter by plan ID (substring match).
+        #[arg(long)]
+        plan: Option<String>,
+        /// Filter by task ID (substring match).
+        #[arg(long)]
+        task: Option<String>,
+        /// Filter by pass/fail status (pass or fail).
+        #[arg(long)]
+        status: Option<String>,
+    },
+    /// Show T0 reflex rules (count, top five by hits, and recent demotions).
+    Reflexes {
+        /// Working directory (default: cwd).
+        #[arg(long)]
+        workdir: Option<PathBuf>,
+    },
+    /// Show adaptive gate threshold state.
+    Gates {
+        /// Working directory (default: cwd).
+        #[arg(long)]
+        workdir: Option<PathBuf>,
+    },
+    /// Show durable knowledge entry counts.
+    #[command(alias = "knowledge")]
+    KnowledgeStats {
+        /// Working directory (default: cwd).
+        #[arg(long)]
+        workdir: Option<PathBuf>,
+    },
+    /// Show learned playbook store contents (name, trigger pattern, success/failure counts).
+    Playbooks {
+        /// Working directory (default: cwd).
+        #[arg(long)]
+        workdir: Option<PathBuf>,
+    },
+    /// Show per-section prompt pass-rate statistics (worst sections first).
+    Sections {
+        /// Working directory (default: cwd).
+        #[arg(long)]
+        workdir: Option<PathBuf>,
+    },
+    /// Show failure patterns, most frequent first (read-only).
+    Patterns {
+        /// Working directory (default: cwd).
+        #[arg(long)]
+        workdir: Option<PathBuf>,
+        /// Only the patterns ready to graduate into a lint or a verify step:
+        /// seen 3 or more times across 2 or more plans, with a verified fix.
+        /// Each comes with a suggested check, which a person writes
+        /// (decision 4127).
+        #[arg(long)]
+        graduate: bool,
+    },
+    /// Show recent post-gate reflection records.
+    Reflections {
+        /// Working directory (default: cwd).
+        #[arg(long)]
+        workdir: Option<PathBuf>,
+        /// Maximum number of recent reflections to display.
+        #[arg(long, default_value_t = 20)]
+        limit: usize,
+    },
+    /// Read-only inspection of a learning subsystem (gates, routing, budget).
+    Inspect {
+        #[command(subcommand)]
+        subsystem: InspectSubsystem,
+    },
+    /// Show tool usage statistics from the tool audit log.
+    Tools {
+        /// Working directory (default: cwd).
+        #[arg(long)]
+        workdir: Option<PathBuf>,
+    },
+    /// Trace an end-to-end feedback loop: knowledge ingested -> injected -> gate pass -> confirmation.
+    FeedbackProof {
+        /// Working directory (default: cwd).
+        #[arg(long)]
+        workdir: Option<PathBuf>,
+    },
+    /// Show per-role cost profiles (average cost, token budget, pass rate).
+    RoleCosts {
+        /// Working directory (default: cwd).
+        #[arg(long)]
+        workdir: Option<PathBuf>,
+    },
+    /// Show graduation policy state (configured policies, counters, and evaluation preview).
+    Graduation {
+        /// Working directory (default: cwd).
+        #[arg(long)]
+        workdir: Option<PathBuf>,
+    },
+    /// First-try verified pass rate by task tier and size, with the size
+    /// limits it supports (decision 3203).
+    Sizing {
+        /// Working directory (default: cwd).
+        #[arg(long)]
+        workdir: Option<PathBuf>,
+        /// The first-try pass rate a size bucket must reach.
+        #[arg(long, default_value_t = commands::learn_sizing::TARGET)]
+        target: f64,
+        /// The fewest first tries a bucket needs before it counts.
+        #[arg(long, default_value_t = commands::learn_sizing::MIN_SAMPLE)]
+        min_sample: usize,
+    },
+    /// The M2 loop census: one row per registered learning loop with its
+    /// state, reason, qualifiers and evidence (S03; read-only, $0).
+    Loops {
+        /// Working directory (default: cwd).
+        #[arg(long)]
+        workdir: Option<PathBuf>,
+        /// The report-only census over the logs, the only mode until the
+        /// measured audit (backlog 5123) lands.
+        #[arg(long)]
+        census: bool,
+        /// Trace a loop's canary, break a loop (S03 §5; backlog 5134), or
+        /// clear a tripped audit.
+        #[command(subcommand)]
+        cmd: Option<roko_cli::commands::learn_loops::LoopsCmd>,
+    },
+    /// Check a run's attempt records, or report routing outcomes from them (read-only).
+    Telemetry {
+        #[command(subcommand)]
+        cmd: commands::learn::TelemetryCmd,
+    },
+    /// The M3 self-model: fit it over the logs, or replay routing policies over a
+    /// run-record matrix (S04; read-only, except what `replay --out` writes).
+    SelfModel {
+        #[command(subcommand)]
+        cmd: commands::learn_self_model::SelfModelCmd,
+    },
+    /// Inference economics: the price snapshot's rows (S04 §4.8; read-only).
+    Econ {
+        #[command(subcommand)]
+        cmd: commands::learn_self_model::EconCmd,
+    },
+    /// M1, the ultrastable controller: its saved state, or a replay over a stream
+    /// (S06; read-only, except what `replay --out` writes).
+    Homeostasis {
+        #[command(subcommand)]
+        cmd: commands::learn_homeostasis::HomeostasisCmd,
+    },
+    /// What the guarded stores (router, knowledge, harness) committed, rolled back and
+    /// restored, newest first: versions, parents, digests, checks, decisions, mode and
+    /// actor (P21; read-only).
+    Commits {
+        /// Only this store.
+        #[arg(long, value_enum)]
+        store: Option<commands::learn_commits::StoreName>,
+        /// Working directory (default: cwd).
+        #[arg(long)]
+        workdir: Option<PathBuf>,
+    },
+    /// Restore a guarded store to a version it keeps, with a `restored` row by `human`
+    /// (P21). Refused while a plan run holds the workspace.
+    Rollback {
+        /// The store.
+        #[arg(value_enum)]
+        store: commands::learn_commits::StoreName,
+        /// The version to restore.
+        #[arg(long)]
+        to: u64,
+        /// Working directory (default: cwd).
+        #[arg(long)]
+        workdir: Option<PathBuf>,
+    },
+    /// (deprecated: use `roko learn inspect`) Tune adaptive thresholds and model routing parameters.
+    #[command(hide = true)]
+    Tune {
+        /// Subsystem to tune: gates, routing, budget.
+        #[arg(default_value = "gates")]
+        subsystem: String,
+        /// Display current values without modifying.
+        #[arg(long)]
+        dry_run: bool,
+        /// Working directory (default: cwd).
+        #[arg(long)]
+        workdir: Option<PathBuf>,
+    },
+}
+
+// -----------------------------------------------------------------------
+// ExperimentsSubCmd — subcommands for `roko learn experiments`
+// -----------------------------------------------------------------------
+
+#[derive(Debug, Subcommand)]
+pub(crate) enum ExperimentsSubCmd {
+    /// List all experiments as a table (Name | Status | Variants | Observations | Best Variant | Win Rate).
+    List {
+        /// Working directory (default: cwd).
+        #[arg(long)]
+        workdir: Option<PathBuf>,
+        /// Show at most N experiments.
+        #[arg(long, value_parser = clap::value_parser!(u32).range(1..=10_000))]
+        limit: Option<u32>,
+    },
+    /// Create a new prompt experiment.
+    Create {
+        /// Unique experiment identifier.
+        #[arg(long)]
+        name: String,
+        /// Prompt section under test (e.g. "constraints").
+        #[arg(long)]
+        section: String,
+        /// Comma-separated variant ids (e.g. "control,concise-v2").
+        #[arg(long)]
+        variants: String,
+        /// Working directory (default: cwd).
+        #[arg(long)]
+        workdir: Option<PathBuf>,
+    },
+    /// Conclude an experiment by auto-picking the best-performing variant as winner.
+    Conclude {
+        /// Experiment identifier to conclude.
+        name: String,
+        /// Working directory (default: cwd).
+        #[arg(long)]
+        workdir: Option<PathBuf>,
+    },
+    /// Print a detailed statistical report for one experiment.
+    Report {
+        /// Experiment identifier to report on.
+        name: String,
+        /// Working directory (default: cwd).
+        #[arg(long)]
+        workdir: Option<PathBuf>,
+    },
+}
+
+// -----------------------------------------------------------------------
+// InspectSubsystem — read-only learning inspection targets
+// -----------------------------------------------------------------------
+
+#[derive(Debug, Subcommand)]
+pub(crate) enum InspectSubsystem {
+    /// Inspect adaptive gate threshold state.
+    Gates {
+        /// Working directory (default: cwd).
+        #[arg(long)]
+        workdir: Option<PathBuf>,
+    },
+    /// Inspect cascade routing state and model statistics.
+    Routing {
+        /// Working directory (default: cwd).
+        #[arg(long)]
+        workdir: Option<PathBuf>,
+    },
+    /// Inspect configured budget limits and spend history.
+    Budget {
+        /// Working directory (default: cwd).
+        #[arg(long)]
+        workdir: Option<PathBuf>,
+    },
+}
+
 /// Format a cost value for human display.
 /// Uses the heuristic: if cost is exactly 0.0 and both token counts are 0,
 /// treat the value as unknown.
@@ -42,11 +365,16 @@ pub(crate) async fn dispatch_learn(cli: &Cli, cmd: LearnCmd) -> Result<i32> {
         | LearnCmd::KnowledgeStats { workdir }
         | LearnCmd::Playbooks { workdir }
         | LearnCmd::Sections { workdir }
+        | LearnCmd::Patterns { workdir, .. }
         | LearnCmd::Reflections { workdir, .. }
         | LearnCmd::Tools { workdir }
         | LearnCmd::FeedbackProof { workdir }
         | LearnCmd::RoleCosts { workdir }
-        | LearnCmd::Graduation { workdir } => {
+        | LearnCmd::Graduation { workdir }
+        | LearnCmd::Loops { workdir, .. }
+        | LearnCmd::Commits { workdir, .. }
+        | LearnCmd::Rollback { workdir, .. }
+        | LearnCmd::Sizing { workdir, .. } => {
             workdir.clone().unwrap_or_else(|| resolve_workdir(cli))
         }
         LearnCmd::Experiments { workdir, cmd: sub } => {
@@ -62,6 +390,13 @@ pub(crate) async fn dispatch_learn(cli: &Cli, cmd: LearnCmd) -> Result<i32> {
         }
         LearnCmd::Inspect { subsystem } => inspect_workdir(cli, subsystem),
         LearnCmd::Telemetry { cmd: sub } => telemetry_workdir(cli, sub),
+        LearnCmd::SelfModel { cmd: sub } => {
+            commands::learn_self_model::self_model_workdir(cli, sub)
+        }
+        LearnCmd::Econ { cmd: sub } => commands::learn_self_model::econ_workdir(cli, sub),
+        LearnCmd::Homeostasis { cmd: sub } => {
+            commands::learn_homeostasis::homeostasis_workdir(cli, sub)
+        }
         LearnCmd::Tune { workdir, .. } => workdir.clone().unwrap_or_else(|| resolve_workdir(cli)),
     };
     let _lock =
@@ -166,6 +501,10 @@ pub(crate) async fn dispatch_learn(cli: &Cli, cmd: LearnCmd) -> Result<i32> {
             let wd = workdir.unwrap_or_else(|| resolve_workdir(cli));
             cmd_learn_sections(&wd).await
         }
+        LearnCmd::Patterns { workdir, graduate } => {
+            let wd = workdir.unwrap_or_else(|| resolve_workdir(cli));
+            cmd_learn_patterns(&wd, graduate, json)
+        }
         LearnCmd::Reflections { workdir, limit } => {
             let wd = workdir.unwrap_or_else(|| resolve_workdir(cli));
             cmd_learn_reflections(&wd, limit).await
@@ -186,11 +525,64 @@ pub(crate) async fn dispatch_learn(cli: &Cli, cmd: LearnCmd) -> Result<i32> {
             let wd = workdir.unwrap_or_else(|| resolve_workdir(cli));
             cmd_learn_graduation(&wd, json).await
         }
+        LearnCmd::Commits { store, workdir } => {
+            let wd = workdir.unwrap_or_else(|| resolve_workdir(cli));
+            commands::learn_commits::cmd_commits(&wd, store, json)
+        }
+        LearnCmd::Rollback { store, to, workdir } => {
+            let wd = workdir.unwrap_or_else(|| resolve_workdir(cli));
+            commands::learn_commits::cmd_rollback(&wd, store, to, json)
+        }
+        LearnCmd::Sizing {
+            workdir,
+            target,
+            min_sample,
+        } => {
+            let wd = workdir.unwrap_or_else(|| resolve_workdir(cli));
+            let (rows, excluded) = commands::learn_sizing::load_rows(&wd);
+            let report = commands::learn_sizing::sizing_report(&rows, excluded, target, min_sample);
+            if json {
+                println!("{}", serde_json::to_string_pretty(&report)?);
+            } else {
+                print!("{}", commands::learn_sizing::render_text(&report));
+            }
+            Ok(EXIT_SUCCESS)
+        }
+        LearnCmd::Loops {
+            workdir,
+            census,
+            cmd,
+        } => {
+            let wd = workdir.unwrap_or_else(|| resolve_workdir(cli));
+            if let Some(cmd) = cmd {
+                let (printed, code) =
+                    roko_cli::commands::learn_loops::loops_cmd_output(&wd, &cmd, json)?;
+                print!("{printed}");
+                return Ok(code);
+            }
+            if !census {
+                tracing::info!(
+                    "the measured loop audit is not built yet (backlog 5123); printing the census"
+                );
+            }
+            print!(
+                "{}",
+                roko_cli::commands::learn_loops::loops_output(&wd, json)?
+            );
+            Ok(EXIT_SUCCESS)
+        }
         LearnCmd::Inspect { subsystem } => {
             let wd = inspect_workdir(cli, &subsystem);
             cmd_learn_inspect(&wd, &subsystem, json).await
         }
         LearnCmd::Telemetry { cmd: sub } => cmd_learn_telemetry(cli, sub, json),
+        LearnCmd::SelfModel { cmd: sub } => {
+            commands::learn_self_model::cmd_self_model(cli, sub, json)
+        }
+        LearnCmd::Econ { cmd: sub } => commands::learn_self_model::cmd_econ(cli, sub, json),
+        LearnCmd::Homeostasis { cmd: sub } => {
+            commands::learn_homeostasis::cmd_homeostasis(cli, sub, json)
+        }
         LearnCmd::Tune {
             subsystem,
             dry_run,
@@ -214,11 +606,21 @@ pub(crate) async fn dispatch_learn(cli: &Cli, cmd: LearnCmd) -> Result<i32> {
 pub(crate) enum TelemetryCmd {
     /// Check a run's records: schema validity, join coverage of the efficiency,
     /// cost and episode rows, duplicate settlements, seq ordering and the
-    /// cost-source mix. Exits non-zero when a check fails.
+    /// cost-source mix; with --srm, each randomised layer's arm split
+    /// instead. Exits non-zero when a check fails.
     Check {
         /// Run to check, a directory under .roko/runs (default: the latest run).
         #[arg(long)]
         run: Option<String>,
+        /// Check instead that each randomised layer's arms split as their
+        /// logged propensities say (S02 SC3): no sample-ratio mismatch at
+        /// alpha 0.001. Prints each layer's units, expected and realised arm
+        /// shares (learned/default/all-off) and e-value.
+        #[arg(long)]
+        srm: bool,
+        /// With `--srm`: pool these runs (comma-separated) instead of one.
+        #[arg(long, value_delimiter = ',', requires = "srm", conflicts_with = "run")]
+        runs: Vec<String>,
         /// Working directory (default: cwd).
         #[arg(long)]
         workdir: Option<std::path::PathBuf>,
@@ -256,6 +658,12 @@ fn telemetry_workdir(cli: &Cli, cmd: &TelemetryCmd) -> PathBuf {
 fn cmd_learn_telemetry(cli: &Cli, cmd: TelemetryCmd, json: bool) -> Result<i32> {
     let layout = roko_fs::RokoLayout::for_project(&telemetry_workdir(cli, &cmd));
     match cmd {
+        TelemetryCmd::Check {
+            srm: true,
+            run,
+            runs,
+            ..
+        } => telemetry_srm(&layout, run.as_deref(), &runs, json),
         TelemetryCmd::Check { run, .. } => telemetry_check(&layout, run.as_deref(), json),
         TelemetryCmd::RouteReport {
             run,
@@ -350,6 +758,23 @@ fn render_telemetry_check(
         report.attempts_opened, report.attempts_settled, report.attempts_abandoned
     );
     let _ = writeln!(out, "  decisions    {}", report.decisions);
+    let _ = writeln!(
+        out,
+        "  content      {} decision(s), {} exposure(s)",
+        report.content_decisions, report.exposures
+    );
+    // The learning components the run's census has unwired (S01 §5.8).
+    if let Some(unwired) = &report.unwired_components {
+        let unwired = if unwired.is_empty() {
+            "none".to_string()
+        } else {
+            unwired.join(", ")
+        };
+        let _ = writeln!(out, "  unwired      {unwired}");
+    }
+    for warning in &report.warnings {
+        let _ = writeln!(out, "  warning      {warning}");
+    }
     let sources: Vec<String> = report
         .cost_sources
         .iter()
@@ -374,6 +799,141 @@ fn render_telemetry_check(
             out,
             "  join         {:<24} {}/{} settled attempts{orphans}",
             coverage.file, coverage.joined, coverage.verdicts
+        );
+    }
+    if failures.is_empty() {
+        let _ = writeln!(out, "PASS");
+    } else {
+        let _ = writeln!(out, "FAIL ({})", failures.len());
+        for failure in failures {
+            let _ = writeln!(out, "  - {failure}");
+        }
+    }
+    out
+}
+
+/// `roko learn telemetry check --srm` (S02 SC3): the arm split of each
+/// randomised layer over one run (`--run`, else the latest) or several
+/// (`--runs`). Exits non-zero on a mismatch.
+fn telemetry_srm(
+    layout: &roko_fs::RokoLayout,
+    run: Option<&str>,
+    runs: &[String],
+    json: bool,
+) -> Result<i32> {
+    use roko_learn::telemetry::report::{RunRecords, srm_check};
+
+    let run_dirs: Vec<PathBuf> = if runs.is_empty() {
+        vec![telemetry_run_dir(layout, run)?]
+    } else {
+        runs.iter()
+            .map(|id| telemetry_run_dir(layout, Some(id.as_str())))
+            .collect::<Result<_>>()?
+    };
+    let records = run_dirs
+        .iter()
+        .map(|run_dir| RunRecords::load(run_dir))
+        .collect::<Result<Vec<_>, _>>()?;
+    let report = srm_check(&records);
+    let failures = report.failures();
+    let passed = failures.is_empty();
+    if json {
+        let document = serde_json::json!({
+            "passed": passed,
+            "failures": failures,
+            "report": report,
+        });
+        println!("{}", serde_json::to_string_pretty(&document)?);
+    } else {
+        print!("{}", render_srm_check(&report, &failures));
+    }
+    Ok(if passed { EXIT_SUCCESS } else { EXIT_FAILURE })
+}
+
+/// The text form of a `check --srm` report: one line per layer with its
+/// units, its arms' expected and realised shares (learned/default/all-off)
+/// and its e-value, then one line per section the section bandit drew, with
+/// its expected and realised share of draws that left it out.
+fn render_srm_check(
+    report: &roko_learn::telemetry::report::SrmReport,
+    failures: &[String],
+) -> String {
+    use roko_learn::telemetry::report::SRM_MIN_UNITS;
+    use std::fmt::Write as _;
+
+    let mut out = String::new();
+    let _ = writeln!(
+        out,
+        "srm: {} run(s), alpha {}; S02 SC3 judges a layer of at least {SRM_MIN_UNITS} units",
+        report.runs.len(),
+        report.alpha
+    );
+    if !report.excluded.is_empty() {
+        let excluded: Vec<String> = report
+            .excluded
+            .iter()
+            .map(|(condition, chains)| format!("{chains} {condition}"))
+            .collect();
+        let _ = writeln!(out, "  left out     {} chain(s)", excluded.join(", "));
+    }
+    if report.unassigned > 0 {
+        let _ = writeln!(
+            out,
+            "  no arms      {} decision row(s) carry no arm set",
+            report.unassigned
+        );
+    }
+    if report.layers.is_empty() {
+        let _ = writeln!(out, "  no decision row carries arms: nothing to check");
+    } else {
+        let _ = writeln!(
+            out,
+            "  {:<16} {:>6}  {:<17} {:<17} {:>10}  verdict",
+            "layer", "n", "expected l/d/off", "realised l/d/off", "e-value"
+        );
+    }
+    for layer in &report.layers {
+        let (mut expected, mut realised) = (Vec::new(), Vec::new());
+        for arm in &layer.arms {
+            expected.push(format!("{:.3}", arm.expected));
+            realised.push(format!("{:.3}", arm.realised));
+        }
+        let verdict = if layer.mismatch {
+            "MISMATCH".to_string()
+        } else if layer.enough_units {
+            "ok".to_string()
+        } else {
+            format!("ok, n < {SRM_MIN_UNITS}")
+        };
+        let _ = writeln!(
+            out,
+            "  {:<16} {:>6}  {:<17} {:<17} {:>10.3e}  {verdict}",
+            layer.layer,
+            layer.units,
+            expected.join("/"),
+            realised.join("/"),
+            layer.e_value
+        );
+    }
+    // The section bandit's draws, one row per section (bug-2410e1).
+    if !report.sections.is_empty() {
+        let _ = writeln!(
+            out,
+            "  {:<16} {:>6}  {:<17} {:<17} {:>10}  verdict",
+            "section", "n", "expected left out", "realised", "e-value"
+        );
+    }
+    for section in &report.sections {
+        let units = section.units.max(1) as f64;
+        let verdict = if section.mismatch { "MISMATCH" } else { "ok" };
+        let _ = writeln!(
+            out,
+            "  {:<16} {:>6}  {:<17.3} {:<17.3} {:>10.3e}  {verdict}",
+            section.section,
+            section.units,
+            section.expected_excluded / units,
+            section.excluded as f64 / units,
+            section.e_value
         );
     }
     if failures.is_empty() {
@@ -457,7 +1017,7 @@ fn render_route_report(
     );
     let _ = writeln!(
         out,
-        "{:<12} {:>4}  {:<14} {:>7} {:>10}  {:<17} {:<17} masked",
+        "{:<12} {:>4}  {:<14} {:>7} {:>10}  {:<17} {:<17} {:<14} masked",
         "source",
         "n",
         "pass rate",
@@ -465,15 +1025,21 @@ fn render_route_report(
         "label null",
         "served!=requested",
         "iota(pick!=dflt)",
+        "eps_honest",
     );
+    let none: Vec<String> = Vec::new();
     for row in &report.rows {
         let masked = row
             .masked
             .as_ref()
             .map_or_else(|| "n/a".to_string(), |keys| keys.len().to_string());
+        let eps_honest = row.executed_learned.as_ref().map_or_else(
+            || "n/a".to_string(),
+            |keys| fraction(keys.len(), row.with_learned.len()),
+        );
         let _ = writeln!(
             out,
-            "{:<12} {:>4}  {:<14} {:>7} {:>10}  {:<17} {:<17} {masked}",
+            "{:<12} {:>4}  {:<14} {:>7} {:>10}  {:<17} {:<17} {eps_honest:<14} {masked}",
             row.source,
             row.attempts.len(),
             fraction(row.passed.len(), row.attempts.len()),
@@ -483,12 +1049,16 @@ fn render_route_report(
             fraction(row.pick_not_default.len(), row.with_default.len()),
         );
         if explain {
+            let ran_learned = row.executed_learned.as_ref().unwrap_or(&none);
+            let masked_keys = row.masked.as_ref().unwrap_or(&none);
             for (what, keys) in [
                 ("label 1", &row.passed),
                 ("label 0", &row.failed),
                 ("label null", &row.unlabeled),
                 ("served!=requested", &row.model_mismatch),
                 ("pick!=default", &row.pick_not_default),
+                ("ran router's pick", ran_learned),
+                ("masked", masked_keys),
             ] {
                 if !keys.is_empty() {
                     let _ = writeln!(out, "    {what}: {}", keys.join(", "));
@@ -503,10 +1073,12 @@ fn render_route_report(
             roko_learn::telemetry::report::UNKNOWN_SOURCE
         );
     }
-    let _ = writeln!(
-        out,
-        "note: masked is n/a until route decisions record the router's own proposal"
-    );
+    if report.rows.iter().all(|row| row.masked.is_none()) {
+        let _ = writeln!(
+            out,
+            "note: masked and eps_honest need the router's own pick in the route decisions"
+        );
+    }
     out
 }
 
@@ -971,6 +1543,19 @@ struct LearnJsonEpisodes {
     #[serde(skip_serializing_if = "Option::is_none")]
     last_seen: Option<String>,
     latest: Vec<LearnJsonEpisodeEntry>,
+    /// The seven compounding rates over the most recent episodes.
+    compounding: roko_learn::aggregate::AutocatalyticMetrics,
+    /// Hindsight corrections, already applied to the counts above.
+    hindsight: LearnJsonHindsight,
+}
+
+#[derive(serde::Serialize)]
+struct LearnJsonHindsight {
+    /// Corrections recorded in `.roko/learn/episode-adjustments.jsonl`.
+    adjustments: usize,
+    /// Episodes of the log they relabeled.
+    applied: usize,
+    latest: Vec<roko_learn::hindsight::EpisodeAdjustment>,
 }
 
 #[derive(serde::Serialize)]
@@ -999,6 +1584,99 @@ struct LearnJsonKnowledge {
 
 /// Maximum number of recent entries to include in JSON output.
 const JSON_LATEST_LIMIT: usize = 10;
+
+/// Number of most recent episodes the compounding metrics cover.
+const COMPOUNDING_WINDOW: usize = 200;
+
+/// Keep `episode` in the window of the most recent `COMPOUNDING_WINDOW`
+/// episodes.
+fn push_compounding_window(
+    window: &mut std::collections::VecDeque<roko_learn::episode_logger::Episode>,
+    episode: roko_learn::episode_logger::Episode,
+) {
+    if window.len() == COMPOUNDING_WINDOW {
+        window.pop_front();
+    }
+    window.push_back(episode);
+}
+
+/// Human lines for the compounding rates in `roko learn episodes`.
+fn format_compounding_metrics(
+    metrics: &roko_learn::aggregate::AutocatalyticMetrics,
+) -> Vec<String> {
+    let window = metrics.episode_window;
+    let rates = [
+        ("playbook hit rate:", metrics.playbook_hit_rate),
+        ("knowledge reuse rate:", metrics.knowledge_reuse_rate),
+        ("cache hit rate:", metrics.cache_hit_rate),
+        ("routing accuracy:", metrics.routing_accuracy),
+        ("gate pass rate:", metrics.gate_pass_rate),
+        ("error dedup rate:", metrics.error_dedup_rate),
+    ];
+    let mut lines = vec![format!("  Compounding (last {window} episodes):")];
+    for (label, rate) in rates {
+        lines.push(format!("    {label:<22}{:.1}%", rate * 100.0));
+    }
+    let cost = metrics.cost_per_success;
+    lines.push(format!("    {:<22}${cost:.4}", "cost per success:"));
+    lines
+}
+
+/// An episode log's episodes with the workspace's hindsight corrections
+/// applied ([`roko_learn::hindsight::apply_adjustments`]).
+struct AdjustedEpisodes {
+    episodes: Vec<roko_learn::episode_logger::Episode>,
+    /// The corrections recorded for the workspace, in write order.
+    adjustments: Vec<roko_learn::hindsight::EpisodeAdjustment>,
+    /// How many episodes they changed.
+    applied: usize,
+}
+
+impl AdjustedEpisodes {
+    /// Parse the episode log `text` of the workspace at `workdir`, skipping
+    /// blank and malformed lines.
+    fn parse(workdir: &std::path::Path, text: &str) -> Self {
+        let mut episodes: Vec<roko_learn::episode_logger::Episode> = text
+            .lines()
+            .map(str::trim)
+            .filter(|line| !line.is_empty())
+            .filter_map(|line| serde_json::from_str(line).ok())
+            .collect();
+        let path = roko_learn::hindsight::workspace_adjustments_path(workdir);
+        let adjustments = roko_learn::hindsight::read_adjustments(&path).unwrap_or_default();
+        let applied = roko_learn::hindsight::apply_adjustments(&mut episodes, &adjustments);
+        Self {
+            episodes,
+            adjustments,
+            applied,
+        }
+    }
+}
+
+/// Human lines for the hindsight corrections in `roko learn episodes`: none
+/// when there are none, else a count and the latest three.
+fn format_hindsight_lines(
+    adjustments: &[roko_learn::hindsight::EpisodeAdjustment],
+    applied: usize,
+) -> Vec<String> {
+    if adjustments.is_empty() {
+        return Vec::new();
+    }
+    let mut lines = vec![format!(
+        "  Hindsight: {} correction(s), {applied} episode(s) relabeled",
+        adjustments.len()
+    )];
+    for adjustment in adjustments.iter().rev().take(3) {
+        lines.push(format!(
+            "    {} {:?} {}: {}",
+            adjustment.timestamp.to_rfc3339(),
+            adjustment.adjustment_kind,
+            adjustment.original_episode_id,
+            adjustment.reason
+        ));
+    }
+    lines
+}
 
 /// `roko learn [what] --json` — structured JSON output.
 #[allow(clippy::cast_precision_loss)]
@@ -1195,17 +1873,14 @@ async fn collect_episodes_json(workdir: &std::path::Path) -> LearnJsonEpisodes {
     let mut first_seen: Option<chrono::DateTime<chrono::Utc>> = None;
     let mut last_seen: Option<chrono::DateTime<chrono::Utc>> = None;
     let mut tail: Vec<LearnJsonEpisodeEntry> = Vec::new();
+    let mut window = std::collections::VecDeque::with_capacity(COMPOUNDING_WINDOW);
+    let AdjustedEpisodes {
+        episodes,
+        adjustments,
+        applied,
+    } = AdjustedEpisodes::parse(workdir, &text);
 
-    for line in text.lines() {
-        let trimmed = line.trim();
-        if trimmed.is_empty() {
-            continue;
-        }
-        let Ok(episode) = serde_json::from_str::<roko_learn::episode_logger::Episode>(trimmed)
-        else {
-            continue;
-        };
-
+    for episode in episodes {
         total += 1;
         if episode.success {
             passed += 1;
@@ -1229,6 +1904,7 @@ async fn collect_episodes_json(workdir: &std::path::Path) -> LearnJsonEpisodes {
         if tail.len() > JSON_LATEST_LIMIT {
             tail.remove(0);
         }
+        push_compounding_window(&mut window, episode);
     }
 
     LearnJsonEpisodes {
@@ -1238,6 +1914,12 @@ async fn collect_episodes_json(workdir: &std::path::Path) -> LearnJsonEpisodes {
         first_seen: first_seen.map(|ts| ts.to_rfc3339()),
         last_seen: last_seen.map(|ts| ts.to_rfc3339()),
         latest: tail,
+        compounding: roko_learn::aggregate::compute_compounding_metrics(&Vec::from(window)),
+        hindsight: LearnJsonHindsight {
+            adjustments: adjustments.len(),
+            applied,
+            latest: adjustments[adjustments.len().saturating_sub(JSON_LATEST_LIMIT)..].to_vec(),
+        },
     }
 }
 
@@ -1830,17 +2512,14 @@ pub(crate) async fn print_learn_episodes(workdir: &std::path::Path) {
     let mut first_seen: Option<chrono::DateTime<chrono::Utc>> = None;
     let mut last_seen: Option<chrono::DateTime<chrono::Utc>> = None;
     let mut latest: Option<String> = None;
+    let mut window = std::collections::VecDeque::with_capacity(COMPOUNDING_WINDOW);
+    let AdjustedEpisodes {
+        episodes,
+        adjustments,
+        applied,
+    } = AdjustedEpisodes::parse(workdir, &text);
 
-    for line in text.lines() {
-        let trimmed = line.trim();
-        if trimmed.is_empty() {
-            continue;
-        }
-        let Ok(episode) = serde_json::from_str::<roko_learn::episode_logger::Episode>(trimmed)
-        else {
-            continue;
-        };
-
+    for episode in episodes {
         count += 1;
         first_seen = Some(match first_seen {
             Some(current) => current.min(episode.timestamp.clone()),
@@ -1863,6 +2542,7 @@ pub(crate) async fn print_learn_episodes(workdir: &std::path::Path) {
                 episode.usage.output_tokens
             )
         ));
+        push_compounding_window(&mut window, episode);
     }
 
     if count == 0 {
@@ -1872,6 +2552,15 @@ pub(crate) async fn print_learn_episodes(workdir: &std::path::Path) {
     }
     println!("  Range: {}", format_range(first_seen, last_seen));
     println!("  Latest: {}", latest.unwrap_or_else(|| "none".to_string()));
+    for line in format_hindsight_lines(&adjustments, applied) {
+        println!("{line}");
+    }
+    if count > 0 {
+        let metrics = roko_learn::aggregate::compute_compounding_metrics(&Vec::from(window));
+        for line in format_compounding_metrics(&metrics) {
+            println!("{line}");
+        }
+    }
 }
 
 pub(crate) fn print_learn_gate_thresholds(workdir: &std::path::Path) {
@@ -2118,6 +2807,63 @@ async fn cmd_learn_playbooks(workdir: &std::path::Path) -> Result<i32> {
         );
     }
 
+    Ok(EXIT_SUCCESS)
+}
+
+// ── Failure patterns (backlog 4128) ──────────────────────────────────
+
+/// `roko learn patterns`: the failure patterns in `learn/error-patterns.json`,
+/// most frequent first. With `graduate`, only those ready to graduate into a
+/// lint or a verify step (decision 4127), each with its fix and a suggested
+/// check: roko proposes, and a person writes the check.
+fn cmd_learn_patterns(workdir: &std::path::Path, graduate: bool, json: bool) -> Result<i32> {
+    use roko_learn::error_pattern_store::{
+        ERROR_PATTERNS_FILE, ErrorPatternStore, GRADUATION_MIN_OCCURRENCES, GRADUATION_MIN_PLANS,
+    };
+
+    let path = workdir
+        .join(".roko")
+        .join("learn")
+        .join(ERROR_PATTERNS_FILE);
+    let store = ErrorPatternStore::load(&path);
+    if !graduate {
+        if json {
+            println!("{}", serde_json::to_string_pretty(&store.top_patterns(50))?);
+        } else if store.is_empty() {
+            println!("Failure patterns: none at {}", path.display());
+        } else {
+            print!("{}", store.format_for_prompt(20));
+        }
+        return Ok(EXIT_SUCCESS);
+    }
+    let candidates = store.graduation_candidates(GRADUATION_MIN_OCCURRENCES, GRADUATION_MIN_PLANS);
+    if json {
+        println!("{}", serde_json::to_string_pretty(&candidates)?);
+        return Ok(EXIT_SUCCESS);
+    }
+    if candidates.is_empty() {
+        println!(
+            "No failure pattern is ready to graduate: none was seen {GRADUATION_MIN_OCCURRENCES} \
+             or more times across {GRADUATION_MIN_PLANS} or more plans with a verified fix."
+        );
+        return Ok(EXIT_SUCCESS);
+    }
+    println!(
+        "Failure patterns ready to graduate into a lint or a verify step \
+         ({GRADUATION_MIN_OCCURRENCES}+ times, {GRADUATION_MIN_PLANS}+ plans, a verified fix):"
+    );
+    for (index, candidate) in candidates.iter().enumerate() {
+        println!();
+        println!("{}. {}", index + 1, candidate.key);
+        let (seen, plans) = (candidate.occurrences, candidate.plans);
+        println!("   seen {seen} times in {plans} plans");
+        println!("   failure: {}", candidate.digest);
+        if let Some(gate) = &candidate.gate {
+            println!("   verify: {gate}");
+        }
+        println!("   fix: {}", candidate.resolution);
+        println!("   suggested check: {}", candidate.suggested_check);
+    }
     Ok(EXIT_SUCCESS)
 }
 
@@ -2786,6 +3532,26 @@ async fn cmd_learn_role_costs(workdir: &std::path::Path, json: bool) -> Result<i
 mod tests {
     use super::*;
 
+    /// S03 T15: `roko learn loops --census --json` parses.
+    #[test]
+    fn learn_loops_parses() {
+        use clap::Parser as _;
+
+        let cli = Cli::try_parse_from(["roko", "learn", "loops", "--census", "--json"])
+            .expect("parse learn loops");
+        assert!(cli.json);
+        assert!(matches!(
+            cli.command,
+            Some(Command::Learn {
+                cmd: LearnCmd::Loops {
+                    workdir: None,
+                    census: true,
+                    cmd: None,
+                },
+            })
+        ));
+    }
+
     /// S01 P0-13: `roko learn telemetry check|route-report` parse, and
     /// `route-report --help` prints help.
     #[test]
@@ -2824,11 +3590,54 @@ mod tests {
                 cmd: LearnCmd::Telemetry {
                     cmd: TelemetryCmd::Check {
                         run: None,
-                        workdir: None
+                        srm: false,
+                        ref runs,
+                        workdir: None,
                     },
                 },
-            })
+            }) if runs.is_empty()
         ));
+        // Backlog 4130: `check --srm` pools the runs `--runs` names; `--runs`
+        // needs `--srm` and conflicts with `--run`.
+        let cli = Cli::try_parse_from([
+            "roko",
+            "learn",
+            "telemetry",
+            "check",
+            "--srm",
+            "--runs",
+            "graph-a-1,graph-b-2",
+        ])
+        .expect("parse learn telemetry check --srm");
+        assert!(matches!(
+            cli.command,
+            Some(Command::Learn {
+                cmd: LearnCmd::Telemetry {
+                    cmd: TelemetryCmd::Check {
+                        run: None,
+                        srm: true,
+                        ref runs,
+                        workdir: None,
+                    },
+                },
+            }) if *runs == ["graph-a-1", "graph-b-2"]
+        ));
+        let needs_srm = Cli::try_parse_from(["roko", "learn", "telemetry", "check", "--runs", "a"])
+            .expect_err("--runs needs --srm");
+        assert_eq!(needs_srm.kind(), ErrorKind::MissingRequiredArgument);
+        let conflict = Cli::try_parse_from([
+            "roko",
+            "learn",
+            "telemetry",
+            "check",
+            "--srm",
+            "--run",
+            "a",
+            "--runs",
+            "b",
+        ])
+        .expect_err("--run and --runs conflict");
+        assert_eq!(conflict.kind(), ErrorKind::ArgumentConflict);
         let help = Cli::try_parse_from(["roko", "learn", "telemetry", "route-report", "--help"])
             .expect_err("--help prints help instead of parsing");
         assert_eq!(help.kind(), ErrorKind::DisplayHelp);
@@ -2847,6 +3656,100 @@ mod tests {
         let since = parse_telemetry_since("2026-09-29").expect("a date");
         assert_eq!(since.to_rfc3339(), "2026-09-29T00:00:00+00:00");
         assert!(parse_telemetry_since("yesterday").is_err());
+    }
+
+    /// Backlog 4130: `roko learn telemetry check --srm` exits 0 when each
+    /// layer splits as logged and non-zero on a skewed split, over one run
+    /// or the runs `--runs` names, and prints one line per layer.
+    #[test]
+    fn learn_telemetry_check_srm_exits_non_zero_on_a_mismatch() {
+        use roko_learn::loop_audit::arm_set::{ArmSet, NORMAL_CONDITION};
+        use roko_learn::telemetry::records::DECISION_SCHEMA;
+        use roko_learn::telemetry::report::{RunRecords, srm_check};
+        use roko_learn::telemetry::{
+            Arm, Assignment, AssignmentUnit, AttemptIdentity, AttemptKey, ContentDecisionPoint,
+            ContentDecisionRecord, RunFile, Stamped, TelemetryRecord,
+        };
+
+        let dir = tempfile::tempdir().unwrap();
+        let layout = roko_fs::RokoLayout::for_project(dir.path());
+        // A run of 300 chains, each with one knowledge row whose draw at
+        // h = 0.5 is the default arm for the first `defaults` chains.
+        let write_run = |run_id: &str, defaults: usize| {
+            let mut lines = String::new();
+            for index in 0..300 {
+                let key = AttemptKey::new(run_id, "srm", format!("T{index}"), 1);
+                let (arm, u) = if index < defaults {
+                    (Arm::Default, 0.25)
+                } else {
+                    (Arm::Learned, 0.75)
+                };
+                let draw = Assignment {
+                    unit: AssignmentUnit::Chain,
+                    layer: "knowledge".to_string(),
+                    salt_id: "knowledge@2026-10-03".to_string(),
+                    u,
+                    h: 0.5,
+                    g: 0.0,
+                    arm,
+                    propensity: 0.5,
+                };
+                let record = ContentDecisionRecord {
+                    identity: AttemptIdentity::new(&key),
+                    decision_point: ContentDecisionPoint::Knowledge,
+                    policy: "keyword_overlap_top3".to_string(),
+                    candidates: Vec::new(),
+                    chosen: Vec::new(),
+                    chosen_propensity: Some(1.0),
+                    source: None,
+                    state: None,
+                    thresholds_digest: None,
+                    arm_set: Some(ArmSet {
+                        chain_key: key.chain_key(),
+                        arms: [("knowledge".to_string(), draw)].into(),
+                        condition_id: NORMAL_CONDITION.to_string(),
+                    }),
+                    section_draws: Vec::new(),
+                    proposals: None,
+                    audit: Default::default(),
+                };
+                let line = Stamped {
+                    schema_version: DECISION_SCHEMA.to_string(),
+                    record_id: record.record_id(),
+                    seq: index as u64 + 1,
+                    ts: "2026-10-03T09:00:00Z".to_string(),
+                    record,
+                };
+                lines.push_str(&serde_json::to_string(&line).unwrap());
+                lines.push('\n');
+            }
+            let run_dir = layout.run_dir(run_id);
+            std::fs::create_dir_all(&run_dir).unwrap();
+            std::fs::write(RunFile::Decisions.path_in(&run_dir), lines).unwrap();
+        };
+        write_run("srm-even-a", 150);
+        write_run("srm-even-b", 150);
+        write_run("srm-skewed", 90);
+
+        let check = |run: Option<&str>, runs: &[&str]| {
+            let runs: Vec<String> = runs.iter().map(|id| id.to_string()).collect();
+            telemetry_srm(&layout, run, &runs, false)
+        };
+        assert_eq!(check(Some("srm-even-a"), &[]).unwrap(), EXIT_SUCCESS);
+        assert_eq!(check(Some("srm-skewed"), &[]).unwrap(), EXIT_FAILURE);
+        assert!(check(None, &["srm-even-a", "no-such-run"]).is_err());
+        let pooled = ["srm-even-a".to_string(), "srm-even-b".to_string()];
+        let exit = telemetry_srm(&layout, None, &pooled, true).unwrap();
+        assert_eq!(exit, EXIT_SUCCESS);
+
+        // 210 of the skewed run's 300 chains took the learned arm.
+        let skewed = RunRecords::load(&layout.run_dir("srm-skewed")).unwrap();
+        let report = srm_check(&[skewed]);
+        let text = render_srm_check(&report, &report.failures());
+        let shares = "0.500/0.500/0.000 0.700/0.300/0.000";
+        assert!(text.contains(shares), "{text}");
+        assert!(text.contains("MISMATCH"), "{text}");
+        assert!(text.contains("FAIL (1)"), "{text}");
     }
 
     #[test]
@@ -2917,6 +3820,89 @@ mod tests {
             learn_episodes_path(workdir),
             workdir.join(".roko").join("episodes.jsonl")
         );
+    }
+
+    #[tokio::test]
+    async fn learn_episodes_json_reports_compounding_metrics() {
+        let dir = tempfile::tempdir().unwrap();
+        let log = learn_episodes_path(dir.path());
+        std::fs::create_dir_all(log.parent().unwrap()).unwrap();
+        // The first four episodes fall out of the window. Within it, every
+        // fourth episode used a playbook and was given knowledge; the rest
+        // say `knowledge_used: false`, as Graph episodes do.
+        let mut lines = String::new();
+        for index in 0..COMPOUNDING_WINDOW + 4 {
+            let mut episode =
+                roko_learn::episode_logger::Episode::new("agent", format!("task-{index}"));
+            episode.success = true;
+            let used = index < 4 || index % 4 == 0;
+            episode
+                .extra
+                .insert("knowledge_used".into(), serde_json::Value::Bool(used));
+            if used {
+                episode
+                    .extra
+                    .insert("playbook_id".into(), serde_json::json!("pb-1"));
+            }
+            lines.push_str(&serde_json::to_string(&episode).unwrap());
+            lines.push('\n');
+        }
+        std::fs::write(&log, lines).unwrap();
+
+        let episodes = collect_episodes_json(dir.path()).await;
+        assert_eq!(episodes.total, COMPOUNDING_WINDOW + 4);
+        assert_eq!(episodes.compounding.episode_window, COMPOUNDING_WINDOW);
+        assert_eq!(episodes.compounding.playbook_hit_rate, 0.25);
+        assert_eq!(episodes.compounding.knowledge_reuse_rate, 0.25);
+
+        let json = serde_json::to_value(&episodes).unwrap();
+        assert_eq!(json["compounding"]["playbook_hit_rate"], 0.25);
+        assert!(json["compounding"]["cost_per_success"].is_number());
+        let human = format_compounding_metrics(&episodes.compounding);
+        assert_eq!(human[1], "    playbook hit rate:    25.0%");
+    }
+
+    /// gap-5be28d: a success that a later verify failure was blamed on
+    /// counts as a failure, and the correction is reported.
+    #[tokio::test]
+    async fn learn_episodes_json_applies_hindsight_adjustments() {
+        let dir = tempfile::tempdir().unwrap();
+        let log = learn_episodes_path(dir.path());
+        std::fs::create_dir_all(log.parent().unwrap()).unwrap();
+        let mut blamed = roko_learn::episode_logger::Episode::new("agent", "T1");
+        blamed.success = true;
+        let mut kept = roko_learn::episode_logger::Episode::new("agent", "T3");
+        kept.success = true;
+        let lines = [&blamed, &kept]
+            .iter()
+            .map(|episode| serde_json::to_string(episode).unwrap() + "\n")
+            .collect::<String>();
+        std::fs::write(&log, lines).unwrap();
+        let regression = roko_learn::hindsight::EpisodeAdjustment {
+            original_episode_id: blamed.id.clone(),
+            adjustment_kind: roko_learn::hindsight::AdjustmentKind::Regression,
+            old_value: serde_json::json!(true),
+            new_value: serde_json::json!(false),
+            reason: "later gate failure in episode ep-2 was attributed to this task's files".into(),
+            timestamp: chrono::Utc::now(),
+        };
+        let path = roko_learn::hindsight::workspace_adjustments_path(dir.path());
+        roko_learn::hindsight::append_new_adjustments(&path, &[regression]).unwrap();
+
+        let episodes = collect_episodes_json(dir.path()).await;
+        assert_eq!(episodes.total, 2);
+        assert_eq!((episodes.passed, episodes.failed), (1, 1));
+        assert_eq!(episodes.hindsight.adjustments, 1);
+        assert_eq!(episodes.hindsight.applied, 1);
+        assert_eq!(episodes.hindsight.latest[0].original_episode_id, blamed.id);
+
+        let adjustments = roko_learn::hindsight::read_adjustments(&path).unwrap();
+        let human = format_hindsight_lines(&adjustments, 1);
+        assert_eq!(
+            human[0],
+            "  Hindsight: 1 correction(s), 1 episode(s) relabeled"
+        );
+        assert!(human[1].contains("Regression"), "{human:?}");
     }
 
     #[test]

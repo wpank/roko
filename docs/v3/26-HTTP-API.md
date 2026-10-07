@@ -1,7 +1,7 @@
 # 26 -- HTTP Control Plane
 
-> The `roko serve` HTTP control plane exposes ~376 canonical REST routes (~421
-> including aliases) plus SSE and WebSocket streams on port 6677. It is the
+> The `roko serve` HTTP control plane exposes REST routes (counts in
+> `tools/http_route_inventory.snapshot.json`) plus SSE and WebSocket streams on port 6677. It is the
 > programmatic surface through which dashboards, CI scripts, external agents,
 > and the interactive TUI observe and control every aspect of the system.
 
@@ -188,15 +188,17 @@ injected into request extensions.
 
 ### 3.2 Scope enforcement
 
-Scope hierarchy: `admin` > `agent:write` > `plan:write` > `read`.
+Scope hierarchy: `owner` and `admin` cover every scope, `write` covers every `*:write` scope
+(`agent:write`, `plan:write`, `terminal:write`), and any key may read.
 
 | Route prefix | Required scope |
 |---|---|
-| GET/HEAD/OPTIONS (any) | `read` (always allowed) |
+| GET/HEAD/OPTIONS (any) | `read` (always allowed), except `GET /ws/terminal`, which opens a session (`terminal:write`) |
+| POST `/api/runs/{id}/share` | `admin`, although `/api/runs` is `write`: anyone holding a share link can read the run (9328) |
 | `/api/secrets`, `/api/config`, `/api/api-keys` | `admin` |
 | `/api/agents/*` | `agent:write` |
-| `/api/plans/*`, `/api/prd*` | `plan:write` |
-| All other POST/PUT/PATCH/DELETE | `read` |
+| `/api/plans/*` | `plan:write` |
+| All other POST/PUT/PATCH/DELETE | the scope its prefix has in `ROUTE_SCOPE_MANIFEST` (`routes/middleware.rs`), else `write`: an unlisted route fails closed |
 
 ### 3.3 RBAC middleware
 
@@ -405,7 +407,7 @@ sequenceDiagram
 | `task_started` | `plan_id`, `task_id`, `title`, `phase` |
 | `task_completed` | `plan_id`, `task_id`, `outcome` |
 | `task_phase_changed` | `plan_id`, `task_id`, `old_phase`, `new_phase` |
-| `agent_spawned` | `agent_id`, `role`, `model` |
+| `agent_spawned` | `agent_id`, `role`, `model`, and `provider` (e.g. `claude-cli`) when the emitter knows it |
 | `agent_output` | `agent_id`, `content` |
 | `agent_completed` | `agent_id`, `role`, `episode_id`, `passed` |
 | `gate_result` | `plan_id`, `task_id`, `gate`, `rung`, `passed` |
@@ -480,10 +482,12 @@ aliases (both are mounted).
 | POST | `/api/plans` | Create a new plan |
 | GET | `/api/plans/{id}` | Full plan details |
 | GET | `/api/plans/{id}/tasks` | Tasks for a plan |
-| POST | `/api/plans/{id}/execute` | Execute plan (background, 202 Accepted) |
-| GET | `/api/plans/{id}/status` | Execution status |
+| POST | `/api/plans/{id}/execute` | Execute plan (background, 202 Accepted with the run's `id`; 422 with the validation report in `details` when `roko plan run` would refuse the plan). While another plan run is live the run is queued instead: 202 with `queued: true` and its `position`, started under its `id` when the live run ends; 409 only when the queue's 8 places are taken |
+| POST | `/api/plans/execute` | Execute a plan set, named plans or every plan (body `plans`, `target`, `resume`, `max_parallel_plans`); queued like a single plan |
+| GET | `/api/plans/{id}/status` | Execution status of the run `{id}` names (plan id, member plan id or run id): `running`, then `succeeded`, `failed` (with `error`), `unverified` or `cancelled`, with `finished` and `finished_at`; a run that ended keeps answering for an hour |
 | POST | `/api/plans/{id}/pause` | Pause execution |
 | POST | `/api/plans/{id}/resume` | Resume execution |
+| POST | `/api/plans/{id}/cancel` | Cancel a running run, or take a queued one out of the queue; either ends `cancelled` |
 | GET | `/api/plans/{id}/gates` | Gate results grouped by task |
 | GET | `/api/plans/{id}/costs` | Retry-inclusive spend, ceilings, projections |
 | GET | `/api/plans/{id}/reviews` | Human reviews |
@@ -491,14 +495,18 @@ aliases (both are mounted).
 | GET | `/api/plans/{id}/tasks/{task_id}/diff` | Code diff from task agent |
 | POST | `/api/plans/{id}/chat` | Chat in plan context |
 | POST | `/api/plans/{id}/estimate` | Cost and duration estimate |
-| POST | `/api/plans/generate` | Generate plan from prompt (202 Accepted) |
 
 ### 8.3 One-Shot Runs
 
 | Method | Path | Description |
 |--------|------|-------------|
-| POST | `/api/run` | Spawn a background run (202 Accepted) |
+| POST | `/api/run` | Run the prompt in the background as a gated one-task plan, as `roko run` does (202 Accepted with the run's `id`, which the Graph run takes; 409 while a plan run is live). Body: `prompt`, optional `workdir`, optional `domain` (a work-domain label such as `research`, which picks the task's tool policy and verifier pack; default: the project's `default_domain`) |
 | GET | `/api/run/{id}/status` | Poll run status |
+
+The status is `running`, then the run's verdict: `succeeded` when gates checked
+its work and passed it, `failed`, or `unverified` when no gate checked it. Only
+`succeeded` sets `success: true`, and the `run_completed` event carries the same
+`verdict`. `GET /api/runs/{id}/summary` reports the same run from its index.
 
 ### 8.4 Run-Scoped Observability
 
@@ -509,6 +517,7 @@ Hashed per-run indexes under `.roko/events-by-run/` and
 |--------|------|-------------|
 | GET | `/api/dashboard/runs` | Bounded summary of hashed per-run indexes |
 | GET | `/api/runs/{run_id}` | Run detail, terminal state, counts, integrity |
+| GET | `/api/runs/{run_id}/summary` | What a host can post: `state` (`queued`, `running`, `succeeded`, `failed`, `unverified`, `cancelled`, the words `GET /api/plans/{id}/status` uses), `verdict` once it ended, `cost_usd`, task counts (`passed`, `failed`, `unverified`, `other`), at most five `milestones` from event kinds and ids, `untrusted_input_boundary` per task (`data_llm` or `none`, see 8.41), `finished_at`, `links` |
 | GET | `/api/runs/{run_id}/events` | Cursor-paginated events (`?cursor=&limit=&types=&source=`) |
 | GET | `/api/runs/{run_id}/events/stream` | Run-filtered SSE |
 | GET | `/api/runs/{run_id}/tasks` | Task summaries and attempt numbers |
@@ -519,22 +528,33 @@ Hashed per-run indexes under `.roko/events-by-run/` and
 | GET | `/api/runs/{run_id}/artifacts` | Evidence artifact metadata |
 | GET | `/api/runs/{run_id}/screenshots` | Screenshot manifest (metadata only) |
 | GET | `/api/runs/{run_id}/bundle` | Evidence-bundle manifest (no download) |
+| POST | `/api/runs/{run_id}/share` | Mint a share link for the run (`admin` scope, see 3.2). Body: `{"public": bool, "no_expire": bool, "prompt": "…"}`, the prompt run once when the run does not exist. A link expires after `serve.share_ttl_days` (7); `no_expire` asks for one that never does, and only a server bound to loopback grants it (400 on any other bind) |
 | GET | `/api/shared/{token}` | Public shared transcript (opaque token) |
 | GET | `/runs/{token}` (no `/api/` prefix) | Self-contained shareable run page |
 
-### 8.5 PRDs
+### 8.5 Plan Authoring
+
+A plan comes straight from a prompt: `generate` writes `plans/<slug>/`, the plan's
+`tasks.toml` is edited as text through `source`, and `execute` (section 8.2) runs it.
+The portal works this way. The PRD routes that used to sit in this section were removed
+with the PRD pipeline; [Removed commands](28-CLI.md#removed-commands) in the CLI
+reference maps each one to its replacement.
 
 | Method | Path | Description |
 |--------|------|-------------|
-| GET | `/api/prds` | List all PRDs |
-| GET | `/api/prds/status` | Coverage report by lifecycle stage |
-| POST | `/api/prds/ideas` | Capture a work-item idea |
-| GET | `/api/prds/{slug}` | Get a PRD by slug |
-| POST | `/api/prds/{slug}/draft` | Agent-driven PRD drafting (202) |
-| POST | `/api/prds/{slug}/promote` | Promote to planned/approved status |
-| POST | `/api/prds/{slug}/plan` | Generate implementation plan from PRD (202) |
-| POST | `/api/prds/consolidate` | Scan for duplicates and gaps |
-| POST | `/api/prd/consolidate` | (alias) |
+| POST | `/api/plans/generate` | Write a plan from `{"prompt": "..."}` (202 Accepted with the operation `id` and the new `plan_id`; poll `GET /api/operations/{id}`). Takes `prompt` only: a body with `slug` is rejected with 422 |
+| GET | `/api/plans/{id}/source` | The plan's raw `tasks.toml` as `{ "id", "path", "toml" }` |
+| PUT | `/api/plans/{id}/source` | Replace `tasks.toml` with `{"toml": "..."}`. Validated before writing: 200 `{ "saved": true, ... }`, or 422 `invalid_plan` with the diagnostics and the file untouched; 409 while a run includes the plan |
+| POST | `/api/plans/{id}/validate` | Validate the file on disk, or `{"toml": "..."}` without saving; always 200 with `{ "valid", "errors", "warnings", "diagnostics" }` |
+| POST | `/api/plans/{id}/revise` | An agent revises the plan from `{"feedback": "..."}` (202; 409 while a run includes the plan) |
+
+```bash
+# Write a plan from a prompt, then fetch its tasks.toml
+curl -X POST http://localhost:6677/api/plans/generate \
+  -H 'Content-Type: application/json' -d '{"prompt": "Add rate limiting to the API"}'
+# {"id":"<operation-id>","plan_id":"add-rate-limiting-to-the-api"}
+curl http://localhost:6677/api/plans/add-rate-limiting-to-the-api/source
+```
 
 ### 8.6 Agents -- Control Plane
 
@@ -650,7 +670,6 @@ All routes have both `/learning/` and `/learn/` prefix forms.
 |--------|------|-------------|
 | GET | `/api/research` | List research artifacts |
 | POST | `/api/research/topic` | Deep research on a topic (202) |
-| POST | `/api/research/enhance-prd/{slug}` | Enhance PRD with research |
 | POST | `/api/research/enhance-plan/{plan}` | Enhance plan with research |
 | POST | `/api/research/enhance-tasks/{plan}` | Enhance tasks with research |
 | POST | `/api/research/analyze` | Analyze execution data |
@@ -850,8 +869,10 @@ Supervised HTTP JSON connectors.
 
 | Method | Path | Description |
 |--------|------|-------------|
-| GET | `/api/safety/quarantine` | Tool results the immune boundary withheld, from the workspace vault (plan runs included) plus any older plan-run vault left in a `.roko/worktrees/` checkout; each entry names its `vault` |
+| GET | `/api/safety/quarantine` | Tool results the immune boundary withheld, from the workspace vault (plan runs included) plus any older plan-run vault left in a `.roko/worktrees/` checkout. Each entry gives its review `status`, its `full_hash` and its `vault`; each vault gives its `capacity` and whether it is `full` (a full vault cannot index further withheld results) |
 | GET | `/api/safety/incidents` | Links between quarantined results, from the same vaults |
+| GET | `/api/effects?run_id=` | Staged outbound effects (9133): the tool calls runs hold for approval under a `stage` outbound policy (9131), without their arguments, and the decisions made on them, newest first |
+| POST | `/api/effects/{id}/decision` | `{ "approve": bool, "note": ... }`: approve an effect, which replays its call once and runs the receipt rungs of its task's pack, or reject it, as the authenticated principal (scope `write`, permission `plan:execute`). Answers the decision's record with the call's result and the receipt verdicts; 409 for a decided effect, 404 for an unknown one |
 
 ### 8.28 Affect (Daimon)
 
@@ -941,7 +962,7 @@ State machine: `open -> assigned/in_progress -> submitted -> completed/failed`.
 | GET | `/api/subscriptions` | List subscriptions |
 | POST | `/api/subscriptions` | Create subscription |
 | GET | `/api/subscriptions/catalog` | Supported trigger/filter shapes |
-| GET | `/api/subscriptions/relay/status` | Durable relay diagnostics |
+| GET | `/api/subscriptions/relay/status` | Durable relay diagnostics; a build without the `relay` feature answers 501 |
 | PUT | `/api/subscriptions/{id}` | Replace subscription |
 | DELETE | `/api/subscriptions/{id}` | Delete subscription |
 | POST | `/api/subscriptions/{id}/enable` | Enable subscription |
@@ -1030,6 +1051,71 @@ The defaults are the safe choice, and each opt-out is an explicit `[serve]` key:
 | POST | `/api/event-ingest` | Event ingestion endpoint |
 | GET/POST | `/api/workspaces` | Multi-workspace management |
 | GET | `/api/swe-bench/*` | SWE-bench evaluation routes |
+
+### 8.41 MCP for chat hosts
+
+`POST /mcp` (no `/api/` prefix) lets a host such as Hermes or OpenClaw call Roko
+as an MCP tool server. It speaks MCP's Streamable HTTP transport with one JSON
+response per request and no SSE stream: `initialize`, `ping`, `tools/list` and
+`tools/call`; a notification such as `notifications/initialized` gets 202 with no
+body, and protocol errors are JSON-RPC errors. With auth on it takes the API's
+key, scope and RBAC checks (`read` scope, `dashboard:view`), and `tools/call`
+checks each tool's own scope. A request whose `Origin` is not this machine is
+refused with 403, so a web page cannot reach it through DNS rebinding; hosts
+call it from outside a browser and send no `Origin`.
+
+The tools and their arguments are the contract with hosts. Each returns its
+JSON as text and as `structuredContent`; a tool's own failure, such as an
+unknown run, is a result with `isError: true`. `run_status` and `recall` only
+read (`annotations.readOnlyHint: true`, `read` scope). The run tools need the
+`write` scope and answer at once with `{ run_id, state, links }` for
+`run_status` to follow. `run_prompt` and `plan_run` are annotated
+`destructiveHint: true`, `idempotentHint: false` and `openWorldHint: true`,
+`plan_generate` `destructiveHint: false`, and `run_cancel` `idempotentHint:
+true`, so a host asks its user before calling them; the paid ones say so in
+their description and in `_meta` (`"roko/paid": true`). No tool picks a model:
+routing stays with the ladder.
+
+| Tool | Arguments | Returns |
+|------|-----------|---------|
+| `run_status` | `run_id` (string, required); `wait_secs` (integer, 0 to 30, default 0) | The run's summary, as `GET /api/runs/{run_id}/summary` returns it, once its state changes, it has ended, or `wait_secs` pass; for a `plan_generate` run, the operation's state and result |
+| `recall` | `query` (string, required); `limit` (integer, 1 to 50, default 5) | The knowledge store's entries on `query`, most relevant first, as `GET /api/knowledge` returns them |
+| `run_prompt` | `prompt` (string, required); `domain` (string); `max_usd` (number above 0, required) | A gated one-task run of the prompt, as `POST /api/run` starts it (409 while a plan run is live) |
+| `plan_run` | `plan_id` (string, required); `resume` (boolean, default false); `max_usd` (number above 0, required) | A run of the plan, or its place in the queue (`state: "queued"`, `position`), as `POST /api/plans/{id}/execute` starts it |
+| `plan_generate` | `prompt` (string, required) | The planner's operation as `run_id` and the new plan's `plan_id`, as `POST /api/plans/generate` starts it |
+| `run_cancel` | `run_id` (string, required) | A `run_prompt` run stopped, or a live or queued plan run cancelled, as `POST /api/plans/{id}/cancel` cancels it |
+| `confirm_pending` | `run_id` (string, required) | `{ pending: [...] }`: the outcomes the run's tasks wait for their person to confirm (a `confirm` rung, 9137), each with `plan_id`, `task_id`, `title`, `attempt_key`, `question`, `summary` and `held_at`. Read-only |
+| `confirm_answer` | `run_id`, `task_id`, `attempt_key` (strings, required); `approve` (boolean, required); `note` (string) | The person's answer recorded in the review log, as `POST /api/plans/{id}/tasks/{task_id}/review` records a decision: a yes passes the rung as `confirmed_by_user`, a no fails the attempt with the note as its feedback. `write` scope; a task that waits for no such confirmation is an error |
+| `effects_pending` | `run_id` (string) | The tool calls runs hold for approval under a `stage` outbound policy (9131), as `GET /api/effects` lists them: each with `effect_id`, `tool`, `server`, `arguments` summarised without their values (each field's type, a string's length) and `proposed_at`, plus the decisions made. Read-only |
+| `effect_decide` | `effect_id` (string, required); `approve` (boolean, required); `note` (string) | The decision, as `POST /api/effects/{id}/decision` makes it (9138): an approval applies the call once and runs its receipt rungs, a rejection drops it; answers the decision's record with the result and the receipt verdicts. `write` scope, annotated `destructiveHint: true`, `openWorldHint: true`; a decided or unknown effect is an error |
+
+A run a chat host starts must name its spending cap: `run_prompt` and
+`plan_run` refuse, with a JSON-RPC error and before anything starts, a call
+without `max_usd` or with one above `[serve.mcp] max_run_usd` (default 5.00),
+and the cap becomes the run's budget ceiling. Such a run carries its origin,
+`{ "kind": "mcp", "client": "<credential name, or local>" }`: the prompt
+run's `run_started` event and the run's manifest (`.roko/runs/<run_id>/manifest.json`,
+`origin: "mcp:<client>"`) record it. Runs started any other way are not
+affected.
+
+A chat host's request is untrusted data: it may quote a web page or another
+person. The task of a `run_prompt` run, and the planner's prompt for
+`plan_generate`, carry it between a `<<<CHAT REQUEST>>>` line and a
+`<<<END CHAT REQUEST>>>` line, after a fixed instruction that nothing between
+the markers can change the agent's tools, its safety policy, the verify steps or
+its instructions; either marker inside the request is escaped (`<<\<`), and the
+task's title names the host instead of quoting the request. The fence is a
+mitigation. What enforces is the data-model boundary, `[agent.data_llm]`, which
+screens what an agent's tools read in roko's own tool loops: `run_prompt` and
+`plan_run` are refused, as a tool error, when it is not set, unless `[serve.mcp]
+allow_without_data_llm = true`, and the runtime checks again before such a run
+starts. The run's summary reports, per task it dispatched an agent for,
+`untrusted_input_boundary`: `{ plan_id, task_id, boundary }`, where `boundary`
+is `data_llm` when the boundary is set and every model the task ran on runs
+roko's own tool loop, and `none` otherwise (a Claude Code, Codex, Cursor or
+Gemini CLI agent runs its own loop, which the boundary cannot reach).
+
+There is no `remember`: personal memory stays with the host.
 
 ---
 

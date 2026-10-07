@@ -174,7 +174,7 @@ Expected output progression:
    b. Dispatches an agent with the configured LLM provider
    c. Runs the 7-rung gate pipeline on the agent's output
    d. Records an efficiency event and episode
-   e. On gate failure, optionally replans (controlled by `learning_config.replan_on_gate_failure`)
+   e. On gate failure, retries the task up to its `max_retries`, with the gate output in the retry prompt
 4. State is persisted to `.roko/state/state-snapshot.json` after each task
 
 ## 4. Resume an Interrupted Plan
@@ -263,8 +263,7 @@ repeatedly fails:
 
 1. Check the gate output: the runner prints the failing `fail_msg`
 2. Review the verify command -- run it manually to diagnose
-3. Check if `replan_on_gate_failure` is enabled in your config
-4. Inspect `.roko/learn/gate-thresholds.json` for adaptive threshold state
+3. Inspect `.roko/learn/gate-thresholds.json` for adaptive threshold state
 
 ### Stale state after code changes
 

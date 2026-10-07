@@ -60,7 +60,7 @@ when you want those writes confined to a disposable workspace.
 | `verify-local [port]` | Start disposable serve, seed agents, and run `dashboard-smoke`. |
 | `bench [workdir]` | Run the SWE-bench proxy gold/empty/command controls and C-factor proof. |
 | `run <name> [args...]` | Execute an existing demo script by short name. |
-| `all [base-url]` | Seed agents, then run the benchmark, PRD, research, and full-loop demos. |
+| `all [base-url]` | Seed agents, then run the benchmark, plan, research, and full-loop demos. |
 
 ## Wrapped Demo Names
 
@@ -70,8 +70,8 @@ demo/demo-resources/bin/roko-demo run match
 demo/demo-resources/bin/roko-demo run lifecycle
 demo/demo-resources/bin/roko-demo run single-agent
 demo/demo-resources/bin/roko-demo run multi-agent
-demo/demo-resources/bin/roko-demo run prd
-demo/demo-resources/bin/roko-demo run prd-api
+demo/demo-resources/bin/roko-demo run plan
+demo/demo-resources/bin/roko-demo run plan-api
 demo/demo-resources/bin/roko-demo run research
 demo/demo-resources/bin/roko-demo run fleet
 demo/demo-resources/bin/roko-demo run full

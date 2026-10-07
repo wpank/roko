@@ -50,11 +50,14 @@ impl StreamingTaskDispatcher for GraphTaskDispatcher {
             });
         }
 
-        // ── Budget reservation ───────────────────────────────────────────
+        // ── Operator pause and budget reservation ────────────────────────
+        // A paused run starts no attempt, a retry included (G10).
+        operator_pause::hold_while_paused(ctx, &spec.plan_id, &spec.title).await?;
         self.admit_daily_budget(spec).await?;
         let budget_reservation = self
             .budget_ledger
-            .reserve(&spec.plan_id, self.budget_policy)?;
+            .reserve_waiting(&spec.plan_id, self.budget_policy, || ctx.is_cancelled())
+            .await?;
 
         // ── Attempt identity ─────────────────────────────────────────────
         let attempt_id = format!(
@@ -83,6 +86,14 @@ impl StreamingTaskDispatcher for GraphTaskDispatcher {
                 spec.title
             ))
         })?;
+        // Only the batch dispatch path builds scratch_dir workspaces (9135).
+        if task.workspace_kind(&self.config) == roko_core::WorkspaceKind::ScratchDir {
+            return Err(RokoError::Rejected(format!(
+                "task `{}` was not run: it works in a scratch_dir workspace, which the streaming \
+                 dispatch path does not build",
+                task.id
+            )));
+        }
         let role = task.role.as_deref().unwrap_or("implementer");
         let _in_flight = self.in_flight.register(
             &format!("{}/{}", spec.plan_id, task.id),
@@ -97,6 +108,7 @@ impl StreamingTaskDispatcher for GraphTaskDispatcher {
             Some(self.learned_tier_limits()),
             &task,
             express_active,
+            self.turn_cap_mult(spec, &task, ctx),
         );
         if express_active {
             tracing::info!(
@@ -115,21 +127,18 @@ impl StreamingTaskDispatcher for GraphTaskDispatcher {
         // the real dispatch-time context to the routing observation sink.
         let mut routing_ctx_for_feedback = routing_ctx.clone();
 
-        let (cached_workspace_map, cached_workspace_context, cached_cfactor_context) =
+        let (cached_workspace_map, cached_workspace_context) =
             self.static_prompt_cache.get_or_init(|| {
                 let ws_map =
                     crate::dispatch::prompt_builder::generate_workspace_map_pub(&self.workdir);
                 let ws_ctx =
                     crate::dispatch::prompt_builder::generate_workspace_context_pub(&self.workdir);
-                let cf_ctx =
-                    crate::dispatch::prompt_builder::generate_cfactor_context_pub(&self.workdir);
                 tracing::debug!(
                     ws_map_bytes = ws_map.len(),
                     ws_ctx_bytes = ws_ctx.len(),
-                    cf_ctx_bytes = cf_ctx.len(),
                     "static_prompt_cache: computed once for this run (streaming path)"
                 );
-                (ws_map, ws_ctx, cf_ctx)
+                (ws_map, ws_ctx)
             });
         let express_force_backend_streaming = if express_active && self.cli_model_override.is_none()
         {
@@ -155,6 +164,9 @@ impl StreamingTaskDispatcher for GraphTaskDispatcher {
             .experiment_store_path
             .as_deref()
             .and_then(|store| prompt_experiment::context(store, &attempt.key));
+        // M1's B4 (8125): the attempt's θ sets how many error patterns its
+        // prompt shows.
+        let error_patterns = self.task_error_patterns(spec, &task, attempt.harness_params());
         let ladder_step = self.ladder_step(spec, &task);
         let mut dispatch_ctx = DispatchContext {
             plan_id: spec.plan_id.clone(),
@@ -169,25 +181,39 @@ impl StreamingTaskDispatcher for GraphTaskDispatcher {
                 ctx.budget_remaining,
                 budget_reservation.routing_budget_usd(),
             ),
-            attempt: 0,
+            // The attempts before this one, as on the batch path, so routing
+            // and the self-model know a retry (bug-b087ea).
+            attempt: attempt_number,
             ladder_step,
             prompt_experiment: prompt_experiment.clone(),
             gate_feedback: None,
             routing_context: Some(routing_ctx),
-            routing_bias: None,
             dependency_outputs: upstream_outputs(&input),
-            error_patterns_context: self.factory.format_error_patterns_for_prompt(5),
+            error_patterns,
             cached_workspace_map: cached_workspace_map.clone(),
             cached_workspace_context: cached_workspace_context.clone(),
-            cached_cfactor_context: cached_cfactor_context.clone(),
+            concurrent_plans: self.concurrent_plans(&spec.plan_id),
+            attempt_key: Some(attempt.key.clone()),
+            arm_set: attempt.arm_set(),
+            self_model_rung: None,
+            skip_enrichment: self.plan_skips_enrichment(spec),
         };
-        let dispatch_plan = match self.plan_dispatch(spec, &task, &mut dispatch_ctx) {
+        // M3, as on the batch path (bug-78e5ce): the self-model forecasts the
+        // attempt before it is routed (6128), surfaces a refine-spec or
+        // abandon forecast (6133), and in active mode proposes its start rung
+        // (6130). The forecast it keeps serves the attempt's post-pass step
+        // (6132) and its verdict (6129).
+        dispatch_ctx.self_model_rung = self.forecast_attempt(spec, &task, &dispatch_ctx, &attempt);
+        // M1's B1 (8124): the attempt's θ may raise the task's start rung.
+        let routed_task = self.routed_task(&task, &attempt);
+        let dispatch_plan = match self.plan_dispatch(spec, &routed_task, &mut dispatch_ctx) {
             Ok(dispatch_plan) => dispatch_plan,
             Err(error) => return Err(self.fail_attempt(spec, &task, attempt, None, error).await),
         };
         attempt.prompt_assembled();
         self.record_attempt_ladder(&mut attempt, spec, &task, &dispatch_plan, ladder_step);
-        let contract = effective_agent_contract(role, &task, &self.config);
+        self.record_planned_attempt(&mut attempt, &task, &dispatch_plan);
+        let contract = self.task_contract(role, spec, &task);
         let timeout_ms =
             base_attempt_timeout_ms_with(&self.config, Some(self.learned_tier_limits()), spec);
         let request = AgentDispatchRequest {
@@ -197,10 +223,12 @@ impl StreamingTaskDispatcher for GraphTaskDispatcher {
             workdir: lease.path.clone(),
             // Immune state belongs to the workspace, not the attempt checkout.
             immune_root: Some(self.workdir.clone()),
-            agent_id: format!(
-                "{}/{}",
-                spec.plan_id,
-                ctx.cell_id.as_deref().unwrap_or(&task.id)
+            // One id per attempt (decision 1107); the watchdog and the
+            // dashboard keep the plan/task id below.
+            agent_id: attempt_agent_id(
+                &attempt.key,
+                &spec.plan_id,
+                ctx.cell_id.as_deref().unwrap_or(&task.id),
             ),
             command: None,
             timeout_ms: Some(timeout_ms),
@@ -215,7 +243,10 @@ impl StreamingTaskDispatcher for GraphTaskDispatcher {
             max_turns: Some(max_turns),
             live_output: None,
             attempt_key: Some(attempt_key.clone()),
+            knowledge_ids: super::decision_log::included_knowledge_ids(&dispatch_plan),
         };
+        // FAST lane: fewer turns, a shorter attempt, a patch-only prompt.
+        let request = self.fast_bounded(request);
         let _launched_treatments = prompt_experiment::LaunchedTreatments::bind(
             prompt_experiment,
             &dispatch_plan.prompt.diagnostics.experiment_assignments,
@@ -226,7 +257,11 @@ impl StreamingTaskDispatcher for GraphTaskDispatcher {
 
         // ── Live output tap and stall watchdog (streaming path) ───────────
         let mut request = request;
-        let agent_id = request.agent_id.clone();
+        let agent_id = format!(
+            "{}/{}",
+            spec.plan_id,
+            ctx.cell_id.as_deref().unwrap_or(&task.id)
+        );
         let watched = WatchedAttempt {
             agent_id: &agent_id,
             plan_id: &spec.plan_id,
@@ -235,26 +270,29 @@ impl StreamingTaskDispatcher for GraphTaskDispatcher {
             stop: ctx.cancel_flag.as_deref(),
         };
         let stall_watch = self.stall_watch();
+        // Tracked even with both stall thresholds off (bug-3a3b0f).
+        let progress = stall_watch
+            .as_ref()
+            .map_or_else(AttemptProgress::default, StallWatch::progress);
         let supervised = self.supervise_attempt(&watched);
         request.live_output = self.live_output_tap(
             &watched,
-            stall_watch.as_ref().map(StallWatch::progress),
+            Some(progress.clone()),
             supervised.as_ref().map(SupervisedAttempt::feed),
+            Some(attempt.live_tool_calls()),
         );
 
         // ── Provider invocation ──────────────────────────────────────────
         attempt.dispatch_started();
-        let progress = stall_watch.as_ref().map(StallWatch::progress);
-        if let Some(progress) = &progress {
-            progress.call_started(
-                crate::dispatch_v2::ProviderDispatchResolver::new(Arc::clone(&self.config))
-                    .resolve(&request.model_key),
-                Default::default(),
-            );
-        }
+        progress.call_started(
+            crate::dispatch_v2::ProviderDispatchResolver::new(Arc::clone(&self.config))
+                .resolve(&request.model_key),
+            Default::default(),
+        );
         let watched_result = self
             .run_watched(
                 self.factory.run_shared_agent_bridge(request),
+                &progress,
                 stall_watch,
                 supervised.as_ref(),
                 &watched,
@@ -270,24 +308,19 @@ impl StreamingTaskDispatcher for GraphTaskDispatcher {
             Err(interrupted) => {
                 let error = interrupted.error(&watched);
                 let settlement =
-                    watchdog::failed_call_settlement(Some(&interrupted), &error, progress.as_ref());
+                    watchdog::failed_call_settlement(Some(&interrupted), &error, Some(&progress));
                 // The cancelled call is accounted like any failed call, with
                 // the usage it streamed (bug-aa2044).
-                let streamed = match progress
-                    .as_ref()
-                    .and_then(|progress| progress.interrupted_call())
-                {
+                let streamed = match progress.interrupted_call() {
                     Some(call) => {
                         let wall_duration = started_at.elapsed();
                         let (dispatch, _) = call.into_dispatch(
                             &error.to_string(),
                             u64::try_from(wall_duration.as_millis()).unwrap_or(u64::MAX),
+                            self.pricing_snapshot().as_deref(),
                         );
                         let cost_usd = f64::from(dispatch.result.usage.cost_usd);
-                        self.task_spend.record(
-                            &format!("{}/{}", spec.plan_id, task.id),
-                            &dispatch.result.usage,
-                        );
+                        self.record_task_spend(&spec.plan_id, &task.id, &dispatch.result.usage);
                         if let Err(budget_error) = budget_reservation.settle(cost_usd) {
                             tracing::warn!(
                                 attempt = %attempt_id,
@@ -405,7 +438,7 @@ impl StreamingTaskDispatcher for GraphTaskDispatcher {
         }
 
         // ── Settle cost and build outcome ────────────────────────────────
-        let (outcome, output_signals, verification) = match dispatch_result {
+        let (outcome, output_signals, verification, denial) = match dispatch_result {
             Ok(dispatch) => {
                 let cost_usd = f64::from(dispatch.result.usage.cost_usd);
                 let actual_cost = if cost_usd.is_finite() && cost_usd > 0.0 {
@@ -417,10 +450,7 @@ impl StreamingTaskDispatcher for GraphTaskDispatcher {
                     );
                     None
                 };
-                self.task_spend.record(
-                    &format!("{}/{}", spec.plan_id, task.id),
-                    &dispatch.result.usage,
-                );
+                self.record_task_spend(&spec.plan_id, &task.id, &dispatch.result.usage);
                 if let Err(error) = budget_reservation.settle(cost_usd.max(0.0)) {
                     let routed = Some((dispatch_plan.model.slug.as_str(), &dispatch));
                     return Err(self.fail_attempt(spec, &task, attempt, routed, error).await);
@@ -443,20 +473,25 @@ impl StreamingTaskDispatcher for GraphTaskDispatcher {
                 let verification = if dispatch.result.success && pinned_model_substituted.is_none()
                 {
                     let attempt_number = self.next_retry_attempt(&spec.plan_id, &task.id).attempt;
-                    Some(
-                        helper_calls
-                            .scope(self.settle_task_verification(
-                                spec,
-                                &task,
-                                &dispatch,
-                                &lease.path,
-                                &retry_key,
-                                attempt_number,
-                                &attempt_key,
-                                Some(&event_tx),
-                            ))
-                            .await,
-                    )
+                    attempt.verify_started();
+                    let report = helper_calls
+                        .scope(self.settle_task_verification(
+                            spec,
+                            &task,
+                            &dispatch,
+                            &lease.path,
+                            &retry_key,
+                            attempt_number,
+                            &attempt_key,
+                            Some(&event_tx),
+                            attempt.harness_params(),
+                        ))
+                        .await;
+                    attempt.verify_ended();
+                    attempt.record_verify_steps(report.steps);
+                    attempt.record_scope_findings(report.scope_findings);
+                    attempt.record_verify_depth(report.verify_depth);
+                    Some(report.result)
                 } else {
                     None
                 };
@@ -464,7 +499,6 @@ impl StreamingTaskDispatcher for GraphTaskDispatcher {
                     self.settle_helper_calls(spec, &task, &attempt_key, &helper_calls)
                         .await,
                 );
-                let verified = matches!(verification, Some(Ok(_)));
 
                 // ── Learning/feedback pipeline (streaming) ───────────────
                 //
@@ -493,10 +527,19 @@ impl StreamingTaskDispatcher for GraphTaskDispatcher {
                 )
                 .await;
 
-                let outcome_kind = if verified {
-                    TaskDispatchOutcomeKind::Succeeded
+                let outcome_kind = match &verification {
+                    Some(Ok(_)) => TaskDispatchOutcomeKind::Succeeded,
+                    // A verify its stopping plan run cut short (bug-82cbef).
+                    Some(Err(RokoError::Cancelled(_))) => TaskDispatchOutcomeKind::Cancelled,
+                    _ => TaskDispatchOutcomeKind::Failed,
+                };
+
+                // A denial no retry can change fails the task at once
+                // (backlog 1116).
+                let denial = if dispatch.result.success || pinned_model_substituted.is_some() {
+                    None
                 } else {
-                    TaskDispatchOutcomeKind::Failed
+                    super::failover::permanent_provider_denial(&dispatch)
                 };
 
                 let output_signals = match &verification {
@@ -530,7 +573,7 @@ impl StreamingTaskDispatcher for GraphTaskDispatcher {
                     output: output_signals.clone(),
                 };
 
-                (dispatch_outcome, output_signals, verification)
+                (dispatch_outcome, output_signals, verification, denial)
             }
             Err(error) => {
                 // No provider result reached the sinks that predate S01; the
@@ -592,6 +635,9 @@ impl StreamingTaskDispatcher for GraphTaskDispatcher {
         }
         if let Some(Err(error)) = verification {
             return Err(error);
+        }
+        if let Some(denial) = denial {
+            return Err(denial);
         }
         if outcome.outcome == TaskDispatchOutcomeKind::Failed {
             return Err(RokoError::Agent {
@@ -1272,5 +1318,188 @@ printf '%s\n' '{"type":"result","session_id":"sess-x","model":"claude-sonnet-4-6
             matches!(error, RokoError::BudgetExceeded { .. }),
             "error must be BudgetExceeded, got: {error:?}"
         );
+    }
+
+    /// bug-78e5ce: the streaming path forecasts each attempt through the self-model, as the
+    /// batch path does (6128): a shadow-mode attempt writes its `roko.prediction/1` row,
+    /// naming both ladder rungs, and its forecast waits, by attempt key, for the attempt's
+    /// verdict and post-pass step.
+    #[tokio::test]
+    async fn streaming_dispatch_forecasts_through_the_self_model() {
+        use roko_core::config::routing::LadderRung;
+        use roko_core::config::self_model::{SelfModelConfig, SelfModelMode};
+        use roko_core::pricing_snapshot::PriceSnapshot;
+        use roko_learn::self_model::model::SelfModel;
+
+        use crate::graph_task_dispatch::self_model::SelfModelRuntime;
+        use crate::graph_task_dispatch::tests::{jsonl_rows_where, model};
+
+        const RUN: &str = "streaming-self-model-run";
+
+        let temp = tempdir().expect("tempdir");
+        let roko = temp.path().join(".roko");
+        let settings = SelfModelConfig {
+            mode: SelfModelMode::Shadow,
+            ..SelfModelConfig::default()
+        };
+        let snapshot = PriceSnapshot::builtin().expect("the built-in snapshot");
+        let state = roko.join("learn/self-model/state-v1.json");
+        let fresh = SelfModel::new(&snapshot);
+        let runtime = Arc::new(SelfModelRuntime::new(settings, state, fresh));
+        let feedback = GraphFeedbackContext {
+            runs_dir: Some(roko.join("runs")),
+            self_model: Some(Arc::clone(&runtime)),
+            ..GraphFeedbackContext::default()
+        };
+        // Two ladder rungs on the scripted provider. A rung runs only on a model that can call
+        // tools, which the fixture's own `stream-model` cannot, so both are set up here, as the
+        // batch path's shadow test sets them up.
+        let ladder = |config: &mut RokoConfig| {
+            no_auto_fix(config);
+            for (key, slug) in [
+                ("cheap-model", "claude-haiku-4-5"),
+                ("stream-model", "claude-sonnet-4-6"),
+            ] {
+                config
+                    .models
+                    .insert(key.to_string(), model("stream-cli", slug, None));
+            }
+            let rung = |name: &str, model: &str| LadderRung {
+                name: name.to_string(),
+                model: model.to_string(),
+            };
+            config.routing.ladder.rungs =
+                vec![rung("cheap", "cheap-model"), rung("strong", "stream-model")];
+        };
+        let (dispatcher, mut task) =
+            make_test_dispatcher(&temp, VERIFY_PROVIDER, ladder, feedback).await;
+        task.model_hint = None;
+        let lease = TaskLease {
+            path: temp.path().to_path_buf(),
+            fingerprint: "test-fingerprint".to_string(),
+        };
+        let (event_tx, _event_rx) = tokio::sync::mpsc::channel(streaming_event_channel_capacity());
+        let ctx = CellContext::new()
+            .with_run_id(RUN.to_string())
+            .with_cell_id("T-STREAM".to_string());
+        // Only the forecast made before the route matters here.
+        let _ = dispatcher
+            .dispatch_streaming(
+                &make_spec(&task),
+                Vec::new(),
+                &ctx,
+                &lease,
+                event_tx,
+                &NoopAttemptRecorder,
+            )
+            .await;
+        drop(dispatcher);
+
+        let path = roko.join("runs").join(RUN).join("predictions.jsonl");
+        let predictions =
+            jsonl_rows_where(&path, 1, |row| row["schema_version"] == "roko.prediction/1").await;
+        let row = &predictions[0];
+        assert_eq!(row["task_id"], "T-STREAM", "{row}");
+        assert_eq!(row["precedes"], "route", "{row}");
+        assert_eq!(row["predictor"]["mode"], "shadow", "{row}");
+        let candidates = row["candidates"].as_array().expect("candidates");
+        assert_eq!(candidates.len(), 2, "{row}");
+        let key = row["attempt_key"].as_str().expect("an attempt key");
+        assert!(runtime.take_forecast(key).is_some(), "{key}");
+    }
+
+    /// bug-b087ea: a streamed retry is forecast as one, as on the batch path:
+    /// its dispatch context counts the attempt before it, so the self-model's
+    /// features for the second attempt say it follows a failure.
+    #[tokio::test]
+    async fn streaming_retry_self_model_features_show_prior_failure() {
+        use roko_core::config::routing::LadderRung;
+        use roko_core::config::self_model::{SelfModelConfig, SelfModelMode};
+        use roko_core::pricing_snapshot::PriceSnapshot;
+        use roko_learn::self_model::model::SelfModel;
+
+        use crate::graph_task_dispatch::self_model::SelfModelRuntime;
+        use crate::graph_task_dispatch::tests::{jsonl_rows_where, model};
+
+        const RUN: &str = "streaming-self-model-retry-run";
+
+        let temp = tempdir().expect("tempdir");
+        let roko = temp.path().join(".roko");
+        let settings = SelfModelConfig {
+            mode: SelfModelMode::Shadow,
+            ..SelfModelConfig::default()
+        };
+        let snapshot = PriceSnapshot::builtin().expect("the built-in snapshot");
+        let state = roko.join("learn/self-model/state-v1.json");
+        let fresh = SelfModel::new(&snapshot);
+        let runtime = Arc::new(SelfModelRuntime::new(settings, state, fresh));
+        let feedback = GraphFeedbackContext {
+            runs_dir: Some(roko.join("runs")),
+            self_model: Some(Arc::clone(&runtime)),
+            ..GraphFeedbackContext::default()
+        };
+        // Two ladder rungs that can run, as in the forecast test above.
+        let ladder = |config: &mut RokoConfig| {
+            no_auto_fix(config);
+            for (key, slug) in [
+                ("cheap-model", "claude-haiku-4-5"),
+                ("stream-model", "claude-sonnet-4-6"),
+            ] {
+                config
+                    .models
+                    .insert(key.to_string(), model("stream-cli", slug, None));
+            }
+            let rung = |name: &str, model: &str| LadderRung {
+                name: name.to_string(),
+                model: model.to_string(),
+            };
+            config.routing.ladder.rungs =
+                vec![rung("cheap", "cheap-model"), rung("strong", "stream-model")];
+        };
+        let (dispatcher, mut task) =
+            make_test_dispatcher(&temp, VERIFY_PROVIDER, ladder, feedback).await;
+        task.model_hint = None;
+        // A verify step that always fails, so the second attempt is a retry.
+        task.verify = vec![verify_step("structural", "false")];
+        let mut spec = make_spec(&task);
+        spec.max_retries = 3;
+        let lease = TaskLease {
+            path: temp.path().to_path_buf(),
+            fingerprint: "test-fingerprint".to_string(),
+        };
+        let ctx = CellContext::new()
+            .with_run_id(RUN.to_string())
+            .with_cell_id("T-STREAM".to_string());
+        for _ in 0..2 {
+            let (event_tx, _event_rx) =
+                tokio::sync::mpsc::channel(streaming_event_channel_capacity());
+            let _ = dispatcher
+                .dispatch_streaming(
+                    &spec,
+                    Vec::new(),
+                    &ctx,
+                    &lease,
+                    event_tx,
+                    &NoopAttemptRecorder,
+                )
+                .await;
+        }
+        drop(dispatcher);
+
+        let path = roko.join("runs").join(RUN).join("predictions.jsonl");
+        let predictions =
+            jsonl_rows_where(&path, 2, |row| row["schema_version"] == "roko.prediction/1").await;
+        let mut features: Vec<(u64, u32, bool)> = predictions
+            .iter()
+            .map(|row| {
+                let key = row["attempt_key"].as_str().expect("an attempt key");
+                let forecast = runtime.take_forecast(key).expect("the attempt's forecast");
+                let ordinal = row["attempt"].as_u64().expect("an attempt ordinal");
+                let features = forecast.features;
+                (ordinal, features.attempt, features.has_prior_failure)
+            })
+            .collect();
+        features.sort_unstable();
+        assert_eq!(features, [(1, 1, false), (2, 2, true)]);
     }
 }

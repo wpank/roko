@@ -1,15 +1,19 @@
-//! `roko diagnose <plan-id>` — structured JSON diagnostic report for plan failures.
+//! `roko diagnose <plan-id>` — diagnostic report for plan failures, as readable
+//! text or, with `--json`, as structured JSON.
 //!
 //! A Graph run is reported from the plan's checkpoint under
 //! `.roko/state/graph/<plan>/` (status, recorded task outputs, spend), the
 //! plan's `tasks.toml`, and the logs Graph task dispatch appends:
 //! `.roko/learn/costs.jsonl` (one row per provider attempt),
-//! `.roko/learn/gate-failures.jsonl` (failed verify steps) and
-//! `.roko/episodes.jsonl` (failure reasons). The Runner-v2 snapshot at
+//! `.roko/learn/gate-failures.jsonl` (failed verify steps),
+//! `.roko/learn/gate-gaming-alerts.jsonl` (gate-gaming alerts),
+//! `.roko/episodes.jsonl` (failure reasons) and the run's
+//! `.roko/runs/<run>/attempts.jsonl` (tool policies). The Runner-v2 snapshot at
 //! `.roko/state/state-snapshot.json` is read only for a plan without a Graph
 //! checkpoint.
 
 use std::collections::{BTreeMap, BTreeSet, HashSet};
+use std::fmt::Write as _;
 use std::io::BufRead;
 use std::path::{Path, PathBuf};
 use std::process::Command as ProcessCommand;
@@ -21,9 +25,10 @@ use regex::Regex;
 use roko_fs::RokoLayout;
 use roko_gate::{FailureClass, GateFailureAction, GateFailureKind, GateFailureRecord};
 use roko_graph::cells::task_executor::TaskGateVerdict;
+use roko_learn::GamingAlert;
 use roko_learn::costs_db::CostRecord;
 use roko_learn::episode_logger::Episode;
-use roko_learn::telemetry::CostSource;
+use roko_learn::telemetry::{CostSource, ToolPolicyRecord};
 use roko_runtime::{
     DurableRunnerProjection, STATE_SNAPSHOT_RELATIVE_PATH, load_durable_runner_projection,
 };
@@ -48,11 +53,16 @@ const EPISODE_MATCH_WINDOW_MS: i64 = 5_000;
 /// Episode ids kept on [`FailedTaskInfo`].
 const FAILED_TASK_EPISODE_IDS: usize = 5;
 
-/// Run the diagnose command, printing a JSON report to stdout.
-pub fn cmd_diagnose(workdir: &Path, plan_id: &str, verbose: bool) -> Result<i32> {
+/// Run the diagnose command, printing the report to stdout as text, or as JSON
+/// with `json`.
+pub fn cmd_diagnose(workdir: &Path, plan_id: &str, verbose: bool, json: bool) -> Result<i32> {
     let report = build_report(workdir, plan_id, verbose)?;
-    let json = serde_json::to_string_pretty(&report).context("serializing diagnose report")?;
-    println!("{json}");
+    if json {
+        let json = serde_json::to_string_pretty(&report).context("serializing diagnose report")?;
+        println!("{json}");
+    } else {
+        print!("{}", render_text(&report, verbose));
+    }
     Ok(0)
 }
 
@@ -64,7 +74,8 @@ pub fn cmd_diagnose(workdir: &Path, plan_id: &str, verbose: bool) -> Result<i32>
 pub struct DiagnoseReport {
     pub plan_id: String,
     /// `completed`, `failed`, `running`, `cancelled` or `interrupted` for a
-    /// Graph run; derived from the plan phase for a Runner-v2 snapshot.
+    /// Graph run; derived from the plan phase and its paused flag for a
+    /// Runner-v2 snapshot.
     pub status: String,
     /// Where the run state came from.
     pub source: ReportSource,
@@ -82,6 +93,11 @@ pub struct DiagnoseReport {
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub tasks: Vec<TaskDiagnosis>,
     pub gate_results: Vec<GateResultInfo>,
+    /// Gate-gaming alerts from `.roko/learn/gate-gaming-alerts.jsonl` that
+    /// the run wrote for a model the plan's attempts ran on, oldest first
+    /// (backlog 2125). An alert names a model, not a plan.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub gate_gaming_alerts: Vec<GamingAlert>,
     pub run_state: Option<RunStateSummary>,
     /// What re-running the plan would do with its Graph checkpoint.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -179,6 +195,9 @@ pub struct RunStateSummary {
     pub tasks_completed: usize,
     pub tasks_failed: usize,
     pub total_cost_usd: f64,
+    /// Agent calls whose cost is unknown, which the total leaves out
+    /// (backlog 2109).
+    pub unpriced_calls: usize,
     pub total_tokens_in: u64,
     pub total_tokens_out: u64,
     pub total_agent_calls: usize,
@@ -270,6 +289,10 @@ pub struct TaskDiagnosis {
     /// `attempts`.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub episode_ids: Vec<String>,
+    /// The tool policy of each attempt that recorded one, oldest first.
+    /// Listed like `attempts`.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub tool_policies: Vec<AttemptToolPolicy>,
 }
 
 /// One provider attempt at a task, from `.roko/learn/costs.jsonl`.
@@ -297,6 +320,22 @@ pub struct AttemptInfo {
     pub episode_id: Option<String>,
 }
 
+/// One attempt's tool policy, from its verdict in the run's `attempts.jsonl`
+/// (`executed.tool_policy`): what its contract asked for, what its provider
+/// enforced, and the operation it was stopped at. Only an attempt on a
+/// provider that runs its own tools, such as Codex, records one (gap-baab0a).
+#[derive(Debug, Clone, Serialize)]
+pub struct AttemptToolPolicy {
+    /// The attempt's number in the run.
+    pub attempt: u32,
+    /// The model the attempt was launched on.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    /// The recorded policy, its fields beside `attempt` and `model`.
+    #[serde(flatten)]
+    pub policy: ToolPolicyRecord,
+}
+
 /// One failed verify step, from `.roko/learn/gate-failures.jsonl`.
 #[derive(Debug, Serialize)]
 pub struct GateFailureInfo {
@@ -308,7 +347,9 @@ pub struct GateFailureInfo {
     pub failure_kind: GateFailureKind,
     pub primary_class: FailureClass,
     pub recommended_action: GateFailureAction,
-    /// Summary as recorded; it is cut at 200 characters.
+    /// Summary as recorded: on Graph runs the step's label, its failure
+    /// message and its output, at most 2 KiB (bug-6f7f72). Records written
+    /// before then hold the first 200 characters of the failure text.
     pub summary: String,
 }
 
@@ -350,7 +391,7 @@ pub struct ResumeInfo {
 // Report builder
 // ---------------------------------------------------------------------------
 
-fn build_report(workdir: &Path, plan_id: &str, verbose: bool) -> Result<DiagnoseReport> {
+pub(crate) fn build_report(workdir: &Path, plan_id: &str, verbose: bool) -> Result<DiagnoseReport> {
     let checkpoint = inspect_canonical_checkpoint(workdir, plan_id)
         .with_context(|| format!("reading the Graph checkpoint of plan '{plan_id}'"))?;
     if let Some(checkpoint) = checkpoint {
@@ -405,12 +446,16 @@ struct RunRecords {
     gate_failures: Vec<GateFailureRecord>,
     /// Task episodes from `.roko/episodes.jsonl`.
     episodes: Vec<Episode>,
+    /// Attempts' tool policies from the run's `attempts.jsonl`, with their
+    /// task ids, oldest first.
+    tool_policies: Vec<(String, AttemptToolPolicy)>,
 }
 
 impl RunRecords {
     /// `plan_id`'s records written at or after `since_ms` (all of them when
-    /// `None`). A record whose time cannot be read is kept.
-    fn load(workdir: &Path, plan_id: &str, since_ms: Option<i64>) -> Self {
+    /// `None`), and its attempts' tool policies in run `run_id`. A record
+    /// whose time cannot be read is kept.
+    fn load(workdir: &Path, plan_id: &str, run_id: &str, since_ms: Option<i64>) -> Self {
         let layout = RokoLayout::for_project(workdir);
         let in_run = |at_ms: Option<i64>| since_ms.zip(at_ms).is_none_or(|(since, at)| at >= since);
         Self {
@@ -431,6 +476,7 @@ impl RunRecords {
                         && in_run(Some(episode.timestamp.timestamp_millis()))
                 })
                 .collect(),
+            tool_policies: recorded_tool_policies(&layout.run_dir(run_id), plan_id),
         }
     }
 
@@ -449,6 +495,64 @@ impl RunRecords {
     }
 }
 
+/// The tool policies `plan_id`'s attempts recorded in their verdicts in
+/// `run_dir`'s `attempts.jsonl`, with their task ids, oldest first. An
+/// unreadable log has none.
+fn recorded_tool_policies(run_dir: &Path, plan_id: &str) -> Vec<(String, AttemptToolPolicy)> {
+    let Ok(run) = roko_learn::telemetry::report::RunRecords::load(run_dir) else {
+        return Vec::new();
+    };
+    run.verdicts
+        .into_iter()
+        .map(|verdict| verdict.record)
+        .filter(|record| record.identity.plan_id == plan_id)
+        .filter_map(|record| {
+            let policy = record.executed.tool_policy?;
+            let attempt = AttemptToolPolicy {
+                attempt: record.identity.attempt,
+                model: record.executed.model_dispatched,
+                policy,
+            };
+            Some((record.identity.task_id, attempt))
+        })
+        .collect()
+}
+
+/// The gate-gaming alerts in `.roko/learn/gate-gaming-alerts.jsonl` that
+/// run `run_id` of plan `plan_id` raised, oldest first (backlog 2125). An
+/// alert that names its plan is the run's when it names this plan and run
+/// (gap-54b2b2). One logged before alerts named them is the run's when it
+/// is at or after `since_ms` (all when `None`) for a model the plan's
+/// attempts in `records` ran on, as near as such an alert can say.
+fn run_gaming_alerts(
+    workdir: &Path,
+    plan_id: &str,
+    run_id: &str,
+    records: &RunRecords,
+    since_ms: Option<i64>,
+) -> Vec<GamingAlert> {
+    let models: HashSet<&str> = records
+        .attempts
+        .iter()
+        .map(|record| record.model.as_str())
+        .collect();
+    let path = RokoLayout::for_project(workdir)
+        .learn_dir()
+        .join("gate-gaming-alerts.jsonl");
+    read_jsonl_lossy::<GamingAlert>(&path)
+        .into_iter()
+        .filter(|alert| match &alert.plan_id {
+            Some(plan) => {
+                plan == plan_id && alert.run_id.as_deref().is_none_or(|run| run == run_id)
+            }
+            None => {
+                models.contains(alert.model_slug.as_str())
+                    && since_ms.is_none_or(|since| alert.timestamp.timestamp_millis() >= since)
+            }
+        })
+        .collect()
+}
+
 /// Report a plan's Graph run from its checkpoint, its `tasks.toml` and the
 /// logs Graph task dispatch appended during the run.
 fn build_graph_report(
@@ -462,7 +566,9 @@ fn build_graph_report(
     let since_ms = checkpoint
         .replaced_at_ms
         .and_then(|ms| i64::try_from(ms).ok());
-    let records = RunRecords::load(workdir, plan_id, since_ms);
+    let records = RunRecords::load(workdir, plan_id, &checkpoint.manifest.run_id, since_ms);
+    let run_id = &checkpoint.manifest.run_id;
+    let gate_gaming_alerts = run_gaming_alerts(workdir, plan_id, run_id, &records, since_ms);
     let definition = load_plan_definition(workdir, plan_id, &mut notes);
     let tasks = diagnose_tasks(checkpoint, definition.as_ref(), &records, verbose);
     let resume = definition
@@ -520,9 +626,21 @@ fn build_graph_report(
         tasks_completed: completed_tasks.len(),
         tasks_failed: failed_tasks.len(),
         total_cost_usd: checkpoint.spent_micro_usd.map_or_else(
-            || records.attempts.iter().map(|record| record.cost_usd).sum(),
+            || {
+                records
+                    .attempts
+                    .iter()
+                    .filter(|record| !roko_learn::costs_log::is_unpriced(record))
+                    .map(|record| record.cost_usd)
+                    .sum()
+            },
             micro_to_usd,
         ),
+        unpriced_calls: records
+            .attempts
+            .iter()
+            .filter(|record| roko_learn::costs_log::is_unpriced(record))
+            .count(),
         total_tokens_in: records
             .attempts
             .iter()
@@ -568,6 +686,7 @@ fn build_graph_report(
         failed_task,
         tasks,
         gate_results,
+        gate_gaming_alerts,
         run_state: Some(run_state),
         resume,
         git_state,
@@ -618,7 +737,6 @@ fn resume_info(
         id: plan_id.to_string(),
         dir: definition.dir.clone(),
         tasks: definition.tasks.clone(),
-        prd_excerpt: String::new(),
     };
     match preview_plan_resume(workdir, &plan, 1, &ResumeOptions::default()) {
         Ok(preview) => Some(ResumeInfo {
@@ -703,6 +821,12 @@ fn diagnose_tasks(
                 .filter(|episode| episode.task_id == task_id)
                 .map(episode_id)
                 .collect();
+            let tool_policies: Vec<AttemptToolPolicy> = records
+                .tool_policies
+                .iter()
+                .filter(|(policy_task, _)| policy_task == task_id)
+                .map(|(_, policy)| policy.clone())
+                .collect();
             // Listed for every task that did not complete; a completed task's
             // history only with `--verbose`.
             let listed = verbose || state != TaskState::Completed;
@@ -725,6 +849,7 @@ fn diagnose_tasks(
                 attempts: if listed { attempts } else { Vec::new() },
                 gate_failures: if listed { gate_failures } else { Vec::new() },
                 episode_ids: if listed { episode_ids } else { Vec::new() },
+                tool_policies: if listed { tool_policies } else { Vec::new() },
             };
             diagnosis.reason = describe_task(&diagnosis, checkpoint.manifest.status, &states);
             diagnosis
@@ -967,6 +1092,9 @@ fn verify_step(summary: &str, task: Option<&TaskDef>) -> Option<VerifyStepInfo> 
 
 /// Classify a recorded Graph gate failure by the class the gate recorded.
 fn classify_recorded_failure(record: &GateFailureRecord) -> Vec<ClassifiedError> {
+    // The first line names the step and its failure message; the output that
+    // follows may mention anything.
+    let headline = record.summary.lines().next().unwrap_or_default();
     let class = match record.primary_class {
         FailureClass::SyntaxError
         | FailureClass::ImportError
@@ -975,14 +1103,14 @@ fn classify_recorded_failure(record: &GateFailureRecord) -> Vec<ClassifiedError>
         | FailureClass::BorrowOrLifetime => ErrorClass::CompileError,
         FailureClass::TestExpectationFailure => ErrorClass::TestFailure,
         _ if record.failure_kind == GateFailureKind::Timeout => ErrorClass::Timeout,
-        _ if mentions_timeout(&record.summary) => ErrorClass::Timeout,
+        _ if mentions_timeout(headline) => ErrorClass::Timeout,
         _ => ErrorClass::Unknown,
     };
     vec![ClassifiedError {
         error_class: class,
         file: None,
         line: None,
-        error_summary: truncate(&record.summary, 200),
+        error_summary: truncate(headline, 200),
         suggestion: suggestion_for(class),
     }]
 }
@@ -1135,10 +1263,12 @@ fn build_legacy_report(
     };
 
     // ── Phase / status ──────────────────────────────────────────────────
-    let phase = plan_state
-        .get("current_phase")
-        .and_then(Value::as_str)
-        .map(String::from);
+    let phase = plan_state.get("current_phase").and_then(phase_name);
+    // Pausing is a flag on the plan state, not a phase.
+    let paused = plan_state
+        .get("paused")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
 
     let iteration = plan_state
         .get("iteration")
@@ -1161,7 +1291,10 @@ fn build_legacy_report(
         })
         .unwrap_or_default();
 
-    let status = derive_status(phase.as_ref(), last_error.as_ref());
+    let mut status = derive_status(phase.as_ref(), last_error.as_ref());
+    if paused && matches!(status.as_str(), "running" | "gating" | "pending") {
+        status = "paused".to_string();
+    }
 
     // ── Gate results ────────────────────────────────────────────────────
     let gate_results: Vec<GateResultInfo> = plan_state
@@ -1258,6 +1391,10 @@ fn build_legacy_report(
                 .get("total_cost_usd")
                 .and_then(Value::as_f64)
                 .unwrap_or(0.0),
+            unpriced_calls: rs
+                .get("unpriced_calls")
+                .and_then(Value::as_u64)
+                .unwrap_or(0) as usize,
             total_tokens_in: rs
                 .get("total_tokens_in")
                 .and_then(Value::as_u64)
@@ -1282,8 +1419,7 @@ fn build_legacy_report(
     let total_cost_usd = collect_total_cost_usd(workdir, plan_id);
 
     // ── Recovery suggestions ────────────────────────────────────────────
-    let suggested_recovery =
-        build_recovery_suggestions(&status, phase.as_ref(), &gate_results, git_state.as_ref());
+    let suggested_recovery = build_recovery_suggestions(&status, &gate_results, git_state.as_ref());
 
     Ok(DiagnoseReport {
         plan_id: plan_id.to_string(),
@@ -1296,6 +1432,7 @@ fn build_legacy_report(
         failed_task,
         tasks: Vec::new(),
         gate_results,
+        gate_gaming_alerts: Vec::new(),
         run_state,
         resume: None,
         git_state,
@@ -1305,15 +1442,30 @@ fn build_legacy_report(
     })
 }
 
+/// A Runner-v2 phase's name. `PlanState.current_phase` is a `PlanPhase`,
+/// which serializes as an object tagged by `kind` (`{"kind": "implementing"}`);
+/// older snapshots wrote a plain string.
+fn phase_name(phase: &Value) -> Option<String> {
+    phase
+        .as_str()
+        .or_else(|| phase.get("kind").and_then(Value::as_str))
+        .map(String::from)
+}
+
+/// A Runner-v2 plan's status from its phase name (a kebab-case `PlanPhase`
+/// kind, or an older snapshot's name), else from whether it recorded an error.
 fn derive_status(phase: Option<&String>, last_error: Option<&String>) -> String {
     if let Some(phase) = phase {
         match phase.as_str() {
-            "done" | "merged" | "accepted" => "completed".to_string(),
+            "done" | "complete" | "merged" | "accepted" => "completed".to_string(),
             "failed" | "error" => "failed".to_string(),
-            "gating" | "gate" | "verifying" => "gating".to_string(),
+            "gating" | "gate" | "verifying" | "regenerating-verify" => "gating".to_string(),
             "implementing" | "implement" | "agent" | "coding" => "running".to_string(),
+            "enriching" | "reviewing" | "doc-revision" | "auto-fixing" => "running".to_string(),
+            "merging" => "running".to_string(),
             "queued" | "pending" | "ready" => "pending".to_string(),
             "paused" => "paused".to_string(),
+            "skipped" => "skipped".to_string(),
             _ => {
                 if last_error.is_some() {
                     "failed".to_string()
@@ -1551,7 +1703,7 @@ fn mentions_timeout(text: &str) -> bool {
 }
 
 /// The snake_case name a gate failure enum serializes to.
-fn enum_label(value: &impl Serialize) -> String {
+pub(crate) fn enum_label(value: &impl Serialize) -> String {
     serde_json::to_value(value)
         .ok()
         .and_then(|value| value.as_str().map(str::to_string))
@@ -1666,12 +1818,180 @@ fn collect_total_cost_usd(workdir: &Path, plan_id: &str) -> Option<f64> {
 }
 
 // ---------------------------------------------------------------------------
+// Text output
+// ---------------------------------------------------------------------------
+
+/// The report for a person: the status, then each task that did not complete
+/// (every task with `verbose`) with why, the verify step it failed and its
+/// attempts, then what to do next. `--json` prints the report itself.
+pub fn render_text(report: &DiagnoseReport, verbose: bool) -> String {
+    let mut out = String::new();
+    let (plan_id, status) = (&report.plan_id, &report.status);
+    let _ = writeln!(out, "Plan {plan_id}: {status}");
+    if let Some(run) = &report.graph_run {
+        let (run_id, checkpoint) = (&run.run_id, &run.checkpoint);
+        let updated = run.updated_at.as_deref().unwrap_or("unknown");
+        let _ = writeln!(out, "  run {run_id}");
+        let _ = writeln!(out, "  checkpoint {checkpoint}, updated {updated}");
+        if let Some(spent) = run.spent_usd {
+            let _ = writeln!(out, "  spent ${spent:.2}");
+        }
+    } else {
+        let phase = report.phase.as_deref().unwrap_or("unknown");
+        let _ = writeln!(out, "  from the Runner-v2 snapshot, phase {phase}");
+    }
+    if let Some(plan_dir) = &report.plan_dir {
+        let _ = writeln!(out, "  plan {plan_dir}");
+    }
+    if let Some(run_state) = &report.run_state {
+        let (completed, total) = (run_state.tasks_completed, run_state.tasks_total);
+        let failed = run_state.tasks_failed;
+        let _ = writeln!(
+            out,
+            "  {completed} of {total} tasks completed, {failed} failed"
+        );
+    }
+
+    let shown: Vec<&TaskDiagnosis> = report
+        .tasks
+        .iter()
+        .filter(|task| verbose || task.state != TaskState::Completed)
+        .collect();
+    for task in &shown {
+        out.push('\n');
+        render_task(&mut out, task);
+    }
+    let hidden = report.tasks.len() - shown.len();
+    if hidden > 0 {
+        let suffix = plural(hidden);
+        let _ = writeln!(
+            out,
+            "\n{hidden} completed task{suffix} not shown; --verbose lists them."
+        );
+    }
+
+    // A Runner-v2 snapshot names the failed task and the plan's gate results.
+    if report.tasks.is_empty() {
+        if let Some(failed) = &report.failed_task {
+            let task_id = &failed.task_id;
+            let _ = writeln!(out, "\nfailed task {task_id}");
+            if let Some(error) = &failed.last_error {
+                let _ = writeln!(out, "    last error: {error}");
+            }
+        }
+        for gate in report.gate_results.iter().filter(|gate| !gate.passed) {
+            let (name, summary) = (&gate.gate_name, &gate.summary);
+            let _ = writeln!(out, "    gate {name} failed: {summary}");
+        }
+    }
+
+    if !report.gate_gaming_alerts.is_empty() {
+        let _ = writeln!(out, "\nGate-gaming alerts:");
+        for alert in &report.gate_gaming_alerts {
+            let at = alert.timestamp.to_rfc3339_opts(SecondsFormat::Secs, true);
+            let _ = writeln!(out, "  - {at} {}", alert.summary());
+        }
+    }
+
+    for (heading, lines) in [
+        ("Next steps", &report.suggested_recovery),
+        ("Notes", &report.notes),
+    ] {
+        if !lines.is_empty() {
+            let _ = writeln!(out, "\n{heading}:");
+            for line in lines {
+                let _ = writeln!(out, "  - {line}");
+            }
+        }
+    }
+    out
+}
+
+/// One task: its state and title, why it is in that state, the verify step it
+/// failed last, and its attempts.
+fn render_task(out: &mut String, task: &TaskDiagnosis) {
+    let task_id = &task.task_id;
+    let state = if task.blocked_by.is_empty() {
+        enum_label(&task.state).replace('_', " ")
+    } else {
+        "blocked".to_string()
+    };
+    let title = task.title.as_deref().unwrap_or("(not in tasks.toml)");
+    let reason = &task.reason;
+    let _ = writeln!(out, "{task_id} [{state}] {title}");
+    let _ = writeln!(out, "    {reason}");
+    let step = task
+        .gate_failures
+        .last()
+        .and_then(|failure| failure.verify_step.as_ref());
+    if let Some(step) = step {
+        let label = step.label();
+        let command = step.command.as_deref().unwrap_or("(not in tasks.toml)");
+        let _ = writeln!(out, "    failing verify step {label}: {command}");
+    }
+    for (index, attempt) in task.attempts.iter().enumerate() {
+        let number = index + 1;
+        let outcome = match (attempt.success, attempt.timed_out) {
+            (true, _) => "succeeded",
+            (false, true) => "timed out",
+            (false, false) => "failed",
+        };
+        let seconds = attempt.duration_ms as f64 / 1000.0;
+        let (cost, model) = (attempt.cost_usd, &attempt.model);
+        let _ = write!(
+            out,
+            "    attempt {number}: {outcome} after {seconds:.1} s, ${cost:.2}, {model}"
+        );
+        if let Some(reason) = &attempt.failure_reason {
+            let _ = write!(out, ": {reason}");
+        }
+        out.push('\n');
+    }
+    for policy in &task.tool_policies {
+        render_tool_policy(out, policy);
+    }
+}
+
+/// One attempt's tool policy: what its contract asked for, what its provider
+/// enforced, and the operation it was stopped at.
+fn render_tool_policy(out: &mut String, policy: &AttemptToolPolicy) {
+    let (attempt, record) = (policy.attempt, &policy.policy);
+    let model = policy.model.as_deref().unwrap_or("an unrecorded model");
+    let enforcement = &record.enforcement;
+    let _ = writeln!(
+        out,
+        "    attempt {attempt} on {model}: tool policy enforced by {enforcement}"
+    );
+    let mut asked = Vec::new();
+    if let Some(allowed) = &record.allowed_tools {
+        asked.push(format!("allow only [{}]", allowed.join(", ")));
+    }
+    if !record.forbidden_tools.is_empty() {
+        asked.push(format!("forbid {}", record.forbidden_tools.join(", ")));
+    }
+    let mut enforced = Vec::new();
+    if !record.denied_operations.is_empty() {
+        enforced.push(format!("deny {}", record.denied_operations.join(", ")));
+    }
+    if record.network_off {
+        enforced.push("network off".to_string());
+    }
+    for (label, parts) in [("asked", asked), ("enforced", enforced)] {
+        if !parts.is_empty() {
+            let _ = writeln!(out, "      {label}: {}", parts.join("; "));
+        }
+    }
+    if let Some(denial) = &record.denial {
+        let _ = writeln!(out, "      stopped at: {denial}");
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Recovery suggestions
 // ---------------------------------------------------------------------------
 
 fn build_recovery_suggestions(
     status: &str,
-    phase: Option<&String>,
     gate_results: &[GateResultInfo],
     git_state: Option<&GitStateInfo>,
 ) -> Vec<String> {
@@ -1719,9 +2039,7 @@ fn build_recovery_suggestions(
         );
     }
 
-    if let Some(phase) = phase
-        && phase == "paused"
-    {
+    if status == "paused" {
         suggestions.push("Plan is paused. Resume with `roko plan run`.".to_string());
     }
 
@@ -1771,14 +2089,14 @@ mod tests {
             duration_ms: 5000,
             classified_errors: Vec::new(),
         }];
-        let suggestions = build_recovery_suggestions("failed", None, &gates, None);
+        let suggestions = build_recovery_suggestions("failed", &gates, None);
         assert!(suggestions.iter().any(|s| s.contains("cargo build")));
         assert!(suggestions.iter().any(|s| s.contains("resume-plan")));
     }
 
     #[test]
     fn recovery_suggestions_completed() {
-        let suggestions = build_recovery_suggestions("completed", None, &[], None);
+        let suggestions = build_recovery_suggestions("completed", &[], None);
         assert!(suggestions.iter().any(|s| s.contains("successfully")));
     }
 
@@ -1789,7 +2107,7 @@ mod tests {
             has_uncommitted_changes: true,
             plan_branch_exists: false,
         };
-        let suggestions = build_recovery_suggestions("failed", None, &[], Some(&git));
+        let suggestions = build_recovery_suggestions("failed", &[], Some(&git));
         assert!(suggestions.iter().any(|s| s.contains("Uncommitted")));
     }
 
@@ -2021,6 +2339,7 @@ warning: unused variable: `x`";
             failed_task: None,
             tasks: Vec::new(),
             gate_results: vec![],
+            gate_gaming_alerts: Vec::new(),
             run_state: None,
             resume: None,
             git_state: None,
@@ -2161,7 +2480,6 @@ title = "Tidy the changelog"
             id: PLAN_ID.to_string(),
             tasks: TasksFile::parse(&dir.join("tasks.toml")).expect("parse tasks.toml"),
             dir,
-            prd_excerpt: String::new(),
         };
         let mut checkpoint = start_plan_checkpoint(workdir, &plan).expect("checkpoint");
         let mut recorder = checkpoint.take_recorder();
@@ -2200,6 +2518,9 @@ title = "Tidy the changelog"
             success,
             session_id: String::new(),
             cost_source: CostSource::CliUsage,
+            priced: None,
+            api_equiv_usd: None,
+            price_snapshot_id: None,
         }
     }
 
@@ -2318,6 +2639,122 @@ title = "Tidy the changelog"
             ],
         );
         workspace
+    }
+
+    /// backlog 2125: the report lists the gate-gaming alerts the run wrote
+    /// for a model the plan's attempts ran on. Another plan's model's alert,
+    /// and one an earlier run wrote, are left out.
+    #[test]
+    fn diagnose_lists_gate_gaming_alerts() {
+        let workspace = failed_run();
+        let learn = workspace.path().join(".roko/learn");
+        let other_plan = CostRecord {
+            plan_id: "other-plan".into(),
+            model: "other-model".into(),
+            ..attempt("T9", "2026-09-29T07:26:00+00:00", true, 0.1)
+        };
+        roko_core::io::append_jsonl(&learn.join("costs.jsonl"), &other_plan).expect("append");
+        let alert = |model: &str, timestamp: &str| GamingAlert {
+            model_slug: model.to_string(),
+            pass_rate_delta: 0.2,
+            quality_delta: -0.15,
+            first_half_pass_rate: 0.6,
+            second_half_pass_rate: 0.8,
+            first_half_quality: 0.7,
+            second_half_quality: 0.55,
+            timestamp: at(timestamp),
+            plan_id: None,
+            run_id: None,
+        };
+        write_jsonl(
+            &learn.join("gate-gaming-alerts.jsonl"),
+            &[
+                alert("claude-sonnet-4-6", "2026-09-28T09:05:00Z"),
+                alert("claude-sonnet-4-6", "2026-09-29T07:25:00Z"),
+                alert("other-model", "2026-09-29T07:27:00Z"),
+            ],
+        );
+
+        let report = build_report(workspace.path(), PLAN_ID, false).expect("report");
+
+        let listed: Vec<(&str, DateTime<Utc>)> = report
+            .gate_gaming_alerts
+            .iter()
+            .map(|alert| (alert.model_slug.as_str(), alert.timestamp))
+            .collect();
+        assert_eq!(listed, [("claude-sonnet-4-6", at("2026-09-29T07:25:00Z"))]);
+        let text = render_text(&report, false);
+        assert!(text.contains("\nGate-gaming alerts:\n"), "{text}");
+        let line = "  - 2026-09-29T07:25:00Z gate gaming detected for model `claude-sonnet-4-6`";
+        assert!(text.contains(line), "{text}");
+        assert!(!text.contains("other-model"), "{text}");
+        let json = serde_json::to_value(&report).expect("serialize the report");
+        assert_eq!(
+            json["gate_gaming_alerts"][0]["model_slug"],
+            "claude-sonnet-4-6"
+        );
+    }
+
+    /// gap-54b2b2: an alert that names its plan and run is the run's only
+    /// when it names this plan and run, though another plan's alert shares
+    /// the model and the time. An alert logged before alerts named them is
+    /// still attributed by model and time.
+    #[test]
+    fn gaming_alerts_are_attributed_by_plan_id_not_model_alone() {
+        let workspace = failed_run();
+        let root = workspace.path();
+        let run_id = inspect_canonical_checkpoint(root, PLAN_ID)
+            .expect("read checkpoint")
+            .expect("checkpoint")
+            .manifest
+            .run_id;
+        let alert = |timestamp: &str, raised_by: Option<(&str, &str)>| {
+            let alert = GamingAlert {
+                model_slug: "claude-sonnet-4-6".to_string(),
+                pass_rate_delta: 0.2,
+                quality_delta: -0.15,
+                first_half_pass_rate: 0.6,
+                second_half_pass_rate: 0.8,
+                first_half_quality: 0.7,
+                second_half_quality: 0.55,
+                timestamp: at(timestamp),
+                plan_id: None,
+                run_id: None,
+            };
+            match raised_by {
+                Some((plan, run)) => alert.raised_by(plan, run),
+                None => alert,
+            }
+        };
+        write_jsonl(
+            &root.join(".roko/learn/gate-gaming-alerts.jsonl"),
+            &[
+                alert("2026-09-29T07:21:00Z", Some((PLAN_ID, run_id.as_str()))),
+                alert("2026-09-29T07:21:00Z", Some(("other-plan", "graph-other"))),
+                alert("2026-09-29T07:22:00Z", Some((PLAN_ID, "graph-demo-0"))),
+                alert("2026-09-29T07:23:00Z", None),
+                alert("2026-09-28T09:05:00Z", None),
+            ],
+        );
+
+        let report = build_report(root, PLAN_ID, false).expect("report");
+
+        let listed: Vec<(Option<&str>, DateTime<Utc>)> = report
+            .gate_gaming_alerts
+            .iter()
+            .map(|alert| (alert.plan_id.as_deref(), alert.timestamp))
+            .collect();
+        assert_eq!(
+            listed,
+            [
+                (Some(PLAN_ID), at("2026-09-29T07:21:00Z")),
+                (None, at("2026-09-29T07:23:00Z")),
+            ]
+        );
+        let text = render_text(&report, false);
+        let named = format!("in plan `{PLAN_ID}`, run `{run_id}`");
+        assert!(text.contains(&named), "{text}");
+        assert!(!text.contains("graph-other"), "{text}");
     }
 
     #[test]
@@ -2439,6 +2876,104 @@ title = "Tidy the changelog"
         assert_eq!(json["resume"]["action"], "resume");
         assert_eq!(json["resume"]["tasks_to_run"][0], "T2");
         assert!(json["tasks"][0].get("attempts").is_none());
+    }
+
+    #[test]
+    fn a_graph_report_renders_as_readable_text() {
+        let workspace = failed_run();
+        let report = build_report(workspace.path(), PLAN_ID, false).expect("report");
+        let text = render_text(&report, false);
+
+        assert!(text.starts_with("Plan demo: failed\n"), "{text}");
+        assert!(serde_json::from_str::<Value>(&text).is_err(), "{text}");
+        assert!(text.contains("T2 [failed] Wire the parser"), "{text}");
+        assert!(text.contains("last error: verify[1:test]"), "{text}");
+        assert!(text.contains("verify step 1 (test): cargo test"), "{text}");
+        let second_attempt = "attempt 2: failed after 600.5 s, $1.00";
+        assert!(text.contains(second_attempt), "{text}");
+        assert!(text.contains("T3 [blocked] Document the parser"), "{text}");
+        assert!(text.contains("never ran: dependency T2 failed"), "{text}");
+        let resume = "Resume with `roko plan run plans/programme/demo`";
+        assert!(text.contains(resume), "{text}");
+        assert!(!text.contains("T1 [completed]"), "{text}");
+        assert!(text.contains("1 completed task not shown"), "{text}");
+
+        let verbose = render_text(&report, true);
+        let completed = "T1 [completed] Write the parser";
+        assert!(verbose.contains(completed), "{verbose}");
+    }
+
+    /// gap-baab0a: an attempt's tool policy, recorded in its verdict in the
+    /// run's `attempts.jsonl`, is listed with its task, with the operation
+    /// the broker stopped it at. A verdict without one, and another plan's,
+    /// add nothing.
+    #[test]
+    fn graph_report_lists_the_tool_policy_of_each_attempt() {
+        use roko_learn::telemetry::{
+            AttemptIdentity, AttemptKey, AttemptOutcome, AttemptVerdictRecord, TelemetryWriter,
+            TelemetryWriterConfig,
+        };
+
+        let workspace = failed_run();
+        let root = workspace.path();
+        let run_id = inspect_canonical_checkpoint(root, PLAN_ID)
+            .expect("read checkpoint")
+            .expect("checkpoint")
+            .manifest
+            .run_id;
+        let policy = ToolPolicyRecord {
+            allowed_tools: None,
+            forbidden_tools: vec!["web_fetch".into(), "web_search".into()],
+            enforcement: "broker".into(),
+            denied_operations: vec!["web_search".into()],
+            network_off: true,
+            denial: Some("web_search denied by policy: parser docs".into()),
+        };
+        let verdict = |plan: &str, attempt: u32, policy: Option<ToolPolicyRecord>| {
+            let key = AttemptKey::new(run_id.as_str(), plan, "T2", attempt);
+            let mut verdict = AttemptVerdictRecord::settle(
+                AttemptIdentity::new(&key),
+                AttemptOutcome::ProviderError,
+                true,
+            );
+            verdict.executed.model_dispatched = Some("gpt-5-codex".to_string());
+            verdict.executed.tool_policy = policy;
+            verdict
+        };
+        let run_dir = RokoLayout::for_project(root).run_dir(&run_id);
+        let writer = TelemetryWriter::spawn(&run_dir, TelemetryWriterConfig::default())
+            .expect("spawn writer");
+        assert!(writer.submit(verdict(PLAN_ID, 1, None)));
+        assert!(writer.submit(verdict(PLAN_ID, 2, Some(policy.clone()))));
+        assert!(writer.submit(verdict("other-plan", 1, Some(policy.clone()))));
+        assert_eq!(writer.close().written, 3);
+
+        let report = build_report(root, PLAN_ID, false).expect("report");
+        let t2 = task(&report, "T2");
+        assert_eq!(t2.tool_policies.len(), 1, "{:?}", t2.tool_policies);
+        assert_eq!(t2.tool_policies[0].attempt, 2);
+        assert_eq!(t2.tool_policies[0].model.as_deref(), Some("gpt-5-codex"));
+        assert_eq!(t2.tool_policies[0].policy, policy);
+        assert!(task(&report, "T1").tool_policies.is_empty());
+
+        let json = serde_json::to_value(&report).expect("serialize");
+        let recorded = &json["tasks"][1]["tool_policies"][0];
+        assert_eq!(recorded["attempt"], 2);
+        assert_eq!(recorded["enforcement"], "broker");
+        assert_eq!(
+            recorded["denial"],
+            "web_search denied by policy: parser docs"
+        );
+
+        let text = render_text(&report, false);
+        for line in [
+            "attempt 2 on gpt-5-codex: tool policy enforced by broker",
+            "asked: forbid web_fetch, web_search",
+            "enforced: deny web_search; network off",
+            "stopped at: web_search denied by policy: parser docs",
+        ] {
+            assert!(text.contains(line), "{text}");
+        }
     }
 
     #[test]
@@ -2664,7 +3199,9 @@ title = "Tidy the changelog"
 
         let report = build_report(workspace.path(), "legacy-plan", false).expect("report");
         assert_eq!(report.source, ReportSource::RunnerSnapshot);
-        assert_eq!(report.status, "failed");
+        // The phase, not the last error, says the plan is still being worked on.
+        assert_eq!(report.phase.as_deref(), Some("implementing"));
+        assert_eq!(report.status, "running");
         assert_eq!(report.iteration, Some(2));
         let failed = report.failed_task.as_ref().expect("failed task");
         assert_eq!(
@@ -2675,6 +3212,62 @@ title = "Tidy the changelog"
         assert_eq!(report.gate_results[0].gate_name, "compile:cargo");
         assert!(report.graph_run.is_none());
         assert!(report.tasks.is_empty());
+    }
+
+    /// The report for `legacy-plan` from a Runner-v2 executor snapshot whose
+    /// state for the plan is `plan_state`.
+    fn runner_snapshot_report(plan_state: Value) -> DiagnoseReport {
+        let workspace = tempfile::tempdir().expect("tempdir");
+        let state = workspace.path().join(".roko/state");
+        std::fs::create_dir_all(&state).expect("state dir");
+        let executor = serde_json::json!({
+            "schema_version": 1,
+            "plan_states": { "legacy-plan": plan_state }
+        });
+        std::fs::write(
+            state.join("executor.json"),
+            serde_json::to_vec(&executor).expect("serialize"),
+        )
+        .expect("executor.json");
+        build_report(workspace.path(), "legacy-plan", false).expect("report")
+    }
+
+    #[test]
+    fn a_runner_snapshot_reports_its_phase() {
+        let running = serde_json::json!({
+            "plan_id": "legacy-plan",
+            "current_phase": { "kind": "implementing" },
+            "iteration": 1,
+            "paused": false
+        });
+        let report = runner_snapshot_report(running);
+        assert_eq!(report.phase.as_deref(), Some("implementing"));
+        assert_eq!(report.status, "running");
+        assert!(report.failed_task.is_none());
+
+        let paused = serde_json::json!({
+            "plan_id": "legacy-plan",
+            "current_phase": { "kind": "auto-fixing" },
+            "paused": true
+        });
+        let report = runner_snapshot_report(paused);
+        assert_eq!(report.phase.as_deref(), Some("auto-fixing"));
+        assert_eq!(report.status, "paused");
+        let suggestions = report.suggested_recovery.join("\n");
+        assert!(suggestions.contains("Plan is paused"), "{suggestions}");
+
+        let failed = serde_json::json!({
+            "plan_id": "legacy-plan",
+            "current_phase": { "kind": "failed", "reason": "AllTasksFailed" }
+        });
+        let report = runner_snapshot_report(failed);
+        assert_eq!(report.phase.as_deref(), Some("failed"));
+        assert_eq!(report.status, "failed");
+
+        // Older snapshots wrote the phase as a plain name.
+        let complete = phase_name(&serde_json::json!("complete"));
+        assert_eq!(complete.as_deref(), Some("complete"));
+        assert_eq!(derive_status(complete.as_ref(), None), "completed");
     }
 
     #[test]

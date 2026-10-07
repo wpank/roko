@@ -25,7 +25,9 @@ use crate::symbol_resolver::SymbolResolver;
 use crate::task_brief::TaskBriefGenerator;
 use roko_core::config::RetrievalConfig;
 use roko_core::{Body, InclusionMode, Kind, OperatingFrequency, PromptPolicy, RoleProfile, Signal};
-use roko_learn::error_pattern_store::{ErrorPatternStore, FailurePatternQuery};
+use roko_learn::error_pattern_store::{
+    ERROR_PATTERNS_FILE, ErrorPatternStore, FailurePatternQuery,
+};
 use roko_learn::section_effect::{
     DEFAULT_SECTION_EFFECTS_PATH, SectionEffect, SectionEffectivenessRegistry,
 };
@@ -924,6 +926,7 @@ impl ContextBidder for RecentFailurePatternsBidder {
                 task_id: Some(&request.task_id),
                 gate: None,
                 classification: None,
+                ..Default::default()
             },
             5,
             1_600,
@@ -1217,7 +1220,6 @@ const fn bidder_for_context_source(source: &ContextSource) -> AttentionBidder {
         | ContextSource::PlanBrief
         | ContextSource::Invariants
         | ContextSource::CrossPlanContext
-        | ContextSource::PrdExtract
         | ContextSource::Decomposition
         | ContextSource::SiblingTasks => AttentionBidder::TaskContext,
     }
@@ -1368,12 +1370,6 @@ impl PlanArtifacts {
         self.read_artifact("rubric.md")
     }
 
-    /// Read the PRD extract (prd-extract.md).
-    #[must_use]
-    pub fn prd_extract(&self) -> Option<String> {
-        self.read_artifact("prd-extract.md")
-    }
-
     /// Read the decomposition (decomposition.md).
     #[must_use]
     pub fn decomposition(&self) -> Option<String> {
@@ -1491,11 +1487,12 @@ impl ContextProvider {
         self
     }
 
+    /// The error-pattern store plan runs write (backlog 4204).
     fn failure_pattern_store_path(&self) -> PathBuf {
         self.workdir
             .join(".roko")
             .join("learn")
-            .join("discovered-patterns.json")
+            .join(ERROR_PATTERNS_FILE)
     }
 
     fn section_effects_path(&self) -> PathBuf {
@@ -1969,24 +1966,6 @@ impl ContextProvider {
                 "focused context includes outputs from declared dependencies",
             ));
         }
-
-        // 5. PRD extract (scoped: only paragraphs mentioning this task's files)
-        if let Some(prd) = plan_artifacts.prd_extract() {
-            let scoped = scope_text_to_files(&prd, &task.files);
-            if !scoped.is_empty() {
-                sections.push(ContextSection::scoped(
-                    PromptSection::new("prd_extract", format!("## PRD context\n{scoped}"))
-                        .with_priority(SectionPriority::Low)
-                        .with_cache_layer(CacheLayer::Workspace)
-                        .with_placement(Placement::Middle)
-                        .with_hard_cap(2_000),
-                    ContextSource::PrdExtract,
-                    ContextPurpose::TaskGuidance,
-                    task_scope.clone(),
-                    "PRD extract was scoped to files touched by the task",
-                ));
-            }
-        }
     }
 
     fn add_pheromone_context(&self, sections: &mut Vec<ContextSection>, scope: &str) {
@@ -2260,7 +2239,6 @@ const fn context_source_type(source: &ContextSource) -> &'static str {
         ContextSource::ResearchMemo => "research_memo",
         ContextSource::Invariants => "invariants",
         ContextSource::CrossPlanContext => "cross_plan",
-        ContextSource::PrdExtract => "prd_extract",
         ContextSource::Decomposition => "decomposition",
         ContextSource::SiblingTasks => "sibling_tasks",
         ContextSource::Pheromone { .. } => "pheromone",
@@ -2302,7 +2280,6 @@ fn context_source_id(source: &ContextSource) -> Option<String> {
         | ContextSource::ResearchMemo
         | ContextSource::Invariants
         | ContextSource::CrossPlanContext
-        | ContextSource::PrdExtract
         | ContextSource::Decomposition
         | ContextSource::SiblingTasks => None,
     }
@@ -2485,37 +2462,6 @@ fn extract_line_range(content: &str, range: &str) -> String {
         .unwrap_or(lines.len())
         .min(lines.len());
     lines[start..end].join("\n")
-}
-
-/// Scope a text document to paragraphs that mention any of the given file paths.
-/// Returns the full paragraph for each match. If no matches, returns empty string.
-fn scope_text_to_files(text: &str, files: &[String]) -> String {
-    if files.is_empty() {
-        return String::new();
-    }
-
-    // Split into paragraphs (double newline separated)
-    let paragraphs: Vec<&str> = text.split("\n\n").collect();
-    let mut matched = Vec::new();
-
-    for para in paragraphs {
-        let lower = para.to_ascii_lowercase();
-        for file in files {
-            // Match the filename or the path
-            let basename = Path::new(file)
-                .file_name()
-                .and_then(|n| n.to_str())
-                .unwrap_or(file);
-            if lower.contains(&file.to_ascii_lowercase())
-                || lower.contains(&basename.to_ascii_lowercase())
-            {
-                matched.push(para);
-                break;
-            }
-        }
-    }
-
-    matched.join("\n\n")
 }
 
 // ─── Tests ─────────────────────────────────────────────────────────────────
@@ -2832,32 +2778,6 @@ mod tests {
     }
 
     #[test]
-    fn scope_text_to_files_finds_relevant_paragraphs() {
-        let text = "This paragraph talks about src/main.rs and how it works.\n\n\
-                     This paragraph is about unrelated things.\n\n\
-                     Here we discuss config.rs and settings.";
-        let files = vec!["src/main.rs".into()];
-        let scoped = scope_text_to_files(text, &files);
-        assert!(scoped.contains("src/main.rs"));
-        assert!(!scoped.contains("unrelated"));
-    }
-
-    #[test]
-    fn scope_text_to_files_matches_basename() {
-        let text = "This talks about main.rs changes.\n\nUnrelated paragraph.";
-        let files = vec!["crates/roko-cli/src/main.rs".into()];
-        let scoped = scope_text_to_files(text, &files);
-        assert!(scoped.contains("main.rs"));
-    }
-
-    #[test]
-    fn scope_text_empty_files_returns_empty() {
-        let text = "Some content here.";
-        let scoped = scope_text_to_files(text, &[]);
-        assert!(scoped.is_empty());
-    }
-
-    #[test]
     fn extract_line_range_works() {
         let content = "line 1\nline 2\nline 3\nline 4\nline 5\n";
         assert_eq!(extract_line_range(content, "2-4"), "line 2\nline 3\nline 4");
@@ -2931,6 +2851,50 @@ mod tests {
         );
     }
 
+    /// The source ids the failure-patterns bidder proposes for a workspace
+    /// whose `.roko/learn/<file>` holds one pattern of the request's plan.
+    fn failure_pattern_sources(file: &str) -> Vec<String> {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let pattern_path = tmp.path().join(".roko").join("learn").join(file);
+        let mut store = ErrorPatternStore::load(&pattern_path);
+        store.append(
+            "error[E0432]: unresolved import",
+            "compile",
+            "plan-test",
+            Some("check module paths before retry"),
+        );
+        store.save(&pattern_path).expect("save pattern store");
+        let provider = ContextProvider::new(tmp.path().to_path_buf());
+        let request = test_request(10_000);
+        let registry = ContextBidderRegistry::new().with_bidder(RecentFailurePatternsBidder);
+        let resolved = provider.select_candidates(
+            &request,
+            registry.propose_context(&provider, &request),
+            ContextInjectionPolicy::default(),
+        );
+        resolved
+            .injection_manifest()
+            .iter()
+            .filter_map(|record| record.source_id.clone())
+            .collect()
+    }
+
+    /// backlog 4204: the failure-patterns bidder reads the store plan runs
+    /// write, and nothing from Runner-v2's legacy pattern file.
+    #[test]
+    fn failure_patterns_bidder_reads_error_patterns_json() {
+        let live = failure_pattern_sources(ERROR_PATTERNS_FILE);
+        let plan_source = "failure-patterns:plan-test";
+        assert!(live.iter().any(|id| id.contains(plan_source)), "{live:?}");
+        let legacy = failure_pattern_sources(
+            roko_learn::error_pattern_store::LEGACY_DISCOVERED_PATTERNS_FILE,
+        );
+        assert!(
+            !legacy.iter().any(|id| id.contains("failure-patterns")),
+            "{legacy:?}"
+        );
+    }
+
     #[test]
     fn cold_start_static_bidders_emit_structured_provenance() {
         let tmp = tempfile::tempdir().expect("tempdir");
@@ -2938,7 +2902,7 @@ mod tests {
             .path()
             .join(".roko")
             .join("learn")
-            .join("discovered-patterns.json");
+            .join(ERROR_PATTERNS_FILE);
         let mut store = ErrorPatternStore::load(&pattern_path);
         store.append(
             "error[E0432]: unresolved import",

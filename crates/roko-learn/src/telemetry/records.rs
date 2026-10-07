@@ -1,22 +1,27 @@
 //! Canonical telemetry records for S01 Phase 0: the attempt key, the
-//! attempt-open line, the settled verdict, the run manifest and the line
-//! envelope every run file shares.
+//! attempt-open line, the settled verdict, the run manifest, the decision
+//! and exposure rows, and the line envelope every run file shares.
 //!
 //! Records are append-only facts. Unknown values are `null`, never `0`, and
 //! fields added after a schema's first version carry `#[serde(default)]` so
 //! older rows keep parsing. Route decisions reuse
-//! [`RoutingDecisionLog`](crate::routing_log::RoutingDecisionLog) rather than
-//! a third decision-record type.
+//! [`RoutingDecisionLog`](crate::routing_log::RoutingDecisionLog); content
+//! decisions (knowledge, playbooks, sections, error patterns) are
+//! [`ContentDecisionRecord`]s in the same file.
 
 use std::collections::BTreeMap;
 use std::fmt;
 use std::path::{Path, PathBuf};
 
+use roko_core::audit_types::VerifyDepth;
+use roko_core::config::harness_params::HarnessParams;
+use roko_core::config::homeostasis::HomeostasisMode;
 use roko_core::usage::UsageSource;
 use serde::{Deserialize, Serialize};
 
+use super::assign::{Arm, Assignment};
 use crate::prompt_experiment::PromptAttemptKey;
-use crate::routing_log::RoutingDecisionLog;
+use crate::routing_log::{DecisionState, RoutingDecisionLog};
 
 // ── Schema names and run files ────────────────────────────────────────
 
@@ -26,6 +31,10 @@ pub const ATTEMPT_OPEN_SCHEMA: &str = "roko.attempt_open/1";
 pub const VERDICT_SCHEMA: &str = "roko.verdict/1";
 /// `schema_version` of a decision row (S01 §5.3).
 pub const DECISION_SCHEMA: &str = "roko.decision/1";
+/// `schema_version` of an exposure row (S01 §5.4).
+pub const EXPOSURE_SCHEMA: &str = "roko.exposure/1";
+/// `schema_version` of a prediction row (S01 §5.6).
+pub const PREDICTION_SCHEMA: &str = "roko.prediction/1";
 /// `schema_version` of `manifest.json` (S01 §5.1).
 pub const RUN_MANIFEST_SCHEMA: &str = "roko.run_manifest/1";
 
@@ -36,6 +45,11 @@ pub const MANIFEST_FILE: &str = "manifest.json";
 pub const ATTEMPTS_FILE: &str = "attempts.jsonl";
 /// `.roko/runs/<run_id>/decisions.jsonl`: decision rows.
 pub const DECISIONS_FILE: &str = "decisions.jsonl";
+/// `.roko/runs/<run_id>/exposures.jsonl`: exposure rows.
+pub const EXPOSURES_FILE: &str = "exposures.jsonl";
+/// `.roko/runs/<run_id>/predictions.jsonl`: the self-model's forecasts, each written before the
+/// route decision it informs.
+pub const PREDICTIONS_FILE: &str = "predictions.jsonl";
 
 /// An append-only telemetry file inside a run directory.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -44,11 +58,20 @@ pub enum RunFile {
     Attempts,
     /// [`DECISIONS_FILE`].
     Decisions,
+    /// [`EXPOSURES_FILE`].
+    Exposures,
+    /// [`PREDICTIONS_FILE`].
+    Predictions,
 }
 
 impl RunFile {
     /// Every append-only run file.
-    pub const ALL: [Self; 2] = [Self::Attempts, Self::Decisions];
+    pub const ALL: [Self; 4] = [
+        Self::Attempts,
+        Self::Decisions,
+        Self::Exposures,
+        Self::Predictions,
+    ];
 
     /// File name inside the run directory.
     #[must_use]
@@ -56,6 +79,8 @@ impl RunFile {
         match self {
             Self::Attempts => ATTEMPTS_FILE,
             Self::Decisions => DECISIONS_FILE,
+            Self::Exposures => EXPOSURES_FILE,
+            Self::Predictions => PREDICTIONS_FILE,
         }
     }
 
@@ -495,6 +520,28 @@ pub struct VerifyStepVerdict {
     pub skipped: bool,
     /// Why the step was skipped, e.g. `fail_fast`.
     pub skip_reason: Option<String>,
+    /// Whether the person the work is for confirmed the outcome: a passed
+    /// `confirm` rung (9137). It is a person's judgement, kept apart from
+    /// the machine checks, which routing and audits read as such.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub confirmed_by_user: bool,
+}
+
+/// Most scope findings a verdict lists; it counts the rest
+/// ([`AttemptVerdictRecord::scope_findings_omitted`]).
+pub const SCOPE_FINDINGS_LISTED: usize = 50;
+
+/// A path a settled attempt changed outside its task's `files`, as the
+/// pre-verify screen found it (`scope_findings[]`, backlog 1125). Under
+/// `[gates] diff_scope = "record"` it is recorded and does not fail the
+/// attempt.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ScopeFinding {
+    /// The path, relative to the attempt's working tree.
+    pub path: String,
+    /// The finding's kind, e.g. `outside_scope`.
+    pub kind: String,
 }
 
 /// Unix-millisecond timestamps of one attempt (S01 §4.4); `None` when
@@ -554,6 +601,38 @@ pub struct ExecutedModel {
     /// Agent turns taken: the Claude CLI's `num_turns`, or the model calls
     /// of roko's tool loop. `None` when the agent did not report a count.
     pub turns: Option<u32>,
+    /// The sampling parameters roko sent with each request, by their
+    /// request-body names (`temperature`, `top_p`, `seed`). Empty, and left
+    /// out of the record, when the provider's defaults applied (gap-13bbbd).
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub sampling: BTreeMap<String, serde_json::Value>,
+    /// The tool policy the attempt's contract asked for and what its provider
+    /// enforced, for a provider that runs its own tools; left out otherwise
+    /// (gap-baab0a).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tool_policy: Option<ToolPolicyRecord>,
+}
+
+/// The tool policy an attempt's contract asked for and what its provider
+/// enforced (`executed.tool_policy`, gap-baab0a).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ToolPolicyRecord {
+    /// Requested: the contract's allowlist; `None` when it has none.
+    pub allowed_tools: Option<Vec<String>>,
+    /// Requested: the contract's forbidden tools.
+    pub forbidden_tools: Vec<String>,
+    /// Effective: how the provider enforced the contract. `broker`: roko
+    /// stops the provider at the first operation the contract denies.
+    pub enforcement: String,
+    /// Effective: the provider's operations the broker denies, by the names
+    /// the provider reports them under.
+    pub denied_operations: Vec<String>,
+    /// Effective: the provider's web search and sandbox network were
+    /// switched off because the contract keeps the role off the network.
+    pub network_off: bool,
+    /// The operation the broker stopped the attempt at, if it did.
+    pub denial: Option<String>,
 }
 
 /// One model provider failover passed over before the one that ran
@@ -566,8 +645,11 @@ pub struct FailoverRefusal {
     /// The refused model's provider.
     pub provider: String,
     /// Why, as a class: `provider_exhausted` (out of usage), `billing`,
-    /// `circuit_open`, `disabled`, `no_credentials`, `not_configured` or
-    /// `not_dispatchable`.
+    /// `circuit_open`, `disabled`, `no_credentials`, `not_configured`,
+    /// `not_dispatchable`, `contract_unsupported` (the provider cannot
+    /// enforce the task's agent contract) or `unguarded_in_checkout` (a
+    /// Codex, Cursor or Gemini CLI agent, which roko cannot guard, for an
+    /// attempt in the operator's shared checkout).
     pub class: String,
     /// The provider's own words, or why it could not be called.
     pub reason: String,
@@ -621,6 +703,48 @@ pub struct AttemptUsage {
     /// Reasoning tokens. Not a sixth class: they are already inside
     /// `tokens_out` and are never priced again.
     pub tokens_reasoning: Option<u64>,
+}
+
+/// Where a backend's prompt-cache writes fall among the token classes of
+/// [`AttemptUsage`] (S01 §4.4).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CacheWriteClass {
+    /// `tokens_cache_write_5m`: the Anthropic API's default TTL.
+    FiveMinutes,
+    /// `tokens_cache_write_1h`: the TTL of the Claude CLI's sessions.
+    OneHour,
+    /// Inside `tokens_in`, so both write classes are 0: OpenAI-style usage
+    /// bills cache writes as input.
+    InInput,
+    /// Not known for the backend; both write classes stay `None`.
+    Unknown,
+}
+
+impl AttemptUsage {
+    /// The classes of a backend's usage `observation`, whose input count
+    /// already leaves out cached tokens (bug-b72a37); its cache writes go
+    /// where `writes` says. A class the backend did not report stays `None`.
+    #[must_use]
+    pub fn from_observation(
+        observation: &roko_core::usage::UsageObservation,
+        writes: CacheWriteClass,
+    ) -> Self {
+        let written = observation.cache_creation_tokens;
+        let (tokens_cache_write_5m, tokens_cache_write_1h) = match writes {
+            CacheWriteClass::FiveMinutes => (written, None),
+            CacheWriteClass::OneHour => (None, written),
+            CacheWriteClass::InInput => (Some(0), Some(0)),
+            CacheWriteClass::Unknown => (None, None),
+        };
+        Self {
+            tokens_in: observation.input_tokens,
+            tokens_out: observation.output_tokens,
+            tokens_cache_read: observation.cache_read_tokens,
+            tokens_cache_write_5m,
+            tokens_cache_write_1h,
+            tokens_reasoning: observation.reasoning_tokens,
+        }
+    }
 }
 
 /// Where an attempt's priced token usage came from (`cost.source`,
@@ -685,7 +809,10 @@ pub struct AttemptCost {
     pub price_snapshot_id: Option<String>,
 }
 
-/// How many content items were retrieved and included for the attempt.
+/// How many content items were retrieved and included for the attempt
+/// (S01 P0-9): the knowledge entries, cited episodes, playbooks and error
+/// patterns of its exposure rows, those past the per-attempt row cap too.
+/// The prompt's own sections have exposure rows but are not counted.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ExposureCounts {
     /// Items retrieved for the prompt.
@@ -751,6 +878,13 @@ pub enum LadderReason {
     /// `--model` or a `model_hint` pinned the model; the ladder never moves
     /// it.
     Pinned,
+    /// Failover ran the attempt on this rung's model, because the routed
+    /// rung's provider could not take it: the same model elsewhere, or a rung
+    /// above (backlog 1120).
+    Failover,
+    /// An active self-model chose the task's start rung (S04, 6130), or climbed after one
+    /// failure (6131).
+    SelfModel,
 }
 
 /// Where an attempt stood on the model ladder (gap-460230).
@@ -770,6 +904,33 @@ pub struct AttemptLadder {
     /// ladder is exhausted, and the task needs a split or a replan.
     #[serde(default)]
     pub exhausted: bool,
+    /// The cascade router's own pick beside the rung, which did not run
+    /// (its shadow pick, G56); `None` without a cascade router, and for a
+    /// pinned model. The attempt's route row has it as `proposals.learned`;
+    /// this copy keeps the verdict readable alone.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub router_pick: Option<String>,
+}
+
+/// DP3's verify depth for one attempt (S05 §4.6, 7132): the depth its checks
+/// ran at and what set it, so that a run's rows show how audit feedback
+/// (L-M4) moved verification (gap-595e28).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct VerifyDepthRecord {
+    /// The task type the strictness ladder keeps a level for.
+    pub task_type: String,
+    /// The depth the attempt was checked at: the ladder's level or M1's
+    /// floor, whichever is higher, held for the ladder's window, and raised
+    /// by an active self-model's request.
+    pub depth: VerifyDepth,
+    /// The level the strictness ladder held for the task type, which audit
+    /// feedback moves; `None` without audits, or when the ladder could not
+    /// be read.
+    #[serde(default)]
+    pub ladder: Option<VerifyDepth>,
+    /// M1's floor request, θ's B3 `extra_rungs`; V0 without M1.
+    #[serde(default)]
+    pub floor: VerifyDepth,
 }
 
 /// `roko.verdict/1` (S01 §5.5): the one settled record per attempt. Not
@@ -801,6 +962,15 @@ pub struct AttemptVerdictRecord {
     /// Per-rung verify results.
     #[serde(default)]
     pub steps: Vec<VerifyStepVerdict>,
+    /// Paths the attempt changed outside its task's `files`, at most
+    /// [`SCOPE_FINDINGS_LISTED`]; empty when it changed none or the
+    /// pre-verify screen did not diff it (backlog 1125).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub scope_findings: Vec<ScopeFinding>,
+    /// How many more scope findings there were than the verdict lists;
+    /// `None` when it lists them all.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scope_findings_omitted: Option<u32>,
     /// Timestamps.
     #[serde(default)]
     pub timing: AttemptTiming,
@@ -840,6 +1010,23 @@ pub struct AttemptVerdictRecord {
     /// Content exposure counts.
     #[serde(default)]
     pub exposures: Option<ExposureCounts>,
+    /// The θ M1 ran the attempt under (S06 T13): its chain's arm on the
+    /// `harness_policy` layer, θ's version and the digest of the θ it ran;
+    /// `None` when the run has no M1 sink.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub harness: Option<HarnessStamp>,
+    /// The routing decisions DP4 (S05 §4.6) made while the attempt was
+    /// routed, one per model audit trust left out, by the cascade router's
+    /// own count. The route row names them too; this count stays apart from
+    /// it, so that the census can tell an exclusion lost before logging from
+    /// none (gap-595e28). `None` without a cascade router, or when the
+    /// attempt was not routed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub trust_exclusions: Option<u64>,
+    /// DP3's verify depth for the attempt; `None` when it did not reach DP3,
+    /// its checks having failed first.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub verify_depth: Option<VerifyDepthRecord>,
 }
 
 impl AttemptVerdictRecord {
@@ -863,6 +1050,8 @@ impl AttemptVerdictRecord {
             blame,
             learning_label: learning_label_for(outcome, blame),
             steps: Vec::new(),
+            scope_findings: Vec::new(),
+            scope_findings_omitted: None,
             timing: AttemptTiming::default(),
             executed: ExecutedModel::default(),
             usage: AttemptUsage::default(),
@@ -874,6 +1063,9 @@ impl AttemptVerdictRecord {
             output_sha256: None,
             diff_sha256: None,
             exposures: None,
+            harness: None,
+            trust_exclusions: None,
+            verify_depth: None,
         }
     }
 
@@ -883,6 +1075,15 @@ impl AttemptVerdictRecord {
         let mut record = Self::settle(identity, verdict.into(), false);
         record.gate_verdict = Some(verdict);
         record
+    }
+
+    /// List `findings` as the attempt's scope findings: the first
+    /// [`SCOPE_FINDINGS_LISTED`] of them, and a count of the rest.
+    pub fn set_scope_findings(&mut self, mut findings: Vec<ScopeFinding>) {
+        let omitted = findings.len().saturating_sub(SCOPE_FINDINGS_LISTED);
+        findings.truncate(SCOPE_FINDINGS_LISTED);
+        self.scope_findings = findings;
+        self.scope_findings_omitted = u32::try_from(omitted).ok().filter(|&count| count > 0);
     }
 
     /// The learning label as learners apply it (S01 §4.1): `Some(true)` for
@@ -911,6 +1112,9 @@ pub enum DecisionSource {
     TaskHint,
     /// An operator or config override.
     Override,
+    /// The task's `[routing.ladder]` rung. The router's own pick, if any, is
+    /// then a shadow proposal (`proposals.learned`).
+    Ladder,
     /// A guard replaced the router's pick (unconfigured model, disabled
     /// provider, no tool support).
     Fallback,
@@ -922,6 +1126,501 @@ pub enum DecisionSource {
     Control,
     /// The self-model's choice (S04).
     SelfModel,
+}
+
+/// A content decision point (S01 §4.5): where a prompt chooses which
+/// retrieved items it includes. Route decisions are `route`
+/// ([`ROUTE_DECISION_POINT`](crate::routing_log::ROUTE_DECISION_POINT)).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ContentDecisionPoint {
+    /// Durable knowledge entries, and the prior episodes a prompt cites.
+    Knowledge,
+    /// Learned playbooks.
+    Playbooks,
+    /// The prompt's own sections.
+    Sections,
+    /// Known error patterns.
+    ErrorPatterns,
+    /// Post-gate reflections.
+    Reflections,
+    /// Dream routing advice.
+    DreamAdvice,
+}
+
+impl ContentDecisionPoint {
+    /// Wire value, e.g. `error_patterns`.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Knowledge => "knowledge",
+            Self::Playbooks => "playbooks",
+            Self::Sections => "sections",
+            Self::ErrorPatterns => "error_patterns",
+            Self::Reflections => "reflections",
+            Self::DreamAdvice => "dream_advice",
+        }
+    }
+}
+
+/// What a retrieved item is (`item_kind`, S01 §5.4).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ExposureItemKind {
+    /// A durable knowledge entry.
+    Knowledge,
+    /// A prior episode the prompt cites, apart from knowledge
+    /// (`PromptDiagnostics::episode_ids`).
+    Episode,
+    /// A learned playbook.
+    Playbook,
+    /// A prompt section the composer could include.
+    Section,
+    /// A known error pattern.
+    ErrorPattern,
+    /// A post-gate reflection.
+    Reflection,
+    /// Dream routing advice.
+    DreamAdvice,
+}
+
+impl ExposureItemKind {
+    /// Wire value, e.g. `error_pattern`.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Knowledge => "knowledge",
+            Self::Episode => "episode",
+            Self::Playbook => "playbook",
+            Self::Section => "section",
+            Self::ErrorPattern => "error_pattern",
+            Self::Reflection => "reflection",
+            Self::DreamAdvice => "dream_advice",
+        }
+    }
+
+    /// The decision point that chooses items of this kind. Knowledge and the
+    /// episodes a prompt cites are one decision: both feed its knowledge.
+    #[must_use]
+    pub const fn decision_point(self) -> ContentDecisionPoint {
+        match self {
+            Self::Knowledge | Self::Episode => ContentDecisionPoint::Knowledge,
+            Self::Playbook => ContentDecisionPoint::Playbooks,
+            Self::Section => ContentDecisionPoint::Sections,
+            Self::ErrorPattern => ContentDecisionPoint::ErrorPatterns,
+            Self::Reflection => ContentDecisionPoint::Reflections,
+            Self::DreamAdvice => ContentDecisionPoint::DreamAdvice,
+        }
+    }
+}
+
+/// Why a retrieved item did not reach the prompt (`excluded_reason`,
+/// S01 §5.4).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ExcludedReason {
+    /// Its section was dropped, or cut short, to fit the token budget.
+    TokenBudget,
+    /// The attempt's arm withholds it (S02, S03).
+    WithheldArm,
+    /// A bandit left it out.
+    BanditExcluded,
+    /// A screen removed it.
+    Screened,
+    /// The role's prompt has no place for it.
+    RoleFilter,
+}
+
+/// One candidate of a content decision (`candidates[]`, S01 §5.3): a
+/// retrieved item.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ContentCandidate {
+    /// The item's id.
+    pub id: String,
+    /// 1-based position in the retrieval's ranking, when it ranks.
+    #[serde(default)]
+    pub rank: Option<u32>,
+    /// The retrieval's score, when it scores.
+    #[serde(default)]
+    pub score: Option<f64>,
+    /// Whether the policy could include it.
+    #[serde(default = "eligible_by_default")]
+    pub eligible: bool,
+    /// Probability the logging policy included it.
+    #[serde(default)]
+    pub p: Option<f64>,
+}
+
+fn eligible_by_default() -> bool {
+    true
+}
+
+/// `decision_point` of the placebo's decision rows (S03 §4.3).
+pub const PLACEBO_DECISION_POINT: &str = "placebo";
+/// The placebo loop's registry id.
+pub const PLACEBO_LOOP_ID: &str = "L-placebo";
+/// What both arms of the placebo propose: the same thing, nothing.
+pub const PLACEBO_PROPOSAL: &str = "no_op";
+
+/// What the placebo's two arms propose: the same, by construction.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PlaceboProposals {
+    /// The learned arm's proposal.
+    pub learned: String,
+    /// The default arm's proposal.
+    pub default: String,
+}
+
+/// The decision point of M1's harness parameters (A-DEC-H, S01 §5.3).
+pub const HARNESS_POLICY_DECISION_POINT: &str = "harness_policy";
+
+/// What an attempt says of the θ it ran under (S06 T13).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HarnessStamp {
+    /// Its chain's arm on the `harness_policy` layer: `learned` runs the
+    /// controller's θ, `default` and `global_off` run θ₀.
+    pub arm: Arm,
+    /// The version of θ the handle held.
+    pub policy_version: u64,
+    /// `b3:` digest of the θ the attempt ran.
+    pub params_digest: String,
+}
+
+/// `roko.decision/1` at the `harness_policy` decision point (A-DEC-H).
+///
+/// One row per attempt (S06 T13), and S03's L-M1 receipt: every knob of
+/// the controller's θ (`chosen`, the would-be θ in shadow) and of θ₀
+/// (`default`), the chain's arm, and the digest of the θ the attempt ran.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct HarnessPolicyDecisionRecord {
+    /// The attempt the decision belongs to.
+    #[serde(flatten)]
+    pub identity: AttemptIdentity,
+    /// Always [`HARNESS_POLICY_DECISION_POINT`].
+    pub decision_point: String,
+    /// The chain's assignment on the `harness_policy` layer.
+    pub assignment: Assignment,
+    /// The arm, as in `assignment`.
+    pub arm: Arm,
+    /// `off`, `shadow` or `on`.
+    pub mode: HomeostasisMode,
+    /// The version of θ the handle held.
+    pub policy_version: u64,
+    /// `b3:` digest of the θ the attempt ran.
+    pub params_digest: String,
+    /// The controller's θ.
+    pub chosen: HarnessParams,
+    /// θ₀.
+    pub default: HarnessParams,
+    /// Whether the controller's θ differs from θ₀.
+    pub differs: bool,
+    /// Who chose: the controller.
+    pub source: DecisionSource,
+    /// A pin (`--model`, a `model_hint`, express routing) chose the
+    /// attempt's model, so θ's B1 knobs left it alone (8124).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub pinned: bool,
+}
+
+/// `roko.decision/1` at the placebo decision point (S03 §4.3, S02 L12): the
+/// L-placebo loop's arm for the attempt's chain. Its two arms are identical
+/// and cost nothing, so its true effect is 0, and S03 calibrates its false
+/// transitions on it. Nothing reads the arm.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct PlaceboDecisionRecord {
+    /// The attempt the decision belongs to.
+    #[serde(flatten)]
+    pub identity: AttemptIdentity,
+    /// Always [`PLACEBO_DECISION_POINT`].
+    pub decision_point: String,
+    /// Always [`PLACEBO_LOOP_ID`].
+    pub loop_id: String,
+    /// The chain's assignment on the placebo layer.
+    pub assignment: Assignment,
+    /// What each arm proposes.
+    pub proposals: PlaceboProposals,
+    /// The realised arm's proposal.
+    pub chosen: String,
+    /// The realised arm's propensity.
+    pub chosen_propensity: f64,
+}
+
+impl PlaceboDecisionRecord {
+    /// The placebo decision of the attempt `identity`, from its chain's
+    /// `assignment` on the placebo layer.
+    #[must_use]
+    pub fn new(identity: AttemptIdentity, assignment: Assignment) -> Self {
+        Self {
+            identity,
+            decision_point: PLACEBO_DECISION_POINT.to_string(),
+            loop_id: PLACEBO_LOOP_ID.to_string(),
+            chosen_propensity: assignment.propensity,
+            assignment,
+            proposals: PlaceboProposals {
+                learned: PLACEBO_PROPOSAL.to_string(),
+                default: PLACEBO_PROPOSAL.to_string(),
+            },
+            chosen: PLACEBO_PROPOSAL.to_string(),
+        }
+    }
+}
+
+/// `roko.decision/1` at a content decision point (S01 §4.5, §5.3): the items
+/// an attempt's prompt retrieved there are the candidates, and the set it
+/// included is the choice. It shares `decisions.jsonl` with the route rows,
+/// which have no content `decision_point`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ContentDecisionRecord {
+    /// The attempt that made the decision.
+    #[serde(flatten)]
+    pub identity: AttemptIdentity,
+    /// Where the prompt chose.
+    pub decision_point: ContentDecisionPoint,
+    /// The ranking that produced the candidates, e.g. `topic_overlap_top3`.
+    pub policy: String,
+    /// Every retrieved item, in rank order.
+    pub candidates: Vec<ContentCandidate>,
+    /// Ids of the candidates the prompt included: a set decision's `chosen`
+    /// is an array.
+    pub chosen: Vec<String>,
+    /// Probability the logging policy gave `chosen`: 1 for a fixed ranking.
+    #[serde(default)]
+    pub chosen_propensity: Option<f64>,
+    /// Who produced `chosen`.
+    #[serde(default)]
+    pub source: Option<DecisionSource>,
+    /// The learned state the candidates came from (S01 P0-10), in the form
+    /// route rows use; `None` when the decision point reads none.
+    #[serde(default)]
+    pub state: Option<DecisionState>,
+    /// `b3:` digest of the gate thresholds in force
+    /// (`learn/gate-thresholds.json`); `None` when there are none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub thresholds_digest: Option<String>,
+    /// The arms of the attempt's chain (S02.P1-14), which every decision row
+    /// of the attempt carries.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub arm_set: Option<crate::loop_audit::arm_set::ArmSet>,
+    /// The section bandit's draws at the `sections` point (S02 L9): each
+    /// droppable section's exclusion probability and whether the prompt left
+    /// it out, which `--srm` checks section by section; empty elsewhere.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub section_draws: Vec<crate::section_effect::SectionDecision>,
+    /// What each policy proposed (A-DEC); `None` on rows written before it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub proposals: Option<ContentProposals>,
+    /// S03's fields (A-DEC).
+    #[serde(flatten)]
+    pub audit: AuditFields,
+}
+
+/// What each policy proposed for a set decision (S01 §5.3 `proposals`, as
+/// arrays of ids).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ContentProposals {
+    /// The ids the learned reader would include, computed on both arms.
+    pub learned: Option<Vec<String>>,
+    /// The ids the default policy π⁰ includes: none for knowledge, the
+    /// seeded ones for playbooks.
+    pub default: Option<Vec<String>>,
+}
+
+/// Whether a decision was an opportunity of its loop (S01 §5.3
+/// `opportunity`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DecisionOpportunity {
+    /// The loop's opportunity predicate held.
+    pub eligible: bool,
+    /// Why, e.g. `no_override_no_hint_ge2_eligible`.
+    #[serde(default)]
+    pub reason: String,
+}
+
+/// A decision's draw on its loop's layer: S01 §4.6's assignment with S03's
+/// A-DEC fields (S01 §5.3 `assignment`).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct DecisionAssignment {
+    /// The draw: unit, layer, salt id, u, h, g, arm and propensity.
+    #[serde(flatten)]
+    pub draw: Assignment,
+    /// The value hashed: the chain key unless the layer says otherwise.
+    pub unit_key: String,
+    /// The assignment epoch, e.g. the UTC day.
+    pub audit_epoch: String,
+    /// The all-learning-off arm was drawn.
+    pub global_off: bool,
+    /// When the arm was drawn, in unix ms.
+    pub assigned_at: i64,
+}
+
+impl DecisionAssignment {
+    /// `draw` of `key`'s unit, made at `assigned_at`, with its epoch read
+    /// from the salt id (`"{layer}@{epoch}"`).
+    #[must_use]
+    pub fn new(draw: Assignment, key: &AttemptKey, assigned_at: i64) -> Self {
+        let audit_epoch = draw
+            .salt_id
+            .split_once('@')
+            .map_or_else(String::new, |(_, epoch)| epoch.to_string());
+        Self {
+            unit_key: draw.unit.unit_key(key),
+            audit_epoch,
+            global_off: draw.arm == Arm::GlobalOff,
+            assigned_at,
+            draw,
+        }
+    }
+}
+
+/// Proof that a decision reached the executed request (S01 §5.3 `receipt`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DecisionReceipt {
+    /// What it checks: `route` (the executed model is the pick) or `content`
+    /// (the rendered sections are in the request).
+    pub kind: String,
+    /// The check passed.
+    pub ok: bool,
+    /// `b3:` hash of the request it checked.
+    #[serde(default)]
+    pub request_hash: Option<String>,
+    /// `b3:` hashes of the rendered sections it looked for.
+    #[serde(default)]
+    pub exposure_hashes: Vec<String>,
+}
+
+/// S03's fields on a decision row (A-DEC, S01 §5.3): the loops that share
+/// the decision, its layer, whether it was an opportunity, the draw and its
+/// time, the decision's time and the receipt. A row written before them has
+/// none, and the census counts it as pre-instrumentation.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct AuditFields {
+    /// The loop whose layer drew the arm.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub loop_id: Option<String>,
+    /// Every loop that shares the decision.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub loop_ids: Vec<String>,
+    /// The decision's layer.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub layer: Option<String>,
+    /// Whether it was an opportunity of its loop.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub opportunity: Option<DecisionOpportunity>,
+    /// The draw on the layer.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub assignment: Option<DecisionAssignment>,
+    /// When the decision was made, in unix ms. S03 §4.6's ordering check
+    /// reads `assigned_at < decided_at`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub decided_at: Option<i64>,
+    /// Proof the decision reached the request.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub receipt: Option<DecisionReceipt>,
+}
+
+impl AuditFields {
+    /// Whether a row carries them: one without a layer predates A-DEC.
+    #[must_use]
+    pub const fn present(&self) -> bool {
+        self.layer.is_some()
+    }
+}
+
+/// `b3(attempt_key|item_kind|item_id)`: one item's exposure in one attempt
+/// (`exposure_id`, S01 §5.4).
+#[must_use]
+pub fn exposure_id(attempt_key: &str, item_kind: ExposureItemKind, item_id: &str) -> String {
+    let parts = [attempt_key, item_kind.as_str(), item_id];
+    b3_digest(parts.join("|").as_bytes())
+}
+
+/// `roko.exposure/1` (S01 §5.4): one item an attempt's prompt retrieved,
+/// and whether it reached the prompt. It holds digests and counts, never
+/// the item's text (S01 §4.7).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ExposureRecord {
+    /// The attempt whose prompt retrieved the item.
+    #[serde(flatten)]
+    pub identity: AttemptIdentity,
+    /// [`exposure_id`] of the item in this attempt.
+    pub exposure_id: String,
+    /// The decision point that chose whether to include the item.
+    pub decision_point: ContentDecisionPoint,
+    /// The loop that reads the item's outcome (S03), e.g. `L-know`.
+    #[serde(default)]
+    pub loop_id: Option<String>,
+    /// What the item is.
+    pub item_kind: ExposureItemKind,
+    /// The item's id in its store.
+    pub item_id: String,
+    /// The item's version, e.g. `kn-2f81@v7`.
+    #[serde(default)]
+    pub item_version: Option<String>,
+    /// How the item came to exist, e.g. `distilled`.
+    #[serde(default)]
+    pub origin: Option<String>,
+    /// The retrieval path that found it, e.g. `neuro_lexical_cache`.
+    #[serde(default)]
+    pub source: Option<String>,
+    /// 1-based position in the retrieval's ranking, when it ranks.
+    #[serde(default)]
+    pub rank: Option<u32>,
+    /// The retrieval's score, when it scores.
+    #[serde(default)]
+    pub score: Option<f64>,
+    /// The prompt's sources retrieved the item. Always true today.
+    pub retrieved: bool,
+    /// Its section reached the prompt, and so did its rendered text.
+    pub included: bool,
+    /// Why it did not, when it did not.
+    #[serde(default)]
+    pub excluded_reason: Option<ExcludedReason>,
+    /// The prompt section that carries the item, e.g. `domain_context`.
+    #[serde(default)]
+    pub section_id: Option<String>,
+    /// Estimated tokens of the item's rendered text.
+    #[serde(default)]
+    pub tokens: Option<u32>,
+    /// `sha256` of the item's rendered text.
+    #[serde(default)]
+    pub rendered_sha256: Option<String>,
+    /// The arm the attempt's assignment put this decision in (S02, S03).
+    #[serde(default)]
+    pub arm: Option<Arm>,
+}
+
+impl ExposureRecord {
+    /// An item the prompt of `identity`'s attempt retrieved, not included
+    /// until the caller says so, chosen at its kind's decision point.
+    #[must_use]
+    pub fn new(
+        identity: AttemptIdentity,
+        item_kind: ExposureItemKind,
+        item_id: impl Into<String>,
+    ) -> Self {
+        let item_id = item_id.into();
+        Self {
+            exposure_id: exposure_id(&identity.attempt_key, item_kind, &item_id),
+            identity,
+            decision_point: item_kind.decision_point(),
+            loop_id: None,
+            item_kind,
+            item_id,
+            item_version: None,
+            origin: None,
+            source: None,
+            rank: None,
+            score: None,
+            retrieved: true,
+            included: false,
+            excluded_reason: None,
+            section_id: None,
+            tokens: None,
+            rendered_sha256: None,
+            arm: None,
+        }
+    }
 }
 
 // ── Run manifest ──────────────────────────────────────────────────────
@@ -965,6 +1664,14 @@ pub struct RunProvenanceManifest {
     /// The workspace the run started from.
     #[serde(default)]
     pub workspace: WorkspaceProvenance,
+    /// Raises of a plan's budget ceiling during the run, oldest first
+    /// (`roko plan budget raise`, backlog 2118).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub budget_raises: Vec<BudgetRaise>,
+    /// Where the run's request came from, when a server started it: `http`,
+    /// or `mcp:<client>` for a chat host (backlog 9116).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub origin: Option<String>,
     /// Set when the run closes.
     #[serde(default)]
     pub closed: Option<RunClosed>,
@@ -985,6 +1692,8 @@ impl RunProvenanceManifest {
             prices: PriceProvenance::default(),
             experiment: ExperimentProvenance::default(),
             workspace: WorkspaceProvenance::default(),
+            budget_raises: Vec::new(),
+            origin: None,
             closed: None,
         }
     }
@@ -1084,6 +1793,23 @@ pub struct WorkspaceProvenance {
     pub base_commit: Option<String>,
 }
 
+/// A raise of a plan's budget ceiling while its run ran (backlog 2118).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct BudgetRaise {
+    /// ISO-8601 UTC time the run applied it.
+    pub at: String,
+    /// The plan whose ceiling was raised.
+    pub plan_id: String,
+    /// The ceiling before, in USD.
+    pub from_usd: f64,
+    /// The ceiling from then on, in USD.
+    pub to_usd: f64,
+    /// What the plan had spent when it was raised, in USD.
+    pub spent_usd: f64,
+    /// Who raised it: the control surface the raise came through.
+    pub by: String,
+}
+
 /// Terminal counts of a run.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
@@ -1102,6 +1828,134 @@ pub struct RunClosed {
     pub telemetry_dropped: u64,
     /// Chains that hit the runaway guard.
     pub runaway_guard_trips: u64,
+}
+
+// ── Predictions ───────────────────────────────────────────────────────
+
+/// The step a prediction is written before: the route decision.
+pub const PREDICTION_PRECEDES_ROUTE: &str = "route";
+
+/// `roko.prediction/1` (S01 §5.6): the self-model's forecast for one attempt, written before
+/// the route decision it informs. The record is S01's and plain serde; S04's self-model fills
+/// it. Outcomes are never copied here: calibration joins the verdict by `attempt_key`.
+///
+/// It is not [`crate::prediction::PredictionRecord`], the calibration tracker's record of one
+/// routed model's prediction together with its outcome and residuals, nor roko-core's Cell
+/// `PredictionRecord`: neither holds a candidate set, a predictor version or a decision.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AttemptPredictionRecord {
+    /// [`Self::prediction_id`] of the attempt and the predictor version.
+    pub prediction_id: String,
+    /// The attempt forecast.
+    #[serde(flatten)]
+    pub identity: AttemptIdentity,
+    /// The step the prediction precedes: [`PREDICTION_PRECEDES_ROUTE`].
+    pub precedes: String,
+    /// The predictor that made it.
+    pub predictor: PredictionPredictor,
+    /// One forecast per candidate arm.
+    pub candidates: Vec<PredictionCandidate>,
+    /// What the predictor would choose, beside what routing chooses without it.
+    pub decision: PredictionDecision,
+    /// The price snapshot the costs are in; `null` when none was loaded.
+    #[serde(default)]
+    pub price_snapshot_id: Option<String>,
+}
+
+impl AttemptPredictionRecord {
+    /// The prediction of `identity`'s attempt by `predictor`, before the route decision.
+    #[must_use]
+    pub fn new(
+        identity: AttemptIdentity,
+        predictor: PredictionPredictor,
+        candidates: Vec<PredictionCandidate>,
+        decision: PredictionDecision,
+    ) -> Self {
+        Self {
+            prediction_id: Self::prediction_id(&identity.attempt_key, &predictor.version),
+            identity,
+            precedes: PREDICTION_PRECEDES_ROUTE.to_string(),
+            predictor,
+            candidates,
+            decision,
+            price_snapshot_id: None,
+        }
+    }
+
+    /// Set the price snapshot id.
+    #[must_use]
+    pub fn with_price_snapshot_id(mut self, id: impl Into<String>) -> Self {
+        self.price_snapshot_id = Some(id.into());
+        self
+    }
+
+    /// `b3(attempt_key | version)`: one prediction per attempt and predictor version.
+    #[must_use]
+    pub fn prediction_id(attempt_key: &str, version: &str) -> String {
+        b3_digest(format!("{attempt_key}|{version}").as_bytes())
+    }
+}
+
+/// The predictor behind a [`AttemptPredictionRecord`].
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PredictionPredictor {
+    /// Its version: forecasts are never compared across versions (S04 §4.11).
+    pub version: String,
+    /// Its model class, e.g. `m3-l1`.
+    pub class: String,
+    /// The routing mode it ran in: `off`, `shadow` or `active`.
+    pub mode: String,
+    /// Outcomes it had learned when it forecast.
+    pub trained_on_n: u64,
+    /// The version of its feature schema.
+    pub features_schema: u32,
+    /// `b3:` digest of the attempt's feature vector.
+    pub features_hash: String,
+}
+
+/// One candidate arm's forecast. Probabilities are in [0, 1], costs in USD at the price
+/// snapshot, latencies in seconds; an unknown value is `null`, never 0.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct PredictionCandidate {
+    /// The arm, in its string form (`<harness>/<provider>/<model>@<effort>#V<depth>`).
+    pub arm: String,
+    /// P(every gate rung passes).
+    pub p_gate: f64,
+    /// P(a pass is a false green).
+    pub p_fg: f64,
+    /// P(verified success); S01's example calls it `p_true`.
+    #[serde(alias = "p_true")]
+    pub p_vs: f64,
+    /// A lower confidence bound on `p_vs`.
+    #[serde(alias = "p_true_lcb")]
+    pub p_vs_lcb: f64,
+    /// The forecast's standard deviation, when the predictor gives one.
+    #[serde(default)]
+    pub sd: Option<f64>,
+    /// Median attempt cost.
+    pub cost_q50: f64,
+    /// 90th-percentile attempt cost.
+    pub cost_q90: f64,
+    /// Median attempt latency.
+    pub lat_q50_s: f64,
+    /// 90th-percentile attempt latency.
+    pub lat_q90_s: f64,
+    /// P(the attempt is retried), when the predictor gives one.
+    #[serde(default)]
+    pub p_retry: Option<f64>,
+}
+
+/// What the predictor would do for the attempt, so that a shadow pick can be scored against the
+/// pick routing made without it (as `router_pick` is for G56).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PredictionDecision {
+    /// The arm it would choose; `null` when it would dispatch nothing.
+    pub would_choose: Option<String>,
+    /// The arm routing chooses without it, when known.
+    #[serde(default)]
+    pub default: Option<String>,
+    /// Its action: `dispatch`, `climb`, `skip`, `retry`, `refine_spec` or `abandon`.
+    pub action: String,
 }
 
 // ── Line envelope ─────────────────────────────────────────────────────
@@ -1184,6 +2038,64 @@ impl TelemetryRecord for RoutingDecisionLog {
     }
 }
 
+/// One content decision per decision point of an attempt.
+impl TelemetryRecord for ContentDecisionRecord {
+    const SCHEMA: &'static str = DECISION_SCHEMA;
+    const FILE: RunFile = RunFile::Decisions;
+
+    fn record_id(&self) -> String {
+        let key = &self.identity.attempt_key;
+        record_id(Self::SCHEMA, key, self.decision_point.as_str(), "", "")
+    }
+}
+
+/// One harness-policy decision per attempt.
+impl TelemetryRecord for HarnessPolicyDecisionRecord {
+    const SCHEMA: &'static str = DECISION_SCHEMA;
+    const FILE: RunFile = RunFile::Decisions;
+
+    fn record_id(&self) -> String {
+        let key = &self.identity.attempt_key;
+        record_id(Self::SCHEMA, key, HARNESS_POLICY_DECISION_POINT, "", "")
+    }
+}
+
+/// One placebo decision per attempt.
+impl TelemetryRecord for PlaceboDecisionRecord {
+    const SCHEMA: &'static str = DECISION_SCHEMA;
+    const FILE: RunFile = RunFile::Decisions;
+
+    fn record_id(&self) -> String {
+        let key = &self.identity.attempt_key;
+        record_id(Self::SCHEMA, key, PLACEBO_DECISION_POINT, "", "")
+    }
+}
+
+/// The item is its kind and id, so a knowledge entry and an episode that
+/// share an id stay two exposures.
+impl TelemetryRecord for ExposureRecord {
+    const SCHEMA: &'static str = EXPOSURE_SCHEMA;
+    const FILE: RunFile = RunFile::Exposures;
+
+    fn record_id(&self) -> String {
+        let key = &self.identity.attempt_key;
+        let item = format!("{}:{}", self.item_kind.as_str(), self.item_id);
+        record_id(Self::SCHEMA, key, self.decision_point.as_str(), &item, "")
+    }
+}
+
+/// One prediction per attempt, step and predictor version.
+impl TelemetryRecord for AttemptPredictionRecord {
+    const SCHEMA: &'static str = PREDICTION_SCHEMA;
+    const FILE: RunFile = RunFile::Predictions;
+
+    fn record_id(&self) -> String {
+        let key = &self.identity.attempt_key;
+        let version = &self.predictor.version;
+        record_id(Self::SCHEMA, key, &self.precedes, version, "")
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1239,6 +2151,20 @@ mod tests {
             "attempts_opened": 4, "attempts_settled": 4, "abandoned": 0,
             "telemetry_dropped": 0, "runaway_guard_trips": 0
         }
+    }"#;
+
+    /// The S01 §5.4 example, with its elisions filled in.
+    const EXPOSURE_EXAMPLE: &str = r#"{
+        "schema_version": "roko.exposure/1", "record_id": "b3:5e1f", "exposure_id": "b3:c4d0",
+        "seq": 21, "ts": "2026-10-02T14:03:11.530Z",
+        "run_id": "gr-7f3c2a91", "plan_id": "loop-census", "task_id": "T2", "node_id": "task:T2",
+        "attempt": 2, "inv": 1, "attempt_key": "gr-7f3c2a91:loop-census:T2:2",
+        "chain_key": "gr-7f3c2a91:loop-census:T2",
+        "decision_point": "knowledge", "loop_id": "L-know", "item_kind": "knowledge",
+        "item_id": "kn-2f81", "item_version": "kn-2f81@v7", "origin": "distilled",
+        "source": "neuro_lexical_cache", "rank": 1, "score": 0.62, "retrieved": true,
+        "included": true, "excluded_reason": null, "section_id": "task_context.domain_notes",
+        "tokens": 143, "rendered_sha256": "9f2c", "arm": "learned"
     }"#;
 
     fn identity(task: &str, attempt: u32) -> AttemptIdentity {
@@ -1345,6 +2271,43 @@ mod tests {
         assert_eq!(json["cost"]["vendor_usd"], serde_json::Value::Null);
         let back: AttemptVerdictRecord = serde_json::from_value(json).expect("deserialize");
         assert_eq!(back, record);
+    }
+
+    /// backlog 1125: a verdict lists at most `SCOPE_FINDINGS_LISTED` scope
+    /// findings and counts the rest; a verdict with none writes neither
+    /// field, and a row from before the fields still parses.
+    #[test]
+    fn scope_findings_are_capped_and_old_rows_still_parse() {
+        let mut record =
+            AttemptVerdictRecord::settle(identity("T3", 1), AttemptOutcome::Passed, true);
+        let findings = (0..SCOPE_FINDINGS_LISTED + 3)
+            .map(|n| ScopeFinding {
+                path: format!("src/f{n}.rs"),
+                kind: "outside_scope".to_string(),
+            })
+            .collect();
+        record.set_scope_findings(findings);
+        assert_eq!(record.scope_findings.len(), SCOPE_FINDINGS_LISTED);
+        assert_eq!(record.scope_findings_omitted, Some(3));
+        let json = serde_json::to_value(&record).expect("serialize");
+        assert_eq!(json["scope_findings"][0]["path"], "src/f0.rs");
+        assert_eq!(json["scope_findings"][0]["kind"], "outside_scope");
+        assert_eq!(json["scope_findings_omitted"], 3);
+        let back: AttemptVerdictRecord = serde_json::from_value(json).expect("deserialize");
+        assert_eq!(back, record);
+
+        let mut json = serde_json::to_value(&record).expect("serialize");
+        let row = json.as_object_mut().expect("a JSON object");
+        row.remove("scope_findings");
+        row.remove("scope_findings_omitted");
+        let old: AttemptVerdictRecord = serde_json::from_value(json).expect("an old row parses");
+        assert!(old.scope_findings.is_empty());
+        assert_eq!(old.scope_findings_omitted, None);
+
+        record.set_scope_findings(Vec::new());
+        let json = serde_json::to_value(&record).expect("serialize");
+        assert!(json.get("scope_findings").is_none(), "{json}");
+        assert!(json.get("scope_findings_omitted").is_none(), "{json}");
     }
 
     #[test]
@@ -1506,6 +2469,9 @@ mod tests {
             success: false,
             session_id: String::new(),
             cost_source: CostSource::CliUsage,
+            priced: None,
+            api_equiv_usd: None,
+            price_snapshot_id: None,
         };
         let keyed = AttemptKeyed {
             attempt_key: AttemptKey::new(RUN, PLAN, "T2", 2).attempt_key(),
@@ -1538,5 +2504,109 @@ mod tests {
         let open = AttemptOpenRecord::new(identity("T2", 2), 0);
         assert_ne!(open.record_id(), verdict.record_id());
         assert_eq!(RunFile::Attempts.file_name(), ATTEMPTS_FILE);
+    }
+
+    #[test]
+    fn exposure_record_round_trips_s01_example() {
+        let line: Stamped<ExposureRecord> =
+            serde_json::from_str(EXPOSURE_EXAMPLE).expect("example");
+        assert_eq!(line.schema_version, EXPOSURE_SCHEMA);
+        assert_eq!(line.seq, 21);
+        let record = &line.record;
+        assert_eq!(record.identity.key(), AttemptKey::new(RUN, PLAN, "T2", 2));
+        assert_eq!(record.decision_point, ContentDecisionPoint::Knowledge);
+        assert_eq!(record.item_kind, ExposureItemKind::Knowledge);
+        assert_eq!(record.item_version.as_deref(), Some("kn-2f81@v7"));
+        assert_eq!((record.rank, record.tokens), (Some(1), Some(143)));
+        assert_eq!(record.score, Some(0.62));
+        assert!(record.retrieved && record.included);
+        assert_eq!(record.excluded_reason, None);
+        assert_eq!(record.arm, Some(Arm::Learned));
+
+        let json = serde_json::to_string(&line).expect("serialize");
+        let back: Stamped<ExposureRecord> = serde_json::from_str(&json).expect("reparse");
+        assert_eq!(back, line);
+        assert_eq!(RunFile::Exposures.file_name(), EXPOSURES_FILE);
+        assert!(RunFile::ALL.contains(&RunFile::Exposures));
+
+        // A cited episode is a knowledge decision, and a dropped item names
+        // why. Its ids follow S01 §4.7 and §5.4.
+        let mut episode =
+            ExposureRecord::new(identity("T2", 2), ExposureItemKind::Episode, "kn-2f81");
+        episode.excluded_reason = Some(ExcludedReason::TokenBudget);
+        let json = serde_json::to_value(&episode).expect("serialize");
+        assert_eq!(json["decision_point"], "knowledge");
+        assert_eq!(json["item_kind"], "episode");
+        assert_eq!(json["included"], false);
+        assert_eq!(json["excluded_reason"], "token_budget");
+        assert_eq!(json["attempt_key"], "gr-7f3c2a91:loop-census:T2:2");
+        let expected = b3_digest(b"gr-7f3c2a91:loop-census:T2:2|episode|kn-2f81");
+        assert_eq!(episode.exposure_id, expected);
+        let back: ExposureRecord = serde_json::from_value(json).expect("deserialize");
+        assert_eq!(back, episode);
+
+        // A knowledge entry with the episode's id is another exposure.
+        let entry = ExposureRecord::new(identity("T2", 2), ExposureItemKind::Knowledge, "kn-2f81");
+        assert_ne!(entry.exposure_id, episode.exposure_id);
+        assert_ne!(entry.record_id(), episode.record_id());
+        for kind in [
+            ExposureItemKind::Playbook,
+            ExposureItemKind::Section,
+            ExposureItemKind::ErrorPattern,
+        ] {
+            let json = serde_json::to_value(kind.decision_point()).expect("serialize");
+            assert_eq!(json, kind.decision_point().as_str());
+        }
+    }
+
+    #[test]
+    fn content_decision_rows_choose_a_set_and_carry_the_route_state_slot() {
+        let state = DecisionState {
+            read: true,
+            version: "kn:n=2".to_string(),
+            digest: b3_digest(b"knowledge"),
+            age_s: None,
+            n_obs: 2,
+            stale: false,
+        };
+        let candidate = |id: &str, rank: u32, p: f64| ContentCandidate {
+            id: id.to_string(),
+            rank: Some(rank),
+            score: Some(1.0),
+            eligible: true,
+            p: Some(p),
+        };
+        let record = ContentDecisionRecord {
+            identity: identity("T2", 2),
+            decision_point: ContentDecisionPoint::Knowledge,
+            policy: "keyword_overlap_top3".to_string(),
+            candidates: vec![candidate("kn-1", 1, 1.0), candidate("kn-2", 2, 0.0)],
+            chosen: vec!["kn-1".to_string()],
+            chosen_propensity: Some(1.0),
+            source: Some(DecisionSource::Default),
+            state: Some(state),
+            thresholds_digest: None,
+            arm_set: None,
+            section_draws: Vec::new(),
+            proposals: None,
+            audit: Default::default(),
+        };
+        let json = serde_json::to_value(&record).expect("serialize");
+        assert_eq!(json["decision_point"], "knowledge");
+        assert_eq!(json["chosen"], serde_json::json!(["kn-1"]));
+        assert_eq!(json["source"], "default");
+        assert_eq!(json["state"]["version"], "kn:n=2");
+        assert!(json.get("thresholds_digest").is_none());
+        let back: ContentDecisionRecord = serde_json::from_value(json).expect("deserialize");
+        assert_eq!(back, record);
+
+        // One row per decision point of an attempt; route rows stay apart.
+        let key = AttemptKey::new(RUN, PLAN, "T2", 2).attempt_key();
+        let expected = record_id(DECISION_SCHEMA, &key, "knowledge", "", "");
+        assert_eq!(record.record_id(), expected);
+        assert_ne!(
+            record.record_id(),
+            record_id(DECISION_SCHEMA, &key, "route", "", "")
+        );
     }
 }

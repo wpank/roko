@@ -26,7 +26,7 @@ use std::path::PathBuf;
 pub enum DryRunPolicy {
     /// Normal mutable execution.
     Execute,
-    /// Read-only: no mutation. Maps from `--dry-run` and `--ghost`.
+    /// Read-only: no mutation. Maps from `--dry-run`.
     ReadOnlyNoMutation,
 }
 
@@ -93,17 +93,6 @@ pub enum ScreenshotPolicy {
     },
 }
 
-/// Budget enforcement policy resolved from `--budget-override`/`--no-budget`.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub enum BudgetPolicy {
-    /// Use the config default.
-    FromConfig,
-    /// Explicit per-run ceiling in USD.
-    Override(f64),
-    /// Disabled entirely (`--no-budget` or `--budget-override 0`).
-    Disabled,
-}
-
 /// Config edit target scope.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ConfigEditTarget {
@@ -133,15 +122,23 @@ pub struct GlobalCliFlags<'a> {
     pub color_enabled: bool,
 }
 
-/// Input fields specific to `roko do`.
+/// Input fields specific to `roko run`.
 #[derive(Debug, Clone, Default)]
-pub struct DoInput {
+pub struct RunInput {
+    /// `--dry-run`.
     pub dry_run: bool,
-    pub ghost: bool,
+    /// `--yes`: run a `--plan` plan without asking.
     pub yes: bool,
+    /// `--no-cascade`.
     pub no_cascade: bool,
+    /// `--provider`.
     pub provider: Option<String>,
+    /// `--context` paths for the planner.
     pub context: Vec<PathBuf>,
+    /// `--serve` or `--share`: the control plane must run.
+    pub serve_required: bool,
+    /// `--max-retries`.
+    pub max_retries: Option<u32>,
 }
 
 /// Input fields specific to `roko plan run`.
@@ -161,8 +158,6 @@ pub struct PlanRunInput {
     pub dry_run: bool,
     pub fresh: bool,
     pub force_resume: bool,
-    pub budget_override: Option<f64>,
-    pub no_budget: bool,
 }
 
 /// Input fields for `config set`.
@@ -176,14 +171,6 @@ pub struct ConfigSetInput {
 #[derive(Debug, Clone, Default)]
 pub struct LearnTuneInput {
     pub dry_run: bool,
-}
-
-/// Input fields specific to `roko develop`.
-#[derive(Debug, Clone, Default)]
-pub struct DevelopInput {
-    pub dry_run: bool,
-    pub yes: bool,
-    pub provider: Option<String>,
 }
 
 /// Input fields specific to `roko research`.
@@ -219,7 +206,7 @@ pub struct AgentChatInput {
 /// side effects. Downstream code consumes this instead of re-parsing clap
 /// state.
 ///
-/// Constructed via `for_run`, `for_do`, or `for_plan_run`.
+/// Constructed via `for_run`, `for_plan_run`, or the other per-surface constructors.
 #[derive(Debug, Clone)]
 pub struct ResolvedExecutionOverrides {
     // ── Model / provider ────────────────────────────────────────────
@@ -252,7 +239,7 @@ pub struct ResolvedExecutionOverrides {
     pub color_enabled: bool,
 
     // ── Policies ────────────────────────────────────────────────────
-    /// Dry-run policy from `--dry-run` / `--ghost`.
+    /// Dry-run policy from `--dry-run`.
     pub dry_run: DryRunPolicy,
 
     /// Cascade routing policy from `--no-cascade`.
@@ -294,9 +281,6 @@ pub struct ResolvedExecutionOverrides {
 
     /// Additional context file paths from `--context`.
     pub context_paths: Vec<PathBuf>,
-
-    /// Budget enforcement policy from `--budget-override`/`--no-budget`.
-    pub budget: BudgetPolicy,
 
     /// Archive old state and start clean from `--fresh`.
     pub fresh: bool,
@@ -340,7 +324,6 @@ impl ResolvedExecutionOverrides {
             force_disk_check: false,
             skip_preflight: false,
             max_retries: None,
-            budget: BudgetPolicy::FromConfig,
             fresh: false,
             force_resume: false,
         }
@@ -349,31 +332,11 @@ impl ResolvedExecutionOverrides {
     // ── Per-surface constructors ─────────────────────────────────────
 
     /// Resolve overrides for `roko run`.
-    pub fn for_run(
-        flags: &GlobalCliFlags<'_>,
-        provider: Option<String>,
-        serve_required: bool,
-        max_retries: Option<u32>,
-    ) -> Self {
-        let mut resolved = Self::resolve_globals(flags);
-        resolved.provider = provider;
-        resolved.max_retries = max_retries;
-
-        // --serve / --share forces Required; --no-serve forces Disabled.
-        if serve_required {
-            resolved.serve_policy = ServePolicy::Required;
-        }
-        // no_serve from globals already set Disabled if true.
-
-        resolved
-    }
-
-    /// Resolve overrides for `roko do`.
-    pub fn for_do(flags: &GlobalCliFlags<'_>, input: &DoInput) -> Self {
+    pub fn for_run(flags: &GlobalCliFlags<'_>, input: &RunInput) -> Self {
         let mut resolved = Self::resolve_globals(flags);
 
-        // --dry-run or --ghost (deprecated alias) -> ReadOnlyNoMutation.
-        if input.dry_run || input.ghost {
+        // --dry-run -> ReadOnlyNoMutation.
+        if input.dry_run {
             resolved.dry_run = DryRunPolicy::ReadOnlyNoMutation;
         }
 
@@ -387,8 +350,15 @@ impl ResolvedExecutionOverrides {
             resolved.cascade_policy = CascadePolicy::DisabledByUser;
         }
 
+        // --serve / --share forces Required; --no-serve forces Disabled.
+        if input.serve_required {
+            resolved.serve_policy = ServePolicy::Required;
+        }
+        // no_serve from globals already set Disabled if true.
+
         resolved.provider = input.provider.clone();
         resolved.context_paths = input.context.clone();
+        resolved.max_retries = input.max_retries;
 
         resolved
     }
@@ -411,23 +381,6 @@ impl ResolvedExecutionOverrides {
                 resolved.provider = Some(backend.clone());
             }
         }
-
-        resolved
-    }
-
-    /// Resolve overrides for `roko develop`.
-    pub fn for_develop(flags: &GlobalCliFlags<'_>, input: &DevelopInput) -> Self {
-        let mut resolved = Self::resolve_globals(flags);
-
-        if input.dry_run {
-            resolved.dry_run = DryRunPolicy::ReadOnlyNoMutation;
-        }
-
-        if input.yes {
-            resolved.approval = ApprovalPolicy::AutoApprove;
-        }
-
-        resolved.provider = input.provider.clone();
 
         resolved
     }
@@ -472,18 +425,6 @@ impl ResolvedExecutionOverrides {
         // Batch size: zero from clap is rejected; nonzero wraps into NonZeroUsize.
         if let Some(n) = input.batch_size {
             resolved.batch_size = NonZeroUsize::new(n);
-        }
-
-        // Budget policy: --no-budget or --budget-override 0 -> Disabled,
-        // --budget-override <n> -> Override(n), otherwise FromConfig.
-        if input.no_budget {
-            resolved.budget = BudgetPolicy::Disabled;
-        } else if let Some(amount) = input.budget_override {
-            if amount == 0.0 {
-                resolved.budget = BudgetPolicy::Disabled;
-            } else {
-                resolved.budget = BudgetPolicy::Override(amount);
-            }
         }
 
         resolved.fresh = input.fresh;
@@ -606,7 +547,7 @@ mod tests {
     #[test]
     fn default_globals_resolve_permissive_policies() {
         let flags = default_flags();
-        let r = ResolvedExecutionOverrides::for_do(&flags, &DoInput::default());
+        let r = ResolvedExecutionOverrides::for_run(&flags, &RunInput::default());
         assert_eq!(r.dry_run, DryRunPolicy::Execute);
         assert_eq!(r.interaction_mode, InteractionMode::Interactive);
         assert_eq!(r.cascade_policy, CascadePolicy::Enabled);
@@ -625,7 +566,7 @@ mod tests {
     fn headless_resolves() {
         let mut flags = default_flags();
         flags.headless = true;
-        let r = ResolvedExecutionOverrides::for_do(&flags, &DoInput::default());
+        let r = ResolvedExecutionOverrides::for_run(&flags, &RunInput::default());
         assert_eq!(r.interaction_mode, InteractionMode::Headless);
     }
 
@@ -633,7 +574,7 @@ mod tests {
     fn no_serve_resolves_disabled() {
         let mut flags = default_flags();
         flags.no_serve = true;
-        let r = ResolvedExecutionOverrides::for_run(&flags, None, false, None);
+        let r = ResolvedExecutionOverrides::for_run(&flags, &RunInput::default());
         assert_eq!(r.serve_policy, ServePolicy::Disabled);
     }
 
@@ -646,7 +587,7 @@ mod tests {
             resume: Some("session-42"),
             ..default_flags()
         };
-        let r = ResolvedExecutionOverrides::for_do(&flags, &DoInput::default());
+        let r = ResolvedExecutionOverrides::for_run(&flags, &RunInput::default());
         assert_eq!(r.model.as_deref(), Some("opus"));
         assert_eq!(r.role.as_deref(), Some("architect"));
         assert_eq!(r.effort.as_deref(), Some("high"));
@@ -661,7 +602,7 @@ mod tests {
             color_enabled: false,
             ..default_flags()
         };
-        let r = ResolvedExecutionOverrides::for_do(&flags, &DoInput::default());
+        let r = ResolvedExecutionOverrides::for_run(&flags, &RunInput::default());
         assert!(r.json);
         assert!(r.quiet);
         assert!(!r.color_enabled);
@@ -672,14 +613,20 @@ mod tests {
     #[test]
     fn for_run_serve_required() {
         let flags = default_flags();
-        let r = ResolvedExecutionOverrides::for_run(&flags, None, true, None);
+        let r = ResolvedExecutionOverrides::for_run(
+            &flags,
+            &RunInput {
+                serve_required: true,
+                ..RunInput::default()
+            },
+        );
         assert_eq!(r.serve_policy, ServePolicy::Required);
     }
 
     #[test]
     fn for_run_serve_auto_without_flags() {
         let flags = default_flags();
-        let r = ResolvedExecutionOverrides::for_run(&flags, None, false, None);
+        let r = ResolvedExecutionOverrides::for_run(&flags, &RunInput::default());
         assert_eq!(r.serve_policy, ServePolicy::Auto);
     }
 
@@ -690,107 +637,87 @@ mod tests {
         let mut flags = default_flags();
         flags.no_serve = true;
         // serve_required=true then overrides to Required.
-        let r = ResolvedExecutionOverrides::for_run(&flags, None, true, None);
+        let r = ResolvedExecutionOverrides::for_run(
+            &flags,
+            &RunInput {
+                serve_required: true,
+                ..RunInput::default()
+            },
+        );
         assert_eq!(r.serve_policy, ServePolicy::Required);
     }
 
     #[test]
     fn for_run_max_retries_propagates() {
         let flags = default_flags();
-        let r = ResolvedExecutionOverrides::for_run(&flags, None, false, Some(3));
+        let r = ResolvedExecutionOverrides::for_run(
+            &flags,
+            &RunInput {
+                max_retries: Some(3),
+                ..RunInput::default()
+            },
+        );
         assert_eq!(r.max_retries, Some(3));
     }
 
     #[test]
     fn for_run_provider_propagates() {
         let flags = default_flags();
-        let r = ResolvedExecutionOverrides::for_run(&flags, Some("anthropic".into()), false, None);
+        let r = ResolvedExecutionOverrides::for_run(
+            &flags,
+            &RunInput {
+                provider: Some("anthropic".into()),
+                ..RunInput::default()
+            },
+        );
         assert_eq!(r.provider.as_deref(), Some("anthropic"));
     }
 
-    // ── for_do ───────────────────────────────────────────────────────
+    // ── for_run flags ────────────────────────────────────────────────
 
     #[test]
-    fn do_dry_run_resolves() {
+    fn run_dry_run_resolves() {
         let flags = default_flags();
-        let input = DoInput {
+        let input = RunInput {
             dry_run: true,
-            ..DoInput::default()
+            ..RunInput::default()
         };
-        let r = ResolvedExecutionOverrides::for_do(&flags, &input);
+        let r = ResolvedExecutionOverrides::for_run(&flags, &input);
         assert_eq!(r.dry_run, DryRunPolicy::ReadOnlyNoMutation);
     }
 
     #[test]
-    fn do_ghost_is_dry_run() {
+    fn run_yes_auto_approves() {
         let flags = default_flags();
-        let input = DoInput {
-            ghost: true,
-            ..DoInput::default()
-        };
-        let r = ResolvedExecutionOverrides::for_do(&flags, &input);
-        assert_eq!(r.dry_run, DryRunPolicy::ReadOnlyNoMutation);
-    }
-
-    #[test]
-    fn ghost_and_dry_run_produce_same_policy() {
-        let flags = default_flags();
-        let ghost_input = DoInput {
-            ghost: true,
-            ..DoInput::default()
-        };
-        let dry_input = DoInput {
-            dry_run: true,
-            ..DoInput::default()
-        };
-        let r_ghost = ResolvedExecutionOverrides::for_do(&flags, &ghost_input);
-        let r_dry = ResolvedExecutionOverrides::for_do(&flags, &dry_input);
-        assert_eq!(r_ghost.dry_run, r_dry.dry_run);
-    }
-
-    #[test]
-    fn do_yes_auto_approves() {
-        let flags = default_flags();
-        let input = DoInput {
+        let input = RunInput {
             yes: true,
-            ..DoInput::default()
+            ..RunInput::default()
         };
-        let r = ResolvedExecutionOverrides::for_do(&flags, &input);
+        let r = ResolvedExecutionOverrides::for_run(&flags, &input);
         assert_eq!(r.approval, ApprovalPolicy::AutoApprove);
     }
 
     #[test]
-    fn do_no_cascade_resolves() {
+    fn run_no_cascade_resolves() {
         let flags = default_flags();
-        let input = DoInput {
+        let input = RunInput {
             no_cascade: true,
-            ..DoInput::default()
+            ..RunInput::default()
         };
-        let r = ResolvedExecutionOverrides::for_do(&flags, &input);
+        let r = ResolvedExecutionOverrides::for_run(&flags, &input);
         assert_eq!(r.cascade_policy, CascadePolicy::DisabledByUser);
     }
 
     #[test]
-    fn do_context_paths_propagate() {
+    fn run_context_paths_propagate() {
         let flags = default_flags();
-        let input = DoInput {
+        let input = RunInput {
             context: vec![PathBuf::from("src/lib.rs"), PathBuf::from("Cargo.toml")],
-            ..DoInput::default()
+            ..RunInput::default()
         };
-        let r = ResolvedExecutionOverrides::for_do(&flags, &input);
+        let r = ResolvedExecutionOverrides::for_run(&flags, &input);
         assert_eq!(r.context_paths.len(), 2);
         assert_eq!(r.context_paths[0], PathBuf::from("src/lib.rs"));
-    }
-
-    #[test]
-    fn do_provider_propagates() {
-        let flags = default_flags();
-        let input = DoInput {
-            provider: Some("openai".into()),
-            ..DoInput::default()
-        };
-        let r = ResolvedExecutionOverrides::for_do(&flags, &input);
-        assert_eq!(r.provider.as_deref(), Some("openai"));
     }
 
     // ── for_plan_run ─────────────────────────────────────────────────
@@ -1042,7 +969,7 @@ mod tests {
             no_serve: true,
             color_enabled: false,
         };
-        let r = ResolvedExecutionOverrides::for_do(&flags, &DoInput::default());
+        let r = ResolvedExecutionOverrides::for_run(&flags, &RunInput::default());
         assert_eq!(r.model.as_deref(), Some("opus"));
         assert_eq!(r.role.as_deref(), Some("architect"));
         assert_eq!(r.effort.as_deref(), Some("high"));
@@ -1057,72 +984,17 @@ mod tests {
     // ── Combined surface constructors do not leak cross-surface fields ──
 
     #[test]
-    fn for_do_does_not_set_plan_run_fields() {
-        let flags = default_flags();
-        let r = ResolvedExecutionOverrides::for_do(&flags, &DoInput::default());
-        assert!(!r.dangerously_skip_permissions);
-        assert!(r.log_file.is_none());
-        assert!(!r.skip_preflight);
-        assert!(!r.force_disk_check);
-        assert_eq!(r.screenshots, ScreenshotPolicy::Disabled);
-        assert_eq!(r.batch_size, None);
-    }
-
-    #[test]
     fn for_run_does_not_set_plan_run_fields() {
         let flags = default_flags();
-        let r = ResolvedExecutionOverrides::for_run(&flags, None, false, None);
+        let r = ResolvedExecutionOverrides::for_run(&flags, &RunInput::default());
         assert!(!r.dangerously_skip_permissions);
         assert!(r.log_file.is_none());
         assert!(!r.skip_preflight);
         assert!(!r.force_disk_check);
         assert_eq!(r.screenshots, ScreenshotPolicy::Disabled);
         assert_eq!(r.batch_size, None);
-        assert_eq!(r.budget, BudgetPolicy::FromConfig);
         assert!(!r.fresh);
         assert!(!r.force_resume);
-    }
-
-    // ── Budget policy ─────────────────────────────────────────────────
-
-    #[test]
-    fn plan_run_budget_default_is_from_config() {
-        let flags = default_flags();
-        let r = ResolvedExecutionOverrides::for_plan_run(&flags, &PlanRunInput::default());
-        assert_eq!(r.budget, BudgetPolicy::FromConfig);
-    }
-
-    #[test]
-    fn plan_run_no_budget_disables() {
-        let flags = default_flags();
-        let plan = PlanRunInput {
-            no_budget: true,
-            ..PlanRunInput::default()
-        };
-        let r = ResolvedExecutionOverrides::for_plan_run(&flags, &plan);
-        assert_eq!(r.budget, BudgetPolicy::Disabled);
-    }
-
-    #[test]
-    fn plan_run_budget_override_zero_disables() {
-        let flags = default_flags();
-        let plan = PlanRunInput {
-            budget_override: Some(0.0),
-            ..PlanRunInput::default()
-        };
-        let r = ResolvedExecutionOverrides::for_plan_run(&flags, &plan);
-        assert_eq!(r.budget, BudgetPolicy::Disabled);
-    }
-
-    #[test]
-    fn plan_run_budget_override_positive() {
-        let flags = default_flags();
-        let plan = PlanRunInput {
-            budget_override: Some(50.0),
-            ..PlanRunInput::default()
-        };
-        let r = ResolvedExecutionOverrides::for_plan_run(&flags, &plan);
-        assert_eq!(r.budget, BudgetPolicy::Override(50.0));
     }
 
     // ── Fresh / force-resume ──────────────────────────────────────────
@@ -1147,56 +1019,6 @@ mod tests {
         };
         let r = ResolvedExecutionOverrides::for_plan_run(&flags, &plan);
         assert!(r.force_resume);
-    }
-
-    // ── for_develop ───────────────────────────────────────────────────
-
-    #[test]
-    fn develop_dry_run_resolves() {
-        let flags = default_flags();
-        let input = DevelopInput {
-            dry_run: true,
-            ..DevelopInput::default()
-        };
-        let r = ResolvedExecutionOverrides::for_develop(&flags, &input);
-        assert_eq!(r.dry_run, DryRunPolicy::ReadOnlyNoMutation);
-    }
-
-    #[test]
-    fn develop_yes_auto_approves() {
-        let flags = default_flags();
-        let input = DevelopInput {
-            yes: true,
-            ..DevelopInput::default()
-        };
-        let r = ResolvedExecutionOverrides::for_develop(&flags, &input);
-        assert_eq!(r.approval, ApprovalPolicy::AutoApprove);
-    }
-
-    #[test]
-    fn develop_provider_propagates() {
-        let flags = default_flags();
-        let input = DevelopInput {
-            provider: Some("anthropic".into()),
-            ..DevelopInput::default()
-        };
-        let r = ResolvedExecutionOverrides::for_develop(&flags, &input);
-        assert_eq!(r.provider.as_deref(), Some("anthropic"));
-    }
-
-    #[test]
-    fn develop_does_not_set_plan_run_fields() {
-        let flags = default_flags();
-        let r = ResolvedExecutionOverrides::for_develop(&flags, &DevelopInput::default());
-        assert!(!r.dangerously_skip_permissions);
-        assert!(r.log_file.is_none());
-        assert!(!r.skip_preflight);
-        assert!(!r.force_disk_check);
-        assert_eq!(r.screenshots, ScreenshotPolicy::Disabled);
-        assert_eq!(r.batch_size, None);
-        assert_eq!(r.budget, BudgetPolicy::FromConfig);
-        assert!(!r.fresh);
-        assert!(!r.force_resume);
     }
 
     // ── for_research ──────────────────────────────────────────────────
@@ -1268,7 +1090,6 @@ mod tests {
         assert!(!r.force_disk_check);
         assert_eq!(r.screenshots, ScreenshotPolicy::Disabled);
         assert_eq!(r.batch_size, None);
-        assert_eq!(r.budget, BudgetPolicy::FromConfig);
         assert!(!r.fresh);
         assert!(!r.force_resume);
     }
@@ -1300,8 +1121,6 @@ mod tests {
                 dry_run: true,
                 fresh: true,
                 force_resume: true,
-                budget_override: Some(25.0),
-                no_budget: false,
             },
         );
 
@@ -1330,7 +1149,6 @@ mod tests {
             skip_preflight,
             max_retries,
             context_paths: _,
-            budget,
             fresh,
             force_resume,
         } = r;
@@ -1344,7 +1162,6 @@ mod tests {
         assert_eq!(batch_size, NonZeroUsize::new(3));
         assert!(force_disk_check);
         assert_eq!(max_retries, Some(2));
-        assert_eq!(budget, BudgetPolicy::Override(25.0));
         assert!(fresh);
         assert!(force_resume);
     }

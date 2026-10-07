@@ -50,7 +50,7 @@ and you decide whether it is good enough. Roko turns this into a **closed loop**
 
 The key insight is that software development is a cycle, not a line:
 
-1. **Observe** -- understand what needs to be done (read a PRD, scan the codebase).
+1. **Observe** -- understand what needs to be done (read the request, scan the codebase).
 2. **Plan** -- break the work into tasks with dependencies.
 3. **Execute** -- dispatch an LLM agent to write code for each task.
 4. **Verify** -- run the compiler, tests, linter, and other gates on the output.
@@ -69,37 +69,39 @@ code path. The next section shows exactly how.
 
 ## 3. The Self-Hosting Loop
 
-The loop below is how Roko develops itself. Each node is a real CLI command. The
-arrows marked with a gate failure feed back into the planner, creating a closed loop
-that converges on working code.
+The loop below is how Roko develops itself. Each node is a real CLI command or a step a
+person takes. Work starts from a request, a prompt or a written spec, which becomes a
+plan; the plan is the unit of work. The arrow marked with a gate failure sends the
+gate's findings back into the next attempt, creating a closed loop that converges on
+working code.
 
 ```mermaid
 graph LR
-    IDEA["Idea<br/><code>roko prd idea</code>"]
-    PRD["PRD<br/><code>roko prd draft</code>"]
-    RESEARCH["Research<br/><code>roko research topic</code>"]
-    PLAN["Plan<br/><code>roko prd plan</code>"]
-    EXECUTE["Execute<br/><code>roko plan run</code>"]
+    REQUEST["Request<br/><i>a prompt or<br/>a written spec</i>"]
+    PLAN["Plan<br/><code>roko plan generate</code>"]
+    RESEARCH["Research<br/><code>roko research enhance-plan</code>"]
+    REVIEW["Review<br/><i>edit tasks.toml</i>"]
+    EXECUTE["Execute<br/><code>roko run plans/&lt;slug&gt;</code>"]
     GATE{"Gates<br/>pass?"}
     LEARN["Learn<br/><i>episodes, routing,<br/>knowledge, affect</i>"]
     IMPROVE["Improve<br/><i>playbooks, thresholds,<br/>model selection</i>"]
 
-    IDEA --> PRD
-    PRD --> RESEARCH
-    RESEARCH --> PLAN
-    PLAN --> EXECUTE
+    REQUEST --> PLAN
+    PLAN --> RESEARCH
+    RESEARCH --> REVIEW
+    REVIEW --> EXECUTE
     EXECUTE --> GATE
 
     GATE -- "Yes" --> LEARN
-    GATE -- "No: replan" --> PLAN
+    GATE -- "No: retry with feedback" --> EXECUTE
 
     LEARN --> IMPROVE
-    IMPROVE --> IDEA
+    IMPROVE --> REQUEST
 
-    style IDEA fill:#e8f5e9,stroke:#2e7d32
-    style PRD fill:#e8f5e9,stroke:#2e7d32
-    style RESEARCH fill:#e3f2fd,stroke:#1565c0
+    style REQUEST fill:#e8f5e9,stroke:#2e7d32
     style PLAN fill:#fff3e0,stroke:#e65100
+    style RESEARCH fill:#e3f2fd,stroke:#1565c0
+    style REVIEW fill:#e8f5e9,stroke:#2e7d32
     style EXECUTE fill:#fff3e0,stroke:#e65100
     style GATE fill:#fce4ec,stroke:#b71c1c
     style LEARN fill:#f3e5f5,stroke:#6a1b9a
@@ -110,27 +112,25 @@ Here is the same workflow expanded as CLI commands. Each command is implemented
 and wired to the runtime today.
 
 ```
-    roko prd idea "..."          Capture what you want to build
+    roko plan generate "..."     Write a plan from the request: plans/<slug>/
+         |                        - tasks.toml: tasks, dependencies, verify commands
+         |                        - plan.md: prose context
+         v
+    roko research enhance-plan   Research-backed improvements to the plan (optional)
          |
          v
-    roko prd draft new "..."     Draft a Product Requirements Doc (agent-assisted)
+    review / edit tasks.toml     Read and adjust the plan; roko plan validate lints it
          |
          v
-    roko research topic "..."    Research the topic for context (optional)
-         |
-         v
-    roko prd plan <slug>         Generate an implementation plan with tasks
-         |
-         v
-    roko plan run plans/         Execute the plan through the Graph engine
+    roko run plans/<slug>        Execute the plan through the Graph engine
          |                        - each task dispatches an LLM agent
          |                        - each agent output runs through gates
          |                        - state checkpoints after each task
          |
-         +---> gate fails?        Feed failure info back to the planner
-         |        |               Replan and retry automatically
-         |        v
-         |     roko plan run plans/ --resume-plan
+         +---> gate fails?        Retry the task with the gate's feedback
+         |                        (up to max_retries)
+         |
+         +---> interrupted?       roko plan run plans/<slug> --resume-plan
          |
          v
     roko dashboard               Watch progress in real time (TUI)
@@ -142,36 +142,36 @@ and wired to the runtime today.
 In concrete shell commands:
 
 ```bash
-# 1. Capture a work item
-roko prd idea "Add rate limiting to the API endpoints"
+# 1. Write a plan from a request (an agent writes plans/<slug>/tasks.toml and plan.md)
+roko plan generate "Add rate limiting to the API endpoints"
 
-# 2. Draft a PRD from the idea (an agent writes the requirements doc)
-roko prd draft new "api-rate-limiting"
+# 2. Optional: research-backed improvements to the plan
+roko research enhance-plan <slug>
 
-# 3. Research the topic for grounded context (uses Perplexity for citations)
-roko research topic "rate limiting best practices in Rust"
+# 3. Review and edit plans/<slug>/tasks.toml, then lint it without executing
+roko plan validate plans/<slug>
 
-# 4. Generate an implementation plan from the PRD
-roko prd plan api-rate-limiting
-
-# 5. Execute the plan
+# 4. Execute the plan
 #    The Graph engine runs each task: agent writes code -> gates verify -> state persists
-roko plan run plans/
+roko run plans/<slug>
 
-# 6. If interrupted, resume from the last checkpoint
-roko plan run plans/ --resume-plan
+# 5. If interrupted, resume from the last checkpoint
+roko plan run plans/<slug> --resume-plan
 
-# 7. Watch progress in the terminal dashboard
+# 6. Watch progress in the terminal dashboard
 roko dashboard
 
-# 8. Check the final result
+# 7. Check the final result
 roko status
 ```
 
-For a single quick task that does not need the full planning pipeline:
+`roko run --plan "<prompt>"` does steps 1 and 4 in one command: it writes the plan,
+shows it, and asks before running it. For a quick task, give `roko run` the prompt
+directly:
 
 ```bash
-# One-shot: prompt -> agent -> gates -> persist, all in one command
+# One step: a small change runs as one checked task;
+# a larger one gets a plan written first, which then runs
 roko run "add a health check endpoint to the API"
 ```
 
@@ -189,7 +189,7 @@ foundations at the bottom, user-facing entry points at the top.
 graph TB
     subgraph UserFacing ["User-Facing Entry Points"]
         CLI["roko-cli<br/><i>CLI binary, TUI dashboard,<br/>plan runner, 85+ commands</i>"]
-        SERVE["roko-serve<br/><i>HTTP control plane,<br/>~376 routes, SSE, WebSocket</i>"]
+        SERVE["roko-serve<br/><i>HTTP control plane,<br/>REST routes, SSE, WebSocket</i>"]
         ACP["roko-acp<br/><i>Editor integration protocol<br/>(Cursor, etc.)</i>"]
     end
 
@@ -554,7 +554,7 @@ roko knowledge query "auth"   # search the durable knowledge store
 
 ## 7. Crate Map
 
-All 39 workspace members organized by function. Status reflects verified runtime
+The 36 workspace members, except the `demo/speed-test` tool, organized by function. Status reflects verified runtime
 wiring, not just whether the code compiles.
 
 ```mermaid
@@ -574,8 +574,6 @@ graph TD
     subgraph T7 ["Tier 7: MCP, Plugin & Gateway"]
         mcpgh["roko-mcp-github"]
         mcpstdio["roko-mcp-stdio"]
-        mcpslack["roko-mcp-slack"]
-        mcpscript["roko-mcp-scripts"]
         plugin["roko-plugin"]
         gateway["roko-gateway"]
         eval["roko-eval"]
@@ -660,7 +658,7 @@ The machinery that runs task DAGs.
 
 | Crate | What it does | Key types |
 |-------|-------------|-----------|
-| **roko-graph** | **Sole execution engine** since #260/#276. DAG of cells, ready-queue execution, conditional routing, cost enforcement, immune decision graph, durable checkpoints. | `GraphEngine`, `ProductionPlanTopology`, `GuaranteedFinallyController` |
+| **roko-graph** | **Sole execution engine** since #260/#276. DAG of cells, ready-queue execution, conditional routing, cost enforcement, immune decision graph, durable checkpoints. | `GraphEngine`, `ProductionPlanTopology` |
 | **roko-execution** | Shared runtime services builder. Gives CLI, serve, and ACP a common layer for safety, budget, routing, and feedback. | `RuntimeServices` |
 | **roko-runtime** | Process supervisor, typed event bus, cancellation tokens, workflow contract types (preserved from retired WorkflowEngine). | `ProcessSupervisor`, `EventBus`, `PipelineStateV2` |
 
@@ -693,7 +691,7 @@ How users and external systems interact with Roko.
 | Crate | What it does | Key types |
 |-------|-------------|-----------|
 | **roko-cli** | Main binary (`roko`). CLI commands, plan DAG runner, merge queue, worktree manager, interactive ratatui TUI with 10 tabs (F1-F10). | `PlanRunner`, `TuiBridge`, `DashboardApp` |
-| **roko-serve** | HTTP control plane: ~376 canonical REST routes + SSE + WebSocket on port 6677. Relay subscription execution, arena/meta-agent services. | Axum routes, `StateHub`, `PeriodicObserver` |
+| **roko-serve** | HTTP control plane: REST routes (counts in `tools/http_route_inventory.snapshot.json`) + SSE + WebSocket on port 6677. Relay subscription execution, arena/meta-agent services. | Axum routes, `StateHub`, `PeriodicObserver` |
 | **roko-acp** | Agent Client Protocol server for editor integration (Cursor, etc.). Mutation consent, budget enforcement, experiment assignment. 180 tests. | `AcpServer`, `AcpSession` |
 | **roko-agent-server** | Per-agent HTTP sidecar: `/message` (real LLM dispatch), `/stream` (WebSocket), `/predictions`, `/research`, `/tasks`. | Sidecar routes |
 
@@ -717,8 +715,6 @@ Tool ecosystem and inference pipeline.
 |-------|-------------|--------|
 | **roko-mcp-github** | GitHub MCP server (shipped binary). Plan PRs, CI integration. | Wired |
 | **roko-mcp-stdio** | Shared JSON-RPC 2.0 transport for all MCP servers. | Wired |
-| **roko-mcp-slack** | Slack MCP server. | Disconnected |
-| **roko-mcp-scripts** | Script execution MCP server. | Disconnected |
 | **roko-plugin** | Plugin SDK: signed dependency graphs, WASM hooks, strict admission, kernel confinement. | Wired (E32 8/8) |
 | **roko-gateway** | Nine-stage inference gateway: routing/fallback, caching, tool controls, cost accounting, key rotation, backpressure. | Wired (E26 12/12) |
 | **roko-eval** | Evaluation framework: evidence collector, criterion, profile traits. | Wired |
@@ -764,17 +760,18 @@ roko init
 # Run a single task
 roko run "add error handling to the parser"
 
-# Full planning pipeline
-roko prd idea "Add OAuth2 support"
-roko prd draft new "oauth2"
-roko prd plan oauth2
-roko plan run plans/
+# Plan first: write the plan, review it, run it
+roko run --plan "Add OAuth2 support"
+
+# Or in steps
+roko plan generate "Add OAuth2 support"   # writes plans/<slug>/
+roko run plans/<slug>
 
 # Interactive dashboard
 roko dashboard
 ```
 
-The CLI provides 85+ subcommands organized into groups: core workflow, planning/PRDs,
+The CLI provides 85+ subcommands organized into groups: core workflow, planning,
 agents, research, knowledge, learning, configuration, server/deployment, graph/feeds/
 triggers, and utilities. See the [CLI Reference](../v2/CLI-REFERENCE.md) for the
 complete list.
@@ -800,8 +797,8 @@ curl http://localhost:6677/api/metrics/c_factor
 curl -X POST http://localhost:6677/api/plans/execute -d '{"path":"plans/"}'
 ```
 
-The server exposes ~376 canonical routes (~421 including aliases) organized by
-subsystem: health/metrics, plans, PRDs, research, agents, knowledge, learning,
+The server exposes REST routes (counts in `tools/http_route_inventory.snapshot.json`) organized by
+subsystem: health/metrics, plans, research, agents, knowledge, learning,
 configuration, events, and more.
 
 ### roko-acp: editor integration
@@ -917,7 +914,7 @@ After cloning the repository, run these commands to verify that everything is wo
 ```bash
 cd /path/to/roko
 rustup update stable          # requires Rust 1.91+
-cargo build --workspace       # build all 39 workspace members
+cargo build --workspace       # build all 36 workspace members
 ```
 
 ### Run the test suite
@@ -1042,8 +1039,8 @@ The v2 docs contain detailed subsystem guides:
 | Repository | `https://github.com/nunchi/roko` |
 | Language | Rust (stable 1.91+, nightly for formatting) |
 | License | MIT OR Apache-2.0 (dual-licensed) |
-| Workspace members | 37 |
+| Workspace members | 36 |
 | Lines of code | ~1,000,000 |
 | Tests | 10,300+ |
-| Epics | 48/48 accepted |
+| Epics | 48/48 epics accepted as programme manifests; most code was built outside this workflow |
 | Default binary targets | `roko-cli`, `roko-mcp-code`, `roko-mcp-github` |

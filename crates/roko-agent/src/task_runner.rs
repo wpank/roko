@@ -6,6 +6,10 @@
 
 use crate::{Agent, Usage, chat_types::FinishReason};
 use indexmap::IndexMap;
+use roko_core::config::model_registry::{
+    DEFAULT_CACHE_READ_MULTIPLIER, DEFAULT_CACHE_WRITE_MULTIPLIER, builtin_pricing, is_snapshot_of,
+    warn_unpriced_model,
+};
 use roko_core::config::schema::ModelProfile;
 use roko_core::{Context, Signal};
 use std::collections::{HashMap, VecDeque};
@@ -408,20 +412,23 @@ pub struct ModelPricing {
     pub cache_write_per_m: f64,
 }
 
+impl From<roko_core::config::model_registry::ModelPricing> for ModelPricing {
+    fn from(pricing: roko_core::config::model_registry::ModelPricing) -> Self {
+        Self {
+            input_per_m: pricing.input_per_m,
+            output_per_m: pricing.output_per_m,
+            cache_read_per_m: pricing.cache_read_per_m,
+            cache_write_per_m: pricing.cache_write_per_m,
+        }
+    }
+}
+
 /// Per-model pricing table owned by the task runner.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct CostTable {
     /// Pricing entries keyed by model slug.
     pub models: HashMap<String, ModelPricing>,
 }
-
-/// Sonnet-rate fallback used when a model slug is unknown but tokens > 0.
-const SONNET_FALLBACK: ModelPricing = ModelPricing {
-    input_per_m: 3.00,
-    output_per_m: 15.00,
-    cache_read_per_m: 0.30,
-    cache_write_per_m: 3.75,
-};
 
 impl CostTable {
     /// Insert or replace pricing for a model.
@@ -430,7 +437,9 @@ impl CostTable {
     }
 
     /// Build a cost table from config model profiles, then merge hardcoded defaults
-    /// for known models (without overriding config-supplied pricing).
+    /// for known models (without overriding config-supplied pricing). A profile
+    /// with no cache prices gets the shared default multiples of its input
+    /// price (bug-0c0747).
     #[must_use]
     pub fn from_config_with_defaults(models: &IndexMap<String, ModelProfile>) -> Self {
         let mut table = Self::default();
@@ -445,8 +454,12 @@ impl CostTable {
                     ModelPricing {
                         input_per_m: input,
                         output_per_m: output,
-                        cache_read_per_m: profile.cost_cache_read_per_m.unwrap_or(input * 0.5),
-                        cache_write_per_m: profile.cost_cache_write_per_m.unwrap_or(input * 1.25),
+                        cache_read_per_m: profile
+                            .cost_cache_read_per_m
+                            .unwrap_or(input * DEFAULT_CACHE_READ_MULTIPLIER),
+                        cache_write_per_m: profile
+                            .cost_cache_write_per_m
+                            .unwrap_or(input * DEFAULT_CACHE_WRITE_MULTIPLIER),
                     },
                 );
             }
@@ -457,20 +470,32 @@ impl CostTable {
             table
                 .models
                 .entry((*slug).to_string())
-                .or_insert(ModelPricing {
-                    input_per_m: reg.input_per_m,
-                    output_per_m: reg.output_per_m,
-                    cache_read_per_m: reg.cache_read_per_m,
-                    cache_write_per_m: reg.cache_write_per_m,
-                });
+                .or_insert(ModelPricing::from(*reg));
         }
 
         table
     }
 
-    /// Calculate request cost from raw token counts.
-    ///
-    /// Falls back to Sonnet rates when the model is unknown but tokens > 0.
+    /// The table's pricing row for `model_slug`: its own, else the row under
+    /// the longest slug it is a dated or versioned snapshot of
+    /// ([`is_snapshot_of`]), as roko-learn's cost table looks rows up.
+    #[must_use]
+    pub fn lookup(&self, model_slug: &str) -> Option<&ModelPricing> {
+        if let Some(pricing) = self.models.get(model_slug) {
+            return Some(pricing);
+        }
+        self.models
+            .iter()
+            .filter(|(key, _)| is_snapshot_of(model_slug, key))
+            .max_by_key(|(key, _)| key.len())
+            .map(|(_, pricing)| pricing)
+    }
+
+    /// Calculate request cost from raw token counts, at the table's row for
+    /// `model_slug` ([`lookup`](Self::lookup)), else the shared registry's
+    /// ([`builtin_pricing`]). A model neither prices costs `0.0`, which
+    /// `Usage::has_known_cost` reads as unknown rather than free, and is
+    /// logged once; it used to be priced at Sonnet's rates (gap-ad0d39).
     #[must_use]
     pub fn calculate(&self, model_slug: &str, usage: &Usage) -> f64 {
         let total_tokens = usage.input_tokens
@@ -478,10 +503,15 @@ impl CostTable {
             + usage.cache_read_tokens
             + usage.cache_create_tokens;
 
-        let pricing = match self.models.get(model_slug) {
-            Some(p) => p,
-            None if total_tokens > 0 => &SONNET_FALLBACK,
-            None => return 0.0,
+        let pricing = self
+            .lookup(model_slug)
+            .cloned()
+            .or_else(|| builtin_pricing(model_slug).map(ModelPricing::from));
+        let Some(pricing) = pricing else {
+            if total_tokens > 0 {
+                warn_unpriced_model(model_slug);
+            }
+            return 0.0;
         };
 
         (usage.input_tokens as f64 * pricing.input_per_m / 1_000_000.0)
@@ -790,6 +820,21 @@ mod tests {
             provider_id: "zai".to_string(),
             max_iterations: 3,
         }
+    }
+
+    /// gap-ad0d39: a model the table lacks is priced from the shared
+    /// registry, and one the registry lacks stays unpriced rather than being
+    /// priced at Sonnet's rates.
+    #[test]
+    fn an_unknown_model_is_unpriced_rather_than_priced_as_sonnet() {
+        let table = CostTable::default();
+        let usage = Usage {
+            input_tokens: 1_000_000,
+            ..Usage::default()
+        };
+        assert!(table.calculate("mystery-model", &usage).abs() < 1e-12);
+        let opus = table.calculate("claude-opus-4-6-20260101", &usage);
+        assert!((opus - 5.00).abs() < 1e-9, "registry-priced opus {opus}");
     }
 
     fn drain_events(rx: &mut broadcast::Receiver<AgentEvent>) -> Vec<AgentEvent> {

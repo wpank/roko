@@ -59,9 +59,8 @@ Analyze the plan content and workspace structure. Identify which crates are
 affected. Map dependencies between tasks. Estimate complexity.
 ```
 
-**Budget emphasis:** Large workspace_map (20K) to see project structure. Large
-prd2 (12K) for specification context. Zero file_context -- Strategist plans
-but does not code.
+**Budget emphasis:** Large workspace_map (20K) to see project structure. Zero
+file_context -- Strategist plans but does not code.
 
 ### 1.3 Scribe (`templates/scribe.rs`)
 
@@ -77,8 +76,8 @@ specifications and academic references where appropriate. Follow the
 project's documentation patterns. Be precise about type signatures.
 ```
 
-**Budget emphasis:** Largest prd2 allocation (16K) for specification accuracy.
-Large file_context (6K) to see the code being documented.
+**Budget emphasis:** Moderate budgets; the plan and brief carry the specification
+it cites. Large file_context (6K) to see the code being documented.
 
 ### 1.4 Reviewer (`templates/reviewer.rs`)
 
@@ -130,8 +129,8 @@ Find and cite primary sources. Produce structured research artifacts with
 clear methodology. Distinguish established findings from speculation.
 ```
 
-**Budget emphasis:** Large prd2 (for existing research context). Moderate
-skills (for research methodologies).
+**Budget emphasis:** Default budgets. Moderate skills (for research
+methodologies).
 
 ### 1.7 Refactorer (`templates/refactorer.rs`)
 
@@ -209,7 +208,6 @@ all templates.
 pub struct PromptBudget {
     pub plan: usize,
     pub workspace_map: usize,
-    pub prd2: usize,
     pub context: usize,
     pub brief: usize,
     pub reviews: usize,
@@ -225,27 +223,27 @@ pub struct PromptBudget {
 pub const fn budget_for(role: AgentRole) -> PromptBudget {
     match role {
         AgentRole::Implementer => PromptBudget {
-            plan: 50_000, workspace_map: 20_000, prd2: 12_000,
+            plan: 50_000, workspace_map: 20_000,
             context: 4_000, brief: 8_000, reviews: 3_000,
             instructions: 4_000, file_context: 8_000, skills: 8_000,
         },
         AgentRole::Strategist => PromptBudget {
-            plan: 50_000, workspace_map: 20_000, prd2: 12_000,
+            plan: 50_000, workspace_map: 20_000,
             context: 4_000, brief: 6_000, reviews: 3_000,
             instructions: 4_000, file_context: 0, skills: 4_000,
         },
         AgentRole::Architect | AgentRole::Auditor => PromptBudget {
-            plan: 50_000, workspace_map: 6_000, prd2: 6_000,
+            plan: 50_000, workspace_map: 6_000,
             context: 2_000, brief: 4_000, reviews: 3_000,
             instructions: 4_000, file_context: 6_000, skills: 4_000,
         },
         AgentRole::Scribe => PromptBudget {
-            plan: 50_000, workspace_map: 6_000, prd2: 16_000,
+            plan: 50_000, workspace_map: 6_000,
             context: 4_000, brief: 6_000, reviews: 3_000,
             instructions: 4_000, file_context: 6_000, skills: 4_000,
         },
         _ => PromptBudget {
-            plan: 50_000, workspace_map: 8_000, prd2: 6_000,
+            plan: 50_000, workspace_map: 8_000,
             context: 4_000, brief: 4_000, reviews: 2_000,
             instructions: 4_000, file_context: 6_000, skills: 4_000,
         },
@@ -258,7 +256,6 @@ pub const fn budget_for(role: AgentRole) -> PromptBudget {
 | Section | Implementer | Strategist | Scribe | Default |
 |---------|------------|------------|--------|---------|
 | workspace_map | **20K** | **20K** | 6K | 8K |
-| prd2 | 12K | 12K | **16K** | 6K |
 | file_context | **8K** | **0** | 6K | 6K |
 | brief | **8K** | 6K | 6K | 4K |
 | skills | **8K** | 4K | 4K | 4K |
@@ -266,7 +263,6 @@ pub const fn budget_for(role: AgentRole) -> PromptBudget {
 Key asymmetries:
 - **Implementer gets most file_context** (8K) -- needs to see existing code
 - **Strategist gets zero file_context** -- plans, never codes
-- **Scribe gets most prd2** (16K) -- must cite specs and references accurately
 - **Implementer gets most skills** (8K) -- playbook rules prevent repeated
   implementation mistakes
 
@@ -286,7 +282,7 @@ pub enum Complexity {
 
 | Complexity | Budget Effect |
 |-----------|--------------|
-| Trivial | Drop PRD, context, skills entirely. Halve workspace_map and brief. ~70% reduction. |
+| Trivial | Drop context and skills entirely. Halve workspace_map and brief. |
 | Standard | No change. Base budget applies. |
 | Complex | +50% workspace_map, +100% context, +50% file_context. ~40% increase. |
 
@@ -336,7 +332,6 @@ pub fn truncate_tail(content: &str, max_chars: usize) -> String
 | workspace_map | truncate (keep beginning) | Top of tree is most important |
 | gate_errors | truncate_tail (keep end) | Most recent errors are most relevant |
 | file_context | truncate (keep beginning) | Headers and imports are most important |
-| prd_extract | truncate (keep beginning) | Opening sections are most important |
 
 ---
 
@@ -366,7 +361,7 @@ From prompt-logs analysis during development:
 | Section | Avg Tokens | % of Prompt | Pass Rate When Present |
 |---------|-----------|-------------|----------------------|
 | Learning Pack | 2,347 | 49% | 61% |
-| PRD2 Context | 712 | 15% | 67% |
+| PRD2 Context (section since removed) | 712 | 15% | 67% |
 | Strategist Brief | 491 | 10% | **72%** |
 | Workspace Map | 334 | 7% | 64% |
 | Execution Strategy | 298 | 6% | 58% |

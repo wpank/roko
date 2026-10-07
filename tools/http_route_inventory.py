@@ -19,7 +19,10 @@ Usage:
   python3 tools/http_route_inventory.py                  # report to stdout
   python3 tools/http_route_inventory.py --json           # JSON to stdout
   python3 tools/http_route_inventory.py --refresh        # write snapshot
-  python3 tools/http_route_inventory.py --check-snapshot  # CI gate
+  python3 tools/http_route_inventory.py --check-snapshot  # CI gate (ci.yml, route-inventory)
+
+--check-snapshot compares the scanned route list with the snapshot's, ignoring
+line numbers, and names every route added or removed since the last --refresh.
 """
 
 from __future__ import annotations
@@ -29,6 +32,7 @@ import json
 import os
 import re
 import sys
+from collections import Counter
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Optional
@@ -400,11 +404,44 @@ def write_snapshot(result: InventoryResult) -> Path:
     return SNAPSHOT_FILE
 
 
-def check_snapshot(result: InventoryResult) -> list[str]:
-    """Compare current scan against the stored snapshot.
+def route_key(registration: dict) -> tuple[str, str, str, str, str]:
+    """A snapshot registration's identity: everything but its line number,
+    which moves with unrelated edits."""
+    return (
+        registration["source_file"],
+        registration["router_fn"],
+        registration["method"],
+        registration["path"],
+        registration["handler"],
+    )
+
+
+def route_changes(stored: dict, current: dict) -> list[str]:
+    """The routes added to and removed from `stored`'s registrations in
+    `current`'s, one message each, added first."""
+    stored_routes = Counter(route_key(r) for r in stored.get("registrations", []))
+    current_routes = Counter(route_key(r) for r in current["registrations"])
+    changes = []
+    for change, routes in (
+        ("added", current_routes - stored_routes),
+        ("removed", stored_routes - current_routes),
+    ):
+        for source_file, router_fn, method, path, handler in sorted(routes.elements()):
+            changes.append(
+                f"route {change}: {method} {path} -> {handler} "
+                f"({source_file}::{router_fn}); run --refresh to update"
+            )
+    return changes
+
+
+def check_snapshot(result: InventoryResult, snapshot_file: Optional[Path] = None) -> list[str]:
+    """Compare current scan against the stored snapshot (default
+    `SNAPSHOT_FILE`): the route lists, ignoring line numbers, and the
+    canonical count, which also moves with the alias overrides.
 
     Returns a list of error messages. Empty list means the check passed.
     """
+    snapshot_file = snapshot_file or SNAPSHOT_FILE
     errors: list[str] = []
 
     if result.conflicts:
@@ -420,20 +457,16 @@ def check_snapshot(result: InventoryResult) -> list[str]:
                 f"unparsed: {u.source_file}:{u.line} — {u.reason}: {u.raw_text}"
             )
 
-    if not SNAPSHOT_FILE.exists():
-        errors.append(f"snapshot file not found: {SNAPSHOT_FILE}")
+    if not snapshot_file.exists():
+        errors.append(f"snapshot file not found: {snapshot_file}")
         return errors
 
-    with open(SNAPSHOT_FILE) as f:
+    with open(snapshot_file) as f:
         stored = json.load(f)
 
     current = build_snapshot(result)
 
-    if stored["total_registrations"] != current["total_registrations"]:
-        errors.append(
-            f"total registration count changed: snapshot={stored['total_registrations']} "
-            f"current={current['total_registrations']}; run --refresh to update"
-        )
+    errors.extend(route_changes(stored, current))
 
     if stored["canonical_registrations"] != current["canonical_registrations"]:
         errors.append(

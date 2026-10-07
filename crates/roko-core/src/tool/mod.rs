@@ -54,14 +54,11 @@
 //! | [`ToolOutcome`] | Terminal reward/latency/cost record |
 //! | [`TraceSink`] + [`TraceBuilder`] | Runtime-agnostic trace sinks + RAII assembly |
 //! | [`ToolMetrics`] + [`MetricsSink`] + [`MetricsKey`] | Aggregated PHR/PMR/TSQ/schema/arg/selection metrics |
-//! | [`compute_reward`] + [`RewardConfig`] | Composite bandit reward |
-//! | [`FormatBandit`] + [`BanditKey`] + [`ArmEntry`] | Adaptive format selection |
-//! | [`ProfileBandit`], [`EpsilonGreedyBandit`] | Day-one bandit impls (Track-and-Stop lives in `roko-learn`) |
+//! | [`compute_reward`] + [`RewardConfig`] | Composite tool-call reward |
 //! | [`MemoryPointer`] | Large-tool-result pointer for context-pressure mitigation |
 //! | [`ToolRelevanceScorer`] + [`KeywordOverlapScorer`] | Progressive tool discovery |
 
 pub mod aliases;
-pub mod bandit;
 pub mod call;
 pub mod def;
 pub mod discovery;
@@ -80,9 +77,10 @@ pub mod trace_finish_guard;
 pub mod transcript;
 
 pub use aliases::{ALIASES, ToolAlias};
-pub use bandit::{ArmEntry, BanditKey, EpsilonGreedyBandit, FormatBandit, ProfileBandit};
 pub use call::{Artifact, ToolCall, ToolError, ToolResult, ToolResultContent};
-pub use def::{ToolCategory, ToolConcurrency, ToolDef, ToolPermission, ToolSchema, ToolSource};
+pub use def::{
+    OutboundPolicy, ToolCategory, ToolConcurrency, ToolDef, ToolPermission, ToolSchema, ToolSource,
+};
 pub use execution_record::{ToolExecutionEnvelope, ToolExecutionRecord};
 pub use format::{ToolFormat, ToolFormatProfile, profile_for_model};
 pub use handler::{

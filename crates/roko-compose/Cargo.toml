@@ -33,6 +33,10 @@ tokenizers = { version = "0.22.2", default-features = false, features = ["fancy-
 [features]
 default = ["hdc"]
 hdc = ["dep:roko-primitives", "roko-neuro/hdc"]
+# The cross-cut functors (memory, daimon, dreams, safety, the natural
+# transformations) and CrossCutArbitrator: nothing outside this crate calls
+# them, so they are parked out of the default build (9201, 9223).
+cross-cut-functors = []
 
 [dev-dependencies]
 roko-std = { path = "../roko-std" }

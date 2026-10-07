@@ -55,7 +55,7 @@ if the Bus and Substrate are already authoritative.
 
 ### 1.3 The cohort unit
 
-Define a cohort as a set of agents working on a shared plan, task family, PRD, or
+Define a cohort as a set of agents working on a shared plan, task family, or
 parent episode during a bounded window. Cohorts are the unit of measurement because
 c-factor is about group process, not isolated agent skill.
 
@@ -350,7 +350,7 @@ target-state for the full Bus/Substrate instrumentation.
 c-factor appears in:
 
 - TUI and dashboard tiles (via StateHub projections)
-- HTTP API routes (roko-serve, ~376 canonical routes)
+- HTTP API routes (roko-serve; counts in `tools/http_route_inventory.snapshot.json`)
 - Metrics export: `roko.c_factor` for observability stacks
 - E33 telemetry Lens (9/9, 39/39 ingress variants)
 

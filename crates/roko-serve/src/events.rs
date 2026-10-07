@@ -126,6 +126,10 @@ pub enum ServerEvent {
         role: String,
         #[serde(default)]
         model: String,
+        /// The provider label (e.g. `"claude-cli"`, `"codex-cli"`), when the
+        /// emitter knows it; left out otherwise, as before it existed.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        provider: Option<String>,
     },
 
     /// Incremental agent output (streamed, sanitized for consumers).
@@ -263,10 +267,21 @@ pub enum ServerEvent {
         run_id: String,
         #[serde(rename = "prompt_preview")]
         prompt: String,
+        /// Where a gated run's request came from (9116); `None` for an
+        /// agent's reply.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        origin: Option<crate::runtime::RunOrigin>,
     },
 
     /// A one-shot run completed.
-    RunCompleted { run_id: String, success: bool },
+    RunCompleted {
+        run_id: String,
+        success: bool,
+        /// The run's verdict: `succeeded`, `failed`, or `unverified` when no
+        /// gate checked its output (G42). Only `succeeded` sets `success`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        verdict: Option<crate::state::RunState>,
+    },
 
     /// A generic operation was started.
     OperationStarted { op_id: String, kind: String },
@@ -1279,10 +1294,12 @@ mod tests {
             ServerEvent::RunStarted {
                 run_id: "r1".into(),
                 prompt: "p".into(),
+                origin: None,
             },
             ServerEvent::RunCompleted {
                 run_id: "r1".into(),
                 success: true,
+                verdict: Some(crate::state::RunState::Succeeded),
             },
             ServerEvent::HeartbeatReceived {
                 sender_id: "s".into(),

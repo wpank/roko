@@ -6,7 +6,7 @@
 
 **Parent:** [32-DEPLOYMENT](../../32-DEPLOYMENT.md)
 
-**Source:** `crates/roko-serve/src/`, ~376 canonical routes on :6677
+**Source:** `crates/roko-serve/src/` on :6677 (route counts in `tools/http_route_inventory.snapshot.json`)
 
 ---
 
@@ -51,7 +51,7 @@ The CLI can expose the HTTP API alongside the TUI. Useful for development
 
 ## 3. HTTP API Surface
 
-roko-serve exposes ~376 canonical REST routes (~421 including aliases)
+roko-serve exposes REST routes (counts in `tools/http_route_inventory.snapshot.json`)
 plus SSE and WebSocket endpoints on a single port (6677 by default).
 
 ### Core REST Endpoints
@@ -137,7 +137,7 @@ headers included in responses.
 One roko-serve instance can manage multiple projects. Each project has:
 
 - Its own `.roko/` state directory
-- PRDs, plans, and context artifacts
+- Plans and context artifacts
 - Provider configuration (inherits server defaults, overridable)
 - Run history, signal and episode logs
 
@@ -170,7 +170,7 @@ All webhooks verify HMAC-SHA256 signature before processing.
 ## 7. The Local-to-Remote Transition
 
 ```
-1. Local:      roko init -> write PRDs -> roko plan run
+1. Local:      roko init -> roko plan generate -> roko run plans/<slug>
                (same tool, same config, same pipeline)
 
 2. Deploy:     roko-serve on Fly.io / Railway
@@ -250,8 +250,8 @@ API calls.
 
 ## 11. Implementation Status
 
-> **Implementation status:** roko-serve is wired with ~376 canonical
-> routes on port 6677. The `roko serve` CLI command starts the HTTP
+> **Implementation status:** roko-serve is wired on port 6677 (route counts
+> in `tools/http_route_inventory.snapshot.json`). The `roko serve` CLI command starts the HTTP
 > control plane. Authentication middleware, rate limiting, and SSE/WS
 > streaming are implemented. The full REST API surface is operational.
 > Multi-project management, webhook integration, and budget enforcement

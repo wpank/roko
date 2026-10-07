@@ -975,13 +975,7 @@ fn extract_prompt(message: &Value) -> Option<String> {
 }
 
 fn format_finish_reason(finish_reason: roko_agent::chat_types::FinishReason) -> String {
-    match finish_reason {
-        roko_agent::chat_types::FinishReason::Stop => "stop".to_string(),
-        roko_agent::chat_types::FinishReason::Length => "length".to_string(),
-        roko_agent::chat_types::FinishReason::ToolCalls => "tool_calls".to_string(),
-        roko_agent::chat_types::FinishReason::ContentFilter => "content_filter".to_string(),
-        roko_agent::chat_types::FinishReason::Error(reason) => reason,
-    }
+    finish_reason.as_str().to_string()
 }
 
 fn public_rest_endpoint(card: &AgentCard) -> Option<String> {

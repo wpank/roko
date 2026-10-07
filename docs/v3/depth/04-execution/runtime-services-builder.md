@@ -126,7 +126,7 @@ pub enum RuntimeProfile {
     FullPlan,       // Runner-v2 plan execution (deprecated)
     GraphPlan,      // Graph engine plan execution
     Workflow,       // roko run (single prompt)
-    DirectLight,    // roko do, roko develop
+    DirectLight,    // lightweight direct execution (no CLI caller)
     AgentServer,    // roko agent serve
     ChatLight,      // roko chat
     AuthoredGraph,  // roko graph run
@@ -242,10 +242,8 @@ The `RuntimeServices` value is consumed by different execution surfaces:
 
 | Surface | Profile | Entry point |
 |---|---|---|
-| `roko plan run` | `GraphPlan` | `drive_controller()` in roko-cli |
-| `roko run` | `Workflow` | `run_workflow()` in roko-cli |
-| `roko do` | `DirectLight` | `do_task()` in roko-cli |
-| `roko develop` | `DirectLight` | `develop()` in roko-cli |
+| `roko plan run`, `roko run plans/<slug>` | `GraphPlan` | `drive_controller()` in roko-cli |
+| `roko run "<prompt>"` | `Workflow` | `run_workflow()` in roko-cli |
 | `roko agent serve` | `AgentServer` | `agent_serve()` in roko-agent-server |
 | `roko chat` | `ChatLight` | `chat_repl()` in roko-cli |
 | `roko graph run` | `AuthoredGraph` | `AuthoredGraphController` in roko-execution |
@@ -272,7 +270,7 @@ This decouples cells from the full service facade. Cells only see the
 handles they need. The dispatch factory provides provider construction,
 the prompt cache provides pre-loaded context, the budget tracker provides
 atomic microdollar accounting, and the cancellation token enables
-cooperative shutdown from the `GuaranteedFinallyController`.
+cooperative shutdown when the run is cancelled.
 
 ---
 

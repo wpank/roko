@@ -60,10 +60,6 @@ pub(crate) const ROUTE_PERMISSION_MANIFEST: &[RoutePermission] = &[
         permission: Permission::ConfigEdit,
     },
     RoutePermission {
-        prefix: "/api/prd",
-        permission: Permission::PlanCreate,
-    },
-    RoutePermission {
         prefix: "/api/plans",
         permission: Permission::PlanCreate,
     },
@@ -183,9 +179,26 @@ pub(crate) const ROUTE_PERMISSION_MANIFEST: &[RoutePermission] = &[
         prefix: "/api/providers",
         permission: Permission::ConfigEdit,
     },
+    // Releasing an immune isolation control lifts a security block.
+    RoutePermission {
+        prefix: "/api/safety",
+        permission: Permission::ConfigEdit,
+    },
+    // Approving a staged outbound effect runs a plan agent's held tool call
+    // (9133).
+    RoutePermission {
+        prefix: "/api/effects",
+        permission: Permission::PlanExecute,
+    },
     RoutePermission {
         prefix: "/relay",
         permission: Permission::AgentSpawn,
+    },
+    // Every MCP call is a POST; its tools only read so far (9114), and
+    // `tools/call` checks each tool's own scope.
+    RoutePermission {
+        prefix: "/mcp",
+        permission: Permission::ViewDashboard,
     },
     RoutePermission {
         prefix: "/ws/terminal",
@@ -476,6 +489,31 @@ mod tests {
         // Only the session-opening route changes; other reads stay open.
         assert_eq!(required_permission_for(&Method::GET, "/ws/events"), None);
         assert_eq!(required_permission_for(&Method::GET, "/ws/terminals"), None);
+    }
+
+    #[test]
+    fn releasing_an_isolation_control_requires_config_edit() {
+        assert_eq!(
+            required_permission_for(&Method::POST, "/api/safety/controls/plan%2Ftask/release"),
+            Some(Permission::ConfigEdit)
+        );
+        assert_eq!(
+            required_permission_for(&Method::POST, "/safety/controls/plan%2Ftask/release"),
+            Some(Permission::ConfigEdit)
+        );
+        assert_eq!(
+            required_permission_for(&Method::GET, "/api/safety/controls"),
+            None
+        );
+    }
+
+    #[test]
+    fn deciding_a_staged_effect_requires_plan_execute() {
+        assert_eq!(
+            required_permission_for(&Method::POST, "/api/effects/effect-1/decision"),
+            Some(Permission::PlanExecute)
+        );
+        assert_eq!(required_permission_for(&Method::GET, "/api/effects"), None);
     }
 
     #[test]

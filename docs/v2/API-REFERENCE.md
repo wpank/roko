@@ -1,12 +1,12 @@
 # Roko HTTP API Reference
 
-> **Implementation status (verified 2026-09-15):** IMPLEMENTED — `roko serve` exposes ~376 canonical REST routes (~421 incl. aliases) plus SSE and WebSocket on :6677. Auth middleware, secret scrubbing, and trace layer are live. All route categories listed in this document are wired. Run-scoped observability (per-run JSONL indexes, cursor-paginated events, evidence bundles) is live. The 19-gate pipeline and per-agent sidecar routes are wired. Named surface routes (E37 5 routes) are wired. See `.roko/GAPS.md` for remaining product residuals.
+> **Implementation status (verified 2026-09-15):** IMPLEMENTED — `roko serve` exposes REST routes (counts in `tools/http_route_inventory.snapshot.json`) plus SSE and WebSocket on :6677. Auth middleware, secret scrubbing, and trace layer are live. All route categories listed in this document are wired. Run-scoped observability (per-run JSONL indexes, cursor-paginated events, evidence bundles) is live. The 19-gate pipeline and per-agent sidecar routes are wired. Named surface routes (E37 5 routes) are wired. See `.roko/GAPS.md` for remaining product residuals.
 
 ## What is this API?
 
 Roko runs a local HTTP control plane — `roko serve` — that exposes everything the system is doing. Dashboards, external tools, CI scripts, and other agents can all talk to it.
 
-**The mental model:** Roko reads product requirement documents (PRDs), generates implementation plans, dispatches Claude agents to execute tasks, and validates results through a gate pipeline (compile, test, clippy, etc.). All of that activity is observable and controllable through this API. You can watch plans execute in real time via SSE or WebSocket, query what agents are doing, inspect what the system has learned, trigger new work, and manage configuration.
+**The mental model:** Roko turns a request (a prompt or a written spec) into an implementation plan, dispatches agents to execute its tasks, and validates results through a gate pipeline (compile, test, clippy, etc.). All of that activity is observable and controllable through this API. You can watch plans execute in real time via SSE or WebSocket, query what agents are doing, inspect what the system has learned, trigger new work, and manage configuration.
 
 ```
 +------------------+         +-----------------------------+
@@ -50,32 +50,31 @@ Roko runs a local HTTP control plane — `roko serve` — that exposes everythin
 7. [Plans](#plans)
 8. [One-Shot Runs](#one-shot-runs)
 9. [Dashboard Runs](#dashboard-runs)
-10. [PRDs](#prds)
-11. [Agents — Control Plane](#agents--control-plane)
-12. [Agent Fleet Aggregation](#agent-fleet-aggregation)
-13. [Gates](#gates)
-14. [Episodes and Signals](#episodes-and-signals)
-15. [Metrics](#metrics)
-16. [Learning and Adaptation](#learning-and-adaptation)
-17. [Benchmarks](#benchmarks)
-18. [Dreams](#dreams)
-19. [Knowledge (Neuro)](#knowledge-neuro)
-20. [Research](#research)
-21. [Jobs](#jobs)
-22. [Deployments](#deployments)
-23. [Inference Gateway](#inference-gateway)
-24. [Extensions](#extensions)
-25. [Providers and Models](#providers-and-models)
-26. [Config](#config)
-27. [Connector, Arena, and Meta-Agent Lifecycles](#connector-arena-and-meta-agent-lifecycles)
-28. [Subscriptions and Workflows](#subscriptions-and-workflows)
-29. [Heartbeats](#heartbeats)
-30. [Secrets](#secrets)
-31. [Chain](#chain)
-32. [Webhooks](#webhooks)
-33. [Terminal](#terminal)
-34. [OpenAPI](#openapi)
-35. [Per-Agent Sidecar API](#per-agent-sidecar-api)
+10. [Agents — Control Plane](#agents--control-plane)
+11. [Agent Fleet Aggregation](#agent-fleet-aggregation)
+12. [Gates](#gates)
+13. [Episodes and Signals](#episodes-and-signals)
+14. [Metrics](#metrics)
+15. [Learning and Adaptation](#learning-and-adaptation)
+16. [Benchmarks](#benchmarks)
+17. [Dreams](#dreams)
+18. [Knowledge (Neuro)](#knowledge-neuro)
+19. [Research](#research)
+20. [Jobs](#jobs)
+21. [Deployments](#deployments)
+22. [Inference Gateway](#inference-gateway)
+23. [Extensions](#extensions)
+24. [Providers and Models](#providers-and-models)
+25. [Config](#config)
+26. [Connector, Arena, and Meta-Agent Lifecycles](#connector-arena-and-meta-agent-lifecycles)
+27. [Subscriptions and Workflows](#subscriptions-and-workflows)
+28. [Heartbeats](#heartbeats)
+29. [Secrets](#secrets)
+30. [Chain](#chain)
+31. [Webhooks](#webhooks)
+32. [Terminal](#terminal)
+33. [OpenAPI](#openapi)
+34. [Per-Agent Sidecar API](#per-agent-sidecar-api)
 
 ---
 
@@ -180,7 +179,7 @@ For mutating requests (POST/PUT/PATCH/DELETE), the caller's scope is checked aga
 | GET/HEAD/OPTIONS | `read` (always allowed) |
 | `/api/secrets`, `/api/config`, `/api/api-keys` | `admin` |
 | `/api/agents/*` | `agent:write` |
-| `/api/plans/*`, `/api/prd*` | `plan:write` |
+| `/api/plans/*` | `plan:write` |
 | all other POST/PUT/PATCH/DELETE | `read` |
 
 Scope hierarchy: `admin` > `agent:write` > `plan:write` > `read`.
@@ -366,7 +365,6 @@ All `type` tags use `snake_case` unless noted. Events flow from the orchestrator
 | `experiment_winners_updated` | experiment data | Learning subsystem |
 | `c_factor_trend_updated` | trend data | Learning subsystem |
 | `marketplace_jobs_updated` | jobs array | Jobs subsystem |
-| `atelier_prds_updated` | PRD list | PRD subsystem |
 | `knowledge_entries_updated` | entries array | Neuro subsystem |
 | `job_execution_started` | `job_id`, `job_type`, `agent_id` | Jobs subsystem |
 | `job_progress` | `job_id`, `percent`, `message` | Jobs subsystem |
@@ -534,7 +532,7 @@ Handler: `dashboard::session_status`
 
 Handler: `dashboard::operation_status`
 
-Background operations (dream runs, plan generation, PRD drafting, etc.) are tracked by an operation UUID. Use this to poll their status.
+Background operations (dream runs, plan generation, research, etc.) are tracked by an operation UUID. Use this to poll their status.
 
 ```json
 { "id": "op-uuid", "kind": "dream_run", "status": "Running" }
@@ -584,7 +582,7 @@ Query the ring buffer directly (without establishing an SSE connection). Useful 
 
 ## Plans
 
-Plans are the primary unit of work in Roko. A plan is a collection of tasks, each of which is executed by an agent and validated through the gate pipeline. Plans live in `./plans/` as `tasks.toml` files (with `.roko/plans/` as a fallback) and can be generated automatically from PRDs.
+Plans are the primary unit of work in Roko. A plan is a collection of tasks, each of which is executed by an agent and validated through the gate pipeline. Plans live in `./plans/` as `tasks.toml` files (with `.roko/plans/` as a fallback) and can be generated from a prompt.
 
 | Method | Path | Description |
 |---|---|---|
@@ -650,13 +648,16 @@ Executes the plan in a background task. Response: `202 Accepted` with `{ "operat
 
 #### `POST /api/plans/generate`
 
-Generate a plan from a natural language prompt using an agent.
+Generate a plan from a natural language prompt with the plan generator. `prompt` is required; a
+`slug` (the removed PRD path) is refused with `422`.
 
 ```json
-{ "prompt": "Implement rate limiting for the API", "context": "..." }
+{ "prompt": "Implement rate limiting for the API" }
 ```
 
-Response: `202 Accepted` with `{ "operation_id": "op-uuid" }`.
+Response: `202 Accepted` with `{ "id": "op-uuid", "plan_id": "implement-rate-limiting-for-the-api" }`.
+Poll `GET /api/operations/{id}`: it completes with `result.slug` and `result.task_count` once the
+plan loads, and fails if no plan was written.
 
 </details>
 
@@ -848,99 +849,6 @@ per-run files after a complete scan. A byte, record, or deadline truncation repl
 Malformed, oversized, missing-ID, invalid-ID, and cross-run records are rejected and counted.
 Apply also refuses symlink/escape targets and any active workspace, JSONL-writer, cache-GC, or
 repair lock. The command is not called by HTTP handlers or process startup.
-
----
-
-## PRDs
-
-PRDs (Product Requirement Documents) are the top of Roko's self-hosting funnel. You capture an idea, Roko drafts a PRD using an agent, generates an implementation plan, and executes it. These routes expose the full lifecycle.
-
-| Method | Path | Description |
-|---|---|---|
-| GET | `/api/prds` | List all PRDs |
-| GET | `/api/prds/status` | Coverage report by lifecycle stage |
-| POST | `/api/prds/ideas` | Capture a new work-item idea |
-| GET | `/api/prds/{slug}` | Get a PRD by slug |
-| POST | `/api/prds/{slug}/draft` | Agent-driven PRD drafting |
-| POST | `/api/prds/{slug}/promote` | Promote to planned/approved status |
-| POST | `/api/prds/{slug}/plan` | Generate implementation plan from PRD |
-| POST | `/api/prd/consolidate` | Scan for duplicates and gaps |
-| POST | `/api/prds/consolidate` | (alias) |
-
-<details>
-<summary>Route details and request/response shapes</summary>
-
-#### `GET /api/prds`
-
-```json
-[
-  { "slug": "rate-limiting", "title": "Add Rate Limiting", "status": "draft", "created_at": "..." }
-]
-```
-
-#### `GET /api/prds/status`
-
-Coverage report: counts by lifecycle stage (`idea`, `draft`, `planned`, `implemented`).
-
-#### `POST /api/prds/ideas`
-
-```json
-{ "title": "Add retry logic to the HTTP client", "description": "..." }
-```
-
-Response: `201 Created` with the new PRD slug.
-
-#### `GET /api/prds/{slug}`
-
-Reads the markdown file from `.roko/prd/{slug}.md`.
-
-```json
-{ "slug": "rate-limiting", "title": "...", "content": "...", "status": "draft" }
-```
-
-#### `POST /api/prds/{slug}/draft`
-
-Spawns a background agent that enriches the idea into a full PRD with requirements, acceptance criteria, and technical design.
-
-Response: `202 Accepted` with `{ "operation_id": "op-uuid" }`.
-
-#### `POST /api/prds/{slug}/promote`
-
-Triggers `AtelierPrdsUpdated` StateHub event.
-
-```json
-{ "status": "approved" }
-```
-
-#### `POST /api/prds/{slug}/plan`
-
-Generates a `tasks.toml` from the PRD using a background agent. If `prd.auto_plan` is enabled in `roko.toml`, this is triggered automatically on PRD publish.
-
-Response: `202 Accepted` with `{ "operation_id": "op-uuid" }`.
-
-</details>
-
-<details>
-<summary>Example: full PRD lifecycle via API</summary>
-
-```bash
-# 1. Capture an idea
-curl -X POST http://127.0.0.1:6677/api/prds/ideas \
-  -H "Content-Type: application/json" \
-  -d '{"title":"Add request deduplication","description":"Deduplicate concurrent identical requests"}'
-# returns slug: "add-request-deduplication"
-
-# 2. Draft the PRD (agent-driven)
-curl -X POST http://127.0.0.1:6677/api/prds/add-request-deduplication/draft
-
-# 3. Generate implementation plan
-curl -X POST http://127.0.0.1:6677/api/prds/add-request-deduplication/plan
-
-# 4. Check status
-curl http://127.0.0.1:6677/api/prds/status
-```
-
-</details>
 
 ---
 
@@ -1933,13 +1841,12 @@ The neuro store is Roko's durable, searchable knowledge base. Episodes and dream
 
 Handler module: `routes/research.rs`
 
-Research routes let you trigger agent-driven research, enhance existing PRDs and plans with findings, and analyze execution data for insights.
+Research routes let you trigger agent-driven research, enhance existing plans with findings, and analyze execution data for insights.
 
 | Method | Path | Description |
 |---|---|---|
 | GET | `/api/research` | List research artifacts |
 | POST | `/api/research/topic` | Conduct deep research on a topic |
-| POST | `/api/research/enhance-prd/{slug}` | Enhance a PRD with research findings |
 | POST | `/api/research/enhance-plan/{plan}` | Enhance a plan with research findings |
 | POST | `/api/research/enhance-tasks/{plan}` | Enhance plan tasks with research |
 | POST | `/api/research/analyze` | Analyze execution data and generate insights |

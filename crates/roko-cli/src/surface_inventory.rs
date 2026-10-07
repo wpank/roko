@@ -139,10 +139,11 @@ pub fn full_inventory() -> Vec<SurfaceEntry> {
         "Creates .roko/ dir and roko.toml; supports --cloud and --profile",
     ));
     v.push(SurfaceEntry::cli(
-        "run / do",
+        "run",
         SurfaceStatus::Wired,
-        "roko-agent, roko-compose, roko-gate",
-        "Single-prompt universal loop: compose -> agent -> gate -> persist",
+        "roko-cli commands/run_cmd",
+        "Sizes a prompt: one checked task, or a generated plan run through the Graph engine; \
+         --plan writes the plan first; `roko run plans/<slug>` runs a plan",
     ));
     v.push(SurfaceEntry::cli(
         "status",
@@ -304,7 +305,8 @@ pub fn full_inventory() -> Vec<SurfaceEntry> {
         "inject",
         SurfaceStatus::Wired,
         "roko-cli inject",
-        "Injects directive/abort/context signal into a running session",
+        "Delivers to a running plan through its plan run's owner-only socket; exits 0 only on \
+         the run's acknowledgement",
     ));
     v.push(SurfaceEntry::cli(
         "plan list",
@@ -340,79 +342,19 @@ pub fn full_inventory() -> Vec<SurfaceEntry> {
         "plan generate",
         SurfaceStatus::Wired,
         "roko-cli plan_generate",
-        "Generates implementation plans from a prompt, file, or PRD",
+        "Generates implementation plans from a prompt, file, notes, or backlog spec",
     ));
     v.push(SurfaceEntry::cli(
         "plan regenerate",
         SurfaceStatus::Wired,
         "roko-cli plan_generate",
-        "Regenerates existing plan from its source PRD",
-    ));
-    v.push(SurfaceEntry::cli(
-        "prd idea",
-        SurfaceStatus::Wired,
-        "roko-cli prd",
-        "Captures a quick idea as a work item",
-    ));
-    v.push(SurfaceEntry::cli(
-        "prd list",
-        SurfaceStatus::Wired,
-        "roko-cli prd",
-        "Lists all PRDs (published, drafts, ideas)",
-    ));
-    v.push(SurfaceEntry::cli(
-        "prd status",
-        SurfaceStatus::Wired,
-        "roko-cli prd",
-        "Coverage report across PRDs and plans",
-    ));
-    v.push(SurfaceEntry::cli(
-        "prd draft new",
-        SurfaceStatus::Wired,
-        "roko-cli prd",
-        "Creates new draft PRD (agent-assisted)",
-    ));
-    v.push(SurfaceEntry::cli(
-        "prd draft edit",
-        SurfaceStatus::Wired,
-        "roko-cli prd",
-        "Refines existing draft",
-    ));
-    v.push(SurfaceEntry::cli(
-        "prd draft promote",
-        SurfaceStatus::Wired,
-        "roko-cli prd",
-        "Promotes draft to published; --auto_execute triggers plan run",
-    ));
-    v.push(SurfaceEntry::cli(
-        "prd draft list",
-        SurfaceStatus::Wired,
-        "roko-cli prd",
-        "Lists all drafts",
-    ));
-    v.push(SurfaceEntry::cli(
-        "prd plan",
-        SurfaceStatus::Wired,
-        "roko-cli prd",
-        "Generates tasks.toml from PRD; triggers auto-plan subscriber",
-    ));
-    v.push(SurfaceEntry::cli(
-        "prd consolidate",
-        SurfaceStatus::Wired,
-        "roko-cli prd",
-        "Scans PRDs for duplicates, gaps, inconsistencies",
+        "Regenerates an existing plan in place",
     ));
     v.push(SurfaceEntry::cli(
         "research topic",
         SurfaceStatus::Wired,
         "roko-cli research",
         "Deep research with citations; --deep for Perplexity async",
-    ));
-    v.push(SurfaceEntry::cli(
-        "research enhance-prd",
-        SurfaceStatus::Wired,
-        "roko-cli research",
-        "Enhances PRD with citations and research",
     ));
     v.push(SurfaceEntry::cli(
         "research enhance-plan",
@@ -710,12 +652,6 @@ pub fn full_inventory() -> Vec<SurfaceEntry> {
         ".roko/jobs/*.json",
         "Job list and detail panels fully wired from local job files. CreateJob sub-view is a stub with placeholder form.",
     ));
-    v.push(SurfaceEntry::tab(
-        "F9 Atelier",
-        SurfaceStatus::Wired,
-        "StateHub atelier_prds",
-        "PRD list, plan detail with task list. Stats bar. Read-only -- inline PRD editing not wired.",
-    ));
 
     // ── TUI sub-views ───────────────────────────────────────────────────
     // F1 Dashboard sub-views
@@ -872,32 +808,12 @@ pub fn full_inventory() -> Vec<SurfaceEntry> {
         "Placeholder form only. Text says 'backend submission is not wired yet.'",
     ));
 
-    // F9 Atelier sub-views
-    v.push(SurfaceEntry::subview(
-        "PrdWorkshop",
-        SurfaceStatus::Wired,
-        "StateHub atelier_prds",
-        "PRD list + plan detail side-by-side. Read-only browsing.",
-    ));
-    v.push(SurfaceEntry::subview(
-        "PlanExplorer",
-        SurfaceStatus::Wired,
-        "StateHub atelier_prds + atelier_tasks_by_slug",
-        "Full-width plan detail with task table for selected PRD",
-    ));
-
     // ── Modals ──────────────────────────────────────────────────────────
     v.push(SurfaceEntry::modal(
         "ApprovalDialog",
         SurfaceStatus::Wired,
         "ApprovalChannel",
         "Approval overlay during plan run --approval. Connected to orchestrator via mpsc channel.",
-    ));
-    v.push(SurfaceEntry::modal(
-        "PRD inline editor",
-        SurfaceStatus::Missing,
-        "n/a",
-        "No inline PRD editing in TUI. Must use CLI: roko prd draft edit <slug>",
     ));
     v.push(SurfaceEntry::modal(
         "Job submission",
@@ -1354,40 +1270,6 @@ pub fn tui_parity_inventory() -> Vec<TuiParityDetail> {
         notes: "Placeholder form. Backend submission is not wired.".into(),
     });
 
-    // ── F9 Atelier ──────────────────────────────────────────────────────
-    v.push(TuiParityDetail {
-        tab: "F9 Atelier".into(),
-        subview: None,
-        dashboard_equivalent: Some("/api/prds".into()),
-        cli_equivalent: Some("roko prd list / roko prd status".into()),
-        data_source: DataSourceKind::PushBased,
-        parity_status: TuiParityStatus::TuiLimited,
-        notes: "PRD list and plan detail from TuiState.atelier_prds (push). \
-                Read-only -- inline PRD editing not wired. CLI has full \
-                draft/edit/promote lifecycle."
-            .into(),
-    });
-    v.push(TuiParityDetail {
-        tab: "F9 Atelier".into(),
-        subview: Some("PrdWorkshop".into()),
-        dashboard_equivalent: Some("/api/prds".into()),
-        cli_equivalent: Some("roko prd list".into()),
-        data_source: DataSourceKind::PushBased,
-        parity_status: TuiParityStatus::TuiLimited,
-        notes: "PRD list with status badges. Read-only browse. CLI supports \
-                full PRD lifecycle (idea/draft/publish/plan)."
-            .into(),
-    });
-    v.push(TuiParityDetail {
-        tab: "F9 Atelier".into(),
-        subview: Some("PlanExplorer".into()),
-        dashboard_equivalent: Some("/api/plans".into()),
-        cli_equivalent: Some("roko plan show".into()),
-        data_source: DataSourceKind::PushBased,
-        parity_status: TuiParityStatus::Equivalent,
-        notes: "Plan detail with task table from TuiState.atelier_tasks_by_slug (push).".into(),
-    });
-
     v
 }
 
@@ -1583,7 +1465,7 @@ pub fn refresh_correction_audit() -> Vec<RefreshCorrection> {
                     .roko/learn/ files by TuiState::sync_connected_learning_files. \
                     Views already read from TuiState, not DashboardData -- \
                     confirmed by source audit: plans_view, agents_view, logs_view, \
-                    context_view, marketplace_view, atelier_view all prefix the \
+                    context_view, marketplace_view all prefix the \
                     DashboardData param with _ (unused). The duplication is only \
                     for the standalone fallback path."
                 .into(),
@@ -1591,7 +1473,7 @@ pub fn refresh_correction_audit() -> Vec<RefreshCorrection> {
         // ── Views that pass DashboardData but don't read it ──
         RefreshCorrection {
             location: "views/plans_view.rs, agents_view.rs, logs_view.rs, \
-                      context_view.rs, marketplace_view.rs, atelier_view.rs"
+                      context_view.rs, marketplace_view.rs"
                 .into(),
             reads: "DashboardData (parameter passed but unused)".into(),
             current_source: DataSourceKind::PushBased,

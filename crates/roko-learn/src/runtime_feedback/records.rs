@@ -183,8 +183,6 @@ pub struct UpdateFrequency {
     pub experiments_every_n: u32,
     /// Skill extraction cadence.
     pub skill_mining_every_n: u32,
-    /// Pattern miner ingestion cadence.
-    pub pattern_discovery_every_n: u32,
     /// Cross-episode consolidation cadence.
     pub distiller_every_n: u32,
 }
@@ -207,10 +205,6 @@ impl UpdateFrequency {
         Self::due(episode_count, self.skill_mining_every_n)
     }
 
-    pub(crate) fn pattern_discovery_due(self, episode_count: u64) -> bool {
-        Self::due(episode_count, self.pattern_discovery_every_n)
-    }
-
     pub(crate) fn distiller_due(self, episode_count: u64) -> bool {
         Self::due(episode_count, self.distiller_every_n)
     }
@@ -227,7 +221,6 @@ impl Default for UpdateFrequency {
             gate_thresholds_every_n: 5,
             experiments_every_n: 1,
             skill_mining_every_n: 10,
-            pattern_discovery_every_n: 20,
             distiller_every_n: 50,
         }
     }
@@ -353,8 +346,6 @@ pub struct LearningUpdate {
     pub matched_skill_updated: ApplyStatus,
     /// Regression report when a task metric was provided and sufficient data exists.
     pub regression_report: Option<RegressionReport>,
-    /// Whether pattern mining ingested this episode.
-    pub patterns_ingested: bool,
     /// Whether the cascade router was updated with an observation.
     pub router_updated: bool,
     /// Whether a post-gate reflection record was persisted.
@@ -1156,6 +1147,23 @@ pub struct GenerationOutcome {
     /// Validation report (if validation ran).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub validation_report: Option<ArtifactValidationReport>,
+    /// The generated plan's spec-quality scores, when it was scored (3218).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub spec_quality: Option<GenerationSpecQuality>,
+}
+
+/// The spec-quality scores of a generated plan (S07.10, backlog 3218), by
+/// the static rules (`roko_gate::spec_quality`).
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct GenerationSpecQuality {
+    /// The mean task score, 0–100.
+    pub mean: f64,
+    /// The lowest task score.
+    pub min: f64,
+    /// How many tasks fall in each band, `A` to `D`.
+    pub bands: std::collections::BTreeMap<String, usize>,
+    /// Whether the planner was asked once more because the plan was weak.
+    pub regenerated: bool,
 }
 
 impl GenerationOutcome {

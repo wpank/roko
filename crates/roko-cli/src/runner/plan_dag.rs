@@ -627,6 +627,7 @@ mod tests {
             estimated_minutes: Some(10),
             crates_touched: None,
             sequence: 0,
+            spec: Default::default(),
             hints: Default::default(),
         }];
 
@@ -644,16 +645,15 @@ mod tests {
                     max_parallel: Some(1),
                     estimated_total_minutes: 10,
                     skip_enrichment: false,
-                    source_prd: None,
                     failure_policy: None,
                     workspace_rungs: None,
                     verify: Vec::new(),
                     approval: None,
                     allow_unverified: false,
+                    outbound: None,
                 },
                 tasks,
             },
-            prd_excerpt: String::new(),
         }
     }
 

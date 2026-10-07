@@ -88,7 +88,7 @@ pub(super) fn command_uses_cargo(command: &str) -> bool {
 /// profile; Cargo does not select that profile unless the command includes
 /// `--profile`. Shell composition and quoted commands are intentionally left
 /// untouched because rewriting them safely requires a shell parser.
-pub(super) fn cargo_command_with_profile(command: &str, profile: &str) -> Option<String> {
+pub(crate) fn cargo_command_with_profile(command: &str, profile: &str) -> Option<String> {
     let tokens = simple_command_tokens(command)?;
     if tokens.first().copied() != Some("cargo")
         || !matches!(tokens.get(1).copied(), Some("check" | "clippy" | "test"))
@@ -114,7 +114,7 @@ pub(super) fn cargo_command_with_profile(command: &str, profile: &str) -> Option
     Some(selected.join(" "))
 }
 
-pub(super) fn cargo_profile_available(workdir: &Path, profile: &str) -> bool {
+pub(crate) fn cargo_profile_available(workdir: &Path, profile: &str) -> bool {
     std::fs::read_to_string(workdir.join("Cargo.toml"))
         .ok()
         .and_then(|manifest| toml::from_str::<toml::Value>(&manifest).ok())
@@ -613,6 +613,7 @@ pub(super) fn with_targeted_compile_rung(
             timeout_secs: timeout_secs.max(1),
             required: true,
             parallel_with: Vec::new(),
+            ..Default::default()
         })
         .collect();
     optimized
@@ -620,7 +621,7 @@ pub(super) fn with_targeted_compile_rung(
 
 // ── Focused/scoped verify steps ─────────────────────────────────────────
 
-pub(super) fn scoped_test_command(
+pub(crate) fn scoped_test_command(
     workdir: &Path,
     command: &str,
     report: &super::impact_analysis::ImpactReport,
@@ -731,6 +732,8 @@ pub(super) fn focused_verify_steps(
             fail_msg: Some("impact-selected Cargo check failed".into()),
             timeout_ms: timeout_secs.max(1).saturating_mul(1_000),
             scope: Vec::new(),
+            covers: Vec::new(),
+            expect: None,
         })
         .collect::<Vec<_>>();
     selected.extend(authored);

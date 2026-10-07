@@ -90,7 +90,6 @@ Temporal Difference estimation and Generalized Advantage Estimation. This enable
 
 **Related work.**
 - AgentPRM (arXiv:2511.08325, Nov 2025; WWW 2026) -- process reward models
-- Messier (arXiv:2607.25891) -- partial-pass scoring rationale
 - PACE (arXiv:2607.02032) -- proxy capability evaluation
 
 ---
@@ -197,7 +196,7 @@ All eight have scaffolding/types but lack final wiring:
 | Item | What |
 |------|------|
 | `--json` flag | Silently ignored on ~15+ commands. Implement JSON output or remove the flag |
-| `--role` flag | Hardcoded in research/PRD commands. Make it use the specified role |
+| `--role` flag | Hardcoded in research commands. Make it use the specified role |
 | `config set --global` | Flag exists but is silently ignored |
 | `roko inject` | Stub that accepts args but never sends signals. Wire or remove |
 | `roko new` | 6/9 scaffold types generate non-compiling code (stale Signal rename) |
@@ -299,7 +298,7 @@ Automate optimization of the agent harness itself. Two independent lines of work
 - AHE (Autonomous Harness Evolution) -- self-modifying agent scaffolding
 
 These validate roko's scaffold thesis and suggest the harness optimization loop (currently
-manual via PRDs and plans) could eventually become automated.
+manual via plans) could eventually become automated.
 
 ### 5.5 eBPF Kernel Enforcement
 
@@ -448,7 +447,7 @@ artifact-bound acceptance. What remains as product work:
 | Item | Current State | What Remains |
 |------|---------------|--------------|
 | Graph approval channel | `--approval` fails before workspace lock | Interactive approval protocol for Graph engine |
-| AgentPool runtime instantiation | Pool/multi-pool management built, TUI modal exists | No runtime instantiation in runner |
+| AgentPool runtime instantiation | `AgentPool`, `MultiAgentPool` and their TUI modal were removed on 2026-10-01 (gap-ee8dc0, bug-2f33d6); `WarmPool` is the only pool | No runtime instantiation in runner |
 | Bus-reactive dream scheduling | Cron/idle/episode-count triggers live | Bus-reactive and intensive-backlog controls |
 | Event system unification | 47 event enums, 4 EventBus structs | Converge to single event system (four-phase migration plan at `tmp/refactoring-audit/P1-10-EVENTBUS-AUDIT.md`) |
 | StateHub cursor atomicity | `SnapshotRebased` event added | Cursor-atomic SSE typed capture, single immutable resume generation |

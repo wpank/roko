@@ -163,6 +163,8 @@ mod tests {
             max_concurrent: None,
             limits: None,
             require_confirmation: false,
+            stream_usage: None,
+            billing: None,
         };
         let model = ModelProfile {
             provider: "hermes".to_string(),
@@ -194,6 +196,8 @@ mod tests {
             max_concurrent: None,
             limits: None,
             require_confirmation: false,
+            stream_usage: None,
+            billing: None,
         };
         let model = ModelProfile {
             provider: "hermes".to_string(),
@@ -225,6 +229,8 @@ mod tests {
             max_concurrent: None,
             limits: None,
             require_confirmation: false,
+            stream_usage: None,
+            billing: None,
         };
         let model = ModelProfile {
             provider: "hermes".to_string(),
@@ -256,6 +262,8 @@ mod tests {
             max_concurrent: None,
             limits: None,
             require_confirmation: false,
+            stream_usage: None,
+            billing: None,
         };
         let model = ModelProfile::default();
         let options = AgentOptions::default();

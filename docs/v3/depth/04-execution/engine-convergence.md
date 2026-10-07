@@ -56,7 +56,7 @@ converted to `Graph` values via `plan_to_graph()` and executed by the
 - `GraphSnapshotV2` with BLAKE3 fingerprinting for drift detection
 - Cell-based execution model where each node type is a `Cell` implementation
 - `CellRegistry` mapping `cell_type` strings to `Cell` implementations
-- `ProductionPlanTopology` building 11-node subgraphs per task
+- `ProductionPlanTopology` building per-task subgraphs (11 nodes then, 5 since 9206 removed the passthrough enrichers)
 
 **Coexistence:** both engines consumed the same `RuntimeServices` value
 (#243), ensuring provider health, rate limiters, cost tables, prompt
@@ -76,8 +76,9 @@ absorbed by the Graph engine.
 
 - `GraphEngine` is the sole execution engine
 - Runner-v2 retained as `--engine legacy` for one release cycle
-- `ProductionPlanTopology` builds the canonical 11-node-per-task subgraph
-- `GuaranteedFinallyController` provides terminal receipt guarantees
+- `ProductionPlanTopology` builds the canonical per-task subgraph (5 nodes since 9206)
+- A `GuaranteedFinallyController` was drafted but never compiled; it was deleted on
+  2026-10-01 (gap-ff6e83)
 
 ### Phase 4: Runner-v2 removal (current)
 
@@ -100,7 +101,7 @@ All new execution uses `GraphPlan` exclusively.
 | Parallelism | `JoinSet` + semaphore | Topological waves + semaphore |
 | Conditional routing | Not supported | `EdgeCondition` on edges |
 | Budget tracking | `plan_costs` HashMap | Atomic microdollar tracker |
-| Process isolation | Manual tracking | `ProcessSupervisor` + `GuaranteedFinallyController` |
+| Process isolation | Manual tracking | `ProcessSupervisor` |
 | Observability | Action/Event logs | Per-node lifecycle events |
 
 ---

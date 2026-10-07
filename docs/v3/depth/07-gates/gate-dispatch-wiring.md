@@ -138,20 +138,18 @@ Key environment variables injected:
 
 ## 5. Sentinel Rung Values
 
-Two sentinel rung values extend the standard 0-6 range for special purposes:
+One sentinel rung value extends the standard 0-6 range:
 
 ```rust
 pub const RUNG_PLAN_VERIFY: u32 = 1000;
-pub const RUNG_MERGE: u32 = 1001;
 ```
 
 **RUNG_PLAN_VERIFY (1000)**: Plan-level verification that runs after all
 tasks complete. Validates the entire plan's output rather than individual
 task output. Used by `plan run` to perform final workspace checks.
 
-**RUNG_MERGE (1001)**: Post-merge regression gates. After a plan's changes
-are merged into the main branch, these gates verify that the merge did not
-introduce regressions. Used by the GitHub workflow integration.
+A second sentinel, `RUNG_MERGE = 1001`, named post-merge regression gates but
+nothing read it, and it was deleted with the merge queue (9205).
 
 ---
 
@@ -330,8 +328,7 @@ pub struct RunnerProductionGateAdapter {
 The adapter implements the trait interface expected by both the Runner-v2
 event loop and the Graph engine's `GatePipelineCell`. It holds:
 
-- A `ProductionGateService` (or `DefaultGateService`) that constructs and
-  runs gate pipelines
+- A `ProductionGateService` that constructs and runs gate pipelines
 - An `FsGeneratedArtifactStore` for persisting generated test artifacts to
   the filesystem
 - An optional `VerdictPublisher` for broadcasting verdicts as Pulse events
@@ -434,7 +431,6 @@ cargo check -p roko-cli
 | `compile_coordinator_shares_semaphore` | Two worktrees in same repo -> same semaphore |
 | `compile_coordinator_isolates_repos` | Two different repos -> different semaphores |
 | `rung_plan_verify_sentinel` | RUNG_PLAN_VERIFY == 1000 |
-| `rung_merge_sentinel` | RUNG_MERGE == 1001 |
 | `command_fingerprint_deduplicates` | Identical commands -> same fingerprint hash |
 | `input_snapshot_detects_changes` | File modification -> different fingerprint |
 | `verdict_publisher_increments_sequence` | Each publish -> sequence + 1 |

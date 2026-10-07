@@ -14,6 +14,7 @@ import {
   TASK_OUTCOME_ACCEPTED_WITH_FAILURES,
   TASK_OUTCOME_ALREADY_SATISFIED,
   TASK_OUTCOME_BLOCKED,
+  TASK_OUTCOME_INTERRUPTED,
   TASK_OUTCOME_PASSED_WITH_PREEXISTING_FAILURES,
   TASK_OUTCOME_UNVERIFIED,
 } from '@/api/contracts';
@@ -35,6 +36,9 @@ export type TaskStatus =
   // (gap-161be1): counted as passed, shown apart.
   | 'passed_with_preexisting_failures'
   | 'failed'
+  // Still running when its run ended other than by cancellation (bug-60ccba):
+  // counted as failed, shown apart.
+  | 'interrupted'
   | 'accepted_with_failures'
   | 'already_satisfied'
   | 'unverified'
@@ -137,6 +141,7 @@ const TERMINAL: Set<TaskStatus> = new Set([
   'passed',
   'passed_with_preexisting_failures',
   'failed',
+  'interrupted',
   'accepted_with_failures',
   'already_satisfied',
   'unverified',
@@ -176,7 +181,7 @@ export function parseCheckName(name: string): { index: number | null; phase: str
  * counts as passed but is shown apart), and any outcome it does not recognise
  * is 'unverified'. The accepted_with_failures, already_satisfied and
  * passed_with_preexisting_failures checks run first: two of them contain
- * "fail".
+ * "fail". An interrupted task is a failure with its own status.
  */
 function classifyOutcome(outcome: string): TaskStatus {
   const lo = outcome.toLowerCase();
@@ -186,8 +191,14 @@ function classifyOutcome(outcome: string): TaskStatus {
   // A blocked task (gap-f59fe9) shows as skipped: the portal has no blocked state.
   if (lo.includes('skipped') || lo === 'unknown' || lo === TASK_OUTCOME_BLOCKED) return 'skipped';
   if (lo === 'passed' || lo === 'succeeded' || lo.startsWith('success')) return 'passed';
-  if (['fail', 'error', 'cancel', 'halt'].some((word) => lo.includes(word))) return 'failed';
+  if (lo === TASK_OUTCOME_INTERRUPTED) return 'interrupted';
+  if (['fail', 'error', 'cancel', 'halt', 'interrupt'].some((word) => lo.includes(word))) return 'failed';
   return TASK_OUTCOME_UNVERIFIED;
+}
+
+/** Whether a status counts in its plan's tasksFailed: a failure, an interrupted task included. */
+function countsAsFailed(status: TaskStatus | null): boolean {
+  return status === 'failed' || status === 'interrupted';
 }
 
 /** Append a TranscriptEntry to a Transcript, capping at MAX_TRANSCRIPT_ENTRIES. */
@@ -570,6 +581,23 @@ export function applyEvent(
           ? { ...state.run, durationMs: event.duration_ms, outcome: event.outcome }
           : state.run;
 
+      // A task still running when the run ends did not finish: it ends with
+      // the run, cancelled or interrupted, never passed (bug-60ccba). As in
+      // the server's snapshot, an interrupted task counts as failed.
+      const endedStatus: TaskStatus = event.outcome === 'cancelled' ? 'cancelled' : 'interrupted';
+      const newTasks: Record<string, TaskRun> = {};
+      const interruptedByPlan: Record<string, number> = {};
+      for (const [key, task] of Object.entries(state.tasks)) {
+        if (task.status !== 'active') {
+          newTasks[key] = task;
+          continue;
+        }
+        newTasks[key] = { ...task, status: endedStatus, finishedAtMs: nowMs };
+        if (countsAsFailed(endedStatus)) {
+          interruptedByPlan[task.planId] = (interruptedByPlan[task.planId] ?? 0) + 1;
+        }
+      }
+
       // Running plans → terminal phase based on outcome
       const planPhaseForOutcome = (outcome: string): PlanPhase => {
         if (outcome === 'succeeded') return 'completed';
@@ -579,23 +607,17 @@ export function applyEvent(
 
       const newPlans: Record<string, PlanRun> = {};
       for (const [id, plan] of Object.entries(state.plans)) {
+        const tasksFailed = plan.tasksFailed + (interruptedByPlan[id] ?? 0);
         if (plan.phase === 'running') {
           newPlans[id] = {
             ...plan,
             phase: planPhaseForOutcome(event.outcome),
             finishedAtMs: nowMs,
+            tasksFailed,
           };
         } else {
-          newPlans[id] = plan;
+          newPlans[id] = tasksFailed === plan.tasksFailed ? plan : { ...plan, tasksFailed };
         }
-      }
-
-      // Active tasks → cancelled
-      const newTasks: Record<string, TaskRun> = {};
-      for (const [key, task] of Object.entries(state.tasks)) {
-        newTasks[key] = task.status === 'active'
-          ? { ...task, status: 'cancelled', finishedAtMs: nowMs }
-          : task;
       }
 
       // Every agent → inactive
@@ -741,7 +763,7 @@ export function applyEvent(
           } else if (existing!.status === 'unverified') {
             tasksDone = Math.max(0, tasksDone - 1);
             tasksUnverified = Math.max(0, tasksUnverified - 1);
-          } else if (existing!.status === 'failed') {
+          } else if (countsAsFailed(existing!.status)) {
             tasksFailed = Math.max(0, tasksFailed - 1);
           } else {
             // passed (with or without pre-existing failures), already
@@ -831,7 +853,7 @@ export function applyEvent(
         } else if (status === 'unverified') {
           tasksDone += 1;
           tasksUnverified += 1;
-        } else if (status === 'failed') {
+        } else if (countsAsFailed(status)) {
           tasksFailed += 1;
         } else if (event.outcome.toLowerCase() !== TASK_OUTCOME_BLOCKED) {
           // passed (with or without pre-existing failures), already satisfied
@@ -903,7 +925,7 @@ export function applyEvent(
         // nothing.
         const counted =
           existing !== undefined && existing.phase !== TASK_OUTCOME_BLOCKED ? existing.status : null;
-        if (counted === 'failed') {
+        if (countsAsFailed(counted)) {
           tasksFailed = Math.max(0, tasksFailed - 1);
         } else if (
           counted === 'passed' ||

@@ -122,22 +122,51 @@ pub trait ProductionGateRunner: Send + Sync + 'static {
 
 /// Production implementation of `ProductionGateRunner`.
 ///
-/// Copies the sequencing from `runner/gate_dispatch.rs::run_gate_once` and
-/// `spawn_gate` into neutral helpers. Delegates rung construction to the
-/// existing `GatePipelineBuilder`.
-#[derive(Debug)]
-pub struct ProductionGateService;
+/// Copies the sequencing of roko-cli's `run_gate_once` into neutral helpers,
+/// and delegates rung construction to the existing `GatePipelineBuilder`.
+/// The canonical rungs run with its
+/// [`RungExecutionConfig`] ([`Self::with_rung_config`]): without a judge or
+/// search oracle there, the LLM-judge and fact-check rungs skip.
+#[derive(Default)]
+pub struct ProductionGateService {
+    rung_config: RungExecutionConfig,
+}
+
+impl std::fmt::Debug for ProductionGateService {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ProductionGateService")
+            .field(
+                "llm_judge_oracle",
+                &self.rung_config.llm_judge_oracle.is_some(),
+            )
+            .field(
+                "fact_check_oracle",
+                &self.rung_config.fact_check_oracle.is_some(),
+            )
+            .finish_non_exhaustive()
+    }
+}
 
 impl ProductionGateService {
     /// Create a new production gate service.
     #[must_use]
-    pub const fn new() -> Self {
-        Self
+    pub fn new() -> Self {
+        Self::default()
     }
 
-    /// Build a gate signal from the request.
+    /// Run the canonical rungs with `rung_config`: its oracles, source roots,
+    /// thresholds and the rest (gap-85f102).
+    #[must_use]
+    pub fn with_rung_config(mut self, rung_config: RungExecutionConfig) -> Self {
+        self.rung_config = rung_config;
+        self
+    }
+
+    /// Build a gate signal from the request, with its `[gates]
+    /// env_passthrough`.
     fn build_signal(request: &ProductionGateRequest) -> Signal {
-        let payload = GatePayload::in_dir(&request.workspace);
+        let payload = GatePayload::in_dir(&request.workspace)
+            .with_env_passthrough(request.gates_config.env_passthrough.iter().cloned());
         Signal::builder(Kind::Task)
             .body(Body::from_json(&payload).unwrap_or_else(|_| Body::empty()))
             .build()
@@ -328,7 +357,7 @@ impl ProductionGateService {
                 ctx,
                 *rung,
                 &RungExecutionInputs::default(),
-                &RungExecutionConfig::default(),
+                &self.rung_config,
             )
             .await;
 
@@ -406,7 +435,8 @@ impl ProductionGateService {
                 .with_name(&gate_name)
                 .with_timeout_ms(step.timeout_ms);
 
-            let payload = GatePayload::in_dir(&request.workspace);
+            let payload = GatePayload::in_dir(&request.workspace)
+                .with_env_passthrough(request.gates_config.env_passthrough.iter().cloned());
             let signal = Signal::builder(Kind::Task)
                 .body(Body::from_json(&payload).unwrap_or_else(|_| Body::empty()))
                 .build();
@@ -449,119 +479,6 @@ impl ProductionGateService {
             .any(|v| matches!(v.state, RungState::Failed));
 
         core_ok && any_failure
-    }
-}
-
-impl Default for ProductionGateService {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-// ────────────────────────────────────────────────────────────────────────────
-// DefaultGateService — SharedGateEvaluator implementation (#250)
-// ────────────────────────────────────────────────────────────────────────────
-
-/// Production implementation of [`SharedGateEvaluator`] wrapping
-/// [`GatePipelineBuilder`].
-///
-/// This adapter bridges the shared per-rung evaluation contract defined in
-/// `roko-core` to the existing rung dispatch infrastructure. It is the
-/// implementation that `GatePipelineCell` accesses via
-/// `CellContext.resources.gates`.
-#[derive(Debug)]
-pub struct DefaultGateService;
-
-impl DefaultGateService {
-    /// Create a new default gate service.
-    #[must_use]
-    pub const fn new() -> Self {
-        Self
-    }
-}
-
-impl Default for DefaultGateService {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-#[async_trait]
-impl roko_core::SharedGateEvaluator for DefaultGateService {
-    async fn verify_rung(
-        &self,
-        request: &roko_core::SharedGateRequest,
-    ) -> std::result::Result<roko_core::SharedGateVerdict, roko_core::SharedGateError> {
-        use roko_core::{SharedGateError, SharedGateVerdict};
-
-        // Parse the rung name.
-        let rung = crate::rung_selector::Rung::from_label(&request.rung).ok_or_else(|| {
-            SharedGateError::UnknownRung {
-                rung: request.rung.clone(),
-            }
-        })?;
-
-        // Build a gate signal from the worktree path.
-        let payload = crate::payload::GatePayload::in_dir(&request.worktree_path);
-        let signal = roko_core::Signal::builder(roko_core::Kind::Task)
-            .body(roko_core::Body::from_json(&payload).unwrap_or_else(|_| roko_core::Body::empty()))
-            .build();
-        let ctx =
-            roko_core::Context::now().with_attr("workdir", request.worktree_path.to_string_lossy());
-
-        // Execute the rung using canonical dispatch.
-        let verdicts = crate::rung_dispatch::run_canonical_rung(
-            &signal,
-            &ctx,
-            rung,
-            &crate::rung_dispatch::RungExecutionInputs::default(),
-            &crate::rung_dispatch::RungExecutionConfig::default(),
-        )
-        .await;
-
-        // Aggregate inner verdicts into a single SharedGateVerdict.
-        if verdicts.is_empty() {
-            return Ok(SharedGateVerdict::skip(&request.rung));
-        }
-
-        let all_passed = verdicts.iter().all(|v| v.passed || v.skipped);
-        let any_skipped = verdicts.iter().all(|v| v.skipped);
-        let failed_reasons: Vec<String> = verdicts
-            .iter()
-            .filter(|v| !v.passed && !v.skipped)
-            .map(|v| {
-                v.error_digest
-                    .as_deref()
-                    .or(v.detail.as_deref())
-                    .unwrap_or(&v.reason)
-                    .to_string()
-            })
-            .collect();
-
-        let evidence = verdicts.iter().find_map(|v| v.detail.as_deref()).map(|s| {
-            if s.len() > 64 * 1024 {
-                s[..64 * 1024].to_string()
-            } else {
-                s.to_string()
-            }
-        });
-
-        let duration_ms: u64 = verdicts.iter().map(|v| v.duration_ms).sum();
-
-        if any_skipped && verdicts.len() == 1 {
-            return Ok(SharedGateVerdict::skip(&request.rung));
-        }
-
-        let mut verdict = if all_passed {
-            SharedGateVerdict::pass(&request.rung)
-        } else {
-            SharedGateVerdict::fail(&request.rung, failed_reasons)
-        };
-        verdict.evidence = evidence;
-        // Duration not tracked in cost_micro_usd for deterministic gates.
-        let _ = duration_ms;
-
-        Ok(verdict)
     }
 }
 
@@ -793,6 +710,35 @@ mod tests {
         assert!(debug.contains("ProductionGateService"));
     }
 
+    /// gap-85f102: the canonical rungs run with the rung config the service
+    /// was given, so its oracles reach the semantic rungs.
+    #[test]
+    fn service_runs_rungs_with_the_rung_config_it_was_given() {
+        use crate::fact_check::{SearchHit, SearchOracle};
+
+        struct NoHits;
+
+        #[async_trait]
+        impl SearchOracle for NoHits {
+            async fn search(&self, _query: &str) -> Result<Vec<SearchHit>, String> {
+                Ok(Vec::new())
+            }
+        }
+
+        let plain = format!("{:?}", ProductionGateService::new());
+        assert!(plain.contains("fact_check_oracle: false"), "{plain}");
+        let config = RungExecutionConfig {
+            fact_check_oracle: Some(Arc::new(NoHits)),
+            ..Default::default()
+        };
+        let service = ProductionGateService::new().with_rung_config(config);
+        let configured = format!("{service:?}");
+        assert!(
+            configured.contains("fact_check_oracle: true"),
+            "{configured}"
+        );
+    }
+
     #[test]
     fn trait_is_object_safe() {
         let service = ProductionGateService::new();
@@ -984,71 +930,5 @@ mod tests {
             input_fingerprint: String::new(),
             skip_reason: None,
         }
-    }
-
-    // ── DefaultGateService (SharedGateEvaluator) tests ──────────────────
-
-    #[test]
-    fn default_gate_service_can_be_constructed() {
-        let _svc = DefaultGateService::new();
-        let _svc2 = DefaultGateService::default();
-    }
-
-    #[test]
-    fn default_gate_service_implements_debug() {
-        let svc = DefaultGateService::new();
-        let debug = format!("{svc:?}");
-        assert!(debug.contains("DefaultGateService"));
-    }
-
-    #[test]
-    fn default_gate_service_is_object_safe() {
-        use roko_core::SharedGateEvaluator;
-        let svc = DefaultGateService::new();
-        let _arc: std::sync::Arc<dyn SharedGateEvaluator> = std::sync::Arc::new(svc);
-    }
-
-    #[tokio::test]
-    async fn default_gate_service_unknown_rung_returns_error() {
-        use roko_core::{SharedGateEvaluator, SharedGateRequest};
-        let svc = DefaultGateService::new();
-        let req = SharedGateRequest {
-            task_id: "t".into(),
-            attempt_id: 0,
-            rung: "nonexistent".into(),
-            plan_dir: String::new(),
-            worktree_path: PathBuf::from("/tmp"),
-            changed_files: Vec::new(),
-            context: Default::default(),
-        };
-        let result = svc.verify_rung(&req).await;
-        assert!(result.is_err());
-        let err = result.unwrap_err();
-        assert!(
-            matches!(err, roko_core::SharedGateError::UnknownRung { .. }),
-            "expected UnknownRung, got: {err}"
-        );
-    }
-
-    #[tokio::test]
-    async fn default_gate_service_compile_rung_executes() {
-        use roko_core::{SharedGateEvaluator, SharedGateRequest};
-        let svc = DefaultGateService::new();
-        let req = SharedGateRequest {
-            task_id: "t".into(),
-            attempt_id: 0,
-            rung: "compile".into(),
-            plan_dir: String::new(),
-            // Point to the workspace root so cargo works (tests run from project root)
-            worktree_path: PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../.."),
-            changed_files: vec!["src/lib.rs".into()],
-            context: Default::default(),
-        };
-        // This actually runs `cargo check` so it may take a while in CI,
-        // but for unit tests it validates the wiring.
-        let result = svc.verify_rung(&req).await;
-        // The result depends on whether cargo is available and the workspace
-        // compiles, but the call should not error with UnknownRung.
-        assert!(result.is_ok(), "compile rung should succeed: {result:?}");
     }
 }

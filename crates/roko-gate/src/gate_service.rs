@@ -8,6 +8,7 @@ use roko_core::foundation::{
     GateClassification, GateConfig, GateReport, GateRunner, GateVerdict, ShellGateCommand,
 };
 use roko_core::{Body, Context, Kind, Result, RokoError, Signal, Verdict, Verify};
+use std::path::Path;
 use std::sync::{Arc, Mutex};
 
 use crate::adaptive_threshold::AdaptiveThresholds;
@@ -27,13 +28,31 @@ use crate::test_gate::TestGate;
 /// - Returns a unified `GateReport`
 pub struct GateService {
     adaptive: Option<Arc<Mutex<AdaptiveThresholds>>>,
+    /// Extra variables gate commands inherit (`[gates] env_passthrough`).
+    env_passthrough: Vec<String>,
 }
 
 impl GateService {
     /// Construct a `GateService`.
     #[must_use]
     pub const fn new() -> Self {
-        Self { adaptive: None }
+        Self {
+            adaptive: None,
+            env_passthrough: Vec::new(),
+        }
+    }
+
+    /// Hand gate commands the variables `patterns` names (`[gates]
+    /// env_passthrough`) on top of the gate allowlist (gap-bbbfbc).
+    #[must_use]
+    pub fn with_env_passthrough(mut self, patterns: Vec<String>) -> Self {
+        self.env_passthrough = patterns;
+        self
+    }
+
+    /// The payload of the gates run in `workdir`.
+    fn payload(&self, workdir: &Path) -> GatePayload {
+        GatePayload::in_dir(workdir).with_env_passthrough(self.env_passthrough.iter().cloned())
     }
 
     /// Attach adaptive thresholds for gate skip/observe decisions.
@@ -236,7 +255,7 @@ impl Default for GateService {
 #[async_trait]
 impl GateRunner for GateService {
     async fn run_gates(&self, config: GateConfig) -> Result<GateReport> {
-        let payload = GatePayload::in_dir(config.workdir.clone());
+        let payload = self.payload(&config.workdir);
         let signal = Signal::builder(Kind::Task)
             .body(Body::from_json(&payload)?)
             .build();
@@ -391,6 +410,17 @@ fn to_gate_verdict(gate_name: String, verdict: Verdict) -> GateVerdict {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// gap-bbbfbc: the gates' payload hands their commands `[gates]
+    /// env_passthrough` on top of the gate allowlist.
+    #[test]
+    fn gate_payload_carries_env_passthrough() {
+        let workdir = Path::new("/tmp/gate-service");
+        let svc = GateService::new().with_env_passthrough(vec!["DATABASE_URL".to_string()]);
+        assert_eq!(svc.payload(workdir).env_passthrough, ["DATABASE_URL"]);
+        let plain = GateService::new().payload(workdir);
+        assert!(plain.env_passthrough.is_empty());
+    }
 
     #[test]
     fn rung_mapping_covers_all_seven_rungs() {

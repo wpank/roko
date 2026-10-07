@@ -1,0 +1,126 @@
++++
+id = "gap-de0b87"
+kind = "gap"
+title = "PK19 Specs a cheap model can execute: The generator prompt sizes tasks for their executor tier (+9 more)"
+status = "done"
+triage = "verified"
+severity = "p2"
+goal = "golden-path"
+rank = 19
+size = "L"
+subsystem = ["roko-cli/plan_policy"]
+created = 2026-10-02
+updated = 2026-10-03
+last_verified = 2026-10-03
+last_verified_rev = "5bb643122"
+source = "tmp/backlog/2026-10-02-complete-and-wire PK19"
+anchors = ["apps/portal/src/components/stage/PlanView.tsx", "crates/roko-cli/src/commands/learn.rs", "crates/roko-cli/src/commands/mod.rs", "crates/roko-cli/src/commands/plan.rs", "crates/roko-cli/src/main.rs", "crates/roko-cli/src/plan_generate.rs", "crates/roko-cli/src/plan_policy.rs", "crates/roko-cli/src/plan_validate.rs", "crates/roko-cli/src/plan_generate/pipeline.rs", "crates/roko-cli/tests/plan_validate.rs", "crates/roko-gate/src/acceptance_contract.rs", "crates/roko-gate/src/lib.rs"]
+lane = "rust-hot"
+parent = "spec-fef7c5"
+links = { depends_on = ["gap-f61823", "gap-cb5133", "gap-e4bfbf"], blocks = [], related = [], supersedes = [], duplicate_of = "" }
+
+[[verify]]
+command = "! grep -q 'Prefer the fewest cohesive tasks' crates/roko-cli/src/plan_generate.rs && grep -rqw 'fn generator_prompt_sizes_tasks_by_tier' crates/roko-cli/src/ && cargo test -p roko-cli --lib generator_prompt_sizes_tasks_by_tier"
+
+[[verify]]
+command = "grep -rqw 'fn generation_rejects_a_task_over_its_tier_size' crates/roko-cli/src/ && cargo test -p roko-cli --lib generation_rejects_a_task_over_its_tier_size"
+
+[[verify]]
+command = "grep -rqw 'fn learn_sizing_reports_pass_rate_by_tier_and_size' crates/roko-cli/ && cargo test -p roko-cli learn_sizing_reports_pass_rate_by_tier_and_size"
+
+[[verify]]
+command = "grep -rqw 'fn plan_revise_cli_prints_the_plan_diff' crates/roko-cli/ && cargo test -p roko-cli plan_revise_cli_prints_the_plan_diff"
+
+[[verify]]
+command = "test -f apps/portal/src/components/stage/revisionDiff.accept.test.tsx && cd apps/portal && npx vitest run src/components/stage/revisionDiff.accept.test.tsx"
+
+[[verify]]
+command = "! grep -rqw 'fn validate_evidence' crates/roko-gate/src/ && grep -rqw 'fn acceptance_contract_is_reported_as_not_enforced' crates/roko-cli/ && cargo test -p roko-cli acceptance_contract_is_reported_as_not_enforced"
+
+[[verify]]
+command = "grep -rqw 'fn plan_run_records_spec_quality_and_gate_per_task' crates/roko-cli/ && cargo test -p roko-cli plan_run_records_spec_quality_and_gate_per_task"
+
+[[verify]]
+command = "grep -rqw 'fn spec_gate_holdout_tasks_skip_score_blocks' crates/roko-cli/ && cargo test -p roko-cli spec_gate_holdout_tasks_skip_score_blocks"
+
+[[verify]]
+command = "grep -qw 'def test_degrade_is_idempotent' benchmarks/viabilitybench/specops/tests/test_degrade.py && benchmarks/viabilitybench/.venv/bin/python -m pytest benchmarks/viabilitybench/specops/tests/test_degrade.py -q"
+
+[closed]
+at = 2026-10-03
+at_ts = "2026-10-03T00:42:02Z"
+commit = "5bb643122"
+executor = "claude-agent"
+via = "work-batch"
+size = "L"
+claimed_at = "2026-10-02T22:19:29Z"
+forced = false
+evidence = "Gate 5a (merged into main as 5bb643122, tree identical to work/backlog-batch-5a apart from work/): cargo check --workspace --tests, cargo clippy --workspace -D warnings, nextest --lib 12,477 passed over 12 crates, roko-cli bin + golden-path canaries + plan_revise/plan_validate/plan_spec_gate integration tests (only bug-2a31bc's two known alias tests fail), ViabilityBench suite 548 passed, portal vitest + tsc; every [[verify]] passes."
++++
+
+## Problem
+
+This package delivers 10 tasks of the backlog `tmp/backlog/2026-10-02-complete-and-wire/` (package PK19, slice 32xx, phase 3), in this order. Each task's full specification (Problem, Why it matters, Where, Current state, Plan, Done when, Notes and its verify) is in its file: read each one completely before starting it.
+
+| # | Task | Size | Sev | Title | File |
+|---|---|---|---|---|---|
+| 1 | 3224 | S | p2 | The generator prompt sizes tasks for their executor tier | `/Users/will/dev/nunchi/roko/roko/tmp/backlog/2026-10-02-complete-and-wire/3224-generator-prompt-sizes-tasks-by-tier.md` |
+| 2 | 3225 | S | p2 | Generation rejects a task over its tier's size limits | `/Users/will/dev/nunchi/roko/roko/tmp/backlog/2026-10-02-complete-and-wire/3225-generation-rejects-task-over-tier-size.md` |
+| 3 | 3226 | M | p2 | `roko learn sizing`: verified pass rate by tier and task size | `/Users/will/dev/nunchi/roko/roko/tmp/backlog/2026-10-02-complete-and-wire/3226-learn-sizing-pass-rate-by-tier-and-size.md` |
+| 4 | 3227 | S | p3 | Set the tier size limits from the sizing report | `/Users/will/dev/nunchi/roko/roko/tmp/backlog/2026-10-02-complete-and-wire/3227-set-tier-size-limits-from-measurements.md` |
+| 5 | 3228 | M | p3 | `roko plan revise` on the CLI, and revise and regenerate print the plan diff | `/Users/will/dev/nunchi/roko/roko/tmp/backlog/2026-10-02-complete-and-wire/3228-plan-revise-cli-and-printed-plan-diffs.md` |
+| 6 | 3229 | S | p3 | The portal shows the plan diff after a revision | `/Users/will/dev/nunchi/roko/roko/tmp/backlog/2026-10-02-complete-and-wire/3229-portal-shows-plan-diff-after-revision.md` |
+| 7 | 3230 | S | p3 | Retire the AcceptanceContract evaluator | `/Users/will/dev/nunchi/roko/roko/tmp/backlog/2026-10-02-complete-and-wire/3230-retire-acceptance-contract-evaluator.md` |
+| 8 | 3231 | M | p2 | Plan-load spec gate: spec.quality and spec.gate records before dispatch | `/Users/will/dev/nunchi/roko/roko/tmp/backlog/2026-10-02-complete-and-wire/3231-plan-load-spec-gate-records-before-dispatch.md` |
+| 9 | 3232 | S | p3 | A 5% gate-off holdout for score-based spec-gate decisions | `/Users/will/dev/nunchi/roko/roko/tmp/backlog/2026-10-02-complete-and-wire/3232-spec-gate-holdout-for-score-decisions.md` |
+| 10 | 3233 | S | p2 | Spec-degradation operator D-v1 with its manifest | `/Users/will/dev/nunchi/roko/roko/tmp/backlog/2026-10-02-complete-and-wire/3233-spec-degradation-operator-d-v1.md` |
+
+## Why it matters
+
+Phase 3: golden-path proof. The slice's epic, with its goal and scope, is `/Users/will/dev/nunchi/roko/roko/tmp/backlog/2026-10-02-complete-and-wire/3200-specs-a-cheap-model-can-execute.md`. The whole order is in `00-INDEX.md` and `PACKAGES.md` in the backlog folder; Will's decisions are in its `DECISIONS.md`.
+
+## Where
+
+Files the tasks change: `apps/portal/src/components/stage/PlanView.tsx`, `apps/portal/src/components/stage/RevisionDiff.tsx`, `apps/portal/src/components/stage/revisionDiff.accept.test.tsx`, `benchmarks/viabilitybench/specops/__init__.py`, `benchmarks/viabilitybench/specops/degrade.py`, `benchmarks/viabilitybench/specops/fixtures/`, `benchmarks/viabilitybench/specops/manifest.py`, `benchmarks/viabilitybench/specops/tests/test_degrade.py`, `crates/roko-cli/src/commands/learn.rs`, `crates/roko-cli/src/commands/learn_sizing.rs`, `crates/roko-cli/src/commands/mod.rs`, `crates/roko-cli/src/commands/plan.rs`, `crates/roko-cli/src/graph_execution/plan_runner.rs`, `crates/roko-cli/src/main.rs`, `crates/roko-cli/src/plan_generate.rs`, `crates/roko-cli/src/plan_policy.rs`, `crates/roko-cli/src/plan_validate.rs`, `crates/roko-cli/src/prd.rs`, `crates/roko-cli/src/spec_gate.rs`, `crates/roko-cli/tests/plan_spec_gate.rs`, `crates/roko-cli/tests/plan_validate.rs`, `crates/roko-gate/src/acceptance_contract.rs`, `crates/roko-gate/src/lib.rs`.
+
+It also edits the hot file(s) `crates/roko-cli/src/graph_execution/plan_runner.rs`, which are left out of this item's anchors so that two hot packages can run at once; the coordinator resolves any merge conflict.
+
+## Current state
+
+The tasks were checked against `2c3ea9f73` on 2026-10-02. Re-check each task's anchors and premise at your base commit before implementing it, and report a task that is already done instead of redoing it.
+
+## Plan
+
+1. Work through the tasks in the order above. For each: read its file, implement its Plan, write the test it names, and make one commit per task whose message ends with `Backlog-Task: <task id>`, `Work-Item: <this item's id>` and `Executor: claude-agent`.
+2. Follow `BUILD-RULES.md` in the backlog folder. Workers run no cargo: Rust is checked by the coordinator's batched gate. Python and doc checks you may run.
+3. If a task cannot be done (a premise is false, a decision is missing, or its verify cannot pass), stop at that task, keep the earlier commits, and report it; do not skip ahead to tasks that depend on it.
+
+## Done when
+
+- Every task's verify command passes (this item's `[[verify]]` list, one entry per task), after the coordinator's batched gate.
+- Each task's own "Done when" holds (see its file).
+
+## Notes
+
+- Waits on: PK10 (gap-f61823), PK17 (gap-cb5133), PK18 (gap-e4bfbf).
+- Suggested model: opus.
+- 2026-10-02 (roko-7d): the workflow-audit migration (merge bfd36512f) removed the PRD pipeline, `roko do` and `roko develop`; `roko run` is the one entry point and plans come from a prompt. The generator prompt and its retries moved from `prd.rs` to `crates/roko-cli/src/plan_generate/pipeline.rs` (anchor re-pointed); a task that names `prd.rs` means that file. Hold lifted.
+
+## Progress
+
+Worker claude-agent on `work/gap-de0b87` from `e9f81ad1e`, 2026-10-03. Rust and TypeScript tasks are implemented, not
+done: cargo, vitest and the TypeScript check are deferred to the batch gate. Anchors re-checked at BASE (prd.rs is now
+`plan_generate/pipeline.rs`).
+
+- 3224: implemented at 3ba1f80a5 (the three cohesion phrases are gone; the tier limits bind)
+- 3225: implemented at 1d4116847 (`validate_tier_sizes` in the generation pipeline's validation; tiers never raised)
+- 3226: implemented at 353fd5004 (`roko learn sizing`, `commands/learn_sizing.rs`; roko-learn gains `wilson_interval_at` and `Z95`)
+- 3227: blocked: waits on data. This workspace has no `.roko/runs/*/attempts.jsonl` (0 verified first tries); 3203 needs at least 20 per tier bucket, and a binary built with 3226 to run `roko learn sizing --json`
+- 3228: implemented at 2389e65e9 (`roko plan revise`; `plan regenerate` passes the last failure and prints the diff)
+- 3229: implemented at 8f92854e7 (`RevisionDiff`; roko-serve's revise operation result now carries `diff`)
+- 3230: implemented at 275a4919d (evaluator and evidence types deleted, review-verdict types kept; PLAN_046; two contract tests now expect that warning)
+- 3231: implemented at aac91158e (plan-load gate in `run_graph_plan_body`; `.roko/runs/<run_id>/spec.jsonl`; the CLI pre-check no longer repeats red-on-base)
+- 3232: implemented at 7cfb542c7 (holdout on the `spec.gate` layer; no `--no-holdout` flag exists yet)
+- 3233: implemented at 1541687d4 (`benchmarks/viabilitybench/specops/`; 16 Python tests pass)
+
+- 2026-10-03 (coordinator, gate 5a): task 3227's verify left this item for its own follow-up: it needs at least 20 verified first tries per bucket from real runs (decision 3203) before the tier size limits can be set from `roko learn sizing`.

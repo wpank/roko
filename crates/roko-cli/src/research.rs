@@ -1,8 +1,8 @@
-//! `roko research` — auto-research to enhance PRDs, plans, and tasks.
+//! `roko research` — auto-research to enhance plans and tasks.
 //!
 //! Provides agent-driven research capabilities:
 //! - Deep-dive into a topic with academic citations
-//! - Enhance existing PRDs with research findings
+//! - Enhance an existing plan with research findings
 //! - Optimize task decomposition based on latest techniques
 //! - Analyze execution data for self-learning insights
 //!
@@ -11,11 +11,16 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
+use std::time::Instant;
 
 use anyhow::Result;
 use roko_agent::gemini::GroundingMetadata;
 use roko_agent::perplexity::types::SearchOptions;
-use roko_core::config::schema::{GeminiConfig, PerplexityConfig};
+use roko_core::config::model_registry::PERPLEXITY_SEARCH_REQUEST_USD;
+use roko_core::config::schema::{GeminiConfig, PerplexityConfig, RokoConfig};
+
+use crate::agent_exec::AgentCapture;
+use crate::plan_authoring::AuthoringSpend;
 
 fn research_dir(workdir: &Path) -> PathBuf {
     workdir.join(".roko").join("research")
@@ -101,27 +106,6 @@ pub fn build_research_prompt(
                 slug(topic)
             );
         }
-        ResearchMode::EnhancePrd => {
-            let _ = writeln!(prompt, "## Enhancement task\n");
-            let _ = writeln!(prompt, "Read this PRD and enhance it with research:\n");
-            let _ = writeln!(prompt, "{context}\n");
-            let _ = writeln!(prompt, "For each section:");
-            let _ = writeln!(
-                prompt,
-                "1. Add missing citations (find real papers that support design decisions)"
-            );
-            let _ = writeln!(
-                prompt,
-                "2. Add mermaid diagrams where architecture would be clearer"
-            );
-            let _ = writeln!(prompt, "3. Identify improvements from recent research");
-            let _ = writeln!(prompt, "4. Flag any claims that contradict recent findings");
-            let _ = writeln!(
-                prompt,
-                "\nUpdate the PRD file in place. Also save a research summary to .roko/research/{}.md",
-                slug(topic)
-            );
-        }
         ResearchMode::EnhancePlan => {
             let _ = writeln!(prompt, "## Plan enhancement task\n");
             let _ = writeln!(prompt, "Read this implementation plan and optimize it:\n");
@@ -202,10 +186,7 @@ pub fn build_research_prompt(
     if !context.is_empty()
         && !matches!(
             mode,
-            ResearchMode::EnhancePrd
-                | ResearchMode::EnhancePlan
-                | ResearchMode::EnhanceTasks
-                | ResearchMode::AnalyzeExecution
+            ResearchMode::EnhancePlan | ResearchMode::EnhanceTasks | ResearchMode::AnalyzeExecution
         )
     {
         let _ = writeln!(prompt, "\n## Additional context\n{context}");
@@ -445,8 +426,6 @@ pub fn save_research_with_grounding(
 pub enum ResearchMode {
     /// Pure research on a topic → .roko/research/<slug>.md
     Topic,
-    /// Enhance a PRD with research findings and citations
-    EnhancePrd,
     /// Optimize an implementation plan with research-backed techniques
     EnhancePlan,
     /// Optimize tasks for efficiency, parallelism, and model selection
@@ -481,6 +460,85 @@ pub fn list_research(workdir: &Path) -> Result<Vec<PathBuf>> {
     }
     files.sort();
     Ok(files)
+}
+
+// ── Spend ─────────────────────────────────────────────────────────────
+
+/// Model that a Perplexity Search API call's spend is recorded under: the
+/// API runs no model.
+const SEARCH_API_MODEL: &str = "perplexity-search";
+
+/// Record what one research agent run cost, against the topic's research
+/// task (bug-86ff56). Perplexity and Gemini report tokens but no dollar
+/// amount, so such a run is priced from its tokens at the workspace's price
+/// snapshot, else the model's configured rates, else the registry's
+/// (bug-2dfd23, backlog 2114).
+pub async fn record_run_spend(
+    workdir: &Path,
+    config: &RokoConfig,
+    topic: &str,
+    role: &str,
+    provider: &str,
+    model: &str,
+    result: &roko_agent::AgentResult,
+    started: Instant,
+) {
+    let mut usage = result.usage;
+    let profile = roko_core::agent::resolve_model(config, model).profile;
+    let snapshot = crate::dispatch_v2::pricing_snapshot(&config.pricing, workdir);
+    crate::dispatch_v2::fill_usage_cost_from_pricing(
+        &mut usage,
+        snapshot.as_deref(),
+        profile.as_ref(),
+        model,
+    );
+    let (api_equiv_usd, price_snapshot_id) =
+        crate::dispatch_v2::api_equiv(result, snapshot.as_deref(), model).unzip();
+    let call = AgentCapture {
+        exit_code: i32::from(!result.success),
+        output: String::new(),
+        usage,
+        api_equiv_usd,
+        price_snapshot_id,
+        model: model.to_string(),
+        provider: provider.to_string(),
+        duration_ms: u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX),
+    };
+    let task_id = format!("research:topic:{}", topic.to_lowercase().replace(' ', "-"));
+    AuthoringSpend::operation(workdir, &task_id, role)
+        .record(&call)
+        .await;
+}
+
+/// Record what `roko research search` cost, against the query's research
+/// task: `requests` calls to the Perplexity Search API, which reports no
+/// usage and bills [`PERPLEXITY_SEARCH_REQUEST_USD`] a request (bug-2dfd23).
+pub async fn record_search_spend(
+    workdir: &Path,
+    query: &str,
+    role: &str,
+    requests: usize,
+    duration_ms: u64,
+) {
+    let usage = roko_core::Usage {
+        cost_usd: (requests as f64 * PERPLEXITY_SEARCH_REQUEST_USD) as f32,
+        ..roko_core::Usage::default()
+    };
+    let call = AgentCapture {
+        exit_code: 0,
+        output: String::new(),
+        usage,
+        // A search request has no tokens to price.
+        api_equiv_usd: None,
+        price_snapshot_id: None,
+        model: SEARCH_API_MODEL.to_string(),
+        provider: "perplexity".to_string(),
+        duration_ms,
+    };
+    let task_id = format!("research:search:{}", query.to_lowercase().replace(' ', "-"));
+    AuthoringSpend::operation(workdir, &task_id, role)
+        .record(&call)
+        .await;
 }
 
 #[cfg(test)]
@@ -720,5 +778,74 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         ensure_dirs(tmp.path()).unwrap();
         assert!(tmp.path().join(".roko/research").is_dir());
+    }
+
+    /// The rows of `workdir`'s `.roko/learn/costs.jsonl`.
+    fn cost_rows(workdir: &Path) -> Vec<roko_learn::costs_db::CostRecord> {
+        std::fs::read_to_string(workdir.join(".roko/learn/costs.jsonl"))
+            .unwrap_or_default()
+            .lines()
+            .map(|line| serde_json::from_str(line).expect("a cost record"))
+            .collect()
+    }
+
+    /// bug-2dfd23: a `roko research search` call is recorded at the Search
+    /// API's price per request, under the query's research task.
+    #[tokio::test]
+    async fn research_search_records_spend() {
+        let tmp = tempfile::tempdir().unwrap();
+
+        record_search_spend(tmp.path(), "Rust async traits", "researcher", 1, 420).await;
+
+        let rows = cost_rows(tmp.path());
+        assert_eq!(rows.len(), 1, "{rows:?}");
+        let row = &rows[0];
+        assert_eq!(row.task_id, "research:search:rust-async-traits");
+        assert_eq!(row.role, "researcher");
+        assert_eq!(row.provider, "perplexity");
+        assert_eq!(row.model, SEARCH_API_MODEL);
+        assert!(
+            (row.cost_usd - PERPLEXITY_SEARCH_REQUEST_USD).abs() < 1e-6,
+            "{row:?}"
+        );
+    }
+
+    /// bug-2dfd23: a research run whose provider reported tokens but no
+    /// dollar amount is priced at the registry's rates for its model.
+    #[tokio::test]
+    async fn research_runs_without_a_reported_cost_are_priced() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut config = RokoConfig::default();
+        config.models.clear();
+        let output = roko_core::Signal::builder(roko_core::Kind::AgentOutput)
+            .body(roko_core::Body::text("findings"))
+            .build();
+        let usage = roko_core::Usage {
+            input_tokens: 200_000,
+            output_tokens: 100_000,
+            ..roko_core::Usage::default()
+        };
+        let result = roko_agent::AgentResult::ok(output).with_usage(usage);
+
+        record_run_spend(
+            tmp.path(),
+            &config,
+            "agent memory",
+            "researcher",
+            "perplexity",
+            "sonar",
+            &result,
+            Instant::now(),
+        )
+        .await;
+
+        let rows = cost_rows(tmp.path());
+        assert_eq!(rows.len(), 1, "{rows:?}");
+        let pricing = roko_core::config::model_registry::builtin_pricing("sonar")
+            .expect("the registry prices sonar");
+        let expected =
+            (200_000.0 * pricing.input_per_m + 100_000.0 * pricing.output_per_m) / 1_000_000.0;
+        assert!((rows[0].cost_usd - expected).abs() < 1e-6, "{rows:?}");
+        assert_eq!(rows[0].task_id, "research:topic:agent-memory");
     }
 }

@@ -1,0 +1,26 @@
+# Emitted by the ViabilityBench driver (planemit-4) for one benchmark task. Roko's agent sees this file and its
+# verify command; the benchmark's hidden checks never enter it.
+[meta]
+plan = "vb-86da757b9e"
+total = 1
+done = 0
+status = "ready"
+max_parallel = 1
+skip_enrichment = true
+
+[[task]]
+id = "T01"
+title = "Implement `clamp`"
+description = "# Implement `clamp`\n\nToy instance: F1-l1-0001\n\nKeep \"quotes\" and \\ backslashes.\n"
+status = "ready"
+role = "implementer"
+tier = "focused"
+files = ["calc/ops.py"]
+depends_on = []
+max_retries = 2
+model_hint = "gpt-oss-120b"
+
+[[task.verify]]
+phase = "test"
+command = "python3 -m unittest discover -s tests/visible"
+fail_msg = "the task's visible check failed"

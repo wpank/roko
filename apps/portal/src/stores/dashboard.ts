@@ -10,7 +10,7 @@
 
 import { create } from 'zustand';
 import type { ConnectionStatus, SessionResult } from '@/lib/bootstrap';
-import type { WireDashboardEvent, WireDashboardSnapshot } from '@/api/contracts';
+import type { WireDashboardFrame, WireDashboardSnapshot } from '@/api/contracts';
 import {
   initialRunState,
   fromSnapshot,
@@ -38,8 +38,11 @@ interface DashboardStore {
   setSession(r: SessionResult): void;
   /** Replace all state from a materialized snapshot (gap recovery / startup). */
   replaceFromSnapshot(s: WireDashboardSnapshot): void;
-  /** Fold one incremental dashboard event into the state. */
-  applyEvent(e: WireDashboardEvent): void;
+  /**
+   * Fold one incremental dashboard event into the state, at the time the server stamped on its
+   * frame, so a replayed event keeps its own time; an unstamped one folds at the time it arrives.
+   */
+  applyEvent(e: WireDashboardFrame): void;
   setConnection(s: ConnectionStatus): void;
   /** Record whether `planId`'s editor holds unsaved text. */
   setUnsaved(planId: string, dirty: boolean): void;
@@ -59,7 +62,7 @@ export const useDashboardStore = create<DashboardStore>((set, get) => ({
 
   replaceFromSnapshot: (s) => set({ run: fromSnapshot(s, Date.now()) }),
 
-  applyEvent: (e) => set({ run: foldEvent(get().run, e, Date.now()) }),
+  applyEvent: (e) => set({ run: foldEvent(get().run, e, e.ts_millis ?? Date.now()) }),
 
   setConnection: (s) => set({ connection: s }),
 

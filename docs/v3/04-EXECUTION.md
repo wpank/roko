@@ -6,9 +6,10 @@
 > finish (up to the plan's `max_parallel`; omitted, as wide as the DAG allows when every
 > writing task declares its `files`, else 1), each task's authored
 > `verify` commands check it, and durable checkpoints allow resume after crash. Three
-> parts of the design are not on this path. Tasks run in the operator's working tree:
-> `--worktree-per-task` is opt-in, and its worktrees are never merged back (section 10).
-> Nothing merges: the merge queue has no production caller (section 11). The 19-gate
+> parts of the design are not on this path. Plans get no worktree of their own: since
+> 2026-10-01 (gap-4ec59f) each task attempt runs in its own worktree by default, and
+> finished plans are delivered into the run's batch branch, never the operator's checkout
+> (section 10). The merge queue has no production caller (section 11). The 19-gate
 > rung pipeline runs only in tests ([07-GATES](07-GATES.md)).
 
 > The plan-execute-verify-persist pipeline. A plan directory becomes a Graph of
@@ -122,10 +123,10 @@ so drift is caught by snapshot tests.
 
 | Profile | Used by | Feedback required |
 |---|---|---|
-| `GraphPlan` | `roko plan run` | Yes |
+| `GraphPlan` | `roko plan run`, `roko run plans/<slug>` | Yes |
 | `FullPlan` | Legacy Runner-v2 (deprecated) | Yes |
 | `Workflow` | `roko run` | No |
-| `DirectLight` | `roko do`, `roko develop` | No |
+| `DirectLight` | No CLI caller (`roko do` and `roko develop` were folded into `roko run`) | No |
 | `AgentServer` | `roko agent serve` | No |
 | `ChatLight` | `roko chat` | No |
 | `AuthoredGraph` | `roko graph run` | No |
@@ -255,23 +256,19 @@ pub fn plan_to_graph(
 
 **Source:** `crates/roko-graph/src/topology.rs`
 
-Builds a richer 11-node subgraph per task. Each task becomes:
+Builds a richer 5-node subgraph per task (`plan run --rich-topology`). Each
+task becomes:
 
 ```
-[TaskContextCell] --> [KnowledgeCell]    --+
-                  --> [EpisodesCell]      --|
-                  --> [PlaybookCell]      --|-> [ComposeCell] -> [TaskExecutorCell] -> [GateCell] -> [SuccessBoundary]
-                  --> [ModulationCell]    --|
-                  --> [SafetyCell]        --|
-                  --> [ExperimentCell]    --+
+[TaskContextCell] -> [ComposeCell] -> [TaskExecutorCell] -> [GateCell] -> [SuccessBoundary]
 ```
 
-The six enricher nodes run in parallel (same wave). ComposeCell receives
-seven inputs: six enrichment Signals plus the TaskContext Signal. Inter-task
+ComposeCell turns the TaskContext Signal into the task's prompt. Inter-task
 dependencies connect predecessor SuccessBoundary nodes to dependent
-TaskContext nodes.
+TaskContext nodes. Six `plan.enricher.*` passthrough stubs that used to sit
+between context and compose changed nothing and were removed (9206).
 
-For a plan with N tasks, the production topology produces 11N nodes. A
+For a plan with N tasks, the production topology produces 5N nodes. A
 `TopologyReport` summarizes totals, entry tasks, and exit tasks.
 
 Cross-plan dependencies (`depends_on_plan`) are outside single-graph
@@ -483,20 +480,22 @@ With retry loops:
 
 Terminal states: `Complete`, `Failed`, `Skipped`.
 
-### GuaranteedFinallyController
+### Cleanup on exit
 
-**Source:** `crates/roko-graph/src/finally.rs`
+A `GuaranteedFinallyController` was drafted in `crates/roko-graph/src/finally.rs`, but
+roko-graph never compiled it (its `lib.rs` declared no `mod finally`), and it was deleted
+on 2026-10-01 (gap-ff6e83).
 
-The `GuaranteedFinallyController` wraps graph execution with an absolute
-guarantee that cleanup runs regardless of outcome (success, failure, panic,
-cancellation):
+`run_one_plan` (`crates/roko-cli/src/graph_execution/plan_runner.rs`) does a plan run's
+cleanup:
 
-1. Emits exactly one `TerminalReceipt` (success, failure, or cancelled).
-2. Releases all workspace leases.
-3. Stops all tracked agent processes.
-4. Flushes the final snapshot to disk.
+- On an interrupt it cancels the graph and sends SIGTERM to in-flight agents. Attempts
+  still running after a drain timeout are stopped, and agents that ignored SIGTERM are
+  killed.
+- It then writes the checkpoint's terminal status and the tasks the run did not complete,
+  and closes the run manifest.
 
-This controller runs outside the DAG -- it is not a graph node.
+A forced exit or SIGHUP ends the run without that terminal write (bug-4641e3).
 
 ---
 
@@ -509,13 +508,11 @@ executor actions in a plan graph:
 |---|---|---|
 | Dispatch agent | `task-executor` | Build prompt, launch LLM provider, collect response |
 | Run gate | `plan.gate` | Invoke compile/test/clippy pipeline, emit verdict |
-| Compose prompt | `plan.compose` | Assemble system prompt from enrichment signals |
-| Enrich context | `plan.knowledge`, `plan.episodes`, etc. | Query knowledge store, episodes, playbooks |
+| Compose prompt | `plan.compose` | Assemble the task's prompt from its context |
 | Success boundary | `plan.success-boundary` | Mark task complete, emit downstream signal |
 
-For the production topology, each task flows through all 11 nodes in
-sequence: context -> 6 enrichers (parallel) -> compose -> executor -> gate
--> success boundary.
+For the production topology, each task flows through its 5 nodes in
+sequence: context -> compose -> executor -> gate -> success boundary.
 
 ---
 
@@ -539,8 +536,8 @@ a `CellResources` bundle. This provides cells access to:
 
 `ProcessSupervisor` (from `roko-runtime`) tracks spawned agent processes.
 When a plan completes or fails, the supervisor ensures all child processes
-are terminated. The `GuaranteedFinallyController` invokes supervisor
-shutdown as part of its cleanup guarantee.
+are terminated. On an interrupt, `run_one_plan` also sends SIGTERM to in-flight agent
+process trees and kills those that ignore it.
 
 ### Budget enforcement
 
@@ -555,12 +552,18 @@ closed.
 ## 10. Worktree Isolation
 
 > **Status (2026-09-29, at `7c556bc0a`): PARTIAL.** This section describes the design.
-> On Graph runs every task edits the operator's working tree by default.
-> `plan run --worktree-per-task` is opt-in: each attempt gets a worktree under
-> `.roko/worktrees/`, forked from `HEAD`, and a successful attempt's edits are never
-> merged back, which is why `crates/roko-cli/src/graph_execution/plan_runner.rs` refuses
-> the flag when plans run in parallel. The per-plan path (`ensure_for_plan`,
-> `create_for_plan`) and `reclaim_idle` have no production caller, and `max_live` is unset.
+> Updated 2026-10-01 (gap-4ec59f): `plan run` gives each task attempt its own worktree
+> under `.roko/worktrees/` by default (`[runner] worktree_per_task`; `--no-worktree-per-task`
+> opts out). An attempt starts from its plan's branch, `roko/plan/<plan>`, and a passed
+> attempt is committed onto it. Each finished plan is delivered into the run's batch
+> branch, `roko/batch/<run-id>`. The operator's checkout is never changed: the run ends
+> with the `git merge` command that takes the work. A workdir that is not the top level
+> of a git checkout with a commit runs its tasks in the shared working tree.
+> With worktrees, plans also run side by side (`max_parallel_plans` above 1, backlog 3104):
+> each plan's attempts start from its own branch, and finished plans are delivered into the
+> batch branch one at a time, each merged into the tip the last one left. The per-plan path
+> (`ensure_for_plan`, `create_for_plan`) and `reclaim_idle` have no production caller, and
+> `max_live` is unset.
 
 Git worktrees provide per-plan filesystem isolation. Each active plan gets
 its own worktree -- a separate working directory on its own branch, sharing
@@ -652,7 +655,8 @@ first attempts `reclaim_idle()`. If still over budget, it returns
 
 ### Tasks that share the operator's tree
 
-Without `--worktree-per-task`, the tasks of a plan run side by side in one
+With `--no-worktree-per-task` (or `[runner] worktree_per_task = false`, or in a
+workdir that cannot hold worktrees), the tasks of a plan run side by side in one
 working tree. Two rules keep them from reading or writing each other's
 half-finished edits:
 
@@ -707,17 +711,34 @@ turns it off, and FAST mode never runs it.
 
 **Source:** `crates/roko-cli/src/graph_task_dispatch/baseline_verify.rs`
 
+### The LLM judge (opt-in)
+
+`[gates] llm_judge = true` adds one check once an attempt's verify steps all
+pass: the cheap helper model scores the attempt's diff against its task through
+the LLM-judge gate, and `llm_judge_min_score` (default `0.8`) is the lowest
+score that passes. The verdict is advisory by default. It is logged, shown on
+the dashboard, counted in the gate metrics and appended to
+`.roko/learn/judge-calibration.jsonl`, and the attempt's verdict stands. With
+`llm_judge_blocking = true`, a lower score, or a judge that cannot answer,
+fails the attempt like a failed verify step, and the next attempt's feedback
+carries the reason. An attempt with no diff, or a run with no helper model,
+is not judged.
+
+**Source:** `crates/roko-cli/src/graph_task_dispatch/judge_step.rs`
+
 ## 11. Merge Queue
 
-> **Status (2026-09-30): ORPHANED.** The merge queue served Runner-v2,
-> whose event loop was deleted on 2026-09-06 (`6b5da8616`), and nothing re-attached it:
-> only tests construct `MergeQueue`, and `PlanMerger` was deleted (gap-3505fb). Graph runs
-> under `--worktree-per-task` deliver each finished plan into the run's batch branch with
-> git plumbing instead (`crates/roko-cli/src/graph_execution/batch.rs`, `delivery.rs`).
+> **Status (2026-10-03): DELETED.** The merge queue served Runner-v2,
+> whose event loop was deleted on 2026-09-06 (`6b5da8616`), and nothing re-attached it.
+> `PlanMerger` was deleted (gap-3505fb), and the queue, its orchestrator snapshot and the
+> Graph engine's merge-queue hook followed (9204, 9205). Graph runs with per-task worktrees
+> (the default) deliver each finished plan into the run's batch branch with git plumbing
+> (`crates/roko-cli/src/graph_execution/batch.rs`, `delivery.rs`). The rest of this section
+> records the removed design.
 
-The merge queue serializes plan merges to prevent file conflicts.
+The merge queue serialized plan merges to prevent file conflicts.
 
-**Source:** `crates/roko-cli/src/orchestrator/merge_queue.rs`
+**Source (deleted):** `crates/roko-cli/src/orchestrator/merge_queue.rs`
 
 ### Conflict detection
 
@@ -1013,7 +1034,7 @@ cargo run -p roko-cli -- resume [run-id]
 | # | File | Topic |
 |---|---|---|
 | 01 | `depth/04-01-plan-discovery.md` | Plan scanning, frontmatter parsing, ranking, validation |
-| 02 | `depth/04-02-plan-to-graph.md` | `plan_to_graph()`, `ProductionPlanTopology`, 11-node subgraph |
+| 02 | `depth/04-02-plan-to-graph.md` | `plan_to_graph()`, `ProductionPlanTopology`, 5-node subgraph |
 | 03 | `depth/04-03-unified-task-dag.md` | Cross-plan DAG, wave computation, critical path, crate overlaps |
 | 04 | `depth/04-04-graph-engine-execution.md` | `GraphEngine`, topological waves, node activation, conditional routing |
 | 05 | `depth/04-05-plan-phases.md` | Phase lifecycle, state transitions, retry loops |
@@ -1025,5 +1046,4 @@ cargo run -p roko-cli -- resume [run-id]
 | 11 | `depth/04-11-episodes-telemetry.md` | Episode log, efficiency events, HDC fingerprints, learning feedback |
 | 12 | `depth/04-12-budget-enforcement.md` | `BudgetTracker`, microdollar accounting, reservation lifecycle, cost sidecar |
 | 13 | `depth/04-13-error-resilience.md` | Four error kinds, supremum composition, retry policy monoid, failure strategies |
-| 14 | `depth/04-14-finally-controller.md` | `GuaranteedFinallyController`, terminal receipts, cleanup guarantees |
 | 15 | `depth/04-15-convergence-history.md` | Engine timeline: Runner-v2, #260 Graph default, #276 WorkflowEngine retired |

@@ -2,11 +2,18 @@
 #
 # This is the canonical roko task execution pattern:
 # 1. ComposeCell assembles the prompt from template + context
-# 2. AgentCell dispatches to an LLM for implementation
+# 2. agent.task runs the implementation as a gated one-task plan, as
+#    `roko run` does: its agent works in the workspace, and the workspace's
+#    gates verify the change, retrying with their feedback
 # 3. Gate validates the output (compile/test/clippy)
 #
 # If the gate fails, a conditional edge routes back to a retry compose
 # that includes the gate feedback.
+#
+# agent.task carries its own `prompt`: the compose nodes show where prompt
+# assembly sits, and the agent nodes do not read their output. The agent
+# nodes need the `llm` capability, which a trigger's run has and which
+# `roko graph run` does not grant (9129).
 
 [graph]
 name = "task-execution"
@@ -47,15 +54,13 @@ domain_context = "This is for the HTTP API layer in roko-serve"
 [[nodes]]
 id = "agent_implement"
 name = "Implementation Agent"
-cell_type = "claude-agent"
+cell_type = "agent.task"
 
 [nodes.config]
-model = "claude-sonnet-4-20250514"
-provider = "anthropic"
-system_prompt = "You are a Rust engineer. Implement the requested feature with tests. Output complete file contents."
-tools = ["read_file", "write_file", "shell"]
-max_response_tokens = 8192
-temperature = 0.3
+prompt = "Implement a rate limiter using the token bucket algorithm for the HTTP API layer in roko-serve. Write idiomatic Rust with unit tests and no unsafe code."
+role = "implementer"
+tier = "focused"
+max_usd = 2.0
 
 [[nodes]]
 id = "compile_gate"
@@ -102,15 +107,13 @@ Please fix the issues and try again.
 [[nodes]]
 id = "retry_agent"
 name = "Retry Agent"
-cell_type = "claude-agent"
+cell_type = "agent.task"
 
 [nodes.config]
-model = "claude-sonnet-4-20250514"
-provider = "anthropic"
-system_prompt = "You are fixing a failed implementation. Read the gate feedback carefully and correct the issues."
-tools = ["read_file", "write_file", "shell"]
-max_response_tokens = 8192
-temperature = 0.2
+prompt = "The rate limiter in roko-serve fails `cargo check --workspace`. Run it, read the errors, and fix them, keeping the unit tests."
+role = "implementer"
+tier = "focused"
+max_usd = 2.0
 
 # ─── Edges ───────────────────────────────────────────────────────────────────
 

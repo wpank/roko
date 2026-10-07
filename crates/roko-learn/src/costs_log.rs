@@ -161,7 +161,9 @@ impl CostsLog {
         Ok(out)
     }
 
-    /// Return the total recorded cost in USD.
+    /// Return the total recorded cost in USD: the sum of the priced calls.
+    /// A call whose cost is unknown is left out, and
+    /// [`Self::unpriced_calls`] counts it (backlog 2109).
     ///
     /// # Errors
     ///
@@ -171,9 +173,25 @@ impl CostsLog {
             .read_all()
             .await?
             .into_iter()
+            .filter(|record| !is_unpriced(record))
             .map(|record| record.cost_usd)
             .sum();
         Ok(total.max(0.0))
+    }
+
+    /// How many recorded calls have an unknown cost, which
+    /// [`Self::total_cost`] leaves out (backlog 2109).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the underlying log cannot be read.
+    pub async fn unpriced_calls(&self) -> io::Result<usize> {
+        Ok(self
+            .read_all()
+            .await?
+            .iter()
+            .filter(|record| is_unpriced(record))
+            .count())
     }
 
     /// The part of [`Self::total_cost`] priced from estimated usage
@@ -332,15 +350,21 @@ fn recent_cost_rate_from_records(records: &[CostRecord], window: Duration) -> f6
     recent_cost / (window.as_secs_f64() / 60.0)
 }
 
-/// Whether `record`'s cost is unknown: recorded at $0 although the call used
-/// tokens, or at a cost that is negative or not a finite number.
-fn is_unpriced(record: &CostRecord) -> bool {
+/// Whether `record`'s cost is unknown. A row that says whether its call was
+/// priced (backlog 2109) is taken at its word, unless its cost is negative or
+/// not a finite number. A row that does not say is unpriced when it recorded
+/// $0 although the call used tokens, which a free model's row does too.
+#[must_use]
+pub fn is_unpriced(record: &CostRecord) -> bool {
+    let valid = record.cost_usd.is_finite() && record.cost_usd >= 0.0;
+    if let Some(priced) = record.priced {
+        return !priced || !valid;
+    }
     let tokens = record
         .input_tokens
         .saturating_add(record.output_tokens)
         .saturating_add(record.cached_tokens);
-    let priced = record.cost_usd.is_finite() && record.cost_usd >= 0.0;
-    !priced || (record.cost_usd <= f64::EPSILON && tokens > 0)
+    !valid || (record.cost_usd <= f64::EPSILON && tokens > 0)
 }
 
 fn record_timestamp(record: &CostRecord) -> Option<DateTime<Utc>> {
@@ -384,7 +408,39 @@ mod tests {
             success: true,
             session_id: "sess-1".to_string(),
             cost_source: CostSource::Unknown,
+            priced: None,
+            api_equiv_usd: None,
+            price_snapshot_id: None,
         }
+    }
+
+    /// backlog 2109: a row that says whether its call was priced is taken at
+    /// its word. A flagged free call cost $0 and is priced; a flagged
+    /// unpriced call is unpriced. A row that does not say is still inferred.
+    #[tokio::test]
+    async fn spend_counts_flagged_unpriced_rows() {
+        let tmp = TempDir::new().unwrap();
+        let log = CostsLog::at(tmp.path().join("costs.jsonl"));
+        let free = CostRecord {
+            priced: Some(true),
+            ..record("free", 0.0)
+        };
+        let unpriced = CostRecord {
+            priced: Some(false),
+            ..record("unpriced", 0.0)
+        };
+        assert!(!is_unpriced(&free));
+        assert!(is_unpriced(&unpriced));
+        assert!(is_unpriced(&record("legacy", 0.0)), "$0 with tokens");
+        log.append_all(&[record("priced", 0.5), free, unpriced])
+            .await
+            .unwrap();
+
+        let spend = log.spend_on(Utc::now().date_naive()).await.unwrap();
+        assert!((spend.cost_usd - 0.5).abs() < 1e-9, "{spend:?}");
+        assert_eq!(spend.unpriced_calls, 1);
+        assert_eq!(log.unpriced_calls().await.unwrap(), 1);
+        assert!((log.total_cost().await.unwrap() - 0.5).abs() < 1e-9);
     }
 
     /// A day's spend sums its priced calls, counts the calls whose cost is
@@ -527,6 +583,9 @@ mod tests {
                 success: true,
                 session_id: "sess-1".to_string(),
                 cost_source: CostSource::Unknown,
+                priced: None,
+                api_equiv_usd: None,
+                price_snapshot_id: None,
             };
 
         let two_days_ago = today - ChronoDuration::days(2);

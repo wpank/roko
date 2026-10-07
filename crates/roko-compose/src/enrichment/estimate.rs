@@ -19,7 +19,6 @@ use super::step::EnrichStep;
 const fn step_token_estimate(step: EnrichStep) -> (u32, u32) {
     // Returns (input_tokens, output_tokens).
     match step {
-        EnrichStep::Prd => (500, 2_000),
         EnrichStep::Briefs => (1_000, 3_000),
         EnrichStep::Tasks | EnrichStep::Invariants | EnrichStep::Scribe => (1_500, 2_500),
         EnrichStep::Decompose => (2_000, 4_000),
@@ -35,7 +34,7 @@ const fn step_token_estimate(step: EnrichStep) -> (u32, u32) {
 /// Known model pricing tiers.
 ///
 /// Prices are per 1M tokens in USD.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Default)]
 struct ModelPricing {
     /// Cost per 1M input tokens.
     input_per_million: f64,
@@ -45,54 +44,29 @@ struct ModelPricing {
 
 /// Look up pricing for a model identifier.
 ///
-/// Registry-first: known slugs (claude, glm, kimi, gpt-5.x, codex, sonar)
-/// resolve through the shared
-/// [`roko_core::config::model_registry::builtin_pricing`] table so every
-/// layer prices the same. The legacy substring ladder remains for slugs the
-/// registry does not know (e.g. gpt-4o), and unknown models still fall back
-/// to conservative Sonnet-tier pricing.
+/// Every rate comes from the shared
+/// [`roko_core::config::model_registry::builtin_pricing`] table, so the
+/// estimate prices a model as the cost tables do (bug-0c0747). A slug the
+/// table does not know takes the row of its Claude family (`opus`, `haiku`),
+/// and anything else Sonnet's, as a conservative default.
 fn model_pricing(model: &str) -> ModelPricing {
-    if let Some(pricing) = roko_core::config::model_registry::builtin_pricing(model) {
-        return ModelPricing {
+    use roko_core::config::model_registry::builtin_pricing;
+
+    let lower = model.to_ascii_lowercase();
+    let family = if lower.contains("opus") {
+        "claude-opus-4-6"
+    } else if lower.contains("haiku") {
+        "claude-haiku-4-5"
+    } else {
+        "claude-sonnet-4-6"
+    };
+    builtin_pricing(model)
+        .or_else(|| builtin_pricing(family))
+        .map(|pricing| ModelPricing {
             input_per_million: pricing.input_per_m,
             output_per_million: pricing.output_per_m,
-        };
-    }
-
-    // Normalize: check for key substrings.
-    let m = model.to_ascii_lowercase();
-    if m.contains("opus") {
-        ModelPricing {
-            input_per_million: 15.0,
-            output_per_million: 75.0,
-        }
-    } else if m.contains("sonnet") {
-        ModelPricing {
-            input_per_million: 3.0,
-            output_per_million: 15.0,
-        }
-    } else if m.contains("haiku") {
-        ModelPricing {
-            input_per_million: 0.80,
-            output_per_million: 4.0,
-        }
-    } else if m.contains("gpt-5.4-mini") || m.contains("gpt-4o-mini") {
-        ModelPricing {
-            input_per_million: 0.15,
-            output_per_million: 0.60,
-        }
-    } else if m.contains("gpt-5") || m.contains("gpt-4o") {
-        ModelPricing {
-            input_per_million: 2.50,
-            output_per_million: 10.0,
-        }
-    } else {
-        // Unknown model: assume Sonnet-tier pricing as a safe default.
-        ModelPricing {
-            input_per_million: 3.0,
-            output_per_million: 15.0,
-        }
-    }
+        })
+        .unwrap_or_default()
 }
 
 // ── Complexity multipliers ──────────────────────────────────────────────
@@ -271,7 +245,7 @@ mod tests {
             est.estimated_duration_secs > 0.0,
             "duration should be positive"
         );
-        assert_eq!(est.step_count, 13);
+        assert_eq!(est.step_count, 12);
         assert_eq!(est.llm_step_count, 6); // 6 LLM steps in ALL_ORDERED
         assert!(!est.batch_mode);
     }
@@ -408,13 +382,13 @@ mod tests {
         let est = estimate_enrichment(
             &default_plan_info(),
             TaskComplexityBand::Standard,
-            &[EnrichStep::Prd],
+            &[EnrichStep::Briefs],
             "claude-sonnet-4-6",
             false,
         );
 
         assert_eq!(est.step_count, 1);
-        assert_eq!(est.llm_step_count, 0); // Prd is non-LLM
+        assert_eq!(est.llm_step_count, 0); // Briefs is non-LLM
         assert!(est.estimated_tokens > 0);
         assert!(est.estimated_cost_usd > 0.0);
     }
@@ -495,10 +469,29 @@ mod tests {
         );
     }
 
+    /// bug-0c0747: a Claude slug the registry does not know is priced at its
+    /// family's registry row, not at rates kept in this module.
+    #[test]
+    fn an_unregistered_claude_slug_is_priced_at_its_family_row() {
+        let cost = |model: &str| {
+            let estimate = estimate_enrichment(
+                &default_plan_info(),
+                TaskComplexityBand::Standard,
+                ALL_ORDERED,
+                model,
+                false,
+            );
+            estimate.estimated_cost_usd
+        };
+
+        assert!((cost("claude-opus-4-7") - cost("claude-opus-4-6")).abs() < 1e-12);
+        assert!((cost("claude-3-5-haiku") - cost("claude-haiku-4-5")).abs() < 1e-12);
+    }
+
     #[test]
     fn codex_priced_from_registry_not_sonnet_fallback() {
-        // Registry knows codex/gpt-5.x rates ($2/$8), which are cheaper than
-        // the sonnet default ($3/$15) unknown models get.
+        // The registry prices gpt-5.6-sol at $4/$20, above the sonnet default
+        // ($3/$15) unknown models get.
         let codex = estimate_enrichment(
             &default_plan_info(),
             TaskComplexityBand::Standard,
@@ -515,8 +508,8 @@ mod tests {
         );
 
         assert!(
-            codex.estimated_cost_usd < sonnet_fallback.estimated_cost_usd,
-            "codex ({}) should price below the sonnet fallback ({})",
+            codex.estimated_cost_usd > sonnet_fallback.estimated_cost_usd,
+            "codex ({}) should price above the sonnet fallback ({})",
             codex.estimated_cost_usd,
             sonnet_fallback.estimated_cost_usd
         );

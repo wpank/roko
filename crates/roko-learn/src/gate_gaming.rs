@@ -8,6 +8,12 @@
 //!
 //! Alerts are logged with [`tracing::warn!`] and appended to
 //! `.roko/learn/gate-gaming-alerts.jsonl`.
+//!
+//! Observations can carry a weight and count toward the pass rate, the
+//! quality or both ([`GateGamingDetector::observe_weighted`], backlog 7128):
+//! the audit worker adds each settled attempt's gate verdict at weight 1 and
+//! each audited label, quality 1 − Y, at weight 1/π_i. The window then keeps
+//! observations by weight, not by count, and splits its weight in halves.
 
 use std::collections::{HashMap, VecDeque};
 use std::io;
@@ -46,6 +52,29 @@ pub struct GamingObservation {
     pub quality_score: f64,
     /// Wall-clock time the observation was recorded.
     pub timestamp: DateTime<Utc>,
+    /// Its weight in the window: 1, or 1/π_i for an audited unit.
+    #[serde(default = "unit_weight")]
+    pub weight: f64,
+    /// What it counts toward.
+    #[serde(default)]
+    pub observed: Observed,
+}
+
+/// What a [`GamingObservation`] counts toward.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Observed {
+    /// The pass rate and the quality: a gate evaluation with a quality score.
+    #[default]
+    Both,
+    /// The pass rate alone: a gate verdict whose quality is unknown.
+    Gate,
+    /// The quality alone: an audited unit's label.
+    Quality,
+}
+
+const fn unit_weight() -> f64 {
+    1.0
 }
 
 impl GamingObservation {
@@ -56,6 +85,8 @@ impl GamingObservation {
             gate_passed,
             quality_score,
             timestamp: Utc::now(),
+            weight: 1.0,
+            observed: Observed::Both,
         }
     }
 }
@@ -79,15 +110,37 @@ pub struct GamingAlert {
     pub second_half_quality: f64,
     /// Wall-clock time the alert was generated.
     pub timestamp: DateTime<Utc>,
+    /// The plan whose attempt's observation raised the alert
+    /// ([`Self::raised_by`]); `None` in an alert logged before alerts named
+    /// it (gap-54b2b2).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub plan_id: Option<String>,
+    /// The run of that attempt; `None` as for `plan_id`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub run_id: Option<String>,
 }
 
 impl GamingAlert {
+    /// This alert, attributed to the attempt of plan `plan_id` in run
+    /// `run_id` whose observation raised it (gap-54b2b2).
+    #[must_use]
+    pub fn raised_by(mut self, plan_id: &str, run_id: &str) -> Self {
+        self.plan_id = Some(plan_id.to_string());
+        self.run_id = Some(run_id.to_string());
+        self
+    }
+
     /// Return a human-readable one-line summary suitable for log output.
     #[must_use]
     pub fn summary(&self) -> String {
+        let raised_by = match (&self.plan_id, &self.run_id) {
+            (Some(plan), Some(run)) => format!(" in plan `{plan}`, run `{run}`"),
+            (Some(plan), None) => format!(" in plan `{plan}`"),
+            _ => String::new(),
+        };
         format!(
-            "gate gaming detected for model `{}`: pass_rate +{:.1}pp, quality -{:.1}pp \
-             (first_half: pass={:.1}% q={:.2}, second_half: pass={:.1}% q={:.2})",
+            "gate gaming detected for model `{}`{raised_by}: pass_rate +{:.1}pp, quality \
+             -{:.1}pp (first_half: pass={:.1}% q={:.2}, second_half: pass={:.1}% q={:.2})",
             self.model_slug,
             self.pass_rate_delta * 100.0,
             -self.quality_delta * 100.0,
@@ -152,14 +205,48 @@ impl GateGamingDetector {
     ///
     /// Older observations are evicted once the window is full.
     pub fn observe(&mut self, model_slug: &str, gate_passed: bool, quality_score: f64) {
+        self.observe_weighted(model_slug, Some(gate_passed), Some(quality_score), 1.0);
+    }
+
+    /// Add one observation for `model_slug` at `weight`: of the gate's
+    /// verdict, of quality, or both (backlog 7128).
+    ///
+    /// The window keeps the newest observations whose weights sum to at least
+    /// its size. An observation of neither, or of no positive weight, is
+    /// ignored.
+    pub fn observe_weighted(
+        &mut self,
+        model_slug: &str,
+        gate_passed: Option<bool>,
+        quality_score: Option<f64>,
+        weight: f64,
+    ) {
+        let observed = match (gate_passed, quality_score) {
+            (Some(_), Some(_)) => Observed::Both,
+            (Some(_), None) => Observed::Gate,
+            (None, Some(_)) => Observed::Quality,
+            (None, None) => return,
+        };
+        if weight.is_nan() || weight <= 0.0 {
+            return;
+        }
+        let size = self.window_size as f64;
         let window = self
             .observations
             .entry(model_slug.to_owned())
             .or_insert_with(|| VecDeque::with_capacity(self.window_size));
-
-        window.push_back(GamingObservation::now(gate_passed, quality_score));
-
-        if window.len() > self.window_size {
+        window.push_back(GamingObservation {
+            gate_passed: gate_passed.unwrap_or(false),
+            quality_score: quality_score.unwrap_or(0.0),
+            timestamp: Utc::now(),
+            weight,
+            observed,
+        });
+        let mut total: f64 = window.iter().map(|observation| observation.weight).sum();
+        while let Some(front) = window.front()
+            && total - front.weight >= size
+        {
+            total -= front.weight;
             window.pop_front();
         }
     }
@@ -172,14 +259,23 @@ impl GateGamingDetector {
     #[must_use]
     pub fn detect(&self, model_slug: &str) -> Option<GamingAlert> {
         let window = self.observations.get(model_slug)?;
+        let total: f64 = window.iter().map(|observation| observation.weight).sum();
 
         // Require a full window before making any comparison.
-        if window.len() < self.window_size.max(MIN_WINDOW_FOR_DETECTION) {
+        if total < self.window_size.max(MIN_WINDOW_FOR_DETECTION) as f64 {
             return None;
         }
 
-        let half = self.window_size / 2;
+        // The halves split the window's weight.
         let observations: Vec<&GamingObservation> = window.iter().collect();
+        let mut cumulative = 0.0;
+        let half = observations
+            .iter()
+            .position(|observation| {
+                cumulative += observation.weight;
+                cumulative > total / 2.0
+            })
+            .unwrap_or(observations.len());
 
         let first_half = &observations[..half];
         let second_half = &observations[half..];
@@ -202,6 +298,8 @@ impl GateGamingDetector {
                 first_half_quality,
                 second_half_quality,
                 timestamp: Utc::now(),
+                plan_id: None,
+                run_id: None,
             })
         } else {
             None
@@ -333,19 +431,28 @@ pub async fn read_gaming_alerts(path: &Path) -> io::Result<Vec<GamingAlert>> {
 // ---------------------------------------------------------------------------
 
 fn pass_rate(obs: &[&GamingObservation]) -> f64 {
-    if obs.is_empty() {
-        return 0.0;
-    }
-    let passed = obs.iter().filter(|o| o.gate_passed).count();
-    passed as f64 / obs.len() as f64
+    weighted_mean(
+        obs.iter()
+            .filter(|o| o.observed != Observed::Quality)
+            .map(|o| (o.weight, f64::from(u8::from(o.gate_passed)))),
+    )
 }
 
 fn avg_quality(obs: &[&GamingObservation]) -> f64 {
-    if obs.is_empty() {
-        return 0.0;
-    }
-    let sum: f64 = obs.iter().map(|o| o.quality_score).sum();
-    sum / obs.len() as f64
+    weighted_mean(
+        obs.iter()
+            .filter(|o| o.observed != Observed::Gate)
+            .map(|o| (o.weight, o.quality_score)),
+    )
+}
+
+/// The weighted mean of `(weight, value)` pairs; NaN without any weight, so
+/// a half with nothing to compare raises no alert.
+fn weighted_mean(pairs: impl Iterator<Item = (f64, f64)>) -> f64 {
+    let (weight, sum) = pairs.fold((0.0, 0.0), |(weight, sum), (w, value)| {
+        (weight + w, w.mul_add(value, sum))
+    });
+    if weight > 0.0 { sum / weight } else { f64::NAN }
 }
 
 // ---------------------------------------------------------------------------
@@ -719,6 +826,8 @@ mod tests {
             first_half_quality: 0.75,
             second_half_quality: 0.60,
             timestamp: Utc::now(),
+            plan_id: None,
+            run_id: None,
         };
 
         let good_line = serde_json::to_string(&alert).expect("serialize");
@@ -744,12 +853,39 @@ mod tests {
             first_half_quality: 0.75,
             second_half_quality: 0.60,
             timestamp: Utc::now(),
+            plan_id: None,
+            run_id: None,
         };
 
         let summary = alert.summary();
         assert!(summary.contains("test-model"), "summary: {summary}");
         assert!(summary.contains("20.0"), "summary: {summary}");
         assert!(summary.contains("15.0"), "summary: {summary}");
+        assert!(!summary.contains("in plan"), "summary: {summary}");
+
+        let raised = alert.raised_by("demo", "graph-demo-1").summary();
+        let named = "model `test-model` in plan `demo`, run `graph-demo-1`: ";
+        assert!(raised.contains(named), "summary: {raised}");
+    }
+
+    /// gap-54b2b2: an alert names the plan and run that raised it, and a row
+    /// logged before alerts did still parses, with neither.
+    #[test]
+    fn gaming_alert_rows_with_and_without_plan_and_run_parse() {
+        let old = r#"{"model_slug":"m","pass_rate_delta":0.2,"quality_delta":-0.15,
+            "first_half_pass_rate":0.4,"second_half_pass_rate":0.6,"first_half_quality":0.75,
+            "second_half_quality":0.6,"timestamp":"2026-09-29T07:25:00Z"}"#;
+        let alert: GamingAlert = serde_json::from_str(old).expect("an old alert row");
+        assert!(alert.plan_id.is_none() && alert.run_id.is_none());
+        let line = serde_json::to_string(&alert).expect("serialize");
+        assert!(!line.contains("plan_id"), "{line}");
+
+        let raised = alert.raised_by("demo", "graph-demo-1");
+        let line = serde_json::to_string(&raised).expect("serialize");
+        let parsed: GamingAlert = serde_json::from_str(&line).expect("a new alert row");
+        assert_eq!(parsed, raised);
+        assert_eq!(parsed.plan_id.as_deref(), Some("demo"));
+        assert_eq!(parsed.run_id.as_deref(), Some("graph-demo-1"));
     }
 
     // -----------------------------------------------------------------------

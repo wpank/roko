@@ -9,6 +9,7 @@
  *   crates/roko-serve/src/plan_types.rs           — PlanSummaryDto, PlanTaskDto, PlanTasksDto
  *   crates/roko-serve/src/projection_contract.rs  — state_frame (WireStateHubSnapshotResponse)
  *   crates/roko-serve/src/routes/sse.rs           — gap payload (WireGapPayload)
+ *   crates/roko-serve/src/routes/plans/merge.rs   — task reviews and diffs (WireReviews, WireTaskDiff)
  *
  * Types only — no runtime code except the TASK_OUTCOME_* constants.
  */
@@ -41,6 +42,12 @@ export const TASK_OUTCOME_ALREADY_SATISFIED = 'already_satisfied' as const;
  * Counted as neither done nor failed.
  */
 export const TASK_OUTCOME_BLOCKED = 'blocked' as const;
+
+/**
+ * Outcome string of a task that was still running when its run ended other than by cancellation
+ * (bug-60ccba). Counted as failed: it did not finish.
+ */
+export const TASK_OUTCOME_INTERRUPTED = 'interrupted' as const;
 
 // ---------------------------------------------------------------------------
 // Dashboard events
@@ -131,6 +138,12 @@ export type WireDashboardEvent =
   | { type: 'critical_path_eta_updated'; plan_id: string; eta_minutes: number | null }
   | { type: 'snapshot_rebased'; revision: number; source?: string }
   | { type: 'error'; message: string };
+
+/**
+ * A dashboard event as `/api/events` sends it: the server stamps each data frame with the time its
+ * hub published the event (gap-8a1fb3). Older servers send no stamp.
+ */
+export type WireDashboardFrame = WireDashboardEvent & { ts_millis?: number };
 
 // ---------------------------------------------------------------------------
 // Dashboard snapshot — fields the portal reads
@@ -441,11 +454,33 @@ export interface WireInvalidPlan {
 // ---------------------------------------------------------------------------
 
 /** Status of an async operation (e.g. plan import, run start). */
+/** One key a revision changed, each side as TOML text; `null` where absent. */
+export interface WireKeyChange {
+  key: string;
+  before: string | null;
+  after: string | null;
+}
+
+/** The keys of one task that a revision changed. */
+export interface WireTaskChange {
+  id: string;
+  keys: WireKeyChange[];
+}
+
+/** What a revision changed in a plan, task by task (`PlanDiffDto`, 3216). */
+export interface WirePlanDiff {
+  meta: WireKeyChange[];
+  added: string[];
+  removed: string[];
+  changed: WireTaskChange[];
+}
+
 export interface WireOperation {
   id: string;
   kind?: string;
   status: string;
-  result?: { slug?: string; task_count?: number } | null;
+  /** A revision's result also carries its plan diff (3229). */
+  result?: { slug?: string; task_count?: number; diff?: WirePlanDiff | null } | null;
   error?: string | null;
 }
 
@@ -468,4 +503,50 @@ export interface WireAccepted {
 export interface WireStatus {
   workdir: string;
   git_branch?: string | null;
+}
+
+// ---------------------------------------------------------------------------
+// Task reviews — a Graph run holds a verified attempt for approval
+// ---------------------------------------------------------------------------
+
+/** One task of GET /api/plans/{id}/reviews; a held Graph attempt has status 'awaiting_approval'. */
+export interface WireReview {
+  task_id: string;
+  description?: string | null;
+  status: string;
+  attempt_key?: string | null;
+  diff_summary: string;
+  files_changed: string[];
+}
+
+/** Response body from GET /api/plans/{id}/reviews. */
+export interface WireReviews {
+  plan_id: string;
+  reviews: WireReview[];
+}
+
+/** One changed file of a task's diff. */
+export interface WireDiffFile {
+  path: string;
+  status: string;
+  additions: number;
+  deletions: number;
+  patch: string;
+}
+
+/** Response body from GET /api/plans/{id}/tasks/{task_id}/diff ('review_hold' for a held attempt). */
+export interface WireTaskDiff {
+  task_id: string;
+  file_count: number;
+  total_additions: number;
+  total_deletions: number;
+  files: WireDiffFile[];
+  source?: string;
+  status?: string;
+}
+
+/** Request body of POST /api/plans/{id}/tasks/{task_id}/review (ReviewDecision). */
+export interface WireReviewDecision {
+  decision: 'approve' | 'reject' | 'skip';
+  comment?: string;
 }

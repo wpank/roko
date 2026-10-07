@@ -79,6 +79,13 @@ impl LiveAgentOutput {
     }
 }
 
+/// The groups of routes `roko serve` can mount without authentication (G1): `/health`,
+/// `/ready`, `/metrics`, the GitHub and Slack webhook receivers, webhook triggers, the share
+/// readers (`/api/shared/{token}`, `/runs/{id}`), and the 403 answers of a disabled terminal.
+pub const PUBLIC_ROUTE_GROUPS: [&str; 7] = [
+    "health", "ready", "metrics", "webhooks", "triggers", "shared", "terminal",
+];
+
 /// API serving options.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -116,6 +123,11 @@ pub struct ServeConfig {
     /// Automatically orchestrate follow-up work when publish events arrive.
     #[serde(default = "default_true")]
     pub auto_orchestrate: bool,
+    /// Times `POST /api/plans/{id}/revise` asks the planning agent again,
+    /// with the validation diagnostics, after it proposes a revision that
+    /// fails validation. `0` makes one attempt only.
+    #[serde(default = "default_revision_max_retries")]
+    pub revision_max_retries: u32,
     /// Authentication settings for `/api/*`.
     #[serde(default)]
     pub auth: ServeAuthConfig,
@@ -151,6 +163,61 @@ pub struct ServeConfig {
     /// Optional OTLP tracing export. Disabled when `otlp_endpoint` is absent.
     #[serde(default)]
     pub tracing: TracingConfig,
+    /// Limits on runs a chat host starts over `POST /mcp` (9116).
+    #[serde(default)]
+    pub mcp: ServeMcpConfig,
+    /// The unauthenticated route groups to mount, from [`PUBLIC_ROUTE_GROUPS`] (G1, 9327).
+    ///
+    /// The default is all of them. A showcase deploy lists only `health` and `ready`; in showcase
+    /// mode the socket, relay, MCP and terminal routes are not mounted either way.
+    #[serde(default = "default_public_routes")]
+    pub public_routes: Vec<String>,
+}
+
+/// `[serve.mcp]`: limits on the runs a chat host starts over `POST /mcp`.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ServeMcpConfig {
+    /// The most a run started over `/mcp` may spend, in USD. A `run_prompt`
+    /// or `plan_run` call must name a cap (`max_usd`) above 0 and at most
+    /// this, and the cap becomes the run's budget ceiling. Defaults to 5.00;
+    /// runs started any other way are not affected.
+    #[serde(default = "default_mcp_max_run_usd")]
+    pub max_run_usd: f64,
+    /// Let a chat host's run start without the data-model boundary
+    /// (`[agent.data_llm]`), which screens what the run reads (9117).
+    /// Defaults to false: such a run is refused.
+    #[serde(default)]
+    pub allow_without_data_llm: bool,
+}
+
+impl Default for ServeMcpConfig {
+    fn default() -> Self {
+        Self {
+            max_run_usd: default_mcp_max_run_usd(),
+            allow_without_data_llm: false,
+        }
+    }
+}
+
+fn default_mcp_max_run_usd() -> f64 {
+    5.0
+}
+
+impl super::schema::RokoConfig {
+    /// Why a run a chat host starts may not start, or `None` when it may
+    /// (9117). Its request text is untrusted data, and the data-model
+    /// boundary (`[agent.data_llm]`) screens what such a run reads, so
+    /// without the boundary the run is refused unless `[serve.mcp]
+    /// allow_without_data_llm` is set.
+    #[must_use]
+    pub fn chat_run_refusal(&self) -> Option<&'static str> {
+        let unscreened = self.agent.data_llm.is_none() && !self.serve.mcp.allow_without_data_llm;
+        unscreened.then_some(
+            "a run from a chat host needs the data-model boundary: set [agent.data_llm] in \
+             roko.toml, or [serve.mcp] allow_without_data_llm = true to run without it",
+        )
+    }
 }
 
 impl Default for ServeConfig {
@@ -163,6 +230,7 @@ impl Default for ServeConfig {
             terminal_max_sessions: default_terminal_max_sessions(),
             terminal_session_ttl_secs: default_terminal_session_ttl_secs(),
             auto_orchestrate: true,
+            revision_max_retries: default_revision_max_retries(),
             auth: ServeAuthConfig::default(),
             deploy: ServeDeployConfig::default(),
             auto_start: false,
@@ -170,8 +238,14 @@ impl Default for ServeConfig {
             event_ingest_allowlist: Vec::new(),
             live_agent_output: LiveAgentOutput::default(),
             tracing: TracingConfig::default(),
+            mcp: ServeMcpConfig::default(),
+            public_routes: default_public_routes(),
         }
     }
+}
+
+fn default_public_routes() -> Vec<String> {
+    Vec::from(PUBLIC_ROUTE_GROUPS.map(String::from))
 }
 
 fn default_share_ttl_days() -> u64 {
@@ -184,6 +258,10 @@ fn default_terminal_max_sessions() -> usize {
 
 fn default_terminal_session_ttl_secs() -> u64 {
     8 * 60 * 60
+}
+
+fn default_revision_max_retries() -> u32 {
+    1
 }
 
 /// Enforcement behaviour for scope-based permission checks.
@@ -459,6 +537,24 @@ mod tests {
         assert!(partial.worker_image.is_some());
     }
 
+    /// 9341 (decision 9305): the registry and owner the default `worker_image` names must be the
+    /// one `docker-publish.yml`'s `IMAGE_PREFIX` actually publishes to, or `roko deploy railway
+    /// --workers` would pull a stale or foreign image.
+    #[test]
+    fn worker_image_default_matches_the_published_prefix() {
+        let workflow = include_str!("../../../../.github/workflows/docker-publish.yml");
+        let prefix = workflow
+            .lines()
+            .find_map(|line| line.trim().strip_prefix("IMAGE_PREFIX:"))
+            .map(str::trim)
+            .expect("docker-publish.yml sets IMAGE_PREFIX");
+        let default_image = default_worker_image().expect("worker_image has a default");
+        assert!(
+            default_image.starts_with(prefix),
+            "default worker_image {default_image:?} must start with published prefix {prefix:?}"
+        );
+    }
+
     #[test]
     fn default_share_ttl_days_is_seven() {
         assert_eq!(ServeConfig::default().share_ttl_days, 7);
@@ -481,6 +577,16 @@ mod tests {
         assert_eq!(cfg.terminal_commands, vec!["htop".to_string()]);
         assert_eq!(cfg.terminal_max_sessions, 0);
         assert_eq!(cfg.terminal_session_ttl_secs, 0);
+    }
+
+    /// gap-b3e513: a rejected plan revision is retried once by default, and
+    /// `[serve] revision_max_retries` changes that.
+    #[test]
+    fn revision_retries_default_to_one_and_are_configurable() {
+        assert_eq!(ServeConfig::default().revision_max_retries, 1);
+        let cfg: ServeConfig =
+            toml::from_str("revision_max_retries = 3\n").expect("parse revision retries");
+        assert_eq!(cfg.revision_max_retries, 3);
     }
 
     #[test]
@@ -740,7 +846,7 @@ pub struct DeployConfig {
     pub environment_id: Option<String>,
 
     /// Docker image for worker containers. Defaults to the published
-    /// `ghcr.io/nunchi-trade/roko-worker:latest`, whether `[deploy]` is
+    /// `ghcr.io/wpank/roko-worker:latest`, whether `[deploy]` is
     /// absent or leaves the key out.
     #[serde(default = "default_worker_image")]
     pub worker_image: Option<String>,
@@ -755,7 +861,7 @@ fn default_deploy_backend() -> String {
 }
 
 fn default_worker_image() -> Option<String> {
-    Some("ghcr.io/nunchi-trade/roko-worker:latest".into())
+    Some("ghcr.io/wpank/roko-worker:latest".into())
 }
 
 impl Default for DeployConfig {

@@ -25,9 +25,8 @@ use crate::agent_lifecycle::{
     ObservedVitalityPhase,
 };
 use crate::state::AppState;
-use crate::subscription_relay::{
-    ReconciliationRecord, RelayStreamBinding, ServeRelayConnectionStatus, SubscriptionRelayStatus,
-};
+#[cfg(feature = "relay")]
+use crate::subscription_relay::SubscriptionRelayStatus;
 
 /// Build the OpenAPI routes served under `/api`.
 pub fn routes() -> Router<Arc<AppState>> {
@@ -57,7 +56,6 @@ async fn openapi_json() -> Json<utoipa::openapi::OpenApi> {
         (name = "research", description = "Research and enhancement endpoints"),
         (name = "config", description = "Configuration endpoints"),
         (name = "subscriptions", description = "Subscription endpoints"),
-        (name = "prds", description = "PRD endpoints"),
         (name = "webhooks", description = "Webhook ingress endpoints"),
         (name = "providers", description = "Provider and routing endpoints"),
         (name = "learning", description = "Learning and cascade endpoints"),
@@ -93,9 +91,16 @@ async fn openapi_json() -> Json<utoipa::openapi::OpenApi> {
         execute_plan,
         plan_status,
         generate_plan,
+        execute_plans,
+        cancel_plan,
+        revise_plan,
+        plan_chat,
+        get_plan_source,
+        update_plan_source,
         start_run,
         run_status,
         run_observability_detail,
+        run_observability_summary,
         run_observability_events,
         run_observability_event_stream,
         run_observability_tasks,
@@ -128,7 +133,6 @@ async fn openapi_json() -> Json<utoipa::openapi::OpenApi> {
         issue_token,
         list_research,
         research_topic,
-        enhance_prd,
         enhance_plan,
         enhance_tasks,
         analyze,
@@ -142,12 +146,6 @@ async fn openapi_json() -> Json<utoipa::openapi::OpenApi> {
         delete_subscription,
         enable_subscription,
         disable_subscription,
-        list_prds,
-        post_idea,
-        get_prd,
-        draft_prd,
-        promote_prd,
-        plan_from_prd,
         github_webhook,
         slack_webhook,
         generic_webhook,
@@ -301,7 +299,232 @@ async fn openapi_json() -> Json<utoipa::openapi::OpenApi> {
         evaluate_job,
         execute_job,
         cancel_job_endpoint,
-        neuro_query
+        neuro_query,
+        knowledge_query,
+        retrieval_stats,
+        retrieval_query,
+        create_auth_session,
+        end_auth_session,
+        probe_auth_session,
+        affect_state_handler,
+        list_agent_tokens,
+        issue_agent_token,
+        revoke_agent_token,
+        create_agent,
+        get_agent_config,
+        get_agent_profile,
+        restart_agent,
+        start_agent,
+        list_api_keys,
+        create_api_key,
+        revoke_api_key,
+        rotate_api_key,
+        query_auth_audit,
+        cost_summary,
+        bench_events_sse,
+        export_bench_run,
+        start_matrix_run,
+        bench_list_models,
+        pareto_frontier,
+        provider_status,
+        start_bench_run,
+        delete_bench_run,
+        get_bench_run,
+        bench_run_status,
+        list_bench_runs,
+        bench_start_bench_run,
+        compare_bench_runs,
+        bench_delete_bench_run,
+        bench_get_bench_run,
+        cancel_bench_run,
+        list_suites,
+        upload_suite,
+        get_suite,
+        list_swe_datasets,
+        start_swe_run,
+        list_swe_runs,
+        get_swe_run,
+        cfactor_trend,
+        cache_prune,
+        cache_status,
+        chain_agents,
+        chain_blocks,
+        chain_bounties,
+        chain_events,
+        chain_status,
+        chain_txs,
+        chain_watcher_status,
+        apply_preset,
+        get_config_toml,
+        get_dashboard_runs,
+        post_defi_bonds,
+        get_defi_bonds_id,
+        get_defi_indices,
+        get_defi_instruments,
+        post_defi_insurance,
+        post_defi_insurance_id_claims,
+        post_defi_options_price,
+        get_defi_risk_portfolio,
+        create_deployment,
+        teardown_deployment,
+        doctor_report,
+        learn_loops_list,
+        learn_loop_detail,
+        learn_loop_decisions,
+        learn_loop_canary,
+        learn_loop_fault,
+        showcase_m2_loops,
+        showcase_m2_loop_ledger,
+        showcase_m2_loop_break,
+        learn_homeostasis,
+        learn_homeostasis_mode,
+        learn_homeostasis_ack,
+        showcase_m1_essential_variables,
+        showcase_m1_episodes,
+        showcase_manifest,
+        showcase_bundles,
+        showcase_bundle,
+        showcase_bundle_file,
+        showcase_overview,
+        showcase_p1_head_to_head,
+        showcase_m4_audits,
+        showcase_economics,
+        showcase_reload_bundles,
+        showcase_unlock_login,
+        list_effects,
+        decide_effect,
+        sse_handler,
+        ingest_event,
+        ingest_event_batch,
+        executor_state,
+        gates_history,
+        gate_summary,
+        gate_history,
+        pipeline_batch_flush,
+        pipeline_batch_result,
+        pipeline_batch_submit,
+        pipeline_inference,
+        gateway_models,
+        gateway_stats,
+        list_heartbeats,
+        receive_heartbeat,
+        list_history,
+        get_history_session,
+        batch_submit,
+        batch_status,
+        inference_complete,
+        list_integrations,
+        get_integration,
+        adaptive_thresholds,
+        cascade,
+        learn_router_snapshot,
+        cost_tiers,
+        costs,
+        efficiency,
+        experiments,
+        gate_thresholds,
+        model_scorecard,
+        playbooks,
+        provider_outcomes,
+        reflexes,
+        retries,
+        role_costs,
+        learning_learn_router_snapshot,
+        runtime_feedback,
+        section_outcomes,
+        learning_costs,
+        learning_model_scorecard,
+        learning_playbooks,
+        learning_provider_outcomes,
+        learning_reflexes,
+        learning_retries,
+        learning_role_costs,
+        learning_runtime_feedback,
+        learning_section_outcomes,
+        show_artifact,
+        market_browse,
+        fork_artifact,
+        publish_artifact,
+        market_search,
+        metrics,
+        c_factor_metrics,
+        coverage,
+        engagement,
+        experiments_metric,
+        feedback_latency,
+        gate_rate,
+        model_efficiency,
+        prometheus_metrics,
+        success_rate,
+        velocity,
+        network_stats,
+        openapi_openapi_json,
+        parity_handler,
+        plan_costs,
+        plan_estimate,
+        plan_gates,
+        pause_plan,
+        resume_plan,
+        list_reviews,
+        plan_tasks,
+        task_diff,
+        submit_review,
+        validate_plan,
+        list_platforms,
+        get_platform,
+        prediction_calibration,
+        rate_limits,
+        issue_relay_token_handler,
+        revoke_relay_token,
+        relay_health,
+        retention_handler,
+        rpc_ws_upgrade,
+        rpc_post,
+        rpc_events_ws_upgrade,
+        rpc_health,
+        crate::routes::shared_runs::create_share,
+        incidents_handler,
+        quarantine_handler,
+        safety_controls_handler,
+        release_safety_control_handler,
+        get_shared_run,
+        prune_signal,
+        promote_signal,
+        sse_sse_handler,
+        statehub_events,
+        statehub_snapshot,
+        disk_usage,
+        subscriptions_catalog,
+        handle_surface_event,
+        invite_member,
+        team_list_invitations,
+        team_accept_invitation,
+        get_me,
+        list_members,
+        remove_member,
+        update_member,
+        list_sessions,
+        create_session,
+        destroy_session,
+        send_input,
+        truth_map_handler,
+        start_vision_loop,
+        cancel_vision_loop,
+        vision_loop_status,
+        workflow_sse_handler,
+        workflow_ws_upgrade,
+        list_workflows,
+        get_latest_workflow,
+        stream_latest_workflow,
+        get_workflow,
+        stream_workflow,
+        get_workflow_tasks,
+        list_workspaces,
+        create_workspace,
+        get_default_workspace,
+        delete_workspace,
+        get_workspace_state,
+        ws_upgrade
     ),
     components(schemas(
         ApiErrorResponse,
@@ -333,11 +556,6 @@ async fn openapi_json() -> Json<utoipa::openapi::OpenApi> {
         ConfigUpdateRequest,
         SubscriptionCreateRequest,
         SubscriptionUpdateRequest,
-        ReconciliationRecord,
-        RelayStreamBinding,
-        ServeRelayConnectionStatus,
-        SubscriptionRelayStatus,
-        PrdIdeaRequest,
         DeploymentCallbackRequest,
         WebhookPayload,
         SearchQueryRequest
@@ -438,6 +656,24 @@ macro_rules! doc_delete {
     };
 }
 
+macro_rules! doc_delete_param {
+    ($name:ident, $path:literal, $tag:literal, $param:literal) => {
+        #[utoipa::path(
+                    delete,
+                    path = $path,
+                    tag = $tag,
+                    params(($param = String, Path, description = "Path parameter")),
+                    responses(
+                        (status = 200, description = "Successful response", body = Value),
+                        (status = 400, description = "Bad request", body = ApiErrorResponse),
+                        (status = 404, description = "Not found", body = ApiErrorResponse),
+                        (status = 500, description = "Internal error", body = ApiErrorResponse)
+                    )
+                )]
+        fn $name() {}
+    };
+}
+
 doc_get!(health, "/health", "status");
 doc_get!(session_status, "/status", "status");
 doc_get!(metrics_summary, "/metrics/summary", "status");
@@ -457,12 +693,24 @@ doc_post_value!(create_plan, "/plans", "plans");
 doc_post_value!(execute_plan, "/plans/{id}/execute", "plans");
 doc_get_param!(plan_status, "/plans/{id}/status", "plans", "id");
 doc_post_value!(generate_plan, "/plans/generate", "plans");
+doc_post_value!(execute_plans, "/plans/execute", "plans");
+doc_post_value!(cancel_plan, "/plans/{id}/cancel", "plans");
+doc_post_value!(revise_plan, "/plans/{id}/revise", "plans");
+doc_post_value!(plan_chat, "/plans/{id}/chat", "plans");
+doc_get_param!(get_plan_source, "/plans/{id}/source", "plans", "id");
+doc_put_value!(update_plan_source, "/plans/{id}/source", "plans");
 
 doc_post_value!(start_run, "/run", "run");
 doc_get_param!(run_status, "/run/{id}/status", "run", "id");
 doc_get_param!(
     run_observability_detail,
     "/runs/{run_id}",
+    "run-observability",
+    "run_id"
+);
+doc_get_param!(
+    run_observability_summary,
+    "/runs/{run_id}/summary",
     "run-observability",
     "run_id"
 );
@@ -540,7 +788,17 @@ doc_get_param!(
 doc_get!(list_templates, "/templates", "templates");
 doc_post_value!(create_template, "/templates", "templates");
 doc_get_param!(get_template, "/templates/{name}", "templates", "name");
-doc_get_param!(delete_template, "/templates/{name}", "templates", "name");
+#[utoipa::path(
+    delete,
+    path = "/templates/{name}",
+    tag = "templates",
+    params(("name" = String, Path, description = "Template name")),
+    responses(
+        (status = 200, description = "Template removed", body = Value),
+        (status = 500, description = "Internal error", body = ApiErrorResponse)
+    )
+)]
+fn delete_template() {}
 doc_post_value!(deploy_template, "/templates/{name}/deploy", "templates");
 
 doc_get!(list_deployments, "/deployments", "deployments");
@@ -585,7 +843,6 @@ doc_post_value!(issue_token, "/agents/{id}/token", "agents");
 
 doc_get!(list_research, "/research", "research");
 doc_post_value!(research_topic, "/research/topic", "research");
-doc_post_value!(enhance_prd, "/research/enhance-prd/{slug}", "research");
 doc_post_value!(enhance_plan, "/research/enhance-plan/{plan}", "research");
 doc_post_value!(enhance_tasks, "/research/enhance-tasks/{plan}", "research");
 doc_post_value!(analyze, "/research/analyze", "research");
@@ -595,12 +852,27 @@ doc_put_value!(update_config, "/config", "config");
 doc_post_value!(reload_config, "/config/reload", "config");
 
 doc_get!(list_subscriptions, "/subscriptions", "subscriptions");
+// The relay status type and the types it holds join the document through this
+// path, so a build without `relay` (gap-e7a3d4) carries none of them.
+#[cfg(feature = "relay")]
 #[utoipa::path(
     get,
     path = "/subscriptions/relay/status",
     tag = "subscriptions",
     responses(
         (status = 200, description = "Durable relay subscription consumer status", body = SubscriptionRelayStatus),
+        (status = 401, description = "Unauthorized", body = ApiErrorResponse),
+        (status = 403, description = "Insufficient scope", body = ApiErrorResponse)
+    )
+)]
+fn relay_subscription_status() {}
+#[cfg(not(feature = "relay"))]
+#[utoipa::path(
+    get,
+    path = "/subscriptions/relay/status",
+    tag = "subscriptions",
+    responses(
+        (status = 501, description = "Parked: it needs the relay feature", body = Value),
         (status = 401, description = "Unauthorized", body = ApiErrorResponse),
         (status = 403, description = "Insufficient scope", body = ApiErrorResponse)
     )
@@ -619,13 +891,6 @@ doc_post_value!(
     "/subscriptions/{id}/disable",
     "subscriptions"
 );
-
-doc_get!(list_prds, "/prds", "prds");
-doc_post_value!(post_idea, "/prds/ideas", "prds");
-doc_get_param!(get_prd, "/prds/{slug}", "prds", "slug");
-doc_post_value!(draft_prd, "/prds/{slug}/draft", "prds");
-doc_post_value!(promote_prd, "/prds/{slug}/promote", "prds");
-doc_post_value!(plan_from_prd, "/prds/{slug}/plan", "prds");
 
 doc_post_value!(github_webhook, "/webhooks/github", "webhooks");
 doc_post_value!(slack_webhook, "/webhooks/slack", "webhooks");
@@ -1189,6 +1454,537 @@ doc_post_value!(cancel_job_endpoint, "/jobs/{id}/cancel", "jobs");
 
 // ── Neuro ─────────────────────────────────────────────────────────────────
 doc_post_value!(neuro_query, "/neuro/query", "neuro");
+doc_get!(knowledge_query, "/knowledge", "neuro");
+doc_get!(retrieval_stats, "/retrieval/stats", "neuro");
+doc_get!(retrieval_query, "/retrieval/query", "neuro");
+
+// ── Session exchange (mounted at `/api/auth/session`, outside the API key layer) ──
+#[utoipa::path(
+    post,
+    path = "/auth/session",
+    tag = "auth",
+    responses(
+        (status = 204, description = "Session created; `Set-Cookie` carries `roko_session`"),
+        (status = 401, description = "Missing or invalid credential", body = ApiErrorResponse),
+        (status = 403, description = "Showcase mode: no `X-Roko-CSRF: 1` or a foreign origin"),
+        (status = 429, description = "Showcase mode: the passphrase queue is full")
+    )
+)]
+fn create_auth_session() {}
+#[utoipa::path(
+    delete,
+    path = "/auth/session",
+    tag = "auth",
+    responses((status = 204, description = "Session ended and its cookie cleared"))
+)]
+fn end_auth_session() {}
+#[utoipa::path(
+    get,
+    path = "/auth/session",
+    tag = "auth",
+    responses(
+        (status = 200, description = "Whether the caller holds a live session", body = Value)
+    )
+)]
+fn probe_auth_session() {}
+
+// ── affect (gap-c50b85) ────────────────────────────────────────────────────────────
+doc_get!(affect_state_handler, "/affect/state", "affect");
+
+// ── agents (gap-c50b85) ────────────────────────────────────────────────────────────
+doc_post_value!(create_agent, "/agents/create", "agents");
+doc_get_param!(get_agent_config, "/agents/{id}/config", "agents", "id");
+doc_get_param!(get_agent_profile, "/agents/{id}/profile", "agents", "id");
+doc_post_value!(restart_agent, "/agents/{id}/restart", "agents");
+doc_post_value!(start_agent, "/agents/{id}/start", "agents");
+
+// ── auth (gap-c50b85) ──────────────────────────────────────────────────────────────
+doc_get!(list_agent_tokens, "/agent-tokens", "auth");
+doc_post_value!(issue_agent_token, "/agent-tokens", "auth");
+doc_delete_param!(
+    revoke_agent_token,
+    "/agent-tokens/{token_id}",
+    "auth",
+    "token_id"
+);
+doc_get!(list_api_keys, "/api-keys", "auth");
+doc_post_value!(create_api_key, "/api-keys", "auth");
+doc_delete_param!(revoke_api_key, "/api-keys/{name}", "auth", "name");
+doc_post_value!(rotate_api_key, "/api-keys/{name}/rotate", "auth");
+doc_get!(query_auth_audit, "/auth/audit", "auth");
+
+// ── bench (gap-c50b85) ─────────────────────────────────────────────────────────────
+doc_get!(cost_summary, "/bench/cost-summary", "bench");
+doc_get!(bench_events_sse, "/bench/events", "bench");
+doc_get_param!(export_bench_run, "/bench/export/{id}", "bench", "id");
+doc_post_value!(start_matrix_run, "/bench/matrix", "bench");
+doc_get!(bench_list_models, "/bench/models", "bench");
+doc_get!(pareto_frontier, "/bench/pareto", "bench");
+doc_get!(provider_status, "/bench/provider-status", "bench");
+doc_post_value!(start_bench_run, "/bench/run", "bench");
+doc_delete!(delete_bench_run, "/bench/run/{id}", "bench");
+doc_get_param!(get_bench_run, "/bench/run/{id}", "bench", "id");
+doc_get_param!(bench_run_status, "/bench/run/{id}/status", "bench", "id");
+doc_get!(list_bench_runs, "/bench/runs", "bench");
+doc_post_value!(bench_start_bench_run, "/bench/runs", "bench");
+doc_get!(compare_bench_runs, "/bench/runs/compare", "bench");
+doc_delete!(bench_delete_bench_run, "/bench/runs/{id}", "bench");
+doc_get_param!(bench_get_bench_run, "/bench/runs/{id}", "bench", "id");
+doc_post_value!(cancel_bench_run, "/bench/runs/{id}/cancel", "bench");
+doc_get!(list_suites, "/bench/suites", "bench");
+doc_post_value!(upload_suite, "/bench/suites", "bench");
+doc_get_param!(get_suite, "/bench/suites/{id}", "bench", "id");
+
+// ── cache (gap-c50b85) ─────────────────────────────────────────────────────────────
+doc_post_value!(cache_prune, "/cache/prune", "cache");
+
+// ── learning (gap-c50b85) ──────────────────────────────────────────────────────────
+doc_get!(cfactor_trend, "/c-factor/trend", "learning");
+
+// ── swe_bench (gap-c50b85) ─────────────────────────────────────────────────────────
+doc_get!(list_swe_datasets, "/bench/swe/datasets", "swe_bench");
+doc_post_value!(start_swe_run, "/bench/swe/run", "swe_bench");
+doc_get!(list_swe_runs, "/bench/swe/runs", "swe_bench");
+doc_get_param!(get_swe_run, "/bench/swe/runs/{id}", "swe_bench", "id");
+
+// ── cache (gap-c50b85) ─────────────────────────────────────────────────────────────
+doc_get!(cache_status, "/cache/status", "cache");
+
+// ── chain (gap-c50b85) ─────────────────────────────────────────────────────────────
+doc_get!(chain_agents, "/chain/agents", "chain");
+doc_get!(chain_blocks, "/chain/blocks", "chain");
+doc_get!(chain_bounties, "/chain/bounties", "chain");
+doc_get!(chain_events, "/chain/events", "chain");
+doc_get!(chain_status, "/chain/status", "chain");
+doc_get!(chain_txs, "/chain/transactions", "chain");
+doc_get!(chain_watcher_status, "/chain/watcher", "chain");
+
+// ── config (gap-c50b85) ────────────────────────────────────────────────────────────
+doc_post_value!(apply_preset, "/config/preset", "config");
+doc_get!(get_config_toml, "/config/toml", "config");
+
+// ── defi (gap-c50b85) ──────────────────────────────────────────────────────────────
+doc_post_value!(post_defi_bonds, "/defi/bonds", "defi");
+doc_get_param!(get_defi_bonds_id, "/defi/bonds/{id}", "defi", "id");
+doc_get!(get_defi_indices, "/defi/indices", "defi");
+doc_get!(get_defi_instruments, "/defi/instruments", "defi");
+doc_post_value!(post_defi_insurance, "/defi/insurance", "defi");
+doc_post_value!(
+    post_defi_insurance_id_claims,
+    "/defi/insurance/{id}/claims",
+    "defi"
+);
+doc_post_value!(post_defi_options_price, "/defi/options/price", "defi");
+doc_get!(get_defi_risk_portfolio, "/defi/risk/portfolio", "defi");
+
+// ── deployments (gap-c50b85) ───────────────────────────────────────────────────────
+doc_post_value!(create_deployment, "/deployments", "deployments");
+doc_delete!(teardown_deployment, "/deployments/{id}", "deployments");
+
+// ── doctor (gap-c50b85) ────────────────────────────────────────────────────────────
+doc_get!(doctor_report, "/doctor", "doctor");
+
+// ── effects (backlog 9133) ─────────────────────────────────────────────────────────
+doc_get!(list_effects, "/effects", "effects");
+doc_post_value!(decide_effect, "/effects/{id}/decision", "effects");
+
+// ── learn loops (backlog 5132-5133) ────────────────────────────────────────────────
+doc_get!(learn_loops_list, "/learn/loops", "learning");
+doc_get_param!(learn_loop_detail, "/learn/loops/{id}", "learning", "id");
+doc_get_param!(
+    learn_loop_decisions,
+    "/learn/loops/{id}/decisions",
+    "learning",
+    "id"
+);
+doc_post_value!(learn_loop_canary, "/learn/loops/{id}/canary", "learning");
+doc_post_value!(learn_loop_fault, "/learn/loops/{id}/fault", "learning");
+doc_get!(showcase_m2_loops, "/showcase/m2/loops", "learning");
+doc_get_param!(
+    showcase_m2_loop_ledger,
+    "/showcase/m2/loops/{id}/ledger",
+    "learning",
+    "id"
+);
+doc_post_value!(
+    showcase_m2_loop_break,
+    "/showcase/m2/loops/{id}/break",
+    "learning"
+);
+
+// ── homeostat (backlog 8131) ───────────────────────────────────────────────────────
+doc_get!(learn_homeostasis, "/learn/homeostasis", "learning");
+doc_post_value!(
+    learn_homeostasis_mode,
+    "/learn/homeostasis/mode",
+    "learning"
+);
+doc_post_value!(learn_homeostasis_ack, "/learn/homeostasis/ack", "learning");
+doc_get!(
+    showcase_m1_essential_variables,
+    "/showcase/m1/essential-variables",
+    "learning"
+);
+doc_get!(showcase_m1_episodes, "/showcase/m1/episodes", "learning");
+
+// ── showcase (S10 §5.2): read routes over verified bundles, and their admin ──
+doc_get!(showcase_manifest, "/showcase/manifest", "showcase");
+doc_get!(showcase_bundles, "/showcase/bundles", "showcase");
+doc_get_param!(showcase_bundle, "/showcase/bundles/{id}", "showcase", "id");
+#[utoipa::path(
+    get,
+    path = "/showcase/bundles/{id}/files/{path}",
+    tag = "showcase",
+    params(
+        ("id" = String, Path, description = "Bundle id"),
+        ("path" = String, Path, description = "A file the bundle's SHA256SUMS lists")
+    ),
+    responses(
+        (status = 200, description = "The file, with its SHA-256 as the ETag"),
+        (status = 404, description = "Not a file of the bundle", body = ApiErrorResponse),
+        (status = 409, description = "The bundle was rejected", body = ApiErrorResponse)
+    )
+)]
+fn showcase_bundle_file() {}
+doc_get!(showcase_overview, "/showcase/overview", "showcase");
+doc_get!(
+    showcase_p1_head_to_head,
+    "/showcase/p1/head-to-head",
+    "showcase"
+);
+doc_get!(showcase_m4_audits, "/showcase/m4/audits", "showcase");
+#[utoipa::path(
+    get,
+    path = "/showcase/economics",
+    tag = "showcase",
+    params(
+        ("experiment_id" = String, Query, description = "The experiment whose report to serve")
+    ),
+    responses(
+        (status = 200, description = "Its econ-report.json, byte for byte, with the SHA-256 ETag"),
+        (status = 400, description = "No experiment_id", body = ApiErrorResponse),
+        (status = 401, description = "No showcase session", body = ApiErrorResponse),
+        (status = 404, description = "No verified bundle reports on it", body = ApiErrorResponse),
+        (status = 409, description = "The bundle was rejected", body = ApiErrorResponse)
+    )
+)]
+fn showcase_economics() {}
+doc_post_value!(
+    showcase_reload_bundles,
+    "/showcase/admin/bundles/reload",
+    "showcase"
+);
+doc_post_value!(
+    showcase_unlock_login,
+    "/showcase/admin/login-unlock",
+    "showcase"
+);
+
+// ── event_ingest (gap-c50b85) ──────────────────────────────────────────────────────
+doc_post_value!(ingest_event, "/events/ingest", "event_ingest");
+doc_post_value!(ingest_event_batch, "/events/ingest/batch", "event_ingest");
+
+// ── gateway (gap-c50b85) ───────────────────────────────────────────────────────────
+doc_post_value!(pipeline_batch_flush, "/gateway/batch/flush", "gateway");
+doc_get_param!(
+    pipeline_batch_result,
+    "/gateway/batch/result/{id}",
+    "gateway",
+    "id"
+);
+doc_post_value!(pipeline_batch_submit, "/gateway/batch/submit", "gateway");
+doc_post_value!(pipeline_inference, "/gateway/inference", "gateway");
+doc_get!(gateway_models, "/gateway/models", "gateway");
+doc_get!(gateway_stats, "/gateway/stats", "gateway");
+doc_post_value!(batch_submit, "/inference/batch/submit", "gateway");
+
+// ── heartbeats (gap-c50b85) ────────────────────────────────────────────────────────
+doc_get!(list_heartbeats, "/heartbeats", "heartbeats");
+doc_post_value!(receive_heartbeat, "/heartbeats", "heartbeats");
+
+// ── history (gap-c50b85) ───────────────────────────────────────────────────────────
+doc_get!(list_history, "/history", "history");
+doc_get_param!(get_history_session, "/history/{id}", "history", "id");
+
+// ── learning (gap-c50b85) ──────────────────────────────────────────────────────────
+doc_get!(executor_state, "/executor/state", "learning");
+
+// ── runs (gap-c50b85) ──────────────────────────────────────────────────────────────
+doc_get!(get_dashboard_runs, "/dashboard/runs", "runs");
+
+// ── sse (gap-c50b85) ───────────────────────────────────────────────────────────────
+doc_get!(sse_handler, "/events", "sse");
+
+// ── status (gap-c50b85) ────────────────────────────────────────────────────────────
+doc_get!(gates_history, "/gates/history", "status");
+doc_get!(gate_summary, "/gates/summary", "status");
+doc_get_param!(
+    gate_history,
+    "/gates/{gate_name}/history",
+    "status",
+    "gate_name"
+);
+
+// ── gateway (gap-c50b85) ───────────────────────────────────────────────────────────
+doc_get_param!(batch_status, "/inference/batch/{id}", "gateway", "id");
+doc_post_value!(inference_complete, "/inference/complete", "gateway");
+
+// ── integrations (gap-c50b85) ──────────────────────────────────────────────────────
+doc_get!(list_integrations, "/integrations", "integrations");
+doc_get_param!(
+    get_integration,
+    "/integrations/{name}",
+    "integrations",
+    "name"
+);
+
+// ── learning (gap-c50b85) ──────────────────────────────────────────────────────────
+doc_get!(
+    adaptive_thresholds,
+    "/learn/adaptive-thresholds",
+    "learning"
+);
+doc_get!(cascade, "/learn/cascade", "learning");
+doc_get!(learn_router_snapshot, "/learn/cascade-router", "learning");
+doc_get!(cost_tiers, "/learn/cost-tiers", "learning");
+doc_get!(costs, "/learn/costs", "learning");
+doc_get!(efficiency, "/learn/efficiency", "learning");
+doc_get!(experiments, "/learn/experiments", "learning");
+doc_get!(gate_thresholds, "/learn/gate-thresholds", "learning");
+doc_get!(model_scorecard, "/learn/model-scorecard", "learning");
+doc_get!(playbooks, "/learn/playbooks", "learning");
+doc_get!(provider_outcomes, "/learn/provider-outcomes", "learning");
+doc_get!(reflexes, "/learn/reflexes", "learning");
+doc_get!(retries, "/learn/retries", "learning");
+doc_get!(role_costs, "/learn/role-costs", "learning");
+doc_get!(learning_learn_router_snapshot, "/learn/router", "learning");
+doc_get!(runtime_feedback, "/learn/runtime-feedback", "learning");
+doc_get!(section_outcomes, "/learn/section-outcomes", "learning");
+doc_get!(learning_costs, "/learning/costs", "learning");
+doc_get!(
+    learning_model_scorecard,
+    "/learning/model-scorecard",
+    "learning"
+);
+doc_get!(learning_playbooks, "/learning/playbooks", "learning");
+doc_get!(
+    learning_provider_outcomes,
+    "/learning/provider-outcomes",
+    "learning"
+);
+doc_get!(learning_reflexes, "/learning/reflexes", "learning");
+doc_get!(learning_retries, "/learning/retries", "learning");
+doc_get!(learning_role_costs, "/learning/role-costs", "learning");
+doc_get!(
+    learning_runtime_feedback,
+    "/learning/runtime-feedback",
+    "learning"
+);
+doc_get!(
+    learning_section_outcomes,
+    "/learning/section-outcomes",
+    "learning"
+);
+
+// ── marketplace (gap-c50b85) ───────────────────────────────────────────────────────
+doc_get_param!(
+    show_artifact,
+    "/marketplace/artifacts/{ref}",
+    "marketplace",
+    "ref"
+);
+doc_get!(market_browse, "/marketplace/browse", "marketplace");
+doc_post_value!(fork_artifact, "/marketplace/fork", "marketplace");
+doc_post_value!(publish_artifact, "/marketplace/publish", "marketplace");
+doc_get!(market_search, "/marketplace/search", "marketplace");
+
+// ── status (gap-c50b85) ────────────────────────────────────────────────────────────
+doc_get!(metrics, "/metrics", "status");
+doc_get!(c_factor_metrics, "/metrics/c_factor", "status");
+doc_get!(coverage, "/metrics/coverage", "status");
+doc_get!(engagement, "/metrics/engagement", "status");
+doc_get!(experiments_metric, "/metrics/experiments", "status");
+
+// ── aggregator (gap-c50b85) ────────────────────────────────────────────────────────
+doc_get_param!(
+    prediction_calibration,
+    "/predictions/calibration/{agent_id}",
+    "aggregator",
+    "agent_id"
+);
+
+// ── auth (gap-c50b85) ──────────────────────────────────────────────────────────────
+doc_post_value!(issue_relay_token_handler, "/relay-tokens", "auth");
+doc_delete_param!(
+    revoke_relay_token,
+    "/relay-tokens/{token_id}",
+    "auth",
+    "token_id"
+);
+
+// ── gateway (gap-c50b85) ───────────────────────────────────────────────────────────
+doc_get!(rate_limits, "/rate-limits", "gateway");
+
+// ── heartbeats (gap-c50b85) ────────────────────────────────────────────────────────
+doc_get!(network_stats, "/network/stats", "heartbeats");
+
+// ── openapi (gap-c50b85) ───────────────────────────────────────────────────────────
+doc_get!(openapi_openapi_json, "/openapi.json", "openapi");
+
+// ── plans (gap-c50b85) ─────────────────────────────────────────────────────────────
+doc_get_param!(plan_costs, "/plans/{id}/costs", "plans", "id");
+doc_post_value!(plan_estimate, "/plans/{id}/estimate", "plans");
+doc_get_param!(plan_gates, "/plans/{id}/gates", "plans", "id");
+doc_post_value!(pause_plan, "/plans/{id}/pause", "plans");
+doc_post_value!(resume_plan, "/plans/{id}/resume", "plans");
+doc_get_param!(list_reviews, "/plans/{id}/reviews", "plans", "id");
+doc_get_param!(plan_tasks, "/plans/{id}/tasks", "plans", "id");
+#[utoipa::path(
+    get,
+    path = "/plans/{id}/tasks/{task_id}/diff",
+    tag = "plans",
+    params(
+        ("id" = String, Path, description = "Path parameter"),
+        ("task_id" = String, Path, description = "Path parameter")
+    ),
+    responses(
+        (status = 200, description = "Successful response", body = Value),
+        (status = 400, description = "Bad request", body = ApiErrorResponse),
+        (status = 404, description = "Not found", body = ApiErrorResponse),
+        (status = 500, description = "Internal error", body = ApiErrorResponse)
+    )
+)]
+fn task_diff() {}
+doc_post_value!(submit_review, "/plans/{id}/tasks/{task_id}/review", "plans");
+doc_post_value!(validate_plan, "/plans/{id}/validate", "plans");
+
+// ── platforms (gap-c50b85) ─────────────────────────────────────────────────────────
+doc_get!(list_platforms, "/platforms", "platforms");
+doc_get_param!(get_platform, "/platforms/{id}", "platforms", "id");
+
+// ── rpc_proxy (gap-c50b85) ─────────────────────────────────────────────────────────
+doc_get!(rpc_ws_upgrade, "/rpc", "rpc_proxy");
+doc_post_value!(rpc_post, "/rpc", "rpc_proxy");
+doc_get!(rpc_events_ws_upgrade, "/rpc/events", "rpc_proxy");
+doc_get!(rpc_health, "/rpc/health", "rpc_proxy");
+
+// ── safety (gap-c50b85) ────────────────────────────────────────────────────────────
+doc_get!(incidents_handler, "/safety/incidents", "safety");
+doc_get!(quarantine_handler, "/safety/quarantine", "safety");
+// The provider immune boundary's isolation controls (backlog 1106).
+doc_get!(safety_controls_handler, "/safety/controls", "safety");
+doc_post_value!(
+    release_safety_control_handler,
+    "/safety/controls/{agent_id}/release",
+    "safety"
+);
+
+// ── shared_runs (gap-c50b85) ───────────────────────────────────────────────────────
+// `create_share` carries its own `#[utoipa::path]` (gap-489023).
+doc_get_param!(get_shared_run, "/shared/{token}", "shared_runs", "token");
+
+// ── sse (gap-c50b85) ───────────────────────────────────────────────────────────────
+doc_get!(sse_sse_handler, "/sse", "sse");
+
+// ── status (gap-c50b85) ────────────────────────────────────────────────────────────
+doc_get!(feedback_latency, "/metrics/feedback_latency", "status");
+doc_get!(gate_rate, "/metrics/gate_rate", "status");
+doc_get!(model_efficiency, "/metrics/model_efficiency", "status");
+doc_get!(prometheus_metrics, "/metrics/prometheus", "status");
+doc_get!(success_rate, "/metrics/success_rate", "status");
+doc_get!(velocity, "/metrics/velocity", "status");
+doc_get!(parity_handler, "/parity", "status");
+doc_get!(relay_health, "/relay/health", "status");
+doc_get!(retention_handler, "/retention", "status");
+doc_delete!(prune_signal, "/signals/{id}", "status");
+#[utoipa::path(
+    patch,
+    path = "/signals/{id}/promote",
+    tag = "status",
+    params(("id" = String, Path, description = "Path parameter")),
+    request_body = Value,
+    responses(
+        (status = 200, description = "Successful response", body = Value),
+        (status = 400, description = "Bad request", body = ApiErrorResponse),
+        (status = 404, description = "Not found", body = ApiErrorResponse),
+        (status = 500, description = "Internal error", body = ApiErrorResponse)
+    )
+)]
+fn promote_signal() {}
+doc_get!(statehub_events, "/statehub/events", "status");
+
+// ── aggregator (gap-c50b85) ────────────────────────────────────────────────────────
+doc_get!(ws_upgrade, "/ws", "aggregator");
+
+// ── run (gap-c50b85) ───────────────────────────────────────────────────────────────
+doc_post_value!(handle_surface_event, "/surface-events", "run");
+
+// ── status (gap-c50b85) ────────────────────────────────────────────────────────────
+doc_get!(statehub_snapshot, "/statehub/snapshot", "status");
+doc_get!(disk_usage, "/status/disk", "status");
+doc_get!(truth_map_handler, "/truth_map", "status");
+
+// ── subscriptions (gap-c50b85) ─────────────────────────────────────────────────────
+doc_get!(
+    subscriptions_catalog,
+    "/subscriptions/catalog",
+    "subscriptions"
+);
+
+// ── team (gap-c50b85) ──────────────────────────────────────────────────────────────
+doc_post_value!(invite_member, "/team/invite", "team");
+doc_get!(team_list_invitations, "/team/invites", "team");
+doc_post_value!(team_accept_invitation, "/team/join", "team");
+doc_get!(get_me, "/team/me", "team");
+doc_get!(list_members, "/team/members", "team");
+doc_delete_param!(remove_member, "/team/members/{did}", "team", "did");
+doc_put_value!(update_member, "/team/members/{did}", "team");
+
+// ── terminal (gap-c50b85) ──────────────────────────────────────────────────────────
+doc_get!(list_sessions, "/terminal/sessions", "terminal");
+doc_post_value!(create_session, "/terminal/sessions", "terminal");
+doc_delete!(destroy_session, "/terminal/sessions/{id}", "terminal");
+doc_post_value!(send_input, "/terminal/sessions/{id}/input", "terminal");
+
+// ── vision_loop (gap-c50b85) ───────────────────────────────────────────────────────
+doc_post_value!(start_vision_loop, "/vision-loop", "vision_loop");
+doc_post_value!(
+    cancel_vision_loop,
+    "/vision-loop/{run_id}/cancel",
+    "vision_loop"
+);
+doc_get_param!(
+    vision_loop_status,
+    "/vision-loop/{run_id}/status",
+    "vision_loop",
+    "run_id"
+);
+
+// ── workflows (gap-c50b85) ─────────────────────────────────────────────────────────
+doc_get!(workflow_sse_handler, "/workflow/events", "workflows");
+doc_get!(workflow_ws_upgrade, "/workflow/ws", "workflows");
+doc_get!(list_workflows, "/workflows", "workflows");
+doc_get!(get_latest_workflow, "/workflows/latest", "workflows");
+doc_get!(
+    stream_latest_workflow,
+    "/workflows/latest/stream",
+    "workflows"
+);
+doc_get_param!(get_workflow, "/workflows/{id}", "workflows", "id");
+doc_get_param!(stream_workflow, "/workflows/{id}/stream", "workflows", "id");
+doc_get_param!(
+    get_workflow_tasks,
+    "/workflows/{id}/tasks",
+    "workflows",
+    "id"
+);
+
+// ── workspaces (gap-c50b85) ────────────────────────────────────────────────────────
+doc_get!(list_workspaces, "/workspaces", "workspaces");
+doc_post_value!(create_workspace, "/workspaces", "workspaces");
+doc_get!(get_default_workspace, "/workspaces/default", "workspaces");
+doc_delete!(delete_workspace, "/workspaces/{id}", "workspaces");
+doc_get_param!(get_workspace_state, "/workspaces/{id}", "workspaces", "id");
 
 #[derive(Debug, Serialize, Deserialize, ToSchema)]
 pub struct ApiErrorResponse {
@@ -1328,11 +2124,6 @@ pub struct SubscriptionUpdateRequest {
 }
 
 #[derive(Debug, Serialize, Deserialize, ToSchema)]
-pub struct PrdIdeaRequest {
-    pub idea: String,
-}
-
-#[derive(Debug, Serialize, Deserialize, ToSchema)]
 pub struct DeploymentCallbackRequest {
     #[serde(flatten)]
     pub value: Value,
@@ -1354,6 +2145,8 @@ pub struct SearchQueryRequest {
 mod tests {
     use super::*;
 
+    use std::collections::BTreeSet;
+    use std::path::{Path, PathBuf};
     use std::sync::Arc;
 
     use axum::body::{Body, to_bytes};
@@ -1418,6 +2211,267 @@ mod tests {
         }
         assert!(payload["components"]["schemas"]["AgentRuntimeObservation"].is_object());
         assert!(payload["components"]["schemas"]["AgentObservationCommit"].is_object());
-        assert!(payload["components"]["schemas"]["SubscriptionRelayStatus"].is_object());
+        assert_eq!(
+            payload["components"]["schemas"]["SubscriptionRelayStatus"].is_object(),
+            cfg!(feature = "relay")
+        );
+    }
+
+    /// Registered routes the document does not describe yet (gap-c50b85).
+    const UNDOCUMENTED_ROUTES: &str = include_str!("openapi_undocumented.txt");
+
+    /// Methods a route registration can name. `any(...)` proxies are left out:
+    /// they have no single method to document.
+    const ROUTE_METHODS: [&str; 8] = [
+        "get", "post", "put", "patch", "delete", "head", "options", "trace",
+    ];
+
+    /// Routers nested under a prefix inside `/api` (`routes/mod.rs`).
+    const NESTED_ROUTERS: [(&str, &str, &str); 3] = [
+        ("routes/providers.rs", "router", "/providers"),
+        ("routes/providers.rs", "models_router", "/models"),
+        ("routes/providers.rs", "routing_router", "/routing"),
+    ];
+
+    /// Routers `routes::build_router` mounts at the server root, not under
+    /// `/api`: their paths outside `/api/` are not part of this document.
+    const ROOT_ROUTERS: [(&str, &str); 8] = [
+        ("routes/ws.rs", "routes"),
+        ("routes/relay_proxy.rs", "routes"),
+        ("routes/mcp.rs", "routes"),
+        ("terminal.rs", "routes"),
+        ("routes/shared_runs.rs", "public_routes"),
+        ("routes/webhooks.rs", "public_routes"),
+        ("routes/triggers.rs", "public_routes"),
+        ("routes/auth_session.rs", "routes"),
+    ];
+
+    /// Probes `routes::build_router` registers on the root router itself.
+    const ROOT_PATHS: [&str; 3] = ["/health", "/ready", "/metrics"];
+
+    #[test]
+    fn openapi_documents_every_registered_route() {
+        let registered = registered_routes();
+        let documented = documented_routes();
+        let listed: BTreeSet<&str> = UNDOCUMENTED_ROUTES
+            .lines()
+            .map(str::trim)
+            .filter(|line| !line.is_empty() && !line.starts_with('#'))
+            .collect();
+
+        let missing: Vec<&str> = registered
+            .iter()
+            .map(String::as_str)
+            .filter(|route| !documented.contains(*route) && !listed.contains(route))
+            .collect();
+        assert!(
+            missing.is_empty(),
+            "registered routes missing from the OpenAPI document; document them in openapi.rs \
+             (or, failing that, list them in openapi_undocumented.txt): {missing:#?}"
+        );
+
+        let stale: Vec<&str> = listed
+            .iter()
+            .copied()
+            .filter(|route| documented.contains(*route) || !registered.contains(*route))
+            .collect();
+        assert!(
+            stale.is_empty(),
+            "openapi_undocumented.txt lists routes that are documented or no longer registered; \
+             delete these lines: {stale:#?}"
+        );
+    }
+
+    /// `METHOD /path` for every operation in the document, parameters written `{}`.
+    fn documented_routes() -> BTreeSet<String> {
+        let doc = serde_json::to_value(ApiDoc::openapi()).expect("serialize OpenAPI document");
+        let mut routes = BTreeSet::new();
+        for (path, item) in doc["paths"].as_object().expect("paths object") {
+            for method in ROUTE_METHODS {
+                if item.get(method).is_some() {
+                    let method = method.to_ascii_uppercase();
+                    routes.insert(format!("{method} {}", normalize_params(path)));
+                }
+            }
+        }
+        routes
+    }
+
+    /// `METHOD /path` for every `.route("<literal>", <methods>)` registration in
+    /// this crate's sources outside test modules, as served under `/api`, with
+    /// parameters written `{}`. Root-mounted `/api/...` literals lose their
+    /// prefix; other root-mounted routes are left out.
+    fn registered_routes() -> BTreeSet<String> {
+        let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        let mut files = Vec::new();
+        collect_rust_files(&src, &mut files);
+        let mut routes = BTreeSet::new();
+        for file in files {
+            if file.file_name().is_some_and(|name| name == "tests.rs") {
+                continue;
+            }
+            let rel = file.strip_prefix(&src).expect("file under src");
+            let rel = rel.to_string_lossy().replace('\\', "/");
+            let source = std::fs::read_to_string(&file).expect("read source file");
+            let text = production_part(&source);
+            let mut from = 0;
+            while let Some(found) = text[from..].find(".route(") {
+                let open = from + found + ".route".len();
+                from = open;
+                let Some(close) = matching_paren(text, open) else {
+                    continue;
+                };
+                let Some(literal) = text[open + 1..close].trim_start().strip_prefix('"') else {
+                    continue;
+                };
+                let Some(end) = literal.find('"') else {
+                    continue;
+                };
+                let Some(methods) = literal[end + 1..].trim_start().strip_prefix(',') else {
+                    continue;
+                };
+                let path = &literal[..end];
+                let router_fn = enclosing_fn(&text[..open]);
+                let nest = NESTED_ROUTERS
+                    .iter()
+                    .find(|(nest_file, nest_fn, _)| *nest_file == rel && *nest_fn == router_fn);
+                let root_router = ROOT_ROUTERS
+                    .iter()
+                    .any(|(root_file, root_fn)| *root_file == rel && *root_fn == router_fn);
+                let root_probe = rel == "routes/mod.rs" && ROOT_PATHS.contains(&path);
+                let api_path = match (path.strip_prefix("/api/"), nest) {
+                    (Some(rest), _) => format!("/{rest}"),
+                    (None, _) if root_router || root_probe => continue,
+                    (None, Some((_, _, prefix))) if path == "/" => (*prefix).to_string(),
+                    (None, Some((_, _, prefix))) => format!("{prefix}{path}"),
+                    (None, None) => path.to_string(),
+                };
+                for method in method_names(methods) {
+                    routes.insert(format!("{method} {}", normalize_params(&api_path)));
+                }
+            }
+        }
+        routes
+    }
+
+    fn collect_rust_files(dir: &Path, files: &mut Vec<PathBuf>) {
+        for entry in std::fs::read_dir(dir).expect("read source dir") {
+            let path = entry.expect("source dir entry").path();
+            if path.is_dir() {
+                collect_rust_files(&path, files);
+            } else if path.extension().is_some_and(|ext| ext == "rs") {
+                files.push(path);
+            }
+        }
+    }
+
+    /// The source before its first `#[cfg(test)]` module.
+    fn production_part(text: &str) -> &str {
+        let mut from = 0;
+        while let Some(found) = text[from..].find("#[cfg(test)]") {
+            let at = from + found;
+            let rest = text[at + "#[cfg(test)]".len()..].trim_start();
+            let rest = rest
+                .strip_prefix("pub(crate)")
+                .or_else(|| rest.strip_prefix("pub"))
+                .map_or(rest, str::trim_start);
+            let is_module = rest
+                .strip_prefix("mod")
+                .is_some_and(|after| after.starts_with(char::is_whitespace));
+            if is_module {
+                return &text[..at];
+            }
+            from = at + 1;
+        }
+        text
+    }
+
+    /// Byte index of the bracket closing the one at `open`, skipping string literals.
+    fn matching_paren(text: &str, open: usize) -> Option<usize> {
+        let bytes = text.as_bytes();
+        let mut depth = 0usize;
+        let mut in_string = false;
+        let mut i = open;
+        while i < bytes.len() {
+            match bytes[i] {
+                b'\\' if in_string => i += 1,
+                b'"' => in_string = !in_string,
+                b'(' | b'[' | b'{' if !in_string => depth += 1,
+                b')' | b']' | b'}' if !in_string => {
+                    depth -= 1;
+                    if depth == 0 {
+                        return Some(i);
+                    }
+                }
+                _ => {}
+            }
+            i += 1;
+        }
+        None
+    }
+
+    /// Name of the last `fn <name>` in `text`.
+    fn enclosing_fn(text: &str) -> &str {
+        let is_ident = |c: char| c.is_alphanumeric() || c == '_';
+        let mut name = "";
+        let mut from = 0;
+        while let Some(found) = text[from..].find("fn ") {
+            let at = from + found;
+            from = at + "fn ".len();
+            if text[..at].chars().next_back().is_some_and(is_ident) {
+                continue;
+            }
+            let rest = text[from..].trim_start();
+            let len = rest.find(|c: char| !is_ident(c)).unwrap_or(rest.len());
+            if len > 0 {
+                name = &rest[..len];
+            }
+        }
+        name
+    }
+
+    /// Upper-cased HTTP methods named by a method router such as
+    /// `get(list).post(create)`.
+    fn method_names(expr: &str) -> Vec<String> {
+        let mut methods = Vec::new();
+        let mut rest = expr;
+        loop {
+            rest = rest.trim_start_matches(|c: char| c.is_whitespace() || c == '.' || c == ',');
+            let len = rest
+                .find(|c: char| !(c.is_alphanumeric() || c == '_' || c == ':'))
+                .unwrap_or(rest.len());
+            let callee = &rest[..len];
+            let open = rest.len() - rest[len..].trim_start().len();
+            if callee.is_empty() || !rest[open..].starts_with('(') {
+                break;
+            }
+            let Some(close) = matching_paren(rest, open) else {
+                break;
+            };
+            let name = callee.rsplit("::").next().unwrap_or(callee);
+            if ROUTE_METHODS.contains(&name) {
+                methods.push(name.to_ascii_uppercase());
+            }
+            rest = &rest[close + 1..];
+        }
+        methods
+    }
+
+    /// `path` with every `{param}` written `{}`.
+    fn normalize_params(path: &str) -> String {
+        let mut out = String::with_capacity(path.len());
+        let mut in_param = false;
+        for c in path.chars() {
+            match c {
+                '{' => {
+                    in_param = true;
+                    out.push_str("{}");
+                }
+                '}' => in_param = false,
+                _ if in_param => {}
+                _ => out.push(c),
+            }
+        }
+        out
     }
 }

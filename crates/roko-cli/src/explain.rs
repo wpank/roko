@@ -179,11 +179,12 @@ pub static TOPICS: &[TopicEntry] = &[
         summary: "Plans are directed acyclic graphs of tasks that roko executes to \
                   accomplish complex goals. Each task has dependencies, an agent role, \
                   and must pass gates to complete.",
-        detail: "Plans are generated from PRDs via `roko prd plan <slug>`. The Graph \
+        detail: "Plans are written from a prompt by `roko run --plan \"<prompt>\"` or \
+                 `roko plan generate \"<prompt>\"`, or by hand. The Graph \
                  engine converts plans into DAGs of cells and executes tasks in parallel \
                  where dependencies allow. Each task is dispatched to an agent with a \
                  role (implementer, reviewer, architect), runs through gates, and \
-                 persists results. Use `roko plan run <dir>` to execute, `--resume-plan` \
+                 persists results. Use `roko run plans/<slug>` to execute, `--resume-plan` \
                  to continue from a checkpoint.",
         internals: "Plan execution uses the Graph engine in `crates/roko-graph/` with \
                     host services in `crates/roko-cli/src/graph_execution/`. DAG \
@@ -265,8 +266,9 @@ pub static TOPICS: &[TopicEntry] = &[
                     `crates/roko-graph/src/cells/`. `TaskCell`, `PlanGateCell`, \
                     `PlanComposeCell`, `TaskContextCell`, and stub variants are the \
                     canonical set. The `GraphTopology` struct owns the compiled DAG. \
-                    Cell execution is driven by `WorkflowGraphController` in \
-                    `crates/roko-cli/src/graph_execution/`. Cell outputs are typed \
+                    The Graph engine (`crates/roko-graph/src/engine.rs`) drives cell \
+                    execution; `run_graph_plan` in `crates/roko-cli/src/graph_execution/` \
+                    runs plans on it. Cell outputs are typed \
                     `CellOutput` variants that gate downstream scheduling.",
     },
     TopicEntry {

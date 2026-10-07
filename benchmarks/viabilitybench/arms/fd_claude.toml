@@ -24,6 +24,9 @@ program = "claude"                    # resolved on the driver's PATH
 effort = "high"                       # explicit: Claude Code's default effort differs from the API's (high)
 credentials = "keychain"              # keychain | credentials_file: how the fresh config directory signs in
 cache_write_ttl = "1h"                # S09 §4.1: subscription turns write the 1-hour cache
+# egress_allow keeps its default, api.anthropic.com:443. The live probe (gap-154f93, 2026-10-02, Claude Code 2.1.282)
+# signed in and answered through that host alone; its log intake (http-intake.logs.us5.datadoghq.com:443) was refused
+# and not needed.
 
 [providers.anthropic]                 # what `vb run` admits as a network provider; claude signs in by itself
 base_url = "https://api.anthropic.com"

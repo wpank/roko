@@ -365,7 +365,6 @@ fn modal_key_hints(modal: &ModalState) -> String {
         ModalState::TaskPicker { .. } => &["Esc:close", "j/k:nav", "Enter:select"],
         ModalState::WaveOverview { .. } => &["Esc:close", "j/k:scroll", "w:toggle"],
         ModalState::QueueOverview { .. } => &["Esc:close", "j/k:scroll", "q:toggle"],
-        ModalState::AgentPool { .. } => &["Esc:close", "j/k:scroll"],
         ModalState::BatchReview { .. } => &["a:approve", "r:reject", "s:skip", "Esc:close"],
         ModalState::NotificationHistory { .. } => {
             &["Esc:close", "j/k:scroll", "1-4:filter", "Enter:jump"]
@@ -478,7 +477,7 @@ fn context_key_hints(state: &TuiState, has_failures: bool) -> String {
             hints.push("j/k:scroll");
             hints.push("s:sort-cost");
         }
-        Tab::Marketplace | Tab::Atelier | Tab::Learning => {
+        Tab::Marketplace | Tab::Learning => {
             hints.push("j/k:scroll");
             hints.push("Enter:expand");
         }

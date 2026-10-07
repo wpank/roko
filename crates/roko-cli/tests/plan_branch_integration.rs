@@ -10,6 +10,9 @@
 //! - C4: two tasks that each pass their own verify but break the build
 //!   together fail the plan on its `[meta] verify`, and `roko plan status`
 //!   names the failed step.
+//!
+//! A plain `roko plan run`, with no flag and no `[runner]` setting, runs the
+//! same way, since per-task worktrees are the default (gap-4ec59f).
 
 mod common;
 
@@ -46,7 +49,8 @@ fn git(dir: &Path, args: &[&str]) -> String {
 fn seed_repo(repo: &Path, provider: &Path, files: &[(&str, &str)]) {
     let config = format!(
         "[agent]\ndefault_model = \"fake\"\n\n[providers.fake]\nkind = \"claude_cli\"\n\
-         command = {:?}\n\n[models.fake]\nprovider = \"fake\"\nslug = \"claude-sonnet-4-6\"\n",
+         command = {:?}\n\n[models.fake]\nprovider = \"fake\"\nslug = \"claude-sonnet-4-6\"\n\n\
+         [spec_quality]\nred_on_base = false\n",
         provider.display().to_string()
     );
     for (path, contents) in [("roko.toml", config.as_str())]
@@ -374,4 +378,163 @@ command = "grep -q 'pub fn quad' b/src/lib.rs"
     }
     assert_ne!(status["status"], "complete", "plan status: {status}");
     assert_eq!(operator_state(&repo), before);
+}
+
+/// gap-4ec59f: per-task worktrees are the default. A plain `roko plan run` in
+/// a git checkout, with no flag and no `[runner]` setting, runs a dependent
+/// task on its predecessor's work and delivers the plan into the run's batch
+/// branch. The operator's checkout never changes, and the run ends with the
+/// command that takes the work, which `roko plan status` repeats.
+#[test]
+fn a_plain_plan_run_isolates_its_tasks_by_default() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let repo = temp.path().join("repo");
+    fs::create_dir_all(&repo).expect("repo dir");
+    let script = Script::new()
+        .task("T1", [Turn::reply().write("one.txt", "one\n")])
+        .task("T2", [Turn::reply().write("two.txt", "two\n")]);
+    let provider = ScriptedProvider::install(&temp.path().join("provider"), &script).command();
+    let task = |id: &str, name: &str, extra: &str, check: &str| {
+        format!(
+            "\n[[task]]\nid = \"{id}\"\ntitle = \"Write {name}.txt\"\n\
+             description = \"Write {name}.txt.\"\nrole = \"implementer\"\nstatus = \"ready\"\n\
+             tier = \"focused\"\nfiles = [\"{name}.txt\"]\n{extra}\n\
+             [[task.verify]]\nphase = \"structural\"\ncommand = \"{check}\"\n"
+        )
+    };
+    // T2's check passes only on T1's work.
+    let tasks = format!(
+        "[meta]\nplan = \"isolated\"\nmax_parallel = 1\nskip_enrichment = true\n{}{}",
+        task("T1", "one", "", "test -f one.txt"),
+        task(
+            "T2",
+            "two",
+            "depends_on = [\"T1\"]\n",
+            "test -f one.txt && test -f two.txt",
+        ),
+    );
+    seed_repo(
+        &repo,
+        &provider,
+        &[
+            (".gitignore", ".roko/\n"),
+            ("plans/isolated/tasks.toml", &tasks),
+        ],
+    );
+    let before = operator_state(&repo);
+
+    let run = StdCommand::new(cargo_bin("roko"))
+        .current_dir(&repo)
+        .args(["plan", "run", "plans/isolated", "--no-tui", "--workdir"])
+        .arg(&repo)
+        .env("CARGO_TARGET_DIR", temp.path().join("target"))
+        .env_remove("ROKO_CONFIG")
+        .output()
+        .expect("run roko");
+    let stdout = String::from_utf8_lossy(&run.stdout).into_owned();
+    let log = format!("{stdout}\n{}", String::from_utf8_lossy(&run.stderr));
+    assert!(run.status.success(), "{log}");
+
+    // The plan is on the run's one batch branch, and the checkout is as it was.
+    let batch = git(
+        &repo,
+        &[
+            "for-each-ref",
+            "--format=%(refname:short)",
+            "refs/heads/roko/batch/",
+        ],
+    );
+    assert_eq!(batch.lines().count(), 1, "one batch branch: {batch}\n{log}");
+    let files = git(&repo, &["ls-tree", "--name-only", &batch]);
+    assert!(
+        files.contains("one.txt") && files.contains("two.txt"),
+        "{files}\n{log}"
+    );
+    assert_eq!(operator_state(&repo), before, "{log}");
+    assert!(!repo.join("one.txt").exists(), "{log}");
+
+    // The run and `roko plan status` both say how to take the work.
+    let command = format!("git merge --ff-only {batch}");
+    assert!(stdout.contains(&command), "{log}");
+    let status = Command::new(cargo_bin("roko"))
+        .current_dir(&repo)
+        .args(["--json", "plan", "status", "plans/isolated", "--workdir"])
+        .arg(&repo)
+        .env_remove("ROKO_CONFIG")
+        .output()
+        .expect("plan status");
+    let status: Value = serde_json::from_slice(&status.stdout).expect("plan status JSON");
+    assert_eq!(status["delivery"]["branch"], batch.as_str(), "{status}");
+    assert_eq!(
+        status["delivery"]["merge_command"],
+        command.as_str(),
+        "{status}"
+    );
+
+    // Taking it brings both tasks' work into the checkout.
+    git(&repo, &["merge", "--ff-only", &batch]);
+    for (file, text) in [("one.txt", "one\n"), ("two.txt", "two\n")] {
+        assert_eq!(fs::read_to_string(repo.join(file)).expect("read"), text);
+    }
+}
+
+/// backlog 3112: `roko run "<prompt>"` follows `[runner] worktree_per_task`.
+/// With it on, the prompt's one task runs in its own worktree: the operator's
+/// checkout stays as it was, and the run's batch branch holds the edit. With
+/// it off, the edit lands in the checkout and no batch branch is made.
+#[test]
+fn roko_run_follows_worktree_per_task() {
+    for isolated in [true, false] {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let repo = temp.path().join("repo");
+        fs::create_dir_all(&repo).expect("repo dir");
+        let script = Script::new().task("T1", [Turn::reply().write("edit.txt", "edit\n")]);
+        let provider = ScriptedProvider::install(&temp.path().join("provider"), &script).command();
+        seed_repo(&repo, &provider, &[(".gitignore", ".roko/\n")]);
+        // The run's one task is checked by the workspace's gate.
+        let mut config = fs::read_to_string(repo.join("roko.toml")).expect("read roko.toml");
+        config.push_str(&format!(
+            "\n[runner]\nworktree_per_task = {isolated}\n\n\
+             [[gates.rungs]]\nname = \"edit\"\ncommand = \"test -f edit.txt\"\n"
+        ));
+        fs::write(repo.join("roko.toml"), config).expect("write roko.toml");
+        git(&repo, &["commit", "--quiet", "-am", "settings"]);
+        let before = operator_state(&repo);
+
+        let run = StdCommand::new(cargo_bin("roko"))
+            .current_dir(&repo)
+            .args(["run", "--complexity", "simple", "Write edit.txt"])
+            .arg("--workdir")
+            .arg(&repo)
+            .env("CARGO_TARGET_DIR", temp.path().join("target"))
+            .env_remove("ROKO_CONFIG")
+            .output()
+            .expect("run roko");
+        let log = format!(
+            "isolated = {isolated}\n{}\n{}",
+            String::from_utf8_lossy(&run.stdout),
+            String::from_utf8_lossy(&run.stderr)
+        );
+        assert!(run.status.success(), "{log}");
+
+        let batch = git(
+            &repo,
+            &[
+                "for-each-ref",
+                "--format=%(refname:short)",
+                "refs/heads/roko/batch/",
+            ],
+        );
+        if isolated {
+            assert_eq!(batch.lines().count(), 1, "one batch branch: {batch}\n{log}");
+            let files = git(&repo, &["ls-tree", "--name-only", &batch]);
+            assert!(files.contains("edit.txt"), "{files}\n{log}");
+            assert_eq!(operator_state(&repo), before, "{log}");
+            assert!(!repo.join("edit.txt").exists(), "{log}");
+        } else {
+            assert!(batch.is_empty(), "no batch branch: {batch}\n{log}");
+            let edit = fs::read_to_string(repo.join("edit.txt")).expect("the edit");
+            assert_eq!(edit, "edit\n", "{log}");
+        }
+    }
 }

@@ -80,11 +80,11 @@ fn help_lines(theme: &Theme) -> Vec<Line<'static>> {
         theme.muted(),
     )));
     lines.push(Line::from(Span::styled(
-        "                F9 Atelier    F10 Learning  -  Providers",
+        "                F9 Learning   F10 Providers",
         theme.muted(),
     )));
     lines.push(kb(
-        "1-9 / 0 / -",
+        "1-9 / 0",
         "switch tabs (except Agents/Logs/Plans)",
         theme,
     ));
@@ -100,7 +100,7 @@ fn help_lines(theme: &Theme) -> Vec<Line<'static>> {
     lines.push(kb("Ctrl-t", "agent topology panel", theme));
     lines.push(kb("Ctrl-e", "toggle post-processing effects", theme));
     lines.push(kb("Ctrl-x", "force-advance (confirm)", theme));
-    lines.push(kb("Ctrl-d", "reset selected plan (confirm)", theme));
+    lines.push(kb("Ctrl-d", "cancel selected plan (confirm)", theme));
     lines.push(kb("Ctrl-g", "git reconcile (confirm)", theme));
     lines.push(Line::from(""));
 
@@ -115,7 +115,7 @@ fn help_lines(theme: &Theme) -> Vec<Line<'static>> {
     lines.push(kb("Esc", "close plan detail", theme));
     lines.push(kb("w", "wave overview modal", theme));
     lines.push(kb("p", "pause/resume pipeline (wired to executor)", theme));
-    lines.push(kb("i", "inject directive to agent", theme));
+    lines.push(kb("i", "inject directive (not available yet)", theme));
     lines.push(kb("y", "approve pending command", theme));
     lines.push(kb("`", "cycle agent role tabs", theme));
     lines.push(sub_label("Right-panel sub-tab shortcuts:", theme));
@@ -158,7 +158,12 @@ fn help_lines(theme: &Theme) -> Vec<Line<'static>> {
     lines.push(kb("c", "re-verify gates only", theme));
     lines.push(kb("V", "re-verify plan", theme));
     lines.push(kb("F", "force-advance past current task", theme));
-    lines.push(kb("R", "restart plan (confirm)", theme));
+    lines.push(kb(
+        "R",
+        "reset a failed plan: run it again (confirm)",
+        theme,
+    ));
+    lines.push(kb("C", "cancel plan (confirm)", theme));
     lines.push(kb("m", "merge plan branch (confirm)", theme));
     lines.push(kb("M", "merge all completed (confirm)", theme));
     lines.push(Line::from(""));
@@ -178,8 +183,8 @@ fn help_lines(theme: &Theme) -> Vec<Line<'static>> {
     lines.push(kb("a", "approve pending command", theme));
     lines.push(kb("A", "approve all pending", theme));
     lines.push(kb("x", "reject pending command", theme));
-    lines.push(kb("X", "cancel selected agent's task (skip)", theme));
-    lines.push(kb("i", "inject directive to agent", theme));
+    lines.push(kb("X", "stop selected agent's task (skip)", theme));
+    lines.push(kb("i", "inject directive (not available yet)", theme));
     lines.push(kb("g", "toggle agent pane grouping", theme));
     lines.push(kb("t", "toggle agent topology", theme));
     lines.push(sub_label("Agent output search:", theme));
@@ -249,25 +254,16 @@ fn help_lines(theme: &Theme) -> Vec<Line<'static>> {
     lines.push(kb("Ctrl-s", "submit job form", theme));
     lines.push(Line::from(""));
 
-    // ── Atelier (F9) ─────────────────────────────────────────────────
-    lines.extend(section("Atelier (F9)", theme));
-    lines.push(kb("Tab", "cycle focus: PRDs ↔ Detail", theme));
-    lines.push(kb("j/k Up/Dn", "scroll focused panel", theme));
-    lines.push(kb("Home/End", "jump to top/bottom", theme));
-    lines.push(kb("Enter", "expand artifact detail", theme));
-    lines.push(kb("r", "refresh", theme));
-    lines.push(Line::from(""));
-
-    // ── Learning (F10) ───────────────────────────────────────────────
-    lines.extend(section("Learning (F10)", theme));
+    // ── Learning (F9) ────────────────────────────────────────────────
+    lines.extend(section("Learning (F9)", theme));
     lines.push(kb("Tab", "cycle focus: Metrics ↔ Detail", theme));
     lines.push(kb("j/k Up/Dn", "scroll focused panel", theme));
     lines.push(kb("Home/End", "jump to top/bottom", theme));
     lines.push(kb("r", "refresh", theme));
     lines.push(Line::from(""));
 
-    // ── Providers (-) ─────────────────────────────────────────────────
-    lines.extend(section("Providers (- key)", theme));
+    // ── Providers (F10) ──────────────────────────────────────────────
+    lines.extend(section("Providers (F10)", theme));
     lines.push(kb("Tab", "cycle focus: List ↔ Detail", theme));
     lines.push(kb("j/k Up/Dn", "scroll focused panel", theme));
     lines.push(kb("Home/End", "jump to top/bottom", theme));

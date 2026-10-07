@@ -325,6 +325,17 @@ pub struct ProviderConfig {
     /// (auto-approve) for backward compatibility.
     #[serde(default, skip_serializing_if = "is_false")]
     pub require_confirmation: bool,
+    /// Whether streaming requests ask an OpenAI-compatible server to report
+    /// usage (`stream_options.include_usage`). Unset means they do; set
+    /// `false` for a server that rejects the field (backlog 2101).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stream_usage: Option<bool>,
+    /// How the account behind a CLI provider pays for its calls (decision
+    /// 2113), which an attempt's `cost.billed_usd` records: 0 on a
+    /// `"subscription"`, the CLI's own cost figure when `"metered"`. Unset
+    /// leaves it unknown.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub billing: Option<ProviderBilling>,
 }
 
 impl Default for ProviderConfig {
@@ -342,8 +353,23 @@ impl Default for ProviderConfig {
             max_concurrent: None,
             limits: None,
             require_confirmation: false,
+            stream_usage: None,
+            billing: None,
         }
     }
+}
+
+/// How the account behind a CLI provider pays for its calls:
+/// `[providers.<name>] billing` (decision 2113).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ProviderBilling {
+    /// A subscription login: a call adds nothing to the bill, so an
+    /// attempt's `billed_usd` is 0.
+    Subscription,
+    /// A metered API key: an attempt's `billed_usd` is the CLI's own cost
+    /// figure.
+    Metered,
 }
 
 /// Per-provider request and token budget enforced by the shared rate limiter.
@@ -671,6 +697,16 @@ pub struct ModelProfile {
     /// Required for newer OpenAI models (o1, o3, gpt-4o, gpt-5.x, etc.).
     #[serde(default, skip_serializing_if = "is_false")]
     pub use_max_completion_tokens: bool,
+    /// Sampling temperature sent with each request to this model by the
+    /// providers that take one (the OpenAI-compatible ones). `None` leaves
+    /// the provider's default (gap-13bbbd).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub temperature: Option<f64>,
+    /// Sampling seed sent with each request to this model by the providers
+    /// that take one (the OpenAI-compatible ones). `None` sends none
+    /// (gap-13bbbd).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub seed: Option<u64>,
 }
 
 impl ModelProfile {
@@ -826,6 +862,25 @@ mod model_profile_tests {
 
         let encoded = toml::to_string(&limits).expect("serialize limits");
         assert!(!encoded.contains("network"));
+    }
+
+    /// decision 2113: `billing` says how a CLI provider's account pays, and
+    /// a provider without it serializes none.
+    #[test]
+    fn provider_billing_parses_from_toml() {
+        let parse = |billing: &str| {
+            toml::from_str::<ProviderConfig>(&format!("kind = \"claude_cli\"\n{billing}"))
+        };
+        let subscription = parse("billing = \"subscription\"").expect("a subscription provider");
+        assert_eq!(subscription.billing, Some(ProviderBilling::Subscription));
+        let metered = parse("billing = \"metered\"").expect("a metered provider");
+        assert_eq!(metered.billing, Some(ProviderBilling::Metered));
+        assert!(parse("billing = \"free\"").is_err());
+
+        let unset = parse("").expect("a provider without billing");
+        assert_eq!(unset.billing, None);
+        let encoded = toml::to_string(&unset).expect("serialize the provider");
+        assert!(!encoded.contains("billing"), "{encoded}");
     }
 
     #[test]

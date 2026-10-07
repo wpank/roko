@@ -1,7 +1,7 @@
 # 32 -- Deployment
 
 > **Implementation status (2026-09):** PARTIAL -- Native builds work on all target
-> triples. `roko serve` (~376 canonical routes on :6677) is wired. `roko deploy
+> triples. `roko serve` (on :6677; route counts in `tools/http_route_inventory.snapshot.json`) is wired. `roko deploy
 > railway` exists. Docker images are designed but not built. Fly.io, systemd, and
 > edge deployment remain specified but unimplemented.
 
@@ -64,7 +64,7 @@ graph LR
 | Crate | Path | Role |
 |---|---|---|
 | `roko-cli` | `crates/roko-cli/` | CLI entry point, daemon mode, worker mode, deploy commands |
-| `roko-serve` | `crates/roko-serve/` | HTTP control plane (~376 canonical routes on :6677), deploy backends |
+| `roko-serve` | `crates/roko-serve/` | HTTP control plane on :6677 (route counts in `tools/http_route_inventory.snapshot.json`), deploy backends |
 | `roko-agent-server` | `crates/roko-agent-server/` | Per-agent HTTP sidecar (14 routes) |
 
 ---
@@ -376,7 +376,7 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/*
 
 RUN useradd -m -s /bin/bash -d /data roko \
-    && mkdir -p /data/.roko/state /data/.roko/prd \
+    && mkdir -p /data/.roko/state \
     && chown -R roko:roko /data
 
 COPY target/x86_64-unknown-linux-musl/release/roko-cli /usr/local/bin/roko
@@ -472,7 +472,7 @@ background service that:
 
 - Watches repositories for changes (filesystem events, git push
   webhooks, cron schedules)
-- Triggers plan execution automatically when PRDs change or on schedule
+- Triggers plan execution automatically when plans change or on schedule
 - Maintains state across reboots (launchd restarts it automatically)
 - Accepts commands via a Unix domain socket IPC interface
 - Streams events to connected clients (TUI, web dashboard, CI hooks)
@@ -675,7 +675,7 @@ triggers plan execution automatically. Subscriptions are defined in
 | Trigger | When it fires | Use case |
 |---|---|---|
 | **Cron** | Time schedule (cron expression) | Periodic builds, nightly consolidation |
-| **Watch** | File changes (fsnotify) | Reactive to PRD edits, code changes |
+| **Watch** | File changes (fsnotify) | Reactive to plan edits, code changes |
 | **Webhook** | HTTP POST arrives | GitHub push events, CI triggers |
 
 ### Configuration format
@@ -692,13 +692,13 @@ repo = "/Users/will/dev/nunchi/roko/roko"
 [subscriptions.cron]
 schedule = "*/30 * * * *"
 plan_dirs = ["plans/"]
-changed_paths = [".roko/prd/**/*.md", "plans/**/*.toml"]
+changed_paths = ["plans/**/*.toml"]
 
 [[subscriptions]]
 repo = "/Users/will/dev/project-b"
 
 [subscriptions.watch]
-paths = [".roko/prd/"]
+paths = ["plans/"]
 debounce_ms = 5000
 
 [[subscriptions]]
@@ -1054,7 +1054,7 @@ Credentials:
 ## 13. Remote Orchestrator (roko-serve)
 
 `roko-serve` runs as a long-lived HTTP service, exposing the full Roko
-API over HTTP. ~376 canonical routes (~421 including aliases) on :6677.
+API over HTTP on :6677; `tools/http_route_inventory.snapshot.json` counts its routes.
 
 **Source:** `crates/roko-serve/src/`
 
@@ -1098,7 +1098,7 @@ resume.
 ### Multi-project management
 
 One roko-serve instance manages multiple projects, each with its own
-git repo, PRDs, plans, config, run history, and Signal/episode logs.
+git repo, plans, config, run history, and Signal/episode logs.
 Projects are isolated.
 
 ### Cost tracking
@@ -1364,7 +1364,7 @@ Isolation without separate code paths per tenant.
 | Feature | Status | Notes |
 |---|---|---|
 | Native build (x86_64, aarch64) | **Working** | 6 target triples, CI cross-compile |
-| roko serve (~376 routes on :6677) | **Wired** | Full HTTP control plane |
+| roko serve (on :6677) | **Wired** | Full HTTP control plane |
 | roko deploy railway/fly/docker | **Wired** | CLI commands, deploy backends |
 | roko daemon start/stop/status/logs/install | **Wired** | launchd + systemd |
 | roko worker | **Wired** | Worker mode for deployed containers |

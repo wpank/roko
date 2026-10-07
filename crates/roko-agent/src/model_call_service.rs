@@ -707,6 +707,7 @@ impl ModelCallService {
         success: bool,
         error_class: Option<&str>,
         model_reported: Option<&str>,
+        cache_hit: bool,
     ) -> Result<()> {
         let Some(sink) = &self.feedback_sink else {
             tracing::debug!("feedback sink not configured for model call service; skipping");
@@ -733,6 +734,7 @@ impl ModelCallService {
             // The service serves callers outside Graph attempts (serve,
             // chat, CLI), so no call it makes belongs to one.
             attempt_key: None,
+            cache_hit,
         })
         .await
     }
@@ -2164,7 +2166,7 @@ pub(crate) fn provider_error_kind(message: &str) -> &'static str {
         || lower.contains("forbidden")
         || lower.contains("permission denied")
         || lower.contains("authentication")
-        || lower.contains("401")
+        || crate::provider::error_classify::mentions_http_401(&lower)
         || lower.contains("403")
     {
         "auth_failure"
@@ -2344,6 +2346,7 @@ impl ModelCaller for ModelCallService {
                         true,
                         None,
                         None,
+                        true,
                     )
                     .await?;
                     self.emit_call_metrics(
@@ -2565,6 +2568,7 @@ impl ModelCaller for ModelCallService {
                     false,
                     Some(provider_error_kind(&message)),
                     None,
+                    false,
                 )
                 .await?;
                 let prov = provider.as_deref().unwrap_or("unknown");
@@ -2628,6 +2632,7 @@ impl ModelCaller for ModelCallService {
                 false,
                 Some("convergence_failure"),
                 output.model_reported.as_deref(),
+                false,
             )
             .await?;
             let convergence_err = RokoError::from(error);
@@ -2696,6 +2701,7 @@ impl ModelCaller for ModelCallService {
             true,
             None,
             output.model_reported.as_deref(),
+            false,
         )
         .await?;
         self.emit_call_metrics(
@@ -3176,6 +3182,8 @@ printf '%s\n' '{"type":"result","session_id":"s","model":"glm-4.7","total_cost_u
                 max_concurrent: None,
                 limits: None,
                 require_confirmation: false,
+                stream_usage: None,
+                billing: None,
             },
         );
         config.models.insert(
@@ -3215,8 +3223,12 @@ printf '%s\n' '{"type":"result","session_id":"s","model":"glm-4.7","total_cost_u
     async fn force_backend_records_when_router_present() {
         let model = "ux34-model";
         let recorder = Arc::new(TestCascadeRecorder::default());
-        let svc =
-            ModelCallService::new("default".into()).with_cascade_router(Arc::clone(&recorder));
+        // An unknown model key needs a command to run (gap-fd44df).
+        let mut config = RokoConfig::default();
+        config.agent.command = Some("cat".to_string());
+        let svc = ModelCallService::new("default".into())
+            .with_config(config)
+            .with_cascade_router(Arc::clone(&recorder));
 
         let response = svc
             .call(user_request(model, "learn this override"))
@@ -3229,7 +3241,10 @@ printf '%s\n' '{"type":"result","session_id":"s","model":"glm-4.7","total_cost_u
 
     #[tokio::test]
     async fn force_backend_noop_when_no_router() {
-        let svc = ModelCallService::new("default".into());
+        // An unknown model key needs a command to run (gap-fd44df).
+        let mut config = RokoConfig::default();
+        config.agent.command = Some("cat".to_string());
+        let svc = ModelCallService::new("default".into()).with_config(config);
 
         let response = svc
             .call(user_request("ux34-model", "no router attached"))
@@ -3237,6 +3252,17 @@ printf '%s\n' '{"type":"result","session_id":"s","model":"glm-4.7","total_cost_u
             .expect("model call should succeed without router");
 
         assert_eq!(response.model, "ux34-model");
+    }
+
+    /// bug-e03f92: the circuit breaker counts a 401 as an auth failure only
+    /// when it is an HTTP status.
+    #[test]
+    fn http_401_is_an_auth_failure_only_as_a_status() {
+        assert_eq!(provider_error_kind("http 401: bad key"), "auth_failure");
+        assert_eq!(
+            provider_error_kind("stream ended after 1401 tokens and 401 chunks"),
+            "unknown"
+        );
     }
 
     #[tokio::test]
@@ -3526,9 +3552,9 @@ printf '%s\n' '{"type":"result","session_id":"s","model":"glm-4.7","total_cost_u
         let estimate = svc.cost_predict(&req);
 
         assert_eq!(estimate.model, "mystery-model");
-        // Unknown models use SONNET_FALLBACK pricing so cost is non-zero
-        // when there are estimated tokens.
-        assert!(estimate.predicted_cost_usd >= 0.0);
+        // An unknown model is unpriced (gap-ad0d39): its predicted cost is
+        // the unknown 0.0, not Sonnet's rates.
+        assert!(estimate.predicted_cost_usd.abs() < 1e-12);
     }
 
     #[test]
@@ -4050,6 +4076,8 @@ printf '%s\n' '{"type":"result","session_id":"s","model":"glm-4.7","total_cost_u
                     ..Default::default()
                 }),
                 require_confirmation: false,
+                stream_usage: None,
+                billing: None,
             },
         );
         config.models.insert(
@@ -4113,6 +4141,8 @@ printf '%s\n' '{"type":"result","session_id":"s","model":"glm-4.7","total_cost_u
                     ..Default::default()
                 }),
                 require_confirmation: false,
+                stream_usage: None,
+                billing: None,
             },
         );
 

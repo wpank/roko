@@ -444,6 +444,20 @@ pub fn resolve_model(config: &RokoConfig, model_key: &str) -> ResolvedModel {
     }
 }
 
+/// [`resolve_model`] that fails for a key no `[models.*]` entry, configured
+/// slug or builtin model resolves, instead of guessing its backend from the
+/// slug and returning no profile (gap-fd44df).
+pub fn try_resolve_model(config: &RokoConfig, model_key: &str) -> crate::Result<ResolvedModel> {
+    let resolved = resolve_model(config, model_key);
+    if resolved.profile.is_some() {
+        return Ok(resolved);
+    }
+    Err(crate::RokoError::Config(format!(
+        "unknown model `{model_key}`: no [models.*] entry, configured slug or builtin model \
+         matches it; add a [models.<name>] entry with its provider and slug"
+    )))
+}
+
 fn resolved_from_profile(
     config: &RokoConfig,
     model_key: &str,
@@ -777,7 +791,7 @@ impl ToolPermissions {
 pub enum AgentRole {
     /// Meta-orchestrator that watches all other agents and intervenes.
     Conductor,
-    /// Writes the plan brief, decomposes PRDs into tasks.
+    /// Writes the plan brief, decomposes plans into tasks.
     Strategist,
     /// Writes code (the main "coding agent").
     Implementer,
@@ -787,7 +801,9 @@ pub enum AgentRole {
     Researcher,
     /// Post-impl review for correctness and safety.
     Auditor,
-    /// Single-pass reviewer for Standard-complexity plans.
+    /// Single-pass reviewer for Standard-complexity plans. Plans may call it
+    /// `reviewer` (bug-e37197).
+    #[serde(alias = "reviewer")]
     QuickReviewer,
     /// Drafts documentation.
     Scribe,
@@ -810,7 +826,7 @@ pub enum AgentRole {
     /// Exercises agent lifecycle (spawn/tick/teardown).
     #[serde(alias = "golem-lifecycle-tester")]
     LifecycleTester,
-    /// Detects divergence between PRD and implementation.
+    /// Detects divergence between spec and implementation.
     SpecDriftDetector,
     /// Watches for regression in test-pass rate and cost.
     RegressionDetector,
@@ -1433,6 +1449,8 @@ mod tests {
                 max_concurrent: Some(8),
                 limits: None,
                 require_confirmation: false,
+                stream_usage: None,
+                billing: None,
             },
         );
         config.models.insert(
@@ -1671,6 +1689,9 @@ mod tests {
         assert_eq!(json, "\"quick-reviewer\"");
         let decoded: AgentRole = serde_json::from_str(&json).unwrap();
         assert_eq!(decoded, r);
+        // bug-e37197: `reviewer` names the same role, and writes back as its label.
+        let reviewer: AgentRole = serde_json::from_str("\"reviewer\"").unwrap();
+        assert_eq!(reviewer, r);
     }
 
     // ── Zero-config builtin model resolution (T5) ──────────────────────
@@ -1698,6 +1719,19 @@ mod tests {
             profile.use_max_completion_tokens,
             "o3 must have use_max_completion_tokens=true"
         );
+    }
+
+    /// gap-fd44df: a key nothing configures is an error naming it, not a
+    /// guess with no profile; configured and builtin models still resolve.
+    #[test]
+    fn try_resolve_model_rejects_a_key_nothing_configures() {
+        let config = RokoConfig::default();
+
+        let error = try_resolve_model(&config, "typo-model").expect_err("an unknown key");
+        assert!(error.to_string().contains("`typo-model`"), "{error}");
+        assert!(resolve_model(&config, "typo-model").profile.is_none());
+        let builtin = try_resolve_model(&config, "o3").expect("a builtin model");
+        assert!(builtin.profile.is_some());
     }
 
     #[test]

@@ -1,6 +1,7 @@
 #[cfg(test)]
 mod tests {
     use std::path::Path;
+    use std::sync::Arc;
 
     use chrono::{DateTime, Duration, Utc};
     use roko_core::extension::CamelTaintLevel;
@@ -72,7 +73,9 @@ mod tests {
             hdc_encoder_version: 0,
             access_count: 0,
             last_accessed: None,
+            contradiction_count: 0,
             activation_conditions: Vec::new(),
+            commit_batch: None,
         }
     }
 
@@ -312,6 +315,93 @@ mod tests {
         assert_eq!(all.len(), 1);
         assert_eq!(all[0].confidence, 1.0);
         assert_eq!(all[0].tier, KnowledgeTier::Consolidated);
+    }
+
+    /// A prompt's access is counted (S01 P0-9) without the spaced half-life
+    /// extension, which is knowledge decay, held for now; `record_access`
+    /// still applies it.
+    #[test]
+    fn record_access_counts_without_changing_half_life() {
+        let tmp = TempDir::new().expect("tempdir");
+        let store = KnowledgeStore::new(tmp.path().join("neuro").join("knowledge.jsonl"));
+        let (kind, now) = (KnowledgeKind::Insight, Utc::now());
+        for (id, content) in [
+            ("counted", "Prompt inclusions count as accesses"),
+            ("spaced", "Spaced retrieval stretches the half-life"),
+            ("untouched", "Unrelated deployment checklist for releases"),
+        ] {
+            let knowledge = entry(kind, id, content, &[], 0.9, &["ep1"], now);
+            store.add(knowledge).expect("add knowledge");
+        }
+        let half_life = kind.default_half_life_days();
+        let state = |id: &str| {
+            let entries = store.read_all().expect("read the store");
+            let entry = entries
+                .iter()
+                .find(|entry| entry.id == id)
+                .unwrap_or_else(|| panic!("no entry {id}: {entries:?}"));
+            let accessed = entry.last_accessed.is_some();
+            (entry.access_count, entry.half_life_days, accessed)
+        };
+
+        assert_eq!(
+            store.count_access(&["counted", "missing"]).expect("count"),
+            1
+        );
+        assert_eq!(store.count_access(&["counted"]).expect("count again"), 1);
+        assert_eq!(state("counted"), (2, half_life, true));
+        assert_eq!(store.count_access(&[]).expect("count nothing"), 0);
+
+        store.record_access(&["spaced"]).expect("first access");
+        store.record_access(&["spaced"]).expect("second access");
+        let (accesses, spaced, accessed) = state("spaced");
+        assert_eq!((accesses, accessed), (2, true));
+        assert!(spaced > half_life, "{spaced} <= {half_life}");
+        assert_eq!(state("untouched"), (0, half_life, false));
+    }
+
+    /// bug-c4f0ed: every store of one file shares its write gate, whatever
+    /// the path's spelling, and so does a store built before the file's
+    /// directory existed; another file has a gate of its own.
+    #[test]
+    fn stores_of_one_file_share_one_write_gate() {
+        let tmp = TempDir::new().expect("tempdir");
+        let path = tmp.path().join("neuro").join("knowledge.jsonl");
+        let early = KnowledgeStore::new(&path);
+        std::fs::create_dir_all(tmp.path().join("neuro")).expect("mkdir");
+        let late = KnowledgeStore::new(&path);
+        let spelled = KnowledgeStore::new(tmp.path().join("neuro/../neuro/knowledge.jsonl"));
+        let other = KnowledgeStore::new(tmp.path().join("neuro").join("other.jsonl"));
+
+        assert!(Arc::ptr_eq(&early.write_gate, &late.write_gate));
+        assert!(Arc::ptr_eq(&early.write_gate, &spelled.write_gate));
+        assert!(!Arc::ptr_eq(&early.write_gate, &other.write_gate));
+    }
+
+    /// bug-c4f0ed: a write waits for the file's lock among processes, which
+    /// another process's store holds while it rewrites the file.
+    #[test]
+    fn a_write_waits_for_the_lock_another_process_holds() {
+        let tmp = TempDir::new().expect("tempdir");
+        let store = KnowledgeStore::new(tmp.path().join("neuro").join("knowledge.jsonl"));
+        let (kind, now) = (KnowledgeKind::Insight, Utc::now());
+        let content = "Prompt inclusions count as accesses";
+        let knowledge = entry(kind, "counted", content, &[], 0.9, &["ep1"], now);
+        store.add(knowledge).expect("add knowledge");
+        let accesses = |store: &KnowledgeStore| store.read_all().expect("read")[0].access_count;
+
+        // Another process's write holds the lock.
+        let held = roko_fs::log_rotation::lock_jsonl(store.path()).expect("hold the lock");
+        let writer = {
+            let store = store.clone();
+            std::thread::spawn(move || store.count_access(&["counted"]))
+        };
+        std::thread::sleep(std::time::Duration::from_millis(200));
+        assert_eq!(accesses(&store), 0, "the write waits for the lock");
+        drop(held);
+        let counted = writer.join().expect("the writer").expect("count");
+        assert_eq!(counted, 1);
+        assert_eq!(accesses(&store), 1);
     }
 
     #[test]
@@ -752,7 +842,9 @@ mod tests {
                 hdc_encoder_version: 0,
                 access_count: 0,
                 last_accessed: None,
+                contradiction_count: 0,
                 activation_conditions: Vec::new(),
+                commit_batch: None,
             })
             .expect("add anti knowledge");
 
@@ -931,7 +1023,9 @@ mod tests {
                 hdc_encoder_version: 0,
                 access_count: 0,
                 last_accessed: None,
+                contradiction_count: 0,
                 activation_conditions: Vec::new(),
+                commit_batch: None,
             })
             .expect("add anti knowledge");
 
@@ -999,7 +1093,9 @@ mod tests {
                 hdc_encoder_version: 0,
                 access_count: 0,
                 last_accessed: None,
+                contradiction_count: 0,
                 activation_conditions: Vec::new(),
+                commit_batch: None,
             })
             .expect("add anti knowledge");
 
@@ -1057,7 +1153,9 @@ mod tests {
                 hdc_encoder_version: 0,
                 access_count: 0,
                 last_accessed: None,
+                contradiction_count: 0,
                 activation_conditions: Vec::new(),
+                commit_batch: None,
             })
             .expect("add oldest");
         store
@@ -1097,7 +1195,9 @@ mod tests {
                 hdc_encoder_version: 0,
                 access_count: 0,
                 last_accessed: None,
+                contradiction_count: 0,
                 activation_conditions: Vec::new(),
+                commit_batch: None,
             })
             .expect("add middle");
         store
@@ -1137,7 +1237,9 @@ mod tests {
                 hdc_encoder_version: 0,
                 access_count: 0,
                 last_accessed: None,
+                contradiction_count: 0,
                 activation_conditions: Vec::new(),
+                commit_batch: None,
             })
             .expect("add newest");
 
@@ -1458,7 +1560,9 @@ mod tests {
             hdc_encoder_version: 0,
             access_count: 0,
             last_accessed: None,
+            contradiction_count: 0,
             activation_conditions: Vec::new(),
+            commit_batch: None,
         };
 
         assert!(!entries_are_similar(&existing, &anti));
@@ -1659,7 +1763,9 @@ mod tests {
                 hdc_encoder_version: 0,
                 access_count: 0,
                 last_accessed: None,
+                contradiction_count: 0,
                 activation_conditions: Vec::new(),
+                commit_batch: None,
             })
             .expect("add tiered");
 
@@ -1711,7 +1817,9 @@ mod tests {
                 hdc_encoder_version: 0,
                 access_count: 0,
                 last_accessed: None,
+                contradiction_count: 0,
                 activation_conditions: Vec::new(),
+                commit_batch: None,
             })
             .expect("add persistent");
 
@@ -1908,7 +2016,9 @@ mod tests {
             hdc_encoder_version: 0,
             access_count: 0,
             last_accessed: None,
+            contradiction_count: 0,
             activation_conditions: Vec::new(),
+            commit_batch: None,
         };
 
         // A near-identical entry that should be rejected.
@@ -1945,7 +2055,9 @@ mod tests {
             hdc_encoder_version: 0,
             access_count: 0,
             last_accessed: None,
+            contradiction_count: 0,
             activation_conditions: Vec::new(),
+            commit_batch: None,
         };
 
         // An unrelated entry that should pass through.
@@ -1982,7 +2094,9 @@ mod tests {
             hdc_encoder_version: 0,
             access_count: 0,
             last_accessed: None,
+            contradiction_count: 0,
             activation_conditions: Vec::new(),
+            commit_batch: None,
         };
 
         let existing = vec![anti];
@@ -2032,7 +2146,9 @@ mod tests {
             hdc_encoder_version: 0,
             access_count: 0,
             last_accessed: None,
+            contradiction_count: 0,
             activation_conditions: Vec::new(),
+            commit_batch: None,
         };
 
         let new_anti = KnowledgeEntry {
@@ -2068,7 +2184,9 @@ mod tests {
             hdc_encoder_version: 0,
             access_count: 0,
             last_accessed: None,
+            contradiction_count: 0,
             activation_conditions: Vec::new(),
+            commit_batch: None,
         };
 
         let existing = vec![existing_anti];
@@ -2541,7 +2659,9 @@ mod anti_pattern_tests {
             hdc_encoder_version: 0,
             access_count: 0,
             last_accessed: None,
+            contradiction_count: 0,
             activation_conditions: Vec::new(),
+            commit_batch: None,
         }
     }
 

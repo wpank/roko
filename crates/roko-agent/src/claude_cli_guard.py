@@ -87,6 +87,13 @@
 # error and runs the call anyway, so every failure here, including
 # unreadable input, exits 2.
 #
+# The audit vault (S05 section 4.4: ROKO_AUDIT_HOME, else ~/.roko/audit)
+# holds hidden tests and audit keys. A Bash command that names it, by that
+# variable or by the default path through ~, $HOME or ${HOME}, a tool call
+# whose path lies in it (as given or with symlinks resolved), and a tree read
+# that reaches its files are denied. The workspace's own .roko/audit log is
+# not the vault. roko-std's bash tool applies the same rules.
+#
 # This is best effort, not a sandbox: a script file or a variable can still
 # hide a command or a path from it.
 
@@ -1353,6 +1360,8 @@ def names_key_file(command, directories):
     roko config file that holds a secret (see the top), else None. A word is
     resolved against each of `directories`, those the call may run in."""
     words = command_words(command)
+    if any(VAULT_TEXT.search(text) for text in [command] + words):
+        return VAULT_REASON
     if any(KEY_PATH_TEXT.search(text) for text in [command] + words):
         return KEY_FILE_REASON
     if any(ROKO_DIR_WORD.search(os.path.normpath(word)) for word in words) and any(
@@ -1368,11 +1377,66 @@ def names_key_file(command, directories):
             if value != word and value and not re.search(r"[$`*?\[{]", value):
                 paths.append(value)
             for path in paths:
+                if is_vault_path(path, cwd):
+                    return VAULT_REASON
                 if is_key_path(path, cwd, False):
                     return KEY_FILE_REASON
                 if is_secret_config_path(path, cwd):
                     return CONFIG_SECRET_REASON
     return None
+
+
+VAULT_TEXT = re.compile(r"ROKO_AUDIT_HOME|(?:~|\$HOME|\$\{HOME\})/\.roko/audit(?![\w.-])")
+VAULT_REASON = (
+    "the audit vault (ROKO_AUDIT_HOME, else ~/.roko/audit) holds hidden tests and audit keys: "
+    "agents may not read it"
+)
+VAULT_FILE_LIMIT = 256
+
+
+def vault_roots():
+    """The audit vault's roots, symlinks resolved: ROKO_AUDIT_HOME when it is
+    set, and the default ~/.roko/audit."""
+    roots = []
+    configured = os.environ.get("ROKO_AUDIT_HOME")
+    if configured:
+        roots.append(os.path.expanduser(configured))
+    home = os.environ.get("HOME")
+    if home:
+        roots.append(os.path.join(home, ".roko", "audit"))
+    return {os.path.realpath(root) for root in roots}
+
+
+def is_vault_path(path, cwd):
+    """Whether a path argument lies in the audit vault, as given or with
+    symlinks resolved."""
+    path = os.path.join(cwd, os.path.expanduser(path))
+    candidates = {os.path.normpath(path), os.path.realpath(path)}
+    return any(
+        candidate == root or candidate.startswith(root.rstrip("/") + "/")
+        for candidate in candidates
+        for root in vault_roots()
+    )
+
+
+def vault_files(top):
+    """At most VAULT_FILE_LIMIT files of the audit vault in the tree at
+    `top`, a real directory: a vault's own when the tree holds it, or the
+    tree's when it lies in a vault."""
+    inside = top.rstrip("/") + "/"
+    found = []
+    for root in sorted(vault_roots()):
+        if (root.rstrip("/") + "/").startswith(inside):
+            start = root
+        elif inside.startswith(root.rstrip("/") + "/"):
+            start = top
+        else:
+            continue
+        for directory, _, filenames in os.walk(start):
+            found += [os.path.join(directory, name) for name in filenames]
+            if len(found) >= VAULT_FILE_LIMIT:
+                return found[:VAULT_FILE_LIMIT]
+    return found
 
 
 def expand(word, cwd):
@@ -1411,6 +1475,7 @@ def sensitive_files(top, cwd):
     (secret_configs) and the key files in the .roko directories of
     key_directories."""
     found = [(config, CONFIG_SECRET_REASON) for config in secret_configs(top, cwd)]
+    found += [(path, VAULT_REASON) for path in vault_files(top)]
     inside = top.rstrip("/") + "/"
     for directory in key_directories(top, cwd):
         is_roko = os.path.basename(directory) == ".roko"
@@ -1636,6 +1701,8 @@ def check_file(tool_input, data):
             continue
         if not isinstance(value, str):
             block("the " + field + " argument is not a string")
+        if value and is_vault_path(value, cwd):
+            block(VAULT_REASON)
         if value and is_key_path(value, cwd, search_root=field == "path"):
             block(KEY_FILE_REASON)
         if value and is_secret_config_path(value, cwd):

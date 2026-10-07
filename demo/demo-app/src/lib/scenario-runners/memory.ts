@@ -8,14 +8,14 @@ const WARM_TASK = 'Build a Rust CLI that parses TOML and outputs JSON';
 export const MEMORY_COMMANDS: CommandDef[] = [
   {
     id: 'cold',
-    command: `roko do "${COLD_TASK}"`,
+    command: `roko run "${COLD_TASK}"`,
     description: 'Cold run writes reusable knowledge',
     timeout: 300000,
     target: { pane: 0 },
   },
   {
     id: 'warm',
-    command: `roko do "${WARM_TASK}"`,
+    command: `roko run "${WARM_TASK}"`,
     description: 'Warm run consumes prior knowledge',
     timeout: 300000,
     target: { pane: 1 },

@@ -13,7 +13,7 @@
  *   answers 404 until the plan is written, and each 404 is a console error.
  */
 
-import type { WireAccepted, WireOperation } from '@/api/contracts';
+import type { WireAccepted, WireOperation, WirePlanDiff } from '@/api/contracts';
 
 // ---------------------------------------------------------------------------
 // Public types
@@ -76,7 +76,8 @@ function leadingWord(status: string): string {
  * Resolution rules, in both `expect` modes:
  *   • A 'failed' operation rejects with its error message (or a generic
  *     fallback when the field is absent).
- *   • A 'completed' operation resolves `{slug}` from result.slug, else plan_id.
+ *   • A 'completed' operation resolves `{slug}` from result.slug, else plan_id,
+ *     with `diff` when the result carries a revision's plan diff.
  *   • A running operation is left to finish; nothing else is requested.
  *
  * A null operation (404) means the server no longer knows it: finished
@@ -95,7 +96,7 @@ export async function waitForOperation(
   accepted: WireAccepted,
   deps: OperationDeps,
   opts: WaitForOperationOpts,
-): Promise<{ slug: string }> {
+): Promise<{ slug: string; diff?: WirePlanDiff }> {
   const { expect, intervalMs = 1_000, timeoutMs = 600_000, onPoll } = opts;
 
   const startMs = deps.now();
@@ -159,7 +160,9 @@ export async function waitForOperation(
     if (word === 'completed') {
       // result.slug is populated on current servers; fall back to planId
       // for servers that don't include it.
-      return { slug: op.result?.slug ?? planId };
+      const slug = op.result?.slug ?? planId;
+      const diff = op.result?.diff;
+      return diff ? { slug, diff } : { slug };
     }
   }
 }

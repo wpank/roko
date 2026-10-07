@@ -1,0 +1,40 @@
+# Arm roko_fixed on kimi-k2.6 (3347; S09 §4.3): LOG1 blocks A, D and E. All but the model, its provider
+# table, the line and the dollar cap's note is arms/roko_fixed.toml's, the arm id included, so records name the arm
+# `roko_fixed` and the model `kimi-k2.6`. One file per model: run_roko.py builds a ladder from an arm with
+# several models_allow entries, and a one-model arm needs its own provider's key alone. Keep the caps in
+# step with arms/roko_fixed.toml.
+schema_version = "vb.arm/1"
+
+[arm]
+id = "roko_fixed"
+harness = "roko"                      # S09's harness vocabulary
+runner = "run_roko"
+models_allow = ["kimi-k2.6"]
+line = "BL1"                          # S09 §4.6: LOG1's line
+billed = true
+label = "cheap·roko"
+
+[caps]                                # S08 §4.10: 150K input tokens and 12 turns per attempt, Roko ≤ 3 attempts
+turns_per_attempt = 12                # roko.toml [pipeline.<tier>] max_turns
+input_tokens_per_attempt = 150000     # Roko has no such cap: the metering proxy holds each attempt (conversation) to it
+turns_per_task = 36
+input_tokens_per_task = 450000        # the metering proxy refuses the task's calls once its input reaches this
+wallclock_s = 1200                    # the runner kills Roko's session at this limit
+model_calls_per_task = 45             # 3 attempts x (12 turns + 3 auxiliary calls after a failed gate)
+usd_per_task = 0.60                   # binds before the token caps ($1.90 at kimi-k2.6's rates)
+max_output_tokens = 8192              # roko.toml max_output, and the worst case
+command_timeout_s = 120               # the visible check's timeout, as a verify step and a gate rung
+
+[roko]
+binary = "target/debug/roko"          # relative to the repository root; each attempt records the build it ran
+build = ""                            # a git sha pins the binary: a different build stops the task
+provider_kind = "openai_compat"
+context_window = 128000
+tier = "focused"
+max_retries = 2
+skip_enrichment = true                # explicit per arm (B §2.3)
+
+[providers.moonshot]
+base_url = "https://api.moonshot.ai/v1"   # check against platform.kimi.ai before the first billed run
+api_key_env = "MOONSHOT_API_KEY"
+max_tokens_param = "max_completion_tokens"

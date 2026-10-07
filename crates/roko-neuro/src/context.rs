@@ -135,8 +135,6 @@ pub enum ContextSource {
     Invariants,
     /// Cross-plan context.
     CrossPlanContext,
-    /// PRD extract.
-    PrdExtract,
     /// Decomposition artifact.
     Decomposition,
     /// IDs and titles of sibling tasks in the same plan.
@@ -1770,7 +1768,6 @@ fn context_source_label(source: &ContextSource) -> String {
         ContextSource::ResearchMemo => "directive:research_memo".to_string(),
         ContextSource::Invariants => "directive:invariants".to_string(),
         ContextSource::CrossPlanContext => "directive:cross_plan_context".to_string(),
-        ContextSource::PrdExtract => "directive:prd_extract".to_string(),
         ContextSource::Decomposition => "directive:decomposition".to_string(),
         ContextSource::SiblingTasks => "directive:sibling_tasks".to_string(),
         ContextSource::Pheromone { kind, source } => format!("pheromone:{kind}:{source}"),
@@ -2064,7 +2061,9 @@ mod tests {
                 hdc_encoder_version: 0,
                 access_count: 0,
                 last_accessed: None,
+                contradiction_count: 0,
                 activation_conditions: Vec::new(),
+                commit_batch: None,
             })
             .expect("add knowledge");
 
@@ -2178,7 +2177,9 @@ mod tests {
                 hdc_encoder_version: 0,
                 access_count: 0,
                 last_accessed: None,
+                contradiction_count: 0,
                 activation_conditions: Vec::new(),
+                commit_batch: None,
             })
             .expect("add knowledge");
 
@@ -2247,7 +2248,9 @@ mod tests {
                 hdc_encoder_version: 0,
                 access_count: 0,
                 last_accessed: None,
+                contradiction_count: 0,
                 activation_conditions: Vec::new(),
+                commit_batch: None,
             })
             .expect("add strategy fragment");
         knowledge_store
@@ -2287,7 +2290,9 @@ mod tests {
                 hdc_encoder_version: 0,
                 access_count: 0,
                 last_accessed: None,
+                contradiction_count: 0,
                 activation_conditions: Vec::new(),
+                commit_batch: None,
             })
             .expect("add anti-knowledge");
         knowledge_store
@@ -2327,7 +2332,9 @@ mod tests {
                 hdc_encoder_version: 0,
                 access_count: 0,
                 last_accessed: None,
+                contradiction_count: 0,
                 activation_conditions: Vec::new(),
+                commit_batch: None,
             })
             .expect("add insight");
 
@@ -2547,7 +2554,9 @@ mod tests {
                     hdc_encoder_version: 0,
                     access_count: 0,
                     last_accessed: None,
+                    contradiction_count: 0,
                     activation_conditions: Vec::new(),
+                    commit_batch: None,
                 })
                 .expect("add anti-knowledge");
         }
@@ -2589,7 +2598,9 @@ mod tests {
                 hdc_encoder_version: 0,
                 access_count: 0,
                 last_accessed: None,
+                contradiction_count: 0,
                 activation_conditions: Vec::new(),
+                commit_batch: None,
             })
             .expect("add strategy");
 
@@ -2678,7 +2689,9 @@ mod tests {
                     hdc_encoder_version: 0,
                     access_count: 0,
                     last_accessed: None,
+                    contradiction_count: 0,
                     activation_conditions: Vec::new(),
+                    commit_batch: None,
                 })
                 .expect("add heuristic");
         }
@@ -2720,7 +2733,9 @@ mod tests {
                 hdc_encoder_version: 0,
                 access_count: 0,
                 last_accessed: None,
+                contradiction_count: 0,
                 activation_conditions: Vec::new(),
+                commit_batch: None,
             })
             .expect("add warning");
 

@@ -18,7 +18,7 @@ lane = "paper"
 links = { depends_on = ["dec-2cd76a", "gap-0191eb", "gap-af0b57", "gap-35a614", "gap-353d57", "gap-370d3c", "gap-4161ea", "gap-ac4646", "gap-e8cb4d", "gap-424bf8", "gap-29a64e", "gap-2aad7d", "gap-c19902", "gap-ec516e", "gap-d1d92c", "gap-8d2c79", "gap-8117a8", "bug-7a6da3", "gap-9cb0b9", "gap-fcea53", "gap-65ed57", "gap-274092", "gap-daa246", "gap-4471d1", "gap-08d9b2", "bug-1f098f", "gap-6e0a95"], blocks = [], related = ["spec-567e52", "spec-f2463d", "spec-ae5f94", "gap-cdf3fc"], supersedes = [], duplicate_of = "" }
 
 [[verify]]
-command = "test -f tools/paperlint.py && python3 tools/paperlint.py --strict --require-status reviewed docs/whitepaper && grep -q '^Verdict: accept' docs/whitepaper/REVIEW.md"
+command = "test -f tools/paperlint.py && python3 tools/paperlint.py --strict --require-status reviewed docs/whitepaper && grep '^Verdict:' docs/whitepaper/REVIEW.md | tail -1 | grep -q '^Verdict: accept'"
 +++
 
 ## Problem

@@ -338,8 +338,9 @@ impl TuiState {
 
     /// Push a typed `AgentOutputRecord` into `agent_output_history` for the
     /// given agent (P1-TUI-G4).  This is the canonical write path for
-    /// streaming events received via `DashboardEvent::AgentOutput` or the
-    /// per-agent sidecar WebSocket client; it ensures the structured renderer
+    /// streaming events received via the per-agent sidecar WebSocket client
+    /// (`DashboardEvent::AgentOutput` lines go through
+    /// [`Self::ingest_agent_output`]); it ensures the structured renderer
     /// always sees up-to-date typed records rather than falling back to legacy
     /// raw-text collect paths.
     pub fn push_agent_output_record(
@@ -367,6 +368,132 @@ impl TuiState {
                 tool_name,
             },
         );
+    }
+
+    /// Record one `DashboardEvent::AgentOutput` line for `agent_id`, as it
+    /// arrives live. The record is made the way a snapshot's output lines are
+    /// backfilled ([`super::AgentOutputHistory::ingest_line`]), so a stream
+    /// seen live and the same stream replayed give the same records; the
+    /// agent's Live Stream chunks get the line decoded.
+    pub fn ingest_agent_output(&mut self, agent_id: &str, content: &str) {
+        use crate::tui::widgets::stream_output::{StreamRecord, parse_stream_line};
+
+        self.agent_output_history
+            .ingest_line(agent_id, content, "assistant");
+        let chunk = match parse_stream_line(content) {
+            StreamRecord::Text { content, .. } | StreamRecord::Plain { content } => content,
+            StreamRecord::Reasoning { content, .. } => format!("[thinking] {content}"),
+            StreamRecord::ToolStart {
+                tool_name, tool_id, ..
+            } => format!("[tool ⏵ {tool_name} {tool_id}]"),
+            StreamRecord::ToolResult {
+                tool_id, output, ..
+            } => format!("[tool ✓ {tool_id}]\n{output}"),
+        };
+        self.push_agent_chunk(agent_id, chunk);
+    }
+
+    /// Record one chunk of an agent's sidecar stream (`roko agent serve`): a
+    /// typed record into `agent_output_history`, a line into the agent's Live
+    /// Stream chunks, and the stream's state. A tool call's line names the
+    /// call, as a StateHub tool step's does (see [`Self::ingest_agent_output`]);
+    /// the call's JSON never reaches the pane (gap-aabeff).
+    pub fn ingest_stream_chunk(
+        &mut self,
+        agent_id: &str,
+        chunk: crate::tui::ws_client::StreamChunk,
+    ) {
+        use super::OutputRecordKind;
+        use crate::tui::ws_client::StreamChunk;
+
+        match chunk {
+            StreamChunk::Connected => self.mark_agent_stream_connected(agent_id),
+            StreamChunk::Text(text) => {
+                // Push typed record into canonical history (P1-TUI-G4).
+                self.push_agent_output_record(
+                    agent_id,
+                    OutputRecordKind::Text,
+                    text.clone(),
+                    None,
+                    None,
+                );
+                self.push_agent_chunk(agent_id, text);
+            }
+            StreamChunk::Reasoning(text) => {
+                self.push_agent_output_record(
+                    agent_id,
+                    OutputRecordKind::Reasoning,
+                    text.clone(),
+                    None,
+                    None,
+                );
+                self.push_agent_chunk(agent_id, format!("[reasoning] {text}"));
+            }
+            StreamChunk::ToolCall(tool_call) => {
+                // Extract name and id from the tool_call JSON for semantic record.
+                let tool_name = tool_call
+                    .get("name")
+                    .or_else(|| tool_call.get("tool"))
+                    .and_then(serde_json::Value::as_str)
+                    .map(str::to_string);
+                let tool_id = tool_call
+                    .get("tool_id")
+                    .or_else(|| tool_call.get("id"))
+                    .and_then(serde_json::Value::as_str)
+                    .map(str::to_string);
+                let line = format!(
+                    "[tool ⏵ {} {}]",
+                    tool_name.as_deref().unwrap_or("tool"),
+                    tool_id.as_deref().unwrap_or_default()
+                );
+                self.push_agent_output_record(
+                    agent_id,
+                    OutputRecordKind::ToolCall,
+                    String::new(),
+                    tool_id,
+                    tool_name,
+                );
+                self.push_agent_chunk(agent_id, line);
+            }
+            StreamChunk::Usage(usage) => {
+                // Usage events are informational; push as system records.
+                if let Ok(text) = serde_json::to_string(&usage) {
+                    self.push_agent_output_record(
+                        agent_id,
+                        OutputRecordKind::System,
+                        format!("[usage] {text}"),
+                        None,
+                        None,
+                    );
+                    self.push_agent_chunk(agent_id, format!("[usage] {text}"));
+                }
+            }
+            StreamChunk::Error(error) => {
+                self.push_agent_output_record(
+                    agent_id,
+                    OutputRecordKind::Error,
+                    error.clone(),
+                    None,
+                    None,
+                );
+                self.push_agent_chunk(agent_id, format!("[error] {error}"));
+            }
+            StreamChunk::Done { session } => {
+                if let Some(session_id) = session {
+                    let msg = format!("[done] session {session_id}");
+                    self.push_agent_output_record(
+                        agent_id,
+                        OutputRecordKind::System,
+                        msg.clone(),
+                        None,
+                        None,
+                    );
+                    self.push_agent_chunk(agent_id, msg);
+                }
+                self.mark_agent_stream_done(agent_id);
+            }
+            StreamChunk::Disconnected => self.mark_agent_stream_disconnected(agent_id),
+        }
     }
 
     /// Mark the agent's live stream as connected.

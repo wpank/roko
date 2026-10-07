@@ -28,8 +28,7 @@
 //! - [`authored_graph`] -- AuthoredGraph controller lifecycle and config (#267).
 //! - [`replan_controller`] -- Durable Graph gate-failure replan controller.
 //! - [`runtime_services`] -- Non-plan service construction for workflow/chat/ACP.
-//! - [`plan_generator`] -- Shared PlanGenerator trait and value types (#280).
-//! - [`workflow`] -- Workflow graph cells and templates.
+//! - [`plan_generator`] -- Plan-generation value types (#280).
 
 pub mod authored_graph;
 pub mod builder;
@@ -46,7 +45,6 @@ pub mod profiles;
 pub mod prompt;
 pub mod replan_controller;
 pub mod runtime_services;
-pub mod workflow;
 
 // ---- Builder-level re-exports ------------------------------------------------
 
@@ -69,14 +67,6 @@ pub use runtime_services::{
     overrides_for_chat, overrides_for_workflow, validate_service_request,
 };
 
-// ---- Workflow re-exports -----------------------------------------------------
-
-pub use workflow::{
-    ActivityScope, ControllerAction, PhaseInput, PhaseReceipt, ReviewVerdict,
-    WorkflowGraphController, WorkflowPhase, WorkflowTemplateDescriptor, WorkflowTermination,
-    build_report, idempotency_key, parse_review, resolve_template,
-};
-
 // ---- Module-level bundle re-exports ------------------------------------------
 
 pub use dispatch::factory::DispatchFactory;
@@ -87,11 +77,10 @@ pub use guards::{CostLedger, GuardsBundle};
 pub use observation::{ObservationBundle, ObservationPublisher};
 pub use overrides::ExecutionOverrides as DetailedExecutionOverrides;
 pub use plan_generator::{
-    PlanGenError, PlanGenerator, PlanGeneratorAdapter, PlanGeneratorOutcome,
-    PlanGeneratorOverrides, PlanGeneratorRequest, PlanSource, ValidatedPlan, ValidationEvidence,
+    PlanGenError, PlanGeneratorAdapter, PlanGeneratorOutcome, PlanGeneratorOverrides,
+    PlanGeneratorRequest, PlanSource, ValidatedPlan, ValidationEvidence,
 };
 pub use prompt::builder::PromptBuildHandle;
-pub use prompt::cache::PromptCacheHandle;
 
 // ---- Authored graph controller re-exports (#267) ----------------------------
 

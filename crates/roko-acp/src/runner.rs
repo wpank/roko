@@ -7,7 +7,6 @@
 //! 4. Emitting ACP session updates (plan entries, tool calls) through the event channel
 
 use std::path::Path;
-use std::sync::{Arc, Mutex};
 
 use roko_agent::claude_cli_agent::build_settings_json;
 use roko_agent::process::apply_credential_scrub;
@@ -21,7 +20,6 @@ use roko_gate::{
     AdaptiveThresholds, ClippyGate, CompileGate, GatePayload, TestGate,
     parse_structured_review_verdict, review_verdict::ReviewVerdictContext,
 };
-use roko_runtime::workflow_contract::WorkflowRunReport;
 use tokio::process::Command;
 use tokio::sync::mpsc;
 use tracing::{debug, error, info, warn};
@@ -31,7 +29,7 @@ use crate::knowledge::prepend_context;
 use crate::pipeline::{PipelineAction, PipelineEvent, PipelinePhase, WorkflowTemplate};
 use crate::session::{CancelToken, SharedWorkflowRun};
 use crate::types::{
-    ContentBlock, FileChangeNotification, FileChangeType, PlanEntry, PlanStatus, Priority,
+    ContentBlock, FileChangeNotification, FileChangeType, PlanEntry, PlanEntryStatus, Priority,
     StopReason, ToolCallKind, ToolCallStatus,
 };
 use crate::workflow::WorkflowRun;
@@ -541,156 +539,6 @@ fn similar_strings(a: &str, b: &str) -> bool {
     total > 3 && (overlap as f64 / total as f64) > 0.5
 }
 
-/// Explicit execution route for ACP workflow callers.
-///
-/// Serializes as lowercase strings for ACP protocol compatibility.
-/// Maps 1:1 to the CLI `WorkflowExecutionRoute` enum; kept as a separate
-/// type because ACP does not depend on `roko-cli`.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum AcpWorkflowRoute {
-    /// Default production route — selects WorkflowEngine.
-    #[default]
-    LegacyDefault,
-    /// Graph-based canary path (#257).
-    GraphCanary,
-    /// Replay-only comparison path (#259).
-    ReplayOnly,
-    /// Explicit legacy fallback with observable warning (#277).
-    LiveFallback,
-}
-
-impl std::fmt::Display for AcpWorkflowRoute {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::LegacyDefault => f.write_str("legacy_default"),
-            Self::GraphCanary => f.write_str("graph_canary"),
-            Self::ReplayOnly => f.write_str("replay_only"),
-            Self::LiveFallback => f.write_str("live_fallback"),
-        }
-    }
-}
-
-impl std::str::FromStr for AcpWorkflowRoute {
-    type Err = String;
-
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        match s {
-            "legacy_default" | "legacy-default" => Ok(Self::LegacyDefault),
-            "graph_canary" | "graph-canary" | "graph" => Ok(Self::GraphCanary),
-            "replay_only" | "replay-only" | "replay" => Ok(Self::ReplayOnly),
-            "live_fallback" | "live-fallback" | "fallback" => Ok(Self::LiveFallback),
-            other => Err(format!(
-                "unknown ACP workflow route `{other}`; expected one of: \
-                 legacy_default, graph_canary, replay_only, live_fallback"
-            )),
-        }
-    }
-}
-
-/// Options for graph-based workflow execution bridged to ACP protocol.
-///
-/// #276 retired `WorkflowEngine`. These options configure the graph template
-/// controller that replaced it.
-pub struct GraphEngineOptions {
-    pub model_key: String,
-    pub input_messages: Vec<roko_core::foundation::ModelInputMessage>,
-    pub mcp_config: Option<std::path::PathBuf>,
-    pub provenance_card: Option<String>,
-    /// Execution route selector (GraphCanary and ReplayOnly are not yet implemented).
-    pub route: AcpWorkflowRoute,
-}
-
-pub async fn run_with_workflow_engine(
-    session_id: &str,
-    prompt: &str,
-    workdir: &Path,
-    template: &str,
-    options: GraphEngineOptions,
-    event_sender: mpsc::Sender<CognitiveEvent>,
-) -> anyhow::Result<WorkflowRunReport> {
-    // Route check: GraphCanary and ReplayOnly are not yet implemented.
-    match options.route {
-        AcpWorkflowRoute::LegacyDefault => {}
-        AcpWorkflowRoute::LiveFallback => {
-            warn!(
-                route = %options.route,
-                "legacy compatibility: explicit LiveFallback route selected; \
-                 this path will be removed by #277"
-            );
-        }
-        AcpWorkflowRoute::GraphCanary => {
-            return Err(anyhow::anyhow!(
-                "AcpWorkflowRoute::GraphCanary is not yet implemented; \
-                 awaiting #257 graph template wiring"
-            ));
-        }
-        AcpWorkflowRoute::ReplayOnly => {
-            return Err(anyhow::anyhow!(
-                "AcpWorkflowRoute::ReplayOnly is not yet implemented; \
-                 awaiting #259 shadow fixture wiring"
-            ));
-        }
-    }
-
-    let runtime_run_id: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
-    let roko_config = roko_core::config::loader::load_config_with_options(
-        workdir,
-        &roko_core::config::loader::LoadOptions::acp(),
-    )
-    .unwrap_or_default();
-
-    // #245: Build RuntimeServices via RuntimeServicesBuilder, then share
-    // handles with ServiceFactory instead of constructing them twice.
-    let builder_overrides = roko_execution::overrides::ExecutionOverrides::default();
-    let roko_config_arc = std::sync::Arc::new(roko_config.clone());
-    let runtime_services = roko_execution::RuntimeServicesBuilder::from_config(
-        &roko_config_arc,
-        roko_execution::profiles::RuntimeProfile::Workflow,
-        builder_overrides,
-    )
-    .build(workdir)
-    .map_err(|e| anyhow::anyhow!("RuntimeServicesBuilder: {e}"))?;
-
-    // #276: WorkflowEngine deleted — resolve template and build report via
-    // graph template controller. Full ACP graph execution wiring is product
-    // work beyond the #276 deletion scope.
-    let _ = (
-        runtime_services,
-        options,
-        runtime_run_id,
-        event_sender,
-        roko_config,
-    );
-
-    let descriptor = roko_execution::workflow::resolve_template(template)
-        .map_err(|e| anyhow::anyhow!("resolve workflow template: {e}"))?;
-
-    let run_id = format!("acp_workflow_{session_id}");
-    let mut controller = roko_execution::workflow::WorkflowGraphController::new(
-        run_id,
-        descriptor,
-        prompt.to_string(),
-    );
-    controller.termination = Some(roko_execution::workflow::WorkflowTermination::Skipped {
-        reason: "ACP graph execution requires runtime wiring".to_string(),
-    });
-
-    Ok(roko_execution::workflow::build_report(
-        &controller,
-        std::time::Instant::now(),
-        "unconfigured".to_string(),
-        None,
-        String::new(),
-        0,
-        0,
-        None,
-        vec![],
-        vec![],
-        None,
-    ))
-}
-
 fn text_block(text: String) -> ContentBlock {
     ContentBlock::Text { text }
 }
@@ -1058,7 +906,7 @@ pub async fn run_workflow_pipeline(
                             for (index, change) in changes.iter().enumerate() {
                                 let tool_call_id = format!("file-change-{}", index + 1);
                                 let (title_prefix, kind) = match change.change_type {
-                                    FileChangeType::Added => ("+", ToolCallKind::Create),
+                                    FileChangeType::Added => ("+", ToolCallKind::Edit),
                                     FileChangeType::Modified => ("~", ToolCallKind::Edit),
                                     FileChangeType::Deleted => ("-", ToolCallKind::Delete),
                                     FileChangeType::Renamed => (">", ToolCallKind::Edit),
@@ -1069,12 +917,8 @@ pub async fn run_workflow_pipeline(
                                         title: format!("{title_prefix} {}", change.path),
                                         kind,
                                         locations: Some(vec![crate::types::ToolCallLocation {
-                                            uri: format!(
-                                                "file://{}/{}",
-                                                workdir.display(),
-                                                change.path
-                                            ),
-                                            range: None,
+                                            path: workdir.join(&change.path).display().to_string(),
+                                            line: None,
                                         }]),
                                     })
                                     .await;
@@ -1287,9 +1131,9 @@ fn build_plan_entries(run: &WorkflowRun) -> Vec<PlanEntry> {
     // Strategy phase (full only).
     if template.has_strategy() {
         let status = match phase {
-            PipelinePhase::Strategizing => PlanStatus::InProgress,
-            PipelinePhase::Pending => PlanStatus::Pending,
-            _ => PlanStatus::Completed,
+            PipelinePhase::Strategizing => PlanEntryStatus::InProgress,
+            PipelinePhase::Pending => PlanEntryStatus::Pending,
+            _ => PlanEntryStatus::Completed,
         };
         entries.push(PlanEntry {
             content: "Strategy brief".into(),
@@ -1300,9 +1144,9 @@ fn build_plan_entries(run: &WorkflowRun) -> Vec<PlanEntry> {
 
     // Implementation phase.
     let impl_status = match phase {
-        PipelinePhase::Implementing | PipelinePhase::AutoFixing => PlanStatus::InProgress,
-        PipelinePhase::Pending | PipelinePhase::Strategizing => PlanStatus::Pending,
-        _ => PlanStatus::Completed,
+        PipelinePhase::Implementing | PipelinePhase::AutoFixing => PlanEntryStatus::InProgress,
+        PipelinePhase::Pending | PipelinePhase::Strategizing => PlanEntryStatus::Pending,
+        _ => PlanEntryStatus::Completed,
     };
     let impl_label = if run.pipeline.iteration > 1 {
         format!(
@@ -1320,12 +1164,12 @@ fn build_plan_entries(run: &WorkflowRun) -> Vec<PlanEntry> {
 
     // Gates phase.
     let gate_status = match phase {
-        PipelinePhase::Gating => PlanStatus::InProgress,
+        PipelinePhase::Gating => PlanEntryStatus::InProgress,
         PipelinePhase::Pending
         | PipelinePhase::Strategizing
         | PipelinePhase::Implementing
-        | PipelinePhase::AutoFixing => PlanStatus::Pending,
-        _ => PlanStatus::Completed,
+        | PipelinePhase::AutoFixing => PlanEntryStatus::Pending,
+        _ => PlanEntryStatus::Completed,
     };
     entries.push(PlanEntry {
         content: "Run gates (compile + test)".into(),
@@ -1336,9 +1180,9 @@ fn build_plan_entries(run: &WorkflowRun) -> Vec<PlanEntry> {
     // Review phase (standard, full only).
     if template.has_review() {
         let review_status = match phase {
-            PipelinePhase::Reviewing => PlanStatus::InProgress,
-            PipelinePhase::Committing | PipelinePhase::Complete => PlanStatus::Completed,
-            _ => PlanStatus::Pending,
+            PipelinePhase::Reviewing => PlanEntryStatus::InProgress,
+            PipelinePhase::Committing | PipelinePhase::Complete => PlanEntryStatus::Completed,
+            _ => PlanEntryStatus::Pending,
         };
         entries.push(PlanEntry {
             content: "Code review".into(),
@@ -1349,9 +1193,9 @@ fn build_plan_entries(run: &WorkflowRun) -> Vec<PlanEntry> {
 
     // Commit phase.
     let commit_status = match phase {
-        PipelinePhase::Committing => PlanStatus::InProgress,
-        PipelinePhase::Complete => PlanStatus::Completed,
-        _ => PlanStatus::Pending,
+        PipelinePhase::Committing => PlanEntryStatus::InProgress,
+        PipelinePhase::Complete => PlanEntryStatus::Completed,
+        _ => PlanEntryStatus::Pending,
     };
     entries.push(PlanEntry {
         content: "Commit changes".into(),
@@ -1695,9 +1539,14 @@ async fn run_agent_phase(
     output
 }
 
-/// Build a Signal with a GatePayload body pointing at `workdir`.
+/// Build a Signal with a GatePayload body pointing at `workdir`. Its gates get
+/// the workspace's `[gates] env_passthrough` on top of the gate allowlist, as
+/// plan-run verify steps do (gap-bbbfbc).
 fn build_gate_signal(workdir: &Path) -> Signal {
-    let payload = GatePayload::in_dir(workdir);
+    let env_passthrough = roko_core::config::loader::load_config_unified(workdir)
+        .map(|config| config.gates.env_passthrough)
+        .unwrap_or_default();
+    let payload = GatePayload::in_dir(workdir).with_env_passthrough(env_passthrough);
     let body = Body::from_json(&payload).unwrap_or_else(|_| Body::empty());
     Signal::builder(Kind::Task).body(body).build()
 }
@@ -1721,9 +1570,12 @@ async fn run_gates(
     let signal = build_gate_signal(workdir);
     let ctx = Context::at(chrono::Utc::now().timestamp_millis());
 
-    // Load adaptive thresholds (creates new if missing).
+    // Load adaptive thresholds (creates new if missing) for the skip
+    // decisions. What the gates find is recorded when they are done
+    // (`record_observations`).
     let thresholds_path = workdir.join(THRESHOLDS_PATH);
-    let mut thresholds = AdaptiveThresholds::load_or_new(&thresholds_path);
+    let thresholds = AdaptiveThresholds::load_or_new(&thresholds_path);
+    let mut observed = Vec::new();
 
     // Compile gate (rung 0).
     let compile_result = run_verify_gate(
@@ -1735,8 +1587,11 @@ async fn run_gates(
         event_sender,
     )
     .await;
-    thresholds.observe(0, compile_result.is_ok());
-    compile_result?;
+    observed.push((0, compile_result.is_ok()));
+    if let Err(e) = compile_result {
+        record_observations(&thresholds_path, &observed);
+        return Err(e);
+    }
 
     // Test gate (rung 2).
     if tests_enabled {
@@ -1752,9 +1607,9 @@ async fn run_gates(
                 event_sender,
             )
             .await;
-            thresholds.observe(2, test_result.is_ok());
+            observed.push((2, test_result.is_ok()));
             if let Err(e) = test_result {
-                save_thresholds(&thresholds, &thresholds_path);
+                record_observations(&thresholds_path, &observed);
                 return Err(e);
             }
         }
@@ -1774,23 +1629,33 @@ async fn run_gates(
                 event_sender,
             )
             .await;
-            thresholds.observe(1, clippy_result.is_ok());
+            observed.push((1, clippy_result.is_ok()));
             if let Err(e) = clippy_result {
-                save_thresholds(&thresholds, &thresholds_path);
+                record_observations(&thresholds_path, &observed);
                 return Err(e);
             }
         }
     }
 
     // Persist updated thresholds.
-    save_thresholds(&thresholds, &thresholds_path);
+    record_observations(&thresholds_path, &observed);
 
     Ok(())
 }
 
-/// Persist adaptive thresholds, logging on error.
-fn save_thresholds(thresholds: &AdaptiveThresholds, path: &Path) {
-    if let Err(e) = thresholds.save(path) {
+/// Record the gates' `(rung, passed)` observations in the adaptive thresholds
+/// at `path`, in one read-modify-write under the file's lock, the one Graph
+/// runs update it under, so neither drops the other's observations
+/// (bug-7f0dc8). A failure is logged.
+fn record_observations(path: &Path, observed: &[(u32, bool)]) {
+    let recorded: std::io::Result<()> =
+        roko_fs::with_locked_json_transaction(path, |thresholds: &mut AdaptiveThresholds| {
+            for &(rung, passed) in observed {
+                thresholds.observe(rung, passed);
+            }
+            Ok(())
+        });
+    if let Err(e) = recorded {
         warn!(error = %e, "failed to save adaptive gate thresholds");
     }
 }
@@ -2038,6 +1903,53 @@ mod tests {
     use super::*;
     use crate::session::AcpSession;
     use roko_compose::SystemPromptBuilder;
+
+    /// bug-7f0dc8: gate observations recorded at once, by sessions or a plan
+    /// run beside them, each reach gate-thresholds.json.
+    #[test]
+    fn concurrent_gate_observations_all_reach_the_thresholds() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let path = tmp.path().join(THRESHOLDS_PATH);
+        let recorders: Vec<_> = (0..8)
+            .map(|_| {
+                let path = path.clone();
+                std::thread::spawn(move || record_observations(&path, &[(0, true), (2, false)]))
+            })
+            .collect();
+        for recorder in recorders {
+            recorder.join().expect("recorder thread");
+        }
+
+        let thresholds = AdaptiveThresholds::load(&path).expect("thresholds");
+        for rung in [0, 2] {
+            let observed = thresholds
+                .rung_stats(rung)
+                .map(|stats| stats.total_observations);
+            assert_eq!(observed, Some(8), "rung {rung}");
+        }
+    }
+
+    /// bug-35c901: a gate-thresholds.json the Graph path wrote keeps the
+    /// fields only it knows, such as `pass_count`, when an ACP session
+    /// records its gates there.
+    #[test]
+    fn gate_thresholds_schema_keeps_graph_fields() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let path = tmp.path().join(THRESHOLDS_PATH);
+        std::fs::create_dir_all(path.parent().expect("learn dir")).expect("learn dir");
+        let graph = serde_json::json!({
+            "rungs": { "0": { "pass_count": 3, "total_count": 4, "ema_pass_rate": 0.75 } }
+        });
+        std::fs::write(&path, graph.to_string()).expect("graph thresholds");
+
+        record_observations(&path, &[(0, true)]);
+
+        let saved = std::fs::read_to_string(&path).expect("thresholds");
+        let saved: serde_json::Value = serde_json::from_str(&saved).expect("json");
+        let rung = &saved["rungs"]["0"];
+        assert_eq!(rung["pass_count"], 3, "{saved}");
+        assert_eq!(rung["total_observations"], 5, "{saved}");
+    }
 
     fn git(workdir: &Path, args: &[&str]) {
         let output = std::process::Command::new("git")

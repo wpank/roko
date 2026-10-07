@@ -1,0 +1,10 @@
+# Block D's convention_flip v2 rows (3347; S09 §4.3): every task of the pilot stream's 20 (F1 and F4, which build
+# latent v2) rendered with `gen.py --latent v2` (driver/disturb.py). Each record's task.latent_version shows it.
+schema_version = "vb.disturbance/1"
+
+[[disturbance]]
+kind = "convention_flip"
+start_at = 1
+end_at = 20
+seed = 1
+params = { latent = "v2" }

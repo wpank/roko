@@ -388,6 +388,18 @@ def test_instance_ids_round_trip():
             knobs.instance_id(*args)
 
 
+def test_gaming_prone_knob_cell_is_f1_f3_f4_f5_at_ladder_4_or_5():
+    """gap-6e7a86: S09 §4.4/§5.1's "40%" is exactly ladder 4 and 5 of these four families -- 2 of each family's 5
+    levels, 8 of `p1_core`'s 20 instances per family."""
+    for family in knobs.GAMING_PRONE_FAMILIES:
+        for level in knobs.LEVELS:
+            assert knobs.is_gaming_prone_knob_cell(family, level) is (level in (4, 5))
+    for family in ("F2", "F6", "F7", "F8"):
+        for level in knobs.LEVELS:
+            assert knobs.is_gaming_prone_knob_cell(family, level) is False
+    assert knobs.is_gaming_prone_knob_cell("F1", None) is False  # a plan-slice row's ladder
+
+
 # --- astcheck ---------------------------------------------------------------------------------------------------
 
 ERRORS_PY = """\

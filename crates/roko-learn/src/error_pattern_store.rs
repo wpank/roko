@@ -18,8 +18,9 @@
 //! 3. `occurrences`, `plan_ids`, and `task_ids` are updated atomically.
 //! 4. `ErrorPatternStore::top_patterns` returns the most frequent unresolved
 //!    patterns for prompt injection.
-//! 5. After a fix is confirmed, `ErrorPatternStore::mark_resolved` annotates the
-//!    pattern with a resolution string and removes it from future prompt context.
+//! 5. After a verified attempt fixes it, `ErrorPatternStore::record_resolution`
+//!    records the fix on the pattern, which stays unresolved so that prompts
+//!    show it ([`ErrorPatternStore::resolved_for`]).
 //!
 //! # Pattern Categorisation
 //!
@@ -48,8 +49,8 @@
 //!
 //! The store is a single JSON file at `.roko/learn/error-patterns.json`. Writes
 //! use atomic tmp-rename (`error-patterns.json.tmp` → rename) to avoid corruption
-//! on crash. There is no upper bound on pattern count, but `mark_resolved` and
-//! periodic GC remove stale entries.
+//! on crash. There is no upper bound on pattern count, but periodic GC
+//! ([`ErrorPatternStore::gc`]) removes stale entries.
 
 use std::collections::{BTreeSet, HashMap};
 use std::fmt::Write as _;
@@ -58,6 +59,49 @@ use std::time::Duration;
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
+
+/// The store's file name in `.roko/learn`: the one pattern file plan runs
+/// write and every reader loads (backlog 4204).
+pub const ERROR_PATTERNS_FILE: &str = "error-patterns.json";
+
+/// The longest fix a verified pass records on a pattern (backlog 4125).
+pub const MAX_RESOLUTION_CHARS: usize = 400;
+
+/// How often a pattern must recur before `roko learn` proposes a check for
+/// it (decision 4127).
+pub const GRADUATION_MIN_OCCURRENCES: u32 = 3;
+
+/// In how many plans a pattern must recur before `roko learn` proposes a
+/// check for it (decision 4127).
+pub const GRADUATION_MIN_PLANS: usize = 2;
+
+/// Runner-v2's pattern file in `.roko/learn`, which nothing writes any more.
+/// [`retire_legacy_discovered_patterns`] sets it aside.
+pub const LEGACY_DISCOVERED_PATTERNS_FILE: &str = "discovered-patterns.json";
+
+/// Set aside Runner-v2's pattern file in `learn_dir`: rename it to
+/// `discovered-patterns.json.v2-legacy`, the suffix roko-fs migrations use,
+/// and log it. Its rows carry no task or command key, so keyed selection
+/// would never pick them: they are not imported. A file already set aside is
+/// never overwritten. Returns whether a file was set aside (backlog 4204).
+///
+/// # Errors
+///
+/// Returns the I/O error of a rename that failed.
+pub fn retire_legacy_discovered_patterns(learn_dir: &Path) -> std::io::Result<bool> {
+    let legacy = learn_dir.join(LEGACY_DISCOVERED_PATTERNS_FILE);
+    let retired = learn_dir.join(format!("{LEGACY_DISCOVERED_PATTERNS_FILE}.v2-legacy"));
+    if !legacy.is_file() || retired.exists() {
+        return Ok(false);
+    }
+    std::fs::rename(&legacy, &retired)?;
+    tracing::info!(
+        from = %legacy.display(),
+        to = %retired.display(),
+        "set aside Runner-v2's pattern file; plan runs read {ERROR_PATTERNS_FILE}"
+    );
+    Ok(true)
+}
 
 /// A single normalized error pattern with occurrence tracking.
 ///
@@ -94,8 +138,34 @@ pub struct ErrorPattern {
     pub resolved: bool,
     /// What fixed the error (filled in from reflection or manual annotation).
     pub resolution: Option<String>,
+    /// The key of the verified attempt whose pass recorded `resolution`
+    /// ([`ErrorPatternStore::record_resolution`]).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resolved_by: Option<String>,
     /// Auto-fix hint extracted from rustc output.
     pub suggestion: Option<String>,
+}
+
+/// A failure pattern ready to graduate into a permanent check (decision
+/// 4127): it kept recurring across plans and has a verified fix. `roko learn
+/// patterns --graduate` proposes the check; a person writes it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct GraduationCandidate {
+    /// The pattern's key.
+    pub key: String,
+    /// Its normalized signature.
+    pub digest: String,
+    /// The verify command that failed, if known.
+    pub gate: Option<String>,
+    /// How many times it was seen.
+    pub occurrences: u32,
+    /// In how many plans.
+    pub plans: usize,
+    /// The fix a verified retry recorded.
+    pub resolution: String,
+    /// The check that would catch it before a retry has to: a regression
+    /// test, a clippy lint or a verify step.
+    pub suggested_check: String,
 }
 
 /// A structured gate failure observation emitted by gates, review parsing, or
@@ -189,6 +259,10 @@ pub struct FailurePatternQuery<'a> {
     pub gate: Option<&'a str>,
     /// Failure class to prefer.
     pub classification: Option<&'a str>,
+    /// The task's verify commands. A keyed summary
+    /// ([`ErrorPatternStore::bounded_summary_keyed`]) selects the patterns
+    /// whose gate is one of them (backlog 4209).
+    pub verify_commands: &'a [String],
 }
 
 /// A bounded prompt/context summary for failure memory.
@@ -201,7 +275,8 @@ pub struct FailurePatternSummary {
 }
 
 impl FailurePatternSummary {
-    /// Render the summary as retry-context text.
+    /// Render the summary as retry-context text: a header, then each
+    /// pattern's entry ([`Self::format_entries`]).
     #[must_use]
     pub fn format_for_prompt(&self) -> String {
         if self.patterns.is_empty() {
@@ -212,32 +287,49 @@ impl FailurePatternSummary {
         out.push_str(
             "Use these concise prior failures as constraints; do not treat them as full logs.\n",
         );
-        for (index, pattern) in self.patterns.iter().enumerate() {
-            let repeated = if pattern.repeated {
-                "repeated"
-            } else {
-                "one-off"
-            };
-            let _ = writeln!(
-                out,
-                "{}. [{}] {} (seen {} time{}, {repeated})",
-                index + 1,
-                pattern.classification,
-                pattern.digest,
-                pattern.occurrences,
-                if pattern.occurrences == 1 { "" } else { "s" },
-            );
-            if let Some(gate) = &pattern.gate {
-                let _ = writeln!(out, "   Verify: {gate}");
-            }
-            if let Some(resolution) = &pattern.resolution {
-                let _ = writeln!(out, "   Fix: {resolution}");
-            }
-            if let Some(suggestion) = &pattern.suggestion {
-                let _ = writeln!(out, "   Hint: {suggestion}");
-            }
+        for entry in self.format_entries() {
+            out.push_str(&entry);
         }
         out
+    }
+
+    /// Each pattern's entry in [`Self::format_for_prompt`]'s text, in display
+    /// order: its numbered line, then its `Verify:`, `Fix:` and `Hint:` lines.
+    /// A prompt's exposure record looks for each entry in the prompt, to tell
+    /// which patterns reached it (gap-a40021).
+    #[must_use]
+    pub fn format_entries(&self) -> Vec<String> {
+        self.patterns
+            .iter()
+            .enumerate()
+            .map(|(index, pattern)| {
+                let repeated = if pattern.repeated {
+                    "repeated"
+                } else {
+                    "one-off"
+                };
+                let mut entry = String::new();
+                let _ = writeln!(
+                    entry,
+                    "{}. [{}] {} (seen {} time{}, {repeated})",
+                    index + 1,
+                    pattern.classification,
+                    pattern.digest,
+                    pattern.occurrences,
+                    if pattern.occurrences == 1 { "" } else { "s" },
+                );
+                if let Some(gate) = &pattern.gate {
+                    let _ = writeln!(entry, "   Verify: {gate}");
+                }
+                if let Some(resolution) = &pattern.resolution {
+                    let _ = writeln!(entry, "   Fix: {resolution}");
+                }
+                if let Some(suggestion) = &pattern.suggestion {
+                    let _ = writeln!(entry, "   Hint: {suggestion}");
+                }
+                entry
+            })
+            .collect()
     }
 }
 
@@ -411,12 +503,88 @@ impl ErrorPatternStore {
             task_ids: observation.task_id.into_iter().collect(),
             resolved: false,
             resolution: None,
+            resolved_by: None,
             suggestion: observation.suggestion,
         });
         FailurePatternUpdate {
             inserted: true,
             occurrences: 1,
         }
+    }
+
+    /// Record on the pattern `key` what fixed it: `resolution`, cut to
+    /// [`MAX_RESOLUTION_CHARS`], from the verified attempt `resolved_by`
+    /// (backlog 4125). The pattern stays unresolved, because prompts leave
+    /// resolved patterns out, which would hide the fix exactly when there is
+    /// one to show. Returns whether `key` names a pattern.
+    pub fn record_resolution(&mut self, key: &str, resolution: &str, resolved_by: &str) -> bool {
+        let Some(&index) = self.key_index.get(key.trim()) else {
+            return false;
+        };
+        let pattern = &mut self.patterns[index];
+        pattern.resolution = Some(truncate_chars(resolution.trim(), MAX_RESOLUTION_CHARS));
+        pattern.resolved_by = Some(resolved_by.to_string());
+        true
+    }
+
+    /// The patterns ready to graduate into a lint or a verify step (decision
+    /// 4127): with a recorded fix, seen at least `min_occurrences` times in at
+    /// least `min_plans` plans, most frequent first, each with a suggested
+    /// check.
+    pub fn graduation_candidates(
+        &self,
+        min_occurrences: u32,
+        min_plans: usize,
+    ) -> Vec<GraduationCandidate> {
+        let mut ready: Vec<&ErrorPattern> = self
+            .patterns
+            .iter()
+            .filter(|pattern| pattern.occurrences >= min_occurrences)
+            .filter(|pattern| pattern.plan_ids.len() >= min_plans)
+            .filter(|pattern| pattern.resolution.is_some())
+            .collect();
+        ready.sort_by(|a, b| {
+            b.occurrences
+                .cmp(&a.occurrences)
+                .then_with(|| a.key.cmp(&b.key))
+        });
+        ready
+            .into_iter()
+            .map(|pattern| GraduationCandidate {
+                key: pattern.key.clone(),
+                digest: pattern.digest.clone(),
+                gate: pattern.gate.clone(),
+                occurrences: pattern.occurrences,
+                plans: pattern.plan_ids.len(),
+                resolution: pattern.resolution.clone().unwrap_or_default(),
+                suggested_check: pattern.suggested_check(),
+            })
+            .collect()
+    }
+
+    /// The patterns with a recorded fix, seen at least twice, that are about
+    /// a crate `paths` name (backlog 4126), most frequent first and at most
+    /// `limit`. A pattern is about the crates its verify command, digest and
+    /// fix name: `crates/<name>` paths, and the package of a cargo `-p` or
+    /// `--package` flag.
+    pub fn resolved_for(&self, paths: &[String], limit: usize) -> Vec<&ErrorPattern> {
+        let wanted: BTreeSet<String> = paths.iter().flat_map(|path| crates_named(path)).collect();
+        if wanted.is_empty() {
+            return Vec::new();
+        }
+        let mut found: Vec<&ErrorPattern> = self
+            .patterns
+            .iter()
+            .filter(|pattern| pattern.resolution.is_some() && pattern.occurrences >= 2)
+            .filter(|pattern| !pattern.crates().is_disjoint(&wanted))
+            .collect();
+        found.sort_by(|a, b| {
+            b.occurrences
+                .cmp(&a.occurrences)
+                .then_with(|| b.last_seen_at.cmp(&a.last_seen_at))
+        });
+        found.truncate(limit);
+        found
     }
 
     /// Return the most frequent patterns, sorted by descending occurrence
@@ -437,6 +605,8 @@ impl ErrorPatternStore {
     }
 
     /// Return a bounded, relevance-ranked summary for retry prompt context.
+    /// Every pattern that scores against `query` qualifies, or every pattern
+    /// when the query is empty; prompts use [`Self::bounded_summary_keyed`].
     #[must_use]
     pub fn bounded_summary(
         &self,
@@ -444,12 +614,40 @@ impl ErrorPatternStore {
         limit: usize,
         max_chars: usize,
     ) -> FailurePatternSummary {
+        self.summary_where(query, limit, max_chars, |pattern| {
+            pattern.relevance_score(query) > 0 || query.is_empty()
+        })
+    }
+
+    /// [`Self::bounded_summary`] for a prompt (backlog 4209): a pattern
+    /// qualifies only when it was seen on the query's task, or its gate is
+    /// one of the query's verify commands, compared with whitespace
+    /// collapsed. Plan and class only order the qualifying patterns. A query
+    /// with neither a task nor commands selects none.
+    #[must_use]
+    pub fn bounded_summary_keyed(
+        &self,
+        query: FailurePatternQuery<'_>,
+        limit: usize,
+        max_chars: usize,
+    ) -> FailurePatternSummary {
+        self.summary_where(query, limit, max_chars, |pattern| pattern.keyed_to(query))
+    }
+
+    /// The bounded summary of the unresolved patterns that `qualifies`
+    /// accepts, ranked by relevance to `query`.
+    fn summary_where(
+        &self,
+        query: FailurePatternQuery<'_>,
+        limit: usize,
+        max_chars: usize,
+        qualifies: impl Fn(&ErrorPattern) -> bool,
+    ) -> FailurePatternSummary {
         let mut candidates: Vec<(usize, &ErrorPattern)> = self
             .patterns
             .iter()
-            .filter(|pattern| !pattern.resolved)
+            .filter(|pattern| !pattern.resolved && qualifies(pattern))
             .map(|pattern| (pattern.relevance_score(query), pattern))
-            .filter(|(score, _)| *score > 0 || query.is_empty())
             .collect();
         candidates.sort_by(|(score_a, a), (score_b, b)| {
             score_b
@@ -490,11 +688,13 @@ impl ErrorPatternStore {
         }
     }
 
-    /// Format the top patterns as a markdown-ish block suitable for
-    /// injection into an agent system prompt.
+    /// Format the top patterns as a markdown-ish block.
     ///
     /// Each entry shows the digest, category, occurrence count, and any
     /// known resolution or suggestion. Output is capped at `limit` entries.
+    /// It is unkeyed, every pattern qualifying, so it suits display
+    /// (`roko learn`); prompts use [`Self::bounded_summary_keyed`]
+    /// (backlog 4209).
     pub fn format_for_prompt(&self, limit: usize) -> String {
         self.bounded_summary(FailurePatternQuery::default(), limit, 2_000)
             .format_for_prompt()
@@ -519,6 +719,10 @@ impl ErrorPatternStore {
     }
 
     fn repair_loaded_patterns(&mut self) {
+        // A turn cap or a timeout says nothing about the code; older runs
+        // recorded them as patterns (backlog 4208).
+        self.patterns
+            .retain(|pattern| !matches!(pattern.category.as_str(), "turn_cap" | "timeout"));
         for pattern in &mut self.patterns {
             if pattern.key.is_empty() {
                 pattern.key = pattern.digest.clone();
@@ -583,6 +787,36 @@ impl ErrorPatternStore {
 }
 
 impl ErrorPattern {
+    /// The check that would catch the pattern before a retry has to, from
+    /// its verify command: a clippy lint, a regression test or a verify
+    /// step.
+    fn suggested_check(&self) -> String {
+        match self.gate.as_deref() {
+            Some(gate) if gate.contains("clippy") => {
+                format!("deny the lint `{gate}` reports in the crate's [lints] table")
+            }
+            Some(gate) if gate.contains("test") => {
+                format!("a regression test for this failure that `{gate}` runs")
+            }
+            Some(gate) => format!("a verify step running `{gate}`"),
+            None => format!("a verify step that reproduces: {}", self.digest),
+        }
+    }
+
+    /// The crates the pattern is about: those its verify command, digest
+    /// and fix name ([`crates_named`]).
+    fn crates(&self) -> BTreeSet<String> {
+        [
+            self.gate.as_deref(),
+            Some(self.digest.as_str()),
+            self.resolution.as_deref(),
+        ]
+        .into_iter()
+        .flatten()
+        .flat_map(crates_named)
+        .collect()
+    }
+
     fn relevance_score(&self, query: FailurePatternQuery<'_>) -> usize {
         let mut score = 0usize;
         if let Some(task_id) = query.task_id
@@ -607,14 +841,33 @@ impl ErrorPattern {
         }
         score
     }
+
+    /// Whether the pattern is about the query's work (backlog 4209): it was
+    /// seen on the query's task, or it is the failure of one of the query's
+    /// verify commands (its gate), compared with whitespace collapsed.
+    fn keyed_to(&self, query: FailurePatternQuery<'_>) -> bool {
+        let same_task = query
+            .task_id
+            .is_some_and(|task_id| self.task_ids.contains(task_id));
+        let same_command = self.gate.as_deref().is_some_and(|gate| {
+            let gate = collapse_whitespace(gate);
+            query
+                .verify_commands
+                .iter()
+                .any(|command| collapse_whitespace(command) == gate)
+        });
+        same_task || same_command
+    }
 }
 
+/// `text` with each run of whitespace made one space, and none at the ends.
 impl FailurePatternQuery<'_> {
     fn is_empty(self) -> bool {
         self.plan_id.is_none()
             && self.task_id.is_none()
             && self.gate.is_none()
             && self.classification.is_none()
+            && self.verify_commands.is_empty()
     }
 }
 
@@ -723,6 +976,38 @@ fn truncate_chars(text: &str, max: usize) -> String {
     text.chars().take(max).collect()
 }
 
+/// Where a workspace keeps its crates.
+const CRATES_DIR: &str = "crates/";
+
+/// The crates `text` names: each `crates/<name>` path, and the package of
+/// each cargo `-p <name>`, `--package <name>` or `--package=<name>` flag.
+fn crates_named(text: &str) -> BTreeSet<String> {
+    let mut crates = BTreeSet::new();
+    let mut words = text.split_whitespace().peekable();
+    while let Some(word) = words.next() {
+        for (start, _) in word.match_indices(CRATES_DIR) {
+            crates.insert(crate_name(&word[start + CRATES_DIR.len()..]));
+        }
+        let package = match word {
+            "-p" | "--package" => words.peek().copied(),
+            _ => word.strip_prefix("--package="),
+        };
+        if let Some(package) = package {
+            crates.insert(crate_name(package));
+        }
+    }
+    crates.remove("");
+    crates
+}
+
+/// The crate name `text` starts with: its leading ASCII letters, digits,
+/// dashes and underscores.
+fn crate_name(text: &str) -> String {
+    text.chars()
+        .take_while(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_'))
+        .collect()
+}
+
 // NOTE: The `unique_tmp_path` helper that lived here has been replaced by
 // `roko_fs::atomic_write_json`.
 
@@ -730,6 +1015,140 @@ fn truncate_chars(text: &str, max: usize) -> String {
 mod tests {
     use super::*;
     use tempfile::TempDir;
+
+    /// Decision 4127: a pattern graduates only when it recurred at least
+    /// three times across at least two plans and has a verified fix. One seen
+    /// in a single plan, one seen twice, and one without a fix stay out; each
+    /// candidate carries its fix and a suggested check.
+    #[test]
+    fn graduation_candidates_need_recurrence_and_a_resolution() {
+        let cases: [(&str, &str, &[&str], bool); 5] = [
+            ("ready", "cargo test", &["p1", "p2", "p2"], true),
+            ("one-plan", "cargo clippy", &["p1", "p1", "p1"], true),
+            ("twice", "cargo build", &["p1", "p2"], true),
+            ("unfixed", "cargo check", &["p1", "p2", "p3"], false),
+            ("lint", "cargo clippy", &["p1", "p2", "p3", "p3"], true),
+        ];
+        let mut store = ErrorPatternStore::empty();
+        for (key, command, plans, fixed) in cases {
+            for plan in plans {
+                store.observe_gate_failure(GateFailureObservation::new(
+                    key,
+                    *plan,
+                    Some("T1".to_string()),
+                    command,
+                    "verify",
+                    format!("{command} failed"),
+                    GateFailureSource::GateClassification,
+                ));
+            }
+            if fixed {
+                store.record_resolution(key, &format!("Fixed `{command}`"), "gr:p1:T1:2");
+            }
+        }
+
+        let candidates =
+            store.graduation_candidates(GRADUATION_MIN_OCCURRENCES, GRADUATION_MIN_PLANS);
+        let keys: Vec<&str> = candidates
+            .iter()
+            .map(|candidate| candidate.key.as_str())
+            .collect();
+        assert_eq!(keys, ["lint", "ready"]);
+        let lint = &candidates[0];
+        assert_eq!((lint.occurrences, lint.plans), (4, 3));
+        assert_eq!(lint.resolution, "Fixed `cargo clippy`");
+        let check = &lint.suggested_check;
+        assert!(check.contains("lint"), "{check}");
+        let check = &candidates[1].suggested_check;
+        assert!(check.contains("regression test"), "{check}");
+    }
+
+    /// backlog 4209: a keyed summary selects a pattern of the same task, or
+    /// of one of the task's verify commands from another task, and skips a
+    /// pattern of another task and command, though it shares the plan.
+    #[test]
+    fn keyed_summary_skips_patterns_of_other_tasks_and_commands() {
+        let mut store = ErrorPatternStore::empty();
+        for (task, command) in [
+            ("T1", "cargo test -p app"),
+            ("T2", "cargo  clippy -p app"),
+            ("T3", "cargo test -p other"),
+        ] {
+            store.observe_gate_failure(GateFailureObservation::new(
+                format!("verify::{task}"),
+                "plan-1",
+                Some(task.to_string()),
+                command,
+                "verify",
+                format!("{command} failed"),
+                GateFailureSource::GateClassification,
+            ));
+        }
+        let commands = vec!["cargo clippy -p app".to_string()];
+        let query = FailurePatternQuery {
+            plan_id: Some("plan-1"),
+            task_id: Some("T1"),
+            verify_commands: &commands,
+            ..FailurePatternQuery::default()
+        };
+
+        let summary = store.bounded_summary_keyed(query, 5, 2_000);
+        let mut gates: Vec<&str> = summary
+            .patterns
+            .iter()
+            .filter_map(|pattern| pattern.gate.as_deref())
+            .collect();
+        gates.sort_unstable();
+        assert_eq!(gates, ["cargo  clippy -p app", "cargo test -p app"]);
+        let unkeyed = FailurePatternQuery::default();
+        let keyed = store.bounded_summary_keyed(unkeyed, 5, 2_000);
+        assert!(keyed.patterns.is_empty(), "no key selects nothing");
+        assert_eq!(store.bounded_summary(unkeyed, 5, 2_000).patterns.len(), 3);
+    }
+
+    /// backlog 4208: loading drops the turn-cap and timeout rows older runs
+    /// recorded, and keeps verify failures.
+    #[test]
+    fn load_drops_turn_cap_and_timeout_patterns() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let path = tmp.path().join(ERROR_PATTERNS_FILE);
+        let mut store = ErrorPatternStore::empty();
+        for class in ["verify", "turn_cap", "timeout"] {
+            store.observe_gate_failure(GateFailureObservation::new(
+                format!("{class}::digest"),
+                "plan-1",
+                Some("T1".to_string()),
+                class,
+                class,
+                format!("{class} failure"),
+                GateFailureSource::RetryClassifier,
+            ));
+        }
+        assert_eq!(store.len(), 3);
+        store.save(&path).expect("save");
+
+        let loaded = ErrorPatternStore::load(&path);
+        assert_eq!(loaded.len(), 1);
+        assert_eq!(loaded.top_patterns(1)[0].category, "verify");
+    }
+
+    /// backlog 4204: Runner-v2's pattern file is renamed aside, never
+    /// deleted or imported, and a second call finds nothing to do.
+    #[test]
+    fn legacy_discovered_patterns_file_is_set_aside() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let legacy = tmp.path().join(LEGACY_DISCOVERED_PATTERNS_FILE);
+        std::fs::write(&legacy, "{\"patterns\":{}}").expect("write the legacy file");
+
+        assert!(retire_legacy_discovered_patterns(tmp.path()).expect("set aside"));
+        assert!(!legacy.exists());
+        let retired = tmp.path().join("discovered-patterns.json.v2-legacy");
+        let kept = std::fs::read_to_string(&retired).expect("the file set aside");
+        assert_eq!(kept, "{\"patterns\":{}}");
+        let imported = tmp.path().join(ERROR_PATTERNS_FILE);
+        assert!(!imported.exists(), "nothing imported");
+        assert!(!retire_legacy_discovered_patterns(tmp.path()).expect("nothing to do"));
+    }
 
     #[test]
     fn append_upserts_by_digest() {
@@ -1028,6 +1447,7 @@ mod tests {
                 task_id: Some("task-a"),
                 gate: Some("compile:cargo"),
                 classification: Some("type_error"),
+                ..FailurePatternQuery::default()
             },
             5,
             500,
@@ -1072,5 +1492,41 @@ mod tests {
         assert_eq!(summary.patterns.len(), 1);
         assert!(summary.patterns[0].repeated);
         assert!(summary.format_for_prompt().contains("repeated"));
+    }
+
+    /// gap-a40021: a summary's prompt text is its header, then each pattern's
+    /// entry in display order, so a prompt that holds an entry shows that
+    /// pattern.
+    #[test]
+    fn summary_entries_make_up_its_prompt_text() {
+        let mut store = ErrorPatternStore::empty();
+        for (key, digest) in [
+            ("verify::E0425", "E0425 total"),
+            ("verify::E0599", "E0599 len"),
+        ] {
+            store.observe_gate_failure(GateFailureObservation::new(
+                key,
+                "plan-a",
+                Some("task-a".to_string()),
+                "cargo test -p a",
+                "verify",
+                digest,
+                GateFailureSource::GateClassification,
+            ));
+        }
+        let query = FailurePatternQuery {
+            task_id: Some("task-a"),
+            ..FailurePatternQuery::default()
+        };
+
+        let summary = store.bounded_summary_keyed(query, 5, 2_000);
+
+        let entries = summary.format_entries();
+        assert_eq!(entries.len(), 2, "{entries:?}");
+        assert!(entries[0].starts_with("1. [verify] "), "{}", entries[0]);
+        assert!(entries[1].starts_with("2. [verify] "), "{}", entries[1]);
+        let text = summary.format_for_prompt();
+        assert!(text.starts_with("## Prior Verify Failure Patterns"));
+        assert!(text.ends_with(&entries.concat()), "{text}");
     }
 }

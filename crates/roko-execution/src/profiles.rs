@@ -25,7 +25,8 @@ pub enum RuntimeProfile {
     GraphPlan,
     /// Single-prompt workflow execution via `roko run`.
     Workflow,
-    /// Lightweight direct execution (`roko do`, `roko develop`).
+    /// Lightweight direct execution. No CLI command uses it now: `roko do` and
+    /// `roko develop` were folded into `roko run` (2026-10-02).
     DirectLight,
     /// Per-agent HTTP sidecar (`roko agent serve`).
     AgentServer,

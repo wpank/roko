@@ -153,6 +153,7 @@ fn outcome_to_episode(outcome: &RehearsalOutcome, threat: &ThreatScenario) -> Ep
             "confidence={:.2}: {}",
             outcome.confidence, outcome.scenario
         )),
+        ..EpisodeGateVerdict::default()
     });
 
     episode

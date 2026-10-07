@@ -23,38 +23,100 @@
 //! learner. That includes the T0 reflex rule that served an attempt
 //! (`reflex_credit`).
 
+use roko_core::config::learning::LearningAuditConfig;
+use roko_core::config::schema::ProviderBilling;
+use roko_core::pricing_snapshot::{PriceSnapshot, PricedUsage, TokenCounts};
+use roko_learn::loop_audit::arm_set::{ArmMode, ArmSet};
+use roko_learn::loop_audit::{LoopAuditor, Registry};
 use roko_learn::telemetry::records::b3_digest;
+use roko_learn::telemetry::records::{
+    AttemptCost, AttemptUsage, CacheWriteClass, PlaceboDecisionRecord, VerifyDepthRecord,
+    VerifyStepVerdict,
+};
 use roko_learn::telemetry::{
     AttemptFailureClass, AttemptIdentity, AttemptKey, AttemptLadder, AttemptOpenRecord,
-    AttemptOrdinals, AttemptTiming, AttemptVerdictRecord, Blame, CostSource, ExecutedModel,
-    GateVerdictTag, HelperCallsUsage, TelemetryEvent, TelemetryWriter, TelemetryWriterConfig,
-    TelemetryWriterStats,
+    AttemptOrdinals, AttemptTiming, AttemptVerdictRecord, Blame, ContentDecisionRecord, CostSource,
+    ExecutedModel, ExposureCounts, ExposureRecord, GateVerdictTag, HelperCallsUsage, LadderReason,
+    TelemetryEvent, TelemetryWriter, TelemetryWriterConfig, TelemetryWriterStats,
 };
 use sha2::Digest;
 
+use super::audit_select::AuditSelector;
 use super::failover::FailoverChain;
 use super::served_model::{ServedModel, is_cli_backend};
 use super::*;
 
-/// Attempt state of one run: its durable ordinals and its telemetry writer.
+/// `run_seed` of the arm-set draws (`telemetry::assign`): 0 until runs
+/// record an experiment seed (S01 `experiment.seed`), as the route's
+/// exploration draws do. The chain key names the run.
+const ARM_SEED: u64 = 0;
+
+/// The run's file of chain arm sets, beside `attempts.jsonl`: one line per
+/// chain, as its first attempt drew it, so a run resumed in another process
+/// keeps its chains' arms (bug-2410e1).
+const ARM_SETS_FILE: &str = "arm-sets.jsonl";
+
+/// One line of [`ARM_SETS_FILE`]: a chain's arm set and the epoch the run
+/// draws for.
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+struct KeptArmSet {
+    epoch: String,
+    arm_set: ArmSet,
+}
+
+/// Attempt state of one run: its durable ordinals, its telemetry writer and
+/// its chains' arm sets.
 struct RunAttempts {
     ordinals: AttemptOrdinals,
     /// `None` when the dispatcher keeps no run files, or the writer did not
     /// start.
     writer: Option<TelemetryWriter>,
+    /// The run's audit lottery (DP1), with `[audit] enabled`.
+    audit: Option<Arc<AuditSelector>>,
+    run_id: String,
+    /// The UTC day the run draws its arm sets for: the day its arm-set file
+    /// names, else the day this process opened the run, so a retry after
+    /// midnight keeps its chain's arms.
+    epoch: String,
+    /// Each chain's arm set (S02.P1-14), drawn on its first attempt in the
+    /// run and inherited by its retries, in this process or a later one.
+    arm_sets: parking_lot::Mutex<HashMap<String, Arc<ArmSet>>>,
+    /// The run's [`ARM_SETS_FILE`]; `None` without run files.
+    arm_sets_path: Option<PathBuf>,
 }
 
 impl RunAttempts {
     /// Open run `run_id` under `runs_dir` (`.roko/runs`): recover its
-    /// ordinals from `attempts.jsonl` and start its writer. Without a
-    /// `runs_dir` the ordinals live in memory and nothing is written.
-    fn open(runs_dir: Option<&Path>, run_id: &str) -> Self {
-        let Some(run_dir) = runs_dir.map(|dir| dir.join(run_id)) else {
+    /// ordinals from `attempts.jsonl` and its chains' arm sets and epoch
+    /// from its arm-set file, and start its writer. Without a `runs_dir` the
+    /// ordinals and arm sets live in memory and nothing is written.
+    fn open(runs_dir: Option<&Path>, run_id: &str, audit: Option<Arc<AuditSelector>>) -> Self {
+        // DP1: the run commits to its audit key before its first draw.
+        if let Some(audit) = &audit {
+            audit.open_run(run_id);
+        }
+        let run_id = run_id.to_string();
+        let today = chrono::Utc::now().format("%Y-%m-%d").to_string();
+        let Some(run_dir) = runs_dir.map(|dir| dir.join(&run_id)) else {
             return Self {
                 ordinals: AttemptOrdinals::default(),
                 writer: None,
+                audit,
+                run_id,
+                epoch: today,
+                arm_sets: parking_lot::Mutex::new(HashMap::new()),
+                arm_sets_path: None,
             };
         };
+        // bug-2410e1: a resumed run keeps the arm sets its earlier processes
+        // drew, and the epoch they drew them for.
+        let arm_sets_path = run_dir.join(ARM_SETS_FILE);
+        let kept = read_arm_sets(&arm_sets_path);
+        let epoch = kept.first().map_or(today, |first| first.epoch.clone());
+        let arm_sets = kept
+            .into_iter()
+            .map(|kept| (kept.arm_set.chain_key.clone(), Arc::new(kept.arm_set)))
+            .collect();
         let ordinals = AttemptOrdinals::load(&run_dir).unwrap_or_else(|error| {
             tracing::warn!(
                 run_dir = %run_dir.display(),
@@ -74,7 +136,54 @@ impl RunAttempts {
                 None
             }
         };
-        Self { ordinals, writer }
+        Self {
+            ordinals,
+            writer,
+            audit,
+            run_id,
+            epoch,
+            arm_sets: parking_lot::Mutex::new(arm_sets),
+            arm_sets_path: Some(arm_sets_path),
+        }
+    }
+
+    /// The arm set of `key`'s chain: drawn in `mode` on the chain's first
+    /// attempt in the run, over the registry and the audited loop states of
+    /// `auditor` (gap-addf2a), and kept in the run's arm-set file; the same
+    /// for every later one, in this process or one that resumes the run.
+    fn arm_set(&self, key: &AttemptKey, auditor: &LoopAuditor, mode: &ArmMode) -> Arc<ArmSet> {
+        let mut sets = self.arm_sets.lock();
+        let chain = key.chain_key();
+        if let Some(set) = sets.get(&chain) {
+            return Arc::clone(set);
+        }
+        let draws = auditor.arm_draws(ARM_SEED, self.epoch.clone());
+        let set = Arc::new(ArmSet::assign(key, auditor.registry(), mode, &draws));
+        self.keep(&set);
+        sets.insert(chain, Arc::clone(&set));
+        set
+    }
+
+    /// Append `set`, a chain's first draw, to the run's arm-set file; a
+    /// failed write is logged, and a resumed run then draws the chain anew.
+    fn keep(&self, set: &ArmSet) {
+        let Some(path) = &self.arm_sets_path else {
+            return;
+        };
+        let kept = KeptArmSet {
+            epoch: self.epoch.clone(),
+            arm_set: set.clone(),
+        };
+        let written = serde_json::to_string(&kept)
+            .map_err(std::io::Error::other)
+            .and_then(|line| append_line(path, &line));
+        if let Err(error) = written {
+            tracing::warn!(
+                path = %path.display(),
+                %error,
+                "a chain's arm set was not kept; a resumed run draws it anew"
+            );
+        }
     }
 
     /// Queue `record` without waiting; the writer counts what it drops.
@@ -89,6 +198,10 @@ impl RunAttempts {
     /// Close the writer, wait for its queued lines, and return its final
     /// counters; `None` when it never started or is already closed.
     fn close(&mut self) -> Option<TelemetryWriterStats> {
+        // DP1: reveal the run's audit key once the run is over.
+        if let Some(audit) = self.audit.take() {
+            audit.close_run(&self.run_id);
+        }
         let stats = self.writer.take()?.close();
         if stats.dropped > 0 || stats.write_errors > 0 {
             tracing::warn!(
@@ -99,6 +212,31 @@ impl RunAttempts {
         }
         Some(stats)
     }
+}
+
+/// The arm sets a run's earlier processes kept at `path`, in the order they
+/// were drawn; none without the file, and a line that does not parse is
+/// skipped.
+fn read_arm_sets(path: &Path) -> Vec<KeptArmSet> {
+    std::fs::read_to_string(path)
+        .unwrap_or_default()
+        .lines()
+        .filter_map(|line| serde_json::from_str(line).ok())
+        .collect()
+}
+
+/// Append `line` to the file at `path`, making its directory.
+fn append_line(path: &Path, line: &str) -> std::io::Result<()> {
+    use std::io::Write as _;
+
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let mut file = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)?;
+    writeln!(file, "{line}")
 }
 
 impl Drop for RunAttempts {
@@ -120,6 +258,12 @@ pub(super) struct AttemptBook {
     /// manifest ([`GraphTaskDispatcher::attach_run_invocation`]). Attempt
     /// records carry it as `inv`.
     invocations: parking_lot::Mutex<HashMap<String, u32>>,
+    /// The audit lottery, made when the first attempt opens (`[audit]`).
+    audit: std::sync::OnceLock<Option<Arc<AuditSelector>>>,
+    /// The loop auditor (the registry and each loop's audited state) and the
+    /// `[experiments]` mode the arm sets are drawn with, loaded when the
+    /// first attempt opens; `None` without a registry.
+    arm_inputs: std::sync::OnceLock<Option<(LoopAuditor, ArmMode)>>,
 }
 
 impl Default for AttemptBook {
@@ -128,8 +272,59 @@ impl Default for AttemptBook {
             fallback_run_id: format!("graph-{}", uuid::Uuid::new_v4().simple()),
             runs: parking_lot::Mutex::new(HashMap::new()),
             invocations: parking_lot::Mutex::new(HashMap::new()),
+            audit: std::sync::OnceLock::new(),
+            arm_inputs: std::sync::OnceLock::new(),
         }
     }
+}
+
+/// The loop auditor the arm sets are drawn under (gap-addf2a): `workdir`'s
+/// loop registry and each loop's state in its loop-audit ledger, so a loop's
+/// audited state sets its holdout and an enforced demotion runs π⁰. With an
+/// unreadable registry override, the embedded registry and no state; `None`
+/// only when that fails too.
+pub(super) fn load_loop_auditor(
+    workdir: &Path,
+    config: &LearningAuditConfig,
+) -> Option<LoopAuditor> {
+    match LoopAuditor::load(workdir, config) {
+        Ok(auditor) => Some(auditor),
+        Err(error) => {
+            tracing::warn!(%error, "loop registry override unreadable; arms draw unaudited");
+            let registry = Registry::embedded()
+                .inspect_err(|error| {
+                    tracing::warn!(%error, "no loop registry; attempts draw no arms");
+                })
+                .ok()?;
+            Some(LoopAuditor::from_records(registry, config, &[]))
+        }
+    }
+}
+
+/// The loop registry the arm sets are drawn over: the embedded registry,
+/// merged with `workdir`'s override. An unreadable override is logged and
+/// the embedded registry used; `None` only when that fails too.
+pub(super) fn load_loop_registry(workdir: &Path) -> Option<Registry> {
+    Registry::load(workdir)
+        .inspect_err(|error| {
+            tracing::warn!(%error, "loop registry override unreadable; using the embedded one");
+        })
+        .or_else(|_| Registry::embedded())
+        .inspect_err(|error| tracing::warn!(%error, "no loop registry; attempts draw no arms"))
+        .ok()
+}
+
+/// The provider agent id of one attempt: its attempt key
+/// (`{run}:{plan}:{task}:{attempt}`). The provider immune boundary keys its
+/// isolation controls by this id, so a control covers this attempt and no
+/// other, in this run or a later one (decision 1107). An attempt key the
+/// boundary would refuse falls back to `{plan}/{task}#{attempt}`.
+pub(super) fn attempt_agent_id(key: &AttemptKey, plan_id: &str, task_or_cell: &str) -> String {
+    let attempt_key = key.attempt_key();
+    if roko_agent::immune_boundary::validate_provider_agent_id(&attempt_key).is_ok() {
+        return attempt_key;
+    }
+    format!("{plan_id}/{task_or_cell}#{}", key.attempt)
 }
 
 impl AttemptBook {
@@ -149,11 +344,49 @@ impl AttemptBook {
     }
 
     fn run(&self, runs_dir: Option<&Path>, run_id: &str) -> Arc<RunAttempts> {
+        let audit = self.audit().cloned();
         let mut runs = self.runs.lock();
         let run = runs
             .entry(run_id.to_string())
-            .or_insert_with(|| Arc::new(RunAttempts::open(runs_dir, run_id)));
+            .or_insert_with(|| Arc::new(RunAttempts::open(runs_dir, run_id, audit)));
         Arc::clone(run)
+    }
+
+    /// The UTC day run `run_id` draws its chains' arms for: the day this
+    /// process opened it, else today, the day its first attempt opens it.
+    fn epoch(&self, run_id: &str) -> String {
+        self.runs.lock().get(run_id).map_or_else(
+            || chrono::Utc::now().format("%Y-%m-%d").to_string(),
+            |run| run.epoch.clone(),
+        )
+    }
+
+    /// The arm set of `attempt`'s chain in its run (S02.P1-14): drawn under
+    /// `workdir`'s loop auditor ([`load_loop_auditor`], `[learning.audit]`)
+    /// in the mode `[experiments]` sets on the chain's first attempt, and
+    /// inherited by its retries. `None` when no registry loads.
+    fn arm_set(
+        &self,
+        attempt: &AttemptContext,
+        workdir: &Path,
+        config: &RokoConfig,
+    ) -> Option<Arc<ArmSet>> {
+        let (auditor, mode) = self
+            .arm_inputs
+            .get_or_init(|| {
+                Some((
+                    load_loop_auditor(workdir, &config.learning.audit)?,
+                    ArmMode::for_config(&config.experiments),
+                ))
+            })
+            .as_ref()?;
+        Some(attempt.run.arm_set(&attempt.key, auditor, mode))
+    }
+
+    /// The audit lottery, once the first attempt opened with `[audit]
+    /// enabled`.
+    pub(super) fn audit(&self) -> Option<&Arc<AuditSelector>> {
+        self.audit.get().and_then(Option::as_ref)
     }
 
     /// Record that this process is invocation `inv` of run `run_id`.
@@ -221,6 +454,15 @@ impl AttemptBook {
             helpers: None,
             ladder: None,
             reflex_rule: None,
+            live_tool_calls: LiveToolCalls::default(),
+            verify_steps: Vec::new(),
+            scope_findings: Vec::new(),
+            exposures: None,
+            pricing: None,
+            arm_set: None,
+            harness: None,
+            trust_exclusions: None,
+            verify_depth: None,
             run,
         }
     }
@@ -243,6 +485,31 @@ pub(super) struct AttemptContext {
     ladder: Option<(AttemptLadder, bool)>,
     /// The T0 reflex rule that served the attempt in place of the provider.
     reflex_rule: Option<uuid::Uuid>,
+    /// The tool calls the attempt's live output shows (bug-264c41).
+    live_tool_calls: LiveToolCalls,
+    /// What each verify step did, once verification settled (backlog 2104).
+    verify_steps: Vec<VerifyStepVerdict>,
+    /// The paths the attempt changed outside its task's `files`, as the
+    /// pre-verify screen found them (backlog 1125).
+    scope_findings: Vec<roko_learn::telemetry::ScopeFinding>,
+    /// How many content items the attempt's prompt retrieved and included,
+    /// once it was planned (S01 P0-9).
+    exposures: Option<ExposureCounts>,
+    /// The run's price snapshot, which prices the verdict (backlog 2115).
+    pricing: Option<Arc<PriceSnapshot>>,
+    /// The arms of the attempt's chain (S02.P1-14), which every decision row
+    /// of the attempt carries; `None` when no loop registry loaded.
+    arm_set: Option<Arc<ArmSet>>,
+    /// M1's decision for the attempt (8123): its chain's arm on the
+    /// `harness_policy` layer and the θ it runs; `None` without an M1 sink.
+    harness: Option<Arc<crate::runtime_feedback::homeostasis::HarnessDecision>>,
+    /// DP4's count of the exclusions the attempt's routing made, for its
+    /// verdict (gap-595e28); `None` until it is routed, or without a cascade
+    /// router.
+    trust_exclusions: Option<u64>,
+    /// DP3's verify depth for the attempt, for its verdict (gap-595e28);
+    /// `None` until verification reaches DP3.
+    verify_depth: Option<VerifyDepthRecord>,
     run: Arc<RunAttempts>,
 }
 
@@ -262,9 +529,55 @@ impl AttemptContext {
         self.timing.dispatch_ended_at = Some(now_ms());
     }
 
+    /// Verification starts: the pre-verify screen, then the verify steps.
+    pub(super) fn verify_started(&mut self) {
+        self.timing.verify_started_at = Some(now_ms());
+    }
+
+    /// Verification ended.
+    pub(super) fn verify_ended(&mut self) {
+        self.timing.verify_ended_at = Some(now_ms());
+    }
+
+    /// Verification found `steps`: what each verify step did, which the
+    /// verdict lists (backlog 2104).
+    pub(super) fn record_verify_steps(&mut self, steps: Vec<VerifyStepVerdict>) {
+        self.verify_steps = steps;
+    }
+
+    /// Planning routed the attempt, and DP4 made `count` exclusions while it
+    /// did, by the cascade router's count, which the verdict keeps apart from
+    /// the route row (gap-595e28).
+    pub(super) fn record_trust_exclusions(&mut self, count: Option<u64>) {
+        self.trust_exclusions = count;
+    }
+
+    /// DP3 checked the attempt at `depth` (gap-595e28), which the verdict
+    /// records; `None` when verification did not reach DP3.
+    pub(super) fn record_verify_depth(&mut self, depth: Option<VerifyDepthRecord>) {
+        self.verify_depth = depth;
+    }
+
+    /// The pre-verify screen found `findings`: paths the attempt changed
+    /// outside its task's `files`, which the verdict lists (backlog 1125).
+    pub(super) fn record_scope_findings(
+        &mut self,
+        findings: Vec<roko_learn::telemetry::ScopeFinding>,
+    ) {
+        self.scope_findings = findings;
+    }
+
     /// Provider failover passed over `failover`'s models before the one
-    /// that ran (bug-35379d).
+    /// that ran (bug-35379d). An attempt the ladder routed then records the
+    /// rung that ran, as a failover, which never exhausts the ladder
+    /// (backlog 1120).
     pub(super) fn record_failover(&mut self, failover: FailoverChain) {
+        if let (Some(rung), Some((ladder, last_chance))) = (&failover.rung, &mut self.ladder) {
+            ladder.rung = Some(rung.name.clone());
+            ladder.index = Some(rung.index);
+            ladder.reason = LadderReason::Failover;
+            *last_chance = false;
+        }
         self.failover = failover;
     }
 
@@ -280,11 +593,121 @@ impl AttemptContext {
         self.ladder = Some((ladder, last_chance));
     }
 
+    /// Queue the attempt's route decision, with its chain's arms, for the
+    /// run's `decisions.jsonl` (S01 P0-8); the writer stamps its sequence
+    /// number.
+    pub(super) fn record_decision(
+        &self,
+        mut decision: roko_learn::routing_log::RoutingDecisionLog,
+    ) {
+        decision.arm_set = self.arm_set.as_deref().cloned();
+        self.run.submit(decision);
+    }
+
+    /// Queue the attempt's placebo decision (S03 §4.3, S02 L12) for the
+    /// run's `decisions.jsonl`: its chain's placebo assignment, whose two
+    /// arms propose the same thing, so nothing reads the arm. A retry carries
+    /// its chain's arm; an attempt without an arm set writes none.
+    fn record_placebo_decision(&self) {
+        let Some(assignment) = self.arm_set.as_deref().and_then(ArmSet::placebo) else {
+            return;
+        };
+        let decision = PlaceboDecisionRecord::new(self.identity.clone(), assignment.clone());
+        self.run.submit(decision);
+    }
+
+    /// M1's decision for the attempt (S06 T13, 8123): its chain's arm on
+    /// the `harness_policy` layer and the θ it runs, queued as the attempt's
+    /// `harness_policy` decision row and stamped on its verdict. `pinned`
+    /// says a pin chooses the attempt's model, which B1 leaves alone (8124).
+    fn record_harness_decision(
+        &mut self,
+        sink: &crate::runtime_feedback::HomeostasisSink,
+        pinned: bool,
+    ) {
+        let decision = sink.decide(&self.key, &self.run.epoch);
+        self.run
+            .submit(decision.record(self.identity.clone(), pinned));
+        self.harness = Some(Arc::new(decision));
+    }
+
+    /// The θ the attempt runs; `None` when the run has no M1 sink, so the
+    /// config's values stand.
+    pub(super) fn harness_params(
+        &self,
+    ) -> Option<&roko_core::config::harness_params::HarnessParams> {
+        self.harness.as_ref().map(|decision| &decision.applied)
+    }
+
+    /// M1's decision for the attempt, with θ₀ beside the θ it runs; `None`
+    /// without an M1 sink.
+    pub(super) fn harness_decision(
+        &self,
+    ) -> Option<&crate::runtime_feedback::homeostasis::HarnessDecision> {
+        self.harness.as_deref()
+    }
+
+    /// The arms of the attempt's chain, which its prompt assembly reads to
+    /// withhold a loop's content (S02 L7).
+    pub(super) fn arm_set(&self) -> Option<Arc<ArmSet>> {
+        self.arm_set.clone()
+    }
+
+    /// The identity every record of the attempt flattens.
+    pub(super) fn identity(&self) -> &AttemptIdentity {
+        &self.identity
+    }
+
+    /// When the attempt opened, assembled its prompt and so on.
+    pub(super) const fn timing(&self) -> &AttemptTiming {
+        &self.timing
+    }
+
+    /// Queue one item the attempt's prompt retrieved for the run's
+    /// `exposures.jsonl` (S01 P0-9).
+    pub(super) fn record_exposure(&self, exposure: ExposureRecord) {
+        self.run.submit(exposure);
+    }
+
+    /// Queue the self-model's forecast of the attempt for the run's
+    /// `predictions.jsonl` (S01 §5.6), ahead of its route decision (6128).
+    /// The run's lottery notes its id, which the attempt's `vs.label` row
+    /// names once an audit labels it.
+    pub(super) fn record_prediction(
+        &self,
+        prediction: roko_learn::telemetry::records::AttemptPredictionRecord,
+    ) {
+        if let Some(audit) = &self.run.audit {
+            audit.note_prediction(&prediction.identity.attempt_key, &prediction.prediction_id);
+        }
+        self.run.submit(prediction);
+    }
+
+    /// Queue the content decision the attempt's prompt made at one decision
+    /// point, with its chain's arms, for the run's `decisions.jsonl` (S01
+    /// P0-9).
+    pub(super) fn record_content_decision(&self, mut decision: ContentDecisionRecord) {
+        decision.arm_set = self.arm_set.as_deref().cloned();
+        self.run.submit(decision);
+    }
+
+    /// The attempt's prompt retrieved and included `counts` content items,
+    /// which its verdict records.
+    pub(super) fn record_exposure_counts(&mut self, counts: ExposureCounts) {
+        self.exposures = Some(counts);
+    }
+
     /// The T0 reflex rule `rule_id` served the attempt in place of the
     /// provider. The attempt's learning label alone credits or demotes the
     /// rule once it settles (gap-4468bd).
     pub(super) fn served_by_reflex(&mut self, rule_id: uuid::Uuid) {
         self.reflex_rule = Some(rule_id);
+    }
+
+    /// The record the attempt's live-output tap fills with the tool calls
+    /// the provider streams (bug-264c41).
+    pub(super) fn live_tool_calls(&self) -> LiveToolCalls {
+        self.live_tool_calls.clone()
     }
 
     /// Settle the attempt: build its verdict record, queue it for the run's
@@ -310,12 +733,27 @@ impl AttemptContext {
         verdict.task_spec_hash = Some(self.task_spec_hash);
         verdict.gate_verdict = gate_verdict;
         verdict.failure_class = failure_class(outcome, failure_reason.as_deref(), rung);
+        verdict.steps = self.verify_steps;
+        verdict.set_scope_findings(self.scope_findings);
         verdict.timing = self.timing;
-        // Neither path sees the first token's time yet (S01 P0-5).
-        verdict.timing.ttft_source = Some("unavailable".to_string());
+        // The call's time to first token, measured from its start
+        // (gap-7a8474), places the first token. A call that streamed no
+        // output records none, never 0 (S01 decision 6).
+        let first_token_at = first_token_time(dispatch, verdict.timing.dispatch_started_at);
+        let ttft_source = if first_token_at.is_some() {
+            "stream"
+        } else {
+            "unavailable"
+        };
+        verdict.timing.first_token_at = first_token_at;
+        verdict.timing.ttft_source = Some(ttft_source.to_string());
         verdict.timing.settled_at = Some(now_ms());
         verdict.executed = executed_model(model_requested, dispatch, self.failover);
-        verdict.cost.source = cost_source(dispatch);
+        verdict.usage = dispatch.map(attempt_usage).unwrap_or_default();
+        verdict.cost = attempt_cost(dispatch);
+        // What the attempt's tokens cost at the run's price snapshot, the
+        // figure cost per verified task reads (backlog 2115, 6105).
+        price_at_snapshot(&mut verdict, dispatch, self.pricing.as_deref());
         verdict.helpers = self.helpers;
         let agent_failed = verdict.blame == Blame::Agent;
         verdict.ladder = self.ladder.map(|(mut ladder, last_chance)| {
@@ -326,11 +764,27 @@ impl AttemptContext {
         verdict.output_sha256 = dispatch
             .and_then(|dispatch| dispatch.result.output.body.as_text().ok())
             .map(sha256_hex);
+        verdict.exposures = self.exposures;
+        verdict.harness = self.harness.as_ref().map(|decision| decision.stamp());
+        verdict.trust_exclusions = self.trust_exclusions;
+        verdict.verify_depth = self.verify_depth;
         self.run.submit(verdict.clone());
+        // DP1: a green attempt draws its audit ticket; the draw is only logged.
+        // M1's audit boost of the θ it ran raises its rate (B7, 8127).
+        if let Some(audit) = &self.run.audit {
+            let output = dispatch.and_then(|dispatch| dispatch.result.output.body.as_text().ok());
+            let boost = self
+                .harness
+                .as_ref()
+                .map_or(1, |decision| decision.applied.audit_boost);
+            audit.draw(&verdict, output, boost);
+        }
         SettledAttempt {
             verdict: Arc::new(verdict),
             failure_reason,
             reflex_rule: self.reflex_rule,
+            live_tool_calls: self.live_tool_calls,
+            harness: self.harness,
         }
     }
 }
@@ -351,7 +805,8 @@ pub(super) struct Settlement {
 impl Settlement {
     /// The verify steps' verdict on a successful provider call. An attempt
     /// the pre-verify screen rejected is a verify failure too: the agent's,
-    /// with the screen's check as its rung.
+    /// with the screen's check as its rung. A verify its stopping plan run
+    /// cut short is a cancellation, which teaches nothing (bug-82cbef).
     pub(super) fn verified(verification: &Result<TaskGateVerdict>) -> Self {
         match verification {
             Ok(verdict) => {
@@ -364,6 +819,16 @@ impl Settlement {
                     rung: None,
                 }
             }
+            Err(RokoError::Cancelled(reason)) => Self {
+                outcome: AttemptOutcome::Cancelled,
+                gate_verdict: None,
+                first_token_seen: true,
+                failure_reason: Some(super::turn_policy::attempt_failure_reason(
+                    "cancelled",
+                    reason,
+                )),
+                rung: None,
+            },
             Err(error) => Self {
                 outcome: AttemptOutcome::GateFailed,
                 gate_verdict: None,
@@ -408,7 +873,9 @@ impl Settlement {
 
     /// A provider call that ended in `error` before returning a result. A
     /// stop the plan run asked for is a cancellation, which teaches nothing
-    /// (bug-2b1ddc); anything else is [`Self::provider_failure`].
+    /// (bug-2b1ddc). An attempt in the shared checkout that only unguarded
+    /// CLI agents could take never called a provider, so it is the harness's
+    /// failure (decision 1214). Anything else is [`Self::provider_failure`].
     pub(super) fn provider_call_error(error: &RokoError) -> Self {
         match error {
             RokoError::Cancelled(reason) => Self {
@@ -421,6 +888,11 @@ impl Settlement {
                 )),
                 rung: None,
             },
+            RokoError::Gateway { category, .. }
+                if *category == super::failover::UNGUARDED_IN_CHECKOUT =>
+            {
+                Self::harness_failure(error)
+            }
             _ => Self::provider_failure(&error.to_string(), false),
         }
     }
@@ -449,6 +921,12 @@ pub(super) struct SettledAttempt {
     /// The T0 reflex rule that served the attempt, which its learning label
     /// credits or demotes ([`GraphTaskDispatcher::credit_reflex_rule`]).
     pub(super) reflex_rule: Option<uuid::Uuid>,
+    /// The tool calls the attempt's live output showed, which its efficiency
+    /// row lists (bug-264c41).
+    pub(super) live_tool_calls: LiveToolCalls,
+    /// M1's decision for the attempt, whose θ caps the task's climb after
+    /// it (8124); `None` without an M1 sink.
+    pub(super) harness: Option<Arc<crate::runtime_feedback::homeostasis::HarnessDecision>>,
 }
 
 impl SettledAttempt {
@@ -503,13 +981,93 @@ impl GraphTaskDispatcher {
                 .or_default();
             *started = started.saturating_add(1);
         }
-        self.attempts.open(
+        self.attempts.audit.get_or_init(|| {
+            // DP4: the plan routes by the audit trust estimates (7133).
+            self.load_audit_trust();
+            let selector =
+                AuditSelector::for_config(&self.config.audit, &self.config.gates, &self.workdir)?;
+            // DP5: audited VS labels teach the run's self-model (7134).
+            let learner = self.feedback.self_model.clone();
+            let learner = learner.map(|model| model as Arc<dyn crate::audit::labels::VsLearner>);
+            let selector = selector.with_phase_b(self.audit_phase_b());
+            // Its workers' model calls write cost and efficiency rows (gap-dd9c2e).
+            let selector = selector.with_call_log(self.audit_call_log());
+            // M1's audit boosts and couplings raise its rate (8127).
+            let selector = selector.with_m1(self.feedback.homeostasis.clone());
+            Some(Arc::new(selector.with_learner(learner)))
+        });
+        let mut attempt = self.attempts.open(
             self.feedback.runs_dir.as_deref(),
             self.attempts.run_id(ctx),
             spec,
             task,
             ctx.cell_id.as_deref(),
-        )
+        );
+        // An audit of the attempt needs its task's verify steps and files.
+        if let Some(audit) = self.attempts.audit() {
+            audit.note_task(&attempt.key.attempt_key(), task);
+        }
+        attempt.pricing = self.pricing_snapshot();
+        // S02.P1-14: the chain's arms, drawn on its first attempt, and the
+        // placebo's decision among them (S02 L12).
+        attempt.arm_set = self.attempts.arm_set(&attempt, &self.workdir, &self.config);
+        attempt.record_placebo_decision();
+        // M1 (S06 T13, 8123): the θ the attempt runs, and its decision row.
+        if let Some(sink) = self.feedback.homeostasis.as_deref() {
+            attempt.record_harness_decision(sink, self.model_pinned(task));
+        }
+        attempt
+    }
+
+    /// The θ the next attempt at task `task_id` of `spec`'s plan, in the run
+    /// `ctx` names, runs, read before the attempt opens: its chain's arm on
+    /// M1's holdout and the handle's θ. Every attempt of a chain draws the
+    /// same arm, so the next attempt's ordinal does not matter. Budget
+    /// admission (B8, 8125), the turn cap and the retry budget (B2, 8126)
+    /// read it. `None` without an M1 sink.
+    pub(super) fn next_attempt_theta(
+        &self,
+        spec: &TaskExecutionSpec,
+        task_id: &str,
+        ctx: &CellContext,
+    ) -> Option<roko_core::config::harness_params::HarnessParams> {
+        let sink = self.feedback.homeostasis.as_deref()?;
+        let run_id = self.attempts.run_id(ctx);
+        let plan_id = if spec.plan_id.is_empty() {
+            "-"
+        } else {
+            spec.plan_id.as_str()
+        };
+        let key = AttemptKey::new(run_id, plan_id, task_id, 1);
+        Some(sink.decide(&key, &self.attempts.epoch(run_id)).applied)
+    }
+
+    /// The share of `task`'s budget ceiling its next attempt may spend
+    /// (M1's B8, 8125): the `task_budget_scale` of the θ its chain runs.
+    /// Decrease-only: 1 without an M1 sink, and for anything but a share
+    /// below 1.
+    ///
+    /// Admission reads θ here, before the attempt opens and stamps the θ it
+    /// runs, so a θ the controller swaps in between leaves the two a version
+    /// apart. That window is accepted as rare and low-risk (gap-26c055): M1
+    /// changes θ only when a dwell ends, at least eight resolutions and two
+    /// minutes apart; B8 only ever lowers a ceiling; and the verdict's harness
+    /// stamp names the θ the attempt ran.
+    pub(super) fn task_budget_scale(
+        &self,
+        spec: &TaskExecutionSpec,
+        task: &TaskDef,
+        ctx: &CellContext,
+    ) -> f64 {
+        let Some(theta) = self.next_attempt_theta(spec, &task.id, ctx) else {
+            return 1.0;
+        };
+        let scale = theta.task_budget_scale;
+        if scale > 0.0 && scale < 1.0 {
+            scale
+        } else {
+            1.0
+        }
     }
 
     /// Close run `run_id`'s attempt log once its plan has finished: wait
@@ -562,6 +1120,17 @@ pub(super) fn first_token_seen(dispatch: &crate::dispatch_v2::AgentResultDispatc
                 | roko_agent::AgentRuntimeEvent::ToolCall { .. }
         )
     })
+}
+
+/// When the attempt's first token arrived (unix ms): the provider call's
+/// start plus the time to first token its stream measured. `None` when the
+/// call showed no streamed output, or never started.
+fn first_token_time(
+    dispatch: Option<&crate::dispatch_v2::AgentResultDispatch>,
+    dispatch_started_at: Option<i64>,
+) -> Option<i64> {
+    let ttft_ms = i64::try_from(dispatch?.result.ttft_ms?).ok()?;
+    dispatch_started_at?.checked_add(ttft_ms)
 }
 
 /// The telemetry mirror of the Graph gate tag.
@@ -623,8 +1192,26 @@ fn executed_model(
         executed.models_reported = served.all_reported;
         executed.model_mismatch = served.mismatch;
         executed.turns = reported_turns(dispatch);
+        executed.sampling = request_sampling(&dispatch.target);
+        executed.tool_policy = dispatch.tool_policy.clone();
     }
     executed
+}
+
+/// The sampling parameters the attempt's requests carried, from the
+/// provider and model that ran (gap-13bbbd); empty when the provider's
+/// defaults applied, or the target named no provider config or profile.
+fn request_sampling(
+    target: &crate::dispatch_v2::ProviderDispatchSpec,
+) -> std::collections::BTreeMap<String, serde_json::Value> {
+    target
+        .provider_config
+        .as_ref()
+        .zip(target.model_profile.as_ref())
+        .map(|(provider, model)| {
+            roko_agent::provider::openai_compat::request_sampling(provider, model)
+        })
+        .unwrap_or_default()
 }
 
 /// The agent turns `dispatch` reported: the Claude CLI's `num_turns`, or
@@ -653,8 +1240,140 @@ fn agent_isolation(
         .collect()
 }
 
-/// Where the attempt's priced usage came from (S01 §4.4); gap-ad0d39 prices
-/// it. CLI agents report their own usage.
+/// The attempt's tokens in the verdict's disjoint classes (S01 §4.4), as its
+/// provider reported them; empty when it reported none.
+fn attempt_usage(dispatch: &crate::dispatch_v2::AgentResultDispatch) -> AttemptUsage {
+    let writes = cache_write_class(dispatch.target.provider_kind);
+    dispatch
+        .result
+        .usage_obs
+        .as_ref()
+        .map(|observation| AttemptUsage::from_observation(observation, writes))
+        .unwrap_or_default()
+}
+
+/// Where `kind`'s prompt-cache writes fall among the token classes (S01
+/// §4.4): Claude Code sessions write at the 1-hour TTL, the Anthropic API at
+/// 5 minutes, and OpenAI-style usage counts writes as input.
+const fn cache_write_class(kind: roko_core::ProviderKind) -> CacheWriteClass {
+    use roko_core::ProviderKind;
+    match kind {
+        ProviderKind::ClaudeCli => CacheWriteClass::OneHour,
+        ProviderKind::AnthropicApi => CacheWriteClass::FiveMinutes,
+        ProviderKind::OpenAiCompat
+        | ProviderKind::CerebrasApi
+        | ProviderKind::PerplexityApi
+        | ProviderKind::Hermes
+        | ProviderKind::OpenClaw
+        | ProviderKind::CodexCli => CacheWriteClass::InInput,
+        _ => CacheWriteClass::Unknown,
+    }
+}
+
+/// The attempt's cost amounts (S01 §4.4): where its usage came from, the
+/// CLI's own figure for a CLI agent, and for an API provider the priced cost
+/// the plan budget settled. An unpriced call, or one whose usage is unknown,
+/// leaves `billed_usd` unknown. An API provider's usage cost is roko's own
+/// price, not a vendor figure, so it never fills `vendor_usd`. A CLI agent
+/// bills what its provider's `billing` says (decision 2113): nothing on a
+/// subscription, the CLI's own figure when metered, and unknown when unset.
+/// The API-equivalent figures come from the run's price snapshot
+/// ([`snapshot_price`]).
+fn attempt_cost(dispatch: Option<&crate::dispatch_v2::AgentResultDispatch>) -> AttemptCost {
+    let mut cost = AttemptCost {
+        source: cost_source(dispatch),
+        ..AttemptCost::default()
+    };
+    let Some(dispatch) = dispatch else {
+        return cost;
+    };
+    let usage = &dispatch.result.usage;
+    if is_cli_backend(dispatch.target.provider_kind) {
+        cost.vendor_usd = dispatch
+            .result
+            .usage_obs
+            .as_ref()
+            .and_then(|observation| observation.cost_usd);
+        let billing = dispatch
+            .target
+            .provider_config
+            .as_ref()
+            .and_then(|provider| provider.billing);
+        cost.billed_usd = match billing {
+            Some(ProviderBilling::Subscription) => Some(0.0),
+            Some(ProviderBilling::Metered) => cost.vendor_usd,
+            None => None,
+        };
+    } else if cost.source != CostSource::Unknown && usage.has_known_cost() {
+        cost.billed_usd = Some(f64::from(usage.cost_usd));
+    }
+    cost
+}
+
+/// Fill `verdict`'s API-equivalent figures at the run's price `snapshot` (S01
+/// §4.4, backlog 2115). A CLI agent that priced each model of its session at
+/// that snapshot itself (backlog 6105) knows better than one rate for all of
+/// its tokens: its figures stand, and a model the snapshot does not list
+/// leaves the attempt's cost unknown (S04 §4.8). Otherwise the attempt's
+/// tokens are priced at the served model's row ([`snapshot_price`]).
+fn price_at_snapshot(
+    verdict: &mut AttemptVerdictRecord,
+    dispatch: Option<&crate::dispatch_v2::AgentResultDispatch>,
+    snapshot: Option<&PriceSnapshot>,
+) {
+    let Some(snapshot) = snapshot else {
+        return;
+    };
+    let agent_priced = dispatch
+        .and_then(|dispatch| dispatch.result.usage_obs.as_ref())
+        .filter(|observation| observation.price_snapshot_id.as_deref() == Some(snapshot.id()));
+    let priced = match agent_priced {
+        Some(observation) => match observation.api_equiv_usd {
+            Some(api_equiv_usd) => Some(PricedUsage {
+                api_equiv_usd,
+                without_cache_usd: observation.without_cache_usd.unwrap_or(api_equiv_usd),
+            }),
+            None => {
+                verdict.cost.source = CostSource::Unknown;
+                None
+            }
+        },
+        None => snapshot_price(snapshot, &verdict.usage, &verdict.executed),
+    };
+    if let Some(priced) = priced {
+        verdict.cost.api_equiv_usd = Some(priced.api_equiv_usd);
+        verdict.cost.without_cache_usd = Some(priced.without_cache_usd);
+        verdict.cost.price_snapshot_id = Some(snapshot.id().to_string());
+    }
+}
+
+/// What the attempt's `usage` costs at the rates of the run's price
+/// `snapshot` (S01 §4.4, backlog 2115): `api_equiv_usd` and
+/// `without_cache_usd`, for the model that served it, the one the provider
+/// reported, else the one the bridge launched. `None`, so all three
+/// snapshot figures stay unknown, when the snapshot does not list that
+/// model or the provider reported no input or output count. A cache class
+/// it did not report holds no tokens.
+fn snapshot_price(
+    snapshot: &PriceSnapshot,
+    usage: &AttemptUsage,
+    executed: &ExecutedModel,
+) -> Option<PricedUsage> {
+    let reported = executed.model_reported.as_deref();
+    let model = reported.or(executed.model_dispatched.as_deref())?;
+    let tokens = TokenCounts {
+        input: usage.tokens_in?,
+        cache_read: usage.tokens_cache_read.unwrap_or(0),
+        cache_write_5m: usage.tokens_cache_write_5m.unwrap_or(0),
+        cache_write_1h: usage.tokens_cache_write_1h.unwrap_or(0),
+        output: usage.tokens_out?,
+        reasoning: usage.tokens_reasoning.unwrap_or(0),
+    };
+    snapshot.price(model, &tokens)
+}
+
+/// Where the attempt's priced usage came from (S01 §4.4). CLI agents report
+/// their own usage.
 fn cost_source(dispatch: Option<&crate::dispatch_v2::AgentResultDispatch>) -> CostSource {
     let Some(dispatch) = dispatch else {
         return CostSource::Unknown;
@@ -665,7 +1384,7 @@ fn cost_source(dispatch: Option<&crate::dispatch_v2::AgentResultDispatch>) -> Co
     CostSource::from_usage_source(&usage.source, is_cli_backend(dispatch.target.provider_kind))
 }
 
-fn sha256_hex(text: &str) -> String {
+pub(super) fn sha256_hex(text: &str) -> String {
     format!("{:x}", sha2::Sha256::digest(text.as_bytes()))
 }
 
@@ -675,12 +1394,16 @@ fn now_ms() -> i64 {
 
 #[cfg(test)]
 mod tests {
+    use roko_core::agent::ProviderKind;
+    use roko_core::config::schema::{ModelProfile, ProviderConfig};
     use roko_learn::telemetry::Blame;
     use tempfile::tempdir;
 
     use super::*;
     use crate::graph_task_dispatch::tests::{
-        VERIFY_PROVIDER, make_spec, make_task_def, make_test_dispatcher, no_auto_fix, verify_step,
+        FIXTURE_HANG_GUARD_SECS, FIXTURE_PROVIDER_TIMEOUT_MS, VERIFY_PROVIDER, final_turn,
+        make_bare_dispatcher, make_spec, make_task_def, make_test_dispatcher, no_auto_fix,
+        spawn_openai_mock, verify_step,
     };
     use crate::runtime_feedback::EpisodeSink;
 
@@ -766,20 +1489,16 @@ mod tests {
         assert_eq!(verdict["executed"]["provider"], "stream-cli");
         assert!(verdict["cost"]["source"].is_string(), "{verdict}");
 
-        // The dispatch row's id is the key; the gate-pass row extends it. The
+        // The attempt's one settled row's id is the key (backlog 2107). The
         // provider bridge logs its own `model_call` rows to the same file,
         // under the feedback schema.
-        let efficiency = jsonl_rows_where(&roko.join("learn/efficiency.jsonl"), 2, |row| {
+        let efficiency = jsonl_rows_where(&roko.join("learn/efficiency.jsonl"), 1, |row| {
             row["schema"] == roko_learn::efficiency::AGENT_EFFICIENCY_EVENT_SCHEMA
         })
         .await;
-        let mut ids = field(&efficiency, "attempt_id");
-        ids.sort_unstable();
-        assert_eq!(ids, [key.clone(), format!("{key}/gate-pass")]);
-        assert_eq!(
-            field(&efficiency, "attempt_key"),
-            [key.as_str(), key.as_str()]
-        );
+        assert_eq!(field(&efficiency, "attempt_id"), [key.as_str()]);
+        assert_eq!(field(&efficiency, "attempt_key"), [key.as_str()]);
+        assert_eq!(efficiency[0]["gate_passed"], true);
         // The bridge's own `model_call` row names the attempt and the model
         // the provider reported (bug-92f655).
         let model_calls = jsonl_rows_where(&roko.join("learn/efficiency.jsonl"), 1, |row| {
@@ -835,11 +1554,11 @@ mod tests {
         assert_eq!(verdict["isolation"]["config_dir"], "user");
     }
 
-    /// The gate row agrees with the attempt's dispatch row on the turns
-    /// (bug-ad5487): the reported count when the agent gave one, and 0
-    /// marked `turns_unknown` when it gave none.
+    /// The attempt's settled efficiency row carries its turns (bug-ad5487):
+    /// the reported count when the agent gave one, and 0 marked
+    /// `turns_unknown` when it gave none.
     #[tokio::test]
-    async fn gate_rows_carry_the_attempts_turns_or_unknown() {
+    async fn efficiency_row_carries_the_attempts_turns_or_unknown() {
         const FOUR_TURNS_PROVIDER: &str = r#"#!/bin/sh
 set -eu
 cat >/dev/null
@@ -861,11 +1580,11 @@ printf '%s\n' '{"type":"result","session_id":"sess-v4","model":"claude-sonnet-4-
                 .await
                 .expect("the verify step passes");
 
-            let rows = jsonl_rows_where(&efficiency_path, 2, |row| {
+            let rows = jsonl_rows_where(&efficiency_path, 1, |row| {
                 row["schema"] == roko_learn::efficiency::AGENT_EFFICIENCY_EVENT_SCHEMA
             })
             .await;
-            assert_eq!(rows.len(), 2, "the dispatch row and the gate-pass row");
+            assert_eq!(rows.len(), 1, "one settled row per attempt");
             for row in &rows {
                 let id = row["attempt_id"].as_str().unwrap_or_default();
                 assert_eq!(row["turn_number"], turns.unwrap_or(0), "{id}");
@@ -878,6 +1597,38 @@ printf '%s\n' '{"type":"result","session_id":"sess-v4","model":"claude-sonnet-4-
                 );
             }
         }
+    }
+
+    /// gap-2e69b2: an efficiency row's attempt id is the attempt's durable
+    /// key, so the same task's first attempt in two runs has two ids.
+    #[tokio::test]
+    async fn attempt_id_is_unique_across_runs() {
+        let temp = tempdir().expect("tempdir");
+        let efficiency_path = temp.path().join(".roko/learn/efficiency.jsonl");
+        let feedback = GraphFeedbackContext {
+            efficiency_path: Some(efficiency_path.clone()),
+            runs_dir: Some(temp.path().join(".roko/runs")),
+            ..GraphFeedbackContext::default()
+        };
+        let (dispatcher, task) =
+            make_test_dispatcher(&temp, VERIFY_PROVIDER, no_auto_fix, feedback).await;
+        let spec = make_spec(&task);
+        for run in ["run-a", "run-b"] {
+            let ctx = CellContext::new().with_run_id(run.to_string());
+            dispatcher
+                .dispatch(&spec, Vec::new(), &ctx)
+                .await
+                .expect("the attempt completes");
+        }
+
+        let rows = jsonl_rows_where(&efficiency_path, 2, |row| {
+            row["schema"] == roko_learn::efficiency::AGENT_EFFICIENCY_EVENT_SCHEMA
+        })
+        .await;
+        let mut ids = field(&rows, "attempt_id");
+        ids.sort_unstable();
+        let key = |run: &str| format!("{run}:{}:{}:1", spec.plan_id, task.id);
+        assert_eq!(ids, [key("run-a"), key("run-b")]);
     }
 
     /// Provider whose first call hangs until the attempt is killed; later
@@ -965,11 +1716,14 @@ printf '%s\n' '{"type":"result","session_id":"sess-r","model":"claude-sonnet-4-6
             .map(|(_, key)| *key)
             .collect();
         assert_eq!(abandoned, [killed.as_str()]);
+        // One per-run seq runs across every record kind (S01 §4.7), so the
+        // decision records between these rows leave gaps; a resumed writer
+        // that restarted the count would repeat a number.
         let seqs: Vec<u64> = rows.iter().filter_map(|row| row["seq"].as_u64()).collect();
-        assert_eq!(
-            seqs,
-            [1, 2, 3],
-            "the resumed writer continues the run's seq"
+        assert_eq!(seqs.len(), 3, "{seqs:?}");
+        assert!(
+            seqs.windows(2).all(|pair| pair[0] < pair[1]),
+            "the resumed writer continues the run's seq: {seqs:?}"
         );
     }
 
@@ -1140,5 +1894,666 @@ printf '%s\n' '{"type":"result","session_id":"sess-r","model":"claude-sonnet-4-6
             Some("pre_verify:no_changes")
         );
         assert_eq!(rung("graph-verify"), None, "a failed verify step");
+    }
+
+    /// A fake Claude CLI that streams its first output after 200 ms.
+    const SLOW_FIRST_TOKEN_PROVIDER: &str = r#"#!/bin/sh
+set -eu
+cat >/dev/null
+sleep 0.2
+printf '%s\n' '{"type":"content_block_delta","delta":{"text":"verify-output"}}'
+printf '%s\n' '{"type":"result","session_id":"sess-v1","model":"claude-sonnet-4-6","total_cost_usd":0.01,"usage":{"input_tokens":5,"output_tokens":10}}'
+"#;
+
+    /// backlog 2102: the verdict places the first token by the stream's time
+    /// to first token, and records when verification started and ended. An
+    /// attempt with no measured first token records none, never 0.
+    #[tokio::test]
+    async fn verdict_records_first_token_and_verify_times() {
+        let temp = tempdir().expect("tempdir");
+        let runs_dir = temp.path().join(".roko/runs");
+        let feedback = GraphFeedbackContext {
+            runs_dir: Some(runs_dir.clone()),
+            ..GraphFeedbackContext::default()
+        };
+        let (dispatcher, mut task) =
+            make_test_dispatcher(&temp, SLOW_FIRST_TOKEN_PROVIDER, no_auto_fix, feedback).await;
+        task.verify = vec![verify_step("structural", "true")];
+        let spec = make_spec(&task);
+        let ctx = CellContext::new().with_run_id(RUN.to_string());
+        dispatcher
+            .dispatch(&spec, Vec::new(), &ctx)
+            .await
+            .expect("the verified attempt passes");
+        drop(dispatcher);
+
+        let attempts = jsonl_rows(&runs_dir.join(RUN).join("attempts.jsonl"), 2).await;
+        let timing = &attempts[1]["timing"];
+        let at = |name: &str| {
+            timing[name]
+                .as_i64()
+                .unwrap_or_else(|| panic!("no {name}: {timing}"))
+        };
+        assert_eq!(timing["ttft_source"], "stream", "{timing}");
+        assert!(at("first_token_at") > at("dispatch_started_at"), "{timing}");
+        assert!(
+            at("dispatch_ended_at") <= at("verify_started_at"),
+            "{timing}"
+        );
+        assert!(at("verify_started_at") <= at("verify_ended_at"), "{timing}");
+        assert!(at("verify_ended_at") <= at("settled_at"), "{timing}");
+
+        let passed = Settlement::verified(&Ok(TaskGateVerdict::Passed));
+        let settled = AttemptBook::default()
+            .open(None, "run-1", &spec, &task, None)
+            .settle(passed, "", None);
+        let timing = &settled.verdict.timing;
+        assert_eq!(timing.first_token_at, None);
+        assert_eq!(timing.ttft_source.as_deref(), Some("unavailable"));
+        assert_eq!(timing.verify_started_at, None);
+    }
+
+    /// `api-model` on an OpenAI-compatible provider the mock at `base_url`
+    /// serves, priced at $1 in and $2 out per million tokens.
+    fn priced_api_config(base_url: String) -> RokoConfig {
+        let mut config = RokoConfig::default();
+        config.providers.clear();
+        config.models.clear();
+        config.agent.default_model = "api-model".to_string();
+        config.agent.bare_mode = false;
+        config.gates.cargo_fix_enabled = false;
+        // `PATH` is always set, standing in for the provider's key.
+        config.providers.insert(
+            "mock_api".to_string(),
+            ProviderConfig {
+                kind: ProviderKind::OpenAiCompat,
+                base_url: Some(base_url),
+                api_key_env: Some("PATH".to_string()),
+                timeout_ms: Some(FIXTURE_PROVIDER_TIMEOUT_MS),
+                ttft_timeout_ms: Some(FIXTURE_PROVIDER_TIMEOUT_MS),
+                connect_timeout_ms: Some(FIXTURE_PROVIDER_TIMEOUT_MS),
+                ..ProviderConfig::default()
+            },
+        );
+        config.models.insert(
+            "api-model".to_string(),
+            ModelProfile {
+                provider: "mock_api".to_string(),
+                slug: "api-model-1".to_string(),
+                context_window: 128_000,
+                max_output: Some(1_024),
+                max_tools: Some(32),
+                supports_tools: true,
+                tool_format: "openai_json".to_string(),
+                cost_input_per_m: Some(1.0),
+                cost_output_per_m: Some(2.0),
+                ..ModelProfile::default()
+            },
+        );
+        // No stall watchdog: the mock answers whether or not the call
+        // streams.
+        config.conductor.silence_timeout_secs = 0;
+        config.conductor.task_stall_secs = 0;
+        config
+    }
+
+    /// backlog 2103: settling fills the verdict's token classes and cost
+    /// amounts from what the provider reported. A Claude CLI attempt keeps
+    /// the CLI's own figure as `vendor_usd`; an OpenAI-compatible attempt
+    /// counts its cached input once, and bills what its cost row records.
+    #[tokio::test]
+    async fn settle_fills_usage_and_cost_amounts() {
+        let ctx = CellContext::new().with_run_id(RUN.to_string());
+
+        let cli = tempdir().expect("tempdir");
+        let runs_dir = cli.path().join(".roko/runs");
+        let feedback = GraphFeedbackContext {
+            runs_dir: Some(runs_dir.clone()),
+            ..GraphFeedbackContext::default()
+        };
+        let (dispatcher, mut task) =
+            make_test_dispatcher(&cli, VERIFY_PROVIDER, no_auto_fix, feedback).await;
+        task.verify = vec![verify_step("structural", "true")];
+        dispatcher
+            .dispatch(&make_spec(&task), Vec::new(), &ctx)
+            .await
+            .expect("the verified attempt passes");
+        drop(dispatcher);
+        let attempts = jsonl_rows(&runs_dir.join(RUN).join("attempts.jsonl"), 2).await;
+        let verdict = &attempts[1];
+        assert_eq!(verdict["usage"]["tokens_out"], 10, "{verdict}");
+        assert_eq!(verdict["cost"]["source"], "cli_usage", "{verdict}");
+        assert_eq!(verdict["cost"]["vendor_usd"], 0.01, "{verdict}");
+        assert!(verdict["cost"]["billed_usd"].is_null(), "{verdict}");
+
+        let api = tempdir().expect("tempdir");
+        let roko = api.path().join(".roko");
+        let mut answer = final_turn("done");
+        answer["usage"] = serde_json::json!({
+            "prompt_tokens": 100,
+            "completion_tokens": 10,
+            "total_tokens": 110,
+            "prompt_tokens_details": { "cached_tokens": 40 }
+        });
+        let (base_url, _requests) = spawn_openai_mock(vec![answer.clone(), answer]);
+        let feedback = GraphFeedbackContext {
+            costs_path: Some(roko.join("learn/costs.jsonl")),
+            runs_dir: Some(roko.join("runs")),
+            ..GraphFeedbackContext::default()
+        };
+        let dispatcher = make_bare_dispatcher(priced_api_config(base_url), api.path())
+            .await
+            .with_feedback(feedback);
+        let task = TaskDef {
+            model_hint: Some("api-model".to_string()),
+            timeout_secs: FIXTURE_HANG_GUARD_SECS,
+            verify: vec![verify_step("structural", "true")],
+            ..make_task_def("focused")
+        };
+        dispatcher
+            .dispatch(&make_spec(&task), Vec::new(), &ctx)
+            .await
+            .expect("the verified attempt passes");
+        drop(dispatcher);
+        let attempts = jsonl_rows(&roko.join("runs").join(RUN).join("attempts.jsonl"), 2).await;
+        let verdict = &attempts[1];
+        let usage = &verdict["usage"];
+        assert_eq!(usage["tokens_in"], 60, "{verdict}");
+        assert_eq!(usage["tokens_cache_read"], 40, "{verdict}");
+        assert_eq!(usage["tokens_out"], 10, "{verdict}");
+        assert_eq!(usage["tokens_cache_write_5m"], 0, "{verdict}");
+        assert_eq!(verdict["cost"]["source"], "provider_usage", "{verdict}");
+        assert!(verdict["cost"]["vendor_usd"].is_null(), "{verdict}");
+        let costs = jsonl_rows(&roko.join("learn/costs.jsonl"), 1).await;
+        let billed = verdict["cost"]["billed_usd"].as_f64().expect("billed_usd");
+        let recorded = costs[0]["cost_usd"].as_f64().expect("cost row");
+        assert!(billed > 0.0, "{verdict}");
+        assert!((billed - recorded).abs() < 1e-12, "{billed} != {recorded}");
+    }
+
+    /// The verdict and the cost row of one verified attempt of `slug` on the
+    /// OpenAI-compatible mock, which reports `usage`, in a workspace whose
+    /// run prices from `prices-2026-09-28` (backlog 2115).
+    async fn snapshot_priced_attempt(
+        slug: &str,
+        usage: serde_json::Value,
+    ) -> (serde_json::Value, serde_json::Value) {
+        let temp = tempdir().expect("tempdir");
+        let roko = temp.path().join(".roko");
+        // The workspace's own copy of the snapshot, which a newer built-in
+        // one does not replace.
+        let prices = temp.path().join("config/prices");
+        std::fs::create_dir_all(&prices).expect("prices dir");
+        std::fs::write(
+            prices.join("2026-09-28.toml"),
+            include_str!("../../../../config/prices/2026-09-28.toml"),
+        )
+        .expect("write the snapshot");
+        let mut answer = final_turn("done");
+        answer["usage"] = usage;
+        let (base_url, _requests) = spawn_openai_mock(vec![answer.clone(), answer]);
+        let mut config = priced_api_config(base_url);
+        config.pricing.snapshot = "prices-2026-09-28".to_string();
+        config.models.get_mut("api-model").expect("api model").slug = slug.to_string();
+        let feedback = GraphFeedbackContext {
+            costs_path: Some(roko.join("learn/costs.jsonl")),
+            runs_dir: Some(roko.join("runs")),
+            ..GraphFeedbackContext::default()
+        };
+        let dispatcher = make_bare_dispatcher(config, temp.path())
+            .await
+            .with_feedback(feedback);
+        let task = TaskDef {
+            model_hint: Some("api-model".to_string()),
+            timeout_secs: FIXTURE_HANG_GUARD_SECS,
+            verify: vec![verify_step("structural", "true")],
+            ..make_task_def("focused")
+        };
+        let ctx = CellContext::new().with_run_id(RUN.to_string());
+        dispatcher
+            .dispatch(&make_spec(&task), Vec::new(), &ctx)
+            .await
+            .expect("the verified attempt passes");
+        drop(dispatcher);
+        let attempts = jsonl_rows(&roko.join("runs").join(RUN).join("attempts.jsonl"), 2).await;
+        let costs = jsonl_rows(&roko.join("learn/costs.jsonl"), 1).await;
+        (attempts[1].clone(), costs[0].clone())
+    }
+
+    /// backlog 2115: a verified attempt of a model the run's price snapshot
+    /// lists carries the snapshot price on its verdict and its cost row: the
+    /// API-equivalent cost, the uncached cost and the snapshot's id. Cached
+    /// input makes the uncached cost the higher one. An attempt of a model
+    /// the snapshot lacks has none of them.
+    #[tokio::test]
+    async fn verdict_and_cost_rows_carry_the_snapshot_price() {
+        // S01 §5.5: 38,211 tokens in at $0.35 and 2,904 out at $0.75 per
+        // million.
+        let usage = serde_json::json!({
+            "prompt_tokens": 38_211,
+            "completion_tokens": 2_904,
+            "total_tokens": 41_115
+        });
+        let (verdict, row) = snapshot_priced_attempt("gpt-oss-120b", usage).await;
+        let cost = &verdict["cost"];
+        let api_equiv = cost["api_equiv_usd"].as_f64().expect("api_equiv_usd");
+        assert!((api_equiv - 0.01555185).abs() < 1e-9, "{verdict}");
+        assert_eq!(cost["price_snapshot_id"], "prices-2026-09-28", "{verdict}");
+        let uncached = cost["without_cache_usd"].as_f64().expect("uncached");
+        assert!((uncached - api_equiv).abs() < 1e-12, "{verdict}");
+        let recorded = row["api_equiv_usd"].as_f64().expect("cost row");
+        assert!((recorded - api_equiv).abs() < 1e-12, "{row}");
+        assert_eq!(row["price_snapshot_id"], "prices-2026-09-28", "{row}");
+
+        // kimi-k2.6 reads cached input at $0.16 per million, not at its
+        // $0.95 input rate: 60 tokens in, 40 cached and 10 out at $4.00.
+        let usage = serde_json::json!({
+            "prompt_tokens": 100,
+            "completion_tokens": 10,
+            "total_tokens": 110,
+            "prompt_tokens_details": { "cached_tokens": 40 }
+        });
+        let (verdict, _) = snapshot_priced_attempt("kimi-k2.6", usage).await;
+        let cost = &verdict["cost"];
+        let api_equiv = cost["api_equiv_usd"].as_f64().expect("api_equiv_usd");
+        let uncached = cost["without_cache_usd"].as_f64().expect("uncached");
+        assert!((api_equiv - 103.4e-6).abs() < 1e-12, "{verdict}");
+        assert!((uncached - 135e-6).abs() < 1e-12, "{verdict}");
+        assert!(uncached > api_equiv, "{verdict}");
+
+        // The snapshot does not list the mock's own model.
+        let usage = serde_json::json!({
+            "prompt_tokens": 100,
+            "completion_tokens": 10,
+            "total_tokens": 110
+        });
+        let (verdict, row) = snapshot_priced_attempt("api-model-1", usage).await;
+        for figure in ["api_equiv_usd", "without_cache_usd", "price_snapshot_id"] {
+            assert!(verdict["cost"][figure].is_null(), "{figure}: {verdict}");
+        }
+        assert!(row["api_equiv_usd"].is_null(), "{row}");
+        assert!(row["price_snapshot_id"].is_null(), "{row}");
+    }
+
+    /// backlog 2115 (decision 2113): a CLI attempt bills what its provider's
+    /// `billing` says: nothing on a subscription, the CLI's own figure when
+    /// metered. With no `billing` what it bills is unknown
+    /// (`settle_fills_usage_and_cost_amounts`).
+    #[tokio::test]
+    async fn a_cli_attempt_bills_by_its_providers_billing() {
+        let ctx = CellContext::new().with_run_id(RUN.to_string());
+        for (billing, billed) in [
+            (ProviderBilling::Subscription, 0.0),
+            (ProviderBilling::Metered, 0.01),
+        ] {
+            let temp = tempdir().expect("tempdir");
+            let runs_dir = temp.path().join(".roko/runs");
+            let feedback = GraphFeedbackContext {
+                runs_dir: Some(runs_dir.clone()),
+                ..GraphFeedbackContext::default()
+            };
+            let configure = |config: &mut RokoConfig| {
+                no_auto_fix(config);
+                let provider = config.providers.get_mut("stream-cli").expect("provider");
+                provider.billing = Some(billing);
+            };
+            let (dispatcher, mut task) =
+                make_test_dispatcher(&temp, VERIFY_PROVIDER, configure, feedback).await;
+            task.verify = vec![verify_step("structural", "true")];
+            dispatcher
+                .dispatch(&make_spec(&task), Vec::new(), &ctx)
+                .await
+                .expect("the verified attempt passes");
+            drop(dispatcher);
+            let attempts = jsonl_rows(&runs_dir.join(RUN).join("attempts.jsonl"), 2).await;
+            let cost = &attempts[1]["cost"];
+            assert_eq!(cost["source"], "cli_usage", "{billing:?}: {cost}");
+            assert_eq!(cost["vendor_usd"], 0.01, "{billing:?}: {cost}");
+            assert_eq!(cost["billed_usd"], billed, "{billing:?}: {cost}");
+        }
+    }
+
+    /// A fake Claude CLI whose session ran `main` with a background
+    /// claude-haiku-4-5, reporting $0.16 of its own (backlog 6105).
+    fn session_provider(main: &str) -> String {
+        format!(
+            r#"#!/bin/sh
+set -eu
+cat >/dev/null
+printf '%s\n' '{{"type":"system","subtype":"init","claude_code_version":"2.1.250"}}'
+printf '%s\n' '{{"type":"content_block_delta","delta":{{"text":"session-output"}}}}'
+printf '%s\n' '{{"type":"result","session_id":"sess-m","model":"{main}","total_cost_usd":0.16,"usage":{{"input_tokens":38,"output_tokens":3120}},"modelUsage":{{"{main}":{{"inputTokens":38,"outputTokens":3120,"cacheReadInputTokens":186112,"cacheCreationInputTokens":21904,"costBasis":"list"}},"claude-haiku-4-5":{{"inputTokens":2513,"outputTokens":196,"cacheReadInputTokens":0,"cacheCreationInputTokens":0,"costBasis":"list"}}}}}}'
+"#
+        )
+    }
+
+    /// backlog 6105: a Claude CLI session's models are priced one by one at
+    /// the run's snapshot, so a background model's tokens are not priced at
+    /// the main model's rate. A model the snapshot does not list leaves the
+    /// attempt's cost unknown, while the CLI's own figure stays the vendor's.
+    #[tokio::test]
+    async fn a_cli_session_is_priced_model_by_model() {
+        // claude-sonnet-5 at the named snapshot's rates, cache writes at the
+        // 1-hour rate, and the background claude-haiku-4-5 at its own.
+        let sonnet = 38.0 * 2.0 + 186_112.0 * 0.20 + 21_904.0 * 4.0 + 3_120.0 * 10.0;
+        let haiku = 2_513.0 * 1.0 + 196.0 * 5.0;
+        let ctx = CellContext::new().with_run_id(RUN.to_string());
+        for (main, api_equiv) in [
+            ("claude-sonnet-5", Some((sonnet + haiku) / 1e6)),
+            ("claude-sonnet-4-6", None),
+        ] {
+            let temp = tempdir().expect("tempdir");
+            let prices = temp.path().join("config/prices");
+            std::fs::create_dir_all(&prices).expect("prices dir");
+            std::fs::write(
+                prices.join("2026-09-28.toml"),
+                include_str!("../../../../config/prices/2026-09-28.toml"),
+            )
+            .expect("write the snapshot");
+            let runs_dir = temp.path().join(".roko/runs");
+            let feedback = GraphFeedbackContext {
+                runs_dir: Some(runs_dir.clone()),
+                ..GraphFeedbackContext::default()
+            };
+            let configure = |config: &mut RokoConfig| {
+                no_auto_fix(config);
+                config.pricing.snapshot = "prices-2026-09-28".to_string();
+            };
+            let script = session_provider(main);
+            let (dispatcher, mut task) =
+                make_test_dispatcher(&temp, &script, configure, feedback).await;
+            task.verify = vec![verify_step("structural", "true")];
+            dispatcher
+                .dispatch(&make_spec(&task), Vec::new(), &ctx)
+                .await
+                .expect("the verified attempt passes");
+            drop(dispatcher);
+            let attempts = jsonl_rows(&runs_dir.join(RUN).join("attempts.jsonl"), 2).await;
+            let cost = &attempts[1]["cost"];
+            assert_eq!(cost["vendor_usd"], 0.16, "{main}: {cost}");
+            match api_equiv {
+                Some(expected) => {
+                    let priced = cost["api_equiv_usd"].as_f64().expect("api_equiv_usd");
+                    assert!((priced - expected).abs() < 1e-9, "{main}: {cost}");
+                    assert_eq!(cost["price_snapshot_id"], "prices-2026-09-28", "{cost}");
+                    assert_eq!(cost["source"], "cli_usage", "{main}: {cost}");
+                }
+                None => {
+                    assert!(cost["api_equiv_usd"].is_null(), "{main}: {cost}");
+                    assert_eq!(cost["source"], "unknown", "{main}: {cost}");
+                }
+            }
+        }
+    }
+
+    /// backlog 2109: a cost row says whether roko could price the call. A
+    /// model with no price writes `priced: false`, its $0 an unknown cost;
+    /// one priced at 0/0 is free, and writes `priced: true`.
+    #[tokio::test]
+    async fn cost_rows_mark_unpriced_calls() {
+        for (prices, priced) in [(None, false), (Some(0.0), true)] {
+            let temp = tempdir().expect("tempdir");
+            let roko = temp.path().join(".roko");
+            let answers = vec![final_turn("done"), final_turn("done")];
+            let (base_url, _requests) = spawn_openai_mock(answers);
+            let mut config = priced_api_config(base_url);
+            let model = config.models.get_mut("api-model").expect("api model");
+            model.cost_input_per_m = prices;
+            model.cost_output_per_m = prices;
+            let feedback = GraphFeedbackContext {
+                costs_path: Some(roko.join("learn/costs.jsonl")),
+                ..GraphFeedbackContext::default()
+            };
+            let dispatcher = make_bare_dispatcher(config, temp.path())
+                .await
+                .with_feedback(feedback);
+            let task = TaskDef {
+                model_hint: Some("api-model".to_string()),
+                timeout_secs: FIXTURE_HANG_GUARD_SECS,
+                verify: vec![verify_step("structural", "true")],
+                ..make_task_def("focused")
+            };
+            dispatcher
+                .dispatch(&make_spec(&task), Vec::new(), &CellContext::new())
+                .await
+                .expect("the verified attempt passes");
+            drop(dispatcher);
+
+            let costs = jsonl_rows(&roko.join("learn/costs.jsonl"), 1).await;
+            assert_eq!(costs[0]["priced"], priced, "{prices:?}: {}", costs[0]);
+            assert_eq!(costs[0]["cost_usd"], 0.0, "{prices:?}: {}", costs[0]);
+        }
+    }
+
+    /// S06 T13 (8123): every attempt writes one `harness_policy` row, with
+    /// its chain's arm on M1's fixed holdout, and a θ the controller swaps in
+    /// between attempts shows in the next row's version and digest.
+    #[tokio::test]
+    async fn harness_policy_decision_row_per_dispatch() {
+        use roko_core::config::harness_params::{HarnessLadders, HarnessParams, Knob, Step};
+        use roko_core::config::homeostasis::{HomeostasisConfig, HomeostasisMode};
+        use roko_learn::homeostasis::controller::Controller;
+        use roko_learn::homeostasis::detect::Baseline;
+        use roko_learn::homeostasis::holdout::HarnessHoldout;
+        use roko_learn::homeostasis::policy::ViabilityPolicy;
+        use roko_learn::loop_audit::assign::takes_default;
+        use roko_learn::telemetry::DecisionSource;
+        use roko_learn::telemetry::report::RunRecords;
+
+        use crate::runtime_feedback::HomeostasisSink;
+
+        const POLICY: &str = "policy_version = 1\nholdout = 0.0\n\
+            ev.pass_rate = { lo = 0.70 }\nev.usd_per_verified_success = { hi = 0.12 }\n\
+            ev.false_green = { hi = 0.10 }\nev.latency_p90_s = { hi = 900 }\n";
+
+        let temp = tempdir().expect("tempdir");
+        let runs_dir = temp.path().join(".roko/runs");
+        let config = roko_core::config::schema::RokoConfig::default();
+        let theta0 = HarnessParams::baseline(&config);
+        let ladders = HarnessLadders::from_config(&config);
+        let policy = ViabilityPolicy::parse(POLICY).expect("the policy parses");
+        let settings = HomeostasisConfig {
+            mode: HomeostasisMode::On,
+            ..HomeostasisConfig::default()
+        };
+        let baseline = Baseline {
+            pass_rate: 0.80,
+            usd_per_resolution: 0.05,
+            wall_ms: 300_000.0,
+        };
+        let controller = Controller::new(
+            &settings,
+            policy,
+            theta0.clone(),
+            ladders.clone(),
+            baseline,
+            0,
+        );
+        let sink = Arc::new(HomeostasisSink::new(temp.path(), Some(controller), None));
+        let feedback = GraphFeedbackContext {
+            runs_dir: Some(runs_dir.clone()),
+            homeostasis: Some(Arc::clone(&sink)),
+            ..GraphFeedbackContext::default()
+        };
+        let (dispatcher, task) =
+            make_test_dispatcher(&temp, VERIFY_PROVIDER, no_auto_fix, feedback).await;
+        let ctx = CellContext::new().with_run_id(RUN.to_string());
+        let tasks: Vec<TaskDef> = ["H1", "H2", "H3"]
+            .into_iter()
+            .map(|id| TaskDef {
+                id: id.to_string(),
+                ..task.clone()
+            })
+            .collect();
+
+        // The controller raises the retry knob after the first attempt opens.
+        let first = dispatcher.open_attempt(&make_spec(&tasks[0]), &tasks[0], &ctx);
+        let raised = theta0
+            .step(Knob::RetryDelta, Step::Up, &ladders)
+            .expect("one more retry");
+        assert_eq!(sink.handle().swap(raised.clone(), "raised"), 1);
+        let second = dispatcher.open_attempt(&make_spec(&tasks[1]), &tasks[1], &ctx);
+        let third = dispatcher.open_attempt(&make_spec(&tasks[2]), &tasks[2], &ctx);
+        for attempt in [first, second, third] {
+            let passed = Settlement::verified(&Ok(TaskGateVerdict::Passed));
+            attempt.settle(passed, "stream-model", None);
+        }
+        dispatcher.close_run_attempts(RUN);
+
+        let run = RunRecords::load(&runs_dir.join(RUN)).expect("load the run");
+        assert!(run.invalid.is_empty(), "{:?}", run.invalid);
+        assert_eq!(run.harness_decisions.len(), 3);
+        for (line, (task, version)) in
+            run.harness_decisions
+                .iter()
+                .zip([("H1", 0), ("H2", 1), ("H3", 1)])
+        {
+            let row = &line.record;
+            assert_eq!(row.identity.task_id, task);
+            assert_eq!(
+                (row.source, row.mode),
+                (DecisionSource::Control, HomeostasisMode::On)
+            );
+            assert_eq!(row.policy_version, version);
+            // The arm is the chain's draw on the harness_policy layer.
+            let epoch = row
+                .assignment
+                .salt_id
+                .strip_prefix("harness_policy@")
+                .expect("a harness_policy salt");
+            let key = AttemptKey::new(RUN, "stream-plan", task, 1);
+            let drawn = HarnessHoldout::new(0.0).assign(epoch, 0, &key);
+            assert_eq!((row.arm, row.assignment.arm), (drawn.arm, drawn.arm));
+            // The learned arm runs the controller's θ; the others run θ₀.
+            let chosen = if version == 0 { &theta0 } else { &raised };
+            let ran = if takes_default(row.arm) {
+                &theta0
+            } else {
+                chosen
+            };
+            assert_eq!(row.params_digest, ran.params_digest());
+            assert_eq!(&row.chosen, chosen);
+            assert_eq!(row.default, theta0);
+            assert_eq!(row.differs, version == 1);
+            // The attempt's verdict carries the same stamp.
+            let verdict = run
+                .verdicts
+                .iter()
+                .find(|verdict| verdict.record.identity.task_id == task)
+                .expect("a verdict");
+            let stamp = verdict.record.harness.as_ref().expect("a harness stamp");
+            assert_eq!(
+                (
+                    stamp.arm,
+                    stamp.policy_version,
+                    stamp.params_digest.as_str()
+                ),
+                (row.arm, version, row.params_digest.as_str())
+            );
+        }
+    }
+
+    /// bug-2410e1: a run resumed by another process on a later day keeps
+    /// each chain's arm set and the epoch its arms were drawn for. The first
+    /// process keeps them in the run's arm-set file; the second reads them
+    /// back, so a retry gets its chain's own arms, not today's redraw, and a
+    /// new chain draws for the run's epoch.
+    #[test]
+    fn resumed_run_in_a_new_process_keeps_its_arm_sets() {
+        const EARLIER: &str = "2000-01-01";
+        let temp = tempdir().expect("tempdir");
+        let runs = temp.path().join(".roko/runs");
+        let loops = Registry::embedded().expect("the embedded registry");
+        let auditor = LoopAuditor::from_records(loops, &LearningAuditConfig::default(), &[]);
+        let mode = ArmMode::Normal;
+        let key = |task: &str, attempt: u32| AttemptKey::new("run-resumed", "plan", task, attempt);
+
+        // The first process opened the run and drew T1's arms on an earlier
+        // day.
+        let mut first = RunAttempts::open(Some(runs.as_path()), "run-resumed", None);
+        first.epoch = EARLIER.to_string();
+        let drawn = first.arm_set(&key("T1", 1), &auditor, &mode);
+        drop(first);
+
+        let resumed = RunAttempts::open(Some(runs.as_path()), "run-resumed", None);
+        assert_eq!(resumed.epoch, EARLIER, "the run keeps its epoch");
+        let retry = resumed.arm_set(&key("T1", 2), &auditor, &mode);
+        assert_eq!(*retry, *drawn, "the retry keeps its chain's arms");
+        let today = chrono::Utc::now().format("%Y-%m-%d").to_string();
+        let draws = auditor.arm_draws(ARM_SEED, today);
+        let redraw = ArmSet::assign(&key("T1", 2), auditor.registry(), &mode, &draws);
+        assert_ne!(*retry, redraw, "a redraw today would change them");
+        let fresh = resumed.arm_set(&key("T2", 1), &auditor, &mode);
+        let at = format!("@{EARLIER}");
+        let on_epoch = fresh.arms.values().all(|arm| arm.salt_id.ends_with(&at));
+        assert!(on_epoch, "{fresh:?}");
+        drop(resumed);
+
+        // Each chain was kept once, as it was first drawn.
+        let kept = read_arm_sets(&runs.join("run-resumed").join(ARM_SETS_FILE));
+        let chains: Vec<&str> = kept
+            .iter()
+            .map(|row| row.arm_set.chain_key.as_str())
+            .collect();
+        let expected = [drawn.chain_key.as_str(), fresh.chain_key.as_str()];
+        assert_eq!(chains, expected);
+    }
+
+    /// A loop-audit ledger in which L-know is live and L-play demoted for
+    /// harm.
+    const AUDITED_LEDGER: &str = concat!(
+        r#"{"schema_version":"roko.loop_audit/1","kind":"loop.health","loop_id":"L-know","#,
+        r#""state":"live","h":0.05,"n_opp":400,"n_L":380,"n_D":20,"#,
+        r#""eps":{"est":1.0,"ucb":1.0,"read":1.0,"reach":1.0,"honest":1.0,"receipt":1.0},"#,
+        r#""iota":{"act":0.5,"aa":0.0,"net":0.5,"lcb":0.4},"beta":{"est":null},"#,
+        r#""srm_evalue":1.0,"placebo_ok":true,"evidence":"measured"}"#,
+        "\n",
+        r#"{"schema_version":"roko.loop_audit/1","kind":"loop.health","loop_id":"L-play","#,
+        r#""state":"demoted","reason":"harm","h":0.5,"n_opp":400,"n_L":200,"n_D":200,"#,
+        r#""eps":{"est":1.0,"ucb":1.0,"read":1.0,"reach":1.0,"honest":1.0,"receipt":1.0},"#,
+        r#""iota":{"act":0.5,"aa":0.0,"net":0.5,"lcb":0.4},"beta":{"est":null},"#,
+        r#""srm_evalue":1.0,"placebo_ok":true,"evidence":"measured"}"#,
+        "\n"
+    );
+
+    /// gap-addf2a: a chain's arms are drawn under the loop auditor. With the
+    /// ledger holding L-know live and L-play demoted, L-know's layer draws
+    /// at h_live and L-play's at h_suspect. Once `[learning.audit] enforce`
+    /// and L-play's own `enforce` let the demotion act, L-play's layer draws
+    /// at h = 1: every chain runs π⁰ for it.
+    #[test]
+    fn arm_assignment_consults_the_loop_auditor() {
+        let temp = tempdir().expect("tempdir");
+        let learn = temp.path().join(".roko/learn");
+        std::fs::create_dir_all(&learn).expect("the learn dir");
+        std::fs::write(learn.join("loop-audit.jsonl"), AUDITED_LEDGER).expect("the ledger");
+        let registry = "[[loop]]\nid = \"L-play\"\nenforce = true\n";
+        std::fs::write(learn.join("loop-registry.toml"), registry).expect("the override");
+        let mode = ArmMode::Normal;
+        let draw = |config: &LearningAuditConfig, task: &str| {
+            let auditor = load_loop_auditor(temp.path(), config).expect("an auditor");
+            let run = RunAttempts::open(None, "run-audited", None);
+            let key = AttemptKey::new("run-audited", "plan", task, 1);
+            run.arm_set(&key, &auditor, &mode)
+        };
+        let h = |arms: &Arc<ArmSet>, layer: &str| arms.get(layer).map(|arm| arm.h);
+
+        let observed = LearningAuditConfig::default();
+        let arms = draw(&observed, "T1");
+        assert_eq!(h(&arms, "knowledge"), Some(0.05), "live: h_live");
+        assert_eq!(h(&arms, "playbooks"), Some(0.5), "demoted: h_suspect");
+
+        let enforced = LearningAuditConfig {
+            enforce: true,
+            ..LearningAuditConfig::default()
+        };
+        let arms = draw(&enforced, "T1");
+        assert_eq!(h(&arms, "playbooks"), Some(1.0), "an enforced demotion");
+        assert_eq!(h(&arms, "knowledge"), Some(0.05));
+        let defaults = (0..20)
+            .map(|index| draw(&enforced, &format!("T{index}")))
+            .filter(|arms| arms.takes_default("playbooks"))
+            .count();
+        assert_eq!(defaults, 20, "every chain runs L-play's default policy");
     }
 }

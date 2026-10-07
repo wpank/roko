@@ -120,6 +120,7 @@ pub mod agent_config;
 pub mod agent_episode;
 pub mod agent_exec;
 pub mod agent_spawn;
+pub mod audit;
 pub mod auth;
 pub mod auth_detect;
 pub(crate) mod background_writes;
@@ -139,6 +140,7 @@ pub mod clean;
 /// own `commands` module re-exports them.
 pub mod commands {
     pub mod diagnose;
+    pub mod learn_loops;
 }
 pub mod config;
 pub mod config_cmd;
@@ -154,6 +156,7 @@ pub mod dispatch;
 pub mod dispatch_v2;
 pub mod doctor;
 pub mod dry_run;
+pub mod effects_apply;
 pub mod episode;
 pub mod event_sources;
 pub mod execution_control;
@@ -164,6 +167,7 @@ pub mod github_ops_impl;
 pub mod graph_checkpoint;
 #[path = "commands/graph.rs"]
 pub(crate) mod graph_command;
+pub mod graph_entry_cells;
 pub mod graph_execution;
 pub mod graph_task_dispatch;
 pub mod hints;
@@ -177,6 +181,7 @@ pub(crate) mod knowledge_helpers;
 #[path = "../../../scripts/layer_check.rs"]
 pub mod layer_check;
 pub mod learning_helpers;
+pub mod loop_canary;
 pub mod model_selection;
 pub mod note_cluster;
 // oneshot.rs was removed in #363 (zero callers after develop deprecation).
@@ -189,12 +194,11 @@ pub mod output_format;
 pub mod pipe;
 pub mod plan;
 pub mod plan_authoring;
+pub mod plan_brief;
 pub mod plan_generate;
 pub mod plan_generator;
 pub mod plan_policy;
 pub mod plan_validate;
-pub mod prd;
-pub mod prd_prompt;
 pub mod projection;
 pub mod prompting;
 pub mod repl;
@@ -206,12 +210,15 @@ pub mod run;
 pub mod run_inline;
 pub mod runner;
 pub mod runtime_feedback;
+pub mod safety_provenance;
 pub mod scaffold;
 pub mod scope_resolver;
 pub mod secrets;
 pub mod share;
 pub mod snapshot_migrate;
 pub mod snapshot_reconcile;
+pub mod spec_gate;
+pub mod spec_red_on_base;
 pub mod spinner;
 pub mod status;
 pub mod subscriptions;
@@ -236,8 +243,7 @@ pub use roko_serve as serve;
 
 pub use config::{
     AgentConfig, Config, ConfigPaths, ConfigSources, DreamsConfig, ExecAgentConfig, GateConfig,
-    PromptConfig, PromptFile, RepoEntry, RepoRegistry, ResolvedConfig, Source, ToolsConfig,
-    load_resolved_config,
+    PromptConfig, RepoEntry, RepoRegistry, ResolvedConfig, Source, load_resolved_config,
 };
 
 pub use config_cmd::{EditTarget, WizardInputs, run_init_wizard};

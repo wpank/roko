@@ -6,7 +6,9 @@
 //! The tools keep agents away from provider keys as roko-std's tools do: the
 //! file tools, `grep` and `bash` refuse key files such as `.roko/.env`
 //! ([`refuse_key_file`], [`refuse_key_file_in_command`]), and `bash` runs with
-//! the environment verify steps get ([`roko_gate::inherit_gate_env`]).
+//! the environment verify steps get ([`roko_gate::inherit_gate_env`]). `bash`
+//! also refuses the git commands that discard work or move branches
+//! ([`check_git_command`]), as roko's own tool loop does.
 
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
@@ -16,6 +18,7 @@ use tracing::{debug, warn};
 use uuid::Uuid;
 
 use roko_agent::safety::bash::check_command;
+use roko_agent::safety::git::check_git_command;
 use roko_agent::safety::network::check_url;
 use roko_std::tool::builtin::sandbox::{refuse_key_file, refuse_key_file_in_command};
 
@@ -280,8 +283,7 @@ fn needs_permission(name: &str) -> bool {
 fn tool_call_kind(name: &str) -> ToolCallKind {
     match name {
         "read_file" => ToolCallKind::Read,
-        "write_file" => ToolCallKind::Create,
-        "edit_file" => ToolCallKind::Edit,
+        "write_file" | "edit_file" => ToolCallKind::Edit,
         "glob" | "grep" => ToolCallKind::Search,
         "bash" => ToolCallKind::Terminal,
         "ls" => ToolCallKind::Read,
@@ -467,12 +469,12 @@ pub fn tool_permission_request(
 
 /// Returns the set of tool names allowed for a given slash command.
 ///
-/// Returns `None` for commands that should have all tools (do, run, express, full).
+/// Returns `None` for commands that should have all tools (run, express, full).
 /// Returns `Some(vec)` for commands with restricted tools.
 ///
 /// Read-only commands (research, search, knowledge queries) get only safe read tools.
-/// PRD/plan editing commands get read + write tools but no bash.
-/// Implementation commands (do, run, express, full, agent-chat) get all tools (None).
+/// Plan editing commands get read + write tools but no bash.
+/// Implementation commands (run, express, full, agent-chat) get all tools (None).
 /// Unknown commands default to all tools (None) for a safe fallback.
 #[must_use]
 pub fn slash_command_allowed_tools(command: &str) -> Option<Vec<String>> {
@@ -493,14 +495,13 @@ pub fn slash_command_allowed_tools(command: &str) -> Option<Vec<String>> {
     match command {
         // Read-only: research commands don't need file writes or bash
         "research" | "search" | "knowledge" | "explain" | "replay" | "status" | "doctor"
-        | "config" | "models" | "learn" | "prd-list" | "prd-status" | "plan-list" | "plan-show"
-        | "agents" | "learn-router" | "learn-episodes" | "knowledge-stats" | "index"
-        | "analyze" | "affect" | "dream-status" => Some(read_only()),
-        // Read + write: PRD/plan editing but no bash
-        "enhance-prd" | "prd-draft" | "prd-plan" | "prd-consolidate" | "plan-generate"
-        | "plan-regenerate" => Some(read_write()),
+        | "config" | "models" | "learn" | "plan-list" | "plan-show" | "agents" | "learn-router"
+        | "learn-episodes" | "knowledge-stats" | "index" | "analyze" | "affect"
+        | "dream-status" => Some(read_only()),
+        // Read + write: plan editing but no bash
+        "enhance-plan" | "plan-generate" | "plan-regenerate" => Some(read_write()),
         // Full access: implementation commands need bash for verification
-        "do" | "run" | "express" | "full" | "agent-chat" => None,
+        "run" | "express" | "full" | "agent-chat" => None,
         // Default: all tools (safe fallback for unknown commands)
         _ => None,
     }
@@ -512,7 +513,7 @@ pub fn slash_command_allowed_tools(command: &str) -> Option<Vec<String>> {
 /// during a session triggered by the given command. Tools whose required
 /// permissions exceed the ceiling are excluded from the tool set.
 ///
-/// Returns `None` for implementation commands (do, run, express, full, agent-chat)
+/// Returns `None` for implementation commands (run, express, full, agent-chat)
 /// and unknown commands, which should have the full tool set.
 #[must_use]
 pub fn command_tool_ceiling(command: &str) -> Option<ToolPermission> {
@@ -527,18 +528,18 @@ pub fn command_tool_ceiling(command: &str) -> Option<ToolPermission> {
         }),
         // Read-only: status/diagnostic/inspection commands.
         "status" | "doctor" | "config" | "models" | "learn" | "knowledge" | "explain"
-        | "replay" | "prd-list" | "prd-status" | "plan-list" | "plan-show" | "agents"
-        | "learn-router" | "learn-episodes" | "knowledge-stats" | "index" | "analyze"
-        | "affect" | "dream-status" => Some(ToolPermission {
-            read: true,
-            write: false,
-            exec: false,
-            git: false,
-            network: false,
-        }),
-        // Read + write: PRD/plan editing commands.
-        "enhance-prd" | "prd-draft" | "prd-plan" | "prd-consolidate" | "plan-generate"
-        | "plan-regenerate" => Some(ToolPermission {
+        | "replay" | "plan-list" | "plan-show" | "agents" | "learn-router" | "learn-episodes"
+        | "knowledge-stats" | "index" | "analyze" | "affect" | "dream-status" => {
+            Some(ToolPermission {
+                read: true,
+                write: false,
+                exec: false,
+                git: false,
+                network: false,
+            })
+        }
+        // Read + write: plan editing commands.
+        "enhance-plan" | "plan-generate" | "plan-regenerate" => Some(ToolPermission {
             read: true,
             write: true,
             exec: false,
@@ -964,10 +965,12 @@ async fn exec_bash(
     let command = require_str(args, "command")?;
     let timeout_ms = opt_u64(args, "timeout").unwrap_or(DEFAULT_REQUEST_TIMEOUT_MS);
 
-    // Safety gate: run command through the roko-agent bash denylist before
-    // spawning. This ensures ACP sessions honor the same policy as the
-    // agent tool dispatcher (rm -rf /, sudo, curl|sh, fork bombs, etc.).
+    // Safety gate: run command through the roko-agent bash denylist and git
+    // policy before spawning. This ensures ACP sessions honor the same policy
+    // as the agent tool dispatcher (rm -rf /, sudo, curl|sh, fork bombs, and
+    // git stash, clean, checkout, restore or push in the user's checkout).
     check_command(&command).map_err(|e| format!("bash: blocked by safety policy: {e}"))?;
+    check_git_command(&command).map_err(|e| format!("bash: blocked by safety policy: {e}"))?;
     refuse_key_file_in_command(&command, workdir)
         .map_err(|e| format!("bash: blocked by safety policy: {e}"))?;
 
@@ -1307,6 +1310,33 @@ mod tests {
         );
     }
 
+    #[test]
+    fn acp_bash_refuses_git_stash() {
+        let repo = tempfile::tempdir().expect("tempdir");
+        let run = |command: &str| {
+            let args = serde_json::json!({ "command": command });
+            tokio::runtime::Runtime::new()
+                .expect("runtime")
+                .block_on(exec_bash(&args, repo.path(), &[], None))
+        };
+        run("git init --quiet").expect("git init runs");
+
+        // The commands that discard the user's work are refused...
+        for command in ["git stash", "git clean -fdx", "git -C . checkout -- ."] {
+            let err = run(command).expect_err("the git guard must refuse it");
+            assert!(
+                err.contains("blocked by safety policy"),
+                "expected safety-policy rejection for `{command}`, got: {err}"
+            );
+        }
+        // ...and the others run.
+        let status = run("git status");
+        assert!(
+            status.is_ok(),
+            "expected git status to run, got: {status:?}"
+        );
+    }
+
     #[cfg(unix)]
     #[test]
     fn exec_bash_env_excludes_provider_keys() {
@@ -1534,8 +1564,9 @@ mod tests {
     }
 
     #[test]
-    fn prd_draft_ceiling_is_read_write() {
-        let ceiling = command_tool_ceiling("prd-draft").expect("prd-draft should have a ceiling");
+    fn plan_generate_ceiling_is_read_write() {
+        let ceiling =
+            command_tool_ceiling("plan-generate").expect("plan-generate should have a ceiling");
         assert!(ceiling.read);
         assert!(ceiling.write);
         assert!(!ceiling.exec);
@@ -1544,7 +1575,6 @@ mod tests {
 
     #[test]
     fn implementation_commands_have_no_ceiling() {
-        assert!(command_tool_ceiling("do").is_none());
         assert!(command_tool_ceiling("run").is_none());
         assert!(command_tool_ceiling("express").is_none());
         assert!(command_tool_ceiling("full").is_none());

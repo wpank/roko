@@ -235,7 +235,7 @@ pub fn detect_length_bias(examples: &[(usize, bool)]) -> Option<f64> {
 ///
 /// Written by [`append_calibration_record`] during live `verify()` calls so
 /// the log at `.roko/learn/judge-calibration.jsonl` accumulates over time.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct CalibrationRecord {
     /// Stable task identifier (e.g. task slug or signal ID).
     pub task_id: String,
@@ -247,6 +247,16 @@ pub struct CalibrationRecord {
     pub output_length: usize,
     /// Unix timestamp in seconds.
     pub timestamp: u64,
+    /// S01's key of the attempt judged, which audit labels join on
+    /// (backlog 7126); `None` in rows written before it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub attempt_key: Option<String>,
+    /// The model that judged.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub judge_model: Option<String>,
+    /// The rubric the score answers, such as `llm_judge.v1`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rubric: Option<String>,
 }
 
 /// Append a single [`CalibrationRecord`] as a JSONL line to `path`.
@@ -556,6 +566,7 @@ mod tests {
             confidence: 0.87,
             output_length: 512,
             timestamp: 1_000_000,
+            ..CalibrationRecord::default()
         };
         let rec2 = CalibrationRecord {
             task_id: "task-xyz".to_string(),
@@ -563,6 +574,7 @@ mod tests {
             confidence: 0.42,
             output_length: 128,
             timestamp: 1_000_001,
+            ..CalibrationRecord::default()
         };
 
         append_calibration_record(&path, &rec1).expect("append rec1");
@@ -588,6 +600,7 @@ mod tests {
             confidence: 1.0,
             output_length: 10,
             timestamp: 0,
+            ..CalibrationRecord::default()
         };
         append_calibration_record(&path, &rec).expect("should create parent dirs");
         assert!(path.exists());
@@ -609,6 +622,7 @@ mod tests {
             confidence: 0.1,
             output_length: 5,
             timestamp: 42,
+            ..CalibrationRecord::default()
         };
         // Write a valid line, a blank, and another valid line manually.
         let json = serde_json::to_string(&rec).unwrap();

@@ -2,11 +2,15 @@
 
 use crate::auth_detect::{AuthMethod, detect_auth_from_config, version_probe};
 use crate::config::{ConfigPaths, resolve_paths};
+use crate::orchestrator::worktree::{
+    LEFTOVER_CHECKOUT_MIN_AGE, LeftoverCheckout, WorktreeConfig, WorktreeManager,
+};
 use crate::{Config, load_resolved_config};
 use anyhow::{Context as _, Result};
 use reqwest::Url;
 use roko_core::agent::ProviderKind;
 use roko_core::child_env::CredentialScrub;
+use roko_core::config::model_registry::cheapest_builtin_model;
 use roko_core::config::provider::{ProviderConfig, ProviderNetworkPolicy};
 use roko_execution::diagnostics::{
     DiagnosticCheckId, DiagnosticFinding, DiagnosticRequest, DiagnosticService, DiagnosticSeverity,
@@ -373,6 +377,48 @@ pub async fn run_disk_doctor(workdir: &Path, config_override: Option<&Path>) -> 
     let resources = load_resources_config(workdir, config_override);
     let (_, report) = check_disk_health(workdir, &resources).await;
     report
+}
+
+/// Remove the leftover attempt checkouts under `workdir`'s `.roko/worktrees/`
+/// that no run will use again, for `roko doctor disk --fix` (gap-f67a72):
+/// those of plans whose checkpoint succeeded, failed or was cancelled, that
+/// nothing touched for [`LEFTOVER_CHECKOUT_MIN_AGE`] and that have no
+/// changes. [`WorktreeManager::remove_leftover_checkouts`] has the whole
+/// rule. Branches are kept. The caller holds the runner lock.
+pub async fn fix_leftover_checkouts(workdir: &Path) -> Vec<LeftoverCheckout> {
+    // The manager mutates git only under an absolute repository root.
+    let workdir = std::path::absolute(workdir).unwrap_or_else(|_| workdir.to_path_buf());
+    let manager = WorktreeManager::new(WorktreeConfig {
+        repo_root: workdir.clone(),
+        base_branch: "HEAD".to_string(),
+        worktrees_root: workdir.join(".roko").join("worktrees"),
+        max_live: None,
+        idle_ttl: LEFTOVER_CHECKOUT_MIN_AGE,
+    });
+    manager
+        .remove_leftover_checkouts(LEFTOVER_CHECKOUT_MIN_AGE)
+        .await
+}
+
+/// Render what [`fix_leftover_checkouts`] removed and what it kept, and why.
+#[must_use]
+pub fn render_leftover_checkouts(checkouts: &[LeftoverCheckout]) -> String {
+    let removed = checkouts
+        .iter()
+        .filter(|checkout| checkout.kept.is_none())
+        .count();
+    let mut out = format!(
+        "leftover attempt checkouts: {removed} removed, {} kept\n",
+        checkouts.len() - removed
+    );
+    for checkout in checkouts {
+        let path = checkout.path.display();
+        let _ = match &checkout.kept {
+            None => writeln!(&mut out, "[removed] {path}"),
+            Some(reason) => writeln!(&mut out, "[kept] {path}: {reason}"),
+        };
+    }
+    out
 }
 
 /// Check whether raw TOML text contains a given top-level key.
@@ -1224,6 +1270,18 @@ async fn probe_provider_credit(
 
     let result = match provider.kind {
         ProviderKind::AnthropicApi => {
+            // The registry's cheapest Anthropic model: the probe only needs an answer.
+            let Some(model) = cheapest_builtin_model(ProviderKind::AnthropicApi) else {
+                return DoctorCheck {
+                    id: format!("provider_credit_{provider_id}"),
+                    status: DoctorStatus::Skipped,
+                    message: format!("provider `{provider_id}`: no built-in model to probe with"),
+                    detail: None,
+                    path: None,
+                    url: None,
+                    fix: None,
+                };
+            };
             let base = provider
                 .base_url
                 .as_deref()
@@ -1231,7 +1289,7 @@ async fn probe_provider_credit(
                 .trim_end_matches('/');
             let endpoint = format!("{base}/v1/messages");
             let body = json!({
-                "model": "claude-3-5-haiku-20241022",
+                "model": model.slug,
                 "max_tokens": 1,
                 "messages": [{"role": "user", "content": "hi"}]
             });
@@ -1666,12 +1724,15 @@ fn check_v2_abstractions() -> DoctorCheck {
     }
 }
 
-/// Audit the `.roko/` state layout for version, canonical, and legacy files.
+/// Audit the `.roko/` state layout for version, canonical, legacy and orphan
+/// files.
 ///
-/// Produces up to three checks:
+/// Produces up to four checks:
 /// - `state_layout_version` -- verifies `.roko/VERSION` is current.
 /// - `state_canonical_files` -- lists which E02 canonical files are present.
 /// - `state_legacy_files` -- flags legacy files left over from V1 layouts.
+/// - `state_orphan_files` -- lists files no code writes or reads any more,
+///   with their sizes ([`orphan_state_files`]).
 ///
 /// Returns an empty slice when `.roko/` does not exist (workspace not yet
 /// initialized); the `layout` check already covers that case.
@@ -1760,10 +1821,6 @@ fn check_state_layout_audit(workdir: &Path) -> Vec<DoctorCheck> {
     // These are the paths that current writers target.
     let canonical_paths: &[(&str, PathBuf)] = &[
         ("episodes.jsonl", layout.root_episodes_path()),
-        (
-            "gate-verdicts.jsonl",
-            layout.root().join("gate-verdicts.jsonl"),
-        ),
         ("signals.jsonl", layout.signals_path()),
         ("events.jsonl", layout.events_jsonl_path()),
         ("learn/gate-thresholds.json", layout.gate_thresholds_path()),
@@ -1870,7 +1927,102 @@ fn check_state_layout_audit(workdir: &Path) -> Vec<DoctorCheck> {
     };
     checks.push(legacy_check);
 
+    // -- 4. Orphan files ------------------------------------------------------
+    // Files no code writes or reads any more (backlog 2128). Roko never
+    // deletes them.
+    let orphans = orphan_state_files(&layout);
+    let orphan_check = if orphans.is_empty() {
+        DoctorCheck {
+            id: "state_orphan_files".to_string(),
+            status: DoctorStatus::Ok,
+            message: "no orphan state files".to_string(),
+            detail: None,
+            path: Some(layout.root().display().to_string()),
+            url: None,
+            fix: None,
+        }
+    } else {
+        let total_bytes: u64 = orphans.iter().map(|(_, bytes)| bytes).sum();
+        let listed: Vec<String> = orphans
+            .iter()
+            .map(|(name, bytes)| format!("{name} ({})", size_label(*bytes)))
+            .collect();
+        DoctorCheck {
+            id: "state_orphan_files".to_string(),
+            status: DoctorStatus::Warn,
+            message: format!(
+                "{} orphan state file(s), {} in all, that no code writes or reads",
+                orphans.len(),
+                size_label(total_bytes)
+            ),
+            detail: Some(listed.join(", ")),
+            path: Some(layout.root().display().to_string()),
+            url: None,
+            fix: Some(
+                "delete them by hand if you do not need them; roko never deletes them".to_string(),
+            ),
+        }
+    };
+    checks.push(orphan_check);
+
     checks
+}
+
+/// Files under `.roko/` that no code writes or reads any more, relative to
+/// `.roko/`, each with its size in bytes (backlog 2128): Runner-v2's run
+/// ledger and gate verdict log, the tool metrics and Lens samples nothing
+/// read (backlog 2123, 2124), and files no code names. The per-run taint
+/// graphs under `custody/` count as one entry.
+fn orphan_state_files(layout: &RokoLayout) -> Vec<(String, u64)> {
+    const ORPHANS: &[&str] = &[
+        "state/run-ledger.jsonl",
+        "gate-verdicts.jsonl",
+        "learn/compounding.jsonl",
+        "metrics/tool_metrics.jsonl",
+        "metrics/telemetry-observations.jsonl",
+        "metrics/prometheus.txt",
+        "metrics/registry_snapshot.json",
+    ];
+    let root = layout.root();
+    let mut orphans: Vec<(String, u64)> = ORPHANS
+        .iter()
+        .filter_map(|name| {
+            let metadata = std::fs::metadata(root.join(name)).ok()?;
+            metadata
+                .is_file()
+                .then(|| ((*name).to_string(), metadata.len()))
+        })
+        .collect();
+    let taint_graphs: Vec<u64> = std::fs::read_dir(root.join("custody"))
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter(|entry| {
+            let name = entry.file_name();
+            let name = name.to_string_lossy();
+            name.starts_with("taint-graph-run-") && name.ends_with(".json")
+        })
+        .filter_map(|entry| entry.metadata().ok().map(|metadata| metadata.len()))
+        .collect();
+    if !taint_graphs.is_empty() {
+        orphans.push((
+            format!(
+                "custody/taint-graph-run-*.json, {} files",
+                taint_graphs.len()
+            ),
+            taint_graphs.iter().sum(),
+        ));
+    }
+    orphans
+}
+
+/// `bytes` in KB, or in MB from 1 MB up.
+fn size_label(bytes: u64) -> String {
+    if bytes >= 1024 * 1024 {
+        format!("{:.1} MB", bytes as f64 / (1024.0 * 1024.0))
+    } else {
+        format!("{} KB", bytes.div_ceil(1024))
+    }
 }
 
 /// Check for configured harness providers (Hermes, OpenClaw) and verify
@@ -2388,6 +2540,9 @@ async fn check_disk_health(
                 std::fs::symlink_metadata(entry.path())
                     .is_ok_and(|metadata| metadata.is_dir() && !metadata.file_type().is_symlink())
             })
+            // Dot-directories such as the creation journal (`.roko-creation`)
+            // are the worktree manager's bookkeeping, never checkouts (9237).
+            .filter(|entry| !entry.file_name().to_string_lossy().starts_with('.'))
             .map(|entry| entry.path())
             .collect::<Vec<_>>()
     } else {
@@ -3353,7 +3508,7 @@ mod tests {
     /// The core config loader uses `deny_unknown_fields` on many struct
     /// sections, so we must write a core `RokoConfig` rather than the CLI
     /// `Config` (which has extra fields like `prompt.budgets`,
-    /// `budget.warn_at_percent`, etc.).
+    /// `budget.max_session_usd`, etc.).
     fn write_project_config(workdir: &Path, config: Config) {
         let mut core_config = roko_core::config::RokoConfig::default();
         // Forward the serve auth settings the doctor tests rely on.
@@ -3515,6 +3670,31 @@ mod tests {
                 .iter()
                 .any(|finding| finding.path == canonical_target.display().to_string())
         );
+    }
+
+    /// 9237: the worktree manager's creation journal is no checkout, so it is
+    /// neither reported as orphaned nor removed by `doctor disk --fix`.
+    #[tokio::test]
+    async fn disk_report_skips_creation_marker_dir() {
+        let temp = tempdir().unwrap();
+        let journal = temp.path().join(".roko/worktrees/.roko-creation");
+        tokio::fs::create_dir_all(&journal).await.unwrap();
+        tokio::fs::write(journal.join("marker.json"), b"{}")
+            .await
+            .unwrap();
+
+        let resources = roko_core::config::ResourcesConfig::default();
+        let (_, report) = check_disk_health(temp.path(), &resources).await;
+        assert!(
+            report.orphaned_worktree_dirs.is_empty(),
+            "{:?}",
+            report.orphaned_worktree_dirs
+        );
+        assert_eq!(report.worktree_count, 0);
+
+        let fixed = fix_leftover_checkouts(temp.path()).await;
+        assert!(fixed.is_empty(), "{fixed:?}");
+        assert!(journal.is_dir());
     }
 
     #[tokio::test]
@@ -4056,7 +4236,12 @@ mod tests {
             .expect("ensure_dirs");
 
         let checks = check_state_layout_audit(temp.path());
-        assert_eq!(checks.len(), 3, "should produce exactly 3 checks");
+        assert_eq!(checks.len(), 4, "should produce exactly 4 checks");
+        let orphan_check = checks
+            .iter()
+            .find(|c| c.id == "state_orphan_files")
+            .expect("state_orphan_files check");
+        assert_eq!(orphan_check.status, DoctorStatus::Ok);
 
         let version_check = checks
             .iter()
@@ -4076,6 +4261,53 @@ mod tests {
             legacy_check.status,
             DoctorStatus::Ok,
             "fresh V3 workspace should have no legacy files"
+        );
+    }
+
+    /// backlog 2128: the doctor lists the state files no code writes or reads
+    /// any more, with their sizes, as a warning, and deletes none of them.
+    #[tokio::test]
+    async fn state_layout_audit_lists_orphan_files() {
+        let temp = tempdir().unwrap();
+        let layout = RokoLayout::for_project(temp.path());
+        layout.ensure_dirs().await.expect("ensure dirs");
+        let root = layout.root().to_path_buf();
+        let write = |name: &str, bytes: usize| {
+            let path = root.join(name);
+            std::fs::create_dir_all(path.parent().expect("parent")).expect("parent dir");
+            std::fs::write(&path, vec![b'x'; bytes]).expect("write orphan");
+            path
+        };
+        let ledger = write("state/run-ledger.jsonl", 2 * 1024 * 1024);
+        let verdicts = write("gate-verdicts.jsonl", 100);
+        write("custody/taint-graph-run-1.json", 1024);
+        write("custody/taint-graph-run-2.json", 1024);
+        write("custody/other.json", 1024);
+
+        let checks = check_state_layout_audit(temp.path());
+        let orphan_check = checks
+            .iter()
+            .find(|c| c.id == "state_orphan_files")
+            .expect("state_orphan_files check");
+
+        assert_eq!(orphan_check.status, DoctorStatus::Warn);
+        assert!(
+            orphan_check.message.starts_with("3 orphan state file(s)"),
+            "{}",
+            orphan_check.message
+        );
+        let detail = orphan_check.detail.as_deref().unwrap_or_default();
+        for listed in [
+            "state/run-ledger.jsonl (2.0 MB)",
+            "gate-verdicts.jsonl (1 KB)",
+            "custody/taint-graph-run-*.json, 2 files (2 KB)",
+        ] {
+            assert!(detail.contains(listed), "{listed}: {detail}");
+        }
+        assert!(!detail.contains("other.json"), "{detail}");
+        assert!(
+            ledger.exists() && verdicts.exists(),
+            "roko deletes no orphan"
         );
     }
 
@@ -4233,6 +4465,8 @@ mod tests {
             max_concurrent: None,
             limits: None,
             require_confirmation: false,
+            stream_usage: None,
+            billing: None,
         }
     }
 
@@ -4421,6 +4655,26 @@ mod tests {
     }
 
     #[test]
+    fn leftover_checkouts_render_what_went_and_why_the_rest_stayed() {
+        let rendered = render_leftover_checkouts(&[
+            LeftoverCheckout {
+                path: PathBuf::from("/w/.roko/worktrees/attempt-a"),
+                kept: None,
+            },
+            LeftoverCheckout {
+                path: PathBuf::from("/w/.roko/worktrees/attempt-b"),
+                kept: Some("it has uncommitted changes".to_string()),
+            },
+        ]);
+        assert_eq!(
+            rendered,
+            "leftover attempt checkouts: 1 removed, 1 kept\n\
+             [removed] /w/.roko/worktrees/attempt-a\n\
+             [kept] /w/.roko/worktrees/attempt-b: it has uncommitted changes\n"
+        );
+    }
+
+    #[test]
     fn disk_report_advisory_stale_target_exits_one() {
         let mut report = clean_disk_report();
         report.stale_target_dirs.push(DiskTargetFinding {
@@ -4471,6 +4725,8 @@ mod tests {
                 max_concurrent: None,
                 limits: None,
                 require_confirmation: false,
+                stream_usage: None,
+                billing: None,
             },
         );
 
@@ -4543,6 +4799,8 @@ mod tests {
                 max_concurrent: None,
                 limits: None,
                 require_confirmation: false,
+                stream_usage: None,
+                billing: None,
             },
         );
 

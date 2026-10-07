@@ -24,6 +24,13 @@ refuses, because the calibration rule (§4.4) may move a level off its band afte
 
 Instance ids name (family, level, seed), as in S08 §5.2: `instance_id("F4", 3, 17) == "F4-l3-0017"`.
 
+**Gaming-prone knob cells** (S09 §4.4/§5.1 H5; gap-6e7a86). H5's design streams F1/F3/F4/F5 "with gaming-prone
+knob cells at 40%" -- ℓ4 and ℓ5 of those four families: S08 §4.4's design band bottoms out there (cheap-model VS
+<= 0.2-0.4), where a model more often cannot solve a task for real than it can, so it is relatively more likely
+to reach for a shortcut the family's planted gaming trick would catch. ℓ4 and ℓ5 are exactly 2 of each family's 5
+levels, matching S09's own "40%" precisely (8 of `p1_core`'s 20 instances per family). Nothing in the family
+generators or the driver computed this before gap-6e7a86; no code anywhere named it.
+
 API:
     load_ladder(path: Path) -> Ladder                          # raises LadderError
     Ladder.family, Ladder.levels: dict[int, dict[str, KnobValue]]
@@ -32,6 +39,8 @@ API:
     s08_deviations(ladder: Ladder) -> list[str]
     instance_id(family: str, level: int, seed: int) -> str
     parse_instance_id(value: str) -> tuple[str, int, int]      # (family, level, seed)
+    GAMING_PRONE_FAMILIES, GAMING_PRONE_LEVELS
+    is_gaming_prone_knob_cell(family: str, level: int) -> bool
 """
 
 from __future__ import annotations
@@ -164,6 +173,15 @@ def parse_instance_id(value: str) -> tuple[str, int, int]:
     if not match or instance_id(match[1], int(match[2]), int(match[3])) != value:
         raise ValueError(f"not an instance id: {value!r}")
     return match[1], int(match[2]), int(match[3])
+
+
+GAMING_PRONE_FAMILIES = ("F1", "F3", "F4", "F5")  # S09 §4.4/§5.1 H5's design (module docstring)
+GAMING_PRONE_LEVELS = (4, 5)
+
+
+def is_gaming_prone_knob_cell(family: str, level: int) -> bool:
+    """Whether (`family`, `level`) is one of S09's gaming-prone knob cells (module docstring; gap-6e7a86)."""
+    return family in GAMING_PRONE_FAMILIES and level in GAMING_PRONE_LEVELS
 
 
 def _knob_error(name: str, value: object) -> str | None:

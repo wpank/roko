@@ -40,12 +40,32 @@ Its environment is the task's agent environment plus those variables, and `ANTHR
 runs scrubbed too: `vb run`, and the probe below, start themselves again with an allowlisted environment
 (`agent_env.exec_scrubbed`, bug-32eb77).
 
+**Network** (gap-0bd49a, 3305, option (1)). The CLI must reach Anthropic's API, and its Bash tool must reach nothing.
+Each session gets its own egress proxy (`egress.EgressProxy`, on the loopback), which admits only the targets of
+`[cli] egress_allow` (default `api.anthropic.com:443`) and logs every request to `<run_dir>/egress.jsonl`. The session
+gets `agent_env.proxy_env` (HTTPS_PROXY and HTTP_PROXY name the proxy) and runs under `common.sandbox` with the rule
+`loopback:<the proxy's port>` (`network_rule`; an offline run's loopback endpoint is added, which NO_PROXY keeps
+direct) and `ctx.deny`. So a shell `curl` to any other host is refused at its CONNECT, a direct socket or a DNS lookup
+is denied by the sandbox, and only the proxy decides what passes. The record's `provenance.network_policy` names the
+rule and carries the proxy's summary for the task: the allowlist, the admitted count and every refused request. A
+shell command can still reach an allowlisted host, as the CLI does. A host the CLI needs besides the API (an OAuth
+refresh, say) is refused until the arm file lists it, which the probe below shows (gap-154f93).
+
 **Credentials** (`[cli] credentials`). With `CLAUDE_CONFIG_DIR` set, Claude Code looks for its macOS keychain entry
 under a name suffixed with a hash of that directory, and misses the subscription login. `keychain`, the default, sets
-`CLAUDE_SECURESTORAGE_CONFIG_DIR=` (empty) to keep the default entry name; the variable is undocumented, so the probe
-confirms it. `credentials_file` copies the login's `.credentials.json` (Linux, or a file-based login) into the fresh
-directory instead. A token in the environment (`CLAUDE_CODE_OAUTH_TOKEN`) is not offered: Claude Code hands its
-environment to the agent's shell.
+`CLAUDE_SECURESTORAGE_CONFIG_DIR=` (empty) to keep the default entry name. Claude Code 2.1.282 then reads the login
+with `security find-generic-password -a "$USER" -w -s "Claude Code-credentials"`, `security` found on its PATH, so
+`agent_env` must pass the operator's USER. macOS finds the login keychain through HOME, though, and the session's HOME
+is its own: the live probe (gap-154f93) ended "Not logged in". So the session's `security` is a wrapper in its
+`.vb-bin` (`KEYCHAIN_WRAPPER`) that runs /usr/bin/security with the operator's HOME, and the session keeps its own
+HOME. The agent's shell can run the wrapper too, as it could already run /usr/bin/security on the login keychain by
+its path: the same-uid limit `agent_env` describes. No host-only sandbox prevents this (gap-3cfe4f): the whole claude
+tree runs under one sandbox for the egress rule, a keychain deny there would stop Claude Code's own login, and macOS
+refuses a nested sandbox that would confine only the agent's shell (`sandbox_apply: Operation not permitted`). So the
+census detects it instead -- any run whose agent names the keychain is `leak_suspected` (`census`, place `keychain`) --
+and prevention waits on a container per task (S08 decision 4). `credentials_file` copies the login's `.credentials.json`
+(Linux, or a file-based login) into the fresh directory instead; a same-uid agent can read that copy too. A token in
+the environment (`CLAUDE_CODE_OAUTH_TOKEN`) is not offered: Claude Code hands its environment to the agent's shell.
 
 **Caps** (S08 §4.10, subscription arms: native behaviour with safety limits). `[caps] turns_per_task` goes to
 `--max-turns` and `usd_per_task` to `--max-budget-usd`, where Claude Code stops itself and still reports its usage.
@@ -75,17 +95,21 @@ the invocation (flags, settings, environment, the config directory's seed), so `
 it and the arm file, covers every flag.
 
 **Probe** (gap-c4f364, step 2): `run_cli.py probe --arm fd_claude --allow-network` runs one throwaway session with the
-arm's invocation and a trivial prompt, and saves its argv, environment, `init` and `result` events as JSON. It passes
-when the `init` event shows the pinned model and no MCP server, plugin, memory or web tool, and the session signed in.
+arm's invocation and a trivial prompt, and saves its argv, environment, `init` and `result` events as JSON, with the
+network policy and what its egress proxy admitted and refused. It passes when the `init` event shows the pinned model
+and no MCP server, memory, web tool or plugin beyond the ones Claude Code ships (`path` "builtin"; 2.1.282 lists
+agents-md and telemetry), and the session signed in.
 
 API:
     run_task(ctx: harness.TaskContext) -> harness.TaskOutcome
     CliConfig.from_table(table) -> CliConfig                    # raises CliError
-    build_invocation(ctx, cli) -> Invocation                    # raises CliError
+    build_invocation(ctx, cli, proxy=None) -> Invocation        # raises CliError; confined behind `proxy` if given
+    network_rule(endpoint, egress_port) -> str                  # the claude process tree's network rule
     run_session(invocation, prompt, *, cwd, wallclock_s, usd_cap, meter) -> Session
     parse_result(event, snapshot, *, cache_write_ttl) -> ResultCost
     Meter(snapshot, *, cache_write_ttl); CliAttempt; settings(run_dir) -> dict; web_tools(event) -> list[str]
     ancestor_instructions(workdir) -> list[Path]; config_dir_digest(path) -> str
+    keychain_fingerprint(user, *, service, security, home) -> str | None   # token-free; for --credential-fingerprint
     main(argv) -> int                                           # `probe`
     PROMPT_VERSION, PROMPT_SHA256
 """
@@ -99,12 +123,14 @@ import json
 import os
 import queue
 import re
+import shlex
 import shutil
 import signal
 import subprocess
 import sys
 import threading
 import time
+import urllib.parse
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field, fields
 from pathlib import Path
@@ -113,17 +139,24 @@ from typing import IO
 import agent_env
 import archive
 import caps
+import egress
 import harness
 import layout
 import ledger
+import provider
 import records
-from common import repo
+from common import repo, sandbox
 
 PROMPT_VERSION = "claude-code-1"
 EFFORTS = ("low", "medium", "high", "xhigh", "max")
 CREDENTIALS = ("keychain", "credentials_file")
 CACHE_WRITE_TTLS = ("5m", "1h")
 CREDENTIAL_FILE = ".credentials.json"
+SECURITY = "/usr/bin/security"  # what the session's `security` runs, under the operator's HOME (keychain credentials)
+CLAUDE_SERVICE = "Claude Code-credentials"  # the keychain service the subscription login is stored under (gap-154f93)
+KEYCHAIN_WRAPPER = '#!/bin/sh\n# macOS finds the login keychain through HOME; the session has a HOME of its own.\n' \
+                   'HOME={home} exec {security} "$@"\n'
+BUILTIN_PLUGIN = "builtin"  # the `path` of a plugin Claude Code ships, in the init event's `plugins`
 WEB_TOOLS = ("WebFetch", "WebSearch")  # disallowed, and denied in the settings (gap-f253cf)
 WEB_TOOL_PREFIX = "Web"  # a tool the init event offers under this prefix kills the session
 FIXED_FLAGS = ("--print", "--verbose", "--output-format", "stream-json", "--setting-sources", "",
@@ -143,6 +176,7 @@ CONTEXT_TAG = re.compile(r"\[[^\]]*\]$")  # "claude-opus-5-5[1m]" names a contex
 EXIT_GRACE_S = 2.0
 STDERR_CHARS = 4000
 PROBE_WALLCLOCK_S = 300.0
+EGRESS_LOG = "egress.jsonl"  # in the run directory: every request a session's egress proxy saw (egress.py)
 
 TASK_MESSAGE = """\
 <task>
@@ -155,7 +189,9 @@ The repository is your current working directory. Complete the task, then stop.
 PROBE_PROMPT = "Reply with the single word READY. Do not use any tools."
 
 PROMPT_SHA256 = hashlib.sha256(json.dumps([TASK_MESSAGE, FIXED_FLAGS, WORKDIR_FLAG, FIXED_ENV, SETTINGS, DENY_TOOLS,
-                                           WEB_TOOLS, CREDENTIAL_FILE], sort_keys=True).encode()).hexdigest()
+                                           WEB_TOOLS, CREDENTIAL_FILE, KEYCHAIN_WRAPPER, SECURITY,
+                                           egress.DEFAULT_ALLOW, agent_env.PROXY_NAMES, agent_env.NO_PROXY],
+                                          sort_keys=True).encode()).hexdigest()
 
 
 class CliError(RuntimeError):
@@ -168,6 +204,7 @@ class CliConfig:
     effort: str = "high"
     credentials: str = "keychain"
     cache_write_ttl: str = "1h"
+    egress_allow: tuple[str, ...] = egress.DEFAULT_ALLOW  # the targets the session's egress proxy admits
 
     @classmethod
     def from_table(cls, table: Mapping) -> CliConfig:
@@ -176,6 +213,12 @@ class CliConfig:
         unknown = sorted(set(table) - {item.name for item in fields(cls)})
         if unknown:
             raise CliError(f"unknown [cli] key(s): {', '.join(unknown)}")
+        table = dict(table)
+        if "egress_allow" in table:
+            try:
+                table["egress_allow"] = egress.parse_allow(table["egress_allow"])
+            except egress.EgressError as err:
+                raise CliError(f"[cli] egress_allow: {err}") from None
         config = cls(**table)
         if not isinstance(config.program, str) or not config.program:
             raise CliError("[cli] program must name the claude executable")
@@ -192,6 +235,8 @@ class Invocation:
     env: dict[str, str]
     config_dir: Path
     config_dir_sha256: str  # at launch
+    jail: tuple[str, ...] = ()  # the `sandbox.command` prefix `run_session` starts argv with; () when unconfined
+    network: str | None = None  # the sandbox's network rule, when a proxy confines the session
 
 
 @dataclass(frozen=True)
@@ -293,10 +338,28 @@ def run_task(ctx: harness.TaskContext) -> harness.TaskOutcome:
     transcript: list[dict] = [{"attempt": 1, "role": "user", "content": prompt}]
     try:
         cli = CliConfig.from_table(ctx.arm.get("cli", {}))
+        proxy = egress.EgressProxy(cli.egress_allow, log_path=ctx.ledger.path.parent / EGRESS_LOG).start()
+    except (CliError, OSError) as err:
+        return harness.TaskOutcome("infra_error", f"claude setup: {err}", [], transcript, started, harness.utc_now())
+    try:  # the session's own egress proxy (module docstring), for this task alone
+        proxy.configure(task=ctx.key)
+        outcome = _run_confined(ctx, cli, proxy, prompt, transcript, started)
+    finally:
+        proxy.close()
+    network = network_rule(ctx.endpoint, proxy.port)
+    outcome.network_policy = {"network": network, "sandbox": sandbox.kind(ctx.deny, network),
+                              "egress": proxy.summary(ctx.key)}
+    return outcome
+
+
+def _run_confined(ctx: harness.TaskContext, cli: CliConfig, proxy: egress.EgressProxy, prompt: str,
+                  transcript: list[dict], started: str) -> harness.TaskOutcome:
+    """`run_task` behind the session's egress proxy."""
+    try:
         above = ancestor_instructions(ctx.workdir)
         if above:
             raise CliError(f"Claude Code would read {above[0]}, above the workdir")
-        invocation = build_invocation(ctx, cli)
+        invocation = build_invocation(ctx, cli, proxy)
     except (CliError, OSError, agent_env.AgentEnvError) as err:
         return harness.TaskOutcome("infra_error", f"claude setup: {err}", [], transcript, started, harness.utc_now())
     attempt = CliAttempt(number=1, attempt_key=f"{ctx.chain_key}:1", model_requested=ctx.model,
@@ -325,8 +388,9 @@ def run_task(ctx: harness.TaskContext) -> harness.TaskOutcome:
                                started_at=started, finished_at=harness.utc_now())
 
 
-def build_invocation(ctx: harness.TaskContext, cli: CliConfig) -> Invocation:
-    """The argv and environment of one session, with its fresh config directory (made here)."""
+def build_invocation(ctx: harness.TaskContext, cli: CliConfig, proxy: egress.EgressProxy | None = None) -> Invocation:
+    """The argv and environment of one session, with its fresh config directory (made here). Behind `proxy`, the
+    session gets the proxy's variables and the sandbox prefix of `network_rule` (module docstring)."""
     program = shutil.which(cli.program)
     if program is None:
         raise CliError(f"{cli.program} is not an executable on the driver's PATH")
@@ -339,12 +403,29 @@ def build_invocation(ctx: harness.TaskContext, cli: CliConfig) -> Invocation:
     env = {**ctx.agent_env, **FIXED_ENV, "CLAUDE_CONFIG_DIR": str(config_dir)}
     if cli.credentials == "keychain":
         env["CLAUDE_SECURESTORAGE_CONFIG_DIR"] = ""
+        _keychain_wrapper(Path(ctx.agent_env["HOME"]))
     if ctx.endpoint.offline:  # a loopback --provider-url: a real claude must not reach the API either
         env["ANTHROPIC_BASE_URL"] = ctx.endpoint.base_url
     if ctx.verify_wrapper is not None:
         env[SHELL_PREFIX_ENV] = str(ctx.verify_wrapper)
+    jail, network = (), None
+    if proxy is not None:
+        env.update(agent_env.proxy_env(proxy.url))
+        network = network_rule(ctx.endpoint, proxy.port)
+        jail = tuple(sandbox.command([], deny=ctx.deny, network=network))
     agent_env.check({name: value for name, value in env.items() if name not in CLI_ENV})
-    return Invocation(argv=argv, env=env, config_dir=config_dir, config_dir_sha256=config_dir_digest(config_dir))
+    return Invocation(argv=argv, env=env, config_dir=config_dir, config_dir_sha256=config_dir_digest(config_dir),
+                      jail=jail, network=network)
+
+
+def network_rule(endpoint: provider.Endpoint, egress_port: int) -> str:
+    """The network rule of a session's process tree: the egress proxy's port and, in an offline run, the port of the
+    loopback endpoint (`ANTHROPIC_BASE_URL`), which NO_PROXY keeps direct."""
+    ports = [egress_port]
+    if endpoint.offline:
+        parts = urllib.parse.urlsplit(endpoint.base_url)
+        ports.append(parts.port or (443 if parts.scheme == "https" else 80))
+    return sandbox.loopback(*dict.fromkeys(ports))
 
 
 def settings(run_dir: Path) -> dict:
@@ -385,11 +466,13 @@ def config_dir_digest(path: Path) -> str:
 
 def run_session(invocation: Invocation, prompt: str, *, cwd: Path, wallclock_s: float, usd_cap: float,
                 meter: Meter) -> Session:
-    """Run claude once in a session of its own, with `prompt` on stdin; kill it at the wall clock or the dollar cap."""
+    """Run claude once, in its sandbox (`invocation.jail`) and a session of its own, with `prompt` on stdin; kill it
+    at the wall clock or the dollar cap."""
     session = Session()
     try:
-        process = subprocess.Popen(invocation.argv, cwd=cwd, env=invocation.env, stdin=subprocess.PIPE,
-                                   stdout=subprocess.PIPE, stderr=subprocess.PIPE, start_new_session=True)
+        process = subprocess.Popen([*invocation.jail, *invocation.argv], cwd=cwd, env=invocation.env,
+                                   stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                   start_new_session=True)
     except OSError as err:
         session.error = f"could not start {invocation.argv[0]}: {err}"
         return session
@@ -518,12 +601,15 @@ def _probe(args: argparse.Namespace, vb) -> int:
                              price_snapshot_id=snapshot.id),
         billed=False, instance_id="probe", seed=0, key="probe", workdir=workdir, spec_text=PROBE_PROMPT,
         agent_env=agent_env.build(home=root / "_home"))
+    proxy = egress.EgressProxy(cli.egress_allow, log_path=root / EGRESS_LOG).start()  # as a task's session has
     try:
-        invocation = build_invocation(ctx, cli)
+        proxy.configure(task=ctx.key)
+        invocation = build_invocation(ctx, cli, proxy)
         session = run_session(invocation, PROBE_PROMPT, cwd=workdir,
                               wallclock_s=min(ctx.caps.wallclock_s, PROBE_WALLCLOCK_S), usd_cap=ctx.caps.usd_per_task,
                               meter=Meter(snapshot, cache_write_ttl=cli.cache_write_ttl))
     finally:
+        proxy.close()
         archive.remove_tree(root / "_home")  # the config directory, with any copied login
     status, reason = _status(session)
     init = session.init or {}
@@ -535,7 +621,7 @@ def _probe(args: argparse.Namespace, vb) -> int:
         "no_mcp_servers": init.get("mcp_servers") == [],
         "no_mcp_tools": tools is not None and not any(str(tool).startswith("mcp__") for tool in tools),
         "no_web_tools": tools is not None and not web_tools(init),
-        "no_plugins": not init.get("plugins"),
+        "no_plugins": not _added_plugins(init),
         "no_memory": not init.get("memory_paths"),
         "signed_in": status == "completed",
     }
@@ -544,7 +630,9 @@ def _probe(args: argparse.Namespace, vb) -> int:
               "reason": reason, "argv": invocation.argv, "env": invocation.env,
               "config_dir_sha256": invocation.config_dir_sha256, "init": session.init, "result": session.result,
               "u_prime_usd": parsed.cost.api_equiv_usd if parsed else None, "r_usd": parsed.r_usd if parsed else None,
-              "stderr": session.stderr}
+              "stderr": session.stderr,
+              "network_policy": {"network": invocation.network, "sandbox": sandbox.kind((), invocation.network),
+                                 "egress": proxy.summary(ctx.key)}}
     out = Path(args.out).absolute() if args.out else root
     out.mkdir(mode=0o700, parents=True, exist_ok=True)
     path = out / f"claude-probe-{stamp}.json"
@@ -641,6 +729,43 @@ def _seed_config_dir(config_dir: Path, credentials: str) -> None:
     fd = os.open(config_dir / CREDENTIAL_FILE, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
     with os.fdopen(fd, "wb") as handle:
         handle.write(data)
+
+
+def _keychain_wrapper(home: Path) -> Path:
+    """The session's `security` for `credentials = "keychain"`, first on its PATH (`.vb-bin`): /usr/bin/security under
+    the operator's HOME, where macOS finds the login keychain (module docstring, gap-154f93)."""
+    wrapper = home / ".vb-bin" / "security"
+    wrapper.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    wrapper.write_text(KEYCHAIN_WRAPPER.format(home=shlex.quote(str(Path.home())), security=SECURITY))
+    wrapper.chmod(0o755)
+    return wrapper
+
+
+def keychain_fingerprint(user: str, *, service: str = CLAUDE_SERVICE, security: str = SECURITY,
+                         home: Path | None = None) -> str | None:
+    """gap-3cfe4f, token-free: a short sha256-hex fingerprint of the Claude Code login the macOS keychain holds, to
+    pass to `vb run --credential-fingerprint`, or None if it cannot be read. The credential is read into a shell
+    variable and piped into `shasum`, so it never enters this process and is never printed; only the 16-hex prefix is
+    returned, never the token. The driver never calls this -- run it out of band once to learn the fingerprint of the
+    credential the agent must not exfiltrate, so no benchmark run reads the login just to fingerprint it."""
+    pipeline = (f'cred=$({shlex.quote(security)} find-generic-password -a {shlex.quote(user)} -w '
+                f'-s {shlex.quote(service)} 2>/dev/null) || exit 7\nprintf %s "$cred" | /usr/bin/shasum -a 256\n')
+    env = {**os.environ, **({"HOME": str(home)} if home is not None else {})}
+    try:
+        done = subprocess.run(["/bin/sh", "-c", pipeline], capture_output=True, text=True, timeout=30, env=env)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    digest = (done.stdout.split() or [""])[0][:16]
+    return digest if done.returncode == 0 and len(digest) == 16 and all(c in "0123456789abcdef" for c in digest) \
+        else None
+
+
+def _added_plugins(init: Mapping) -> list:
+    """The plugins an `init` event lists beyond the ones Claude Code ships (`path` "builtin")."""
+    plugins = init.get("plugins") or []
+    if not isinstance(plugins, list):
+        return [plugins]
+    return [plugin for plugin in plugins if not (isinstance(plugin, dict) and plugin.get("path") == BUILTIN_PLUGIN)]
 
 
 def _message_usage(raw: object, cache_write_ttl: str) -> dict | None:

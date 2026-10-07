@@ -19,7 +19,7 @@ pub fn step_dependency_paths(plan_dir: &Path, step: EnrichStep) -> Vec<PathBuf> 
 
     match step {
         // These only depend on plan.md.
-        EnrichStep::Prd | EnrichStep::Briefs | EnrichStep::Invariants => {}
+        EnrichStep::Briefs | EnrichStep::Invariants => {}
 
         // Depend on tasks.toml.
         EnrichStep::Tasks
@@ -79,13 +79,6 @@ pub fn step_dependency_paths(plan_dir: &Path, step: EnrichStep) -> Vec<PathBuf> 
 mod tests {
     use super::*;
     use std::path::Path;
-
-    #[test]
-    fn prd_depends_only_on_plan() {
-        let dir = Path::new("/plans/test");
-        let deps = step_dependency_paths(dir, EnrichStep::Prd);
-        assert_eq!(deps, vec![dir.join("plan.md")]);
-    }
 
     #[test]
     fn briefs_depends_only_on_plan() {

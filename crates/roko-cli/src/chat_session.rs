@@ -45,7 +45,7 @@ use tokio::signal;
 
 use crate::config::Config;
 use crate::learning_helpers::{
-    capture_runtime_model_slugs, provider_id_for_model, record_persisted_provider_health,
+    capture_runtime_model_slugs, provider_id_for_model, record_persisted_provider_outcome,
 };
 use crate::model_selection::EffectiveModelSelection;
 
@@ -89,7 +89,9 @@ impl ChatFeedbackRuntime {
         // them (find-0dc1d5).
         let cascade_journal = Arc::new(ModelCallJournal::for_snapshot(&cascade_path));
 
-        let feedback_service = FeedbackService::from_roko_dir(&workdir.join(".roko"));
+        // Nothing else costs a chat turn's model call (bug-724982).
+        let roko_dir = workdir.join(".roko");
+        let feedback_service = FeedbackService::from_roko_dir(&roko_dir).with_cost_records();
         let sink: Arc<dyn FeedbackSink> = match &cascade_router {
             Some(router) => Arc::new(
                 feedback_service
@@ -275,6 +277,41 @@ pub fn accumulate_tool_event(
     }
 }
 
+/// Start a new paragraph in a text delta that follows a tool event.
+///
+/// Claude's stream-json output gives each assistant message's text as one
+/// `MessageDelta` with no message boundary, and tool calls are what separate
+/// the messages of a turn. Without a separator, the text written before and
+/// after a tool call runs together ("…the repository.No `Cargo.toml`…").
+/// `streamed` is the turn's text so far, and `after_tool` records a tool
+/// event since the last text delta. The streaming turn rewrites each event
+/// before it keeps or forwards it, so the reply, the terminal and the live
+/// view show the same text.
+fn separate_assistant_messages(
+    event: &mut AgentRuntimeEvent,
+    streamed: &str,
+    after_tool: &mut bool,
+) {
+    match event {
+        AgentRuntimeEvent::ToolCall { .. } | AgentRuntimeEvent::ToolOutput { .. } => {
+            *after_tool = true;
+        }
+        AgentRuntimeEvent::MessageDelta { text } if !text.is_empty() => {
+            if std::mem::take(after_tool) && !streamed.is_empty() {
+                let separator = if streamed.ends_with("\n\n") {
+                    ""
+                } else if streamed.ends_with('\n') {
+                    "\n"
+                } else {
+                    "\n\n"
+                };
+                text.insert_str(0, separator);
+            }
+        }
+        _ => {}
+    }
+}
+
 fn write_stdout_bytes(bytes: &[u8]) {
     let stdout = io::stdout();
     let mut handle = stdout.lock();
@@ -406,6 +443,9 @@ pub struct ChatAgentSession {
     pub provider_base_url: Option<String>,
     /// Env var name for the provider's API key (e.g. `ANTHROPIC_API_KEY`).
     pub provider_api_key_env: Option<String>,
+    /// `[agent] env_passthrough`: variables the chat's Claude CLI keeps
+    /// although roko loaded them from a `.env` file (`AWS_*`).
+    pub env_passthrough: Vec<String>,
     /// Run Claude with `--dangerously-skip-permissions`. Mirrors the
     /// workspace's `runner.dangerously_skip_permissions`, which is off by
     /// default, so skipping Claude's permission checks is an explicit opt-in.
@@ -468,16 +508,19 @@ impl ChatAgentSession {
             timeout,
             provider_base_url,
             provider_api_key_env,
+            env_passthrough: config.agent.env_passthrough.clone(),
             dangerously_skip_permissions: config.runner.dangerously_skip_permissions,
         })
     }
 
     /// Which inherited credentials the chat's Claude CLI loses: those of
-    /// [`CredentialScrub::for_kind`], except the provider's `api_key_env` and
-    /// the variables the MCP config refers to.
+    /// [`CredentialScrub::for_kind`], except the provider's `api_key_env`,
+    /// `[agent] env_passthrough` and the variables the MCP config refers to,
+    /// as for the provider CLIs of plan runs.
     fn credential_scrub(&self) -> CredentialScrub {
         CredentialScrub::for_kind(ProviderKind::ClaudeCli)
             .keep_all(self.provider_api_key_env.iter().cloned())
+            .keep_all(self.env_passthrough.iter().cloned())
             .keep_all(
                 self.mcp_config
                     .as_deref()
@@ -671,6 +714,8 @@ impl ChatAgentSession {
                 max_concurrent: None,
                 limits: None,
                 require_confirmation: false,
+                stream_usage: None,
+                billing: None,
             });
 
         let model_key = self.model_call_model_key();
@@ -769,11 +814,12 @@ impl ChatAgentSession {
         let mut stream = match stream_result {
             Ok(stream) => stream,
             Err(error) => {
-                self.record_chat_provider_health(&config, &model_slug, false);
+                let message = error.to_string();
+                self.record_chat_provider_health(&config, &model_slug, Some(&message));
                 feedback.flush("chat stream setup failure").await;
                 return Err(SessionError::NetworkError {
                     provider: provider_kind.clone(),
-                    message: error.to_string(),
+                    message,
                 });
             }
         };
@@ -801,7 +847,7 @@ impl ChatAgentSession {
                     return Ok(TurnResult::cancelled(started.elapsed()));
                 }
                 ModelStreamEvent::Failed { error } => {
-                    self.record_chat_provider_health(&config, &response_model, false);
+                    self.record_chat_provider_health(&config, &response_model, Some(&error));
                     feedback.flush("chat model-call failed").await;
                     return Err(SessionError::NetworkError {
                         provider: provider_kind,
@@ -824,7 +870,7 @@ impl ChatAgentSession {
             content: response_text.clone(),
         });
 
-        self.record_chat_provider_health(&config, &response_model, true);
+        self.record_chat_provider_health(&config, &response_model, None);
         feedback.flush("chat model-call completed").await;
 
         Ok(TurnResult {
@@ -839,7 +885,11 @@ impl ChatAgentSession {
         })
     }
 
-    fn record_chat_provider_health(&self, config: &RokoConfig, model: &str, success: bool) {
+    /// Persist the provider health of a chat model call: a success when
+    /// `failure` is `None`, else a failure classified from its text
+    /// (bug-9ca6d7).
+    fn record_chat_provider_health(&self, config: &RokoConfig, model: &str, failure: Option<&str>) {
+        let success = failure.is_none();
         let Some(provider) = provider_id_for_model(config, model) else {
             tracing::debug!(
                 model,
@@ -849,7 +899,7 @@ impl ChatAgentSession {
             return;
         };
 
-        if let Err(error) = record_persisted_provider_health(&self.workdir, &provider, success) {
+        if let Err(error) = record_persisted_provider_outcome(&self.workdir, &provider, failure) {
             tracing::warn!(
                 provider = %provider,
                 model,
@@ -1215,6 +1265,7 @@ impl ChatAgentSession {
             timeout: self.timeout,
             provider_base_url: self.provider_base_url.clone(),
             provider_api_key_env: self.provider_api_key_env.clone(),
+            env_passthrough: self.env_passthrough.clone(),
             dangerously_skip_permissions: self.dangerously_skip_permissions,
         }
     }
@@ -1392,6 +1443,7 @@ async fn send_turn_streaming_with_program(
 
     let mut stdout_lines = BufReader::new(stdout).lines();
     let mut accumulated_text = String::new();
+    let mut after_tool = false;
     let mut tool_calls = Vec::new();
     let mut pending_ids = Vec::new();
     let mut final_session_id: Option<String> = None;
@@ -1426,7 +1478,8 @@ async fn send_turn_streaming_with_program(
                     continue;
                 }
 
-                for event in parse_stream_line(&line) {
+                for mut event in parse_stream_line(&line) {
+                    separate_assistant_messages(&mut event, &accumulated_text, &mut after_tool);
                     accumulate_tool_event(&mut tool_calls, &mut pending_ids, &event);
 
                     match &event {
@@ -2137,6 +2190,7 @@ mod tests {
             timeout: Some(Duration::from_secs(30)),
             provider_base_url: None,
             provider_api_key_env: None,
+            env_passthrough: Vec::new(),
             dangerously_skip_permissions: false,
         }
     }
@@ -2158,8 +2212,31 @@ mod tests {
             timeout: Some(Duration::from_secs(5)),
             provider_base_url: None,
             provider_api_key_env: None,
+            env_passthrough: Vec::new(),
             dangerously_skip_permissions: false,
         }
+    }
+
+    /// bug-76dc76: `[agent] env_passthrough` keeps a `.env`-loaded variable
+    /// in the chat's Claude CLI, as in the provider CLIs of plan runs.
+    #[test]
+    fn chat_credential_scrub_keeps_agent_env_passthrough() {
+        let mut core = RokoConfig::default();
+        core.agent.env_passthrough = vec!["AWS_*".to_string()];
+        let config = Config::from_roko_config(&core).expect("convert config");
+        assert_eq!(config.agent.env_passthrough, ["AWS_*"]);
+
+        // The process-wide startup record is write-once, so build one here.
+        let mut dotenv = roko_core::child_env::DotenvNames::new();
+        dotenv.insert("AWS_PROFILE", true);
+        dotenv.insert("OPENAI_API_KEY", true);
+
+        let mut session = test_session();
+        assert!(session.credential_scrub().strips("AWS_PROFILE", &dotenv));
+        session.env_passthrough = config.agent.env_passthrough;
+        let scrub = session.credential_scrub();
+        assert!(!scrub.strips("AWS_PROFILE", &dotenv));
+        assert!(scrub.strips("OPENAI_API_KEY", &dotenv));
     }
 
     fn write_fake_claude_script(tmp: &tempfile::TempDir, body: &str) -> PathBuf {
@@ -2565,6 +2642,65 @@ max_output = 4096
         assert!(router.contains("mock-chat"), "{router}");
     }
 
+    /// bug-724982: a chat turn whose model call reported usage writes one
+    /// cost row, where `roko status` and the daily budget read spend.
+    #[tokio::test(flavor = "current_thread")]
+    async fn chat_calls_write_cost_rows() {
+        let tmp = tempdir().expect("tempdir");
+        let script = write_fake_claude_script(
+            &tmp,
+            r#"#!/bin/sh
+set -eu
+cat >/dev/null
+printf '%s\n' '{"type":"content_block_delta","delta":{"text":"chat cost ok"}}'
+printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"total_cost_usd":0.002,"usage":{"input_tokens":12,"output_tokens":5}}'
+"#,
+        );
+        std::fs::write(
+            tmp.path().join("roko.toml"),
+            format!(
+                r#"
+[providers.mock]
+kind = "claude_cli"
+command = "{}"
+
+[models.mock-chat]
+provider = "mock"
+slug = "mock-chat"
+max_output = 4096
+"#,
+                script.display()
+            ),
+        )
+        .expect("write roko.toml");
+
+        let mut session = test_session();
+        session.workdir = tmp.path().to_path_buf();
+        session.model = "mock-chat".to_string();
+        session.model_selection.requested_model = Some("mock-chat".to_string());
+        session.model_selection.effective_model_key = "mock-chat".to_string();
+        session.model_selection.provider_key = "mock".to_string();
+        session.model_selection.provider_kind = "claude_cli".to_string();
+        session.model_selection.backend_slug = "mock-chat".to_string();
+
+        session
+            .send_turn_api("hello from chat")
+            .await
+            .expect("mock chat turn");
+
+        let costs = std::fs::read_to_string(tmp.path().join(".roko/learn/costs.jsonl"))
+            .expect("the chat turn's cost row");
+        let rows: Vec<serde_json::Value> = costs
+            .lines()
+            .map(|line| serde_json::from_str(line).expect("cost row"))
+            .collect();
+        assert_eq!(rows.len(), 1, "{costs}");
+        assert_eq!(rows[0]["role"], "chat", "{costs}");
+        assert_eq!(rows[0]["provider"], "mock", "{costs}");
+        assert_eq!(rows[0]["input_tokens"], 12, "{costs}");
+        assert_eq!(rows[0]["output_tokens"], 5, "{costs}");
+    }
+
     #[test]
     fn slash_system_shows_current() {
         let mut s = test_session().clone_for_test();
@@ -2675,6 +2811,47 @@ printf '%s\n' '{"type":"result","session_id":"","model":"claude-sonnet-4-6","tot
         assert_eq!(result.input_tokens, 9);
         assert_eq!(result.output_tokens, 10);
         assert_eq!(result.text, "partial");
+    }
+
+    /// bug-6ae24e: the text of assistant messages split by tool calls does
+    /// not run together, in the reply or in the forwarded deltas.
+    #[tokio::test]
+    async fn streaming_turn_separates_assistant_messages() {
+        let tmp = tempdir().expect("tempdir");
+        let script = write_fake_claude_script(
+            &tmp,
+            r#"#!/bin/sh
+set -eu
+cat >/dev/null
+printf '%s\n' '{"type":"system","subtype":"init","session_id":"sess-split","model":"claude-sonnet-4-6","tools":[]}'
+printf '%s\n' '{"type":"assistant","subtype":"message","message":{"content":[{"type":"text","text":"Looking at the repository."},{"type":"tool_use","id":"tool-1","name":"Glob","input":{"pattern":"Cargo.toml"}}]}}'
+printf '%s\n' '{"type":"tool","subtype":"result","tool_name":"Glob","tool_use_id":"tool-1","content":"no matches"}'
+printf '%s\n' '{"type":"assistant","subtype":"message","message":{"content":[{"type":"text","text":"No Cargo.toml exists yet.\n"},{"type":"tool_use","id":"tool-2","name":"Read","input":{"path":"README.md"}}]}}'
+printf '%s\n' '{"type":"tool","subtype":"result","tool_name":"Read","tool_use_id":"tool-2","content":"readme"}'
+printf '%s\n' '{"type":"assistant","subtype":"message","message":{"content":[{"type":"text","text":"Done."}]}}'
+printf '%s\n' '{"type":"result","session_id":"sess-split","model":"claude-sonnet-4-6","total_cost_usd":0.01,"is_error":false}'
+"#,
+        );
+
+        let mut session = streaming_test_session(tmp.path().to_path_buf());
+        let (tx, mut rx) = tokio::sync::mpsc::channel(32);
+        let result = send_turn_streaming_with_program(&mut session, "hi", tx, &script)
+            .await
+            .expect("streaming turn");
+
+        let mut streamed = String::new();
+        while let Some(event) = rx.recv().await {
+            if let AgentRuntimeEvent::MessageDelta { text } = event {
+                streamed.push_str(&text);
+            }
+        }
+
+        assert_eq!(
+            result.text,
+            "Looking at the repository.\n\nNo Cargo.toml exists yet.\n\nDone."
+        );
+        assert_eq!(streamed, result.text);
+        assert_eq!(result.tool_calls.len(), 2);
     }
 
     #[tokio::test]

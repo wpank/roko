@@ -176,7 +176,7 @@ The Graph engine is the **sole execution engine** since PR #260 (made default) a
 cycle.
 
 **Rust location**: `crates/roko-graph/` -- DAG cells, topology, cost state,
-`ProductionPlanTopology`, `GuaranteedFinallyController`
+`ProductionPlanTopology`
 
 **Primary doc**: [03-GRAPH.md](03-GRAPH.md)
 
@@ -342,7 +342,7 @@ high-certainty situations route to fast T0/T1, high-uncertainty to deep T2.
 The `select_compose_verify_persist` helper in `roko-core` covers only the non-ACT /
 non-BROADCAST signal-selection subset of this workflow. The full 8-stage loop is
 orchestrated by the Graph engine (for plans) and by `roko-cli`'s runner (for interactive
-execution). `roko run` uses graph templates via `WorkflowGraphController`.
+execution). `roko run` writes a one-task plan and runs it on the Graph engine.
 
 ---
 
@@ -375,6 +375,23 @@ The workspace contains **39 members** organized into 33 library crates, 3 applic
 binaries, and 1 integration test crate, plus the CLI binary (`roko-cli`), the HTTP server
 (`roko-serve`), and the ACP server (`roko-acp`).
 
+### Parked (off the default build)
+
+Decision 9201 parked every group that nothing on the plan path uses behind a cargo feature that
+is off by default (the conductor stays on, 9236). A default `roko` binary leaves these out; build
+with the feature to bring one back. Measurements are in `benchmarks/park/`.
+
+| Feature | Crate | What it adds back |
+|---|---|---|
+| `chain` | `roko-cli`, `roko-serve` | `roko-chain`, the 17 `chain.*` tools, the chain-family routes (arenas, marketplace, DeFi, registries, RPC proxy), chain state and the seven chain feed agents, x402 paid feeds, chain jobs; without it those routes answer 501 |
+| `alloy-backend` | `roko-cli`, `roko-serve` | Real EVM JSON-RPC (implies `chain`) |
+| `groups` | `roko-cli`, `roko-serve` | Agent groups, membership and pheromone state, and their routes |
+| `relay` | `roko-cli`, `roko-serve` | Relay registration, the subscription and feed relay bridge, the `/relay` proxy |
+| `cognitive-clock` | `roko-cli`, `roko-runtime` | The heartbeat clock, `CorticalState`, the theta and delta consumers and plan-completion sinks, the attention auction, heartbeat probes |
+| `cross-cut-functors` | `roko-compose` | The memory, daimon, dreams and safety functors, natural transformations, `CrossCutArbitrator` |
+| `spc` | `roko-gate` | CUSUM/EWMA/BOCPD detectors, PELT, Hotelling's T-squared in the adaptive thresholds |
+| `active-inference` | `roko-learn` | The expected-free-energy tier selector |
+
 ### Kernel layer
 
 These crates define the type system and core abstractions. Everything else depends on them.
@@ -382,7 +399,7 @@ These crates define the type system and core abstractions. Everything else depen
 | Crate | Path | What | Status |
 |---|---|---|---|
 | `roko-primitives` | `crates/roko-primitives/` | HDC vectors, tier routing | Stable |
-| `roko-runtime` | `crates/roko-runtime/` | ProcessSupervisor, event bus, cancellation, workflow contract | Stable |
+| `roko-runtime` | `crates/roko-runtime/` | ProcessSupervisor, event bus, cancellation, workflow contract | Stable; the cognitive clock is parked (`cognitive-clock`) |
 | `roko-core` | `crates/roko-core/` | Signal + 12 traits, types, config, tools, errors | Kernel, stable |
 
 ### Protocol implementation layer
@@ -392,10 +409,10 @@ Concrete implementations of the 9 protocol traits.
 | Crate | Path | What | Status |
 |---|---|---|---|
 | `roko-std` | `crates/roko-std/` | 35 default tool definitions (16 executable local + 19 GitHub MCP); 52 with typed optional-chain placeholders | Stable |
-| `roko-gate` | `crates/roko-gate/` | 19 gates, 7-rung pipeline, adaptive thresholds | Partial: plan runs use `ShellGate` for authored verify commands; the rung pipeline runs only in tests |
+| `roko-gate` | `crates/roko-gate/` | 19 gates, 7-rung pipeline, adaptive thresholds | Partial: plan runs use `ShellGate` for authored verify commands; the rung pipeline runs only in tests; the SPC ensemble is parked (`spc`) |
 | `roko-eval` | `crates/roko-eval/` | Unified evaluation framework: EvidenceCollector, Criterion, Profile traits | Wired |
 | `roko-fs` | `crates/roko-fs/` | FileSubstrate (JSONL), GC, layout | Stable |
-| `roko-compose` | `crates/roko-compose/` | Prompt assembly, 11 role templates, 9-layer SystemPromptBuilder, enrichment | Wired |
+| `roko-compose` | `crates/roko-compose/` | Prompt assembly, 11 role templates, 9-layer SystemPromptBuilder, enrichment | Wired; the cross-cut functors are parked (`cross-cut-functors`) |
 
 ### Agent layer
 
@@ -423,7 +440,7 @@ Learning, memory, affect, and dreams.
 
 | Crate | Path | What | Status |
 |---|---|---|---|
-| `roko-learn` | `crates/roko-learn/` | Episodes, playbooks, bandits, model routing, experiments, efficiency | Wired |
+| `roko-learn` | `crates/roko-learn/` | Episodes, playbooks, bandits, model routing, experiments, efficiency | Wired; the EFE tier selector is parked (`active-inference`) |
 | `roko-neuro` | `crates/roko-neuro/` | Durable knowledge store, distillation, tier progression | Wired |
 | `roko-dreams` | `crates/roko-dreams/` | Offline consolidation (hypnagogia, imagination, cycle), scheduling | Wired |
 | `roko-daimon` | `crates/roko-daimon/` | Affect engine, somatic markers, PAD vector, dispatch modulation | Partial: affect feeds routing; `modulate_dispatch` and somatic markers have no caller |
@@ -436,7 +453,7 @@ Gateway, plugins, connectivity, and configuration.
 |---|---|---|---|
 | `roko-gateway` | `crates/roko-gateway/` | 9-stage inference pipeline: routing, caching, backpressure, cost accounting | Wired in `roko serve` only; plan runs don't use it |
 | `roko-plugin` | `crates/roko-plugin/` | Plugin manifests, WASM hook validation (no hook runtime), signed deps, semantic-version resolution | Wired |
-| `roko-chain` | `crates/roko-chain/` | Optional chain client/runtime primitives, local registry, marketplace, arena, DeFi state machines | Partial (local state machines tested; chain transport/indexing remain Phase 2+) |
+| `roko-chain` | `crates/roko-chain/` | Optional chain client/runtime primitives, local registry, marketplace, arena, DeFi state machines | Parked: not in a default `roko` build (`--features chain`); local state machines tested, chain transport/indexing remain Phase 2+ |
 
 ### Code intelligence layer
 
@@ -455,8 +472,6 @@ Standalone MCP servers used by agents via `--mcp-config`.
 |---|---|---|---|
 | `roko-mcp-code` | `crates/roko-mcp-code/` | Code-intelligence MCP server | Wired |
 | `roko-mcp-github` | `crates/roko-mcp-github/` | GitHub integration MCP | Partial |
-| `roko-mcp-slack` | `crates/roko-mcp-slack/` | Slack integration MCP | Partial |
-| `roko-mcp-scripts` | `crates/roko-mcp-scripts/` | Scripts execution MCP | Partial |
 | `roko-mcp-stdio` | `crates/roko-mcp-stdio/` | Stdio transport MCP | Wired |
 
 ### User-facing surfaces
@@ -464,7 +479,7 @@ Standalone MCP servers used by agents via `--mcp-config`.
 | Crate | Path | What | Status |
 |---|---|---|---|
 | `roko-cli` | `crates/roko-cli/` | CLI binary, plan DAG/runner, merge queue, worktree manager, ratatui TUI | Main entry point, wired |
-| `roko-serve` | `crates/roko-serve/` | HTTP control plane: ~376 canonical REST routes (~421 incl. aliases) + SSE + WebSocket on :6677 | Wired |
+| `roko-serve` | `crates/roko-serve/` | HTTP control plane: REST routes (counts in `tools/http_route_inventory.snapshot.json`) + SSE + WebSocket on :6677 | Wired; the chain-family, group and relay routes are parked (`chain`, `groups`, `relay`) and answer 501 |
 | `roko-demo` | `crates/roko-demo/` | Demo/example binary for showcasing features | Built |
 
 ### Application binaries
@@ -705,30 +720,28 @@ through L4, and signed under ERC-8004.
 Roko develops itself. Each step is a CLI command that exists today:
 
 ```bash
-# 1. Capture a work item
-roko prd idea "Wire SystemPromptBuilder into runner"
+# 1. Write a plan from a request: plans/<slug>/ (tasks.toml + plan.md)
+roko plan generate "Wire SystemPromptBuilder into runner"
 
-# 2. Draft a PRD from the idea (agent-driven)
-roko prd draft new "system-prompt-wiring"
+# 2. Optional: research-backed improvements to the plan
+roko research enhance-plan <slug>
 
-# 3. Research the topic for context
-roko research enhance-prd system-prompt-wiring
+# 3. Review or edit plans/<slug>/tasks.toml, then run it
+#    (agents run tasks, gates validate, state persists)
+roko run plans/<slug>
 
-# 4. Generate implementation plan + tasks from the PRD
-roko prd plan system-prompt-wiring
+# 4. Resume if interrupted
+roko plan run plans/<slug> --resume-plan
 
-# 5. Execute the plan (agents run tasks, gates validate, state persists)
-roko plan run plans/
-
-# 6. Resume if interrupted
-roko plan run plans/ --resume-plan
-
-# 7. Watch progress
+# 5. Watch progress
 roko dashboard
 
-# 8. Check status
+# 6. Check status
 roko status
 ```
+
+`roko run --plan "<prompt>"` does steps 1 and 3 in one command: it writes the plan,
+shows it, and asks before running it.
 
 Each step uses Roko's own infrastructure: the Composer assembles context, the Router
 selects models, the Gate pipeline verifies outputs, the Episode logger records what
@@ -737,19 +750,19 @@ the scaffold -- this is the autocatalytic cycle made concrete.
 
 ```mermaid
 flowchart LR
-    PRD["PRD\n(idea/draft)"]
+    Request["Request\n(prompt or spec)"]
     Plan["Plan\n(tasks.toml)"]
     Execute["Execute\n(agent dispatch)"]
     Gate["Gate\n(verify pipeline)"]
     Learn["Learn\n(episodes/routing)"]
-    Iterate["Iterate\n(replan/improve)"]
+    Iterate["Iterate\n(retry/improve)"]
 
-    PRD --> Plan --> Execute --> Gate --> Learn --> Iterate
-    Iterate -->|"next cycle"| PRD
+    Request --> Plan --> Execute --> Gate --> Learn --> Iterate
+    Iterate -->|"next cycle"| Request
 
     Gate -->|"gate failure"| Iterate
 
-    style PRD fill:#e0f2fe,stroke:#0284c7
+    style Request fill:#e0f2fe,stroke:#0284c7
     style Plan fill:#e0f2fe,stroke:#0284c7
     style Execute fill:#fef9c3,stroke:#ca8a04
     style Gate fill:#fde8e8,stroke:#c0392b
@@ -875,10 +888,10 @@ As of 2026-09-15 (source: CLAUDE.md), with the rows corrected on 2026-09-29 mark
 
 | # | Document | What It Defines | Status |
 |---|---|---|---|
-| **[25](25-TUI.md)** | Interactive TUI | ratatui dashboard. 11 tabs (F1-F11). StateHub bridge. File/git watchers. ROSEDUST design language. Spectre creature visualization. Collective display. Sonification. A2UI generative interfaces. Onboarding flow. Accessibility. | WIRED |
-| **[26](26-HTTP-API.md)** | HTTP Control Plane | ~376 canonical routes (~421 incl. aliases). SSE. WebSocket. OpenAPI. REST conventions. | WIRED |
+| **[25](25-TUI.md)** | Interactive TUI | ratatui dashboard. 10 tabs (F1-F10). StateHub bridge. File/git watchers. ROSEDUST design language. Spectre creature visualization. Collective display. Sonification. A2UI generative interfaces. Onboarding flow. Accessibility. | WIRED |
+| **[26](26-HTTP-API.md)** | HTTP Control Plane | REST routes (counts in `tools/http_route_inventory.snapshot.json`). SSE. WebSocket. OpenAPI. REST conventions. | WIRED |
 | **[27](27-ACP.md)** | Agent Client Protocol | ACP server for Cursor/editor integration. Mutation consent. Experiments. Budget enforcement. 180 tests. | WIRED (E17 8/8) |
-| **[28](28-CLI.md)** | CLI Reference | All subcommands: prd, plan, agent, research, knowledge, learn, config, serve, dashboard, etc. | WIRED |
+| **[28](28-CLI.md)** | CLI Reference | All subcommands: run, plan, agent, research, knowledge, learn, config, serve, dashboard, etc. | WIRED |
 
 ### Cognitive architecture deep-dives
 
@@ -886,7 +899,7 @@ As of 2026-09-15 (source: CLAUDE.md), with the rows corrected on 2026-09-29 mark
 |---|---|---|---|
 | **[29](29-HEARTBEAT.md)** | Universal Cognitive Loop | CoALA-inspired decision cycle. 3 cognitive speeds (T0/T1/T2). Gamma/theta/delta loops. Adaptive clock. VCG attention auction. | WIRED |
 | **[30](30-CONDUCTOR.md)** | Conductor | 12 watchers. Circuit breaker. Graduated interventions. Diagnosis engine. OODA cybernetic loop. Yerkes-Dodson pressure. | BUILT-UNWIRED |
-| **[31](31-SELF-HOSTING.md)** | Self-Hosting | 8-step CLI loop. FAST self-development. RSI taxonomy (arXiv:2607.07663). Bounded self-refinement. Gate-failure replan (built, not wired). GRASP admission. Autocatalytic compounding. DGM/ADAS. AI4AI-Bench. Triple-loop learning. Dogfood evidence. | WIRED |
+| **[31](31-SELF-HOSTING.md)** | Self-Hosting | Plan-first CLI loop (prompt -> plan -> review -> run). FAST self-development. RSI taxonomy (arXiv:2607.07663). Bounded self-refinement. Gate-failure replan (built, not wired). GRASP admission. Autocatalytic compounding. DGM/ADAS. AI4AI-Bench. Triple-loop learning. Dogfood evidence. | WIRED |
 
 ### Deployment and meta
 

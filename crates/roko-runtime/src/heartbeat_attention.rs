@@ -831,7 +831,7 @@ impl ContextBidder for ResearchArtifactsBidder {
     }
 }
 
-/// Task context bidder: bids for PRD/plan/task description context.
+/// Task context bidder: bids for plan/task description context.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct TaskContextBidder;
 
@@ -847,7 +847,7 @@ impl ContextBidder for TaskContextBidder {
             512,
             0.9,
             ctx.urgency(),
-            "task context (PRD/plan)",
+            "task context (plan/task)",
         )]
     }
 

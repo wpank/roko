@@ -2,12 +2,14 @@
 //! §5.9, §7): what `roko learn telemetry check` and `route-report` print.
 //!
 //! Everything here reads files alone and writes nothing.
-//! [`RunRecords::load`] parses one run directory's `attempts.jsonl` and
-//! `decisions.jsonl`, and [`LegacyRows::load`] finds the run's attempt keys
-//! in the logs that predate S01 (`learn/efficiency.jsonl`,
-//! `learn/costs.jsonl`, `episodes.jsonl`). [`check`] validates one run;
-//! [`route_report`] counts routing outcomes per decision source over any
-//! number of runs.
+//! [`RunRecords::load`] parses one run directory's `attempts.jsonl`,
+//! `decisions.jsonl` (route and content decisions), `exposures.jsonl` and
+//! `census.json`, and [`LegacyRows::load`] finds the run's attempt keys in
+//! the logs that predate S01 (`learn/efficiency.jsonl`, `learn/costs.jsonl`,
+//! `episodes.jsonl`). [`check`] validates one run; [`route_report`] counts
+//! routing outcomes per decision source over any number of runs; and
+//! [`srm_check`] tests each randomised layer's arm split against its logged
+//! propensities (S02 SC3).
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fs::File;
@@ -16,20 +18,31 @@ use std::path::Path;
 
 use chrono::{DateTime, Utc};
 use roko_fs::layout::RokoLayout;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+use super::assign::{Arm, Assignment};
+use super::census::{CENSUS_FILE, CensusReport};
 use super::manifest::AttemptTally;
 use super::records::{
-    ATTEMPT_OPEN_SCHEMA, AttemptKey, AttemptOpenRecord, AttemptVerdictRecord, DECISION_SCHEMA,
+    ATTEMPT_OPEN_SCHEMA, AttemptKey, AttemptOpenRecord, AttemptPredictionRecord,
+    AttemptVerdictRecord, ContentDecisionPoint, ContentDecisionRecord, DECISION_SCHEMA,
+    DecisionSource, EXPOSURE_SCHEMA, ExecutedModel, ExposureRecord, HARNESS_POLICY_DECISION_POINT,
+    HarnessPolicyDecisionRecord, PLACEBO_DECISION_POINT, PREDICTION_SCHEMA, PlaceboDecisionRecord,
     RunFile, Stamped, VERDICT_SCHEMA,
 };
 use crate::error::LearnError;
-use crate::routing_log::RoutingDecisionLog;
+use crate::loop_audit::arm_set::{
+    ArmSet, FORCED_CONDITION, MAXIMIZE_CONDITION, NORMAL_CONDITION, PLACEBO_LAYER,
+};
+use crate::loop_audit::cs::SrmEvalue;
+use crate::routing_log::{ROUTE_DECISION_POINT, RoutingDecisionLog};
+use crate::section_effect::SectionDecision;
 
 /// The source [`route_report`] files an attempt under when no route
-/// decision names one. Graph dispatch writes no route decisions yet (S01
-/// P0-8), so today every attempt is `unknown`.
+/// decision names one: an attempt that never routed (a T0 reflex, a harness
+/// failure before planning), or one from a run written before Graph
+/// dispatch recorded route decisions (S01 P0-8).
 pub const UNKNOWN_SOURCE: &str = "unknown";
 
 // ── Reading a run ─────────────────────────────────────────────────────
@@ -45,6 +58,20 @@ pub struct RunRecords {
     pub verdicts: Vec<Stamped<AttemptVerdictRecord>>,
     /// Route decision rows, in file order.
     pub decisions: Vec<Stamped<RoutingDecisionLog>>,
+    /// Content decision rows (knowledge, playbooks, sections, error
+    /// patterns), in file order.
+    pub content_decisions: Vec<Stamped<ContentDecisionRecord>>,
+    /// Placebo decision rows (S03 §4.3), one per attempt, in file order.
+    pub placebo_decisions: Vec<Stamped<PlaceboDecisionRecord>>,
+    /// M1's `harness_policy` decision rows (A-DEC-H), one per attempt of a
+    /// run with an M1 sink, in file order.
+    pub harness_decisions: Vec<Stamped<HarnessPolicyDecisionRecord>>,
+    /// Exposure rows, in file order.
+    pub exposures: Vec<Stamped<ExposureRecord>>,
+    /// Self-model prediction rows (S01 §5.6), in file order.
+    pub predictions: Vec<Stamped<AttemptPredictionRecord>>,
+    /// The run's wiring census; `None` for a run that has none.
+    pub census: Option<CensusReport>,
     /// Lines that are not a valid record of their file, as
     /// `file:line: reason`.
     pub invalid: Vec<String>,
@@ -77,6 +104,10 @@ impl RunRecords {
                 }
             }
         }
+        match CensusReport::load(run_dir) {
+            Ok(census) => records.census = census,
+            Err(error) => records.invalid.push(format!("{CENSUS_FILE}: {error}")),
+        }
         Ok(records)
     }
 
@@ -104,8 +135,25 @@ impl RunRecords {
             (RunFile::Attempts, VERDICT_SCHEMA) => {
                 serde_json::from_value(value).map(|record| self.verdicts.push(record))
             }
-            (RunFile::Decisions, DECISION_SCHEMA) => {
+            // A route row's `decision_point` is `route`; rows written before
+            // the field existed have none, and are route rows too.
+            (RunFile::Decisions, DECISION_SCHEMA) if is_route_decision(&value) => {
                 serde_json::from_value(value).map(|record| self.decisions.push(record))
+            }
+            (RunFile::Decisions, DECISION_SCHEMA) if is_placebo_decision(&value) => {
+                serde_json::from_value(value).map(|record| self.placebo_decisions.push(record))
+            }
+            (RunFile::Decisions, DECISION_SCHEMA) if is_harness_decision(&value) => {
+                serde_json::from_value(value).map(|record| self.harness_decisions.push(record))
+            }
+            (RunFile::Decisions, DECISION_SCHEMA) => {
+                serde_json::from_value(value).map(|record| self.content_decisions.push(record))
+            }
+            (RunFile::Exposures, EXPOSURE_SCHEMA) => {
+                serde_json::from_value(value).map(|record| self.exposures.push(record))
+            }
+            (RunFile::Predictions, PREDICTION_SCHEMA) => {
+                serde_json::from_value(value).map(|record| self.predictions.push(record))
             }
             _ => {
                 self.invalid
@@ -134,6 +182,25 @@ impl RunRecords {
     }
 }
 
+/// Whether a decision row is a route row: its `decision_point` is `route`,
+/// or it has none.
+fn is_route_decision(value: &Value) -> bool {
+    value
+        .get("decision_point")
+        .and_then(Value::as_str)
+        .is_none_or(|point| point == ROUTE_DECISION_POINT)
+}
+
+/// Whether a decision row is a placebo row (S03 §4.3).
+fn is_placebo_decision(value: &Value) -> bool {
+    value.get("decision_point").and_then(Value::as_str) == Some(PLACEBO_DECISION_POINT)
+}
+
+/// Whether a decision row is M1's `harness_policy` row (A-DEC-H).
+fn is_harness_decision(value: &Value) -> bool {
+    value.get("decision_point").and_then(Value::as_str) == Some(HARNESS_POLICY_DECISION_POINT)
+}
+
 /// One run's attempt keys in the logs that predate S01, which gained an
 /// `attempt_key` (S01 §5): rows whose key names another run, or that have
 /// none, are left out.
@@ -144,7 +211,8 @@ pub struct LegacyRows {
     pub efficiency: Vec<String>,
     /// Keys of the `learn/costs.jsonl` rows.
     pub costs: Vec<String>,
-    /// Keys of the `episodes.jsonl` rows (`extra.attempt_key`).
+    /// Keys of the `episodes.jsonl` rows (`extra.attempt_key`): the
+    /// workspace's, and a frozen run's own `runs/<run_id>/episodes.jsonl`.
     pub episodes: Vec<String>,
 }
 
@@ -157,6 +225,18 @@ impl LegacyRows {
     /// Returns an error when a log exists but cannot be read.
     pub fn load(layout: &RokoLayout, run_id: &str) -> Result<Self, LearnError> {
         let learn_dir = layout.learn_dir();
+        // A frozen run writes its episodes to its own run directory, not to
+        // the workspace's log (gap-127263).
+        let mut episodes = run_keys(
+            &layout.root_episodes_path(),
+            run_id,
+            &["extra", "attempt_key"],
+        )?;
+        episodes.extend(run_keys(
+            &layout.run_dir(run_id).join("episodes.jsonl"),
+            run_id,
+            &["extra", "attempt_key"],
+        )?);
         Ok(Self {
             efficiency: run_keys(
                 &learn_dir.join("efficiency.jsonl"),
@@ -164,11 +244,7 @@ impl LegacyRows {
                 &["attempt_key"],
             )?,
             costs: run_keys(&learn_dir.join("costs.jsonl"), run_id, &["attempt_key"])?,
-            episodes: run_keys(
-                &layout.root_episodes_path(),
-                run_id,
-                &["extra", "attempt_key"],
-            )?,
+            episodes,
         })
     }
 }
@@ -245,15 +321,26 @@ pub struct CheckReport {
     pub attempts_abandoned: u64,
     /// Route decision rows.
     pub decisions: usize,
+    /// Content decision rows.
+    pub content_decisions: usize,
+    /// Exposure rows.
+    pub exposures: usize,
     /// Lines that are not valid records of their file.
     pub invalid_lines: Vec<String>,
     /// `settlement_id`s that settle more than once.
     pub duplicate_settlements: Vec<String>,
     /// Attempts with a verdict but no attempt-open line.
     pub unopened_verdicts: Vec<String>,
+    /// Attempt keys of exposure rows whose attempt the run never opened.
+    pub unopened_exposures: Vec<String>,
     /// `seq` ordering violations: repeated or decreasing `seq`, and a verdict
-    /// that precedes its own attempt's open line or route decision.
+    /// that precedes its own attempt's open line, decisions or exposures.
     pub seq_violations: Vec<String>,
+    /// The learning components the run's census lists as unwired; `None`
+    /// when the run has no census.
+    pub unwired_components: Option<Vec<String>>,
+    /// What is worth knowing but fails nothing, e.g. a run with no census.
+    pub warnings: Vec<String>,
     /// Join coverage of the efficiency, cost and episode logs.
     pub coverage: Vec<JoinCoverage>,
     /// Settled attempts per `cost.source`.
@@ -278,6 +365,11 @@ impl CheckReport {
             self.unopened_verdicts
                 .iter()
                 .map(|key| format!("verdict without an attempt-open line: {key}")),
+        );
+        failures.extend(
+            self.unopened_exposures
+                .iter()
+                .map(|key| format!("exposure without an attempt-open line: {key}")),
         );
         failures.extend(self.seq_violations.iter().cloned());
         for coverage in &self.coverage {
@@ -308,8 +400,10 @@ impl CheckReport {
 }
 
 /// Check one run's records: schema validity, one settlement per attempt,
-/// `seq` ordering, join coverage of the legacy logs and the cost-source mix
-/// (S01 §7 criterion 2).
+/// exposures that join an opened attempt, `seq` ordering, join coverage of
+/// the legacy logs and the cost-source mix (S01 §7 criterion 2). It lists
+/// the components the run's census has unwired, and warns of a run with no
+/// census, since runs before it have none.
 #[must_use]
 pub fn check(records: &RunRecords, legacy: &LegacyRows) -> CheckReport {
     let tally = records.tally();
@@ -339,6 +433,15 @@ pub fn check(records: &RunRecords, legacy: &LegacyRows) -> CheckReport {
         .difference(&opened)
         .map(|key| (*key).to_string())
         .collect();
+    let unopened_exposures = records
+        .exposures
+        .iter()
+        .map(|line| line.record.identity.attempt_key.as_str())
+        .filter(|key| !opened.contains(key))
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .map(str::to_string)
+        .collect();
 
     let mut cost_sources = BTreeMap::new();
     for line in &records.verdicts {
@@ -358,16 +461,32 @@ pub fn check(records: &RunRecords, legacy: &LegacyRows) -> CheckReport {
     .map(|(file, keys)| join_coverage(file, &settled, keys))
     .collect();
 
+    let unwired_components = records
+        .census
+        .as_ref()
+        .map(|census| census.unwired().into_iter().map(str::to_string).collect());
+    let mut warnings = Vec::new();
+    if records.census.is_none() {
+        warnings.push(format!(
+            "no {CENSUS_FILE}: the run predates the wiring census"
+        ));
+    }
+
     CheckReport {
         run_id: records.run_id.clone(),
         attempts_opened: tally.opened,
         attempts_settled: tally.settled,
         attempts_abandoned: tally.abandoned,
         decisions: records.decisions.len(),
+        content_decisions: records.content_decisions.len(),
+        exposures: records.exposures.len(),
         invalid_lines: records.invalid.clone(),
         duplicate_settlements,
         unopened_verdicts,
+        unopened_exposures,
         seq_violations: seq_violations(records),
+        unwired_components,
+        warnings,
         coverage,
         cost_sources,
     }
@@ -392,7 +511,7 @@ fn join_coverage(file: &'static str, settled: &BTreeSet<&str>, keys: &[String]) 
 
 /// Repeated `seq`s across the run's files, a `seq` that does not grow along
 /// its file, and a verdict whose `seq` does not follow its attempt's open
-/// line and route decision.
+/// line, decisions and exposures.
 fn seq_violations(records: &RunRecords) -> Vec<String> {
     let mut violations = Vec::new();
     let mut seen = BTreeSet::new();
@@ -425,6 +544,20 @@ fn seq_violations(records: &RunRecords) -> Vec<String> {
                 .or_default()
                 .push(("route decision", line.seq));
         }
+    }
+    for line in &records.content_decisions {
+        let key = line.record.identity.attempt_key.as_str();
+        preceding
+            .entry(key)
+            .or_default()
+            .push(("content decision", line.seq));
+    }
+    for line in &records.exposures {
+        let key = line.record.identity.attempt_key.as_str();
+        preceding
+            .entry(key)
+            .or_default()
+            .push(("exposure", line.seq));
     }
     for line in &records.verdicts {
         let key = line.record.identity.attempt_key.as_str();
@@ -466,10 +599,17 @@ pub struct RouteRow {
     pub with_default: Vec<String>,
     /// Those of them whose pick differs from the default (ι).
     pub pick_not_default: Vec<String>,
+    /// Attempts whose route decision records the router's own proposal
+    /// (`proposals.learned`).
+    pub with_learned: Vec<String>,
     /// Masked routes (`source = router` while the pick differs from the
-    /// router's own proposal): `None` until route decisions record that
-    /// proposal (S01 P0-8).
+    /// router's own proposal): `None` until a decision of this source
+    /// records that proposal.
     pub masked: Option<Vec<String>>,
+    /// Router-sourced attempts whose executed model is the router's own
+    /// proposal (ε_honest's numerator): `None` for other sources and until a
+    /// decision records that proposal.
+    pub executed_learned: Option<Vec<String>>,
 }
 
 impl RouteRow {
@@ -484,6 +624,15 @@ impl RouteRow {
     #[must_use]
     pub fn iota(&self) -> Option<f64> {
         ratio(self.pick_not_default.len(), self.with_default.len())
+    }
+
+    /// ε_honest: share of the router-sourced attempts recording the router's
+    /// own proposal whose executed model is that proposal; `None` for other
+    /// sources and when no decision records one.
+    #[must_use]
+    pub fn eps_honest(&self) -> Option<f64> {
+        let honest = self.executed_learned.as_ref()?;
+        ratio(honest.len(), self.with_learned.len())
     }
 }
 
@@ -513,7 +662,8 @@ impl RouteReport {
 
 /// Count the settled attempts of `runs` per route decision source: how many
 /// passed, failed or carry no label, how often the served model differed
-/// from the requested one, and ι where decisions name a default. With
+/// from the requested one, ι where decisions name a default, and the masked
+/// routes and ε_honest where they record the router's own proposal. With
 /// `since`, only verdicts written at or after it count.
 #[must_use]
 pub fn route_report(runs: &[RunRecords], since: Option<DateTime<Utc>>) -> RouteReport {
@@ -563,6 +713,21 @@ pub fn route_report(runs: &[RunRecords], since: Option<DateTime<Utc>>) -> RouteR
                 row.pick_not_default.push(key.clone());
             }
         }
+        if let Some(decision) = decision
+            && let Some(learned) = &decision.proposals.learned
+        {
+            row.with_learned.push(key.clone());
+            let masked = row.masked.get_or_insert_with(Vec::new);
+            if decision.source == Some(DecisionSource::Router) {
+                if decision.selected_model != *learned {
+                    masked.push(key.clone());
+                }
+                let honest = row.executed_learned.get_or_insert_with(Vec::new);
+                if executed_model(executed).is_some_and(|ran| undated(ran) == undated(learned)) {
+                    honest.push(key.clone());
+                }
+            }
+        }
         row.attempts.push(key);
     }
     RouteReport {
@@ -572,11 +737,516 @@ pub fn route_report(runs: &[RunRecords], since: Option<DateTime<Utc>>) -> RouteR
     }
 }
 
+/// The model an attempt ran on: the one the provider reported, else the one
+/// the provider bridge launched, else the one dispatch requested.
+fn executed_model(executed: &ExecutedModel) -> Option<&str> {
+    executed
+        .model_reported
+        .as_deref()
+        .or(executed.model_dispatched.as_deref())
+        .or(executed.model_requested.as_deref())
+}
+
 /// `model` without a trailing `-YYYYMMDD` release date.
-fn undated(model: &str) -> &str {
+pub(crate) fn undated(model: &str) -> &str {
     match model.rsplit_once('-') {
         Some((base, date)) if date.len() == 8 && date.bytes().all(|b| b.is_ascii_digit()) => base,
         _ => model,
+    }
+}
+
+// ── srm ───────────────────────────────────────────────────────────────
+
+/// α of the sample-ratio-mismatch check (S02 SC3).
+pub const SRM_ALPHA: f64 = 0.001;
+/// Units a layer needs before S02 SC3 judges it.
+pub const SRM_MIN_UNITS: usize = 200;
+/// The arms an assignment can realise, in the order the e-value counts
+/// them. [`Arm::Explore`] is S02's ε draw inside the route decision, never
+/// an assignment's arm.
+pub const SRM_ARMS: [Arm; 3] = [Arm::Learned, Arm::Default, Arm::GlobalOff];
+/// How far a logged propensity may sit from the one its h and g give.
+const PROPENSITY_TOLERANCE: f64 = 1e-9;
+/// A unit that took [`Arm::Explore`].
+const EXPLORE_ARM: &str = "took the explore arm, which no assignment draws";
+/// A unit that took an arm of probability 0.
+const NO_CHANCE: &str = "took an arm their h and g give no chance";
+/// A unit whose logged propensity is not its arm's probability.
+const WRONG_PROPENSITY: &str = "log a propensity their h and g do not give";
+/// A unit whose rows carry two different draws.
+const REDRAWN: &str = "carry another draw in a later row: a retry redrew";
+
+/// One arm of a layer in the sample-ratio check.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct SrmArm {
+    /// The arm.
+    pub arm: Arm,
+    /// Units that took it.
+    pub units: usize,
+    /// Its mean probability over the layer's units, from their logged h and
+    /// g.
+    pub expected: f64,
+    /// Its share of the layer's units.
+    pub realised: f64,
+}
+
+/// One randomised layer's sample-ratio check (S02 SC3).
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct SrmLayer {
+    /// The layer, e.g. `knowledge`.
+    pub layer: String,
+    /// Units counted, once each: chains, for a per-chain layer.
+    pub units: usize,
+    /// Each arm, in [`SRM_ARMS`] order.
+    pub arms: Vec<SrmArm>,
+    /// The sequential multinomial SRM e-value (S03 §4.5) of the units' arms
+    /// against their logged propensities, capped at `f64::MAX`.
+    pub e_value: f64,
+    /// Whether the e-value reached 1/[`SRM_ALPHA`], or a unit took an arm
+    /// its h and g give no chance.
+    pub mismatch: bool,
+    /// Whether the layer has the [`SRM_MIN_UNITS`] units S02 SC3 asks for.
+    /// The e-value is valid at any count, so a mismatch fails either way.
+    pub enough_units: bool,
+    /// Units whose rows break the assignment's rules, one line per rule.
+    pub problems: Vec<String>,
+}
+
+/// One droppable section's bandit draws in the sample-ratio check (S02
+/// L9): how often the chains that drew it left it out, against the
+/// exclusion probabilities they logged.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct SrmSection {
+    /// The section, e.g. `conventions`.
+    pub section: String,
+    /// Chains that drew it, once each, with their first draw.
+    pub units: usize,
+    /// Of those, the draws that left it out.
+    pub excluded: usize,
+    /// The exclusions the draws' logged probabilities expect: Σ p_ex.
+    pub expected_excluded: f64,
+    /// The sequential SRM e-value (S03 §4.5) of the draws against their
+    /// p_ex, capped at `f64::MAX`.
+    pub e_value: f64,
+    /// Whether the e-value reached 1/[`SRM_ALPHA`], or a draw took an
+    /// outcome its p_ex gives no chance.
+    pub mismatch: bool,
+}
+
+/// What `roko learn telemetry check --srm` prints.
+#[derive(Debug, Clone, Default, PartialEq, Serialize)]
+pub struct SrmReport {
+    /// The runs read.
+    pub runs: Vec<String>,
+    /// α of the check ([`SRM_ALPHA`]).
+    pub alpha: f64,
+    /// One entry per layer, by layer name.
+    pub layers: Vec<SrmLayer>,
+    /// One entry per section the section bandit drew, by section name.
+    pub sections: Vec<SrmSection>,
+    /// Chains left out, by condition: `maximize` withholds nothing and
+    /// `forced` pins arms, so neither draws as its h and g say.
+    pub excluded: BTreeMap<String, usize>,
+    /// Decision rows that carry no arms: rows written before S02.P1-14, or
+    /// outside an attempt.
+    pub unassigned: usize,
+    /// Rows with arms whose attempt key does not parse, as `run: "key"`.
+    pub unreadable: Vec<String>,
+}
+
+impl SrmReport {
+    /// Every failure: a layer whose arms do not split as logged, a row that
+    /// breaks the assignment's rules, arms without a readable attempt key.
+    /// Empty when the check passes.
+    #[must_use]
+    pub fn failures(&self) -> Vec<String> {
+        let mut failures = Vec::new();
+        for layer in &self.layers {
+            if layer.mismatch {
+                failures.push(format!(
+                    "{}: sample-ratio mismatch over {} unit(s) (e-value {:.3e})",
+                    layer.layer, layer.units, layer.e_value
+                ));
+            }
+            for problem in &layer.problems {
+                failures.push(format!("{}: {problem}", layer.layer));
+            }
+        }
+        for section in self.sections.iter().filter(|section| section.mismatch) {
+            failures.push(format!(
+                "section `{}`: the bandit left it out in {} of {} draw(s), {:.1} expected \
+                 (e-value {:.3e})",
+                section.section,
+                section.excluded,
+                section.units,
+                section.expected_excluded,
+                section.e_value
+            ));
+        }
+        for row in &self.unreadable {
+            failures.push(format!("arms without a readable attempt key: {row}"));
+        }
+        failures
+    }
+
+    /// Whether every layer splits as logged.
+    #[must_use]
+    pub fn passed(&self) -> bool {
+        self.failures().is_empty()
+    }
+}
+
+/// Check that every randomised layer of `runs` splits its units across
+/// arms as their logged propensities say (S02 SC3, S02.P1-16), with S03's
+/// sequential multinomial e-value at [`SRM_ALPHA`].
+///
+/// Every decision row of an attempt carries its chain's arm set. A layer's
+/// units are the chains with a decision row at the layer's own decision
+/// point: the content rows whose `decision_point` names the layer
+/// (`knowledge`, `playbooks`, `sections`, ...) and the placebo rows for
+/// `placebo`. A layer that records no decisions of its own (`global`, the
+/// all-off draw, and `prompt_variant`) counts every chain whose rows carry
+/// arms. Each unit counts once, however many of its attempts wrote rows,
+/// with its first draw; a unit whose rows carry another draw is a problem,
+/// since a retry must keep its chain's arms. Chains in the `maximize` and
+/// `forced` conditions are left out; a placebo row takes its chain's
+/// condition from the run's other rows.
+///
+/// The section bandit's draws (S02 L9), which the `sections` rows carry,
+/// are checked section by section: each chain's first draw of a section
+/// against its logged exclusion probability (bug-2410e1).
+#[must_use]
+pub fn srm_check(runs: &[RunRecords]) -> SrmReport {
+    let mut tally = SrmTally::default();
+    for run in runs {
+        tally.read(run, u64::MAX);
+    }
+    let layers = tally
+        .draws
+        .iter()
+        .map(|(layer, draws)| srm_layer(layer, draws, tally.redrawn.get(layer)))
+        .collect();
+    let sections = tally
+        .sections
+        .iter()
+        .map(|(section, draws)| srm_section(section, draws))
+        .collect();
+    SrmReport {
+        runs: runs.iter().map(|run| run.run_id.clone()).collect(),
+        alpha: SRM_ALPHA,
+        layers,
+        sections,
+        excluded: tally
+            .excluded
+            .into_iter()
+            .map(|(condition, chains)| (condition, chains.len()))
+            .collect(),
+        unassigned: tally.unassigned,
+        unreadable: tally.unreadable,
+    }
+}
+
+/// The draws [`srm_check`] gathers from its runs' decision rows.
+#[derive(Default)]
+struct SrmTally {
+    /// Each unit's first draw, by layer and unit key.
+    draws: BTreeMap<String, BTreeMap<String, Assignment>>,
+    /// Units whose rows carry another draw, by layer.
+    redrawn: BTreeMap<String, BTreeSet<String>>,
+    /// Each chain's first draw of a section by the section bandit, by
+    /// section and chain key.
+    sections: BTreeMap<String, BTreeMap<String, SectionDecision>>,
+    /// Chains left out, by condition.
+    excluded: BTreeMap<String, BTreeSet<String>>,
+    /// Decision rows without arms.
+    unassigned: usize,
+    /// Rows with arms whose attempt key does not parse.
+    unreadable: Vec<String>,
+}
+
+impl SrmTally {
+    /// Gather the draws of `run`'s decision rows with a `seq` below `below`:
+    /// route and content rows carry their chain's whole arm set, placebo
+    /// rows the placebo's draw.
+    fn read(&mut self, run: &RunRecords, below: u64) {
+        let mut rows: Vec<(&str, &ArmSet, Option<&str>)> = Vec::new();
+        for line in lines_below(&run.decisions, below) {
+            match &line.record.arm_set {
+                Some(arms) => {
+                    let key = line.record.attempt_key.as_deref().unwrap_or_default();
+                    rows.push((key, arms, None));
+                }
+                None => self.unassigned += 1,
+            }
+        }
+        for line in lines_below(&run.content_decisions, below) {
+            let record = &line.record;
+            match &record.arm_set {
+                Some(arms) => {
+                    let point = record.decision_point.as_str();
+                    rows.push((record.identity.attempt_key.as_str(), arms, Some(point)));
+                }
+                None => self.unassigned += 1,
+            }
+            for draw in &record.section_draws {
+                self.sections
+                    .entry(draw.section.clone())
+                    .or_default()
+                    .entry(record.identity.chain_key.clone())
+                    .or_insert_with(|| draw.clone());
+            }
+        }
+        // A run draws every chain's arms in one mode, so a placebo row whose
+        // chain wrote no other row takes the condition the run's arms share.
+        let conditions: HashMap<&str, &str> = rows
+            .iter()
+            .map(|&(_, arms, _)| (arms.chain_key.as_str(), arms.condition_id.as_str()))
+            .collect();
+        let shared: BTreeSet<&str> = conditions.values().copied().collect();
+        let run_condition = match shared.first() {
+            Some(condition) if shared.len() == 1 => *condition,
+            _ => NORMAL_CONDITION,
+        };
+        for (key, arms, point) in rows {
+            if self.leaves_out(&arms.condition_id, &arms.chain_key) {
+                continue;
+            }
+            let Some(key) = AttemptKey::parse(key) else {
+                self.unreadable.push(format!("{}: {key:?}", run.run_id));
+                continue;
+            };
+            for assignment in arms.arms.values() {
+                let layer = assignment.layer.as_str();
+                // A layer with decision rows of its own counts only those.
+                if point == Some(layer) || !has_decision_point(layer) {
+                    self.observe(&key, assignment);
+                }
+            }
+        }
+        for line in lines_below(&run.placebo_decisions, below) {
+            let record = &line.record;
+            let chain = record.identity.chain_key.as_str();
+            let condition = conditions.get(chain).copied().unwrap_or(run_condition);
+            if self.leaves_out(condition, chain) {
+                continue;
+            }
+            let key = &record.identity.attempt_key;
+            match AttemptKey::parse(key) {
+                Some(key) => self.observe(&key, &record.assignment),
+                None => self.unreadable.push(format!("{}: {key:?}", run.run_id)),
+            }
+        }
+    }
+
+    /// Whether `condition` leaves `chain` out of the check; a chain left out
+    /// is counted under its condition.
+    fn leaves_out(&mut self, condition: &str, chain: &str) -> bool {
+        let left_out = condition == MAXIMIZE_CONDITION || condition == FORCED_CONDITION;
+        if left_out {
+            self.excluded
+                .entry(condition.to_string())
+                .or_default()
+                .insert(chain.to_string());
+        }
+        left_out
+    }
+
+    /// Count `assignment`, the draw of `key`'s unit on its layer, unless the
+    /// unit has a draw already; a different one is a redraw.
+    fn observe(&mut self, key: &AttemptKey, assignment: &Assignment) {
+        let unit = assignment.unit.unit_key(key);
+        let layer = self.draws.entry(assignment.layer.clone()).or_default();
+        let first = layer
+            .entry(unit.clone())
+            .or_insert_with(|| assignment.clone());
+        if *first != *assignment {
+            self.redrawn
+                .entry(assignment.layer.clone())
+                .or_default()
+                .insert(unit);
+        }
+    }
+}
+
+/// The lines of `lines` with a `seq` below `below`.
+fn lines_below<T>(lines: &[Stamped<T>], below: u64) -> impl Iterator<Item = &Stamped<T>> {
+    lines.iter().filter(move |line| line.seq < below)
+}
+
+/// The check of `section`'s bandit draws, one per chain: a two-outcome
+/// e-value of each draw, kept or left out, against its logged p_ex.
+fn srm_section(section: &str, draws: &BTreeMap<String, SectionDecision>) -> SrmSection {
+    let mut srm = SrmEvalue::new(2);
+    let (mut excluded, mut expected_excluded) = (0, 0.0);
+    let mut impossible = false;
+    for draw in draws.values() {
+        let p_ex = draw.p_exclude.clamp(0.0, 1.0);
+        let chance = if draw.excluded { p_ex } else { 1.0 - p_ex };
+        impossible |= chance <= 0.0;
+        srm.push(usize::from(draw.excluded), &[1.0 - p_ex, p_ex]);
+        excluded += usize::from(draw.excluded);
+        expected_excluded += p_ex;
+    }
+    SrmSection {
+        section: section.to_string(),
+        units: draws.len(),
+        excluded,
+        expected_excluded,
+        e_value: srm.e_value().min(f64::MAX),
+        mismatch: impossible || srm.rejects(SRM_ALPHA),
+    }
+}
+
+/// Whether `layer` records decisions in rows of its own: the placebo, and
+/// each content decision point (`knowledge`, `playbooks`, `sections`, ...).
+fn has_decision_point(layer: &str) -> bool {
+    let point = serde_json::from_value::<ContentDecisionPoint>(Value::from(layer));
+    layer == PLACEBO_LAYER || point.is_ok()
+}
+
+/// Units that broke each assignment rule: how many, and the first.
+type Problems = BTreeMap<&'static str, (usize, String)>;
+
+/// Note `unit` under `rule`.
+fn note(problems: &mut Problems, rule: &'static str, unit: &str) {
+    let entry = problems.entry(rule).or_default();
+    if entry.0 == 0 {
+        entry.1 = unit.to_string();
+    }
+    entry.0 += 1;
+}
+
+/// P(learned), P(default) and P(all-off) under a draw's h and g (S01 §4.6),
+/// in [`SRM_ARMS`] order.
+fn arm_probabilities(assignment: &Assignment) -> [f64; 3] {
+    let (h, g) = (assignment.h, assignment.g);
+    [(1.0 - g) * (1.0 - h), (1.0 - g) * h, g]
+}
+
+/// The check of `layer` over its units' first draws; the `redrawn` units
+/// carry another draw too.
+fn srm_layer(
+    layer: &str,
+    draws: &BTreeMap<String, Assignment>,
+    redrawn: Option<&BTreeSet<String>>,
+) -> SrmLayer {
+    let mut srm = SrmEvalue::new(SRM_ARMS.len());
+    let mut counts = [0_usize; SRM_ARMS.len()];
+    let mut probability_sums = [0.0_f64; SRM_ARMS.len()];
+    let mut problems = Problems::new();
+    let mut impossible = false;
+    for (unit, assignment) in draws {
+        let Some(index) = SRM_ARMS.iter().position(|arm| *arm == assignment.arm) else {
+            note(&mut problems, EXPLORE_ARM, unit);
+            continue;
+        };
+        let probabilities = arm_probabilities(assignment);
+        if probabilities[index] <= 0.0 {
+            impossible = true;
+            note(&mut problems, NO_CHANCE, unit);
+        } else if (assignment.propensity - probabilities[index]).abs() > PROPENSITY_TOLERANCE {
+            let (logged, given) = (assignment.propensity, probabilities[index]);
+            let example = format!("{unit} logs {logged:.4}, h and g give {given:.4}");
+            note(&mut problems, WRONG_PROPENSITY, &example);
+        }
+        srm.push(index, &probabilities);
+        counts[index] += 1;
+        for (sum, probability) in probability_sums.iter_mut().zip(probabilities) {
+            *sum += probability;
+        }
+    }
+    for unit in redrawn.into_iter().flatten() {
+        note(&mut problems, REDRAWN, unit);
+    }
+    let units: usize = counts.iter().sum();
+    let whole = units.max(1) as f64;
+    let arms = SRM_ARMS
+        .into_iter()
+        .enumerate()
+        .map(|(index, arm)| SrmArm {
+            arm,
+            units: counts[index],
+            expected: probability_sums[index] / whole,
+            realised: counts[index] as f64 / whole,
+        })
+        .collect();
+    let problems = problems
+        .into_iter()
+        .map(|(rule, (count, first))| format!("{count} unit(s) {rule}, e.g. {first}"))
+        .collect();
+    SrmLayer {
+        layer: layer.to_string(),
+        units,
+        arms,
+        e_value: srm.e_value().min(f64::MAX),
+        mismatch: impossible || srm.rejects(SRM_ALPHA),
+        enough_units: units >= SRM_MIN_UNITS,
+        problems,
+    }
+}
+
+/// One layer's sample-ratio check folded unit by unit, so that the loop
+/// auditor's tick can carry it from one plan-run close to the next and count
+/// only the units it has not seen (gap-addf2a): the e-value and mismatch
+/// [`srm_check`] gives the layer, without its counts and problems.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SrmFold {
+    srm: SrmEvalue,
+    impossible: bool,
+}
+
+impl Default for SrmFold {
+    fn default() -> Self {
+        Self {
+            srm: SrmEvalue::new(SRM_ARMS.len()),
+            impossible: false,
+        }
+    }
+}
+
+impl SrmFold {
+    /// Count a unit's first draw, `assignment`. An arm outside
+    /// [`SRM_ARMS`] is no unit of the check.
+    fn push(&mut self, assignment: &Assignment) {
+        let Some(index) = SRM_ARMS.iter().position(|arm| *arm == assignment.arm) else {
+            return;
+        };
+        let probabilities = arm_probabilities(assignment);
+        self.impossible |= probabilities[index] <= 0.0;
+        self.srm.push(index, &probabilities);
+    }
+
+    /// The e-value over the units counted, capped at `f64::MAX`.
+    #[must_use]
+    pub fn e_value(&self) -> f64 {
+        self.srm.e_value().min(f64::MAX)
+    }
+
+    /// Whether the e-value reached 1/[`SRM_ALPHA`], or a unit took an arm
+    /// its h and g give no chance.
+    #[must_use]
+    pub fn mismatch(&self) -> bool {
+        self.impossible || self.srm.rejects(SRM_ALPHA)
+    }
+}
+
+/// Fold into `folds`, by layer, the units [`srm_check`] counts in `run`
+/// whose first rows have a `seq` in `from..until`: those its rows below
+/// `until` count and its rows below `from`, which an earlier fold read, do
+/// not. Each unit counts once, with its first draw, as in [`srm_check`].
+pub fn srm_fold(folds: &mut BTreeMap<String, SrmFold>, run: &RunRecords, from: u64, until: u64) {
+    let mut earlier = SrmTally::default();
+    earlier.read(run, from);
+    let mut tally = SrmTally::default();
+    tally.read(run, until);
+    for (layer, draws) in tally.draws {
+        let counted = earlier.draws.get(&layer);
+        let fold = folds.entry(layer).or_default();
+        for (unit, assignment) in &draws {
+            if counted.is_none_or(|counted| !counted.contains_key(unit)) {
+                fold.push(assignment);
+            }
+        }
     }
 }
 
@@ -585,8 +1255,11 @@ mod tests {
     use tempfile::TempDir;
 
     use super::*;
+    use crate::telemetry::assign::AssignmentUnit;
+    use crate::telemetry::census::CensusComponent;
     use crate::telemetry::records::{
-        AttemptIdentity, AttemptOutcome, CostSource, DecisionSource, TelemetryRecord,
+        AttemptIdentity, AttemptOutcome, ContentCandidate, ContentDecisionPoint, CostSource,
+        DecisionSource, ExcludedReason, ExposureItemKind, TelemetryRecord,
     };
     use crate::telemetry::writer::{TelemetryWriter, TelemetryWriterConfig};
 
@@ -719,6 +1392,67 @@ mod tests {
     }
 
     #[test]
+    fn route_report_counts_masked_and_honest_routes() {
+        use DecisionSource as S;
+        const GLM: &str = "glm-4.6";
+        const KIMI: &str = "kimi-k2";
+        const OSS: &str = "gpt-oss-120b";
+
+        let dir = TempDir::new().expect("tempdir");
+        let writer = TelemetryWriter::spawn(dir.path(), TelemetryWriterConfig::default())
+            .expect("spawn writer");
+        // (task, attempt, source, router's proposal, pick, model the provider served)
+        let attempts = [
+            ("T1", 1, S::Router, Some(GLM), GLM, "glm-4.6-20250101"),
+            ("T2", 1, S::Router, Some(KIMI), OSS, OSS),
+            ("T2", 2, S::Router, Some(GLM), GLM, OSS),
+            ("T3", 1, S::Fallback, Some(KIMI), OSS, OSS),
+            ("T4", 1, S::TaskHint, None, GLM, GLM),
+        ];
+        for (task, attempt, source, learned, pick, served) in attempts {
+            assert!(writer.submit(open(task, attempt)));
+            let mut decision = decision(task, attempt, source, pick);
+            decision.proposals.learned = learned.map(str::to_string);
+            assert!(writer.submit(decision));
+            let mut verdict = verdict(task, attempt, AttemptOutcome::Passed);
+            verdict.executed.model_requested = Some(pick.to_string());
+            verdict.executed.model_reported = Some(served.to_string());
+            assert!(writer.submit(verdict));
+        }
+        assert_eq!(writer.close().written, 15);
+        let run = RunRecords::load(dir.path()).expect("load the run");
+        assert!(run.invalid.is_empty(), "{:?}", run.invalid);
+
+        let report = route_report(std::slice::from_ref(&run), None);
+        let key = |task: &str, attempt: u32| identity(task, attempt).attempt_key;
+        let sources: Vec<&str> = report.rows.iter().map(|row| row.source.as_str()).collect();
+        assert_eq!(sources, ["fallback", "router", "task_hint"]);
+
+        // T2's first pick was rewritten while labelled `router`: masked. Its
+        // second failed over to another model: honestly labelled, but not
+        // what the router proposed. T1 ran a dated snapshot of its pick.
+        let router = &report.rows[1];
+        assert_eq!(
+            router.with_learned,
+            [key("T1", 1), key("T2", 1), key("T2", 2)]
+        );
+        assert_eq!(router.masked, Some(vec![key("T2", 1)]));
+        assert_eq!(router.executed_learned, Some(vec![key("T1", 1)]));
+        assert_eq!(router.eps_honest(), Some(1.0 / 3.0));
+
+        // A fallback labelled as one is not masked, and ε_honest is the
+        // router's alone.
+        let fallback = &report.rows[0];
+        assert_eq!(fallback.with_learned, [key("T3", 1)]);
+        assert_eq!(fallback.masked, Some(Vec::new()));
+        assert_eq!(fallback.eps_honest(), None);
+
+        let hint = &report.rows[2];
+        assert_eq!(hint.masked, None, "no decision records a proposal");
+        assert_eq!(hint.eps_honest(), None);
+    }
+
+    #[test]
     fn check_passes_a_joined_run_and_flags_a_duplicate_settlement() {
         let dir = TempDir::new().expect("tempdir");
         let run = census_run(&dir);
@@ -845,5 +1579,508 @@ mod tests {
         assert_eq!(rows.costs, [ours.clone()]);
         assert_eq!(rows.episodes, [ours]);
         assert!(rows.efficiency.is_empty());
+    }
+
+    /// gap-127263: a frozen run writes its episodes to its own run
+    /// directory, where the check joins them as it joins the workspace's.
+    #[test]
+    fn legacy_rows_read_a_frozen_runs_own_episodes() {
+        let dir = TempDir::new().expect("tempdir");
+        let layout = RokoLayout::new(dir.path().join(".roko"));
+        let ours = identity("T1", 1).attempt_key;
+        std::fs::create_dir_all(layout.run_dir(RUN)).expect("run dir");
+        std::fs::write(
+            layout.run_dir(RUN).join("episodes.jsonl"),
+            format!("{{\"extra\":{{\"attempt_key\":\"{ours}\"}}}}\n"),
+        )
+        .expect("write the run's episodes");
+
+        let rows = LegacyRows::load(&layout, RUN).expect("load legacy rows");
+        assert_eq!(rows.episodes, [ours]);
+        assert!(!layout.root_episodes_path().exists());
+    }
+
+    /// `check` lists what the run's census has unwired, and only warns of a
+    /// run with no census, since runs before the census have none.
+    #[test]
+    fn check_lists_the_census_unwired_components() {
+        let dir = TempDir::new().expect("tempdir");
+        let legacy = LegacyRows::default();
+        let report = check(&census_run(&dir), &legacy);
+        assert_eq!(report.unwired_components, None);
+        assert_eq!(report.warnings.len(), 1, "{:?}", report.warnings);
+        assert!(report.warnings[0].starts_with("no census.json"));
+
+        let component = |id: &str, wired: bool| CensusComponent {
+            id: id.to_string(),
+            kind: "sink".to_string(),
+            wired,
+            detail: None,
+        };
+        let components = vec![
+            component("sink.routing", true),
+            component("sink.section_effect", false),
+        ];
+        let census = CensusReport::new(RUN, "725f21e05", false, components);
+        census.store(dir.path()).expect("store the census");
+        let run = RunRecords::load(dir.path()).expect("reload the run");
+        assert_eq!(run.census.as_ref(), Some(&census));
+        let report = check(&run, &legacy);
+        let unwired = vec!["sink.section_effect".to_string()];
+        assert_eq!(report.unwired_components, Some(unwired));
+        assert!(report.warnings.is_empty(), "{:?}", report.warnings);
+    }
+
+    /// The knowledge decision of attempt `task`:`attempt`: two retrieved
+    /// entries, the first included.
+    fn knowledge_decision(task: &str, attempt: u32) -> ContentDecisionRecord {
+        let candidate = |id: &str, rank: u32, p: f64| ContentCandidate {
+            id: id.to_string(),
+            rank: Some(rank),
+            score: None,
+            eligible: true,
+            p: Some(p),
+        };
+        ContentDecisionRecord {
+            identity: identity(task, attempt),
+            decision_point: ContentDecisionPoint::Knowledge,
+            policy: "keyword_overlap_top3".to_string(),
+            candidates: vec![candidate("kn-1", 1, 1.0), candidate("kn-2", 2, 0.0)],
+            chosen: vec!["kn-1".to_string()],
+            chosen_propensity: Some(1.0),
+            source: Some(DecisionSource::Default),
+            state: None,
+            thresholds_digest: None,
+            arm_set: None,
+            section_draws: Vec::new(),
+            proposals: None,
+            audit: Default::default(),
+        }
+    }
+
+    /// A run's `decisions.jsonl` holds route and content rows, told apart by
+    /// `decision_point` (a route row written before that field has none),
+    /// and its `exposures.jsonl` holds one row per retrieved item. `check`
+    /// validates both schemas and flags an exposure of an attempt the run
+    /// never opened; `route_report` counts the route rows alone.
+    #[test]
+    fn report_reads_route_and_content_decisions() {
+        let dir = TempDir::new().expect("tempdir");
+        // A route row from before `decision_point`, written first.
+        let route = decision("T1", 1, DecisionSource::Router, "gpt-oss-120b");
+        let line = Stamped {
+            schema_version: DECISION_SCHEMA.to_string(),
+            record_id: route.record_id(),
+            seq: 1,
+            ts: "2026-10-02T14:03:11.402Z".to_string(),
+            record: route,
+        };
+        let mut legacy = serde_json::to_value(&line).expect("serialize the route row");
+        let fields = legacy.as_object_mut().expect("a JSON object");
+        assert!(fields.remove("decision_point").is_some());
+        let decisions_path = RunFile::Decisions.path_in(dir.path());
+        std::fs::write(&decisions_path, format!("{legacy}\n")).expect("write decisions.jsonl");
+
+        let writer = TelemetryWriter::spawn(dir.path(), TelemetryWriterConfig::default())
+            .expect("spawn writer");
+        assert!(writer.submit(open("T1", 1)));
+        assert!(writer.submit(knowledge_decision("T1", 1)));
+        let exposure = |task: &str, id: &str, included: bool| {
+            let mut row = ExposureRecord::new(identity(task, 1), ExposureItemKind::Knowledge, id);
+            row.included = included;
+            row.excluded_reason = (!included).then_some(ExcludedReason::TokenBudget);
+            row.section_id = Some("domain_context".to_string());
+            row
+        };
+        assert!(writer.submit(exposure("T1", "kn-1", true)));
+        assert!(writer.submit(exposure("T1", "kn-2", false)));
+        // T9 never opened an attempt in this run.
+        assert!(writer.submit(exposure("T9", "kn-1", true)));
+        assert!(writer.submit(verdict("T1", 1, AttemptOutcome::Passed)));
+        assert_eq!(writer.close().written, 6);
+
+        let run = RunRecords::load(dir.path()).expect("load the run");
+        assert!(run.invalid.is_empty(), "{:?}", run.invalid);
+        assert_eq!(run.decisions.len(), 1, "the legacy route row");
+        let route = &run.decisions[0].record;
+        assert_eq!(route.decision_point, ROUTE_DECISION_POINT);
+        assert_eq!(run.content_decisions.len(), 1);
+        let content = &run.content_decisions[0].record;
+        assert_eq!(content, &knowledge_decision("T1", 1));
+        let included: Vec<(&str, bool)> = run
+            .exposures
+            .iter()
+            .map(|line| (line.record.item_id.as_str(), line.record.included))
+            .collect();
+        assert_eq!(included, [("kn-1", true), ("kn-2", false), ("kn-1", true)]);
+
+        // Content rows are not route decisions.
+        let report = route_report(std::slice::from_ref(&run), None);
+        assert_eq!((report.attempts(), report.decisions), (1, 1));
+        let sources: Vec<&str> = report.rows.iter().map(|row| row.source.as_str()).collect();
+        assert_eq!(sources, ["router"]);
+
+        let t1 = identity("T1", 1).attempt_key;
+        let legacy_rows = LegacyRows {
+            efficiency: vec![t1.clone()],
+            costs: vec![t1.clone()],
+            episodes: vec![t1],
+        };
+        let checked = check(&run, &legacy_rows);
+        assert_eq!((checked.content_decisions, checked.exposures), (1, 3));
+        let t9 = identity("T9", 1).attempt_key;
+        assert_eq!(checked.unopened_exposures, [t9.clone()]);
+        assert!(
+            checked.seq_violations.is_empty(),
+            "{:?}",
+            checked.seq_violations
+        );
+        let unopened = format!("exposure without an attempt-open line: {t9}");
+        assert_eq!(checked.failures(), [unopened]);
+
+        // A content row that does not match its schema is an invalid line.
+        let malformed = serde_json::json!({
+            "schema_version": DECISION_SCHEMA,
+            "decision_point": "knowledge",
+            "seq": 9,
+        });
+        roko_core::io::append_jsonl(&decisions_path, &malformed).expect("append");
+        let run = RunRecords::load(dir.path()).expect("reload");
+        assert_eq!(run.invalid.len(), 1, "{:?}", run.invalid);
+        let invalid = &run.invalid[0];
+        assert!(
+            invalid.starts_with("decisions.jsonl:3: invalid roko.decision/1"),
+            "{invalid}"
+        );
+        assert_eq!(run.content_decisions.len(), 1);
+    }
+
+    /// A chain's draw on `layer` at h, with g = 0: the default arm when
+    /// `default`, else the learned arm, at its propensity.
+    fn chain_draw(layer: &str, h: f64, default: bool) -> Assignment {
+        let (arm, propensity, u) = if default {
+            (Arm::Default, h, h / 2.0)
+        } else {
+            (Arm::Learned, 1.0 - h, (1.0 + h) / 2.0)
+        };
+        Assignment {
+            unit: AssignmentUnit::Chain,
+            layer: layer.to_string(),
+            salt_id: format!("{layer}@2026-10-03"),
+            u,
+            h,
+            g: 0.0,
+            arm,
+            propensity,
+        }
+    }
+
+    /// The arms of chain `chain_key`.
+    fn arm_set(chain_key: &str, draws: &[Assignment], condition: &str) -> ArmSet {
+        ArmSet {
+            chain_key: chain_key.to_string(),
+            arms: draws
+                .iter()
+                .map(|draw| (draw.layer.clone(), draw.clone()))
+                .collect(),
+            condition_id: condition.to_string(),
+        }
+    }
+
+    /// `record` as a line of its run file.
+    fn stamped<T: TelemetryRecord>(record: T) -> Stamped<T> {
+        Stamped {
+            schema_version: T::SCHEMA.to_string(),
+            record_id: record.record_id(),
+            seq: 1,
+            ts: "2026-10-03T09:00:00Z".to_string(),
+            record,
+        }
+    }
+
+    /// The knowledge row of attempt `task`:`attempt`, carrying its chain's
+    /// `draws` in `condition`.
+    fn knowledge_row(
+        task: &str,
+        attempt: u32,
+        draws: &[Assignment],
+        condition: &str,
+    ) -> Stamped<ContentDecisionRecord> {
+        let mut record = knowledge_decision(task, attempt);
+        record.arm_set = Some(arm_set(&record.identity.chain_key, draws, condition));
+        stamped(record)
+    }
+
+    /// A run with no rows yet.
+    fn empty_run() -> RunRecords {
+        RunRecords {
+            run_id: RUN.to_string(),
+            ..RunRecords::default()
+        }
+    }
+
+    /// S02 SC3 (backlog 4130): 1,000 chains whose knowledge draw at h = 0.5
+    /// splits 50/50 pass, each counted once however many attempts it
+    /// wrote; a 60/40 split is a sample-ratio mismatch.
+    #[test]
+    fn srm_check_flags_a_skewed_layer() {
+        // The first `defaults` of 1,000 chains take the default arm. Each
+        // chain writes a row on its first attempt and on a retry, which
+        // keeps the chain's draw.
+        let stream = |defaults: usize| {
+            let mut run = empty_run();
+            for index in 0..1000 {
+                let draw = chain_draw("knowledge", 0.5, index < defaults);
+                let task = format!("T{index}");
+                for attempt in 1..=2 {
+                    let row = knowledge_row(&task, attempt, &[draw.clone()], NORMAL_CONDITION);
+                    run.content_decisions.push(row);
+                }
+            }
+            run
+        };
+
+        let even = srm_check(&[stream(500)]);
+        assert_eq!(even.failures(), Vec::<String>::new());
+        assert_eq!(even.layers.len(), 1, "{:?}", even.layers);
+        let layer = &even.layers[0];
+        assert_eq!((layer.layer.as_str(), layer.units), ("knowledge", 1000));
+        assert!(layer.enough_units && !layer.mismatch, "{layer:?}");
+        assert!(layer.e_value < 1.0, "{layer:?}");
+        let arms: Vec<(Arm, usize, f64, f64)> = layer
+            .arms
+            .iter()
+            .map(|arm| (arm.arm, arm.units, arm.expected, arm.realised))
+            .collect();
+        let split = [
+            (Arm::Learned, 500, 0.5, 0.5),
+            (Arm::Default, 500, 0.5, 0.5),
+            (Arm::GlobalOff, 0, 0.0, 0.0),
+        ];
+        assert_eq!(arms, split);
+
+        let skewed = srm_check(&[stream(400)]);
+        let layer = &skewed.layers[0];
+        assert_eq!((layer.units, layer.arms[0].units), (1000, 600));
+        assert!(layer.mismatch, "{layer:?}");
+        assert!(layer.e_value >= 1.0 / SRM_ALPHA, "{layer:?}");
+        let failures = skewed.failures();
+        assert_eq!(failures.len(), 1, "{failures:?}");
+        assert!(
+            failures[0].starts_with("knowledge: sample-ratio mismatch over 1000 unit(s)"),
+            "{failures:?}"
+        );
+    }
+
+    /// gap-addf2a: the loop auditor's tick folds the SRM check window by
+    /// window of a run's rows. Each chain counts once, with its first draw,
+    /// though its retry lands in a later window, and the folded check ends
+    /// where one check of the whole run does.
+    #[test]
+    fn srm_fold_counts_each_unit_once_across_ticks() {
+        // Chain `index` writes its row at seq 2·index + 1 and its retry,
+        // which keeps the draw, at 2·index + 2; 400 of 1,000 take the
+        // default arm at h = 0.5.
+        let mut run = empty_run();
+        for index in 0..1000_u64 {
+            let draw = chain_draw("knowledge", 0.5, index < 400);
+            let task = format!("T{index}");
+            for attempt in 1..=2 {
+                let mut row = knowledge_row(&task, attempt, &[draw.clone()], NORMAL_CONDITION);
+                row.seq = 2 * index + u64::from(attempt);
+                run.content_decisions.push(row);
+            }
+        }
+        let whole = srm_check(std::slice::from_ref(&run));
+        let layer = &whole.layers[0];
+
+        // The first window ends between chain 350's row and its retry.
+        let mut folds = BTreeMap::new();
+        for (from, until) in [(0, 702), (702, 1500), (1500, u64::MAX)] {
+            srm_fold(&mut folds, &run, from, until);
+        }
+        let fold = &folds["knowledge"];
+        assert!(layer.mismatch && fold.mismatch(), "{layer:?} {fold:?}");
+        let (whole_log, folded_log) = (layer.e_value.ln(), fold.e_value().ln());
+        let close = (whole_log - folded_log).abs() < 1e-9 * whole_log.abs();
+        assert!(close, "whole run {whole_log}, folded {folded_log}");
+    }
+
+    /// Each layer counts at its own decision point: knowledge rows for
+    /// `knowledge`, placebo rows for `placebo`, and every row with arms for
+    /// the all-off draw, which has none. Maximize and forced chains are
+    /// left out, and a placebo row takes its chain's condition.
+    #[test]
+    fn srm_check_reads_each_layer_at_its_decision_point() {
+        let mut global = chain_draw("global", 0.0, false);
+        global.g = 0.05;
+        global.propensity = 0.95;
+        let mut run = empty_run();
+        // T0-T3 write a knowledge row each, with a playbooks draw that no
+        // playbooks row backs; T0 and T1 write placebo rows too.
+        for index in 0..4 {
+            let task = format!("T{index}");
+            let draws = [
+                global.clone(),
+                chain_draw("knowledge", 0.5, index % 2 == 0),
+                chain_draw("playbooks", 0.5, false),
+            ];
+            let row = knowledge_row(&task, 1, &draws, NORMAL_CONDITION);
+            run.content_decisions.push(row);
+            if index < 2 {
+                let draw = chain_draw(PLACEBO_LAYER, 0.5, false);
+                let row = PlaceboDecisionRecord::new(identity(&task, 1), draw);
+                run.placebo_decisions.push(stamped(row));
+            }
+        }
+        // T4 writes a route row alone, which counts for the all-off draw.
+        let mut route = decision("T4", 1, DecisionSource::Router, "gpt-oss-120b");
+        let draws = [global.clone(), chain_draw("knowledge", 0.5, true)];
+        let arms = arm_set(&identity("T4", 1).chain_key, &draws, NORMAL_CONDITION);
+        route.arm_set = Some(arms);
+        run.decisions.push(stamped(route));
+        // T5 runs in maximize mode and T6 with a forced arm: both are left
+        // out, and so is T5's placebo row.
+        let maximize = [chain_draw("knowledge", 0.0, false)];
+        let row = knowledge_row("T5", 1, &maximize, MAXIMIZE_CONDITION);
+        run.content_decisions.push(row);
+        let draw = chain_draw(PLACEBO_LAYER, 0.0, false);
+        let row = PlaceboDecisionRecord::new(identity("T5", 1), draw);
+        run.placebo_decisions.push(stamped(row));
+        let mut forced = chain_draw("knowledge", 0.5, true);
+        forced.propensity = 1.0;
+        let row = knowledge_row("T6", 1, &[forced], FORCED_CONDITION);
+        run.content_decisions.push(row);
+        // T7's row predates arm sets.
+        let row = stamped(knowledge_decision("T7", 1));
+        run.content_decisions.push(row);
+
+        let report = srm_check(&[run]);
+        assert_eq!(report.failures(), Vec::<String>::new());
+        let units: Vec<(&str, usize)> = report
+            .layers
+            .iter()
+            .map(|layer| (layer.layer.as_str(), layer.units))
+            .collect();
+        assert_eq!(units, [("global", 5), ("knowledge", 4), ("placebo", 2)]);
+        let knowledge = &report.layers[1];
+        assert_eq!((knowledge.arms[0].units, knowledge.arms[1].units), (2, 2));
+        assert!(!knowledge.enough_units, "{knowledge:?}");
+        let excluded: Vec<(&str, usize)> = report
+            .excluded
+            .iter()
+            .map(|(condition, chains)| (condition.as_str(), *chains))
+            .collect();
+        assert_eq!(excluded, [(FORCED_CONDITION, 1), (MAXIMIZE_CONDITION, 1)]);
+        assert_eq!(report.unassigned, 1);
+    }
+
+    /// bug-2410e1 (S02 L9): `--srm` checks each section the section bandit
+    /// drew, one draw per chain, against the exclusion probabilities the
+    /// sections rows logged. 400 chains that leave `conventions` out at
+    /// p_ex = 0.2 pass with 80 exclusions, and 160 is a mismatch; a retry's
+    /// row with the same draw counts once.
+    #[test]
+    fn srm_check_reports_each_sections_bandit_draws() {
+        let draw = |excluded: bool| SectionDecision {
+            section: "conventions".to_string(),
+            p_exclude: 0.2,
+            excluded,
+            propensity: if excluded { 0.2 } else { 0.8 },
+        };
+        let stream = |left_out: usize| {
+            let mut run = empty_run();
+            for index in 0..400 {
+                for attempt in 1..=2 {
+                    let mut record = knowledge_decision(&format!("T{index}"), attempt);
+                    record.decision_point = ContentDecisionPoint::Sections;
+                    record.section_draws = vec![draw(index < left_out)];
+                    run.content_decisions.push(stamped(record));
+                }
+            }
+            run
+        };
+
+        let even = srm_check(&[stream(80)]);
+        assert_eq!(even.failures(), Vec::<String>::new());
+        let rows: Vec<(&str, usize, usize)> = even
+            .sections
+            .iter()
+            .map(|row| (row.section.as_str(), row.units, row.excluded))
+            .collect();
+        assert_eq!(rows, [("conventions", 400, 80)]);
+        let section = &even.sections[0];
+        assert!(
+            (section.expected_excluded - 80.0).abs() < 1e-9,
+            "{section:?}"
+        );
+        assert!(!section.mismatch && section.e_value < 1.0, "{section:?}");
+
+        let skewed = srm_check(&[stream(160)]);
+        let section = &skewed.sections[0];
+        assert!(section.mismatch, "{section:?}");
+        let failures = skewed.failures();
+        assert_eq!(failures.len(), 1, "{failures:?}");
+        assert!(
+            failures[0].starts_with("section `conventions`: the bandit left it out in 160 of 400"),
+            "{failures:?}"
+        );
+    }
+
+    /// A retry that redraws, a propensity its h and g do not give, an arm
+    /// they give no chance, and arms without a readable attempt key all
+    /// fail the check.
+    #[test]
+    fn srm_check_flags_redraws_and_impossible_arms() {
+        let mut run = empty_run();
+        // T0's retry draws another arm.
+        for (attempt, default) in [(1, false), (2, true)] {
+            let draw = chain_draw("knowledge", 0.5, default);
+            let row = knowledge_row("T0", attempt, &[draw], NORMAL_CONDITION);
+            run.content_decisions.push(row);
+        }
+        // T1 takes the default arm at h = 0; T2 logs propensity 1 at h = 0.5.
+        let impossible = chain_draw("knowledge", 0.0, true);
+        let row = knowledge_row("T1", 1, &[impossible], NORMAL_CONDITION);
+        run.content_decisions.push(row);
+        let mut mislogged = chain_draw("knowledge", 0.5, false);
+        mislogged.propensity = 1.0;
+        let row = knowledge_row("T2", 1, &[mislogged], NORMAL_CONDITION);
+        run.content_decisions.push(row);
+        // T3's placebo row names no readable attempt.
+        let draw = chain_draw(PLACEBO_LAYER, 0.5, false);
+        let mut placebo = PlaceboDecisionRecord::new(identity("T3", 1), draw);
+        placebo.identity.attempt_key = "not-an-attempt-key".to_string();
+        run.placebo_decisions.push(stamped(placebo));
+
+        let report = srm_check(&[run]);
+        assert_eq!(report.layers.len(), 1, "{:?}", report.layers);
+        let layer = &report.layers[0];
+        assert_eq!((layer.layer.as_str(), layer.units), ("knowledge", 3));
+        assert!(
+            layer.mismatch,
+            "an arm with no chance is a mismatch: {layer:?}"
+        );
+        let key = |task: &str| identity(task, 1).chain_key;
+        let line = |rule: &str, example: &str| format!("1 unit(s) {rule}, e.g. {example}");
+        let mislogged = format!("{} logs 1.0000, h and g give 0.5000", key("T2"));
+        let problems = [
+            line(REDRAWN, &key("T0")),
+            line(WRONG_PROPENSITY, &mislogged),
+            line(NO_CHANCE, &key("T1")),
+        ];
+        assert_eq!(layer.problems, problems);
+        let unreadable = format!("{RUN}: \"not-an-attempt-key\"");
+        assert_eq!(report.unreadable, [unreadable]);
+        let failures = report.failures();
+        assert_eq!(failures.len(), 5, "{failures:?}");
+        assert!(
+            failures[0].starts_with("knowledge: sample-ratio mismatch over 3 unit(s)"),
+            "{failures:?}"
+        );
+        assert!(
+            failures[4].starts_with("arms without a readable attempt key"),
+            "{failures:?}"
+        );
     }
 }

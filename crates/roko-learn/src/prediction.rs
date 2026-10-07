@@ -299,10 +299,9 @@ impl CalibrationTracker {
         let residuals = self
             .residuals
             .get(&(model.to_string(), category.to_string()))?;
-        if residuals.is_empty() {
-            return None;
-        }
-        Some(residuals.iter().map(|r| r * r).sum::<f64>() / residuals.len() as f64)
+        // The crate's one Brier formula (backlog 6111): a residual is the
+        // forecast's error against its outcome.
+        crate::self_model::metrics::mean_square(residuals.iter().map(|residual| (*residual, 1.0)))
     }
 
     /// Bin residuals into 10 equally-spaced buckets for reliability diagrams.
@@ -747,7 +746,9 @@ mod tests {
         CalibrationTracker, PredictionRecord, ResidualBuffer, ResidualCorrector,
         fallback_stage_probability, selected_probability,
     };
-    use crate::routing_log::{CandidateEntry, RoutingDecisionLog};
+    use crate::routing_log::{
+        CandidateEntry, ROUTE_DECISION_POINT, RouteProposals, RoutingDecisionLog,
+    };
 
     #[test]
     fn prediction_record_register_starts_unresolved() {
@@ -865,13 +866,17 @@ mod tests {
                     model: "claude-sonnet-4-5".to_string(),
                     provider: "anthropic".to_string(),
                     score: 1.4,
-                    disqualified: None,
+                    eligible: true,
+                    ineligible_reason: None,
+                    p: None,
                 },
                 CandidateEntry {
                     model: "claude-haiku-4-5".to_string(),
                     provider: "anthropic".to_string(),
                     score: 0.2,
-                    disqualified: None,
+                    eligible: true,
+                    ineligible_reason: None,
+                    p: None,
                 },
             ],
             outcome_success: Some(true),
@@ -881,6 +886,13 @@ mod tests {
             source: None,
             default_model: None,
             propensity: None,
+            decision_point: ROUTE_DECISION_POINT.to_string(),
+            proposals: RouteProposals::default(),
+            fallback_reason: None,
+            influences: Vec::new(),
+            state: None,
+            arm_set: None,
+            audit: Default::default(),
         };
 
         let probability = selected_probability(&record).expect("probability");
@@ -909,6 +921,13 @@ mod tests {
             source: None,
             default_model: None,
             propensity: None,
+            decision_point: ROUTE_DECISION_POINT.to_string(),
+            proposals: RouteProposals::default(),
+            fallback_reason: None,
+            influences: Vec::new(),
+            state: None,
+            arm_set: None,
+            audit: Default::default(),
         };
 
         assert_eq!(fallback_stage_probability(&base), 0.65);
@@ -932,7 +951,9 @@ mod tests {
                 model: "claude-sonnet-4-5".to_string(),
                 provider: "anthropic".to_string(),
                 score: 0.8,
-                disqualified: None,
+                eligible: true,
+                ineligible_reason: None,
+                p: None,
             }],
             outcome_success: Some(true),
             outcome_cost_usd: Some(0.10),
@@ -941,6 +962,13 @@ mod tests {
             source: None,
             default_model: None,
             propensity: None,
+            decision_point: ROUTE_DECISION_POINT.to_string(),
+            proposals: RouteProposals::default(),
+            fallback_reason: None,
+            influences: Vec::new(),
+            state: None,
+            arm_set: None,
+            audit: Default::default(),
         };
 
         let tracker = CalibrationTracker::from_routing_logs(&[record]);

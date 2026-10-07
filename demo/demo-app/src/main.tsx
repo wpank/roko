@@ -1,6 +1,6 @@
 import { StrictMode, Suspense, lazy } from 'react';
 import { createRoot } from 'react-dom/client';
-import { BrowserRouter, Routes, Route } from 'react-router';
+import { BrowserRouter, Navigate, Routes, Route, useLocation } from 'react-router';
 import ErrorBoundary from './components/ErrorBoundary';
 import AppShell from './components/AppShell';
 import { ToastProvider } from './components/Toast';
@@ -35,6 +35,41 @@ const BenchRunDetail = lazy(() => import('./pages/BenchRunDetail'));
 const BenchCompare = lazy(() => import('./pages/BenchCompare'));
 const Settings = lazy(() => import('./pages/Settings'));
 const SharePage = lazy(() => import('./pages/Share'));
+// The showcase (S10 §4.2), R1: replay-only views of one recorded bundle.
+const Overview = lazy(() => import('./pages/showcase/Overview'));
+const HeadToHead = lazy(() => import('./pages/showcase/HeadToHead'));
+const AuditLottery = lazy(() => import('./pages/showcase/AuditLottery'));
+const Replays = lazy(() => import('./pages/showcase/Replays'));
+const ReplayView = lazy(() => (
+  import('./pages/showcase/Replays').then((module) => ({ default: module.ReplayView }))
+));
+// The passphrase login of showcase mode (S10 §4.2), outside the shell: no nav before a session.
+const Login = lazy(() => import('./pages/showcase/Login'));
+
+// Fixture-only harness routes (S10 §7). The condition is replaced at build time, so a build
+// without VITE_ALLOW_FIXTURES=1 compiles the import out.
+const FixtureRoutes =
+  import.meta.env.MODE !== 'production' && import.meta.env.VITE_ALLOW_FIXTURES === '1'
+    ? lazy(() => import('./showcase/fixtureRoutes'))
+    : null;
+
+/** The legacy pages that moved under /lab (D23); their old top-level paths redirect. */
+const LAB_PATHS = [
+  'demo',
+  'dashboard',
+  'terminal',
+  'builder',
+  'explorer',
+  'settings',
+  'bench',
+  'share',
+];
+
+/** An old top-level path: the same page under /lab, keeping the query and hash. */
+function ToLab() {
+  const { pathname, search, hash } = useLocation();
+  return <Navigate to={`/lab${pathname}${search}${hash}`} replace />;
+}
 
 function RouteLoading() {
   return (
@@ -94,29 +129,44 @@ createRoot(document.getElementById('root')!).render(
         <ToastProvider>
           <Suspense fallback={<RouteLoading />}>
             <Routes>
+              {FixtureRoutes && <Route path="__fixtures/*" element={<FixtureRoutes />} />}
+              <Route path="login" element={<Login />} />
               <Route element={<AppShell />}>
-                <Route index element={<Landing />} />
-                <Route path="dashboard" element={<DashboardLayout />}>
-                  <Route index element={<CostDashboard />} />
-                  <Route path="fleet" element={<AgentFleet />} />
-                  <Route path="knowledge" element={<KnowledgeGraph />} />
-                  <Route path="integrity" element={<IntegrityView />} />
-                  <Route path="entries" element={<KnowledgeEntries />} />
-                  <Route path="routing" element={<CascadeRouter />} />
-                  <Route path="dreams" element={<DreamsView />} />
-                  <Route path="feeds" element={<FeedsDashboard />} />
-                  <Route path="relay" element={<RelayDashboard />} />
+                {/* The showcase (S10 §4.2): measured claims at the home. */}
+                <Route index element={<Overview />} />
+                <Route path="p1/head-to-head" element={<HeadToHead />} />
+                <Route path="p2/audits" element={<AuditLottery />} />
+                <Route path="replays" element={<Replays />} />
+                <Route path="replay/:bundleId" element={<ReplayView />} />
+                {/* Legacy pages, local only (D23). */}
+                <Route path="lab">
+                  <Route index element={<Landing />} />
+                  {/* AppShell keeps the scenario player mounted while this path is open. */}
+                  <Route path="demo" />
+                  <Route path="dashboard" element={<DashboardLayout />}>
+                    <Route index element={<CostDashboard />} />
+                    <Route path="fleet" element={<AgentFleet />} />
+                    <Route path="knowledge" element={<KnowledgeGraph />} />
+                    <Route path="integrity" element={<IntegrityView />} />
+                    <Route path="entries" element={<KnowledgeEntries />} />
+                    <Route path="routing" element={<CascadeRouter />} />
+                    <Route path="dreams" element={<DreamsView />} />
+                    <Route path="feeds" element={<FeedsDashboard />} />
+                    <Route path="relay" element={<RelayDashboard />} />
+                  </Route>
+                  <Route path="terminal" element={<Terminal />} />
+                  <Route path="builder" element={<Builder />} />
+                  <Route path="explorer" element={<Explorer />} />
+                  <Route path="settings" element={<Settings />} />
+                  <Route path="bench" element={<Bench />} />
+                  <Route path="bench/run/:id" element={<BenchRunDetail />} />
+                  <Route path="bench/compare" element={<BenchCompare />} />
+                  <Route path="share/:token" element={<SharePage />} />
+                  <Route path="share" element={<SharePage />} />
                 </Route>
-                <Route path="demo" element={null} />
-                <Route path="terminal" element={<Terminal />} />
-                <Route path="builder" element={<Builder />} />
-                <Route path="explorer" element={<Explorer />} />
-                <Route path="settings" element={<Settings />} />
-                <Route path="bench" element={<Bench />} />
-                <Route path="bench/run/:id" element={<BenchRunDetail />} />
-                <Route path="bench/compare" element={<BenchCompare />} />
-                <Route path="share/:token" element={<SharePage />} />
-                <Route path="share" element={<SharePage />} />
+                {LAB_PATHS.map((path) => (
+                  <Route key={path} path={`${path}/*`} element={<ToLab />} />
+                ))}
               </Route>
             </Routes>
           </Suspense>

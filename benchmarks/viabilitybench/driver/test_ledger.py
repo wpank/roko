@@ -79,26 +79,30 @@ def write_csv(path: Path, header: list[str], rows: list[list]) -> Path:
     return path
 
 
-def test_budget_is_s09_v1_2():
+def test_budget_is_s09_v1_6():
     budget = ledger.load_budget()
     caps = {line.id: line.cap_usd for line in budget.lines.values()}
     planned = {line.id: line.planned_usd for line in budget.lines.values()}
-    assert caps == {"BL0": 10, "BL1": 160, "BL2": 0, "BL3": 30, "BL4": 40, "BL5": 26, "BL6": 44, "BL7": 26, "BL8": 8,
-                    "BL9": 20, "BL10": 2, "BL11": 18, "BL13": 6}
+    assert caps == {"BL0": 14, "BL1": 160, "BL2": 0, "BL3": 30, "BL4": 40, "BL5": 26, "BL6": 44, "BL7": 26, "BL8": 8,
+                    "BL9": 20, "BL10": 2, "BL11": 18, "BL13": 6, "BL14": 6}
     assert planned == {"BL0": 6, "BL1": 152, "BL2": 0, "BL3": 27, "BL4": 36, "BL5": 23, "BL6": 42, "BL7": 24,
-                       "BL8": 6, "BL9": 15, "BL10": 1.2, "BL11": 16.2, "BL13": 5}
-    assert budget.caps_usd == 390 and budget.planned_usd == 353.4  # S09 §4.6's totals
-    assert budget.stop_usd == 400 and budget.total_usd - budget.caps_usd == 110 >= budget.floor_usd  # S09 SC3
+                       "BL8": 6, "BL9": 15, "BL10": 1.2, "BL11": 16.2, "BL13": 5, "BL14": 5.4}
+    # S09 §4.6's totals; v1.6 adds Pilot C's BL14 ($5.4 planned, $6 cap; decision 3302, task 3313).
+    assert budget.caps_usd == 400 and round(budget.planned_usd, 2) == 358.8
+    assert budget.stop_usd == 400 and budget.total_usd - budget.caps_usd == 100 >= budget.floor_usd  # S09 SC3
     assert "D43" in budget.reserved["BL12"]
     # v1.2's rebalance is a default the author confirms at the lock, and it leaves the caps' sum unchanged.
     lowered = [budget.lines[line_id] for line_id in ("BL1", "BL6", "BL7")]
     assert {line.id for line in budget.lines.values() if line.confirm == "lock"} == {"BL1", "BL6", "BL7", "BL13"}
     assert sum(line.was_cap_usd for line in lowered) == sum(line.cap_usd for line in lowered) + 6
-    # W10 rec 7's raise of BL0 is recorded, not in force; with it the caps would still fit the stop.
-    assert budget.lines["BL0"].proposed_cap_usd == 14 and budget.caps_usd + 4 <= budget.stop_usd
-    [pilot] = budget.experiments
+    # W10 rec 7's raise of BL0 is in force (dec-1089ec, v1.5): no proposal is left, and the caps fit the stop.
+    assert [line.id for line in budget.lines.values() if line.proposed_cap_usd is not None] == []
+    assert budget.lines["BL0"].cap_usd == 14 and budget.caps_usd <= budget.stop_usd
+    pilot, pilot_c = budget.experiments
     assert (pilot.id, pilot.experiment_ids, pilot.lines, pilot.cap_usd) == ("pilot", ("PILOT-A", "PILOT-B"),
                                                                             ("BL0", "BL8"), 15)
+    assert (pilot_c.id, pilot_c.experiment_ids, pilot_c.lines, pilot_c.cap_usd) == ("pilot_c", ("PILOT-C",),
+                                                                                    ("BL14",), 6)
 
 
 def test_budget_file_is_checked(tmp_path):
@@ -106,7 +110,7 @@ def test_budget_file_is_checked(tmp_path):
     for (old, new), problem in [
         (("cap_usd = 160", "cap_usd = 180"), "must fit the $400 stop"),
         (("stop_usd = 400", "stop_usd = 420"), "never allocated (S09 SC3)"),
-        (("planned_usd = 6\n", "planned_usd = 11\n"), "BL0: its planned amount must fit its cap"),
+        (("planned_usd = 6\n", "planned_usd = 15\n"), "BL0: its planned amount must fit its cap"),
         (("cap_usd = 26\nwas", "cap_usd = -26\nwas"), "cap_usd must be a number of at least 0, not -26"),
         (('id = "BL3"', 'id = "BL2"'), "each appears once"),
         (('162\nconfirm = "lock"', '162\nconfirm = "later"'), "BL1: confirm must be"),
@@ -122,9 +126,9 @@ def test_budget_file_is_checked(tmp_path):
 
 def test_dispatch_over_line_cap_is_refused(tmp_path):
     root = tmp_path / "results"
-    write_row(root, usd=9.80)  # an earlier pilot run spent $9.80 of BL0's $10
+    write_row(root, usd=13.80)  # an earlier pilot run spent $13.80 of BL0's $14
     book = open_ledger(root)
-    with pytest.raises(ledger.BudgetError, match=re.escape("line BL0: $9.8000 spent + $0.0000 reserved + $0.2500")):
+    with pytest.raises(ledger.BudgetError, match=re.escape("line BL0: $13.8000 spent + $0.0000 reserved + $0.2500")):
         book.reserve("now/t1.s1:1", 0.25)
     assert not (root / "PILOT-A" / "now" / ledger.RESERVATIONS).exists()  # a refused dispatch reserves nothing
     book.reserve("now/t1.s1:1", 0.15)
@@ -148,24 +152,24 @@ def test_dispatch_over_line_cap_is_refused(tmp_path):
     [held] = ledger.read_books(root).reservations
     assert (held["attempt_key"], held["reserved_usd"], held["line"]) == ("now/t2.s1:1", 0.12, "BL0")
     later = open_ledger(root, run="later")
-    assert later.refusal(0.10).startswith("line BL0: $9.8100 spent + $0.1200 reserved")
+    assert later.refusal(0.10).startswith("line BL0: $13.8100 spent + $0.1200 reserved")
     assert later.refusal(0.0) is None  # a subscription dispatch bills $0 and still fits
 
 
 def test_dispatch_over_line_cap_is_refused_before_any_provider_call(places):
-    write_row(places["results"], experiment="TEST-BUDGET", usd=9.80)  # less than one task's $0.29 worst case left
+    write_row(places["results"], experiment="TEST-BUDGET", usd=13.80)  # less than one task's $0.29 worst case left
     with StubServer(lambda body: bash("echo VB_SUBMIT")) as stub:
         assert run_vb(places, stub.url) == 1
         assert stub.requests == []
     run_dir = places["results"] / "TEST-BUDGET" / "run-2"
     [error] = read_jsonl(run_dir / "errors.jsonl")
-    assert error["stage"] == "budget" and "line BL0: $9.8000 spent" in error["error"]
+    assert error["stage"] == "budget" and "line BL0: $13.8000 spent" in error["error"]
     assert not (run_dir / "records.jsonl").exists() and not (run_dir / "ledger.jsonl").exists()
 
 
 def test_attempt_over_line_cap_is_refused_by_the_runner(places, monkeypatch):
     """The runner's own reservation binds when the room went after the task's check (say, to a concurrent run)."""
-    write_row(places["results"], experiment="TEST-BUDGET", usd=9.90)  # less than one attempt's $0.13 worst case left
+    write_row(places["results"], experiment="TEST-BUDGET", usd=13.90)  # less than one attempt's $0.13 worst case left
     monkeypatch.setattr(ledger.Ledger, "refusal", lambda self, worst_usd: None)
     with StubServer(lambda body: bash("echo VB_SUBMIT")) as stub:
         assert run_vb(places, stub.url, "--limit", "1") == 0
@@ -182,7 +186,7 @@ def test_experiment_cap_programme_stop_and_unfunded_lines(tmp_path, monkeypatch)
     write_row(root, usd=9.00)  # Pilot A on BL0
     write_row(root, line="BL8", provider="openai", model="gpt-5.4", usd=5.90, n=2)  # and its fd_api runs on BL8
     pilot_b = open_ledger(root, experiment="PILOT-B", run="b-1")
-    assert pilot_b.refusal(0.13).startswith("experiment cap pilot: $14.9000 spent")  # BL0 alone has $1.00 left
+    assert pilot_b.refusal(0.13).startswith("experiment cap pilot: $14.9000 spent")  # BL0 alone has $5.00 left
     assert pilot_b.refusal(0.05) is None
     assert "may book only to BL0, BL8" in open_ledger(root, experiment="PILOT-B", run="b-2", line="BL1").refusal(0.05)
     assert "held back (D43" in open_ledger(root, experiment="LOG1", run="l-1", line="BL12").refusal(0.0)
@@ -222,22 +226,23 @@ def test_ledger_report_shows_spent_reserved_and_cap(tmp_path, capsys):
     assert vb.main(["ledger", "report", "--results", str(root), "--json"]) == 0
     data = json.loads(capsys.readouterr().out)
     lines = {line["id"]: line for line in data["lines"]}
-    assert list(lines) == [f"BL{n}" for n in (*range(12), 13)]
-    assert (lines["BL0"]["spent_usd"], lines["BL0"]["reserved_usd"], lines["BL0"]["cap_usd"]) == (2.5, 0.126, 10)
-    assert lines["BL0"]["left_usd"] == pytest.approx(7.374) and lines["BL0"]["rows"] == 1
+    assert list(lines) == [f"BL{n}" for n in (*range(12), 13, 14)]
+    assert (lines["BL0"]["spent_usd"], lines["BL0"]["reserved_usd"], lines["BL0"]["cap_usd"]) == (2.5, 0.126, 14)
+    assert lines["BL0"]["left_usd"] == pytest.approx(11.374) and lines["BL0"]["rows"] == 1
     assert lines["BL1"]["spent_usd"] == 0.13 and lines["BL8"]["spent_usd"] == 1.25
-    [pilot] = data["experiments"]
+    pilot, pilot_c = data["experiments"]
     assert (pilot["spent_usd"], pilot["reserved_usd"], pilot["cap_usd"]) == (3.75, 0.126, 15)
+    assert (pilot_c["spent_usd"], pilot_c["reserved_usd"], pilot_c["cap_usd"]) == (0, 0, 6)
     programme = data["programme"]
-    assert (programme["caps_usd"], programme["planned_usd"], programme["stop_usd"]) == (390, 353.4, 400)
-    assert (programme["unallocated_usd"], programme["caps_with_proposals_usd"]) == (110, 394)
+    assert (programme["caps_usd"], round(programme["planned_usd"], 2), programme["stop_usd"]) == (400, 358.8, 400)
+    assert (programme["unallocated_usd"], programme["caps_with_proposals_usd"]) == (100, 400)
     assert programme["spent_usd"] == pytest.approx(3.88) and data["ok"] and data["over"] == []
 
     write_row(root, line="BL2", experiment="LOG1", run="log1-a", n=2, usd=0.01)  # replays have a $0 cap
     assert vb.main(["ledger", "report", "--results", str(root)]) == 1
     text = capsys.readouterr().out
     assert "OVER CAP: BL2" in text and "BL12  held back, funds nothing: D43" in text
-    assert "proposed cap $14.00 awaits the author" in text
+    assert "awaits the author" not in text  # BL0's raise is in force (dec-1089ec), so no proposal is pending
     assert "v1.2 default (was $162.00), to be confirmed at the lock" in text and "v1.2 default (new)" in text
 
 

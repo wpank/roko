@@ -43,7 +43,7 @@ impl KnowledgeStore {
         );
         entry.source = Some("dream-consolidation".to_string());
         let entry = normalize_entry_for_ingest(entry);
-        let _guard = self.write_gate.lock();
+        let _guard = self.lock_writes();
         let mut entries = self.read_all()?;
         if entries.iter().any(|existing| existing.id == entry.id) {
             return Ok(false);
@@ -66,7 +66,7 @@ impl KnowledgeStore {
             "cross-domain derivatives require a target domain tag"
         );
         let entry = normalize_entry_for_ingest(entry);
-        let _guard = self.write_gate.lock();
+        let _guard = self.lock_writes();
         let mut entries = self.read_all()?;
         if entries.iter().any(|existing| existing.id == entry.id) {
             return Ok(false);
@@ -102,7 +102,7 @@ impl KnowledgeStore {
             agent_output,
         );
 
-        let _guard = self.write_gate.lock();
+        let _guard = self.lock_writes();
         let mut entries = self.read_all()?;
 
         if let Some(index) = find_similar_anti_pattern_index(&entries, &candidate) {
@@ -146,16 +146,24 @@ impl KnowledgeStore {
     ///
     /// Returns an error if the directory cannot be created, an entry
     /// cannot be serialized, or the write fails.
-    pub fn ingest(&self, entries: Vec<KnowledgeEntry>) -> Result<()> {
+    pub fn ingest(&self, mut entries: Vec<KnowledgeEntry>) -> Result<()> {
         if entries.is_empty() {
             return Ok(());
+        }
+        // A run's store adds its entries to the run's batch (P21, 8137).
+        if let Some(batch) = &self.commit_batch {
+            for entry in &mut entries {
+                if entry.commit_batch.is_none() {
+                    entry.commit_batch = Some(batch.clone());
+                }
+            }
         }
 
         if let Some(parent) = self.path.parent() {
             fs::create_dir_all(parent).context("create knowledge directory")?;
         }
 
-        let _guard = self.write_gate.lock();
+        let _guard = self.lock_writes();
         let mut existing = self.read_all().unwrap_or_default();
         let entries = coalesce_incoming_security_labels(prepare_entries_for_ingest(entries));
         let security_upgraded = join_replayed_security_labels(&mut existing, &entries);
@@ -330,7 +338,7 @@ impl KnowledgeStore {
     where
         F: FnMut(&mut KnowledgeEntry) -> bool,
     {
-        let _guard = self.write_gate.lock();
+        let _guard = self.lock_writes();
         let mut entries = self.read_all()?;
         let mut changed = 0usize;
         for entry in &mut entries {
@@ -353,7 +361,7 @@ impl KnowledgeStore {
     ///
     /// Returns an error if the store cannot be read or rewritten.
     pub fn update_confidence(&mut self, knowledge_id: &str, delta: f64) -> Result<bool> {
-        let _guard = self.write_gate.lock();
+        let _guard = self.lock_writes();
         let mut entries = self.read_all()?;
         let mut found = false;
 
@@ -408,7 +416,7 @@ impl KnowledgeStore {
             return Ok(0);
         }
 
-        let _guard = self.write_gate.lock();
+        let _guard = self.lock_writes();
         let mut entries = self.read_all()?;
         let mut updated_ids = HashSet::new();
 
@@ -450,7 +458,7 @@ impl KnowledgeStore {
     pub fn check_falsifier(&self, entry_id: &str, violated: bool) -> Result<FalsifierOutcome> {
         const IMMUNITY_OBSERVATIONS: u32 = 3;
 
-        let _guard = self.write_gate.lock();
+        let _guard = self.lock_writes();
         let mut entries = self.read_all()?;
         let entry = entries
             .iter_mut()
@@ -548,6 +556,68 @@ impl KnowledgeStore {
             } else {
                 false
             }
+        })
+    }
+
+    /// Count an attempt that failed through the agent's own work against
+    /// each of `entry_ids`, the entries its prompt surfaced (S02 L5,
+    /// decision 4): increment `contradiction_count` and change nothing else.
+    /// No confidence, balance or tier moves, because the entry may have had
+    /// no part in the failure. `attempt_key` names the attempt in the log.
+    ///
+    /// Returns the number of entries counted.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the store cannot be read or rewritten.
+    pub fn record_contradiction(&self, entry_ids: &[&str], attempt_key: &str) -> Result<usize> {
+        let id_set = entry_ids
+            .iter()
+            .map(|id| id.trim())
+            .filter(|id| !id.is_empty())
+            .collect::<HashSet<_>>();
+        if id_set.is_empty() {
+            return Ok(0);
+        }
+        let counted = self.update_entries(|entry| {
+            if !id_set.contains(entry.id.as_str()) {
+                return false;
+            }
+            entry.contradiction_count = entry.contradiction_count.saturating_add(1);
+            true
+        })?;
+        tracing::debug!(
+            attempt_key,
+            counted,
+            "agent-blamed failure counted against the knowledge it surfaced"
+        );
+        Ok(counted)
+    }
+
+    /// Count a retrieval access to each of `entry_ids` (S01 P0-9): increment
+    /// `access_count` and set `last_accessed`, and leave `half_life_days` as
+    /// it is. Graph dispatch counts the entries a prompt included this way.
+    /// [`Self::record_access`] also spaces the half-life, which is knowledge
+    /// decay, held for now (dec-e70592).
+    ///
+    /// Returns the number of entries counted.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the store cannot be read or rewritten.
+    pub fn count_access(&self, entry_ids: &[&str]) -> Result<usize> {
+        let id_set: HashSet<&str> = entry_ids.iter().copied().collect();
+        if id_set.is_empty() {
+            return Ok(0);
+        }
+        let now = Utc::now();
+        self.update_entries(|entry| {
+            if !id_set.contains(entry.id.as_str()) {
+                return false;
+            }
+            entry.access_count = entry.access_count.saturating_add(1);
+            entry.last_accessed = Some(now);
+            true
         })
     }
 

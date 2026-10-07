@@ -49,11 +49,13 @@ pub mod extract;
 pub mod feed_agents;
 pub mod feedback;
 pub mod fswatcher;
+#[cfg(feature = "groups")]
 pub mod group_runtime;
 pub mod integrations;
 pub mod job_runner;
 pub mod jwks;
 pub mod openapi;
+mod operations;
 pub mod parity;
 pub mod plan_types;
 pub mod projection_contract;
@@ -66,7 +68,11 @@ pub mod runtime_event_bridge;
 pub mod sanitize;
 pub mod scheduler;
 pub mod service_factory;
+pub mod showcase;
 pub mod state;
+// The relay bridge's durable consumer (9220): its journal and status back
+// `GET /api/subscriptions/relay/status`, which a build without `relay` parks.
+#[cfg(feature = "relay")]
 mod subscription_relay;
 mod telemetry_observer;
 pub mod templates;
@@ -97,6 +103,7 @@ use tracing::{debug, info, warn};
 
 use roko_core::Signal;
 use roko_core::config::schema::RokoConfig;
+use roko_core::config::showcase::PASSPHRASE_HASH_ENV;
 use roko_core::connector::{ConnectorHealth, ConnectorInfo, ConnectorKind, ConnectorStatus};
 use roko_core::dashboard_snapshot::DashboardEvent;
 use roko_core::feed::{FeedAccess, FeedInfo, FeedKind};
@@ -385,6 +392,9 @@ impl ServerBuilder {
         );
         let roko_config = state.load_roko_config();
         validate_bind_safety(&addr, &roko_config.serve)?;
+        let passphrase_hash = std::env::var(PASSPHRASE_HASH_ENV).ok();
+        validate_showcase_mode(&roko_config, passphrase_hash.as_deref())?;
+        state.local_access.set_passphrase_hash(passphrase_hash);
         state.configure_listener_security(&effective_bind, roko_config.serve.auth.enabled);
         let (live_setting, live_msg) =
             live_agent_output_for_bind(roko_config.serve.live_agent_output, &effective_bind);
@@ -442,7 +452,9 @@ impl ServerBuilder {
         }
         let _gateway_batch_loop = state.gateway_http.spawn_batch_loop();
         let _config_watcher = config_watcher::start_config_watcher(Arc::clone(&state));
-        let _prd_publish_subscriber = start_prd_publish_orchestrator(Arc::clone(&state));
+        let _calibration_mirror =
+            routes::showcase::economics::start_calibration_mirror(Arc::clone(&state));
+        crate::showcase::idle::start_idle_timer(&state);
         let _feedback_loop = feedback::start_feedback_loop(Arc::clone(&state));
         let bridge_dedup = BridgeDedup::new();
         let _state_hub_bridge = start_state_hub_bridge(Arc::clone(&state), bridge_dedup.clone());
@@ -470,18 +482,26 @@ impl ServerBuilder {
         }
 
         // Register workspace with relay if configured.
-        let serve_port = self.config.port.unwrap_or(6677);
+        #[cfg(feature = "relay")]
         let _relay_registration = relay::start_workspace_registration(
             self.config.roko_config.relay.clone(),
-            serve_port,
+            self.config.port.unwrap_or(6677),
             Arc::clone(&state.agent_count),
             Arc::clone(&state.relay_health),
         );
+        #[cfg(not(feature = "relay"))]
+        if self.config.roko_config.relay.url.is_some() {
+            warn!(
+                "[relay] url ignored: rebuild roko with `--features relay` to register \
+                 with the relay and bridge feeds to it"
+            );
+        }
 
         // Spawn feed agents publishing to the relay and local event bus.
         let _feed_agents = feed_agents::spawn_all(Arc::clone(&state));
 
         // Bridge feed agents to the relay: registers feeds and forwards ticks.
+        #[cfg(feature = "relay")]
         let _feed_relay_bridge = start_feed_relay_bridge(Arc::clone(&state));
 
         // Register plugin webhook route scopes with the middleware so that
@@ -718,12 +738,6 @@ pub async fn start_server_background(
     ServerBuilder::new(config).start_background().await
 }
 
-/// Start the PRD-publish auto-orchestration background tasks for an existing state.
-#[doc(hidden)]
-pub fn start_prd_publish_orchestrator(state: Arc<AppState>) -> JoinHandle<()> {
-    routes::start_prd_publish_subscriber(state)
-}
-
 /// Bridges WorkflowEngine RuntimeEvents to SharedStateHub as DashboardEvents.
 struct DashboardEventBridge {
     state_hub: SharedStateHub,
@@ -952,6 +966,49 @@ pub(crate) fn warn_if_auth_misconfigured(auth: &roko_core::config::ServeAuthConf
     }
 }
 
+/// Refuse to start a showcase serve that is half configured (S11 §4.7, 9320).
+///
+/// With `[showcase] enabled = true`, serve starts only when auth is on in `enforce` mode,
+/// `showcase.public_origin` is set, `passphrase_hash` (`ROKO_SHOWCASE_PASSPHRASE_HASH`) is an
+/// Argon2id PHC string and no Privy app id is configured. Otherwise it would come up fail-open
+/// while looking configured. The error names every rule that fails.
+///
+/// # Errors
+///
+/// Returns an error when showcase mode is on and a rule fails.
+pub fn validate_showcase_mode(config: &RokoConfig, passphrase_hash: Option<&str>) -> Result<()> {
+    let showcase = &config.showcase;
+    if !showcase.enabled {
+        return Ok(());
+    }
+    let auth = &config.serve.auth;
+    let mut missing = Vec::new();
+    if !auth.enabled {
+        missing.push("serve.auth.enabled must be true");
+    }
+    if auth.enforcement_mode != roko_core::config::EnforcementMode::Enforce {
+        missing.push("serve.auth.enforcement_mode must be \"enforce\"");
+    }
+    let origin = showcase.public_origin.as_deref().unwrap_or_default();
+    if origin.trim().is_empty() {
+        missing.push("showcase.public_origin must be set");
+    }
+    if !passphrase_hash.is_some_and(|hash| hash.starts_with("$argon2id$")) {
+        missing
+            .push("ROKO_SHOWCASE_PASSPHRASE_HASH must hold an Argon2id PHC string ($argon2id$...)");
+    }
+    if auth.privy_app_id.is_some() {
+        missing.push("serve.auth.privy_app_id must not be set");
+    }
+    if missing.is_empty() {
+        return Ok(());
+    }
+    anyhow::bail!(
+        "showcase mode is half configured, so serve will not start: {}",
+        missing.join("; ")
+    );
+}
+
 pub fn validate_bind_safety(addr: &str, serve: &ServeConfig) -> Result<()> {
     if is_loopback_addr(addr) || serve.auth.enabled {
         return Ok(());
@@ -989,6 +1046,9 @@ pub async fn run_server_with_state(state: Arc<AppState>, bind: &str, port: u16) 
 
     let addr = format!("{bind}:{port}");
     validate_bind_safety(&addr, &roko_config.serve)?;
+    let passphrase_hash = std::env::var(PASSPHRASE_HASH_ENV).ok();
+    validate_showcase_mode(&roko_config, passphrase_hash.as_deref())?;
+    state.local_access.set_passphrase_hash(passphrase_hash);
     state.configure_listener_security(bind, roko_config.serve.auth.enabled);
     if !roko_config.serve.auth.enabled {
         tracing::warn!(
@@ -1004,7 +1064,9 @@ pub async fn run_server_with_state(state: Arc<AppState>, bind: &str, port: u16) 
     start_builtin_event_sources(Arc::clone(&state), roko_config.clone());
     let _trigger_runtime = trigger_runtime::ensure_trigger_runtime(&state).await;
     let _config_watcher = config_watcher::start_config_watcher(Arc::clone(&state));
-    let _prd_publish_subscriber = start_prd_publish_orchestrator(Arc::clone(&state));
+    let _calibration_mirror =
+        routes::showcase::economics::start_calibration_mirror(Arc::clone(&state));
+    crate::showcase::idle::start_idle_timer(&state);
     // Both bridges share a BridgeDedup so they can run simultaneously without
     // creating a feedback loop (EventBus -> StateHub -> EventBus -> ...).
     let bridge_dedup = BridgeDedup::new();
@@ -1072,10 +1134,12 @@ fn build_server_router(
     // `routes::build_router` currently installs only the top-level SPA fallback.
     // Reset it here so the final fallback can distinguish API/WS typos from browser routes.
     let auth_enabled = api_auth.enabled;
+    let showcase_mode = state.load_roko_config().showcase.enabled;
+    let activity_state = Arc::clone(&state);
     let api_router =
         routes::build_router(Arc::clone(&state), cors_origins, api_auth).reset_fallback();
     let fallback_router = axum::Router::new()
-        .fallback(serve_api_or_spa_fallback)
+        .fallback(serve_fallback)
         .layer(TraceLayer::new_for_http())
         .layer(routes::cors_layer(&routes::CorsPolicy {
             origins: cors_origins.to_vec(),
@@ -1084,7 +1148,16 @@ fn build_server_router(
         }))
         .with_state(state);
 
-    api_router.merge(fallback_router)
+    let router = api_router.merge(fallback_router);
+    if showcase_mode {
+        // Every request but the health checks keeps a showcase serve awake (G10).
+        router.layer(axum::middleware::from_fn_with_state(
+            activity_state,
+            crate::showcase::idle::track_activity,
+        ))
+    } else {
+        router
+    }
 }
 
 fn api_or_ws_path_requires_json_404(path: &str) -> bool {
@@ -1110,6 +1183,44 @@ pub(crate) async fn serve_api_or_spa_fallback(
     }
 
     crate::embedded::serve_embedded(req).await
+}
+
+/// The router's fallback: [`serve_api_or_spa_fallback`], with showcase mode's rules first.
+pub(crate) async fn serve_fallback(
+    axum::extract::State(state): axum::extract::State<Arc<AppState>>,
+    req: axum::extract::Request,
+) -> axum::response::Response {
+    showcase_or_spa_fallback(&state, req).await
+}
+
+/// [`serve_api_or_spa_fallback`], except in showcase mode with the portal off (S11 §4.2, 9329):
+/// `/` answers `302` to `/demo/`, and a browser path outside the demo app, or under its legacy
+/// `/demo/lab/`, is not found, so the portal and the lab pages are never served.
+pub(crate) async fn showcase_or_spa_fallback(
+    state: &AppState,
+    req: axum::extract::Request,
+) -> axum::response::Response {
+    let config = state.load_roko_config();
+    let showcase = &config.showcase;
+    if showcase.enabled && !showcase.portal_mounted {
+        let path = req.uri().path();
+        if path == "/" {
+            let location = [(axum::http::header::LOCATION, "/demo/")];
+            return (axum::http::StatusCode::FOUND, location).into_response();
+        }
+        let demo = crate::embedded::is_demo_path(path) && !crate::embedded::is_demo_lab_path(path);
+        if !demo && !api_or_ws_path_requires_json_404(path) {
+            return (
+                axum::http::StatusCode::NOT_FOUND,
+                axum::Json(serde_json::json!({
+                    "error": "not_found",
+                    "message": format!("No route matches {path}"),
+                })),
+            )
+                .into_response();
+        }
+    }
+    serve_api_or_spa_fallback(req).await
 }
 
 fn log_provider_credential_status(config: &RokoConfig) {
@@ -1208,10 +1319,6 @@ fn build_app_state(
             "loaded existing marketplace jobs from disk"
         );
     }
-    let prds = scan_prd_summaries(&state.workdir);
-    if !prds.is_empty() {
-        info!(count = prds.len(), "loaded existing PRDs from disk");
-    }
     let knowledge = scan_knowledge_entries(&state.workdir);
     if !knowledge.is_empty() {
         info!(
@@ -1221,7 +1328,6 @@ fn build_app_state(
     }
     state.state_hub.hydrate_recovered_snapshot(|snapshot| {
         snapshot.marketplace_jobs = jobs;
-        snapshot.atelier_prds = prds;
         snapshot.knowledge_entries = knowledge;
     });
 
@@ -1400,37 +1506,6 @@ fn scan_marketplace_jobs(workdir: &Path) -> Vec<roko_core::MarketplaceJob> {
     jobs
 }
 
-/// Scan `.roko/prd/{drafts,published}/*.md` and return a vec of `PrdSummary`.
-fn scan_prd_summaries(workdir: &Path) -> Vec<roko_core::PrdSummary> {
-    let prd_dir = workdir.join(".roko").join("prd");
-    let mut prds = Vec::new();
-    for (status, subdir) in [("draft", "drafts"), ("published", "published")] {
-        let dir = prd_dir.join(subdir);
-        let entries = match std::fs::read_dir(&dir) {
-            Ok(entries) => entries,
-            Err(_) => continue,
-        };
-        for entry in entries.flatten() {
-            let path = entry.path();
-            if path.extension().and_then(|e| e.to_str()) != Some("md") {
-                continue;
-            }
-            let slug = path
-                .file_stem()
-                .and_then(|s| s.to_str())
-                .unwrap_or("unknown")
-                .to_string();
-            prds.push(roko_core::PrdSummary {
-                slug: slug.clone(),
-                title: slug,
-                status: status.to_string(),
-                ..Default::default()
-            });
-        }
-    }
-    prds
-}
-
 /// Load knowledge entries from the neuro JSONL store and project them into
 /// lightweight `KnowledgeBrowseEntry` summaries for the dashboard snapshot.
 fn scan_knowledge_entries(
@@ -1607,13 +1682,14 @@ fn server_event_to_observable(
             plan_id,
             task_id,
             gate,
-            rung: _,
+            rung,
             passed,
         } => {
+            let gate = gate_label_with_rung(gate, *rung);
             let verdict = if *passed {
-                Verdict::pass(gate.clone())
+                Verdict::pass(gate)
             } else {
-                Verdict::fail(gate.clone(), "gate failed")
+                Verdict::fail(gate, "gate failed")
             };
             (
                 ObservableEvent::VerifyPostResult {
@@ -1680,6 +1756,7 @@ fn server_event_to_dashboard(event: &ServerEvent) -> Option<roko_core::Dashboard
             agent_id,
             role,
             model,
+            provider,
         } => Some(DashboardEvent::AgentSpawned {
             agent_id: agent_id.clone(),
             plan_id: String::new(),
@@ -1687,7 +1764,7 @@ fn server_event_to_dashboard(event: &ServerEvent) -> Option<roko_core::Dashboard
             attempt: 0,
             role: role.clone(),
             model: dashboard_model_label(model, agent_id),
-            provider: String::new(),
+            provider: provider.clone().unwrap_or_default(),
         }),
         ServerEvent::AgentOutput {
             agent_id, content, ..
@@ -1702,12 +1779,12 @@ fn server_event_to_dashboard(event: &ServerEvent) -> Option<roko_core::Dashboard
             plan_id,
             task_id,
             gate,
-            rung: _,
+            rung,
             passed,
         } => Some(DashboardEvent::GateResult {
             plan_id: plan_id.clone(),
             task_id: task_id.clone(),
-            gate: gate.clone(),
+            gate: gate_label_with_rung(gate, *rung),
             passed: *passed,
             output_text: None,
         }),
@@ -1809,13 +1886,16 @@ fn server_event_to_dashboard(event: &ServerEvent) -> Option<roko_core::Dashboard
         ServerEvent::Error { message } => Some(DashboardEvent::Error {
             message: message.clone(),
         }),
-        // Map one-shot runs as ephemeral plans so the TUI's plan/task views show them.
+        // Map one-shot runs as ephemeral plans so the TUI's plan/task views
+        // show them: the plan the run's own task and agent events name.
         ServerEvent::RunStarted { run_id, .. } => Some(DashboardEvent::PlanStarted {
-            plan_id: format!("run-{run_id}"),
+            plan_id: run_plan_id(run_id),
             tasks_total: 0,
         }),
-        ServerEvent::RunCompleted { run_id, success } => Some(DashboardEvent::PlanCompleted {
-            plan_id: format!("run-{run_id}"),
+        ServerEvent::RunCompleted {
+            run_id, success, ..
+        } => Some(DashboardEvent::PlanCompleted {
+            plan_id: run_plan_id(run_id),
             success: *success,
         }),
         // Map agent lifecycle events from the supervisor.
@@ -2018,6 +2098,38 @@ fn dashboard_model_label(model: &str, fallback: &str) -> String {
     }
 }
 
+/// The dashboard plan of the one-shot run `run_id`: `run-` and the first
+/// eight characters of its id. The run's task and agent events and the plan
+/// start and end the bridge makes of its `RunStarted` and `RunCompleted` name
+/// the same plan (gap-8a1fb3).
+pub(crate) fn run_plan_id(run_id: &str) -> String {
+    format!("run-{}", run_id.get(..8).unwrap_or(run_id))
+}
+
+/// The dashboard label of a gate result that `ServerEvent::GateResult` sends
+/// with its rung apart: the Graph path's `verify[i:phase]` form, so the rung
+/// survives the bridge (gap-8a1fb3). A label that already names its rung
+/// keeps it.
+fn gate_label_with_rung(gate: &str, rung: u32) -> String {
+    if gate_label_rung(gate).is_some() {
+        gate.to_string()
+    } else if gate.is_empty() {
+        format!("verify[{rung}]")
+    } else {
+        format!("verify[{rung}:{gate}]")
+    }
+}
+
+/// The rung a gate label names, as in `verify[3]` or `verify[3:test]`.
+fn gate_label_rung(gate: &str) -> Option<u32> {
+    let (_, index) = gate.strip_suffix(']')?.rsplit_once('[')?;
+    index
+        .split_once(':')
+        .map_or(index, |(rung, _)| rung)
+        .parse()
+        .ok()
+}
+
 /// Bridge orchestrator events (`StateHub` -> `EventBus`) so SSE/WS clients
 /// see gate results, task completions, and other events from `roko plan run`.
 ///
@@ -2126,11 +2238,13 @@ fn dashboard_event_to_server(event: &roko_core::DashboardEvent) -> Option<Server
             agent_id,
             role,
             model,
+            provider,
             ..
         } => Some(ServerEvent::AgentSpawned {
             agent_id: agent_id.clone(),
             role: role.clone(),
             model: model.clone(),
+            provider: (!provider.is_empty()).then(|| provider.clone()),
         }),
         DashboardEvent::AgentOutput {
             agent_id, content, ..
@@ -2151,7 +2265,7 @@ fn dashboard_event_to_server(event: &roko_core::DashboardEvent) -> Option<Server
             plan_id: plan_id.clone(),
             task_id: task_id.clone(),
             gate: gate.clone(),
-            rung: 0,
+            rung: gate_label_rung(gate).unwrap_or(0),
             passed: *passed,
         }),
         DashboardEvent::PhaseTransition { plan_id, from, to } => {
@@ -2290,7 +2404,6 @@ fn dashboard_event_to_server(event: &roko_core::DashboardEvent) -> Option<Server
         | DashboardEvent::GateThresholdsUpdated { .. }
         | DashboardEvent::AgentCompleted { .. }
         | DashboardEvent::MarketplaceJobsUpdated { .. }
-        | DashboardEvent::AtelierPrdsUpdated { .. }
         | DashboardEvent::KnowledgeEntriesUpdated { .. }
         | DashboardEvent::EfficiencyTrendUpdated { .. }
         | DashboardEvent::PaymentReceived { .. }
@@ -2307,6 +2420,11 @@ fn dashboard_event_to_server(event: &roko_core::DashboardEvent) -> Option<Server
         | DashboardEvent::CriticalPathEtaUpdated { .. }
         | DashboardEvent::CostAnomaly { .. }
         | DashboardEvent::CrossCutCascade { .. }
+        | DashboardEvent::LoopHealth { .. }
+        | DashboardEvent::LoopTransition { .. }
+        | DashboardEvent::EvUpdate { .. }
+        | DashboardEvent::M1Episode { .. }
+        | DashboardEvent::SelfModelCalibration { .. }
         | DashboardEvent::SnapshotRebased { .. } => None,
     }
 }
@@ -2816,7 +2934,8 @@ fn start_block_watcher(_state: Arc<AppState>) -> JoinHandle<()> {
     tokio::spawn(async {})
 }
 
-#[cfg(any(feature = "alloy-backend", test))]
+/// Publish one block-watcher payload to the event bus and the chain state.
+#[cfg(any(feature = "alloy-backend", all(test, feature = "chain")))]
 fn publish_chain_watcher_payload(state: &Arc<AppState>, topic: &str, payload: serde_json::Value) {
     use roko_chain::chain_state::{
         BlockInfo, ChainReorgInfo, ContractEventInfo, RawLogInfo, TxInfo,
@@ -2902,6 +3021,7 @@ fn publish_chain_watcher_payload(state: &Arc<AppState>, topic: &str, payload: se
 /// Run the supervised relay bridge for both durable subscription consumption
 /// and optional feed publication. The consumer is active whenever a relay URL
 /// is configured; it is intentionally not coupled to `feed_agents.enabled`.
+#[cfg(feature = "relay")]
 fn start_feed_relay_bridge(state: Arc<AppState>) -> Option<tokio::task::JoinHandle<()>> {
     use roko_agent_server::features::relay_client::{
         MAX_DESIRED_ROOMS, RelayClientConfig, RelayClientStatus, TopicHandler, connect,
@@ -3239,6 +3359,7 @@ fn start_feed_relay_bridge(state: Arc<AppState>) -> Option<tokio::task::JoinHand
     }))
 }
 
+#[cfg(feature = "relay")]
 fn stable_relay_workspace_identity(workdir: &Path) -> String {
     let stable_path = std::fs::canonicalize(workdir).unwrap_or_else(|_| workdir.to_path_buf());
     let hash = blake3::hash(stable_path.to_string_lossy().as_bytes())
@@ -3247,14 +3368,17 @@ fn stable_relay_workspace_identity(workdir: &Path) -> String {
     hash[..16].to_string()
 }
 
+#[cfg(feature = "relay")]
 fn relay_consumer_id(workspace_identity: &str) -> String {
     format!("roko-serve-consumer-{workspace_identity}")
 }
 
+#[cfg(feature = "relay")]
 fn relay_publisher_id(workspace_identity: &str) -> String {
     format!("roko-serve-publisher-{workspace_identity}")
 }
 
+#[cfg(feature = "relay")]
 fn relay_initial_retry_delay(attempt: u32) -> std::time::Duration {
     let multiplier = 1u32.checked_shl(attempt.min(7)).unwrap_or(u32::MAX);
     std::time::Duration::from_millis(250)
@@ -3262,6 +3386,7 @@ fn relay_initial_retry_delay(attempt: u32) -> std::time::Duration {
         .min(std::time::Duration::from_secs(30))
 }
 
+#[cfg(feature = "relay")]
 async fn run_feed_relay_publisher(
     state: Arc<AppState>,
     relay_url: String,
@@ -3371,6 +3496,7 @@ async fn run_feed_relay_publisher(
 }
 
 #[cfg(test)]
+#[cfg(feature = "relay")]
 mod subscription_relay_bridge_tests {
     use super::*;
 
@@ -3469,6 +3595,115 @@ mod plan_set_event_mapping_tests {
                 .unwrap_or_else(|| panic!("{dashboard:?} reaches the server stream"));
             assert_eq!(server_event_to_dashboard(&server), Some(dashboard));
         }
+    }
+
+    /// gap-8a1fb3: a gate result's rung crosses both bridges. A Graph run's
+    /// label names it (`verify[i:phase]`); a server gate result sends it
+    /// apart, and the dashboard gets it in the same label form.
+    #[test]
+    fn gate_rung_survives_both_bridges() {
+        let graph = roko_core::DashboardEvent::GateResult {
+            plan_id: "p1".into(),
+            task_id: "T1".into(),
+            gate: "verify[3:test]".into(),
+            passed: false,
+            output_text: None,
+        };
+        let server = dashboard_event_to_server(&graph).expect("reaches the server stream");
+        assert!(
+            matches!(server, ServerEvent::GateResult { rung: 3, .. }),
+            "{server:?}"
+        );
+        assert_eq!(server_event_to_dashboard(&server), Some(graph));
+
+        let named = ServerEvent::GateResult {
+            plan_id: "p1".into(),
+            task_id: "T1".into(),
+            gate: "compile".into(),
+            rung: 2,
+            passed: true,
+        };
+        let Some(roko_core::DashboardEvent::GateResult { gate, .. }) =
+            server_event_to_dashboard(&named)
+        else {
+            panic!("a server gate result reaches the dashboard");
+        };
+        assert_eq!(gate, "verify[2:compile]");
+        assert_eq!(gate_label_rung(&gate), Some(2));
+        assert_eq!(gate_label_rung("verify[0]"), Some(0));
+        assert_eq!(gate_label_rung("rung[compile]"), None);
+    }
+
+    /// gap-511268: an agent's provider label crosses the bridge both ways, and
+    /// an older emitter's payload without one still parses and stays without.
+    #[test]
+    fn agent_spawned_provider_survives_the_serve_bridge() {
+        let spawned = roko_core::DashboardEvent::AgentSpawned {
+            agent_id: "agent-1".into(),
+            plan_id: String::new(),
+            task_id: String::new(),
+            attempt: 0,
+            role: "implementer".into(),
+            model: "claude-sonnet-4-6".into(),
+            provider: "claude-cli".into(),
+        };
+        let server = dashboard_event_to_server(&spawned).expect("reaches the server stream");
+        let wire = serde_json::to_value(&server).expect("serialize server event");
+        assert_eq!(wire["provider"], "claude-cli");
+        assert_eq!(server_event_to_dashboard(&server), Some(spawned));
+
+        let old: ServerEvent = serde_json::from_value(serde_json::json!({
+            "type": "agent_spawned",
+            "agent_id": "agent-2",
+            "role": "implementer",
+            "model": "gpt-oss-120b",
+        }))
+        .expect("an agent_spawned without a provider parses");
+        assert!(
+            matches!(old, ServerEvent::AgentSpawned { provider: None, .. }),
+            "{old:?}"
+        );
+        let wire = serde_json::to_value(&old).expect("serialize server event");
+        assert!(wire.get("provider").is_none(), "{wire}");
+        let Some(roko_core::DashboardEvent::AgentSpawned { provider, .. }) =
+            server_event_to_dashboard(&old)
+        else {
+            panic!("an agent_spawned reaches the dashboard");
+        };
+        assert!(provider.is_empty());
+    }
+
+    /// gap-8a1fb3: a one-shot run starts and ends the plan its task and agent
+    /// events name, so that plan completes when the run does.
+    #[test]
+    fn one_shot_run_starts_and_ends_the_plan_its_events_name() {
+        let run_id = "0123abcd-4567-89ef-0123-456789abcdef";
+        let started = ServerEvent::RunStarted {
+            run_id: run_id.into(),
+            prompt: "say hi".into(),
+            origin: None,
+        };
+        let completed = ServerEvent::RunCompleted {
+            run_id: run_id.into(),
+            success: true,
+            verdict: Some(crate::state::RunState::Succeeded),
+        };
+        assert_eq!(run_plan_id(run_id), "run-0123abcd");
+        assert_eq!(
+            server_event_to_dashboard(&started),
+            Some(roko_core::DashboardEvent::PlanStarted {
+                plan_id: run_plan_id(run_id),
+                tasks_total: 0,
+            })
+        );
+        assert_eq!(
+            server_event_to_dashboard(&completed),
+            Some(roko_core::DashboardEvent::PlanCompleted {
+                plan_id: run_plan_id(run_id),
+                success: true,
+            })
+        );
+        assert_eq!(run_plan_id("r1"), "run-r1");
     }
 }
 
@@ -3711,9 +3946,10 @@ fn init_otlp_tracing(endpoint: &str, service_name: &str, _sample_rate: f64) {
 #[cfg(test)]
 mod tests {
     use super::{
-        ServerBuildConfig, ServerBuilder, build_app_state, drain_within,
+        RokoConfig, ServerBuildConfig, ServerBuilder, build_app_state, drain_within,
         resolve_bind_with_port_env, run_cold_archival_tick, run_server_with_state,
-        serve_api_or_spa_fallback, start_telemetry_producer_bridge, warn_if_auth_misconfigured,
+        serve_api_or_spa_fallback, start_telemetry_producer_bridge, validate_showcase_mode,
+        warn_if_auth_misconfigured,
     };
 
     use axum::body::{Body, to_bytes};
@@ -3930,7 +4166,7 @@ mod tests {
                 }
             ) if lens == "verify-recorder"
                 && block == "task-a"
-                && verdict == &Verdict::pass("compile")
+                && verdict == &Verdict::pass("verify[2:compile]")
                 && evidence.is_empty()
         ));
         assert_eq!(
@@ -4223,6 +4459,7 @@ mod tests {
                 error_class: None,
                 model_reported: None,
                 attempt_key: None,
+                cache_hit: false,
             })
             .await
             .expect("record the model call");
@@ -4440,8 +4677,10 @@ mod tests {
         drop(rebound);
     }
 
+    /// backlog 2124: the serve lifecycle runs its periodic telemetry
+    /// observer, keeps no Lens sample on disk, and shuts down.
     #[tokio::test(flavor = "multi_thread")]
-    async fn run_server_with_state_emits_periodic_telemetry_and_shuts_down() {
+    async fn run_server_with_state_persists_no_telemetry_and_shuts_down() {
         let dir = tempdir().expect("tempdir");
         let state = Arc::new(
             build_app_state(
@@ -4462,27 +4701,20 @@ mod tests {
 
         let server_state = Arc::clone(&state);
         let server = tokio::spawn(run_server_with_state(server_state, "127.0.0.1", port));
-        let telemetry_path = state.layout.telemetry_observations_path();
-        let observations = tokio::time::timeout(std::time::Duration::from_secs(3), async {
-            loop {
-                if let Ok(contents) = tokio::fs::read_to_string(&telemetry_path).await {
-                    let observations = contents
-                        .lines()
-                        .filter_map(|line| {
-                            serde_json::from_str::<roko_core::obs::TelemetryObservation>(line).ok()
-                        })
-                        .collect::<Vec<_>>();
-                    if observations.len() >= 3 {
-                        break observations;
-                    }
-                }
+        let listening = tokio::time::timeout(std::time::Duration::from_secs(3), async {
+            while tokio::net::TcpStream::connect(("127.0.0.1", port))
+                .await
+                .is_err()
+            {
                 tokio::time::sleep(std::time::Duration::from_millis(10)).await;
             }
         })
         .await;
+        // The observer samples at once, then every 30 s.
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
 
         // Always cancel and join the production lifecycle before asserting so
-        // a failed observation cannot strand server background tasks in tests.
+        // a failed check cannot strand server background tasks in tests.
         state.shutdown().await;
         let server_result = tokio::time::timeout(std::time::Duration::from_secs(3), server)
             .await
@@ -4490,12 +4722,11 @@ mod tests {
             .expect("server task panicked");
         server_result.expect("server returned an error");
 
-        let observations = observations.expect("serve lifecycle did not emit telemetry");
-        let names = observations
-            .iter()
-            .map(|observation| observation.lens_name.as_str())
-            .collect::<Vec<_>>();
-        assert_eq!(names, ["token-usage", "latency", "cost"]);
+        listening.expect("the server never listened");
+        let samples = dir
+            .path()
+            .join(".roko/metrics/telemetry-observations.jsonl");
+        assert!(!samples.exists(), "Lens samples are not persisted");
         assert!(state.cancel.is_cancelled());
     }
 
@@ -4685,6 +4916,45 @@ mod tests {
             ..Default::default()
         };
         warn_if_auth_misconfigured(&auth);
+    }
+
+    /// 9320: with `[showcase] enabled = true`, serve refuses to start unless every rule holds:
+    /// auth on and enforcing, a public origin, an Argon2id passphrase hash, and no Privy. Each
+    /// case breaks one rule, and the error names it.
+    #[test]
+    fn showcase_mode_refuses_to_start_half_configured() {
+        const HASH: &str = "$argon2id$v=19$m=19456,t=2,p=1$c2FsdHNhbHQ$aGFzaGhhc2hoYXNoaGFzaA";
+        let mut ready = RokoConfig::default();
+        ready.showcase.enabled = true;
+        ready.showcase.public_origin = Some("https://roko-showcase.fly.dev".to_string());
+        assert!(validate_showcase_mode(&ready, Some(HASH)).is_ok());
+        // Showcase mode off: nothing to check.
+        assert!(validate_showcase_mode(&RokoConfig::default(), None).is_ok());
+
+        let mut auth_off = ready.clone();
+        auth_off.serve.auth.enabled = false;
+        let mut audit_only = ready.clone();
+        audit_only.serve.auth.enforcement_mode = roko_core::config::EnforcementMode::Audit;
+        let mut no_origin = ready.clone();
+        no_origin.showcase.public_origin = None;
+        let mut privy = ready.clone();
+        privy.serve.auth.privy_app_id = Some("privy-app".to_string());
+        let argon2i = Some("$argon2i$v=19$m=19456,t=2,p=1$c2FsdA$aGFzaA");
+        let cases = [
+            (auth_off, Some(HASH), "serve.auth.enabled"),
+            (audit_only, Some(HASH), "serve.auth.enforcement_mode"),
+            (no_origin, Some(HASH), "showcase.public_origin"),
+            (ready.clone(), None, "ROKO_SHOWCASE_PASSPHRASE_HASH"),
+            (ready.clone(), argon2i, "ROKO_SHOWCASE_PASSPHRASE_HASH"),
+            (privy, Some(HASH), "serve.auth.privy_app_id"),
+        ];
+        for (config, hash, rule) in cases {
+            let error = validate_showcase_mode(&config, hash).expect_err(rule);
+            let message = error.to_string();
+            assert!(message.contains(rule), "{message}");
+            assert!(message.contains("half configured"), "{message}");
+            assert_eq!(message.matches(" must ").count(), 1, "{message}");
+        }
     }
 
     // ── live_agent_output_honours_the_bind ───────────────────────────────────

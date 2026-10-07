@@ -205,33 +205,3 @@ pub(crate) async fn reflex_input_fingerprint(
     let GateInputSnapshot(base, digest, has_owned_diff) = gate_input_snapshot(workdir).await?;
     Ok((base, digest, has_owned_diff))
 }
-
-pub(super) fn gate_input_fingerprint_id(snapshot: &GateInputSnapshot) -> String {
-    let mut identity = Sha256::new();
-    hash_part(&mut identity, snapshot.0.as_bytes());
-    identity.update(snapshot.1);
-    identity.update([u8::from(snapshot.2)]);
-    format!("{:x}", identity.finalize())
-}
-
-/// Combined identity of the immutable base plus every tracked/untracked byte
-/// and mode in a task checkout.
-pub(crate) async fn owned_input_fingerprint_id(
-    workdir: std::path::PathBuf,
-) -> Result<String, String> {
-    let snapshot = gate_input_snapshot(workdir).await?;
-    snapshot
-        .2
-        .then(|| gate_input_fingerprint_id(&snapshot))
-        .ok_or_else(|| "worktree has no owned diff to fingerprint".to_string())
-}
-
-pub(super) async fn accepted_input_snapshot(
-    workdir: std::path::PathBuf,
-    expected_oid: &str,
-) -> Result<GateInputSnapshot, String> {
-    let snapshot = gate_input_snapshot(workdir).await?;
-    (snapshot.0 == expected_oid && !snapshot.2)
-        .then_some(snapshot)
-        .ok_or_else(|| "accepted plan input differs from immutable commit".into())
-}

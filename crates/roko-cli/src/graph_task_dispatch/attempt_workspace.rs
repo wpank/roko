@@ -3,26 +3,221 @@
 //! first when its plan asks for that (gap-0d64d5), and the attempt and
 //! checkout a task's output names (bug-50caf2).
 
+use roko_core::Verdict;
+use roko_core::config::GateRungConfig;
 use roko_graph::workspace::{
     ExecutionWorkspaceProvider, WorkspaceAcceptRequest, WorkspaceAcceptance, WorkspaceError,
     WorkspaceLease, WorkspaceReleasePolicy,
 };
 
 use super::*;
+use crate::orchestrator::scratch::{CopyBackError, ScratchLease};
+
+/// The scratch_dir workspace of an attempt (9135). An accepted attempt's
+/// changes are copied back into the workspace and its copy removed
+/// ([`GraphTaskDispatcher::accept_scratch`], 9136). Otherwise, when the
+/// attempt ends, however it ends, its result manifest is written and the
+/// copy kept, as a failed attempt's worktree is.
+pub(super) struct ScratchAttempt {
+    dir: PathBuf,
+    /// `None` once the attempt was accepted and its copy removed.
+    lease: Option<ScratchLease>,
+}
+
+impl ScratchAttempt {
+    /// The attempt's working directory.
+    pub(super) fn dir(&self) -> &Path {
+        &self.dir
+    }
+}
+
+impl Drop for ScratchAttempt {
+    fn drop(&mut self) {
+        let Some(lease) = &self.lease else {
+            return;
+        };
+        let dir = self.dir.display().to_string();
+        match lease.finish() {
+            Ok(changes) => tracing::info!(
+                scratch = %dir,
+                changed = changes.changed.len(),
+                added = changes.added.len(),
+                removed = changes.removed.len(),
+                "the attempt's scratch workspace is kept with its result manifest"
+            ),
+            Err(error) => tracing::warn!(
+                scratch = %dir,
+                error = %format!("{error:#}"),
+                "the scratch workspace's result manifest was not written"
+            ),
+        }
+    }
+}
 
 impl GraphTaskDispatcher {
+    /// The scratch_dir workspace of `task`'s attempts in checkout
+    /// generation `generation` (9135): a copy of the data its `files` name,
+    /// under `.roko/scratch/<run>/<task>/<generation>/`, which its retries
+    /// resume in.
+    pub(super) fn lease_scratch(
+        &self,
+        task: &TaskDef,
+        ctx: &CellContext,
+        generation: u32,
+    ) -> Result<ScratchAttempt> {
+        let run_id = self.attempts.run_id(ctx);
+        let dir = roko_fs::RokoLayout::for_project(&self.workdir)
+            .scratch_attempt_dir(run_id, &task.id, generation);
+        match ScratchLease::acquire(&self.workdir, dir, &task.files) {
+            Ok(lease) => Ok(ScratchAttempt {
+                dir: lease.dir().to_path_buf(),
+                lease: Some(lease),
+            }),
+            Err(error) => Err(RokoError::Agent {
+                backend: "scratch-workspace".to_string(),
+                message: format!(
+                    "failed to lease a scratch workspace for task `{}`: {error:#}",
+                    task.id
+                ),
+            }),
+        }
+    }
+
+    /// Accept the verified scratch_dir attempt `settled` of `task` (9136):
+    /// copy what it changed back into the workspace, unless the workspace
+    /// changed those files since the copy was made. The files written back
+    /// and their new hashes go to `<copy>.accepted.json` beside the copy,
+    /// which is then removed. A conflict fails the attempt, its feedback
+    /// names the files, the copy is kept, and the task's next attempt works
+    /// in a fresh copy. A verdict that does not let work land keeps the copy
+    /// and copies nothing back, and so does a plan that holds its tasks for
+    /// approval, whose review hold shows a worktree's changes only.
+    pub(super) fn accept_scratch(
+        &self,
+        spec: &TaskExecutionSpec,
+        task: &TaskDef,
+        settled: &SettledAttempt,
+        verdict: TaskGateVerdict,
+        scratch: &mut ScratchAttempt,
+    ) -> Result<()> {
+        if !verdict.is_replayable() {
+            tracing::warn!(
+                plan_id = %spec.plan_id,
+                task_id = %task.id,
+                verdict = verdict.as_str(),
+                scratch = %scratch.dir.display(),
+                "the attempt's verdict does not let its work land; kept its scratch copy"
+            );
+            return Ok(());
+        }
+        if self.holds_for_approval(&spec.plan_id) {
+            return Err(RokoError::Rejected(format!(
+                "attempt {} passed its gates, but its plan holds each task for approval, which a \
+                 scratch_dir task cannot wait for yet; its copy is kept at {}",
+                settled.attempt_key(),
+                scratch.dir.display()
+            )));
+        }
+        let Some(lease) = scratch.lease.as_ref() else {
+            return Ok(());
+        };
+        match lease.copy_back(&self.workdir) {
+            Ok(copied) => {
+                let record = serde_json::json!({
+                    "attempt_key": settled.attempt_key(),
+                    "copied": copied,
+                });
+                let path = scratch_record_path(&scratch.dir, "accepted");
+                if let Err(error) = std::fs::write(&path, record.to_string()) {
+                    tracing::warn!(path = %path.display(), %error, "copy-back record not written");
+                }
+                tracing::info!(
+                    plan_id = %spec.plan_id,
+                    task_id = %task.id,
+                    attempt_key = settled.attempt_key(),
+                    files = copied.len(),
+                    "copied the scratch attempt's changes back into the workspace"
+                );
+                if let Some(lease) = scratch.lease.take()
+                    && let Err(error) = lease.remove()
+                {
+                    tracing::warn!(error = %format!("{error:#}"), "the scratch copy stays");
+                }
+                Ok(())
+            }
+            Err(CopyBackError::Conflict(paths)) => {
+                // The next attempt works in a fresh copy of the workspace's
+                // data, which holds the other writer's changes.
+                let key = format!("{}/{}", spec.plan_id, task.id);
+                *self.worktree_generations.lock().entry(key).or_default() += 1;
+                if let Some(feedback) = scratch_conflict_feedback(&paths) {
+                    self.gate_retry_context.record(
+                        &spec.plan_id,
+                        &task.id,
+                        feedback,
+                        settled.key().attempt.saturating_add(1),
+                    );
+                }
+                Err(RokoError::Verify {
+                    gate: "scratch-copy-back".to_string(),
+                    message: format!(
+                        "attempt {} passed its gates, but the workspace changed {} since its copy \
+                         was made, so its result was not copied back; its copy is kept at {}, \
+                         and the next attempt works in a fresh copy",
+                        settled.attempt_key(),
+                        paths.join(", "),
+                        scratch.dir.display()
+                    ),
+                })
+            }
+            Err(error) => Err(RokoError::Rejected(format!(
+                "attempt {} passed its gates, but its result could not be copied back: {error}; \
+                 its copy is kept at {}",
+                settled.attempt_key(),
+                scratch.dir.display()
+            ))),
+        }
+    }
+
     /// Checkout generation of the task `task_key` (`"{plan_id}/{task_id}"`):
     /// its worktree is the workspace attempt `(plan, task, generation)`.
     /// Retries of a task share that checkout, so a retry resumes the work its
-    /// predecessor left. When the plan branch refuses the task's work as
-    /// conflicting, the task moves on to a fresh checkout of the plan's
-    /// accepted tip.
+    /// predecessor left, as after a turn cap or a timeout. When the plan
+    /// branch refuses the task's work as conflicting, or the pre-verify
+    /// screen rejects it for tampering or for scope, the task moves on to a
+    /// fresh checkout of the plan's accepted tip
+    /// ([`Self::restart_from_plan_tip`]).
     pub(super) fn worktree_generation(&self, task_key: &str) -> u32 {
         self.worktree_generations
             .lock()
             .get(task_key)
             .copied()
             .unwrap_or_default()
+    }
+
+    /// Move the task `task_id` of plan `plan_id` on to a fresh checkout of the
+    /// plan's accepted tip, because of `why`: its next attempt starts there
+    /// instead of resuming the work its predecessor left, which stays in the
+    /// old checkout for review (backlog 1122). Without per-task worktrees
+    /// there is no checkout to move on from, and nothing changes.
+    pub(super) fn restart_from_plan_tip(&self, plan_id: &str, task_id: &str, why: &str) {
+        if self.workspace_provider.is_none() {
+            return;
+        }
+        let key = format!("{plan_id}/{task_id}");
+        let generation = {
+            let mut generations = self.worktree_generations.lock();
+            let generation = generations.entry(key).or_default();
+            *generation += 1;
+            *generation
+        };
+        tracing::info!(
+            plan_id,
+            task_id,
+            generation,
+            why,
+            "the task's next attempt starts from the plan branch in a fresh checkout"
+        );
     }
 
     /// Accept the successful attempt `settled` of `task`, which ran in `lease`
@@ -109,11 +304,18 @@ impl GraphTaskDispatcher {
                 Ok(Some(acceptance))
             }
             Some(Err(WorkspaceError::Conflict(reason))) => {
-                *self
-                    .worktree_generations
-                    .lock()
-                    .entry(format!("{}/{}", spec.plan_id, task.id))
-                    .or_default() += 1;
+                self.restart_from_plan_tip(&spec.plan_id, &task.id, "plan-branch conflict");
+                // The next attempt learns what this one conflicted with,
+                // instead of starting blind (backlog 1123).
+                let changed = self.take_changed_files(settled.attempt_key());
+                if let Some(feedback) = conflict_feedback(&reason, &changed) {
+                    self.gate_retry_context.record(
+                        &spec.plan_id,
+                        &task.id,
+                        feedback,
+                        settled.key().attempt.saturating_add(1),
+                    );
+                }
                 Err(RokoError::Verify {
                     gate: "plan-branch".to_string(),
                     message: format!(
@@ -134,6 +336,93 @@ impl GraphTaskDispatcher {
         }
     }
 
+    /// A `confirm` rung's verdict on the attempt `attempt_key` at `task`
+    /// (9137, decision 9108): the person the work is for confirms its
+    /// outcome. The task's review hold gets the rung's question and a short
+    /// summary of `artefacts`, where `roko serve`'s review routes and the
+    /// `/mcp` `confirm_pending` tool show it, and the rung waits for a
+    /// decision on the attempt in the review log, which the `confirm_answer`
+    /// tool, the review route and `roko plan review` write. A "yes" passes it
+    /// as [`CONFIRMED_BY_USER`], a person's judgement that the attempt record
+    /// keeps apart from machine checks; any other answer fails it with the
+    /// person's note; no answer within the rung's `timeout_secs`, or a run
+    /// that began to stop, skips it, so the task ends unverified. The hold is
+    /// removed either way.
+    pub(super) async fn confirm_rung(
+        &self,
+        spec: &TaskExecutionSpec,
+        task: &TaskDef,
+        attempt_key: &str,
+        rung: &GateRungConfig,
+        artefacts: &[(String, String)],
+    ) -> Verdict {
+        let label = super::verification::rung_step_label(&rung.name);
+        let layout = roko_fs::RokoLayout::for_project(&self.workdir);
+        let hold_path = layout.review_hold(&spec.plan_id, &task.id);
+        let key = roko_learn::telemetry::AttemptKey::parse(attempt_key);
+        let hold = serde_json::json!({
+            "schema_version": 1,
+            "kind": "confirm",
+            "plan_id": spec.plan_id,
+            "task_id": task.id,
+            "title": task.title,
+            "run_id": key.as_ref().map(|key| key.run_id.clone()),
+            "attempt_key": attempt_key,
+            "attempt": key.as_ref().map(|key| key.attempt),
+            "rung": rung.name,
+            "question": confirm_question(&self.workdir, rung),
+            "summary": confirm_summary(artefacts),
+            "timeout_secs": rung.timeout_secs,
+            "held_at": chrono::Utc::now().to_rfc3339(),
+        });
+        if let Err(error) = write_review_hold(&hold_path, &hold) {
+            let reason = format!("the confirmation could not be asked: {error}");
+            return Verdict::skip(&label, reason);
+        }
+        tracing::info!(
+            plan_id = %spec.plan_id,
+            task_id = %task.id,
+            attempt_key,
+            hold = %hold_path.display(),
+            "the attempt waits for its person to confirm the outcome"
+        );
+        let reviews = layout.reviews_log();
+        let deadline = std::time::Instant::now() + rung.timeout();
+        let decision = loop {
+            if let Some(decision) = review_decision(&reviews, &spec.plan_id, &task.id, attempt_key)
+            {
+                break Some(decision);
+            }
+            let stopping = self.stopped_verify(spec, task, "confirm").is_some();
+            if stopping || std::time::Instant::now() >= deadline {
+                break None;
+            }
+            tokio::time::sleep(REVIEW_POLL_INTERVAL).await;
+        };
+        if let Err(error) = std::fs::remove_file(&hold_path) {
+            tracing::warn!(hold = %hold_path.display(), %error, "the confirm hold stays");
+        }
+        match decision {
+            Some((decision, note)) if decision == "approved" => {
+                let mut verdict = Verdict::pass(&label).with_detail(note);
+                verdict.reason = CONFIRMED_BY_USER.to_string();
+                verdict
+            }
+            Some((decision, note)) => {
+                let note = if note.trim().is_empty() {
+                    "no note".to_string()
+                } else {
+                    note
+                };
+                Verdict::fail(&label, format!("the person {decision} the outcome: {note}"))
+            }
+            None => {
+                let reason = format!("no answer within {} s", rung.timeout_secs);
+                Verdict::skip(&label, reason)
+            }
+        }
+    }
+
     /// Hold the verified attempt `settled` of `task`, which ran in `lease`,
     /// until a person approves or rejects it (gap-0d64d5).
     ///
@@ -146,6 +435,11 @@ impl GraphTaskDispatcher {
     /// attempt with `gate: "review"`, and the reviewer's note is the next
     /// attempt's feedback. A cancelled run ends the hold without a decision.
     /// The hold is removed either way.
+    ///
+    /// While it waits, the dashboard shows the task in the
+    /// [`AWAITING_APPROVAL_PHASE`], not as a failed gate. The decision is the
+    /// task's `review` gate result: passed on approval, failed with the
+    /// reviewer's note otherwise.
     pub(super) async fn await_review(
         &self,
         spec: &TaskExecutionSpec,
@@ -189,12 +483,11 @@ impl GraphTaskDispatcher {
             "the verified attempt waits for a review before it is accepted"
         );
         if let Some(tui) = &self.tui_bridge {
-            tui.gate_result_with_output(
+            tui.task_phase_changed(
                 &spec.plan_id,
                 &task.id,
-                "review",
-                false,
-                Some("waiting for a review: approve or reject the task's diff"),
+                RUNNING_PHASE,
+                AWAITING_APPROVAL_PHASE,
             );
         }
 
@@ -212,6 +505,15 @@ impl GraphTaskDispatcher {
         if let Err(error) = std::fs::remove_file(&hold_path) {
             tracing::warn!(hold = %hold_path.display(), %error, "could not remove the review hold");
         }
+        // The task no longer waits, decided or not.
+        if let Some(tui) = &self.tui_bridge {
+            tui.task_phase_changed(
+                &spec.plan_id,
+                &task.id,
+                AWAITING_APPROVAL_PHASE,
+                RUNNING_PHASE,
+            );
+        }
         let Some((decision, note)) = decision else {
             return Err(RokoError::Cancelled(format!(
                 "the run was cancelled while attempt {attempt_key} waited for a review"
@@ -219,6 +521,15 @@ impl GraphTaskDispatcher {
         };
         if decision == "approved" {
             tracing::info!(plan_id = %spec.plan_id, task_id = %task.id, attempt_key, "a reviewer approved the attempt");
+            if let Some(tui) = &self.tui_bridge {
+                tui.gate_result_with_output(
+                    &spec.plan_id,
+                    &task.id,
+                    "review",
+                    true,
+                    Some("a reviewer approved the attempt"),
+                );
+            }
             return Ok(());
         }
         let note = if note.trim().is_empty() {
@@ -227,6 +538,9 @@ impl GraphTaskDispatcher {
             note
         };
         let message = format!("a reviewer {decision} attempt {attempt_key}: {note}");
+        if let Some(tui) = &self.tui_bridge {
+            tui.gate_result_with_output(&spec.plan_id, &task.id, "review", false, Some(&message));
+        }
         if let Some(feedback) = GateFeedback::from_raw(&message) {
             self.gate_retry_context.record(
                 &spec.plan_id,
@@ -242,8 +556,128 @@ impl GraphTaskDispatcher {
     }
 }
 
+/// Most changed paths the feedback on a plan-branch conflict lists.
+const CONFLICT_PATHS_LISTED: usize = 20;
+
+/// The next attempt's feedback on a plan-branch conflict (backlog 1123): the
+/// refusal's `reason`, then the paths it names, or else the paths the
+/// attempt changed (`changed`). It stays raw text: lifting out a path that
+/// reads like a failing test would leave the prompt with that line alone.
+/// The reason a passed `confirm` rung gives (9137): the person the work is
+/// for confirmed the outcome, which is their judgement, not a machine check.
+pub(super) const CONFIRMED_BY_USER: &str = "confirmed_by_user";
+
+/// The question a `confirm` rung asks when its `rubric` names none.
+const DEFAULT_CONFIRM_QUESTION: &str = "Is the result what you asked for?";
+
+/// The most of its artefacts a `confirm` hold's summary shows, in bytes.
+const CONFIRM_SUMMARY_BYTES: usize = 2 * 1024;
+
+/// The question `rung`, a `confirm` rung, asks: its `rubric`, the text or
+/// the path of a file in the workspace at `workdir` holding it, else
+/// [`DEFAULT_CONFIRM_QUESTION`].
+fn confirm_question(workdir: &Path, rung: &GateRungConfig) -> String {
+    let Some(rubric) = rung
+        .rubric
+        .as_deref()
+        .map(str::trim)
+        .filter(|rubric| !rubric.is_empty())
+    else {
+        return DEFAULT_CONFIRM_QUESTION.to_string();
+    };
+    std::fs::read_to_string(workdir.join(rubric))
+        .map(|text| text.trim().to_string())
+        .unwrap_or_else(|_| rubric.to_string())
+}
+
+/// A short summary of a `confirm` rung's `artefacts` for the person to
+/// judge: each one's path and text, cut to [`CONFIRM_SUMMARY_BYTES`].
+fn confirm_summary(artefacts: &[(String, String)]) -> String {
+    if artefacts.is_empty() {
+        return "(the rung names no files)".to_string();
+    }
+    let mut summary = String::new();
+    for (path, text) in artefacts {
+        summary.push_str(&format!("{path}:\n{}\n", text.trim()));
+    }
+    if summary.len() > CONFIRM_SUMMARY_BYTES {
+        let cut = summary.floor_char_boundary(CONFIRM_SUMMARY_BYTES);
+        summary.truncate(cut);
+        summary.push_str("\n...[truncated]");
+    }
+    summary
+}
+
+/// The record of kind `kind` (such as `accepted`) beside the scratch copy at
+/// `dir`, where its manifests are.
+fn scratch_record_path(dir: &Path, kind: &str) -> PathBuf {
+    let name = dir
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    dir.with_file_name(format!("{name}.{kind}.json"))
+}
+
+/// The next attempt's feedback after a scratch copy-back refused because the
+/// workspace changed `paths` since the copy was made (9136).
+fn scratch_conflict_feedback(paths: &[String]) -> Option<GateFeedback> {
+    let message = format!(
+        "Your previous attempt's result was not copied back: the workspace changed {} since its \
+         copy was made. This attempt works in a fresh copy that holds those changes; keep them.",
+        paths.join(", ")
+    );
+    GateFeedback::from_raw(&message).map(|feedback| GateFeedback {
+        compile_errors: Vec::new(),
+        test_failures: Vec::new(),
+        clippy_warnings: Vec::new(),
+        ..feedback
+    })
+}
+
+fn conflict_feedback(reason: &str, changed: &[String]) -> Option<GateFeedback> {
+    let mut message = format!(
+        "Your previous attempt's work conflicts with the plan's accepted work ({reason}). The \
+         plan branch now includes those changes; start from it and keep them."
+    );
+    if let Some(paths) = conflicted_paths(reason) {
+        message.push_str(&format!("\nConflicting paths: {paths}."));
+    } else if !changed.is_empty() {
+        let shown = changed.len().min(CONFLICT_PATHS_LISTED);
+        let mut listed = changed[..shown].join(", ");
+        let more = changed.len() - shown;
+        if more > 0 {
+            listed.push_str(&format!(" and {more} more"));
+        }
+        message.push_str(&format!("\nYour previous attempt changed: {listed}."));
+    }
+    GateFeedback::from_raw(&message).map(|feedback| GateFeedback {
+        compile_errors: Vec::new(),
+        test_failures: Vec::new(),
+        clippy_warnings: Vec::new(),
+        ..feedback
+    })
+}
+
+/// The paths a plan-branch conflict names, as `WorktreeError::Conflict`
+/// words them (`…; conflicted paths: a.txt, b.txt`); `None` when it names
+/// none.
+fn conflicted_paths(reason: &str) -> Option<&str> {
+    let (_, paths) = reason.split_once("conflicted paths:")?;
+    let paths = paths.trim();
+    (!paths.is_empty()).then_some(paths)
+}
+
 /// How often a held attempt looks for its review decision.
 const REVIEW_POLL_INTERVAL: std::time::Duration = std::time::Duration::from_millis(250);
+
+/// The dashboard phase of a task whose verified attempt waits for a person's
+/// review. `roko serve`'s review routes call the state `awaiting_approval`
+/// too.
+pub const AWAITING_APPROVAL_PHASE: &str = "awaiting_approval";
+
+/// The phase the graph runner starts a task in, which a held task returns to
+/// once its wait ends.
+const RUNNING_PHASE: &str = "graph-executing";
 
 /// Write `hold` to `path` whole: to a temporary file beside it, then renamed.
 fn write_review_hold(path: &Path, hold: &serde_json::Value) -> Result<()> {
@@ -280,6 +714,56 @@ fn review_decision(
             let note = entry["comment"].as_str().unwrap_or_default().to_string();
             Some((decision, note))
         })
+}
+
+/// Record `decision` (`approved` or `rejected`) with `note` on the attempt
+/// of `task_id` that `plan_id`'s run holds for review (gap-0d64d5), in the
+/// review log the held attempt reads (`review_decision`). `roko plan
+/// review` and a Graph run's Approve and Reject commands record through it,
+/// and `roko serve`'s review route writes the same entry. Returns the
+/// attempt's key.
+///
+/// # Errors
+///
+/// When the task holds no attempt for review, or the log cannot be written.
+pub fn record_review(
+    workdir: &Path,
+    plan_id: &str,
+    task_id: &str,
+    decision: &str,
+    note: &str,
+) -> anyhow::Result<String> {
+    use anyhow::anyhow;
+    use std::io::Write as _;
+
+    let layout = roko_fs::RokoLayout::for_project(workdir);
+    let hold_path = layout.review_hold(plan_id, task_id);
+    let hold: serde_json::Value = std::fs::read(&hold_path)
+        .ok()
+        .and_then(|bytes| serde_json::from_slice(&bytes).ok())
+        .ok_or_else(|| {
+            anyhow!("task `{task_id}` of plan `{plan_id}` is not waiting for a review")
+        })?;
+    let attempt_key = hold["attempt_key"]
+        .as_str()
+        .ok_or_else(|| anyhow!("the review hold {} names no attempt", hold_path.display()))?
+        .to_string();
+    let entry = serde_json::json!({
+        "plan_id": plan_id,
+        "task_id": task_id,
+        "decision": decision,
+        "comment": note,
+        "attempt_key": attempt_key,
+        "timestamp": chrono::Utc::now().to_rfc3339(),
+    });
+    let log = layout.reviews_log();
+    std::fs::create_dir_all(layout.state_dir())?;
+    let mut file = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&log)?;
+    file.write_all(format!("{entry}\n").as_bytes())?;
+    Ok(attempt_key)
 }
 
 #[cfg(test)]
@@ -464,6 +948,39 @@ printf '%s\n' '{"type":"result","session_id":"sess-w","model":"claude-sonnet-4-6
         assert_operator_checkout_untouched(repo.path(), &head);
     }
 
+    /// gap-7f32ed: acceptance commits everything in the attempt's worktree,
+    /// so roko's own records of the attempt belong at the workspace root. In
+    /// a repository that does not ignore `.roko/`, the plan branch holds the
+    /// agent's work and no `.roko/` path, and the attempt's model-call row
+    /// is at the root (bug-412a5e).
+    #[tokio::test]
+    async fn accepted_worktree_attempt_commits_no_roko_state() {
+        let (repo, worktrees) = repo_with_worktrees();
+        let provider = worktree_provider(repo.path(), worktrees.path());
+        let (dispatcher, task) = isolated_dispatcher(&repo, provider).await;
+        let spec = make_spec(&task);
+        let ctx = CellContext::new().with_run_id(RUN.to_string());
+
+        dispatcher
+            .dispatch(&spec, Vec::new(), &ctx)
+            .await
+            .expect("the verified attempt is accepted");
+
+        let plan_branch = format!("roko/plan/{}", spec.plan_id);
+        let committed = git(repo.path(), &["ls-tree", "-r", "--name-only", &plan_branch]);
+        assert!(
+            committed.lines().any(|path| path == "feature.txt"),
+            "{committed}"
+        );
+        assert!(
+            !committed.lines().any(|path| path.starts_with(".roko")),
+            "{committed}"
+        );
+        let efficiency = std::fs::read_to_string(repo.path().join(".roko/learn/efficiency.jsonl"))
+            .expect("the attempt's model-call row is at the workspace root");
+        assert!(efficiency.contains(r#""kind":"model_call""#));
+    }
+
     /// Passes a rung only in a tree that holds `feature.txt`.
     struct PassesWhereTheFeatureIs;
 
@@ -588,6 +1105,91 @@ printf '%s\n' '{"type":"result","session_id":"sess-w","model":"claude-sonnet-4-6
         assert_eq!(git(repo.path(), &["show", &landed]), "feature");
         assert!(!hold_path.exists(), "the hold is removed");
         assert_operator_checkout_untouched(repo.path(), &head);
+    }
+
+    /// Apply to `snapshot` the events `events` has received, and return
+    /// whether each `review` gate result among them passed.
+    fn apply_published(
+        events: &mut tokio::sync::broadcast::Receiver<
+            roko_runtime::event_bus::Envelope<roko_core::DashboardEvent>,
+        >,
+        snapshot: &mut roko_core::DashboardSnapshot,
+    ) -> Vec<bool> {
+        let mut review_gates = Vec::new();
+        loop {
+            let envelope = match events.try_recv() {
+                Ok(envelope) => envelope,
+                Err(tokio::sync::broadcast::error::TryRecvError::Lagged(_)) => continue,
+                Err(_) => break,
+            };
+            if let roko_core::DashboardEvent::GateResult { gate, passed, .. } = &envelope.payload
+                && gate == "review"
+            {
+                review_gates.push(*passed);
+            }
+            snapshot.apply(&envelope.payload);
+        }
+        review_gates
+    }
+
+    /// 1217: while a verified attempt waits for a review, the dashboard shows
+    /// its task awaiting approval rather than a failed `review` gate. The
+    /// decision is the gate's result, and the task runs on.
+    #[tokio::test]
+    async fn held_task_snapshot_shows_awaiting_approval() {
+        let (repo, worktrees) = repo_with_worktrees();
+        let provider = worktree_provider(repo.path(), worktrees.path());
+        let hub = crate::state_hub::StateHub::new(4096);
+        let mut events = hub.subscribe_events();
+        let (dispatcher, mut task) = make_test_dispatcher_with(
+            &repo,
+            WRITES_FEATURE_PROVIDER,
+            no_auto_fix,
+            GraphFeedbackContext::default(),
+            |dispatcher| {
+                dispatcher
+                    .with_workspace_provider(provider)
+                    .with_tui_bridge(TuiBridge::new(hub.sender()))
+            },
+        )
+        .await;
+        task.verify = vec![verify_step("structural", "test -f feature.txt")];
+        let spec = make_spec(&task);
+        dispatcher.hold_for_approval(&spec.plan_id);
+        let hold_path =
+            roko_fs::RokoLayout::for_project(repo.path()).review_hold(&spec.plan_id, &task.id);
+        // The graph runner starts the task, as in a plan run.
+        let key = format!("{}/{}", spec.plan_id, task.id);
+        let mut snapshot = roko_core::DashboardSnapshot::default();
+        snapshot.apply(&roko_core::DashboardEvent::TaskStarted {
+            plan_id: spec.plan_id.clone(),
+            task_id: task.id.clone(),
+            title: task.title.clone(),
+            phase: RUNNING_PHASE.to_string(),
+        });
+
+        let running = dispatch_in_background(&dispatcher, &spec);
+        let hold = held_review(&hold_path).await;
+        // The hold is published just after it is written.
+        let mut review_gates = Vec::new();
+        for _ in 0..200 {
+            review_gates.extend(apply_published(&mut events, &mut snapshot));
+            if snapshot.tasks[&key].phase == AWAITING_APPROVAL_PHASE {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+        }
+        assert_eq!(snapshot.tasks[&key].phase, AWAITING_APPROVAL_PHASE);
+        assert!(review_gates.is_empty(), "{review_gates:?}");
+
+        decide(repo.path(), &hold, "approved", "");
+        running
+            .await
+            .expect("dispatch task")
+            .expect("the approved attempt passes");
+        review_gates.extend(apply_published(&mut events, &mut snapshot));
+        assert_eq!(review_gates, [true], "the approval passes the review gate");
+        assert_eq!(snapshot.tasks[&key].phase, RUNNING_PHASE);
     }
 
     /// gap-0d64d5: a rejection fails the held attempt without merging it,
@@ -828,6 +1430,244 @@ printf '%s\n' '{"type":"result","session_id":"sess-w","model":"claude-sonnet-4-6
             .collect();
         assert_eq!(checkouts, [0, 1], "each retry gets a fresh checkout");
         assert!(git(repo.path(), &["branch", "--list", "roko/plan/*"]).is_empty());
+        // The refusal names no paths, so the next attempt hears which paths
+        // its predecessor changed (backlog 1123).
+        let feedback = dispatcher
+            .gate_retry_context
+            .next_attempt(&spec.plan_id, &task.id, 1)
+            .feedback
+            .expect("the next attempt hears of the conflict");
+        assert!(
+            feedback
+                .raw_output
+                .contains("Your previous attempt changed: feature.txt."),
+            "{feedback:?}"
+        );
+    }
+
+    /// A provider that records each call's arguments, which carry the
+    /// system prompt and so any retry feedback, and its prompt as
+    /// `prompt-<call>`, and rewrites the one line of `same.txt`; each of the
+    /// first two calls waits for the test to release it (`release-<call>`).
+    const EDITS_SAME_LINE_PROVIDER: &str = r#"#!/bin/sh
+set -eu
+dir=$(dirname -- "$0")
+n=$(( $(cat "$dir/calls" 2>/dev/null || echo 0) + 1 ))
+echo "$n" > "$dir/calls"
+{ printf '%s\n---\n' "$*"; cat; } > "$dir/prompt-$n.part" && mv "$dir/prompt-$n.part" "$dir/prompt-$n"
+if [ "$n" -le 2 ]; then
+  while [ ! -e "$dir/release-$n" ]; do sleep 0.05; done
+fi
+printf 'edit %s\n' "$n" > same.txt
+printf '%s\n' '{"type":"content_block_delta","delta":{"text":"edited same.txt"}}'
+printf '%s\n' '{"type":"result","session_id":"sess-c","model":"claude-sonnet-4-6","total_cost_usd":0.01,"usage":{"input_tokens":5,"output_tokens":10}}'
+"#;
+
+    /// Wait for `path` to appear.
+    async fn appears(path: &Path) {
+        for _ in 0..600 {
+            if path.exists() {
+                return;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+        panic!("{} never appeared", path.display());
+    }
+
+    /// backlog 1123: two sibling tasks edit the same line, both from the
+    /// plan's base. The first lands on the plan branch; the second's work
+    /// conflicts with it, and its next attempt's prompt says so and names
+    /// the conflicting file.
+    #[tokio::test]
+    async fn conflict_retry_prompt_names_the_conflict() {
+        let (repo, worktrees) = repo_with_worktrees();
+        std::fs::write(repo.path().join("same.txt"), "base\n").expect("write same.txt");
+        git(repo.path(), &["add", "same.txt"]);
+        git(repo.path(), &["commit", "-m", "same"]);
+        let provider = worktree_provider(repo.path(), worktrees.path());
+        let (dispatcher, mut first) = make_test_dispatcher_with(
+            &repo,
+            EDITS_SAME_LINE_PROVIDER,
+            no_auto_fix,
+            GraphFeedbackContext::default(),
+            |dispatcher| dispatcher.with_workspace_provider(provider),
+        )
+        .await;
+        first.verify = vec![verify_step("structural", "test -f same.txt")];
+        let mut second = first.clone();
+        second.id = "T-SECOND".to_string();
+        let (first_spec, second_spec) = (make_spec(&first), make_spec(&second));
+
+        // Both siblings have their checkouts before either lands.
+        let first_run = dispatch_in_background(&dispatcher, &first_spec);
+        appears(&repo.path().join("prompt-1")).await;
+        let second_run = dispatch_in_background(&dispatcher, &second_spec);
+        appears(&repo.path().join("prompt-2")).await;
+        std::fs::write(repo.path().join("release-1"), "").expect("release the first");
+        first_run
+            .await
+            .expect("dispatch task")
+            .expect("the first sibling lands");
+        std::fs::write(repo.path().join("release-2"), "").expect("release the second");
+        let error = second_run
+            .await
+            .expect("dispatch task")
+            .expect_err("the second sibling's work conflicts");
+        assert!(
+            matches!(&error, RokoError::Verify { gate, .. } if gate == "plan-branch"),
+            "{error:?}"
+        );
+
+        // Its next attempt starts from the plan branch and is told why.
+        let ctx = CellContext::new().with_run_id(RUN.to_string());
+        dispatcher
+            .dispatch(&second_spec, Vec::new(), &ctx)
+            .await
+            .expect("the retry lands on top of the first sibling's work");
+        let blind = std::fs::read_to_string(repo.path().join("prompt-2")).expect("first prompt");
+        assert!(!blind.contains("conflicts with the plan's accepted work"));
+        let retry = std::fs::read_to_string(repo.path().join("prompt-3")).expect("retry prompt");
+        assert!(
+            retry.contains("conflicts with the plan's accepted work"),
+            "{retry}"
+        );
+        // The conflict names `same.txt`, among whatever else both siblings
+        // committed.
+        let paths = retry
+            .lines()
+            .find_map(|line| line.trim().strip_prefix("Conflicting paths: "))
+            .unwrap_or_else(|| panic!("no conflicting paths in {retry}"));
+        assert!(paths.contains("same.txt"), "{retry}");
+    }
+
+    /// A provider that writes `feature.txt` and, on its first call only, also
+    /// rewrites `check.sh`, the script its task's verify step runs, to pass.
+    const TAMPERS_ONCE_PROVIDER: &str = r#"#!/bin/sh
+set -eu
+cat >/dev/null
+dir=$(dirname -- "$0")
+printf 'feature\n' > feature.txt
+if [ ! -e "$dir/tampered-once" ]; then
+  : > "$dir/tampered-once"
+  printf 'exit 0\n' > check.sh
+fi
+printf '%s\n' '{"type":"content_block_delta","delta":{"text":"wrote the feature"}}'
+printf '%s\n' '{"type":"result","session_id":"sess-t","model":"claude-sonnet-4-6","total_cost_usd":0.01,"usage":{"input_tokens":5,"output_tokens":10}}'
+"#;
+
+    /// backlog 1122: an attempt the pre-verify screen rejects for tampering
+    /// with what checks it is not resumed. Its checkout stays as it left it,
+    /// and the task's next attempt starts in a fresh checkout of the plan
+    /// branch (generation 1), without the tampering, and passes there.
+    #[tokio::test]
+    async fn retry_after_tamper_rejection_starts_from_plan_tip() {
+        let (repo, worktrees) = repo_with_worktrees();
+        std::fs::write(repo.path().join("check.sh"), "test -f feature.txt\n")
+            .expect("write check.sh");
+        git(repo.path(), &["add", "check.sh"]);
+        git(repo.path(), &["commit", "-m", "check"]);
+        let provider = worktree_provider(repo.path(), worktrees.path());
+        let (dispatcher, mut task) = make_test_dispatcher_with(
+            &repo,
+            TAMPERS_ONCE_PROVIDER,
+            no_auto_fix,
+            GraphFeedbackContext::default(),
+            |dispatcher| dispatcher.with_workspace_provider(provider),
+        )
+        .await;
+        task.verify = vec![verify_step("structural", "sh check.sh")];
+        let spec = make_spec(&task);
+        let ctx = CellContext::new().with_run_id(RUN.to_string());
+        let task_key = format!("{}/{}", spec.plan_id, task.id);
+
+        let error = dispatcher
+            .dispatch(&spec, Vec::new(), &ctx)
+            .await
+            .expect_err("the tampering attempt is rejected");
+        let RokoError::Verify { gate, message } = &error else {
+            panic!("expected a verify failure, got {error:?}");
+        };
+        assert_eq!(gate, "pre_verify:tamper");
+        assert!(message.contains("from the plan branch"), "{message}");
+        assert_eq!(dispatcher.worktree_generation(&task_key), 1);
+
+        let outputs = dispatcher
+            .dispatch(&spec, Vec::new(), &ctx)
+            .await
+            .expect("the retry passes in a fresh checkout");
+        let attempt = TaskAttempt::from_signals(&outputs).expect("the output names its attempt");
+        assert_eq!(attempt.attempt, 2);
+        let accepted = attempt.accepted.expect("the retry was accepted");
+        let check = format!("{}:check.sh", accepted.plan_branch);
+        assert_eq!(git(repo.path(), &["show", &check]), "test -f feature.txt");
+        assert_eq!(dispatcher.worktree_generation(&task_key), 1);
+    }
+
+    /// A provider whose call `n` writes `file-<n>.txt`, and nothing else.
+    const WRITES_OWN_FILE_PROVIDER: &str = r#"#!/bin/sh
+set -eu
+cat >/dev/null
+dir=$(dirname -- "$0")
+n=$(( $(cat "$dir/calls" 2>/dev/null || echo 0) + 1 ))
+echo "$n" > "$dir/calls"
+printf 'task %s\n' "$n" > "file-$n.txt"
+printf '%s\n' '{"type":"content_block_delta","delta":{"text":"wrote its own file"}}'
+printf '%s\n' '{"type":"result","session_id":"sess-o","model":"claude-sonnet-4-6","total_cost_usd":0.01,"usage":{"input_tokens":5,"output_tokens":10}}'
+"#;
+
+    /// backlog 1124: an attempt's diff starts from the commit its checkout
+    /// was made from. Sibling A lands on the plan branch; B's checkout then
+    /// starts from that tip, and B, which changes only its own file, is not
+    /// flagged for A's file, even under `diff_scope = "enforce"` and with
+    /// the base branch named by name (which does not hold A's work).
+    #[tokio::test]
+    async fn outside_scope_ignores_sibling_accepted_commits() {
+        let (repo, worktrees) = repo_with_worktrees();
+        let provider = Arc::new(WorktreeExecutionWorkspaceProvider::new(
+            WorktreeManager::new(WorktreeConfig {
+                repo_root: repo.path().to_path_buf(),
+                base_branch: "main".to_string(),
+                worktrees_root: worktrees.path().to_path_buf(),
+                max_live: None,
+                idle_ttl: std::time::Duration::from_secs(3600),
+            }),
+        ));
+        let (dispatcher, mut first) = make_test_dispatcher_with(
+            &repo,
+            WRITES_OWN_FILE_PROVIDER,
+            |config| {
+                no_auto_fix(config);
+                config.gates.diff_scope = roko_core::config::gates::DiffScope::Enforce;
+            },
+            GraphFeedbackContext::default(),
+            |dispatcher| dispatcher.with_workspace_provider(provider),
+        )
+        .await;
+        let mut second = first.clone();
+        second.id = "T-SECOND".to_string();
+        for (n, task) in [(1, &mut first), (2, &mut second)] {
+            task.files = vec![format!("file-{n}.txt")];
+            task.verify = vec![verify_step("structural", &format!("test -f file-{n}.txt"))];
+        }
+        let ctx = CellContext::new().with_run_id(RUN.to_string());
+
+        dispatcher
+            .dispatch(&make_spec(&first), Vec::new(), &ctx)
+            .await
+            .expect("the first sibling lands");
+        let outputs = dispatcher
+            .dispatch(&make_spec(&second), Vec::new(), &ctx)
+            .await
+            .expect("the second sibling is not flagged for the first one's file");
+
+        let accepted = TaskAttempt::from_signals(&outputs)
+            .expect("the output names its attempt")
+            .accepted
+            .expect("the second sibling was accepted");
+        for file in ["file-1.txt", "file-2.txt"] {
+            let landed = format!("{}:{file}", accepted.plan_branch);
+            assert!(!git(repo.path(), &["show", &landed]).is_empty(), "{file}");
+        }
     }
 
     /// reg-7cf6f9: an attempt waits for disk headroom while another attempt

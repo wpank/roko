@@ -348,7 +348,9 @@ fn loosened_association(
         hdc_encoder_version: 0,
         access_count: 0,
         last_accessed: None,
+        contradiction_count: 0,
         activation_conditions: Vec::new(),
+        commit_batch: None,
     }
 }
 
@@ -412,7 +414,9 @@ fn interrupt_to_insight(
         hdc_encoder_version: 0,
         access_count: 0,
         last_accessed: None,
+        contradiction_count: 0,
         activation_conditions: Vec::new(),
+        commit_batch: None,
     }
 }
 
@@ -469,7 +473,9 @@ fn dali_insight(episode: &Episode, created_at: DateTime<Utc>) -> KnowledgeEntry 
         hdc_encoder_version: 0,
         access_count: 0,
         last_accessed: None,
+        contradiction_count: 0,
         activation_conditions: Vec::new(),
+        commit_batch: None,
     }
 }
 
@@ -577,7 +583,9 @@ mod tests {
                 hdc_encoder_version: 0,
                 access_count: 0,
                 last_accessed: None,
+                contradiction_count: 0,
                 activation_conditions: Vec::new(),
+                commit_batch: None,
             },
             KnowledgeEntry {
                 id: "sig-2".to_string(),
@@ -615,7 +623,9 @@ mod tests {
                 hdc_encoder_version: 0,
                 access_count: 0,
                 last_accessed: None,
+                contradiction_count: 0,
                 activation_conditions: Vec::new(),
+                commit_batch: None,
             },
             KnowledgeEntry {
                 id: "sig-3".to_string(),
@@ -653,7 +663,9 @@ mod tests {
                 hdc_encoder_version: 0,
                 access_count: 0,
                 last_accessed: None,
+                contradiction_count: 0,
                 activation_conditions: Vec::new(),
+                commit_batch: None,
             },
             KnowledgeEntry {
                 id: "sig-4".to_string(),
@@ -691,7 +703,9 @@ mod tests {
                 hdc_encoder_version: 0,
                 access_count: 0,
                 last_accessed: None,
+                contradiction_count: 0,
                 activation_conditions: Vec::new(),
+                commit_batch: None,
             },
         ];
         let output = engine.run(&signals, &[], Utc::now());

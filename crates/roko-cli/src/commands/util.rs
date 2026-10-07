@@ -7,6 +7,55 @@ use roko_fs::RokoLayout;
 use roko_learn::efficiency::AgentEfficiencyEvent;
 use std::io::IsTerminal;
 
+#[derive(Debug, Subcommand)]
+pub(crate) enum IndexCmd {
+    /// Build a code index for the workspace (or specified directory).
+    Build {
+        /// Directory to index (default: cwd / --repo).
+        #[arg(long)]
+        path: Option<PathBuf>,
+    },
+    /// Drop existing index data and rebuild from source files.
+    Rebuild {
+        /// Directory to index (default: cwd / --repo).
+        #[arg(long)]
+        path: Option<PathBuf>,
+    },
+    /// Search the code index.
+    Search {
+        /// Search query text (symbol name/pattern, never a file path).
+        query: String,
+        /// Restrict to a symbol kind (function, struct, enum, trait, const, type, module, impl).
+        #[arg(long)]
+        kind: Option<String>,
+        /// Search strategy: keyword, structural, hybrid.
+        #[arg(long, default_value = "keyword")]
+        strategy: String,
+        /// Glob filter on file paths (independent of query text).
+        #[arg(long)]
+        file_pattern: Option<String>,
+        /// Maximum number of results (must be > 0).
+        #[arg(long, default_value_t = 20)]
+        limit: usize,
+        /// Directory to index (default: cwd / --repo).
+        #[arg(long)]
+        path: Option<PathBuf>,
+    },
+    /// Show index statistics.
+    Stats {
+        /// Directory to index (default: cwd / --repo).
+        #[arg(long)]
+        path: Option<PathBuf>,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub(crate) enum CompletionShell {
+    Bash,
+    Zsh,
+    Fish,
+}
+
 /// Print a dim next-step hint to stderr, only when stdout is a TTY.
 pub(crate) fn print_next_step_hint(msg: &str) {
     if std::io::stdout().is_terminal() {
@@ -185,12 +234,9 @@ pub(crate) async fn cmd_init(
         .with_context(|| "create .roko layout directories")?;
 
     // Create additional directories used by CLI subsystems but not in
-    // RokoLayout::top_level_dirs() (jobs, prd, task-outputs, etc.).
+    // RokoLayout::top_level_dirs() (jobs, task-outputs, etc.).
     for extra in &[
         roko_dir.join("jobs"),
-        roko_dir.join("prd"),
-        roko_dir.join("prd").join("published"),
-        roko_dir.join("prd").join("drafts"),
         roko_dir.join("task-outputs"),
         roko_dir.join("research"),
         roko_dir.join("subscriptions"),
@@ -263,7 +309,7 @@ pub(crate) async fn cmd_init(
     let domain = if let Some(ref p) = profile {
         p.as_str()
     } else {
-        crate::commands::prd::detect_project_domain(&target)
+        detect_project_domain(&target)
     };
 
     let config_path = target.join("roko.toml");
@@ -288,10 +334,7 @@ pub(crate) async fn cmd_init(
 
     println!("initialized roko workspace at {}", target.display());
     println!("detected project domain: {domain}");
-    println!(
-        "suggested gates: {}",
-        crate::commands::prd::domain_gate_hint(domain)
-    );
+    println!("suggested gates: {}", domain_gate_hint(domain));
 
     if demo {
         let report = roko_cli::demo_seed::seed_demo_workspace(&target, demo_config.as_ref())?;
@@ -332,11 +375,46 @@ pub(crate) async fn cmd_init(
     }
 
     print_next_step_hint(
-        "Next: roko doctor (verify setup) · roko setup (configure providers) · roko develop \"your task\"\n\
+        "Next: roko doctor (verify setup) · roko setup (configure providers) · roko run \"your task\"\n\
          Tip:  roko serve  — prints a portal URL with a one-time token so you can open the UI instantly",
     );
 
     Ok(())
+}
+
+/// Auto-detect the project domain from file patterns in the target directory.
+fn detect_project_domain(target: &Path) -> &'static str {
+    if target.join("Cargo.toml").exists() {
+        "rust"
+    } else if target.join("package.json").exists() {
+        "typescript"
+    } else if target.join("go.mod").exists() {
+        "go"
+    } else if target.join("requirements.txt").exists()
+        || target.join("pyproject.toml").exists()
+        || target.join("setup.py").exists()
+    {
+        "python"
+    } else if target.join("Gemfile").exists() {
+        "ruby"
+    } else if target.join("pom.xml").exists() || target.join("build.gradle").exists() {
+        "java"
+    } else {
+        "general"
+    }
+}
+
+/// Verify configuration hint based on domain profile.
+fn domain_gate_hint(domain: &str) -> &'static str {
+    match domain {
+        "rust" => "compile (cargo check), test (cargo test), clippy (cargo clippy)",
+        "typescript" => "compile (tsc --noEmit), test (npm test), lint (eslint)",
+        "go" => "compile (go build), test (go test), lint (golangci-lint)",
+        "python" => "test (pytest), lint (ruff), typecheck (mypy)",
+        "ruby" => "test (rspec), lint (rubocop)",
+        "java" => "compile (mvn compile), test (mvn test)",
+        _ => "compile, test, lint (configure in roko.toml)",
+    }
 }
 
 pub(crate) async fn cmd_run(
@@ -348,6 +426,8 @@ pub(crate) async fn cmd_run(
     provider: Option<String>,
     max_retries: Option<u32>,
     engine: Option<String>,
+    domain: Option<roko_core::TaskDomain>,
+    no_holdout: bool,
 ) -> Result<i32> {
     // Build CLI overrides from clap-parsed args instead of re-parsing
     // process args or laundering through env vars.
@@ -407,7 +487,7 @@ pub(crate) async fn cmd_run(
     };
 
     // The prompt runs as one task at the tier its classified scope maps to.
-    let tier = crate::commands::do_cmd::workflow_template_for_complexity(
+    let tier = crate::commands::run_cmd::workflow_template_for_complexity(
         roko_cli::scope_resolver::ScopeResolver::classify_prompt_complexity(&prompt),
     );
 
@@ -421,6 +501,12 @@ pub(crate) async fn cmd_run(
         max_retries,
         quiet: cli.quiet || cli.json,
         state_hub: serve_hub,
+        run_id: None,
+        cancel: None,
+        domain,
+        max_usd: None,
+        origin: roko_serve::runtime::RunOrigin::Cli,
+        no_holdout,
     })
     .await;
 
@@ -627,6 +713,8 @@ pub(crate) async fn cmd_status(
     } else {
         None
     };
+    // Calls whose cost is unknown, which the total leaves out (backlog 2109).
+    let unpriced_calls = costs_log.unpriced_calls().await.unwrap_or(0);
     let today_cost_usd = costs_log
         .daily_cost(1)
         .await
@@ -985,8 +1073,13 @@ pub(crate) async fn cmd_status(
 
     // Adaptive threshold summary.
     let thresholds_path = learn_dir.join("gate-thresholds.json");
-    let thresholds =
+    let mut thresholds =
         roko_gate::adaptive_threshold::AdaptiveThresholds::load_or_new(&thresholds_path);
+    // `retries=` and `skip=` follow `[gates]`, as the budgets of plan runs do.
+    let gates = roko_core::config::loader::load_config_unified(&workdir)
+        .map(|config| config.gates)
+        .unwrap_or_default();
+    thresholds.apply_gates_config(&gates);
     let rung_count: usize = thresholds.all_rungs().count();
     if rung_count > 0 {
         println!();
@@ -1011,6 +1104,11 @@ pub(crate) async fn cmd_status(
         println!("Cost Summary:");
         if let Some(total_cost_usd) = total_cost_usd {
             println!("  Total:    ${:.4}", total_cost_usd.max(0.0));
+        }
+        if unpriced_calls > 0 {
+            println!(
+                "  Unpriced: {unpriced_calls} calls, whose cost is unknown and not in the total"
+            );
         }
         if let Some(estimated) = estimated_cost_usd.filter(|cost| *cost > 0.0) {
             println!("  Estimated: ${estimated:.4} of the total, from usage no provider reported");
@@ -1281,12 +1379,16 @@ pub(crate) async fn cmd_doctor(
     subject: Option<DoctorSubject>,
     workdir: Option<PathBuf>,
     serve_url: Option<String>,
+    fix: bool,
 ) -> Result<i32> {
+    if fix && !matches!(subject, Some(DoctorSubject::Disk)) {
+        anyhow::bail!("--fix applies only to `roko doctor disk`");
+    }
     let workdir = workdir.unwrap_or_else(|| resolve_workdir(cli));
-    // `doctor clean` removes orphaned files (exclusive); all other doctor
-    // variants are read-only and use a shared lock so they can coexist with
-    // an active plan runner.
-    let _lock = if matches!(subject, Some(DoctorSubject::Clean)) {
+    // `doctor clean` removes orphaned files and `doctor disk --fix` leftover
+    // attempt checkouts (exclusive); all other doctor variants are read-only
+    // and use a shared lock so they can coexist with an active plan runner.
+    let _lock = if matches!(subject, Some(DoctorSubject::Clean)) || fix {
         roko_cli::workspace_lock::acquire_workspace_lock(&workdir.join(".roko"))?
     } else {
         roko_cli::workspace_lock::acquire_workspace_lock_shared(&workdir.join(".roko"))?
@@ -1314,10 +1416,25 @@ pub(crate) async fn cmd_doctor(
         return Ok(0);
     }
     if matches!(subject, Some(DoctorSubject::Disk)) {
+        // `--fix` holds the runner lock too, so no plan run is live while it
+        // removes checkouts, and none can start (gap-f67a72).
+        let leftovers = if fix {
+            let _runner = roko_cli::workspace_lock::acquire_runner_lock(&workdir.join(".roko"))?;
+            Some(roko_cli::doctor::fix_leftover_checkouts(&workdir).await)
+        } else {
+            None
+        };
         let report = roko_cli::doctor::run_disk_doctor(&workdir, cli.config.as_deref()).await;
         if cli.json {
-            println!("{}", serde_json::to_string_pretty(&report)?);
+            let mut json = serde_json::to_value(&report)?;
+            if let Some(leftovers) = &leftovers {
+                json["leftover_checkouts"] = serde_json::to_value(leftovers)?;
+            }
+            println!("{}", serde_json::to_string_pretty(&json)?);
         } else {
+            if let Some(leftovers) = &leftovers {
+                print!("{}", roko_cli::doctor::render_leftover_checkouts(leftovers));
+            }
             print!("{}", report.render_human());
         }
         return Ok(report.exit_code());
@@ -1482,6 +1599,14 @@ pub(crate) async fn cmd_replay(
     }
 }
 
+/// What `roko inject` tells the operator when no plan run answers.
+const INJECT_UNAVAILABLE_HINT: &str =
+    "No plan run in this workspace is listening; start one with `roko plan run`.";
+
+/// What `roko inject` tells the operator when a plan run refuses.
+const INJECT_REFUSED_HINT: &str =
+    "Name a running plan, or its checkpoint run, from `roko plan status`.";
+
 pub(crate) async fn cmd_inject(
     cli: &Cli,
     session: String,
@@ -1489,87 +1614,67 @@ pub(crate) async fn cmd_inject(
     payload: String,
     workdir: Option<PathBuf>,
 ) -> Result<i32> {
-    use roko_cli::runner::types::{ControlAction, ControlCommand};
-
     let inject_kind = InjectKind::parse(kind_str).map_err(|e| anyhow!("{e}"))?;
     let wd = workdir.unwrap_or_else(|| resolve_workdir(cli));
-    let request = InjectRequest::new(
-        session.clone(),
-        inject_kind.clone(),
-        payload.clone(),
-        wd.clone(),
-    );
+    let request = InjectRequest::new(session.clone(), inject_kind.clone(), payload, wd);
 
     // Validation errors (empty session, empty payload for directive/context) remain
-    // more specific than the transport-unavailable error below.
+    // more specific than the delivery errors below.
     request.validate().map_err(|e| anyhow!("{e}"))?;
 
-    // #361: Wire inject through the file-based ControlCommand transport.
-    // Map InjectKind to ControlAction: abort maps to cancel, directive/context
-    // map to resume (as a trigger to re-read context). The control file is
-    // picked up by the Graph engine's control-file poll loop.
-    let control_action = match inject_kind {
-        InjectKind::Abort => ControlAction::Cancel,
-        InjectKind::Directive | InjectKind::Context => {
-            // For directive and context injections, write the payload to
-            // the inject signal file and send a resume control action so
-            // the running session picks up the new context.
-            let inject_dir = wd.join(".roko").join("state");
-            std::fs::create_dir_all(&inject_dir)?;
-            let inject_file = inject_dir.join("inject.json");
-            let inject_payload = serde_json::json!({
+    // The plan run that runs the plan, or the checkpoint run, `session`
+    // names must acknowledge the request: nothing else counts as delivered,
+    // and nothing is written here (#325, gap-f118b3).
+    let wire = request.to_wire();
+    let reply = roko_cli::inject::deliver(&request.workdir, &wire).await;
+    let (code, message) = match reply {
+        Some(reply) if reply.outcome == roko_cli::inject::InjectOutcome::Accepted => {
+            if cli.json {
+                println!(
+                    "{}",
+                    serde_json::json!({
+                        "code": "inject_accepted",
+                        "message": reply.message,
+                        "kind": inject_kind.as_str(),
+                        "session": session,
+                        "request_id": wire.request_id,
+                    })
+                );
+            } else {
+                println!("Injected {inject_kind} -> {session}: {}", reply.message);
+            }
+            return Ok(EXIT_SUCCESS);
+        }
+        Some(reply) if reply.outcome == roko_cli::inject::InjectOutcome::UnknownSession => {
+            ("inject_unknown_session", reply.message)
+        }
+        Some(reply) => ("inject_rejected", reply.message),
+        None => (
+            "inject_transport_unavailable",
+            "no plan run is listening".to_string(),
+        ),
+    };
+    let hint = if code == "inject_transport_unavailable" {
+        INJECT_UNAVAILABLE_HINT
+    } else {
+        INJECT_REFUSED_HINT
+    };
+    if cli.json {
+        println!(
+            "{}",
+            serde_json::json!({
+                "code": code,
+                "message": message,
+                "hint": hint,
                 "kind": inject_kind.as_str(),
                 "session": session,
-                "payload": payload,
-                "timestamp": chrono::Utc::now().to_rfc3339(),
-            });
-            std::fs::write(&inject_file, serde_json::to_string_pretty(&inject_payload)?)?;
-            // Resume to wake the executor and consume the injected signal.
-            ControlAction::Resume
-        }
-    };
-
-    let state_dir = wd.join(".roko").join("state");
-    let control_cmd = ControlCommand {
-        command: control_action.clone(),
-        plan_id: None,
-        task_id: None,
-    };
-
-    match control_cmd.write(&state_dir) {
-        Ok(()) => {
-            if cli.json {
-                println!(
-                    r#"{{"code":"inject_delivered","kind":"{}","session":"{}","action":"{}"}}"#,
-                    inject_kind,
-                    session,
-                    match control_action {
-                        ControlAction::Cancel => "cancel",
-                        ControlAction::Resume => "resume",
-                        ControlAction::Pause => "pause",
-                        ControlAction::Retry => "retry",
-                    },
-                );
-            } else {
-                println!(
-                    "Injected {} -> session {} (control action: {:?})",
-                    inject_kind, session, control_action,
-                );
-            }
-            Ok(EXIT_SUCCESS)
-        }
-        Err(e) => {
-            if cli.json {
-                println!(
-                    r#"{{"code":"inject_write_failed","message":"{}","kind":"{}","session":"{}"}}"#,
-                    e, inject_kind, session,
-                );
-            } else {
-                tracing::error!(inject_kind = %inject_kind, %session, error = %e, "failed to write control command for inject");
-            }
-            Ok(EXIT_FAILURE)
-        }
+            })
+        );
+    } else {
+        eprintln!("Error: inject {inject_kind} -> session {session} was not delivered: {message}");
+        eprintln!("Hint: {hint}");
     }
+    Ok(EXIT_FAILURE)
 }
 
 pub(crate) fn cmd_index(cli: &Cli, cmd: IndexCmd) -> Result<i32> {
@@ -1968,9 +2073,6 @@ fn resolve_node<'a>(root: &'a CompletionNode, path: &[&str]) -> Option<&'a Compl
 pub(crate) fn dynamic_completion_candidates(path: &[&str]) -> Vec<String> {
     match path {
         ["plan", "run" | "show" | "validate"] | ["plan"] => scan_dir_names("plans"),
-        ["prd", "plan" | "status"] | ["prd", "draft", "edit" | "promote"] | ["prd"] => {
-            scan_dir_names(".roko/prd")
-        }
         ["agent", ..] => scan_dir_names(".roko/agents"),
         _ => Vec::new(),
     }
@@ -2288,13 +2390,10 @@ fn print_fish_completions() {
     // Recursive static subcommands at all depths.
     emit_fish_children(&tree);
     println!();
-    // Dynamic completions for workspace items (plan/prd/agent names).
+    // Dynamic completions for workspace items (plan/agent names).
     println!("# Dynamic completions for workspace values.");
     println!(
         "complete -c roko -f -n '__fish_seen_subcommand_from plan' -a '(__roko_dynamic_complete)'"
-    );
-    println!(
-        "complete -c roko -f -n '__fish_seen_subcommand_from prd' -a '(__roko_dynamic_complete)'"
     );
     println!(
         "complete -c roko -f -n '__fish_seen_subcommand_from agent' -a '(__roko_dynamic_complete)'"
@@ -2372,7 +2471,7 @@ pub(crate) fn capture_role(task_kind: &str) -> &'static str {
 pub(crate) fn capture_task_category(task_kind: &str) -> &'static str {
     if task_kind.starts_with("research-") {
         "research"
-    } else if task_kind.starts_with("prd-plan") {
+    } else if task_kind.starts_with("plan-") {
         "scaffolding"
     } else {
         "docs"
@@ -2422,6 +2521,9 @@ pub(crate) fn build_capture_episode(
     episode.output_signal_hash = ContentHash::of(output.as_bytes()).to_hex();
     episode.duration_secs = wall_time_ms as f64 / 1000.0;
     episode.usage.wall_ms = wall_time_ms;
+    // A capture carries no tokens or cost, so its cost is a 0 placeholder and
+    // no $0 cost record is derived from it (bug-ac5432).
+    episode.mark_cost_unknown();
     episode.success = success;
     episode.turns = 1;
     if !success {
@@ -2521,15 +2623,11 @@ pub(crate) async fn persist_capture_episode(
         LearningRuntime::open_for_project_with_models(workdir, model_slugs).await
     }
     .map_err(|e| anyhow!("open learning runtime: {e}"))?;
-    let distillation_workdir = workdir.to_path_buf();
-    let distillation_caller = roko_cli::learning_helpers::distillation_model_caller(workdir);
-    runtime.set_episode_completion_hook(move |episode| {
-        roko_neuro::spawn_episode_distillation(
-            distillation_workdir.clone(),
-            episode,
-            Some(std::sync::Arc::clone(&distillation_caller)),
-        );
-    });
+    roko_cli::learning_helpers::install_capture_distillation(
+        &mut runtime,
+        workdir,
+        roko_cli::learning_helpers::distillation_model_caller(workdir),
+    );
 
     let mut completed = CompletedRunInput::from_episode(episode);
     completed.provider = Some(provider);

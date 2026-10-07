@@ -18,6 +18,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
+use roko_core::error::RokoError;
 use roko_core::{Body, Kind, ProtocolId, Signal, error::Result};
 use serde::{Deserialize, Serialize};
 
@@ -54,7 +55,41 @@ pub struct TaskExecutionSpec {
     /// that checkout, so it must outlive the dispatch. The attempt's output
     /// carries the lease (see [`TaskAttempt::lease`]).
     pub keep_workspace: bool,
+    /// The task's live retry budget, which the executor reads before each
+    /// retry decision in place of `max_retries` (M1's B2); `None`, as the
+    /// converter leaves it, keeps `max_retries`.
+    pub retry_budget: Option<LiveRetryBudget>,
 }
+
+/// A live retry budget for plan tasks (M1's B2, S06).
+///
+/// The executor reads it before each retry decision, so a budget that changes
+/// during the run reaches the task's next retry. Without one, a task keeps the
+/// [`TaskExecutionSpec::max_retries`] its plan was converted with.
+pub trait RetryBudgetSource: Send + Sync {
+    /// The retry budget of `spec`'s task in the run `ctx` names, now; `None`
+    /// keeps `spec.max_retries`.
+    fn max_retries(&self, spec: &TaskExecutionSpec, ctx: &CellContext) -> Option<u32>;
+}
+
+/// A [`RetryBudgetSource`] as a [`TaskExecutionSpec`] holds it: two specs
+/// hold the same budget when they share one source.
+#[derive(Clone)]
+pub struct LiveRetryBudget(pub Arc<dyn RetryBudgetSource>);
+
+impl std::fmt::Debug for LiveRetryBudget {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("LiveRetryBudget(..)")
+    }
+}
+
+impl PartialEq for LiveRetryBudget {
+    fn eq(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.0, &other.0)
+    }
+}
+
+impl Eq for LiveRetryBudget {}
 
 impl TaskExecutionSpec {
     /// Decode the converter-owned TOML node configuration.
@@ -104,7 +139,18 @@ impl TaskExecutionSpec {
                 .and_then(|value| value.get("keep_workspace"))
                 .and_then(toml::Value::as_bool)
                 .unwrap_or(false),
+            retry_budget: None,
         }
+    }
+
+    /// The task's retry budget now, in the run `ctx` names: what its live
+    /// source says, else `max_retries`.
+    #[must_use]
+    pub fn current_max_retries(&self, ctx: &CellContext) -> u32 {
+        self.retry_budget
+            .as_ref()
+            .and_then(|live| live.0.max_retries(self, ctx))
+            .unwrap_or(self.max_retries)
     }
 }
 
@@ -727,6 +773,101 @@ pub fn truncate_utf8(s: &str, max_bytes: usize) -> &str {
     &s[..end]
 }
 
+// ─── Retry backoff ──────────────────────────────────────────────────────────
+
+/// How often a wait before a retry checks whether its run was cancelled.
+const RETRY_WAIT_STEP: Duration = Duration::from_millis(100);
+
+/// How a live [`TaskExecutorCell`] waits before retrying a provider failure.
+///
+/// A task whose attempt failed with a provider error waits (backlog 1117), so
+/// that a short rate limit is waited out rather than retried into an open
+/// circuit.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RetryBackoff {
+    /// Window before the first retry; each later retry doubles it.
+    pub base: Duration,
+    /// Largest window.
+    pub cap: Duration,
+    /// Longest retry-after a provider asks for that a retry honours.
+    pub retry_after_cap: Duration,
+    /// Whether each wait is drawn at random from its window (full jitter), so
+    /// that tasks failing together do not retry together, rather than taking
+    /// the whole window.
+    pub jitter: bool,
+}
+
+impl RetryBackoff {
+    /// A window of 1 s, doubled per retry up to 30 s, with full jitter; a
+    /// retry-after is honoured up to 120 s.
+    pub const DEFAULT: Self = Self {
+        base: Duration::from_secs(1),
+        cap: Duration::from_secs(30),
+        retry_after_cap: Duration::from_mins(2),
+        jitter: true,
+    };
+
+    /// How long to wait before retry `retry` (1 for the first) of a task
+    /// whose last attempt failed with `error`. An error that is not the
+    /// provider's, such as a turn cap or a failed verify step, retries at
+    /// once. A provider error (`Agent`, `RateLimited` or a retryable
+    /// `Gateway`) waits within the retry's window, and at least the
+    /// retry-after it carries ([`RokoError::retry_after`]), up to
+    /// [`Self::retry_after_cap`].
+    #[must_use]
+    pub fn wait_before(&self, retry: u32, error: &RokoError) -> Duration {
+        let provider_error = match error {
+            RokoError::Agent { .. } | RokoError::RateLimited(_) => true,
+            RokoError::Gateway { retryable, .. } => *retryable,
+            _ => false,
+        };
+        if !provider_error {
+            return Duration::ZERO;
+        }
+        let doublings = retry.saturating_sub(1).min(31);
+        let window = self.base.saturating_mul(1_u32 << doublings).min(self.cap);
+        let wait = if self.jitter {
+            full_jitter(window)
+        } else {
+            window
+        };
+        let retry_after = error
+            .retry_after()
+            .unwrap_or_default()
+            .min(self.retry_after_cap);
+        wait.max(retry_after)
+    }
+}
+
+impl Default for RetryBackoff {
+    fn default() -> Self {
+        Self::DEFAULT
+    }
+}
+
+/// A random duration in `[0, window]`, to the millisecond.
+fn full_jitter(window: Duration) -> Duration {
+    use std::hash::BuildHasher as _;
+
+    let window_ms = u64::try_from(window.as_millis()).unwrap_or(u64::MAX);
+    // Each `RandomState` is keyed afresh, which is random enough to spread
+    // retries without a `rand` dependency.
+    let random = std::collections::hash_map::RandomState::new().hash_one(window_ms);
+    Duration::from_millis(random % window_ms.saturating_add(1))
+}
+
+/// Wait `delay` in short steps, ending early once `ctx`'s run is cancelled.
+async fn wait_unless_cancelled(ctx: &CellContext, delay: Duration) {
+    let deadline = tokio::time::Instant::now() + delay;
+    while !ctx.is_cancelled() {
+        let left = deadline.saturating_duration_since(tokio::time::Instant::now());
+        if left.is_zero() {
+            return;
+        }
+        tokio::time::sleep(left.min(RETRY_WAIT_STEP)).await;
+    }
+}
+
 enum TaskExecutionMode {
     /// Explicit diagnostic mode. This is never selected by the production
     /// plan Graph path.
@@ -741,6 +882,8 @@ enum TaskExecutionMode {
 pub struct TaskExecutorCell {
     spec: TaskExecutionSpec,
     mode: TaskExecutionMode,
+    /// How a live cell waits before each retry.
+    backoff: RetryBackoff,
 }
 
 impl TaskExecutorCell {
@@ -750,6 +893,7 @@ impl TaskExecutorCell {
         Self {
             spec: TaskExecutionSpec::from_config(&config),
             mode: TaskExecutionMode::DryRun,
+            backoff: RetryBackoff::DEFAULT,
         }
     }
 
@@ -759,6 +903,7 @@ impl TaskExecutorCell {
         Self {
             spec: TaskExecutionSpec::from_config(&config),
             mode: TaskExecutionMode::Live(dispatcher),
+            backoff: RetryBackoff::DEFAULT,
         }
     }
 
@@ -768,7 +913,23 @@ impl TaskExecutorCell {
         Self {
             spec: TaskExecutionSpec::from_config(&config),
             mode: TaskExecutionMode::Unconfigured,
+            backoff: RetryBackoff::DEFAULT,
         }
+    }
+
+    /// Wait `backoff` before each retry instead of [`RetryBackoff::DEFAULT`].
+    #[must_use]
+    pub fn with_retry_backoff(mut self, backoff: RetryBackoff) -> Self {
+        self.backoff = backoff;
+        self
+    }
+
+    /// Read the task's retry budget from `source` before each retry decision
+    /// instead of keeping its converted `max_retries` (M1's B2).
+    #[must_use]
+    pub fn with_retry_budget(mut self, source: Arc<dyn RetryBudgetSource>) -> Self {
+        self.spec.retry_budget = Some(LiveRetryBudget(source));
+        self
     }
 }
 
@@ -824,6 +985,20 @@ impl Cell for TaskExecutorCell {
             TaskExecutionMode::Live(dispatcher) => {
                 let mut retry = 0_u32;
                 loop {
+                    // A cancelled run starts no further attempt (bug-ceb581).
+                    if ctx.is_cancelled() {
+                        tracing::info!(
+                            plan = %self.spec.plan_id,
+                            task = %self.spec.title,
+                            attempt = retry + 1,
+                            "TaskExecutorCell: the run was cancelled; starting no further attempt"
+                        );
+                        return Err(roko_core::error::RokoError::cancelled(format!(
+                            "the run was cancelled before task `{}` started attempt {}",
+                            self.spec.title,
+                            retry + 1
+                        )));
+                    }
                     match dispatcher.dispatch(&self.spec, input.clone(), ctx).await {
                         Ok(output) => return Ok(output),
                         // A non-retryable gateway error (e.g. every candidate
@@ -832,9 +1007,11 @@ impl Cell for TaskExecutorCell {
                         // (e.g. a plan branch that refused the attempt's
                         // work), so surface them at once. A cancellation
                         // means the run is stopping, which a retry would
-                        // only delay.
+                        // only delay, and so does a run cancelled while the
+                        // attempt ran (bug-ceb581).
                         Err(error)
-                            if retry < self.spec.max_retries
+                            if retry < self.spec.current_max_retries(ctx)
+                                && !ctx.is_cancelled()
                                 && !matches!(
                                     error,
                                     roko_core::error::RokoError::Gateway {
@@ -845,14 +1022,20 @@ impl Cell for TaskExecutorCell {
                                 ) =>
                         {
                             retry = retry.saturating_add(1);
+                            // A provider error waits before its retry, which a
+                            // cancelled run cuts short (backlog 1117).
+                            let wait = self.backoff.wait_before(retry, &error);
+                            let wait_ms = u64::try_from(wait.as_millis()).unwrap_or(u64::MAX);
                             tracing::warn!(
                                 plan = %self.spec.plan_id,
                                 task = %self.spec.title,
                                 attempt = retry,
-                                max_retries = self.spec.max_retries,
+                                max_retries = self.spec.current_max_retries(ctx),
+                                wait_ms,
                                 error = %error,
-                                "TaskExecutorCell provider dispatch failed; retrying"
+                                "TaskExecutorCell attempt failed; retrying in {wait_ms} ms"
                             );
+                            wait_unless_cancelled(ctx, wait).await;
                         }
                         Err(error) => return Err(error),
                     }
@@ -871,7 +1054,7 @@ impl Cell for TaskExecutorCell {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
 
     use parking_lot::Mutex;
 
@@ -984,7 +1167,8 @@ task_def_json = "{}"
         assert!(error.to_string().contains("refusing synthetic success"));
     }
 
-    #[tokio::test]
+    // Paused time: the retry's backoff passes without a real wait.
+    #[tokio::test(start_paused = true)]
     async fn live_dispatch_honors_the_task_retry_ceiling() {
         let dispatcher = Arc::new(FailsOnceDispatcher::default());
         let cell = TaskExecutorCell::live(config(), dispatcher.clone());
@@ -995,6 +1179,222 @@ task_def_json = "{}"
 
         assert_eq!(dispatcher.calls.load(Ordering::SeqCst), 2);
         assert_eq!(output[0].body.as_text().expect("text"), "retry-output");
+    }
+
+    /// A live retry budget that [`MovesBudgetDispatcher`] moves.
+    struct MovableBudget(AtomicU32);
+
+    impl RetryBudgetSource for MovableBudget {
+        fn max_retries(&self, _spec: &TaskExecutionSpec, _ctx: &CellContext) -> Option<u32> {
+            Some(self.0.load(Ordering::SeqCst))
+        }
+    }
+
+    /// Fails every attempt's verify step, and sets `budget` to `to` during
+    /// attempt `at` (0-based).
+    struct MovesBudgetDispatcher {
+        calls: AtomicUsize,
+        budget: Arc<MovableBudget>,
+        at: usize,
+        to: u32,
+    }
+
+    #[async_trait::async_trait]
+    impl TaskDispatcher for MovesBudgetDispatcher {
+        async fn dispatch(
+            &self,
+            _spec: &TaskExecutionSpec,
+            _input: Vec<Signal>,
+            _ctx: &CellContext,
+        ) -> Result<Vec<Signal>> {
+            if self.calls.fetch_add(1, Ordering::SeqCst) == self.at {
+                self.budget.0.store(self.to, Ordering::SeqCst);
+            }
+            Err(RokoError::gate("test", "the verify step failed"))
+        }
+    }
+
+    /// M1's B2 (8126): the executor reads a task's live retry budget before
+    /// each retry decision, so a budget moved during an attempt decides
+    /// whether the next one runs. Lowered below the converted `max_retries`
+    /// (2) it stops the task early; raised above it, the task retries on.
+    /// Without a source the converted budget holds.
+    #[tokio::test(start_paused = true)]
+    async fn task_executor_reads_live_retry_budget() {
+        // The starting budget (none: no source), the attempt that moves it,
+        // its new value, and the attempts the task then runs.
+        let cases = [(None, 0, 0, 3), (Some(4), 1, 1, 2), (Some(0), 0, 3, 4)];
+        for (start, at, to, attempts) in cases {
+            let budget = Arc::new(MovableBudget(AtomicU32::new(start.unwrap_or(0))));
+            let dispatcher = Arc::new(MovesBudgetDispatcher {
+                calls: AtomicUsize::new(0),
+                budget: Arc::clone(&budget),
+                at,
+                to,
+            });
+            let mut cell = TaskExecutorCell::live(config(), dispatcher.clone());
+            if start.is_some() {
+                cell = cell.with_retry_budget(budget);
+            }
+            cell.execute(Vec::new(), &CellContext::new())
+                .await
+                .expect_err("every attempt fails");
+            assert_eq!(
+                dispatcher.calls.load(Ordering::SeqCst),
+                attempts,
+                "{start:?} -> {to}"
+            );
+        }
+    }
+
+    /// Fails its first dispatches with `failures`, in order, then succeeds,
+    /// and records when each dispatch started.
+    struct ScriptedFailuresDispatcher {
+        failures: Mutex<Vec<RokoError>>,
+        started: Mutex<Vec<tokio::time::Instant>>,
+    }
+
+    impl ScriptedFailuresDispatcher {
+        fn new(failures: Vec<RokoError>) -> Arc<Self> {
+            Arc::new(Self {
+                failures: Mutex::new(failures),
+                started: Mutex::new(Vec::new()),
+            })
+        }
+
+        /// The time between each dispatch and the next.
+        fn gaps(&self) -> Vec<Duration> {
+            let started = self.started.lock();
+            started.windows(2).map(|pair| pair[1] - pair[0]).collect()
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl TaskDispatcher for ScriptedFailuresDispatcher {
+        async fn dispatch(
+            &self,
+            _spec: &TaskExecutionSpec,
+            _input: Vec<Signal>,
+            _ctx: &CellContext,
+        ) -> Result<Vec<Signal>> {
+            self.started.lock().push(tokio::time::Instant::now());
+            let mut failures = self.failures.lock();
+            if failures.is_empty() {
+                return Ok(vec![
+                    Signal::builder(Kind::AgentOutput)
+                        .body(Body::text("done"))
+                        .build(),
+                ]);
+            }
+            Err(failures.remove(0))
+        }
+    }
+
+    /// `count` transient provider errors.
+    fn agent_errors(count: usize) -> Vec<RokoError> {
+        (0..count)
+            .map(|_| RokoError::agent("test", "transient"))
+            .collect()
+    }
+
+    /// [`config`] with `max_retries` retries.
+    fn config_with_retries(max_retries: i64) -> toml::Value {
+        let mut config = config();
+        config
+            .as_table_mut()
+            .expect("the task config is a table")
+            .insert("max_retries".to_string(), toml::Value::Integer(max_retries));
+        config
+    }
+
+    /// backlog 1117: a provider error is retried after a backoff that grows
+    /// per retry, is drawn from its window, and lasts at least the
+    /// retry-after the provider asked for; a turn cap or a failed verify
+    /// step is retried at once; a cancelled run stops waiting; and a
+    /// non-retryable gateway error is not retried at all.
+    #[tokio::test(start_paused = true)]
+    async fn retries_back_off_and_skip_permanent_denials() {
+        let secs = Duration::from_secs;
+        let run = |dispatcher: Arc<ScriptedFailuresDispatcher>, ctx: CellContext| async move {
+            TaskExecutorCell::live(config_with_retries(5), dispatcher)
+                .execute(Vec::new(), &ctx)
+                .await
+        };
+
+        // Without jitter each wait is its whole window: 1 s, 2 s, 4 s.
+        let dispatcher = ScriptedFailuresDispatcher::new(agent_errors(3));
+        let no_jitter = RetryBackoff {
+            jitter: false,
+            ..RetryBackoff::DEFAULT
+        };
+        TaskExecutorCell::live(config_with_retries(5), dispatcher.clone())
+            .with_retry_backoff(no_jitter)
+            .execute(Vec::new(), &CellContext::new())
+            .await
+            .expect("the fourth attempt succeeds");
+        assert_eq!(dispatcher.gaps(), [secs(1), secs(2), secs(4)]);
+
+        // With full jitter each wait is drawn from its window.
+        let dispatcher = ScriptedFailuresDispatcher::new(agent_errors(3));
+        run(dispatcher.clone(), CellContext::new())
+            .await
+            .expect("the fourth attempt succeeds");
+        let gaps = dispatcher.gaps();
+        assert_eq!(gaps.len(), 3);
+        for (gap, window) in gaps.into_iter().zip([secs(1), secs(2), secs(4)]) {
+            assert!(gap <= window, "{gap:?} > {window:?}");
+        }
+
+        // A retry-after longer than the window is waited out.
+        let rate_limited = RokoError::agent("openai", "rate limited; retry after 2000 ms");
+        let dispatcher = ScriptedFailuresDispatcher::new(vec![rate_limited]);
+        run(dispatcher.clone(), CellContext::new())
+            .await
+            .expect("the retry succeeds");
+        assert!(dispatcher.gaps()[0] >= secs(2), "{:?}", dispatcher.gaps());
+
+        // Neither a turn cap nor a failed verify step is the provider's.
+        let turn_cap = RokoError::TurnLimitReached {
+            backend: "test".to_string(),
+            limit: 10,
+            num_turns: 10,
+        };
+        let verify = RokoError::gate("test", "the verify step failed");
+        let dispatcher = ScriptedFailuresDispatcher::new(vec![turn_cap, verify]);
+        run(dispatcher.clone(), CellContext::new())
+            .await
+            .expect("the third attempt succeeds");
+        assert_eq!(dispatcher.gaps(), [Duration::ZERO, Duration::ZERO]);
+
+        // A run cancelled during a wait starts no further attempt.
+        let cancel = tokio_util::sync::CancellationToken::new();
+        let canceller = cancel.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(secs(1)).await;
+            canceller.cancel();
+        });
+        let long_wait = RokoError::agent("openai", "rate limited; retry after 60000 ms");
+        let dispatcher = ScriptedFailuresDispatcher::new(vec![long_wait]);
+        let ctx = CellContext::new().with_run_cancel(cancel);
+        let started = tokio::time::Instant::now();
+        let error = run(dispatcher.clone(), ctx)
+            .await
+            .expect_err("the cancelled run stops the task");
+        assert!(matches!(error, RokoError::Cancelled(_)), "{error:?}");
+        assert!(started.elapsed() < secs(2), "{:?}", started.elapsed());
+        assert_eq!(dispatcher.started.lock().len(), 1);
+
+        // A non-retryable gateway error fails the task at once.
+        let denied = RokoError::gateway("provider_denied", false, "not logged in");
+        let dispatcher = ScriptedFailuresDispatcher::new(vec![denied]);
+        let error = run(dispatcher.clone(), CellContext::new())
+            .await
+            .expect_err("the denial fails the task");
+        assert_eq!(
+            error.to_string(),
+            "gateway error (provider_denied): not logged in"
+        );
+        assert_eq!(dispatcher.started.lock().len(), 1);
     }
 
     #[derive(Default)]
@@ -1070,6 +1470,66 @@ task_def_json = "{}"
 
         assert_eq!(dispatcher.calls.load(Ordering::SeqCst), 1);
         assert!(matches!(error, roko_core::error::RokoError::Cancelled(_)));
+    }
+
+    /// Fails its attempt and cancels its run while the attempt runs, as an
+    /// interrupt does.
+    #[derive(Default)]
+    struct CancelsItsRunDispatcher {
+        calls: AtomicUsize,
+        cancel: Arc<std::sync::atomic::AtomicBool>,
+    }
+
+    #[async_trait::async_trait]
+    impl TaskDispatcher for CancelsItsRunDispatcher {
+        async fn dispatch(
+            &self,
+            _spec: &TaskExecutionSpec,
+            _input: Vec<Signal>,
+            _ctx: &CellContext,
+        ) -> Result<Vec<Signal>> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            self.cancel.store(true, Ordering::SeqCst);
+            Err(roko_core::error::RokoError::Agent {
+                backend: "test".to_string(),
+                message: "the agent was killed".to_string(),
+            })
+        }
+    }
+
+    /// bug-ceb581: once its run is cancelled a task starts no further
+    /// attempt, though the failed one has retries left, and a task of a run
+    /// cancelled before it started dispatches nothing.
+    #[tokio::test]
+    async fn a_cancelled_run_starts_no_further_attempt() {
+        let dispatcher = Arc::new(CancelsItsRunDispatcher::default());
+        let cell = TaskExecutorCell::live(config(), dispatcher.clone());
+        let ctx = CellContext::new().with_cancel_flag(Arc::clone(&dispatcher.cancel));
+        let error = cell
+            .execute(Vec::new(), &ctx)
+            .await
+            .expect_err("the attempt failed");
+        assert_eq!(dispatcher.calls.load(Ordering::SeqCst), 1);
+        assert!(
+            matches!(error, roko_core::error::RokoError::Agent { .. }),
+            "{error:?}"
+        );
+
+        let run = tokio_util::sync::CancellationToken::new();
+        run.cancel();
+        let error = cell
+            .execute(Vec::new(), &CellContext::new().with_run_cancel(run))
+            .await
+            .expect_err("a cancelled run starts nothing");
+        assert_eq!(
+            dispatcher.calls.load(Ordering::SeqCst),
+            1,
+            "no attempt started"
+        );
+        assert!(
+            matches!(error, roko_core::error::RokoError::Cancelled(_)),
+            "{error:?}"
+        );
     }
 
     #[tokio::test]

@@ -83,3 +83,71 @@ Status: reviewed · budget none · owner gap-8d2c79
 - **Rows IS4, IS5, LM1 and RC6** may move at that refresh (finding 28).
 
 Verdict: accept
+
+## Re-read after the audit re-pin
+
+- **Reader:** w3-pk95, a Claude agent that wrote none of the re-pinned text and had no drafting context (backlog task
+  9504, gap-d4a1c1). Another agent wrote task 9503's sections.
+- **Read at:** `79ba9911f`, where the whitepaper is as `ec12c7513` left it, with the matrix pinned at `a43288b5f` (71
+  rows; `tools/status_matrix.py --check` passes, with the warnings of finding 39).
+- **Scope:** every sentence of §0, §1, §3, §4, §5, §6, §8, §9 and the README that changed after the first read: the
+  re-pins at `ed0c33bd5` (`12a8d7793`), at `41228d7b2` (`9a37ad4d4`) and at `a43288b5f` (`29996ca33`, `ec12c7513`),
+  read in the current text; the 13 rows `9d059cc72` moved, with its claims and figures; and the two files `ac644b6d7`
+  froze. §2 and §7 have not changed since the first read. §10 and §6.3's sentences on cited works changed through the
+  prior-art pass (gap-65ed57) and the citation content audit (`34a924d2f`), not through a re-pin, and were not
+  re-read.
+
+### How the re-read was done
+
+- **Tags:** each `TAG@a43288b5f` in the changed text against its row or claim in `data/mechanisms.toml`, and every
+  row and claim tag against the audit's own matrix at `a43288b5f`, which the re-pin followed. All 71 rows and 10
+  claims agree, and so do §9.1's counts.
+- **Lowered rows:** the notes of EX4, IS5, QA7, RC1, RC3, RC4, RC5 and SS3 against the frozen run and its root causes.
+- **Numbers:** each number in the changed text against the frozen run, its root causes, B7 and the field rollup;
+  §4.5's plan counts recomputed at `a43288b5f` with the footnote's command and `tomllib`.
+- **Code at the pin:** the retry budget (`TaskRetryBudgets`), plan discovery's skip of `plans/archive/` (`load_plans`)
+  and the efficiency record's lack of a cost source (`AgentEfficiencyEvent`).
+- **Items and commits:** every commit the changed text cites is in the pin's history, and every item it cites exists.
+  Where the text names an item as the work that would change a tag, its tasks were read and its state checked at
+  `79ba9911f`.
+- **Frozen evidence:** `shasum -a 256 -c SHA256SUMS` passes, no absolute path remains, and each 2026-10-02 file
+  differs from its gitignored source only by the rewrites its provenance row lists.
+- **Lint:** `paperlint --strict --require-status reviewed docs/whitepaper/*.md` passes on all 14 files.
+
+### Findings
+
+| # | Where | Finding[^rr-sources] | Disposition |
+|---|---|---|---|
+| 29 | §0, §1.3, §4.12, §8.5 and §9.1; the README's thesis; claim V3's blocker, printed in the appendix | The run of 2026-10-02 is called Roko's first live run on cheap models ("a first", "the first", "Roko's first", "after the first live run"); the README calls it "the one live run on cheap models", and V3 says "One live run on real cheap models exists". The paper's own frozen evidence records earlier ones. B7's TL;DR, and the Findings row "Cheap models on mechanical tasks" that the footnotes of §0 and §1 cite: 142 attempts on gpt-oss-120b, 132 of them on demo, test and bench tasks and 10 on self-development, half of those 10 verified. The field rollup's "By run": plan runs on gpt-oss-120b on 09-18, 09-21 and 09-22. All of them predate the tier ladder (`a13873ad2` and `ce12e86d8`, 2026-09-30). What the run of 2026-10-02 adds is the ladder's first live use on cheap models, as the text before this re-pin put it ("no real run has used the cheap rungs yet"); gap-f30b8e, a fixture plan through the ladder on real cheap models, is still open | Must change before the tag: "the ladder's first live run on cheap models" (one word more; §0 has three to spare), no "the one" in the README, and in V3 "One live run of the ladder on real cheap models exists" |
+| 30 | §0, §1.3, §4.12 and §9.1 | "Needed six operator interventions". The frozen run's TL;DR and its "Operator interventions" table count six, and say four count against unattended running: three rounds of moving the isolation files aside, the last with a ladder change, then a second ladder change. The fifth passed `USER` to the Claude CLI, a harness artefact that "does not count against roko"; the sixth was the designed merge between plans. The text charges all six to Roko | Must change, in the sentences of finding 29: four interventions, the other two named in the footnotes, which keeps §0 within budget |
+| 31 | §3.1; row RC1's note, printed in the appendix | §3.1: "keeps one field per stream chunk, so GLM-4.7's answers arrived blank"; RC1: "because". The frozen evidence confirms the parser's behaviour but not that it made the answers blank. The run, "What broke" 2: the parser makes up a `stop` finish reason, "so the failure looks like an empty success". The root causes, TL;DR and §1: which payload was lost (a tool call, a length or content-filter finish, or reasoning with no answer) "stays open until someone captures the raw stream", and in the last case GLM gave no answer at all. The capture is task 1112 of gap-625195, still open | Must change, in both places: for example "keeps one field per stream chunk and makes up a stop reason, so GLM-4.7's failed turns arrived as blank successes" |
+| 32 | §3.3, the `.roko/learn/gate-thresholds.json` row | The caveat "Sets retry budgets since `99adacd6d`" rests on QA7, which the re-pin lowered, and was not rewritten. At the pin `TaskRetryBudgets` raises the budget of every task the ladder routes to at least what climbing takes, five in the run and the top of the thresholds' default range (`default_max_retries`), so there the thresholds change nothing; §3.2 says the ladder overrode them | Should change: "Sets retry budgets since `99adacd6d`, but the ladder raises them (QA7)" |
+| 33 | §4.5 | Recomputed at `a43288b5f`: 132 plans, 102 with `max_parallel = 1`, 25 of those with tasks at the same depth; 79 of the 102 and 24 of the 25 are under `plans/archive/`, which `load_plans` skips, as the footnote says. The body still reads "102 of the 132 tracked plans set it to 1, 25 of them with tasks that could run together": of the plans discovery finds, one, `plans/qa-workflow-validation/tasks.toml`, is held to 1 with tasks that could run together | Should change: the archive caveat in the body ("all but one of them archived") |
+| 34 | §1.2, §3.2 | The README asks each mechanism that is not WIRED to name the item that would change its tag. §1.2 cites gap-625195 and gap-e00238 for adapters, failover, the circuit breaker, budgets and output screening, but budgets are in neither: they are gap-997366 (task 3102) and gap-f548c1 (task 2101). §3.2's paragraph names no item for RC3 (gap-e00238), RC5 (as above) or QA7 (none is filed; §5.2 points it at spec-6ac537). The Sensors row cites gap-f548c1 for "no decision log", but decision records are gap-cc5051, gap-f61823 and gap-2b5d37 | Should change |
+| 35 | §4.7, §5.2 | "Since `4c0e5646e` every surface counts only verified passes" (§5.2: "neither does any surface"): `4c0e5646e` brought the dashboard and the TUI, and `601997dd1` the serve routes, the runtime adapter and the portal. Row QA2 cites both, and both precede the pin | Should change: cite both |
+| 36 | §4.8 | "The budget gate history sets (`99adacd6d`) is PARTIAL@a43288b5f" reads as if "budget gate history" were one noun; the claim is right | Should change: "the retry budget that gate history sets" |
+| 37 | §9.3 | "Four goals follow in order" lists E2 (spec-e9d7ec) under Truth and E13 (spec-f2463d) under Proof as work to come, but both closed before the pin, E2 in `a43288b5f` itself and E13 in `d7070e368`; §4.12 and §8.5 already treat E2 as done. Five of the six Golden-path epics had closed by the pin, which "most of them merged" understates. E4 (spec-b7303f) closed after the pin | Should change: mark the closed epics |
+| 38 | §3.1; §9.1, V10's row | gap-198c9c, cited for pause (SS5) and for V10, closed in wave 1 (`f37936858`), after 9503 was written: its tasks 1207 and 1208 make pause hold. At the pin pause is as row SS5 says, so the text holds as a snapshot, as in finding 28 | For gap-08d9b2's final re-pin: move SS5 if the fix holds there, and cite what is still open |
+| 39 | Matrix | `tools/status_matrix.py --check` warns that eight rows have a fix, wire or build verdict but no item: RC1, RC3, RC6, LM3, SS3, SS5, SS6 and DM2. The items the text cites for them (gap-625195, gap-e00238, gap-f548c1, gap-843aef, gap-ce1d11) were filed after the pin, where the tool looks; LM3 could name gap-644040, open at the pin. RC1, RC3 and RC5 take the verdict fix where the audit's matrix says keep, though `9d059cc72` says the verdicts follow the audit's; fix suits their live defects. QA7 (PARTIAL, keep) has no item | For the final re-pin |
+| 40 | §0–§10 | 7,755 words, 1.19× the 6,500 decided in dec-2cd76a, against 7,135 (1.10×) at the first read; the re-pins added 620 words, 238 of them in `29996ca33`. §0, §3, §4 and §9 sit at 1.27–1.29× their budgets, 3 to 15 words under strict lint's limit, so the changes above must be close to word-neutral there. Finding 17 accepted §2's 1.18× because the whole was within 10%; it no longer is | For the author: trim before the tag, or accept 1.19× |
+| 41 | Tags, numbers, figures | Every tag in the changed text matches its row or claim at the pin. QA7, RC3, RC4, RC5 and SS3 say what the live run showed, and so does RC1 but for finding 31; EX4 and IS5, lowered on the static re-check, rest on the code and the canaries, and EX4 says no live run has used it. The run's numbers in the text match the frozen files: about $1.2–1.4, ten tasks verified, seven on gpt-oss-120b, failover down to the cheap rung four times, a rate-limited call retried about 1 s later, three knowledge entries per prompt, retries raised to five. Figures 1 and 2 and their text versions carry the matrix's marks, and the re-pin changed only §6's tags | Accepted |
+| 42 | `evidence/` | The two 2026-10-02 files match their sources but for the rewrites their rows list. The run's copy still names the audit's own README, a gitignored file, as its row records | Accepted |
+
+[^rr-sources]: Each row names its sources: the live run, frozen as `evidence/2026-10-02-live-cheap-model-run.md`
+    (sha256 `813172c96b88`), and its root causes, as `evidence/2026-10-02-live-defect-root-causes.md` (sha256
+    `5df7d5221539`); B7, as `evidence/2026-09-29-b7-real-run-evidence.md` (sha256 `799b6a2b6184`); the field rollup,
+    as `evidence/2026-09-29-field-rollup.md` (sha256 `7bade1532a6d`); the matrix pinned at `a43288b5f`; the commits
+    and work items it cites; and for finding 40, the word counts of `paperlint --report` applied to the files at
+    `f5a6ac64b` and at `79ba9911f`.
+
+### Checks that read this file
+
+The first read's verdict line, above, stands for the text read at `9947af4d2`. The checks of task 9504 and of the
+whitepaper epic (spec-ce1484) grep this file for `^Verdict: accept`, which that line matches, so they cannot see the
+verdict below.
+
+Findings 29 to 31 must change before gap-8117a8 tags the whitepaper, and a reader should then check those sentences
+again. Findings 32 to 37 can go in the same pass, 38 and 39 wait for gap-08d9b2's final re-pin, and 40 is the
+author's call.
+
+Verdict: revise

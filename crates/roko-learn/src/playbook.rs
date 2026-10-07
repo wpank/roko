@@ -673,7 +673,9 @@ fn summarize_inline_call_object(object: &serde_json::Map<String, Value>) -> Opti
 /// `.tmp` scratch files before the atomic rename, plus a per-id
 /// [`tokio::sync::Mutex`] to serialize load+save cycles in
 /// [`PlaybookStore::record_outcome`] so concurrent outcomes don't lose
-/// updates.
+/// updates. Those cycles also hold the playbook file's sibling lock
+/// (`<id>.json.lock`), which serializes them across store instances and
+/// processes.
 ///
 /// ## Lock domains
 ///
@@ -1065,27 +1067,57 @@ impl PlaybookStore {
     /// Returns `Ok(true)` if a playbook with that id existed and was
     /// updated, `Ok(false)` if no such playbook is stored.
     ///
-    /// Concurrent calls for the same `id` are serialized through a
-    /// per-id async mutex, so the load+save cycle is atomic and two
-    /// simultaneous outcomes cannot lose an update.
+    /// The load+save cycle holds the playbook file's lock
+    /// ([`PlaybookStore::update_locked`]), so simultaneous outcomes lose no
+    /// update, whichever store instance or process records them.
     ///
     /// # Errors
     ///
     /// Returns an error for any I/O or serialization failure.
     pub async fn record_outcome(&self, id: &str, success: bool) -> io::Result<bool> {
+        self.update_locked(id, move |pb| {
+            if success {
+                pb.success_count = pb.success_count.saturating_add(1);
+            } else {
+                pb.failure_count = pb.failure_count.saturating_add(1);
+            }
+            pb.last_used_ms = Some(Utc::now().timestamp_millis());
+        })
+        .await
+    }
+
+    /// Apply `update` to the playbook stored under `id` in one locked
+    /// read-modify-write of its file ([`roko_fs::with_locked_json_transaction`]),
+    /// so that stores of other tasks, `roko serve` and other processes never
+    /// overwrite each other's counts (S02.P1-9). Calls of this store for one
+    /// id also queue on an in-process lock. Returns `false` when no playbook
+    /// has that id.
+    async fn update_locked(
+        &self,
+        id: &str,
+        update: impl FnOnce(&mut Playbook) + Send + 'static,
+    ) -> io::Result<bool> {
+        let path = self.path_for(id);
+        // A missing playbook leaves no lock file or directory behind.
+        if !tokio::fs::try_exists(&path).await? {
+            return Ok(false);
+        }
         let lock = self.id_lock(id);
         let _guard = lock.lock().await;
-        let Some(mut pb) = self.load(id).await? else {
-            return Ok(false);
-        };
-        if success {
-            pb.success_count = pb.success_count.saturating_add(1);
-        } else {
-            pb.failure_count = pb.failure_count.saturating_add(1);
-        }
-        pb.last_used_ms = Some(Utc::now().timestamp_millis());
-        self.save(&pb).await?;
-        Ok(true)
+        tokio::task::spawn_blocking(move || {
+            roko_fs::with_locked_json_transaction(
+                &path,
+                |stored: &mut Option<Playbook>| -> io::Result<bool> {
+                    let Some(playbook) = stored.as_mut() else {
+                        return Ok(false);
+                    };
+                    update(playbook);
+                    Ok(true)
+                },
+            )
+        })
+        .await
+        .map_err(io::Error::other)?
     }
 
     /// Record an outcome for the playbook identified by `id`.
@@ -1099,6 +1131,22 @@ impl PlaybookStore {
     /// Returns any I/O error raised while loading or updating the playbook.
     pub async fn record(&self, id: &str, success: bool) -> io::Result<bool> {
         self.record_outcome(id, success).await
+    }
+
+    /// Move one success recorded for the playbook `id` to its failures: a
+    /// later verdict showed that the attempt credited with it had failed
+    /// (hindsight relabeling). A playbook with no recorded success just gains
+    /// the failure. Returns `false` when no playbook has that id.
+    ///
+    /// # Errors
+    ///
+    /// Returns any I/O error raised while loading or updating the playbook.
+    pub async fn relabel_success_as_failure(&self, id: &str) -> io::Result<bool> {
+        self.update_locked(id, |pb| {
+            pb.success_count = pb.success_count.saturating_sub(1);
+            pb.failure_count = pb.failure_count.saturating_add(1);
+        })
+        .await
     }
 
     /// Deprecate playbooks with high failure rates.
@@ -1744,6 +1792,21 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn relabel_success_as_failure_moves_one_success() {
+        let tmp = TempDir::new().expect("tempdir");
+        let store = PlaybookStore::new(tmp.path());
+        store.save(&sample_playbook("p3")).await.expect("save");
+        assert!(store.record_outcome("p3", true).await.expect("record"));
+
+        let relabeled = store.relabel_success_as_failure("p3").await;
+        assert!(relabeled.expect("relabel"));
+        let pb = store.load("p3").await.expect("load").expect("some");
+        assert_eq!((pb.success_count, pb.failure_count), (0, 1));
+        let missing = store.relabel_success_as_failure("missing").await;
+        assert!(!missing.expect("relabel"));
+    }
+
+    #[tokio::test]
     async fn record_outcome_missing_returns_false() {
         let tmp = TempDir::new().expect("tempdir");
         let store = PlaybookStore::new(tmp.path());
@@ -1972,6 +2035,32 @@ mod tests {
         assert_eq!(pb.success_count + pb.failure_count, 32);
         assert_eq!(pb.success_count, 16);
         assert_eq!(pb.failure_count, 16);
+    }
+
+    /// S02.P1-9: two stores on one directory, as two settling tasks or a
+    /// plan run and `roko serve` hold, credit one playbook at once and keep
+    /// every credit: the playbook file's lock serializes them.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn credits_from_separate_stores_are_not_lost() {
+        let tmp = TempDir::new().expect("tempdir");
+        let first = PlaybookStore::new(tmp.path());
+        let second = PlaybookStore::new(tmp.path());
+        first.save(&sample_playbook("shared")).await.expect("save");
+
+        let mut handles = Vec::new();
+        for store in [&first, &second] {
+            for _ in 0..50 {
+                let store = store.clone();
+                handles.push(tokio::spawn(async move {
+                    store.record_outcome("shared", true).await
+                }));
+            }
+        }
+        for h in handles {
+            assert!(h.await.expect("join").expect("record"));
+        }
+        let pb = second.load("shared").await.expect("load").expect("some");
+        assert_eq!(pb.success_count, 100);
     }
 
     #[tokio::test]

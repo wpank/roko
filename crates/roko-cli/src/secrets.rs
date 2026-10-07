@@ -241,7 +241,10 @@ fn log_rotation_event(namespace: &str, key: &str) -> Result<()> {
 /// this silently succeeds.
 async fn send_reload_signal_to_daemon() -> Result<()> {
     let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
-    let socket_path = Path::new(&home).join(".roko").join("daemon.sock");
+    // A daemon under a path too long for `sun_path` listens where its
+    // pointer file says (gap-604ff6).
+    let home_socket = Path::new(&home).join(".roko").join("daemon.sock");
+    let socket_path = crate::state_hub_ipc::bound_socket_path(&home_socket);
 
     // If socket doesn't exist, daemon isn't running — that's fine.
     if !socket_path.exists() {

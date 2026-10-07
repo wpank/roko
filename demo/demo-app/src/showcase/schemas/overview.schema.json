@@ -1,0 +1,229 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "showcase-view/overview/1",
+  "description": "The Overview claims board (S10 §5.2): P1 and M4 tiles in R1.",
+  "type": "object",
+  "required": ["schema", "tiles", "negatives", "metrics", "provenance"],
+  "additionalProperties": false,
+  "properties": {
+    "schema": {"const": "showcase-view/overview/1"},
+    "tiles": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "id",
+          "pillar",
+          "mechanism",
+          "title",
+          "hypothesis",
+          "claim_state",
+          "rows",
+          "planned_in",
+          "view"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "id": {"type": "string"},
+          "pillar": {"enum": ["P1", "P2"]},
+          "mechanism": {"type": ["string", "null"]},
+          "title": {"type": "string"},
+          "hypothesis": {"type": ["string", "null"]},
+          "claim_state": {
+            "enum": ["SUPPORTED", "NOT_SUPPORTED", "INCONCLUSIVE", "NOT_YET_MEASURED"]
+          },
+          "rows": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": ["label", "estimate"],
+              "additionalProperties": false,
+              "properties": {
+                "label": {"type": "string"},
+                "estimate": {
+                  "type": "object",
+                  "required": ["value", "ci", "metric_ref"],
+                  "additionalProperties": false,
+                  "properties": {
+                    "value": {"type": ["number", "null"]},
+                    "ci": {
+                      "type": ["array", "null"],
+                      "minItems": 2,
+                      "items": {"type": "number"},
+                      "description": "[low, high]"
+                    },
+                    "metric_ref": {"type": "string"}
+                  }
+                }
+              }
+            }
+          },
+          "planned_in": {"type": "array", "items": {"type": "string"}},
+          "view": {"enum": ["overview", "p1-head-to-head", "m4-audits", null]}
+        }
+      }
+    },
+    "negatives": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id", "kind", "text", "rows", "view"],
+        "additionalProperties": false,
+        "properties": {
+          "id": {"type": "string"},
+          "kind": {"enum": ["frontier_wins", "loop_dormant", "fgr_above_bound", "other"]},
+          "text": {"type": "string"},
+          "rows": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": ["label", "estimate"],
+              "additionalProperties": false,
+              "properties": {
+                "label": {"type": "string"},
+                "estimate": {
+                  "type": "object",
+                  "required": ["value", "ci", "metric_ref"],
+                  "additionalProperties": false,
+                  "properties": {
+                    "value": {"type": ["number", "null"]},
+                    "ci": {
+                      "type": ["array", "null"],
+                      "minItems": 2,
+                      "items": {"type": "number"},
+                      "description": "[low, high]"
+                    },
+                    "metric_ref": {"type": "string"}
+                  }
+                }
+              }
+            }
+          },
+          "view": {"enum": ["overview", "p1-head-to-head", "m4-audits", null]}
+        }
+      }
+    },
+    "metrics": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "metric_ref",
+          "metric",
+          "kind",
+          "value",
+          "ci",
+          "ci_method",
+          "n",
+          "estimator",
+          "arm",
+          "envelope_level"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "metric_ref": {"type": "string"},
+          "metric": {"type": "string"},
+          "kind": {"enum": ["rate", "usd", "ratio", "count", "score"]},
+          "value": {"type": ["number", "null"]},
+          "ci": {
+            "type": ["array", "null"],
+            "minItems": 2,
+            "items": {"type": "number"},
+            "description": "[low, high]"
+          },
+          "ci_method": {"type": "string"},
+          "n": {"type": "integer"},
+          "estimator": {"type": "string"},
+          "arm": {"type": ["string", "null"]},
+          "envelope_level": {"type": ["integer", "null"]}
+        }
+      }
+    },
+    "provenance": {
+      "type": "object",
+      "required": [
+        "schema",
+        "kind",
+        "simulated",
+        "bundle_id",
+        "experiment_ids",
+        "run_ids",
+        "sources",
+        "harness_commit",
+        "dirty",
+        "analysis_commit",
+        "config_hashes",
+        "price_snapshot_id",
+        "models",
+        "n",
+        "seeds",
+        "window",
+        "estimator",
+        "record_filter",
+        "ci",
+        "cost_usd",
+        "generated_at",
+        "reproduce"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "schema": {"const": "showcase-provenance/1"},
+        "kind": {"enum": ["measured", "replay", "fixture"]},
+        "simulated": {"const": false},
+        "bundle_id": {"type": "string"},
+        "experiment_ids": {"type": "array", "items": {"type": "string"}},
+        "run_ids": {"type": "array", "minItems": 1, "items": {"type": "string"}},
+        "sources": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "object",
+            "required": ["path", "schema", "sha256", "rows", "simulated", "sha256_verified"],
+            "additionalProperties": false,
+            "properties": {
+              "path": {"type": "string"},
+              "schema": {"type": "string"},
+              "sha256": {"type": "string"},
+              "rows": {"type": "integer"},
+              "simulated": {"const": false},
+              "sha256_verified": {
+                "type": "boolean",
+                "description": "set by the loader; bundles store false"
+              }
+            }
+          }
+        },
+        "harness_commit": {"type": "string"},
+        "dirty": {"type": "boolean"},
+        "analysis_commit": {"type": "string"},
+        "config_hashes": {"type": "array", "items": {"type": "string"}},
+        "price_snapshot_id": {"type": "string"},
+        "models": {"type": "array", "items": {"type": "string"}},
+        "n": {"type": "integer"},
+        "seeds": {"type": "array", "items": {"type": "integer"}},
+        "window": {
+          "type": "object",
+          "required": ["from", "to"],
+          "additionalProperties": false,
+          "properties": {"from": {"type": "string"}, "to": {"type": "string"}}
+        },
+        "estimator": {"type": "string"},
+        "record_filter": {"type": "string"},
+        "ci": {
+          "type": "object",
+          "required": ["method", "strata", "level", "resamples"],
+          "additionalProperties": false,
+          "properties": {
+            "method": {"type": "string"},
+            "strata": {"type": "array", "items": {"type": "string"}},
+            "level": {"type": "number"},
+            "resamples": {"type": ["integer", "null"]}
+          }
+        },
+        "cost_usd": {"type": "number"},
+        "generated_at": {"type": "string"},
+        "reproduce": {"type": "array", "items": {"type": "string"}}
+      }
+    }
+  }
+}

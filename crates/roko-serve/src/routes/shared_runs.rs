@@ -12,12 +12,12 @@ use axum::{
 };
 use chrono::{DateTime, Duration, Utc};
 use regex::Regex;
+use roko_core::obs::LogScrubber;
 use roko_core::runtime_event::{RuntimeEvent, RuntimeEventEnvelope, WorkflowOutcome};
-use roko_core::{config::schema::RokoConfig, obs::LogScrubber};
-use roko_runtime::workflow_contract::WorkflowRunReport;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
+use crate::openapi::ApiErrorResponse;
 use crate::state::AppState;
 
 /// A persisted run transcript for sharing.
@@ -58,12 +58,10 @@ pub struct RunTranscript {
 
 #[derive(Debug, Default, Deserialize)]
 pub struct CreateShareRequest {
+    /// Prompt to run when no run `{id}` exists yet. It runs once through the
+    /// runtime; a `workflow` or `enabled_gates` key is ignored (gap-38a529).
     #[serde(default)]
     prompt: Option<String>,
-    #[serde(default)]
-    workflow: Option<String>,
-    #[serde(default)]
-    enabled_gates: Option<Vec<String>>,
     /// Request a public base URL instead of the default local-only path.
     #[serde(default)]
     public: bool,
@@ -137,6 +135,16 @@ pub async fn get_shared_run(
 }
 
 /// `POST /api/runs/{id}/share` — create a shared run token.
+///
+/// Anyone holding the link can read the share, so minting one needs the `admin` scope (9328): a
+/// `write` key gets 403. A share expires after `serve.share_ttl_days` unless the body asks for
+/// `no_expire`, which only a server bound to loopback grants; elsewhere that is a 400.
+#[utoipa::path(post, path = "/runs/{id}/share", tag = "shared_runs", request_body = Value,
+    params(("id" = String, Path, description = "The run to share")), responses(
+        (status = 200, description = "The token, url, metadata and transcript", body = Value),
+        (status = 400, description = "A bad id, or no_expire off a loopback bind", body = Value),
+        (status = 403, description = "The key lacks the admin scope", body = ApiErrorResponse),
+        (status = 404, description = "No run with that id, and no prompt to run")))]
 pub async fn create_share(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
@@ -157,6 +165,15 @@ pub async fn create_share(
         .as_ref()
         .map(|Json(request)| request.no_expire)
         .unwrap_or(false);
+    // A share that never expires stays readable by anyone with the link, so
+    // only a server bound to loopback may mint one (9328).
+    if no_expire && !state.listener_is_loopback() {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({"error": "a share that never expires needs a loopback bind"})),
+        )
+            .into_response();
+    }
     let workspace_config = state.load_roko_config();
     let shared_dir = state.workdir.join(".roko").join("shared");
     if let Err(e) = std::fs::create_dir_all(&shared_dir) {
@@ -195,14 +212,7 @@ pub async fn create_share(
                     let Some(Json(request)) = payload else {
                         return StatusCode::NOT_FOUND.into_response();
                     };
-                    match run_shared_workflow(
-                        &state,
-                        &token,
-                        request,
-                        Arc::clone(&workspace_config),
-                    )
-                    .await
-                    {
+                    match run_shared_prompt(&state, &token, request).await {
                         Ok(transcript) => transcript,
                         Err(e) => {
                             return (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": e})))
@@ -495,11 +505,13 @@ fn transcript_from_runtime_events(
     })
 }
 
-async fn run_shared_workflow(
-    _state: &AppState,
+/// Run a share request's prompt once through the runtime, the dispatch
+/// `POST /api/run` uses, and describe the result as a transcript
+/// (gap-38a529).
+async fn run_shared_prompt(
+    state: &AppState,
     token: &str,
     request: CreateShareRequest,
-    workspace_config: Arc<RokoConfig>,
 ) -> Result<RunTranscript, String> {
     let prompt = request
         .prompt
@@ -507,37 +519,34 @@ async fn run_shared_workflow(
         .and_then(non_empty)
         .map(ToOwned::to_owned)
         .ok_or_else(|| "share request requires a non-empty prompt".to_string())?;
-    // #276: WorkflowEngine deleted — resolve template and build a report stub
-    // via graph template controller. Full graph execution wiring for shared runs
-    // is product work beyond the #276 deletion scope.
-    let template_name = request.workflow.as_deref().unwrap_or("express");
-    let descriptor = roko_execution::workflow::resolve_template(template_name)
-        .map_err(|e| format!("resolve workflow template: {e}"))?;
-
-    let run_id = format!("shared_{}", chrono::Utc::now().timestamp_millis());
-    let mut controller =
-        roko_execution::workflow::WorkflowGraphController::new(run_id, descriptor, prompt.clone());
-    controller.termination = Some(roko_execution::workflow::WorkflowTermination::Skipped {
-        reason: "shared workflow execution requires graph runtime wiring".to_string(),
-    });
-
-    let _ = (workspace_config, request.enabled_gates);
-
-    let report = roko_execution::workflow::build_report(
-        &controller,
-        std::time::Instant::now(),
-        "unconfigured".to_string(),
-        None,
-        String::new(),
-        0,
-        0,
-        None,
-        vec![],
-        vec![],
-        None,
-    );
-
-    Ok(transcript_from_report(token.to_string(), &report))
+    let started_at = Utc::now();
+    let started = std::time::Instant::now();
+    let result = state
+        .runtime
+        .run_once(&state.workdir, &prompt)
+        .await
+        .map_err(|e| format!("run shared prompt: {e}"))?;
+    Ok(RunTranscript {
+        id: token.to_string(),
+        agent: "roko-serve".to_string(),
+        role: "implementer".to_string(),
+        prompt,
+        success: result.success,
+        gates: result
+            .gate_results
+            .iter()
+            .map(|gate| (gate.gate.clone(), gate.passed))
+            .collect(),
+        output: result.output_text,
+        cost_usd: None,
+        input_tokens: result.usage.as_ref().map(|usage| usage.input_tokens),
+        output_tokens: result.usage.as_ref().map(|usage| usage.output_tokens),
+        model: None,
+        duration_s: Some(started.elapsed().as_secs_f64()),
+        episode_id: None,
+        transcript: Vec::new(),
+        timestamp: started_at.to_rfc3339(),
+    })
 }
 
 fn scrub_run_transcript(
@@ -635,72 +644,6 @@ fn share_url_for(
         .and_then(non_empty)
         .ok_or_else(|| "public sharing requires [relay].public_url in roko.toml".to_string())?;
     Ok(format!("{}/runs/{token}", base_url.trim_end_matches('/')))
-}
-
-fn transcript_from_report(token: String, report: &WorkflowRunReport) -> RunTranscript {
-    let (agent, role) = report_agent_role(report);
-
-    // Aggregate tokens_used from all AgentCompleted events. Fall back to the
-    // report-level token_usage total if no per-agent events are present.
-    // TODO: RuntimeEvent::AgentCompleted only carries `tokens_used` (total);
-    // split into input/output tokens when the event gains that breakdown.
-    let aggregated_tokens: u64 = report
-        .events
-        .iter()
-        .filter_map(|envelope| {
-            if let RuntimeEvent::AgentCompleted { tokens_used, .. } = &envelope.payload {
-                Some(*tokens_used)
-            } else {
-                None
-            }
-        })
-        .sum();
-    let input_tokens = if aggregated_tokens > 0 {
-        Some(aggregated_tokens)
-    } else if report.token_usage > 0 {
-        Some(report.token_usage)
-    } else {
-        None
-    };
-
-    RunTranscript {
-        id: token,
-        agent,
-        role,
-        prompt: report.prompt_summary.clone(),
-        success: report.success,
-        gates: report
-            .gates
-            .iter()
-            .map(|gate| (gate.name.clone(), gate.passed))
-            .collect(),
-        output: non_empty(&report.output).map(ToOwned::to_owned),
-        cost_usd: report.cost,
-        input_tokens,
-        output_tokens: None,
-        model: Some(report.model.clone()),
-        duration_s: Some(report.duration_secs),
-        episode_id: Some(report.run_id.clone()),
-        transcript: report.events.clone(),
-        timestamp: report
-            .events
-            .first()
-            .map(|event| event.ts.to_rfc3339())
-            .unwrap_or_else(|| chrono::Utc::now().to_rfc3339()),
-    }
-}
-
-fn report_agent_role(report: &WorkflowRunReport) -> (String, String) {
-    let mut first = None;
-    for envelope in &report.events {
-        if let RuntimeEvent::AgentSpawned { agent_id, role, .. } = &envelope.payload {
-            if role == "implementer" {
-                return (agent_id.clone(), role.clone());
-            }
-            first.get_or_insert_with(|| (agent_id.clone(), role.clone()));
-        }
-    }
-    first.unwrap_or_else(|| ("workflow".to_string(), "workflow".to_string()))
 }
 
 fn non_empty_owned(value: String) -> Option<String> {
@@ -914,6 +857,8 @@ pub fn public_routes() -> axum::Router<Arc<AppState>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    use roko_core::config::schema::RokoConfig;
 
     #[test]
     fn shared_run_rejects_path_traversal() {
@@ -1174,6 +1119,138 @@ mod tests {
             )
             .expect("AppState::new"),
         )
+    }
+
+    /// Echoes the prompt it ran, so a test can see a shared prompt ran.
+    struct EchoRuntime;
+
+    #[async_trait::async_trait]
+    impl crate::runtime::CliRuntime for EchoRuntime {
+        async fn run_once(
+            &self,
+            _workdir: &std::path::Path,
+            prompt: &str,
+        ) -> anyhow::Result<crate::runtime::RunResult> {
+            Ok(crate::runtime::RunResult {
+                success: true,
+                output_text: Some(format!("ran: {prompt}")),
+                usage: Some(crate::runtime::RunResultUsage {
+                    input_tokens: 12,
+                    output_tokens: 3,
+                    model: None,
+                }),
+                gate_results: Vec::new(),
+            })
+        }
+
+        fn session_status(&self, workdir: std::path::PathBuf) -> crate::runtime::SessionStatusInfo {
+            crate::runtime::SessionStatusInfo {
+                session_id: None,
+                workdir,
+                daemon_running: false,
+                signal_count: None,
+                episode_count: None,
+                last_episode_passed: None,
+            }
+        }
+
+        fn dashboard_scaffold(&self, _workdir: &std::path::Path) -> crate::runtime::DashboardInfo {
+            crate::runtime::DashboardInfo {
+                rendered: String::new(),
+            }
+        }
+    }
+
+    /// gap-38a529: a share request for an unknown run with a prompt runs the
+    /// prompt instead of storing a skipped stub.
+    #[tokio::test]
+    async fn share_with_a_prompt_runs_it_through_the_runtime() {
+        use crate::deploy::manual::ManualBackend;
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let state = Arc::new(
+            AppState::new(
+                dir.path().to_path_buf(),
+                Arc::new(EchoRuntime),
+                RokoConfig::default(),
+                Arc::new(ManualBackend::default()),
+            )
+            .expect("AppState::new"),
+        );
+        let request = CreateShareRequest {
+            prompt: Some("say hello".to_string()),
+            ..CreateShareRequest::default()
+        };
+
+        let response = create_share(
+            State(Arc::clone(&state)),
+            Path("unknown-run".to_string()),
+            Some(Json(request)),
+        )
+        .await;
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("body");
+        let shared: Value = serde_json::from_slice(&body).expect("json body");
+        let transcript = &shared["transcript"];
+        assert_eq!(transcript["success"], true);
+        assert_eq!(transcript["prompt"], "say hello");
+        assert_eq!(transcript["output"], "ran: say hello");
+        assert_eq!(transcript["input_tokens"], 12);
+    }
+
+    /// 9328: a permanent share is refused on a public bind before any work, and still allowed on
+    /// a loopback one.
+    #[tokio::test]
+    async fn permanent_share_is_refused_on_a_public_bind() {
+        use crate::deploy::manual::ManualBackend;
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let state = Arc::new(
+            AppState::new(
+                dir.path().to_path_buf(),
+                Arc::new(EchoRuntime),
+                RokoConfig::default(),
+                Arc::new(ManualBackend::default()),
+            )
+            .expect("AppState::new"),
+        );
+        let permanent = || CreateShareRequest {
+            prompt: Some("say hello".to_string()),
+            no_expire: true,
+            ..CreateShareRequest::default()
+        };
+
+        state.configure_listener_security("0.0.0.0", true);
+        let response = create_share(
+            State(Arc::clone(&state)),
+            Path("public-run".to_string()),
+            Some(Json(permanent())),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let stored = std::fs::read_dir(dir.path().join(".roko").join("shared"))
+            .map(|entries| {
+                entries.filter_map(Result::ok).any(|entry| {
+                    entry
+                        .file_name()
+                        .to_string_lossy()
+                        .starts_with("public-run")
+                })
+            })
+            .unwrap_or(false);
+        assert!(!stored, "a refused share must store nothing");
+
+        state.configure_listener_security("127.0.0.1", true);
+        let response = create_share(
+            State(Arc::clone(&state)),
+            Path("local-run".to_string()),
+            Some(Json(permanent())),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK);
     }
 
     /// Writer (JsonlLogger) and route readers must resolve to the same path.

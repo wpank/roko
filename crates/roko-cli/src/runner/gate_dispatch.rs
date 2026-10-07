@@ -1,5 +1,6 @@
-//! Verify dispatch — runs gate rungs as background tokio tasks and sends
-//! results through a channel.
+//! Verify dispatch: the inline gate rung executor, `run_gate_once` (no
+//! production caller; see its docs), and the helpers Graph dispatch shares
+//! with it: auto-fix, compile ownership and verify-step gates.
 //!
 //! Sub-modules extracted for clarity:
 //! - [`cargo_command`](super::cargo_command) — Cargo command parsing/fingerprinting
@@ -8,12 +9,10 @@
 //! - [`gate_adapter`](super::gate_adapter) — `RunnerProductionGateAdapter` and artifact store
 
 use std::collections::HashMap;
-use std::panic::AssertUnwindSafe;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock, Weak};
 use std::time::Instant;
 
-use futures::FutureExt;
 use roko_core::config::{GateMode, GatesConfig};
 use roko_core::{
     Body, Kind, LensScope, ObservableEvent, Provenance, Signal, SignalBuilder, TelemetryEventSink,
@@ -31,8 +30,7 @@ use roko_gate::test_gate::TestGate;
 use roko_gate::verdict_publisher::VerdictPublisher;
 use roko_gate::{GatePayload, PlanComplexity, ShellGate};
 use tokio::process::Command;
-use tokio::sync::{Semaphore, mpsc, oneshot};
-use tokio::task::JoinHandle;
+use tokio::sync::{Semaphore, mpsc};
 use tokio::time::{Duration, timeout};
 use tracing::{error, info, warn};
 
@@ -46,7 +44,7 @@ use super::{impact_analysis, impact_analysis::ImpactReport};
 
 // Re-export items from extracted modules for backward compatibility.
 pub(crate) use super::gate_adapter::FsGeneratedArtifactStore;
-pub use super::gate_adapter::{RunnerProductionGateAdapter, default_gate_adapter};
+pub use super::gate_adapter::RunnerProductionGateAdapter;
 
 // Import extracted helpers used within this module.
 use super::cargo_command::{
@@ -55,19 +53,14 @@ use super::cargo_command::{
     focused_verify_steps, safe_cargo_name, scope_authored_verify_steps, targeted_cargo_check,
     with_targeted_compile_rung,
 };
-use super::gate_input::{accepted_input_snapshot, fetch_git_diff, gate_input_snapshot};
+use super::gate_input::{fetch_git_diff, gate_input_snapshot};
 use super::gate_report::{
     classify_failure_kind, filter_preexisting_failures, gate_failure_input, raw_gate_name,
     render_output,
 };
 
-// Re-export for callers that access these through `gate_dispatch::`.
-pub(crate) use super::gate_input::owned_input_fingerprint_id;
-
 /// Sentinel rung value for plan-level verification (not a per-task rung).
 pub const RUNG_PLAN_VERIFY: u32 = 1000;
-/// Sentinel rung value for post-merge regression gates.
-pub const RUNG_MERGE: u32 = 1001;
 
 /// Compute the `CARGO_BUILD_JOBS` limit: half the available logical CPUs,
 /// floored to at least 1. This prevents CPU exhaustion when multiple agents
@@ -188,7 +181,10 @@ struct CompileCoordinatorRegistry {
 
 type CompileCoordinators = Mutex<CompileCoordinatorRegistry>;
 
-async fn compile_coordinator(workdir: &Path, permits: usize) -> Arc<Semaphore> {
+/// This process's compile semaphore for `workdir`'s repository, and the key
+/// of that repository: its canonical git common dir, or `workdir` itself
+/// outside git.
+async fn compile_coordinator(workdir: &Path, permits: usize) -> (Arc<Semaphore>, PathBuf) {
     static COORDINATORS: OnceLock<CompileCoordinators> = OnceLock::new();
     let coordinators =
         COORDINATORS.get_or_init(|| Mutex::new(CompileCoordinatorRegistry::default()));
@@ -203,7 +199,7 @@ async fn compile_coordinator(workdir: &Path, permits: usize) -> Arc<Semaphore> {
                 .get(repository)
                 .and_then(Weak::upgrade)
         {
-            return existing;
+            return (existing, repository.clone());
         }
     }
 
@@ -247,7 +243,7 @@ async fn compile_coordinator(workdir: &Path, permits: usize) -> Arc<Semaphore> {
         .get(&repository)
         .and_then(Weak::upgrade)
     {
-        return existing;
+        return (existing, repository);
     }
     coordinators
         .repositories
@@ -255,8 +251,86 @@ async fn compile_coordinator(workdir: &Path, permits: usize) -> Arc<Semaphore> {
     let coordinator = Arc::new(Semaphore::new(permits.max(1)));
     coordinators
         .repositories
-        .insert(repository, Arc::downgrade(&coordinator));
-    coordinator
+        .insert(repository.clone(), Arc::downgrade(&coordinator));
+    (coordinator, repository)
+}
+
+/// What a cargo command holds while it runs: this process's compile permit
+/// and, in a git repository whose slot files could be opened, one of the
+/// build slots the repository shares with other roko processes. Dropping it
+/// releases the slot, then the permit.
+#[derive(Debug)]
+pub(crate) struct CompileOwnership {
+    _slot: Option<BuildSlot>,
+    _permit: tokio::sync::OwnedSemaphorePermit,
+}
+
+/// One cross-process build slot: an exclusive advisory lock on a lock file
+/// in [`build_slot_dir`], held until dropped (gap-c89b40).
+#[derive(Debug)]
+pub(crate) struct BuildSlot {
+    _lock: std::fs::File,
+}
+
+/// Where the roko processes that build in one repository take turns, like
+/// the in-process permits per repository: `roko-build-slots/` in its git
+/// common dir (`repository`), which all its worktrees share and no `git
+/// status` lists. `None` outside a git repository.
+fn build_slot_dir(repository: &Path) -> Option<PathBuf> {
+    (repository.join("HEAD").is_file() && repository.join("objects").is_dir())
+        .then(|| repository.join("roko-build-slots"))
+}
+
+/// Take one of `slots` build slots in `dir`, waiting up to `max_wait` for one
+/// to free up. `Ok(None)` when the slot files can't be opened or locked at
+/// all: the build then runs on this process's compile permit alone.
+async fn acquire_build_slot(
+    dir: &Path,
+    slots: usize,
+    max_wait: Duration,
+) -> Result<Option<BuildSlot>, String> {
+    use fs2::FileExt as _;
+    let unavailable = |error: std::io::Error| {
+        warn!(
+            dir = %dir.display(),
+            %error,
+            "build slots unavailable; using this process's compile permit alone"
+        );
+        Ok(None)
+    };
+    if let Err(error) = std::fs::create_dir_all(dir) {
+        return unavailable(error);
+    }
+    let started = Instant::now();
+    let mut pause = Duration::from_millis(25);
+    loop {
+        for slot in 0..slots.max(1) {
+            let lock = match std::fs::OpenOptions::new()
+                .create(true)
+                .truncate(false)
+                .write(true)
+                .open(dir.join(format!("slot-{slot}.lock")))
+            {
+                Ok(lock) => lock,
+                Err(error) => return unavailable(error),
+            };
+            match lock.try_lock_exclusive() {
+                Ok(()) => return Ok(Some(BuildSlot { _lock: lock })),
+                Err(error) if error.kind() == fs2::lock_contended_error().kind() => {}
+                Err(error) => return unavailable(error),
+            }
+        }
+        let waited = started.elapsed();
+        if waited >= max_wait {
+            return Err(format!(
+                "no build slot in {} freed up within {}s",
+                dir.display(),
+                max_wait.as_secs()
+            ));
+        }
+        tokio::time::sleep(pause.min(max_wait.saturating_sub(waited))).await;
+        pause = (pause * 2).min(Duration::from_secs(1));
+    }
 }
 
 pub(crate) async fn acquire_compile_ownership(
@@ -266,22 +340,34 @@ pub(crate) async fn acquire_compile_ownership(
     plan_id: &str,
     task_id: &str,
     command: &str,
-) -> Result<tokio::sync::OwnedSemaphorePermit, String> {
+) -> Result<CompileOwnership, String> {
     let started = Instant::now();
-    let coordinator = compile_coordinator(workdir, permits).await;
+    let (coordinator, repository) = compile_coordinator(workdir, permits).await;
     let permit = timeout(max_wait, coordinator.acquire_owned())
         .await
         .map_err(|_| format!("compile ownership timed out for `{command}`"))?
         .map_err(|_| "compile ownership semaphore closed".to_string())?;
+    // Then a slot shared with the other roko processes that build in this
+    // repository, in what is left of the wait (gap-c89b40).
+    let build_slot = match build_slot_dir(&repository) {
+        Some(dir) => acquire_build_slot(&dir, permits, max_wait.saturating_sub(started.elapsed()))
+            .await
+            .map_err(|error| format!("compile ownership timed out for `{command}`: {error}"))?,
+        None => None,
+    };
     info!(
         plan_id,
         task_id,
         command,
         wait_ms = elapsed_millis(started),
         compile_concurrency = permits.max(1),
+        build_slot = build_slot.is_some(),
         "compile ownership acquired"
     );
-    Ok(permit)
+    Ok(CompileOwnership {
+        _slot: build_slot,
+        _permit: permit,
+    })
 }
 
 pub(super) fn elapsed_millis(started: Instant) -> u64 {
@@ -315,127 +401,6 @@ macro_rules! proof_failure {
     ($gate:expr, $reason:expr, $digest:expr $(,)?) => {
         Verdict::fail($gate, $reason).with_error_digest($digest)
     };
-}
-
-/// Spawn a gate rung as a background task. Sends `GateCompletion` when done.
-///
-/// When `gate_adapter` is provided, the worker body delegates through the
-/// shared [`RunnerProductionGateAdapter`] instead of calling `run_gate_once`
-/// directly. This is production redirect #2 from #275.
-pub fn spawn_gate(
-    effect: GateEffectRef,
-    plan_id: String,
-    task_id: String,
-    rung: u32,
-    workdir: PathBuf,
-    gates_config: GatesConfig,
-    complexity: PlanComplexity,
-    verify_steps: Vec<VerifyStep>,
-    baseline_failed_gates: Option<Vec<GateVerdictSummary>>,
-    timeout_secs: u64,
-    gate_tx: mpsc::Sender<GateCompletion>,
-    gate_sem: Arc<Semaphore>,
-    target_crates: Vec<String>,
-    verdict_publisher: Option<VerdictPublisher>,
-    task_context: Option<GateTaskContext>,
-    telemetry_sink: Option<Arc<dyn TelemetryEventSink>>,
-    main_target_dir: Option<PathBuf>,
-    expected_input_fingerprint: Option<String>,
-    gate_adapter: Option<Arc<RunnerProductionGateAdapter>>,
-    line_sink: Option<mpsc::UnboundedSender<String>>,
-) -> (JoinHandle<()>, oneshot::Sender<()>) {
-    let (start_tx, start_rx) = oneshot::channel();
-    let handle = tokio::spawn(async move {
-        if start_rx.await.is_err() {
-            return;
-        }
-        let failure_effect = effect.clone();
-        let failure_plan = plan_id.clone();
-        let failure_task = task_id.clone();
-        let worker = AssertUnwindSafe(async move {
-            let t_wait = Instant::now();
-            let _permit = gate_sem
-                .acquire_owned()
-                .await
-                .map_err(|_| "gate semaphore closed before acquisition".to_string())?;
-            let wait_ms = t_wait.elapsed().as_millis() as u64;
-            if wait_ms > 10 {
-                info!(plan_id = %plan_id, task_id = %task_id, rung, wait_ms,
-                    "gate semaphore acquired");
-            }
-            if let Some(expected) = expected_input_fingerprint.as_deref() {
-                let observed = owned_input_fingerprint_id(workdir.clone()).await?;
-                if observed != expected {
-                    return Err(
-                        "timeout salvage input changed before ordinary gate start; refusing attribution"
-                            .to_string(),
-                    );
-                }
-            }
-            // #275 redirect: when a shared gate adapter is available, delegate
-            // through it instead of calling `run_gate_once` inline.
-            let completion = if let Some(adapter) = gate_adapter {
-                adapter
-                    .run(
-                        effect,
-                        plan_id,
-                        task_id,
-                        rung,
-                        workdir,
-                        gates_config,
-                        complexity,
-                        verify_steps,
-                        baseline_failed_gates,
-                        timeout_secs,
-                        target_crates,
-                        task_context,
-                    )
-                    .await
-            } else {
-                run_gate_once(
-                    effect,
-                    plan_id,
-                    task_id,
-                    rung,
-                    workdir,
-                    gates_config,
-                    complexity,
-                    verify_steps,
-                    baseline_failed_gates,
-                    timeout_secs,
-                    target_crates,
-                    verdict_publisher,
-                    task_context,
-                    telemetry_sink,
-                    main_target_dir,
-                    line_sink,
-                )
-                .await
-            };
-            Ok::<_, String>(completion)
-        })
-        .catch_unwind()
-        .await;
-        let completion = match worker {
-            Ok(Ok(completion)) => completion,
-            Ok(Err(message)) => {
-                failed_gate_completion(failure_effect, failure_plan, failure_task, rung, message)
-            }
-            Err(_) => failed_gate_completion(
-                failure_effect,
-                failure_plan,
-                failure_task,
-                rung,
-                "gate producer panicked".to_string(),
-            ),
-        };
-
-        if let Err(e) = gate_tx.send(completion).await {
-            error!(err = %e, "failed to send gate completion — channel closed");
-            return;
-        }
-    });
-    (handle, start_tx)
 }
 
 pub(super) fn failed_gate_completion(
@@ -530,8 +495,9 @@ fn detect_workdir_build_system(workdir: &Path) -> Option<&'static str> {
 #[derive(Clone, Copy, Debug)]
 pub struct AutoFixBounds<'a> {
     /// Files the task owns. Cargo fixes run only for the packages owning
-    /// them (`-p`). When none resolves to a Cargo package, the Cargo fix is
-    /// skipped instead of running workspace-wide.
+    /// them (`-p`), and the other fixers only on those files in their
+    /// language. When none qualifies, the fix is skipped instead of running
+    /// on the whole tree.
     pub task_files: &'a [String],
     /// Wall-clock limit for each fix command and for acquiring compile
     /// ownership.
@@ -591,6 +557,33 @@ fn owning_cargo_packages(workdir: &Path, files: &[String]) -> Vec<String> {
     packages
 }
 
+/// The files of `task_files` a non-Cargo fixer may rewrite: regular files
+/// inside `workdir` with one of `extensions`, named as the task names them
+/// (gap-c08623).
+fn task_fix_targets(workdir: &Path, task_files: &[String], extensions: &[&str]) -> Vec<String> {
+    use std::path::Component;
+    let mut targets: Vec<String> = Vec::new();
+    for file in task_files {
+        let path = Path::new(file);
+        if path.is_absolute()
+            || file.starts_with('-')
+            || path.components().any(|part| part == Component::ParentDir)
+        {
+            continue;
+        }
+        let fixable = path
+            .extension()
+            .and_then(|extension| extension.to_str())
+            .is_some_and(|extension| extensions.contains(&extension));
+        let regular =
+            std::fs::symlink_metadata(workdir.join(path)).is_ok_and(|meta| meta.is_file());
+        if fixable && regular && !targets.contains(file) {
+            targets.push(file.clone());
+        }
+    }
+    targets
+}
+
 /// Run one auto-fix command, killing it when `limit` elapses.
 ///
 /// The command gets the gate environment (roko's allowlisted variables plus
@@ -623,13 +616,17 @@ async fn run_fix_command(
 /// Every fix command is killed after `bounds.timeout`.
 ///
 /// For npm (TypeScript/JavaScript) projects:
-/// - "lint" / "compile" gates: runs `npx eslint --fix .`.
+/// - "lint" / "compile" gates: runs `npx eslint --fix <files>`.
 ///
 /// For Go projects:
-/// - "compile" / "lint" / "format" gates: runs `gofmt -w .`.
+/// - "compile" / "lint" / "format" gates: runs `gofmt -w <files>`.
 ///
 /// For Python projects:
-/// - "lint" / "compile" gates: tries `ruff --fix .` first, falls back to `black .`.
+/// - "lint" / "compile" gates: tries `ruff --fix <files>` first, falls back to
+///   `black <files>`.
+///
+/// `<files>` are the task's own files in the fixer's language
+/// ([`task_fix_targets`]). A task with none skips the fix.
 ///
 /// Returns `Ok(AutoFixOutcome)` describing what happened. Returns `Err` only
 /// on internal failures (spawn error, etc).
@@ -766,17 +763,41 @@ pub async fn attempt_auto_fix(
     }
 
     let build_system = detect_workdir_build_system(workdir);
+    // A fixer rewrites only the task's own files of its language, never the
+    // whole tree: other tasks and plans may own the rest (gap-c08623).
+    let extensions: &[&str] = match build_system {
+        Some("npm") => &["js", "jsx", "mjs", "cjs", "ts", "tsx", "mts", "cts"],
+        Some("go") => &["go"],
+        Some("python") => &["py", "pyi"],
+        _ => &[],
+    };
+    let targets = task_fix_targets(workdir, bounds.task_files, extensions);
+    if !extensions.is_empty() && targets.is_empty() {
+        info!(
+            gate = %gate_name,
+            build_system = ?build_system,
+            task_files = bounds.task_files.len(),
+            "no task file for the auto-fixer — skipping auto-fix"
+        );
+        return Ok(AutoFixOutcome {
+            was_candidate: true,
+            ..AutoFixOutcome::not_candidate(gate_name)
+        });
+    }
     match build_system {
         Some("npm") => {
-            // npx eslint --fix . — auto-fixes lint errors for JS/TS.
-            let command_str = "npx eslint --fix .".to_string();
+            // npx eslint --fix <files> — auto-fixes lint errors for JS/TS.
+            let command_str = format!("npx eslint --fix {}", targets.join(" "));
             info!(
                 gate = %gate_name,
                 command = %command_str,
                 "attempting npm/eslint auto-fix before agent retry"
             );
             let mut fix_cmd = Command::new("npx");
-            fix_cmd.args(["eslint", "--fix", "."]).current_dir(workdir);
+            fix_cmd
+                .args(["eslint", "--fix"])
+                .args(&targets)
+                .current_dir(workdir);
             let fix_status =
                 run_fix_command(fix_cmd, bounds.timeout, bounds.env_passthrough, "npx").await?;
 
@@ -803,15 +824,15 @@ pub async fn attempt_auto_fix(
         }
 
         Some("go") => {
-            // gofmt -w . — reformats all Go source files in the tree.
-            let command_str = "gofmt -w .".to_string();
+            // gofmt -w <files> — reformats the task's Go source files.
+            let command_str = format!("gofmt -w {}", targets.join(" "));
             info!(
                 gate = %gate_name,
                 command = %command_str,
                 "attempting gofmt auto-fix before agent retry"
             );
             let mut fix_cmd = Command::new("gofmt");
-            fix_cmd.args(["-w", "."]).current_dir(workdir);
+            fix_cmd.arg("-w").args(&targets).current_dir(workdir);
             let fix_status =
                 run_fix_command(fix_cmd, bounds.timeout, bounds.env_passthrough, "gofmt").await?;
 
@@ -839,14 +860,14 @@ pub async fn attempt_auto_fix(
 
         Some("python") => {
             // Try ruff --fix first; fall back to black.
-            let command_str = "ruff --fix .".to_string();
+            let command_str = format!("ruff --fix {}", targets.join(" "));
             info!(
                 gate = %gate_name,
                 command = %command_str,
                 "attempting ruff auto-fix before agent retry"
             );
             let mut ruff_cmd = Command::new("ruff");
-            ruff_cmd.args(["--fix", "."]).current_dir(workdir);
+            ruff_cmd.arg("--fix").args(&targets).current_dir(workdir);
             let ruff_status =
                 run_fix_command(ruff_cmd, bounds.timeout, bounds.env_passthrough, "ruff").await;
 
@@ -854,13 +875,13 @@ pub async fn attempt_auto_fix(
                 Ok(Some(out)) if out.status.success() => (true, command_str),
                 _ => {
                     // ruff not available, failed, or timed out — try black.
-                    let black_cmd = "black .".to_string();
+                    let black_cmd = format!("black {}", targets.join(" "));
                     info!(
                         gate = %gate_name,
                         "ruff unavailable or failed, trying black"
                     );
                     let mut black = Command::new("black");
-                    black.arg(".").current_dir(workdir);
+                    black.args(&targets).current_dir(workdir);
                     let black_status =
                         run_fix_command(black, bounds.timeout, bounds.env_passthrough, "black")
                             .await;
@@ -889,6 +910,15 @@ pub async fn attempt_auto_fix(
 }
 
 /// Run a gate rung to completion and return its summary.
+///
+/// No production path calls this since 7129 deleted `spawn_gate`: tasks gate
+/// through the Graph dispatcher, and the rich-topology path through
+/// [`RunnerProductionGateAdapter`] over `ProductionGateService`. It stays
+/// because its tests pin what that service does not do yet: publishing
+/// verdicts, gate telemetry, streamed output lines, impact analysis,
+/// filtering pre-existing failures, the focused baseline verify and the
+/// targeted compile rung. Port those to the service, with their tests, and
+/// delete it.
 pub async fn run_gate_once(
     effect: GateEffectRef,
     plan_id: String,
@@ -1039,6 +1069,7 @@ pub async fn run_gate_once(
         &workdir,
         &gate_target_crates,
         main_target_dir.as_deref(),
+        &gates_config.env_passthrough,
     );
 
     let execute_pipeline = gate_mode == GateMode::Full && (!task_verify_only || focused_fallback);
@@ -1316,6 +1347,7 @@ pub async fn run_gate_once(
                 &gate_target_crates,
                 main_target_dir.as_deref(),
                 gates_config.compile_concurrency,
+                &gates_config.env_passthrough,
             )
             .await
         } else {
@@ -1632,163 +1664,6 @@ pub async fn run_gate_once(
     }
 }
 
-/// Spawn plan-level verify steps as a background task.
-pub fn spawn_plan_verify(
-    effect: GateEffectRef,
-    plan_id: String,
-    workdir: PathBuf,
-    expected_oid: String,
-    verify_steps: Vec<(String, Vec<VerifyStep>)>,
-    timeout_secs: u64,
-    gate_tx: mpsc::Sender<GateCompletion>,
-    gate_sem: Arc<Semaphore>,
-    main_target_dir: Option<PathBuf>,
-    line_sink: Option<mpsc::UnboundedSender<String>>,
-) -> (JoinHandle<()>, oneshot::Sender<()>) {
-    let (start_tx, start_rx) = oneshot::channel();
-    let handle = tokio::spawn(async move {
-        if start_rx.await.is_err() {
-            return;
-        }
-        let failure_effect = effect.clone();
-        let failure_plan = plan_id.clone();
-        let worker = AssertUnwindSafe(async move {
-            let t_wait = Instant::now();
-            let _permit = gate_sem
-                .acquire_owned()
-                .await
-                .map_err(|_| "plan verify semaphore closed before acquisition".to_string())?;
-            let wait_ms = t_wait.elapsed().as_millis() as u64;
-            if wait_ms > 10 {
-                info!(
-                    plan_id = %plan_id,
-                    wait_ms,
-                    "plan verify semaphore acquired"
-                );
-            }
-            let start = Instant::now();
-            let ctx = roko_core::Context::now();
-            let limit = Duration::from_secs(timeout_secs.max(1));
-            let plan_id_for_run = plan_id.clone();
-            let workdir_for_run = workdir.clone();
-
-            let line_sink_for_run = line_sink;
-            let run = async move {
-                let before =
-                    match accepted_input_snapshot(workdir_for_run.clone(), &expected_oid).await {
-                        Ok(snapshot) => snapshot,
-                        Err(error) => return vec![Verdict::fail("accepted-plan:input", error)],
-                    };
-                let mut all = Vec::new();
-                for (task_id, steps) in verify_steps {
-                    let signal = gate_signal(
-                        &plan_id_for_run,
-                        &task_id,
-                        RUNG_PLAN_VERIFY,
-                        &workdir_for_run,
-                        &[], // plan-level verify runs workspace-wide
-                        main_target_dir.as_deref(),
-                    );
-                    all.extend(
-                        run_verify_steps(
-                            &signal,
-                            &ctx,
-                            &plan_id_for_run,
-                            &task_id,
-                            steps,
-                            1,
-                            line_sink_for_run.clone(),
-                        )
-                        .await,
-                    );
-                }
-                if accepted_input_snapshot(workdir_for_run, &expected_oid).await != Ok(before) {
-                    all.push(Verdict::fail(
-                        "accepted-plan:immutable-input",
-                        "accepted plan input changed during verification",
-                    ));
-                }
-                all
-            };
-
-            let verdicts = match timeout(limit, run).await {
-                Ok(verdicts) => verdicts,
-                Err(_) => vec![
-                    Verdict::fail(
-                        "plan-verify-timeout",
-                        format!("plan verify timed out after {timeout_secs}s"),
-                    )
-                    .with_error_digest(format!("timeout: plan verify exceeded {timeout_secs}s")),
-                ],
-            };
-            let duration_ms = start.elapsed().as_millis() as u64;
-            let real_verdicts: Vec<&Verdict> = verdicts.iter().filter(|v| !v.skipped).collect();
-            let passed = real_verdicts.iter().all(|v| v.passed);
-            let output = render_output(&verdicts);
-            let failure_kind = (!passed).then(|| classify_failure_kind(&verdicts, &output));
-            let summaries = verdicts
-                .iter()
-                .map(|v| GateVerdictSummary {
-                    gate_name: v.gate.clone(),
-                    passed: v.passed,
-                    skipped: v.skipped,
-                    summary: v.reason.clone(),
-                    error_digest: v.error_digest.clone(),
-                    failure_kind: (!v.passed && !v.skipped)
-                        .then(|| classify_failure_kind(std::slice::from_ref(v), &v.reason)),
-                    rung_index: None, // plan-verify steps are not canonical rungs
-                })
-                .collect();
-
-            info!(
-                plan_id = %plan_id,
-                passed,
-                duration_ms,
-                "plan verify completed"
-            );
-
-            Ok::<_, String>(GateCompletion {
-                kind: GateCompletionKind::PlanVerify,
-                attempt: Some(effect.attempt.clone()),
-                effect: Some(effect),
-                plan_id,
-                task_id: "plan-verify".to_string(),
-                rung: RUNG_PLAN_VERIFY,
-                passed,
-                failure_kind,
-                verdicts: summaries,
-                output,
-                duration_ms,
-                selected_rungs: Vec::new(), // sentinel: no canonical rungs for plan-verify
-            })
-        })
-        .catch_unwind()
-        .await;
-        let completion = match worker {
-            Ok(Ok(completion)) => completion,
-            Ok(Err(message)) => failed_gate_completion(
-                failure_effect,
-                failure_plan,
-                "plan-verify".to_string(),
-                RUNG_PLAN_VERIFY,
-                message,
-            ),
-            Err(_) => failed_gate_completion(
-                failure_effect,
-                failure_plan,
-                "plan-verify".to_string(),
-                RUNG_PLAN_VERIFY,
-                "plan verify producer panicked".to_string(),
-            ),
-        };
-
-        if let Err(e) = gate_tx.send(completion).await {
-            error!(err = %e, "failed to send plan verify completion — channel closed");
-        }
-    });
-    (handle, start_tx)
-}
-
 /// Build enriched [`RungExecutionInputs`] from available task context.
 ///
 /// E05-T05 / P2-GAT-1: Populates real signal fields from the task definition
@@ -1926,8 +1801,8 @@ fn build_rung_execution_config(
     };
 
     let generated_test_artifacts: Option<Arc<dyn roko_gate::generated_test_gate::ArtifactStore>> = {
-        // `.roko/generated-tests/`: where the Graph dispatcher writes eval
-        // artifacts when `gates.write_eval_artifacts` is enabled.
+        // `.roko/generated-tests/`: where the Graph dispatcher wrote eval
+        // artifacts before S05 F2 removed that write.
         let store = FsGeneratedArtifactStore::new(workdir.join(".roko"));
         if store.matching_entries("generated-tests/gen_").is_empty() {
             None
@@ -1968,6 +1843,9 @@ fn build_rung_execution_config(
     }
 }
 
+/// The gate payload signal of one rung. Its commands get `env_passthrough`
+/// (`[gates] env_passthrough`) on top of the gate allowlist, as Graph verify
+/// steps do (gap-bbbfbc).
 fn gate_signal(
     plan_id: &str,
     task_id: &str,
@@ -1975,6 +1853,7 @@ fn gate_signal(
     workdir: &std::path::Path,
     target_crates: &[String],
     main_target_dir: Option<&Path>,
+    env_passthrough: &[String],
 ) -> Signal {
     let attempt_sentinel = RokoLayout::for_project(workdir)
         .gate_attempts_dir()
@@ -1986,6 +1865,7 @@ fn gate_signal(
     let mut payload = GatePayload::in_dir(workdir)
         .with_label(format!("{plan_id}:{task_id}:rung-{rung}"))
         .with_target_crates(target_crates.to_vec())
+        .with_env_passthrough(env_passthrough.iter().cloned())
         .with_env("ROKO_GATE_PLAN_ID", plan_id)
         .with_env("ROKO_GATE_TASK_ID", task_id)
         .with_env("ROKO_GATE_RUNG", rung.to_string())
@@ -2124,6 +2004,7 @@ async fn run_focused_baseline_verify(
     target_crates: &[String],
     main_target_dir: Option<&Path>,
     compile_concurrency: usize,
+    env_passthrough: &[String],
 ) -> Option<Vec<GateVerdictSummary>> {
     let steps = steps
         .into_iter()
@@ -2143,6 +2024,7 @@ async fn run_focused_baseline_verify(
         baseline.path(),
         target_crates,
         main_target_dir,
+        env_passthrough,
     );
     let ctx = roko_core::Context::now();
     let verdicts = run_verify_steps(
@@ -2243,6 +2125,8 @@ mod tests {
             fail_msg: None,
             timeout_ms: 1_000,
             scope: Vec::new(),
+            covers: Vec::new(),
+            expect: None,
         }
     }
 
@@ -2269,6 +2153,7 @@ mod tests {
             timeout_secs: 30,
             required: false,
             parallel_with: Vec::new(),
+            ..Default::default()
         }];
         assert!(
             canonical_verify_commands(&gates, PlanComplexity::Trivial, &[], None).is_empty(),
@@ -2538,6 +2423,7 @@ path = "src/shared.rs"
                 timeout_secs: 10,
                 required: true,
                 parallel_with: Vec::new(),
+                ..Default::default()
             }],
             ..GatesConfig::default()
         };
@@ -2598,190 +2484,6 @@ path = "src/shared.rs"
         Ok(())
     }
 
-    fn barrier_gate() -> (
-        JoinHandle<()>,
-        oneshot::Sender<()>,
-        mpsc::Receiver<GateCompletion>,
-    ) {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let workdir = dir.keep();
-        let (tx, rx) = mpsc::channel(1);
-        let effect = GateEffectRef {
-            attempt: TaskAttemptRef::new("plan", "task", 1),
-            kind: GateCompletionKind::Gate,
-            rung: 1,
-            generation: 99,
-        };
-        let (handle, start) = spawn_gate(
-            effect,
-            "plan".to_string(),
-            "task".to_string(),
-            1,
-            workdir,
-            GatesConfig::default(),
-            PlanComplexity::Trivial,
-            Vec::new(),
-            None,
-            1,
-            tx,
-            Arc::new(Semaphore::new(1)),
-            Vec::new(),
-            None,
-            None,
-            None,
-            None, // main_target_dir
-            None, // expected_input_fingerprint
-            None, // gate_adapter
-            None, // line_sink
-        );
-        (handle, start, rx)
-    }
-
-    #[tokio::test]
-    async fn gate_producer_waits_for_owner_start_barrier() {
-        let (handle, start, mut rx) = barrier_gate();
-        tokio::task::yield_now().await;
-        assert!(matches!(
-            rx.try_recv(),
-            Err(mpsc::error::TryRecvError::Empty)
-        ));
-        drop(start);
-        handle.await.expect("barrier cancellation should be clean");
-    }
-
-    #[tokio::test]
-    async fn gate_start_reports_failure_after_producer_abort() {
-        let (handle, start, _rx) = barrier_gate();
-        handle.abort();
-        let _ = handle.await;
-        assert!(start.send(()).is_err());
-    }
-
-    #[tokio::test]
-    async fn plan_verify_is_barriered_and_preserves_exact_effect() {
-        let shared_root = git_repo();
-        std::fs::write(shared_root.path().join("unrelated.txt"), b"dirty root\n").unwrap();
-        let dir = git_repo();
-        let expected_oid = String::from_utf8_lossy(
-            &std::process::Command::new("git")
-                .args(["rev-parse", "HEAD"])
-                .current_dir(dir.path())
-                .output()
-                .unwrap()
-                .stdout,
-        )
-        .trim()
-        .to_string();
-        let effect = GateEffectRef {
-            attempt: TaskAttemptRef::new("plan-a", "plan-verify", 1),
-            kind: GateCompletionKind::PlanVerify,
-            rung: RUNG_PLAN_VERIFY,
-            generation: 501,
-        };
-        let (tx, mut rx) = mpsc::channel(1);
-        let (handle, start) = spawn_plan_verify(
-            effect.clone(),
-            "plan-a".to_string(),
-            dir.path().to_path_buf(),
-            expected_oid,
-            Vec::new(),
-            1,
-            tx,
-            Arc::new(Semaphore::new(1)),
-            None, // main_target_dir
-            None, // line_sink
-        );
-        tokio::task::yield_now().await;
-        assert!(matches!(
-            rx.try_recv(),
-            Err(mpsc::error::TryRecvError::Empty)
-        ));
-        start.send(()).unwrap();
-        let completion = rx.recv().await.unwrap();
-        handle.await.unwrap();
-        assert!(completion.passed);
-        assert_eq!(completion.effect, Some(effect));
-        assert!(shared_root.path().join("unrelated.txt").exists());
-    }
-
-    #[tokio::test]
-    async fn closed_plan_verify_semaphore_emits_exact_resource_failure() {
-        let dir = tempfile::tempdir().unwrap();
-        let effect = GateEffectRef {
-            attempt: TaskAttemptRef::new("plan-b", "plan-verify", 1),
-            kind: GateCompletionKind::PlanVerify,
-            rung: RUNG_PLAN_VERIFY,
-            generation: 502,
-        };
-        let semaphore = Arc::new(Semaphore::new(0));
-        semaphore.close();
-        let (tx, mut rx) = mpsc::channel(1);
-        let (handle, start) = spawn_plan_verify(
-            effect.clone(),
-            "plan-b".to_string(),
-            dir.path().to_path_buf(),
-            "unused".to_string(),
-            Vec::new(),
-            1,
-            tx,
-            semaphore,
-            None, // main_target_dir
-            None, // line_sink
-        );
-        start.send(()).unwrap();
-        let completion = rx.recv().await.unwrap();
-        handle.await.unwrap();
-        assert!(!completion.passed);
-        assert_eq!(completion.failure_kind, Some(RunnerFailureKind::Resource));
-        assert_eq!(completion.effect, Some(effect));
-    }
-
-    #[tokio::test]
-    async fn closed_semaphore_emits_exact_failed_preflight_completion() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let (tx, mut rx) = mpsc::channel(1);
-        let semaphore = Arc::new(Semaphore::new(1));
-        semaphore.close();
-        let effect = GateEffectRef {
-            attempt: TaskAttemptRef::new("plan", "task", 2),
-            kind: GateCompletionKind::Preflight,
-            rung: 3,
-            generation: 101,
-        };
-        let (handle, start) = spawn_gate(
-            effect.clone(),
-            "plan".to_string(),
-            "task".to_string(),
-            3,
-            dir.path().to_path_buf(),
-            GatesConfig::default(),
-            PlanComplexity::Trivial,
-            Vec::new(),
-            None,
-            1,
-            tx,
-            semaphore,
-            Vec::new(),
-            None,
-            None,
-            None,
-            None, // main_target_dir
-            None, // expected_input_fingerprint
-            None, // gate_adapter
-            None, // line_sink
-        );
-
-        start.send(()).expect("owner starts producer");
-        let completion = rx.recv().await.expect("structured failure completion");
-        handle.await.expect("supervisor exits cleanly");
-        assert!(!completion.passed);
-        assert_eq!(completion.kind, GateCompletionKind::Preflight);
-        assert_eq!(completion.attempt.as_ref(), Some(&effect.attempt));
-        assert_eq!(completion.effect.as_ref(), Some(&effect));
-        assert_eq!(completion.failure_kind, Some(RunnerFailureKind::Resource));
-        assert!(completion.output.contains("semaphore closed"));
-    }
-
     #[test]
     fn retry_recommended_gate_digest_remains_retryable() {
         let digest = r#"{
@@ -2836,7 +2538,7 @@ path = "src/shared.rs"
     #[tokio::test]
     async fn verify_steps_fail_when_a_piped_command_fails_before_tail() {
         let tempdir = tempfile::tempdir().expect("tempdir should be created");
-        let signal = gate_signal("plan", "task", 2, tempdir.path(), &[], None);
+        let signal = gate_signal("plan", "task", 2, tempdir.path(), &[], None, &[]);
         let ctx = roko_core::Context::now();
         let step = VerifyStep {
             phase: "test".to_string(),
@@ -2844,6 +2546,8 @@ path = "src/shared.rs"
             fail_msg: None,
             timeout_ms: 10_000,
             scope: Vec::new(),
+            covers: Vec::new(),
+            expect: None,
         };
 
         let verdicts = run_verify_steps(&signal, &ctx, "plan", "T01", vec![step], 1, None).await;
@@ -2854,7 +2558,7 @@ path = "src/shared.rs"
     #[tokio::test]
     async fn verify_steps_pass() {
         let tempdir = tempfile::tempdir().expect("tempdir should be created");
-        let signal = gate_signal("plan", "task", 2, tempdir.path(), &[], None);
+        let signal = gate_signal("plan", "task", 2, tempdir.path(), &[], None, &[]);
         let ctx = roko_core::Context::now();
         let step = VerifyStep {
             phase: "structural".to_string(),
@@ -2862,11 +2566,67 @@ path = "src/shared.rs"
             fail_msg: None,
             timeout_ms: 10_000,
             scope: Vec::new(),
+            covers: Vec::new(),
+            expect: None,
         };
 
         let verdicts = run_verify_steps(&signal, &ctx, "plan", "T01", vec![step], 1, None).await;
 
         assert_eq!(verdicts.first().map(|verdict| verdict.passed), Some(true));
+    }
+
+    /// gap-c89b40: processes that build in one repository take turns through
+    /// its build slots. A second holder of the only slot waits for it, a second
+    /// slot is free, and a released slot can be taken again.
+    #[tokio::test]
+    async fn build_slots_are_shared_through_lock_files() {
+        let tempdir = tempfile::tempdir().expect("tempdir should be created");
+        let dir = tempdir.path().join(".roko-build-slots");
+        let first = acquire_build_slot(&dir, 1, Duration::from_secs(5))
+            .await
+            .expect("the first slot")
+            .expect("slot files open");
+        let error = acquire_build_slot(&dir, 1, Duration::from_millis(50))
+            .await
+            .expect_err("the only slot is held");
+        assert!(error.contains("no build slot"), "{error}");
+        let second = acquire_build_slot(&dir, 2, Duration::from_millis(50))
+            .await
+            .expect("the second slot")
+            .expect("slot files open");
+
+        drop(first);
+        drop(second);
+        let again = acquire_build_slot(&dir, 1, Duration::from_millis(50))
+            .await
+            .expect("the released slot");
+        assert!(again.is_some());
+    }
+
+    /// gap-c89b40: a repository's build slots live in its git common dir, which
+    /// every worktree shares and `git status` never lists; outside git there
+    /// are none.
+    #[test]
+    fn build_slots_live_in_the_git_common_dir() {
+        let repo = git_repo();
+        let common_dir = repo.path().join(".git");
+        assert_eq!(
+            build_slot_dir(&common_dir),
+            Some(common_dir.join("roko-build-slots"))
+        );
+        let plain = tempfile::tempdir().expect("tempdir should be created");
+        assert_eq!(build_slot_dir(plain.path()), None);
+    }
+
+    /// gap-bbbfbc: a runner gate payload hands its commands `[gates]
+    /// env_passthrough`, as Graph verify payloads do.
+    #[test]
+    fn gate_signal_payload_carries_env_passthrough() {
+        let tempdir = tempfile::tempdir().expect("tempdir should be created");
+        let passthrough = vec!["DATABASE_URL".to_string()];
+        let signal = gate_signal("plan", "task", 2, tempdir.path(), &[], None, &passthrough);
+        let payload: GatePayload = signal.body.as_json().expect("gate payload");
+        assert_eq!(payload.env_passthrough, ["DATABASE_URL"]);
     }
 
     #[tokio::test]
@@ -2890,6 +2650,8 @@ path = "src/shared.rs"
                     fail_msg: None,
                     timeout_ms: 10_000,
                     scope: Vec::new(),
+                    covers: Vec::new(),
+                    expect: None,
                 }],
                 Some(Vec::new()),
                 10,
@@ -2943,6 +2705,8 @@ path = "src/shared.rs"
                 fail_msg: None,
                 timeout_ms: 10_000,
                 scope: Vec::new(),
+                covers: Vec::new(),
+                expect: None,
             }],
             Some(Vec::new()),
             10,
@@ -2975,6 +2739,7 @@ path = "src/shared.rs"
                 timeout_secs: 10,
                 required: true,
                 parallel_with: Vec::new(),
+                ..Default::default()
             }],
             ..GatesConfig::default()
         };
@@ -2984,6 +2749,8 @@ path = "src/shared.rs"
             fail_msg: None,
             timeout_ms: 10_000,
             scope: Vec::new(),
+            covers: Vec::new(),
+            expect: None,
         };
         let baseline = run_gate_once(
             gate_effect(GateCompletionKind::Preflight),
@@ -3059,6 +2826,8 @@ path = "src/shared.rs"
                 fail_msg: None,
                 timeout_ms: 10_000,
                 scope: Vec::new(),
+                covers: Vec::new(),
+                expect: None,
             }],
             Some(Vec::new()),
             10,
@@ -3272,6 +3041,7 @@ path = "src/shared.rs"
                 timeout_secs: 10,
                 required: true,
                 parallel_with: Vec::new(),
+                ..Default::default()
             }],
             ..GatesConfig::default()
         };
@@ -3289,6 +3059,8 @@ path = "src/shared.rs"
                 fail_msg: None,
                 timeout_ms: 10_000,
                 scope: Vec::new(),
+                covers: Vec::new(),
+                expect: None,
             }],
             None,
             10,
@@ -3396,6 +3168,60 @@ path = "src/shared.rs"
         assert!(
             outcome.command.is_none(),
             "no workspace-wide cargo fix may run when no package owns the task files"
+        );
+    }
+
+    /// gap-c08623: a non-Cargo fixer gets only the task's regular files in its
+    /// language, inside the workdir.
+    #[test]
+    fn non_cargo_fix_targets_are_the_task_files_in_the_language() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("src")).unwrap();
+        for file in ["src/app.ts", "src/view.tsx", "README.md"] {
+            std::fs::write(dir.path().join(file), "x\n").unwrap();
+        }
+        let task_files = [
+            "src/app.ts",
+            "src/view.tsx",
+            "src/app.ts",
+            "README.md",
+            // Not created: nothing to fix.
+            "src/missing.ts",
+            // Outside the workdir: skipped.
+            "../outside.ts",
+            "/abs/root.ts",
+        ]
+        .map(String::from);
+
+        assert_eq!(
+            task_fix_targets(dir.path(), &task_files, &["ts", "tsx"]),
+            ["src/app.ts", "src/view.tsx"]
+        );
+        assert!(task_fix_targets(dir.path(), &task_files, &["go"]).is_empty());
+    }
+
+    /// gap-c08623: when none of the task's files is in the fixer's language,
+    /// the fixer doesn't run, rather than running on the whole tree.
+    #[tokio::test]
+    async fn non_cargo_auto_fix_skips_a_task_without_files_in_its_language() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("package.json"), "{}\n").unwrap();
+        std::fs::write(dir.path().join("index.js"), "x\n").unwrap();
+        let task_files = vec!["README.md".to_string()];
+        let outcome = attempt_auto_fix(
+            dir.path(),
+            "lint",
+            "1 problem",
+            test_fix_bounds(&task_files),
+        )
+        .await
+        .expect("skipping must not error");
+
+        assert!(outcome.was_candidate);
+        assert!(!outcome.fix_applied);
+        assert!(
+            outcome.command.is_none(),
+            "no fixer may run on the whole tree"
         );
     }
 
@@ -3559,6 +3385,8 @@ cargo_fix_enabled = false
             fail_msg: Some("tests failed".into()),
             timeout_ms: 60_000,
             scope: Vec::new(),
+            covers: Vec::new(),
+            expect: None,
         }];
         let cancel = tokio_util::sync::CancellationToken::new();
         let request = RunnerProductionGateAdapter::build_request(
@@ -3766,13 +3594,6 @@ cargo_fix_enabled = false
             .await;
         assert!(!completion.passed);
         assert!(completion.failure_kind.is_some());
-    }
-
-    #[test]
-    fn default_gate_adapter_creates_valid_adapter() {
-        let adapter = default_gate_adapter();
-        let debug = format!("{adapter:?}");
-        assert!(debug.contains("RunnerProductionGateAdapter"));
     }
 
     // ── P2-GAT-1: rung input completion tests ────────────────────────────────

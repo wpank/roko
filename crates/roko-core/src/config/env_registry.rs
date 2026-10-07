@@ -493,6 +493,19 @@ fn tui_accessibility() -> Vec<EnvVarSpec> {
 fn config_system() -> Vec<EnvVarSpec> {
     vec![
         EnvVarSpec {
+            name: "ROKO_AUDIT_HOME",
+            owner: "Audit",
+            purpose: "Root of the audit vault (hidden tests, audit keys, the audit ledger), \
+                      outside every workdir",
+            value_type: ValueType::Path,
+            default: "~/.roko/audit",
+            precedence: "env > [audit] home > default",
+            scope: Scope::Gate,
+            sensitivity: Sensitivity::Public,
+            stability: Stability::Unstable,
+            replacement: None,
+        },
+        EnvVarSpec {
             name: "ROKO_CONFIG",
             owner: "Configuration",
             purpose: "Explicit path to roko.toml config file",
@@ -950,6 +963,18 @@ fn server_deploy() -> Vec<EnvVarSpec> {
             replacement: None,
         },
         EnvVarSpec {
+            name: "ROKO_SHOWCASE_PASSPHRASE_HASH",
+            owner: "Server / deploy",
+            purpose: "Argon2id PHC string of the showcase passphrase; required in showcase mode",
+            value_type: ValueType::String,
+            default: "",
+            precedence: "env only (a deploy secret, never a roko.toml key)",
+            scope: Scope::Server,
+            sensitivity: Sensitivity::Secret,
+            stability: Stability::Unstable,
+            replacement: None,
+        },
+        EnvVarSpec {
             name: "ROKO_SERVE_URL",
             owner: "Server / deploy",
             purpose: "URL of the roko serve instance",
@@ -1042,6 +1067,31 @@ fn server_deploy() -> Vec<EnvVarSpec> {
             precedence: "env only",
             scope: Scope::Deploy,
             sensitivity: Sensitivity::Secret,
+            stability: Stability::Stable,
+            replacement: None,
+        },
+        EnvVarSpec {
+            name: "ROKO_WORKER_GIT_AUTHOR_NAME",
+            owner: "Server / deploy",
+            purpose: "Git author/committer name for a cloud worker's own commits (decision 9305)",
+            value_type: ValueType::String,
+            default: "roko",
+            precedence: "env only",
+            scope: Scope::Deploy,
+            sensitivity: Sensitivity::Public,
+            stability: Stability::Stable,
+            replacement: None,
+        },
+        EnvVarSpec {
+            name: "ROKO_WORKER_GIT_AUTHOR_EMAIL",
+            owner: "Server / deploy",
+            purpose: "Git author/committer email for a cloud worker's own commits (decision 9305, \
+                      a neutral default)",
+            value_type: ValueType::String,
+            default: "roko@users.noreply.github.com",
+            precedence: "env only",
+            scope: Scope::Deploy,
+            sensitivity: Sensitivity::Public,
             stability: Stability::Stable,
             replacement: None,
         },
@@ -1255,7 +1305,7 @@ fn acp_vars() -> Vec<EnvVarSpec> {
         EnvVarSpec {
             name: "ROKO_ACP_LEGACY",
             owner: "ACP",
-            purpose: "Activate legacy ACP behavior paths",
+            purpose: "Ignored: ACP workflow sessions always run the pipeline (gap-38a529)",
             value_type: ValueType::Presence,
             default: "",
             precedence: "env only; removal planned",
@@ -1954,17 +2004,14 @@ pub(crate) fn operator_facing_registry() -> Vec<EnvVarSpec> {
         .collect()
 }
 
-/// Emit a deprecation warning to stderr if `spec` is deprecated.
+/// Log a deprecation warning if `spec` is deprecated.
 pub(crate) fn warn_if_deprecated(spec: &EnvVarSpec) {
     if spec.stability == Stability::Deprecated {
         let replacement_msg = spec
             .replacement
             .map(|r| format!("; use {r} instead"))
             .unwrap_or_default();
-        eprintln!(
-            "warning: env var {} is deprecated{replacement_msg}",
-            spec.name
-        );
+        tracing::warn!("env var {} is deprecated{replacement_msg}", spec.name);
     }
 }
 

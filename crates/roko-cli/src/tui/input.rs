@@ -91,10 +91,6 @@ pub enum FocusZone {
     MarketList,
     /// Marketplace tab: job detail.
     MarketDetail,
-    /// Atelier tab: artifact list.
-    AtelierList,
-    /// Atelier tab: artifact detail.
-    AtelierDetail,
     /// Learning tab: metric list.
     LearningMetrics,
     /// Learning tab: chart/detail pane.
@@ -125,8 +121,6 @@ impl FocusZone {
             Self::InspectDetail => "Detail",
             Self::MarketList => "Jobs",
             Self::MarketDetail => "Detail",
-            Self::AtelierList => "PRDs",
-            Self::AtelierDetail => "Detail",
             Self::LearningMetrics => "Metrics",
             Self::LearningDetail => "Detail",
             Self::ProviderList => "Providers",
@@ -174,10 +168,6 @@ impl FocusZone {
             Tab::Marketplace => match self {
                 Self::MarketList => Self::MarketDetail,
                 _ => Self::MarketList,
-            },
-            Tab::Atelier => match self {
-                Self::AtelierList => Self::AtelierDetail,
-                _ => Self::AtelierList,
             },
             Tab::Learning => match self {
                 Self::LearningMetrics => Self::LearningDetail,
@@ -231,10 +221,6 @@ impl FocusZone {
                 Self::MarketDetail => Self::MarketList,
                 _ => Self::MarketDetail,
             },
-            Tab::Atelier => match self {
-                Self::AtelierDetail => Self::AtelierList,
-                _ => Self::AtelierDetail,
-            },
             Tab::Learning => match self {
                 Self::LearningDetail => Self::LearningMetrics,
                 _ => Self::LearningDetail,
@@ -256,7 +242,11 @@ impl FocusZone {
 pub enum ConfirmAction {
     RestartAllPlans,
     RestartPhase,
+    /// Reset the selected plan (`R`): a Graph run runs a plan that failed or
+    /// was cancelled earlier in the run again from scratch (gap-c002bb).
     ResetSelectedPlan(String),
+    /// Cancel the selected plan (`C`, `Ctrl-d`).
+    CancelPlan(String),
     ForceAdvance(String),
     ReverifyPlan(String),
     DiagnosePlan(String),
@@ -279,7 +269,8 @@ pub enum ConfirmAction {
     MergeAllDone {
         branches: Vec<String>,
     },
-    /// Cancel (skip) a specific running agent's task (P3-TUI-4).
+    /// Stop a specific running agent's task (P3-TUI-4): a Graph run ends the
+    /// agent, and the task fails as stopped by the operator (gap-c002bb).
     ///
     /// `plan_id` and `task_id` are empty when fired from the key handler and
     /// are filled in by `resolve_confirm_action` from the selected agent row.
@@ -295,6 +286,7 @@ impl std::fmt::Display for ConfirmAction {
             Self::RestartAllPlans => write!(f, "Restart all plans?"),
             Self::RestartPhase => write!(f, "Restart current phase?"),
             Self::ResetSelectedPlan(id) => write!(f, "Reset plan {id}?"),
+            Self::CancelPlan(id) => write!(f, "Cancel plan {id}?"),
             Self::ForceAdvance(id) => write!(f, "Force-advance plan {id}?"),
             Self::ReverifyPlan(id) => write!(f, "Re-verify plan {id}?"),
             Self::DiagnosePlan(id) => write!(f, "Diagnose plan {id}?"),
@@ -475,9 +467,9 @@ pub enum TuiAction {
     /// Re-parse `roko.toml` into the config editor cache immediately.
     ConfigReload,
 
-    // -- force / reset --
+    // -- force / cancel --
     ForceAdvance,
-    ResetPlanState,
+    CancelSelectedPlan,
     ReverifyPlan,
 
     // -- confirm dialog --
@@ -647,7 +639,6 @@ pub fn handle_key(
             ModalState::TaskPicker { .. } => handle_task_picker_key(key),
             ModalState::TaskDetail { .. } => handle_task_detail_key(key),
             ModalState::QueueOverview { .. } => handle_queue_overview_key(key),
-            ModalState::AgentPool { .. } => handle_agent_pool_key(key),
             ModalState::Quit | ModalState::Confirm { .. } => handle_confirm_key(key),
             ModalState::Inject { .. } => handle_inject_key(key),
             ModalState::BatchReview { .. } => handle_batch_review_key(key),
@@ -670,7 +661,6 @@ pub fn handle_key(
         Tab::Config => handle_config_key(key),
         Tab::Inspect => handle_inspect_key(key, focus),
         Tab::Marketplace => handle_marketplace_key(key, focus),
-        Tab::Atelier => handle_atelier_key(key, focus),
         Tab::Learning | Tab::Providers => handle_learning_key(key),
     }
 }
@@ -765,15 +755,6 @@ fn handle_queue_overview_key(key: KeyEvent) -> TuiAction {
         KeyCode::Esc | KeyCode::Char('q') => TuiAction::ShowQueueOverview, // toggle off
         KeyCode::Up | KeyCode::Char('k') => TuiAction::QueueOverviewUp,
         KeyCode::Down | KeyCode::Char('j') => TuiAction::QueueOverviewDown,
-        _ => TuiAction::None,
-    }
-}
-
-fn handle_agent_pool_key(key: KeyEvent) -> TuiAction {
-    match key.code {
-        KeyCode::Esc | KeyCode::Char('q') => TuiAction::CloseModal,
-        KeyCode::Up | KeyCode::Char('k') => TuiAction::ModalScrollUp,
-        KeyCode::Down | KeyCode::Char('j') => TuiAction::ModalScrollDown,
         _ => TuiAction::None,
     }
 }
@@ -891,11 +872,11 @@ fn handle_global_key(key: KeyEvent, active_tab: Tab) -> Option<TuiAction> {
         return Some(TuiAction::SwitchTab(tab));
     }
 
-    // Number keys 1-9 switch top-level tabs (same as F1-F10), but only when
+    // Number keys 1-9 switch top-level tabs (same as F1-F9), but only when
     // the active tab does NOT use number keys for its own purpose (e.g.
     // Agents uses 1-7 for agent sub-tabs, Logs uses 1-4 for filter levels,
     // Plans uses 1-9 for direct plan selection).
-    // 0 switches to F10 (Learning). Plain digit press, no modifiers.
+    // 0 switches to F10 (Providers). Plain digit press, no modifiers.
     let tab_uses_numbers = matches!(active_tab, Tab::Agents | Tab::Logs | Tab::Plans);
     if key.modifiers.is_empty() && !tab_uses_numbers {
         let tab = match key.code {
@@ -907,9 +888,8 @@ fn handle_global_key(key: KeyEvent, active_tab: Tab) -> Option<TuiAction> {
             KeyCode::Char('6') => Some(Tab::Config),
             KeyCode::Char('7') => Some(Tab::Inspect),
             KeyCode::Char('8') => Some(Tab::Marketplace),
-            KeyCode::Char('9') => Some(Tab::Atelier),
-            KeyCode::Char('0') => Some(Tab::Learning),
-            KeyCode::Char('-') => Some(Tab::Providers),
+            KeyCode::Char('9') => Some(Tab::Learning),
+            KeyCode::Char('0') => Some(Tab::Providers),
             _ => None,
         };
         if let Some(tab) = tab {
@@ -950,9 +930,9 @@ fn handle_global_key(key: KeyEvent, active_tab: Tab) -> Option<TuiAction> {
         KeyCode::Char('x') if key.modifiers.contains(KeyModifiers::CONTROL) => {
             Some(TuiAction::ForceAdvance)
         }
-        // Ctrl-d: reset selected plan (confirm)
+        // Ctrl-d: cancel selected plan (confirm)
         KeyCode::Char('d') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-            Some(TuiAction::ResetPlanState)
+            Some(TuiAction::CancelSelectedPlan)
         }
         // Ctrl-e: toggle full-screen post-processing
         KeyCode::Char('e') if key.modifiers.contains(KeyModifiers::CONTROL) => {
@@ -1084,6 +1064,8 @@ fn handle_plans_key(key: KeyEvent, focus: FocusZone) -> TuiAction {
         KeyCode::Char('R') => {
             TuiAction::RequestConfirm(ConfirmAction::ResetSelectedPlan(String::new()))
         } // reset plan (confirm)
+        // cancel plan (confirm)
+        KeyCode::Char('C') => TuiAction::RequestConfirm(ConfirmAction::CancelPlan(String::new())),
         KeyCode::Char('c') => TuiAction::ReverifyGatesOnly, // reverify gates only
         KeyCode::Char('F') => TuiAction::ForceAdvance,
         KeyCode::Char('V') => TuiAction::ReverifyPlan,
@@ -1243,18 +1225,6 @@ fn handle_marketplace_key(key: KeyEvent, _focus: FocusZone) -> TuiAction {
         KeyCode::Char('k') | KeyCode::Up => TuiAction::ScrollFocusedUp,
         KeyCode::Enter => TuiAction::ExpandCollapse,
         KeyCode::Char('n') => TuiAction::SwitchSubView(2), // CreateJob sub-view
-        KeyCode::Char('r') => TuiAction::Refresh,
-        KeyCode::Home => TuiAction::ScrollFocusedHome,
-        KeyCode::End => TuiAction::ScrollFocusedEnd,
-        _ => TuiAction::None,
-    }
-}
-
-fn handle_atelier_key(key: KeyEvent, _focus: FocusZone) -> TuiAction {
-    match key.code {
-        KeyCode::Char('j') | KeyCode::Down => TuiAction::ScrollFocusedDown,
-        KeyCode::Char('k') | KeyCode::Up => TuiAction::ScrollFocusedUp,
-        KeyCode::Enter => TuiAction::ExpandCollapse,
         KeyCode::Char('r') => TuiAction::Refresh,
         KeyCode::Home => TuiAction::ScrollFocusedHome,
         KeyCode::End => TuiAction::ScrollFocusedEnd,
@@ -1465,7 +1435,19 @@ mod tests {
     }
 
     #[test]
-    fn zero_key_switches_to_learning_tab() {
+    fn nine_key_switches_to_learning_tab() {
+        let action = handle_key(
+            key(KeyCode::Char('9')),
+            InputMode::Normal,
+            Tab::Dashboard,
+            FocusZone::PlanTree,
+            &modals(None),
+        );
+        assert_eq!(action, TuiAction::SwitchTab(Tab::Learning));
+    }
+
+    #[test]
+    fn zero_key_switches_to_providers_tab() {
         let action = handle_key(
             key(KeyCode::Char('0')),
             InputMode::Normal,
@@ -1473,7 +1455,7 @@ mod tests {
             FocusZone::PlanTree,
             &modals(None),
         );
-        assert_eq!(action, TuiAction::SwitchTab(Tab::Learning));
+        assert_eq!(action, TuiAction::SwitchTab(Tab::Providers));
     }
 
     #[test]
@@ -1621,16 +1603,6 @@ mod tests {
             vis.active_modal,
             Some(ModalState::TaskPicker { .. })
         ));
-
-        let agent_pool = ModalState::AgentPool {
-            agents: Vec::new(),
-            scroll_offset: 0,
-        };
-        let vis = ModalVisibility::from_active_modal(Some(&agent_pool));
-        assert!(matches!(
-            vis.active_modal,
-            Some(ModalState::AgentPool { .. })
-        ));
     }
 
     #[test]
@@ -1755,51 +1727,6 @@ mod tests {
             &vis,
         );
         assert_eq!(action, TuiAction::QueueOverviewDown);
-    }
-
-    #[test]
-    fn agent_pool_modal_blocks_navigation_keys() {
-        let modal = ModalState::AgentPool {
-            agents: Vec::new(),
-            scroll_offset: 0,
-        };
-        let vis = modals(Some(&modal));
-
-        let action = handle_key(
-            key(KeyCode::Up),
-            InputMode::Normal,
-            Tab::Agents,
-            FocusZone::AgentOutput,
-            &vis,
-        );
-        assert_eq!(action, TuiAction::ModalScrollUp);
-
-        let action = handle_key(
-            key(KeyCode::Char('j')),
-            InputMode::Normal,
-            Tab::Agents,
-            FocusZone::AgentOutput,
-            &vis,
-        );
-        assert_eq!(action, TuiAction::ModalScrollDown);
-
-        let action = handle_key(
-            key(KeyCode::Tab),
-            InputMode::Normal,
-            Tab::Agents,
-            FocusZone::AgentOutput,
-            &vis,
-        );
-        assert_eq!(action, TuiAction::None);
-
-        let action = handle_key(
-            key(KeyCode::Esc),
-            InputMode::Normal,
-            Tab::Agents,
-            FocusZone::AgentOutput,
-            &vis,
-        );
-        assert_eq!(action, TuiAction::CloseModal);
     }
 
     #[test]

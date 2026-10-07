@@ -2,6 +2,10 @@
 
 use super::*;
 
+/// What the inject key says: the TUI cannot send a directive itself yet.
+const INJECT_UNAVAILABLE: &str =
+    "inject is not available in the TUI yet; send it with `roko inject <plan> <text>`";
+
 impl App {
     pub(super) fn handle_key(&mut self, key: KeyEvent) {
         if key.code == crossterm::event::KeyCode::Esc {
@@ -45,7 +49,6 @@ impl App {
                     Tab::Config => FocusZone::ConfigKeys,
                     Tab::Inspect => FocusZone::InspectTree,
                     Tab::Marketplace => FocusZone::MarketList,
-                    Tab::Atelier => FocusZone::AtelierList,
                     Tab::Learning => FocusZone::LearningMetrics,
                     Tab::Providers => FocusZone::ProviderList,
                 };
@@ -257,7 +260,6 @@ impl App {
                 if let Some(modal) = self.tui_state.active_modal.as_mut() {
                     match modal {
                         ModalState::WaveOverview { scroll_offset, .. }
-                        | ModalState::AgentPool { scroll_offset, .. }
                         | ModalState::BatchReview { scroll_offset, .. } => {
                             *scroll_offset = scroll_offset.saturating_sub(1);
                         }
@@ -283,7 +285,6 @@ impl App {
                 if let Some(modal) = self.tui_state.active_modal.as_mut() {
                     match modal {
                         ModalState::WaveOverview { scroll_offset, .. }
-                        | ModalState::AgentPool { scroll_offset, .. }
                         | ModalState::BatchReview { scroll_offset, .. } => {
                             *scroll_offset = scroll_offset.saturating_add(1);
                         }
@@ -345,9 +346,6 @@ impl App {
                     "state",
                     "learn",
                     "jobs",
-                    "prd",
-                    "prd/published",
-                    "prd/drafts",
                     "task-outputs",
                     "research",
                     "subscriptions",
@@ -619,6 +617,9 @@ impl App {
                 }
             }
             TuiAction::ApproveCommand => {
+                if self.decide_held_task(true) {
+                    return;
+                }
                 // P1-40: Emit SurfaceEvent for the approval action.
                 if let Some(approval) = &self.tui_state.pending_approval {
                     self.emit_surface_event(roko_core::runtime_event::SurfaceEvent::HumanRespond {
@@ -632,6 +633,9 @@ impl App {
                 }
             }
             TuiAction::ApproveAll => {
+                if self.decide_held_task(true) {
+                    return;
+                }
                 if let Some(approval) = &self.tui_state.pending_approval {
                     self.emit_surface_event(roko_core::runtime_event::SurfaceEvent::HumanRespond {
                         run_id: approval.run_id.clone().unwrap_or_default(),
@@ -644,6 +648,9 @@ impl App {
                 }
             }
             TuiAction::RejectCommand => {
+                if self.decide_held_task(false) {
+                    return;
+                }
                 if let Some(approval) = &self.tui_state.pending_approval {
                     self.emit_surface_event(roko_core::runtime_event::SurfaceEvent::HumanRespond {
                         run_id: approval.run_id.clone().unwrap_or_default(),
@@ -655,56 +662,18 @@ impl App {
                     self.tui_state.pending_approval = None;
                 }
             }
+            // No transport reaches a live run yet, so inject fails closed, as
+            // `roko inject` does: no prompt for a directive nothing would
+            // read, and nothing written (bug-6c3491, gap-f118b3).
             TuiAction::StartInject => {
-                self.tui_state.input_mode = InputMode::Inject;
-                self.tui_state.message_input.clear();
+                self.notifications
+                    .push_back(super::super::modals::Notification::warn(INJECT_UNAVAILABLE));
             }
             TuiAction::SubmitInject => {
-                let msg = self.tui_state.message_input.clone();
                 self.tui_state.input_mode = InputMode::Normal;
                 self.tui_state.message_input.clear();
-                if !msg.is_empty() {
-                    // Write inject signal to .roko/signals.jsonl for the plan runner
-                    let signal_path = self.workdir.join(".roko").join("signals.jsonl");
-                    let ts = std::time::SystemTime::now()
-                        .duration_since(std::time::UNIX_EPOCH)
-                        .unwrap_or_default()
-                        .as_millis();
-                    let entry = serde_json::json!({
-                        "id": format!("inject-{ts}"),
-                        "kind": "roko.inject.directive",
-                        "created_at_ms": ts,
-                        "payload": { "message": msg },
-                    });
-                    std::fs::OpenOptions::new()
-                        .create(true)
-                        .append(true)
-                        .open(&signal_path)
-                        .inspect_err(|err| {
-                            tracing::warn!(
-                                error = %err,
-                                path = %signal_path.display(),
-                                "failed to open signal file for inject"
-                            );
-                        })
-                        .ok()
-                        .and_then(|mut f| {
-                            roko_core::io::write_jsonl_line(&mut f, &entry.to_string())
-                                .inspect_err(|err| {
-                                    tracing::warn!(
-                                        error = %err,
-                                        path = %signal_path.display(),
-                                        "failed to append inject signal"
-                                    );
-                                })
-                                .ok()
-                        });
-                    self.notifications
-                        .push_back(super::super::modals::Notification::info(format!(
-                            "Injected: {}",
-                            truncate_str(&msg, 40)
-                        )));
-                }
+                self.notifications
+                    .push_back(super::super::modals::Notification::warn(INJECT_UNAVAILABLE));
             }
             TuiAction::CancelInject => {
                 self.tui_state.input_mode = InputMode::Normal;
@@ -1023,8 +992,7 @@ impl App {
                     self.tui_state.git_branch_cursor =
                         (self.tui_state.git_branch_cursor + 1).min(max);
                 }
-                Tab::Inspect | Tab::Marketplace | Tab::Atelier | Tab::Learning | Tab::Providers => {
-                }
+                Tab::Inspect | Tab::Marketplace | Tab::Learning | Tab::Providers => {}
                 Tab::Agents | Tab::Logs | Tab::Config => {}
             },
             TuiAction::DrillOut => match self.tui_state.active_tab {
@@ -1041,8 +1009,7 @@ impl App {
                     self.tui_state.git_branch_cursor =
                         self.tui_state.git_branch_cursor.saturating_sub(1);
                 }
-                Tab::Inspect | Tab::Marketplace | Tab::Atelier | Tab::Learning | Tab::Providers => {
-                }
+                Tab::Inspect | Tab::Marketplace | Tab::Learning | Tab::Providers => {}
                 Tab::Agents | Tab::Logs | Tab::Config => {}
             },
             TuiAction::WaveNext => {
@@ -1074,7 +1041,7 @@ impl App {
                     self.tui_state.pending_confirm =
                         Some(ConfirmAction::ResetSelectedPlan(plan_id.clone()));
                     let modal_action = modals_mod::ConfirmAction::Custom {
-                        message: format!("Restart plan '{plan_id}'?"),
+                        message: format!("Reset plan '{plan_id}'?"),
                     };
                     self.tui_state.active_modal = Some(ModalState::Confirm {
                         action: modal_action,
@@ -1095,14 +1062,14 @@ impl App {
                     });
                 }
             }
-            TuiAction::ResetPlanState => {
+            TuiAction::CancelSelectedPlan => {
                 if let Some(plan) = self.tui_state.plans.get(self.tui_state.selected_plan_idx) {
                     let plan_id = plan.id.clone();
                     self.tui_state.input_mode = InputMode::Confirm;
                     self.tui_state.pending_confirm =
-                        Some(ConfirmAction::ResetSelectedPlan(plan_id.clone()));
+                        Some(ConfirmAction::CancelPlan(plan_id.clone()));
                     let modal_action = modals_mod::ConfirmAction::Custom {
-                        message: format!("Reset state for plan '{plan_id}'?"),
+                        message: format!("Cancel plan '{plan_id}'?"),
                     };
                     self.tui_state.active_modal = Some(ModalState::Confirm {
                         action: modal_action,
@@ -1853,14 +1820,6 @@ impl App {
                 auto_tail: false,
                 search_query: self.tui_state.filter.clone(),
             },
-            Tab::Atelier => ViewState {
-                scroll: 0,
-                selected: self.tui_state.atelier_selected_prd,
-                sub_tab: self.tui_state.sub_tab_for(Tab::Atelier),
-                secondary_selected: 0,
-                auto_tail: false,
-                search_query: self.tui_state.filter.clone(),
-            },
             Tab::Learning => ViewState {
                 scroll: 0,
                 selected: 0,
@@ -1892,11 +1851,77 @@ impl App {
             })
     }
 
-    pub(super) fn dismiss_all_modals(&mut self) {
+    /// Send the run an Approve, or a Reject, for the task a Graph run holds
+    /// for review that the pending approval offers (1218), and close its
+    /// prompt. The offer stays until the task no longer waits, and the run's
+    /// acknowledgement shows. `false` when no held task is offered.
+    pub(super) fn decide_held_task(&mut self, approved: bool) -> bool {
+        use super::super::modals::Notification;
+        use crate::execution_control::{CommandSendError, ExecutionCommandKind};
+
+        let Some(approval_id) = self
+            .tui_state
+            .pending_approval
+            .as_ref()
+            .filter(|pending| pending.held_task)
+            .and_then(|pending| pending.approval_id.clone())
+        else {
+            return false;
+        };
         if matches!(
             self.tui_state.active_modal,
             Some(ModalState::Approval { .. })
         ) {
+            self.tui_state.active_modal = None;
+        }
+        let Some(sender) = &self.exec_cmd_sender else {
+            let message = format!("no connected run: decide {approval_id} with roko plan review");
+            self.notifications.push_back(Notification::warn(message));
+            return true;
+        };
+        let (plan_id, task_id) = approval_id
+            .rsplit_once('/')
+            .map(|(plan_id, task_id)| (plan_id.to_string(), task_id.to_string()))
+            .unzip();
+        let kind = if approved {
+            ExecutionCommandKind::Approve { approval_id }
+        } else {
+            ExecutionCommandKind::RejectApproval {
+                approval_id,
+                reason: "rejected in the TUI".to_string(),
+            }
+        };
+        let cmd = sender.build_command(kind.clone(), plan_id, task_id, None);
+        let cmd_id = cmd.command_id.clone();
+        match sender.try_send(cmd) {
+            Ok(()) => {
+                self.pending_exec_commands.insert(cmd_id, kind);
+            }
+            Err(CommandSendError::Full(_)) => {
+                self.notifications
+                    .push_back(Notification::warn("command queue full"));
+            }
+            Err(CommandSendError::Disconnected(_)) => {
+                self.notifications
+                    .push_back(Notification::warn("executor disconnected"));
+            }
+        }
+        true
+    }
+
+    pub(super) fn dismiss_all_modals(&mut self) {
+        // A held task's offer outlives its prompt: closing the prompt decides
+        // nothing.
+        let held_task = self
+            .tui_state
+            .pending_approval
+            .as_ref()
+            .is_some_and(|pending| pending.held_task);
+        let approval_open = matches!(
+            self.tui_state.active_modal,
+            Some(ModalState::Approval { .. })
+        );
+        if approval_open && !held_task {
             let _ = self.resolve_active_approval(false);
         }
         self.tui_state.active_modal = None;

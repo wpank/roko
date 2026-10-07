@@ -22,6 +22,7 @@ use roko_core::agent::ProviderKind;
 use roko_core::child_env::{CredentialScrub, KEY_FILE_NAMES};
 use roko_core::config::model_registry::model_meta;
 use roko_core::defaults::DEFAULT_REQUEST_TIMEOUT_MS;
+use roko_core::pricing_snapshot::{PriceSnapshot, PricedUsage, PricingConfig, TokenCounts};
 use roko_core::{Body, Context, Kind, OperatingFrequency, Provenance, Signal};
 use serde_json::Value;
 use std::collections::HashMap;
@@ -35,26 +36,42 @@ use tokio::sync::mpsc;
 use tokio::time::{Duration, timeout};
 use tokio_util::task::AbortOnDropHandle;
 
+mod guard_payload;
+
 /// The PreToolUse guard: destructive git commands anywhere in a Bash
 /// command, recursive `rm`, and provider key files named by a command or a
 /// file tool's path. What it checks is documented at its top.
 const GUARD_SCRIPT: &str = include_str!("claude_cli_guard.py");
 
+/// The program each guard hook gives `python3 -c`: [`GUARD_SCRIPT`],
+/// zlib-compressed and base64-encoded, then unpacked and run. The plain
+/// script, once per hook, made `--settings` longer than the 128 KiB Linux
+/// allows one argument (`MAX_ARG_STRLEN`), so `execve` would fail with
+/// `E2BIG` (1223). The program holds no single quote.
+fn guard_program() -> &'static str {
+    static PROGRAM: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    PROGRAM.get_or_init(|| {
+        format!(
+            "import base64,zlib;exec(zlib.decompress(base64.b64decode(\"{}\")))",
+            guard_payload::zlib_base64(GUARD_SCRIPT.as_bytes())
+        )
+    })
+}
+
 /// Claude's file tools, whose path arguments the guard checks for provider
 /// key files.
 const FILE_TOOL_MATCHER: &str = "Read|Edit|MultiEdit|Write|NotebookEdit|Grep|Glob";
 
-/// The shell command of a guard hook running `check` (`bash` or `file`).
-/// Claude Code runs hooks with `sh -c` and blocks the tool call only on exit
-/// 2; any other failure is a non-blocking error that lets the call run. So a
-/// missing `python3`, and a guard that fails for any reason, exit 2 with a
-/// `BLOCKED:` message.
+/// The shell command of a guard hook running `check` (`bash` or `file`)
+/// with [`guard_program`]. Claude Code runs hooks with `sh -c` and blocks
+/// the tool call only on exit 2; any other failure is a non-blocking error
+/// that lets the call run. So a missing `python3`, and a guard that fails
+/// for any reason (unpacking included), exit 2 with a `BLOCKED:` message.
 fn guard_hook_command(check: &str) -> String {
     format!(
         "command -v python3 >/dev/null 2>&1 || {{ echo 'BLOCKED: the roko command guard needs python3 on PATH' >&2; exit 2; }}\n\
-         python3 -c '{script}' {check} || {{ status=$?; [ \"$status\" -eq 2 ] || echo \"BLOCKED: the roko command guard failed (python3 exit $status)\" >&2; exit 2; }}",
-        // Close the single-quoted string, add an escaped quote, reopen it.
-        script = GUARD_SCRIPT.replace('\'', r"'\''"),
+         python3 -c '{program}' {check} || {{ status=$?; [ \"$status\" -eq 2 ] || echo \"BLOCKED: the roko command guard failed (python3 exit $status)\" >&2; exit 2; }}",
+        program = guard_program(),
     )
 }
 
@@ -75,18 +92,40 @@ fn key_file_deny_rules() -> Vec<String> {
     rules
 }
 
+/// `Read` and `Edit` deny rules for the audit vault's roots (S05 §4.4).
+/// Claude Code also turns `Read` rules into exclusions in its own Grep and
+/// Glob.
+fn vault_deny_rules(roots: &[PathBuf]) -> Vec<String> {
+    let mut rules = Vec::new();
+    for root in roots {
+        let root = root.display();
+        rules.push(format!("Read(/{root}/**)"));
+        rules.push(format!("Edit(/{root}/**)"));
+    }
+    rules
+}
+
 /// Build the Claude CLI `--settings` JSON payload with safety hooks.
 ///
 /// Claude Code hook entries do not support per-hook condition fields. Keep the
 /// filtering inside one command so ordinary Bash calls are allowed while the
 /// destructive commands that should never be launched by a model in this
-/// workspace are blocked. The payload does not depend on the environment:
-/// the guard resolves `~` and the working directory when it runs.
+/// workspace are blocked. The deny rules name the audit vault's roots as this
+/// process resolves them when it spawns the CLI (`ROKO_AUDIT_HOME` and
+/// `~/.roko/audit`); nothing else depends on the environment: the guard
+/// resolves `~`, the vault and the working directory when it runs.
 #[must_use]
 pub fn build_settings_json() -> String {
+    settings_json_for(&roko_core::audit_home::vault_roots())
+}
+
+/// [`build_settings_json`] with the audit vault at `vault_roots`.
+fn settings_json_for(vault_roots: &[PathBuf]) -> String {
+    let mut deny = key_file_deny_rules();
+    deny.extend(vault_deny_rules(vault_roots));
     serde_json::json!({
         "permissions": {
-            "deny": key_file_deny_rules(),
+            "deny": deny,
         },
         "hooks": {
             "PreToolUse": [
@@ -135,8 +174,14 @@ pub const ISOLATION_ENV: &[(&str, &str)] = &[
 ];
 
 /// Claude Code's managed-settings directory, where an administrator puts
-/// `managed-mcp.json`. Claude Code 2.1.282 has no way to move it.
+/// `managed-mcp.json`. Claude Code 2.1.282 has no way to move it. This
+/// crate's tests look in a directory that never exists instead, so that they
+/// do not depend on the host's managed config; a test that wants one passes
+/// its own directory ([`ClaudeIsolation::with_managed_settings_dir`]).
 fn claude_managed_settings_dir() -> PathBuf {
+    if cfg!(test) {
+        return PathBuf::from("/nonexistent/roko-tests/claude-code-managed-settings");
+    }
     PathBuf::from(if cfg!(target_os = "macos") {
         "/Library/Application Support/ClaudeCode"
     } else if cfg!(windows) {
@@ -326,7 +371,17 @@ pub struct ClaudeCliAgent {
     dangerously_skip_permissions: bool,
     timeout_ms: u64,
     resource_limits: Option<ResourceLimits>,
+    /// The provider whose `max_concurrent` caps this agent's runs, with the
+    /// shared semaphores that enforce it (bug-eba31d).
+    provider_id: Option<String>,
+    provider_semaphores: Option<Arc<crate::provider::ProviderSemaphores>>,
+    /// Where a run reports that it waits for its provider's permit.
+    live_output: Option<crate::live_output::LiveOutput>,
     name: String,
+    /// The operator's `[pricing]` snapshot pin (bug-1809d7), consulted instead of the default in
+    /// `priced_observation`. Unset (`PricingConfig::default()`) keeps the "newest file in
+    /// `config/prices/`, else the built-in copy" fallback.
+    pricing: PricingConfig,
 }
 
 impl ClaudeCliAgent {
@@ -363,7 +418,11 @@ impl ClaudeCliAgent {
             dangerously_skip_permissions: false,
             timeout_ms: DEFAULT_REQUEST_TIMEOUT_MS,
             resource_limits: None,
+            provider_id: None,
+            provider_semaphores: None,
+            live_output: None,
             name: format!("claude-cli:{model}"),
+            pricing: PricingConfig::default(),
         }
     }
 
@@ -381,11 +440,70 @@ impl ClaudeCliAgent {
         self
     }
 
+    /// Pin pricing to the operator's configured `[pricing]` snapshot (bug-1809d7), instead of
+    /// `priced_observation`'s "newest, else built-in" default.
+    #[must_use]
+    pub fn with_pricing(mut self, pricing: PricingConfig) -> Self {
+        self.pricing = pricing;
+        self
+    }
+
     /// Apply OS resource limits to the Claude subprocess.
     #[must_use]
     pub fn with_resource_limits(mut self, limits: ResourceLimits) -> Self {
         self.resource_limits = Some(limits);
         self
+    }
+
+    /// Attach shared provider semaphores, so that no more `claude` processes
+    /// run at once than `[providers.<provider_id>] max_concurrent` allows: a
+    /// run waits for a permit before it spawns and holds it until it ends.
+    #[must_use]
+    pub fn with_provider_semaphores(
+        mut self,
+        provider_id: impl Into<String>,
+        provider_semaphores: Arc<crate::provider::ProviderSemaphores>,
+    ) -> Self {
+        self.provider_id = Some(provider_id.into());
+        self.provider_semaphores = Some(provider_semaphores);
+        self
+    }
+
+    /// Report on `live_output` when a run has to wait for its provider's
+    /// concurrency permit, and when it gets it, so that a stall watchdog
+    /// counts the wait as queued rather than silent.
+    #[must_use]
+    pub fn with_live_output(mut self, live_output: crate::live_output::LiveOutput) -> Self {
+        self.live_output = Some(live_output);
+        self
+    }
+
+    /// Wait for this provider's concurrency permit when a cap applies
+    /// (bug-eba31d). A run that has to wait reports it on its live output,
+    /// and reports again once it has the permit and starts.
+    async fn provider_permit(&self) -> Option<tokio::sync::OwnedSemaphorePermit> {
+        let (Some(provider_id), Some(provider_semaphores)) =
+            (&self.provider_id, &self.provider_semaphores)
+        else {
+            return None;
+        };
+        if let Some(permit) = provider_semaphores.try_acquire(provider_id) {
+            return Some(permit);
+        }
+        self.report_queued(true).await;
+        let permit = provider_semaphores.acquire(provider_id).await.ok();
+        self.report_queued(false).await;
+        permit
+    }
+
+    /// Tell the live output, if any, whether the run waits for its permit.
+    async fn report_queued(&self, waiting: bool) {
+        if let Some(live_output) = &self.live_output {
+            let _ = live_output
+                .sink
+                .send(crate::live_output::LiveAgentEvent::Queued { waiting })
+                .await;
+        }
     }
 
     /// Override the reasoning-effort label passed to Claude.
@@ -555,7 +673,7 @@ impl ClaudeCliAgent {
             output = output.tag("num_turns", num_turns.to_string());
         }
         let output = output.build();
-        AgentResult::fail(output).with_usage_obs(Self::usage_observation(stream_usage, wall_ms))
+        AgentResult::fail(output).with_usage_obs(self.priced_observation(stream_usage, wall_ms))
     }
 
     /// The run stopped at `--max-turns`: the final stream-json `result` has
@@ -759,6 +877,16 @@ impl ClaudeCliAgent {
                 streamed.observe(&event);
                 continue;
             }
+            if kind == Some("system") {
+                // The `init` event names the CLI's version (backlog 6105).
+                if let Some(version) = ["claude_code_version", "version"]
+                    .iter()
+                    .find_map(|key| event.get(*key).and_then(Value::as_str))
+                {
+                    usage.cli_version = Some(version.to_string());
+                }
+                continue;
+            }
             if kind != Some("result") {
                 continue;
             }
@@ -801,12 +929,67 @@ impl ClaudeCliAgent {
                         &["cache_read_input_tokens", "cache_read_tokens"],
                     ),
                 );
+                // The main model's cache writes by TTL, when the event splits
+                // them (backlog 6105).
+                usage.cache_write_split = result_usage.get("cache_creation").map(|split| {
+                    let ttl = |key: &str| split.get(key).and_then(Value::as_u64).unwrap_or(0);
+                    (
+                        ttl("ephemeral_5m_input_tokens"),
+                        ttl("ephemeral_1h_input_tokens"),
+                    )
+                });
+            }
+            // `usage` counts only the main model; `modelUsage` counts every
+            // model the session used, background turns and subagents
+            // included, as `total_cost_usd` does, and its thinking tokens
+            // (gap-ad0d39).
+            if let Some(per_model) = event.get("modelUsage").and_then(Value::as_object)
+                && !per_model.is_empty()
+            {
+                let total = |key: &str| {
+                    per_model
+                        .values()
+                        .filter_map(|entry| entry.get(key).and_then(Value::as_u64))
+                        .reduce(|sum, count| sum + count)
+                };
+                Self::update_stream_usage_field(&mut usage.input_tokens, total("inputTokens"));
+                Self::update_stream_usage_field(&mut usage.output_tokens, total("outputTokens"));
+                Self::update_stream_usage_field(
+                    &mut usage.cache_creation_tokens,
+                    total("cacheCreationInputTokens"),
+                );
+                Self::update_stream_usage_field(
+                    &mut usage.cache_read_tokens,
+                    total("cacheReadInputTokens"),
+                );
+                Self::update_stream_usage_field(
+                    &mut usage.reasoning_tokens,
+                    total("thinkingTokens"),
+                );
+                // Each model's own tokens, which the price snapshot prices
+                // one by one (backlog 6105).
+                usage.models = per_model
+                    .iter()
+                    .map(|(slug, entry)| ModelTokens::from_entry(slug, entry))
+                    .collect();
             }
         }
         if usage.source == UsageSource::Unknown {
-            return streamed.stream_usage(fallback_model);
+            return StreamUsage {
+                cli_version: usage.cli_version,
+                ..streamed.stream_usage(fallback_model)
+            };
         }
         usage
+    }
+
+    /// The usage observation of `stream_usage`, priced model by model at the price snapshot of
+    /// the agent's working directory: the operator's `[pricing]` pin (`self.pricing`,
+    /// bug-1809d7) when set, else the newest file there, else the built-in copy (backlog 6105).
+    fn priced_observation(&self, stream_usage: &StreamUsage, wall_ms: u64) -> UsageObservation {
+        let snapshot = PriceSnapshot::shared(&self.pricing, &self.current_dir);
+        let priced = stream_usage.clone().priced_at(snapshot.as_deref());
+        Self::usage_observation(&priced, wall_ms)
     }
 
     /// Canonical usage for a run, keeping the source of `stream_usage`:
@@ -814,16 +997,27 @@ impl ClaudeCliAgent {
     /// unknown. Its model is the one the CLI's output named, `None` when it
     /// named none (bug-2379dc): the configured slug is only the request.
     fn usage_observation(stream_usage: &StreamUsage, wall_ms: u64) -> UsageObservation {
+        let (snapshot_id, priced) = match &stream_usage.snapshot_price {
+            Some((id, priced)) => (Some(id.clone()), *priced),
+            None => (None, None),
+        };
         UsageObservation {
             input_tokens: stream_usage.input_tokens,
             output_tokens: stream_usage.output_tokens,
             cache_creation_tokens: stream_usage.cache_creation_tokens,
             cache_read_tokens: stream_usage.cache_read_tokens,
-            reasoning_tokens: None,
+            reasoning_tokens: stream_usage.reasoning_tokens,
+            // The CLI's own figure, a client-side estimate: the attempt's
+            // `vendor_usd` (backlog 6105).
             cost_usd: stream_usage.cost_usd,
             source: stream_usage.source.clone(),
             model: stream_usage.model.clone(),
             wall_ms,
+            api_equiv_usd: priced.map(|priced| priced.api_equiv_usd),
+            without_cache_usd: priced.map(|priced| priced.without_cache_usd),
+            price_snapshot_id: snapshot_id,
+            cost_basis: stream_usage.cost_basis(),
+            cli_version: stream_usage.cli_version.clone(),
         }
     }
 
@@ -1052,6 +1246,7 @@ impl ClaudeCliAgent {
     /// - `tool` events (subtype `result`) → `ToolResult`.
     /// - `user` messages with `tool_result` blocks (older CLI format) →
     ///   `ToolResult`, with content flattened to a single text string.
+    /// - Either result's `is_error` mark → the `ToolResult`'s `is_error`.
     /// - partial-message deltas ([`Self::delta_kind`]) → `TextDelta` or
     ///   `ReasoningDelta`.
     fn event_kinds_from_value(event: &Value) -> Vec<StreamEventKind> {
@@ -1109,7 +1304,12 @@ impl ClaudeCliAgent {
                     .and_then(Value::as_str)
                     .unwrap_or("")
                     .to_string();
-                events.push(StreamEventKind::ToolResult { id, output });
+                let is_error = Self::marked_error(event);
+                events.push(StreamEventKind::ToolResult {
+                    id,
+                    output,
+                    is_error,
+                });
             }
             Some("user") => {
                 // Older Claude CLI format: tool results arrive as a `user`
@@ -1145,7 +1345,12 @@ impl ClaudeCliAgent {
                             .join("\n"),
                         _ => String::new(),
                     };
-                    events.push(StreamEventKind::ToolResult { id, output });
+                    let is_error = Self::marked_error(block);
+                    events.push(StreamEventKind::ToolResult {
+                        id,
+                        output,
+                        is_error,
+                    });
                 }
             }
             _ => {}
@@ -1173,6 +1378,15 @@ impl ClaudeCliAgent {
             .get("thinking")
             .and_then(Value::as_str)
             .map(|thinking| StreamEventKind::ReasoningDelta(thinking.to_string()))
+    }
+
+    /// Whether a tool result carries `"is_error": true`: the tool call
+    /// failed (bug-264c41). A result without the mark is a success.
+    fn marked_error(result: &Value) -> bool {
+        result
+            .get("is_error")
+            .and_then(Value::as_bool)
+            .unwrap_or(false)
     }
 
     /// Whether `stdout` is a stream-json run that never reached its final
@@ -1214,6 +1428,9 @@ impl ClaudeCliAgent {
             tracing::warn!(agent = %self.name, "claude run not started: {reason}");
             return self.failure(input, &reason, started);
         }
+        // The provider's concurrency cap (bug-eba31d): wait for a permit
+        // before spawning, and hold it until the run ends.
+        let _permit = self.provider_permit().await;
         let mut cmd = match self.build_command() {
             Ok(command) => command,
             Err(error) => {
@@ -1428,9 +1645,35 @@ impl ClaudeCliAgent {
 
         let elapsed_secs = started.elapsed().as_secs();
 
-        let stdout = stdout_handle.await.unwrap_or_default();
-        let stderr = stderr_handle.await.unwrap_or_default();
-        tree_guard.disarm();
+        // A process the run started and left running (a backgrounded shell,
+        // a dev server) can hold the output pipes open, so the readers would
+        // never see EOF and the run would hang after `claude` exited
+        // (gap-5d3b82). Give them `EXITED_OUTPUT_DRAIN_MS`, then end the
+        // run's process group and keep what they read.
+        let (mut stdout_handle, mut stderr_handle) = (stdout_handle, stderr_handle);
+        let drained = timeout(Duration::from_millis(EXITED_OUTPUT_DRAIN_MS), async {
+            tokio::join!(&mut stdout_handle, &mut stderr_handle)
+        })
+        .await;
+        let (stdout, stderr) = match drained {
+            Ok((stdout, stderr)) => {
+                tree_guard.disarm();
+                (stdout.unwrap_or_default(), stderr.unwrap_or_default())
+            }
+            Err(_) => {
+                tracing::warn!(
+                    agent = %self.name,
+                    "claude exited but a process it started holds its output open; ending its group"
+                );
+                // The armed guard signals the run's process group: SIGTERM,
+                // then SIGKILL.
+                drop(tree_guard);
+                tokio::join!(
+                    drain_killed_output(stdout_handle),
+                    drain_killed_output(stderr_handle)
+                )
+            }
+        };
         let wall_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
         let stream_usage = Self::parse_stream_usage(&stdout, &self.model)
             .merge(Self::parse_stream_usage(&stderr, &self.model));
@@ -1518,7 +1761,7 @@ impl ClaudeCliAgent {
 
         AgentResult::ok(output_signal)
             .with_trace(self.stderr_trace(&stderr))
-            .with_usage_obs(Self::usage_observation(&stream_usage, wall_ms))
+            .with_usage_obs(self.priced_observation(&stream_usage, wall_ms))
     }
 }
 
@@ -1563,12 +1806,63 @@ struct StreamUsage {
     output_tokens: Option<u64>,
     cache_creation_tokens: Option<u64>,
     cache_read_tokens: Option<u64>,
+    /// Thinking tokens, a part of `output_tokens`, from `modelUsage`.
+    reasoning_tokens: Option<u64>,
     cost_usd: Option<f64>,
     model: Option<String>,
     /// Agent turns the CLI reported in its final `result` event, or the
     /// main-loop messages a killed run streamed.
     num_turns: Option<u64>,
     source: UsageSource,
+    /// Each model's tokens from `modelUsage`, which the price snapshot
+    /// prices one by one (backlog 6105).
+    models: Vec<ModelTokens>,
+    /// The main model's cache writes by TTL (5 minutes, 1 hour), when the
+    /// `result` event's `usage.cache_creation` splits them.
+    cache_write_split: Option<(u64, u64)>,
+    /// The CLI's version, from its `system`/`init` event.
+    cli_version: Option<String>,
+    /// The snapshot `models` were priced at, and what they cost there:
+    /// `None` inside when it does not list one of them.
+    snapshot_price: Option<(String, Option<PricedUsage>)>,
+}
+
+/// How far the CLI's own cost may stray from the snapshot price, as a
+/// fraction of it, before the gap is flagged (S04 §4.8).
+const VENDOR_GAP_TOLERANCE: f64 = 0.05;
+
+/// One model's tokens in a Claude Code session's `modelUsage` (backlog
+/// 6105). Cache writes are not split by TTL there.
+#[derive(Debug, Clone, PartialEq, Default)]
+struct ModelTokens {
+    slug: String,
+    input: u64,
+    output: u64,
+    cache_read: u64,
+    cache_write: u64,
+    /// Thinking tokens, a part of `output`.
+    thinking: u64,
+    /// How the CLI priced the model: `list`, `managed` or `unknown`.
+    cost_basis: Option<String>,
+}
+
+impl ModelTokens {
+    /// The `modelUsage` entry `entry` of model `slug`.
+    fn from_entry(slug: &str, entry: &Value) -> Self {
+        let count = |key: &str| entry.get(key).and_then(Value::as_u64).unwrap_or(0);
+        Self {
+            slug: slug.to_string(),
+            input: count("inputTokens"),
+            output: count("outputTokens"),
+            cache_read: count("cacheReadInputTokens"),
+            cache_write: count("cacheCreationInputTokens"),
+            thinking: count("thinkingTokens"),
+            cost_basis: entry
+                .get("costBasis")
+                .and_then(Value::as_str)
+                .map(str::to_string),
+        }
+    }
 }
 
 impl StreamUsage {
@@ -1584,13 +1878,100 @@ impl StreamUsage {
                 self.cache_creation_tokens =
                     self.cache_creation_tokens.or(other.cache_creation_tokens);
                 self.cache_read_tokens = self.cache_read_tokens.or(other.cache_read_tokens);
+                self.reasoning_tokens = self.reasoning_tokens.or(other.reasoning_tokens);
                 self.cost_usd = self.cost_usd.or(other.cost_usd);
                 self.model = self.model.or(other.model);
                 self.num_turns = self.num_turns.or(other.num_turns);
+                if self.models.is_empty() {
+                    self.models = other.models;
+                }
+                self.cache_write_split = self.cache_write_split.or(other.cache_write_split);
+                self.cli_version = self.cli_version.or(other.cli_version);
             }
             _ => {}
         }
         self
+    }
+
+    /// The usage with its `modelUsage` models priced one by one at
+    /// `snapshot` (backlog 6105), each at its own row's rates. A model the
+    /// snapshot does not list leaves the session's price unknown. A session
+    /// that reported no `modelUsage` stays unpriced. A CLI figure more than
+    /// [`VENDOR_GAP_TOLERANCE`] away from the snapshot price is logged.
+    fn priced_at(mut self, snapshot: Option<&PriceSnapshot>) -> Self {
+        let Some(snapshot) = snapshot.filter(|_| !self.models.is_empty()) else {
+            return self;
+        };
+        let zero = PricedUsage {
+            api_equiv_usd: 0.0,
+            without_cache_usd: 0.0,
+        };
+        let priced = self.models.iter().try_fold(zero, |total, model| {
+            let priced = snapshot.price(&model.slug, &self.model_tokens(model))?;
+            Some(PricedUsage {
+                api_equiv_usd: total.api_equiv_usd + priced.api_equiv_usd,
+                without_cache_usd: total.without_cache_usd + priced.without_cache_usd,
+            })
+        });
+        self.snapshot_price = Some((snapshot.id().to_string(), priced));
+        if let Some(gap) = self
+            .vendor_gap()
+            .filter(|gap| gap.abs() > VENDOR_GAP_TOLERANCE)
+        {
+            tracing::warn!(
+                vendor_usd = self.cost_usd.unwrap_or_default(),
+                api_equiv_usd = priced.map_or(0.0, |priced| priced.api_equiv_usd),
+                gap,
+                snapshot = snapshot.id(),
+                "the Claude CLI's own cost is more than 5% away from the price snapshot's"
+            );
+        }
+        self
+    }
+
+    /// `model`'s tokens in the snapshot's classes. Cache writes are at the
+    /// 1-hour TTL of Claude Code sessions, unless the `result` event split
+    /// the main model's writes by TTL. Thinking is part of the output.
+    fn model_tokens(&self, model: &ModelTokens) -> TokenCounts {
+        let main = self.model.as_deref() == Some(model.slug.as_str());
+        let (cache_write_5m, cache_write_1h) = match self.cache_write_split {
+            Some((five, hour)) if main && five + hour == model.cache_write => (five, hour),
+            _ => (0, model.cache_write),
+        };
+        TokenCounts {
+            input: model.input,
+            cache_read: model.cache_read,
+            cache_write_5m,
+            cache_write_1h,
+            output: model.output,
+            reasoning: model.thinking,
+        }
+    }
+
+    /// How far the CLI's own cost is from the snapshot price, as a fraction
+    /// of the snapshot price: `None` when either is unknown.
+    fn vendor_gap(&self) -> Option<f64> {
+        let (_, priced) = self.snapshot_price.as_ref()?;
+        let api_equiv = priced.as_ref()?.api_equiv_usd;
+        let vendor = self.cost_usd?;
+        if api_equiv > 0.0 {
+            Some((vendor - api_equiv) / api_equiv)
+        } else {
+            None
+        }
+    }
+
+    /// The models' `costBasis` values, sorted and joined by `,`: `None`
+    /// when none reported one.
+    fn cost_basis(&self) -> Option<String> {
+        let mut bases: Vec<&str> = self
+            .models
+            .iter()
+            .filter_map(|model| model.cost_basis.as_deref())
+            .collect();
+        bases.sort_unstable();
+        bases.dedup();
+        (!bases.is_empty()).then(|| bases.join(","))
     }
 }
 
@@ -1700,10 +2081,12 @@ impl StreamedMessages {
             output_tokens: Some(output),
             cache_creation_tokens: Some(cache_creation),
             cache_read_tokens: Some(cache_read),
+            reasoning_tokens: None,
             cost_usd,
             model: top_level().rev().find_map(|message| message.model.clone()),
             num_turns: Some(top_level().count() as u64),
             source: UsageSource::Estimated,
+            ..StreamUsage::default()
         }
     }
 }
@@ -1711,10 +2094,21 @@ impl StreamedMessages {
 /// Longest wait for a killed run's output readers to reach end of file.
 const KILLED_OUTPUT_DRAIN_MS: u64 = 2_000;
 
+/// How long a run's output readers may take to reach EOF after its agent CLI
+/// (`claude`, or an [`ExecAgent`](crate::ExecAgent)'s program) exited, before
+/// the run's process group is ended (gap-5d3b82).
+#[cfg(not(test))]
+pub(crate) const EXITED_OUTPUT_DRAIN_MS: u64 = 5_000;
+
+/// Tests keep the grace short: a reader that only needed more time still
+/// finishes within [`KILLED_OUTPUT_DRAIN_MS`].
+#[cfg(test)]
+pub(crate) const EXITED_OUTPUT_DRAIN_MS: u64 = 300;
+
 /// What `reader` collected from a killed run's pipe. A reader still blocked
 /// after [`KILLED_OUTPUT_DRAIN_MS`] (a surviving descendant holds the pipe
 /// open) is left behind, and its output is lost.
-async fn drain_killed_output(reader: tokio::task::JoinHandle<String>) -> String {
+pub(crate) async fn drain_killed_output(reader: tokio::task::JoinHandle<String>) -> String {
     timeout(Duration::from_millis(KILLED_OUTPUT_DRAIN_MS), reader)
         .await
         .ok()
@@ -1754,6 +2148,10 @@ mod tests {
         Signal::builder(Kind::Prompt).body(Body::text(text)).build()
     }
 
+    /// The Bash hook is one command, with no condition field, and it denies
+    /// each destructive git subcommand and a recursive `rm` by what it does
+    /// when run: the guard inside it is packed (1223), so its text names
+    /// none of them.
     #[test]
     fn settings_json_contains_expected_hooks() {
         let value: Value = serde_json::from_str(&build_settings_json()).unwrap();
@@ -1771,19 +2169,39 @@ mod tests {
             .get("command")
             .and_then(Value::as_str)
             .expect("hook command");
-        assert!(command.contains("tool_input"));
-        for subcommand in [
-            "checkout", "switch", "restore", "push", "reset", "stash", "clean",
+        for denied in [
+            "git checkout main",
+            "git switch main",
+            "git restore .",
+            "git push origin HEAD",
+            "git reset --hard",
+            "git stash",
+            "git clean -fdx",
+            "rm -rf target",
         ] {
-            assert!(
-                command.contains(subcommand),
-                "guard ignores git {subcommand}"
+            assert_eq!(
+                run_hook_command(command, denied).code(),
+                Some(2),
+                "the guard let `{denied}` through"
             );
         }
-        assert!(command.contains("rm"));
+        assert_eq!(run_hook_command(command, "git status").code(), Some(0));
         assert!(
             !command.contains("|| exit 0"),
             "the guard must not fail open"
+        );
+    }
+
+    /// 1223: Linux refuses one argument longer than 128 KiB
+    /// (`MAX_ARG_STRLEN`) with `E2BIG`, so `--settings` stays well under it,
+    /// with room for the guard to grow.
+    #[test]
+    fn settings_json_fits_one_linux_argument() {
+        let settings = build_settings_json();
+        assert!(
+            settings.len() < 96 * 1024,
+            "--settings is {} bytes",
+            settings.len()
         );
     }
 
@@ -2273,6 +2691,68 @@ mod tests {
         assert_eq!(bash_code("grep -r api_key ."), Some(0));
     }
 
+    /// S05 §4.4: Claude Code's own tools are kept out of the audit vault, by
+    /// deny rules on its roots and by the guard, which resolves
+    /// `ROKO_AUDIT_HOME` and `HOME` itself.
+    #[test]
+    fn claude_settings_deny_the_audit_vault() {
+        let vault = tempdir().unwrap();
+        let root = vault.path().canonicalize().unwrap();
+        let value: Value = serde_json::from_str(&settings_json_for(&[root.clone()])).unwrap();
+        let deny: Vec<&str> = value
+            .pointer("/permissions/deny")
+            .and_then(Value::as_array)
+            .expect("deny rules")
+            .iter()
+            .filter_map(Value::as_str)
+            .collect();
+        for tool in ["Read", "Edit"] {
+            let rule = format!("{tool}(/{}/**)", root.display());
+            assert!(deny.contains(&rule.as_str()), "missing {rule} in {deny:?}");
+        }
+        for name in KEY_FILE_NAMES {
+            let rule = format!("Read(//**/.roko/{name})");
+            assert!(deny.contains(&rule.as_str()), "missing {rule} in {deny:?}");
+        }
+
+        let suite = root.join("ws/hidden/hs-1/suite.py");
+        fs::create_dir_all(suite.parent().unwrap()).unwrap();
+        fs::write(&suite, "# hidden\n").unwrap();
+        let workdir = tempdir().unwrap();
+        fs::create_dir_all(workdir.path().join(".roko/audit")).unwrap();
+        fs::write(workdir.path().join(".roko/audit/messages.jsonl"), "{}\n").unwrap();
+        let env: [(&str, &std::path::Path); 1] = [("ROKO_AUDIT_HOME", root.as_path())];
+        let file = |input: Value| {
+            let payload = serde_json::json!({
+                "cwd": workdir.path(),
+                "tool_name": "Read",
+                "tool_input": input,
+            });
+            run_hook(&file_hook_command(), &payload.to_string(), &env)
+                .status
+                .code()
+        };
+        let bash = |command: String| {
+            let payload =
+                serde_json::json!({ "cwd": workdir.path(), "tool_input": { "command": command } });
+            run_hook(&bash_hook_command(), &payload.to_string(), &env)
+                .status
+                .code()
+        };
+        assert_eq!(file(serde_json::json!({ "file_path": suite })), Some(2));
+        assert_eq!(bash(format!("cat {}", suite.display())), Some(2));
+        assert_eq!(
+            bash("grep -r canary \"$ROKO_AUDIT_HOME\"".to_string()),
+            Some(2)
+        );
+        assert_eq!(
+            bash("cat ~/.roko/audit/ws/keys/audit-secret".to_string()),
+            Some(2)
+        );
+        let log = serde_json::json!({ "file_path": ".roko/audit/messages.jsonl" });
+        assert_eq!(file(log), Some(0), "the workspace log is not the vault");
+    }
+
     /// bug-69a002, bug-77413c: the searches and reads that reach a roko.toml
     /// holding a secret, or a key file in .roko, from the table roko-std's
     /// bash tool checks too, and the Grep calls only this guard checks.
@@ -2328,7 +2808,8 @@ mod tests {
             let (cwd, command) = rest
                 .strip_prefix("in src: ")
                 .map_or((root, rest), |command| (src.as_path(), command));
-            let want = if verdict == "deny" { Some(2) } else { Some(0) };
+            let refused = verdict == "deny" || verdict == "vault";
+            let want = if refused { Some(2) } else { Some(0) };
             assert_eq!(
                 hook_code(command, cwd),
                 want,
@@ -2568,6 +3049,212 @@ mod tests {
         assert_eq!(usage.model.as_deref(), Some("claude-sonnet-4-6"));
     }
 
+    /// gap-ad0d39: `modelUsage` counts every model the session used, so the
+    /// background turns on a small model count with the main model's, and
+    /// its thinking tokens are the output's reasoning part.
+    #[test]
+    fn parse_stream_usage_counts_every_model_in_model_usage() {
+        let usage = ClaudeCliAgent::parse_stream_usage(
+            r#"{"type":"result","model":"claude-sonnet-4-6","total_cost_usd":0.2791,"usage":{"input_tokens":38,"output_tokens":3120,"cache_creation_input_tokens":21904,"cache_read_input_tokens":186112},"modelUsage":{"claude-sonnet-4-6":{"inputTokens":38,"outputTokens":3120,"thinkingTokens":1450,"cacheReadInputTokens":186112,"cacheCreationInputTokens":21904,"costUSD":0.2756},"claude-haiku-4-5":{"inputTokens":2513,"outputTokens":196,"cacheReadInputTokens":0,"cacheCreationInputTokens":0,"costUSD":0.0035}}}"#,
+            "claude-test-model",
+        );
+
+        assert_eq!(usage.source, UsageSource::ProviderReported);
+        assert_eq!(usage.input_tokens, Some(38 + 2_513));
+        assert_eq!(usage.output_tokens, Some(3_120 + 196));
+        assert_eq!(usage.cache_read_tokens, Some(186_112));
+        assert_eq!(usage.cache_creation_tokens, Some(21_904));
+        assert_eq!(usage.reasoning_tokens, Some(1_450));
+        assert_eq!(usage.cost_usd, Some(0.2791));
+        let observed = ClaudeCliAgent::usage_observation(&usage, 0);
+        assert_eq!(observed.reasoning_tokens, Some(1_450));
+    }
+
+    /// The dated price snapshot, by name: a newer built-in copy does not
+    /// change what the pricing tests expect.
+    fn snapshot_2026_09_28() -> PriceSnapshot {
+        PriceSnapshot::from_toml(
+            include_str!("../../../config/prices/2026-09-28.toml"),
+            "config/prices/2026-09-28.toml",
+        )
+        .expect("the 2026-09-28 snapshot")
+    }
+
+    /// The stream-json of a Claude Code session whose main model `main` ran
+    /// with a background claude-haiku-4-5, the CLI reporting `vendor` USD.
+    fn two_model_session(main: &str, vendor: f64) -> String {
+        let init = r#"{"type":"system","subtype":"init","claude_code_version":"2.1.250"}"#;
+        let result = serde_json::json!({
+            "type": "result",
+            "model": main,
+            "total_cost_usd": vendor,
+            "usage": { "input_tokens": 38, "output_tokens": 3_120 },
+            "modelUsage": {
+                main: {
+                    "inputTokens": 38,
+                    "outputTokens": 3_120,
+                    "thinkingTokens": 1_450,
+                    "cacheReadInputTokens": 186_112,
+                    "cacheCreationInputTokens": 21_904,
+                    "costBasis": "list"
+                },
+                "claude-haiku-4-5": {
+                    "inputTokens": 2_513,
+                    "outputTokens": 196,
+                    "cacheReadInputTokens": 0,
+                    "cacheCreationInputTokens": 0,
+                    "costBasis": "list"
+                }
+            }
+        });
+        format!("{init}\n{result}")
+    }
+
+    /// backlog 6105: every model of a Claude Code session is priced at its
+    /// own snapshot row, cache writes at the 1-hour rate, and the CLI's own
+    /// figure stays the vendor's, beside its `costBasis` and version.
+    #[test]
+    fn claude_model_usage_is_repriced_per_model() {
+        let usage = ClaudeCliAgent::parse_stream_usage(
+            &two_model_session("claude-sonnet-5", 0.16),
+            "claude-test-model",
+        )
+        .priced_at(Some(&snapshot_2026_09_28()));
+        // claude-sonnet-5: 38 in at $2, 186,112 cache reads at $0.20, 21,904
+        // cache writes at the 1-hour $4 and 3,120 out at $10 per million;
+        // claude-haiku-4-5: 2,513 in at $1 and 196 out at $5. Thinking is
+        // inside the output.
+        let sonnet = 38.0 * 2.0 + 186_112.0 * 0.20 + 21_904.0 * 4.0 + 3_120.0 * 10.0;
+        let haiku = 2_513.0 * 1.0 + 196.0 * 5.0;
+        let observed = ClaudeCliAgent::usage_observation(&usage, 0);
+        let api_equiv = observed.api_equiv_usd.expect("both models are listed");
+        let expected = (sonnet + haiku) / 1e6;
+        assert!((api_equiv - expected).abs() < 1e-9, "{observed:?}");
+        let uncached = (38.0 + 186_112.0) * 2.0 + 21_904.0 * 4.0 + 3_120.0 * 10.0 + haiku;
+        let uncached = uncached / 1e6;
+        let without_cache = observed.without_cache_usd.expect("the uncached price");
+        assert!((without_cache - uncached).abs() < 1e-9, "{observed:?}");
+        assert_eq!(
+            observed.price_snapshot_id.as_deref(),
+            Some("prices-2026-09-28")
+        );
+        assert_eq!(
+            observed.cost_usd,
+            Some(0.16),
+            "the CLI's figure is the vendor's"
+        );
+        assert_eq!(observed.cost_basis.as_deref(), Some("list"));
+        assert_eq!(observed.cli_version.as_deref(), Some("2.1.250"));
+        let gap = usage.vendor_gap().expect("both figures are known");
+        assert!(gap.abs() <= VENDOR_GAP_TOLERANCE, "{gap}");
+    }
+
+    /// A row with every rate column, required and positive (`PriceRow::problem`).
+    fn pin_test_row(slug: &str, rate: f64) -> String {
+        format!(
+            "[[model]]\nslug = \"{slug}\"\nprovider = \"test\"\ninput = {rate}\n\
+             cache_read = {rate}\ncache_write_5m = {rate}\ncache_write_1h = {rate}\n\
+             output = {rate}\nreasoning_in_output = true\nsource_url = \"https://example.test\"\n\
+             verified = \"test\"\n"
+        )
+    }
+
+    /// A `vb.price_snapshot/1` file's text, with `id` and `rows`.
+    fn pin_test_snapshot(id: &str, rows: &str) -> String {
+        format!(
+            "schema_version = \"roko.price_snapshot/1\"\nid = \"{id}\"\n\
+             fetched_at = \"2030-01-01\"\ncurrency = \"USD\"\nunit = \"per_1M_tokens\"\n{rows}"
+        )
+    }
+
+    /// bug-1809d7: a configured `[pricing] snapshot` pin prices a Claude CLI call at that
+    /// snapshot, not the newest file in `config/prices/`.
+    #[test]
+    fn claude_cli_prices_at_the_configured_snapshot_pin() {
+        let workspace = tempdir().expect("tempdir");
+        let prices = workspace.path().join("config").join("prices");
+        fs::create_dir_all(&prices).expect("create config/prices");
+        // The pin prices this model at $1/million; the newer file, which must NOT be used, at
+        // $1000/million, 1000x larger, so a wrong resolution could not pass the assertion below
+        // by accident.
+        fs::write(
+            prices.join("2030-01-01.toml"),
+            pin_test_snapshot("prices-2030-01-01", &pin_test_row("pin-test-model", 1.0)),
+        )
+        .expect("write the pinned snapshot");
+        fs::write(
+            prices.join("2030-06-01.toml"),
+            pin_test_snapshot("prices-2030-06-01", &pin_test_row("pin-test-model", 1000.0)),
+        )
+        .expect("write the newer snapshot");
+
+        let agent = ClaudeCliAgent::new("claude", workspace.path(), "pin-test-model").with_pricing(
+            PricingConfig {
+                snapshot: "prices-2030-01-01".to_string(),
+            },
+        );
+        // The snapshot prices the result event's `modelUsage` sessions, as a real run reports them.
+        let result = serde_json::json!({
+            "type": "result",
+            "model": "pin-test-model",
+            "usage": { "input_tokens": 1_000, "output_tokens": 1_000 },
+            "modelUsage": {
+                "pin-test-model": {
+                    "inputTokens": 1_000,
+                    "outputTokens": 1_000,
+                    "cacheReadInputTokens": 0,
+                    "cacheCreationInputTokens": 0,
+                    "costBasis": "list"
+                }
+            }
+        });
+        let usage = ClaudeCliAgent::parse_stream_usage(&result.to_string(), "pin-test-model");
+        let observed = agent.priced_observation(&usage, 0);
+        assert_eq!(
+            observed.price_snapshot_id.as_deref(),
+            Some("prices-2030-01-01"),
+            "{observed:?}"
+        );
+        let api_equiv = observed
+            .api_equiv_usd
+            .expect("the pinned snapshot prices this model");
+        assert!((api_equiv - 0.002).abs() < 1e-9, "{observed:?}");
+    }
+
+    /// backlog 6105: a model of the session the snapshot does not list
+    /// leaves the session's price unknown, against the snapshot it tried.
+    #[test]
+    fn an_unlisted_session_model_leaves_the_price_unknown() {
+        let usage = ClaudeCliAgent::parse_stream_usage(
+            &two_model_session("claude-sonnet-4-6", 0.28),
+            "claude-test-model",
+        )
+        .priced_at(Some(&snapshot_2026_09_28()));
+        let observed = ClaudeCliAgent::usage_observation(&usage, 0);
+        assert_eq!(observed.api_equiv_usd, None);
+        assert_eq!(observed.without_cache_usd, None);
+        assert_eq!(
+            observed.price_snapshot_id.as_deref(),
+            Some("prices-2026-09-28")
+        );
+        assert_eq!(usage.vendor_gap(), None);
+    }
+
+    /// backlog 6105: a CLI figure more than 5% away from the snapshot price
+    /// is flagged.
+    #[test]
+    fn a_vendor_figure_far_from_the_snapshot_is_flagged() {
+        let usage = ClaudeCliAgent::parse_stream_usage(
+            &two_model_session("claude-sonnet-5", 0.20),
+            "claude-test-model",
+        )
+        .priced_at(Some(&snapshot_2026_09_28()));
+        let gap = usage.vendor_gap().expect("both figures are known");
+        // $0.20 against the snapshot's $0.1596074.
+        assert!(gap > VENDOR_GAP_TOLERANCE, "{gap}");
+        assert!((gap - (0.20 / 0.1596074 - 1.0)).abs() < 1e-9, "{gap}");
+    }
+
     #[test]
     fn parse_stream_usage_leaves_missing_fields_none_and_keeps_zeroes() {
         let usage = ClaudeCliAgent::parse_stream_usage(
@@ -2622,10 +3309,10 @@ mod tests {
         assert_eq!(usage.cache_creation_tokens, Some(3_000));
         assert_eq!(usage.cache_read_tokens, Some(11_000));
         // Per million: Sonnet $3 in, $15 out, $0.30 cache read, $3.75 cache
-        // write (msg_1, and msg_3 at the fallback model); Haiku $0.80 in,
-        // $4 out (msg_2).
+        // write (msg_1, and msg_3 at the fallback model); Haiku $1 in, $5
+        // out (msg_2).
         let sonnet = 1_010.0 * 3.0 + 250.0 * 15.0 + 11_000.0 * 0.30 + 3_000.0 * 3.75;
-        let haiku = 500.0 * 0.80 + 100.0 * 4.0;
+        let haiku = 500.0 * 1.0 + 100.0 * 5.0;
         let cost = usage.cost_usd.expect("priced from the model table");
         assert!((cost - (sonnet + haiku) / 1e6).abs() < 1e-6, "{usage:?}");
         assert_eq!(usage.model.as_deref(), Some("claude-sonnet-4-6"));
@@ -2897,6 +3584,29 @@ mod tests {
             .position(|arg| arg == "--mcp-config")
             .expect("workspace MCP config");
         assert_eq!(args[mcp + 1], own.to_string_lossy());
+    }
+
+    /// bug-a70def: the isolation tests read no managed MCP config from the
+    /// host, so they pass whether or not it has one; a test that wants one
+    /// points the isolation at its own directory.
+    #[test]
+    fn mcp_isolation_tests_ignore_the_hosts_managed_mcp_json() {
+        let host_dir = claude_managed_settings_dir();
+        assert!(!host_dir.exists(), "{} exists", host_dir.display());
+        let strict = |args: &[String]| args.iter().any(|arg| arg == "--strict-mcp-config");
+        let workdir = tempdir().unwrap();
+        let isolation = ClaudeIsolation::new(workdir.path());
+        assert_eq!(isolation.managed_mcp_config(), None);
+        assert!(strict(&isolation.args()));
+        assert_eq!(isolation.mcp_config_refusal(), None);
+
+        let tmp = tempdir().unwrap();
+        let managed = tmp.path();
+        fs::write(managed.join("managed-mcp.json"), r#"{"mcpServers":{}}"#).unwrap();
+        let isolation = isolation.with_managed_settings_dir(managed);
+        assert!(isolation.managed_mcp_config().is_some());
+        assert!(!strict(&isolation.args()));
+        assert!(isolation.mcp_config_refusal().is_some());
     }
 
     #[tokio::test]
@@ -3382,6 +4092,136 @@ printf '%s\n' '{"type":"content_block_delta","delta":{"text":"done"}}'
         assert!(plain.success, "plain output has no `result` event to miss");
     }
 
+    /// bug-eba31d: a run waits for its provider's concurrency permit
+    /// (`[providers.<id>] max_concurrent`) before it spawns `claude`, and says
+    /// on its live output that it is queued, then that it got the permit.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn claude_cli_waits_for_provider_permit() {
+        let tmp = tempdir().unwrap();
+        let script = tmp.path().join("claude-fake.sh");
+        fs::write(
+            &script,
+            r#"#!/bin/sh
+cat >/dev/null
+touch "$(dirname "$0")/launched"
+printf '%s\n' '{"type":"content_block_delta","delta":{"text":"done"}}'
+printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"total_cost_usd":0}'
+"#,
+        )
+        .unwrap();
+        let mut perms = fs::metadata(&script).unwrap().permissions();
+        perms.set_mode(0o755);
+        fs::set_permissions(&script, perms).unwrap();
+        let mut configs = indexmap::IndexMap::new();
+        configs.insert(
+            "capped".to_string(),
+            roko_core::config::schema::ProviderConfig {
+                kind: ProviderKind::ClaudeCli,
+                base_url: None,
+                api_key_env: None,
+                command: Some(script.display().to_string()),
+                args: None,
+                timeout_ms: None,
+                ttft_timeout_ms: None,
+                connect_timeout_ms: None,
+                extra_headers: None,
+                max_concurrent: Some(1),
+                limits: None,
+                require_confirmation: false,
+                stream_usage: None,
+                billing: None,
+            },
+        );
+        let semaphores = Arc::new(crate::provider::ProviderSemaphores::new(&configs));
+        let held = semaphores.acquire("capped").await.expect("the only permit");
+        let (sink, mut events) = mpsc::channel(8);
+        let agent = ClaudeCliAgent::new(&script, tmp.path(), "claude-sonnet-4-6")
+            .with_provider_semaphores("capped", Arc::clone(&semaphores))
+            .with_live_output(crate::live_output::LiveOutput {
+                sink,
+                trusted: true,
+            });
+        let launched = tmp.path().join("launched");
+
+        let input = prompt("go");
+        let ctx = Context::now();
+        let run = agent.run(&input, &ctx);
+        tokio::pin!(run);
+        assert!(
+            timeout(Duration::from_millis(100), &mut run).await.is_err(),
+            "the run waits while the provider's only permit is held"
+        );
+        assert!(!launched.exists(), "claude is not spawned before a permit");
+        assert!(matches!(
+            events.try_recv(),
+            Ok(crate::live_output::LiveAgentEvent::Queued { waiting: true })
+        ));
+
+        drop(held);
+        let result = timeout(Duration::from_secs(10), run)
+            .await
+            .expect("the run ends once the permit is free");
+        assert!(result.success, "{:?}", result.output.body.as_text());
+        assert!(launched.exists());
+        assert!(matches!(
+            events.try_recv(),
+            Ok(crate::live_output::LiveAgentEvent::Queued { waiting: false })
+        ));
+    }
+
+    /// gap-5d3b82: `claude` exits while a process it started still holds its
+    /// output open. The run ends soon after the exit with what `claude`
+    /// printed, and that process is killed.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn exited_agent_with_open_stdout_does_not_hang() {
+        let tmp = tempdir().unwrap();
+        let script = tmp.path().join("claude-fake.sh");
+        let holder = tmp.path().join("holder.pid");
+        fs::write(
+            &script,
+            format!(
+                r#"#!/bin/sh
+cat >/dev/null
+sleep 600 &
+echo $! > '{holder}'
+printf '%s\n' '{{"type":"content_block_delta","delta":{{"text":"done"}}}}'
+printf '%s\n' '{{"type":"result","subtype":"success","is_error":false,"total_cost_usd":0}}'
+"#,
+                holder = holder.display()
+            ),
+        )
+        .unwrap();
+        let mut perms = fs::metadata(&script).unwrap().permissions();
+        perms.set_mode(0o755);
+        fs::set_permissions(&script, perms).unwrap();
+        let agent = ClaudeCliAgent::new(&script, tmp.path(), "claude-sonnet-4-6");
+
+        let result = timeout(
+            Duration::from_secs(30),
+            agent.run(&prompt("go"), &Context::now()),
+        )
+        .await
+        .expect("the run ends although a process it started holds its output");
+        assert!(result.success, "{:?}", result.output.body.as_text());
+
+        let pid = fs::read_to_string(&holder).unwrap().trim().to_string();
+        let mut alive = true;
+        for _ in 0..50 {
+            alive = StdCommand::new("kill")
+                .args(["-0", &pid])
+                .stderr(Stdio::null())
+                .status()
+                .is_ok_and(|status| status.success());
+            if !alive {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+        assert!(!alive, "process {pid} still holds the run's output");
+    }
+
     /// Dropping a run's future, which is how a cancel or the stall watchdog
     /// stops it, kills the subprocesses `claude` started, not only `claude`
     /// (bug-739dcc). One ignores SIGTERM, so the kill escalates to SIGKILL.
@@ -3663,8 +4503,8 @@ printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"total_cost
         let kinds = ClaudeCliAgent::event_kinds_from_value(&event);
         assert_eq!(kinds.len(), 1);
         assert!(
-            matches!(&kinds[0], StreamEventKind::ToolResult { id, output }
-            if id == "tu_2" && output == "output")
+            matches!(&kinds[0], StreamEventKind::ToolResult { id, output, is_error }
+            if id == "tu_2" && output == "output" && !is_error)
         );
     }
 
@@ -3683,8 +4523,8 @@ printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"total_cost
         let kinds = ClaudeCliAgent::event_kinds_from_value(&event);
         assert_eq!(kinds.len(), 1);
         assert!(
-            matches!(&kinds[0], StreamEventKind::ToolResult { id, output }
-            if id == "tu_3" && output == "plain text result")
+            matches!(&kinds[0], StreamEventKind::ToolResult { id, output, is_error }
+            if id == "tu_3" && output == "plain text result" && !is_error)
         );
     }
 
@@ -3706,8 +4546,30 @@ printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"total_cost
         let kinds = ClaudeCliAgent::event_kinds_from_value(&event);
         assert_eq!(kinds.len(), 1);
         assert!(
-            matches!(&kinds[0], StreamEventKind::ToolResult { id, output }
+            matches!(&kinds[0], StreamEventKind::ToolResult { id, output, .. }
             if id == "tu_4" && output == "line one\nline two")
+        );
+    }
+
+    /// bug-264c41: a tool result marked `is_error` is a failed call.
+    #[test]
+    fn event_kinds_tool_result_marked_error() {
+        let event = serde_json::json!({
+            "type": "user",
+            "message": {
+                "content": [{
+                    "type": "tool_result",
+                    "tool_use_id": "tu_5",
+                    "content": "<tool_use_error>File does not exist.</tool_use_error>",
+                    "is_error": true
+                }]
+            }
+        });
+        let kinds = ClaudeCliAgent::event_kinds_from_value(&event);
+        assert_eq!(kinds.len(), 1);
+        assert!(
+            matches!(&kinds[0], StreamEventKind::ToolResult { id, is_error, .. }
+            if id == "tu_5" && *is_error)
         );
     }
 
@@ -3763,7 +4625,7 @@ printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"result":"h
         let tool_result_pos = kinds
             .iter()
             .position(|k| {
-                matches!(k, StreamEventKind::ToolResult { id, output } if id == "tu_1" && output == "file contents")
+                matches!(k, StreamEventKind::ToolResult { id, output, .. } if id == "tu_1" && output == "file contents")
             })
             .expect("ToolResult not found");
 

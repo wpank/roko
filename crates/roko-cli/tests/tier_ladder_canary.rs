@@ -68,7 +68,7 @@ role = "implementer"
 status = "ready"
 tier = "mechanical"
 files = ["t1.txt"]
-verify = [{ phase = "structural", command = "true" }]
+verify = [{ phase = "structural", command = "test -d ." }]
 timeout_secs = 60
 
 [[task]]
@@ -105,7 +105,7 @@ status = "ready"
 tier = "mechanical"
 rung = "top"
 files = ["t4.txt"]
-verify = [{ phase = "structural", command = "true" }]
+verify = [{ phase = "structural", command = "test -d ." }]
 timeout_secs = 60
 
 [[task]]
@@ -116,7 +116,7 @@ role = "implementer"
 status = "ready"
 tier = "integrative"
 files = ["t5.txt"]
-verify = [{ phase = "structural", command = "true" }]
+verify = [{ phase = "structural", command = "test -d ." }]
 timeout_secs = 60
 "#;
 
@@ -336,7 +336,8 @@ fn tier_ladder_canary() {
     );
     assert_eq!(places, expected_places, "{verdicts:#?}");
 
-    // The router learned from more than one rung.
+    // The router is credited only for its own picks (decision 4111): a rung
+    // or a pinned model teaches it nothing, so no model gained trials.
     let router = json_file(&roko.join("learn/cascade-router.json"));
     let trained: Vec<&str> = [CHEAP, MID, TOP]
         .into_iter()
@@ -346,5 +347,5 @@ fn tier_ladder_canary() {
                 .is_some_and(|trials| trials > 0)
         })
         .collect();
-    assert!(trained.len() >= 2, "{trained:?}: {router:#}");
+    assert!(trained.is_empty(), "{trained:?}: {router:#}");
 }

@@ -2,8 +2,8 @@
 //!
 //! Constructs the six shared service bundles once before the event loop.
 //! Both Runner-v2 (`FullPlan`) and Graph (`GraphPlan`) use this builder
-//! to share provider health, rate limiter, cost table, prompt cache, and
-//! process supervisor contracts.
+//! to share provider health, rate limiter, cost table, prompt builder
+//! config, and process supervisor contracts.
 //!
 //! # Bundle types
 //!
@@ -11,7 +11,7 @@
 //! the rich, handle-bearing types defined in their dedicated modules:
 //!
 //! - [`DispatchBundle`] — `dispatch/factory.rs` (`DispatchFactory`)
-//! - [`PromptBundle`] — prompt cache + builder config
+//! - [`PromptBundle`] — prompt builder config
 //! - [`FeedbackBundle`] — learning directory + optional settler
 //! - [`ExtensionsBundle`] — `extensions.rs` (MCP + plugins)
 //! - [`ObservationBundle`] — `observation.rs` (event publisher)
@@ -33,20 +33,18 @@ use crate::observation::ObservationBundle;
 use crate::overrides::ExecutionOverrides as DetailedOverrides;
 use crate::profiles::{BundleRequirement, ProfileMatrix, RuntimeProfile, ServiceBundleId};
 use crate::prompt::builder::PromptBuildHandle;
-use crate::prompt::cache::PromptCacheHandle;
 
 // ---------------------------------------------------------------------------
 // PromptBundle — wraps the prompt sub-handles
 // ---------------------------------------------------------------------------
 
-/// Prompt assembly bundle: cache and builder configuration.
+/// Prompt assembly bundle: the builder configuration.
 ///
-/// The cache holds pre-loaded knowledge, episodes, playbooks, and section
-/// effectiveness data. The build handle carries composition strategy config.
+/// The build handle carries composition strategy config. The prompt context
+/// cache (knowledge, episodes, playbooks, section effects) has one owner,
+/// roko-cli's `dispatch/prompt_cache.rs`, which plan runs load (backlog 4203).
 #[derive(Debug, Clone)]
 pub struct PromptBundle {
-    /// Pre-loaded prompt context data.
-    pub cache: Arc<PromptCacheHandle>,
     /// Prompt assembly configuration.
     pub build_handle: PromptBuildHandle,
 }
@@ -55,7 +53,6 @@ impl PromptBundle {
     /// Create a minimal prompt bundle for testing.
     pub fn for_test() -> Self {
         Self {
-            cache: Arc::new(PromptCacheHandle::empty()),
             build_handle: PromptBuildHandle::default(),
         }
     }
@@ -118,7 +115,7 @@ impl FeedbackBundle {
 pub struct RuntimeServices {
     /// Provider dispatch: factory, model resolver, rate limiter, health.
     pub dispatch: Arc<DispatchFactory>,
-    /// Prompt assembly: cache and builder state.
+    /// Prompt assembly: builder state.
     pub prompt: PromptBundle,
     /// Feedback: learning stores and handles (None for light profiles).
     pub feedback: Option<FeedbackBundle>,
@@ -293,7 +290,8 @@ pub enum BuilderError {
 /// Constructs shared service bundles once before the event loop. Both
 /// Runner-v2 and Graph engines use this builder with their respective
 /// profiles (`FullPlan` / `GraphPlan`) to ensure they share provider
-/// health, rate limiter, cost table, prompt cache, and process supervisor.
+/// health, rate limiter, cost table, prompt builder config, and process
+/// supervisor.
 ///
 /// # DI overrides
 ///
@@ -463,7 +461,6 @@ impl RuntimeServicesBuilder {
 
         // -- Prompt ---------------------------------------------------------
         let prompt = PromptBundle {
-            cache: Arc::new(PromptCacheHandle::load(workdir)),
             build_handle: PromptBuildHandle::default(),
         };
 
@@ -676,7 +673,7 @@ mod tests {
     }
 
     #[test]
-    fn prompt_cache_loads_from_workdir() {
+    fn prompt_bundle_carries_the_default_build_handle() {
         let workdir = tempfile::tempdir().unwrap();
         std::fs::create_dir_all(workdir.path().join(".roko")).unwrap();
 
@@ -684,9 +681,13 @@ mod tests {
             .build(workdir.path())
             .unwrap();
 
-        // Cache is loaded (empty in test, but constructed).
-        assert!(services.prompt.cache.neuro_entries.is_empty());
-        assert!(!services.prompt.cache.is_stale());
+        // The bundle loads no prompt context: roko-cli's prompt cache does
+        // (backlog 4203).
+        let default = PromptBuildHandle::default();
+        assert_eq!(
+            services.prompt.build_handle.composition_strategy,
+            default.composition_strategy
+        );
     }
 
     #[test]
@@ -808,9 +809,10 @@ mod tests {
     #[test]
     fn prompt_bundle_for_test_is_fresh() {
         let bundle = PromptBundle::for_test();
-        assert!(bundle.cache.neuro_entries.is_empty());
-        assert!(bundle.cache.episodes.is_empty());
-        assert!(!bundle.cache.is_stale());
+        assert_eq!(
+            bundle.build_handle.composition_strategy,
+            PromptBuildHandle::default().composition_strategy
+        );
     }
 
     #[test]

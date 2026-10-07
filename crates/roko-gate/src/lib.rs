@@ -78,11 +78,14 @@ pub mod adaptive_threshold;
 pub mod chaos;
 
 pub mod acceptance_contract;
+pub mod agent_judge;
 pub mod artifact_store;
 pub mod attempt_diff;
+pub mod audit;
 /// Criterion benchmark regression detection: parse JSON output, compare against baselines.
 pub mod benchmark_gate;
 mod cancel_safe_command;
+pub mod citation_gate;
 pub mod clippy_gate;
 pub mod code_exec;
 pub mod compile;
@@ -95,6 +98,7 @@ pub mod env_builder;
 pub mod error;
 pub mod error_patterns;
 pub mod eval_generator;
+pub mod evidence_judge;
 pub mod fact_check;
 pub mod feedback;
 /// Forensic causal chain reconstruction from content-addressed artifacts (GATE-07).
@@ -107,12 +111,14 @@ pub mod generated_test_gate;
 /// Graph-compatible Cell wrapper for the production gate pipeline (#250).
 pub mod graph_cell;
 /// Multi-gate joint anomaly detection via Hotelling's T-squared (GATE-08).
+#[cfg(feature = "spc")]
 pub mod hotelling;
 pub mod integration_gate;
 pub mod judge_calibration;
 pub mod llm_judge_gate;
 pub mod payload;
 /// PELT (Pruned Exact Linear Time) offline change point detection (P1-13).
+#[cfg(feature = "spc")]
 pub mod pelt;
 pub mod process_reward;
 /// Production gate request types shared between Runner-v2 and Graph (#250).
@@ -128,8 +134,10 @@ pub mod registry;
 pub mod review_verdict;
 pub mod rung_dispatch;
 pub mod rung_selector;
+pub mod schema_gate;
 pub mod shell;
 /// Statistical Process Control extensions: CUSUM, EWMA Control Chart, BOCPD (GATE-01).
+#[cfg(feature = "spc")]
 pub mod spc;
 /// Static spec-quality score for task specs: speclint's `sq-2` rules (S07.7).
 pub mod spec_quality;
@@ -139,16 +147,19 @@ pub mod verdict_publisher;
 pub mod verify_chain_gate;
 
 pub use acceptance_contract::{
-    AcceptanceContract, AcceptanceDecision, AcceptanceEvidence, AcceptanceIssue, AcceptanceOutcome,
-    GateEvidence, GateRequirement, GateRequirementKind, NoStubEvidence, NoStubRequirement,
-    ParityLedgerEvidenceRow, ParityLedgerRequirement, ParityLedgerRequirementRow,
-    ParityLedgerStatus, RecoveryEvidence, RecoveryRequirement, RequiredNextAction,
-    ReviewVerdictEvidence, ReviewVerdictRequirement, StructuredAgentOutputRequirement,
-    StructuredOutputEvidence,
+    AcceptanceContract, AcceptanceDecision, AcceptanceIssue, AcceptanceOutcome, GateRequirement,
+    GateRequirementKind, NoStubRequirement, ParityLedgerRequirement, ParityLedgerRequirementRow,
+    RecoveryRequirement, RequiredNextAction, ReviewVerdictEvidence, ReviewVerdictRequirement,
+    StructuredAgentOutputRequirement,
 };
 pub use adaptive_threshold::{AdaptiveThresholds, RungStats, TOTAL_RUNGS};
+pub use agent_judge::AgentJudgeOracle;
 pub use artifact_store::ArtifactStore;
 pub use benchmark_gate::{BenchmarkComparison, BenchmarkRegressionGate};
+pub use citation_gate::{
+    Citation, CitationResolver, HttpCitationResolver, Resolution, check_citations,
+    extract_citations,
+};
 pub use clippy_gate::ClippyGate;
 pub use code_exec::{
     CodeExecutionBackend, CodeExecutionGate, CodeExecutionOutcome, CodeExecutionPayload,
@@ -181,6 +192,7 @@ pub use gate_env::{inherit_gate_env, inherit_gate_env_from};
 pub use gate_pipeline::{ComposedGatePipeline, GateComposition, GatePipeline};
 pub use gate_service::GateService;
 pub use generated::{GateGenerator, GeneratedCheck};
+#[cfg(feature = "spc")]
 pub use hotelling::{HotellingDetector, JointAnomalyResult};
 pub use payload::{BuildSystem, GatePayload, TestSelector};
 pub use process_reward::{
@@ -200,6 +212,7 @@ pub use rung_dispatch::{
 };
 pub use rung_selector::{PlanComplexity, Rung, RungCaps, is_selected, select_rungs};
 pub use shell::ShellGate;
+#[cfg(feature = "spc")]
 pub use spc::{
     BocpdDetector, ChangePoint, ControlStatus, CusumDetector, CusumShift, EwmaControlChart,
     SpcAlert, SpcDetector,
@@ -211,8 +224,8 @@ pub use verdict_publisher::VerdictPublisher;
 pub use graph_cell::{GatePipelineCell, GatePipelineCellInput, GraphEventProgressSink};
 pub use production_request::{GateTaskContextSpec, ProductionGateRequest, VerifyStepSpec};
 pub use production_service::{
-    DefaultGateService, GatePipelineProgress, NoopProgressSink, ProductionGateRunner,
-    ProductionGateService, ProgressSink,
+    GatePipelineProgress, NoopProgressSink, ProductionGateRunner, ProductionGateService,
+    ProgressSink,
 };
 pub use production_verdict::{
     EvidenceRef, PipelineOutcome, ProductionGateRungVerdict, ProductionGateVerdictV1, RungState,

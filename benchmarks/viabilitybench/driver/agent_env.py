@@ -8,7 +8,12 @@ key can reach an agent, and `check` asserts that on the finished environment.
 - HOME and TMPDIR point into a per-task directory outside the workdir, so `~` never reaches the real home and its
   `~/.roko/.env`.
 - PATH starts with a per-task `.vb-bin/`, whose `python3` and `python` link to the driver's own base interpreter (the
-  families need Python 3.11 or newer), followed by the system directories.
+  families need Python 3.11 or newer), followed by the host's Rust toolchain, when there is one, and the system
+  directories.
+- The Rust toolchain (F7; Will's decision of 2026-10-02, `common/toolchain`): its own bin directory on PATH (cargo,
+  rustc, rustfmt, clippy; not `~/.cargo/bin`, which holds whatever `cargo install` put there), RUSTUP_HOME the
+  real one, and CARGO_HOME under the task's HOME, so cargo's registry cache is per run. Every sandbox the agent's
+  code runs in keeps the real toolchain read-only (`common/sandbox`).
 - PYTHONDONTWRITEBYTECODE keeps `__pycache__` out of the tree the census labels; git gets a fixed identity and no
   system config, so an agent's `git commit` behaves the same on every host.
 
@@ -21,8 +26,16 @@ What it cannot do: an agent under the same uid can still read a file it names by
 own environment with `ps -E` or `/proc/<pid>/environ`. So `secret.preflight` keeps the secret and every provider key out
 of the driver's environment (the keys live in a driver-only key file, bug-979a06), and registers both with `forbid`.
 Canaries catch reads of benchmark files, and the tripwire catches a read of the secret file or the key file, which
-must be chmod'ed first while agents run (`census`, gap-308373). A container per task is the stronger option (S08
-decision 4).
+must be chmod'ed first while agents run (`census`, gap-308373). The same limit reaches the operator's macOS login
+keychain: in the fd_claude arm the agent's shell can read the Claude Code subscription credential through the arm's
+`security` wrapper (`run_cli.KEYCHAIN_WRAPPER`), a direct `/usr/bin/security` call, or the keychain file's path, which
+`census` detects (place `keychain`, label `vb-keychain`, gap-3cfe4f) but no host-only sandbox prevents. A container per
+task is the stronger option (S08 decision 4).
+
+**Proxies** (gap-0bd49a, 3305). `build` passes no proxy variable of the operator's. A runner whose agent reaches the
+network only through the egress proxy (`egress`, the Claude Code arm) adds `proxy_env(url)`: HTTPS_PROXY, HTTP_PROXY
+and ALL_PROXY name the proxy, in upper and lower case (curl reads only a lower-case `http_proxy`), and NO_PROXY keeps
+the loopback direct, where the sandbox admits only the ports its rule names.
 
 **The driver's own environment** (bug-32eb77). An agent can read the environment the driver started with, so any
 credential the operator's shell exports would reach every agent: `ANTHROPIC_API_KEY`, `GITHUB_TOKEN`, cloud keys.
@@ -43,7 +56,9 @@ API:
     forbid(values: Iterable[str]) -> None           # values refused in every later build and check (the secret)
     driver_env(env: Mapping[str, str] | None = None) -> dict        # the allowlisted driver environment
     exec_scrubbed() -> None                         # start again with `driver_env()`, once; returns if already done
-    FORBIDDEN_NAME, PASSTHROUGH, SYSTEM_PATH, DRIVER_PASSTHROUGH, DRIVER_SCRUBBED
+    proxy_env(url: str) -> dict                     # the variables that send HTTP clients through the egress proxy
+    FORBIDDEN_NAME, PASSTHROUGH, SYSTEM_PATH, TOOLCHAIN_NAMES, DRIVER_PASSTHROUGH, DRIVER_SCRUBBED, PROXY_NAMES,
+    NO_PROXY
 """
 
 from __future__ import annotations
@@ -56,9 +71,11 @@ from collections.abc import Iterable, Mapping
 from pathlib import Path
 
 import layout
+from common import toolchain
 
 PASSTHROUGH = ("LANG", "LC_ALL", "LC_CTYPE", "TZ")
 SYSTEM_PATH = ("/usr/local/bin", "/usr/bin", "/bin", "/usr/sbin", "/sbin")
+TOOLCHAIN_NAMES = ("RUSTUP_HOME", "CARGO_HOME")  # what `build` sets for the host's Rust toolchain (common/toolchain)
 FORBIDDEN_NAME = re.compile(r"^VB_|API_?KEY|TOKEN|SECRET|PASSW|CREDENTIAL|^AWS_|^ANTHROPIC_|^OPENAI_|^CEREBRAS_",
                             re.IGNORECASE)
 FIXED = {"SHELL": "/bin/bash", "TERM": "dumb", "NO_COLOR": "1", "PAGER": "cat", "GIT_PAGER": "cat",
@@ -67,9 +84,12 @@ FIXED = {"SHELL": "/bin/bash", "TERM": "dumb", "NO_COLOR": "1", "PAGER": "cat", 
          "GIT_COMMITTER_NAME": "vb-agent", "GIT_COMMITTER_EMAIL": "agent@vb.invalid"}
 _forbidden: tuple[str, ...] = ()  # set by `forbid`: the benchmark secret and its canary, once `vb run` has read them
 # What the driver itself keeps of the operator's environment: paths, locale and its own settings, never a credential.
+# TOOLCHAIN_NAMES let `toolchain.find` see a toolchain installed outside ~/.rustup and ~/.cargo.
 DRIVER_PASSTHROUGH = ("PATH", "HOME", "USER", "LOGNAME", "TMPDIR", "LANG", "TZ", "SSL_CERT_FILE", "SSL_CERT_DIR",
-                      "CLAUDE_CONFIG_DIR", "VB_SECRET_FILE", "VB_KEY_FILE", "VB_RESULTS", "VB_WORK")
+                      "CLAUDE_CONFIG_DIR", *TOOLCHAIN_NAMES, "VB_SECRET_FILE", "VB_KEY_FILE", "VB_RESULTS", "VB_WORK")
 DRIVER_SCRUBBED = "VB_DRIVER_ENV"  # "scrubbed" in the environment `exec_scrubbed` starts the driver with
+PROXY_NAMES = ("HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy", "ALL_PROXY", "all_proxy")
+NO_PROXY = "127.0.0.1,localhost,::1"  # NO_PROXY and no_proxy under `proxy_env`: the loopback stays direct
 
 
 class AgentEnvError(ValueError):
@@ -90,8 +110,12 @@ def build(*, home: Path, extra: Mapping[str, str] | None = None, forbidden_value
             link.symlink_to(python)
     env = {name: os.environ[name] for name in PASSTHROUGH if name in os.environ}
     env.update(FIXED)
-    env.update(HOME=str(home), TMPDIR=str(tmp), PATH=os.pathsep.join([str(bin_dir), *SYSTEM_PATH]),
+    rust = toolchain.find()  # the host's Rust toolchain, or None (module docstring)
+    path = [str(bin_dir), *([str(rust.bin_dir)] if rust is not None else []), *SYSTEM_PATH]
+    env.update(HOME=str(home), TMPDIR=str(tmp), PATH=os.pathsep.join(path),
                USER=os.environ.get("USER", "vb-agent"), LOGNAME=os.environ.get("LOGNAME", "vb-agent"))
+    if rust is not None:
+        env.update(rust.env(home))
     env.update(extra or {})
     check(env, forbidden_values)
     return env
@@ -121,6 +145,11 @@ def forbid(values: Iterable[str]) -> None:
     """
     global _forbidden
     _forbidden = tuple(value for value in values if value)
+
+
+def proxy_env(url: str) -> dict:
+    """The variables that send an agent's HTTP clients through the egress proxy at `url` (module docstring)."""
+    return {**dict.fromkeys(PROXY_NAMES, url), "NO_PROXY": NO_PROXY, "no_proxy": NO_PROXY}
 
 
 def driver_env(env: Mapping[str, str] | None = None) -> dict:

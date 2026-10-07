@@ -49,5 +49,5 @@ fn signal_chat_roundtrip() {
         "Preserve this content"
     );
     assert_eq!(output.tag("model"), Some("glm-5.1"));
-    assert_eq!(output.tag("finish_reason"), Some("Stop"));
+    assert_eq!(output.tag("finish_reason"), Some("stop"));
 }

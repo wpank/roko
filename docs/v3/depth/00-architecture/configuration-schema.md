@@ -26,7 +26,6 @@ pub struct RokoConfig {
     pub config_version: u32,              // Migration tracking (current: 2)
     pub schema_version: u32,              // Semantic version (current: 2)
     pub project: ProjectConfig,           // Project metadata
-    pub prd: PrdConfig,                   // PRD lifecycle
     pub agent: AgentConfig,               // Agent/model settings
     pub providers: IndexMap<String, ProviderConfig>,  // Provider registry
     pub models: IndexMap<String, ModelProfile>,       // Model registry
@@ -81,11 +80,12 @@ pub struct RokoConfig {
 | `root` | String | `"."` | Project root directory |
 | `fresh_base_branch` | String | `"main"` | Base branch for fresh checkouts |
 
-### 2.2 PRD (`[prd]`)
+### 2.2 PRD (`[prd]`, removed)
 
-| Parameter | Type | Default | Description |
-|---|---|---|---|
-| `auto_plan` | bool | `false` | Generate plan when PRD is promoted to published |
+The `[prd]` section configured the PRD pipeline, which was removed: plans come straight
+from a prompt (`roko run --plan`, `roko plan generate`). An old `roko.toml` that still has
+a `[prd]` section, `auto_plan` included, still loads; the section is dropped with a
+warning.
 
 ### 2.3 Agent (`[agent]`)
 
@@ -171,7 +171,6 @@ Per-role overrides (`[agent.roles.<name>]`):
 | `experiment_min_samples` | u32 | `25` | Min samples per experiment variant |
 | `adaptive_thresholds` | bool | `true` | Enable EMA-based gate threshold adaptation |
 | `cascade_router_persistence` | bool | `true` | Persist cascade router state |
-| `replan_on_gate_failure` | bool | `true` | Trigger replanning on gate failure |
 
 ### 2.9 Conductor (`[conductor]`)
 
@@ -328,9 +327,6 @@ name = "roko"
 root = "."
 fresh_base_branch = "main"
 
-[prd]
-auto_plan = false
-
 [agent]
 default_model = "claude-sonnet-4-6"
 default_backend = "claude"
@@ -388,7 +384,6 @@ auto_extract_skills = true
 episode_retention_days = 30
 adaptive_thresholds = true
 cascade_router_persistence = true
-replan_on_gate_failure = true
 
 [tui]
 refresh_rate_ms = 250

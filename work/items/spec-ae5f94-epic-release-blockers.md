@@ -106,3 +106,9 @@ This is the implementation plan.
 - **`CLAUDE.md` is edited twice,** by gap-452185 and by gap-cdf3fc (E15). Merge them one after the other.
 - **Needs the author:** branch protection on `main`, and lifting the hold on bug-7eef96.
 - **Still open (not accepted on 2026-09-29):** branch protection on `main`. bug-7d7200 closed in 70820a74c.
+- 2026-10-03 (wave-9 follow-up, PK44/gap-85d176): for Will — the production fly image currently builds with the
+  `fault-injection` feature on: `Dockerfile:51`, `cargo build --release -p roko-cli --bin roko --features
+  alloy-backend,acp,fault-injection` (decision 5101 §9.10). Non-HARMFUL fault flags reach only
+  `faults::dry_run` reads (so they can't act on real runs without the dry-run wrapper), but the deployed binary
+  does carry the fault-injection code and its admin surface either way. Worth a decision on whether that's
+  acceptable for the public image or should be a separate, non-fault-injection release build.

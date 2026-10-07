@@ -83,9 +83,13 @@ fn reflex_rule() -> Value {
 /// `tasks.toml` of plan `plan`, one task per `(id, role, verify command)`.
 /// A task without a verify command is a `scribe` or `researcher` task: an
 /// `implementer` task must declare one. Every task but a `researcher`, which
-/// may write no files, names `NOTES.md`.
+/// may write no files, names `NOTES.md`. Plan validation refuses a verify-less
+/// task of any role unless the plan sets `allow_unverified` (PLAN_037), which
+/// changes no verdict: the task still ends unverified.
 fn tasks_toml(plan: &str, tasks: &[(&str, &str, Option<&str>)]) -> String {
-    let mut toml = format!("[meta]\nplan = \"{plan}\"\nmax_parallel = 1\nskip_enrichment = true\n");
+    let mut toml = format!(
+        "[meta]\nplan = \"{plan}\"\nmax_parallel = 1\nskip_enrichment = true\nallow_unverified = true\n"
+    );
     for (id, role, verify) in tasks {
         let files = if *role == "researcher" {
             "[]"
@@ -161,7 +165,7 @@ fn honest_verdicts_canary() {
         &tasks_toml(
             CHECKED_PLAN,
             &[
-                ("T1", "implementer", Some("true")),
+                ("T1", "implementer", Some("test -d .")),
                 ("T2", "scribe", None),
                 ("T5", "scribe", None),
             ],

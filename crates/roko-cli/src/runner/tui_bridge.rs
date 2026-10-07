@@ -130,6 +130,11 @@ impl TuiBridge {
     }
 
     /// An agent has been spawned.
+    ///
+    /// Published again for an agent id that is already running, it updates
+    /// that row's model and provider: the dashboard upserts agents by id. A
+    /// Graph attempt does so when failover runs another model than the one
+    /// it was spawned with (backlog 1128).
     pub fn agent_spawned(
         &self,
         agent_id: &str,
@@ -608,15 +613,15 @@ impl TuiBridge {
         });
     }
 
-    /// A task failed a gate rung below the highest one it had already
-    /// passed: the gate ratchet's regression notice (P1-11).
-    pub fn gate_regression(&self, plan_id: &str, task_id: &str, rung: u32, highest_passed: u8) {
+    /// A task's verify step that passed on an earlier attempt fails now: the
+    /// regression notice of the step history (gap-6dba88).
+    pub fn gate_regression(&self, plan_id: &str, task_id: &str, step: &str) {
         self.sender.publish(DashboardEvent::EventLogEntry {
             timestamp_ms: timestamp_now_ms(),
             event_type: "gate_regression".to_string(),
             plan_id: plan_id.to_string(),
             task_id: task_id.to_string(),
-            message: format!("failed rung {rung} after passing rung {highest_passed}"),
+            message: format!("{step} passed on an earlier attempt and fails now"),
         });
     }
 

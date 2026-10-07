@@ -33,8 +33,8 @@ const FAST_MAX_DECLARED_CONTEXT_BYTES: usize = 24 * 1024;
 const FAST_MAX_SERIAL_OWNERS_PER_FILE: usize = 2;
 const ANCHOR_CONTEXT_RADIUS: usize = 8;
 
-/// Binding default-template task ceiling used by direct plan generation and
-/// regeneration paths that do not originate from PRD template frontmatter.
+/// Binding default-template task ceiling for plan generation and regeneration
+/// (the `default` plan template).
 pub const DEFAULT_GENERATED_TASK_LIMIT: usize = 8;
 
 /// Structural limits applied to a plan before it can execute.
@@ -629,8 +629,8 @@ fn check_count(
     }
 }
 
-/// Validate paths, regular-file identity, explicit symbol anchors, and an
-/// explicitly named source PRD before the plan enters the runner.
+/// Validate paths, regular-file identity, and explicit symbol anchors before
+/// the plan enters the runner.
 #[must_use]
 pub fn validate_plan_context(
     tasks: &TasksFile,
@@ -761,36 +761,6 @@ pub fn validate_plan_context(
                     "PLAN_CONTEXT_SYMBOL",
                     format!(
                         "explicit symbol anchor `{anchor}` was not found in any declared read_files entry"
-                    ),
-                ));
-            }
-        }
-    }
-
-    if let Some(source_prd) = tasks
-        .meta
-        .source_prd
-        .as_deref()
-        .map(str::trim)
-        .filter(|source| !source.is_empty())
-    {
-        if validate_artifact_slug(source_prd).is_err() {
-            issues.push(PlanPolicyViolation::plan(
-                "PLAN_SOURCE_PRD_PATH",
-                format!("source_prd `{source_prd}` is not a safe artifact slug"),
-            ));
-        } else {
-            let prd_root = workspace_root.join(".roko").join("prd");
-            let candidates = [
-                prd_root.join("published").join(format!("{source_prd}.md")),
-                prd_root.join("drafts").join(format!("{source_prd}.md")),
-                prd_root.join("draft").join(format!("{source_prd}.md")),
-            ];
-            if !candidates.iter().any(|path| path.is_file()) {
-                issues.push(PlanPolicyViolation::plan(
-                    "PLAN_SOURCE_PRD_MISSING",
-                    format!(
-                        "source_prd `{source_prd}` is explicit but no published/drafts artifact exists"
                     ),
                 ));
             }
@@ -1072,21 +1042,6 @@ fn validate_regular_file(path: &Path, canonical_root: &Path) -> Result<(), Strin
     Ok(())
 }
 
-fn validate_artifact_slug(slug: &str) -> Result<(), ()> {
-    if slug.is_empty()
-        || slug.starts_with('.')
-        || slug.starts_with('-')
-        || slug.contains("..")
-        || !slug
-            .chars()
-            .all(|character| character.is_ascii_alphanumeric() || matches!(character, '-' | '_'))
-    {
-        Err(())
-    } else {
-        Ok(())
-    }
-}
-
 fn transitive_dependency_outputs(
     task: &TaskDef,
     task_by_id: &HashMap<&str, &TaskDef>,
@@ -1289,6 +1244,8 @@ mod tests {
                 fail_msg: None,
                 timeout_ms: 1_000,
                 scope: Vec::new(),
+                covers: Vec::new(),
+                expect: None,
             }],
             timeout_secs: 60,
             max_retries: 0,
@@ -1299,6 +1256,7 @@ mod tests {
             estimated_minutes: None,
             crates_touched: None,
             sequence: 0,
+            spec: Default::default(),
             hints: Default::default(),
         }
     }
@@ -1315,12 +1273,12 @@ mod tests {
                 max_parallel: Some(1),
                 estimated_total_minutes: 1,
                 skip_enrichment: false,
-                source_prd: None,
                 failure_policy: None,
                 workspace_rungs: None,
                 verify: Vec::new(),
                 approval: None,
                 allow_unverified: false,
+                outbound: None,
             },
             tasks: vec![task],
         }
@@ -1357,6 +1315,31 @@ mod tests {
                 .iter()
                 .any(|issue| issue.code == "PLAN_CONTEXT_SYMBOL")
         );
+    }
+
+    /// A plan written before the PRD pipeline went (2026-10-02) may still set
+    /// `[meta] source_prd`. It loads, and validates exactly like the same plan
+    /// without it: nothing reads the key any more.
+    #[test]
+    fn a_plan_that_names_a_source_prd_still_loads() {
+        let root = tempdir().expect("root");
+        std::fs::create_dir(root.path().join("src")).expect("src");
+        std::fs::write(root.path().join("src/lib.rs"), "pub struct Widget;\n").expect("source");
+        let plan_dir = root.path().join("plans/p1");
+        std::fs::create_dir_all(&plan_dir).expect("plan dir");
+        std::fs::write(plan_dir.join("tasks.toml"), "[meta]").expect("manifest");
+        let toml = |meta: &str| {
+            format!(
+                "[meta]\nplan = \"p1\"\n{meta}\n[[task]]\nid = \"T1\"\ntitle = \"A\"\n\
+                 status = \"ready\"\n"
+            )
+        };
+        let with = TasksFile::parse_str(&toml("source_prd = \"missing-prd\"")).expect("old plan");
+        let without = TasksFile::parse_str(&toml("")).expect("plan");
+        let validate = |plan: &TasksFile| {
+            validate_plan_context(plan, root.path(), &plan_dir, PlanExecutionPolicy::normal())
+        };
+        assert_eq!(validate(&with), validate(&without));
     }
 
     #[test]

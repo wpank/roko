@@ -25,6 +25,11 @@ pub struct AgentResult {
 
     /// Whether the agent ran successfully (non-zero exit / connection errors = false).
     pub success: bool,
+
+    /// Milliseconds from the start of the call to its first streamed model
+    /// output (text, reasoning or a tool call): its time to first token
+    /// (gap-7a8474). `None` when no stream showed one.
+    pub ttft_ms: Option<u64>,
 }
 
 impl AgentResult {
@@ -37,6 +42,7 @@ impl AgentResult {
             usage: Usage::zero(),
             usage_obs: None,
             success: true,
+            ttft_ms: None,
         }
     }
 
@@ -49,6 +55,7 @@ impl AgentResult {
             usage: Usage::zero(),
             usage_obs: None,
             success: false,
+            ttft_ms: None,
         }
     }
 

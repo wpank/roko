@@ -153,21 +153,24 @@ enrichment_payload!(
     /// Output from the knowledge enrichment Cell (`compose.knowledge@1`).
     ///
     /// Provides scoped memory, knowledge store, and code-index context.
-    KnowledgeSections, "compose.knowledge@1"
+    KnowledgeSections,
+    "compose.knowledge@1"
 );
 
 enrichment_payload!(
     /// Output from the episodes enrichment Cell (`compose.episodes@1`).
     ///
     /// Provides relevant episode summaries and error-pattern context.
-    EpisodeSections, "compose.episodes@1"
+    EpisodeSections,
+    "compose.episodes@1"
 );
 
 enrichment_payload!(
     /// Output from the playbook enrichment Cell (`compose.playbook@1`).
     ///
     /// Provides playbook/skill/Dreams context.
-    PlaybookSections, "compose.playbook@1"
+    PlaybookSections,
+    "compose.playbook@1"
 );
 
 enrichment_payload!(
@@ -175,14 +178,16 @@ enrichment_payload!(
     ///
     /// Provides dependency-output and task-context sections. **Required** --
     /// absence or error fails the aggregate.
-    TaskContextSections, "compose.task_context@1"
+    TaskContextSections,
+    "compose.task_context@1"
 );
 
 enrichment_payload!(
     /// Output from the modulation enrichment Cell (`compose.modulation@1`).
     ///
     /// Provides Daimon/cortical/routing modulation context.
-    ModulationSections, "compose.modulation@1"
+    ModulationSections,
+    "compose.modulation@1"
 );
 
 enrichment_payload!(
@@ -190,7 +195,8 @@ enrichment_payload!(
     ///
     /// Provides safety and capability context. **Required** -- absence or
     /// error fails the aggregate.
-    SafetySections, "compose.safety@1"
+    SafetySections,
+    "compose.safety@1"
 );
 
 enrichment_payload!(
@@ -198,7 +204,8 @@ enrichment_payload!(
     ///
     /// Provides structural code context (symbols, files, call graphs) from
     /// the workspace code intelligence index.
-    CodeIndexSections, "compose.code_index@1"
+    CodeIndexSections,
+    "compose.code_index@1"
 );
 
 // ---------------------------------------------------------------------------

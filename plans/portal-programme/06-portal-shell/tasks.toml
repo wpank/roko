@@ -57,7 +57,6 @@ At least 8 tests over the three pure functions.
 status = "ready"
 role = "implementer"
 tier = "focused"
-model_hint = "claude-sonnet-4-6"
 max_retries = 2
 estimated_minutes = 20
 depends_on = []
@@ -143,7 +142,6 @@ order, filtering, each time kind.
 status = "ready"
 role = "implementer"
 tier = "integrative"
-model_hint = "claude-sonnet-4-6"
 timeout_secs = 1200
 max_retries = 2
 estimated_minutes = 35
@@ -199,7 +197,6 @@ src/components/primitives/MetricCell.tsx and src/lib/formatters.ts first.
 status = "ready"
 role = "implementer"
 tier = "focused"
-model_hint = "claude-sonnet-4-6"
 max_retries = 2
 estimated_minutes = 20
 depends_on = ["T02"]
@@ -253,7 +250,6 @@ Confirmation of Run all lives with the caller, which owns every destructive conf
 status = "ready"
 role = "implementer"
 tier = "focused"
-model_hint = "claude-sonnet-4-6"
 max_retries = 2
 estimated_minutes = 25
 depends_on = ["T03"]
@@ -312,7 +308,6 @@ the next candidate, the attempt-keyed re-alert, and null when all is well.
 status = "ready"
 role = "implementer"
 tier = "focused"
-model_hint = "claude-sonnet-4-6"
 max_retries = 2
 estimated_minutes = 25
 depends_on = []
@@ -350,7 +345,6 @@ Read src/lib/alerts.ts first.
 status = "ready"
 role = "implementer"
 tier = "mechanical"
-model_hint = "claude-sonnet-4-6"
 max_retries = 2
 estimated_minutes = 10
 depends_on = ["T05"]
@@ -404,7 +398,6 @@ does not belong here.
 status = "ready"
 role = "implementer"
 tier = "focused"
-model_hint = "claude-sonnet-4-6"
 max_retries = 2
 estimated_minutes = 25
 depends_on = []
@@ -457,7 +450,6 @@ except Escape, Tab, and an unbound key.
 status = "ready"
 role = "implementer"
 tier = "focused"
-model_hint = "claude-sonnet-4-6"
 max_retries = 2
 estimated_minutes = 20
 depends_on = []
@@ -530,7 +522,6 @@ this plan).
 status = "ready"
 role = "implementer"
 tier = "integrative"
-model_hint = "claude-sonnet-4-6"
 timeout_secs = 1800
 max_retries = 2
 estimated_minutes = 40

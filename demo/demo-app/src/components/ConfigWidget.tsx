@@ -80,7 +80,6 @@ const SECTIONS: SectionDef[] = [
     id: 'learning', label: 'Learning', configKey: 'learning',
     fields: [
       { key: 'log_efficiency_events', label: 'Log Efficiency', type: 'boolean' },
-      { key: 'replan_on_gate_failure', label: 'Replan on Failure', type: 'boolean' },
       { key: 'cascade_router', label: 'Cascade Router', type: 'boolean' },
       { key: 'experiments', label: 'Experiments', type: 'boolean' },
     ],

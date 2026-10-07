@@ -68,6 +68,16 @@ pub enum AuthAuditAction {
     RoleChanged,
     /// A relay token was delegated from one agent to another.
     TokenDelegated,
+    /// A showcase passphrase login succeeded and minted a session (S11 §4.3).
+    LoginSucceeded,
+    /// A showcase passphrase login failed: a wrong passphrase, never logged.
+    LoginFailed,
+    /// A showcase login was refused because its address, or every address, is blocked.
+    LoginLocked,
+    /// A showcase session was ended on request.
+    SessionRevoked,
+    /// A showcase session was refused because the passphrase hash rotated after it was minted.
+    GenerationChanged,
 }
 
 impl AuthAuditAction {
@@ -87,6 +97,11 @@ impl AuthAuditAction {
             Self::KeyExpired => "KeyExpired",
             Self::RoleChanged => "RoleChanged",
             Self::TokenDelegated => "TokenDelegated",
+            Self::LoginSucceeded => "LoginSucceeded",
+            Self::LoginFailed => "LoginFailed",
+            Self::LoginLocked => "LoginLocked",
+            Self::SessionRevoked => "SessionRevoked",
+            Self::GenerationChanged => "GenerationChanged",
         }
     }
 }

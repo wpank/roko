@@ -1,7 +1,7 @@
 # Demo Resources
 
 Scripts and automations for validating and demoing roko-serve, agent
-matchmaking, PRDs, research, benchmark telemetry, the dashboard integration,
+matchmaking, plans, research, benchmark telemetry, the dashboard integration,
 and the self-hosting loop.
 
 ## Quick start
@@ -49,9 +49,9 @@ Reusable scripts accept an optional base URL argument, defaulting to
 | `agent-matchmaking/` | Agent registration, skill matching, job lifecycle, e2e tests | API + CLI |
 | `agent-setup/` | Agent creation, tool config, fleet registration | CLI + API |
 | `agent-workflows/` | Agent sidecar start/stop, multi-agent, chat REPL | CLI (live processes) |
-| `prd-workflow/` | Idea capture, PRD listing, status, plan generation | CLI + API |
-| `research-workflow/` | Research dispatch, artifact listing, PRD enhancement | CLI + API |
-| `full-self-hosting/` | End-to-end: capture → jobs → match → observe | CLI + API |
+| `plan-workflow/` | Plan generation from a prompt, review, validation, execution | CLI + API |
+| `research-workflow/` | Research dispatch, artifact listing, plan enhancement | CLI + API |
+| `full-self-hosting/` | End-to-end: plan → jobs → match → run → observe | CLI + API |
 | `benchmark-flow/` | Native SWE-bench proxy scoring, prediction export, episodes, efficiency, C-factor | CLI |
 | `coding-agent-benchmarks/` | Ollama coding-agent loops, context injection comparisons, neuro knowledge reuse | CLI + Ollama |
 | `dashboard-quickstart/` | Setup guide for nunchi-dashboard + roko-serve | Docs only |
@@ -65,10 +65,10 @@ These have `pause()` calls for live walkthroughs (press Enter between steps):
 |--------|---------------|
 | `agent-matchmaking/demo-match.sh` | 6 matchmaking queries with formatted output |
 | `agent-matchmaking/demo-lifecycle.sh` | Job state machine: match → create → assign → start → submit → evaluate |
-| `prd-workflow/demo-prd-cli.sh` | Ideas, PRD list, status, job creation via CLI |
-| `prd-workflow/demo-prd-api.sh` | Same flow via HTTP API |
-| `research-workflow/demo-research.sh` | Research dispatch + ideas + jobs |
-| `full-self-hosting/demo-full-loop.sh` | All 4 acts: capture, jobs, match, system state |
+| `plan-workflow/demo-plan-cli.sh` | Prompt → plan → review → validate → run via CLI |
+| `plan-workflow/demo-plan-api.sh` | Same flow via HTTP API |
+| `research-workflow/demo-research.sh` | Research dispatch + research-backed plan + jobs |
+| `full-self-hosting/demo-full-loop.sh` | All 5 acts: plan, jobs, match, run, system state |
 | `agent-setup/setup-fleet.sh` | Create 3 agents + register for matchmaking |
 | `benchmark-flow/demo-benchmark.sh` | Gold/empty/command benchmark controls and C-factor proof |
 | `coding-agent-benchmarks/run-ollama-bench.sh` | Minimal/context/neuro Ollama coding-agent comparison |
@@ -171,13 +171,14 @@ Verify: `curl -s http://localhost:6677/api/providers | python3 -m json.tool`
 | GET | `/api/jobs` | List all jobs |
 | GET | `/api/jobs/stats` | Job statistics |
 
-### PRDs & Plans
+### Plans
 | Method | Path | Purpose |
 |--------|------|---------|
-| POST | `/api/prds/ideas` | Capture idea |
-| GET | `/api/prds` | List PRDs |
-| GET | `/api/prds/status` | Coverage report |
+| POST | `/api/plans/generate` | Write a plan from `{"prompt": "..."}` |
+| GET | `/api/operations/{id}` | Poll a background operation, such as plan generation |
 | GET | `/api/plans` | List plans |
+| GET/PUT | `/api/plans/{id}/source` | Read or save a plan's `tasks.toml` (saves are validated) |
+| POST | `/api/plans/{id}/execute` | Run a plan |
 
 ### Research
 | Method | Path | Purpose |

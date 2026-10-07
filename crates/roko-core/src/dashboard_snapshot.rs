@@ -267,11 +267,6 @@ pub enum DashboardEvent {
     MarketplaceJobsUpdated {
         jobs: Vec<crate::job::MarketplaceJob>,
     },
-    /// Atelier PRDs and associated task data were refreshed.
-    AtelierPrdsUpdated {
-        prds: Vec<crate::job::PrdSummary>,
-        tasks: std::collections::HashMap<String, Vec<crate::job::TaskSummary>>,
-    },
     /// Knowledge entries were refreshed from the neuro store.
     KnowledgeEntriesUpdated { entries: Vec<KnowledgeBrowseEntry> },
     /// A job execution started.
@@ -456,6 +451,86 @@ pub enum DashboardEvent {
         #[serde(default)]
         source: String,
     },
+    /// M2's health of one learning loop (S03 §5, the `loop.health` row).
+    LoopHealth {
+        /// The loop, e.g. `L-know`.
+        loop_id: String,
+        /// `probation`, `live`, `flagged` or `demoted`.
+        state: String,
+        /// S03 §4.6's reason, e.g. `dormant:unlogged`.
+        #[serde(default)]
+        reason: Option<String>,
+        /// Qualifiers, printed after the reason.
+        #[serde(default)]
+        qualifiers: Vec<String>,
+        /// The loop's holdout rate.
+        h: f64,
+        /// ε̂, when measured.
+        #[serde(default)]
+        eps: Option<f64>,
+        /// ι_net, when measured.
+        #[serde(default)]
+        iota_net: Option<f64>,
+        /// β̂, when judged.
+        #[serde(default)]
+        beta: Option<f64>,
+        /// When the auditor evaluated it (RFC 3339).
+        ts: String,
+    },
+    /// M2 moved a learning loop to another state (S03 §5, the
+    /// `loop.transition` row).
+    LoopTransition {
+        /// The loop, e.g. `L-bid`.
+        loop_id: String,
+        /// The state it left.
+        from: String,
+        /// The state it entered.
+        to: String,
+        /// The new state's reason.
+        #[serde(default)]
+        reason: Option<String>,
+        /// The rule that fired.
+        rule: String,
+        /// `auditor` or `human`.
+        actor: String,
+        /// When it moved (RFC 3339).
+        ts: String,
+    },
+    /// One of M1's essential variables after a resolution (S06 §5).
+    #[serde(rename = "ev.update")]
+    EvUpdate {
+        /// The variable: `pass_rate`, `usd_per_verified_success`,
+        /// `false_green` or `latency_p90_s`.
+        ev: String,
+        /// Its estimate over M1's window; `None` before it has data.
+        #[serde(default)]
+        value: Option<f64>,
+        /// The S5 bound it must stay inside.
+        bound: f64,
+        /// The inner band it recovers to.
+        #[serde(default)]
+        inner: Option<f64>,
+        /// `breached` or `in_bounds`.
+        state: String,
+    },
+    /// An M1 episode moved: it opened, changed θ, held or closed (S06 §5).
+    #[serde(rename = "m1.episode")]
+    M1Episode {
+        /// The episode, e.g. `ep-0007`; `relax` for a relaxation.
+        episode_id: String,
+        /// The controller's phase after it: `idle`, `search` or `hold`.
+        phase: String,
+        /// The change it made, as `knob: from -> to`; `None` without one.
+        #[serde(default)]
+        change: Option<String>,
+    },
+    /// M3's calibration export changed (S04 §4.7, 6134): the gate report the
+    /// self-model wrote to `.roko/learn/self-model/calibration.json`.
+    #[serde(rename = "self_model.calibration")]
+    SelfModelCalibration {
+        /// The export, as written.
+        report: serde_json::Value,
+    },
     /// An error occurred.
     Error { message: String },
 }
@@ -560,6 +635,11 @@ pub struct PlanSetEntry {
     /// Human-readable plan title (the plan ID when none is declared).
     #[serde(default)]
     pub title: String,
+    /// Plan set (directory) containing the plan, relative to the workspace
+    /// `plans/` directory and `/`-separated (e.g. `"portal-programme"`).
+    /// `None` for a top-level plan or one outside `plans/`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub group: Option<String>,
     /// Total tasks declared by the plan.
     #[serde(default)]
     pub tasks_total: usize,
@@ -630,6 +710,15 @@ pub struct TaskState {
     /// Why the task will not run, when it is blocked (gap-f59fe9).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub blocked_reason: Option<String>,
+    /// When the task's latest run started (Unix ms), stamped as its
+    /// `TaskStarted` is applied. `None` until it starts, and for a task that
+    /// finished without one.
+    #[serde(default)]
+    pub started_at_ms: Option<u64>,
+    /// When the task's latest run ended (Unix ms), stamped as its first
+    /// `TaskCompleted` is applied. `None` before it ends.
+    #[serde(default)]
+    pub finished_at_ms: Option<u64>,
 }
 
 /// A single agent's live state.
@@ -1163,6 +1252,11 @@ pub const TASK_OUTCOME_ALREADY_SATISFIED: &str = "already_satisfied";
 /// did not start (gap-f59fe9). Counted as neither done nor failed.
 pub const TASK_OUTCOME_BLOCKED: &str = "blocked";
 
+/// Outcome of a task that was still running when its run ended other than by
+/// cancellation, which `RunCompleted` gives it (bug-60ccba). Counted as
+/// failed: it did not finish.
+pub const TASK_OUTCOME_INTERRUPTED: &str = "interrupted";
+
 /// How a `TaskCompleted` outcome counts in the dashboard.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TaskOutcomeClass {
@@ -1189,8 +1283,8 @@ pub enum TaskOutcomeClass {
 /// Only an outcome that names a pass (`passed`,
 /// `passed_with_preexisting_failures`, or a legacy `success` or `succeeded`)
 /// counts as passed. A skipped task is not a pass, a blocked task is neither
-/// done nor failed, a failure is failed, and any other outcome, `unverified`
-/// included, is unverified. Accepted-with-failures, already-satisfied,
+/// done nor failed, a failure (an interrupted or cancelled task included) is
+/// failed, and any other outcome, `unverified` included, is unverified. Accepted-with-failures, already-satisfied,
 /// blocked and the passes are matched exactly before failures: two of them
 /// contain "fail".
 #[must_use]
@@ -1210,7 +1304,7 @@ pub fn classify_task_outcome(outcome: &str) -> TaskOutcomeClass {
         || lower.starts_with("success")
     {
         TaskOutcomeClass::Passed
-    } else if ["fail", "error", "cancel", "halt"]
+    } else if ["fail", "error", "cancel", "halt", "interrupt"]
         .iter()
         .any(|word| lower.contains(word))
     {
@@ -1220,7 +1314,7 @@ pub fn classify_task_outcome(outcome: &str) -> TaskOutcomeClass {
     }
 }
 
-/// Latest gate output retained for one task.
+/// Latest output retained for one verify step (gate) of one task.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TaskGateOutput {
     /// Parent plan identifier.
@@ -1362,12 +1456,6 @@ pub struct DashboardSnapshot {
     /// Marketplace jobs for the Marketplace (F8) tab.
     #[serde(default)]
     pub marketplace_jobs: Vec<crate::job::MarketplaceJob>,
-    /// PRD summaries for the Atelier (F9) tab.
-    #[serde(default)]
-    pub atelier_prds: Vec<crate::job::PrdSummary>,
-    /// Tasks keyed by PRD slug for the Atelier detail view.
-    #[serde(default)]
-    pub atelier_tasks: HashMap<String, Vec<crate::job::TaskSummary>>,
     /// Knowledge entries for the Inspect (F7) tab.
     #[serde(default)]
     pub knowledge_entries: Vec<KnowledgeBrowseEntry>,
@@ -1398,9 +1486,10 @@ pub struct DashboardSnapshot {
     /// Gate output lines from rung executions (bounded to 500).
     #[serde(default)]
     pub gate_output_lines: VecDeque<String>,
-    /// Latest gate output retained per task (bounded), so a failure's detail
-    /// outlives later gates of other tasks. `gate_output_lines` remains the
-    /// live view of the most recent rung.
+    /// Latest output of each verify step, retained per task and gate
+    /// (bounded), so a failure's detail outlives later gates of the same task
+    /// and of other tasks. `gate_output_lines` remains the live view of the
+    /// most recent rung.
     #[serde(default)]
     pub task_gate_outputs: VecDeque<TaskGateOutput>,
     /// Gate pipeline currently in progress, cleared on the next verdict.
@@ -1487,9 +1576,11 @@ const MAX_EPISODES: usize = 128;
 const MAX_EVENT_LOG: usize = 200;
 const MAX_TASK_OUTPUT_LINES: usize = 50;
 const MAX_GATE_OUTPUT_LINES: usize = 500;
-/// Tasks whose latest gate output is retained in `task_gate_outputs`.
-const MAX_TASK_GATE_OUTPUTS: usize = 64;
-/// Output lines retained per task.
+/// Gate outputs retained in `task_gate_outputs`, one per task and verify step.
+const MAX_TASK_GATE_OUTPUTS: usize = 128;
+/// Verify steps whose output is retained per task.
+const MAX_TASK_GATE_STEPS: usize = 8;
+/// Output lines retained per verify step.
 const MAX_TASK_GATE_OUTPUT_LINES: usize = 60;
 /// Output tail lines folded into a failure summary.
 const FAILURE_SUMMARY_TAIL_LINES: usize = 3;
@@ -1743,6 +1834,27 @@ impl DashboardSnapshot {
                     }
                     .into();
                 }
+                // A task still running when the run ends did not finish: it
+                // ends with the run, cancelled or interrupted, never passed
+                // (bug-60ccba).
+                let task_outcome = if outcome == "cancelled" {
+                    "cancelled"
+                } else {
+                    TASK_OUTCOME_INTERRUPTED
+                };
+                let mut ended = Vec::new();
+                for task in self.tasks.values_mut() {
+                    if task.outcome.is_none() {
+                        task.phase = task_outcome.into();
+                        task.outcome = Some(task_outcome.into());
+                        task.finished_at_ms = Some(ts);
+                        ended.push(task.plan_id.clone());
+                    }
+                }
+                self.stats.tasks_active = self.stats.tasks_active.saturating_sub(ended.len());
+                for plan_id in ended {
+                    self.count_settled(&plan_id, classify_task_outcome(task_outcome), true);
+                }
                 for agent in self.agents.values_mut() {
                     agent.active =
                         *cleanup_degraded && surviving_agent_ids.contains(&agent.agent_id);
@@ -1763,6 +1875,13 @@ impl DashboardSnapshot {
                     .tasks
                     .get(&key)
                     .is_none_or(|task| task.outcome.is_some());
+                // A repeated start of a running task keeps its clock.
+                let started_at_ms = self
+                    .tasks
+                    .get(&key)
+                    .filter(|task| task.outcome.is_none())
+                    .and_then(|task| task.started_at_ms)
+                    .unwrap_or(ts);
                 self.tasks.insert(
                     key,
                     TaskState {
@@ -1773,6 +1892,8 @@ impl DashboardSnapshot {
                         outcome: None,
                         blocked_by: None,
                         blocked_reason: None,
+                        started_at_ms: Some(started_at_ms),
+                        finished_at_ms: None,
                     },
                 );
                 if newly_active {
@@ -1799,6 +1920,10 @@ impl DashboardSnapshot {
                         // later run that settles it counts (gap-f59fe9).
                         let newly_terminal =
                             was_active || task.outcome.as_deref() == Some(TASK_OUTCOME_BLOCKED);
+                        // A repeated completion keeps the first end time.
+                        if newly_terminal {
+                            task.finished_at_ms = Some(ts);
+                        }
                         task.phase = "completed".into();
                         task.outcome = Some(outcome.clone());
                         task.blocked_by = None;
@@ -1816,6 +1941,8 @@ impl DashboardSnapshot {
                                 outcome: Some(outcome.clone()),
                                 blocked_by: None,
                                 blocked_reason: None,
+                                started_at_ms: None,
+                                finished_at_ms: Some(ts),
                             },
                         );
                         self.grow_plan_task_total(plan_id);
@@ -1858,6 +1985,8 @@ impl DashboardSnapshot {
                     outcome: None,
                     blocked_by: None,
                     blocked_reason: None,
+                    started_at_ms: None,
+                    finished_at_ms: None,
                 });
                 if task.title.is_empty() {
                     task.title.clone_from(title);
@@ -2205,10 +2334,6 @@ impl DashboardSnapshot {
             DashboardEvent::MarketplaceJobsUpdated { jobs } => {
                 self.marketplace_jobs = jobs.clone();
             }
-            DashboardEvent::AtelierPrdsUpdated { prds, tasks } => {
-                self.atelier_prds = prds.clone();
-                self.atelier_tasks = tasks.clone();
-            }
             DashboardEvent::KnowledgeEntriesUpdated { entries } => {
                 self.knowledge_entries = entries.clone();
             }
@@ -2370,6 +2495,46 @@ impl DashboardSnapshot {
             // this event only exists to advance the event-bus cursor for
             // SSE/WS consumers.
             DashboardEvent::SnapshotRebased { .. } => {}
+            // The Homeostat view reads EVs from the event stream; the
+            // snapshot logs only M1's episode moves (8130).
+            DashboardEvent::EvUpdate { .. } => {}
+            DashboardEvent::M1Episode {
+                episode_id,
+                phase,
+                change,
+            } => {
+                let change = change.as_deref().unwrap_or("no change");
+                self.push_event_log(
+                    ts,
+                    "m1_episode".to_string(),
+                    String::new(),
+                    String::new(),
+                    format!("M1 {episode_id}: {phase}, {change}"),
+                );
+            }
+            // S10's calibration view reads the export from the event stream
+            // (6134); the snapshot keeps none of it.
+            DashboardEvent::SelfModelCalibration { .. } => {}
+            // S10's Loop Health view reads health from the event stream; the
+            // snapshot keeps no loop state, and logs only the transitions.
+            DashboardEvent::LoopHealth { .. } => {}
+            DashboardEvent::LoopTransition {
+                loop_id,
+                from,
+                to,
+                reason,
+                actor,
+                ..
+            } => {
+                let reason = reason.as_deref().unwrap_or("-");
+                self.push_event_log(
+                    ts,
+                    "loop_transition".to_string(),
+                    String::new(),
+                    String::new(),
+                    format!("{loop_id}: {from} → {to} ({reason}, by the {actor})"),
+                );
+            }
         }
     }
 
@@ -2987,6 +3152,8 @@ fn bootstrap_plan_state(
                 outcome: Some(String::from("success")),
                 blocked_by: None,
                 blocked_reason: None,
+                started_at_ms: None,
+                finished_at_ms: None,
             },
         );
     }
@@ -3007,6 +3174,8 @@ fn bootstrap_plan_state(
                 outcome: Some(String::from("failed")),
                 blocked_by: None,
                 blocked_reason: None,
+                started_at_ms: None,
+                finished_at_ms: None,
             },
         );
     }
@@ -3026,6 +3195,8 @@ fn bootstrap_plan_state(
                     outcome: None,
                     blocked_by: None,
                     blocked_reason: None,
+                    started_at_ms: None,
+                    finished_at_ms: None,
                 },
             );
         }
@@ -3055,6 +3226,8 @@ fn bootstrap_plan_state(
                 }),
                 blocked_by: None,
                 blocked_reason: None,
+                started_at_ms: None,
+                finished_at_ms: None,
             },
         );
     }
@@ -3338,6 +3511,8 @@ fn apply_runner_lifecycle_projection(
                     outcome: outcome.map(str::to_string),
                     blocked_by: None,
                     blocked_reason: None,
+                    started_at_ms: None,
+                    finished_at_ms: None,
                 },
             );
             if let Some(plan) = snapshot.plans.get_mut(plan_id) {
@@ -3551,6 +3726,8 @@ fn apply_runner_terminal_task_maps(
                         outcome: Some(outcome.to_string()),
                         blocked_by: None,
                         blocked_reason: None,
+                        started_at_ms: None,
+                        finished_at_ms: None,
                     },
                 );
                 if let Some(plan) = snapshot.plans.get_mut(plan_id) {
@@ -3588,6 +3765,8 @@ fn apply_runner_terminal_task_maps(
                     outcome: Some("skipped".to_string()),
                     blocked_by: None,
                     blocked_reason: None,
+                    started_at_ms: None,
+                    finished_at_ms: None,
                 },
             );
             if let Some(plan) = snapshot.plans.get_mut(plan_id) {
@@ -3878,7 +4057,7 @@ fn record_gate_trend(
 }
 
 impl DashboardSnapshot {
-    /// Latest retained gate output for `plan_id/task_id`, if any.
+    /// Latest retained gate output for `plan_id/task_id`, of any verify step.
     #[must_use]
     pub fn task_gate_output(&self, plan_id: &str, task_id: &str) -> Option<&TaskGateOutput> {
         self.task_gate_outputs
@@ -3886,12 +4065,27 @@ impl DashboardSnapshot {
             .rev()
             .find(|output| output.plan_id == plan_id && output.task_id == task_id)
     }
+
+    /// Retained output of the `gate` verify step of `plan_id/task_id`, if any.
+    #[must_use]
+    pub fn task_gate_step_output(
+        &self,
+        plan_id: &str,
+        task_id: &str,
+        gate: &str,
+    ) -> Option<&TaskGateOutput> {
+        self.task_gate_outputs.iter().rev().find(|output| {
+            output.plan_id == plan_id && output.task_id == task_id && output.gate == gate
+        })
+    }
 }
 
-/// Retain the latest gate output for one task, bounded in tasks and lines.
+/// Retain the latest output of one verify step of one task, bounded in steps
+/// per task, in entries overall and in lines.
 ///
-/// A leading `$ command` line survives truncation so the failing command
-/// stays attributable.
+/// A rerun of a step replaces that step's output; the task's other steps
+/// keep theirs. A leading `$ command` line survives truncation so the
+/// failing command stays attributable.
 fn retain_task_gate_output(
     snapshot: &mut DashboardSnapshot,
     plan_id: &str,
@@ -3900,9 +4094,20 @@ fn retain_task_gate_output(
     passed: bool,
     output: &str,
 ) {
+    let is_task = |entry: &TaskGateOutput| entry.plan_id == plan_id && entry.task_id == task_id;
     snapshot
         .task_gate_outputs
-        .retain(|entry| entry.plan_id != plan_id || entry.task_id != task_id);
+        .retain(|entry| !is_task(entry) || entry.gate != gate);
+    let task_steps = snapshot
+        .task_gate_outputs
+        .iter()
+        .filter(|&entry| is_task(entry))
+        .count();
+    if task_steps >= MAX_TASK_GATE_STEPS
+        && let Some(oldest) = snapshot.task_gate_outputs.iter().position(is_task)
+    {
+        snapshot.task_gate_outputs.remove(oldest);
+    }
     if snapshot.task_gate_outputs.len() >= MAX_TASK_GATE_OUTPUTS {
         snapshot.task_gate_outputs.pop_front();
     }
@@ -3978,8 +4183,8 @@ fn rebuild_gate_observability(snapshot: &mut DashboardSnapshot, gates: &[GateVer
         record_gate_trend(snapshot, &gate.gate, ts, gate.passed);
         if !gate.passed {
             let summary = snapshot
-                .task_gate_output(&gate.plan_id, &gate.task_id)
-                .filter(|output| !output.passed && output.gate == gate.gate)
+                .task_gate_step_output(&gate.plan_id, &gate.task_id, &gate.gate)
+                .filter(|output| !output.passed)
                 .map(|output| summarize_gate_lines(output.lines.iter().map(String::as_str)))
                 .unwrap_or_default();
             push_gate_failure(
@@ -4348,6 +4553,49 @@ mod tests {
     use super::*;
     use tempfile::tempdir;
 
+    /// S03 §5: M2's loop events carry the `loop_health` and
+    /// `loop_transition` kinds, round-trip through serde, and a transition
+    /// lands in the snapshot's event log.
+    #[test]
+    fn loop_events_serialize_with_kind() {
+        let health = DashboardEvent::LoopHealth {
+            loop_id: "L-know".into(),
+            state: "flagged".into(),
+            reason: Some("dormant:unlogged".into()),
+            qualifiers: vec!["pre_instrumentation".into()],
+            h: 0.5,
+            eps: Some(0.0),
+            iota_net: Some(0.94),
+            beta: None,
+            ts: "2026-10-03T10:00:00Z".into(),
+        };
+        let transition = DashboardEvent::LoopTransition {
+            loop_id: "L-bid".into(),
+            from: "probation".into(),
+            to: "flagged".into(),
+            reason: Some("dormant:degenerate".into()),
+            rule: "degeneracy: posterior spread 0 over 7 sections".into(),
+            actor: "auditor".into(),
+            ts: "2026-10-03T10:05:00Z".into(),
+        };
+        for (event, kind) in [(&health, "loop_health"), (&transition, "loop_transition")] {
+            let json = serde_json::to_value(event).expect("serialize a loop event");
+            assert_eq!(json["type"], kind);
+            let again: DashboardEvent = serde_json::from_value(json).expect("parse a loop event");
+            assert_eq!(&again, event);
+        }
+
+        let mut snap = DashboardSnapshot::default();
+        snap.apply_with_ts(&health, 1);
+        snap.apply_with_ts(&transition, 2);
+        let logged: Vec<&str> = snap
+            .event_log
+            .iter()
+            .map(|entry| entry.event_type.as_str())
+            .collect();
+        assert_eq!(logged, ["loop_transition"]);
+    }
+
     /// gap-f59fe9: a task blocked by a failed one never starts. It is listed
     /// with its blocker and title, and counts as neither done nor failed,
     /// also when the status poll first reported it as skipped.
@@ -4532,6 +4780,24 @@ mod tests {
     }
 
     #[test]
+    fn plan_set_entry_names_its_group_only_when_it_has_one() {
+        let nested = PlanSetEntry {
+            plan_id: "01-backend".into(),
+            group: Some("portal-programme".into()),
+            ..PlanSetEntry::default()
+        };
+        let json = serde_json::to_value(&nested).unwrap();
+        assert_eq!(json["group"], "portal-programme");
+        assert_eq!(
+            serde_json::from_value::<PlanSetEntry>(json).unwrap(),
+            nested
+        );
+
+        let top_level = serde_json::to_value(PlanSetEntry::default()).unwrap();
+        assert!(top_level.get("group").is_none(), "{top_level}");
+    }
+
+    #[test]
     fn plan_set_loaded_seeds_pending_plans_and_whole_set_total() {
         let mut snap = DashboardSnapshot {
             run_duration_ms: Some(9),
@@ -4698,6 +4964,51 @@ mod tests {
         assert_eq!(next.tasks_accepted_with_failures, 0);
     }
 
+    /// gap-8a1fb3: the snapshot stamps when each task started and ended, so a
+    /// client that reloads mid-run still has every task's times.
+    #[test]
+    fn task_state_carries_start_and_end_times() {
+        let mut snap = DashboardSnapshot::default();
+        let started = |task_id: &str| DashboardEvent::TaskStarted {
+            plan_id: "p1".into(),
+            task_id: task_id.into(),
+            title: task_id.into(),
+            phase: "implement".into(),
+        };
+        let completed = |task_id: &str| DashboardEvent::TaskCompleted {
+            plan_id: "p1".into(),
+            task_id: task_id.into(),
+            outcome: "passed".into(),
+        };
+
+        snap.apply_with_ts(&started("t1"), 1_000);
+        // A repeated start of a running task keeps its clock.
+        snap.apply_with_ts(&started("t1"), 1_500);
+        assert_eq!(snap.tasks["p1/t1"].started_at_ms, Some(1_000));
+        assert_eq!(snap.tasks["p1/t1"].finished_at_ms, None);
+
+        snap.apply_with_ts(&completed("t1"), 3_000);
+        // A repeated completion keeps the first end time.
+        snap.apply_with_ts(&completed("t1"), 9_000);
+        assert_eq!(snap.tasks["p1/t1"].started_at_ms, Some(1_000));
+        assert_eq!(snap.tasks["p1/t1"].finished_at_ms, Some(3_000));
+
+        // A task that ends without a start has only an end time.
+        snap.apply_with_ts(&completed("t2"), 4_000);
+        assert_eq!(snap.tasks["p1/t2"].started_at_ms, None);
+        assert_eq!(snap.tasks["p1/t2"].finished_at_ms, Some(4_000));
+
+        // The snapshot a reloading client fetches carries them.
+        let wire = serde_json::to_value(&snap).expect("serialize snapshot");
+        assert_eq!(wire["tasks"]["p1/t1"]["started_at_ms"], 1_000);
+        assert_eq!(wire["tasks"]["p1/t1"]["finished_at_ms"], 3_000);
+
+        // A retry starts a new clock.
+        snap.apply_with_ts(&started("t1"), 5_000);
+        assert_eq!(snap.tasks["p1/t1"].started_at_ms, Some(5_000));
+        assert_eq!(snap.tasks["p1/t1"].finished_at_ms, None);
+    }
+
     #[test]
     fn run_completed_ends_the_clock_of_the_plans_it_stops() {
         let mut snap = DashboardSnapshot::default();
@@ -4724,6 +5035,68 @@ mod tests {
         // A member that never started has neither time.
         assert_eq!(snap.plans["b"].started_at_ms, None);
         assert_eq!(snap.plans["b"].finished_at_ms, None);
+    }
+
+    /// bug-60ccba: a run that ends while tasks still run ends them too, at its
+    /// time and never as passed: interrupted, or cancelled when the run was
+    /// cancelled. A task that finished keeps its outcome and time.
+    #[test]
+    fn run_completed_ends_running_tasks() {
+        let started = |task_id: &str| DashboardEvent::TaskStarted {
+            plan_id: "p1".into(),
+            task_id: task_id.into(),
+            title: task_id.into(),
+            phase: "implement".into(),
+        };
+        let run_completed = |outcome: &str| DashboardEvent::RunCompleted {
+            outcome: outcome.into(),
+            duration_ms: 2_000,
+            cleanup_degraded: false,
+            surviving_agent_ids: Vec::new(),
+            surviving_agent_pids: Vec::new(),
+        };
+
+        let mut snap = DashboardSnapshot::default();
+        snap.apply_with_ts(&plan_set_event(&[("p1", 2)]), 500);
+        snap.apply_with_ts(
+            &DashboardEvent::PlanStarted {
+                plan_id: "p1".into(),
+                tasks_total: 2,
+            },
+            1_000,
+        );
+        snap.apply_with_ts(&started("t1"), 1_100);
+        snap.apply_with_ts(&started("t2"), 1_100);
+        snap.apply_with_ts(
+            &DashboardEvent::TaskCompleted {
+                plan_id: "p1".into(),
+                task_id: "t1".into(),
+                outcome: TASK_OUTCOME_PASSED.into(),
+            },
+            2_000,
+        );
+        snap.apply_with_ts(&run_completed("failed"), 3_000);
+
+        let t2 = &snap.tasks["p1/t2"];
+        assert_eq!(t2.outcome.as_deref(), Some(TASK_OUTCOME_INTERRUPTED));
+        assert_eq!(t2.finished_at_ms, Some(3_000));
+        assert_eq!(
+            classify_task_outcome(TASK_OUTCOME_INTERRUPTED),
+            TaskOutcomeClass::Failed
+        );
+        assert_eq!(snap.stats.tasks_active, 0);
+        assert_eq!(snap.plans["p1"].tasks_failed, 1);
+        assert_eq!(snap.plans["p1"].tasks_passed, 1);
+        let t1 = &snap.tasks["p1/t1"];
+        assert_eq!(t1.outcome.as_deref(), Some(TASK_OUTCOME_PASSED));
+        assert_eq!(t1.finished_at_ms, Some(2_000));
+
+        // A cancelled run's running tasks end cancelled.
+        let mut snap = DashboardSnapshot::default();
+        snap.apply_with_ts(&started("t1"), 1_000);
+        snap.apply_with_ts(&run_completed("cancelled"), 2_000);
+        assert_eq!(snap.tasks["p1/t1"].outcome.as_deref(), Some("cancelled"));
+        assert_eq!(snap.stats.tasks_failed, 1);
     }
 
     #[test]
@@ -5149,6 +5522,44 @@ mod tests {
     }
 
     #[test]
+    fn task_gate_outputs_keep_each_verify_step() {
+        let mut snap = DashboardSnapshot::default();
+        let gate_result = |gate: &str, passed: bool, output: &str| DashboardEvent::GateResult {
+            plan_id: "p1".into(),
+            task_id: "t1".into(),
+            gate: gate.into(),
+            passed,
+            output_text: Some(output.into()),
+        };
+        let step = |snap: &DashboardSnapshot, gate: &str| {
+            snap.task_gate_step_output("p1", "t1", gate).cloned()
+        };
+        snap.apply(&gate_result("compile", true, "$ cargo check\nFinished"));
+        snap.apply(&gate_result("test", false, "$ cargo test\n1 failed"));
+
+        // The failing step did not displace the earlier step's output.
+        let compile = step(&snap, "compile").expect("compile");
+        assert_eq!(compile.lines, ["$ cargo check", "Finished"]);
+        assert!(!step(&snap, "test").expect("test").passed);
+        let latest = snap.task_gate_output("p1", "t1").expect("latest");
+        assert_eq!(latest.gate, "test");
+
+        // A rerun replaces only that step's output.
+        snap.apply(&gate_result("test", true, "$ cargo test\nok"));
+        assert_eq!(snap.task_gate_outputs.len(), 2);
+        assert!(step(&snap, "test").expect("rerun").passed);
+        assert!(step(&snap, "compile").is_some());
+
+        // Steps are bounded per task; the oldest step's output goes first.
+        for extra in 2..=MAX_TASK_GATE_STEPS {
+            snap.apply(&gate_result(&format!("extra-{extra}"), true, "$ true"));
+        }
+        assert_eq!(snap.task_gate_outputs.len(), MAX_TASK_GATE_STEPS);
+        assert!(step(&snap, "compile").is_none());
+        assert!(step(&snap, "test").is_some());
+    }
+
+    #[test]
     fn gate_results_update_trends_and_recent_failures() {
         let mut snap = DashboardSnapshot::default();
 
@@ -5548,5 +5959,38 @@ mod tests {
         assert_eq!(snapshot.experiment_winners[0].sample_size, 120);
         assert!(snapshot.experiment_winners[0].ci_lower <= snapshot.experiment_winners[0].win_rate);
         assert!(snapshot.experiment_winners[0].ci_upper >= snapshot.experiment_winners[0].win_rate);
+    }
+
+    /// S06 §5 (8130): M1's live events serialize as `ev.update` and
+    /// `m1.episode` and read back the same.
+    #[test]
+    fn homeostasis_dashboard_events_serialize() {
+        let events = [
+            DashboardEvent::EvUpdate {
+                ev: "pass_rate".to_string(),
+                value: Some(0.62),
+                bound: 0.70,
+                inner: Some(0.75),
+                state: "breached".to_string(),
+            },
+            DashboardEvent::M1Episode {
+                episode_id: "ep-0007".to_string(),
+                phase: "search".to_string(),
+                change: Some("tier_floor.focused: \"cheap\" -> \"mid\"".to_string()),
+            },
+        ];
+        for (event, kind) in events.into_iter().zip(["ev.update", "m1.episode"]) {
+            let json = serde_json::to_value(&event).expect("the event serializes");
+            assert_eq!(json["type"], kind, "{json}");
+            let back: DashboardEvent = serde_json::from_value(json).expect("it reads back");
+            assert_eq!(back, event);
+        }
+        let quiet: DashboardEvent =
+            serde_json::from_str(r#"{"type":"m1.episode","episode_id":"ep-1","phase":"idle"}"#)
+                .expect("an episode move without a change");
+        assert!(matches!(
+            quiet,
+            DashboardEvent::M1Episode { change: None, .. }
+        ));
     }
 }

@@ -16,12 +16,15 @@
 //!   the task's `max_retries`.
 //!
 //! `0` turns a threshold off, and with both off nothing is watched. The hard
-//! `timeout_secs` stays the outer bound either way.
+//! `timeout_secs` stays the outer bound either way. The attempt's progress is
+//! kept either way, so a call that is stopped or cancelled settles the usage
+//! it streamed (bug-3a3b0f).
 //!
 //! A plan run that outlives its interrupt's drain asks its attempts to stop
 //! ([`WatchedAttempt::stop`]): `run_watched` drops the call within
 //! [`STOP_CHECK_INTERVAL`], and the attempt settles as cancelled with the usage
-//! its watch saw stream (bug-2b1ddc).
+//! its progress saw stream (bug-2b1ddc). The operator can stop one task's
+//! attempt the same way ([`OperatorStops`], gap-c002bb); it is not retried.
 //!
 //! Silence counts only while the agent waits on its model:
 //!
@@ -31,8 +34,11 @@
 //!   from the start of its call once [`FIRST_OUTPUT_GRACE`] has passed, so one
 //!   that never reports anything is cancelled too (bug-2aa55f);
 //! - other providers may report nothing until they finish (the Codex CLI hands
-//!   over its whole answer at the end), so their attempts are left to the hard
-//!   timeout until they first report something;
+//!   over its whole answer at the end), so their calls get the longer grace of
+//!   `[conductor] report_at_end_stall_secs` before they are silent from their
+//!   start: a hung one costs minutes, not the hours of a hard timeout that
+//!   grows with each retry (backlog 1126). With it at `0` such a call is left
+//!   to the hard timeout until it first reports something;
 //! - a tool call the agent made (a long `cargo test`, say) is bounded by the
 //!   provider's own tool timeout, so silence while one runs does not count.
 
@@ -64,7 +70,7 @@ const STOP_CHECK_INTERVAL: Duration = Duration::from_millis(250);
 /// first token take longer than the gap between two events, and much longer
 /// under load, so a short `task_stall_secs` would otherwise cancel a call that
 /// is only starting.
-const FIRST_OUTPUT_GRACE: Duration = Duration::from_secs(30);
+pub(super) const FIRST_OUTPUT_GRACE: Duration = Duration::from_secs(30);
 
 /// Capacity of the channel between the provider boundary and the live-output
 /// tap. The boundary never waits on it: events that do not fit are dropped.
@@ -81,6 +87,9 @@ pub(super) struct StallThresholds {
     warn_after: Option<Duration>,
     /// Silence after which the attempt is cancelled (`task_stall_secs`).
     cancel_after: Option<Duration>,
+    /// The first-output grace of a call to a provider that may report only
+    /// at the end (`report_at_end_stall_secs`).
+    report_at_end_grace: Option<Duration>,
 }
 
 impl StallThresholds {
@@ -89,6 +98,7 @@ impl StallThresholds {
         Self {
             warn_after: threshold(config.silence_timeout_secs),
             cancel_after: threshold(config.task_stall_secs),
+            report_at_end_grace: threshold(config.report_at_end_stall_secs),
         }
     }
 
@@ -109,9 +119,22 @@ pub(super) struct AttemptProgress {
 struct ProgressState {
     /// When the attempt last reported anything; `None` until it first does.
     last_event: Option<Instant>,
-    /// When the call in flight started, if its provider streams as it goes:
-    /// the start of its silence until it reports anything.
+    /// When the call in flight started: the start of its silence until it
+    /// reports anything, once its first-output grace has passed.
     quiet_since: Option<Instant>,
+    /// The call in flight is to a provider that may report nothing until it
+    /// finishes ([`streams_as_it_goes`] is false for it).
+    reports_at_end: bool,
+    /// The call waits for its provider's concurrency permit, which is no
+    /// silence (bug-eba31d).
+    queued: bool,
+    /// The first-output grace of this attempt's calls; `None` is
+    /// [`FIRST_OUTPUT_GRACE`].
+    first_output_grace: Option<Duration>,
+    /// The first-output grace of a call that may report only at the end
+    /// (`[conductor] report_at_end_stall_secs`); `None` leaves such a call
+    /// to the hard timeout until it first reports anything (backlog 1126).
+    report_at_end_grace: Option<Duration>,
     /// Tool calls the agent made whose results have not arrived yet.
     open_tool_calls: HashSet<String>,
     /// The provider call the attempt waits on, once one started.
@@ -172,12 +195,14 @@ impl InterruptedCall {
         self,
         message: &str,
         wall_ms: u64,
+        snapshot: Option<&roko_core::pricing_snapshot::PriceSnapshot>,
     ) -> (crate::dispatch_v2::AgentResultDispatch, FailoverChain) {
         let target = self.call.target;
         let usage_obs = match self.usage {
             Some(mut usage) => {
                 crate::dispatch_v2::fill_usage_cost_from_pricing(
                     &mut usage,
+                    snapshot,
                     target.model_profile.as_ref(),
                     &target.model_slug,
                 );
@@ -200,6 +225,8 @@ impl InterruptedCall {
             target,
             result: roko_agent::AgentResult::fail(output).with_usage_obs(usage_obs),
             events: Vec::new(),
+            tool_calls: Vec::new(),
+            tool_policy: None,
         };
         (dispatch, self.call.failover)
     }
@@ -213,7 +240,20 @@ impl AttemptProgress {
 
     fn observe_at(&self, event: &LiveAgentEvent, at: Instant) {
         let mut state = self.inner.lock();
+        if let LiveAgentEvent::Queued { waiting } = event {
+            // A call waiting for its provider's permit is queued, not silent.
+            // Once it has the permit it starts: its silence, and its
+            // first-output grace, count from then (bug-eba31d). Neither is
+            // progress the agent reported.
+            state.queued = *waiting;
+            if !*waiting {
+                state.last_event = state.last_event.map(|_| at);
+                state.quiet_since = state.quiet_since.map(|_| at);
+            }
+            return;
+        }
         state.last_event = Some(at);
+        state.queued = false;
         match event {
             LiveAgentEvent::ToolStep { id, .. }
             | LiveAgentEvent::Unscreened(StreamEventKind::ToolCallEnd { id, .. }) => {
@@ -231,7 +271,7 @@ impl AttemptProgress {
                     ended.add(&open);
                 }
             }
-            LiveAgentEvent::Unscreened(_) => {}
+            LiveAgentEvent::Unscreened(_) | LiveAgentEvent::Queued { .. } => {}
         }
     }
 
@@ -252,7 +292,9 @@ impl AttemptProgress {
         at: Instant,
     ) {
         let mut state = self.inner.lock();
-        state.quiet_since = streams_as_it_goes(target.provider_kind).then_some(at);
+        state.quiet_since = Some(at);
+        state.reports_at_end = !streams_as_it_goes(target.provider_kind);
+        state.queued = false;
         state.call = Some(CallInFlight { target, failover });
         state.usage = StreamedUsage::default();
     }
@@ -282,18 +324,31 @@ impl AttemptProgress {
     }
 
     /// How long, at `now`, the attempt has been waiting on its model without
-    /// reporting progress: since its last event or, when its provider streams
-    /// as it goes, since its call started, once [`FIRST_OUTPUT_GRACE`] has
-    /// passed. `None` within that grace, before a provider that may report
-    /// only at the end first reports anything, and while a tool call the
-    /// agent made is still running.
+    /// reporting progress: since its last event or, before its first, since
+    /// its call started, once its first-output grace has passed
+    /// ([`FIRST_OUTPUT_GRACE`] when its provider streams as it goes, the
+    /// longer `report_at_end_stall_secs` when it may report only at the end,
+    /// backlog 1126). `None` within that grace, while the call waits for its
+    /// provider's permit, before a provider that may report only at the end
+    /// first reports anything when it has no such grace, and while a tool
+    /// call the agent made is still running.
     fn silence(&self, now: Instant) -> Option<Duration> {
         let state = self.inner.lock();
+        if state.queued {
+            return None;
+        }
         let quiet_since = match state.last_event {
             Some(last_event) => last_event,
-            None => state
-                .quiet_since
-                .filter(|&started| now.saturating_duration_since(started) >= FIRST_OUTPUT_GRACE)?,
+            None => {
+                let grace = if state.reports_at_end {
+                    state.report_at_end_grace?
+                } else {
+                    state.first_output_grace.unwrap_or(FIRST_OUTPUT_GRACE)
+                };
+                state
+                    .quiet_since
+                    .filter(|&started| now.saturating_duration_since(started) >= grace)?
+            }
         };
         state
             .open_tool_calls
@@ -305,7 +360,8 @@ impl AttemptProgress {
 /// Whether the adapter of a `kind` provider streams the agent's events as it
 /// goes, so that a call reporting nothing for a while is silent. The Claude
 /// CLI does; providers that may report only at the end (the Codex CLI, the
-/// Cursor CLI) do not.
+/// Cursor CLI) do not, and their calls get the longer first-output grace of
+/// `[conductor] report_at_end_stall_secs`.
 const fn streams_as_it_goes(kind: roko_core::agent::ProviderKind) -> bool {
     matches!(kind, roko_core::agent::ProviderKind::ClaudeCli)
 }
@@ -333,11 +389,19 @@ pub(super) enum StallCheck {
 
 impl StallWatch {
     pub(super) fn new(thresholds: StallThresholds) -> Self {
+        let progress = AttemptProgress::default();
+        progress.inner.lock().report_at_end_grace = thresholds.report_at_end_grace;
         Self {
             thresholds,
-            progress: AttemptProgress::default(),
+            progress,
             warned: false,
         }
+    }
+
+    /// This watch with `grace` as its calls' first-output grace.
+    pub(super) fn with_first_output_grace(self, grace: Duration) -> Self {
+        self.progress.inner.lock().first_output_grace = Some(grace);
+        self
     }
 
     /// The progress this watch reads, for the attempt's live-output tap.
@@ -384,8 +448,8 @@ pub(super) struct WatchedAttempt<'a> {
     pub(super) attempt_key: &'a str,
     /// The plan run's request that its attempts stop (the cell context's
     /// cancel flag). Once set, the attempt's provider call is dropped and the
-    /// attempt settles with the usage its stall watch saw stream
-    /// (bug-2b1ddc).
+    /// attempt settles with the usage its progress saw stream (bug-2b1ddc,
+    /// bug-3a3b0f).
     pub(super) stop: Option<&'a AtomicBool>,
 }
 
@@ -399,6 +463,8 @@ pub(super) enum AttemptInterrupted {
     Restarted(ConductorRestart),
     /// Its plan run is stopping (an interrupt the attempt outlived).
     Stopped,
+    /// The operator stopped its task ([`OperatorStops::stop`]).
+    StoppedByOperator,
 }
 
 impl AttemptInterrupted {
@@ -422,6 +488,10 @@ impl AttemptInterrupted {
                 "agent for {}/{} stopped: its plan run is stopping",
                 attempt.plan_id, attempt.task_id
             )),
+            Self::StoppedByOperator => RokoError::cancelled(format!(
+                "agent for {}/{} stopped by the operator",
+                attempt.plan_id, attempt.task_id
+            )),
         }
     }
 
@@ -429,7 +499,9 @@ impl AttemptInterrupted {
     pub(super) const fn outcome(&self) -> TaskDispatchOutcomeKind {
         match self {
             Self::Stalled(_) => TaskDispatchOutcomeKind::TimedOut,
-            Self::Restarted(_) | Self::Stopped => TaskDispatchOutcomeKind::Cancelled,
+            Self::Restarted(_) | Self::Stopped | Self::StoppedByOperator => {
+                TaskDispatchOutcomeKind::Cancelled
+            }
         }
     }
 }
@@ -442,8 +514,8 @@ impl AttemptInterrupted {
 /// - A stall is a timeout, whatever the error's text says (bug-4c553b): the
 ///   agent's once `progress` shows it reported anything, the provider's
 ///   before.
-/// - A cancellation, a stopping plan run's included, teaches nothing
-///   (bug-2b1ddc).
+/// - A cancellation, a stopping plan run's or the operator's included,
+///   teaches nothing (bug-2b1ddc).
 /// - Anything else, a conductor restart included, is a provider failure.
 pub(super) fn failed_call_settlement(
     interrupted: Option<&AttemptInterrupted>,
@@ -455,9 +527,12 @@ pub(super) fn failed_call_settlement(
             &error.to_string(),
             progress.is_some_and(AttemptProgress::reported_progress),
         ),
-        Some(AttemptInterrupted::Restarted(_) | AttemptInterrupted::Stopped) | None => {
-            Settlement::provider_call_error(error)
-        }
+        Some(
+            AttemptInterrupted::Restarted(_)
+            | AttemptInterrupted::Stopped
+            | AttemptInterrupted::StoppedByOperator,
+        )
+        | None => Settlement::provider_call_error(error),
     }
 }
 
@@ -519,7 +594,17 @@ impl GraphTaskDispatcher {
     /// `[conductor] silence_timeout_secs` and `task_stall_secs` are both 0.
     pub(super) fn stall_watch(&self) -> Option<StallWatch> {
         let thresholds = StallThresholds::from_config(&self.config.conductor);
-        thresholds.is_enabled().then(|| StallWatch::new(thresholds))
+        thresholds
+            .is_enabled()
+            .then(|| StallWatch::new(thresholds).with_first_output_grace(self.first_output_grace))
+    }
+
+    /// Give each call `grace` before its silence counts, instead of
+    /// [`FIRST_OUTPUT_GRACE`].
+    #[cfg(test)]
+    pub(super) fn with_first_output_grace(mut self, grace: Duration) -> Self {
+        self.first_output_grace = grace;
+        self
     }
 
     /// The live-output channel for an attempt's dispatch request, when
@@ -533,11 +618,17 @@ impl GraphTaskDispatcher {
     /// tell a model that is thinking from a tool that is running, the
     /// conductor to see the agent's messages. They stay in the tap: the TUI
     /// still gets them only under [`LiveAgentOutput::Trusted`].
+    ///
+    /// A tap also records the tool calls the provider streams in
+    /// `tool_calls` (bug-264c41), with the outcomes its tool results report
+    /// once the tap is trusted. Recording alone opens no tap, and widens no
+    /// trust: a tap makes the provider stream its call.
     pub(super) fn live_output_tap(
         &self,
         attempt: &WatchedAttempt<'_>,
         progress: Option<AttemptProgress>,
         feed: Option<AttemptFeed>,
+        tool_calls: Option<LiveToolCalls>,
     ) -> Option<LiveOutput> {
         let tui = self.tui_bridge.clone().zip(self.live_agent_output);
         if tui.is_none() && progress.is_none() && feed.is_none() {
@@ -551,10 +642,14 @@ impl GraphTaskDispatcher {
         let plan_id = attempt.plan_id.to_string();
         let task_id = attempt.task_id.to_string();
         let mut feed = feed;
-        tokio::spawn(async move {
+        let record = tool_calls.clone();
+        let tap = tokio::spawn(async move {
             while let Some(event) = events.recv().await {
                 if let Some(progress) = &progress {
                     progress.observe(&event);
+                }
+                if let Some(tool_calls) = &tool_calls {
+                    tool_calls.observe(&event);
                 }
                 if let Some(feed) = feed.as_mut() {
                     feed.push_live(&event);
@@ -566,6 +661,9 @@ impl GraphTaskDispatcher {
                 }
             }
         });
+        if let Some(record) = record {
+            record.attach(tap);
+        }
         Some(LiveOutput { sink, trusted })
     }
 
@@ -573,14 +671,17 @@ impl GraphTaskDispatcher {
     /// heartbeat every [`AGENT_HEARTBEAT_INTERVAL`] so the dashboard's
     /// elapsed-time counter stays live, and checking `watch` every
     /// [`STALL_CHECK_INTERVAL`]. An attempt that stalls, that the conductor
-    /// restarts through `supervised`, or whose plan run asks it to stop
-    /// ([`WatchedAttempt::stop`]) returns [`AttemptInterrupted`]; `dispatch`
-    /// is dropped with it, which cancels the provider call, and `watch`'s
-    /// progress then gives the call and what it streamed
-    /// ([`AttemptProgress::interrupted_call`]).
+    /// restarts through `supervised`, whose plan run asks it to stop
+    /// ([`WatchedAttempt::stop`]), or whose task the operator stops
+    /// ([`OperatorStops`]) returns [`AttemptInterrupted`]; `dispatch`
+    /// is dropped with it, which cancels the provider call, and `progress`
+    /// then gives the call and what it streamed
+    /// ([`AttemptProgress::interrupted_call`]), with or without a `watch`
+    /// (bug-3a3b0f).
     pub(super) async fn run_watched<T>(
         &self,
         dispatch: impl Future<Output = T>,
+        progress: &AttemptProgress,
         mut watch: Option<StallWatch>,
         supervised: Option<&SupervisedAttempt>,
         attempt: &WatchedAttempt<'_>,
@@ -602,15 +703,21 @@ impl GraphTaskDispatcher {
                 None => std::future::pending().await,
             }
         };
-        tokio::pin!(dispatch, restarted);
+        let operator_stop = self
+            .operator_stops
+            .register(attempt.plan_id, attempt.task_id);
+        let stopped_by_operator = operator_stop.stopped();
+        tokio::pin!(dispatch, restarted, stopped_by_operator);
         loop {
             tokio::select! {
                 result = &mut dispatch => return Ok(result),
                 restart = &mut restarted => {
-                    if let Some(watch) = &watch {
-                        watch.progress.interrupted();
-                    }
+                    progress.interrupted();
                     return Err(AttemptInterrupted::Restarted(restart));
+                }
+                () = &mut stopped_by_operator => {
+                    progress.interrupted();
+                    return Err(AttemptInterrupted::StoppedByOperator);
                 }
                 _ = heartbeat.tick() => {
                     if let Some(tui) = &self.tui_bridge {
@@ -624,9 +731,7 @@ impl GraphTaskDispatcher {
                 }
                 _ = stop_check.tick(), if attempt.stop.is_some() => {
                     if attempt.stop.is_some_and(|stop| stop.load(Ordering::Acquire)) {
-                        if let Some(watch) = &watch {
-                            watch.progress.interrupted();
-                        }
+                        progress.interrupted();
                         return Err(AttemptInterrupted::Stopped);
                     }
                 }
@@ -634,7 +739,7 @@ impl GraphTaskDispatcher {
                     if let Some(watch) = watch.as_mut()
                         && let Some(stalled) = self.check_stall(watch, attempt)
                     {
-                        watch.progress.interrupted();
+                        progress.interrupted();
                         return Err(stalled);
                     }
                 }
@@ -707,6 +812,7 @@ mod tests {
         LiveAgentEvent::Unscreened(StreamEventKind::ToolResult {
             id: id.to_string(),
             output: "ok".to_string(),
+            is_error: false,
         })
     }
 
@@ -719,6 +825,7 @@ mod tests {
         let defaults = StallThresholds::from_config(&ConductorConfig::default());
         assert_eq!(defaults.warn_after, Some(secs(180)));
         assert_eq!(defaults.cancel_after, Some(secs(300)));
+        assert_eq!(defaults.report_at_end_grace, Some(secs(900)));
         assert!(defaults.is_enabled());
 
         assert!(!thresholds(0, 0).is_enabled(), "0 and 0 watch nothing");
@@ -888,6 +995,8 @@ exec sleep 60
                 max_concurrent: None,
                 limits: None,
                 require_confirmation: false,
+                stream_usage: None,
+                billing: None,
             },
         );
         config.models.insert(
@@ -1026,6 +1135,65 @@ exec sleep 60
         assert_eq!(restarts, 2);
     }
 
+    /// gap-c002bb: the operator's stop of a running task ends its attempt at
+    /// once, and the task fails as stopped by the operator without a retry.
+    #[tokio::test]
+    async fn an_operator_stop_ends_the_running_attempt_without_a_retry() {
+        let temp = tempdir().expect("tempdir");
+        let launches = temp.path().join("launches.log");
+        let script = silent_provider_script(temp.path(), &launches);
+        let mut config = watched_config(&script);
+        // Nothing but the operator ends the attempt.
+        config.conductor.silence_timeout_secs = 0;
+        config.conductor.task_stall_secs = 0;
+        let config = Arc::new(config);
+        let factory =
+            Arc::new(SharedAgentFactory::new(Arc::clone(&config), None, None, None).await);
+        let dispatcher = Arc::new(GraphTaskDispatcher::new(
+            factory,
+            Arc::clone(&config),
+            temp.path().to_path_buf(),
+        ));
+        let stops = dispatcher.operator_stops();
+        // Stop the task once its agent has launched.
+        let operator = tokio::spawn({
+            let launches = launches.clone();
+            async move {
+                for _ in 0..400 {
+                    let launched =
+                        std::fs::read_to_string(&launches).is_ok_and(|log| !log.is_empty());
+                    if launched && stops.stop("p1", "T01") {
+                        return true;
+                    }
+                    tokio::time::sleep(Duration::from_millis(50)).await;
+                }
+                false
+            }
+        });
+
+        let started = Instant::now();
+        let error = stalled_task_cell(dispatcher, 1)
+            .execute(
+                Vec::new(),
+                &CellContext::new().with_cell_id("T01".to_string()),
+            )
+            .await
+            .expect_err("a stopped task fails");
+
+        assert!(
+            operator.await.expect("operator task"),
+            "the attempt never ran"
+        );
+        assert!(matches!(error, RokoError::Cancelled(_)), "{error}");
+        assert!(
+            error.to_string().contains("stopped by the operator"),
+            "{error}"
+        );
+        assert!(started.elapsed() < secs(30), "{:?}", started.elapsed());
+        let launched = std::fs::read_to_string(&launches).expect("launch log");
+        assert_eq!(launched.lines().count(), 1, "no retry after the stop");
+    }
+
     /// The streaming path cancels a stalled attempt the same way and ends it
     /// `TimedOut`.
     #[tokio::test]
@@ -1158,13 +1326,13 @@ exec sleep 60
         };
 
         let unwatched = dispatcher
-            .live_output_tap(&attempt, None, None)
+            .live_output_tap(&attempt, None, None, None)
             .expect("the TUI reads live output");
         assert!(!unwatched.trusted, "without the watchdog nothing changes");
 
         let watch = StallWatch::new(thresholds(1, 2));
         let live = dispatcher
-            .live_output_tap(&attempt, Some(watch.progress()), None)
+            .live_output_tap(&attempt, Some(watch.progress()), None, None)
             .expect("the watchdog reads live output");
         assert!(live.trusted);
         live.sink
@@ -1325,6 +1493,89 @@ exec sleep 60
         assert!((cost_usd - expected).abs() < 1e-6, "{cost}");
     }
 
+    /// bug-3a3b0f: with both stall thresholds at 0 nothing is watched, but
+    /// the attempt's progress still is: a call its plan run stops settles the
+    /// usage it streamed, not an unknown one.
+    #[tokio::test]
+    async fn usage_is_tracked_with_the_watchdog_off() {
+        let temp = tempdir().expect("tempdir");
+        let script = temp.path().join("fake-claude.sh");
+        write_provider(
+            &script,
+            r#"#!/bin/sh
+set -eu
+cat >/dev/null
+printf '%s\n' '{"type":"assistant","message":{"id":"msg-1","model":"claude-sonnet-4-6","content":[{"type":"text","text":"reading the task"}],"usage":{"input_tokens":1000,"output_tokens":200}}}'
+echo streamed > "$(dirname -- "$0")/streamed"
+exec sleep 60
+"#,
+        );
+        let mut config = watched_config(&script);
+        config.conductor.silence_timeout_secs = 0;
+        config.conductor.task_stall_secs = 0;
+        let config = Arc::new(config);
+        let factory =
+            Arc::new(SharedAgentFactory::new(Arc::clone(&config), None, None, None).await);
+        let dispatcher =
+            GraphTaskDispatcher::new(factory, Arc::clone(&config), temp.path().to_path_buf())
+                .with_feedback(crate::graph_task_dispatch::tests::recording_feedback(
+                    temp.path(),
+                ));
+        assert!(dispatcher.stall_watch().is_none(), "nothing is watched");
+        let spec = TaskExecutionSpec {
+            plan_id: "p1".to_string(),
+            title: STALLED_TASK_TITLE.to_string(),
+            timeout_secs: 60,
+            task_def_json: stalled_task_json(0),
+            ..TaskExecutionSpec::default()
+        };
+        let run = "stopped-run";
+        let stop = Arc::new(AtomicBool::new(false));
+        let ctx = CellContext::new()
+            .with_cell_id("T01".to_string())
+            .with_run_id(run.to_string())
+            .with_cancel_flag(Arc::clone(&stop));
+        let streamed = temp.path().join("streamed");
+        let stop_once_streamed = async {
+            for _ in 0..400 {
+                if streamed.exists() {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(25)).await;
+            }
+            // Time for the live-output tap to take in the message's usage.
+            for _ in 0..5 {
+                tokio::time::sleep(Duration::from_millis(100)).await;
+            }
+            stop.store(true, Ordering::Release);
+        };
+
+        let (result, ()) = tokio::join!(
+            dispatcher.dispatch(&spec, Vec::new(), &ctx),
+            stop_once_streamed
+        );
+        let error = result.expect_err("the plan run stopped the attempt");
+        assert!(matches!(error, RokoError::Cancelled(_)), "{error}");
+        let roko = temp.path().join(".roko");
+        let verdicts = crate::graph_task_dispatch::tests::jsonl_rows_where(
+            &roko.join("runs").join(run).join("attempts.jsonl"),
+            1,
+            |row| row["schema_version"] == "roko.verdict/1",
+        )
+        .await;
+        let verdict = &verdicts[0];
+        assert_eq!(verdict["outcome"], "cancelled", "{verdict}");
+        assert_eq!(verdict["cost"]["source"], "estimated", "{verdict}");
+        let costs = crate::graph_task_dispatch::tests::jsonl_rows_where(
+            &roko.join("learn/costs.jsonl"),
+            1,
+            |_| true,
+        )
+        .await;
+        assert_eq!(costs[0]["input_tokens"], 1_000, "{}", costs[0]);
+        assert_eq!(costs[0]["output_tokens"], 200, "{}", costs[0]);
+    }
+
     /// Write `body` as an executable provider script at `path`.
     fn write_provider(path: &Path, body: &str) {
         std::fs::write(path, body).expect("write provider script");
@@ -1445,9 +1696,39 @@ exec sleep 60
         );
     }
 
+    /// backlog 1126: a Codex CLI call that reports nothing is not left to the
+    /// hard timeout. Past the longer first-output grace of
+    /// `report_at_end_stall_secs` (set low here) its silence counts from its
+    /// start, and the stall watchdog cancels it at `task_stall_secs`.
+    #[tokio::test]
+    async fn hung_codex_attempt_is_cancelled_by_stall_watchdog() {
+        let temp = tempdir().expect("tempdir");
+        let hung = temp.path().join("hung-codex.sh");
+        write_provider(&hung, "#!/bin/sh\nset -eu\ncat >/dev/null\nexec sleep 60\n");
+        let mut config = watched_config(&hung);
+        let provider = config.providers.get_mut("graph-cli").expect("provider");
+        provider.kind = ProviderKind::CodexCli;
+        // This exercises the watchdog, not the command guard: let the Codex
+        // agent run in the test's checkout.
+        config.runner.allow_unguarded_agents_in_checkout = true;
+        config.conductor.report_at_end_stall_secs = 1;
+        let started = Instant::now();
+        let (error, verdict) = dispatch_once(temp.path(), config, "hung-codex").await;
+        let elapsed = started.elapsed();
+
+        assert!(error.to_string().contains("stalled"), "{error}");
+        assert_eq!(verdict["outcome"], "timeout", "{verdict}");
+        assert_eq!(verdict["blame"], "infra", "{verdict}");
+        assert!(
+            elapsed < secs(30),
+            "the watchdog, not the 60 s timeout, ended the hung call after {elapsed:?}"
+        );
+    }
+
     /// bug-2aa55f: a call whose provider streams as it goes is silent from
     /// its start, once its first-output grace has passed; one whose provider
-    /// may report only at the end is not until it reports something.
+    /// may report only at the end has the longer grace of
+    /// `report_at_end_stall_secs` first (backlog 1126).
     #[test]
     fn a_streaming_call_is_silent_from_its_start() {
         let config = Arc::new(watched_config(Path::new("/bin/true")));
@@ -1474,13 +1755,135 @@ exec sleep 60
         assert_eq!(streaming.silence(t0 + secs(5)), Some(secs(1)));
         assert!(streaming.reported_progress());
 
-        let at_the_end = AttemptProgress::default();
-        at_the_end.call_started_at(codex, FailoverChain::default(), t0);
+        // Past that longer grace, such a call is silent from its start too;
+        // with `report_at_end_stall_secs = 0` it is left to its timeout until
+        // it reports something.
+        let report_at_end = |grace_secs: u64| {
+            StallWatch::new(StallThresholds::from_config(&ConductorConfig {
+                report_at_end_stall_secs: grace_secs,
+                ..ConductorConfig::default()
+            }))
+            .progress()
+        };
+        let at_the_end = report_at_end(900);
+        at_the_end.call_started_at(codex.clone(), FailoverChain::default(), t0);
         assert_eq!(
             at_the_end.silence(t0 + secs(600)),
             None,
-            "a provider that may report only at the end is left to its timeout"
+            "it has its longer grace"
         );
+        assert_eq!(at_the_end.silence(t0 + secs(900)), Some(secs(900)));
+        let unbounded = report_at_end(0);
+        unbounded.call_started_at(codex, FailoverChain::default(), t0);
+        assert_eq!(
+            unbounded.silence(t0 + secs(3_600)),
+            None,
+            "with report_at_end_stall_secs = 0 it is left to its timeout"
+        );
+    }
+
+    /// bug-eba31d: a call waiting for its provider's permit is queued, not
+    /// silent. Once it has the permit, its silence and its first-output grace
+    /// count from then, and the wait is no progress the agent reported.
+    #[test]
+    fn a_queued_call_is_not_silent_until_it_starts() {
+        let config = Arc::new(watched_config(Path::new("/bin/true")));
+        let claude =
+            crate::dispatch_v2::ProviderDispatchResolver::new(config).resolve("graph-model");
+        let t0 = Instant::now();
+        let progress = AttemptProgress::default();
+        progress.call_started_at(claude, FailoverChain::default(), t0);
+
+        progress.observe_at(&LiveAgentEvent::Queued { waiting: true }, t0 + secs(1));
+        assert_eq!(
+            progress.silence(t0 + secs(600)),
+            None,
+            "a queued call is not silent"
+        );
+        progress.observe_at(&LiveAgentEvent::Queued { waiting: false }, t0 + secs(600));
+        assert_eq!(
+            progress.silence(t0 + secs(601)),
+            None,
+            "its first-output grace starts with the permit"
+        );
+        assert_eq!(
+            progress.silence(t0 + secs(600) + FIRST_OUTPUT_GRACE),
+            Some(FIRST_OUTPUT_GRACE)
+        );
+        assert!(!progress.reported_progress(), "waiting is no progress");
+    }
+
+    /// bug-eba31d: with `max_concurrent = 1`, an attempt queued behind a long
+    /// first attempt waits for the permit without being cancelled as stalled,
+    /// although the wait outlasts its first-output grace and `task_stall_secs`.
+    #[tokio::test]
+    async fn a_queued_attempt_is_not_cancelled_while_it_waits() {
+        let temp = tempdir().expect("tempdir");
+        let script = temp.path().join("one-slot-claude.sh");
+        // The call that claims `first` works for 8 s, reporting every second;
+        // the other one, queued meanwhile, answers at once.
+        write_provider(
+            &script,
+            r#"#!/bin/sh
+set -eu
+cat >/dev/null
+if mkdir "$(dirname "$0")/first" 2>/dev/null; then
+  i=0
+  while [ "$i" -lt 8 ]; do
+    printf '%s\n' '{"type":"assistant","message":{"id":"msg-1","content":[{"type":"text","text":"working"}]}}'
+    i=$((i + 1))
+    sleep 1
+  done
+fi
+printf '%s\n' '{"type":"content_block_delta","delta":{"text":"done"}}'
+printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"total_cost_usd":0}'
+"#,
+        );
+        let mut config = watched_config(&script);
+        config.conductor.silence_timeout_secs = 0;
+        config.conductor.task_stall_secs = 3;
+        config
+            .providers
+            .get_mut("graph-cli")
+            .expect("the fixture provider")
+            .max_concurrent = Some(1);
+        let config = Arc::new(config);
+        let factory =
+            Arc::new(SharedAgentFactory::new(Arc::clone(&config), None, None, None).await);
+        let dispatcher = Arc::new(
+            GraphTaskDispatcher::new(factory, Arc::clone(&config), temp.path().to_path_buf())
+                .with_first_output_grace(secs(5)),
+        );
+        let attempt = |id: &'static str| {
+            let dispatcher = Arc::clone(&dispatcher);
+            async move {
+                let spec = TaskExecutionSpec {
+                    plan_id: "p1".to_string(),
+                    title: format!("Task {id}"),
+                    timeout_secs: 60,
+                    task_def_json: serde_json::json!({
+                        "id": id,
+                        "title": format!("Task {id}"),
+                        "role": "implementer",
+                        "model_hint": "graph-model",
+                        "timeout_secs": 60,
+                    })
+                    .to_string(),
+                    ..TaskExecutionSpec::default()
+                };
+                dispatcher
+                    .dispatch(
+                        &spec,
+                        Vec::new(),
+                        &CellContext::new().with_cell_id(id.to_string()),
+                    )
+                    .await
+            }
+        };
+
+        let (first, second) = tokio::join!(attempt("T01"), attempt("T02"));
+        first.expect("the attempt holding the permit finishes");
+        second.expect("the queued attempt waits for the permit, then finishes");
     }
 
     /// A run the stall watchdog drops leaves none of its tasks behind

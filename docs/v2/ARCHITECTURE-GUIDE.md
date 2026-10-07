@@ -1,6 +1,6 @@
 # Roko v2 Architecture Guide
 
-> **Implementation status (verified 2026-09-15):** This guide reflects the converged production architecture. Graph is the sole execution engine (`PlanEngine::Graph`; `WorkflowEngine` retired by #276; Runner-v2 retained as `--engine legacy`). `roko-serve` exposes ~376 canonical routes (~421 incl. aliases). `roko-gate` provides 19 gates in a 7-rung pipeline. All 48 epics are accepted. See `.roko/GAPS.md` for remaining product/release residuals. Any references to `WorkflowEngine` as a live runtime type reflect the deprecated path; the authoritative types are in `roko-runtime::workflow_contract`.
+> **Implementation status (verified 2026-09-15):** This guide reflects the converged production architecture. Graph is the sole execution engine (`PlanEngine::Graph`; `WorkflowEngine` retired by #276; Runner-v2 retained as `--engine legacy`). `roko-serve` exposes the routes counted in `tools/http_route_inventory.snapshot.json`. `roko-gate` provides 19 gates in a 7-rung pipeline. All 48 epics are accepted. See `.roko/GAPS.md` for remaining product/release residuals. Any references to `WorkflowEngine` as a live runtime type reflect the deprecated path; the authoritative types are in `roko-runtime::workflow_contract`.
 
 **Who this is for**: Engineers reading the codebase for the first time. If you
 already know the system well, jump to the section you need using the table of
@@ -199,12 +199,15 @@ reconsider the design.
 
 ## 3. Runtime Workflows and the Signal-Selection Helper
 
-Production execution has two explicit owners:
+Production execution has two explicit owners, and both end in the Graph engine:
 
-- `roko run` and `roko do` use Graph workflow templates (WorkflowEngine was retired by #276;
-  its serializable types are preserved in `roko-runtime::workflow_contract`).
-- `roko plan run` uses the Graph engine (default). The legacy Runner-v2 is available via
-  `--engine legacy` for one deprecation cycle.
+- `roko run` runs a prompt as a one-task plan, or writes a plan first, and runs it with
+  `run_graph_plan`; `roko run plans/<slug>` runs an existing plan the same way. WorkflowEngine was
+  retired by #276 (its serializable types are preserved in `roko-runtime::workflow_contract`), and
+  `roko do` was folded into `roko run` on 2026-10-02.
+- `roko plan run` uses the Graph engine, the only plan executor. The Runner-v2 event loop was
+  deleted on 2026-09-06; `--engine legacy` and `--engine runner-v2` still parse but exit with an
+  error.
 
 `crates/roko-core/src/loop_tick.rs` contains a smaller reusable helper named
 `select_compose_verify_persist`. It queries candidate Signals, routes one,
@@ -350,7 +353,7 @@ the top are foundations.
 Additional crates (parallel, not in the main execution stack):
 
 ```
-  roko-serve          HTTP control plane (~376 canonical routes (~421 incl. aliases) on :6677), durable exact-room
+  roko-serve          HTTP control plane on :6677 (route counts in tools/http_route_inventory.snapshot.json), durable exact-room
                       relay subscription execution, local arena/meta-agent services
   roko-agent-server   Per-agent HTTP sidecar plus supervised durable relay client
   agent-relay         Bounded canonical-envelope relay and atomic recovery server
@@ -1053,7 +1056,7 @@ The separation in the current Graph-based approach:
 ```
 ProductionPlanTopology    -- builds per-task subgraphs (11 nodes each)
 GraphEngine               -- executes the DAG in topological waves
-GuaranteedFinallyController -- ensures cleanup on any exit path
+run_one_plan (roko-cli)   -- interrupt handling and the terminal checkpoint write
 FeedbackSettler           -- drives 12 completion sinks with exactly-once semantics
 ```
 
@@ -1306,7 +1309,6 @@ pub struct ToolDispatcher {
     safety: SafetyLayer,
     hook_chain: Option<SafetyHookChain>,
     production_hook_chain: Option<SafetyHookChain>,
-    tool_selector: Option<ToolSelector>,
 }
 ```
 

@@ -23,7 +23,6 @@
 pub mod archive;
 /// Shared atomic-write helpers (write-tmp-rename pattern).
 pub mod atomic;
-pub mod bandit;
 /// Classified persistence for transcript records with redaction and versioning.
 pub mod classified_persistence;
 /// Classified JSONL persistence writer.
@@ -45,7 +44,6 @@ pub mod pointer;
 pub mod run_index;
 pub mod target_cleanup;
 pub mod tool_audit;
-pub mod tool_metrics_sink;
 pub mod trace_sink;
 /// Where a workspace keeps its plans: `plans/`, or the legacy `.roko/plans/`.
 pub mod workspace_plans;
@@ -56,7 +54,6 @@ pub use atomic::{
     read_json_or_default_strict_bounded, sibling_lock_path, with_locked_json_transaction,
     with_locked_json_transaction_bounded,
 };
-pub use bandit::{ArmSnapshot, BanditStore};
 pub use classified_persistence::{
     ArtifactDescriptor, CLASSIFIED_SCHEMA_VERSION, Classification, ClassifiedRecord,
     PayloadPointer, RedactedField, RedactionMeta, ResultMeta,
@@ -83,5 +80,4 @@ pub use target_cleanup::{
     cleanup_workspace_caches, scan_target_dirs,
 };
 pub use tool_audit::{AuditLine, ScrubAuditAdapter, ToolAuditLog};
-pub use tool_metrics_sink::{JsonlMetricsSink, ToolMetricsRecord};
 pub use trace_sink::{JsonlTraceSink, TraceSinkHealth, default_trace_sink};

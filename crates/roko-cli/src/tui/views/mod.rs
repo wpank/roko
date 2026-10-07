@@ -21,11 +21,10 @@
 //! | F6 Config | System | Config View, Provider Health, Model Comparison |
 //! | F7 Inspect | Knowledge | Signal DAG, Episode Replay, Knowledge Browse, Dreams |
 //! | F8 Marketplace | Jobs | Job List, Job Detail, Create Job |
-//! | F9 Atelier | Workshop | PRD Workshop, Plan Explorer |
-//! | F10 Learning | Learning | Route, History, Efficiency |
+//! | F9 Learning | Learning | Route, History, Efficiency |
+//! | F10 Providers | Providers | Overview, Cost, Latency |
 
 pub mod agents_view;
-pub mod atelier_view;
 pub mod config_view;
 pub mod context_view;
 pub mod dashboard_view;
@@ -120,13 +119,7 @@ pub enum SubView {
     /// Job creation form.
     CreateJob,
 
-    // ── Region 9: Atelier (F9) ──
-    /// PRD workshop.
-    PrdWorkshop,
-    /// Plan explorer.
-    PlanExplorer,
-
-    // ── Region 10: Learning (F10) ──
+    // ── Region 9: Learning (F9) ──
     /// Cascade router overview and per-model stats.
     LearningRouter,
     /// Stage transition history timeline.
@@ -148,7 +141,7 @@ pub enum SubView {
     /// Safety incident viewer (quarantine / taint propagation) (P2-06).
     SafetyIncidents,
 
-    // ── Region 11: Providers (F11) ──
+    // ── Region 10: Providers (F10) ──
     /// Provider overview: health indicators, list, and detail.
     ProviderOverview,
     /// Per-provider cost breakdown and sparklines.
@@ -203,7 +196,6 @@ impl SubView {
                 SubView::DaimonView,
             ],
             Tab::Marketplace => &[SubView::JobList, SubView::JobDetail, SubView::CreateJob],
-            Tab::Atelier => &[SubView::PrdWorkshop, SubView::PlanExplorer],
             Tab::Learning => &[
                 SubView::LearningRouter,
                 SubView::LearningHistory,
@@ -254,8 +246,6 @@ impl SubView {
             Self::JobList => "Jobs",
             Self::JobDetail => "Detail",
             Self::CreateJob => "New Job",
-            Self::PrdWorkshop => "PRDs",
-            Self::PlanExplorer => "Plans",
             Self::LearningRouter => "Route",
             Self::LearningHistory => "History",
             Self::LearningEfficiency => "Efficiency",
@@ -356,7 +346,6 @@ pub fn render_tab_content(
         Tab::Marketplace => {
             marketplace_view::render(frame, area, data, tui_state, view_state, theme);
         }
-        Tab::Atelier => atelier_view::render(frame, area, data, tui_state, view_state, theme),
         Tab::Learning => learning_view::render(frame, area, data, tui_state, view_state, theme),
         Tab::Providers => {
             providers_view::render(frame, area, data, tui_state, view_state, theme);

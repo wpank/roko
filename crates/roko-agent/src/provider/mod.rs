@@ -48,6 +48,7 @@ use crate::mcp::McpRuntime;
 use crate::mock::MockAgent;
 use crate::process::ResourceLimits;
 use crate::rate_limit::ProviderRateLimiter;
+use crate::safety::DataLlmBoundary;
 use crate::safety::contract::AgentContract;
 use crate::{Agent, ExecAgent};
 use indexmap::IndexMap;
@@ -56,8 +57,9 @@ use roko_core::child_env::CredentialScrub;
 #[cfg(test)]
 use roko_core::config::DEFAULT_TTFT_TIMEOUT_MS;
 use roko_core::config::schema::RokoConfig;
-use roko_core::config::schema::{ModelProfile, ProviderConfig};
+use roko_core::config::schema::{DataLlmConfig, ModelProfile, ProviderConfig};
 use roko_core::defaults::{DEFAULT_MAX_TOOL_ITERATIONS, DEFAULT_REQUEST_TIMEOUT_MS};
+use roko_core::pricing_snapshot::PricingConfig;
 use roko_core::tool::{
     CorrelationEnvelope, MetricsSink, ToolDef, ToolFormat, ToolRegistry, TraceSink,
 };
@@ -236,6 +238,7 @@ pub fn create_agent_for_model(
     // Populate canonical fields so adapters can read them directly.
     options.safety_layer = Some(safety_layer.clone());
     options.temperament = Some(effective_temperament);
+    options.pricing = config.pricing.clone();
     let resolved = resolve_model(config, model_key);
     let profile = resolved
         .profile
@@ -282,9 +285,19 @@ pub fn create_agent_for_model(
                     provider: resolved.provider_kind,
                 });
             }
+            // Without a command to run instead, a model key nothing resolves
+            // fails here rather than running `cat` as its agent, which
+            // echoed the prompt back as a successful answer (gap-fd44df).
+            let Some(command) = legacy_command else {
+                let reason = match roko_core::agent::try_resolve_model(config, model_key) {
+                    Err(error) => error.to_string(),
+                    Ok(_) => format!("model `{model_key}` has no provider to run it"),
+                };
+                return Err(AgentCreationError::MissingConfig(reason));
+            };
             tracing::warn!(
                 model_key = model_key,
-                command = %legacy_command.unwrap_or("unknown"),
+                command = %command,
                 "no provider found — falling back to ExecAgent (no tool support)"
             );
 
@@ -293,15 +306,11 @@ pub fn create_agent_for_model(
             } else {
                 &options.env_passthrough
             };
-            let mut agent = ExecAgent::new(
-                legacy_command.unwrap_or("cat"),
-                options.extra_args.clone(),
-                safety_layer,
-            )
-            .with_timeout_ms(options.effective_timeout_ms(None))
-            .with_credential_scrub(
-                CredentialScrub::default().keep_all(env_passthrough.iter().cloned()),
-            );
+            let mut agent = ExecAgent::new(command, options.extra_args.clone(), safety_layer)
+                .with_timeout_ms(options.effective_timeout_ms(None))
+                .with_credential_scrub(
+                    CredentialScrub::default().keep_all(env_passthrough.iter().cloned()),
+                );
             if !options.name.is_empty() {
                 agent = agent.with_name(options.name.clone());
             }
@@ -406,6 +415,22 @@ pub fn create_agent_for_model(
     if options.env_passthrough.is_empty() {
         options.env_passthrough = config.agent.env_passthrough.clone();
     }
+    // The CaMeL data-LLM boundary covers the tool loops roko runs itself:
+    // the adapters that execute tools in process (gap-b0d514).
+    if options.data_llm.is_none()
+        && adapter.supports_local_tool_runtime()
+        && let Some(data_llm) = &config.agent.data_llm
+    {
+        options.data_llm = Some(data_llm_boundary(config, data_llm)?);
+    }
+    // The system prompt's cache markers mean something only to the Anthropic
+    // API translators, which turn them into `cache_control` blocks; any other
+    // provider would get them as inert text (find-6ee709).
+    if provider_config.kind != ProviderKind::AnthropicApi
+        && let Some(prompt) = options.system_prompt.as_mut()
+    {
+        *prompt = crate::translate::claude::strip_cache_markers(prompt);
+    }
     let agent = with_temperament(Some(effective_temperament), || {
         with_safety_layer(Some(safety_layer), || {
             adapter.create_agent(&provider_config, &profile, &options)
@@ -438,6 +463,50 @@ fn safety_layer_for_options(config: &RokoConfig, options: &AgentOptions) -> Safe
         safety_layer = safety_layer.with_contract(contract);
     }
     safety_layer
+}
+
+/// The CaMeL data-LLM boundary `[agent.data_llm]` asks for (gap-b0d514):
+/// a backend for its model with no tools, which must be a model roko calls
+/// over an API. A boundary it cannot build fails the agent's construction,
+/// so a configured boundary is never skipped.
+pub fn data_llm_boundary(
+    config: &RokoConfig,
+    data_llm: &DataLlmConfig,
+) -> Result<Arc<DataLlmBoundary>, AgentCreationError> {
+    let model_key = data_llm.model.as_str();
+    let resolved = resolve_model(config, model_key);
+    let profile = resolved
+        .profile
+        .or_else(|| config.effective_models().get(model_key).cloned())
+        .ok_or_else(|| {
+            AgentCreationError::MissingConfig(format!(
+                "agent.data_llm.model `{model_key}` is not a configured model"
+            ))
+        })?;
+    let provider = resolved
+        .provider_config
+        .or_else(|| config.effective_providers().get(&profile.provider).cloned())
+        .ok_or_else(|| {
+            AgentCreationError::MissingConfig(format!(
+                "agent.data_llm.model `{model_key}` uses provider `{}`, which is not configured",
+                profile.provider
+            ))
+        })?;
+    let poster = Arc::new(crate::http::ReqwestPoster::new());
+    let backend = crate::tool_loop::backends::create_tool_loop_backend(
+        &provider,
+        &profile,
+        &AgentOptions::default(),
+        poster,
+    )
+    .map_err(|error| {
+        AgentCreationError::MissingConfig(format!(
+            "agent.data_llm.model `{model_key}` cannot serve as the data LLM: {error}"
+        ))
+    })?;
+    DataLlmBoundary::new(data_llm.clone(), backend)
+        .map(Arc::new)
+        .map_err(AgentCreationError::MissingConfig)
 }
 
 fn mock_agent_from_env(
@@ -532,10 +601,12 @@ pub fn build_provider_tool_dispatcher(
     }) {
         identity.role = role;
     }
-    Arc::new(
-        scoped_tool_dispatcher(registry, resolver, options.tool_audit.clone())
-            .with_call_identity(identity),
-    )
+    let mut dispatcher = scoped_tool_dispatcher(registry, resolver, options.tool_audit.clone())
+        .with_call_identity(identity);
+    if let Some(sink) = &options.provenance_sink {
+        dispatcher = dispatcher.with_provenance_sink(Arc::clone(sink));
+    }
+    Arc::new(dispatcher)
 }
 
 /// Attach `options`' per-call trace and metrics sinks and its tool
@@ -773,6 +844,17 @@ impl ProviderSemaphores {
         semaphore.acquire_owned().await.map_err(|_| {
             ProviderError::Other(format!("provider semaphore for '{provider_id}' closed"))
         })
+    }
+
+    /// A permit for `provider_id` when one is free now, without waiting.
+    #[must_use]
+    pub fn try_acquire(&self, provider_id: &str) -> Option<OwnedSemaphorePermit> {
+        let semaphore = self
+            .semaphores
+            .get(provider_id)
+            .cloned()
+            .unwrap_or_else(|| Arc::new(Semaphore::new(self.default_permits)));
+        semaphore.try_acquire_owned().ok()
     }
 }
 
@@ -1070,6 +1152,12 @@ pub struct AgentOptions {
     /// to, carried into their audit, trace and metrics records
     /// (find-f489db).
     pub tool_correlation: Option<CorrelationEnvelope>,
+    /// Durable safety provenance for the tool loop's tool calls (gap-ff95f5).
+    ///
+    /// When set, the tool dispatcher records each call's intent with the sink
+    /// before its handler runs, and does not run a call whose intent the sink
+    /// refuses.
+    pub provenance_sink: Option<Arc<dyn crate::safety::SafetyProvenanceSink>>,
     /// Live output channel for forwarding provider events before screening.
     ///
     /// When set and the provider supports streaming, the immune boundary taps
@@ -1078,6 +1166,17 @@ pub struct AgentOptions {
     /// and result events are additionally forwarded as
     /// [`LiveAgentEvent::Unscreened`] when `trusted` is set.
     pub live_output: Option<LiveOutput>,
+    /// The CaMeL data-LLM boundary for this agent's tool loop. When it is
+    /// unset, [`create_agent_for_model`] builds one from `[agent.data_llm]`
+    /// for a provider whose tool loop roko runs, and that loop sends untrusted
+    /// tool output through it (gap-b0d514).
+    pub data_llm: Option<Arc<DataLlmBoundary>>,
+    /// The operator's `[pricing]` snapshot pin (bug-1809d7).
+    ///
+    /// [`create_agent_for_model`] fills this from `RokoConfig.pricing` so every adapter that
+    /// prices usage itself (the Claude CLI's `priced_observation`) honours the pin instead of
+    /// always re-resolving the newest snapshot file.
+    pub pricing: PricingConfig,
 }
 
 impl std::fmt::Debug for AgentOptions {
@@ -1102,11 +1201,14 @@ impl std::fmt::Debug for AgentOptions {
                 &self.dangerously_skip_permissions,
             )
             .field("name", &self.name)
+            .field("pricing", &self.pricing)
             .field("cancel_token", &self.cancel_token.is_some())
             .field("tool_audit", &self.tool_audit.is_some())
             .field("trace_sink", &self.trace_sink.is_some())
             .field("metrics_sink", &self.metrics_sink.is_some())
             .field("tool_correlation", &self.tool_correlation)
+            .field("provenance_sink", &self.provenance_sink.is_some())
+            .field("data_llm", &self.data_llm.is_some())
             .finish_non_exhaustive()
     }
 }
@@ -1234,7 +1336,7 @@ pub fn map_provider_error(
         return format!("{err_text} (provider '{provider_name}')");
     }
 
-    if err_lower.contains("401")
+    if error_classify::mentions_http_401(&err_lower)
         || err_lower.contains("authentication_error")
         || err_lower.contains("unauthorized")
     {
@@ -1355,7 +1457,7 @@ impl fmt::Display for ProviderError {
                 Some(ms) => write!(f, "rate limited; retry after {ms} ms"),
                 None => f.write_str("rate limited"),
             },
-            Self::AuthFailure => f.write_str("authentication failed"),
+            Self::AuthFailure => f.write_str(error_classify::AUTH_FAILURE_MARKER),
             Self::InsufficientCredits => f.write_str(
                 "billing error: insufficient credits or quota exceeded — will not retry",
             ),
@@ -1445,6 +1547,10 @@ pub enum AgentCreationError {
         "Provider {0:?} cannot execute in-process local tools; use an authenticated MCP bridge or a provider-native tool loop"
     )]
     LocalToolsUnsupported(ProviderKind),
+    #[error(
+        "Provider {0:?} cannot enforce a tool allowlist: its built-in tools have no binding allowlist"
+    )]
+    ToolAllowlistUnsupported(ProviderKind),
 }
 
 #[cfg(test)]
@@ -1501,6 +1607,8 @@ mod tests {
             max_concurrent: None,
             limits: None,
             require_confirmation: false,
+            stream_usage: None,
+            billing: None,
         };
         let cursor = provider(ProviderKind::CursorCli);
         assert!(adapter_for_kind(ProviderKind::CursorCli).supports_per_call_local_mcp(&cursor));
@@ -1615,6 +1723,8 @@ mod tests {
                 max_concurrent: None,
                 limits: None,
                 require_confirmation: false,
+                stream_usage: None,
+                billing: None,
             },
         );
         config.models.insert(
@@ -1650,6 +1760,42 @@ mod tests {
         config
     }
 
+    /// gap-b0d514: `[agent.data_llm]` builds its boundary from a model roko
+    /// calls over an API, and refuses a model it does not know or cannot call.
+    #[test]
+    fn data_llm_boundary_needs_a_model_roko_calls_over_an_api() {
+        let mut config = test_config("http://127.0.0.1:9/v1".to_string());
+        let data_llm = |model: &str| DataLlmConfig {
+            model: model.to_string(),
+            ..DataLlmConfig::default()
+        };
+        assert!(data_llm_boundary(&config, &data_llm("glm-5-1")).is_ok());
+        assert!(data_llm_boundary(&config, &data_llm("no-such-model")).is_err());
+
+        config.providers.insert(
+            "claude".to_string(),
+            ProviderConfig {
+                kind: ProviderKind::ClaudeCli,
+                command: Some("claude".to_string()),
+                ..ProviderConfig::default()
+            },
+        );
+        config.models.insert(
+            "cli-model".to_string(),
+            ModelProfile {
+                provider: "claude".to_string(),
+                slug: "claude-haiku-4-5".to_string(),
+                ..ModelProfile::default()
+            },
+        );
+        let error = data_llm_boundary(&config, &data_llm("cli-model"))
+            .expect_err("a CLI model cannot be the data LLM");
+        assert!(
+            error.to_string().contains("cannot serve as the data LLM"),
+            "{error}"
+        );
+    }
+
     fn perplexity_config(
         base_url: Option<String>,
         model_slug: &str,
@@ -1671,6 +1817,8 @@ mod tests {
                 max_concurrent: None,
                 limits: None,
                 require_confirmation: false,
+                stream_usage: None,
+                billing: None,
             },
         );
         config.models.insert(
@@ -1709,6 +1857,8 @@ mod tests {
                 cost_per_request: None,
                 use_max_completion_tokens: false,
                 tier: None,
+                temperature: None,
+                seed: None,
             },
         );
         config
@@ -1847,6 +1997,8 @@ mod tests {
             max_concurrent: None,
             limits: None,
             require_confirmation: false,
+            stream_usage: None,
+            billing: None,
         };
         let enforcement =
             |config: &ProviderConfig| adapter_for_kind(config.kind).turn_cap_enforcement(config);
@@ -2121,6 +2273,66 @@ mod tests {
         handle.join().expect("server thread");
     }
 
+    /// find-6ee709: the system prompt's cache markers reach only the
+    /// Anthropic API translators; an OpenAI-compatible provider gets the
+    /// prompt without them.
+    #[tokio::test]
+    async fn cache_markers_are_stripped_for_non_anthropic_providers() {
+        let response = serde_json::json!({
+            "id": "chatcmpl-test",
+            "choices": [{
+                "index": 0,
+                "message": {"role": "assistant", "content": "factory-ok"},
+                "finish_reason": "stop"
+            }],
+            "usage": {
+                "prompt_tokens": 11,
+                "completion_tokens": 7,
+                "total_tokens": 18
+            }
+        })
+        .to_string();
+        let (base_url, captured, handle) = spawn_chat_server(response);
+        let config = test_config(format!("{base_url}/v4"));
+        let system_prompt = "Role instructions\n\n<!-- cache:system -->\n\nWorkspace context\n\n\
+                             <!-- cache:session -->\n\nTurn notes";
+        let options = AgentOptions {
+            timeout_ms: Some(2_500),
+            name: "factory-agent".to_string(),
+            system_prompt: Some(system_prompt.to_string()),
+            ..Default::default()
+        };
+
+        let agent =
+            create_agent_for_model(&config, "glm-5-1", options).expect("create agent for model");
+        let result = agent.run(&prompt("hello"), &Context::now()).await;
+        assert!(
+            result.success,
+            "{}",
+            result.output.body.as_text().unwrap_or("unknown")
+        );
+
+        let request = captured
+            .lock()
+            .expect("capture lock")
+            .take()
+            .expect("captured request");
+        let body = request.split("\r\n\r\n").nth(1).expect("request body");
+        let parsed: serde_json::Value = serde_json::from_str(body).expect("json request body");
+        let system = parsed["messages"]
+            .as_array()
+            .and_then(|messages| messages.iter().find(|message| message["role"] == "system"))
+            .and_then(|message| message["content"].as_str())
+            .expect("a system message");
+        assert!(!system.contains("<!-- cache:"), "{system}");
+        assert!(
+            system.contains("Role instructions\n\nWorkspace context\n\nTurn notes"),
+            "{system}"
+        );
+
+        handle.join().expect("server thread");
+    }
+
     #[tokio::test]
     async fn create_agent_for_model_routes_perplexity_search_grounded_chat() {
         let response = serde_json::json!({
@@ -2257,6 +2469,24 @@ mod tests {
         assert_eq!(result.output.body.as_text().unwrap_or(""), "fallback-ok");
     }
 
+    /// gap-fd44df: a model key nothing resolves, with no command configured
+    /// to run instead, fails with the reason rather than running `cat`.
+    #[test]
+    fn an_unknown_model_without_a_command_is_an_error() {
+        let mut config = RokoConfig::default();
+        config.agent.command = None;
+
+        let result = create_agent_for_model(&config, "mystery-model", AgentOptions::default());
+
+        let Err(AgentCreationError::MissingConfig(message)) = result else {
+            panic!("an unknown model with no command must not get an agent");
+        };
+        assert!(
+            message.contains("unknown model `mystery-model`"),
+            "{message}"
+        );
+    }
+
     #[test]
     fn exec_agent_fallback_defaults_safety_layer_when_unscoped() {
         let mut config = RokoConfig::default();
@@ -2363,6 +2593,8 @@ mod tests {
                 max_concurrent: None,
                 limits: None,
                 require_confirmation: false,
+                stream_usage: None,
+                billing: None,
             },
         );
         config.models.insert(
@@ -2444,6 +2676,8 @@ mod tests {
                 max_concurrent: None,
                 limits: None,
                 require_confirmation: false,
+                stream_usage: None,
+                billing: None,
             },
         );
         config.models.insert(
@@ -2527,6 +2761,8 @@ mod tests {
                 max_concurrent: Some(3),
                 limits: None,
                 require_confirmation: false,
+                stream_usage: None,
+                billing: None,
             },
         );
 
@@ -2571,6 +2807,28 @@ mod tests {
         assert!(msg.contains("API key invalid"), "got: {msg}");
         assert!(msg.contains("anthropic"), "got: {msg}");
         assert!(msg.contains("ANTHROPIC_API_KEY"), "got: {msg}");
+    }
+
+    /// bug-e03f92: a 401 inside a count is not an HTTP status, so it does
+    /// not blame the API key.
+    #[test]
+    fn http_401_inside_a_count_is_not_an_api_key_error() {
+        let msg = map_provider_error(
+            ProviderKind::OpenAiCompat,
+            "openai",
+            Some("OPENAI_API_KEY"),
+            Some("https://api.openai.com/v1"),
+            &"stream ended after 1401 tokens and 401 chunks",
+        );
+        assert!(!msg.contains("API key invalid"), "got: {msg}");
+        let msg = map_provider_error(
+            ProviderKind::OpenAiCompat,
+            "openai",
+            Some("OPENAI_API_KEY"),
+            Some("https://api.openai.com/v1"),
+            &"http 401: bad key",
+        );
+        assert!(msg.contains("API key invalid"), "got: {msg}");
     }
 
     #[test]
@@ -2688,6 +2946,8 @@ mod tests {
             max_concurrent: None,
             limits: None,
             require_confirmation: false,
+            stream_usage: None,
+            billing: None,
         };
         let model = ModelProfile {
             provider: "hermes".to_string(),
@@ -2730,6 +2990,8 @@ mod tests {
             max_concurrent: None,
             limits: None,
             require_confirmation: false,
+            stream_usage: None,
+            billing: None,
         };
         let model = ModelProfile {
             provider: "openclaw".to_string(),

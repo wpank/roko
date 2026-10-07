@@ -172,49 +172,6 @@ impl MarketplaceJob {
     }
 }
 
-/// Summary of a PRD for the Atelier TUI view.
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
-pub struct PrdSummary {
-    /// URL-safe slug identifier.
-    #[serde(default)]
-    pub slug: String,
-    /// Human-readable title.
-    #[serde(default)]
-    pub title: String,
-    /// Lifecycle status: `idea`, `draft`, `published`, `planned`.
-    #[serde(default)]
-    pub status: String,
-    /// Number of associated plans.
-    #[serde(default)]
-    pub plan_count: usize,
-    /// Total tasks across all plans.
-    #[serde(default)]
-    pub task_total: usize,
-    /// Completed tasks.
-    #[serde(default)]
-    pub task_done: usize,
-    /// Failed tasks.
-    #[serde(default)]
-    pub task_failed: usize,
-}
-
-/// Summary of a task for the Atelier TUI view.
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
-pub struct TaskSummary {
-    /// Task identifier.
-    #[serde(default)]
-    pub id: String,
-    /// Human-readable title.
-    #[serde(default)]
-    pub title: String,
-    /// Current status string.
-    #[serde(default)]
-    pub status: String,
-    /// Agent assigned to this task.
-    #[serde(default)]
-    pub agent: String,
-}
-
 /// Progress entry for a running job (used by TUI).
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct JobProgressEntry {
@@ -950,6 +907,27 @@ impl JobExecutionService {
         receivers.remove(job_id)
     }
 
+    /// Register an executor that runs job `job_id` itself instead of through
+    /// [`Self::start`] (serve's job runner). A later [`Self::cancel`] of the
+    /// `in_progress` job sends on the returned receiver and reports the
+    /// cancellation acknowledged.
+    pub fn register_executor(&self, job_id: &str) -> tokio::sync::oneshot::Receiver<()> {
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        self.active_cancellers
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(job_id.to_string(), tx);
+        rx
+    }
+
+    /// Forget the executor of job `job_id` once it has finished.
+    pub fn unregister_executor(&self, job_id: &str) {
+        self.active_cancellers
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(job_id);
+    }
+
     /// Try to acquire a file-based lease for a job.
     async fn try_acquire_lease(lock_path: &std::path::Path) -> bool {
         if lock_path.exists() {
@@ -1307,13 +1285,6 @@ mod tests {
         assert!(parsed.auto_execute);
     }
 
-    #[test]
-    fn prd_summary_default() {
-        let prd = PrdSummary::default();
-        assert!(prd.slug.is_empty());
-        assert_eq!(prd.task_total, 0);
-    }
-
     // -----------------------------------------------------------------
     // JobExecutionService tests (backlog #371)
     // -----------------------------------------------------------------
@@ -1392,6 +1363,31 @@ mod tests {
         assert_eq!(receipt.prior_status, "in_progress");
         assert_eq!(receipt.new_status, "cancelled");
         assert!(receipt.acknowledged);
+    }
+
+    #[tokio::test]
+    async fn job_execution_cancel_signals_registered_executor() {
+        let (svc, id, _tmp) = setup_execution_service().await;
+        // An executor that drives the job itself marks it in_progress and
+        // registers instead of calling `start`.
+        let mut job = svc.store().get(&id).await.unwrap();
+        job.status = "in_progress".into();
+        svc.store().save(&job).await.unwrap();
+        let mut cancelled = svc.register_executor(&id);
+
+        let receipt = svc.cancel(&id, JobExecutionMode::Serve).await.unwrap();
+        assert_eq!(receipt.prior_status, "in_progress");
+        assert!(receipt.acknowledged);
+        assert!(cancelled.try_recv().is_ok(), "executor got no cancel");
+
+        // A finished executor no longer acknowledges a cancel.
+        let mut job = svc.store().get(&id).await.unwrap();
+        job.status = "in_progress".into();
+        svc.store().save(&job).await.unwrap();
+        let _receiver = svc.register_executor(&id);
+        svc.unregister_executor(&id);
+        let receipt = svc.cancel(&id, JobExecutionMode::Serve).await.unwrap();
+        assert!(!receipt.acknowledged);
     }
 
     #[tokio::test]

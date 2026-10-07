@@ -7,14 +7,35 @@ import Tooltip from './Tooltip';
 import { PulseIcon, SpinnerIcon } from './icons/AnimatedIcons';
 import './TopNav.css';
 
-const NAV_LINKS = [
-  { to: '/demo', label: 'DEMO', full: 'Interactive Demo Scenarios' },
-  { to: '/dashboard', label: 'DASH', full: 'System Dashboard' },
-  { to: '/bench', label: 'BENCH', full: 'Benchmark Lab' },
-  { to: '/explorer', label: 'EXPLORE', full: 'Crate & Route Explorer' },
-  { to: '/builder', label: 'BUILD', full: 'Pipeline Builder' },
-  { to: '/terminal', label: 'TERM', full: 'Terminal Sessions' },
-  { to: '/settings', label: 'CONFIG', full: 'Configuration' },
+interface NavItem {
+  to: string;
+  label: string;
+  full: string;
+  /** Active only on this exact path. */
+  end?: boolean;
+}
+
+/** The showcase (S10 §4.2): measured claims first, the legacy pages under LAB. */
+const NAV_LINKS: NavItem[] = [
+  { to: '/', label: 'OVERVIEW', full: 'Measured claims: overview', end: true },
+  { to: '/p1/head-to-head', label: 'HEAD-TO-HEAD', full: 'Cheap + harness vs frontier-direct' },
+  { to: '/p2/audits', label: 'AUDITS', full: 'M4 audit lottery' },
+  { to: '/replays', label: 'REPLAYS', full: 'Recorded bundles' },
+  { to: '/lab', label: 'LAB', full: 'Legacy pages (local only)' },
+];
+
+/**
+ * The legacy pages, shown in a second row while a /lab page is open (D23). The Demo scenario
+ * player stays here: S10 §4.4 retires it from the showcase nav.
+ */
+const LAB_LINKS: NavItem[] = [
+  { to: '/lab/demo', label: 'DEMO', full: 'Interactive Demo Scenarios' },
+  { to: '/lab/dashboard', label: 'DASH', full: 'System Dashboard' },
+  { to: '/lab/bench', label: 'BENCH', full: 'Benchmark Lab' },
+  { to: '/lab/explorer', label: 'EXPLORE', full: 'Crate & Route Explorer' },
+  { to: '/lab/builder', label: 'BUILD', full: 'Pipeline Builder' },
+  { to: '/lab/terminal', label: 'TERM', full: 'Terminal Sessions' },
+  { to: '/lab/settings', label: 'CONFIG', full: 'Configuration' },
 ];
 
 interface HealthResponse {
@@ -35,8 +56,11 @@ export default function TopNav() {
   const [indicator, setIndicator] = useState<IndicatorStyle | null>(null);
   const linksRef = useRef<HTMLDivElement>(null);
   const location = useLocation();
+  // The server status is a lab concern: the showcase shows only REPLAY and LIVE badges.
+  const inLab = location.pathname === '/lab' || location.pathname.startsWith('/lab/');
 
   useEffect(() => {
+    if (!inLab) return;
     let cancelled = false;
     const poll = async () => {
       try {
@@ -51,7 +75,7 @@ export default function TopNav() {
     poll();
     const id = setInterval(poll, 5_000);
     return () => { cancelled = true; clearInterval(id); };
-  }, [get]);
+  }, [get, inLab]);
 
   // Scroll shadow detection
   useEffect(() => {
@@ -91,58 +115,78 @@ export default function TopNav() {
   const isConnecting = serverHealth === 'checking';
 
   return (
-    <nav className={`topnav${scrolled ? ' scrolled' : ''}`} role="navigation" aria-label="Main navigation">
-      <Link to="/" className="brand" style={{ textDecoration: 'none' }}>
-        <span className="mark" aria-hidden="true" />
-        <span className="brand-text">{'\u2308'} NUNCHI {'\u230B'}</span>
-      </Link>
+    <>
+      <nav className={`topnav${scrolled ? ' scrolled' : ''}`} role="navigation" aria-label="Main navigation">
+        <Link to="/" className="brand" style={{ textDecoration: 'none' }}>
+          <span className="mark" aria-hidden="true" />
+          <span className="brand-text">{'\u2308'} NUNCHI {'\u230B'}</span>
+        </Link>
 
-      <span className="nav-sep" aria-hidden="true">{'\u2502'}</span>
+        <span className="nav-sep" aria-hidden="true">{'\u2502'}</span>
 
-      <div className="links" ref={linksRef}>
-        {/* Morphing indicator pill */}
-        {indicator && (
-          <span
-            className="nav-indicator"
-            style={{
-              transform: `translateX(${indicator.left}px)`,
-              width: `${indicator.width}px`,
-            }}
-          />
-        )}
+        <div className="links" ref={linksRef}>
+          {/* Morphing indicator pill */}
+          {indicator && (
+            <span
+              className="nav-indicator"
+              style={{
+                transform: `translateX(${indicator.left}px)`,
+                width: `${indicator.width}px`,
+              }}
+            />
+          )}
 
-        {NAV_LINKS.map((l, i) => (
-          <Tooltip content={l.full} placement="bottom" key={l.to}>
-            <NavLink
-              to={l.to}
-              className={({ isActive }) => `nav-link${isActive ? ' active' : ''}`}
-              style={{ animationDelay: `${i * 40}ms` }}
+          {NAV_LINKS.map((l, i) => (
+            <Tooltip content={l.full} placement="bottom" key={l.to}>
+              <NavLink
+                to={l.to}
+                end={l.end}
+                className={({ isActive }) => `nav-link${isActive ? ' active' : ''}`}
+                style={{ animationDelay: `${i * 40}ms` }}
+              >
+                {({ isActive }) => (
+                  <span className="nav-link-inner">
+                    {isActive ? `\u25B8 ${l.label} \u25C2` : l.label}
+                  </span>
+                )}
+              </NavLink>
+            </Tooltip>
+          ))}
+        </div>
+
+        <div className="right">
+          {inLab && (
+            <span
+              className={`status-pill ${isLive ? 'live' : isConnecting ? 'connecting' : 'demo'}`}
+              role="status"
+              aria-live="polite"
+              aria-label={isLive ? `Server live, uptime ${fmtUptime(uptime)}` : isConnecting ? 'Connecting to server' : 'Using seed data'}
             >
-              {({ isActive }) => (
-                <span className="nav-link-inner">
-                  {isActive ? `\u25B8 ${l.label} \u25C2` : l.label}
-                </span>
-              )}
-            </NavLink>
-          </Tooltip>
-        ))}
-      </div>
-
-      <div className="right">
-        <span
-          className={`status-pill ${isLive ? 'live' : isConnecting ? 'connecting' : 'demo'}`}
-          role="status"
-          aria-live="polite"
-          aria-label={isLive ? `Server live, uptime ${fmtUptime(uptime)}` : isConnecting ? 'Connecting to server' : 'Using seed data'}
-        >
-          {isLive
-            ? <PulseIcon size={8} color="var(--success)" />
-            : isConnecting
-              ? <SpinnerIcon size={8} />
-              : <span className="status-dot" />}
-          {isLive ? `LIVE ${fmtUptime(uptime)}` : isConnecting ? 'SYNC' : 'SEED'}
-        </span>
-      </div>
-    </nav>
+              {isLive
+                ? <PulseIcon size={8} color="var(--success)" />
+                : isConnecting
+                  ? <SpinnerIcon size={8} />
+                  : <span className="status-dot" />}
+              {isLive ? `LIVE ${fmtUptime(uptime)}` : isConnecting ? 'SYNC' : 'SEED'}
+            </span>
+          )}
+        </div>
+      </nav>
+      {inLab && (
+        <nav className="labnav" aria-label="Lab navigation">
+          <span className="labnav__label">LAB</span>
+          {LAB_LINKS.map((l) => (
+            <Tooltip content={l.full} placement="bottom" key={l.to}>
+              <NavLink
+                to={l.to}
+                className={({ isActive }) => `nav-link${isActive ? ' active' : ''}`}
+              >
+                {l.label}
+              </NavLink>
+            </Tooltip>
+          ))}
+        </nav>
+      )}
+    </>
   );
 }

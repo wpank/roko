@@ -1,16 +1,20 @@
-//! Model routing inputs of a Graph task dispatch: the cheap helper model, cross-cut
-//! and dream routing bias, the agent contract, and the routing context.
+//! Model routing inputs of a Graph task dispatch: the cheap helper model, the
+//! agent contract, the routing context, and the audit trust estimates the
+//! cascade router routes by (DP4).
 
 use roko_core::TaskDomain;
-use roko_core::tool::ToolRegistry;
+use roko_core::config::homeostasis::HomeostasisMode;
+use roko_core::tool::{OutboundPolicy, ToolRegistry};
+use roko_gate::audit::feedback::{TrustBook, trust_path};
 use roko_std::StaticToolRegistry;
 use roko_std::roles::domain_profile;
 
 use super::*;
 
 /// Thin `Agent` adapter that forwards a one-shot prompt through the shared
-/// factory bridge so `error_enrichment` and `quality_judge` can use the
-/// live provider without rebuilding the full dispatch stack.
+/// factory bridge so `error_enrichment`, the gate reflection and the LLM
+/// judge can use the live provider without rebuilding the full dispatch
+/// stack.
 ///
 /// The adapter is intentionally lightweight: it constructs a minimal
 /// `AgentDispatchRequest` with no tools, no MCP, and no contract, targeting
@@ -57,6 +61,7 @@ impl roko_agent::Agent for CheapFactoryAgent {
             max_turns: None,
             live_output: None,
             attempt_key: None,
+            knowledge_ids: Vec::new(),
         };
         match self.factory.run_shared_agent_bridge(request).await {
             Ok(dispatch) => dispatch.result,
@@ -73,8 +78,8 @@ impl roko_agent::Agent for CheapFactoryAgent {
     }
 }
 
-/// Choose the model for best-effort one-shot helper calls (quality judge,
-/// error enrichment, gate reflections).
+/// Choose the model for best-effort one-shot helper calls (error
+/// enrichment, gate reflections, the opt-in LLM judge).
 ///
 /// Prefers `routing.fast_task_model` when it names (by `[models.*]` key or
 /// slug) a dispatchable model. Otherwise picks the cheapest dispatchable
@@ -85,6 +90,28 @@ impl roko_agent::Agent for CheapFactoryAgent {
 /// key so dispatch resolves exactly that profile.
 pub(super) fn select_cheap_model_key(config: &RokoConfig) -> Option<String> {
     select_cheap_model_key_with(config, |key| config.provider_available_for_model_key(key))
+}
+
+/// The helper model that judges an attempt `executor` (a model slug) ran
+/// (9123): the cheap helper model among those of another model family, with
+/// `true`, when one is available; else the cheap helper model, with `false`.
+pub(super) fn select_judge_model_key(
+    config: &RokoConfig,
+    executor: &str,
+) -> Option<(String, bool)> {
+    let family = |slug: &str| roko_core::config::model_registry::model_meta(slug).family;
+    let executor_family = family(executor);
+    let models = config.effective_models();
+    let cross_family = select_cheap_model_key_with(config, |key| {
+        config.provider_available_for_model_key(key)
+            && models
+                .get(key)
+                .is_some_and(|profile| family(&profile.slug) != executor_family)
+    });
+    match cross_family {
+        Some(key) => Some((key, true)),
+        None => select_cheap_model_key(config).map(|key| (key, false)),
+    }
 }
 
 /// [`select_cheap_model_key`] with an injectable provider-availability check.
@@ -167,6 +194,39 @@ impl GraphTaskDispatcher {
             task.hints.preferred_provider.as_deref(),
         )
     }
+
+    /// DP4 (S05 §4.6), at plan start: hand the cascade router the vault's
+    /// latest routing trust estimates, with `[audit] theta_max`.
+    ///
+    /// Nothing happens without `[audit] enabled`, a cascade router or a
+    /// usable vault; the harness reads the vault, agents never do. With M1 on
+    /// (`[homeostasis] mode = "on"`), routing trust is M1's actuator, and the
+    /// router only keeps the estimates.
+    pub(super) fn load_audit_trust(&self) {
+        let audit = &self.config.audit;
+        if !audit.enabled {
+            return;
+        }
+        let Some(router) = self.factory.dispatcher().cascade_router_arc() else {
+            return;
+        };
+        let vault = match audit.vault(&self.workdir) {
+            Ok(vault) => vault,
+            Err(error) => {
+                tracing::warn!(%error, "no audit trust for routing: the vault cannot be used");
+                return;
+            }
+        };
+        let book = match TrustBook::load(&trust_path(&vault)) {
+            Ok(book) => book,
+            Err(error) => {
+                tracing::warn!(%error, "no audit trust for routing: its file is unreadable");
+                return;
+            }
+        };
+        let m1_on = matches!(self.config.homeostasis.mode, HomeostasisMode::On);
+        router.set_audit_trust(&book.estimates, audit.theta_max, m1_on);
+    }
 }
 
 /// [`preferred_provider_model`] with an injectable provider-availability
@@ -212,109 +272,6 @@ fn cmp_price(a: Option<f64>, b: Option<f64>) -> std::cmp::Ordering {
     rank(a).total_cmp(&rank(b))
 }
 
-/// P1-16: Resolve cross-cut functor conflicts at routing time.
-///
-/// When Memory, Daimon, and Dreams all propose routing recommendations on
-/// the same signal set, the arbitrator applies priority resolution (safety-
-/// critical Daimon wins, consolidated Memory beats speculative Dreams) and
-/// falls back to VCG second-price arbitration for same-level ties.
-///
-/// Returns an `Option<RoutingBias>` derived from the winning recommendation
-/// so the cascade router can incorporate the cross-cut consensus.
-///
-/// `dream_advice` is the persisted Dreams advice, loaded once per dispatch
-/// and shared with [`dream_routing_bias`].
-pub(super) fn arbitrate_cross_cut_routing_bias(
-    feedback: &GraphFeedbackContext,
-    dream_advice: Option<&roko_dreams::DreamRoutingAdvice>,
-    task_category: &str,
-) -> Option<roko_learn::cascade_router::RoutingBias> {
-    use roko_compose::auction::{
-        CrossCutArbitrationResult, CrossCutDecisionKind, CrossCutRecommendation,
-    };
-
-    // Collect recommendations from persisted cross-cut state.
-    let mut recommendations = Vec::new();
-
-    // Dreams routing advice (persisted by DreamOutputConsumer or delta dream).
-    if let Some(advice) = dream_advice {
-        for rec in &advice.recommendations {
-            if rec.confidence < 0.5 {
-                continue;
-            }
-            recommendations.push(CrossCutRecommendation {
-                source: roko_compose::auction::CrossCutId::Dreams,
-                decision_key: format!("route:{task_category}"),
-                decision_kind: CrossCutDecisionKind::Route,
-                value: rec.recommended_model.clone(),
-                confidence: rec.confidence,
-                priority_level: 2,
-                safety_critical: false,
-                knowledge_tier: None,
-            });
-        }
-    }
-
-    // Daimon safety override: if the daimon is Struggling, emit a safety-
-    // critical recommendation to prefer a conservative model.
-    if let Some(daimon) = &feedback.daimon_state {
-        if let Ok(daimon) = daimon.lock() {
-            let affect = daimon.query_state();
-            if affect.behavioral_state == roko_core::BehavioralState::Struggling {
-                recommendations.push(CrossCutRecommendation {
-                    source: roko_compose::auction::CrossCutId::Daimon,
-                    decision_key: format!("route:{task_category}"),
-                    decision_kind: CrossCutDecisionKind::Route,
-                    value: "conservative".to_string(),
-                    confidence: 0.9,
-                    priority_level: 1,
-                    safety_critical: true,
-                    knowledge_tier: None,
-                });
-            }
-        }
-    }
-
-    if recommendations.is_empty() {
-        return None;
-    }
-
-    // Run priority-then-VCG arbitration.
-    let result = roko_compose::auction::resolve_by_priority(&recommendations)
-        .unwrap_or_else(|| roko_compose::auction::resolve_by_vcg(&recommendations));
-
-    match result {
-        CrossCutArbitrationResult::Resolved {
-            winner,
-            ref recommendation,
-            attention_cost,
-            mechanism,
-            ..
-        } => {
-            tracing::debug!(
-                ?winner,
-                value = %recommendation.value,
-                attention_cost,
-                ?mechanism,
-                "cross-cut arbitration resolved routing recommendation"
-            );
-            // If the winning recommendation names a specific model to prefer,
-            // deprioritize everything else. For safety-critical "conservative"
-            // recommendations, signal budget pressure instead.
-            if recommendation.safety_critical {
-                Some(roko_learn::cascade_router::RoutingBias {
-                    deprioritize: Vec::new(),
-                    prefer_cheaper: true,
-                    reason: format!("cross-cut safety arbitration: {}", recommendation.value),
-                })
-            } else {
-                None // Prefer normal dream routing advice path (P1-18)
-            }
-        }
-        CrossCutArbitrationResult::NoConflict => None,
-    }
-}
-
 /// The agent contract of a Graph task: its role's contract, narrowed by the
 /// task's `allowed_tools` and `denied_tools` and by its domain
 /// ([`task_denied_tools`]). A task that names no `domain` takes
@@ -329,10 +286,62 @@ pub(super) fn effective_agent_contract(
         .as_deref()
         .filter(|tools| !tools.is_empty());
     let domain = task.effective_domain(config.project.default_domain.as_ref());
+    // `[profiles.<domain>] tool_profile` picks the tool set (9125).
+    let domain = super::pack_rungs::tool_domain(config, domain);
     let denied = task_denied_tools(task, domain.as_ref(), task_allowed_tools);
     AgentContract::load_for_role_with_mode(task_role, ContractLoadMode::RestrictedFallback)
         .unwrap_or_else(|_| AgentContract::restricted(task_role))
         .with_tool_restrictions(task_allowed_tools, Some(denied.as_slice()))
+}
+
+/// What `task`'s agents do with a tool call that acts on the outside world
+/// (9131): its plan's `[meta] outbound` (`meta`), which a chat host's run
+/// sets to `stage`; else the `outbound` of the `[profiles.<domain>]` entry
+/// for its domain; else decision 9107's default, `stage` in the `ops` domain
+/// and `allow` elsewhere.
+pub(super) fn outbound_policy(
+    meta: Option<&crate::task_parser::TaskMeta>,
+    task: &TaskDef,
+    config: &RokoConfig,
+) -> OutboundPolicy {
+    let domain = task.effective_domain(config.project.default_domain.as_ref());
+    let profile = domain
+        .as_ref()
+        .and_then(|domain| super::pack_rungs::domain_profile(config, domain))
+        .and_then(|profile| profile.outbound);
+    let ops = domain
+        .as_ref()
+        .is_some_and(|domain| domain.label() == "ops");
+    let default = if ops {
+        OutboundPolicy::Stage
+    } else {
+        OutboundPolicy::Allow
+    };
+    meta.and_then(|meta| meta.outbound)
+        .or(profile)
+        .unwrap_or(default)
+}
+
+/// `policy`, held at least as strictly as `floor`: a run's floor raises an
+/// `allow` to `stage` and keeps a `deny` (gap-1a4563).
+pub(super) const fn at_least(
+    policy: OutboundPolicy,
+    floor: Option<OutboundPolicy>,
+) -> OutboundPolicy {
+    match floor {
+        Some(floor) if strictness(floor) > strictness(policy) => floor,
+        _ => policy,
+    }
+}
+
+/// How firmly `policy` holds a tool call that acts on the outside world:
+/// `allow` runs it, `stage` holds it for approval, `deny` refuses it.
+const fn strictness(policy: OutboundPolicy) -> u8 {
+    match policy {
+        OutboundPolicy::Allow => 0,
+        OutboundPolicy::Stage => 1,
+        OutboundPolicy::Deny => 2,
+    }
 }
 
 /// The tools a task in `domain` is denied: its own `denied_tools`, and the
@@ -374,61 +383,6 @@ pub(super) fn upstream_outputs(input: &[Signal]) -> Vec<(String, Vec<String>)> {
                 .map(|text| (format!("graph-upstream-{index}"), vec![text.to_string()]))
         })
         .collect()
-}
-
-/// P1-18: Convert persisted dream routing advice to a `RoutingBias` for the
-/// cascade router. Returns `None` when no advice was loaded (missing or
-/// stale file) or no recommendations match the task category.
-pub(super) fn dream_routing_bias(
-    advice: Option<&roko_dreams::DreamRoutingAdvice>,
-    task_category: &str,
-    routing_ctx: &roko_learn::model_router::RoutingContext,
-) -> Option<roko_learn::cascade_router::RoutingBias> {
-    let advice = advice?;
-    if advice.recommendations.is_empty() {
-        return None;
-    }
-    let complexity_band = routing_ctx.complexity.label();
-    let bias = roko_dreams::dream_advice_to_routing_bias(advice, task_category, complexity_band);
-    if bias.deprioritize.is_empty() {
-        return None;
-    }
-    tracing::debug!(
-        deprioritize = ?bias.deprioritize,
-        reason = %bias.reason,
-        "loaded dream routing bias for graph task dispatch"
-    );
-    Some(bias)
-}
-
-/// RAG-11: assign the retrieval-strategy arm from the experiment store.
-///
-/// Blocking file I/O: call it from `spawn_blocking`. Assignment is a pure
-/// read of the persisted arm statistics. The store is written only to
-/// register the experiment, and then under its lock, so the prompt
-/// treatments parallel attempts record in the same file are never lost.
-pub(super) fn assign_retrieval_strategy_arm(exp_path: &Path) -> String {
-    use roko_learn::prompt_experiment::ExperimentStore;
-
-    let mut store = ExperimentStore::load_or_new(exp_path);
-    if store
-        .get(ExperimentStore::RETRIEVAL_STRATEGY_EXPERIMENT_ID)
-        .is_none()
-    {
-        store.ensure_retrieval_strategy_experiment();
-        if let Err(error) = ExperimentStore::transaction(exp_path, |locked| {
-            locked.ensure_retrieval_strategy_experiment();
-            Ok(())
-        }) {
-            tracing::debug!(
-                %error,
-                "RAG-11: persisting the retrieval-strategy experiment failed (best-effort)"
-            );
-        }
-    }
-    store
-        .assign_retrieval_strategy()
-        .unwrap_or_else(|| roko_learn::retrieval_outcome::STRATEGY_KEYWORD.to_string())
 }
 
 /// Build a reasonable `RoutingContext` for Graph task dispatch.
@@ -478,13 +432,19 @@ pub(super) fn build_routing_context(
         .complexity_band
         .unwrap_or_else(|| task.tier_class().complexity_band());
 
-    // Extract daimon policy if the affect state is loaded.
+    // Extract daimon policy if the affect state is loaded (`[daimon] enabled`,
+    // 1211). It shifts the routing tier, and this log line is its record.
     let daimon_policy = daimon_state
         .as_ref()
         .and_then(|d| {
             d.lock().ok().map(|state| {
                 use roko_daimon::AffectEngine;
                 let affect = state.query();
+                tracing::info!(
+                    behavioral_state = ?affect.behavioral_state,
+                    confidence = affect.confidence,
+                    "affect shapes this dispatch's routing tier ([daimon] enabled)"
+                );
                 roko_core::DaimonPolicy::new(affect.confidence, affect.behavioral_state)
             })
         })
@@ -533,7 +493,7 @@ pub(super) fn mark_attempt(
 
 #[cfg(test)]
 mod tests {
-    use roko_core::config::schema::ModelProfile;
+    use roko_core::config::schema::{DomainProfile, ModelProfile};
     use tempfile::tempdir;
 
     use super::*;
@@ -553,6 +513,52 @@ mod tests {
             .map(|tool| tool.name.clone())
             .filter(|name| contract.permits_tool(name))
             .collect()
+    }
+
+    /// 9131: a plan's `[meta] outbound` wins; else the domain's profile
+    /// decides; else the `ops` domain stages outbound effects and every
+    /// other domain allows them.
+    #[test]
+    fn outbound_policy_follows_meta_profile_then_ops_domain() {
+        let mut config = RokoConfig::default();
+        let mut task = make_task_def("focused");
+        assert_eq!(outbound_policy(None, &task, &config), OutboundPolicy::Allow);
+
+        task.domain = TaskDomain::from_label("ops");
+        assert_eq!(outbound_policy(None, &task, &config), OutboundPolicy::Stage);
+
+        let profile = DomainProfile {
+            name: "ops".to_string(),
+            outbound: Some(OutboundPolicy::Deny),
+            ..DomainProfile::default()
+        };
+        config.profiles.insert("ops".to_string(), profile);
+        assert_eq!(outbound_policy(None, &task, &config), OutboundPolicy::Deny);
+
+        let chat = crate::task_parser::TaskMeta {
+            outbound: Some(OutboundPolicy::Stage),
+            ..toml::from_str("plan = \"chat\"").expect("a meta")
+        };
+        task.domain = Some(TaskDomain::Code);
+        let policy = outbound_policy(Some(&chat), &task, &config);
+        assert_eq!(policy, OutboundPolicy::Stage);
+    }
+
+    /// gap-1a4563: a run's floor raises a policy weaker than itself and
+    /// keeps a stricter one.
+    #[test]
+    fn a_run_floor_raises_allow_and_keeps_deny() {
+        let stage = Some(OutboundPolicy::Stage);
+        assert_eq!(
+            at_least(OutboundPolicy::Allow, stage),
+            OutboundPolicy::Stage
+        );
+        assert_eq!(
+            at_least(OutboundPolicy::Stage, stage),
+            OutboundPolicy::Stage
+        );
+        assert_eq!(at_least(OutboundPolicy::Deny, stage), OutboundPolicy::Deny);
+        assert_eq!(at_least(OutboundPolicy::Allow, None), OutboundPolicy::Allow);
     }
 
     /// gap-585bd2: the task's domain decides whether the `chain.*` tools,
@@ -945,30 +951,5 @@ mod tests {
         let agent = dispatcher.cheap_agent().expect("a dispatchable model");
         assert_eq!(agent.model_key, "cli-sonnet");
         assert_eq!(agent.timeout_ms, 7_000);
-    }
-
-    #[test]
-    fn retrieval_strategy_assignment_rewrites_the_store_only_on_registration() {
-        let temp = tempdir().expect("tempdir");
-        let path = temp.path().join("experiments.json");
-        let arm = assign_retrieval_strategy_arm(&path);
-        assert!(path.is_file(), "registration persists the experiment");
-
-        let old = std::time::SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(1_000_000);
-        std::fs::File::options()
-            .write(true)
-            .open(&path)
-            .expect("open store")
-            .set_modified(old)
-            .expect("backdate store");
-        assert_eq!(assign_retrieval_strategy_arm(&path), arm);
-        assert_eq!(
-            std::fs::metadata(&path)
-                .expect("store metadata")
-                .modified()
-                .expect("mtime"),
-            old,
-            "a steady-state dispatch must not rewrite the store"
-        );
     }
 }

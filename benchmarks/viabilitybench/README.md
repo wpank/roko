@@ -22,7 +22,9 @@ what has run, is tracked in `work/items/` under epic `spec-567e52`.
   `~/vb-work`). Each pilot's small summary bundle (records, metrics, ledger and report page; no transcripts or
   archives) is committed under `reports/`.
 - **Stdlib-only Python 3.11 or newer** for everything the benchmark runs: families, verifiers, driver and
-  analysis. pytest is a dev-only dependency, pinned in `requirements.lock`.
+  analysis. pytest is a dev-only dependency, pinned in `requirements.lock`. The one exception (decision 3336): the
+  secondary analyses under `analysis/models/` (the GLMM, 2PL IRT and ICC) use numpy and scipy, pinned in
+  `requirements-analysis.lock`. Nothing else imports them, so every primary analysis stays stdlib-only.
 - **One price source.** Costs come from `config/prices/<date>.toml`, never from `roko.toml`'s per-model rates
   (its gpt-oss-120b rates are wrong) and never from a fallback rate.
 - **No provider calls in tests.** Tests run offline against fixtures and stub servers.
@@ -31,31 +33,44 @@ what has run, is tracked in `work/items/` under epic `spec-567e52`.
 
 ```
 benchmarks/viabilitybench/
-  schema/{task, feature, run-record, metric-record, ledger, price-snapshot}.schema.json  validate.py  examples/
+  schema/{task, feature, run-record, metric-record, ledger, price-snapshot, experiment}.schema.json  validate.py
+  schema/examples/
   families/common/{repo, knobs, hmac_seed, astcheck, mutate, canary}.py
   families/f1_pyconv/{gen, hidden, gaming}.py  ladder.toml  template/  spec/  reference/{solution, stub, gaming}/
   families/f4_kvtool/{gen, hidden, gaming, instance}.py  ladder.toml  template/  spec/  reference/
   families/plan_slice/{slicekit, runner}.py  features/{pl01_stockroom … pl06_csvclean}/   # PL fixtures (S09 §4.9)
   speclint/{speclint, dynamic}.py  fixtures/
-  streams/pilot.toml
+  streams/{pilot, pilot_fd_api}.toml
   arms/{cheap_direct, fd_api, fd_claude, roko_fixed}.toml
   experiments/budget.toml                                   # budget lines and caps (S09 §4.6)
-  driver/vb.py                                              # vb run | estimate | materialize | ledger | report
+  experiments/{pilot_a, pilot_b}.toml  test_*.py            # experiment manifests (vb campaign) and their rehearsals
+  experiments/provider_fault.toml                           # Pilot B's provider_fault rows (vb.disturbance/1)
+  driver/vb.py                                              # vb run | estimate | materialize | campaign | ledger | …
+  driver/campaign.py                                        # vb campaign: an experiment's blocks, validated and run
   driver/{mini_loop, run_roko, planemit, run_cli}.py        # the runners: direct loop, Roko arm, Claude Code arm
+  driver/run_codex.py                                       # the Codex CLI arm's runner (fd_codex)
   driver/{ledger, faultproxy, secret}.py                    # the run ledger, the metering and fault proxy, the secret
+  driver/egress.py                                          # the Claude Code arm's egress allowlist proxy
   driver/{disturb, vb_verify}.py                            # H6's disturbances, and the visible-verify wrapper
   driver/{materialize, harness, provider, stub_provider, agent_env, caps, archive, census, records, layout}.py
   analysis/{metrics, passk, report}.py                      # vb report
+  analysis/gates.py                                         # gate pages: G0's go/no-go (go-no-go.md, g0.json)
+  analysis/{bootstrap, cs, mcnemar, cuped}.py               # S09 §4.1's toolkit: bootstrap, sequences, McNemar, CUPED
+  analysis/{envelope, holm}.py                              # H1's envelope (E*) and graphical Holm over the primaries
+  analysis/simulate.py                                      # synthetic campaigns: coverage, FWER, anytime coverage
+  analysis/replay.py                                        # replay IO: run records and S01 copies, in one order
+  analysis/{lock, blind}.py                                 # the pre-registration lock, and blinded arm labels
+  analysis/models/{glmm, irt}.py                            # the secondaries on numpy and scipy (decision 3336)
   ci/{verify_verifiers, determinism, leak_check}.py         # verifier CI
+  showcase/{build_bundle, verify_bundle}.py  fixtures/      # S10 §5.5's replay bundle: built from records, verified
 $VB_RESULTS (default ~/.roko-bench/viability)/<experiment_id>/<run_id>/
   manifest.json  order-<seed>.json  records.jsonl  ledger.jsonl  reservations.jsonl  errors.jsonl  metrics.json
-  proxy.jsonl  s01/  archives/  private/  transcripts/ (opt-in)
+  proxy.jsonl  egress.jsonl  s01/  archives/  private/  transcripts/ (opt-in)
 ```
 
 Tests sit beside the code they test (`test_*.py`), plus `tests/test_plan_slice.py`, and `driver/testdata/` holds a
 toy family. The prices live in `config/prices/2026-09-28.toml` (§5.6). S08 §5.1 plans more than this tree holds: the
-families F2, F3 and F5–F8, `external/swebench/`, the other streams and arms, and
-`analysis/{bootstrap, cs, cuped, irt, replay}.py`.
+families F2, F3 and F5–F8, `external/swebench/`, and the other streams and arms.
 
 ## The driver
 
@@ -64,9 +79,12 @@ families F2, F3 and F5–F8, `external/swebench/`, the other streams and arms, a
 - the direct loop (`mini_loop.py`, harness `mini-loop`) serves `cheap_direct` and `fd_api`: one model, one bash
   tool, no Roko prompt;
 - the Roko arm (`run_roko.py`, harness `roko`) serves `roko_fixed`: a one-task plan (`planemit.py`) through
-  `roko plan run` on one pinned model, checked on every attempt;
+  `roko plan run` on one pinned model, checked on every attempt. `planemit.py`'s ladder mode emits the cheap-model
+  ladder instead (decision 3302), for the routed Roko arms;
 - the Claude Code arm (`run_cli.py`, harness `claude-code`) serves `fd_claude`: `claude -p` with an isolated config,
-  on the subscription.
+  on the subscription;
+- the Codex CLI arm (`run_codex.py`, harness `codex-cli`) serves `fd_codex`: `codex exec --json` with a fresh Codex
+  home, on the ChatGPT subscription, reusing `run_cli.py`'s session, kill and egress machinery.
 
 Each runner's module docstring has its isolation, caps and costs. The bullets below describe the direct loop, and
 most hold for every arm.
@@ -95,6 +113,20 @@ $PY benchmarks/viabilitybench/driver/vb.py run --experiment PILOT-A --stream pil
   read the driver's own start-up environment (`ps -E`, `/proc`), so once its checks pass,
   `vb run` starts itself again with an allowlisted environment (`agent_env.exec_scrubbed`). Every other process of
   your user stays readable (`ps -E -ax`), so run the benchmark from a session that exports no credential.
+- **Rust toolchain** (F7, gap-46fd19; Will's decision of 2026-10-02). A per-task HOME hides `~/.rustup`, so
+  `families/common/toolchain.py` resolves the host's toolchain in the operator's environment (`rustup show home`,
+  `rustup which cargo`). Agent processes, the census and `ci/verify_verifiers.py` get the toolchain's own bin
+  directory on PATH (never `~/.cargo/bin`, which holds whatever `cargo install` put there), the real `RUSTUP_HOME`,
+  and a `CARGO_HOME` under their own HOME, so cargo's registry cache is per run. Every sandbox keeps `RUSTUP_HOME`
+  and the operator's `CARGO_HOME` read-only.
+- **Network** (gap-0bd49a). On macOS every agent process runs under a network rule of `sandbox.py`, and is denied the
+  secret file, the key file and the run's private task directories. The direct loop's shell gets no network at all,
+  since the driver makes every model call. The Roko arm's process tree, whose tools run the agent's commands, reaches
+  only the loopback port of the endpoint Roko calls (the metering proxy's) and Unix sockets in its workspace. The
+  Claude Code arm reaches the network only through an egress proxy of its own (`driver/egress.py`), which admits the
+  targets of `[cli] egress_allow` (default `api.anthropic.com:443`) and logs every request to `egress.jsonl`. The
+  record names the rule and the confinement that applied (`provenance.network_policy`), and for Claude Code every
+  refused request. Off macOS the rule is not applied, and the record says "none" (gap-29ac83).
 - **Label.** The driver commits the final tree as c_i with `families/common/repo.export_tree`, never with git in the
   agent's repo, then archives it (a git bundle, a tarball and the diff). The census (`census.py`) re-runs the visible
   checks on a clean export with the test files restored, runs the family's `hidden.py --secret-file` and the integrity
@@ -137,6 +169,21 @@ $PY benchmarks/viabilitybench/driver/vb.py run --experiment PILOT-A --stream pil
   `flaky_verify` routes every arm's visible checks through the visible-verify wrapper (`vb_verify.py`), which fails
   some of them at random; the census's own rerun never meets a flake. `model_swap` has the metering proxy serve
   another model than the pin, and the model checks accept that one model as a declared swap (`model_swapped`).
+- **Campaigns** (`vb campaign`, `driver/campaign.py`). An experiment manifest in `experiments/` lists an
+  experiment's blocks: stream, arm, model, seeds, budget line and the rest of a `vb run`. `vb campaign --manifest PATH
+  --dry-run` validates every block and estimates it against the budget and what the ledger already holds, and
+  without `--dry-run` it runs one `vb run` per unit in the manifest's order (`as_listed`, or S09's
+  `daily_interleave`), logs them in `<experiment>/campaign.jsonl`, and on a rerun goes on after the last finished
+  unit. Its module docstring has the rules.
+- **The pre-registration lock** (`analysis/lock.py`, S09 SC1, §5). `lock.py build` writes
+  `experiments/prereg.lock.json` from S09, the analysis code, the streams and the price snapshot, and `lock.py
+  --check` recomputes every hash. LOG1, every live `E-` experiment and every manifest with `requires_lock` start,
+  through `vb run` or `vb campaign`, only when the lock is committed and checks clean; taking it is task 3345.
+  `analysis/blind.py` labels arms with a salted HMAC and unblinds them only under that lock.
+- **Gate G0** (`analysis/gates.py G0 --experiment PILOT-A --experiment PILOT-B ...`, S09 §4.7). It computes every
+  G0 check from the pilot's runs and the evidence files it is given (the verifier-CI JSON, `vb ledger reconcile
+  --json` per provider, the hand-filled SC2 spot check, a synthetic runaway's run), with its value, threshold and run
+  ids, and writes `go-no-go.md` and `g0.json`. A check without its evidence is "not evaluated", never passed.
 - **The report.** `vb report --experiment <id>` writes `metrics.json` and prints the VS rate, $/VS, pass^k and false
   greens of each arm (of each model, for an arm that ran more than one), every false green with its run id, and the
   excluded runs. `--bundle` writes the summary bundle for `reports/`, and `--check` holds bundles to their manifests
@@ -151,6 +198,7 @@ $PY benchmarks/viabilitybench/driver/vb.py run --experiment PILOT-A --stream pil
 | `schema/run-record.schema.json` | `vb.run_record/1`, a row of `records.jsonl` (§5.4) | `examples/run-record.json` (§5.4, verbatim) |
 | `schema/metric-record.schema.json` | `vb.metric_record/1`, a row of `metrics.json` (§5.5) | `examples/metric-record.json` |
 | `schema/ledger.schema.json` | a row of `ledger.jsonl` (§4.10, §5.6) | `examples/ledger.json` |
+| `schema/experiment.schema.json` | `vb.experiment/1`, an experiment manifest that `vb campaign` runs (S09 E5) | the manifests in `experiments/` |
 | `schema/price-snapshot.schema.json` | `roko.price_snapshot/1`, a parsed `config/prices/<date>.toml` (§5.6) | `config/prices/2026-09-28.toml` |
 
 The MetricRecord and ledger examples are built from the §5.4 record, since S08 gives only their field lists. The
@@ -229,3 +277,12 @@ dependencies with hashes. To change them, edit `requirements.in` and regenerate 
 ```bash
 uv pip compile requirements.in --generate-hashes --universal --python-version 3.11 -o requirements.lock
 ```
+
+The secondary models' tests (`analysis/models/test_models.py`) need the analysis stack too, and skip without it:
+
+```bash
+benchmarks/viabilitybench/.venv/bin/python -m pip install --require-hashes -r benchmarks/viabilitybench/requirements-analysis.lock
+uv pip compile requirements-analysis.in --generate-hashes --universal --python-version 3.11 -o requirements-analysis.lock
+```
+
+The second line regenerates that lock from this directory after `requirements-analysis.in` changes.

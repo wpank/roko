@@ -271,6 +271,8 @@ impl EfficiencyTracker {
             cache_write_tokens: 0,
             cost_usd: 0.0,
             cost_usd_without_cache: 0.0,
+            api_equiv_usd: None,
+            price_snapshot_id: None,
             prompt_sections: Vec::new(),
             total_prompt_tokens: tokens,
             system_prompt_tokens: 0,
@@ -1522,9 +1524,13 @@ fn server_event_to_synthetic_signal(event: &ServerEvent) -> Option<Signal> {
                 "assigned_to": assigned_to,
             }),
         ),
-        ServerEvent::RunCompleted { run_id, success } => (
+        ServerEvent::RunCompleted {
+            run_id,
+            success,
+            verdict,
+        } => (
             "run_completed",
-            serde_json::json!({ "run_id": run_id, "success": success }),
+            serde_json::json!({ "run_id": run_id, "success": success, "verdict": verdict }),
         ),
         ServerEvent::DeploymentReady { id, url } => (
             "deployment_ready",
@@ -1836,6 +1842,7 @@ async fn dispatch_agent(
 /// Execute one relay-selected subscription and return only after its terminal
 /// episode is durable. The relay journal calls this instead of the background
 /// event loop so ACK ordering remains explicit and testable.
+#[cfg(feature = "relay")]
 pub(crate) async fn dispatch_relay_subscription(
     state: Arc<AppState>,
     subscription: Subscription,
@@ -2049,9 +2056,12 @@ fn build_agent(
             trace_sink: None,
             metrics_sink: None,
             tool_correlation: None,
+            provenance_sink: None,
             max_turns: None,
             live_output: None,
             thinking: None,
+            data_llm: None,
+            pricing: roko_core::pricing_snapshot::PricingConfig::default(),
         },
     )
     .with_context(|| format!("create agent for template '{}'", template.name))
@@ -2122,6 +2132,9 @@ async fn record_template_dispatch_feedback(
     } else {
         ModelCallFeedbackRecorder::from_learn_dir(learn_dir.to_path_buf(), cascade_model_slugs)
     };
+    // The template's agent runs outside the model-call service, so nothing
+    // else costs its call (bug-c1f6b8).
+    let recorder = recorder.with_cost_records();
 
     if let Err(error) = recorder
         .record(ModelCallFeedback {
@@ -2132,6 +2145,8 @@ async fn record_template_dispatch_feedback(
                 signal.id.to_hex()
             )),
             prompt_section_ids: Vec::new(),
+            // A template's prompt is its role prompt, output format and
+            // experiment variant: it includes no knowledge entry (bug-eaa318).
             knowledge_ids: Vec::new(),
             model: model_slug.clone(),
             provider: provider_id.clone(),
@@ -2910,6 +2925,7 @@ mod tests {
     };
     use roko_core::{Body, Kind, Provenance};
     use roko_learn::cascade_router::CascadeRouter;
+    use roko_learn::costs_db::CostRecord;
     use uuid::Uuid;
 
     use crate::deploy::create_backend;
@@ -3433,7 +3449,7 @@ filter = { path = "src/*.rs" }
 set -eu
 cat >/dev/null
 printf '%s\n' '{"type":"content_block_delta","delta":{"text":"template-ok"}}'
-printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"total_cost_usd":0}'
+printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"total_cost_usd":0.0625,"usage":{"input_tokens":40,"output_tokens":10}}'
 "#,
         );
 
@@ -3456,6 +3472,8 @@ printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"total_cost
                 max_concurrent: None,
                 limits: None,
                 require_confirmation: false,
+                stream_usage: None,
+                billing: None,
             },
         );
         config.models.insert(
@@ -3537,6 +3555,20 @@ printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"total_cost
         let health = state.provider_health.get("template-cli");
         assert_eq!(health.total_attempts, 1);
         assert_eq!(health.total_successes, 1);
+
+        // The template's call is costed once, under its role (bug-c1f6b8).
+        let costs =
+            std::fs::read_to_string(workdir.join(".roko/learn/costs.jsonl")).expect("read costs");
+        let template_rows: Vec<CostRecord> = costs
+            .lines()
+            .filter_map(|line| serde_json::from_str::<CostRecord>(line).ok())
+            .filter(|row| row.role == "template_dispatch")
+            .collect();
+        assert_eq!(template_rows.len(), 1, "{costs}");
+        let row = &template_rows[0];
+        assert_eq!(row.model, "claude-sonnet-4-6");
+        assert_eq!((row.input_tokens, row.output_tokens), (40, 10));
+        assert!((row.cost_usd - 0.0625).abs() < 1e-9, "{row:?}");
     }
 
     #[tokio::test]
@@ -3572,6 +3604,8 @@ printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"total_cost
                 max_concurrent: None,
                 limits: None,
                 require_confirmation: false,
+                stream_usage: None,
+                billing: None,
             },
         );
         config.models.insert(
@@ -3676,6 +3710,8 @@ printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"total_cost
                 max_concurrent: None,
                 limits: None,
                 require_confirmation: false,
+                stream_usage: None,
+                billing: None,
             },
         );
         config.models.insert(

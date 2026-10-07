@@ -192,6 +192,8 @@ fn gemini_provider(base_url: impl Into<String>) -> ProviderConfig {
         max_concurrent: None,
         limits: None,
         require_confirmation: false,
+        stream_usage: None,
+        billing: None,
     }
 }
 
@@ -230,6 +232,8 @@ fn gemini_model(slug: &str) -> ModelProfile {
         cost_per_request: None,
         use_max_completion_tokens: false,
         tier: None,
+        temperature: None,
+        seed: None,
     }
 }
 

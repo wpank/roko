@@ -12,28 +12,47 @@ default-run = "roko"
 workspace = true
 
 [features]
-default = ["acp", "chain", "hdc"]
-# Backend-neutral chain tools: propagates to roko-std (17 chain tool
-# handlers), roko-agent (test assertions), and roko-serve (route marker).
+default = ["acp", "hdc"]
+# Backend-neutral chain tools, parked out of the default build (9201):
+# propagates to roko-std (17 chain tool handlers), roko-agent (test
+# assertions), roko-serve (chain-family routes, chain state, chain feed
+# agents) and the agent sidecar (ERC-8004 registration).
 # Real RPC/provider support is an explicit build choice via alloy-backend.
-chain = ["dep:roko-chain", "roko-std/chain", "roko-agent/chain", "roko-serve/chain"]
+chain = [
+    "dep:roko-chain",
+    "roko-std/chain",
+    "roko-agent/chain",
+    "roko-serve/chain",
+    "roko-agent-server/chain",
+]
 # Full HDC fingerprint pipeline: neuro store, prompt composition, substrate
 # persistence, and serve webhook handling.
 hdc = ["roko-compose/hdc", "roko-fs/hdc", "roko-serve/hdc"]
 acp = ["dep:roko-acp"]
+# Agent groups in roko serve, parked out of the default build (9219).
+groups = ["roko-serve/groups"]
+# The relay client in roko serve, parked out of the default build (9220).
+relay = ["roko-serve/relay"]
+# The cognitive clock and its theta/delta plan-completion sinks, parked out of
+# the default build (9222).
+cognitive-clock = ["roko-runtime/cognitive-clock"]
 alloy-backend = [
     "chain",
     "roko-chain/alloy-backend",
     "roko-serve/alloy-backend",
 ]
+# S03 §4.9's "break a loop" fault flags and their read sites (5129): the
+# knowledge, playbook and route readers and the decision-row builders consult
+# them. Off by default, where `faults::active` is a const `None`.
+fault-injection = ["roko-learn/fault-injection", "roko-serve/fault-injection"]
 # tui-png: Optional PNG screenshot capture for TUI visual regression testing.
 # Not required for production.
 #
-# Gates two modules (png_renderer, screenshot_diff) that provide a built-in
-# bitmap rasterizer and pixel/text/buffer diff comparison. No heavy image
+# Gates the png_renderer module, a built-in bitmap rasterizer. No heavy image
 # dependencies yet — the current implementation uses a minimal hand-rolled
-# PNG writer. No callers outside the gated modules themselves; tests inside
-# the modules run only when the feature is enabled.
+# PNG writer. No callers outside the module itself; its tests run only when
+# the feature is enabled. (The text/buffer diff module, screenshot_diff, is
+# always built: `roko screenshot --compare` and `--format ansi` use it.)
 tui-png = []
 
 [[bin]]
@@ -56,7 +75,7 @@ roko-fs = { path = "../roko-fs" }
 roko-learn = { path = "../roko-learn" }
 roko-compose = { path = "../roko-compose" }
 roko-agent = { path = "../roko-agent" }
-roko-agent-server = { path = "../roko-agent-server" }
+roko-agent-server = { path = "../roko-agent-server", default-features = false }
 roko-gate = { path = "../roko-gate" }
 roko-dreams = { path = "../roko-dreams" }
 roko-daimon = { path = "../roko-daimon" }
@@ -68,6 +87,8 @@ roko-serve = { path = "../roko-serve" }
 # SQLite is the canonical index persistence backend (backlog #362).
 # rkyv remains library-only; tree-sitter is disabled/experimental.
 roko-index = { path = "../roko-index", features = ["sqlite"] }
+# B2 finds the changed functions with its symbol extractor (backlog 7125).
+roko-lang-rust = { path = "../roko-lang-rust" }
 roko-graph = { path = "../roko-graph" }
 roko-execution = { path = "../roko-execution" }
 roko-chain = { path = "../roko-chain", optional = true }
@@ -103,6 +124,7 @@ octocrab = { workspace = true }
 base64 = { workspace = true }
 hmac = { workspace = true }
 sha2 = { workspace = true }
+argon2 = { workspace = true }
 wasmi = { workspace = true }
 sysinfo = { workspace = true }
 ratatui = { version = "0.29", features = ["unstable-rendered-line-info"] }

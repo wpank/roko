@@ -183,14 +183,41 @@ impl AcpAdapter {
     pub fn run_id(&self) -> &str {
         &self.run_id
     }
+
+    /// Sends `event` once the channel has room. `consume` is synchronous, so the
+    /// wait runs as a task on the current Tokio runtime.
+    fn deliver_when_ready(&self, event: CognitiveEvent) {
+        let sender = self.sender.clone();
+        match tokio::runtime::Handle::try_current() {
+            Ok(runtime) => {
+                runtime.spawn(async move {
+                    if sender.send(event).await.is_err() {
+                        tracing::warn!("acp_adapter: session closed before the turn's last event");
+                    }
+                });
+            }
+            Err(_) => {
+                tracing::error!("acp_adapter: channel full and no runtime; last event dropped");
+            }
+        }
+    }
 }
 
 impl EventConsumer for AcpAdapter {
     fn consume(&self, event: &RuntimeEvent) {
-        if let Some(cognitive_event) = self.map_event(event)
-            && self.sender.try_send(cognitive_event).is_err()
-        {
-            tracing::warn!("acp_adapter: cognitive event channel full or closed; event dropped");
+        let Some(cognitive_event) = self.map_event(event) else {
+            return;
+        };
+        match self.sender.try_send(cognitive_event) {
+            Ok(()) => {}
+            // A full channel may drop progress, but not the event that ends the turn:
+            // without it the editor waits forever.
+            Err(mpsc::error::TrySendError::Full(event)) if event.ends_turn() => {
+                self.deliver_when_ready(event);
+            }
+            Err(_) => {
+                tracing::warn!("acp_adapter: cognitive event channel full or closed; dropped");
+            }
         }
     }
 }
@@ -256,6 +283,40 @@ mod tests {
             }
             _ => panic!("Expected ToolCallComplete"),
         }
+    }
+
+    #[tokio::test]
+    async fn acp_adapter_delivers_workflow_completed_when_channel_full() {
+        let (tx, mut rx) = mpsc::channel(1);
+        let adapter = AcpAdapter::new("sess1".into(), "run1".into(), tx);
+        let output = |chunk: &str| RuntimeEvent::AgentOutput {
+            run_id: "run1".into(),
+            agent_id: "a1".into(),
+            chunk: chunk.into(),
+        };
+
+        // The first chunk fills the channel; the second is progress and may drop.
+        adapter.consume(&output("first"));
+        adapter.consume(&output("dropped"));
+        adapter.consume(&RuntimeEvent::WorkflowCompleted {
+            run_id: "run1".into(),
+            outcome: WorkflowOutcome::Cancelled,
+        });
+
+        assert!(matches!(
+            rx.recv().await,
+            Some(CognitiveEvent::TokenChunk(chunk)) if chunk == "first"
+        ));
+        let completion = tokio::time::timeout(std::time::Duration::from_secs(1), rx.recv())
+            .await
+            .expect("the completion must arrive once the channel has room");
+        assert!(matches!(
+            completion,
+            Some(CognitiveEvent::Complete {
+                stop_reason: StopReason::Cancelled,
+                ..
+            })
+        ));
     }
 
     #[test]

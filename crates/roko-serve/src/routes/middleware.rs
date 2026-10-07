@@ -4,13 +4,16 @@ use std::sync::{Arc, OnceLock};
 
 use axum::body::Body;
 use axum::extract::State;
+#[cfg(feature = "chain")]
+use axum::http::HeaderValue;
 use axum::http::header::{AUTHORIZATION, CONTENT_TYPE, UPGRADE};
 use axum::http::{HeaderMap, Method, Request};
-use axum::http::{HeaderName, HeaderValue, StatusCode};
+use axum::http::{HeaderName, StatusCode};
 use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
 use base64::Engine;
 use chrono::Utc;
+#[cfg(feature = "chain")]
 use roko_chain::x402::{PaymentAuthorization, PaymentRequest};
 use roko_core::config::{ApiKeyEntry, ServeAuthConfig};
 use roko_core::feed::{FeedAccess, FeedInfo};
@@ -42,9 +45,11 @@ pub(crate) fn privy_allow_list_configured(auth: &ServeAuthConfig) -> bool {
 }
 
 /// Header containing an ERC-3009 payment authorization as JSON.
+#[cfg(feature = "chain")]
 pub const X_PAYMENT_AUTHORIZATION: &str = "x-payment-authorization";
 
 /// Header carrying the same payment challenge returned in an HTTP 402 body.
+#[cfg(feature = "chain")]
 pub const X_PAYMENT_REQUEST: &str = "x-payment-request";
 
 /// Verify the structural x402 authorization required to read a paid feed.
@@ -52,6 +57,7 @@ pub const X_PAYMENT_REQUEST: &str = "x-payment-request";
 /// Public and private feeds bypass the payment cell. Signature verification is
 /// deliberately deferred to the chain settlement layer; this boundary checks
 /// only JSON shape and that the authorized value covers the advertised price.
+/// A build without `chain` has no x402 check and refuses every priced feed.
 // Axum handlers consume `Response` directly on denial; boxing it here would only move the
 // allocation and complicate every caller without reducing the HTTP response itself.
 #[allow(clippy::result_large_err)]
@@ -75,7 +81,17 @@ pub fn require_payment(feed: &FeedInfo, headers: &HeaderMap) -> Result<(), Respo
     if required_amount == 0 {
         return Ok(());
     }
+    check_payment(feed, headers, required_amount)
+}
 
+/// Challenge for, or accept, an x402 authorization of `required_amount`.
+#[cfg(feature = "chain")]
+#[allow(clippy::result_large_err)]
+fn check_payment(
+    feed: &FeedInfo,
+    headers: &HeaderMap,
+    required_amount: u128,
+) -> Result<(), Response> {
     let now = u64::try_from(Utc::now().timestamp()).unwrap_or(0);
     let challenge = PaymentRequest {
         recipient: feed.agent_id.clone(),
@@ -97,6 +113,20 @@ pub fn require_payment(feed: &FeedInfo, headers: &HeaderMap) -> Result<(), Respo
     }
 }
 
+/// Without `chain` there is no x402 check, so a priced feed is refused
+/// rather than served for free (9215).
+#[cfg(not(feature = "chain"))]
+#[allow(clippy::result_large_err)]
+fn check_payment(
+    _feed: &FeedInfo,
+    _headers: &HeaderMap,
+    _required_amount: u128,
+) -> Result<(), Response> {
+    let refusal = super::chain_disabled::parked("paid feed access", "chain");
+    Err(refusal.into_response())
+}
+
+#[cfg(feature = "chain")]
 fn payment_required(challenge: PaymentRequest) -> Response {
     let challenge_header = serde_json::to_string(&challenge)
         .ok()
@@ -598,7 +628,8 @@ fn expired_key_response() -> Response {
     resp
 }
 
-/// Extract the value of the `roko_session` cookie from the `Cookie` request header.
+/// Extract the value of the cookie called `name` from the `Cookie` request header
+/// (`roko_session` locally; showcase mode names its own cookie).
 ///
 /// Parses the cookie string naively (splits on `;`, trims whitespace) to avoid
 /// pulling in a cookie-parsing dependency. Returns `None` when the cookie is
@@ -606,11 +637,12 @@ fn expired_key_response() -> Response {
 ///
 /// The raw value is **never logged**; it is passed to [`crate::state::LocalAccess`]
 /// which hashes it before any comparison.
-fn extract_session_cookie(headers: &HeaderMap) -> Option<&str> {
+pub(crate) fn extract_named_cookie<'a>(headers: &'a HeaderMap, name: &str) -> Option<&'a str> {
     let cookie_str = headers.get("Cookie")?.to_str().ok()?;
     for part in cookie_str.split(';') {
-        let part = part.trim();
-        if let Some(value) = part.strip_prefix("roko_session=") {
+        if let Some((key, value)) = part.trim().split_once('=')
+            && key == name
+        {
             let value = value.trim();
             if !value.is_empty() {
                 return Some(value);
@@ -686,6 +718,136 @@ fn check_cookie_same_origin(req: &Request<Body>) -> Result<(), Response> {
     Err(cookie_cross_origin_response())
 }
 
+/// The session the request's cookie names, as its credential: the cookie fallback of
+/// [`require_api_key`].
+///
+/// The scope comes from the session's record (9322), never a fixed `admin`. A state-changing
+/// request must also pass the same-origin check; in showcase mode it carries the CSRF header from
+/// the exact public origin instead (S11 §4.3), and the cookie has the configured name.
+#[allow(clippy::result_large_err)]
+fn session_credential(state: &AppState, req: &Request<Body>) -> Result<AuthContext, Response> {
+    let config = state.load_roko_config();
+    let showcase = &config.showcase;
+    let missing = || {
+        ApiError::unauthorized("missing X-Api-Key header or Authorization bearer token")
+            .into_response()
+    };
+    let cookie = crate::showcase::auth::session_cookie_name(&config);
+    let Some(session_id) = extract_named_cookie(req.headers(), cookie) else {
+        return Err(missing());
+    };
+    let access = &state.local_access;
+    match access.authenticate_session(session_id, Utc::now()) {
+        crate::state::SessionLookup::Live { scope, .. } => {
+            let safe = matches!(*req.method(), Method::GET | Method::HEAD | Method::OPTIONS)
+                && !is_websocket_upgrade(req.headers());
+            if !showcase.enabled {
+                // Cookie auth on a state-changing request must satisfy the
+                // same-origin constraint before we grant access.
+                check_cookie_same_origin(req)?;
+            } else if !safe {
+                let public_origin = showcase.public_origin.as_deref();
+                crate::showcase::auth::check_csrf_and_origin(req.headers(), public_origin)
+                    .map_err(showcase_forbidden)?;
+            }
+            Ok(AuthContext {
+                method: AuthMethod::Session,
+                scope,
+                user_id: None,
+            })
+        }
+        crate::state::SessionLookup::Rotated => {
+            append_auth_audit(
+                state,
+                crate::auth_audit::AuthAuditEvent::new(
+                    "session",
+                    crate::auth_audit::AuthAuditAction::GenerationChanged,
+                    format!("{} {}", req.method(), req.uri().path()),
+                    crate::auth_audit::AuthOutcome::Denied,
+                ),
+            );
+            Err(missing())
+        }
+        crate::state::SessionLookup::Missing => Err(missing()),
+    }
+}
+
+/// Query parameters that carry a key somewhere; showcase mode refuses a request that has one.
+const QUERY_CREDENTIALS: [&str; 4] = ["api_key", "key", "token", "access_token"];
+
+/// [`require_api_key`] in showcase mode (S11 §4.2, 9326).
+///
+/// Only the admin key in `X-Api-Key` and a passphrase session's cookie authenticate. Every
+/// other credential is refused with 401 before any lookup: a bearer token of any kind (Privy,
+/// agent, relay, sidecar or API key), a worker token, a key in the query, the launch token and a
+/// named key. A session reaches only what [`crate::showcase::scope::session_may_access`]
+/// allows; anything else is `403 forbidden_for_session`.
+async fn require_showcase_credential(
+    state: &AppState,
+    config: &roko_core::config::schema::RokoConfig,
+    mut req: Request<Body>,
+    next: Next,
+) -> Response {
+    let refused = || {
+        ApiError::unauthorized("showcase mode accepts only the admin key or a passphrase session")
+            .into_response()
+    };
+    let headers = req.headers();
+    let query_key = req.uri().query().is_some_and(|query| {
+        query
+            .split('&')
+            .filter_map(|pair| pair.split('=').next())
+            .any(|name| QUERY_CREDENTIALS.contains(&name))
+    });
+    if headers.contains_key(AUTHORIZATION)
+        || headers.contains_key("X-Roko-Worker-Token")
+        || query_key
+    {
+        return refused();
+    }
+    let context = if let Some(value) = headers.get("X-Api-Key") {
+        let admin_key = config.serve.auth.api_key.as_bytes();
+        let supplied = value.as_bytes();
+        if admin_key.is_empty() || !constant_time_eq(supplied, admin_key) {
+            return refused();
+        }
+        AuthContext {
+            method: AuthMethod::ApiKey,
+            scope: "admin".to_string(),
+            user_id: Some("admin".to_string()),
+        }
+    } else {
+        match session_credential(state, &req) {
+            Ok(context) if context.scope == crate::showcase::SHOWCASE_SCOPE => context,
+            Ok(_) => return refused(),
+            Err(response) => return response,
+        }
+    };
+    let live_enabled = config.showcase.live_enabled;
+    let allowed = context.method != AuthMethod::Session
+        || crate::showcase::scope::session_may_access(req.method(), req.uri().path(), live_enabled);
+    if !allowed {
+        return showcase_forbidden("forbidden_for_session");
+    }
+    let method = context.method;
+    req.extensions_mut().insert(context);
+    let mut response = next.run(req).await;
+    response.headers_mut().insert(
+        "X-Auth-Method",
+        axum::http::HeaderValue::from_static(method.header_value()),
+    );
+    response
+}
+
+/// `403 {"error": code}`: a showcase session request refused by its CSRF header or origin.
+fn showcase_forbidden(code: &'static str) -> Response {
+    (
+        StatusCode::FORBIDDEN,
+        axum::Json(serde_json::json!({ "error": code })),
+    )
+        .into_response()
+}
+
 fn cookie_cross_origin_response() -> Response {
     (
         StatusCode::FORBIDDEN,
@@ -722,7 +884,7 @@ fn is_websocket_upgrade(headers: &HeaderMap) -> bool {
 /// 5. `Authorization: Bearer roko_relay_*` — relay bearer tokens
 /// 6. `Authorization: Bearer <token>` — matched against API keys
 /// 7. `Authorization: Bearer <jwt>` — verified via Privy JWKS
-/// 8. `Cookie: roko_session=<id>` — live session cookie (admin scope)
+/// 8. `Cookie: roko_session=<id>` — live session cookie, with its record's scope
 ///    when no explicit header credential is present; state-changing requests
 ///    must additionally pass the same-origin check.
 ///
@@ -731,12 +893,19 @@ fn is_websocket_upgrade(headers: &HeaderMap) -> bool {
 ///
 /// Expired keys return 401 with `X-Key-Expired: true` so clients can
 /// distinguish "wrong key" from "key needs rotation".
+///
+/// In showcase mode only the admin key and a passphrase session authenticate
+/// ([`require_showcase_credential`]).
 pub async fn require_api_key(
     State(state): State<Arc<AppState>>,
     mut req: Request<Body>,
     next: Next,
 ) -> Result<Response, ApiError> {
-    let auth = state.load_roko_config().serve.auth.clone();
+    let config = state.load_roko_config();
+    if config.showcase.enabled {
+        return Ok(require_showcase_credential(&state, &config, req, next).await);
+    }
+    let auth = config.serve.auth.clone();
     let named_api_keys = state.auth_registry.api_keys_snapshot().await;
     let route_label = format!("{} {}", req.method(), req.uri().path());
 
@@ -957,33 +1126,10 @@ pub async fn require_api_key(
                 ));
             }
             ApiCredential::Missing => {
-                // No explicit credential header — fall back to the `roko_session` cookie.
-                if let Some(session_id) = extract_session_cookie(req.headers()) {
-                    if state.local_access.session_valid(session_id) {
-                        // Cookie auth on a state-changing request must satisfy the
-                        // same-origin constraint before we grant access.
-                        if let Err(cross_origin_response) = check_cookie_same_origin(&req) {
-                            return Ok(cross_origin_response);
-                        }
-                        (
-                            AuthMethod::Session,
-                            AuthContext {
-                                method: AuthMethod::Session,
-                                scope: "admin".to_string(),
-                                user_id: None,
-                            },
-                            None,
-                            None,
-                        )
-                    } else {
-                        return Err(ApiError::unauthorized(
-                            "missing X-Api-Key header or Authorization bearer token",
-                        ));
-                    }
-                } else {
-                    return Err(ApiError::unauthorized(
-                        "missing X-Api-Key header or Authorization bearer token",
-                    ));
+                // No explicit credential header — fall back to the session cookie.
+                match session_credential(&state, &req) {
+                    Ok(context) => (AuthMethod::Session, context, None, None),
+                    Err(response) => return Ok(response),
                 }
             }
         };
@@ -1113,6 +1259,21 @@ pub(crate) const ROUTE_SCOPE_MANIFEST: &[RouteScopeEntry] = &[
         prefix: "/api/api-keys",
         scope: "admin",
     },
+    // The loop audit's canary and fault routes, and the showcase's "break a
+    // loop" (S03 §5; 5133). Their reads stay `read`.
+    RouteScopeEntry {
+        prefix: "/api/learn/loops",
+        scope: "admin",
+    },
+    RouteScopeEntry {
+        prefix: "/api/showcase/m2/loops",
+        scope: "admin",
+    },
+    // The showcase's admin routes (S11): bundle reload, login unlock.
+    RouteScopeEntry {
+        prefix: "/api/showcase/admin",
+        scope: "admin",
+    },
     RouteScopeEntry {
         prefix: "/api/agent-tokens",
         scope: "admin",
@@ -1150,14 +1311,6 @@ pub(crate) const ROUTE_SCOPE_MANIFEST: &[RouteScopeEntry] = &[
     // --- plan:write ----------------------------------------------------------
     RouteScopeEntry {
         prefix: "/api/plans",
-        scope: "plan:write",
-    },
-    RouteScopeEntry {
-        prefix: "/api/prd",
-        scope: "plan:write",
-    },
-    RouteScopeEntry {
-        prefix: "/api/prds",
         scope: "plan:write",
     },
     // --- terminal:write ------------------------------------------------------
@@ -1280,6 +1433,12 @@ pub(crate) const ROUTE_SCOPE_MANIFEST: &[RouteScopeEntry] = &[
         prefix: "/api/team/join",
         scope: "read",
     },
+    // The MCP endpoint takes every JSON-RPC call by POST; `tools/call`
+    // checks each tool's own scope (9114).
+    RouteScopeEntry {
+        prefix: "/mcp",
+        scope: "read",
+    },
     RouteScopeEntry {
         prefix: "/api/team",
         scope: "write",
@@ -1290,6 +1449,11 @@ pub(crate) const ROUTE_SCOPE_MANIFEST: &[RouteScopeEntry] = &[
     },
     RouteScopeEntry {
         prefix: "/api/providers",
+        scope: "write",
+    },
+    // Approving or rejecting a staged outbound effect (9133).
+    RouteScopeEntry {
+        prefix: "/api/effects",
         scope: "write",
     },
 ];
@@ -1326,6 +1490,11 @@ pub(crate) fn required_scope_for(method: &Method, path: &str) -> &'static str {
     if is_read_only_method(method) && !opens_interactive_session(path) {
         return "read";
     }
+    // 9328: anyone holding a share's link can read it without auth, so minting
+    // one publishes the run; that is an admin act, not a `write` one.
+    if is_share_creation(path) {
+        return "admin";
+    }
     // Middleware on the nested API router can observe `/registries/...`
     // rather than the externally visible `/api/registries/...`. Match both
     // forms so an admin route never falls back to the weaker generic write
@@ -1358,12 +1527,20 @@ fn is_read_only_method(method: &Method) -> bool {
     matches!(*method, Method::GET | Method::HEAD | Method::OPTIONS)
 }
 
+/// Whether `path` is a run's share route, `/api/runs/{id}/share`, with or without the nest
+/// prefix.
+fn is_share_creation(path: &str) -> bool {
+    let path = path.strip_prefix("/api").unwrap_or(path);
+    let segments: Vec<&str> = path.split('/').collect();
+    matches!(segments.as_slice(), ["", "runs", id, "share"] if !id.is_empty())
+}
+
 /// Check whether the caller's scope is sufficient for the required scope.
 ///
 /// `"write:unclassified"` is treated identically to `"write"` so that the
 /// fallback sentinel does not change runtime behaviour — it is only detectable
 /// by the regression test.
-fn is_scope_sufficient(has: &str, required: &str) -> bool {
+pub(crate) fn is_scope_sufficient(has: &str, required: &str) -> bool {
     if matches!(has, "owner" | "admin") {
         return true;
     }
@@ -3003,10 +3180,12 @@ mod tests {
             (Method::POST, "/api/relay-tokens", "admin"),
             (Method::POST, "/relay-tokens", "admin"),
             (Method::DELETE, "/relay-tokens/tok-1", "admin"),
-            (Method::POST, "/api/prd/consolidate", "plan:write"),
-            (Method::POST, "/prds/ideas", "plan:write"),
+            (Method::POST, "/api/plans/generate", "plan:write"),
+            (Method::POST, "/plans/generate", "plan:write"),
             (Method::POST, "/api/run", "write"),
-            (Method::POST, "/runs/abc/share", "write"),
+            (Method::POST, "/runs/abc/share", "admin"),
+            (Method::POST, "/api/runs/abc/share", "admin"),
+            (Method::POST, "/api/runs/abc/shares", "write"),
             (Method::POST, "/api/secretsx", SCOPE_WRITE_UNCLASSIFIED),
             (Method::POST, "/api/configure", SCOPE_WRITE_UNCLASSIFIED),
         ] {
@@ -3491,13 +3670,6 @@ mod tests {
         (Method::POST, "/api/plans/123/chat"),
         (Method::POST, "/api/plans/123/estimate"),
         (Method::POST, "/api/plans/generate"),
-        // --- /api/prd (plan:write) ---
-        (Method::POST, "/api/prds/ideas"),
-        (Method::POST, "/api/prd/consolidate"),
-        (Method::POST, "/api/prds/consolidate"),
-        (Method::POST, "/api/prds/my-slug/draft"),
-        (Method::POST, "/api/prds/my-slug/promote"),
-        (Method::POST, "/api/prds/my-slug/plan"),
         // --- /api/workspaces (write) ---
         (Method::POST, "/api/workspaces"),
         // --- /api/jobs (write) ---
@@ -3522,7 +3694,6 @@ mod tests {
         (Method::POST, "/api/deployments/123/callback"),
         // --- /api/research (write) ---
         (Method::POST, "/api/research/topic"),
-        (Method::POST, "/api/research/enhance-prd/my-slug"),
         (Method::POST, "/api/research/enhance-plan/my-plan"),
         (Method::POST, "/api/research/enhance-tasks/my-plan"),
         (Method::POST, "/api/research/analyze"),
@@ -3633,6 +3804,10 @@ mod tests {
         // --- /api/relay-tokens (admin) ---
         (Method::POST, "/api/relay-tokens"),
         (Method::DELETE, "/api/relay-tokens/tok-1"),
+        // --- /api/effects (write) ---
+        (Method::POST, "/api/effects/effect-1/decision"),
+        // --- /mcp (read; tools/call checks each tool's scope) ---
+        (Method::POST, "/mcp"),
     ];
 
     /// CI guard: every mutating route registered in the router must have an
@@ -4518,27 +4693,33 @@ mod tests {
                 .parse()
                 .unwrap(),
         );
-        assert_eq!(extract_session_cookie(&headers), Some("deadbeef0123"));
+        assert_eq!(
+            extract_named_cookie(&headers, "roko_session"),
+            Some("deadbeef0123")
+        );
     }
 
     #[test]
     fn cookie_parsing_returns_none_without_roko_session() {
         let mut headers = HeaderMap::new();
         headers.insert("Cookie", "other=foo; another=bar".parse().unwrap());
-        assert_eq!(extract_session_cookie(&headers), None);
+        assert_eq!(extract_named_cookie(&headers, "roko_session"), None);
     }
 
     #[test]
     fn cookie_parsing_returns_none_when_no_cookie_header() {
         let headers = HeaderMap::new();
-        assert_eq!(extract_session_cookie(&headers), None);
+        assert_eq!(extract_named_cookie(&headers, "roko_session"), None);
     }
 
     #[test]
     fn cookie_parsing_handles_session_as_sole_cookie() {
         let mut headers = HeaderMap::new();
         headers.insert("Cookie", "roko_session=only-cookie".parse().unwrap());
-        assert_eq!(extract_session_cookie(&headers), Some("only-cookie"));
+        assert_eq!(
+            extract_named_cookie(&headers, "roko_session"),
+            Some("only-cookie")
+        );
     }
 
     // --- Origin / same-origin rule unit tests --------------------------------
@@ -4650,6 +4831,145 @@ mod tests {
         assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
     }
 
+    // --- showcase mode (9326) ---------------------------------------------------
+
+    const SHOWCASE_ADMIN_KEY: &str = "showcase-admin-key";
+    const SHOWCASE_LAUNCH_TOKEN: &str = "showcase-launch-token";
+
+    /// A showcase-mode server with an admin key and a launch token.
+    fn showcase_test_state() -> Arc<AppState> {
+        let tempdir = tempdir().expect("invariant: tempdir creates");
+        let mut config = RokoConfig::default();
+        config.serve.auth = ServeAuthConfig {
+            enabled: true,
+            api_key: SHOWCASE_ADMIN_KEY.to_string(),
+            ..Default::default()
+        };
+        config.showcase.enabled = true;
+        config.showcase.public_origin = Some("https://showcase.test".to_string());
+        let mut state = AppState::new(
+            tempdir.path().to_path_buf(),
+            Arc::new(NoOpRuntime),
+            config,
+            Arc::new(ManualBackend::default()),
+        )
+        .expect("AppState::new");
+        state.local_access =
+            crate::state::LocalAccess::new(Some(SHOWCASE_LAUNCH_TOKEN.to_string()));
+        Arc::new(state)
+    }
+
+    /// Routes standing in for the API, behind `require_api_key`.
+    fn showcase_test_app(state: Arc<AppState>) -> Router {
+        let ok = || async { StatusCode::NO_CONTENT };
+        Router::new()
+            .route("/config", get(ok))
+            .route("/secrets", get(ok))
+            .route("/run", post(ok))
+            .route("/showcase/manifest", get(ok))
+            .route("/showcase/admin/bundles/reload", post(ok))
+            .layer(axum::middleware::from_fn_with_state(state, require_api_key))
+    }
+
+    #[tokio::test]
+    async fn showcase_scope_session_gets_403_on_config_and_secrets() {
+        let state = showcase_test_state();
+        let config = state.load_roko_config();
+        let grant = crate::state::SessionGrant::showcase(&config.showcase.session, None);
+        let access = &state.local_access;
+        let session_id = access.create_scoped_session(&grant, Utc::now());
+        let app = showcase_test_app(Arc::clone(&state));
+        let request = |method: Method, uri: &str| {
+            Request::builder()
+                .method(method)
+                .uri(uri)
+                .header("Cookie", format!("__Host-roko_session={session_id}"))
+                .header("X-Roko-CSRF", "1")
+                .header("Origin", "https://showcase.test")
+                .body(Body::empty())
+                .unwrap()
+        };
+
+        let refused = [
+            (Method::GET, "/config"),
+            (Method::GET, "/secrets"),
+            (Method::POST, "/run"),
+            (Method::POST, "/showcase/admin/bundles/reload"),
+        ];
+        for (method, uri) in refused {
+            let resp = app.clone().oneshot(request(method, uri)).await.unwrap();
+            assert_eq!(resp.status(), StatusCode::FORBIDDEN, "{uri}");
+            let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+                .await
+                .unwrap();
+            let body: Value = serde_json::from_slice(&body).unwrap();
+            assert_eq!(body["error"], "forbidden_for_session", "{uri}");
+        }
+        let resp = app
+            .clone()
+            .oneshot(request(Method::GET, "/showcase/manifest"))
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::NO_CONTENT);
+        assert_eq!(resp.headers()["x-auth-method"], "session");
+
+        // The admin key reaches the rest of the API.
+        for uri in ["/config", "/secrets"] {
+            let admin = Request::builder()
+                .uri(uri)
+                .header("X-Api-Key", SHOWCASE_ADMIN_KEY)
+                .body(Body::empty())
+                .unwrap();
+            let resp = app.clone().oneshot(admin).await.unwrap();
+            assert_eq!(resp.status(), StatusCode::NO_CONTENT, "{uri}");
+        }
+    }
+
+    #[tokio::test]
+    async fn showcase_scope_rejects_privy_and_agent_tokens() {
+        let app = showcase_test_app(showcase_test_state());
+        let bearer = |token: &str| {
+            Request::builder()
+                .uri("/showcase/manifest")
+                .header(AUTHORIZATION, format!("Bearer {token}"))
+                .body(Body::empty())
+                .unwrap()
+        };
+        let key = |key: &str| {
+            Request::builder()
+                .uri("/config")
+                .header("X-Api-Key", key)
+                .body(Body::empty())
+                .unwrap()
+        };
+        let query = Request::builder()
+            .uri(format!("/showcase/manifest?api_key={SHOWCASE_ADMIN_KEY}"))
+            .body(Body::empty())
+            .unwrap();
+        let requests = [
+            bearer("eyJhbGciOiJSUzI1NiJ9.eyJzdWIiOiJkaWQ6cHJpdnk6eCJ9.c2lnbmF0dXJl"),
+            bearer("roko_agent_0123456789abcdef"),
+            bearer("roko_relay_0123456789abcdef"),
+            bearer(SHOWCASE_ADMIN_KEY),
+            bearer(SHOWCASE_LAUNCH_TOKEN),
+            key(SHOWCASE_LAUNCH_TOKEN),
+            key("not-the-admin-key"),
+            query,
+        ];
+        for request in requests {
+            let label = format!("{:?}", request.headers());
+            let resp = app.clone().oneshot(request).await.unwrap();
+            assert_eq!(resp.status(), StatusCode::UNAUTHORIZED, "{label}");
+        }
+        // Without any credential the session cookie is required.
+        let anonymous = Request::builder()
+            .uri("/showcase/manifest")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(anonymous).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+    }
+
     // --- launch token as Authorization: Bearer --------------------------------
 
     #[tokio::test]
@@ -4714,6 +5034,95 @@ mod tests {
             .unwrap();
         assert_eq!(resp.status(), StatusCode::NO_CONTENT);
         assert_eq!(resp.headers()["x-auth-method"], "session");
+    }
+
+    /// 9322: the cookie branch takes the scope from the session's record, not a fixed `admin`.
+    #[tokio::test]
+    async fn session_scope_comes_from_the_session_record() {
+        let state = make_test_state(ServeAuthConfig::default());
+        let access = &state.local_access;
+        let showcase = crate::state::SessionGrant::showcase(
+            &roko_core::config::showcase::ShowcaseSessionConfig::default(),
+            None,
+        );
+        let sessions = [
+            (access.create_session(), "admin"),
+            (
+                access.create_scoped_session(&showcase, Utc::now()),
+                "showcase",
+            ),
+        ];
+        let app = Router::new()
+            .route(
+                "/scope",
+                get(|Extension(context): Extension<AuthContext>| async move { context.scope }),
+            )
+            .layer(axum::middleware::from_fn_with_state(
+                Arc::clone(&state),
+                require_api_key,
+            ));
+
+        for (session_id, scope) in sessions {
+            let resp = app
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .uri("/scope")
+                        .header("Cookie", format!("roko_session={session_id}"))
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(resp.status(), StatusCode::OK);
+            assert_eq!(resp.headers()["x-auth-method"], "session");
+            let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+                .await
+                .unwrap();
+            assert_eq!(body, scope.as_bytes());
+        }
+    }
+
+    /// 9322: rotating the passphrase hash revokes every session minted under the old one, and
+    /// rotating back does not revive it.
+    #[tokio::test]
+    async fn rotating_the_passphrase_hash_revokes_sessions() {
+        const FIRST: &str = "$argon2id$v=19$m=8,t=1,p=1$c2FsdHNhbHQ$Zmlyc3Q";
+        const SECOND: &str = "$argon2id$v=19$m=8,t=1,p=1$c2FsdHNhbHQ$c2Vjb25k";
+        let state = make_test_state(ServeAuthConfig::default());
+        let access = &state.local_access;
+        access.set_passphrase_hash(Some(FIRST.to_string()));
+        let grant = crate::state::SessionGrant::showcase(
+            &roko_core::config::showcase::ShowcaseSessionConfig::default(),
+            access.passphrase_generation(),
+        );
+        let session_id = access.create_scoped_session(&grant, Utc::now());
+        let admin_id = access.create_session();
+        let app = local_access_test_app(Arc::clone(&state));
+        let status = |id: String| {
+            let app = app.clone();
+            async move {
+                app.oneshot(
+                    Request::builder()
+                        .uri("/test")
+                        .header("Cookie", format!("roko_session={id}"))
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap()
+                .status()
+            }
+        };
+
+        assert_eq!(status(session_id.clone()).await, StatusCode::NO_CONTENT);
+        access.set_passphrase_hash(Some(SECOND.to_string()));
+        assert_ne!(access.passphrase_generation(), grant.generation);
+        assert_eq!(status(session_id.clone()).await, StatusCode::UNAUTHORIZED);
+        access.set_passphrase_hash(Some(FIRST.to_string()));
+        assert_eq!(status(session_id).await, StatusCode::UNAUTHORIZED);
+        // A credential exchange carries no generation: rotation leaves it alone.
+        assert_eq!(status(admin_id).await, StatusCode::NO_CONTENT);
     }
 
     #[tokio::test]

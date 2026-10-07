@@ -12,6 +12,10 @@
 //!   commits. A reliable publish may not be silently dropped. Terminal, usage,
 //!   receipt, gate, and control events are all reliable.
 //!
+//! The sink observes a run and never stops it: the engine logs an event the
+//! sink fails to take or drops, counts it as lost, and reports the loss as a
+//! reliable `Gap` before the sink's next event (bug-4ba581).
+//!
 //! - **BestEffort** events are bounded/coalescible: `NodeProgress`,
 //!   `CellProgress`, `AgentText`, and `GateRungOutput`. A slow TUI never
 //!   blocks execution. If a best-effort event is dropped, the engine must
@@ -49,7 +53,8 @@ pub const GRAPH_EVENT_SCHEMA_VERSION: u8 = 1;
 #[serde(rename_all = "snake_case")]
 pub enum GraphEventDelivery {
     /// The engine must receive `Acknowledged` before committing at the next
-    /// node/wave/terminal boundary. Reliable publish failure stops the graph.
+    /// node/wave/terminal boundary. A failed reliable publish is logged and
+    /// reported to the sink as a `Gap`; it does not stop the graph.
     Reliable,
     /// Fire-and-forget: the engine emits and does not wait. May be dropped or
     /// coalesced by a slow observer, but the observer must then emit a `Gap`.
@@ -92,8 +97,8 @@ pub trait GraphEventSink: Send + Sync {
     /// # Errors
     ///
     /// Returns an error when a reliable event cannot be delivered. The engine
-    /// treats reliable publish failure as a stop condition at the next safe
-    /// commit boundary (node/wave/terminal).
+    /// logs the failure, counts the event as lost and reports the loss as a
+    /// `Gap` before the sink's next event; it does not stop the graph.
     async fn publish(
         &self,
         event: &GraphExecutionEvent,

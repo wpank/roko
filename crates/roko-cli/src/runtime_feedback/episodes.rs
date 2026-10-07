@@ -11,19 +11,34 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use async_trait::async_trait;
+use chrono::{DateTime, TimeDelta, Utc};
 use roko_learn::episode_logger::{
     Episode, EpisodeGateVerdict, EpisodeLogger, LEARNING_LABEL_KEY, Usage,
 };
 use roko_learn::hdc_fingerprint::{encode as encode_hdc_fingerprint, fingerprint_episode};
 use roko_learn::hindsight::BLAMED_TASKS_KEY;
-use roko_learn::telemetry::AttemptVerdictRecord;
+use roko_learn::telemetry::{AttemptVerdictRecord, VerifyStepVerdict};
 
 use super::{FeedbackEvent, FeedbackSink};
 
-/// Sink that appends `task_completed` events to `.roko/episodes.jsonl`.
+/// Sink that appends `task_completed` events to `.roko/episodes.jsonl`, or,
+/// in a frozen run, to each run's own episode log ([`EpisodeSink::per_run`]).
 #[derive(Debug, Clone)]
 pub struct EpisodeSink {
-    logger: Arc<EpisodeLogger>,
+    log: EpisodeLog,
+    /// Whether episodes carry an `hdc_fingerprint`: `[learning]
+    /// episode_hdc_fingerprint`, off by default (9226).
+    hdc_fingerprint: bool,
+}
+
+/// Where an [`EpisodeSink`] appends its episodes.
+#[derive(Debug, Clone)]
+enum EpisodeLog {
+    /// One log, `.roko/episodes.jsonl`: learned state later runs read.
+    Shared(Arc<EpisodeLogger>),
+    /// The attempt's own run, `<runs_dir>/<run_id>/episodes.jsonl`: a frozen
+    /// run's telemetry, which no later run reads back (decision 2218).
+    PerRun(PathBuf),
 }
 
 impl EpisodeSink {
@@ -31,21 +46,51 @@ impl EpisodeSink {
     #[must_use]
     pub fn at(path: impl Into<PathBuf>) -> Self {
         Self {
-            logger: Arc::new(EpisodeLogger::new(path.into())),
+            log: EpisodeLog::Shared(Arc::new(EpisodeLogger::new(path.into()))),
+            hdc_fingerprint: false,
         }
     }
 
     /// Wrap an existing logger (lets tests share state).
     #[must_use]
     pub fn from_logger(logger: Arc<EpisodeLogger>) -> Self {
-        Self { logger }
+        Self {
+            log: EpisodeLog::Shared(logger),
+            hdc_fingerprint: false,
+        }
+    }
+
+    /// Construct a sink writing each episode to its attempt's own run,
+    /// `<runs_dir>/<run_id>/episodes.jsonl` beside the run's attempt log,
+    /// never to `.roko/episodes.jsonl`. A frozen run's episodes are telemetry
+    /// (decision 2218): the bench driver reads them, and no later run learns
+    /// from them (gap-127263).
+    #[must_use]
+    pub fn per_run(runs_dir: impl Into<PathBuf>) -> Self {
+        Self {
+            log: EpisodeLog::PerRun(runs_dir.into()),
+            hdc_fingerprint: false,
+        }
+    }
+
+    /// Write an `hdc_fingerprint` on each episode (`[learning]
+    /// episode_hdc_fingerprint`).
+    #[must_use]
+    pub fn with_hdc_fingerprint(mut self, on: bool) -> Self {
+        self.hdc_fingerprint = on;
+        self
     }
 }
 
 #[async_trait]
 impl FeedbackSink for EpisodeSink {
     fn name(&self) -> &'static str {
-        "episodes"
+        // A run's own log is telemetry, not the learning census's `episodes`
+        // sink (decision 2218).
+        match &self.log {
+            EpisodeLog::Shared(_) => "episodes",
+            EpisodeLog::PerRun(_) => "run_episodes",
+        }
     }
 
     fn interested(&self, event: &FeedbackEvent) -> bool {
@@ -66,6 +111,8 @@ impl FeedbackSink for EpisodeSink {
             turns,
             failure_reason,
             settled,
+            routing_context,
+            model_source,
             ..
         } = event
         else {
@@ -106,15 +153,13 @@ impl FeedbackSink for EpisodeSink {
                     serde_json::Value::String(class.to_string()),
                 );
             }
-            // An authored verify gate failed: record the verdict, and any
-            // sibling task the failure is attributed to, for hindsight.
+            // An authored verify gate failed: record any sibling task the
+            // failure is attributed to, for hindsight. The steps' own
+            // verdicts come from the settled verdict (backlog 2106).
             if let Some(reason) = failure_reason
                 .as_deref()
                 .filter(|r| r.starts_with("verify: "))
             {
-                episode
-                    .gate_verdicts
-                    .push(EpisodeGateVerdict::new("verify", false));
                 let blamed = super::hindsight::blamed_tasks(plan_id, reason);
                 if !blamed.is_empty() {
                     episode
@@ -132,6 +177,7 @@ impl FeedbackSink for EpisodeSink {
         };
         episode.tokens_used = outcome.total_tokens();
         episode.duration_secs = outcome.duration_ms as f64 / 1000.0;
+        attach_attempt_times(&mut episode, settled.as_deref(), outcome.duration_ms);
         episode.backend = outcome.provider.clone();
         episode.model = outcome.model.clone();
         // Plan id is carried in the forward-compat `extra` bag — feedback
@@ -173,7 +219,30 @@ impl FeedbackSink for EpisodeSink {
                 "playbook_hits".into(),
                 serde_json::Value::Number(serde_json::Number::from(playbook_ids.len())),
             );
+            // Every playbook dispatch credited, so a hindsight relabel can
+            // retract each one (gap-b95d94).
+            episode.extra.insert(
+                super::hindsight::PLAYBOOK_IDS_KEY.into(),
+                serde_json::json!(playbook_ids),
+            );
         }
+        // The category the routing sink counts this attempt's credit under,
+        // so a hindsight relabel can retract it (gap-b95d94).
+        let routing_category = routing_context.as_ref().map_or_else(
+            || super::routing::build_fallback_routing_context(&outcome.model, None).task_category,
+            |ctx| ctx.task_category,
+        );
+        episode.extra.insert(
+            super::hindsight::ROUTING_CATEGORY_KEY.into(),
+            serde_json::json!(routing_category),
+        );
+        // Whether the routing sink credits the router with this attempt at
+        // all (decision 4111), so a hindsight relabel retracts only credit
+        // that was given.
+        episode.extra.insert(
+            super::hindsight::ROUTER_CREDITED_KEY.into(),
+            serde_json::Value::Bool(super::routing::credits_router(*model_source)),
+        );
         episode.extra.insert(
             "cache_hit".into(),
             serde_json::Value::Bool(*cache_read_tokens > 0),
@@ -195,20 +264,76 @@ impl FeedbackSink for EpisodeSink {
             attach_settled_attempt(&mut episode, settled);
         }
 
-        attach_episode_hdc_fingerprint(
-            &mut episode,
-            plan_id,
-            task_id,
-            outcome,
-            *succeeded,
-            prompt_text,
-        );
+        if self.hdc_fingerprint {
+            attach_episode_hdc_fingerprint(
+                &mut episode,
+                plan_id,
+                task_id,
+                outcome,
+                *succeeded,
+                prompt_text,
+            );
+        }
 
-        self.logger
-            .append(&episode)
-            .await
-            .map_err(|err| anyhow::anyhow!("episode append failed: {err}"))?;
+        let appended = match &self.log {
+            EpisodeLog::Shared(logger) => logger.append(&episode).await,
+            EpisodeLog::PerRun(runs_dir) => {
+                let Some(settled) = settled else {
+                    tracing::debug!(
+                        %plan_id,
+                        %task_id,
+                        "an episode with no settled attempt names no run to log it under"
+                    );
+                    return Ok(());
+                };
+                let path = runs_dir
+                    .join(&settled.identity.run_id)
+                    .join("episodes.jsonl");
+                EpisodeLogger::new(path).append(&episode).await
+            }
+        };
+        appended.map_err(|err| anyhow::anyhow!("episode append failed: {err}"))?;
         Ok(())
+    }
+}
+
+/// The episode's gate verdict of one of the attempt's verify steps: its rung,
+/// result, exit code, duration and skip reason. Its command stays out.
+fn step_gate_verdict(step: &VerifyStepVerdict) -> EpisodeGateVerdict {
+    EpisodeGateVerdict {
+        gate: step.rung.clone(),
+        passed: step.passed == Some(true),
+        signature: None,
+        exit_code: step.exit_code,
+        duration_ms: step.duration_ms,
+        timed_out: step.timed_out,
+        skipped: step.skipped,
+        skip_reason: step.skip_reason.clone(),
+    }
+}
+
+/// Place the episode at its attempt's start and settlement, from the
+/// settled verdict's timing, not at the moment the row is written (backlog
+/// 2105). Without that timing it started `duration_ms` before it completed.
+/// The episode's id, derived at construction, stays.
+fn attach_attempt_times(
+    episode: &mut Episode,
+    settled: Option<&AttemptVerdictRecord>,
+    duration_ms: u64,
+) {
+    let at = |ms: Option<i64>| ms.and_then(DateTime::<Utc>::from_timestamp_millis);
+    let timing = settled.map(|settled| &settled.timing);
+    if let Some(completed_at) = timing.and_then(|timing| at(timing.settled_at)) {
+        episode.completed_at = completed_at;
+    }
+    let started_at = timing
+        .and_then(|timing| at(timing.attempt_started_at))
+        .or_else(|| {
+            let duration = TimeDelta::try_milliseconds(i64::try_from(duration_ms).ok()?)?;
+            episode.completed_at.checked_sub_signed(duration)
+        });
+    if let Some(started_at) = started_at {
+        episode.started_at = started_at;
     }
 }
 
@@ -218,6 +343,9 @@ impl FeedbackSink for EpisodeSink {
 /// never reported (bug-55fd84), and the helper model calls made for the
 /// attempt (bug-62e3f4), which stay out of `usage`: that is the agent run's.
 fn attach_settled_attempt(episode: &mut Episode, settled: &AttemptVerdictRecord) {
+    // One gate verdict per verify step, on passes and failures alike
+    // (backlog 2106).
+    episode.gate_verdicts = settled.steps.iter().map(step_gate_verdict).collect();
     let executed = &settled.executed;
     episode.extra.insert(
         "model_reported".into(),
@@ -258,6 +386,11 @@ fn attach_settled_attempt(episode: &mut Episode, settled: &AttemptVerdictRecord)
             );
         }
     }
+    // The sampling parameters the requests carried; empty when the
+    // provider's defaults applied (gap-13bbbd).
+    episode
+        .extra
+        .insert("sampling".into(), serde_json::json!(executed.sampling));
     // An unreported count is unknown, not one turn.
     match executed.turns {
         Some(turns) => episode.turns = u64::from(turns),
@@ -394,8 +527,11 @@ mod tests {
         );
     }
 
+    /// A verify failure keeps its whole reason and its class. Its gate
+    /// verdicts are the settled verdict's steps, which this event lacks: no
+    /// synthetic `verify` entry stands in for them (backlog 2106).
     #[tokio::test]
-    async fn verify_failure_keeps_the_full_reason_and_a_failed_verdict() {
+    async fn verify_failure_keeps_the_full_reason_and_its_class() {
         let dir = tempdir().unwrap();
         let path = dir.path().join("episodes.jsonl");
         let sink = EpisodeSink::at(&path);
@@ -426,10 +562,7 @@ mod tests {
         let episode = EpisodeLogger::read_all(&path).await.unwrap().remove(0);
         assert_eq!(episode.failure_reason.as_deref(), Some(reason));
         assert_eq!(episode.extra["failure_class"], "verify");
-        assert_eq!(
-            episode.gate_verdicts,
-            [EpisodeGateVerdict::new("verify", false)]
-        );
+        assert!(episode.gate_verdicts.is_empty(), "{episode:?}");
         assert!(!episode.extra.contains_key(BLAMED_TASKS_KEY));
     }
 
@@ -500,6 +633,56 @@ mod tests {
             (episode.usage.cost_usd - 0.003).abs() < 1e-9,
             "helper cost stays out of the agent run's usage"
         );
+    }
+
+    /// gap-13bbbd: an episode names the sampling its requests carried, and
+    /// records an empty map when the provider's defaults applied.
+    #[tokio::test]
+    async fn episodes_record_the_sampling_sent() {
+        use roko_learn::telemetry::{AttemptIdentity, AttemptKey, AttemptOutcome};
+
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("episodes.jsonl");
+        let sink = EpisodeSink::at(&path);
+        for (task_id, temperature) in [("sampled", Some(0.2)), ("defaults", None)] {
+            let key = AttemptKey::new("run-1", "plan-1", task_id, 1);
+            let mut verdict = AttemptVerdictRecord::settle(
+                AttemptIdentity::new(&key),
+                AttemptOutcome::Unverified,
+                true,
+            );
+            if let Some(temperature) = temperature {
+                verdict
+                    .executed
+                    .sampling
+                    .insert("temperature".into(), serde_json::json!(temperature));
+            }
+            sink.on_event(&FeedbackEvent::TaskCompleted {
+                turns: 1,
+                failure_reason: None,
+                settled: Some(Arc::new(verdict)),
+                plan_id: "plan-1".into(),
+                task_id: task_id.into(),
+                outcome: outcome(),
+                model_source: ModelChoiceSource::Router,
+                succeeded: true,
+                routing_context: None,
+                prompt_text: None,
+                cache_read_tokens: 0,
+                knowledge_ids: vec![],
+                playbook_ids: vec![],
+                initial_model: "gpt-oss-120b".into(),
+            })
+            .await
+            .unwrap();
+        }
+
+        let episodes = EpisodeLogger::read_all(&path).await.unwrap();
+        assert_eq!(
+            episodes[0].extra["sampling"],
+            serde_json::json!({ "temperature": 0.2 })
+        );
+        assert_eq!(episodes[1].extra["sampling"], serde_json::json!({}));
     }
 
     /// Every attempt still gets its episode, but a learner reading episodes
@@ -580,5 +763,198 @@ mod tests {
         sink.on_event(&event).await.unwrap();
         // No file should have been created.
         assert!(!path.exists() || std::fs::read(&path).unwrap().is_empty());
+    }
+
+    /// 9226: only `[learning] episode_hdc_fingerprint`, off by default, adds
+    /// the fingerprint.
+    #[tokio::test]
+    async fn default_episode_has_no_hdc_fingerprint() {
+        let dir = tempdir().expect("tempdir");
+        let configured = roko_core::config::LearningConfig::default().episode_hdc_fingerprint;
+        assert!(!configured, "the fingerprint is off by default");
+        for (name, on) in [("default", configured), ("on", true)] {
+            let path = dir.path().join(format!("{name}.jsonl"));
+            let sink = EpisodeSink::at(&path).with_hdc_fingerprint(on);
+            sink.on_event(&completed(None)).await.expect("episode");
+
+            let episodes = EpisodeLogger::read_all(&path).await.expect("episodes");
+            assert_eq!(episodes.len(), 1, "{name}");
+            assert_eq!(episodes[0].hdc_fingerprint.is_some(), on, "{name}");
+        }
+    }
+
+    /// A completed task's event for `outcome()`, settled by `settled`.
+    fn completed(settled: Option<AttemptVerdictRecord>) -> FeedbackEvent {
+        FeedbackEvent::TaskCompleted {
+            turns: 1,
+            failure_reason: None,
+            settled: settled.map(Arc::new),
+            plan_id: "plan-1".into(),
+            task_id: "task-1".into(),
+            outcome: outcome(),
+            model_source: ModelChoiceSource::Router,
+            succeeded: true,
+            routing_context: None,
+            prompt_text: None,
+            cache_read_tokens: 0,
+            knowledge_ids: vec![],
+            playbook_ids: vec![],
+            initial_model: String::new(),
+        }
+    }
+
+    /// backlog 2105: a Graph episode starts when its attempt started and
+    /// completes when the attempt settled, not when its row was written.
+    /// Without a settled verdict it started its duration before it ended.
+    #[tokio::test]
+    async fn graph_episode_started_before_completed() {
+        use roko_learn::telemetry::{AttemptIdentity, AttemptKey, AttemptOutcome};
+
+        let dir = tempdir().expect("tempdir");
+        let path = dir.path().join("episodes.jsonl");
+        let sink = EpisodeSink::at(&path);
+        let key = AttemptKey::new("run-1", "plan-1", "task-1", 1);
+        let mut verdict =
+            AttemptVerdictRecord::settle(AttemptIdentity::new(&key), AttemptOutcome::Passed, true);
+        let started_ms = 1_790_000_000_000;
+        verdict.timing.attempt_started_at = Some(started_ms);
+        verdict.timing.settled_at = Some(started_ms + 1_500);
+        sink.on_event(&completed(Some(verdict)))
+            .await
+            .expect("settled episode");
+        sink.on_event(&completed(None))
+            .await
+            .expect("unsettled episode");
+
+        let episodes = EpisodeLogger::read_all(&path).await.expect("episodes");
+        assert_eq!(episodes[0].started_at.timestamp_millis(), started_ms);
+        let lasted =
+            |episode: &Episode| (episode.completed_at - episode.started_at).num_milliseconds();
+        assert_eq!(lasted(&episodes[0]), 1_500);
+        // `outcome()` took 1234 ms.
+        assert_eq!(lasted(&episodes[1]), 1_234);
+    }
+
+    /// gap-127263: a frozen run's sink writes each episode to its attempt's
+    /// own run, beside that run's attempt log, and none to the workspace's
+    /// `episodes.jsonl`. An episode with no settled attempt names no run, so
+    /// it is not written. The sink is not the census's `episodes` sink.
+    #[tokio::test]
+    async fn per_run_sink_writes_each_episode_to_its_runs_own_log() {
+        use roko_learn::telemetry::{AttemptIdentity, AttemptKey, AttemptOutcome};
+
+        let dir = tempdir().expect("tempdir");
+        let runs = dir.path().join("runs");
+        let sink = EpisodeSink::per_run(&runs);
+        assert_eq!(sink.name(), "run_episodes");
+        let settled_in = |run: &str| {
+            let key = AttemptKey::new(run, "plan-1", "task-1", 1);
+            AttemptVerdictRecord::settle(AttemptIdentity::new(&key), AttemptOutcome::Passed, true)
+        };
+        for run in ["run-1", "run-2"] {
+            sink.on_event(&completed(Some(settled_in(run))))
+                .await
+                .expect("settled episode");
+        }
+        sink.on_event(&completed(None))
+            .await
+            .expect("unsettled episode");
+
+        for run in ["run-1", "run-2"] {
+            let episodes = EpisodeLogger::read_all(runs.join(run).join("episodes.jsonl"))
+                .await
+                .expect("the run's episodes");
+            assert_eq!(episodes.len(), 1, "{run}");
+            let key = format!("{run}:plan-1:task-1:1");
+            assert_eq!(episodes[0].extra["attempt_key"], key.as_str(), "{run}");
+        }
+        assert!(!dir.path().join("episodes.jsonl").exists());
+        assert_eq!(
+            EpisodeSink::at(dir.path().join("episodes.jsonl")).name(),
+            "episodes"
+        );
+    }
+
+    /// A settled verdict of `outcome` whose verify steps did `steps`.
+    fn settled_with_steps(
+        outcome: roko_learn::telemetry::AttemptOutcome,
+        steps: Vec<VerifyStepVerdict>,
+    ) -> AttemptVerdictRecord {
+        use roko_learn::telemetry::{AttemptIdentity, AttemptKey};
+
+        let key = AttemptKey::new("run-1", "plan-1", "task-1", 1);
+        let mut verdict = AttemptVerdictRecord::settle(AttemptIdentity::new(&key), outcome, true);
+        verdict.steps = steps;
+        verdict
+    }
+
+    /// backlog 2106: an episode records one gate verdict per verify step of
+    /// its settled attempt, by the step's rung, with its exit code, duration
+    /// and skip reason; a passing attempt's steps record passes.
+    #[tokio::test]
+    async fn episode_records_per_rung_verdicts_and_skip_reasons() {
+        use roko_learn::telemetry::AttemptOutcome;
+
+        let dir = tempdir().expect("tempdir");
+        let path = dir.path().join("episodes.jsonl");
+        let sink = EpisodeSink::at(&path);
+        let failed_step = VerifyStepVerdict {
+            rung: "verify:0/test".into(),
+            passed: Some(false),
+            exit_code: Some(101),
+            duration_ms: Some(812),
+            ..VerifyStepVerdict::default()
+        };
+        let skipped_step = VerifyStepVerdict {
+            rung: "verify:1/clippy".into(),
+            skipped: true,
+            skip_reason: Some("fail_fast".into()),
+            ..VerifyStepVerdict::default()
+        };
+        let passed_step = VerifyStepVerdict {
+            rung: "verify:0/test".into(),
+            passed: Some(true),
+            exit_code: Some(0),
+            duration_ms: Some(640),
+            ..VerifyStepVerdict::default()
+        };
+        let failed =
+            settled_with_steps(AttemptOutcome::GateFailed, vec![failed_step, skipped_step]);
+        let passed = settled_with_steps(AttemptOutcome::Passed, vec![passed_step]);
+        sink.on_event(&completed(Some(failed)))
+            .await
+            .expect("failed attempt's episode");
+        sink.on_event(&completed(Some(passed)))
+            .await
+            .expect("passing attempt's episode");
+
+        let episodes = EpisodeLogger::read_all(&path).await.expect("episodes");
+        assert_eq!(
+            episodes[0].gate_verdicts,
+            [
+                EpisodeGateVerdict {
+                    gate: "verify:0/test".into(),
+                    exit_code: Some(101),
+                    duration_ms: Some(812),
+                    ..EpisodeGateVerdict::default()
+                },
+                EpisodeGateVerdict {
+                    gate: "verify:1/clippy".into(),
+                    skipped: true,
+                    skip_reason: Some("fail_fast".into()),
+                    ..EpisodeGateVerdict::default()
+                },
+            ]
+        );
+        assert_eq!(
+            episodes[1].gate_verdicts,
+            [EpisodeGateVerdict {
+                gate: "verify:0/test".into(),
+                passed: true,
+                exit_code: Some(0),
+                duration_ms: Some(640),
+                ..EpisodeGateVerdict::default()
+            }]
+        );
     }
 }

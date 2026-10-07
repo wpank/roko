@@ -363,6 +363,8 @@ mod tests {
             max_concurrent: None,
             limits: None,
             require_confirmation: false,
+            stream_usage: None,
+            billing: None,
         };
         let options = AgentOptions {
             timeout_ms: Some(2_500),
@@ -457,6 +459,8 @@ mod tests {
             max_concurrent: None,
             limits: None,
             require_confirmation: false,
+            stream_usage: None,
+            billing: None,
         };
         let options = AgentOptions {
             timeout_ms: Some(2_500),

@@ -174,11 +174,6 @@ fn matrix() -> Vec<MatrixRow> {
             method: Method::GET,
             path: "/api/plans",
         },
-        // -- PRDs --
-        MatrixRow {
-            method: Method::GET,
-            path: "/api/prds",
-        },
         // -- Research --
         MatrixRow {
             method: Method::GET,
@@ -665,7 +660,9 @@ async fn stub_mutation_routes_produce_no_side_effects() {
     );
 }
 
-/// The 501 envelope for stubs must be machine-readable.
+/// The 501 envelope for stubs must be machine-readable. Without `chain` the
+/// marketplace is parked, and `parked_routes.rs` checks its answer instead.
+#[cfg(feature = "chain")]
 #[tokio::test]
 async fn stub_envelope_is_machine_readable() {
     let (_dir, router) = test_router();

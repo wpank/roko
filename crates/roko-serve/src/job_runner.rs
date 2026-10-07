@@ -13,7 +13,8 @@ use chrono::Utc;
 use tokio::task::JoinHandle;
 use tracing::{error, info, warn};
 
-use roko_core::MarketplaceJob;
+use roko_core::{FileJobStore, MarketplaceJob};
+use roko_fs::workspace_plans::workspace_plans_dir;
 
 use crate::events::ServerEvent;
 use crate::runtime::PlanGenerationResult;
@@ -142,18 +143,25 @@ async fn poll_and_execute(state: &AppState) -> anyhow::Result<()> {
 }
 
 /// Execute a single job end-to-end: claim -> in_progress -> dispatch -> submit -> complete.
+///
+/// A cancel through `state.job_execution` (`POST /api/jobs/{id}/cancel`) stops
+/// the dispatch, and a job found `cancelled` on disk after the dispatch keeps
+/// that status: both return an error and write nothing (gap-2a9ed7).
 pub async fn execute_job(state: &AppState, job_id: &str) -> anyhow::Result<String> {
     let path = job_path(&state.workdir, job_id);
     let data = tokio::fs::read_to_string(&path).await?;
     let mut job: MarketplaceJob = serde_json::from_str(&data)?;
+    // `write_job` names the file after `job.id`; keep it the file read here.
+    job.id = job_id.to_string();
 
     // Transition: open -> in_progress
     let prev_status = effective_status(&job);
     job.status = "in_progress".to_string();
     job.assigned_to = "job-runner".to_string();
     job.updated_at = Utc::now().to_rfc3339();
-    write_job(&path, &job).await?;
+    write_job(&state.workdir, &job).await?;
     publish_transition(state, &job, &prev_status);
+    let mut cancelled = state.job_execution.register_executor(job_id);
 
     // Emit execution started event.
     state.event_bus.publish(ServerEvent::JobExecutionStarted {
@@ -174,30 +182,21 @@ pub async fn execute_job(state: &AppState, job_id: &str) -> anyhow::Result<Strin
         message: initial_progress.1.to_string(),
     });
 
-    // Dispatch by job type.
-    let result = match job.job_type.as_str() {
-        "research" => execute_research_job(state, &job).await,
-        "coding_task" | "coding" => execute_coding_job(state, &job).await,
-        "chain_monitor" => execute_chain_monitor_job(state, &job).await,
-        "chain_analysis" => execute_chain_analysis_job(state, &job).await,
-        _ => {
-            // Generic fallback: use description as prompt.
-            let prompt = if job.description.is_empty() {
-                job.title.clone()
-            } else {
-                job.description.clone()
-            };
-            state
-                .runtime
-                .run_once(&state.workdir, &prompt)
-                .await
-                .map(|r| {
-                    JobExecutionOutcome::summary_only(
-                        r.output_text.unwrap_or_else(|| "completed".to_string()),
-                    )
-                })
+    // Dispatch by job type, unless the job is cancelled first.
+    let result = tokio::select! {
+        result = dispatch_job(state, &job) => result,
+        Ok(()) = &mut cancelled => {
+            info!(job_id = %job_id, "job cancelled while running");
+            anyhow::bail!("job {job_id} was cancelled while running");
         }
     };
+    state.job_execution.unregister_executor(job_id);
+    // A cancel that raced the dispatch, or came from another process, wins
+    // over this run's result.
+    if cancelled_on_disk(&state.workdir, job_id).await {
+        info!(job_id = %job_id, "job cancelled while running; its result is dropped");
+        anyhow::bail!("job {job_id} was cancelled while running");
+    }
 
     // Emit midpoint progress for research jobs.
     if job.job_type == "research" && result.is_ok() {
@@ -235,7 +234,7 @@ pub async fn execute_job(state: &AppState, job_id: &str) -> anyhow::Result<Strin
                 "submitted_at": Utc::now().to_rfc3339(),
             }));
             job.updated_at = Utc::now().to_rfc3339();
-            write_job(&path, &job).await?;
+            write_job(&state.workdir, &job).await?;
             publish_transition(state, &job, &prev);
 
             let prev = job.status.clone();
@@ -246,7 +245,7 @@ pub async fn execute_job(state: &AppState, job_id: &str) -> anyhow::Result<Strin
                 "evaluated_at": Utc::now().to_rfc3339(),
             }));
             job.updated_at = Utc::now().to_rfc3339();
-            write_job(&path, &job).await?;
+            write_job(&state.workdir, &job).await?;
             publish_transition(state, &job, &prev);
 
             info!(job_id = %job_id, "job completed successfully");
@@ -261,13 +260,61 @@ pub async fn execute_job(state: &AppState, job_id: &str) -> anyhow::Result<Strin
                 "failed_at": Utc::now().to_rfc3339(),
             }));
             job.updated_at = Utc::now().to_rfc3339();
-            write_job(&path, &job).await?;
+            write_job(&state.workdir, &job).await?;
             publish_transition(state, &job, &prev);
 
             error!(job_id = %job_id, error = %err, "job failed");
             Err(err)
         }
     }
+}
+
+/// Run `job` by its type and return the outcome.
+async fn dispatch_job(
+    state: &AppState,
+    job: &MarketplaceJob,
+) -> anyhow::Result<JobExecutionOutcome> {
+    match job.job_type.as_str() {
+        "research" => execute_research_job(state, job).await,
+        "coding_task" | "coding" => execute_coding_job(state, job).await,
+        #[cfg(feature = "chain")]
+        "chain_monitor" => execute_chain_monitor_job(state, job).await,
+        #[cfg(feature = "chain")]
+        "chain_analysis" => execute_chain_analysis_job(state, job).await,
+        // Never the generic prompt runner: the job would "succeed" without
+        // running the triage it asked for (9217).
+        #[cfg(not(feature = "chain"))]
+        "chain_monitor" | "chain_analysis" => Err(anyhow::anyhow!(
+            "`{}` jobs are not included in this build: rebuild roko with `--features chain`",
+            job.job_type
+        )),
+        _ => {
+            // Generic fallback: use description as prompt.
+            let prompt = if job.description.is_empty() {
+                job.title.clone()
+            } else {
+                job.description.clone()
+            };
+            state
+                .runtime
+                .run_once(&state.workdir, &prompt)
+                .await
+                .map(|r| {
+                    JobExecutionOutcome::summary_only(
+                        r.output_text.unwrap_or_else(|| "completed".to_string()),
+                    )
+                })
+        }
+    }
+}
+
+/// Whether the file of job `job_id` records it `cancelled`.
+async fn cancelled_on_disk(workdir: &Path, job_id: &str) -> bool {
+    let Ok(data) = tokio::fs::read_to_string(job_path(workdir, job_id)).await else {
+        return false;
+    };
+    serde_json::from_str::<MarketplaceJob>(&data)
+        .is_ok_and(|job| effective_status(&job) == "cancelled")
 }
 
 /// Execute a research job: build a research prompt and run it.
@@ -320,8 +367,12 @@ async fn execute_coding_job(
     let brief = render_coding_job_brief(job);
     tokio::fs::write(&brief_path, &brief).await?;
 
-    let prd_path = materialize_coding_job_prd(&state.workdir, job, &brief).await?;
-    let plan = prepare_coding_plan(state, job, &prd_path).await?;
+    // The spec the plan is generated from: the brief with the job's
+    // requirements and acceptance criteria.
+    let spec = render_coding_job_spec(job, &brief);
+    let spec_path = artifact_dir.join("job-spec.md");
+    tokio::fs::write(&spec_path, &spec).await?;
+    let plan = prepare_coding_plan(state, job, &spec_path, &spec).await?;
     let before = snapshot_workspace_files(&state.workdir);
 
     let mut summaries = Vec::new();
@@ -370,9 +421,9 @@ async fn execute_coding_job(
         ),
         artifact_value(
             &state.workdir,
-            &prd_path,
-            "prd",
-            Some("Materialized PRD brief for coding job planning"),
+            &spec_path,
+            "spec",
+            Some("Coding job spec the plan was generated from"),
         ),
     ];
     artifacts.extend(
@@ -400,6 +451,7 @@ async fn execute_coding_job(
 }
 
 /// Execute a chain monitor job: run the triage pipeline on synthetic events.
+#[cfg(feature = "chain")]
 async fn execute_chain_monitor_job(
     state: &AppState,
     job: &MarketplaceJob,
@@ -464,6 +516,7 @@ async fn execute_chain_monitor_job(
 }
 
 /// Execute a chain analysis job: one-shot triage analysis.
+#[cfg(feature = "chain")]
 async fn execute_chain_analysis_job(
     _state: &AppState,
     job: &MarketplaceJob,
@@ -557,12 +610,11 @@ fn is_open(job: &MarketplaceJob) -> bool {
     s == "open" || s == "pending"
 }
 
-async fn write_job(path: &Path, job: &MarketplaceJob) -> anyhow::Result<()> {
-    if let Some(parent) = path.parent() {
-        tokio::fs::create_dir_all(parent).await?;
-    }
-    let json = serde_json::to_string_pretty(job)?;
-    tokio::fs::write(path, json).await?;
+/// Persist `job` to `.roko/jobs/<id>.json` through [`FileJobStore::save`]: an
+/// atomic write that folds the legacy `state` key into `status`, so the file
+/// never carries two status keys that disagree (bug-0a934f).
+async fn write_job(workdir: &Path, job: &MarketplaceJob) -> anyhow::Result<()> {
+    FileJobStore::new(jobs_dir(workdir)).save(job).await?;
     Ok(())
 }
 
@@ -591,23 +643,11 @@ fn render_coding_job_brief(job: &MarketplaceJob) -> String {
     )
 }
 
-async fn materialize_coding_job_prd(
-    workdir: &Path,
-    job: &MarketplaceJob,
-    brief: &str,
-) -> anyhow::Result<PathBuf> {
-    let slug = coding_job_slug(job);
-    let prd_dir = workdir.join(".roko").join("prd").join("published");
-    tokio::fs::create_dir_all(&prd_dir).await?;
-    let prd_path = prd_dir.join(format!("{slug}.md"));
-    tokio::fs::write(&prd_path, render_coding_job_prd(job, brief)).await?;
-    Ok(prd_path)
-}
-
 async fn prepare_coding_plan(
     state: &AppState,
     job: &MarketplaceJob,
-    prd_path: &Path,
+    spec_path: &Path,
+    spec: &str,
 ) -> anyhow::Result<PlanGenerationResult> {
     if !job.plan_id.trim().is_empty() {
         let targets = resolve_plan_targets(&state.workdir, &job.plan_id);
@@ -616,7 +656,7 @@ async fn prepare_coding_plan(
                 plans_root: targets
                     .first()
                     .and_then(|target| target.parent().map(Path::to_path_buf))
-                    .unwrap_or_else(|| state.workdir.join(".roko").join("plans")),
+                    .unwrap_or_else(|| workspace_plans_dir(&state.workdir)),
                 artifacts: collect_plan_artifact_paths(&targets),
                 plan_targets: targets,
             });
@@ -626,13 +666,13 @@ async fn prepare_coding_plan(
             plan_id = %job.plan_id,
             "referenced coding job plan was not found; synthesizing fallback plan"
         );
-        return synthesize_coding_plan(&state.workdir, job, prd_path).await;
+        return synthesize_coding_plan(&state.workdir, job, spec_path).await;
     }
 
     let slug = coding_job_slug(job);
     match state
         .runtime
-        .generate_plan_from_prd(&state.workdir, &slug, prd_path)
+        .generate_plan_from_prompt(&state.workdir, &slug, spec)
         .await
     {
         Ok(mut plan) => {
@@ -645,9 +685,9 @@ async fn prepare_coding_plan(
             warn!(
                 job_id = %job.id,
                 error = %err,
-                "runtime PRD planning unavailable; synthesizing fallback coding plan"
+                "runtime plan generation unavailable; synthesizing fallback coding plan"
             );
-            synthesize_coding_plan(&state.workdir, job, prd_path).await
+            synthesize_coding_plan(&state.workdir, job, spec_path).await
         }
     }
 }
@@ -655,16 +695,17 @@ async fn prepare_coding_plan(
 async fn synthesize_coding_plan(
     workdir: &Path,
     job: &MarketplaceJob,
-    prd_path: &Path,
+    spec_path: &Path,
 ) -> anyhow::Result<PlanGenerationResult> {
     let slug = coding_job_slug(job);
-    let plans_root = workdir.join(".roko").join("plans");
+    // Where every new plan goes, so plan listings and discovery find it.
+    let plans_root = workspace_plans_dir(workdir);
     let plan_dir = plans_root.join(&slug);
     tokio::fs::create_dir_all(&plan_dir).await?;
     let plan_md = plan_dir.join("plan.md");
     let tasks_toml = plan_dir.join("tasks.toml");
-    tokio::fs::write(&plan_md, render_coding_plan_markdown(job, prd_path)).await?;
-    tokio::fs::write(&tasks_toml, render_coding_tasks_toml(job, &slug, prd_path)).await?;
+    tokio::fs::write(&plan_md, render_coding_plan_markdown(job, spec_path)).await?;
+    tokio::fs::write(&tasks_toml, render_coding_tasks_toml(job, &slug, spec_path)).await?;
     Ok(PlanGenerationResult {
         plans_root,
         plan_targets: vec![plan_dir],
@@ -716,9 +757,9 @@ fn collect_plan_artifact_paths(targets: &[PathBuf]) -> Vec<PathBuf> {
     artifacts
 }
 
-fn render_coding_job_prd(job: &MarketplaceJob, brief: &str) -> String {
+fn render_coding_job_spec(job: &MarketplaceJob, brief: &str) -> String {
     format!(
-        "# PRD: {}\n\n## Problem\n\n{}\n\n## Requirements\n\n- REQ-001: Implement the coding job described below.\n- REQ-002: Preserve existing behavior outside the requested scope.\n- REQ-003: Collect changed files and gate results as submission evidence.\n\n## Acceptance Criteria\n\n- The requested code change is implemented in the workspace.\n- Relevant project gates are run and reported.\n- The job submission includes plan, result, gate, and changed-file artifacts.\n\n## Source Job Brief\n\n{}\n",
+        "# Spec: {}\n\n## Problem\n\n{}\n\n## Requirements\n\n- REQ-001: Implement the coding job described below.\n- REQ-002: Preserve existing behavior outside the requested scope.\n- REQ-003: Collect changed files and gate results as submission evidence.\n\n## Acceptance Criteria\n\n- The requested code change is implemented in the workspace.\n- Relevant project gates are run and reported.\n- The job submission includes plan, result, gate, and changed-file artifacts.\n\n## Source Job Brief\n\n{}\n",
         job.title,
         if job.description.trim().is_empty() {
             "Complete the requested coding work."
@@ -729,17 +770,17 @@ fn render_coding_job_prd(job: &MarketplaceJob, brief: &str) -> String {
     )
 }
 
-fn render_coding_plan_markdown(job: &MarketplaceJob, prd_path: &Path) -> String {
+fn render_coding_plan_markdown(job: &MarketplaceJob, spec_path: &Path) -> String {
     format!(
-        "---\nplan: {}\ntitle: {}\npriority: 0\n---\n\n# {}\n\nSource PRD: `{}`\n\nImplement the marketplace coding job, then run the configured gates and preserve submission evidence.\n",
+        "---\nplan: {}\ntitle: {}\npriority: 0\n---\n\n# {}\n\nSource spec: `{}`\n\nImplement the marketplace coding job, then run the configured gates and preserve submission evidence.\n",
         coding_job_slug(job),
         toml_escape(&job.title),
         job.title,
-        prd_path.display()
+        spec_path.display()
     )
 }
 
-fn render_coding_tasks_toml(job: &MarketplaceJob, slug: &str, prd_path: &Path) -> String {
+fn render_coding_tasks_toml(job: &MarketplaceJob, slug: &str, spec_path: &Path) -> String {
     let title = if job.title.trim().is_empty() {
         "Implement coding job"
     } else {
@@ -750,15 +791,15 @@ fn render_coding_tasks_toml(job: &MarketplaceJob, slug: &str, prd_path: &Path) -
     } else {
         job.description.trim()
     };
-    let prd_rel = prd_path
+    let spec_rel = spec_path
         .strip_prefix(Path::new("."))
-        .unwrap_or(prd_path)
+        .unwrap_or(spec_path)
         .to_string_lossy();
     format!(
         "[meta]\nplan = \"{}\"\niteration = 1\ntotal = 1\ndone = 0\nstatus = \"ready\"\nmax_parallel = 1\nestimated_total_minutes = 30\n\n[[task]]\nid = \"T1\"\ntitle = \"{}\"\nrole = \"implementer\"\nstatus = \"ready\"\ntier = \"focused\"\nmodel_hint = \"claude-sonnet-4-6\"\nmax_loc = 500\nfiles = []\nallowed_tools = []\ndepends_on = []\nverify = [{{ phase = \"runtime\", command = \"cargo check\", fail_msg = \"cargo check failed\", timeout_ms = 120000 }}]\n\n[task.context]\nread_files = [{{ path = \"{}\" }}]\nrequirements = [\"{}\"]\nanti_patterns = [\"Do not make unrelated refactors.\"]\n",
         toml_escape(slug),
         toml_escape(title),
-        toml_escape(&prd_rel),
+        toml_escape(&spec_rel),
         toml_escape(description)
     )
 }
@@ -880,7 +921,7 @@ fn should_skip_artifact_path(rel: &Path) -> bool {
             .next()
             .and_then(|component| component.as_os_str().to_str())
             .unwrap_or_default();
-        return !matches!(second, "jobs" | "plans" | "prd" | "research");
+        return !matches!(second, "jobs" | "plans" | "research");
     }
     false
 }
@@ -1033,6 +1074,63 @@ async fn remove_lock(job_path: &Path) {
 mod tests {
     use super::*;
 
+    /// bug-e3df7d: the fallback plan goes where every other new plan goes:
+    /// `plans/` once the workspace has one, not `.roko/plans/`.
+    #[tokio::test]
+    async fn synthesized_coding_plan_lands_in_the_workspace_plans_dir() {
+        let workdir = tempfile::tempdir().expect("tempdir");
+        let plans = workdir.path().join("plans");
+        std::fs::create_dir_all(&plans).expect("plans directory");
+        let job = MarketplaceJob {
+            id: "job-42".into(),
+            title: "Add a widget".into(),
+            description: "Write the widget module.".into(),
+            ..Default::default()
+        };
+        let spec_path = workdir.path().join("job-42.md");
+
+        let plan = synthesize_coding_plan(workdir.path(), &job, &spec_path)
+            .await
+            .expect("synthesize the fallback plan");
+
+        let plan_dir = plans.join(coding_job_slug(&job));
+        assert_eq!(plan.plans_root, plans);
+        assert_eq!(plan.plan_targets, [plan_dir.clone()]);
+        assert!(plan_dir.join("tasks.toml").is_file());
+        assert!(plan_dir.join("plan.md").is_file());
+        assert!(!workdir.path().join(".roko").join("plans").exists());
+    }
+
+    #[cfg(not(feature = "chain"))]
+    #[tokio::test]
+    async fn chain_monitor_job_fails_with_feature_hint_without_chain() {
+        use crate::deploy::create_backend;
+        use crate::runtime::NoOpRuntime;
+        use roko_core::config::schema::RokoConfig;
+
+        let workdir = tempfile::tempdir().expect("tempdir");
+        let deploy = Arc::from(create_backend("manual", None, None, None).expect("manual backend"));
+        let state = AppState::new(
+            workdir.path().to_path_buf(),
+            Arc::new(NoOpRuntime),
+            RokoConfig::default(),
+            deploy,
+        )
+        .expect("AppState::new");
+
+        for job_type in ["chain_monitor", "chain_analysis"] {
+            let job = MarketplaceJob {
+                id: format!("job-{job_type}"),
+                job_type: job_type.into(),
+                ..Default::default()
+            };
+            let error = dispatch_job(&state, &job)
+                .await
+                .expect_err("a chain job must not reach the generic prompt runner");
+            assert!(error.to_string().contains("--features chain"), "{error}");
+        }
+    }
+
     #[test]
     fn effective_status_prefers_status_field() {
         let job = MarketplaceJob {
@@ -1078,5 +1176,28 @@ mod tests {
             ..Default::default()
         };
         assert!(!is_open(&running));
+    }
+
+    #[tokio::test]
+    async fn write_job_clears_legacy_state_key() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        // A job created through the API carries the legacy `state` key; the
+        // runner then moves it on through `status`.
+        let job = MarketplaceJob {
+            id: "job-legacy".into(),
+            status: "in_progress".into(),
+            state: "open".into(),
+            ..Default::default()
+        };
+
+        write_job(dir.path(), &job).await.expect("write job");
+
+        let raw = std::fs::read_to_string(job_path(dir.path(), "job-legacy")).expect("job file");
+        let written: serde_json::Value = serde_json::from_str(&raw).expect("job json");
+        assert_eq!(written["status"], "in_progress");
+        assert!(
+            written.get("state").is_none(),
+            "stale legacy state key: {raw}"
+        );
     }
 }

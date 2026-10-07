@@ -11,6 +11,7 @@ import json
 import os
 import re
 import shlex
+import socket
 import sys
 import time
 from pathlib import Path
@@ -19,6 +20,8 @@ import pytest
 
 import agent_env
 import caps
+import census
+import egress
 import harness
 import layout
 import ledger
@@ -29,8 +32,11 @@ import secret
 import validate
 import vb
 from common import canary
+from stub_provider import StubServer
+from test_sandbox_net import Listener, macos_only
 
 TOY_STREAM = str(layout.DRIVER_DIR / "testdata" / "toy_stream.toml")
+RECORDED_PROBE = layout.DRIVER_DIR / "testdata" / "fd_claude_probe.json"  # the live probe's output, scrubbed
 MODEL = "claude-opus-5-5"
 HAIKU = "claude-haiku-4-5-20251001"
 LOOPBACK = "http://127.0.0.1:9/v1"
@@ -41,7 +47,8 @@ HIDDEN_URL = ("https://raw.githubusercontent.com/example/roko/main/benchmarks/vi
               "hidden.py")  # a truth suite, once the repository is public
 
 # A `result` event in Claude Code 2.1.282's stream-json shape (the SDK's `modelUsage` fields, cumulative for the
-# session), with background turns on the small model. The figures are made up; a live probe saves real ones.
+# session), with background turns on the small model. The figures are made up, for what one short session cannot show;
+# the field names are those of the live probe's event (RECORDED_PROBE, test_the_recorded_probe_parses).
 RESULT = {
     "type": "result", "subtype": "success", "is_error": False, "duration_ms": 48211, "duration_api_ms": 45907,
     "num_turns": 7, "result": "Implemented clamp; the visible tests pass.", "session_id": "fake-session",
@@ -66,12 +73,14 @@ R = 0.2791
 
 FAKE_CLAUDE = r'''#!/usr/bin/env python3
 """A stand-in for `claude -p --output-format stream-json`: note what it was given, then play one scenario."""
+import http.client
 import json
 import os
 import shlex
 import subprocess
 import sys
 import time
+import urllib.parse
 
 with open(__CONFIG__) as handle:
     CONFIG = json.load(handle)
@@ -139,10 +148,31 @@ if scenario.startswith("fetch") and "WebFetch" in tools:  # a model that fetches
     fetch(None)
 if scenario == "subagent_fetch":  # a subagent's fetch, which the init event's tool list does not show
     fetch("toolu_task")
+if scenario == "keychain":  # gap-3cfe4f: the agent's shell reads the operator's login keychain; never run here
+    assistant(9, model, {"type": "tool_use", "id": "toolu_kc", "name": "Bash",
+                         "input": {"command": CONFIG["keychain_command"]}}, input_tokens=120, output_tokens=20)
+    emit({"type": "user", "parent_tool_use_id": None, "message": {"role": "user", "content": [
+        {"type": "tool_result", "tool_use_id": "toolu_kc", "content": CONFIG["keychain_result"]}]}})
 if scenario == "spend":
     for number in range(1, 1000):
         assistant(number, model, {"type": "text", "text": "Still reading."}, input_tokens=150000, output_tokens=5000)
         time.sleep(0.02)
+if scenario == "egress":  # the CLI's own API call through its proxy, then its Bash tool's attempts at the network
+    proxy = urllib.parse.urlsplit(os.environ["HTTPS_PROXY"])
+    try:
+        api = http.client.HTTPConnection(proxy.hostname, proxy.port, timeout=10)
+        api.set_tunnel(*CONFIG["api"])
+        api.request("POST", "/v1/chat/completions", body=json.dumps({"model": model, "messages": [
+            {"role": "user", "content": "Implement clamp."}]}), headers={"Content-Type": "application/json"})
+        reply = api.getresponse()
+        called = "%d %s" % (reply.status, json.loads(reply.read())["model"])
+    except OSError as err:
+        called = "failed: %s" % err
+    shell = {name: subprocess.run(["bash", "-c", command], capture_output=True, text=True, timeout=60)
+             for name, command in CONFIG["shell"].items()}
+    with open(CONFIG["log"], "a") as handle:
+        handle.write(json.dumps({"egress": {"api": called, "shell": {
+            name: ran.stdout + ran.stderr for name, ran in shell.items()}}}) + "\n")
 served = "claude-sonnet-5" if scenario == "switch" else model
 for path, text in CONFIG["files"].items():
     if os.path.isdir(os.path.dirname(path) or "."):
@@ -178,23 +208,25 @@ def places(tmp_path: Path, monkeypatch) -> dict[str, Path]:
             "secret": secret_file}
 
 
-def fake_claude(places: dict[str, Path], scenario: str) -> tuple[Path, Path]:
-    """Put the fake `claude` for `scenario` on PATH; returns it and the log of what it was given."""
+def fake_claude(places: dict[str, Path], scenario: str, **extra: object) -> tuple[Path, Path]:
+    """Put the fake `claude` for `scenario` on PATH, with `extra` in its config; returns it and the log of what it
+    was given."""
     log, config = places["tmp"] / f"claude-{scenario}.jsonl", places["tmp"] / f"claude-{scenario}.json"
     needles = [*secret.load(places["secret"]).needles, canary.RELEASE_CANARY, "vb.task/1"]
     config.write_text(json.dumps({"scenario": scenario, "log": str(log), "result": RESULT, "needles": needles,
                                   "files": {"calc/ops.py": CORRECT}, "hidden_url": HIDDEN_URL,
-                                  "visible": "python3 -m unittest discover -s tests/visible"}))
+                                  "visible": "python3 -m unittest discover -s tests/visible", **extra}))
     program = places["bin"] / "claude"
     program.write_text(FAKE_CLAUDE.replace("__CONFIG__", repr(str(config))))
     program.chmod(0o755)
     return program, log
 
 
-def arm_file(places: dict[str, Path], program: Path, **overrides: object) -> str:
-    """arms/fd_claude.toml with the fake as its program and some caps changed, written outside arms/."""
+def arm_file(places: dict[str, Path], program: Path, *, cli: str = "", **overrides: object) -> str:
+    """arms/fd_claude.toml with the fake as its program, `cli` added to its [cli] table and some caps changed, written
+    outside arms/."""
     text = (layout.ARMS_DIR / "fd_claude.toml").read_text()
-    text = text.replace('program = "claude"', f'program = "{program}"', 1)
+    text = text.replace('program = "claude"', f'program = "{program}"\n{cli}'.rstrip("\n"), 1)
     assert f'program = "{program}"' in text
     for name, value in overrides.items():
         text, count = re.subn(rf"(?m)^{name} = \S+", f"{name} = {value}", text)
@@ -277,6 +309,11 @@ def test_claude_arm_command_is_isolated_and_pinned(places, monkeypatch):
     assert env["CLAUDE_CODE_DISABLE_AUTO_MEMORY"] == "1" and env["DISABLE_AUTOUPDATER"] == "1"
     assert env["CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD"] == "1"
     assert env["CLAUDE_SECURESTORAGE_CONFIG_DIR"] == ""  # keychain: the login's default entry name
+    # ...read by the session's `security`, which alone sees the operator's HOME, where the login keychain is.
+    wrapper = home / ".vb-bin" / "security"
+    assert wrapper.read_text() == run_cli.KEYCHAIN_WRAPPER.format(home=shlex.quote(str(Path.home())),
+                                                                  security="/usr/bin/security")
+    assert os.access(wrapper, os.X_OK)
     assert set(env) - set(ctx.agent_env) == {"CLAUDE_CONFIG_DIR", "CLAUDE_SECURESTORAGE_CONFIG_DIR",
                                              "CLAUDE_CODE_DISABLE_AUTO_MEMORY",
                                              "CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD", "DISABLE_AUTOUPDATER"}
@@ -300,6 +337,7 @@ def test_claude_arm_command_is_isolated_and_pinned(places, monkeypatch):
     assert [path.name for path in by_file.config_dir.iterdir()] == [".credentials.json"]
     assert (by_file.config_dir / ".credentials.json").stat().st_mode & 0o777 == 0o600
     assert "CLAUDE_SECURESTORAGE_CONFIG_DIR" not in by_file.env and by_file.env["CLAUDE_CONFIG_DIR"] != str(login)
+    assert not (Path(by_file.env["HOME"]) / ".vb-bin" / "security").exists()  # no keychain, so no wrapper
     assert by_file.config_dir_sha256 == records.canonical_hash({".credentials.json": "login"})
 
     # Refused: a used config directory, a CLAUDE.md above the workdir, a fallback model, an unknown effort.
@@ -594,6 +632,93 @@ def test_flaky_verify_reaches_claude_code_through_its_shell_prefix(places, p, fl
     assert (ran["returncode"], "Killed" in ran["output"]) == ((137, True) if flaked else (0, False)), ran
 
 
+@macos_only
+def test_cli_arm_shell_cannot_reach_the_network(places):
+    """3305: the session reaches the network only through its egress proxy, which admits the allowlisted API host.
+    The fake claude's own API call to that host passes. Its Bash tool's fetch of a truth suite and a plain-HTTP request
+    through the proxy are refused there and recorded; a fetch that skips the proxy cannot even resolve the host; and a
+    socket to a local listener or straight to the API host's port is denied by the sandbox."""
+    with Listener() as other, StubServer(lambda body: "Hi.") as api:
+        api_port = int(api.url.split(":")[2].split("/")[0])
+        shell = {"fetch_suite": f"curl -sS --max-time 5 {HIDDEN_URL}; echo exit=$?",
+                 "plain_http": "curl -fsS --max-time 5 http://example.com/; echo exit=$?",
+                 "skip_proxy": f"curl -sS --max-time 5 --noproxy '*' {HIDDEN_URL}; echo exit=$?",
+                 "local_port": f"curl -sS --max-time 5 http://127.0.0.1:{other.port}/; echo exit=$?",
+                 "api_socket": "python3 -c 'import socket; socket.create_connection((\"127.0.0.1\", "
+                               f"{api_port}), timeout=5)'; echo exit=$?"}
+        program, log = fake_claude(places, "egress", api=["127.0.0.1", api_port], shell=shell)
+        arm = arm_file(places, program, cli=f'egress_allow = ["127.0.0.1:{api_port}"]')
+        assert run_vb(places, arm, "--transcripts") == 0
+        assert other.connections == 0 and len(api.requests) == 1  # the CLI's one call, through the proxy
+    [record] = read_jsonl(run_dir(places) / "records.jsonl")
+    assert validate.validate("run-record", record) == []
+    assert (record["execution"]["status"], record["vs"]["label"]) == ("completed", 1)
+    assert record["provenance"]["canary_places"] == []
+
+    [seen] = [line for line in read_jsonl(log) if "env" in line]
+    [tried] = [line["egress"] for line in read_jsonl(log) if "egress" in line]
+    proxy_url = seen["env"]["HTTPS_PROXY"]
+    egress_port = int(proxy_url.rsplit(":", 1)[1])
+    assert {name: seen["env"][name] for name in agent_env.PROXY_NAMES} == dict.fromkeys(agent_env.PROXY_NAMES,
+                                                                                         proxy_url)
+    assert seen["env"]["NO_PROXY"] == seen["env"]["no_proxy"] == agent_env.NO_PROXY
+    assert tried["api"] == f"200 {MODEL}"
+    outcome = {name: re.search(r"exit=\d+", text)[0] for name, text in tried["shell"].items()}
+    assert outcome == {"fetch_suite": "exit=56", "plain_http": "exit=22", "skip_proxy": "exit=6",
+                       "local_port": "exit=7", "api_socket": "exit=1"}, tried["shell"]
+    assert "403" in tried["shell"]["fetch_suite"] and "PermissionError" in tried["shell"]["api_socket"]
+
+    policy = record["provenance"]["network_policy"]
+    assert (policy["network"], policy["sandbox"]) == (f"loopback:{egress_port},9", "sandbox-exec+net")
+    assert (policy["egress"]["allow"], policy["egress"]["admitted"]) == ([f"127.0.0.1:{api_port}"], 1)
+    assert [(row["method"], row["target"]) for row in policy["egress"]["refused"]] == [
+        ("CONNECT", "raw.githubusercontent.com:443"), ("GET", "example.com:80")]
+    rows = read_jsonl(run_dir(places) / run_cli.EGRESS_LOG)  # every request the proxy saw, with the task's key
+    assert [(row["task"], row["target"], row["admitted"]) for row in rows] == [
+        ("F1-l1-0001.s1", f"127.0.0.1:{api_port}", True), ("F1-l1-0001.s1", "raw.githubusercontent.com:443", False),
+        ("F1-l1-0001.s1", "example.com:80", False)]
+    # The record keeps claude's own argv, without the sandbox's profile.
+    assert record["execution"]["attempts"][0]["cli"]["argv"][0] == str(program)
+    for bad in ("api.anthropic.com", ["api.anthropic.com"], ["api.anthropic.com:0"], ["http://x:443"]):
+        with pytest.raises(run_cli.CliError, match="egress_allow"):
+            run_cli.CliConfig.from_table({"egress_allow": bad})
+    assert run_cli.CliConfig.from_table({}).egress_allow == ("api.anthropic.com:443",)
+
+
+def test_egress_proxy_answers_every_request_and_ends_its_tunnels(tmp_path):
+    """egress.py on any host: an allowlisted target it cannot reach gets a 502, a head that never ends a 400, and
+    `close` ends a tunnel still open. Every request is logged."""
+
+    def ask(port: int, data: bytes) -> bytes:
+        with socket.create_connection(("127.0.0.1", port), timeout=10) as client:
+            client.sendall(data)
+            return client.recv(4096)
+
+    with socket.socket() as spare:  # a port with nothing listening on it
+        spare.bind(("127.0.0.1", 0))
+        closed_port = spare.getsockname()[1]
+    with Listener() as target:
+        proxy = egress.EgressProxy([f"127.0.0.1:{closed_port}", f"127.0.0.1:{target.port}"],
+                                   log_path=tmp_path / "egress.jsonl").start()
+        proxy.configure(task="t1")
+        assert ask(proxy.port, f"CONNECT 127.0.0.1:{closed_port} HTTP/1.1\r\n\r\n".encode()).startswith(
+            b"HTTP/1.1 502")
+        assert ask(proxy.port, b"x" * (egress.HEAD_MAX_BYTES + 4096)).startswith(b"HTTP/1.1 400")
+        tunnel = socket.create_connection(("127.0.0.1", proxy.port), timeout=10)
+        tunnel.sendall(f"CONNECT 127.0.0.1:{target.port} HTTP/1.1\r\nHost: x\r\n\r\n".encode())
+        assert tunnel.recv(4096).startswith(b"HTTP/1.1 200")
+        proxy.close()
+        assert tunnel.recv(4096) == b""  # the proxy ended the tunnel when it closed
+        tunnel.close()
+    rows = read_jsonl(tmp_path / "egress.jsonl")
+    assert [(row["task"], row["method"], row["target"], row["admitted"], row.get("error")) for row in rows] == [
+        ("t1", "CONNECT", f"127.0.0.1:{closed_port}", True, "ConnectionRefusedError"), ("t1", "?", "", False, None),
+        ("t1", "CONNECT", f"127.0.0.1:{target.port}", True, None)]
+    assert proxy.summary("t1") == {"allow": [f"127.0.0.1:{closed_port}", f"127.0.0.1:{target.port}"], "admitted": 2,
+                                   "refused": [{"ts": rows[1]["ts"], "method": "?", "target": ""}]}
+    assert egress.parse_allow(["API.Anthropic.com:443", "api.anthropic.com:443"]) == ("api.anthropic.com:443",)
+
+
 def test_a_budget_refusal_starts_no_session(places):
     program, log = fake_claude(places, "solve")
     ctx = task_context(places, vb.load_arm(arm_file(places, program)), line="BL99")  # the budget funds no BL99
@@ -622,3 +747,138 @@ def test_probe_saves_the_init_event(places):
                   "--settings"]
     assert [arg for arg in report["argv"] if arg.startswith("--")] == [f for f in task_flags if f.startswith("--")]
     assert not list(places["work"].glob("claude-probe-*/_home"))  # the config directory is gone
+
+
+def test_the_recorded_probe_parses():
+    """gap-154f93: the one live probe (Claude Code 2.1.282 on the subscription, 2026-10-02), its session ids, paths
+    and user name scrubbed. The parser reads its real `modelUsage`, and U′ at the snapshot's rates is the CLI's own
+    total. The init event shows the pinned model, no MCP server, no web tool and only the plugins Claude Code ships.
+    The session signed in through the keychain wrapper (its first attempt, without it, ended "Not logged in"), and
+    reached only the API host. RESULT stays for what one short session cannot show, with the recorded field names."""
+    report = json.loads(RECORDED_PROBE.read_text())
+    init, result = report["init"], report["result"]
+    assert (report["passed"], report["status"], report["credentials"]) == (True, "completed", "keychain")
+    assert all(report["checks"].values())
+    assert init["claude_code_version"] == "2.1.282" and init["model"] == MODEL and init["mcp_servers"] == []
+    assert run_cli.web_tools(init) == [] and init["plugins"] and run_cli._added_plugins(init) == []
+    added = {"name": "extra", "path": "/plugins/extra", "source": "extra@market"}
+    assert run_cli._added_plugins({"plugins": [*init["plugins"], added]}) == [added]
+    assert (result["result"], result["num_turns"], result["is_error"]) == ("READY", 1, False)
+
+    parsed = run_cli.parse_result(result, ledger.load_snapshot(), cache_write_ttl="1h")
+    assert parsed.usage == {"tokens_in": 2, "tokens_out": 4, "tokens_cache_read": 10_118,
+                            "tokens_cache_write_1h": 4_601, "tokens_reasoning": 0}
+    u_prime = (2 * 4.00 + 10_118 * 0.20 + 4_601 * 8.00 + 4 * 20.00) / 1e6
+    assert parsed.cost.source == "cli_usage" and parsed.cost.api_equiv_usd == pytest.approx(u_prime)
+    assert parsed.r_usd == result["total_cost_usd"] == pytest.approx(u_prime)  # U′ = R: the CLI's list prices
+    assert parsed.gap == pytest.approx(0, abs=1e-9)
+    assert list(parsed.models) == [MODEL] and parsed.web_search_requests == 0
+
+    # The session got the user name and the empty secure-storage directory; its egress proxy admitted only the API
+    # host and refused Claude Code's log intake, which the session did not need.
+    env = report["env"]
+    assert env["USER"] == env["LOGNAME"] == "<user>" and env["CLAUDE_SECURESTORAGE_CONFIG_DIR"] == ""
+    assert env["CLAUDE_CONFIG_DIR"] == env["HOME"] + "/.claude"
+    policy = report["network_policy"]
+    assert (policy["sandbox"], policy["egress"]["allow"]) == ("sandbox-exec+net", list(egress.DEFAULT_ALLOW))
+    assert policy["egress"]["admitted"] == 8
+    assert [row["target"] for row in policy["egress"]["refused"]] == ["http-intake.logs.us5.datadoghq.com:443"]
+
+    # RESULT, which the fake claude plays, uses the recorded event's field names.
+    assert set(RESULT) <= set(result) and set(RESULT["usage"]) <= set(result["usage"])
+    for entry in RESULT["modelUsage"].values():
+        assert set(entry) <= set(result["modelUsage"][MODEL])
+
+
+def test_agent_shell_cannot_read_the_real_keychain(places):
+    """gap-3cfe4f: the fd_claude arm's `.vb-bin/security` wrapper lets Claude Code find the subscription login under
+    the session's own HOME, but a same-uid agent shell can read the operator's real Anthropic OAuth credential the same
+    way -- the wrapper, a direct `security find-generic-password`, or the keychain file by its path. No host-only
+    sandbox prevents it (the whole claude tree shares one sandbox for the egress rule, and macOS refuses a nested
+    sandbox; S08 decision 4's container is the only prevention). So the census detects it: a run whose transcript shows
+    the agent naming the keychain is `leak_suspected`, excluded and counted. The fake never runs the command and no
+    real keychain is read."""
+    command = '"$HOME/.vb-bin/security" find-generic-password -a "$USER" -w -s "Claude Code-credentials"'
+    program, _ = fake_claude(places, "keychain", keychain_command=command,
+                             keychain_result="(the fake does not run the command)")
+    assert run_vb(places, arm_file(places, program), "--transcripts") == 0
+    [record] = read_jsonl(run_dir(places) / "records.jsonl")
+    assert validate.validate("run-record", record) == []
+    assert record["execution"]["status"] == "leak_suspected"  # excluded from the report, and counted
+    assert "keychain" in record["provenance"]["canary_places"] and record["provenance"]["canary_hits"] >= 1
+    # The agent wrote a correct solution, so the VS checks still pass; `leak_suspected` excludes the run regardless.
+    transcript = (run_dir(places) / record["provenance"]["transcript_ref"]).read_text()
+    assert "Claude Code-credentials" in transcript  # the attempt reached the transcript, where the census caught it
+
+
+def test_the_keychain_detector_flags_only_real_keychain_access():
+    """gap-3cfe4f: `census._keychain_access` flags the operations and paths an agent uses to read the login keychain,
+    and leaves a bare mention of the word `security` alone, so an honest coding task is not falsely `leak_suspected`."""
+    for flagged in ('security find-generic-password -s "Claude Code-credentials"',
+                    "/usr/bin/security dump-keychain -d",
+                    "~/.vb-bin/security find-generic-password -w",
+                    "cat ~/Library/Keychains/login.keychain-db",
+                    "open /Users/op/Library/Keychains/login.keychain-db"):
+        assert census._keychain_access(flagged) == [census.KEYCHAIN_LABEL], flagged
+    for benign in ("please review the security of the parser",
+                   "import security_headers", "grep -rn find_password src/",
+                   "run the tests in tests/security/", "cargo add password-hash"):
+        assert census._keychain_access(benign) == [], benign
+
+
+def test_a_supplied_credential_fingerprint_catches_an_exfiltrated_token():
+    """gap-3cfe4f, token-free: `census._credential_fingerprints` matches a sha256-hex-prefix fingerprint (computed out
+    of band, so the driver never holds the token) against the token-shaped runs of a text, and reports the fingerprint,
+    never the token. It catches a raw credential an agent printed, and needs at least eight hex of fingerprint."""
+    import hashlib
+    token = "sk-ant-oat01-" + "Zx9Q" * 12
+    fp = hashlib.sha256(token.encode()).hexdigest()[:12]
+    assert census._credential_fingerprints(f"the agent echoed {token} into its log", [fp]) == [fp]
+    assert census._credential_fingerprints(f"printed {token}", []) == []  # none supplied: nothing scanned
+    assert census._credential_fingerprints("no credential here at all", [fp]) == []
+    assert census._credential_fingerprints(token, ["abc"]) == []  # too short to be a fingerprint
+    assert fp not in token  # the match is by hash; the fingerprint itself never appears in the token
+
+
+def test_keychain_fingerprint_is_token_free(tmp_path):
+    """gap-3cfe4f: `run_cli.keychain_fingerprint` pipes the credential straight into shasum, so the token never enters
+    the driver; it returns the 16-hex prefix of its sha256, or None when the lookup fails. Tested against a fake
+    `security`, never the real keychain -- a failing one returns None, not the hash of empty input."""
+    import hashlib
+    dummy = "DUMMY-NOT-A-REAL-CREDENTIAL-0000"
+    good = tmp_path / "security-ok"
+    good.write_text(f"#!/bin/sh\nprintf %s {shlex.quote(dummy)}\n")
+    good.chmod(0o755)
+    assert run_cli.keychain_fingerprint("whoever", security=str(good)) == hashlib.sha256(dummy.encode()).hexdigest()[:16]
+    bad = tmp_path / "security-fail"  # "Not logged in": nonzero and silent -> None, never sha256 of an empty string
+    bad.write_text("#!/bin/sh\nexit 44\n")
+    bad.chmod(0o755)
+    assert run_cli.keychain_fingerprint("whoever", security=str(bad)) is None
+    assert run_cli.keychain_fingerprint("whoever", security=str(tmp_path / "does-not-exist")) is None
+
+
+def test_a_credential_fingerprint_flags_an_exfiltrated_token(places):
+    """gap-3cfe4f end to end: `vb run --credential-fingerprint <hex>` makes the census leak_suspect a run whose
+    transcript carries a token that hashes to the fingerprint -- token-free, since the driver holds the fingerprint and
+    never the token. Here the agent names the keychain and the fake login lands in its shell output, so both the
+    keychain and the credential places fire."""
+    import hashlib
+    token = "sk-ant-oat01-" + "Zx9Q" * 12
+    fp = hashlib.sha256(token.encode()).hexdigest()[:16]
+    command = 'security find-generic-password -a "$USER" -w -s "Claude Code-credentials"'
+    program, _ = fake_claude(places, "keychain", keychain_command=command, keychain_result=f"-> {token}")
+    assert run_vb(places, arm_file(places, program), "--transcripts", "--credential-fingerprint", fp) == 0
+    [record] = read_jsonl(run_dir(places) / "records.jsonl")
+    assert validate.validate("run-record", record) == []
+    assert record["execution"]["status"] == "leak_suspected"
+    hit = record["provenance"]["canary_places"]
+    assert "keychain" in hit and "credential" in hit
+    transcript = (run_dir(places) / record["provenance"]["transcript_ref"]).read_text()
+    assert token in transcript and fp not in transcript  # matched by hash; the fingerprint itself never appears
+
+
+def test_a_non_hex_credential_fingerprint_is_refused(places):
+    """gap-3cfe4f: a --credential-fingerprint that is not at least eight hex characters is refused before any task."""
+    program, _ = fake_claude(places, "solve")
+    assert run_vb(places, arm_file(places, program), "--credential-fingerprint", "nothex!!") == 2
+    assert not (run_dir(places) / "records.jsonl").exists()

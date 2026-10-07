@@ -551,7 +551,8 @@ fn dot(a: &[f64], b: &[f64]) -> f64 {
     a.iter().zip(b).map(|(ai, bi)| ai * bi).sum()
 }
 
-fn sample_beta<R: Rng + ?Sized>(alpha: f64, beta: f64, rng: &mut R) -> f64 {
+/// One draw from Beta(`alpha`, `beta`), through two gamma draws.
+pub(crate) fn sample_beta<R: Rng + ?Sized>(alpha: f64, beta: f64, rng: &mut R) -> f64 {
     let x = sample_gamma(alpha.max(f64::MIN_POSITIVE), rng);
     let y = sample_gamma(beta.max(f64::MIN_POSITIVE), rng);
     let total = x + y;
@@ -804,15 +805,12 @@ impl LinUCBRouter {
 
         let state = self.state.read();
 
-        // Cold start: use static routing.
+        // Cold start: use static routing, else the first configured model.
         if state.total_observations < COLD_START_THRESHOLD {
             let tier = complexity_to_tier(ctx.complexity);
+            let configured = state.arms[0].slug.clone();
             drop(state);
-            let slug = self
-                .static_table
-                .get(&tier)
-                .cloned()
-                .unwrap_or_else(|| "claude-sonnet-4-5".to_string());
+            let slug = self.static_table.get(&tier).cloned().unwrap_or(configured);
             return ModelSpec::from_slug(slug);
         }
 
@@ -841,15 +839,12 @@ impl LinUCBRouter {
     pub fn select_features(&self, x: &[f64]) -> ModelSpec {
         let state = self.state.read();
 
-        // Cold start: use static routing.
+        // Cold start: use static routing, else the first configured model.
         if state.total_observations < COLD_START_THRESHOLD {
             let tier = context_vec_to_tier(x);
+            let configured = state.arms[0].slug.clone();
             drop(state);
-            let slug = self
-                .static_table
-                .get(&tier)
-                .cloned()
-                .unwrap_or_else(|| "claude-sonnet-4-5".to_string());
+            let slug = self.static_table.get(&tier).cloned().unwrap_or(configured);
             return ModelSpec::from_slug(slug);
         }
 
@@ -1308,7 +1303,7 @@ impl LinUCBRouter {
                 .static_table
                 .get(&tier)
                 .cloned()
-                .unwrap_or_else(|| "claude-sonnet-4-5".to_string());
+                .unwrap_or_else(|| state.arms[0].slug.clone());
 
             // If the static pick is healthy, use it.
             if health.is_healthy(&provider_of(&slug)) {
@@ -1537,24 +1532,28 @@ fn base_alpha_for_observations(n: u64) -> f64 {
     (ALPHA_MAX - ALPHA_MIN).mul_add((-n_f / ALPHA_TAU).exp(), ALPHA_MIN)
 }
 
-/// Default static routing table: tier -> model slug.
+/// Default static routing table: tier -> model slug. Each tier takes the
+/// first of its preferred model families that `model_slugs` holds, else the
+/// configured model of that tier, else the first configured model: never a
+/// slug the router was not given (gap-5bd375).
 fn default_static_table(model_slugs: &[String]) -> HashMap<ModelTier, String> {
     let mut table = HashMap::new();
 
     table.insert(
         ModelTier::Fast,
-        pick_static_slug(model_slugs, &["claude-haiku-4-5"]),
+        pick_static_slug(model_slugs, ModelTier::Fast, &["claude-haiku-4-5"]),
     );
     table.insert(
         ModelTier::Standard,
         pick_static_slug(
             model_slugs,
+            ModelTier::Standard,
             &["glm-5.1", "claude-sonnet-4-6", "claude-sonnet-4-5"],
         ),
     );
     table.insert(
         ModelTier::Premium,
-        pick_static_slug(model_slugs, &["claude-opus-4-6"]),
+        pick_static_slug(model_slugs, ModelTier::Premium, &["claude-opus-4-6"]),
     );
     table
 }
@@ -1579,7 +1578,11 @@ fn pick_static_from_candidates(candidate_slugs: &[String], tier: ModelTier) -> S
     candidate_slugs[0].clone()
 }
 
-fn pick_static_slug(model_slugs: &[String], candidates: &[&str]) -> String {
+/// The configured model of `model_slugs` that `tier`'s cold start routes to:
+/// the first of the preferred `candidates` it holds; else, as 9207's static
+/// routing does, the configured model of `tier`, else the first configured
+/// model. A literal candidate is never returned unless it was configured.
+fn pick_static_slug(model_slugs: &[String], tier: ModelTier, candidates: &[&str]) -> String {
     for candidate in candidates {
         if let Some(slug) = model_slugs
             .iter()
@@ -1590,7 +1593,7 @@ fn pick_static_slug(model_slugs: &[String], candidates: &[&str]) -> String {
         }
     }
 
-    candidates[0].to_string()
+    static_slug_for_tier(model_slugs, tier, &HashMap::new()).unwrap_or_default()
 }
 
 /// Map complexity band to model tier.
@@ -1618,6 +1621,7 @@ fn slugs_match(lhs: &str, rhs: &str) -> bool {
 }
 
 // Use the canonical slug_family from cascade_router.
+use crate::cascade::helpers::static_slug_for_tier;
 use crate::cascade_router::slug_family;
 
 // ─── Tests ──────────────────────────────────────────────────────────────────
@@ -1933,8 +1937,8 @@ mod tests {
             "glm-5.1 normalized cost should be close to 0.0301, got {glm_5_1}"
         );
         assert!(
-            (claude_opus - 0.4).abs() < 0.001,
-            "claude-opus normalized cost should be close to 0.4, got {claude_opus}"
+            (claude_opus - 0.1333).abs() < 0.001,
+            "claude-opus normalized cost should be close to 0.1333, got {claude_opus}"
         );
         assert!(
             (kimi_k2_5 - 0.0157).abs() < 0.001,
@@ -2216,6 +2220,42 @@ mod tests {
 
         let different = ctx.to_features_for_model(Some("claude-opus-4-6"));
         assert!((different[17] - 0.0).abs() < f64::EPSILON);
+    }
+
+    // ── gap-5bd375: a cold start names only configured models ───────────
+
+    /// A router given none of the cold-start table's preferred families
+    /// still routes only to models it was given: each tier's configured model
+    /// by the slug heuristics, else the first configured one. A custom table
+    /// that lacks a tier falls back to a configured model too.
+    #[test]
+    fn cold_start_table_refuses_an_unconfigured_slug() {
+        let slugs = vec!["gpt-5".to_string(), "gemini-2.5-flash-lite".to_string()];
+        let table = default_static_table(&slugs);
+        for (tier, slug) in &table {
+            assert!(slugs.contains(slug), "{tier:?} routes to {slug}");
+        }
+        assert_eq!(table[&ModelTier::Fast], "gemini-2.5-flash-lite");
+        assert_eq!(table[&ModelTier::Standard], "gpt-5");
+        assert_eq!(table[&ModelTier::Premium], "gpt-5");
+
+        let bands = [
+            TaskComplexityBand::Fast,
+            TaskComplexityBand::Standard,
+            TaskComplexityBand::Complex,
+        ];
+        let router = LinUCBRouter::new(slugs.clone());
+        let mut ctx = default_ctx();
+        for band in bands {
+            ctx.complexity = band;
+            let picked = router.select_model(&ctx).slug;
+            assert!(slugs.contains(&picked), "{band:?} routes to {picked}");
+        }
+
+        let partial = HashMap::from([(ModelTier::Fast, "gpt-5".to_string())]);
+        let router = LinUCBRouter::new(slugs.clone()).with_static_table(partial);
+        ctx.complexity = TaskComplexityBand::Complex;
+        assert_eq!(router.select_model(&ctx).slug, "gpt-5");
     }
 
     // ── Test 26: custom static table ────────────────────────────────────

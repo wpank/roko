@@ -66,6 +66,15 @@ pub struct BudgetConfig {
     /// `max_task_retry_usd`.
     #[serde(default)]
     pub max_agent_lifetime_usd: f32,
+    /// Percentages of a plan's ceiling (`max_plan_usd`, or the run's
+    /// `--budget-override`) at which `roko plan run` raises a budget alert:
+    /// a `budget_alert` Inbox item and a warning line, once per threshold,
+    /// as the plan's settled spend crosses it. Alerts only notify: the plan
+    /// still stops at its ceiling. An empty list turns them off.
+    ///
+    /// Default: `[50, 80]`.
+    #[serde(default = "default_alert_at_percent")]
+    pub alert_at_percent: Vec<u8>,
 }
 
 /// Per-task budget multipliers for the four canonical plan tiers.
@@ -122,6 +131,10 @@ const fn default_prompt_token_budget() -> usize {
     10_000
 }
 
+fn default_alert_at_percent() -> Vec<u8> {
+    vec![50, 80]
+}
+
 impl Default for BudgetConfig {
     fn default() -> Self {
         Self {
@@ -133,6 +146,7 @@ impl Default for BudgetConfig {
             prompt_token_budget: default_prompt_token_budget(),
             tier_multipliers: TaskBudgetMultipliers::default(),
             max_agent_lifetime_usd: 0.0,
+            alert_at_percent: default_alert_at_percent(),
         }
     }
 }
@@ -221,5 +235,16 @@ mod tests {
             BudgetConfig::default().task_limit_usd("architectural", None),
             0.0
         );
+    }
+
+    /// Backlog 2116: plan budget alerts default to 50% and 80% of the
+    /// ceiling, and an empty list turns them off.
+    #[test]
+    fn plan_budget_alerts_default_to_half_and_four_fifths() {
+        assert_eq!(BudgetConfig::default().alert_at_percent, [50, 80]);
+        let unset: BudgetConfig = toml::from_str("max_plan_usd = 5.0").expect("parse");
+        assert_eq!(unset.alert_at_percent, [50, 80]);
+        let off: BudgetConfig = toml::from_str("alert_at_percent = []").expect("parse");
+        assert!(off.alert_at_percent.is_empty());
     }
 }

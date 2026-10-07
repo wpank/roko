@@ -418,7 +418,21 @@ graph LR
 ```
 
 The first head to veto terminates evaluation -- later heads are never reached.
-Lexicographic ordering guarantees that deference to the operator always dominates.
+Within the five-head evaluation, deference to the operator therefore comes first. That
+ordering covers only the actions that pass through roko's safety layer; what an agent does
+outside it is checked by narrower, per-provider guards or not at all. Today (2026-10-03):
+
+- **Codex** runs its own shell. Its stream broker checks each command against roko's key-file
+  and git guards, but only once the command has started, so it stops the run and keeps a key
+  file's contents from the model without undoing a command that already ran (1215).
+- **Cursor and Gemini CLI agents** run their own tools with no roko command guard. They run
+  only in per-task worktrees, where a destructive git command cannot reach the operator's
+  checkout, unless `[runner] allow_unguarded_agents_in_checkout` is set (1214, 1216).
+- **No OS sandbox** confines any agent process (gap-8f8544, held); Codex keeps its own
+  sandbox unless the sandbox level is `none` or `observe` (1213).
+
+roko's own `bash` tool and the Claude CLI hook deny `git stash`, `git clean`, `git checkout`,
+`git switch`, `git restore` and `git push` (1201).
 
 ### 4.1 Lexicographic Evaluation
 

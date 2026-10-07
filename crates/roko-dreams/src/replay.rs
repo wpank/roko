@@ -459,6 +459,7 @@ fn episode_signature(episode: &Episode) -> u64 {
         gate,
         passed,
         signature,
+        ..
     } in &episode.gate_verdicts
     {
         gate.hash(&mut hasher);

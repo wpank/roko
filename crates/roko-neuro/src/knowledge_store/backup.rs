@@ -487,7 +487,7 @@ impl KnowledgeStore {
             transformed.push(normalize_entry_security(entry));
         }
 
-        let _guard = self.write_gate.lock();
+        let _guard = self.lock_writes();
         let mut merged = self.read_all_strict()?;
         let security_upgraded = join_replayed_security_labels(&mut merged, &transformed);
         let mut admitted = Vec::new();

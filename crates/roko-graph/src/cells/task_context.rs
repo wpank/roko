@@ -8,7 +8,7 @@
 //! 2. Extracts prior attempt context from upstream input signals (predecessor
 //!    task success boundaries feed into this cell's inputs).
 //! 3. Outputs a single `Kind::Task` signal whose `Body::Json` payload contains
-//!    the assembled task context for downstream enricher and compose cells.
+//!    the assembled task context for the downstream compose cell.
 
 use std::time::Duration;
 
@@ -124,10 +124,10 @@ impl TaskContextConfig {
 }
 
 /// TaskContextCell: assembles task metadata and prior attempt state into a
-/// structured signal for downstream enricher and compose cells.
+/// structured signal for the downstream compose cell.
 ///
-/// This is the first cell in each per-task subgraph. Its output fans out to
-/// all six enricher cells and also feeds directly into the compose cell.
+/// This is the first cell in each per-task subgraph. Its output feeds the
+/// compose cell, which turns it into the task's prompt.
 pub struct TaskContextCell {
     /// Parsed task configuration from the node's TOML config.
     config: TaskContextConfig,

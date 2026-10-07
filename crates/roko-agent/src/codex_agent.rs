@@ -534,6 +534,7 @@ impl Agent for CodexAgent {
             // named none, never the configured slug (bug-2379dc).
             model: parsed.model.clone().filter(|model| !model.is_empty()),
             wall_ms,
+            ..UsageObservation::default()
         };
 
         let mut builder = input
@@ -1079,6 +1080,8 @@ mod tests {
                 max_concurrent: Some(1),
                 limits: None,
                 require_confirmation: false,
+                stream_usage: None,
+                billing: None,
             },
         );
 

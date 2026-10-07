@@ -1,0 +1,12 @@
+# Stream pilot_fd_api (S09 E1a, 3307): the five pilot instances fd_api runs in Pilot A, one per level, F1 and F4
+# alternating. Drawn from the pilot stream with seed 1, as `experiments/test_pilot_a.py` re-derives:
+#   draw = hmac_seed.surface_stream("stream", "pilot_fd_api/draw/1")
+#   the level-1 family is draw.choice(["F1", "F4"]) (F1), and the families alternate from there;
+#   level l's instance is draw.child(f"l{l}").choice([f"<family>-l{l}-0001", f"<family>-l{l}-0002"]).
+schema_version = "vb.stream/1"
+
+[stream]
+id = "pilot_fd_api"
+spec_variant = "precise"
+families = { F1 = "families/f1_pyconv", F4 = "families/f4_kvtool" }
+instances = ["F1-l1-0002", "F4-l2-0002", "F1-l3-0001", "F4-l4-0001", "F1-l5-0001"]

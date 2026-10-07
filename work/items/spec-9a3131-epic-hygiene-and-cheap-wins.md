@@ -90,23 +90,23 @@ This is the implementation plan.
 - [x] bug-470de8: Every plan run pays for a dream consolidation nobody reads: dream_on_completion defaults to true
 - [x] dec-e70592: Decide whether to park the 18 items the TL;DR says to drop
 - [x] gap-c8e1f1: Split graph_task_dispatch.rs into modules without changing behaviour
-- [ ] gap-0d0e81: Split main.rs: move the clap command enums into their command modules
-- [ ] gap-a6de8d: Split roko-serve routes/plans.rs into run-control, authoring, merge and read modules
+- [x] gap-0d0e81: Split main.rs: move the clap command enums into their command modules
+- [x] gap-a6de8d: Split roko-serve routes/plans.rs into run-control, authoring, merge and read modules
 - [x] gap-cdf3fc: Correct the 13 docs claims that the code or the literature contradicts
 - [x] bug-b16d55: ACP starts a paid dream consolidation every 10 episodes, and no config flag turns it off
 - [x] bug-b17805: The docs/v3 [learning] config table gives wrong defaults for eight fields
 - [x] bug-91af0e: The graph_execution module doc still says delivery is backed by MergeQueue and GitHubWorkflow
-- [ ] bug-31bca6: Nothing reads learning.dreams.max_concurrent, so the ACP trigger starts another dream on every turn while one runs
-- [ ] bug-9434c4: roko config set rejects learning.t0_reflexes and every learning.dreams key
-- [ ] bug-919fe8: roko redirects any workdir under a .roko directory to the outer project, including per-task worktrees in .roko/worktrees
+- [x] bug-31bca6: Nothing reads learning.dreams.max_concurrent, so the ACP trigger starts another dream on every turn while one runs
+- [x] bug-9434c4: roko config set rejects learning.t0_reflexes and every learning.dreams key
+- [x] bug-919fe8: roko redirects any workdir under a .roko directory to the outer project, including per-task worktrees in .roko/worktrees
 - [x] bug-c1950e: roko config validate warns that agent.default_model references a missing model when the model is a builtin
-- [ ] bug-7df50d: Every cargo update flips tempfile's getrandom dependency between 0.4.3 and 0.3.4 in Cargo.lock
+- [x] bug-7df50d: Every cargo update flips tempfile's getrandom dependency between 0.4.3 and 0.3.4 in Cargo.lock
 - [ ] dec-01be49: Decide how the doctor tests stop depending on the machine's claude and API keys: injectable probes or relaxed assertions
-- [ ] gap-4b3bd5: commands/plan.rs walks plan directories itself instead of reusing plan_validate's collect_tasks_files
+- [x] gap-4b3bd5: commands/plan.rs walks plan directories itself instead of reusing plan_validate's collect_tasks_files
 - [x] bug-779ae7: Three lib tests fail only under heavy load: a roko-gate tautology-filter test and two dispatcher timing tests
-- [ ] bug-ccfa0d: config validate flags [profiles.<name>] keys that DomainProfile collects into extra, and tools.profiles has no schema template
-- [ ] gap-d0f52f: LearningRuntime::discover_cross_episode_patterns has no caller, so EpisodeView::succeeded has no production reader
-- [ ] bug-a70def: The Claude MCP isolation tests assume the host has no managed-mcp.json
+- [x] bug-ccfa0d: config validate flags [profiles.<name>] keys that DomainProfile collects into extra, and tools.profiles has no schema template
+- [x] gap-d0f52f: LearningRuntime::discover_cross_episode_patterns has no caller, so EpisodeView::succeeded has no production reader
+- [x] bug-a70def: The Claude MCP isolation tests assume the host has no managed-mcp.json
 - [x] bug-f3969d: InFlightTasks keeps every ended attempt for the life of the process
 - [x] gap-3505fb: PlanMerger and the roko-execution workflow templates' gate builders have no production caller
 - [x] gap-603aa4: roko-serve's estimate_cost_usd has no callers
@@ -126,3 +126,9 @@ This is the implementation plan.
 - **Related:** gap-b23ebd (about 585 citation errors across `docs/v3`).
 - **Decided 2026-09-29 (Will):** the 18 set-aside items are held rather than parked (dec-e70592).
 - **Still open (not accepted on 2026-09-29):** branch protection on `main`, which this epic's exit check assumes.
+- 2026-10-03 (wave-6 follow-up, PK06/gap-4b890c): `GraphExecutionControlAdapter`
+  (`crates/roko-cli/src/graph_execution/control_adapter.rs`, referenced from `graph_execution/mod.rs`) has no
+  production caller — grep finds it defined and exported but not constructed anywhere outside its own tests. A
+  cheap-wins candidate: either wire it into whatever control path it was meant for, or remove it if it was
+  superseded by the control-file polling (`forward_control_file` in `plan_runner.rs`, from an earlier batch's
+  research on bug-8208a6).

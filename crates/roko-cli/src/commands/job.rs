@@ -2,6 +2,115 @@
 
 use crate::*;
 
+#[derive(Debug, Subcommand)]
+pub(crate) enum JobCmd {
+    /// List all marketplace jobs.
+    List {
+        /// Working directory (default: cwd / --repo).
+        #[arg(long)]
+        workdir: Option<PathBuf>,
+        /// Filter by status (open, assigned, in_progress, submitted, completed, failed, cancelled).
+        #[arg(long)]
+        status: Option<String>,
+    },
+    /// Create a new marketplace job.
+    Create {
+        /// Job title.
+        title: String,
+        /// Job type: research, coding_task, chain_monitor, chain_analysis, review, documentation, testing.
+        #[arg(long, default_value = "research")]
+        r#type: String,
+        /// Job description.
+        #[arg(long, default_value = "")]
+        description: String,
+        /// Priority: low, medium, high, critical.
+        #[arg(long, default_value = "medium")]
+        priority: String,
+        /// Auto-execute the job when the runner picks it up.
+        #[arg(long)]
+        auto_execute: bool,
+        /// Associated plan ID.
+        #[arg(long)]
+        plan_id: Option<String>,
+        /// Tag (repeatable, e.g. --tag rust --tag cli).
+        #[arg(long)]
+        tag: Vec<String>,
+        /// Reward string, e.g. "2500 KORAI".
+        #[arg(long)]
+        reward: Option<String>,
+        /// Identity of the poster.
+        #[arg(long)]
+        posted_by: Option<String>,
+        /// Working directory (default: cwd / --repo).
+        #[arg(long)]
+        workdir: Option<PathBuf>,
+    },
+    /// Match a proposed job against registered agents via roko-serve.
+    Match {
+        /// Job title.
+        title: String,
+        /// roko-serve base URL.
+        #[arg(long, default_value = "http://localhost:6677")]
+        serve_url: String,
+        /// Job description.
+        #[arg(long, default_value = "")]
+        description: String,
+        /// Primary implementation language, also treated as a required skill.
+        #[arg(long)]
+        language: Option<String>,
+        /// Minimum agent tier: Unverified, Verified, Trusted, Expert, Pioneer.
+        #[arg(long)]
+        min_tier: Option<String>,
+        /// Reward string, e.g. "2500 KORAI".
+        #[arg(long, default_value = "")]
+        reward: String,
+        /// Required skills, comma-separated.
+        #[arg(long, value_delimiter = ',')]
+        skills: Vec<String>,
+        /// Working directory (default: cwd / --repo), used for auth config.
+        #[arg(long)]
+        workdir: Option<PathBuf>,
+    },
+    /// Show details for a specific job.
+    Show {
+        /// Job ID.
+        id: String,
+        /// Working directory (default: cwd / --repo).
+        #[arg(long)]
+        workdir: Option<PathBuf>,
+    },
+    /// Execute a job (locally or via roko-serve).
+    Execute {
+        /// Job ID.
+        id: String,
+        /// roko-serve base URL. If set, POST to /api/jobs/{id}/execute.
+        #[arg(long)]
+        serve_url: Option<String>,
+        /// Working directory (default: cwd / --repo).
+        #[arg(long)]
+        workdir: Option<PathBuf>,
+    },
+    /// Cancel a job.
+    Cancel {
+        /// Job ID.
+        id: String,
+        /// Working directory (default: cwd / --repo).
+        #[arg(long)]
+        workdir: Option<PathBuf>,
+    },
+    /// Recover an interrupted in_progress job.
+    ///
+    /// If the job has a durable submission, it completes. Otherwise it
+    /// transitions back to open for re-execution.
+    Recover {
+        /// Job ID.
+        id: String,
+        /// Working directory (default: cwd / --repo).
+        #[arg(long)]
+        workdir: Option<PathBuf>,
+    },
+}
+
 pub(crate) async fn cmd_job(cli: &Cli, cmd: JobCmd) -> Result<i32> {
     let jobs_dir = |wd: &Path| wd.join(".roko").join("jobs");
 

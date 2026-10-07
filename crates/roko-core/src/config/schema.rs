@@ -13,7 +13,7 @@ use std::fmt::Write as _;
 
 use crate::agent::{AgentBackend, ProviderKind};
 use crate::defaults::{DEFAULT_PLAN_TIMEOUT_SECS, DEFAULT_RATE_LIMIT_RETRY_ATTEMPTS};
-use crate::tool::{ToolFormat, profile_for_model};
+use crate::tool::{OutboundPolicy, ToolFormat, profile_for_model};
 use indexmap::IndexMap;
 use regex::Regex;
 use serde::{Deserialize, Serialize};
@@ -32,6 +32,7 @@ pub use super::provider::*;
 pub use super::retrieval::*;
 pub use super::routing::*;
 pub use super::serve::*;
+pub use super::spec_quality::*;
 pub use super::subscriptions::*;
 pub use super::tools::*;
 pub use super::tui_cfg::*;
@@ -98,12 +99,13 @@ pub struct RokoConfig {
     #[serde(default)]
     pub project: ProjectConfig,
     #[serde(default)]
-    pub prd: PrdConfig,
-    #[serde(default)]
     pub agent: AgentConfig,
     /// Plan authoring: the model that generates and revises plans.
     #[serde(default)]
     pub authoring: AuthoringConfig,
+    /// The spec-quality gate `plan run` applies before it dispatches a plan.
+    #[serde(default)]
+    pub spec_quality: SpecQualityConfig,
     #[serde(default)]
     pub providers: IndexMap<String, ProviderConfig>,
     #[serde(default)]
@@ -122,8 +124,21 @@ pub struct RokoConfig {
     pub pipeline: PipelineConfig,
     #[serde(default)]
     pub budget: BudgetConfig,
+    /// The dated price snapshot behind API-equivalent costs.
+    #[serde(default)]
+    pub pricing: crate::pricing_snapshot::PricingConfig,
     #[serde(default)]
     pub conductor: ConductorConfig,
+    /// M1, the ultrastable controller: its mode and constants (S06 §5).
+    #[serde(default)]
+    pub homeostasis: super::homeostasis::HomeostasisConfig,
+    /// M4, random deep audits: the lottery, its floor and budget (S05 §5).
+    #[serde(default)]
+    pub audit: super::audit::AuditConfig,
+    /// M3, the self-model: whether it forecasts routed attempts or picks their start rung
+    /// (S04 §5). Off by default.
+    #[serde(default)]
+    pub self_model: super::self_model::SelfModelConfig,
     #[serde(default, skip_serializing_if = "WatcherConfig::is_empty")]
     pub watcher: WatcherConfig,
     #[serde(default)]
@@ -136,6 +151,10 @@ pub struct RokoConfig {
     pub statehub: StateHubConfig,
     #[serde(default)]
     pub serve: ServeConfig,
+    /// The passphrase-gated public showcase (S11 §4.7). Off by default; serve refuses to
+    /// start half configured in showcase mode.
+    #[serde(default)]
+    pub showcase: super::showcase::ShowcaseConfig,
     #[serde(default)]
     pub scheduler: SchedulerConfig,
     #[serde(default)]
@@ -192,51 +211,81 @@ pub struct RokoConfig {
     /// RAG retrieval pipeline settings.
     #[serde(default)]
     pub retrieval: RetrievalConfig,
+    /// How runs randomise their learning loops: maximize mode and forced
+    /// arms (`[experiments]`, decision 4115).
+    #[serde(default)]
+    pub experiments: super::experiments::ExperimentsConfig,
+    /// Prompt sections the section bandit never leaves out, on top of the
+    /// built-in pinned ones (`[sections] pinned`, S02 L9).
+    #[serde(default)]
+    pub sections: super::sections::SectionsConfig,
 }
 
 /// Composition strategy for allocating prompt token budget across candidate sections.
 ///
 /// Mirrors [`roko_compose::CompositionStrategy`] so that `roko-core` (which cannot
 /// depend on `roko-compose`) can expose this knob in the config schema.  The CLI
-/// converts this value to the compose-side enum at construction time.
+/// converts this value to the compose-side enum at construction time. Every
+/// strategy allocates density-greedy: the VCG auction is retired (4218).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ConfigCompositionStrategy {
-    /// Select `Vcg` once learned bidder observations are warm; otherwise use
-    /// the deterministic density-greedy path.
-    #[default]
+    /// Deprecated: loads as `density_greedy` (4219).
     Auto,
-    /// Deterministic greedy allocation by score density.
+    /// Deterministic greedy allocation by score density, the default.
+    #[default]
     DensityGreedy,
     /// Backward-compatible alias for density-greedy allocation.
     WeightedSum,
-    /// VCG-style allocation with payments and displacement diagnostics.
+    /// Deprecated: loads as `density_greedy` (4219).
     Vcg,
 }
 
-/// Default VCG warmup observation count (mirrors the compose-side constant).
+/// Default of the deprecated `vcg_warmup_observations`.
 const fn default_vcg_warmup_observations() -> u32 {
     10
 }
 
-/// Prompt composition configuration.
-///
-/// Controls how the runner-v2 `PromptComposer` allocates token budget across
-/// candidate prompt sections and when the VCG auction activates.
+/// Logged once: a config named a deprecated composition strategy.
+static LEGACY_COMPOSITION_STRATEGY: std::sync::Once = std::sync::Once::new();
+
+/// `[prompt] composition_strategy` as a config sets it. `auto` and `vcg`
+/// load as `density_greedy`, with a warning once per process: the VCG
+/// auction they named is retired (4218).
+fn deserialize_composition_strategy<'de, D>(
+    deserializer: D,
+) -> Result<ConfigCompositionStrategy, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let strategy = ConfigCompositionStrategy::deserialize(deserializer)?;
+    if !matches!(
+        strategy,
+        ConfigCompositionStrategy::Auto | ConfigCompositionStrategy::Vcg
+    ) {
+        return Ok(strategy);
+    }
+    LEGACY_COMPOSITION_STRATEGY.call_once(|| {
+        tracing::warn!(
+            "[prompt] composition_strategy `auto` and `vcg` are deprecated and now mean \
+             `density_greedy`: the VCG auction is retired"
+        );
+    });
+    Ok(ConfigCompositionStrategy::DensityGreedy)
+}
+
+/// Prompt composition configuration: how prompt assembly allocates the
+/// token budget across candidate prompt sections.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct PromptConfig {
-    /// Budget-allocation strategy for prompt composition.
-    ///
-    /// - `auto` (default): density-greedy on cold start; VCG once bidders are warm.
-    /// - `density_greedy` / `weighted_sum`: always use the deterministic greedy path.
-    /// - `vcg`: always use VCG allocation (requires warm bidder observations).
-    #[serde(default)]
+    /// Budget-allocation strategy for prompt composition: `density_greedy`
+    /// (the default) or its alias `weighted_sum`. The deprecated `auto` and
+    /// `vcg` load as `density_greedy`, with a warning.
+    #[serde(default, deserialize_with = "deserialize_composition_strategy")]
     pub composition_strategy: ConfigCompositionStrategy,
-    /// Minimum bidder-observation count before `auto` enables VCG allocation.
-    ///
-    /// Defaults to 10. Setting this to 0 enables VCG immediately (not
-    /// recommended for cold starts).
+    /// Deprecated and ignored: the VCG auction it warmed up is retired
+    /// (4218). It still loads, so configs that set it keep working.
     #[serde(default = "default_vcg_warmup_observations")]
     pub vcg_warmup_observations: u32,
 }
@@ -311,6 +360,24 @@ pub struct DomainProfile {
     pub tool_profile: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub gate_config: Option<GateProfileConfig>,
+    /// The `[gates.packs.<name>]` that verifies the tasks of the domain this
+    /// profile is named for, in place of the pack named for the domain
+    /// (9125).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pack: Option<String>,
+    /// One line that leads the prompt of the domain's tasks, saying who the
+    /// agent is (9125).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub role_identity: Option<String>,
+    /// What the domain's tasks do with a tool call that acts on the outside
+    /// world, in place of decision 9107's default: `stage` in the `ops`
+    /// domain, `allow` elsewhere (9131).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub outbound: Option<OutboundPolicy>,
+    /// Where the domain's tasks work when they name no `workspace` of their
+    /// own: `git_worktree` or `scratch_dir` (9134).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workspace: Option<crate::WorkspaceKind>,
     /// Forward-compatible profile-local extension fields.
     #[serde(default, flatten)]
     pub extra: HashMap<String, toml::Value>,
@@ -329,6 +396,10 @@ impl DomainProfile {
             max_iterations: child.max_iterations.or(parent.max_iterations),
             tool_profile: child.tool_profile.or(parent.tool_profile),
             gate_config: GateProfileConfig::overlay(parent.gate_config, child.gate_config),
+            pack: child.pack.or(parent.pack),
+            role_identity: child.role_identity.or(parent.role_identity),
+            outbound: child.outbound.or(parent.outbound),
+            workspace: child.workspace.or(parent.workspace),
             extra,
         }
     }
@@ -429,9 +500,9 @@ impl Default for RokoConfig {
             config_version: CURRENT_CONFIG_VERSION,
             schema_version: CURRENT_SCHEMA_VERSION,
             project: ProjectConfig::default(),
-            prd: PrdConfig::default(),
             agent: AgentConfig::default(),
             authoring: AuthoringConfig::default(),
+            spec_quality: SpecQualityConfig::default(),
             providers: IndexMap::new(),
             models: IndexMap::new(),
             profiles: HashMap::new(),
@@ -440,13 +511,18 @@ impl Default for RokoConfig {
             routing: RoutingConfig::default(),
             pipeline: PipelineConfig::default(),
             budget: BudgetConfig::default(),
+            pricing: crate::pricing_snapshot::PricingConfig::default(),
             conductor: ConductorConfig::default(),
+            homeostasis: super::homeostasis::HomeostasisConfig::default(),
+            audit: super::audit::AuditConfig::default(),
+            self_model: super::self_model::SelfModelConfig::default(),
             watcher: WatcherConfig::default(),
             learning: LearningConfig::default(),
             tui: TuiConfig::default(),
             timeouts: super::timeouts::TimeoutConfig::default(),
             statehub: StateHubConfig::default(),
             serve: ServeConfig::default(),
+            showcase: super::showcase::ShowcaseConfig::default(),
             scheduler: SchedulerConfig::default(),
             webhooks: WebhooksConfig::default(),
             github: GitHubConfig::default(),
@@ -470,6 +546,8 @@ impl Default for RokoConfig {
             daimon: DaimonConfig::default(),
             repos: Vec::new(),
             retrieval: RetrievalConfig::default(),
+            experiments: super::experiments::ExperimentsConfig::default(),
+            sections: super::sections::SectionsConfig::default(),
         }
     }
 }
@@ -542,6 +620,8 @@ fn synthesize_standard_providers_with_env(
                     max_concurrent: None,
                     limits: None,
                     require_confirmation: false,
+                    stream_usage: None,
+                    billing: None,
                 },
             );
         }
@@ -553,8 +633,29 @@ fn synthesize_standard_providers_with_env(
 
 impl RokoConfig {
     /// Parse from a TOML string.
+    ///
+    /// A key the schema no longer has is an error, except one that roko
+    /// removed ([`super::loader::drop_removed_config_keys`]): that is dropped
+    /// with a warning, as loading drops it, so an old file still parses.
     pub fn from_toml(s: &str) -> Result<Self, toml::de::Error> {
-        let config: Self = toml::from_str(s)?;
+        let config: Self = match toml::from_str(s) {
+            Ok(config) => config,
+            Err(err) => {
+                let mut value: toml::Value = toml::from_str(s)?;
+                let removed = super::loader::drop_removed_config_keys(&mut value);
+                if removed.is_empty() {
+                    return Err(err);
+                }
+                for diagnostic in &removed {
+                    tracing::warn!(
+                        config_key = %diagnostic.key,
+                        "config warning: {}",
+                        diagnostic.message
+                    );
+                }
+                value.try_into()?
+            }
+        };
         // Only warn when the TOML text explicitly sets config_version to a value
         // below CURRENT_CONFIG_VERSION. Skip if:
         //   - The field is absent (serde default kicks in; not a real v1 config)
@@ -653,6 +754,21 @@ impl RokoConfig {
         }
 
         providers
+    }
+
+    /// The `[profiles.<label>]` entry a task of work domain `domain` follows,
+    /// resolved through its `base` chain, which may end at a built-in profile
+    /// (9125): `None` when the workspace declares no entry for the label, or
+    /// when its entry does not resolve.
+    #[must_use]
+    pub fn domain_profile(&self, domain: &crate::TaskDomain) -> Option<DomainProfile> {
+        let label = domain.label();
+        if !self.profiles.contains_key(label) {
+            return None;
+        }
+        let mut profiles = builtin_profiles();
+        profiles.extend(self.profiles.clone());
+        resolve_profile(label, &profiles).ok()
     }
 
     /// Return the explicit model registry that should be used at runtime.
@@ -1180,7 +1296,6 @@ impl RokoConfig {
         let mut out = String::with_capacity(4096);
         Self::write_example_prelude(&mut out);
         Self::write_example_project(&mut out, &cfg);
-        Self::write_example_prd(&mut out, &cfg);
         Self::write_example_agent(&mut out, &cfg);
         Self::write_example_gates(&mut out, &cfg);
         Self::write_example_routing(&mut out, &cfg);
@@ -1218,11 +1333,6 @@ impl RokoConfig {
             "fresh_base_branch = \"{}\"\n",
             c.project.fresh_base_branch
         );
-    }
-    fn write_example_prd(out: &mut String, c: &Self) {
-        let _ = writeln!(out, "# -- PRD lifecycle settings --");
-        let _ = writeln!(out, "[prd]");
-        let _ = writeln!(out, "auto_plan = {}\n", c.prd.auto_plan);
     }
     fn write_example_agent(out: &mut String, c: &Self) {
         let _ = writeln!(out, "# -- Agent / model settings --");
@@ -1359,6 +1469,7 @@ impl RokoConfig {
             "max_auto_fix_attempts = {}",
             c.conductor.max_auto_fix_attempts
         );
+        let _ = writeln!(out, "supervise = {}", c.conductor.supervise);
         let _ = writeln!(
             out,
             "silence_timeout_secs = {}",
@@ -1401,21 +1512,6 @@ impl RokoConfig {
         );
         let _ = writeln!(
             out,
-            "replan_on_gate_failure = {}",
-            c.learning.replan_on_gate_failure
-        );
-        let _ = writeln!(
-            out,
-            "replan_max_per_plan = {}",
-            c.learning.replan_max_per_plan
-        );
-        let _ = writeln!(
-            out,
-            "replan_gate_attempts = {}",
-            c.learning.replan_gate_attempts
-        );
-        let _ = writeln!(
-            out,
             "dream_on_completion = {}",
             c.learning.dream_on_completion
         );
@@ -1434,12 +1530,7 @@ impl RokoConfig {
         };
         let _ = writeln!(out, "# -- Prompt composition --");
         let _ = writeln!(out, "[prompt]");
-        let _ = writeln!(out, "composition_strategy = \"{}\"", strategy);
-        let _ = writeln!(
-            out,
-            "vcg_warmup_observations = {}\n",
-            c.prompt.vcg_warmup_observations
-        );
+        let _ = writeln!(out, "composition_strategy = \"{}\"\n", strategy);
     }
     fn write_example_tui_and_server(out: &mut String, c: &Self) {
         let _ = writeln!(out, "# -- TUI preferences --");
@@ -1470,14 +1561,11 @@ impl RokoConfig {
         let _ = writeln!(out, "[serve.deploy]");
         let _ = writeln!(out, "provider = \"{}\"", c.serve.deploy.provider);
         let _ = writeln!(out, "environment = {:?}", c.serve.deploy.environment);
-        let _ = writeln!(out, "\n[[serve.deploy.webhooks]]");
-        let _ = writeln!(out, "provider = \"github\"");
-        let _ = writeln!(out, "owner = \"nunchi\"");
-        let _ = writeln!(out, "repo = \"roko\"");
-        let _ = writeln!(out, "\n[[serve.deploy.webhooks]]");
-        let _ = writeln!(out, "provider = \"github\"");
-        let _ = writeln!(out, "owner = \"nunchi\"");
-        let _ = writeln!(out, "repo = \"collaboration\"");
+        // Commented: a live table would register a webhook on that repository.
+        let _ = writeln!(out, "\n# [[serve.deploy.webhooks]]");
+        let _ = writeln!(out, "# provider = \"github\"");
+        let _ = writeln!(out, "# owner = \"<your-github-owner>\"");
+        let _ = writeln!(out, "# repo = \"<your-repo>\"");
     }
     fn write_example_scheduler(out: &mut String, _c: &Self) {
         let _ = writeln!(out, "\n# -- Cron scheduler --");
@@ -1678,6 +1766,17 @@ pub(crate) fn validate_references(config: &RokoConfig) -> Vec<ValidationWarning>
         });
     }
 
+    // So may the data LLM (gap-b0d514).
+    if let Some(data_llm) = &config.agent.data_llm
+        && !explicit_model_keys.contains(data_llm.model.trim())
+        && super::model_registry::builtin_model(data_llm.model.trim()).is_none()
+    {
+        warnings.push(ValidationWarning::UnknownModel {
+            field: "agent.data_llm.model".to_string(),
+            model: data_llm.model.trim().to_string(),
+        });
+    }
+
     // Routing tier model slugs.
     for (field, slug) in [
         (
@@ -1767,17 +1866,24 @@ pub struct ConductorConfig {
     /// supervision. These are consumed by `Conductor::from_config`.
     #[serde(default)]
     pub watchers: WatcherThresholds,
+    /// Whether the conductor's watchers supervise a Graph plan run's running
+    /// attempts (default `true`): they may restart an attempt or stop the
+    /// run. The stall watchdog (`silence_timeout_secs`, `task_stall_secs`)
+    /// runs either way.
+    #[serde(default = "default_supervise")]
+    pub supervise: bool,
 
     // ── Live supervision thresholds ─────────────────────────────────────
     //
     // `silence_timeout_secs` and `task_stall_secs` drive the Graph
     // dispatcher's per-attempt stall watchdog. An agent is silent while it
-    // waits on its model without reporting progress: silence starts counting
-    // when its provider call starts for a provider that streams as it goes
-    // (the Claude CLI), else once the attempt has reported something, and
-    // pauses while a tool call it made runs. `0` turns a threshold off; with
-    // both off a Graph run is not supervised at all. The hard `timeout_secs`
-    // stays the outer bound.
+    // waits on its model without reporting progress: silence counts from its
+    // last report or, before its first, from its provider call's start once
+    // a first-output grace has passed (30 s for a provider that streams as it
+    // goes, the Claude CLI; `report_at_end_stall_secs` for one that may
+    // report only at the end), and pauses while a tool call it made runs.
+    // `0` turns a threshold off; with both off a Graph run is not supervised
+    // at all. The hard `timeout_secs` stays the outer bound.
     /// Seconds of agent silence before its task gets a warning diagnosis
     /// (default 180; 0 = off).
     #[serde(default = "default_silence_timeout_secs")]
@@ -1789,6 +1895,14 @@ pub struct ConductorConfig {
     /// under its task's `max_retries` (default 300; 0 = off).
     #[serde(default = "default_task_stall_secs")]
     pub task_stall_secs: u64,
+    /// The first-output grace, in seconds, of a call to a provider that may
+    /// report nothing until it finishes (the Codex CLI, the Cursor CLI):
+    /// past it the call's silence counts from its start, so a call that never
+    /// reports anything is cancelled after this long, or after
+    /// `task_stall_secs` when that is longer (default 900; 0 = such a call
+    /// is left to the hard `timeout_secs` until it first reports anything).
+    #[serde(default = "default_report_at_end_stall_secs")]
+    pub report_at_end_stall_secs: u64,
     /// Context window usage percentage that triggers a warning (default 80).
     #[serde(default = "default_context_pressure_pct")]
     pub context_pressure_pct: u8,
@@ -1841,6 +1955,9 @@ const fn default_compile_fail_threshold() -> u32 {
 const fn default_task_stall_secs() -> u64 {
     300
 }
+const fn default_report_at_end_stall_secs() -> u64 {
+    900
+}
 const fn default_context_pressure_pct() -> u8 {
     80
 }
@@ -1856,6 +1973,9 @@ const fn default_context_window_opus_tokens() -> u64 {
 const fn default_context_pressure_lookback() -> usize {
     3
 }
+const fn default_supervise() -> bool {
+    true
+}
 
 impl Default for ConductorConfig {
     fn default() -> Self {
@@ -1868,9 +1988,11 @@ impl Default for ConductorConfig {
             max_auto_fix_attempts: default_max_auto_fix(),
             auto_fix_model: default_auto_fix_model(),
             watchers: WatcherThresholds::default(),
+            supervise: default_supervise(),
             silence_timeout_secs: default_silence_timeout_secs(),
             compile_fail_threshold: default_compile_fail_threshold(),
             task_stall_secs: default_task_stall_secs(),
+            report_at_end_stall_secs: default_report_at_end_stall_secs(),
             context_pressure_pct: default_context_pressure_pct(),
             phase_timeout_secs: default_phase_timeout_secs(),
             context_window_small_tokens: default_context_window_small_tokens(),
@@ -2525,9 +2647,6 @@ pub struct CoreRunnerConfig {
     /// Defaults to 4. A value of 1 preserves sequential execution.
     #[serde(default = "CoreRunnerConfig::default_max_concurrent_tasks")]
     pub max_concurrent_tasks: Option<usize>,
-    /// Maximum number of plans executing concurrently.
-    #[serde(default)]
-    pub max_concurrent_plans: Option<usize>,
     /// Wall-clock timeout for the entire plan execution, in seconds.
     /// Defaults to 3600 (1 hour).
     #[serde(default = "CoreRunnerConfig::default_plan_timeout_secs")]
@@ -2575,6 +2694,24 @@ pub struct CoreRunnerConfig {
     /// are removed, and the branches stay for inspection and history.
     #[serde(default)]
     pub delete_attempt_branches: bool,
+    /// Whether `roko plan run` runs each task in its own git worktree, as
+    /// `--worktree-per-task` asks. Defaults to `true`: finished plans are
+    /// delivered into the run's batch branch, `roko/batch/<run-id>`, and the
+    /// operator's checkout is never changed. A workdir that is not the top
+    /// level of a git checkout with a commit runs its tasks in the shared
+    /// working tree instead. `--worktree-per-task` and
+    /// `--no-worktree-per-task` override it per run; a server's runs follow
+    /// the server's value (gap-4ec59f).
+    #[serde(default = "CoreRunnerConfig::default_worktree_per_task")]
+    pub worktree_per_task: bool,
+    /// Whether a task attempt in the operator's shared checkout, with no
+    /// worktree of its own, may run on a Codex, Cursor or Gemini CLI agent.
+    /// Defaults to `false`: roko cannot check those CLIs' commands before
+    /// they run, so a `git stash` or `git clean -fdx` of theirs would destroy
+    /// the operator's uncommitted work. Failover passes them over there, and
+    /// an attempt no other provider can take fails (decision 1214).
+    #[serde(default)]
+    pub allow_unguarded_agents_in_checkout: bool,
 }
 
 impl CoreRunnerConfig {
@@ -2609,13 +2746,17 @@ impl CoreRunnerConfig {
     pub const fn default_prompt_log_retention() -> usize {
         100
     }
+
+    /// Default task isolation: each task in its own git worktree.
+    pub const fn default_worktree_per_task() -> bool {
+        true
+    }
 }
 
 impl Default for CoreRunnerConfig {
     fn default() -> Self {
         Self {
             max_concurrent_tasks: None,
-            max_concurrent_plans: None,
             plan_timeout_secs: Self::default_plan_timeout_secs(),
             dangerously_skip_permissions: Self::default_dangerously_skip_permissions(),
             sandbox_level: RunnerSandboxLevel::default(),
@@ -2625,6 +2766,8 @@ impl Default for CoreRunnerConfig {
             log_prompts: false,
             prompt_log_retention: Self::default_prompt_log_retention(),
             delete_attempt_branches: false,
+            worktree_per_task: Self::default_worktree_per_task(),
+            allow_unguarded_agents_in_checkout: false,
         }
     }
 }
@@ -2978,6 +3121,55 @@ pheromone_decay_rate = 0.5
         let cfg = RokoConfig::from_toml(&example).expect("parse");
         assert_eq!(cfg.schema_version, CURRENT_SCHEMA_VERSION);
     }
+
+    /// 4219: the VCG prompt keys still load. `auto` and `vcg` mean
+    /// `density_greedy` and `vcg_warmup_observations` is ignored; the default
+    /// is `density_greedy`, and the example config names neither old key.
+    #[test]
+    fn legacy_vcg_prompt_keys_load_as_density_greedy() {
+        for strategy in ["auto", "vcg"] {
+            let toml = format!(
+                "[prompt]\ncomposition_strategy = \"{strategy}\"\nvcg_warmup_observations = 3\n"
+            );
+            let cfg = RokoConfig::from_toml(&toml).expect("the legacy prompt keys load");
+            assert_eq!(
+                cfg.prompt.composition_strategy,
+                ConfigCompositionStrategy::DensityGreedy,
+                "{strategy}"
+            );
+        }
+        let cfg = RokoConfig::from_toml("[prompt]\ncomposition_strategy = \"weighted_sum\"\n")
+            .expect("parse");
+        assert_eq!(
+            cfg.prompt.composition_strategy,
+            ConfigCompositionStrategy::WeightedSum
+        );
+        assert_eq!(
+            PromptConfig::default().composition_strategy,
+            ConfigCompositionStrategy::DensityGreedy
+        );
+        let example = RokoConfig::example_toml();
+        assert!(!example.contains("vcg_warmup_observations"), "{example}");
+        assert!(
+            example.contains("composition_strategy = \"density_greedy\""),
+            "{example}"
+        );
+    }
+
+    /// 1210: the conductor supervises plan runs unless `[conductor]
+    /// supervise = false` turns it off.
+    #[test]
+    fn conductor_supervise_defaults_on_and_parses_off() {
+        assert!(ConductorConfig::default().supervise);
+        assert!(RokoConfig::example_toml().contains("supervise = true"));
+        let cfg = RokoConfig::from_toml("[conductor]\nsupervise = false\n").expect("parse");
+        assert!(!cfg.conductor.supervise);
+        assert_eq!(
+            cfg.conductor.task_stall_secs,
+            ConductorConfig::default().task_stall_secs,
+            "the stall watchdog keeps its thresholds"
+        );
+    }
     #[test]
     fn kimi_config_parse() {
         let example = include_str!("../../../../examples/roko-kimi.toml");
@@ -3214,6 +3406,38 @@ max_output = 16384
         );
     }
 
+    /// gap-b0d514: `[agent.data_llm]` must name a model roko can resolve:
+    /// a `[models.*]` entry or a builtin slug.
+    #[test]
+    fn validate_references_warns_on_unknown_data_llm_model() {
+        let mut cfg = RokoConfig::default();
+        cfg.models.clear();
+        cfg.agent.data_llm = Some(super::super::agent::DataLlmConfig {
+            model: "nonexistent-data-model".to_string(),
+            ..Default::default()
+        });
+        let warnings = validate_references(&cfg);
+        assert!(
+            warnings.iter().any(|w| matches!(
+                w,
+                ValidationWarning::UnknownModel { field, model }
+                    if field == "agent.data_llm.model" && model == "nonexistent-data-model"
+            )),
+            "expected warning for unknown data_llm model, got: {warnings:?}"
+        );
+
+        // The default, a builtin slug, needs no `[models.*]` entry.
+        cfg.agent.data_llm = Some(super::super::agent::DataLlmConfig::default());
+        let warnings = validate_references(&cfg);
+        assert!(
+            !warnings.iter().any(|w| matches!(
+                w,
+                ValidationWarning::UnknownModel { field, .. } if field == "agent.data_llm.model"
+            )),
+            "builtin slug should not produce a warning, got: {warnings:?}"
+        );
+    }
+
     #[test]
     fn resolve_api_key_returns_env_value() {
         run_resolve_api_key_child(
@@ -3247,6 +3471,8 @@ max_output = 16384
             max_concurrent: None,
             limits: None,
             require_confirmation: false,
+            stream_usage: None,
+            billing: None,
         };
         assert_eq!(cfg.resolve_api_key().as_deref(), Some(expected.as_str()));
     }
@@ -3270,6 +3496,8 @@ max_output = 16384
             max_concurrent: None,
             limits: None,
             require_confirmation: false,
+            stream_usage: None,
+            billing: None,
         };
         assert_eq!(cfg.resolve_api_key(), None);
     }
@@ -3302,6 +3530,8 @@ max_output = 16384
                 max_concurrent: None,
                 limits: None,
                 require_confirmation: false,
+                stream_usage: None,
+                billing: None,
             },
         );
         cfg.models.insert(
@@ -3420,9 +3650,6 @@ max_output = 16384
     fn demo_resources_config_parses() {
         let example = include_str!("../../../../demo/demo-resources/roko.toml");
         let cfg = RokoConfig::from_toml(example).expect("parse demo/demo-resources/roko.toml");
-        // auto_plan must be in [prd], not at root level.
-        // A successful parse here proves the section placement is correct.
-        assert!(!cfg.prd.auto_plan);
         // [[gates.rungs]] must use the current syntax (not the stale [[gate]]).
         assert!(
             !cfg.gates.custom_rungs.is_empty(),
@@ -3456,6 +3683,8 @@ max_output = 16384
                 max_concurrent: None,
                 limits: None,
                 require_confirmation: false,
+                stream_usage: None,
+                billing: None,
             },
         );
         config.resolve_file_secrets();
@@ -3504,6 +3733,8 @@ max_output = 16384
             max_concurrent: None,
             limits: None,
             require_confirmation: false,
+            stream_usage: None,
+            billing: None,
         };
         assert!(!cfg.is_provider_available_with_env(&p, |_| None));
         cfg.agent.env = Some(vec![("OPENAI_API_KEY".into(), "sk-test".into())]);
@@ -3532,6 +3763,8 @@ max_output = 16384
                 max_concurrent: None,
                 limits: None,
                 require_confirmation: false,
+                stream_usage: None,
+                billing: None,
             },
         );
         cfg.models.insert(
@@ -3573,6 +3806,8 @@ max_output = 16384
             max_concurrent: None,
             limits: None,
             require_confirmation: false,
+            stream_usage: None,
+            billing: None,
         };
         assert!(
             !cfg.is_provider_available(&provider),
@@ -3597,6 +3832,8 @@ max_output = 16384
             max_concurrent: None,
             limits: None,
             require_confirmation: false,
+            stream_usage: None,
+            billing: None,
         };
         assert!(
             cfg.is_provider_available(&provider),
@@ -3620,6 +3857,8 @@ max_output = 16384
             max_concurrent: None,
             limits: None,
             require_confirmation: false,
+            stream_usage: None,
+            billing: None,
         };
         assert!(
             !cfg.is_provider_available(&provider),
@@ -3643,6 +3882,8 @@ max_output = 16384
             max_concurrent: None,
             limits: None,
             require_confirmation: false,
+            stream_usage: None,
+            billing: None,
         };
         assert!(
             !cfg.is_provider_available(&provider),
@@ -3667,6 +3908,8 @@ max_output = 16384
             max_concurrent: None,
             limits: None,
             require_confirmation: false,
+            stream_usage: None,
+            billing: None,
         };
         assert!(
             cfg.is_provider_available(&provider),
@@ -3690,6 +3933,8 @@ max_output = 16384
             max_concurrent: None,
             limits: None,
             require_confirmation: false,
+            stream_usage: None,
+            billing: None,
         };
         assert!(
             !cfg.is_provider_available(&provider),
@@ -3713,6 +3958,8 @@ max_output = 16384
             max_concurrent: None,
             limits: None,
             require_confirmation: false,
+            stream_usage: None,
+            billing: None,
         };
         assert!(
             cfg.is_provider_available(&provider),
@@ -3737,6 +3984,8 @@ max_output = 16384
             max_concurrent: None,
             limits: None,
             require_confirmation: false,
+            stream_usage: None,
+            billing: None,
         };
         // Whether this passes depends on whether hermes is installed;
         // just verify it doesn't panic.
@@ -3767,6 +4016,8 @@ max_output = 16384
                 max_concurrent: None,
                 limits: None,
                 require_confirmation: false,
+                stream_usage: None,
+                billing: None,
             },
         );
 

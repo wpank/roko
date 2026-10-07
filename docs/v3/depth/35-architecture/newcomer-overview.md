@@ -103,30 +103,27 @@ try a different approach.
 ## 3. The self-hosting idea
 
 Every architectural decision in Roko exists because the self-hosting loop needed it.
-Here is the complete self-hosting workflow as CLI commands:
+A plan is the unit of work. Here is the complete self-hosting workflow as CLI commands:
 
 ```
-    roko prd idea "..."          Capture what you want to build
+    roko plan generate "..."     Write a plan from what you want to build:
+         |                        plans/<slug>/ (tasks.toml + plan.md)
+         v
+    roko research enhance-plan   Research-backed improvements to the plan (optional)
          |
          v
-    roko prd draft new "..."     Draft a Product Requirements Doc
+    review / edit tasks.toml     Read and adjust the plan; roko plan validate lints it
          |
          v
-    roko research topic "..."    Research the topic for context
-         |
-         v
-    roko prd plan <slug>         Generate an implementation plan with tasks
-         |
-         v
-    roko plan run plans/         Execute the plan through the Graph engine
+    roko run plans/<slug>        Execute the plan through the Graph engine
          |                        - each task dispatches an LLM agent
          |                        - each agent output runs through gates
          |                        - state checkpoints after each task
          |
-         +---> gate fails?        Feed failure info back to the planner
-         |        |               Replan and retry automatically
-         |        v
-         |     roko plan run plans/ --resume-plan
+         +---> gate fails?        Retry the task with the gate's feedback
+         |                        (up to max_retries)
+         |
+         +---> interrupted?       roko plan run plans/<slug> --resume-plan
          |
          v
     roko dashboard               Watch progress in real time (TUI)
@@ -135,7 +132,10 @@ Here is the complete self-hosting workflow as CLI commands:
     roko status                  Inspect the final state
 ```
 
-When you run `roko plan run`, the system:
+`roko run --plan "..."` writes the plan, shows it, and asks before running it, all in
+one command.
+
+When you run a plan (`roko run plans/<slug>` or `roko plan run`), the system:
 1. Parses your plan (a `tasks.toml` file with task descriptions and dependencies).
 2. Converts the task DAG into a Graph of Cells.
 3. Topologically sorts the graph and identifies parallel waves.
@@ -348,7 +348,7 @@ and work down only when you need to.
 
 | Crate | One-liner |
 |-------|-----------|
-| **roko-serve** | HTTP control plane: ~376 routes + SSE + WebSocket on :6677 |
+| **roko-serve** | HTTP control plane: REST routes (counts in `tools/http_route_inventory.snapshot.json`) + SSE + WebSocket on :6677 |
 | **roko-acp** | Editor integration protocol (Cursor, etc.) |
 | **roko-agent-server** | Per-agent HTTP sidecar: 14 routes |
 | **roko-execution** | Shared RuntimeServices builder for CLI/serve/ACP |
@@ -407,7 +407,8 @@ This creates:
 - `roko.toml` -- per-project configuration file
 
 The `.roko/` directory stores everything: episodes, signals, knowledge, learning data,
-checkpoints, PRDs, research artifacts. It is gitignored by default.
+checkpoints, research artifacts. Plans live in `plans/` at the workspace root. `.roko/`
+is gitignored by default.
 
 ### Step 3: Configure a provider (1 minute)
 
@@ -465,24 +466,19 @@ What you will see:
 For larger work, use the plan-based flow:
 
 ```bash
-# Capture an idea
-roko prd idea "Add rate limiting to the API endpoints"
+# Write a plan, show it, and run it after you approve
+roko run --plan "Add rate limiting to the API endpoints"
 
-# Generate a PRD (the agent writes requirements)
-roko prd draft new "api-rate-limiting"
-
-# Generate an implementation plan from the PRD
-roko prd plan api-rate-limiting
-
-# Execute the plan
-roko plan run plans/
+# Or in steps: write the plan (plans/<slug>/), review or edit it, then run it
+roko plan generate "Add rate limiting to the API endpoints"
+roko run plans/<slug>
 
 # Watch progress in the dashboard
 roko dashboard
 ```
 
-The dashboard is a full ratatui TUI with 10 tabs (F1-F10): overview, agents, plans,
-knowledge, learning, costs, telemetry, feeds, triggers, and status.
+The dashboard is a full ratatui TUI with 10 tabs (F1-F10): dashboard, plans, agents,
+git, logs, config, inspect, marketplace, learning, and providers.
 
 ### Step 6: Explore the results (1 minute)
 
@@ -533,11 +529,6 @@ roko/
   |  knowledge/
   |  |  entries/            Durable knowledge entries by type
   |  |  hdc/                HDC fingerprint index for semantic similarity
-  |
-  |  prd/
-  |  |  ideas/              Raw work item ideas
-  |  |  drafts/             PRD drafts (markdown)
-  |  |  published/          Published, ready-for-planning PRDs
   |
   |  research/              Research artifacts and citations
   |  archive/               Cold storage for aged-out signals
@@ -622,10 +613,7 @@ verify the fix compiles and passes tests.
 ### "I want to build a feature with multiple parts"
 
 ```bash
-roko prd idea "Add WebSocket support for real-time updates"
-roko prd draft new "websocket-support"
-roko prd plan websocket-support
-roko plan run plans/
+roko run --plan "Add WebSocket support for real-time updates"
 ```
 
 The plan-based flow breaks the feature into tasks (add dependencies, create handler,
@@ -646,7 +634,8 @@ roko research topic "rate limiting best practices in Rust"
 roko research search "tokio rate limit middleware"
 ```
 
-Research produces grounded, cited artifacts that can feed into PRDs and plans.
+Research produces grounded, cited artifacts that can feed into plans (pass them to
+`roko plan generate --context <path>`).
 
 ### "A plan failed and I want to see why"
 
@@ -655,8 +644,8 @@ roko plan status plans/
 roko diagnose <plan-id>
 ```
 
-The `diagnose` command produces structured JSON output explaining what failed, at which
-gate, with what error message.
+The `diagnose` command prints a report explaining what failed, at which verify step, with
+what error message, and how to resume. Add `--json` for the structured JSON report.
 
 ### "I want to resume after a crash"
 
@@ -717,22 +706,18 @@ The `roko.toml` file controls all behavior. Here is a minimal working configurat
 [providers.anthropic]
 kind = "anthropic_api"
 api_key_env = "ANTHROPIC_API_KEY"
-default_model = "claude-sonnet-4-20250514"
+default_model = "claude-sonnet-4-6"
 
 # Optional: model routing tiers
 [models.routing]
-tier0 = "claude-haiku-3"          # Fast, cheap tasks
-tier1 = "claude-sonnet-4-20250514"     # Default complexity
-tier2 = "claude-opus-4-20250514"         # Hard tasks
+tier0 = "claude-haiku-4-5"     # Fast, cheap tasks
+tier1 = "claude-sonnet-4-6"    # Default complexity
+tier2 = "claude-opus-4-6"      # Hard tasks
 
 # Optional: gate configuration
 [gates]
 max_rung = 2     # Only run compile + lint + test (skip expensive gates)
 adaptive = true  # Enable adaptive threshold learning
-
-# Optional: learning configuration
-[learning]
-replan_on_gate_failure = true  # Auto-generate revised plans on failure
 ```
 
 Key configuration sections:
@@ -799,10 +784,9 @@ and file names (e.g., `engrams.jsonl` is the Signal log).
 | Disk health | `roko doctor disk` |
 | Provider health | `roko config providers health` |
 | One-shot task | `roko run "do something"` |
-| Capture idea | `roko prd idea "feature description"` |
-| Draft PRD | `roko prd draft new "slug"` |
-| Generate plan | `roko prd plan slug` |
-| Execute plan | `roko plan run plans/` |
+| Plan, review, run | `roko run --plan "feature description"` |
+| Write a plan only | `roko plan generate "feature description"` |
+| Execute plan | `roko run plans/<slug>` or `roko plan run plans/` |
 | Resume interrupted plan | `roko plan run plans/ --resume-plan` |
 | Validate plan | `roko plan validate plans/` |
 | Plan status | `roko plan status plans/` |

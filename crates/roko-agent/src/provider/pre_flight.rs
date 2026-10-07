@@ -1,7 +1,7 @@
 //! Startup pre-flight provider readiness checks.
 //!
 //! These checks run before any long-running CLI operation (plan run, chat,
-//! prd pipeline) to detect provider misconfigurations early — before spending
+//! plan generation) to detect provider misconfigurations early — before spending
 //! time on context assembly and prompt building that would fail at dispatch.
 //!
 //! Checks are cheap: PATH lookups and environment variable presence only.
@@ -275,6 +275,8 @@ mod tests {
                 max_concurrent: None,
                 limits: None,
                 require_confirmation: false,
+                stream_usage: None,
+                billing: None,
             },
         );
         config.models.insert(
@@ -317,6 +319,8 @@ mod tests {
                 max_concurrent: None,
                 limits: None,
                 require_confirmation: false,
+                stream_usage: None,
+                billing: None,
             },
         );
         config.models.insert(
@@ -351,6 +355,8 @@ mod tests {
                 max_concurrent: None,
                 limits: None,
                 require_confirmation: false,
+                stream_usage: None,
+                billing: None,
             },
         );
         // SAFETY: test is single-threaded; no other thread reads this env var.

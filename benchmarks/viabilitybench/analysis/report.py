@@ -170,8 +170,8 @@ def build(records: list[dict], experiment_id: str, *, ks: tuple[int, ...], analy
         raise ReportError(f"records of other experiments ({', '.join(others)}) are mixed into {experiment_id}")
     metrics.check_unique(records)
     snapshot = single_snapshot(records)
-    found = [metric for arm, model in metrics.cells(records)
-             for metric in metrics.arm_metrics(records, experiment_id, arm, ks, model=model)]
+    found = [metric for arm, model, harness in metrics.cells(records)
+             for metric in metrics.arm_metrics(records, experiment_id, arm, ks, model=model, harness=harness)]
     section, slice_metrics = metrics.plan_slice(records, experiment_id)
     found += slice_metrics
     report = {
@@ -400,7 +400,7 @@ def render(report: dict, found: list[Metric]) -> str:
     cells: dict[tuple[str, str], dict[tuple[str, str | None], Metric]] = {}  # (arm or "arm (model)", cell)
     for metric in found:
         if metric.cell == "all" or metric.cell[0] == "l":
-            name = metrics.cell_name(metric.cut.rows[0]["arm"], metric.model)
+            name = metrics.cell_name(metric.cut.rows[0]["arm"], metric.model, metrics.harness_of(metric.cut.rows[0]))
             cells.setdefault((name, metric.cell), {})[(metric.metric, metric.cost_basis)] = metric
     ks = sorted({int(m.metric.split("_")[2]) for m in found if m.metric.startswith("pass_hat_")})
     lines = [f"ViabilityBench report: experiment {report['experiment_id']} ({report['label']}; "

@@ -54,6 +54,9 @@ use roko_core::tool::ToolError;
 use super::super::glob::segment_match;
 use super::{MAX_COMMAND_NESTING, ends_word, normalize, resolve_symlinks, word_path};
 
+/// The most audit-vault files a tree read is checked against.
+const VAULT_FILES: usize = 256;
+
 /// Words that can start a command without being its program.
 const SHELL_KEYWORDS: &[&str] = &[
     "if", "then", "else", "elif", "do", "while", "until", "!", "{", "}", "time",
@@ -1903,7 +1906,44 @@ fn sensitive_files(top: &Path, cwd: &Path, call_dir: &Path) -> Vec<PathBuf> {
             );
         }
     }
+    found.extend(vault_files_in(top, &roko_core::audit_home::vault_roots()));
     found
+}
+
+/// The audit vault's files (S05 §4.4) in the tree at `top`, a canonical
+/// directory, at most [`VAULT_FILES`]: those of each root in `roots` that
+/// the tree holds, or the tree's own when it lies in a vault.
+pub(super) fn vault_files_in(top: &Path, roots: &[PathBuf]) -> Vec<PathBuf> {
+    let mut files = Vec::new();
+    for root in roots {
+        let Ok(root) = root.canonicalize() else {
+            continue;
+        };
+        let start = if root.starts_with(top) {
+            root
+        } else if top.starts_with(&root) {
+            top.to_path_buf()
+        } else {
+            continue;
+        };
+        let mut pending = vec![start];
+        while let Some(dir) = pending.pop() {
+            let Ok(entries) = std::fs::read_dir(&dir) else {
+                continue;
+            };
+            for entry in entries.flatten() {
+                match entry.file_type() {
+                    Ok(kind) if kind.is_dir() => pending.push(entry.path()),
+                    Ok(_) => files.push(entry.path()),
+                    Err(_) => {}
+                }
+                if files.len() >= VAULT_FILES {
+                    return files;
+                }
+            }
+        }
+    }
+    files
 }
 
 /// The directories whose `.roko` holds key files that a read of the tree at

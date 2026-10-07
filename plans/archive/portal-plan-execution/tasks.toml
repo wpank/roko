@@ -1,0 +1,249 @@
+# Archived (bug-261c02): every task here assumes apps/portal/src/app/work/editor/page.tsx already exists, with an
+# existing TaskEditorRow component and StatusLED atom to extend -- none of the three exist in the current portal
+# tree (confirmed: no editor/ directory, no StatusLED.tsx, no AgentOutputStream.tsx anywhere under apps/portal/src).
+# This is not a stale line range; the plan's whole premise (modifying an existing editor page) does not hold, and
+# nothing in its own tasks creates these files first. Archived rather than patched.
+[meta]
+plan = "portal-plan-execution"
+total = 3
+done = 0
+status = "archived"
+skip_enrichment = true
+estimated_total_minutes = 45
+
+# ── T01: Add SSE task-status event handling in the plan editor page ───────────
+#
+# The editor page (`apps/portal/src/app/work/editor/page.tsx`) currently fires
+# `api.post('/api/plans/{id}/execute')` and then shows a single toast. After that
+# the UI is static — the task list does not update as the plan runs.
+#
+# The dashboard SSE stream (`useStateHubSSE`, fanning events into Zustand) already
+# delivers `task_started`, `task_completed`, and `task_failed` events. The editor
+# page needs to subscribe to these events from the store and reflect them in the
+# task list rows so users can see live task status without navigating away.
+#
+# Wire: import `useDashboardStore` in the editor page, derive a map of
+# `{ [taskId]: 'idle' | 'running' | 'done' | 'failed' }` from the store's
+# `tasks` slice, and apply a status indicator to each `TaskEditorRow` while
+# `executionRunId` is non-null.
+
+[[task]]
+id = "T01"
+title = "Wire live task status indicators into the plan editor page"
+description = """Modify `apps/portal/src/app/work/editor/page.tsx` to display
+live task execution status in the task list. After a successful `executeMut`,
+store the returned `run_id` in a `executionRunId` state variable. While
+`executionRunId` is set, subscribe to the `useDashboardStore` tasks slice and
+derive a `taskStatus` map keyed by task ID. Pass each task's derived status
+(`'idle' | 'running' | 'done' | 'failed'`) as a new `liveStatus` prop to
+`TaskEditorRow`. In `TaskEditorRow`, render a coloured status pill on the left
+of the row using the existing `StatusLED` atom when `liveStatus` is not `'idle'`.
+The form controls (ID, title, role, depends, files) must remain editable during
+execution. Do not modify the `AgentOutputStream` component in this task."""
+status = "ready"
+tier = "focused"
+max_loc = 120
+files = [
+    "apps/portal/src/app/work/editor/page.tsx",
+]
+role = "implementer"
+depends_on = []
+acceptance = [
+    "executionRunId is captured from the execute mutation response and stored in state.",
+    "While executionRunId is set, a taskStatus map is derived from useDashboardStore tasks.",
+    "TaskEditorRow accepts and renders a liveStatus prop using StatusLED.",
+    "The page compiles with no TypeScript errors (`npx tsc --noEmit` from apps/portal).",
+    "Existing Generate, Save, and Execute button behaviour is unchanged.",
+]
+
+[task.context]
+read_files = [
+    { path = "apps/portal/src/app/work/editor/page.tsx", lines = "1-80", why = "Imports and type definitions — ExecuteResponse has run_id field." },
+    { path = "apps/portal/src/app/work/editor/page.tsx", lines = "479-550", why = "Execute mutation and render — where to capture run_id and integrate status." },
+    { path = "apps/portal/src/app/work/editor/page.tsx", lines = "185-260", why = "TaskEditorRow component — where to add the liveStatus prop and StatusLED." },
+    { path = "apps/portal/src/stores/dashboard.ts", lines = "1-80", why = "Understand the tasks slice shape in the dashboard store." },
+    { path = "apps/portal/src/components/atoms/StatusLED.tsx", why = "StatusLED props and colour variants to use for task status rendering." },
+]
+symbols = [
+    "ExecuteResponse.run_id — string | undefined, returned from execute mutation",
+    "useDashboardStore — Zustand store with a tasks: Map<string, TaskState> slice",
+    "TaskState.status — string field ('running' | 'done' | 'failed' | etc.)",
+    "StatusLED — atom component that accepts a status prop for coloured indicators",
+    "TaskEditorRow — the row component to extend with a liveStatus prop",
+]
+anti_patterns = [
+    "Do not poll the HTTP API for task status — derive status exclusively from the SSE-driven Zustand store.",
+    "Do not disable the task form fields during execution; they must remain editable.",
+    "Do not modify AgentOutputStream.tsx in this task; streaming output is T02's scope.",
+    "Do not add a new SSE connection; reuse the existing global connection via useDashboardStore.",
+    "Do not clear executionRunId until the user explicitly starts a new execution.",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'executionRunId\\|execution_run_id' apps/portal/src/app/work/editor/page.tsx"
+fail_msg = "editor page must store the active execution run_id in state"
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'useDashboardStore' apps/portal/src/app/work/editor/page.tsx"
+fail_msg = "editor page must import and use the dashboard store for live task status"
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'liveStatus\\|StatusLED' apps/portal/src/app/work/editor/page.tsx"
+fail_msg = "editor page must pass liveStatus to TaskEditorRow and render StatusLED"
+
+[[task.verify]]
+phase = "typecheck"
+command = "cd apps/portal && npx tsc --noEmit 2>&1"
+fail_msg = "portal TypeScript compilation must pass after adding live status wiring"
+
+# ── T02: Add agent output streaming panel ─────────────────────────────────────
+#
+# After T01 the task list has live status pills but the agent's text output is
+# not visible. The `AgentOutputStream` component already exists and reads from
+# the dashboard store's `agentOutput` map keyed by agent ID. During execution
+# the `agent_spawned` event populates the store with an agent ID associated with
+# a task. Wire a collapsible `AgentOutputStream` panel below the task list that
+# appears only while `executionRunId` is set, showing output for the currently
+# running agent (the one whose task status is `'running'`).
+
+[[task]]
+id = "T02"
+title = "Add collapsible agent output streaming panel to the plan editor"
+description = """Add a collapsible agent output streaming panel to
+`apps/portal/src/app/work/editor/page.tsx`, rendered below the task list while
+`executionRunId` is non-null. The panel must:
+  1. Derive the active agent ID from the store: find the task whose status is
+     'running' in the dashboard store, then look up the `agentId` associated with
+     that task from the store's `agents` slice.
+  2. Render `<AgentOutputStream agentId={activeAgentId} />` inside a bordered
+     section with a header showing `Agent output — <taskId>` and a collapse
+     toggle button.
+  3. Default to expanded. Persist the collapsed/expanded preference in a local
+     `useState` variable (do not persist to localStorage).
+  4. Show a `Spinner` placeholder when no agent is active (executionRunId set
+     but no task is yet 'running').
+  5. Hide entirely when `executionRunId` is null.
+Do not change `AgentOutputStream.tsx` itself."""
+status = "ready"
+tier = "focused"
+max_loc = 100
+files = [
+    "apps/portal/src/app/work/editor/page.tsx",
+]
+role = "implementer"
+depends_on = ["T01"]
+acceptance = [
+    "A streaming panel appears below the task list while executionRunId is set.",
+    "The panel shows AgentOutputStream for the currently running agent's task.",
+    "A collapse toggle button hides/shows the panel body.",
+    "A Spinner is shown when executionRunId is set but no task is running yet.",
+    "The panel is hidden entirely when executionRunId is null.",
+    "`npx tsc --noEmit` from apps/portal passes with no errors.",
+]
+
+[task.context]
+read_files = [
+    { path = "apps/portal/src/app/work/editor/page.tsx", lines = "498-620", why = "The render section where the streaming panel should be added below the task list." },
+    { path = "apps/portal/src/components/organisms/AgentOutputStream.tsx", lines = "1-50", why = "AgentOutputStream props interface — accepts agentId: string." },
+    { path = "apps/portal/src/stores/dashboard.ts", lines = "1-120", why = "Understand agents slice shape: AgentState with taskId association." },
+    { path = "apps/portal/src/components/atoms/Spinner.tsx", why = "Spinner component props for the loading placeholder." },
+    { path = "apps/portal/src/components/atoms/Button.tsx", why = "Button atom for the collapse toggle." },
+]
+symbols = [
+    "AgentOutputStream({ agentId }) — organism component, reads from dashboard store agentOutput map",
+    "useDashboardStore — store with agents: Map<string, AgentState> and tasks: Map<string, TaskState>",
+    "AgentState.taskId — links an agent to its owning task for status correlation",
+    "executionRunId — state variable from T01 gating panel visibility",
+    "Spinner — loading indicator atom",
+]
+anti_patterns = [
+    "Do not fetch agent output via HTTP polling; AgentOutputStream already reads from the SSE-driven store.",
+    "Do not persist collapsed state to localStorage or any external store.",
+    "Do not render more than one AgentOutputStream instance simultaneously.",
+    "Do not modify AgentOutputStream.tsx — integrate it as-is via its existing agentId prop.",
+    "Do not show the panel when executionRunId is null, even if agents are in the store.",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'AgentOutputStream' apps/portal/src/app/work/editor/page.tsx"
+fail_msg = "editor page must render AgentOutputStream in the streaming panel"
+
+[[task.verify]]
+phase = "structural"
+command = "grep -qE 'collapsed|streamPanelOpen|panelOpen|isCollapsed' apps/portal/src/app/work/editor/page.tsx"
+fail_msg = "editor page must have a collapse state variable for the streaming panel"
+
+[[task.verify]]
+phase = "typecheck"
+command = "cd apps/portal && npx tsc --noEmit 2>&1"
+fail_msg = "portal TypeScript compilation must pass after adding the streaming panel"
+
+# ── T03: Review the implementation ────────────────────────────────────────────
+#
+# A reviewer reads both modified files and the two referenced component files,
+# confirms the wiring is correct, and writes a brief review doc noting any
+# residual concerns. The reviewer does not modify source files.
+
+[[task]]
+id = "T03"
+title = "Review live execution wiring and write review doc"
+description = """Act as an independent reviewer. Read the modified editor page
+and the referenced store and component files. Confirm: (1) executionRunId is
+captured and cleared correctly, (2) task status derivation from the store is
+correct and does not cause stale-closure bugs, (3) the streaming panel derives
+the active agent ID correctly, (4) no new SSE connections are opened, and
+(5) TypeScript types are correct. Create `apps/portal/src/app/work/editor/REVIEW.md`
+with sections `## Wiring correctness`, `## Potential issues`, and `## Verdict`.
+Verdict must be `PASS` or `FAIL`. Do not modify any source file."""
+status = "ready"
+tier = "integrative"
+max_loc = 120
+files = [
+    "apps/portal/src/app/work/editor/REVIEW.md",
+]
+role = "implementer"
+depends_on = ["T02"]
+acceptance = [
+    "REVIEW.md exists with Wiring correctness, Potential issues, and Verdict sections.",
+    "Verdict section contains the word PASS or FAIL in uppercase.",
+    "Review references specific line numbers or symbol names from the implementation.",
+    "TypeScript typecheck passes: `npx tsc --noEmit` from apps/portal.",
+]
+
+[task.context]
+read_files = [
+    { path = "apps/portal/src/app/work/editor/page.tsx", lines = "1-80", why = "Review imports and type definitions introduced by T01 and T02." },
+    { path = "apps/portal/src/app/work/editor/page.tsx", lines = "479-620", why = "Review execute mutation, run_id capture, and streaming panel rendering." },
+    { path = "apps/portal/src/stores/dashboard.ts", lines = "1-120", why = "Verify the store slice shapes the implementation depends on." },
+    { path = "apps/portal/src/components/organisms/AgentOutputStream.tsx", lines = "1-50", why = "Confirm the agentId prop contract used by the streaming panel." },
+]
+symbols = [
+    "executionRunId — state variable gating the streaming panel",
+    "taskStatus — derived map from dashboard store tasks slice",
+    "activeAgentId — derived from agents slice, used as AgentOutputStream prop",
+    "useDashboardStore — global SSE-driven store; no new connections should be opened",
+]
+anti_patterns = [
+    "Do not edit source files to resolve review findings — note them in Potential issues.",
+    "Do not accept the implementation without checking for stale-closure or hook ordering issues.",
+    "Do not skip execution of the TypeScript typecheck — run it and report the result.",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "test -f apps/portal/src/app/work/editor/REVIEW.md && grep -q '## Wiring correctness' apps/portal/src/app/work/editor/REVIEW.md && grep -q '## Potential issues' apps/portal/src/app/work/editor/REVIEW.md && grep -q '## Verdict' apps/portal/src/app/work/editor/REVIEW.md"
+fail_msg = "REVIEW.md must exist with all three required sections"
+
+[[task.verify]]
+phase = "content"
+command = "grep -qE 'PASS|FAIL' apps/portal/src/app/work/editor/REVIEW.md"
+fail_msg = "REVIEW.md Verdict section must contain PASS or FAIL"
+
+[[task.verify]]
+phase = "typecheck"
+command = "cd apps/portal && npx tsc --noEmit 2>&1"
+fail_msg = "portal TypeScript compilation must remain clean after review"

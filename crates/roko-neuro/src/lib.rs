@@ -445,6 +445,12 @@ pub struct KnowledgeEntry {
     /// Used for tier promotion: 2+ for Transient->Working.
     #[serde(default)]
     pub confirmation_count: u32,
+    /// Number of attempts that failed through the agent's own work while
+    /// their prompt surfaced this entry (S02 L5, decision 4): evidence that
+    /// it keeps company with failures, for audits to weigh. It changes no
+    /// confidence, balance or tier.
+    #[serde(default)]
+    pub contradiction_count: u32,
     /// Distinct context IDs (e.g. plan/task combos) that confirmed this entry.
     /// Used for tier promotion: 3+ distinct contexts for Working->Consolidated.
     #[serde(default)]
@@ -500,6 +506,11 @@ pub struct KnowledgeEntry {
     /// P3-30: Activation conditions controlling when this entry is surfaced.
     #[serde(default)]
     pub activation_conditions: Vec<ActivationCondition>,
+    /// The run whose uncommitted batch the entry belongs to (P21, 8137):
+    /// other runs' retrieval skips it until the batch commits, which clears
+    /// it, and a rolled-back batch is deleted. `None` once committed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub commit_batch: Option<String>,
 }
 
 impl Default for KnowledgeEntry {
@@ -537,7 +548,9 @@ impl Default for KnowledgeEntry {
             hdc_encoder_version: 0,
             access_count: 0,
             last_accessed: None,
+            contradiction_count: 0,
             activation_conditions: Vec::new(),
+            commit_batch: None,
         }
     }
 }
@@ -1562,7 +1575,10 @@ pub use context::{
     VerifySpec,
 };
 pub use distiller::{DistillationBackend, Distiller};
-pub use episode_completion::spawn_episode_distillation;
+pub use episode_completion::{
+    DISTILLATION_ROLE, DistillationSpend, spawn_episode_distillation,
+    spawn_recorded_episode_distillation,
+};
 #[cfg(feature = "hdc")]
 pub use hdc::ResonancePair;
 pub use knowledge_store::{
@@ -1645,7 +1661,9 @@ mod tests {
             hdc_encoder_version: 0,
             access_count: 0,
             last_accessed: None,
+            contradiction_count: 0,
             activation_conditions: Vec::new(),
+            commit_batch: None,
         };
 
         assert_eq!(entry.effective_half_life_days(), 100.0);
@@ -1798,7 +1816,7 @@ mod tests {
     }
 
     #[test]
-    fn legacy_knowledge_kind_names_deserialize_to_prd_variants() {
+    fn legacy_knowledge_kind_names_deserialize_to_current_variants() {
         #[derive(Deserialize)]
         struct Wrapper {
             kind: KnowledgeKind,

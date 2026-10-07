@@ -45,6 +45,11 @@ use roko_core::{Body, Kind, Provenance, Signal, ToolPermissions};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
+use crate::safety::effects::{EffectHold, OutboundPolicy, is_outbound_effect};
+use crate::safety::provenance_sink::{
+    ProvenanceAck, ProvenanceCall, ProvenanceIntent, ProvenanceOutcome, ProvenanceVerdict,
+    SafetyProvenanceSink, arguments_digest, result_digest,
+};
 use crate::safety::{HookDecision, SafetyLayer};
 use crate::tool_immune::{
     check_tool_control, is_untrusted_source, screen_tool_result, validate_tool_call_identity,
@@ -63,7 +68,6 @@ pub mod production_safety_chain;
 /// control, screening, finalization, and terminal audit state.
 pub mod result_cache;
 pub mod timeout;
-pub mod tool_selector;
 pub mod truncate;
 pub mod validate;
 
@@ -276,8 +280,6 @@ pub struct EffectiveCatalogSnapshot {
     pub execution_owner: String,
     /// The entity (role, profile, contract) that owns policy authority.
     pub policy_owner: String,
-    /// Whether a profile-based tool selector was active.
-    pub selector_active: bool,
     /// Whether an extension hook chain was active.
     pub hook_chain_active: bool,
     /// Whether the production (IFC/corrigibility) hook chain was active.
@@ -290,7 +292,6 @@ impl Default for EffectiveCatalogSnapshot {
             tool_count: 0,
             execution_owner: "unknown".to_string(),
             policy_owner: "unknown".to_string(),
-            selector_active: false,
             hook_chain_active: false,
             production_hooks_active: false,
         }
@@ -341,11 +342,6 @@ pub struct ToolDispatcher {
     /// Kept separate from the extension hook chain so callers cannot replace
     /// production safety hooks by attaching a custom chain.
     production_safety_chain: Option<production_safety_chain::ProductionSafetyChain>,
-    /// Optional profile-based tool selector (TOOL-03).
-    ///
-    /// When set, tool calls are filtered against the selector before dispatch.
-    /// Tools not allowed by the selector are rejected with `PermissionDenied`.
-    tool_selector: Option<tool_selector::ToolSelector>,
     /// Optional callback invoked when the safety layer denies a tool call.
     ///
     /// See [`SafetyDenialCallback`] for the argument signature. Wire this up
@@ -358,8 +354,23 @@ pub struct ToolDispatcher {
     /// [`roko_fs::tool_audit::ScrubAuditAdapter`]. The adapter scrubs
     /// secrets before persistence so raw arguments never land on disk.
     file_audit: Option<Arc<roko_fs::tool_audit::ScrubAuditAdapter>>,
+    /// Optional durable safety provenance (gap-ff95f5): an acknowledged
+    /// intent before each handler runs, and how the call ended after it.
+    provenance_sink: Option<Arc<dyn SafetyProvenanceSink>>,
     /// What per-call traces and metrics are keyed on.
     call_identity: ToolCallIdentity,
+}
+
+/// Where a call's safety provenance stands when it ends (gap-ff95f5).
+#[derive(Debug, Default)]
+enum CallProvenance {
+    /// No intent was recorded: the call stopped before its handler.
+    #[default]
+    NotStarted,
+    /// The sink acknowledged the call's intent, and its handler ran.
+    Acknowledged(ProvenanceAck),
+    /// The sink did not record the intent, so the handler did not run.
+    IntentFailed,
 }
 
 impl ToolDispatcher {
@@ -381,9 +392,9 @@ impl ToolDispatcher {
             safety,
             hook_chain: None,
             production_safety_chain: Some(chain),
-            tool_selector: None,
             safety_denial_callback: None,
             file_audit: None,
+            provenance_sink: None,
             call_identity: ToolCallIdentity::default(),
         }
     }
@@ -407,9 +418,9 @@ impl ToolDispatcher {
             safety: SafetyLayer::permissive(),
             hook_chain: None,
             production_safety_chain: None,
-            tool_selector: None,
             safety_denial_callback: None,
             file_audit: None,
+            provenance_sink: None,
             call_identity: ToolCallIdentity::default(),
         }
     }
@@ -455,25 +466,9 @@ impl ToolDispatcher {
         self
     }
 
-    /// Attach a profile-based tool selector (TOOL-03).
-    ///
-    /// When attached, every dispatched tool call is checked against the
-    /// selector. Tools not allowed are rejected with `PermissionDenied`.
-    #[must_use]
-    pub fn with_tool_selector(mut self, selector: tool_selector::ToolSelector) -> Self {
-        self.tool_selector = Some(selector);
-        self
-    }
-
-    /// Returns the attached tool selector, if any.
-    #[must_use]
-    pub const fn tool_selector(&self) -> Option<&tool_selector::ToolSelector> {
-        self.tool_selector.as_ref()
-    }
-
     /// Snapshot the effective catalog state for audit/replay provenance.
     ///
-    /// The snapshot captures the tool count, whether selectors/hooks are
+    /// The snapshot captures the tool count, whether hook chains are
     /// active, and the execution/policy owner identifiers. Callers embed
     /// this in dispatch results so that offline replay can reconstruct
     /// exactly what authorization state applied.
@@ -487,7 +482,6 @@ impl ToolDispatcher {
             tool_count: self.registry.all().len(),
             execution_owner: execution_owner.into(),
             policy_owner: policy_owner.into(),
-            selector_active: self.tool_selector.is_some(),
             hook_chain_active: self.hook_chain.is_some(),
             production_hooks_active: self.production_safety_chain.is_some(),
         }
@@ -514,6 +508,16 @@ impl ToolDispatcher {
     #[must_use]
     pub fn with_file_audit(mut self, adapter: Arc<roko_fs::tool_audit::ScrubAuditAdapter>) -> Self {
         self.file_audit = Some(adapter);
+        self
+    }
+
+    /// Record safety provenance with `sink` (gap-ff95f5): an intent the sink
+    /// acknowledges after every safety stage has passed and before the
+    /// handler runs, then how the call ended, or that it was stopped. A call
+    /// whose intent the sink does not record never reaches its handler.
+    #[must_use]
+    pub fn with_provenance_sink(mut self, sink: Arc<dyn SafetyProvenanceSink>) -> Self {
+        self.provenance_sink = Some(sink);
         self
     }
 
@@ -585,6 +589,7 @@ impl ToolDispatcher {
                 serde_json::json!({}),
             );
             self.emit_terminal_audit(ctx, &placeholder, &result, timeout_ms, 0);
+            self.record_provenance_outcome(&call, ctx, CallProvenance::NotStarted, &result);
             return result;
         }
         // Persistent file audit: record the admitted call before execution.
@@ -594,14 +599,16 @@ impl ToolDispatcher {
             tracing::warn!(err = %e, tool = %call.name, "file audit admit write failed");
         }
         let started = std::time::Instant::now();
+        let mut provenance = CallProvenance::default();
         let result = self
-            .dispatch_unfinalized(&mut call, ctx, result_limit)
+            .dispatch_unfinalized(&mut call, ctx, result_limit, &mut provenance)
             .await;
         let result = self.finalize_result_with_limit(result, result_limit);
         let elapsed_ms = duration_to_ms(started.elapsed());
         self.emit_terminal_audit(ctx, &call, &result, timeout_ms, elapsed_ms);
         // Per-run tool history, for the contract's count and history rules.
         crate::safety::contract::record_tool_result(ctx, &call, result.is_ok());
+        self.record_provenance_outcome(&call, ctx, provenance, &result);
         // Persistent file audit: record the terminal result after execution.
         if let Some(fa) = &self.file_audit
             && let Err(e) = fa.record_result(&call, &result, &ctx.correlation).await
@@ -618,6 +625,7 @@ impl ToolDispatcher {
         call: &mut ToolCall,
         ctx: &ToolContext,
         result_limit: usize,
+        provenance: &mut CallProvenance,
     ) -> ToolResult {
         let timeout = ctx.timeout;
         let _timeout_ms = duration_to_ms(timeout);
@@ -700,27 +708,6 @@ impl ToolDispatcher {
             (timeout, "context")
         };
         let timeout_ms = duration_to_ms(timeout);
-        // 2b. Profile-based tool selector check (TOOL-03).
-        if let Some(ref selector) = self.tool_selector
-            && !selector.is_allowed(&call.name)
-        {
-            let err = ToolError::PermissionDenied(format!(
-                "tool `{}` not allowed by agent profile",
-                call.name
-            ));
-            self.emit_audit(
-                ctx,
-                call,
-                "tool_selector",
-                "denied",
-                &json!({
-                    "tool": call.name,
-                    "error": self.sanitize_audit_label(&err.to_string()),
-                    "error_kind": tool_error_kind(&err),
-                }),
-            );
-            return ToolResult::err(err);
-        }
         // 3. Apply task-level tool filters before capability checks.
         if let Some(reason) = tool_filter_block_reason(
             &call.name,
@@ -863,6 +850,61 @@ impl ToolDispatcher {
             );
             return ToolResult::err(err);
         };
+        // 4a. A call that acts on the outside world follows the run's
+        //     outbound policy (9131): `stage` holds it for a person's
+        //     approval instead of running it, and `deny` refuses it.
+        if is_outbound_effect(def) {
+            match self.safety.contract.outbound_policy() {
+                OutboundPolicy::Allow => {}
+                OutboundPolicy::Stage => return self.stage_effect(def, call, ctx),
+                OutboundPolicy::Deny => {
+                    let err = ToolError::PermissionDenied(format!(
+                        "`{}` acts on the outside world, which this run's outbound policy \
+                         denies; it did not run",
+                        call.name
+                    ));
+                    self.emit_audit(
+                        ctx,
+                        call,
+                        "effect",
+                        "denied",
+                        &json!({ "error_kind": tool_error_kind(&err) }),
+                    );
+                    return ToolResult::err(err);
+                }
+            }
+        }
+        // 4b. Safety provenance: the sink acknowledges the call's intent
+        //     before its handler can produce an effect, or the call stops
+        //     here (gap-ff95f5).
+        if let Some(sink) = &self.provenance_sink {
+            let intent = ProvenanceIntent {
+                call: self.provenance_call(&sink.digest_key(), call, ctx),
+                taint: ctx.taint_level(),
+            };
+            match sink.record_intent(&intent) {
+                Ok(ack) => *provenance = CallProvenance::Acknowledged(ack),
+                Err(error) => {
+                    *provenance = CallProvenance::IntentFailed;
+                    let error = self.sanitize_audit_label(&error.to_string());
+                    tracing::warn!(
+                        tool = %self.sanitize_audit_label(&call.name),
+                        %error,
+                        "safety provenance intent not recorded; the tool does not run"
+                    );
+                    self.emit_audit(
+                        ctx,
+                        call,
+                        "provenance",
+                        "intent_failed",
+                        &json!({ "error": error }),
+                    );
+                    return ToolResult::err(ToolError::PermissionDenied(format!(
+                        "{error}; the tool did not run"
+                    )));
+                }
+            }
+        }
         let handler_name = self.sanitize_audit_label(handler.name());
         self.emit_audit(
             ctx,
@@ -928,6 +970,50 @@ impl ToolDispatcher {
         // 8. Run every host-visible result through the fixed immune Graph.
         //    Suspicious payloads are withheld before translator/model reuse.
         screen_tool_result(call, def, ctx, result).await
+    }
+
+    /// Hold `call`, a call of `def` that acts on the outside world, for a
+    /// person's approval instead of running it (9131). The hold goes under
+    /// the workspace's `.roko/state/effect-holds/<run>/`, an `effect`
+    /// `staged` audit names it, and the agent learns that the call has not
+    /// run. The arguments stay in the hold alone: they may carry secrets.
+    fn stage_effect(&self, def: &ToolDef, call: &ToolCall, ctx: &ToolContext) -> ToolResult {
+        let hold = EffectHold::propose(def, call, ctx);
+        match hold.write(&ctx.immune_root_path) {
+            Ok(_) => {
+                self.emit_audit(
+                    ctx,
+                    call,
+                    "effect",
+                    "staged",
+                    &json!({ "effect_id": hold.effect_id, "run_id": hold.run_id }),
+                );
+                ToolResult::text(format!(
+                    "staged for approval as {}; it has not run",
+                    hold.effect_id
+                ))
+            }
+            Err(error) => {
+                let error = self.sanitize_audit_label(&error.to_string());
+                tracing::warn!(
+                    tool = %self.sanitize_audit_label(&call.name),
+                    %error,
+                    "an outbound effect could not be held for approval; it does not run"
+                );
+                self.emit_audit(
+                    ctx,
+                    call,
+                    "effect",
+                    "stage_failed",
+                    &json!({ "error": error }),
+                );
+                ToolResult::err(ToolError::PermissionDenied(format!(
+                    "`{}` acts on the outside world and could not be held for approval \
+                     ({error}); it did not run",
+                    call.name
+                )))
+            }
+        }
     }
 
     fn finalize_result_with_limit(&self, result: ToolResult, result_limit: usize) -> ToolResult {
@@ -1228,6 +1314,76 @@ impl ToolDispatcher {
         let bounded = truncate_result(ToolResult::text(scrubbed), MAX_AUDIT_LABEL_BYTES);
         bounded.text_content()
     }
+
+    /// Which call a provenance record is about: its IDs as bounded, scrubbed
+    /// labels, and its arguments as a digest keyed with `key`, never as text.
+    fn provenance_call(
+        &self,
+        key: &[u8; 32],
+        call: &ToolCall,
+        ctx: &ToolContext,
+    ) -> ProvenanceCall {
+        ProvenanceCall {
+            run_id: ctx.correlation.run_id.clone(),
+            task_id: ctx.correlation.task_id.clone(),
+            attempt_id: ctx.correlation.attempt_id.clone(),
+            turn_id: ctx.correlation.turn_id.clone(),
+            call_id: self.sanitize_audit_label(&call.id),
+            tool: self.sanitize_audit_label(&call.name),
+            args_digest: arguments_digest(key, &call.arguments),
+        }
+    }
+
+    /// Record with the provenance sink how `call` ended with `result`: the
+    /// handler's outcome once its intent was acknowledged, else the call's
+    /// refusal (gap-ff95f5). A failed write is logged: the call has already
+    /// happened.
+    fn record_provenance_outcome(
+        &self,
+        call: &ToolCall,
+        ctx: &ToolContext,
+        provenance: CallProvenance,
+        result: &ToolResult,
+    ) {
+        let Some(sink) = &self.provenance_sink else {
+            return;
+        };
+        let reason = match result {
+            ToolResult::Err(error) => Some(tool_error_kind(error).to_string()),
+            ToolResult::Ok { .. } => None,
+        };
+        let (intent, verdict, reason) = match provenance {
+            CallProvenance::Acknowledged(ack) if result.is_ok() => {
+                (Some(ack.record_id), ProvenanceVerdict::Succeeded, reason)
+            }
+            CallProvenance::Acknowledged(ack) => {
+                (Some(ack.record_id), ProvenanceVerdict::Failed, reason)
+            }
+            CallProvenance::NotStarted => (None, ProvenanceVerdict::Denied, reason),
+            CallProvenance::IntentFailed => (
+                None,
+                ProvenanceVerdict::Denied,
+                Some("provenance_intent_failed".to_string()),
+            ),
+        };
+        let key = sink.digest_key();
+        let ran = intent.is_some();
+        let outcome = ProvenanceOutcome {
+            call: self.provenance_call(&key, call, ctx),
+            intent,
+            verdict,
+            reason,
+            result_digest: ran.then(|| result_digest(&key, result)),
+            taint: ctx.taint_level(),
+        };
+        if let Err(error) = sink.record_outcome(&outcome) {
+            tracing::warn!(
+                tool = %self.sanitize_audit_label(&call.name),
+                error = %self.sanitize_audit_label(&error.to_string()),
+                "safety provenance outcome not recorded"
+            );
+        }
+    }
 }
 
 fn tool_result_taint(def: &ToolDef) -> CamelTaintLevel {
@@ -1423,10 +1579,10 @@ fn apply_production_result_filter(
         ToolResult::Err(err) => {
             // Post-handler filters run even on error payloads per spec:
             // "Post-handler filters run even when a handler returns an error payload."
-            let filtered_msg = chain.filter_result(&err.to_string(), tool_name);
-            // Reconstruct the error with filtered text. We use the same
-            // error variant but with sanitized content.
-            ToolResult::Err(ToolError::Other(filtered_msg))
+            // They rewrite the text the error carries and keep its variant, so a
+            // handler's refusal still reads as `PermissionDenied`.
+            let filtered = map_error_text(err, |message| chain.filter_result(&message, tool_name));
+            ToolResult::Err(filtered)
         }
     }
 }
@@ -1554,23 +1710,27 @@ fn is_sensitive_json_key(key: &str) -> bool {
 }
 
 fn scrub_untrusted_error(safety: &SafetyLayer, error: ToolError) -> ToolError {
-    let scrub = |message: String| safety.scrub_text(&message);
+    map_error_text(error, |message| safety.scrub_text(&message))
+}
+
+/// Rewrites the text `error` carries with `rewrite`, keeping its variant.
+fn map_error_text(error: ToolError, rewrite: impl Fn(String) -> String) -> ToolError {
     match error {
-        ToolError::PermissionDenied(message) => ToolError::PermissionDenied(scrub(message)),
-        ToolError::SchemaInvalid(message) => ToolError::SchemaInvalid(scrub(message)),
-        ToolError::HandlerPanic(message) => ToolError::HandlerPanic(scrub(message)),
+        ToolError::PermissionDenied(message) => ToolError::PermissionDenied(rewrite(message)),
+        ToolError::SchemaInvalid(message) => ToolError::SchemaInvalid(rewrite(message)),
+        ToolError::HandlerPanic(message) => ToolError::HandlerPanic(rewrite(message)),
         ToolError::PathOutsideWorktree(path) => {
-            ToolError::PathOutsideWorktree(scrub(path.to_string_lossy().into_owned()).into())
+            ToolError::PathOutsideWorktree(rewrite(path.to_string_lossy().into_owned()).into())
         }
         ToolError::KeyFileBlocked(path) => {
-            ToolError::KeyFileBlocked(scrub(path.to_string_lossy().into_owned()).into())
+            ToolError::KeyFileBlocked(rewrite(path.to_string_lossy().into_owned()).into())
         }
-        ToolError::CommandNotAllowed(message) => ToolError::CommandNotAllowed(scrub(message)),
-        ToolError::NetworkBlocked(message) => ToolError::NetworkBlocked(scrub(message)),
-        ToolError::Other(message) => ToolError::Other(scrub(message)),
+        ToolError::CommandNotAllowed(message) => ToolError::CommandNotAllowed(rewrite(message)),
+        ToolError::NetworkBlocked(message) => ToolError::NetworkBlocked(rewrite(message)),
+        ToolError::Other(message) => ToolError::Other(rewrite(message)),
         ToolError::Timeout { after_ms } => ToolError::Timeout { after_ms },
         ToolError::Cancelled => ToolError::Cancelled,
-        other => ToolError::Other(scrub(other.to_string())),
+        other => ToolError::Other(rewrite(other.to_string())),
     }
 }
 
@@ -3141,6 +3301,54 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn production_result_filter_keeps_the_handler_error_variant() {
+        async fn dispatch_fixed(error: ToolError, workspace: &std::path::Path) -> ToolResult {
+            let registry: Arc<dyn ToolRegistry> =
+                Arc::new(VecToolRegistry::from_tools(vec![tool(
+                    "fixed",
+                    ToolPermission::read_only(),
+                    ToolConcurrency::Serial,
+                )]));
+            let resolver = resolver_from([(
+                "fixed",
+                Arc::new(FixedResultHandler {
+                    name: "fixed",
+                    calls: Arc::new(AtomicUsize::new(0)),
+                    result: ToolResult::err(error),
+                }) as Arc<dyn ToolHandler>,
+            )]);
+            // `with_safety` installs the production chain, whose post-handler
+            // filter rewrites error text.
+            ToolDispatcher::new_unguarded(registry, resolver)
+                .with_safety(SafetyLayer::permissive())
+                .dispatch(
+                    ToolCall::new("fixed-call", "fixed", serde_json::json!({})),
+                    &ToolContext::testing(workspace),
+                )
+                .await
+        }
+
+        let workspace = tempfile::tempdir().unwrap();
+        let refused = dispatch_fixed(
+            ToolError::PermissionDenied("not for this role".to_string()),
+            workspace.path(),
+        )
+        .await;
+        let ToolResult::Err(ToolError::PermissionDenied(message)) = &refused else {
+            panic!("a handler's refusal must stay PermissionDenied, got {refused:?}");
+        };
+        assert_eq!(message, "not for this role");
+        let timed_out = dispatch_fixed(ToolError::Timeout { after_ms: 5 }, workspace.path()).await;
+        assert!(
+            matches!(
+                timed_out,
+                ToolResult::Err(ToolError::Timeout { after_ms: 5 })
+            ),
+            "a handler's timeout must stay Timeout, got {timed_out:?}"
+        );
+    }
+
+    #[tokio::test]
     async fn successful_call_emits_audit_signals_for_each_phase() {
         let registry: Arc<dyn ToolRegistry> = Arc::new(VecToolRegistry::from_tools(vec![tool(
             "echo",
@@ -3581,5 +3789,114 @@ mod tests {
             sample.tsq > 0.0 && sample.schema_compliance > 0.0,
             "{sample:?}"
         );
+    }
+
+    /// 9131: under a `stage` policy a call of a tool that acts on the
+    /// outside world never reaches its handler. Its hold, with the call's
+    /// run, plan, task, attempt and arguments, is written readable by its
+    /// owner alone; an `effect` `staged` audit names it without the
+    /// arguments; and the agent is told that the call is staged and has not
+    /// run. Under `deny` the call is refused, and under `allow` it runs.
+    #[tokio::test]
+    async fn outbound_effect_tool_call_is_held_for_approval() {
+        let mut send = tool(
+            "mail.send",
+            ToolPermission::writes(),
+            ToolConcurrency::Serial,
+        );
+        send.source = ToolSource::Mcp {
+            server: "mail".to_string(),
+        };
+        send.metadata = Some(json!({
+            "mcp_annotations": { "readOnlyHint": false, "destructiveHint": true }
+        }));
+        let registry: Arc<dyn ToolRegistry> = Arc::new(VecToolRegistry::from_tools(vec![send]));
+        let calls = Arc::new(AtomicUsize::new(0));
+        let handler: Arc<dyn ToolHandler> = Arc::new(FixedResultHandler {
+            name: "mail.send",
+            calls: Arc::clone(&calls),
+            result: ToolResult::text("sent"),
+        });
+        let dispatcher = |policy: OutboundPolicy| {
+            let contract = crate::safety::contract::AgentContract::permissive("assistant")
+                .with_outbound_policy(policy);
+            ToolDispatcher::new(
+                Arc::clone(&registry),
+                resolver_from([("mail.send", Arc::clone(&handler))]),
+            )
+            .with_safety(SafetyLayer::permissive().with_contract(contract))
+        };
+        let workspace = tempfile::tempdir().expect("tempdir");
+        let audit_sink = Arc::new(CollectAuditSink::default());
+        let ctx = ToolContext::testing(workspace.path())
+            .with_audit_sink(audit_sink.clone())
+            .with_correlation(roko_core::tool::CorrelationEnvelope {
+                run_id: "run-1".to_string(),
+                task_id: "T1".to_string(),
+                attempt_id: "run-1:plan-a:T1:2".to_string(),
+                ..roko_core::tool::CorrelationEnvelope::empty()
+            });
+        let arguments = json!({ "to": "ops@example.com", "body": "deploy is done" });
+        let call = || ToolCall::new("c-send", "mail.send", arguments.clone());
+
+        let staged = dispatcher(OutboundPolicy::Stage)
+            .dispatch(call(), &ctx)
+            .await;
+        assert_eq!(calls.load(Ordering::SeqCst), 0, "the handler ran");
+        let text = staged.text_content();
+        let effect_id = text
+            .strip_prefix("staged for approval as ")
+            .and_then(|rest| rest.strip_suffix("; it has not run"))
+            .unwrap_or_else(|| panic!("a staged result: {staged:?}"));
+        let path = workspace
+            .path()
+            .join(".roko/state/effect-holds/run-1")
+            .join(format!("{effect_id}.json"));
+        let hold: EffectHold =
+            serde_json::from_slice(&std::fs::read(&path).expect("the hold")).expect("hold JSON");
+        assert_eq!(
+            (hold.plan_id.as_str(), hold.task_id.as_str(), hold.attempt),
+            ("plan-a", "T1", 2)
+        );
+        assert_eq!(hold.server.as_deref(), Some("mail"));
+        assert_eq!(hold.arguments, arguments);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            let mode = std::fs::metadata(&path)
+                .expect("hold metadata")
+                .permissions()
+                .mode();
+            assert_eq!(mode & 0o777, 0o600);
+        }
+        let audits = audit_sink.snapshot();
+        let staged_audit = audits
+            .iter()
+            .find(|signal| {
+                signal.tag("phase") == Some("effect") && signal.tag("status") == Some("staged")
+            })
+            .expect("an effect staged audit");
+        let body = serde_json::to_string(&staged_audit.body).expect("audit body");
+        assert!(body.contains(effect_id), "{body}");
+        assert!(!body.contains("deploy is done"), "{body}");
+
+        let denied = dispatcher(OutboundPolicy::Deny)
+            .dispatch(call(), &ctx)
+            .await;
+        assert!(
+            matches!(
+                &denied,
+                ToolResult::Err(ToolError::PermissionDenied(message))
+                    if message.contains("outbound policy")
+            ),
+            "{denied:?}"
+        );
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
+
+        let allowed = dispatcher(OutboundPolicy::Allow)
+            .dispatch(call(), &ctx)
+            .await;
+        assert!(allowed.is_ok(), "{allowed:?}");
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
     }
 }

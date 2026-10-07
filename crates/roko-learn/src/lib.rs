@@ -43,6 +43,7 @@
 )]
 
 /// Active inference helpers for tier routing support.
+#[cfg(feature = "active-inference")]
 pub mod active_inference;
 /// Efficiency trend aggregation helpers for JSONL telemetry.
 pub mod aggregate;
@@ -77,14 +78,15 @@ pub mod error;
 pub mod error_enrichment;
 /// Persistent storage for error patterns discovered during plan execution.
 pub mod error_pattern_store;
-/// Event subscriber that fans runtime events into learning subsystems.
-pub mod event_subscriber;
 /// Unified learning events emitted by routing, evaluation, and runtime feedback.
 pub mod events;
 /// Crash-durable prompt-experiment receipt shared across all dispatch surfaces.
 pub mod experiment_receipt;
 /// Concrete feedback sink for workflow learning telemetry.
 pub mod feedback_service;
+/// Guarded commit (P21): last-known-good snapshots of learned stores,
+/// held-out and anchor checks, and rollback.
+pub mod guarded_commit;
 pub mod hdc_clustering;
 /// HDC fingerprint helpers for episode memory.
 pub mod hdc_fingerprint;
@@ -92,10 +94,14 @@ pub mod hdc_fingerprint;
 pub mod heuristics;
 /// Append-only hindsight corrections for recent episode outcomes.
 pub mod hindsight;
+/// M1, the ultrastable controller (S06): task resolutions, essential
+/// variables, change detectors and the controller's parts.
+pub mod homeostasis;
 /// Size-based rotation helper for append-only JSONL logs.
 /// Rolling latency EMAs and percentiles for routing feedback.
 pub mod latency;
 pub mod local_reward;
+pub mod loop_audit;
 /// Durable direct model-call feedback recorder.
 pub mod model_call_feedback;
 pub mod model_experiment;
@@ -110,6 +116,8 @@ pub mod playbook_rules;
 pub mod post_gate_reflection;
 pub mod prediction;
 pub mod prompt_experiment;
+/// Provider failover, the policy every dispatch path shares (gap-28ceb9).
+pub mod provider_failover;
 pub mod provider_health;
 /// Provider/model pass-rate outcome telemetry for future routing bandits.
 pub mod provider_model_outcome;
@@ -119,6 +127,9 @@ pub mod reflex_store;
 pub mod regression;
 /// RAG-10: Retrieval outcome JSONL telemetry with gate-pass correlation.
 pub mod retrieval_outcome;
+/// Guarded commit for the cascade router: held-out and anchor checks before
+/// its snapshot is replaced (P21, 8136).
+pub mod router_commit;
 /// Lookahead and calibration shells around the shipped cascade router.
 pub mod routing_extras;
 /// Append-only routing-decision audit log for explainability and dashboards.
@@ -129,8 +140,8 @@ pub mod runtime_feedback;
 pub mod section_effect;
 /// Prompt/context section outcome telemetry for future adaptive policy.
 pub mod section_outcome;
-/// Shadow testing loop (Loop 12) — runs alternative configs alongside production tasks for A/B comparison.
-pub mod shadow;
+/// M3: the calibrated self-model that forecasts each arm's pass, false-green, cost and latency.
+pub mod self_model;
 pub mod skill_library;
 pub mod task_metric;
 pub mod telemetry;
@@ -163,10 +174,6 @@ pub mod plasticity;
 pub mod prompt_compiler;
 /// P4-18: Adaptive model-specific tool degradation threshold learner.
 pub mod tool_cap_learner;
-/// P4-17: Persistent tool metrics aggregation store.
-pub mod tool_metrics_store;
-/// P4-19: Tool recommendation from efficiency history.
-pub mod tool_recommendation;
 /// P4-16: Trigger outcome learning.
 pub mod trigger_outcome;
 /// P4-01: LLM-generated verbal self-reflection after gate failure.

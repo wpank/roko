@@ -118,7 +118,6 @@ accept/planBars.accept.test.ts (3) → src/lib/.
 status = "ready"
 role = "implementer"
 tier = "focused"
-model_hint = "claude-sonnet-4-6"
 max_retries = 2
 estimated_minutes = 30
 depends_on = []
@@ -195,7 +194,6 @@ Acceptance: accept/pulse.accept.test.tsx (3) → src/components/primitives/.
 status = "ready"
 role = "implementer"
 tier = "focused"
-model_hint = "claude-sonnet-4-6"
 max_retries = 2
 estimated_minutes = 5
 depends_on = []
@@ -271,7 +269,6 @@ Acceptance: accept/taskGrid.accept.test.tsx (5) → src/components/stage/.
 status = "ready"
 role = "implementer"
 tier = "focused"
-model_hint = "claude-sonnet-4-6"
 max_retries = 2
 estimated_minutes = 20
 depends_on = ["T01", "T02", "T06"]
@@ -343,7 +340,6 @@ Acceptance: accept/bandCompact.accept.test.tsx (5) → src/components/run/.
 status = "ready"
 role = "implementer"
 tier = "focused"
-model_hint = "claude-sonnet-4-6"
 max_retries = 2
 estimated_minutes = 20
 depends_on = ["T02"]
@@ -409,7 +405,6 @@ Acceptance: accept/streamTruth.accept.test.tsx (6) → src/components/stream/.
 status = "ready"
 role = "implementer"
 tier = "focused"
-model_hint = "claude-sonnet-4-6"
 max_retries = 2
 estimated_minutes = 20
 depends_on = ["T02"]
@@ -487,7 +482,6 @@ Acceptance: accept/noticeClose.accept.test.tsx (6) → src/components/stage/.
 status = "ready"
 role = "implementer"
 tier = "focused"
-model_hint = "claude-sonnet-4-6"
 max_retries = 2
 estimated_minutes = 20
 depends_on = []
@@ -550,7 +544,6 @@ edit the acceptance copies.
 status = "ready"
 role = "implementer"
 tier = "focused"
-model_hint = "claude-sonnet-4-6"
 max_retries = 2
 estimated_minutes = 15
 depends_on = ["T01", "T03", "T04", "T05", "T06"]

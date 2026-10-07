@@ -1,4 +1,4 @@
-# ViabilityBench budget lines and caps: S09 v1.2 §4.6 (2026-09-29), enforced by driver/ledger.py (S08 §4.10, S09 E2).
+# ViabilityBench budget lines and caps: S09 v1.5 §4.6 (2026-10-02), enforced by driver/ledger.py (S08 §4.10, S09 E2).
 #
 # Before every dispatch the ledger reserves the dispatch's worst case against its budget line, and it refuses one
 # that would take spent + reserved + worst case past the line's cap, its experiment's cap or the programme stop.
@@ -7,27 +7,26 @@
 #
 # Change a cap only with the author's agreement, and amend S09 §4.6 in the same change.
 schema_version = "vb.budget/1"
-source = "S09 v1.2 §4.6 (2026-09-29)"
+source = "S09 v1.5 §4.6 (2026-10-02)"
 
 [programme]
 total_usd = 500                 # S09 §4.6: at most $500 in all, Fly.io excluded
-never_allocated_min_usd = 100   # S09 SC3: at least $100 is never allocated (these caps leave $110)
+never_allocated_min_usd = 100   # S09 SC3: at least $100 is never allocated (these caps leave $106)
 stop_usd = 400                  # the programme stop (S08 §4.10): no dispatch past $400 billed over all lines
 
 # One table per line, in S09's order, with its planned amount and cap.
 # `confirm = "lock"` marks a v1.2 default that the author confirms at the pre-registration lock (S09 §9 decision 11;
 # dec-39c781). v1.2 funds BL13 ($5 planned, $6 cap) for the plan-level slice by lowering BL1, BL6 and BL7, so the
-# caps still sum to $390. `was_cap_usd` is the v1.1 cap it lowered.
+# caps still sum to $390. `was_cap_usd` is the v1.1 cap it lowered. v1.5 raises BL0's cap from $10 to $14
+# (dec-1089ec), so the caps sum to $394: within the $400 stop, leaving $106 never allocated.
 [[line]]
 id = "BL0"
 gate = "G0"
 content = "Pilot: verifiers and cost accounting (F1, F4); ≈ 105 billed and 20 subscription runs"
 planned_usd = 6
-cap_usd = 10
-# W10 rec 7 proposes $14, to pay for Pilot B's seeds 2–3 (+$3 planned) from the unallocated reserve. It is not in
-# force until the author agrees (gap-327242). With it the caps sum to $394, still within the stop, and S09 §7.3's
-# "Σ caps = $390" needs a one-line amendment.
-proposed_cap_usd = 14
+cap_usd = 14
+# Raised from $10 by W10 rec 7, which the author approved on 2026-10-02 (dec-1089ec, with the pilots): it pays for
+# Pilot B's seeds 2–3 (+$3 planned) from the unallocated reserve (gap-327242). S09 v1.5 §4.6 and §7.3 carry it.
 
 [[line]]
 id = "BL1"
@@ -120,6 +119,13 @@ planned_usd = 5
 cap_usd = 6
 confirm = "lock"
 
+[[line]]
+id = "BL14"
+gate = "after G0"
+content = "Pilot C, exploratory (decision 3302): roko_ladder's cheap-model ladder on the pilot slice × 3 seeds"
+planned_usd = 5.40              # 60 runs x $0.09
+cap_usd = 6
+
 # Line ids held back: they fund nothing, so a dispatch on one is refused.
 [reserved]
 BL12 = "D43's proposed line for S05's first slice, still open"
@@ -131,3 +137,9 @@ id = "pilot"
 experiment_ids = ["PILOT-A", "PILOT-B"]   # S09 E1a (gap-c33709) and E1b (gap-327242)
 lines = ["BL0", "BL8"]                    # BL0, plus fd_api's five BL8 runs in Pilot A
 cap_usd = 15                              # W10 stage 1: the whole pilot stays within $15 billed
+
+[[experiment]]
+id = "pilot_c"
+experiment_ids = ["PILOT-C"]              # decision 3302; 3313
+lines = ["BL14"]
+cap_usd = 6                               # BL14's own cap: the ladder pilot stays within it

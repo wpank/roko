@@ -1,25 +1,168 @@
 # Roko
 
-Roko is a Rust toolkit for building agents that build themselves.
+**Run any mix of AI agents on real work, and know how far to trust the result.**
 
-Describe the work and roko turns it into a plan: a graph of small tasks with explicit dependencies.
-Agents carry out the tasks, running independent ones in parallel. Every result has to pass gates
-(compile, lint and test checks plus the task's own verify commands) before it is accepted. Each run
-records signals, episodes and costs, the inputs to roko's learning loops for model routing, prompts
-and gate thresholds. roko's own plans live in [`plans/`](plans/) and run through the same engine.
+Roko is a cybernetic multi-agent orchestration harness, written in Rust. Work runs as a plan: a
+graph of small tasks, each carrying a check that proves it is done. Roko runs the plan with a team
+of agents from any vendor: your Claude Code or Codex subscription, Gemini, Cursor, or API models,
+mixed freely. Independent tasks run in parallel, each in its own git worktree. Nothing counts until
+its checks pass, and the merged result is checked again as a whole. Every verdict feeds back: Roko
+learns which agent to trust with which kind of task, keeps what worked in memory, and re-checks a
+sample of its own passes to measure how often a green result is wrong.
 
-36 workspace members, ~1M lines of Rust, 10,300+ tests.
+*Cybernetic* means it steers by feedback. Roko senses what happened, compares it with what should
+have happened, corrects course, and audits its own corrections.
 
-## Status
+```mermaid
+flowchart LR
+    plan["Plan: small tasks,<br/>each with a check"]
+    run["Agents from any vendor<br/>run the tasks in parallel"]
+    plan --> run
+    run --> check{"Checks<br/>pass?"}
+    check -->|no| retry["Retry with the errors,<br/>then a stronger model"]
+    retry --> run
+    check -->|yes| merge["Merge, then check<br/>the whole plan"]
+    merge --> done["Verified result"]
+    done -.->|random sample| audit["Audit against<br/>hidden tests"]
+    run -.->|every attempt| learn[("Memory and<br/>learning")]
+    audit -.->|false-pass rate| learn
+    learn -.->|routing and context| run
+```
 
-roko is under active development, and not every subsystem described below is wired into every run
-path. Status and open work are tracked in the work graph under [`work/`](work/README.md), not in
-this file:
+## Why Roko
 
-- [`work/NOW.md`](work/NOW.md): what to work on next, goal by goal.
-- [`work/STATUS.md`](work/STATUS.md): every open item, grouped by subsystem.
+- **Use the agents you already pay for.** Roko is vendor-neutral. It drives the Claude Code, Codex,
+  Cursor and Gemini CLIs as workers, and calls Anthropic, Gemini, Cerebras, Perplexity or any
+  OpenAI-compatible API, local models included. One plan can mix all of them.
+- **Learns which agent to trust with what.** Routing comes from what has actually passed in your
+  own work. Each task goes to the cheapest model and vendor likely to succeed, and moves up to a
+  stronger one only when it fails.
+- **Done means checked.** A task is finished when its checks pass, not when an agent says so. The
+  checks are fixed before the agent starts and kept out of its reach, and the merged result is
+  checked again.
+- **Knows how often it's wrong.** Roko re-checks a random sample of its own passes against hidden
+  tests and reports a false-pass rate, so you know how far to trust a green result.
+- **Learning you can audit.** Every attempt feeds playbooks, a durable knowledge store and the
+  router. Each learning loop is measured against a held-out control and switched off if it doesn't
+  help, and Roko changes its own configuration only after regression checks, with rollback.
+- **Parallel without the mess.** Tasks run as a dependency graph, each in its own worktree. Tasks
+  that touch the same files never overlap, and finished work merges through a queue.
+- **Built to run unattended.** Plans checkpoint after every task, resume after any interruption, and
+  stay inside the budgets you set per turn, task, plan and day.
 
-The component table in [`CLAUDE.md`](CLAUDE.md) says where each subsystem lives.
+## Roko and Claude Code
+
+Roko doesn't replace your coding agent; it runs a team of them. Use Claude Code to pair on a
+problem. Use Roko when the work is big enough to plan, long enough to run unattended and important
+enough to verify, with Claude Code as one of its workers.
+
+| | Claude Code alone | Roko |
+|---|---|---|
+| Unit of work | A session | A plan: a versioned graph of tasks, each with its own check |
+| Models | Claude | Any vendor, routed per task by what has passed before |
+| "Done" means | The agent, a hook or you decide | The task's checks pass, then the whole plan's |
+| How far to trust it | Your own review | A false-pass rate measured by random audits |
+| Parallel work | Subagents within a session | A scheduled graph across isolated worktrees, merged through a queue |
+| Interruptions | Resume the conversation | Resume the plan from its last checkpoint |
+| Over time | Memory files | Routing, playbooks and knowledge learned from verified results |
+
+## Features
+
+### Plan
+
+- **Plans are files.** A plan is a `tasks.toml`: tasks, dependencies, the files each task may touch,
+  the context it needs and the commands that prove it is done. Read it, edit it, lint it, commit it.
+- **Specs are checked first.** A spec-quality lint scores every task, and vague ones go back to the
+  author before any agent starts.
+- **Focused context.** Each prompt layers a role template, the task's declared files and symbols,
+  relevant playbooks and knowledge, and the errors from any earlier attempt.
+- **From prompt to plan.** Write a plan by hand, or have an agent write one from a prompt with
+  `roko run --plan` or `roko plan generate`. Review and edit it, then run it.
+
+### Execute
+
+- **Parallel scheduling.** A task starts as soon as its dependencies finish, and tasks that write
+  the same files never run together.
+- **Isolation.** Every task works in its own git worktree. A git guard blocks destructive commands,
+  agents can't read your key files, and checks run in a clean environment.
+- **Self-correction.** A failed check comes back to the agent as parsed errors. Repeated failures
+  escalate the model, then split or replan the task.
+- **Durability.** Checkpoints after every task, resume after any interruption, a stall watchdog,
+  automatic provider failover, and spending limits per turn, task, plan and day.
+
+### Verify
+
+- **Per-task checks.** Any command with an exit code: `cargo test`, `npm test`, `pytest`, a script.
+  Code, docs, data or ops: if a command can check it, Roko can run it.
+- **Tamper evidence.** Acceptance tests are pinned outside the agent's reach, and every attempt is
+  diffed: deleted tests, weakened asserts or edits to the checks fail it.
+- **A gate ladder.** Compile, lint, test, public API, generated tests, property tests and
+  integration, scaled to each task's risk, with thresholds that adapt from history.
+- **Whole-plan checks.** Finished tasks merge into one branch, the integrated result is checked as a
+  whole, and a merge that breaks it is backed out.
+- **Random audits.** A random sample of passed tasks is re-verified against hidden tests, which
+  gives a measured false-pass rate.
+
+### Learn
+
+- **Everything recorded.** Every prompt, model, cost and verdict is a content-addressed signal in a
+  lineage graph you can replay (`roko replay <hash>`).
+- **Memory.** Verified lessons, error patterns and playbooks go into a durable knowledge store and
+  come back in future prompts.
+- **Learned routing.** The router learns from settled verdicts which model and vendor to trust with
+  which kind of task, and starts each task on the cheapest one likely to pass.
+- **Prompt experiments.** Prompt variants compete on real task outcomes.
+- **Self-regulation.** Roko holds pass rate, cost per verified task, false-pass rate and latency
+  within bounds and retunes itself when they drift. It commits a change to itself only after
+  regression checks, with rollback, and it switches off any learning loop that doesn't beat a
+  held-out control.
+
+### Connect
+
+- **12 provider kinds.** CLI agents (Claude Code, Codex, Cursor, Gemini), APIs (Anthropic, Gemini,
+  Cerebras, Perplexity), any OpenAI-compatible endpoint (OpenRouter, Ollama, LM Studio, GLM, Kimi),
+  and the Hermes and OpenClaw runtimes.
+- **ACP, both ways.** `roko acp` puts Roko inside ACP editors such as Zed and JetBrains IDEs, with
+  permission prompts in the editor, and Roko drives ACP agents such as Cursor as workers.
+- **MCP.** Every agent gets Roko's built-in tools plus your MCP servers, and Roko ships its own MCP
+  servers for code intelligence and GitHub.
+- **See and steer.** A ten-tab terminal dashboard, a web portal, and an HTTP API with SSE and
+  WebSocket streams. Watch each task's model, cost, gate output and transcript live; pause, resume,
+  retry or cancel from any of them.
+- **Runs where you do.** One binary. Run it as a daemon (launchd or systemd) or a remote worker,
+  deploy it to Railway, Fly or Docker in one command, and let GitHub webhooks start plans from
+  labelled issues.
+
+### Also in the box
+
+Offline knowledge consolidation between runs · affect-modulated dispatch · plugins with a capability
+policy · feeds, recipes and cron, webhook and file-watch triggers · per-agent HTTP sidecars ·
+Telegram and Slack channel adapters · a code-intelligence index for Rust, TypeScript and Go ·
+optional chain primitives (agent registry, job marketplace, arena).
+
+## What it looks like
+
+```bash
+roko init                                          # set up a workspace in your repo
+roko run "add a unit test for the config parser"   # one change, checked
+roko run --plan "Add OAuth2 login"                 # bigger work: write a plan, review it, run it
+
+roko plan generate "Add OAuth2 login"              # or in steps: write plans/add-oauth2-login/
+roko run plans/add-oauth2-login                    # run it: parallel, isolated, checked, merged
+roko dashboard                                     # watch it live
+```
+
+Roko ran most of the build of its own web portal: 16 plans and 173 tasks.
+
+36 workspace members · ~1.2M lines of Rust · 11,000+ tests · MIT OR Apache-2.0
+
+---
+
+**The guide:** [Quick start](#quick-start) · [How it works](#how-it-works) ·
+[Dashboard](#dashboard) · [Providers](#providers) · [Architecture](#architecture) ·
+[Gate pipeline](#gate-pipeline) · [Learning](#learning) · [Deployment](#deployment) ·
+[Configuration](#configuration) · [CLI reference](#cli-quick-reference) ·
+[Building](#building-and-testing) · [Contributing](#contributing)
 
 ## Quick start
 
@@ -127,34 +270,35 @@ commands pass (`crates/roko-gate`). Checkpoints, activity logs and costs go to
 
 ### Full planning pipeline
 
-For larger work that spans several tasks:
+For larger work that spans several tasks, a plan comes straight from a prompt:
 
 ```bash
-# 1. Capture what you want to build
-roko prd idea "Add user authentication with OAuth2"
+# 1. Write a plan: plans/add-oauth2-login/ with tasks.toml and plan.md (runs nothing)
+roko plan generate "Add OAuth2 login"
 
-# 2. Research the topic (optional; uses Perplexity for web-grounded citations)
-roko research topic "OAuth2 best practices in Rust"
+# 2. Optional: have an agent make research-backed improvements to the plan, in place
+roko research enhance-plan add-oauth2-login
 
-# 3. Draft a PRD (agent-assisted)
-roko prd draft new "oauth2-auth"
+# 3. Review it: edit tasks.toml and plan.md as you like, then lint the result
+roko plan validate plans/add-oauth2-login
 
-# 4. Generate an implementation plan with tasks
-roko prd plan oauth2-auth
+# 4. Run it through the Graph engine
+roko run plans/add-oauth2-login
 
-# 5. Execute the plans under plans/ through the Graph engine
-roko plan run plans/
+# 5. Resume if interrupted
+roko plan run plans/add-oauth2-login --resume-plan
 
-# 6. Resume if interrupted
-roko plan run plans/ --resume-plan
-
-# 7. Watch progress
+# 6. Watch progress
 roko dashboard
 ```
 
-`roko plan validate plans/<plan>` lints a `tasks.toml` without running it, and
-`roko plan run plans/<plan> --dry-run` lists the tasks and their order. `roko doctor disk` reports
-free space, stale Rust targets, orphaned worktrees and oversized logs without changing anything.
+`roko run --plan "<prompt>"` does steps 1 and 4 in one command: it writes the plan, shows it, and
+asks before running it (`--yes` skips the question). `roko run --plan --dry-run "<prompt>"` writes
+the plan and stops, and `roko run plans/` runs every plan under `plans/`.
+
+`roko plan run plans/<plan> --dry-run` lists a plan's tasks and their order. `roko doctor disk`
+reports free space, stale Rust targets, orphaned worktrees and oversized logs without changing
+anything.
 
 ### One-shot prompts
 
@@ -182,8 +326,8 @@ tabs, and `?` shows the key bindings.
 | F6 | Config | Effective config view with source annotations |
 | F7 | Inspect | Signal DAG inspector, episode replay |
 | F8 | Marketplace | Job browser, creation, and assignment |
-| F9 | Atelier | PRD workshop and plan progress |
-| F10 / 0 | Learning | Cascade routing, model health, and efficiency |
+| F9 | Learning | Cascade routing, model health, and efficiency |
+| F10 | Providers | Provider health, cost, latency, and circuit-breaker state |
 
 ## Providers
 
@@ -286,8 +430,7 @@ shows them.
 
 ## Learning
 
-roko records its own performance and feeds it back into routing, prompts and knowledge. Not every
-loop is attached to Graph plan runs yet. [`work/STATUS.md`](work/STATUS.md) tracks the open ones.
+roko records its own performance and feeds it back into routing, prompts and knowledge.
 
 ```bash
 roko learn all                       # router, experiments, efficiency, episodes, reflexes
@@ -410,9 +553,9 @@ debug binary instead of `cargo run`:
 ./dev.sh fast plans/my-plan
 ```
 
-FAST is only partly ported to the Graph engine; check work item `gap-4a6dcb` before relying on it.
 Every FAST task must author exactly one `verify` command. The patching agent is told not to build
-or test, and the runner owns that one check and writes a private evidence bundle under
+or test, and each attempt is capped at 6 turns and 90 s; the runner owns that one check, builds it
+in the `dev-fast` profile, never runs `cargo fix`, and writes a private evidence bundle under
 `.roko/runs/`.
 
 ```bash
@@ -435,11 +578,10 @@ collection.
 |---------|-------------|
 | `roko init [path]` | Create `.roko/` and `roko.toml` |
 | `roko run "<prompt>"` | Run a prompt as a checked task, or as a generated plan |
-| `roko plan run <dir>` | Execute a plan directory through the Graph engine |
+| `roko run --plan "<prompt>"` | Write a plan for the prompt, show it, and run it once you confirm |
+| `roko plan generate "<prompt>"` | Write a plan to `plans/<slug>/` without running it |
+| `roko run plans/<dir>` | Execute a plan directory through the Graph engine (also `roko plan run <dir>`) |
 | `roko plan status <dir>` | Show a plan's task states |
-| `roko prd idea "<text>"` | Capture a work item |
-| `roko prd draft new "<title>"` | Draft a PRD (agent-assisted) |
-| `roko prd plan <slug>` | Generate an implementation plan from a PRD |
 | `roko research topic "<topic>"` | Research with citations |
 | `roko status` | Signal counts, recent episodes, gate results |
 | `roko github status` | GitHub config, auth, plan PR, CI, and failure-issue status |
@@ -471,14 +613,24 @@ cargo test -p roko-agent
 cargo test -p roko-gate
 ```
 
+## Roadmap and open work
+
+Roko is under active development. Plans and open work live in the work graph under
+[`work/`](work/README.md):
+
+- [`work/NOW.md`](work/NOW.md): what to work on next, goal by goal.
+- [`work/STATUS.md`](work/STATUS.md): every open item, grouped by subsystem.
+
+The component table in [`CLAUDE.md`](CLAUDE.md) says where each subsystem lives.
+
 ## Contributing
 
 Contributions are welcome. A few ground rules:
 
 1. **Search before writing.** With 36 workspace members and ~1M lines, the thing you want to build
    might already exist. Run `rg 'StructName' crates/ --glob '*.rs'` first.
-2. **Wire, don't build.** The most common pattern in this repo is "built but never connected."
-   Before adding new code, check if existing code needs to be called from the runtime.
+2. **Wire, don't build.** Before adding new code, check whether existing code just needs to be
+   called from the runtime.
 3. **Verify before marking done.** Run the actual CLI code path. Passing unit tests does not mean
    the feature works end-to-end.
 4. **All checks must pass.** `cargo +nightly fmt --all`, `cargo clippy --workspace --no-deps -- -D warnings`

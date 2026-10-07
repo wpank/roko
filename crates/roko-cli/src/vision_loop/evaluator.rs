@@ -148,6 +148,8 @@ impl VisionEvaluator {
 
         let cascade_model_slugs = capture_runtime_model_slugs(&self.config, &model_slug);
         let recorder = ModelCallFeedbackRecorder::from_workdir(&self.workdir, cascade_model_slugs);
+        // Nothing else costs the evaluator's model calls (bug-724982).
+        let recorder = recorder.with_cost_records();
         if let Err(error) = recorder
             .record(ModelCallFeedback {
                 run_id: None,
@@ -156,6 +158,8 @@ impl VisionEvaluator {
                     chrono::Utc::now().timestamp_millis()
                 )),
                 prompt_section_ids: Vec::new(),
+                // The evaluator's prompt is its goal, the code, the screenshot
+                // and the loop's history: no knowledge entry (bug-eaa318).
                 knowledge_ids: Vec::new(),
                 model: model_slug.clone(),
                 provider: provider_id.clone(),
@@ -479,6 +483,8 @@ printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"total_cost
                 max_concurrent: None,
                 limits: None,
                 require_confirmation: false,
+                stream_usage: None,
+                billing: None,
             },
         );
         config.models.insert(

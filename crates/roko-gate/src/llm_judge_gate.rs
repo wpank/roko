@@ -84,6 +84,9 @@ pub struct LlmJudgeGate {
     /// JSONL file. Errors are logged via `tracing::warn` but never propagate
     /// to the caller. Typically set to `.roko/learn/judge-calibration.jsonl`.
     calibration_log: Option<PathBuf>,
+    /// The keys every calibration row carries: the attempt judged, the
+    /// judge model and the rubric (backlog 7126).
+    calibration_row: CalibrationRecord,
 }
 
 impl LlmJudgeGate {
@@ -94,6 +97,10 @@ impl LlmJudgeGate {
     ///
     /// Sourced from [`roko_core::defaults::DEFAULT_MAX_DIFF_BYTES`].
     pub const DEFAULT_MAX_DIFF_BYTES: usize = roko_core::defaults::DEFAULT_MAX_DIFF_BYTES;
+
+    /// The rubric of [`Self::build_prompt`]'s 0-to-1 score, which its
+    /// calibration rows name unless [`Self::with_rubric`] names another.
+    pub const RUBRIC: &str = "llm_judge.v1";
 
     /// Construct a judge gate that passes iff the oracle returns at least
     /// `min_score`. `min_score` is clamped to `[0, 1]`.
@@ -106,13 +113,18 @@ impl LlmJudgeGate {
             max_diff_bytes: Self::DEFAULT_MAX_DIFF_BYTES,
             name: "llm_judge".to_string(),
             calibration_log: None,
+            calibration_row: CalibrationRecord {
+                rubric: Some(Self::RUBRIC.to_string()),
+                ..CalibrationRecord::default()
+            },
         }
     }
 
     /// Set the path where per-decision calibration records are appended.
     ///
     /// Each `verify()` call will append a JSONL record to `path` with fields:
-    /// `task_id`, `verdict`, `confidence`, `output_length`, `timestamp`.
+    /// `task_id`, `verdict`, `confidence`, `output_length`, `timestamp`, and
+    /// the keys of [`Self::with_calibration_keys`] and [`Self::with_rubric`].
     /// Write errors are logged with `tracing::warn` and never surfaced as
     /// verdict failures.
     ///
@@ -120,6 +132,27 @@ impl LlmJudgeGate {
     #[must_use]
     pub fn with_calibration_log(mut self, path: impl Into<PathBuf>) -> Self {
         self.calibration_log = Some(path.into());
+        self
+    }
+
+    /// Key every calibration row by the attempt `attempt_key` and the
+    /// `judge_model` that scores it, so audit labels can score the judge
+    /// (backlog 7126).
+    #[must_use]
+    pub fn with_calibration_keys(
+        mut self,
+        attempt_key: impl Into<String>,
+        judge_model: impl Into<String>,
+    ) -> Self {
+        self.calibration_row.attempt_key = Some(attempt_key.into());
+        self.calibration_row.judge_model = Some(judge_model.into());
+        self
+    }
+
+    /// Name the rubric the calibration rows' scores answer.
+    #[must_use]
+    pub fn with_rubric(mut self, rubric: impl Into<String>) -> Self {
+        self.calibration_row.rubric = Some(rubric.into());
         self
     }
 
@@ -287,6 +320,7 @@ impl Verify for LlmJudgeGate {
                     confidence: score,
                     output_length,
                     timestamp: now_unix_secs(),
+                    ..self.calibration_row.clone()
                 });
                 v
             }
@@ -301,6 +335,7 @@ impl Verify for LlmJudgeGate {
                         confidence: self.min_score,
                         output_length,
                         timestamp: now_unix_secs(),
+                        ..self.calibration_row.clone()
                     });
                     v
                 } else {
@@ -310,6 +345,7 @@ impl Verify for LlmJudgeGate {
                         confidence: 0.0,
                         output_length,
                         timestamp: now_unix_secs(),
+                        ..self.calibration_row.clone()
                     });
                     Verdict::fail(&self.name, format!("judge error: {err}"))
                 }

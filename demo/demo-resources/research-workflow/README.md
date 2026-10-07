@@ -1,6 +1,6 @@
 # Research Workflow Demo
 
-Demonstrate research dispatch, PRD enhancement, and the research panel.
+Demonstrate research dispatch, research-backed plans, and the research panel.
 
 ## CLI commands
 
@@ -14,11 +14,14 @@ roko research topic "MEV landscape on Ethereum L2s" --deep
 # Direct search (fast, structured results)
 roko research search "libp2p relay implementation patterns"
 
-# Enhance a PRD with research citations
-roko research enhance-prd wire-knowledge-matchmaking
+# Write a plan that draws on the research reports
+roko plan generate "Wire knowledge into matchmaking" --context .roko/research
 
-# Optimize a plan with research
-roko research enhance-plan plans/wire-knowledge-matchmaking
+# Optimize the plan with research (takes the plan's directory name under plans/)
+roko research enhance-plan wire-knowledge-into-matchmaking
+
+# Optimize its tasks: split large ones, add file context, cut needless dependencies
+roko research enhance-tasks wire-knowledge-into-matchmaking
 
 # Analyze execution episodes for insights
 roko research analyze
@@ -26,7 +29,7 @@ roko research analyze
 
 ## Dashboard flow
 
-1. Open **Atelier → Chat**
+1. Open the dashboard chat
 2. Type `/research MEV landscape on Ethereum L2s`
 3. Watch the **Research bounty** tab — stages progress: dispatching → gathering → analyzing → synthesizing → complete
 4. Results show sources with relevance scores, findings with confidence levels, gaps, and follow-ups
@@ -42,8 +45,8 @@ curl -X POST http://localhost:6677/api/research/topic \
 # List research artifacts
 curl http://localhost:6677/api/research
 
-# Enhance a PRD
-curl -X POST http://localhost:6677/api/research/enhance-prd/wire-knowledge-matchmaking
+# Optimize a plan
+curl -X POST http://localhost:6677/api/research/enhance-plan/wire-knowledge-into-matchmaking
 
 # Analyze episodes
 curl -X POST http://localhost:6677/api/research/analyze
@@ -59,6 +62,6 @@ curl -X POST http://localhost:6677/api/research/analyze
 
 ## Dashboard tabs that light up
 
-- **Atelier → Research bounty** — Live research session with stages
-- **Atelier → PRDs** — Enhanced PRD shows citations
+- **Research bounty** — Live research session with stages
+- **Plans** — The enhanced plan's updated tasks
 - **Network → Learning** — Research efficiency recorded

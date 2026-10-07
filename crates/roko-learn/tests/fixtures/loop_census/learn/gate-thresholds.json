@@ -1,0 +1,49 @@
+{
+  "rungs": {
+    "5": {
+      "pass_count": 0,
+      "total_count": 0,
+      "ema_pass_rate": 0.9
+    },
+    "4": {
+      "pass_count": 0,
+      "total_count": 0,
+      "ema_pass_rate": 0.7
+    },
+    "6": {
+      "pass_count": 1,
+      "total_count": 1,
+      "ema_pass_rate": 1.0
+    },
+    "0": {
+      "pass_count": 35,
+      "total_count": 35,
+      "ema_pass_rate": 1.0
+    },
+    "1": {
+      "pass_count": 0,
+      "total_count": 0,
+      "ema_pass_rate": 0.75
+    },
+    "3": {
+      "pass_count": 0,
+      "total_count": 0,
+      "ema_pass_rate": 0.8
+    },
+    "1000": {
+      "pass_count": 78,
+      "total_count": 80,
+      "ema_pass_rate": 0.9406688378905352
+    },
+    "2": {
+      "pass_count": 214,
+      "total_count": 237,
+      "ema_pass_rate": 0.9131075953228578
+    },
+    "1001": {
+      "pass_count": 12,
+      "total_count": 13,
+      "ema_pass_rate": 0.7175704635189999
+    }
+  }
+}

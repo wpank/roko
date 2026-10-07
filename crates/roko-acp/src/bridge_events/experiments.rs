@@ -13,6 +13,7 @@ use roko_learn::{
     model_router::RoutingContext,
     prompt_experiment::{
         AssignmentSettlement, ExperimentStatus, ExperimentStore, PromptAttemptKey,
+        PromptExperimentAssignment,
     },
     provider_health::ProviderHealthRegistry,
 };
@@ -35,7 +36,8 @@ pub(crate) struct AcpExperimentAssignment {
     pub(crate) content: String,
     pub(crate) model_slug: Option<String>,
     /// P1-21: Durable receipt key for the canonical experiment lifecycle.
-    /// Populated when `prepare_attempt_assignments` succeeds.
+    /// Populated when `prepare_attempt_assignments` drew this dispatch's
+    /// variant (bug-a3f005); `None` records the outcome directly.
     pub(crate) attempt_key: Option<PromptAttemptKey>,
     /// Assignment IDs returned by `prepare_attempt_assignments`, needed by
     /// `mark_attempt_dispatched` to record the exact included subset.
@@ -49,10 +51,16 @@ pub(crate) fn experiment_store_lock() -> std::sync::MutexGuard<'static, ()> {
         .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
-/// Select one running experiment deterministically for this ACP role.
+/// Select one running experiment deterministically for this ACP role, and
+/// the variant this dispatch serves.
 ///
 /// The persisted map is intentionally sorted before selection so HashMap
 /// iteration order cannot change which experiment receives an ACP turn.
+///
+/// The variant is drawn once, by the dispatch's durable receipt, and ACP
+/// serves, marks dispatched and settles that one variant (bug-a3f005).
+/// Without a receipt, ACP serves the experiment's unkeyed variant, its
+/// control, and records the outcome directly.
 pub(crate) fn assign_acp_experiment(
     path: &Path,
     mode: &str,
@@ -73,43 +81,74 @@ pub(crate) fn assign_acp_experiment(
         .collect::<Vec<_>>();
     experiments.sort_by(|left, right| left.experiment_id.cmp(&right.experiment_id));
     let experiment = experiments.first()?;
-    let variant = experiment.assign_variant()?;
 
     // P1-21: Prepare a durable receipt key so ACP dispatches participate in
     // the canonical experiment lifecycle. Use session_id as run_id, "acp" as
-    // plan_id, and the mode as task_id.
-    let attempt_key = PromptAttemptKey::new(session_id, "acp", mode, 1);
-    let prepare_result = ExperimentStore::prepare_attempt_assignments(
+    // plan_id, the mode as task_id, and the dispatch as the attempt, so each
+    // dispatch gets its own draw and its own settlement (bug-a3f005).
+    let attempt = store.next_attempt_for(session_id, "acp", mode);
+    let attempt_key = PromptAttemptKey::new(session_id, "acp", mode, attempt);
+    match ExperimentStore::prepare_attempt_assignments(
         path,
         &attempt_key,
         Some(role),
         &[experiment.section_name.as_str()],
-    );
-    let (attempt_key, prepared_assignment_ids) = match prepare_result {
-        Ok(assignments) => {
-            let ids = assignments
-                .iter()
-                .map(|a| a.assignment_id.clone())
-                .collect::<Vec<_>>();
-            (Some(attempt_key), ids)
+    ) {
+        Ok(receipts) => {
+            if let Some(served) = served_from_receipts(&store, attempt_key, &receipts) {
+                return Some(served);
+            }
         }
         Err(err) => {
             tracing::debug!(
                 error = %err,
                 "P1-21: ACP experiment receipt preparation failed (non-fatal)"
             );
-            (None, Vec::new())
         }
-    };
+    }
 
+    let variant = experiment.assign_variant()?;
     Some(AcpExperimentAssignment {
         experiment_id: experiment.experiment_id.clone(),
         variant_id: variant.id.clone(),
         section_name: experiment.section_name.clone(),
         content: variant.content.clone(),
         model_slug: variant.slug.clone().filter(|slug| !slug.trim().is_empty()),
-        attempt_key,
-        prepared_assignment_ids,
+        attempt_key: None,
+        prepared_assignment_ids: Vec::new(),
+    })
+}
+
+/// What a dispatch serves from its receipts: the experiment and variant the
+/// receipt drew, with the content it snapshotted, so that the variant ACP
+/// serves is the one it settles (bug-a3f005). `None` without a receipt for a
+/// variant of a known experiment.
+fn served_from_receipts(
+    store: &ExperimentStore,
+    attempt_key: PromptAttemptKey,
+    receipts: &[PromptExperimentAssignment],
+) -> Option<AcpExperimentAssignment> {
+    let receipt = receipts.first()?;
+    let variant = store
+        .get(&receipt.experiment_id)?
+        .variants
+        .iter()
+        .find(|variant| variant.id == receipt.variant_id)?;
+    let content = receipt
+        .content_snapshot
+        .clone()
+        .unwrap_or_else(|| variant.content.clone());
+    Some(AcpExperimentAssignment {
+        experiment_id: receipt.experiment_id.clone(),
+        variant_id: receipt.variant_id.clone(),
+        section_name: receipt.section_name.clone(),
+        content,
+        model_slug: variant.slug.clone().filter(|slug| !slug.trim().is_empty()),
+        attempt_key: Some(attempt_key),
+        prepared_assignment_ids: receipts
+            .iter()
+            .map(|prepared| prepared.assignment_id.clone())
+            .collect(),
     })
 }
 
@@ -131,8 +170,15 @@ pub(crate) fn experiment_model_key(
     matching.into_iter().next()
 }
 
+/// The assignment ACP serves for this prompt, and the model it overrides.
+///
+/// A model variant whose model is not configured, or that would override a
+/// model the session selected explicitly, is dropped, and its receipt in
+/// `experiment_path` settles as abandoned instead of staying `Prepared`
+/// (bug-e3bbee).
 pub(crate) fn applicable_acp_experiment(
     config: &RokoConfig,
+    experiment_path: &Path,
     current_model_key: &str,
     model_selection_explicit: bool,
     assignment: Option<AcpExperimentAssignment>,
@@ -151,6 +197,7 @@ pub(crate) fn applicable_acp_experiment(
             model_slug = ?assignment.model_slug,
             "skipping ACP experiment variant with unresolved model"
         );
+        abandon_acp_experiment(experiment_path, &assignment);
         return (None, None);
     };
     if model_selection_explicit && resolve_model(config, current_model_key).model_key != candidate {
@@ -161,11 +208,66 @@ pub(crate) fn applicable_acp_experiment(
             selected_model = current_model_key,
             "skipping ACP model experiment because the session model was explicitly selected"
         );
+        abandon_acp_experiment(experiment_path, &assignment);
         return (None, None);
     }
 
     let model_override = (!model_selection_explicit).then_some(candidate);
     (Some(assignment), model_override)
+}
+
+/// Settle as abandoned the receipt of an assignment ACP drew but does not
+/// serve (bug-e3bbee), or whose prompt ended before its outcome was recorded
+/// ([`OpenExperimentReceipt`]): it counts no trial, and it does not stay
+/// `Prepared` or `Dispatched` in the store. Non-fatal: logs and returns on
+/// failure.
+fn abandon_acp_experiment(experiment_path: &Path, assignment: &AcpExperimentAssignment) {
+    let Some(attempt_key) = assignment.attempt_key.as_ref() else {
+        return;
+    };
+    let settlement = AssignmentSettlement::Abandoned;
+    if let Err(err) = ExperimentStore::settle_attempt(experiment_path, attempt_key, settlement) {
+        debug!(
+            experiment_id = %assignment.experiment_id,
+            variant_id = %assignment.variant_id,
+            error = %err,
+            "ACP experiment receipt abandonment failed (non-fatal)"
+        );
+    }
+}
+
+/// The receipt of a prompt's experiment assignment, open until the prompt's
+/// outcome is recorded. Dropped open, by an early return, an error or a panic
+/// between the assignment and its settlement, it settles the receipt as
+/// abandoned, so that no exit leaves it `Prepared` or `Dispatched`
+/// (bug-897879).
+pub(crate) struct OpenExperimentReceipt {
+    path: PathBuf,
+    assignment: Option<AcpExperimentAssignment>,
+}
+
+impl OpenExperimentReceipt {
+    /// The open receipt of `assignment`, in the experiment store at `path`.
+    /// Without an assignment there is none to settle.
+    pub(crate) fn new(path: &Path, assignment: Option<&AcpExperimentAssignment>) -> Self {
+        Self {
+            path: path.to_path_buf(),
+            assignment: assignment.cloned(),
+        }
+    }
+
+    /// The prompt's outcome was recorded, which settled the receipt.
+    pub(crate) fn settled(mut self) {
+        self.assignment = None;
+    }
+}
+
+impl Drop for OpenExperimentReceipt {
+    fn drop(&mut self) {
+        if let Some(assignment) = self.assignment.take() {
+            abandon_acp_experiment(&self.path, &assignment);
+        }
+    }
 }
 
 pub(crate) fn render_experiment_context(assignment: &AcpExperimentAssignment) -> String {
@@ -264,6 +366,25 @@ fn find_next_heading(text: &str) -> usize {
         .find("\n## ")
         .map(|pos| skip + pos + 1) // +1 to skip past the newline, pointing at "## "
         .unwrap_or(text.len())
+}
+
+/// Settle `assignment`'s receipt with what its prompt's outcome says about
+/// the prompt ([`super::cost::acp_learning_success`]): a success or a failure
+/// is recorded ([`record_acp_experiment_outcome`]), and an outcome that says
+/// nothing, a provider failure, abandons the receipt without a trial, as
+/// Graph dispatch does (bug-7e8dae).
+pub(crate) fn settle_acp_experiment(
+    path: &Path,
+    assignment: &AcpExperimentAssignment,
+    learning: Option<bool>,
+) -> std::io::Result<()> {
+    match learning {
+        Some(success) => record_acp_experiment_outcome(path, assignment, success),
+        None => {
+            abandon_acp_experiment(path, assignment);
+            Ok(())
+        }
+    }
 }
 
 pub(crate) fn record_acp_experiment_outcome(

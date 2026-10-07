@@ -110,11 +110,9 @@ roko agent start --name fix-auth-bug
 # Watch progress
 roko dashboard
 
-# Or use the self-hosting loop
-roko prd idea "Extract runner prompt assembly into a dedicated module"
-roko prd draft new "system-prompt-wiring"
-roko prd plan system-prompt-wiring
-roko plan run plans/
+# Or use the self-hosting loop: write a plan from a prompt, review it, run it
+roko plan generate "Extract runner prompt assembly into a dedicated module"
+roko run plans/extract-runner-prompt-assembly-into-a-dedicated-module
 ```
 
 ### 2.3 Agent Creation UX

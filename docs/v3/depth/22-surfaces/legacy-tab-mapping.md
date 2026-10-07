@@ -3,7 +3,7 @@
 > Parent: [22-SURFACES](../../22-SURFACES.md) SS5
 
 This file documents the compatibility mapping between the existing TUI tabs
-(F1-F11) and the seven v2 named-surface identities introduced by E37.
+(F1-F10) and the seven v2 named-surface identities introduced by E37.
 
 ---
 
@@ -30,14 +30,14 @@ named surfaces. The mapping is not 1:1 because:
   Workbench and Inbox)
 - Some surface identities add navigation concepts beyond the five core surfaces
   (Flows and System are additional compatibility identities)
-- Six legacy tabs carry no v2 surface identity at all (F4, F5, F8, F9, F10,
-  and Providers)
+- Five legacy tabs carry no v2 surface identity at all (F4, F5, F8, F9 and
+  F10)
 
 ---
 
 ## 2. Tab Enum and Function Keys
 
-The `Tab` enum defines eleven values mapped to function keys:
+The `Tab` enum defines ten values mapped to function keys:
 
 ```rust
 pub enum Tab {
@@ -49,9 +49,8 @@ pub enum Tab {
     Config,       // F6
     Inspect,      // F7
     Marketplace,  // F8
-    Atelier,      // F9
-    Learning,     // F10
-    Providers,    // -  (hyphen key)
+    Learning,     // F9
+    Providers,    // F10
 }
 ```
 
@@ -77,7 +76,7 @@ pub fn v2_surfaces(self) -> Vec<V2Surface> {
         Self::Config    => vec![V2Surface::System],
         Self::Inspect   => vec![V2Surface::Knowledge],
         Self::Git | Self::Logs | Self::Marketplace
-        | Self::Atelier | Self::Learning | Self::Providers => vec![],
+        | Self::Learning | Self::Providers => vec![],
     }
 }
 ```
@@ -94,9 +93,8 @@ pub fn v2_surfaces(self) -> Vec<V2Surface> {
 | **F6 Config** | System | Config editing maps to the System surface, which includes autonomy controls. |
 | **F7 Inspect** | Knowledge | The signal DAG inspector is the closest match to the Knowledge surface. |
 | **F8 Marketplace** | *(none)* | Marketplace browsing has no named-surface counterpart. |
-| **F9 Atelier** | *(none)* | PRD workshop is rendering-target-specific. |
-| **F10 Learning** | *(none)* | Learning analytics (cascade router, experiments) are rendering-target-specific. |
-| **- Providers** | *(none)* | Provider health is rendering-target-specific. |
+| **F9 Learning** | *(none)* | Learning analytics (cascade router, experiments) are rendering-target-specific. |
+| **F10 Providers** | *(none)* | Provider health is rendering-target-specific. |
 
 ---
 

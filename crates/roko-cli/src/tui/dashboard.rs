@@ -23,8 +23,6 @@ use ratatui::style::Color;
 use crate::plan::{PlanSummary, plans_dir};
 use crate::task_parser::{TaskDef, TasksFile};
 use roko_core::ExperimentWinnerSummary;
-#[cfg(test)]
-use roko_core::metric::TaskMetric;
 use roko_gate::adaptive_threshold::AdaptiveThresholds;
 use roko_learn::aggregate::{CFactorBucket, EfficiencyBucket, cfactor_trend, efficiency_trend};
 pub use roko_learn::cfactor::{CFactor, CFactorComponents};
@@ -60,9 +58,9 @@ pub(crate) use super::dashboard_types::{
 };
 
 // Re-export TuiDashboardModel and import shared functions from dashboard_model.
-pub use super::dashboard_model::TuiDashboardModel;
 #[cfg(test)]
 use super::dashboard_model::load_snapshot_blocking;
+pub use super::dashboard_model::{TuiDashboardModel, attempt_ledger_metrics};
 use super::dashboard_model::{
     count_to_f64, load_json_opt, load_knowledge_browse_entries, load_snapshot_best_effort,
     resolve_snapshot_root,
@@ -70,7 +68,6 @@ use super::dashboard_model::{
 
 pub(super) const MEMORY_DIR: &str = ".roko/memory";
 pub(super) const EPISODES_FILE: &str = "episodes.jsonl";
-pub(super) const TASK_METRICS_FILE: &str = "task-metrics.jsonl";
 
 pub(super) const LEARN_DIR: &str = ".roko/learn";
 pub(super) const EFFICIENCY_FILE: &str = "efficiency.jsonl";
@@ -359,6 +356,9 @@ pub struct DashboardData {
     pub generation: u64,
     /// Effective spend configuration used by HTTP/runner/TUI projections.
     pub budget: roko_core::config::BudgetConfig,
+    /// Effective `[gates]` configuration. It bounds the retry budgets the gate
+    /// pages show, as it bounds those of plan runs.
+    gates: roko_core::config::GatesConfig,
     /// Cached executor state from the canonical durable Runner projection.
     executor_state: Value,
     /// Durable source supplying `executor_state`.
@@ -443,10 +443,6 @@ pub struct DashboardData {
     event_log_cursor: EventLogCursor,
     /// Marketplace jobs from `.roko/jobs/`.
     pub marketplace_jobs: Vec<roko_core::MarketplaceJob>,
-    /// PRD summaries from `.roko/prd/`.
-    pub atelier_prds: Vec<roko_core::PrdSummary>,
-    /// Per-slug task lists for Atelier.
-    pub atelier_tasks_by_slug: std::collections::HashMap<String, Vec<roko_core::job::TaskSummary>>,
     /// Knowledge entries from `.roko/neuro/knowledge.jsonl` for the Inspect tab.
     pub knowledge_entries: Vec<KnowledgeBrowseEntry>,
     /// Incremental tailer for `.roko/learn/efficiency.jsonl`.
@@ -478,8 +474,8 @@ impl DashboardData {
         let cascade_router_path = learn_dir.join(CASCADE_ROUTER_FILE);
         let cfactor_path = learn_dir.join("c-factor.jsonl");
         let events_path = roko_dir.join("state").join("events.json");
-        let budget = roko_core::config::loader::load_config_unified(&root)
-            .map(|config| config.budget)
+        let (budget, gates) = roko_core::config::loader::load_config_unified(&root)
+            .map(|config| (config.budget, config.gates))
             .unwrap_or_default();
 
         let (runner_projection, runner_projection_status, runner_projection_error) =
@@ -584,7 +580,8 @@ impl DashboardData {
             Some(thresholds) => serde_json::from_value(thresholds.clone()).ok(),
             None if runner_projection_status == "invalid" => None,
             None => load_json_opt::<AdaptiveThresholds>(&gate_thresholds_path),
-        };
+        }
+        .map(|thresholds| bounded_by_gates(thresholds, &gates));
         let gate_thresholds_stamp = file_stamp(&gate_thresholds_path);
         let gate_results_page = if runner_projection_status == "invalid" {
             GateResultsPageData::default()
@@ -629,7 +626,6 @@ impl DashboardData {
             },
         );
 
-        let (atelier_prds, atelier_tasks_by_slug) = scan_atelier_prds(&roko_dir);
         let knowledge_entries = load_knowledge_browse_entries(&root);
 
         // Initialize incremental tailers and do the first tick so items are
@@ -644,6 +640,7 @@ impl DashboardData {
             root,
             generation,
             budget,
+            gates,
             executor_state: state,
             runner_projection_source,
             runner_projection_path,
@@ -686,8 +683,6 @@ impl DashboardData {
             event_log,
             event_log_cursor,
             marketplace_jobs: scan_marketplace_jobs(&roko_dir),
-            atelier_prds,
-            atelier_tasks_by_slug,
             knowledge_entries,
             efficiency_tailer,
             cfactor_tailer,
@@ -752,7 +747,8 @@ impl DashboardData {
                     {
                         Some(thresholds) => serde_json::from_value(thresholds.clone()).ok(),
                         None => load_json_opt::<AdaptiveThresholds>(&gate_thresholds_path),
-                    };
+                    }
+                    .map(|thresholds| bounded_by_gates(thresholds, &self.gates));
                 }
                 Err(error) => {
                     self.executor_state = Value::Null;
@@ -816,7 +812,8 @@ impl DashboardData {
             && self.runner_projection_status != "invalid"
         {
             self.gate_thresholds_stamp = stamp;
-            self.adaptive_thresholds = load_json_opt::<AdaptiveThresholds>(&gate_thresholds_path);
+            self.adaptive_thresholds = load_json_opt::<AdaptiveThresholds>(&gate_thresholds_path)
+                .map(|thresholds| bounded_by_gates(thresholds, &self.gates));
             self.rebuild_gate_results_page();
             generation_changed = true;
         }
@@ -881,11 +878,8 @@ impl DashboardData {
             }
         }
 
-        // Refresh marketplace jobs + PRDs each tick.
+        // Refresh marketplace jobs each tick.
         self.marketplace_jobs = scan_marketplace_jobs(&roko_dir);
-        let (prds, tasks_by_slug) = scan_atelier_prds(&roko_dir);
-        self.atelier_prds = prds;
-        self.atelier_tasks_by_slug = tasks_by_slug;
 
         if generation_changed {
             self.generation = self.generation.saturating_add(1);
@@ -1022,126 +1016,6 @@ fn scan_marketplace_jobs(roko_dir: &Path) -> Vec<roko_core::MarketplaceJob> {
         .collect();
     jobs.sort_by(|a, b| b.created_at.cmp(&a.created_at).then(b.id.cmp(&a.id)));
     jobs
-}
-
-/// Scan `.roko/prd/` for PRD markdown files, then correlate with plan task
-/// files to populate task counts and per-slug task lists.
-fn scan_atelier_prds(
-    roko_dir: &Path,
-) -> (
-    Vec<roko_core::PrdSummary>,
-    std::collections::HashMap<String, Vec<roko_core::job::TaskSummary>>,
-) {
-    let dir = roko_dir.join("prd");
-    let Ok(entries) = std::fs::read_dir(&dir) else {
-        return (Vec::new(), std::collections::HashMap::new());
-    };
-    let mut prds: Vec<roko_core::PrdSummary> = entries
-        .filter_map(|e| e.ok())
-        .filter(|e| {
-            e.path()
-                .extension()
-                .and_then(|ext| ext.to_str())
-                .is_some_and(|ext| ext == "md")
-        })
-        .filter_map(|e| {
-            let slug = e
-                .path()
-                .file_stem()
-                .and_then(|s| s.to_str())
-                .unwrap_or_default()
-                .to_string();
-            let data = std::fs::read_to_string(e.path()).ok()?;
-            // Extract title from first markdown heading.
-            let title = data
-                .lines()
-                .find(|l| l.starts_with("# "))
-                .map(|l| l.trim_start_matches("# ").trim().to_string())
-                .unwrap_or_else(|| slug.clone());
-            // Detect status from frontmatter or content.
-            let status = if data.contains("status: published") || data.contains("Status: Published")
-            {
-                "published"
-            } else if data.contains("status: planned") || data.contains("Status: Planned") {
-                "planned"
-            } else if data.contains("status: draft") || data.contains("Status: Draft") {
-                "draft"
-            } else {
-                "idea"
-            };
-            Some(roko_core::PrdSummary {
-                slug,
-                title,
-                status: status.to_string(),
-                ..Default::default()
-            })
-        })
-        .collect();
-    prds.sort_by(|a, b| a.slug.cmp(&b.slug));
-
-    // Scan plan directories for tasks.toml files and correlate with PRD slugs.
-    let mut tasks_by_slug: std::collections::HashMap<String, Vec<roko_core::job::TaskSummary>> =
-        std::collections::HashMap::new();
-
-    // Workspace root is one level up from .roko/
-    let workspace_root = roko_dir.parent().unwrap_or(roko_dir);
-    let plan_dirs: Vec<PathBuf> = [workspace_root.join("plans"), roko_dir.join("plans")]
-        .into_iter()
-        .filter(|d| d.is_dir())
-        .collect();
-
-    for plan_dir in &plan_dirs {
-        let Ok(plan_entries) = std::fs::read_dir(plan_dir) else {
-            continue;
-        };
-        for entry in plan_entries.filter_map(|e| e.ok()) {
-            let tasks_path = entry.path().join("tasks.toml");
-            let Ok(tasks_file) = TasksFile::parse(&tasks_path) else {
-                continue;
-            };
-            let plan_name = entry
-                .path()
-                .file_name()
-                .and_then(|n| n.to_str())
-                .unwrap_or_default()
-                .to_string();
-
-            // Match plan to PRD: check if any PRD slug is a substring of the plan name,
-            // or the plan name contains the slug.
-            for prd in &mut prds {
-                let slug_lower = prd.slug.to_lowercase();
-                let plan_lower = plan_name.to_lowercase();
-                if plan_lower.contains(&slug_lower) || slug_lower.contains(&plan_lower) {
-                    prd.plan_count += 1;
-                    prd.task_total += tasks_file.tasks.len();
-                    let mut done = 0usize;
-                    let mut failed = 0usize;
-                    let mut task_summaries = Vec::new();
-                    for task in &tasks_file.tasks {
-                        match task.status.as_str() {
-                            "done" | "completed" | "passed" => done += 1,
-                            "failed" | "error" => failed += 1,
-                            _ => {}
-                        }
-                        task_summaries.push(roko_core::job::TaskSummary {
-                            id: task.id.clone(),
-                            title: task.title.clone(),
-                            status: task.status.clone(),
-                            agent: String::new(),
-                        });
-                    }
-                    prd.task_done += done;
-                    prd.task_failed += failed;
-                    tasks_by_slug
-                        .entry(prd.slug.clone())
-                        .or_default()
-                        .extend(task_summaries);
-                }
-            }
-        }
-    }
-
-    (prds, tasks_by_slug)
 }
 
 fn load_dashboard_git_diff(root: &Path) -> (String, bool) {
@@ -3141,6 +3015,27 @@ struct GateAggregate {
     last_run: Option<GateSignalSummary>,
 }
 
+/// Thresholds as plan runs use them: the `[gates]` retry bounds and skip
+/// streak over the learned per-rung statistics, which is what
+/// `graph_task_dispatch::retry_budget::TaskRetryBudgets::load` applies. The
+/// persisted file carries no bounds, so without this the suggested retries
+/// follow the crate's built-in 1..=5 rather than the run's budgets.
+pub(crate) fn bounded_by_gates(
+    mut thresholds: AdaptiveThresholds,
+    gates: &roko_core::config::GatesConfig,
+) -> AdaptiveThresholds {
+    thresholds.apply_gates_config(gates);
+    thresholds
+}
+
+/// The effective `[gates]` section of the workspace at `root`; the defaults
+/// when its config does not load.
+pub(crate) fn workspace_gates_config(root: &Path) -> roko_core::config::GatesConfig {
+    roko_core::config::loader::load_config_unified(root)
+        .map(|config| config.gates)
+        .unwrap_or_default()
+}
+
 /// Build the adaptive-threshold table rows for the gate-results page.
 ///
 /// Shared by the disk-mode loader and the connected-mode push path, which
@@ -3576,29 +3471,55 @@ mod tests {
         episode
     }
 
+    /// Attempt `attempt` of `plan`/`task` in run `run-1`, settled as passed
+    /// or as a failed verify step, on `model`, with `input_tokens` of which
+    /// `cache_hit_rate` came from the prompt cache, billed `cost_usd`.
     fn sample_metric(
         plan: &str,
         task: &str,
-        iteration: u32,
+        attempt: u32,
         passed: bool,
         model: &str,
         input_tokens: u64,
         cache_hit_rate: f64,
         cost_usd: f64,
-    ) -> TaskMetric {
-        let mut metric = TaskMetric::new(
-            roko_core::metric::ConfigHash::from("hash".to_string()),
-            plan,
-            task,
+    ) -> roko_learn::telemetry::AttemptVerdictRecord {
+        use roko_learn::telemetry::{AttemptIdentity, AttemptKey, AttemptOutcome};
+
+        let key = AttemptKey::new("run-1", plan, task, attempt);
+        let outcome = if passed {
+            AttemptOutcome::Passed
+        } else {
+            AttemptOutcome::GateFailed
+        };
+        let mut verdict = roko_learn::telemetry::AttemptVerdictRecord::settle(
+            AttemptIdentity::new(&key),
+            outcome,
+            true,
         );
-        metric.iteration = iteration;
-        metric.gate_passed = passed;
-        metric.model = model.to_string();
-        metric.input_tokens = input_tokens;
-        metric.cached_tokens = (input_tokens as f64 * cache_hit_rate).round() as u64;
-        metric.cache_hit_rate = cache_hit_rate;
-        metric.cost_usd = cost_usd;
-        metric
+        verdict.executed.model_dispatched = Some(model.to_string());
+        let cached = (input_tokens as f64 * cache_hit_rate).round() as u64;
+        verdict.usage.tokens_cache_read = Some(cached);
+        verdict.usage.tokens_in = Some(input_tokens - cached);
+        verdict.cost.billed_usd = Some(cost_usd);
+        verdict
+    }
+
+    /// Write `verdicts` to the attempt ledger of run `run-1` under `root`.
+    fn write_attempt_ledger(
+        root: &Path,
+        verdicts: Vec<roko_learn::telemetry::AttemptVerdictRecord>,
+    ) {
+        use roko_learn::telemetry::{TelemetryWriter, TelemetryWriterConfig};
+
+        let run_dir = roko_fs::RokoLayout::for_project(root).run_dir("run-1");
+        let writer = TelemetryWriter::spawn(&run_dir, TelemetryWriterConfig::default())
+            .expect("spawn the attempt writer");
+        let count = verdicts.len() as u64;
+        for verdict in verdicts {
+            assert!(writer.submit(verdict));
+        }
+        assert_eq!(writer.close().written, count);
     }
 
     fn sample_efficiency_event(
@@ -3625,6 +3546,8 @@ mod tests {
             cache_write_tokens: 0,
             cost_usd,
             cost_usd_without_cache: cost_usd,
+            api_equiv_usd: None,
+            price_snapshot_id: None,
             prompt_sections: Vec::new(),
             total_prompt_tokens: input_tokens,
             system_prompt_tokens: 0,
@@ -3829,7 +3752,6 @@ mod tests {
         let tempdir = tempdir().expect("tempdir");
         let memory_dir = tempdir.path().join(MEMORY_DIR);
         let episodes_path = memory_dir.join(EPISODES_FILE);
-        let metrics_path = memory_dir.join(TASK_METRICS_FILE);
 
         let episodes = vec![
             serde_json::to_string(&sample_episode("agent-a", "task-a", true, 1.50, 1_000))
@@ -3853,13 +3775,7 @@ mod tests {
             ),
             sample_metric("plan-b", "t2", 1, true, "claude-haiku-4-5", 200, 0.25, 0.30),
         ];
-        write_jsonl(
-            &metrics_path,
-            &metrics
-                .iter()
-                .map(|metric| metric.to_jsonl().expect("metric json"))
-                .collect::<Vec<_>>(),
-        );
+        write_attempt_ledger(tempdir.path(), metrics);
 
         let snapshot = load_snapshot_blocking(tempdir.path()).expect("snapshot should load");
 
@@ -3881,7 +3797,6 @@ mod tests {
         let tempdir = tempdir().expect("tempdir");
         let memory_dir = tempdir.path().join(MEMORY_DIR);
         let episodes_path = memory_dir.join(EPISODES_FILE);
-        let metrics_path = memory_dir.join(TASK_METRICS_FILE);
 
         write_jsonl(
             &episodes_path,
@@ -3892,12 +3807,10 @@ mod tests {
                     .expect("episode json"),
             ],
         );
-        write_jsonl(
-            &metrics_path,
-            &[
-                sample_metric("plan-a", "t1", 1, true, "claude-haiku-4-5", 100, 0.20, 0.10)
-                    .to_jsonl()
-                    .expect("metric json"),
+        write_attempt_ledger(
+            tempdir.path(),
+            vec![
+                sample_metric("plan-a", "t1", 1, true, "claude-haiku-4-5", 100, 0.20, 0.10),
                 sample_metric(
                     "plan-a",
                     "t1",
@@ -3907,12 +3820,8 @@ mod tests {
                     300,
                     0.50,
                     0.20,
-                )
-                .to_jsonl()
-                .expect("metric json"),
-                sample_metric("plan-b", "t2", 1, true, "claude-haiku-4-5", 200, 0.25, 0.30)
-                    .to_jsonl()
-                    .expect("metric json"),
+                ),
+                sample_metric("plan-b", "t2", 1, true, "claude-haiku-4-5", 200, 0.25, 0.30),
             ],
         );
 
@@ -3927,7 +3836,7 @@ mod tests {
         assert!(health.contains("haiku share: 66.7%"));
         assert!(health.contains("cache hit rate: 31.7%"));
 
-        assert!(trends.contains("task metrics: 3"));
+        assert!(trends.contains("attempts: 3"));
         assert!(trends.contains("first-attempt pass rate: 100.0%"));
         assert!(trends.contains("avg iterations per plan: 1.50"));
         assert!(trends.contains("avg cost per plan: $0.3000"));
@@ -4044,6 +3953,54 @@ mod tests {
         assert!(rendered.contains("compile"));
         assert!(rendered.contains("task-b"));
         assert!(rendered.contains("assertion failed on line 42"));
+    }
+
+    #[test]
+    fn displayed_retry_suggestions_follow_gates_config() {
+        // A rung that always passes.
+        let mut thresholds = AdaptiveThresholds::new();
+        for _ in 0..20 {
+            thresholds.observe(1, true);
+        }
+        let retries = |rows: &[GateThresholdRow]| {
+            rows.iter()
+                .find(|row| row.rung == 1)
+                .map(|row| row.current_threshold)
+        };
+        // The crate's built-in floor suggests 1 retry; a plan run gives a task
+        // without an authored `max_retries` the `[gates]` floor.
+        assert_eq!(retries(&gate_threshold_rows(&thresholds)), Some(1));
+        let gates = roko_core::config::GatesConfig {
+            adaptive_min_retries: 4,
+            ..roko_core::config::GatesConfig::default()
+        };
+        let bounded = bounded_by_gates(thresholds.clone(), &gates);
+        assert_eq!(retries(&gate_threshold_rows(&bounded)), Some(4));
+
+        // The disk loader reads `[gates]` from the workspace config.
+        let tmpdir = tempdir().expect("tempdir");
+        let learn_dir = tmpdir.path().join(LEARN_DIR);
+        write_json(&learn_dir.join(GATE_THRESHOLDS_FILE), &thresholds);
+        let memory_dir = tmpdir.path().join(MEMORY_DIR);
+        fs::create_dir_all(&memory_dir).expect("memory dir");
+        fs::write(memory_dir.join(EPISODES_FILE), "").expect("empty episodes");
+        fs::write(
+            tmpdir.path().join("roko.toml"),
+            "[gates]\nadaptive_min_retries = 4\n",
+        )
+        .expect("roko.toml");
+        let data = DashboardData::load_best_effort(tmpdir.path());
+        assert_eq!(retries(&data.gate_results_page.threshold_rows), Some(4));
+
+        // So does the connected view, which parses the pushed thresholds.
+        let mut state = crate::tui::state::TuiState::default();
+        state.workdir = tmpdir.path().to_path_buf();
+        let snapshot = roko_core::dashboard_snapshot::DashboardSnapshot {
+            gate_thresholds_json: serde_json::to_string(&thresholds).expect("thresholds json"),
+            ..roko_core::dashboard_snapshot::DashboardSnapshot::default()
+        };
+        state.update_from_dashboard_snapshot(&snapshot);
+        assert_eq!(retries(&state.gate_results_page.threshold_rows), Some(4));
     }
 
     #[test]
@@ -4180,7 +4137,8 @@ mod tests {
         assert!(rendered.contains("GateThresholds"));
         assert!(rendered.contains("Experiments"));
         assert!(rendered.contains("SkillLibrary"));
-        assert!(rendered.contains("PatternMiner"));
+        assert!(rendered.contains("MetaPatterns"));
+        assert!(!rendered.contains("PatternMiner"));
         assert!(rendered.contains("ProviderHealth"));
         assert!(rendered.contains("KnowledgeStore"));
         assert!(rendered.contains("24h Efficiency Trends"));

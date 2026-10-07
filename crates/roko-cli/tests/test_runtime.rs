@@ -392,11 +392,10 @@ impl TestRuntimeBuilder {
         let roko_dir = workdir.path().join(".roko");
         fs::create_dir_all(roko_dir.join("learn")).expect("create .roko/learn/");
         fs::create_dir_all(roko_dir.join("state")).expect("create .roko/state/");
-        fs::create_dir_all(roko_dir.join("prd")).expect("create .roko/prd/");
 
         // Write a minimal roko.toml so config loading doesn't fail.
-        let roko_toml = "[meta]\nversion = 1\n\n[agent]\nmodel = \"mock-model\"\nbackend = \"mock\"\n\
-             [learning]\nreplan_on_gate_failure = false\n";
+        let roko_toml =
+            "[meta]\nversion = 1\n\n[agent]\nmodel = \"mock-model\"\nbackend = \"mock\"\n";
         fs::write(workdir.path().join("roko.toml"), roko_toml).expect("write minimal roko.toml");
 
         let dispatcher = Arc::new(MockTaskDispatcher::new(

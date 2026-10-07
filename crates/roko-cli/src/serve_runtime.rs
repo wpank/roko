@@ -17,8 +17,8 @@ use roko_neuro::KnowledgeStore;
 use roko_runtime::cancel::CancelToken;
 use roko_serve::bench::{BenchConfigOverrides, BenchStrategy};
 use roko_serve::plan_types::{
-    CreatePlanOutcome, PlanDiagnosticDto, PlanSourceDto, PlanSummaryDto, PlanTaskDto,
-    PlanTaskVerifyDto, PlanTasksDto, PlanValidationDto, RevisionDto,
+    CreatePlanOutcome, KeyChangeDto, PlanDiagnosticDto, PlanDiffDto, PlanSourceDto, PlanSummaryDto,
+    PlanTaskDto, PlanTaskVerifyDto, PlanTasksDto, PlanValidationDto, RevisionDto, TaskChangeDto,
 };
 use roko_serve::runtime::{
     CliRuntime, DashboardInfo, PlanExecutionResult, PlanGenerationResult, PlanRunOptions, RepoInfo,
@@ -27,7 +27,7 @@ use roko_serve::runtime::{
 
 use crate::config::{Config, RepoRegistry};
 use crate::graph_execution::plan_runner::{PlanRunInterrupt, PlanRunInterruptHandle};
-use crate::prd;
+use crate::plan_generate;
 use crate::runner::tui_bridge::TuiBridge;
 use crate::state_hub::SharedStateHub;
 use crate::status::collect_session_status;
@@ -117,9 +117,42 @@ impl CliRuntime for RokoCliRuntime {
             usage: Some(RunResultUsage {
                 input_tokens: result.input_tokens,
                 output_tokens: result.output_tokens,
+                model: Some(result.model),
             }),
             gate_results: Vec::new(),
         })
+    }
+
+    /// Run `prompt` as a gated one-task plan, as `roko run` does, under the
+    /// id serve returned for it (9113). The run publishes into the server's
+    /// hub and takes the workspace runner lock, so it fails at once while a
+    /// plan run holds the lock.
+    async fn run_prompt_plan(
+        &self,
+        workdir: &Path,
+        prompt: &str,
+        options: roko_serve::runtime::PromptPlanOptions,
+    ) -> anyhow::Result<roko_serve::runtime::PromptPlanResult> {
+        refuse_unscreened_chat_run(workdir, &self.repo_registry, &options.origin)?;
+        let workdir = workdir.to_path_buf();
+        let prompt = prompt.to_string();
+        let state_hub = self.state_hub.clone();
+        tokio::task::spawn_blocking(move || {
+            let origin = options.origin.label();
+            let result =
+                run_prompt_plan_on_local_runtime(workdir.clone(), prompt, state_hub, options);
+            // The run's manifest says where its request came from (9116).
+            if let Ok(result) = &result {
+                crate::graph_execution::run_manifest::record_origin(
+                    &workdir,
+                    &result.run_id,
+                    &origin,
+                );
+            }
+            result
+        })
+        .await
+        .map_err(|err| anyhow::anyhow!("prompt run worker failed: {err}"))?
     }
 
     async fn run_once_with_config(
@@ -173,12 +206,16 @@ impl CliRuntime for RokoCliRuntime {
                     }
                 }
 
+                // No gate checked the answer, so its verdict is `unverified`,
+                // never a pass (9319): the bench grades a task with its own
+                // executed check.
                 Ok(RunResult {
                     success: true,
                     output_text,
                     usage: Some(RunResultUsage {
                         input_tokens: dispatch.input_tokens,
                         output_tokens: dispatch.output_tokens,
+                        model: Some(dispatch.model),
                     }),
                     gate_results: Vec::new(),
                 })
@@ -213,16 +250,28 @@ impl CliRuntime for RokoCliRuntime {
         }
     }
 
-    async fn generate_plan_from_prd(
+    async fn generate_plan_from_prompt(
         &self,
         workdir: &Path,
         slug: &str,
-        prd_path: &Path,
+        prompt: &str,
     ) -> anyhow::Result<PlanGenerationResult> {
         let plans_root = workspace_paths::plans_dir(workdir);
         let before = snapshot_plan_artifacts(&plans_root);
-        let generated_root =
-            prd::generate_plan_from_prd_isolated(slug, prd_path, Some(self.spend_bridge())).await?;
+        // The planner model writes the plan; each call's spend reaches the
+        // server's hub as it returns.
+        let request = plan_generate::PlanRequest {
+            live: Some(self.spend_bridge()),
+            ..plan_generate::PlanRequest::new(
+                plan_generate::PlanSource::Text {
+                    text: prompt,
+                    kind: "prompt",
+                },
+                slug,
+                workdir,
+            )
+        };
+        let (generated_root, _) = plan_generate::generate_plan(request).await?;
         let after = snapshot_plan_artifacts(&generated_root);
 
         let mut plan_targets = changed_plan_targets(&generated_root, &before, &after);
@@ -252,6 +301,7 @@ impl CliRuntime for RokoCliRuntime {
         plan_target: &Path,
         options: PlanRunOptions,
     ) -> anyhow::Result<PlanExecutionResult> {
+        refuse_unscreened_chat_run(workdir, &self.repo_registry, &options.origin)?;
         let workdir = workdir.to_path_buf();
         let plan_target = plan_target.to_path_buf();
         let config = self.config.clone();
@@ -261,8 +311,13 @@ impl CliRuntime for RokoCliRuntime {
         let extension_chain = self.extension_chain_for_workdir(&workdir)?;
         let live_agent_output = config_live_output_to_dispatcher(options.live_agent_output);
         tokio::task::spawn_blocking(move || {
-            run_plan_on_local_runtime(
-                workdir,
+            let origin = options.origin.label();
+            let run_id = options.run_id.clone();
+            // A plan a chat host submits holds outbound-effect calls for
+            // approval whatever it says itself (decision 9107, gap-1a4563).
+            let outbound_floor = crate::graph_execution::outbound_floor(&options.origin);
+            let result = run_plan_on_local_runtime(
+                workdir.clone(),
                 plan_target,
                 config,
                 repo_registry,
@@ -275,10 +330,29 @@ impl CliRuntime for RokoCliRuntime {
                 options.max_parallel_plans,
                 options.cancel,
                 live_agent_output,
-            )
+                options.run_id,
+                options.max_usd,
+                outbound_floor,
+            );
+            // The run's manifest says where its request came from (9116).
+            if let Some(run_id) = &run_id {
+                crate::graph_execution::run_manifest::record_origin(&workdir, run_id, &origin);
+            }
+            result
         })
         .await
         .map_err(|err| anyhow::anyhow!("plan execution worker failed: {err}"))?
+    }
+
+    async fn validate_plan_run(
+        &self,
+        workdir: &Path,
+        plan_target: &Path,
+        only_plans: Option<&[String]>,
+    ) -> anyhow::Result<Option<PlanValidationDto>> {
+        // The models the run itself would load, as `roko plan run` does.
+        let config = load_effective_roko_config(workdir, &self.repo_registry)?;
+        plan_run_validation(workdir, plan_target, only_plans, &config.effective_models())
     }
 
     async fn plan_run_order(
@@ -310,14 +384,36 @@ impl CliRuntime for RokoCliRuntime {
         crate::graph_execution::compute_plan_run_order(&workdir, &plans_dir, only_plans.as_deref())
     }
 
+    async fn resume_skippable_tasks(
+        &self,
+        workdir: &Path,
+        plan_dir: &Path,
+    ) -> anyhow::Result<Option<Vec<String>>> {
+        let plans = crate::runner::plan_loader::load_plans(plan_dir)?;
+        let options = crate::graph_checkpoint::ResumeOptions {
+            force_resume: true,
+            ..crate::graph_checkpoint::ResumeOptions::default()
+        };
+        let mut skippable = Vec::new();
+        for plan in &plans {
+            let preview =
+                crate::graph_checkpoint::preview_plan_resume(workdir, plan, plans.len(), &options)?;
+            skippable.extend(preview.restored_tasks);
+        }
+        Ok(Some(skippable))
+    }
+
     async fn run_trigger_graph(
         &self,
-        _workdir: &Path,
+        workdir: &Path,
         graph: &Path,
         event: &roko_core::trigger::TriggerEvent,
     ) -> anyhow::Result<PlanExecutionResult> {
+        // The graph's cells work in the served workspace, not the server
+        // process's working directory (9129).
         let output =
-            crate::graph_command::execute_graph(graph, &self.state_hub, Some(event), None).await?;
+            crate::graph_command::execute_graph(graph, workdir, &self.state_hub, Some(event), None)
+                .await?;
         Ok(PlanExecutionResult {
             success: output.success,
             output_text: Some(output.summary()),
@@ -327,13 +423,14 @@ impl CliRuntime for RokoCliRuntime {
 
     async fn run_trigger_graph_scoped(
         &self,
-        _workdir: &Path,
+        workdir: &Path,
         graph: &Path,
         event: &roko_core::trigger::TriggerEvent,
         scope: &TriggerExecutionScope,
     ) -> anyhow::Result<PlanExecutionResult> {
         let output = crate::graph_command::execute_graph(
             graph,
+            workdir,
             &self.state_hub,
             Some(event),
             scope.capabilities.as_ref(),
@@ -699,11 +796,45 @@ impl CliRuntime for RokoCliRuntime {
         )
         .await?;
 
-        Ok(Some(RevisionDto {
-            revised: outcome.written,
-            task_count: outcome.task_count,
-            validation: plan_source_report_to_dto(outcome.report),
-        }))
+        Ok(Some(revision_to_dto(outcome)))
+    }
+
+    async fn list_effects(
+        &self,
+        workdir: &Path,
+        run_id: Option<&str>,
+    ) -> anyhow::Result<serde_json::Value> {
+        Ok(crate::effects_apply::effects_report(workdir, run_id))
+    }
+
+    async fn decide_effect(
+        &self,
+        workdir: &Path,
+        effect_id: &str,
+        decision: roko_serve::runtime::EffectDecisionInput,
+    ) -> Result<serde_json::Value, roko_serve::runtime::EffectDecisionError> {
+        use crate::effects_apply::{DecideError, EffectDecision, McpEffectApplier};
+        use roko_serve::runtime::EffectDecisionError;
+
+        let config = load_effective_roko_config(workdir, &self.repo_registry)
+            .map_err(|error| EffectDecisionError::Failed(format!("{error:#}")))?;
+        let applier = McpEffectApplier::new(workdir.to_path_buf(), config.clone());
+        let decision = EffectDecision {
+            approve: decision.approve,
+            note: decision.note,
+            decided_by: decision.decided_by,
+        };
+        let record =
+            crate::effects_apply::decide_effect(workdir, &config, effect_id, decision, &applier)
+                .await
+                .map_err(|error| match error {
+                    DecideError::NotFound(id) => EffectDecisionError::NotFound(id),
+                    DecideError::AlreadyDecided(id, outcome) => {
+                        EffectDecisionError::AlreadyDecided(id, outcome.to_string())
+                    }
+                    DecideError::Io(error) => EffectDecisionError::Failed(error.to_string()),
+                })?;
+        serde_json::to_value(record).map_err(|error| EffectDecisionError::Failed(error.to_string()))
     }
 }
 
@@ -820,7 +951,7 @@ fn run_plan_on_local_runtime(
     _config: Config,
     repo_registry: RepoRegistry,
     state_hub: SharedStateHub,
-    _metrics: Option<Arc<roko_core::obs::metrics::MetricRegistry>>,
+    metrics: Option<Arc<roko_core::obs::metrics::MetricRegistry>>,
     _extension_chain: Arc<tokio::sync::Mutex<roko_core::extension::ExtensionChain>>,
     fresh: bool,
     force_resume: bool,
@@ -828,12 +959,19 @@ fn run_plan_on_local_runtime(
     max_parallel_plans: Option<usize>,
     cancel: Option<CancelToken>,
     live_agent_output: crate::graph_task_dispatch::LiveAgentOutput,
+    run_id: Option<String>,
+    budget_override: Option<f64>,
+    outbound_floor: Option<roko_core::tool::OutboundPolicy>,
 ) -> anyhow::Result<PlanExecutionResult> {
     // Acquire the runner lock before touching the workspace.  Server-side runs
     // and `roko plan run` both take this lock, so only one plan executor can be
     // active at a time.  If the lock is already held the error message names the
     // owning PID; return it immediately without retrying.
     let _runner_lock = crate::workspace_lock::acquire_runner_lock(&workdir.join(".roko"))?;
+    // The run's agents are spawned on this thread: scope them so stopping the
+    // run signals them and not the server's other agents (find-65ff6b).
+    let _spawn_scope =
+        roko_agent::process::enter_spawn_scope(roko_agent::process::new_spawn_scope());
 
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -869,8 +1007,11 @@ fn run_plan_on_local_runtime(
             });
         }
 
-        let exit_code =
-            crate::graph_execution::run_graph_plan(crate::graph_execution::GraphPlanRunParams {
+        // The run takes the id the server returned to its client, so the
+        // client can find the run's events, status and, for a fresh single
+        // plan, its checkpoint by it (bug-4f833d).
+        let exit_code = crate::graph_execution::plan_runner::run_graph_plan_in_run(
+            crate::graph_execution::GraphPlanRunParams {
                 plans_dir: execution_root,
                 workdir: workdir.clone(),
                 // Suppress interactive output: this runs inside an HTTP handler.
@@ -882,12 +1023,18 @@ fn run_plan_on_local_runtime(
                 max_retries: None,
                 // 0 → use each plan's meta.max_parallel default.
                 max_tasks: 0,
-                budget_override: None,
+                // A chat host's spending cap is the run's ceiling (9116).
+                budget_override,
                 no_budget: false,
                 cli_model_override: None,
                 dangerously_skip_permissions,
                 log_file: None,
-                worktree_per_task: false,
+                // The server's `[runner] worktree_per_task`, where the workdir
+                // can isolate tasks (gap-4ec59f).
+                worktree_per_task: roko_config.runner.worktree_per_task
+                    && crate::graph_execution::batch::worktree_isolation_blocker(&workdir)
+                        .is_none(),
+                worktree_per_task_explicit: false,
                 rich_topology: false,
                 promote: None,
                 // Never launch an interactive TUI from an HTTP handler.
@@ -903,8 +1050,18 @@ fn run_plan_on_local_runtime(
                 only_plans,
                 live_agent_output,
                 force_disk_check: false,
-            })
-            .await?;
+                effort: None,
+                no_cascade: false,
+                frozen_learning: false,
+                no_holdout: false,
+                metrics,
+                // A chat host's run stages outbound effects whatever its
+                // plans say (decision 9107, gap-1a4563).
+                outbound_floor,
+            },
+            run_id,
+        )
+        .await?;
 
         let success = exit_code == crate::exit_codes::EXIT_SUCCESS;
 
@@ -929,6 +1086,99 @@ fn run_plan_on_local_runtime(
             gate_results,
         })
     })
+}
+
+/// Run `prompt` as a gated one-task plan on this thread's own runtime, as
+/// [`run_plan_on_local_runtime`] runs a plan: under the workspace runner lock,
+/// with the run's agents scoped to it (9113).
+fn run_prompt_plan_on_local_runtime(
+    workdir: PathBuf,
+    prompt: String,
+    state_hub: SharedStateHub,
+    options: roko_serve::runtime::PromptPlanOptions,
+) -> anyhow::Result<roko_serve::runtime::PromptPlanResult> {
+    // One plan executor at a time: a prompt run fails at once while a plan
+    // run, or another prompt run, holds the lock.
+    let _runner_lock = crate::workspace_lock::acquire_runner_lock(&workdir.join(".roko"))
+        .context("a run is active in this workspace")?;
+    let _spawn_scope =
+        roko_agent::process::enter_spawn_scope(roko_agent::process::new_spawn_scope());
+
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()?;
+    let local = tokio::task::LocalSet::new();
+    local.block_on(&runtime, async move {
+        // Always a token, so the run never takes over the server's signals.
+        let cancel = options.cancel.unwrap_or_default();
+        let overrides = crate::run::CliOverrides::default();
+        let report = crate::run::run_prompt(crate::run::PromptRun {
+            prompt: &prompt,
+            workdir: &workdir,
+            // A host's prompt runs at the tier `roko run` gives a simple one.
+            tier: "focused",
+            overrides: &overrides,
+            max_retries: None,
+            quiet: true,
+            state_hub: Some(state_hub.clone()),
+            run_id: options.run_id,
+            cancel: Some(cancel.clone()),
+            domain: options.domain,
+            max_usd: options.max_usd,
+            origin: options.origin,
+            no_holdout: false,
+        })
+        .await?;
+        let snapshot = state_hub.current_snapshot();
+        Ok(prompt_plan_result(
+            &report,
+            &snapshot,
+            cancel.is_cancelled(),
+        ))
+    })
+}
+
+/// Refuse a chat host's run when the workspace has no data-model boundary
+/// (`[agent.data_llm]`) and does not allow running without one (9117).
+fn refuse_unscreened_chat_run(
+    workdir: &Path,
+    repo_registry: &RepoRegistry,
+    origin: &roko_serve::runtime::RunOrigin,
+) -> anyhow::Result<()> {
+    if !origin.is_chat() {
+        return Ok(());
+    }
+    match load_effective_roko_config(workdir, repo_registry)?.chat_run_refusal() {
+        Some(reason) => anyhow::bail!("{reason}"),
+        None => Ok(()),
+    }
+}
+
+/// What a prompt run reports to serve: its id; its verdict, which
+/// [`roko_serve::state::RunState::of_ended_run`] gives from its task's outcome
+/// as for plan runs; its output and its cost.
+pub(crate) fn prompt_plan_result(
+    report: &roko_runtime::workflow_contract::WorkflowRunReport,
+    snapshot: &roko_core::DashboardSnapshot,
+    cancelled: bool,
+) -> roko_serve::runtime::PromptPlanResult {
+    use roko_core::dashboard_snapshot::classify_task_outcome;
+    use roko_serve::state::RunState;
+
+    let tasks = snapshot
+        .tasks
+        .values()
+        .filter(|task| task.plan_id == report.run_id)
+        .filter_map(|task| task.outcome.as_deref())
+        .map(classify_task_outcome);
+    let verdict = RunState::of_ended_run(cancelled, report.success, tasks);
+    roko_serve::runtime::PromptPlanResult {
+        run_id: report.run_id.clone(),
+        verdict,
+        success: verdict == RunState::Succeeded,
+        output_text: Some(report.output.clone()).filter(|output| !output.is_empty()),
+        cost_usd: report.cost,
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1158,9 +1408,11 @@ fn simulate_bench_result(prompt: &str) -> RunResult {
         } else {
             "[demo] Simulated failure — gate check did not pass".to_string()
         }),
+        // A simulated run names no served model, so its cost stays unknown.
         usage: Some(RunResultUsage {
             input_tokens,
             output_tokens,
+            model: None,
         }),
         gate_results: Vec::new(),
     }
@@ -1169,24 +1421,23 @@ fn simulate_bench_result(prompt: &str) -> RunResult {
 /// Dispatch a bench prompt via the `ModelCallService` path.
 ///
 /// Uses the same ModelCallService that `WorkflowEngine` uses, preserving
-/// routing, budget, and feedback behavior.
+/// routing, budget, and feedback behavior. The planned model is a preference,
+/// as on Graph runs (gap-28ceb9): a provider that is disabled, has no
+/// credentials, is held out by the persisted health registry, or refuses
+/// with a usage exhaustion hands the prompt to the next usable model of
+/// `roko_learn::provider_failover`. An exhausted provider is quarantined
+/// until its reset. `model_override` pins the model, which never fails over.
 pub(crate) async fn dispatch_bench_prompt(
     workdir: &Path,
     config: &Config,
     prompt: &str,
     model_override: Option<&str>,
 ) -> anyhow::Result<BenchDispatchResult> {
-    use crate::learning_helpers::{
-        capture_runtime_model_slugs, provider_id_for_model, record_persisted_provider_health,
-    };
-    use roko_agent::model_call_service::ModelCallService;
+    use crate::learning_helpers::provider_id_for_model;
     use roko_core::agent::resolve_model;
     use roko_core::config::schema::RokoConfig;
-    use roko_core::foundation::{
-        ChatMessage, FeedbackSink, MessageRole, ModelCallRequest, ModelCaller, caller,
-    };
-    use roko_learn::feedback_service::FeedbackService;
-    use roko_learn::model_call_feedback::{ModelCallJournal, load_recovered_router};
+    use roko_learn::provider_failover::Failover;
+    use roko_learn::provider_health::{ErrorClass, ProviderHealthRegistry};
 
     // Build a RokoConfig from CLI config (same pattern as dispatch_v2.rs).
     let mut model_config = RokoConfig::default();
@@ -1206,19 +1457,109 @@ pub(crate) async fn dispatch_bench_prompt(
     {
         model_config.agent.default_model = model.clone();
     }
+    // `[routing]` names the fallback models, the disabled providers and the
+    // exhaustion cooldown the failover follows.
+    model_config.routing = roko_core::config::loader::load_config_unified(workdir)
+        .unwrap_or_default()
+        .routing;
 
     let model_key = model_override
         .map(ToString::to_string)
         .or_else(|| config.agent.model.clone())
         .unwrap_or_else(|| model_config.agent.default_model.clone());
-    let model = resolve_model(&model_config, &model_key).slug;
+    let model_config = Arc::new(model_config);
+
+    // One registry for the prompt: it holds providers out, takes each
+    // outcome, and persists them when it drops.
+    let health = ProviderHealthRegistry::load_or_new(
+        &workdir
+            .join(".roko")
+            .join("learn")
+            .join("provider-health.json"),
+    );
+    let mut failover = Failover::new(Arc::clone(&model_config), model_override.is_some(), false);
+    let mut candidate = match failover.start(&health, &model_key) {
+        Ok(candidate) => candidate,
+        Err(error) => {
+            // A provider that rejected roko's credentials needs a login
+            // (gap-ade918), as `roko run` and ACP say.
+            let mut reason = vec![error];
+            reason.extend(failover.credentials_hints());
+            anyhow::bail!(
+                "ModelCallService bench dispatch failed: {}",
+                reason.join(" ")
+            );
+        }
+    };
+    loop {
+        let call_config = candidate
+            .config
+            .clone()
+            .unwrap_or_else(|| Arc::clone(&model_config));
+        // A candidate with a config of its own serves a slug on another
+        // provider, which only its key names.
+        let model = if candidate.config.is_some() {
+            candidate.model_key.clone()
+        } else {
+            resolve_model(&call_config, &candidate.model_key).slug
+        };
+        let error = match call_bench_model(workdir, config, &call_config, &model, prompt).await {
+            Ok(response) => {
+                if let Some(provider) = provider_id_for_model(&call_config, &response.model) {
+                    health.record_success(&provider);
+                }
+                return Ok(BenchDispatchResult {
+                    text: response.content,
+                    input_tokens: response.usage.input_tokens,
+                    output_tokens: response.usage.output_tokens,
+                    model: response.model,
+                });
+            }
+            Err(error) => error,
+        };
+        let failure = format!("{error:#}");
+        match failover.after_refusal(&health, &candidate, &failure) {
+            Ok(Some(next)) => candidate = next,
+            Ok(None) => {
+                // The shared classifier names the failure, an auth failure
+                // included, rather than recording it as unknown (bug-52c48f).
+                if let Some(provider) = provider_id_for_model(&call_config, &model) {
+                    health.record_failure(&provider, ErrorClass::from_failure_text(&failure));
+                }
+                return Err(error).context("ModelCallService bench dispatch failed");
+            }
+            Err(why) => {
+                return Err(error)
+                    .context(format!("ModelCallService bench dispatch failed; {why}"));
+            }
+        }
+    }
+}
+
+/// One `ModelCallService` call of `prompt` on `model` under `model_config`,
+/// with the cascade router and feedback of a bench dispatch. Provider health
+/// is the caller's to record.
+async fn call_bench_model(
+    workdir: &Path,
+    config: &Config,
+    model_config: &roko_core::config::schema::RokoConfig,
+    model: &str,
+    prompt: &str,
+) -> anyhow::Result<roko_core::foundation::ModelCallResponse> {
+    use crate::learning_helpers::capture_runtime_model_slugs;
+    use roko_agent::model_call_service::ModelCallService;
+    use roko_core::foundation::{
+        ChatMessage, FeedbackSink, MessageRole, ModelCallRequest, ModelCaller, caller,
+    };
+    use roko_learn::feedback_service::FeedbackService;
+    use roko_learn::model_call_feedback::{ModelCallJournal, load_recovered_router};
 
     // Set up cascade router for learning.
     let cascade_path = workdir
         .join(".roko")
         .join("learn")
         .join("cascade-router.json");
-    let cascade_model_slugs = capture_runtime_model_slugs(&model_config, &model);
+    let cascade_model_slugs = capture_runtime_model_slugs(model_config, model);
     // The snapshot first takes what a crashed writer journaled and never
     // saved (bug-8a78e1).
     let cascade_router = (!cascade_model_slugs.is_empty())
@@ -1240,7 +1581,7 @@ pub(crate) async fn dispatch_bench_prompt(
 
     // Build and call ModelCallService.
     let cost_table = roko_agent::CostTable::from_config_with_defaults(&model_config.models);
-    let mut service = ModelCallService::new(model.clone())
+    let mut service = ModelCallService::new(model.to_string())
         .with_config(model_config.clone())
         .with_working_dir(workdir)
         .with_immune_root(workdir)
@@ -1255,7 +1596,7 @@ pub(crate) async fn dispatch_bench_prompt(
     }
 
     let request = ModelCallRequest {
-        model: model.clone(),
+        model: model.to_string(),
         system: None,
         messages: vec![ChatMessage {
             role: MessageRole::User,
@@ -1279,26 +1620,7 @@ pub(crate) async fn dispatch_bench_prompt(
         );
     }
 
-    let response = match call_result {
-        Ok(response) => {
-            if let Some(provider) = provider_id_for_model(&model_config, &response.model) {
-                let _ = record_persisted_provider_health(workdir, &provider, true);
-            }
-            response
-        }
-        Err(err) => {
-            if let Some(provider) = provider_id_for_model(&model_config, &model) {
-                let _ = record_persisted_provider_health(workdir, &provider, false);
-            }
-            return Err(err).context("ModelCallService bench dispatch failed");
-        }
-    };
-
-    Ok(BenchDispatchResult {
-        text: response.content,
-        input_tokens: response.usage.input_tokens,
-        output_tokens: response.usage.output_tokens,
-    })
+    call_result.map_err(anyhow::Error::from)
 }
 
 /// Result from dispatching a bench prompt via `ModelCallService`.
@@ -1306,6 +1628,8 @@ pub(crate) struct BenchDispatchResult {
     pub(crate) text: String,
     pub(crate) input_tokens: u64,
     pub(crate) output_tokens: u64,
+    /// The model the provider reported serving the call.
+    pub(crate) model: String,
 }
 
 fn runner_events_offset(workdir: &Path) -> u64 {
@@ -1468,7 +1792,7 @@ pub(crate) fn task_to_dto(task: &crate::task_parser::TaskDef) -> PlanTaskDto {
         status: task.status.clone(),
         depends_on: task.depends_on.clone(),
         files: task.files.clone(),
-        completed: task.status == "done",
+        completed: crate::plan::task_status_is_complete(&task.status),
         verify_phases: task.verify.iter().map(|v| v.phase.clone()).collect(),
         model_hint: task.model_hint.clone(),
         estimated_minutes: task.estimated_minutes,
@@ -1508,6 +1832,63 @@ fn plan_estimated_minutes(tasks_file: &crate::task_parser::TasksFile) -> Option<
 
 /// Convert a [`crate::plan_authoring::PlanSourceReport`] to the wire-format
 /// [`PlanValidationDto`].
+/// The validation `roko plan run` does before it starts any agent
+/// (`validate_before_run` in `commands/plan.rs`), for a server run of
+/// `plan_target` (gap-655d19): `plan_validate::validate_plans_dir_with_workdir`,
+/// where an error-severity finding that is not advisory stops the run.
+/// `only_plans` keeps the plans the run names, by plan id or directory.
+///
+/// Returns the report of the plans that would run when one of them has such
+/// an error, and `None` when the run may start or there is nothing to check.
+/// A graph's `plan.run` node checks its plan with it too (9128).
+pub(crate) fn plan_run_validation(
+    workdir: &Path,
+    plan_target: &Path,
+    only_plans: Option<&[String]>,
+    models: &indexmap::IndexMap<String, roko_core::config::schema::ModelProfile>,
+) -> anyhow::Result<Option<PlanValidationDto>> {
+    use crate::plan_validate::{PlanDiagnostics, Severity};
+
+    if !plan_target.exists() {
+        return Ok(None);
+    }
+    let report = crate::plan_validate::validate_plans_dir_with_workdir(
+        plan_target,
+        Some(models),
+        Some(workdir),
+    )?;
+    let runs = |plan: &PlanDiagnostics| {
+        let Some(ids) = only_plans else {
+            return true;
+        };
+        let dir = Path::new(&plan.path)
+            .parent()
+            .and_then(Path::file_name)
+            .and_then(std::ffi::OsStr::to_str);
+        let named = |id: &String| *id == plan.plan_id || Some(id.as_str()) == dir;
+        ids.iter().any(named)
+    };
+    let diagnostics: Vec<PlanDiagnosticDto> = report
+        .plans
+        .iter()
+        .filter(|plan| runs(plan))
+        .flat_map(|plan| &plan.diagnostics)
+        .map(|d| PlanDiagnosticDto {
+            severity: match d.severity {
+                Severity::Error => "error".to_string(),
+                Severity::Warning => "warning".to_string(),
+            },
+            rule_id: d.rule_id.clone(),
+            task_id: d.task_id.clone(),
+            message: d.message.clone(),
+        })
+        .collect();
+    let blocks = diagnostics
+        .iter()
+        .any(|d| d.severity == "error" && !crate::plan_policy::is_advisory_code(&d.rule_id));
+    Ok(blocks.then(|| PlanValidationDto::from_diagnostics(diagnostics)))
+}
+
 fn plan_source_report_to_dto(report: crate::plan_authoring::PlanSourceReport) -> PlanValidationDto {
     use crate::plan_validate::Severity;
     PlanValidationDto::from_diagnostics(
@@ -1525,6 +1906,43 @@ fn plan_source_report_to_dto(report: crate::plan_authoring::PlanSourceReport) ->
             })
             .collect(),
     )
+}
+
+/// The response to a plan revision: whether it was written, its validation
+/// report and, when written, what it changed task by task (3216).
+pub(crate) fn revision_to_dto(outcome: crate::plan_authoring::RevisionOutcome) -> RevisionDto {
+    RevisionDto {
+        revised: outcome.written,
+        task_count: outcome.task_count,
+        validation: plan_source_report_to_dto(outcome.report),
+        diff: outcome.diff.map(plan_diff_to_dto),
+    }
+}
+
+fn plan_diff_to_dto(diff: crate::plan_authoring::PlanDiff) -> PlanDiffDto {
+    let keys = |changes: Vec<crate::plan_authoring::KeyChange>| -> Vec<KeyChangeDto> {
+        changes
+            .into_iter()
+            .map(|change| KeyChangeDto {
+                key: change.key,
+                before: change.before,
+                after: change.after,
+            })
+            .collect()
+    };
+    PlanDiffDto {
+        meta: keys(diff.meta),
+        added: diff.added,
+        removed: diff.removed,
+        changed: diff
+            .changed
+            .into_iter()
+            .map(|task| TaskChangeDto {
+                id: task.id,
+                keys: keys(task.keys),
+            })
+            .collect(),
+    }
 }
 
 #[cfg(test)]
@@ -1554,6 +1972,107 @@ mod tests {
             result, plan_dir,
             "a plan directory must run in place; got a different path"
         );
+    }
+
+    /// bug-9f340c: the plan API counts a task as completed exactly when the
+    /// CLI's plan listing does: `done`, `completed`, `passed` or `skipped`.
+    #[tokio::test]
+    async fn task_to_dto_treats_passed_and_skipped_as_completed() {
+        let workdir = tempfile::tempdir().unwrap();
+        let plan_dir = workdir.path().join("plans").join("statuses");
+        std::fs::create_dir_all(&plan_dir).unwrap();
+        let cases = [
+            ("done", true),
+            ("completed", true),
+            ("passed", true),
+            ("skipped", true),
+            ("pending", false),
+            ("ready", false),
+            ("active", false),
+            ("blocked", false),
+            ("failed", false),
+        ];
+        let tasks: String = cases
+            .iter()
+            .map(|(status, _)| {
+                format!("\n[[task]]\nid = {status:?}\ntitle = {status:?}\nstatus = {status:?}\n")
+            })
+            .collect();
+        let tasks_toml = format!("[meta]\nplan = \"statuses\"\n{tasks}");
+        std::fs::write(plan_dir.join("tasks.toml"), tasks_toml).unwrap();
+
+        let runtime = RokoCliRuntime::new(Config::default(), RepoRegistry::default());
+        let dto = runtime
+            .load_plan_tasks(workdir.path(), "statuses")
+            .await
+            .unwrap()
+            .expect("the directory plan is found");
+        let completed: Vec<(&str, bool)> = dto
+            .tasks
+            .iter()
+            .map(|task| (task.id.as_str(), task.completed))
+            .collect();
+        assert_eq!(completed, cases);
+
+        // The plan's summary counts the same four tasks as done.
+        let summary = runtime
+            .load_plan_summary(workdir.path(), "statuses")
+            .await
+            .unwrap()
+            .expect("the directory plan is listed");
+        assert_eq!(
+            (summary.task_count, summary.tasks_done, summary.tasks_failed),
+            (9, 4, 1)
+        );
+    }
+
+    /// gap-655d19: a server run is validated as `roko plan run` validates it.
+    /// A plan with a blocking error is refused with its diagnostics, and a
+    /// run that names other plans does not check it.
+    #[tokio::test]
+    async fn server_plan_runs_are_validated_like_roko_plan_run() {
+        let workdir = tempfile::tempdir().unwrap();
+        let plans_root = workdir.path().join("plans");
+        let plan_dir = plans_root.join("broken");
+        std::fs::create_dir_all(&plan_dir).unwrap();
+        std::fs::write(
+            plan_dir.join("tasks.toml"),
+            r#"[meta]
+plan = "broken"
+
+[[task]]
+id = "T1"
+title = "Waits on a task the plan does not have"
+depends_on = ["T9"]
+"#,
+        )
+        .unwrap();
+        let runtime = RokoCliRuntime::new(Config::default(), RepoRegistry::default());
+
+        let refused = runtime
+            .validate_plan_run(workdir.path(), &plan_dir, None)
+            .await
+            .unwrap()
+            .expect("an unknown dependency stops the run");
+        assert!(!refused.valid);
+        assert!(
+            refused.diagnostics.iter().any(|d| d.rule_id == "PLAN_005"),
+            "{:?}",
+            refused.diagnostics
+        );
+
+        let broken = vec!["broken".to_string()];
+        let named = runtime
+            .validate_plan_run(workdir.path(), &plans_root, Some(broken.as_slice()))
+            .await
+            .unwrap();
+        assert!(named.is_some(), "a set run of the broken plan is refused");
+        let others = vec!["other".to_string()];
+        let unrelated = runtime
+            .validate_plan_run(workdir.path(), &plans_root, Some(others.as_slice()))
+            .await
+            .unwrap();
+        assert!(unrelated.is_none(), "{unrelated:?}");
     }
 
     /// A plan-set directory (no top-level tasks.toml) must also be returned
@@ -1894,6 +2413,11 @@ command = {script:?}
 provider = "fake-cli"
 slug = "claude-sonnet-4-6"
 context_window = 200000
+
+# One planner call per generation: these tests count cost rows, and the
+# spec-quality gate would ask again for this minimal plan (3218).
+[spec_quality]
+mode = "off"
 "#,
                 script = script.display().to_string()
             ),
@@ -1948,18 +2472,10 @@ context_window = 200000
     #[tokio::test]
     async fn generation_spend_reaches_the_server_hub_and_cost_logs() {
         let workspace = fake_provider_workspace();
-        let prd_dir = workspace.path().join(".roko").join("prd").join("published");
-        std::fs::create_dir_all(&prd_dir).expect("create PRD dir");
-        let prd_path = prd_dir.join("demo.md");
-        std::fs::write(
-            &prd_path,
-            "---\nid: demo\ntitle: Demo\nstatus: published\n---\n\n# Demo\n\nPrint hello world.\n",
-        )
-        .expect("write PRD");
         let hub = SharedStateHub::new_in_process();
 
         let generated = runtime_on(&hub)
-            .generate_plan_from_prd(workspace.path(), "demo", &prd_path)
+            .generate_plan_from_prompt(workspace.path(), "demo", "# Demo\n\nPrint hello world.\n")
             .await
             .expect("generate plan");
 
@@ -2065,18 +2581,10 @@ planner_model = "fake-planner"
     #[tokio::test]
     async fn generation_plans_with_the_authoring_planner_model() {
         let workspace = planner_workspace();
-        let prd_dir = workspace.path().join(".roko").join("prd").join("published");
-        std::fs::create_dir_all(&prd_dir).expect("create PRD dir");
-        let prd_path = prd_dir.join("demo.md");
-        std::fs::write(
-            &prd_path,
-            "---\nid: demo\ntitle: Demo\nstatus: published\n---\n\n# Demo\n\nPrint hello world.\n",
-        )
-        .expect("write PRD");
         let hub = SharedStateHub::new_in_process();
 
         let generated = runtime_on(&hub)
-            .generate_plan_from_prd(workspace.path(), "demo", &prd_path)
+            .generate_plan_from_prompt(workspace.path(), "demo", "# Demo\n\nPrint hello world.\n")
             .await
             .expect("generate plan");
 
@@ -2116,5 +2624,178 @@ planner_model = "fake-planner"
             logged_models(workspace.path(), "revise"),
             vec!["claude-opus-4-6"]
         );
+    }
+}
+
+#[cfg(all(test, unix))]
+mod tests_provider_failover {
+    use std::os::unix::fs::PermissionsExt;
+
+    use roko_core::agent::ProviderKind;
+    use roko_core::config::schema::{ModelProfile, ProviderConfig};
+    use roko_learn::provider_health::ProviderHealthRegistry;
+
+    use super::*;
+
+    /// A fake Claude CLI `dir/name` that appends a line to `dir/name.calls`,
+    /// prints `output` and exits with `status`.
+    fn fake_claude(dir: &Path, name: &str, output: &str, status: i32) -> PathBuf {
+        let script = dir.join(name);
+        let calls = dir.join(format!("{name}.calls"));
+        std::fs::write(
+            &script,
+            format!(
+                "#!/bin/sh\ncat >/dev/null\necho call >> '{}'\ncat <<'JSON'\n{output}\nJSON\n\
+                 exit {status}\n",
+                calls.display()
+            ),
+        )
+        .expect("write fake provider");
+        let mut permissions = std::fs::metadata(&script)
+            .expect("fake provider metadata")
+            .permissions();
+        permissions.set_mode(0o755);
+        std::fs::set_permissions(&script, permissions).expect("make fake provider executable");
+        script
+    }
+
+    fn calls(dir: &Path, name: &str) -> usize {
+        std::fs::read_to_string(dir.join(format!("{name}.calls")))
+            .unwrap_or_default()
+            .lines()
+            .count()
+    }
+
+    /// The answer of the backup provider.
+    const ANSWER: &str = "answered by the backup provider";
+
+    /// A workspace with model `primary` on `limited-cli`, a fake Claude CLI out
+    /// of usage, and a second Claude CLI provider, `backup-cli`, that answers
+    /// with [`ANSWER`]. A key in the environment would synthesize an
+    /// `anthropic` provider of the same family, so `[routing]` disables it.
+    fn failover_workspace() -> (tempfile::TempDir, Config) {
+        let workspace = tempfile::tempdir().expect("workspace");
+        let dir = workspace.path();
+        let refusal = serde_json::json!({
+            "type": "result",
+            "subtype": "success",
+            "is_error": true,
+            "total_cost_usd": 0,
+            "result": "You’ve hit your session limit · resets 4pm (Europe/Berlin)",
+        });
+        let assistant = serde_json::json!({
+            "type": "assistant",
+            "message": {"content": [{"type": "text", "text": ANSWER}]},
+        });
+        let result = serde_json::json!({
+            "type": "result",
+            "subtype": "success",
+            "is_error": false,
+            "result": ANSWER,
+            "model": "claude-sonnet-4-6",
+            "total_cost_usd": 0.0,
+            "usage": {"input_tokens": 10, "output_tokens": 5},
+        });
+        let limited = fake_claude(dir, "limited-claude", &refusal.to_string(), 1);
+        let backup = fake_claude(dir, "backup-claude", &format!("{assistant}\n{result}"), 0);
+        std::fs::write(
+            dir.join("roko.toml"),
+            "[routing]\ndisabled_providers = [\"anthropic\"]\n",
+        )
+        .expect("write roko.toml");
+        let mut config = Config::default();
+        for (id, script) in [("limited-cli", &limited), ("backup-cli", &backup)] {
+            config.providers.insert(
+                id.to_string(),
+                ProviderConfig {
+                    kind: ProviderKind::ClaudeCli,
+                    command: Some(script.display().to_string()),
+                    ..ProviderConfig::default()
+                },
+            );
+        }
+        config.models.insert(
+            "primary".to_string(),
+            ModelProfile {
+                provider: "limited-cli".to_string(),
+                slug: "claude-sonnet-4-6".to_string(),
+                context_window: 200_000,
+                ..ModelProfile::default()
+            },
+        );
+        config.agent.model = Some("primary".to_string());
+        (workspace, config)
+    }
+
+    fn persisted_health(dir: &Path) -> ProviderHealthRegistry {
+        ProviderHealthRegistry::load_or_new(
+            &dir.join(".roko").join("learn").join("provider-health.json"),
+        )
+    }
+
+    /// gap-28ceb9: a serve prompt whose planned model's provider is out of
+    /// usage runs on the same slug on another provider of its family in the
+    /// same call, as Graph runs fail over, and the refusing provider stays
+    /// quarantined in the persisted health registry until its reset.
+    #[tokio::test]
+    async fn a_one_shot_prompt_fails_over_from_an_exhausted_provider() {
+        let (workspace, config) = failover_workspace();
+        let dir = workspace.path();
+
+        let dispatched = dispatch_bench_prompt(dir, &config, "Say hello.", None)
+            .await
+            .expect("the backup provider answers");
+
+        assert!(dispatched.text.contains(ANSWER), "{}", dispatched.text);
+        assert_eq!(calls(dir, "limited-claude"), 1);
+        assert!(calls(dir, "backup-claude") >= 1);
+        let health = persisted_health(dir);
+        assert!(!health.is_available("limited-cli"));
+        assert!(health.is_available("backup-cli"));
+    }
+
+    /// An explicit model pins the prompt: its provider's exhaustion fails it,
+    /// says so, and still quarantines the provider.
+    #[tokio::test]
+    async fn a_pinned_one_shot_prompt_does_not_fail_over() {
+        let (workspace, config) = failover_workspace();
+        let dir = workspace.path();
+
+        let error = dispatch_bench_prompt(dir, &config, "Say hello.", Some("primary"))
+            .await
+            .err()
+            .expect("the pinned model is out of usage");
+
+        let message = format!("{error:#}");
+        assert!(message.contains("pinned"), "{message}");
+        assert_eq!(calls(dir, "backup-claude"), 0);
+        assert!(!persisted_health(dir).is_available("limited-cli"));
+    }
+
+    /// 9319: a bench run whose provider answers ends with no gate result, so
+    /// its verdict is `unverified`: the answer alone is not a pass.
+    #[tokio::test]
+    async fn bench_run_without_gates_is_unverified() {
+        let (workspace, mut config) = failover_workspace();
+        let dir = workspace.path();
+        // The prompt's model runs on the provider that answers.
+        let primary = config.models.get_mut("primary").expect("primary model");
+        primary.provider = "backup-cli".to_string();
+        let runtime = RokoCliRuntime::new(config, RepoRegistry::default());
+        let overrides = BenchConfigOverrides {
+            strategy: BenchStrategy::Minimal,
+            ..BenchConfigOverrides::default()
+        };
+
+        let result = runtime
+            .run_once_with_config(dir, "Say hello.", &overrides)
+            .await
+            .expect("bench run");
+
+        let output = result.output_text.as_deref().unwrap_or_default();
+        assert!(output.contains(ANSWER), "{output}");
+        assert!(result.success, "the provider answered");
+        assert!(result.gate_results.is_empty());
+        assert_eq!(result.verdict(), roko_serve::state::RunState::Unverified);
     }
 }

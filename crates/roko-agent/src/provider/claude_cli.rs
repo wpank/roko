@@ -14,7 +14,8 @@ use crate::provider::{
     AgentCreationError, AgentOptions, ProviderAdapter, ProviderError, TurnCapEnforcement,
     configured_resource_limits, provider_credential_scrub,
 };
-use crate::safety::SafetyLayer;
+use crate::safety::contract::AgentContract;
+use crate::safety::{SafetyLayer, SandboxLevel};
 use roko_core::agent::ProviderKind;
 #[cfg(test)]
 use roko_core::config::DEFAULT_TTFT_TIMEOUT_MS;
@@ -22,7 +23,8 @@ use roko_core::config::schema::{ModelProfile, ProviderConfig};
 use roko_core::tool::aliases::{canonical_names, claude_of_canonical};
 use roko_std::roles::CHAIN_TOOL_PREFIX;
 use serde_json::Value;
-use std::path::PathBuf;
+use std::ffi::OsString;
+use std::path::{Path, PathBuf};
 
 /// Adapter for the `claude` CLI subprocess protocol.
 pub struct ClaudeCliAdapter;
@@ -65,7 +67,8 @@ impl ProviderAdapter for ClaudeCliAdapter {
             .with_settings_json(build_settings_json())
             .with_bare_mode(options.bare_mode)
             .with_dangerously_skip_permissions(options.dangerously_skip_permissions)
-            .with_credential_scrub(provider_credential_scrub(provider, options));
+            .with_credential_scrub(provider_credential_scrub(provider, options))
+            .with_pricing(options.pricing.clone());
 
         if let Some(limits) = configured_resource_limits(provider)? {
             agent = agent.with_resource_limits(limits);
@@ -110,6 +113,12 @@ impl ProviderAdapter for ClaudeCliAdapter {
         for (key, value) in &options.env {
             agent = agent.with_env_var(key.clone(), value.clone());
         }
+        if let Some(provider_semaphores) = options.provider_semaphores.clone() {
+            agent = agent.with_provider_semaphores(model.provider.clone(), provider_semaphores);
+        }
+        if let Some(live_output) = options.live_output.clone() {
+            agent = agent.with_live_output(live_output);
+        }
 
         Ok(Box::new(agent))
     }
@@ -145,6 +154,17 @@ impl ProviderAdapter for CodexCliAdapter {
         if provider.kind != self.kind() {
             return Err(AgentCreationError::InvalidKind(provider.kind));
         }
+        // Codex's built-in tools have no binding allowlist: it reads, searches
+        // and edits through its shell, so a contract naming the only tools a
+        // role may use cannot be honoured. Refuse it, so that failover picks a
+        // provider that can (gap-baab0a).
+        if options
+            .agent_contract
+            .as_ref()
+            .is_some_and(|contract| contract.allowed_tools.is_some())
+        {
+            return Err(AgentCreationError::ToolAllowlistUnsupported(self.kind()));
+        }
 
         let command = provider
             .command
@@ -163,31 +183,6 @@ impl ProviderAdapter for CodexCliAdapter {
             .clone()
             .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
         let timeout_ms = options.effective_timeout_ms(provider.timeout_ms);
-
-        let mut args = vec![
-            "exec".to_string(),
-            "--json".to_string(),
-            "--cd".to_string(),
-            current_dir.to_string_lossy().to_string(),
-            "--skip-git-repo-check".to_string(),
-            "--color".to_string(),
-            "never".to_string(),
-        ];
-
-        if options.dangerously_skip_permissions {
-            args.push("--dangerously-bypass-approvals-and-sandbox".to_string());
-        } else {
-            args.push("--sandbox".to_string());
-            args.push("workspace-write".to_string());
-        }
-
-        // Only pass --model for non-Claude models (codex defaults to its own)
-        if !model.slug.is_empty() && !model.slug.starts_with("claude") {
-            args.push("--model".to_string());
-            args.push(model.slug.clone());
-        }
-
-        args.push("-".to_string()); // Read prompt from stdin
 
         let safety = options
             .safety_layer
@@ -208,12 +203,50 @@ impl ProviderAdapter for CodexCliAdapter {
                 SafetyLayer::with_defaults()
             });
 
+        let mut args = vec![
+            "exec".to_string(),
+            "--json".to_string(),
+            "--cd".to_string(),
+            current_dir.to_string_lossy().to_string(),
+            "--skip-git-repo-check".to_string(),
+            "--color".to_string(),
+            "never".to_string(),
+        ];
+
+        // Codex keeps its own OS sandbox unless the sandbox level lets
+        // skip-permissions switch it off; builds may also write Cargo's
+        // directories (1213).
+        let inherited = |name: &str| {
+            options
+                .env
+                .iter()
+                .rev()
+                .find(|(key, _)| key == name)
+                .map(|(_, value)| OsString::from(value))
+                .or_else(|| std::env::var_os(name))
+        };
+        args.extend(codex_sandbox_args(
+            options.dangerously_skip_permissions,
+            safety.sandbox_level,
+            options.agent_contract.as_ref(),
+            &codex_writable_roots(inherited, &current_dir),
+        ));
+
+        // Only pass --model for non-Claude models (codex defaults to its own)
+        if !model.slug.is_empty() && !model.slug.starts_with("claude") {
+            args.push("--model".to_string());
+            args.push(model.slug.clone());
+        }
+
+        args.push("-".to_string()); // Read prompt from stdin
+
         // ── Operation policy broker (RG-2) ──────────────────────────────────
         // Derive a CodexOperationPolicy from the AgentContract so that Codex
-        // built-in operations (command_execution, file_change) are screened
-        // against the configured deny/allow list.  The broker fires on the
-        // JSONL output stream, which is the only post-execution enforcement
-        // boundary available for a subprocess provider.
+        // built-in operations (command_execution, file_change, web_search,
+        // mcp_tool_call) are screened against the configured deny/allow list,
+        // and file changes against the worktree.  The broker reads the JSONL
+        // output stream as Codex writes it and stops the process at the first
+        // denied operation; a subprocess provider offers no earlier boundary.
         let operation_policy = options
             .agent_contract
             .as_ref()
@@ -272,11 +305,128 @@ impl ProviderAdapter for CodexCliAdapter {
         ClaudeCliAdapter.classify_error(status, body)
     }
 
-    /// `codex exec` has no turn-count flag or setting, and roko reads its
-    /// JSONL only after the process exits, so nothing stops it at the cap:
+    /// `codex exec` has no turn-count flag or setting, and roko does not count
+    /// its turns while it runs, so nothing stops it at the cap:
     /// the cap is advisory, and only the attempt timeout bounds a long run.
     fn turn_cap_enforcement(&self, _provider: &ProviderConfig) -> TurnCapEnforcement {
         TurnCapEnforcement::Advisory
+    }
+}
+
+/// The `codex exec` arguments that choose its sandbox, the directories it may
+/// write besides its workspace, and its network access.
+///
+/// Codex keeps its OS sandbox (`--sandbox workspace-write`) unless the run
+/// skips permissions and its sandbox level lets a CLI's own sandbox be
+/// switched off ([`SandboxLevel::allows_sandbox_bypass`]: `None` or
+/// `Observe`). `codex exec` asks for no approvals, so skipping permissions
+/// never needed the sandbox off. In the sandbox, under `Isolate` and
+/// `Quarantine` Codex writes only its workspace and has no network. Under the
+/// other levels it may also write `writable_roots` ([`codex_writable_roots`]),
+/// and its network follows the contract: off when the contract keeps the role
+/// off the network ([`codex_network_pins`]), on when it lets the role reach
+/// the network, and as the user's Codex configuration says without one.
+///
+/// Without the sandbox the network pins switch off only web search, so a run
+/// whose contract keeps it off the network is logged as unconfined.
+///
+/// Neither mode confines what Codex reads. The sandbox's mode
+/// workspace-write does not confine reads: its settings choose only the roots
+/// Codex may write and its network access. A Codex run can read every file
+/// its user can, the audit vault (`ROKO_AUDIT_HOME`, else `~/.roko/audit`)
+/// included, at every sandbox level (gap-0714c4; checked against codex-cli
+/// 0.152.0). What keeps Codex out of the vault is `ExecAgent`'s operation
+/// broker (`exec.rs`), which stops the run at a command that names the vault,
+/// as roko's bash tool refuses one, but only once the command has started; a
+/// command that reaches the vault without naming it goes unseen. The vault's
+/// canaries (backlog 7117) detect what gets through.
+fn codex_sandbox_args(
+    skip_permissions: bool,
+    level: SandboxLevel,
+    contract: Option<&AgentContract>,
+    writable_roots: &[PathBuf],
+) -> Vec<String> {
+    let network_pins = codex_network_pins(contract);
+    if skip_permissions && level.allows_sandbox_bypass() {
+        if !network_pins.is_empty() {
+            tracing::warn!(
+                ?level,
+                "Codex runs without its sandbox, so its network is not confined: the contract \
+                 keeps the role off the network, but only web search is switched off"
+            );
+        }
+        let mut args = vec!["--dangerously-bypass-approvals-and-sandbox".to_string()];
+        args.extend(network_pins);
+        return args;
+    }
+
+    let mut args = vec!["--sandbox".to_string(), "workspace-write".to_string()];
+    if matches!(level, SandboxLevel::Isolate | SandboxLevel::Quarantine) {
+        args.extend(CODEX_NETWORK_OFF.map(str::to_string));
+        return args;
+    }
+    for root in writable_roots {
+        args.push("--add-dir".to_string());
+        args.push(root.to_string_lossy().into_owned());
+    }
+    if contract.is_some_and(AgentContract::permits_network) {
+        args.push("-c".to_string());
+        args.push("sandbox_workspace_write.network_access=true".to_string());
+    }
+    args.extend(network_pins);
+    args
+}
+
+/// Directories outside its workspace that a sandboxed Codex run may also
+/// write, so that its builds keep working: Cargo's target directory
+/// (`CARGO_TARGET_DIR`) and Cargo's home (`CARGO_HOME`, else `~/.cargo`),
+/// which holds the registry and git caches. `var` reads the environment Codex
+/// inherits. A directory inside `workspace` is left out, since Codex may write
+/// it anyway, and so is one that does not exist yet, which a sandbox may
+/// refuse to grant.
+///
+/// They are passed as `--add-dir`, which adds to the user's
+/// `sandbox_workspace_write.writable_roots` instead of replacing them, as a
+/// `-c` override would. Checked against codex-cli 0.152.0.
+fn codex_writable_roots(var: impl Fn(&str) -> Option<OsString>, workspace: &Path) -> Vec<PathBuf> {
+    let target_dir = var("CARGO_TARGET_DIR").map(PathBuf::from);
+    let cargo_home = var("CARGO_HOME")
+        .map(PathBuf::from)
+        .or_else(|| var("HOME").map(|home| PathBuf::from(home).join(".cargo")));
+    let mut roots: Vec<PathBuf> = Vec::new();
+    for root in target_dir.into_iter().chain(cargo_home) {
+        let root = if root.is_absolute() {
+            root
+        } else {
+            workspace.join(root)
+        };
+        if root.is_dir() && !root.starts_with(workspace) && !roots.contains(&root) {
+            roots.push(root);
+        }
+    }
+    roots
+}
+
+/// `codex exec` overrides that switch off web search and the workspace
+/// sandbox's network access. Checked against codex-cli 0.152.0, whose
+/// `web_search` takes `disabled`, `cached`, `indexed` or `live`.
+const CODEX_NETWORK_OFF: [&str; 4] = [
+    "-c",
+    "web_search=\"disabled\"",
+    "-c",
+    "sandbox_workspace_write.network_access=false",
+];
+
+/// [`CODEX_NETWORK_OFF`] for a run whose contract keeps the role off the
+/// network; nothing for other runs, whose sandbox network
+/// [`codex_sandbox_args`] decides. The network pin confines the network only
+/// while Codex's sandbox is on.
+fn codex_network_pins(contract: Option<&AgentContract>) -> Vec<String> {
+    match contract {
+        Some(contract) if !contract.permits_network() => {
+            CODEX_NETWORK_OFF.map(str::to_string).into()
+        }
+        _ => Vec::new(),
     }
 }
 
@@ -310,6 +460,235 @@ mod tests {
 
     fn prompt(text: &str) -> Signal {
         Signal::builder(Kind::Prompt).body(Body::text(text)).build()
+    }
+
+    fn codex_provider(command: &str) -> ProviderConfig {
+        ProviderConfig {
+            kind: ProviderKind::CodexCli,
+            base_url: None,
+            api_key_env: None,
+            command: Some(command.to_string()),
+            args: None,
+            timeout_ms: None,
+            ttft_timeout_ms: None,
+            connect_timeout_ms: None,
+            extra_headers: None,
+            max_concurrent: None,
+            limits: None,
+            require_confirmation: false,
+            stream_usage: None,
+            billing: None,
+        }
+    }
+
+    /// gap-baab0a: Codex cannot honour a tool allowlist, so the adapter
+    /// refuses a contract with one, before it looks for the binary. A role's
+    /// forbidden tools alone are fine: the operation broker enforces them.
+    #[test]
+    fn codex_adapter_refuses_a_tool_allowlist() {
+        use crate::safety::contract::{AgentContract, GovernanceRule};
+
+        let model = ModelProfile {
+            provider: "codex_cli".to_string(),
+            slug: "gpt-5-codex".to_string(),
+            ..ModelProfile::default()
+        };
+        let allowlist = AgentContract {
+            allowed_tools: Some(vec!["read_file".to_string(), "grep".to_string()]),
+            ..AgentContract::default()
+        };
+        let options = AgentOptions {
+            agent_contract: Some(allowlist),
+            ..Default::default()
+        };
+        let missing_binary = codex_provider("not-on-path");
+        let refused = CodexCliAdapter.create_agent(&missing_binary, &model, &options);
+        assert!(
+            matches!(
+                refused,
+                Err(AgentCreationError::ToolAllowlistUnsupported(
+                    ProviderKind::CodexCli
+                ))
+            ),
+            "{:?}",
+            refused.err()
+        );
+
+        let forbids_bash = AgentContract {
+            governance: vec![GovernanceRule::ForbiddenTools(vec!["bash".to_string()])],
+            ..AgentContract::default()
+        };
+        let options = AgentOptions {
+            agent_contract: Some(forbids_bash),
+            ..Default::default()
+        };
+        let created = CodexCliAdapter.create_agent(&codex_provider("sh"), &model, &options);
+        assert!(created.is_ok(), "{:?}", created.err());
+    }
+
+    /// gap-baab0a: a Codex run whose contract keeps the role off the network
+    /// gets web search and sandbox networking switched off; other runs keep
+    /// the user's Codex configuration.
+    #[test]
+    fn codex_network_is_pinned_off_unless_the_contract_permits_it() {
+        use crate::safety::contract::{AgentContract, GovernanceRule};
+
+        let implementer = AgentContract {
+            governance: vec![GovernanceRule::ForbiddenTools(vec![
+                "web_fetch".into(),
+                "web_search".into(),
+            ])],
+            ..AgentContract::default()
+        };
+        let expected = [
+            "-c",
+            "web_search=\"disabled\"",
+            "-c",
+            "sandbox_workspace_write.network_access=false",
+        ];
+        assert_eq!(codex_network_pins(Some(&implementer)), expected);
+        assert!(codex_network_pins(Some(&AgentContract::default())).is_empty());
+        assert!(codex_network_pins(None).is_empty());
+    }
+
+    /// 1213: skipping permissions switches Codex's own sandbox off only under
+    /// `None` and `Observe`. Under `Restrict`, the default, Codex keeps
+    /// `--sandbox workspace-write`, so the network pin of a role kept off the
+    /// network now confines it: with the sandbox bypassed it only switched
+    /// web search off.
+    #[test]
+    fn codex_keeps_workspace_sandbox_with_skip_permissions() {
+        use crate::safety::contract::GovernanceRule;
+
+        let bypass = "--dangerously-bypass-approvals-and-sandbox";
+        let sandbox = ["--sandbox", "workspace-write"];
+        let restrict = codex_sandbox_args(true, SandboxLevel::Restrict, None, &[]);
+        assert_eq!(restrict, sandbox);
+        assert!(!restrict.iter().any(|arg| arg == bypass));
+        for level in [SandboxLevel::Isolate, SandboxLevel::Quarantine] {
+            assert_eq!(codex_sandbox_args(true, level, None, &[])[..2], sandbox);
+        }
+        for level in [SandboxLevel::None, SandboxLevel::Observe] {
+            assert_eq!(codex_sandbox_args(true, level, None, &[]), [bypass]);
+            assert_eq!(codex_sandbox_args(false, level, None, &[]), sandbox);
+        }
+
+        // In the sandbox Cargo's directories stay writable, and the network
+        // follows the contract.
+        let implementer = AgentContract {
+            governance: vec![GovernanceRule::ForbiddenTools(vec![
+                "web_fetch".into(),
+                "web_search".into(),
+            ])],
+            ..AgentContract::default()
+        };
+        let roots = [
+            PathBuf::from("/shared/target"),
+            PathBuf::from("/home/dev/.cargo"),
+        ];
+        assert_eq!(
+            codex_sandbox_args(true, SandboxLevel::Restrict, Some(&implementer), &roots),
+            [
+                "--sandbox",
+                "workspace-write",
+                "--add-dir",
+                "/shared/target",
+                "--add-dir",
+                "/home/dev/.cargo",
+                "-c",
+                "web_search=\"disabled\"",
+                "-c",
+                "sandbox_workspace_write.network_access=false",
+            ]
+        );
+        let networked = AgentContract::default();
+        assert_eq!(
+            codex_sandbox_args(true, SandboxLevel::Restrict, Some(&networked), &[]),
+            [
+                "--sandbox",
+                "workspace-write",
+                "-c",
+                "sandbox_workspace_write.network_access=true",
+            ]
+        );
+        // Isolate keeps the run in its workspace and off the network.
+        assert_eq!(
+            codex_sandbox_args(true, SandboxLevel::Isolate, Some(&networked), &roots),
+            [
+                "--sandbox",
+                "workspace-write",
+                "-c",
+                "web_search=\"disabled\"",
+                "-c",
+                "sandbox_workspace_write.network_access=false",
+            ]
+        );
+        // Without the sandbox the pins still switch web search off.
+        assert_eq!(
+            codex_sandbox_args(true, SandboxLevel::None, Some(&implementer), &roots),
+            [
+                bypass,
+                "-c",
+                "web_search=\"disabled\"",
+                "-c",
+                "sandbox_workspace_write.network_access=false",
+            ]
+        );
+    }
+
+    /// The environment Codex would inherit, as `codex_writable_roots` reads it.
+    fn env_of<P: AsRef<std::ffi::OsStr>>(vars: &[(&str, P)]) -> impl Fn(&str) -> Option<OsString> {
+        let vars: Vec<(String, OsString)> = vars
+            .iter()
+            .map(|(name, value)| ((*name).to_string(), value.as_ref().to_os_string()))
+            .collect();
+        move |name: &str| {
+            vars.iter()
+                .find(|(key, _)| key == name)
+                .map(|(_, value)| value.clone())
+        }
+    }
+
+    /// 1213: a sandboxed Codex run in a per-task worktree can still build
+    /// when `CARGO_TARGET_DIR` points outside it.
+    #[test]
+    fn codex_writable_roots_cover_cargo_dirs_outside_the_workspace() {
+        let dir = tempdir().expect("tempdir");
+        let workspace = dir.path().join("worktree");
+        let target = dir.path().join("shared-target");
+        let home = dir.path().join("home");
+        let cargo_home = home.join(".cargo");
+        let custom_home = dir.path().join("cargo-home");
+        for path in [
+            &workspace.join("target"),
+            &target,
+            &cargo_home,
+            &custom_home,
+        ] {
+            fs::create_dir_all(path).expect("create dir");
+        }
+
+        let roots = codex_writable_roots(
+            env_of(&[("CARGO_TARGET_DIR", &target), ("HOME", &home)]),
+            &workspace,
+        );
+        assert_eq!(roots, [target, cargo_home]);
+
+        // CARGO_HOME wins over ~/.cargo; a target inside the worktree, and
+        // one that does not exist yet, are left out.
+        let inside = workspace.join("target");
+        let roots = codex_writable_roots(
+            env_of(&[
+                ("CARGO_TARGET_DIR", &inside),
+                ("CARGO_HOME", &custom_home),
+                ("HOME", &home),
+            ]),
+            &workspace,
+        );
+        assert_eq!(roots, [custom_home]);
+        let missing = dir.path().join("missing-target");
+        let roots = codex_writable_roots(env_of(&[("CARGO_TARGET_DIR", &missing)]), &workspace);
+        assert!(roots.is_empty(), "{roots:?}");
     }
 
     #[test]
@@ -411,6 +790,8 @@ printf '%s\n' '{{"type":"result","subtype":"success","is_error":false,"total_cos
             max_concurrent: None,
             limits: None,
             require_confirmation: false,
+            stream_usage: None,
+            billing: None,
         };
         let options = AgentOptions {
             safety_layer: None,
@@ -455,9 +836,12 @@ printf '%s\n' '{{"type":"result","subtype":"success","is_error":false,"total_cos
             trace_sink: None,
             metrics_sink: None,
             tool_correlation: None,
+            provenance_sink: None,
             max_turns: None,
             live_output: None,
             thinking: None,
+            data_llm: None,
+            pricing: roko_core::pricing_snapshot::PricingConfig::default(),
         };
         let model = claude_model();
 
@@ -548,6 +932,8 @@ printf '%s\n' '{{"type":"result","subtype":"success","is_error":false,"total_cos
             max_concurrent: None,
             limits: None,
             require_confirmation: false,
+            stream_usage: None,
+            billing: None,
         };
         let options = AgentOptions {
             timeout_ms: Some(10_000),
@@ -604,6 +990,8 @@ printf '%s\n' '{"type":"content_block_delta","delta":{"text":"late"}}'
             max_concurrent: None,
             limits: None,
             require_confirmation: false,
+            stream_usage: None,
+            billing: None,
         };
         let options = AgentOptions {
             timeout_ms: Some(100),

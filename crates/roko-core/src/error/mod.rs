@@ -380,6 +380,36 @@ impl RokoError {
     pub const fn log_level(&self) -> &'static str {
         self.kind().log_level()
     }
+
+    /// How long the provider asked the caller to wait before a retry, when
+    /// the error's text carries it (backlog 1117): `retry after 2000 ms`, as
+    /// a rate limit renders, or `retry after 30s`, as a long retry-after
+    /// does.
+    #[must_use]
+    pub fn retry_after(&self) -> Option<std::time::Duration> {
+        parse_retry_after(&self.to_string())
+    }
+}
+
+/// The first `retry after <n> ms` or `retry after <n>s` in `text`.
+fn parse_retry_after(text: &str) -> Option<std::time::Duration> {
+    const MARKER: &str = "retry after ";
+    let lower = text.to_ascii_lowercase();
+    lower.match_indices(MARKER).find_map(|(at, _)| {
+        let rest = &lower[at + MARKER.len()..];
+        let digits = rest
+            .find(|c: char| !c.is_ascii_digit())
+            .unwrap_or(rest.len());
+        let amount: u64 = rest[..digits].parse().ok()?;
+        let unit = rest[digits..].trim_start();
+        if unit.starts_with("ms") {
+            Some(std::time::Duration::from_millis(amount))
+        } else if unit.starts_with('s') {
+            Some(std::time::Duration::from_secs(amount))
+        } else {
+            None
+        }
+    })
 }
 
 /// Stable discriminant — maps variants to a flat set of error kinds for
@@ -579,6 +609,25 @@ mod tests {
     fn display_is_useful() {
         let e = RokoError::Rejected("no way".into());
         assert!(format!("{e}").contains("no way"));
+    }
+
+    /// backlog 1117: both forms in which a provider's retry-after reaches
+    /// an error.
+    #[test]
+    fn retry_after_reads_both_message_forms() {
+        use std::time::Duration;
+
+        let limited = RokoError::agent("openai", "rate limited; retry after 2000 ms");
+        assert_eq!(limited.retry_after(), Some(Duration::from_millis(2_000)));
+        let long = RokoError::gateway("provider", true, "slow down (retry after 3600s)");
+        assert_eq!(long.retry_after(), Some(Duration::from_secs(3_600)));
+        let unparsed = [
+            RokoError::agent("openai", "rate limited"),
+            RokoError::agent("cli", "retry after a pause"),
+        ];
+        for error in unparsed {
+            assert_eq!(error.retry_after(), None, "{error}");
+        }
     }
 
     #[test]

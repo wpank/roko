@@ -87,6 +87,10 @@ pub mod agent;
 /// Cross-cut arbitration protocol for resolving Daimon/Neuro/Dreams conflicts (INT-21).
 pub mod arbitration;
 pub mod attestation;
+/// The audit vault outside every workdir (S05 §4.4).
+pub mod audit_home;
+/// Plain audit data shared across crates (S05 §4.1, §4.6, §5).
+pub mod audit_types;
 pub mod body;
 pub mod build;
 /// Additional Bus backend implementations: BroadcastBus, MemoryBus, MultiBus.
@@ -121,8 +125,7 @@ pub mod defaults;
 
 pub mod demurrage;
 pub mod dispatch_plan;
-/// Domain profiles for agent specialization: gate defaults, tool sets, context templates.
-pub mod domain_profile;
+pub mod disturbance;
 /// Canonical single-unit duration parser (`ms`, `s`, `m`, `h`, `d`).
 pub mod duration;
 /// Backward-compatible re-export module — canonical definitions live in [`signal`].
@@ -212,6 +215,8 @@ pub mod plugin;
 pub mod policy_manifest;
 pub mod polyglot;
 pub mod prediction;
+/// Dated price snapshots (`config/prices/`) and API-equivalent costs priced from them.
+pub mod pricing_snapshot;
 pub mod project;
 pub mod provenance;
 pub mod provider_catalog;
@@ -312,7 +317,6 @@ pub use dispatch_plan::{
     DispatchPlan, DispatchRequest, DispatchRequirement, FallbackPolicy, ProviderDispatchError,
     TransportAuth, TransportPlan,
 };
-pub use domain_profile::{DomainProfile, TypedContext};
 pub use duration::{DurationParseError, parse_duration, parse_duration_ms};
 pub use error::{Result, RokoError};
 pub use feed::{
@@ -419,7 +423,7 @@ pub use signal_kinds::*;
 pub use task::{
     GlobalTaskId, PlanStatus, Task, TaskCategory, TaskComplexityBand, TaskContextWeight,
     TaskDomain, TaskHints, TaskMeta, TaskQualityProfile, TaskReasoningLevel, TaskSpeedPriority,
-    TaskStatus, TaskTier,
+    TaskStatus, TaskTier, WorkspaceKind,
 };
 pub use usage::{UsageObservation, UsageSource};
 // Note: tool::FailureKind (for tool-call failures) is NOT re-exported here to avoid
@@ -436,7 +440,6 @@ pub use job::{
     CreateJobRequest, FileJobStore, JobError, JobEvaluation, JobExecutionMode, JobExecutionService,
     JobFilter, JobGateResult, JobPriority, JobProgressEntry, JobStats, JobStatus, JobSubmission,
     JobTransitionReceipt, JobType, LegacyMigrationDiagnostic, MalformedJobFile, MarketplaceJob,
-    PrdSummary, TaskSummary as JobTaskSummary,
 };
 pub use lens_registry::{LensConfig, LensRegistration, LensRegistry, parse_scope};
 pub use namespace::{
@@ -456,15 +459,14 @@ pub use todo_dag::{
     TodoChanges, TodoDag, TodoDagError, TodoDelta, TodoItem, TodoSnapshot, TodoSource, TodoStatus,
 };
 pub use tool::{
-    ArmEntry, Artifact, AuditSink, BanditKey, CancelSource, CancelToken, EpsilonGreedyBandit,
-    FailureTrace, FormatBandit, KeywordOverlapScorer, MemoryPointer, MetricsKey, MetricsSink,
-    ProfileBandit, RewardConfig, ToolCall, ToolCategory, ToolConcurrency, ToolContext, ToolDef,
-    ToolError, ToolExecutionEnvelope, ToolExecutionRecord, ToolFormat, ToolFormatProfile,
-    ToolHandler, ToolLifecycleStatus, ToolMetrics, ToolOutcome, ToolPermission, ToolRegistry,
-    ToolRelevanceScorer, ToolResult, ToolResultContent, ToolSchema, ToolSource, ToolTrace,
-    ToolTraceEvent, TraceBuilder, TraceFinishGuard, TraceId, TraceSink, TraceStep, TranscriptEvent,
-    TranscriptEventMeta, TranscriptRecord, VecToolRegistry, classify_tool_error, compute_reward,
-    galileo_tsq, profile_for_model,
+    Artifact, AuditSink, CancelSource, CancelToken, FailureTrace, KeywordOverlapScorer,
+    MemoryPointer, MetricsKey, MetricsSink, RewardConfig, ToolCall, ToolCategory, ToolConcurrency,
+    ToolContext, ToolDef, ToolError, ToolExecutionEnvelope, ToolExecutionRecord, ToolFormat,
+    ToolFormatProfile, ToolHandler, ToolLifecycleStatus, ToolMetrics, ToolOutcome, ToolPermission,
+    ToolRegistry, ToolRelevanceScorer, ToolResult, ToolResultContent, ToolSchema, ToolSource,
+    ToolTrace, ToolTraceEvent, TraceBuilder, TraceFinishGuard, TraceId, TraceSink, TraceStep,
+    TranscriptEvent, TranscriptEventMeta, TranscriptRecord, VecToolRegistry, classify_tool_error,
+    compute_reward, galileo_tsq, profile_for_model,
 };
 pub use traits::{
     Bus, ColdStore, Compose, Connect, Observe, React, Route, Store, Substrate, Trigger, Verify,

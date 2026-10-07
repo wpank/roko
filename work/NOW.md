@@ -4,7 +4,7 @@
 
 What to work on next: the top checked, open items of each goal, highest-priority goal first. Reorder or change goals in `goals.toml`; pin an item higher with `rank = 1` (lower first).
 
-**Drift:** 12 anchor gone · 166 changed since checked · 2 mentioned in commits. Re-check them before relying on this list: `DRIFT.md`.
+**Drift:** 13 anchor gone · 117 changed since checked · 2 mentioned in commits. Re-check them before relying on this list: `DRIFT.md`.
 
 ## 1. Public release: security, licence, CI, first run
 
@@ -12,86 +12,92 @@ What to work on next: the top checked, open items of each goal, highest-priority
 - **P2** [bug-911361](items/bug-911361-cargo-toml-s-repository-and-homepage-point.md) Cargo.toml's repository and homepage point at an unrelated GitHub account [bug] · size S · verified 2026-09-29
 - **P2** [q-bc6cc5](items/q-bc6cc5-confirm-licence-coverage-for-another-contributor-s.md) Confirm licence coverage for another contributor's code in apps/mirage-rs [question] · size S · verified 2026-09-29
 
-_3 more open · on hold: gap-8f8544 · 4 unchecked (`TRIAGE.md`) · `goal = "release"`_
+_10 more open · on hold: gap-00e882, gap-8f8544, gap-fbd580 · 4 unchecked (`TRIAGE.md`) · `goal = "release"`_
 
 ## 2. Whitepaper v1 and the research papers
 
+- **P2** [gap-d2507f](items/gap-d2507f-pk97-papers-companion-fill-the-e2-and.md) PK97 Papers: Companion: fill the E2 and E3 results from the human ratings, and redraw Figure 3 (+2 more) · size M · verified 2026-10-02
 - **P1** [spec-f8d196](items/spec-f8d196-epic-research-paper-companion-report-and-tl.md) Epic: research paper, companion report and TL;DR upkeep [spec] · size L · verified 2026-09-29
 - **P1** [gap-8117a8](items/gap-8117a8-publish-the-whitepaper-pdf-build-release-tag.md) Publish the whitepaper: PDF build, release tag and venue · size S · verified 2026-09-29
-- **P2** [gap-08d9b2](items/gap-08d9b2-whitepaper-final-matrix-re-pin-right-before.md) Whitepaper: final matrix re-pin right before the whitepaper-v1 tag · size S · verified 2026-09-30
 
-_0 more open · on hold: gap-85f86a · 2 unchecked (`TRIAGE.md`) · `goal = "whitepaper"`_
+_3 more open · on hold: gap-6aaee9, gap-85f86a, gap-9b5582, gap-ac1aed, gap-b90650, gap-d4a1c1 · 2 unchecked (`TRIAGE.md`) · `goal = "whitepaper"`_
 
 ## 3. Roko tells the truth and is safe (P0)
 
-- nothing checked and open
+- **P2** [spec-65c828](items/spec-65c828-backlog-phase-1-safe-runs.md) Backlog Phase 1 — safe runs [spec] · verified 2026-10-02
+- **P2** [spec-99d417](items/spec-99d417-backlog-phase-2-honest-measurement.md) Backlog Phase 2 — honest measurement [spec] · verified 2026-10-02
+- **P2** [gap-11a91a](items/gap-11a91a-helper-calls-record-the-task-s-own.md) Helper calls record the task's own agent id, not a helper-specific one · size S · verified 2026-10-02
 
-_0 more open · 4 unchecked (`TRIAGE.md`) · `goal = "truth"`_
+_7 more open · on hold: gap-3698cd · `goal = "truth"`_
 
 ## 4. Frontier plans, cheap models execute, the result integrates (P1)
 
-- nothing checked and open
+- **P2** [spec-fef7c5](items/spec-fef7c5-backlog-phase-3-golden-path-proof.md) Backlog Phase 3 — golden-path proof [spec] · verified 2026-10-02
+- **P2** [dec-55532d](items/dec-55532d-confirm-nine-worker-choices-from-waves-3.md) Confirm nine worker choices from waves 3-5 (budget raise transport, failover retries, 24h auth quarantine, frozen allow-list, CLI billing, cold-start knowledge, domain packs, secret scrubbing) [decision] · size S · verified 2026-10-03
 
-_0 more open · 9 unchecked (`TRIAGE.md`) · `goal = "golden-path"`_
+_0 more open · on hold: gap-634954, gap-c013c5, gap-e1fdb3 · 4 unchecked (`TRIAGE.md`) · `goal = "golden-path"`_
 
 ## 5. Proof: the pilot benchmark and a record of the work
 
-- nothing checked and open
+- **P1** [dec-20744e](items/dec-20744e-accept-same-uid-keychain-risk-for-subscription.md) Accept same-uid keychain risk for subscription arms, or containerize them (S08 decision 4) [decision] · size S · verified 2026-10-02
+- **P1** [dec-3d5714](items/dec-3d5714-s09-4-1-s-two-stage-bootstrap.md) S09 §4.1's two-stage bootstrap over-covers (0.975): change to task-only n_h-1 resampling, or accept, before the lock [decision] · size S · verified 2026-10-03
+- **P2** [gap-76fd1c](items/gap-76fd1c-f4-s-converter-and-a-product-decision.md) F4's converter and a product decision for F2/F3/F5/F7 are still needed for the full 48-instance H3 report · size M · verified 2026-10-05
 
-_0 more open · 12 unchecked (`TRIAGE.md`) · `goal = "proof"`_
+_10 more open · on hold: gap-057cc7, gap-05c4c0, gap-11cec6, gap-31e1b0, gap-394f28, gap-4a5109, gap-50346f, gap-681741, gap-7c9a9c, gap-8c2535, gap-942f88, gap-aa60f2, gap-b7f99e, gap-ba9965, gap-e9218e, gap-eabd7f · 9 unchecked (`TRIAGE.md`) · `goal = "proof"`_
 
 ## 6. Learning from verified outcomes, M1-M4 (P2)
 
-- nothing checked and open
+- **P2** [q-85792e](items/q-85792e-b2-s-retry-delta-has-no-room.md) B2's retry_delta has no room to move on ladder-routed tasks: raise adaptive_max_retries, or amend 8101's clamp? [question] · size S · verified 2026-10-04
+- **P2** [spec-446a41](items/spec-446a41-backlog-phase-4-loops-re-closed-s02.md) Backlog Phase 4 — loops re-closed (S02) [spec] · verified 2026-10-02
+- **P2** [spec-c6e21b](items/spec-c6e21b-backlog-phase-5-m2-loop-liveness-audit.md) Backlog Phase 5 — M2 loop-liveness audit (S03) [spec] · verified 2026-10-02
 
-_0 more open · 2 unchecked (`TRIAGE.md`) · `goal = "cybernetic"`_
+_17 more open · on hold: gap-3d37e8, gap-799698, gap-8a26fc, gap-93c748, gap-fd96c8 · 2 unchecked (`TRIAGE.md`) · `goal = "cybernetic"`_
 
 ## 7. Plan runs work reliably
 
-- **P0** [gap-4ec59f](items/gap-4ec59f-worktree-isolation-flip-default-and-add-startup.md) Worktree Isolation: Flip Default and Add Startup Repair · size L · verified 2026-10-01
-- **P1** [gap-baab0a](items/gap-baab0a-da-09-11-codex-tool-policy-is.md) Codex tool policy is advisory; Roko-owned operation-level broker missing · size L · verified 2026-09-29
-- **P1** [q-1faa0c](items/q-1faa0c-da-09-10-dev-audit-runtime-fixes.md) Dev-audit runtime fixes unverified on the Graph engine after Runner-v2 deletion [question] · size L · verified 2026-09-29
+- **P1** [gap-af73a8](items/gap-af73a8-fresh-live-dogfood-rerun-of-the-full.md) Fresh live dogfood rerun of the full self-hosting workflow · size M · verified 2026-09-29
+- **P1** [gap-d58ae8](items/gap-d58ae8-tp2-36-p0-0-37-mori-shaped.md) Mori-shaped workflow contract unproven end-to-end · size L · verified 2026-10-01
+- **P1** [gap-5d3b82](items/gap-5d3b82-proof-case-1-agent-early-exit-losteffect.md) Proof Case 1: Agent early exit / LostEffect · size M · verified 2026-10-01
 
-_53 more open · 4 unchecked (`TRIAGE.md`) · `goal = "core"`_
+_9 more open · 1 unchecked (`TRIAGE.md`) · `goal = "core"`_
 
 ## 8. Live visibility: serve, dashboard, portal
 
-- **P1** [gap-aabeff](items/gap-aabeff-tool-t003-tui-paths-still-consume-string.md) TUI paths still consume string/tail projections that lose semantics (TUI adoption unproven) · size L · verified 2026-09-29
-- **P1** [gap-c002bb](items/gap-c002bb-wire-tui-recovery-keybindings-to-runner-command.md) Wire TUI Recovery Keybindings to Runner Command Channel · size L · verified 2026-09-29
-- **P2** [bug-1cb461](items/bug-1cb461-aggregator-truncates-content-by-byte-index-and.md) Aggregator truncates content by byte index and can panic on non-ASCII text [bug] · size S · verified 2026-09-29
+- **P1** [gap-aabeff](items/gap-aabeff-tool-t003-tui-paths-still-consume-string.md) TUI paths still consume string/tail projections that lose semantics (TUI adoption unproven) · size L · verified 2026-10-01
+- **P2** [bug-a0f01e](items/bug-a0f01e-long-running-operation-handles-never-record-completion.md) Long-running operation handles never record completion [bug] · verified 2026-10-01
+- **P3** [gap-0d6ae5](items/gap-0d6ae5-closing-the-tui-mid-run-stops-the.md) Closing the TUI mid-run stops the plan run; there is no detach mode · verified 2026-10-01
 
-_21 more open · 3 unchecked (`TRIAGE.md`) · `goal = "visibility"`_
+_1 more open · `goal = "visibility"`_
 
 ## 9. Learning loops on the Graph path
 
-- **P1** [find-34a4b5](items/find-34a4b5-cybernetic-re-verify-learning-16-learning-routing.md) 16 learning/routing closures wired into deleted Runner-v2 event_loop.rs [finding] · size M · verified 2026-09-29
-- **P2** [gap-7a8474](items/gap-7a8474-provider-f037-10-of-23-agentefficiencyevent-fields.md) 10 of 23 AgentEfficiencyEvent fields always zero/empty in primary live path · size M · verified 2026-09-29
-- **P2** [find-49ec18](items/find-49ec18-evals-re-verify-8-eval-closures-2026.md) 8 eval closures (2026-09-05) wired via Runner-v2 dispatch/event loop [finding] · size M · verified 2026-09-29
+- **P2** [q-6b7cca](items/q-6b7cca-graph-plan-runs-never-emit-plancompleted-wire.md) Graph plan runs never emit PlanCompleted: wire the four plan-completion sinks (the dream sink starts claude) or remove them? [question] · size S · verified 2026-09-29
+- **P2** [gap-a4fbf8](items/gap-a4fbf8-the-model-ladder-retry-budget-floor-overrides.md) The model-ladder retry-budget floor overrides the adaptive gate-history suggestion instead of composing with it (QA7) · size M · verified 2026-10-02
 
-_12 more open · on hold: bug-429315, bug-8c5d32, bug-b9be1d, bug-dd5dca, bug-dee062, find-3d8bd4, find-3f99f2, gap-47356e, gap-4d1bff, reg-d76ab0 · `goal = "learning"`_
+_0 more open · on hold: bug-429315, bug-8c5d32, bug-b9be1d, bug-dd5dca, bug-dee062, find-3d8bd4, find-3f99f2, gap-47356e, gap-4d1bff, reg-d76ab0 · `goal = "learning"`_
 
 ## 10. Tooling, CLI polish and code hygiene
 
-- **P1** [gap-759041](items/gap-759041-backlog-and-plan-state-reconciliation.md) Backlog and Plan State Reconciliation · size M · verified 2026-09-29
-- **P2** [bug-97c2dc](items/bug-97c2dc-async-runtime-anti-patterns-drop-spawn-unbounded.md) Async Runtime Anti-Patterns (Drop+Spawn, Unbounded Channels, Mutex Across Await) [bug] · size M · verified 2026-09-29
-- **P2** [gap-8921a3](items/gap-8921a3-df-0925-p4-dead-code-paths-graphexecutionevent.md) Dead code paths (GraphExecutionEvent sink, duplicate streaming verify path, build_fix_prompt) · size S · verified 2026-09-29
+- **P2** [spec-0b3a32](items/spec-0b3a32-backlog-phase-9-domains-assistant-held-and.md) Backlog Phase 9 — domains, assistant, held and parked work, cleanup, showcase and deploy [spec] · verified 2026-10-02
+- **P2** [spec-c89168](items/spec-c89168-feature-gate-chain-alloy-out-of-the.md) Feature-gate chain/Alloy out of the default CLI build: remaining benchmark evidence, all-feature test matrix and release jobs [spec] · size M · verified 2026-09-29
+- **P2** [gap-082a14](items/gap-082a14-graph-runs-never-write-task-status-back.md) Graph runs never write task status back to tasks.toml · verified 2026-10-01
 
-_37 more open · 17 unchecked (`TRIAGE.md`) · `goal = "tooling"`_
+_9 more open · 3 unchecked (`TRIAGE.md`) · `goal = "tooling"`_
 
 ## 11. Feature ideas
 
-- **P1** [gap-b0d514](items/gap-b0d514-provider-f019-camel-data-llm-execution-boundary.md) CaMeL Data-LLM execution boundary not enforced · size L · verified 2026-09-29
-- **P1** [gap-f118b3](items/gap-f118b3-deliver-roko-inject-through-the-canonical-acknowledged.md) Deliver `roko inject` Through the Canonical Acknowledged Control Transport · size L · verified 2026-09-29
-- **P1** [gap-ff95f5](items/gap-ff95f5-persist-taint-witness-and-custody-provenance-across.md) Persist Taint, Witness, and Custody Provenance Across Restart · size L · verified 2026-09-29
+- **P1** [gap-ff95f5](items/gap-ff95f5-persist-taint-witness-and-custody-provenance-across.md) Persist Taint, Witness, and Custody Provenance Across Restart · size L · verified 2026-10-01
+- **P2** [gap-3d5cce](items/gap-3d5cce-provider-f036-actcell-cognitive-loop-llm-dispatch.md) ActCell (cognitive loop LLM dispatch point) is a stub pass-through · verified 2026-10-01
+- **P2** [gap-666a64](items/gap-666a64-deprecate-all-jsonl-file-i-o-statehub.md) Deprecate All JSONL File I/O — StateHub as Single Source of Truth · verified 2026-10-01
 
-_11 more open · on hold: gap-63055e, gap-8d80d3, gap-ebd656, spec-743a7e, spec-b3ab28, spec-b4ba72 · `goal = "features"`_
+_5 more open · on hold: gap-63055e, gap-8d80d3, gap-ebd656, spec-743a7e, spec-b3ab28, spec-b4ba72 · `goal = "features"`_
 
 ## 12. Hermes and ACP integration
 
-- **P1** [bug-f0f108](items/bug-f0f108-refactor-p0-01-acp-bridge-crash-under.md) ACP bridge crash under sustained load (analyzed, not fixed) [bug] · size M · verified 2026-09-29
 - **P1** [spec-704c28](items/spec-704c28-acp-v2-spec-compliance-refactor-and-best.md) ACP v2 Spec Compliance, Refactor, and Best-in-Class Editor UX [spec] · size L · verified 2026-09-29
-- **P1** [gap-55eada](items/gap-55eada-provider-f007-agentcontract-tool-policy-not-applied.md) AgentContract tool policy not applied to ACP tool dispatch · size M · verified 2026-09-29
+- **P2** [gap-ac78fb](items/gap-ac78fb-acp-elicitation-notices-and-interactive-ux-primitives.md) ACP Elicitation, Notices, and Interactive UX Primitives · size L · verified 2026-09-29
+- **P2** [gap-31f96f](items/gap-31f96f-acp-registry-publication-and-editor-compatibility-matrix.md) ACP Registry Publication and Editor Compatibility Matrix · verified 2026-09-29
 
-_14 more open · `goal = "hermes"`_
+_3 more open · on hold: gap-85f69b · `goal = "hermes"`_
 
-10 open items have no goal (later); they are listed in `STATUS.md`.
+11 open items have no goal (later); they are listed in `STATUS.md`.

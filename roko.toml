@@ -6,8 +6,11 @@ name = "roko-project"
 root = "."
 fresh_base_branch = "main"
 
-[prd]
-auto_plan = false
+# Frontier plans, cheap models execute (decision 3204, task 3217): plan
+# generation and revision run on Opus through the Claude CLI subscription.
+# Built-in defaults are unchanged; this workspace opts in.
+[authoring]
+planner_model = "claude-opus"
 
 [agent]
 default_model = "claude-sonnet"
@@ -99,8 +102,10 @@ slug = "gpt-oss-120b"
 context_window = 128000
 max_output = 8192
 tool_format = "openai_json"
-cost_input_per_m = 0.5
-cost_output_per_m = 1.5
+# Rates from prices-2026-09-28 (config/prices/2026-09-28.toml), USD per 1M tokens.
+cost_input_per_m = 0.35
+cost_output_per_m = 0.75
+cost_cache_read_per_m = 0.35
 
 [models.cerebras-qwen]
 provider = "cerebras"
@@ -120,6 +125,13 @@ cost_output_per_m = 0.1
 [models.claude-haiku]
 provider = "claude_cli"
 slug = "claude-haiku-4-5"
+context_window = 200000
+tool_format = "anthropic_blocks"
+max_tools = 32
+
+[models.claude-opus]
+provider = "claude_cli"
+slug = "claude-opus-5-5"
 context_window = 200000
 tool_format = "anthropic_blocks"
 max_tools = 32
@@ -144,8 +156,10 @@ slug = "glm-4.7"
 context_window = 128000
 max_output = 16384
 tool_format = "openai_json"
+# Rates from prices-2026-09-28 (config/prices/2026-09-28.toml), USD per 1M tokens.
 cost_input_per_m = 0.6
 cost_output_per_m = 2.2
+cost_cache_read_per_m = 0.11
 
 [models.glm51]
 provider = "zai"
@@ -184,8 +198,10 @@ slug = "gpt-5.4-mini"
 context_window = 200000
 max_output = 16384
 tool_format = "openai_json"
-cost_input_per_m = 0.4
-cost_output_per_m = 1.6
+# Rates from prices-2026-09-28 (config/prices/2026-09-28.toml), USD per 1M tokens.
+cost_input_per_m = 0.75
+cost_output_per_m = 4.5
+cost_cache_read_per_m = 0.075
 
 [models.groq-llama70b]
 provider = "groq"
@@ -203,9 +219,10 @@ context_window = 256000
 max_output = 65535
 supports_thinking = true
 tool_format = "openai_json"
-cost_input_per_m = 0.6
-cost_output_per_m = 3.0
-cost_cache_read_per_m = 0.1
+# Rates from prices-2026-09-28 (config/prices/2026-09-28.toml), USD per 1M tokens.
+cost_input_per_m = 0.95
+cost_output_per_m = 4.0
+cost_cache_read_per_m = 0.16
 
 [models.sonar]
 provider = "perplexity"
@@ -403,9 +420,6 @@ knowledge_error_patterns = true
 learning_min_occurrences = 2
 file_intel_max_entries = 15
 warning_max_entries = 5
-replan_on_gate_failure = true
-replan_max_per_plan = 2
-replan_gate_attempts = 3
 dream_on_completion = false
 use_lookahead_router = false
 lookahead_threshold = 0.7
@@ -428,7 +442,7 @@ refresh_rate_ms = 250
 preset = "full"
 
 [timeouts]
-agent_dispatch_secs = 600
+agent_dispatch_secs = 1800
 gate_compile_secs = 600
 gate_test_secs = 900
 gate_clippy_secs = 300
@@ -548,10 +562,6 @@ enabled = true
 max_age_days = 7
 batch_size = 500
 interval_secs = 21600
-
-[prompt]
-composition_strategy = "auto"
-vcg_warmup_observations = 10
 
 [resources]
 min_free_disk_mb = 2048

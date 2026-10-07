@@ -97,6 +97,67 @@ pub enum ExecutionCommandKind {
     /// Uses the same receipt-preserving rules as repair-clean: committed
     /// receipts are never erased.
     Reset,
+    /// Give the next task of `plan_id` to start an operator directive or
+    /// context, sent with `roko inject` (gap-f118b3).
+    Inject {
+        /// A directive to follow, or context to keep in mind.
+        kind: InjectedKind,
+        /// The operator's text, which no log shows.
+        text: InjectedText,
+    },
+    /// Raise the budget ceiling of the running plan `plan_id` names for the
+    /// rest of its run (`roko plan budget raise`, backlog 2118).
+    RaiseBudget {
+        /// The new ceiling, in millionths of one USD.
+        ceiling_micro_usd: u64,
+        /// Who asked: the control surface the command came through.
+        requested_by: String,
+    },
+}
+
+/// What an [`ExecutionCommandKind::Inject`] gives the next task.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InjectedKind {
+    /// An instruction from the operator.
+    Directive,
+    /// Information from the operator.
+    Context,
+}
+
+impl InjectedKind {
+    /// Lower-case name, as `roko inject --kind` takes it.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Directive => "directive",
+            Self::Context => "context",
+        }
+    }
+}
+
+/// Operator text a command carries. It may be sensitive, so its `Debug`
+/// gives only its length, and a logged command never shows it.
+#[derive(Clone, PartialEq, Eq)]
+pub struct InjectedText(String);
+
+impl InjectedText {
+    /// Wrap `text`.
+    #[must_use]
+    pub fn new(text: impl Into<String>) -> Self {
+        Self(text.into())
+    }
+
+    /// The text.
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl fmt::Debug for InjectedText {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "<{} bytes withheld>", self.0.len())
+    }
 }
 
 impl fmt::Display for ExecutionCommandKind {
@@ -117,6 +178,10 @@ impl fmt::Display for ExecutionCommandKind {
                 reason,
             } => write!(f, "reject-approval({}, {})", approval_id, reason),
             Self::Reset => write!(f, "reset"),
+            Self::Inject { kind, .. } => write!(f, "inject({})", kind.as_str()),
+            Self::RaiseBudget {
+                ceiling_micro_usd, ..
+            } => write!(f, "raise-budget(${:.4})", *ceiling_micro_usd as f64 / 1e6),
         }
     }
 }
@@ -300,6 +365,34 @@ impl CommandAckReceiver {
     }
 }
 
+/// A command channel for `run_id` whose commands `handle` serves, one at a
+/// time, acknowledging each with the status and message it returns. It is
+/// the transport for an executor outside this process, such as a workspace
+/// server reached over HTTP (gap-1555ac). Must be called on a Tokio runtime.
+pub fn spawn_command_bridge<F, Fut>(
+    run_id: impl Into<String>,
+    mut handle: F,
+) -> (ExecutionCommandSender, CommandAckReceiver)
+where
+    F: FnMut(ExecutionCommand) -> Fut + Send + 'static,
+    Fut: std::future::Future<Output = (CommandAckStatus, Option<String>)> + Send + 'static,
+{
+    let (sender, mut commands, ack_tx, ack_rx) = ExecutionCommandSender::channel(run_id);
+    tokio::spawn(async move {
+        while let Some(command) = commands.recv().await {
+            let (status, message) = handle(command.clone()).await;
+            if ack_tx
+                .send(ack_for(&command, status, message))
+                .await
+                .is_err()
+            {
+                break;
+            }
+        }
+    });
+    (sender, CommandAckReceiver::new(ack_rx))
+}
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
@@ -354,6 +447,15 @@ pub fn control_command_to_execution(
         ControlAction::Resume => ExecutionCommandKind::Resume,
         ControlAction::Cancel => ExecutionCommandKind::Cancel,
         ControlAction::Retry => ExecutionCommandKind::SoftRetry,
+        // A raise naming no positive amount asks for $0, which no plan
+        // takes.
+        ControlAction::RaiseBudget => ExecutionCommandKind::RaiseBudget {
+            ceiling_micro_usd: ctrl
+                .budget_usd
+                .and_then(crate::graph_task_dispatch::plan_ceiling_micro_usd)
+                .unwrap_or(0),
+            requested_by: "control.json".to_string(),
+        },
     };
 
     ExecutionCommand {
@@ -441,6 +543,41 @@ mod tests {
         assert_eq!(err.to_string(), "executor disconnected");
     }
 
+    /// gap-1555ac: a bridge serves each command with its handler and acks it
+    /// with the handler's status and message.
+    #[tokio::test]
+    async fn command_bridge_acks_each_command_with_its_handler_result() {
+        let (sender, mut acks) = spawn_command_bridge("run-bridge", |command| async move {
+            match command.kind {
+                ExecutionCommandKind::Cancel => (CommandAckStatus::Completed, Some("gone".into())),
+                other => (CommandAckStatus::Rejected, Some(format!("no {other}"))),
+            }
+        });
+        let cancel = sender
+            .send_kind(ExecutionCommandKind::Cancel, None, None)
+            .unwrap();
+        let retry = sender
+            .send_kind(ExecutionCommandKind::SoftRetry, None, None)
+            .unwrap();
+
+        let mut received = Vec::new();
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            while received.len() < 2 {
+                received.extend(acks.drain());
+                tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .expect("both commands are acknowledged");
+        assert_eq!(received[0].command_id, cancel);
+        assert_eq!(received[0].run_id, "run-bridge");
+        assert_eq!(received[0].status, CommandAckStatus::Completed);
+        assert_eq!(received[0].message.as_deref(), Some("gone"));
+        assert_eq!(received[1].command_id, retry);
+        assert_eq!(received[1].status, CommandAckStatus::Rejected);
+        assert_eq!(received[1].message.as_deref(), Some("no soft-retry"));
+    }
+
     #[tokio::test]
     async fn ack_receiver_drain() {
         let (_sender, _cmd_rx, ack_tx, ack_rx) = ExecutionCommandSender::channel("run-z");
@@ -501,11 +638,42 @@ mod tests {
             command: crate::runner::types::ControlAction::Pause,
             plan_id: Some("p1".into()),
             task_id: None,
+            budget_usd: None,
         };
         let exec_cmd = control_command_to_execution(&ctrl, "run-42");
         assert_eq!(exec_cmd.kind, ExecutionCommandKind::Pause);
         assert_eq!(exec_cmd.run_id, "run-42");
         assert_eq!(exec_cmd.plan_id.as_deref(), Some("p1"));
+    }
+
+    /// backlog 2118: a raise written to control.json reaches the run as a
+    /// raise of the plan it names, in micro-USD; one that names no positive
+    /// amount asks for $0, which no plan takes.
+    #[test]
+    fn control_command_conversion_carries_a_budget_raise() {
+        use crate::runner::types::{ControlAction, ControlCommand};
+
+        let mut ctrl = ControlCommand {
+            command: ControlAction::RaiseBudget,
+            plan_id: Some("p1".into()),
+            task_id: None,
+            budget_usd: Some(0.25),
+        };
+        let raise = |ceiling_micro_usd| ExecutionCommandKind::RaiseBudget {
+            ceiling_micro_usd,
+            requested_by: "control.json".to_string(),
+        };
+        let kind = control_command_to_execution(&ctrl, "run-42").kind;
+        assert_eq!(kind, raise(250_000));
+        assert_eq!(kind.to_string(), "raise-budget($0.2500)");
+        ctrl.budget_usd = Some(-1.0);
+        let kind = control_command_to_execution(&ctrl, "run-42").kind;
+        assert_eq!(kind, raise(0));
+
+        let json = r#"{"command":"raise_budget","plan_id":"p1","budget_usd":2.5}"#;
+        let parsed: ControlCommand = serde_json::from_str(json).expect("parse");
+        assert_eq!(parsed.command, ControlAction::RaiseBudget);
+        assert_eq!(parsed.budget_usd, Some(2.5));
     }
 
     #[test]

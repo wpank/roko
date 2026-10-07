@@ -120,6 +120,12 @@ impl Default for DreamScheduleConfig {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct DaimonConfig {
+    /// Whether a Graph plan run uses affect (default `false`: affect is held,
+    /// dec-e70592). When on, the run loads `.roko/daimon/affect.json`,
+    /// appraises each settled attempt, and the affect state shifts each
+    /// dispatch's routing tier, which dispatch logs.
+    #[serde(default)]
+    pub enabled: bool,
     /// Domain-specific strategy-space registration for somatic markers.
     #[serde(default)]
     pub strategy_space: StrategySpaceConfig,
@@ -128,6 +134,7 @@ pub struct DaimonConfig {
 impl Default for DaimonConfig {
     fn default() -> Self {
         Self {
+            enabled: false,
             strategy_space: StrategySpaceConfig::default(),
         }
     }

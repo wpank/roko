@@ -12,15 +12,18 @@ use chrono::Utc;
 use parking_lot::Mutex;
 use roko_core::Result;
 use roko_core::foundation::{FeedbackEvent, FeedbackSink};
+use roko_core::task::TaskCategory;
 
 use crate::cascade::types::OVERRIDE_LEARNING_RATE;
 use crate::cascade_router::{CascadeRouter, normalized_cost_and_latency, outcome_reward};
 use crate::error::LearnError;
 use crate::feedback_service::FeedbackService;
+use crate::guarded_commit::CommitDecision;
 use crate::model_router::{
     CONTEXT_DIM, RewardWeights, RoutingContext, compute_routing_reward_with_weights,
 };
 use crate::provider_health::{ErrorClass, ProviderHealthRegistry};
+use crate::router_commit::RouterGuard;
 use crate::runtime_feedback::LearningPaths;
 use crate::wal::{self, WalEntry, WalSegment};
 
@@ -54,7 +57,8 @@ pub struct ModelCallFeedback {
     /// Provider transport outcome. When omitted, uses [`Self::success`].
     pub provider_success: Option<bool>,
     /// Classified error kind (e.g. `"rate_limit"`, `"timeout"`).
-    /// `None` on success.
+    /// `None` on success. A failure's provider-health record takes its class
+    /// ([`ErrorClass::from_kind`]).
     pub error_class: Option<String>,
     /// Model the provider reported serving the call; `None` when it named
     /// none.
@@ -81,6 +85,14 @@ pub struct ModelCallFeedbackRecorder {
     cascade_journal: Arc<ModelCallJournal>,
     cascade_router: Option<Arc<CascadeRouter>>,
     save_cascade_router: bool,
+    /// Whether each call is also recorded in `costs.jsonl` (bug-c1f6b8).
+    record_costs: bool,
+    /// Whether each call's outcome is written to `provider-health.json`; off
+    /// when the caller records provider health itself (backlog 1114).
+    write_provider_health: bool,
+    /// Whether a call's knowledge ids feed knowledge feedback; off for a run
+    /// that holds learned state fixed (bug-eaa318).
+    knowledge_feedback: bool,
 }
 
 impl ModelCallFeedbackRecorder {
@@ -107,6 +119,9 @@ impl ModelCallFeedbackRecorder {
             cascade_journal: Arc::new(cascade_journal),
             cascade_router,
             save_cascade_router: true,
+            record_costs: false,
+            write_provider_health: true,
+            knowledge_feedback: true,
         }
     }
 
@@ -121,6 +136,9 @@ impl ModelCallFeedbackRecorder {
             learn_dir,
             cascade_router: Some(cascade_router),
             save_cascade_router: true,
+            record_costs: false,
+            write_provider_health: true,
+            knowledge_feedback: true,
         }
     }
 
@@ -132,10 +150,42 @@ impl ModelCallFeedbackRecorder {
             learn_dir,
             cascade_router: None,
             save_cascade_router: false,
+            record_costs: false,
+            write_provider_health: true,
+            knowledge_feedback: true,
         }
     }
 
+    /// Also record each call as a cost record in `costs.jsonl`
+    /// ([`FeedbackService::with_cost_records`]), for a caller whose calls
+    /// nothing else costs (bug-c1f6b8).
+    #[must_use]
+    pub const fn with_cost_records(mut self) -> Self {
+        self.record_costs = true;
+        self
+    }
+
+    /// Leave provider health to the caller, which records each call's
+    /// outcome in a registry of its own, so that a call is counted once
+    /// (backlog 1114).
+    #[must_use]
+    pub const fn without_provider_health(mut self) -> Self {
+        self.write_provider_health = false;
+        self
+    }
+
+    /// Keep each call's knowledge ids on its efficiency row, but record no
+    /// knowledge feedback for them ([`FeedbackService::without_knowledge_feedback`]):
+    /// for a run that holds learned state fixed (decision 2218, bug-eaa318).
+    #[must_use]
+    pub const fn without_knowledge_feedback(mut self) -> Self {
+        self.knowledge_feedback = false;
+        self
+    }
+
     /// Record model-call feedback, provider health, and cascade observation.
+    /// Provider health is left to a caller that records it itself
+    /// ([`Self::without_provider_health`]).
     ///
     /// The cascade observation is journaled in the learning WAL before it is
     /// applied, and dropped from the journal once the router snapshot is
@@ -145,9 +195,17 @@ impl ModelCallFeedbackRecorder {
     ///
     /// Returns an error if any durable write fails.
     pub async fn record(&self, feedback: ModelCallFeedback) -> Result<()> {
-        self.record_provider_health(&feedback)?;
+        if self.write_provider_health {
+            self.record_provider_health(&feedback)?;
+        }
 
         let mut feedback_service = FeedbackService::new(self.learn_dir.clone());
+        if self.record_costs {
+            feedback_service = feedback_service.with_cost_records();
+        }
+        if !self.knowledge_feedback {
+            feedback_service = feedback_service.without_knowledge_feedback();
+        }
         if let Some(router) = &self.cascade_router {
             feedback_service = feedback_service
                 .with_cascade_router(Arc::clone(router))
@@ -174,6 +232,7 @@ impl ModelCallFeedbackRecorder {
                 error_class: feedback.error_class.clone(),
                 model_reported: feedback.model_reported,
                 attempt_key: feedback.attempt_key,
+                cache_hit: false,
             })
             .await?;
         feedback_service.flush_async().await?;
@@ -189,36 +248,37 @@ impl ModelCallFeedbackRecorder {
         Ok(())
     }
 
+    /// Persist the call's provider outcome, a failure under the class its
+    /// [`ModelCallFeedback::error_class`] names (backlog 1114).
     fn record_provider_health(&self, feedback: &ModelCallFeedback) -> Result<()> {
-        record_provider_health_at(
+        let error = feedback
+            .error_class
+            .as_deref()
+            .map_or(ErrorClass::Unknown, ErrorClass::from_kind);
+        record_provider_outcome_at(
             &self.learn_dir,
             &feedback.provider,
             feedback.provider_health_success(),
+            error,
         )
     }
 }
 
-/// Persist one provider-health outcome under a workspace `.roko/learn` tree.
+/// Persist one provider-health outcome under a `.roko/learn` directory, a
+/// failure under the class `error`. A caller with only the failure's text
+/// classifies it with [`ErrorClass::from_failure_text`]; there is no wrapper
+/// that records every failure as [`ErrorClass::Unknown`] (bug-9ca6d7).
 ///
 /// # Errors
 ///
 /// Returns an error when the health registry directory or JSON file cannot be
 /// written.
-pub fn record_provider_health_for_workdir(
-    workdir: &Path,
+pub fn record_provider_outcome_at(
+    learn_dir: &Path,
     provider: &str,
     success: bool,
+    error: ErrorClass,
 ) -> Result<()> {
-    record_provider_health_at(&workdir.join(".roko").join("learn"), provider, success)
-}
-
-/// Persist one provider-health outcome under a `.roko/learn` directory.
-///
-/// # Errors
-///
-/// Returns an error when the health registry directory or JSON file cannot be
-/// written.
-pub fn record_provider_health_at(learn_dir: &Path, provider: &str, success: bool) -> Result<()> {
     let provider = provider.trim();
     if provider.is_empty() {
         return Ok(());
@@ -230,7 +290,7 @@ pub fn record_provider_health_at(learn_dir: &Path, provider: &str, success: bool
     if success {
         registry.record_success(provider);
     } else {
-        registry.record_failure(provider, ErrorClass::Unknown);
+        registry.record_failure(provider, error);
     }
     registry.save(&path)?;
     Ok(())
@@ -258,6 +318,16 @@ pub fn observe_model_call_on_router(
         model_call_reward(success),
         success,
     );
+}
+
+/// One outcome [`ModelCallJournal`] journals and applies: its reward, success
+/// and the share of a full observation it carries, and the task category
+/// whose per-category counts it moves too (bug-a6a3cd).
+struct JournaledOutcome {
+    reward: f64,
+    success: bool,
+    weight: f64,
+    category: Option<TaskCategory>,
 }
 
 /// Write-ahead journal for the cascade observations of model-call surfaces
@@ -345,7 +415,8 @@ impl ModelCallJournal {
     /// Journal the settled outcome of a task that ran on the model the
     /// router picked, then apply it to `router`. A success earns the
     /// multi-objective reward at its cost and latency, and a failure 0,
-    /// since its cost and latency bought nothing (bug-8da8ba). A Graph run
+    /// since its cost and latency bought nothing (bug-8da8ba). The outcome
+    /// also moves `ctx`'s task category counts (bug-a83a6e). A Graph run
     /// records its routing outcomes through it (bug-dfb28f).
     pub fn observe_task_outcome(
         &self,
@@ -357,14 +428,20 @@ impl ModelCallJournal {
         duration_ms: u64,
     ) {
         let reward = task_outcome_reward(success, cost_usd, duration_ms);
-        self.observe_weighted(router, model_slug, ctx.to_features(), reward, success, 1.0);
+        let outcome = JournaledOutcome {
+            reward,
+            success,
+            weight: 1.0,
+            category: Some(ctx.task_category),
+        };
+        self.journal_observation(router, model_slug, ctx.to_features(), outcome);
     }
 
     /// Journal the settled outcome of a task that ran on an operator's
     /// override, then apply it to `router` as
     /// [`CascadeRouter::record_override_outcome`] does: the reward of
     /// [`Self::observe_task_outcome`], at an override's dampened weight
-    /// (bug-f68404).
+    /// (bug-f68404). The category counts move in full, as for any outcome.
     pub fn observe_override_outcome(
         &self,
         router: &CascadeRouter,
@@ -375,14 +452,51 @@ impl ModelCallJournal {
         duration_ms: u64,
     ) {
         let reward = task_outcome_reward(success, cost_usd, duration_ms);
-        self.observe_weighted(
-            router,
-            model_slug,
-            ctx.to_features(),
+        let outcome = JournaledOutcome {
             reward,
             success,
-            OVERRIDE_LEARNING_RATE,
-        );
+            weight: OVERRIDE_LEARNING_RATE,
+            category: Some(ctx.task_category),
+        };
+        self.journal_observation(router, model_slug, ctx.to_features(), outcome);
+    }
+
+    /// Journal the retraction of a success that a routing outcome credited
+    /// to `model_slug`, then apply it to `router`
+    /// ([`CascadeRouter::retract_success`], in `category`'s stats too): a
+    /// later verdict relabeled the attempt a failure. Journaled as the
+    /// outcome it undoes was, it survives a crash before the router is
+    /// saved (bug-583e50).
+    ///
+    /// When the WAL cannot be written the retraction is still applied, and
+    /// is then only as durable as the next snapshot save.
+    pub fn retract_success(
+        &self,
+        router: &CascadeRouter,
+        model_slug: &str,
+        category: TaskCategory,
+    ) {
+        // An untracked model's outcome was not journaled, so neither is its
+        // retraction.
+        if router.model_index_for_slug(model_slug).is_none() {
+            router.retract_success(model_slug, category);
+            return;
+        }
+        let entry = WalEntry::SuccessRetraction {
+            model_slug: model_slug.to_string(),
+            category: Some(category),
+            ts_ms: Utc::now().timestamp_millis(),
+        };
+        // Journaled and applied under the lock, as an observation is.
+        let mut segment = self.segment.lock();
+        if let Err(error) = wal::append_to_segment(&mut segment, &self.segments_dir, &entry) {
+            tracing::warn!(
+                dir = %self.segments_dir.display(),
+                %error,
+                "[wal] success retraction not journaled -- not durable until the next save"
+            );
+        }
+        router.retract_success(model_slug, category);
     }
 
     /// Journal an observation that carries `weight` (0.0 to 1.0) of a full
@@ -400,8 +514,40 @@ impl ModelCallJournal {
         success: bool,
         weight: f64,
     ) {
+        let outcome = JournaledOutcome {
+            reward,
+            success,
+            weight,
+            category: None,
+        };
+        self.journal_observation(router, model_slug, context_features, outcome);
+    }
+
+    /// [`Self::observe_weighted`] for an outcome that also moves
+    /// `outcome.category`'s per-category counts (bug-a6a3cd). Journaling and
+    /// both updates happen under the journal's lock, so a save sees the
+    /// counts with the journaled observation or neither, and a replay counts
+    /// them once (bug-a83a6e).
+    fn journal_observation(
+        &self,
+        router: &CascadeRouter,
+        model_slug: &str,
+        context_features: Vec<f64>,
+        outcome: JournaledOutcome,
+    ) {
+        let JournaledOutcome {
+            reward,
+            success,
+            weight,
+            category,
+        } = outcome;
         let Some(model_idx) = router.model_index_for_slug(model_slug) else {
             tracing::debug!("model {model_slug} not in cascade router slug list, skipping observe");
+            // An untracked model's outcome is not journaled, but its category
+            // counts still move (audit #84).
+            if let Some(category) = category {
+                router.record_category_outcome(model_slug, category, success);
+            }
             return;
         };
         let weight = weight.clamp(0.0, 1.0);
@@ -414,6 +560,7 @@ impl ModelCallJournal {
             reward,
             success,
             weight,
+            category,
             ts_ms: Utc::now().timestamp_millis(),
         };
 
@@ -430,6 +577,9 @@ impl ModelCallJournal {
             );
         }
         router.observe_weighted_outcome(&context_features, model_idx, reward, success, weight);
+        if let Some(category) = category {
+            router.record_category_outcome(model_slug, category, success);
+        }
     }
 
     /// Save `router` to the snapshot, then truncate the journal's segment:
@@ -444,16 +594,42 @@ impl ModelCallJournal {
     pub fn save(&self, router: &CascadeRouter) -> std::result::Result<(), LearnError> {
         let mut segment = self.segment.lock();
         router.save(&self.snapshot_path)?;
-        if let Some(segment) = segment.as_mut()
-            && let Err(error) = segment.truncate()
-        {
-            tracing::warn!(
-                path = %segment.path().display(),
-                %error,
-                "[wal] segment not truncated -- a replay may count these observations twice"
-            );
-        }
+        truncate_segment(&mut segment);
         Ok(())
+    }
+
+    /// [`Self::save`] under guard (P21, 8136): the merge is proposed to the
+    /// router's guarded store under the snapshot's lock, and a rollback
+    /// writes the last-known-good version back, into the snapshot and into
+    /// `router`. Decision 8103 runs it once per run, at the run's end.
+    ///
+    /// # Errors
+    ///
+    /// As [`crate::router_commit::save_guarded`]; the segment then keeps the
+    /// observations, as after a failed [`Self::save`].
+    pub fn save_guarded(
+        &self,
+        router: &CascadeRouter,
+        guard: &RouterGuard,
+    ) -> std::result::Result<CommitDecision, LearnError> {
+        let mut segment = self.segment.lock();
+        let decision = crate::router_commit::save_guarded(router, &self.snapshot_path, guard)?;
+        truncate_segment(&mut segment);
+        Ok(decision)
+    }
+}
+
+/// Truncate a journal's segment once the snapshot holds its observations,
+/// or a rollback dropped them.
+fn truncate_segment(segment: &mut Option<WalSegment>) {
+    if let Some(segment) = segment.as_mut()
+        && let Err(error) = segment.truncate()
+    {
+        tracing::warn!(
+            path = %segment.path().display(),
+            %error,
+            "[wal] segment not truncated -- a replay may count these observations twice"
+        );
     }
 }
 
@@ -472,6 +648,21 @@ pub fn load_recovered_router(snapshot_path: &Path, model_slugs: Vec<String>) -> 
         crate::runtime_feedback::recover_wal(&paths);
     }
     CascadeRouter::load_or_new(snapshot_path, model_slugs)
+}
+
+/// Drop what the learning WAL beside the router saved at `snapshot_path`
+/// journaled for the router and no snapshot saved, after a rollback put a
+/// kept version back in `snapshot_path` (gap-775aa6). A crashed writer's
+/// segment would otherwise replay those observations over the restored file
+/// at the next [`load_recovered_router`]. The WAL's other entries are
+/// replayed as a load replays them, and a live writer's segment is left to
+/// that writer.
+pub fn discard_unsaved_router_observations(snapshot_path: &Path) {
+    if let Some(learn_dir) = snapshot_path.parent() {
+        let mut paths = LearningPaths::under(learn_dir);
+        paths.cascade_router_json = snapshot_path.to_path_buf();
+        crate::runtime_feedback::discard_router_wal(&paths);
+    }
 }
 
 /// A settled task's routing reward: the multi-objective reward of a success
@@ -517,6 +708,7 @@ mod tests {
     use super::{ModelCallFeedback, ModelCallFeedbackRecorder, ModelCallJournal};
     use crate::cascade_router::CascadeRouter;
     use crate::feedback_service::FeedbackService;
+    use crate::model_router::RoutingContext;
     use crate::runtime_feedback::LearningRuntime;
     use crate::wal::replay_wal;
 
@@ -539,6 +731,7 @@ mod tests {
             error_class: None,
             model_reported: None,
             attempt_key: None,
+            cache_hit: false,
         }
     }
 
@@ -618,6 +811,112 @@ mod tests {
 
         let runtime = reopen(&learn_dir, models).await;
         assert_eq!(runtime.cascade_router().total_observations(), 2);
+        assert_eq!(
+            runtime.cascade_router().confidence_snapshot()["model-a"],
+            (2, 1)
+        );
+    }
+
+    #[tokio::test]
+    async fn retraction_survives_a_crash() {
+        // bug-583e50: a run retracts, after a hindsight relabel, a success
+        // an earlier run saved, then dies before it saves its router. The
+        // journal replays the retraction after the run's failure, and the
+        // snapshot keeps it, though it holds fewer successes than before.
+        let tmp = tempdir().expect("tempdir");
+        let learn_dir = tmp.path().join("learn");
+        let models = vec!["model-a".to_string()];
+        let ctx = RoutingContext::default();
+        {
+            let router = CascadeRouter::new(models.clone());
+            let journal = ModelCallJournal::for_learn_dir(&learn_dir);
+            journal.observe_task_outcome(&router, "model-a", &ctx, true, 0.02, 30_000);
+            journal.save(&router).expect("the earlier run saves");
+        }
+        {
+            let journal = ModelCallJournal::for_learn_dir(&learn_dir);
+            let router = CascadeRouter::load_or_new(journal.snapshot_path(), models.clone());
+            // A later attempt fails and is blamed on the success.
+            journal.observe_task_outcome(&router, "model-a", &ctx, false, 0.02, 30_000);
+            journal.retract_success(&router, "model-a", ctx.task_category);
+            assert_eq!(router.confidence_snapshot()["model-a"], (2, 0));
+            // The run dies before it saves its router.
+        }
+
+        let runtime = reopen(&learn_dir, models).await;
+        assert_eq!(
+            runtime.cascade_router().confidence_snapshot()["model-a"],
+            (2, 0)
+        );
+        assert_eq!(
+            journaled_entries(&learn_dir),
+            0,
+            "the replayed segment is removed"
+        );
+    }
+
+    #[tokio::test]
+    async fn journaled_category_counts_survive_a_crash() {
+        // bug-a6a3cd: a Graph run's routing outcome moves its task category's
+        // counts, and so does a hindsight retraction. The journal names the
+        // category, so the replay after a crash moves them as the run did.
+        let tmp = tempdir().expect("tempdir");
+        let learn_dir = tmp.path().join("learn");
+        let models = vec!["model-a".to_string()];
+        let ctx = RoutingContext::default();
+        let category = ctx.task_category;
+        let key = ("model-a".to_string(), category.label().to_string());
+        {
+            let router = CascadeRouter::new(models.clone());
+            let journal = ModelCallJournal::for_learn_dir(&learn_dir);
+            journal.observe_task_outcome(&router, "model-a", &ctx, true, 0.02, 30_000);
+            journal.save(&router).expect("the earlier run saves");
+        }
+        {
+            let journal = ModelCallJournal::for_learn_dir(&learn_dir);
+            let router = CascadeRouter::load_or_new(journal.snapshot_path(), models.clone());
+            journal.observe_task_outcome(&router, "model-a", &ctx, false, 0.02, 30_000);
+            journal.retract_success(&router, "model-a", category);
+            assert_eq!(router.category_stats_snapshot()[&key], (2, 0));
+            // The run dies before it saves its router.
+        }
+
+        let runtime = reopen(&learn_dir, models).await;
+        assert_eq!(
+            runtime.cascade_router().category_stats_snapshot()[&key],
+            (2, 0)
+        );
+    }
+
+    #[tokio::test]
+    async fn category_counted_once_across_a_save() {
+        // bug-a83a6e: the journal moves a task outcome's category counts under
+        // its lock, with the observation. A save therefore holds both or
+        // neither, and the replay after a crash counts each outcome once.
+        let tmp = tempdir().expect("tempdir");
+        let learn_dir = tmp.path().join("learn");
+        let models = vec!["model-a".to_string()];
+        let ctx = RoutingContext::default();
+        let key = ("model-a".to_string(), ctx.task_category.label().to_string());
+        {
+            let router = CascadeRouter::new(models.clone());
+            let journal = ModelCallJournal::for_learn_dir(&learn_dir);
+            journal.observe_task_outcome(&router, "model-a", &ctx, true, 0.02, 30_000);
+            assert_eq!(
+                router.category_stats_snapshot()[&key],
+                (1, 1),
+                "the journal moves the category counts itself"
+            );
+            journal.save(&router).expect("save");
+            journal.observe_override_outcome(&router, "model-a", &ctx, false, 0.02, 30_000);
+            // The run dies before it saves again.
+        }
+
+        let runtime = reopen(&learn_dir, models).await;
+        assert_eq!(
+            runtime.cascade_router().category_stats_snapshot()[&key],
+            (2, 1)
+        );
         assert_eq!(
             runtime.cascade_router().confidence_snapshot()["model-a"],
             (2, 1)

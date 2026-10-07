@@ -7,40 +7,49 @@
 mod affect;
 mod agents;
 mod aggregator;
+#[cfg(feature = "chain")]
 pub(crate) mod arenas;
 pub(crate) mod auth;
 mod bench;
 #[cfg(feature = "alloy-backend")]
 mod chain;
-#[cfg(not(feature = "alloy-backend"))]
-#[path = "chain_disabled.rs"]
-mod chain;
+#[cfg(any(
+    not(feature = "alloy-backend"),
+    not(feature = "groups"),
+    not(feature = "relay")
+))]
+mod chain_disabled;
 pub(crate) mod config;
 mod connectors;
+#[cfg(feature = "chain")]
 mod defi;
 mod deployments;
 mod diagnosis;
 mod dream;
+mod effects;
 mod event_ingest;
 mod extensions;
 pub(crate) mod feeds;
 mod gateway;
+#[cfg(feature = "groups")]
 mod groups;
 mod heartbeats;
 mod integrations;
 mod jobs;
 mod learning;
+#[cfg(feature = "chain")]
 mod marketplace;
+mod mcp;
 pub(crate) mod meta;
 mod metrics;
 pub(crate) mod middleware;
 mod neuro;
 mod plans;
-pub(crate) mod prds;
 mod projections;
 mod providers;
 mod rbac_middleware;
 mod recipes;
+#[cfg(feature = "chain")]
 pub(crate) mod registries;
 mod research;
 mod route_permissions;
@@ -49,6 +58,7 @@ mod runs;
 mod safety;
 mod secrets;
 pub mod shared_runs;
+pub(crate) mod showcase;
 pub(crate) mod sse;
 mod status;
 mod subscriptions;
@@ -66,10 +76,21 @@ mod auth_session;
 mod cache;
 mod doctor;
 mod history;
+#[cfg(any(feature = "chain", feature = "relay"))]
 mod proxy_ws;
+#[cfg(feature = "relay")]
 mod relay_proxy;
+#[cfg(feature = "chain")]
 mod rpc_proxy;
 
+#[cfg(not(feature = "alloy-backend"))]
+use self::chain_disabled as chain;
+#[cfg(not(feature = "chain"))]
+use self::chain_disabled::chain_family_routes;
+#[cfg(not(feature = "groups"))]
+use self::chain_disabled::group_routes;
+#[cfg(not(feature = "relay"))]
+use self::chain_disabled::relay_routes;
 use std::convert::Infallible;
 use std::net::IpAddr;
 use std::num::NonZeroU32;
@@ -97,7 +118,7 @@ use tokio::sync::broadcast;
 use tower_http::trace::TraceLayer;
 
 /// Global request-body cap. Axum's default is 2 MiB; we raise it to 4 MiB so
-/// reasonably sized JSON payloads (PRDs, agent manifests, plan objects) still
+/// reasonably sized JSON payloads (agent manifests, plan objects, task files) still
 /// fit while keeping the cap small enough to bound memory pressure from a
 /// single hostile client. Webhook routes that accept opaque `Bytes` clamp
 /// further to 1 MiB locally.
@@ -277,7 +298,6 @@ pub(crate) async fn keyed_rate_limit_middleware(
 pub use self::config::reload_config_from_disk;
 pub use self::deployments::load_persisted_deployments;
 pub(crate) use self::middleware::{CorsPolicy, cors_layer};
-pub(crate) use self::prds::start_prd_publish_subscriber;
 pub(crate) use self::ws::apply_ws_size_limits as ws_size_limits;
 
 /// Build the complete API router with all route groups and middleware.
@@ -297,7 +317,12 @@ pub fn build_router(
         unsafe_public: roko_config.server.unsafe_public_cors,
         auth_enabled: api_auth.enabled,
     });
-    let terminal_enabled = roko_config.serve.terminal_enabled;
+    // Showcase mode (S11 §4.2) mounts no socket, relay, MCP or terminal routes, and only the
+    // public route groups `serve.public_routes` lists (G1).
+    let showcase_mode = roko_config.showcase.enabled;
+    let terminal_enabled = roko_config.serve.terminal_enabled && !showcase_mode;
+    let public_routes = &roko_config.serve.public_routes;
+    let public = |group: &str| public_routes.iter().any(|listed| listed == group);
 
     // Per-route keyed rate limiters for expensive endpoint groups.
     // These are checked per-caller (key = API key hash or client IP) and bound
@@ -309,6 +334,7 @@ pub fn build_router(
     // Replay the durable arena event outbox before accepting new mutations.
     // Publication is at-least-once: a crash after publish but before cursor
     // persistence may duplicate an event, but can never silently lose it.
+    #[cfg(feature = "chain")]
     if let Ok(runtime) = tokio::runtime::Handle::try_current() {
         let arena_state = Arc::clone(&state);
         runtime.spawn(async move {
@@ -328,7 +354,6 @@ pub fn build_router(
         .merge(jobs::routes())
         .merge(heartbeats::routes())
         .merge(plans::routes())
-        .merge(prds::routes())
         .merge(run::routes().layer(axum::middleware::from_fn_with_state(
             Arc::clone(&infer_limiter),
             keyed_rate_limit_middleware,
@@ -338,16 +363,13 @@ pub fn build_router(
         .merge(subscriptions::routes())
         .merge(templates::routes())
         .merge(aggregator::routes())
-        .merge(arenas::routes())
+        .merge(chain_family_routes())
         .merge(meta::routes())
         .merge(agents::routes().layer(axum::middleware::from_fn_with_state(
             agent_reg_limiter,
             keyed_rate_limit_middleware,
         )))
         .merge(learning::routes())
-        .merge(marketplace::routes())
-        .merge(defi::routes())
-        .merge(registries::routes())
         .merge(config::routes())
         .merge(deployments::routes())
         .merge(diagnosis::routes())
@@ -367,7 +389,7 @@ pub fn build_router(
         .merge(connectors::routes())
         .merge(feeds::routes())
         .merge(recipes::routes())
-        .merge(groups::routes())
+        .merge(group_routes())
         .merge(auth::routes())
         .merge(secrets::routes())
         .merge(vision_loop::routes())
@@ -382,14 +404,15 @@ pub fn build_router(
         .merge(cache::routes())
         .merge(doctor::routes())
         .merge(safety::routes())
+        .merge(effects::routes())
         .merge(affect::routes())
         .merge(shared_runs::auth_routes())
+        .merge(showcase::routes())
         .merge(webhooks::authenticated_routes())
         .nest("/providers", providers::router())
         .nest("/models", providers::models_router())
         .nest("/routing", providers::routing_router())
         .merge(sse::routes())
-        .merge(rpc_proxy::routes())
         .route("/workflow/events", get(workflow_sse_handler));
 
     let api = if api_auth.enabled {
@@ -441,8 +464,10 @@ pub fn build_router(
                 terminal_create_limiter,
                 keyed_rate_limit_middleware,
             ))
-    } else {
+    } else if public("terminal") && !showcase_mode {
         crate::terminal::disabled_routes()
+    } else {
+        Router::new()
     };
 
     let ws = if api_auth.enabled {
@@ -455,7 +480,7 @@ pub fn build_router(
     };
 
     let relay = if api_auth.enabled {
-        relay_proxy::routes()
+        relay_routes()
             .layer(axum::middleware::from_fn_with_state(
                 Arc::clone(&state),
                 rbac_middleware::require_route_permission,
@@ -469,31 +494,72 @@ pub fn build_router(
                 middleware::require_api_key,
             ))
     } else {
-        relay_proxy::routes()
+        relay_routes()
     };
 
-    let router = Router::new()
+    // MCP for chat hosts (9114), at the root like the relay: the API's auth
+    // layers when auth is on, and its secret scrubbing always.
+    let mcp = if api_auth.enabled {
+        mcp::routes()
+            .layer(axum::middleware::from_fn_with_state(
+                Arc::clone(&state),
+                rbac_middleware::require_route_permission,
+            ))
+            .layer(axum::middleware::from_fn_with_state(
+                Arc::clone(&state),
+                middleware::require_scope,
+            ))
+            .layer(axum::middleware::from_fn_with_state(
+                Arc::clone(&state),
+                middleware::require_api_key,
+            ))
+    } else {
+        mcp::routes()
+    };
+    let mcp = mcp.layer(axum::middleware::from_fn_with_state(
+        Arc::clone(&state.scrubber),
+        middleware::scrub_secrets,
+    ));
+
+    // The unauthenticated groups, each only when `serve.public_routes` lists it.
+    let mut router = Router::new();
+    if public("health") {
         // Top-level liveness probe — no auth, no /api prefix.
-        .route("/health", get(top_level_health))
+        router = router.route("/health", get(top_level_health));
+    }
+    if public("ready") {
         // Top-level readiness probe — no auth, no /api prefix.
-        .route("/ready", get(top_level_ready))
+        router = router.route("/ready", get(top_level_ready));
+    }
+    if public("metrics") {
         // Standard Prometheus scrape endpoint — no auth, no /api prefix.
-        .route("/metrics", get(metrics::metrics_handler))
-        .merge(webhooks::public_routes())
-        .merge(triggers::public_routes())
+        router = router.route("/metrics", get(metrics::metrics_handler));
+    }
+    if public("webhooks") {
+        router = router.merge(webhooks::public_routes());
+    }
+    if public("triggers") {
+        router = router.merge(triggers::public_routes());
+    }
+    if public("shared") {
         // Public share-receipt reader: no auth required so recipients can
         // open share links without a roko API key.
-        .merge(shared_runs::public_routes())
+        router = router.merge(shared_runs::public_routes());
+    }
+    let router = router
         // Session minting: outside require_api_key (it IS how you get a
         // credential) but still covered by the global rate limiter.
         .merge(auth_session::routes())
         // PTY terminal sessions for web UI — gated by config and bind policy.
         .merge(terminal)
-        .nest("/api", api)
-        .merge(ws)
-        .merge(relay)
-        // API/WS typos are JSON 404s; browser routes retain the SPA fallback.
-        .fallback(crate::serve_api_or_spa_fallback);
+        .nest("/api", api);
+    let router = if showcase_mode {
+        router
+    } else {
+        router.merge(ws).merge(relay).merge(mcp)
+    };
+    // API/WS typos are JSON 404s; browser routes retain the SPA fallback.
+    let router = router.fallback(crate::serve_fallback);
 
     let rate_limiter = build_global_rate_limiter(roko_config.server.rate_limit_per_sec);
     let keyed_limiter = build_keyed_rate_limiter(roko_config.server.rate_limit_per_key_per_sec);
@@ -513,6 +579,32 @@ pub fn build_router(
         .layer(TraceLayer::new_for_http())
         .layer(cors)
         .with_state(state)
+}
+
+/// The relay proxy, mounted at the server root. A build without `relay`
+/// parks it (9220).
+#[cfg(feature = "relay")]
+fn relay_routes() -> Router<Arc<AppState>> {
+    relay_proxy::routes()
+}
+
+/// Agent groups and their invitations. A build without `groups` parks them
+/// (9219).
+#[cfg(feature = "groups")]
+fn group_routes() -> Router<Arc<AppState>> {
+    groups::routes()
+}
+
+/// The chain-family routes: arenas, the marketplace, DeFi, the registries
+/// and the Mirage JSON-RPC proxy. A build without `chain` parks them (9214).
+#[cfg(feature = "chain")]
+fn chain_family_routes() -> Router<Arc<AppState>> {
+    Router::new()
+        .merge(arenas::routes())
+        .merge(marketplace::routes())
+        .merge(defi::routes())
+        .merge(registries::routes())
+        .merge(rpc_proxy::routes())
 }
 
 async fn api_not_found(req: Request) -> Response {
@@ -652,6 +744,7 @@ mod tests {
         (dir, router)
     }
 
+    #[cfg(feature = "chain")]
     fn build_test_router_at(
         workdir: &std::path::Path,
         config: RokoConfig,
@@ -668,6 +761,108 @@ mod tests {
         );
         let router = build_router(Arc::clone(&state), &[], config.serve.auth.clone());
         (state, router)
+    }
+
+    async fn get_text(router: &axum::Router, uri: &str) -> (StatusCode, String) {
+        let req = Request::builder()
+            .uri(uri)
+            .body(Body::empty())
+            .expect("build request");
+        let resp = router.clone().oneshot(req).await.expect("oneshot");
+        let status = resp.status();
+        let body = resp
+            .into_body()
+            .collect()
+            .await
+            .expect("collect body")
+            .to_bytes();
+        (status, String::from_utf8_lossy(&body).into_owned())
+    }
+
+    /// G1 (9327): by default every public route group is mounted, as before the allowlist.
+    #[tokio::test]
+    async fn default_public_routes_match_todays_router() {
+        let config = RokoConfig::default();
+        let groups = roko_core::config::serve::PUBLIC_ROUTE_GROUPS.map(String::from);
+        assert_eq!(config.serve.public_routes, groups);
+        let (_dir, router) = build_test_router(config);
+
+        let (status, _) = get_text(&router, "/health").await;
+        assert_eq!(status, StatusCode::OK);
+        let (status, metrics) = get_text(&router, "/metrics").await;
+        assert_eq!(status, StatusCode::OK);
+        assert!(metrics.contains("roko_uptime_seconds"), "{metrics}");
+        // The disabled terminal answers 403 rather than 404.
+        let (status, body) = get_json(&router, "/api/terminal/sessions").await;
+        assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
+        let (status, _) = get_json(&router, "/ws/terminal/x").await;
+        assert_eq!(status, StatusCode::FORBIDDEN);
+    }
+
+    /// G1 (9327): showcase mode with `public_routes = ["health", "ready"]` mounts no other public
+    /// group, no socket and no terminal answer; with the portal off (9329) each is a 404.
+    #[tokio::test]
+    async fn showcase_router_mounts_no_public_extras() {
+        let mut config = RokoConfig::default();
+        config.showcase.enabled = true;
+        config.serve.public_routes = vec!["health".to_string(), "ready".to_string()];
+        let (_dir, router) = build_test_router(config);
+
+        let (status, _) = get_text(&router, "/health").await;
+        assert_eq!(status, StatusCode::OK);
+        for uri in [
+            "/metrics",
+            "/api/shared/x",
+            "/runs/x",
+            "/ws/terminal/x",
+            "/api/terminal/sessions",
+            "/ws",
+        ] {
+            let (status, body) = get_json(&router, uri).await;
+            assert_eq!(status, StatusCode::NOT_FOUND, "{uri}: {body}");
+            assert_eq!(body["error"], "not_found", "{uri}");
+        }
+    }
+
+    /// 9329: in showcase mode with the portal off, `/` redirects to the showcase at `/demo/`;
+    /// outside showcase mode `/` still serves the portal.
+    #[tokio::test]
+    async fn showcase_mode_redirects_root_to_demo() {
+        let mut config = RokoConfig::default();
+        config.showcase.enabled = true;
+        let (_dir, router) = build_test_router(config);
+        let request = Request::builder()
+            .uri("/")
+            .body(Body::empty())
+            .expect("build request");
+        let resp = router.oneshot(request).await.expect("oneshot");
+        assert_eq!(resp.status(), StatusCode::FOUND);
+        assert_eq!(resp.headers()["location"], "/demo/");
+
+        let (_dir, router) = build_test_router(RokoConfig::default());
+        let (status, _) = get_text(&router, "/").await;
+        assert_eq!(status, StatusCode::OK);
+    }
+
+    /// 9329: showcase mode serves no portal path and no legacy lab deep link, while the demo app
+    /// is still served; default mode is unchanged.
+    #[tokio::test]
+    async fn showcase_mode_serves_no_portal_assets() {
+        let mut config = RokoConfig::default();
+        config.showcase.enabled = true;
+        let (_dir, router) = build_test_router(config);
+        for uri in ["/index.html", "/dashboard", "/demo/lab", "/demo/lab/bench"] {
+            let (status, body) = get_json(&router, uri).await;
+            assert_eq!(status, StatusCode::NOT_FOUND, "{uri}: {body}");
+        }
+        let (status, _) = get_text(&router, "/demo/").await;
+        assert_eq!(status, StatusCode::OK);
+
+        let (_dir, router) = build_test_router(RokoConfig::default());
+        for uri in ["/dashboard", "/demo/lab/bench"] {
+            let (status, _) = get_text(&router, uri).await;
+            assert_eq!(status, StatusCode::OK, "{uri}");
+        }
     }
 
     async fn get_json(router: &axum::Router, uri: &str) -> (StatusCode, Value) {
@@ -687,6 +882,7 @@ mod tests {
         (status, json)
     }
 
+    #[cfg(feature = "chain")]
     async fn authenticated_json(
         router: &axum::Router,
         method: Method,
@@ -851,6 +1047,7 @@ mod tests {
         }
     }
 
+    #[cfg(feature = "chain")]
     #[tokio::test]
     async fn registry_lifecycle_is_authenticated_admin_only_and_queryable() {
         let viewer = "registry-viewer";
@@ -1153,6 +1350,7 @@ mod tests {
         assert_eq!(response.status(), StatusCode::OK);
     }
 
+    #[cfg(feature = "chain")]
     #[tokio::test]
     async fn arena_service_is_authenticated_classified_and_live() {
         let mut config = RokoConfig::default();
@@ -1190,6 +1388,7 @@ mod tests {
         assert_eq!(body["code"], "invalid_json");
     }
 
+    #[cfg(feature = "chain")]
     #[tokio::test]
     async fn arena_mutations_fail_closed_when_serve_auth_is_disabled() {
         let mut config = RokoConfig::default();
@@ -1215,6 +1414,7 @@ mod tests {
         assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
     }
 
+    #[cfg(feature = "chain")]
     #[tokio::test]
     async fn arena_mutation_denies_a_read_only_workspace_key() {
         let plaintext = "arena-viewer";
@@ -1263,6 +1463,7 @@ mod tests {
         assert_eq!(body["code"], "insufficient_scope");
     }
 
+    #[cfg(feature = "chain")]
     #[tokio::test]
     async fn arena_owner_and_admin_settle_external_evidence_and_project_events() {
         let owner = "arena-owner-key";
@@ -1455,6 +1656,7 @@ mod tests {
         assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
     }
 
+    #[cfg(feature = "chain")]
     #[tokio::test]
     async fn meta_activation_is_owned_arena_bound_single_use_and_fail_closed() {
         let owner = "meta-owner-key";
@@ -1783,6 +1985,7 @@ mod tests {
         assert_eq!(body["state"], "deactivated");
     }
 
+    #[cfg(feature = "chain")]
     #[tokio::test]
     async fn defi_stubs_are_authenticated_classified_and_explicit() {
         let mut config = RokoConfig::default();
@@ -2186,6 +2389,7 @@ mod tests {
 
     /// With `auth.enabled = false`, relay routes are accessible without a key
     /// (behavior unchanged from before the auth gating).
+    #[cfg(feature = "relay")]
     #[tokio::test]
     async fn relay_requires_auth_skipped_when_disabled() {
         let mut config = RokoConfig::default();
@@ -2217,6 +2421,7 @@ mod tests {
     /// A member-level `agent:write` key may mutate `/relay/*`: RBAC applies
     /// the declared `AgentSpawn` row instead of the `ConfigEdit` catch-all
     /// that only admins hold (bug-928add).
+    #[cfg(feature = "relay")]
     #[tokio::test]
     async fn relay_mutation_uses_declared_agent_spawn_permission() {
         let plaintext = "relay-agent-writer";
@@ -2459,6 +2664,11 @@ mod tests {
             ("/api/config/reload", "admin"),
             ("/api/relay-tokens", "admin"),
             ("/api/relay-tokens/tok-1", "admin"),
+            ("/api/learn/loops/L-know/canary", "admin"),
+            ("/api/learn/loops/L-know/fault", "admin"),
+            ("/api/showcase/m2/loops/L-know/break", "admin"),
+            ("/api/showcase/admin/bundles/reload", "admin"),
+            ("/api/showcase/admin/login-unlock", "admin"),
             // agent:write
             ("/api/agents/register", "agent:write"),
             ("/api/agents/create", "agent:write"),
@@ -2480,12 +2690,6 @@ mod tests {
             ("/api/plans/123/chat", "plan:write"),
             ("/api/plans/123/estimate", "plan:write"),
             ("/api/plans/123/tasks/t1/review", "plan:write"),
-            ("/api/prds/ideas", "plan:write"),
-            ("/api/prd/consolidate", "plan:write"),
-            ("/api/prds/consolidate", "plan:write"),
-            ("/api/prds/my-slug/draft", "plan:write"),
-            ("/api/prds/my-slug/promote", "plan:write"),
-            ("/api/prds/my-slug/plan", "plan:write"),
             // terminal:write
             ("/api/terminal/sessions", "terminal:write"),
             ("/ws/terminal/abc-123", "terminal:write"),
@@ -2498,13 +2702,13 @@ mod tests {
             ("/api/jobs/123/execute", "write"),
             ("/api/jobs/123/cancel", "write"),
             ("/api/run", "write"),
-            ("/api/runs/123/share", "write"),
+            ("/api/runs/123/share", "admin"),
             ("/api/dream/run", "write"),
             ("/api/deployments", "write"),
             ("/api/deployments/123/task", "write"),
             ("/api/deployments/123/callback", "write"),
             ("/api/research/topic", "write"),
-            ("/api/research/enhance-prd/my-slug", "write"),
+            ("/api/research/enhance-plan/my-plan", "write"),
             ("/api/research/analyze", "write"),
             ("/api/subscriptions", "write"),
             ("/api/subscriptions/123/enable", "write"),
@@ -2539,6 +2743,8 @@ mod tests {
             ("/api/team/members/did:test", "write"),
             ("/api/webhooks/generic", "write"),
             ("/api/providers/openai/test", "write"),
+            // read: tools/call checks each MCP tool's own scope
+            ("/mcp", "read"),
         ];
 
         for (path, expected_scope) in router_routes {

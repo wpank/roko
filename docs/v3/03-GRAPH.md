@@ -256,7 +256,7 @@ tasks.toml:                        Graph:
 
 ### Production Plan Topology: `ProductionPlanTopology`
 
-For real plan execution, each task expands into an 11-node subgraph via
+For real plan execution, each task expands into a 5-node subgraph via
 `ProductionPlanTopology::build()`:
 
 ```
@@ -265,25 +265,14 @@ Source: crates/roko-graph/src/topology.rs
 
 ```mermaid
 flowchart LR
-    subgraph "Per-task subgraph (11 nodes, 16 intra-task edges)"
+    subgraph "Per-task subgraph (5 nodes, 4 intra-task edges)"
         Context["TaskContextCell<br/><i>Workflow</i>"]
-
-        Knowledge["KnowledgeEnricher<br/><i>Workflow</i>"]
-        Episodes["EpisodesEnricher<br/><i>Workflow</i>"]
-        Playbook["PlaybookEnricher<br/><i>Workflow</i>"]
-        Modulation["ModulationEnricher<br/><i>Workflow</i>"]
-        Safety["SafetyEnricher<br/><i>Workflow</i>"]
-        Experiment["ExperimentEnricher<br/><i>Workflow</i>"]
-
         Compose["PlanComposeCell<br/><i>Workflow</i>"]
         Executor["TaskExecutorCell<br/><i>Activity</i>"]
         Gate["PlanGateCell<br/><i>Activity</i>"]
         Success["SuccessBoundary<br/><i>Workflow</i>"]
 
-        Context --> Knowledge & Episodes & Playbook & Modulation & Safety & Experiment
-        Context -->|"direct 7th input"| Compose
-        Knowledge & Episodes & Playbook & Modulation & Safety & Experiment --> Compose
-        Compose --> Executor --> Gate --> Success
+        Context --> Compose --> Executor --> Gate --> Success
     end
 
     Predecessor["Predecessor<br/>SuccessBoundary"] -->|"Success edge"| Context
@@ -298,17 +287,11 @@ flowchart LR
 ```
 
 ```
-                            Per-task subgraph (11 nodes, 16 intra-task edges)
-                            ================================================
+                 Per-task subgraph (5 nodes, 4 intra-task edges)
+                 ===============================================
 
-  [TaskContextCell]----+---> [KnowledgeEnricher]  ---+
-       (Workflow)      |---> [EpisodesEnricher]   ---|
-                       |---> [PlaybookEnricher]   ---|---> [PlanComposeCell] --> [TaskExecutorCell] --> [PlanGateCell] --> [SuccessBoundary]
-                       |---> [ModulationEnricher] ---|     (Workflow)            (Activity)             (Activity)        (Workflow)
-                       |---> [SafetyEnricher]     ---|
-                       +---> [ExperimentEnricher] ---+
-                       |                             |
-                       +-----------------------------+  (direct 7th input: context -> compose)
+  [TaskContextCell] --> [PlanComposeCell] --> [TaskExecutorCell] --> [PlanGateCell] --> [SuccessBoundary]
+     (Workflow)            (Workflow)            (Activity)            (Activity)          (Workflow)
 ```
 
 **Node roles:**
@@ -316,23 +299,22 @@ flowchart LR
 | Node | Cell Type | ExecutionClass | Purpose |
 |---|---|---|---|
 | TaskContext | `plan.task-context` | Workflow | Collects task metadata, prior attempt state |
-| KnowledgeEnricher | `plan.enricher.knowledge` | Workflow | Queries durable knowledge store |
-| EpisodesEnricher | `plan.enricher.episodes` | Workflow | Retrieves relevant episodes |
-| PlaybookEnricher | `plan.enricher.playbook` | Workflow | Matches when/then playbook rules |
-| ModulationEnricher | `plan.enricher.modulation` | Workflow | Applies affect/daimon modulation |
-| SafetyEnricher | `plan.enricher.safety` | Workflow | Injects safety context |
-| ExperimentEnricher | `plan.enricher.experiment` | Workflow | Applies A/B experiment assignment |
-| PlanCompose | `plan.compose` | Workflow | Fan-in: assembles prompt from 7 inputs |
+| PlanCompose | `plan.compose` | Workflow | Assembles the task's prompt from its context |
 | TaskExecutor | `task-executor` | Activity | Non-deterministic LLM dispatch |
 | PlanGate | `plan.gate` | Activity | Runs gate pipeline (compile, test, clippy, diff) |
 | SuccessBoundary | `plan.success-boundary` | Workflow | No-op anchor for inter-task edges |
 
+Until 2026-10-03 the subgraph also fanned the context out to six
+`plan.enricher.*` nodes (knowledge, episodes, playbook, modulation, safety,
+experiment). They were passthrough stubs that changed nothing, so they were
+removed (9206); the dispatcher's prompt builder does the enrichment.
+
 **Inter-task wiring:** Predecessor's `SuccessBoundary` connects to dependent's
-`TaskContextCell` via a `Success` edge. This means a task's 6 enrichers begin
+`TaskContextCell` via a `Success` edge. This means a task's context node begins
 only after all predecessor tasks have passed their gates.
 
-**Scale:** A 4-task diamond plan produces 44 nodes and 68 edges (11 nodes x 4
-tasks + 4 inter-task edges; 16 intra-task edges x 4 + 4 inter-task edges).
+**Scale:** A 4-task diamond plan produces 20 nodes and 20 edges (5 nodes x 4
+tasks; 4 intra-task edges x 4 + 4 inter-task edges).
 
 ### Full Execution Flow: `roko plan run plans/<dir>`
 
@@ -341,12 +323,12 @@ The complete pipeline from CLI command to execution:
 ```mermaid
 flowchart TD
     CLI["roko plan run plans/my-plan/"] --> Parse["1. Parse tasks.toml<br/>(TasksFile::parse_str)"]
-    Parse --> Topology["2. Build ProductionPlanTopology<br/>(11 nodes per task)"]
+    Parse --> Topology["2. Build ProductionPlanTopology<br/>(5 nodes per task)"]
     Topology --> Fingerprint["3. Compute graph fingerprint<br/>(BLAKE3 over sorted nodes/edges/policy)"]
     Fingerprint --> CheckSnap{"4. Existing snapshot?<br/>(.roko/state/graph/&lt;fp&gt;.json)"}
     CheckSnap -->|Yes| Resume["5a. Load snapshot,<br/>skip completed Activities"]
     CheckSnap -->|No| Validate["5b. validate_for_start()<br/>(type-schema checks)"]
-    Resume --> Finally["6. GuaranteedFinallyController<br/>wraps execution"]
+    Resume --> Finally["6. run_one_plan wraps execution<br/>(interrupts, terminal checkpoint)"]
     Validate --> Finally
     Finally --> Execute["7. GraphEngine::execute_parallel()<br/>(ready-queue dispatch, bounded concurrency)"]
     Execute --> PerNode["8. Per-node: resolve Cell,<br/>evaluate edge conditions,<br/>dispatch Cell::execute(),<br/>record Activity outputs"]
@@ -354,7 +336,7 @@ flowchart TD
     Budget -->|Exceeded| Skip["Skip remaining nodes<br/>GraphError::BudgetExceeded"]
     Budget -->|OK| NextNode["Next ready node"]
     NextNode --> PerNode
-    Skip --> Receipt["10. Terminal receipt + cleanup<br/>(resource release, snapshot flush)"]
+    Skip --> Receipt["10. Terminal checkpoint write<br/>(status, unfinished tasks)"]
     NextNode -->|All nodes settled| Receipt
     Receipt --> Feedback["11. FeedbackSettler: 12 ordered sinks<br/>(episode, efficiency, routing, knowledge, ...)"]
 
@@ -371,7 +353,7 @@ flowchart TD
   1. Parse plans/my-plan/tasks.toml      (TasksFile::parse_str)
        |
        v
-  2. Build ProductionPlanTopology         (11 nodes per task)
+  2. Build ProductionPlanTopology         (5 nodes per task)
        |
        v
   3. Compute graph fingerprint            (BLAKE3 over sorted nodes/edges/policy)
@@ -384,7 +366,7 @@ flowchart TD
      If fresh: validate_for_start()
        |
        v
-  6. GuaranteedFinallyController wraps execution
+  6. run_one_plan wraps execution         (interrupt handling, terminal checkpoint write)
        |
        v
   7. GraphEngine::execute_parallel()      (ready-queue dispatch, bounded concurrency)
@@ -397,7 +379,7 @@ flowchart TD
   9. Budget enforcement per-node          (tokens, cost, deadline)
        |
        v
-  10. Terminal receipt + cleanup           (resource release, snapshot flush)
+  10. Terminal checkpoint write            (status, unfinished tasks, run manifest)
        |
        v
   11. FeedbackSettler: 12 ordered sinks   (episode, efficiency, routing, knowledge, ...)
@@ -692,7 +674,7 @@ sequenceDiagram
 
     Exec-->>Engine: GraphOutput
     Engine->>Disk: Final snapshot flush
-    Engine-->>CLI: TerminalReceipt
+    Engine-->>CLI: GraphOutput
 ```
 
 When a snapshot contains `Running` Activity nodes (the process crashed during
@@ -824,7 +806,7 @@ domain (DAG of Cells).
 
 1. **Validate dependencies.** Every `depends_on` reference must name a task
    present in the plan. Missing references fail with `GraphError::InvalidGraph`.
-2. **Build per-task subgraphs.** For each task, add 11 nodes and 16
+2. **Build per-task subgraphs.** For each task, add 5 nodes and 4
    intra-task edges.
 3. **Wire inter-task dependencies.** Predecessor's `task.<id>.success` connects
    to dependent's `task.<id>.context` via a `Success` edge.
@@ -836,34 +818,23 @@ entry tasks (no predecessors), and exit tasks (no dependents).
 
 ---
 
-## GuaranteedFinallyController
+## Cleanup on exit
 
-```
-Source: crates/roko-graph/src/finally.rs
-```
+There is no separate finally controller. A `GuaranteedFinallyController` was
+drafted in `crates/roko-graph/src/finally.rs`, but roko-graph never compiled it
+(its `lib.rs` declared no `mod finally`), and it was deleted on 2026-10-01
+(gap-ff6e83).
 
-The controller wraps graph execution with an absolute guarantee that cleanup
-runs regardless of how execution ends:
+`run_one_plan` (`crates/roko-cli/src/graph_execution/plan_runner.rs`) does a plan run's
+cleanup:
 
-| Exit Path | Terminal Receipt | Resource Release | Snapshot Flush |
-|---|---|---|---|
-| All tasks succeed | `TerminalOutcome::Success` | Yes | Yes |
-| One or more tasks fail | `TerminalOutcome::Failure` | Yes | Yes |
-| Operator cancels | `TerminalOutcome::Cancelled` | Yes | Yes |
-| Process panic | Logged via `FinallyGuard::drop` | Requires caller retry | No (async cleanup impossible in Drop) |
+- On an interrupt it cancels the graph and sends SIGTERM to in-flight agents. Attempts
+  still running after a drain timeout are stopped, and agents that ignored SIGTERM are
+  killed.
+- It then writes the checkpoint's terminal status and the tasks the run did not complete,
+  and closes the run manifest.
 
-**Tracked resources:** `WorkspaceLease`, `AgentProcess`, `LockFile`. Resources
-are tracked with `controller.track()` and released idempotently by the
-host-provided `ResourceReleaser`. Early explicit release uses `untrack()`.
-
-**TerminalReceipt:** Exactly one per execution. Contains run/plan IDs,
-outcome, duration, per-status task counts, and optional error message.
-Downstream consumers (FeedbackSettler, delivery, GitHub) drive their
-workflows from this receipt.
-
-**FinallyGuard:** An explicit guard struct tracks whether cleanup has been
-performed. If dropped without `mark_cleaned_up()` (programming error or
-panic), it logs a diagnostic error for post-mortem investigation.
+A forced exit or SIGHUP ends the run without that terminal write (bug-4641e3).
 
 ---
 
@@ -880,7 +851,6 @@ let engine = GraphEngine::new(graph, registry)
     .with_root_inputs(inputs)
     .with_recorder(recorder)        // Activity recording
     .with_replayer(replayer)        // Activity replay on resume
-    .with_merge_queue(queue)        // Merge enqueue on success
     .with_telemetry(telemetry)      // Passive lifecycle sink
     .with_event_sink(sink)          // Rich graph execution events
     .with_allow_test_stubs(false);  // Reject stub descriptors in production
@@ -1000,10 +970,9 @@ The graph crate has comprehensive unit tests covering:
 - Wave computation (linear, diamond, parallel).
 - Edge validation (untyped, compatible, incompatible, missing cells).
 - Fingerprint stability and sensitivity.
-- Production topology (11 nodes per task, edge counts, cycles, duplicates).
+- Production topology (5 nodes per task, edge counts, cycles, duplicates).
 - Cognitive loop (T0 short-circuit, all 7 cells, calibration).
 - Immune pipeline (all 5 stages, out-of-order rejection, malformed input).
-- GuaranteedFinallyController (success, failure, cancel, resource release).
 - Budget tracking and enforcement.
 - Snapshot serialization and resume.
 
@@ -1058,7 +1027,6 @@ Each fixture contains `tasks.toml`, `graph.toml`, `expected.json`, and
 | `depth/03-graph/fingerprint.md` | BLAKE3 graph fingerprinting algorithm |
 | `depth/03-graph/edge-conditions.md` | EdgeCondition evaluation, type-schema validation |
 | `depth/03-graph/plan-conversion.md` | plan_to_graph, plan_to_graph_with_endpoints |
-| `depth/03-graph/finally-controller.md` | GuaranteedFinallyController, TerminalReceipt |
 | `depth/03-graph/events.md` | GraphExecutionEvent, EventSeqCounter, sinks |
 | `depth/03-graph/delivery.md` | CompletionDeliveryService, merge queue |
 | `depth/03-graph/control.md` | ExecutionControlService, approval, pause/resume |

@@ -1,11 +1,12 @@
-//! `roko do --plan` and `plan run --log-file` drive the Graph engine end to
+//! `roko run --plan` and `plan run --log-file` drive the Graph engine end to
 //! end.
 //!
-//! `roko do --plan` generates a plan with the strategist, then executes the
-//! plans directory through `commands::do_cmd::run_plan_execution` (the path
-//! the removed `roko develop` used). Until the Runner-v2 stub was removed,
-//! that execution failed on every run. Every agent here is a mock script,
-//! also shadowing `claude`/`codex`/`gemini` on `PATH`, so no model is called.
+//! `roko run --plan` generates a plan with the strategist, then executes that
+//! plan through `commands::run_cmd::run_plan_execution` (the path `roko do
+//! --plan` and the removed `roko develop` used). Until the Runner-v2 stub was
+//! removed, that execution failed on every run. Every agent here is a mock
+//! script, also shadowing `claude`/`codex`/`gemini` on `PATH`, so no model is
+//! called.
 #![cfg(unix)]
 
 mod common;
@@ -19,6 +20,93 @@ use serde_json::Value;
 
 /// Error the removed `runner::run` stub returned.
 const RUNNER_V2_STUB_ERROR: &str = "legacy Runner-v2 event loop has been removed";
+
+/// The plan the mock strategist writes for the prompt `run the prepared
+/// plan`: one task whose verify step passes without a build.
+const GENERATED_PLAN: &str = r#"[meta]
+plan = "run-the-prepared-plan"
+total = 1
+done = 0
+status = "ready"
+skip_enrichment = true
+
+[[task]]
+id = "T1"
+title = "Confirm the sample crate is in place"
+description = "Check that the sample crate's manifest exists."
+status = "ready"
+role = "implementer"
+tier = "focused"
+files = ["src/main.rs"]
+depends_on = []
+
+[task.context]
+read_files = [{ path = "Cargo.toml", why = "the sample crate's manifest" }]
+
+[[task.verify]]
+phase = "structural"
+command = "test -f Cargo.toml"
+"#;
+
+/// What the plan generator's planning prompt says.
+const PLANNING_MARKER: &str = "Plan slug (use exactly in meta.plan)";
+
+/// What the plan generator's retry prompt says.
+const RETRY_MARKER: &str = "Please regenerate a valid tasks.toml";
+
+/// Make the workspace's mock agent the strategist too: a planning prompt, or
+/// the plan generator's retry, gets [`GENERATED_PLAN`] in a `toml` fence;
+/// every other call gets the mock's usual reply.
+fn mock_strategist_writes_a_plan(workdir: &Path) {
+    let reply = workdir.join("planner-reply.jsonl");
+    let text = format!("```toml\n{GENERATED_PLAN}```\n");
+    let lines = [
+        serde_json::json!({
+            "type": "system",
+            "subtype": "init",
+            "session_id": "plan-sess",
+            "model": "claude-sonnet-4-6",
+            "tools": [],
+        }),
+        serde_json::json!({
+            "type": "assistant",
+            "subtype": "message",
+            "message": {
+                "content": [{ "type": "text", "text": text }],
+                "usage": { "input_tokens": 100, "output_tokens": 50 },
+            },
+        }),
+        serde_json::json!({
+            "type": "result",
+            "session_id": "plan-sess",
+            "total_cost_usd": 0.001,
+            "num_turns": 1,
+            "is_error": false,
+        }),
+    ];
+    let reply_text: String = lines.iter().map(|line| format!("{line}\n")).collect();
+    std::fs::write(&reply, reply_text).expect("write the planner reply");
+
+    let mock = workdir.join("mock-claude.sh");
+    let usual = std::fs::read_to_string(&mock).expect("read the mock agent");
+    let usual = usual
+        .strip_prefix("#!/bin/sh\n")
+        .expect("the mock agent is a sh script");
+    std::fs::write(
+        &mock,
+        format!(
+            "#!/bin/sh\n\
+             # A planning prompt, or the plan generator's retry, gets the plan.\n\
+             prompt=$(cat)\n\
+             case $prompt in\n\
+             *'{PLANNING_MARKER}'*|*'{RETRY_MARKER}'*) exec cat '{}' ;;\n\
+             esac\n\
+             {usual}",
+            reply.display()
+        ),
+    )
+    .expect("write the mock strategist");
+}
 
 /// Run `roko` in `workdir`, isolated from the user's config and API keys,
 /// and kill it after three minutes.
@@ -104,38 +192,39 @@ fn assert_not_runner_v2_stub(output: &Output) {
 }
 
 #[test]
-fn do_plan_executes_through_graph_engine() {
+fn run_plan_executes_through_graph_engine() {
     let tmp = tempfile::tempdir().expect("tempdir");
     let workdir = tmp.path();
     common::setup_sample_plan_workspace(workdir);
+    mock_strategist_writes_a_plan(workdir);
 
-    // The mock strategist writes no plan, so the prepared sample plan in
-    // `plans/` is what runs.
+    // The mock strategist plans `run-the-prepared-plan`; roko writes that
+    // plan to `plans/` and runs it alone, not the sample plan beside it.
     let output = run_roko(
         workdir,
-        &[
-            "--json",
-            "do",
-            "--plan",
-            "--complexity",
-            "standard",
-            "--yes",
-            "run the prepared plan",
-        ],
+        &["--json", "run", "--plan", "--yes", "run the prepared plan"],
     );
     assert_not_runner_v2_stub(&output);
     let report = json_report(&output);
 
     assert_eq!(report["engine"], "graph", "report = {report:#}");
     assert_eq!(report["plan_count"], 1, "report = {report:#}");
+    let plans: Vec<&String> = report["plan_outcomes"]
+        .as_object()
+        .expect("plan outcomes")
+        .keys()
+        .collect();
+    assert_eq!(plans, ["run-the-prepared-plan"], "report = {report:#}");
+    let generated = workdir.join("plans/run-the-prepared-plan/tasks.toml");
+    assert!(generated.is_file(), "{}", generated.display());
     let agent_calls = report["total_agent_calls"].as_u64().unwrap_or(0);
     assert!(
         agent_calls > 0,
-        "do --plan should have dispatched the mock agent; report = {report:#}"
+        "run --plan should have dispatched the mock agent; report = {report:#}"
     );
     // A finished task (verified or not) records an episode.
     let episodes = std::fs::read_to_string(workdir.join(".roko").join("episodes.jsonl"))
-        .expect("episodes.jsonl after do --plan");
+        .expect("episodes.jsonl after run --plan");
     assert!(!episodes.trim().is_empty(), "no episode recorded");
     let succeeded = report["succeeded"].as_bool().expect("succeeded flag");
     assert_eq!(output.status.success(), succeeded, "report = {report:#}");

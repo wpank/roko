@@ -57,13 +57,28 @@ Override fields: `model`, `backend`, `effort`, `temperament`, `context_limit_k`,
 
 ### `[agent.data_llm]` -- DataLlmConfig
 
+The CaMeL data-LLM boundary: untrusted tool output (MCP, plugin, web-search and network tool
+results) goes to this separate, tool-less model, and the main model sees only its validated output.
+
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `model` | String | `"claude-haiku-3-5"` | Model for data extraction |
+| `model` | String | `"claude-haiku-4-5"` | Model for data extraction: a `[models.*]` key or a builtin slug |
 | `max_tokens` | u64 | 4096 | Output token limit |
 | `temperature` | f64 | 0.0 | Temperature (0 = deterministic) |
-| `strip_tool_calls` | bool | true | Remove tool calls from output |
-| `sanitize_input` | bool | true | Sanitize inputs before sending |
+| `strip_tool_calls` | bool | true | The data LLM gets no tools; `false` fails config loading |
+| `output_schema` | JSON | none | Keys the data LLM's JSON output must have (`required`) |
+| `sanitize_input` | bool | true | Strip known injection phrases before the call |
+| `timeout_ms` | u64 | 30000 | Time limit for one data-LLM call; a slower call withholds the content |
+| `max_input_bytes` | usize | 32768 | Most untrusted text one call is given; the rest is cut off |
+
+Leaving the section out turns the boundary off. With it set, the tool loops roko runs itself send
+the output of MCP, plugin, web-search, retrieval and network tools through the data LLM: those of
+every agent roko builds for an API provider (Anthropic, OpenAI-compatible, Gemini, Perplexity,
+Cerebras), and ACP's. The model sees only the extracted summary and facts, or a notice that they
+were withheld. CLI providers run their own tool loops, so it cannot cover them. The data model
+must be one roko calls over an API: if roko cannot build it, the agent fails to start, or the ACP
+turn fails, rather than run without the boundary. A run a chat host starts over `/mcp` is refused
+while the section is left out, unless `[serve.mcp] allow_without_data_llm = true`.
 
 ---
 
@@ -79,7 +94,7 @@ planner_model = "claude-opus-4-6"   # a key from [models], or a builtin slug
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `planner_model` | String | `""` (unset) | Model for every plan generate and revise path: `roko prd plan`, `roko plan generate` / `regenerate`, the plan-writing bands of `roko do`, and the serve runtime's generate and revise |
+| `planner_model` | String | `""` (unset) | Model for every plan generate and revise path: `roko plan generate` / `regenerate`, `roko run --plan` and the plan-writing sizes of `roko run`, and the serve runtime's generate and revise |
 
 Precedence (`model_selection::resolve_planner_model`): `--model`, then
 `[authoring] planner_model`, then `[agent.roles.strategist] model`, then
@@ -94,7 +109,9 @@ serialized default config lacks.
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `sandbox_level` | RunnerSandboxLevel | `"restrict"` | Live enforcement: `none`, `observe`, `restrict`, `isolate`, or `quarantine` |
-| `dangerously_skip_permissions` | bool | false | Run agents without the provider's own permission checks (Claude `--dangerously-skip-permissions`, the Codex and Gemini bypass modes). Off by default, and nothing turns it on by itself: `roko plan run`, the direct agent flows (`roko prd`, `plan generate`, `research`, `do`), `roko chat`, template dispatch in `roko serve` and the legacy ACP pipeline read this key, and the other spawn paths never skip. Rejected in strict/shared config |
+| `dangerously_skip_permissions` | bool | false | Run agents without the provider's own permission checks (Claude `--dangerously-skip-permissions`, the Codex and Gemini bypass modes). Off by default, and nothing turns it on by itself: `roko plan run`, the direct agent flows (`plan generate`, `research`, and the one-task path of `roko run`), `roko chat`, template dispatch in `roko serve` and the legacy ACP pipeline read this key, and the other spawn paths never skip. Rejected in strict/shared config |
+| `worktree_per_task` | bool | true | `roko plan run` runs each task in its own git worktree and delivers finished plans into the run's batch branch, `roko/batch/<run-id>`, never the operator's checkout; the run ends with the `git merge` that takes the work (gap-4ec59f). A workdir that is not the top level of a git checkout with a commit runs its tasks in the shared working tree. `--worktree-per-task` and `--no-worktree-per-task` override it per run, and a server's runs follow the server's value |
+| `allow_unguarded_agents_in_checkout` | bool | false | Whether a task attempt in the operator's shared checkout (no worktree of its own) may run on a Codex, Cursor or Gemini CLI agent. roko cannot check those CLIs' commands before they run, so by default failover passes them over there, and an attempt no other provider can take fails with `no guarded provider for a shared-checkout attempt` (decision 1214). Set it to accept the risk |
 
 ---
 
@@ -124,6 +141,7 @@ connect_timeout_ms = 5000
 | `max_concurrent` | Option\<usize\> | None | Concurrency limit |
 | `limits` | Option\<ProviderLimits\> | None | Rate limits and resource constraints |
 | `require_confirmation` | bool | false | Require user confirmation before dispatch |
+| `billing` | Option\<String\> | None | CLI providers: `"subscription"` bills each attempt $0, `"metered"` bills the CLI's own cost figure; unset leaves the billed amount unknown (`cost.billed_usd`) |
 
 Provider kinds: `anthropic_api`, `claude_cli`, `codex_cli`, `openai_compat`,
 `cursor_acp`, `cursor_cli`, `perplexity_api`, `gemini_api`, `gemini_cli`,
@@ -166,7 +184,38 @@ semantics and built-in profiles.
 | `clippy_enabled` | bool | true | Enable clippy gate |
 | `skip_tests` | bool | false | Skip test gate |
 | `max_iterations` | u32 | 3 | Global gate retry ceiling |
-| `rungs` | array of tables (`name`, `command`, `timeout_secs`, `required`, `parallel_with`) | none | Declared gate rungs. The `required` ones are `roko run`'s verify steps, and every `roko plan run` task runs them after its own, skipping a rung whose command one of its steps already runs. A plan opts out with `[meta] workspace_rungs = false` |
+| `rungs` | array of tables (`name`, `kind`, `command`, `timeout_secs`, `required`, `parallel_with`, `artefacts`, `schema`, `rubric`, `advisory`) | none | Declared gate rungs, the `code` verifier pack. The `required` `command` ones are `roko run`'s verify steps, and every `roko plan run` task with no domain, or of the `code` domain when `packs` declares no `code` pack, runs them after its own, skipping a rung whose command one of its steps already runs. A plan opts out with `[meta] workspace_rungs = false` |
+| `packs` | table of tables (`[gates.packs.<domain>] rungs = [...]`) | none | Verifier packs by task domain label (`code`, `chain`, `research`, `docs` or a custom label). A plan task faces its domain's pack in place of `rungs`; a task of a domain other than `code` with no pack runs only its own verify steps, so it ends unverified rather than run the code ladder |
+
+A rung's `kind` says what it checks. `command`, the default, runs `command` under `sh -c`.
+`citations` runs once the task's verify steps pass: it looks up every DOI (Crossref, then
+DataCite), arXiv id (DataCite) and http(s) URL (`HEAD`, then `GET`) that the files its `artefacts`
+match cite. One that does not resolve fails the task and is named in the retry feedback; one that
+cannot be looked up (no network, a timeout, a server error, or a URL roko's network policy refuses)
+leaves the task unverified, never passed. Every lookup is listed in the rung's gate output. `judge`
+runs then too: a helper model, from another model family than the attempt's when one is configured,
+scores the files its `artefacts` match against each line of `rubric` (or the task's acceptance
+criteria), with the attempt's diff as context. A score counts only when the judge quotes an artefact
+word for word; a criterion without such a quote is `no_evidence`, and a rung with no counted score
+is skipped. The gate output names the judge model and `cross_family`. `schema` checks JSON and JSONL
+artefacts against `schema` as a JSON Schema (the draft 2020-12 keywords data contracts use: `type`,
+`enum`, `const`, `properties`, `required`, `additionalProperties`, `items`, length, count and range
+bounds, `pattern`, `allOf`, `anyOf`, `oneOf`, `not` and local `$ref`s), and CSV artefacts against it
+as a table schema (`fields` with `name`, a `type` among `string`, `integer`, `number`, `boolean` and
+`date`, and `constraints.required`; `primaryKey`). It reads `schema` from the main workspace, lists
+the first 20 violations by JSON pointer or CSV row, and is skipped when the schema uses a keyword it
+does not check. `confirm` (9137) asks the person the work is for to confirm the outcome: it writes
+the task's review hold with its question and a summary of its `artefacts` (which it does not need)
+and waits up to `timeout_secs` for an answer in the review log; a yes passes it as
+`confirmed_by_user`, a no fails it, and no answer skips it. `receipt` checks an applied outbound
+effect (9132) and is not built as a task rung: a plan task that must pass one fails before its agent
+runs, and an advisory or optional one is skipped. Loading
+fails when a rung lacks what its kind needs: a `command` rung a command, a
+`schema` rung `schema` (a file relative to the task's workspace), and a `citations`, `judge` or
+`schema` rung `artefacts` (globs relative to the task's workspace). `rubric` is a `judge` rung's
+rubric, or a `confirm` rung's question, as text or a file path. A rung with `advisory = true` only advises: its verdict is recorded
+and never fails the task, so no verify step runs it. A `judge` rung advises unless it sets
+`advisory = false`; then a counted score below `[gates] llm_judge_min_score` fails the task.
 
 ---
 
@@ -177,6 +226,7 @@ semantics and built-in profiles.
 | `fast_task_model` | String | MODEL_FAST | Model for fast/simple tasks |
 | `standard_task_model` | String | MODEL_FOCUSED | Model for standard tasks |
 | `complex_task_model` | String | MODEL_DEEP | Model for complex tasks |
+| `explore_epsilon` | f64 | 0.05 | Share of the routes the cascade router decides that run an eligible model drawn uniformly instead of its argmax (S02.P1-3, decision 2203), so each eligible model's logged propensity is at least ε/k. Capped at 0.10; 0 turns exploration off. A `--model` pin, a model hint or a ladder rung is never explored |
 
 ---
 
@@ -211,9 +261,9 @@ Defaults come from `LearningConfig` (`crates/roko-core/src/config/learning.rs`),
 defaults and `Default` impl agree. Checked at `7c556bc0a` (2026-09-29), most of these keys
 change nothing: "No effect" marks a key that only the config tooling reads (loading,
 `roko config set`, presets and config views). "No effect on Graph runs" marks a key that
-`roko plan run`, and the plans that `roko run` and `roko serve` start, never read. When the
-replan keys are set to a non-default value, `roko config doctor` reports them
-(`graph_engine_inert_settings` in `crates/roko-cli/src/graph_task_dispatch.rs`).
+`roko plan run`, and the plans that `roko run` and `roko serve` start, never read. The replan
+keys `replan_on_gate_failure`, `replan_max_per_plan` and `replan_gate_attempts` were removed (see
+[Removed keys](#removed-keys)).
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
@@ -225,15 +275,14 @@ replan keys are set to a non-default value, `roko config doctor` reports them
 | `learning_min_occurrences` | usize | 2 | Occurrences before a learned rule is promoted. No effect |
 | `file_intel_max_entries` | usize | 15 | Maximum file-intel entries injected per task. No effect |
 | `warning_max_entries` | usize | 5 | Maximum warning entries injected per task. No effect |
-| `replan_on_gate_failure` | bool | true | Graph runs never revise a plan: a failed task is retried up to its `max_retries`. When true and a cheap model is available, each failed verify also gets an LLM reflection, saved to `.roko/learn/post-gate-reflections.json` |
-| `replan_max_per_plan` | u32 | 2 | Maximum gate-failure plan revisions per plan. No effect on Graph runs (gap-7a3527) |
-| `replan_gate_attempts` | u32 | 3 | Consecutive gate failures before a plan revision. No effect on Graph runs (gap-7a3527) |
 | `dream_on_completion` | bool | false | Opt in to dream consolidation on plan completion; otherwise dreams run on demand via `roko knowledge dream run`. No effect on Graph runs: nothing emits the plan-completion event (q-6b7cca) |
 | `use_lookahead_router` | bool | false | Pass the cascade router's pick through `LookaheadRouter`, which may choose a cheaper tier. No effect |
 | `lookahead_threshold` | f64 | 0.7 | Success probability at which the lookahead router accepts a cheaper tier. No effect |
 | `override_learning_dampening` | Option\<f64\> | None | Weight of a manual model override's outcome in router learning. No effect: the router always uses 0.5 (`OVERRIDE_LEARNING_RATE`) |
-| `gate_threshold_flush_interval` | u64 | 10 | Gate observations (a count, not seconds) between writes of `.roko/learn/gate-thresholds.json`; 0 is read as 1. No effect on Graph runs, which save the thresholds after every task (reg-c7ecf6) |
+| `gate_threshold_flush_interval` | u64 | 10 | Gate observations (a count, not seconds) between writes of `.roko/learn/gate-thresholds.json`; 0 is read as 1. Graph runs write the thresholds once this many observations have built up, before a plan's retry budgets are read, and when the run ends (reg-c7ecf6) |
 | `t0_reflexes` | bool | false | Run the T0 reflex path in Graph task dispatch. Off by default until reflex rules are credited after verify (bug-94151f) |
+| `episode_hdc_fingerprint` | bool | false | Write `hdc_fingerprint` (a hash of the prompt and outcome expanded into an HDC vector) on each persisted episode. Off by default (9226): it identifies exact inputs, measures no similarity, only the TUI context view reads it, and it was most of each `.roko/episodes.jsonl` row. Rows already written keep it |
+| `frozen` | bool | false | Hold learned state fixed (decision 2218): a frozen run reads learned state and writes none, while telemetry stays on. A frozen Graph run registers no learning sinks, sets no playbook-outcome or prompt-experiment path and saves no router state at its end, and its attempts write no affect, T0 reflex or knowledge-access state. It has no loop-audit tick either: attempt open draws arms from the auditor's ledger, so the ledger and its census stay as they were, and the next live run's tick folds the frozen run's rows (gap-addf2a). Gate settlement still updates the adaptive thresholds (backlog 2222). `roko plan run --frozen-learning` freezes one run. The run's manifest records `experiment.ablation_flags = ["learning_frozen"]`, and the config fingerprint differs from a live run's. A roko binary older than this key fails to load a config that sets it, since `[learning]` denies unknown fields |
 
 The `dreams` and `knowledge` fields are the two sub-tables below.
 
@@ -242,7 +291,7 @@ The `dreams` and `knowledge` fields are the two sub-tables below.
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `trigger_on_plan_complete` | bool | true | Plan-completion dream trigger; fires only when `learning.dream_on_completion` is also true. No effect on Graph runs: nothing emits the plan-completion event (q-6b7cca) |
-| `max_concurrent` | usize | 1 | Intended cap on concurrent dream runs; no code reads it yet (the plan-completion trigger runs one dream at a time, the ACP trigger has no cap) |
+| `max_concurrent` | usize | 1 | Most dream consolidations that ACP sessions run at once in one process; an ACP turn that finds this many running starts none (0 is treated as 1). The plan-completion trigger keeps its own limit of one |
 | `trigger_on_acp_episodes` | bool | false | Opt in to a dream consolidation from ACP sessions once `acp_episode_threshold` episodes accumulate since the last dream report; independent of the plan-completion switches |
 | `acp_episode_threshold` | usize | 10 | Episodes since the last dream report before an ACP session starts a dream (0 is treated as 1) |
 
@@ -254,6 +303,26 @@ The `dreams` and `knowledge` fields are the two sub-tables below.
 | `working_contexts` | u32 | 3 | Distinct contexts for Working -> Consolidated promotion. No effect |
 | `consolidated_age_days` | u32 | 14 | Minimum age in days for Consolidated -> Persistent promotion. No effect |
 | `demotion_balance_threshold` | f64 | 0.1 | Minimum balance before an entry is considered for demotion. No effect |
+
+---
+
+## `[sections]` -- SectionsConfig
+
+The prompt sections the section bandit (S02 L9, loop `L-sec`) never leaves out, on top of the
+built-in pinned ones: the role's identity, the task spec, the verify instructions, the tool policy
+and the safety rules. On the learned arm of its chain, a Graph attempt's prompt may leave a
+droppable section out, at most 20% of the time over the section's first 100 opportunities and 50%
+after, so that the section's effect on verified passes can be measured. Defaults come from
+`SectionsConfig` (`crates/roko-core/src/config/sections.rs`).
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `pinned` | Vec\<String\> | `[]` | Canonical section names (`conventions`, `domain_context`, ...) the section bandit never leaves out of a prompt |
+
+```toml
+[sections]
+pinned = ["conventions"]
+```
 
 ---
 
@@ -287,6 +356,7 @@ max_iterations = 5
 | `terminal_commands` | Vec\<String\> | `[]` | Command lines a terminal session may run instead of the login shell; any other `command` is refused |
 | `terminal_max_sessions` | usize | 8 | Most PTY sessions open at once; `0` lifts the cap |
 | `terminal_session_ttl_secs` | u64 | 28800 | Seconds a PTY session may live, attached or not; `0` lifts the limit |
+| `revision_max_retries` | u32 | 1 | Times `POST /api/plans/{id}/revise` asks the planning agent again, with the validation diagnostics, after a revision that fails validation; `0` makes one attempt only |
 
 ### `[serve.auth]` -- ServeAuthConfig
 
@@ -295,6 +365,16 @@ max_iterations = 5
 | `enabled` | bool | false | Enable authentication middleware |
 | `api_key` | String | `""` | Legacy single API key |
 | `api_keys` | Vec\<ApiKeyEntry\> | `[]` | Named scoped API keys |
+
+### `[serve.mcp]` -- ServeMcpConfig
+
+Runs a chat host starts through the `/mcp` endpoint's `run_prompt` and `plan_run` tools
+(`docs/v3/26-HTTP-API.md` 8.41). Runs started any other way are not affected.
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `max_run_usd` | f64 | 5.0 | Most a run may spend; each call names its own `max_usd`, at most this, which becomes the run's budget ceiling |
+| `allow_without_data_llm` | bool | false | Let such a run start without the data-model boundary (`[agent.data_llm]`); by default it is refused |
 
 ---
 
@@ -308,11 +388,35 @@ max_iterations = 5
 
 ---
 
+## Removed keys
+
+These keys were removed because nothing read them. Loading an old `roko.toml` that sets one
+still works: the key is dropped with a warning that says why, and `roko config doctor` parses
+the file the same way. `roko config validate` reports the key as removed, so delete the line, and
+`roko config set` refuses it with the same reason.
+The list is `REMOVED_CONFIG_KEYS` in `crates/roko-core/src/config/loader.rs`.
+
+| Key | Why it went |
+|-----|-------------|
+| `runner.max_concurrent_plans` | No plan run read it. `conductor.max_parallel_plans` (or `roko plan run --max-parallel-plans`) sets how many plans run at once (gap-6bc156) |
+| `gates.domain_gates` | No gate ran its commands. Give the plan tasks of that domain their own verify commands (gap-7a3527) |
+| `learning.replan_max_per_plan` | No plan run revises a plan on gate failure, so it limited nothing (gap-7a3527) |
+| `learning.replan_gate_attempts` | As for `replan_max_per_plan` (gap-7a3527) |
+| `learning.replan_on_gate_failure` | No plan run revises a plan on gate failure: a failed task is retried up to its `max_retries`. The post-gate LLM reflection it also turned on was retired, since no retry prompt read it (backlog 4109, 4110) |
+| `[prd]` (the whole section) | The PRD pipeline was removed, `auto_plan` with it: plans come straight from a prompt (`roko run --plan`, `roko plan generate`), so nothing reads the PRD lifecycle settings |
+| `[executor]` (the whole section) | The CLI-only parallel executor it configured never ran in a plan run. `conductor.max_parallel_plans` sets how many plans run at once, and `runner.worktree_per_task` (on by default) runs each task in its own git worktree (gap-666ab3, gap-4ec59f) |
+| `tools.prefer_mcp`, `tools.mcp_timeout_secs` | v1 keys of the CLI-only config that nothing read (bug-d5051e) |
+| `tools.global_denied` | v1 key that nothing read; `tools.deny` is the current tool denylist (bug-d5051e) |
+| `prompt.token_budget` | v1 key that nothing read from roko.toml; `budget.prompt_token_budget` is the current key (bug-d5051e) |
+| `prompt.role` | v1 key that nothing read from roko.toml; `--role` chooses the agent role (bug-d5051e) |
+| `prompt.files`, `prompt.budgets`, `prompt.context_budgets` | v1 keys that nothing read (bug-d5051e) |
+
+---
+
 ## Other Sections
 
 | Section | Struct | Purpose |
 |---------|--------|---------|
-| `[prd]` | `PrdConfig` | PRD lifecycle settings |
 | `[graduation]` | `GraduationConfig` | Bus-to-Store promotion policies |
 | `[watcher]` | `WatcherConfig` | Filesystem watcher settings |
 | `[tui]` | `TuiConfig` | TUI display preferences |

@@ -4,8 +4,9 @@ use std::{
     collections::HashMap,
     sync::{
         Arc, Mutex,
-        atomic::{AtomicU64, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
     },
+    time::Duration,
 };
 
 use thiserror::Error;
@@ -37,7 +38,17 @@ pub enum TransportError {
         /// The numeric JSON-RPC request identifier.
         request_id: u64,
     },
+    /// A write to the client did not finish in time, or an earlier one did not:
+    /// the client stopped reading.
+    #[error("stdio transport write did not finish within {after_ms} ms")]
+    WriteTimeout {
+        /// The write timeout in milliseconds.
+        after_ms: u64,
+    },
 }
+
+/// How long a write to the client may block before the client counts as gone.
+pub const DEFAULT_WRITE_TIMEOUT: Duration = Duration::from_secs(60);
 
 /// Result alias for ACP stdio transport operations.
 pub type TransportResult<T> = Result<T, TransportError>;
@@ -45,10 +56,16 @@ pub type TransportResult<T> = Result<T, TransportError>;
 /// A stdio JSON-RPC transport for ACP messages.
 #[derive(Debug)]
 pub struct StdioTransport<R = Stdin, W = Stdout> {
-    reader: Arc<AsyncMutex<BufReader<R>>>,
+    /// The reader and the bytes of a line it has started, which survive a
+    /// `read_message` call that a `select!` cancels.
+    reader: Arc<AsyncMutex<(BufReader<R>, Vec<u8>)>>,
     writer: Arc<AsyncMutex<W>>,
     next_id: Arc<AtomicU64>,
     pending_requests: Arc<Mutex<HashMap<u64, oneshot::Sender<JsonRpcResponse>>>>,
+    write_timeout: Duration,
+    /// Set once a write timed out. Part of a message may be on the wire, so no
+    /// later write may append to it.
+    write_failed: Arc<AtomicBool>,
 }
 
 /// Removes an outbound request from the shared pending registry when its
@@ -79,6 +96,8 @@ impl<R, W> Clone for StdioTransport<R, W> {
             writer: Arc::clone(&self.writer),
             next_id: Arc::clone(&self.next_id),
             pending_requests: Arc::clone(&self.pending_requests),
+            write_timeout: self.write_timeout,
+            write_failed: Arc::clone(&self.write_failed),
         }
     }
 }
@@ -104,28 +123,40 @@ where
     /// Creates a transport from arbitrary async reader and writer handles.
     pub fn from_io(reader: R, writer: W) -> Self {
         Self {
-            reader: Arc::new(AsyncMutex::new(BufReader::new(reader))),
+            reader: Arc::new(AsyncMutex::new((BufReader::new(reader), Vec::new()))),
             writer: Arc::new(AsyncMutex::new(writer)),
             next_id: Arc::new(AtomicU64::new(1)),
             pending_requests: Arc::new(Mutex::new(HashMap::new())),
+            write_timeout: DEFAULT_WRITE_TIMEOUT,
+            write_failed: Arc::new(AtomicBool::new(false)),
         }
+    }
+
+    /// Gives up on a write to the client after `timeout` instead of
+    /// [`DEFAULT_WRITE_TIMEOUT`].
+    #[must_use]
+    pub const fn with_write_timeout(mut self, timeout: Duration) -> Self {
+        self.write_timeout = timeout;
+        self
     }
 
     /// Reads one newline-delimited JSON-RPC message from stdin.
     ///
-    /// Returns `Ok(None)` when EOF is reached before any bytes are read.
+    /// Returns `Ok(None)` when EOF is reached before any bytes are read. A call
+    /// that is cancelled mid-line keeps what it has read, and the next call
+    /// carries on from there.
     pub async fn read_message(&mut self) -> TransportResult<Option<JsonRpcMessage>> {
-        let mut line = String::new();
-        let bytes_read = {
-            let mut reader = self.reader.lock().await;
-            reader.read_line(&mut line).await?
+        let line = {
+            let mut guard = self.reader.lock().await;
+            let (reader, partial) = &mut *guard;
+            let bytes_read = reader.read_until(b'\n', partial).await?;
+            if bytes_read == 0 && partial.is_empty() {
+                return Ok(None);
+            }
+            std::mem::take(partial)
         };
 
-        if bytes_read == 0 {
-            return Ok(None);
-        }
-
-        let message = serde_json::from_str::<JsonRpcMessage>(&line)?;
+        let message = serde_json::from_slice::<JsonRpcMessage>(&line)?;
         Ok(Some(message))
     }
 
@@ -247,12 +278,24 @@ where
     where
         T: serde::Serialize,
     {
+        let after_ms = u64::try_from(self.write_timeout.as_millis()).unwrap_or(u64::MAX);
+        if self.write_failed.load(Ordering::Acquire) {
+            return Err(TransportError::WriteTimeout { after_ms });
+        }
         let bytes = serde_json::to_vec(message)?;
-        let mut writer = self.writer.lock().await;
-        writer.write_all(&bytes).await?;
-        writer.write_all(b"\n").await?;
-        writer.flush().await?;
-        Ok(())
+        let write = async {
+            let mut writer = self.writer.lock().await;
+            writer.write_all(&bytes).await?;
+            writer.write_all(b"\n").await?;
+            writer.flush().await
+        };
+        match tokio::time::timeout(self.write_timeout, write).await {
+            Ok(result) => Ok(result?),
+            Err(_) => {
+                self.write_failed.store(true, Ordering::Release);
+                Err(TransportError::WriteTimeout { after_ms })
+            }
+        }
     }
 }
 
@@ -358,5 +401,57 @@ mod tests {
                 .is_empty(),
             "cancelling send_request must not leak a pending response sender"
         );
+    }
+
+    #[tokio::test]
+    async fn bridge_under_load_read_resumes_after_a_cancelled_read() {
+        let (mut client, server) = duplex(1024);
+        let mut transport = StdioTransport::from_io(server, sink());
+        let line = br#"{"jsonrpc":"2.0","id":3,"method":"session/list","params":{}}"#;
+        let (head, tail) = line.split_at(20);
+
+        // Half a line arrives, and the read is cancelled before the rest does.
+        client.write_all(head).await.expect("write first half");
+        let cancelled =
+            tokio::time::timeout(Duration::from_millis(20), transport.read_message()).await;
+        assert!(cancelled.is_err(), "half a line must not parse");
+
+        // The next read carries on from the bytes already taken.
+        client.write_all(tail).await.expect("write second half");
+        client.write_all(b"\n").await.expect("write newline");
+        let message = transport
+            .read_message()
+            .await
+            .expect("read message")
+            .expect("message present");
+        let JsonRpcMessage::Request(request) = message else {
+            panic!("expected a request");
+        };
+        assert_eq!(request.id, JsonRpcId::Number(3));
+        assert_eq!(request.method, "session/list");
+    }
+
+    #[tokio::test]
+    async fn bridge_under_load_write_gives_up_on_a_client_that_stopped_reading() {
+        // The client never reads, so the 64-byte pipe fills and the write stalls.
+        let (_client, server) = duplex(64);
+        let mut transport =
+            StdioTransport::from_io(empty(), server).with_write_timeout(Duration::from_millis(50));
+        let started = std::time::Instant::now();
+        let error = transport
+            .send_notification("session/update", json!({ "text": "x".repeat(1_024) }))
+            .await
+            .expect_err("the write must give up");
+        assert!(matches!(
+            error,
+            TransportError::WriteTimeout { after_ms: 50 }
+        ));
+        assert!(started.elapsed() < Duration::from_secs(5));
+
+        // Later writes fail at once instead of adding to a half-written line.
+        let again = transport
+            .send_notification("session/update", json!({}))
+            .await;
+        assert!(matches!(again, Err(TransportError::WriteTimeout { .. })));
     }
 }

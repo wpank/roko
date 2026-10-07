@@ -81,7 +81,7 @@ impl GraphTaskDispatcher {
 ///   truncated to 2 048 bytes on a char boundary
 /// - `Unscreened(ToolResult)` → unscreened `tool_result` record with output
 ///   truncated the same way `forward_dispatch_events_to_tui` truncates it
-/// - All other `Unscreened` variants are silently ignored.
+/// - All other `Unscreened` variants, and `Queued`, are silently ignored.
 pub(super) fn forward_live_event_to_tui(
     tui: &TuiBridge,
     agent_id: &str,
@@ -145,7 +145,7 @@ pub(super) fn forward_live_event_to_tui(
                     }),
                 );
             }
-            StreamEventKind::ToolResult { id, output } => {
+            StreamEventKind::ToolResult { id, output, .. } => {
                 // Truncate tool output the same way forward_dispatch_events_to_tui
                 // does: keep the last 1 024 bytes (aligned to a char boundary).
                 let truncated = if output.len() > 2048 {
@@ -172,6 +172,8 @@ pub(super) fn forward_live_event_to_tui(
             // Usage, Done) are not forwarded as unscreened records.
             _ => {}
         },
+        // A wait for the provider's permit is the watchdog's business.
+        LiveAgentEvent::Queued { .. } => {}
     }
 }
 

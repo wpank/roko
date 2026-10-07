@@ -65,9 +65,12 @@ pub struct AgentConfig {
     /// `["AWS_*", "CLAUDE_CODE_USE_BEDROCK"]`.
     ///
     /// Provider CLIs lose known LLM provider keys other than their own, every
-    /// variable roko loaded from `~/.roko/.env` or `.roko/.env`, and roko's
-    /// own `ROKO_*` credentials. A provider's `api_key_env` is always kept for
-    /// that provider. See `roko_core::child_env::CredentialScrub`.
+    /// other variable whose name looks like a credential (`GITHUB_TOKEN`,
+    /// `AWS_SECRET_ACCESS_KEY`, roko's own `ROKO_*` credentials), and every
+    /// variable roko loaded from `~/.roko/.env` or `.roko/.env`. A provider's
+    /// `api_key_env` is always kept for that provider; a CLI that reads cloud
+    /// credentials itself (Claude Code on Bedrock reads `AWS_*`) needs them
+    /// listed here. See `roko_core::child_env::CredentialScrub`.
     ///
     /// The commands agents run through roko's own tools (`bash`, `run_tests`,
     /// ACP's `bash`) get the gate allowlist instead, as verify steps do
@@ -89,10 +92,9 @@ pub struct AgentConfig {
     #[serde(default)]
     pub defaults: AgentDefaults,
 
-    /// Reserved for future CaMeL dual-LLM isolation. The DataLlmConfig
-    /// type and DataLlmRouter implementation are substantial enough to
-    /// keep around, but no production dispatch path currently consults
-    /// this field. See audit T2-21 / 39-config-schema-phantom-fields.md.
+    /// The CaMeL data-LLM boundary (`[agent.data_llm]`); `None`, the
+    /// default, turns it off. See [`DataLlmConfig`] for what it covers
+    /// (gap-b0d514).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub data_llm: Option<DataLlmConfig>,
 
@@ -281,7 +283,8 @@ pub struct RoutingOverrides {
 
 // ---- CaMeL dual-LLM configuration (SAFE-07) ────────────────────────────
 
-/// Configuration for the Data LLM in the CaMeL dual-LLM architecture.
+/// Configuration for the Data LLM in the CaMeL dual-LLM architecture
+/// (`[agent.data_llm]`; leaving the section out turns the boundary off).
 ///
 /// The Data LLM processes untrusted external content (web fetches, plugin
 /// output, user-provided files) with tool-call capability stripped. It
@@ -296,10 +299,17 @@ pub struct RoutingOverrides {
 /// ```toml
 /// [agent.data_llm]
 /// model = "claude-haiku-4-5"
-/// max_tokens = 4096
-/// temperature = 0.0
-/// strip_tool_calls = true
+/// timeout_ms = 30000
+/// max_input_bytes = 32768
 /// ```
+///
+/// It covers the tool loops roko runs itself, which send untrusted tool
+/// output through it: those of an agent the provider factory
+/// (`create_agent_for_model`) builds for an API provider, and ACP's. CLI
+/// providers (Claude CLI, Codex, Gemini CLI, Cursor) run their own tool
+/// loops, so roko never sees their tool results first. The data model must
+/// be one roko calls over an API; otherwise the agent fails to build, or
+/// the ACP turn fails.
 #[allow(clippy::derive_partial_eq_without_eq)] // contains f64
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -336,6 +346,16 @@ pub struct DataLlmConfig {
     /// untrusted content before it reaches the Data LLM.
     #[serde(default = "default_true")]
     pub sanitize_input: bool,
+
+    /// How long one Data LLM call may take, in milliseconds. A call that
+    /// takes longer is abandoned, and the content it was given is withheld.
+    #[serde(default = "default_data_llm_timeout_ms")]
+    pub timeout_ms: u64,
+
+    /// The most untrusted text, in bytes, one Data LLM call is given; the
+    /// rest of a longer tool result is cut off first.
+    #[serde(default = "default_data_llm_max_input_bytes")]
+    pub max_input_bytes: usize,
 }
 
 fn default_data_llm_model() -> String {
@@ -344,6 +364,14 @@ fn default_data_llm_model() -> String {
 
 const fn default_data_llm_max_tokens() -> u64 {
     4096
+}
+
+const fn default_data_llm_timeout_ms() -> u64 {
+    30_000
+}
+
+const fn default_data_llm_max_input_bytes() -> usize {
+    32 * 1024
 }
 
 impl Default for DataLlmConfig {
@@ -355,6 +383,8 @@ impl Default for DataLlmConfig {
             strip_tool_calls: true,
             output_schema: None,
             sanitize_input: true,
+            timeout_ms: default_data_llm_timeout_ms(),
+            max_input_bytes: default_data_llm_max_input_bytes(),
         }
     }
 }

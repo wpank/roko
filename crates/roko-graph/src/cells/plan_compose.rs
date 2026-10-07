@@ -1,8 +1,10 @@
 //! PlanComposeCell — fan-in compose cell for the production plan topology.
 //!
-//! Collects the 7 input signals (6 enrichers + 1 task context) produced by the
-//! per-task subgraph enrichment wave and merges them into a single composed
-//! `Prompt` signal for the downstream `TaskExecutorCell`.
+//! Merges its input signals into a single composed `Prompt` signal for the
+//! downstream `TaskExecutorCell`. In the production topology the only input is
+//! the task context; a signal tagged with an enrichment source (knowledge,
+//! episodes, ...) still gets a labelled section of its own when a graph wires
+//! one in.
 //!
 //! Each input signal's text content is extracted and assembled into labeled
 //! sections. The output is a single `Signal` of kind `Prompt` whose body
@@ -32,9 +34,10 @@ const ENRICHER_SOURCES: &[&str] = &[
 
 /// Fan-in compose cell for the production plan topology.
 ///
-/// Receives 7 input signals (6 enrichers + 1 task context), extracts text
-/// content from each, and produces a single composed `Prompt` signal. Empty
-/// or failed enricher outputs are omitted from the composed result.
+/// Receives the task context signal, and any enrichment signals a graph
+/// wires in, extracts text content from each, and produces a single composed
+/// `Prompt` signal. Empty or failed enrichment inputs are omitted from the
+/// composed result.
 ///
 /// Protocol: `Compose` (prompt assembly).
 pub struct PlanComposeCell;

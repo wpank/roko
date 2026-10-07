@@ -3,7 +3,6 @@ plan = "03b-backend-workspace-server"
 total = 18
 done = 0
 status = "ready"
-max_parallel = 1
 skip_enrichment = true
 estimated_total_minutes = 485
 
@@ -74,7 +73,6 @@ gap.
 status = "ready"
 role = "implementer"
 tier = "integrative"
-model_hint = "claude-sonnet-4-6"
 timeout_secs = 2700
 max_retries = 2
 estimated_minutes = 25
@@ -142,7 +140,6 @@ In `crates/roko-serve/src/runtime.rs`:
 status = "ready"
 role = "implementer"
 tier = "focused"
-model_hint = "claude-sonnet-4-6"
 timeout_secs = 2700
 max_retries = 2
 estimated_minutes = 20
@@ -217,7 +214,6 @@ and make `run_plan` delegate to `run_plan_with_options(.., PlanRunOptions::defau
 status = "ready"
 role = "implementer"
 tier = "architectural"
-model_hint = "claude-sonnet-4-6"
 timeout_secs = 2700
 max_retries = 2
 estimated_minutes = 40
@@ -279,7 +275,6 @@ could never skip anything.
 status = "ready"
 role = "implementer"
 tier = "focused"
-model_hint = "claude-sonnet-4-6"
 timeout_secs = 2700
 max_retries = 2
 estimated_minutes = 20
@@ -345,7 +340,6 @@ Leave `resume_plan` to T17, which makes it share this handler's path.
 status = "ready"
 role = "implementer"
 tier = "focused"
-model_hint = "claude-sonnet-4-6"
 timeout_secs = 2700
 max_retries = 2
 estimated_minutes = 25
@@ -417,7 +411,6 @@ records one plan run, not a `run_once`, for `plans/<group>/<id>`, with
 status = "ready"
 role = "implementer"
 tier = "focused"
-model_hint = "claude-sonnet-4-6"
 timeout_secs = 2700
 max_retries = 2
 estimated_minutes = 25
@@ -472,7 +465,6 @@ directory plan and no plan file on disk, `GET /api/plans/{id}/costs` and
 status = "ready"
 role = "implementer"
 tier = "focused"
-model_hint = "claude-sonnet-4-6"
 timeout_secs = 2700
 max_retries = 2
 estimated_minutes = 30
@@ -534,7 +526,6 @@ file that names another pid.
 status = "ready"
 role = "implementer"
 tier = "focused"
-model_hint = "claude-sonnet-4-6"
 timeout_secs = 2700
 max_retries = 2
 estimated_minutes = 30
@@ -590,7 +581,6 @@ binding. It serves the whole event stream, agent output included, and
 status = "ready"
 role = "implementer"
 tier = "focused"
-model_hint = "claude-sonnet-4-6"
 timeout_secs = 2700
 max_retries = 2
 estimated_minutes = 25
@@ -639,7 +629,6 @@ repository.
 status = "ready"
 role = "implementer"
 tier = "mechanical"
-model_hint = "claude-sonnet-4-6"
 timeout_secs = 2700
 max_retries = 2
 estimated_minutes = 15
@@ -711,7 +700,6 @@ However many of its plans run at once, a set run is one run:
 status = "ready"
 role = "implementer"
 tier = "integrative"
-model_hint = "claude-sonnet-4-6"
 timeout_secs = 2700
 max_retries = 2
 estimated_minutes = 30
@@ -775,7 +763,6 @@ Assert:
 status = "ready"
 role = "implementer"
 tier = "integrative"
-model_hint = "claude-sonnet-4-6"
 timeout_secs = 2700
 max_retries = 2
 estimated_minutes = 30
@@ -835,7 +822,6 @@ url gives `None`.
 status = "ready"
 role = "implementer"
 tier = "integrative"
-model_hint = "claude-sonnet-4-6"
 timeout_secs = 2700
 max_retries = 2
 estimated_minutes = 30
@@ -911,7 +897,6 @@ not `Cli`:
 status = "ready"
 role = "implementer"
 tier = "architectural"
-model_hint = "claude-sonnet-4-6"
 timeout_secs = 2700
 max_retries = 2
 estimated_minutes = 45
@@ -969,7 +954,6 @@ or inspect their own workspace from a terminal.
 status = "ready"
 role = "implementer"
 tier = "focused"
-model_hint = "claude-sonnet-4-6"
 timeout_secs = 2700
 max_retries = 2
 estimated_minutes = 25
@@ -1020,7 +1004,6 @@ tempdir under `/tmp` so the socket path fits the unix-socket length limit.
 status = "ready"
 role = "implementer"
 tier = "focused"
-model_hint = "claude-sonnet-4-6"
 timeout_secs = 2700
 max_retries = 2
 estimated_minutes = 20
@@ -1088,7 +1071,6 @@ Run the acceptance check and record the result in
 status = "ready"
 role = "implementer"
 tier = "integrative"
-model_hint = "claude-sonnet-4-6"
 timeout_secs = 2700
 max_retries = 2
 estimated_minutes = 30
@@ -1164,7 +1146,6 @@ Then update the work graph: `work/items/`, format in `work/README.md`.
 status = "ready"
 role = "implementer"
 tier = "focused"
-model_hint = "claude-sonnet-4-6"
 max_retries = 2
 estimated_minutes = 20
 depends_on = ["T15"]

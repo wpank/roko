@@ -66,12 +66,14 @@ fn gemini_tool_loop_agent(
         .with_max_tokens(max_tokens_for_model(model))
         .with_extra_headers(provider.extra_headers.clone().unwrap_or_default())
         .with_extra_body_params(extra_body_params)
+        .with_stream_usage(provider.stream_usage.unwrap_or(true))
         .with_poster(Box::new(ReqwestPoster::new()));
 
     let tool_loop = ToolLoop::new(translator, dispatcher, Arc::new(backend))
         .with_max_iterations(tool_loop_max_iterations_for_options(model, options))
         .with_context_token_limit(usize::try_from(model.context_window).unwrap_or(usize::MAX))
-        .with_model_profile(model.clone());
+        .with_model_profile(model.clone())
+        .with_optional_data_llm(options.data_llm.clone());
 
     let name = if options.name.is_empty() {
         format!("gemini-compat:{}", model.slug)
@@ -120,7 +122,8 @@ fn gemini_native_tool_loop_agent(
     let tool_loop = ToolLoop::new(translator, dispatcher, backend)
         .with_max_iterations(tool_loop_max_iterations_for_options(model, options))
         .with_context_token_limit(usize::try_from(model.context_window).unwrap_or(usize::MAX))
-        .with_model_profile(model.clone());
+        .with_model_profile(model.clone())
+        .with_optional_data_llm(options.data_llm.clone());
 
     let name = if options.name.is_empty() {
         format!("gemini-native:{}", model.slug)
@@ -311,6 +314,8 @@ mod tests {
             max_concurrent: None,
             limits: None,
             require_confirmation: false,
+            stream_usage: None,
+            billing: None,
         }
     }
 
@@ -349,6 +354,8 @@ mod tests {
             cost_per_request: None,
             use_max_completion_tokens: false,
             tier: None,
+            temperature: None,
+            seed: None,
         }
     }
 

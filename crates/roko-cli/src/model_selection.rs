@@ -393,9 +393,9 @@ pub fn resolve_effective_model_key(
 /// Resolve the model key that generates or revises a plan in `workdir`.
 ///
 /// Every plan generate and revise path calls this, so one key,
-/// `[authoring] planner_model`, reaches all of them: `roko prd plan`,
-/// `roko plan generate` and `regenerate`, both plan-writing bands of
-/// `roko do`, and the serve runtime's generate and revise. It loads
+/// `[authoring] planner_model`, reaches all of them: `roko plan generate` and
+/// `regenerate`, `roko run` when it plans, and the serve runtime's generate
+/// and revise. It loads
 /// `roko.toml` like [`resolve_effective_model_key`], applies
 /// [`resolve_planner_selection`], and prints the selection to stderr.
 /// `context` names the caller in the error when resolution fails.
@@ -658,6 +658,8 @@ mod tests {
             max_concurrent: None,
             limits: None,
             require_confirmation: false,
+            stream_usage: None,
+            billing: None,
         }
     }
 
@@ -983,6 +985,8 @@ mod tests {
                 max_concurrent: None,
                 limits: None,
                 require_confirmation: false,
+                stream_usage: None,
+                billing: None,
             },
         );
 

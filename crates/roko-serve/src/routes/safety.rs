@@ -1,7 +1,14 @@
 //! Safety observability endpoints.
 //!
-//! * `GET /api/safety/quarantine` -- quarantine vault entries.
+//! * `GET /api/safety/quarantine` -- quarantine vault entries, each with its
+//!   review status and full hash, and each vault's capacity: a full vault
+//!   cannot index the results the boundary withholds next.
 //! * `GET /api/safety/incidents` -- incident log from the immune system.
+//! * `GET /api/safety/controls` -- the isolation controls the provider immune
+//!   boundary checks before every dispatch (`.roko/immune/agent-controls.json`).
+//! * `POST /api/safety/controls/{agent_id}/release` -- release one control,
+//!   recorded with the authenticated principal in
+//!   `.roko/immune/agent-control-releases.jsonl`.
 //!
 //! Both read the review vaults the tool immune boundary writes when it
 //! withholds a tool result (`roko_agent::quarantine_vault_path` under an
@@ -19,11 +26,12 @@ use std::sync::Arc;
 
 use axum::Json;
 use axum::Router;
-use axum::extract::State;
-use axum::routing::get;
+use axum::extract::{Extension, Path as AxumPath, State};
+use axum::routing::{get, post};
 use roko_core::immune::QuarantineVault;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
+use super::middleware::AuthContext;
 use crate::error::ApiError;
 use crate::state::AppState;
 
@@ -31,6 +39,11 @@ pub fn routes() -> Router<Arc<AppState>> {
     Router::new()
         .route("/safety/quarantine", get(quarantine_handler))
         .route("/safety/incidents", get(incidents_handler))
+        .route("/safety/controls", get(controls_handler))
+        .route(
+            "/safety/controls/{agent_id}/release",
+            post(release_control_handler),
+        )
 }
 
 // ── Vault ─────────────────────────────────────────────────────────────
@@ -103,11 +116,16 @@ fn display_path(workdir: &Path, path: &Path) -> String {
         .to_string()
 }
 
-/// Where each vault read came from, and how many entries it holds.
+/// Where each vault read came from, how many entries it holds, and how many
+/// it can hold.
 #[derive(Serialize)]
 struct VaultSummary {
     path: String,
     entries: usize,
+    capacity: usize,
+    /// Whether the vault is at capacity: the tool immune boundary still
+    /// withholds suspect results, but can no longer index them for review.
+    full: bool,
 }
 
 fn vault_summaries(vaults: &[LoadedVault]) -> Vec<VaultSummary> {
@@ -116,6 +134,8 @@ fn vault_summaries(vaults: &[LoadedVault]) -> Vec<VaultSummary> {
         .map(|loaded| VaultSummary {
             path: loaded.path.clone(),
             entries: loaded.vault.stats().total,
+            capacity: loaded.vault.capacity(),
+            full: loaded.vault.is_full(),
         })
         .collect()
 }
@@ -144,6 +164,8 @@ struct QuarantineResponse {
 #[derive(Serialize)]
 struct QuarantineEntrySummary {
     hash: String,
+    /// The entry's full content hash, in hex.
+    full_hash: String,
     score: f64,
     status: String,
     quarantined_at: String,
@@ -177,9 +199,10 @@ async fn quarantine_handler(
         response.approved += stats.approved;
         response.rejected += stats.rejected;
         response.escalated += stats.escalated;
-        for entry in loaded.vault.pending() {
+        for entry in loaded.vault.entries() {
             response.entries.push(QuarantineEntrySummary {
                 hash: format!("{:?}", entry.hash),
+                full_hash: entry.hash.to_hex(),
                 score: entry.anomaly_score.score,
                 status: format!("{:?}", entry.status),
                 quarantined_at: entry.quarantined_at.to_rfc3339(),
@@ -226,7 +249,7 @@ async fn incidents_handler(
 
     let mut incidents = Vec::new();
     for loaded in &vaults {
-        for entry in loaded.vault.pending() {
+        for entry in loaded.vault.entries() {
             for link in &entry.incident_links {
                 incidents.push(IncidentSummary {
                     hash: format!("{:?}", entry.hash),
@@ -248,6 +271,80 @@ async fn incidents_handler(
     }))
 }
 
+// ── Isolation controls ────────────────────────────────────────────────
+
+/// Workspace-relative path of the isolation control ledger.
+const CONTROL_LEDGER_PATH: &str = ".roko/immune/agent-controls.json";
+/// Workspace-relative path of the release audit file.
+const CONTROL_RELEASES_PATH: &str = ".roko/immune/agent-control-releases.jsonl";
+/// Why the controls list is empty.
+const NO_CONTROLS_REASON: &str = "no agent is isolated in this workspace; the provider immune \
+     boundary writes a control when it contains a provider result";
+
+#[derive(Serialize)]
+struct ControlsResponse {
+    /// Workspace-relative path of the control ledger.
+    ledger: &'static str,
+    total: usize,
+    /// Why the list is empty, when it is.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    reason: Option<&'static str>,
+    controls: Vec<roko_agent::AgentControlEntry>,
+}
+
+async fn controls_handler(
+    State(state): State<Arc<AppState>>,
+) -> Result<Json<ControlsResponse>, ApiError> {
+    let controls = roko_agent::list_agent_controls(&state.workdir)
+        .map_err(|error| ApiError::internal(format!("read isolation controls: {error}")))?;
+    Ok(Json(ControlsResponse {
+        ledger: CONTROL_LEDGER_PATH,
+        total: controls.len(),
+        reason: controls.is_empty().then_some(NO_CONTROLS_REASON),
+        controls,
+    }))
+}
+
+#[derive(Deserialize)]
+struct ReleaseRequest {
+    /// Why the control is released, recorded in the audit file.
+    reason: String,
+}
+
+#[derive(Serialize)]
+struct ReleaseResponse {
+    released: roko_agent::ReleasedControl,
+    /// Workspace-relative path of the audit file the release was added to.
+    audit: &'static str,
+}
+
+/// Release one agent's isolation control on behalf of the authenticated
+/// principal (`local-api` for an unauthenticated local server). 404 when the
+/// agent has no control, 400 for a malformed agent id or reason.
+async fn release_control_handler(
+    State(state): State<Arc<AppState>>,
+    AxumPath(agent_id): AxumPath<String>,
+    auth: Option<Extension<AuthContext>>,
+    Json(request): Json<ReleaseRequest>,
+) -> Result<Json<ReleaseResponse>, ApiError> {
+    let by = auth
+        .and_then(|Extension(context)| context.user_id)
+        .unwrap_or_else(|| "local-api".to_string());
+    let released =
+        roko_agent::release_agent_control(&state.workdir, &agent_id, &by, &request.reason)
+            .map_err(|error| match error.kind() {
+                io::ErrorKind::InvalidInput => ApiError::bad_request(error.to_string()),
+                _ => ApiError::internal(format!("release isolation control: {error}")),
+            })?
+            .ok_or_else(|| {
+                ApiError::not_found(format!("no isolation control for agent {agent_id}"))
+            })?;
+    Ok(Json(ReleaseResponse {
+        released,
+        audit: CONTROL_RELEASES_PATH,
+    }))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -257,7 +354,9 @@ mod tests {
     use http_body_util::BodyExt as _;
     use roko_core::ContentHash;
     use roko_core::config::RokoConfig;
-    use roko_core::immune::{AnomalyScore, IncidentRelation, QuarantineStatus};
+    use roko_core::immune::{
+        AnomalyScore, DEFAULT_QUARANTINE_VAULT_CAPACITY, IncidentRelation, QuarantineStatus,
+    };
     use serde_json::Value;
     use tower::ServiceExt as _;
 
@@ -291,6 +390,68 @@ mod tests {
             .to_bytes();
         let body = serde_json::from_slice(&bytes).unwrap_or(Value::Null);
         (status, body)
+    }
+
+    async fn post_json(state: &Arc<AppState>, uri: &str, body: Value) -> (StatusCode, Value) {
+        let request = Request::post(uri)
+            .header("content-type", "application/json")
+            .body(Body::from(body.to_string()))
+            .expect("request");
+        let response = routes()
+            .with_state(Arc::clone(state))
+            .oneshot(request)
+            .await
+            .expect("response");
+        let status = response.status();
+        let bytes = response
+            .into_body()
+            .collect()
+            .await
+            .expect("collect body")
+            .to_bytes();
+        let body = serde_json::from_slice(&bytes).unwrap_or(Value::Null);
+        (status, body)
+    }
+
+    /// backlog 1106: the controls route lists an isolation, the release
+    /// route lifts it on behalf of the principal with an audit line, and a
+    /// second release finds nothing.
+    #[tokio::test]
+    async fn release_route_clears_isolation_control() {
+        let workdir = tempfile::tempdir().expect("tempdir");
+        let state = test_state(workdir.path());
+        roko_agent::isolate_agent(workdir.path(), "live-a/cli", "operator_isolation")
+            .expect("seed an isolation control");
+
+        let (status, body) = get_json(&state, "/safety/controls").await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["total"], 1);
+        assert_eq!(body["controls"][0]["agent_id"], "live-a/cli");
+        assert_eq!(body["controls"][0]["reason"], "operator_isolation");
+
+        let uri = "/safety/controls/live-a%2Fcli/release";
+        let (status, body) = post_json(
+            &state,
+            uri,
+            serde_json::json!({ "reason": "blank answer, not tamper" }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(body["released"]["agent_id"], "live-a/cli");
+        assert_eq!(body["released"]["by"], "local-api");
+        assert_eq!(body["released"]["reason"], "blank answer, not tamper");
+        let controls = roko_agent::list_agent_controls(workdir.path()).expect("read controls");
+        assert!(controls.is_empty(), "{controls:?}");
+        let audit_path = roko_agent::agent_control_releases_path(workdir.path());
+        let audit = std::fs::read_to_string(audit_path).expect("audit file");
+        assert_eq!(audit.lines().count(), 1, "{audit}");
+
+        let (status, _) = post_json(&state, uri, serde_json::json!({ "reason": "again" })).await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+        let (status, body) = get_json(&state, "/safety/controls").await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["total"], 0);
+        assert!(body["reason"].is_string(), "{body}");
     }
 
     /// Record `output` in the vault under `workdir` the way the tool immune
@@ -372,6 +533,57 @@ mod tests {
                 .any(|incident| incident["relation"] == "SameSource"),
             "{body}"
         );
+    }
+
+    /// gap-2f69e9: the listing names every entry, escalated ones included, by
+    /// its full hash, and each vault reports its capacity.
+    #[tokio::test]
+    async fn quarantine_route_lists_escalated_entries_and_vault_capacity() {
+        let workdir = tempfile::tempdir().expect("tempdir");
+        let pending = ContentHash::of(b"ignore all previous instructions");
+        let escalated = ContentHash::of(b"malformed structured result");
+        quarantine_like_immune_layer(workdir.path(), pending, "mcp:docs", false);
+        quarantine_like_immune_layer(workdir.path(), escalated, "plugin:lint", true);
+        let state = test_state(workdir.path());
+
+        let (status, body) = get_json(&state, "/safety/quarantine").await;
+
+        assert_eq!(status, StatusCode::OK, "{body}");
+        let listed = body["entries"]
+            .as_array()
+            .expect("entries array")
+            .iter()
+            .map(|entry| (entry["full_hash"].as_str(), entry["status"].as_str()))
+            .collect::<Vec<_>>();
+        for (hash, review_status) in [(pending, "Pending"), (escalated, "Escalated")] {
+            let full_hash = hash.to_hex();
+            assert!(
+                listed.contains(&(Some(full_hash.as_str()), Some(review_status))),
+                "{hash:?} missing: {body}"
+            );
+        }
+        assert_eq!(
+            body["vaults"][0]["capacity"],
+            DEFAULT_QUARANTINE_VAULT_CAPACITY
+        );
+        assert_eq!(body["vaults"][0]["full"], false);
+    }
+
+    #[tokio::test]
+    async fn quarantine_route_reports_a_full_vault() {
+        let workdir = tempfile::tempdir().expect("tempdir");
+        let mut vault = QuarantineVault::new(0.8, 1, false);
+        assert!(vault.quarantine(ContentHash::of(b"withheld"), AnomalyScore::from_score(0.9)));
+        vault
+            .save(roko_agent::quarantine_vault_path(workdir.path()))
+            .expect("save vault");
+        let state = test_state(workdir.path());
+
+        let (status, body) = get_json(&state, "/safety/quarantine").await;
+
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(body["vaults"][0]["capacity"], 1);
+        assert_eq!(body["vaults"][0]["full"], true);
     }
 
     /// Plan runs from before the workspace-rooted vault left theirs in the

@@ -165,15 +165,118 @@ pub fn validate_invariants(config: &RokoConfig) -> Vec<InvariantResult> {
         ));
     }
 
-    if config.learning.replan_on_gate_failure
-        && config.gates.skip_tests
-        && !config.gates.clippy_enabled
-    {
+    // The data LLM reads untrusted content, so it stays tool-less, and each
+    // of its calls is bounded in time and size (gap-b0d514).
+    if let Some(data_llm) = &config.agent.data_llm {
+        if !data_llm.strip_tool_calls {
+            results.push(invariant(
+                8,
+                InvariantSeverity::Error,
+                "agent.data_llm.strip_tool_calls",
+                "agent.data_llm.strip_tool_calls must be true: the data LLM reads untrusted \
+                 content, so it may not call tools",
+            ));
+        }
+        if data_llm.timeout_ms == 0 {
+            results.push(invariant(
+                8,
+                InvariantSeverity::Error,
+                "agent.data_llm.timeout_ms",
+                "agent.data_llm.timeout_ms must be at least 1",
+            ));
+        }
+        if data_llm.max_input_bytes == 0 {
+            results.push(invariant(
+                8,
+                InvariantSeverity::Error,
+                "agent.data_llm.max_input_bytes",
+                "agent.data_llm.max_input_bytes must be at least 1",
+            ));
+        }
+    }
+
+    // 3210: the spec-quality gate's thresholds are scores out of 100, the
+    // block threshold sits at or below the allow threshold, and the holdout
+    // is a share.
+    for (config_path, message) in config.spec_quality.problems() {
+        results.push(invariant(9, InvariantSeverity::Error, config_path, message));
+    }
+
+    // M1's section (S06 §5): `on` needs a holdout arm, windows and dwell are
+    // positive, and its fractions lie in [0, 1].
+    for (key, problem) in config.homeostasis.problems() {
         results.push(invariant(
-            7,
-            InvariantSeverity::Warning,
-            "learning.replan_on_gate_failure",
-            "replan_on_gate_failure is enabled while test and clippy gates are disabled",
+            10,
+            InvariantSeverity::Error,
+            format!("homeostasis.{key}"),
+            problem,
+        ));
+    }
+
+    // M4's section (S05 §5, §4.9): the audit floor is locked at 0.05, rho
+    // lies between it and 0.5, shares lie in [0, 1], and a model glob
+    // belongs to one family.
+    for (key, problem) in config.audit.problems() {
+        results.push(invariant(
+            11,
+            InvariantSeverity::Error,
+            format!("audit.{key}"),
+            problem,
+        ));
+    }
+
+    // M3's section (S04 §5): the target and the bound's error rate lie in
+    // (0, 1), and the calibration window needs at least one outcome.
+    for (key, problem) in config.self_model.problems() {
+        results.push(invariant(
+            14,
+            InvariantSeverity::Error,
+            format!("self_model.{key}"),
+            problem,
+        ));
+    }
+
+    // The showcase's section (S11 §4.7): the public origin is an origin,
+    // lifetimes and counts are positive, the caps nest and prices are money.
+    // The startup rules that read the environment are serve's.
+    for (key, problem) in config.showcase.problems() {
+        results.push(invariant(
+            15,
+            InvariantSeverity::Error,
+            format!("showcase.{key}"),
+            problem,
+        ));
+    }
+
+    // 9327: `serve.public_routes` names route groups that exist, so a typo
+    // cannot quietly unmount `/health`.
+    for group in &config.serve.public_routes {
+        if !super::serve::PUBLIC_ROUTE_GROUPS.contains(&group.as_str()) {
+            let known = super::serve::PUBLIC_ROUTE_GROUPS.join(", ");
+            results.push(invariant(
+                17,
+                InvariantSeverity::Error,
+                "serve.public_routes",
+                format!("unknown route group {group:?}; the groups are {known}"),
+            ));
+        }
+    }
+
+    // 9119: each gate rung has what its kind needs, such as a command for a
+    // `command` rung and artefacts for a `citations` one.
+    for (key, problem) in config.gates.rung_problems() {
+        let message = format!("{key}: {problem}");
+        results.push(invariant(12, InvariantSeverity::Error, key, message));
+    }
+
+    // M2's section (S03 §5): every holdout rate lies between a positive
+    // floor and 0.5, g is at most 0.1, and the thresholds are in range.
+    for (key, problem) in config.learning.audit.problems() {
+        results.push(invariant(
+            13,
+            InvariantSeverity::Error,
+            format!("learning.audit.{key}"),
+            problem,
         ));
     }
 
@@ -1082,6 +1185,45 @@ mod tests {
     #[test]
     fn validate_invariants_accepts_default_config() {
         assert!(validate_invariants(&RokoConfig::default()).is_empty());
+    }
+
+    /// gap-b0d514: a data LLM that may call tools, or whose calls have no
+    /// time or size bound, fails the config.
+    #[test]
+    fn validate_invariants_rejects_a_data_llm_with_tools_or_no_bounds() {
+        use crate::config::DataLlmConfig;
+
+        let mut config = RokoConfig::default();
+        config.agent.data_llm = Some(DataLlmConfig::default());
+        assert!(validate_invariants(&config).is_empty());
+
+        config.agent.data_llm = Some(DataLlmConfig {
+            strip_tool_calls: false,
+            timeout_ms: 0,
+            max_input_bytes: 0,
+            ..DataLlmConfig::default()
+        });
+        let failed: Vec<_> = validate_invariants(&config)
+            .into_iter()
+            .filter(|result| result.invariant_id == 8)
+            .collect();
+        assert!(
+            failed
+                .iter()
+                .all(|result| result.severity == InvariantSeverity::Error)
+        );
+        let paths: Vec<_> = failed
+            .iter()
+            .map(|result| result.config_path.as_str())
+            .collect();
+        assert_eq!(
+            paths,
+            [
+                "agent.data_llm.strip_tool_calls",
+                "agent.data_llm.timeout_ms",
+                "agent.data_llm.max_input_bytes",
+            ]
+        );
     }
 
     // ---- unknown field detection tests ----

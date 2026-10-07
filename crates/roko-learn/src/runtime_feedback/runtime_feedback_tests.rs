@@ -273,7 +273,6 @@ async fn skipped_only_gate_runs_are_blocked_not_passed_and_do_not_update_learnin
         gate_thresholds_every_n: 1,
         experiments_every_n: 1,
         skill_mining_every_n: 1,
-        pattern_discovery_every_n: 1,
         distiller_every_n: 1,
     });
 
@@ -317,7 +316,6 @@ async fn skipped_only_gate_runs_are_blocked_not_passed_and_do_not_update_learnin
     assert_eq!(update.router_updated, false);
     assert!(update.extracted_skill_id.is_none());
     assert!(update.regression_report.is_none());
-    assert!(!update.patterns_ingested);
 
     assert_eq!(runtime.local_reward_score("router", "claude-opus-4-6"), 0.5);
     assert_eq!(runtime.local_reward_score("skill", "skill-skip-only"), 0.5);
@@ -327,7 +325,6 @@ async fn skipped_only_gate_runs_are_blocked_not_passed_and_do_not_update_learnin
     );
     assert_eq!(runtime.cascade_router().total_observations(), 0);
     assert_eq!(runtime.skill_library().len(), 0);
-    assert_eq!(runtime.pattern_miner().lock().total_episodes(), 0);
     assert!(!runtime.paths().cfactor_jsonl.exists());
     assert!(!runtime.paths().task_metrics_jsonl.exists());
 
@@ -412,7 +409,6 @@ async fn unlabelled_attempts_update_no_runtime_learner() {
         gate_thresholds_every_n: 1,
         experiments_every_n: 1,
         skill_mining_every_n: 1,
-        pattern_discovery_every_n: 1,
         distiller_every_n: 1,
     });
 
@@ -596,7 +592,6 @@ async fn update_frequency_separation() {
         gate_thresholds_every_n: 5,
         experiments_every_n: 3,
         skill_mining_every_n: 2,
-        pattern_discovery_every_n: 3,
         distiller_every_n: 4,
     });
 
@@ -624,10 +619,8 @@ async fn update_frequency_separation() {
         .unwrap();
     assert!(!update.router_updated);
     assert!(update.extracted_skill_id.is_none());
-    assert!(!update.patterns_ingested);
     assert_eq!(runtime.cascade_router().total_observations(), 0);
     assert_eq!(runtime.skill_library().len(), 0);
-    assert_eq!(runtime.pattern_miner().lock().total_episodes(), 0);
     assert!(!runtime.paths().cfactor_jsonl.exists());
     assert_eq!(
         runtime
@@ -648,10 +641,8 @@ async fn update_frequency_separation() {
         .unwrap();
     assert!(update.router_updated);
     assert!(update.extracted_skill_id.is_some());
-    assert!(!update.patterns_ingested);
     assert_eq!(runtime.cascade_router().total_observations(), 1);
     assert_eq!(runtime.skill_library().len(), 1);
-    assert_eq!(runtime.pattern_miner().lock().total_episodes(), 0);
     assert!(!runtime.paths().cfactor_jsonl.exists());
     assert_eq!(
         runtime
@@ -672,10 +663,8 @@ async fn update_frequency_separation() {
         .unwrap();
     assert!(!update.router_updated);
     assert!(update.extracted_skill_id.is_none());
-    assert!(update.patterns_ingested);
     assert_eq!(runtime.cascade_router().total_observations(), 1);
     assert_eq!(runtime.skill_library().len(), 1);
-    assert_eq!(runtime.pattern_miner().lock().total_episodes(), 1);
     assert!(!runtime.paths().cfactor_jsonl.exists());
     assert_eq!(
         runtime
@@ -696,10 +685,8 @@ async fn update_frequency_separation() {
         .unwrap();
     assert!(update.router_updated);
     assert!(update.extracted_skill_id.is_some());
-    assert!(!update.patterns_ingested);
     assert_eq!(runtime.cascade_router().total_observations(), 2);
     assert_eq!(runtime.skill_library().len(), 2);
-    assert_eq!(runtime.pattern_miner().lock().total_episodes(), 1);
     let cfactor_jsonl = std::fs::read_to_string(&runtime.paths().cfactor_jsonl).unwrap();
     let snapshots: Vec<crate::cfactor::CFactor> = cfactor_jsonl
         .lines()
@@ -1037,8 +1024,14 @@ async fn experiment_updates_static_table() {
         ],
     );
     experiment.role = Some("implementer".to_string());
-    experiment.min_trials_per_variant = 5;
+    experiment.min_trials_per_variant = 30;
     experiment.min_effect_size = 0.5;
+    // Settled attempts already separate the variants (25 randomized draws
+    // each); the runtime outcomes below supply the trials still missing.
+    for _ in 0..25 {
+        experiment.record_observation("haiku", true, 0.5);
+        experiment.record_observation("sonnet", false, 0.5);
+    }
     runtime.experiment_store().lock().register(experiment);
 
     let mut before_ctx = RoutingContext {
@@ -1510,10 +1503,11 @@ async fn generation_outcome_partial_success_does_not_seed_learning() {
         process_success: true,
         artifact_valid: false,
         validation_report: None,
+        spec_quality: None,
     };
 
     runtime
-        .record_generation_outcome("prd:plan:test", "claude-sonnet-4-6", &outcome)
+        .record_generation_outcome("plan:generate:test", "claude-sonnet-4-6", &outcome)
         .await
         .unwrap();
 
@@ -1587,6 +1581,7 @@ async fn wal_replay_on_open_restores_cascade_observations() {
                 model_idx: 0,
                 reward: 0.8,
                 success: i % 2 == 0,
+                category: None,
                 ts_ms: 1000 + i as i64,
             })
             .unwrap();

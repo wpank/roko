@@ -350,7 +350,9 @@ pub(crate) fn record_lifecycle_knowledge(
             hdc_encoder_version: 0,
             access_count: 0,
             last_accessed: None,
+            contradiction_count: 0,
             activation_conditions: Vec::new(),
+            commit_batch: None,
         };
         knowledge_store.max_similarity(&probe).unwrap_or(0.0)
     };
@@ -423,7 +425,8 @@ pub(crate) fn record_lifecycle_knowledge(
 ///
 /// This bridges neuro (durable knowledge) with the gate verification pipeline,
 /// so that known problematic or reliably stable rungs are tuned accordingly
-/// before the plan run begins.
+/// before the plan run begins. Graph plan runs apply it to the thresholds that
+/// set their tasks' retry budgets (`TaskRetryBudgets::with_neuro_gate_hints`).
 pub(crate) fn apply_neuro_gate_hints(
     knowledge_store: &KnowledgeStore,
     thresholds: &mut AdaptiveThresholds,
@@ -477,69 +480,6 @@ pub(crate) fn apply_neuro_gate_hints(
             failure_rungs = ?failure_rungs,
             stable_rungs = ?stable_rungs,
             "INT-15: applying neuro knowledge hints to adaptive gate thresholds"
-        );
-        thresholds.apply_neuro_hints(&failure_rungs, &stable_rungs);
-    }
-}
-
-/// P1-09: Variant of [`apply_neuro_gate_hints`] targeting the persist-layer
-/// [`crate::runner::persist::GateThresholds`] used by the runner event loop.
-///
-/// Extracts the same failure/stability rung lists from neuro, then applies
-/// them through the `GateThresholds::apply_neuro_hints` method.
-pub(crate) fn apply_neuro_gate_hints_persist(
-    knowledge_store: &KnowledgeStore,
-    thresholds: &mut crate::runner::persist::GateThresholds,
-) {
-    let failure_rungs = match knowledge_store.query("gate failure compile lint test", 10) {
-        Ok(entries) => entries
-            .into_iter()
-            .filter_map(|entry| {
-                let content_lower = entry.content.to_lowercase();
-                if content_lower.contains("compile") || content_lower.contains("rung 0") {
-                    Some(0u32)
-                } else if content_lower.contains("lint")
-                    || content_lower.contains("clippy")
-                    || content_lower.contains("rung 1")
-                {
-                    Some(1)
-                } else if content_lower.contains("test fail") || content_lower.contains("rung 2") {
-                    Some(2)
-                } else {
-                    None
-                }
-            })
-            .collect::<Vec<_>>(),
-        Err(err) => {
-            tracing::debug!(error = %err, "P1-09: skipping neuro gate hints (query failed)");
-            return;
-        }
-    };
-
-    let stable_rungs = match knowledge_store.query("gate stable passing consistently", 10) {
-        Ok(entries) => entries
-            .into_iter()
-            .filter_map(|entry| {
-                let content_lower = entry.content.to_lowercase();
-                if content_lower.contains("compile") || content_lower.contains("rung 0") {
-                    Some(0u32)
-                } else if content_lower.contains("lint") || content_lower.contains("rung 1") {
-                    Some(1)
-                } else if content_lower.contains("test") || content_lower.contains("rung 2") {
-                    Some(2)
-                } else {
-                    None
-                }
-            })
-            .collect::<Vec<_>>(),
-        Err(_) => Vec::new(),
-    };
-
-    if !failure_rungs.is_empty() || !stable_rungs.is_empty() {
-        tracing::info!(
-            failure_rungs = ?failure_rungs,
-            stable_rungs = ?stable_rungs,
-            "P1-09: applying neuro knowledge hints to runner gate thresholds"
         );
         thresholds.apply_neuro_hints(&failure_rungs, &stable_rungs);
     }
@@ -664,7 +604,9 @@ pub(crate) fn build_success_knowledge_entry(
         hdc_encoder_version: 0,
         access_count: 0,
         last_accessed: None,
+        contradiction_count: 0,
         activation_conditions: Vec::new(),
+        commit_batch: None,
     }
 }
 
@@ -935,7 +877,9 @@ mod tests {
             hdc_encoder_version: 0,
             access_count: 0,
             last_accessed: None,
+            contradiction_count: 0,
             activation_conditions: Vec::new(),
+            commit_batch: None,
         };
         knowledge_store.add(existing).expect("add existing entry");
 

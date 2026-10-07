@@ -12,6 +12,7 @@ Run from the repository root with the benchmark venv:
 
 from __future__ import annotations
 
+import datetime as dt
 import json
 import os
 import subprocess
@@ -24,11 +25,14 @@ from pathlib import Path
 import pytest
 
 import agent_env
+import campaign
+import caps
 import census
 import layout
 import ledger
 import materialize
 import planemit
+import provider
 import records
 import run_roko
 import validate
@@ -67,6 +71,9 @@ roko = repo / ".roko"
 models, succeeded = behaviour["models"], behaviour["status"] == "succeeded"
 verdict = behaviour.get("verdict")  # S01's outcome of the passing attempt, in its episode; an older Roko writes none
 completed = behaviour.get("completed") or [f"2026-09-29T15:00:0{number}Z" for number in range(len(models))]
+# With learning frozen, Roko keeps each run's episodes in the run's own log (gap-127263).
+episodes = roko / "runs" / f"graph-{slug}-1" / "episodes.jsonl" if behaviour.get("frozen") else roko / "episodes.jsonl"
+episodes.parent.mkdir(parents=True, exist_ok=True)
 for number, model in enumerate(models):
     passed = succeeded and number == len(models) - 1
     usage = {"input_tokens": 1200, "output_tokens": 80, "cache_read_tokens": 0, "cache_write_tokens": 0,
@@ -78,7 +85,7 @@ for number, model in enumerate(models):
         episode["extra"]["outcome"] = verdict if passed else "gate_failed"
     if "durations" in behaviour:  # the Graph path's dispatch time, in seconds
         episode["duration_secs"] = behaviour["durations"][number]
-    with open(roko / "episodes.jsonl", "a") as handle:
+    with open(episodes, "a") as handle:
         handle.write(json.dumps(episode) + "\n")
     with open(roko / "learn" / "costs.jsonl", "a") as handle:
         handle.write(json.dumps({"model": model, "provider": "cerebras", "plan_id": slug, "task_id": "T01"}) + "\n")
@@ -190,6 +197,20 @@ def plan_spec(task: materialize.Materialized, **changes: object) -> planemit.Pla
     return planemit.PlanSpec(**{**fields, **changes})
 
 
+def real_arm_spec(arm_name: str, model: str = PIN) -> planemit.PlanSpec:
+    """`run_roko._plan_spec` over the real arm file `arm_name` names (`vb.load_arm`), the construction a real
+    dispatch does (3360): confirms the arm's `[overlay]` table, if it has one, reaches `PlanSpec.overlay`."""
+    arm = vb.load_arm(arm_name)
+    first = next(iter(arm["providers"]))
+    endpoint = provider.Endpoint(provider=first, base_url=arm["providers"][first]["base_url"],
+                                 api_key_env=arm["providers"][first]["api_key_env"])
+    snapshot = ledger.load_snapshot()
+    limits = caps.Caps.from_table(arm["caps"])
+    return run_roko._plan_spec(arm, model, endpoint, limits, snapshot.row(model), limits.usd_per_task,
+                               key="overlay-test.s1", spec_text="# T\n\nTest.\n", files=("f.py",),
+                               visible=("true",), snapshot=snapshot)
+
+
 def fake_roko(tmp_path: Path, models: list[str], *, status: str = "succeeded", **extra: object) -> tuple[Path, Path]:
     """Write the fake roko and its behaviour (`extra` adds episode `completed` times and `durations`, and `proxy` rows
     to append to `proxy_log`); return the binary and the log of its calls."""
@@ -255,6 +276,8 @@ def test_emitted_plan_has_explicit_rungs_and_no_hidden_checks(tmp_path):
     assert config["models"][PIN]["slug"] == PIN and config["routing"]["fallback_models"] == []
     # bug-a05c53: no routing ladder, so the pin is the only routing input and PLAN_041 has nothing to flag.
     assert config["routing"]["ladder"] == {"enabled": False}
+    # gap-4ec59f: the task runs in the shared working tree, so its edits land in the workdir the driver checks.
+    assert config["runner"] == {"worktree_per_task": False}
     assert config["gates"]["max_review_cycles"] == 0 and config["pipeline"]["focused"]["max_turns"] == 12
     assert config["models"][PIN]["cost_input_per_m"] == ledger.load_snapshot().row(PIN)["input"]
     budget = config["budget"]  # Roko's invariants: 0 < max_turn_usd <= max_plan_usd, and room for every retry
@@ -281,6 +304,28 @@ def test_emitted_plan_has_explicit_rungs_and_no_hidden_checks(tmp_path):
     [task_table] = tomllib.loads(tricky.tasks_text)["task"]
     assert task_table["description"].strip() == nasty.strip()
     assert [step["command"] for step in task_table["verify"]] == ["( true ) && ( echo ok )"]
+
+
+def test_roko_full_arm_overlay_reaches_the_emitted_config(tmp_path, monkeypatch):
+    """3360's follow-up: run_roko._plan_spec now passes the arm's [overlay] table into PlanSpec (previously
+    dropped), so a real roko_full dispatch emits every mechanism's table; roko_fixed and roko_ladder, which name
+    no [overlay], keep emitting exactly what they did before this feature existed."""
+    monkeypatch.setattr(campaign, "census_report", lambda repo=None, roko_bin=None: {
+        "schema": campaign.LOOPS_SCHEMA, "harness_sha": "f1x3d", "rows": [{"loop": "L-M1", "state": "live"}]})
+    full = planemit.emit(real_arm_spec("roko_full"), tmp_path / "full")
+    config = tomllib.loads(full.config_text)
+    assert config["spec_quality"] == {"mode": "enforce"}
+    assert config["audit"] == {"enabled": True, "eps_floor": 0.05}
+    assert config["self_model"] == {"mode": "active", "policy": "lcb_aci"}
+    assert config["homeostasis"] == {"holdout": 0.10, "mode": "on"}  # L-M1 is LIVE
+
+    for arm_name, name in (("roko_fixed", "fixed"), ("roko_ladder", "ladder")):
+        emitted = planemit.emit(real_arm_spec(arm_name), tmp_path / name)
+        config = tomllib.loads(emitted.config_text)
+        assert not {"spec_quality", "audit", "self_model", "homeostasis"} & set(config)
+        # Byte-identical to before the overlay existed: nothing is appended after CONFIG_TAIL's own last line.
+        assert emitted.config_text.endswith("[learning.dreams]\ntrigger_on_plan_complete = false\n")
+    assert planemit.TEMPLATE_SHA256 == "1b7b9906dd846ef598602bee770d0b6d3270e885f6262f76c3fbdd9e97b87f2b"
 
 
 def test_vb_run_refuses_a_binary_that_rejects_the_emitted_plan(places, tmp_path, capsys):
@@ -370,7 +415,7 @@ def test_pinned_run_records_attempts_and_leaves_only_the_agents_tree(places, tmp
     env = calls[2]["env"]
     extra = set(env) - set(agent_env.FIXED) - set(agent_env.PASSTHROUGH) - {"HOME", "TMPDIR", "PATH", "USER",
                                                                            "LOGNAME"}
-    assert extra <= {"ROKO_CONFIG", "CEREBRAS_API_KEY", "__CF_USER_TEXT_ENCODING"}
+    assert extra <= {"ROKO_CONFIG", "CEREBRAS_API_KEY", "__CF_USER_TEXT_ENCODING", *agent_env.TOOLCHAIN_NAMES}
     assert env["CEREBRAS_API_KEY"] == run_roko.OFFLINE_KEY and env["ROKO_CONFIG"].endswith("/roko.toml")
     assert env["ROKO_CONFIG"] != "/elsewhere/roko.toml" and env["HOME"].startswith(str(places["work"]))
 
@@ -432,6 +477,41 @@ def model_truth_records(workspace: Path, order: tuple[int, ...] = (1, 2, 3), hel
         (roko / relpath).parent.mkdir(parents=True, exist_ok=True)
         (roko / relpath).write_text("".join(json.dumps(line) + "\n" for line in rows))
     return run_roko.read_evidence(workspace, SLUG)
+
+
+def test_frozen_run_reads_attempts_from_the_runs_own_episodes(places, tmp_path, monkeypatch):
+    # gap-127263: with learning frozen (planemit's pinned mode, decision 2218), Roko keeps its episodes in the run's
+    # own `.roko/runs/<run_id>/episodes.jsonl`, not the workspace's log. The driver reads its attempts there, and the
+    # S01 copy keeps the run's log.
+    monkeypatch.setattr(vb.secret, "KEYS_IN_ENV_OK", True)  # the tests' escape hatch (bug-979a06) for the next line
+    monkeypatch.setenv("CEREBRAS_API_KEY", "sk-driver-only-9d1e")
+    binary, _ = fake_roko(tmp_path, [PIN, PIN], frozen=True)
+    assert run_vb(places, arm_with(tmp_path, binary)) == 0
+    out = places["results"] / "TEST-ROKO" / "run-1"
+    [record] = read_jsonl(out / "records.jsonl")
+    assert (record["execution"]["status"], record["execution"]["reason"]) == ("completed", "gate_passed")
+    assert [attempt["model_dispatched"] for attempt in record["execution"]["attempts"]] == [PIN] * 2
+    s01 = out / "s01" / "F1-l1-0001.s1"
+    [run_log] = s01.glob("runs/*/episodes.jsonl")
+    assert [episode["model"] for episode in read_jsonl(run_log)] == [PIN] * 2
+    assert not (s01 / "episodes.jsonl").exists()
+
+
+def test_read_evidence_takes_a_runs_own_episodes_only_when_the_workspace_log_has_none(tmp_path):
+    # gap-127263: a run's own episode log stands in for the workspace's log only when that log holds none of the
+    # plan's episodes, as with learning frozen.
+    roko = tmp_path / ".roko"
+    (roko / "runs" / "graph-vb-x-1").mkdir(parents=True)
+
+    def episode(model: str, plan: str = "vb-x") -> str:
+        return json.dumps({"task_id": "T01", "model": model, "extra": {"plan_id": plan}}) + "\n"
+
+    (roko / "runs" / "graph-vb-x-1" / "episodes.jsonl").write_text(episode("from-the-run"))
+    (roko / "episodes.jsonl").write_text(episode("another-plan", plan="vb-y"))
+    assert [row["model"] for row in run_roko.read_evidence(tmp_path, "vb-x").episodes] == ["from-the-run"]
+    with open(roko / "episodes.jsonl", "a") as handle:
+        handle.write(episode("from-the-workspace"))
+    assert [row["model"] for row in run_roko.read_evidence(tmp_path, "vb-x").episodes] == ["from-the-workspace"]
 
 
 def test_run_roko_reads_the_model_truth_fields(tmp_path):
@@ -696,6 +776,45 @@ def test_attempts_ending_in_the_same_second_get_their_own_usage():
     attempts, problems = settle(with_ends([{**row, "ts": row["ts"][:19] + "Z"} for row in rows]))
     assert problems == [] and [(attempt.calls_known, attempt.usage_unknown) for attempt in attempts] == [
         (True, False), (False, True), (False, True)]
+
+
+def test_delayed_episode_write_does_not_misattribute_a_later_proxy_row():
+    # bug-eadcc4: attempt 1's episode is stamped completed_at once Roko has written it, after any helper calls
+    # (module docstring); under load that write can land after attempt 2's own first request already reached the
+    # proxy. Construct exactly that shape deterministically, no sleeps: attempt 1's completed_at (05.000) is later
+    # than attempt 2's own proxy row (04.300), even though S01's verdict says attempt 2 independently started at
+    # 04.100 -- proof attempt 1 was really done well before its recorded end. ends[] stays "monotonic" (05 < 06), so
+    # this is not caught by comparing ends to each other; only the independent start exposes the delayed stamp.
+    def epoch_ms(iso: str) -> int:
+        return round(dt.datetime.fromisoformat(iso.replace("Z", "+00:00")).timestamp() * 1000)
+
+    usage = {"tokens_in": 500, "tokens_cache_read": 0, "tokens_cache_write_5m": 0, "tokens_cache_write_1h": 0,
+             "tokens_out": 50, "tokens_reasoning": 0}
+    base = {"task": "F1-l1-0001.s1", "model_requested": PIN, "model_reported": PIN, "usage": usage,
+            "usage_source": "reported"}
+    rows = [{**base, "ordinal": 1, "ts": "2026-10-04T10:00:03.900000Z"},  # attempt 1's own request
+            {**base, "ordinal": 2, "ts": "2026-10-04T10:00:04.300000Z"}]  # attempt 2's: before its delayed stamp
+    found = evidence([PIN, PIN], proxy_rows=rows, verdicts=[
+        {"attempt": 1, "timing": {"attempt_started_at": epoch_ms("2026-10-04T10:00:03.000000Z"),
+                                  "settled_at": epoch_ms("2026-10-04T10:00:05.000000Z")}},
+        {"attempt": 2, "timing": {"attempt_started_at": epoch_ms("2026-10-04T10:00:04.100000Z"),
+                                  "settled_at": epoch_ms("2026-10-04T10:00:06.000000Z")}}])
+    found.episodes[0]["completed_at"] = "2026-10-04T10:00:05.000000Z"  # the delayed write: after row 2's real ts
+    found.episodes[1]["completed_at"] = "2026-10-04T10:00:06.000000Z"
+    attempts, problems = settle(found)
+    assert problems == []  # not no_proxy_traffic: row 2 is no longer swallowed by attempt 1's (delayed) window
+    assert [attempt.calls for attempt in attempts] == [1, 1]
+    assert attempts[1].started_at == "2026-10-04T10:00:04.100Z"  # the independent signal that exposed the stamp
+    assert attempts[1].proxy_diagnostic is None  # nothing to diagnose: the fix, not the flag, resolved it
+
+    # Without the verdict's independent start (an older Roko, or this task's own), the delayed stamp still swallows
+    # row 2 -- the fix only applies when it has the data to know better, and the flag still fires and is diagnosable.
+    found.verdicts = []
+    attempts, problems = settle(found)
+    assert problems == ["no_proxy_traffic: attempt 2: the metering proxy saw no request"]
+    assert attempts[1].proxy_diagnostic == {
+        "ends": ["2026-10-04T10:00:05.000Z", "2026-10-04T10:00:06.000Z"], "starts": [None, None],
+        "proxy_ts": ["2026-10-04T10:00:03.900000Z", "2026-10-04T10:00:04.300000Z"]}
 
 
 def test_the_roko_arm_enforces_the_per_attempt_input_cap(places, tmp_path):

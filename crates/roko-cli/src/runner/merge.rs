@@ -6,8 +6,9 @@
 //! checkout, an index or a ref.
 //!
 //! This module used to hold `PlanMerger`, Runner v2's merge wrapper around
-//! `MergeQueue`. Plans deliver through `GitDeliveryBackend` instead, and
-//! `PlanMerger` was deleted with its last test callers (gap-3505fb).
+//! its merge queue. Plans deliver through `GitDeliveryBackend` instead:
+//! `PlanMerger` was deleted with its last test callers (gap-3505fb), and the
+//! queue itself with the orchestrator snapshot that recorded it (9205).
 
 /// A `git` command run in `workdir`. It drops the variables that point git
 /// at another repository, checkout or index, which git sets for hooks.

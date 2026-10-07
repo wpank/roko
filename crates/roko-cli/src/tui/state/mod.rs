@@ -44,6 +44,7 @@ use super::input::{ConfirmAction, FocusZone, InputMode, LogFilterLevel};
 use super::modals::ModalState;
 use super::segment::CachedRender;
 use super::tabs::Tab;
+use super::widgets::stream_output::display_text;
 use crate::config::Config;
 use crate::plan::PlanSummary;
 
@@ -64,6 +65,33 @@ pub struct PendingApproval {
     pub run_id: Option<String>,
     /// Optional approval identifier (P1-40: SurfaceEvent command path).
     pub approval_id: Option<String>,
+    /// Whether this offers a task a Graph run holds for review, whose
+    /// `approval_id` is `<plan>/<task>`: an Approve or Reject command on the
+    /// run's control channel decides it, not an agent's request.
+    pub held_task: bool,
+}
+
+impl PendingApproval {
+    /// The offer of task `task_id` of plan `plan_id`, whose verified attempt
+    /// a Graph run holds for review (its phase is
+    /// [`AWAITING_APPROVAL_PHASE`](crate::graph_task_dispatch::AWAITING_APPROVAL_PHASE)).
+    #[must_use]
+    pub fn for_held_task(plan_id: &str, task_id: &str) -> Self {
+        let id = format!("{plan_id}/{task_id}");
+        Self {
+            agent_id: format!("review of {id}"),
+            description: format!("task {task_id} of plan {plan_id} waits for a review"),
+            command: format!(
+                "Task {task_id} of plan {plan_id} passed its gates and waits for a review.\n\
+                 Its diff is in the portal's review pane and in\n\
+                 .roko/state/review-holds/{plan_id}/{task_id}.json.\n\
+                 y approves it and n rejects it, as roko plan review {plan_id} {task_id} does."
+            ),
+            run_id: None,
+            approval_id: Some(id),
+            held_task: true,
+        }
+    }
 }
 
 /// Health classification for a configured LLM provider.
@@ -550,6 +578,13 @@ pub struct AgentOutputHistory {
     /// transcript. They are removed (while preserving tool steps) when
     /// [`settle_screened_transcript`] is called.
     live_unscreened_seqs: HashMap<String, HashSet<u64>>,
+    /// Agents whose current attempt's screened transcript has begun
+    /// (bug-cc61a3): their unscreened text is settled, and more that arrives
+    /// late is dropped until [`Self::begin_attempt`].
+    settled_agents: HashSet<String>,
+    /// Per agent whose output arrives only through task-output rings: the
+    /// ring last taken in, and the sequence number that followed it.
+    ring_tails: HashMap<String, (Vec<String>, u64)>,
 }
 
 impl AgentOutputHistory {
@@ -588,6 +623,10 @@ impl AgentOutputHistory {
             let new_oldest = evicted_record.seq + 1;
             self.oldest_seq.insert(agent_id.to_string(), new_oldest);
             self.evicted += 1;
+            // An evicted record no longer waits to be settled.
+            if let Some(unscreened) = self.live_unscreened_seqs.get_mut(agent_id) {
+                unscreened.remove(&evicted_record.seq);
+            }
 
             // If we just evicted a ToolCall, also evict any immediately
             // following ToolResult with the same tool_id to keep pairs intact.
@@ -601,6 +640,9 @@ impl AgentOutputHistory {
                             self.oldest_seq
                                 .insert(agent_id.to_string(), paired_result.seq + 1);
                             self.evicted += 1;
+                            if let Some(unscreened) = self.live_unscreened_seqs.get_mut(agent_id) {
+                                unscreened.remove(&paired_result.seq);
+                            }
                         }
                     }
                 }
@@ -622,6 +664,9 @@ impl AgentOutputHistory {
                             self.oldest_seq
                                 .insert(agent_id.to_string(), orphaned_call.seq + 1);
                             self.evicted += 1;
+                            if let Some(unscreened) = self.live_unscreened_seqs.get_mut(agent_id) {
+                                unscreened.remove(&orphaned_call.seq);
+                            }
                         }
                     }
                 }
@@ -698,7 +743,7 @@ impl AgentOutputHistory {
                         return false;
                     }
                 }
-                pattern.is_match(&r.text)
+                pattern.is_match(&display_text(&r.text))
                     || r.tool_name.as_deref().is_some_and(|n| pattern.is_match(n))
                     || pattern.is_match(&r.role)
             })
@@ -739,6 +784,34 @@ impl AgentOutputHistory {
         self.records.remove(agent_id);
         self.oldest_seq.remove(agent_id);
         self.next_seq.remove(agent_id);
+        self.ring_tails.remove(agent_id);
+        self.live_unscreened_seqs.remove(agent_id);
+        self.settled_agents.remove(agent_id);
+    }
+
+    /// Take in the lines a task-output ring adds for an agent whose output
+    /// arrives only through such rings (#367).
+    ///
+    /// A ring slides: each one holds the task's latest lines, so the new
+    /// lines are those after its overlap with the ring taken in last. An
+    /// agent whose history holds records from another path (`AgentOutput`
+    /// events) is left to it, because the ring repeats what it delivers.
+    pub fn ingest_ring(&mut self, agent_id: &str, ring: &[String], role: &str) {
+        let next = self.next_sequence(agent_id);
+        let new_from = match self.ring_tails.get(agent_id) {
+            Some((tail, tail_next)) if *tail_next == next => ring_overlap(tail, ring),
+            // Another path pushed records since the last ring: it owns them.
+            Some(_) => {
+                self.ring_tails.remove(agent_id);
+                return;
+            }
+            None if self.len(agent_id) > 0 => return,
+            None => 0,
+        };
+        self.ingest_lines(agent_id, &ring[new_from..], role);
+        let next = self.next_sequence(agent_id);
+        self.ring_tails
+            .insert(agent_id.to_string(), (ring.to_vec(), next));
     }
 
     /// Convert raw output lines into records and populate the history for
@@ -749,89 +822,120 @@ impl AgentOutputHistory {
     /// `live_unscreened_seqs` so they can be dropped when the screened
     /// transcript arrives via [`settle_screened_transcript`].
     pub fn ingest_lines(&mut self, agent_id: &str, lines: &[String], role: &str) {
+        for line in lines {
+            self.ingest_line(agent_id, line, role);
+        }
+    }
+
+    /// Convert one raw output line into a record for an agent, as
+    /// [`Self::ingest_lines`] does. A stream record keeps its encoded line as
+    /// the record's text, which the renderer and search decode, so a line
+    /// published live (`TuiState::ingest_agent_output`) and the same line
+    /// backfilled from a snapshot give the same record.
+    pub fn ingest_line(&mut self, agent_id: &str, line: &str, role: &str) {
+        let (kind, tool_id, tool_name, is_live_unscreened) = classify_output_line(line);
+        if is_live_unscreened && self.settled_agents.contains(agent_id) {
+            // Late unscreened text of an attempt whose screened copy is
+            // already here: the live forwarder runs on a task of its own.
+            return;
+        }
+        if is_screened_transcript_line(line) {
+            self.settle_unscreened(agent_id);
+        }
         let now_ms = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()
             .as_millis() as u64;
-
-        for line in lines {
-            let (kind, tool_id, tool_name, is_live_unscreened) = classify_output_line(line);
-            // Assign the sequence number before push so we can track it.
-            let seq = *self.next_seq.entry(agent_id.to_string()).or_insert(1);
-            self.push(
-                agent_id,
-                AgentOutputRecord {
-                    seq: 0, // overwritten by push()
-                    timestamp_ms: now_ms,
-                    role: role.to_string(),
-                    kind,
-                    text: line.clone(),
-                    redacted: false,
-                    tool_id,
-                    tool_name,
-                },
-            );
-            if is_live_unscreened {
-                self.live_unscreened_seqs
-                    .entry(agent_id.to_string())
-                    .or_insert_with(HashSet::new)
-                    .insert(seq);
-            }
+        // Assign the sequence number before push so we can track it.
+        let seq = *self.next_seq.entry(agent_id.to_string()).or_insert(1);
+        self.push(
+            agent_id,
+            AgentOutputRecord {
+                seq: 0, // overwritten by push()
+                timestamp_ms: now_ms,
+                role: role.to_string(),
+                kind,
+                text: line.to_string(),
+                redacted: false,
+                tool_id,
+                tool_name,
+            },
+        );
+        if is_live_unscreened {
+            self.live_unscreened_seqs
+                .entry(agent_id.to_string())
+                .or_insert_with(HashSet::new)
+                .insert(seq);
         }
     }
 
     /// Replace live-unscreened non-tool records for `agent_id` with the
-    /// settled screened transcript.
-    ///
-    /// Called when the first non-`live` record arrives for an agent (or when
-    /// `agent_completed` is signalled). Drops all previously tracked
-    /// unscreened records from the deque while preserving every tool step.
-    /// The new `settled_lines` are then ingested as normal screened records.
+    /// settled screened transcript `settled_lines`, preserving every tool
+    /// step. [`Self::ingest_line`] does the same when the first record of a
+    /// screened transcript arrives on its own.
     pub fn settle_screened_transcript(
         &mut self,
         agent_id: &str,
         settled_lines: &[String],
         role: &str,
     ) {
-        // Remove the unscreened non-tool records.
-        if let Some(unscreened) = self.live_unscreened_seqs.remove(agent_id) {
-            if let Some(deque) = self.records.get_mut(agent_id) {
-                deque.retain(|r| !unscreened.contains(&r.seq));
-            }
-        }
-
-        // Ingest the settled, screened lines.
-        let now_ms = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_millis() as u64;
-        for line in settled_lines {
-            let (kind, tool_id, tool_name, _) = classify_output_line(line);
-            self.push(
-                agent_id,
-                AgentOutputRecord {
-                    seq: 0,
-                    timestamp_ms: now_ms,
-                    role: role.to_string(),
-                    kind,
-                    text: line.clone(),
-                    redacted: false,
-                    tool_id,
-                    tool_name,
-                },
-            );
-        }
+        self.settle_unscreened(agent_id);
+        self.ingest_lines(agent_id, settled_lines, role);
     }
+
+    /// Drop the unscreened text and reasoning `agent_id` streamed, keeping
+    /// every tool step, and any more that arrives late, until the agent's
+    /// next attempt ([`Self::begin_attempt`]): the screened transcript
+    /// replaces them (bug-cc61a3).
+    fn settle_unscreened(&mut self, agent_id: &str) {
+        if let Some(unscreened) = self.live_unscreened_seqs.remove(agent_id)
+            && let Some(deque) = self.records.get_mut(agent_id)
+        {
+            deque.retain(|record| !unscreened.contains(&record.seq));
+        }
+        self.settled_agents.insert(agent_id.to_string());
+    }
+
+    /// A new attempt of `agent_id` starts (`AgentSpawned`): what it streams
+    /// unscreened shows until its own screened transcript settles it.
+    pub fn begin_attempt(&mut self, agent_id: &str) {
+        self.settled_agents.remove(agent_id);
+    }
+}
+
+/// How many leading lines of `ring` repeat the end of `previous`: the longest
+/// such overlap, so a ring that slid by `n` lines leaves its last `n` new.
+fn ring_overlap(previous: &[String], ring: &[String]) -> usize {
+    (0..=previous.len().min(ring.len()))
+        .rev()
+        .find(|&overlap| previous[previous.len() - overlap..] == ring[..overlap])
+        .unwrap_or(0)
+}
+
+/// Whether `line` is a record of an attempt's screened transcript, which is
+/// published once the attempt's turn ends: a stream record that is not live
+/// (bug-cc61a3). A tool result is never the first one.
+fn is_screened_transcript_line(line: &str) -> bool {
+    use super::widgets::stream_output::{StreamRecord, parse_stream_line};
+
+    matches!(
+        parse_stream_line(line),
+        StreamRecord::Text { live: false, .. }
+            | StreamRecord::Reasoning { live: false, .. }
+            | StreamRecord::ToolStart { live: false, .. }
+    )
 }
 
 /// Classify a raw output line into an `OutputRecordKind` with optional
 /// tool metadata, based on the `roko.stream.v1` protocol or text heuristics.
 ///
 /// Returns `(kind, tool_id, tool_name, is_live_unscreened)`.  The fourth
-/// element is `true` only when the record is a live-preview, non-tool record
-/// that has not yet been validated by the safety screener (`screened: false`).
-/// Callers use this to track which records should be replaced when the
-/// settled, screened transcript arrives.
+/// element is `true` only when the record is a live preview that the safety
+/// screener has not validated (`screened: false`): text, reasoning, or a tool
+/// call or result with its raw arguments or output (bug-9affca). Callers use
+/// this to track which records should be replaced when the settled, screened
+/// transcript arrives. A live tool step (`tool_step`: its name and scrubbed
+/// target) is screened, and stays.
 fn classify_output_line(line: &str) -> (OutputRecordKind, Option<String>, Option<String>, bool) {
     use super::widgets::stream_output::{StreamRecord, parse_stream_line};
 
@@ -845,20 +949,28 @@ fn classify_output_line(line: &str) -> (OutputRecordKind, Option<String>, Option
             (OutputRecordKind::Reasoning, None, None, unscreened)
         }
         StreamRecord::ToolStart {
-            tool_id, tool_name, ..
-        } => {
-            // Tool steps are never treated as unscreened for drop purposes —
-            // they are kept even when the screened transcript replaces text.
-            (
-                OutputRecordKind::ToolCall,
-                Some(tool_id),
-                Some(tool_name),
-                false,
-            )
-        }
-        StreamRecord::ToolResult { tool_id, .. } => {
-            (OutputRecordKind::ToolResult, Some(tool_id), None, false)
-        }
+            tool_id,
+            tool_name,
+            live,
+            screened,
+            ..
+        } => (
+            OutputRecordKind::ToolCall,
+            Some(tool_id),
+            Some(tool_name),
+            live && !screened,
+        ),
+        StreamRecord::ToolResult {
+            tool_id,
+            live,
+            screened,
+            ..
+        } => (
+            OutputRecordKind::ToolResult,
+            Some(tool_id),
+            None,
+            live && !screened,
+        ),
         StreamRecord::Plain { ref content } => {
             // Legacy heuristic classification for untyped records.
             let trimmed = content.trim();
@@ -1493,7 +1605,7 @@ impl AgentOutputSearchState {
         self.match_seqs.clear();
         if let Some(ref re) = self.compiled {
             for record in history.records_for(agent_id) {
-                if re.is_match(&record.text)
+                if re.is_match(&display_text(&record.text))
                     || record.tool_name.as_deref().is_some_and(|n| re.is_match(n))
                     || re.is_match(&record.role)
                 {
@@ -1792,7 +1904,7 @@ pub enum JobFormField {
     Description,
 }
 
-/// Result of a TUI-initiated command (e.g. job creation, PRD publish).
+/// Result of a TUI-initiated command (e.g. job creation).
 #[derive(Debug, Clone)]
 pub struct CommandResult {
     /// Whether the command succeeded.
@@ -1887,13 +1999,18 @@ pub struct TuiState {
     pub gate_trends: HashMap<String, roko_core::TrendBuckets>,
     /// Recent failing verdicts surfaced beside the trend grid.
     pub gate_recent_failures: Vec<roko_core::FailureEntry>,
-    /// Latest gate output retained per task by the live snapshot: a leading
-    /// `$ command` line (when published) plus the output tail.
+    /// Latest gate output retained per task and verify step by the live
+    /// snapshot: a leading `$ command` line (when published) plus the output
+    /// tail.
     pub task_gate_outputs: Vec<roko_core::dashboard_snapshot::TaskGateOutput>,
     /// Plan set of each plan id seen in the live snapshot, from disk
-    /// discovery (`None` for top-level or undiscovered plans). The snapshot
-    /// itself carries no plan set.
+    /// discovery (`None` for top-level or undiscovered plans). Read through
+    /// [`TuiState::plan_group`], which prefers the announced plan set's group.
     pub plan_groups: HashMap<String, Option<String>>,
+    /// Plans announced by the live snapshot's plan set, in execution order,
+    /// with each plan's group, wave, prerequisites and conflicts. Empty when
+    /// no plan set was announced.
+    pub plan_set: Vec<roko_core::dashboard_snapshot::PlanSetEntry>,
 
     // -- gate output --
     /// Streaming gate output lines from rung executions (bounded).
@@ -1908,7 +2025,8 @@ pub struct TuiState {
     pub affect: Option<roko_core::AffectSnapshot>,
 
     // -- agents (Vec-based roster for widgets) --
-    /// Ordered agent roster for widgets (agent_pool, agent_output, header_bar).
+    /// Ordered agent roster, read by the Agents and Dashboard views and the
+    /// header_bar, status_bar, cost_by_model and token_sparkline widgets.
     pub agents: Vec<AgentRow>,
     /// Latest fetched agent-topology payload.
     pub agent_topology: roko_core::AgentTopology,
@@ -1951,8 +2069,6 @@ pub struct TuiState {
     pub inspect_sub_tab: usize,
     /// Selected Marketplace tab sub-view index.
     pub marketplace_sub_tab: usize,
-    /// Selected Atelier tab sub-view index.
-    pub atelier_sub_tab: usize,
     /// Which panel has keyboard focus.
     pub focus: FocusZone,
 
@@ -1995,8 +2111,6 @@ pub struct TuiState {
     pub inspect_detail_scroll: usize,
     /// Marketplace detail pane scroll offset.
     pub marketplace_detail_scroll: usize,
-    /// Atelier detail pane scroll offset.
-    pub atelier_detail_scroll: usize,
     /// Learning detail pane scroll offset.
     pub learning_detail_scroll: usize,
     /// Task list scroll offset.
@@ -2162,7 +2276,7 @@ pub struct TuiState {
     pub gate_results_page: GateResultsPageData,
     /// Experiment summaries for the config tab.
     pub experiments: Vec<ExperimentSummary>,
-    /// Playbook summaries for the F10 Learning tab (P2-05).
+    /// Playbook summaries for the F9 Learning tab (P2-05).
     pub playbook_summaries: Vec<PlaybookSummary>,
     /// Incremental tailer over `.roko/learn/efficiency.jsonl`, used in
     /// connected mode where the core snapshot cannot carry per-event
@@ -2227,17 +2341,11 @@ pub struct TuiState {
     /// Knowledge entries for the Inspect tab's KnowledgeBrowse sub-view.
     pub knowledge_entries: Vec<KnowledgeBrowseEntry>,
 
-    // -- marketplace / atelier --
+    // -- marketplace --
     /// Jobs loaded from .roko/jobs/ for the Marketplace tab.
     pub marketplace_jobs: Vec<roko_core::MarketplaceJob>,
     /// Selected job index in the Marketplace tab.
     pub marketplace_selected_job: usize,
-    /// PRD summaries for the Atelier tab.
-    pub atelier_prds: Vec<roko_core::PrdSummary>,
-    /// Selected PRD index in the Atelier tab.
-    pub atelier_selected_prd: usize,
-    /// Per-slug task lists for the Atelier tab.
-    pub atelier_tasks_by_slug: HashMap<String, Vec<roko_core::job::TaskSummary>>,
     /// Whether the job creation form is in editing mode.
     pub job_form_editing: bool,
     /// Job form: title field.
@@ -2333,8 +2441,8 @@ pub struct TuiState {
     /// Safety incidents loaded from `.roko/immune/` or extracted from log entries.
     pub safety_incidents: Vec<SafetyIncident>,
 
-    // -- providers (F11) --
-    /// Provider status snapshots for the F11 Providers NERV tab.
+    // -- providers (F10) --
+    /// Provider status snapshots for the F10 Providers NERV tab.
     pub provider_statuses: Vec<ProviderStatus>,
     /// Selected Providers tab sub-view index.
     pub providers_sub_tab: usize,
@@ -2369,6 +2477,7 @@ impl Default for TuiState {
             gate_recent_failures: Vec::new(),
             task_gate_outputs: Vec::new(),
             plan_groups: HashMap::new(),
+            plan_set: Vec::new(),
 
             gate_output_lines: VecDeque::new(),
             current_gate_rung: None,
@@ -2397,7 +2506,6 @@ impl Default for TuiState {
             config_sub_tab: 0,
             inspect_sub_tab: 0,
             marketplace_sub_tab: 0,
-            atelier_sub_tab: 0,
             focus: FocusZone::default(),
 
             atmosphere: Atmosphere::default(),
@@ -2416,7 +2524,6 @@ impl Default for TuiState {
             config_values_scroll: 0,
             inspect_detail_scroll: 0,
             marketplace_detail_scroll: 0,
-            atelier_detail_scroll: 0,
             learning_detail_scroll: 0,
             task_scroll: 0,
             command_output_scroll: 0,
@@ -2548,9 +2655,6 @@ impl Default for TuiState {
 
             marketplace_jobs: Vec::new(),
             marketplace_selected_job: 0,
-            atelier_prds: Vec::new(),
-            atelier_selected_prd: 0,
-            atelier_tasks_by_slug: HashMap::new(),
             job_form_editing: false,
             job_form_title: String::new(),
             job_form_type: String::new(),
@@ -3160,6 +3264,67 @@ impl TuiState {
         state
     }
 
+    /// The plan set (directory under `plans/`) containing `plan_id`: the
+    /// group its announced plan-set entry names, else the group disk
+    /// discovery gave it. `None` for a top-level plan.
+    #[must_use]
+    pub fn plan_group(&self, plan_id: &str) -> Option<&str> {
+        self.plan_set
+            .iter()
+            .find(|entry| entry.plan_id == plan_id)
+            .and_then(|entry| entry.group.as_deref())
+            .or_else(|| self.plan_groups.get(plan_id).and_then(Option::as_deref))
+            .or_else(|| {
+                self.plan_summaries
+                    .iter()
+                    .find(|summary| summary.id == plan_id)
+                    .and_then(|summary| summary.group.as_deref())
+            })
+    }
+
+    /// Why an announced plan has not started, as the plan-set scheduler
+    /// holds it back: prerequisites that have not succeeded yet, else a plan
+    /// it conflicts with that is running, or that comes earlier in the set
+    /// and has not started. `None` for a plan that started, finished, or is
+    /// waiting only for a free slot.
+    #[must_use]
+    pub fn plan_wait_reason(&self, plan_id: &str) -> Option<String> {
+        let phase = |id: &str| match self.plans.iter().find(|plan| plan.id == id) {
+            Some(plan) if plan.active => PlanPhase::Active,
+            Some(plan) => plan.status,
+            None => PlanPhase::Pending,
+        };
+        if phase(plan_id) != PlanPhase::Pending {
+            return None;
+        }
+        let position = self
+            .plan_set
+            .iter()
+            .position(|entry| entry.plan_id == plan_id)?;
+        let entry = &self.plan_set[position];
+        let unfinished: Vec<&str> = entry
+            .depends_on
+            .iter()
+            .map(String::as_str)
+            .filter(|prerequisite| !phase(prerequisite).is_done())
+            .collect();
+        if !unfinished.is_empty() {
+            return Some(format!("waiting on {}", unfinished.join(", ")));
+        }
+        self.plan_set
+            .iter()
+            .enumerate()
+            .find(|(index, other)| {
+                entry.conflicts_with.contains(&other.plan_id)
+                    && match phase(&other.plan_id) {
+                        PlanPhase::Active => true,
+                        PlanPhase::Pending => *index < position,
+                        PlanPhase::Done | PlanPhase::Failed => false,
+                    }
+            })
+            .map(|(_, other)| format!("conflicts with {}", other.plan_id))
+    }
+
     // -- config items cache (P3.2) ------------------------------------------
 
     /// How often to re-parse `roko.toml` for the config view.
@@ -3742,9 +3907,9 @@ impl TuiState {
             Tab::Git => usize::from(self.pending_approval.is_some()),
             // F5 Logs: recent gate failures.
             Tab::Logs => self.gate_results.iter().filter(|g| !g.passed).count(),
-            // F10 Learning: number of concluded experiment winners.
+            // F9 Learning: number of concluded experiment winners.
             Tab::Learning => self.experiment_winners.len(),
-            // F11 Providers: number of unhealthy providers.
+            // F10 Providers: number of unhealthy providers.
             Tab::Providers => self
                 .provider_statuses
                 .iter()
@@ -3781,7 +3946,6 @@ impl TuiState {
             Tab::Config => self.config_sub_tab,
             Tab::Inspect => self.inspect_sub_tab,
             Tab::Marketplace => self.marketplace_sub_tab,
-            Tab::Atelier => self.atelier_sub_tab,
             Tab::Learning => self.learning_sub_tab,
             Tab::Providers => self.providers_sub_tab,
         }
@@ -3798,7 +3962,6 @@ impl TuiState {
             Tab::Config => self.config_sub_tab = idx,
             Tab::Inspect => self.inspect_sub_tab = idx,
             Tab::Marketplace => self.marketplace_sub_tab = idx,
-            Tab::Atelier => self.atelier_sub_tab = idx,
             Tab::Learning => self.learning_sub_tab = idx,
             Tab::Providers => self.providers_sub_tab = idx,
         }

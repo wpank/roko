@@ -15,8 +15,10 @@
 //! | [`delivery`] | Post-execution merge, regression, and publication pipeline |
 //! | [`disk_admission`] | Free-disk check at run start, and disk headroom per attempt |
 //! | [`event_log`] | `--log-file` JSONL recorder and StateHub event taps |
+//! | [`failure_issues`] | GitHub issues for the tasks a plan run leaves failed |
 //! | [`fast_lane`] | FAST lane (`./dev.sh fast`) run deadline |
 //! | [`identity_map`] | Graph node-to-plan/task identity resolution |
+//! | [`loop_audit`] | The loop auditor's tick at each run's close: ledger rows, StateHub events |
 //! | [`plan_runner`] | Runs a selected plan set through the Graph engine |
 //! | [`plan_set`] | Plan-set order, footprints, and which plans may run at once |
 //! | [`plan_verify`] | The whole-plan gate: `[meta] verify` on a plan's integrated result |
@@ -32,8 +34,11 @@ pub mod control_adapter;
 pub mod delivery;
 pub mod disk_admission;
 pub mod event_log;
+pub mod failure_issues;
 pub mod fast_lane;
 pub mod identity_map;
+pub mod learning_commit;
+pub mod loop_audit;
 pub mod plan_runner;
 pub mod plan_set;
 pub mod plan_verify;
@@ -51,7 +56,7 @@ pub use delivery::{
 };
 pub use event_log::{EventTap, RunEventLog, Tapped};
 pub use identity_map::{GraphIdentityMap, NodeIdentity};
-pub use plan_runner::{GraphPlanRunParams, compute_plan_run_order, run_graph_plan};
+pub use plan_runner::{GraphPlanRunParams, compute_plan_run_order, outbound_floor, run_graph_plan};
 pub use plan_set::{PlanSetOrder, plan_set_order};
 pub use runtime_event_adapter::GraphRuntimeEventAdapter;
 pub use view_state::{

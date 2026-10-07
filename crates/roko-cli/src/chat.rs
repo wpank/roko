@@ -278,6 +278,8 @@ pub async fn run_direct_provider_chat(
     let model_slug = resolve_model(config, &model_key).slug;
     let cascade_model_slugs = capture_runtime_model_slugs(config, &model_slug);
     let feedback_recorder = ModelCallFeedbackRecorder::from_workdir(workdir, cascade_model_slugs);
+    // Nothing else costs a direct chat turn's model call (bug-724982).
+    let feedback_recorder = feedback_recorder.with_cost_records();
 
     let llm_timeout_ms = config.timeouts.llm_call().as_millis() as u64;
     let options = AgentOptions {
@@ -351,6 +353,8 @@ pub async fn run_direct_provider_chat(
                 run_id: None,
                 request_id: Some(format!("direct-chat-{agent_id}-{turn_count}")),
                 prompt_section_ids: Vec::new(),
+                // The chat prompt is its history alone: it includes no
+                // knowledge entry (bug-eaa318).
                 knowledge_ids: Vec::new(),
                 model: model_slug.clone(),
                 provider: provider_name.to_string(),

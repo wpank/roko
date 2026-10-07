@@ -9,7 +9,7 @@
   },
   "tasks": {
     "T1": {
-      "score": 42,
+      "score": 49.41,
       "band": "C",
       "hard_fail": [],
       "verify_classes": [
@@ -31,8 +31,8 @@
       }
     },
     "T2": {
-      "score": 37,
-      "band": "D",
+      "score": 43.53,
+      "band": "C",
       "hard_fail": [],
       "verify_classes": [
         "test"
@@ -53,8 +53,8 @@
       }
     },
     "T3": {
-      "score": 37,
-      "band": "D",
+      "score": 43.53,
+      "band": "C",
       "hard_fail": [],
       "verify_classes": [
         "test"

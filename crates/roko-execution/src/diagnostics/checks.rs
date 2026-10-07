@@ -544,7 +544,7 @@ pub fn check_workspace(workdir: &Path) -> Vec<DiagnosticFinding> {
     }
 
     // Check key subdirectories.
-    let expected_dirs = ["state", "learn", "memory", "prd"];
+    let expected_dirs = ["state", "learn", "memory"];
     let mut missing = Vec::new();
     for dir_name in &expected_dirs {
         let dir_path = roko_dir.join(dir_name);

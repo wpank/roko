@@ -714,7 +714,7 @@ impl GateRunOutcome {
 pub enum ArtifactOutcome {
     /// Artifact exists and validation passed.
     Valid {
-        /// Artifact category, such as `prd` or `plan`.
+        /// Artifact category, such as `plan` or `brief`.
         artifact_type: String,
         /// Path to the validated artifact.
         path: PathBuf,
@@ -723,7 +723,7 @@ pub enum ArtifactOutcome {
     },
     /// Artifact exists or was attempted, but validation failed.
     Invalid {
-        /// Artifact category, such as `prd` or `plan`.
+        /// Artifact category, such as `plan` or `brief`.
         artifact_type: String,
         /// Path to the invalid artifact, when it exists.
         path: Option<PathBuf>,
@@ -732,14 +732,14 @@ pub enum ArtifactOutcome {
     },
     /// Required artifact was not produced.
     NotProduced {
-        /// Artifact category, such as `prd` or `plan`.
+        /// Artifact category, such as `plan` or `brief`.
         artifact_type: String,
         /// Human-readable reason the artifact was not produced.
         reason: String,
     },
     /// Artifact validation could not run.
     ValidationUnavailable {
-        /// Artifact category, such as `prd` or `plan`.
+        /// Artifact category, such as `plan` or `brief`.
         artifact_type: String,
         /// Human-readable reason validation was unavailable.
         reason: String,

@@ -5,7 +5,7 @@
 //! `Dispatcher` / `PromptAssembler` / `WarmPool`.  `SharedAgentFactory`
 //! creates these once at run start and hands them to every dispatch call.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -15,7 +15,6 @@ use roko_agent::AgentRuntimeEvent;
 use roko_agent::mcp::{McpConfig, McpRuntime, discover_mcp_runtime};
 use roko_agent::provider::{LocalToolRuntime, ProviderSemaphores};
 use roko_agent::rate_limit::ProviderRateLimiter;
-use roko_compose::{AttentionBidder, LearningBidder};
 use roko_core::config::schema::RokoConfig;
 use roko_core::tool::ToolDef;
 use roko_learn::provider_health::ProviderHealthRegistry;
@@ -33,6 +32,21 @@ use super::plugin_mcp::CliPluginMcpBridge;
 use super::{
     Dispatcher, PromptAssembler, PromptCache, ResolvedAgentRuntime, RoutingLadder, WarmPool,
 };
+
+/// The error patterns a task's prompt carries (backlog 4210): the rendered
+/// block, and the keys of the patterns in it, which the attempt's exposure
+/// record can name.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ErrorPatternSelection {
+    /// The rendered block; empty when no pattern is keyed to the task.
+    pub text: String,
+    /// The keys of the selected patterns, in display order.
+    pub keys: Vec<String>,
+    /// Each selected pattern's entry in `text`, in the order of `keys`: the
+    /// prompt's exposure record makes one item of each, so that the
+    /// error-pattern decision lists every pattern (gap-a40021).
+    pub entries: Vec<String>,
+}
 
 /// Shared, reusable components for agent dispatch.
 ///
@@ -73,9 +87,8 @@ pub struct SharedAgentFactory {
     /// Per-call trace and metrics sinks shared across all dispatches
     /// (find-f489db).
     observability: Option<roko_fs::FsObservabilitySinks>,
-    /// Runtime-scoped format selection bandit. Shared across all dispatches
-    /// so tool-format selection learns from cumulative feedback within a run.
-    pub format_bandit: Arc<dyn roko_core::tool::bandit::FormatBandit>,
+    /// The safety provenance sinks of the runs in flight (gap-ff95f5).
+    provenance: Option<crate::safety_provenance::ProvenanceSinks>,
     /// Shared in-memory error pattern store. When an agent's gate fails, the
     /// observation is written here immediately so that subsequent agent
     /// dispatches within the same plan run can include the pattern in their
@@ -84,6 +97,9 @@ pub struct SharedAgentFactory {
     /// Uses `std::sync::RwLock` because `ErrorPatternStore` performs only
     /// brief CPU-bound operations (no I/O under the lock).
     error_pattern_store: Arc<std::sync::RwLock<ErrorPatternStore>>,
+    /// What the run's prompt-cache snapshot holds, when the factory's
+    /// prompts are built from one (backlog 4214).
+    prompt_snapshot: Option<crate::dispatch::prompt_cache::PromptCacheDigest>,
 }
 
 /// Bridge task returned only after its worker reaches the provider boundary.
@@ -102,7 +118,6 @@ impl std::fmt::Debug for SharedAgentFactory {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("SharedAgentFactory")
             .field("config", &"...")
-            .field("format_bandit", &self.format_bandit.name())
             .finish()
     }
 }
@@ -152,6 +167,7 @@ impl SharedAgentFactory {
             None => None,
         };
 
+        let prompt_snapshot = prompt_cache.as_deref().map(PromptCache::digest);
         let prompt_assembler = match prompt_cache {
             Some(cache) => PromptAssembler::with_cache(cache),
             None => PromptAssembler::new(),
@@ -159,7 +175,7 @@ impl SharedAgentFactory {
         // Apply [prompt] config knobs from roko.toml.
         let prompt_assembler = prompt_assembler
             .with_composition_strategy(config.prompt.composition_strategy)
-            .with_vcg_warmup_observations(config.prompt.vcg_warmup_observations);
+            .with_pinned_sections(config.sections.pinned.clone());
         // Default warm-pool capacity: 2 slots per role. Zero-capacity silently
         // discards every pre-spawned agent on insert; using 2 lets the reviewer
         // slot remain warm while the implementer is being cleaned up.
@@ -238,6 +254,24 @@ impl SharedAgentFactory {
             Some(ladder) => dispatcher.with_routing_ladder(ladder),
             None => dispatcher,
         };
+        // `[routing] explore_epsilon`: routes the cascade router decides
+        // explore the eligible models (S02.P1-3). Maximize mode
+        // (`[experiments] maximize`, decision 4115) explores nothing.
+        let epsilon = if config.experiments.maximize {
+            0.0
+        } else {
+            config.routing.effective_explore_epsilon()
+        };
+        let dispatcher = dispatcher.with_explore_epsilon(epsilon);
+        // `[agent] default_model`, a `[models.*]` key or a slug resolved as
+        // failover resolves it, is what the router falls back to when nothing
+        // else decides a route (backlog 3107); `MODEL_FOCUSED` without one.
+        let default_model = config.agent.default_model.trim();
+        let dispatcher = if default_model.is_empty() {
+            dispatcher
+        } else {
+            dispatcher.with_default_slug(resolver.resolve(default_model).model_slug)
+        };
 
         Self {
             config,
@@ -252,11 +286,19 @@ impl SharedAgentFactory {
             health_registry,
             tool_audit: None,
             observability: None,
-            format_bandit: Arc::new(roko_core::tool::bandit::ProfileBandit::with_static_profiles()),
+            provenance: None,
             // Start with an empty in-memory store. Callers should replace it
             // via `with_error_pattern_store` or `with_error_patterns_from_disk`.
             error_pattern_store: Arc::new(std::sync::RwLock::new(ErrorPatternStore::empty())),
+            prompt_snapshot,
         }
+    }
+
+    /// What the run's prompt-cache snapshot holds, when this factory's
+    /// prompts are built from one: the decision records name it (backlog
+    /// 4214).
+    pub fn prompt_snapshot(&self) -> Option<&crate::dispatch::prompt_cache::PromptCacheDigest> {
+        self.prompt_snapshot.as_ref()
     }
 
     /// Read-only access to the shared dispatcher (for plan/route without acting).
@@ -273,13 +315,35 @@ impl SharedAgentFactory {
         self.dispatcher.warm_pool()
     }
 
+    /// Skip the ladder rungs whose models `failed` their tool-use probe, by
+    /// model with the reason (backlog 1121); with no rung left the router
+    /// picks.
+    #[must_use]
+    pub fn skip_failed_rungs(
+        mut self,
+        failed: &std::collections::BTreeMap<String, String>,
+    ) -> Self {
+        if failed.is_empty() {
+            return self;
+        }
+        if let Some(ladder) = self.dispatcher.routing_ladder().cloned() {
+            self.dispatcher
+                .replace_routing_ladder(ladder.without_models(failed));
+        }
+        self
+    }
+
     /// Use a caller-owned provider health registry for all subsequent
     /// dispatches from this factory.
     ///
     /// Runner v2 supplies the persisted workspace registry here so bridge and
-    /// CLI provider outcomes share one circuit-breaker state.
+    /// CLI provider outcomes share one circuit-breaker state. The router
+    /// built in [`Self::new`] reads it too, so a circuit the persisted
+    /// registry holds open steers the next route away (bug-cf1cf7).
     #[must_use]
     pub fn with_health_registry(mut self, registry: Arc<ProviderHealthRegistry>) -> Self {
+        self.dispatcher
+            .replace_provider_health(Arc::clone(&registry));
         self.health_registry = registry;
         self
     }
@@ -304,6 +368,18 @@ impl SharedAgentFactory {
         self
     }
 
+    /// Record each dispatch's tool calls with the safety provenance sink
+    /// `sinks` holds for its run (gap-ff95f5). A run registers its sink there
+    /// before its tasks run.
+    #[must_use]
+    pub fn with_provenance_sinks(
+        mut self,
+        sinks: crate::safety_provenance::ProvenanceSinks,
+    ) -> Self {
+        self.provenance = Some(sinks);
+        self
+    }
+
     /// Replace the error pattern store with a pre-loaded shared instance.
     #[must_use]
     pub fn with_error_pattern_store(
@@ -317,10 +393,14 @@ impl SharedAgentFactory {
     /// Load the error pattern store from disk at the given workspace root.
     #[must_use]
     pub fn with_error_patterns_from_disk(mut self, workdir: &Path) -> Self {
-        let path = workdir
-            .join(".roko")
-            .join("learn")
-            .join("error-patterns.json");
+        let learn_dir = workdir.join(".roko").join("learn");
+        // Runner-v2's pattern file is set aside, never read (backlog 4204).
+        if let Err(error) =
+            roko_learn::error_pattern_store::retire_legacy_discovered_patterns(&learn_dir)
+        {
+            tracing::warn!(%error, "factory: Runner-v2's pattern file could not be set aside");
+        }
+        let path = learn_dir.join(roko_learn::error_pattern_store::ERROR_PATTERNS_FILE);
         let store = ErrorPatternStore::load(&path);
         tracing::debug!(
             pattern_count = store.len(),
@@ -330,22 +410,51 @@ impl SharedAgentFactory {
         self
     }
 
+    /// Weigh what the durable knowledge store of the workspace at `workdir`
+    /// says about each model into the cascade router's pick (reg-ff6e1a).
+    #[must_use]
+    pub fn with_knowledge_routing(mut self, workdir: &Path) -> Self {
+        let store = roko_neuro::KnowledgeStore::for_workdir(workdir);
+        self.dispatcher = self.dispatcher.with_knowledge_store(store);
+        self
+    }
+
     /// Shared error pattern store for cross-agent pattern sharing.
     pub fn error_pattern_store(&self) -> &Arc<std::sync::RwLock<ErrorPatternStore>> {
         &self.error_pattern_store
     }
 
-    /// Format the top error patterns from the shared store for prompt injection.
-    ///
-    /// Returns an empty string when the store is empty or the lock is
-    /// poisoned (fail-open: missing context is better than a panic).
-    pub fn format_error_patterns_for_prompt(&self, limit: usize) -> String {
-        match self.error_pattern_store.read() {
-            Ok(store) => store.format_for_prompt(limit),
-            Err(_) => {
-                tracing::warn!("error pattern store lock poisoned; skipping prompt injection");
-                String::new()
-            }
+    /// The error patterns keyed to task `task_id` of plan `plan_id`, whose
+    /// verify steps run `verify_commands`: those its own earlier attempts hit
+    /// and those of its verify commands, at most `limit` (backlog 4210).
+    /// Empty when none is keyed to the task, or the lock is poisoned
+    /// (fail-open: missing context is better than a panic).
+    pub fn error_patterns_for_task(
+        &self,
+        plan_id: &str,
+        task_id: &str,
+        verify_commands: &[String],
+        limit: usize,
+    ) -> ErrorPatternSelection {
+        let Ok(store) = self.error_pattern_store.read() else {
+            tracing::warn!("error pattern store lock poisoned; skipping prompt injection");
+            return ErrorPatternSelection::default();
+        };
+        let query = roko_learn::error_pattern_store::FailurePatternQuery {
+            plan_id: Some(plan_id),
+            task_id: Some(task_id),
+            verify_commands,
+            ..Default::default()
+        };
+        let summary = store.bounded_summary_keyed(query, limit, 2_000);
+        ErrorPatternSelection {
+            text: summary.format_for_prompt(),
+            keys: summary
+                .patterns
+                .iter()
+                .map(|pattern| pattern.key.clone())
+                .collect(),
+            entries: summary.format_entries(),
         }
     }
 
@@ -379,70 +488,6 @@ impl SharedAgentFactory {
         self.cli_plugin_mcp_bridge
             .as_ref()
             .and_then(|bridge| bridge.session_config(worktree, immune_root, contract))
-    }
-
-    /// Swap the prompt assembler's cache without rebuilding expensive factory
-    /// components (semaphores, MCP tools, resolver).
-    ///
-    /// Called after gate failures or when the periodic staleness check fires.
-    pub fn update_prompt_cache(&mut self, cache: Arc<PromptCache>) {
-        let learning_bidders = self.dispatcher.prompt_assembler().learning_bidders();
-        let assembler = PromptAssembler::with_cache(cache)
-            .with_composition_strategy(self.config.prompt.composition_strategy)
-            .with_vcg_warmup_observations(self.config.prompt.vcg_warmup_observations)
-            .with_learning_bidders(learning_bidders);
-        let configured_models: HashSet<String> = self
-            .config
-            .available_model_slugs_for_cascade()
-            .into_iter()
-            .collect();
-        let model_providers = crate::config_helpers::routing_model_provider_map(&self.config);
-        let disabled_providers: HashSet<String> = self
-            .config
-            .routing
-            .disabled_providers
-            .iter()
-            .cloned()
-            .collect();
-        let warm_pool_size = self.config.runner.warm_pool_size;
-        let mut dispatcher = Dispatcher::new(
-            self.dispatcher.cascade_router_arc(),
-            assembler,
-            WarmPool::new(warm_pool_size),
-            configured_models.clone(),
-        )
-        .with_provider_health(Arc::clone(&self.health_registry), model_providers);
-        if !disabled_providers.is_empty() {
-            dispatcher = dispatcher.with_disabled_providers(disabled_providers);
-        }
-        // Preserve tool-capability filter across cache updates.
-        let tool_capable: HashSet<String> =
-            self.config.models_supporting_tools().into_iter().collect();
-        let models_without_tools: HashSet<String> = configured_models
-            .iter()
-            .filter(|slug| !tool_capable.contains(*slug))
-            .cloned()
-            .collect();
-        if !models_without_tools.is_empty() {
-            dispatcher = dispatcher.with_tool_capability_filter(models_without_tools);
-        }
-        // Keep the ladder bound at construction rather than logging its
-        // skipped rungs again.
-        if let Some(ladder) = self.dispatcher.routing_ladder() {
-            dispatcher = dispatcher.with_routing_ladder(ladder.clone());
-        }
-        self.dispatcher = dispatcher;
-    }
-
-    /// Set persisted learning bidders on the prompt assembler.
-    ///
-    /// Called at run startup after loading from `.roko/learn/attention-bidders.json`.
-    /// The bidders are passed to `PromptComposer::with_learning_bidders` when the
-    /// runner-v2 prompt path is routed through the canonical compose surface.
-    pub fn set_learning_bidders(&mut self, bidders: HashMap<AttentionBidder, LearningBidder>) {
-        self.dispatcher
-            .prompt_assembler()
-            .replace_learning_bidders(bidders);
     }
 
     /// Resolve the runtime for a model key.
@@ -516,6 +561,9 @@ impl SharedAgentFactory {
         if let Some(sinks) = &self.observability {
             dispatcher = dispatcher.with_observability_sinks(sinks.clone());
         }
+        if let Some(sinks) = &self.provenance {
+            dispatcher = dispatcher.with_provenance_sinks(sinks.clone());
+        }
 
         dispatcher
             .run_agent_result_bridge_with_tools_and_cli_mcp(
@@ -556,6 +604,7 @@ impl SharedAgentFactory {
         let health_registry = Arc::clone(&self.health_registry);
         let tool_audit = self.tool_audit.clone();
         let observability = self.observability.clone();
+        let provenance = self.provenance.clone();
 
         tokio::spawn(async move {
             let mut dispatcher = AgentDispatcherV2::with_shared(config, semaphores)
@@ -569,6 +618,9 @@ impl SharedAgentFactory {
             }
             if let Some(sinks) = observability {
                 dispatcher = dispatcher.with_observability_sinks(sinks);
+            }
+            if let Some(sinks) = provenance {
+                dispatcher = dispatcher.with_provenance_sinks(sinks);
             }
             match dispatcher
                 .run_agent_result_bridge_with_tools_and_cli_mcp(
@@ -632,6 +684,7 @@ impl SharedAgentFactory {
         let health_registry = Arc::clone(&self.health_registry);
         let tool_audit = self.tool_audit.clone();
         let observability = self.observability.clone();
+        let provenance = self.provenance.clone();
         let (started_tx, started_rx) = tokio::sync::oneshot::channel();
 
         let mut handle = tokio::spawn(async move {
@@ -646,6 +699,9 @@ impl SharedAgentFactory {
             }
             if let Some(sinks) = observability {
                 dispatcher = dispatcher.with_observability_sinks(sinks);
+            }
+            if let Some(sinks) = provenance {
+                dispatcher = dispatcher.with_provenance_sinks(sinks);
             }
             if started_tx.send(()).is_err() {
                 return;
@@ -696,10 +752,5 @@ impl SharedAgentFactory {
     /// Pre-discovered MCP tools, if available.
     pub fn mcp_tools(&self) -> Option<&Arc<Vec<ToolDef>>> {
         self.mcp_runtime.as_ref().map(|runtime| runtime.tools())
-    }
-
-    /// Shared format-selection bandit for adaptive tool format decisions.
-    pub fn format_bandit(&self) -> &Arc<dyn roko_core::tool::bandit::FormatBandit> {
-        &self.format_bandit
     }
 }

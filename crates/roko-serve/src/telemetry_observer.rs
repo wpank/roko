@@ -2,10 +2,11 @@
 //!
 //! The observer samples the server's shared
 //! [`MetricRegistry`](roko_core::obs::metrics::MetricRegistry) immediately at
-//! startup and every 30 seconds thereafter. Samples are derived telemetry, so
-//! failures are best-effort and never affect request handling. Each observation
-//! is persisted as one JSONL record under `.roko/metrics/`; the canonical
-//! resource log-size limit controls rotation.
+//! startup and every 30 seconds thereafter, and checks the rolling cost rate
+//! for a spike. Samples are derived telemetry, so failures are best-effort and
+//! never affect request handling. A sample goes to the debug log only: the
+//! JSONL file serve used to keep under `.roko/metrics/` had no reader
+//! (backlog 2124).
 
 use std::io;
 use std::path::PathBuf;
@@ -33,38 +34,19 @@ trait TelemetryObservationSink: Send + Sync {
     fn emit(&self, observations: &[TelemetryObservation]) -> io::Result<()>;
 }
 
-#[derive(Debug)]
-struct JsonlTelemetryObservationSink {
-    path: PathBuf,
-    max_mb: u64,
-}
+/// Logs each Lens sample at debug level and keeps none (backlog 2124).
+#[derive(Debug, Default)]
+struct DebugLogTelemetryObservationSink;
 
-impl JsonlTelemetryObservationSink {
-    fn new(path: impl Into<PathBuf>, max_mb: u64) -> Self {
-        Self {
-            path: path.into(),
-            max_mb,
-        }
-    }
-}
-
-impl TelemetryObservationSink for JsonlTelemetryObservationSink {
+impl TelemetryObservationSink for DebugLogTelemetryObservationSink {
     fn emit(&self, observations: &[TelemetryObservation]) -> io::Result<()> {
-        if observations.is_empty() {
-            return Ok(());
-        }
-
-        // Serialize the complete cycle before touching the file. Appending the
-        // batch under one rotation lock prevents lenses from being split across
-        // archived and live generations by another writer.
-        let mut batch = Vec::new();
         for observation in observations {
-            serde_json::to_writer(&mut batch, observation)
-                .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
-            batch.push(b'\n');
+            tracing::debug!(
+                lens = %observation.lens_name,
+                data = %observation.data,
+                "telemetry lens sample"
+            );
         }
-
-        roko_fs::log_rotation::append_jsonl_line_sync(&self.path, &batch, self.max_mb)?;
         Ok(())
     }
 }
@@ -76,16 +58,12 @@ impl TelemetryObservationSink for JsonlTelemetryObservationSink {
 /// server's cancellation token terminates the task during graceful shutdown.
 pub(crate) fn start_periodic_telemetry_observer(state: &AppState) -> JoinHandle<()> {
     let registry = Arc::new(default_registry(state.metrics_sink()));
-    let max_mb = state.load_roko_config().resources.log_rotation_max_mb;
-    let path = state.layout.telemetry_observations_path();
     let costs_path = state.layout.learn_dir().join("costs.jsonl");
     tracing::debug!(
-        path = %path.display(),
         interval_secs = DEFAULT_OBSERVATION_INTERVAL.as_secs(),
-        max_mb,
         "periodic telemetry observer started"
     );
-    let sink = Arc::new(JsonlTelemetryObservationSink::new(path, max_mb));
+    let sink = Arc::new(DebugLogTelemetryObservationSink);
 
     spawn_periodic_observer(
         registry,
@@ -129,7 +107,7 @@ fn spawn_periodic_observer(
             match tokio::task::spawn_blocking(move || sink.emit(&observations)).await {
                 Ok(Ok(())) => {}
                 Ok(Err(error)) => {
-                    tracing::warn!(%error, "periodic telemetry observation persist failed");
+                    tracing::warn!(%error, "periodic telemetry observation emit failed");
                 }
                 Err(error) => {
                     tracing::warn!(%error, "periodic telemetry observation task failed");
@@ -268,26 +246,5 @@ mod tests {
 
         assert!(registry_weak.upgrade().is_none());
         assert!(sink_weak.upgrade().is_none());
-    }
-
-    #[test]
-    fn jsonl_sink_persists_one_parseable_record_per_lens() {
-        let temp = tempfile::tempdir().expect("tempdir");
-        let path = temp.path().join("telemetry-observations.jsonl");
-        let sink = JsonlTelemetryObservationSink::new(&path, 100);
-        let observer = PeriodicObserver::new();
-        let registry = default_lenses();
-
-        sink.emit(&observer.observe(&registry)).expect("emit");
-
-        let contents = std::fs::read_to_string(path).expect("read telemetry JSONL");
-        let observations = contents
-            .lines()
-            .map(|line| serde_json::from_str::<TelemetryObservation>(line).expect("parse line"))
-            .collect::<Vec<_>>();
-        assert_eq!(observations.len(), 3);
-        assert_eq!(observations[0].lens_name, "token-usage");
-        assert_eq!(observations[1].lens_name, "latency");
-        assert_eq!(observations[2].lens_name, "cost");
     }
 }

@@ -1,6 +1,6 @@
 # Roko Integration Guide
 
-> **Implementation status (verified 2026-09-15):** IMPLEMENTED — the plan-execute-gate-persist loop works end-to-end. Graph is the sole execution engine (`PlanEngine::Graph`; `WorkflowEngine` retired by #276; its serializable contract types are in `roko-runtime::workflow_contract`; Runner-v2 retained as `--engine legacy`). `roko-serve` exposes ~376 canonical routes (~421 incl. aliases). `roko-gate` provides 19 gates in a 7-rung pipeline. All provider kinds, MCP passthrough, ACP, TUI, and GitHub integration are wired. See `.roko/GAPS.md` for remaining product residuals. The `WorkflowEngine` code diagram in Section 2 and the code example in Section 18 are preserved as historical reference; the production path is Graph-based.
+> **Implementation status (verified 2026-09-15):** IMPLEMENTED — the plan-execute-gate-persist loop works end-to-end. Graph is the sole execution engine (`PlanEngine::Graph`; `WorkflowEngine` retired by #276; its serializable contract types are in `roko-runtime::workflow_contract`; Runner-v2 retained as `--engine legacy`). `roko-serve` exposes the routes counted in `tools/http_route_inventory.snapshot.json`. `roko-gate` provides 19 gates in a 7-rung pipeline. All provider kinds, MCP passthrough, ACP, TUI, and GitHub integration are wired. See `.roko/GAPS.md` for remaining product residuals. The `WorkflowEngine` code diagram in Section 2 and the code example in Section 18 are preserved as historical reference; the production path is Graph-based.
 
 Roko is a self-developing agent toolkit: you describe work in plain English, and Roko generates
 an implementation plan, dispatches Claude agents to execute it, validates the result with a gate
@@ -75,11 +75,10 @@ cargo build -p roko-cli --release
 # Initialize .roko/ directory and write a starter roko.toml
 roko init
 
-# Capture work → draft a plan → execute it
-roko prd idea "Add input validation to the API handler"
-roko prd draft new "api-validation"
-roko prd plan api-validation
-roko plan run plans/api-validation/
+# Write a plan from a prompt → review it → execute it
+roko plan generate "Add input validation to the API handler"
+$EDITOR plans/add-input-validation-to-the-api-handler/tasks.toml
+roko run plans/add-input-validation-to-the-api-handler/
 
 # Watch progress in real time
 roko dashboard
@@ -152,12 +151,6 @@ into what happened.
   state/                Crash recovery
     state-snapshot.json Legacy runner checkpoint (deprecated; Graph uses state/graph/)
     events.json         Event log snapshot
-
-  prd/                  Product Requirements Documents
-    ideas/              Raw one-line ideas
-    drafts/             PRDs being written
-    published/          Promoted PRDs (trigger plan generation)
-    plans/              Generated implementation plans
 
   learn/                (see above)
   research/             Perplexity research artifacts
@@ -258,13 +251,13 @@ Source: `crates/roko-core/src/foundation.rs`.
 
 ## 3. Self-Hosting Workflow (End-to-End)
 
-This is how Roko develops itself: a ten-step loop from capturing an idea to a validated,
-committed implementation. Every command listed here exists in the CLI today.
+This is how Roko develops itself: an eight-step loop from a prompt to a validated, committed
+implementation. Every command listed here exists in the CLI today.
 
 ```
-idea → PRD → research → plan → execute → gate → learn → repeat
-  │                               │
-  └── roko prd idea/draft/plan    └── roko plan run
+prompt → plan → research → review → execute → gate → learn → repeat
+  │                                    │
+  └── roko plan generate               └── roko run plans/<slug>
 ```
 
 ### Prerequisites
@@ -291,88 +284,66 @@ roko init
 Creates `.roko/` with the standard directory layout and a starter `roko.toml` in the workspace
 root. Edit `roko.toml` to configure your providers (see Section 4) before proceeding.
 
-### Step 2: Capture a work item
+### Step 2: Write a plan from a prompt
+
+For a request longer than a sentence, write it to a file:
 
 ```bash
-roko prd idea "Wire knowledge store into CascadeRouter for model selection"
+cat > knowledge-informed-routing.md <<'EOF'
+Wire the durable knowledge store into CascadeRouter's model selection, so that
+routing can use what past runs learned about each model.
+EOF
+
+roko plan generate --from-file knowledge-informed-routing.md
 ```
 
-Creates a dated idea file in `.roko/prd/ideas/`. Ideas are lightweight — just a title and
-timestamp. Think of this as a post-it note you don't want to lose.
-
-```bash
-roko prd list   # view all ideas and PRDs
-```
-
-### Step 3: Draft a PRD
-
-```bash
-roko prd draft new "knowledge-informed-routing"
-```
-
-Launches a Claude agent that reads the idea, reads the current codebase via the code-intelligence
-MCP, and writes a structured PRD into `.roko/prd/drafts/knowledge-informed-routing.md`.
-
-The PRD includes a mandatory **Repository Grounding** section listing the specific files and
-types the implementation will touch. This grounding is injected as context when generating the
-plan in step 5, which dramatically reduces hallucinated references to nonexistent functions.
-
-### Step 4: Enrich with research (optional)
-
-```bash
-roko research enhance-prd knowledge-informed-routing
-```
-
-Launches a Perplexity research agent that queries for relevant prior art, papers, and API
-documentation, then appends a **Research** section to the draft PRD. Optional but significantly
-improves plan quality for novel subsystems.
-
-### Step 5: Review and promote the PRD
-
-```bash
-# Inspect the draft
-roko prd draft list
-
-# Edit if needed
-roko prd draft edit knowledge-informed-routing
-
-# Promote to published
-roko prd draft promote knowledge-informed-routing
-```
-
-Promoting moves the file to `.roko/prd/published/`. If `prd.auto_plan = true` in `roko.toml`,
-plan generation (step 6) triggers automatically via the `prd_publish_subscriber` background task
-in `roko serve`.
-
-### Step 6: Generate an implementation plan
-
-```bash
-roko prd plan knowledge-informed-routing
-```
-
-A Claude agent reads the published PRD (including the Repository Grounding section), reads the
-relevant source files, and produces a `plans/knowledge-informed-routing/tasks.toml` with a DAG
-of implementation tasks.
+An agent reads the request and the relevant source files and writes
+`plans/knowledge-informed-routing/` (the file's name becomes the plan's slug): a `tasks.toml`
+with a DAG of implementation tasks, and a `plan.md` with the narrative. Nothing runs. For a
+one-line request, `roko plan generate "<prompt>"` works the same way, and the slug comes from
+the prompt's words. `--context <path>` adds files, directories or globs to the planner's
+prompt.
 
 Each task in the TOML has:
 - `id` — stable identifier for resumption
 - `title` — human-readable description
+- `description` — the implementation instruction given to the agent
+- `files` — the files the task may touch
 - `depends_on` — list of task ids that must complete first
-- `prompt` — the implementation instruction given to the agent
+- `[[task.verify]]` — the commands that prove the task is done
 
-Validate the plan without executing:
+### Step 3: Enrich with research (optional)
+
+```bash
+roko research enhance-plan knowledge-informed-routing
+```
+
+An agent reworks `plan.md` and `tasks.toml` in place with research-backed techniques: finer
+task decomposition, exact file and line context for each task, runnable verify commands, and
+the cheapest suitable model for each task. `roko research enhance-tasks
+knowledge-informed-routing` does the same for `tasks.toml` alone. To ground the plan in outside
+research, run `roko research topic "<topic>"` first and pass its report to `roko plan generate`
+with `--context`.
+
+### Step 4: Review and edit the plan
+
+The plan is plain files: change the task wording, the files a task may touch, the dependencies
+or the verify commands as you like. Then lint it and preview the run:
 
 ```bash
 roko plan validate plans/knowledge-informed-routing/
+roko plan run plans/knowledge-informed-routing/ --dry-run   # tasks and their order; runs nothing
 ```
 
-### Step 7: Execute the plan
+### Step 5: Execute the plan
 
 ```bash
-roko plan run plans/knowledge-informed-routing/ --engine legacy  # deprecated; Graph is the default
+roko run plans/knowledge-informed-routing/
 ```
 
-This starts the Graph execution engine (`crates/roko-cli/src/graph_execution/`). For each task:
+This is the same run as `roko plan run plans/knowledge-informed-routing/`, which also takes
+every plan-run option. It starts the Graph execution engine
+(`crates/roko-cli/src/graph_execution/`). For each task:
 
 1. Build the 9-layer system prompt via `PromptAssemblyService`
 2. Route to a model via `CascadeRouter`
@@ -384,17 +355,19 @@ This starts the Graph execution engine (`crates/roko-cli/src/graph_execution/`).
 
 Progress is visible in real time on the TUI.
 
-### Step 8: Resume if interrupted
+`roko run --plan "<prompt>"` does steps 2 and 5 in one command: it writes the plan, shows it on
+a terminal, and asks before running it (`--yes` skips the question).
+
+### Step 6: Resume if interrupted
 
 ```bash
-roko plan run plans/knowledge-informed-routing/ \
-  --engine legacy  # deprecated; Graph is the default --resume-plan
+roko plan run plans/knowledge-informed-routing/ --resume-plan
 ```
 
-The unified `.roko/state/state-snapshot.json` checkpoint is written atomically after each
-phase transition. Resumption restores the exact pipeline state so work is never duplicated.
+The Graph engine checkpoints each plan under `.roko/state/graph/<plan>/` after every task.
+Resuming continues from the checkpoint, so tasks that passed stay done.
 
-### Step 9: Watch progress
+### Step 7: Watch progress
 
 ```bash
 roko dashboard
@@ -412,13 +385,13 @@ Opens the interactive ratatui TUI. F1–F10 cycle through tabs:
 | F6 | Config | Config editor / effective config view |
 | F7 | Inspect | Signal DAG inspector, episode replay |
 | F8 | Marketplace | Job browser, creation, assignment |
-| F9 | Atelier | PRD workshop, plan progress |
-| F10 | Learning | Cascade router, model routing, efficiency |
+| F9 | Learning | Cascade router, model routing, efficiency |
+| F10 | Providers | Provider health, cost, latency, circuit-breaker state |
 
 The TUI uses a file watcher (`notify::RecommendedWatcher`) to pick up changes to `.roko/`
 without polling. Updates appear in under 250 ms.
 
-### Step 10: Inspect learning state
+### Step 8: Inspect learning state
 
 ```bash
 roko learn all          # full dump
@@ -441,7 +414,7 @@ These are the sections you need to set correctly before anything works. Get thes
 
 ### 4.1 [project]
 
-**Why this matters**: The project name appears in logs, episode records, and PRD metadata. The
+**Why this matters**: The project name appears in logs, episode records, and plan metadata. The
 `root` and `fresh_base_branch` fields tell the orchestrator where your code lives and which git
 branch to use as a baseline when creating fresh worktrees for isolated task execution.
 
@@ -466,18 +439,11 @@ fresh_base_branch = "main"   # git branch for fresh worktree creation, default: 
 </details>
 
 <details>
-<summary>[prd] — PRD lifecycle settings</summary>
+<summary>[prd] — removed</summary>
 
-**Why this matters**: Setting `auto_plan = true` with `roko serve` running means you never have
-to manually run `roko prd plan` — promoting a PRD automatically queues the plan generation.
-
-```toml
-[prd]
-auto_plan = false   # bool: auto-generate plan when a PRD is promoted, default: false
-```
-
-When `auto_plan = true`, `roko serve` listens for PRD publish events and triggers
-`roko prd plan <slug>` automatically via the `prd_publish_subscriber` background task.
+The `[prd]` section (`auto_plan`) configured the PRD pipeline, which is gone: plans come
+straight from a prompt (`roko plan generate` or `roko run --plan`). Roko drops an old `[prd]`
+section with a warning, so you can delete it from `roko.toml`.
 
 </details>
 
@@ -547,18 +513,16 @@ force_tier = "focused"         # pin to a complexity tier
 <details>
 <summary>CaMeL dual-LLM isolation (SAFE-07)</summary>
 
-The `data_llm` section enables CaMeL-style dual-LLM isolation: untrusted content (e.g., web
-search results, user-provided data) is processed by a smaller isolated model before being
-passed to the main agent. This prevents prompt injection from untrusted sources.
+`[agent.data_llm]` configures a separate, tool-less model that reads untrusted tool output (MCP,
+plugin, web-search, retrieval and network tool results) for every agent roko builds for an API
+provider and for ACP's tool loops, so the main model sees only the extracted summary and facts, or
+a notice that they were withheld. It cannot cover CLI providers, which run their own tool loops.
 
 ```toml
 [agent.data_llm]
-model = "claude-haiku-3-5"   # smaller model for untrusted content isolation
-max_tokens = 4096
-temperature = 0.0
-strip_tool_calls = true      # Data LLM cannot produce tool calls
-sanitize_input = true        # strip known injection patterns before sending
-# output_schema = { ... }    # optional JSON Schema for Data LLM output validation
+model = "claude-haiku-4-5"   # a model roko calls over an API
+timeout_ms = 30000
+max_input_bytes = 32768
 ```
 
 </details>
@@ -676,19 +640,15 @@ default, Roko runs `cargo build` (rung 0), `cargo clippy` (rung 1), `cargo test`
 a `git diff` sanity check (rung 3). If any gate fails, the orchestrator retries up to
 `max_iterations` times before giving up. Gates are what prevent agents from shipping broken code.
 
-For non-Rust projects, you can replace the default gates with custom shell commands via
-`[gates.domain_gates]`.
+For non-Rust projects, declare your own gate commands as `[[gates.rungs]]` (see Section 11),
+and give each plan task its own `verify` commands. (`[gates.domain_gates]` was removed: no gate
+ran its commands.)
 
 ```toml
 [gates]
 clippy_enabled = true    # run clippy/lint gate, default: true
 skip_tests = false       # skip test gate entirely, default: false
 max_iterations = 3       # max gate retry iterations before giving up, default: 3
-
-# Per-domain gate overrides (keys are domain labels):
-[gates.domain_gates]
-research = ["shell:true"]    # research tasks skip compile/test
-docs = ["shell:true"]        # docs tasks skip compile/test
 ```
 
 See [Section 11: Gate Pipeline Configuration](#11-gate-pipeline-configuration) for the full
@@ -770,9 +730,7 @@ knowledge_error_patterns = true    # error signature pattern matching, default: 
 learning_min_occurrences = 2       # min occurrences before promoting rules, default: 2
 file_intel_max_entries = 15        # max file-intel entries per task, default: 15
 warning_max_entries = 5            # max warning entries per task, default: 5
-replan_on_gate_failure = true      # trigger plan revision on repeated gate failure
-replan_max_per_plan = 2            # max gate-failure replans per plan, default: 2
-replan_gate_attempts = 3           # consecutive failures before replan, default: 3
+replan_on_gate_failure = true      # LLM reflection on each failed verify (no plan revision)
 use_lookahead_router = false       # enable lookahead cost-saving tier downgrades
 lookahead_threshold = 0.7          # success probability floor for downgrade, default: 0.7
 ```
@@ -1154,8 +1112,8 @@ webhooks.
 
 ```toml
 [[subscriptions]]
-template = "prd-publisher"       # agent template name
-trigger = "prd.published"        # signal kind glob to match
+template = "pr-reviewer"         # agent template name
+trigger = "github:pull_request:*" # signal kind glob to match
 concurrency_limit = 1            # max concurrent dispatches, default: 1
 cooldown_secs = 0                # min interval between dispatches, default: 0
 debounce_ms = 0                  # debounce window in milliseconds, default: 0
@@ -1869,13 +1827,16 @@ Custom gates wrap any shell command. This is how you adapt the gate pipeline for
 projects or add security checks:
 
 ```toml
-[gates.domain_gates]
-# Domain "security" runs cargo audit instead of clippy:
-security = ["shell:cargo audit --deny warnings"]
-
-# Domain "research" skips compile/test entirely:
-research = ["shell:true"]
+# Every plan task runs the required rungs after its own verify commands.
+[[gates.rungs]]
+name = "audit"
+command = "cargo audit --deny warnings"
+timeout_secs = 120
+required = true
 ```
+
+`[gates.domain_gates]` was removed (gap-7a3527): no gate ran its commands. Give the plan tasks
+of a domain their own `verify` commands instead.
 
 In `WorkflowRunConfig` (programmatic API):
 
@@ -1916,19 +1877,17 @@ gate_pass_rate_floor = 0.65   # never skip rungs unless pass rate exceeds this
 
 ### Gate failure replanning
 
-When gate failures exhaust the autofix budget and the iteration limit,
-`learning.replan_on_gate_failure` triggers a plan revision — the system generates a new
-implementation plan with the gate failure context injected as additional requirements:
+Graph runs never revise a plan on gate failure: a failed task is retried up to its
+`max_retries`. With `learning.replan_on_gate_failure = true` and a cheap model available, each
+failed verify also gets an LLM reflection, saved to `.roko/learn/post-gate-reflections.json`.
 
 ```toml
 [learning]
 replan_on_gate_failure = true
-replan_max_per_plan = 2      # max plan revisions per plan
-replan_gate_attempts = 3     # consecutive failures before revision triggers
 ```
 
-The replan emits `RokoEvent::PlanRevision` on the global event bus, which triggers a new
-planning agent pass.
+`learning.replan_max_per_plan` and `learning.replan_gate_attempts` were removed (gap-7a3527):
+with no plan revision, they limited nothing.
 
 ---
 
@@ -2174,19 +2133,6 @@ event = "pull_request.opened"
 The webhook endpoint is `POST /webhooks/github`. Roko verifies the
 `X-Hub-Signature-256` header using `webhooks.github.secret`.
 
-### PRD auto-plan subscription
-
-If `prd.auto_plan = true` and `roko serve` is running, a built-in subscriber fires on
-every PRD publish event — no manual subscription entry needed:
-
-```toml
-[prd]
-auto_plan = true
-
-[serve]
-auto_orchestrate = true
-```
-
 ---
 
 ## 14. HTTP Control Plane
@@ -2214,9 +2160,8 @@ can be protected with `serve.auth`.
 | `POST /api/agents/:id/message` | Send message to a running agent |
 | `GET /api/events` | SSE stream of `RuntimeEvent` |
 | `GET /api/learn/*` | Learning state inspection |
-| `GET /api/prds` | PRD list |
-| `POST /api/prds/ideas` | Create a PRD idea |
-| `POST /api/prds/:slug/plan` | Generate plan from PRD |
+| `POST /api/plans/generate` | Write a plan from `{"prompt": "..."}`; poll `GET /api/operations/:id` |
+| `GET`/`PUT /api/plans/:id/source` | Read or replace a plan's `tasks.toml` (validated before saving) |
 | `GET /api/gates/summary` | Gate pipeline summary |
 | `GET /api/gates/history` | Gate history |
 | `GET /api/bench/run` | Benchmark endpoint |
@@ -2283,12 +2228,11 @@ The sidecar (`roko-agent-server`) exposes 13 routes including:
 
 ### Resuming after interruption
 
-The executor checkpoint is written atomically after every phase transition. If a plan run
-is interrupted (Ctrl-C, process crash, network failure), resume with:
+The Graph engine checkpoints each plan under `.roko/state/graph/<plan>/` after every task. If
+a plan run is interrupted (Ctrl-C, process crash, network failure), resume with:
 
 ```bash
-roko plan run plans/my-plan/ \
-  --engine legacy  # deprecated; Graph is the default --resume-plan
+roko plan run plans/my-plan/ --resume-plan
 ```
 
 The checkpoint restores the exact pipeline state — phase, iteration count, accumulated review
@@ -2311,9 +2255,9 @@ When gates fail the orchestrator tries three recovery strategies in order:
 1. **Autofix** — spawn a fast model (`conductor.auto_fix_model`) with the gate failure output
    injected as context. Attempts up to `conductor.max_auto_fix_attempts` times.
 
-2. **Replan** — when autofix budget is exhausted and `learning.replan_on_gate_failure = true`,
-   a new planning agent pass runs with the gate failure context. Happens at most
-   `learning.replan_max_per_plan` times per plan.
+2. **Retry** — Graph runs do not replan: the task is retried up to its `max_retries`, and with
+   `learning.replan_on_gate_failure = true` each failed verify gets an LLM reflection (see
+   *Gate failure replanning*).
 
 3. **Halt** — if replan budget is also exhausted, the task is marked failed and the plan is
    halted. Inspect with `roko plan show <plan-id>`.
@@ -2346,11 +2290,8 @@ Roko does not have a built-in rollback command — use standard git operations.
 If the executor checkpoint is corrupt:
 
 ```bash
-# Remove the corrupt checkpoint
-rm .roko/state/state-snapshot.json
-
-# Restart the plan from the beginning
-roko plan run plans/my-plan/ --engine legacy  # deprecated; Graph is the default
+# Archive the old run state and restart the plan from the beginning
+roko plan run plans/my-plan/ --fresh
 ```
 
 To skip already-completed tasks, use `roko plan show` to inspect which task IDs completed,

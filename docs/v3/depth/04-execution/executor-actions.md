@@ -77,7 +77,7 @@ The composition uses the 9-layer prompt builder:
 
 1. Core identity and capabilities
 2. Role-specific instructions
-3. Plan context (PRD, task description)
+3. Plan context (plan.md, task description)
 4. Learned context (skills, playbooks, knowledge)
 5. Feedback context (gate failures, review feedback)
 6. Operating constraints (budget, timeout, tool restrictions)
@@ -138,7 +138,7 @@ controller (`drive_controller`) outside the DAG:
 | Documentation | After review approval | Launch scribe agent |
 | Merge | After documentation | Enqueue in `MergeQueue` |
 | Snapshot | Periodically | Write `GraphSnapshotV2` to disk |
-| Cleanup | On terminal | `GuaranteedFinallyController` cleanup |
+| Cleanup | On terminal | `run_one_plan` writes the terminal checkpoint |
 
 These actions exist outside the graph because they operate on the
 execution context (worktrees, merge queue, snapshots) rather than on task
@@ -155,8 +155,8 @@ data.
 | `RunGate { plan_id, rung }` | `plan.gate` cell | In-graph |
 | `RunVerify { plan_id }` | Controller verify step | Controller-side |
 | `MergeBranch { plan_id }` | Controller merge step | Controller-side |
-| `FailPlan { plan_id, reason }` | `GuaranteedFinallyController` | Controller-side |
-| `CompletePlan { plan_id }` | `TerminalReceipt` | Controller-side |
+| `FailPlan { plan_id, reason }` | Terminal checkpoint write (`run_one_plan`) | Controller-side |
+| `CompletePlan { plan_id }` | Terminal checkpoint write (`run_one_plan`) | Controller-side |
 | `PausePlan { plan_id }` | Cancellation token | Controller-side |
 | `ResumePlan { plan_id }` | Snapshot restore | Controller-side |
 | `Reorder { plan_id, position }` | Cross-plan DAG recompute | Controller-side |

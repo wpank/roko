@@ -17,7 +17,6 @@ pub(crate) async fn cmd_dashboard(
     // Skip the shared lock when a server owns the workspace (it is the only
     // writer and operates atomically); otherwise take the shared lock as usual.
     let _lock = roko_cli::serve_client::read_lock_unless_served(&workdir)?;
-    let server_owns = _lock.is_none();
 
     let initial_page = page.as_deref().map(|page| {
         parse_dashboard_page(page).ok_or_else(|| {
@@ -30,23 +29,10 @@ pub(crate) async fn cmd_dashboard(
     let initial_page = initial_page.transpose()?;
 
     if !text && !list_pages && std::io::stdout().is_terminal() {
-        // Resolve which hub to connect the TUI to:
-        //   1. Caller-provided hub (e.g. from `roko plan run` in the same process).
-        //   2. IPC mirror when a live `roko serve` owns the workspace and no
-        //      caller hub was supplied — this lets `roko dashboard` show the
-        //      server's live runs without being blocked by the exclusive lock.
-        //   3. No hub → static file-polling TUI.
-        let ipc_hub: Option<roko_cli::state_hub::SharedStateHub> =
-            if state_hub.is_none() && server_owns {
-                roko_cli::state_hub_ipc::try_connect_hub_ipc(&workdir).await
-            } else {
-                None
-            };
-
-        let effective_hub = state_hub.as_ref().or(ipc_hub.as_ref());
+        let hub = dashboard_hub(&workdir, state_hub).await;
 
         // Use the Mori-style interactive TUI with 60fps event loop.
-        let mut app = if let Some(hub) = effective_hub {
+        let mut app = if let Some(hub) = &hub {
             App::new_connected_with_page(&workdir, initial_page, hub)
         } else {
             App::new_with_page(&workdir, initial_page)
@@ -68,6 +54,20 @@ pub(crate) async fn cmd_dashboard(
     Ok(EXIT_SUCCESS)
 }
 
+/// The hub the dashboard TUI follows: the caller's (e.g. from `roko plan run`
+/// in the same process), else a mirror of the hub that `roko serve`, or a
+/// `roko plan run` in another terminal, serves on `.roko/runtime/hub.sock`
+/// (gap-6533bf). `None` leaves the TUI polling files.
+async fn dashboard_hub(
+    workdir: &Path,
+    state_hub: Option<roko_cli::state_hub::SharedStateHub>,
+) -> Option<roko_cli::state_hub::SharedStateHub> {
+    match state_hub {
+        Some(hub) => Some(hub),
+        None => roko_cli::state_hub_ipc::try_connect_hub_ipc(workdir).await,
+    }
+}
+
 pub(crate) async fn cmd_dashboard_snapshot(
     cli: &Cli,
     workdir: Option<PathBuf>,
@@ -87,6 +87,7 @@ pub(crate) async fn cmd_dashboard_snapshot(
             output_dir: snapshot_dir.to_path_buf(),
             tabs: None,
             label: Some("dashboard --snapshot".to_string()),
+            ansi: false,
         },
     )?;
 
@@ -175,24 +176,6 @@ pub(crate) fn format_duration(ms: f64) -> String {
     }
 }
 
-pub(crate) async fn load_task_metrics(path: PathBuf) -> Vec<TaskMetric> {
-    let Ok(text) = tokio::fs::read_to_string(&path).await else {
-        return Vec::new();
-    };
-
-    let mut records = Vec::new();
-    for line in text.lines() {
-        let line = line.trim();
-        if line.is_empty() {
-            continue;
-        }
-        if let Ok(metric) = TaskMetric::from_jsonl(line) {
-            records.push(metric);
-        }
-    }
-    records
-}
-
 pub(crate) async fn load_cfactor_history(path: PathBuf) -> Vec<CFactor> {
     let Ok(text) = tokio::fs::read_to_string(&path).await else {
         return Vec::new();
@@ -207,6 +190,8 @@ pub(crate) async fn load_cfactor_history(path: PathBuf) -> Vec<CFactor> {
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct CommandDashboardSnapshot {
     episodes: Vec<Episode>,
+    /// One record per settled attempt in the newest runs' attempt ledgers
+    /// (backlog 2126).
     task_metrics: Vec<TaskMetric>,
     headlines: Headlines,
     cfactor_history: Vec<CFactor>,
@@ -217,7 +202,7 @@ impl CommandDashboardSnapshot {
     async fn load(workdir: &Path) -> Result<Self> {
         let layout = RokoLayout::for_project(workdir);
         let episodes = EpisodeLogger::read_all_lossy(layout.episodes_path()).await?;
-        let task_metrics = load_task_metrics(layout.memory_dir().join("task-metrics.jsonl")).await;
+        let task_metrics = roko_cli::tui::dashboard::attempt_ledger_metrics(workdir);
         let cfactor_history =
             load_cfactor_history(workdir.join(".roko").join("learn").join("c-factor.jsonl")).await;
         let cfactor = cfactor_history.last().cloned();
@@ -315,7 +300,7 @@ impl CommandDashboardSnapshot {
             "Time-series learning signals from the current snapshot.",
             &[
                 format!(
-                    "focus: {} records across {} plans, {} pass rate",
+                    "focus: {} attempts across {} plans, {} first-attempt pass rate",
                     headlines.n_records,
                     headlines.n_plans,
                     format_percent(headlines.first_attempt_pass_rate)
@@ -428,4 +413,81 @@ pub(crate) async fn dashboard_output(
     list_pages: bool,
 ) -> Result<String> {
     render_dashboard_text(cli, workdir, page, list_pages).await
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use super::*;
+    use roko_cli::state_hub_ipc::start_hub_ipc_server;
+
+    /// gap-6533bf: with no `roko serve` in the workspace, a dashboard follows
+    /// the hub that a `roko plan run` in another terminal serves, and polls
+    /// files while nothing serves one.
+    #[tokio::test]
+    async fn dashboard_follows_the_hub_a_standalone_run_serves() {
+        // Under /tmp, so the socket path stays short.
+        let workdir = tempfile::Builder::new()
+            .prefix("dashboard_hub_")
+            .tempdir_in("/tmp")
+            .expect("tempdir");
+        assert!(dashboard_hub(workdir.path(), None).await.is_none());
+
+        let hub = roko_cli::state_hub::shared_state_hub();
+        hub.publish(roko_core::DashboardEvent::PlanStarted {
+            plan_id: "p1".into(),
+            tasks_total: 1,
+        });
+        let shutdown = tokio_util::sync::CancellationToken::new();
+        let server = start_hub_ipc_server(hub, workdir.path(), shutdown.clone()).expect("bind");
+
+        let mirror = dashboard_hub(workdir.path(), None)
+            .await
+            .expect("the dashboard follows the served hub");
+        assert!(mirror.current_snapshot().plans.contains_key("p1"));
+
+        shutdown.cancel();
+        server.await.expect("hub server task");
+    }
+
+    /// backlog 2126: the headline numbers come from the attempt ledger plan
+    /// runs write. One run of three verdicts, two of them passed, shows 3
+    /// attempts and a 67% first-attempt pass rate.
+    #[tokio::test]
+    async fn dashboard_headlines_come_from_attempt_verdicts() {
+        use roko_learn::telemetry::{
+            AttemptIdentity, AttemptKey, AttemptOutcome, AttemptVerdictRecord, TelemetryWriter,
+            TelemetryWriterConfig,
+        };
+
+        let workdir = tempfile::tempdir().expect("tempdir");
+        let run_dir = RokoLayout::for_project(workdir.path()).run_dir("run-1");
+        let writer = TelemetryWriter::spawn(&run_dir, TelemetryWriterConfig::default())
+            .expect("spawn the attempt writer");
+        for (task, outcome) in [
+            ("T1", AttemptOutcome::Passed),
+            ("T2", AttemptOutcome::GateFailed),
+            ("T3", AttemptOutcome::Passed),
+        ] {
+            let key = AttemptKey::new("run-1", "plan-a", task, 1);
+            let identity = AttemptIdentity::new(&key);
+            let mut verdict = AttemptVerdictRecord::settle(identity, outcome, true);
+            verdict.cost.billed_usd = Some(0.25);
+            assert!(writer.submit(verdict));
+        }
+        assert_eq!(writer.close().written, 3);
+
+        let snapshot = CommandDashboardSnapshot::load(workdir.path())
+            .await
+            .expect("load the dashboard snapshot");
+
+        assert_eq!(snapshot.headlines.n_records, 3);
+        let trends = snapshot.render_trends_page_text();
+        for line in [
+            "focus: 3 attempts across 1 plans, 66.7% first-attempt pass rate",
+            "first-attempt pass rate: 66.7%",
+            "avg cost per plan: $0.7500",
+        ] {
+            assert!(trends.contains(line), "{line}: {trends}");
+        }
+    }
 }

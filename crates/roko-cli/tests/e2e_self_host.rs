@@ -54,6 +54,7 @@ fn td(id: &str, deps: &[&str]) -> TaskDef {
         estimated_minutes: None,
         crates_touched: None,
         sequence: 0,
+        spec: Default::default(),
         hints: Default::default(),
     }
 }
@@ -136,53 +137,26 @@ fn snap(
 
 /// E16-T2: Offline front-half self-hosting smoke test.
 ///
-/// Proves the generative front-half of self-hosting without any network or
-/// LLM calls:
+/// Proves the front half of self-hosting without any network or LLM calls.
+/// A request becomes a plan (`roko run --plan --dry-run` or `roko plan
+/// generate`, which write `plans/<slug>/`); here the planner's output is
+/// placed by hand:
 ///
-/// 1. `prd::cmd_idea` writes the idea to ideas.md.
-/// 2. A PRD draft can be placed in the drafts directory (simulating `prd draft
-///    new`).
-/// 3. A tasks.toml placed in the plans directory (simulating `prd plan`) is
-///    parseable by `TasksFile::parse`.
-/// 4. `prd::cmd_status` reads the plans directory and reports non-zero plan and
-///    task counts in the footer (i.e., not all dashes).
+/// 1. The plan's tasks.toml parses with `TasksFile::parse`.
+/// 2. `plan validate` finds the one plan and no errors in it.
+/// 3. The plans index lists it.
+/// 4. Nothing is written under `.roko/prd`: the PRD pipeline is gone.
 #[test]
-fn prd_front_half_offline_smoke() {
-    use roko_cli::prd;
+fn plan_front_half_offline_smoke() {
     use roko_cli::task_parser::TasksFile;
-    use roko_cli::workspace_paths::{drafts_dir, plans_dir};
+    use roko_cli::workspace_paths::plans_dir;
 
     let dir = tempdir().unwrap();
     let workdir = dir.path();
 
-    // Step 1: prd idea appends to ideas.md.
-    prd::ensure_dirs(workdir).unwrap();
-    prd::cmd_idea(workdir, "Wire the self-hosting smoke test", false).unwrap();
-
-    let ideas_path = roko_cli::workspace_paths::ideas_path(workdir);
-    let ideas_content = fs::read_to_string(&ideas_path).unwrap();
-    assert!(
-        ideas_content.contains("Wire the self-hosting smoke test"),
-        "idea must appear in ideas.md"
-    );
-
-    // Step 2: Place a PRD draft (simulating `prd draft new`).
-    let slug = "smoke-test-prd";
-    let draft_path = drafts_dir(workdir).join(format!("{slug}.md"));
-    let draft_content = format!(
-        "---\nid: prd-{slug}\ntitle: Smoke Test PRD\nstatus: draft\nversion: 1\n\
-         created: 2026-08-03\nupdated: 2026-08-03\n---\n\
-         # Smoke Test PRD\n\n## Overview\nVerify the front-half pipeline works offline.\n\
-         ## Requirements\n- REQ-01: tasks.toml must parse.\n\
-         ## Acceptance criteria\n- [ ] Tasks are non-empty.\n"
-    );
-    fs::write(&draft_path, &draft_content).unwrap();
-    assert!(draft_path.exists(), "draft must exist on disk");
-
-    // Step 3: Place a tasks.toml in the plans directory (simulating `prd plan`).
-    // This mirrors what the strategist agent would generate.
-    let plans_root = plans_dir(workdir);
-    let plan_dir = plans_root.join(slug);
+    // A plan as the generator writes it: tasks.toml and plan.md.
+    let slug = "smoke-test-plan";
+    let plan_dir = plans_dir(workdir).join(slug);
     fs::create_dir_all(&plan_dir).unwrap();
     let tasks_toml_path = plan_dir.join("tasks.toml");
     let tasks_toml_content = format!(
@@ -191,7 +165,6 @@ plan = "{slug}"
 total = 2
 done = 0
 status = "ready"
-max_parallel = 1
 
 [[task]]
 id = "{slug}-T1"
@@ -200,7 +173,11 @@ description = "Wire feature A into the runtime."
 status = "ready"
 role = "implementer"
 tier = "focused"
-files = []
+files = ["src/feature_a.rs"]
+
+[[task.verify]]
+phase = "check"
+command = "test -f src/feature_a.rs"
 
 [[task]]
 id = "{slug}-T2"
@@ -209,56 +186,46 @@ description = "Cover feature A with unit tests."
 status = "ready"
 role = "implementer"
 tier = "focused"
-files = []
+files = ["tests/feature_a.rs"]
 depends_on = ["{slug}-T1"]
-"#,
-        slug = slug
+
+[[task.verify]]
+phase = "check"
+command = "test -f tests/feature_a.rs"
+"#
     );
     fs::write(&tasks_toml_path, &tasks_toml_content).unwrap();
-    assert!(tasks_toml_path.exists(), "tasks.toml must exist on disk");
+    fs::write(
+        plan_dir.join("plan.md"),
+        format!("---\nplan: {slug}\ntitle: Smoke test plan\n---\n\n# Smoke test plan\n"),
+    )
+    .unwrap();
 
-    // Step 3a: Verify tasks.toml is parseable by TasksFile::parse.
-    let parsed = TasksFile::parse(&tasks_toml_path)
-        .expect("tasks.toml produced by prd plan must parse without errors");
-    assert_eq!(parsed.meta.plan, slug, "meta.plan must match the PRD slug");
+    // Step 1: the plan parses.
+    let parsed = TasksFile::parse(&tasks_toml_path).expect("the plan's tasks.toml must parse");
+    assert_eq!(parsed.meta.plan, slug, "meta.plan must match the plan slug");
     assert_eq!(parsed.tasks.len(), 2, "plan must contain exactly 2 tasks");
-    assert_eq!(
-        parsed.tasks[0].id,
-        format!("{slug}-T1"),
-        "first task id must match"
-    );
     assert_eq!(
         parsed.tasks[1].depends_on,
         vec![format!("{slug}-T1")],
         "second task depends on first"
     );
 
-    // Step 4: prd status reads the plans directory and reports non-zero counts.
-    // Capture stdout to inspect the footer.
-    //
-    // cmd_status writes directly to stdout, so we run it and trust the absence
-    // of a panic as proof it succeeds, then separately validate the plans root
-    // contains what the status function would read.
-    prd::cmd_status(workdir, Some(&plans_root), false).unwrap();
+    // Step 2: `plan validate` checks the one plan and finds no error.
+    let report = roko_cli::plan_validate::validate_plans_dir(&plan_dir, None).unwrap();
+    assert_eq!(report.totals.plans_checked, 1, "{report:?}");
+    assert_eq!(report.totals.errors, 0, "{report:?}");
 
-    // Validate the plans root directly: at least one plan dir with tasks.toml.
-    let mut found_plans = 0u32;
-    let mut found_tasks = 0u32;
-    if let Ok(entries) = fs::read_dir(&plans_root) {
-        for entry in entries.flatten() {
-            let toml = entry.path().join("tasks.toml");
-            if toml.exists() {
-                found_plans += 1;
-                let content = fs::read_to_string(&toml).unwrap_or_default();
-                found_tasks += content.matches("status = ").count() as u32;
-            }
-        }
-    }
-    assert_eq!(found_plans, 1, "status must see exactly 1 plan");
+    // Step 3: the plans index lists the plan.
+    roko_cli::index::rebuild_plans_index(workdir).unwrap();
+    let index = fs::read_to_string(plans_dir(workdir).join("INDEX.md")).unwrap();
     assert!(
-        found_tasks >= 2,
-        "status must see at least 2 tasks (got {found_tasks})"
+        index.contains(slug),
+        "plans index must list {slug}:\n{index}"
     );
+
+    // Step 4: no PRD artifacts.
+    assert!(!workdir.join(".roko").join("prd").exists());
 }
 
 // ─── 1: Full pipeline — execute, gate-fail/retry, dashboard, persist, resume ─

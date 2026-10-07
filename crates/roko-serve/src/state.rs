@@ -11,6 +11,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
+#[cfg(feature = "relay")]
 use anyhow::Context as _;
 use arc_swap::ArcSwap;
 use base64::Engine;
@@ -21,6 +22,7 @@ use tokio::task::JoinHandle;
 use uuid::Uuid;
 
 use crate::service_factory::{ServiceConfig, ServiceFactory};
+use crate::showcase::after;
 use roko_agent::ModelCallService;
 use roko_core::config::schema::RokoConfig;
 use roko_core::config::serve::LiveAgentOutput;
@@ -44,6 +46,7 @@ use crate::dispatch::SubscriptionRegistry;
 use crate::event_bus::EventBus;
 use crate::runtime::CliRuntime;
 use crate::runtime::RunResult;
+#[cfg(feature = "chain")]
 use roko_chain::ChainClient;
 #[cfg(feature = "alloy-backend")]
 use roko_chain::alloy_impl::{AlloyChainClient, AlloyChainWallet};
@@ -226,6 +229,11 @@ pub struct RunHandle {
     pub status: OperationStatus,
     /// Final result payload once the run has completed.
     pub result: Option<RunResult>,
+    /// The run's verdict once it has completed: a gated run's own, or the
+    /// one its result gives (G42).
+    pub verdict: Option<RunState>,
+    /// Stops a gated run (`run_cancel`, 9115); an answer has none.
+    pub cancel: Option<CancelToken>,
     /// Background task driving the run.
     pub handle: JoinHandle<()>,
 }
@@ -242,19 +250,76 @@ pub struct PlanHandle {
     /// Multi-plan executions (future) would list every member plan id so that
     /// `active_run_for` can resolve the entry from any member's id.
     pub members: Vec<String>,
-    /// Current execution status.
-    pub status: OperationStatus,
+    /// Current execution status: `running` until the run's task records how
+    /// the run ended (G43).
+    pub status: PlanRunStatus,
     /// Background task driving the plan runner.
     pub handle: JoinHandle<()>,
     /// Cancel token for pausing / stopping the execution.
     pub cancel: CancelToken,
 }
 
-/// A tracked generic operation (PRD draft, research, etc.).
+impl PlanHandle {
+    /// Whether the run is still going: its task has not ended and it has not
+    /// recorded how the run ended.
+    #[must_use]
+    pub fn is_live(&self) -> bool {
+        !self.handle.is_finished() && !self.status.state.is_terminal()
+    }
+
+    /// The state the run reports. A task that ended without recording how
+    /// the run ended, because it panicked or was aborted, reports `failed`.
+    #[must_use]
+    pub fn state(&self) -> RunState {
+        if self.handle.is_finished() && !self.status.state.is_terminal() {
+            RunState::Failed
+        } else {
+            self.status.state
+        }
+    }
+}
+
+/// How a plan run stands. The run's task records the terminal state when the
+/// run ends, so `GET /api/plans/{id}/status` still answers for a run that is
+/// over (G43).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PlanRunStatus {
+    /// `running` until the run ends; then `succeeded`, `failed`,
+    /// `unverified` or `cancelled`.
+    pub state: RunState,
+    /// Why a failed run failed.
+    pub error: Option<String>,
+    /// When the run ended.
+    pub finished_at: Option<chrono::DateTime<chrono::Utc>>,
+}
+
+impl PlanRunStatus {
+    /// A run that is executing.
+    #[must_use]
+    pub const fn running() -> Self {
+        Self {
+            state: RunState::Running,
+            error: None,
+            finished_at: None,
+        }
+    }
+
+    /// A run that ended now in `state`, with the error of a failed run.
+    #[must_use]
+    pub fn ended(state: RunState, error: Option<String>) -> Self {
+        Self {
+            state,
+            error,
+            finished_at: Some(chrono::Utc::now()),
+        }
+    }
+}
+
+/// A tracked generic operation (plan generation, research, etc.).
 pub struct OperationHandle {
     /// Unique identifier for this operation.
     pub id: String,
-    /// Operation kind (e.g. `"prd_draft"`, `"research"`).
+    /// Operation kind (e.g. `"plan_generate:<slug>"`, `"research"`).
     pub kind: String,
     /// Current execution status.
     pub status: OperationStatus,
@@ -278,6 +343,136 @@ pub enum OperationStatus {
         /// Error description.
         error: String,
     },
+}
+
+/// The state of a run, in the words every run route reports.
+///
+/// Those routes are `GET /api/run/{id}/status`, `GET /api/plans/{id}/status`
+/// and `GET /api/runs/{run_id}/summary`. A run that has ended is `succeeded`,
+/// `failed`, `unverified` or `cancelled`, and only `succeeded` is a success.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RunState {
+    /// Accepted, and waiting for the active run to end.
+    Queued,
+    /// Executing.
+    Running,
+    /// Ended, and the gates that checked its work passed it.
+    Succeeded,
+    /// Ended in an error, or a gate rejected its work.
+    Failed,
+    /// Ended, but no gate checked its work (G42), so it is not a success.
+    Unverified,
+    /// Cancelled before it ended.
+    Cancelled,
+}
+
+impl RunState {
+    /// The state's word, as the run routes report it.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Queued => "queued",
+            Self::Running => "running",
+            Self::Succeeded => "succeeded",
+            Self::Failed => "failed",
+            Self::Unverified => "unverified",
+            Self::Cancelled => "cancelled",
+        }
+    }
+
+    /// Whether the run has ended.
+    #[must_use]
+    pub const fn is_terminal(self) -> bool {
+        !matches!(self, Self::Queued | Self::Running)
+    }
+
+    /// The state of a run that has ended, from whether it was cancelled,
+    /// whether it reported success, and the classes of the outcomes its
+    /// tasks ended with. The plan-run handle and the run summary both use it,
+    /// so the two never disagree: `cancelled` for a cancelled run, `failed`
+    /// when a task failed, `unverified` when a task ended unverified and none
+    /// failed, which is never a success (G42), and otherwise `succeeded` if
+    /// the run reported success, else `failed`.
+    #[must_use]
+    pub fn of_ended_run(
+        cancelled: bool,
+        succeeded: bool,
+        tasks: impl IntoIterator<Item = roko_core::dashboard_snapshot::TaskOutcomeClass>,
+    ) -> Self {
+        use roko_core::dashboard_snapshot::TaskOutcomeClass;
+
+        if cancelled {
+            return Self::Cancelled;
+        }
+        let mut unverified = false;
+        for class in tasks {
+            match class {
+                TaskOutcomeClass::Failed => return Self::Failed,
+                TaskOutcomeClass::Unverified => unverified = true,
+                _ => {}
+            }
+        }
+        if unverified {
+            Self::Unverified
+        } else if succeeded {
+            Self::Succeeded
+        } else {
+            Self::Failed
+        }
+    }
+}
+
+/// How long the handle of a plan run that ended stays in
+/// `AppState::active_plans`, answering `GET /api/plans/{id}/status`, before
+/// the handle GC drops it (G43).
+pub const FINISHED_PLAN_RUN_RETENTION_SECS: i64 = 60 * 60;
+
+/// How many plan runs may wait behind the live one. A run past this is
+/// refused with 409.
+pub const PLAN_RUN_QUEUE_CAPACITY: usize = 8;
+
+/// What starts a plan run: `POST /api/plans/{id}/execute` and `POST
+/// /api/plans/execute` start one at once, or queue it behind the live run
+/// (decision 9105).
+#[derive(Debug, Clone)]
+pub struct PlanRunSpec {
+    /// The id the route's 202 returned; the run takes it.
+    pub run_id: String,
+    /// The run's key in `active_plans`: the plan id of a single-plan run, the
+    /// run id of a plan-set run.
+    pub key: String,
+    /// The plan ids the run executes, in order.
+    pub members: Vec<String>,
+    /// The plan directory, or the plan-set directory, the run executes.
+    pub plan_dir: PathBuf,
+    /// Resume from the last checkpoint instead of starting fresh.
+    pub resume: bool,
+    /// A plan-set run's own options; `None` for a single-plan run.
+    pub plan_set: Option<PlanSetSpec>,
+    /// Where the run's request came from (9116).
+    pub origin: crate::runtime::RunOrigin,
+    /// The run's budget ceiling in USD, when its caller set one (9116).
+    pub max_usd: Option<f64>,
+}
+
+/// The options of a plan-set run.
+#[derive(Debug, Clone)]
+pub struct PlanSetSpec {
+    /// Run only these plan ids; `None` runs every plan under the target.
+    pub only_plans: Option<Vec<String>>,
+    /// How many independent plans may run at once.
+    pub max_parallel_plans: usize,
+}
+
+/// A plan run waiting for the live run to end. Queued runs start one at a
+/// time, oldest first (decision 9105).
+#[derive(Debug, Clone)]
+pub struct QueuedPlanRun {
+    /// What starts the run.
+    pub spec: PlanRunSpec,
+    /// When it was queued.
+    pub queued_at: chrono::DateTime<chrono::Utc>,
 }
 
 /// A recorded template run outcome used by the metrics summary endpoint.
@@ -392,19 +587,105 @@ pub struct FeedAgentCatalog {
 // LocalAccess
 // ---------------------------------------------------------------------------
 
+/// What a new browser session may do, and how long it lives (S11 §4.3).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SessionGrant {
+    /// The scope the session authenticates with.
+    pub scope: String,
+    /// Absolute lifetime in seconds; `None` lives as long as the server.
+    pub ttl_secs: Option<u64>,
+    /// Idle lifetime in seconds, slid by each use; `None` never idles out.
+    pub idle_ttl_secs: Option<u64>,
+    /// The passphrase generation that minted the session; `None` for a credential exchange.
+    pub generation: Option<String>,
+    /// Most live sessions of this scope; the oldest go first.
+    pub max_sessions: Option<usize>,
+}
+
+impl SessionGrant {
+    /// A launch-token or API-key exchange: `admin`, for as long as the server runs.
+    #[must_use]
+    pub fn admin() -> Self {
+        Self {
+            scope: "admin".to_string(),
+            ttl_secs: None,
+            idle_ttl_secs: None,
+            generation: None,
+            max_sessions: None,
+        }
+    }
+
+    /// A passphrase login (S11 §4.3): `showcase`, under the passphrase `generation`.
+    ///
+    /// Its lifetimes and the session cap come from `[showcase.session]`.
+    #[must_use]
+    pub fn showcase(
+        session: &roko_core::config::showcase::ShowcaseSessionConfig,
+        generation: Option<String>,
+    ) -> Self {
+        Self {
+            scope: crate::showcase::SHOWCASE_SCOPE.to_string(),
+            ttl_secs: Some(session.ttl_secs),
+            idle_ttl_secs: Some(session.idle_ttl_secs),
+            generation,
+            max_sessions: Some(session.max_sessions as usize),
+        }
+    }
+}
+
+/// One live browser session. The map that holds it is keyed by the hash of its id.
+#[derive(Debug, Clone)]
+struct SessionRecord {
+    scope: String,
+    created_at: chrono::DateTime<chrono::Utc>,
+    expires_at: Option<chrono::DateTime<chrono::Utc>>,
+    idle_ttl_secs: Option<u64>,
+    idle_expires_at: Option<chrono::DateTime<chrono::Utc>>,
+    generation: Option<String>,
+}
+
+impl SessionRecord {
+    /// Whether neither lifetime has run out at `now`.
+    fn live_at(&self, now: chrono::DateTime<chrono::Utc>) -> bool {
+        self.expires_at.is_none_or(|at| now < at) && self.idle_expires_at.is_none_or(|at| now < at)
+    }
+}
+
+/// What a session cookie names, as [`LocalAccess::authenticate_session`] finds it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SessionLookup {
+    /// A live session, with its scope and absolute expiry.
+    Live {
+        scope: String,
+        expires_at: Option<chrono::DateTime<chrono::Utc>>,
+    },
+    /// A session minted under a passphrase that has since rotated; its record is gone now.
+    Rotated,
+    /// No live session: unknown, ended or expired.
+    Missing,
+}
+
 /// Ephemeral local-access state for this server process.
 ///
-/// Holds an optional launch token (never persisted) and a set of live sessions.
-/// Session IDs are stored as SHA-256 hashes via [`crate::routes::middleware::hash_api_key`]
-/// so raw IDs are never retained in memory or logs.
+/// Holds an optional launch token (never persisted), the live sessions and the showcase
+/// passphrase hash. Session IDs are stored as SHA-256 hashes via
+/// [`crate::routes::middleware::hash_api_key`] so raw IDs are never retained in memory or logs.
+/// Each session carries a scope, its lifetimes and the passphrase generation that minted it
+/// (S11 §4.3); sessions do not survive a restart.
 ///
 /// The launch token comparison uses
 /// [`crate::routes::middleware::constant_time_eq`] to resist timing attacks.
 pub struct LocalAccess {
     /// SHA-256 hash of the optional launch token (never the raw token).
     launch_token_hash: Option<String>,
-    /// SHA-256 hashes of active session ids.
-    sessions: std::sync::Mutex<std::collections::HashSet<String>>,
+    /// Live sessions by the SHA-256 hash of their id.
+    sessions: std::sync::Mutex<HashMap<String, SessionRecord>>,
+    /// The showcase passphrase's Argon2id PHC string (`ROKO_SHOWCASE_PASSPHRASE_HASH`).
+    passphrase_hash: std::sync::RwLock<Option<String>>,
+    /// Passphrase verification behind a bounded queue, made on the first login (9323).
+    login: std::sync::OnceLock<crate::showcase::auth::PassphraseVerifier>,
+    /// Failed passphrase logins, per client address and in total (9325).
+    lockout: crate::showcase::lockout::LoginLockout,
 }
 
 impl LocalAccess {
@@ -415,7 +696,10 @@ impl LocalAccess {
     pub fn new(launch_token: Option<String>) -> Self {
         Self {
             launch_token_hash: launch_token.map(|t| crate::routes::middleware::hash_api_key(&t)),
-            sessions: std::sync::Mutex::new(std::collections::HashSet::new()),
+            sessions: std::sync::Mutex::new(HashMap::new()),
+            passphrase_hash: std::sync::RwLock::new(None),
+            login: std::sync::OnceLock::new(),
+            lockout: crate::showcase::lockout::LoginLockout::default(),
         }
     }
 
@@ -435,31 +719,136 @@ impl LocalAccess {
         )
     }
 
-    /// Create a new session and return its raw 64-hex-character ID.
+    /// Install the showcase passphrase's PHC string; an empty one counts as none.
+    ///
+    /// Sessions minted under another hash stop authenticating: rotating the secret revokes them.
+    pub fn set_passphrase_hash(&self, hash: Option<String>) {
+        let hash = hash.filter(|hash| !hash.trim().is_empty());
+        *self
+            .passphrase_hash
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = hash;
+    }
+
+    /// The showcase passphrase's PHC string, when one is installed.
+    pub fn passphrase_hash(&self) -> Option<String> {
+        self.passphrase_hash
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+    }
+
+    /// The passphrase verifier, made on first use with `concurrency` slots (S11 §4.3).
+    pub fn login_verifier(&self, concurrency: u32) -> &crate::showcase::auth::PassphraseVerifier {
+        self.login
+            .get_or_init(|| crate::showcase::auth::PassphraseVerifier::new(concurrency as usize))
+    }
+
+    /// The failed-login counters that block bursts of wrong passphrases (S11 §4.3).
+    pub fn login_lockout(&self) -> &crate::showcase::lockout::LoginLockout {
+        &self.lockout
+    }
+
+    /// `hex(sha256(PHC))[..16]` of the installed passphrase hash (S11 §4.3).
+    pub fn passphrase_generation(&self) -> Option<String> {
+        let hash = self.passphrase_hash()?;
+        let mut generation = crate::routes::middleware::hash_api_key(&hash);
+        generation.truncate(16);
+        Some(generation)
+    }
+
+    /// Create an `admin` session that lives as long as the server, and return its raw
+    /// 64-hex-character ID: a launch-token or API-key exchange.
     ///
     /// The raw ID is returned to the caller exactly once and is not stored;
     /// only its SHA-256 hash is retained so a dump of server state cannot
     /// replay sessions.
     pub fn create_session(&self) -> String {
+        self.create_scoped_session(&SessionGrant::admin(), chrono::Utc::now())
+    }
+
+    /// Create a session with `grant`'s scope, lifetimes and generation at `now`, and return its
+    /// raw ID.
+    ///
+    /// Expired sessions are dropped first; when the grant caps its scope, the oldest sessions of
+    /// that scope make room.
+    pub fn create_scoped_session(
+        &self,
+        grant: &SessionGrant,
+        now: chrono::DateTime<chrono::Utc>,
+    ) -> String {
         let a = Uuid::new_v4();
         let b = Uuid::new_v4();
         // {:032x} pads to exactly 32 hex chars per UUID = 64 chars total = 32 bytes.
         let id = format!("{:032x}{:032x}", a.as_u128(), b.as_u128());
-        let hash = crate::routes::middleware::hash_api_key(&id);
-        self.sessions
+        let record = SessionRecord {
+            scope: grant.scope.clone(),
+            created_at: now,
+            expires_at: grant.ttl_secs.and_then(|secs| after(now, secs)),
+            idle_ttl_secs: grant.idle_ttl_secs,
+            idle_expires_at: grant.idle_ttl_secs.and_then(|secs| after(now, secs)),
+            generation: grant.generation.clone(),
+        };
+        let mut sessions = self
+            .sessions
             .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .insert(hash);
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        sessions.retain(|_, session| session.live_at(now));
+        if let Some(cap) = grant.max_sessions {
+            let mut same_scope: Vec<(chrono::DateTime<chrono::Utc>, String)> = sessions
+                .iter()
+                .filter(|(_, session)| session.scope == grant.scope)
+                .map(|(hash, session)| (session.created_at, hash.clone()))
+                .collect();
+            same_scope.sort_unstable();
+            let excess = (same_scope.len() + 1).saturating_sub(cap.max(1));
+            for (_, hash) in same_scope.into_iter().take(excess) {
+                sessions.remove(&hash);
+            }
+        }
+        sessions.insert(crate::routes::middleware::hash_api_key(&id), record);
         id
+    }
+
+    /// Look up the session `session_id` names at `now`, sliding its idle expiry when it is live.
+    ///
+    /// A session minted under a passphrase generation other than the installed one is removed
+    /// and reported as [`SessionLookup::Rotated`].
+    pub fn authenticate_session(
+        &self,
+        session_id: &str,
+        now: chrono::DateTime<chrono::Utc>,
+    ) -> SessionLookup {
+        let generation = self.passphrase_generation();
+        let hash = crate::routes::middleware::hash_api_key(session_id);
+        let mut sessions = self
+            .sessions
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let Some(session) = sessions.get_mut(&hash) else {
+            return SessionLookup::Missing;
+        };
+        if !session.live_at(now) {
+            sessions.remove(&hash);
+            return SessionLookup::Missing;
+        }
+        if session.generation.is_some() && session.generation != generation {
+            sessions.remove(&hash);
+            return SessionLookup::Rotated;
+        }
+        session.idle_expires_at = session.idle_ttl_secs.and_then(|secs| after(now, secs));
+        SessionLookup::Live {
+            scope: session.scope.clone(),
+            expires_at: session.expires_at,
+        }
     }
 
     /// Return `true` when `session_id` matches a live session.
     pub fn session_valid(&self, session_id: &str) -> bool {
-        let hash = crate::routes::middleware::hash_api_key(session_id);
-        self.sessions
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .contains(&hash)
+        matches!(
+            self.authenticate_session(session_id, chrono::Utc::now()),
+            SessionLookup::Live { .. }
+        )
     }
 
     /// End the session for `session_id`.
@@ -472,6 +861,7 @@ impl LocalAccess {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .remove(&hash)
+            .is_some()
     }
 }
 
@@ -502,10 +892,29 @@ impl ListenerSecurity {
         self.protections.load(Ordering::Acquire) != 0
     }
 
+    fn bound_to_loopback(&self) -> bool {
+        (self.protections.load(Ordering::Acquire) & LISTENER_PROTECTED_BY_LOOPBACK) != 0
+    }
+
     fn protection_mask(bind: &str, auth_enabled: bool) -> u8 {
         (u8::from(crate::routes::bind_is_loopback(bind)) * LISTENER_PROTECTED_BY_LOOPBACK)
             | (u8::from(auth_enabled) * LISTENER_PROTECTED_BY_AUTH)
     }
+}
+
+/// What runs a loop's canary trace (S03 §4.7) for the admin canary route (5133).
+///
+/// It is roko-cli's canary writers and dry-run planner, which `roko serve`
+/// injects into [`AppState::loop_canary`], since roko-serve cannot depend on
+/// roko-cli.
+pub trait LoopCanaryRunner: Send + Sync {
+    /// Trace `loop_id`'s canary, dry, and append its `loop.canary` row to the
+    /// loop-audit ledger; the row.
+    ///
+    /// # Errors
+    ///
+    /// Why the loop has no canary here, or why the trace could not run.
+    fn run(&self, loop_id: &str) -> Result<roko_learn::loop_audit::ledger::CanaryRow, String>;
 }
 
 /// Shared server state, wrapped in `Arc` for handler access.
@@ -541,6 +950,7 @@ pub struct AppState {
     /// Event subscriptions loaded at startup.
     pub subscriptions: SubscriptionRegistry,
     /// Restart-safe relay subscription cursor, dispatch journal, and status.
+    #[cfg(feature = "relay")]
     pub(crate) subscription_relay: Arc<crate::subscription_relay::SubscriptionRelayRuntime>,
     /// Runtime bridge to CLI operations (run_once, status, dashboard).
     pub runtime: Arc<dyn CliRuntime>,
@@ -582,6 +992,10 @@ pub struct AppState {
     pub active_runs: RwLock<HashMap<String, RunHandle>>,
     /// Active plan executions.
     pub active_plans: RwLock<HashMap<String, PlanHandle>>,
+    /// Plan runs waiting for the live one to end, oldest first (decision
+    /// 9105). Changed only under the `active_plans` write lock, so starting
+    /// or queueing a run is one step; locked after `active_plans`.
+    pub plan_queue: std::sync::Mutex<VecDeque<QueuedPlanRun>>,
     /// Active generic operations.
     pub operations: RwLock<HashMap<String, OperationHandle>>,
     /// Agent template registry.
@@ -605,6 +1019,7 @@ pub struct AppState {
     /// Monotonic agent lifecycle observations committed before Lens delivery.
     pub agent_lifecycle: crate::agent_lifecycle::AgentLifecycleStore,
     /// Optional backend-neutral client used by registries and arenas.
+    #[cfg(feature = "chain")]
     pub chain_client: Option<Arc<dyn ChainClient>>,
     /// Optional concrete Alloy client for provider-specific routes/watchers.
     #[cfg(feature = "alloy-backend")]
@@ -613,8 +1028,10 @@ pub struct AppState {
     #[cfg(feature = "alloy-backend")]
     pub chain_wallet: Option<Arc<AlloyChainWallet>>,
     /// Restart-safe local registry lifecycle plus optional read-only chain indexer.
+    #[cfg(feature = "chain")]
     pub(crate) registries: crate::routes::registries::RegistryRuntime,
     /// Restart-safe authorized arena lifecycle and external settlement service.
+    #[cfg(feature = "chain")]
     pub(crate) arenas: crate::routes::arenas::ArenaRuntime,
     /// Restart-safe bounded meta-agent lineage and activation service.
     pub(crate) meta_agents: crate::routes::meta::MetaAgentRuntime,
@@ -662,6 +1079,9 @@ pub struct AppState {
     pub trigger_bindings: RwLock<HashMap<String, TriggerBinding>>,
     /// Long-lived trigger coordinator, initialized once server tasks are allowed.
     pub trigger_runtime: OnceCell<crate::trigger_runtime::TriggerRuntimeHandle>,
+    /// Runs a loop's canary for `POST /api/learn/loops/{id}/canary`; `roko
+    /// serve` sets it, and the route answers 503 without it (5133).
+    pub loop_canary: std::sync::OnceLock<Arc<dyn LoopCanaryRunner>>,
 
     /// Upstream mirage JSON-RPC URL for reverse proxy (`ROKO_MIRAGE_URL`).
     pub mirage_url: Option<String>,
@@ -672,6 +1092,7 @@ pub struct AppState {
     pub feed_agent_catalog: RwLock<FeedAgentCatalog>,
 
     /// Shared chain watcher state exposed via REST and SSE.
+    #[cfg(feature = "chain")]
     pub chain: Arc<roko_chain::chain_state::ChainState>,
 
     /// Runtime feed instances started at serve-time and queryable via
@@ -680,6 +1101,7 @@ pub struct AppState {
     /// Routes runtime feed output into the existing universal Pulse Bus.
     pub feed_bus_bridge: FeedBusBridge<roko_runtime::pulse_bus::PulseBus>,
     /// Persistent multi-agent group coordination runtime.
+    #[cfg(feature = "groups")]
     pub groups: crate::group_runtime::GroupRuntime,
 
     /// Optional shared secret that workers must present as the
@@ -697,10 +1119,22 @@ pub struct AppState {
     /// read by plan run handlers to forward the setting into each run.
     pub(crate) live_agent_output: AtomicBool,
 
-    /// Ephemeral local-access state: the optional launch token hash and the
-    /// set of active session hashes for this process lifetime.
+    /// Ephemeral local-access state: the optional launch token hash, the live
+    /// sessions with their scopes and lifetimes, and the showcase passphrase hash.
     /// Never persisted; reset on every server start.
     pub local_access: LocalAccess,
+
+    /// The showcase bundles the loader checked, loaded on first use and on an admin reload
+    /// (S10 §4.5).
+    pub(crate) showcase_bundles: crate::routes::showcase::bundles::BundleCache,
+
+    /// When the last request arrived, and what keeps a showcase serve from its idle exit
+    /// (S11 §4.6, G10).
+    pub showcase_idle: crate::showcase::idle::IdleTracker,
+
+    /// Job execution service shared by `POST /api/jobs/{id}/cancel` and the
+    /// job runner, so a cancel reaches the run it targets (gap-2a9ed7).
+    pub job_execution: roko_core::JobExecutionService,
 }
 
 /// A tracked bench run with its background task handle.
@@ -832,6 +1266,15 @@ pub(crate) fn register_observability_foundation_metrics(registry: &MetricRegistr
     // Gate metrics (separate from the standard roko_gate_verdicts_total which
     // is already registered by register_standard_metrics)
     // -- no additional gate counter needed; the standard one covers it.
+
+    // Conductor evaluations and provider failures (gap-a95898): a hosted run's
+    // conductor and the provider health registry count into these.
+    for descriptor in [
+        roko_core::obs::schema::ROKO_CONDUCTOR_EVALUATIONS_TOTAL_DESCRIPTOR,
+        roko_core::obs::schema::ROKO_PROVIDER_FAILURES_TOTAL_DESCRIPTOR,
+    ] {
+        registry.register_counter(descriptor.name, descriptor.help, LabelSet::new());
+    }
 
     // LLM provider metrics
     registry.register_counter(
@@ -987,6 +1430,8 @@ impl AppState {
         let cancel = CancelToken::new();
         let supervisor = Arc::new(ProcessSupervisor::new(cancel.child()));
         let subscriptions = SubscriptionRegistry::load_from_project(&workdir, &roko_config);
+        // The bridge connects when a relay URL is configured (9220).
+        #[cfg(feature = "relay")]
         let subscription_relay = Arc::new(
             crate::subscription_relay::SubscriptionRelayRuntime::open(
                 &workdir,
@@ -1012,20 +1457,21 @@ impl AppState {
             .as_ref()
             .map(|client| Arc::clone(client) as Arc<dyn ChainClient>);
         #[cfg(not(feature = "alloy-backend"))]
-        let chain_client: Option<Arc<dyn ChainClient>> = {
-            if roko_config.chain.enabled && roko_config.chain.rpc_url.is_some() {
-                tracing::warn!(
-                    "[chain] RPC configuration ignored: rebuild roko with \
-                     `--features alloy-backend` to enable real chain access"
-                );
-            }
-            None
-        };
+        if roko_config.chain.enabled && roko_config.chain.rpc_url.is_some() {
+            tracing::warn!(
+                "[chain] RPC configuration ignored: rebuild roko with \
+                 `--features alloy-backend` to enable real chain access"
+            );
+        }
+        #[cfg(all(feature = "chain", not(feature = "alloy-backend")))]
+        let chain_client: Option<Arc<dyn ChainClient>> = None;
+        #[cfg(feature = "chain")]
         let registries = crate::routes::registries::RegistryRuntime::open(
             &workdir,
             &roko_config,
             chain_client.clone(),
         );
+        #[cfg(feature = "chain")]
         let arenas = crate::routes::arenas::ArenaRuntime::open(&workdir);
         let meta_agents = crate::routes::meta::MetaAgentRuntime::open(&workdir);
         let http_client = reqwest::Client::builder()
@@ -1040,6 +1486,8 @@ impl AppState {
             .map_err(|e| anyhow::anyhow!("build shared service bundle: {e}"))?;
         let model_call_service = service_bundle.model_call_service;
         let provider_health_registry = service_bundle.provider_health_registry;
+        // Provider failures count on `/metrics` too (gap-a95898).
+        provider_health_registry.attach_metrics(Arc::clone(&metrics));
         let cascade_journal = service_bundle.cascade_journal;
         let effective_models = roko_config.effective_models();
         // One cascade router for every surface (bug-012303), saved by
@@ -1163,6 +1611,7 @@ impl AppState {
         );
         let pulse_bus = Arc::new(roko_runtime::pulse_bus::PulseBus::new(16_384));
         let feed_bus_bridge = FeedBusBridge::new(Arc::clone(&pulse_bus));
+        #[cfg(feature = "groups")]
         let groups = crate::group_runtime::GroupRuntime::open(&workdir, &roko_config.groups)
             .map_err(|error| anyhow::anyhow!("open group runtime: {error}"))?;
         let jwks_providers = crate::jwks::jwks_providers_for(&roko_config.serve.auth);
@@ -1186,6 +1635,8 @@ impl AppState {
         let connectors = Arc::new(RwLock::new(roko_core::ConnectorRegistry::new()));
         let connector_runtime =
             Arc::new(roko_runtime::ConnectorRuntime::new(Arc::clone(&connectors)));
+        let jobs_root = workdir.join(".roko").join("jobs");
+        let job_execution = roko_core::JobExecutionService::new(jobs_root);
 
         Ok(Self {
             workdir,
@@ -1205,6 +1656,7 @@ impl AppState {
             sse_adapter: Arc::new(crate::adapters::SseAdapter::new(256)),
             runtime_event_logger,
             subscriptions,
+            #[cfg(feature = "relay")]
             subscription_relay,
             runtime,
             model_call_service,
@@ -1221,6 +1673,7 @@ impl AppState {
             latency_registry: LatencyRegistry::new(),
             active_runs: RwLock::new(HashMap::new()),
             active_plans: RwLock::new(HashMap::new()),
+            plan_queue: std::sync::Mutex::new(VecDeque::new()),
             operations: RwLock::new(HashMap::new()),
             templates: RwLock::new(template_registry),
             deploy_backend,
@@ -1237,12 +1690,15 @@ impl AppState {
             aggregator_cache: RwLock::new(HashMap::new()),
             heartbeats: RwLock::new(VecDeque::new()),
             agent_lifecycle,
+            #[cfg(feature = "chain")]
             chain_client,
             #[cfg(feature = "alloy-backend")]
             alloy_chain_client,
             #[cfg(feature = "alloy-backend")]
             chain_wallet,
+            #[cfg(feature = "chain")]
             registries,
+            #[cfg(feature = "chain")]
             arenas,
             meta_agents,
             agent_count: Arc::new(std::sync::atomic::AtomicU32::new(0)),
@@ -1262,6 +1718,7 @@ impl AppState {
             ephemeral_workspaces,
             trigger_bindings: RwLock::new(trigger_bindings),
             trigger_runtime: OnceCell::new(),
+            loop_canary: std::sync::OnceLock::new(),
             mirage_url: std::env::var("ROKO_MIRAGE_URL")
                 .ok()
                 .filter(|s| !s.is_empty()),
@@ -1270,15 +1727,20 @@ impl AppState {
                 .filter(|s| !s.is_empty())
                 .or_else(|| roko_config.relay.url.clone()),
             feed_agent_catalog: RwLock::new(FeedAgentCatalog::default()),
+            #[cfg(feature = "chain")]
             chain: Arc::new(roko_chain::chain_state::ChainState::default()),
             runtime_feeds,
             feed_bus_bridge,
+            #[cfg(feature = "groups")]
             groups,
             worker_callback_token: std::env::var("ROKO_WORKER_CALLBACK_TOKEN")
                 .ok()
                 .filter(|s| !s.is_empty()),
             live_agent_output: AtomicBool::new(false),
             local_access: LocalAccess::new(None),
+            showcase_bundles: crate::routes::showcase::bundles::BundleCache::default(),
+            showcase_idle: crate::showcase::idle::IdleTracker::new(chrono::Utc::now()),
+            job_execution,
         })
     }
 
@@ -1355,6 +1817,11 @@ impl AppState {
     /// changes when `roko.toml` is reloaded.
     pub fn configure_listener_security(&self, bind: &str, auth_enabled: bool) {
         self.listener_security.configure(bind, auth_enabled);
+    }
+
+    /// Whether the listener is bound to a loopback address, as recorded at startup.
+    pub fn listener_is_loopback(&self) -> bool {
+        self.listener_security.bound_to_loopback()
     }
 
     /// Record the effective live-agent-output level chosen at startup.
@@ -1816,14 +2283,31 @@ impl AppState {
             .write()
             .await
             .retain(|_, handle| !handle.handle.is_finished());
-        self.active_plans
-            .write()
-            .await
-            .retain(|_, handle| !handle.handle.is_finished());
+        // A plan run that ended keeps its handle for a while, so its status
+        // route still reports how it ended (G43).
+        let now = chrono::Utc::now();
+        self.active_plans.write().await.retain(|_, handle| {
+            handle.is_live()
+                || handle.status.finished_at.is_some_and(|finished_at| {
+                    now.signed_duration_since(finished_at).num_seconds()
+                        < FINISHED_PLAN_RUN_RETENTION_SECS
+                })
+        });
         self.operations
             .write()
             .await
             .retain(|_, handle| !handle.handle.is_finished());
+    }
+
+    /// The number of plan runs still going. The handle of a run that ended
+    /// stays in `active_plans` for a while (G43) and is not counted.
+    pub async fn live_plan_runs(&self) -> usize {
+        self.active_plans
+            .read()
+            .await
+            .values()
+            .filter(|handle| handle.is_live())
+            .count()
     }
 }
 
@@ -2077,6 +2561,66 @@ mod tests {
             access.session_valid(&id2),
             "second session must be unaffected"
         );
+    }
+
+    /// 9322: a session expires after its idle TTL unless used, and after its absolute TTL however
+    /// often it is used; each use slides the idle expiry.
+    #[test]
+    fn session_expires_after_idle_ttl() {
+        let access = LocalAccess::new(None);
+        let grant = SessionGrant {
+            scope: "showcase".to_string(),
+            ttl_secs: Some(100),
+            idle_ttl_secs: Some(10),
+            generation: None,
+            max_sessions: None,
+        };
+        let start = chrono::Utc::now();
+        let at = |secs| start + chrono::TimeDelta::seconds(secs);
+        let live = |id: &str, secs| {
+            matches!(
+                access.authenticate_session(id, at(secs)),
+                SessionLookup::Live { .. }
+            )
+        };
+
+        let idle = access.create_scoped_session(&grant, start);
+        assert!(live(&idle, 9));
+        // The use at 9 s slid the idle expiry to 19 s.
+        assert!(live(&idle, 18));
+        assert!(!live(&idle, 29));
+
+        let busy = access.create_scoped_session(&grant, start);
+        for secs in (5..100).step_by(5) {
+            assert!(live(&busy, secs), "{secs}");
+        }
+        assert_eq!(
+            access.authenticate_session(&busy, at(100)),
+            SessionLookup::Missing
+        );
+    }
+
+    /// A capped scope drops its oldest session to make room; other scopes keep theirs.
+    #[test]
+    fn session_cap_drops_the_oldest_of_its_scope() {
+        let access = LocalAccess::new(None);
+        let grant = SessionGrant {
+            max_sessions: Some(2),
+            ..SessionGrant::showcase(
+                &roko_core::config::showcase::ShowcaseSessionConfig::default(),
+                None,
+            )
+        };
+        let start = chrono::Utc::now();
+        let admin = access.create_session();
+        let first = access.create_scoped_session(&grant, start);
+        let second = access.create_scoped_session(&grant, start + chrono::TimeDelta::seconds(1));
+        let third = access.create_scoped_session(&grant, start + chrono::TimeDelta::seconds(2));
+
+        assert!(!access.session_valid(&first));
+        assert!(access.session_valid(&second));
+        assert!(access.session_valid(&third));
+        assert!(access.session_valid(&admin));
     }
 
     // ── (existing tests continue below) ─────────────────────────────────────

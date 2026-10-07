@@ -16,7 +16,8 @@ use crate::orchestrator::{ReplanStrategy, detect_cycle_nodes};
 use crate::task_accept::TaskAccept;
 use anyhow::{Context as _, Result};
 use roko_agent::safety::contract::{AgentContract, ContractLoadMode, RoleCapabilities};
-use roko_core::{OperatingFrequency, TaskDomain, TaskHints, TaskTier};
+use roko_core::config::schema::RokoConfig;
+use roko_core::{OperatingFrequency, TaskDomain, TaskHints, TaskTier, WorkspaceKind};
 use roko_gate::AcceptanceContract;
 use roko_std::denied_tools_for_role;
 use serde::{Deserialize, Deserializer, Serialize};
@@ -45,14 +46,11 @@ pub struct TaskMeta {
     pub estimated_total_minutes: u32,
     /// When `true`, skip the enrichment pipeline and transition directly to
     /// implementing.  Useful for pre-authored plans where tasks.toml already
-    /// contains complete definitions.
+    /// contains complete definitions. The plan's tasks run unenriched: their
+    /// prompts load no workspace map, `tasks.toml`, workspace context or plan
+    /// brief (bug-19ae56).
     #[serde(default)]
     pub skip_enrichment: bool,
-    /// Optional slug of the originating PRD.  Set by `roko prd plan` so that
-    /// `cmd_status` can link plans back to PRDs even when the directory name
-    /// does not match the slug.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub source_prd: Option<String>,
     /// What a run of this plan does when a task fails. Overrides
     /// `[conductor] plan_failure_policy`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -77,6 +75,12 @@ pub struct TaskMeta {
     /// run` sets it in a workspace that no gate can check (bug-1410e8).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub allow_unverified: bool,
+    /// What the plan's agents do with a tool call that acts on the outside
+    /// world (9131): `allow`, `stage` (hold it for a person's approval) or
+    /// `deny`. A chat host's `roko run` sets `stage`. Unset, each task's
+    /// domain decides.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub outbound: Option<roko_core::tool::OutboundPolicy>,
 }
 
 /// When a plan's verified tasks wait for a person's approval before their
@@ -179,6 +183,11 @@ pub struct TaskDef {
     /// execute in the order they were authored, not alphabetically.
     #[serde(default)]
     pub sequence: usize,
+    /// The TSS v1 fields (`goal`, `non_goals`, `assumptions`,
+    /// `open_questions` and `[task.hidden]`), each a top-level `[[task]]`
+    /// key.
+    #[serde(flatten)]
+    pub spec: TaskSpec,
     /// Optional routing, gate, prompt and scheduling hints, each a top-level
     /// `[[task]]` key (`category`, `complexity_band`, `rung`, ...).
     #[serde(flatten)]
@@ -190,6 +199,20 @@ impl TaskDef {
     #[must_use]
     pub fn effective_domain(&self, config_default: Option<&TaskDomain>) -> Option<TaskDomain> {
         self.domain.clone().or_else(|| config_default.cloned())
+    }
+
+    /// Where the task's attempts work (9134): its own `workspace`, else the
+    /// `workspace` of the `[profiles.<domain>]` entry for its domain under
+    /// `config`, else a git worktree.
+    #[must_use]
+    pub fn workspace_kind(&self, config: &RokoConfig) -> WorkspaceKind {
+        if let Some(kind) = self.hints.workspace {
+            return kind;
+        }
+        self.effective_domain(config.project.default_domain.as_ref())
+            .and_then(|domain| config.domain_profile(&domain))
+            .and_then(|profile| profile.workspace)
+            .unwrap_or_default()
     }
 
     /// Whether the task declares planner-written acceptance tests
@@ -222,17 +245,61 @@ impl TaskDef {
         format!("\n## Specification\n{}\n", body.trim_end())
     }
 
+    /// The task's TSS v1 fields as prompt sections, each only when set:
+    /// `## Goal`, `## Non-goals`, `## Assumptions`, and `## Hidden tests`
+    /// with the hook's interface and properties. The hook restates the spec,
+    /// so the agent sees it; its suite is never shown.
+    #[must_use]
+    pub fn tss_sections(&self) -> String {
+        let spec = &self.spec;
+        let mut out = String::new();
+        let goal = spec.goal.as_deref().map(str::trim).unwrap_or_default();
+        if !goal.is_empty() {
+            out.push_str("\n## Goal\n");
+            out.push_str(goal);
+            out.push('\n');
+        }
+        let lists = [
+            ("Non-goals", &spec.non_goals),
+            ("Assumptions", &spec.assumptions),
+        ];
+        for (heading, items) in lists {
+            if items.is_empty() {
+                continue;
+            }
+            out.push_str("\n## ");
+            out.push_str(heading);
+            out.push('\n');
+            for item in items {
+                out.push_str("- ");
+                out.push_str(item);
+                out.push('\n');
+            }
+        }
+        if let Some(hidden) = &spec.hidden
+            && (!hidden.interface.is_empty() || !hidden.properties.is_empty())
+        {
+            out.push_str("\n## Hidden tests\nA hidden test suite checks this task.\n");
+            for item in &hidden.interface {
+                out.push_str("- Interface: `");
+                out.push_str(item);
+                out.push_str("`\n");
+            }
+            for item in &hidden.properties {
+                out.push_str("- Property: ");
+                out.push_str(item);
+                out.push('\n');
+            }
+        }
+        out
+    }
+
     /// The hints this task sets that `plan run` parses but does not act on
     /// yet, by `tasks.toml` key.
     #[must_use]
     pub fn unused_hints(&self) -> Vec<&'static str> {
         let hints = &self.hints;
         [
-            ("quality_profile", hints.quality_profile.is_some()),
-            ("context_weight", hints.context_weight.is_some()),
-            ("skills", hints.skills.is_some()),
-            ("plan_section", hints.plan_section.is_some()),
-            ("research_before_edit", hints.research_before_edit.is_some()),
             ("parallel_group", hints.parallel_group.is_some()),
             ("exclusive_files", hints.exclusive_files.is_some()),
             ("tags", hints.tags.is_some()),
@@ -302,6 +369,8 @@ struct TaskDefSerde {
     #[serde(default)]
     pub crates_touched: Option<Vec<String>>,
     #[serde(flatten)]
+    pub spec: TaskSpec,
+    #[serde(flatten)]
     pub hints: TaskHints,
 }
 
@@ -337,6 +406,7 @@ impl From<TaskDefSerde> for TaskDef {
             estimated_minutes: raw.estimated_minutes,
             crates_touched: raw.crates_touched,
             sequence: 0, // stamped by TasksFile::parse_str after deserialization
+            spec: raw.spec,
             hints: raw.hints,
         };
         task.apply_role_tool_defaults();
@@ -671,40 +741,6 @@ impl TaskDef {
                 .all(|dep| completed_plans.contains(dep))
     }
 
-    /// Build a focused prompt asking the agent to fix a specific verify failure.
-    ///
-    /// # Arguments
-    /// * `original_prompt` – the full prompt that was sent for the original task run
-    /// * `failing_phase`   – phase string of the step that failed ("compile", "test", …)
-    /// * `failing_command` – the shell command that failed
-    /// * `error_output`    – captured stdout+stderr (will be truncated to 4000 chars)
-    pub fn build_fix_prompt(
-        &self,
-        original_prompt: &str,
-        failing_phase: &str,
-        failing_command: &str,
-        error_output: &str,
-    ) -> String {
-        let truncated = if error_output.len() > 4000 {
-            &error_output[..4000]
-        } else {
-            error_output
-        };
-
-        format!(
-            "## Auto-fix request\n\n\
-            ## Original task\n\n\
-            {}\n\n\
-            ## Failing verification step\n\n\
-            Phase: {}, Command: `{}`\n\n\
-            ## Error output\n\n\
-            ```\n{}\n```\n\n\
-            ## Instructions\n\n\
-            Fix the code so that `{}` exits 0. Do not change other behaviour.",
-            original_prompt, failing_phase, failing_command, truncated, failing_command
-        )
-    }
-
     /// Apply role-specific tool defaults after TOML parsing.
     ///
     /// Explicit task settings take precedence over role defaults.
@@ -719,7 +755,10 @@ impl TaskDef {
     }
 }
 
-/// Roles a plan task may declare in `role`.
+/// Roles a plan task may declare in `role`: those with a bundled safety
+/// contract, as a role without one gets no tools at dispatch. Plan
+/// validation, plan generation and `roko run --role` all read this one list
+/// (bug-db607b).
 pub const PLAN_TASK_ROLES: &[&str] = &[
     "implementer",
     "researcher",
@@ -728,6 +767,8 @@ pub const PLAN_TASK_ROLES: &[&str] = &[
     "reviewer",
     "quick-reviewer",
     "scribe",
+    "auditor",
+    "auto-fixer",
 ];
 
 /// What a task in `role` may do when it does not narrow its own tools.
@@ -833,6 +874,59 @@ fn default_why() -> String {
     "context".into()
 }
 
+/// The TSS v1 fields of a task (S07 §4.1): the outcome it is for, what it
+/// must leave alone, what its planner assumed or could not settle, and the
+/// hidden-test hook. Each is a top-level `[[task]]` key, and a field left
+/// unset is not written back, so a `tasks.toml` without them rewrites
+/// unchanged.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TaskSpec {
+    /// One sentence stating the observable outcome.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub goal: Option<String>,
+    /// Scope exclusions ("do not change the public signature of X").
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub non_goals: Vec<String>,
+    /// What the planner, or a refiner resolving an ambiguity, assumed.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub assumptions: Vec<String>,
+    /// Questions the planner could not settle. A task with any keeps its
+    /// plan from running until the author answers them in the spec and
+    /// deletes them (PLAN_045).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub open_questions: Vec<String>,
+    /// `[task.hidden]`: what a hidden test suite targets.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hidden: Option<TaskHidden>,
+}
+
+/// `[task.hidden]` (TSS v1): the public surface and the properties a hidden
+/// test suite targets. It restates the spec, so the agent sees it; it never
+/// holds tests.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TaskHidden {
+    /// `"auto"`, `"none"` or a suite id. Never shown to the agent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub suite: Option<String>,
+    /// The public surface the suite calls (`path::symbol`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub interface: Vec<String>,
+    /// The properties the suite checks.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub properties: Vec<String>,
+}
+
+/// What a verify step does on the unchanged base (TSS v1 `expect`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum VerifyExpect {
+    /// The step fails until the task's change lands: a feature or a fix.
+    FailOnBase,
+    /// The step passes on the base as well: a refactor's regression check.
+    PassOnBase,
+}
+
 /// One step in the per-task verification pipeline.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct VerifyStep {
@@ -854,6 +948,14 @@ pub struct VerifyStep {
     /// project, so it waits for every sibling that is mid-edit.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub scope: Vec<String>,
+    /// The acceptance criteria this step checks, by id (`AC1`, ...): an
+    /// explicit `ACn:` prefix of an `acceptance` item, or else its position
+    /// (TSS v1).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub covers: Vec<String>,
+    /// What the step does on the unchanged base (TSS v1).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expect: Option<VerifyExpect>,
 }
 
 pub(crate) fn default_verify_timeout() -> u64 {
@@ -873,8 +975,237 @@ impl From<&roko_core::config::GateRungConfig> for VerifyStep {
             fail_msg: None,
             timeout_ms: rung.timeout_secs.saturating_mul(1_000),
             scope: Vec::new(),
+            covers: Vec::new(),
+            expect: None,
         }
     }
+}
+
+// ─── The keys of a tasks.toml ────────────────────────────────────────────────
+
+/// Every `[[task]]` key: the fields of [`TaskDef`] as `tasks.toml` spells
+/// them (with `write_files`, the alias of `files`) and those of its
+/// flattened [`TaskSpec`] and [`TaskHints`], plus `sequence`, which
+/// [`TasksFile::write`] writes and parsing stamps again. Three keys are read
+/// by tools rather than by `plan run`: `gate_rung` and `deferral` by `plan
+/// validate` (PLAN_007, PLAN_026) and `closes` by `tools/work.py sync`.
+///
+/// `plan validate` warns about any other key (PLAN_043), and plan
+/// generation corrects near misses against this set.
+pub const TASK_KEYS: &[&str] = &[
+    "id",
+    "title",
+    "description",
+    "role",
+    "status",
+    "tier",
+    "frequency",
+    "model_hint",
+    "replan_strategy",
+    "max_loc",
+    "files",
+    "write_files",
+    "allowed_tools",
+    "denied_tools",
+    "mcp_servers",
+    "depends_on",
+    "depends_on_plan",
+    "split_into",
+    "context",
+    "verify",
+    "timeout_secs",
+    "max_retries",
+    "acceptance",
+    "acceptance_contract",
+    "accept",
+    "domain",
+    "estimated_minutes",
+    "crates_touched",
+    "sequence",
+    // TSS v1: `TaskSpec`
+    "goal",
+    "non_goals",
+    "assumptions",
+    "open_questions",
+    "hidden",
+    // `roko_core::TaskHints`
+    "category",
+    "complexity_band",
+    "reasoning_level",
+    "speed_priority",
+    "preferred_model",
+    "preferred_provider",
+    "escalate_on_retry",
+    "rung",
+    "quality_profile",
+    "test_invariants",
+    "context_weight",
+    "skills",
+    "example_pattern",
+    "context_files",
+    "plan_section",
+    "types_to_define",
+    "formulas",
+    "imports",
+    "research_before_edit",
+    "workspace",
+    "parallel_group",
+    "exclusive_files",
+    "tags",
+    "dependency_tags",
+    "fixture_keys",
+    "sidecar_requirements",
+    "integration_surfaces",
+    // Read by tools, not by `plan run`.
+    "gate_rung",
+    "deferral",
+    "closes",
+];
+
+/// Every `[task.context]` key ([`TaskContext`]).
+pub const CONTEXT_KEYS: &[&str] = &[
+    "read_files",
+    "symbols",
+    "anti_patterns",
+    "prior_failures",
+    "impact_acknowledgement",
+];
+
+/// Every key of a `[[task.verify]]` or `[[meta.verify]]` step ([`VerifyStep`]).
+pub const VERIFY_KEYS: &[&str] = &[
+    "phase",
+    "command",
+    "fail_msg",
+    "timeout_ms",
+    "scope",
+    "covers",
+    "expect",
+];
+
+/// Every `[meta]` key: the fields of [`TaskMeta`], plus `queue_kind`,
+/// `queue_schema` and `kind`, by which `plan validate` recognises an
+/// architecture queue, and `hidden_suites`, by which the spec-quality score
+/// counts SQ12 (`roko_gate::spec_quality`, sq-3).
+pub const META_KEYS: &[&str] = &[
+    "plan",
+    "iteration",
+    "total",
+    "done",
+    "status",
+    "superseded_by",
+    "max_parallel",
+    "estimated_total_minutes",
+    "skip_enrichment",
+    "failure_policy",
+    "workspace_rungs",
+    "verify",
+    "approval",
+    "allow_unverified",
+    "outbound",
+    // Read by `plan validate` and the spec-quality score.
+    "queue_kind",
+    "queue_schema",
+    "kind",
+    "hidden_suites",
+];
+
+/// Misspellings of `tasks.toml` keys that plan generators write, and the key
+/// each one means.
+const KEY_TYPOS: &[(&str, &str)] = &[
+    ("pha", "phase"),
+    ("phas", "phase"),
+    ("cmd", "command"),
+    ("comand", "command"),
+    ("commnad", "command"),
+    ("commmand", "command"),
+    ("descrption", "description"),
+    ("descripion", "description"),
+    ("desc", "description"),
+    ("stat", "status"),
+    ("staus", "status"),
+    ("tite", "title"),
+    ("titl", "title"),
+    ("modle_hint", "model_hint"),
+    ("model", "model_hint"),
+    ("modelhint", "model_hint"),
+    ("depnds_on", "depends_on"),
+    ("dependson", "depends_on"),
+    ("depend_on", "depends_on"),
+    ("filse", "files"),
+    ("fles", "files"),
+    ("verfy", "verify"),
+    ("verfiy", "verify"),
+    ("tiemout_secs", "timeout_secs"),
+    ("fail_message", "fail_msg"),
+    ("failure_msg", "fail_msg"),
+    ("timeout", "timeout_ms"),
+    // Singular/plural variants
+    ("denied_tool", "denied_tools"),
+    ("deni_tools", "denied_tools"),
+    ("allowed_tool", "allowed_tools"),
+    ("mcp_server", "mcp_servers"),
+    ("file", "files"),
+    ("write_file", "write_files"),
+    // Truncated field names
+    ("stus", "status"),
+    ("rol", "role"),
+    ("tie", "tier"),
+    ("tit", "title"),
+    ("max_lo", "max_loc"),
+    ("model_hin", "model_hint"),
+    ("depends_o", "depends_on"),
+    ("timeout_sec", "timeout_secs"),
+    ("max_retrie", "max_retries"),
+    // Common misspellings
+    ("discription", "description"),
+    ("dependancies", "depends_on"),
+    ("dependecies", "depends_on"),
+];
+
+/// The key of `known` that `field` most likely means: its entry in the typo
+/// table, or else the nearest key within two edits. `None` when no key is
+/// close.
+#[must_use]
+pub fn suggest_field_correction(field: &str, known: &[&str]) -> Option<String> {
+    if let Some((_, correction)) = KEY_TYPOS
+        .iter()
+        .find(|(typo, correction)| *typo == field && known.contains(correction))
+    {
+        return Some((*correction).to_string());
+    }
+    let mut best: Option<(&str, usize)> = None;
+    for &known_field in known {
+        let dist = strsim_distance(field, known_field);
+        if dist > 0 && dist <= 2 && best.is_none_or(|(_, best_dist)| dist < best_dist) {
+            best = Some((known_field, dist));
+        }
+    }
+    best.map(|(key, _)| key.to_string())
+}
+
+/// Levenshtein distance between two byte strings.
+fn strsim_distance(a: &str, b: &str) -> usize {
+    let a_bytes = a.as_bytes();
+    let b_bytes = b.as_bytes();
+    let m = a_bytes.len();
+    let n = b_bytes.len();
+    if m == 0 {
+        return n;
+    }
+    if n == 0 {
+        return m;
+    }
+    let mut prev: Vec<usize> = (0..=n).collect();
+    let mut curr = vec![0usize; n + 1];
+    for i in 1..=m {
+        curr[0] = i;
+        for j in 1..=n {
+            let cost = usize::from(a_bytes[i - 1] != b_bytes[j - 1]);
+            curr[j] = (prev[j] + 1).min(curr[j - 1] + 1).min(prev[j - 1] + cost);
+        }
+        std::mem::swap(&mut prev, &mut curr);
+    }
+    prev[n]
 }
 
 /// The full parsed tasks.toml.
@@ -1841,6 +2172,80 @@ fn strip_embedded_code(input: &str) -> String {
 mod tests {
     use super::*;
 
+    /// 9134: `workspace` parses on a task and defaults to `git_worktree`; a
+    /// `[profiles.<domain>]` default applies to a task that names none; and
+    /// plan validation refuses a `scratch_dir` task that names no data in
+    /// `files`.
+    #[test]
+    fn task_workspace_kind_parses_scratch_dir() {
+        let tasks = TasksFile::parse_str(
+            r#"[meta]
+plan = "data"
+
+[[task]]
+id = "T1"
+title = "Clean the export"
+role = "researcher"
+workspace = "scratch_dir"
+files = ["data/export.csv"]
+
+[[task]]
+id = "T2"
+title = "Summarize it"
+role = "researcher"
+domain = "data"
+"#,
+        )
+        .expect("parse");
+        let config = RokoConfig::default();
+        assert_eq!(
+            tasks.tasks[0].hints.workspace,
+            Some(WorkspaceKind::ScratchDir)
+        );
+        assert_eq!(
+            tasks.tasks[0].workspace_kind(&config),
+            WorkspaceKind::ScratchDir
+        );
+        assert_eq!(
+            tasks.tasks[1].workspace_kind(&config),
+            WorkspaceKind::GitWorktree
+        );
+        let written = toml::to_string(&tasks).expect("write tasks.toml");
+        assert!(written.contains("workspace = \"scratch_dir\""), "{written}");
+
+        let mut data = RokoConfig::default();
+        let profile = roko_core::config::schema::DomainProfile {
+            name: "data".to_string(),
+            workspace: Some(WorkspaceKind::ScratchDir),
+            ..Default::default()
+        };
+        data.profiles.insert("data".to_string(), profile);
+        assert_eq!(
+            tasks.tasks[1].workspace_kind(&data),
+            WorkspaceKind::ScratchDir
+        );
+
+        let workspace = tempfile::tempdir().expect("tempdir");
+        let plan_dir = workspace.path().join("plans").join("data");
+        std::fs::create_dir_all(&plan_dir).expect("plan directory");
+        let unnamed = "[meta]\nplan = \"data\"\n\n[[task]]\nid = \"T1\"\ntitle = \"Clean\"\n\
+                       role = \"researcher\"\nworkspace = \"scratch_dir\"\n";
+        std::fs::write(plan_dir.join("tasks.toml"), unnamed).expect("tasks.toml");
+        let report = crate::plan_validate::validate_plans_dir_with_workdir(
+            &plan_dir,
+            None,
+            Some(workspace.path()),
+        )
+        .expect("validate");
+        let found: Vec<&str> = report
+            .plans
+            .iter()
+            .flat_map(|plan| &plan.diagnostics)
+            .map(|diagnostic| diagnostic.rule_id.as_str())
+            .collect();
+        assert!(found.contains(&"PLAN_048"), "{found:?}");
+    }
+
     #[test]
     fn parse_minimal_tasks_toml() {
         let toml = r#"
@@ -2138,6 +2543,7 @@ test_invariants = ["an empty task sets no hint"]
             estimated_minutes: None,
             crates_touched: None,
             sequence: 0,
+            spec: Default::default(),
             hints: TaskHints::default(),
         };
         assert_eq!(task.effective_model("fallback", None), "claude-haiku-4-5");
@@ -2202,6 +2608,7 @@ test_invariants = ["an empty task sets no hint"]
             estimated_minutes: None,
             crates_touched: None,
             sequence: 0,
+            spec: Default::default(),
             hints: TaskHints::default(),
         };
         assert_eq!(task.operating_frequency(), OperatingFrequency::Gamma);
@@ -2238,6 +2645,7 @@ test_invariants = ["an empty task sets no hint"]
             estimated_minutes: None,
             crates_touched: None,
             sequence: 0,
+            spec: Default::default(),
             hints: TaskHints::default(),
         };
         assert_eq!(reactive.operating_frequency(), OperatingFrequency::Gamma);
@@ -2271,6 +2679,7 @@ test_invariants = ["an empty task sets no hint"]
             estimated_minutes: None,
             crates_touched: None,
             sequence: 0,
+            spec: Default::default(),
             hints: TaskHints::default(),
         };
         assert_eq!(reflective.operating_frequency(), OperatingFrequency::Delta);
@@ -2304,6 +2713,7 @@ test_invariants = ["an empty task sets no hint"]
             estimated_minutes: None,
             crates_touched: None,
             sequence: 0,
+            spec: Default::default(),
             hints: TaskHints::default(),
         };
         assert_eq!(
@@ -2614,12 +3024,12 @@ depends_on = []
                 max_parallel: Some(1),
                 estimated_total_minutes: 0,
                 skip_enrichment: false,
-                source_prd: None,
                 failure_policy: None,
                 workspace_rungs: None,
                 verify: Vec::new(),
                 approval: None,
                 allow_unverified: false,
+                outbound: None,
             },
             tasks: Vec::new(),
         };
@@ -2664,6 +3074,8 @@ depends_on = []
                     fail_msg: None,
                     timeout_ms: 60_000,
                     scope: Vec::new(),
+                    covers: Vec::new(),
+                    expect: None,
                 }],
                 timeout_secs: 600,
                 max_retries: 3,
@@ -2674,6 +3086,7 @@ depends_on = []
                 estimated_minutes: None,
                 crates_touched: None,
                 sequence: 0,
+                spec: Default::default(),
                 hints: TaskHints::default(),
             });
         }
@@ -2707,94 +3120,6 @@ depends_on = ["other-plan:T3"]
         .unwrap();
         tasks.update_cross_refs("other-plan:T3", "other-plan:T5");
         assert_eq!(tasks.tasks[0].depends_on[0], "other-plan:T5");
-    }
-
-    #[test]
-    fn build_fix_prompt_includes_error_output() {
-        let task = TaskDef {
-            id: "T1".into(),
-            title: "test task".into(),
-            description: Some("test task".into()),
-            role: None,
-            status: "ready".into(),
-            tier: "focused".into(),
-            frequency: None,
-            model_hint: None,
-            replan_strategy: None,
-            max_loc: None,
-            files: vec![],
-            allowed_tools: None,
-            denied_tools: None,
-            mcp_servers: None,
-            depends_on: vec![],
-            depends_on_plan: vec![],
-            split_into: None,
-            context: None,
-            verify: vec![],
-            timeout_secs: 600,
-            max_retries: 3,
-            acceptance: vec![],
-            acceptance_contract: None,
-            accept: None,
-            domain: None,
-            estimated_minutes: None,
-            crates_touched: None,
-            sequence: 0,
-            hints: TaskHints::default(),
-        };
-        let original = "Original task prompt";
-        let error_msg = "compilation failed: undefined symbol";
-        let prompt = task.build_fix_prompt(original, "compile", "cargo check", error_msg);
-
-        assert!(prompt.contains(original));
-        assert!(prompt.contains(error_msg));
-        assert!(prompt.contains("compile"));
-        assert!(prompt.contains("cargo check"));
-    }
-
-    #[test]
-    fn build_fix_prompt_truncates_long_error() {
-        let task = TaskDef {
-            id: "T1".into(),
-            title: "test task".into(),
-            description: Some("test task".into()),
-            role: None,
-            status: "ready".into(),
-            tier: "focused".into(),
-            frequency: None,
-            model_hint: None,
-            replan_strategy: None,
-            max_loc: None,
-            files: vec![],
-            allowed_tools: None,
-            denied_tools: None,
-            mcp_servers: None,
-            depends_on: vec![],
-            depends_on_plan: vec![],
-            split_into: None,
-            context: None,
-            verify: vec![],
-            timeout_secs: 600,
-            max_retries: 3,
-            acceptance: vec![],
-            acceptance_contract: None,
-            accept: None,
-            domain: None,
-            estimated_minutes: None,
-            crates_touched: None,
-            sequence: 0,
-            hints: TaskHints::default(),
-        };
-        let original = "Original prompt";
-        let long_error = "x".repeat(5000);
-        let prompt = task.build_fix_prompt(original, "test", "cargo test", &long_error);
-
-        // The prompt should contain truncated error (4000 chars max)
-        assert!(prompt.contains(original));
-        // Should not contain the full 5000-char string
-        assert!(!prompt.contains(&long_error));
-        // But should contain a 4000-char substring of it
-        assert!(prompt.contains(&"x".repeat(4000)));
     }
 
     #[test]
@@ -3569,6 +3894,31 @@ depends_on = ["T2"]
         assert_eq!(role_capabilities("quick-reviewer"), caps(true, false, true));
     }
 
+    /// bug-db607b: an `auditor` task is a plan task like any other role with
+    /// a bundled contract, so schema validation accepts it.
+    #[test]
+    fn an_auditor_task_passes_schema_validation() {
+        let file = TasksFile::parse_str(
+            r#"
+[meta]
+plan = "roles"
+
+[[task]]
+id = "T1"
+title = "Audit the parser"
+role = "auditor"
+"#,
+        )
+        .expect("parse");
+
+        let issues = file.validate_against_schema();
+
+        assert!(
+            !issues.iter().any(|issue| issue.contains("unknown role")),
+            "{issues:?}"
+        );
+    }
+
     #[test]
     fn every_plan_role_has_a_contract_that_agrees_on_write() {
         for role in PLAN_TASK_ROLES {
@@ -3634,6 +3984,320 @@ files = ["README.md"]
         let message = issues[0].to_string();
         assert!(message.contains("docs/design.md"), "{message}");
         assert!(message.contains("cannot write files"), "{message}");
-        assert!(message.contains("(implementer, scribe)"), "{message}");
+        assert!(
+            message.contains("(implementer, scribe, auto-fixer)"),
+            "{message}"
+        );
+    }
+
+    /// 3206: the key sets hold every key the parser reads. Each literal below
+    /// lists every field of its type, so a field added to one breaks this test
+    /// until it is set here, and then fails it until its key joins the set
+    /// that `plan validate` checks each `tasks.toml` against (PLAN_043).
+    #[test]
+    fn key_sets_cover_every_parsed_field() {
+        use roko_core::task::{
+            TaskCategory, TaskComplexityBand, TaskContextWeight, TaskQualityProfile,
+            TaskReasoningLevel, TaskSpeedPriority,
+        };
+
+        let some = || Some(vec!["x".to_string()]);
+        let step = VerifyStep {
+            phase: "test".into(),
+            command: "cargo test -p roko-cli".into(),
+            fail_msg: Some("failed".into()),
+            timeout_ms: 1_000,
+            scope: vec!["crates/roko-cli".into()],
+            covers: vec!["AC1".into()],
+            expect: Some(VerifyExpect::FailOnBase),
+        };
+        let ctx = TaskContext {
+            read_files: vec![ReadFile {
+                path: "crates/roko-cli/src/task_parser.rs".into(),
+                lines: Some("1-10".into()),
+                why: "the parser".into(),
+            }],
+            symbols: vec!["TaskDef".into()],
+            anti_patterns: vec!["x".into()],
+            prior_failures: vec!["x".into()],
+            impact_acknowledgement: Some("x".into()),
+        };
+        let hints = TaskHints {
+            category: Some(TaskCategory::Verification),
+            complexity_band: Some(TaskComplexityBand::Complex),
+            reasoning_level: Some(TaskReasoningLevel::High),
+            speed_priority: Some(TaskSpeedPriority::Accuracy),
+            preferred_model: Some("x".into()),
+            preferred_provider: Some("x".into()),
+            escalate_on_retry: Some(true),
+            rung: Some("strong".into()),
+            quality_profile: Some(TaskQualityProfile::Hardened),
+            test_invariants: some(),
+            context_weight: Some(TaskContextWeight::Deep),
+            skills: some(),
+            example_pattern: Some("x".into()),
+            context_files: some(),
+            plan_section: Some("x".into()),
+            types_to_define: some(),
+            formulas: some(),
+            imports: some(),
+            research_before_edit: Some(true),
+            workspace: Some(WorkspaceKind::ScratchDir),
+            parallel_group: Some("x".into()),
+            exclusive_files: Some(false),
+            tags: some(),
+            dependency_tags: some(),
+            fixture_keys: some(),
+            sidecar_requirements: some(),
+            integration_surfaces: some(),
+        };
+        let raw = TaskDefSerde {
+            id: "T1".into(),
+            title: "Check the key sets".into(),
+            description: Some("x".into()),
+            role: Some("implementer".into()),
+            status: "ready".into(),
+            tier: "focused".into(),
+            frequency: Some(OperatingFrequency::Theta),
+            model_hint: Some("x".into()),
+            replan_strategy: Some(ReplanStrategy::Decompose),
+            max_loc: Some(10),
+            files: vec!["x".into()],
+            allowed_tools: some(),
+            denied_tools: some(),
+            mcp_servers: some(),
+            depends_on: vec!["T0".into()],
+            depends_on_plan: vec!["p".into()],
+            split_into: some(),
+            context: Some(ctx.clone()),
+            verify: vec![step.clone()],
+            timeout_secs: Some(60),
+            max_retries: 1,
+            acceptance: vec!["x".into()],
+            acceptance_contract: Some(toml::from_str("version = 1").expect("a contract")),
+            accept: Some(TaskAccept::default()),
+            domain: Some(TaskDomain::Code),
+            estimated_minutes: Some(5),
+            crates_touched: some(),
+            spec: TaskSpec {
+                goal: Some("x".into()),
+                non_goals: vec!["x".into()],
+                assumptions: vec!["x".into()],
+                open_questions: vec!["x".into()],
+                hidden: Some(TaskHidden {
+                    suite: Some("auto".into()),
+                    interface: vec!["x".into()],
+                    properties: vec!["x".into()],
+                }),
+            },
+            hints,
+        };
+        let meta = TaskMeta {
+            plan: "keys".into(),
+            iteration: 1,
+            total: 1,
+            done: 0,
+            status: "ready".into(),
+            superseded_by: Some("x".into()),
+            max_parallel: Some(1),
+            estimated_total_minutes: 5,
+            skip_enrichment: true,
+            failure_policy: Some(roko_core::config::PlanFailurePolicy::FailFast),
+            workspace_rungs: Some(false),
+            verify: vec![step.clone()],
+            approval: Some(ApprovalMode::PerTask),
+            allow_unverified: true,
+            outbound: Some(roko_core::tool::OutboundPolicy::Stage),
+        };
+
+        let task = TaskDef::from(raw.clone());
+        let tables = [
+            ("[[task]] parse", toml::Value::try_from(&raw), TASK_KEYS),
+            ("[[task]] write", toml::Value::try_from(&task), TASK_KEYS),
+            ("[task.context]", toml::Value::try_from(&ctx), CONTEXT_KEYS),
+            ("verify step", toml::Value::try_from(&step), VERIFY_KEYS),
+            ("[meta]", toml::Value::try_from(&meta), META_KEYS),
+        ];
+        for (table, value, set) in tables {
+            let value = value.expect("serialize");
+            let keys = value.as_table().expect("a table").keys();
+            for key in keys {
+                assert!(
+                    set.contains(&key.as_str()),
+                    "{table}: `{key}` is not in its key set"
+                );
+            }
+        }
+        for set in [TASK_KEYS, CONTEXT_KEYS, VERIFY_KEYS, META_KEYS] {
+            let unique: HashSet<&str> = set.iter().copied().collect();
+            assert_eq!(
+                unique.len(),
+                set.len(),
+                "a key set lists a key twice: {set:?}"
+            );
+        }
+    }
+
+    /// 3207: the TSS v1 fields parse into `TaskDef` and `VerifyStep`, and a
+    /// rewrite of the `tasks.toml`, or of the JSON a Graph node carries, keeps
+    /// every one. A file without them writes none of their keys, so it
+    /// rewrites as before.
+    #[test]
+    fn tss_v1_fields_round_trip() {
+        let content = r#"
+[meta]
+plan = "tss"
+
+[[task]]
+id = "T1"
+title = "Rename user keys"
+goal = "Every user:* key is stored under acct:* with its value unchanged."
+non_goals = ["Do not modify bin/kvtool"]
+assumptions = ["The store fits in memory"]
+open_questions = ["Should a second run print anything?"]
+acceptance = ["AC1: `kvtool list --prefix user:` prints nothing", "AC2: values are unchanged"]
+
+[task.hidden]
+suite = "auto"
+interface = ["scripts/migrate_prefix.sh"]
+properties = ["idempotent"]
+
+[[task.verify]]
+phase = "test"
+command = "python3 -m unittest tests.visible.test_migrate"
+covers = ["AC1", "AC2"]
+expect = "fail_on_base"
+
+[[task.verify]]
+phase = "test"
+command = "python3 -m unittest tests.visible.test_store"
+expect = "pass_on_base"
+"#;
+        let parsed = TasksFile::parse_str(content).expect("parse the TSS v1 fields");
+        let task = &parsed.tasks[0];
+        let expected = TaskSpec {
+            goal: Some("Every user:* key is stored under acct:* with its value unchanged.".into()),
+            non_goals: vec!["Do not modify bin/kvtool".into()],
+            assumptions: vec!["The store fits in memory".into()],
+            open_questions: vec!["Should a second run print anything?".into()],
+            hidden: Some(TaskHidden {
+                suite: Some("auto".into()),
+                interface: vec!["scripts/migrate_prefix.sh".into()],
+                properties: vec!["idempotent".into()],
+            }),
+        };
+        assert_eq!(task.spec, expected);
+        let checks = |task: &TaskDef| -> Vec<(Vec<String>, Option<VerifyExpect>)> {
+            task.verify
+                .iter()
+                .map(|step| (step.covers.clone(), step.expect))
+                .collect()
+        };
+        let expected_checks = vec![
+            (
+                vec!["AC1".to_string(), "AC2".to_string()],
+                Some(VerifyExpect::FailOnBase),
+            ),
+            (Vec::new(), Some(VerifyExpect::PassOnBase)),
+        ];
+        assert_eq!(checks(task), expected_checks);
+
+        let rewritten = toml::to_string_pretty(&parsed).expect("write tasks.toml");
+        let reread = TasksFile::parse_str(&rewritten).expect("read the rewrite");
+        assert_eq!(reread.tasks[0].spec, expected, "{rewritten}");
+        assert_eq!(checks(&reread.tasks[0]), expected_checks, "{rewritten}");
+        let json = serde_json::to_value(task).expect("serialize TaskDef");
+        let from_json: TaskDef = serde_json::from_value(json).expect("read the JSON back");
+        assert_eq!(from_json.spec, expected);
+        assert_eq!(checks(&from_json), expected_checks);
+
+        let plain = TasksFile::parse_str(
+            "[meta]\nplan = \"plain\"\n\n[[task]]\nid = \"T1\"\ntitle = \"Plain\"\n\n\
+             [[task.verify]]\nphase = \"test\"\ncommand = \"cargo test\"\n",
+        )
+        .expect("parse a plain plan");
+        assert_eq!(plain.tasks[0].spec, TaskSpec::default());
+        let first = toml::to_string_pretty(&plain).expect("write");
+        let second = toml::to_string_pretty(&TasksFile::parse_str(&first).expect("reread"))
+            .expect("rewrite");
+        assert_eq!(first, second);
+        let written: toml::Value = toml::from_str(&first).expect("parse the rewrite");
+        let task_keys = written["task"][0].as_table().expect("a task table");
+        let step_keys = written["task"][0]["verify"][0]
+            .as_table()
+            .expect("a verify step");
+        for key in [
+            "goal",
+            "non_goals",
+            "assumptions",
+            "open_questions",
+            "hidden",
+        ] {
+            assert!(!task_keys.contains_key(key), "{key} written: {first}");
+        }
+        for key in ["covers", "expect"] {
+            assert!(!step_keys.contains_key(key), "{key} written: {first}");
+        }
+    }
+
+    /// 3207: the prompt sections show the goal, non-goals, assumptions and
+    /// hidden-test hook, never the hook's suite, and nothing for a task
+    /// without them.
+    #[test]
+    fn tss_sections_show_what_the_task_sets() {
+        let mut task = TasksFile::parse_str(
+            "[meta]\nplan = \"p\"\n\n[[task]]\nid = \"T1\"\ntitle = \"Plain\"\n",
+        )
+        .expect("parse")
+        .tasks
+        .remove(0);
+        assert!(task.tss_sections().is_empty());
+
+        task.spec = TaskSpec {
+            goal: Some("Exits 0.".into()),
+            non_goals: vec!["Keep the signature".into()],
+            assumptions: Vec::new(),
+            open_questions: Vec::new(),
+            hidden: Some(TaskHidden {
+                suite: Some("suite-9".into()),
+                interface: vec!["src/lib.rs::run".into()],
+                properties: vec!["empty input".into()],
+            }),
+        };
+        assert_eq!(
+            task.tss_sections(),
+            "\n## Goal\nExits 0.\n\n## Non-goals\n- Keep the signature\n\n## Hidden tests\n\
+             A hidden test suite checks this task.\n- Interface: `src/lib.rs::run`\n\
+             - Property: empty input\n"
+        );
+    }
+
+    #[test]
+    fn strsim_distance_basic() {
+        assert_eq!(strsim_distance("phase", "phase"), 0);
+        assert_eq!(strsim_distance("pha", "phase"), 2);
+        assert_eq!(strsim_distance("stat", "status"), 2);
+        assert_eq!(strsim_distance("", "abc"), 3);
+        assert_eq!(strsim_distance("abc", ""), 3);
+    }
+
+    #[test]
+    fn suggest_correction_finds_typos() {
+        assert_eq!(
+            suggest_field_correction("pha", VERIFY_KEYS),
+            Some("phase".to_string())
+        );
+        assert_eq!(
+            suggest_field_correction("stat", TASK_KEYS),
+            Some("status".to_string())
+        );
+        assert_eq!(
+            suggest_field_correction("verfy", TASK_KEYS),
+            Some("verify".to_string())
+        );
+        // A typo-table correction counts only for a key of the table checked.
+        assert_eq!(suggest_field_correction("file", META_KEYS), None);
+        // Unknown field with no close match returns None.
+        assert_eq!(suggest_field_correction("zzzzunknown", TASK_KEYS), None);
     }
 }

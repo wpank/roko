@@ -13,10 +13,34 @@ pub(crate) async fn output(mut command: Command) -> io::Result<Output> {
     configure_process_group(&mut command);
 
     let child = command.spawn()?;
+    let _registered = RegisteredCommand::new(child.id());
     let mut guard = ProcessGroupGuard::new(child.id());
     let result = child.wait_with_output().await;
     guard.disarm();
     result
+}
+
+/// A running gate command, registered with the process registry an
+/// interrupted plan run signals (`roko_agent::process`), so that an interrupt
+/// stops the command along with the run's agents (gap-b367bf). Dropping it
+/// unregisters the command, once it ended or was abandoned.
+pub(crate) struct RegisteredCommand(Option<u32>);
+
+impl RegisteredCommand {
+    pub(crate) fn new(pid: Option<u32>) -> Self {
+        if let Some(pid) = pid {
+            roko_agent::process::register_spawned_pid(pid);
+        }
+        Self(pid)
+    }
+}
+
+impl Drop for RegisteredCommand {
+    fn drop(&mut self) {
+        if let Some(pid) = self.0 {
+            roko_agent::process::unregister_pid(pid);
+        }
+    }
 }
 
 struct ProcessGroupGuard {

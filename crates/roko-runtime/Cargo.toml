@@ -12,6 +12,13 @@ description = "Shared async runtime primitives for Bardo: typed event bus, proce
 [lints]
 workspace = true
 
+[features]
+# The cognitive clock: the heartbeat policy and scheduler, CorticalState, the
+# theta and delta consumers, the attention auction and the heartbeat probes.
+# Nothing on the plan path drives them, so they are parked out of the
+# default build (9201, 9221, 9222).
+cognitive-clock = []
+
 [dependencies]
 async-trait = { workspace = true }
 tokio = { workspace = true, features = ["sync", "time", "process", "macros", "rt"] }

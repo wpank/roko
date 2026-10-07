@@ -285,7 +285,7 @@ async fn webhook_or_spa(State(state): State<Arc<AppState>>, request: Request) ->
             return StatusCode::METHOD_NOT_ALLOWED.into_response();
         }
         if method == Method::GET || method == Method::HEAD {
-            return crate::serve_api_or_spa_fallback(request).await;
+            return crate::showcase_or_spa_fallback(&state, request).await;
         }
         return StatusCode::NOT_FOUND.into_response();
     };

@@ -80,9 +80,7 @@ pub(crate) const SLASH_COMMANDS: &[(&str, &str)] = &[
     ("/plan run", "execute a plan"),
     ("/plan generate", "generate plan from prompt"),
     ("/gate", "toggle gates (compile/test/clippy)"),
-    // PRD & research
-    ("/prd idea", "capture a work item idea"),
-    ("/prd list", "list PRDs"),
+    // Research
     ("/research", "research a topic"),
     // Knowledge & learning
     ("/knowledge", "query knowledge store"),

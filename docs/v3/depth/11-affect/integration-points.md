@@ -111,7 +111,7 @@ negative states increase emotionally-relevant context weight:
 | **Code intelligence** | Safety-critical code paths | Neutral | Neutral |
 | **Playbook rules** | Proven playbooks | Novel playbooks | Conservative playbooks |
 | **Research artifacts** | Neutral | **Strong boost** | Neutral |
-| **Task context** | Deadline PRD sections | Neutral | Neutral |
+| **Task context** | Deadline plan sections | Neutral | Neutral |
 
 ### VCG Truthfulness
 

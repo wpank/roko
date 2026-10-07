@@ -2,7 +2,7 @@
 
 > **Parent**: [00-ARCHITECTURE](../../00-ARCHITECTURE.md)
 >
-> Roko is a 39-member Cargo workspace (~1M LOC, 10,300+ tests). This depth file
+> Roko is a 36-member Cargo workspace (~1M LOC, 10,300+ tests). This depth file
 > catalogs every active crate with lines of code, test count, dependency tier,
 > status, and inter-crate dependency edges. Written fresh for v3 on 2026-09-15.
 
@@ -12,12 +12,12 @@
 
 | Metric | Value |
 |---|---|
-| Workspace members | 39 |
+| Workspace members | 36 |
 | Total Rust LOC (src/) | ~1,010,000 |
 | Total `#[test]` functions | ~10,300 |
 | Minimum rustc version | 1.91 (alloy dependency) |
 | Green release checkpoint rustc | 1.96.1 (2026-08-16) |
-| Accepted epics | 48/48 |
+| Accepted epics | 48/48 as programme manifests; most code was built outside this workflow |
 | Executable tasks complete | Withdrawn 2026-09-29: stale count (`work/history/claude-md-status-2026-09-28.md`) |
 
 ---
@@ -30,10 +30,10 @@ depth. The invariant is strict: no crate depends on a crate in a higher tier.
 | Tier | Description | Member count |
 |---|---|---|
 | **T0 -- Leaf** | No workspace dependencies | 5 |
-| **T1 -- Foundation** | Depends only on T0 crates | 7 |
+| **T1 -- Foundation** | Depends only on T0 crates | 5 |
 | **T2 -- Service** | Depends on T0 and T1 | 9 |
 | **T3 -- Integration** | Depends on T0-T2 | 9 |
-| **T4 -- Application** | Depends on T0-T3 | 8+ |
+| **T4 -- Application** | Depends on T0-T3 | 8 |
 
 ---
 
@@ -63,8 +63,6 @@ integrations.
 | roko-lang-typescript | `crates/roko-lang-typescript/` | ~940 | 33 | Built | TypeScript language support |
 | roko-lang-go | `crates/roko-lang-go/` | ~670 | 25 | Built | Go language support |
 | roko-mcp-github | `crates/roko-mcp-github/` | ~4,300 | 39 | Partial | GitHub MCP integration |
-| roko-mcp-scripts | `crates/roko-mcp-scripts/` | ~770 | 6 | Partial | Script execution MCP server |
-| roko-mcp-slack | `crates/roko-mcp-slack/` | ~1,950 | 3 | Partial | Slack MCP integration |
 
 ### 3.3 T2 -- Service Crates
 
@@ -107,8 +105,8 @@ integration test harnesses.
 
 | Crate | Path | LOC | Tests | Status | Description |
 |---|---|---|---|---|---|
-| roko-cli | `crates/roko-cli/` | ~279,400 | 3,109 | Main entry point | CLI commands, plan DAG/runner, Graph execution, merge queue, worktree manager, ratatui TUI (F1-F10), chat, research, prd, status, doctor, dashboard |
-| roko-serve | `crates/roko-serve/` | ~107,400 | 462 | Wired | HTTP control plane: ~376 canonical REST routes (~421 incl. aliases) + SSE + WebSocket on :6677 |
+| roko-cli | `crates/roko-cli/` | ~279,400 | 3,109 | Main entry point | CLI commands, plan DAG/runner, Graph execution, merge queue, worktree manager, ratatui TUI (F1-F10), chat, research, status, doctor, dashboard |
+| roko-serve | `crates/roko-serve/` | ~107,400 | 462 | Wired | HTTP control plane: REST routes (counts in `tools/http_route_inventory.snapshot.json`) + SSE + WebSocket on :6677 |
 | roko-acp | `crates/roko-acp/` | ~22,100 | 120 | 8/8 (E17) | ACP (Agent Client Protocol) server for Cursor/external editor integration. 180 ACP tests pass |
 | roko-agent-server | `crates/roko-agent-server/` | ~7,700 | 21 | Wired | Per-agent HTTP sidecar: 14 routes including `/message` (real LLM dispatch), `/stream` WS, `/predictions`, `/research`, `/tasks` |
 | roko-execution | `crates/roko-execution/` | ~12,000 | 239 | Wired | RuntimeServices builder (#243), diagnostic service, execution control, feedback settlement. Profile-driven shared service facade for CLI/serve/ACP |

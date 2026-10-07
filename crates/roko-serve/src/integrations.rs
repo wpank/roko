@@ -7,14 +7,14 @@
 //! 2. **Agent Execution** — received events become [`Signal`]s, matched to
 //!    [`Subscription`]s, and dispatched to agent templates.
 //! 3. **MCP Tool Adapters** — agents interact with external platforms via
-//!    MCP servers (github.*, slack.*, scripts.*).
+//!    MCP servers the workspace builds (`roko-mcp-github` for github.*).
 //!
 //! # Built-in integrations
 //!
 //! | Integration | Event Reception | Tool Adapter |
 //! |---|---|---|
 //! | GitHub | `POST /webhooks/github` | `roko-mcp-github` |
-//! | Slack | `POST /webhooks/slack` | `roko-mcp-slack` |
+//! | Slack | `POST /webhooks/slack` | N/A |
 //! | Generic | `POST /api/webhooks/generic` | N/A |
 //! | Cron | `CronEventSource` | N/A |
 //! | FileWatch | `FileWatchEventSource` | N/A |
@@ -231,11 +231,11 @@ fn builtin_integrations() -> Vec<ServiceIntegration> {
                     "github:pr:opened".into(),
                     "github:pr:review".into(),
                     "github:issue:opened".into(),
-                    "prd:plan:approved".into(),
+                    "plan.approved".into(),
                 ],
             }),
             execution: Some(ExecutionDescriptor {
-                trigger_patterns: vec!["github:*".into(), "prd:plan:approved".into()],
+                trigger_patterns: vec!["github:*".into(), "plan.approved".into()],
                 default_templates: vec!["pr-review".into(), "code-implementer".into()],
             }),
             mcp_adapter: Some(McpAdapterDescriptor {
@@ -258,11 +258,8 @@ fn builtin_integrations() -> Vec<ServiceIntegration> {
                 trigger_patterns: vec!["slack:*".into()],
                 default_templates: vec!["slack-notify".into()],
             }),
-            mcp_adapter: Some(McpAdapterDescriptor {
-                server: "roko-mcp-slack".into(),
-                tool_prefixes: vec!["slack.*".into()],
-                tool_count: 9,
-            }),
+            // No Slack MCP server exists: Slack is reception only.
+            mcp_adapter: None,
         },
         ServiceIntegration {
             name: "generic-webhook".into(),
@@ -279,18 +276,6 @@ fn builtin_integrations() -> Vec<ServiceIntegration> {
                 default_templates: vec![],
             }),
             mcp_adapter: None,
-        },
-        ServiceIntegration {
-            name: "scripts".into(),
-            description: "Config-driven script wrappers exposed as tools".into(),
-            kind: IntegrationKind::Decorative,
-            reception: None,
-            execution: None,
-            mcp_adapter: Some(McpAdapterDescriptor {
-                server: "roko-mcp-scripts".into(),
-                tool_prefixes: vec!["scripts.*".into()],
-                tool_count: 0, // dynamic, depends on scripts.toml
-            }),
         },
         ServiceIntegration {
             name: "cron".into(),
@@ -334,11 +319,10 @@ mod tests {
     #[test]
     fn builtin_registry_contains_expected_integrations() {
         let registry = IntegrationRegistry::with_builtins();
-        assert!(registry.len() >= 6);
+        assert!(registry.len() >= 5);
         assert!(registry.get("github").is_some());
         assert!(registry.get("slack").is_some());
         assert!(registry.get("generic-webhook").is_some());
-        assert!(registry.get("scripts").is_some());
         assert!(registry.get("cron").is_some());
         assert!(registry.get("file-watch").is_some());
     }
@@ -353,13 +337,27 @@ mod tests {
         assert_eq!(github.kind, IntegrationKind::Structural);
     }
 
+    /// 9208: an integration's tool adapter names an MCP server whose binary
+    /// the workspace builds. Slack is webhook reception only, and no
+    /// `scripts` server exists.
     #[test]
-    fn scripts_integration_is_mcp_only() {
+    fn builtin_integrations_name_only_shipped_mcp_servers() {
+        let crates = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
         let registry = IntegrationRegistry::with_builtins();
-        let scripts = registry.get("scripts").unwrap();
-        assert!(scripts.reception.is_none());
-        assert!(scripts.execution.is_none());
-        assert!(scripts.mcp_adapter.is_some());
+        for integration in registry.by_layer(IntegrationLayer::McpToolAdapter) {
+            let adapter = integration.mcp_adapter.as_ref().expect("an MCP adapter");
+            let binary = crates.join(&adapter.server).join("src/main.rs");
+            assert!(
+                binary.is_file(),
+                "{}: no `{}` MCP server in the workspace",
+                integration.name,
+                adapter.server
+            );
+        }
+        let slack = registry.get("slack").expect("slack");
+        assert!(slack.reception.is_some());
+        assert!(slack.mcp_adapter.is_none());
+        assert!(registry.get("scripts").is_none());
     }
 
     #[test]
@@ -370,8 +368,9 @@ mod tests {
 
         // github, slack, generic-webhook, cron, file-watch have event reception
         assert!(event_reception.len() >= 5);
-        // github, slack, scripts have MCP adapters
-        assert!(mcp_adapters.len() >= 3);
+        // only github has an MCP adapter
+        let names: Vec<&str> = mcp_adapters.iter().map(|i| i.name.as_str()).collect();
+        assert_eq!(names, ["github"]);
     }
 
     #[test]

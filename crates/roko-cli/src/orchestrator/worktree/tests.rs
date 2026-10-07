@@ -369,6 +369,97 @@ async fn remove_drops_handle_and_worktree() {
     );
 }
 
+/// gap-f67a72: `roko doctor disk --fix` removes the leftover attempt
+/// checkouts of a plan whose current checkpoint ended for good, made by its
+/// current run or by a run it replaced, once nothing touched them for the
+/// minimum age, and keeps their branches. It keeps a checkout of a plan that
+/// can resume, one whose run is not recorded, and one with changes.
+#[tokio::test]
+async fn leftover_checkouts_go_only_when_their_plan_has_ended() {
+    use super::LEFTOVER_CHECKOUT_MIN_AGE;
+
+    let Some((_tmp, mgr)) = make_manager() else {
+        return;
+    };
+    let ended = mgr.create("p-ended-T1-1", "feature/ended").await.unwrap();
+    let replaced = mgr
+        .create("p-replaced-T1-1", "feature/replaced")
+        .await
+        .unwrap();
+    let resumable = mgr
+        .create("p-resumable-T1-1", "feature/resumable")
+        .await
+        .unwrap();
+    let unrecorded = mgr
+        .create("p-unrecorded-T1-1", "feature/unrecorded")
+        .await
+        .unwrap();
+    let dirty = mgr.create("p-dirty-T1-1", "feature/dirty").await.unwrap();
+    for (path, run) in [
+        (&ended.path, "run-2"),
+        (&replaced.path, "run-1"),
+        (&resumable.path, "run-3"),
+        (&dirty.path, "run-2"),
+    ] {
+        let admin = read_gitdir(path).unwrap();
+        std::fs::write(admin.join("roko-run"), format!("{run}\n")).unwrap();
+    }
+    // Plan `done` succeeded in run-2, which replaced the interrupted run-1;
+    // plan `paused` stopped in run-3, which can resume.
+    let graph = mgr.config.repo_root.join(".roko/state/graph");
+    for (manifest, run, status) in [
+        ("done/checkpoint.json", "run-2", "succeeded"),
+        ("done/checkpoint.json.bak.1", "run-1", "interrupted"),
+        ("paused/checkpoint.json", "run-3", "interrupted"),
+    ] {
+        let manifest = graph.join(manifest);
+        std::fs::create_dir_all(manifest.parent().unwrap()).unwrap();
+        let checkpoint = serde_json::json!({ "run_id": run, "status": status });
+        std::fs::write(manifest, checkpoint.to_string()).unwrap();
+    }
+    std::fs::write(dirty.path.join("notes.txt"), "unsaved\n").unwrap();
+    // A later process, which tracks none of them.
+    let later = manager_with_worktrees_root(&mgr, mgr.config.worktrees_root.clone());
+
+    let young = later
+        .remove_leftover_checkouts(LEFTOVER_CHECKOUT_MIN_AGE)
+        .await;
+    assert_eq!(young.len(), 5, "{young:?}");
+    assert!(
+        young.iter().all(|checkout| checkout.kept.is_some()),
+        "{young:?}"
+    );
+
+    let outcomes = later.remove_leftover_checkouts(Duration::ZERO).await;
+    assert_eq!(outcomes.len(), 5, "{outcomes:?}");
+    let kept = |path: &Path| {
+        outcomes
+            .iter()
+            .find(|checkout| checkout.path == path)
+            .and_then(|checkout| checkout.kept.clone())
+    };
+    for removed in [&ended.path, &replaced.path] {
+        assert_eq!(kept(removed), None, "{outcomes:?}");
+        assert!(!removed.exists());
+    }
+    for branch in ["feature/ended", "feature/replaced"] {
+        let verify = StdCommand::new("git")
+            .current_dir(&mgr.config.repo_root)
+            .args(["rev-parse", "--verify", "--quiet", branch])
+            .output()
+            .unwrap();
+        assert!(verify.status.success(), "{branch} is kept");
+    }
+    for (path, reason) in [
+        (&resumable.path, "plan paused's checkpoint is interrupted"),
+        (&unrecorded.path, "no run is recorded for it"),
+        (&dirty.path, "it has uncommitted changes"),
+    ] {
+        assert_eq!(kept(path).as_deref(), Some(reason), "{outcomes:?}");
+        assert!(path.exists());
+    }
+}
+
 #[tokio::test]
 async fn create_remove_roundtrip_allows_reuse() {
     let Some((_tmp, mgr)) = make_manager() else {
@@ -2575,6 +2666,39 @@ async fn ensure_for_plan_reattaches_untracked_on_disk_worktree() {
     let ensured = mgr2.ensure_for_plan("09-ensure").await.unwrap();
     assert_eq!(ensured.path, original_path);
     assert_eq!(ensured.branch, original.branch);
+}
+
+/// bug-045773: a re-attached checkout keeps the commit it was made from,
+/// which its creation recorded in its administrative directory, though the
+/// base branch has moved on since, so a resumed attempt still diffs from
+/// where it started.
+#[tokio::test]
+async fn reattached_handle_keeps_its_original_base_commit() {
+    let Some((_tmp, mgr)) = make_manager() else {
+        return;
+    };
+    let original = mgr.create_for_plan("09-base").await.unwrap();
+    let base = original.base_commit.clone().expect("its base");
+    let repo = mgr.config.repo_root.clone();
+    let moved = StdCommand::new("git")
+        .current_dir(&repo)
+        .args(["commit", "--allow-empty", "-q", "-m", "main moves on"])
+        .status()
+        .unwrap()
+        .success();
+    assert!(moved, "git commit failed");
+
+    let mgr2 = WorktreeManager::new(WorktreeConfig {
+        repo_root: repo,
+        base_branch: "main".to_string(),
+        worktrees_root: original.path.parent().unwrap().to_path_buf(),
+        max_live: None,
+        idle_ttl: Duration::from_secs(3600),
+    });
+    let reattached = mgr2.ensure_for_plan("09-base").await.unwrap();
+
+    assert_eq!(reattached.path, original.path);
+    assert_eq!(reattached.base_commit.as_deref(), Some(base.as_str()));
 }
 
 #[tokio::test]

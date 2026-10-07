@@ -197,6 +197,36 @@ impl ToolPermission {
     }
 }
 
+// ─── OutboundPolicy ───────────────────────────────────────────────────────
+
+/// What a run does with a tool call that acts on the outside world: sends,
+/// posts, pays or changes a remote system (9131). Decision 9107 stages such
+/// calls by default in the `ops` domain and in runs a chat host starts;
+/// elsewhere they run.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum OutboundPolicy {
+    /// Run the call, as any other.
+    #[default]
+    Allow,
+    /// Hold the call for a person's approval instead of running it.
+    Stage,
+    /// Refuse the call.
+    Deny,
+}
+
+impl OutboundPolicy {
+    /// The policy's name in config: `allow`, `stage` or `deny`.
+    #[must_use]
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Allow => "allow",
+            Self::Stage => "stage",
+            Self::Deny => "deny",
+        }
+    }
+}
+
 // ─── ToolSchema ───────────────────────────────────────────────────────────
 
 /// JSON Schema describing a tool's input arguments.

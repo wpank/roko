@@ -12,7 +12,10 @@ Every function reads `vb.run_record/1` dicts, as `records.jsonl` holds them (S08
   so a record with no attempt takes the model of its run's other records. Such a cell's filter adds
   `model == "<slug>"`, where `model` is that derived field; an arm that ran one model keeps its arm-only cell and
   filter. A routed arm (`ROUTED_ARMS`) may switch models within a run, so its cell is always the arm. A run of any
-  other arm that requested two models is an error, and so is a run with no model call in an arm that ran two.
+  other arm that requested two models is an error, and so is a run with no model call in an arm that ran two. A cell
+  also splits by harness (`harness_of`, 3317) when more than one ran under the same nominal arm id: `cheap_direct`'s
+  bash-only loop and `cheap_direct_msa`'s mini-swe-agent runs share `[arm] id = "cheap_direct"` (billed/capped
+  together by design) but are two cells, not one pooled together (bug-40de03).
 - **Labels.** The headline label VS- is `vs.label`, and 0 when `vs.unknown`. The bound VS+ is 1 when `vs.unknown`.
   Every label metric is computed with VS- and again with VS+, as `<metric>_unknown_as_1`, the result shown beside it.
 - **VS rate** (D.1): the mean over tasks of each task's share of verified successes, c/n. A task is an (instance,
@@ -45,11 +48,13 @@ API:
     Metric(metric, value, n, estimator, cost_basis, cut, cell, ladder, ci, ci_method, model)
     vs_minus(record) -> int; vs_plus(record) -> int; reported_pass(record) -> bool
     check_unique(records) -> None                    # raises MetricsError when a run repeats or fits no cell
+    harness_of(record) -> str                         # "" for the arm's own harness; 3317's marker otherwise
     run_models(records) -> {(experiment_id, arm, run_id): model | None}
-    with_models(records) -> list[dict]               # copies, each with its cell's `model`
-    cells(records) -> list[(arm, model | None)]      # the report's cells outside the plan-level slice
-    cell_name(arm, model) -> str
-    arm_metrics(records, experiment_id, arm, ks=(3,), model=None) -> list[Metric]
+    with_models(records) -> list[dict]               # copies, each with its cell's `model` and `harness`
+    cells(records) -> list[(arm, model | None, harness)]  # the report's cells outside the plan-level slice
+    cell_name(arm, model, harness="") -> str
+    arm_metrics(records, experiment_id, arm, ks=(3,), model=None, harness=None) -> list[Metric]
+                                                      # harness=None pools every harness of the arm (bug-40de03)
     false_greens(records) -> list[dict]; excluded(records) -> list[dict]
     plan_slice(records, experiment_id) -> (section: dict | None, metrics: list[Metric])
     clopper_pearson(successes, n, alpha=0.05) -> (low, high)
@@ -72,9 +77,9 @@ PLAN_SLICE = "PL"
 EXCLUDED = ("infra_error", "leak_suspected")
 CENSORED = ("aborted_cap", "timeout")
 # S09 §4.2's arm registry: these arms run Roko, and their reported pass is the gate's final verdict.
-ROKO_ARMS = frozenset({"roko_fixed", "roko_full", "fr_claude", "roko_plan"})
+ROKO_ARMS = frozenset({"roko_fixed", "roko_full", "fr_claude", "roko_plan", "roko_ladder"})
 # S09 §4.2 and §4.9: arms whose runs may switch models (routing, the tier ladder, a planner, escalation).
-ROUTED_ARMS = frozenset({"roko_full", "roko_plan", "hybrid"})
+ROUTED_ARMS = frozenset({"roko_full", "roko_plan", "hybrid", "roko_ladder"})
 NOT_PASSED = ("unverified", "forced_accept")
 # gap-9eb1e1: Roko's final attempt changed nothing, and its checks passed on the tree as it was. S01's own stratum, so
 # it is neither a reported pass nor unverified: counted apart, in its own metric.
@@ -172,14 +177,24 @@ def task_key(record: dict) -> tuple[str, str]:
     return record["task"]["instance_id"], record["task"]["spec_variant"]
 
 
+def harness_of(record: dict) -> str:
+    """S08 decision 3 (3317): the harness that ran a record, from the runner's own `network_policy.harness` marker
+    (`run_msa.py`'s, for the cheap_direct arm's mini-swe-agent candidate); "" (the arm's own, usual one) when the
+    runner names none, which is every arm but that one today."""
+    policy = record.get("provenance", {}).get("network_policy") or {}
+    return policy.get("harness") or ""
+
+
 def check_unique(records: Iterable[dict]) -> None:
-    """Raise MetricsError when a cell ran one task twice with the same seed and replicate, or a run fits no cell."""
+    """Raise MetricsError when a cell ran one task twice with the same seed and replicate, or a run fits no cell. Two
+    harnesses of the same nominal arm (3317) are never pooled into one cell's "duplicate": harness_of joins the key."""
     seen: dict[tuple, str] = {}
     for record in with_models(records):
-        key = (record["arm"], record["model"], *task_key(record), record["seed"], record["replicate"])
+        key = (record["arm"], record["model"], harness_of(record), *task_key(record), record["seed"],
+              record["replicate"])
         if key in seen:
-            raise MetricsError(f"arm {cell_name(key[0], key[1])} ran {key[2]} ({key[3]}) with seed {key[4]} and "
-                               f"replicate {key[5]} twice (runs {seen[key]} and {record['run_id']}); a repeat is not "
+            raise MetricsError(f"arm {cell_name(key[0], key[1])} ran {key[3]} ({key[4]}) with seed {key[5]} and "
+                               f"replicate {key[6]} twice (runs {seen[key]} and {record['run_id']}); a repeat is not "
                                "an independent run")
         seen[key] = record["run_id"]
 
@@ -204,7 +219,9 @@ def run_models(records: Iterable[dict]) -> dict[tuple[str, str, str], str | None
 
 def with_models(records: Iterable[dict]) -> list[dict]:
     """Copies of the records, each with `model`, its cell's model: its run's model when its arm ran more than one
-    model in the experiment, else None. Raises MetricsError for a run that has no cell (module docstring)."""
+    model in the experiment, else None; and `harness` (`harness_of`, 3317), so two harnesses sharing one nominal
+    arm id (`cheap_direct`/`cheap_direct_msa`) never pool into one cell. Raises MetricsError for a run that has
+    no cell (module docstring)."""
     records = list(records)
     by_run = run_models(records)
     ran: dict[tuple[str, str], set[str]] = {}
@@ -218,20 +235,25 @@ def with_models(records: Iterable[dict]) -> list[dict]:
         if len(models) > 1 and model is None:
             raise MetricsError(f"run {record['run_id']} of arm {record['arm']} made no model call, so it belongs to "
                                f"none of the models the arm ran ({', '.join(sorted(models))})")
-        out.append({**record, "model": model})
+        out.append({**record, "model": model, "harness": harness_of(record)})
     return out
 
 
-def cell_name(arm: str, model: str | None) -> str:
-    """A cell as the report names it: the arm, with its model in parentheses when it has one."""
-    return f"{arm} ({model})" if model else arm
+def cell_name(arm: str, model: str | None, harness: str = "") -> str:
+    """A cell as the report names it: the arm, with its model in parentheses when it has one, and `harness` (3317)
+    appended when it is not the arm's own, usual one."""
+    name = f"{arm} ({model})" if model else arm
+    return f"{name} [{harness}]" if harness else name
 
 
-def cells(records: Iterable[dict]) -> list[tuple[str, str | None]]:
-    """The report's cells outside the plan-level slice: (arm, None) for an arm that ran one model or routes between
-    models, and (arm, model) for each model of an arm that ran more than one."""
-    return sorted({(row["arm"], row["model"]) for row in with_models(records) if row["task"]["family"] != PLAN_SLICE},
-                  key=lambda cell: (cell[0], cell[1] or ""))
+def cells(records: Iterable[dict]) -> list[tuple[str, str | None, str]]:
+    """The report's cells outside the plan-level slice: (arm, None | model, harness). `model` is `None` for an arm
+    that ran one model or routes between models, else each model of an arm that ran more than one; `harness` is ""
+    for the arm's own, usual one, else 3317's marker (`harness_of`) -- so `cheap_direct`'s bash loop and
+    `cheap_direct_msa`'s mini-swe-agent, which share the nominal arm id `cheap_direct`, are two cells, not one
+    pooled together (bug-40de03)."""
+    return sorted({(row["arm"], row["model"], row["harness"]) for row in with_models(records)
+                  if row["task"]["family"] != PLAN_SLICE}, key=lambda cell: (cell[0], cell[1] or "", cell[2]))
 
 
 def vs_rate(records: Iterable[dict], label: Callable[[dict], int] = vs_minus) -> float | None:
@@ -243,9 +265,11 @@ def vs_rate(records: Iterable[dict], label: Callable[[dict], int] = vs_minus) ->
 
 
 def arm_metrics(records: Iterable[dict], experiment_id: str, arm: str, ks: Sequence[int] = (3,),
-                model: str | None = None) -> list[Metric]:
+                model: str | None = None, harness: str | None = None) -> list[Metric]:
     """Every metric of one cell outside the plan-level slice: overall, at each level, and per family x level. The
-    cell is the arm, or the arm and `model` when the arm ran more than one model (see `cells`)."""
+    cell is the arm, or the arm and `model` when the arm ran more than one model (see `cells`). `harness` (3317)
+    is `None` by default, pooling every harness of the arm (every caller's cell before bug-40de03); a caller that
+    distinguishes `cheap_direct`'s cells (see `cells`) passes the harness its own 3-tuple named."""
     rows = with_models(records)
     ran = sorted({row["model"] for row in rows if row["experiment_id"] == experiment_id and row["arm"] == arm} - {None})
     if (model is None and ran) or (model is not None and model not in ran):
@@ -255,6 +279,8 @@ def arm_metrics(records: Iterable[dict], experiment_id: str, arm: str, ks: Seque
     clauses = [Clause("experiment_id", "==", experiment_id), Clause("arm", "==", arm)]
     if model is not None:
         clauses.append(Clause("model", "==", model))
+    if harness is not None:
+        clauses.append(Clause("harness", "==", harness))
     base = cut(rows, (*clauses, Clause("task.family", "!=", PLAN_SLICE)))
     out = _cell_metrics(base, arm, ks, "all", None)
     for level in sorted({row["task"]["ladder"] for row in base.rows}):

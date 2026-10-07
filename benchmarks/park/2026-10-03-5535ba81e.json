@@ -1,0 +1,157 @@
+{
+  "schema": "roko-park-measurement/1",
+  "date": "2026-10-03",
+  "commit": "5535ba81e",
+  "decision": "9201: park every tldr §3 group behind an off-by-default feature, except the conductor (9236)",
+  "method": "Lines of the .rs files each feature gates as a whole (wc -l, tests included), at the commit above.",
+  "parked_features": [
+    {
+      "feature": "chain",
+      "crates": [
+        "roko-cli",
+        "roko-serve"
+      ],
+      "tasks": [
+        "9214",
+        "9215",
+        "9216",
+        "9217",
+        "9218"
+      ],
+      "enable": "cargo build -p roko-cli --features chain",
+      "whole_file_lines": 34307,
+      "files": {
+        "crates/roko-chain/src": 29678,
+        "crates/roko-serve/src/routes/arenas.rs": 1180,
+        "crates/roko-serve/src/routes/registries.rs": 1317,
+        "crates/roko-serve/src/routes/marketplace.rs": 197,
+        "crates/roko-serve/src/routes/defi.rs": 55,
+        "crates/roko-serve/src/routes/rpc_proxy.rs": 188,
+        "crates/roko-serve/src/feed_agents/chain_watcher.rs": 74,
+        "crates/roko-serve/src/feed_agents/gas_oracle.rs": 88,
+        "crates/roko-serve/src/feed_agents/onchain.rs": 403,
+        "crates/roko-cli/src/chain_handler.rs": 1074,
+        "crates/roko-cli/src/chain_registry.rs": 53
+      }
+    },
+    {
+      "feature": "groups",
+      "crates": [
+        "roko-cli",
+        "roko-serve"
+      ],
+      "tasks": [
+        "9219"
+      ],
+      "enable": "cargo build -p roko-cli --features groups",
+      "whole_file_lines": 2303,
+      "files": {
+        "crates/roko-serve/src/group_runtime.rs": 1436,
+        "crates/roko-serve/src/routes/groups.rs": 867
+      }
+    },
+    {
+      "feature": "relay",
+      "crates": [
+        "roko-cli",
+        "roko-serve"
+      ],
+      "tasks": [
+        "9220"
+      ],
+      "enable": "cargo build -p roko-cli --features relay",
+      "whole_file_lines": 160,
+      "files": {
+        "crates/roko-serve/src/routes/relay_proxy.rs": 160
+      }
+    },
+    {
+      "feature": "cognitive-clock",
+      "crates": [
+        "roko-cli",
+        "roko-runtime"
+      ],
+      "tasks": [
+        "9221",
+        "9222"
+      ],
+      "enable": "cargo build -p roko-cli --features cognitive-clock",
+      "whole_file_lines": 7030,
+      "files": {
+        "crates/roko-runtime/src/heartbeat.rs": 2420,
+        "crates/roko-runtime/src/heartbeat_attention.rs": 2155,
+        "crates/roko-runtime/src/heartbeat_probes.rs": 1552,
+        "crates/roko-runtime/src/theta_consumer.rs": 478,
+        "crates/roko-runtime/src/delta_consumer.rs": 425
+      }
+    },
+    {
+      "feature": "cross-cut-functors",
+      "crates": [
+        "roko-compose"
+      ],
+      "tasks": [
+        "9223"
+      ],
+      "enable": "cargo build -p roko-compose --features cross-cut-functors",
+      "whole_file_lines": 1854,
+      "files": {
+        "crates/roko-compose/src/cross_cut.rs": 171,
+        "crates/roko-compose/src/daimon_functor.rs": 350,
+        "crates/roko-compose/src/dreams_functor.rs": 237,
+        "crates/roko-compose/src/memory_functor.rs": 449,
+        "crates/roko-compose/src/safety_functor.rs": 233,
+        "crates/roko-compose/src/natural_transforms.rs": 414
+      }
+    },
+    {
+      "feature": "spc",
+      "crates": [
+        "roko-gate"
+      ],
+      "tasks": [
+        "9224"
+      ],
+      "enable": "cargo build -p roko-gate --features spc",
+      "whole_file_lines": 1202,
+      "files": {
+        "crates/roko-gate/src/spc.rs": 415,
+        "crates/roko-gate/src/pelt.rs": 348,
+        "crates/roko-gate/src/hotelling.rs": 439
+      }
+    },
+    {
+      "feature": "active-inference",
+      "crates": [
+        "roko-learn"
+      ],
+      "tasks": [
+        "9225"
+      ],
+      "enable": "cargo build -p roko-learn --features active-inference",
+      "whole_file_lines": 508,
+      "files": {
+        "crates/roko-learn/src/active_inference.rs": 508
+      }
+    }
+  ],
+  "whole_file_lines_total": 47364,
+  "workspace_tracked_rs_lines": 1237637,
+  "share_of_workspace": 0.0383,
+  "not_counted": [
+    "files gated only in part: roko-serve's relay bridge (lib.rs) and relay registration (relay.rs), the x402 check, AppState's chain, arena and registry fields, roko-std's chain tools, the agent sidecar's ERC-8004 registration, roko-cli's theta and delta sinks",
+    "alloy-backend, which was already off by default"
+  ],
+  "cargo_tree_normal_deps": {
+    "default": null,
+    "all_parked_features": null,
+    "command": "cargo tree -p roko-cli -e normal --prefix none | sort -u | wc -l"
+  },
+  "cold_build_seconds": {
+    "default": null,
+    "all_parked_features": null,
+    "command": "cargo build -p roko-cli (cold, idle machine), then the same with --features chain,groups,relay,cognitive-clock and the crate features cross-cut-functors, spc, active-inference"
+  },
+  "pending": "The cargo-based numbers need one idle machine; the worker that wrote this file runs no cargo, so they are null until the coordinator measures them.",
+  "conclusion": "Whole-file parking takes 47,364 of 1,237,637 tracked .rs lines (3.8%) out of the default build, 34,307 of them chain; the dependency and build-time effects are not measured yet."
+}

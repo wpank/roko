@@ -8,7 +8,7 @@ use std::io::{BufWriter, Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
 
-use crate::orchestrator::{ExecutorSnapshot, OrchestratorSnapshot, PlanRevisionRequest};
+use crate::orchestrator::{ExecutorSnapshot, PlanRevisionRequest};
 use anyhow::{Context, Result};
 use roko_fs::RokoLayout;
 use roko_runtime::StateSnapshot;
@@ -49,8 +49,6 @@ pub struct PersistPaths {
     pub events_json: PathBuf,
     /// `.roko/events.jsonl` — append-only runner event log consumed by TUI/server.
     pub events_jsonl: PathBuf,
-    /// `.roko/state/run-ledger.jsonl` — typed run ledger (task starts, completions, gate outcomes).
-    pub run_ledger_jsonl: PathBuf,
     /// `.roko/state/status.json` — lightweight runner status for fast polling.
     pub status_json: PathBuf,
 }
@@ -79,7 +77,6 @@ impl PersistPaths {
             agent_pids_json: layout.agent_pids_path(),
             events_json: layout.event_log_snapshot(),
             events_jsonl: layout.events_jsonl_path(),
-            run_ledger_jsonl: layout.run_ledger_path(),
             status_json: state.join("status.json"),
         })
     }
@@ -251,6 +248,11 @@ pub struct GateThresholdStats {
     pub total_count: u64,
     #[serde(default = "GateThresholdStats::default_ema_pass_rate")]
     pub ema_pass_rate: f64,
+    /// Fields that roko-acp's `AdaptiveThresholds` keeps for the rung (its
+    /// pass streak, CUSUM and poisoning-defense state), carried through a
+    /// load and save unchanged (bug-35c901).
+    #[serde(flatten)]
+    pub extra: serde_json::Map<String, serde_json::Value>,
 }
 
 impl GateThresholdStats {
@@ -265,6 +267,7 @@ impl Default for GateThresholdStats {
             pass_count: 0,
             total_count: 0,
             ema_pass_rate: Self::default_ema_pass_rate(),
+            extra: serde_json::Map::new(),
         }
     }
 }
@@ -274,6 +277,11 @@ impl Default for GateThresholdStats {
 pub struct GateThresholds {
     #[serde(default)]
     pub rungs: HashMap<u32, GateThresholdStats>,
+    /// Fields that roko-acp's `AdaptiveThresholds` keeps in the same file
+    /// (its CUSUM settings and SPC detectors), carried through a load and
+    /// save unchanged (bug-35c901).
+    #[serde(flatten)]
+    pub extra: serde_json::Map<String, serde_json::Value>,
 }
 
 /// Per-rung conservative EMA priors used when no observations have been
@@ -313,9 +321,8 @@ impl GateThresholds {
                 .rungs
                 .entry(rung)
                 .or_insert_with(|| GateThresholdStats {
-                    pass_count: 0,
-                    total_count: 0,
                     ema_pass_rate: prior,
+                    ..GateThresholdStats::default()
                 });
             // Only update the EMA when this rung truly has no observations.
             // Never clobber learned data.
@@ -330,14 +337,26 @@ impl GateThresholds {
         self.rungs.values().map(|s| s.total_count).sum()
     }
 
+    /// Fold one gate outcome into `rung`'s pass-rate EMA with the default
+    /// `[gates] ema_alpha`. Graph runs pass the configured one
+    /// ([`Self::observe_with_alpha`]).
+    #[cfg(test)]
     pub(crate) fn observe(&mut self, rung: u32, passed: bool) {
+        let alpha = roko_core::config::GatesConfig::default().ema_alpha;
+        self.observe_with_alpha(rung, passed, alpha);
+    }
+
+    /// Fold one gate outcome into `rung`'s pass-rate EMA with smoothing
+    /// factor `alpha`, `[gates] ema_alpha` on Graph runs (gap-7a3527). A
+    /// rung's first observation replaces its prior.
+    pub(crate) fn observe_with_alpha(&mut self, rung: u32, passed: bool, alpha: f64) {
         let stats = self.rungs.entry(rung).or_default();
         let value = if passed { 1.0 } else { 0.0 };
 
         if stats.total_count == 0 {
             stats.ema_pass_rate = value;
         } else {
-            stats.ema_pass_rate = 0.1_f64.mul_add(value, 0.9 * stats.ema_pass_rate);
+            stats.ema_pass_rate = alpha.mul_add(value, (1.0 - alpha) * stats.ema_pass_rate);
         }
 
         stats.total_count += 1;
@@ -365,9 +384,9 @@ impl GateThresholds {
 
     /// Feed one Graph verify sequence, as `(phase, passed)` per step, into
     /// the thresholds: each step whose phase names a canonical rung updates
-    /// that rung's EMA. A test-rung step also feeds
-    /// [`Self::observe_residual`] with how far the CodingOracle's test
-    /// pass-rate forecast for the attempt missed, when that forecast
+    /// that rung's EMA with smoothing factor `ema_alpha`. A test-rung step
+    /// also feeds [`Self::observe_residual`] with how far the CodingOracle's
+    /// test pass-rate forecast for the attempt missed, when that forecast
     /// (`(predicted, confidence)`, taken before the steps ran, so it never
     /// saw them) is confident enough to act on. Returns the `(rung,
     /// residual)` pairs observed.
@@ -375,6 +394,7 @@ impl GateThresholds {
         &mut self,
         step_outcomes: &[(String, bool)],
         test_pass_forecast: Option<(f64, f64)>,
+        ema_alpha: f64,
     ) -> Vec<(u32, f64)> {
         /// The CodingOracle's own bar for acting on its forecast.
         const MIN_FORECAST_CONFIDENCE: f64 = 0.1;
@@ -391,7 +411,7 @@ impl GateThresholds {
             else {
                 continue;
             };
-            self.observe(rung, *passed);
+            self.observe_with_alpha(rung, *passed, ema_alpha);
             if let Some(predicted) = forecast.filter(|_| rung == test_rung) {
                 let residual = predicted - if *passed { 1.0 } else { 0.0 };
                 self.observe_residual(rung, residual);
@@ -401,31 +421,12 @@ impl GateThresholds {
         residuals
     }
 
-    /// P1-09: Apply neuro-derived knowledge hints to threshold tuning.
-    ///
-    /// Known failure rungs get their EMA biased toward caution when few
-    /// observations exist. Known stable rungs are left untouched (the
-    /// existing EMA already captures stability).
-    pub(crate) fn apply_neuro_hints(
-        &mut self,
-        known_failure_rungs: &[u32],
-        known_stable_rungs: &[u32],
-    ) {
-        let _ = known_stable_rungs; // stability hints don't modify persist thresholds
-        for &rung in known_failure_rungs {
-            let stats = self.rungs.entry(rung).or_default();
-            if stats.total_count < 10 {
-                stats.ema_pass_rate = (stats.ema_pass_rate * 0.7).min(0.5);
-            }
-        }
-    }
-
     /// P1-10: Apply a domain-specific threshold profile.
     ///
     /// Sets rung priors from the profile when the rung has no prior
     /// observations, giving domain-appropriate initial expectations. Graph
     /// verify runs apply their task's profile before observing. A rung's
-    /// first observation replaces its prior ([`Self::observe`]).
+    /// first observation replaces its prior ([`Self::observe_with_alpha`]).
     pub(crate) fn apply_profile(
         &mut self,
         profile: &roko_gate::adaptive_threshold::ThresholdProfile,
@@ -503,6 +504,26 @@ impl GateThresholds {
         thresholds.fill_default_rungs();
         Ok(thresholds)
     }
+
+    /// Update the thresholds at `path` in one read-modify-write under the
+    /// file's sibling lock: load them (defaults when the file is missing,
+    /// every canonical rung filled in, as [`Self::load_or_default`] does),
+    /// apply `update`, and save them when it changed them. Updates that run
+    /// at once, from a run's parallel tasks or another roko process in the
+    /// workspace, each build on the one before, so none is lost
+    /// (bug-e0f472). A file that cannot be read is an error and is left as
+    /// it is. Returns the thresholds as saved and what `update` returned.
+    pub(crate) fn update_locked<R>(
+        path: &Path,
+        update: impl FnOnce(&mut Self) -> R,
+    ) -> Result<(Self, R)> {
+        roko_fs::with_locked_json_transaction::<Self, _, std::io::Error, _>(path, |thresholds| {
+            thresholds.fill_default_rungs();
+            let result = update(thresholds);
+            Ok((thresholds.clone(), result))
+        })
+        .with_context(|| format!("updating {}", path.display()))
+    }
 }
 
 /// Load persisted gate thresholds from disk, or create a fresh default set.
@@ -512,24 +533,7 @@ impl GateThresholds {
 /// rungs have been exercised in past runs.  If the file does not exist yet
 /// (fresh workspace), a fully defaulted set is returned.
 pub fn load_gate_thresholds(paths: &PersistPaths) -> Result<GateThresholds> {
-    let mut thresholds = match GateThresholds::load(&paths.gate_thresholds_json) {
-        Ok(t) => t,
-        Err(err)
-            if err.chain().any(|e| {
-                e.downcast_ref::<std::io::Error>()
-                    .is_some_and(|io| io.kind() == std::io::ErrorKind::NotFound)
-            }) =>
-        {
-            tracing::debug!(
-                path = %paths.gate_thresholds_json.display(),
-                "gate-thresholds.json not found; starting from defaults"
-            );
-            GateThresholds::default()
-        }
-        Err(err) => return Err(err),
-    };
-    thresholds.fill_default_rungs();
-    Ok(thresholds)
+    GateThresholds::load_or_default(&paths.gate_thresholds_json)
 }
 
 /// Atomically write the adaptive gate thresholds to the standalone
@@ -540,28 +544,6 @@ pub fn load_gate_thresholds(paths: &PersistPaths) -> Result<GateThresholds> {
 /// the standalone file is what external readers depend on.
 pub fn save_gate_thresholds(paths: &PersistPaths, thresholds: &GateThresholds) -> Result<()> {
     thresholds.save(&paths.gate_thresholds_json)
-}
-
-/// Flush gate thresholds to disk when the observation counter reaches the
-/// configured interval.
-///
-/// Increments `obs_since_flush` unconditionally. When the count reaches
-/// `flush_interval`, the thresholds are saved atomically and the counter
-/// is reset to zero.  Flush errors are logged at warn level and do not
-/// propagate — a missed flush is non-fatal; the thresholds are still held
-/// in memory and will be flushed on the next interval or at run completion.
-pub fn maybe_flush_gate_thresholds(
-    thresholds: &GateThresholds,
-    obs_since_flush: &mut u64,
-    paths: &PersistPaths,
-    flush_interval: u64,
-) {
-    if *obs_since_flush >= flush_interval {
-        if let Err(e) = save_gate_thresholds(paths, thresholds) {
-            tracing::warn!(error = %e, "failed to flush gate thresholds to disk");
-        }
-        *obs_since_flush = 0;
-    }
 }
 
 /// Atomically write `content` to `path` via a `.tmp` sibling.
@@ -843,23 +825,6 @@ pub fn append_runner_event(paths: &PersistPaths, event: &RunnerEvent) -> Result<
 pub fn save_executor_snapshot(paths: &PersistPaths, snapshot: &ExecutorSnapshot) -> Result<()> {
     let json = serde_json::to_string_pretty(snapshot).context("serializing executor snapshot")?;
     atomic_write(&paths.executor_json, json.as_bytes())
-}
-
-/// Save the aggregate orchestrator snapshot atomically.
-pub fn save_orchestrator_snapshot(
-    paths: &PersistPaths,
-    snapshot: &OrchestratorSnapshot,
-) -> Result<()> {
-    let json = snapshot
-        .to_json()
-        .context("serializing orchestrator snapshot")?;
-    atomic_write(&paths.orchestrator_json, json.as_bytes())
-}
-
-/// Save the set of live agent PIDs.
-pub fn save_agent_pids(paths: &PersistPaths, pids: &[u32]) -> Result<()> {
-    let json = serde_json::to_string_pretty(&pids).context("serializing agent PIDs")?;
-    atomic_write(&paths.agent_pids_json, json.as_bytes())
 }
 
 /// Atomically write the runner-owned [`RunStateSnapshot`].
@@ -1284,34 +1249,6 @@ pub fn section_outcomes_path(workdir: &Path) -> PathBuf {
         .join("section-outcomes.jsonl")
 }
 
-/// Read previously-saved agent PIDs and kill any that are still alive.
-pub fn cleanup_orphaned_agents(paths: &PersistPaths) {
-    let Ok(content) = fs::read_to_string(&paths.agent_pids_json) else {
-        return;
-    };
-    let pids = match serde_json::from_str::<Vec<u32>>(&content) {
-        Ok(p) => p,
-        Err(e) => {
-            tracing::warn!(
-                path = %paths.agent_pids_json.display(),
-                err = %e,
-                "malformed agent PID file — removing"
-            );
-            let _ = fs::remove_file(&paths.agent_pids_json);
-            return;
-        }
-    };
-
-    for pid in pids {
-        // Delegate to roko-agent's registry-based cleanup.
-        roko_agent::process::register_spawned_pid(pid);
-    }
-    roko_agent::process::cleanup_orphaned_agents();
-
-    // Clean up the PID file.
-    let _ = fs::remove_file(&paths.agent_pids_json);
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1391,17 +1328,6 @@ mod tests {
     }
 
     #[test]
-    fn save_agent_pids_roundtrip() {
-        let tmp = tempfile::tempdir().unwrap();
-        let paths = PersistPaths::from_workdir(tmp.path()).unwrap();
-        save_agent_pids(&paths, &[1234, 5678]).unwrap();
-
-        let content = fs::read_to_string(&paths.agent_pids_json).unwrap();
-        let pids: Vec<u32> = serde_json::from_str(&content).unwrap();
-        assert_eq!(pids, vec![1234, 5678]);
-    }
-
-    #[test]
     fn load_run_state_defaults_missing_cascade_router_json() {
         let tmp = tempfile::tempdir().unwrap();
         let paths = PersistPaths::from_workdir(tmp.path()).unwrap();
@@ -1451,79 +1377,6 @@ mod tests {
         gt.observe(3, false);
         gt.observe(3, true);
         assert_eq!(gt.total_observations(), 5);
-    }
-
-    /// E07-T10: Prove incremental gate-threshold flush writes to disk
-    /// periodically (every N observations) and that data survives a
-    /// re-read.
-    #[test]
-    fn incremental_gate_threshold_flush() {
-        let tmp = tempfile::tempdir().unwrap();
-        let paths = PersistPaths::from_workdir(tmp.path()).unwrap();
-        let config = roko_core::config::RokoConfig::from_toml(
-            "[learning]\ngate_threshold_flush_interval = 3\n",
-        )
-        .expect("parse custom learning cadence");
-        let flush_interval = config.learning.effective_gate_threshold_flush_interval();
-        assert_eq!(flush_interval, 3);
-
-        let mut thresholds = GateThresholds::default();
-        let mut obs_since_flush: u64 = 0;
-
-        // Accumulate observations below the flush interval -- no file yet.
-        for i in 0..(flush_interval - 1) {
-            thresholds.observe(1, i % 2 == 0);
-            obs_since_flush += 1;
-            super::maybe_flush_gate_thresholds(
-                &thresholds,
-                &mut obs_since_flush,
-                &paths,
-                flush_interval,
-            );
-        }
-        assert!(
-            !paths.gate_thresholds_json.exists(),
-            "file must not exist before flush interval reached"
-        );
-        assert_eq!(obs_since_flush, flush_interval - 1);
-
-        // One more observation crosses the interval -- file must appear.
-        thresholds.observe(1, true);
-        obs_since_flush += 1;
-        super::maybe_flush_gate_thresholds(
-            &thresholds,
-            &mut obs_since_flush,
-            &paths,
-            flush_interval,
-        );
-        assert!(
-            paths.gate_thresholds_json.exists(),
-            "file must exist after flush interval reached"
-        );
-        assert_eq!(obs_since_flush, 0, "counter must reset after flush");
-
-        // Verify the persisted content round-trips.
-        let loaded = GateThresholds::load(&paths.gate_thresholds_json).unwrap();
-        assert_eq!(loaded, thresholds);
-
-        // Another full interval of observations produces a second flush
-        // with updated data.
-        for _ in 0..flush_interval {
-            thresholds.observe(2, false);
-            obs_since_flush += 1;
-        }
-        super::maybe_flush_gate_thresholds(
-            &thresholds,
-            &mut obs_since_flush,
-            &paths,
-            flush_interval,
-        );
-        let reloaded = GateThresholds::load(&paths.gate_thresholds_json).unwrap();
-        assert_eq!(reloaded, thresholds, "second flush must write updated data");
-        assert!(
-            reloaded.rungs.contains_key(&2),
-            "rung 2 must be present after second flush"
-        );
     }
 
     #[test]
@@ -1716,6 +1569,77 @@ mod tests {
         }
     }
 
+    /// bug-e0f472: verify runs that update gate-thresholds.json at once each
+    /// read what the others saved, so every observation reaches the EMA.
+    #[test]
+    fn concurrent_verify_updates_keep_every_gate_observation() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("learn").join("gate-thresholds.json");
+        let updates: Vec<_> = (0..16_u32)
+            .map(|index| {
+                let path = path.clone();
+                std::thread::spawn(move || {
+                    let steps = [("test".to_string(), index % 2 == 0)];
+                    GateThresholds::update_locked(&path, |thresholds| {
+                        thresholds.observe_verify_steps(&steps, None, 0.1)
+                    })
+                    .expect("locked update");
+                })
+            })
+            .collect();
+        for update in updates {
+            update.join().expect("update thread");
+        }
+
+        let thresholds = GateThresholds::load_or_default(&path).expect("load thresholds");
+        let test = &thresholds.rungs[&2];
+        assert_eq!(test.total_count, 16, "{thresholds:?}");
+        assert_eq!(test.pass_count, 8, "{thresholds:?}");
+        assert_eq!(
+            thresholds.rungs.len(),
+            7,
+            "every canonical rung is filled in"
+        );
+    }
+
+    /// bug-35c901: a gate-thresholds.json roko-acp wrote keeps the fields
+    /// only `AdaptiveThresholds` knows (pass streaks, CUSUM state, SPC
+    /// detectors) when a Graph run updates it, and roko-acp reads them back.
+    #[test]
+    fn gate_thresholds_schema_keeps_acp_fields() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("gate-thresholds.json");
+        let mut acp = roko_gate::AdaptiveThresholds::default();
+        for _ in 0..3 {
+            acp.observe(0, true);
+        }
+        acp.save(&path).expect("acp thresholds");
+        let read = |path: &Path| -> serde_json::Value {
+            serde_json::from_str(&fs::read_to_string(path).expect("thresholds")).expect("json")
+        };
+        let before = read(&path);
+
+        GateThresholds::update_locked(&path, |thresholds| thresholds.observe(0, false))
+            .expect("graph update");
+
+        let after = read(&path);
+        for key in before.as_object().expect("thresholds").keys() {
+            assert!(after.get(key).is_some(), "{key} was dropped: {after}");
+        }
+        // The Graph path names the count `total_count`, which roko-acp reads.
+        let rung_keys = before["rungs"]["0"].as_object().expect("rung 0").keys();
+        for key in rung_keys.filter(|key| *key != "total_observations") {
+            assert!(
+                after["rungs"]["0"].get(key).is_some(),
+                "rung field {key} was dropped: {after}"
+            );
+        }
+        let acp = roko_gate::AdaptiveThresholds::load(&path).expect("roko-acp reads it");
+        let rung = acp.rung_stats(0).expect("rung 0");
+        assert_eq!(rung.total_observations, 4);
+        assert_eq!(rung.consecutive_passes, 3);
+    }
+
     /// Audit #80: `load_gate_thresholds` on a fresh workspace (no file)
     /// must not error and must return a set that covers all 7 canonical rungs.
     #[test]
@@ -1834,7 +1758,7 @@ mod tests {
         ];
 
         // The oracle forecast a 0.8 pass rate; the test step failed.
-        let residuals = thresholds.observe_verify_steps(&steps, Some((0.8, 0.5)));
+        let residuals = thresholds.observe_verify_steps(&steps, Some((0.8, 0.5)), 0.1);
         assert_eq!(residuals.len(), 1);
         assert_eq!(residuals[0].0, 2);
         assert!((residuals[0].1 - 0.8).abs() < 1e-9);
@@ -1852,10 +1776,14 @@ mod tests {
         let mut unforecast = GateThresholds::default();
         assert!(
             unforecast
-                .observe_verify_steps(&steps, Some((0.8, 0.1)))
+                .observe_verify_steps(&steps, Some((0.8, 0.1)), 0.1)
                 .is_empty()
         );
-        assert!(unforecast.observe_verify_steps(&steps, None).is_empty());
+        assert!(
+            unforecast
+                .observe_verify_steps(&steps, None, 0.1)
+                .is_empty()
+        );
         assert_eq!(unforecast.rungs[&2].total_count, 2);
     }
 }

@@ -275,7 +275,7 @@ pub struct SubscriptionRelayStatus {
 }
 ```
 
-Exposed via `GET /api/subscriptions/relay/status`.
+Exposed via `GET /api/subscriptions/relay/status` in builds with the `relay` feature; a build without it parks the route (501) and compiles no consumer.
 
 ### 8.2 ServeRelayConnectionStatus
 

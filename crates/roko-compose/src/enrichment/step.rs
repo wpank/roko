@@ -51,8 +51,6 @@ impl From<roko_core::agent::ProviderKind> for LlmBackend {
 /// later steps. Use [`ALL_ORDERED`] for the canonical execution order.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum EnrichStep {
-    /// Generate PRD context extract.
-    Prd,
     /// Generate implementation brief.
     Briefs,
     /// Generate tasks.toml.
@@ -79,11 +77,10 @@ pub enum EnrichStep {
     Scribe,
 }
 
-/// All 13 enrichment steps in dependency order.
+/// All 12 enrichment steps in dependency order.
 ///
 /// Ported from `EnrichStep::all_ordered()` (Mori line 159-175).
 pub const ALL_ORDERED: &[EnrichStep] = &[
-    EnrichStep::Prd,
     EnrichStep::Briefs,
     EnrichStep::Tasks,
     EnrichStep::Decompose,
@@ -105,7 +102,6 @@ impl EnrichStep {
     #[must_use]
     pub const fn output_filename(self) -> &'static str {
         match self {
-            Self::Prd => "prd-extract.md",
             Self::Briefs => "brief.md",
             Self::Tasks => "tasks.toml",
             Self::Decompose => "decomposition.md",
@@ -128,8 +124,7 @@ impl EnrichStep {
     #[must_use]
     pub const fn needs_llm(self) -> bool {
         match self {
-            Self::Prd
-            | Self::Briefs
+            Self::Briefs
             | Self::Tasks
             | Self::Research
             | Self::Dependencies
@@ -157,8 +152,7 @@ impl EnrichStep {
                 Self::Decompose | Self::Verify | Self::Reviews | Self::Tests | Self::Scribe => {
                     roko_core::defaults::MODEL_FOCUSED
                 }
-                Self::Prd
-                | Self::Briefs
+                Self::Briefs
                 | Self::Tasks
                 | Self::Invariants
                 | Self::Research
@@ -170,8 +164,7 @@ impl EnrichStep {
                 Self::Decompose | Self::Verify | Self::Reviews | Self::Tests | Self::Scribe => {
                     "gpt-5.4"
                 }
-                Self::Prd
-                | Self::Briefs
+                Self::Briefs
                 | Self::Tasks
                 | Self::Invariants
                 | Self::Research
@@ -187,8 +180,7 @@ impl EnrichStep {
                 Self::Decompose | Self::Verify | Self::Reviews | Self::Tests | Self::Scribe => {
                     "gemma4:27b"
                 }
-                Self::Prd
-                | Self::Briefs
+                Self::Briefs
                 | Self::Tasks
                 | Self::Invariants
                 | Self::Research
@@ -224,7 +216,6 @@ impl EnrichStep {
 impl fmt::Display for EnrichStep {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let name = match self {
-            Self::Prd => "prd",
             Self::Briefs => "briefs",
             Self::Tasks => "tasks",
             Self::Decompose => "decompose",
@@ -247,14 +238,13 @@ mod tests {
     use super::*;
 
     #[test]
-    fn all_ordered_has_13_entries() {
-        assert_eq!(ALL_ORDERED.len(), 13);
+    fn all_ordered_has_12_entries() {
+        assert_eq!(ALL_ORDERED.len(), 12);
     }
 
     #[test]
     fn all_ordered_contains_every_variant() {
         let all = [
-            EnrichStep::Prd,
             EnrichStep::Briefs,
             EnrichStep::Tasks,
             EnrichStep::Decompose,
@@ -278,7 +268,6 @@ mod tests {
 
     #[test]
     fn output_filename_table() {
-        assert_eq!(EnrichStep::Prd.output_filename(), "prd-extract.md");
         assert_eq!(EnrichStep::Briefs.output_filename(), "brief.md");
         assert_eq!(EnrichStep::Tasks.output_filename(), "tasks.toml");
         assert_eq!(EnrichStep::Decompose.output_filename(), "decomposition.md");
@@ -302,7 +291,6 @@ mod tests {
     #[test]
     fn needs_llm_table() {
         // Non-LLM steps (pure extraction).
-        assert!(!EnrichStep::Prd.needs_llm());
         assert!(!EnrichStep::Briefs.needs_llm());
         assert!(!EnrichStep::Tasks.needs_llm());
         assert!(!EnrichStep::Research.needs_llm());
@@ -329,7 +317,6 @@ mod tests {
         assert!(EnrichStep::Fixtures.is_toml());
 
         // Non-TOML steps.
-        assert!(!EnrichStep::Prd.is_toml());
         assert!(!EnrichStep::Briefs.is_toml());
         assert!(!EnrichStep::Decompose.is_toml());
         assert!(!EnrichStep::Research.is_toml());
@@ -359,7 +346,6 @@ mod tests {
     #[test]
     fn default_model_claude_light_steps_use_haiku() {
         let light = [
-            EnrichStep::Prd,
             EnrichStep::Briefs,
             EnrichStep::Tasks,
             EnrichStep::Invariants,

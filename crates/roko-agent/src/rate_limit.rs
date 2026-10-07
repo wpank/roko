@@ -646,6 +646,8 @@ mod tests {
                     ..Default::default()
                 }),
                 require_confirmation: false,
+                stream_usage: None,
+                billing: None,
             },
         );
         let limiter = ProviderRateLimiter::from_provider_configs(60, configs.iter());
@@ -680,6 +682,8 @@ mod tests {
                 max_concurrent: None,
                 limits: None,
                 require_confirmation: false,
+                stream_usage: None,
+                billing: None,
             },
         );
         configs.insert(
@@ -701,6 +705,8 @@ mod tests {
                 extra_headers: None,
                 max_concurrent: None,
                 require_confirmation: false,
+                stream_usage: None,
+                billing: None,
             },
         );
         let limiter = ProviderRateLimiter::from_provider_configs(75, configs.iter());

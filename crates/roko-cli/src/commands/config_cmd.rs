@@ -3,9 +3,392 @@
 use crate::*;
 use indexmap::IndexMap;
 use roko_cli::resolved_overrides::{ConfigEditTarget, ConfigSetInput, ResolvedExecutionOverrides};
+use roko_core::config::model_registry::cheapest_builtin_model;
 use roko_core::tool::{ToolRegistry, ToolSource};
 use roko_fs::RokoLayout;
 use serde::Serialize;
+
+// -----------------------------------------------------------------------
+// Plugins (now nested under config)
+// -----------------------------------------------------------------------
+
+#[derive(Debug, Subcommand)]
+pub(crate) enum PluginCmd {
+    /// List available and installed plugins.
+    List {
+        /// Working directory (default: cwd).
+        #[arg(long)]
+        workdir: Option<PathBuf>,
+        /// Emit JSON output instead of human-readable text.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Install a plugin from a local path or registry.
+    Install {
+        /// Path to the plugin manifest (plugin.toml) or directory.
+        source: String,
+        /// Working directory (default: cwd).
+        #[arg(long)]
+        workdir: Option<PathBuf>,
+    },
+    /// Sign and publish a WASM extension directory to the relay registry.
+    Publish {
+        /// Extension directory containing extension.toml and its WASM module.
+        source: PathBuf,
+        /// Publisher identity configured by the relay.
+        #[arg(long)]
+        publisher: String,
+        /// Registry base URL. Defaults to relay.url or ROKO_EXTENSION_REGISTRY_URL.
+        #[arg(long)]
+        registry: Option<String>,
+        /// Working directory used to resolve Roko configuration.
+        #[arg(long)]
+        workdir: Option<PathBuf>,
+    },
+    /// Remove an installed plugin by name.
+    Remove {
+        /// Name of the plugin to remove.
+        name: String,
+        /// Working directory (default: cwd).
+        #[arg(long)]
+        workdir: Option<PathBuf>,
+    },
+    /// Audit installed plugins and report capabilities.
+    Audit {
+        /// Working directory (default: cwd).
+        #[arg(long)]
+        workdir: Option<PathBuf>,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+pub(crate) enum ConfigCmd {
+    // ── Core config management ──────────────────────────────────────
+    /// Interactive wizard: detects installed LLM CLIs, writes global config.
+    #[command(alias = "wizard")]
+    Init {
+        /// Skip all confirmation prompts.
+        #[arg(long)]
+        yes: bool,
+        /// Pre-select agent command (skip picker).
+        #[arg(long)]
+        agent: Option<String>,
+        /// Pre-set model name (ollama-only convenience).
+        #[arg(long)]
+        model: Option<String>,
+        /// Pre-set token budget.
+        #[arg(long)]
+        budget: Option<usize>,
+        /// Ignored: no config key stores a role text any more.
+        #[arg(long)]
+        role: Option<String>,
+        /// Enable default compile+clippy gates.
+        #[arg(long)]
+        enable_gates: bool,
+        /// Write to this path instead of the resolved global path.
+        #[arg(long)]
+        path: Option<PathBuf>,
+        /// Non-interactive mode: skip all prompts, fail if any answer is missing.
+        #[arg(long)]
+        non_interactive: bool,
+    },
+    /// Print the effective merged config with per-field source tags.
+    Show {
+        /// Print only this section of the fully-resolved config, as TOML: a
+        /// top-level table such as `agent` or a dotted path such as `providers.anthropic`.
+        section: Option<String>,
+        /// Directory to resolve project config from (default: cwd).
+        #[arg(long)]
+        workdir: Option<PathBuf>,
+        /// Show the fully-resolved config after global merge and env var overrides.
+        #[arg(long)]
+        effective: bool,
+    },
+    /// Print the resolved global + project + env config paths.
+    Path {
+        /// Directory to resolve project config from (default: cwd).
+        #[arg(long)]
+        workdir: Option<PathBuf>,
+    },
+    /// Print basic config health without modifying files.
+    Doctor {
+        /// Directory to resolve project config from (default: cwd).
+        #[arg(long)]
+        workdir: Option<PathBuf>,
+    },
+    /// Open $EDITOR on the chosen config file.
+    Edit {
+        /// Open the global config file.
+        #[arg(long, conflicts_with = "project")]
+        global: bool,
+        /// Open (or create) the project `roko.toml`.
+        #[arg(long, conflicts_with = "global")]
+        project: bool,
+        /// Directory to resolve project config from (default: cwd).
+        #[arg(long)]
+        workdir: Option<PathBuf>,
+    },
+    /// Set a dotted key (e.g. `agent.command = ollama`) in the global or
+    /// project config.
+    ///
+    /// A secret key such as `serve.auth.api_key` goes to the project's
+    /// `.roko/.env` instead, as its `ROKO__` variable
+    /// (`ROKO__SERVE__AUTH__API_KEY`), whatever the flags, and is removed
+    /// from the config files agents can read.
+    Set {
+        /// Dotted key path.
+        key: String,
+        /// Value to write.
+        value: String,
+        /// Write to project config instead of global.
+        #[arg(long, conflicts_with = "global")]
+        project: bool,
+        /// Write to global config (default).
+        #[arg(long, conflicts_with = "project")]
+        global: bool,
+        /// Directory to resolve project config from (default: cwd).
+        #[arg(long)]
+        workdir: Option<PathBuf>,
+    },
+    /// Store a secret in `~/.roko/.env` as `NAME=VALUE`.
+    SetSecret {
+        /// Secret name.
+        name: String,
+        /// Secret value.
+        value: String,
+    },
+    /// Check `${VAR}` references in config and validate referenced secrets.
+    CheckSecrets {
+        /// Directory to resolve project config from (default: cwd).
+        #[arg(long)]
+        workdir: Option<PathBuf>,
+    },
+    /// Validate `roko.toml` syntax, schema, and semantic references.
+    Validate {
+        /// Directory to resolve project config from (default: cwd).
+        #[arg(long)]
+        workdir: Option<PathBuf>,
+    },
+    /// Migrate a legacy project `roko.toml` into explicit provider/model tables.
+    Migrate {
+        /// Directory to resolve project config from (default: cwd).
+        #[arg(long)]
+        workdir: Option<PathBuf>,
+        /// Print the proposed migration without writing changes.
+        #[arg(long)]
+        dry_run: bool,
+        /// Skip the confirmation prompt and apply the migration immediately.
+        #[arg(short = 'y', long)]
+        yes: bool,
+    },
+
+    // ── Export ─────────────────────────────────────────────────────
+    /// Export config as environment variables for a deployment target.
+    Export {
+        /// Working directory (default: current directory).
+        #[arg(long)]
+        workdir: Option<PathBuf>,
+        /// Deployment target: railway, docker, or fly.
+        #[arg(long)]
+        env: Option<String>,
+        /// Write output to a file instead of stdout.
+        #[arg(long)]
+        output: Option<PathBuf>,
+    },
+
+    // ── Environment variables ─────────────────────────────────────
+    /// List all recognized environment variables with descriptions.
+    Env {
+        /// Emit JSON instead of a formatted table.
+        #[arg(long)]
+        json: bool,
+    },
+
+    // ── Providers ───────────────────────────────────────────────────
+    /// Inspect configured LLM providers.
+    Providers {
+        #[command(subcommand)]
+        cmd: ConfigProviderCmd,
+    },
+    // ── Models ──────────────────────────────────────────────────────
+    /// Inspect configured models and routing.
+    Models {
+        #[command(subcommand)]
+        cmd: ConfigModelCmd,
+    },
+    // ── Subscriptions ───────────────────────────────────────────────
+    /// Manage event subscriptions.
+    Subscriptions {
+        #[command(subcommand)]
+        cmd: ConfigSubscriptionCmd,
+    },
+    // ── Event sources ───────────────────────────────────────────────
+    /// Inspect configured event sources (cron, file watchers).
+    Events {
+        /// Directory containing `roko.toml` (default: cwd).
+        #[arg(long)]
+        workdir: Option<PathBuf>,
+    },
+    // ── Experiments ─────────────────────────────────────────────────
+    /// Manage model A/B experiments.
+    Experiments {
+        #[command(subcommand)]
+        cmd: ExperimentCmd,
+    },
+    // ── Plugins ─────────────────────────────────────────────────────
+    /// Manage plugins (list, install, remove, audit).
+    Plugins {
+        #[command(subcommand)]
+        cmd: PluginCmd,
+    },
+    // ── Secrets ─────────────────────────────────────────────────────
+    /// Manage profile-aware secrets (set, get, list, rotate).
+    Secrets {
+        #[command(subcommand)]
+        cmd: roko_cli::SecretsCmd,
+    },
+    // ── MCP servers ────────────────────────────────────────────────
+    /// Manage MCP server configuration (list, test, add).
+    Mcp {
+        #[command(subcommand)]
+        cmd: ConfigMcpCmd,
+    },
+    // ── Presets ─────────────────────────────────────────────────────
+    /// Apply validated configuration presets (gates, routing, budget, model).
+    Preset {
+        #[command(subcommand)]
+        cmd: ConfigPresetCmd,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+pub(crate) enum ConfigProviderCmd {
+    /// List configured providers and their current connection status.
+    List {
+        /// Directory containing `roko.toml` (default: cwd / --repo).
+        #[arg(long)]
+        workdir: Option<PathBuf>,
+    },
+    /// Show persisted provider circuit-breaker health and latency.
+    Health {
+        /// Directory containing `.roko/` (default: cwd / --repo).
+        #[arg(long)]
+        workdir: Option<PathBuf>,
+        /// Make a minimal API call to each provider to verify the account has credits.
+        #[arg(long)]
+        check_credits: bool,
+    },
+    /// Clear a provider's persisted circuit once its cause is fixed (a CLI
+    /// logged in again, a bill paid), so runs route to it again. Without a
+    /// provider, clears every provider held out of routing.
+    ResetHealth {
+        /// Provider name from `[providers.*]`; omit to clear every held provider.
+        provider: Option<String>,
+        /// Directory containing `.roko/` (default: cwd / --repo).
+        #[arg(long)]
+        workdir: Option<PathBuf>,
+    },
+    /// Send a minimal request to verify provider connectivity.
+    Test {
+        /// Provider name from `[providers.*]`.  Omit when using `--all`.
+        provider: Option<String>,
+        /// Test every configured provider and print a summary table.
+        #[arg(long)]
+        all: bool,
+        /// Directory containing `roko.toml` (default: cwd / --repo).
+        #[arg(long)]
+        workdir: Option<PathBuf>,
+    },
+    /// List all supported provider kinds with required credentials and setup instructions.
+    Available,
+    /// Scan environment for API keys and report available providers.
+    Discover {
+        /// Directory containing `roko.toml` (default: cwd / --repo).
+        #[arg(long)]
+        workdir: Option<PathBuf>,
+    },
+    /// Interactive provider setup with pre-filled defaults from the catalog.
+    Add {
+        /// Provider catalog ID (e.g. deepseek, openai, anthropic).
+        name: String,
+        /// Print the generated TOML without writing to config.
+        #[arg(long)]
+        dry_run: bool,
+        /// Directory containing `roko.toml` (default: cwd / --repo).
+        #[arg(long)]
+        workdir: Option<PathBuf>,
+    },
+    /// Show all known providers from the built-in catalog with availability status.
+    Catalog {
+        /// Directory containing `roko.toml` (default: cwd / --repo).
+        #[arg(long)]
+        workdir: Option<PathBuf>,
+    },
+    /// Validate provider and model config semantics (early failure checks).
+    Validate {
+        /// Directory containing `roko.toml` (default: cwd / --repo).
+        #[arg(long)]
+        workdir: Option<PathBuf>,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+pub(crate) enum ConfigModelCmd {
+    /// List configured models and their capabilities.
+    #[command(alias = "ls")]
+    List {
+        /// Print only model names, one per line (for shell completion scripts).
+        #[arg(long)]
+        names_only: bool,
+        /// Directory containing `roko.toml` (default: cwd / --repo).
+        #[arg(long)]
+        workdir: Option<PathBuf>,
+    },
+    /// Show the current routing decision and optionally explain why it won.
+    Route {
+        /// Model key or slug to explain.
+        model: String,
+        /// Show the full routing trace instead of only the final decision.
+        #[arg(long)]
+        explain: bool,
+        /// Complexity tier (`mechanical`, `focused`, `integrative`, `architectural`).
+        #[arg(long)]
+        complexity: Option<String>,
+        /// Directory containing `roko.toml` (default: cwd / --repo).
+        #[arg(long)]
+        workdir: Option<PathBuf>,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+pub(crate) enum ConfigSubscriptionCmd {
+    /// List all subscriptions.
+    List,
+    /// Create a new subscription.
+    Add {
+        /// Agent template name to invoke.
+        #[arg(long)]
+        template: String,
+        /// Signal trigger glob to match.
+        #[arg(long)]
+        trigger: String,
+    },
+    /// Delete a subscription.
+    Remove {
+        /// Subscription ID.
+        id: String,
+    },
+    /// Enable a subscription.
+    Enable {
+        /// Subscription ID.
+        id: String,
+    },
+    /// Disable a subscription.
+    Disable {
+        /// Subscription ID.
+        id: String,
+    },
+}
 
 pub(crate) const fn edit_target(global: bool, project: bool) -> EditTarget {
     if global {
@@ -46,9 +429,6 @@ pub(crate) async fn dispatch_config(cli: &Cli, cmd: ConfigCmd) -> Result<()> {
                     return Err(anyhow!("--non-interactive requires --agent"));
                 }
                 inputs.token_budget.get_or_insert(8000);
-                inputs
-                    .role
-                    .get_or_insert_with(|| "You are a Roko agent.".into());
                 inputs.enable_gates.get_or_insert(false);
                 inputs.yes = true;
                 if inputs.agent_args.is_none() {
@@ -58,9 +438,15 @@ pub(crate) async fn dispatch_config(cli: &Cli, cmd: ConfigCmd) -> Result<()> {
             let _ = run_init_wizard(path, &inputs)?;
             Ok(())
         }
-        ConfigCmd::Show { workdir, effective } => {
+        ConfigCmd::Show {
+            section,
+            workdir,
+            effective,
+        } => {
             let wd = workdir.unwrap_or_else(|| resolve_workdir(cli));
-            if effective {
+            if let Some(section) = section {
+                config_cmd::cmd_show_section(&wd, &section)
+            } else if effective {
                 config_cmd::cmd_show_effective(&wd)
             } else {
                 config_cmd::cmd_show(&wd)
@@ -142,6 +528,10 @@ pub(crate) async fn dispatch_config(cli: &Cli, cmd: ConfigCmd) -> Result<()> {
                 let wd = workdir.unwrap_or_else(|| resolve_workdir(cli));
                 cmd_provider_health(&wd, check_credits).await?;
                 Ok(())
+            }
+            ConfigProviderCmd::ResetHealth { provider, workdir } => {
+                let wd = workdir.unwrap_or_else(|| resolve_workdir(cli));
+                cmd_provider_reset_health(&wd, provider.as_deref())
             }
             ConfigProviderCmd::Test {
                 provider,
@@ -662,8 +1052,6 @@ fn provider_add_snippet(
     }
     for model in models {
         let key = toml_string(&model_table_key(model.slug));
-        // `{:?}` keeps a whole cost a float (`3.0`, not `3`).
-        let (input, output) = (model.cost_input_per_m, model.cost_output_per_m);
         lines.push(String::new());
         lines.push(format!("[models.{key}]"));
         lines.push(format!("provider = {}", toml_string(name)));
@@ -671,8 +1059,13 @@ fn provider_add_snippet(
         lines.push(format!("context_window = {}", model.context_window));
         lines.push(format!("max_output = {}", model.max_output));
         lines.push(format!("supports_tools = {}", model.supports_tools));
-        lines.push(format!("cost_input_per_m = {input:?}"));
-        lines.push(format!("cost_output_per_m = {output:?}"));
+        // A model the built-in price table prices gets no cost keys, so its
+        // rates stay the table's (bug-0c0747). `{:?}` keeps a whole cost a
+        // float (`3.0`, not `3`).
+        if let (Some(input), Some(output)) = (model.cost_input_per_m, model.cost_output_per_m) {
+            lines.push(format!("cost_input_per_m = {input:?}"));
+            lines.push(format!("cost_output_per_m = {output:?}"));
+        }
     }
     lines.join("\n")
 }
@@ -810,6 +1203,83 @@ pub(crate) async fn cmd_provider_health(workdir: &Path, check_credits: bool) -> 
     Ok(())
 }
 
+/// `roko config providers reset-health`: clear the circuit of `provider`, or
+/// of every provider held out of routing, in `.roko/learn/provider-health.json`
+/// (gap-d90a93), and say what was cleared.
+pub(crate) fn cmd_provider_reset_health(workdir: &Path, provider: Option<&str>) -> Result<()> {
+    let cleared = reset_provider_health(&provider_health_path(workdir), provider)?;
+    if cleared.is_empty() {
+        println!("no provider is held out of routing");
+        return Ok(());
+    }
+    for line in &cleared {
+        println!("{line}");
+    }
+    println!("a plan run already in progress keeps the provider health it loaded until it ends");
+    Ok(())
+}
+
+/// Clear the circuit of `provider`, or of every provider whose circuit is
+/// open, in the provider health file at `path`, and save it. Each provider
+/// keeps its lifetime counts. Returns one line per cleared provider, naming
+/// what held it.
+///
+/// # Errors
+///
+/// A file that cannot be read or parsed, a `provider` the file does not
+/// track, or a failed save.
+pub(crate) fn reset_provider_health(path: &Path, provider: Option<&str>) -> Result<Vec<String>> {
+    use roko_learn::provider_health::{ProviderHealthRegistry, normalize_provider_key};
+
+    // Read strictly first: the registry loads a file it cannot parse as
+    // empty, and saving that would erase it.
+    let snapshot = load_provider_health_snapshot(path)?;
+    let now_ms = unix_ms_now();
+    let targets: Vec<String> = match provider {
+        Some(provider) => {
+            let key = normalize_provider_key(provider);
+            if !snapshot.contains_key(&key) {
+                bail!(
+                    "provider `{provider}` has no recorded health in {}",
+                    path.display()
+                );
+            }
+            vec![key]
+        }
+        None => {
+            let mut held: Vec<String> = snapshot
+                .iter()
+                .filter(|(_, health)| !provider_is_available(Some(*health), now_ms))
+                .map(|(key, _)| key.clone())
+                .collect();
+            held.sort();
+            held
+        }
+    };
+    if targets.is_empty() {
+        return Ok(Vec::new());
+    }
+    let registry = ProviderHealthRegistry::load_or_new(path);
+    let mut cleared = Vec::with_capacity(targets.len());
+    for key in &targets {
+        let Some(before) = registry.clear(key) else {
+            continue;
+        };
+        let note = format_provider_health_note(Some(&before), now_ms);
+        let cause = match before.failure_window.back() {
+            Some(record) => format!("{:?}", record.error_class),
+            None => "no failure".to_string(),
+        };
+        cleared.push(format!(
+            "{key}: was {note} after {cause}; its circuit is closed"
+        ));
+    }
+    registry
+        .save(path)
+        .with_context(|| format!("save {}", path.display()))?;
+    Ok(cleared)
+}
+
 /// Make a minimal API call to verify that a provider account has credits.
 ///
 /// Returns a human-readable status string such as `"ok (credits available)"`,
@@ -844,6 +1314,10 @@ async fn test_provider_credit(_provider_id: &str, provider: &ProviderConfig) -> 
 
     let result = match provider.kind {
         AnthropicApi => {
+            // The registry's cheapest Anthropic model: the probe only needs an answer.
+            let Some(model) = cheapest_builtin_model(AnthropicApi) else {
+                return "skip (no built-in anthropic model)".to_string();
+            };
             let base = provider
                 .base_url
                 .as_deref()
@@ -851,7 +1325,7 @@ async fn test_provider_credit(_provider_id: &str, provider: &ProviderConfig) -> 
                 .trim_end_matches('/');
             let endpoint = format!("{base}/v1/messages");
             let body = json!({
-                "model": "claude-3-5-haiku-20241022",
+                "model": model.slug,
                 "max_tokens": 1,
                 "messages": [{"role": "user", "content": "hi"}]
             });

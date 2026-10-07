@@ -236,10 +236,9 @@ After `roko init` or `roko setup`, the recommended first-run experience:
 roko run "Summarize what this codebase does"
 
 # 2. If the test works, try the self-hosting workflow:
-roko prd idea "Wire SystemPromptBuilder into runner"
-roko prd draft new "system-prompt-wiring"
-roko prd plan system-prompt-wiring
-roko plan run plans/system-prompt-wiring/
+roko plan generate "Wire SystemPromptBuilder into runner"   # writes plans/<slug>/
+roko run plans/<slug>
+#    (or both in one step: roko run --plan "Wire SystemPromptBuilder into runner")
 
 # 3. Watch progress:
 roko dashboard

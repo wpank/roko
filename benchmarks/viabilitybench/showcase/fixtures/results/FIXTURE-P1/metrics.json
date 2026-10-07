@@ -1,0 +1,360 @@
+{
+  "analysis_commit": "8d74531eb",
+  "computed_at": "2026-10-04T00:00:00Z",
+  "excluded": [],
+  "experiment_id": "FIXTURE-P1",
+  "false_greens": [],
+  "label": "fixture",
+  "price_snapshot_id": "prices-2026-09-28",
+  "records": [
+    {
+      "analysis_commit": "8d74531eb",
+      "arms": [
+        "roko_fixed"
+      ],
+      "blinded": false,
+      "ci": [
+        0.0945,
+        0.9055
+      ],
+      "ci_method": "wilson",
+      "commits": [
+        "8d74531eb"
+      ],
+      "computed_at": "2026-10-04T00:00:00Z",
+      "config_hashes": [
+        "b3:fixture-config"
+      ],
+      "cost_basis": null,
+      "estimator": "fixture estimator for vs_rate",
+      "experiment_id": "FIXTURE-P1",
+      "label_source": "vs_census",
+      "metric": "vs_rate",
+      "n": 2,
+      "prereg_id": null,
+      "preregistered": false,
+      "price_snapshot_id": "prices-2026-09-28",
+      "record_filter": "arm=='roko_fixed'",
+      "run_ids": [
+        "vb-fixture-r1",
+        "vb-fixture-r2"
+      ],
+      "schema_version": "vb.metric_record/1",
+      "seeds": [
+        1,
+        2
+      ],
+      "value": 0.5
+    },
+    {
+      "analysis_commit": "8d74531eb",
+      "arms": [
+        "roko_fixed"
+      ],
+      "blinded": false,
+      "ci_method": "none",
+      "commits": [
+        "8d74531eb"
+      ],
+      "computed_at": "2026-10-04T00:00:00Z",
+      "config_hashes": [
+        "b3:fixture-config"
+      ],
+      "cost_basis": "api_equiv_usd",
+      "estimator": "fixture estimator for usd_per_vs",
+      "experiment_id": "FIXTURE-P1",
+      "label_source": "vs_census",
+      "metric": "usd_per_vs",
+      "n": 2,
+      "prereg_id": null,
+      "preregistered": false,
+      "price_snapshot_id": "prices-2026-09-28",
+      "record_filter": "arm=='roko_fixed'",
+      "run_ids": [
+        "vb-fixture-r1",
+        "vb-fixture-r2"
+      ],
+      "schema_version": "vb.metric_record/1",
+      "seeds": [
+        1,
+        2
+      ],
+      "value": 0.0418
+    },
+    {
+      "analysis_commit": "8d74531eb",
+      "arms": [
+        "roko_fixed"
+      ],
+      "blinded": false,
+      "ci_method": "none",
+      "commits": [
+        "8d74531eb"
+      ],
+      "computed_at": "2026-10-04T00:00:00Z",
+      "config_hashes": [
+        "b3:fixture-config"
+      ],
+      "cost_basis": null,
+      "estimator": "fixture estimator for pass_hat_1",
+      "experiment_id": "FIXTURE-P1",
+      "label_source": "vs_census",
+      "metric": "pass_hat_1",
+      "n": 2,
+      "prereg_id": null,
+      "preregistered": false,
+      "price_snapshot_id": "prices-2026-09-28",
+      "record_filter": "arm=='roko_fixed'",
+      "run_ids": [
+        "vb-fixture-r1",
+        "vb-fixture-r2"
+      ],
+      "schema_version": "vb.metric_record/1",
+      "seeds": [
+        1,
+        2
+      ],
+      "value": 0.5
+    },
+    {
+      "analysis_commit": "8d74531eb",
+      "arms": [
+        "roko_fixed"
+      ],
+      "blinded": false,
+      "ci_method": "none",
+      "commits": [
+        "8d74531eb"
+      ],
+      "computed_at": "2026-10-04T00:00:00Z",
+      "config_hashes": [
+        "b3:fixture-config"
+      ],
+      "cost_basis": null,
+      "estimator": "fixture estimator for false_green_rate",
+      "experiment_id": "FIXTURE-P1",
+      "label_source": "vs_census",
+      "metric": "false_green_rate",
+      "n": 2,
+      "prereg_id": null,
+      "preregistered": false,
+      "price_snapshot_id": "prices-2026-09-28",
+      "record_filter": "arm=='roko_fixed'",
+      "run_ids": [
+        "vb-fixture-r1",
+        "vb-fixture-r2"
+      ],
+      "schema_version": "vb.metric_record/1",
+      "seeds": [
+        1,
+        2
+      ],
+      "value": 0.5
+    },
+    {
+      "analysis_commit": "8d74531eb",
+      "arms": [
+        "roko_fixed"
+      ],
+      "blinded": false,
+      "ci_method": "none",
+      "commits": [
+        "8d74531eb"
+      ],
+      "computed_at": "2026-10-04T00:00:00Z",
+      "config_hashes": [
+        "b3:fixture-config"
+      ],
+      "cost_basis": null,
+      "estimator": "fixture estimator for false_greens",
+      "experiment_id": "FIXTURE-P1",
+      "label_source": "vs_census",
+      "metric": "false_greens",
+      "n": 2,
+      "prereg_id": null,
+      "preregistered": false,
+      "price_snapshot_id": "prices-2026-09-28",
+      "record_filter": "arm=='roko_fixed'",
+      "run_ids": [
+        "vb-fixture-r1",
+        "vb-fixture-r2"
+      ],
+      "schema_version": "vb.metric_record/1",
+      "seeds": [
+        1,
+        2
+      ],
+      "value": 1
+    },
+    {
+      "analysis_commit": "8d74531eb",
+      "arms": [
+        "fd_claude"
+      ],
+      "blinded": false,
+      "ci": [
+        0.2065,
+        1.0
+      ],
+      "ci_method": "wilson",
+      "commits": [
+        "8d74531eb"
+      ],
+      "computed_at": "2026-10-04T00:00:00Z",
+      "config_hashes": [
+        "b3:fixture-config"
+      ],
+      "cost_basis": null,
+      "estimator": "fixture estimator for vs_rate",
+      "experiment_id": "FIXTURE-P1",
+      "label_source": "vs_census",
+      "metric": "vs_rate",
+      "n": 1,
+      "prereg_id": null,
+      "preregistered": false,
+      "price_snapshot_id": "prices-2026-09-28",
+      "record_filter": "arm=='fd_claude'",
+      "run_ids": [
+        "vb-fixture-f1"
+      ],
+      "schema_version": "vb.metric_record/1",
+      "seeds": [
+        1
+      ],
+      "value": 1.0
+    },
+    {
+      "analysis_commit": "8d74531eb",
+      "arms": [
+        "fd_claude"
+      ],
+      "blinded": false,
+      "ci_method": "none",
+      "commits": [
+        "8d74531eb"
+      ],
+      "computed_at": "2026-10-04T00:00:00Z",
+      "config_hashes": [
+        "b3:fixture-config"
+      ],
+      "cost_basis": "api_equiv_usd",
+      "estimator": "fixture estimator for usd_per_vs",
+      "experiment_id": "FIXTURE-P1",
+      "label_source": "vs_census",
+      "metric": "usd_per_vs",
+      "n": 1,
+      "prereg_id": null,
+      "preregistered": false,
+      "price_snapshot_id": "prices-2026-09-28",
+      "record_filter": "arm=='fd_claude'",
+      "run_ids": [
+        "vb-fixture-f1"
+      ],
+      "schema_version": "vb.metric_record/1",
+      "seeds": [
+        1
+      ],
+      "value": 0.241
+    },
+    {
+      "analysis_commit": "8d74531eb",
+      "arms": [
+        "fd_claude"
+      ],
+      "blinded": false,
+      "ci_method": "none",
+      "commits": [
+        "8d74531eb"
+      ],
+      "computed_at": "2026-10-04T00:00:00Z",
+      "config_hashes": [
+        "b3:fixture-config"
+      ],
+      "cost_basis": null,
+      "estimator": "fixture estimator for pass_hat_1",
+      "experiment_id": "FIXTURE-P1",
+      "label_source": "vs_census",
+      "metric": "pass_hat_1",
+      "n": 1,
+      "prereg_id": null,
+      "preregistered": false,
+      "price_snapshot_id": "prices-2026-09-28",
+      "record_filter": "arm=='fd_claude'",
+      "run_ids": [
+        "vb-fixture-f1"
+      ],
+      "schema_version": "vb.metric_record/1",
+      "seeds": [
+        1
+      ],
+      "value": 1.0
+    },
+    {
+      "analysis_commit": "8d74531eb",
+      "arms": [
+        "fd_claude"
+      ],
+      "blinded": false,
+      "ci_method": "none",
+      "commits": [
+        "8d74531eb"
+      ],
+      "computed_at": "2026-10-04T00:00:00Z",
+      "config_hashes": [
+        "b3:fixture-config"
+      ],
+      "cost_basis": null,
+      "estimator": "fixture estimator for false_green_rate",
+      "experiment_id": "FIXTURE-P1",
+      "label_source": "vs_census",
+      "metric": "false_green_rate",
+      "n": 1,
+      "prereg_id": null,
+      "preregistered": false,
+      "price_snapshot_id": "prices-2026-09-28",
+      "record_filter": "arm=='fd_claude'",
+      "run_ids": [
+        "vb-fixture-f1"
+      ],
+      "schema_version": "vb.metric_record/1",
+      "seeds": [
+        1
+      ],
+      "value": 0.0
+    },
+    {
+      "analysis_commit": "8d74531eb",
+      "arms": [
+        "fd_claude"
+      ],
+      "blinded": false,
+      "ci_method": "none",
+      "commits": [
+        "8d74531eb"
+      ],
+      "computed_at": "2026-10-04T00:00:00Z",
+      "config_hashes": [
+        "b3:fixture-config"
+      ],
+      "cost_basis": null,
+      "estimator": "fixture estimator for false_greens",
+      "experiment_id": "FIXTURE-P1",
+      "label_source": "vs_census",
+      "metric": "false_greens",
+      "n": 1,
+      "prereg_id": null,
+      "preregistered": false,
+      "price_snapshot_id": "prices-2026-09-28",
+      "record_filter": "arm=='fd_claude'",
+      "run_ids": [
+        "vb-fixture-f1"
+      ],
+      "schema_version": "vb.metric_record/1",
+      "seeds": [
+        1
+      ],
+      "value": 0
+    }
+  ],
+  "schema_version": "vb.metrics/1"
+}

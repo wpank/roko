@@ -400,12 +400,24 @@ async fn spawn_mock_provider_server(
         tokio::time::sleep(response_delay).await;
 
         if let Some(response) = response {
-            let body = mock_chat_body(&response, &expected_model);
-            let response_bytes = format!(
-                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
-                body.len(),
-                body
-            );
+            // Answer the request the client sent: the model stream asks for SSE
+            // (`stream: true`), and a plain JSON body there makes the client retry
+            // without streaming, on a connection this one-shot server never accepts
+            // (bug-68a33f).
+            let streaming = body.get("stream").and_then(Value::as_bool) == Some(true);
+            let response_bytes = if streaming {
+                format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nCache-Control: no-cache\r\nConnection: close\r\n\r\n{}",
+                    mock_chat_sse(&response, &expected_model)
+                )
+            } else {
+                let body = mock_chat_body(&response, &expected_model);
+                format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                    body.len(),
+                    body
+                )
+            };
             stream
                 .write_all(response_bytes.as_bytes())
                 .await
@@ -493,6 +505,50 @@ fn mock_chat_body(response: &MockResponse, model: &str) -> String {
         }
     })
     .to_string()
+}
+
+/// The same answer as [`mock_chat_body`], as an OpenAI chat-completions event stream: a
+/// content chunk, the finish chunk, the usage chunk that `stream_options.include_usage`
+/// asks for, then `[DONE]`.
+fn mock_chat_sse(response: &MockResponse, model: &str) -> String {
+    let chunk = |choices: Value, usage: Value| {
+        json!({
+            "id": "chatcmpl-test",
+            "object": "chat.completion.chunk",
+            "model": model,
+            "choices": choices,
+            "usage": usage,
+        })
+    };
+    let events = [
+        chunk(
+            json!([{
+                "index": 0,
+                "delta": { "role": "assistant", "content": response.text },
+                "finish_reason": null
+            }]),
+            Value::Null,
+        ),
+        chunk(
+            json!([{ "index": 0, "delta": {}, "finish_reason": "stop" }]),
+            Value::Null,
+        ),
+        chunk(
+            json!([]),
+            json!({
+                "prompt_tokens": response.input_tokens,
+                "completion_tokens": response.output_tokens,
+                "total_tokens": response.input_tokens + response.output_tokens,
+                "prompt_tokens_details": { "cached_tokens": 0 }
+            }),
+        ),
+    ];
+    let mut out: String = events
+        .iter()
+        .map(|event| format!("data: {event}\n\n"))
+        .collect();
+    out.push_str("data: [DONE]\n\n");
+    out
 }
 
 async fn collect_notifications(client_output: DuplexStream) -> Result<Vec<JsonRpcNotification>> {

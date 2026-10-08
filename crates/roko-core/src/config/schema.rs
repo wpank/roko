@@ -2676,10 +2676,11 @@ pub struct CoreRunnerConfig {
     /// 300 s (5 minutes).
     #[serde(default = "CoreRunnerConfig::default_warm_pool_idle_timeout_secs")]
     pub warm_pool_idle_timeout_secs: u64,
-    /// When `true`, the runner writes the full assembled system prompt to
-    /// `.roko/prompt-logs/` before each agent dispatch. Disabled by default.
-    /// Useful for debugging unexpected agent behaviour. The log directory is
-    /// gitignored and bounded by [`Self::prompt_log_retention`].
+    /// When `true`, each plan-task attempt writes the system and user prompt it
+    /// sends its agent to `.roko/prompt-logs/<plan>-<task>-<unix ms>.txt`, with
+    /// known secret patterns redacted, before the agent runs. Disabled by
+    /// default. Useful for debugging unexpected agent behaviour. The log
+    /// directory is gitignored and bounded by [`Self::prompt_log_retention`].
     #[serde(default)]
     pub log_prompts: bool,
     /// Maximum number of prompt log files to retain in `.roko/prompt-logs/`.

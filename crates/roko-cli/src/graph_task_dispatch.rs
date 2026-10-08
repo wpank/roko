@@ -72,6 +72,7 @@ mod operator_pause;
 mod operator_stop;
 mod pack_rungs;
 mod prompt_experiment;
+mod prompt_log;
 mod red_flags;
 mod reflex_credit;
 mod retry_budget;
@@ -1299,6 +1300,7 @@ impl TaskDispatcher for GraphTaskDispatcher {
         if let Some(audit) = self.attempts.audit() {
             audit.scan_prompt(&dispatch_plan.prompt.system_prompt, &prompt);
         }
+        self.log_prompts(spec, &task.id, &dispatch_plan.prompt.system_prompt, &prompt);
         let mut request = AgentDispatchRequest {
             model_key: self.dispatch_model_key(&dispatch_plan, &task),
             prompt,

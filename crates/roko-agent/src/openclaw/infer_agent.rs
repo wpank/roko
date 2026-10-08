@@ -349,7 +349,11 @@ mod fixture_tests {
 
     /// Create a fake `openclaw` binary (shell script) that prints
     /// the given fixture content to stdout and exits with the given code.
-    fn fake_openclaw_script(fixture: &str, exit_code: i32) -> NamedTempFile {
+    ///
+    /// The write handle is closed before the script runs: Linux refuses to
+    /// execute a file that is still open for writing (`ETXTBSY`), which made
+    /// these tests fail on CI while they passed on macOS.
+    fn fake_openclaw_script(fixture: &str, exit_code: i32) -> tempfile::TempPath {
         let mut script = NamedTempFile::new().unwrap();
         writeln!(
             script,
@@ -364,7 +368,7 @@ mod fixture_tests {
             perms.set_mode(0o755);
             script.as_file().set_permissions(perms).unwrap();
         }
-        script
+        script.into_temp_path()
     }
 
     #[tokio::test]
@@ -373,7 +377,7 @@ mod fixture_tests {
         let script = fake_openclaw_script(fixture, 0);
 
         let config = OpenClawInferConfig {
-            binary: script.path().as_os_str().to_owned(),
+            binary: script.as_os_str().to_owned(),
             ..Default::default()
         };
         let agent = OpenClawInferAgent::new(config).unwrap();
@@ -394,7 +398,7 @@ mod fixture_tests {
         let script = fake_openclaw_script(fixture, 1);
 
         let config = OpenClawInferConfig {
-            binary: script.path().as_os_str().to_owned(),
+            binary: script.as_os_str().to_owned(),
             ..Default::default()
         };
         let agent = OpenClawInferAgent::new(config).unwrap();
@@ -414,7 +418,7 @@ mod fixture_tests {
         let script = fake_openclaw_script(fixture, 0);
 
         let config = OpenClawInferConfig {
-            binary: script.path().as_os_str().to_owned(),
+            binary: script.as_os_str().to_owned(),
             ..Default::default()
         };
         let agent = OpenClawInferAgent::new(config).unwrap();
@@ -434,7 +438,7 @@ mod fixture_tests {
         let script = fake_openclaw_script(fixture, 0);
 
         let config = OpenClawInferConfig {
-            binary: script.path().as_os_str().to_owned(),
+            binary: script.as_os_str().to_owned(),
             ..Default::default()
         };
         let agent = OpenClawInferAgent::new(config).unwrap();

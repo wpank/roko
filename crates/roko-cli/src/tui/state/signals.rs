@@ -124,7 +124,7 @@ pub(super) fn build_unified_log_cache(tui_state: &TuiState) -> Vec<LogEntry> {
         let ts_ms = chrono::DateTime::parse_from_rfc3339(&event.timestamp)
             .map(|dt| dt.timestamp_millis())
             .unwrap_or_else(|_| chrono::Utc::now().timestamp_millis());
-        let level = if event.cost_usd > 1.0 {
+        let level = if event.cost_usd > 5.0 {
             LogEntryLevel::Warn
         } else {
             LogEntryLevel::Debug

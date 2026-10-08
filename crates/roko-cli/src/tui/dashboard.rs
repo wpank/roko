@@ -4293,6 +4293,41 @@ mod tests {
     }
 
     #[test]
+    fn agent_rows_keep_the_real_token_split() {
+        let events = vec![
+            sample_efficiency_event(
+                "agent-a",
+                "task-1",
+                "Implementer",
+                "claude-opus-4-6",
+                500,
+                100,
+                0.5,
+                "2026-04-08T10:00:00Z",
+            ),
+            sample_efficiency_event(
+                "agent-a",
+                "task-1",
+                "Implementer",
+                "claude-opus-4-6",
+                300,
+                50,
+                0.25,
+                "2026-04-08T10:01:00Z",
+            ),
+        ];
+
+        let snapshot = build_agent_activity_snapshot(&[], &events).expect("snapshot");
+        let row = snapshot
+            .active_agents
+            .iter()
+            .find(|row| row.agent_id == "agent-a")
+            .expect("agent-a row");
+        assert_eq!(row.tokens_used, 950);
+        assert_eq!((row.input_tokens, row.output_tokens), (800, 150));
+    }
+
+    #[test]
     fn cost_rows_use_real_cost_when_known() {
         let events = vec![sample_efficiency_event(
             "agent-a",

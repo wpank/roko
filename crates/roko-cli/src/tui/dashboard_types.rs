@@ -51,6 +51,10 @@ pub(crate) struct AgentActivityRow {
     pub role: String,
     pub turns: usize,
     pub tokens_used: u64,
+    /// Input tokens summed from the agent's efficiency events.
+    pub input_tokens: u64,
+    /// Output tokens summed from the agent's efficiency events.
+    pub output_tokens: u64,
     pub cost_usd: f64,
     pub uptime_ms: u64,
 }
@@ -429,6 +433,8 @@ pub(crate) fn build_agent_activity_snapshot(
             .or_insert_with(AgentActivityAggregate::default);
         entry.turns += 1;
         entry.tokens_used += event.input_tokens + event.output_tokens;
+        entry.input_tokens += event.input_tokens;
+        entry.output_tokens += event.output_tokens;
         entry.cost_usd += event.cost_usd;
         entry.update_from_event(event);
     }
@@ -533,6 +539,8 @@ struct AgentActivityAggregate {
     role: String,
     turns: usize,
     tokens_used: u64,
+    input_tokens: u64,
+    output_tokens: u64,
     cost_usd: f64,
     first_seen_at: Option<DateTime<Utc>>,
     latest_event_at: Option<DateTime<Utc>>,
@@ -586,6 +594,8 @@ impl AgentActivityAggregate {
             },
             turns: self.turns,
             tokens_used: self.tokens_used,
+            input_tokens: self.input_tokens,
+            output_tokens: self.output_tokens,
             cost_usd: self.cost_usd,
             uptime_ms,
         }

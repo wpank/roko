@@ -276,13 +276,27 @@ fn render_agent_roster(
             })
             .or_else(|| agent.plan_id.as_deref().map(ToOwned::to_owned))
             .unwrap_or_else(|| "-".to_string());
+        // The activity row carries the real input/output split; halving `tokens_used` is
+        // only a fallback for a row with no split recorded.
         let input_tok = activity_row.map_or_else(
             || agent_row.map_or(0, |row| row.input_tokens),
-            |row| row.tokens_used / 2, // approximate split
+            |row| {
+                if row.input_tokens > 0 {
+                    row.input_tokens
+                } else {
+                    row.tokens_used / 2
+                }
+            },
         );
         let output_tok = activity_row.map_or_else(
             || agent_row.map_or(0, |row| row.output_tokens),
-            |row| row.tokens_used.saturating_sub(row.tokens_used / 2),
+            |row| {
+                if row.output_tokens > 0 {
+                    row.output_tokens
+                } else {
+                    row.tokens_used.saturating_sub(row.tokens_used / 2)
+                }
+            },
         );
         let total_tokens = input_tok + output_tok;
         let tokens_str = format_tokens(total_tokens);

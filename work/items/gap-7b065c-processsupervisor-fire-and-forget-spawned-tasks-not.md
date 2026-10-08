@@ -2,21 +2,21 @@
 id = "gap-7b065c"
 kind = "gap"
 title = "ProcessSupervisor Fire-and-Forget Spawned Tasks Not Tracked"
-status = "parked"
-triage = "unverified"
+status = "open"
+triage = "verified"
 severity = "p2"
+goal = "tooling"
 subsystem = ["roko-runtime"]
 created = 2026-09-07
-updated = 2026-09-28
+updated = 2026-10-08
+last_verified = 2026-10-08
 source = "tmp/backlog/archive/94-process-supervisor-untracked-tasks.md#94 — ProcessSupervisor Fire-and-Forget Spawned Tasks Not Tracked"
 discovered_from = "audit:tmp/backlog/archive/94-process-supervisor-untracked-tasks.md#94 — ProcessSupervisor Fire-and-Forget Spawned Tasks Not Tracked"
 anchors = ["crates/roko-runtime/", "src/process.rs", "crates/roko-runtime/src/process.rs", "ProcessSupervisor", "ProcessHandle", "HashMap", "ProcessSupervisor::new", "SpawnConfig::default()"]
 links = { depends_on = [], blocks = [], related = [], supersedes = [], duplicate_of = "" }
 
-[parked]
-at = 2026-09-28
-from_status = "open"
-reason = "Triage 2026-09-28: unchecked import from an older document; not planned unless revived"
+[[verify]]
+command = "grep -qw 'fn cancellation_watchers_are_tracked_pruned_and_stopped' crates/roko-runtime/src/process.rs && cargo test -p roko-runtime --lib cancellation_watchers_are_tracked_pruned_and_stopped"
 +++
 Reliability: untracked cancellation-watcher tasks hold Arc references that can delay cleanup and cannot be awaited during shutdown. `ProcessSupervisor` manages long-running subprocesses (agents, sidecars) and provides `shutdown_all()` and `Drop` paths to clean them up. When a process is spawned…
 

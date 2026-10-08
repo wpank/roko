@@ -2,7 +2,7 @@
 id = "bug-6d703e"
 kind = "bug"
 title = "Three openclaw fixture tests fail on Linux: they execute their fake binary while it is still open for writing"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p2"
 goal = "tooling"
@@ -11,6 +11,7 @@ subsystem = ["roko-agent/openclaw"]
 created = 2026-10-08
 updated = 2026-10-08
 last_verified = 2026-10-08
+last_verified_rev = "5eba50188"
 source = "PR #84 CI run 37798627818 (Test + Clippy)"
 discovered_from = "bug-68a33f (the first CI run past roko-acp)"
 anchors = ["crates/roko-agent/src/openclaw/infer_agent.rs"]
@@ -18,6 +19,13 @@ links = { depends_on = [], blocks = [], related = [], supersedes = [], duplicate
 
 [[verify]]
 command = "grep -q 'script.into_temp_path()' crates/roko-agent/src/openclaw/infer_agent.rs && cargo test -p roko-agent --lib openclaw::infer_agent::fixture_tests"
+
+[closed]
+at = 2026-10-08
+at_ts = "2026-10-08T17:06:57Z"
+commit = "48b2bf137"
+forced = false
+evidence = "PR #84 CI run 37806395795 (ubuntu-latest, Test + Clippy): the three openclaw fixture tests pass; cargo test --workspace now gets past roko-acp and roko-agent and stops only at roko-cli's doctor tests (dec-01be49)"
 +++
 
 ## Problem

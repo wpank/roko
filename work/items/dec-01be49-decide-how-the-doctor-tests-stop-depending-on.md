@@ -9,7 +9,7 @@ goal = "tooling"
 size = "S"
 subsystem = ["roko-cli/doctor"]
 created = 2026-09-29
-updated = 2026-09-29
+updated = 2026-10-08
 source = "tmp/cybernetic-harness/workstreams/PROGRESS.md"
 discovered_from = "tmp/cybernetic-harness/workstreams/PROGRESS.md (wk-ci2's report on find-8cc7ac)"
 anchors = ["crates/roko-cli/src/doctor.rs::check_provider_usable", "crates/roko-cli/src/doctor.rs::run_doctor"]
@@ -53,3 +53,10 @@ The two options:
 
 - [ ] Will (or the item's owner, if Will delegates) picks (a) or (b).
 - [ ] The doctor tests pass with no `claude` on PATH and no keys: the `[[verify]]` command runs them with an empty HOME and a minimal PATH.
+
+## Update 2026-10-08
+
+These two tests are now the only thing stopping CI's `cargo test --workspace` (Test + Clippy). bug-68a33f (roko-acp)
+and bug-6d703e (roko-agent's openclaw fixtures on Linux) used to fail earlier in the run, and both are fixed (PR #84,
+CI run 37806395795). Because the step stops at the first failing test binary, every crate after roko-cli still goes
+untested in CI until this decision is made and implemented.

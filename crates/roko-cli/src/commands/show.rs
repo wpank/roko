@@ -229,7 +229,13 @@ pub(crate) async fn cmd_show(
     // lock).
     let _lock = roko_cli::workspace_lock::acquire_workspace_lock_shared(&workdir.join(".roko"))?;
     let state = load_show_state(&workdir, window);
-    let output = match ShowTarget::parse(subject) {
+    let target = ShowTarget::parse(subject);
+    if cli.json {
+        let value = render_json(&state, target)?;
+        println!("{}", serde_json::to_string_pretty(&value)?);
+        return Ok(EXIT_SUCCESS);
+    }
+    let output = match target {
         ShowTarget::Subject(ShowSubject::Overview) => render_overview(&state),
         ShowTarget::Subject(ShowSubject::Costs) => render_costs(&state),
         ShowTarget::Subject(ShowSubject::Agents) => render_agents(&state),
@@ -809,6 +815,380 @@ fn render_work_detail(state: &ShowState, work_id: &str) -> Result<String> {
     }
 
     Ok(out)
+}
+
+/// `roko show --json`: each view as one JSON object, over the same data and `--since` window
+/// as its text, with the subject, the workspace and the window at the top level.
+fn render_json(state: &ShowState, target: ShowTarget) -> Result<Value> {
+    let (subject, body) = match target {
+        ShowTarget::Subject(ShowSubject::Overview) => ("overview", overview_json(state)),
+        ShowTarget::Subject(ShowSubject::Costs) => ("costs", costs_json(state)),
+        ShowTarget::Subject(ShowSubject::Agents) => {
+            ("agents", agents_json(&agent_rows(state), usize::MAX))
+        }
+        ShowTarget::Subject(ShowSubject::Knowledge) => ("knowledge", knowledge_json(state)),
+        ShowTarget::Subject(ShowSubject::Plans) => ("plans", plans_json(state)),
+        ShowTarget::Subject(ShowSubject::Learning) => ("learning", learning_json(state)),
+        ShowTarget::Subject(ShowSubject::History) => ("history", history_json(state)),
+        ShowTarget::WorkId(work_id) => ("work-item", work_detail_json(state, &work_id)?),
+    };
+    let mut out = serde_json::Map::new();
+    out.insert("subject".into(), subject.into());
+    out.insert("workdir".into(), state.workdir.display().to_string().into());
+    out.insert("window".into(), window_json(state.window));
+    if let Value::Object(body) = body {
+        out.extend(body);
+    }
+    Ok(Value::Object(out))
+}
+
+fn window_json(window: ActivityWindow) -> Value {
+    let since = match window {
+        ActivityWindow::All => Value::Null,
+        ActivityWindow::Since(cutoff) => cutoff.to_rfc3339().into(),
+    };
+    serde_json::json!({ "label": window.label(), "since": since })
+}
+
+fn cost_json(aggregate: &CostAggregate) -> Value {
+    serde_json::json!({
+        "turns": aggregate.turns,
+        "cost_usd": aggregate.cost_usd,
+        "input_tokens": aggregate.input_tokens,
+        "output_tokens": aggregate.output_tokens,
+        "gate_verdicts": aggregate.verdicts,
+        "gate_passed": aggregate.passed,
+    })
+}
+
+fn work_item_json(state: &ShowState, item: &WorkItemSummary) -> Value {
+    serde_json::json!({
+        "id": item.id,
+        "kind": item.kind,
+        "status": item.status,
+        "prompt": item.prompt,
+        "created": item.created,
+        "tasks_done": item.tasks_done,
+        "tasks_total": item.tasks_total,
+        "cost_usd": item.cost_usd,
+        "source": display_rel(&state.workdir, &item.source),
+    })
+}
+
+/// The first `limit` agent rows, and how many older agents the window hides.
+fn agents_json(agents: &AgentRows, limit: usize) -> Value {
+    let rows: Vec<Value> = agents
+        .rows
+        .iter()
+        .take(limit)
+        .map(|row| serde_json::json!({ "id": row.id, "summary": row.summary }))
+        .collect();
+    serde_json::json!({ "agents": rows, "stale_agents_hidden": agents.stale })
+}
+
+fn event_log_json(event: &roko_cli::tui::dashboard::EventLogEntry) -> Value {
+    serde_json::json!({
+        "timestamp_ms": event.timestamp_ms,
+        "event_type": event.event_type,
+        "plan_id": event.plan_id,
+        "task_id": event.task_id,
+        "message": event.message,
+    })
+}
+
+fn learning_summary_json(state: &ShowState) -> Value {
+    let router = &state.data.cascade_router;
+    let trials: u64 = router
+        .confidence_stats
+        .values()
+        .map(|stats| stats.trials)
+        .sum();
+    let successes: u64 = router
+        .confidence_stats
+        .values()
+        .map(|stats| stats.successes)
+        .sum();
+    serde_json::json!({
+        "routing_trials": trials,
+        "routing_successes": successes,
+        "experiments": state.data.experiments.len(),
+        "cfactor": state.data.cfactor.as_ref().map(|cfactor| cfactor.overall),
+    })
+}
+
+fn overview_json(state: &ShowState) -> Value {
+    let work_items: Vec<Value> = state
+        .work_items
+        .iter()
+        .take(8)
+        .map(|item| work_item_json(state, item))
+        .collect();
+    let agents = agents_json(&agent_rows(state), 6);
+    serde_json::json!({
+        "work_items": work_items,
+        "agents": agents["agents"],
+        "stale_agents_hidden": agents["stale_agents_hidden"],
+        "costs": cost_json(&cost_total(window_events(state))),
+        "learning": learning_summary_json(state),
+    })
+}
+
+fn costs_json(state: &ShowState) -> Value {
+    let events = window_events(state);
+    let total = cost_total(events.iter().copied());
+    let avg_turn_cost_usd = if total.turns == 0 {
+        0.0
+    } else {
+        total.cost_usd / total.turns as f64
+    };
+    let all_time = (state.window != ActivityWindow::All)
+        .then(|| cost_json(&cost_total(&state.data.efficiency_events)));
+    let by_model: Vec<Value> = cost_by_model(&events)
+        .iter()
+        .map(|(model, aggregate)| keyed(cost_json(aggregate), "model", model))
+        .collect();
+    let by_task: Vec<Value> = cost_by_task(&events)
+        .iter()
+        .take(12)
+        .map(|(task, aggregate)| keyed(cost_json(aggregate), "task", task))
+        .collect();
+    let by_day: Vec<Value> = cost_by_day(&events)
+        .iter()
+        .map(|(day, aggregate)| keyed(cost_json(aggregate), "day", day))
+        .collect();
+    let recent_runs: Vec<Value> = state
+        .recent_runs
+        .iter()
+        .filter(|run| state.window.contains(&run.timestamp))
+        .map(|run| {
+            serde_json::json!({
+                "run_id": run.run_id,
+                "started": run.timestamp,
+                "tasks_completed": run.tasks_completed,
+                "tasks_failed": run.tasks_failed,
+                "tasks_unverified": run.tasks_unverified,
+                "input_tokens": run.total_tokens_in,
+                "output_tokens": run.total_tokens_out,
+                "cost_usd": run.total_cost_usd,
+                "duration_ms": run.duration_ms,
+            })
+        })
+        .collect();
+    serde_json::json!({
+        "summary": cost_json(&total),
+        "avg_turn_cost_usd": avg_turn_cost_usd,
+        "all_time": all_time,
+        "by_model": by_model,
+        "by_task": by_task,
+        "by_day": by_day,
+        "recent_runs": recent_runs,
+    })
+}
+
+/// `value` with one more field in front of the rest, for a keyed row.
+fn keyed(value: Value, key: &str, name: &str) -> Value {
+    let mut row = serde_json::Map::new();
+    row.insert(key.into(), name.into());
+    if let Value::Object(fields) = value {
+        row.extend(fields);
+    }
+    Value::Object(row)
+}
+
+fn knowledge_json(state: &ShowState) -> Value {
+    let entries = &state.data.knowledge_entries;
+    let mut recent: Vec<_> = entries.iter().collect();
+    recent.sort_by_key(|entry| std::cmp::Reverse(entry.created_at));
+    let recent: Vec<Value> = recent
+        .into_iter()
+        .take(12)
+        .map(|entry| {
+            serde_json::json!({
+                "id": entry.id,
+                "kind": entry.kind,
+                "tier": entry.tier,
+                "confidence": entry.confidence,
+                "tags": entry.tags,
+                "created_at": entry.created_at.to_rfc3339(),
+                "preview": entry.content_preview,
+            })
+        })
+        .collect();
+    let store = state.layout.root().join("neuro").join("knowledge.jsonl");
+    serde_json::json!({
+        "store": display_rel(&state.workdir, &store),
+        "entries": entries.len(),
+        "recent_entries": recent,
+    })
+}
+
+fn plans_json(state: &ShowState) -> Value {
+    let current = state.data.current_plan_execution.as_ref().map(|current| {
+        serde_json::json!({
+            "plan_id": current.plan_id,
+            "title": current.plan_title,
+            "tasks_done": current.tasks_done,
+            "tasks_total": current.tasks_total,
+            "current_task": current.current_task.as_ref().map(|task| {
+                serde_json::json!({ "task_id": task.task_id, "description": task.description })
+            }),
+        })
+    });
+    let plans: Vec<Value> = state
+        .data
+        .plans
+        .iter()
+        .map(|plan| {
+            serde_json::json!({
+                "id": plan.id,
+                "title": plan.title,
+                "status": plan_status(plan.completed, plan.tasks_done, plan.tasks_failed),
+                "task_count": plan.task_count,
+                "tasks_done": plan.tasks_done,
+                "tasks_failed": plan.tasks_failed,
+                "last_error": plan.last_error.as_deref().filter(|error| !error.is_empty()),
+            })
+        })
+        .collect();
+    serde_json::json!({ "current": current, "plans": plans })
+}
+
+fn learning_json(state: &ShowState) -> Value {
+    let router = &state.data.cascade_router;
+    let mut stats: Vec<_> = router.confidence_stats.iter().collect();
+    stats.sort_by(|left, right| left.0.cmp(right.0));
+    let routing: Vec<Value> = stats
+        .into_iter()
+        .map(|(model, stats)| {
+            serde_json::json!({
+                "model": model,
+                "trials": stats.trials,
+                "successes": stats.successes,
+                "success_rate": ratio(stats.successes as usize, stats.trials as usize),
+            })
+        })
+        .collect();
+    let experiments: Vec<Value> = state
+        .data
+        .experiments
+        .iter()
+        .take(10)
+        .map(|experiment| {
+            serde_json::json!({
+                "id": experiment.experiment_id,
+                "status": experiment.status,
+                "active_variants": experiment.active_variants,
+                "total_trials": experiment.total_trials,
+                "winner": experiment.winner_id,
+            })
+        })
+        .collect();
+    let gates: Vec<Value> = state
+        .data
+        .gate_results_page
+        .gate_rows
+        .iter()
+        .take(10)
+        .map(|gate| {
+            serde_json::json!({
+                "gate": gate.gate_name,
+                "pass_rate": gate.pass_rate,
+                "runs": gate.total_runs,
+                "avg_duration_ms": gate.avg_duration_ms,
+            })
+        })
+        .collect();
+    let cfactor = state.data.cfactor.as_ref().map(|cfactor| {
+        serde_json::json!({
+            "overall": cfactor.overall,
+            "cost_efficiency": cfactor.components.cost_efficiency,
+            "knowledge_growth": cfactor.components.knowledge_growth,
+        })
+    });
+    serde_json::json!({
+        "models": router.model_slugs,
+        "routing": routing,
+        "experiments": experiments,
+        "gates": gates,
+        "cfactor": cfactor,
+    })
+}
+
+fn history_json(state: &ShowState) -> Value {
+    let mut events: Vec<_> = state.data.event_log.iter().collect();
+    events.sort_by_key(|event| event.timestamp_ms);
+    let state_events: Vec<Value> = events
+        .iter()
+        .rev()
+        .take(20)
+        .rev()
+        .copied()
+        .map(event_log_json)
+        .collect();
+    let recent_turns: Vec<Value> = state
+        .data
+        .efficiency_events
+        .iter()
+        .rev()
+        .take(12)
+        .rev()
+        .map(|event| {
+            serde_json::json!({
+                "timestamp": event.timestamp,
+                "plan_id": event.plan_id,
+                "task_id": event.task_id,
+                "agent_id": event.agent_id,
+                "model": event.model,
+                "cost_usd": event.cost_usd,
+            })
+        })
+        .collect();
+    serde_json::json!({ "state_events": state_events, "recent_turns": recent_turns })
+}
+
+fn work_detail_json(state: &ShowState, work_id: &str) -> Result<Value> {
+    let Some(item) = state.work_items.iter().find(|item| item.id == work_id) else {
+        anyhow::bail!(
+            "`{work_id}` is not a recognised subject or work-item ID.\n\
+            Valid subjects: overview, costs, agents, knowledge, plans, learning, history"
+        );
+    };
+    let plan = state
+        .data
+        .plans
+        .iter()
+        .find(|plan| plan.id == item.id)
+        .map(|plan| {
+            serde_json::json!({
+                "title": plan.title,
+                "task_count": plan.task_count,
+                "tasks_done": plan.tasks_done,
+                "tasks_failed": plan.tasks_failed,
+                "last_error": plan.last_error.as_deref().filter(|error| !error.is_empty()),
+            })
+        });
+    let related = |plan_id: &str, task_id: &str| plan_id == item.id || task_id == item.id;
+    let costs = cost_total(
+        state
+            .data
+            .efficiency_events
+            .iter()
+            .filter(|event| related(&event.plan_id, &event.task_id)),
+    );
+    let history: Vec<Value> = state
+        .data
+        .event_log
+        .iter()
+        .filter(|event| related(&event.plan_id, &event.task_id))
+        .take(12)
+        .map(event_log_json)
+        .collect();
+    Ok(serde_json::json!({
+        "item": work_item_json(state, item),
+        "plan": plan,
+        "costs": cost_json(&costs),
+        "history": history,
+    }))
 }
 
 fn collect_work_items(
@@ -1608,6 +1988,81 @@ mod tests {
             ["live-agent", "T02:1", "H11:12", "undated"]
         );
         assert_eq!(everything.stale, 0);
+    }
+
+    #[test]
+    fn show_json_renders_every_subject_over_the_window() {
+        let now = at("2026-10-01T12:00:00Z");
+        let window = ActivityWindow::parse(None, now).expect("default");
+        let events = [
+            AgentEfficiencyEvent {
+                cost_usd: 100.0,
+                ..efficiency_event("H11:12", "2026-05-10T09:00:00+00:00")
+            },
+            AgentEfficiencyEvent {
+                cost_usd: 0.25,
+                input_tokens: 400,
+                output_tokens: 100,
+                gate_passed: Some(true),
+                ..efficiency_event("T02:1", "2026-09-30T10:00:00+00:00")
+            },
+        ];
+        let state = show_state(&events, window);
+        let json = |subject: &str| {
+            render_json(&state, ShowTarget::parse(Some(subject.to_string()))).expect(subject)
+        };
+
+        let costs = json("costs");
+        assert_eq!(costs["subject"], "costs");
+        assert_eq!(costs["workdir"], "/workspace");
+        assert_eq!(costs["window"]["since"], "2026-09-24T12:00:00+00:00");
+        assert_eq!(costs["summary"]["turns"], 1);
+        assert_eq!(costs["summary"]["cost_usd"], 0.25);
+        assert_eq!(costs["summary"]["gate_passed"], 1);
+        assert_eq!(costs["all_time"]["turns"], 2);
+        assert_eq!(costs["by_model"][0]["model"], "claude-sonnet-4-6");
+        assert_eq!(costs["by_task"][0]["task"], "plan-a:T01");
+        assert_eq!(costs["by_day"][0]["day"], "2026-09-30");
+
+        let overview = json("overview");
+        assert_eq!(overview["costs"]["input_tokens"], 400);
+        assert_eq!(overview["agents"][0]["id"], "T02:1");
+        assert_eq!(overview["stale_agents_hidden"], 1);
+
+        let agents = json("agents");
+        assert_eq!(agents["agents"].as_array().map(Vec::len), Some(1));
+
+        for (subject, key) in [
+            ("knowledge", "entries"),
+            ("plans", "plans"),
+            ("learning", "routing"),
+            ("history", "recent_turns"),
+        ] {
+            let value = json(subject);
+            assert_eq!(value["subject"], subject);
+            assert!(value.get(key).is_some(), "{subject}: {value}");
+        }
+        assert_eq!(json("history")["recent_turns"][1]["cost_usd"], 0.25);
+
+        let all = render_json(
+            &show_state(&events, ActivityWindow::All),
+            ShowTarget::parse(None),
+        )
+        .expect("overview");
+        assert_eq!(all["window"]["since"], Value::Null);
+        assert_eq!(all["costs"]["turns"], 2);
+    }
+
+    #[test]
+    fn show_json_rejects_an_unknown_work_id() {
+        let state = show_state(&[], ActivityWindow::All);
+        let error = render_json(&state, ShowTarget::WorkId(String::from("nope")))
+            .expect_err("no such work item");
+        assert!(
+            error
+                .to_string()
+                .contains("`nope` is not a recognised subject")
+        );
     }
 
     #[test]

@@ -1,5 +1,11 @@
 Status: reviewed · budget none · owner gap-8d2c79
 
+> **Note, 2026-10-02.** The whitepaper was rewritten on 2026-10-02 with a new framing: a design paper about
+> Roko's feedback loops, without status tags or the status appendix. The review below applies to the earlier
+> text, which git history keeps; the rewritten text needs its own independent review. A same-day editing pass applied
+> a fact-check of the rewrite against the code and brought each section within its word budget; that pass is an edit,
+> not an independent review.
+
 # Whitepaper review
 
 - **Reviewer:** wk-wp-review, a Claude agent that drafted no section and had no drafting context (gap-8d2c79).

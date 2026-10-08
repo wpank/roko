@@ -1,204 +1,174 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="880" height="708" viewBox="0 0 880 708" role="img" aria-labelledby="title desc" data-pin="a43288b5f">
-  <title id="title">Figure 1: architecture and control stack</title>
-  <desc id="desc">The execution path from tasks.toml to recorded results, and the six-layer control stack that reads the records and acts on the path, with each mechanism marked by its status tag.</desc>
+<svg xmlns="http://www.w3.org/2000/svg" width="1100" height="840" viewBox="0 0 1100 840" role="img" aria-label="Roko's layered architecture: surfaces, loops and services, the substrate, and workers, with a column of records">
+  <desc>Four layers from top to bottom: operator surfaces; the loops and services, tagged with each loop's clock; the substrate of signals, cells and graphs, bus and store; and the workers reached through twelve provider adapters. Dashed boxes run outside Roko. A side column lists the records the loops write and read.</desc>
   <defs>
-    <pattern id="fill-partial" width="6" height="6" patternUnits="userSpaceOnUse" patternTransform="rotate(45)">
-      <rect width="6" height="6" fill="#fde9b8"/>
-      <rect width="3" height="6" fill="#c98500"/>
-    </pattern>
-    <pattern id="fill-broken" width="6" height="6" patternUnits="userSpaceOnUse" patternTransform="rotate(45)">
-      <rect width="6" height="6" fill="#f7dada"/>
-      <rect width="1.6" height="6" fill="#d03b3b"/>
-      <rect width="6" height="1.6" fill="#d03b3b"/>
-    </pattern>
-    <pattern id="fill-built-unwired" width="6" height="6" patternUnits="userSpaceOnUse" patternTransform="rotate(-45)">
-      <rect width="6" height="6" fill="#efeee9"/>
-      <rect width="1.4" height="6" fill="#8f8d86"/>
-    </pattern>
-    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto">
-      <path d="M0,0 L10,5 L0,10 z" fill="#52514e"/>
+    <marker id="a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto">
+      <path d="M0,0 L10,5 L0,10 z" fill="#475569"/>
     </marker>
   </defs>
   <style>
-    text { font-family: 'Helvetica Neue', Helvetica, Arial, 'Liberation Sans', Arimo, sans-serif; fill: #0b0b0b; }
-    .note { fill: #52514e; }
-    .wired .key { fill: #0ca30c; }
-    .partial .key { fill: url(#fill-partial); }
-    .broken .key { fill: url(#fill-broken); }
-    .orphaned .key { fill: #cfcdc6; }
-    .built-unwired .key { fill: url(#fill-built-unwired); }
-    .docs-only .key, .missing .key, .removed .key, .unproven .key { fill: #ffffff; stroke: #898781; }
-    .missing .key { stroke-dasharray: 3 2; }
-    .docs-only .key, .removed .key, .unproven .key { stroke-dasharray: 1 2; }
-    .partial .id, .broken .id, .built-unwired .id { paint-order: stroke; stroke: #ffffff; stroke-width: 3px; stroke-linejoin: round; }
-    .docs-only .id, .missing .id, .removed .id, .unproven .id { fill: #52514e; }
-    .removed .id { text-decoration: line-through; }
-    .code { font-family: SFMono-Regular, Menlo, Consolas, 'DejaVu Sans Mono', monospace; }
-    .title { font-size: 14px; font-weight: bold; }
-    .box { fill: #ffffff; stroke: #a9a8a0; }
-    .panel { fill: #fafaf8; stroke: #e1e0d9; }
-    .flow { fill: none; stroke: #52514e; stroke-width: 1.4; }
-    .wired .body { fill: #e7f5e7; stroke: #0ca30c; }
-    .partial .body { fill: #fef5de; stroke: #c98500; }
-    .broken .body { fill: #fbe8e8; stroke: #d03b3b; }
-    .orphaned .body, .built-unwired .body { fill: #f3f2ee; stroke: #a3a19a; }
-    .docs-only .body, .missing .body, .removed .body, .unproven .body { fill: #ffffff; stroke: #898781; }
-    .missing .body { stroke-dasharray: 4 3; }
-    .docs-only .body, .removed .body, .unproven .body { stroke-dasharray: 1.5 2.5; }
-    .docs-only .swatch, .missing .swatch, .removed .swatch, .unproven .swatch { stroke: none; }
+    text { font-family: Helvetica, Arial, sans-serif; fill: #1f2937; font-size: 13px; }
+    .h { font-size: 15px; font-weight: bold; }
+    .t { font-size: 14px; font-weight: bold; }
+    .tb { font-size: 15px; font-weight: bold; }
+    .b { font-weight: bold; }
+    .m { fill: #4b5563; }
+    .c { text-anchor: middle; }
+    .e { text-anchor: end; }
+    .ar { stroke: #475569; stroke-width: 1.5; fill: none; }
+    .up { stroke-dasharray: 4 3; }
+    .band { fill: #f8fafc; stroke: #cbd5e1; stroke-width: 1; }
+    .box { fill: #ffffff; stroke: #94a3b8; stroke-width: 1; }
+    .sub { fill: #f3f4f6; stroke: #9ca3af; stroke-width: 1; }
   </style>
-  <rect width="880" height="708" rx="8" fill="#ffffff"/>
-  <!-- Execution path: the plan level, then each task's loop. Boxes are neutral: §3.1 tags them. -->
-  <rect class="panel" x="12.5" y="12.5" width="855" height="221" rx="8"/>
-  <text class="title" x="28" y="37">Execution path</text>
-  <g>
-    <rect class="box" x="28.5" y="50.5" width="103" height="45" rx="5"/>
-    <text x="80" y="77.5" font-size="13" text-anchor="middle"><tspan class="code">tasks.toml</tspan></text>
-    <path class="flow" d="M134,73 H160" marker-end="url(#arrow)"/>
-    <rect class="box" x="162.5" y="50.5" width="70" height="45" rx="5"/>
-    <text x="197.5" y="77.5" font-size="13" text-anchor="middle">validate</text>
-    <path class="flow" d="M235,73 H261" marker-end="url(#arrow)"/>
-    <rect class="box" x="263.5" y="50.5" width="126" height="45" rx="5"/>
-    <text x="326.5" y="77.5" font-size="13" text-anchor="middle"><tspan class="code">plan_to_graph</tspan></text>
-    <path class="flow" d="M392,73 H418" marker-end="url(#arrow)"/>
-    <rect class="box" x="420.5" y="50.5" width="226" height="45" rx="5"/>
-    <text x="533.5" y="68" font-size="13" text-anchor="middle"><tspan font-weight="bold">Graph engine</tspan></text>
-    <text class="note" x="533.5" y="83" font-size="11" text-anchor="middle">a task starts once its dependencies settle</text>
-    <rect class="box" x="28.5" y="140.5" width="98" height="37" rx="5"/>
-    <text x="77.5" y="163.5" font-size="13" text-anchor="middle">context pack</text>
-    <path class="flow" d="M129,159 H155" marker-end="url(#arrow)"/>
-    <rect class="box" x="157.5" y="140.5" width="60" height="37" rx="5"/>
-    <text x="187.5" y="163.5" font-size="13" text-anchor="middle">model</text>
-    <path class="flow" d="M220,159 H246" marker-end="url(#arrow)"/>
-    <rect class="box" x="248.5" y="140.5" width="58" height="37" rx="5"/>
-    <text x="277.5" y="163.5" font-size="13" text-anchor="middle">agent</text>
-    <path class="flow" d="M309,159 H335" marker-end="url(#arrow)"/>
-    <rect class="box" x="337.5" y="140.5" width="56" height="37" rx="5"/>
-    <text x="365.5" y="163.5" font-size="13" text-anchor="middle">verify</text>
-    <path class="flow" d="M396,159 H454" marker-end="url(#arrow)"/>
-    <rect class="box" x="456.5" y="140.5" width="156" height="37" rx="5"/>
-    <text x="534.5" y="163.5" font-size="13" text-anchor="middle">records under <tspan class="code">.roko/</tspan></text>
-  </g>
-  <text class="note" x="425" y="153" font-size="11" text-anchor="middle">pass</text>
-    <path class="flow" d="M533.5,96 V118 H77.5 V138" marker-end="url(#arrow)"/>
-  <text class="note" x="541.5" y="114" font-size="11">each task</text>
-    <path class="flow" d="M365.5,178 V202 H77.5 V180" marker-end="url(#arrow)"/>
-  <text class="note" x="221.5" y="217" font-size="11" text-anchor="middle">fail: retry with the gate output</text>
-  <text class="note" x="852" y="37" font-size="12" text-anchor="end">Surfaces: CLI · TUI · HTTP API + SSE · portal · ACP</text>
-  <!-- Control stack: a chip per mechanism. data-row names its appendix row and data-tag its tag;
-       the check mode of tools/status_matrix.py fails when a chip disagrees with the matrix. -->
-  <rect class="panel" x="12.5" y="274.5" width="855" height="369" rx="8"/>
-  <text x="28" y="299"><tspan class="title">Control stack</tspan><tspan class="note" font-size="12" dx="10">reads the records and acts on the path</tspan></text>
-  <text x="28" y="338" font-size="13"><tspan font-weight="bold">6</tspan><tspan x="46">Second-order audits</tspan></text>
-    <g class="missing" data-row="QA5" data-tag="MISSING" transform="translate(194,314)"><title>QA5 Hidden tests and random audits: MISSING</title>
-      <rect class="body" x="0.5" y="0.5" width="148" height="37" rx="5"/><path class="key swatch" d="M5.5,0.5 H12 V37.5 H5.5 A5,5 0 0 1 0.5,32.5 V5.5 A5,5 0 0 1 5.5,0.5 Z"/>
-      <text x="20" y="16" font-size="13.5">random audits (M4)</text><text class="note" x="20" y="30" font-size="11" letter-spacing="0.3">QA5 · MISSING</text>
-    </g>
-    <g class="missing" data-row="RG4" data-tag="MISSING" transform="translate(350,314)"><title>RG4 Loop-liveness audit (M2): MISSING</title>
-      <rect class="body" x="0.5" y="0.5" width="121" height="37" rx="5"/><path class="key swatch" d="M5.5,0.5 H12 V37.5 H5.5 A5,5 0 0 1 0.5,32.5 V5.5 A5,5 0 0 1 5.5,0.5 Z"/>
-      <text x="20" y="16" font-size="13.5">loop audit (M2)</text><text class="note" x="20" y="30" font-size="11" letter-spacing="0.3">RG4 · MISSING</text>
-    </g>
-    <g class="missing" data-row="RG6" data-tag="MISSING" transform="translate(479,314)"><title>RG6 Guarded commit with rollback: MISSING</title>
-      <rect class="body" x="0.5" y="0.5" width="128" height="37" rx="5"/><path class="key swatch" d="M5.5,0.5 H12 V37.5 H5.5 A5,5 0 0 1 0.5,32.5 V5.5 A5,5 0 0 1 5.5,0.5 Z"/>
-      <text x="20" y="16" font-size="13.5">guarded commit</text><text class="note" x="20" y="30" font-size="11" letter-spacing="0.3">RG6 · MISSING</text>
-    </g>
-  <text x="28" y="384" font-size="13"><tspan font-weight="bold">5</tspan><tspan x="46">Slow regulators</tspan></text>
-    <g class="partial" data-row="RC3" data-tag="PARTIAL" transform="translate(194,360)"><title>RC3 Provider-health circuit breaker: PARTIAL</title>
-      <rect class="body" x="0.5" y="0.5" width="120" height="37" rx="5"/><path class="key swatch" d="M5.5,0.5 H12 V37.5 H5.5 A5,5 0 0 1 0.5,32.5 V5.5 A5,5 0 0 1 5.5,0.5 Z"/>
-      <text x="20" y="16" font-size="13.5">provider health</text><text class="note" x="20" y="30" font-size="11" letter-spacing="0.3">RC3 · PARTIAL</text>
-    </g>
-    <g class="partial" data-row="RC5" data-tag="PARTIAL" transform="translate(322,360)"><title>RC5 Budgets: PARTIAL</title>
-      <rect class="body" x="0.5" y="0.5" width="112" height="37" rx="5"/><path class="key swatch" d="M5.5,0.5 H12 V37.5 H5.5 A5,5 0 0 1 0.5,32.5 V5.5 A5,5 0 0 1 5.5,0.5 Z"/>
-      <text x="20" y="16" font-size="13.5">plan budget</text><text class="note" x="20" y="30" font-size="11" letter-spacing="0.3">RC5 · PARTIAL</text>
-    </g>
-    <g class="partial" data-row="QA7" data-tag="PARTIAL" transform="translate(442,360)"><title>QA7 Adaptive gate thresholds: PARTIAL</title>
-      <rect class="body" x="0.5" y="0.5" width="110" height="37" rx="5"/><path class="key swatch" d="M5.5,0.5 H12 V37.5 H5.5 A5,5 0 0 1 0.5,32.5 V5.5 A5,5 0 0 1 5.5,0.5 Z"/>
-      <text x="20" y="16" font-size="13.5">retry budgets</text><text class="note" x="20" y="30" font-size="11" letter-spacing="0.3">QA7 · PARTIAL</text>
-    </g>
-    <g class="wired" data-row="LM2" data-tag="WIRED" transform="translate(560,360)"><title>LM2 Playbooks: WIRED</title>
-      <rect class="body" x="0.5" y="0.5" width="102" height="37" rx="5"/><path class="key swatch" d="M5.5,0.5 H12 V37.5 H5.5 A5,5 0 0 1 0.5,32.5 V5.5 A5,5 0 0 1 5.5,0.5 Z"/>
-      <text x="20" y="16" font-size="13.5">playbooks</text><text class="note" x="20" y="30" font-size="11" letter-spacing="0.3">LM2 · WIRED</text>
-    </g>
-    <g class="partial" data-row="RC2" data-tag="PARTIAL" transform="translate(194,406)"><title>RC2 Learned model router: PARTIAL</title>
-      <rect class="body" x="0.5" y="0.5" width="112" height="37" rx="5"/><path class="key swatch" d="M5.5,0.5 H12 V37.5 H5.5 A5,5 0 0 1 0.5,32.5 V5.5 A5,5 0 0 1 5.5,0.5 Z"/>
-      <text x="20" y="16" font-size="13.5">model router</text><text class="note" x="20" y="30" font-size="11" letter-spacing="0.3">RC2 · PARTIAL</text>
-    </g>
-    <g class="partial" data-row="LM5" data-tag="PARTIAL" transform="translate(314,406)"><title>LM5 Prompt experiments: PARTIAL</title>
-      <rect class="body" x="0.5" y="0.5" width="150" height="37" rx="5"/><path class="key swatch" d="M5.5,0.5 H12 V37.5 H5.5 A5,5 0 0 1 0.5,32.5 V5.5 A5,5 0 0 1 5.5,0.5 Z"/>
-      <text x="20" y="16" font-size="13.5">prompt experiments</text><text class="note" x="20" y="30" font-size="11" letter-spacing="0.3">LM5 · PARTIAL</text>
-    </g>
-    <g class="partial" data-row="LM3" data-tag="PARTIAL" transform="translate(472,406)"><title>LM3 Knowledge store: PARTIAL</title>
-      <rect class="body" x="0.5" y="0.5" width="112" height="37" rx="5"/><path class="key swatch" d="M5.5,0.5 H12 V37.5 H5.5 A5,5 0 0 1 0.5,32.5 V5.5 A5,5 0 0 1 5.5,0.5 Z"/>
-      <text x="20" y="16" font-size="13.5">knowledge</text><text class="note" x="20" y="30" font-size="11" letter-spacing="0.3">LM3 · PARTIAL</text>
-    </g>
-    <g class="partial" data-row="LM4" data-tag="PARTIAL" transform="translate(592,406)"><title>LM4 Error patterns and post-gate lessons: PARTIAL</title>
-      <rect class="body" x="0.5" y="0.5" width="128" height="37" rx="5"/><path class="key swatch" d="M5.5,0.5 H12 V37.5 H5.5 A5,5 0 0 1 0.5,32.5 V5.5 A5,5 0 0 1 5.5,0.5 Z"/>
-      <text x="20" y="16" font-size="13.5">failure memory</text><text class="note" x="20" y="30" font-size="11" letter-spacing="0.3">LM4 · PARTIAL</text>
-    </g>
-    <g class="missing" data-row="RG3" data-tag="MISSING" transform="translate(728,406)"><title>RG3 Ultrastable controller (M1): MISSING</title>
-      <rect class="body" x="0.5" y="0.5" width="118" height="37" rx="5"/><path class="key swatch" d="M5.5,0.5 H12 V37.5 H5.5 A5,5 0 0 1 0.5,32.5 V5.5 A5,5 0 0 1 5.5,0.5 Z"/>
-      <text x="20" y="16" font-size="13.5">controller (M1)</text><text class="note" x="20" y="30" font-size="11" letter-spacing="0.3">RG3 · MISSING</text>
-    </g>
-  <text x="28" y="476" font-size="13"><tspan font-weight="bold">4</tspan><tspan x="46">Fast regulators</tspan></text>
-    <g class="wired" data-row="EX6" data-tag="WIRED" transform="translate(194,452)"><title>EX6 Retry with gate feedback: WIRED</title>
-      <rect class="body" x="0.5" y="0.5" width="101" height="37" rx="5"/><path class="key swatch" d="M5.5,0.5 H12 V37.5 H5.5 A5,5 0 0 1 0.5,32.5 V5.5 A5,5 0 0 1 5.5,0.5 Z"/>
-      <text x="20" y="16" font-size="13.5">retry</text><text class="note" x="20" y="30" font-size="11" letter-spacing="0.3">EX6 · WIRED</text>
-    </g>
-    <g class="wired" data-row="EX7" data-tag="WIRED" transform="translate(303,452)"><title>EX7 Escalation to a stronger model: WIRED</title>
-      <rect class="body" x="0.5" y="0.5" width="128" height="37" rx="5"/><path class="key swatch" d="M5.5,0.5 H12 V37.5 H5.5 A5,5 0 0 1 0.5,32.5 V5.5 A5,5 0 0 1 5.5,0.5 Z"/>
-      <text x="20" y="16" font-size="13.5">escalation</text><text class="note" x="20" y="30" font-size="11" letter-spacing="0.3">EX7 · WIRED</text>
-    </g>
-    <g class="built-unwired" data-row="EX8" data-tag="BUILT-UNWIRED" transform="translate(439,452)"><title>EX8 Split or replan on failure: BUILT-UNWIRED</title>
-      <rect class="body" x="0.5" y="0.5" width="154" height="37" rx="5"/><path class="key swatch" d="M5.5,0.5 H12 V37.5 H5.5 A5,5 0 0 1 0.5,32.5 V5.5 A5,5 0 0 1 5.5,0.5 Z"/>
-      <text x="20" y="16" font-size="13.5">split or replan</text><text class="note" x="20" y="30" font-size="11" letter-spacing="0.3">EX8 · BUILT-UNWIRED</text>
-    </g>
-  <text x="28" y="522" font-size="13"><tspan font-weight="bold">3</tspan><tspan x="46">Comparators</tspan></text>
-    <g class="wired" data-row="QA1" data-tag="WIRED" transform="translate(194,498)"><title>QA1 Task verify commands: WIRED</title>
-      <rect class="body" x="0.5" y="0.5" width="105" height="37" rx="5"/><path class="key swatch" d="M5.5,0.5 H12 V37.5 H5.5 A5,5 0 0 1 0.5,32.5 V5.5 A5,5 0 0 1 5.5,0.5 Z"/>
-      <text x="20" y="16" font-size="13.5">visible verify</text><text class="note" x="20" y="30" font-size="11" letter-spacing="0.3">QA1 · WIRED</text>
-    </g>
-    <g class="wired" data-row="QA4" data-tag="WIRED" transform="translate(307,498)"><title>QA4 Tamper and scope diff: WIRED</title>
-      <rect class="body" x="0.5" y="0.5" width="113" height="37" rx="5"/><path class="key swatch" d="M5.5,0.5 H12 V37.5 H5.5 A5,5 0 0 1 0.5,32.5 V5.5 A5,5 0 0 1 5.5,0.5 Z"/>
-      <text x="20" y="16" font-size="13.5">tamper diff</text><text class="note" x="20" y="30" font-size="11" letter-spacing="0.3">QA4 · WIRED</text>
-    </g>
-    <g class="missing" data-row="QA5" data-tag="MISSING" transform="translate(428,498)"><title>QA5 Hidden tests and random audits: MISSING</title>
-      <rect class="body" x="0.5" y="0.5" width="113" height="37" rx="5"/><path class="key swatch" d="M5.5,0.5 H12 V37.5 H5.5 A5,5 0 0 1 0.5,32.5 V5.5 A5,5 0 0 1 5.5,0.5 Z"/>
-      <text x="20" y="16" font-size="13.5">hidden tests</text><text class="note" x="20" y="30" font-size="11" letter-spacing="0.3">QA5 · MISSING</text>
-    </g>
-  <text x="28" y="568" font-size="13"><tspan font-weight="bold">2</tspan><tspan x="46">Sensors</tspan></text>
-    <g class="wired" data-row="RG1" data-tag="WIRED" transform="translate(194,544)"><title>RG1 Telemetry lenses and state hub: WIRED</title>
-      <rect class="body" x="0.5" y="0.5" width="103" height="37" rx="5"/><path class="key swatch" d="M5.5,0.5 H12 V37.5 H5.5 A5,5 0 0 1 0.5,32.5 V5.5 A5,5 0 0 1 5.5,0.5 Z"/>
-      <text x="20" y="16" font-size="13.5">telemetry</text><text class="note" x="20" y="30" font-size="11" letter-spacing="0.3">RG1 · WIRED</text>
-    </g>
-    <g class="partial" data-row="LM1" data-tag="PARTIAL" transform="translate(305,544)"><title>LM1 Episode and efficiency records: PARTIAL</title>
-      <rect class="body" x="0.5" y="0.5" width="125" height="37" rx="5"/><path class="key swatch" d="M5.5,0.5 H12 V37.5 H5.5 A5,5 0 0 1 0.5,32.5 V5.5 A5,5 0 0 1 5.5,0.5 Z"/>
-      <text x="20" y="16" font-size="13.5">attempt records</text><text class="note" x="20" y="30" font-size="11" letter-spacing="0.3">LM1 · PARTIAL</text>
-    </g>
-    <g class="partial" data-row="RC6" data-tag="PARTIAL" transform="translate(438,544)"><title>RC6 Cost accounting: PARTIAL</title>
-      <rect class="body" x="0.5" y="0.5" width="125" height="37" rx="5"/><path class="key swatch" d="M5.5,0.5 H12 V37.5 H5.5 A5,5 0 0 1 0.5,32.5 V5.5 A5,5 0 0 1 5.5,0.5 Z"/>
-      <text x="20" y="16" font-size="13.5">cost accounting</text><text class="note" x="20" y="30" font-size="11" letter-spacing="0.3">RC6 · PARTIAL</text>
-    </g>
-  <text x="28" y="614" font-size="13"><tspan font-weight="bold">1</tspan><tspan x="46">Feedforward</tspan></text>
-    <g class="wired" data-row="AU2" data-tag="WIRED" transform="translate(194,590)"><title>AU2 Plan validation: WIRED</title>
-      <rect class="body" x="0.5" y="0.5" width="102" height="37" rx="5"/><path class="key swatch" d="M5.5,0.5 H12 V37.5 H5.5 A5,5 0 0 1 0.5,32.5 V5.5 A5,5 0 0 1 5.5,0.5 Z"/>
-      <text x="20" y="16" font-size="13.5">plan lints</text><text class="note" x="20" y="30" font-size="11" letter-spacing="0.3">AU2 · WIRED</text>
-    </g>
-    <g class="partial" data-row="AU3" data-tag="PARTIAL" transform="translate(304,590)"><title>AU3 Spec-quality lint and gate: PARTIAL</title>
-      <rect class="body" x="0.5" y="0.5" width="133" height="37" rx="5"/><path class="key swatch" d="M5.5,0.5 H12 V37.5 H5.5 A5,5 0 0 1 0.5,32.5 V5.5 A5,5 0 0 1 5.5,0.5 Z"/>
-      <text x="20" y="16" font-size="13.5">spec-quality lint</text><text class="note" x="20" y="30" font-size="11" letter-spacing="0.3">AU3 · PARTIAL</text>
-    </g>
-  <!-- The loop between the two parts -->
-    <path class="flow" d="M534.5,178 V272" marker-end="url(#arrow)"/>
-  <text class="note" x="542.5" y="258" font-size="11">reads the records</text>
-    <path class="flow" d="M790,274 V73 H649" marker-end="url(#arrow)"/>
-  <text class="note" x="782" y="258" font-size="11" text-anchor="end">acts on the path</text>
-  <!-- Legend -->
-  <text class="note" x="28" y="672" font-size="12">On the production path</text>
-  <g class="wired"><rect class="key" x="194.5" y="660.5" width="22" height="14" rx="2"/><text x="224" y="672" font-size="12">WIRED</text></g>
-  <g class="partial"><rect class="key" x="286.496" y="660.5" width="22" height="14" rx="2"/><text x="315.996" y="672" font-size="12">PARTIAL</text></g>
-  <g class="broken"><rect class="key" x="388.512" y="660.5" width="22" height="14" rx="2"/><text x="418.012" y="672" font-size="12">BROKEN</text></g>
-  <text class="note" x="28" y="694" font-size="12">Not on the path</text>
-  <g class="built-unwired"><rect class="key" x="194.5" y="682.5" width="22" height="14" rx="2"/><text x="224" y="694" font-size="12">BUILT-UNWIRED</text></g>
-  <g class="missing"><rect class="key" x="341.828" y="682.5" width="22" height="14" rx="2"/><text x="371.328" y="694" font-size="12">MISSING</text></g>
-  <text class="note" x="852" y="672" font-size="11" text-anchor="end">Status tags at a43288b5f; each chip names its appendix row.</text>
+  <rect width="1100" height="840" fill="#ffffff"/>
+
+  <!-- Surfaces -->
+  <rect x="30" y="20" width="820" height="136" rx="10" class="band"/>
+  <text x="44" y="44" class="h">Surfaces</text>
+  <rect x="42" y="56" width="128" height="56" rx="6" class="box"/>
+  <text x="106" y="79" class="t c">CLI</text>
+  <text x="106" y="99" class="c">plan, run, inspect</text>
+  <rect x="182" y="56" width="140" height="56" rx="6" class="box"/>
+  <text x="252" y="79" class="t c">TUI dashboard</text>
+  <text x="252" y="99" class="c">and chat REPL</text>
+  <rect x="334" y="56" width="184" height="56" rx="6" class="box"/>
+  <text x="426" y="79" class="t c">HTTP control plane</text>
+  <text x="426" y="99" class="c">REST · SSE · WebSocket</text>
+  <rect x="530" y="56" width="112" height="56" rx="6" class="box"/>
+  <text x="586" y="79" class="t c">ACP</text>
+  <text x="586" y="99" class="c">for editors</text>
+  <rect x="654" y="56" width="184" height="56" rx="6" class="box"/>
+  <text x="746" y="79" class="t c">MCP servers</text>
+  <text x="746" y="99" class="c">code intelligence, GitHub</text>
+  <rect x="182" y="120" width="336" height="24" rx="5" fill="#eef2f7" stroke="#94a3b8" stroke-width="1"/>
+  <text x="350" y="137" class="c m">state hub: live events for the TUI and HTTP streams</text>
+
+  <!-- between layers 1 -->
+  <line x1="430" y1="160" x2="430" y2="192" class="ar" marker-end="url(#a)"/>
+  <line x1="454" y1="192" x2="454" y2="160" class="ar up" marker-end="url(#a)"/>
+  <text x="420" y="181" class="e m">commands</text>
+  <text x="466" y="181" class="m">events</text>
+
+  <!-- Loops and services -->
+  <rect x="30" y="196" width="820" height="228" rx="10" class="band"/>
+  <text x="44" y="220" class="h">Loops and services</text>
+
+  <rect x="42" y="232" width="257" height="92" rx="7" fill="#e5f4ef" stroke="#4fa585" stroke-width="1.2"/>
+  <rect x="223" y="240" width="64" height="22" rx="5" fill="#ffffff" stroke="#4fa585"/>
+  <text x="255" y="256" class="c" style="fill:#2d7f63">hours</text>
+  <text x="56" y="256" class="tb">Plan loop</text>
+  <text x="56" y="277">the Graph engine and its scheduler,</text>
+  <text x="56" y="295">a worktree per task, plan and run</text>
+  <text x="56" y="313">branches, checkpoints and resume</text>
+
+  <rect x="311" y="232" width="257" height="92" rx="7" fill="#fdf3e1" stroke="#d09a45" stroke-width="1.2"/>
+  <rect x="492" y="240" width="64" height="22" rx="5" fill="#ffffff" stroke="#d09a45"/>
+  <text x="524" y="256" class="c" style="fill:#9a6512">days</text>
+  <text x="325" y="256" class="tb">Learning loops</text>
+  <text x="325" y="277">learned model router, retry budgets,</text>
+  <text x="325" y="295">playbooks, prompt experiments,</text>
+  <text x="325" y="313">knowledge store, outcome forecaster</text>
+
+  <rect x="580" y="232" width="258" height="92" rx="7" fill="#f1eafb" stroke="#9b7fd4" stroke-width="1.2"/>
+  <rect x="762" y="240" width="64" height="22" rx="5" fill="#ffffff" stroke="#9b7fd4"/>
+  <text x="794" y="256" class="c" style="fill:#6d4fb0">weeks</text>
+  <text x="594" y="256" class="tb">Audit level</text>
+  <text x="594" y="277">random deep audits, loop audit,</text>
+  <text x="594" y="295">bounded controller,</text>
+  <text x="594" y="313">guarded commit</text>
+
+  <rect x="42" y="336" width="257" height="76" rx="7" fill="#e6f0fb" stroke="#5b8fd0" stroke-width="1.2"/>
+  <rect x="223" y="344" width="64" height="22" rx="5" fill="#ffffff" stroke="#5b8fd0"/>
+  <text x="255" y="360" class="c" style="fill:#2f6db3">minutes</text>
+  <text x="56" y="360" class="tb">Attempt loop</text>
+  <text x="56" y="381">dispatch, model routing, prompts,</text>
+  <text x="56" y="399">retry, escalation, failover</text>
+
+  <rect x="311" y="336" width="257" height="76" rx="7" fill="#e6f0fb" stroke="#5b8fd0" stroke-width="1.2"/>
+  <rect x="492" y="344" width="64" height="22" rx="5" fill="#ffffff" stroke="#5b8fd0"/>
+  <text x="524" y="360" class="c" style="fill:#2f6db3">minutes</text>
+  <text x="325" y="360" class="tb">Gates</text>
+  <text x="325" y="381">pre-verify screen, gate rungs,</text>
+  <text x="325" y="399">one verdict record per attempt</text>
+
+  <rect x="580" y="336" width="258" height="76" rx="7" fill="#eef2f7" stroke="#6b7f99" stroke-width="1.2"/>
+  <rect x="762" y="344" width="64" height="22" rx="5" fill="#ffffff" stroke="#6b7f99"/>
+  <text x="794" y="360" class="c" style="fill:#475a73">seconds</text>
+  <text x="594" y="360" class="tb">Safety</text>
+  <text x="594" y="381">tool-call guard, fail-closed tools,</text>
+  <text x="594" y="399">git guard, output screening</text>
+
+  <!-- between layers 2 -->
+  <line x1="430" y1="428" x2="430" y2="460" class="ar" marker-end="url(#a)"/>
+  <line x1="454" y1="460" x2="454" y2="428" class="ar up" marker-end="url(#a)"/>
+  <text x="420" y="449" class="e m">write, publish</text>
+  <text x="466" y="449" class="m">read, subscribe</text>
+
+  <!-- Substrate -->
+  <rect x="30" y="464" width="820" height="120" rx="10" class="band"/>
+  <text x="44" y="488" class="h">Substrate</text>
+  <rect x="42" y="500" width="190" height="72" rx="6" class="sub"/>
+  <text x="137" y="523" class="t c">Signals</text>
+  <text x="137" y="543" class="c">content-addressed,</text>
+  <text x="137" y="561" class="c">with lineage</text>
+  <rect x="244" y="500" width="190" height="72" rx="6" class="sub"/>
+  <text x="339" y="523" class="t c">Cells and graphs</text>
+  <text x="339" y="543" class="c">processing steps,</text>
+  <text x="339" y="561" class="c">composed into graphs</text>
+  <rect x="446" y="500" width="190" height="72" rx="6" class="sub"/>
+  <text x="541" y="523" class="t c">Bus</text>
+  <text x="541" y="543" class="c">events (ephemeral)</text>
+  <rect x="648" y="500" width="190" height="72" rx="6" class="sub"/>
+  <text x="743" y="523" class="t c">Store</text>
+  <text x="743" y="543" class="c">records (durable)</text>
+
+  <!-- between layers 3 -->
+  <line x1="430" y1="588" x2="430" y2="620" class="ar" marker-end="url(#a)"/>
+  <line x1="454" y1="620" x2="454" y2="588" class="ar up" marker-end="url(#a)"/>
+  <text x="420" y="609" class="e m">prompts</text>
+  <text x="466" y="609" class="m">outputs, tool calls</text>
+
+  <!-- Workers -->
+  <rect x="30" y="624" width="820" height="196" rx="10" class="band"/>
+  <text x="44" y="648" class="h">Workers</text>
+  <text x="838" y="648" class="e m">dashed: runs outside Roko</text>
+  <rect x="42" y="660" width="796" height="52" rx="6" class="box"/>
+  <text x="440" y="681" class="t c">Provider adapters</text>
+  <text x="440" y="701" class="c">12 provider kinds, one adapter each; everything above them is provider-neutral</text>
+  <line x1="238" y1="712" x2="238" y2="734" class="ar" marker-end="url(#a)"/>
+  <line x1="642" y1="712" x2="642" y2="734" class="ar" marker-end="url(#a)"/>
+  <rect x="42" y="736" width="392" height="72" rx="6" class="box" style="stroke-dasharray:5 4"/>
+  <text x="238" y="758" class="t c">Agent loops</text>
+  <text x="238" y="778" class="c">Claude Code, Codex, Gemini CLI, …</text>
+  <text x="238" y="796" class="c">each runs its own tool loop, isolated</text>
+  <rect x="446" y="736" width="392" height="72" rx="6" class="box" style="stroke-dasharray:5 4"/>
+  <text x="642" y="758" class="t c">API models</text>
+  <text x="642" y="778" class="c">models called over HTTP;</text>
+  <text x="642" y="796" class="c">Roko runs the tool loop and its guard</text>
+
+  <!-- Records column -->
+  <rect x="900" y="196" width="180" height="388" rx="10" fill="#ffffff" stroke="#334155" stroke-width="1.5"/>
+  <text x="914" y="222" class="h">Records</text>
+  <text x="914" y="241" class="m">durable, attributable</text>
+  <rect x="912" y="254" width="156" height="52" rx="6" fill="#f8fafc" stroke="#cbd5e1"/>
+  <text x="924" y="275" class="t">Verdict records</text>
+  <text x="924" y="294">one per attempt</text>
+  <rect x="912" y="316" width="156" height="52" rx="6" fill="#f8fafc" stroke="#cbd5e1"/>
+  <text x="924" y="337" class="t">Episodes</text>
+  <text x="924" y="356">per agent turn</text>
+  <rect x="912" y="378" width="156" height="52" rx="6" fill="#f8fafc" stroke="#cbd5e1"/>
+  <text x="924" y="399" class="t">Checkpoints</text>
+  <text x="924" y="418">per plan, for resume</text>
+  <rect x="912" y="440" width="156" height="52" rx="6" fill="#f8fafc" stroke="#cbd5e1"/>
+  <text x="924" y="461" class="t">Costs</text>
+  <text x="924" y="480">settled spend</text>
+  <rect x="912" y="502" width="156" height="52" rx="6" fill="#f8fafc" stroke="#cbd5e1"/>
+  <text x="924" y="523" class="t">Loop registry</text>
+  <text x="924" y="542">each loop's contract</text>
+
+  <!-- loops write and read records -->
+  <line x1="852" y1="290" x2="897" y2="290" class="ar" marker-end="url(#a)"/>
+  <text x="875" y="282" class="c m">write</text>
+  <line x1="897" y1="350" x2="852" y2="350" class="ar up" marker-end="url(#a)"/>
+  <text x="875" y="342" class="c m">read</text>
 </svg>

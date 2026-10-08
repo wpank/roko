@@ -1,91 +1,86 @@
-Status: reviewed · budget 850 words · owner gap-e8cb4d
+Status: draft · budget 900 words · owner spec-ce1484
 
-# 5 Cybernetic mechanisms
+# 5 The loops above the work
 
-Roko is designed to improve from verified outcomes and to show that it does. Three layers carry the design: essential
-variables that define "better", first-order loops that tune prompts, retries and routing, and second-order mechanisms
-that audit the gates and the loops and guard every change. Each tag names its appendix row.
+This section sets out Roko's five loops and describes the slowest two: the learning loops and the audit level.
 
-## 5.1 Essential variables
+## 5.1 Five loops nested by time scale
 
-The essential variables of §2 are the verified pass rate, the cost per verified task, the false-green rate (passes that
-a stronger check would fail) and latency, each measured per task over all its attempts. People set their bounds, and §8
-reports them. Nothing regulates them as a set yet; that is M1's job.
+Table 5.1 and Figure 2 show the five loops. Each steers toward a reference written before it acts; slower loops set
+the references and parameters of faster ones, and faster loops leave records that slower ones read.
 
-## 5.2 First-order learning loops
+**Table 5.1.** The five loops, their clocks and goals.
 
-Each loop senses outcomes and changes a later decision.
-
-| Loop | Senses | Changes | Status |
+| Level | Loop | Clock | Goal |
 |---|---|---|---|
-| Model routing | Each model choice's outcome | Which model runs | PARTIAL@a43288b5f (RC2): it learns from settled verdicts, but the ladder places most tasks and its pick is only logged; spec-6ac537 |
-| Retry feedback | The failed attempt's gate output | The retry prompt, across a resume | WIRED@a43288b5f (EX6) |
-| Adaptive thresholds | Each gate rung's pass rate | Retry budgets of tasks that set none | PARTIAL@a43288b5f (QA7): the ladder raises a task's budget to five, so in the live run it changed nothing; spec-6ac537 |
-| Failure memory | Error patterns, post-gate lessons | Retry prompts | PARTIAL@a43288b5f (LM4): error patterns reach later prompts, the lessons none, and live the only patterns were turn caps; gap-e483e7 |
-| Playbooks | Outcomes of the playbooks a prompt used | Which playbooks enter prompts | WIRED@a43288b5f (LM2): a floor still puts three in every prompt |
-| Knowledge store | Gate-verified attempts | Notes in prompts | PARTIAL@a43288b5f (LM3): since `133c02093` plan prompts get up to three entries, but live they were generic success notes;[^5-live] spec-6ac537 |
-| Prompt experiments | Each prompt variant's outcome | The variant a task gets | PARTIAL@a43288b5f (LM5): its winner test is invalid under adaptive assignment; spec-6ac537 |
-| Hindsight relabelling | A verify failure that blames an earlier task | That task's recorded success | WIRED@a43288b5f (LM12): since `26c592955` the prompt caches apply the corrections; no run has triggered one yet |
+| L0 | The tool-call loop | Seconds | Every action permitted, bounded and screened |
+| L1 | The attempt loop | Minutes | A verified pass for one task |
+| L2 | The plan loop | Hours | The whole plan integrated and verified |
+| L3 | The learning loops | Days | Better decisions, learned from verified outcomes |
+| L4 | The audit level | Weeks | Checks and learning that stay honest and useful |
 
-Runner-v2 had 16 learning loops in its event loop, and most lost their caller or their data when `6b5da8616` deleted
-it. Merges on 2026-09-29 (`ce3bdcbb8`, `33e107da1`) re-attached several (reg-3f5969, reg-06ae9f, gap-fdd27f,
-gap-5fb9a7): at `942d2a6c3`, of the 16, two are wired, five partial, seven orphaned, one broken and one built but
-unwired.[^5-lost] Since `04c1da262` (gap-8f6206) every learner reads the settled verdict's learning label, so an
-unverified outcome no longer counts as a pass, and since `4c0e5646e` neither does any surface (WIRED@a43288b5f, QA2).
-The larger limit remains: no loop has a measured benefit, under Runner-v2 or since. That learning improves outcomes is
-UNPROVEN@a43288b5f until M2 and frozen-learning runs (gap-644040) exist.
+![Figure 2: five loops nested by time scale](figures/fig2-loops.svg)
 
-## 5.3 Second-order mechanisms and guarded commit
+**Figure 2:** Five loops nested by time scale, with planning feeding forward into the attempt and plan loops.
 
-The loops change Roko's behaviour, but nothing checks that the changes help, or that the gates they learn from are
-right. Four mechanisms and one commit rule are designed for that. All five are MISSING@a43288b5f; epic spec-6ac537 (E17)
-carries their specifications.
+## 5.2 The learning loops
 
-| Mechanism | Regulates | Sensor → actuator | Bounds[^5-design] | Status |
-|---|---|---|---|---|
-| M1 bounded controller | The essential variables | Change detectors → one step on one harness setting, kept or rolled back | Acts only when a variable leaves its bounds; never widens permissions, removes authored checks or raises budget ceilings; 10% static holdout | MISSING@a43288b5f (RG3) |
-| M2 loop-liveness audit | Each loop's exposure, influence and benefit | Randomized holdouts with an A/A floor → keep or demote the loop | Holdout at least 2%; one state change a day at most; safety checks exempt | MISSING@a43288b5f (RG4) |
-| M3 calibrated self-model | The chance a task passes on a given model | Verified outcomes → model choice, verification depth | Shadow until calibrated; only adds verification; authored pins win | MISSING@a43288b5f (RG5) |
-| M4 random deep audits | The false-green rate | Audit lottery over passes, hidden tests → stricter checks, routing trust | Audit probability at least 5% per pass; at most 12% of spend | MISSING@a43288b5f (QA5) |
-| Guarded commit | Every self-modification: router, memory, controller | Held-out and anchor checks → commit, or roll back | The last known good version is kept | MISSING@a43288b5f (RG6) |
+Every learner reads one fact: the learning label on an attempt's settled verdict record (§6.1). Credit follows
+execution: the router is credited only when the provider reports running its pick, and a playbook or knowledge entry
+only when the prompt included it. Learning changes which model runs, what prompts contain and a few settings within
+declared ranges, never model weights, checks, tools or spending budgets.
 
-**M1** starts in shadow mode, logging the moves it would make, and is judged by disturbance tests (a provider fault, a
-model swap, a halved budget) against its holdout. Since `dd192cb82` the conductor supervises running attempts again, each on
-its own (PARTIAL@a43288b5f, RG2); M1 is meant to regulate the harness above it.
+Each loop declares a contract in the loop registry: the decision it changes, its default policy (that decision without
+learning), when it can act, and a receipt proving that its state reached an executed request.
 
-**M2** exists because a loop can run without reaching any decision (§5.2). A loop that shows no benefit against a
-withheld control reverts to its default policy.
+- **The learned model router** picks the model when no flag, hint or ladder rung decides, learning in stages from a
+  role-to-model table to a contextual bandit [@li2010contextual]. Failures earn zero reward, and a small share of
+  random choices (5% by default, at most 10%), logged with their probabilities, keeps it open to unbiased offline
+  evaluation.[^5-explore]
+- **Adaptive retry budgets** set the retries of a task whose author gave none, from each gate rung's pass rate.
+- **Playbooks** are learned "when …, then …" hints, credited with the label of each attempt that used them.
+- **Prompt experiments** assign variants of a prompt section by bandit, settled by the label.
+- **The knowledge store** distils verified passes into typed entries, promotes them as confirmations accumulate, and
+  retrieves relevant ones into prompts; agent claims count only with evidence.
+- **The calibrated outcome forecaster** (the self-model) predicts each candidate's chance of a verified pass, cost and
+  latency, is scored against the label, and routes to the cheapest candidate that clears a confidence target within
+  budget. It can only add checking, and it runs in shadow at first and whenever it scores worse than the base rate.
 
-**M3** forecasts from recorded outcomes, not from a model's stated confidence.
+## 5.3 The audit level
 
-**M4** is the only sensor on the gates themselves. Another model family writes hidden tests from the spec, out of the
-agent's reach, and a Hájek estimator, weighting each audited pass by the inverse of its audit probability, gives the
-false-green rate with an interval. Today's honest verdicts (§6) rest on visible checks alone.
+The loops below trust that passes are right and that learners help. Agents can saturate visible tests yet fail
+held-out tests of the same features [@zhao2026specbench], and a metric read through a loop's own verifier can stay
+flat while the true error swings [@rajput2026cheap]. The audit level watches from outside the paths it judges.
 
-**Guarded commit** wraps every learner and every M1 change: a change stays only if it helps on held-out work and loses
-no more than a set margin on fixed anchor tasks.
+**Random deep audits** play the role of Beer's System 3\*, the sporadic audit that inspects operations directly
+instead of trusting their reports [@beer1979heart]. A keyed lottery that no agent can predict draws passed attempts,
+each with at least a fixed chance, and re-checks them in a fresh worktree: hidden tests written from the spec by
+another model family, a clean re-run, tamper checks and mutation. A Hájek estimate, weighting each audit by the
+inverse of its draw probability [@horvitz1952generalization], gives the false-green rate with a Wilson interval
+[@wilson1927probable]. It sets verification depth and
+how far each model is trusted (§6).
 
-## 5.4 The claim
+**The loop audit** checks that each registered loop, the regulators included, earns its place. A keyed-hash holdout
+sends some task chains to the default policy (20% on probation, 5% once live, never below 2%),[^5-holdout] and the
+audit measures exposure (does the state reach decisions?), influence (does it change them beyond rerun noise?) and
+benefit (are outcomes better?). A loop whose state never reaches a decision shows a reach failure; one with no benefit
+reverts to its default policy.
 
-The claim is measured, guarded improvement, not compounding; the literature supports no more. In a two-phase test on
-hard Terminal-Bench 2.0 tasks, two of three harness optimizers fell below baseline or stalled once new tasks arrived,
-and the one that kept improving, the authors' own, built regression control into its loop [@wang2026compound]. On
-Terminal-Bench 2.1, harness evolution did not consistently beat simple test-time scaling at matched budgets
-[@wang2026rethinking]. In a re-evaluation on multi-step agent tasks, memory-based self-improvement amplified evaluation
-noise and depended on task order [@ye2026fragility], and on a trading benchmark, gains on similar unseen tasks often
-weakened under distribution shift [@lin2026evopath]. None of these measured repository-scale plans.
+**The bounded controller** applies Ashby's ultrastability [@ashby1960design]: it changes faster loops' settings only
+when an essential variable leaves its bounds. It watches four (verified pass rate, cost per verified success,
+false-green rate and 90th-percentile latency) against bounds that people set, and does nothing inside them. On a
+confirmed breach it moves one setting one notch, keeps the move if the breach shrinks, and otherwise rolls back to the
+last known good setting. It starts in shadow mode until a person switches it on. A safety box sits outside its search:
+no move widens permissions, removes an authored check or raises a budget ceiling.
 
-Subsystems built on analogies are proposals to park (§9), not features: affect (PARTIAL@a43288b5f, LM8) and offline
-batch consolidation (ORPHANED@a43288b5f, LM7), both pending q-6b7cca; HDC similarity (BUILT-UNWIRED@a43288b5f, LM10);
-and the conductor (PARTIAL@a43288b5f, RG2; gap-ebd656), which since `dd192cb82` supervises attempts.
+**Guarded commit** keeps a self-modification (to the router, memory or the controller's settings) only if it helps on
+held-out work and loses no more than a set margin on fixed anchor tasks; otherwise it rolls back. Without regression
+control, one harness optimizer fell below its baseline on new tasks and another stopped improving [@wang2026compound].
 
-[^5-lost]: The re-check of the 16 loops Runner-v2 had, at `942d2a6c3`, frozen as
-    `evidence/2026-09-29-learning-loops-b5-942d2a6c3.md` (sha256 `22f79f28a844`): the tags of the earlier re-check in
-    research note B5, with the evidence behind seven rows updated. At `d9e79e9d8` none was wired, eight were partial,
-    seven orphaned and one built but unwired (`evidence/learning-loops-B5.md`, sha256 `044ad5c96542`). find-34a4b5
-    lists the closures in the deleted event loop. The table above groups the loops by mechanism, with the appendix's
-    tags at `a43288b5f`.
-[^5-design]: Design values from the specifications that epic spec-6ac537 carries; none is built at `a43288b5f`.
-[^5-live]: The live run of 2026-10-02, frozen as `evidence/2026-10-02-live-cheap-model-run.md` (sha256
-    `813172c96b88`), "What worked" (knowledge write-back and injection) and "What broke" 11: two five-task plans, the
-    second fed by the first's verified passes.
+The four link through records: audited labels train the forecaster, the false-green estimate is one of the
+controller's variables, and a move that cuts cost or checking raises the audit rate.
+
+[^5-explore]: Design defaults (`1f860d408`): the exploration rate and its cap in
+    `crates/roko-learn/src/loop_audit/assign.rs`.
+[^5-holdout]: Design defaults (`1f860d408`): the holdout schedule by audit state, and its floor, in
+    `crates/roko-learn/src/loop_audit/assign.rs`.

@@ -1,58 +1,66 @@
-Status: reviewed · budget 550 words · owner gap-370d3c
+Status: draft · budget 650 words · owner spec-ce1484
 
-# 2 Design principles
+# 2 Design goals and principles
 
-Eight rules from the literature shape the golden path. Each ends with Roko's design response; §4 tags each step's
-status. The evidence comes mostly from single functions, question answering, text environments and single repository
-issues. None of it compares a repository-scale plan with one frontier agent at matched cost, so the rules guide the
-design without showing that it pays.
+This section states Roko's design goals, defines the cybernetic terms the paper uses, and sets out eight principles.
 
-## 2.1 Eight rules
+## 2.1 Goals
 
-**1. Size tasks for the executor, not for cohesion.** On software and research tasks timed against human experts, the
-task length models complete with 80% success is 4–6× shorter than at 50% [@kwa2025measuring]; on a synthetic long
-task, per-step errors compound [@sinha2025illusion]. *Design:* size each task to its executor tier's measured pass
-rate (§4, step 3).
+**Table 2.1.** Design goals, their main mechanisms and sections.
 
-**2. Split on independent outputs, not on sequential steps.** Across six agentic benchmarks, multi-agent teams changed
-performance against a single agent by +80.8% on decomposable financial reasoning and −70.0% on sequential planning
-[@kim2025towards]. *Design:* parallel siblings get disjoint write sets; sequential or integrative work stays one
-frontier task (§4, steps 3 and 5).
+| Goal | Main mechanisms | § |
+|---|---|---|
+| **Trustworthy completion:** done means a check the worker cannot change has passed | Planned checks; the pre-verify screen; the gate rungs; the verdict record | 4, 6 |
+| **Right-sized models:** the cheapest model that passes | The escalation ladder; provider failover; the learned model router; per-call budget reservations | 4, 5 |
+| **Parallel without collisions** | Write sets; a worktree per task; plan and run branches; the whole-plan check on the merge | 4 |
+| **Recoverable:** stop and resume, keeping verified work | Checkpoints; verdict records; operator controls | 4 |
+| **Learns from outcomes, not self-report** | One learning label, read by every learner; the loop registry | 5 |
+| **Checks its own checks and learning** | Random deep audits; the loop audit; the bounded controller; guarded commit | 5, 6 |
+| **Safe by default:** unknown actions are denied | The tool-call guard; role contracts; fail-closed tools; the git guard; credential scrubbing; isolation controls | 8 |
+| **Provider- and domain-neutral** | One adapter per provider kind; any shell command as a check | 3, 4 |
+| **Observable** | Content-addressed signals with lineage; verdict, episode and cost records; the state hub | 3, 6 |
 
-**3. The planner writes the gating checks; the implementer never does.** In 24 Java projects, LLM-written unit-test
-oracles tended to encode what the code does, not what it should do [@konstantinou2024do]. *Design:* each task carries
-a plan-time check that fails on the base commit; the implementer's tests are extra evidence, never the gate (§4, steps
-2 and 7).
+## 2.2 Cybernetic terms
 
-**4. Assume visible checks will be gamed, most of all by cheap models.** On 30 systems-programming tasks, smaller
-models showed larger gaps between visible and held-out test pass rates, and the gap grew 28 percentage points per
-tenfold growth in code size [@zhao2026specbench]. *Design:* freeze the checks, diff each attempt for edits to tests or
-out-of-scope files, and sample hidden tests (§4, step 7).
+A *feedback loop* measures a result with a *sensor*, compares it with a *reference* (its goal) in a *comparator*, and
+acts on the difference, the *error*, through an *actuator*; *feedforward* acts before a problem shows up in the result
+[@wiener1948cybernetics]. By the *law of requisite variety*, a regulator can absorb only as many kinds of
+*disturbance* (anything that pushes a result off target) as it has kinds of response [@ashby1956introduction].
+*Essential variables* are the few quantities that must stay within bounds for a system to keep doing its job; an
+*ultrastable* system adds a slow loop that retunes a fast one only when one of them leaves its bounds
+[@ashby1960design]. A *regulator card* lists a loop's goal, reference, sensor, comparator, actuator, bounds, clock and
+records.
 
-**5. Retry twice cheaply, then escalate, then split.** On the same synthetic task, models erred more once their own
-mistakes were in context [@sinha2025illusion]. In three text environments, decomposing a subtask only when the
-executor failed raised success rates by up to 33% [@prasad2024adapt]. *Design:* retry with the distilled gate errors,
-never the failed transcript; after two failures, go one tier up, then split or replan (§4, step 8).
+## 2.3 Principles
 
-**6. Merge, then verify, through a queue.** In 5,355 merges by human developers on three open-source projects, 16%
-conflicted textually and 7% more merged cleanly but broke the build or tests [@brun2011proactive]. *Design:* a queue
-merges finished tasks into a plan branch and re-runs the affected checks, then a whole-plan check runs (§4, step 9).
+**1. Make every loop explicit.** An undeclared loop cannot be audited, and implicit feedback loops are hidden technical
+debt in machine-learning systems [@sculley2015hidden]. Each Roko loop has a regulator card, and a registry declares
+each learning loop's decision, default and receipt.
 
-**7. Put ambiguity back into authoring.** On underspecified SWE-bench Verified issues, models struggled to tell them
-from well-specified ones [@vijayvargiya2025ambigswe]; a scaffold that checks for underspecification and asks before
-executing resolved 69.4%, close to the fully specified level [@edwards2026askorassume]. *Design:* the planner records
-open questions, and dispatch waits for the author's answers (§4, step 1).
+**2. Write the reference before the work.** The planner, never the implementer, writes each task's checks: in Java
+projects, model-written test oracles tended to encode what code does, not what it should do [@konstantinou2024do]. A
+check for new behaviour must fail on the unchanged base.
 
-**8. Count cost per verified task,** including verification, retries, escalations and the planner. In a cascade
-answering math questions, the verifier passed 12% to 55% of a cheap student's wrong answers, more as the student grew;
-a frontier verifier cut that to about 5% but escalated 46% of hard queries, giving the saving back [@rajput2026cheap].
-*Design:* route and report on this cost, which §8 measures (§4, step 4).
+**3. Keep each sensor out of its actor's reach.** On systems-programming tasks, agents passed visible tests more often
+than held-out ones, smaller models most [@zhao2026specbench]. Roko pins the planner's acceptance tests outside every
+working tree, screens attempts for tampering before tests run, and audits with hidden tests.
 
-## 2.2 The cybernetic vocabulary
+**4. Separate the clocks.** Each loop runs much slower than the loop it tunes and changes its settings, never its
+decisions in flight [@ashby1960design]; correction that is too fast or too strong oscillates [@wiener1948cybernetics].
 
-The rules form one loop: sense, compare with the specification, correct, audit. Ashby called the quantities that must
-stay within limits essential variables [@ashby1960design]; Roko's design names four: the verified pass rate, cost per
-verified task, the false-green rate and latency. Its regulators act on them within a run (retry, escalation, split)
-and across runs (routing, task sizing), and its audits check the regulators (§5), because metrics read through a
-loop's own verifier can hide its decline [@rajput2026cheap]. The closest framing we found as of 2026-09-29 is a
-position paper, *Agent Cybernetics* [@wang2026agent] (§10); we claim no priority for it.
+**5. Judge by a few essential variables:** verified pass rate, cost per verified success, false-green rate and p90
+latency, against bounds that people set. In a model cascade on math questions, the error its dashboard showed stayed
+flat while the delivered error rose [@rajput2026cheap], so false greens are estimated from independent audits.
+
+**6. Match variety to disturbance.** Each declared disturbance has a designed response: retry with gate feedback, a
+stronger model, a provider switch, a split, a replan, or a halt with an alert. The failure's blame picks among them
+(§4).
+
+**7. Bound and isolate every action.** Each attempt runs in its own worktree, and integration runs the whole-plan
+check on the merge, since clean merges can still break the build [@brun2011proactive].
+Regulators tune how Roko spends and checks, never what counts as correct: no slower loop widens permissions or removes
+an authored check, and guarded commit can roll back any self-modification.
+
+**8. Record once, audit every loop.** Every decision leaves one attributable record, and every learner reads the same
+learning label. Deutero-learning asks whether learning helped [@argyris1978organizational]; the loop audit asks it of
+every learning loop against a holdout, and a loop that shows no benefit reverts to its default.

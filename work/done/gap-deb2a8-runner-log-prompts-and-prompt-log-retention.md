@@ -2,7 +2,7 @@
 id = "gap-deb2a8"
 kind = "gap"
 title = "[runner] log_prompts and prompt_log_retention are documented, but nothing reads them"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p3"
 goal = "tooling"
@@ -11,6 +11,7 @@ subsystem = ["roko-cli/graph-dispatch"]
 created = 2026-10-08
 updated = 2026-10-08
 last_verified = 2026-10-08
+last_verified_rev = "ad7a3a337"
 source = "stash-triage-2026-10-08 (roko-worktree-archive/2026-10-08-stash-triage/TRIAGE.md)"
 discovered_from = "archive/stash-2026-09-21-main-2"
 anchors = ["crates/roko-cli/src/graph_task_dispatch.rs::GraphTaskDispatcher::dispatch", "crates/roko-core/src/config/schema.rs::CoreRunnerConfig"]
@@ -18,6 +19,13 @@ links = { depends_on = [], blocks = [], related = [], supersedes = [], duplicate
 
 [[verify]]
 command = "grep -q 'fn log_prompts' crates/roko-cli/src/graph_task_dispatch/prompt_log.rs && cargo test -p roko-cli --lib graph_task_dispatch::prompt_log"
+
+[closed]
+at = 2026-10-08
+at_ts = "2026-10-08T13:21:51Z"
+commit = "880f9a419"
+forced = false
+evidence = "gate 24 (2026-10-08): its verify passes; check, nightly fmt, clippy -D warnings, CI feature checks, nextest --workspace --lib (15223 passed), touched crates' full tests, roko-acp integration, roko-cli bin (457) and CI canaries all pass"
 +++
 
 ## Problem

@@ -2,7 +2,7 @@
 id = "gap-23e02f"
 kind = "gap"
 title = "roko's MCP servers answer the MCP ping request with method-not-found"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p3"
 goal = "tooling"
@@ -11,6 +11,7 @@ subsystem = ["roko-mcp-stdio"]
 created = 2026-10-08
 updated = 2026-10-08
 last_verified = 2026-10-08
+last_verified_rev = "ad7a3a337"
 source = "stash-triage-2026-10-08 (roko-worktree-archive/2026-10-08-stash-triage/TRIAGE.md)"
 discovered_from = "archive/stash-2026-09-21-main-2"
 anchors = ["crates/roko-mcp-stdio/src/lib.rs::serve_stdio"]
@@ -18,6 +19,13 @@ links = { depends_on = [], blocks = [], related = [], supersedes = [], duplicate
 
 [[verify]]
 command = "grep -qw 'fn serve_stdio_answers_ping_without_the_handler' crates/roko-mcp-stdio/src/lib.rs && cargo test -p roko-mcp-stdio serve_stdio_answers_ping_without_the_handler"
+
+[closed]
+at = 2026-10-08
+at_ts = "2026-10-08T13:21:51Z"
+commit = "66a844d4e"
+forced = false
+evidence = "gate 24 (2026-10-08): its verify passes; check, nightly fmt, clippy -D warnings, CI feature checks, nextest --workspace --lib (15223 passed), touched crates' full tests, roko-acp integration, roko-cli bin (457) and CI canaries all pass"
 +++
 
 ## Problem

@@ -2,7 +2,7 @@
 id = "gap-caabcc"
 kind = "gap"
 title = "roko show ignores the global --json flag"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p2"
 goal = "tooling"
@@ -11,6 +11,7 @@ subsystem = ["roko-cli/commands"]
 created = 2026-10-08
 updated = 2026-10-08
 last_verified = 2026-10-08
+last_verified_rev = "ad7a3a337"
 source = "stash-triage-2026-10-08 (roko-worktree-archive/2026-10-08-stash-triage/TRIAGE.md)"
 discovered_from = "archive/stash-2026-09-21-main-2"
 anchors = ["crates/roko-cli/src/commands/show.rs::cmd_show"]
@@ -18,6 +19,13 @@ links = { depends_on = [], blocks = [], related = ["bug-194c8f", "bug-331613"], 
 
 [[verify]]
 command = "grep -q 'fn render_json' crates/roko-cli/src/commands/show.rs && cargo test -p roko-cli --bin roko show_json_"
+
+[closed]
+at = 2026-10-08
+at_ts = "2026-10-08T13:21:52Z"
+commit = "3a32cf329"
+forced = false
+evidence = "gate 24 (2026-10-08): its verify passes; check, nightly fmt, clippy -D warnings, CI feature checks, nextest --workspace --lib (15223 passed), touched crates' full tests, roko-acp integration, roko-cli bin (457) and CI canaries all pass"
 +++
 
 ## Problem

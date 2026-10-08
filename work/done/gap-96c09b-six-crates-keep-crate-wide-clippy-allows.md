@@ -2,7 +2,7 @@
 id = "gap-96c09b"
 kind = "gap"
 title = "Six crates keep crate-wide clippy allows (roko-std, -fs, -eval, -index, -runtime, -primitives)"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p3"
 goal = "tooling"
@@ -11,6 +11,7 @@ subsystem = ["workspace/hygiene"]
 created = 2026-10-08
 updated = 2026-10-08
 last_verified = 2026-10-08
+last_verified_rev = "ad7a3a337"
 source = "stash-triage-2026-10-08 (roko-worktree-archive/2026-10-08-stash-triage/TRIAGE.md)"
 discovered_from = "archive/stash-2026-09-21-main-2"
 anchors = ["crates/roko-std/src/lib.rs", "crates/roko-runtime/src/lib.rs"]
@@ -18,6 +19,13 @@ links = { depends_on = [], blocks = [], related = ["gap-1535e7"], supersedes = [
 
 [[verify]]
 command = "! grep -q 'allow(clippy::unnecessary_literal_bound)' crates/roko-std/src/lib.rs && ! grep -q 'allow(clippy::derive_partial_eq_without_eq' crates/roko-runtime/src/lib.rs && cargo clippy -p roko-std -p roko-fs -p roko-eval -p roko-index -p roko-runtime -p roko-primitives --no-deps -- -D warnings"
+
+[closed]
+at = 2026-10-08
+at_ts = "2026-10-08T13:21:53Z"
+commit = "8a355fe7e"
+forced = false
+evidence = "gate 24 (2026-10-08): its verify passes; check, nightly fmt, clippy -D warnings, CI feature checks, nextest --workspace --lib (15223 passed), touched crates' full tests, roko-acp integration, roko-cli bin (457) and CI canaries all pass"
 +++
 
 ## Problem

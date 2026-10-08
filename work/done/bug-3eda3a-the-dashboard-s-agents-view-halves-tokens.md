@@ -2,7 +2,7 @@
 id = "bug-3eda3a"
 kind = "bug"
 title = "The dashboard's Agents view halves tokens_used instead of showing the real input/output split"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p3"
 goal = "tooling"
@@ -11,6 +11,7 @@ subsystem = ["roko-cli/tui"]
 created = 2026-10-08
 updated = 2026-10-08
 last_verified = 2026-10-08
+last_verified_rev = "ad7a3a337"
 source = "stash-triage-2026-10-08 (roko-worktree-archive/2026-10-08-stash-triage/TRIAGE.md)"
 discovered_from = "archive/stash-2026-09-21-main-1"
 anchors = ["crates/roko-cli/src/tui/dashboard_types.rs::build_agent_activity_snapshot", "crates/roko-cli/src/tui/views/agents_view.rs"]
@@ -18,6 +19,13 @@ links = { depends_on = [], blocks = [], related = [], supersedes = [], duplicate
 
 [[verify]]
 command = "grep -rqw 'fn agent_rows_keep_the_real_token_split' crates/roko-cli/src/tui/ && cargo test -p roko-cli --lib agent_rows_keep_the_real_token_split"
+
+[closed]
+at = 2026-10-08
+at_ts = "2026-10-08T13:21:50Z"
+commit = "a456785ae"
+forced = false
+evidence = "gate 24 (2026-10-08): its verify passes; check, nightly fmt, clippy -D warnings, CI feature checks, nextest --workspace --lib (15223 passed), touched crates' full tests, roko-acp integration, roko-cli bin (457) and CI canaries all pass"
 +++
 
 ## Problem

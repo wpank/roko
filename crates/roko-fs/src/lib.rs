@@ -1,5 +1,3 @@
-// Closures used for error-mapping chaining in I/O code.
-#![allow(clippy::redundant_closure)]
 //! Filesystem-backed [`Store`](roko_core::Store).
 //!
 //! `FileSubstrate` persists signals to an append-only JSONL log under a

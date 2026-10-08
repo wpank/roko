@@ -1384,6 +1384,8 @@ impl Default for PomdpMatrices {
     fn default() -> Self {
         // A: states with higher quality/lower uncertainty -> lower error observations.
         let mut a = vec![[0.0; 3]; POMDP_STATE_COUNT];
+        #[allow(clippy::needless_range_loop)]
+        // idx needed both for a[idx] and decode_pomdp_state(idx)
         for idx in 0..POMDP_STATE_COUNT {
             let (_phase, quality, uncertainty) = decode_pomdp_state(idx);
             // Quality 0..4 maps to error expectation, uncertainty 0..2 modulates.

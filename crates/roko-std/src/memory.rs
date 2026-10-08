@@ -59,10 +59,10 @@ impl MemorySubstrate {
 }
 
 impl roko_core::Cell for MemorySubstrate {
-    fn cell_id(&self) -> &str {
+    fn cell_id(&self) -> &'static str {
         "memory-substrate"
     }
-    fn cell_name(&self) -> &str {
+    fn cell_name(&self) -> &'static str {
         "MemorySubstrate"
     }
     fn protocols(&self) -> Vec<ProtocolId> {

@@ -1,4 +1,3 @@
-#![allow(clippy::too_many_lines)]
 //! Code intelligence for Roko: source parsing, symbol graphs, and HDC
 //! fingerprints.
 //!

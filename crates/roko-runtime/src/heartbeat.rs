@@ -1993,7 +1993,7 @@ pub fn select_tier_from_probes(
 ///
 /// Feed every tier decision into `record()` and query `distribution()` to
 /// verify that the dual-process gating is working as expected.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TierGatingStats {
     /// Total T0 ticks observed.
     pub t0_count: u64,

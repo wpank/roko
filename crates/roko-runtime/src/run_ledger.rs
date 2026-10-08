@@ -710,7 +710,7 @@ impl GateRunOutcome {
 }
 
 /// Typed result of artifact production or validation.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ArtifactOutcome {
     /// Artifact exists and validation passed.
     Valid {

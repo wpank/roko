@@ -136,6 +136,30 @@ fn unified_log_cache_refreshes_from_sources() {
 }
 
 #[test]
+fn unified_log_warns_only_on_turns_above_five_dollars() {
+    let mut state = TuiState::default();
+    for (cost_usd, second) in [(1.5, "00"), (5.5, "01")] {
+        state.efficiency_events.push(AgentEfficiencyEvent {
+            cost_usd,
+            ..efficiency_event(
+                "implementer",
+                100,
+                10,
+                &format!("2026-10-08T10:00:{second}Z"),
+            )
+        });
+    }
+    state.force_refresh_cached_unified_log();
+
+    let levels: Vec<LogEntryLevel> = state
+        .unified_log_entries()
+        .iter()
+        .map(|entry| entry.level)
+        .collect();
+    assert_eq!(levels, vec![LogEntryLevel::Debug, LogEntryLevel::Warn]);
+}
+
+#[test]
 fn elapsed_secs_zero_when_not_started() {
     let state = TuiState::default();
     assert_eq!(state.elapsed_secs(), 0.0);

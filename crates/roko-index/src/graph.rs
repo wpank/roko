@@ -194,6 +194,7 @@ impl SymbolGraph {
 /// Edges are inferred by matching import paths against defined symbol names:
 /// if file A imports a path ending in `Foo` and file B defines a symbol named
 /// `Foo`, an `Imports` edge is created from A's importing context to B's `Foo`.
+#[allow(clippy::too_many_lines)] // graph construction pipeline; splitting would harm readability
 pub fn build_graph(files: &[SourceFile]) -> SymbolGraph {
     let mut nodes = HashSet::new();
     let mut forward: HashMap<SymbolId, Vec<(SymbolId, EdgeKind)>> = HashMap::new();

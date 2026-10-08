@@ -1,4 +1,3 @@
-#![allow(clippy::missing_fields_in_debug)]
 //! Unified evaluation framework for Roko.
 //!
 //! This crate separates **evidence collection** from **judgment** via two core
@@ -918,7 +917,7 @@ impl fmt::Debug for BoxedLegacyCriterion {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("BoxedLegacyCriterion")
             .field("name", &self.criterion_name)
-            .finish()
+            .finish_non_exhaustive() // gate field is a boxed trait object — not Debug
     }
 }
 
@@ -1892,7 +1891,7 @@ impl<G: roko_core::Verify> std::fmt::Debug for LegacyCriterion<G> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("LegacyCriterion")
             .field("name", &self.name)
-            .finish()
+            .finish_non_exhaustive() // gate field may not implement Debug
     }
 }
 

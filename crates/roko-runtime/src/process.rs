@@ -841,6 +841,10 @@ pub struct ProcessSupervisor {
     restart_history: Mutex<HashMap<String, Vec<Instant>>>,
     cancel: CancelToken,
     strategy: SupervisionStrategy,
+    /// Watcher tasks that service external-cancellation tokens (gap-7b065c). Keeping the
+    /// `JoinHandle`s lets `shutdown_all` and `Drop` stop them and surfaces a watcher's panic;
+    /// `spawn` prunes finished ones, so the list holds only live watchers.
+    background_tasks: Mutex<Vec<tokio::task::JoinHandle<()>>>,
 }
 
 impl std::fmt::Debug for ProcessSupervisor {
@@ -859,6 +863,34 @@ impl ProcessSupervisor {
             restart_history: Mutex::new(HashMap::new()),
             cancel,
             strategy: SupervisionStrategy::default(),
+            background_tasks: Mutex::new(Vec::new()),
+        }
+    }
+
+    /// Drop finished watcher tasks and log any that panicked (gap-7b065c).
+    ///
+    /// `spawn` calls this before it records a new watcher; `shutdown_all` stops the rest.
+    pub async fn reap_background_tasks(&self) {
+        let finished: Vec<_> = {
+            let mut tasks = self.background_tasks.lock();
+            let mut remaining = Vec::with_capacity(tasks.len());
+            let mut done = Vec::new();
+            for handle in tasks.drain(..) {
+                if handle.is_finished() {
+                    done.push(handle);
+                } else {
+                    remaining.push(handle);
+                }
+            }
+            *tasks = remaining;
+            done
+        };
+        for handle in finished {
+            if let Err(err) = handle.await
+                && err.is_panic()
+            {
+                warn!("cancellation watcher panicked: {err}");
+            }
         }
     }
 
@@ -876,7 +908,6 @@ impl ProcessSupervisor {
     }
 
     /// Spawn a new managed process.
-    #[allow(clippy::unused_async)] // Preserve the existing async API for callers across crates.
     ///
     /// # Errors
     ///
@@ -931,13 +962,15 @@ impl ProcessSupervisor {
 
         if let Some(token) = external_cancellation {
             let handles = Arc::clone(&self.handles);
-            std::mem::drop(tokio::spawn(async move {
+            let task = tokio::spawn(async move {
                 token.cancelled().await;
                 let mut handle = { handles.lock().remove(&id) };
                 if let Some(mut handle) = handle.take() {
                     let _ = handle.shutdown().await;
                 }
-            }));
+            });
+            self.reap_background_tasks().await;
+            self.background_tasks.lock().push(task);
         }
 
         Ok(id)
@@ -967,6 +1000,18 @@ impl ProcessSupervisor {
         for mut handle in handles {
             outcomes.push(handle.shutdown().await);
         }
+
+        // Every child is gone, so a watcher still waiting on its token has nothing left to stop.
+        let watchers: Vec<_> = self.background_tasks.lock().drain(..).collect();
+        for task in watchers {
+            task.abort();
+            if let Err(err) = task.await
+                && err.is_panic()
+            {
+                warn!("cancellation watcher panicked: {err}");
+            }
+        }
+
         outcomes
     }
 
@@ -1256,6 +1301,9 @@ impl ProcessSupervisor {
 impl Drop for ProcessSupervisor {
     fn drop(&mut self) {
         self.cancel.cancel();
+        for task in self.background_tasks.get_mut().drain(..) {
+            task.abort();
+        }
 
         let children = {
             let mut handles = self.handles.lock();
@@ -1326,6 +1374,47 @@ mod tests {
         let outcomes = supervisor.shutdown_all().await;
         assert_eq!(outcomes.len(), 1);
         assert_eq!(supervisor.count().await, 0);
+    }
+
+    #[tokio::test]
+    async fn cancellation_watchers_are_tracked_pruned_and_stopped() {
+        let supervisor = ProcessSupervisor::new(CancelToken::new());
+        let sleeper = |label: &str, token: &CancelToken| SpawnConfig {
+            program: "sleep".into(),
+            args: vec!["60".into()],
+            label: label.into(),
+            grace_period: Duration::from_millis(100),
+            cancellation: Some(token.clone()),
+            ..Default::default()
+        };
+
+        let first = CancelToken::new();
+        supervisor
+            .spawn(sleeper("watched-1", &first))
+            .await
+            .expect("spawn should succeed");
+        assert_eq!(supervisor.background_tasks.lock().len(), 1);
+
+        // The watcher stops its child once the token fires, then finishes.
+        first.cancel();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while supervisor.count().await > 0 || !supervisor.background_tasks.lock()[0].is_finished() {
+            assert!(Instant::now() < deadline, "the watcher never finished");
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+
+        // The next spawn prunes the finished watcher before recording its own.
+        let second = CancelToken::new();
+        supervisor
+            .spawn(sleeper("watched-2", &second))
+            .await
+            .expect("spawn should succeed");
+        assert_eq!(supervisor.background_tasks.lock().len(), 1);
+
+        // Shutdown stops the live watcher along with the child.
+        let outcomes = supervisor.shutdown_all().await;
+        assert_eq!(outcomes.len(), 1);
+        assert!(supervisor.background_tasks.lock().is_empty());
     }
 
     #[tokio::test]

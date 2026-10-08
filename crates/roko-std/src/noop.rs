@@ -17,10 +17,10 @@ use roko_core::{
 #[derive(Debug, Clone, Default)]
 pub struct NoOpScorer;
 impl roko_core::Cell for NoOpScorer {
-    fn cell_id(&self) -> &str {
+    fn cell_id(&self) -> &'static str {
         "noop-scorer"
     }
-    fn cell_name(&self) -> &str {
+    fn cell_name(&self) -> &'static str {
         "NoOpScorer"
     }
     fn protocols(&self) -> Vec<roko_core::ProtocolId> {
@@ -42,10 +42,10 @@ impl ScoreFn for NoOpScorer {
 pub struct NoOpGate;
 
 impl roko_core::Cell for NoOpGate {
-    fn cell_id(&self) -> &str {
+    fn cell_id(&self) -> &'static str {
         "noop-gate"
     }
-    fn cell_name(&self) -> &str {
+    fn cell_name(&self) -> &'static str {
         "NoOpGate"
     }
     fn protocols(&self) -> Vec<ProtocolId> {
@@ -54,12 +54,11 @@ impl roko_core::Cell for NoOpGate {
 }
 
 #[async_trait]
-#[allow(clippy::unnecessary_literal_bound)]
 impl Verify for NoOpGate {
     async fn verify(&self, _s: &Signal, _ctx: &Context) -> Verdict {
         Verdict::pass("noop_gate")
     }
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "noop_gate"
     }
 }
@@ -67,12 +66,11 @@ impl Verify for NoOpGate {
 /// A router that always selects the first candidate (if any).
 #[derive(Debug, Clone, Default)]
 pub struct NoOpRouter;
-#[allow(clippy::unnecessary_literal_bound)]
 impl roko_core::Cell for NoOpRouter {
-    fn cell_id(&self) -> &str {
+    fn cell_id(&self) -> &'static str {
         "noop-router"
     }
-    fn cell_name(&self) -> &str {
+    fn cell_name(&self) -> &'static str {
         "NoOpRouter"
     }
     fn protocols(&self) -> Vec<roko_core::ProtocolId> {
@@ -87,7 +85,7 @@ impl Route for NoOpRouter {
             .map(|s| Selection::new(s.id, "noop_router"))
     }
     fn feedback(&self, _outcome: &Outcome) {}
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "noop_router"
     }
 }
@@ -96,12 +94,11 @@ impl Route for NoOpRouter {
 /// If given no inputs, returns an empty signal.
 #[derive(Debug, Clone, Default)]
 pub struct NoOpComposer;
-#[allow(clippy::unnecessary_literal_bound)]
 impl roko_core::Cell for NoOpComposer {
-    fn cell_id(&self) -> &str {
+    fn cell_id(&self) -> &'static str {
         "noop-composer"
     }
-    fn cell_name(&self) -> &str {
+    fn cell_name(&self) -> &'static str {
         "NoOpComposer"
     }
     fn protocols(&self) -> Vec<roko_core::ProtocolId> {
@@ -123,7 +120,7 @@ impl Compose for NoOpComposer {
                 .build()
         }))
     }
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "noop_composer"
     }
 }
@@ -131,12 +128,11 @@ impl Compose for NoOpComposer {
 /// A policy that emits no signals.
 #[derive(Debug, Clone, Default)]
 pub struct NoOpPolicy;
-#[allow(clippy::unnecessary_literal_bound)]
 impl roko_core::Cell for NoOpPolicy {
-    fn cell_id(&self) -> &str {
+    fn cell_id(&self) -> &'static str {
         "noop-policy"
     }
-    fn cell_name(&self) -> &str {
+    fn cell_name(&self) -> &'static str {
         "NoOpPolicy"
     }
     fn protocols(&self) -> Vec<roko_core::ProtocolId> {
@@ -148,7 +144,7 @@ impl React for NoOpPolicy {
     fn decide(&self, _stream: &[Signal], _ctx: &Context) -> Vec<Signal> {
         Vec::new()
     }
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "noop_policy"
     }
 }

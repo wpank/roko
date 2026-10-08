@@ -322,7 +322,7 @@ pub struct StateHubSubscription {
 }
 
 /// Current materialized value for one typed telemetry projection.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ProjectionState {
     /// Stable projection identifier, such as `cohort_health`.
     pub id: String,

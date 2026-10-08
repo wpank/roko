@@ -2,14 +2,15 @@
 id = "bug-68a33f"
 kind = "bug"
 title = "Two roko-acp telemetry integration tests fail on main: the model-stream request to the mock provider fails"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p2"
 size = "S"
 subsystem = ["roko-acp/tests"]
 created = 2026-10-02
-updated = 2026-10-02
-last_verified = 2026-10-02
+updated = 2026-10-08
+last_verified = 2026-10-08
+last_verified_rev = "ad7a3a337"
 source = "roko-7d: cargo nextest run --workspace for the workflow-audit merge (2026-10-02)"
 discovered_from = "merge:bfd36512f"
 anchors = ["crates/roko-acp/tests/telemetry_integration.rs", "crates/roko-acp/tests/helpers.rs"]
@@ -18,6 +19,13 @@ links = { depends_on = [], blocks = [], related = [], supersedes = [], duplicate
 
 [[verify]]
 command = "grep -rqw 'fn single_dispatch_produces_episode' crates/roko-acp/tests/ && cargo test -p roko-acp --test telemetry_integration single_dispatch_"
+
+[closed]
+at = 2026-10-08
+at_ts = "2026-10-08T13:21:54Z"
+commit = "4289f4a12"
+forced = false
+evidence = "gate 24 (2026-10-08): its verify passes; check, nightly fmt, clippy -D warnings, CI feature checks, nextest --workspace --lib (15223 passed), touched crates' full tests, roko-acp integration, roko-cli bin (457) and CI canaries all pass"
 +++
 
 ## Problem

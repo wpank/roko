@@ -2,7 +2,7 @@
 
 Roko is a Rust toolkit for building agents that build themselves. 36 workspace members, ~1.2M LOC, 11,000+ tests.
 
-**Goal**: roko develops itself — it turns requests into plans, executes their tasks
+**Goal**: roko is a cybernetic multi-agent orchestration harness. it turns requests into plans, executes their tasks
 via Claude agents, validates with gates, and persists results. The core loop is wired. Your job
 is to use it and improve it.
 

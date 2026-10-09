@@ -1458,6 +1458,7 @@ pub(crate) async fn cmd_doctor(
         workdir,
         config_override: cli.config.clone(),
         serve_url,
+        credentials: roko_cli::doctor::CredentialProbe::Environment,
     })
     .await?;
 

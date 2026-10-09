@@ -28,7 +28,7 @@ What each subsystem is and where it lives. The table makes no maturity or status
 | Runtime services | Shared `RuntimeServices` builder (the service facade for CLI, serve and ACP) | `crates/roko-execution/` |
 | Process supervision | ProcessSupervisor, event bus, cancellation | `crates/roko-runtime/` |
 | Execution state | Per-plan Graph checkpoint, activity log and cost state | `.roko/state/graph/<plan>/` (`checkpoint.json`, `activities.jsonl`, `costs.json`) |
-| Episodes | Per-turn episode records. `hdc_fingerprint` is `HdcVector::from_seed` of the serialized prompt and outcome, i.e. one 64-bit FNV-1a hash expanded into a vector. It identifies exact inputs; it does not measure semantic similarity | `crates/roko-cli/src/runtime_feedback/episodes.rs`, `crates/roko-primitives/src/hdc.rs`, `.roko/episodes.jsonl` |
+| Episodes | Per-turn episode records. `hdc_fingerprint`, written only when `[learning] episode_hdc_fingerprint = true` (off by default), is `HdcVector::from_seed` of the serialized prompt and outcome, i.e. one 64-bit FNV-1a hash expanded into a vector. It identifies exact inputs; it does not measure semantic similarity | `crates/roko-cli/src/runtime_feedback/episodes.rs`, `crates/roko-primitives/src/hdc.rs`, `.roko/episodes.jsonl` |
 | Learning | Model routing (CascadeRouter), bandits, playbooks, prompt experiments, efficiency events | `crates/roko-learn/`; state in `.roko/learn/` (`cascade-router.json`, `gate-thresholds.json`, `efficiency.jsonl`) |
 | Knowledge and dreams | Durable knowledge store, distillation, tiers; offline Dream consolidation | `crates/roko-neuro/`, `crates/roko-dreams/` |
 | Affect | Daimon affect engine and dispatch modulation | `crates/roko-daimon/` |
@@ -41,8 +41,27 @@ What each subsystem is and where it lives. The table makes no maturity or status
 | TUI and chat | ratatui dashboard (`roko dashboard`) with a file watcher; `roko chat` REPL | `crates/roko-cli/src/tui/` (`fs_watch.rs`), `crates/roko-cli/src/chat.rs` |
 | GitHub integration | `roko github status`; `GitHubOps` trait with no-op and live adapters; `[github]` config | `crates/roko-cli/src/commands/github.rs`, `crates/roko-cli/src/github_ops.rs`, `crates/roko-cli/src/github_ops_impl.rs`, `roko.toml` |
 | Plugins | Plugin manifests, declarative tools, capability policy, dependency resolution | `crates/roko-plugin/` |
-| Chain primitives | Optional chain client plus local registry, marketplace, arena and DeFi state machines | `crates/roko-chain/` |
-| Signal log | Canonical signal log (a legacy `engrams.jsonl` is read only as a fallback) | `.roko/signals.jsonl` (path logic in `crates/roko-fs/src/layout.rs`) |
+| Chain primitives | Chain client plus local registry, marketplace, arena and DeFi state machines; parked (see below) | `crates/roko-chain/` |
+| Signal log | The kernel substrate's log (`FileSubstrate`; a legacy `engrams.jsonl` is read only as a fallback). `roko serve` writes it; plan runs do not. `roko status` and `roko replay` read it | `.roko/signals.jsonl` (path logic in `crates/roko-fs/src/layout.rs`) |
+| Plan run records | What a plan run writes: per run, an attempt-open line and one settled verdict per attempt (`attempts.jsonl`) and the run manifest (`manifest.json`); for the workspace, the run's dashboard events (`events.jsonl`); per plan, the execution state above | `.roko/runs/<run>/` (`attempts.jsonl`, `manifest.json`), `.roko/events.jsonl` |
+
+## Parked (off the default build)
+
+Decision 9201 parked what the plan path never uses behind cargo features that are off by default
+(the conductor stays on). A default `roko` build leaves these out; build with
+`cargo build -p roko-cli --features <feature>` (or `-p <crate>` for a crate feature) to bring one
+back. Line counts are in `benchmarks/park/`.
+
+| Feature | Crates | Brings back |
+|---|---|---|
+| `chain` | roko-cli, roko-serve | roko-chain, the 17 `chain.*` tools, the chain-family routes (501 without it), chain state and feed agents, x402 paid feeds, chain jobs |
+| `alloy-backend` | roko-cli, roko-serve | Real EVM JSON-RPC (implies `chain`) |
+| `groups` | roko-cli, roko-serve | Agent groups and pheromone state, and their routes |
+| `relay` | roko-cli, roko-serve | Relay registration, the subscription and feed relay bridge, the `/relay` proxy |
+| `cognitive-clock` | roko-cli, roko-runtime | The heartbeat clock, `CorticalState`, the theta and delta consumers and sinks, the attention auction, heartbeat probes |
+| `cross-cut-functors` | roko-compose | The cross-cut functors and `CrossCutArbitrator` |
+| `spc` | roko-gate | CUSUM, EWMA and BOCPD detectors, PELT, Hotelling's T-squared |
+| `active-inference` | roko-learn | The expected-free-energy tier selector |
 
 ## Critical rules
 
@@ -166,7 +185,7 @@ safety, auth, persistence, migration, payment, or other high-risk changes. FAST 
 | Command | What it does |
 |---|---|
 | `roko plan list/show/create` | Manage plans |
-| `roko plan run <dir>` | Execute plans through the Graph engine (the only engine; `--engine legacy`/`runner-v2` exits with an error) |
+| `roko plan run <dir>` | Execute plans through the Graph engine (the only engine; `--engine legacy`/`runner-v2` exits with an error); `--no-holdout` runs it in maximize mode (decision 4115) |
 | `roko plan generate/regenerate` | Generate a plan from a prompt, file, notes or backlog spec (runs nothing), or regenerate one in place |
 | `roko plan index` | Rebuild or verify the deterministic plans index |
 | `roko plan pause/resume/cancel` | Pause, resume, or cancel a running plan |
@@ -216,6 +235,9 @@ safety, auth, persistence, migration, payment, or other high-risk changes. FAST 
 |---|---|
 | `roko learn all/router/experiments/efficiency/episodes` | Inspect learning state |
 | `roko learn reflexes` | Show T0 reflex rules (count, top five by hits, recent demotions) |
+| `roko learn patterns` | Show failure patterns, most frequent first (`--graduate`: the ones ready to become a lint or verify step) |
+| `roko learn self-model fit/replay` | Fit the M3 self-model over the run logs, or replay routing policies over a run-record matrix |
+| `roko learn econ prices` | Show the price snapshot's rows with their source URLs |
 | `roko learn gates` | Show adaptive gate threshold state |
 | `roko learn knowledge-stats` | Show durable knowledge entry counts |
 | `roko learn inspect gates/routing/budget` | Read-only subsystem inspection (thresholds, routing, budget) |
@@ -274,6 +296,7 @@ safety, auth, persistence, migration, payment, or other high-risk changes. FAST 
 | `roko run-index repair` | Inspect or rebuild derived per-run event indexes |
 | `roko bench demo/swe` | Run benchmark evaluations and write learning telemetry |
 | `roko new <type> <name>` | Scaffold boilerplate |
+| `roko effects list/show/approve/reject` | List, inspect and approve or reject a staged (held) tool call |
 | `roko explain <topic>` | Concept explainer (3 depth levels) |
 | `roko completions <shell>` | Shell completion scripts |
 
@@ -287,11 +310,11 @@ safety, auth, persistence, migration, payment, or other high-risk changes. FAST 
 | roko-serve | `crates/roko-serve/` | HTTP control plane: REST routes + SSE + WebSocket on :6677 |
 | roko-gate | `crates/roko-gate/` | 19 gates, 7-rung pipeline, adaptive thresholds |
 | roko-compose | `crates/roko-compose/` | Prompt assembly, 11 role templates, enrichment |
-| roko-conductor | `crates/roko-conductor/` | 12 watchers, circuit breaker, diagnosis |
+| roko-conductor | `crates/roko-conductor/` | 13 watchers, circuit breaker, diagnosis |
 | roko-learn | `crates/roko-learn/` | Episodes, playbooks, bandits, model routing, experiments, efficiency |
 | roko-cli | `crates/roko-cli/` | CLI, plan DAG/runner, merge queue, worktree manager, ratatui TUI |
 | roko-fs | `crates/roko-fs/` | FileSubstrate (JSONL), GC, layout |
-| roko-std | `crates/roko-std/` | 35 definitions by default (16 executable local + 19 GitHub MCP); 52 with typed optional-chain placeholders; HTTP MCP clients/resolvers retained at runtime |
+| roko-std | `crates/roko-std/` | 35 definitions in a default build (16 executable local + 19 GitHub MCP); 52 with `--features chain` (the 17 chain tools); HTTP MCP clients/resolvers retained at runtime |
 | roko-execution | `crates/roko-execution/` | RuntimeServices builder, diagnostic service, execution control, feedback settlement |
 | roko-runtime | `crates/roko-runtime/` | ProcessSupervisor, event bus, cancellation, workflow contract |
 | roko-primitives | `crates/roko-primitives/` | HDC vectors, tier routing |
@@ -306,7 +329,7 @@ safety, auth, persistence, migration, payment, or other high-risk changes. FAST 
 | roko-plugin | `crates/roko-plugin/` | Plugin manifests, executable declarative tools, canonical tier/capability policy, semantic-version/dependency resolution |
 | roko-graph | `crates/roko-graph/` | Graph engine, DAG cells, topology, cost state |
 | roko-demo | `crates/roko-demo/` | Demo/example binary for showcasing features |
-| roko-chain | `crates/roko-chain/` | Optional chain client/runtime primitives plus tested local registry, marketplace, arena, and DeFi state machines. daeji owns node/BFT/precompiles in a separate repo. |
+| roko-chain | `crates/roko-chain/` | Parked (`--features chain`): chain client/runtime primitives plus tested local registry, marketplace, arena, and DeFi state machines. daeji owns node/BFT/precompiles in a separate repo. |
 
 ## Absolute paths
 
@@ -327,7 +350,8 @@ safety, auth, persistence, migration, payment, or other high-risk changes. FAST 
 | **Graph checkpoints** | `/Users/will/dev/nunchi/roko/roko/.roko/state/graph/` |
 | **Plans** | `/Users/will/dev/nunchi/roko/roko/plans/` |
 | **Research artifacts** | `/Users/will/dev/nunchi/roko/roko/.roko/research/` |
-| **Signal log** | `/Users/will/dev/nunchi/roko/roko/.roko/signals.jsonl` |
+| **Signal log (kernel substrate; plan runs do not write it)** | `/Users/will/dev/nunchi/roko/roko/.roko/signals.jsonl` |
+| **Plan run records** | `/Users/will/dev/nunchi/roko/roko/.roko/runs/<run>/` (`attempts.jsonl`, `manifest.json`), `/Users/will/dev/nunchi/roko/roko/.roko/events.jsonl` |
 | **Episode log** | `/Users/will/dev/nunchi/roko/roko/.roko/episodes.jsonl` |
 
 ## Reference material (read-only, do not modify)
@@ -387,8 +411,9 @@ Long-term priorities that still hold:
    end. The blockers from the first dogfood run have regression fixes, but no live rerun has been
    recorded.
 2. **Learning loops on the Graph path**: several feedback paths were attached to the deleted
-   Runner-v2 event loop and have not been re-attached to Graph runs. For example, Graph task
-   dispatch passes `prompt_experiment: None` (`crates/roko-cli/src/graph_task_dispatch.rs:1791`).
+   Runner-v2 event loop and have not been re-attached to Graph runs. For example, Graph runs never
+   emit `FeedbackEvent::PlanCompleted`, so the dream, daimon, theta and delta plan-completion sinks
+   never fire (q-6b7cca).
 3. **roko tracks its own work**: the `roko work` CLI (it extends `roko backlog`, per
    `work/README.md`) plus plan-task `closes = [...]` links, so that roko itself maintains the work
    graph.

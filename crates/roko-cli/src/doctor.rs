@@ -12,6 +12,7 @@ use roko_core::agent::ProviderKind;
 use roko_core::child_env::CredentialScrub;
 use roko_core::config::model_registry::cheapest_builtin_model;
 use roko_core::config::provider::{ProviderConfig, ProviderNetworkPolicy};
+use roko_execution::diagnostics::checks::credentials_finding;
 use roko_execution::diagnostics::{
     DiagnosticCheckId, DiagnosticFinding, DiagnosticRequest, DiagnosticService, DiagnosticSeverity,
 };
@@ -62,6 +63,25 @@ pub struct DoctorOptions {
     pub config_override: Option<PathBuf>,
     /// Optional roko-serve base URL or explicit health endpoint URL.
     pub serve_url: Option<String>,
+    /// Where the provider-credential checks get their answers: the machine, or fixed answers.
+    pub credentials: CredentialProbe,
+}
+
+/// Where `roko doctor`'s provider-credential checks (`provider_usable` and the shared
+/// `credentials` check) get their answers (dec-01be49). `run_doctor` probes the machine by
+/// default; tests pass fixed answers, so they don't depend on the machine's `claude` and keys.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub enum CredentialProbe {
+    /// Probe the environment, the config and PATH.
+    #[default]
+    Environment,
+    /// Use these answers instead.
+    Fixed {
+        /// The provider auth `provider_usable` finds, by label (`None`: no working auth).
+        auth: Option<String>,
+        /// The credential sources the shared check lists, e.g. `claude-cli` (empty: none).
+        sources: Vec<String>,
+    },
 }
 
 /// One doctor check status.
@@ -226,14 +246,26 @@ pub async fn run_doctor(options: &DoctorOptions) -> Result<DoctorReport> {
 
     // ── Shared diagnostic service checks (#279) ─────────────────────────
     // Run all 11 shared checks via the consolidated DiagnosticService.
+    // With fixed credential answers, the shared credentials check uses them, not the machine.
+    let fixed_sources = match &options.credentials {
+        CredentialProbe::Environment => None,
+        CredentialProbe::Fixed { sources, .. } => Some(sources),
+    };
     let shared_report = DiagnosticService::run(&DiagnosticRequest {
         workdir: workdir.clone(),
-        selected: DiagnosticCheckId::ALL.iter().copied().collect(),
+        selected: DiagnosticCheckId::ALL
+            .iter()
+            .copied()
+            .filter(|id| fixed_sources.is_none() || *id != DiagnosticCheckId::Credentials)
+            .collect(),
         profile: None,
         allow_repairs: false,
     });
     for finding in &shared_report.findings {
         checks.push(finding_to_doctor_check(finding));
+    }
+    if let Some(sources) = fixed_sources {
+        checks.push(finding_to_doctor_check(&credentials_finding(sources)));
     }
 
     // ── Doctor-only checks (not in the shared service) ──────────────────
@@ -246,7 +278,7 @@ pub async fn run_doctor(options: &DoctorOptions) -> Result<DoctorReport> {
     checks.push(check_layout_basics(&workdir));
     checks.push(check_claude_cli());
     checks.extend(check_configured_provider_keys(&loaded_config));
-    checks.push(check_provider_usable(&workdir));
+    checks.push(check_provider_usable(&workdir, &options.credentials));
     checks.push(check_available_providers(&loaded_config));
     checks.extend(check_provider_credits(&loaded_config).await);
     checks.push(check_default_model_configured(&loaded_config));
@@ -714,10 +746,16 @@ fn check_layout_basics(workdir: &Path) -> DoctorCheck {
     }
 }
 
-fn check_provider_usable(workdir: &Path) -> DoctorCheck {
-    let auth = detect_auth_from_config(workdir);
+fn check_provider_usable(workdir: &Path, probe: &CredentialProbe) -> DoctorCheck {
+    let auth = match probe {
+        CredentialProbe::Environment => match detect_auth_from_config(workdir) {
+            AuthMethod::NeedsSetup => None,
+            auth => Some(auth.label()),
+        },
+        CredentialProbe::Fixed { auth, .. } => auth.clone(),
+    };
     match auth {
-        AuthMethod::NeedsSetup => DoctorCheck {
+        None => DoctorCheck {
             id: "provider_usable".to_string(),
             status: DoctorStatus::Fail,
             message: "no LLM provider has working auth".to_string(),
@@ -726,10 +764,10 @@ fn check_provider_usable(workdir: &Path) -> DoctorCheck {
             url: None,
             fix: Some("Set an API key. Example: export ANTHROPIC_API_KEY=sk-...".to_string()),
         },
-        _ => DoctorCheck {
+        Some(label) => DoctorCheck {
             id: "provider_usable".to_string(),
             status: DoctorStatus::Ok,
-            message: format!("provider available: {}", auth.label()),
+            message: format!("provider available: {label}"),
             detail: None,
             path: None,
             url: None,
@@ -3503,6 +3541,21 @@ mod tests {
         assert!(checks[0].message.contains("budget"));
     }
 
+    /// Doctor options for a test workspace, with fixed answers for the provider-credential
+    /// checks: a logged-in `claude` CLI. The tests then pass on any machine, `claude` and API
+    /// keys or not (dec-01be49).
+    fn test_options(workdir: &Path) -> DoctorOptions {
+        DoctorOptions {
+            workdir: workdir.to_path_buf(),
+            config_override: None,
+            serve_url: None,
+            credentials: CredentialProbe::Fixed {
+                auth: Some("claude CLI".to_string()),
+                sources: vec!["claude-cli".to_string()],
+            },
+        }
+    }
+
     /// Write a core-compatible `roko.toml` for doctor tests.
     ///
     /// The core config loader uses `deny_unknown_fields` on many struct
@@ -3557,13 +3610,7 @@ mod tests {
     #[tokio::test]
     async fn run_doctor_reports_missing_project_config_and_layout() {
         let temp = tempdir().unwrap();
-        let report = run_doctor(&DoctorOptions {
-            workdir: temp.path().to_path_buf(),
-            config_override: None,
-            serve_url: None,
-        })
-        .await
-        .unwrap();
+        let report = run_doctor(&test_options(temp.path())).await.unwrap();
 
         assert!(!report.healthy);
         assert_eq!(report.exit_code(), 1);
@@ -3591,13 +3638,7 @@ mod tests {
         write_project_config(temp.path(), config);
         bootstrap_layout(temp.path()).await;
 
-        let report = run_doctor(&DoctorOptions {
-            workdir: temp.path().to_path_buf(),
-            config_override: None,
-            serve_url: None,
-        })
-        .await
-        .unwrap();
+        let report = run_doctor(&test_options(temp.path())).await.unwrap();
 
         assert!(report.healthy);
         assert_eq!(report.exit_code(), 0);
@@ -3610,6 +3651,49 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn run_doctor_fails_a_bootstrapped_workspace_without_provider_credentials() {
+        let temp = tempdir().unwrap();
+        let mut config = Config::default();
+        config.serve.auth.enabled = false;
+        write_project_config(temp.path(), config);
+        bootstrap_layout(temp.path()).await;
+        let status = |report: &DoctorReport, id: &str| {
+            report
+                .checks
+                .iter()
+                .find(|check| check.id == id)
+                .map(|check| check.status)
+        };
+
+        let without = run_doctor(&DoctorOptions {
+            credentials: CredentialProbe::Fixed {
+                auth: None,
+                sources: Vec::new(),
+            },
+            ..test_options(temp.path())
+        })
+        .await
+        .unwrap();
+        assert!(!without.healthy);
+        assert_eq!(
+            status(&without, "provider_usable"),
+            Some(DoctorStatus::Fail)
+        );
+        assert_eq!(
+            status(&without, "shared_credentials_none"),
+            Some(DoctorStatus::Fail)
+        );
+
+        let with = run_doctor(&test_options(temp.path())).await.unwrap();
+        assert!(with.healthy);
+        assert_eq!(status(&with, "provider_usable"), Some(DoctorStatus::Ok));
+        assert_eq!(
+            status(&with, "shared_credentials_ok"),
+            Some(DoctorStatus::Ok)
+        );
+    }
+
+    #[tokio::test]
     async fn run_doctor_fails_when_serve_auth_enabled_without_api_key() {
         let temp = tempdir().unwrap();
         let mut config = Config::default();
@@ -3618,13 +3702,7 @@ mod tests {
         write_project_config(temp.path(), config);
         bootstrap_layout(temp.path()).await;
 
-        let report = run_doctor(&DoctorOptions {
-            workdir: temp.path().to_path_buf(),
-            config_override: None,
-            serve_url: None,
-        })
-        .await
-        .unwrap();
+        let report = run_doctor(&test_options(temp.path())).await.unwrap();
 
         let auth_check = report
             .checks
@@ -3700,13 +3778,7 @@ mod tests {
     #[tokio::test]
     async fn failing_checks_have_fix_lines_in_human_output() {
         let temp = tempdir().unwrap();
-        let report = run_doctor(&DoctorOptions {
-            workdir: temp.path().to_path_buf(),
-            config_override: None,
-            serve_url: None,
-        })
-        .await
-        .unwrap();
+        let report = run_doctor(&test_options(temp.path())).await.unwrap();
 
         let rendered = report.render_human();
         // Every fail/warn check with a fix should produce an arrow-fix line.
@@ -3732,13 +3804,7 @@ mod tests {
         write_project_config(temp.path(), config);
         bootstrap_layout(temp.path()).await;
 
-        let report = run_doctor(&DoctorOptions {
-            workdir: temp.path().to_path_buf(),
-            config_override: None,
-            serve_url: None,
-        })
-        .await
-        .unwrap();
+        let report = run_doctor(&test_options(temp.path())).await.unwrap();
 
         for check in &report.checks {
             if check.status == DoctorStatus::Ok {
@@ -3790,13 +3856,7 @@ mod tests {
     #[tokio::test]
     async fn doctor_includes_environment_checks() {
         let temp = tempdir().unwrap();
-        let report = run_doctor(&DoctorOptions {
-            workdir: temp.path().to_path_buf(),
-            config_override: None,
-            serve_url: None,
-        })
-        .await
-        .unwrap();
+        let report = run_doctor(&test_options(temp.path())).await.unwrap();
 
         let check_ids: Vec<&str> = report.checks.iter().map(|c| c.id.as_str()).collect();
         assert!(
@@ -3848,13 +3908,7 @@ mod tests {
     #[tokio::test]
     async fn doctor_report_includes_v2_abstractions() {
         let temp = tempdir().unwrap();
-        let report = run_doctor(&DoctorOptions {
-            workdir: temp.path().to_path_buf(),
-            config_override: None,
-            serve_url: None,
-        })
-        .await
-        .unwrap();
+        let report = run_doctor(&test_options(temp.path())).await.unwrap();
 
         let v2_check = report
             .checks
@@ -3867,13 +3921,7 @@ mod tests {
     #[tokio::test]
     async fn doctor_human_output_contains_v2_abstractions() {
         let temp = tempdir().unwrap();
-        let report = run_doctor(&DoctorOptions {
-            workdir: temp.path().to_path_buf(),
-            config_override: None,
-            serve_url: None,
-        })
-        .await
-        .unwrap();
+        let report = run_doctor(&test_options(temp.path())).await.unwrap();
 
         let rendered = report.render_human();
         assert!(
@@ -3932,13 +3980,7 @@ mod tests {
         )
         .unwrap();
 
-        let report = run_doctor(&DoctorOptions {
-            workdir: temp.path().to_path_buf(),
-            config_override: None,
-            serve_url: None,
-        })
-        .await
-        .unwrap();
+        let report = run_doctor(&test_options(temp.path())).await.unwrap();
 
         // 1. The safe server is on the allowlist; it may warn if npx is not on
         //    PATH, but must NOT warn about the allowlist itself.
@@ -4040,13 +4082,7 @@ mod tests {
         )
         .unwrap();
 
-        let report = run_doctor(&DoctorOptions {
-            workdir: temp.path().to_path_buf(),
-            config_override: None,
-            serve_url: None,
-        })
-        .await
-        .unwrap();
+        let report = run_doctor(&test_options(temp.path())).await.unwrap();
 
         let check = report
             .checks
@@ -4093,13 +4129,7 @@ mod tests {
         )
         .unwrap();
 
-        let report = run_doctor(&DoctorOptions {
-            workdir: temp.path().to_path_buf(),
-            config_override: None,
-            serve_url: None,
-        })
-        .await
-        .unwrap();
+        let report = run_doctor(&test_options(temp.path())).await.unwrap();
 
         let check = report
             .checks
@@ -4134,7 +4164,10 @@ mod tests {
         let mcp_json = serde_json::json!({
             "servers": [{
                 "name": "hardcoded-secret",
-                "command": "node",
+                // An allowlisted command that is on PATH wherever tests run (cargo runs them):
+                // with one that isn't, the check reports the command first, not the secret
+                // (dec-01be49).
+                "command": "cargo",
                 "args": ["server.js"],
                 "env": {
                     // Literal secret value, not an env var reference.
@@ -4148,13 +4181,7 @@ mod tests {
         )
         .unwrap();
 
-        let report = run_doctor(&DoctorOptions {
-            workdir: temp.path().to_path_buf(),
-            config_override: None,
-            serve_url: None,
-        })
-        .await
-        .unwrap();
+        let report = run_doctor(&test_options(temp.path())).await.unwrap();
 
         let check = report
             .checks
@@ -4195,13 +4222,7 @@ mod tests {
         bootstrap_layout(temp.path()).await;
         // No .mcp.json written.
 
-        let report = run_doctor(&DoctorOptions {
-            workdir: temp.path().to_path_buf(),
-            config_override: None,
-            serve_url: None,
-        })
-        .await
-        .unwrap();
+        let report = run_doctor(&test_options(temp.path())).await.unwrap();
 
         let mcp_check = report
             .checks
@@ -4428,13 +4449,7 @@ mod tests {
         write_project_config(temp.path(), config);
         bootstrap_layout(temp.path()).await;
 
-        let report = run_doctor(&DoctorOptions {
-            workdir: temp.path().to_path_buf(),
-            config_override: None,
-            serve_url: None,
-        })
-        .await
-        .unwrap();
+        let report = run_doctor(&test_options(temp.path())).await.unwrap();
 
         let check_ids: Vec<&str> = report.checks.iter().map(|c| c.id.as_str()).collect();
         assert!(

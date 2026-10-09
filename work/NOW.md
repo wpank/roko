@@ -28,7 +28,7 @@ _3 more open · on hold: gap-6aaee9, gap-85f86a, gap-9b5582, gap-ac1aed, gap-b90
 - **P2** [spec-99d417](items/spec-99d417-backlog-phase-2-honest-measurement.md) Backlog Phase 2 — honest measurement [spec] · verified 2026-10-02
 - **P2** [gap-11a91a](items/gap-11a91a-helper-calls-record-the-task-s-own.md) Helper calls record the task's own agent id, not a helper-specific one · size S · verified 2026-10-02
 
-_7 more open · on hold: gap-3698cd · `goal = "truth"`_
+_7 more open · `goal = "truth"`_
 
 ## 4. Frontier plans, cheap models execute, the result integrates (P1)
 

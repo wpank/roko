@@ -101,7 +101,7 @@ Progress per epic: its children (items whose `parent` is the epic, plus its `dep
 | Lane | Closed | Total | Open (verified) |
 |---|---|---|---|
 | bench | 82 | 120 | 38 (29) |
-| docs | 19 | 25 | 6 (5) |
+| docs | 20 | 25 | 5 (4) |
 | frontend | 3 | 6 | 3 (3) |
 | none | 355 | 434 | 79 (79) |
 | paper | 61 | 78 | 17 (14) |

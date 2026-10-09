@@ -1,39 +1,55 @@
-Status: reviewed · budget 450 words · owner gap-424bf8
+Status: draft · budget 550 words · owner spec-ce1484
 
-# 6 Measured trust
+# 6 Verification and measured trust
 
-Cheap executors are worth using only if a team can tell which results to trust. Roko is designed to report three
-measures of that trust from the team's own runs; none is produced today. §5 describes the mechanisms, and §8 how
-they will be evaluated.
+This section defines what counts as done, what Roko measures about itself and for which loop, and what it refuses
+as acceptance.
 
-## 6.1 Three measures
+## 6.1 What counts as done
 
-| Measure | Counts | Denominator | Reported as | Mechanism and status |
-|---|---|---|---|---|
-| Routing learned from verified outcomes | Verified passes on any vendor's model, credited to the model that ran | Settled attempts per model and kind of task; an unverified attempt counts as failed | Pass rate and cost per verified task, with forecast calibration | M3, a calibrated self-model: MISSING@a43288b5f (row RG5; spec-6ac537). Its base, the router, is PARTIAL@a43288b5f (row RC2): it learns only from settled verdicts since `74eaf5c8f`, but the tier ladder places most tasks, so its picks are mostly logged |
-| False-green rate | Accepted tasks that fail an independent audit: a tamper check, a clean re-run, and hidden tests written from the spec by another model family | Tasks accepted in a window. A keyed lottery audits each with a known chance, and weights it by the inverse of that chance | A Hájek estimate with a confidence interval, per model and kind of task | M4, random deep audits: MISSING@a43288b5f (row QA5; spec-6ac537) |
-| Per-loop evidence that learning helps | Per loop: exposure (learned state reached the decision), influence (the decision left the default, net of A/A noise) and benefit (the change in verified success) | Decisions the loop could change; a random holdout keeps some on the default as the control | The three figures, with anytime-valid intervals; a harmful loop is demoted to its default | M2, the loop-liveness audit: MISSING@a43288b5f (row RG4; spec-6ac537). It needs frozen learning (gap-644040) |
+A task is done when its checks pass: commands written at planning time, run by the harness in the attempt's worktree,
+out of the agent's reach. Each attempt settles into exactly one verdict record (`roko.verdict/1`) carrying a learning
+label: 1 for a pass, 0 when the agent's own work failed, and empty otherwise.[^6-label] An attempt with no checks, a
+forced accept or an infrastructure failure never counts as a success, and a provider outage never counts against a
+model. Every learner, from routing to the knowledge store, reads that one label.
 
-## 6.2 What exists today
+## 6.2 What Roko measures
 
-Today Roko has only the base these measures need: verdicts honest about its own gates. Since the 09-28 fix, 0 of
-151 recorded passes had a failing gate, against 101 of 373 (27%) before.[^6-verdicts] But those gates are each
-task's visible verify commands, which the agent can read and could game. So the figure shows that Roko no longer
-records a failed check as a pass; it is not a false-green rate, since nothing yet re-checks a pass against tests
-the agent never saw.
+Each measure is defined on verified outcomes, per task resolution (one task after all its attempts).
 
-## 6.3 The field
+**Table 6.1.** What Roko measures about itself, and the loop that reads each measure.
 
-As documented on 2026-09-29, we found no product that documents any of the three measures. Several pair a stronger
-model with a cheaper one: Claude Code's `opusplan` plans on Opus and executes on Sonnet, and its
-advisor tool lets the main model escalate hard decisions to an advisor model; Devin's Fusion pairs "a frontier lead
-model with a cost-efficient sidekick" [@anthropic2026modelconfig; @anthropic2026advisor; @cognition2026models]. Model choice
-is tied to one vendor or made by the vendor's router: Claude Code's workers are always Claude sessions, Cursor's
-router is "managed by Cursor", and Factory's sends routine steps to lower-cost models and reserves stronger ones for work that needs deeper
-reasoning
-[@anthropic2026agents; @cursor2026router; @factory2026router]. None of these pages says that routing learns from
-the user's own verdicts, reports how often a pass is wrong, or gives evidence per learning mechanism.
+| Measure | Definition | Read by |
+|---|---|---|
+| Verified pass rate | Share of resolutions that pass the task's checks | Learned model router, per model and task kind; bounded controller |
+| Cost per verified success | All attributable spend, planning and audits included, over verified successes | Learned model router; bounded controller |
+| False-green rate | Share of passes that a stronger, independent check would fail, estimated by random deep audits (§5) | Verification depth and per-model trust; outcome forecaster; bounded controller |
+| pass^k^ | Chance that all k independent runs of a task pass [@yao2024taubench] | Forecaster's comparison of routing policies |
+| Calibration | Fit between forecast and observed verified success: Brier score [@brier1950], expected calibration error [@guo2017calibration] | Forecaster, which falls back to shadow mode when worse than the base rate |
+| Exposure, influence, benefit | Per loop: whether its learned state reached a decision, changed it beyond rerun noise, and improved verified outcomes against a holdout | Loop audit, which keeps the loop or reverts it to its default |
+| Latency | 90th-percentile wall time per resolution | Bounded controller |
 
-[^6-verdicts]: Research note B7, frozen as `evidence/2026-09-29-b7-real-run-evidence.md` (sha256 `799b6a2b6184`),
-    "TL;DR"; fix commit `725f21e05` (bug-82d47b, bug-521f08, bug-06e2d1). Before: 430 attempts in 31 plans,
-    2026-09-05 to the fix; after: 168 attempts to 2026-09-29 07:41Z. §7 gives the full case (CASE-001).
+The first three measures and latency are the bounded controller's essential variables. The false-green estimate
+discounts the pass rate, and with it the denominator of cost per verified success. Cost counts every attempt, as agent
+evaluations should [@kapoor2024agents], at API-equivalent prices; an unknown cost makes the figure unmeasurable, never
+smaller. The instruments are checked too: a census test builds the production dispatcher with the wiring that plan
+runs use, and fails whenever a learning component's connection differs from the census it records.
+
+## 6.3 What is not acceptance
+
+Three readily available signals stay out of every sensor.
+
+**Agent self-reports.** A claim to be finished, a summary or a clean exit is not evidence: models struggle to correct
+their own reasoning without external feedback [@huang2023large]. Watchers read an agent's output for signs of
+trouble; learners read only the learning label.
+
+**LLM judges.** A judge as the acceptance check is rejected because actor and sensor would share failure modes, and
+judges show position, verbosity and self-enhancement biases [@zheng2023judging]. Roko's optional judge scores an
+attempt only after its checks pass, so it can add a reason to fail but never passes work the checks reject.
+
+**Visible checks alone.** Agents can satisfy a check they can see without doing the work, up to editing the tests
+[@krakovna2020specification; @zhong2025impossiblebench], and the difference between visible and held-out results
+grows with code size [@zhao2026specbench]. So the pre-verify screen rejects tampered or out-of-scope attempts before
+tests run, and a visible pass rate is reported only beside the audited false-green rate.
+
+[^6-label]: `learning_label_for` in `crates/roko-learn/src/telemetry/records.rs` (`1f860d408`).

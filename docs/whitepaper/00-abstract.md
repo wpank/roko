@@ -1,25 +1,15 @@
-Status: reviewed · budget 150 words · owner gap-353d57
+Status: draft · budget 200 words · owner spec-ce1484
 
 # Abstract
 
-Frontier models finish more agent work but cost more; cheap models fail more often, and sooner as tasks get
-longer. Roko is a harness for spec'd agent work: a frontier model writes a plan of small tasks, each with an
-executable check, and Roko runs it as a checkpointed, resumable graph, each task judged by its own checks
-(WIRED@a43288b5f). Roko is designed to run independent tasks in parallel on the cheapest model that
-passes, escalate on failure, check the whole plan, audit its own passes and learn from verified outcomes; the
-tier ladder with escalation, parallel scheduling and the whole-plan check are WIRED@a43288b5f, the audits
-MISSING@a43288b5f. Roko
-ran most of its own web portal's build: 16 plans and 173 tasks (168 gate-verified) for $174.87 of recorded agent
-spend; the frontier sessions that supervised it cost an estimated 16–20× Roko's spend.[^0-portal] All 210 attempts
-pinned one mid-tier model, and a first live run on cheap models needed six operator interventions to verify ten
-small tasks,[^0-live] so the cheap-model half of the thesis is UNPROVEN@a43288b5f. The evaluation plan compares
-cost per verified task with Claude Code on Opus 5.5 on hidden-test tasks (§8).
-
-[^0-portal]: Research note B7, frozen by gap-29a64e as `evidence/2026-09-29-b7-real-run-evidence.md` (sha256
-    `799b6a2b6184`), "TL;DR", and its Findings row "Cheap models on mechanical tasks" for the 210 attempts: Roko's
-    records for the portal plans, attempts to 2026-09-29 07:41Z, costs as recorded. The supervising sessions: assessment note W12, frozen as
-    `evidence/2026-09-29-w12-operator-loop-cost.md` (sha256 `82676de5eee4`), an API-equivalent estimate for
-    2026-09-25 to 09-29 against the $172.80 Roko recorded over those days (§7).
-[^0-live]: The live run of 2026-10-02, frozen as `evidence/2026-10-02-live-cheap-model-run.md` (sha256
-    `813172c96b88`), "TL;DR" and "Operator interventions": two five-task Python plans in a test repository, with a
-    binary built at `a43288b5f`; not a benchmark.
+Language-model agents do real software work, but they are variable workers: the same task can pass on one run and
+fail on the next, errors build up over long tasks, and an agent can satisfy a visible check without doing the work.
+Roko is a cybernetic harness for multi-agent orchestration. It runs agent loops and API models as workers against a
+plan of small tasks, each carrying an executable check written before the work starts. Its design is five feedback
+loops nested by time scale. The tool-call loop permits, bounds and screens every action. The attempt loop judges each
+attempt by its checks and, on failure, retries it or escalates to a stronger model. The plan loop runs independent
+tasks in parallel, each in its own worktree, and integrates them under a whole-plan check. The learning loops update
+model routing, retry budgets, playbooks and knowledge from verified outcomes only. The audit level checks the checks
+and the learning: it re-verifies a random sample of passes and tests whether each learning loop changes decisions for
+the better. The executable verdict is the one fact every loop reads, and each loop leaves durable records for slower
+loops. We describe each loop, the mechanisms behind it and the principles that join them.

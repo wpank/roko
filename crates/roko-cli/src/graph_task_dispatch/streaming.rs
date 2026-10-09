@@ -216,6 +216,12 @@ impl StreamingTaskDispatcher for GraphTaskDispatcher {
         let contract = self.task_contract(role, spec, &task);
         let timeout_ms =
             base_attempt_timeout_ms_with(&self.config, Some(self.learned_tier_limits()), spec);
+        self.log_prompts(
+            spec,
+            &task.id,
+            &dispatch_plan.prompt.system_prompt,
+            &dispatch_plan.prompt.user_prompt,
+        );
         let request = AgentDispatchRequest {
             model_key: self.dispatch_model_key(&dispatch_plan, &task),
             prompt: dispatch_plan.prompt.user_prompt.clone(),

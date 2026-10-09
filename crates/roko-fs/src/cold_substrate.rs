@@ -92,7 +92,7 @@ impl ArchiveColdSubstrate {
         }
         let data = fs::read_to_string(&path).await?;
         let index: HashMap<ContentHash, ColdIndexEntry> =
-            serde_json::from_str(&data).map_err(|e| RokoError::body_decode(e))?;
+            serde_json::from_str(&data).map_err(RokoError::body_decode)?;
         Ok(index)
     }
 
@@ -101,7 +101,7 @@ impl ArchiveColdSubstrate {
         let path = Self::index_path(&self.root);
         let data = {
             let idx = self.index.read();
-            serde_json::to_string_pretty(&*idx).map_err(|e| RokoError::body_encode(e))?
+            serde_json::to_string_pretty(&*idx).map_err(RokoError::body_encode)?
         };
         fs::write(&path, data.as_bytes()).await?;
         Ok(())
@@ -124,7 +124,7 @@ impl ArchiveColdSubstrate {
 
         let offset = file.metadata().await?.len();
 
-        let mut line = serde_json::to_string(signal).map_err(|e| RokoError::body_encode(e))?;
+        let mut line = serde_json::to_string(signal).map_err(RokoError::body_encode)?;
         line.push('\n');
         file.write_all(line.as_bytes()).await?;
         file.flush().await?;
@@ -164,8 +164,7 @@ impl ArchiveColdSubstrate {
             return Ok(None);
         }
 
-        let signal: Signal =
-            serde_json::from_str(line.trim()).map_err(|e| RokoError::body_decode(e))?;
+        let signal: Signal = serde_json::from_str(line.trim()).map_err(RokoError::body_decode)?;
         Ok(Some(signal))
     }
 

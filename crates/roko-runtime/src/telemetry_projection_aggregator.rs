@@ -261,7 +261,7 @@ pub enum TelemetryProjectionError {
 }
 
 /// One ready-to-publish replacement value for `StateHubSender::update_projection`.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ProjectionUpdate {
     /// Stable StateHub projection ID.
     pub projection_id: &'static str,

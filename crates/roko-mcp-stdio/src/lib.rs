@@ -104,7 +104,8 @@ struct JsonRpcResponse {
 ///
 /// Requests and responses are serialized as single newline-delimited JSON
 /// objects. Notifications are handled by calling the handler and discarding
-/// any returned value.
+/// any returned value. The loop answers an MCP `ping` itself, with an empty
+/// result, so every server built on it supports the keep-alive probe.
 ///
 /// # Errors
 ///
@@ -171,6 +172,21 @@ where
             continue;
         }
 
+        if request.method == "ping" {
+            if has_id {
+                write_response(
+                    &mut writer,
+                    &JsonRpcResponse {
+                        jsonrpc: "2.0",
+                        result: Some(Value::Object(serde_json::Map::new())),
+                        error: None,
+                        id: request_id,
+                    },
+                )?;
+            }
+            continue;
+        }
+
         if !has_id {
             let _ = handler(request);
             continue;
@@ -233,6 +249,23 @@ mod tests {
         assert_eq!(response["jsonrpc"], "2.0");
         assert_eq!(response["id"], 7);
         assert_eq!(response["result"]["tools"], json!([]));
+        assert!(response.get("error").is_none());
+    }
+
+    #[test]
+    fn serve_stdio_answers_ping_without_the_handler() {
+        let input = b"{\"jsonrpc\":\"2.0\",\"method\":\"ping\",\"id\":3}\n";
+        let mut output = Vec::new();
+
+        serve_stdio(Cursor::new(&input[..]), &mut output, |_request| {
+            panic!("the loop answers ping itself");
+        })
+        .expect("stdio transport");
+
+        let response: Value = serde_json::from_slice(&output).expect("ping response json");
+        assert_eq!(response["jsonrpc"], "2.0");
+        assert_eq!(response["id"], 3);
+        assert_eq!(response["result"], json!({}));
         assert!(response.get("error").is_none());
     }
 

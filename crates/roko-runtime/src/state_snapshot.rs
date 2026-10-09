@@ -79,7 +79,7 @@ impl fmt::Display for RunnerProjectionSource {
 /// The four embedded payloads are parsed before this value is returned. A
 /// present unified snapshot is authoritative: corruption never falls through
 /// to the legacy executor file.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DurableRunnerProjection {
     /// Format selected by the loader.
     pub source: RunnerProjectionSource,

@@ -45,10 +45,10 @@ impl SumScorer {
 }
 
 impl roko_core::Cell for SumScorer {
-    fn cell_id(&self) -> &str {
+    fn cell_id(&self) -> &'static str {
         "sum-scorer"
     }
-    fn cell_name(&self) -> &str {
+    fn cell_name(&self) -> &'static str {
         "SumScorer"
     }
     fn protocols(&self) -> Vec<roko_core::ProtocolId> {
@@ -98,10 +98,10 @@ impl MulScorer {
 }
 
 impl roko_core::Cell for MulScorer {
-    fn cell_id(&self) -> &str {
+    fn cell_id(&self) -> &'static str {
         "mul-scorer"
     }
-    fn cell_name(&self) -> &str {
+    fn cell_name(&self) -> &'static str {
         "MulScorer"
     }
     fn protocols(&self) -> Vec<roko_core::ProtocolId> {
@@ -137,10 +137,10 @@ impl ConstScorer {
 }
 
 impl roko_core::Cell for ConstScorer {
-    fn cell_id(&self) -> &str {
+    fn cell_id(&self) -> &'static str {
         "const-scorer"
     }
-    fn cell_name(&self) -> &str {
+    fn cell_name(&self) -> &'static str {
         "ConstScorer"
     }
     fn protocols(&self) -> Vec<roko_core::ProtocolId> {

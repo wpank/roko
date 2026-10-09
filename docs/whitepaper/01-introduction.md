@@ -1,80 +1,60 @@
-Status: reviewed · budget 550 words · owner gap-353d57
+Status: draft · budget 600 words · owner spec-ce1484
 
 # 1 Introduction
 
-## 1.1 Capable or cheap
+This section sets out the problem, Roko's approach, the design in brief and the paper's contributions.
 
-Unattended agent work forces a choice. Frontier models complete more tasks but cost more per attempt; cheap
-models cost little but fail more often. Models fail more as tasks get longer, and small ones far sooner
-[@kwa2025measuring; @sinha2025illusion]; §2 gives the settings.
+## 1.1 Variable workers
 
-Roko bets on the harness, the code that wraps a model and decides when its work counts as done. On work that
-splits into small tasks with executable checks, the bet is that specs, checks, retries, escalation, integration
-gates and feedback supply most of the dependability, so cheap models inside the harness can match a frontier
-model working alone, for less. Studies support parts of this. A frontier model that split long-document
-questions into subtasks for a small local model kept 97.9% of its quality at 5.7× lower cost
-[@narayan2025minions]; cascades and routers cut cost at matched quality on single-turn queries
-[@chen2024frugalgpt; @ong2025routellm]; across six agentic benchmarks, multi-agent set-ups helped decomposable
-work and hurt sequential work [@kim2025towards]. None ran a repository-scale plan, and we claim nothing for
-sequential or integrative work.
+Language-model agents are capable but variable workers. On SWE-bench Verified, single-run pass rates vary by 2.2 to
+6.0 percentage points between runs [@bjarnason2026randomness]. Agents fail more often as tasks get longer
+[@kwa2025measuring; @sinha2025illusion], and an agent that can see the tests may delete a failing one instead of
+fixing the code [@zhong2025impossiblebench]. Model fees can differ by two orders of magnitude [@chen2024frugalgpt].
+Parallel work must come back together, and in open-source projects some merges that apply cleanly still break the
+build [@brun2011proactive]. The harness, the code that decides what a model may do and when its work counts as done,
+changes results even with the model held fixed [@lewis2026same].
 
-## 1.2 Built and designed
+## 1.2 Orchestration as regulation
 
-A frontier model writes the plan: small tasks, each with the commands that prove it done. The Graph engine
-(`crates/roko-graph/src/engine.rs`) runs it as a dependency graph with durable checkpoints and resume
-(WIRED@a43288b5f), and each task's verify commands decide its verdict, which every surface now reports as recorded
-(WIRED@a43288b5f, spec-e9d7ec). Roko is designed to run independent tasks in parallel on
-the cheapest model that passes, escalate on failure, merge and check the whole plan, and regulate itself: keep cost
-per verified task and the share of wrong passes in bounds, and audit its own regulators. Today, independent
-tasks run in parallel when they declare their files, a role and tier ladder places each task and escalates it after
-two failures, and each task works in its own worktree, merged through a whole-plan check (WIRED@a43288b5f;
-spec-a78d57, spec-98f76d, spec-a0e40a). One small live run on cheap models used all of it, but its failure paths
-broke: provider adapters, failover, the circuit breaker and budgets are PARTIAL@a43288b5f, and output screening is
-BROKEN@a43288b5f (gap-625195, gap-e00238). The regulators and audits are MISSING@a43288b5f, while the learning
-loops that run (PARTIAL@a43288b5f) have no measured benefit (spec-6ac537).
+Roko treats orchestration as regulation in the sense of classical cybernetics: keeping a few chosen quantities within
+bounds despite disturbances such as a flaky test, a provider outage or an ambiguous spec
+[@wiener1948cybernetics; @ashby1956introduction]. Its unit is the feedback loop, which measures a result, compares it
+with a reference (the goal) and acts on the difference. Roko sits above agent loops such as Claude Code and Codex,
+and runs them and API models as workers (§3).
 
-## 1.3 The evidence so far
+**The executable verdict is the one fact every loop reads.** Each attempt settles into one verdict record, and its
+learning label counts only a pass of the task's checks as a success (§6). The attempt loop retries and escalates on
+the verdict, the plan loop integrates on it, the learning loops learn from it, and the audit level checks it.
 
-Roko ran most of the build of its own web portal: 16 plans and 173 tasks, 168 gate-verified, for $174.87 of
-recorded agent spend.[^1-portal] Since a verdict fix on 2026-09-28, 0 of 151 recorded passes had a failing gate, against
-101 of 373 before it.[^1-verdicts] Two facts limit what this shows. All 210 attempts pinned one mid-tier model,
-`claude-sonnet-4-6`. A first capped live run on cheap models, two five-task plans in a test repository for about
-$1.2–1.4, verified all ten tasks, seven of them on gpt-oss-120b, but needed six operator interventions,[^1-live] so
-the cheap-model half of the thesis is UNPROVEN@a43288b5f (spec-567e52). And supervising
-frontier-model Claude Code sessions wrote and audited the plans, fixed engine defects, set up worktrees, merged by
-hand and checked the assembled product (§7), costing an estimated 16–20× Roko's recorded spend over the same
-days.[^1-operator] Across 42 captured runs, Roko recovered from a failure by itself twice and people stepped in
-39 times: an autonomy index of 2/41.[^1-autonomy]
+## 1.3 The design in brief
+
+The paper's thesis is:
+
+> Roko is a cybernetic multi-agent orchestration harness. Its design is a set of feedback loops nested by time
+> scale, from a single tool call to the audits of its own learning. Each loop steers toward a reference written
+> before the work starts, measures with a sensor the actor cannot change, acts within bounds that people set, and
+> leaves records that slower loops read. That structure is how Roko is built to do its job well: to turn plans into
+> verified, integrated work across many agents and models.
+
+Planning is the feedforward half: it writes each task's checks before any agent runs. Five feedback loops do the
+rest (§5):
+
+- **The tool-call loop (L0, seconds)** permits, bounds and screens every action against the worker's role contract.
+- **The attempt loop (L1, minutes)** screens each attempt for tampering, runs its checks and retries with distilled
+  gate feedback; repeated agent failures climb an escalation ladder of model tiers, and a provider failure switches
+  provider sideways.
+- **The plan loop (L2, hours)** runs tasks whose files do not overlap in parallel, each in its own worktree, gates the
+  integrated result on a whole-plan check, and keeps checkpoints so that a run can stop and resume.
+- **The learning loops (L3, days)** learn from verified outcomes which model a task goes to, how many retries it gets,
+  and which playbooks and knowledge enter its prompt.
+- **The audit level (L4, weeks)** estimates the false-green rate (the share of passes that a stronger, independent
+  check would fail) from random deep audits, tests each learning loop against a holdout, and moves one setting one
+  notch when an essential variable leaves its bounds.
 
 ## 1.4 Contributions
 
-- **A design:** eight research-backed rules (§2), the architecture and its control stack (§3), and the golden
-  path in eleven steps, each with its status (§4).
-- **Cybernetic mechanisms** that regulate the loop and audit the regulators (§5), and three measures that make
-  trust checkable (§6).
-- **Field evidence** from the portal build, with the operator's share stated (§7).
-- **An evaluation plan,** with what would count against the thesis (§8).
-- **Status:** limitations and the order of work (§9), related work (§10), and every mechanism's tag at one
-  commit (appendix).
-
-[^1-portal]: Research note B7, frozen as `evidence/2026-09-29-b7-real-run-evidence.md` (sha256 `799b6a2b6184`),
-    "TL;DR", and its Findings row "Cheap models on mechanical tasks" for the 210 attempts: Roko's records for the portal plans, attempts to 2026-09-29 07:41Z; costs as recorded, without a cost
-    source or the supervising sessions.
-
-[^1-verdicts]: B7 as above, "Method" and "TL;DR": recorded successes whose own gate failed. Before the fix
-    (`725f21e05`, named in CASE-001 of `evidence/2026-09-29-field-cases.md`, sha256 `d03e50476fb0`): 430 attempts in
-    31 plans from 2026-09-05; after it, 168 attempts to 2026-09-29 07:41Z. Items bug-82d47b, bug-521f08, bug-06e2d1.
-
-[^1-operator]: Assessment note W12, table F2, frozen as `evidence/2026-09-29-w12-operator-loop-cost.md` (sha256
-    `82676de5eee4`): an estimate from the sessions' token counts, 2026-09-25 to 09-29, at API list prices and
-    including research work, against $172.80 recorded by Roko. The harvester (gap-263de5) is built; measured
-    figures await the daily rollup (gap-ccb87e).
-
-[^1-autonomy]: Field rollup 2026-09-29T14:37:51, corrected by bug-7b37c4, frozen as
-    `evidence/2026-09-29-field-rollup.md` (sha256 `7bade1532a6d`), "Totals": 42 runs from 2026-08-22, 124 notes.
-    Index: automatic recoveries over automatic recoveries plus interventions. Observational.
-
-[^1-live]: The live run of 2026-10-02, frozen as `evidence/2026-10-02-live-cheap-model-run.md` (sha256
-    `813172c96b88`), "TL;DR", "The runs", "Cost" and "Operator interventions": a binary built at `a43288b5f`, a $5
-    cap, one seed and no comparison arm. The root causes of its defects:
-    `evidence/2026-10-02-live-defect-root-causes.md` (sha256 `5df7d5221539`).
+This paper describes Roko's design: its loops, the mechanisms that implement them, and the reasons for each choice.
+It contributes a design of orchestration as nested regulation around one executable verdict (§2, §3); attempt and
+plan loops that judge work only by checks written before it (§4); learning from verified outcomes, under audit (§5,
+§6); and bounds at every level (§8). §7 shows Roko in use, §9 weighs trade-offs and open problems, and §10 covers
+related work.

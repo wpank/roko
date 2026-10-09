@@ -1,5 +1,3 @@
-// Trait impls return literal &str tied to &self -- the trait contracts mandate this.
-#![allow(clippy::unnecessary_literal_bound)]
 //! Standard trait implementations for Roko.
 //!
 //! This crate provides:

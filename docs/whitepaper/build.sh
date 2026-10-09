@@ -3,10 +3,9 @@
 #
 # Usage: docs/whitepaper/build.sh [OUTPUT.pdf]
 #
-# Joins the sections in reading order (00-abstract.md … 10-related-work.md), the references and then
-# appendix-status-matrix.md, leaving out the status header on line 1 of each file. pandoc writes the LaTeX
-# (citeproc with references.bib), rsvg-convert from librsvg turns the SVG figures into PDF, and tectonic
-# typesets the result.
+# Joins the sections in reading order (00-abstract.md … 10-related-work.md) and then the references, leaving
+# out the status header on line 1 of each file. pandoc writes the LaTeX (citeproc with references.bib),
+# rsvg-convert from librsvg turns the SVG figures into PDF, and tectonic typesets the result.
 #
 # The default output is tmp/whitepaper/roko-whitepaper.pdf under the repository root, which is gitignored.
 # The script needs no git metadata, so it also builds from an export:
@@ -23,21 +22,20 @@ WP_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(cd "${WP_DIR}/../.." && pwd)"
 OUT="${1:-${ROOT}/tmp/whitepaper/roko-whitepaper.pdf}"
 
-TITLE="Roko: a Cybernetic Harness for Spec'd Agent Work"
+TITLE="Roko: A Cybernetic Harness for Multi-Agent Orchestration"
 SECTIONS=(
     00-abstract.md
     01-introduction.md
     02-design-principles.md
     03-architecture.md
-    04-golden-path.md
+    04-orchestration.md
     05-cybernetic-mechanisms.md
     06-measured-trust.md
-    07-field-evidence.md
-    08-evaluation-plan.md
-    09-status-and-roadmap.md
+    07-in-use.md
+    08-safety.md
+    09-open-problems.md
     10-related-work.md
 )
-APPENDIX=appendix-status-matrix.md
 
 # ── Dependency check ──────────────────────────────────────────────────────────
 for tool in pandoc tectonic rsvg-convert; do
@@ -69,12 +67,10 @@ for svg in "${WORK}"/figures/*.svg; do
 done
 
 # ── LaTeX preamble ────────────────────────────────────────────────────────────
-# Tables are set a size smaller than the text; the appendix switches to \footnotesize. PDF 1.7 matches the
-# figures that rsvg-convert writes.
+# Tables are set a size smaller than the text. PDF 1.7 matches the figures that rsvg-convert writes.
 cat > "${WORK}/header.tex" <<'EOF'
 \usepackage{etoolbox}
 \usepackage{needspace}
-\usepackage{pdflscape}
 \newcommand{\wptablefont}{\small}
 \AtBeginEnvironment{longtable}{\wptablefont}
 \setlength{\tabcolsep}{4pt}
@@ -253,7 +249,7 @@ local tables = {
   end,
 }
 
--- 3. A link to one of the joined files (appendix-status-matrix.md) jumps to that file's first heading; a
+-- 3. A link to one of the joined files (06-measured-trust.md) jumps to that file's first heading; a
 --    link to any other repository file keeps its text and loses the link, which a PDF can't follow. Each
 --    file arrives wrapped in a Div carrying its name, which is removed here. A heading directly above a
 --    table keeps room for the table's first rows, so it never ends a page alone.
@@ -307,10 +303,7 @@ section() {
     done
     printf '# References\n\n```{=latex}\n\\begingroup\\small\n```\n\n'
     printf '::: {#refs}\n:::\n\n'
-    # The appendix's seven-column tables get landscape pages, 648pt wide.
-    printf '```{=latex}\n\\endgroup\n\\renewcommand{\\wptablefont}{\\footnotesize}\n\\begin{landscape}\n```\n\n'
-    section "$APPENDIX" 648
-    printf '```{=latex}\n\\end{landscape}\n```\n'
+    printf '```{=latex}\n\\endgroup\n```\n'
 } | pandoc \
     --from markdown-implicit_figures \
     --to latex --standalone \

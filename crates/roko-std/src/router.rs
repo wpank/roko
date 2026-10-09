@@ -12,12 +12,11 @@ use std::sync::Arc;
 #[derive(Debug, Clone, Default)]
 pub struct FirstRouter;
 
-#[allow(clippy::unnecessary_literal_bound)]
 impl roko_core::Cell for FirstRouter {
-    fn cell_id(&self) -> &str {
+    fn cell_id(&self) -> &'static str {
         "first-router"
     }
-    fn cell_name(&self) -> &str {
+    fn cell_name(&self) -> &'static str {
         "FirstRouter"
     }
     fn protocols(&self) -> Vec<roko_core::ProtocolId> {
@@ -32,7 +31,7 @@ impl Route for FirstRouter {
             .map(|s| Selection::new(s.id, self.name()))
     }
     fn feedback(&self, _outcome: &Outcome) {}
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "first"
     }
 }
@@ -50,12 +49,11 @@ impl HighestScoreRouter {
     }
 }
 
-#[allow(clippy::unnecessary_literal_bound)]
 impl roko_core::Cell for HighestScoreRouter {
-    fn cell_id(&self) -> &str {
+    fn cell_id(&self) -> &'static str {
         "highest-score-router"
     }
-    fn cell_name(&self) -> &str {
+    fn cell_name(&self) -> &'static str {
         "HighestScoreRouter"
     }
     fn protocols(&self) -> Vec<roko_core::ProtocolId> {
@@ -76,7 +74,7 @@ impl Route for HighestScoreRouter {
             })
     }
     fn feedback(&self, _outcome: &Outcome) {}
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "highest_score"
     }
 }
@@ -95,12 +93,11 @@ impl RoundRobinRouter {
     }
 }
 
-#[allow(clippy::unnecessary_literal_bound)]
 impl roko_core::Cell for RoundRobinRouter {
-    fn cell_id(&self) -> &str {
+    fn cell_id(&self) -> &'static str {
         "round-robin-router"
     }
-    fn cell_name(&self) -> &str {
+    fn cell_name(&self) -> &'static str {
         "RoundRobinRouter"
     }
     fn protocols(&self) -> Vec<roko_core::ProtocolId> {
@@ -120,7 +117,7 @@ impl Route for RoundRobinRouter {
         Some(Selection::new(candidates[idx].id, self.name()))
     }
     fn feedback(&self, _outcome: &Outcome) {}
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "round_robin"
     }
 }

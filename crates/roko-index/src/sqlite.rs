@@ -639,6 +639,7 @@ impl IndexStore {
     ///
     /// Like [`build`](Self::build) but additionally persists PageRank scores
     /// in the `rankings` table.
+    #[allow(clippy::too_many_lines)] // one temp-file build, one transaction, one atomic rename, in order
     pub fn build_with_rankings(
         root: &Path,
         symbols: &[SymbolInfo],

@@ -33,7 +33,7 @@
 % arXiv 2503.14499 (DataCite); NeurIPS 38 DOI from the programme corpus
 @inproceedings{kwa2025measuring,
   title = {Measuring AI Ability to Complete Long Software Tasks},
-  author = {Thomas Kwa and Ben West and Joel Becker and Amy Deng and Katharyn Garcia and Max Hasin and Sami Jawhar and Megan Kinniment and Nate Rush and Sydney Von Arx and Ryan Bloom and Thomas Broadley and Haoxing Du and Brian Goodrich and Nikola Jurkovic and Luke Harold Miles and Seraphina Nix and Tao Lin and Chris Painter and Neev Parikh and David Rein and Lucas Jun Koba Sato and Hjalmar Wijk and Daniel M. Ziegler and Elizabeth Barnes and others},
+  author = {Thomas Kwa and Ben West and Joel Becker and Amy Deng and Katharyn Garcia and Max Hasin and Sami Jawhar and Megan Kinniment and Nate Rush and Sydney {Von Arx} and Ryan Bloom and Thomas Broadley and Haoxing Du and Brian Goodrich and Nikola Jurkovic and Luke Harold Miles and Seraphina Nix and Tao Lin and Chris Painter and Neev Parikh and David Rein and Lucas Jun Koba Sato and Hjalmar Wijk and Daniel M. Ziegler and Elizabeth Barnes and others},
   booktitle = {Advances in Neural Information Processing Systems 38},
   pages = {102382-102435},
   year = {2025},
@@ -314,9 +314,10 @@
 
 % arXiv 2405.15793 (DataCite); DOI 10.52202/079017-1601 (Crossref)
 @inproceedings{yang2024sweagent,
-  title = {SWE-agent: Agent-Computer Interfaces Enable Automated Software Engineering},
+  title = {{SWE-agent}: Agent-Computer Interfaces Enable Automated Software Engineering},
   author = {John Yang and Carlos E. Jimenez and Alexander Wettig and Kilian Lieret and Shunyu Yao and Karthik Narasimhan and Ofir Press},
-  booktitle = {NeurIPS 2024 (Advances in Neural Information Processing Systems 37, pp. 50528-50652)},
+  booktitle = {NeurIPS 2024 (Advances in Neural Information Processing Systems 37)},
+  pages = {50528--50652},
   year = {2024},
   doi = {10.52202/079017-1601},
   eprint = {2405.15793},
@@ -442,7 +443,8 @@
 @inproceedings{yu2025utboost,
   title = {UTBoost: Rigorous Evaluation of Coding Agents on SWE-Bench},
   author = {Boxi Yu and Yuxuan Zhu and Pinjia He and Daniel Kang},
-  booktitle = {ACL 2025 (Long Papers), pp. 3762-3774},
+  booktitle = {ACL 2025 (Long Papers)},
+  pages = {3762--3774},
   year = {2025},
   doi = {10.18653/v1/2025.acl-long.189},
   eprint = {2506.09289},
@@ -589,4 +591,437 @@
   archivePrefix = {arXiv},
   url = {https://arxiv.org/abs/2609.34177},
   howpublished = {arXiv:2609.34177}
+}
+
+% Added 2026-10-02 (rw-V4): the keys the rewritten sections cite that this file lacked, merged from the rewrite's
+% staged files (tmp/cybernetic-harness/rewrite-2026-10-02/stage/whitepaper/bib-WP1..3.bib). They come from the research
+% paper's verified bibliography. rw-V4 re-checked every DOI (Crossref) and arXiv id (DataCite) with refcheck that day,
+% and the web pages named in the comments with WebFetch. Changes from the staged copies: Wiener and Argyris are the
+% original books (the staged DOIs were a 2019 reissue and a 1997 review); journal volume, issue and pages are fields;
+% web pages are @online with urldate.
+
+% No DOI for the 1948 original. Open Library: first published 1948 (The Technology Press / John Wiley), checked
+% 2026-10-02 (rw-V4). The research bib's DOI 10.7551/mitpress/11810.001.0001 is the 2019 MIT Press reissue (Crossref); not used.
+@book{wiener1948cybernetics,
+  title = {Cybernetics: Or Control and Communication in the Animal and the Machine},
+  author = {Norbert Wiener},
+  publisher = {The Technology Press and John Wiley \& Sons},
+  year = {1948}
+}
+
+% DOI 10.5962/bhl.title.5851 (Crossref, 2026-10-02): the Biodiversity Heritage Library copy of the 1956 book
+@book{ashby1956introduction,
+  title = {An Introduction to Cybernetics},
+  author = {W. Ross Ashby},
+  publisher = {John Wiley \& Sons},
+  year = {1956},
+  doi = {10.5962/bhl.title.5851},
+  url = {https://doi.org/10.5962/bhl.title.5851}
+}
+
+% No DOI (a book). Open Library: The Heart of Enterprise, Stafford Beer, John Wiley & Sons, 1979 (corpus.jsonl record)
+@book{beer1979heart,
+  title = {The Heart of Enterprise},
+  author = {Stafford Beer},
+  publisher = {John Wiley \& Sons},
+  year = {1979}
+}
+
+% No DOI (a book). Open Library: Organizational Learning, Argyris and Schön, Addison-Wesley, first published 1978,
+% checked 2026-10-02 (rw-V4). The research bib's DOI 10.2307/40183951 is a 1997 review of the book in Reis 77/78 (Crossref); not used.
+@book{argyris1978organizational,
+  title = {Organizational Learning: A Theory of Action Perspective},
+  author = {Chris Argyris and Donald A. Schön},
+  publisher = {Addison-Wesley},
+  year = {1978}
+}
+
+% No DOI; the NeurIPS 2015 proceedings page (corpus.jsonl record)
+@inproceedings{sculley2015hidden,
+  title = {Hidden Technical Debt in Machine Learning Systems},
+  author = {D. Sculley and Gary Holt and Daniel Golovin and Eugene Davydov and Todd Phillips and Dietmar Ebner and Vinay Chaudhary and Michael Young and Jean-François Crespo and Dan Dennison},
+  booktitle = {Advances in Neural Information Processing Systems 28 (NeurIPS 2015)},
+  year = {2015},
+  url = {https://papers.nips.cc/paper_files/paper/2015/hash/86df7dcfd896fcaf2674f757a2463eba-Abstract.html}
+}
+
+% arXiv 2602.07150 (DataCite, 2026-10-02); abstract: 60,000 SWE-bench Verified trajectories, single-run pass@1 varies by 2.2 to 6.0 points
+@misc{bjarnason2026randomness,
+  title = {On Randomness in Agentic Evals},
+  author = {Bjarni Haukur Bjarnason and André Silva and Martin Monperrus},
+  year = {2026},
+  eprint = {2602.07150},
+  archivePrefix = {arXiv},
+  url = {https://arxiv.org/abs/2602.07150},
+  howpublished = {arXiv:2602.07150}
+}
+
+% arXiv 2608.26218 (DataCite, 2026-10-02)
+@misc{lewis2026same,
+  title = {Same Model, Different Harness: Different Coding-Agent Results},
+  author = {Sydney Lewis},
+  year = {2026},
+  eprint = {2608.26218},
+  archivePrefix = {arXiv},
+  url = {https://arxiv.org/abs/2608.26218},
+  howpublished = {arXiv:2608.26218}
+}
+
+% Web page, WebFetch 2026-10-02 (rw-V4): the Model Context Protocol specification, version 2025-06-18
+@online{mcp2025spec,
+  title = {Model Context Protocol Specification (version 2025-06-18)},
+  author = {{Model Context Protocol contributors}},
+  year = {2025},
+  url = {https://modelcontextprotocol.io/specification/2025-06-18},
+  urldate = {2026-10-02},
+  note = {Online specification}
+}
+
+% arXiv 1003.0146 (DataCite) and DOI 10.1145/1772690.1772758 (Crossref), both 2026-10-02
+@inproceedings{li2010contextual,
+  title = {A Contextual-Bandit Approach to Personalized News Article Recommendation},
+  author = {Lihong Li and Wei Chu and John Langford and Robert E. Schapire},
+  booktitle = {WWW 2010},
+  year = {2010},
+  doi = {10.1145/1772690.1772758},
+  eprint = {1003.0146},
+  archivePrefix = {arXiv},
+  url = {https://arxiv.org/abs/1003.0146}
+}
+
+% DOI 10.1080/01621459.1952.10483446 (Crossref, 2026-10-02)
+@article{horvitz1952generalization,
+  title = {A Generalization of Sampling Without Replacement from a Finite Universe},
+  author = {D. G. Horvitz and D. J. Thompson},
+  journal = {Journal of the American Statistical Association},
+  volume = {47},
+  number = {260},
+  pages = {663--685},
+  year = {1952},
+  doi = {10.1080/01621459.1952.10483446},
+  url = {https://doi.org/10.1080/01621459.1952.10483446}
+}
+
+% DOI 10.1080/01621459.1927.10502953 (Crossref, 2026-10-02)
+@article{wilson1927probable,
+  title = {Probable Inference, the Law of Succession, and Statistical Inference},
+  author = {Edwin B. Wilson},
+  journal = {Journal of the American Statistical Association},
+  volume = {22},
+  number = {158},
+  pages = {209--212},
+  year = {1927},
+  doi = {10.1080/01621459.1927.10502953},
+  url = {https://doi.org/10.1080/01621459.1927.10502953}
+}
+
+% arXiv 2406.12045 (DataCite, 2026-10-02); defines pass^k and its unbiased estimator
+@misc{yao2024taubench,
+  title = {{$\tau$-bench}: A Benchmark for Tool-Agent-User Interaction in Real-World Domains},
+  author = {Shunyu Yao and Noah Shinn and Pedram Razavi and Karthik Narasimhan},
+  year = {2024},
+  eprint = {2406.12045},
+  archivePrefix = {arXiv},
+  url = {https://arxiv.org/abs/2406.12045},
+  howpublished = {arXiv:2406.12045}
+}
+
+% DOI 10.1175/1520-0493(1950)078<0001:VOFEIT>2.0.CO;2 (Crossref, 2026-10-02)
+@article{brier1950,
+  title = {Verification of Forecasts Expressed in Terms of Probability},
+  author = {Glenn W. Brier},
+  journal = {Monthly Weather Review},
+  volume = {78},
+  number = {1},
+  pages = {1--3},
+  year = {1950},
+  doi = {10.1175/1520-0493(1950)078<0001:VOFEIT>2.0.CO;2},
+  url = {https://doi.org/10.1175/1520-0493(1950)078<0001:VOFEIT>2.0.CO;2}
+}
+
+% arXiv 1706.04599 (DataCite, 2026-10-02); ICML 2017. ECE over equal-width bins (its §2)
+@inproceedings{guo2017calibration,
+  title = {On Calibration of Modern Neural Networks},
+  author = {Chuan Guo and Geoff Pleiss and Yu Sun and Kilian Q. Weinberger},
+  booktitle = {ICML 2017},
+  year = {2017},
+  eprint = {1706.04599},
+  archivePrefix = {arXiv},
+  url = {https://arxiv.org/abs/1706.04599}
+}
+
+% arXiv 2407.01502 (DataCite, 2026-10-02); published in TMLR (2025)
+@article{kapoor2024agents,
+  title = {AI Agents That Matter},
+  author = {Sayash Kapoor and Benedikt Stroebl and Zachary S. Siegel and Nitya Nadgir and Arvind Narayanan},
+  journal = {Transactions on Machine Learning Research},
+  year = {2025},
+  eprint = {2407.01502},
+  archivePrefix = {arXiv},
+  url = {https://arxiv.org/abs/2407.01502}
+}
+
+% arXiv 2310.01798 (DataCite, 2026-10-02)
+@misc{huang2023large,
+  title = {Large Language Models Cannot Self-Correct Reasoning Yet},
+  author = {Jie Huang and Xinyun Chen and Swaroop Mishra and Huaixiu Steven Zheng and Adams Wei Yu and Xinying Song and Denny Zhou},
+  year = {2023},
+  eprint = {2310.01798},
+  archivePrefix = {arXiv},
+  url = {https://arxiv.org/abs/2310.01798},
+  howpublished = {arXiv:2310.01798}
+}
+
+% arXiv 2306.05685 (DataCite) and DOI 10.52202/075280-2020 (Crossref), both 2026-10-02
+@inproceedings{zheng2023judging,
+  title = {Judging LLM-as-a-Judge with MT-Bench and Chatbot Arena},
+  author = {Lianmin Zheng and Wei-Lin Chiang and Ying Sheng and Siyuan Zhuang and Zhanghao Wu and Yonghao Zhuang and Zi Lin and Zhuohan Li and Dacheng Li and Eric P. Xing and Hao Zhang and Joseph E. Gonzalez and Ion Stoica},
+  booktitle = {NeurIPS 2023},
+  year = {2023},
+  doi = {10.52202/075280-2020},
+  eprint = {2306.05685},
+  archivePrefix = {arXiv},
+  url = {https://arxiv.org/abs/2306.05685}
+}
+
+% Web page (DeepMind blog, 21 April 2020), fetched 2026-09-28 by rw-R2 (corpus.jsonl)
+@online{krakovna2020specification,
+  title = {Specification gaming: the flip side of AI ingenuity},
+  author = {Victoria Krakovna and Jonathan Uesato and Vladimir Mikulik and Matthew Rahtz and Tom Everitt and Ramana Kumar and Zac Kenton and Jan Leike and Shane Legg},
+  year = {2020},
+  url = {https://deepmind.google/discover/blog/specification-gaming-the-flip-side-of-ai-ingenuity/},
+  note = {DeepMind Blog, 21 April 2020},
+  urldate = {2026-09-28}
+}
+
+% DOI 10.1109/PROC.1975.9939 (Crossref, 2026-10-02)
+@article{saltzer1975protection,
+  title = {The Protection of Information in Computer Systems},
+  author = {Jerome H. Saltzer and Michael D. Schroeder},
+  journal = {Proceedings of the IEEE},
+  volume = {63},
+  number = {9},
+  pages = {1278--1308},
+  year = {1975},
+  doi = {10.1109/PROC.1975.9939},
+  url = {https://doi.org/10.1109/PROC.1975.9939}
+}
+
+% arXiv 2302.12173 (DataCite) and DOI 10.1145/3605764.3623985 (Crossref), both 2026-10-02
+@inproceedings{greshake2023not,
+  title = {Not What You've Signed Up For: Compromising Real-World LLM-Integrated Applications with Indirect Prompt Injection},
+  author = {Kai Greshake and Sahar Abdelnabi and Shailesh Mishra and Christoph Endres and Thorsten Holz and Mario Fritz},
+  booktitle = {AISec 2023 (16th ACM Workshop on Artificial Intelligence and Security)},
+  year = {2023},
+  doi = {10.1145/3605764.3623985},
+  eprint = {2302.12173},
+  archivePrefix = {arXiv},
+  url = {https://doi.org/10.1145/3605764.3623985}
+}
+
+% arXiv 2503.15223 (DataCite) and DOI 10.1145/3744916.3764576 (Crossref), both 2026-10-02
+@inproceedings{wang2025solved,
+  title = {Are ``Solved Issues'' in {SWE-bench} Really Solved Correctly? An Empirical Study},
+  author = {You Wang and Michael Pradel and Zhongxin Liu},
+  booktitle = {Proceedings of the 48th IEEE/ACM International Conference on Software Engineering (ICSE 2026)},
+  pages = {169--181},
+  year = {2026},
+  doi = {10.1145/3744916.3764576},
+  eprint = {2503.15223},
+  archivePrefix = {arXiv},
+  url = {https://arxiv.org/abs/2503.15223}
+}
+
+% arXiv 1803.04585 (DataCite, 2026-10-02)
+@misc{manheim2018categorizing,
+  title = {Categorizing Variants of Goodhart's Law},
+  author = {David Manheim and Scott Garrabrant},
+  year = {2018},
+  eprint = {1803.04585},
+  archivePrefix = {arXiv},
+  url = {https://arxiv.org/abs/1803.04585},
+  howpublished = {arXiv:1803.04585}
+}
+
+% Web page, WebFetch 2026-10-02 (rw-V4): title, authors, 5 June 2025; "attempting (often successfully) to get a
+% higher score by modifying the tests or scoring code"
+@online{vonarx2025recent,
+  title = {Recent Frontier Models Are Reward Hacking},
+  author = {Sydney {Von Arx} and Lawrence Chan and Beth Barnes},
+  year = {2025},
+  url = {https://metr.org/blog/2025-06-05-recent-reward-hacking/},
+  urldate = {2026-10-02},
+  note = {METR blog, 5 June 2025}
+}
+
+% arXiv 2308.08155 (DataCite, 2026-10-02); COLM 2024
+@inproceedings{wu2024autogen,
+  title = {AutoGen: Enabling Next-Gen LLM Applications via Multi-Agent Conversation},
+  author = {Qingyun Wu and Gagan Bansal and Jieyu Zhang and Yiran Wu and Beibin Li and Erkang Zhu and Li Jiang and Xiaoyun Zhang and Shaokun Zhang and Jiale Liu and Ahmed Hassan Awadallah and Ryen W White and Doug Burger and Chi Wang},
+  booktitle = {COLM 2024},
+  year = {2024},
+  eprint = {2308.08155},
+  archivePrefix = {arXiv},
+  url = {https://arxiv.org/abs/2308.08155}
+}
+
+% Vendor page, WebFetch 2026-10-02 (rw-P9): "The Agent Framework is the direct successor" (to AutoGen and
+% Semantic Kernel); "graph-based workflows"
+@online{microsoft2026agentframework,
+  title = {Microsoft Agent Framework Overview},
+  author = {{Microsoft}},
+  organization = {Microsoft},
+  year = {2026},
+  url = {https://learn.microsoft.com/en-us/agent-framework/overview/},
+  note = {Microsoft Learn},
+  urldate = {2026-10-02}
+}
+
+% Vendor page, WebFetch 2026-10-02 (rw-P9): function- and LLM-based task guardrails; a failed output goes back to
+% the agent and is retried up to guardrail_max_retries (default 3)
+@online{crewai2026docs,
+  title = {CrewAI documentation: Tasks},
+  author = {{CrewAI}},
+  organization = {CrewAI},
+  year = {2026},
+  url = {https://docs.crewai.com/en/concepts/tasks},
+  note = {CrewAI documentation},
+  urldate = {2026-10-02}
+}
+
+% Blog post, WebFetch 2026-10-02 (rw-P9): Nuno Campos, 4 September 2025; "LLM agents really benefit from looping";
+% Pregel-style supersteps, checkpoints, interrupts
+@online{campos2025building,
+  title = {Building LangGraph: Designing an Agent Runtime from first principles},
+  author = {Nuno Campos},
+  year = {2025},
+  url = {https://www.langchain.com/blog/building-langgraph},
+  note = {LangChain blog},
+  urldate = {2026-10-02}
+}
+
+% Vendor documentation (undated), WebFetch 2026-10-02 (rw-P9): agents, handoffs, guardrails on agent inputs and outputs
+@online{openai2025agentssdk,
+  title = {OpenAI Agents SDK},
+  author = {{OpenAI}},
+  organization = {OpenAI},
+  year = {2026},
+  url = {https://openai.github.io/openai-agents-python/},
+  note = {OpenAI Agents SDK documentation},
+  urldate = {2026-10-02}
+}
+
+% Vendor documentation, WebFetch 2026-10-02 (rw-P9, rw-V4): "ADK can work with almost any generative AI model";
+% sequential, parallel and loop workflows
+@online{google2026adk,
+  title = {Agent Development Kit (ADK)},
+  author = {{Google}},
+  organization = {Google},
+  year = {2026},
+  url = {https://adk.dev/},
+  note = {ADK documentation},
+  urldate = {2026-10-02}
+}
+
+% Vendor documentation, WebFetch 2026-09-28 (corpus.jsonl): running Claude Code non-interactively
+@online{anthropic2026cchheadless,
+  title = {Run Claude Code programmatically (headless / Agent SDK CLI)},
+  author = {{Anthropic}},
+  organization = {Anthropic},
+  year = {2026},
+  url = {https://code.claude.com/docs/en/headless},
+  note = {Product documentation (fetched 2026-09-28)},
+  urldate = {2026-09-28}
+}
+
+% Vendor documentation, WebFetch 2026-09-28 (corpus.jsonl) and 2026-10-02 (rw-V4): "When you enable `--json`,
+% `stdout` becomes a JSON Lines (JSONL) stream"
+@online{openai2026codexexec,
+  title = {Non-interactive mode},
+  author = {{OpenAI}},
+  organization = {OpenAI, Codex documentation},
+  year = {2026},
+  url = {https://learn.chatgpt.com/docs/non-interactive-mode},
+  note = {Codex documentation, OpenAI},
+  urldate = {2026-10-02}
+}
+
+% GitHub repository, WebFetch 2026-10-02 (rw-P9, rw-V4): "part of the Agentic AI Foundation (AAIF) at the Linux
+% Foundation"; "15+ providers"; "70+ extensions via the Model Context Protocol"
+@online{aaif2026goose,
+  title = {{goose}: an open source, extensible AI agent},
+  author = {{goose contributors}},
+  year = {2026},
+  url = {https://github.com/aaif-goose/goose},
+  note = {GitHub repository, Agentic AI Foundation (Linux Foundation)},
+  urldate = {2026-10-02}
+}
+
+% Vendor blog, WebFetch 2026-10-02 (rw-P9, rw-V4): Thariq Shihipar and Sid Bidasaria, 2 June 2026; a model and a
+% worktree per subagent, adversarial verification "against a rubric or criteria", resume after an interruption
+@online{shihipar2026harness,
+  title = {A harness for every task: dynamic workflows in Claude Code},
+  author = {Thariq Shihipar and Sid Bidasaria},
+  year = {2026},
+  url = {https://claude.dev/blog/a-harness-for-every-task-dynamic-workflows-in-claude-code/},
+  note = {Claude blog},
+  urldate = {2026-10-02}
+}
+
+% Vendor blog, WebFetch 2026-10-02 (rw-P2, rw-P9): Vivek Trivedy, 10 March 2026; "Agent = Model + Harness"
+@online{trivedy2026anatomy,
+  title = {The Anatomy of an Agent Harness},
+  author = {Vivek Trivedy},
+  year = {2026},
+  url = {https://www.langchain.com/blog/the-anatomy-of-an-agent-harness},
+  note = {LangChain blog, 10 March 2026},
+  urldate = {2026-10-02}
+}
+
+% Web article, WebFetch 2026-10-02 (rw-P2, rw-P9): Birgitta Böckeler, 2 April 2026; guides as "feedforward
+% controls", sensors as "feedback controls"
+@online{bockeler2026harness,
+  title = {Harness engineering for coding agent users},
+  author = {Birgitta Böckeler},
+  year = {2026},
+  url = {https://martinfowler.com/articles/exploring-gen-ai/harness-engineering.html},
+  note = {martinfowler.com, 2 April 2026},
+  urldate = {2026-10-02}
+}
+
+% DOI 10.1109/MC.2003.1160055 (Crossref, 2026-10-02)
+@article{kephart2003vision,
+  title = {The Vision of Autonomic Computing},
+  author = {Jeffrey O. Kephart and David M. Chess},
+  journal = {Computer},
+  volume = {36},
+  number = {1},
+  pages = {41--50},
+  year = {2003},
+  doi = {10.1109/MC.2003.1160055},
+  url = {https://doi.org/10.1109/MC.2003.1160055}
+}
+
+% DOI 10.1002/9781119574910 (Crossref, 2026-10-02). Crossref dates the book 2021; the year stays 2020 as in the
+% research bib (same key)
+@book{weyns2020introduction,
+  title = {An Introduction to Self-Adaptive Systems},
+  author = {Danny Weyns},
+  publisher = {Wiley},
+  year = {2020},
+  doi = {10.1002/9781119574910},
+  url = {https://doi.org/10.1002/9781119574910}
+}
+
+% arXiv 2307.06187 (DataCite) and DOI 10.1109/ACSOS-C58168.2023.00048 (Crossref), both 2026-10-02
+@inproceedings{nascimento2023selfadaptive,
+  title = {Self-Adaptive Large Language Model (LLM)-Based Multiagent Systems},
+  author = {Nathalia Nascimento and Paulo Alencar and Donald Cowan},
+  booktitle = {2023 IEEE International Conference on Autonomic Computing and Self-Organizing Systems Companion (ACSOS-C)},
+  pages = {104-109},
+  year = {2023},
+  doi = {10.1109/acsos-c58168.2023.00048},
+  eprint = {2307.06187},
+  archivePrefix = {arXiv},
+  url = {https://arxiv.org/abs/2307.06187}
 }

@@ -1,0 +1,119 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1080" height="744" viewBox="0 0 1080 744" role="img" aria-label="Roko's five loops nested by time scale, each with its clock, goal and main mechanisms">
+  <desc>Five rungs, L0 to L4, each with its name, clock, goal and main mechanisms. Arrows down carry references and parameters; arrows up carry records. Planning feeds checks written before the work into the plan loop and the attempt loop. A rail on the right shows the executable verdict read by L1 to L4.</desc>
+  <defs>
+    <marker id="a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto">
+      <path d="M0,0 L10,5 L0,10 z" fill="#475569"/>
+    </marker>
+    <marker id="v" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="5" markerHeight="5" orient="auto">
+      <path d="M0,0 L10,5 L0,10 z" fill="#334155"/>
+    </marker>
+  </defs>
+  <style>
+    text { font-family: Helvetica, Arial, sans-serif; fill: #1f2937; font-size: 14px; }
+    .nm { font-size: 16px; font-weight: bold; }
+    .b { font-weight: bold; }
+    .s { font-size: 13px; }
+    .m { fill: #4b5563; }
+    .i { font-style: italic; }
+    .c { text-anchor: middle; }
+    .e { text-anchor: end; }
+    .ar { stroke: #475569; stroke-width: 1.5; fill: none; }
+    .up { stroke-dasharray: 4 3; }
+  </style>
+  <rect width="1080" height="744" fill="#ffffff"/>
+
+  <!-- L4 -->
+  <rect x="280" y="20" width="510" height="104" rx="8" fill="#f1eafb" stroke="#9b7fd4" stroke-width="1.2"/>
+  <rect x="294" y="34" width="36" height="24" rx="5" fill="#ffffff" stroke="#9b7fd4"/>
+  <text x="312" y="51" class="b c" style="fill:#6d4fb0">L4</text>
+  <text x="342" y="51" class="nm">The audit level</text>
+  <text x="776" y="51" class="e m">clock: weeks</text>
+  <text x="294" y="76"><tspan class="b">Goal:</tspan> the checks and the learning stay honest and useful</text>
+  <text x="294" y="97" class="s m">random deep audits and the false-green estimate, the loop audit,</text>
+  <text x="294" y="114" class="s m">the bounded controller, guarded commit for every self-modification</text>
+
+  <!-- L3 -->
+  <rect x="280" y="170" width="510" height="104" rx="8" fill="#fdf3e1" stroke="#d09a45" stroke-width="1.2"/>
+  <rect x="294" y="184" width="36" height="24" rx="5" fill="#ffffff" stroke="#d09a45"/>
+  <text x="312" y="201" class="b c" style="fill:#9a6512">L3</text>
+  <text x="342" y="201" class="nm">The learning loops</text>
+  <text x="776" y="201" class="e m">clock: days (across runs)</text>
+  <text x="294" y="226"><tspan class="b">Goal:</tspan> better decisions, learned from verified outcomes only</text>
+  <text x="294" y="247" class="s m">the loop registry, the learned model router, adaptive retry budgets,</text>
+  <text x="294" y="264" class="s m">playbooks, prompt experiments, knowledge store, outcome forecaster</text>
+
+  <!-- L2 -->
+  <rect x="280" y="320" width="510" height="104" rx="8" fill="#e5f4ef" stroke="#4fa585" stroke-width="1.2"/>
+  <rect x="294" y="334" width="36" height="24" rx="5" fill="#ffffff" stroke="#4fa585"/>
+  <text x="312" y="351" class="b c" style="fill:#2d7f63">L2</text>
+  <text x="342" y="351" class="nm">The plan loop</text>
+  <text x="776" y="351" class="e m">clock: hours</text>
+  <text x="294" y="376"><tspan class="b">Goal:</tspan> the whole plan integrated and verified</text>
+  <text x="294" y="397" class="s m">spec check, plan graph, scheduler (write sets), a worktree per task,</text>
+  <text x="294" y="414" class="s m">plan and run branches, whole-plan check, checkpoints, run supervisor</text>
+
+  <!-- L1 -->
+  <rect x="280" y="470" width="510" height="104" rx="8" fill="#e6f0fb" stroke="#5b8fd0" stroke-width="1.2"/>
+  <rect x="294" y="484" width="36" height="24" rx="5" fill="#ffffff" stroke="#5b8fd0"/>
+  <text x="312" y="501" class="b c" style="fill:#2f6db3">L1</text>
+  <text x="342" y="501" class="nm">The attempt loop</text>
+  <text x="776" y="501" class="e m">clock: minutes</text>
+  <text x="294" y="526"><tspan class="b">Goal:</tspan> a verified pass for one task</text>
+  <text x="294" y="547" class="s m">pre-verify screen, gate rungs, one verdict record per attempt,</text>
+  <text x="294" y="564" class="s m">retry with gate feedback, escalation ladder, provider failover</text>
+
+  <!-- L0 -->
+  <rect x="280" y="620" width="510" height="104" rx="8" fill="#eef2f7" stroke="#6b7f99" stroke-width="1.2"/>
+  <rect x="294" y="634" width="36" height="24" rx="5" fill="#ffffff" stroke="#6b7f99"/>
+  <text x="312" y="651" class="b c" style="fill:#475a73">L0</text>
+  <text x="342" y="651" class="nm">The tool-call loop</text>
+  <text x="776" y="651" class="e m">clock: seconds</text>
+  <text x="294" y="676"><tspan class="b">Goal:</tspan> every action is permitted, bounded and screened</text>
+  <text x="294" y="697" class="s m">tool-call guard, fail-closed tool access, git guard, output screening,</text>
+  <text x="294" y="714" class="s m">credential scrub, turn caps, stall watchdog, isolation controls</text>
+
+  <!-- between rungs: references and parameters (down), records (up) -->
+  <line x1="528" y1="129" x2="528" y2="165" class="ar" marker-end="url(#a)"/>
+  <line x1="552" y1="165" x2="552" y2="129" class="ar up" marker-end="url(#a)"/>
+  <text x="516" y="152" class="s m e">references and parameters</text>
+  <text x="564" y="152" class="s m">records</text>
+
+  <line x1="528" y1="279" x2="528" y2="315" class="ar" marker-end="url(#a)"/>
+  <line x1="552" y1="315" x2="552" y2="279" class="ar up" marker-end="url(#a)"/>
+  <text x="516" y="302" class="s m e">references and parameters</text>
+  <text x="564" y="302" class="s m">records</text>
+
+  <line x1="528" y1="429" x2="528" y2="465" class="ar" marker-end="url(#a)"/>
+  <line x1="552" y1="465" x2="552" y2="429" class="ar up" marker-end="url(#a)"/>
+  <text x="516" y="452" class="s m e">references and parameters</text>
+  <text x="564" y="452" class="s m">records</text>
+
+  <line x1="528" y1="579" x2="528" y2="615" class="ar" marker-end="url(#a)"/>
+  <line x1="552" y1="615" x2="552" y2="579" class="ar up" marker-end="url(#a)"/>
+  <text x="516" y="602" class="s m e">references and parameters</text>
+  <text x="564" y="602" class="s m">records</text>
+
+  <!-- planning: feedforward into L2 and L1 -->
+  <rect x="20" y="330" width="180" height="84" rx="8" fill="#ffffff" stroke="#4b5563" stroke-width="1.2"/>
+  <text x="34" y="354" class="b" style="font-size:15px">Planning</text>
+  <text x="34" y="376" class="s">request → plan → tasks</text>
+  <text x="34" y="398" class="s m i">feedforward</text>
+  <line x1="200" y1="372" x2="277" y2="372" class="ar" marker-end="url(#a)"/>
+  <path d="M110,414 V522 H277" class="ar" marker-end="url(#a)"/>
+  <text x="124" y="456">checks written</text>
+  <text x="124" y="475">before the work</text>
+
+  <!-- the verdict rail: read by L1 to L4 -->
+  <line x1="812" y1="72" x2="812" y2="522" stroke="#334155" stroke-width="2"/>
+  <line x1="812" y1="72" x2="795" y2="72" stroke="#334155" stroke-width="2" marker-end="url(#v)"/>
+  <line x1="812" y1="222" x2="795" y2="222" stroke="#334155" stroke-width="2" marker-end="url(#v)"/>
+  <line x1="812" y1="372" x2="795" y2="372" stroke="#334155" stroke-width="2" marker-end="url(#v)"/>
+  <line x1="812" y1="522" x2="795" y2="522" stroke="#334155" stroke-width="2" marker-end="url(#v)"/>
+  <line x1="812" y1="297" x2="826" y2="297" stroke="#334155" stroke-width="2"/>
+  <rect x="826" y="232" width="240" height="130" rx="8" fill="#ffffff" stroke="#334155" stroke-width="1.5"/>
+  <text x="840" y="257" class="b" style="font-size:15px">the executable verdict:</text>
+  <text x="840" y="278">the one fact every loop reads</text>
+  <text x="840" y="310" class="s m">one settled verdict record</text>
+  <text x="840" y="328" class="s m">per attempt, from checks</text>
+  <text x="840" y="346" class="s m">the worker cannot change</text>
+</svg>

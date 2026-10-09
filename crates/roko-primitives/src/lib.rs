@@ -13,7 +13,8 @@
 
 #![deny(unsafe_code)]
 #![warn(missing_docs)]
-// Math module docs legitimately have long first paragraphs describing the algorithm.
+// Math module docs (manifold, robust_stats, sheaf) legitimately need long first
+// paragraphs to describe the algorithm — splitting them would lose coherence.
 #![allow(clippy::too_long_first_doc_paragraph)]
 
 /// HDC codebook: deterministic symbol allocation, role-filler binding,

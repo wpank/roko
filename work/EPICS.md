@@ -103,7 +103,7 @@ Progress per epic: its children (items whose `parent` is the epic, plus its `dep
 | bench | 82 | 120 | 38 (29) |
 | docs | 20 | 25 | 5 (4) |
 | frontend | 3 | 6 | 3 (3) |
-| none | 355 | 434 | 79 (79) |
+| none | 355 | 436 | 81 (81) |
 | paper | 61 | 78 | 17 (14) |
 | rust-cold | 235 | 265 | 30 (21) |
 | rust-hot | 223 | 243 | 20 (17) |

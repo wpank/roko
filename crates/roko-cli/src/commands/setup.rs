@@ -20,7 +20,7 @@ use std::path::PathBuf;
 
 use crate::Cli;
 use roko_cli::auth_detect::{AuthMethod, detect_auth_from_env, version_probe};
-use roko_cli::doctor::{DoctorOptions, run_doctor};
+use roko_cli::doctor::{CredentialProbe, DoctorOptions, run_doctor};
 use roko_core::child_env::CredentialScrub;
 use roko_core::provider_catalog::{ProviderAvailability, catalog, check_provider_availability};
 
@@ -236,6 +236,7 @@ async fn cmd_setup_interactive(cli: &Cli, workdir: &std::path::Path, yes: bool) 
         workdir: workdir.to_path_buf(),
         config_override: cli.config.clone(),
         serve_url: None,
+        credentials: CredentialProbe::Environment,
     })
     .await?;
 

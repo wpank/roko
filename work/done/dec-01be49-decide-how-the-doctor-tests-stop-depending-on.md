@@ -2,14 +2,16 @@
 id = "dec-01be49"
 kind = "decision"
 title = "Decide how the doctor tests stop depending on the machine's claude and API keys: injectable probes or relaxed assertions"
-status = "open"
-triage = "unverified"
+status = "done"
+triage = "verified"
 severity = "p2"
 goal = "tooling"
 size = "S"
 subsystem = ["roko-cli/doctor"]
 created = 2026-09-29
-updated = 2026-10-08
+updated = 2026-10-09
+last_verified = 2026-10-09
+last_verified_rev = "811b56d74"
 source = "tmp/cybernetic-harness/workstreams/PROGRESS.md"
 discovered_from = "tmp/cybernetic-harness/workstreams/PROGRESS.md (wk-ci2's report on find-8cc7ac)"
 anchors = ["crates/roko-cli/src/doctor.rs::check_provider_usable", "crates/roko-cli/src/doctor.rs::run_doctor"]
@@ -19,6 +21,13 @@ links = { depends_on = [], blocks = [], related = ["find-8cc7ac"], supersedes = 
 
 [[verify]]
 command = "env -i HOME=\"$(mktemp -d)\" CARGO_HOME=\"$HOME/.cargo\" RUSTUP_HOME=\"$HOME/.rustup\" PATH=\"$HOME/.cargo/bin:/usr/bin:/bin\" cargo test -p roko-cli --lib doctor::tests::"
+
+[closed]
+at = 2026-10-09
+at_ts = "2026-10-09T12:37:16Z"
+commit = "f3221c8d5"
+forced = true
+evidence = "Will decided (a) on 2026-10-09. Forced: work.py's static runner treats this env -i verify as static and runs it in the main checkout; gate 26 ran the verify itself in the batch worktree (empty HOME, minimal PATH, no keys): doctor::tests:: 52/52 pass. Also clippy -D warnings; roko-cli + roko-execution lib 3804 passed (the gist-publishing share test excluded); roko-execution tests; roko-cli bin 457."
 +++
 
 ## Problem
@@ -60,3 +69,14 @@ These two tests are now the only thing stopping CI's `cargo test --workspace` (T
 and bug-6d703e (roko-agent's openclaw fixtures on Linux) used to fail earlier in the run, and both are fixed (PR #84,
 CI run 37806395795). Because the step stops at the first failing test binary, every crate after roko-cli still goes
 untested in CI until this decision is made and implemented.
+
+## Decided 2026-10-09
+
+Will picked **(a), injectable probes**. `DoctorOptions` now has `credentials: CredentialProbe`. Its default,
+`Environment`, probes the machine. `Fixed { auth, sources }` supplies the answers that `provider_usable` and the
+shared `credentials` check use, and roko-execution's `credentials_finding` builds that finding from the sources.
+The doctor tests now build their options with `test_options`, which declares a logged-in `claude` CLI. The new
+`run_doctor_fails_a_bootstrapped_workspace_without_provider_credentials` test covers both outcomes.
+
+`doctor_warns_when_mcp_env_has_hardcoded_secret` also depended on the machine: its fixture ran `node`, which a bare
+PATH lacks. Its fixture now uses `cargo`, which is allowlisted and on PATH wherever the tests run.

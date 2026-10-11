@@ -59,7 +59,7 @@ _17 more open · on hold: gap-3d37e8, gap-799698, gap-8a26fc, gap-93c748, gap-fd
 - **P1** [gap-d58ae8](items/gap-d58ae8-tp2-36-p0-0-37-mori-shaped.md) Mori-shaped workflow contract unproven end-to-end · size L · verified 2026-10-01
 - **P1** [gap-5d3b82](items/gap-5d3b82-proof-case-1-agent-early-exit-losteffect.md) Proof Case 1: Agent early exit / LostEffect · size M · verified 2026-10-01
 
-_9 more open · 1 unchecked (`TRIAGE.md`) · `goal = "core"`_
+_10 more open · 1 unchecked (`TRIAGE.md`) · `goal = "core"`_
 
 ## 8. Live visibility: serve, dashboard, portal
 
@@ -78,11 +78,11 @@ _0 more open · on hold: bug-429315, bug-8c5d32, bug-b9be1d, bug-dd5dca, bug-dee
 
 ## 10. Tooling, CLI polish and code hygiene
 
+- **P2** [bug-c63cca](items/bug-c63cca-about-a-dozen-roko-cli-integration-tests.md) About a dozen roko-cli integration tests pass only with a real claude CLI on PATH, so they fail on CI [bug] · size M · verified 2026-10-11
 - **P2** [spec-0b3a32](items/spec-0b3a32-backlog-phase-9-domains-assistant-held-and.md) Backlog Phase 9 — domains, assistant, held and parked work, cleanup, showcase and deploy [spec] · verified 2026-10-02
-- **P2** [spec-c89168](items/spec-c89168-feature-gate-chain-alloy-out-of-the.md) Feature-gate chain/Alloy out of the default CLI build: remaining benchmark evidence, all-feature test matrix and release jobs [spec] · size M · verified 2026-09-29
-- **P2** [gap-082a14](items/gap-082a14-graph-runs-never-write-task-status-back.md) Graph runs never write task status back to tasks.toml · verified 2026-10-01
+- **P2** [bug-13bbe9](items/bug-13bbe9-ci-coverage-canaries-that-run-a-nested.md) CI coverage: canaries that run a nested cargo fail under cargo-llvm-cov (the gate inherits its RUSTC_WRAPPER but not its marker variables) [bug] · size S · verified 2026-10-11
 
-_12 more open · 2 unchecked (`TRIAGE.md`) · `goal = "tooling"`_
+_15 more open · 3 unchecked (`TRIAGE.md`) · `goal = "tooling"`_
 
 ## 11. Feature ideas
 
@@ -98,6 +98,6 @@ _5 more open · on hold: gap-63055e, gap-8d80d3, gap-ebd656, spec-743a7e, spec-b
 - **P2** [gap-ac78fb](items/gap-ac78fb-acp-elicitation-notices-and-interactive-ux-primitives.md) ACP Elicitation, Notices, and Interactive UX Primitives · size L · verified 2026-09-29
 - **P2** [gap-31f96f](items/gap-31f96f-acp-registry-publication-and-editor-compatibility-matrix.md) ACP Registry Publication and Editor Compatibility Matrix · verified 2026-09-29
 
-_3 more open · on hold: gap-85f69b · `goal = "hermes"`_
+_4 more open · on hold: gap-85f69b · `goal = "hermes"`_
 
 10 open items have no goal (later); they are listed in `STATUS.md`.

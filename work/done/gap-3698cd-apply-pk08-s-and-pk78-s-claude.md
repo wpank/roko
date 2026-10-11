@@ -2,16 +2,16 @@
 id = "gap-3698cd"
 kind = "gap"
 title = "Apply PK08's, PK78's and PK80's CLAUDE.md rows (the records plan runs write; stale prompt_experiment and watcher count; the parked features)"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p3"
 goal = "truth"
 size = "S"
-hold = "waits on the uncommitted CLAUDE.md Goal-line edit in the main checkout (Will's): commit it, or say to apply the rows on top"
 subsystem = ["docs"]
 created = 2026-10-03
-updated = 2026-10-03
-last_verified = 2026-10-03
+updated = 2026-10-09
+last_verified = 2026-10-09
+last_verified_rev = "b8b8489cb"
 source = "tmp/backlog/2026-10-02-complete-and-wire 2121 and 9213 (held at gates 4c and 5a)"
 discovered_from = "gap-a0043b"
 anchors = ["CLAUDE.md"]
@@ -26,6 +26,15 @@ command = "! grep -q 'prompt_experiment: None' CLAUDE.md && ! grep -q '12 watche
 
 [[verify]]
 command = "grep -q 'Parked (off the default build)' CLAUDE.md"
+
+[closed]
+at = 2026-10-09
+at_ts = "2026-10-09T11:44:38Z"
+commit = "b8b8489cb"
+by = "commit trailer"
+executor = "unknown"
+forced = false
+evidence = "Closed by b8b8489cb: CLAUDE.md: apply PK08, PK78 and PK80 rows and the missing command rows"
 +++
 
 ## Problem

@@ -92,7 +92,14 @@ pub fn check_config(workdir: &Path) -> Vec<DiagnosticFinding> {
 
 /// Check that at least one LLM provider has usable credentials.
 pub fn check_credentials(workdir: &Path) -> Vec<DiagnosticFinding> {
-    // Check well-known API key environment variables.
+    let _ = workdir; // Credentials come from the environment, not the workspace.
+    vec![credentials_finding(&available_credentials())]
+}
+
+/// The provider credentials this machine has: each well-known API key variable that is set,
+/// and a `claude` CLI on PATH.
+#[must_use]
+pub fn available_credentials() -> Vec<String> {
     let known_keys = [
         ("ANTHROPIC_API_KEY", "anthropic"),
         ("OPENAI_API_KEY", "openai"),
@@ -100,27 +107,23 @@ pub fn check_credentials(workdir: &Path) -> Vec<DiagnosticFinding> {
         ("ZAI_API_KEY", "zhipu"),
         ("PERPLEXITY_API_KEY", "perplexity"),
     ];
-
-    let mut available = Vec::new();
-    for (env_var, label) in &known_keys {
-        if std::env::var(env_var)
-            .ok()
-            .filter(|v| !v.is_empty())
-            .is_some()
-        {
-            available.push(*label);
-        }
-    }
-
-    // Check for claude CLI on PATH.
+    let mut available: Vec<String> = known_keys
+        .iter()
+        .filter(|(env_var, _)| std::env::var(env_var).is_ok_and(|value| !value.is_empty()))
+        .map(|(_, label)| (*label).to_string())
+        .collect();
     if command_exists("claude") {
-        available.push("claude-cli");
+        available.push("claude-cli".to_string());
     }
+    available
+}
 
+/// The credentials finding for these credential sources: `credentials_none`, an error, when
+/// there are none. `roko doctor` passes fixed sources here in tests (dec-01be49).
+#[must_use]
+pub fn credentials_finding(available: &[String]) -> DiagnosticFinding {
     if available.is_empty() {
-        // Check if there is a config with providers that might have keys.
-        let _ = workdir; // Used for context only.
-        vec![DiagnosticFinding {
+        DiagnosticFinding {
             check_id: DiagnosticCheckId::Credentials,
             code: "credentials_none".into(),
             severity: DiagnosticSeverity::Error,
@@ -133,16 +136,16 @@ pub fn check_credentials(workdir: &Path) -> Vec<DiagnosticFinding> {
                 mutation_required: false,
             }),
             evidence: BTreeMap::new(),
-        }]
+        }
     } else {
-        vec![DiagnosticFinding {
+        DiagnosticFinding {
             check_id: DiagnosticCheckId::Credentials,
             code: "credentials_ok".into(),
             severity: DiagnosticSeverity::Info,
             message: format!("provider(s) available: {}", available.join(", ")),
             remediation: None,
             evidence: evidence([("providers", available.join(", "))]),
-        }]
+        }
     }
 }
 

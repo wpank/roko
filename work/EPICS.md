@@ -60,8 +60,8 @@ Progress per epic: its children (items whose `parent` is the epic, plus its `dep
 
 ## [spec-9a3131](items/spec-9a3131-epic-hygiene-and-cheap-wins.md) hygiene and cheap wins
 
-- **25/27 closed** · goal `tooling` · severity p2
-- open by lane: none 1, rust-cold 1
+- **26/27 closed** · goal `tooling` · severity p2
+- open by lane: none 1
 - next: [find-8cc7ac](items/find-8cc7ac-some-github-workflows-fail-on-main-and.md) Some GitHub workflows fail on main and required checks are undefined
 
 ## [spec-e9d7ec](done/spec-e9d7ec-epic-honest-verdicts-end-to-end.md) honest verdicts end to end (done)
@@ -101,11 +101,11 @@ Progress per epic: its children (items whose `parent` is the epic, plus its `dep
 | Lane | Closed | Total | Open (verified) |
 |---|---|---|---|
 | bench | 82 | 120 | 38 (29) |
-| docs | 19 | 25 | 6 (5) |
+| docs | 20 | 25 | 5 (4) |
 | frontend | 3 | 6 | 3 (3) |
 | none | 355 | 434 | 79 (79) |
 | paper | 61 | 78 | 17 (14) |
-| rust-cold | 234 | 265 | 31 (21) |
+| rust-cold | 235 | 265 | 30 (21) |
 | rust-hot | 223 | 243 | 20 (17) |
 | tests | 1 | 1 | 0 (0) |
 | tracker | 21 | 24 | 3 (2) |

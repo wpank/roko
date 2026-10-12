@@ -4,7 +4,7 @@
 
 What to work on next: the top checked, open items of each goal, highest-priority goal first. Reorder or change goals in `goals.toml`; pin an item higher with `rank = 1` (lower first).
 
-**Drift:** 13 anchor gone · 117 changed since checked · 2 mentioned in commits. Re-check them before relying on this list: `DRIFT.md`.
+**Drift:** 13 anchor gone · 118 changed since checked · 2 mentioned in commits. Re-check them before relying on this list: `DRIFT.md`.
 
 ## 1. Public release: security, licence, CI, first run
 
@@ -59,15 +59,15 @@ _17 more open · on hold: gap-3d37e8, gap-799698, gap-8a26fc, gap-93c748, gap-fd
 - **P1** [gap-d58ae8](items/gap-d58ae8-tp2-36-p0-0-37-mori-shaped.md) Mori-shaped workflow contract unproven end-to-end · size L · verified 2026-10-01
 - **P1** [gap-5d3b82](items/gap-5d3b82-proof-case-1-agent-early-exit-losteffect.md) Proof Case 1: Agent early exit / LostEffect · size M · verified 2026-10-01
 
-_10 more open · 1 unchecked (`TRIAGE.md`) · `goal = "core"`_
+_9 more open · 1 unchecked (`TRIAGE.md`) · `goal = "core"`_
 
 ## 8. Live visibility: serve, dashboard, portal
 
 - **P1** [gap-aabeff](items/gap-aabeff-tool-t003-tui-paths-still-consume-string.md) TUI paths still consume string/tail projections that lose semantics (TUI adoption unproven) · size L · verified 2026-10-01
-- **P2** [gap-6f0eca](items/gap-6f0eca-a-plan-run-s-end-names-no.md) A plan run's end names no run: DashboardEvent::RunCompleted has no run id, so /ws never sends run_completed for plan runs · size M · verified 2026-10-12
 - **P2** [bug-a0f01e](items/bug-a0f01e-long-running-operation-handles-never-record-completion.md) Long-running operation handles never record completion [bug] · verified 2026-10-01
+- **P3** [gap-0d6ae5](items/gap-0d6ae5-closing-the-tui-mid-run-stops-the.md) Closing the TUI mid-run stops the plan run; there is no detach mode · verified 2026-10-01
 
-_2 more open · `goal = "visibility"`_
+_1 more open · `goal = "visibility"`_
 
 ## 9. Learning loops on the Graph path
 

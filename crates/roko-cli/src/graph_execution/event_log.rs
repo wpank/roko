@@ -34,6 +34,7 @@ use std::future::Future;
 use std::io::{BufWriter, Write as _};
 use std::path::Path;
 use std::pin::Pin;
+use std::time::{Duration, Instant};
 
 use anyhow::{Context as _, anyhow};
 use chrono::{DateTime, Utc};
@@ -281,7 +282,9 @@ pub(crate) fn graph_run_id(run_id: Option<&str>) -> String {
 /// derived and repaired. A hub that writes the workspace log itself (serve's,
 /// see [`StateHub::persists_events`]) gets the index only. Plan, task, gate
 /// and run lifecycle events are synced and flush the index; the rest, agent
-/// output above all, are appended without a sync per line.
+/// output above all, are appended without a sync per line, and reach the
+/// index at the latest with the first row `INDEX_FLUSH_INTERVAL` after its
+/// last flush (bug-0b997a).
 pub(crate) struct WorkspaceEventLog {
     tap: EventTap<WorkspaceLogWriter>,
 }
@@ -300,6 +303,7 @@ impl WorkspaceEventLog {
             run_id,
             index_only: hub.persists_events(),
             failed: false,
+            last_flush: Instant::now(),
         };
         Some(Self {
             tap: EventTap::spawn(hub, writer, WorkspaceLogWriter::record),
@@ -320,6 +324,12 @@ impl WorkspaceEventLog {
     }
 }
 
+/// How long a run's index may hold rows that are not lifecycle events before
+/// the next row flushes them (bug-0b997a). An agent turn writes no lifecycle
+/// row, so without it a reader following a live run (the per-run stream, the
+/// run's events, a chat host's run card) saw nothing until the turn ended.
+const INDEX_FLUSH_INTERVAL: Duration = Duration::from_secs(1);
+
 /// Writer state folded by a [`WorkspaceEventLog`]'s tap.
 struct WorkspaceLogWriter {
     paths: crate::runner::persist::PersistPaths,
@@ -328,6 +338,8 @@ struct WorkspaceLogWriter {
     index_only: bool,
     /// A write failed, and was reported.
     failed: bool,
+    /// When the run's index was last flushed.
+    last_flush: Instant,
 }
 
 impl WorkspaceLogWriter {
@@ -359,12 +371,16 @@ impl WorkspaceLogWriter {
                 .or_insert_with(|| serde_json::json!(ts_millis));
         }
         let lifecycle = is_lifecycle_event(event);
+        let flush_index = lifecycle || self.last_flush.elapsed() >= INDEX_FLUSH_INTERVAL;
+        if flush_index {
+            self.last_flush = Instant::now();
+        }
         let result = if self.index_only {
             crate::runner::persist::append_run_index_event(
                 &self.paths,
                 &self.run_id,
                 &line,
-                lifecycle,
+                flush_index,
             )
         } else {
             let durability = if lifecycle {
@@ -377,7 +393,7 @@ impl WorkspaceLogWriter {
                 &self.run_id,
                 &line,
                 durability,
-                lifecycle,
+                flush_index,
             )
         };
         if let Err(error) = result
@@ -954,6 +970,57 @@ mod tests {
             (before..=after).contains(&at),
             "{at} not in {before}..={after}"
         );
+    }
+
+    /// bug-0b997a: rows that are not lifecycle events reach the run's index
+    /// while the run is still recording, at the latest with the first row
+    /// INDEX_FLUSH_INTERVAL after the last flush, so a reader following a live
+    /// run sees an agent's turn as it happens.
+    #[tokio::test]
+    async fn agent_rows_reach_the_index_while_the_run_is_live() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let hub = crate::state_hub::shared_state_hub();
+        let log = WorkspaceEventLog::spawn(&hub, dir.path(), "graph-test-live".to_string())
+            .expect("record the run");
+        let index = roko_fs::run_index::run_index_path(
+            &dir.path().join(".roko/events.jsonl"),
+            "graph-test-live",
+        )
+        .expect("index path");
+        let kinds = || {
+            std::fs::read_to_string(&index)
+                .unwrap_or_default()
+                .lines()
+                .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+                .filter_map(|row| row["type"].as_str().map(str::to_string))
+                .collect::<Vec<_>>()
+        };
+        let heartbeat = |elapsed_ms| DashboardEvent::AgentHeartbeat {
+            agent_id: "a1".to_string(),
+            plan_id: "p1".to_string(),
+            task_id: "T1".to_string(),
+            elapsed_ms,
+        };
+
+        hub.sender().publish(DashboardEvent::AgentSpawned {
+            agent_id: "a1".to_string(),
+            plan_id: "p1".to_string(),
+            task_id: "T1".to_string(),
+            attempt: 1,
+            role: "implementer".to_string(),
+            model: String::new(),
+            provider: String::new(),
+        });
+        tokio::time::sleep(INDEX_FLUSH_INTERVAL + Duration::from_millis(200)).await;
+        hub.sender().publish(heartbeat(1_200));
+
+        // No lifecycle row came, and the run has not finished recording.
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while kinds().len() < 2 && Instant::now() < deadline {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        assert_eq!(kinds(), ["agent_spawned", "agent_heartbeat"]);
+        log.finish().await;
     }
 
     /// gap-dd4826: a blocked task is synced as it is written, like the

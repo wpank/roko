@@ -2,7 +2,7 @@
 id = "bug-856656"
 kind = "bug"
 title = "Exchanging any API key at POST /api/auth/session mints an admin session, so a write or read key gains admin rights through its cookie"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p1"
 goal = "release"
@@ -11,12 +11,24 @@ subsystem = ["roko-serve/auth"]
 created = 2026-10-12
 updated = 2026-10-12
 last_verified = 2026-10-12
+last_verified_rev = "b1cdade95"
 source = "hermes-plugin-roko 0.2.0 UI work, roko serve probe 2026-10-11 (scratchpad roko-ui-data.md)"
 anchors = ["crates/roko-serve/src/routes/auth_session.rs::create_session", "crates/roko-serve/src/routes/auth_session.rs::validate_token", "crates/roko-serve/src/state.rs::SessionGrant"]
 links = { depends_on = [], blocks = [], related = [], supersedes = [], duplicate_of = "" }
 
 [[verify]]
 command = "grep -rqw 'fn session_from_a_write_key_is_scoped_to_write' crates/roko-serve/ && cargo test -p roko-serve session_from_a_write_key_is_scoped_to_write"
+
+[closed]
+at = 2026-10-12
+at_ts = "2026-10-12T11:22:25Z"
+commit = "b1cdade95"
+by = "commit trailer"
+executor = "claude-agent"
+size = "S"
+claimed_at = "2026-10-12T11:02:43Z"
+forced = false
+evidence = "b1cdade95: validate_token returns the matched credential's scope and create_session mints SessionGrant::exchange(scope): a named key's session has the key's scope, the launch token and legacy key stay admin. Verify passes in the worktree (session_from_a_write_key_is_scoped_to_write: write and read keys get write/read, the launch token admin; plus session_from_the_legacy_key_stays_admin); all 145 auth/session tests in roko-serve pass; clippy -p roko-serve --no-deps -D warnings clean."
 +++
 
 ## Problem

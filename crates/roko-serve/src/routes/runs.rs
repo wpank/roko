@@ -322,6 +322,29 @@ async fn run_events_sse(
         return Err(ApiError::not_found(format!("run '{run_id}' not found")));
     }
 
+    // A Graph run (every plan run, and a prompt run, which is a one-task plan)
+    // writes the runner index and publishes to the StateHub, never to the runtime
+    // bus this stream used to follow alone, so its stream sent only keepalives
+    // (bug-1f41f0). Follow the runner index unless the run has a runtime index.
+    let has_runtime_index = {
+        let io_state = Arc::clone(&state);
+        let io_run_id = run_id.clone();
+        blocking_io(move || {
+            Ok(source_path(&io_state, &io_run_id, EventSource::Runtime)
+                .is_some_and(|path| roko_fs::run_index::open_existing_run_index(&path).is_ok()))
+        })
+        .await?
+    };
+    if !has_runtime_index {
+        let types = parse_types(query.types.as_deref())?;
+        let header_cursor = headers
+            .get("Last-Event-ID")
+            .and_then(|value| value.to_str().ok())
+            .and_then(|value| value.parse::<u64>().ok());
+        let cursor = header_cursor.or(query.cursor).unwrap_or(0);
+        return Ok(runner_index_sse(state, run_id, cursor, types));
+    }
+
     query.source = Some("runtime".to_string());
     query.limit = Some(query.limit.unwrap_or(MAX_SSE_REPLAY).min(MAX_SSE_REPLAY));
     let types = parse_types(query.types.as_deref())?;
@@ -422,6 +445,104 @@ async fn run_events_sse(
             .text("keepalive"),
     );
     Ok((super::sse::sse_response_headers(), sse).into_response())
+}
+
+/// How often [`runner_index_sse`] looks for rows appended to a run's index.
+const RUNNER_INDEX_POLL: std::time::Duration = std::time::Duration::from_millis(500);
+
+/// The per-run stream of a Graph run (bug-1f41f0): the rows of its runner index
+/// from `cursor` on, then each row appended later, as SSE events whose `id` is
+/// the byte cursor after the row (so `Last-Event-ID` resumes), filtered by
+/// `types`. It ends after the run's `run_completed`, or when the server shuts
+/// down; a cursor the index refuses ends it with an `error` event.
+///
+/// Only lifecycle rows are flushed as they happen; the rest arrive with the
+/// next one (runner/persist.rs), so the stream can be a few rows behind.
+fn runner_index_sse(
+    state: Arc<AppState>,
+    run_id: String,
+    cursor: u64,
+    types: BTreeSet<String>,
+) -> Response {
+    struct Follow {
+        state: Arc<AppState>,
+        run_id: String,
+        cursor: u64,
+        types: BTreeSet<String>,
+        pending: std::collections::VecDeque<Event>,
+        ended: bool,
+    }
+    let follow = Follow {
+        state: Arc::clone(&state),
+        run_id,
+        cursor,
+        types,
+        pending: std::collections::VecDeque::new(),
+        ended: false,
+    };
+    let rows = stream::unfold(follow, |mut follow| async move {
+        loop {
+            if let Some(frame) = follow.pending.pop_front() {
+                return Some((Ok::<_, Infallible>(frame), follow));
+            }
+            if follow.ended {
+                return None;
+            }
+            let io_state = Arc::clone(&follow.state);
+            let io_run_id = follow.run_id.clone();
+            let cursor = follow.cursor;
+            // Read every row, whatever `types` asks for, so the run's end is seen.
+            let page = blocking_io(move || {
+                read_for_run(
+                    &io_state,
+                    &io_run_id,
+                    Some(EventSource::Runner),
+                    cursor,
+                    MAX_SSE_REPLAY,
+                    MAX_PAGE_SCAN_BYTES,
+                    &BTreeSet::new(),
+                )
+            })
+            .await;
+            match page {
+                Ok(Some(page)) => {
+                    let has_more = page.has_more;
+                    follow.cursor = page.next_cursor;
+                    for item in page.events {
+                        let kind = event_type(&item.value).unwrap_or_default().to_string();
+                        if kind == "run_completed" {
+                            follow.ended = true;
+                        }
+                        if follow.types.is_empty() || follow.types.contains(&kind) {
+                            follow
+                                .pending
+                                .push_back(indexed_sse_event(item, &follow.state.scrubber));
+                        }
+                    }
+                    if follow.ended || has_more || !follow.pending.is_empty() {
+                        continue;
+                    }
+                }
+                // No index yet: the run is queued or has only just started.
+                Ok(None) => {}
+                Err(error) => {
+                    follow.ended = true;
+                    let data = json!({ "run_id": follow.run_id, "message": error.to_string() });
+                    follow
+                        .pending
+                        .push_back(Event::default().event("error").data(data.to_string()));
+                    continue;
+                }
+            }
+            tokio::time::sleep(RUNNER_INDEX_POLL).await;
+        }
+    });
+    let sse = Sse::new(super::sse::until_shutdown(rows, state.cancel.clone())).keep_alive(
+        KeepAlive::new()
+            .interval(std::time::Duration::from_secs(8))
+            .text("keepalive"),
+    );
+    (super::sse::sse_response_headers(), sse).into_response()
 }
 
 async fn get_run_tasks(
@@ -1382,6 +1503,23 @@ fn event_timestamp_ms(value: &Value) -> Option<u64> {
         .get("timestamp_ms")
         .and_then(Value::as_u64)
         .or_else(|| value.get("event")?.get("timestamp_ms")?.as_u64())
+        // Graph runs' index rows carry the hub's publish time (bug-28aae1).
+        .or_else(|| value.get("ts_millis").and_then(Value::as_u64))
+}
+
+/// When an indexed event happened, as text: its timestamp, else its time in
+/// milliseconds as RFC 3339 (UTC, milliseconds).
+fn event_time_text(value: &Value) -> Option<String> {
+    value
+        .get("timestamp")
+        .and_then(Value::as_str)
+        .or_else(|| value.get("ts").and_then(Value::as_str))
+        .map(str::to_string)
+        .or_else(|| {
+            let millis = i64::try_from(event_timestamp_ms(value)?).ok()?;
+            let at = chrono::DateTime::<chrono::Utc>::from_timestamp_millis(millis)?;
+            Some(at.to_rfc3339_opts(chrono::SecondsFormat::Millis, true))
+        })
 }
 
 fn event_level(value: &Value) -> &'static str {
@@ -1474,42 +1612,50 @@ fn summarize_events(events: &[IndexedEvent]) -> Value {
     let mut status = "observed";
     let mut saw_inference_usage = false;
     let mut final_cost = None;
+    // What Graph runs record: `efficiency_event` rows, one metric each (bug-28aae1).
+    let mut efficiency = Efficiency::default();
+    // The first time any row carries: a Graph run has no start event of its own.
+    let mut first_time = None;
 
     for item in events {
         let value = &item.value;
         let kind = event_type(value).unwrap_or_default();
-        if let Some(plan_id) = event_plan_id(value) {
+        // Log entries carry empty ids; they name no plan or task.
+        if let Some(plan_id) = event_plan_id(value).filter(|id| !id.is_empty()) {
             plans.insert(plan_id.to_string());
         }
-        if let Some(task_id) = event_task_id(value) {
+        if let Some(task_id) = event_task_id(value).filter(|id| !id.is_empty()) {
             tasks.insert(task_id.to_string());
             if let Some(attempt) = event_attempt(value) {
                 attempts.insert((task_id.to_string(), attempt));
             }
         }
-        let timestamp = value
-            .get("timestamp")
-            .and_then(Value::as_str)
-            .or_else(|| value.get("ts").and_then(Value::as_str));
+        let time = event_time_text(value);
+        if first_time.is_none() {
+            first_time.clone_from(&time);
+        }
         if kind == "run.started" || kind == "workflow_started" || kind == "run_started" {
             status = "running";
-            started_at = timestamp
-                .map(str::to_string)
-                .or_else(|| event_timestamp_ms(value).map(|value| value.to_string()));
+            started_at.clone_from(&time);
         }
         if matches!(
             kind,
             "run.completed" | "workflow_completed" | "run_completed"
         ) {
             status = completion_status(value);
-            finished_at = timestamp
-                .map(str::to_string)
-                .or_else(|| event_timestamp_ms(value).map(|value| value.to_string()));
+            finished_at.clone_from(&time);
             duration_ms = numeric(value, "duration_ms");
             final_cost = decimal(value, "total_cost_usd").or_else(|| decimal(value, "cost_usd"));
         }
-        if is_gate_event(kind)
-            && (kind.contains("completed") || kind.contains("passed") || kind.contains("failed"))
+        if kind == "efficiency_event" {
+            efficiency.add(value);
+        }
+        // Graph runs report a rung's verdict as `gate_result` (bug-28aae1).
+        if kind == "gate_result"
+            || (is_gate_event(kind)
+                && (kind.contains("completed")
+                    || kind.contains("passed")
+                    || kind.contains("failed")))
         {
             gates_total = gates_total.saturating_add(1);
             let passed = bool_field(value, "passed").unwrap_or_else(|| kind.contains("passed"));
@@ -1563,6 +1709,26 @@ fn summarize_events(events: &[IndexedEvent]) -> Value {
             cost_usd = runner_attempt_costs.values().sum();
         }
     }
+    // A Graph run records its spend only as efficiency events: use them when no
+    // other source reported any.
+    if efficiency.seen
+        && !saw_inference_usage
+        && final_cost.is_none()
+        && runner_attempt_costs.is_empty()
+        && cost_usd.abs() < f64::EPSILON
+    {
+        cost_usd = efficiency.cost_usd;
+    }
+    if efficiency.seen && input_tokens == 0 && output_tokens == 0 {
+        input_tokens = efficiency.input_tokens;
+        output_tokens = efficiency.output_tokens;
+        cache_read_tokens = cache_read_tokens.max(efficiency.cache_read_tokens);
+        cache_write_tokens = cache_write_tokens.max(efficiency.cache_write_tokens);
+        total_tokens = input_tokens.saturating_add(output_tokens);
+    }
+    if started_at.is_none() {
+        started_at = first_time;
+    }
     json!({
         "status": status,
         "started_at": started_at,
@@ -1592,6 +1758,51 @@ fn summarize_events(events: &[IndexedEvent]) -> Value {
             "duration_ms": duration_ms,
         }
     })
+}
+
+/// A Graph run's `efficiency_event` rows, summed: each carries one `metric` and
+/// its `value`.
+#[derive(Debug, Default)]
+struct Efficiency {
+    seen: bool,
+    cost_usd: f64,
+    input_tokens: u64,
+    output_tokens: u64,
+    cache_read_tokens: u64,
+    cache_write_tokens: u64,
+}
+
+impl Efficiency {
+    fn add(&mut self, value: &Value) {
+        let data = event_data(value);
+        let metric = data
+            .get("metric")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        let Some(amount) = data
+            .get("value")
+            .and_then(Value::as_f64)
+            .filter(|amount| amount.is_finite() && *amount >= 0.0)
+        else {
+            return;
+        };
+        self.seen = true;
+        // Token counts are whole numbers recorded as floats.
+        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+        let tokens = amount.round() as u64;
+        match metric {
+            "cost_usd" => self.cost_usd += amount,
+            "input_tokens" => self.input_tokens = self.input_tokens.saturating_add(tokens),
+            "output_tokens" => self.output_tokens = self.output_tokens.saturating_add(tokens),
+            "cache_read_tokens" => {
+                self.cache_read_tokens = self.cache_read_tokens.saturating_add(tokens);
+            }
+            "cache_write_tokens" => {
+                self.cache_write_tokens = self.cache_write_tokens.saturating_add(tokens);
+            }
+            _ => {}
+        }
+    }
 }
 
 fn completion_status(value: &Value) -> &'static str {
@@ -2261,6 +2472,189 @@ mod tests {
         assert_eq!(summary["metrics"]["tasks"], 1);
         assert_eq!(summary["metrics"]["gates_passed"], 1);
         assert_eq!(summary["metrics"]["duration_ms"], 10);
+    }
+
+    /// bug-28aae1: a Graph run records its spend as `efficiency_event` rows,
+    /// its gate verdicts as `gate_result`, and its times only as each row's
+    /// `ts_millis`; log entries carry empty plan and task ids. The summary
+    /// reads all of it.
+    #[tokio::test]
+    async fn summary_counts_cost_tokens_gates_and_times_of_graph_runs() {
+        let dir = tempfile::tempdir().unwrap();
+        let deploy_backend = Arc::from(
+            crate::deploy::create_backend("manual", None, None, None).expect("manual backend"),
+        );
+        let state = Arc::new(
+            AppState::new(
+                dir.path().to_path_buf(),
+                Arc::new(crate::runtime::NoOpRuntime),
+                roko_core::config::schema::RokoConfig::default(),
+                deploy_backend,
+            )
+            .expect("AppState::new"),
+        );
+        let index =
+            roko_fs::run_index::run_index_path(&state.layout.events_jsonl_path(), "g1").unwrap();
+        let efficiency = |metric: &str, value: f64| json!({"type":"efficiency_event","run_id":"g1","plan_id":"p1","task_id":"T1","metric":metric,"value":value,"ts_millis":1_791_550_840_000_u64});
+        write_rows(
+            &index,
+            &[
+                json!({"type":"plan_set_loaded","run_id":"g1","plans":[{"plan_id":"p1","tasks_total":1}],"ts_millis":1_791_550_809_314_u64}),
+                json!({"type":"event_log_entry","run_id":"g1","plan_id":"","task_id":"","event_type":"spec.gate","message":"allow","timestamp_ms":1_791_550_809_333_u64}),
+                json!({"type":"plan_started","run_id":"g1","plan_id":"p1","tasks_total":1,"ts_millis":1_791_550_809_360_u64}),
+                json!({"type":"task_started","run_id":"g1","plan_id":"p1","task_id":"T1","title":"t","phase":"x","ts_millis":1_791_550_809_400_u64}),
+                json!({"type":"gate_result","run_id":"g1","plan_id":"p1","task_id":"T1","gate":"verify[0:test]","passed":true,"output_text":"$ cargo test","ts_millis":1_791_550_850_000_u64}),
+                efficiency("input_tokens", 3352.0),
+                efficiency("output_tokens", 655.0),
+                efficiency("cache_read_tokens", 10368.0),
+                efficiency("cache_write_tokens", 0.0),
+                efficiency("cost_usd", 0.010_270_480_066_537_857),
+                json!({"type":"task_completed","run_id":"g1","plan_id":"p1","task_id":"T1","outcome":"passed","ts_millis":1_791_550_850_100_u64}),
+                json!({"type":"plan_completed","run_id":"g1","plan_id":"p1","success":true,"ts_millis":1_791_550_850_200_u64}),
+                json!({"type":"run_completed","run_id":"g1","outcome":"succeeded","duration_ms":42210,"ts_millis":1_791_550_850_893_u64}),
+            ],
+        );
+
+        let summary = summarize_events(
+            &read_index_page(
+                &index,
+                "g1",
+                EventSource::Runner,
+                0,
+                100,
+                MAX_PAGE_SCAN_BYTES,
+                &BTreeSet::new(),
+                &LogScrubber::new(),
+            )
+            .unwrap()
+            .events,
+        );
+        assert_eq!(summary["plans"], json!(["p1"]), "{summary}");
+        assert_eq!(summary["tasks"], json!(["T1"]), "{summary}");
+        assert_eq!(
+            summary["gates"],
+            json!({"total": 1, "passed": 1, "failed": 0})
+        );
+        let metrics = &summary["metrics"];
+        assert_eq!(metrics["input_tokens"], 3352, "{summary}");
+        assert_eq!(metrics["output_tokens"], 655, "{summary}");
+        assert_eq!(metrics["cache_read_tokens"], 10368, "{summary}");
+        assert_eq!(metrics["total_tokens"], 4007, "{summary}");
+        assert!((metrics["cost_usd"].as_f64().unwrap() - 0.010_270_48).abs() < 1e-9);
+        assert_eq!(
+            summary["started_at"], "2026-10-09T13:00:09.314Z",
+            "{summary}"
+        );
+        assert_eq!(
+            summary["finished_at"], "2026-10-09T13:00:50.893Z",
+            "{summary}"
+        );
+
+        let Json(run) = get_run_summary(State(Arc::clone(&state)), Path("g1".into()))
+            .await
+            .unwrap();
+        assert_eq!(run["state"], "succeeded", "{run}");
+        assert!(
+            (run["cost_usd"].as_f64().unwrap() - 0.010_270_48).abs() < 1e-9,
+            "{run}"
+        );
+        assert_eq!(run["started_at"], "2026-10-09T13:00:09.314Z", "{run}");
+        assert_eq!(run["finished_at"], "2026-10-09T13:00:50.893Z", "{run}");
+    }
+
+    /// The next named event on an SSE `body` other than a keepalive, as its
+    /// kind and id; `None` once the stream has ended.
+    async fn next_sse_event(body: &mut axum::body::Body) -> Option<(String, Option<String>)> {
+        use http_body_util::BodyExt as _;
+        loop {
+            let frame = tokio::time::timeout(std::time::Duration::from_secs(5), body.frame())
+                .await
+                .expect("a frame in time")?;
+            let data = frame.expect("a frame").into_data().expect("a data frame");
+            let text = String::from_utf8(data.to_vec()).expect("UTF-8");
+            if let Some(kind) = text.lines().find_map(|line| line.strip_prefix("event: "))
+                && kind != "keepalive"
+            {
+                let id = text
+                    .lines()
+                    .find_map(|line| line.strip_prefix("id: "))
+                    .map(str::to_string);
+                return Some((kind.to_string(), id));
+            }
+        }
+    }
+
+    /// bug-1f41f0: a Graph run's per-run stream replays its runner index,
+    /// delivers rows appended later, keeps `types` out of what it sends, and
+    /// ends after the run's `run_completed`.
+    #[tokio::test]
+    async fn per_run_stream_carries_a_graph_runs_events() {
+        let dir = tempfile::tempdir().unwrap();
+        let deploy_backend = Arc::from(
+            crate::deploy::create_backend("manual", None, None, None).expect("manual backend"),
+        );
+        let state = Arc::new(
+            AppState::new(
+                dir.path().to_path_buf(),
+                Arc::new(crate::runtime::NoOpRuntime),
+                roko_core::config::schema::RokoConfig::default(),
+                deploy_backend,
+            )
+            .expect("AppState::new"),
+        );
+        let index =
+            roko_fs::run_index::run_index_path(&state.layout.events_jsonl_path(), "g1").unwrap();
+        write_rows(
+            &index,
+            &[
+                json!({"type":"plan_started","run_id":"g1","plan_id":"p1","tasks_total":1}),
+                json!({"type":"agent_heartbeat","run_id":"g1","plan_id":"p1","task_id":"T1","elapsed_ms":5000}),
+            ],
+        );
+
+        let query = EventQuery {
+            types: Some("plan_started,gate_result,run_completed".to_string()),
+            ..EventQuery::default()
+        };
+        let mut body = get_run_events_stream(
+            State(Arc::clone(&state)),
+            Path("g1".into()),
+            HeaderMap::new(),
+            Query(query),
+        )
+        .await
+        .expect("open the stream")
+        .into_response()
+        .into_body();
+
+        let (kind, id) = next_sse_event(&mut body).await.expect("the replayed row");
+        assert_eq!(kind, "plan_started");
+        assert!(id.is_some(), "a resumable id");
+
+        // Rows the run appends later arrive live; the heartbeat is filtered out.
+        let mut file = std::fs::OpenOptions::new()
+            .append(true)
+            .open(&index)
+            .unwrap();
+        for row in [
+            json!({"type":"gate_result","run_id":"g1","plan_id":"p1","task_id":"T1","gate":"verify[0:test]","passed":true}),
+            json!({"type":"run_completed","run_id":"g1","outcome":"succeeded","duration_ms":10}),
+        ] {
+            std::io::Write::write_all(&mut file, format!("{row}\n").as_bytes()).unwrap();
+        }
+        assert_eq!(
+            next_sse_event(&mut body).await.expect("gate_result").0,
+            "gate_result"
+        );
+        assert_eq!(
+            next_sse_event(&mut body).await.expect("run_completed").0,
+            "run_completed"
+        );
+        assert_eq!(
+            next_sse_event(&mut body).await,
+            None,
+            "the stream ends after the run's end"
+        );
     }
 
     /// The statuses `GET /runs/{run_id}/tasks` reports for a run's tasks.

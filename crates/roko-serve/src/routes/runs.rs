@@ -232,7 +232,31 @@ pub(super) async fn summarize_run(state: &Arc<AppState>, run_id: &str) -> Result
     }
     let events = page.map(|page| page.events).unwrap_or_default();
     let config = state.load_roko_config();
-    Ok(run_summary(run_id, &events, in_memory, &config))
+    let mut summary = run_summary(run_id, &events, in_memory, &config);
+    // gap-8409d0: an ended run's summary says where its verified work is, so a
+    // chat host can tell its person what changed and how to take it.
+    if summary["active"] == Value::Bool(false) {
+        let mut plan_ids = Vec::<String>::new();
+        for item in &events {
+            if let Some(plan_id) = event_plan_id(&item.value).filter(|id| !id.is_empty())
+                && !plan_ids.iter().any(|known| known == plan_id)
+            {
+                plan_ids.push(plan_id.to_string());
+            }
+        }
+        let workdir = state.workdir.clone();
+        let io_run_id = run_id.to_string();
+        let result = blocking_io(move || {
+            Ok(super::run_result::run_result(
+                &workdir, &io_run_id, &plan_ids,
+            ))
+        })
+        .await?;
+        if let Some(result) = result {
+            summary["result"] = result;
+        }
+    }
+    Ok(summary)
 }
 
 /// What this server holds of run `run_id` in memory: the state of its
@@ -2757,6 +2781,179 @@ mod tests {
         assert_eq!(summary["verdict"], "unverified", "{summary}");
         assert_eq!(summary["tasks"]["unverified"], 1, "{summary}");
         assert_eq!(summary["tasks"]["failed"], 0, "{summary}");
+    }
+
+    /// gap-8409d0: an ended run's summary names its batch branch, the branch's
+    /// tip and base, and what it changes, with how to take it: a merge command
+    /// while the checkout lacks the work, `merged` once it has it, the
+    /// promotion once the run was promoted. The base comes from the run's
+    /// manifest or a plan's batch record, so it survives the merge. A run
+    /// still active, or one with no batch branch, has no result.
+    #[tokio::test]
+    async fn run_summary_reports_where_the_verified_work_is() {
+        let dir = tempfile::tempdir().unwrap();
+        let repo = dir.path().to_path_buf();
+        let git = |args: &[&str]| -> String {
+            let output = std::process::Command::new("git")
+                .current_dir(&repo)
+                .args([
+                    "-c",
+                    "user.name=roko-test",
+                    "-c",
+                    "user.email=roko@test.invalid",
+                    "-c",
+                    "commit.gpgsign=false",
+                    "-c",
+                    "tag.gpgsign=false",
+                ])
+                .args(args)
+                .env_remove("GIT_DIR")
+                .env_remove("GIT_WORK_TREE")
+                .env_remove("GIT_INDEX_FILE")
+                .output()
+                .expect("run git");
+            assert!(
+                output.status.success(),
+                "git {args:?}: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            String::from_utf8_lossy(&output.stdout).trim().to_string()
+        };
+        git(&["init", "--quiet", "-b", "main"]);
+        std::fs::create_dir_all(repo.join("src")).unwrap();
+        std::fs::write(repo.join("src/lib.rs"), "pub fn one() {}\n").unwrap();
+        git(&["add", "src/lib.rs"]);
+        git(&["commit", "--quiet", "-m", "base"]);
+        let base = git(&["rev-parse", "HEAD"]);
+        // The run's verified work is on its batch branch; the checkout stays
+        // on main.
+        git(&["switch", "--quiet", "-c", "roko/batch/r9"]);
+        std::fs::write(
+            repo.join("src/lib.rs"),
+            "pub fn one() {}\npub fn two() {}\n",
+        )
+        .unwrap();
+        std::fs::write(repo.join("src/new.rs"), "pub fn three() {}\n").unwrap();
+        git(&["add", "src/lib.rs", "src/new.rs"]);
+        git(&["commit", "--quiet", "-m", "the run's work"]);
+        let tip = git(&["rev-parse", "HEAD"]);
+        git(&["switch", "--quiet", "main"]);
+        for run_id in ["r7", "r6"] {
+            git(&[
+                "update-ref",
+                &format!("refs/heads/roko/batch/{run_id}"),
+                &tip,
+            ]);
+        }
+
+        let deploy_backend = Arc::from(
+            crate::deploy::create_backend("manual", None, None, None).expect("manual backend"),
+        );
+        let state = Arc::new(
+            AppState::new(
+                repo.clone(),
+                Arc::new(crate::runtime::NoOpRuntime),
+                roko_core::config::schema::RokoConfig::default(),
+                deploy_backend,
+            )
+            .expect("AppState::new"),
+        );
+        let index = |run_id: &str| {
+            roko_fs::run_index::run_index_path(&state.layout.events_jsonl_path(), run_id).unwrap()
+        };
+        let ended = |run_id: &str, plan_id: &str| {
+            vec![
+                json!({"type":"run.started","run_id":run_id,"timestamp_ms":1,"plan_id":plan_id}),
+                json!({"type":"task_completed","run_id":run_id,"timestamp_ms":2,"plan_id":plan_id,"task_id":"t1","outcome":"passed"}),
+                json!({"type":"run.completed","run_id":run_id,"timestamp_ms":3,"outcome":"succeeded","duration_ms":10}),
+            ]
+        };
+        // r9's manifest records its base; r7's plan checkpoint does.
+        write_rows(&index("r9"), &ended("r9", "p9"));
+        let manifest = roko_fs::RokoLayout::for_project(&repo)
+            .run_dir("r9")
+            .join("manifest.json");
+        std::fs::create_dir_all(manifest.parent().unwrap()).unwrap();
+        std::fs::write(
+            &manifest,
+            json!({"run_id":"r9","plan_ids":["p9"],"workspace":{"base_commit":base}}).to_string(),
+        )
+        .unwrap();
+        write_rows(&index("r7"), &ended("r7", "p7"));
+        let checkpoint =
+            super::super::run_result::graph_plan_state_dir(&repo, "p7").join("checkpoint.json");
+        std::fs::create_dir_all(checkpoint.parent().unwrap()).unwrap();
+        std::fs::write(
+            &checkpoint,
+            json!({"extensions":{"roko.batch@1":{"value":{
+                "run_id":"r7","branch":"roko/batch/r7","base_oid":base,"state":"delivered"
+            }}}})
+            .to_string(),
+        )
+        .unwrap();
+        // r6 is still running; r5 ended with no batch branch.
+        write_rows(
+            &index("r6"),
+            &[json!({"type":"run.started","run_id":"r6","timestamp_ms":1,"plan_id":"p6"})],
+        );
+        write_rows(&index("r5"), &ended("r5", "p5"));
+
+        let summary = |run_id: &'static str| {
+            let state = Arc::clone(&state);
+            async move {
+                let Json(summary) = get_run_summary(State(state), Path(run_id.into()))
+                    .await
+                    .unwrap();
+                summary
+            }
+        };
+
+        let result = summary("r9").await["result"].clone();
+        assert_eq!(result["branch"], "roko/batch/r9", "{result}");
+        assert_eq!(result["commit"], tip.as_str(), "{result}");
+        assert_eq!(result["base"], base.as_str(), "{result}");
+        assert_eq!(result["files_changed"], json!(["src/lib.rs", "src/new.rs"]));
+        assert_eq!(
+            result["diffstat"],
+            json!({"files": 2, "insertions": 2, "deletions": 0}),
+        );
+        assert_eq!(result["merged"], false, "{result}");
+        assert_eq!(
+            result["merge_command"], "git merge --ff-only roko/batch/r9",
+            "{result}"
+        );
+        assert!(result.get("tag").is_none(), "{result}");
+
+        assert!(summary("r6").await.get("result").is_none(), "an active run");
+        assert!(
+            summary("r5").await.get("result").is_none(),
+            "no batch branch"
+        );
+
+        // Once the checkout has the work, it is merged, and the recorded base
+        // still names what the run changed.
+        git(&["merge", "--quiet", "--ff-only", "roko/batch/r9"]);
+        let result = summary("r9").await["result"].clone();
+        assert_eq!(result["merged"], true, "{result}");
+        assert!(result.get("merge_command").is_none(), "{result}");
+        assert_eq!(result["diffstat"]["files"], 2, "{result}");
+        let result = summary("r7").await["result"].clone();
+        assert_eq!(result["base"], base.as_str(), "{result}");
+        assert_eq!(result["files_changed"], json!(["src/lib.rs", "src/new.rs"]));
+        assert_eq!(result["merged"], true, "{result}");
+
+        // A promoted run names its tag and target.
+        git(&[
+            "tag",
+            "--annotate",
+            "--message",
+            "roko run r9: roko/batch/r9 promoted into release",
+            "roko/run/r9",
+            &tip,
+        ]);
+        let result = summary("r9").await["result"].clone();
+        assert_eq!(result["tag"], "roko/run/r9", "{result}");
+        assert_eq!(result["promoted_into"], "release", "{result}");
     }
 
     /// 9117: each task the run dispatched an agent for reports what screens

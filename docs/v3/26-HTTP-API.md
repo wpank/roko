@@ -517,7 +517,7 @@ Hashed per-run indexes under `.roko/events-by-run/` and
 |--------|------|-------------|
 | GET | `/api/dashboard/runs` | Bounded summary of hashed per-run indexes |
 | GET | `/api/runs/{run_id}` | Run detail, terminal state, counts, integrity |
-| GET | `/api/runs/{run_id}/summary` | What a host can post: `state` (`queued`, `running`, `succeeded`, `failed`, `unverified`, `cancelled`, the words `GET /api/plans/{id}/status` uses), `verdict` once it ended, `cost_usd`, task counts (`passed`, `failed`, `unverified`, `other`), at most five `milestones` from event kinds and ids, `untrusted_input_boundary` per task (`data_llm` or `none`, see 8.41), `finished_at`, `links` |
+| GET | `/api/runs/{run_id}/summary` | What a host can post: `state` (`queued`, `running`, `succeeded`, `failed`, `unverified`, `cancelled`, the words `GET /api/plans/{id}/status` uses), `verdict` once it ended, `cost_usd`, task counts (`passed`, `failed`, `unverified`, `other`), at most five `milestones` from event kinds and ids, `untrusted_input_boundary` per task (`data_llm` or `none`, see 8.41), `finished_at`, `links`, and once the run ended, `result`: where its verified work is (see below) |
 | GET | `/api/runs/{run_id}/events` | Cursor-paginated events (`?cursor=&limit=&types=&source=`) |
 | GET | `/api/runs/{run_id}/events/stream` | Run-filtered SSE |
 | GET | `/api/runs/{run_id}/tasks` | Task summaries and attempt numbers |
@@ -528,6 +528,20 @@ Hashed per-run indexes under `.roko/events-by-run/` and
 | GET | `/api/runs/{run_id}/artifacts` | Evidence artifact metadata |
 | GET | `/api/runs/{run_id}/screenshots` | Screenshot manifest (metadata only) |
 | GET | `/api/runs/{run_id}/bundle` | Evidence-bundle manifest (no download) |
+
+A run never commits into the operator's checkout. When its tasks ran in their
+own git worktrees, its verified work is on the batch branch
+`roko/batch/<run_id>`, started at the checkout's `HEAD`, and an ended run's
+summary says so in `result` (gap-8409d0): the `branch`, its tip `commit`, the
+`base` it started from (the run manifest's `workspace.base_commit`, else a
+plan's `roko.batch@1` checkpoint record), `files_changed` (the first 50) and
+`diffstat` (`files`, `insertions`, `deletions`) from that base, and `merged`,
+whether the checkout's `HEAD` already has the work. A run promoted with
+`--promote` adds `tag` (`roko/run/<run_id>`) and `promoted_into`; otherwise,
+while the checkout lacks the work, `merge_command` is the command that takes it
+(`git merge --ff-only <branch>`, or `git merge <branch>` once `HEAD` moved on).
+`result` is absent while the run is active, and for a run with no batch branch
+in this workspace, such as one whose tasks ran in the shared working tree.
 | POST | `/api/runs/{run_id}/share` | Mint a share link for the run (`admin` scope, see 3.2). Body: `{"public": bool, "no_expire": bool, "prompt": "…"}`, the prompt run once when the run does not exist. A link expires after `serve.share_ttl_days` (7); `no_expire` asks for one that never does, and only a server bound to loopback grants it (400 on any other bind) |
 | GET | `/api/shared/{token}` | Public shared transcript (opaque token) |
 | GET | `/runs/{token}` (no `/api/` prefix) | Self-contained shareable run page |

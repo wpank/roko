@@ -54,6 +54,7 @@ pub(crate) mod registries;
 mod research;
 mod route_permissions;
 mod run;
+mod run_result;
 mod runs;
 mod safety;
 mod secrets;

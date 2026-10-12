@@ -2,22 +2,33 @@
 id = "bug-1c75cc"
 kind = "bug"
 title = "Plan generation discards a whole plan when a read_files line range ends one line past EOF (PLAN_CONTEXT_RANGE is not repaired like PLAN_CONTEXT_MISSING)"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p2"
 goal = "core"
 size = "S"
 subsystem = ["roko-cli/plan-generate"]
 created = 2026-10-09
-updated = 2026-10-09
-last_verified = 2026-10-09
-last_verified_rev = "856ed7570"
+updated = 2026-10-12
+last_verified = 2026-10-12
+last_verified_rev = "24fafc69e"
 source = "live hermes-plugin-roko e2e, 2026-10-09 (Hermes session 20261009_145635_15ac62)"
 anchors = ["crates/roko-cli/src/plan_generate/pipeline.rs", "crates/roko-cli/src/plan_policy.rs::validate_plan_context"]
 links = { depends_on = [], blocks = [], related = ["find-8cc7ac"], supersedes = [], duplicate_of = "" }
 
 [[verify]]
 command = "grep -rqw 'fn generated_plan_context_range_past_eof_is_clamped' crates/roko-cli/ && cargo test -p roko-cli generated_plan_context_range_past_eof_is_clamped"
+
+[closed]
+at = 2026-10-12
+at_ts = "2026-10-12T12:13:50Z"
+commit = "24fafc69e"
+by = "commit trailer"
+executor = "claude-agent"
+size = "S"
+claimed_at = "2026-10-12T12:00:09Z"
+forced = false
+evidence = "24fafc69e: the generation pipeline clamps a read_files range that starts inside its file and ends past it to start-<line count> (clamp_context_ranges_past_eof) before the context re-check, beside the PLAN_CONTEXT_MISSING repair; a range that starts past the end still fails; validate_plan_context stays strict for hand-written plans. Verify passes in the worktree: generated_plan_context_range_past_eof_is_clamped (1-17 on a 16-line file becomes 1-16, 20-25 stays refused); the plan-context tests pass; clippy -p roko-cli --no-deps -D warnings clean."
 +++
 
 ## Problem

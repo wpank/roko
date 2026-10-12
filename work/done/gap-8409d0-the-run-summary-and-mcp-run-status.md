@@ -2,22 +2,33 @@
 id = "gap-8409d0"
 kind = "gap"
 title = "The run summary and MCP run_status never say where a run's verified work is (roko/batch/<run_id> branch, commit, files, promotion), so chat hosts cannot report or merge it"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p2"
 goal = "hermes"
 size = "M"
 subsystem = ["roko-serve/runs"]
 created = 2026-10-09
-updated = 2026-10-09
-last_verified = 2026-10-09
-last_verified_rev = "856ed7570"
+updated = 2026-10-12
+last_verified = 2026-10-12
+last_verified_rev = "8f4f7f2ee"
 source = "live hermes-plugin-roko e2e, 2026-10-09 (Hermes session 20261009_144646_a355c0)"
 anchors = ["crates/roko-serve/src/routes/runs.rs::get_run_summary", "crates/roko-cli/src/graph_execution/batch.rs::BATCH_BRANCH_PREFIX"]
 links = { depends_on = [], blocks = [], related = [], supersedes = [], duplicate_of = "" }
 
 [[verify]]
 command = "grep -rqw 'fn run_summary_reports_where_the_verified_work_is' crates/roko-serve/ && cargo test -p roko-serve run_summary_reports_where_the_verified_work_is"
+
+[closed]
+at = 2026-10-12
+at_ts = "2026-10-12T12:23:01Z"
+commit = "8f4f7f2ee"
+by = "commit trailer"
+executor = "claude-agent"
+size = "M"
+claimed_at = "2026-10-12T12:14:16Z"
+forced = false
+evidence = "8f4f7f2ee: an ended run's summary (and so MCP run_status) carries result: the batch branch, its tip commit, the base (run manifest workspace.base_commit, else a plan checkpoint roko.batch@1 record, else merge-base with HEAD), files_changed (first 50) and diffstat from that base, merged, and tag/promoted_into or merge_command; absent while active or without a batch branch; documented in docs/v3/26-HTTP-API.md 8.4. Verify passes in the worktree: run_summary_reports_where_the_verified_work_is; task_diff_reads_the_graph_task_result and the summary tests pass; clippy -p roko-serve --no-deps -D warnings clean. hermes-plugin-roko reads it (working tree, uncommitted)."
 +++
 
 ## Problem

@@ -515,21 +515,8 @@ pub(super) fn graph_task_commit(
     plan_id: &str,
     task_id: &str,
 ) -> Option<(String, Option<String>)> {
-    let safe_plan: String = plan_id
-        .chars()
-        .map(|character| {
-            if character.is_ascii_alphanumeric() || matches!(character, '-' | '_' | '.') {
-                character
-            } else {
-                '_'
-            }
-        })
-        .collect();
-    let activities = roko_fs::RokoLayout::for_project(workdir)
-        .state_dir()
-        .join("graph")
-        .join(safe_plan)
-        .join("activities.jsonl");
+    let activities =
+        super::super::run_result::graph_plan_state_dir(workdir, plan_id).join("activities.jsonl");
     let log = std::fs::read_to_string(activities).ok()?;
     log.lines()
         .rev()

@@ -1076,8 +1076,14 @@ pub async fn generate_plan(request: PlanRequest<'_>) -> Result<(PathBuf, Generat
                     })
                     .collect();
 
-                if missing_paths.is_empty() {
-                    // Violations are not PLAN_CONTEXT_MISSING — cannot auto-fix.
+                // bug-1c75cc: a range that starts inside its file but ends past
+                // its end (a planner counting the empty line after the final
+                // newline) is clamped to the file instead of costing the plan.
+                let mut fixed = parsed.clone();
+                let clamped = clamp_context_ranges_past_eof(&mut fixed, workdir_ref);
+
+                if missing_paths.is_empty() && clamped == 0 {
+                    // Nothing here can be repaired.
                     return Err(format!(
                         "generated plan violates execution context policy:\n{}",
                         ctx_violations
@@ -1089,7 +1095,6 @@ pub async fn generate_plan(request: PlanRequest<'_>) -> Result<(PathBuf, Generat
                 }
 
                 // Drop the unreachable entries and re-serialize.
-                let mut fixed = parsed.clone();
                 for task in &mut fixed.tasks {
                     if let Some(ctx) = task.context.as_mut() {
                         ctx.read_files.retain(|f| !missing_paths.contains(&f.path));
@@ -1116,7 +1121,8 @@ pub async fn generate_plan(request: PlanRequest<'_>) -> Result<(PathBuf, Generat
                 } else {
                     Err(format!(
                         "generated plan still violates execution context policy \
-                         after dropping {} missing read_files:\n{}",
+                         after dropping {} missing read_files and clamping {clamped} line \
+                         ranges:\n{}",
                         missing_paths.len(),
                         remaining
                             .iter()
@@ -2079,6 +2085,42 @@ pub fn slugify(title: &str) -> String {
     } else {
         slug[..MAX_LEN].to_string()
     }
+}
+
+/// Clamp each `read_files` line range in `tasks` that starts inside its file
+/// but ends past the file's last line (bug-1c75cc), and return how many it
+/// clamped. Paths resolve against `workspace_root`, as `validate_plan_context`
+/// resolves them; a range it cannot read or parse, or one that starts past the
+/// end, is left for that check to refuse. Only generation repairs ranges:
+/// hand-written plans stay strict.
+fn clamp_context_ranges_past_eof(
+    tasks: &mut crate::task_parser::TasksFile,
+    workspace_root: &std::path::Path,
+) -> usize {
+    let mut clamped = 0;
+    for task in &mut tasks.tasks {
+        let Some(context) = task.context.as_mut() else {
+            continue;
+        };
+        for read_file in &mut context.read_files {
+            let Some(range) = read_file.lines.as_deref() else {
+                continue;
+            };
+            let Ok((start, Some(end))) = crate::plan_policy::parse_line_range(range, usize::MAX)
+            else {
+                continue;
+            };
+            let Ok(content) = std::fs::read_to_string(workspace_root.join(&read_file.path)) else {
+                continue;
+            };
+            let line_count = content.lines().count();
+            if start >= 1 && start <= line_count && end > line_count {
+                read_file.lines = Some(format!("{start}-{line_count}"));
+                clamped += 1;
+            }
+        }
+    }
+    clamped
 }
 
 #[cfg(test)]
@@ -3557,6 +3599,94 @@ command = "true"
             .and_then(|s| s.find('`').map(|end| s[..end].to_string()))
             .expect("PLAN_CONTEXT_MISSING message format must be parseable");
         assert_eq!(path, "src/missing.rs");
+    }
+
+    /// bug-1c75cc: a generated plan whose read_files range ends one line past
+    /// the end of its file gets the range clamped to the file; a range that
+    /// starts past the end is left for the check to refuse.
+    #[test]
+    fn generated_plan_context_range_past_eof_is_clamped() {
+        use crate::plan_policy::{PlanExecutionPolicy, validate_plan_context};
+        use tempfile::tempdir;
+
+        let dir = tempdir().unwrap();
+        let plan_dir = dir.path().join("my-plan");
+        std::fs::create_dir_all(&plan_dir).unwrap();
+        std::fs::create_dir(dir.path().join("src")).unwrap();
+        let sixteen: String = (1..=16).map(|n| format!("// line {n}\n")).collect();
+        std::fs::write(dir.path().join("src/lib.rs"), sixteen).unwrap();
+
+        let toml_src = r#"
+[meta]
+plan = "my-plan"
+total = 2
+done = 0
+status = "ready"
+max_parallel = 1
+
+[[task]]
+id = "T1"
+title = "one past the end"
+role = "implementer"
+status = "ready"
+tier = "focused"
+files = ["src/lib.rs"]
+
+[task.context]
+[[task.context.read_files]]
+path = "src/lib.rs"
+lines = "1-17"
+why = "the whole file, counted with the empty line after the final newline"
+
+[[task.verify]]
+phase = "structural"
+command = "true"
+
+[[task]]
+id = "T2"
+title = "past the end entirely"
+role = "implementer"
+status = "ready"
+tier = "focused"
+files = ["src/lib.rs"]
+
+[task.context]
+[[task.context.read_files]]
+path = "src/lib.rs"
+lines = "20-25"
+why = "starts past the end"
+
+[[task.verify]]
+phase = "structural"
+command = "true"
+"#;
+        let mut tasks_file =
+            crate::task_parser::TasksFile::parse_str(toml_src).expect("test TOML must parse");
+        let ranges = |tasks: &crate::task_parser::TasksFile| {
+            validate_plan_context(tasks, dir.path(), &plan_dir, PlanExecutionPolicy::normal())
+                .into_iter()
+                .filter(|v| v.code == "PLAN_CONTEXT_RANGE")
+                .map(|v| v.to_string())
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(ranges(&tasks_file).len(), 2, "{:?}", ranges(&tasks_file));
+
+        assert_eq!(
+            clamp_context_ranges_past_eof(&mut tasks_file, dir.path()),
+            1
+        );
+        let t1 = &tasks_file.tasks[0].context.as_ref().unwrap().read_files[0];
+        assert_eq!(t1.lines.as_deref(), Some("1-16"));
+        let t2 = &tasks_file.tasks[1].context.as_ref().unwrap().read_files[0];
+        assert_eq!(
+            t2.lines.as_deref(),
+            Some("20-25"),
+            "a range past the end stays"
+        );
+
+        let remaining = ranges(&tasks_file);
+        assert_eq!(remaining.len(), 1, "{remaining:?}");
+        assert!(remaining[0].contains("20-25"), "{remaining:?}");
     }
 
     /// Verify that after dropping PLAN_CONTEXT_MISSING paths from a TasksFile

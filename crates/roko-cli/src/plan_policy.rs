@@ -1096,7 +1096,10 @@ fn normalize_verify_command(command: &str) -> String {
     command.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
-fn parse_line_range(range: &str, line_count: usize) -> Result<(usize, Option<usize>), String> {
+pub(crate) fn parse_line_range(
+    range: &str,
+    line_count: usize,
+) -> Result<(usize, Option<usize>), String> {
     let trimmed = range.trim();
     let (start, end) = trimmed
         .split_once('-')

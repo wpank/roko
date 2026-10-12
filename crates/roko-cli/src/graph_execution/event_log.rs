@@ -332,8 +332,8 @@ struct WorkspaceLogWriter {
 
 impl WorkspaceLogWriter {
     fn record(&mut self, tapped: Tapped<'_>) {
-        let event = match tapped {
-            Tapped::Event(envelope) => &envelope.payload,
+        let (event, ts_millis) = match tapped {
+            Tapped::Event(envelope) => (&envelope.payload, envelope.ts_millis),
             Tapped::Lagged(skipped) => {
                 tracing::warn!(
                     run_id = %self.run_id,
@@ -351,6 +351,12 @@ impl WorkspaceLogWriter {
             fields
                 .entry("run_id")
                 .or_insert_with(|| serde_json::json!(self.run_id));
+            // When the hub published it, as `/api/events` reports it, so the run's
+            // summary and a replayed timeline can say when things happened
+            // (bug-28aae1).
+            fields
+                .entry("ts_millis")
+                .or_insert_with(|| serde_json::json!(ts_millis));
         }
         let lifecycle = is_lifecycle_event(event);
         let result = if self.index_only {
@@ -917,6 +923,37 @@ mod tests {
         assert_eq!(indexed.len(), 1);
         assert_eq!(indexed[0]["type"], "task_completed");
         assert_eq!(indexed[0]["run_id"], "graph-test-2");
+    }
+
+    /// bug-28aae1: every row of the run's index carries the time the hub
+    /// published its event, so the run's summary has a start and an end.
+    #[tokio::test]
+    async fn index_rows_carry_the_time_they_were_published() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let hub = crate::state_hub::shared_state_hub();
+        let before = unix_millis(Utc::now());
+        let log = WorkspaceEventLog::spawn(&hub, dir.path(), "graph-test-ts".to_string())
+            .expect("record the run");
+        hub.sender().publish(DashboardEvent::PlanStarted {
+            plan_id: "p1".to_string(),
+            tasks_total: 1,
+        });
+        log.finish().await;
+        let after = unix_millis(Utc::now());
+
+        let events_path = dir.path().join(".roko/events.jsonl");
+        let index =
+            roko_fs::run_index::run_index_path(&events_path, "graph-test-ts").expect("index path");
+        let rows = read_lines(&index);
+        let started = rows
+            .iter()
+            .find(|row| row["type"] == "plan_started")
+            .expect("plan_started row");
+        let at = started["ts_millis"].as_u64().expect("ts_millis");
+        assert!(
+            (before..=after).contains(&at),
+            "{at} not in {before}..={after}"
+        );
     }
 
     /// gap-dd4826: a blocked task is synced as it is written, like the

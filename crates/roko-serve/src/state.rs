@@ -603,11 +603,19 @@ pub struct SessionGrant {
 }
 
 impl SessionGrant {
-    /// A launch-token or API-key exchange: `admin`, for as long as the server runs.
+    /// An `admin` session for as long as the server runs: the launch token's exchange.
     #[must_use]
     pub fn admin() -> Self {
+        Self::exchange("admin")
+    }
+
+    /// A credential exchange (`POST /api/auth/session`): the credential's own `scope`, for as
+    /// long as the server runs. A scoped key yields a session of that scope, never `admin`
+    /// (bug-856656).
+    #[must_use]
+    pub fn exchange(scope: &str) -> Self {
         Self {
-            scope: "admin".to_string(),
+            scope: scope.to_string(),
             ttl_secs: None,
             idle_ttl_secs: None,
             generation: None,
@@ -758,7 +766,8 @@ impl LocalAccess {
     }
 
     /// Create an `admin` session that lives as long as the server, and return its raw
-    /// 64-hex-character ID: a launch-token or API-key exchange.
+    /// 64-hex-character ID: the launch token's exchange. A key's exchange uses the key's own
+    /// scope ([`SessionGrant::exchange`]).
     ///
     /// The raw ID is returned to the caller exactly once and is not stored;
     /// only its SHA-256 hash is retained so a dump of server state cannot

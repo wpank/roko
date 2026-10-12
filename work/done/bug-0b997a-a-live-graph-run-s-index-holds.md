@@ -2,7 +2,7 @@
 id = "bug-0b997a"
 kind = "bug"
 title = "A live Graph run's index holds agent rows until the next lifecycle row, so live readers see nothing during an agent turn"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p2"
 goal = "visibility"
@@ -11,12 +11,24 @@ subsystem = ["roko-cli/graph-execution"]
 created = 2026-10-12
 updated = 2026-10-12
 last_verified = 2026-10-12
+last_verified_rev = "4a4bf7ab6"
 source = "hermes-plugin-roko e2e 2026-10-12, live per-run stream of run 22cfb25f (roko serve 2448626a4)"
 anchors = ["crates/roko-cli/src/graph_execution/event_log.rs::WorkspaceLogWriter", "crates/roko-cli/src/runner/persist.rs::append_buffered_run_index"]
 links = { depends_on = [], blocks = [], related = ["bug-1f41f0"], supersedes = [], duplicate_of = "" }
 
 [[verify]]
 command = "grep -rqw 'fn agent_rows_reach_the_index_while_the_run_is_live' crates/roko-cli/ && cargo test -p roko-cli agent_rows_reach_the_index_while_the_run_is_live"
+
+[closed]
+at = 2026-10-12
+at_ts = "2026-10-12T13:22:32Z"
+commit = "4a4bf7ab6"
+by = "claude (session 9cf6b7db, hermes-plugin-roko)"
+executor = "claude-agent"
+size = "S"
+claimed_at = "2026-10-12T12:59:18Z"
+forced = false
+evidence = "4a4bf7ab6: WorkspaceLogWriter flushes the run index for lifecycle rows and for any row once its last flush is at least INDEX_FLUSH_INTERVAL (1 s) old; durability unchanged. Verify passes in the worktree: agent_rows_reach_the_index_while_the_run_is_live; the event-log tests and per_run_stream_carries_a_graph_runs_events pass; clippy -p roko-cli -p roko-serve --no-deps -D warnings clean."
 +++
 
 ## Problem

@@ -480,8 +480,8 @@ const RUNNER_INDEX_POLL: std::time::Duration = std::time::Duration::from_millis(
 /// `types`. It ends after the run's `run_completed`, or when the server shuts
 /// down; a cursor the index refuses ends it with an `error` event.
 ///
-/// Only lifecycle rows are flushed as they happen; the rest arrive with the
-/// next one (runner/persist.rs), so the stream can be a few rows behind.
+/// The runner flushes lifecycle rows as they happen and the rest at most a
+/// second apart (bug-0b997a), so the stream can be a second behind.
 fn runner_index_sse(
     state: Arc<AppState>,
     run_id: String,

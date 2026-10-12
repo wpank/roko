@@ -2385,9 +2385,12 @@ fn dashboard_event_to_server(event: &roko_core::DashboardEvent) -> Option<Server
         DashboardEvent::FeedAgentOffline { agent_id } => Some(ServerEvent::FeedAgentOffline {
             agent_id: agent_id.clone(),
         }),
-        // Not bridged (bug-bfdb9a). `RunCompleted` names no run, which
-        // `ServerEvent::RunCompleted` needs, and `ChainContractEvent` does not
-        // say whether the raw log evidence was published.
+        // Not bridged. roko serve sends each run's `run_completed` itself, from
+        // the path that settled the run (`routes/run.rs` for prompt runs,
+        // `run_control.rs` for plan runs, gap-6f0eca), with the verdict this
+        // event lacks; bridging it too would deliver every end twice.
+        // `ChainContractEvent` does not say whether the raw log evidence was
+        // published (bug-bfdb9a).
         DashboardEvent::RunCompleted { .. } | DashboardEvent::ChainContractEvent { .. } => None,
         // Dashboard state the server stream has no event for: the dashboard's
         // own stream and snapshot carry it. The match lists every variant, so

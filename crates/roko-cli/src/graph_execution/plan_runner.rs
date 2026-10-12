@@ -1006,6 +1006,7 @@ pub(crate) async fn run_graph_plan_observed(
     );
     // `.roko/events.jsonl` and the run's index show it to a dashboard in
     // another terminal, serve and `roko doctor` (bug-230de6).
+    let completed_run_id = observed_run_id.clone();
     let events = super::event_log::WorkspaceEventLog::spawn(&hub, &params.workdir, observed_run_id);
 
     // Ensure a consistent interrupt handle: if the caller passed None, create
@@ -1026,6 +1027,7 @@ pub(crate) async fn run_graph_plan_observed(
 
     let outcome = graph_run_outcome(&result, &interrupt_handle);
     hub_sender.publish(roko_core::DashboardEvent::RunCompleted {
+        run_id: Some(completed_run_id),
         outcome: outcome.to_string(),
         duration_ms: run_start.elapsed().as_millis() as u64,
         cleanup_degraded: false,

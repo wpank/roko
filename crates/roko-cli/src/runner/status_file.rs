@@ -657,6 +657,7 @@ mod tests {
 
     fn run_completed(outcome: &str) -> DashboardEvent {
         DashboardEvent::RunCompleted {
+            run_id: None,
             outcome: outcome.to_string(),
             duration_ms: 9,
             cleanup_degraded: false,

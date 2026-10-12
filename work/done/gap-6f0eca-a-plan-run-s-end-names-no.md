@@ -2,7 +2,7 @@
 id = "gap-6f0eca"
 kind = "gap"
 title = "A plan run's end names no run: DashboardEvent::RunCompleted has no run id, so /ws never sends run_completed for plan runs"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p2"
 goal = "visibility"
@@ -11,12 +11,24 @@ subsystem = ["roko-serve/bridge"]
 created = 2026-10-12
 updated = 2026-10-12
 last_verified = 2026-10-12
+last_verified_rev = "e282f4973"
 source = "hermes-plugin-roko 0.2.0 UI work, roko serve probe 2026-10-11 (scratchpad roko-ui-data.md)"
 anchors = ["crates/roko-core/src/dashboard_snapshot.rs::DashboardEvent", "crates/roko-cli/src/graph_execution/plan_runner.rs", "crates/roko-serve/src/lib.rs::dashboard_event_to_server"]
 links = { depends_on = [], blocks = [], related = ["bug-bfdb9a"], supersedes = [], duplicate_of = "" }
 
 [[verify]]
 command = "grep -rqw 'fn plan_run_completion_reaches_ws_with_its_run_id' crates/roko-serve/ && cargo test -p roko-serve plan_run_completion_reaches_ws_with_its_run_id"
+
+[closed]
+at = 2026-10-12
+at_ts = "2026-10-12T11:58:54Z"
+commit = "e282f4973"
+by = "commit trailer"
+executor = "claude-agent"
+size = "M"
+claimed_at = "2026-10-12T11:02:45Z"
+forced = false
+evidence = "e282f4973: DashboardEvent::RunCompleted carries the run id (plan runner, TuiBridge, runtime projector; older events still read), and roko serve publishes ServerEvent::RunCompleted {run_id, success, verdict} for each plan run from the path that settled it (the run task for one plan or a set, the cancel handler on abort, a queued run's cancel). Verify passes in the worktree: run_completed_carries_its_run_id (roko-core) and plan_run_completion_reaches_ws_with_its_run_id (roko-serve); runtime projector, status-file and TUI tests pass; clippy -p roko-core -p roko-runtime -p roko-cli -p roko-serve --no-deps -D warnings clean."
 +++
 
 ## Problem

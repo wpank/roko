@@ -322,6 +322,29 @@ async fn run_events_sse(
         return Err(ApiError::not_found(format!("run '{run_id}' not found")));
     }
 
+    // A Graph run (every plan run, and a prompt run, which is a one-task plan)
+    // writes the runner index and publishes to the StateHub, never to the runtime
+    // bus this stream used to follow alone, so its stream sent only keepalives
+    // (bug-1f41f0). Follow the runner index unless the run has a runtime index.
+    let has_runtime_index = {
+        let io_state = Arc::clone(&state);
+        let io_run_id = run_id.clone();
+        blocking_io(move || {
+            Ok(source_path(&io_state, &io_run_id, EventSource::Runtime)
+                .is_some_and(|path| roko_fs::run_index::open_existing_run_index(&path).is_ok()))
+        })
+        .await?
+    };
+    if !has_runtime_index {
+        let types = parse_types(query.types.as_deref())?;
+        let header_cursor = headers
+            .get("Last-Event-ID")
+            .and_then(|value| value.to_str().ok())
+            .and_then(|value| value.parse::<u64>().ok());
+        let cursor = header_cursor.or(query.cursor).unwrap_or(0);
+        return Ok(runner_index_sse(state, run_id, cursor, types));
+    }
+
     query.source = Some("runtime".to_string());
     query.limit = Some(query.limit.unwrap_or(MAX_SSE_REPLAY).min(MAX_SSE_REPLAY));
     let types = parse_types(query.types.as_deref())?;
@@ -422,6 +445,104 @@ async fn run_events_sse(
             .text("keepalive"),
     );
     Ok((super::sse::sse_response_headers(), sse).into_response())
+}
+
+/// How often [`runner_index_sse`] looks for rows appended to a run's index.
+const RUNNER_INDEX_POLL: std::time::Duration = std::time::Duration::from_millis(500);
+
+/// The per-run stream of a Graph run (bug-1f41f0): the rows of its runner index
+/// from `cursor` on, then each row appended later, as SSE events whose `id` is
+/// the byte cursor after the row (so `Last-Event-ID` resumes), filtered by
+/// `types`. It ends after the run's `run_completed`, or when the server shuts
+/// down; a cursor the index refuses ends it with an `error` event.
+///
+/// Only lifecycle rows are flushed as they happen; the rest arrive with the
+/// next one (runner/persist.rs), so the stream can be a few rows behind.
+fn runner_index_sse(
+    state: Arc<AppState>,
+    run_id: String,
+    cursor: u64,
+    types: BTreeSet<String>,
+) -> Response {
+    struct Follow {
+        state: Arc<AppState>,
+        run_id: String,
+        cursor: u64,
+        types: BTreeSet<String>,
+        pending: std::collections::VecDeque<Event>,
+        ended: bool,
+    }
+    let follow = Follow {
+        state: Arc::clone(&state),
+        run_id,
+        cursor,
+        types,
+        pending: std::collections::VecDeque::new(),
+        ended: false,
+    };
+    let rows = stream::unfold(follow, |mut follow| async move {
+        loop {
+            if let Some(frame) = follow.pending.pop_front() {
+                return Some((Ok::<_, Infallible>(frame), follow));
+            }
+            if follow.ended {
+                return None;
+            }
+            let io_state = Arc::clone(&follow.state);
+            let io_run_id = follow.run_id.clone();
+            let cursor = follow.cursor;
+            // Read every row, whatever `types` asks for, so the run's end is seen.
+            let page = blocking_io(move || {
+                read_for_run(
+                    &io_state,
+                    &io_run_id,
+                    Some(EventSource::Runner),
+                    cursor,
+                    MAX_SSE_REPLAY,
+                    MAX_PAGE_SCAN_BYTES,
+                    &BTreeSet::new(),
+                )
+            })
+            .await;
+            match page {
+                Ok(Some(page)) => {
+                    let has_more = page.has_more;
+                    follow.cursor = page.next_cursor;
+                    for item in page.events {
+                        let kind = event_type(&item.value).unwrap_or_default().to_string();
+                        if kind == "run_completed" {
+                            follow.ended = true;
+                        }
+                        if follow.types.is_empty() || follow.types.contains(&kind) {
+                            follow
+                                .pending
+                                .push_back(indexed_sse_event(item, &follow.state.scrubber));
+                        }
+                    }
+                    if follow.ended || has_more || !follow.pending.is_empty() {
+                        continue;
+                    }
+                }
+                // No index yet: the run is queued or has only just started.
+                Ok(None) => {}
+                Err(error) => {
+                    follow.ended = true;
+                    let data = json!({ "run_id": follow.run_id, "message": error.to_string() });
+                    follow
+                        .pending
+                        .push_back(Event::default().event("error").data(data.to_string()));
+                    continue;
+                }
+            }
+            tokio::time::sleep(RUNNER_INDEX_POLL).await;
+        }
+    });
+    let sse = Sse::new(super::sse::until_shutdown(rows, state.cancel.clone())).keep_alive(
+        KeepAlive::new()
+            .interval(std::time::Duration::from_secs(8))
+            .text("keepalive"),
+    );
+    (super::sse::sse_response_headers(), sse).into_response()
 }
 
 async fn get_run_tasks(
@@ -2439,6 +2560,101 @@ mod tests {
         );
         assert_eq!(run["started_at"], "2026-10-09T13:00:09.314Z", "{run}");
         assert_eq!(run["finished_at"], "2026-10-09T13:00:50.893Z", "{run}");
+    }
+
+    /// The next named event on an SSE `body` other than a keepalive, as its
+    /// kind and id; `None` once the stream has ended.
+    async fn next_sse_event(body: &mut axum::body::Body) -> Option<(String, Option<String>)> {
+        use http_body_util::BodyExt as _;
+        loop {
+            let frame = tokio::time::timeout(std::time::Duration::from_secs(5), body.frame())
+                .await
+                .expect("a frame in time")?;
+            let data = frame.expect("a frame").into_data().expect("a data frame");
+            let text = String::from_utf8(data.to_vec()).expect("UTF-8");
+            if let Some(kind) = text.lines().find_map(|line| line.strip_prefix("event: "))
+                && kind != "keepalive"
+            {
+                let id = text
+                    .lines()
+                    .find_map(|line| line.strip_prefix("id: "))
+                    .map(str::to_string);
+                return Some((kind.to_string(), id));
+            }
+        }
+    }
+
+    /// bug-1f41f0: a Graph run's per-run stream replays its runner index,
+    /// delivers rows appended later, keeps `types` out of what it sends, and
+    /// ends after the run's `run_completed`.
+    #[tokio::test]
+    async fn per_run_stream_carries_a_graph_runs_events() {
+        let dir = tempfile::tempdir().unwrap();
+        let deploy_backend = Arc::from(
+            crate::deploy::create_backend("manual", None, None, None).expect("manual backend"),
+        );
+        let state = Arc::new(
+            AppState::new(
+                dir.path().to_path_buf(),
+                Arc::new(crate::runtime::NoOpRuntime),
+                roko_core::config::schema::RokoConfig::default(),
+                deploy_backend,
+            )
+            .expect("AppState::new"),
+        );
+        let index =
+            roko_fs::run_index::run_index_path(&state.layout.events_jsonl_path(), "g1").unwrap();
+        write_rows(
+            &index,
+            &[
+                json!({"type":"plan_started","run_id":"g1","plan_id":"p1","tasks_total":1}),
+                json!({"type":"agent_heartbeat","run_id":"g1","plan_id":"p1","task_id":"T1","elapsed_ms":5000}),
+            ],
+        );
+
+        let query = EventQuery {
+            types: Some("plan_started,gate_result,run_completed".to_string()),
+            ..EventQuery::default()
+        };
+        let mut body = get_run_events_stream(
+            State(Arc::clone(&state)),
+            Path("g1".into()),
+            HeaderMap::new(),
+            Query(query),
+        )
+        .await
+        .expect("open the stream")
+        .into_response()
+        .into_body();
+
+        let (kind, id) = next_sse_event(&mut body).await.expect("the replayed row");
+        assert_eq!(kind, "plan_started");
+        assert!(id.is_some(), "a resumable id");
+
+        // Rows the run appends later arrive live; the heartbeat is filtered out.
+        let mut file = std::fs::OpenOptions::new()
+            .append(true)
+            .open(&index)
+            .unwrap();
+        for row in [
+            json!({"type":"gate_result","run_id":"g1","plan_id":"p1","task_id":"T1","gate":"verify[0:test]","passed":true}),
+            json!({"type":"run_completed","run_id":"g1","outcome":"succeeded","duration_ms":10}),
+        ] {
+            std::io::Write::write_all(&mut file, format!("{row}\n").as_bytes()).unwrap();
+        }
+        assert_eq!(
+            next_sse_event(&mut body).await.expect("gate_result").0,
+            "gate_result"
+        );
+        assert_eq!(
+            next_sse_event(&mut body).await.expect("run_completed").0,
+            "run_completed"
+        );
+        assert_eq!(
+            next_sse_event(&mut body).await,
+            None,
+            "the stream ends after the run's end"
+        );
     }
 
     /// The statuses `GET /runs/{run_id}/tasks` reports for a run's tasks.

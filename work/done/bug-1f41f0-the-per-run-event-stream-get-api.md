@@ -2,7 +2,7 @@
 id = "bug-1f41f0"
 kind = "bug"
 title = "The per-run event stream (GET /api/runs/{id}/events/stream) sends only keepalives for Graph runs"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p2"
 goal = "visibility"
@@ -11,12 +11,24 @@ subsystem = ["roko-serve/runs"]
 created = 2026-10-12
 updated = 2026-10-12
 last_verified = 2026-10-12
+last_verified_rev = "25eebe5d5"
 source = "hermes-plugin-roko 0.2.0 UI work, roko serve probe 2026-10-11 (scratchpad roko-ui-data.md)"
 anchors = ["crates/roko-serve/src/routes/runs.rs::run_events_sse"]
 links = { depends_on = [], blocks = [], related = [], supersedes = [], duplicate_of = "" }
 
 [[verify]]
 command = "grep -rqw 'fn per_run_stream_carries_a_graph_runs_events' crates/roko-serve/ && cargo test -p roko-serve per_run_stream_carries_a_graph_runs_events"
+
+[closed]
+at = 2026-10-12
+at_ts = "2026-10-12T11:57:59Z"
+commit = "25eebe5d5"
+by = "commit trailer"
+executor = "claude-agent"
+size = "M"
+claimed_at = "2026-10-12T11:50:07Z"
+forced = false
+evidence = "25eebe5d5: a run with no runtime index streams its runner index: the rows from the cursor (Last-Event-ID or ?cursor=) and then each appended row, polled every 500 ms, with the byte cursor as the SSE id; types filters what is sent, the stream ends after run_completed, a refused cursor ends it with an error event. Verify passes in the worktree: per_run_stream_carries_a_graph_runs_events (replay, live append, filter, end); the run-events and summary tests pass; clippy -p roko-serve --no-deps -D warnings clean."
 +++
 
 ## Problem

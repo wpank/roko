@@ -64,10 +64,10 @@ _9 more open · 1 unchecked (`TRIAGE.md`) · `goal = "core"`_
 ## 8. Live visibility: serve, dashboard, portal
 
 - **P1** [gap-aabeff](items/gap-aabeff-tool-t003-tui-paths-still-consume-string.md) TUI paths still consume string/tail projections that lose semantics (TUI adoption unproven) · size L · verified 2026-10-01
+- **P2** [bug-0b997a](items/bug-0b997a-a-live-graph-run-s-index-holds.md) A live Graph run's index holds agent rows until the next lifecycle row, so live readers see nothing during an agent turn [bug] · size S · verified 2026-10-12
 - **P2** [bug-a0f01e](items/bug-a0f01e-long-running-operation-handles-never-record-completion.md) Long-running operation handles never record completion [bug] · verified 2026-10-01
-- **P3** [gap-0d6ae5](items/gap-0d6ae5-closing-the-tui-mid-run-stops-the.md) Closing the TUI mid-run stops the plan run; there is no detach mode · verified 2026-10-01
 
-_1 more open · `goal = "visibility"`_
+_2 more open · `goal = "visibility"`_
 
 ## 9. Learning loops on the Graph path
 

@@ -4,7 +4,7 @@
 
 What to work on next: the top checked, open items of each goal, highest-priority goal first. Reorder or change goals in `goals.toml`; pin an item higher with `rank = 1` (lower first).
 
-**Drift:** 13 anchor gone · 116 changed since checked · 2 mentioned in commits. Re-check them before relying on this list: `DRIFT.md`.
+**Drift:** 13 anchor gone · 117 changed since checked · 2 mentioned in commits. Re-check them before relying on this list: `DRIFT.md`.
 
 ## 1. Public release: security, licence, CI, first run
 
@@ -67,7 +67,7 @@ _10 more open · 1 unchecked (`TRIAGE.md`) · `goal = "core"`_
 - **P2** [gap-6f0eca](items/gap-6f0eca-a-plan-run-s-end-names-no.md) A plan run's end names no run: DashboardEvent::RunCompleted has no run id, so /ws never sends run_completed for plan runs · size M · verified 2026-10-12
 - **P2** [bug-a0f01e](items/bug-a0f01e-long-running-operation-handles-never-record-completion.md) Long-running operation handles never record completion [bug] · verified 2026-10-01
 
-_4 more open · `goal = "visibility"`_
+_2 more open · `goal = "visibility"`_
 
 ## 9. Learning loops on the Graph path
 

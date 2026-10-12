@@ -2,7 +2,7 @@
 id = "bug-28aae1"
 kind = "bug"
 title = "Run summaries report $0, no tokens, no gates and no start or end time for Graph runs, and list a phantom empty plan and task"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p2"
 goal = "visibility"
@@ -11,6 +11,7 @@ subsystem = ["roko-serve/runs"]
 created = 2026-10-12
 updated = 2026-10-12
 last_verified = 2026-10-12
+last_verified_rev = "21293c986"
 source = "hermes-plugin-roko 0.2.0 UI work, roko serve probe 2026-10-11 (scratchpad roko-ui-data.md)"
 anchors = ["crates/roko-serve/src/routes/runs.rs::summarize_events", "crates/roko-cli/src/graph_execution/event_log.rs::WorkspaceLogWriter"]
 links = { depends_on = [], blocks = [], related = [], supersedes = [], duplicate_of = "" }
@@ -20,6 +21,17 @@ command = "grep -rqw 'fn summary_counts_cost_tokens_gates_and_times_of_graph_run
 
 [[verify]]
 command = "grep -rqw 'fn index_rows_carry_the_time_they_were_published' crates/roko-cli/ && cargo test -p roko-cli index_rows_carry_the_time_they_were_published"
+
+[closed]
+at = 2026-10-12
+at_ts = "2026-10-12T11:49:44Z"
+commit = "21293c986"
+by = "commit trailer"
+executor = "claude-agent"
+size = "M"
+claimed_at = "2026-10-12T11:02:44Z"
+forced = false
+evidence = "21293c986: the runner stamps each index row with ts_millis; summarize_events sums efficiency_event cost and tokens, counts gate_result rows, takes started_at/finished_at from timestamped rows (RFC 3339) and skips empty plan/task ids. Verify passes in the worktree: summary_counts_cost_tokens_gates_and_times_of_graph_runs (roko-serve) and index_rows_carry_the_time_they_were_published (roko-cli); summary, dashboard-runs, gate-summary and event-log tests pass; clippy -p roko-serve -p roko-cli --no-deps -D warnings clean."
 +++
 
 ## Problem

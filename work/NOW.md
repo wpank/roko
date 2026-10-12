@@ -4,15 +4,15 @@
 
 What to work on next: the top checked, open items of each goal, highest-priority goal first. Reorder or change goals in `goals.toml`; pin an item higher with `rank = 1` (lower first).
 
-**Drift:** 14 anchor gone · 116 changed since checked · 2 mentioned in commits. Re-check them before relying on this list: `DRIFT.md`.
+**Drift:** 13 anchor gone · 116 changed since checked · 2 mentioned in commits. Re-check them before relying on this list: `DRIFT.md`.
 
 ## 1. Public release: security, licence, CI, first run
 
+- **P1** [bug-856656](items/bug-856656-exchanging-any-api-key-at-post-api.md) Exchanging any API key at POST /api/auth/session mints an admin session, so a write or read key gains admin rights through its cookie [bug] · size S · verified 2026-10-12
 - **P1** [find-8cc7ac](items/find-8cc7ac-some-github-workflows-fail-on-main-and.md) Some GitHub workflows fail on main and required checks are undefined [finding] · size M · verified 2026-09-29
 - **P2** [bug-911361](items/bug-911361-cargo-toml-s-repository-and-homepage-point.md) Cargo.toml's repository and homepage point at an unrelated GitHub account [bug] · size S · verified 2026-09-29
-- **P2** [q-bc6cc5](items/q-bc6cc5-confirm-licence-coverage-for-another-contributor-s.md) Confirm licence coverage for another contributor's code in apps/mirage-rs [question] · size S · verified 2026-09-29
 
-_10 more open · on hold: gap-00e882, gap-8f8544, gap-fbd580 · 4 unchecked (`TRIAGE.md`) · `goal = "release"`_
+_11 more open · on hold: gap-00e882, gap-8f8544, gap-fbd580 · 4 unchecked (`TRIAGE.md`) · `goal = "release"`_
 
 ## 2. Whitepaper v1 and the research papers
 
@@ -64,10 +64,10 @@ _10 more open · 1 unchecked (`TRIAGE.md`) · `goal = "core"`_
 ## 8. Live visibility: serve, dashboard, portal
 
 - **P1** [gap-aabeff](items/gap-aabeff-tool-t003-tui-paths-still-consume-string.md) TUI paths still consume string/tail projections that lose semantics (TUI adoption unproven) · size L · verified 2026-10-01
+- **P2** [gap-6f0eca](items/gap-6f0eca-a-plan-run-s-end-names-no.md) A plan run's end names no run: DashboardEvent::RunCompleted has no run id, so /ws never sends run_completed for plan runs · size M · verified 2026-10-12
 - **P2** [bug-a0f01e](items/bug-a0f01e-long-running-operation-handles-never-record-completion.md) Long-running operation handles never record completion [bug] · verified 2026-10-01
-- **P3** [gap-0d6ae5](items/gap-0d6ae5-closing-the-tui-mid-run-stops-the.md) Closing the TUI mid-run stops the plan run; there is no detach mode · verified 2026-10-01
 
-_1 more open · `goal = "visibility"`_
+_4 more open · `goal = "visibility"`_
 
 ## 9. Learning loops on the Graph path
 

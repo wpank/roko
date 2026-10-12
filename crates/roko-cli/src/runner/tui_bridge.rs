@@ -497,6 +497,7 @@ impl TuiBridge {
     /// Publish a typed runner lifecycle event into the dashboard event log.
     pub fn runner_event(&self, event: &RunnerEvent) {
         if let RunnerEvent::RunCompleted {
+            run_id,
             outcome,
             duration_ms,
             cleanup_degraded,
@@ -511,6 +512,7 @@ impl TuiBridge {
                 super::types::RunOutcome::Cancelled => "cancelled",
             };
             self.sender.publish(DashboardEvent::RunCompleted {
+                run_id: Some(run_id.clone()),
                 outcome: outcome.to_string(),
                 duration_ms: *duration_ms,
                 cleanup_degraded: *cleanup_degraded,

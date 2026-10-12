@@ -204,6 +204,8 @@ impl RuntimeEventDashboardProjector {
     fn map_to_dashboard(envelope: &RuntimeEventEnvelope) -> Vec<DashboardEvent> {
         let plan_id_opt = envelope.plan_id.as_deref().unwrap_or("");
         let task_id_opt = envelope.task_id.as_deref().unwrap_or("");
+        // v2 kinds may carry an empty run id; an empty one names no run.
+        let run_id_opt = Some(envelope.run_id.clone()).filter(|run_id| !run_id.is_empty());
         let ts_ms = envelope.ts.timestamp_millis() as u64;
 
         match &envelope.payload {
@@ -227,6 +229,7 @@ impl RuntimeEventDashboardProjector {
                     });
                 }
                 events.push(DashboardEvent::RunCompleted {
+                    run_id: run_id_opt.clone(),
                     outcome: if *success {
                         "success".to_string()
                     } else {
@@ -247,6 +250,7 @@ impl RuntimeEventDashboardProjector {
                     roko_core::runtime_event::WorkflowOutcome::Success { .. }
                 );
                 vec![DashboardEvent::RunCompleted {
+                    run_id: run_id_opt.clone(),
                     outcome: if success {
                         "success".to_string()
                     } else {

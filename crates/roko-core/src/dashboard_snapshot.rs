@@ -94,6 +94,10 @@ pub enum DashboardEvent {
     /// per-plan completion so cancellation and hard deadlines can converge all
     /// live dashboard projections in one idempotent event.
     RunCompleted {
+        /// The run that ended, when the publisher knows it (gap-6f0eca), so a
+        /// client can match the end to the run it started.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        run_id: Option<String>,
         outcome: String,
         duration_ms: u64,
         #[serde(default)]
@@ -1814,6 +1818,7 @@ impl DashboardSnapshot {
                 cleanup_degraded,
                 surviving_agent_ids,
                 surviving_agent_pids,
+                ..
             } => {
                 // Preserve the first terminal duration for this invocation.
                 // Duplicate terminal publications and event-log replay must
@@ -5022,6 +5027,7 @@ mod tests {
         );
         snap.apply_with_ts(
             &DashboardEvent::RunCompleted {
+                run_id: None,
                 outcome: "cancelled".into(),
                 duration_ms: 5_000,
                 cleanup_degraded: false,
@@ -5037,6 +5043,38 @@ mod tests {
         assert_eq!(snap.plans["b"].finished_at_ms, None);
     }
 
+    /// gap-6f0eca: a run's end names the run when its publisher knows it, and an
+    /// older end without a run id still reads.
+    #[test]
+    fn run_completed_carries_its_run_id() {
+        let named = DashboardEvent::RunCompleted {
+            run_id: Some("run-1".into()),
+            outcome: "succeeded".into(),
+            duration_ms: 5,
+            cleanup_degraded: false,
+            surviving_agent_ids: Vec::new(),
+            surviving_agent_pids: Vec::new(),
+        };
+        let json = serde_json::to_value(&named).expect("serialize");
+        assert_eq!(json["type"], "run_completed");
+        assert_eq!(json["run_id"], "run-1");
+        let back: DashboardEvent = serde_json::from_value(json).expect("deserialize");
+        assert_eq!(back, named);
+
+        let older: DashboardEvent = serde_json::from_value(serde_json::json!({
+            "type": "run_completed",
+            "outcome": "failed",
+            "duration_ms": 1,
+        }))
+        .expect("an end without a run id");
+        assert!(matches!(
+            older,
+            DashboardEvent::RunCompleted { run_id: None, .. }
+        ));
+        let unnamed = serde_json::to_value(&older).expect("serialize");
+        assert!(unnamed.get("run_id").is_none(), "{unnamed}");
+    }
+
     /// bug-60ccba: a run that ends while tasks still run ends them too, at its
     /// time and never as passed: interrupted, or cancelled when the run was
     /// cancelled. A task that finished keeps its outcome and time.
@@ -5049,6 +5087,7 @@ mod tests {
             phase: "implement".into(),
         };
         let run_completed = |outcome: &str| DashboardEvent::RunCompleted {
+            run_id: None,
             outcome: outcome.into(),
             duration_ms: 2_000,
             cleanup_degraded: false,

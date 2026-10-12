@@ -112,6 +112,23 @@ fn plan_run_end(
     PlanRunStatus::ended(state, error)
 }
 
+/// Tell `/ws` clients that the plan run `run_id` ended, and how (gap-6f0eca): the
+/// `run_completed` a prompt run's handler sends (`routes/run.rs`), so a client can
+/// follow any run it started by its id. Each run gets one, from the path that
+/// settled it: the run's task, or the cancel handler when it had to abort the
+/// task, or never started it.
+fn publish_plan_run_completed(
+    bus: &crate::event_bus::EventBus<ServerEvent>,
+    run_id: &str,
+    state: RunState,
+) {
+    bus.publish(ServerEvent::RunCompleted {
+        run_id: run_id.to_owned(),
+        success: state == RunState::Succeeded,
+        verdict: Some(state),
+    });
+}
+
 /// Record `status`, how the plan run `run_id` ended, on its handle under
 /// `key`, unless a newer run has taken the key or the run's end is already
 /// recorded.
@@ -629,6 +646,7 @@ fn launch_single_plan_run(
                     success,
                 });
             }
+            publish_plan_run_completed(&bus, &run_id, status.state);
             // Record how the run ended on its handle, so its status route
             // still answers once it is over (G43), then start the next
             // queued run (decision 9105).
@@ -714,6 +732,7 @@ fn launch_plan_set_run(
             success,
             failure,
         );
+        publish_plan_run_completed(&bus, &run_id, status.state);
         record_plan_run_end(&state_for_task, &run_id, &run_id, status).await;
         start_next_queued_run(&state_for_task).await;
     });
@@ -1043,6 +1062,8 @@ pub(crate) async fn cancel_plan_run(state: &Arc<AppState>, id: &str) -> Result<V
             plan_id: id.to_string(),
             success: false,
         });
+        // The aborted task never reached its own run_completed.
+        publish_plan_run_completed(&state.event_bus, &run_id, RunState::Cancelled);
     }
 
     Ok(json!({ "cancelled": true }))
@@ -1077,5 +1098,7 @@ fn cancel_queued_run(
         cancel: CancelToken::new(),
     };
     active.insert(spec.run_id.clone(), plan_handle);
+    // The run never started, so nothing else will say it ended.
+    publish_plan_run_completed(&state.event_bus, &spec.run_id, RunState::Cancelled);
     Ok(json!({ "cancelled": true, "run_id": spec.run_id }))
 }

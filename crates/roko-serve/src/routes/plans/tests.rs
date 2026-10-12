@@ -1365,6 +1365,7 @@ impl CliRuntime for HubLifecycleRuntime {
             success: true,
         });
         hub.publish(roko_core::DashboardEvent::RunCompleted {
+            run_id: None,
             outcome: "succeeded".to_string(),
             duration_ms: 5,
             cleanup_degraded: false,
@@ -1476,6 +1477,93 @@ async fn single_plan_run_publishes_plan_completed_once() {
 #[tokio::test]
 async fn run_failing_before_the_plan_starts_completes_it_once() {
     assert_eq!(plan_completions_of_single_plan_run(true).await, vec![false]);
+}
+
+/// gap-6f0eca: a plan run's end reaches `/ws` as one `run_completed` that names
+/// the run id the route answered with, and the verdict its status route reports;
+/// before, only prompt runs got one.
+#[tokio::test]
+async fn plan_run_completion_reaches_ws_with_its_run_id() {
+    use crate::state::RunState;
+
+    for fail_before_start in [false, true] {
+        let hub = roko_runtime::SharedStateHub::new_in_process();
+        let runtime = Arc::new(HubLifecycleRuntime {
+            hub: hub.clone(),
+            fail_before_start,
+        });
+        let dir = tempdir().expect("tempdir");
+        let deploy_backend =
+            Arc::from(create_backend("manual", None, None, None).expect("manual backend"));
+        let state = Arc::new(
+            AppState::new_with_state_hub(
+                dir.path().to_path_buf(),
+                runtime,
+                roko_core::config::schema::RokoConfig::default(),
+                deploy_backend,
+                hub.clone(),
+            )
+            .expect("AppState::new_with_state_hub"),
+        );
+        let mut bus = state.event_bus.subscribe();
+
+        let response = execute_plan(
+            State(Arc::clone(&state)),
+            Path("hello".into()),
+            axum::body::Bytes::new(),
+        )
+        .await
+        .expect("execute plan")
+        .into_response();
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("response body");
+        let started: Value = serde_json::from_slice(&body).expect("response json");
+        let run_id = started["run_id"].as_str().expect("run_id").to_string();
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            loop {
+                let finished = state
+                    .active_plans
+                    .read()
+                    .await
+                    .get("hello")
+                    .is_none_or(|run| run.handle.is_finished());
+                if finished {
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("the run task should finish");
+
+        let recorded = state
+            .active_plans
+            .read()
+            .await
+            .get("hello")
+            .map(|run| run.status.state)
+            .expect("the run's handle");
+        let mut ends = Vec::new();
+        while let Ok(envelope) = bus.try_recv() {
+            if let ServerEvent::RunCompleted {
+                run_id,
+                success,
+                verdict,
+            } = envelope.payload
+            {
+                ends.push((run_id, success, verdict));
+            }
+        }
+        assert_eq!(
+            ends,
+            vec![(run_id, recorded == RunState::Succeeded, Some(recorded))],
+            "fail_before_start = {fail_before_start}"
+        );
+        if fail_before_start {
+            assert_eq!(recorded, RunState::Failed);
+        }
+    }
 }
 
 /// A plan runtime whose runs end as a test scripts them: a run records the

@@ -153,6 +153,8 @@ pub(super) struct DashboardRow<'a> {
     pub(super) agent_id: &'a str,
     /// The task's role.
     pub(super) role: &'a str,
+    /// The attempt's ordinal, as its attempt key numbers it (bug-369c21).
+    pub(super) attempt: u32,
 }
 
 impl FailoverChain {
@@ -281,7 +283,7 @@ impl GraphTaskDispatcher {
                     row.agent_id,
                     &spec.plan_id,
                     task_id,
-                    0,
+                    row.attempt,
                     row.role,
                     &target.model_slug,
                     &target.provider_id,

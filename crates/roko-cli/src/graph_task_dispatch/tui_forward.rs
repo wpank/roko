@@ -8,13 +8,15 @@ impl GraphTaskDispatcher {
     ///
     /// Called after `run_shared_agent_bridge` returns. Each event in the
     /// dispatch result is mapped to the corresponding `TuiBridge` method
-    /// which publishes a `DashboardEvent` through the StateHub.
+    /// which publishes a `DashboardEvent` through the StateHub, numbered as
+    /// attempt `attempt` of the task (bug-369c21).
     pub(super) fn forward_dispatch_events_to_tui(
         &self,
         spec: &TaskExecutionSpec,
         task: &TaskDef,
         dispatch: &crate::dispatch_v2::AgentResultDispatch,
         ctx: &CellContext,
+        attempt: u32,
     ) {
         let Some(tui) = &self.tui_bridge else {
             return;
@@ -35,10 +37,10 @@ impl GraphTaskDispatcher {
         for event in &dispatch.events {
             match event {
                 roko_agent::AgentRuntimeEvent::MessageDelta { text } => {
-                    tui.agent_text_delta(&agent_id, plan_id, task_id, 0, text);
+                    tui.agent_text_delta(&agent_id, plan_id, task_id, attempt, text);
                 }
                 roko_agent::AgentRuntimeEvent::ToolCall { id, name } => {
-                    tui.tool_call(&agent_id, plan_id, task_id, 0, id, name);
+                    tui.tool_call(&agent_id, plan_id, task_id, attempt, id, name);
                 }
                 roko_agent::AgentRuntimeEvent::ToolOutput { id, output } => {
                     // Truncate tool output for the TUI to avoid overwhelming
@@ -58,14 +60,14 @@ impl GraphTaskDispatcher {
                     } else {
                         output.clone()
                     };
-                    tui.tool_output(&agent_id, plan_id, task_id, 0, id, &truncated);
+                    tui.tool_output(&agent_id, plan_id, task_id, attempt, id, &truncated);
                 }
                 _ => {}
             }
         }
 
         // Emit agent completed event.
-        tui.agent_completed(&agent_id, plan_id, task_id, 0);
+        tui.agent_completed(&agent_id, plan_id, task_id, attempt);
     }
 }
 

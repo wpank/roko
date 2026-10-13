@@ -24,11 +24,11 @@ _3 more open · on hold: gap-6aaee9, gap-85f86a, gap-9b5582, gap-ac1aed, gap-b90
 
 ## 3. Roko tells the truth and is safe (P0)
 
+- **P1** [bug-09e21e](items/bug-09e21e-a-prompt-run-refused-by-the-workspace.md) A prompt run refused by the workspace runner lock is recorded in the active run's event index, so the active run's summary says failed and the refused run's id answers 404 [bug] · size M · verified 2026-10-13
+- **P1** [find-2ba86d](items/find-2ba86d-an-impossible-test-was-passed-twice-by.md) An impossible test was passed twice by hidden call-count state and input special cases, against explicit instructions, and roko reported succeeded [finding] · size L · verified 2026-10-13
 - **P2** [spec-65c828](items/spec-65c828-backlog-phase-1-safe-runs.md) Backlog Phase 1 — safe runs [spec] · verified 2026-10-02
-- **P2** [spec-99d417](items/spec-99d417-backlog-phase-2-honest-measurement.md) Backlog Phase 2 — honest measurement [spec] · verified 2026-10-02
-- **P2** [gap-11a91a](items/gap-11a91a-helper-calls-record-the-task-s-own.md) Helper calls record the task's own agent id, not a helper-specific one · size S · verified 2026-10-02
 
-_7 more open · `goal = "truth"`_
+_9 more open · `goal = "truth"`_
 
 ## 4. Frontier plans, cheap models execute, the result integrates (P1)
 
@@ -59,15 +59,15 @@ _17 more open · on hold: gap-3d37e8, gap-799698, gap-8a26fc, gap-93c748, gap-fd
 - **P1** [gap-d58ae8](items/gap-d58ae8-tp2-36-p0-0-37-mori-shaped.md) Mori-shaped workflow contract unproven end-to-end · size L · verified 2026-10-01
 - **P1** [gap-5d3b82](items/gap-5d3b82-proof-case-1-agent-early-exit-losteffect.md) Proof Case 1: Agent early exit / LostEffect · size M · verified 2026-10-01
 
-_11 more open · 1 unchecked (`TRIAGE.md`) · `goal = "core"`_
+_13 more open · 1 unchecked (`TRIAGE.md`) · `goal = "core"`_
 
 ## 8. Live visibility: serve, dashboard, portal
 
 - **P1** [gap-aabeff](items/gap-aabeff-tool-t003-tui-paths-still-consume-string.md) TUI paths still consume string/tail projections that lose semantics (TUI adoption unproven) · size L · verified 2026-10-01
+- **P2** [gap-7c6663](items/gap-7c6663-a-confirm-rung-s-wait-publishes-no.md) A confirm rung's wait publishes no event, so a run's event stream cannot show that it waits on the person · size M · verified 2026-10-13
 - **P2** [bug-a0f01e](items/bug-a0f01e-long-running-operation-handles-never-record-completion.md) Long-running operation handles never record completion [bug] · verified 2026-10-01
-- **P3** [gap-0d6ae5](items/gap-0d6ae5-closing-the-tui-mid-run-stops-the.md) Closing the TUI mid-run stops the plan run; there is no detach mode · verified 2026-10-01
 
-_2 more open · `goal = "visibility"`_
+_4 more open · `goal = "visibility"`_
 
 ## 9. Learning loops on the Graph path
 
@@ -95,9 +95,9 @@ _5 more open · on hold: gap-63055e, gap-8d80d3, gap-ebd656, spec-743a7e, spec-b
 ## 12. Hermes and ACP integration
 
 - **P1** [spec-704c28](items/spec-704c28-acp-v2-spec-compliance-refactor-and-best.md) ACP v2 Spec Compliance, Refactor, and Best-in-Class Editor UX [spec] · size L · verified 2026-09-29
+- **P2** [gap-9a8d66](items/gap-9a8d66-mcp-run-prompt-hands-out-a-run.md) /mcp run_prompt hands out a run_id and then fails the run at once when another run holds the workspace, while plan_run queues · size M · verified 2026-10-13
 - **P2** [gap-cf427e](items/gap-cf427e-a-chat-host-s-run-is-accepted.md) A chat host's run is accepted, then fails in milliseconds, when no model its routing can pick runs in roko's own tool loop; refuse it up front so the host's probe sees it · size M · verified 2026-10-13
-- **P2** [gap-ac78fb](items/gap-ac78fb-acp-elicitation-notices-and-interactive-ux-primitives.md) ACP Elicitation, Notices, and Interactive UX Primitives · size L · verified 2026-09-29
 
-_4 more open · on hold: gap-85f69b · `goal = "hermes"`_
+_8 more open · on hold: gap-85f69b · `goal = "hermes"`_
 
 10 open items have no goal (later); they are listed in `STATUS.md`.

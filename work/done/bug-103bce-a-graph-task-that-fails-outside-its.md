@@ -2,7 +2,7 @@
 id = "bug-103bce"
 kind = "bug"
 title = "A Graph task that fails outside its gates never says why: its error reaches only a warn log and a hash, so a chat host reports 'engine failed'"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p2"
 goal = "visibility"
@@ -11,12 +11,24 @@ subsystem = ["roko-cli/graph-execution"]
 created = 2026-10-13
 updated = 2026-10-13
 last_verified = 2026-10-13
+last_verified_rev = "f7839a9d5"
 source = "hermes-plugin-roko docs walkthrough 2026-10-13, fresh roko init workspace with only the Claude CLI (roko 5de43f9ab)"
 anchors = ["crates/roko-cli/src/graph_execution/plan_runner.rs::run_one_plan"]
 links = { depends_on = [], blocks = [], related = [], supersedes = [], duplicate_of = "" }
 
 [[verify]]
 command = "grep -rqw 'fn failed_tasks_say_why_in_the_runs_events' crates/roko-cli/ && cargo test -p roko-cli failed_tasks_say_why_in_the_runs_events"
+
+[closed]
+at = 2026-10-13
+at_ts = "2026-10-13T12:02:23Z"
+commit = "f7839a9d5"
+by = "commit trailer"
+executor = "claude-agent"
+size = "S"
+claimed_at = "2026-10-13T11:30:30Z"
+forced = false
+evidence = "f7839a9d5: when a plan ends, each task that failed by its own error publishes an error event (plan/task/error, clipped to 1,500 chars); blocked tasks, error-less failures and helper nodes publish none. Verify passes in the worktree: failed_tasks_say_why_in_the_runs_events; run_metrics_count_task_verdicts passes; clippy -p roko-cli --no-deps -D warnings clean."
 +++
 
 ## Problem

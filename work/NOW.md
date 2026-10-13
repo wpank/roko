@@ -98,6 +98,6 @@ _5 more open · on hold: gap-63055e, gap-8d80d3, gap-ebd656, spec-743a7e, spec-b
 - **P2** [gap-cf427e](items/gap-cf427e-a-chat-host-s-run-is-accepted.md) A chat host's run is accepted, then fails in milliseconds, when no model its routing can pick runs in roko's own tool loop; refuse it up front so the host's probe sees it · size M · verified 2026-10-13
 - **P2** [gap-ac78fb](items/gap-ac78fb-acp-elicitation-notices-and-interactive-ux-primitives.md) ACP Elicitation, Notices, and Interactive UX Primitives · size L · verified 2026-09-29
 
-_5 more open · on hold: gap-85f69b · `goal = "hermes"`_
+_4 more open · on hold: gap-85f69b · `goal = "hermes"`_
 
 10 open items have no goal (later); they are listed in `STATUS.md`.

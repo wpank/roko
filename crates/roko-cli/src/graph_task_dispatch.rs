@@ -1359,6 +1359,9 @@ impl TaskDispatcher for GraphTaskDispatcher {
             spec.plan_id,
             ctx.cell_id.as_deref().unwrap_or(&task.id)
         );
+        // Every attempt of a task keeps the task's agent id; its events say
+        // which attempt they are by the attempt key's ordinal (bug-369c21).
+        let attempt_ordinal = attempt.key.attempt;
         if let Some(tui) = &self.tui_bridge {
             // The slug and provider the planned model key resolves to, as
             // dispatch resolves them (`glm-4.7` on `zai`, a Claude model on
@@ -1374,7 +1377,7 @@ impl TaskDispatcher for GraphTaskDispatcher {
                 &pre_dispatch_agent_id,
                 &spec.plan_id,
                 &task.id,
-                0,
+                attempt_ordinal,
                 task.role.as_deref().unwrap_or("implementer"),
                 &planned.model_slug,
                 &planned.provider_id,
@@ -1432,6 +1435,7 @@ impl TaskDispatcher for GraphTaskDispatcher {
                     Some(failover::DashboardRow {
                         agent_id: &pre_dispatch_agent_id,
                         role: task.role.as_deref().unwrap_or("implementer"),
+                        attempt: attempt_ordinal,
                     }),
                     attempt.harness_params(),
                 ),
@@ -1479,7 +1483,12 @@ impl TaskDispatcher for GraphTaskDispatcher {
                 // T04: Publish agent_completed on the error path so the dashboard
                 // never leaves an agent stuck in the "running" state.
                 if let Some(tui) = &self.tui_bridge {
-                    tui.agent_completed(&pre_dispatch_agent_id, &spec.plan_id, &task.id, 0);
+                    tui.agent_completed(
+                        &pre_dispatch_agent_id,
+                        &spec.plan_id,
+                        &task.id,
+                        attempt_ordinal,
+                    );
                 }
                 // A call the stall watchdog, the conductor or a stopping plan
                 // run cancelled is accounted like any failed call, with the
@@ -1549,8 +1558,19 @@ impl TaskDispatcher for GraphTaskDispatcher {
             // (bug-f03b0d).
             if let Some(tui) = &self.tui_bridge {
                 let reason = format!("the plan budget could not settle this call: {error}");
-                tui.agent_output(&pre_dispatch_agent_id, &spec.plan_id, &task.id, 0, &reason);
-                tui.agent_completed(&pre_dispatch_agent_id, &spec.plan_id, &task.id, 0);
+                tui.agent_output(
+                    &pre_dispatch_agent_id,
+                    &spec.plan_id,
+                    &task.id,
+                    attempt_ordinal,
+                    &reason,
+                );
+                tui.agent_completed(
+                    &pre_dispatch_agent_id,
+                    &spec.plan_id,
+                    &task.id,
+                    attempt_ordinal,
+                );
             }
             let routed = Some((dispatch_plan.model.slug.as_str(), &dispatch));
             return Err(self.fail_attempt(spec, &task, attempt, routed, error).await);
@@ -1563,7 +1583,7 @@ impl TaskDispatcher for GraphTaskDispatcher {
         // Forward provider dispatch events (text deltas, tool calls, tool
         // outputs) to the TUI bridge so the dashboard shows what the agent
         // produced. This runs for both successful and failed dispatches.
-        self.forward_dispatch_events_to_tui(spec, &task, &dispatch, ctx);
+        self.forward_dispatch_events_to_tui(spec, &task, &dispatch, ctx, attempt_ordinal);
 
         if let Some(error) = pinned_model_substituted {
             let settlement =
@@ -3380,6 +3400,95 @@ sleep 30
         let (_, model, provider) = spawned.first().expect("an agent_spawned event");
         assert_eq!(provider, "zai", "{spawned:?}");
         assert_eq!(model, "glm-4.7", "{spawned:?}");
+    }
+
+    /// bug-369c21: a task dispatched twice publishes its `agent_spawned` and
+    /// `agent_completed` events with each attempt's number, as its attempt
+    /// key numbers it, under the task's one agent id.
+    #[tokio::test]
+    async fn retried_attempts_publish_their_attempt_number() {
+        let temp = tempdir().expect("tempdir");
+        let (base_url, _requests) = spawn_openai_mock(vec![final_turn("ok"), final_turn("ok")]);
+        let mut config = RokoConfig::default();
+        config.providers.clear();
+        config.models.clear();
+        config.agent.default_model = "glm-model".to_string();
+        config.agent.bare_mode = false;
+        // `PATH` is always set, standing in for an API key.
+        config.providers.insert(
+            "zai".to_string(),
+            ProviderConfig {
+                kind: ProviderKind::OpenAiCompat,
+                base_url: Some(base_url),
+                api_key_env: Some("PATH".to_string()),
+                timeout_ms: Some(15_000),
+                ..ProviderConfig::default()
+            },
+        );
+        config.models.insert(
+            "glm-model".to_string(),
+            ModelProfile {
+                provider: "zai".to_string(),
+                slug: "glm-4.7".to_string(),
+                context_window: 128_000,
+                max_output: Some(1_024),
+                max_tools: Some(32),
+                supports_tools: true,
+                tool_format: "openai_json".to_string(),
+                ..ModelProfile::default()
+            },
+        );
+        config.conductor.silence_timeout_secs = 0;
+        config.conductor.task_stall_secs = 0;
+        let config = Arc::new(config);
+        let factory =
+            Arc::new(SharedAgentFactory::new(Arc::clone(&config), None, None, None).await);
+        let hub = crate::state_hub::shared_state_hub();
+        let mut events = hub.subscribe_events();
+        let dispatcher =
+            GraphTaskDispatcher::new(factory, Arc::clone(&config), temp.path().to_path_buf())
+                .with_tui_bridge(TuiBridge::new(hub.sender()));
+        let task = TaskDef {
+            model_hint: Some("glm-model".to_string()),
+            timeout_secs: FIXTURE_HANG_GUARD_SECS,
+            verify: vec![verify_step("structural", "true")],
+            ..make_task_def("focused")
+        };
+        let ctx = CellContext::new().with_run_id("retry-run".to_string());
+        for _ in 0..2 {
+            let _ = dispatcher
+                .dispatch(&make_spec(&task), Vec::new(), &ctx)
+                .await;
+        }
+
+        let mut spawned = Vec::new();
+        let mut completed = Vec::new();
+        loop {
+            match events.try_recv() {
+                Ok(envelope) => match envelope.payload {
+                    roko_core::DashboardEvent::AgentSpawned {
+                        agent_id, attempt, ..
+                    } => spawned.push((agent_id, attempt)),
+                    roko_core::DashboardEvent::AgentCompleted {
+                        agent_id, attempt, ..
+                    } => completed.push((agent_id, attempt)),
+                    _ => {}
+                },
+                Err(tokio::sync::broadcast::error::TryRecvError::Lagged(_)) => {}
+                Err(_) => break,
+            }
+        }
+        let attempts = |rows: &[(String, u32)]| rows.iter().map(|row| row.1).collect::<Vec<_>>();
+        assert_eq!(attempts(&spawned), [1, 2], "{spawned:?}");
+        assert_eq!(attempts(&completed), [1, 2], "{completed:?}");
+        let agent_id = &spawned[0].0;
+        assert!(
+            spawned
+                .iter()
+                .chain(&completed)
+                .all(|row| &row.0 == agent_id),
+            "one agent id per task: {spawned:?} {completed:?}"
+        );
     }
 
     /// bug-2e5429: a Claude model on the direct Anthropic API shows that provider in the

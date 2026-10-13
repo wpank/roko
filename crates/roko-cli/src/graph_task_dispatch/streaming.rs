@@ -399,7 +399,7 @@ impl StreamingTaskDispatcher for GraphTaskDispatcher {
         // ── TUI streaming output (streaming path) ──────────────────────
         // Forward provider events to the TUI bridge in the streaming path too.
         if let Ok(dispatch) = &dispatch_result {
-            self.forward_dispatch_events_to_tui(spec, &task, dispatch, ctx);
+            self.forward_dispatch_events_to_tui(spec, &task, dispatch, ctx, attempt.key.attempt);
         }
 
         // ── Map provider events to graph events ──────────────────────────

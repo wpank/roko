@@ -141,7 +141,8 @@ pub enum DashboardEvent {
         old_phase: String,
         new_phase: String,
     },
-    /// An agent was spawned.
+    /// An agent was spawned. Every attempt at a task keeps the task's agent
+    /// id; `attempt` tells the attempts apart (bug-369c21).
     AgentSpawned {
         agent_id: String,
         /// Plan this agent is working on.
@@ -150,7 +151,9 @@ pub enum DashboardEvent {
         /// Task this agent is working on.
         #[serde(default)]
         task_id: String,
-        /// Dispatch attempt number (1-based).
+        /// Dispatch attempt number (1-based): the attempt key's ordinal of a
+        /// Graph task's attempt. 0 from an emitter that does not number
+        /// attempts.
         #[serde(default)]
         attempt: u32,
         role: String,

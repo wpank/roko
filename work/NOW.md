@@ -67,7 +67,7 @@ _13 more open · 1 unchecked (`TRIAGE.md`) · `goal = "core"`_
 - **P2** [gap-7c6663](items/gap-7c6663-a-confirm-rung-s-wait-publishes-no.md) A confirm rung's wait publishes no event, so a run's event stream cannot show that it waits on the person · size M · verified 2026-10-13
 - **P2** [bug-a0f01e](items/bug-a0f01e-long-running-operation-handles-never-record-completion.md) Long-running operation handles never record completion [bug] · verified 2026-10-01
 
-_4 more open · `goal = "visibility"`_
+_3 more open · `goal = "visibility"`_
 
 ## 9. Learning loops on the Graph path
 

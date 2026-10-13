@@ -5,7 +5,8 @@ use super::*;
 
 use crate::runtime::RunOrigin;
 use crate::state::{
-    PLAN_RUN_QUEUE_CAPACITY, PlanRunSpec, PlanRunStatus, PlanSetSpec, QueuedPlanRun, RunState,
+    OperationStatus, PLAN_RUN_QUEUE_CAPACITY, PlanRunSpec, PlanRunStatus, PlanSetSpec,
+    QueuedPlanRun, QueuedRun, RunHandle, RunState,
 };
 use roko_core::dashboard_snapshot::classify_task_outcome;
 
@@ -38,16 +39,23 @@ fn queued_run_named(queued: &QueuedPlanRun, id: &str) -> bool {
 }
 
 /// The queued run `id` names, with its place in the queue, 1 being next
-/// (decision 9105).
+/// (decision 9105): queued prompt runs count, as they wait in the same order
+/// (gap-9a8d66).
 fn queued_run_for(state: &AppState, id: &str) -> Option<(usize, QueuedPlanRun)> {
-    let queue = state
-        .plan_queue
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-    queue
-        .iter()
-        .position(|queued| queued_run_named(queued, id))
-        .map(|index| (index + 1, queue[index].clone()))
+    let queued = {
+        let queue = state
+            .plan_queue
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let index = queue
+            .iter()
+            .position(|queued| queued_run_named(queued, id))?;
+        (index + 1, queue[index].clone())
+    };
+    let position = state
+        .queue_position(&queued.1.spec.run_id)
+        .unwrap_or(queued.0);
+    Some((position, queued.1))
 }
 
 /// Returns the map key of the live entry whose key or run id equals `id`, or
@@ -450,6 +458,49 @@ pub(crate) struct StartedPlanRun {
 
 // ── Starting and queueing runs ───────────────────────────────────────
 
+/// The run that holds the workspace's one plan executor (9113).
+pub(crate) struct LiveRun {
+    /// A plan run's map key, or a prompt run's id.
+    pub(crate) key: String,
+    /// Whether it is a gated prompt run.
+    pub(crate) prompt: bool,
+}
+
+impl LiveRun {
+    /// Why a run that cannot start now waits, or is refused when the queue is
+    /// full.
+    pub(crate) fn conflict(&self, queued: usize) -> ApiError {
+        let (kind, name) = if self.prompt {
+            ("prompt run", "run id")
+        } else {
+            ("plan run", "run key")
+        };
+        ApiError::conflict(format!(
+            "a {kind} is already active (run {name}: {}) and {queued} more are queued, \
+             as many as the queue holds",
+            self.key
+        ))
+    }
+}
+
+/// The run holding the workspace's plan executor (9113), if any: a live plan
+/// run in `plans`, or a gated prompt run still going in `runs` (gap-9a8d66).
+/// An agent's chat reply, which takes no runner lock, does not count.
+pub(crate) fn workspace_busy(
+    runs: &std::collections::HashMap<String, RunHandle>,
+    plans: &std::collections::HashMap<String, PlanHandle>,
+) -> Option<LiveRun> {
+    if let Some(key) = active_run_conflict(plans) {
+        return Some(LiveRun { key, prompt: false });
+    }
+    runs.values()
+        .find(|run| run.cancel.is_some() && matches!(run.status, OperationStatus::Running))
+        .map(|run| LiveRun {
+            key: run.id.clone(),
+            prompt: true,
+        })
+}
+
 /// Start the run `spec` describes, or queue it behind the live run
 /// (decision 9105). Returns the run's place in the queue, 1 being next, or
 /// `None` when it started. A full queue refuses the run with 409.
@@ -457,55 +508,57 @@ async fn start_or_queue_plan_run(
     state: &Arc<AppState>,
     spec: PlanRunSpec,
 ) -> Result<Option<usize>, ApiError> {
-    // Acquire the write lock once to check-and-insert atomically (no TOCTOU
-    // race). A queue left waiting with no live run starts first, and this
-    // run goes behind it.
+    // Lock both run maps once, in the lock order, to check and start or queue
+    // in one step (no TOCTOU race). A queue left waiting with no live run
+    // starts first, and this run goes behind it.
+    let mut runs = state.active_runs.write().await;
     let mut active = state.active_plans.write().await;
-    start_queued_run(state, &mut active);
-    let Some(live_key) = active_run_conflict(&active) else {
+    start_queued_run(state, &mut runs, &mut active);
+    let Some(live) = workspace_busy(&runs, &active) else {
         launch_plan_run(state, &mut active, spec, false);
         return Ok(None);
     };
-    let mut queue = state
-        .plan_queue
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-    if queue.len() >= PLAN_RUN_QUEUE_CAPACITY {
-        return Err(ApiError::conflict(format!(
-            "a plan run is already active (run key: {live_key}) and {} more are queued, \
-             as many as the queue holds",
-            queue.len()
-        )));
+    let queued = state.queued_runs();
+    if queued >= PLAN_RUN_QUEUE_CAPACITY {
+        return Err(live.conflict(queued));
     }
-    queue.push_back(QueuedPlanRun {
-        spec,
-        queued_at: chrono::Utc::now(),
-    });
-    Ok(Some(queue.len()))
-}
-
-/// Start the oldest queued run when no run is live (decision 9105).
-fn start_queued_run(
-    state: &Arc<AppState>,
-    active: &mut std::collections::HashMap<String, PlanHandle>,
-) {
-    if active_run_conflict(active).is_some() {
-        return;
-    }
-    let next = state
+    let run_id = spec.run_id.clone();
+    state
         .plan_queue
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .pop_front();
-    if let Some(queued) = next {
-        launch_plan_run(state, active, queued.spec, true);
+        .push_back(QueuedPlanRun {
+            spec,
+            queued_at: chrono::Utc::now(),
+        });
+    Ok(state.queue_position(&run_id).or(Some(queued + 1)))
+}
+
+/// Start the oldest queued run, a plan run or a gated prompt run, when no run
+/// holds the workspace (decision 9105, gap-9a8d66). `runs` and `plans` are the
+/// locked `active_runs` and `active_plans` maps.
+pub(crate) fn start_queued_run(
+    state: &Arc<AppState>,
+    runs: &mut std::collections::HashMap<String, RunHandle>,
+    plans: &mut std::collections::HashMap<String, PlanHandle>,
+) {
+    if workspace_busy(runs, plans).is_some() || state.cancel.is_cancelled() {
+        return;
+    }
+    match state.pop_queued_run() {
+        Some(QueuedRun::Plan(queued)) => launch_plan_run(state, plans, queued.spec, true),
+        Some(QueuedRun::Prompt(queued)) => {
+            crate::routes::run::launch_queued_prompt_run(state, runs, queued);
+        }
+        None => {}
     }
 }
 
 /// Start the next queued run, now that a run has ended.
-async fn start_next_queued_run(state: &Arc<AppState>) {
+pub(crate) async fn start_next_queued_run(state: &Arc<AppState>) {
+    let mut runs = state.active_runs.write().await;
     let mut active = state.active_plans.write().await;
-    start_queued_run(state, &mut active);
+    start_queued_run(state, &mut runs, &mut active);
 }
 
 /// Spawn the run `spec` describes and insert its handle into `active`, which

@@ -2,15 +2,16 @@
 id = "gap-5e645b"
 kind = "gap"
 title = "POST /api/run refuses with 409 while a plan run is live instead of queueing, unlike plan runs since 9111"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p2"
 goal = "hermes"
 size = "M"
 subsystem = ["roko-serve/routes"]
 created = 2026-10-02
-updated = 2026-10-02
-last_verified = 2026-10-02
+updated = 2026-10-13
+last_verified = 2026-10-13
+last_verified_rev = "4a47e969f"
 source = "wave-3 follow-up reports 2026-10-02 (w3-pk73 gap-5e9292)"
 discovered_from = "backlog task 9113 (run.rs), extending the queueing 9104/9111 built for plan runs (find-8872ad)"
 anchors = ["crates/roko-serve/src/routes/run.rs::start_run", "crates/roko-serve/src/state.rs::AppState"]
@@ -19,6 +20,18 @@ links = { depends_on = [], blocks = [], related = [], supersedes = [], duplicate
 
 [[verify]]
 command = "grep -rqw 'fn prompt_run_is_queued_not_refused_while_a_plan_runs' crates/roko-serve/ && cargo test -p roko-serve prompt_run_is_queued_not_refused_while_a_plan_runs"
+
+[closed]
+at = 2026-10-13
+at_ts = "2026-10-13T16:36:49Z"
+commit = "4a47e969f"
+by = "roko-fixes (Claude fork, hermes-plugin dogfood)"
+executor = "claude-agent"
+via = "manual"
+size = "M"
+claimed_at = "2026-10-13T16:36:32Z"
+forced = false
+evidence = "137755aa1 + 4a47e969f: POST /api/run (and /mcp run_prompt) queue a prompt run behind a live plan run or prompt run instead of refusing it with 409: a parallel prompt queue (AppState::prompt_queue) shares one order with plan_queue and one executor slot (run_control.rs workspace_busy), so only one run of either kind runs at a time; the 202 says queued and position, GET /api/run/{id}/status answers queued with its position, and the run starts under its id once the workspace is free (start_next_queued_run at the end of every plan or gated prompt run). The old 409 test was replaced by prompt_run_is_queued_not_refused_while_a_plan_runs, which passes."
 +++
 
 ## Problem

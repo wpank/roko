@@ -475,6 +475,34 @@ pub struct QueuedPlanRun {
     pub queued_at: chrono::DateTime<chrono::Utc>,
 }
 
+/// A gated prompt run waiting for the live run to end (gap-9a8d66).
+///
+/// Prompt runs and plan runs share the workspace's one plan executor (9113)
+/// and one queue order: the oldest waiting run of either kind starts next
+/// (decision 9105).
+#[derive(Debug, Clone)]
+pub struct QueuedPromptRun {
+    /// The id the run was given when it was queued; it runs under it.
+    pub run_id: String,
+    /// What the run is asked to do.
+    pub prompt: String,
+    /// The directory it runs in, when not the server's workspace.
+    pub workdir: Option<PathBuf>,
+    /// How it runs.
+    pub options: crate::runtime::PromptPlanOptions,
+    /// When it was queued.
+    pub queued_at: chrono::DateTime<chrono::Utc>,
+}
+
+/// The oldest waiting run, taken off its queue by [`AppState::pop_queued_run`].
+#[derive(Debug)]
+pub enum QueuedRun {
+    /// A plan run.
+    Plan(QueuedPlanRun),
+    /// A gated prompt run.
+    Prompt(QueuedPromptRun),
+}
+
 /// A recorded template run outcome used by the metrics summary endpoint.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TemplateRunRecord {
@@ -1002,9 +1030,14 @@ pub struct AppState {
     /// Active plan executions.
     pub active_plans: RwLock<HashMap<String, PlanHandle>>,
     /// Plan runs waiting for the live one to end, oldest first (decision
-    /// 9105). Changed only under the `active_plans` write lock, so starting
-    /// or queueing a run is one step; locked after `active_plans`.
+    /// 9105). Changed only under the `active_runs` and `active_plans` write
+    /// locks, so starting or queueing a run is one step; locked after
+    /// `active_plans`.
     pub plan_queue: std::sync::Mutex<VecDeque<QueuedPlanRun>>,
+    /// Gated prompt runs waiting for the live run to end, oldest first
+    /// (gap-9a8d66). Changed under the same locks as `plan_queue`, and locked
+    /// after it.
+    pub prompt_queue: std::sync::Mutex<VecDeque<QueuedPromptRun>>,
     /// Active generic operations.
     pub operations: RwLock<HashMap<String, OperationHandle>>,
     /// Agent template registry.
@@ -1683,6 +1716,7 @@ impl AppState {
             active_runs: RwLock::new(HashMap::new()),
             active_plans: RwLock::new(HashMap::new()),
             plan_queue: std::sync::Mutex::new(VecDeque::new()),
+            prompt_queue: std::sync::Mutex::new(VecDeque::new()),
             operations: RwLock::new(HashMap::new()),
             templates: RwLock::new(template_registry),
             deploy_backend,
@@ -2306,6 +2340,75 @@ impl AppState {
             .write()
             .await
             .retain(|_, handle| !handle.handle.is_finished());
+    }
+
+    /// How many runs wait in the queues, plan and prompt runs together.
+    pub fn queued_runs(&self) -> usize {
+        let plans = self
+            .plan_queue
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .len();
+        let prompts = self
+            .prompt_queue
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .len();
+        plans + prompts
+    }
+
+    /// Run `run_id`'s place in the queue, 1 being next: plan and prompt runs
+    /// wait in one order, oldest first (decision 9105, gap-9a8d66). `None`
+    /// when no queued run has that id.
+    pub fn queue_position(&self, run_id: &str) -> Option<usize> {
+        let plans = self
+            .plan_queue
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let prompts = self
+            .prompt_queue
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let (mut plan, mut prompt) = (plans.iter().peekable(), prompts.iter().peekable());
+        let mut position = 0;
+        loop {
+            // Each queue keeps its own order; between them the older run goes first.
+            let next = match (plan.peek(), prompt.peek()) {
+                (Some(p), Some(q)) if p.queued_at <= q.queued_at => {
+                    plan.next().map(|p| p.spec.run_id.as_str())
+                }
+                (Some(_), Some(_)) | (None, Some(_)) => prompt.next().map(|q| q.run_id.as_str()),
+                (Some(_), None) => plan.next().map(|p| p.spec.run_id.as_str()),
+                (None, None) => return None,
+            };
+            position += 1;
+            if next == Some(run_id) {
+                return Some(position);
+            }
+        }
+    }
+
+    /// Take the oldest waiting run, of either kind, off its queue.
+    pub fn pop_queued_run(&self) -> Option<QueuedRun> {
+        let mut plans = self
+            .plan_queue
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut prompts = self
+            .prompt_queue
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let plan_first = match (plans.front(), prompts.front()) {
+            (Some(plan), Some(prompt)) => plan.queued_at <= prompt.queued_at,
+            (Some(_), None) => true,
+            (None, Some(_)) => false,
+            (None, None) => return None,
+        };
+        if plan_first {
+            plans.pop_front().map(QueuedRun::Plan)
+        } else {
+            prompts.pop_front().map(QueuedRun::Prompt)
+        }
     }
 
     /// The number of plan runs still going. The handle of a run that ended

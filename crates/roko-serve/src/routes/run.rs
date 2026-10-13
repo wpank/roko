@@ -18,7 +18,9 @@ use crate::events::ServerEvent;
 use crate::extract::{RequestPayload, ValidJson, validate_with_validator};
 use crate::runtime::{CliRuntime, PromptPlanOptions, RunOrigin, RunResult};
 use crate::sanitize::sanitize_agent_content;
-use crate::state::{AppState, OperationStatus, RunHandle, RunState};
+use crate::state::{
+    AppState, OperationStatus, PLAN_RUN_QUEUE_CAPACITY, QueuedPromptRun, RunHandle, RunState,
+};
 
 pub fn routes() -> Router<Arc<AppState>> {
     Router::new()
@@ -53,9 +55,9 @@ impl RequestPayload for RunRequest {
 /// plan through the Graph engine, as `roko run` does, under the id the 202
 /// returns (9113).
 ///
-/// One plan executor runs at a time, and prompt runs are not queued behind
-/// plan runs yet: while a plan run is live the request is refused with 409
-/// instead of waiting for the workspace.
+/// One plan executor runs at a time: while another run holds the workspace,
+/// the run waits in the run queue, and the 202 says `"queued": true` and its
+/// `"position"` (gap-9a8d66).
 async fn start_run(
     State(state): State<Arc<AppState>>,
     ValidJson(body): ValidJson<RunRequest>,
@@ -65,7 +67,7 @@ async fn start_run(
         domain,
         ..PromptPlanOptions::default()
     };
-    let run_id = start_gated_run(
+    let started = start_gated_run(
         &state,
         body.prompt.clone(),
         body.workdir.map(PathBuf::from),
@@ -75,7 +77,11 @@ async fn start_run(
 
     Ok((
         axum::http::StatusCode::ACCEPTED,
-        Json(json!({ "id": run_id })),
+        Json(json!({
+            "id": started.run_id,
+            "queued": started.queued.is_some(),
+            "position": started.queued,
+        })),
     ))
 }
 
@@ -89,9 +95,29 @@ async fn run_status(
     Path(id): Path<String>,
 ) -> Result<Json<Value>, ApiError> {
     let runs = state.active_runs.read().await;
-    let handle = runs
-        .get(&id)
-        .ok_or_else(|| ApiError::not_found("run not found"))?;
+    let Some(handle) = runs.get(&id) else {
+        drop(runs);
+        // A prompt run waiting in the run queue (gap-9a8d66).
+        let prompt = state
+            .prompt_queue
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .iter()
+            .find(|queued| queued.run_id == id)
+            .map(|queued| queued.prompt.clone())
+            .ok_or_else(|| ApiError::not_found("run not found"))?;
+        return Ok(Json(json!({
+            "id": id,
+            "prompt": prompt,
+            "status": RunState::Queued.as_str(),
+            "position": state.queue_position(&id),
+            "verdict": null,
+            "success": null,
+            "output_text": null,
+            "error": null,
+            "finished": false,
+        })));
+    };
 
     let (status, error) = run_handle_state(handle);
     let ended = !matches!(handle.status, OperationStatus::Running);
@@ -140,25 +166,189 @@ pub(crate) async fn spawn_background_run(
     .await
 }
 
+/// A gated prompt run [`start_gated_run`] started or queued.
+pub(crate) struct StartedPromptRun {
+    /// The id it runs under.
+    pub(crate) run_id: String,
+    /// Its place in the run queue, 1 being next, while it waits for the live
+    /// run to end (gap-9a8d66).
+    pub(crate) queued: Option<usize>,
+}
+
 /// Start a gated prompt run (9113) with `options` and return the id it runs
 /// under: the route of `POST /api/run` and of the MCP `run_prompt` tool.
 ///
-/// One plan executor runs at a time, and prompt runs are not queued behind
-/// plan runs yet: while a plan run is live this refuses with 409 instead of
-/// waiting for the workspace.
+/// One plan executor runs at a time. While another run of this server holds
+/// the workspace, the run waits in the run queue with plan runs, oldest first,
+/// and starts when the runs before it end (decision 9105, gap-9a8d66): it never
+/// fails because the workspace is busy after its id has been handed out. A full
+/// queue, or a run outside this server holding the workspace (`roko plan run`
+/// in a terminal), refuses it with 409 before it gets an id.
 pub(crate) async fn start_gated_run(
     state: &Arc<AppState>,
     prompt: String,
     workdir: Option<PathBuf>,
     options: PromptPlanOptions,
-) -> Result<String, ApiError> {
-    if state.live_plan_runs().await > 0 {
-        return Err(ApiError::conflict(
-            "a plan run is active in this workspace; start the prompt run once it ends",
-        ));
+) -> Result<StartedPromptRun, ApiError> {
+    // Lock both run maps once, in the lock order, to check and start or queue
+    // in one step. A queue left waiting with no live run starts first, and
+    // this run goes behind it.
+    let mut runs = state.active_runs.write().await;
+    let mut plans = state.active_plans.write().await;
+    super::plans::start_queued_run(state, &mut runs, &mut plans);
+    let Some(live) = super::plans::workspace_busy(&runs, &plans) else {
+        let run_workdir = workdir.clone().unwrap_or_else(|| state.workdir.clone());
+        if let Some(holder) = state.runtime.runner_lock_holder(&run_workdir) {
+            return Err(ApiError::conflict(format!(
+                "a run outside this server holds the workspace ({holder}); start this run once \
+                 it ends"
+            )));
+        }
+        let (run_id, handle, start) = prepare_run(
+            state,
+            None,
+            prompt,
+            workdir,
+            None,
+            RunMode::GatedPlan,
+            options,
+        );
+        runs.insert(run_id.clone(), handle);
+        let _ = start.send(());
+        return Ok(StartedPromptRun {
+            run_id,
+            queued: None,
+        });
+    };
+    let queued = state.queued_runs();
+    if queued >= PLAN_RUN_QUEUE_CAPACITY {
+        return Err(live.conflict(queued));
     }
-    let run_id = spawn_run(state, prompt, workdir, None, RunMode::GatedPlan, options).await;
-    Ok(run_id)
+    let run_id = uuid::Uuid::new_v4().to_string();
+    state
+        .prompt_queue
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .push_back(QueuedPromptRun {
+            run_id: run_id.clone(),
+            prompt,
+            workdir,
+            options,
+            queued_at: chrono::Utc::now(),
+        });
+    drop((plans, runs));
+    let position = state.queue_position(&run_id).or(Some(queued + 1));
+    Ok(StartedPromptRun {
+        run_id,
+        queued: position,
+    })
+}
+
+/// Start the queued prompt run `queued` under the id it was given (gap-9a8d66):
+/// `runs` is the locked `active_runs` map, which holds no live run.
+pub(crate) fn launch_queued_prompt_run(
+    state: &Arc<AppState>,
+    runs: &mut std::collections::HashMap<String, RunHandle>,
+    queued: QueuedPromptRun,
+) {
+    let (run_id, handle, start) = prepare_run(
+        state,
+        Some(queued.run_id),
+        queued.prompt,
+        queued.workdir,
+        None,
+        RunMode::GatedPlan,
+        queued.options,
+    );
+    runs.insert(run_id, handle);
+    let _ = start.send(());
+}
+
+/// Take the queued prompt run `run_id` out of the run queue (`run_cancel`,
+/// gap-9a8d66). Its handle records it as cancelled, so its status answers;
+/// the run never started, so the handle's task only stands in, and its index
+/// gets the row that says how it ended, so its summary answers once the handle
+/// is gone. `false` when no queued prompt run has that id.
+pub(crate) async fn cancel_queued_prompt_run(state: &Arc<AppState>, run_id: &str) -> bool {
+    let mut runs = state.active_runs.write().await;
+    let removed = {
+        let mut queue = state
+            .prompt_queue
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let index = queue.iter().position(|queued| queued.run_id == run_id);
+        index.and_then(|index| queue.remove(index))
+    };
+    let Some(queued) = removed else {
+        return false;
+    };
+    runs.insert(
+        queued.run_id.clone(),
+        RunHandle {
+            id: queued.run_id.clone(),
+            prompt: queued.prompt,
+            status: OperationStatus::Completed { result: None },
+            result: None,
+            verdict: Some(RunState::Cancelled),
+            cancel: None,
+            handle: tokio::spawn(async {}),
+        },
+    );
+    drop(runs);
+    record_unstarted_run(state, run_id, RunState::Cancelled, None);
+    publish_run_completed(
+        &state.event_bus,
+        run_id,
+        None,
+        RunState::Cancelled,
+        Some(json!({ "error": "cancelled while it waited in the run queue" })),
+    );
+    true
+}
+
+/// Write the rows that say how run `run_id` ended into its own index, for a
+/// run that never started (gap-9a8d66): an `error` row when `error` says why,
+/// and its `run_completed`. Nothing is published on the state hub, whose
+/// events another run's index takes (bug-09e21e).
+fn record_unstarted_run(state: &AppState, run_id: &str, outcome: RunState, error: Option<&str>) {
+    use roko_core::DashboardEvent;
+    use std::io::Write as _;
+
+    let now = run_now_millis();
+    let mut events = Vec::new();
+    if let Some(message) = error {
+        events.push(DashboardEvent::Error {
+            message: message.to_string(),
+        });
+    }
+    events.push(DashboardEvent::RunCompleted {
+        run_id: Some(run_id.to_string()),
+        outcome: outcome.as_str().to_string(),
+        duration_ms: 0,
+        cleanup_degraded: false,
+        surviving_agent_ids: Vec::new(),
+        surviving_agent_pids: Vec::new(),
+    });
+    // The rows a run's own event log writes: the event, its run and its time.
+    let rows = events.iter().map(|event| {
+        let mut row = serde_json::to_value(event).unwrap_or_default();
+        if let Some(fields) = row.as_object_mut() {
+            fields.insert("run_id".into(), json!(run_id));
+            fields.insert("ts_millis".into(), json!(now));
+        }
+        row
+    });
+    let written =
+        roko_fs::run_index::open_run_index_append(&state.layout.events_jsonl_path(), run_id)
+            .and_then(|(_, mut file)| {
+                for row in rows {
+                    writeln!(file, "{row}")?;
+                }
+                file.sync_data()
+            });
+    if let Err(error) = written {
+        tracing::warn!(%run_id, %error, "could not record how the run ended");
+    }
 }
 
 /// Stop background run `run_id` when it is a gated prompt run still going
@@ -218,7 +408,31 @@ async fn spawn_run(
     mode: RunMode,
     options: PromptPlanOptions,
 ) -> String {
-    let run_id = uuid::Uuid::new_v4().to_string();
+    let (run_id, handle, start) =
+        prepare_run(state, None, prompt, workdir, agent_target, mode, options);
+    state
+        .active_runs
+        .write()
+        .await
+        .insert(run_id.clone(), handle);
+    let _ = start.send(());
+    run_id
+}
+
+/// The task of a background run of `prompt` in `mode`, under `run_id` or a new
+/// id: its id, its handle for `active_runs`, and the signal that starts it once
+/// the handle is in place. A gated run starts the next queued run when it ends
+/// (gap-9a8d66).
+fn prepare_run(
+    state: &Arc<AppState>,
+    run_id: Option<String>,
+    prompt: String,
+    workdir: Option<PathBuf>,
+    agent_target: Option<String>,
+    mode: RunMode,
+    options: PromptPlanOptions,
+) -> (String, RunHandle, oneshot::Sender<()>) {
+    let run_id = run_id.unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
     let workdir = workdir.unwrap_or_else(|| state.workdir.clone());
     let bus = state.event_bus.clone();
     let runtime = state.runtime.clone();
@@ -394,6 +608,11 @@ async fn spawn_run(
                     }
                 }
             }
+            // The workspace is free again: the oldest queued run starts
+            // (gap-9a8d66).
+            if mode == RunMode::GatedPlan {
+                super::plans::start_next_queued_run(&state_for_task).await;
+            }
         }
     });
 
@@ -406,14 +625,7 @@ async fn spawn_run(
         cancel,
         handle,
     };
-
-    state
-        .active_runs
-        .write()
-        .await
-        .insert(run_id.clone(), run_handle);
-    let _ = start_tx.send(());
-    run_id
+    (run_id, run_handle, start_tx)
 }
 
 /// How often a one-shot run's agent reports that it is still working.
@@ -945,11 +1157,14 @@ mod tests {
         assert_eq!(ran, [Some(run_id)]);
     }
 
-    /// 9113: prompt runs are not queued behind plan runs yet, so `POST
-    /// /api/run` refuses with 409 while a plan run is live instead of waiting.
+    /// gap-9a8d66, gap-5e645b: while a plan run holds the workspace, `POST /api/run`
+    /// queues the prompt run behind it instead of refusing it: the 202 says
+    /// so, with the run's place, its status answers `queued`, and it starts
+    /// under the id it was handed once the plan run ends.
     #[tokio::test]
-    async fn api_run_is_refused_while_a_plan_run_is_live() {
-        let (_dir, state) = state_over(Arc::new(GatedPrompts::default()));
+    async fn prompt_run_is_queued_not_refused_while_a_plan_runs() {
+        let runtime = Arc::new(GatedPrompts::default());
+        let (_dir, state) = state_over(Arc::clone(&runtime) as Arc<dyn CliRuntime>);
         let plan_run = crate::state::PlanHandle {
             id: "run-1".into(),
             plan_dir: state.workdir.join("plans").join("live"),
@@ -969,12 +1184,34 @@ mod tests {
             workdir: None,
             domain: None,
         };
-        let err = match start_run(State(Arc::clone(&state)), ValidJson(request)).await {
-            Ok(_) => panic!("a live plan run must refuse the prompt run"),
-            Err(err) => err,
-        };
-        assert_eq!(err.status, axum::http::StatusCode::CONFLICT);
+        let response = start_run(State(Arc::clone(&state)), ValidJson(request))
+            .await
+            .expect("the run is queued")
+            .into_response();
+        assert_eq!(response.status(), axum::http::StatusCode::ACCEPTED);
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("the response body");
+        let body: Value = serde_json::from_slice(&body).expect("a JSON body");
+        assert_eq!(body["queued"], true, "{body}");
+        assert_eq!(body["position"], 1, "{body}");
+        let run_id = body["id"].as_str().expect("the run's id").to_string();
         assert!(state.active_runs.read().await.is_empty());
+        let Json(status) = run_status(State(Arc::clone(&state)), Path(run_id.clone()))
+            .await
+            .expect("a queued run has a status");
+        assert_eq!(status["status"], "queued", "{status}");
+        assert_eq!(status["position"], 1, "{status}");
+
+        // The plan run ends: the queued prompt run starts under its id.
+        if let Some(plan) = state.active_plans.write().await.get_mut("live") {
+            plan.status = crate::state::PlanRunStatus::ended(RunState::Succeeded, None);
+        }
+        super::super::plans::start_next_queued_run(&state).await;
+        let status = ended_run_status(&state, &run_id).await;
+        assert_eq!(status["status"], "succeeded", "{status}");
+        let ran = runtime.run_ids.lock().expect("lock run ids").clone();
+        assert_eq!(ran, [Some(run_id)]);
     }
 
     /// gap-8a1fb3: a one-shot run's agent reports how long it has worked while

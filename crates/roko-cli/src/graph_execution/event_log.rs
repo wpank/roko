@@ -300,7 +300,9 @@ impl WorkspaceEventLog {
             .ok()?;
         let writer = WorkspaceLogWriter {
             paths,
+            serve_plan: serve_plan_id(&run_id),
             run_id,
+            plans: None,
             index_only: hub.persists_events(),
             failed: false,
             last_flush: Instant::now(),
@@ -334,6 +336,12 @@ const INDEX_FLUSH_INTERVAL: Duration = Duration::from_secs(1);
 struct WorkspaceLogWriter {
     paths: crate::runner::persist::PersistPaths,
     run_id: String,
+    /// The plans the run executes, from its `PlanSetLoaded`, which a Graph run
+    /// publishes before any plan starts; `None` until then.
+    plans: Option<BTreeSet<String>>,
+    /// The plan `roko serve` names a one-shot run's own events after
+    /// (`run-<first 8 of the run id>`).
+    serve_plan: String,
     /// The hub writes `.roko/events.jsonl` itself.
     index_only: bool,
     /// A write failed, and was reported.
@@ -359,6 +367,9 @@ impl WorkspaceLogWriter {
             return;
         }
         let mut line = serde_json::to_value(event).unwrap_or_default();
+        if !self.owns(event, &line) {
+            return;
+        }
         if let Some(fields) = line.as_object_mut() {
             fields
                 .entry("run_id")
@@ -406,6 +417,45 @@ impl WorkspaceLogWriter {
             );
         }
     }
+}
+
+impl WorkspaceLogWriter {
+    /// Whether `event`, serialized as `line`, is this run's (bug-09e21e).
+    /// Every run on the hub publishes into it, and serve's own runs and errors
+    /// too: an event that names another run, or a plan outside this run's plan
+    /// set once that is known, is not this run's, and is neither recorded nor
+    /// stamped with its id. An event that names neither a run nor a plan is
+    /// taken as the run's own.
+    fn owns(&mut self, event: &DashboardEvent, line: &serde_json::Value) -> bool {
+        let named = |field: &str| {
+            line.get(field)
+                .and_then(serde_json::Value::as_str)
+                .filter(|id| !id.is_empty())
+        };
+        if let Some(run_id) = named("run_id") {
+            return run_id == self.run_id;
+        }
+        if let DashboardEvent::PlanSetLoaded { plans } = event
+            && self.plans.is_none()
+        {
+            self.plans = Some(plans.iter().map(|plan| plan.plan_id.clone()).collect());
+        }
+        let Some(plan_id) = named("plan_id") else {
+            return true;
+        };
+        plan_id == self.run_id
+            || plan_id == self.serve_plan
+            || self
+                .plans
+                .as_ref()
+                .is_none_or(|plans| plans.contains(plan_id))
+    }
+}
+
+/// The plan `roko serve` names a one-shot run's own events after: `run-` and
+/// the run id's first 8 characters (`roko_serve`'s `run_plan_id`).
+fn serve_plan_id(run_id: &str) -> String {
+    format!("run-{}", run_id.get(..8).unwrap_or(run_id))
 }
 
 /// Whether a [`WorkspaceEventLog`] syncs `event` and flushes the run's index
@@ -939,6 +989,89 @@ mod tests {
         assert_eq!(indexed.len(), 1);
         assert_eq!(indexed[0]["type"], "task_completed");
         assert_eq!(indexed[0]["run_id"], "graph-test-2");
+    }
+
+    /// bug-09e21e: the hub carries every run's events. A run's index takes
+    /// its own plans' events and the run-wide ones, never another run's: not
+    /// serve's one-shot plan of a run it refused, nor an event naming another
+    /// run, so its summary counts only its own tasks.
+    #[tokio::test]
+    async fn foreign_plan_events_stay_out_of_the_runs_index() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let events = dir.path().join(".roko/events.jsonl");
+        let hub = crate::state_hub::SharedStateHub::new(
+            crate::state_hub::StateHub::with_event_log(64, &events),
+        );
+        let run_id = "c237c5b3-d2ad-4e63-a47e-bb02fa6ce274";
+        let log =
+            WorkspaceEventLog::spawn(&hub, dir.path(), run_id.to_string()).expect("record the run");
+        let sender = hub.sender();
+        let task = |plan: &str, task: &str| DashboardEvent::TaskStarted {
+            plan_id: plan.to_string(),
+            task_id: task.to_string(),
+            title: String::new(),
+            phase: "implementing".to_string(),
+        };
+        let completed = |plan: &str, task: &str, outcome: &str| DashboardEvent::TaskCompleted {
+            plan_id: plan.to_string(),
+            task_id: task.to_string(),
+            outcome: outcome.to_string(),
+        };
+        sender.publish(DashboardEvent::PlanSetLoaded {
+            plans: vec![PlanSetEntry {
+                plan_id: run_id.to_string(),
+                title: run_id.to_string(),
+                ..PlanSetEntry::default()
+            }],
+        });
+        sender.publish(task(run_id, "T1"));
+        // Serve's events for a prompt run it started while this one held the
+        // workspace: its one-shot plan, its failure, its end.
+        let refused = "run-da891352";
+        sender.publish(task(refused, "In the tally project, add a --json flag"));
+        sender.publish(completed(
+            refused,
+            "In the tally project, add a --json flag",
+            "failed",
+        ));
+        sender.publish(DashboardEvent::PlanCompleted {
+            plan_id: refused.to_string(),
+            success: false,
+        });
+        sender.publish(DashboardEvent::RunCompleted {
+            run_id: Some("da891352-1709-45bf-bc8c-ac8417494046".to_string()),
+            outcome: "failed".to_string(),
+            duration_ms: 3,
+            cleanup_degraded: false,
+            surviving_agent_ids: Vec::new(),
+            surviving_agent_pids: Vec::new(),
+        });
+        // Serve's heartbeat for this run's own one-shot plan, and a run-wide line.
+        sender.publish(DashboardEvent::AgentHeartbeat {
+            agent_id: "claude".to_string(),
+            plan_id: "run-c237c5b3".to_string(),
+            task_id: "T1".to_string(),
+            elapsed_ms: 5_000,
+        });
+        sender.publish(completed(run_id, "T1", "passed"));
+        log.finish().await;
+
+        let index = roko_fs::run_index::run_index_path(&events, run_id).expect("index path");
+        let rows = read_lines(&index);
+        let plans: BTreeSet<&str> = rows
+            .iter()
+            .filter_map(|row| row["plan_id"].as_str())
+            .collect();
+        assert_eq!(plans, BTreeSet::from([run_id, "run-c237c5b3"]), "{rows:#?}");
+        assert!(rows.iter().all(|row| row["run_id"] == run_id), "{rows:#?}");
+        let outcomes: Vec<&str> = rows
+            .iter()
+            .filter(|row| row["type"] == "task_completed")
+            .filter_map(|row| row["outcome"].as_str())
+            .collect();
+        assert_eq!(outcomes, ["passed"]);
+        // The hub still logs every event once; only the index is the run's own.
+        assert_eq!(read_lines(&events).len(), 8);
     }
 
     /// bug-28aae1: every row of the run's index carries the time the hub

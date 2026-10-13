@@ -8,8 +8,11 @@
 //! `roko.batch@1`. A promoted run's commit carries the tag `roko/run/<run-id>`.
 //! roko-cli (`graph_execution/batch.rs`) writes all of these; this module only
 //! reads them, with read-only git plumbing, so that the run summary can tell a
-//! chat host what the run changed and how to take it.
+//! chat host what the run changed and how to take it, and the run's diff can
+//! show it (gap-0d6d21).
 
+use std::collections::HashMap;
+use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
@@ -58,6 +61,47 @@ pub(super) fn graph_plan_state_dir(workdir: &Path, plan_id: &str) -> PathBuf {
         .join(component)
 }
 
+/// Where a run's batch stands in the repository: its branch, the branch's tip
+/// and, when it can be told, the commit the batch started from. The summary's
+/// `result` and the run's diff both read it, so they agree (gap-0d6d21).
+pub(super) struct ResultRange {
+    /// `roko/batch/<run-id>`.
+    pub(super) branch: String,
+    /// The branch's tip.
+    pub(super) commit: String,
+    /// The commit the batch started from, from the run's records, else the
+    /// merge base of the tip and `HEAD`.
+    pub(super) base: Option<String>,
+    /// The checkout's `HEAD` commit, when it has one.
+    head: Option<String>,
+}
+
+/// Run `run_id`'s [`ResultRange`] in the repository at `workdir`, or `None`
+/// when it has no batch branch there. `plan_ids` are the run's plans, whose
+/// checkpoints may record the base.
+pub(super) fn result_range(
+    workdir: &Path,
+    run_id: &str,
+    plan_ids: &[String],
+) -> Option<ResultRange> {
+    if run_id.is_empty() {
+        return None;
+    }
+    let branch = format!("{BATCH_BRANCH_PREFIX}{run_id}");
+    let commit = rev_parse(workdir, &format!("refs/heads/{branch}"))?;
+    let head = rev_parse(workdir, "HEAD");
+    let base = recorded_base(workdir, run_id, plan_ids, &commit).or_else(|| {
+        let head = head.as_deref()?;
+        git_text(workdir, &["merge-base", head, &commit]).filter(|base| is_object_id(base))
+    });
+    Some(ResultRange {
+        branch,
+        commit,
+        base,
+        head,
+    })
+}
+
 /// Where run `run_id`'s verified work is in the repository at `workdir`, or
 /// `None` when it has no batch branch there: its tasks ran in the shared
 /// working tree, it ran in another repository, or the branch was deleted.
@@ -71,16 +115,12 @@ pub(super) fn graph_plan_state_dir(workdir: &Path, plan_id: &str) -> PathBuf {
 /// command that takes it, as `roko plan run` prints it. `plan_ids` are the
 /// run's plans, whose checkpoints may record the base.
 pub(super) fn run_result(workdir: &Path, run_id: &str, plan_ids: &[String]) -> Option<Value> {
-    if run_id.is_empty() {
-        return None;
-    }
-    let branch = format!("{BATCH_BRANCH_PREFIX}{run_id}");
-    let commit = rev_parse(workdir, &format!("refs/heads/{branch}"))?;
-    let head = rev_parse(workdir, "HEAD");
-    let base = recorded_base(workdir, run_id, plan_ids, &commit).or_else(|| {
-        let head = head.as_deref()?;
-        git_text(workdir, &["merge-base", head, &commit]).filter(|base| is_object_id(base))
-    });
+    let ResultRange {
+        branch,
+        commit,
+        base,
+        head,
+    } = result_range(workdir, run_id, plan_ids)?;
 
     let mut result = json!({ "branch": branch, "commit": commit });
     if let Some(base) = &base {
@@ -205,6 +245,278 @@ fn changed_files(workdir: &Path, base: &str, tip: &str) -> Option<(Vec<String>, 
     Some((files, insertions, deletions))
 }
 
+/// What [`run_diff`] returns at most.
+#[derive(Debug, Clone, Copy)]
+pub(super) struct DiffLimits {
+    /// The most files listed; the totals count every file.
+    pub(super) max_files: usize,
+    /// The most bytes of one file's patch, cut on a line boundary.
+    pub(super) max_patch_bytes: usize,
+}
+
+/// One file a run's batch changes from its base.
+struct DiffEntry {
+    path: String,
+    status: &'static str,
+    additions: u64,
+    deletions: u64,
+    binary: bool,
+}
+
+/// The diff of run `run_id`'s verified work (gap-0d6d21): each file its batch
+/// changes from its base, with its status, line counts, whether it is binary
+/// and its unified patch (`null` for a binary file), within `limits`, plus
+/// totals over every file. `None` when the run has no batch branch in the
+/// repository at `workdir`, no base to diff from, or git cannot tell.
+pub(super) fn run_diff(
+    workdir: &Path,
+    run_id: &str,
+    plan_ids: &[String],
+    limits: DiffLimits,
+) -> Option<Value> {
+    let range = result_range(workdir, run_id, plan_ids)?;
+    let base = range.base.as_deref()?;
+    let entries = diff_entries(workdir, base, &range.commit)?;
+    let kept = &entries[..entries.len().min(limits.max_files)];
+    let paths = kept
+        .iter()
+        .filter(|entry| !entry.binary)
+        .map(|entry| entry.path.as_str())
+        .collect::<Vec<_>>();
+    let mut patches = if paths.is_empty() {
+        HashMap::new()
+    } else {
+        file_patches(workdir, base, &range.commit, &paths, limits.max_patch_bytes)?
+    };
+    let files = kept
+        .iter()
+        .map(|entry| {
+            let (patch, truncated) = if entry.binary {
+                (Value::Null, false)
+            } else {
+                patches
+                    .remove(&entry.path)
+                    .map_or((json!(""), false), |(patch, cut)| (json!(patch), cut))
+            };
+            json!({
+                "path": entry.path,
+                "status": entry.status,
+                "additions": entry.additions,
+                "deletions": entry.deletions,
+                "binary": entry.binary,
+                "patch": patch,
+                "truncated": truncated,
+            })
+        })
+        .collect::<Vec<_>>();
+    let additions = entries
+        .iter()
+        .fold(0_u64, |sum, entry| sum.saturating_add(entry.additions));
+    let deletions = entries
+        .iter()
+        .fold(0_u64, |sum, entry| sum.saturating_add(entry.deletions));
+    Some(json!({
+        "run_id": run_id,
+        "branch": range.branch,
+        "base": base,
+        "commit": range.commit,
+        "files": files,
+        "totals": {
+            "files": entries.len(),
+            "additions": additions,
+            "deletions": deletions,
+        },
+        "truncated": kept.len() < entries.len(),
+    }))
+}
+
+/// Each file `tip` changes from `base`, in git's path order: its status from
+/// `--name-status` and its line counts from `--numstat` (a binary file counts
+/// none). `None` when git cannot tell.
+fn diff_entries(workdir: &Path, base: &str, tip: &str) -> Option<Vec<DiffEntry>> {
+    let options = ["diff", "--no-color", "--no-ext-diff", "--no-renames", "-z"];
+    let numstat = git(workdir, &[&options[..], &["--numstat", base, tip]].concat())?;
+    let mut counts = HashMap::new();
+    for record in numstat.split(|byte| *byte == 0) {
+        let record = String::from_utf8_lossy(record);
+        let mut fields = record.splitn(3, '\t');
+        let (Some(added), Some(removed), Some(path)) =
+            (fields.next(), fields.next(), fields.next())
+        else {
+            continue;
+        };
+        let binary = added == "-" && removed == "-";
+        counts.insert(
+            path.to_string(),
+            (
+                added.parse::<u64>().unwrap_or(0),
+                removed.parse::<u64>().unwrap_or(0),
+                binary,
+            ),
+        );
+    }
+    let statuses = git(
+        workdir,
+        &[&options[..], &["--name-status", base, tip]].concat(),
+    )?;
+    let mut fields = statuses
+        .split(|byte| *byte == 0)
+        .filter(|field| !field.is_empty());
+    let mut entries = Vec::new();
+    while let (Some(status), Some(path)) = (fields.next(), fields.next()) {
+        let path = String::from_utf8_lossy(path).into_owned();
+        let (additions, deletions, binary) = counts.get(&path).copied().unwrap_or((0, 0, false));
+        entries.push(DiffEntry {
+            status: match status.first() {
+                Some(b'A') => "added",
+                Some(b'D') => "deleted",
+                _ => "modified",
+            },
+            path,
+            additions,
+            deletions,
+            binary,
+        });
+    }
+    Some(entries)
+}
+
+/// The unified patch of each of `paths` from `base` to `tip`, by path, each
+/// cut on a line boundary at `max_patch_bytes` (and then marked truncated).
+/// git writes one `diff --git` section per path, in the order `--name-status`
+/// lists them, so sections pair with `paths` in turn; should the counts ever
+/// differ, each section's header names its path instead. The output is read as
+/// a stream, so no patch takes more memory than its own limit. `None` when git
+/// fails.
+fn file_patches(
+    workdir: &Path,
+    base: &str,
+    tip: &str,
+    paths: &[&str],
+    max_patch_bytes: usize,
+) -> Option<HashMap<String, (String, bool)>> {
+    let mut child = git_command(workdir)
+        .args([
+            "--literal-pathspecs",
+            "diff",
+            "--no-color",
+            "--no-ext-diff",
+            "--no-renames",
+            base,
+            tip,
+            "--",
+        ])
+        .args(paths)
+        .stdout(Stdio::piped())
+        .spawn()
+        .ok()?;
+    let read = child
+        .stdout
+        .take()
+        .map(|stdout| read_sections(&mut BufReader::new(stdout), max_patch_bytes));
+    let status = child.wait().ok()?;
+    let sections = read?.ok()?;
+    if !status.success() {
+        return None;
+    }
+    let text = |patch: Vec<u8>| String::from_utf8_lossy(&patch).into_owned();
+    if sections.len() == paths.len() {
+        return Some(
+            paths
+                .iter()
+                .zip(sections)
+                .map(|(path, (patch, truncated))| ((*path).to_string(), (text(patch), truncated)))
+                .collect(),
+        );
+    }
+    Some(
+        sections
+            .into_iter()
+            .filter_map(|(patch, truncated)| {
+                let path = header_path(&patch)?;
+                Some((path, (text(patch), truncated)))
+            })
+            .collect(),
+    )
+}
+
+/// The `diff --git` sections of a patch stream, each with the lines that fit
+/// in `max_patch_bytes` and whether any did not.
+fn read_sections(
+    reader: &mut impl BufRead,
+    max_patch_bytes: usize,
+) -> std::io::Result<Vec<(Vec<u8>, bool)>> {
+    // Each line keeps at most this much: enough to see a section header, and
+    // to tell whether the line fits what is left of its patch.
+    let line_cap = max_patch_bytes.saturating_add(1).max(64);
+    let mut sections: Vec<(Vec<u8>, bool)> = Vec::new();
+    let mut line = Vec::new();
+    loop {
+        line.clear();
+        let length = read_line_capped(reader, &mut line, line_cap)?;
+        if length == 0 {
+            return Ok(sections);
+        }
+        if line.starts_with(b"diff --git ") {
+            sections.push((Vec::new(), false));
+        }
+        let Some((patch, truncated)) = sections.last_mut() else {
+            continue;
+        };
+        if *truncated {
+            continue;
+        }
+        if length == line.len() && patch.len() + length <= max_patch_bytes {
+            patch.extend_from_slice(&line);
+        } else {
+            *truncated = true;
+        }
+    }
+}
+
+/// The path a `diff --git a/<path> b/<path>` section header names. Without
+/// renames both sides name the same path; a quoted header names none here.
+fn header_path(section: &[u8]) -> Option<String> {
+    let first = section.split(|byte| *byte == b'\n').next()?;
+    let rest = std::str::from_utf8(first.strip_prefix(b"diff --git ")?).ok()?;
+    // "a/" + path + " b/" + path: five bytes besides the path twice.
+    let both = rest.len().checked_sub(5)?;
+    if both % 2 != 0 {
+        return None;
+    }
+    let length = both / 2;
+    let path = rest.get(2..2 + length)?;
+    (rest.starts_with("a/") && rest.get(2 + length..)? == format!(" b/{path}"))
+        .then(|| path.to_string())
+}
+
+/// Read one line from `reader` into `line`, keeping at most `cap` bytes of
+/// it, and return the line's whole length (0 at the end of the stream), so a
+/// very long line costs no more memory than `cap`.
+fn read_line_capped(
+    reader: &mut impl BufRead,
+    line: &mut Vec<u8>,
+    cap: usize,
+) -> std::io::Result<usize> {
+    let mut length = 0;
+    loop {
+        let available = reader.fill_buf()?;
+        if available.is_empty() {
+            return Ok(length);
+        }
+        let end = available.iter().position(|byte| *byte == b'\n');
+        let chunk = &available[..end.map_or(available.len(), |at| at + 1)];
+        let room = cap.saturating_sub(line.len());
+        line.extend_from_slice(&chunk[..chunk.len().min(room)]);
+        let used = chunk.len();
+        length += used;
+        reader.consume(used);
+        if end.is_some() {
+            return Ok(length);
+        }
+    }
+}
+
 /// A JSON record roko wrote under `.roko/`, unless it is missing, too large
 /// or not JSON.
 fn read_record(path: &Path) -> Option<Value> {
@@ -249,22 +561,25 @@ fn git_text(workdir: &Path, args: &[&str]) -> Option<String> {
     (!text.is_empty()).then_some(text)
 }
 
-/// The stdout of a read-only git command in `workdir`, when it succeeded. It
-/// takes no optional locks, never prompts, and ignores a `GIT_DIR` or
-/// `GIT_WORK_TREE` the server inherited.
+/// The stdout of a read-only git command in `workdir`, when it succeeded.
 fn git(workdir: &Path, args: &[&str]) -> Option<Vec<u8>> {
-    let output = Command::new("git")
+    let output = git_command(workdir).args(args).output().ok()?;
+    output.status.success().then_some(output.stdout)
+}
+
+/// A git command in `workdir` that takes no optional locks, never prompts,
+/// and ignores a `GIT_DIR` or `GIT_WORK_TREE` the server inherited.
+fn git_command(workdir: &Path) -> Command {
+    let mut command = Command::new("git");
+    command
         .arg("-C")
         .arg(workdir)
-        .args(args)
         .env("GIT_TERMINAL_PROMPT", "0")
         .env("GIT_OPTIONAL_LOCKS", "0")
         .env_remove("GIT_DIR")
         .env_remove("GIT_WORK_TREE")
         .env_remove("GIT_INDEX_FILE")
         .stdin(Stdio::null())
-        .stderr(Stdio::null())
-        .output()
-        .ok()?;
-    output.status.success().then_some(output.stdout)
+        .stderr(Stdio::null());
+    command
 }

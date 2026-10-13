@@ -56,6 +56,7 @@ pub fn routes() -> Router<Arc<AppState>> {
         .route("/dashboard/runs", get(get_dashboard_runs))
         .route("/runs/{run_id}", get(get_run_detail))
         .route("/runs/{run_id}/summary", get(get_run_summary))
+        .route("/runs/{run_id}/diff", get(get_run_diff))
         .route("/runs/{run_id}/events", get(get_run_events))
         .route("/runs/{run_id}/events/stream", get(get_run_events_stream))
         .route("/runs/{run_id}/tasks", get(get_run_tasks))
@@ -79,6 +80,24 @@ struct EventQuery {
     types: Option<String>,
     source: Option<String>,
 }
+
+/// `GET /api/runs/{run_id}/diff`'s limits (gap-0d6d21).
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(default)]
+struct DiffQuery {
+    max_files: Option<usize>,
+    max_patch_bytes: Option<usize>,
+}
+
+/// How many files a run's diff lists unless asked, and at most.
+const DEFAULT_DIFF_FILES: usize = 200;
+const MAX_DIFF_FILES: usize = 500;
+
+/// How many bytes of one file's patch a run's diff returns unless asked, at
+/// least, and at most.
+const DEFAULT_DIFF_PATCH_BYTES: usize = 65_536;
+const MIN_DIFF_PATCH_BYTES: usize = 1_024;
+const MAX_DIFF_PATCH_BYTES: usize = 262_144;
 
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(default)]
@@ -210,6 +229,93 @@ async fn get_run_summary(
 /// The summary `GET /api/runs/{run_id}/summary` returns for run `run_id`,
 /// which the MCP `run_status` tool returns too.
 pub(super) async fn summarize_run(state: &Arc<AppState>, run_id: &str) -> Result<Value, ApiError> {
+    let (mut summary, plan_ids) = summary_and_plans(state, run_id).await?;
+    // gap-8409d0: an ended run's summary says where its verified work is, so a
+    // chat host can tell its person what changed and how to take it.
+    if summary["active"] == Value::Bool(false) {
+        let workdir = state.workdir.clone();
+        let io_run_id = run_id.to_string();
+        let result = blocking_io(move || {
+            Ok(super::run_result::run_result(
+                &workdir, &io_run_id, &plan_ids,
+            ))
+        })
+        .await?;
+        if let Some(result) = result {
+            summary["result"] = result;
+        }
+    }
+    Ok(summary)
+}
+
+/// `GET /api/runs/{run_id}/diff` — every change an ended run's verified work
+/// makes from the base its batch started at (gap-0d6d21): each file's status,
+/// line counts, whether it is binary and its unified patch, within
+/// `max_files` and `max_patch_bytes` per file, and totals over every file.
+/// 409 while the run is active; 404 when it has no result to diff.
+async fn get_run_diff(
+    State(state): State<Arc<AppState>>,
+    Path(run_id): Path<String>,
+    Query(query): Query<DiffQuery>,
+) -> Result<Json<Value>, ApiError> {
+    let limits = super::run_result::DiffLimits {
+        max_files: bounded_param(
+            "max_files",
+            query.max_files,
+            DEFAULT_DIFF_FILES,
+            1,
+            MAX_DIFF_FILES,
+        )?,
+        max_patch_bytes: bounded_param(
+            "max_patch_bytes",
+            query.max_patch_bytes,
+            DEFAULT_DIFF_PATCH_BYTES,
+            MIN_DIFF_PATCH_BYTES,
+            MAX_DIFF_PATCH_BYTES,
+        )?,
+    };
+    let (summary, plan_ids) = summary_and_plans(&state, &run_id).await?;
+    if summary["active"] != Value::Bool(false) {
+        return Err(ApiError::conflict(format!(
+            "run '{run_id}' is still active"
+        )));
+    }
+    let workdir = state.workdir.clone();
+    let io_run_id = run_id.clone();
+    let diff = blocking_io(move || {
+        Ok(super::run_result::run_diff(
+            &workdir, &io_run_id, &plan_ids, limits,
+        ))
+    })
+    .await?;
+    diff.map(Json)
+        .ok_or_else(|| ApiError::not_found(format!("run '{run_id}' has no result to diff")))
+}
+
+/// `value`, or `default` when it is not given, refused when it falls outside
+/// `least..=most`.
+fn bounded_param(
+    name: &str,
+    value: Option<usize>,
+    default: usize,
+    least: usize,
+    most: usize,
+) -> Result<usize, ApiError> {
+    let value = value.unwrap_or(default);
+    if !(least..=most).contains(&value) {
+        return Err(ApiError::bad_request(format!(
+            "{name} must be between {least} and {most}"
+        )));
+    }
+    Ok(value)
+}
+
+/// Run `run_id`'s summary without its `result`, and the plans its events
+/// name, whose checkpoints may record where its batch started.
+async fn summary_and_plans(
+    state: &Arc<AppState>,
+    run_id: &str,
+) -> Result<(Value, Vec<String>), ApiError> {
     ensure_observability_allowed(state)?;
     validate_id(run_id, "run id")?;
     let in_memory = run_state_in_memory(state, run_id).await;
@@ -232,31 +338,16 @@ pub(super) async fn summarize_run(state: &Arc<AppState>, run_id: &str) -> Result
     }
     let events = page.map(|page| page.events).unwrap_or_default();
     let config = state.load_roko_config();
-    let mut summary = run_summary(run_id, &events, in_memory, &config);
-    // gap-8409d0: an ended run's summary says where its verified work is, so a
-    // chat host can tell its person what changed and how to take it.
-    if summary["active"] == Value::Bool(false) {
-        let mut plan_ids = Vec::<String>::new();
-        for item in &events {
-            if let Some(plan_id) = event_plan_id(&item.value).filter(|id| !id.is_empty())
-                && !plan_ids.iter().any(|known| known == plan_id)
-            {
-                plan_ids.push(plan_id.to_string());
-            }
-        }
-        let workdir = state.workdir.clone();
-        let io_run_id = run_id.to_string();
-        let result = blocking_io(move || {
-            Ok(super::run_result::run_result(
-                &workdir, &io_run_id, &plan_ids,
-            ))
-        })
-        .await?;
-        if let Some(result) = result {
-            summary["result"] = result;
+    let summary = run_summary(run_id, &events, in_memory, &config);
+    let mut plan_ids = Vec::<String>::new();
+    for item in &events {
+        if let Some(plan_id) = event_plan_id(&item.value).filter(|id| !id.is_empty())
+            && !plan_ids.iter().any(|known| known == plan_id)
+        {
+            plan_ids.push(plan_id.to_string());
         }
     }
-    Ok(summary)
+    Ok((summary, plan_ids))
 }
 
 /// What this server holds of run `run_id` in memory: the state of its
@@ -2789,6 +2880,220 @@ mod tests {
     /// promotion once the run was promoted. The base comes from the run's
     /// manifest or a plan's batch record, so it survives the merge. A run
     /// still active, or one with no batch branch, has no result.
+    /// gap-0d6d21: an ended run's diff lists every file its batch changes
+    /// from its base, with status, line counts, a binary flag and the patch,
+    /// within `max_files` and `max_patch_bytes`; 409 while the run is active,
+    /// 404 when it has no result, 400 for limits out of range.
+    #[tokio::test]
+    async fn run_diff_returns_the_runs_patches() {
+        use axum::http::StatusCode;
+
+        let dir = tempfile::tempdir().unwrap();
+        let repo = dir.path().to_path_buf();
+        let git = |args: &[&str]| -> String {
+            let output = std::process::Command::new("git")
+                .current_dir(&repo)
+                .args([
+                    "-c",
+                    "user.name=roko-test",
+                    "-c",
+                    "user.email=roko@test.invalid",
+                    "-c",
+                    "commit.gpgsign=false",
+                ])
+                .args(args)
+                .env_remove("GIT_DIR")
+                .env_remove("GIT_WORK_TREE")
+                .env_remove("GIT_INDEX_FILE")
+                .output()
+                .expect("run git");
+            assert!(
+                output.status.success(),
+                "git {args:?}: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            String::from_utf8_lossy(&output.stdout).trim().to_string()
+        };
+        git(&["init", "--quiet", "-b", "main"]);
+        std::fs::create_dir_all(repo.join("src")).unwrap();
+        std::fs::write(repo.join("src/lib.rs"), "pub fn one() {}\n").unwrap();
+        std::fs::write(repo.join("src/old.rs"), "pub fn gone() {}\n").unwrap();
+        git(&["add", "src"]);
+        git(&["commit", "--quiet", "-m", "base"]);
+        let base = git(&["rev-parse", "HEAD"]);
+        git(&["switch", "--quiet", "-c", "roko/batch/r9"]);
+        std::fs::write(
+            repo.join("src/lib.rs"),
+            "pub fn one() {}\npub fn two() {}\n",
+        )
+        .unwrap();
+        std::fs::write(repo.join("src/new.rs"), "pub fn three() {}\n").unwrap();
+        std::fs::remove_file(repo.join("src/old.rs")).unwrap();
+        std::fs::create_dir_all(repo.join("assets")).unwrap();
+        std::fs::write(
+            repo.join("assets/logo.bin"),
+            [0_u8, 159, 146, 150, 0, 255, 10],
+        )
+        .unwrap();
+        let big: String = (1..=3000).map(|n| format!("line {n}\n")).collect();
+        std::fs::write(repo.join("big.txt"), big).unwrap();
+        git(&["add", "-A", "src", "assets", "big.txt"]);
+        git(&["commit", "--quiet", "-m", "the run's work"]);
+        let tip = git(&["rev-parse", "HEAD"]);
+        git(&["switch", "--quiet", "main"]);
+        git(&["update-ref", "refs/heads/roko/batch/r6", &tip]);
+
+        let deploy_backend = Arc::from(
+            crate::deploy::create_backend("manual", None, None, None).expect("manual backend"),
+        );
+        let state = Arc::new(
+            AppState::new(
+                repo.clone(),
+                Arc::new(crate::runtime::NoOpRuntime),
+                roko_core::config::schema::RokoConfig::default(),
+                deploy_backend,
+            )
+            .expect("AppState::new"),
+        );
+        let index = |run_id: &str| {
+            roko_fs::run_index::run_index_path(&state.layout.events_jsonl_path(), run_id).unwrap()
+        };
+        let ended = |run_id: &str| {
+            vec![
+                json!({"type":"run.started","run_id":run_id,"timestamp_ms":1,"plan_id":run_id}),
+                json!({"type":"task_completed","run_id":run_id,"timestamp_ms":2,"plan_id":run_id,"task_id":"t1","outcome":"passed"}),
+                json!({"type":"run.completed","run_id":run_id,"timestamp_ms":3,"outcome":"succeeded","duration_ms":10}),
+            ]
+        };
+        write_rows(&index("r9"), &ended("r9"));
+        let manifest = roko_fs::RokoLayout::for_project(&repo)
+            .run_dir("r9")
+            .join("manifest.json");
+        std::fs::create_dir_all(manifest.parent().unwrap()).unwrap();
+        std::fs::write(
+            &manifest,
+            json!({"run_id":"r9","plan_ids":["r9"],"workspace":{"base_commit":base}}).to_string(),
+        )
+        .unwrap();
+        // r6 is still running; r5 ended with no batch branch.
+        write_rows(
+            &index("r6"),
+            &[json!({"type":"run.started","run_id":"r6","timestamp_ms":1,"plan_id":"r6"})],
+        );
+        write_rows(&index("r5"), &ended("r5"));
+
+        let diff = |run_id: &'static str, query: DiffQuery| {
+            let state = Arc::clone(&state);
+            async move { get_run_diff(State(state), Path(run_id.into()), Query(query)).await }
+        };
+
+        let Json(all) = diff("r9", DiffQuery::default()).await.unwrap();
+        assert_eq!(all["branch"], "roko/batch/r9", "{all}");
+        assert_eq!(all["base"], base.as_str(), "{all}");
+        assert_eq!(all["commit"], tip.as_str(), "{all}");
+        assert_eq!(all["truncated"], false, "{all}");
+        assert_eq!(
+            all["totals"],
+            json!({"files": 5, "additions": 3002, "deletions": 1}),
+        );
+        let files = all["files"].as_array().unwrap();
+        let summary = files
+            .iter()
+            .map(|file| {
+                (
+                    file["path"].as_str().unwrap(),
+                    file["status"].as_str().unwrap(),
+                    file["binary"].as_bool().unwrap(),
+                )
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            summary,
+            [
+                ("assets/logo.bin", "added", true),
+                ("big.txt", "added", false),
+                ("src/lib.rs", "modified", false),
+                ("src/new.rs", "added", false),
+                ("src/old.rs", "deleted", false),
+            ]
+        );
+        assert_eq!(files[0]["patch"], Value::Null, "a binary file has no patch");
+        assert_eq!(files[2]["additions"], 1);
+        assert!(
+            files[2]["patch"]
+                .as_str()
+                .unwrap()
+                .contains("+pub fn two() {}")
+        );
+        assert!(
+            files[3]["patch"]
+                .as_str()
+                .unwrap()
+                .contains("+pub fn three() {}")
+        );
+        assert!(
+            files[4]["patch"]
+                .as_str()
+                .unwrap()
+                .contains("-pub fn gone() {}")
+        );
+        assert_eq!(files[1]["truncated"], false);
+
+        // A patch is cut on a line boundary at max_patch_bytes.
+        let Json(cut) = diff(
+            "r9",
+            DiffQuery {
+                max_patch_bytes: Some(1_024),
+                ..DiffQuery::default()
+            },
+        )
+        .await
+        .unwrap();
+        let big_patch = cut["files"][1]["patch"].as_str().unwrap();
+        assert_eq!(cut["files"][1]["truncated"], true, "{}", cut["files"][1]);
+        assert!(big_patch.len() <= 1_024 && big_patch.ends_with('\n'));
+        assert_eq!(cut["files"][2]["truncated"], false);
+
+        // Files past max_files are left out; the totals still count them.
+        let Json(first_two) = diff(
+            "r9",
+            DiffQuery {
+                max_files: Some(2),
+                ..DiffQuery::default()
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(first_two["files"].as_array().unwrap().len(), 2);
+        assert_eq!(first_two["truncated"], true);
+        assert_eq!(first_two["totals"]["files"], 5);
+
+        let active = diff("r6", DiffQuery::default()).await.unwrap_err();
+        assert_eq!(active.status, StatusCode::CONFLICT, "{}", active.message);
+        let none = diff("r5", DiffQuery::default()).await.unwrap_err();
+        assert_eq!(none.status, StatusCode::NOT_FOUND, "{}", none.message);
+        let refused = diff(
+            "r9",
+            DiffQuery {
+                max_files: Some(0),
+                ..DiffQuery::default()
+            },
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(refused.status, StatusCode::BAD_REQUEST);
+        let too_much = diff(
+            "r9",
+            DiffQuery {
+                max_patch_bytes: Some(MAX_DIFF_PATCH_BYTES + 1),
+                ..DiffQuery::default()
+            },
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(too_much.status, StatusCode::BAD_REQUEST);
+    }
+
     #[tokio::test]
     async fn run_summary_reports_where_the_verified_work_is() {
         let dir = tempfile::tempdir().unwrap();

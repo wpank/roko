@@ -2,7 +2,7 @@
 id = "gap-25d9cc"
 kind = "gap"
 title = "MCP confirm_pending omits the confirm rung's timeout, so hosts guess when an unanswered sign-off is skipped"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p2"
 goal = "hermes"
@@ -11,12 +11,25 @@ subsystem = ["roko-serve/mcp"]
 created = 2026-10-13
 updated = 2026-10-13
 last_verified = 2026-10-13
+last_verified_rev = "7452f36be"
 source = "hermes-plugin-roko dogfood, 2026-10-13 (roko serve :6716 built from 6ab6fde47)"
 anchors = ["crates/roko-serve/src/routes/mcp.rs::confirm_holds", "crates/roko-cli/src/graph_task_dispatch/attempt_workspace.rs::confirm_rung"]
 links = { depends_on = [], blocks = [], related = ["gap-7c6663"], supersedes = [], duplicate_of = "" }
 
 [[verify]]
 command = "grep -rqw 'fn confirm_pending_reports_the_rungs_deadline' crates/roko-serve/ && cargo test -p roko-serve confirm_pending_reports_the_rungs_deadline"
+
+[closed]
+at = 2026-10-13
+at_ts = "2026-10-13T17:14:23Z"
+commit = "7452f36be"
+by = "roko-fixes (Claude fork, hermes-plugin dogfood)"
+executor = "claude-agent"
+via = "manual"
+size = "S"
+claimed_at = "2026-10-13T16:53:41Z"
+forced = false
+evidence = "7452f36be: /mcp confirm_pending (crates/roko-serve/src/routes/mcp.rs, confirm_holds + confirm_deadline) lists each confirmation with the rung's timeout_secs and deadline_at (held_at plus the timeout, RFC 3339; null for a hold without one); the tool description and docs/v3/26-HTTP-API.md say so. Verify confirm_pending_reports_the_rungs_deadline passes (a hold with timeout_secs 1800 lists deadline_at 30 minutes after held_at); roko-serve mcp tests pass and clippy -D warnings is clean."
 +++
 
 ## Problem

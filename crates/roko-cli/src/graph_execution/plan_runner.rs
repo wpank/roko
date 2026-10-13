@@ -3875,6 +3875,12 @@ async fn run_one_plan(
             ),
         );
     }
+    // Why each failed task failed, in the run's events, so a host can tell
+    // its person (bug-103bce): a dispatch error otherwise reached only the
+    // log below, which `roko serve` does not print by default.
+    for message in task_failure_errors(&plan.id, &output, &node_titles) {
+        graph_tui_bridge.error(&message);
+    }
     graph_tui_bridge.plan_completed(&plan.id, outcome.succeeded());
 
     if !ctx.quiet && !ctx.json {
@@ -4107,6 +4113,48 @@ fn plan_check_source(plan: &crate::runner::plan_loader::Plan) -> &'static str {
     } else {
         "authored"
     }
+}
+
+/// The most of a failed task's error its `error` event carries (bug-103bce).
+const MAX_TASK_ERROR_CHARS: usize = 1_500;
+
+/// Why each of the plan's tasks that failed by its own error did, as the
+/// `error` events a run shows a host (bug-103bce), such as a dispatch that
+/// found no provider able to run the task. A task blocked by another, a
+/// failure without an error, and the helper nodes of the rich topology,
+/// which are absent from `node_titles`, are left out.
+fn task_failure_errors(
+    plan_id: &str,
+    output: &roko_graph::GraphOutput,
+    node_titles: &HashMap<String, String>,
+) -> Vec<String> {
+    use roko_graph::engine::NodeStatus;
+
+    output
+        .node_results
+        .iter()
+        .filter(|result| {
+            result.status == NodeStatus::Failed
+                && result.blocked_by.is_none()
+                && node_titles.contains_key(&result.node_id)
+        })
+        .filter_map(|result| {
+            let error = result.error.as_deref()?.trim();
+            if error.is_empty() {
+                return None;
+            }
+            let clipped: String = error.chars().take(MAX_TASK_ERROR_CHARS).collect();
+            let more = if clipped.len() < error.len() {
+                "…"
+            } else {
+                ""
+            };
+            Some(format!(
+                "plan '{plan_id}': task '{}' failed: {clipped}{more}",
+                result.node_id
+            ))
+        })
+        .collect()
 }
 
 /// How `output` left the plan's tasks that did not complete. Helper nodes of
@@ -6365,6 +6413,65 @@ exec sleep 60
             ..counts(1, 0, 0, 0)
         };
         assert_eq!(rerun.outcome(), PlanOutcome::Succeeded);
+    }
+
+    /// bug-103bce: each task that failed by its own error says why in the
+    /// run's events, clipped; blocked tasks, failures without an error and
+    /// helper nodes do not.
+    #[test]
+    fn failed_tasks_say_why_in_the_runs_events() {
+        use roko_graph::engine::NodeStatus;
+
+        let node = |id: &str, status: NodeStatus, error: Option<&str>| roko_graph::NodeResult {
+            node_id: id.to_string(),
+            cell_type: TASK_EXECUTOR_CELL_TYPE.to_string(),
+            status,
+            duration: Duration::ZERO,
+            error: error.map(str::to_string),
+            output_count: 0,
+            is_stub: false,
+            blocked_by: None,
+            timing: roko_graph::NodeTiming::default(),
+        };
+        let provider = "no usable provider for this task: `claude-sonnet-4-6` on `claude_cli`: \
+                        provider `claude_cli` (claude_cli) runs its own tools, so it cannot \
+                        honour the task's `stage` policy";
+        let long = "x".repeat(MAX_TASK_ERROR_CHARS + 500);
+        let output = roko_graph::GraphOutput {
+            graph_name: "reasons".to_string(),
+            success: false,
+            node_results: vec![
+                node("T1", NodeStatus::Failed, Some(provider)),
+                roko_graph::NodeResult {
+                    blocked_by: Some("T1".to_string()),
+                    ..node("T2", NodeStatus::Failed, Some("blocked by T1"))
+                },
+                node("T3", NodeStatus::Complete, None),
+                node("T4", NodeStatus::Failed, None),
+                node("T5", NodeStatus::Failed, Some(&long)),
+                // A helper node of the rich topology is not a task.
+                node("task.T1.gate", NodeStatus::Failed, Some("gate failed")),
+            ],
+            total_duration: Duration::ZERO,
+            gate_verdicts: BTreeMap::new(),
+        };
+        let node_titles = ["T1", "T2", "T3", "T4", "T5"]
+            .into_iter()
+            .map(|id| (id.to_string(), format!("task {id}")))
+            .collect::<HashMap<_, _>>();
+
+        let messages = task_failure_errors("p1", &output, &node_titles);
+
+        assert_eq!(messages.len(), 2, "{messages:?}");
+        assert_eq!(
+            messages[0],
+            format!("plan 'p1': task 'T1' failed: {provider}")
+        );
+        let clipped = format!(
+            "plan 'p1': task 'T5' failed: {}…",
+            "x".repeat(MAX_TASK_ERROR_CHARS)
+        );
+        assert_eq!(messages[1], clipped);
     }
 
     /// bug-7eb27e: run metrics count each task under its own verdict, not

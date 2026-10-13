@@ -324,7 +324,8 @@ fn tools() -> Vec<(Value, &'static str)> {
             read_only_tool(
                 "confirm_pending",
                 "The outcomes a Roko run's tasks wait for their person to confirm: for each, \
-                 the task, the attempt, the question to ask and a short summary of the work. \
+                 the task, the attempt, the question to ask, a short summary of the work and \
+                 when the rung stops waiting (deadline_at; the task then ends unverified). \
                  Ask the person, then answer with confirm_answer.",
                 json!({
                     "type": "object",
@@ -593,7 +594,8 @@ async fn call_tool(
 
 /// The confirmations (9137) the tasks of run `run_id` wait for: their review
 /// holds whose `kind` is `confirm`, oldest first, with what a host shows its
-/// user.
+/// user, and how long the rung waits for an answer: `timeout_secs` and the
+/// `deadline_at` it gives from `held_at` (gap-25d9cc).
 fn confirm_holds(workdir: &std::path::Path, run_id: &str) -> Vec<Value> {
     let root = roko_fs::RokoLayout::for_project(workdir)
         .state_dir()
@@ -616,11 +618,32 @@ fn confirm_holds(workdir: &std::path::Path, run_id: &str) -> Vec<Value> {
                 "question": hold["question"],
                 "summary": hold["summary"],
                 "held_at": hold["held_at"],
+                "timeout_secs": hold["timeout_secs"],
+                "deadline_at": confirm_deadline(&hold),
             })
         })
         .collect();
     holds.sort_by(|a, b| a["held_at"].as_str().cmp(&b["held_at"].as_str()));
     holds
+}
+
+/// When the confirm rung that wrote `hold` stops waiting and the task ends
+/// unverified: its `held_at` plus its `timeout_secs`, in RFC 3339; null when
+/// the hold names neither (gap-25d9cc).
+fn confirm_deadline(hold: &Value) -> Value {
+    let held_at = hold["held_at"]
+        .as_str()
+        .and_then(|at| chrono::DateTime::parse_from_rfc3339(at).ok());
+    let timeout = hold["timeout_secs"]
+        .as_u64()
+        .and_then(|secs| i64::try_from(secs).ok())
+        .and_then(chrono::TimeDelta::try_seconds);
+    match (held_at, timeout) {
+        (Some(held_at), Some(timeout)) => held_at
+            .checked_add_signed(timeout)
+            .map_or(Value::Null, |deadline| json!(deadline.to_rfc3339())),
+        _ => Value::Null,
+    }
 }
 
 /// A `confirm_answer` call's arguments.
@@ -1617,6 +1640,64 @@ mod tests {
         let (_, body) = post_mcp(&open, &call(3, "run_prompt", prompt), &[]).await;
         assert_eq!(body["result"]["isError"], false, "{body}");
         runtime.gate.add_permits(1);
+    }
+
+    /// gap-25d9cc: `confirm_pending` lists each confirmation with the rung's
+    /// `timeout_secs` and the `deadline_at` it gives from `held_at`, so a host
+    /// can say how long its person has before the task ends unverified; a hold
+    /// without a timeout has no deadline.
+    #[tokio::test]
+    async fn confirm_pending_reports_the_rungs_deadline() {
+        let (dir, open) = router(no_auth());
+        let holds = roko_fs::RokoLayout::for_project(dir.path())
+            .state_dir()
+            .join("review-holds")
+            .join("p1");
+        std::fs::create_dir_all(&holds).expect("the holds directory");
+        let hold = |task: &str, timeout: Value| {
+            json!({
+                "schema_version": 1,
+                "kind": "confirm",
+                "plan_id": "p1",
+                "task_id": task,
+                "title": "Write the report",
+                "run_id": "run-1",
+                "attempt_key": format!("run-1:p1:{task}:1"),
+                "question": "Is this what you asked for?",
+                "summary": "REPORT.md: …",
+                "timeout_secs": timeout,
+                "held_at": "2026-10-13T14:28:53.126917+00:00",
+            })
+        };
+        for (task, timeout) in [("T1", json!(1800)), ("T2", Value::Null)] {
+            std::fs::write(
+                holds.join(format!("{task}.json")),
+                hold(task, timeout).to_string(),
+            )
+            .expect("write the hold");
+        }
+
+        let pending = call(1, "confirm_pending", json!({ "run_id": "run-1" }));
+        let (_, body) = post_mcp(&open, &pending, &[]).await;
+        let items = body["result"]["structuredContent"]["pending"]
+            .as_array()
+            .expect("the pending list")
+            .clone();
+        let item = |task: &str| {
+            items
+                .iter()
+                .find(|item| item["task_id"] == task)
+                .expect("the task's hold")
+                .clone()
+        };
+        let timed = item("T1");
+        assert_eq!(timed["timeout_secs"], 1800, "{body}");
+        assert_eq!(
+            timed["deadline_at"], "2026-10-13T14:58:53.126917+00:00",
+            "{body}"
+        );
+        let untimed = item("T2");
+        assert!(untimed["deadline_at"].is_null(), "{body}");
     }
 
     /// A runtime that holds one staged effect, `effect-1`, until it is

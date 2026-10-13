@@ -117,6 +117,26 @@ pub fn acquire_runner_lock(roko_dir: &Path) -> Result<WorkspaceLockGuard> {
     }
 }
 
+/// Who holds the workspace runner lock, or `None` when nobody does
+/// (gap-9a8d66): `a roko plan runner (PID <n>)` from the PID the holder wrote.
+/// Takes no lock and changes nothing: it probes the lock file with a shared
+/// lock, which only an exclusive holder refuses. A run of this process holds
+/// the lock through another handle, so it counts as a holder too.
+pub fn runner_lock_holder(roko_dir: &Path) -> Option<String> {
+    let lock_path = roko_dir.join("runtime").join("roko.runner.lock");
+    // No lock file: no runner has ever taken the lock here.
+    let file = OpenOptions::new().read(true).open(&lock_path).ok()?;
+    if file.try_lock_shared().is_ok() {
+        let _ = file.unlock();
+        return None;
+    }
+    let pid = fs::read_to_string(&lock_path).unwrap_or_default();
+    Some(match pid.trim() {
+        "" => "a roko plan runner".to_string(),
+        pid => format!("a roko plan runner (PID {pid})"),
+    })
+}
+
 /// Acquires a shared advisory lock on the workspace.
 /// Returns a guard that releases the lock on drop.
 /// Multiple shared locks can coexist; fails immediately if another process

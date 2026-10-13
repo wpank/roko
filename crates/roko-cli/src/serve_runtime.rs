@@ -123,10 +123,16 @@ impl CliRuntime for RokoCliRuntime {
         })
     }
 
+    /// The holder of the workspace runner lock a prompt run takes (gap-9a8d66).
+    fn runner_lock_holder(&self, workdir: &Path) -> Option<String> {
+        crate::workspace_lock::runner_lock_holder(&workdir.join(".roko"))
+    }
+
     /// Run `prompt` as a gated one-task plan, as `roko run` does, under the
     /// id serve returned for it (9113). The run publishes into the server's
     /// hub and takes the workspace runner lock, so it fails at once while a
-    /// plan run holds the lock.
+    /// run outside the server holds the lock; serve queues it behind its own
+    /// runs (gap-9a8d66).
     async fn run_prompt_plan(
         &self,
         workdir: &Path,
@@ -1097,10 +1103,20 @@ fn run_prompt_plan_on_local_runtime(
     state_hub: SharedStateHub,
     options: roko_serve::runtime::PromptPlanOptions,
 ) -> anyhow::Result<roko_serve::runtime::PromptPlanResult> {
-    // One plan executor at a time: a prompt run fails at once while a plan
-    // run, or another prompt run, holds the lock.
-    let _runner_lock = crate::workspace_lock::acquire_runner_lock(&workdir.join(".roko"))
-        .context("a run is active in this workspace")?;
+    // One plan executor at a time: serve queues its runs behind each other
+    // (gap-9a8d66), so a prompt run finds the lock taken only while a run
+    // outside the server holds it, and then fails at once. Its own index says
+    // why, so its id resolves to that failure (bug-09e21e).
+    let _runner_lock = match crate::workspace_lock::acquire_runner_lock(&workdir.join(".roko")) {
+        Ok(lock) => lock,
+        Err(error) => {
+            let error = error.context("a run is active in this workspace");
+            if let Some(run_id) = &options.run_id {
+                record_refused_run(&workdir, run_id, &format!("run failed: {error:#}"));
+            }
+            return Err(error);
+        }
+    };
     let _spawn_scope =
         roko_agent::process::enter_spawn_scope(roko_agent::process::new_spawn_scope());
 
@@ -1136,6 +1152,41 @@ fn run_prompt_plan_on_local_runtime(
             cancel.is_cancelled(),
         ))
     })
+}
+
+/// Write into run `run_id`'s own index the rows of a run that ended before it
+/// started: the `error` that says why and its `run_completed` (bug-09e21e).
+/// They go to the index only, never to the shared state hub, whose events the
+/// run holding the workspace would record as its own.
+fn record_refused_run(workdir: &Path, run_id: &str, message: &str) {
+    let now = u64::try_from(chrono::Utc::now().timestamp_millis()).unwrap_or_default();
+    let events = [
+        roko_core::DashboardEvent::Error {
+            message: message.to_string(),
+        },
+        roko_core::DashboardEvent::RunCompleted {
+            run_id: Some(run_id.to_string()),
+            outcome: "failed".to_string(),
+            duration_ms: 0,
+            cleanup_degraded: false,
+            surviving_agent_ids: Vec::new(),
+            surviving_agent_pids: Vec::new(),
+        },
+    ];
+    let recorded = crate::runner::persist::PersistPaths::from_workdir(workdir).and_then(|paths| {
+        for event in &events {
+            let mut row = serde_json::to_value(event)?;
+            if let Some(fields) = row.as_object_mut() {
+                fields.insert("run_id".into(), serde_json::json!(run_id));
+                fields.insert("ts_millis".into(), serde_json::json!(now));
+            }
+            crate::runner::persist::append_run_index_event(&paths, run_id, &row, true)?;
+        }
+        crate::runner::persist::flush_run_index(&paths, run_id)
+    });
+    if let Err(error) = recorded {
+        tracing::warn!(%run_id, error = %format!("{error:#}"), "the refused run's index was not written");
+    }
 }
 
 /// Refuse a chat host's run when the workspace has no data-model boundary

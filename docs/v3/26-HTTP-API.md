@@ -500,8 +500,8 @@ aliases (both are mounted).
 
 | Method | Path | Description |
 |--------|------|-------------|
-| POST | `/api/run` | Run the prompt in the background as a gated one-task plan, as `roko run` does (202 Accepted with the run's `id`, which the Graph run takes; 409 while a plan run is live). Body: `prompt`, optional `workdir`, optional `domain` (a work-domain label such as `research`, which picks the task's tool policy and verifier pack; default: the project's `default_domain`) |
-| GET | `/api/run/{id}/status` | Poll run status |
+| POST | `/api/run` | Run the prompt in the background as a gated one-task plan, as `roko run` does (202 Accepted with the run's `id`, which the Graph run takes). While another run holds the workspace the run waits in the run queue it shares with plan runs, oldest first, and the 202 says `queued: true` and its `position`; a full queue, or a run outside the server holding the workspace, answers 409 before any id is handed out. Body: `prompt`, optional `workdir`, optional `domain` (a work-domain label such as `research`, which picks the task's tool policy and verifier pack; default: the project's `default_domain`) |
+| GET | `/api/run/{id}/status` | Poll run status: `queued` with its `position` while the run waits in the run queue, then `running` and its verdict |
 
 The status is `running`, then the run's verdict: `succeeded` when gates checked
 its work and passed it, `failed`, or `unverified` when no gate checked it. Only
@@ -1095,10 +1095,10 @@ routing stays with the ladder.
 |------|-----------|---------|
 | `run_status` | `run_id` (string, required); `wait_secs` (integer, 0 to 30, default 0) | The run's summary, as `GET /api/runs/{run_id}/summary` returns it, once its state changes, it has ended, or `wait_secs` pass; for a `plan_generate` run, the operation's state and result |
 | `recall` | `query` (string, required); `limit` (integer, 1 to 50, default 5) | The knowledge store's entries on `query`, most relevant first, as `GET /api/knowledge` returns them |
-| `run_prompt` | `prompt` (string, required); `domain` (string); `max_usd` (number above 0, required) | A gated one-task run of the prompt, as `POST /api/run` starts it (409 while a plan run is live) |
+| `run_prompt` | `prompt` (string, required); `domain` (string); `max_usd` (number above 0, required) | A gated one-task run of the prompt, as `POST /api/run` starts it, or its place in the run queue (`state: "queued"`, `position`) while another run holds the workspace; refused before it gets an id when the queue is full or a run outside the server holds the workspace |
 | `plan_run` | `plan_id` (string, required); `resume` (boolean, default false); `max_usd` (number above 0, required) | A run of the plan, or its place in the queue (`state: "queued"`, `position`), as `POST /api/plans/{id}/execute` starts it |
 | `plan_generate` | `prompt` (string, required) | The planner's operation as `run_id` and the new plan's `plan_id`, as `POST /api/plans/generate` starts it |
-| `run_cancel` | `run_id` (string, required) | A `run_prompt` run stopped, or a live or queued plan run cancelled, as `POST /api/plans/{id}/cancel` cancels it |
+| `run_cancel` | `run_id` (string, required) | A `run_prompt` run stopped or taken out of the run queue, or a live or queued plan run cancelled, as `POST /api/plans/{id}/cancel` cancels it |
 | `confirm_pending` | `run_id` (string, required) | `{ pending: [...] }`: the outcomes the run's tasks wait for their person to confirm (a `confirm` rung, 9137), each with `plan_id`, `task_id`, `title`, `attempt_key`, `question`, `summary` and `held_at`. Read-only |
 | `confirm_answer` | `run_id`, `task_id`, `attempt_key` (strings, required); `approve` (boolean, required); `note` (string) | The person's answer recorded in the review log, as `POST /api/plans/{id}/tasks/{task_id}/review` records a decision: a yes passes the rung as `confirmed_by_user`, a no fails the attempt with the note as its feedback. `write` scope; a task that waits for no such confirmation is an error |
 | `effects_pending` | `run_id` (string) | The tool calls runs hold for approval under a `stage` outbound policy (9131), as `GET /api/effects` lists them: each with `effect_id`, `tool`, `server`, `arguments` summarised without their values (each field's type, a string's length) and `proposed_at`, plus the decisions made. Read-only |

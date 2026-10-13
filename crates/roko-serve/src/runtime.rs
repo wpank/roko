@@ -537,6 +537,16 @@ pub trait CliRuntime: Send + Sync + 'static {
         anyhow::bail!("runtime does not support prompt plan runs")
     }
 
+    /// Who holds `workdir`'s plan executor outside this server, as a short
+    /// description, or `None` when it is free (gap-9a8d66): a `roko plan run`
+    /// in a terminal takes the runner lock a prompt run needs. Asked before a
+    /// prompt run is handed its id, never while a run of this server holds
+    /// the lock. The default knows of none.
+    fn runner_lock_holder(&self, workdir: &std::path::Path) -> Option<String> {
+        let _ = workdir;
+        None
+    }
+
     /// Generate the plan `slug` from a request's text (a prompt, or a
     /// written spec) with the plan generator.
     ///

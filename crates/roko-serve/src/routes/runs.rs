@@ -351,24 +351,21 @@ async fn summary_and_plans(
 }
 
 /// What this server holds of run `run_id` in memory: the state of its
-/// one-shot or plan-run handle, or `queued` with its place in the plan-run
-/// queue.
+/// one-shot or plan-run handle, or `queued` with its place in the run queue,
+/// which plan and prompt runs share (gap-9a8d66).
 async fn run_state_in_memory(state: &AppState, run_id: &str) -> Option<(RunState, Option<usize>)> {
     if let Some(run) = state.active_runs.read().await.get(run_id) {
         return Some((super::run::run_handle_state(run).0, None));
     }
-    let plans = state.active_plans.read().await;
-    if let Some(plan) = plans.values().find(|plan| plan.id == run_id) {
-        return Some((plan.state(), None));
+    {
+        let plans = state.active_plans.read().await;
+        if let Some(plan) = plans.values().find(|plan| plan.id == run_id) {
+            return Some((plan.state(), None));
+        }
     }
-    let queue = state
-        .plan_queue
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-    queue
-        .iter()
-        .position(|queued| queued.spec.run_id == run_id)
-        .map(|index| (RunState::Queued, Some(index + 1)))
+    state
+        .queue_position(run_id)
+        .map(|position| (RunState::Queued, Some(position)))
 }
 
 /// `GET /api/runs/{run_id}/events` — cursor-paginated JSON, or SSE when the

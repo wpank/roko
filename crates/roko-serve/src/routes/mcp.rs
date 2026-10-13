@@ -227,8 +227,9 @@ fn tools() -> Vec<(Value, &'static str)> {
                 "run_prompt",
                 "Have Roko do a piece of work as one gated task, as `roko run` does: an \
                  agent works in Roko's workspace and the workspace's checks verify the \
-                 result. Paid: it spends model budget, at most max_usd. Answers at once \
-                 with the run's id; follow it with run_status.",
+                 result, or queue it behind the run in progress. Paid: it spends model \
+                 budget, at most max_usd. Answers at once with the run's id and whether it \
+                 is running or queued (with its position); follow it with run_status.",
                 json!({
                     "type": "object",
                     "properties": {
@@ -844,10 +845,19 @@ async fn start_prompt_run(
     options: PromptPlanOptions,
 ) -> Result<Value, ApiError> {
     refuse_unscreened_run(state)?;
-    let run_id = super::run::start_gated_run(state, prompt, None, options).await?;
+    let started = super::run::start_gated_run(state, prompt, None, options).await?;
+    let run_id = started.run_id;
+    // While another run holds the workspace, the run waits in the run queue
+    // (gap-9a8d66).
+    let run_state = if started.queued.is_some() {
+        RunState::Queued
+    } else {
+        RunState::Running
+    };
     Ok(json!({
         "run_id": run_id,
-        "state": RunState::Running.as_str(),
+        "state": run_state.as_str(),
+        "position": started.queued,
         "links": {
             "summary": format!("/api/runs/{run_id}/summary"),
             "status": format!("/api/run/{run_id}/status"),
@@ -909,6 +919,8 @@ async fn generate_plan(state: &Arc<AppState>, prompt: String, origin: &RunOrigin
 async fn cancel_run(state: &Arc<AppState>, run_id: &str) -> Result<Value, ApiError> {
     match super::run::cancel_background_run(state, run_id).await {
         Some(stopped) => stopped.map_err(ApiError::conflict)?,
+        // A prompt run still waiting in the run queue (gap-9a8d66).
+        None if super::run::cancel_queued_prompt_run(state, run_id).await => {}
         None => {
             super::plans::cancel_plan_run(state, run_id).await?;
         }
@@ -1296,6 +1308,219 @@ mod tests {
         assert_eq!(cancelled["state"], "cancelled", "{body}");
         assert!(state.plan_queue.lock().expect("lock the queue").is_empty());
         runtime.gate.add_permits(1);
+    }
+
+    /// A runtime whose prompt runs record their options, then wait for a
+    /// permit from `gate` before they succeed; whose plan runs record theirs
+    /// and succeed at once; and that reports `holder` as holding the
+    /// workspace's runner lock outside the server.
+    struct HeldPrompts {
+        prompts: std::sync::Mutex<Vec<PromptPlanOptions>>,
+        plans: std::sync::Mutex<Vec<crate::runtime::PlanRunOptions>>,
+        gate: tokio::sync::Semaphore,
+        holder: std::sync::Mutex<Option<String>>,
+    }
+
+    impl HeldPrompts {
+        fn new() -> Self {
+            Self {
+                prompts: std::sync::Mutex::default(),
+                plans: std::sync::Mutex::default(),
+                gate: tokio::sync::Semaphore::new(0),
+                holder: std::sync::Mutex::default(),
+            }
+        }
+
+        /// The run ids the prompt runs ran under, in the order they started.
+        fn prompt_ids(&self) -> Vec<String> {
+            let prompts = self.prompts.lock().expect("lock prompt runs");
+            prompts
+                .iter()
+                .map(|options| options.run_id.clone().unwrap_or_default())
+                .collect()
+        }
+
+        fn plan_ids(&self) -> Vec<String> {
+            let plans = self.plans.lock().expect("lock plan runs");
+            plans
+                .iter()
+                .map(|options| options.run_id.clone().unwrap_or_default())
+                .collect()
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl crate::runtime::CliRuntime for HeldPrompts {
+        async fn run_once(
+            &self,
+            _workdir: &std::path::Path,
+            _prompt: &str,
+        ) -> anyhow::Result<crate::runtime::RunResult> {
+            anyhow::bail!("HeldPrompts runs gated prompts and plans only")
+        }
+
+        async fn load_plan_summary(
+            &self,
+            workdir: &std::path::Path,
+            plan_id: &str,
+        ) -> anyhow::Result<Option<crate::plan_types::PlanSummaryDto>> {
+            crate::runtime::CliRuntime::load_plan_summary(&HeldPlans::new(), workdir, plan_id).await
+        }
+
+        async fn run_prompt_plan(
+            &self,
+            _workdir: &std::path::Path,
+            _prompt: &str,
+            options: PromptPlanOptions,
+        ) -> anyhow::Result<crate::runtime::PromptPlanResult> {
+            let run_id = options.run_id.clone().unwrap_or_default();
+            self.prompts.lock().expect("lock prompt runs").push(options);
+            self.gate
+                .acquire()
+                .await
+                .expect("the gate stays open")
+                .forget();
+            Ok(crate::runtime::PromptPlanResult {
+                run_id,
+                verdict: RunState::Succeeded,
+                success: true,
+                output_text: None,
+                cost_usd: None,
+            })
+        }
+
+        async fn run_plan_with_options(
+            &self,
+            _workdir: &std::path::Path,
+            _plan_target: &std::path::Path,
+            options: crate::runtime::PlanRunOptions,
+        ) -> anyhow::Result<crate::runtime::PlanExecutionResult> {
+            self.plans.lock().expect("lock plan runs").push(options);
+            Ok(crate::runtime::PlanExecutionResult {
+                success: true,
+                output_text: None,
+                gate_results: Vec::new(),
+            })
+        }
+
+        fn runner_lock_holder(&self, _workdir: &std::path::Path) -> Option<String> {
+            self.holder.lock().expect("lock the holder").clone()
+        }
+
+        fn session_status(&self, workdir: std::path::PathBuf) -> crate::runtime::SessionStatusInfo {
+            crate::runtime::CliRuntime::session_status(&HeldPlans::new(), workdir)
+        }
+
+        fn dashboard_scaffold(&self, workdir: &std::path::Path) -> crate::runtime::DashboardInfo {
+            crate::runtime::CliRuntime::dashboard_scaffold(&HeldPlans::new(), workdir)
+        }
+    }
+
+    /// Wait until `ready` holds, for up to 5 s.
+    async fn eventually(what: &str, ready: impl Fn() -> bool) {
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while !ready() {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .unwrap_or_else(|_| panic!("{what}"));
+    }
+
+    /// gap-9a8d66, bug-09e21e: a second `run_prompt` while a run holds the
+    /// workspace waits in the run queue, which it shares with plan runs, and
+    /// starts when the runs before it end; it never fails because the
+    /// workspace is busy after its id was handed out. `run_status` answers
+    /// for a queued run, `run_cancel` takes one out of the queue and its id
+    /// still answers, and a run outside the server holding the workspace
+    /// refuses a prompt run before it gets an id.
+    #[tokio::test]
+    async fn a_second_prompt_run_waits_or_is_refused_up_front() {
+        let runtime = Arc::new(HeldPrompts::new());
+        let (_dir, state, open) = state_and_router(runtime.clone(), open_config());
+        let prompt =
+            |id: u64, text: &str| call(id, "run_prompt", json!({ "prompt": text, "max_usd": 1.0 }));
+        let structured = |body: &Value| body["result"]["structuredContent"].clone();
+
+        let (_, body) = post_mcp(&open, &prompt(1, "add a --json flag"), &[]).await;
+        let first = structured(&body);
+        assert_eq!(first["state"], "running", "{body}");
+        assert!(first["position"].is_null(), "{body}");
+        let first_id = first["run_id"].as_str().expect("a run id").to_string();
+        eventually("the first run starts", || runtime.prompt_ids().len() == 1).await;
+
+        let (_, body) = post_mcp(&open, &prompt(2, "add a categories command"), &[]).await;
+        let second = structured(&body);
+        assert_eq!(second["state"], "queued", "{body}");
+        assert_eq!(second["position"], 1, "{body}");
+        let second_id = second["run_id"].as_str().expect("a run id").to_string();
+        let status = call(3, "run_status", json!({ "run_id": second_id }));
+        let (_, body) = post_mcp(&open, &status, &[]).await;
+        assert_eq!(structured(&body)["state"], "queued", "{body}");
+        assert_eq!(structured(&body)["position"], 1, "{body}");
+
+        // Plan runs wait in the same order.
+        let plan = call(4, "plan_run", json!({ "plan_id": "alpha", "max_usd": 1.0 }));
+        let (_, body) = post_mcp(&open, &plan, &[]).await;
+        assert_eq!(structured(&body)["state"], "queued", "{body}");
+        assert_eq!(structured(&body)["position"], 2, "{body}");
+        let plan_id = structured(&body)["run_id"]
+            .as_str()
+            .expect("a run id")
+            .to_string();
+
+        let (_, body) = post_mcp(&open, &prompt(5, "add a report"), &[]).await;
+        assert_eq!(structured(&body)["position"], 3, "{body}");
+        let third_id = structured(&body)["run_id"]
+            .as_str()
+            .expect("a run id")
+            .to_string();
+        let cancel = call(6, "run_cancel", json!({ "run_id": third_id }));
+        let (_, body) = post_mcp(&open, &cancel, &[]).await;
+        assert_eq!(structured(&body)["state"], "cancelled", "{body}");
+        let status = call(7, "run_status", json!({ "run_id": third_id }));
+        let (_, body) = post_mcp(&open, &status, &[]).await;
+        assert_eq!(structured(&body)["state"], "cancelled", "{body}");
+        assert_eq!(state.queued_runs(), 2);
+
+        // The first run ends: the oldest queued run, the second prompt, starts
+        // under the id it was handed; the plan run starts after it.
+        runtime.gate.add_permits(1);
+        eventually("the second run starts", || runtime.prompt_ids().len() == 2).await;
+        assert_eq!(runtime.prompt_ids(), [first_id.clone(), second_id.clone()]);
+        assert!(
+            runtime.plan_ids().is_empty(),
+            "the plan run waits for the second prompt"
+        );
+        runtime.gate.add_permits(1);
+        eventually("the plan run starts", || runtime.plan_ids().len() == 1).await;
+        assert_eq!(runtime.plan_ids(), [plan_id]);
+        for run_id in [&first_id, &second_id] {
+            let status = call(8, "run_status", json!({ "run_id": run_id }));
+            let (_, body) = post_mcp(&open, &status, &[]).await;
+            assert_eq!(structured(&body)["state"], "succeeded", "{body}");
+        }
+
+        // A run outside the server holds the workspace: refused before any id.
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while state.live_plan_runs().await > 0 || state.queued_runs() > 0 {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("the plan run ends");
+        *runtime.holder.lock().expect("lock the holder") =
+            Some("a roko plan runner (PID 42)".to_string());
+        let (_, body) = post_mcp(&open, &prompt(9, "add a flag"), &[]).await;
+        assert_eq!(body["result"]["isError"], true, "{body}");
+        let reason = body["result"]["content"][0]["text"]
+            .as_str()
+            .unwrap_or_default();
+        assert!(
+            reason.contains("outside this server") && reason.contains("PID 42"),
+            "{body}"
+        );
+        assert_eq!(runtime.prompt_ids().len(), 2);
     }
 
     /// 9116: `run_prompt` and `plan_run` over `/mcp` must name a spending cap

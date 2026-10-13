@@ -57,9 +57,9 @@ _17 more open · on hold: gap-3d37e8, gap-799698, gap-8a26fc, gap-93c748, gap-fd
 
 - **P1** [gap-af73a8](items/gap-af73a8-fresh-live-dogfood-rerun-of-the-full.md) Fresh live dogfood rerun of the full self-hosting workflow · size M · verified 2026-09-29
 - **P1** [gap-d58ae8](items/gap-d58ae8-tp2-36-p0-0-37-mori-shaped.md) Mori-shaped workflow contract unproven end-to-end · size L · verified 2026-10-01
-- **P1** [gap-5d3b82](items/gap-5d3b82-proof-case-1-agent-early-exit-losteffect.md) Proof Case 1: Agent early exit / LostEffect · size M · verified 2026-10-01
+- **P1** [bug-11901c](items/bug-11901c-planner-written-checks-pipe-into-grep-q.md) Planner-written checks pipe into grep -q, which under the verifier's pipefail fails at random when the producer gets a broken pipe (exit 120), so passing work is retried until the cap [bug] · size M · verified 2026-10-13
 
-_13 more open · 1 unchecked (`TRIAGE.md`) · `goal = "core"`_
+_14 more open · 1 unchecked (`TRIAGE.md`) · `goal = "core"`_
 
 ## 8. Live visibility: serve, dashboard, portal
 

@@ -2,7 +2,7 @@
 id = "gap-9a8d66"
 kind = "gap"
 title = "/mcp run_prompt hands out a run_id and then fails the run at once when another run holds the workspace, while plan_run queues"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p2"
 goal = "hermes"
@@ -11,12 +11,25 @@ subsystem = ["roko-serve/mcp"]
 created = 2026-10-13
 updated = 2026-10-13
 last_verified = 2026-10-13
+last_verified_rev = "137755aa1"
 source = "hermes-plugin-roko dogfood, 2026-10-13 (roko serve :6716 built from 6ab6fde47)"
 anchors = ["crates/roko-serve/src/routes/mcp.rs::start_prompt_run", "crates/roko-cli/src/serve_runtime.rs::run_prompt_plan_on_local_runtime"]
 links = { depends_on = [], blocks = [], related = ["bug-09e21e"], supersedes = [], duplicate_of = "" }
 
 [[verify]]
 command = "grep -rqw 'fn a_second_prompt_run_waits_or_is_refused_up_front' crates/roko-serve/ && cargo test -p roko-serve a_second_prompt_run_waits_or_is_refused_up_front"
+
+[closed]
+at = 2026-10-13
+at_ts = "2026-10-13T16:35:50Z"
+commit = "137755aa1"
+by = "roko-fixes (Claude fork, hermes-plugin dogfood)"
+executor = "claude-agent"
+via = "manual"
+size = "M"
+claimed_at = "2026-10-13T15:31:01Z"
+forced = false
+evidence = "137755aa1: prompt runs and plan runs share serve's run queue (AppState::prompt_queue beside plan_queue, oldest first across both; run_control.rs workspace_busy/start_queued_run, run.rs start_gated_run). A second run_prompt on a busy workspace answers state queued with its position and starts under the id it was handed when the runs before it end; run_status and GET /api/run/{id}/status answer for it, run_cancel takes it out of the queue; a full queue or a runner lock held outside serve (CliRuntime::runner_lock_holder) refuses it before any id. Documented in the run_prompt tool description and docs/v3/26-HTTP-API.md. Verify a_second_prompt_run_waits_or_is_refused_up_front passes; roko-serve 1014 lib + integration tests passed."
 +++
 
 ## Problem

@@ -2,7 +2,7 @@
 id = "bug-09e21e"
 kind = "bug"
 title = "A prompt run refused by the workspace runner lock is recorded in the active run's event index, so the active run's summary says failed and the refused run's id answers 404"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p1"
 goal = "truth"
@@ -11,12 +11,25 @@ subsystem = ["roko-serve/runs"]
 created = 2026-10-13
 updated = 2026-10-13
 last_verified = 2026-10-13
+last_verified_rev = "137755aa1"
 source = "hermes-plugin-roko dogfood, 2026-10-13 (roko serve :6716 built from 6ab6fde47)"
 anchors = ["crates/roko-cli/src/graph_execution/event_log.rs::WorkspaceLogWriter", "crates/roko-serve/src/lib.rs::server_event_to_dashboard", "crates/roko-serve/src/lib.rs::run_plan_id", "crates/roko-cli/src/serve_runtime.rs::run_prompt_plan_on_local_runtime"]
 links = { depends_on = [], blocks = [], related = ["gap-9a8d66"], supersedes = [], duplicate_of = "" }
 
 [[verify]]
 command = "grep -rqw 'fn foreign_plan_events_stay_out_of_the_runs_index' crates/roko-cli/ && cargo test -p roko-cli foreign_plan_events_stay_out_of_the_runs_index"
+
+[closed]
+at = 2026-10-13
+at_ts = "2026-10-13T16:35:50Z"
+commit = "137755aa1"
+by = "roko-fixes (Claude fork, hermes-plugin dogfood)"
+executor = "claude-agent"
+via = "manual"
+size = "M"
+claimed_at = "2026-10-13T15:31:01Z"
+forced = false
+evidence = "137755aa1: a run's workspace event log (crates/roko-cli/src/graph_execution/event_log.rs, WorkspaceLogWriter::owns) records only its own events: one naming another run, or a plan outside the run's plan set from its PlanSetLoaded, is neither indexed nor stamped with its id; serve queues prompt runs so a second one no longer fails at the lock inside another's run (gap-9a8d66); a prompt run refused at the runner lock writes its error and run_completed into its own index (serve_runtime.rs record_refused_run), and a queued run cancelled before it started records run_completed cancelled in its index (routes/run.rs record_unstarted_run). Verify foreign_plan_events_stay_out_of_the_runs_index passes; roko-cli lib 3619 passed (gist test skipped), roko-serve 1014 lib + all integration tests passed, clippy -D warnings clean on both."
 +++
 
 ## Problem

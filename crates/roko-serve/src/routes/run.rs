@@ -1157,12 +1157,12 @@ mod tests {
         assert_eq!(ran, [Some(run_id)]);
     }
 
-    /// gap-9a8d66: while a plan run holds the workspace, `POST /api/run`
+    /// gap-9a8d66, gap-5e645b: while a plan run holds the workspace, `POST /api/run`
     /// queues the prompt run behind it instead of refusing it: the 202 says
     /// so, with the run's place, its status answers `queued`, and it starts
     /// under the id it was handed once the plan run ends.
     #[tokio::test]
-    async fn api_run_waits_in_the_queue_while_a_plan_run_is_live() {
+    async fn prompt_run_is_queued_not_refused_while_a_plan_runs() {
         let runtime = Arc::new(GatedPrompts::default());
         let (_dir, state) = state_over(Arc::clone(&runtime) as Arc<dyn CliRuntime>);
         let plan_run = crate::state::PlanHandle {

@@ -59,7 +59,7 @@ _17 more open · on hold: gap-3d37e8, gap-799698, gap-8a26fc, gap-93c748, gap-fd
 - **P1** [gap-d58ae8](items/gap-d58ae8-tp2-36-p0-0-37-mori-shaped.md) Mori-shaped workflow contract unproven end-to-end · size L · verified 2026-10-01
 - **P1** [gap-5d3b82](items/gap-5d3b82-proof-case-1-agent-early-exit-losteffect.md) Proof Case 1: Agent early exit / LostEffect · size M · verified 2026-10-01
 
-_9 more open · 1 unchecked (`TRIAGE.md`) · `goal = "core"`_
+_11 more open · 1 unchecked (`TRIAGE.md`) · `goal = "core"`_
 
 ## 8. Live visibility: serve, dashboard, portal
 
@@ -67,7 +67,7 @@ _9 more open · 1 unchecked (`TRIAGE.md`) · `goal = "core"`_
 - **P2** [bug-a0f01e](items/bug-a0f01e-long-running-operation-handles-never-record-completion.md) Long-running operation handles never record completion [bug] · verified 2026-10-01
 - **P3** [gap-0d6ae5](items/gap-0d6ae5-closing-the-tui-mid-run-stops-the.md) Closing the TUI mid-run stops the plan run; there is no detach mode · verified 2026-10-01
 
-_1 more open · `goal = "visibility"`_
+_2 more open · `goal = "visibility"`_
 
 ## 9. Learning loops on the Graph path
 
@@ -95,9 +95,9 @@ _5 more open · on hold: gap-63055e, gap-8d80d3, gap-ebd656, spec-743a7e, spec-b
 ## 12. Hermes and ACP integration
 
 - **P1** [spec-704c28](items/spec-704c28-acp-v2-spec-compliance-refactor-and-best.md) ACP v2 Spec Compliance, Refactor, and Best-in-Class Editor UX [spec] · size L · verified 2026-09-29
+- **P2** [gap-cf427e](items/gap-cf427e-a-chat-host-s-run-is-accepted.md) A chat host's run is accepted, then fails in milliseconds, when no model its routing can pick runs in roko's own tool loop; refuse it up front so the host's probe sees it · size M · verified 2026-10-13
 - **P2** [gap-ac78fb](items/gap-ac78fb-acp-elicitation-notices-and-interactive-ux-primitives.md) ACP Elicitation, Notices, and Interactive UX Primitives · size L · verified 2026-09-29
-- **P2** [gap-31f96f](items/gap-31f96f-acp-registry-publication-and-editor-compatibility-matrix.md) ACP Registry Publication and Editor Compatibility Matrix · verified 2026-09-29
 
-_3 more open · on hold: gap-85f69b · `goal = "hermes"`_
+_4 more open · on hold: gap-85f69b · `goal = "hermes"`_
 
 10 open items have no goal (later); they are listed in `STATUS.md`.

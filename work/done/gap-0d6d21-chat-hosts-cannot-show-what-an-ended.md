@@ -2,7 +2,7 @@
 id = "gap-0d6d21"
 kind = "gap"
 title = "Chat hosts cannot show what an ended run changed: no route returns the diff of its verified work"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p2"
 goal = "hermes"
@@ -11,12 +11,24 @@ subsystem = ["roko-serve/runs"]
 created = 2026-10-13
 updated = 2026-10-13
 last_verified = 2026-10-13
+last_verified_rev = "4bc447702"
 source = "hermes-plugin-roko UI push 2026-10-13 (diff viewer), roko 473d41ab9"
 anchors = ["crates/roko-serve/src/routes/run_result.rs", "crates/roko-serve/src/routes/runs.rs"]
 links = { depends_on = [], blocks = [], related = ["gap-8409d0"], supersedes = [], duplicate_of = "" }
 
 [[verify]]
 command = "grep -rqw 'fn run_diff_returns_the_runs_patches' crates/roko-serve/ && cargo test -p roko-serve run_diff_returns_the_runs_patches"
+
+[closed]
+at = 2026-10-13
+at_ts = "2026-10-13T13:22:29Z"
+commit = "4bc447702"
+by = "commit trailer"
+executor = "claude-agent"
+size = "M"
+claimed_at = "2026-10-13T12:42:44Z"
+forced = false
+evidence = "4bc447702: GET /api/runs/{run_id}/diff returns each file an ended run's batch changes from its base (status, line counts, binary flag, unified patch or null, truncated) within max_files (200, 1-500) and max_patch_bytes (65536, 1024-262144, cut on a line boundary, streamed), with totals; 409 active, 404 no result, 400 bad limits; run_result.rs result_range shared with the summary; OpenAPI + docs 8.4. Verify passes in the worktree: run_diff_returns_the_runs_patches; summary, task-diff and OpenAPI coverage tests pass; clippy -p roko-serve --no-deps -D warnings clean."
 +++
 
 ## Problem

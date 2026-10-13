@@ -518,6 +518,7 @@ Hashed per-run indexes under `.roko/events-by-run/` and
 | GET | `/api/dashboard/runs` | Bounded summary of hashed per-run indexes |
 | GET | `/api/runs/{run_id}` | Run detail, terminal state, counts, integrity |
 | GET | `/api/runs/{run_id}/summary` | What a host can post: `state` (`queued`, `running`, `succeeded`, `failed`, `unverified`, `cancelled`, the words `GET /api/plans/{id}/status` uses), `verdict` once it ended, `cost_usd`, task counts (`passed`, `failed`, `unverified`, `other`), at most five `milestones` from event kinds and ids, `untrusted_input_boundary` per task (`data_llm` or `none`, see 8.41), `finished_at`, `links`, and once the run ended, `result`: where its verified work is (see below) |
+| GET | `/api/runs/{run_id}/diff` | Every change an ended run's verified work makes from the base its batch started at (gap-0d6d21): `branch`, `base`, `commit`, `files` (each with `path`, `status` `added`/`modified`/`deleted`, `additions`, `deletions`, `binary`, `patch`, the unified diff or `null` for a binary file, and `truncated`), `totals` over every file, and `truncated` when files were left out. `?max_files=` (default 200, 1 to 500) and `?max_patch_bytes=` per file (default 65536, 1024 to 262144; a patch is cut on a line boundary). 409 while the run is active, 404 when it has no result |
 | GET | `/api/runs/{run_id}/events` | Cursor-paginated events (`?cursor=&limit=&types=&source=`) |
 | GET | `/api/runs/{run_id}/events/stream` | Run-filtered SSE |
 | GET | `/api/runs/{run_id}/tasks` | Task summaries and attempt numbers |

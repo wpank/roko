@@ -281,10 +281,12 @@ pub(crate) fn graph_run_id(run_id: Option<&str>) -> String {
 /// the TUI replays, with the run's `run_id` added, by which the index is
 /// derived and repaired. A hub that writes the workspace log itself (serve's,
 /// see [`StateHub::persists_events`]) gets the index only. Plan, task, gate
-/// and run lifecycle events are synced and flush the index; the rest, agent
-/// output above all, are appended without a sync per line, and reach the
-/// index at the latest with the first row `INDEX_FLUSH_INTERVAL` after its
-/// last flush (bug-0b997a).
+/// and run lifecycle events are synced and flush the index; the rest are
+/// appended without a sync per line. Of those, what a host shows as it
+/// happens, agent output above all, flushes the index too (bug-966cf7);
+/// heartbeats, efficiency rows and gate or task output lines reach it at the
+/// latest with the first row `INDEX_FLUSH_INTERVAL` after its last flush
+/// (bug-0b997a).
 pub(crate) struct WorkspaceEventLog {
     tap: EventTap<WorkspaceLogWriter>,
 }
@@ -382,7 +384,9 @@ impl WorkspaceLogWriter {
                 .or_insert_with(|| serde_json::json!(ts_millis));
         }
         let lifecycle = is_lifecycle_event(event);
-        let flush_index = lifecycle || self.last_flush.elapsed() >= INDEX_FLUSH_INTERVAL;
+        let flush_index = lifecycle
+            || shown_as_it_happens(event)
+            || self.last_flush.elapsed() >= INDEX_FLUSH_INTERVAL;
         if flush_index {
             self.last_flush = Instant::now();
         }
@@ -473,6 +477,22 @@ fn is_lifecycle_event(event: &DashboardEvent) -> bool {
             | DashboardEvent::TaskBlocked { .. }
             | DashboardEvent::GateResult { .. }
             | DashboardEvent::RunCompleted { .. }
+    )
+}
+
+/// Whether a [`WorkspaceEventLog`] flushes the run's index as soon as it
+/// writes `event`, though without a sync (bug-966cf7): what a host following
+/// the run shows as it happens, such as an agent's live tool steps and text,
+/// a route decision, a confirm wait, a held effect or a knowledge write. Only
+/// the steady traffic waits for [`INDEX_FLUSH_INTERVAL`] (bug-0b997a):
+/// heartbeats, efficiency rows, and gate or task output lines.
+fn shown_as_it_happens(event: &DashboardEvent) -> bool {
+    !matches!(
+        event,
+        DashboardEvent::AgentHeartbeat { .. }
+            | DashboardEvent::EfficiencyEvent { .. }
+            | DashboardEvent::GateOutputLine { .. }
+            | DashboardEvent::TaskOutputAppended { .. }
     )
 }
 
@@ -1154,6 +1174,99 @@ mod tests {
         }
         assert_eq!(kinds(), ["agent_spawned", "agent_heartbeat"]);
         log.finish().await;
+    }
+
+    /// bug-966cf7: a live agent record, and a loop event such as a route
+    /// decision, is in the run's index once it has been recorded, without a
+    /// later row to flush it; heartbeats and efficiency rows still wait for
+    /// the flush interval.
+    #[tokio::test]
+    async fn live_records_flush_at_once() {
+        /// The types of the rows in the run's index once it has `count`, or
+        /// after 5 s.
+        async fn rows(index: &Path, count: usize) -> Vec<String> {
+            let deadline = Instant::now() + Duration::from_secs(5);
+            loop {
+                let kinds = std::fs::read_to_string(index)
+                    .unwrap_or_default()
+                    .lines()
+                    .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+                    .filter_map(|row| row["type"].as_str().map(str::to_string))
+                    .collect::<Vec<_>>();
+                if kinds.len() >= count || Instant::now() >= deadline {
+                    return kinds;
+                }
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        }
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let hub = crate::state_hub::shared_state_hub();
+        let log = WorkspaceEventLog::spawn(&hub, dir.path(), "graph-test-prompt".to_string())
+            .expect("record the run");
+        let index = roko_fs::run_index::run_index_path(
+            &dir.path().join(".roko/events.jsonl"),
+            "graph-test-prompt",
+        )
+        .expect("index path");
+
+        hub.sender().publish(DashboardEvent::TaskStarted {
+            plan_id: "p1".to_string(),
+            task_id: "T1".to_string(),
+            title: "do it".to_string(),
+            phase: "graph-executing".to_string(),
+        });
+        assert_eq!(rows(&index, 1).await, ["task_started"]);
+        // Nothing is published after each of these, so only its own flush
+        // can put it in the index.
+        let record = serde_json::json!({
+            "kind": "tool_start",
+            "agent_id": "p1/T1",
+            "plan_id": "p1",
+            "task_id": "T1",
+            "attempt": 1,
+            "live": true,
+            "payload": {"tool": "read_file"},
+        });
+        hub.sender().publish(DashboardEvent::AgentOutput {
+            agent_id: "p1/T1".to_string(),
+            plan_id: "p1".to_string(),
+            task_id: "T1".to_string(),
+            attempt: 1,
+            content: format!("{STREAM_RECORD_PREFIX}{record}"),
+        });
+        assert_eq!(rows(&index, 2).await, ["task_started", "agent_output"]);
+        hub.sender().publish(DashboardEvent::RouteDecided {
+            plan_id: "p1".to_string(),
+            task_id: "T1".to_string(),
+            attempt: 2,
+            model: "glm-model".to_string(),
+            provider: "openai-mock".to_string(),
+            stage: "retry".to_string(),
+            reason: "task hint".to_string(),
+            source: "task_hint".to_string(),
+            candidates: Vec::new(),
+        });
+        assert_eq!(
+            rows(&index, 3).await,
+            ["task_started", "agent_output", "route_decided"]
+        );
+        log.finish().await;
+
+        let heartbeat = DashboardEvent::AgentHeartbeat {
+            agent_id: "p1/T1".to_string(),
+            plan_id: "p1".to_string(),
+            task_id: "T1".to_string(),
+            elapsed_ms: 5_000,
+        };
+        let efficiency = DashboardEvent::EfficiencyEvent {
+            plan_id: "p1".to_string(),
+            task_id: "T1".to_string(),
+            metric: "cost_usd".to_string(),
+            value: 0.01,
+        };
+        assert!(!shown_as_it_happens(&heartbeat));
+        assert!(!shown_as_it_happens(&efficiency));
     }
 
     /// gap-dd4826: a blocked task is synced as it is written, like the

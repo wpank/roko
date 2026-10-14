@@ -2,21 +2,33 @@
 id = "gap-7c6663"
 kind = "gap"
 title = "A confirm rung's wait publishes no event, so a run's event stream cannot show that it waits on the person"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p2"
 goal = "visibility"
 size = "M"
 subsystem = ["roko-cli/graph_task_dispatch"]
 created = 2026-10-13
-updated = 2026-10-13
-last_verified = 2026-10-13
+updated = 2026-10-14
+last_verified = 2026-10-14
+last_verified_rev = "d96464585"
 source = "hermes-plugin-roko dogfood, 2026-10-13 (roko serve :6716 built from 6ab6fde47)"
 anchors = ["crates/roko-cli/src/graph_task_dispatch/attempt_workspace.rs::confirm_rung", "crates/roko-cli/src/graph_task_dispatch/pack_rungs.rs"]
 links = { depends_on = [], blocks = [], related = ["gap-25d9cc"], supersedes = [], duplicate_of = "" }
 
 [[verify]]
 command = "grep -rqw 'fn a_confirm_wait_is_published' crates/roko-cli/ && cargo test -p roko-cli a_confirm_wait_is_published"
+
+[closed]
+at = 2026-10-14
+at_ts = "2026-10-14T09:55:15Z"
+commit = "d96464585"
+executor = "claude-agent"
+size = "M"
+claimed_at = "2026-10-14T08:26:40Z"
+model = "claude-opus-5-5"
+forced = false
+evidence = "d96464585: a confirm rung publishes confirm_waiting (question, timeout, deadline) when its hold is written and confirm_resolved (approved/rejected/timed_out/stopped, note) when the wait ends; pack rungs publish gate_rung_started; an approved rung's gate result says approved by the person (attempt_workspace.rs confirm_rung, pack_rungs.rs). Verify: cargo test -p roko-cli a_confirm_wait_is_published passes. Checked at the top of the stacked branches (all six roko-loops items): cargo test -p roko-cli --lib passed except the date-keyed active_self_model_picks_start_rung_and_logs_propensity (fails on 2026-10-14 without these changes too), learning_wiring_census passed, clippy -D warnings clean on roko-core, roko-cli and roko-serve; a zero-cost roko serve smoke (fake Claude CLI) showed the event in the run's index."
 +++
 
 ## Problem

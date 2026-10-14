@@ -251,6 +251,7 @@ async fn production_census(
         journal.as_ref(),
         factory.error_pattern_store(),
         None,
+        None,
     );
     GraphTaskDispatcher::new(Arc::new(factory), shared_config, workdir.to_path_buf())
         .with_feedback(feedback)

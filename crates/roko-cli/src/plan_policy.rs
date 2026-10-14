@@ -706,13 +706,20 @@ pub fn validate_plan_context(
                 )),
             }
             if let Some(range) = read_file.lines.as_deref() {
+                // A range in a file an earlier task changes is fitted to the
+                // file once that task has run (bug-7ff055): the file's
+                // length now says nothing about the range the task reads.
+                let changed_earlier = dependency_outputs.contains(&read_file.path);
                 match parse_line_range(range, usize::MAX) {
                     Ok((start, end)) => {
                         let line_count = std::fs::read_to_string(&full_path)
                             .map(|content| content.lines().count())
                             .unwrap_or(0);
                         let resolved_end = end.unwrap_or(line_count);
-                        if start == 0 || start > resolved_end || resolved_end > line_count {
+                        let reversed = end.is_some_and(|end| start > end);
+                        let outside =
+                            start == 0 || start > resolved_end || resolved_end > line_count;
+                        if reversed || (outside && !changed_earlier) {
                             issues.push(PlanPolicyViolation::task(
                                 task,
                                 "PLAN_CONTEXT_RANGE",
@@ -776,9 +783,73 @@ pub fn validate_plan_context(
     issues
 }
 
+/// Fit `task`'s declared line ranges in files an earlier task of `plan`
+/// changes to those files as `workspace_root` holds them, once that task has
+/// run (bug-7ff055). The planner wrote the ranges before the files changed: a
+/// range that runs past the end of its file is cut at the file's last line,
+/// and one that starts past it becomes an unranged entry, which shows the file
+/// within the context budget. A range in a file no earlier task changes, or a
+/// malformed one, is left for [`render_declared_context`] to refuse. Returns
+/// one line per range it changed, for the log.
+pub(crate) fn fit_ranges_to_earlier_changes(
+    task: &mut TaskDef,
+    plan: &TasksFile,
+    workspace_root: &Path,
+) -> Vec<String> {
+    let task_by_id = plan
+        .tasks
+        .iter()
+        .map(|task| (task.id.as_str(), task))
+        .collect::<HashMap<_, _>>();
+    let changed_earlier = transitive_dependency_outputs(task, &task_by_id);
+    let mut fitted = Vec::new();
+    let Some(context) = task.context.as_mut() else {
+        return fitted;
+    };
+    for read_file in &mut context.read_files {
+        let Some(range) = read_file.lines.clone() else {
+            continue;
+        };
+        if !changed_earlier.contains(&read_file.path) {
+            continue;
+        }
+        let Ok(relative) = validate_repo_relative_path(&read_file.path) else {
+            continue;
+        };
+        let Ok((start, end)) = parse_line_range(&range, usize::MAX) else {
+            continue;
+        };
+        if end.is_some_and(|end| start > end) {
+            continue;
+        }
+        let Ok(content) = std::fs::read_to_string(workspace_root.join(relative)) else {
+            continue;
+        };
+        let line_count = content.lines().count();
+        let lines = if start > line_count {
+            None
+        } else if end.is_some_and(|end| end > line_count) {
+            Some(format!("{start}-{line_count}"))
+        } else {
+            continue;
+        };
+        fitted.push(format!(
+            "`{range}` of `{}` ({line_count} lines) became {}",
+            read_file.path,
+            lines.as_deref().map_or_else(
+                || "the whole file".to_string(),
+                |lines| format!("`{lines}`")
+            )
+        ));
+        read_file.lines = lines;
+    }
+    fitted
+}
+
 /// Render exact, line-numbered context for prompt assembly. Unlike preflight,
 /// dispatch has no future-output exception: every dependency should already be
-/// materialized in the attempt worktree.
+/// materialized in the attempt worktree, and the dispatcher has fitted ranges
+/// in files an earlier task changed ([`fit_ranges_to_earlier_changes`]).
 pub fn render_declared_context(
     task: &TaskDef,
     workspace_root: &Path,
@@ -1475,6 +1546,92 @@ mod tests {
         let error = render_declared_context(&ranged, root.path(), policy)
             .expect_err("an explicit range over the budget fails the task");
         assert!(error.contains("byte prompt budget"), "{error}");
+    }
+
+    /// bug-7ff055: a range the planner guessed in a file an earlier task
+    /// changes passes the plan check, and at dispatch fits the file as that
+    /// task left it: cut at its last line, or the whole file when it starts
+    /// past the end. The same range in a file no earlier task changes is
+    /// still refused, by both.
+    #[test]
+    fn ranges_in_files_an_earlier_task_changes_fit_the_file() {
+        let root = tempdir().expect("root");
+        std::fs::create_dir(root.path().join("src")).expect("src");
+        let plan_dir = root.path().join("plan");
+        std::fs::create_dir(&plan_dir).expect("plan dir");
+        std::fs::write(plan_dir.join("tasks.toml"), "").expect("tasks.toml");
+        // Before the run, the file T1 rewrites has 10 lines.
+        write_lines(root.path(), "src/out.py", 10, 12);
+        write_lines(root.path(), "src/other.py", 17, 12);
+
+        let mut writer = unranged_task(&[]);
+        writer.files = vec!["src/out.py".into()];
+        let guessed = |path: &str, lines: &str| ReadFile {
+            path: path.into(),
+            lines: Some(lines.into()),
+            why: "guessed".into(),
+        };
+        let mut reader = unranged_task(&[]);
+        reader.id = "T2".into();
+        reader.depends_on = vec!["T1".into()];
+        reader.files = vec!["src/test_out.py".into()];
+        reader.context.as_mut().expect("context").read_files = vec![
+            guessed("src/out.py", "5-25"),
+            guessed("src/out.py", "20-30"),
+        ];
+        let mut plan = tasks(writer);
+        plan.tasks.push(reader);
+        let range_issues = |plan: &TasksFile| {
+            validate_plan_context(plan, root.path(), &plan_dir, PlanExecutionPolicy::normal())
+                .into_iter()
+                .filter(|issue| issue.code == "PLAN_CONTEXT_RANGE")
+                .map(|issue| issue.message)
+                .collect::<Vec<_>>()
+        };
+        assert!(range_issues(&plan).is_empty(), "{:?}", range_issues(&plan));
+
+        // T1 ran and left the file 17 lines long.
+        write_lines(root.path(), "src/out.py", 17, 12);
+        let mut dispatched = plan.tasks[1].clone();
+        let fitted = fit_ranges_to_earlier_changes(&mut dispatched, &plan, root.path());
+        assert_eq!(fitted.len(), 2, "{fitted:?}");
+        let ranges = dispatched
+            .context
+            .as_ref()
+            .expect("context")
+            .read_files
+            .iter()
+            .map(|read_file| read_file.lines.clone())
+            .collect::<Vec<_>>();
+        assert_eq!(ranges, [Some("5-17".to_string()), None]);
+        let rendered =
+            render_declared_context(&dispatched, root.path(), PlanExecutionPolicy::normal())
+                .expect("the fitted ranges render");
+        assert!(
+            rendered.contains("lines=\"5-17\" total=\"17\""),
+            "{rendered}"
+        );
+        assert!(
+            rendered.contains("lines=\"1-17\" total=\"17\""),
+            "{rendered}"
+        );
+
+        // The same range in a file no earlier task changes is refused.
+        let mut strict = plan.clone();
+        strict.tasks[1]
+            .context
+            .as_mut()
+            .expect("context")
+            .read_files = vec![guessed("src/other.py", "5-25")];
+        assert_eq!(range_issues(&strict).len(), 1);
+        let mut unchanged = strict.tasks[1].clone();
+        assert!(fit_ranges_to_earlier_changes(&mut unchanged, &strict, root.path()).is_empty());
+        let error = render_declared_context(&unchanged, root.path(), PlanExecutionPolicy::normal())
+            .expect_err("a range past a file no earlier task changes");
+        assert!(
+            error.contains("is outside `src/other.py` (17 lines)"),
+            "{error}"
+        );
     }
 
     /// gap-1d1fa6: a task bigger than its tier allows is flagged, with the

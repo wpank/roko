@@ -2,7 +2,7 @@
 id = "bug-06bd18"
 kind = "bug"
 title = "A new run of a plan cannot start while a failed run's attempt checkout is kept"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p1"
 goal = "core"
@@ -11,12 +11,25 @@ subsystem = ["roko-cli/orchestrator"]
 created = 2026-10-14
 updated = 2026-10-14
 last_verified = 2026-10-14
+last_verified_rev = "1e609bb67"
 source = "e2e-v4 dogfood, roko-stream worker, 2026-10-14 (roko main 86d629363)"
 anchors = ["crates/roko-cli/src/orchestrator/worktree/acceptance.rs::create_attempt_locked", "crates/roko-cli/src/orchestrator/worktree/mod.rs::create_locked", "crates/roko-cli/src/orchestrator/worktree/tests.rs"]
 links = { depends_on = [], blocks = [], related = ["bug-056b40"], supersedes = [], duplicate_of = "" }
 
 [[verify]]
 command = "grep -rqw 'fn a_new_run_sets_aside_the_checkouts_another_run_kept' crates/roko-cli/ && cargo test -p roko-cli a_new_run_sets_aside_the_checkouts_another_run_kept"
+
+[closed]
+at = 2026-10-14
+at_ts = "2026-10-14T18:26:28Z"
+commit = "1e609bb67"
+by = "commit trailer"
+executor = "claude-agent"
+size = "M"
+claimed_at = "2026-10-14T17:19:28Z"
+forced = false
+model = "claude-opus-5-5"
+evidence = "1e609bb67: create_attempt_locked sets aside an attempt checkout that another run made and kept (set_aside_kept_checkout in crates/roko-cli/src/orchestrator/worktree/acceptance.rs) before making the new run's own: after a re-attach's identity checks it renames the branch to <branch>-<run> and moves the checkout to <id>-<run> with git worktree move (the rename is rolled back if the move fails), keeping uncommitted work; nothing is deleted, and a path that fails the identity checks is still refused. Verify: cargo test -p roko-cli a_new_run_sets_aside_the_checkouts_another_run_kept passes, as do the 107 orchestrator::worktree and graph_execution::workspaces tests (a_resumed_run_starts_attempts_from_the_plan_branch now expects run-2's own checkout). Also roko-cli --lib 3626 passed with 1 failure (active_self_model_picks_start_rung_and_logs_propensity, date-keyed, bug-3e2d76, fails without this change); clippy -D warnings clean on roko-cli."
 +++
 
 ## Problem

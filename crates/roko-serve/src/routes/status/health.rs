@@ -312,6 +312,7 @@ fn dashboard_event_type(event: &roko_core::dashboard_snapshot::DashboardEvent) -
         DashboardEvent::EvUpdate { .. } => "ev.update",
         DashboardEvent::M1Episode { .. } => "m1.episode",
         DashboardEvent::SelfModelCalibration { .. } => "self_model.calibration",
+        DashboardEvent::RouteDecided { .. } => "route_decided",
         DashboardEvent::SnapshotRebased { .. } => "snapshot_rebased",
     }
 }
@@ -327,6 +328,7 @@ fn dashboard_event_plan_id(event: &roko_core::dashboard_snapshot::DashboardEvent
         | DashboardEvent::GateResult { plan_id, .. }
         | DashboardEvent::PhaseTransition { plan_id, .. }
         | DashboardEvent::EfficiencyEvent { plan_id, .. }
+        | DashboardEvent::RouteDecided { plan_id, .. }
         | DashboardEvent::EventLogEntry { plan_id, .. } => Some(plan_id),
         _ => None,
     }
@@ -341,6 +343,7 @@ fn dashboard_event_task_id(event: &roko_core::dashboard_snapshot::DashboardEvent
         | DashboardEvent::GateResult { task_id, .. }
         | DashboardEvent::EfficiencyEvent { task_id, .. }
         | DashboardEvent::TaskOutputAppended { task_id, .. }
+        | DashboardEvent::RouteDecided { task_id, .. }
         | DashboardEvent::EventLogEntry { task_id, .. } => Some(task_id),
         _ => None,
     }

@@ -1504,6 +1504,7 @@ pub fn format_dashboard_event(
         | DashboardEvent::EvUpdate { .. }
         | DashboardEvent::M1Episode { .. }
         | DashboardEvent::SelfModelCalibration { .. }
+        | DashboardEvent::RouteDecided { .. }
         | DashboardEvent::SnapshotRebased { .. } => return None,
     };
 

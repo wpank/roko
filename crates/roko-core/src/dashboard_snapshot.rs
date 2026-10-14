@@ -164,6 +164,38 @@ pub enum DashboardEvent {
         #[serde(default)]
         provider: String,
     },
+    /// The router picked the model for a Graph attempt (gap-2a3298): the
+    /// route row `decisions.jsonl` keeps, as it happens. Published before
+    /// the attempt's `agent_spawned`, and again with `source: "failover"`
+    /// when failover passes the planned model over for another one.
+    RouteDecided {
+        plan_id: String,
+        task_id: String,
+        /// The attempt, from 1.
+        #[serde(default)]
+        attempt: u32,
+        /// The model the route picked.
+        model: String,
+        /// The provider it runs on; empty when the route does not say.
+        #[serde(default)]
+        provider: String,
+        /// The routing stage that decided (`routing_stage`), or `failover`.
+        #[serde(default)]
+        stage: String,
+        /// Why, as the route row words it (`routing_reason`), or which
+        /// model failover passed over and why.
+        #[serde(default)]
+        reason: String,
+        /// Who produced the pick: `router`, `ladder`, `task_hint`,
+        /// `override`, `fallback`, `default`, `explore`, `control`,
+        /// `self_model`, or `failover`.
+        #[serde(default)]
+        source: String,
+        /// The candidates the route weighed, the picked model first and the
+        /// rest by score, at most [`ROUTE_EVENT_CANDIDATES`].
+        #[serde(default)]
+        candidates: Vec<RouteCandidate>,
+    },
     /// Incremental agent output.
     AgentOutput {
         agent_id: String,
@@ -633,6 +665,32 @@ pub type PlanState = PlanDisplayState;
 
 /// Phase of a plan-set member that has not started yet.
 pub const PLAN_SET_PENDING_PHASE: &str = "pending";
+
+/// Most candidates a [`DashboardEvent::RouteDecided`] carries.
+pub const ROUTE_EVENT_CANDIDATES: usize = 5;
+
+/// One candidate a route weighed, as [`DashboardEvent::RouteDecided`]
+/// carries it.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct RouteCandidate {
+    /// The model.
+    pub model: String,
+    /// The provider it runs on.
+    #[serde(default)]
+    pub provider: String,
+    /// The stage's score for it.
+    #[serde(default)]
+    pub score: f64,
+    /// The probability the route's policy gave it, when it says.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub p: Option<f64>,
+    /// Whether the guards let the policy pick it.
+    #[serde(default)]
+    pub eligible: bool,
+    /// Why it could not be picked.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ineligible_reason: Option<String>,
+}
 
 /// One plan announced by [`DashboardEvent::PlanSetLoaded`].
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -2523,6 +2581,23 @@ impl DashboardSnapshot {
             // S10's calibration view reads the export from the event stream
             // (6134); the snapshot keeps none of it.
             DashboardEvent::SelfModelCalibration { .. } => {}
+            DashboardEvent::RouteDecided {
+                plan_id,
+                task_id,
+                attempt,
+                model,
+                source,
+                ..
+            } => {
+                let by = if source.is_empty() { "route" } else { source };
+                self.push_event_log(
+                    ts,
+                    "route_decided".to_string(),
+                    plan_id.clone(),
+                    task_id.clone(),
+                    format!("attempt {attempt}: {model} ({by})"),
+                );
+            }
             // S10's Loop Health view reads health from the event stream; the
             // snapshot keeps no loop state, and logs only the transitions.
             DashboardEvent::LoopHealth { .. } => {}

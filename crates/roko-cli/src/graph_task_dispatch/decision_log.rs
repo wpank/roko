@@ -44,6 +44,56 @@ use super::*;
 use crate::dispatch::RunnerDispatchPlan;
 use crate::dispatch::prompt_builder::{PromptItemDiagnostic, ReaderRead};
 
+/// `decision`, the route row of attempt `attempt` of a task of `plan_id`, as
+/// the [`DashboardEvent::RouteDecided`](roko_core::DashboardEvent::RouteDecided)
+/// a host follows: the pick, the stage, source and reason, and its
+/// candidates, the pick first and the rest by score. A pick by rung or by
+/// hint can score below the models it passed over, and must not fall out of
+/// the list.
+pub(super) fn route_event(
+    decision: &roko_learn::routing_log::RoutingDecisionLog,
+    plan_id: &str,
+    attempt: u32,
+) -> roko_core::DashboardEvent {
+    let mut candidates: Vec<&roko_learn::routing_log::CandidateEntry> =
+        decision.candidates.iter().collect();
+    let picked = |candidate: &roko_learn::routing_log::CandidateEntry| {
+        candidate.model == decision.selected_model
+    };
+    candidates.sort_by(|a, b| {
+        picked(b)
+            .cmp(&picked(a))
+            .then_with(|| b.score.total_cmp(&a.score))
+    });
+    let source = decision
+        .source
+        .and_then(|source| serde_json::to_value(source).ok())
+        .and_then(|value| value.as_str().map(str::to_string))
+        .unwrap_or_default();
+    roko_core::DashboardEvent::RouteDecided {
+        plan_id: plan_id.to_string(),
+        task_id: decision.task_id.clone(),
+        attempt,
+        model: decision.selected_model.clone(),
+        provider: decision.selected_provider.clone(),
+        stage: decision.routing_stage.clone(),
+        reason: decision.routing_reason.clone(),
+        source,
+        candidates: candidates
+            .into_iter()
+            .take(roko_core::dashboard_snapshot::ROUTE_EVENT_CANDIDATES)
+            .map(|candidate| roko_core::RouteCandidate {
+                model: candidate.model.clone(),
+                provider: candidate.provider.clone(),
+                score: candidate.score,
+                p: candidate.p,
+                eligible: candidate.eligible,
+                ineligible_reason: candidate.ineligible_reason.clone(),
+            })
+            .collect(),
+    }
+}
+
 /// Most exposure rows one attempt writes (S01 §5.9
 /// `max_exposures_per_attempt`; a constant until a `[telemetry]` key
 /// exists). The attempt's counts include the items past it.
@@ -70,6 +120,15 @@ impl GraphTaskDispatcher {
             decision.attempt_key = Some(attempt_key);
             decision.task_id.clone_from(&task.id);
             decision.timestamp = chrono::Utc::now().to_rfc3339();
+            // The decision as it happens, for whoever follows the run
+            // (gap-2a3298); the attempt's `agent_spawned` follows it.
+            if let Some(tui) = &self.tui_bridge {
+                tui.publish_event(route_event(
+                    &decision,
+                    &attempt.key.plan_id,
+                    attempt.key.attempt,
+                ));
+            }
             attempt.record_decision(decision);
         }
         record_exposures(attempt, plan);

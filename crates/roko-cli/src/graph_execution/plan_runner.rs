@@ -1365,6 +1365,12 @@ async fn run_graph_plan_body(
             .clone()
             .unwrap_or_else(super::batch::new_batch_run_id)
     });
+    // Keep the full SharedStateHub alive so the TUI can subscribe to the
+    // live event stream. Previously this path only extracted sender().
+    // Every publisher of this run (plan set, TUI bridges, telemetry, the
+    // TUI itself, the knowledge it writes) shares this one hub.
+    let state_hub = state_hub.unwrap_or_else(crate::state_hub::shared_state_hub);
+    let state_hub_sender = state_hub.sender();
     let mut graph_feedback = build_graph_feedback_context(
         workdir,
         &roko_config,
@@ -1372,6 +1378,7 @@ async fn run_graph_plan_body(
         cascade_journal.as_ref(),
         shared_factory.error_pattern_store(),
         knowledge_batch.as_deref(),
+        Some(state_hub_sender.clone()),
     );
     // CLI dispatch turns record with their run's provenance sink (gap-ca8022).
     graph_feedback.provenance_sinks = Some(provenance_sinks.clone());
@@ -1393,12 +1400,6 @@ async fn run_graph_plan_body(
     // TUI logic (line ~470).
     let launch_tui = !no_tui && !quiet && !json && std::io::stdout().is_terminal();
 
-    // Keep the full SharedStateHub alive so the TUI can subscribe to the
-    // live event stream. Previously this path only extracted sender().
-    // Every publisher of this run (plan set, TUI bridges, telemetry, the
-    // TUI itself) shares this one hub.
-    let state_hub = state_hub.unwrap_or_else(crate::state_hub::shared_state_hub);
-    let state_hub_sender = state_hub.sender();
     // P21 (gap-6ff99a): a knowledge batch an earlier run left unproposed, as a
     // run that crashed leaves it, goes through the guard now instead of staying
     // hidden; this process holds the runner lock, so no other run owns one.
@@ -2460,6 +2461,7 @@ pub fn build_graph_feedback_context(
     cascade_journal: Option<&Arc<roko_learn::model_call_feedback::ModelCallJournal>>,
     error_patterns: &Arc<std::sync::RwLock<roko_learn::error_pattern_store::ErrorPatternStore>>,
     knowledge_batch: Option<&str>,
+    publisher: Option<crate::state_hub::StateHubSender>,
 ) -> crate::graph_task_dispatch::GraphFeedbackContext {
     let graph_layout = RokoLayout::for_project(workdir);
     let graph_learn_dir = graph_layout.learn_dir();
@@ -2503,6 +2505,7 @@ pub fn build_graph_feedback_context(
             self_model.as_ref(),
             homeostasis.as_ref(),
             knowledge_batch,
+            publisher,
         )),
         efficiency_path: Some(graph_learn_dir.join("efficiency.jsonl")),
         costs_path: Some(graph_learn_dir.join("costs.jsonl")),
@@ -2589,6 +2592,7 @@ pub fn build_graph_feedback_facade(
     self_model: Option<&Arc<crate::graph_task_dispatch::self_model::SelfModelRuntime>>,
     homeostasis: Option<&Arc<crate::runtime_feedback::HomeostasisSink>>,
     knowledge_batch: Option<&str>,
+    publisher: Option<crate::state_hub::StateHubSender>,
 ) -> Arc<crate::runtime_feedback::FeedbackFacade> {
     // A frozen run (decision 2218) registers no learning sink. Each one
     // writes learned state: episodes, hindsight, knowledge, error patterns,
@@ -2613,6 +2617,11 @@ pub fn build_graph_feedback_facade(
     let verified_knowledge = crate::runtime_feedback::VerifiedKnowledgeSink::for_workdir(workdir);
     let verified_knowledge = match knowledge_batch {
         Some(batch) => verified_knowledge.with_commit_batch(batch),
+        None => verified_knowledge,
+    };
+    // What it writes is published on the run's hub (gap-7576c7).
+    let verified_knowledge = match publisher {
+        Some(publisher) => verified_knowledge.with_publisher(publisher),
         None => verified_knowledge,
     };
     let mut facade = crate::runtime_feedback::FeedbackFacade::new()
@@ -5805,6 +5814,7 @@ max_retries = 0
             Some(&router),
             Some(&journal),
             factory.error_pattern_store(),
+            None,
             None,
         );
         let frozen = config.learning.frozen;

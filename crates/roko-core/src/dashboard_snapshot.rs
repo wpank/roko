@@ -275,6 +275,32 @@ pub enum DashboardEvent {
         #[serde(default)]
         decided_by: String,
     },
+    /// A verified Graph attempt taught the knowledge store something
+    /// (gap-7576c7): its stated lesson admitted or confirmed, the entries its
+    /// prompt surfaced reinforced, tiers promoted. Published only when the
+    /// ingestion changed something.
+    KnowledgeWritten {
+        plan_id: String,
+        task_id: String,
+        /// How admission handled the attempt's lesson: `light_admitted`,
+        /// `full_admitted`, `full_deferred`, `full_rejected`,
+        /// `full_suppressed`, `deferred`, `duplicate` (it confirmed a stored
+        /// entry), or `no_candidate` (the attempt stated no lesson).
+        admission: String,
+        /// The entry admitted or confirmed, when one was.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        entry_id: Option<String>,
+        /// Entries the attempt's prompt surfaced that its passed gates
+        /// reinforced.
+        #[serde(default)]
+        reinforced: u32,
+        /// Entries promoted to a higher tier.
+        #[serde(default)]
+        promoted: u32,
+        /// The lesson admitted or confirmed, at most 160 characters.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        lesson: Option<String>,
+    },
     /// Incremental agent output.
     AgentOutput {
         agent_id: String,
@@ -2723,6 +2749,26 @@ impl DashboardSnapshot {
                     plan_id.clone(),
                     task_id.clone(),
                     format!("{effect_id}: {outcome}"),
+                );
+            }
+            DashboardEvent::KnowledgeWritten {
+                plan_id,
+                task_id,
+                admission,
+                reinforced,
+                promoted,
+                lesson,
+                ..
+            } => {
+                let lesson = lesson
+                    .as_deref()
+                    .map_or_else(String::new, |lesson| format!(": {lesson}"));
+                self.push_event_log(
+                    ts,
+                    "knowledge_written".to_string(),
+                    plan_id.clone(),
+                    task_id.clone(),
+                    format!("{admission}, {reinforced} reinforced, {promoted} promoted{lesson}"),
                 );
             }
             DashboardEvent::RouteDecided {

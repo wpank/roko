@@ -426,6 +426,7 @@ a client that does not know a type ignores it.
 | `confirm_resolved` | `plan_id`, `task_id`, `attempt`, `attempt_key`, `rung`, `outcome` (`approved`, `rejected`, `timed_out`, or `stopped`), `note` when the person gave one. The rung's `gate_result` follows, saying who passed it |
 | `effect_staged` | `effect_id` (what `effect_decide` names), `plan_id`, `task_id`, `attempt`, `tool`, `server`, `proposed_at`: an outbound call the agent proposed waits for a person (gap-f439c1). Published while the attempt runs, within about 2 s of the hold |
 | `effect_decided` | `effect_id`, `plan_id`, `task_id`, `tool`, `server`, `outcome` (`applied`, `rejected`, `failed`, `ambiguous`), `decided_by`. Published on `roko serve`'s hub (`/api/events`), and in the run's index while the run is live |
+| `knowledge_written` | `plan_id`, `task_id`, `admission` (`light_admitted`, `full_admitted`, `full_deferred`, `full_rejected`, `full_suppressed`, `deferred`, `duplicate`, `no_candidate`), `entry_id` (the entry admitted or confirmed), `reinforced`, `promoted`, `lesson` (≤160 characters): what a verified attempt taught the knowledge store (gap-7576c7). Only when it changed something |
 
 **Inference and deployment events:**
 

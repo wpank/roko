@@ -39,6 +39,8 @@ const MAX_AGENT_OUTPUT_BYTES: usize = 2_000;
 const MAX_FILE_TAGS: usize = 16;
 /// The longest lesson a verified pass stores, in characters (decision 4201).
 const MAX_LESSON_CHARS: usize = 300;
+/// The longest lesson a `knowledge_written` event carries, in characters.
+const EVENT_LESSON_CHARS: usize = 160;
 
 /// A task attempt whose every authored verify step passed.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -135,15 +137,26 @@ fn bounded(text: &str, max: usize) -> String {
 
 /// Sink that feeds [`FeedbackEvent::TaskVerified`] into the durable
 /// knowledge lifecycle.
-#[derive(Debug)]
 pub struct VerifiedKnowledgeSink {
     lifecycle: RuntimeKnowledgeLifecycle,
+    /// Where what an ingestion wrote is published (gap-7576c7): the run's
+    /// hub.
+    publisher: Option<crate::state_hub::StateHubSender>,
     /// One ingestion at a time: each rewrites the knowledge store several
     /// times, and parallel tasks can finish together. Each rewrite is whole
     /// on its own, under the file's write gate, which every store of the
     /// file shares (bug-c4f0ed); this lock keeps the ingestion's steps
     /// together, so the next one sees what this one admitted.
     serial: Arc<Mutex<()>>,
+}
+
+impl std::fmt::Debug for VerifiedKnowledgeSink {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("VerifiedKnowledgeSink")
+            .field("lifecycle", &self.lifecycle)
+            .field("publishes", &self.publisher.is_some())
+            .finish_non_exhaustive()
+    }
 }
 
 impl VerifiedKnowledgeSink {
@@ -158,8 +171,17 @@ impl VerifiedKnowledgeSink {
     pub fn new(lifecycle: RuntimeKnowledgeLifecycle) -> Self {
         Self {
             lifecycle,
+            publisher: None,
             serial: Arc::new(Mutex::new(())),
         }
+    }
+
+    /// Publish what each ingestion wrote on `publisher`, the run's hub, as
+    /// a `knowledge_written` event (gap-7576c7).
+    #[must_use]
+    pub fn with_publisher(mut self, publisher: crate::state_hub::StateHubSender) -> Self {
+        self.publisher = Some(publisher);
+        self
     }
 
     /// Add what this sink admits to the run `batch`'s knowledge batch, which
@@ -189,6 +211,7 @@ impl FeedbackSink for VerifiedKnowledgeSink {
             return Ok(());
         };
         let observation = attempt.observation();
+        let lesson = observation.lesson.clone();
         let lifecycle = self.lifecycle.clone();
         let serial = Arc::clone(&self.serial);
         let record = tokio::task::spawn_blocking(move || {
@@ -206,8 +229,52 @@ impl FeedbackSink for VerifiedKnowledgeSink {
             promoted = record.promotion_updates,
             "verified attempt ingested into durable knowledge"
         );
+        if let Some(publisher) = &self.publisher
+            && let Some(event) = written_event(attempt, &record, lesson)
+        {
+            publisher.publish(event);
+        }
         Ok(())
     }
+}
+
+/// What the ingestion `record` of `attempt` wrote, as a `knowledge_written`
+/// event, or `None` when it changed nothing (gap-7576c7). `lesson` is the
+/// lesson the attempt stated.
+fn written_event(
+    attempt: &VerifiedAttempt,
+    record: &roko_neuro::KnowledgeLifecycleRecord,
+    lesson: Option<String>,
+) -> Option<roko_core::DashboardEvent> {
+    use roko_neuro::RuntimeAdmissionPath;
+    let stored = matches!(
+        record.admission_path,
+        RuntimeAdmissionPath::LightAdmitted
+            | RuntimeAdmissionPath::FullAdmitted
+            | RuntimeAdmissionPath::Duplicate
+    );
+    let entry_id = stored.then(|| record.candidate_entry_id.clone()).flatten();
+    let reinforced = u32::try_from(record.gated_reinforcements).unwrap_or(u32::MAX);
+    let promoted = u32::try_from(record.promotion_updates).unwrap_or(u32::MAX);
+    if entry_id.is_none() && reinforced == 0 && promoted == 0 {
+        return None;
+    }
+    let admission = serde_json::to_value(record.admission_path)
+        .ok()
+        .and_then(|value| value.as_str().map(str::to_string))
+        .unwrap_or_default();
+    let lesson = lesson
+        .filter(|_| stored)
+        .map(|lesson| lesson.chars().take(EVENT_LESSON_CHARS).collect());
+    Some(roko_core::DashboardEvent::KnowledgeWritten {
+        plan_id: attempt.plan_id.clone(),
+        task_id: attempt.task_id.clone(),
+        admission,
+        entry_id,
+        reinforced,
+        promoted,
+        lesson,
+    })
 }
 
 impl VerifiedKnowledgeSink {
@@ -376,6 +443,75 @@ mod tests {
             RuntimeAdmissionPath::LightAdmitted
         );
         assert_eq!(receipts[0].gated_reinforcements, 1);
+    }
+
+    /// gap-7576c7: an ingestion that wrote something publishes it on the
+    /// run's hub as `knowledge_written`: the lesson admitted, the entries
+    /// reinforced. A repeat confirms the stored entry instead.
+    #[tokio::test]
+    async fn verified_knowledge_publishes_what_it_wrote() {
+        let dir = tempdir().unwrap();
+        let store = KnowledgeStore::for_workdir(dir.path());
+        store
+            .add(KnowledgeEntry {
+                id: "prior-hint".into(),
+                kind: KnowledgeKind::Insight,
+                content: "Rust hello world programs compile with a plain rustc call".into(),
+                confidence: 0.8,
+                confidence_weight: 0.8,
+                tags: vec!["rust".into()],
+                ..KnowledgeEntry::default()
+            })
+            .unwrap();
+        let hub = crate::state_hub::shared_state_hub();
+        let mut events = hub.subscribe_events();
+        let sink = VerifiedKnowledgeSink::for_workdir(dir.path()).with_publisher(hub.sender());
+
+        sink.on_event(&FeedbackEvent::TaskVerified(attempt(
+            "run-1:hello-plan/T01/a0",
+            vec!["prior-hint".into()],
+        )))
+        .await
+        .unwrap();
+        sink.on_event(&FeedbackEvent::TaskVerified(attempt(
+            "run-2:hello-plan/T01/a0",
+            vec![],
+        )))
+        .await
+        .unwrap();
+
+        let mut written = Vec::new();
+        loop {
+            match events.try_recv() {
+                Ok(envelope) => {
+                    if let roko_core::DashboardEvent::KnowledgeWritten {
+                        plan_id,
+                        task_id,
+                        admission,
+                        entry_id,
+                        reinforced,
+                        lesson,
+                        ..
+                    } = envelope.payload
+                    {
+                        written.push((plan_id, task_id, admission, entry_id, reinforced, lesson));
+                    }
+                }
+                Err(tokio::sync::broadcast::error::TryRecvError::Lagged(_)) => {}
+                Err(_) => break,
+            }
+        }
+        assert_eq!(written.len(), 2, "{written:?}");
+        let (plan_id, task_id, admission, entry_id, reinforced, lesson) = &written[0];
+        assert_eq!((plan_id.as_str(), task_id.as_str()), ("hello-plan", "T01"));
+        assert_eq!(admission, "light_admitted");
+        assert!(entry_id.is_some(), "{written:?}");
+        assert_eq!(*reinforced, 1);
+        assert_eq!(lesson.as_deref(), Some(LESSON));
+        let (_, _, admission, entry_id, _, lesson) = &written[1];
+        assert_eq!(admission, "duplicate", "{written:?}");
+        assert_eq!(entry_id, &written[0].3);
+        assert_eq!(lesson.as_deref(), Some(LESSON));
     }
 
     /// backlog 4216 (decision 4201): a verified pass stores the lesson its

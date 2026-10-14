@@ -313,6 +313,7 @@ fn dashboard_event_type(event: &roko_core::dashboard_snapshot::DashboardEvent) -
         DashboardEvent::M1Episode { .. } => "m1.episode",
         DashboardEvent::SelfModelCalibration { .. } => "self_model.calibration",
         DashboardEvent::RouteDecided { .. } => "route_decided",
+        DashboardEvent::KnowledgeWritten { .. } => "knowledge_written",
         DashboardEvent::EffectStaged { .. } => "effect_staged",
         DashboardEvent::EffectDecided { .. } => "effect_decided",
         DashboardEvent::ConfirmWaiting { .. } => "confirm_waiting",
@@ -333,6 +334,7 @@ fn dashboard_event_plan_id(event: &roko_core::dashboard_snapshot::DashboardEvent
         | DashboardEvent::PhaseTransition { plan_id, .. }
         | DashboardEvent::EfficiencyEvent { plan_id, .. }
         | DashboardEvent::RouteDecided { plan_id, .. }
+        | DashboardEvent::KnowledgeWritten { plan_id, .. }
         | DashboardEvent::EffectStaged { plan_id, .. }
         | DashboardEvent::EffectDecided { plan_id, .. }
         | DashboardEvent::ConfirmWaiting { plan_id, .. }
@@ -352,6 +354,7 @@ fn dashboard_event_task_id(event: &roko_core::dashboard_snapshot::DashboardEvent
         | DashboardEvent::EfficiencyEvent { task_id, .. }
         | DashboardEvent::TaskOutputAppended { task_id, .. }
         | DashboardEvent::RouteDecided { task_id, .. }
+        | DashboardEvent::KnowledgeWritten { task_id, .. }
         | DashboardEvent::EffectStaged { task_id, .. }
         | DashboardEvent::EffectDecided { task_id, .. }
         | DashboardEvent::ConfirmWaiting { task_id, .. }

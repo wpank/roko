@@ -65,9 +65,9 @@ _14 more open · 1 unchecked (`TRIAGE.md`) · `goal = "core"`_
 
 - **P1** [gap-aabeff](items/gap-aabeff-tool-t003-tui-paths-still-consume-string.md) TUI paths still consume string/tail projections that lose semantics (TUI adoption unproven) · size L · verified 2026-10-01
 - **P2** [gap-7c6663](items/gap-7c6663-a-confirm-rung-s-wait-publishes-no.md) A confirm rung's wait publishes no event, so a run's event stream cannot show that it waits on the person · size M · verified 2026-10-13
-- **P2** [bug-a0f01e](items/bug-a0f01e-long-running-operation-handles-never-record-completion.md) Long-running operation handles never record completion [bug] · verified 2026-10-01
+- **P2** [gap-f439c1](items/gap-f439c1-a-held-outbound-effect-and-its-decision.md) A held outbound effect and its decision publish no event, so a run's stream cannot show what waits on the person or when it was decided · size M · verified 2026-10-14
 
-_3 more open · `goal = "visibility"`_
+_8 more open · `goal = "visibility"`_
 
 ## 9. Learning loops on the Graph path
 

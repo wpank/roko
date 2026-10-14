@@ -1505,6 +1505,8 @@ pub fn format_dashboard_event(
         | DashboardEvent::M1Episode { .. }
         | DashboardEvent::SelfModelCalibration { .. }
         | DashboardEvent::RouteDecided { .. }
+        | DashboardEvent::EffectStaged { .. }
+        | DashboardEvent::EffectDecided { .. }
         | DashboardEvent::ConfirmWaiting { .. }
         | DashboardEvent::ConfirmResolved { .. }
         | DashboardEvent::SnapshotRebased { .. } => return None,

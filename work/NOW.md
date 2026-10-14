@@ -4,7 +4,7 @@
 
 What to work on next: the top checked, open items of each goal, highest-priority goal first. Reorder or change goals in `goals.toml`; pin an item higher with `rank = 1` (lower first).
 
-**Drift:** 13 anchor gone · 117 changed since checked · 2 mentioned in commits. Re-check them before relying on this list: `DRIFT.md`.
+**Drift:** 13 anchor gone · 118 changed since checked · 2 mentioned in commits. Re-check them before relying on this list: `DRIFT.md`.
 
 ## 1. Public release: security, licence, CI, first run
 
@@ -28,7 +28,7 @@ _3 more open · on hold: gap-6aaee9, gap-85f86a, gap-9b5582, gap-ac1aed, gap-b90
 - **P2** [spec-65c828](items/spec-65c828-backlog-phase-1-safe-runs.md) Backlog Phase 1 — safe runs [spec] · verified 2026-10-02
 - **P2** [spec-99d417](items/spec-99d417-backlog-phase-2-honest-measurement.md) Backlog Phase 2 — honest measurement [spec] · verified 2026-10-02
 
-_8 more open · `goal = "truth"`_
+_9 more open · `goal = "truth"`_
 
 ## 4. Frontier plans, cheap models execute, the result integrates (P1)
 
@@ -64,10 +64,10 @@ _14 more open · 1 unchecked (`TRIAGE.md`) · `goal = "core"`_
 ## 8. Live visibility: serve, dashboard, portal
 
 - **P1** [gap-aabeff](items/gap-aabeff-tool-t003-tui-paths-still-consume-string.md) TUI paths still consume string/tail projections that lose semantics (TUI adoption unproven) · size L · verified 2026-10-01
-- **P2** [gap-7c6663](items/gap-7c6663-a-confirm-rung-s-wait-publishes-no.md) A confirm rung's wait publishes no event, so a run's event stream cannot show that it waits on the person · size M · verified 2026-10-13
-- **P2** [gap-f439c1](items/gap-f439c1-a-held-outbound-effect-and-its-decision.md) A held outbound effect and its decision publish no event, so a run's stream cannot show what waits on the person or when it was decided · size M · verified 2026-10-14
+- **P2** [bug-a0f01e](items/bug-a0f01e-long-running-operation-handles-never-record-completion.md) Long-running operation handles never record completion [bug] · verified 2026-10-01
+- **P3** [gap-0d6ae5](items/gap-0d6ae5-closing-the-tui-mid-run-stops-the.md) Closing the TUI mid-run stops the plan run; there is no detach mode · verified 2026-10-01
 
-_8 more open · `goal = "visibility"`_
+_2 more open · `goal = "visibility"`_
 
 ## 9. Learning loops on the Graph path
 

@@ -787,6 +787,11 @@ impl GraphTaskDispatcher {
     /// The `[meta]` of `spec`'s plan, from `<plan_dir>/tasks.toml`; `None`
     /// when the file is missing or unreadable.
     fn read_plan_meta(&self, spec: &TaskExecutionSpec) -> Option<crate::task_parser::TaskMeta> {
+        self.read_plan(spec).map(|tasks| tasks.meta)
+    }
+
+    /// `spec`'s plan, read from its `tasks.toml`.
+    fn read_plan(&self, spec: &TaskExecutionSpec) -> Option<crate::task_parser::TasksFile> {
         let plan_dir = Path::new(&spec.plan_dir);
         [plan_dir.to_path_buf(), self.workdir.join(plan_dir)]
             .into_iter()
@@ -794,7 +799,32 @@ impl GraphTaskDispatcher {
             .map(|dir| dir.join("tasks.toml"))
             .find(|path| path.is_file())
             .and_then(|path| crate::task_parser::TasksFile::parse(&path).ok())
-            .map(|tasks| tasks.meta)
+    }
+
+    /// Fit `task`'s declared line ranges in files an earlier task of its
+    /// plan changed to those files in `workdir`, the attempt's checkout
+    /// (bug-7ff055): the planner guessed them before the files changed.
+    fn fit_declared_ranges(&self, spec: &TaskExecutionSpec, task: &mut TaskDef, workdir: &Path) {
+        let ranged = task.context.as_ref().is_some_and(|context| {
+            context
+                .read_files
+                .iter()
+                .any(|read_file| read_file.lines.is_some())
+        });
+        if !ranged || task.depends_on.is_empty() {
+            return;
+        }
+        let Some(plan) = self.read_plan(spec) else {
+            return;
+        };
+        for fitted in crate::plan_policy::fit_ranges_to_earlier_changes(task, &plan, workdir) {
+            tracing::warn!(
+                plan_id = %spec.plan_id,
+                task_id = %task.id,
+                %fitted,
+                "fitted a declared line range to a file an earlier task changed"
+            );
+        }
     }
 
     /// Whether `spec`'s plan sets `[meta] skip_enrichment`, which its
@@ -875,7 +905,9 @@ impl GraphTaskDispatcher {
         }
         // The prompt shows every check that will judge the task: its own
         // verify steps, then the workspace rungs it faces.
-        let task = &self.prompt_task(spec, task);
+        let mut task = self.prompt_task(spec, task);
+        self.fit_declared_ranges(spec, &mut task, &dispatch_ctx.workdir);
+        let task = &task;
         let mut dispatch_plan = match self.factory.dispatcher().plan(task, dispatch_ctx) {
             Err(error) if dispatch_ctx.prompt_experiment.is_some() => {
                 tracing::warn!(

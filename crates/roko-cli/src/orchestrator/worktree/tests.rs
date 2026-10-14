@@ -2161,7 +2161,7 @@ async fn a_resumed_run_starts_attempts_from_the_plan_branch() {
     );
 
     // Another run starts from the configured base and does not take over
-    // the checkouts run-1 kept.
+    // the checkouts run-1 kept: it makes its own (bug-06bd18).
     let other_run = manager_with_worktrees_root(&first_process, worktrees_root);
     assert_eq!(
         other_run.begin_plan_run("plan", "run-2").await.unwrap(),
@@ -2172,11 +2172,54 @@ async fn a_resumed_run_starts_attempts_from_the_plan_branch() {
         .await
         .unwrap();
     assert_eq!(git_in(&fresh.path, &["rev-parse", "HEAD"]), base);
-    assert!(
-        other_run
-            .create_for_attempt("plan", "second", 0)
-            .await
-            .is_err()
+    let own = other_run
+        .create_for_attempt("plan", "second", 0)
+        .await
+        .expect("run-2 makes its own checkout");
+    assert_eq!(git_in(&own.path, &["rev-parse", "HEAD"]), base);
+    assert!(!own.path.join("half-done.txt").exists());
+}
+
+/// bug-06bd18: a new run of a plan does not stop at the checkout an earlier,
+/// failed run kept for one of its attempts. The kept checkout is set aside
+/// under `<id>-<run>`, its branch renamed to match and its uncommitted work
+/// intact, and the new run gets a fresh checkout from its base.
+#[tokio::test]
+async fn a_new_run_sets_aside_the_checkouts_another_run_kept() {
+    let Some((_tmp, first_run)) = make_manager() else {
+        return;
+    };
+    let worktrees_root = first_run.config.worktrees_root.clone();
+    let repo = first_run.config.repo_root.clone();
+    let base = git_in(&repo, &["rev-parse", "main"]);
+    first_run.begin_plan_run("plan", "run-1").await.unwrap();
+    let kept = first_run
+        .create_for_attempt("plan", "task", 0)
+        .await
+        .unwrap();
+    std::fs::write(kept.path.join("half-done.txt"), b"failed attempt\n").unwrap();
+
+    let second_run = manager_with_worktrees_root(&first_run, worktrees_root.clone());
+    assert_eq!(
+        second_run.begin_plan_run("plan", "run-2").await.unwrap(),
+        None
+    );
+    let fresh = second_run
+        .create_for_attempt("plan", "task", 0)
+        .await
+        .expect("the new run gets its own checkout");
+    assert_eq!(fresh.path, kept.path);
+    assert_eq!(git_in(&fresh.path, &["rev-parse", "HEAD"]), base);
+    assert!(!fresh.path.join("half-done.txt").exists());
+
+    let aside = worktrees_root.join(format!("{}-run1", kept.id));
+    assert_eq!(
+        std::fs::read_to_string(aside.join("half-done.txt")).unwrap(),
+        "failed attempt\n"
+    );
+    assert_eq!(
+        git_in(&aside, &["symbolic-ref", "--short", "HEAD"]),
+        format!("{}-run1", kept.branch)
     );
 }
 

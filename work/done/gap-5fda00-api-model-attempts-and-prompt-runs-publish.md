@@ -2,7 +2,7 @@
 id = "gap-5fda00"
 kind = "gap"
 title = "API-model attempts and prompt runs publish no live tool steps or tool results"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p2"
 goal = "visibility"
@@ -11,6 +11,7 @@ subsystem = ["roko-agent/tool_loop", "roko-cli/run", "roko-serve/routes"]
 created = 2026-10-14
 updated = 2026-10-14
 last_verified = 2026-10-14
+last_verified_rev = "6fbebf642"
 source = "e2e-v4 dogfood, roko-stream worker, 2026-10-14 (roko main 86d629363)"
 anchors = ["crates/roko-agent/src/tool_loop/mod.rs::send_turn_streaming", "crates/roko-agent/src/immune_boundary.rs::drive_streaming_inner", "crates/roko-cli/src/run.rs::run_prompt", "crates/roko-cli/src/serve_runtime.rs::run_prompt_plan_on_local_runtime", "crates/roko-serve/src/runtime.rs::PromptPlanOptions", "crates/roko-serve/src/routes/mcp.rs", "crates/roko-serve/src/routes/run.rs"]
 links = { depends_on = [], blocks = [], related = ["bug-0b7c81", "bug-264c41"], supersedes = [], duplicate_of = "" }
@@ -20,6 +21,18 @@ command = "grep -rqw 'fn api_model_tool_calls_reach_the_live_output' crates/roko
 
 [[verify]]
 command = "grep -rqw 'fn prompt_runs_take_the_live_output_setting' crates/roko-serve/ && cargo test -p roko-serve prompt_runs_take_the_live_output_setting"
+
+[closed]
+at = 2026-10-14
+at_ts = "2026-10-14T18:16:42Z"
+commit = "6fbebf642"
+by = "commit trailer"
+executor = "claude-agent"
+size = "M"
+claimed_at = "2026-10-14T17:03:07Z"
+forced = false
+model = "claude-opus-5-5"
+evidence = "6fbebf642: roko's tool loop sends a streaming caller a ToolCallEnd for each call its stream did not end (OpenAI-compatible streams end none) before the call runs, and a ToolResult per call once it ran and was screened (crates/roko-agent/src/tool_loop/mod.rs), so the provider boundary publishes live tool_start and, trusted, tool_result records for API-model attempts and the stall watchdog sees each call close. PromptPlanOptions and PromptRun carry the live output setting: serve's prompt runs (/api/run, MCP run_prompt) take the server's effective [serve] live_agent_output in routes/run.rs prepare_run, roko run the configured one (LiveAgentOutput::for_local_run). Verify: cargo test -p roko-agent api_model_tool_calls_reach_the_live_output and cargo test -p roko-serve prompt_runs_take_the_live_output_setting pass. Also roko-agent --lib 2350 passed, roko-serve --lib 1017 passed, roko-cli --lib 3625 passed with 1 failure (active_self_model_picks_start_rung_and_logs_propensity, date-keyed, bug-3e2d76, fails without this change); clippy -D warnings clean on roko-agent, roko-serve and roko-cli."
 +++
 
 ## Problem

@@ -239,6 +239,10 @@ impl GraphTaskDispatcher {
         for rung in rungs {
             let label = rung_step_label(&rung.name);
             let shown = format!("{} {}", rung.kind, rung.artefacts.join(" "));
+            // Pack rungs start like command rungs do (gap-7c6663).
+            if let Some(tui) = &self.tui_bridge {
+                tui.gate_rung_started(&spec.plan_id, &task.id, &label);
+            }
             let started = Instant::now();
             let artefacts = read_artefacts(workdir, &rung.artefacts);
             // A `confirm` rung asks about the outcome, with or without files.
@@ -1093,6 +1097,139 @@ mod tests {
         assert!(
             steps.iter().any(|step| step["confirmed_by_user"] == true),
             "{steps:?}"
+        );
+    }
+
+    /// gap-7c6663: a `confirm` rung's wait is published. The rung starts like
+    /// a command rung, the hold says what it asks and until when, and the
+    /// answer resolves it with the person's note; the gate result says who
+    /// passed it. Unanswered, the wait resolves as `timed_out`.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_confirm_wait_is_published() {
+        use roko_core::DashboardEvent;
+
+        let temp = tempdir().expect("tempdir");
+        std::fs::write(temp.path().join("report.md"), "Summary: all done.\n").expect("report");
+        let hub = crate::state_hub::shared_state_hub();
+        let mut events = hub.subscribe_events();
+        let sender = hub.sender();
+        let (dispatcher, mut task) = make_test_dispatcher_with(
+            &temp,
+            VERIFY_PROVIDER,
+            confirm_pack,
+            GraphFeedbackContext::default(),
+            |dispatcher| {
+                dispatcher.with_tui_bridge(crate::runner::tui_bridge::TuiBridge::new(sender))
+            },
+        )
+        .await;
+        task.verify.clear();
+        task.domain = TaskDomain::from_label("assistant");
+        let spec = make_spec(&task);
+        let workdir = temp.path().to_path_buf();
+        let hold = roko_fs::RokoLayout::for_project(&workdir).review_hold(&spec.plan_id, &task.id);
+
+        // The person answers once the hold appears.
+        let answer = tokio::spawn({
+            let (workdir, hold) = (workdir.clone(), hold.clone());
+            let (plan_id, task_id) = (spec.plan_id.clone(), task.id.clone());
+            async move {
+                for _ in 0..200 {
+                    if hold.exists() {
+                        crate::graph_task_dispatch::record_review(
+                            &workdir,
+                            &plan_id,
+                            &task_id,
+                            "approved",
+                            "yes, that is it",
+                        )
+                        .expect("the answer");
+                        return;
+                    }
+                    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+                }
+            }
+        });
+        let ctx = CellContext::new().with_run_id("confirm-events".to_string());
+        dispatcher
+            .dispatch(&spec, Vec::new(), &ctx)
+            .await
+            .expect("a confirmed attempt passes");
+        answer.await.expect("the answer");
+        dispatcher
+            .dispatch(&spec, Vec::new(), &CellContext::new())
+            .await
+            .expect("an unanswered confirmation does not fail the attempt");
+
+        let mut seen = Vec::new();
+        loop {
+            match events.try_recv() {
+                Ok(envelope) => seen.push(envelope.payload),
+                Err(tokio::sync::broadcast::error::TryRecvError::Lagged(_)) => {}
+                Err(_) => break,
+            }
+        }
+        assert!(
+            seen.iter().any(|event| matches!(
+                event,
+                DashboardEvent::GateRungStarted { rung_name, .. } if rung_name == "rung[sign-off]"
+            )),
+            "{seen:?}"
+        );
+        let waits: Vec<(String, u64, String)> = seen
+            .iter()
+            .filter_map(|event| match event {
+                DashboardEvent::ConfirmWaiting {
+                    question,
+                    timeout_secs,
+                    deadline_at,
+                    rung,
+                    ..
+                } if rung == "rung[sign-off]" => {
+                    Some((question.clone(), *timeout_secs, deadline_at.clone()))
+                }
+                _ => None,
+            })
+            .collect();
+        assert_eq!(waits.len(), 2, "{seen:?}");
+        assert_eq!(waits[0].0, "Is the summary what you asked for?");
+        assert_eq!(waits[0].1, 2);
+        assert!(
+            chrono::DateTime::parse_from_rfc3339(&waits[0].2).is_ok(),
+            "{waits:?}"
+        );
+        let resolved: Vec<(String, Option<String>)> = seen
+            .iter()
+            .filter_map(|event| match event {
+                DashboardEvent::ConfirmResolved { outcome, note, .. } => {
+                    Some((outcome.clone(), note.clone()))
+                }
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            resolved,
+            [
+                ("approved".to_string(), Some("yes, that is it".to_string())),
+                ("timed_out".to_string(), None),
+            ],
+            "{seen:?}"
+        );
+        let passed = seen
+            .iter()
+            .find_map(|event| match event {
+                DashboardEvent::GateResult {
+                    gate,
+                    passed: true,
+                    output_text,
+                    ..
+                } if gate == "rung[sign-off]" => output_text.clone(),
+                _ => None,
+            })
+            .expect("a passed sign-off");
+        assert!(
+            passed.contains("approved by the person: yes, that is it"),
+            "{passed}"
         );
     }
 }

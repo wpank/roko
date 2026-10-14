@@ -196,6 +196,44 @@ pub enum DashboardEvent {
         #[serde(default)]
         candidates: Vec<RouteCandidate>,
     },
+    /// A Graph task's `confirm` rung asked its person whether the outcome is
+    /// what they asked for; the task waits until they answer or the rung
+    /// times out (gap-7c6663). MCP `confirm_answer` names the attempt key.
+    ConfirmWaiting {
+        plan_id: String,
+        task_id: String,
+        /// The attempt, from 1.
+        #[serde(default)]
+        attempt: u32,
+        /// The attempt key the answer names.
+        attempt_key: String,
+        /// The rung, as its gate results name it (`rung[<name>]`).
+        rung: String,
+        /// What the person is asked.
+        question: String,
+        /// How long the rung waits for an answer, in seconds.
+        timeout_secs: u64,
+        /// When the rung stops waiting (RFC 3339).
+        deadline_at: String,
+    },
+    /// A `confirm` rung's wait ended (gap-7c6663).
+    ConfirmResolved {
+        plan_id: String,
+        task_id: String,
+        /// The attempt, from 1.
+        #[serde(default)]
+        attempt: u32,
+        /// The attempt key the answer named.
+        attempt_key: String,
+        /// The rung, as its gate results name it.
+        rung: String,
+        /// `approved`, `rejected` (or another word the person answered with),
+        /// `timed_out`, or `stopped` when the run began to stop.
+        outcome: String,
+        /// The person's note, when they gave one.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        note: Option<String>,
+    },
     /// Incremental agent output.
     AgentOutput {
         agent_id: String,
@@ -2581,6 +2619,35 @@ impl DashboardSnapshot {
             // S10's calibration view reads the export from the event stream
             // (6134); the snapshot keeps none of it.
             DashboardEvent::SelfModelCalibration { .. } => {}
+            DashboardEvent::ConfirmWaiting {
+                plan_id,
+                task_id,
+                question,
+                deadline_at,
+                ..
+            } => {
+                self.push_event_log(
+                    ts,
+                    "confirm_waiting".to_string(),
+                    plan_id.clone(),
+                    task_id.clone(),
+                    format!("waits for a person until {deadline_at}: {question}"),
+                );
+            }
+            DashboardEvent::ConfirmResolved {
+                plan_id,
+                task_id,
+                outcome,
+                ..
+            } => {
+                self.push_event_log(
+                    ts,
+                    "confirm_resolved".to_string(),
+                    plan_id.clone(),
+                    task_id.clone(),
+                    format!("confirmation {outcome}"),
+                );
+            }
             DashboardEvent::RouteDecided {
                 plan_id,
                 task_id,

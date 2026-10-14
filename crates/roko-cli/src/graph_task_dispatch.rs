@@ -3402,6 +3402,102 @@ sleep 30
         assert_eq!(model, "glm-4.7", "{spawned:?}");
     }
 
+    /// gap-2a3298: an attempt's route decision is published as it is made,
+    /// before the attempt's `agent_spawned`: the pick, its source and
+    /// stage, and the candidates the route weighed.
+    #[tokio::test]
+    async fn route_decisions_are_published() {
+        let temp = tempdir().expect("tempdir");
+        let (base_url, _requests) = spawn_openai_mock(vec![final_turn("ok")]);
+        let mut config = RokoConfig::default();
+        config.providers.clear();
+        config.models.clear();
+        config.agent.default_model = "glm-model".to_string();
+        config.agent.bare_mode = false;
+        // `PATH` is always set, standing in for an API key.
+        config.providers.insert(
+            "zai".to_string(),
+            ProviderConfig {
+                kind: ProviderKind::OpenAiCompat,
+                base_url: Some(base_url),
+                api_key_env: Some("PATH".to_string()),
+                timeout_ms: Some(15_000),
+                ..ProviderConfig::default()
+            },
+        );
+        config.models.insert(
+            "glm-model".to_string(),
+            ModelProfile {
+                provider: "zai".to_string(),
+                slug: "glm-4.7".to_string(),
+                context_window: 128_000,
+                max_output: Some(1_024),
+                max_tools: Some(32),
+                supports_tools: true,
+                tool_format: "openai_json".to_string(),
+                ..ModelProfile::default()
+            },
+        );
+        config.conductor.silence_timeout_secs = 0;
+        config.conductor.task_stall_secs = 0;
+        let config = Arc::new(config);
+        let factory =
+            Arc::new(SharedAgentFactory::new(Arc::clone(&config), None, None, None).await);
+        let hub = crate::state_hub::shared_state_hub();
+        let mut events = hub.subscribe_events();
+        let dispatcher =
+            GraphTaskDispatcher::new(factory, Arc::clone(&config), temp.path().to_path_buf())
+                .with_tui_bridge(TuiBridge::new(hub.sender()));
+        let task = TaskDef {
+            model_hint: Some("glm-model".to_string()),
+            timeout_secs: FIXTURE_HANG_GUARD_SECS,
+            verify: vec![verify_step("structural", "true")],
+            ..make_task_def("focused")
+        };
+        let ctx = CellContext::new().with_run_id("route-run".to_string());
+        let _ = dispatcher
+            .dispatch(&make_spec(&task), Vec::new(), &ctx)
+            .await;
+
+        let mut order = Vec::new();
+        let mut decided = None;
+        loop {
+            match events.try_recv() {
+                Ok(envelope) => match envelope.payload {
+                    roko_core::DashboardEvent::RouteDecided {
+                        plan_id,
+                        task_id,
+                        attempt,
+                        model,
+                        source,
+                        candidates,
+                        ..
+                    } => {
+                        order.push("route_decided");
+                        decided = Some((plan_id, task_id, attempt, model, source, candidates));
+                    }
+                    roko_core::DashboardEvent::AgentSpawned { .. } => order.push("agent_spawned"),
+                    _ => {}
+                },
+                Err(tokio::sync::broadcast::error::TryRecvError::Lagged(_)) => {}
+                Err(_) => break,
+            }
+        }
+        let (plan_id, task_id, attempt, model, source, candidates) =
+            decided.expect("a route_decided event");
+        assert_eq!(order.first(), Some(&"route_decided"), "{order:?}");
+        assert!(order.contains(&"agent_spawned"), "{order:?}");
+        assert_eq!(plan_id, make_spec(&task).plan_id);
+        assert_eq!(task_id, task.id);
+        assert_eq!(attempt, 1);
+        assert_eq!(model, "glm-model");
+        assert_eq!(source, "task_hint");
+        assert!(
+            candidates.len() <= roko_core::dashboard_snapshot::ROUTE_EVENT_CANDIDATES,
+            "{candidates:?}"
+        );
+    }
+
     /// bug-369c21: a task dispatched twice publishes its `agent_spawned` and
     /// `agent_completed` events with each attempt's number, as its attempt
     /// key numbers it, under the task's one agent id.

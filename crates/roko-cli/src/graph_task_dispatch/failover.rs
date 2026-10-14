@@ -90,6 +90,61 @@ struct ProviderRefusal {
     at_ms: i64,
 }
 
+/// The [`DashboardEvent::RouteDecided`](roko_core::DashboardEvent::RouteDecided)
+/// of an attempt failover moved to `target` after `refusals` (gap-2a3298):
+/// the models passed over are its ineligible candidates, the last refusal
+/// its reason.
+fn failover_route_event(
+    plan_id: &str,
+    task_id: &str,
+    attempt: u32,
+    target: &crate::dispatch_v2::ProviderDispatchSpec,
+    refusals: &[ProviderRefusal],
+) -> roko_core::DashboardEvent {
+    let reason = refusals.last().map_or_else(String::new, |refusal| {
+        let words: String = refusal.reason.chars().take(200).collect();
+        format!(
+            "{} on {} passed over ({}): {words}",
+            refusal.model_key, refusal.provider_id, refusal.class
+        )
+    });
+    let mut candidates: Vec<roko_core::RouteCandidate> = refusals
+        .iter()
+        .rev()
+        .take(roko_core::dashboard_snapshot::ROUTE_EVENT_CANDIDATES - 1)
+        .map(|refusal| roko_core::RouteCandidate {
+            model: refusal.model_slug.clone(),
+            provider: refusal.provider_id.clone(),
+            score: 0.0,
+            p: None,
+            eligible: false,
+            ineligible_reason: Some(refusal.class.to_string()),
+        })
+        .collect();
+    candidates.insert(
+        0,
+        roko_core::RouteCandidate {
+            model: target.model_slug.clone(),
+            provider: target.provider_id.clone(),
+            score: 1.0,
+            p: Some(1.0),
+            eligible: true,
+            ineligible_reason: None,
+        },
+    );
+    roko_core::DashboardEvent::RouteDecided {
+        plan_id: plan_id.to_string(),
+        task_id: task_id.to_string(),
+        attempt,
+        model: target.model_slug.clone(),
+        provider: target.provider_id.clone(),
+        stage: "failover".to_string(),
+        reason,
+        source: "failover".to_string(),
+        candidates,
+    }
+}
+
 /// The models failover passed over before the one that ran (bug-35379d).
 /// Empty when the planned model ran.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -279,6 +334,15 @@ impl GraphTaskDispatcher {
                 && let (Some(tui), Some(row)) = (&self.tui_bridge, dashboard)
             {
                 let target = self.resolve_candidate(&candidate);
+                // Failover re-routed the attempt: say to what, and why
+                // (gap-2a3298).
+                tui.publish_event(failover_route_event(
+                    &spec.plan_id,
+                    task_id,
+                    row.attempt,
+                    &target,
+                    &refusals,
+                ));
                 tui.agent_spawned(
                     row.agent_id,
                     &spec.plan_id,

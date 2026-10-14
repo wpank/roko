@@ -415,6 +415,14 @@ sequenceDiagram
 | `efficiency_event` | `plan_id`, `task_id`, `agent_id`, `cost_usd`, `tokens`, `duration_ms` |
 | `episode_recorded` | `agent_id`, `role`, `episode_id`, `passed` |
 
+**Loop events of a Graph run.** A run's event index (`GET /api/runs/{run_id}/events`, its SSE
+`GET /api/runs/{run_id}/events/stream`) and the hub stream (`GET /api/events`) carry these as they happen;
+a client that does not know a type ignores it.
+
+| `type` | Key fields |
+|--------|-----------|
+| `route_decided` | `plan_id`, `task_id`, `attempt` (from 1), `model`, `provider`, `stage`, `reason`, `source` (`router`, `ladder`, `task_hint`, `override`, `fallback`, `default`, `explore`, `control`, `self_model`, or `failover`), `candidates` (best score first, at most 5: `model`, `provider`, `score`, `p`, `eligible`, `ineligible_reason`). Published before the attempt's `agent_spawned`, and again with `source: "failover"` when failover passes the planned model over (gap-2a3298) |
+
 **Inference and deployment events:**
 
 | `type` | Key fields |

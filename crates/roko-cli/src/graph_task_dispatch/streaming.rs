@@ -273,6 +273,7 @@ impl StreamingTaskDispatcher for GraphTaskDispatcher {
             plan_id: &spec.plan_id,
             task_id: &task.id,
             attempt_key: &attempt_key,
+            attempt: attempt.key.attempt,
             stop: ctx.cancel_flag.as_deref(),
         };
         let stall_watch = self.stall_watch();

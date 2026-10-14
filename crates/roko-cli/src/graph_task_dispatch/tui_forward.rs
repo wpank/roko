@@ -84,11 +84,14 @@ impl GraphTaskDispatcher {
 /// - `Unscreened(ToolResult)` → unscreened `tool_result` record with output
 ///   truncated the same way `forward_dispatch_events_to_tui` truncates it
 /// - All other `Unscreened` variants, and `Queued`, are silently ignored.
+///
+/// Every record carries `attempt`, the attempt's ordinal (bug-0b7c81).
 pub(super) fn forward_live_event_to_tui(
     tui: &TuiBridge,
     agent_id: &str,
     plan_id: &str,
     task_id: &str,
+    attempt: u32,
     event: roko_agent::live_output::LiveAgentEvent,
 ) {
     use roko_agent::StreamEventKind;
@@ -98,7 +101,7 @@ pub(super) fn forward_live_event_to_tui(
 
     match event {
         LiveAgentEvent::ToolStep { id, name, target } => {
-            tui.tool_step(agent_id, plan_id, task_id, 0, &id, &name, &target);
+            tui.tool_step(agent_id, plan_id, task_id, attempt, &id, &name, &target);
         }
         LiveAgentEvent::Unscreened(kind) => match kind {
             StreamEventKind::TextDelta(text) => {
@@ -106,7 +109,7 @@ pub(super) fn forward_live_event_to_tui(
                     agent_id,
                     plan_id,
                     task_id,
-                    0,
+                    attempt,
                     "text",
                     serde_json::json!({"text": text}),
                 );
@@ -116,7 +119,7 @@ pub(super) fn forward_live_event_to_tui(
                     agent_id,
                     plan_id,
                     task_id,
-                    0,
+                    attempt,
                     "reasoning",
                     serde_json::json!({"text": text}),
                 );
@@ -138,7 +141,7 @@ pub(super) fn forward_live_event_to_tui(
                     agent_id,
                     plan_id,
                     task_id,
-                    0,
+                    attempt,
                     "tool_start",
                     serde_json::json!({
                         "tool_id": id,
@@ -165,7 +168,7 @@ pub(super) fn forward_live_event_to_tui(
                     agent_id,
                     plan_id,
                     task_id,
-                    0,
+                    attempt,
                     "tool_result",
                     serde_json::json!({"tool_id": id, "output": truncated}),
                 );

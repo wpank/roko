@@ -446,6 +446,9 @@ pub(super) struct WatchedAttempt<'a> {
     pub(super) task_id: &'a str,
     /// Durable attempt key, which names the attempt's diagnoses.
     pub(super) attempt_key: &'a str,
+    /// The attempt's ordinal, from 1, which its live records carry
+    /// (bug-0b7c81).
+    pub(super) attempt: u32,
     /// The plan run's request that its attempts stop (the cell context's
     /// cancel flag). Once set, the attempt's provider call is dropped and the
     /// attempt settles with the usage its progress saw stream (bug-2b1ddc,
@@ -641,6 +644,7 @@ impl GraphTaskDispatcher {
         let agent_id = attempt.agent_id.to_string();
         let plan_id = attempt.plan_id.to_string();
         let task_id = attempt.task_id.to_string();
+        let attempt_ordinal = attempt.attempt;
         let mut feed = feed;
         let record = tool_calls.clone();
         let tap = tokio::spawn(async move {
@@ -657,7 +661,14 @@ impl GraphTaskDispatcher {
                 if let Some((tui, _)) = &tui
                     && (forward_unscreened || matches!(event, LiveAgentEvent::ToolStep { .. }))
                 {
-                    forward_live_event_to_tui(tui, &agent_id, &plan_id, &task_id, event);
+                    forward_live_event_to_tui(
+                        tui,
+                        &agent_id,
+                        &plan_id,
+                        &task_id,
+                        attempt_ordinal,
+                        event,
+                    );
                 }
             }
         });
@@ -909,6 +920,7 @@ mod tests {
             plan_id: "p1",
             task_id: "T01",
             attempt_key: "run-1/p1/T01/1",
+            attempt: 1,
             stop: None,
         };
         let silent = stall_diagnosis(&attempt, thresholds(180, 300), secs(181), false);
@@ -1322,6 +1334,7 @@ exec sleep 60
             plan_id: "p1",
             task_id: "T01",
             attempt_key: "run-1/p1/T01/1",
+            attempt: 1,
             stop: None,
         };
 
@@ -1375,6 +1388,68 @@ exec sleep 60
             progress.open_tool_calls.contains("toolu_1"),
             "the tool call is still running"
         );
+    }
+
+    /// bug-0b7c81: the live records a watched attempt publishes carry the
+    /// attempt they belong to, on the event and inside the record.
+    #[tokio::test]
+    async fn live_records_carry_their_attempt() {
+        let temp = tempdir().expect("tempdir");
+        let script = silent_provider_script(temp.path(), &temp.path().join("launches.log"));
+        let config = Arc::new(watched_config(&script));
+        let hub = crate::state_hub::shared_state_hub();
+        let mut hub_events = hub.subscribe_events();
+        let factory =
+            Arc::new(SharedAgentFactory::new(Arc::clone(&config), None, None, None).await);
+        let dispatcher =
+            GraphTaskDispatcher::new(factory, Arc::clone(&config), temp.path().to_path_buf())
+                .with_tui_bridge(TuiBridge::new(hub.sender()))
+                .with_live_agent_output(LiveAgentOutput::ToolSteps);
+        let attempt = WatchedAttempt {
+            agent_id: "p1/T01",
+            plan_id: "p1",
+            task_id: "T01",
+            attempt_key: "run-1:p1:T01:3",
+            attempt: 3,
+            stop: None,
+        };
+        let live = dispatcher
+            .live_output_tap(&attempt, None, None, None)
+            .expect("the TUI reads live output");
+        live.sink
+            .send(tool_step("toolu_3"))
+            .await
+            .expect("send tool step");
+        drop(live);
+
+        let (event_attempt, content) = tokio::time::timeout(secs(5), async {
+            loop {
+                match hub_events.recv().await {
+                    Ok(envelope) => {
+                        if let DashboardEvent::AgentOutput {
+                            attempt, content, ..
+                        } = envelope.payload
+                            && content.contains("toolu_3")
+                        {
+                            return (attempt, content);
+                        }
+                    }
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {}
+                    Err(error) => panic!("state hub closed: {error}"),
+                }
+            }
+        })
+        .await
+        .expect("the tool step reaches the TUI");
+        assert_eq!(event_attempt, 3);
+        let record: serde_json::Value = serde_json::from_str(
+            content
+                .strip_prefix(crate::runner::tui_bridge::STREAM_RECORD_PREFIX)
+                .expect("a stream record"),
+        )
+        .expect("record JSON");
+        assert_eq!(record["attempt"], 3, "{record}");
+        assert_eq!(record["live"], true, "{record}");
     }
 
     fn usage(input_tokens: u32, output_tokens: u32) -> LiveAgentEvent {

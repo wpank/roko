@@ -940,14 +940,7 @@ fn load_serve_extension_chain(
 fn config_live_output_to_dispatcher(
     setting: Option<roko_core::config::serve::LiveAgentOutput>,
 ) -> crate::graph_task_dispatch::LiveAgentOutput {
-    match setting.unwrap_or_default() {
-        roko_core::config::serve::LiveAgentOutput::Trusted => {
-            crate::graph_task_dispatch::LiveAgentOutput::Trusted
-        }
-        roko_core::config::serve::LiveAgentOutput::ToolSteps => {
-            crate::graph_task_dispatch::LiveAgentOutput::ToolSteps
-        }
-    }
+    setting.unwrap_or_default().into()
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1143,6 +1136,7 @@ fn run_prompt_plan_on_local_runtime(
             max_usd: options.max_usd,
             origin: options.origin,
             no_holdout: false,
+            live_agent_output: config_live_output_to_dispatcher(options.live_agent_output),
         })
         .await?;
         let snapshot = state_hub.current_snapshot();

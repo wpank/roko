@@ -263,6 +263,10 @@ pub struct PromptPlanOptions {
     pub max_usd: Option<f64>,
     /// Where the run's request came from (9116).
     pub origin: RunOrigin,
+    /// The live agent output the run publishes while its attempts run: the
+    /// server's effective `[serve] live_agent_output`, as a plan run's
+    /// (gap-5fda00). `None` publishes tool steps only.
+    pub live_agent_output: Option<roko_core::config::serve::LiveAgentOutput>,
 }
 
 /// How a prompt run through [`CliRuntime::run_prompt_plan`] ended.

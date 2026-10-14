@@ -507,6 +507,12 @@ pub(crate) async fn cmd_run(
         max_usd: None,
         origin: roko_serve::runtime::RunOrigin::Cli,
         no_holdout,
+        // The server this command started, if any, decides as for its own
+        // runs (gap-5fda00).
+        live_agent_output: server_guard.as_ref().map_or_else(
+            || roko_cli::graph_task_dispatch::LiveAgentOutput::for_local_run(&workdir),
+            |(state, _)| state.effective_live_agent_output().into(),
+        ),
     })
     .await;
 

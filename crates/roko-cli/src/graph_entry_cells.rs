@@ -337,6 +337,7 @@ fn run(
             max_usd: Some(config.max_usd),
             origin: RunOrigin::Cli,
             no_holdout: false,
+            live_agent_output: crate::graph_task_dispatch::LiveAgentOutput::ToolSteps,
         })
         .await?;
         let snapshot = hub.current_snapshot();

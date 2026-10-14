@@ -1606,6 +1606,35 @@ mod tests {
         runtime.gate.add_permits(1);
     }
 
+    /// gap-5fda00: a prompt run the `run_prompt` tool starts publishes the
+    /// live agent output the server's plan runs do: the runtime gets the
+    /// server's effective setting.
+    #[tokio::test]
+    async fn prompt_runs_take_the_live_output_setting() {
+        use roko_core::config::serve::LiveAgentOutput;
+
+        let runtime = Arc::new(HeldPlans::new());
+        let mut config = open_config();
+        config.serve.mcp.max_run_usd = 3.0;
+        let (_dir, state, open) = state_and_router(runtime.clone(), config);
+        state.configure_live_agent_output(LiveAgentOutput::Trusted);
+
+        let prompt = json!({ "prompt": "fix the parser", "max_usd": 1.0 });
+        let (_, body) = post_mcp(&open, &call(1, "run_prompt", prompt), &[]).await;
+        assert_eq!(body["result"]["isError"], false, "{body}");
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while runtime.prompts.lock().expect("lock prompt runs").is_empty() {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("the run starts");
+
+        let prompts = runtime.prompts.lock().expect("lock prompt runs").clone();
+        assert_eq!(prompts[0].live_agent_output, Some(LiveAgentOutput::Trusted));
+        runtime.gate.add_permits(1);
+    }
+
     /// 9117: without the data-model boundary a chat host's run is refused,
     /// with a reason the host can read, and nothing starts; once
     /// `[agent.data_llm]` is set it starts.

@@ -440,6 +440,7 @@ fn prepare_run(
     let (start_tx, start_rx) = oneshot::channel::<()>();
     let cancel = (mode == RunMode::GatedPlan).then(|| state.cancel.child());
     let cancel_for_task = cancel.clone();
+    let live_agent_output = state.effective_live_agent_output();
     // A gated run's start event says where its request came from (9116).
     let origin = (mode == RunMode::GatedPlan).then(|| options.origin.clone());
 
@@ -496,10 +497,12 @@ fn prepare_run(
                 ]);
             }
 
-            // A gated run takes the id this route returns.
+            // A gated run takes the id this route returns, and publishes the
+            // live agent output a plan run of this server does (gap-5fda00).
             let options = PromptPlanOptions {
                 run_id: Some(run_id.clone()),
                 cancel: cancel_for_task,
+                live_agent_output: Some(live_agent_output),
                 ..options
             };
             let run = execute_run(

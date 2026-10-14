@@ -492,6 +492,9 @@ pub struct PromptRun<'a> {
     /// 4115): no learning loop is withheld, no route explores and the spec
     /// gate holds no task out, though every decision is logged.
     pub no_holdout: bool,
+    /// The live agent output the run publishes while its attempts run, as
+    /// `roko plan run` and a server's plan runs choose it (gap-5fda00).
+    pub live_agent_output: crate::graph_task_dispatch::LiveAgentOutput,
 }
 
 /// Execute one prompt through the Graph engine.
@@ -646,7 +649,7 @@ pub async fn run_prompt(run: PromptRun<'_>) -> Result<WorkflowRunReport> {
             max_parallel_plans: None,
             fail_fast: false,
             only_plans: None,
-            live_agent_output: crate::graph_task_dispatch::LiveAgentOutput::ToolSteps,
+            live_agent_output: run.live_agent_output,
             force_disk_check: false,
             effort: run.overrides.effort.clone(),
             no_cascade: run.overrides.cascade_enabled == Some(false),
@@ -1243,6 +1246,7 @@ command = "test -f README.md"
             max_usd: None,
             origin: RunOrigin::Cli,
             no_holdout: false,
+            live_agent_output: crate::graph_task_dispatch::LiveAgentOutput::ToolSteps,
         })
         .await
         .expect("roko run completes");
@@ -1326,6 +1330,7 @@ frozen = {frozen}
                 max_usd: None,
                 origin: RunOrigin::Cli,
                 no_holdout: false,
+                live_agent_output: crate::graph_task_dispatch::LiveAgentOutput::ToolSteps,
             })
             .await
             .expect("roko run completes");
@@ -1384,6 +1389,7 @@ printf '%s\n' '{"type":"result","session_id":"run","model":"claude-sonnet-4-6","
                 max_usd: None,
                 origin: RunOrigin::Cli,
                 no_holdout: false,
+                live_agent_output: crate::graph_task_dispatch::LiveAgentOutput::ToolSteps,
             })
             .await
             .expect("roko run completes");
@@ -1427,6 +1433,7 @@ command = "test -f README.md"
                 max_usd: None,
                 origin: RunOrigin::Cli,
                 no_holdout,
+                live_agent_output: crate::graph_task_dispatch::LiveAgentOutput::ToolSteps,
             })
             .await
             .expect("roko run completes");
@@ -1464,6 +1471,7 @@ command = "test -f README.md"
             max_usd: None,
             origin: RunOrigin::Cli,
             no_holdout: false,
+            live_agent_output: crate::graph_task_dispatch::LiveAgentOutput::ToolSteps,
         })
         .await
         .expect("roko run completes");
@@ -1572,6 +1580,7 @@ sibling_settle_secs = 0
             max_usd: None,
             origin: RunOrigin::Cli,
             no_holdout: false,
+            live_agent_output: crate::graph_task_dispatch::LiveAgentOutput::ToolSteps,
         })
         .await
         .expect("roko run dispatches without a build manifest");

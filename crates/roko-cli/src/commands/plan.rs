@@ -3187,23 +3187,9 @@ async fn cmd_plan_run_engine(
     let interrupt = PlanRunInterruptHandle::default();
     let _signals = install_plan_run_signal_handlers(interrupt.clone())?;
 
-    // Standalone `roko plan run` opens no listener, so the bind is always
-    // loopback-only. Pass `effective(true)` so a `trusted` config setting is
-    // honoured here even though there is no HTTP server running.
-    let live_agent_output = {
-        let core = roko_core::config::loader::load_config_unified(workdir)
-            .map(|cfg| cfg.serve.live_agent_output)
-            .unwrap_or_default()
-            .effective(true);
-        match core {
-            roko_core::config::serve::LiveAgentOutput::Trusted => {
-                roko_cli::graph_task_dispatch::LiveAgentOutput::Trusted
-            }
-            roko_core::config::serve::LiveAgentOutput::ToolSteps => {
-                roko_cli::graph_task_dispatch::LiveAgentOutput::ToolSteps
-            }
-        }
-    };
+    // Standalone `roko plan run` opens no listener, so a `trusted` config
+    // setting is honoured as on a loopback-only server.
+    let live_agent_output = roko_cli::graph_task_dispatch::LiveAgentOutput::for_local_run(workdir);
 
     // A `roko dashboard` in another terminal follows this run live through
     // the hub socket, as it follows a server's runs (gap-6533bf). Binding is

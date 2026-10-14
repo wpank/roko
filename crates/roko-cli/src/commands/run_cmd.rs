@@ -508,6 +508,7 @@ async fn run_one_task(
         max_usd: None,
         origin: roko_serve::runtime::RunOrigin::Cli,
         no_holdout: args.no_holdout,
+        live_agent_output: roko_cli::graph_task_dispatch::LiveAgentOutput::for_local_run(workdir),
     })
     .await;
 
@@ -780,7 +781,7 @@ pub(crate) async fn run_plan_execution(
         max_parallel_plans: None,
         fail_fast: false,
         only_plans: None,
-        live_agent_output: roko_cli::graph_task_dispatch::LiveAgentOutput::ToolSteps,
+        live_agent_output: roko_cli::graph_task_dispatch::LiveAgentOutput::for_local_run(workdir),
         force_disk_check: false,
         effort: cli.effort.map(|effort| effort.to_string()),
         no_cascade,

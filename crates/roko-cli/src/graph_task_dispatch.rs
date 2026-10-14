@@ -159,6 +159,29 @@ pub enum LiveAgentOutput {
     Trusted,
 }
 
+impl LiveAgentOutput {
+    /// The live output a run started from the command line publishes (`roko
+    /// plan run`, `roko run`): the workspace's `[serve] live_agent_output`,
+    /// honoured as on a loopback-only server, since no listener is open.
+    #[must_use]
+    pub fn for_local_run(workdir: &Path) -> Self {
+        roko_core::config::loader::load_config_unified(workdir)
+            .map(|config| config.serve.live_agent_output)
+            .unwrap_or_default()
+            .effective(true)
+            .into()
+    }
+}
+
+impl From<roko_core::config::serve::LiveAgentOutput> for LiveAgentOutput {
+    fn from(setting: roko_core::config::serve::LiveAgentOutput) -> Self {
+        match setting {
+            roko_core::config::serve::LiveAgentOutput::Trusted => Self::Trusted,
+            roko_core::config::serve::LiveAgentOutput::ToolSteps => Self::ToolSteps,
+        }
+    }
+}
+
 /// Real runner/provider adapter injected into `TaskExecutorCell` factories.
 pub struct GraphTaskDispatcher {
     factory: Arc<SharedAgentFactory>,

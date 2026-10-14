@@ -1794,6 +1794,128 @@ mod tests {
         server.join().expect("server thread");
     }
 
+    /// gap-5fda00: an OpenAI-compatible stream never ends its tool calls, yet
+    /// an API model's call reaches the provider boundary's live output as a
+    /// tool step before it runs and, trusted, as its result once it has, as
+    /// a CLI provider's calls do, both under the call's own id.
+    #[tokio::test]
+    async fn api_model_tool_calls_reach_the_live_output() {
+        use crate::agent::Agent;
+        use crate::immune_boundary::ImmuneScreenedAgent;
+        use crate::live_output::{LiveAgentEvent, LiveOutput};
+        use crate::tool_loop::ToolLoopAgent;
+        use roko_core::{Body, Context, Kind, Signal};
+
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind test server");
+        let addr = listener.local_addr().expect("listener addr");
+        let server = thread::spawn(move || {
+            let responses = [
+                vec![
+                    sse_json_line(serde_json::json!({
+                        "choices": [{"delta": {"tool_calls": [{
+                            "index": 0,
+                            "id": "call-1",
+                            "function": {"name": "echo", "arguments": "{\"path\":"}
+                        }]}}]
+                    })),
+                    sse_json_line(serde_json::json!({
+                        "choices": [{"delta": {"tool_calls": [{
+                            "index": 0,
+                            "function": {"arguments": "\"src/lib.rs\"}"}
+                        }]}}]
+                    })),
+                    sse_json_line(serde_json::json!({
+                        "choices": [{"delta": {}, "finish_reason": "tool_calls"}]
+                    })),
+                    "data: [DONE]\n\n".to_string(),
+                ],
+                vec![
+                    sse_json_line(serde_json::json!({
+                        "choices": [{"delta": {"content": "read it"}}]
+                    })),
+                    sse_json_line(serde_json::json!({
+                        "choices": [{"delta": {}, "finish_reason": "stop"}]
+                    })),
+                    "data: [DONE]\n\n".to_string(),
+                ],
+            ];
+            for response in responses {
+                let (mut stream, _) = listener.accept().expect("accept request");
+                read_http_request(&mut stream);
+                write!(
+                    stream,
+                    "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nConnection: close\r\n\r\n"
+                )
+                .expect("write response headers");
+                for chunk in response {
+                    stream
+                        .write_all(chunk.as_bytes())
+                        .expect("write response chunk");
+                    stream.flush().expect("flush response chunk");
+                }
+            }
+        });
+
+        let backend = OpenAiCompatLlmBackend::new("test-key", "glm-5.1")
+            .with_base_url(format!("http://{addr}"))
+            .with_timeout_ms(5_000);
+        let agent = ToolLoopAgent::new(make_tool_loop(backend)).with_tools(test_tools());
+        let (live_tx, mut live_rx) = mpsc::channel::<LiveAgentEvent>(64);
+        let boundary = ImmuneScreenedAgent::with_store(
+            Box::new(agent),
+            "api-model-agent",
+            Arc::new(roko_std::MemorySubstrate::new()),
+        )
+        .with_live_output(LiveOutput {
+            sink: live_tx,
+            trusted: true,
+        });
+
+        let input = Signal::builder(Kind::Prompt)
+            .body(Body::text("read src/lib.rs, then finish"))
+            .build();
+        let result = boundary.run(&input, &Context::now()).await;
+        drop(boundary);
+        server.join().expect("server thread");
+        assert!(result.success, "{:?}", result.output.body);
+
+        let mut events = Vec::new();
+        while let Some(event) = live_rx.recv().await {
+            events.push(event);
+        }
+        let steps: Vec<(&str, &str, &str)> = events
+            .iter()
+            .filter_map(|event| match event {
+                LiveAgentEvent::ToolStep { id, name, target } => {
+                    Some((id.as_str(), name.as_str(), target.as_str()))
+                }
+                _ => None,
+            })
+            .collect();
+        assert_eq!(steps, [("call-1", "echo", "src/lib.rs")], "{events:?}");
+        let step = events
+            .iter()
+            .position(|event| matches!(event, LiveAgentEvent::ToolStep { .. }))
+            .expect("the call's tool step");
+        let tool_result = events
+            .iter()
+            .position(|event| {
+                matches!(
+                    event,
+                    LiveAgentEvent::Unscreened(StreamEventKind::ToolResult {
+                        id,
+                        output,
+                        is_error: false,
+                    }) if id == "call-1" && output.contains("src/lib.rs")
+                )
+            })
+            .expect("the call's result, trusted");
+        assert!(
+            step < tool_result,
+            "the step comes before the result: {events:?}"
+        );
+    }
+
     /// bug-b72a37: 800 of an answer's 1,000 prompt tokens were cached. The
     /// non-streaming and the streaming path both price 200 uncached input
     /// tokens and 800 cache-read tokens, each once.

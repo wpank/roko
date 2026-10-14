@@ -14,6 +14,7 @@
 //! - [`checkpoint`] — resumable state (§36.57).
 //! - [`context_factory`] — production [`ToolContext`] builder (T026).
 
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
@@ -720,6 +721,23 @@ fn tool_result_previews(
     previews
 }
 
+/// The stream event that reports `call`'s `result` to a streaming caller:
+/// the text the model reads back, or the error, and whether the call failed
+/// (gap-5fda00).
+fn tool_result_event(call: &ToolCall, result: &roko_core::tool::ToolResult) -> StreamEventKind {
+    use roko_core::tool::ToolResult;
+
+    let (output, is_error) = match result {
+        ToolResult::Ok { .. } => (result.text_content(), false),
+        ToolResult::Err(err) => (format!("error: {err}"), true),
+    };
+    StreamEventKind::ToolResult {
+        id: call.id.clone(),
+        output,
+        is_error,
+    }
+}
+
 fn tool_result_preview(result: &roko_core::tool::ToolResult) -> String {
     use roko_core::tool::{ToolError, ToolResult};
 
@@ -1214,12 +1232,16 @@ impl ToolLoop {
             // event channel is active, use `stream_turn` so incremental
             // events are forwarded to the caller before the response is
             // assembled.
+            let mut ended_on_stream = HashSet::new();
             let response = if let Some(ref tx) = event_tx {
                 match self
                     .send_turn_streaming(&messages, &rendered_tools, &session, tx)
                     .await
                 {
-                    Ok(r) => r,
+                    Ok((r, ended)) => {
+                        ended_on_stream = ended;
+                        r
+                    }
                     Err(e) => {
                         let cp = Checkpoint::new(iterations, all_calls.clone(), messages)
                             .with_session(session.clone());
@@ -1460,9 +1482,35 @@ impl ToolLoop {
                 tool_name_hashes = ?tool_name_hashes,
                 "tool_loop: dispatching tool calls"
             );
+            // A streaming caller sees each call end before it runs and its
+            // result once it has, as a CLI provider reports them: the live
+            // output shows the call as a tool step (gap-5fda00). A call its
+            // stream already ended is not sent again; an OpenAI-compatible
+            // stream ends none.
+            if let Some(tx) = &event_tx {
+                for call in calls
+                    .iter()
+                    .filter(|call| !ended_on_stream.contains(&call.id))
+                {
+                    let _ = tx
+                        .send(StreamEvent::now(StreamEventKind::ToolCallEnd {
+                            id: call.id.clone(),
+                            name: call.name.clone(),
+                            args: call.arguments.clone(),
+                        }))
+                        .await;
+                }
+            }
             let current_calls = calls.clone();
             let results = self.dispatcher.dispatch_batch(calls, ctx).await;
             let results = self.screen_untrusted_results(results).await;
+            if let Some(tx) = &event_tx {
+                for (call, result) in &results {
+                    let _ = tx
+                        .send(StreamEvent::now(tool_result_event(call, result)))
+                        .await;
+                }
+            }
             all_calls.extend(current_calls.clone());
             let tool_results = tool_result_previews(&current_calls, &results);
 
@@ -1635,14 +1683,15 @@ impl ToolLoop {
     }
 
     /// Send a turn through `stream_turn`, forwarding each event to `tx`
-    /// and collecting the final response via [`collect_stream_to_response`].
+    /// and collecting the final response via [`collect_stream_to_response`],
+    /// with the ids of the tool calls the stream ended (`ToolCallEnd`).
     async fn send_turn_streaming(
         &self,
         messages: &[serde_json::Value],
         tools: &RenderedTools,
         session: &SessionState,
         tx: &mpsc::Sender<StreamEvent>,
-    ) -> Result<BackendResponse, LlmError> {
+    ) -> Result<(BackendResponse, HashSet<String>), LlmError> {
         use futures::StreamExt;
 
         let config = self.turn_config();
@@ -1652,12 +1701,21 @@ impl ToolLoop {
             .await?;
 
         // Tee: forward every event to the caller channel while also
-        // collecting into a vec for `collect_stream_to_response`.
+        // collecting into a vec for `collect_stream_to_response`. The ids
+        // of the calls the stream ended come back with the response.
         let tx = tx.clone();
+        let ended = Arc::new(std::sync::Mutex::new(HashSet::new()));
+        let ended_on_stream = Arc::clone(&ended);
         let tee_stream = stream.then(move |result| {
             let tx = tx.clone();
+            let ended = Arc::clone(&ended_on_stream);
             async move {
                 if let Ok(ref event) = result {
+                    if let StreamEventKind::ToolCallEnd { id, .. } = &event.kind
+                        && let Ok(mut ended) = ended.lock()
+                    {
+                        ended.insert(split_stream_key(id).1);
+                    }
                     let _ = tx.send(event.clone()).await;
                 }
                 result
@@ -1665,7 +1723,12 @@ impl ToolLoop {
         });
 
         let request_start = std::time::Instant::now();
-        collect_stream_to_response(Box::pin(tee_stream), request_start).await
+        let response = collect_stream_to_response(Box::pin(tee_stream), request_start).await?;
+        let ended = ended
+            .lock()
+            .map(|mut ended| std::mem::take(&mut *ended))
+            .unwrap_or_default();
+        Ok((response, ended))
     }
 }
 

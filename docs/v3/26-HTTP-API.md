@@ -417,7 +417,8 @@ sequenceDiagram
 
 **Loop events of a Graph run.** A run's event index (`GET /api/runs/{run_id}/events`, its SSE
 `GET /api/runs/{run_id}/events/stream`) and the hub stream (`GET /api/events`) carry these as they happen;
-a client that does not know a type ignores it.
+a client that does not know a type ignores it. A run's index has each of them, and each live `agent_output` record,
+as soon as it is published; heartbeats, efficiency rows and gate output lines reach it in batches (bug-966cf7).
 
 | `type` | Key fields |
 |--------|-----------|

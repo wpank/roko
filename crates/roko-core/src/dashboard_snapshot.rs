@@ -234,6 +234,47 @@ pub enum DashboardEvent {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         note: Option<String>,
     },
+    /// A run's agent proposed a call that acts on the outside world (a send,
+    /// a post, a payment), and roko held it for a person's approval instead
+    /// of running it (gap-f439c1). MCP `effect_decide` names the effect id.
+    /// It names no run: a run's event log keeps it by its plan, since a run
+    /// of several plans holds each plan's effects under that plan's own run.
+    EffectStaged {
+        effect_id: String,
+        #[serde(default)]
+        plan_id: String,
+        #[serde(default)]
+        task_id: String,
+        /// The attempt, from 1; 0 when the call named none.
+        #[serde(default)]
+        attempt: u32,
+        /// The tool, as the agent called it.
+        tool: String,
+        /// The MCP server of an MCP tool; empty otherwise.
+        #[serde(default)]
+        server: String,
+        /// When the agent proposed the call (RFC 3339).
+        #[serde(default)]
+        proposed_at: String,
+    },
+    /// A held effect was decided (gap-f439c1).
+    EffectDecided {
+        effect_id: String,
+        #[serde(default)]
+        plan_id: String,
+        #[serde(default)]
+        task_id: String,
+        #[serde(default)]
+        tool: String,
+        #[serde(default)]
+        server: String,
+        /// `applied`, `rejected`, `failed` (it ran and its checks did not
+        /// pass), or `ambiguous` (it may have run).
+        outcome: String,
+        /// Who decided.
+        #[serde(default)]
+        decided_by: String,
+    },
     /// Incremental agent output.
     AgentOutput {
         agent_id: String,
@@ -2646,6 +2687,42 @@ impl DashboardSnapshot {
                     plan_id.clone(),
                     task_id.clone(),
                     format!("confirmation {outcome}"),
+                );
+            }
+            DashboardEvent::EffectStaged {
+                plan_id,
+                task_id,
+                tool,
+                server,
+                effect_id,
+                ..
+            } => {
+                let on = if server.is_empty() {
+                    String::new()
+                } else {
+                    format!(" on {server}")
+                };
+                self.push_event_log(
+                    ts,
+                    "effect_staged".to_string(),
+                    plan_id.clone(),
+                    task_id.clone(),
+                    format!("{tool}{on} held for approval as {effect_id}"),
+                );
+            }
+            DashboardEvent::EffectDecided {
+                plan_id,
+                task_id,
+                effect_id,
+                outcome,
+                ..
+            } => {
+                self.push_event_log(
+                    ts,
+                    "effect_decided".to_string(),
+                    plan_id.clone(),
+                    task_id.clone(),
+                    format!("{effect_id}: {outcome}"),
                 );
             }
             DashboardEvent::RouteDecided {

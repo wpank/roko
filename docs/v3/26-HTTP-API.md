@@ -424,6 +424,8 @@ a client that does not know a type ignores it.
 | `route_decided` | `plan_id`, `task_id`, `attempt` (from 1), `model`, `provider`, `stage`, `reason`, `source` (`router`, `ladder`, `task_hint`, `override`, `fallback`, `default`, `explore`, `control`, `self_model`, or `failover`), `candidates` (the picked model first, then by score, at most 5: `model`, `provider`, `score`, `p`, `eligible`, `ineligible_reason`). Published before the attempt's `agent_spawned`, and again with `source: "failover"` when failover passes the planned model over (gap-2a3298) |
 | `confirm_waiting` | `plan_id`, `task_id`, `attempt`, `attempt_key` (what `confirm_answer` names), `rung` (`rung[<name>]`), `question`, `timeout_secs`, `deadline_at` (RFC 3339): a `confirm` rung waits for its person (gap-7c6663) |
 | `confirm_resolved` | `plan_id`, `task_id`, `attempt`, `attempt_key`, `rung`, `outcome` (`approved`, `rejected`, `timed_out`, or `stopped`), `note` when the person gave one. The rung's `gate_result` follows, saying who passed it |
+| `effect_staged` | `effect_id` (what `effect_decide` names), `plan_id`, `task_id`, `attempt`, `tool`, `server`, `proposed_at`: an outbound call the agent proposed waits for a person (gap-f439c1). Published while the attempt runs, within about 2 s of the hold |
+| `effect_decided` | `effect_id`, `plan_id`, `task_id`, `tool`, `server`, `outcome` (`applied`, `rejected`, `failed`, `ambiguous`), `decided_by`. Published on `roko serve`'s hub (`/api/events`), and in the run's index while the run is live |
 
 **Inference and deployment events:**
 

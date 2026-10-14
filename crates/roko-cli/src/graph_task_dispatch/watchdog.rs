@@ -65,6 +65,10 @@ const STALL_CHECK_INTERVAL: Duration = Duration::from_secs(1);
 /// ([`WatchedAttempt::stop`]).
 const STOP_CHECK_INTERVAL: Duration = Duration::from_millis(250);
 
+/// How often a watched attempt looks for outbound calls its agent proposed
+/// and roko held (gap-f439c1).
+const EFFECT_CHECK_INTERVAL: Duration = Duration::from_secs(2);
+
 /// How long a call whose provider streams as it goes may report nothing from
 /// its start before that counts as silence. Starting the CLI and the model's
 /// first token take longer than the gap between two events, and much longer
@@ -708,6 +712,12 @@ impl GraphTaskDispatcher {
         let mut stop_check = tokio::time::interval(STOP_CHECK_INTERVAL);
         stop_check.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         stop_check.tick().await;
+        // Held outbound calls are published as the agent proposes them
+        // (gap-f439c1).
+        let mut effect_check = tokio::time::interval(EFFECT_CHECK_INTERVAL);
+        effect_check.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        effect_check.tick().await;
+        let mut effects_seen = std::collections::HashSet::new();
         let restarted = async {
             match supervised {
                 Some(supervised) => supervised.restarted().await,
@@ -721,7 +731,13 @@ impl GraphTaskDispatcher {
         tokio::pin!(dispatch, restarted, stopped_by_operator);
         loop {
             tokio::select! {
-                result = &mut dispatch => return Ok(result),
+                result = &mut dispatch => {
+                    self.publish_staged_effects(attempt, &mut effects_seen);
+                    return Ok(result);
+                }
+                _ = effect_check.tick(), if self.tui_bridge.is_some() => {
+                    self.publish_staged_effects(attempt, &mut effects_seen);
+                }
                 restart = &mut restarted => {
                     progress.interrupted();
                     return Err(AttemptInterrupted::Restarted(restart));
@@ -755,6 +771,66 @@ impl GraphTaskDispatcher {
                     }
                 }
             }
+        }
+    }
+
+    /// Publish an `effect_staged` event for each outbound call of `attempt`
+    /// that its run's agent proposed and roko held for approval since the
+    /// last look (gap-f439c1). The holds are the run's files under
+    /// `.roko/state/effect-holds/<run>/`; `seen` keeps the ids already
+    /// looked at.
+    pub(super) fn publish_staged_effects(
+        &self,
+        attempt: &WatchedAttempt<'_>,
+        seen: &mut std::collections::HashSet<String>,
+    ) {
+        let Some(tui) = &self.tui_bridge else {
+            return;
+        };
+        let Some(key) = roko_learn::telemetry::AttemptKey::parse(attempt.attempt_key) else {
+            return;
+        };
+        let layout = roko_fs::RokoLayout::for_project(&self.workdir);
+        let Some(dir) = layout
+            .effect_hold(&key.run_id, "probe")
+            .parent()
+            .map(std::path::Path::to_path_buf)
+        else {
+            return;
+        };
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            return;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.extension().and_then(std::ffi::OsStr::to_str) != Some("json") {
+                continue;
+            }
+            let Some(stem) = path.file_stem().and_then(std::ffi::OsStr::to_str) else {
+                continue;
+            };
+            if seen.contains(stem) {
+                continue;
+            }
+            let Some(hold) = std::fs::read(&path).ok().and_then(|bytes| {
+                serde_json::from_slice::<roko_agent::safety::effects::EffectHold>(&bytes).ok()
+            }) else {
+                // Half written: look again next time.
+                continue;
+            };
+            seen.insert(stem.to_string());
+            if hold.plan_id != attempt.plan_id || hold.task_id != attempt.task_id {
+                continue;
+            }
+            tui.publish_event(roko_core::DashboardEvent::EffectStaged {
+                effect_id: hold.effect_id,
+                plan_id: hold.plan_id,
+                task_id: hold.task_id,
+                attempt: hold.attempt,
+                tool: hold.tool,
+                server: hold.server.unwrap_or_default(),
+                proposed_at: hold.proposed_at,
+            });
         }
     }
 
@@ -1450,6 +1526,74 @@ exec sleep 60
         .expect("record JSON");
         assert_eq!(record["attempt"], 3, "{record}");
         assert_eq!(record["live"], true, "{record}");
+    }
+
+    /// gap-f439c1: a held outbound call of a watched attempt is published as
+    /// `effect_staged`, once; another task's hold is not.
+    #[tokio::test]
+    async fn staged_effects_are_published() {
+        let temp = tempdir().expect("tempdir");
+        let config = Arc::new(RokoConfig::default());
+        let hub = crate::state_hub::shared_state_hub();
+        let mut hub_events = hub.subscribe_events();
+        let factory =
+            Arc::new(SharedAgentFactory::new(Arc::clone(&config), None, None, None).await);
+        let dispatcher =
+            GraphTaskDispatcher::new(factory, Arc::clone(&config), temp.path().to_path_buf())
+                .with_tui_bridge(TuiBridge::new(hub.sender()));
+        let hold = |effect_id: &str, task_id: &str| roko_agent::safety::effects::EffectHold {
+            effect_id: effect_id.to_string(),
+            run_id: "run-1".to_string(),
+            plan_id: "p1".to_string(),
+            task_id: task_id.to_string(),
+            attempt: 2,
+            tool: "send".to_string(),
+            server: Some("mail".to_string()),
+            arguments: serde_json::json!({"to": "someone"}),
+            proposed_at: "2026-10-14T09:00:00+00:00".to_string(),
+        };
+        hold("effect-a", "T01").write(temp.path()).expect("hold a");
+        hold("effect-b", "T09").write(temp.path()).expect("hold b");
+        let attempt = WatchedAttempt {
+            agent_id: "p1/T01",
+            plan_id: "p1",
+            task_id: "T01",
+            attempt_key: "run-1:p1:T01:2",
+            attempt: 2,
+            stop: None,
+        };
+        let mut seen = std::collections::HashSet::new();
+        dispatcher.publish_staged_effects(&attempt, &mut seen);
+        dispatcher.publish_staged_effects(&attempt, &mut seen);
+
+        let mut staged = Vec::new();
+        loop {
+            match hub_events.try_recv() {
+                Ok(envelope) => {
+                    if let DashboardEvent::EffectStaged {
+                        effect_id,
+                        tool,
+                        server,
+                        attempt,
+                        ..
+                    } = envelope.payload
+                    {
+                        staged.push((effect_id, tool, server, attempt));
+                    }
+                }
+                Err(tokio::sync::broadcast::error::TryRecvError::Lagged(_)) => {}
+                Err(_) => break,
+            }
+        }
+        assert_eq!(
+            staged,
+            [(
+                "effect-a".to_string(),
+                "send".to_string(),
+                "mail".to_string(),
+                2
+            )]
+        );
     }
 
     fn usage(input_tokens: u32, output_tokens: u32) -> LiveAgentEvent {

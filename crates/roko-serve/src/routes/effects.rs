@@ -105,7 +105,7 @@ pub(super) async fn decide_effect(
     decision: EffectDecisionInput,
 ) -> Result<Value, ApiError> {
     let _one_at_a_time = DECISIONS.lock().await;
-    state
+    let record = state
         .runtime
         .decide_effect(&state.workdir, effect_id, decision)
         .await
@@ -120,7 +120,31 @@ pub(super) async fn decide_effect(
             EffectDecisionError::Failed(reason) => {
                 ApiError::internal(format!("decide effect {effect_id}: {reason}"))
             }
-        })
+        })?;
+    // Whoever follows the run sees the decision (gap-f439c1).
+    state.state_hub.publish(decided_event(effect_id, &record));
+    Ok(record)
+}
+
+/// The [`roko_core::DashboardEvent::EffectDecided`] of `record`, the
+/// decision's record as the runtime answered it.
+fn decided_event(effect_id: &str, record: &Value) -> roko_core::DashboardEvent {
+    let text = |key: &str| {
+        record
+            .get(key)
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string()
+    };
+    roko_core::DashboardEvent::EffectDecided {
+        effect_id: effect_id.to_string(),
+        plan_id: text("plan_id"),
+        task_id: text("task_id"),
+        tool: text("tool"),
+        server: text("server"),
+        outcome: text("outcome"),
+        decided_by: text("decided_by"),
+    }
 }
 
 #[cfg(test)]
@@ -258,5 +282,56 @@ mod tests {
         let decisions = runtime.decisions.lock().expect("decisions");
         assert_eq!(decisions.len(), 3);
         assert_eq!(decisions[0].1.note.as_deref(), Some("checked"));
+    }
+
+    /// gap-f439c1: a decision through `roko serve` is published on its hub as
+    /// `effect_decided`, with the outcome and who decided; a refused one is
+    /// not.
+    #[tokio::test]
+    async fn a_decided_effect_is_published() {
+        let workdir = tempfile::tempdir().expect("tempdir");
+        let runtime = Arc::new(EffectsRuntime::default());
+        let state = Arc::new(
+            AppState::new(
+                workdir.path().to_path_buf(),
+                Arc::clone(&runtime) as Arc<dyn CliRuntime>,
+                RokoConfig::default(),
+                Arc::new(ManualBackend::default()),
+            )
+            .expect("create state"),
+        );
+        let mut events = state.state_hub.subscribe_events();
+        let approve = serde_json::json!({ "approve": true });
+        let (status, _) = post(&state, "/effects/effect-1/decision", approve.clone()).await;
+        assert_eq!(status, StatusCode::OK);
+        let (status, _) = post(&state, "/effects/effect-9/decision", approve).await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+
+        let mut decided = Vec::new();
+        loop {
+            match events.try_recv() {
+                Ok(envelope) => {
+                    if let roko_core::DashboardEvent::EffectDecided {
+                        effect_id,
+                        outcome,
+                        decided_by,
+                        ..
+                    } = envelope.payload
+                    {
+                        decided.push((effect_id, outcome, decided_by));
+                    }
+                }
+                Err(tokio::sync::broadcast::error::TryRecvError::Lagged(_)) => {}
+                Err(_) => break,
+            }
+        }
+        assert_eq!(
+            decided,
+            [(
+                "effect-1".to_string(),
+                "applied".to_string(),
+                "local-api".to_string()
+            )]
+        );
     }
 }

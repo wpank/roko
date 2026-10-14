@@ -1398,6 +1398,7 @@ impl TaskDispatcher for GraphTaskDispatcher {
             plan_id: &spec.plan_id,
             task_id: &task.id,
             attempt_key: &watched_key,
+            attempt: attempt_ordinal,
             stop: ctx.cancel_flag.as_deref(),
         };
         let stall_watch = self.stall_watch();

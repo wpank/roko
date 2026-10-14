@@ -3496,6 +3496,12 @@ sleep 30
             candidates.len() <= roko_core::dashboard_snapshot::ROUTE_EVENT_CANDIDATES,
             "{candidates:?}"
         );
+        if candidates.iter().any(|candidate| candidate.model == model) {
+            assert_eq!(
+                candidates[0].model, model,
+                "the pick comes first: {candidates:?}"
+            );
+        }
     }
 
     /// bug-369c21: a task dispatched twice publishes its `agent_spawned` and

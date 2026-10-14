@@ -421,7 +421,7 @@ a client that does not know a type ignores it.
 
 | `type` | Key fields |
 |--------|-----------|
-| `route_decided` | `plan_id`, `task_id`, `attempt` (from 1), `model`, `provider`, `stage`, `reason`, `source` (`router`, `ladder`, `task_hint`, `override`, `fallback`, `default`, `explore`, `control`, `self_model`, or `failover`), `candidates` (best score first, at most 5: `model`, `provider`, `score`, `p`, `eligible`, `ineligible_reason`). Published before the attempt's `agent_spawned`, and again with `source: "failover"` when failover passes the planned model over (gap-2a3298) |
+| `route_decided` | `plan_id`, `task_id`, `attempt` (from 1), `model`, `provider`, `stage`, `reason`, `source` (`router`, `ladder`, `task_hint`, `override`, `fallback`, `default`, `explore`, `control`, `self_model`, or `failover`), `candidates` (the picked model first, then by score, at most 5: `model`, `provider`, `score`, `p`, `eligible`, `ineligible_reason`). Published before the attempt's `agent_spawned`, and again with `source: "failover"` when failover passes the planned model over (gap-2a3298) |
 
 **Inference and deployment events:**
 

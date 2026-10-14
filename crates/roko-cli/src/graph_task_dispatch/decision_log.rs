@@ -46,8 +46,10 @@ use crate::dispatch::prompt_builder::{PromptItemDiagnostic, ReaderRead};
 
 /// `decision`, the route row of attempt `attempt` of a task of `plan_id`, as
 /// the [`DashboardEvent::RouteDecided`](roko_core::DashboardEvent::RouteDecided)
-/// a host follows: the pick, the stage, source and reason, and its best
-/// candidates by score.
+/// a host follows: the pick, the stage, source and reason, and its
+/// candidates, the pick first and the rest by score. A pick by rung or by
+/// hint can score below the models it passed over, and must not fall out of
+/// the list.
 pub(super) fn route_event(
     decision: &roko_learn::routing_log::RoutingDecisionLog,
     plan_id: &str,
@@ -55,7 +57,14 @@ pub(super) fn route_event(
 ) -> roko_core::DashboardEvent {
     let mut candidates: Vec<&roko_learn::routing_log::CandidateEntry> =
         decision.candidates.iter().collect();
-    candidates.sort_by(|a, b| b.score.total_cmp(&a.score));
+    let picked = |candidate: &roko_learn::routing_log::CandidateEntry| {
+        candidate.model == decision.selected_model
+    };
+    candidates.sort_by(|a, b| {
+        picked(b)
+            .cmp(&picked(a))
+            .then_with(|| b.score.total_cmp(&a.score))
+    });
     let source = decision
         .source
         .and_then(|source| serde_json::to_value(source).ok())

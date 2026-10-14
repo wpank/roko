@@ -191,8 +191,8 @@ pub enum DashboardEvent {
         /// `self_model`, or `failover`.
         #[serde(default)]
         source: String,
-        /// The candidates the route weighed, best score first, at most
-        /// [`ROUTE_EVENT_CANDIDATES`].
+        /// The candidates the route weighed, the picked model first and the
+        /// rest by score, at most [`ROUTE_EVENT_CANDIDATES`].
         #[serde(default)]
         candidates: Vec<RouteCandidate>,
     },

@@ -4485,8 +4485,9 @@ fn distinct_tasks(commits: &[super::batch::AcceptedCommit]) -> Vec<String> {
 
 /// Each task of `undelivered`'s plan whose work is not on the batch branch,
 /// with why (bug-74164c): its work ran no check, or builds on work that did not;
-/// the whole-plan check refused the plan, or the delivery failed; it failed,
-/// was cancelled or interrupted; it was blocked, or never started.
+/// the whole-plan check refused the plan, or the delivery failed; a stop cut
+/// it off (cancelled or interrupted), or it failed; it was blocked, or never
+/// started.
 fn missing_tasks(
     undelivered: &UndeliveredPlan<'_>,
     work: &super::batch::PlanWork,
@@ -4519,6 +4520,11 @@ fn missing_tasks(
                     "the plan's whole-plan check failed".to_string()
                 }
                 Some(_) => "its delivery failed".to_string(),
+                // A stop cut it off (bug-1d09e8).
+                None if outcomes.cancelled.contains(&task.id) => match undelivered.outcome {
+                    PlanOutcome::Interrupted => "interrupted".to_string(),
+                    _ => "cancelled".to_string(),
+                },
                 None if outcomes.failed.contains(&task.id) => match undelivered.outcome {
                     PlanOutcome::Cancelled => "cancelled".to_string(),
                     PlanOutcome::Interrupted => "interrupted".to_string(),
@@ -9156,5 +9162,38 @@ printf '%s\n' '{"type":"result","session_id":"sess-batch","model":"claude-sonnet
         let tip = git_stdout(repo, &["rev-parse", "roko/plan/01-alpha"]);
         assert!(git_stdout(repo, &["ls-tree", "--name-only", &tip]).contains("alpha.txt"));
         assert!(!git_stdout(repo, &["rev-parse", "roko/batch/run-released"]).is_empty());
+    }
+
+    /// bug-74164c, bug-1d09e8: a task a stop cut off is missing from a
+    /// partial delivery as cancelled, or as interrupted when a stop request
+    /// ended the plan, not as "not accepted".
+    #[test]
+    fn a_cut_off_task_is_missing_as_cancelled() {
+        let plan = test_plan("p", "P", 2);
+        let outcomes = TaskOutcomeSummary {
+            cancelled: ["T1".to_string()].into_iter().collect(),
+            ..TaskOutcomeSummary::default()
+        };
+        let work = crate::graph_execution::batch::PlanWork {
+            base: "b".repeat(40),
+            commits: Vec::new(),
+        };
+        for (outcome, why) in [
+            (PlanOutcome::Cancelled, "cancelled"),
+            (PlanOutcome::Interrupted, "interrupted"),
+        ] {
+            let undelivered = UndeliveredPlan {
+                plan: &plan,
+                run_id: "r",
+                outcome,
+                deliver_verified: true,
+                task_outcomes: &outcomes,
+            };
+            let missing = missing_tasks(&undelivered, &work, &["T0".to_string()]);
+            assert_eq!(
+                missing,
+                vec![serde_json::json!({ "task_id": "T1", "why": why })]
+            );
+        }
     }
 }

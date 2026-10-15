@@ -33,7 +33,7 @@ mod git_ops;
 #[cfg(test)]
 mod tests;
 
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 #[cfg(test)]
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
@@ -513,6 +513,9 @@ pub struct WorktreeManager {
     /// The run each plan's attempts belong to in this process, set by
     /// [`WorktreeManager::begin_plan_run`] (bug-056b40).
     plan_runs: Arc<Mutex<HashMap<String, PlanRun>>>,
+    /// The attempt checkouts each plan's attempts got in this process, until
+    /// [`WorktreeManager::remove_idle_attempts`] looks at them (bug-58329f).
+    pub(super) attempt_checkouts: Arc<Mutex<HashMap<String, BTreeSet<String>>>>,
     /// Shared fair reservation transferred into cancellation-independent
     /// tasks, and the ownership an unproved cleanup retained (bug-53475e).
     pub(super) operations: Arc<AsyncMutex<OperationState>>,
@@ -543,6 +546,7 @@ impl WorktreeManager {
             accepted: Arc::new(Mutex::new(HashMap::new())),
             accepted_attempts: Arc::new(Mutex::new(HashMap::new())),
             plan_runs: Arc::new(Mutex::new(HashMap::new())),
+            attempt_checkouts: Arc::new(Mutex::new(HashMap::new())),
             operations: Arc::new(AsyncMutex::new(OperationState::default())),
             resolved_git_executable: Arc::new(Mutex::new(None)),
             #[cfg(test)]
@@ -588,6 +592,7 @@ impl WorktreeManager {
             accepted: Arc::new(Mutex::new(HashMap::new())),
             accepted_attempts: Arc::new(Mutex::new(HashMap::new())),
             plan_runs: Arc::new(Mutex::new(HashMap::new())),
+            attempt_checkouts: Arc::new(Mutex::new(HashMap::new())),
             operations: Arc::new(AsyncMutex::new(OperationState::default())),
             resolved_git_executable: Arc::new(Mutex::new(None)),
             #[cfg(test)]
@@ -893,7 +898,7 @@ impl WorktreeManager {
             .map(|run| run.run_id.clone());
         let operation = Arc::clone(&self.operations).lock_owned().await;
         let manager = self.clone();
-        await_owned_operation(operation, move |lifecycle| async move {
+        let handle = await_owned_operation(operation, move |lifecycle| async move {
             let repository_lock = manager.acquire_repository_mutation_lock()?;
             let result = manager
                 .create_attempt_locked(&id, &branch, &base, run_id.as_deref(), &lifecycle)
@@ -901,7 +906,13 @@ impl WorktreeManager {
             retain_lock_if_cleanup_unproved(repository_lock, &lifecycle);
             result
         })
-        .await
+        .await?;
+        self.attempt_checkouts
+            .lock()
+            .entry(plan_id.to_string())
+            .or_default()
+            .insert(handle.id.clone());
+        Ok(handle)
     }
 
     /// Base of `plan_id`'s next attempt: the plan branch's tip after the

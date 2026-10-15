@@ -6921,6 +6921,7 @@ dependencies = [
  "reqwest 0.12.28",
  "roko-chain",
  "roko-core",
+ "rustix 1.1.4",
  "serde",
  "serde_json",
  "tempfile",

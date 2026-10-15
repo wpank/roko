@@ -17,10 +17,10 @@ anchors = ["crates/roko-cli/src/graph_execution/plan_runner.rs::run_graph_plan_b
 links = { depends_on = [], blocks = [], related = ["bug-1d09e8", "gap-8409d0"], supersedes = [], duplicate_of = "" }
 
 [[verify]]
-command = "grep -rqw 'fn an_unverified_run_says_where_its_unchecked_work_is' crates/roko-cli/ && cargo test -p roko-cli an_unverified_run_says_where_its_unchecked_work_is"
+command = "grep -rqw 'fn an_unverified_run_says_where_its_unchecked_work_is' crates/roko-cli/ && cargo test -p roko-cli --lib an_unverified_run_says_where_its_unchecked_work_is"
 
 [[verify]]
-command = "grep -rqw 'fn run_summary_names_unverified_work' crates/roko-serve/ && cargo test -p roko-serve run_summary_names_unverified_work"
+command = "grep -rqw 'fn run_summary_names_unverified_work' crates/roko-serve/ && cargo test -p roko-serve --lib run_summary_names_unverified_work"
 +++
 
 ## Problem

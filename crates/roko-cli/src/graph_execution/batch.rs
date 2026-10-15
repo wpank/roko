@@ -339,6 +339,20 @@ impl BatchIntegration {
         })
     }
 
+    /// The batch record of plan `plan_id` when it delivered nothing, kept in
+    /// the plan's checkpoint under `roko.batch@1` like [`Self::record`], with
+    /// no delivery `state` (bug-db89d4).
+    #[must_use]
+    pub fn plan_record(&self, plan_id: &str) -> serde_json::Value {
+        serde_json::json!({
+            "run_id": self.run_id,
+            "branch": self.branch,
+            "base_oid": self.base_oid,
+            "plan_id": plan_id,
+            "plan_branch": format_branch_name(plan_id),
+        })
+    }
+
     /// The batch record of a plan's delivery, kept in the plan's checkpoint
     /// under `roko.batch@1`.
     #[must_use]
@@ -362,6 +376,159 @@ impl BatchIntegration {
 /// `None` when no attempt of the plan was accepted.
 pub async fn plan_branch_tip(repo: &Path, plan_id: &str) -> Option<String> {
     commit_of(repo, &format!("refs/heads/{}", format_branch_name(plan_id))).await
+}
+
+/// How many commits [`PlanWork::read`] walks back along a plan branch at
+/// most.
+const MAX_PLAN_WORK_COMMITS: usize = 512;
+
+/// One commit a run accepted onto a plan branch (gap-3b5361): an attempt's
+/// commit, or the commit that folded one in, with the task and the verdict
+/// its trailers name.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AcceptedCommit {
+    /// The commit.
+    pub commit: String,
+    /// The task whose attempt it holds.
+    pub task_id: String,
+    /// The attempt's settled verdict, such as `passed` or `unverified`.
+    pub verdict: String,
+}
+
+impl AcceptedCommit {
+    /// Whether its task's checks passed (bug-db89d4): every verify step
+    /// passed, passed but for failures the run's base already had, or passed
+    /// on work that was already there. An `unverified` task ran none.
+    #[must_use]
+    pub fn verified(&self) -> bool {
+        use roko_graph::cells::task_executor::TaskGateVerdict;
+        matches!(
+            TaskGateVerdict::parse(&self.verdict),
+            Some(
+                TaskGateVerdict::Passed
+                    | TaskGateVerdict::PassedWithPreexistingFailures
+                    | TaskGateVerdict::AlreadySatisfied
+            )
+        )
+    }
+}
+
+/// The work one run accepted onto a plan's branch (bug-db89d4).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PlanWork {
+    /// The commit the run's first accepted commit builds on.
+    pub base: String,
+    /// The run's accepted commits, oldest first, along the branch's first
+    /// parents.
+    pub commits: Vec<AcceptedCommit>,
+}
+
+impl PlanWork {
+    /// What run `run_id` accepted onto plan `plan_id`'s branch in `repo`: the
+    /// branch's commits from its tip back along first parents, as long as
+    /// their trailers name the plan and the run. `None` when the branch does
+    /// not exist or its tip is not the run's.
+    pub async fn read(repo: &Path, plan_id: &str, run_id: &str) -> Option<Self> {
+        let tip = plan_branch_tip(repo, plan_id).await?;
+        let log = git_output(
+            repo,
+            &[
+                "log",
+                "--first-parent",
+                &format!("--max-count={MAX_PLAN_WORK_COMMITS}"),
+                "--format=%H%x1f%P%x1f%B%x1e",
+                &tip,
+            ],
+        )
+        .await
+        .ok()?;
+        let mut commits = Vec::new();
+        let mut base = None;
+        for record in log.split('\x1e') {
+            let mut fields = record.trim_start_matches('\n').splitn(3, '\x1f');
+            let (Some(commit), Some(parents), Some(body)) =
+                (fields.next(), fields.next(), fields.next())
+            else {
+                break;
+            };
+            if trailer(body, "Roko-Plan") != Some(plan_id)
+                || trailer(body, "Roko-Run") != Some(run_id)
+            {
+                break;
+            }
+            let (Some(task_id), Some(verdict)) =
+                (trailer(body, "Roko-Task"), trailer(body, "Roko-Verdict"))
+            else {
+                break;
+            };
+            commits.push(AcceptedCommit {
+                commit: commit.trim().to_string(),
+                task_id: task_id.to_string(),
+                verdict: verdict.to_string(),
+            });
+            base = parents.split_whitespace().next().map(str::to_string);
+        }
+        commits.reverse();
+        Some(Self {
+            base: base?,
+            commits,
+        })
+    }
+
+    /// How many of the commits, oldest first, are verified. A commit after an
+    /// unverified one builds on work no check ran on, so it does not count.
+    #[must_use]
+    pub fn verified_len(&self) -> usize {
+        self.commits
+            .iter()
+            .take_while(|commit| commit.verified())
+            .count()
+    }
+
+    /// The last of the verified commits, if any.
+    #[must_use]
+    pub fn verified_tip(&self) -> Option<&str> {
+        self.commits[..self.verified_len()]
+            .last()
+            .map(|accepted| accepted.commit.as_str())
+    }
+
+    /// The commits after the verified ones: work no check ran on, and work
+    /// built on it.
+    #[must_use]
+    pub fn unverified(&self) -> &[AcceptedCommit] {
+        &self.commits[self.verified_len()..]
+    }
+
+    /// The unverified work as a plan's batch record keeps it (bug-db89d4):
+    /// the commit it ends at, the commit it starts from (the verified work's
+    /// tip, else [`Self::base`]) and its tasks with their verdicts. `None`
+    /// when every commit is verified.
+    #[must_use]
+    pub fn unverified_record(&self) -> Option<serde_json::Value> {
+        let unverified = self.unverified();
+        let last = unverified.last()?;
+        let tasks = unverified
+            .iter()
+            .map(|accepted| {
+                serde_json::json!({ "task_id": accepted.task_id, "verdict": accepted.verdict })
+            })
+            .collect::<Vec<_>>();
+        Some(serde_json::json!({
+            "commit": last.commit,
+            "base": self.verified_tip().unwrap_or(&self.base),
+            "tasks": tasks,
+        }))
+    }
+}
+
+/// The value of the last `<key>: <value>` trailer line in a commit message.
+fn trailer<'a>(message: &'a str, key: &str) -> Option<&'a str> {
+    message
+        .lines()
+        .rev()
+        .find_map(|line| line.strip_prefix(key)?.strip_prefix(':'))
+        .map(str::trim)
 }
 
 /// The run whose batch a resumed run continues: the batch an earlier process

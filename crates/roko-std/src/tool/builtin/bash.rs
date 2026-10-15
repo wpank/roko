@@ -14,6 +14,7 @@ use roko_core::tool::{
 use std::ffi::OsString;
 use std::time::Duration;
 
+use super::child_group;
 use super::sandbox::{refuse_key_file_in_command, require_string};
 
 /// Canonical `snake_case` name.
@@ -64,6 +65,9 @@ pub fn tool_def() -> ToolDef {
 /// [`ToolContext::timeout`] as the wall-clock budget. The command's
 /// combined stdout+stderr is returned as the tool result's content.
 ///
+/// The command leads a process group of its own, which a call dropped or
+/// timed out before the command ends kills ([`child_group`], bug-c83c84).
+///
 /// The command gets the environment verify steps get
 /// ([`child_env::apply_gate_env`]): system, locale and toolchain variables,
 /// never a provider key, a secret-looking name or a name roko loaded from a
@@ -113,14 +117,13 @@ async fn run(
     let mut cmd = tokio::process::Command::new("bash");
     cmd.arg("-c").arg(&command);
     cmd.current_dir(ctx.worktree());
-    cmd.kill_on_drop(true);
     child_env::apply_gate_env(
         cmd.as_std_mut(),
         parent_env.unwrap_or_else(child_env::process_env),
         &ctx.env_passthrough,
     );
 
-    let output = match tokio::time::timeout(effective_timeout, cmd.output()).await {
+    let output = match child_group::output_within(cmd, effective_timeout).await {
         Ok(Ok(o)) => o,
         Ok(Err(e)) => {
             return ToolResult::Err(ToolError::Other(format!("bash: spawn failed: {e}")));
@@ -152,6 +155,100 @@ async fn run(
 mod tests {
     use super::*;
     use roko_core::tool::ToolContext;
+
+    /// Whether process `pid` still exists.
+    #[cfg(unix)]
+    fn alive(pid: i32) -> bool {
+        rustix::process::Pid::from_raw(pid)
+            .is_some_and(|pid| rustix::process::test_kill_process(pid).is_ok())
+    }
+
+    /// The PID a command wrote to `file`, once it is there (within ten
+    /// seconds).
+    #[cfg(unix)]
+    async fn written_pid(file: &std::path::Path) -> i32 {
+        for _ in 0..500 {
+            if let Some(pid) = std::fs::read_to_string(file)
+                .ok()
+                .and_then(|text| text.trim().parse().ok())
+            {
+                return pid;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        panic!("no PID in {}", file.display());
+    }
+
+    /// Wait up to five seconds for process `pid` to be gone.
+    #[cfg(unix)]
+    async fn gone(pid: i32) -> bool {
+        for _ in 0..100 {
+            if !alive(pid) {
+                return true;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        false
+    }
+
+    /// bug-c83c84: a command leads a process group of its own, apart from
+    /// roko's. A signal it sends its own group (`kill -INT 0`) therefore never
+    /// reaches roko, where a `roko serve` would take a SIGINT as Ctrl-C.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn bash_commands_run_in_their_own_process_group() {
+        let call = ToolCall::new(
+            "c",
+            NAME,
+            serde_json::json!({"command": "echo $$ $(ps -o pgid= -p $$)"}),
+        );
+        let ctx = ToolContext::testing(std::env::temp_dir());
+
+        let output = env_output(Handler.execute(call, &ctx).await);
+        let ids = output
+            .split_whitespace()
+            .map(|id| id.parse::<i32>().expect("a process id"))
+            .collect::<Vec<_>>();
+
+        assert_eq!(ids.len(), 2, "{output}");
+        assert_eq!(ids[0], ids[1], "the command leads its group: {output}");
+        let ours = rustix::process::getpgrp().as_raw_nonzero().get();
+        assert_ne!(ids[1], ours, "the command shares roko's group: {output}");
+    }
+
+    /// bug-c83c84: a call dropped while its command runs, as a cancelled
+    /// attempt's is, kills what the command started; so does a timeout.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_stopped_bash_call_kills_what_its_command_started() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let command = |file: &str| {
+            ToolCall::new(
+                "c",
+                NAME,
+                serde_json::json!({"command": format!("sleep 30 & echo $! > {file}; wait")}),
+            )
+        };
+
+        let ctx = ToolContext::testing(dir.path());
+        let dropped = dir.path().join("dropped.pid");
+        let running = Handler.execute(command("dropped.pid"), &ctx);
+        let pid = tokio::select! {
+            result = running => panic!("the command ended early: {result:?}"),
+            pid = written_pid(&dropped) => pid,
+        };
+        assert!(gone(pid).await, "the dropped call's child outlived it");
+
+        let mut ctx = ToolContext::testing(dir.path());
+        ctx.timeout = Duration::from_secs(1);
+        let result = Handler.execute(command("timed-out.pid"), &ctx).await;
+        assert!(
+            matches!(result, ToolResult::Err(ToolError::Timeout { .. })),
+            "{result:?}"
+        );
+        let pid = written_pid(&dir.path().join("timed-out.pid")).await;
+        assert!(gone(pid).await, "the timed-out call's child outlived it");
+    }
 
     /// `items` as an inherited environment, after this process's `PATH`.
     #[cfg(unix)]

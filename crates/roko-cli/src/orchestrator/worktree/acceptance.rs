@@ -234,11 +234,18 @@ impl WorktreeManager {
         }
         // The identity checks of a re-attach prove it is the attempt's own
         // checkout; this run does not take it over.
-        if !matches!(
-            self.try_reattach_locked_with_branch(id, branch).await,
-            Ok(Some(_))
-        ) {
-            return Ok(());
+        match self.try_reattach_locked_with_branch(id, branch).await {
+            Ok(Some(_)) => {}
+            Ok(None) => return Ok(()),
+            Err(error) => {
+                tracing::warn!(
+                    id,
+                    %error,
+                    "left the attempt checkout another run kept where it is: it is not provably \
+                     that attempt's own"
+                );
+                return Ok(());
+            }
         }
         self.active.lock().remove(id);
 

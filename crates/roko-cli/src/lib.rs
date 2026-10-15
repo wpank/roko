@@ -133,6 +133,7 @@ pub mod chain_handler;
 pub mod chain_registry;
 pub mod chat;
 pub mod chat_history;
+pub mod chat_host;
 pub mod chat_inline;
 pub mod chat_session;
 pub mod clean;

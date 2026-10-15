@@ -70,6 +70,12 @@ pub enum ConfigSection {
     Scheduler,
     /// `[watcher]` — filesystem watchers.
     Watcher,
+    /// `[agent.data_llm]` — the data model, which a run reads when it
+    /// starts and serve's `/mcp` on each request (hot-reloadable).
+    DataLlm,
+    /// `[serve.mcp]` — what serve's `/mcp` lets a chat host do, read on each
+    /// request (hot-reloadable).
+    ServeMcp,
     /// Other unrecognized section.
     Other(String),
 }
@@ -85,6 +91,8 @@ impl ConfigSection {
                 | Self::Gates
                 | Self::Conductor
                 | Self::Routing
+                | Self::DataLlm
+                | Self::ServeMcp
         )
     }
 
@@ -104,6 +112,8 @@ impl ConfigSection {
             Self::Routing => "routing",
             Self::Scheduler => "scheduler",
             Self::Watcher => "watcher",
+            Self::DataLlm => "agent.data_llm",
+            Self::ServeMcp => "serve.mcp",
             Self::Other(section) => section,
         }
     }
@@ -292,8 +302,29 @@ pub fn config_diff(old: &RokoConfig, new: &RokoConfig) -> Vec<ConfigChange> {
         });
     }
 
-    // Non-hot-reloadable sections.
-    if old.agent != new.agent {
+    // Whether a chat host's run may start is read from the stored config on
+    // each request, and a run reads the data model when it starts, so these
+    // two tables are live (gap-cf427e).
+    if old.agent.data_llm != new.agent.data_llm {
+        changes.push(ConfigChange {
+            section: ConfigSection::DataLlm,
+            summary: "agent.data_llm changed; runs that start from now on use it".into(),
+        });
+    }
+    if old.serve.mcp != new.serve.mcp {
+        changes.push(ConfigChange {
+            section: ConfigSection::ServeMcp,
+            summary: "serve.mcp changed; requests from chat hosts get it now".into(),
+        });
+    }
+
+    // Non-hot-reloadable sections, apart from those two tables.
+    let without_data_llm = |config: &RokoConfig| {
+        let mut agent = config.agent.clone();
+        agent.data_llm = None;
+        agent
+    };
+    if without_data_llm(old) != without_data_llm(new) {
         changes.push(ConfigChange {
             section: ConfigSection::Agent,
             summary: "agent configuration changed (requires restart)".into(),
@@ -314,7 +345,12 @@ pub fn config_diff(old: &RokoConfig, new: &RokoConfig) -> Vec<ConfigChange> {
         });
     }
 
-    if old.serve != new.serve {
+    let without_mcp = |config: &RokoConfig| {
+        let mut serve = config.serve.clone();
+        serve.mcp = Default::default();
+        serve
+    };
+    if without_mcp(old) != without_mcp(new) {
         changes.push(ConfigChange {
             section: ConfigSection::Serve,
             summary: "serve configuration changed (requires restart)".into(),
@@ -376,6 +412,10 @@ pub fn apply_hot_reload(
                 }
                 ConfigSection::Conductor => current.conductor = new_config.conductor.clone(),
                 ConfigSection::Routing => current.routing = new_config.routing.clone(),
+                ConfigSection::DataLlm => {
+                    current.agent.data_llm = new_config.agent.data_llm.clone();
+                }
+                ConfigSection::ServeMcp => current.serve.mcp = new_config.serve.mcp.clone(),
                 _ => {} // unreachable given is_hot_reloadable()
             }
             tracing::info!(
@@ -521,6 +561,39 @@ pub fn parse_strategy_md(content: &str) -> StrategyDocument {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// gap-115bae: adding `[agent.data_llm]` or `[serve.mcp]
+    /// allow_without_data_llm`, as `roko config preset chat-host` does, is
+    /// applied live; the rest of `[agent]` and `[serve]` still needs a
+    /// restart.
+    #[test]
+    fn chat_host_tables_reload_live() {
+        let old = RokoConfig::default();
+        let mut new = old.clone();
+        new.agent.data_llm = Some(crate::config::DataLlmConfig::default());
+        new.serve.mcp.allow_without_data_llm = true;
+        let changes = config_diff(&old, &new);
+        let sections: Vec<&ConfigSection> = changes.iter().map(|change| &change.section).collect();
+        assert_eq!(
+            sections,
+            [&ConfigSection::DataLlm, &ConfigSection::ServeMcp]
+        );
+        let mut current = old.clone();
+        let result = apply_hot_reload(&mut current, &new, &changes);
+        assert_eq!(result.applied.len(), 2);
+        assert!(result.needs_restart.is_empty());
+        assert_eq!(current.agent.data_llm, new.agent.data_llm);
+        assert!(current.serve.mcp.allow_without_data_llm);
+
+        new.agent.default_model = "another-model".to_string();
+        new.serve.port = Some(6799);
+        let sections: Vec<ConfigSection> = config_diff(&old, &new)
+            .into_iter()
+            .map(|change| change.section)
+            .collect();
+        assert!(sections.contains(&ConfigSection::Agent), "{sections:?}");
+        assert!(sections.contains(&ConfigSection::Serve), "{sections:?}");
+    }
 
     #[test]
     fn config_section_hot_reload_classification() {

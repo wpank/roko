@@ -182,7 +182,7 @@ mod tests {
     use super::*;
     use crate::telemetry::records::{
         AttemptIdentity, AttemptKey, AttemptOpenRecord, AttemptOutcome, AttemptVerdictRecord,
-        ConfigHashProvenance, HarnessProvenance, RUN_MANIFEST_SCHEMA, RunClosed,
+        ConfigHashProvenance, HarnessProvenance, RUN_MANIFEST_SCHEMA, RunClosed, RunInterruption,
     };
     use crate::telemetry::writer::{TelemetryWriter, TelemetryWriterConfig};
 
@@ -302,6 +302,47 @@ mod tests {
         assert!(!legacy.mixed_provenance);
         legacy.begin_invocation(build("aaa1111", "b3:two"));
         assert!(legacy.mixed_provenance, "another config resumed the run");
+    }
+
+    /// bug-dceafd: a run closed `interrupted` because its process was gone
+    /// keeps the record of that when a resume opens it again, and a manifest
+    /// written before interruptions were recorded still loads.
+    #[test]
+    fn a_resumed_run_keeps_the_interruptions_that_closed_it() {
+        let dir = TempDir::new().expect("tempdir");
+        let mut manifest = RunProvenanceManifest::new(RUN, "plan_run");
+        manifest.begin_invocation(RunInvocation {
+            pid: 41,
+            ..RunInvocation::default()
+        });
+        manifest.store(dir.path()).expect("store");
+        let stored = std::fs::read_to_string(RunProvenanceManifest::path_in(dir.path()))
+            .expect("read the manifest");
+        assert!(
+            !stored.contains("interruptions"),
+            "a run never interrupted writes none: {stored}"
+        );
+
+        manifest.interruptions.push(RunInterruption {
+            at: "2026-10-15T15:02:00.000Z".to_string(),
+            detected_at: "2026-10-15T15:20:00.000Z".to_string(),
+            inv: 1,
+            pid: 41,
+            reason: "roko stopped while this run was going".to_string(),
+        });
+        manifest.closed = Some(RunClosed {
+            status: "interrupted".to_string(),
+            ..RunClosed::default()
+        });
+        manifest.store(dir.path()).expect("store");
+
+        let mut resumed = RunProvenanceManifest::load(dir.path())
+            .expect("load")
+            .expect("the stored manifest");
+        assert_eq!(resumed, manifest);
+        resumed.begin_invocation(RunInvocation::default());
+        assert_eq!(resumed.closed, None, "a resumed run is open again");
+        assert_eq!(resumed.interruptions, manifest.interruptions);
     }
 
     #[test]

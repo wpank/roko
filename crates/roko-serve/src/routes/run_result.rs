@@ -175,7 +175,32 @@ pub(super) fn run_result(workdir: &Path, run_id: &str, plan_ids: &[String]) -> O
         };
         result["merge_command"] = json!(command);
     }
-    let unverified = batch_records(workdir, run_id, plan_ids)
+    let records = batch_records(workdir, run_id, plan_ids);
+    // A plan that did not succeed delivered only its verified tasks, or
+    // nothing (bug-74164c): the branch holds part of the run's work.
+    let plans = records
+        .iter()
+        .filter(|(_, record)| record["work"].is_object())
+        .map(|(plan_id, record)| {
+            let work = &record["work"];
+            json!({
+                "plan_id": plan_id,
+                "partial": work["partial"].as_bool().unwrap_or(false),
+                "delivered_tasks": work["delivered_tasks"].as_array().cloned().unwrap_or_default(),
+                "missing_tasks": work["missing_tasks"].as_array().cloned().unwrap_or_default(),
+            })
+        })
+        .collect::<Vec<_>>();
+    let missing = plans.iter().any(|plan| {
+        plan["missing_tasks"]
+            .as_array()
+            .is_some_and(|tasks| !tasks.is_empty())
+    });
+    result["partial"] = json!(delivered && missing);
+    if !plans.is_empty() {
+        result["plans"] = json!(plans);
+    }
+    let unverified = records
         .iter()
         .filter_map(|(plan_id, record)| unverified_work(workdir, plan_id, record))
         .collect::<Vec<_>>();

@@ -36,6 +36,10 @@ pub const RUN_TAG_PREFIX: &str = "roko/run/";
 /// (gap-415c54): the checkouts it removed and the branches it kept.
 pub const ATTEMPT_CLEANUP_EXTENSION: &str = "roko.attempt_cleanup";
 
+/// Receipt extension marking a partial delivery (bug-74164c): the verified tasks
+/// of a plan that did not finish, whose work it holds.
+pub const PARTIAL_EXTENSION: &str = "roko.partial";
+
 /// What promoting a run's batch did (see [`BatchIntegration::promote`]).
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 pub struct Promotion {
@@ -182,6 +186,17 @@ impl BatchIntegration {
             changed_files: Vec::new(),
             publish: false,
         }
+    }
+
+    /// The request that delivers `verified`, the tip of the verified part of
+    /// plan `plan_id`'s work, when the plan did not finish (bug-74164c). Its
+    /// delivery id is not the whole plan's, so delivering the whole plan
+    /// later in the same process is a delivery of its own.
+    #[must_use]
+    pub fn partial_request(&self, plan_id: &str, verified: String) -> CompletionDeliveryRequest {
+        let mut request = self.request(plan_id, verified);
+        request.delivery_id.push_str(":partial");
+        request
     }
 
     /// Deliver `request` through `service`, which must use this batch's
@@ -367,6 +382,7 @@ impl BatchIntegration {
             "state": receipt.state,
             "merge_commit": receipt.merge_commit,
             "error": receipt.error,
+            "partial": receipt.extensions.contains_key(PARTIAL_EXTENSION),
         })
     }
 }

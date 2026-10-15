@@ -391,11 +391,7 @@ where
     // so a subsequent restart picks up the new values. But we surface
     // the restart-required warning.
     for change in &result.needs_restart {
-        warnings.push(format!(
-            "{}: {} (requires restart)",
-            change.summary,
-            change.section.is_hot_reloadable(),
-        ));
+        warnings.push(change.summary.clone());
     }
 
     // Store the fully merged config (hot-reloaded + pending restart sections).

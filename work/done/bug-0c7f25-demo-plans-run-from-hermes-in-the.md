@@ -2,14 +2,16 @@
 id = "bug-0c7f25"
 kind = "bug"
 title = "Demo plans run from Hermes in the roko repo are refused by the spec gate or end in a workspace-wide cargo clippy"
-status = "open"
-triage = "unverified"
+status = "done"
+triage = "verified"
 severity = "p2"
 goal = "hermes"
 size = "M"
 subsystem = ["plans/demos"]
 created = 2026-10-15
 updated = 2026-10-15
+last_verified = 2026-10-15
+last_verified_rev = "622598e5d"
 source = "tmp/hermes-roko-v5/findings/roko-demos.md (roko-demos, 2026-10-15)"
 discovered_from = "hermes-roko-v5 round: Will's hello-world demo from Hermes"
 anchors = ["plans/demos/parallel-plans/demo-hello-world/tasks.toml", "plans/demos/demo-hello/tasks.toml", "plans/demos/demo-release-readiness/tasks.toml", "plans/demos/demo-resume-recovery/tasks.toml", "plans/demos/README.md"]
@@ -17,6 +19,15 @@ links = { depends_on = [], blocks = [], related = [], supersedes = [], duplicate
 
 [[verify]]
 command = "out=\"${TMPDIR:-/tmp}/roko-demos-spec-quality.json\" && cargo run -q -p roko-cli --bin roko -- plan validate --spec-quality --dynamic --json plans/demos > \"$out\" && python3 -c 'import json, pathlib, sys, tomllib; report = json.load(open(sys.argv[1])); hf3 = [t[\"plan_path\"] + \"#\" + t[\"task_id\"] for t in report[\"spec_quality\"][\"tasks\"] if \"HF3\" in t[\"hard_fail\"]]; plans = [p for p in pathlib.Path(\"plans/demos\").rglob(\"tasks.toml\") if not any(part.startswith(\"_\") for part in p.parts)]; rust = [str(p) for p in plans for doc in [tomllib.load(open(p, \"rb\"))] if any(f.endswith(\".rs\") for t in doc.get(\"task\", []) for f in t.get(\"files\", [])) and not doc[\"meta\"].get(\"verify\")]; assert not hf3 and not rust, (\"green on base\", hf3, \"rust demos without [meta] verify\", rust)' \"$out\""
+
+[closed]
+at = 2026-10-15
+at_ts = "2026-10-15T14:54:56Z"
+commit = "622598e5d"
+size = "M"
+claimed_at = "2026-10-15T14:22:08Z"
+forced = false
+evidence = "Plans fixed in 53c03e8a8 + 622598e5d: [meta] verify on the six Rust demos, dated demo-hello output, stale release-readiness/resume-recovery outputs removed, resume demo under plans/demos/_cli, start-here title, README. 'roko plan validate --spec-quality --dynamic --json plans/demos' on the branch: no HF3 (was 3: DEMO-T01, REL-3, RESUME-1) and no Rust demo without [meta] verify. Live from Hermes' plan route (plugin 0.4.0, roko-main 7b6a5af44, scratch clone): demo-hello-world succeeded 46 s $0.005, demo-hello 42 s $0.012, demo-print-hello 49 s $0.004, demo-fibonacci 59 s $0.019, demo-release-readiness 4m08 $0.064, demo-hello-color 2m $0.017, demo-greeting-module 36 s $0.042; demo-hello-world also on Will's serve binary 216f88c84 (83 s $0.004). Evidence: tmp/hermes-roko-v5/findings/roko-demos.md"
 +++
 
 ## Problem

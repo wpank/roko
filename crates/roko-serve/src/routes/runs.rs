@@ -2901,6 +2901,133 @@ mod tests {
         assert_eq!(summary["tasks"]["failed"], 0, "{summary}");
     }
 
+    /// bug-74164c: a plan that did not finish delivered only its verified tasks, so
+    /// its run's summary says the batch is partial and, per plan, which
+    /// tasks' work it holds and why the others' is missing. A run whose
+    /// plans all delivered whole is not partial.
+    #[tokio::test]
+    async fn run_summary_says_which_work_is_partial() {
+        let dir = tempfile::tempdir().unwrap();
+        let repo = dir.path().to_path_buf();
+        let git = |args: &[&str]| -> String {
+            let output = std::process::Command::new("git")
+                .current_dir(&repo)
+                .args([
+                    "-c",
+                    "user.name=roko-test",
+                    "-c",
+                    "user.email=roko@test.invalid",
+                    "-c",
+                    "commit.gpgsign=false",
+                ])
+                .args(args)
+                .env_remove("GIT_DIR")
+                .env_remove("GIT_WORK_TREE")
+                .env_remove("GIT_INDEX_FILE")
+                .output()
+                .expect("run git");
+            assert!(
+                output.status.success(),
+                "git {args:?}: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            String::from_utf8_lossy(&output.stdout).trim().to_string()
+        };
+        git(&["init", "--quiet", "-b", "main"]);
+        std::fs::write(repo.join("lib.py"), "def one():\n    return 1\n").unwrap();
+        git(&["add", "lib.py"]);
+        git(&["commit", "--quiet", "-m", "base"]);
+        let base = git(&["rev-parse", "HEAD"]);
+        git(&["switch", "--quiet", "-c", "roko/batch/p1"]);
+        std::fs::write(repo.join("one.py"), "ONE = 1\n").unwrap();
+        git(&["add", "one.py"]);
+        git(&["commit", "--quiet", "-m", "roko: pp/T1: one"]);
+        git(&["switch", "--quiet", "main"]);
+        git(&["branch", "roko/batch/w1", "roko/batch/p1"]);
+
+        let deploy_backend = Arc::from(
+            crate::deploy::create_backend("manual", None, None, None).expect("manual backend"),
+        );
+        let state = Arc::new(
+            AppState::new(
+                repo.clone(),
+                Arc::new(crate::runtime::NoOpRuntime),
+                roko_core::config::schema::RokoConfig::default(),
+                deploy_backend,
+            )
+            .expect("AppState::new"),
+        );
+        let ended = |run_id: &str, plan_id: &str, outcome: &str| {
+            let index =
+                roko_fs::run_index::run_index_path(&state.layout.events_jsonl_path(), run_id)
+                    .unwrap();
+            write_rows(
+                &index,
+                &[
+                    json!({"type":"run.started","run_id":run_id,"timestamp_ms":1,"plan_id":plan_id}),
+                    json!({"type":"task_completed","run_id":run_id,"timestamp_ms":2,"plan_id":plan_id,"task_id":"T1","outcome":"passed"}),
+                    json!({"type":"task_completed","run_id":run_id,"timestamp_ms":3,"plan_id":plan_id,"task_id":"T2","outcome":outcome}),
+                    json!({"type":"run.completed","run_id":run_id,"timestamp_ms":4,"outcome":"failed","duration_ms":10}),
+                ],
+            );
+        };
+        ended("p1", "pp", "failed");
+        ended("w1", "pw", "passed");
+        let record = |plan_id: &str, value: Value| {
+            let checkpoint = super::super::run_result::graph_plan_state_dir(&repo, plan_id)
+                .join("checkpoint.json");
+            std::fs::create_dir_all(checkpoint.parent().unwrap()).unwrap();
+            std::fs::write(
+                &checkpoint,
+                json!({"extensions":{"roko.batch@1":{"value": value}}}).to_string(),
+            )
+            .unwrap();
+        };
+        record(
+            "pp",
+            json!({
+                "run_id":"p1","branch":"roko/batch/p1","base_oid":base,"plan_id":"pp",
+                "plan_branch":"roko/plan/pp","state":"delivered","partial":true,
+                "work":{"partial":true,"delivered_tasks":["T1"],
+                    "missing_tasks":[{"task_id":"T2","why":"failed"}]}
+            }),
+        );
+        record(
+            "pw",
+            json!({"run_id":"w1","branch":"roko/batch/w1","base_oid":base,"state":"delivered"}),
+        );
+        let summary = |run_id: &'static str| {
+            let state = Arc::clone(&state);
+            async move {
+                let Json(summary) = get_run_summary(State(state), Path(run_id.into()))
+                    .await
+                    .unwrap();
+                summary
+            }
+        };
+
+        let partial = summary("p1").await["result"].clone();
+        assert_eq!(partial["partial"], true, "{partial}");
+        assert_eq!(partial["files_changed"], json!(["one.py"]), "{partial}");
+        assert_eq!(
+            partial["merge_command"], "git merge --ff-only roko/batch/p1",
+            "the verified part can be taken: {partial}"
+        );
+        assert_eq!(
+            partial["plans"],
+            json!([{
+                "plan_id": "pp",
+                "partial": true,
+                "delivered_tasks": ["T1"],
+                "missing_tasks": [{"task_id": "T2", "why": "failed"}],
+            }]),
+            "{partial}"
+        );
+        let whole = summary("w1").await["result"].clone();
+        assert_eq!(whole["partial"], false, "{whole}");
+        assert!(whole.get("plans").is_none(), "{whole}");
+    }
+
     /// bug-db89d4: a plan that ended unverified was not delivered, so its
     /// run's batch is still at its base and has nothing to merge. Its batch
     /// record names the work no check ran on, which the summary's

@@ -24,8 +24,8 @@ Progress per epic: its children (items whose `parent` is the epic, plus its `dep
 
 ## [spec-ce1484](items/spec-ce1484-epic-whitepaper-v1.md) whitepaper v1
 
-- **25/27 closed** · goal `whitepaper` · severity p1
-- open by lane: paper 2
+- **26/27 closed** · goal `whitepaper` · severity p1
+- open by lane: paper 1
 - next: [gap-8117a8](items/gap-8117a8-publish-the-whitepaper-pdf-build-release-tag.md) Publish the whitepaper: PDF build, release tag and venue
 
 ## [spec-f09094](items/spec-f09094-epic-golden-path-acceptance-tests.md) golden-path acceptance tests
@@ -54,9 +54,9 @@ Progress per epic: its children (items whose `parent` is the epic, plus its `dep
 
 ## [spec-1e1b45](items/spec-1e1b45-epic-tracker-tooling-for-parallel-work.md) tracker tooling for parallel work
 
-- **6/8 closed** · goal `tooling` · severity p1
-- open by lane: tracker 2
-- next: [gap-25065c](items/gap-25065c-import-the-rest-of-the-research-programme.md) Import the rest of the research programme's checklist as unverified work items
+- **7/8 closed** · goal `tooling` · severity p1
+- open by lane: tracker 1
+- next: [gap-d6fd3c](items/gap-d6fd3c-install-the-work-skills-at-user-level.md) Install the work skills at user level so sessions in worktrees get them
 
 ## [spec-9a3131](items/spec-9a3131-epic-hygiene-and-cheap-wins.md) hygiene and cheap wins
 
@@ -103,9 +103,9 @@ Progress per epic: its children (items whose `parent` is the epic, plus its `dep
 | bench | 82 | 120 | 38 (29) |
 | docs | 20 | 25 | 5 (4) |
 | frontend | 3 | 6 | 3 (3) |
-| none | 377 | 470 | 93 (92) |
-| paper | 61 | 78 | 17 (14) |
+| none | 381 | 478 | 97 (89) |
+| paper | 65 | 78 | 13 (10) |
 | rust-cold | 235 | 265 | 30 (21) |
 | rust-hot | 224 | 244 | 20 (17) |
 | tests | 1 | 1 | 0 (0) |
-| tracker | 21 | 24 | 3 (2) |
+| tracker | 22 | 24 | 2 (1) |

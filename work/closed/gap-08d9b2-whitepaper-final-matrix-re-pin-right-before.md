@@ -2,15 +2,16 @@
 id = "gap-08d9b2"
 kind = "gap"
 title = "Whitepaper: final matrix re-pin right before the whitepaper-v1 tag"
-status = "open"
+status = "superseded"
 triage = "verified"
 severity = "p2"
 goal = "whitepaper"
 size = "S"
 subsystem = ["paper"]
 created = 2026-09-29
-updated = 2026-10-01
-last_verified = 2026-09-30
+updated = 2026-10-15
+last_verified = 2026-10-15
+last_verified_rev = "9d5210330"
 source = "tmp/cybernetic-harness/workstreams/PROGRESS.md"
 discovered_from = "tmp/cybernetic-harness/workstreams/PROGRESS.md (23:15, wk-tldr2 on gap-00cc7f; wk-wp-s7 on gap-4471d1)"
 anchors = ["docs/whitepaper/data/mechanisms.toml", "docs/whitepaper/appendix-status-matrix.md"]
@@ -20,6 +21,16 @@ links = { depends_on = ["gap-fcea53"], blocks = [], related = ["gap-fcea53", "ga
 
 [[verify]]
 command = "python3 tools/status_matrix.py --check 2>&1 | grep -v 'at ed0c33bd5' | grep -q 'rows ok at' && python3 tools/paperlint.py --strict --require-status reviewed docs/whitepaper/*.md"
+
+[closed]
+at = 2026-10-15
+at_ts = "2026-10-15T15:46:18Z"
+commit = "7b6a5af44"
+by = "status-quo-2026-10-15"
+executor = "claude-session"
+via = "manual"
+forced = false
+evidence = "Superseded by the 2026-10-02 design-paper reframing. The whitepaper rewrite (7898493f2, 2026-10-08) dropped the status appendix and the status tags this item re-pins, and tools/status_matrix.py --check now fails only because its default targets were deleted. Checked 2026-10-15 (tmp/status-quo/2026-10-15/work-items/C1, tmp/status-quo/2026-10-15/backlog/A12-95-papers.md)."
 +++
 
 ## Problem

@@ -2,16 +2,16 @@
 id = "gap-5d3b82"
 kind = "gap"
 title = "Proof Case 1: Agent early exit / LostEffect"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p1"
 size = "M"
 goal = "core"
 subsystem = ["roko-cli/runner"]
 created = 2026-09-01
-updated = 2026-10-01
-last_verified = 2026-10-01
-last_verified_rev = "ebdc0f5d5"
+updated = 2026-10-15
+last_verified = 2026-10-15
+last_verified_rev = "9d5210330"
 source = "tmp/archive/MASTER-ACTION-PLAN-2026-09-23.md#5.1 Proof Case 1: Agent early exit / LostEffect"
 discovered_from = "audit:tmp/archive/MASTER-ACTION-PLAN-2026-09-23.md#5.1 Proof Case 1: Agent early exit / LostEffect"
 anchors = ["crates/roko-agent/src/claude_cli_agent.rs:1014", "crates/roko-agent/src/claude_cli_agent.rs:1049", "crates/roko-agent/src/exec.rs", "crates/roko-cli/src/graph_task_dispatch/streaming.rs::GraphTaskDispatcher::reconcile_attempt", "crates/roko-cli/src/graph_execution/agent_slots.rs::AgentSlotDispatcher", "crates/roko-runtime/src/run_ledger.rs:523"]
@@ -19,6 +19,16 @@ links = { depends_on = [], blocks = [], related = ["gap-01b2ff"], supersedes = [
 
 [[verify]]
 command = "grep -rqw 'fn agent_exit_before_first_event_fails_the_attempt_promptly' crates/roko-cli/ && cargo test -p roko-cli agent_exit_before_first_event_fails_the_attempt_promptly && grep -rqw 'fn exited_agent_with_open_stdout_does_not_hang' crates/roko-agent/ && cargo test -p roko-agent exited_agent_with_open_stdout_does_not_hang"
+
+[closed]
+at = 2026-10-15
+at_ts = "2026-10-15T15:46:17Z"
+commit = "7b6a5af44"
+by = "status-quo-2026-10-15"
+executor = "claude-session"
+via = "manual"
+forced = false
+evidence = "Both named tests pass at 7b6a5af44 in the 2026-10-15 status-quo test run (clean clone, CI-like env): roko-cli graph_task_dispatch::tests::agent_exit_before_first_event_fails_the_attempt_promptly PASS (4.3 s) and roko-agent claude_cli_agent::tests::exited_agent_with_open_stdout_does_not_hang PASS (3.0 s), per tmp/status-quo/2026-10-15/tests/G-nextest-results.tsv. They cover every Done-when point (tmp/status-quo/2026-10-15/work-items/C2). The live proof can ride on gap-af73a8."
 +++
 
 ## Problem

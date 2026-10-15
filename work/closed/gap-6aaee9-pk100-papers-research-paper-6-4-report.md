@@ -2,17 +2,17 @@
 id = "gap-6aaee9"
 kind = "gap"
 title = "PK100 Papers: Research paper §6.4: report H3, the spec × model interaction (+9 more)"
-status = "open"
+status = "superseded"
 triage = "verified"
 severity = "p2"
 goal = "whitepaper"
 rank = 100
 size = "L"
-hold = "waits on Will's deferred decision(s) 3333, 3346, 3363, 7101, 9524 (tmp/backlog/2026-10-02-complete-and-wire/DECISIONS.md)"
 subsystem = ["paper"]
 created = 2026-10-02
-updated = 2026-10-02
-last_verified = 2026-10-02
+updated = 2026-10-15
+last_verified = 2026-10-15
+last_verified_rev = "9d5210330"
 source = "tmp/backlog/2026-10-02-complete-and-wire PK100"
 anchors = ["tmp/cybernetic-harness/paper/sections/00-abstract.md", "tmp/cybernetic-harness/paper/sections/01-introduction.md", "tmp/cybernetic-harness/paper/sections/03b-related-work.md", "tmp/cybernetic-harness/paper/sections/04-system.md", "tmp/cybernetic-harness/paper/sections/06-results-economics.md", "tmp/cybernetic-harness/paper/sections/07-results-regulation.md", "tmp/cybernetic-harness/paper/sections/08-discussion.md", "tmp/cybernetic-harness/paper/sections/09-limitations.md", "tmp/cybernetic-harness/paper/sections/10-conclusion.md", "tmp/cybernetic-harness/paper/sections/F-ai-assistance-ethics.md"]
 lane = "paper"
@@ -48,6 +48,16 @@ command = "python3 -c \"import re,sys;bad=[f for f in ('08-discussion.md','09-li
 
 [[verify]]
 command = "python3 -c \"import re,sys;bad=[f for f in ('04-system.md','03b-related-work.md') if re.search(r'\\[\\[',open('tmp/cybernetic-harness/paper/sections/'+f).read())];sys.exit(1 if bad else 0)\" && python3 tools/paperlint.py --check-identifiers tmp/cybernetic-harness/paper/sections/04-system.md tmp/cybernetic-harness/paper/sections/03b-related-work.md"
+
+[closed]
+at = 2026-10-15
+at_ts = "2026-10-15T15:46:22Z"
+commit = "7b6a5af44"
+by = "status-quo-2026-10-15"
+executor = "claude-session"
+via = "manual"
+forced = false
+evidence = "PK100, closed on Will's 'mark everything done' (2026-10-15). Its tasks fill the results sections and H1-H7 templates of the empirical draft archived on 2026-10-02 (06-results-economics.md, 07-results-regulation.md), and the design papers have no results section. Benchmark runs, if still wanted, stay with their own packages (PK46 and others) (tmp/status-quo/2026-10-15/backlog/A12-95-papers.md, tmp/status-quo/2026-10-15/decisions/I2-decision-register.md)."
 +++
 
 ## Problem

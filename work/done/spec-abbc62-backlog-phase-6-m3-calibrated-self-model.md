@@ -2,17 +2,28 @@
 id = "spec-abbc62"
 kind = "spec"
 title = "Backlog Phase 6 — M3 calibrated self-model (S04)"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p2"
 goal = "cybernetic"
 subsystem = ["unknown"]
 created = 2026-10-02
-updated = 2026-10-02
-last_verified = 2026-10-02
+updated = 2026-10-15
+last_verified = 2026-10-15
+last_verified_rev = "9d5210330"
 source = "tmp/backlog/2026-10-02-complete-and-wire/PACKAGES.md"
 anchors = []
 links = { depends_on = [], blocks = [], related = [], supersedes = [], duplicate_of = "" }
+
+[closed]
+at = 2026-10-15
+at_ts = "2026-10-15T15:46:18Z"
+commit = "7b6a5af44"
+by = "status-quo-2026-10-15"
+executor = "claude-session"
+via = "manual"
+forced = false
+evidence = "Phase 6 roll-up: its Done when is that every package of the phase is done, and all six children (PK47-PK52) are in work/done (checked 2026-10-15 at 7b6a5af44, tmp/status-quo/2026-10-15/work-items/C2). The later M3 follow-ups gap-819df9, gap-cced54 and gap-e464e6 are not its children."
 +++
 
 ## Problem

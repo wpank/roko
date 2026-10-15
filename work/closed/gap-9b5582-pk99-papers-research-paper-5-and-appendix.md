@@ -2,17 +2,17 @@
 id = "gap-9b5582"
 kind = "gap"
 title = "PK99 Papers: Research paper §5 and Appendix D: cite the pre-registration lock for every number and… (+1 more)"
-status = "open"
+status = "superseded"
 triage = "verified"
 severity = "p2"
 goal = "whitepaper"
 rank = 99
 size = "S"
-hold = "papers rewritten 2026-10-02 (session roko-55) as design papers; the old empirical draft is archived in tmp/cybernetic-harness/paper/archive/2026-10-02-empirical-draft/. This item's tasks target the old text: Will decides whether to re-scope or supersede it"
 subsystem = ["paper"]
 created = 2026-10-02
-updated = 2026-10-02
-last_verified = 2026-10-02
+updated = 2026-10-15
+last_verified = 2026-10-15
+last_verified_rev = "9d5210330"
 source = "tmp/backlog/2026-10-02-complete-and-wire PK99"
 anchors = ["tmp/cybernetic-harness/paper/sections/05-evaluation-protocol.md", "tmp/cybernetic-harness/paper/sections/06-results-economics.md", "tmp/cybernetic-harness/paper/sections/D-metrics-statistics.md"]
 lane = "paper"
@@ -24,6 +24,16 @@ command = "head -1 tmp/cybernetic-harness/paper/sections/05-evaluation-protocol.
 
 [[verify]]
 command = "python3 -c \"import re,sys;t=open('tmp/cybernetic-harness/paper/sections/06-results-economics.md').read();sys.exit(1 if re.search(r'\\[\\[(RESULT PL|TAB T11)',t) else 0)\" && python3 tmp/cybernetic-harness/paper/tools/claims.py --check"
+
+[closed]
+at = 2026-10-15
+at_ts = "2026-10-15T15:46:22Z"
+commit = "7b6a5af44"
+by = "status-quo-2026-10-15"
+executor = "claude-session"
+via = "manual"
+forced = false
+evidence = "PK99, closed on Will's 'mark everything done' (2026-10-15). Its tasks re-pin and finish sections that the 2026-10-02 design-paper rewrite removed (05-evaluation-protocol.md, D-metrics-statistics.md, 06-results-economics.md), and the design papers report no results (tmp/status-quo/2026-10-15/backlog/A12-95-papers.md)."
 +++
 
 ## Problem

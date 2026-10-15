@@ -2,15 +2,16 @@
 id = "gap-25065c"
 kind = "gap"
 title = "Import the rest of the research programme's checklist as unverified work items"
-status = "open"
+status = "superseded"
 triage = "verified"
 severity = "p2"
 goal = "tooling"
 size = "M"
 subsystem = ["tools/work"]
 created = 2026-09-29
-updated = 2026-10-01
-last_verified = 2026-10-01
+updated = 2026-10-15
+last_verified = 2026-10-15
+last_verified_rev = "9d5210330"
 source = "tmp/cybernetic-harness/workstreams/PLAN.md#e14"
 discovered_from = "tmp/cybernetic-harness/workstreams/assessment/W1-work-graph-audit.md (R5); W3a-crosswalk-core.md; W3b-crosswalk-product.md"
 anchors = ["tools/work_import_checklist.py", "tools/test_work_import_checklist.py"]
@@ -20,6 +21,16 @@ links = { depends_on = ["gap-130a3e", "gap-2bc1b9"], blocks = [], related = ["sp
 
 [[verify]]
 command = "grep -rq '^source = \"tmp/cybernetic-harness/execution/checklist.json#S10.T1\"' work/items/ && grep -qw 'def test_import_skips_items_already_covered' tools/test_work_import_checklist.py && python3 tools/test_work_import_checklist.py -k test_import_skips_items_already_covered"
+
+[closed]
+at = 2026-10-15
+at_ts = "2026-10-15T15:46:19Z"
+commit = "7b6a5af44"
+by = "status-quo-2026-10-15"
+executor = "claude-session"
+via = "manual"
+forced = false
+evidence = "Superseded: the 2026-10-02 complete-and-wire backlog re-checked all 200 open checklist rows and made tasks for 189 (the other 11 had landed or were superseded), so importing the checklist into work/ is no longer needed. Checked 2026-10-15 (tmp/status-quo/2026-10-15/work-items/C2)."
 +++
 
 ## Problem

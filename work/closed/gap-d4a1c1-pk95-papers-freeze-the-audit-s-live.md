@@ -2,17 +2,17 @@
 id = "gap-d4a1c1"
 kind = "gap"
 title = "PK95 Papers: Freeze the audit's live-run findings (R3, R4) as whitepaper evidence (+10 more)"
-status = "open"
+status = "superseded"
 triage = "verified"
 severity = "p1"
 goal = "whitepaper"
 rank = 95
 size = "L"
-hold = "papers rewritten 2026-10-02 (session roko-55) as design papers; the old empirical draft is archived in tmp/cybernetic-harness/paper/archive/2026-10-02-empirical-draft/. This item's tasks target the old text: Will decides whether to re-scope or supersede it"
 subsystem = ["paper"]
 created = 2026-10-02
-updated = 2026-10-02
-last_verified = 2026-10-02
+updated = 2026-10-15
+last_verified = 2026-10-15
+last_verified_rev = "9d5210330"
 source = "tmp/backlog/2026-10-02-complete-and-wire PK95"
 anchors = ["docs/whitepaper/00-abstract.md", "docs/whitepaper/01-introduction.md", "docs/whitepaper/03-architecture.md", "docs/whitepaper/04-golden-path.md", "docs/whitepaper/05-cybernetic-mechanisms.md", "docs/whitepaper/06-measured-trust.md", "docs/whitepaper/08-evaluation-plan.md", "docs/whitepaper/09-status-and-roadmap.md", "docs/whitepaper/README.md", "docs/whitepaper/REVIEW.md", "docs/whitepaper/appendix-status-matrix.md", "docs/whitepaper/data/mechanisms.toml", "docs/whitepaper/evidence/README.md", "docs/whitepaper/evidence/SHA256SUMS", "docs/whitepaper/figures/fig1-architecture.svg", "docs/whitepaper/figures/fig2-golden-path.svg", "docs/whitepaper/figures/fig3-status-matrix.svg", "tmp/cybernetic-harness/paper/FIGURES-TABLES.md", "tmp/cybernetic-harness/paper/sections/00-abstract.md", "tmp/cybernetic-harness/paper/sections/01-introduction.md", "tmp/cybernetic-harness/paper/sections/02-background.md", "tmp/cybernetic-harness/paper/sections/04-system.md", "tmp/cybernetic-harness/paper/sections/08-discussion.md", "tmp/cybernetic-harness/paper/sections/F-ai-assistance-ethics.md"]
 lane = "paper"
@@ -51,6 +51,16 @@ command = "test -x tmp/cybernetic-harness/paper/tools/build.sh && tmp/cybernetic
 
 [[verify]]
 command = "test -f tmp/cybernetic-harness/paper/figures/f1-control-stack.svg && python3 -c \"import re,sys;bad=[f for f in ('02-background.md','04-system.md') if re.search(r'\\[\\[(FIG F1|TAB T1)\\]\\]|TODO:\\s*align the F1',open('tmp/cybernetic-harness/paper/sections/'+f).read())];sys.exit(1 if bad else 0)\""
+
+[closed]
+at = 2026-10-15
+at_ts = "2026-10-15T15:46:21Z"
+commit = "7b6a5af44"
+by = "status-quo-2026-10-15"
+executor = "claude-session"
+via = "manual"
+forced = false
+evidence = "PK95, closed on Will's 'mark everything done' (2026-10-15). Tasks 9501-9503 and 9505-9507 are done: the evidence files and SHA256SUMS are present, and the BIB-QA verify passes. The rest target empirical-draft sections and status tags that the 2026-10-02 design-paper rewrite removed (whitepaper 7898493f2; research paper in tmp/cybernetic-harness/paper). The rewrite hold has run its course: session roko-55 finished both papers on 10-02 and 10-08 (tmp/status-quo/2026-10-15/backlog/A12-95-papers.md)."
 +++
 
 ## Problem

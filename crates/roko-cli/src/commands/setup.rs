@@ -6,6 +6,9 @@
 //! - `--yes`: non-interactive, use first available provider.
 //! - `--quick`: detect everything, write config, print summary — no prompts.
 //!
+//! Both create `~/.roko/.env`, the file roko loads API keys from before any
+//! command runs, when it is missing: `roko init` writes only the workspace.
+//!
 //! Steps (interactive/yes paths):
 //! 1. Detect available providers via `detect_auth_from_env()`
 //! 2. If `NeedsSetup`: prompt for API key (or print instructions)
@@ -14,9 +17,9 @@
 //! 5. Run `roko doctor` to verify
 //! 6. Print "next steps" message
 
-use anyhow::Result;
+use anyhow::{Context as _, Result};
 use std::io::{self, BufRead, Write};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use crate::Cli;
 use roko_cli::auth_detect::{AuthMethod, detect_auth_from_env, version_probe};
@@ -73,6 +76,7 @@ async fn cmd_setup_quick(workdir: &std::path::Path) -> Result<i32> {
 
     // ── Step 2: Detect API keys ─────────────────────────────────────────
     println!("\n[2/4] Scanning environment for API keys...");
+    create_global_env();
     let found_keys = detect_all_api_keys();
     let missing_keys = detect_missing_api_keys();
 
@@ -92,7 +96,7 @@ async fn cmd_setup_quick(workdir: &std::path::Path) -> Result<i32> {
     // ── Step 3: Init + write config ─────────────────────────────────────
     println!("\n[3/4] Initializing workspace...");
     if roko_cli::init::needs_init(workdir) {
-        cmd_init(Some(workdir.to_path_buf()), false, None, false).await?;
+        cmd_init(Some(workdir.to_path_buf()), false, None, None, false).await?;
         println!("  Created .roko/ and roko.toml");
     } else {
         println!("  roko.toml already exists, skipping init.");
@@ -142,6 +146,7 @@ async fn cmd_setup_interactive(cli: &Cli, workdir: &std::path::Path, yes: bool) 
 
     // ── Step 1: Detect auth ─────────────────────────────────────────────
     println!("[1/5] Detecting available LLM providers...");
+    create_global_env();
 
     // Show all detected and missing providers before deciding on the primary auth.
     let found_keys = detect_all_api_keys();
@@ -188,7 +193,7 @@ async fn cmd_setup_interactive(cli: &Cli, workdir: &std::path::Path, yes: bool) 
     // ── Step 3: Init if needed ──────────────────────────────────────────
     if roko_cli::init::needs_init(workdir) {
         println!("\n[3/5] Initializing workspace...");
-        cmd_init(Some(workdir.to_path_buf()), false, None, false).await?;
+        cmd_init(Some(workdir.to_path_buf()), false, None, None, false).await?;
         println!("  Created .roko/ and roko.toml");
     } else {
         println!("\n[3/5] Workspace already initialized (roko.toml exists)");
@@ -416,7 +421,66 @@ fn print_provider_instructions() {
     println!("    export CEREBRAS_API_KEY=...           # https://cloud.cerebras.ai/ (free)");
     println!("    export DEEPSEEK_API_KEY=...           # https://platform.deepseek.com/");
     println!();
+    println!("  Keep keys in ~/.roko/.env, which every roko command loads, or export them.");
     println!("  After setting a key, re-run: roko setup --quick");
+}
+
+/// What `roko setup` writes to a new `~/.roko/.env`: only comments, so it
+/// sets no key until the person fills one in.
+const GLOBAL_ENV_TEMPLATE: &str = "\
+# API keys roko loads before every command (then a workspace's .roko/.env).
+# Uncomment a line and paste the key after `=`. Never put a key in roko.toml.
+# `roko init` gives the models of each provider whose key is set rungs on the
+# model ladder.
+# OPENAI_API_KEY=
+# ANTHROPIC_API_KEY=
+# OPENROUTER_API_KEY=
+# CEREBRAS_API_KEY=
+# ZAI_API_KEY=
+# MOONSHOT_API_KEY=
+# GEMINI_API_KEY=
+# PERPLEXITY_API_KEY=
+";
+
+/// Create `~/.roko/.env` when it is missing and say so. Every note about API
+/// keys points at that file, and `roko init` writes only the workspace, so
+/// the machine's setup is what creates it. A failure is only reported.
+fn create_global_env() {
+    let Some(home) = std::env::var_os("HOME").filter(|home| !home.is_empty()) else {
+        return;
+    };
+    match ensure_global_env(Path::new(&home)) {
+        Ok(Some(path)) => println!(
+            "  Created {} for your API keys; it sets none yet",
+            path.display()
+        ),
+        Ok(None) => {}
+        Err(err) => println!("  note: could not create ~/.roko/.env: {err:#}"),
+    }
+}
+
+/// Write [`GLOBAL_ENV_TEMPLATE`] to `home`'s `.roko/.env`, readable only by
+/// its owner, unless the file exists. Returns its path when it was created.
+fn ensure_global_env(home: &Path) -> Result<Option<PathBuf>> {
+    let dir = home.join(".roko");
+    let path = dir.join(".env");
+    if path.exists() {
+        return Ok(None);
+    }
+    std::fs::create_dir_all(&dir).with_context(|| format!("create {}", dir.display()))?;
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt as _;
+        options.mode(0o600);
+    }
+    let mut file = options
+        .open(&path)
+        .with_context(|| format!("create {}", path.display()))?;
+    file.write_all(GLOBAL_ENV_TEMPLATE.as_bytes())
+        .with_context(|| format!("write {}", path.display()))?;
+    Ok(Some(path))
 }
 
 // ---------------------------------------------------------------------------
@@ -469,5 +533,37 @@ fn default_model_for_auth(auth: &AuthMethod) -> &'static str {
         | AuthMethod::AnthropicApi { .. } => "claude-sonnet-4-6",
         AuthMethod::OpenAiCompat { .. } => "gpt-4.1-mini",
         AuthMethod::NeedsSetup => "claude-sonnet-4-6",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `roko setup` creates `~/.roko/.env` once, owner-only and setting no
+    /// key, and never touches an existing one.
+    #[test]
+    fn setup_creates_the_global_env_file_once() {
+        let home = tempfile::tempdir().expect("tempdir");
+        let path = ensure_global_env(home.path())
+            .expect("create")
+            .expect("a new file");
+        assert_eq!(path, home.path().join(".roko/.env"));
+        let text = std::fs::read_to_string(&path).expect("read");
+        assert!(
+            text.lines().all(|line| line.starts_with('#')),
+            "the template sets a variable: {text}"
+        );
+        assert!(text.contains("# OPENAI_API_KEY="));
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            let mode = std::fs::metadata(&path).expect("stat").permissions().mode();
+            assert_eq!(mode & 0o777, 0o600);
+        }
+
+        std::fs::write(&path, "KEPT=1\n").expect("write");
+        assert_eq!(ensure_global_env(home.path()).expect("existing"), None);
+        assert_eq!(std::fs::read_to_string(&path).expect("read"), "KEPT=1\n");
     }
 }

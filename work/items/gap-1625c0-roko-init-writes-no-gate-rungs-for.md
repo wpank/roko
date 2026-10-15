@@ -9,14 +9,15 @@ goal = "hermes"
 size = "M"
 subsystem = ["roko-cli/init"]
 created = 2026-10-13
-updated = 2026-10-13
-last_verified = 2026-10-13
+updated = 2026-10-15
+last_verified = 2026-10-15
+last_verified_rev = "7b6a5af44"
 source = "hermes-plugin-roko dogfood, 2026-10-13 (roko serve :6716 built from 6ab6fde47)"
-anchors = ["crates/roko-cli/src/commands/init.rs::profile_gate_rungs", "crates/roko-cli/src/commands/init.rs::detect_init_profile", "crates/roko-cli/src/commands/util.rs::detect_project_domain", "crates/roko-cli/src/run.rs::prompt_verify_steps"]
-links = { depends_on = [], blocks = [], related = [], supersedes = [], duplicate_of = "" }
+anchors = ["crates/roko-cli/src/commands/init.rs::ProjectGates", "crates/roko-cli/src/commands/init.rs::InitProfile", "crates/roko-core/src/project.rs::detect_from_files", "crates/roko-cli/src/run.rs::prompt_verify_steps"]
+links = { depends_on = [], blocks = [], related = ["bug-4e336b"], supersedes = [], duplicate_of = "" }
 
 [[verify]]
-command = "grep -rqw 'fn python_profile_writes_a_test_rung' crates/roko-cli/ && cargo test -p roko-cli python_profile_writes_a_test_rung"
+command = "grep -rqw 'fn python_profile_writes_a_test_rung' crates/roko-cli/ && cargo test -p roko-cli --lib python_profile_writes_a_test_rung"
 +++
 
 ## Problem
@@ -48,6 +49,13 @@ yields runs nobody checked, which defeats the point of gated runs (goal `hermes`
 ## Current state
 
 The dogfood set its rung by hand: `{ name = "test", command = "python3 -m unittest discover -s tests -q" }`.
+
+Re-checked 2026-10-15 at `7b6a5af44` (roko-init, `tmp/hermes-roko-v5/roko-init/evidence/before-*`): fresh
+`roko init` in a stdlib Python project, a Node project with a `test` script, an empty directory and a Cargo crate
+writes `rungs = []` in all four. Four project detectors exist: `roko_core::project::detect_from_files` (I/O-free,
+used nowhere outside roko-core), `roko_gate::BuildSystem::detect`, `repo_context::ProjectKind::detect` (plan
+generation) and init's own `detect_project_domain`, which only printed a hint. None recognises a Python project
+with no packaging file.
 
 ## Plan
 

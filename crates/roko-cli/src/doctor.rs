@@ -286,6 +286,10 @@ pub async fn run_doctor(options: &DoctorOptions) -> Result<DoctorReport> {
         &workdir,
         options.config_override.as_deref(),
     ));
+    checks.extend(check_routing_ladder(
+        &workdir,
+        options.config_override.as_deref(),
+    ));
     checks.push(check_rust_version());
     checks.push(check_node_version());
     checks.push(check_serve_auth(&loaded_config));
@@ -830,20 +834,30 @@ fn check_default_model_configured(loaded_config: &LoadedConfig) -> DoctorCheck {
 
 /// Validate that `routing.{fast,standard,complex}_task_model` slugs match a
 /// configured `[models.*]` key or a well-known builtin model.
-fn check_routing_tier_models(workdir: &Path, config_override: Option<&Path>) -> Vec<DoctorCheck> {
-    let roko_cfg = if let Some(path) = config_override
+/// The workspace config: the `--config` file, else what a run loads (the
+/// workspace's `roko.toml` with the global config merged). `None` when it
+/// does not load.
+fn doctor_roko_config(
+    workdir: &Path,
+    config_override: Option<&Path>,
+) -> Option<roko_core::config::schema::RokoConfig> {
+    if let Some(path) = config_override
         && let Ok(text) = std::fs::read_to_string(path)
         && let Ok(config) = roko_core::config::schema::RokoConfig::from_toml(&text)
     {
-        config
-    } else {
-        match roko_core::config::loader::load_config_validated_with_options(
-            workdir,
-            &roko_core::config::loader::LoadOptions::default(),
-        ) {
-            Ok(loaded) => loaded.config().clone(),
-            Err(_) => return vec![],
-        }
+        return Some(config);
+    }
+    roko_core::config::loader::load_config_validated_with_options(
+        workdir,
+        &roko_core::config::loader::LoadOptions::default(),
+    )
+    .ok()
+    .map(|loaded| loaded.config().clone())
+}
+
+fn check_routing_tier_models(workdir: &Path, config_override: Option<&Path>) -> Vec<DoctorCheck> {
+    let Some(roko_cfg) = doctor_roko_config(workdir, config_override) else {
+        return vec![];
     };
 
     let model_keys: std::collections::HashSet<&str> =
@@ -900,6 +914,98 @@ fn check_routing_tier_models(workdir: &Path, config_override: Option<&Path>) -> 
         });
     }
     checks
+}
+
+/// `[routing.ladder]` bound as a run binds it: the rungs that run here, and
+/// why each other rung cannot. A run only logs the rungs it skips, so this is
+/// where a person sees that tasks start higher up the ladder than their tier
+/// asks, as they did in workspaces whose ladder names models nothing defines
+/// (bug-4e336b).
+fn check_routing_ladder(workdir: &Path, config_override: Option<&Path>) -> Option<DoctorCheck> {
+    use crate::dispatch::model_routing::{LadderRungReport, ladder_report};
+
+    let config = doctor_roko_config(workdir, config_override)?;
+    let check = |status, message: String, detail: Option<String>, fix: Option<&str>| DoctorCheck {
+        id: "routing_ladder".to_string(),
+        status,
+        message,
+        detail,
+        path: None,
+        url: None,
+        fix: fix.map(str::to_string),
+    };
+    if !config.routing.ladder.enabled {
+        return Some(check(
+            DoctorStatus::Ok,
+            "routing.ladder is off: the router picks each task's model".to_string(),
+            None,
+            None,
+        ));
+    }
+    let report = ladder_report(&config);
+    let (runs, skipped): (Vec<&LadderRungReport>, Vec<&LadderRungReport>) =
+        report.iter().partition(|rung| rung.dispatch.is_ok());
+    let names = |rungs: &[&LadderRungReport]| {
+        rungs
+            .iter()
+            .map(|rung| format!("{} ({})", rung.rung, rung.model))
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
+    if report.is_empty() {
+        return Some(check(
+            DoctorStatus::Warn,
+            "routing.ladder has no rung: the router picks each task's model".to_string(),
+            None,
+            Some(
+                "set a provider's API key (in ~/.roko/.env), then add [routing.ladder] rungs; \
+                 `roko init` writes them for a new workspace",
+            ),
+        ));
+    }
+    if skipped.is_empty() {
+        return Some(check(
+            DoctorStatus::Ok,
+            format!("routing.ladder: every rung can run here: {}", names(&runs)),
+            None,
+            None,
+        ));
+    }
+    let reasons = skipped
+        .iter()
+        .map(|rung| {
+            let reason = rung.dispatch.as_ref().err().map_or("", String::as_str);
+            format!("{} ({}): {reason}", rung.rung, rung.model)
+        })
+        .collect::<Vec<_>>()
+        .join("; ");
+    let message = if runs.is_empty() {
+        format!(
+            "routing.ladder: no rung can run here, so the router picks each task's model; \
+             {reasons}"
+        )
+    } else {
+        format!(
+            "routing.ladder: {} of {} rungs cannot run here, so a task that would start on one \
+             starts on the next rung up that can; {reasons}",
+            skipped.len(),
+            report.len()
+        )
+    };
+    let runnable = if runs.is_empty() {
+        "none".to_string()
+    } else {
+        names(&runs)
+    };
+    Some(check(
+        DoctorStatus::Warn,
+        message,
+        Some(format!("rungs that run here: {runnable}")),
+        Some(
+            "give each skipped rung's model a [models.*] entry and its [providers.*] table, and \
+             set the provider's key; or remove the rung from [routing.ladder]",
+        ),
+    ))
 }
 
 fn check_serve_auth(loaded_config: &LoadedConfig) -> DoctorCheck {

@@ -469,18 +469,10 @@ impl GraphTaskDispatcher {
         };
         let reading = self.in_flight.begin_step(&read);
         let _reading = self.unless_stopped(spec, task, &label, reading).await?;
-        let gate = ShellGate::new(
-            "bash",
-            vec![
-                "-o".into(),
-                "pipefail".into(),
-                "-c".into(),
-                self.verify_command(&step.command),
-            ],
-        )
-        .with_timeout_ms(step.timeout_ms)
-        .with_name(&label)
-        .with_phase(&step.phase);
+        let gate = ShellGate::verify_step(&self.verify_command(&step.command))
+            .with_timeout_ms(step.timeout_ms)
+            .with_name(&label)
+            .with_phase(&step.phase);
         let payload = GatePayload::in_dir(workdir)
             .with_label(format!("{}/{}", spec.plan_id, task.id))
             .with_env_passthrough(self.config.gates.env_passthrough.iter().cloned());

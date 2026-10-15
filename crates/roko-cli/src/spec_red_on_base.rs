@@ -14,7 +14,8 @@
 //!
 //! Tasks that are not implementers, or have neither a pinned acceptance test
 //! nor a verify step, are not run. A run stops at its first failing step, as
-//! `plan run` does. Each step runs as `bash -o pipefail -c <command>` in the
+//! `plan run` does. Each step runs as `plan run` runs it (`bash -o pipefail -c
+//! <command>`, early readers drained: `roko_gate::verify_shell`) in the
 //! workspace root of the base checkout, in a process group of its own, for at
 //! most the timeout (120 s by default) or its own `timeout_ms` when that is
 //! shorter; a timeout kills the whole group. Cargo steps build into a
@@ -655,7 +656,7 @@ enum Ended {
     Interrupted(i32),
 }
 
-/// Run one step as `plan run` does: `bash -o pipefail -c <command>` in `cwd`,
+/// Run one step as `plan run` does ([`roko_gate::verify_shell::bash_args`]) in `cwd`,
 /// in a process group of its own that is killed when the step ends, times out
 /// or is interrupted.
 fn run_step(
@@ -666,7 +667,7 @@ fn run_step(
 ) -> Result<StepResult> {
     let mut out = tempfile::tempfile().context("create a step's output file")?;
     let mut bash = Command::new("bash");
-    bash.args(["-o", "pipefail", "-c", command])
+    bash.args(roko_gate::verify_shell::bash_args(command))
         .current_dir(cwd)
         .env("PWD", cwd)
         .env("CARGO_TARGET_DIR", cargo_target)

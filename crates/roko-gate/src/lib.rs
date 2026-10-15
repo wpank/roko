@@ -145,6 +145,7 @@ pub mod symbol_gate;
 pub mod test_gate;
 pub mod verdict_publisher;
 pub mod verify_chain_gate;
+pub mod verify_shell;
 
 pub use acceptance_contract::{
     AcceptanceContract, AcceptanceDecision, AcceptanceIssue, AcceptanceOutcome, GateRequirement,

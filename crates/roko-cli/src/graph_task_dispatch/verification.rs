@@ -305,18 +305,10 @@ impl GraphTaskDispatcher {
                     tui.gate_rung_started(&spec.plan_id, &task.id, step_label);
                 }
 
-                let gate = ShellGate::new(
-                    "bash",
-                    vec![
-                        "-o".into(),
-                        "pipefail".into(),
-                        "-c".into(),
-                        self.verify_command(&step.command),
-                    ],
-                )
-                .with_timeout_ms(step.timeout_ms)
-                .with_name(step_label)
-                .with_phase(&step.phase);
+                let gate = ShellGate::verify_step(&self.verify_command(&step.command))
+                    .with_timeout_ms(step.timeout_ms)
+                    .with_name(step_label)
+                    .with_phase(&step.phase);
 
                 // Wait until no sibling is mid-edit on what this step reads,
                 // and keep siblings from starting to edit it while the step
@@ -670,18 +662,10 @@ impl GraphTaskDispatcher {
                             if let Some(tui) = &self.tui_bridge {
                                 tui.gate_rung_started(&spec.plan_id, &task.id, step_label);
                             }
-                            let retry_gate = ShellGate::new(
-                                "bash",
-                                vec![
-                                    "-o".into(),
-                                    "pipefail".into(),
-                                    "-c".into(),
-                                    step.command.clone(),
-                                ],
-                            )
-                            .with_timeout_ms(step.timeout_ms)
-                            .with_name(step_label)
-                            .with_phase(&step.phase);
+                            let retry_gate = ShellGate::verify_step(&step.command)
+                                .with_timeout_ms(step.timeout_ms)
+                                .with_name(step_label)
+                                .with_phase(&step.phase);
                             let step_scope =
                                 sibling_settle::StepScope::of(step, &effective_workdir);
                             let reading = self
@@ -1682,6 +1666,44 @@ mod tests {
             "{message}"
         );
         assert!(!marker.exists(), "fail-fast must not run later steps");
+    }
+
+    /// bug-11901c: a step that pipes into a reader that stops early, here
+    /// `grep -q` at its first match with a megabyte still to come, passes.
+    /// Under `pipefail` the writer used to die of the broken pipe, so passing
+    /// work was failed and retried. A writer that fails still fails the step.
+    #[tokio::test]
+    async fn graph_verify_passes_when_a_reader_stops_early() {
+        let temp = tempdir().expect("tempdir");
+        let (dispatcher, mut task) = make_test_dispatcher(
+            &temp,
+            VERIFY_PROVIDER,
+            no_auto_fix,
+            GraphFeedbackContext::default(),
+        )
+        .await;
+        task.verify = vec![verify_step(
+            "structural",
+            "{ echo OK; seq 1 200000; } | grep -q OK",
+        )];
+        let passed = dispatcher
+            .dispatch(&make_spec(&task), Vec::new(), &CellContext::new())
+            .await
+            .expect("the check held");
+        assert_eq!(
+            TaskGateVerdict::from_signals(&passed),
+            Some(TaskGateVerdict::Passed)
+        );
+
+        task.verify = vec![verify_step(
+            "structural",
+            "{ echo OK; seq 1 200000; exit 3; } | grep -q OK",
+        )];
+        let error = dispatcher
+            .dispatch(&make_spec(&task), Vec::new(), &CellContext::new())
+            .await
+            .expect_err("the writer failed");
+        assert!(matches!(error, RokoError::Verify { .. }), "{error}");
     }
 
     /// backlog 4210: a verify failure's pattern reaches a later attempt of

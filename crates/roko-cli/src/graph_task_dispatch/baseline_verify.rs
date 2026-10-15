@@ -943,18 +943,10 @@ impl GraphTaskDispatcher {
         let signal = Signal::builder(Kind::Task)
             .body(Body::from_json(payload).unwrap_or_else(|_| Body::text("gate-payload-fallback")))
             .build();
-        let gate = ShellGate::new(
-            "bash",
-            vec![
-                "-o".into(),
-                "pipefail".into(),
-                "-c".into(),
-                command.to_string(),
-            ],
-        )
-        .with_timeout_ms(step.timeout_ms)
-        .with_name(step_label)
-        .with_phase(&step.phase);
+        let gate = ShellGate::verify_step(command)
+            .with_timeout_ms(step.timeout_ms)
+            .with_name(step_label)
+            .with_phase(&step.phase);
         let _compile_permit = super::verification::verify_compile_permit(
             lock_dir,
             self.config.gates.compile_concurrency,

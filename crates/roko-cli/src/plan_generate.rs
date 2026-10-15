@@ -365,6 +365,7 @@ Detect the project language and use the right commands:
 
 - **implementer**: MUST have exactly one focused verify step. Use a target-aware compile for ordinary Rust edits, an exact test for behavioral logic, or one shell command that combines a structural assertion with the selected check.
 - **Weak verify steps** (any role): a verify step must fail on the unchanged code and pass once the task is done. Prefer the crate's own gate (e.g. `cargo check -p roko-core`, `cargo test -p roko-core parse_config`) to a check that reads only the edited file, which lets a regression elsewhere in the crate through. Never negate a grep (`! grep -q ...`): correct code that mentions the text fails it (`roko plan validate` warns, PLAN_042). Never use a command that cannot fail (`echo ok`, `true`).
+- **Test runners** (any role): a test runner's exit status already says whether its tests passed, so run it on its own (`python3 -m unittest tests.test_budgets`, `pytest tests/test_x.py`). Do not pipe it into `grep -q OK`: that adds nothing and hides the runner's output, which a retry needs. Pipe into `grep -q` only to check what the exit status cannot show, such as a pass count.
 - **architect/researcher/strategist**: MUST have only structural checks on files that already exist (e.g. `grep -q ...`). These roles cannot write, so never verify an output file they would have to create, and do NOT add compile/test verify steps.
 - **scribe/quick-reviewer**: structural checks only (verify docs exist, verify reviewed files haven't changed)
 
@@ -412,6 +413,7 @@ Before finalizing, verify your tasks against:
 - [ ] Every task is within its tier's limits (files, max_loc, description words); a larger one is split or given a higher tier
 - [ ] Every task has exactly one focused verify step and no semantic duplicate exists elsewhere in the plan
 - [ ] No verify step negates a grep, cannot fail, or checks only the edited file where the crate's gate would catch a regression
+- [ ] A test runner's own exit status is its check: no `| grep -q OK` after it
 - [ ] Architect/researcher/strategist tasks have ONLY structural verify steps (no cargo check, no cargo test)
 - [ ] Every task with a non-empty `files` list uses a role that can write (see Role-Tool Constraints)
 - [ ] No task requires reading more than 3 files
@@ -675,6 +677,20 @@ mod template_tests {
             "{:?}",
             report.tasks[0]
         );
+    }
+
+    /// bug-11901c: the generator prompt says a test runner's exit status is
+    /// its check, so the planner stops writing `… | grep -q 'OK'` after one.
+    #[test]
+    fn generator_prompt_makes_a_test_runner_its_own_check() {
+        let prompt = PLAN_GENERATOR_SYSTEM_PROMPT;
+        for needle in [
+            "a test runner's exit status already says whether its tests passed",
+            "Do not pipe it into `grep -q OK`",
+            "- [ ] A test runner's own exit status is its check",
+        ] {
+            assert!(prompt.contains(needle), "the prompt says {needle}");
+        }
     }
 
     /// 3222: the generator prompt teaches `[task.accept]`: the section, the

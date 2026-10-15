@@ -2223,6 +2223,89 @@ async fn a_new_run_sets_aside_the_checkouts_another_run_kept() {
     );
 }
 
+/// bug-e998be: when the attempt's branch is still checked out somewhere roko
+/// cannot set aside (here a checkout someone moved by hand without renaming
+/// its branch), the refusal says where, that roko deleted nothing, and gives
+/// the command that moves the checkout aside with its branch. It never tells
+/// anyone to remove a checkout by force. Run as given, that command keeps the
+/// checkout's work and lets the attempt start.
+#[tokio::test]
+async fn a_refused_attempt_says_where_its_branch_is_and_how_to_move_it_aside() {
+    let Some((_tmp, first_run)) = make_manager() else {
+        return;
+    };
+    let worktrees_root = first_run.config.worktrees_root.clone();
+    let repo = first_run.config.repo_root.clone();
+    first_run.begin_plan_run("plan", "run-1").await.unwrap();
+    let kept = first_run
+        .create_for_attempt("plan", "task", 0)
+        .await
+        .unwrap();
+    std::fs::write(kept.path.join("half-done.txt"), b"crashed attempt\n").unwrap();
+    let moved = worktrees_root.join(format!("{}-moved", kept.id));
+    git_in(
+        &repo,
+        &[
+            "worktree",
+            "move",
+            &kept.path.to_string_lossy(),
+            &moved.to_string_lossy(),
+        ],
+    );
+
+    let second_run = manager_with_worktrees_root(&first_run, worktrees_root.clone());
+    second_run.begin_plan_run("plan", "run-2").await.unwrap();
+    let error = second_run
+        .create_for_attempt("plan", "task", 0)
+        .await
+        .expect_err("the branch is checked out elsewhere");
+    assert!(matches!(error, WorktreeError::ReattachRejected { .. }));
+    let message = error.to_string();
+    let holder = message
+        .split("repository, at `")
+        .nth(1)
+        .and_then(|rest| rest.split('`').next())
+        .expect("the refusal names the checkout that has the branch");
+    assert_eq!(
+        std::fs::canonicalize(holder).unwrap(),
+        std::fs::canonicalize(&moved).unwrap(),
+        "{message}"
+    );
+    assert!(message.contains("deleted nothing"), "{message}");
+    assert!(!message.contains("--force"), "{message}");
+    let command = message
+        .split("keeps its work: ")
+        .nth(1)
+        .expect("the refusal gives a command");
+    assert!(command.contains(" worktree move "), "{command}");
+    assert!(
+        command.contains(&format!("branch -m {} {}-kept", kept.branch, kept.branch)),
+        "{command}"
+    );
+
+    let output = StdCommand::new("sh")
+        .arg("-c")
+        .arg(command)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{command}: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let aside = PathBuf::from(format!("{holder}-kept"));
+    assert_eq!(
+        std::fs::read_to_string(aside.join("half-done.txt")).unwrap(),
+        "crashed attempt\n"
+    );
+    let fresh = second_run
+        .create_for_attempt("plan", "task", 0)
+        .await
+        .expect("the attempt starts once the checkout is aside");
+    assert_eq!(fresh.path, kept.path);
+    assert!(!fresh.path.join("half-done.txt").exists());
+}
+
 fn acceptance_in(run_id: &str) -> AttemptAcceptance {
     AttemptAcceptance {
         run_id: run_id.to_string(),

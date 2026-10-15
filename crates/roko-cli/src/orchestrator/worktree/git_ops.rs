@@ -723,10 +723,53 @@ pub(super) fn worktree_list_contains_path(stdout: &[u8], path: &Path) -> bool {
     })
 }
 
-pub(super) fn worktree_list_contains_branch(stdout: &[u8], branch_ref: &str) -> bool {
-    String::from_utf8_lossy(stdout)
-        .lines()
-        .any(|line| line.strip_prefix("branch ") == Some(branch_ref))
+/// The checkout that has `branch_ref` checked out, from `git worktree list
+/// --porcelain`: its path, or `None` when no checkout has it.
+pub(super) fn worktree_with_branch(stdout: &[u8], branch_ref: &str) -> Option<PathBuf> {
+    let listing = String::from_utf8_lossy(stdout);
+    let mut checkout = None;
+    for line in listing.lines() {
+        if let Some(path) = line.strip_prefix("worktree ") {
+            checkout = Some(PathBuf::from(path));
+        } else if line.strip_prefix("branch ") == Some(branch_ref) {
+            return checkout;
+        }
+    }
+    None
+}
+
+/// Why a new checkout of `branch` in the repository at `repo` cannot be made
+/// while the checkout at `holder` has the branch checked out, and the safe way
+/// past (bug-e998be): move that checkout aside with its branch, as roko sets
+/// aside the checkout an earlier run kept (bug-06bd18). Nothing is deleted,
+/// so whatever that checkout holds, committed or not, is kept.
+pub(super) fn branch_checked_out_reason(repo: &Path, branch: &str, holder: &Path) -> String {
+    let repo = shell_word(&repo.to_string_lossy());
+    let aside = shell_word(&format!("{}-kept", holder.display()));
+    format!(
+        "branch `{branch}` is already checked out in this repository, at `{}`. roko left that \
+         checkout as it is and deleted nothing. To let this attempt run, move it aside with its \
+         branch, which keeps its work: git -C {repo} worktree move {} {aside} && git -C {repo} \
+         branch -m {} {}",
+        holder.display(),
+        shell_word(&holder.to_string_lossy()),
+        shell_word(branch),
+        shell_word(&format!("{branch}-kept")),
+    )
+}
+
+/// `word` as one shell word: as it is when it holds only characters a shell
+/// leaves alone, else single-quoted.
+fn shell_word(word: &str) -> String {
+    let plain = !word.is_empty()
+        && word
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || b"/._-+:@%,=".contains(&byte));
+    if plain {
+        word.to_string()
+    } else {
+        format!("'{}'", word.replace('\'', "'\\''"))
+    }
 }
 
 pub(super) fn reattach_rejected(id: &str, reason: impl Into<String>) -> WorktreeError {

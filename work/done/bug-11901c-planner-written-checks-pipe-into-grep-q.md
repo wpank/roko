@@ -2,7 +2,7 @@
 id = "bug-11901c"
 kind = "bug"
 title = "Planner-written checks pipe into grep -q, which under the verifier's pipefail fails at random when the producer gets a broken pipe (exit 120), so passing work is retried until the cap"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p1"
 goal = "core"
@@ -11,13 +11,25 @@ subsystem = ["roko-gate/verify_shell", "roko-cli/graph_task_dispatch", "roko-cli
 created = 2026-10-13
 updated = 2026-10-15
 last_verified = 2026-10-15
-last_verified_rev = "7b6a5af44"
+last_verified_rev = "a96491532"
 source = "hermes-plugin-roko live end-to-end, 2026-10-13 (roko serve 1e3419a51)"
 anchors = ["crates/roko-gate/src/verify_shell.rs::drain_early_readers", "crates/roko-gate/src/shell.rs::verify_step", "crates/roko-cli/src/graph_task_dispatch/verification.rs", "crates/roko-cli/src/graph_task_dispatch/verify_depth.rs", "crates/roko-cli/src/graph_task_dispatch/baseline_verify.rs", "crates/roko-cli/src/runner/gate_dispatch.rs::verify_step_gate", "crates/roko-cli/src/spec_red_on_base.rs::run_step", "crates/roko-cli/src/plan_generate.rs::PLAN_GENERATOR_SYSTEM_PROMPT"]
 links = { depends_on = [], blocks = [], related = ["bug-6fa025", "gap-1f08f4"], supersedes = [], duplicate_of = "" }
 
 [[verify]]
 command = "grep -rqw 'fn a_reader_that_stops_early_no_longer_fails_the_step' crates/roko-gate/src && grep -rqw 'fn graph_verify_passes_when_a_reader_stops_early' crates/roko-cli/src && grep -rqw 'fn generator_prompt_makes_a_test_runner_its_own_check' crates/roko-cli/src && cargo test -p roko-gate -p roko-cli --lib -- verify_shell:: graph_verify_passes_when_a_reader_stops_early generator_prompt_makes_a_test_runner_its_own_check"
+
+[closed]
+at = 2026-10-15
+at_ts = "2026-10-15T16:20:03Z"
+commit = "a96491532"
+by = "roko-checks"
+executor = "claude-agent"
+via = "manual"
+size = "M"
+claimed_at = "2026-10-15T14:00:30Z"
+forced = false
+evidence = "a96491532: verify steps drain early readers (roko_gate::verify_shell, ShellGate::verify_step) on every pipefail verify path; the planner prompt says a test runner's exit status is its check. CLI: the planner-style 'python3 -m unittest ... -v 2>&1 | grep -q OK' plan passed 8 of 8 runs on the first attempt with the fix (main 7b6a5af44: 8 of 15 attempts failed with exit 120, 1 run failed outright). Tests: verify_shell:: (7), graph_verify_passes_when_a_reader_stops_early, generator_prompt_makes_a_test_runner_its_own_check; roko-cli lib 3630 passed, roko-gate lib 687 and its 6 integration test binaries passed; clippy -D warnings and nightly fmt clean on roko-gate and roko-cli."
 +++
 
 ## Problem

@@ -11,8 +11,8 @@ use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 use roko_core::dashboard_snapshot::{
-    TASK_OUTCOME_ACCEPTED_WITH_FAILURES, TASK_OUTCOME_ALREADY_SATISFIED, TASK_OUTCOME_PASSED,
-    TASK_OUTCOME_PASSED_WITH_PREEXISTING_FAILURES, TASK_OUTCOME_UNVERIFIED,
+    TASK_OUTCOME_ACCEPTED_WITH_FAILURES, TASK_OUTCOME_ALREADY_SATISFIED, TASK_OUTCOME_CANCELLED,
+    TASK_OUTCOME_PASSED, TASK_OUTCOME_PASSED_WITH_PREEXISTING_FAILURES, TASK_OUTCOME_UNVERIFIED,
 };
 use roko_core::{LensScope, ObservableEvent, Signal, TelemetryEventSink};
 use roko_graph::cells::task_executor::TaskGateVerdict;
@@ -270,6 +270,13 @@ impl GraphTuiBridge {
             changes.push((node_id.clone(), new_status));
         }
         changes
+    }
+
+    /// Report a task that a stop cut off, as `cancelled` rather than failed
+    /// (bug-1d09e8).
+    pub fn task_cancelled(&self, plan_id: &str, task_id: &str) {
+        self.tui
+            .task_completed(plan_id, task_id, TASK_OUTCOME_CANCELLED);
     }
 
     /// Report a task that will not run (gap-f59fe9): blocked by the failed

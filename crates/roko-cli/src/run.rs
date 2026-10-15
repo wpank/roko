@@ -609,7 +609,7 @@ pub async fn run_prompt(run: PromptRun<'_>) -> Result<WorkflowRunReport> {
             let interrupt = interrupt.clone();
             tokio::spawn(async move {
                 cancel.cancelled().await;
-                interrupt.request(PlanRunInterrupt::Interrupt);
+                interrupt.request(PlanRunInterrupt::Cancel);
             });
             None
         }

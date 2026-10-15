@@ -245,12 +245,14 @@ fn render_plan(
                 TaskStatus::Failed | TaskStatus::Blocked => "\u{2717}",
                 TaskStatus::Active => "\u{25B6}",
                 TaskStatus::Pending => "\u{25CB}",
-                TaskStatus::Skipped => "\u{2298}",
+                TaskStatus::Skipped | TaskStatus::Cancelled => "\u{2298}",
             };
             let status_style = match task.status {
                 TaskStatus::Done => theme.success(),
                 TaskStatus::AlreadySatisfied => theme.satisfied(),
-                TaskStatus::AcceptedWithFailures | TaskStatus::Unverified => theme.warning(),
+                TaskStatus::AcceptedWithFailures
+                | TaskStatus::Unverified
+                | TaskStatus::Cancelled => theme.warning(),
                 TaskStatus::Failed | TaskStatus::Blocked => theme.danger(),
                 TaskStatus::Active => theme.warning(),
                 TaskStatus::Pending | TaskStatus::Skipped => theme.muted(),

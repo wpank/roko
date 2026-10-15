@@ -1493,12 +1493,18 @@ pub const TASK_OUTCOME_BLOCKED: &str = "blocked";
 /// failed: it did not finish.
 pub const TASK_OUTCOME_INTERRUPTED: &str = "interrupted";
 
+/// Outcome of a task that a stop cut off: its run was cancelled while it ran,
+/// or the operator stopped it (bug-1d09e8). Counted as neither done nor
+/// failed: a cancel is the person's choice, and a resume runs the task again.
+pub const TASK_OUTCOME_CANCELLED: &str = "cancelled";
+
 /// How a `TaskCompleted` outcome counts in the dashboard.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TaskOutcomeClass {
     /// The task completed and passed its verify steps.
     Passed,
-    /// The task failed, errored, was cancelled or halted.
+    /// The task failed, errored, halted, or was interrupted by a run that
+    /// ended other than by cancellation.
     Failed,
     /// The task completed although its verification failed.
     AcceptedWithFailures,
@@ -1512,17 +1518,20 @@ pub enum TaskOutcomeClass {
     /// The task will not run: a task it depends on failed, or it did not
     /// start (gap-f59fe9). Neither done nor failed.
     Blocked,
+    /// A stop cut the task off: its run was cancelled while it ran, or the
+    /// operator stopped it (bug-1d09e8). Neither done nor failed.
+    Cancelled,
 }
 
 /// Classify a `TaskCompleted` outcome string.
 ///
 /// Only an outcome that names a pass (`passed`,
 /// `passed_with_preexisting_failures`, or a legacy `success` or `succeeded`)
-/// counts as passed. A skipped task is not a pass, a blocked task is neither
-/// done nor failed, a failure (an interrupted or cancelled task included) is
-/// failed, and any other outcome, `unverified` included, is unverified. Accepted-with-failures, already-satisfied,
-/// blocked and the passes are matched exactly before failures: two of them
-/// contain "fail".
+/// counts as passed. A skipped task is not a pass, a blocked or cancelled task
+/// is neither done nor failed, a failure (an interrupted task included) is
+/// failed, and any other outcome, `unverified` included, is unverified.
+/// Accepted-with-failures, already-satisfied, blocked and the passes are
+/// matched exactly before failures: two of them contain "fail".
 #[must_use]
 pub fn classify_task_outcome(outcome: &str) -> TaskOutcomeClass {
     let lower = outcome.to_ascii_lowercase();
@@ -1540,7 +1549,9 @@ pub fn classify_task_outcome(outcome: &str) -> TaskOutcomeClass {
         || lower.starts_with("success")
     {
         TaskOutcomeClass::Passed
-    } else if ["fail", "error", "cancel", "halt", "interrupt"]
+    } else if lower.contains("cancel") {
+        TaskOutcomeClass::Cancelled
+    } else if ["fail", "error", "halt", "interrupt"]
         .iter()
         .any(|word| lower.contains(word))
     {
@@ -1924,7 +1935,7 @@ impl DashboardSnapshot {
                     step(&mut plan.tasks_skipped);
                 }
             }
-            TaskOutcomeClass::Blocked => {}
+            TaskOutcomeClass::Blocked | TaskOutcomeClass::Cancelled => {}
         }
     }
 
@@ -2073,9 +2084,10 @@ impl DashboardSnapshot {
                 }
                 // A task still running when the run ends did not finish: it
                 // ends with the run, cancelled or interrupted, never passed
-                // (bug-60ccba).
+                // (bug-60ccba). Only an interrupted one counts as failed
+                // (bug-1d09e8).
                 let task_outcome = if outcome == "cancelled" {
-                    "cancelled"
+                    TASK_OUTCOME_CANCELLED
                 } else {
                     TASK_OUTCOME_INTERRUPTED
                 };
@@ -5449,7 +5461,8 @@ mod tests {
 
     /// bug-60ccba: a run that ends while tasks still run ends them too, at its
     /// time and never as passed: interrupted, or cancelled when the run was
-    /// cancelled. A task that finished keeps its outcome and time.
+    /// cancelled, which is not a failure (bug-1d09e8). A task that finished
+    /// keeps its outcome and time.
     #[test]
     fn run_completed_ends_running_tasks() {
         let started = |task_id: &str| DashboardEvent::TaskStarted {
@@ -5502,12 +5515,17 @@ mod tests {
         assert_eq!(t1.outcome.as_deref(), Some(TASK_OUTCOME_PASSED));
         assert_eq!(t1.finished_at_ms, Some(2_000));
 
-        // A cancelled run's running tasks end cancelled.
+        // A cancelled run's running tasks end cancelled, and no failure is
+        // counted.
         let mut snap = DashboardSnapshot::default();
         snap.apply_with_ts(&started("t1"), 1_000);
         snap.apply_with_ts(&run_completed("cancelled"), 2_000);
-        assert_eq!(snap.tasks["p1/t1"].outcome.as_deref(), Some("cancelled"));
-        assert_eq!(snap.stats.tasks_failed, 1);
+        assert_eq!(
+            snap.tasks["p1/t1"].outcome.as_deref(),
+            Some(TASK_OUTCOME_CANCELLED)
+        );
+        assert_eq!(snap.stats.tasks_failed, 0);
+        assert_eq!(snap.stats.tasks_active, 0);
     }
 
     #[test]
@@ -5838,7 +5856,7 @@ mod tests {
     #[test]
     fn classify_task_outcome_counts_only_verified_passes() {
         use TaskOutcomeClass::{
-            AcceptedWithFailures, AlreadySatisfied, Failed, Passed, Skipped, Unverified,
+            AcceptedWithFailures, AlreadySatisfied, Cancelled, Failed, Passed, Skipped, Unverified,
         };
         for (outcome, class) in [
             (TASK_OUTCOME_PASSED, Passed),
@@ -5853,7 +5871,9 @@ mod tests {
             ("failed", Failed),
             ("gate_failed", Failed),
             ("error", Failed),
-            ("cancelled", Failed),
+            (TASK_OUTCOME_INTERRUPTED, Failed),
+            (TASK_OUTCOME_CANCELLED, Cancelled),
+            ("canceled", Cancelled),
             (TASK_OUTCOME_ACCEPTED_WITH_FAILURES, AcceptedWithFailures),
         ] {
             assert_eq!(classify_task_outcome(outcome), class, "{outcome}");

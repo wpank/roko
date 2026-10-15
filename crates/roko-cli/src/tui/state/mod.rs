@@ -266,6 +266,9 @@ pub enum TaskStatus {
     /// Never ran: a task it depends on failed, or its condition was not met.
     Skipped,
     Blocked,
+    /// A stop cut it off: its run was cancelled while it ran, or the operator
+    /// stopped it (bug-1d09e8). Neither done nor failed.
+    Cancelled,
 }
 
 impl TaskStatus {
@@ -312,6 +315,7 @@ impl TaskStatus {
             Self::Unverified => "unverified",
             Self::Skipped => "skipped",
             Self::Blocked => "blocked",
+            Self::Cancelled => "cancelled",
         }
     }
 }
@@ -362,6 +366,7 @@ impl From<&str> for TaskStatus {
             | "accepted-with-failures"
             | "accepted with failures" => Self::AcceptedWithFailures,
             "blocked" => Self::Blocked,
+            roko_core::dashboard_snapshot::TASK_OUTCOME_CANCELLED | "canceled" => Self::Cancelled,
             _ => Self::Pending,
         }
     }

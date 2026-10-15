@@ -2656,10 +2656,15 @@ pub fn build_graph_feedback_context(
     // Persists across the plan run, accumulating build/test observations
     // for predictive gate feedback. Mirrors Runner-v2's CodingOracle.
     let coding_oracle = std::sync::Arc::new(roko_learn::oracles::coding::CodingOracle::new());
-    // M3 (S04): the self-model, loaded when `[self_model] mode` is on; its
-    // outcome sink teaches it each settled verdict (6129).
-    let self_model =
-        crate::graph_task_dispatch::self_model::SelfModelRuntime::load(workdir, config);
+    // M3 (S04): the self-model, loaded when `[self_model] mode` is not off,
+    // shadow by default (decision 2 of 2026-10-15, superseding decision
+    // 6102 question 5); its outcome sink teaches it each settled verdict
+    // (6129). Shadow forecasts and records every routed attempt; it never
+    // changes the route (`routes()` needs `active`). A frozen run loads and
+    // saves none of it, like M1's sink below.
+    let self_model = learning
+        .then(|| crate::graph_task_dispatch::self_model::SelfModelRuntime::load(workdir, config))
+        .flatten();
     // M1 (S06, 8122): the ultrastable controller's sink, in shadow by default;
     // a frozen run writes no controller state or ledger.
     let homeostasis = if learning {
@@ -6109,6 +6114,75 @@ max_retries = 0
         );
         let closed = resumed.closed.as_ref().expect("the resumed run closed");
         assert_eq!(closed.attempts_opened, 1);
+    }
+
+    /// gap-9aca5d, decision 2 of 2026-10-15: `[self_model] mode` defaults to
+    /// shadow, so a plan run with no `[self_model]` section forecasts its
+    /// one routed attempt, writing one `predictions.jsonl` row and the
+    /// self-model's state file. Shadow never changes the route (S04 §4.7):
+    /// the model it dispatches is the one an explicit `mode = "off"` run
+    /// dispatches too.
+    #[cfg(unix)]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn default_plan_run_forecasts_in_shadow() {
+        use roko_learn::telemetry::report::RunRecords;
+
+        let shadow_dir = verified_plan_set(&[("a", "a.txt", &[])], "");
+        let (shadow_exit, _, _) = run_plan_set(shadow_dir.path(), Some(1), None).await;
+        assert_eq!(shadow_exit, EXIT_SUCCESS);
+
+        let off_dir =
+            verified_plan_set(&[("a", "a.txt", &[])], "[self_model]\nmode = \"off\"\n");
+        let (off_exit, _, _) = run_plan_set(off_dir.path(), Some(1), None).await;
+        assert_eq!(off_exit, EXIT_SUCCESS);
+
+        let shadow_manifest = only_run_manifest(shadow_dir.path());
+        let shadow_run_dir = shadow_dir
+            .path()
+            .join(".roko/runs")
+            .join(&shadow_manifest.run_id);
+        let off_manifest = only_run_manifest(off_dir.path());
+        let off_run_dir = off_dir.path().join(".roko/runs").join(&off_manifest.run_id);
+
+        let predictions = std::fs::read_to_string(shadow_run_dir.join("predictions.jsonl"))
+            .expect("a default run forecasts and writes predictions.jsonl");
+        let rows: Vec<&str> = predictions
+            .lines()
+            .filter(|line| !line.is_empty())
+            .collect();
+        assert_eq!(rows.len(), 1, "one routed attempt, one prediction: {rows:?}");
+
+        let state_path = shadow_dir
+            .path()
+            .join(roko_core::config::self_model::DEFAULT_STATE_PATH);
+        assert!(
+            state_path.exists(),
+            "a default run saves the self-model's state at {}",
+            state_path.display()
+        );
+        assert!(
+            !off_run_dir.join("predictions.jsonl").exists(),
+            "mode = off forecasts nothing"
+        );
+
+        let shadow_model = RunRecords::load(&shadow_run_dir)
+            .expect("read the shadow run's records")
+            .verdicts[0]
+            .record
+            .executed
+            .model_requested
+            .clone();
+        let off_model = RunRecords::load(&off_run_dir)
+            .expect("read the off run's records")
+            .verdicts[0]
+            .record
+            .executed
+            .model_requested
+            .clone();
+        assert_eq!(
+            shadow_model, off_model,
+            "shadow forecasts; it never changes the route"
+        );
     }
 
     /// S01 §5.8: a plan run writes its run's `census.json` from the

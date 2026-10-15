@@ -2006,6 +2006,7 @@ async fn cmd_plan_dir_status(
                 "delivery": delivery.as_ref().map(|delivery| serde_json::json!({
                     "branch": delivery.branch,
                     "merge_commit": delivery.merge_commit,
+                    "partial": delivery.partial,
                     "merge_command": merge_command,
                     // The whole-plan checks the delivery ran (backlog 3111).
                     "checks": delivery
@@ -2032,8 +2033,14 @@ async fn cmd_plan_dir_status(
         }
         if let Some(delivery) = &delivery {
             println!(
-                "delivered:       {} at {}",
-                delivery.branch, delivery.merge_commit
+                "delivered:       {} at {}{}",
+                delivery.branch,
+                delivery.merge_commit,
+                if delivery.partial {
+                    " (partial: only the verified tasks of a plan that did not finish)"
+                } else {
+                    ""
+                }
             );
             if let Some(command) = &merge_command {
                 println!("take it with:    {command}");

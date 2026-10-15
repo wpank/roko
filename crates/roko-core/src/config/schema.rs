@@ -1380,6 +1380,12 @@ impl RokoConfig {
         let _ = writeln!(out, "compile_concurrency = {}", c.gates.compile_concurrency);
         let _ = writeln!(
             out,
+            "# Checks build with a job cap (unset: half the CPUs; 0: no cap) at a lower priority:"
+        );
+        let _ = writeln!(out, "# cargo_jobs = 4");
+        let _ = writeln!(out, "nice = {}", c.gates.nice);
+        let _ = writeln!(
+            out,
             "# Gate commands inherit only allowlisted variables; add more (names or PREFIX*):"
         );
         let _ = writeln!(out, "# env_passthrough = [\"DATABASE_URL\"]\n");

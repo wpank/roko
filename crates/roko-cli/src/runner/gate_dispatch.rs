@@ -62,14 +62,17 @@ use super::gate_report::{
 /// Sentinel rung value for plan-level verification (not a per-task rung).
 pub const RUNG_PLAN_VERIFY: u32 = 1000;
 
-/// Compute the `CARGO_BUILD_JOBS` limit: half the available logical CPUs,
-/// floored to at least 1. This prevents CPU exhaustion when multiple agents
+/// The `CARGO_BUILD_JOBS` limit: the gate job cap of this process
+/// (`[gates] cargo_jobs`, by default half the logical CPUs, bug-b3849c),
+/// else one job per CPU. This prevents CPU exhaustion when multiple agents
 /// run gate checks in parallel.
 fn cargo_build_jobs() -> String {
-    let cpus = std::thread::available_parallelism()
-        .map(|n| n.get())
-        .unwrap_or(2);
-    (cpus / 2).max(1).to_string()
+    roko_core::child_env::gate_limits()
+        .cargo_jobs
+        .unwrap_or_else(|| {
+            std::thread::available_parallelism().map_or(1, std::num::NonZeroUsize::get)
+        })
+        .to_string()
 }
 
 /// Detect whether `sccache` is available on `PATH`. The result is cached

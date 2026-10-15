@@ -1224,6 +1224,16 @@ async fn run_graph_plan_body(
     // the manifest, the feedback facade and the dispatcher are built, so
     // every reader sees one value.
     apply_run_switches(&mut roko_config, frozen_learning, no_holdout);
+    // Every check the run starts builds with a job cap at a lower priority
+    // (bug-b3849c): `[gates] cargo_jobs` and `[gates] nice`.
+    let gate_limits = roko_config.gates.gate_limits();
+    roko_core::child_env::set_gate_limits(gate_limits);
+    tracing::info!(
+        cargo_jobs = ?gate_limits.cargo_jobs,
+        nice = gate_limits.nice,
+        cargo_build_jobs_from_env = ?std::env::var("CARGO_BUILD_JOBS").ok(),
+        "gate commands run with a job cap at a lower priority"
+    );
     if roko_config.learning.frozen {
         tracing::info!(
             "learning is frozen for this run: it reads learned state and writes none \

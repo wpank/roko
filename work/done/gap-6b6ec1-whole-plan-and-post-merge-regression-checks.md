@@ -2,14 +2,16 @@
 id = "gap-6b6ec1"
 kind = "gap"
 title = "Whole-plan and post-merge regression checks publish no hub event while they run, so a host shows 'between tasks' for the whole check"
-status = "open"
-triage = "unverified"
+status = "done"
+triage = "verified"
 severity = "p2"
 goal = "core"
 size = "M"
 subsystem = ["roko-cli/graph_execution"]
 created = 2026-10-15
 updated = 2026-10-15
+last_verified = 2026-10-15
+last_verified_rev = "26d836e38"
 source = "tmp/hermes-roko-v5/findings/repro-will.md (row C2; roko-gates, 2026-10-15)"
 discovered_from = "hermes-roko-v5 round: a demo run from Hermes showed 'between tasks' for a 25-minute regression check"
 anchors = ["crates/roko-cli/src/graph_execution/plan_verify.rs::run_plan_verify", "crates/roko-cli/src/graph_execution/delivery.rs::GitDeliveryBackend", "crates/roko-core/src/dashboard_snapshot.rs::DashboardEvent"]
@@ -17,6 +19,13 @@ links = { depends_on = [], blocks = [], related = ["bug-a7e018", "bug-b3849c", "
 
 [[verify]]
 command = "grep -rqw 'fn plan_check_publishes_start_heartbeat_and_finish' crates/roko-cli/ && cargo test -p roko-cli plan_check_publishes_start_heartbeat_and_finish"
+
+[closed]
+at = 2026-10-15
+at_ts = "2026-10-15T21:23:24Z"
+commit = "26d836e38"
+forced = false
+evidence = "Each step of a plan's whole-plan check publishes plan_check_started, plan_check_heartbeat (every 15 s) and plan_check_finished on the StateHub (GET /api/events, the run's events index): run_plan_verify (in_place) and GitDeliveryBackend::regression_output (regression) through PlanCheckEvents (graph_execution/plan_check_events.rs), built by plan_runner from the run's GraphTuiBridge; status.json phase 'check'; CLI output lines; /health features plan_check_events. Tests on main 4505cd54d + the item: plan_check_publishes_start_heartbeat_and_finish (the verify), regression_check_publishes_its_steps, check_scope_names_what_a_step_builds, graph_status_follows_a_run_through_its_phases pass; roko-cli lib 3645, roko-core lib 2021, roko-serve lib 1019 passed, 0 failed; clippy -p roko-core -p roko-cli -p roko-serve -D warnings clean; cargo +nightly fmt --check clean."
 +++
 
 ## Problem

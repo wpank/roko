@@ -301,6 +301,13 @@ impl GraphTuiBridge {
     pub fn publish_event(&self, event: roko_core::DashboardEvent) {
         self.tui.publish_event(event);
     }
+
+    /// The bridge this one publishes through, for a publisher that outlives
+    /// a borrow of it, such as a delivery's check events (gap-6b6ec1).
+    #[must_use]
+    pub fn tui(&self) -> &TuiBridge {
+        &self.tui
+    }
 }
 
 /// Dashboard outcome for a finished node.

@@ -530,6 +530,72 @@ pub enum DashboardEvent {
         /// Human-readable rung label (e.g. "compile", "clippy", "test").
         rung_name: String,
     },
+    /// A step of a plan's whole-plan check started (gap-6b6ec1): its
+    /// `[meta] verify`, or the default check of a Cargo workspace, which runs
+    /// once the plan's tasks passed and can build the whole workspace for
+    /// many minutes. A `plan_check_heartbeat` follows every 15 s while the
+    /// step runs, and a `plan_check_finished` ends it.
+    PlanCheckStarted {
+        plan_id: String,
+        /// Where the check runs: `regression` (the delivery's post-merge
+        /// check, in the regression checkout) or `in_place` (the working tree
+        /// the plan's tasks edited).
+        stage: String,
+        /// The step, from 1.
+        step: u32,
+        /// How many steps the check has.
+        steps: u32,
+        /// What the step runs, in a word or two: `cargo clippy`, `cargo
+        /// test`, or the program it starts.
+        name: String,
+        /// The step's command.
+        command: String,
+        /// What the step builds: `workspace` (every Cargo package),
+        /// `packages` (the ones `packages` names), or `command` (no Cargo
+        /// build it names).
+        scope: String,
+        /// The Cargo packages of a `packages` step.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        packages: Vec<String>,
+        /// Where the check came from: `authored` (`[meta] verify`) or
+        /// `cargo-default`.
+        source: String,
+    },
+    /// A whole-plan check step is still running (gap-6b6ec1).
+    PlanCheckHeartbeat {
+        plan_id: String,
+        stage: String,
+        step: u32,
+        steps: u32,
+        name: String,
+        scope: String,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        packages: Vec<String>,
+        /// Milliseconds since the step started.
+        elapsed_ms: u64,
+    },
+    /// A whole-plan check step ended (gap-6b6ec1).
+    PlanCheckFinished {
+        plan_id: String,
+        stage: String,
+        step: u32,
+        steps: u32,
+        name: String,
+        scope: String,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        packages: Vec<String>,
+        /// Whether the step passed. A failed step ends the check.
+        passed: bool,
+        /// The step's exit code; `None` when it did not exit.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        exit_code: Option<i32>,
+        /// Why a step that did not exit ended, such as `timed out after
+        /// 600 s`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        reason: Option<String>,
+        /// Milliseconds the step ran.
+        elapsed_ms: u64,
+    },
     /// Daimon affect state updated after a task turn.
     AffectUpdated {
         /// PAD pleasure dimension [-1.0, 1.0].
@@ -2607,6 +2673,44 @@ impl DashboardSnapshot {
                     plan_id.clone(),
                     task_id.clone(),
                     format!("rung={rung_name}"),
+                );
+            }
+            DashboardEvent::PlanCheckStarted {
+                plan_id,
+                step,
+                steps,
+                command,
+                ..
+            } => {
+                self.push_event_log(
+                    ts,
+                    "plan_check_started".to_string(),
+                    plan_id.clone(),
+                    String::new(),
+                    format!("plan check {step}/{steps}: {command}"),
+                );
+            }
+            // The step's start and end are logged; a host shows its clock.
+            DashboardEvent::PlanCheckHeartbeat { .. } => {}
+            DashboardEvent::PlanCheckFinished {
+                plan_id,
+                step,
+                steps,
+                name,
+                passed,
+                elapsed_ms,
+                ..
+            } => {
+                let verdict = if *passed { "passed" } else { "failed" };
+                self.push_event_log(
+                    ts,
+                    "plan_check_finished".to_string(),
+                    plan_id.clone(),
+                    String::new(),
+                    format!(
+                        "plan check {step}/{steps} {verdict}: {name} after {} s",
+                        elapsed_ms / 1_000
+                    ),
                 );
             }
             DashboardEvent::AffectUpdated {

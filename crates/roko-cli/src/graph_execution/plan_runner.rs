@@ -4201,7 +4201,12 @@ async fn deliver_plan_to_batch(
     let backend = super::delivery::GitDeliveryBackend::new(batch.repo().to_path_buf())
         .with_regression_steps(checks.iter().map(|step| step.command.clone()).collect())
         .with_regression_source(plan_check_source(plan))
-        .with_env_passthrough(env_passthrough.to_vec());
+        .with_env_passthrough(env_passthrough.to_vec())
+        .with_check_events(plan_check_events(
+            graph_tui_bridge,
+            plan,
+            super::plan_check_events::CheckStage::Regression,
+        ));
     let service = super::delivery::CliCompletionDeliveryService::with_store(
         batch.store().clone(),
         Arc::new(backend),
@@ -4318,7 +4323,13 @@ async fn check_plan_in_place(
     checkpoint: &mut crate::graph_checkpoint::PreparedGraphCheckpoint,
     graph_tui_bridge: &crate::runner::graph_tui_bridge::GraphTuiBridge,
 ) -> anyhow::Result<PlanOutcome> {
-    let result = super::plan_verify::run_plan_verify(workdir, checks, env_passthrough).await;
+    let events = plan_check_events(
+        graph_tui_bridge,
+        plan,
+        super::plan_check_events::CheckStage::InPlace,
+    );
+    let result =
+        super::plan_verify::run_plan_verify(workdir, checks, env_passthrough, &events).await;
     let commands: Vec<&str> = checks.iter().map(|step| step.command.as_str()).collect();
     checkpoint.record_plan_verify(serde_json::json!({
         "passed": result.is_ok(),
@@ -4342,6 +4353,20 @@ async fn check_plan_in_place(
             Ok(PlanOutcome::Failed)
         }
     }
+}
+
+/// The hub events of `plan`'s whole-plan check at `stage` (gap-6b6ec1).
+fn plan_check_events(
+    graph_tui_bridge: &crate::runner::graph_tui_bridge::GraphTuiBridge,
+    plan: &crate::runner::plan_loader::Plan,
+    stage: super::plan_check_events::CheckStage,
+) -> super::plan_check_events::PlanCheckEvents {
+    super::plan_check_events::PlanCheckEvents::new(
+        graph_tui_bridge.tui().clone(),
+        &plan.id,
+        stage,
+        plan_check_source(plan),
+    )
 }
 
 /// Where `plan`'s whole-plan check came from: `authored` (its `[meta]

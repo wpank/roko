@@ -21,6 +21,7 @@ use std::time::Duration;
 
 use serde::Serialize;
 
+use super::plan_check_events::PlanCheckEvents;
 use super::plan_set::{Area, PlanFootprint};
 use crate::runner::plan_loader::Plan;
 use crate::task_parser::VerifyStep;
@@ -102,7 +103,8 @@ impl std::fmt::Display for PlanVerifyFailure {
 }
 
 /// Run `steps` in order in `dir` (`sh -c`), each within its timeout, and
-/// stop at the first that fails.
+/// stop at the first that fails. `events` publishes each step's start,
+/// heartbeats and end (gap-6b6ec1).
 ///
 /// Each step starts from the environment a task's verify steps get
 /// ([`roko_gate::inherit_gate_env`]): roko's own, without provider keys or
@@ -117,9 +119,10 @@ pub async fn run_plan_verify(
     dir: &Path,
     steps: &[VerifyStep],
     env_passthrough: &[String],
+    events: &PlanCheckEvents,
 ) -> Result<(), PlanVerifyFailure> {
     let parent_env = roko_core::child_env::process_env();
-    run_plan_verify_from(dir, steps, &parent_env, env_passthrough).await
+    run_plan_verify_from(dir, steps, &parent_env, env_passthrough, events).await
 }
 
 /// [`run_plan_verify`], with `parent_env` standing in for roko's own
@@ -129,8 +132,9 @@ async fn run_plan_verify_from(
     steps: &[VerifyStep],
     parent_env: &[(String, OsString)],
     passthrough: &[String],
+    events: &PlanCheckEvents,
 ) -> Result<(), PlanVerifyFailure> {
-    for step in steps {
+    for (index, step) in steps.iter().enumerate() {
         let failure = |output: String| PlanVerifyFailure {
             phase: step.phase.clone(),
             command: step.command.clone(),
@@ -143,15 +147,23 @@ async fn run_plan_verify_from(
             .current_dir(dir)
             .kill_on_drop(true);
         roko_gate::inherit_gate_env_from(&mut command, parent_env.iter().cloned(), passthrough);
-        let run = command.output();
+        let watched = events.start(index, steps.len(), &step.command);
+        let run = watched.watch(command.output());
         let timeout = Duration::from_millis(step.timeout_ms.max(1));
         let output = match tokio::time::timeout(timeout, run).await {
             Ok(Ok(output)) => output,
-            Ok(Err(error)) => return Err(failure(format!("could not start: {error}"))),
+            Ok(Err(error)) => {
+                let reason = format!("could not start: {error}");
+                watched.finish(false, None, Some(reason.clone()));
+                return Err(failure(reason));
+            }
             Err(_) => {
-                return Err(failure(format!("timed out after {}s", timeout.as_secs())));
+                let reason = format!("timed out after {}s", timeout.as_secs());
+                watched.finish(false, None, Some(reason.clone()));
+                return Err(failure(reason));
             }
         };
+        watched.finish(output.status.success(), output.status.code(), None);
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
             let stdout = String::from_utf8_lossy(&output.stdout);
@@ -193,7 +205,7 @@ mod tests {
             verify_step("touch never"),
         ];
 
-        let failure = run_plan_verify(dir.path(), &steps, &[])
+        let failure = run_plan_verify(dir.path(), &steps, &[], &PlanCheckEvents::none())
             .await
             .expect_err("the second step fails");
 
@@ -204,7 +216,90 @@ mod tests {
         );
         assert!(dir.path().join("first").exists());
         assert!(!dir.path().join("never").exists());
-        assert!(run_plan_verify(dir.path(), &steps[..1], &[]).await.is_ok());
+        let none = PlanCheckEvents::none();
+        assert!(
+            run_plan_verify(dir.path(), &steps[..1], &[], &none)
+                .await
+                .is_ok()
+        );
+    }
+
+    /// gap-6b6ec1: each step of a plan's check publishes its start, a
+    /// heartbeat while it runs, and its end; the step that fails is the last.
+    #[tokio::test]
+    async fn plan_check_publishes_start_heartbeat_and_finish() {
+        use roko_core::DashboardEvent;
+
+        use super::super::plan_check_events::CheckStage;
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let hub = crate::state_hub::StateHub::new(256);
+        let mut published = hub.subscribe_events();
+        let events = PlanCheckEvents::new(
+            crate::runner::tui_bridge::TuiBridge::new(hub.sender()),
+            "demo",
+            CheckStage::InPlace,
+            "cargo-default",
+        )
+        .with_heartbeat_every(Duration::from_millis(40));
+        let steps = [
+            verify_step("sleep 0.4"),
+            verify_step("exit 3"),
+            verify_step("touch never"),
+        ];
+
+        let failure = run_plan_verify(dir.path(), &steps, &[], &events)
+            .await
+            .expect_err("the second step fails");
+
+        assert_eq!(failure.command, "exit 3");
+        let mut seen = Vec::new();
+        while let Ok(envelope) = published.try_recv() {
+            seen.push(envelope.payload);
+        }
+        let rows: Vec<String> = seen
+            .iter()
+            .map(|event| match event {
+                DashboardEvent::PlanCheckStarted {
+                    plan_id,
+                    stage,
+                    step,
+                    steps,
+                    name,
+                    command,
+                    scope,
+                    source,
+                    ..
+                } => format!(
+                    "started {plan_id} {stage} {step}/{steps} {name} {scope} {source}: {command}"
+                ),
+                DashboardEvent::PlanCheckHeartbeat {
+                    step, elapsed_ms, ..
+                } => {
+                    assert!(*elapsed_ms > 0, "{event:?}");
+                    format!("heartbeat {step}")
+                }
+                DashboardEvent::PlanCheckFinished {
+                    step,
+                    passed,
+                    exit_code,
+                    reason,
+                    ..
+                } => format!("finished {step} {passed} {exit_code:?} {reason:?}"),
+                other => format!("{other:?}"),
+            })
+            .collect();
+        let mut expected = vec!["started demo in_place 1/3 sleep command cargo-default: sleep 0.4"];
+        let beats = rows.iter().filter(|row| *row == "heartbeat 1").count();
+        assert!(beats >= 1, "{rows:#?}");
+        expected.extend(std::iter::repeat_n("heartbeat 1", beats));
+        expected.extend([
+            "finished 1 true Some(0) None",
+            "started demo in_place 2/3 exit command cargo-default: exit 3",
+            "finished 2 false Some(3) None",
+        ]);
+        assert_eq!(rows, expected);
+        assert!(!dir.path().join("never").exists());
     }
 
     /// G09: a step runs the agents' code with the environment verify steps
@@ -230,6 +325,7 @@ mod tests {
             &steps,
             &parent_env,
             &["PLAN_VERIFY_PROBE".to_string()],
+            &PlanCheckEvents::none(),
         )
         .await
         .expect("the step runs");

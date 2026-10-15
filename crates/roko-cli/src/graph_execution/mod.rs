@@ -39,6 +39,7 @@ pub mod fast_lane;
 pub mod identity_map;
 pub mod learning_commit;
 pub mod loop_audit;
+pub mod plan_check_events;
 pub mod plan_runner;
 pub mod plan_set;
 pub mod plan_verify;

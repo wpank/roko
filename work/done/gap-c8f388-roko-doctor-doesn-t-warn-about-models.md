@@ -2,7 +2,7 @@
 id = "gap-c8f388"
 kind = "gap"
 title = "roko doctor doesn't warn about models roko has no price for, whose calls a budget cap cannot count"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p2"
 goal = "hermes"
@@ -11,6 +11,7 @@ subsystem = ["roko-cli/doctor"]
 created = 2026-10-15
 updated = 2026-10-15
 last_verified = 2026-10-15
+last_verified_rev = "094f9a15c"
 source = "roko-init round v5, 2026-10-15 (team lead: plugin wrote unpriced [models.*], caps did not hold)"
 anchors = ["crates/roko-cli/src/doctor.rs::check_model_prices", "crates/roko-cli/src/dispatch/model_routing.rs::builtin_rung_model", "crates/roko-cli/src/commands/init.rs::MODELS"]
 links = { depends_on = [], blocks = [], related = ["bug-4e336b", "bug-1bc222", "gap-ceffb3", "gap-2bec05", "gap-8548e3"], supersedes = [], duplicate_of = "" }
@@ -23,6 +24,15 @@ command = "grep -rqw 'fn every_builtin_model_has_a_price' crates/roko-cli/ && ca
 
 [[verify]]
 command = "grep -rqw 'fn every_model_init_writes_has_a_price' crates/roko-cli/ && cargo test -p roko-cli --lib every_model_init_writes_has_a_price"
+
+[closed]
+at = 2026-10-15
+at_ts = "2026-10-15T21:06:21Z"
+commit = "094f9a15c"
+by = "roko-init"
+executor = "claude-agent"
+forced = false
+evidence = "094f9a15c on main 4505cd54d. roko doctor's new model_prices check names the models a task can be routed to that have no price ([models.*] entries, ladder rung models, the default model), judged as a run judges them (dispatch_v2::model_has_price: price snapshot, entry rates, built-in table). builtin_rung_model refuses an unpriced built-in. Tests at 094f9a15c: doctor_warns_about_unpriced_models, every_builtin_model_has_a_price and every_model_init_writes_has_a_price pass; all roko-cli lib/bin and roko-core tests plus cli_fallback, doctor and agent_lifecycle pass; clippy -D warnings and fmt clean. Live: roko doctor in a fresh init workspace on Will's machine warns about gemma4, glm-5v-turbo and llama32 from his global config, and about nothing init wrote. Up-front refusal of capped runs is filed as gap-8548e3. Evidence: tmp/hermes-roko-v5/findings/roko-init.md"
 +++
 
 ## Problem

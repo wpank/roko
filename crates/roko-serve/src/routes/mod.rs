@@ -620,6 +620,18 @@ async fn api_not_found(req: Request) -> Response {
         .into_response()
 }
 
+/// What this server does that older ones do not, for clients that adapt to
+/// it (`features` in `GET /health` and `GET /api/health`), since `version`
+/// stays the crate's:
+/// - `chat_refusals`: `/mcp` refuses a run a chat host starts before the plan
+///   lookup, with its reason under `structuredContent.error.data.refusal`,
+///   and every tool failure carries `structuredContent.error.code`
+///   (gap-cf427e);
+/// - `loop_events`: runs publish `route_decided`, `confirm_*`, `effect_*` and
+///   `knowledge_written` events;
+/// - `live_tool_steps`: API-model tool calls publish live tool steps.
+pub(crate) const FEATURES: &[&str] = &["chat_refusals", "loop_events", "live_tool_steps"];
+
 /// `GET /health` — bare liveness probe for load balancers and external tools.
 ///
 /// Returns 200 while the process is alive. For richer telemetry use
@@ -629,6 +641,7 @@ async fn top_level_health(State(state): State<Arc<AppState>>) -> Json<Value> {
         "status": "ok",
         "version": env!("CARGO_PKG_VERSION"),
         "uptime_secs": state.started_at.elapsed().as_secs(),
+        "features": FEATURES,
     }))
 }
 
@@ -979,6 +992,8 @@ mod tests {
         assert_eq!(body["status"], "ok");
         assert_eq!(body["version"], env!("CARGO_PKG_VERSION"));
         assert!(body["uptime_secs"].as_u64().is_some());
+        assert_eq!(body["features"], json!(FEATURES), "{body}");
+        assert!(FEATURES.contains(&"chat_refusals"));
 
         let (status, body) = get_json(&app, "/ready").await;
         assert_eq!(status, StatusCode::OK);

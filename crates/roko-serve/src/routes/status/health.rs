@@ -111,6 +111,7 @@ pub async fn health(State(state): State<Arc<AppState>>) -> (axum::http::StatusCo
         Json(json!({
             "status": status,
             "version": env!("CARGO_PKG_VERSION"),
+            "features": crate::routes::FEATURES,
             "uptime_secs": uptime_secs,
             "active_plans": active_plans,
             "active_agents": active_agents,

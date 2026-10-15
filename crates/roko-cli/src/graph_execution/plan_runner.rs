@@ -1334,6 +1334,13 @@ async fn run_graph_plan_body(
             crate::dispatch::rung_probe::probe_ladder(&roko_config, &ladder, workdir).await;
         shared_factory = shared_factory.skip_failed_rungs(&failed);
     }
+    // A chat host's run holds its tasks' outbound tool calls for approval
+    // (decision 9107), which only roko's own tool loop can do: its ladder
+    // keeps only the rungs that run there, so no task starts or climbs onto a
+    // CLI agent that would be refused at dispatch (gap-cf427e).
+    if outbound_floor.is_some_and(|floor| floor != roko_core::tool::OutboundPolicy::Allow) {
+        shared_factory = shared_factory.keep_tool_loop_rungs();
+    }
     let shared_factory = Arc::new(shared_factory);
     if dangerously_skip_permissions {
         tracing::warn!(

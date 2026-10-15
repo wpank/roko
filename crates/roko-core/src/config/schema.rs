@@ -725,7 +725,7 @@ impl RokoConfig {
         self.effective_providers_with_env(|key| std::env::var(key).ok())
     }
 
-    fn effective_providers_with_env(
+    pub(crate) fn effective_providers_with_env(
         &self,
         env_fn: impl Fn(&str) -> Option<String>,
     ) -> IndexMap<String, ProviderConfig> {
@@ -976,7 +976,7 @@ impl RokoConfig {
         self.is_provider_available_with_env(provider, |name| std::env::var(name).ok())
     }
 
-    fn is_provider_available_with_env(
+    pub(crate) fn is_provider_available_with_env(
         &self,
         provider: &ProviderConfig,
         env_fn: impl Fn(&str) -> Option<String>,

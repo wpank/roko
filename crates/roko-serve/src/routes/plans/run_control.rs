@@ -1043,6 +1043,11 @@ pub(super) async fn resume_plan(
 /// Returns 200 `{ "cancelled": true }` on success, or 404 when the plan is not
 /// actively executing or queued.
 ///
+/// A run whose roko process stopped while it ran (a machine restart or a
+/// crash) is already over: its cancel answers 200 with `"state":
+/// "interrupted"`, `"already_ended": true` and the `reason`, every time
+/// (bug-dceafd).
+///
 /// `{id}` may be the run key, the run id **or** any member plan id of an
 /// active or queued run.
 pub(super) async fn cancel_plan(
@@ -1057,9 +1062,17 @@ pub(super) async fn cancel_plan(
 /// (9115) share it.
 pub(crate) async fn cancel_plan_run(state: &Arc<AppState>, id: &str) -> Result<Value, ApiError> {
     let mut active = state.active_plans.write().await;
-    // Resolve by key, run id or member plan id; else look in the queue.
+    // Resolve by key, run id or member plan id; else look in the queue, then
+    // for a run whose process is gone.
     let Some(key) = active_run_for(&active, id) else {
-        return cancel_queued_run(state, &mut active, id);
+        let queued = cancel_queued_run(state, &mut active, id);
+        drop(active);
+        if queued.is_err()
+            && let Some(ended) = interrupted_run(state, id).await
+        {
+            return Ok(ended);
+        }
+        return queued;
     };
     let handle = active
         .get(&key)
@@ -1120,6 +1133,26 @@ pub(crate) async fn cancel_plan_run(state: &Arc<AppState>, id: &str) -> Result<V
     }
 
     Ok(json!({ "cancelled": true }))
+}
+
+/// The answer to a cancel of run `id` when it is a run whose roko process
+/// stopped while it ran (bug-dceafd): it is over already, ended `interrupted`
+/// (now, if this is the first anyone asks). `None` for any other id.
+async fn interrupted_run(state: &AppState, id: &str) -> Option<Value> {
+    let workdir = state.workdir.clone();
+    let run_id = id.to_string();
+    let ended =
+        tokio::task::spawn_blocking(move || crate::interrupted_runs::settle(&workdir, &run_id))
+            .await
+            .ok()??;
+    Some(json!({
+        "cancelled": true,
+        "run_id": id,
+        "state": RunState::Interrupted.as_str(),
+        "already_ended": true,
+        "reason": ended.reason,
+        "ended_at": ended.at,
+    }))
 }
 
 /// Take the queued run `id` names out of the queue (decision 9105). Its

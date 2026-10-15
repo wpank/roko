@@ -938,17 +938,25 @@ async fn generate_plan(state: &Arc<AppState>, prompt: String, origin: &RunOrigin
 }
 
 /// The `run_cancel` tool: stop run `run_id`, a gated prompt run or a live or
-/// queued plan run, as `POST /api/plans/{id}/cancel` stops a plan run.
+/// queued plan run, as `POST /api/plans/{id}/cancel` stops a plan run. A run
+/// whose roko process stopped while it ran is over already: the answer says
+/// `interrupted` and why (bug-dceafd).
 async fn cancel_run(state: &Arc<AppState>, run_id: &str) -> Result<Value, ApiError> {
+    let mut answer = json!({ "run_id": run_id, "state": RunState::Cancelled.as_str() });
     match super::run::cancel_background_run(state, run_id).await {
         Some(stopped) => stopped.map_err(ApiError::conflict)?,
         // A prompt run still waiting in the run queue (gap-9a8d66).
         None if super::run::cancel_queued_prompt_run(state, run_id).await => {}
         None => {
-            super::plans::cancel_plan_run(state, run_id).await?;
+            let cancelled = super::plans::cancel_plan_run(state, run_id).await?;
+            for field in ["state", "reason"] {
+                if let Some(value) = cancelled.get(field) {
+                    answer[field] = value.clone();
+                }
+            }
         }
     }
-    Ok(json!({ "run_id": run_id, "state": RunState::Cancelled.as_str() }))
+    Ok(answer)
 }
 
 /// A tool's result: its JSON as text, as every MCP client reads it, and as

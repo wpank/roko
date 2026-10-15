@@ -349,7 +349,8 @@ pub enum OperationStatus {
 ///
 /// Those routes are `GET /api/run/{id}/status`, `GET /api/plans/{id}/status`
 /// and `GET /api/runs/{run_id}/summary`. A run that has ended is `succeeded`,
-/// `failed`, `unverified` or `cancelled`, and only `succeeded` is a success.
+/// `failed`, `unverified`, `cancelled` or `interrupted`, and only `succeeded`
+/// is a success.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum RunState {
@@ -365,6 +366,9 @@ pub enum RunState {
     Unverified,
     /// Cancelled before it ended.
     Cancelled,
+    /// The roko process running it stopped before it ended, a machine restart
+    /// or a crash; it is no longer running (bug-dceafd).
+    Interrupted,
 }
 
 impl RunState {
@@ -378,6 +382,7 @@ impl RunState {
             Self::Failed => "failed",
             Self::Unverified => "unverified",
             Self::Cancelled => "cancelled",
+            Self::Interrupted => "interrupted",
         }
     }
 

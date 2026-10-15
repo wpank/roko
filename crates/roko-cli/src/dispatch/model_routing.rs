@@ -1581,6 +1581,38 @@ impl RoutingLadder {
         Some(self)
     }
 
+    /// This ladder without the rungs whose agents run their own tools (CLI,
+    /// ACP and agent-runtime providers), each logged. A task that holds its
+    /// tool calls that act on the outside world for approval, as every task
+    /// of a chat host's run does (decision 9107), can run only in roko's own
+    /// tool loop, so such a run climbs only the other rungs (gap-cf427e).
+    /// `None` when no rung is left, which leaves routing to the router.
+    #[must_use]
+    pub fn in_own_tool_loop(mut self, config: &Arc<RokoConfig>) -> Option<Self> {
+        let resolver = crate::dispatch_v2::ProviderDispatchResolver::new(Arc::clone(config));
+        self.runnable.retain(|rung_model, model| {
+            let target = resolver.resolve(model);
+            if !crate::dispatch_v2::runs_own_tools(&target) {
+                return true;
+            }
+            tracing::info!(
+                model = %rung_model,
+                provider = %target.provider_id,
+                "routing ladder: skipping a rung whose agent runs its own tools; this run's tasks \
+                 hold their outbound tool calls for approval, which only roko's tool loop can do"
+            );
+            false
+        });
+        if self.runnable.is_empty() {
+            tracing::warn!(
+                "routing ladder: no rung runs in roko's own tool loop; the router picks, and \
+                 failover passes over agents that run their own tools"
+            );
+            return None;
+        }
+        Some(self)
+    }
+
     /// How many runnable rungs sit above rung `index` on `role`'s ladder.
     #[must_use]
     pub fn runnable_above(&self, role: &str, index: usize) -> usize {

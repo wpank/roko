@@ -9,7 +9,7 @@ goal = "truth"
 size = "S"
 subsystem = ["roko-cli/dispatch"]
 created = 2026-10-14
-updated = 2026-10-14
+updated = 2026-10-15
 last_verified = 2026-10-14
 source = "roko-loops worker, full roko-cli lib run on 2026-10-14"
 anchors = ["crates/roko-cli/src/dispatch/model_routing.rs"]
@@ -54,3 +54,5 @@ the source the draw implies (explored or not, from the row's own draw fields) in
 ## Done when
 
 `[[verify]]` passes on any date.
+
+2026-10-15 (status-quo assessment at 7b6a5af44, finding 30; tmp/status-quo/2026-10-15/work-items/C1-*.md point 4): still open and unchanged. Agent G's full nextest run on 2026-10-15 passed `dispatch::model_routing::tests::active_self_model_picks_start_rung_and_logs_propensity` (tests/G-nextest-results.tsv:4174), but that is the date's luck, not a fix: the test still derives its expected source from the chosen model on the day's exploration draw (model_routing.rs:2853). Under Will's decision 11 (push a branch and open a PR so CI runs on HEAD, merge when green apart from known CI-hidden failures), list this test among the known failures if the PR's CI run lands on a bad day, and fix it before branch protection (find-8cc7ac) makes it block merges.

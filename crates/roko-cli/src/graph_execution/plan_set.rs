@@ -1369,6 +1369,39 @@ mod tests {
         assert_eq!(commands(&authored, Some(&cargo)), ["make check"]);
     }
 
+    /// bug-a7e018: this workspace's lockfile cannot always be resolved
+    /// offline, yet a plan that writes one file of one crate still gets the
+    /// default check of that crate and its dependents, not of the workspace.
+    #[tokio::test]
+    async fn this_workspace_scopes_the_default_check_to_the_written_crate() {
+        use super::super::plan_verify::plan_verify_steps;
+
+        let root = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .and_then(Path::parent)
+            .expect("the workspace root");
+        let cargo = CargoWorkspace::load(root)
+            .await
+            .expect("this workspace's package graph");
+        let one_file = plan("one-file", &[], &["crates/roko-cli/src/run.rs"], &[]);
+
+        let footprint = PlanFootprint::of(&one_file, root, Some(&cargo));
+        let commands: Vec<String> = plan_verify_steps(&one_file, Some(&footprint))
+            .into_iter()
+            .map(|step| step.command)
+            .collect();
+
+        assert_eq!(commands.len(), 3, "{commands:?}");
+        assert!(
+            commands
+                .iter()
+                .all(|command| command.contains("-p roko-cli")
+                    && !command.contains("--workspace")
+                    && !command.contains("--all")),
+            "{commands:?}"
+        );
+    }
+
     #[test]
     fn upstream_writer_conflicts_with_downstream_builder_but_not_siblings() {
         let workspace = tempfile::tempdir().expect("tempdir");

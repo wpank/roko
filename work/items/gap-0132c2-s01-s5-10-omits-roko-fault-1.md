@@ -9,7 +9,7 @@ goal = "cybernetic"
 size = "S"
 subsystem = ["roko-learn/loop-audit"]
 created = 2026-10-03
-updated = 2026-10-03
+updated = 2026-10-15
 last_verified = 2026-10-03
 source = "wave-7 follow-up reports 2026-10-03 (PK42 gap-2b3c1b)"
 discovered_from = "gap-2b3c1b"
@@ -89,3 +89,5 @@ signal before anyone relies on it.
 
 - (2) needs no fix — it's recorded only so `faults::enable`'s lack of a production caller isn't later mistaken
   for a regression.
+
+2026-10-15 (status-quo assessment at 7b6a5af44, finding 41): also, C4 (and E2) cannot fail as specified: the empirical-Bernstein radius is about 2300/n, so at any realistic n the check passes whatever the data (A06: "C4 passes only vacuously"). When S01 §5.10 gets `spend_cap_usd`, also restate C4's acceptance with a bound that a broken loop can fail, or mark it as not decidable at pilot scale.

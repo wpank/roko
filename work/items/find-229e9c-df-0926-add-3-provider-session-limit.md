@@ -8,7 +8,7 @@ severity = "p3"
 goal = "core"
 subsystem = ["roko-agent/provider"]
 created = 2026-09-26
-updated = 2026-10-01
+updated = 2026-10-15
 last_verified = 2026-10-01
 last_verified_rev = "ebdc0f5d5"
 source = "tmp/dogfood/2026-09-25-portal-programme-run.md#Addendum 3 — 2026-09-26: plan 02, and a hard stop"
@@ -44,3 +44,5 @@ Re-checked 2026-09-29: unchanged since 725f21e05; line refs moved (run_bridge_wi
     all-exhausted refusal within that bound, return a typed "retry at <reset>" outcome. The plan runner then pauses
     the plan (as `roko plan pause` does), shows the reset in the TUI and resumes it, instead of holding an attempt
     open. The test `exhausted_only_provider_waits_for_reset` named in `[[verify]]` belongs with that change.
+
+2026-10-15 decision (Will delegated it to the coordinator's recommendation, tmp/status-quo/2026-10-15/DECISIONS-2026-10-15.md, decision 9; he can veto it): The plan pauses, not the task, and waiting is opt-in. Add [routing] max_exhaustion_wait_secs with default 0, which keeps today's behaviour: stop with the non-retryable provider_exhausted error and burn no retries. When it is set and every candidate is exhausted, the dispatcher returns a typed 'retry at <reset>' outcome. The plan runner then pauses the plan as roko plan pause does, shows the reset time, and resumes at the reset only if the reset falls within the bound; otherwise it stops as today. No attempt is held open while waiting. The item stays open with its verify (exhausted_only_provider_waits_for_reset). Why: All-exhausted refusals already end as provider_exhausted without a retry (crates/roko-cli/src/graph_task_dispatch/failover.rs:884, no_usable_provider; run_bridge_with_failover at :288). The 2026-10-01 note shows an in-attempt wait is wrong: the 300 s stall watchdog would cancel it and burn a retry. A plan-level pause reuses the existing pause and resume path and keeps dependents from failing on the same exhausted provider. A default of 0 changes nothing for anyone who doesn't opt in, so the change is reversible and costs no spend. If vetoed: With a task-level pause instead, the task waits while the rest of the plan continues, and a held attempt must survive the stall watchdog. With 'not now', the item is parked and runs keep stopping at a session limit.

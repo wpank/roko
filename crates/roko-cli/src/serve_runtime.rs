@@ -1184,7 +1184,9 @@ fn record_refused_run(workdir: &Path, run_id: &str, message: &str) {
 }
 
 /// Refuse a chat host's run when the workspace has no data-model boundary
-/// (`[agent.data_llm]`) and does not allow running without one (9117).
+/// (`[agent.data_llm]`) and does not allow running without one (9117), or
+/// when no model its tasks can be routed to runs in roko's own tool loop
+/// (gap-cf427e), as serve's `/mcp` refuses it before queueing it.
 fn refuse_unscreened_chat_run(
     workdir: &Path,
     repo_registry: &RepoRegistry,
@@ -1194,7 +1196,7 @@ fn refuse_unscreened_chat_run(
         return Ok(());
     }
     match load_effective_roko_config(workdir, repo_registry)?.chat_run_refusal() {
-        Some(reason) => anyhow::bail!("{reason}"),
+        Some(refusal) => anyhow::bail!("{}", refusal.message),
         None => Ok(()),
     }
 }

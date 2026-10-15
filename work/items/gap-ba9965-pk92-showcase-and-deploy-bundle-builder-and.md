@@ -11,7 +11,7 @@ size = "L"
 hold = "waits on Will's deferred decision(s) 3346, 7101, 9303 (tmp/backlog/2026-10-02-complete-and-wire/DECISIONS.md)"
 subsystem = ["demo-app/showcase"]
 created = 2026-10-02
-updated = 2026-10-02
+updated = 2026-10-15
 last_verified = 2026-10-02
 source = "tmp/backlog/2026-10-02-complete-and-wire PK92"
 anchors = ["demo/demo-app/src/main.tsx"]
@@ -71,3 +71,5 @@ The tasks were checked against `2c3ea9f73` on 2026-10-02. Re-check each task's a
 - Waits on: PK30 (gap-2ca903), PK44 (gap-85d176), PK49 (gap-7ec3ef), PK50 (gap-63fd4c), PK57 (gap-4a5109), PK67 (gap-ed1a08), PK71 (gap-099513), PK81 (gap-a63e3c), PK82 (gap-9ecd37), PK84 (gap-59ebfd), PK85 (gap-fcb44c), PK91 (gap-799698).
 - On hold until Will takes the deferred decision(s) 3346, 7101, 9303 (spend or a public release); see `DECISIONS.md`.
 - Suggested model: sonnet.
+
+2026-10-15 (status-quo assessment at 7b6a5af44, finding 41): task 9342's verify is weak: its greps already pass (`p1-routing` is only an Overview tile id at `build_bundle.py:100`, and `timeline` is in `verify_bundle.py`), and `test_bundle.py` tests only R1, so with pytest installed the verify would pass with no R2 view built (tmp/status-quo/2026-10-15/backlog/A11-93-showcase-deploy.md lines 116-118). Add assertions that the R2 views exist in a built bundle. Its pytest also needs `benchmarks/viabilitybench/.venv`, which does not exist in the main checkout.

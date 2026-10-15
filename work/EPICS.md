@@ -6,8 +6,8 @@ Progress per epic: its children (items whose `parent` is the epic, plus its `dep
 
 ## [spec-ae5f94](items/spec-ae5f94-epic-release-blockers.md) release blockers
 
-- **20/24 closed** · goal `release` · severity p0
-- open by lane: none 3, rust-cold 1
+- **21/24 closed** · goal `release` · severity p0
+- open by lane: none 3
 - next: [find-8cc7ac](items/find-8cc7ac-some-github-workflows-fail-on-main-and.md) Some GitHub workflows fail on main and required checks are undefined
 
 ## [spec-ba7bea](items/spec-ba7bea-epic-secrets-and-git-guard.md) secrets and git guard
@@ -18,13 +18,13 @@ Progress per epic: its children (items whose `parent` is the epic, plus its `dep
 
 ## [spec-f8d196](items/spec-f8d196-epic-research-paper-companion-report-and-tl.md) research paper, companion report and TL;DR upkeep
 
-- **37/39 closed** · goal `whitepaper` · severity p1
+- **38/40 closed** · goal `whitepaper` · severity p1
 - open by lane: paper 2
-- next: none ready (2 unverified)
+- next: [gap-aed6f1](items/gap-aed6f1-the-research-paper-loops-within-loops-has.md) The research paper Loops Within Loops has an independent review, the fixes it asks for, and a final lint pass
 
 ## [spec-ce1484](items/spec-ce1484-epic-whitepaper-v1.md) whitepaper v1
 
-- **25/27 closed** · goal `whitepaper` · severity p1
+- **26/28 closed** · goal `whitepaper` · severity p1
 - open by lane: paper 2
 - next: [gap-8117a8](items/gap-8117a8-publish-the-whitepaper-pdf-build-release-tag.md) Publish the whitepaper: PDF build, release tag and venue
 
@@ -36,9 +36,9 @@ Progress per epic: its children (items whose `parent` is the epic, plus its `dep
 
 ## [spec-e57870](items/spec-e57870-epic-specs-a-cheap-model-can-execute.md) specs a cheap model can execute
 
-- **19/21 closed** · goal `golden-path` · severity p1
-- open by lane: docs 1, none 1
-- next: [find-70edcb](items/find-70edcb-df-0926-r-1-r-5-plan.md) Plan generation/validation does not flag weak verify gates
+- **20/21 closed** · goal `golden-path` · severity p1
+- open by lane: none 1
+- next: none ready (1 on hold)
 
 ## [spec-567e52](items/spec-567e52-epic-pilot-benchmark.md) pilot benchmark
 
@@ -48,15 +48,19 @@ Progress per epic: its children (items whose `parent` is the epic, plus its `dep
 
 ## [spec-6ac537](items/spec-6ac537-epic-cybernetic-core.md) cybernetic core
 
-- **27/28 closed** · goal `cybernetic` · severity p2
-- open by lane: rust-hot 1
-- next: none ready (1 unverified)
+- **28/28 closed** · goal `cybernetic` · severity p2
+
+## [spec-7a71d6](items/spec-7a71d6-epic-turn-the-cybernetic-layer-on-in.md) turn the cybernetic layer on in safe stages
+
+- **0/15 closed** · goal `cybernetic` · severity p2
+- open by lane: rust-hot 9, rust-cold 6
+- next: [gap-d76b1b](items/gap-d76b1b-decision-7103-s-audit-on-by-default.md) Decision 7103's audit-on-by-default outcome was never implemented: enabled stays false, no --no-audit flag
 
 ## [spec-1e1b45](items/spec-1e1b45-epic-tracker-tooling-for-parallel-work.md) tracker tooling for parallel work
 
-- **6/8 closed** · goal `tooling` · severity p1
-- open by lane: tracker 2
-- next: [gap-25065c](items/gap-25065c-import-the-rest-of-the-research-programme.md) Import the rest of the research programme's checklist as unverified work items
+- **7/8 closed** · goal `tooling` · severity p1
+- open by lane: tracker 1
+- next: [gap-d6fd3c](items/gap-d6fd3c-install-the-work-skills-at-user-level.md) Install the work skills at user level so sessions in worktrees get them
 
 ## [spec-9a3131](items/spec-9a3131-epic-hygiene-and-cheap-wins.md) hygiene and cheap wins
 
@@ -100,12 +104,12 @@ Progress per epic: its children (items whose `parent` is the epic, plus its `dep
 
 | Lane | Closed | Total | Open (verified) |
 |---|---|---|---|
-| bench | 82 | 120 | 38 (29) |
-| docs | 20 | 25 | 5 (4) |
-| frontend | 3 | 6 | 3 (3) |
-| none | 377 | 470 | 93 (92) |
-| paper | 61 | 78 | 17 (14) |
-| rust-cold | 235 | 265 | 30 (21) |
-| rust-hot | 224 | 244 | 20 (17) |
+| bench | 85 | 122 | 37 (28) |
+| docs | 22 | 30 | 8 (8) |
+| frontend | 3 | 7 | 4 (4) |
+| none | 390 | 479 | 89 (81) |
+| paper | 69 | 83 | 14 (12) |
+| rust-cold | 239 | 285 | 46 (38) |
+| rust-hot | 234 | 262 | 28 (27) |
 | tests | 1 | 1 | 0 (0) |
-| tracker | 21 | 24 | 3 (2) |
+| tracker | 22 | 28 | 6 (5) |

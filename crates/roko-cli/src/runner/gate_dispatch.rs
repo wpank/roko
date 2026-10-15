@@ -2059,18 +2059,10 @@ fn verify_step_gate(
     step: &VerifyStep,
     line_sink: Option<mpsc::UnboundedSender<String>>,
 ) -> ShellGate {
-    let mut gate = ShellGate::new(
-        "bash",
-        vec![
-            "-o".into(),
-            "pipefail".into(),
-            "-c".into(),
-            step.command.clone(),
-        ],
-    )
-    .with_name(format!("task-verify:{}:{}", task_id, step.phase))
-    .with_phase(&step.phase)
-    .with_timeout_ms(step.timeout_ms);
+    let mut gate = ShellGate::verify_step(&step.command)
+        .with_name(format!("task-verify:{}:{}", task_id, step.phase))
+        .with_phase(&step.phase)
+        .with_timeout_ms(step.timeout_ms);
     if let Some(sink) = line_sink {
         gate = gate.with_line_sink(sink);
     }

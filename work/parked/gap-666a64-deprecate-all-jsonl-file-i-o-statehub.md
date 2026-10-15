@@ -1,0 +1,57 @@
++++
+id = "gap-666a64"
+kind = "gap"
+title = "Deprecate All JSONL File I/O — StateHub as Single Source of Truth"
+status = "parked"
+triage = "verified"
+severity = "p2"
+goal = "features"
+subsystem = ["roko-runtime"]
+created = 2026-09-07
+updated = 2026-10-15
+last_verified = 2026-10-01
+last_verified_rev = "ebdc0f5d5"
+source = "tmp/backlog/archive/110-deprecate-jsonl-statehub-only.md#110 — Deprecate All JSONL File I/O — StateHub as Single Source of Truth"
+discovered_from = "audit:tmp/backlog/archive/110-deprecate-jsonl-statehub-only.md#110 — Deprecate All JSONL File I/O — StateHub as Single Source of Truth"
+anchors = ["crates/roko-cli/src/tui/cursors.rs", "crates/roko-cli/src/tui/jsonl_tailer.rs", "crates/roko-runtime/src/state_hub.rs"]
+links = { depends_on = [], blocks = [], related = ["gap-d81125", "find-275736"], supersedes = [], duplicate_of = "" }
+
+[[verify]]
+command = "test ! -e crates/roko-cli/src/tui/jsonl_tailer.rs && test ! -e crates/roko-cli/src/tui/cursors.rs"
+
+[parked]
+at = 2026-10-15
+from_status = "open"
+reason = "Decision 2026-10-15 (Will's decision 9, the coordinator's recommendation): Not the persisted logs. Episodes, efficiency, signals, events and attempts stay as append-only JSONL, the durable record. The item's full scope ('deprecate all JSONL I/O') is rejected. The narrow scope is accepted but parked: the dashboard would read those logs once through a hub bootstrap and then "
++++
+architectural debt; 26 parallel JSONL write streams and 20+ reader poll sites fragment state and guarantee stale data in the standalone TUI. Every runtime data producer in roko writes to a separate JSONL file. Every consumer reads from a separate JSONL file. This creates 26 parallel write streams…
+
+Imported without verification from:
+- `tmp/backlog/archive/110-deprecate-jsonl-statehub-only.md#110 — Deprecate All JSONL File I/O — StateHub as Single Source of Truth`
+
+Some cited files are gone: `.roko/engrams.jsonl`.
+
+How to verify: Check: `grep -rn '\.jsonl' crates/ --include='*.rs' | grep -v test | grep -v doc | grep -v target` — zero results (no production JSONL usage outside tests).; `ls .roko/*.jsonl .roko/learn/*.jsonl .roko/state/*.jsonl 2>/dev/null` — returns nothing… [evidence: 00-STATUS-SUMMARY 3. Open / P1 -- High (Open): XL | 6 |]
+
+Verified 2026-09-28: JSONL is still everywhere: 181 non-test source files (939 lines) reference .jsonl, and 22 live .roko/*.jsonl and .roko/learn/*.jsonl files exist. tui/cursors.rs and tui/jsonl_tailer.rs also still exist, so the import's 'gone' warning was wrong. The 'zero production JSONL' acceptance check conflicts with JSONL logs documented as canonical (episodes.jsonl, efficiency.jsonl, engrams.jsonl), so the scope needs a decision. Severity p2 (architectural debt).
+
+Re-verified 2026-09-29: still open. 3d0637232 extended tui/jsonl_tailer.rs (+114 lines), moving further from a StateHub-only design. The scope conflict recorded on 2026-09-28 (zero production JSONL versus canonical episodes/efficiency/signals logs) still needs a decision before this can be planned.
+
+## Notes
+
+- 2026-10-01 (wk-streams): still blocked on the scope decision recorded on 2026-09-28; no code change.
+  - Re-checked at BASE: `tui/jsonl_tailer.rs` (384 lines) and `tui/cursors.rs` (163) feed `DashboardData::tick`
+    (`tui/dashboard.rs:453`, `:637`; `tui/state/learning.rs:47`) with efficiency, c-factor, signal, episode and
+    event-log history. The StateHub has event types for most of these (`EfficiencyEvent`, `CFactorTrendUpdated`,
+    `EpisodeRecorded`, `EventLogEntry`), but a hub holds only what was published since it started, and
+    `SharedStateHub::bootstrap_from_workdir` restores the durable plan and task projection, not those logs. Deleting
+    the two files, as the verify asks, therefore means bootstrapping the hub from the logs: their reading moves; it
+    does not disappear.
+  - Since gap-6533bf (same branch), a dashboard beside a standalone `roko plan run` follows the run's hub live, which
+    removes the staleness during runs that motivated this item.
+  - Proposed scope for Will: keep the append-only logs as the persisted record (episodes, efficiency, signals,
+    events); have the dashboard read them once, through a hub bootstrap, and then only the hub's stream; delete
+    `jsonl_tailer.rs` and `cursors.rs` once `DashboardData::tick` no longer polls files. Next step: decide that
+    scope, or a narrower one, then write the Plan.
+
+2026-10-15 decision (Will delegated it to the coordinator's recommendation, tmp/status-quo/2026-10-15/DECISIONS-2026-10-15.md, decision 9; he can veto it): Not the persisted logs. Episodes, efficiency, signals, events and attempts stay as append-only JSONL, the durable record. The item's full scope ('deprecate all JSONL I/O') is rejected. The narrow scope is accepted but parked: the dashboard would read those logs once through a hub bootstrap and then only the hub stream, and jsonl_tailer.rs and cursors.rs would go. Un-park it if the dashboard shows stale data outside a live run, or if the tailer causes a bug. Why: The logs are the record that diagnose, learning and audits read; a hub holds only what was published since it started (item note 2026-10-01). Since gap-6533bf, a dashboard beside a standalone plan run follows the run's hub live, which removed the staleness that motivated the item. crates/roko-cli/src/tui/jsonl_tailer.rs and cursors.rs still exist and work. Deleting them now would only move the log reading into a bootstrap, with no user-visible gain. Parking costs nothing and can be reversed. If vetoed: With the narrow scope worked now, the dashboard reads the logs once through SharedStateHub::bootstrap_from_workdir, DashboardData::tick stops polling files, and the item's verify (both files deleted) passes.

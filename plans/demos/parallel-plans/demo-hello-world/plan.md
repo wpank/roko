@@ -4,14 +4,26 @@ estimated_tasks: 1
 estimated_parallel_width: 1
 estimated_minutes: 1
 parallel_safe: true
-tags: [demo, hello-world, parallel-plans, fake-agent]
+tags: [demo, hello-world, parallel-plans, fake-agent, start-here]
 ---
 
-# Hello world demo
+# Start here: hello world demo
 
-The smallest end-to-end run that produces a working program: one implementer
-task writes `demo/hello-world/main.rs`, and the verify step compiles it with
-`rustc` and checks that it prints exactly `hello world`.
+The demo to run first, from Hermes, the portal or the terminal. It is the
+smallest end-to-end run that produces a working program: one implementer task
+writes `demo/hello-world/main.rs`, and the verify step compiles it with `rustc`
+and checks that it prints exactly `hello world`. On the default model ladder it
+takes about a minute and costs well under a cent.
+
+The plan's `[meta] verify` runs the same check on the merged result. Without it,
+a plan that writes a `.rs` file gets the Cargo workspace's default whole-plan
+check (fmt, clippy and tests of the packages it may touch), which in the roko
+repository is a build of the whole workspace.
+
+The program is demo output and says so in its first line. The run leaves it on
+its own branch (`roko/batch/<run>`): look at the diff, and do not merge it. If
+it lands on your branch, the next run of this demo finds its check already
+passing, and roko refuses a plan whose checks pass before an agent has started.
 
 It is one half of the `parallel-plans` set. Its sibling, `demo-print-hello`,
 writes a different directory, so the two plans can run at the same time.

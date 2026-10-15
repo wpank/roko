@@ -47,10 +47,9 @@
 | `demos/demo-multistage` | 5 | 🧪 fixture |
 | `demos/demo-parallel-integration` | 3 | 🧪 fixture |
 | `demos/demo-release-readiness` | 4 | 🧪 fixture |
-| `demos/demo-resume-recovery` | 2 | 🧪 fixture |
 | `demos/hello-color/demo-greeting-module` | 1 | 🧪 fixture |
 | `demos/hello-color/demo-hello-color` | 5 | 🧪 fixture |
 | `demos/parallel-plans/demo-hello-world` | 1 | 🧪 fixture |
 | `demos/parallel-plans/demo-print-hello` | 1 | 🧪 fixture |
 
-**Fixtures excluded from backlog**: 12 plans, 35 tasks
+**Fixtures excluded from backlog**: 11 plans, 33 tasks

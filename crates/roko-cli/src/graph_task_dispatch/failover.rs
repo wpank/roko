@@ -49,6 +49,19 @@ const FAILOVER_REFUSED_ROLE: &str = "failover_refused";
 /// the error says how to log in (backlog 1115).
 const AUTH_FAILURE: &str = "auth_failure";
 
+/// Failover refusal classes that waiting does not end: a login or a change
+/// to the workspace's configuration does, such as a key for a model, or an
+/// API model for a task a CLI agent cannot run (backlog 1115, gap-cf427e).
+const WAITING_DOES_NOT_HELP: [&str; 7] = [
+    AUTH_FAILURE,
+    "not_configured",
+    "not_dispatchable",
+    "contract_unsupported",
+    "disabled",
+    "no_credentials",
+    UNGUARDED_IN_CHECKOUT,
+];
+
 /// `RokoError::Gateway` category of an attempt denied in a way no retry can
 /// change (backlog 1116). The error is non-retryable like
 /// [`PROVIDER_EXHAUSTED_CATEGORY`], so the task fails at once with how to
@@ -312,7 +325,7 @@ impl GraphTaskDispatcher {
                 }
                 let definitive = refusal.definitive;
                 refusals.push(refusal);
-                match self.failover_model(spec, task_id, &refusals, ladder, theta) {
+                match self.failover_model(spec, task_id, &refusals, ladder, theta, &request) {
                     Ok(next) => {
                         candidate = next;
                         continue;
@@ -448,7 +461,7 @@ impl GraphTaskDispatcher {
             if pinned {
                 return Err(self.no_usable_provider(&refusals, &[], true, None));
             }
-            candidate = self.failover_model(spec, task_id, &refusals, ladder, theta)?;
+            candidate = self.failover_model(spec, task_id, &refusals, ladder, theta, &request)?;
         }
     }
 
@@ -616,13 +629,18 @@ impl GraphTaskDispatcher {
     ///
     /// An attempt the model ladder routed (`ladder`) takes the first group,
     /// then the runnable rungs above its own, and nothing cheaper (decision
-    /// 1119, backlog 1120). M1's `provider_order` in `theta` then reorders
-    /// the candidates ([`Self::order_by_provider`], 8124).
+    /// 1119, backlog 1120). An attempt the ladder did not route that holds
+    /// its outbound tool calls for approval (`stages`, as a chat host's run
+    /// does) can run only in roko's own tool loop, so it takes the models
+    /// that run there last ([`RokoConfig::tool_loop_models`], gap-cf427e).
+    /// M1's `provider_order` in `theta` then reorders the candidates
+    /// ([`Self::order_by_provider`], 8124).
     fn failover_candidates(
         &self,
         refusals: &[ProviderRefusal],
         ladder: Option<&LadderRoute>,
         theta: Option<&HarnessParams>,
+        stages: bool,
     ) -> Vec<DispatchCandidate> {
         let first = refusals
             .first()
@@ -643,6 +661,19 @@ impl GraphTaskDispatcher {
             let first = first.as_ref();
             let mut candidates =
                 roko_learn::provider_failover::failover_candidates(&self.config, first);
+            if stages {
+                for model_key in self.config.tool_loop_models() {
+                    if !candidates
+                        .iter()
+                        .any(|candidate| candidate.model_key == model_key)
+                    {
+                        candidates.push(DispatchCandidate {
+                            model_key,
+                            config: None,
+                        });
+                    }
+                }
+            }
             self.order_by_provider(&mut candidates, theta);
             return candidates;
         };
@@ -705,7 +736,9 @@ impl GraphTaskDispatcher {
     /// The first usable model in [`Self::failover_candidates`], with the
     /// substitution and its reason logged at WARN. A candidate that would run
     /// unguarded in the shared checkout is passed over, and when that is all
-    /// that stopped every candidate the error says so.
+    /// that stopped every candidate the error says so. So is one that cannot
+    /// enforce `request`'s agent contract, such as a CLI agent for a task
+    /// that holds its outbound tool calls for approval (gap-cf427e).
     fn failover_model(
         &self,
         spec: &TaskExecutionSpec,
@@ -713,19 +746,28 @@ impl GraphTaskDispatcher {
         refusals: &[ProviderRefusal],
         ladder: Option<&LadderRoute>,
         theta: Option<&HarnessParams>,
+        request: &AgentDispatchRequest,
     ) -> Result<DispatchCandidate> {
         let mut skipped = Vec::new();
         let mut only_unguarded = refusals
             .iter()
             .all(|refusal| refusal.class == UNGUARDED_IN_CHECKOUT);
-        for candidate in self.failover_candidates(refusals, ladder, theta) {
-            if let Some(kind) = self.unguarded_in_checkout(&self.resolve_candidate(&candidate)) {
+        let stages = request.agent_contract.as_ref().is_some_and(|contract| {
+            contract.outbound_policy() != roko_core::tool::OutboundPolicy::Allow
+        });
+        for candidate in self.failover_candidates(refusals, ladder, theta, stages) {
+            let target = self.resolve_candidate(&candidate);
+            if let Some(kind) = self.unguarded_in_checkout(&target) {
                 log_unguarded_skip(&spec.plan_id, kind);
                 let why = unguarded_reason(kind);
                 skipped.push(format!("{}: {why}", candidate.model_key));
                 continue;
             }
             only_unguarded = false;
+            if let Err(error) = crate::dispatch_v2::validate_contract_support(request, &target) {
+                skipped.push(format!("{}: {error}", candidate.model_key));
+                continue;
+            }
             match self.failover_candidate(&candidate, refusals) {
                 Ok(provider_id) => {
                     if let Some(refused) = refusals.last() {
@@ -892,21 +934,23 @@ impl GraphTaskDispatcher {
                 skipped.join("; ")
             )
         };
-        // A provider that rejected roko's credentials needs a login, which
-        // waiting does not bring (backlog 1115).
+        // A provider that rejected roko's credentials needs a login, and one
+        // this task cannot use needs a configuration change: waiting brings
+        // neither (backlog 1115, gap-cf427e).
         let mut fixes: Vec<String> = refusals
             .iter()
             .filter(|refusal| refusal.class == AUTH_FAILURE)
             .map(|refusal| self.credentials_hint(refusal))
             .collect();
-        let auth_only = !fixes.is_empty() && fixes.len() == refusals.len();
+        let waiting_helps =
+            |refusal: &ProviderRefusal| !WAITING_DOES_NOT_HELP.contains(&refusal.class);
         fixes.push(fallback);
-        if auth_only {
+        if !refusals.iter().any(waiting_helps) {
             fixes.push("Then re-run.".to_string());
         } else {
             let wait = refusals
                 .iter()
-                .filter(|refusal| refusal.class != AUTH_FAILURE)
+                .filter(|refusal| waiting_helps(refusal))
                 .filter_map(|refusal| refusal.until_ms)
                 .min()
                 .map_or_else(
@@ -2043,6 +2087,102 @@ printf '%s\n' '{{"type":"result","subtype":"success","is_error":false,"total_cos
         assert!(message.contains("rung `mid`"), "{message}");
         assert!(message.contains("cheaper model"), "{message}");
         assert_eq!(logged_models(&models), ["claude-sonnet-4-6"]);
+    }
+
+    /// gap-cf427e: a chat host's run holds its outbound tool calls for
+    /// approval, which only roko's own tool loop can do, so its ladder keeps
+    /// only the rungs that run there (`run_graph_plan` keeps them for a run
+    /// with a `stage` floor). A task whose start rung is a CLI rung runs on
+    /// the nearest API rung below it, and no CLI is called; a run from the
+    /// CLI routes the same task to the CLI rung, as before.
+    #[tokio::test]
+    async fn chat_run_ladder_skips_rungs_whose_agent_runs_its_own_tools() {
+        const RUN: &str = "chat-ladder";
+        let temp = tempdir().expect("tempdir");
+        let models = temp.path().join("claude-models.log");
+        let claude = temp.path().join("fake-claude.sh");
+        model_logging_claude(&claude, &models);
+        let (base_url, requests) = spawn_openai_mock(vec![final_turn("done"); 2]);
+        let rungs = [
+            ("cheap", "cheap-model"),
+            ("mid", "mid-model"),
+            ("strong", "strong-model"),
+        ];
+        let mut config = ladder_failover_config(&claude, &rungs);
+        config
+            .providers
+            .get_mut("mid_api")
+            .expect("the mid rung's API provider")
+            .base_url = Some(base_url);
+        let config = Arc::new(config);
+        let mut task = make_task_def("mechanical");
+        task.timeout_secs = FIXTURE_HANG_GUARD_SECS;
+        task.hints.rung = Some("strong".to_string());
+        let spec = make_spec(&task);
+        let ctx = CellContext::new().with_run_id(RUN.to_string());
+        let runs_dir = temp.path().join(".roko/runs");
+
+        let factory = SharedAgentFactory::new(Arc::clone(&config), None, None, None)
+            .await
+            .keep_tool_loop_rungs();
+        let chat = GraphTaskDispatcher::new(
+            Arc::new(factory),
+            Arc::clone(&config),
+            temp.path().to_path_buf(),
+        )
+        .with_outbound_floor(Some(roko_core::tool::OutboundPolicy::Stage))
+        .with_feedback(GraphFeedbackContext {
+            runs_dir: Some(runs_dir.clone()),
+            ..GraphFeedbackContext::default()
+        });
+        chat.dispatch(&spec, Vec::new(), &ctx)
+            .await
+            .expect("the mid rung's API model runs the task");
+        assert!(logged_models(&models).is_empty(), "no CLI runs");
+        assert_eq!(requests.lock().len(), 1, "one call to the API rung");
+        let attempts = runs_dir.join(RUN).join("attempts.jsonl");
+        let is_verdict = |row: &serde_json::Value| row["schema_version"] == "roko.verdict/1";
+        let verdicts = jsonl_rows_where(&attempts, 1, is_verdict).await;
+        let verdict = &verdicts[0];
+        assert_eq!(verdict["ladder"]["rung"], "mid", "{verdict}");
+        assert_eq!(verdict["executed"]["provider"], "mid_api", "{verdict}");
+
+        let cli = make_bare_dispatcher(config.as_ref().clone(), temp.path()).await;
+        cli.dispatch(&spec, Vec::new(), &ctx)
+            .await
+            .expect("the strong rung's CLI runs the task");
+        assert_eq!(logged_models(&models), ["claude-sonnet-4-6"]);
+
+        // Without the API model's key, nothing can run the chat run's task:
+        // the error names the CLI that cannot keep its policy, and asks for
+        // a configuration change, not for waiting.
+        let mut keyless = config.as_ref().clone();
+        keyless
+            .providers
+            .get_mut("mid_api")
+            .expect("the mid rung's API provider")
+            .api_key_env = Some("ROKO_TEST_FAILOVER_KEY_NEVER_SET".to_string());
+        let keyless = Arc::new(keyless);
+        let factory = SharedAgentFactory::new(Arc::clone(&keyless), None, None, None)
+            .await
+            .keep_tool_loop_rungs();
+        let chat = GraphTaskDispatcher::new(
+            Arc::new(factory),
+            Arc::clone(&keyless),
+            temp.path().to_path_buf(),
+        )
+        .with_outbound_floor(Some(roko_core::tool::OutboundPolicy::Stage));
+        let error = chat
+            .dispatch(&spec, Vec::new(), &ctx)
+            .await
+            .expect_err("no model of roko's tool loop has its key");
+        let RokoError::Gateway { message, .. } = &error else {
+            panic!("expected a gateway error, got {error:?}");
+        };
+        assert!(message.contains("runs its own tools"), "{message}");
+        assert!(message.contains("Then re-run."), "{message}");
+        assert!(!message.contains("wait for the provider"), "{message}");
+        assert_eq!(logged_models(&models), ["claude-sonnet-4-6"], "no CLI runs");
     }
 
     /// bug-ef82eb (shakedown D1): an API model that answers blank fails its

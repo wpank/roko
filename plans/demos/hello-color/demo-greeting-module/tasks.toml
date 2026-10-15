@@ -7,6 +7,19 @@ max_parallel = 1
 skip_enrichment = true
 estimated_total_minutes = 2
 
+# The whole-plan check, on the merged result, in place of the Cargo workspace's
+# default, which in the roko repository builds the whole workspace. It runs under
+# `sh`, so it pipes into grep where the task steps use bash's `<<<`.
+[[meta.verify]]
+phase = "unit-tests"
+command = '''out="$(CARGO_TARGET_DIR="${TMPDIR:-/tmp}/roko-demo-hello-color" cargo test --quiet --manifest-path demo/hello-color/Cargo.toml 2>&1)" && printf '%s\n' "$out" | grep -Eq "test result: ok\. [1-9][0-9]* passed"'''
+fail_msg = "demo/hello-color's unit tests must pass."
+
+[[meta.verify]]
+phase = "runs"
+command = '''out="$(CARGO_TARGET_DIR="${TMPDIR:-/tmp}/roko-demo-hello-color" cargo run --quiet --manifest-path demo/hello-color/Cargo.toml)" && printf '%s\n' "$out" | grep -Fq "Hello, World!"'''
+fail_msg = "demo/hello-color must still print its greeting."
+
 [[task]]
 id = "T01"
 title = "Add a greeting module to hello-color"

@@ -8,10 +8,9 @@ severity = "p2"
 goal = "cybernetic"
 rank = 54
 size = "M"
-hold = "waits on Will's deferred decision(s) 7101 (tmp/backlog/2026-10-02-complete-and-wire/DECISIONS.md)"
 subsystem = ["benchmarks/viabilitybench/audit"]
 created = 2026-10-02
-updated = 2026-10-02
+updated = 2026-10-15
 last_verified = 2026-10-02
 source = "tmp/backlog/2026-10-02-complete-and-wire PK54"
 anchors = ["benchmarks/viabilitybench"]
@@ -59,3 +58,5 @@ The tasks were checked against `2c3ea9f73` on 2026-10-02. Re-check each task's a
 - Waits on: PK53 (gap-dff960).
 - On hold until Will takes the deferred decision(s) 7101 (spend or a public release); see `DECISIONS.md`.
 - Suggested model: opus.
+
+2026-10-15 (Will, 2026-10-15; tmp/status-quo/2026-10-15/DECISIONS-2026-10-15.md), decision 5: 7101 approved: a BL12 line with a $10 cap for S05's first audit slice. Hold lifted.

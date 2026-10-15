@@ -7,6 +7,14 @@ max_parallel = 2
 skip_enrichment = true
 estimated_total_minutes = 18
 
+# The whole-plan check, on the merged result, in place of the Cargo workspace's
+# default, which in the roko repository builds the whole workspace. It runs under
+# `sh`, so it pipes into grep where the task steps use bash's `<<<`.
+[[meta.verify]]
+phase = "compiles"
+command = '''CARGO_TARGET_DIR="${TMPDIR:-/tmp}/roko-demo-hello-server" cargo build --quiet --manifest-path demo/hello-server/Cargo.toml'''
+fail_msg = "demo/hello-server must build."
+
 # Dependency DAG:
 #
 #   T01 (researcher)

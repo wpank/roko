@@ -8,13 +8,14 @@ severity = "p2"
 goal = "core"
 subsystem = ["roko-cli/plan_policy"]
 created = 2026-09-26
-updated = 2026-10-01
+updated = 2026-10-15
 last_verified = 2026-10-01
 last_verified_rev = "d9e79e9d8"
 source = "tmp/dogfood/2026-09-25-portal-programme-run.md#R-1. Plan 01 shipped a regression its own gate could not see"
 discovered_from = "audit:tmp/dogfood/2026-09-25-portal-programme-run.md#R-1. Plan 01 shipped a regression its own gate could not see"
 anchors = ["crates/roko-cli/src/plan_policy.rs::validate_plan_budgets", "crates/roko-cli/src/plan_validate.rs", "crates/roko-cli/src/plan_generate.rs:353"]
 links = { depends_on = [], blocks = [], related = [], supersedes = [], duplicate_of = "" }
+hold = "until the plan-validate CI job runs --strict (dec-50192e, decided 2026-10-15); then add only the cannot-fail case as a default warning"
 +++
 A verify scoped to the file the task wrote let a crate regression through; negative greps punished correct code; vacuous verifies passed on an untouched repo. Validator/generator should warn on these patterns and prefer whole-crate gates.
 
@@ -41,3 +42,5 @@ Rechecked 2026-09-29 at d9e79e9d8: still open. plan_validate.rs has no rule that
   - Left: default validation still does not flag vacuous or file-scoped verify steps. `plan validate
     --spec-quality` scores them (HF2, SQ04, SQ05). Making that a default warning needs a decision, since
     `--strict` rejects warnings and many plans and test fixtures use `echo ok` or `test -f` steps.
+
+2026-10-15 decision (Will delegated it to the coordinator's recommendation, tmp/status-quo/2026-10-15/DECISIONS-2026-10-15.md, decision 9; he can veto it): Not now. Vacuous and file-scoped steps stay in plan validate --spec-quality (HF2, SQ04, SQ05). Once plan-validate CI runs --strict (dec-50192e, decided 2026-10-15), add only the cannot-fail case (echo, true, :, exit 0 as the whole step) as a default warning, in a change that also fixes the active plans that use it. File-scoped steps stay a spec-quality score. Hold the item with that reason. Why: Will's decision 3 (dec-50192e) switches CI to --strict in the change that fixes the last warning. A new default warning now would move that target, since many plans and test fixtures use echo ok or test -f steps (item note 2026-10-01). The generator already rules out commands that cannot fail, and PLAN_042 already flags negated greps (test a_negative_grep_verify_step_is_a_plan_042_warning), so new plans are covered. Sequencing the warning after the --strict switch still catches vacuous verifies, the real false-green risk, without blocking the switch. If vetoed: With 'now', the default validator warns on vacuous and file-scoped steps immediately, and the active plans and fixture-count tests must be fixed before CI can go --strict.

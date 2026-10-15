@@ -140,6 +140,19 @@ impl ProviderKind {
             Self::CodexCli => AgentBackend::Codex,
         }
     }
+
+    /// Provider kinds that serve the same model family over another
+    /// transport: `claude_cli` runs any Claude slug the Anthropic API serves,
+    /// and the Gemini CLI any slug the Gemini API serves. Failover moves a
+    /// refused model's slug to these (`roko_learn::provider_failover`).
+    #[must_use]
+    pub const fn same_family(self) -> &'static [Self] {
+        match self {
+            Self::ClaudeCli | Self::AnthropicApi => &[Self::ClaudeCli, Self::AnthropicApi],
+            Self::GeminiCli | Self::GeminiApi => &[Self::GeminiCli, Self::GeminiApi],
+            _ => &[],
+        }
+    }
 }
 
 impl fmt::Display for ProviderKind {

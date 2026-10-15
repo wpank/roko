@@ -2004,7 +2004,7 @@ pub(crate) fn validate_contract_support(
 /// dispatcher, which alone stages or refuses a tool call that acts on the
 /// outside world (9131): a CLI agent, an ACP agent, or an agent runtime such
 /// as Hermes or OpenClaw. Only the API providers run roko's own tool loop.
-fn runs_own_tools(target: &ProviderDispatchSpec) -> bool {
+pub(crate) fn runs_own_tools(target: &ProviderDispatchSpec) -> bool {
     let kind = match &target.runtime {
         ProviderRuntime::Cli(_) => return true,
         ProviderRuntime::AgentResultBridge { provider_kind } => *provider_kind,
@@ -3678,6 +3678,60 @@ mod tests {
             assert!(validate_contract_support(&request, &kind_target(kind)).is_ok());
         }
         assert!(validate_contract_support(&request, &cli).is_ok());
+    }
+
+    /// gap-cf427e: serve refuses a chat host's run, and routing skips a
+    /// ladder rung, by `ProviderConfig::runs_in_own_tool_loop`, read from the
+    /// config alone; dispatch refuses a `stage` contract by the resolved
+    /// runtime ([`runs_own_tools`]). The two agree for every provider kind,
+    /// with or without a CLI command.
+    #[test]
+    fn config_tool_loop_classification_matches_dispatch() {
+        let kinds = [
+            ProviderKind::AnthropicApi,
+            ProviderKind::ClaudeCli,
+            ProviderKind::OpenAiCompat,
+            ProviderKind::CursorAcp,
+            ProviderKind::PerplexityApi,
+            ProviderKind::GeminiApi,
+            ProviderKind::GeminiCli,
+            ProviderKind::CerebrasApi,
+            ProviderKind::CursorCli,
+            ProviderKind::Hermes,
+            ProviderKind::OpenClaw,
+            ProviderKind::CodexCli,
+        ];
+        for kind in kinds {
+            for command in [None, Some("codex"), Some("/opt/bin/claude")] {
+                let provider = ProviderConfig {
+                    kind,
+                    command: command.map(str::to_string),
+                    base_url: Some("http://127.0.0.1:9/v1".to_string()),
+                    api_key_env: Some("PATH".to_string()),
+                    ..ProviderConfig::default()
+                };
+                let mut config = RokoConfig::default();
+                config.providers.clear();
+                config.models.clear();
+                config.providers.insert("p".to_string(), provider.clone());
+                config.models.insert(
+                    "m".to_string(),
+                    ModelProfile {
+                        provider: "p".to_string(),
+                        slug: "m-1".to_string(),
+                        supports_tools: true,
+                        ..ModelProfile::default()
+                    },
+                );
+                let target = ProviderDispatchResolver::new(Arc::new(config)).resolve("m");
+                assert!(target.runtime.is_supported(), "{kind:?} {command:?}");
+                assert_eq!(
+                    runs_own_tools(&target),
+                    !provider.runs_in_own_tool_loop(),
+                    "{kind:?} with command {command:?}"
+                );
+            }
+        }
     }
 
     /// gap-baab0a: a Codex attempt records the tool policy its contract

@@ -8,10 +8,9 @@ severity = "p1"
 goal = "golden-path"
 rank = 16
 size = "M"
-hold = "waits on Will's deferred decision(s) 3114 (tmp/backlog/2026-10-02-complete-and-wire/DECISIONS.md)"
 subsystem = ["self-hosting"]
 created = 2026-10-02
-updated = 2026-10-02
+updated = 2026-10-15
 last_verified = 2026-10-02
 source = "tmp/backlog/2026-10-02-complete-and-wire PK16"
 anchors = ["work/history/"]
@@ -64,3 +63,5 @@ The tasks were checked against `2c3ea9f73` on 2026-10-02. Re-check each task's a
 - On hold until Will takes the deferred decision(s) 3114 (spend or a public release); see `DECISIONS.md`.
 - Existing work items this package covers or touches: gap-f30b8e. When its tasks are done, close those whose verify then passes.
 - Suggested model: sonnet.
+
+2026-10-15 (Will, 2026-10-15; tmp/status-quo/2026-10-15/DECISIONS-2026-10-15.md), decision 5: 3114 approved: $12 for the three golden-path runs ($4 each), $2 for the live plan set, $15 for the dogfood rerun, $29 in all. Hold lifted.

@@ -7,18 +7,27 @@ max_parallel = 1
 skip_enrichment = true
 estimated_total_minutes = 1
 
+# The whole-plan check: the same rustc run, on the merged result. Without it a plan
+# that writes a `.rs` file gets the Cargo default (fmt, clippy and tests of every
+# package it may touch), which in the roko repository is the whole workspace.
+[[meta.verify]]
+phase = "runs"
+command = '''bin="${TMPDIR:-/tmp}/roko-demo-hello-world-$$" && rustc --edition 2021 -o "$bin" demo/hello-world/main.rs && out="$("$bin")"; status=$?; rm -f "$bin"; test "$status" -eq 0 && test "$out" = "hello world"'''
+fail_msg = "demo/hello-world/main.rs must compile with rustc and print exactly `hello world`."
+
 [[task]]
 id = "HELLO-1"
 title = "Write a Rust program that prints hello world"
 description = """Create `demo/hello-world/main.rs`: a single-file Rust program whose
-`main` prints exactly `hello world` followed by a newline. Use only the standard
-library. Do not create a Cargo project, and do not modify or create any other
-file. If the file already satisfies this contract, leave it unchanged.
+`main` prints exactly `hello world` followed by a newline. Start the file with the
+comment line `// roko demo output (plan demo-hello-world): safe to delete.` Use only
+the standard library. Do not create a Cargo project, and do not modify or create any
+other file. If the file already satisfies this contract, leave it unchanged.
 
 Output file (the fake test agent reads this marker): ARTIFACT demo/hello-world/main.rs"""
 status = "ready"
 tier = "mechanical"
-max_loc = 3
+max_loc = 4
 files = ["demo/hello-world/main.rs"]
 role = "implementer"
 depends_on = []

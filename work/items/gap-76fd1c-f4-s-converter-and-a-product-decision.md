@@ -9,7 +9,7 @@ goal = "proof"
 size = "M"
 subsystem = ["benchmarks/viabilitybench"]
 created = 2026-10-05
-updated = 2026-10-05
+updated = 2026-10-15
 last_verified = 2026-10-05
 source = "wave-19 follow-up reports 2026-10-05 (gap-c71dbb, work/gap-6e7a86)"
 discovered_from = "gap-c71dbb (open, work/gap-6e7a86; own Progress note recorded this but deliberately did not file it)"
@@ -85,3 +85,5 @@ even correctly converted and scored, is 8 of the 48 instances the spec calls for
   deliberately did not file it separately at the time ("this note is the record"); filing it now
   per the instruction so it doesn't go stale once that item closes on its narrowed, F1-only
   scope.
+
+2026-10-15 (status-quo assessment at 7b6a5af44, findings 28 and 41; tmp/status-quo/2026-10-15/backlog/A03-31-32-defaults-and-specs.md row 3234, work-items/C1-*.md line 12): still open and still the only item for backlog 3234's full 48-instance H3 manipulation-check report, which has never run (the check has run on the four fixture families and on 8 fresh F1 instances only). Its verify is now vacuous: `test_full_48_instance_h3_report_runs_from_generators` exists and passes, but it converts and checks only 8 F1 instances (its own docstring says so), so this item's static verify passes while its Done when does not hold. Replace the verify with a test that needs all 48, for example `grep -qw 'def test_h3_manipulation_report_covers_all_48_instances' benchmarks/viabilitybench/specops/tests/test_manipulation.py && benchmarks/viabilitybench/.venv/bin/python -m pytest benchmarks/viabilitybench/specops/tests/test_manipulation.py -k test_h3_manipulation_report_covers_all_48_instances -q` (48 pairs from the instances `streams/p1_h3.toml` names, each with gap >= MIN_GAP). The product decision for F2/F3/F5/F7 is shared with a new item from finding 26 (LOG1 block C's vague stream cannot materialize those 32 instances either): rendering a `spec.precise.md` in F1's layout for those families would serve both, and both should land before the pre-registration lock (gap-394f28), which hashes the streams. `benchmarks/viabilitybench/.venv` does not exist in the main checkout at HEAD, so the Python half of this verify cannot run there yet.

@@ -416,6 +416,7 @@ mod tests {
 
         assert_eq!(body["status"], "ok");
         assert_eq!(body["version"], env!("CARGO_PKG_VERSION"));
+        assert_eq!(body["features"], serde_json::json!(crate::routes::FEATURES));
         assert!(body["uptime_secs"].as_u64().is_some());
         assert_eq!(body["active_plans"], 0);
         assert_eq!(body["active_agents"], 0);

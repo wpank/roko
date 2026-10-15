@@ -9,7 +9,7 @@ goal = "release"
 size = "S"
 subsystem = ["docs"]
 created = 2026-10-02
-updated = 2026-10-02
+updated = 2026-10-15
 last_verified = 2026-10-02
 source = "backlog wave reports 2026-10-02 (PK01 gap-625195)"
 discovered_from = "gap-625195 (backlog tasks 1104-1106)"
@@ -87,3 +87,5 @@ in `commands/plan.rs`/`run_cmd.rs`, hardcoded `false`) — that's tracked separa
 decision 4115) — real and shipped, like `roko learn patterns`, just absent from the config-schema
 docs table alongside `[pricing]`/`stream_usage` (gap-d2c64f) and the CLAUDE.md CLI table this item
 already tracks.
+
+2026-10-15 (status-quo assessment at 7b6a5af44, finding 38; tmp/status-quo/2026-10-15/backlog/A01-11-12-safe-runs.md line 122): still open: CLAUDE.md's CLI reference has no `roko safety controls` or `roko safety release` row (grep finds no 'roko safety' in CLAUDE.md at b42578bab). The same finding's other stale CLAUDE.md line (the Gates row calling `run_gate_once` the per-task entry point) is filed as a new docs item; whoever takes either can do both CLAUDE.md edits in one commit.

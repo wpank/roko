@@ -1,0 +1,82 @@
++++
+id = "gap-a29711"
+kind = "gap"
+title = "Production Topology Restore and Kill-Point Gate"
+status = "parked"
+triage = "verified"
+severity = "p2"
+goal = "core"
+subsystem = ["roko-cli"]
+created = 2026-09-05
+updated = 2026-10-15
+last_verified = 2026-10-01
+last_verified_rev = "ebdc0f5d5"
+source = "tmp/backlog/archive/284-topology-restore-killpoint-gate.md#284 — Production Topology Restore and Kill-Point Gate"
+discovered_from = "audit:tmp/backlog/archive/284-topology-restore-killpoint-gate.md#284 — Production Topology Restore and Kill-Point Gate"
+anchors = ["crates/roko-graph/src/topology.rs::ProductionPlanTopology", "crates/roko-cli/src/graph_execution/plan_runner.rs::run_one_plan", "crates/roko-cli/src/graph_checkpoint.rs::resume_checkpoint"]
+links = { depends_on = [], blocks = [], related = ["gap-22b0a2", "gap-8ea1bd"], supersedes = [], duplicate_of = "" }
+
+[[verify]]
+command = 'cargo test -p roko-cli --test topology_kill_points'
+
+[parked]
+at = 2026-10-15
+from_status = "open"
+reason = "Decision 2026-10-15 (Will's decision 9, the coordinator's recommendation): Park it. The item comes from archived backlog #284 (the engine-convergence programme). Every file it cites is gone, and the topology anchors it still names have drifted. Re-file a narrow item with its own verify if a resume-after-kill defect shows up in a live run."
++++
+[blocked] Blocked —
+
+Imported without verification from:
+- `tmp/backlog/archive/284-topology-restore-killpoint-gate.md#284 — Production Topology Restore and Kill-Point Gate`
+
+Warning: every file this item cites is gone (`crates/roko-cli/tests/topology_kill_points.rs`, `crates/roko-cli/tests/topology_restore.rs`, `tmp/engine-audit/22-run-lifecycle-state-model.md`, `tmp/engine-audit/SPEC-HARDENING-ADDENDUM.md`) — likely obsolete or moved.
+
+How to verify: Check: Register plan-controller guaranteed-finally/release/terminal state from #256.; Register workflow iteration/generation/phase/commit state from #257.; Implement every fixed plan/workflow kill point and exact-count assertion above. [evidence: own status: Blocked; 00-STATUS-SUMMARY 3. Open / Engine Convergence Program (: Blocked]
+
+Verified 2026-09-28: still open - no crates/roko-cli/tests/topology_restore.rs or topology_kill_points.rs and no kill-point harness anywhere; ProductionPlanTopology (roko-graph/src/topology.rs:90) and GuaranteedFinallyController (roko-graph/src/finally.rs:270) exist without the restore/kill-point gate. Severity lowered p0 -> p2: a blocked proof gate, not a broken core loop.
+
+Re-verified 2026-09-29: still open. 3d0637232 made Graph checkpoints upgrade-safe (fingerprint matching, rebind, authored-plan checks) but added no production-topology restore and no kill-point harness. graph_checkpoint.rs:1425-1426 still refuses --rich-topology for the checkpoint preview.
+
+## Notes
+
+- 2026-10-01 (wk-tamper): blocked; no code change. Still open at ebdc0f5d5, and it needs scoping before anyone builds
+  the gate (several days of work):
+  - `crates/roko-graph/src/finally.rs` (`GuaranteedFinallyController`, :270) is not compiled: `roko-graph/src/lib.rs`
+    declares no `mod finally`, and `git log -S "pub mod finally"` finds none. The controller finally, release and
+    terminal state that the first checklist step registers exists in no build. Wiring the controller into
+    `run_one_plan`, or deleting the file, is the unfinished part of #256.
+  - The workflow half targets #257's `integrative@1` workflow (compose, implement, gate, autofix, review, commit),
+    which ran on the WorkflowEngine that #276 retired. `integrative` is now a task tier (`plan_generate.rs:216`). It
+    should be re-scoped to the one-task plan `roko run` writes, or dropped.
+  - `ProductionPlanTopology` (`topology.rs:90`) runs only under `--rich-topology`, with passthrough enricher stubs
+    (`plan_runner.rs:2512-2525`, `with_allow_test_stubs` at :2687; gap-8ea1bd is parked), and the resume preview
+    refuses it (`graph_checkpoint.rs:1833`).
+  - No kill-point hook exists: `ROKO_TEST_KILL_POINT` appears nowhere. An env-triggered `process::exit` in the
+    shipped binary needs a decision (a test-only cargo feature, or a cfg).
+  Next step: a scope decision (Will or the coordinator). Then wire or delete `finally.rs`, add the hook behind a
+  test feature, and write `crates/roko-cli/tests/topology_kill_points.rs` with counting fakes on the default
+  topology.
+- 2026-10-01 (wk-tamper): gap-ff6e83 deleted `finally.rs`, which was never compiled. `run_one_plan` owns a plan run's
+  cleanup, so without the controller the first checklist step would register `run_one_plan`'s terminal state (the
+  checkpoint's terminal status and task outcomes); that is part of the scope decision. The anchor moved from the
+  controller to `run_one_plan`.
+- 2026-10-03 (wave-5 follow-up, PK78 gap-2339e2): the three top-level `anchors` still resolve
+  (`ProductionPlanTopology` at `topology.rs:83`, `run_one_plan` at `plan_runner.rs:3096`, `resume_checkpoint` at
+  `graph_checkpoint.rs:1818`), and the behavior these Notes describe still holds — but two things drifted after
+  backlog task 9206 ("Drop the six passthrough enricher cells from the `--rich-topology` subgraph," part of
+  `gap-2339e2`, implemented at `e23d01942`, merged `5bb643122`): (1) `ENRICHER_SUFFIXES` and the six passthrough
+  enricher cells 9206 names are now gone from `topology.rs` entirely (9206 added
+  `rich_topology_task_subgraph_has_no_passthrough_enrichers` asserting none remain), which simplifies — but does
+  not resolve — the "passthrough enricher stubs" half of the scope decision above: the *generic* stub-cell
+  mechanism these Notes meant (`plan_runner.rs`'s own "register stub passthrough cells for all topology node
+  types," now around line 3166) is a different, still-present thing from the six *enricher* cells 9206 removed.
+  (2) The specific line citations above (`plan_runner.rs:2512-2525`, `with_allow_test_stubs` at `:2687`,
+  `graph_checkpoint.rs:1833`) have drifted from unrelated growth of these hot files since 2026-10-01:
+  `with_allow_test_stubs` is now at `plan_runner.rs:3336`, the "register stub passthrough cells" comment is now
+  around `plan_runner.rs:3166`, and the `--rich-topology` refusal `bail!` in `resume_checkpoint` is now around
+  `graph_checkpoint.rs:2741-2742` (same message, same behavior, just moved) — re-locate all three before anyone
+  acts on this item.
+
+2026-10-15 (status-quo assessment at 7b6a5af44, finding 41): the verify can never pass: `cargo test -p roko-cli --test topology_kill_points` names a test target that no longer exists, and every file the item cites is gone (notes of 10-01 and 10-03: the anchors moved after gap-ff6e83 and 9206). This is an imported Runner-v2-era packet (#284): re-scope it against the Graph engine's checkpoint and kill-point code with a guarded test, or park it.
+
+2026-10-15 decision (Will delegated it to the coordinator's recommendation, tmp/status-quo/2026-10-15/DECISIONS-2026-10-15.md, decision 9; he can veto it): Park it. The item comes from archived backlog #284 (the engine-convergence programme). Every file it cites is gone, and the topology anchors it still names have drifted. Re-file a narrow item with its own verify if a resume-after-kill defect shows up in a live run. Why: The item says its cited files are all gone (crates/roko-cli/tests/topology_kill_points.rs, topology_restore.rs and two tmp/engine-audit docs), and it has no [[verify]]. Its scope (registering plan-controller and workflow iteration state from #256/#257) predates the Runner-v2 deletion. Resume-after-interrupt is covered more narrowly by gap-36f3fb (decided above) and the existing resume_records_the_attempts_a_stop_cut_off test. Parking is the cheapest reversible option and keeps it out of `next`. If vetoed: With a re-scope instead, someone must write a new Done-when and verify for the kill points that still matter around run_one_plan (plan_runner.rs) and resume_checkpoint (graph_checkpoint.rs).

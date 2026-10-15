@@ -1,5 +1,7 @@
 # 215 — HTTP Run-Scoped Event and Gate Query Endpoints
 
+> **Status 2026-10-15: DONE.** Verified at `7b6a5af44` by the status-quo assessment (`tmp/status-quo/2026-10-15/backlog/B-top-level-and-regressions.md`): routes moved from routes/events.rs to crates/roko-serve/src/routes/runs.rs:60-67 (/runs/{run_id}/events, /events/stream, /gates); handler read_for_run runs.rs:391
+
 > **Status: SOURCE-DONE; LOOPBACK API/CURSOR/SSE CHECKPOINT VERIFIED** (2026-08-31,
 > `5f689d66e` + `85c052fc9`). The
 > implementation uses the safer run-resource surface under `/api/runs/{run_id}` rather than the

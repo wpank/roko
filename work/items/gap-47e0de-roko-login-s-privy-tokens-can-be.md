@@ -9,7 +9,7 @@ goal = "release"
 size = "S"
 subsystem = ["roko-serve/auth", "roko-core/config"]
 created = 2026-09-29
-updated = 2026-09-29
+updated = 2026-10-15
 last_verified = 2026-09-29
 last_verified_rev = "d5c1dc6be"
 source = "session:roko-b6 2026-09-29 portal close-out"
@@ -84,3 +84,5 @@ real Privy token contains.
 
 - Keep fail-closed: an empty `privy_allowed_users` must not widen access.
 - find-a1284b (the default Privy JWKS URL returns 404) also affects Privy auth on deployed servers.
+
+2026-10-15 (status-quo decision 3, D18): Will chose to reject a Privy JWT on a role or user-id mismatch. When this item adds privy_allowed_user_ids, a token whose sub is not listed must get no authentication (try_privy_jwt returns None), not read scope. bug-17213a (backlog 9340) makes the role branch reject; both edit try_privy_jwt, so land one, then the other.

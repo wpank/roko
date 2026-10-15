@@ -7,6 +7,19 @@ max_parallel = 1
 skip_enrichment = true
 estimated_total_minutes = 3
 
+# The whole-plan check, on the merged result, in place of the Cargo workspace's
+# default, which in the roko repository builds the whole workspace. It runs under
+# `sh`, so it pipes into grep where the task steps use bash's `<<<`.
+[[meta.verify]]
+phase = "output"
+command = '''bin="${TMPDIR:-/tmp}/roko-demo-fibonacci-$$" && rustc --edition 2021 -o "$bin" demo/fibonacci/src/main.rs && out="$("$bin")"; status=$?; rm -f "$bin"; test "$status" -eq 0 && test "$out" = "0 1 1 2 3 5 8 13 21 34"'''
+fail_msg = "demo/fibonacci must compile with rustc and print the first ten Fibonacci numbers."
+
+[[meta.verify]]
+phase = "unit-tests"
+command = '''bin="${TMPDIR:-/tmp}/roko-demo-fibonacci-tests-$$" && rustc --edition 2021 --test -o "$bin" demo/fibonacci/src/main.rs && out="$("$bin")"; status=$?; rm -f "$bin"; test "$status" -eq 0 && printf '%s\n' "$out" | grep -Eq "test result: ok\. [1-9][0-9]* passed"'''
+fail_msg = "demo/fibonacci's unit tests must pass."
+
 [[task]]
 id = "FIB-1"
 title = "Create the fibonacci crate"

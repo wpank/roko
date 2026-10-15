@@ -2,7 +2,7 @@
 id = "bug-dceafd"
 kind = "bug"
 title = "A run whose roko process died reads running forever: its summary stays active, cancel answers 404, hosts keep its cap held"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p1"
 goal = "core"
@@ -11,6 +11,7 @@ subsystem = ["roko-serve/runs"]
 created = 2026-10-15
 updated = 2026-10-15
 last_verified = 2026-10-15
+last_verified_rev = "bd000231d"
 source = "tmp/hermes-roko-v5/findings/repro-will.md#F1 (repro-will, 2026-10-15)"
 discovered_from = "hermes-roko-v5 round: Will's Mac crashed at 17:02 with roko runs in flight"
 anchors = ["crates/roko-serve/src/routes/runs.rs::run_summary", "crates/roko-serve/src/routes/plans/run_control.rs::cancel_plan_run", "crates/roko-serve/src/routes/mcp.rs::cancel_run", "crates/roko-learn/src/telemetry/records.rs::RunClosed", "crates/roko-serve/src/lib.rs::run_server_with_state"]
@@ -18,6 +19,18 @@ links = { depends_on = [], blocks = [], related = ["gap-36f3fb", "bug-1d09e8", "
 
 [[verify]]
 command = "grep -rqw 'fn a_run_whose_process_died_reads_interrupted' crates/roko-serve/ && cargo test -p roko-serve a_run_whose_process_died_reads_interrupted"
+
+[closed]
+at = 2026-10-15
+at_ts = "2026-10-15T19:53:59Z"
+commit = "bd000231d"
+by = "commit trailer"
+executor = "claude-agent"
+via = "manual"
+size = "M"
+model = "claude-opus-5-5"
+forced = false
+evidence = "roko-serve interrupted_runs::settle ends a run whose manifest is open and whose last invocation's process is gone (pid free, or recycled: started after the invocation; ps etime tells other users' processes): the manifest closes interrupted with a RunInterruption record (roko-learn), and the run's own index gets run_completed {outcome: interrupted, reason}. Serve settles open runs at start and on summary, detail, dashboard list or cancel of a run it holds no handle of; RunState::Interrupted; cancel answers 200 state interrupted, idempotently; an unknown id still 404s. cargo test -p roko-serve a_run_whose_process_died_reads_interrupted passes; roko-learn 1352 and roko-serve 1022 lib tests plus every integration test pass; clippy -p roko-learn -p roko-serve -D warnings clean. Live: kill -9 of a real serve mid-attempt (gpt-5.4-mini, $0.010), restart: summary interrupted, run_cancel clean twice, the re-run succeeded with the crashed checkout set aside (tmp/hermes-roko-v5/findings/roko-recovery.md)."
 +++
 
 ## Problem

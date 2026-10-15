@@ -6817,15 +6817,14 @@ exec sleep 60
         };
         assert_eq!(outcomes("T1"), ["passed"]);
         assert_eq!(outcomes("T2"), ["cancelled"]);
-        // A cancel raises no error. The run's closing tally is bug-db89d4's:
-        // until it counts plans by outcome, it says "Graph Engine: … failed".
+        // A cancel raises no error, so the run's last row is not a failure:
+        // its closing tally counts the stopped plan as a notice (bug-db89d4).
         let errors = events
             .iter()
             .filter_map(|event| match event {
                 DashboardEvent::Error { message } => Some(message.as_str()),
                 _ => None,
             })
-            .filter(|message| !message.starts_with("Graph Engine:"))
             .collect::<Vec<_>>();
         assert!(errors.is_empty(), "a cancel is not a failure: {errors:?}");
         let notes = events

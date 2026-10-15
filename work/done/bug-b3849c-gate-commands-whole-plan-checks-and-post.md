@@ -2,14 +2,16 @@
 id = "bug-b3849c"
 kind = "bug"
 title = "Gate commands, whole-plan checks and post-merge regression checks run cargo on every core at normal priority, so one run can take the whole machine"
-status = "open"
-triage = "unverified"
+status = "done"
+triage = "verified"
 severity = "p2"
 goal = "core"
 size = "M"
 subsystem = ["roko-gate"]
 created = 2026-10-15
 updated = 2026-10-15
+last_verified = 2026-10-15
+last_verified_rev = "913656959"
 source = "tmp/hermes-roko-v5/findings/repro-will.md (rows C2, C4, 'Gate time per real run'; roko-gates, 2026-10-15)"
 discovered_from = "hermes-roko-v5 round: a demo run from Hermes in the roko repo, then the 17:02 kernel panic"
 anchors = ["crates/roko-gate/src/gate_env.rs::inherit_gate_env_from", "crates/roko-core/src/child_env.rs::apply_gate_env", "crates/roko-core/src/config/gates.rs::GatesConfig"]
@@ -17,6 +19,13 @@ links = { depends_on = [], blocks = [], related = ["bug-a7e018", "bug-7b62ff"], 
 
 [[verify]]
 command = "grep -rqw 'fn gate_commands_run_throttled' crates/roko-gate/ && cargo test -p roko-gate gate_commands_run_throttled"
+
+[closed]
+at = 2026-10-15
+at_ts = "2026-10-15T19:39:37Z"
+commit = "913656959"
+forced = false
+evidence = "Gate commands run throttled: roko_gate::inherit_gate_env_from calls throttle() (CARGO_BUILD_JOBS and RUST_TEST_THREADS = [gates] cargo_jobs, default half the CPUs >= 2, unless already set; pre_exec niceness [gates] nice, default 10), covering ShellGate verify steps and rungs, run_plan_verify, the delivery regression check and run_gate_once; run_graph_plan applies and logs the workspace limits. Tests: roko-gate gate_env::tests::gate_commands_run_throttled and throttle_keeps_a_set_job_count_and_can_be_switched_off, roko-core gate_limits_default_to_half_the_cpus_at_niceness_10; roko-core lib 2019 passed, roko-gate lib 689 passed, roko-cli lib 3634 passed + 1 flaky judge test that passed on rerun; clippy -p roko-core -p roko-gate -p roko-cli -D warnings clean. roko-gate compile_real_project::compile_gate_fails_on_syntax_error fails with a shared CARGO_TARGET_DIR (known bug-be2a53)."
 +++
 
 ## Problem

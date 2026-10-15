@@ -1868,6 +1868,7 @@ fn build_schema_tree() -> toml::Value {
     // `every_accepted_config_field_is_in_the_schema_tree` fails when the
     // tree lacks one.
     config.gates.max_rung = Some(0);
+    config.gates.cargo_jobs = Some(0);
     // `max_output_tokens` maps roles to output-token caps (a dynamic map
     // section).
     config

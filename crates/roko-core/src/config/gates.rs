@@ -56,6 +56,10 @@ const fn default_compile_concurrency() -> usize {
     1
 }
 
+const fn default_gate_nice() -> i32 {
+    crate::child_env::GateLimits::DEFAULT_NICE
+}
+
 const fn default_sibling_settle_secs() -> u64 {
     600
 }
@@ -324,6 +328,19 @@ pub struct GatesConfig {
     /// Per-repository Cargo command ownership limit.
     #[serde(default = "default_compile_concurrency")]
     pub compile_concurrency: usize,
+    /// How many jobs a gate command's cargo builds run at once, and how many
+    /// tests its test binaries run at once (`CARGO_BUILD_JOBS` and
+    /// `RUST_TEST_THREADS`), for every check roko runs: task verify steps and
+    /// rungs, whole-plan checks and post-merge regression checks
+    /// (bug-b3849c). Unset: half the CPUs, at least 2. `0`: no cap. A value
+    /// in roko's own environment wins.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cargo_jobs: Option<usize>,
+    /// The niceness those commands run at, so that the person's own work
+    /// keeps the machine (bug-b3849c). Default: 10. `0` leaves their
+    /// priority alone.
+    #[serde(default = "default_gate_nice")]
+    pub nice: i32,
     /// Seconds a Graph verify step that failed while sibling tasks were
     /// editing the same working tree waits for them to finish their current
     /// attempt before re-running once; only the re-run counts. `0` disables
@@ -467,6 +484,8 @@ impl Default for GatesConfig {
             impact_max_reverse_dependents: default_impact_max_reverse_dependents(),
             impact_max_targets: default_impact_max_targets(),
             compile_concurrency: default_compile_concurrency(),
+            cargo_jobs: None,
+            nice: default_gate_nice(),
             sibling_settle_secs: default_sibling_settle_secs(),
             baseline_filter: default_true(),
             llm_judge: false,
@@ -489,6 +508,21 @@ impl Default for GatesConfig {
 }
 
 impl GatesConfig {
+    /// The limits gate commands run with: `cargo_jobs` (unset: half the
+    /// CPUs, at least 2; `0`: no cap) and `nice` (below 0 counts as 0).
+    #[must_use]
+    pub fn gate_limits(&self) -> crate::child_env::GateLimits {
+        let cargo_jobs = match self.cargo_jobs {
+            None => Some(crate::child_env::GateLimits::default_cargo_jobs()),
+            Some(0) => None,
+            Some(jobs) => Some(jobs),
+        };
+        crate::child_env::GateLimits {
+            cargo_jobs,
+            nice: self.nice.max(0),
+        }
+    }
+
     /// The smoothing factor of the gate pass-rate EMAs: `ema_alpha` when it
     /// lies in (0, 1), the default otherwise.
     #[must_use]
@@ -964,6 +998,42 @@ required = true
         assert_eq!(cfg.gates.effective_rungs().len(), 2);
         assert_eq!(cfg.gates.effective_rungs()[0].name, "compile");
         assert_eq!(cfg.gates.effective_rungs()[1].timeout_secs, 300);
+    }
+
+    /// bug-b3849c: checks run with a job cap at niceness 10 unless
+    /// `[gates]` says otherwise; `cargo_jobs = 0` lifts the cap, and a
+    /// negative niceness counts as 0.
+    #[test]
+    fn gate_limits_default_to_half_the_cpus_at_niceness_10() {
+        use crate::child_env::GateLimits;
+
+        let default = RokoConfig::default().gates.gate_limits();
+        assert_eq!(default, GateLimits::default());
+        assert_eq!(default.nice, 10);
+        assert!(default.cargo_jobs.is_some_and(|jobs| jobs >= 2));
+
+        let limits = |toml: &str| {
+            RokoConfig::from_toml(toml)
+                .expect("config parses")
+                .gates
+                .gate_limits()
+        };
+        let set = limits("[gates]\ncargo_jobs = 3\nnice = 15\n");
+        assert_eq!(
+            set,
+            GateLimits {
+                cargo_jobs: Some(3),
+                nice: 15
+            }
+        );
+        let off = limits("[gates]\ncargo_jobs = 0\nnice = -5\n");
+        assert_eq!(
+            off,
+            GateLimits {
+                cargo_jobs: None,
+                nice: 0
+            }
+        );
     }
 
     #[test]

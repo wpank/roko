@@ -2,14 +2,16 @@
 id = "bug-a7e018"
 kind = "bug"
 title = "cargo metadata --offline fails in the roko repo, so plan footprints and gate impact analysis treat every .rs edit as touching every package"
-status = "open"
-triage = "unverified"
+status = "done"
+triage = "verified"
 severity = "p2"
 goal = "core"
 size = "S"
 subsystem = ["roko-cli/graph_execution"]
 created = 2026-10-15
 updated = 2026-10-15
+last_verified = 2026-10-15
+last_verified_rev = "19f112373"
 source = "tmp/hermes-roko-v5/findings/roko-demos.md (roko-demos, 2026-10-15)"
 discovered_from = "hermes-roko-v5 round: demo plans run from Hermes in the roko repo"
 anchors = ["crates/roko-cli/src/runner/impact_analysis.rs::cargo_metadata", "crates/roko-cli/src/graph_execution/plan_set.rs::CargoWorkspace"]
@@ -17,6 +19,15 @@ links = { depends_on = [], blocks = [], related = ["bug-0c7f25"], supersedes = [
 
 [[verify]]
 command = "grep -rqw 'fn cargo_metadata_reads_this_workspace_offline' crates/roko-cli/ && cargo test -p roko-cli cargo_metadata_reads_this_workspace_offline"
+
+[closed]
+at = 2026-10-15
+at_ts = "2026-10-15T18:12:46Z"
+commit = "19f112373"
+size = "S"
+claimed_at = "2026-10-15T15:51:48Z"
+forced = false
+evidence = "cargo_metadata (runner/impact_analysis.rs) falls back to cargo metadata --no-deps when the offline resolve fails (here: android_system_properties missing from the registry cache), and reverse_dependents follows members' path dependencies without a resolve graph. cargo test -p roko-cli --lib: cargo_metadata_reads_this_workspace_offline, reverse_dependents_follow_path_dependencies_without_a_resolve_graph and this_workspace_scopes_the_default_check_to_the_written_crate pass; full lib suite 3631 passed, 0 failed (gist test skipped); clippy -p roko-cli -D warnings clean. plan run --dry-run now prints each plan's whole-plan check."
 +++
 
 ## Problem

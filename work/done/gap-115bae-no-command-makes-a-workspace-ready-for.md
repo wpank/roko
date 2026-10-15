@@ -2,7 +2,7 @@
 id = "gap-115bae"
 kind = "gap"
 title = "No command makes a workspace ready for runs a chat host starts, roko doctor does not say whether they can start, and serve calls the fix a restart"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p2"
 goal = "hermes"
@@ -11,12 +11,22 @@ subsystem = ["roko-cli/config"]
 created = 2026-10-15
 updated = 2026-10-15
 last_verified = 2026-10-15
+last_verified_rev = "b2b899685"
 source = "hermes-roko round v5, roko-chathost, 2026-10-15"
 anchors = ["crates/roko-cli/src/commands/tune.rs::cmd_config_preset", "crates/roko-cli/src/doctor.rs::run_doctor", "crates/roko-core/src/config/hot_reload.rs::config_diff"]
 links = { depends_on = [], blocks = [], related = ["gap-cf427e", "bug-9f4bb6"], supersedes = [], duplicate_of = "" }
 
 [[verify]]
 command = "grep -rqw 'fn chat_host_preset_sets_the_data_model_and_keeps_comments' crates/ && cargo test -p roko-cli --lib chat_host_preset_sets_the_data_model_and_keeps_comments"
+
+[closed]
+at = 2026-10-15
+at_ts = "2026-10-15T19:26:47Z"
+commit = "b2b899685"
+by = "roko-chathost"
+executor = "claude-agent"
+forced = false
+evidence = "b2b899685: `roko config preset chat-host` (crates/roko-cli/src/chat_host.rs, commands/tune.rs) sets [agent.data_llm] model to the cheapest tool-loop model with its key (ladder rungs first), or --data-llm-model, or with --allow-without-data-llm [serve.mcp] allow_without_data_llm = true; toml_edit keeps comments; --dry-run diff, --json; never the global config. roko doctor gains chat_host_runs; a reload of [agent.data_llm]/[serve.mcp] is live (hot_reload DataLlm/ServeMcp). Tests: chat_host::tests (4, incl. the verify chat_host_preset_sets_the_data_model_and_keeps_comments), doctor::tests::doctor_says_whether_chat_hosts_can_start_runs, hot_reload::tests::chat_host_tables_reload_live, chat_run_tests::a_rung_naming_a_builtin_model_counts, main tests::cli_parses_config_preset_chat_host; lib suites roko-cli 3635, roko bin 458, roko-core 2020, roko-learn 1351, roko-serve 1017 passed (its one failure, the racy jwks::tests::proactive_refresh_task_fetches_without_validation_traffic, fails 3/20 at main too: bug-904a1c); fmt and clippy -D warnings clean. Live (roko serve on :6791, Will's real HOME, a scratch project with his ladder): the MCP probe was refused no_data_boundary; `preset chat-host --yes` wrote [agent.data_llm] model = \"cerebras-gptoss\" with the file's comments kept; 3 s later, no restart, the probe got not_found and serve logged `config hot-reloaded section=DataLlm`; a chat-started architectural task then skipped the claude_cli rung and ran on strong (gpt-5.4-mini), succeeded, $0.0027; roko doctor turned warn -> ok. A CLI-only workspace (scratch HOME): refusal [no_data_boundary, no_tool_loop_model]; --allow-without-data-llm left only no_tool_loop_model."
 +++
 
 ## Problem

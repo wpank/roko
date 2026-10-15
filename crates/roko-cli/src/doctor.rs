@@ -290,6 +290,10 @@ pub async fn run_doctor(options: &DoctorOptions) -> Result<DoctorReport> {
         &workdir,
         options.config_override.as_deref(),
     ));
+    checks.extend(check_model_prices(
+        &workdir,
+        options.config_override.as_deref(),
+    ));
     checks.push(check_rust_version());
     checks.push(check_node_version());
     checks.push(check_serve_auth(&loaded_config));
@@ -1004,6 +1008,92 @@ fn check_routing_ladder(workdir: &Path, config_override: Option<&Path>) -> Optio
         Some(
             "give each skipped rung's model a [models.*] entry and its [providers.*] table, and \
              set the provider's key; or remove the rung from [routing.ladder]",
+        ),
+    ))
+}
+
+/// The models a task can be routed to that roko has no price for: every
+/// `[models.*]` entry, each ladder rung's model and the default model, priced
+/// as a run prices a call (`dispatch_v2::model_has_price`: the run's price
+/// snapshot, the entry's rates, or the built-in table). A call on one is
+/// recorded at an unknown cost, so a budget cap cannot count it: a plan under
+/// `[budget] max_plan_usd`, or a chat host's run under its `max_usd`, stops
+/// only after that call ran (gap-c8f388).
+fn check_model_prices(workdir: &Path, config_override: Option<&Path>) -> Option<DoctorCheck> {
+    use crate::dispatch::model_routing::ladder_report;
+    use std::collections::{BTreeMap, BTreeSet};
+
+    let config = doctor_roko_config(workdir, config_override)?;
+    let snapshot =
+        roko_core::pricing_snapshot::PriceSnapshot::for_workspace(&config.pricing, workdir).ok();
+    let mut names: BTreeSet<String> = config
+        .effective_models()
+        .into_iter()
+        .filter(|(_, profile)| !profile.is_embedding_model)
+        .map(|(key, _)| key)
+        .collect();
+    names.extend(
+        ladder_report(&config)
+            .into_iter()
+            .filter_map(|rung| rung.dispatch.ok()),
+    );
+    let default_model = config.agent.default_model.trim();
+    if !default_model.is_empty() {
+        names.insert(default_model.to_string());
+    }
+    // Model key -> slug of each model that resolves and has no price.
+    let mut unpriced = BTreeMap::new();
+    for name in &names {
+        let resolved = roko_core::agent::resolve_model(&config, name);
+        if resolved.profile.is_some()
+            && !crate::dispatch_v2::model_has_price(
+                snapshot.as_ref(),
+                resolved.profile.as_ref(),
+                &resolved.slug,
+            )
+        {
+            unpriced.insert(resolved.model_key, resolved.slug);
+        }
+    }
+    let check = |status, message: String, fix: Option<&str>| DoctorCheck {
+        id: "model_prices".to_string(),
+        status,
+        message,
+        detail: None,
+        path: None,
+        url: None,
+        fix: fix.map(str::to_string),
+    };
+    if unpriced.is_empty() {
+        return Some(check(
+            DoctorStatus::Ok,
+            "every model a task can be routed to has a price, so a budget cap counts every call"
+                .to_string(),
+            None,
+        ));
+    }
+    let models = unpriced
+        .iter()
+        .map(|(key, slug)| {
+            if key == slug {
+                key.clone()
+            } else {
+                format!("{key} ({slug})")
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(", ");
+    Some(check(
+        DoctorStatus::Warn,
+        format!(
+            "{} model(s) a task can be routed to have no price: {models}. A call on one is \
+             recorded at an unknown cost, so a budget cap ([budget] max_plan_usd, or a chat \
+             run's max_usd) stops the run only after that call ran",
+            unpriced.len()
+        ),
+        Some(
+            "set cost_input_per_m and cost_output_per_m on each one's [models.*] entry (0 for a \
+             free local model)",
         ),
     ))
 }
@@ -3685,6 +3775,38 @@ mod tests {
             .ensure_dirs()
             .await
             .expect("create .roko layout");
+    }
+
+    /// gap-c8f388: doctor names the models a task can be routed to that have
+    /// no price, since a budget cap cannot count their calls; a rate of 0 is
+    /// a price.
+    #[test]
+    fn doctor_warns_about_unpriced_models() {
+        let dir = tempdir().expect("tempdir");
+        let path = dir.path().join("roko.toml");
+        let models = "[providers.local]\nkind = \"openai_compat\"\n\
+                      base_url = \"http://localhost:11434/v1\"\n\n\
+                      [models.free-local]\nprovider = \"local\"\nslug = \"free-local-model\"\n\
+                      cost_input_per_m = 0.0\ncost_output_per_m = 0.0\n";
+        let unpriced = "\n[models.mystery]\nprovider = \"local\"\nslug = \"mystery-model\"\n";
+        std::fs::write(&path, format!("{models}{unpriced}")).expect("write roko.toml");
+        let check = check_model_prices(dir.path(), Some(&path)).expect("a config");
+        assert_eq!(check.status, DoctorStatus::Warn, "{check:?}");
+        assert!(
+            check.message.contains("mystery (mystery-model)"),
+            "{check:?}"
+        );
+        assert!(!check.message.contains("free-local"), "{check:?}");
+        assert!(
+            check
+                .fix
+                .as_deref()
+                .is_some_and(|fix| fix.contains("cost_input_per_m"))
+        );
+
+        std::fs::write(&path, models).expect("write roko.toml");
+        let check = check_model_prices(dir.path(), Some(&path)).expect("a config");
+        assert_eq!(check.status, DoctorStatus::Ok, "{check:?}");
     }
 
     #[test]

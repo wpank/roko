@@ -1753,6 +1753,15 @@ fn builtin_rung_model(
     if !builtin.supports_tools {
         return Err("the model cannot call tools".to_string());
     }
+    // A budget cap counts a call only at a known price, so a rung never
+    // runs a built-in that roko cannot price (gap-c8f388).
+    if roko_core::config::model_registry::builtin_pricing(builtin.slug).is_none() {
+        return Err(
+            "roko has no price for this built-in model, so a budget cap could not count its \
+             calls; give it a [models.*] entry with cost_input_per_m and cost_output_per_m"
+                .to_string(),
+        );
+    }
     let resolved = roko_core::agent::resolve_model(config, model);
     if resolved.slug != builtin.slug {
         // A `[models.*]` slug that starts with the name selects that entry.
@@ -2330,6 +2339,20 @@ mod tests {
         assert!(strong.contains("disabled_providers"), "{strong}");
         config.routing.ladder.enabled = false;
         assert!(ladder_report_with(&config, |_| true).is_empty());
+    }
+
+    /// gap-c8f388: a rung that names a built-in model binds only at a known
+    /// price, so a budget cap counts its calls; every built-in has one.
+    #[test]
+    fn every_builtin_model_has_a_price() {
+        use roko_core::config::model_registry::{BUILTIN_MODELS, builtin_pricing};
+        for builtin in BUILTIN_MODELS {
+            assert!(
+                builtin_pricing(builtin.slug).is_some(),
+                "built-in model {} has no price",
+                builtin.slug
+            );
+        }
     }
 
     /// gap-460230: each ladder step climbs one runnable rung above the

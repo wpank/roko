@@ -1599,6 +1599,29 @@ mod tests {
         assert!(format!("{err:#}").contains("no-such-model"), "{err:#}");
     }
 
+    /// gap-c8f388: every model `roko init` can write has a price, its own
+    /// rates or the built-in table's for its slug, so a budget cap counts
+    /// its calls.
+    #[test]
+    fn every_model_init_writes_has_a_price() {
+        for model in MODELS {
+            let rate = |name: &str| {
+                model
+                    .fields
+                    .iter()
+                    .any(|field| field.starts_with(&format!("{name} = ")))
+            };
+            let own_rates = rate("cost_input_per_m") && rate("cost_output_per_m");
+            let builtin = roko_core::config::model_registry::builtin_pricing(model.slug).is_some();
+            assert!(
+                own_rates || builtin,
+                "{} ({}) has no price",
+                model.key,
+                model.slug
+            );
+        }
+    }
+
     /// A project with `files` (path, text) in a new directory.
     fn project(files: &[(&str, &str)]) -> tempfile::TempDir {
         let dir = tempfile::tempdir().expect("tempdir");

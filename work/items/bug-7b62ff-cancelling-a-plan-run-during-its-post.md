@@ -1,0 +1,58 @@
++++
+id = "bug-7b62ff"
+kind = "bug"
+title = "Cancelling a plan run during its post-merge regression check leaves the check running and the workspace runner lock held, so the next run fails at once"
+status = "open"
+triage = "unverified"
+severity = "p2"
+goal = "core"
+size = "M"
+subsystem = ["roko-cli/graph_execution"]
+created = 2026-10-15
+updated = 2026-10-15
+source = "tmp/hermes-roko-v5/findings/roko-demos.md (roko-demos, 2026-10-15)"
+discovered_from = "hermes-roko-v5 round: demo plans run from Hermes in the roko repo"
+anchors = ["crates/roko-cli/src/graph_execution/delivery.rs", "crates/roko-cli/src/graph_execution/plan_verify.rs::run_plan_verify", "crates/roko-cli/src/workspace_lock.rs"]
+links = { depends_on = [], blocks = [], related = ["bug-1d09e8", "bug-0c7f25"], supersedes = [], duplicate_of = "" }
+
+[[verify]]
+command = "grep -rqw 'fn a_cancel_stops_the_post_merge_regression_check' crates/roko-cli/ && cargo test -p roko-cli a_cancel_stops_the_post_merge_regression_check"
++++
+
+## Problem
+
+2026-10-15, roko-main 7b6a5af44, `roko serve` in a clone of the roko repo: run `6ee167ae…` (`demo-hello-world`, started
+from Hermes) passed its task, delivery merged it, and the post-merge regression check started
+`cargo clippy --workspace --no-deps -- -D warnings` in `.roko/state/regression-checkout` (a child of roko serve).
+`run_cancel` over `/mcp` at 14:04:58 made serve and Hermes report "cancelled", but:
+
+- the clippy kept running (until I killed it at 14:07:12; otherwise until the step's 15-minute timeout);
+- the run's thread kept the workspace runner lock, so a plan run started at 14:05:39 failed in 0.7 s with
+  `plan execution failed for demo-hello: A roko plan runner is already active in this workspace (PID 38618).
+  hint: wait for it to finish, or kill it with \`kill 38618\`` — PID 38618 being roko serve itself.
+
+Expected: a cancel stops the regression check (its whole process group), the run ends cancelled and releases the
+lock, and no hint tells anyone to kill the server.
+
+## Why it matters
+
+Hermes and the portal show the run as cancelled while it still holds the workspace; the next run the person starts
+fails at once, and (see the related item on pre-start failures) its card does not say why.
+
+## Where
+
+- `crates/roko-cli/src/graph_execution/delivery.rs`: the post-merge regression check (`sh -c`).
+- `crates/roko-cli/src/graph_execution/plan_verify.rs::run_plan_verify`: `kill_on_drop` on the `sh` child only,
+  and nothing selects on the run's cancel token while it waits.
+- `crates/roko-cli/src/workspace_lock.rs`: the runner-lock message and its `kill <pid>` hint.
+
+## Plan
+
+1. Run the regression and whole-plan steps in their own process group, and select on the run's interrupt: on a
+   cancel, kill the group and record the delivery as cancelled.
+2. When the lock holder is the current process (serve), say that a run in this server still holds the workspace.
+3. Test: a regression step that sleeps is cancelled; the step's process group is gone and the lock is free.
+
+## Done when
+
+`a_cancel_stops_the_post_merge_regression_check` passes (the `[[verify]]` command).

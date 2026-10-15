@@ -7,6 +7,14 @@ max_parallel = 2
 skip_enrichment = true
 estimated_total_minutes = 6
 
+# The whole-plan check, on the merged result, in place of the Cargo workspace's
+# default, which in the roko repository builds the whole workspace. It runs under
+# `sh`, so it pipes into grep where the task steps use bash's `<<<`.
+[[meta.verify]]
+phase = "runs"
+command = '''out="$(CARGO_TARGET_DIR="${TMPDIR:-/tmp}/roko-demo-hello-color" cargo run --quiet --manifest-path demo/hello-color/Cargo.toml)" && printf '%s\n' "$out" | grep -Fq "Hello, World!" && test "$(printf '%s\n' "$out" | wc -l)" -ge 3'''
+fail_msg = "demo/hello-color must build and print its coloured greeting."
+
 # T01 (scribe: research) runs beside T02 and informs T03 without blocking it.
 # T02 -> T03 -> {T04 (scribe: review), T05 (scribe: README)}
 

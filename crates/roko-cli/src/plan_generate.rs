@@ -204,7 +204,7 @@ You are a task decomposition engine for software projects. Your job is to take a
 3. **Single-owner executable verification**: Give each task exactly one focused command that proves its observable outcome. Combine structural assertions into that command when necessary. Do not repeat equivalent compile/test/clippy commands across tasks; the runner and release lane own broader validation.
 4. **Dependency ordering**: Types before implementations. Implementations before wiring. Wiring before tests.
 5. **Model hints**: NEVER set `model_hint`. The task's `tier` and `role` pick its model on the runtime's routing ladder; set `rung` only when a task needs more than its tier's start rung. Hardcoded model names break across providers.
-6. **Executable spec (TSS v1)**: Every task states its `goal`, one observable outcome in a sentence. Its `acceptance` criteria are `AC1: …`, `AC2: …` items, each an input and its output, a state, an exit code or a message that a check can observe. Every test-class verify step names the criteria it proves in `covers = ["AC1"]` and says `expect = "fail_on_base"` (it fails on the unchanged code and passes once the task is done), or `expect = "pass_on_base"` for a regression check that must pass before and after. Every `read_files` entry has a `why`. `non_goals` lists what the task must not do or change. A compile check passes on the unchanged code, and a test filter that matches no test passes too, so a `fail_on_base` step checks what the task adds: a `grep -q` for the new item before the compile, or the test's pass count (`cargo test -p x new_test 2>&1 | grep -q 'ok. 1 passed'`).
+6. **Executable spec (TSS v1)**: Every task states its `goal`, one observable outcome in a sentence. Its `acceptance` criteria are `AC1: …`, `AC2: …` items, each an input and its output, a state, an exit code or a message that a check can observe. Every test-class verify step names the criteria it proves in `covers = ["AC1"]` and says `expect = "fail_on_base"` (it fails on the unchanged code and passes once the task is done), or `expect = "pass_on_base"` for a regression check that must pass before and after. Every `read_files` entry has a `why`. `non_goals` lists what the task must not do or change. A compile check passes on the unchanged code, and a test filter that matches no test passes too, so a `fail_on_base` step checks what the task adds: a `grep -q` for the new item before the compile or the test run (`grep -q 'fn new_test' crates/x/src/lib.rs && cargo test -p x new_test`), or a runner that fails while the test it names is missing (`python3 -m unittest tests.test_x.XTests.test_new`, `pytest tests/test_x.py::test_new`). Never check a count of tests: correct work with a different number of tests fails it.
 7. **Say what you don't know**: When the source leaves a choice open that changes the outcome (a limit, a format, which caller wins), write it in the task's `open_questions` instead of guessing; such a plan will not run until it is answered. Leave `open_questions` empty when nothing is open.
 
 ## Task tiers
@@ -305,7 +305,7 @@ anti_patterns = [
 
 [[task.verify]]
 phase = "test"
-command = "cargo test -p roko-cli status_shows_funding_rate 2>&1 | grep -q 'ok. 1 passed'"
+command = "grep -q 'fn status_shows_funding_rate' crates/roko-cli/src/commands/status.rs && cargo test -p roko-cli status_shows_funding_rate"
 covers = ["AC1"]
 expect = "fail_on_base"
 ```
@@ -359,13 +359,13 @@ Detect the project language and use the right commands:
 - Cargo.toml → Rust: `cargo check`, `cargo test`, `cargo clippy`
 - package.json → TypeScript: `npx tsc`, `npx jest`, `npx eslint`
 - go.mod → Go: `go build`, `go test`, `golangci-lint`
-- pyproject.toml/setup.py → Python: `python -m py_compile`, `pytest`, `ruff`
+- pyproject.toml/setup.py → Python: `python -m py_compile`, `pytest` (or `python3 -m unittest` when the tests use unittest), `ruff`
 
 ## Verify steps by role
 
 - **implementer**: MUST have exactly one focused verify step. Use a target-aware compile for ordinary Rust edits, an exact test for behavioral logic, or one shell command that combines a structural assertion with the selected check.
 - **Weak verify steps** (any role): a verify step must fail on the unchanged code and pass once the task is done. Prefer the crate's own gate (e.g. `cargo check -p roko-core`, `cargo test -p roko-core parse_config`) to a check that reads only the edited file, which lets a regression elsewhere in the crate through. Never negate a grep (`! grep -q ...`): correct code that mentions the text fails it (`roko plan validate` warns, PLAN_042). Never use a command that cannot fail (`echo ok`, `true`).
-- **Test runners** (any role): a test runner's exit status already says whether its tests passed, so run it on its own (`python3 -m unittest tests.test_budgets`, `pytest tests/test_x.py`). Do not pipe it into `grep -q OK`: that adds nothing and hides the runner's output, which a retry needs. Pipe into `grep -q` only to check what the exit status cannot show, such as a pass count.
+- **Test runners** (any role): a test runner's exit status already says whether its tests passed, so run it on its own (`python3 -m unittest tests.test_budgets`, `pytest tests/test_x.py`). Do not pipe it into `grep -q OK`: that adds nothing and hides the runner's output, which a retry needs. Nor pipe it into any other program (`awk`, `tail`), send it to `/dev/null` or a file, or compare a count of its tests: when the check fails, that output is all the retry and the person see of why (`roko plan validate` warns, PLAN_050). Put any other assertion in its own command joined with `&&`.
 - **architect/researcher/strategist**: MUST have only structural checks on files that already exist (e.g. `grep -q ...`). These roles cannot write, so never verify an output file they would have to create, and do NOT add compile/test verify steps.
 - **scribe/quick-reviewer**: structural checks only (verify docs exist, verify reviewed files haven't changed)
 
@@ -377,7 +377,7 @@ When a task's outcome can be checked by a test you can write now, write the test
 2. Declare it in the task with the four keys:
    - `src`: the block's path, relative to the plan directory (`accept/...`).
    - `dest`: where the run copies the pinned test, relative to the repository root.
-   - `runner`: the command that runs it from the repository root; `{dest}` expands to the copied test's path and `{count}` to `count`.
+   - `runner`: the command that runs it from the repository root; `{dest}` expands to the copied test's path and `{count}` to `count`. Give the test command alone: roko shows its output and counts the passing tests itself, so never pipe or filter it.
    - `count`: exactly how many tests the file holds; the check fails unless the runner reports exactly that many passing.
 
 Rules:
@@ -413,7 +413,7 @@ Before finalizing, verify your tasks against:
 - [ ] Every task is within its tier's limits (files, max_loc, description words); a larger one is split or given a higher tier
 - [ ] Every task has exactly one focused verify step and no semantic duplicate exists elsewhere in the plan
 - [ ] No verify step negates a grep, cannot fail, or checks only the edited file where the crate's gate would catch a regression
-- [ ] A test runner's own exit status is its check: no `| grep -q OK` after it
+- [ ] A test runner's own exit status is its check: no pipe, redirection or test count around it
 - [ ] Architect/researcher/strategist tasks have ONLY structural verify steps (no cargo check, no cargo test)
 - [ ] Every task with a non-empty `files` list uses a role that can write (see Role-Tool Constraints)
 - [ ] No task requires reading more than 3 files
@@ -493,7 +493,7 @@ anti_patterns = ["Do NOT add new dependencies. Use only std and existing crate t
 
 [[task.verify]]
 phase = "test"
-command = "cargo test -p roko-serve --test api_integration health_endpoint 2>&1 | grep -q 'ok. 1 passed'"
+command = "grep -q 'fn health_endpoint' crates/roko-serve/tests/api_integration.rs && cargo test -p roko-serve --test api_integration health_endpoint"
 covers = ["AC1", "AC2"]
 expect = "fail_on_base"
 fail_msg = "The exact health endpoint integration test failed or was not found"
@@ -690,6 +690,42 @@ mod template_tests {
             "- [ ] A test runner's own exit status is its check",
         ] {
             assert!(prompt.contains(needle), "the prompt says {needle}");
+        }
+    }
+
+    /// bug-59ed90: the generator prompt teaches checks that keep the test
+    /// runner's output: no pass-count pipe in its guidance or examples, a
+    /// named test or a `grep -q` guard instead, and every example command
+    /// passes PLAN_050.
+    #[test]
+    fn generator_prompt_runs_test_runners_plainly() {
+        let prompt = PLAN_GENERATOR_SYSTEM_PROMPT;
+        assert!(
+            !prompt.contains("ok. 1 passed"),
+            "the pass-count idiom is gone"
+        );
+        assert!(!prompt.contains("such as a pass count"), "{prompt}");
+        for needle in [
+            "Never check a count of tests",
+            "`python3 -m unittest tests.test_x.XTests.test_new`",
+            "`grep -q 'fn new_test' crates/x/src/lib.rs && cargo test -p x new_test`",
+            "(`roko plan validate` warns, PLAN_050)",
+            "roko shows its output and counts the passing tests itself",
+        ] {
+            assert!(prompt.contains(needle), "the prompt says {needle}");
+        }
+        let commands: Vec<&str> = prompt
+            .lines()
+            .filter_map(|line| line.strip_prefix("command = \""))
+            .filter_map(|rest| rest.strip_suffix('"'))
+            .collect();
+        assert_eq!(commands.len(), 4, "{commands:?}");
+        for command in commands {
+            assert_eq!(
+                roko_gate::spec_quality::hidden_runner_output(command),
+                None,
+                "{command}"
+            );
         }
     }
 

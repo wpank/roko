@@ -133,6 +133,21 @@ const AGENT_ERROR_PREVIEW_CHARS: usize = 500;
 /// Characters of the model's last output that a retry prompt quotes.
 const RETRY_OUTPUT_CHARS: usize = 2000;
 
+/// What a failed planner call printed, as a line to add to its error: the
+/// provider's own message is what says a key is wrong or a server is
+/// unreachable (bug-59ed90). Empty when it printed nothing.
+fn agent_said(output: &str) -> String {
+    let output = output.trim();
+    if output.is_empty() {
+        String::new()
+    } else {
+        format!(
+            "\nThe planner said: {}",
+            crate::run::truncate(output, AGENT_ERROR_PREVIEW_CHARS)
+        )
+    }
+}
+
 /// Default model escalation chain: haiku -> sonnet -> opus.
 ///
 /// When the workspace configures models, chain models it does not configure
@@ -452,6 +467,38 @@ fn spec_regeneration_prompt(task_prompt: &str, plan: &str, scores: &SpecScores) 
         scores.mean,
         scores.min,
         scores.weak.join("\n")
+    )
+}
+
+/// bug-59ed90: the checks of a candidate `tasks.toml` that hide their test
+/// runner's output, one PLAN_050 line each; none when it does not parse.
+fn hidden_output_lines(candidate: &str) -> Vec<String> {
+    TasksFile::parse_str(candidate).map_or_else(
+        |_| Vec::new(),
+        |tasks_file| {
+            crate::plan_validate::hidden_output_checks(&tasks_file)
+                .iter()
+                .map(|check| format!("- {}", check.message()))
+                .collect()
+        },
+    )
+}
+
+/// The prompt that asks the planner once more for a plan whose checks hide
+/// their test runner's output (bug-59ed90): the original request, the plan it
+/// wrote, and each such check.
+fn hidden_output_regeneration_prompt(task_prompt: &str, plan: &str, hidden: &[String]) -> String {
+    format!(
+        "{task_prompt}\n\n---\n\nThese checks of your plan below hide their test runner's \
+         output, so when one fails neither the retry nor the person can see why:\n{}\n\n\
+         ```toml\n{plan}\n```\n\n\
+         Rewrite each of those checks to run its test command on its own, with no pipe, \
+         redirection or test count around it. To make one fail before its task is done, name \
+         the new tests in the command (and in the task's description), or put a `grep -q` for \
+         them before it. Keep the rest of the plan as it is. Output the complete plan as a \
+         single ```toml fenced block, followed only by the ```accept:accept/<file> blocks of \
+         the tests it pins.",
+        hidden.join("\n")
     )
 }
 
@@ -879,9 +926,11 @@ pub async fn generate_plan(request: PlanRequest<'_>) -> Result<(PathBuf, Generat
             // Auth errors: fail fast with actionable message.
             if matches!(crash_class, AgentCrashClass::AuthenticationError) {
                 return Err(anyhow!(
-                    "plan generation agent auth failure (exit code {exit_code}): {}\n\
-                     Hint: Check ANTHROPIC_API_KEY or your provider config in roko.toml",
-                    crash_class.recovery_hint()
+                    "plan generation agent auth failure (exit code {exit_code}): {}{}\n\
+                     Hint: check the API key of the planner model `{planner_model}`'s provider \
+                     in roko.toml or ~/.roko/.env",
+                    crash_class.recovery_hint(),
+                    agent_said(&output)
                 ));
             }
 
@@ -944,9 +993,10 @@ pub async fn generate_plan(request: PlanRequest<'_>) -> Result<(PathBuf, Generat
                 let final_class = classify_agent_crash(&last_output);
                 return Err(anyhow!(
                     "plan generation agent failed after {} attempts \
-                     (last exit code {last_exit_code}): {}",
+                     (last exit code {last_exit_code}): {}{}",
                     max_crash_retries + 1,
-                    final_class.recovery_hint()
+                    final_class.recovery_hint(),
+                    agent_said(&last_output)
                 ));
             }
 
@@ -1317,10 +1367,47 @@ pub async fn generate_plan(request: PlanRequest<'_>) -> Result<(PathBuf, Generat
             }
         }
 
+        // bug-59ed90: a check that hides its test runner's output fails
+        // without saying why, so the planner is asked once more to rewrite
+        // such checks, and the plan that hides fewer is kept.
+        if let Ok(candidate) = &validated_toml {
+            let hidden = hidden_output_lines(candidate);
+            if !hidden.is_empty() {
+                eprintln!(
+                    "  {} check(s) hide their test runner's output; asking the planner once more",
+                    hidden.len()
+                );
+                let prompt = hidden_output_regeneration_prompt(&task_prompt, candidate, &hidden);
+                let retry = run_agent_capture_silent_with_usage(AgentExecOpts {
+                    prompt: &prompt,
+                    workdir: workdir_ref,
+                    model: effective_model,
+                    effort: Some(planner_effort),
+                    system_prompt: Some(&system),
+                    resume_session: None,
+                    env_vars: &resolved.config.agent.env,
+                    role: Some("strategist"),
+                    allowed_tools: Some("Read,Grep,Glob"),
+                })
+                .await;
+                if let Ok(retry) = &retry {
+                    spend.record(retry).await;
+                }
+                if let Ok(retry) = retry
+                    && retry.exit_code == 0
+                    && let Ok(better) = try_extract_and_validate(&retry.output)
+                    && hidden_output_lines(&better).len() < hidden.len()
+                {
+                    validated_toml = Ok(better);
+                }
+            }
+        }
+
         // 3218: score the plan. A weak one (a mean below `[spec_quality]
         // allow_threshold`, or a task below `block_threshold`) is regenerated
         // once with each weak task's missing rules, and the better plan is
-        // kept: no hard fail and a higher mean.
+        // kept: no hard fail, a higher mean and no more checks that hide
+        // their runner's output (bug-59ed90).
         let mut spec_quality = None;
         if let Ok(candidate) = &validated_toml
             && let Some(scores) = spec_scores(candidate, workdir_ref, &spec_config)
@@ -1354,6 +1441,7 @@ pub async fn generate_plan(request: PlanRequest<'_>) -> Result<(PathBuf, Generat
                     && let Ok(better) = try_extract_and_validate(&retry.output)
                     && let Some(better_scores) = spec_scores(&better, workdir_ref, &spec_config)
                     && better_scores.mean > kept.1.mean
+                    && hidden_output_lines(&better).len() <= hidden_output_lines(&kept.0).len()
                 {
                     kept = (better, better_scores);
                 }
@@ -1500,6 +1588,16 @@ pub async fn generate_plan(request: PlanRequest<'_>) -> Result<(PathBuf, Generat
                         "warning: artifact validation found {} error(s) and {} warning(s) for {}",
                         report.totals.errors, report.totals.warnings, slug
                     );
+                }
+                // bug-59ed90: a check the planner left hiding its runner's
+                // output is said out loud, so the person can fix it first.
+                for diagnostic in report
+                    .plans
+                    .iter()
+                    .flat_map(|plan| &plan.diagnostics)
+                    .filter(|diagnostic| diagnostic.rule_id == "PLAN_050")
+                {
+                    eprintln!("warning: PLAN_050 {}", diagnostic.message);
                 }
                 validation_report = serde_json::to_value(&report).ok();
                 if validation_report.is_none() {
@@ -2127,6 +2225,25 @@ fn clamp_context_ranges_past_eof(
 mod tests {
     use super::*;
 
+    /// bug-59ed90: a failed planner call's error carries what it printed,
+    /// which is where a provider says its key is wrong or it is unreachable.
+    #[test]
+    fn a_failed_planner_call_says_what_the_planner_printed() {
+        assert_eq!(agent_said("  \n"), "");
+        assert_eq!(
+            agent_said("error: 401 Unauthorized: invalid api key\n"),
+            "\nThe planner said: error: 401 Unauthorized: invalid api key"
+        );
+        let long = "y".repeat(AGENT_ERROR_PREVIEW_CHARS + 50);
+        assert_eq!(
+            agent_said(&long),
+            format!(
+                "\nThe planner said: {}",
+                "y".repeat(AGENT_ERROR_PREVIEW_CHARS)
+            )
+        );
+    }
+
     /// bug-d3c72e: a failed plan generation prints the head of the model's
     /// output. Cutting it at byte 2000 panicked when that byte fell inside a
     /// multi-byte character; the cut now falls on a char boundary.
@@ -2624,6 +2741,62 @@ mod tests {
             scored.min <= scored.mean && scored.mean < 100.0,
             "{scored:?}"
         );
+    }
+
+    /// bug-59ed90: a plan whose check pipes its test runner's output away is
+    /// sent back to the planner once, naming the check and the runner. The
+    /// rewritten plan is kept when it hides less; a planner that keeps the
+    /// pipe is not asked again, and its plan is written as it is.
+    #[cfg(unix)]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn generation_asks_once_more_when_a_check_hides_its_runner_output() {
+        let plain = WIDGET_PLAN.replace(
+            "\"test -f src/widget.rs\"",
+            "\"python3 -m unittest tests.test_widget\"",
+        );
+        let hidden = WIDGET_PLAN.replace(
+            "\"test -f src/widget.rs\"",
+            "\"python3 -m unittest tests.test_widget 2>&1 | grep -q OK\"",
+        );
+        assert_ne!(plain, hidden);
+
+        for (replies, kept) in [
+            (vec![hidden.as_str(), plain.as_str()], plain.as_str()),
+            (vec![hidden.as_str()], hidden.as_str()),
+        ] {
+            let temp = tempfile::tempdir().expect("tempdir");
+            let workdir = temp.path();
+            let bin = tempfile::tempdir().expect("tempdir");
+            let calls = write_scripted_planner(
+                workdir,
+                bin.path(),
+                &replies,
+                "allow_threshold = 0.0\nblock_threshold = 0.0\n",
+            );
+            let request = PlanRequest {
+                model: Some("planner"),
+                ..PlanRequest::new(WIDGET_REQUEST, "widget", workdir)
+            };
+            generate_plan(request)
+                .await
+                .expect("generate the widget plan");
+            let written = std::fs::read_to_string(workdir.join("plans/widget/tasks.toml"))
+                .expect("the widget plan");
+            let pipes = written.contains("| grep -q OK");
+            assert_eq!(pipes, kept.contains("| grep -q OK"), "{written}");
+            let log = std::fs::read_to_string(&calls).expect("planner call log");
+            assert_eq!(log.lines().count(), 2, "the plan, then one rewrite");
+            let ask = std::fs::read_to_string(bin.path().join("prompt-1.txt")).expect("ask");
+            assert!(ask.contains("hide their test runner's output"), "{ask}");
+            assert!(
+                ask.contains(
+                    "task 'T1' verify step 1 `python3 -m unittest tests.test_widget 2>&1 | grep \
+                     -q OK` pipes the output of `python3 -m unittest tests.test_widget` into \
+                     `grep`"
+                ),
+                "{ask}"
+            );
+        }
     }
 
     /// 3221: the planner can write its acceptance tests into the plan. A

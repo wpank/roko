@@ -307,16 +307,30 @@ struct SimpleCommand {
     op: &'static str,
     /// 0 at the step's top level; more inside `$(...)`, backticks, `(...)` or `<(...)`.
     depth: usize,
+    /// Where it sends its output: its redirections of stdout or stderr to a file.
+    outputs: Vec<OutputRedirect>,
+    /// Inside `$(...)`, backticks or `<(...)`, which capture its output.
+    captured: bool,
+}
+
+/// A redirection of a command's output to a file (`>`, `>>`, `2>`, `&>`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct OutputRedirect {
+    /// The stream: 1 for stdout, 2 for stderr, 0 for both (`&>`).
+    fd: u32,
+    /// The file, unquoted: `/dev/null`, `out.log`.
+    target: String,
 }
 
 /// Split a bash command into simple commands, in the order they complete.
 ///
-/// Quotes are removed, redirections are dropped, and the commands inside `$(...)`, backticks,
-/// subshells and process substitutions come before the command that contains them.
+/// Quotes are removed, redirections leave the words (output redirections to a file are kept in
+/// `outputs`), and the commands inside `$(...)`, backticks, subshells and process substitutions
+/// come before the command that contains them.
 fn parse_shell(src: &str) -> Vec<SimpleCommand> {
     let chars: Vec<char> = src.chars().collect();
     let mut out = Vec::new();
-    parse_into(&chars, 0, &mut out);
+    parse_into(&chars, 0, false, &mut out);
     out
 }
 
@@ -327,19 +341,26 @@ struct Pending {
     in_word: bool,
     /// The next word is a redirection target. It survives the end of a command, as in speclint.
     skip_next_word: bool,
+    /// The stream that target receives, for an output redirection.
+    redirect_fd: Option<u32>,
+    outputs: Vec<OutputRedirect>,
     op: &'static str,
     depth: usize,
+    captured: bool,
 }
 
 impl Pending {
-    const fn new(depth: usize) -> Self {
+    const fn new(depth: usize, captured: bool) -> Self {
         Self {
             words: Vec::new(),
             word: String::new(),
             in_word: false,
             skip_next_word: false,
+            redirect_fd: None,
+            outputs: Vec::new(),
             op: "",
             depth,
+            captured,
         }
     }
 
@@ -347,6 +368,10 @@ impl Pending {
         if self.in_word {
             if self.skip_next_word {
                 self.skip_next_word = false;
+                if let Some(fd) = self.redirect_fd.take() {
+                    let target = std::mem::take(&mut self.word);
+                    self.outputs.push(OutputRedirect { fd, target });
+                }
             } else {
                 self.words.push(std::mem::take(&mut self.word));
             }
@@ -363,6 +388,8 @@ impl Pending {
                 words: std::mem::take(&mut self.words),
                 op: self.op,
                 depth: self.depth,
+                outputs: std::mem::take(&mut self.outputs),
+                captured: self.captured,
             });
             self.op = next_op;
         } else if matches!(next_op, "&&" | "||" | "|") {
@@ -372,9 +399,10 @@ impl Pending {
     }
 }
 
-fn parse_into(src: &[char], depth: usize, out: &mut Vec<SimpleCommand>) {
+/// Parse `src` into `out`. `captured`: `src` is the inside of a `$(...)`, backticks or `<(...)`.
+fn parse_into(src: &[char], depth: usize, captured: bool, out: &mut Vec<SimpleCommand>) {
     let n = src.len();
-    let mut cmd = Pending::new(depth);
+    let mut cmd = Pending::new(depth, captured);
     let mut i = 0;
     while i < n {
         let c = src[i];
@@ -412,7 +440,7 @@ fn parse_into(src: &[char], depth: usize, out: &mut Vec<SimpleCommand>) {
             }
             '`' => {
                 let end = backtick_end(src, i + 1);
-                parse_into(&src[i + 1..end], depth + 1, out);
+                parse_into(&src[i + 1..end], depth + 1, true, out);
                 cmd.word.push_str(SUBSTITUTION);
                 cmd.in_word = true;
                 i = end + 1;
@@ -421,7 +449,7 @@ fn parse_into(src: &[char], depth: usize, out: &mut Vec<SimpleCommand>) {
                 let end = paren_end(src, i + 2);
                 // `$(( arithmetic ))` holds no commands.
                 if src.get(i + 2) != Some(&'(') {
-                    parse_into(&src[i + 2..end], depth + 1, out);
+                    parse_into(&src[i + 2..end], depth + 1, true, out);
                 }
                 cmd.word.push_str(SUBSTITUTION);
                 cmd.in_word = true;
@@ -452,6 +480,7 @@ fn parse_into(src: &[char], depth: usize, out: &mut Vec<SimpleCommand>) {
                     cmd.end_word();
                     i += if src.get(i + 2) == Some(&'>') { 3 } else { 2 };
                     cmd.skip_next_word = true;
+                    cmd.redirect_fd = Some(0);
                 } else {
                     cmd.end_command("&", out);
                     i += 1;
@@ -463,7 +492,8 @@ fn parse_into(src: &[char], depth: usize, out: &mut Vec<SimpleCommand>) {
             }
             '(' if !cmd.in_word && cmd.words.is_empty() => {
                 let end = paren_end(src, i + 1);
-                parse_into(&src[i + 1..end], depth + 1, out);
+                // A subshell's output is its caller's.
+                parse_into(&src[i + 1..end], depth + 1, captured, out);
                 cmd.words.push("(subshell)".to_string());
                 i = end + 1;
             }
@@ -487,13 +517,16 @@ fn read_redirection(
     cmd: &mut Pending,
 ) -> usize {
     let n = src.len();
-    if cmd.in_word && !cmd.word.is_empty() && cmd.word.chars().all(char::is_numeric) {
+    let fd = if cmd.in_word && !cmd.word.is_empty() && cmd.word.chars().all(char::is_numeric) {
         // The fd of `2>`.
+        let fd = cmd.word.parse().ok();
         cmd.word.clear();
         cmd.in_word = false;
+        fd
     } else {
         cmd.end_word();
-    }
+        None
+    };
     let mut j = i;
     while j < n && matches!(src[j], '<' | '>') {
         j += 1;
@@ -508,10 +541,12 @@ fn read_redirection(
     } else if j < n && src[j] == '(' && j == i + 1 {
         // `<(...)` process substitution
         let end = paren_end(src, j + 1);
-        parse_into(&src[j + 1..end], depth + 1, out);
+        parse_into(&src[j + 1..end], depth + 1, true, out);
         end + 1
     } else {
         cmd.skip_next_word = true;
+        // An output redirection (`>`, `>>`, `2>`) sends that stream to the target.
+        cmd.redirect_fd = (src[i] == '>').then(|| fd.unwrap_or(1));
         j
     }
 }
@@ -535,13 +570,13 @@ fn read_double_quoted(
         } else if c == '$' && src.get(i + 1) == Some(&'(') {
             let end = paren_end(src, i + 2);
             if src.get(i + 2) != Some(&'(') {
-                parse_into(&src[i + 2..end], depth + 1, out);
+                parse_into(&src[i + 2..end], depth + 1, true, out);
             }
             word.push_str(SUBSTITUTION);
             i = end + 1;
         } else if c == '`' {
             let end = backtick_end(src, i + 1);
-            parse_into(&src[i + 1..end], depth + 1, out);
+            parse_into(&src[i + 1..end], depth + 1, true, out);
             word.push_str(SUBSTITUTION);
             i = end + 1;
         } else {
@@ -938,6 +973,300 @@ pub fn named_paths(command: &str) -> Vec<String> {
 /// Whether a path names a test: one of its parts is `test`, `tests`, `spec` or a test runner.
 pub fn is_test_path(path: &str) -> bool {
     has_token(&name_tokens(path), TEST_TOKENS)
+}
+
+// --------------------------------------------------------------------------------------------
+// bug-59ed90: steps that hide a test runner's output.
+
+/// A test runner whose output a verify step hides, so when the step fails nobody sees why: not
+/// the retrying agent, not the person.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct HiddenRunnerOutput {
+    /// The runner as the step runs it, without what hides its output, as in
+    /// `python3 -m unittest tests.test_cli`; behind `cd <dir> &&` when the step changes directory.
+    pub runner: String,
+    /// What hides its output.
+    pub hiding: Hiding,
+    /// The commands that read its output check a count: of passing tests (`'ok. 1 passed'`,
+    /// `'^Ran [0-9]+'`), a number (`$2 >= 11`, `-ge`), lines or matches (`wc`, `grep -c`).
+    pub counts: bool,
+}
+
+/// What hides a test runner's output.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Hiding {
+    /// A pipe into these programs, in order.
+    Piped(Vec<String>),
+    /// A redirection to a file or `/dev/null`.
+    Redirected {
+        /// The file, as in `/dev/null`.
+        target: String,
+        /// Only its error output, as `2>` sends it.
+        errors_only: bool,
+    },
+    /// `$(…)`, backticks or `<(…)`.
+    Captured,
+}
+
+impl HiddenRunnerOutput {
+    /// What the step does with the runner's output, as in "pipes the output of `cargo test` into
+    /// `grep` and checks a count on it".
+    pub fn describe(&self) -> String {
+        let runner = &self.runner;
+        let how = match &self.hiding {
+            Hiding::Piped(programs) => {
+                let names: Vec<String> = programs.iter().map(|name| format!("`{name}`")).collect();
+                format!("pipes the output of `{runner}` into {}", names.join(", "))
+            }
+            Hiding::Redirected {
+                target,
+                errors_only,
+            } => format!(
+                "{} the {}output of `{runner}` to `{target}`",
+                if target == "/dev/null" {
+                    "sends"
+                } else {
+                    "writes"
+                },
+                if *errors_only { "error " } else { "" }
+            ),
+            Hiding::Captured => format!("captures the output of `{runner}` in `$(…)`"),
+        };
+        if self.counts {
+            format!("{how} and checks a count on it")
+        } else {
+            how
+        }
+    }
+}
+
+/// A count check in a word of a command that reads a runner's output.
+static COUNT_CHECK: LazyLock<Regex> = LazyLock::new(|| {
+    compile_regex(
+        r"(?i)\d\s*(?:passed|failed|tests?)\b|\]\+?\s*(?:passed|failed|tests?)\b|\bRan\b|[<>]=?\s*\d|==\s*\d|^-(?:ge|gt|eq|le|lt|ne)$",
+    )
+});
+
+/// Files that show what is written to them: the step's own streams.
+const SHOWN_TARGETS: &[&str] = &[
+    "/dev/stdout",
+    "/dev/stderr",
+    "/dev/tty",
+    "/dev/fd/1",
+    "/dev/fd/2",
+];
+
+/// The first test runner whose output a verify step hides (bug-59ed90).
+///
+/// The step pipes the runner's output into a program other than `tee` or `cat`, sends it to a
+/// file or `/dev/null`, or captures it in `$(…)`. `None` when every runner's output reaches the
+/// step's own output, which is what a failed check shows the retry and the person.
+///
+/// A runner's exit status is its check, so a step needs none of these. The planner prompt's old
+/// pass-count idiom, `cargo test x 2>&1 | grep -q 'ok. 1 passed'`, is one.
+pub fn hidden_runner_output(command: &str) -> Option<HiddenRunnerOutput> {
+    let commands = parse_shell(command);
+    let mut cwd = String::new();
+    for (index, simple) in commands.iter().enumerate() {
+        let argv = strip_wrappers(&simple.words);
+        if argv.first().is_some_and(|word| word == "cd") {
+            let target = first_positional(&argv[1..]);
+            cwd = if target.is_empty() || target.starts_with(['$', '~', '/', '-']) {
+                String::new()
+            } else {
+                resolve(&cwd, target)
+            };
+            if cwd == "." || cwd.starts_with("..") {
+                cwd.clear();
+            }
+            continue;
+        }
+        if let Some((program, args)) = argv.split_first()
+            && matches!(path_name(program).as_str(), "sh" | "bash" | "zsh" | "dash")
+            && let Some(hidden) = position(args, "-c")
+                .and_then(|index| args.get(index + 1))
+                .and_then(|script| hidden_runner_output(script))
+        {
+            return Some(hidden);
+        }
+        // A runner the step negates (`… && ! pytest -k gone >/dev/null`) fails it only by
+        // passing, so its output cannot say why the step failed.
+        if simple.words.first().is_some_and(|word| word == "!") {
+            continue;
+        }
+        let runs_tests = classify(&simple.words, &cwd, &BTreeSet::new())
+            .iter()
+            .any(|program| program.kind == UseKind::Test);
+        if !runs_tests {
+            continue;
+        }
+        let Some((how, readers)) = hiding(&commands, index) else {
+            continue;
+        };
+        let shown = shown_words(&simple.words);
+        let runner = if cwd.is_empty() {
+            shown
+        } else {
+            format!("cd {} && {shown}", shell_word(&cwd))
+        };
+        return Some(HiddenRunnerOutput {
+            runner,
+            hiding: how,
+            counts: readers.iter().any(|words| checks_a_count(words)),
+        });
+    }
+    None
+}
+
+/// What hides the output of `commands[index]`, with the words of the commands that read it.
+fn hiding(commands: &[SimpleCommand], index: usize) -> Option<(Hiding, Vec<&[String]>)> {
+    let simple = &commands[index];
+    let depth = simple.depth;
+    // The later stages of its pipeline; the commands nested in them come first and are skipped.
+    let mut stages = Vec::new();
+    for (offset, command) in commands[index + 1..].iter().enumerate() {
+        if command.depth > depth {
+            continue;
+        }
+        if command.depth < depth || command.op != "|" {
+            break;
+        }
+        stages.push(index + 1 + offset);
+    }
+    // The command that contains this one: a subshell passes its output on, and `$(…)` keeps it.
+    let container = commands[index + 1..]
+        .iter()
+        .position(|command| command.depth < depth)
+        .map(|offset| index + 1 + offset);
+    let mut readers: Vec<&[String]> = stages
+        .iter()
+        .map(|&stage| commands[stage].words.as_slice())
+        .collect();
+    if simple.captured
+        && let Some(container) = container
+    {
+        readers.push(commands[container].words.as_slice());
+    }
+    if let Some(&last) = stages.last() {
+        if stages
+            .iter()
+            .any(|&stage| shows_what_it_reads(&commands[stage].words))
+        {
+            return None;
+        }
+        if stages
+            .iter()
+            .all(|&stage| passes_through(&commands[stage].words))
+        {
+            // `tee` and `cat` pass it on to wherever the last of them sends it.
+            return hiding(commands, last);
+        }
+        let mut programs: Vec<String> = Vec::new();
+        for &stage in &stages {
+            let program = strip_wrappers(&commands[stage].words)
+                .first()
+                .map(|word| path_name(word))
+                .unwrap_or_default();
+            if !program.is_empty() && !programs.contains(&program) {
+                programs.push(program);
+            }
+        }
+        return Some((Hiding::Piped(programs), readers));
+    }
+    if let Some(redirect) = simple
+        .outputs
+        .iter()
+        .find(|redirect| !SHOWN_TARGETS.contains(&redirect.target.as_str()))
+    {
+        let redirected = Hiding::Redirected {
+            target: redirect.target.clone(),
+            errors_only: redirect.fd == 2,
+        };
+        return Some((redirected, readers));
+    }
+    if simple.captured {
+        return Some((Hiding::Captured, readers));
+    }
+    let container = container?;
+    if commands[container].words.first().map(String::as_str) == Some("(subshell)") {
+        hiding(commands, container)
+    } else {
+        None
+    }
+}
+
+/// A reader that shows what it reads: `tee /dev/stderr` copies it to the step's own output.
+fn shows_what_it_reads(words: &[String]) -> bool {
+    let argv = strip_wrappers(words);
+    argv.split_first().is_some_and(|(program, args)| {
+        path_name(program) == "tee" && args.iter().any(|arg| SHOWN_TARGETS.contains(&arg.as_str()))
+    })
+}
+
+/// A reader that passes all it reads on: `tee <file>`, or `cat` with no file.
+fn passes_through(words: &[String]) -> bool {
+    let argv = strip_wrappers(words);
+    match argv.split_first() {
+        Some((program, args)) => match path_name(program).as_str() {
+            "tee" => true,
+            "cat" => args.iter().all(|arg| arg.starts_with('-')),
+            _ => false,
+        },
+        None => false,
+    }
+}
+
+/// Whether a command that reads a runner's output checks a count on it.
+fn checks_a_count(words: &[String]) -> bool {
+    let argv = strip_wrappers(words);
+    let program = argv.first().map(|word| path_name(word)).unwrap_or_default();
+    let counts_matches = matches!(program.as_str(), "grep" | "egrep" | "fgrep" | "rg")
+        && argv.iter().skip(1).any(|arg| {
+            arg == "--count"
+                || (arg.starts_with('-') && !arg.starts_with("--") && arg.contains('c'))
+        });
+    program == "wc" || counts_matches || argv.iter().any(|word| COUNT_CHECK.is_match(word))
+}
+
+/// A command's words as a shell would read them back, without leading keywords (`if`, `!` …).
+fn shown_words(words: &[String]) -> String {
+    let rest = skip_leading(words, |word| {
+        LEAD_WORDS.contains(&word) || matches!(word, "if" | "while" | "until" | "{")
+    });
+    rest.iter()
+        .map(|word| shell_word(word))
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// `word` as a shell reads it back; an assignment's value is quoted apart from its name.
+fn shell_word(word: &str) -> String {
+    if is_assignment(word)
+        && let Some((name, value)) = word.split_once('=')
+    {
+        return format!("{name}={}", quoted(value));
+    }
+    quoted(word)
+}
+
+/// `text` quoted for the shell: as it is when nothing in it is special, in double quotes when it
+/// expands a variable, in single quotes otherwise.
+fn quoted(text: &str) -> String {
+    let plain = !text.is_empty()
+        && text
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || "-_./:=@%+,".contains(c));
+    if plain || text == SUBSTITUTION {
+        text.to_string()
+    } else if text.contains('$') {
+        let escaped = text
+            .replace('\\', r"\\")
+            .replace('"', "\\\"")
+            .replace('`', "\\`");
+        format!("\"{escaped}\"")
+    } else {
+        format!("'{}'", text.replace('\'', r"'\''"))
+    }
 }
 
 /// What the program of one simple command proves; `bash -c`, `npx` and `npm exec` yield the uses
@@ -1583,6 +1912,191 @@ mod tests {
         ] {
             assert!(!runs_program(command, "cargo"), "{command}");
         }
+    }
+
+    /// bug-59ed90: the output of a test runner that a step pipes, redirects or captures never
+    /// reaches the failure report.
+    #[test]
+    fn a_test_runners_hidden_output_is_flagged() {
+        let piped = |programs: &[&str]| {
+            Hiding::Piped(programs.iter().map(|name| (*name).to_string()).collect())
+        };
+        let redirected = |target: &str, errors_only| Hiding::Redirected {
+            target: target.to_string(),
+            errors_only,
+        };
+        let cases = [
+            // fresh-guide item 28: a guessed test count read from piped output.
+            (
+                "python3 -m unittest tests.test_cli 2>&1 | grep -E '^Ran [0-9]+ test' \
+                 | awk '{if ($2 >= 11) exit 0; else exit 1}'",
+                "python3 -m unittest tests.test_cli",
+                piped(&["grep", "awk"]),
+                true,
+            ),
+            // The planner prompt's old pass-count idiom.
+            (
+                "cargo test -p x new_test 2>&1 | grep -q 'ok. 1 passed'",
+                "cargo test -p x new_test",
+                piped(&["grep"]),
+                true,
+            ),
+            (
+                "python3 -m unittest tests.test_budgets -v 2>&1 | grep -q 'OK'",
+                "python3 -m unittest tests.test_budgets -v",
+                piped(&["grep"]),
+                false,
+            ),
+            (
+                "go test ./pkg/... 2>&1 | tail -20",
+                "go test ./pkg/...",
+                piped(&["tail"]),
+                false,
+            ),
+            (
+                "cargo test -p x 2>&1 | tee test.log | tail -10",
+                "cargo test -p x",
+                piped(&["tee", "tail"]),
+                false,
+            ),
+            (
+                "npx jest src/x.test.ts | grep -c PASS",
+                "npx jest src/x.test.ts",
+                piped(&["grep"]),
+                true,
+            ),
+            (
+                "if ! pytest -q tests/test_x.py | grep -q '3 passed'; then exit 1; fi",
+                "pytest -q tests/test_x.py",
+                piped(&["grep"]),
+                true,
+            ),
+            (
+                "(cd app && npm test) | grep -q passing",
+                "cd app && npm test",
+                piped(&["grep"]),
+                false,
+            ),
+            (
+                "bash -c 'cargo test -p x 2>&1 | grep -q ok'",
+                "cargo test -p x",
+                piped(&["grep"]),
+                false,
+            ),
+            (
+                "cargo test -p x > /dev/null 2>&1 && echo ok",
+                "cargo test -p x",
+                redirected("/dev/null", false),
+                false,
+            ),
+            (
+                "pytest tests/ 2>/dev/null",
+                "pytest tests/",
+                redirected("/dev/null", true),
+                false,
+            ),
+            (
+                "cargo test &> out.log && grep -q 'test result: ok' out.log",
+                "cargo test",
+                redirected("out.log", false),
+                false,
+            ),
+            (
+                "cargo test -p x 2>&1 | tee test.log > /dev/null",
+                "cargo test -p x",
+                redirected("/dev/null", false),
+                false,
+            ),
+            (
+                "out=$(cargo test -p x 2>&1); grep -q 'test result: ok' <<<\"$out\"",
+                "cargo test -p x",
+                Hiding::Captured,
+                false,
+            ),
+            (
+                "test \"$(pytest -q | tail -1)\" = '5 passed'",
+                "pytest -q",
+                piped(&["tail"]),
+                true,
+            ),
+            // A demo plan's capture of a pass count: the runner keeps its assignment runnable.
+            (
+                r#"out="$(CARGO_TARGET_DIR="${TMPDIR:-/tmp}/demo" cargo test --quiet 2>&1)" && grep -Eq 'test result: ok\. [1-9][0-9]* passed' <<<"$out""#,
+                r#"CARGO_TARGET_DIR="${TMPDIR:-/tmp}/demo" cargo test --quiet"#,
+                Hiding::Captured,
+                false,
+            ),
+        ];
+        for (command, runner, hiding, counts) in cases {
+            let expected = HiddenRunnerOutput {
+                runner: runner.to_string(),
+                hiding,
+                counts,
+            };
+            assert_eq!(hidden_runner_output(command), Some(expected), "{command}");
+        }
+        let fresh_guide = hidden_runner_output(
+            "python3 -m unittest tests.test_cli 2>&1 | grep -E '^Ran [0-9]+ test' | awk '{exit 1}'",
+        )
+        .map(|hidden| hidden.describe());
+        assert_eq!(
+            fresh_guide.as_deref(),
+            Some(
+                "pipes the output of `python3 -m unittest tests.test_cli` into `grep`, `awk` and \
+                 checks a count on it"
+            )
+        );
+        let redirect =
+            hidden_runner_output("pytest -k 'a and b' 2>/dev/null").map(|hidden| hidden.describe());
+        assert_eq!(
+            redirect.as_deref(),
+            Some("sends the error output of `pytest -k 'a and b'` to `/dev/null`")
+        );
+    }
+
+    /// bug-59ed90: a runner whose output reaches the step's own output, a runner behind a static
+    /// guard, and programs that are not test runners pass.
+    #[test]
+    fn a_runner_whose_output_the_step_shows_is_not_flagged() {
+        for command in [
+            "python3 -m unittest tests.test_cli.CliTests.test_json_flag",
+            "pytest tests/test_cli.py::test_json_flag",
+            "grep -qw 'fn new_test' crates/x/src/lib.rs && cargo test -p x new_test",
+            "cargo test -p x 2>&1",
+            "cargo test -p x 2>&1 | tee test.log",
+            "cargo test -p x 2>&1 | cat",
+            "cargo test -p x 2>&1 | tee /dev/stderr | grep -q 'test result: ok'",
+            "pytest -q > /dev/stderr",
+            "cd app && npm test",
+            "cargo test -p x --no-run 2>&1 | tail -3",
+            "cargo check -p x 2>&1 | tail -5",
+            "python3 -m wordy --version | grep -q 1.0",
+            "test $(grep -c 'def test_' tests/test_cli.py) -ge 4",
+            "cargo test -p x && cargo run -p x -- --help | grep -q usage",
+            // A run that must fail; its output cannot explain the step's failure.
+            "cd app && node scripts/vitest-min.mjs src/x.test.ts 3 && ! node scripts/vitest-min.mjs \
+             src/x.test.ts 99 >/dev/null 2>&1",
+        ] {
+            assert_eq!(hidden_runner_output(command), None, "{command}");
+        }
+    }
+
+    /// Output redirections are kept apart from a command's words, so the step classes stay
+    /// speclint's.
+    #[test]
+    fn redirections_leave_the_words_alone() {
+        let commands = parse_shell("cargo test -p x > out.log 2>&1 && cat < in.txt");
+        assert_eq!(commands[0].words, ["cargo", "test", "-p", "x"]);
+        assert_eq!(
+            commands[0].outputs,
+            [OutputRedirect {
+                fd: 1,
+                target: "out.log".to_string()
+            }]
+        );
+        assert_eq!(commands[1].words, ["cat"]);
+        assert!(commands[1].outputs.is_empty());
+        assert_eq!(class_of("cargo test -p x > out.log"), VerifyClass::Test);
     }
 
     #[test]

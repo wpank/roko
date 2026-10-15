@@ -540,22 +540,8 @@ impl GraphTaskDispatcher {
                 }
 
                 if !verdict.passed {
-                    let fail_msg = step.fail_msg.as_deref().unwrap_or(&verdict.reason);
-                    let detail_snippet = verdict
-                        .detail
-                        .as_deref()
-                        .map(|d| {
-                            // Include a bounded tail of the output for diagnostics.
-                            let lines: Vec<&str> = d.lines().collect();
-                            let start = lines.len().saturating_sub(30);
-                            lines[start..].join("\n")
-                        })
-                        .unwrap_or_default();
-
                     timed_out |= roko_gate::verdict_timed_out(&verdict);
-                    failures.push(format!(
-                        "{step_label} (`{shown}`): {fail_msg}\n{detail_snippet}"
-                    ));
+                    failures.push(step_failure(step_label, shown, step, &verdict));
                 }
                 step_verdicts.push(ran_step_verdict(i, step, &verdict, exit_code));
                 ran_steps.push((step.phase.clone(), verdict));
@@ -768,20 +754,12 @@ impl GraphTaskDispatcher {
                                 );
                             }
                             if !retry_verdict.passed {
-                                let fail_msg =
-                                    step.fail_msg.as_deref().unwrap_or(&retry_verdict.reason);
-                                let detail_snippet = retry_verdict
-                                    .detail
-                                    .as_deref()
-                                    .map(|d| {
-                                        let lines: Vec<&str> = d.lines().collect();
-                                        let start = lines.len().saturating_sub(30);
-                                        lines[start..].join("\n")
-                                    })
-                                    .unwrap_or_default();
                                 retry_timed_out |= roko_gate::verdict_timed_out(&retry_verdict);
-                                retry_failures.push(format!(
-                                    "{step_label} (`{shown}`): {fail_msg}\n{detail_snippet}"
+                                retry_failures.push(step_failure(
+                                    step_label,
+                                    shown,
+                                    step,
+                                    &retry_verdict,
                                 ));
                             }
                             retry_step_verdicts.push(ran_step_verdict(
@@ -1439,9 +1417,54 @@ pub(super) fn published_gate_output(command: &str, verdict: &roko_core::Verdict)
     if !verdict.passed {
         result.push_str("\n✗ ");
         result.push_str(&gate_how_ended(&verdict.reason));
+        if let Some(note) = hidden_output_note(command) {
+            result.push('\n');
+            result.push_str(&note);
+        }
     }
 
     result
+}
+
+/// bug-59ed90: for a step that pipes, redirects or captures its test
+/// runner's output, a line that says so and names the command that shows
+/// why it failed; the step's own output cannot.
+fn hidden_output_note(command: &str) -> Option<String> {
+    roko_gate::spec_quality::hidden_runner_output(command).map(|hidden| {
+        format!(
+            "This check {}, so the runner's own failure text is not shown here; run `{}` on its \
+             own to see it.",
+            hidden.describe(),
+            hidden.runner
+        )
+    })
+}
+
+/// A failed step's entry in the retry's feedback: its label and command, its
+/// authored `fail_msg` (else how it ended), the last 30 lines it printed, and
+/// [`hidden_output_note`] when its runner's output was hidden.
+fn step_failure(
+    step_label: &str,
+    shown: &str,
+    step: &crate::task_parser::VerifyStep,
+    verdict: &roko_core::Verdict,
+) -> String {
+    let fail_msg = step.fail_msg.as_deref().unwrap_or(&verdict.reason);
+    let detail_snippet = verdict
+        .detail
+        .as_deref()
+        .map(|detail| {
+            let lines: Vec<&str> = detail.lines().collect();
+            let start = lines.len().saturating_sub(30);
+            lines[start..].join("\n")
+        })
+        .unwrap_or_default();
+    let mut entry = format!("{step_label} (`{shown}`): {fail_msg}\n{detail_snippet}");
+    if let Some(note) = hidden_output_note(&step.command) {
+        entry.push('\n');
+        entry.push_str(&note);
+    }
+    entry
 }
 
 /// Keep the last [`GATE_OUTPUT_TAIL_LINES`] lines of `detail`; prepend a
@@ -1704,6 +1727,57 @@ mod tests {
             .await
             .expect_err("the writer failed");
         assert!(matches!(error, RokoError::Verify { .. }), "{error}");
+    }
+
+    /// bug-59ed90: a failed check that pipes its test runner's output away
+    /// says so and names the runner to run on its own, both in what the
+    /// person sees and in the retry's feedback. A plain check is unchanged.
+    #[tokio::test]
+    async fn a_check_that_hides_its_runner_names_the_runner() {
+        let failed = roko_core::Verdict::fail("verify[0:test]", "exit code: 1");
+        assert_eq!(
+            published_gate_output("sh run_tests.sh 2>&1 | grep -q OK", &failed),
+            "$ sh run_tests.sh 2>&1 | grep -q OK\n✗ exit status 1\nThis check pipes the output \
+             of `sh run_tests.sh` into `grep`, so the runner's own failure text is not shown \
+             here; run `sh run_tests.sh` on its own to see it."
+        );
+        assert_eq!(
+            published_gate_output("sh run_tests.sh", &failed),
+            "$ sh run_tests.sh\n✗ exit status 1"
+        );
+
+        let temp = tempdir().expect("tempdir");
+        let feedback_file = temp.path().join("state/retry-feedback.json");
+        let (dispatcher, mut task) = make_test_dispatcher(
+            &temp,
+            FEEDBACK_PROVIDER,
+            no_auto_fix,
+            GraphFeedbackContext::default(),
+        )
+        .await;
+        std::fs::write(
+            temp.path().join("run_tests.sh"),
+            "echo 'FAIL: test_count (1 != 3)'\nexit 1\n",
+        )
+        .expect("test script");
+        task.verify = vec![verify_step("test", "sh run_tests.sh 2>&1 | grep -q OK")];
+        let spec = make_spec(&task);
+        dispatcher.attach_retry_feedback(&spec.plan_id, feedback_file.clone(), "run-1");
+        let error = dispatcher
+            .dispatch(&spec, Vec::new(), &CellContext::new())
+            .await
+            .expect_err("the tests fail");
+        assert!(matches!(error, RokoError::Verify { .. }), "{error}");
+        let persisted: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&feedback_file).expect("feedback persisted"))
+                .expect("feedback json");
+        let raw = persisted["tasks"][task.id.as_str()]["feedback"]["raw_output"]
+            .as_str()
+            .unwrap_or_default();
+        assert!(
+            raw.contains("run `sh run_tests.sh` on its own to see it"),
+            "{persisted}"
+        );
     }
 
     /// backlog 4210: a verify failure's pattern reaches a later attempt of

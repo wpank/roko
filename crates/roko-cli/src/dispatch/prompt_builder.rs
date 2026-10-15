@@ -3110,10 +3110,6 @@ fn render_gate_feedback(feedback: &GateFeedback) -> String {
         buf.push_str(diagnosis);
         buf.push_str("\n\n");
     }
-    let has_structured = !feedback.compile_errors.is_empty()
-        || !feedback.test_failures.is_empty()
-        || !feedback.clippy_warnings.is_empty();
-
     if !feedback.compile_errors.is_empty() {
         buf.push_str("## Compile errors\n");
         for err in &feedback.compile_errors {
@@ -3132,9 +3128,14 @@ fn render_gate_feedback(feedback: &GateFeedback) -> String {
             buf.push_str(&format!("- {w}\n"));
         }
     }
-    // When no structured errors were parsed but raw output exists, include
-    // a bounded excerpt so the agent still sees what went wrong.
-    if !has_structured && !feedback.raw_output.is_empty() {
+    // Unless compile errors explain the failure, include a bounded excerpt
+    // of the raw output: a failing test's lines name it, but only the output
+    // says what it expected and got (bug-59ed90), and a step's `fail_msg` can
+    // look like a failing test line itself.
+    if feedback.compile_errors.is_empty() && !feedback.raw_output.is_empty() {
+        if !buf.ends_with("\n\n") {
+            buf.push('\n');
+        }
         buf.push_str("## Raw gate output\n```\n");
         // Limit to ~2 KB to avoid blowing the prompt budget.
         let raw_excerpt: String = feedback.raw_output.chars().take(2048).collect();
@@ -4373,6 +4374,46 @@ mod tests {
             p.system_prompt.contains("mod::test_foo"),
             "retry should contain test failure"
         );
+    }
+
+    /// bug-59ed90: a failed test step's output reaches the retry, even when a
+    /// line of it (the step's `fail_msg`, a pytest summary) reads as a failing
+    /// test; compile errors stay on their own.
+    #[test]
+    fn retry_prompt_keeps_a_failed_tests_output() {
+        let unittest = "verify[1:test] (`python3 -m unittest tests.test_cli`): the new flag \
+             tests failed\n\
+             FAIL: test_json_flag_for_stdin (tests.test_cli.CliTests.test_json_flag_for_stdin)\n\
+             Traceback (most recent call last):\n\
+             AssertionError: {'count': 1} != {'count': 3}\n\
+             Ran 8 tests in 0.003s\n\
+             FAILED (failures=1)";
+        let pytest = "verify[1:test] (`pytest tests/test_cli.py`): exit code: 1\n\
+             >       assert counts == {\"a.txt\": 3}\n\
+             E       AssertionError: assert {'a.txt': 1} == {'a.txt': 3}\n\
+             FAILED tests/test_cli.py::test_json_files - AssertionError: assert {'a.txt': 1}";
+        for (raw, cause) in [
+            (unittest, "AssertionError: {'count': 1} != {'count': 3}"),
+            (
+                pytest,
+                "E       AssertionError: assert {'a.txt': 1} == {'a.txt': 3}",
+            ),
+        ] {
+            let feedback = GateFeedback::from_raw(raw).expect("feedback");
+            assert!(!feedback.test_failures.is_empty(), "{feedback:?}");
+            let rendered = render_gate_feedback(&feedback);
+            assert!(rendered.contains("\n\n## Raw gate output"), "{rendered}");
+            assert!(rendered.contains(cause), "{rendered}");
+        }
+
+        let compile = GateFeedback::from_raw(
+            "verify[0:compile] (`cargo check`): exit code: 101\n\
+             error[E0425]: cannot find value `x` in this scope\n --> src/lib.rs:3:5",
+        )
+        .expect("feedback");
+        let rendered = render_gate_feedback(&compile);
+        assert!(rendered.contains("## Compile errors"), "{rendered}");
+        assert!(!rendered.contains("## Raw gate output"), "{rendered}");
     }
 
     /// gap-c8bfc8: QuickReviewer and AutoFixer get no cross-plan context, yet

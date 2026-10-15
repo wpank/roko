@@ -17,10 +17,10 @@ use serde::Serialize;
 use toml::Value;
 
 use roko_cli::task_parser::{
-    CONTEXT_KEYS, META_KEYS, TASK_KEYS, TaskDef, VERIFY_KEYS, normalize_model_alias,
+    CONTEXT_KEYS, META_KEYS, TASK_KEYS, TaskDef, TasksFile, VERIFY_KEYS, normalize_model_alias,
     suggest_field_correction,
 };
-use roko_gate::spec_quality::ac_id;
+use roko_gate::spec_quality::{HiddenRunnerOutput, ac_id, hidden_runner_output};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize)]
 #[serde(rename_all = "lowercase")]
@@ -545,6 +545,106 @@ fn negates_a_grep(command: &str) -> bool {
     })
 }
 
+/// bug-59ed90: a check of a plan that hides its test runner's output, so
+/// when it fails neither the retry nor the person sees why.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HiddenOutputCheck {
+    /// The task it checks; `None` for a whole-plan `[[meta.verify]]` step.
+    pub task_id: Option<String>,
+    /// Which check it is: `verify step 1`, `[task.accept] runner 1`,
+    /// `[[meta.verify]] step 1`.
+    pub label: String,
+    /// The check's command.
+    pub command: String,
+    /// What it does with its runner's output.
+    pub hidden: HiddenRunnerOutput,
+}
+
+impl HiddenOutputCheck {
+    /// Whether it is a `[task.accept]` runner, whose output roko shows and
+    /// whose passing tests roko counts itself.
+    fn is_accept_runner(&self) -> bool {
+        self.label.starts_with("[task.accept]")
+    }
+
+    /// What is wrong with it and what to write instead (PLAN_050).
+    pub fn message(&self) -> String {
+        let owner = match &self.task_id {
+            Some(task_id) => format!("task '{task_id}' {}", self.label),
+            None => self.label.clone(),
+        };
+        let mut message = format!(
+            "{owner} `{}` {}, so when it fails neither the retry nor the person sees why",
+            self.command,
+            self.hidden.describe()
+        );
+        if self.hidden.counts {
+            message.push_str(
+                "; a test count also fails correct work that writes a different number of tests",
+            );
+        }
+        if self.is_accept_runner() {
+            let _ = write!(
+                message,
+                "; roko shows a pinned test's output and counts its passing tests itself, so \
+                 the runner is the test command alone: `{}`",
+                self.hidden.runner
+            );
+        } else {
+            let _ = write!(
+                message,
+                "; run `{}` on its own, naming the new tests (or putting a `grep -q` for them \
+                 first) so it fails before the task is done, and give any other check its own \
+                 `&&` command",
+                self.hidden.runner
+            );
+        }
+        message
+    }
+}
+
+/// bug-59ed90: every check of `tasks_file` that hides its test runner's
+/// output ([`hidden_runner_output`]): the tasks' verify steps and
+/// `[task.accept]` runners, and the whole-plan `[[meta.verify]]` steps.
+pub fn hidden_output_checks(tasks_file: &TasksFile) -> Vec<HiddenOutputCheck> {
+    let mut checks = Vec::new();
+    let mut check = |task_id: Option<&str>, label: String, command: &str| {
+        if let Some(hidden) = hidden_runner_output(command) {
+            checks.push(HiddenOutputCheck {
+                task_id: task_id.map(str::to_string),
+                label,
+                command: command.to_string(),
+                hidden,
+            });
+        }
+    };
+    for task in &tasks_file.tasks {
+        for (index, step) in task.verify.iter().enumerate() {
+            check(
+                Some(&task.id),
+                format!("verify step {}", index + 1),
+                &step.command,
+            );
+        }
+        let accepted = task.accept.iter().flat_map(|accept| &accept.files);
+        for (index, file) in accepted.enumerate() {
+            check(
+                Some(&task.id),
+                format!("[task.accept] runner {}", index + 1),
+                &file.runner,
+            );
+        }
+    }
+    for (index, step) in tasks_file.meta.verify.iter().enumerate() {
+        check(
+            None,
+            format!("[[meta.verify]] step {}", index + 1),
+            &step.command,
+        );
+    }
+    checks
+}
+
 /// 3206: one PLAN_043 warning per key of `parsed` that `plan run` does not
 /// read, naming its table, so `--strict` rejects it. The parser drops such a
 /// key without a word, which turns a precise spec into a vague one: R3's
@@ -857,6 +957,17 @@ fn validate_tasks_file(
                         ),
                     });
                 }
+            }
+            // bug-59ed90: a check that hides its test runner's output fails
+            // without saying why, to the retry and to the person.
+            for check in hidden_output_checks(&tasks_file) {
+                diagnostics.push(Diagnostic {
+                    severity: Severity::Warning,
+                    rule_id: "PLAN_050".to_string(),
+                    plan_id: Some(plan_id.clone()),
+                    task_id: check.task_id.clone(),
+                    message: check.message(),
+                });
             }
             // 3208: a verify step names the acceptance criteria it checks.
             for task in &tasks_file.tasks {
@@ -2432,6 +2543,112 @@ verify = [{ phase = "structural", command = "! grep -q TODO src/lib.rs" }]
         assert_eq!(negative.len(), 1, "{report:?}");
         assert_eq!(negative[0].severity, Severity::Warning);
         assert_eq!(negative[0].task_id.as_deref(), Some("T1"));
+    }
+
+    /// bug-59ed90: a check that pipes, redirects or captures its test
+    /// runner's output is a PLAN_050 warning that names the runner to run on
+    /// its own: fresh-guide's guessed-count check, a pinned test's runner and
+    /// a whole-plan step. Plain and `grep -q`-guarded runners pass.
+    #[test]
+    fn plan_validate_warns_on_a_check_that_hides_its_runner_output() {
+        let temp = TempDir::new().unwrap();
+        let root = temp.path();
+        fs::create_dir_all(root.join("plans/demo")).unwrap();
+        fs::write(
+            root.join("plans/demo/tasks.toml"),
+            r#"
+[meta]
+plan = "demo"
+
+[[meta.verify]]
+phase = "test"
+command = "cargo test 2>&1 | grep -q 'test result: ok'"
+
+[[task]]
+id = "T1"
+title = "Test the new flags"
+role = "implementer"
+files = ["tests/test_cli.py"]
+depends_on = []
+
+[[task.verify]]
+phase = "test"
+command = "python3 -m unittest tests.test_cli 2>&1 | grep -E '^Ran [0-9]+ test' | awk '{if ($2 >= 11) exit 0; else exit 1}'"
+
+[[task.accept.files]]
+src = "accept/test_new_flags.py"
+dest = "tests/test_new_flags.py"
+runner = "python3 -m unittest tests.test_new_flags -v 2>&1 | tail -5"
+count = 5
+
+[[task]]
+id = "T2"
+title = "Count characters"
+role = "implementer"
+files = ["wordy/cli.py", "tests/test_cli.py"]
+depends_on = ["T1"]
+
+[[task.verify]]
+phase = "test"
+command = "python3 -m unittest tests.test_cli.CharsTests"
+
+[[task.verify]]
+phase = "test"
+command = "grep -qw 'def test_chars' tests/test_cli.py && pytest tests/test_cli.py -k chars"
+"#,
+        )
+        .unwrap();
+
+        let report = validate_plans_dir(root.join("plans").as_path(), None).unwrap();
+
+        let hidden = report
+            .plans
+            .iter()
+            .flat_map(|plan| &plan.diagnostics)
+            .filter(|diag| diag.rule_id == "PLAN_050")
+            .collect::<Vec<_>>();
+        assert_eq!(hidden.len(), 3, "{report:?}");
+        assert!(
+            hidden.iter().all(|diag| diag.severity == Severity::Warning),
+            "{hidden:?}"
+        );
+        let find = |owner: &str| {
+            hidden
+                .iter()
+                .find(|diag| diag.message.starts_with(owner))
+                .unwrap_or_else(|| panic!("no warning for {owner}: {hidden:?}"))
+        };
+        let step = find("task 'T1' verify step 1 `python3 -m unittest tests.test_cli 2>&1");
+        assert_eq!(step.task_id.as_deref(), Some("T1"));
+        assert!(
+            step.message.contains(
+                "pipes the output of `python3 -m unittest tests.test_cli` into `grep`, `awk` \
+                 and checks a count on it, so when it fails neither the retry nor the person \
+                 sees why; a test count also fails correct work"
+            ),
+            "{}",
+            step.message
+        );
+        assert!(
+            step.message
+                .contains("run `python3 -m unittest tests.test_cli` on its own"),
+            "{}",
+            step.message
+        );
+        let runner = find(
+            "task 'T1' [task.accept] runner 1 `python3 -m unittest tests.test_new_flags -v 2>&1 | \
+             tail -5` pipes the output of",
+        );
+        assert_eq!(runner.task_id.as_deref(), Some("T1"));
+        assert!(
+            runner.message.contains(
+                "the runner is the test command alone: `python3 -m unittest tests.test_new_flags -v`"
+            ),
+            "{}",
+            runner.message
+        );
+        let whole_plan = find("[[meta.verify]] step 1 `cargo test 2>&1");
+        assert_eq!(whole_plan.task_id, None);
     }
 
     /// 3208: a verify step's `covers` must name one of its task's acceptance

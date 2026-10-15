@@ -2,7 +2,7 @@
 id = "bug-1d09e8"
 kind = "bug"
 title = "A cancelled plan run reports its interrupted task as failed, ends with a 'failed' engine error, and does not say what happens to its passed tasks' work"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p2"
 goal = "core"
@@ -11,13 +11,25 @@ subsystem = ["roko-cli/graph_execution", "roko-core/dashboard_snapshot", "roko-s
 created = 2026-10-13
 updated = 2026-10-15
 last_verified = 2026-10-15
-last_verified_rev = "9d5210330"
+last_verified_rev = "04e7d475b"
 source = "hermes-plugin-roko dogfood, 2026-10-13 (roko serve :6716 built from 6ab6fde47)"
 anchors = ["crates/roko-cli/src/graph_execution/plan_runner.rs::PlanRunInterrupt", "crates/roko-cli/src/graph_execution/plan_runner.rs::cancel_reason", "crates/roko-cli/src/serve_runtime.rs", "crates/roko-core/src/dashboard_snapshot.rs::classify_task_outcome", "crates/roko-serve/src/routes/runs.rs::run_summary"]
 links = { depends_on = [], blocks = [], related = ["bug-db89d4", "bug-7b62ff"], supersedes = [], duplicate_of = "" }
 
 [[verify]]
 command = "grep -rqw 'fn a_cancelled_run_reports_interrupted_tasks_as_cancelled' crates/roko-cli/ && cargo test -p roko-cli --lib a_cancelled_run_reports_interrupted_tasks_as_cancelled"
+
+[closed]
+at = 2026-10-15
+at_ts = "2026-10-15T19:52:44Z"
+commit = "04e7d475b"
+by = "roko-checks"
+executor = "claude-agent"
+via = "manual"
+size = "M"
+claimed_at = "2026-10-15T15:37:42Z"
+forced = true
+evidence = "04e7d475b: a task cut off by a stop (its node failed with RokoError::Cancelled) is task_completed outcome=cancelled with a graph.task_cancelled notice, raises no 'task failed' error, sits in the checkpoint's cancelled set and counts apart from failures (TaskVerdictCounts, run metrics, TaskOutcomeClass::Cancelled in the snapshot, TUI and run summary, which gains tasks.cancelled); a host's cancel token requests PlanRunInterrupt::Cancel (label cancel) and closing the TUI TuiClosed, and the notices name the cause and say a resume keeps the passed tasks. Tests: a_cancelled_run_reports_interrupted_tasks_as_cancelled, a_task_a_stop_cut_off_is_cancelled_not_failed, a_stopping_run_holds_back_failures_from_the_poll, a_cancellation_is_told_apart_by_its_text plus updated ones; roko-cli lib 3639, roko-core lib 2019, roko-serve lib 1018, graph_timeout_matrix 7, honest_verdicts_canary 1, plan_execute 6 passed; clippy -D warnings and rustfmt clean. Live, zero cost (tmp/hermes-roko-v5/roko-checks/cancel-demo): CLI SIGINT and serve /mcp run_cancel both show T2 cancelled with its reason and the cause named ('a cancel request is stopping the run'); the serve summary counts cancelled 1, failed 0; a resume after the cancel ran only T2 and T3. Left: the closing 'Graph Engine: … failed' row is bug-db89d4's; serve's 'completed with task-level failures' error on a fast-settling cancel is bug-7256b9. Claimed with --force over batch.rs, which this item does not touch (roko-delivery's bug-db89d4)."
 +++
 
 ## Problem

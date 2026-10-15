@@ -2,16 +2,16 @@
 id = "bug-c83c84"
 kind = "bug"
 title = "A cancel can stop roko serve itself, and the agent's tool processes outlive it: the bash tool runs its command in roko's own process group and kills only its shell"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p1"
 goal = "core"
 size = "M"
 subsystem = ["roko-std/tool"]
 created = 2026-10-15
-updated = 2026-10-15
+updated = 2026-10-16
 last_verified = 2026-10-16
-last_verified_rev = "71b7c73f8"
+last_verified_rev = "0400e85c0"
 source = "tmp/hermes-roko-v5/findings/plugin-setup.md F1 (plugin-setup, 2026-10-15); filed by roko-checks"
 discovered_from = "hermes-roko-v5 round: a cancelled run from Hermes"
 anchors = ["crates/roko-std/src/tool/builtin/bash.rs::run", "crates/roko-std/src/tool/builtin/child_group.rs::output_within", "crates/roko-std/src/tool/builtin/run_tests.rs"]
@@ -19,6 +19,17 @@ links = { depends_on = [], blocks = [], related = ["bug-1d09e8", "bug-7b62ff"], 
 
 [[verify]]
 command = "grep -rqw 'fn bash_commands_run_in_their_own_process_group' crates/roko-std/src && cargo test -p roko-std --lib bash_commands_run_in_their_own_process_group"
+
+[closed]
+at = 2026-10-16
+at_ts = "2026-10-15T23:14:57Z"
+commit = "0400e85c0"
+by = "roko-checks"
+executor = "claude-agent"
+via = "manual"
+size = "M"
+forced = false
+evidence = "0400e85c0: the bash and run_tests tools run their command through child_group::output_within, which makes it the leader of its own process group (stdin closed as Command::output did) and SIGKILLs that group when the call is dropped or times out. Tests: bash_commands_run_in_their_own_process_group, a_stopped_bash_call_kills_what_its_command_started; roko-std lib 231 passed; clippy -D warnings clean. Live, zero cost, on a scratch roko serve with a scripted OpenAI-compatible model (tmp/hermes-roko-v5/roko-checks/serve-signal): on main 7b6a5af44 a bash call running 'sleep 2; kill -INT 0' shut serve down with plugin-setup F1's exact log (same tool hash, two 'server shutdown initiated', 'server stopped'), and a cancelled call's 'sleep' child was still running 15 s after the cancel; with the fix serve kept running and the run completed, and the child was gone after the cancel. The exact command that signalled the group in F1 is not identified; the mechanism and log signature match."
 +++
 
 ## Problem

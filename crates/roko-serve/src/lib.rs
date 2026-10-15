@@ -2439,6 +2439,9 @@ fn dashboard_event_to_server(event: &roko_core::DashboardEvent) -> Option<Server
         | DashboardEvent::InboxDismiss { .. }
         | DashboardEvent::AgentHeartbeat { .. }
         | DashboardEvent::GateRungStarted { .. }
+        | DashboardEvent::PlanCheckStarted { .. }
+        | DashboardEvent::PlanCheckHeartbeat { .. }
+        | DashboardEvent::PlanCheckFinished { .. }
         | DashboardEvent::AffectUpdated { .. }
         | DashboardEvent::AgentTopologyUpdated { .. }
         | DashboardEvent::CriticalPathEtaUpdated { .. }

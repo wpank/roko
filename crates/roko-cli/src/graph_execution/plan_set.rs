@@ -264,6 +264,12 @@ const NON_BUILDING_CARGO_COMMANDS: [&str; 9] = [
     "--list",
 ];
 
+/// Whether `cargo <subcommand>` builds or reads the workspace sources:
+/// not one of [`NON_BUILDING_CARGO_COMMANDS`].
+pub(crate) fn cargo_builds(subcommand: &str) -> bool {
+    !subcommand.is_empty() && !NON_BUILDING_CARGO_COMMANDS.contains(&subcommand)
+}
+
 /// The Cargo package graph footprints need: where each workspace member
 /// lives, and which members build on it.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -648,7 +654,7 @@ impl AreaResolver<'_> {
         let Some(subcommand) = args.next() else {
             return Vec::new();
         };
-        if NON_BUILDING_CARGO_COMMANDS.contains(&subcommand) {
+        if !cargo_builds(subcommand) {
             return Vec::new();
         }
         let mut named = Vec::new();

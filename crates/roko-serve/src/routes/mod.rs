@@ -629,8 +629,18 @@ async fn api_not_found(req: Request) -> Response {
 ///   (gap-cf427e);
 /// - `loop_events`: runs publish `route_decided`, `confirm_*`, `effect_*` and
 ///   `knowledge_written` events;
-/// - `live_tool_steps`: API-model tool calls publish live tool steps.
-pub(crate) const FEATURES: &[&str] = &["chat_refusals", "loop_events", "live_tool_steps"];
+/// - `live_tool_steps`: API-model tool calls publish live tool steps;
+/// - `plan_check_events`: each step of a plan's whole-plan check (its
+///   `[meta] verify` or the Cargo default, in place or as the delivery's
+///   post-merge regression check) publishes `plan_check_started`,
+///   `plan_check_heartbeat` every 15 s and `plan_check_finished`
+///   (gap-6b6ec1).
+pub(crate) const FEATURES: &[&str] = &[
+    "chat_refusals",
+    "loop_events",
+    "live_tool_steps",
+    "plan_check_events",
+];
 
 /// `GET /health` — bare liveness probe for load balancers and external tools.
 ///

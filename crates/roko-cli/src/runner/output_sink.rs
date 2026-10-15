@@ -1401,6 +1401,40 @@ pub fn format_dashboard_event(
             ">",
             format!("Phase: {from} -> {to}"),
         ),
+        DashboardEvent::PlanCheckStarted {
+            plan_id,
+            step,
+            steps,
+            command,
+            ..
+        } => (
+            format!("[{plan_id}]"),
+            ">",
+            format!("Plan check {step}/{steps}: {command}"),
+        ),
+        DashboardEvent::PlanCheckFinished {
+            plan_id,
+            step,
+            steps,
+            name,
+            passed,
+            elapsed_ms,
+            ..
+        } => {
+            let (icon, word) = if *passed {
+                ("+", "passed")
+            } else {
+                ("x", "failed")
+            };
+            (
+                format!("[{plan_id}]"),
+                icon,
+                format!(
+                    "Plan check {step}/{steps} {word}: {name} ({} s)",
+                    elapsed_ms / 1_000
+                ),
+            )
+        }
         DashboardEvent::Error { message } => {
             let trunc = truncate_chars(message, 120);
             (String::new(), "x", format!("Error: {trunc}"))
@@ -1492,6 +1526,7 @@ pub fn format_dashboard_event(
         | DashboardEvent::ChainTx { .. }
         | DashboardEvent::ChainContractEvent { .. }
         | DashboardEvent::AgentHeartbeat { .. }
+        | DashboardEvent::PlanCheckHeartbeat { .. }
         | DashboardEvent::GateRungStarted { .. }
         | DashboardEvent::GateOutputLine { .. }
         | DashboardEvent::AffectUpdated { .. }

@@ -464,8 +464,9 @@ fn serve_plan_id(run_id: &str) -> String {
 
 /// Whether a [`WorkspaceEventLog`] syncs `event` and flushes the run's index
 /// as it is written: the plan, task, gate and run events that explain a run's
-/// end state, a blocked task's included (gap-dd4826), so a crash right after
-/// one cannot lose it.
+/// end state, a blocked task's included (gap-dd4826), and the steps of a
+/// plan's whole-plan check (gap-6b6ec1), so a crash right after one cannot
+/// lose it.
 fn is_lifecycle_event(event: &DashboardEvent) -> bool {
     matches!(
         event,
@@ -476,6 +477,8 @@ fn is_lifecycle_event(event: &DashboardEvent) -> bool {
             | DashboardEvent::TaskCompleted { .. }
             | DashboardEvent::TaskBlocked { .. }
             | DashboardEvent::GateResult { .. }
+            | DashboardEvent::PlanCheckStarted { .. }
+            | DashboardEvent::PlanCheckFinished { .. }
             | DashboardEvent::RunCompleted { .. }
     )
 }
@@ -490,6 +493,7 @@ fn shown_as_it_happens(event: &DashboardEvent) -> bool {
     !matches!(
         event,
         DashboardEvent::AgentHeartbeat { .. }
+            | DashboardEvent::PlanCheckHeartbeat { .. }
             | DashboardEvent::EfficiencyEvent { .. }
             | DashboardEvent::GateOutputLine { .. }
             | DashboardEvent::TaskOutputAppended { .. }

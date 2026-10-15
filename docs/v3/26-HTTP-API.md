@@ -428,6 +428,9 @@ as soon as it is published; heartbeats, efficiency rows and gate output lines re
 | `effect_staged` | `effect_id` (what `effect_decide` names), `plan_id`, `task_id`, `attempt`, `tool`, `server`, `proposed_at`: an outbound call the agent proposed waits for a person (gap-f439c1). Published while the attempt runs, within about 2 s of the hold |
 | `effect_decided` | `effect_id`, `plan_id`, `task_id`, `tool`, `server`, `outcome` (`applied`, `rejected`, `failed`, `ambiguous`), `decided_by`. Published on `roko serve`'s hub (`/api/events`), and in the run's index while the run is live |
 | `knowledge_written` | `plan_id`, `task_id`, `admission` (`light_admitted`, `full_admitted`, `full_deferred`, `full_rejected`, `full_suppressed`, `deferred`, `duplicate`, `no_candidate`), `entry_id` (the entry admitted or confirmed), `reinforced`, `promoted`, `lesson` (≤160 characters): what a verified attempt taught the knowledge store (gap-7576c7). Only when it changed something |
+| `plan_check_started` | `plan_id`, `stage` (`regression`: the delivery's post-merge check in the regression checkout; `in_place`: the working tree the tasks edited), `step` (from 1) of `steps`, `name` (`cargo clippy`, `cargo test`, … or the program the step runs), `command`, `scope` (`workspace`, `packages`, or `command`), `packages` (of a `packages` step), `source` (`authored` or `cargo-default`): a step of the plan's whole-plan check started (gap-6b6ec1) |
+| `plan_check_heartbeat` | `plan_id`, `stage`, `step`, `steps`, `name`, `scope`, `packages`, `elapsed_ms`: every 15 s while the step runs |
+| `plan_check_finished` | `plan_id`, `stage`, `step`, `steps`, `name`, `scope`, `packages`, `passed`, `exit_code` (absent when it did not exit), `reason` (why a step that did not exit ended), `elapsed_ms`. A failed step ends the check |
 
 **Inference and deployment events:**
 

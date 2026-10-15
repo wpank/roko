@@ -30,6 +30,7 @@ use roko_graph::delivery::{
 use roko_graph::delivery::ReleasePolicy;
 use tracing::{debug, info, warn};
 
+use super::plan_check_events::PlanCheckEvents;
 use crate::runner::merge::{MergeTree, git_command, git_merge_tree, git_output};
 
 // ---------------------------------------------------------------------------
@@ -163,6 +164,9 @@ pub struct GitDeliveryBackend {
     /// The environment the regression commands inherit from in place of
     /// roko's own, in tests.
     parent_env: Option<Vec<(String, OsString)>>,
+    /// Publishes each regression command's start, heartbeats and end
+    /// (gap-6b6ec1).
+    check_events: PlanCheckEvents,
 }
 
 impl GitDeliveryBackend {
@@ -185,7 +189,16 @@ impl GitDeliveryBackend {
             regression_source: "default".to_string(),
             env_passthrough: Vec::new(),
             parent_env: None,
+            check_events: PlanCheckEvents::none(),
         }
+    }
+
+    /// Publish each regression command's start, heartbeats and end through
+    /// `events` (gap-6b6ec1).
+    #[must_use]
+    pub fn with_check_events(mut self, events: PlanCheckEvents) -> Self {
+        self.check_events = events;
+        self
     }
 
     /// Say where the regression commands came from, `authored` or
@@ -364,7 +377,7 @@ impl GitDeliveryBackend {
             .unwrap_or_else(roko_core::child_env::process_env);
         let mut checks = Vec::new();
         let mut log = String::new();
-        for command in &self.regression {
+        for (index, command) in self.regression.iter().enumerate() {
             let Some((program, args)) = command.split_first() else {
                 return Err("the regression command is empty".to_string());
             };
@@ -373,14 +386,24 @@ impl GitDeliveryBackend {
             roko_gate::inherit_gate_env_from(&mut regression, env, &self.env_passthrough);
             // Only the build output is shared: the sources are the checkout's.
             let started = std::time::Instant::now();
-            let output = regression
+            let watched =
+                self.check_events
+                    .start(index, self.regression.len(), &check_command(command));
+            let run = regression
                 .args(args)
                 .current_dir(&checkout)
                 .env("CARGO_TARGET_DIR", &self.regression_target_dir)
                 .kill_on_drop(true)
-                .output()
-                .await
-                .map_err(|e| format!("failed to spawn regression gate: {e}"))?;
+                .output();
+            let output = match watched.watch(run).await {
+                Ok(output) => output,
+                Err(e) => {
+                    let reason = format!("failed to spawn regression gate: {e}");
+                    watched.finish(false, None, Some(reason.clone()));
+                    return Err(reason);
+                }
+            };
+            watched.finish(output.status.success(), output.status.code(), None);
             let check = DeliveryCheck {
                 command: check_command(command),
                 source: self.regression_source.clone(),
@@ -1777,6 +1800,68 @@ mod tests {
         assert!(
             !env.contains("sk-regression-canary"),
             "a provider key reached the regression:\n{env}"
+        );
+    }
+
+    /// gap-6b6ec1: the regression check publishes each command's start and
+    /// end, with what it builds, so a host can say what the run waits for.
+    #[tokio::test]
+    async fn regression_check_publishes_its_steps() {
+        use super::super::plan_check_events::CheckStage;
+        use roko_core::DashboardEvent;
+
+        let repo = diverged_repo();
+        let path = repo.path();
+        git(path, &["checkout", "--quiet", "-b", "work"]);
+        let hub = crate::state_hub::StateHub::new(256);
+        let mut published = hub.subscribe_events();
+        let events = PlanCheckEvents::new(
+            crate::runner::tui_bridge::TuiBridge::new(hub.sender()),
+            "plan-a",
+            CheckStage::Regression,
+            "cargo-default",
+        );
+        let backend = GitDeliveryBackend::new(path.to_path_buf())
+            .with_regression_steps(vec![
+                "true cargo test -p plan-a".to_string(),
+                "exit 4".to_string(),
+            ])
+            .with_check_events(events);
+        let commit = git(path, &["rev-parse", "roko/plan-a"]);
+
+        let outcome = backend
+            .run_regression(&git_request("d-git-check-events", path), &commit)
+            .await;
+
+        assert!(!outcome.passed, "{}", outcome.summary);
+        let mut seen = Vec::new();
+        while let Ok(envelope) = published.try_recv() {
+            match envelope.payload {
+                DashboardEvent::PlanCheckStarted {
+                    plan_id,
+                    stage,
+                    step,
+                    steps,
+                    name,
+                    ..
+                } => seen.push(format!("started {plan_id} {stage} {step}/{steps} {name}")),
+                DashboardEvent::PlanCheckFinished {
+                    step,
+                    passed,
+                    exit_code,
+                    ..
+                } => seen.push(format!("finished {step} {passed} {exit_code:?}")),
+                _ => {}
+            }
+        }
+        assert_eq!(
+            seen,
+            [
+                "started plan-a regression 1/2 true",
+                "finished 1 true Some(0)",
+                "started plan-a regression 2/2 exit",
+                "finished 2 false Some(4)",
+            ]
         );
     }
 

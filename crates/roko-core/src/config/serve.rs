@@ -204,20 +204,488 @@ fn default_mcp_max_run_usd() -> f64 {
     5.0
 }
 
+// ---- runs a chat host starts (9117, gap-cf427e) --------------------------
+
+/// What stops a run a chat host starts over `/mcp` before anything is queued
+/// (9117, gap-cf427e). A host reads [`Self::code`] as the `refusal` of the
+/// tool error's data.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ChatRunBlocker {
+    /// No data-model boundary: `[agent.data_llm]`, which screens what such a
+    /// run reads, is unset while `[serve.mcp] allow_without_data_llm` is off;
+    /// or it names a model roko cannot call over an API with its key set,
+    /// which fails every agent roko's own tool loop runs.
+    NoDataBoundary,
+    /// No model a task can be put on runs in roko's own tool loop with its
+    /// credentials set. Such a run holds its tool calls that act on the
+    /// outside world for approval (`stage`, decision 9107), which a CLI agent
+    /// cannot do, so every task would fail at dispatch.
+    NoToolLoopModel,
+}
+
+impl ChatRunBlocker {
+    /// The machine-readable code: `no_data_boundary` or `no_tool_loop_model`.
+    #[must_use]
+    pub const fn code(self) -> &'static str {
+        match self {
+            Self::NoDataBoundary => "no_data_boundary",
+            Self::NoToolLoopModel => "no_tool_loop_model",
+        }
+    }
+}
+
+/// Why a run a chat host starts may not start ([`super::schema::RokoConfig::chat_run_refusal`]).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ChatRunRefusal {
+    /// Every blocker that applies, [`ChatRunBlocker::NoDataBoundary`] first.
+    pub blockers: Vec<ChatRunBlocker>,
+    /// What the host shows its person: each blocker's reason and fix, in order.
+    pub message: String,
+}
+
+impl ChatRunRefusal {
+    /// The first blocker's code, the one a host matches.
+    #[must_use]
+    pub fn code(&self) -> &'static str {
+        self.blockers.first().map_or("", |blocker| blocker.code())
+    }
+
+    /// Every blocker's code, in order.
+    #[must_use]
+    pub fn codes(&self) -> Vec<&'static str> {
+        self.blockers.iter().map(|blocker| blocker.code()).collect()
+    }
+}
+
+/// The words of [`ChatRunBlocker::NoDataBoundary`] when `[agent.data_llm]` is
+/// unset. Chat hosts' readiness probes match "data-model boundary", so the
+/// wording stays.
+const NO_DATA_BOUNDARY: &str = "a run from a chat host needs the data-model boundary: set \
+                                [agent.data_llm] in roko.toml, or [serve.mcp] \
+                                allow_without_data_llm = true to run without it";
+
 impl super::schema::RokoConfig {
     /// Why a run a chat host starts may not start, or `None` when it may
-    /// (9117). Its request text is untrusted data, and the data-model
-    /// boundary (`[agent.data_llm]`) screens what such a run reads, so
-    /// without the boundary the run is refused unless `[serve.mcp]
-    /// allow_without_data_llm` is set.
+    /// (9117, gap-cf427e). Its request text is untrusted data, and the
+    /// data-model boundary (`[agent.data_llm]`) screens what such a run
+    /// reads, so without the boundary the run is refused unless `[serve.mcp]
+    /// allow_without_data_llm` is set. Such a run stages its tool calls that
+    /// act on the outside world (decision 9107), which only roko's own tool
+    /// loop can do, so it is refused too when no model it can be routed to
+    /// runs there with its credentials set ([`Self::tool_loop_models`]).
     #[must_use]
-    pub fn chat_run_refusal(&self) -> Option<&'static str> {
-        let unscreened = self.agent.data_llm.is_none() && !self.serve.mcp.allow_without_data_llm;
-        unscreened.then_some(
-            "a run from a chat host needs the data-model boundary: set [agent.data_llm] in \
-             roko.toml, or [serve.mcp] allow_without_data_llm = true to run without it",
-        )
+    pub fn chat_run_refusal(&self) -> Option<ChatRunRefusal> {
+        self.chat_run_refusal_with_env(&|name| std::env::var(name).ok())
     }
+
+    /// [`Self::chat_run_refusal`] with the environment `env` holds.
+    pub(crate) fn chat_run_refusal_with_env(
+        &self,
+        env: &dyn Fn(&str) -> Option<String>,
+    ) -> Option<ChatRunRefusal> {
+        let mut blockers = Vec::new();
+        let mut reasons = Vec::new();
+        match &self.agent.data_llm {
+            None if !self.serve.mcp.allow_without_data_llm => {
+                blockers.push(ChatRunBlocker::NoDataBoundary);
+                reasons.push(NO_DATA_BOUNDARY.to_string());
+            }
+            None => {}
+            Some(data_llm) => {
+                let model = data_llm.model.trim();
+                if let Err(why) = self.data_llm_model_usable_with_env(model, env) {
+                    blockers.push(ChatRunBlocker::NoDataBoundary);
+                    reasons.push(format!(
+                        "a run from a chat host needs a working data-model boundary, and \
+                         [agent.data_llm] model `{model}` {why}: name a model roko calls over an \
+                         API, with its key set"
+                    ));
+                }
+            }
+        }
+        if !self.chat_run_has_tool_loop_model_with_env(env) {
+            blockers.push(ChatRunBlocker::NoToolLoopModel);
+            reasons.push(self.no_tool_loop_model_reason_with_env(env));
+        }
+        (!blockers.is_empty()).then(|| ChatRunRefusal {
+            blockers,
+            message: reasons.join("; and "),
+        })
+    }
+
+    /// Why `model` cannot serve as `[agent.data_llm]`'s model, as the end of
+    /// a sentence about it, or `None` when it can: roko calls the data model
+    /// over an API (`roko_agent::provider::data_llm_boundary`), so it must
+    /// resolve to a configured API provider with its key set (gap-cf427e).
+    #[must_use]
+    pub fn data_llm_model_problem(&self, model: &str) -> Option<String> {
+        self.data_llm_model_usable_with_env(model.trim(), &|name| std::env::var(name).ok())
+            .err()
+    }
+
+    /// The `[models.*]` keys (or names routing gives) whose agents roko's own
+    /// tool loop runs with their credentials set (gap-cf427e): models that
+    /// can call tools, on a provider that runs there
+    /// ([`super::provider::ProviderConfig::runs_in_own_tool_loop`]), is not
+    /// in `[routing] disabled_providers` and has its key. Only these can run a
+    /// task that stages its tool calls, as a chat host's run does. The
+    /// candidates are the `[models.*]` entries and the models routing names:
+    /// the ladder's rungs, `[routing] fallback_models`,
+    /// `agent.fallback_model` and `agent.default_model`. The ladder's rungs
+    /// come first, cheapest first, then the rest by their configured price.
+    #[must_use]
+    pub fn tool_loop_models(&self) -> Vec<String> {
+        self.tool_loop_models_with_env(&|name| std::env::var(name).ok())
+    }
+
+    /// [`Self::tool_loop_models`] with the environment `env` holds.
+    pub(crate) fn tool_loop_models_with_env(
+        &self,
+        env: &dyn Fn(&str) -> Option<String>,
+    ) -> Vec<String> {
+        let providers = self.effective_providers_with_env(env);
+        let mut models: Vec<(usize, f64, String)> = Vec::new();
+        for (rank, key) in self.routing_candidate_models().into_iter().enumerate() {
+            let Ok((profile, provider_id, provider)) = self.tool_model(&key, &providers) else {
+                continue;
+            };
+            if self
+                .provider_runs_task_tools(&provider_id, provider, env)
+                .is_ok()
+            {
+                let price = profile.cost_input_per_m.unwrap_or(f64::MAX)
+                    + profile.cost_output_per_m.unwrap_or(f64::MAX);
+                models.push((rank, price, key));
+            }
+        }
+        // Rungs keep the ladder's order (cheapest first); the rest follow by price.
+        let rungs = self.ladder_rung_models().len();
+        models.sort_by(|(a_rank, a_price, a_key), (b_rank, b_price, b_key)| {
+            let (a_rung, b_rung) = (*a_rank < rungs, *b_rank < rungs);
+            b_rung
+                .cmp(&a_rung)
+                .then_with(|| {
+                    if a_rung && b_rung {
+                        a_rank.cmp(b_rank)
+                    } else {
+                        a_price.total_cmp(b_price)
+                    }
+                })
+                .then_with(|| a_key.cmp(b_key))
+        });
+        models.into_iter().map(|(_, _, key)| key).collect()
+    }
+
+    /// Whether a task of a chat host's run can be put on a model roko's own
+    /// tool loop runs: one of [`Self::tool_loop_models`], or a model routing
+    /// names whose slug failover can run on another provider of its family
+    /// that qualifies (`claude_cli`'s Claude slug on the Anthropic API).
+    fn chat_run_has_tool_loop_model_with_env(&self, env: &dyn Fn(&str) -> Option<String>) -> bool {
+        if !self.tool_loop_models_with_env(env).is_empty() {
+            return true;
+        }
+        let providers = self.effective_providers_with_env(env);
+        self.routing_candidate_models().iter().any(|key| {
+            let Ok((_, provider_id, provider)) = self.tool_model(key, &providers) else {
+                return false;
+            };
+            providers.iter().any(|(other_id, other)| {
+                other_id != &provider_id
+                    && provider.kind.same_family().contains(&other.kind)
+                    && self.provider_runs_task_tools(other_id, other, env).is_ok()
+            })
+        })
+    }
+
+    /// The models routing can put a task on: the ladder's rung models, then
+    /// `[routing] fallback_models`, `agent.fallback_model`,
+    /// `agent.default_model` and the `[models.*]` keys, each once, by its
+    /// `[models.*]` key when an entry has it as key or slug.
+    fn routing_candidate_models(&self) -> Vec<String> {
+        let models = self.effective_models();
+        let named = self
+            .ladder_rung_models()
+            .into_iter()
+            .chain(self.routing.fallback_models.iter().cloned())
+            .chain(self.agent.fallback_model.iter().cloned())
+            .chain(std::iter::once(self.agent.default_model.clone()))
+            .chain(models.keys().cloned());
+        let mut seen = std::collections::HashSet::new();
+        named
+            .filter(|model| !model.trim().is_empty())
+            .map(|model| model_key_of(&models, &model))
+            .filter(|model| seen.insert(model.clone()))
+            .collect()
+    }
+
+    /// The `[models.*]` keys of the ladder's rungs, its roles' own included,
+    /// cheapest first, each once; none while the ladder is off. A rung runs
+    /// only a model a `[models.*]` entry names by key or slug, so the others
+    /// are left out.
+    fn ladder_rung_models(&self) -> Vec<String> {
+        if !self.routing.ladder.enabled {
+            return Vec::new();
+        }
+        let models = self.effective_models();
+        let mut seen = std::collections::HashSet::new();
+        self.routing
+            .ladder
+            .all_rungs()
+            .filter(|rung| has_model_entry(&models, &rung.model))
+            .map(|rung| model_key_of(&models, &rung.model))
+            .filter(|model| seen.insert(model.clone()))
+            .collect()
+    }
+
+    /// `model`'s profile, with the id and config of the provider it runs on:
+    /// the one its profile names, else (a builtin model, which names its
+    /// provider kind's label) the first of its kind, as
+    /// `roko_agent::provider::data_llm_boundary` finds it. Otherwise why
+    /// not, as the end of a sentence about it.
+    fn model_provider<'a>(
+        &self,
+        model: &str,
+        providers: &'a indexmap::IndexMap<String, super::provider::ProviderConfig>,
+    ) -> Result<
+        (
+            super::provider::ModelProfile,
+            String,
+            &'a super::provider::ProviderConfig,
+        ),
+        String,
+    > {
+        let resolved = crate::agent::resolve_model(self, model);
+        let Some(profile) = resolved.profile else {
+            return Err("is not a configured model".to_string());
+        };
+        let found = providers.get_key_value(&profile.provider).or_else(|| {
+            providers
+                .iter()
+                .find(|(_, provider)| provider.kind == resolved.provider_kind)
+        });
+        let Some((provider_id, provider)) = found else {
+            return Err(format!(
+                "uses provider `{}`, which is not configured",
+                profile.provider
+            ));
+        };
+        Ok((profile, provider_id.clone(), provider))
+    }
+
+    /// [`Self::model_provider`] of a model that can call tools, as a task's
+    /// agent must; otherwise why not.
+    fn tool_model<'a>(
+        &self,
+        model: &str,
+        providers: &'a indexmap::IndexMap<String, super::provider::ProviderConfig>,
+    ) -> Result<
+        (
+            super::provider::ModelProfile,
+            String,
+            &'a super::provider::ProviderConfig,
+        ),
+        String,
+    > {
+        let found = self.model_provider(model, providers)?;
+        if !found.0.supports_tools || found.0.is_embedding_model {
+            return Err("cannot call tools".to_string());
+        }
+        Ok(found)
+    }
+
+    /// Whether provider `id` runs a task's agent in roko's own tool loop now
+    /// (it runs there, is not disabled and has its credentials set), or why
+    /// not, as the end of a sentence about a model on it.
+    fn provider_runs_task_tools(
+        &self,
+        id: &str,
+        provider: &super::provider::ProviderConfig,
+        env: &dyn Fn(&str) -> Option<String>,
+    ) -> Result<(), String> {
+        if !provider.runs_in_own_tool_loop() {
+            let kind = provider.kind.to_string();
+            let named = if kind == id {
+                id.to_string()
+            } else {
+                format!("{id} ({kind})")
+            };
+            return Err(format!(
+                "runs on {named}, an agent that runs its own tools, so it cannot hold a tool \
+                 call for approval"
+            ));
+        }
+        if self
+            .routing
+            .disabled_providers
+            .iter()
+            .any(|disabled| disabled == id)
+        {
+            return Err(format!(
+                "runs on {id}, which [routing] disabled_providers turns off"
+            ));
+        }
+        if !self.is_provider_available_with_env(provider, env) {
+            return Err(match api_key_name(provider) {
+                Some(key) => format!("runs on {id}, whose key {key} is not set"),
+                None => format!("runs on {id}, which names no api_key_env"),
+            });
+        }
+        Ok(())
+    }
+
+    /// Why `[agent.data_llm]` model `model` cannot serve as the data model,
+    /// as the end of a sentence about it, or `Ok` when it can
+    /// ([`Self::data_llm_model_problem`]).
+    fn data_llm_model_usable_with_env(
+        &self,
+        model: &str,
+        env: &dyn Fn(&str) -> Option<String>,
+    ) -> Result<(), String> {
+        let providers = self.effective_providers_with_env(env);
+        let (_, provider_id, provider) = self.model_provider(model, &providers)?;
+        if !provider.runs_in_own_tool_loop() {
+            return Err(format!(
+                "runs on `{provider_id}` ({}), which roko cannot call over an API",
+                provider.kind
+            ));
+        }
+        if !self.is_provider_available_with_env(provider, env) {
+            let key = api_key_name(provider).unwrap_or("its API key");
+            return Err(format!(
+                "runs on `{provider_id}`, whose key ({key}) is not set"
+            ));
+        }
+        Ok(())
+    }
+
+    /// Why each model routing can put a task on cannot run a task of a chat
+    /// host's run, as `<model> <why>`: the ladder's rungs first, in its
+    /// order and named with their rung, a rung no `[models.*]` entry names
+    /// (which the ladder skips) included; then the other models
+    /// [`Self::routing_candidate_models`] lists.
+    fn tool_loop_misses_with_env(&self, env: &dyn Fn(&str) -> Option<String>) -> Vec<String> {
+        let providers = self.effective_providers_with_env(env);
+        let models = self.effective_models();
+        let miss = |model: &str| match self.tool_model(model, &providers) {
+            Ok((_, provider_id, provider)) => self
+                .provider_runs_task_tools(&provider_id, provider, env)
+                .err(),
+            Err(why) => Some(why),
+        };
+        let mut seen = std::collections::HashSet::new();
+        let mut misses = Vec::new();
+        let ladder = &self.routing.ladder;
+        for rung in ladder.all_rungs().filter(|_| ladder.enabled) {
+            let model = rung.model.trim();
+            if model.is_empty() || !seen.insert(model_key_of(&models, model)) {
+                continue;
+            }
+            let why = if has_model_entry(&models, model) {
+                miss(model)
+            } else {
+                Some("has no [models.*] entry".to_string())
+            };
+            if let Some(why) = why {
+                misses.push(format!("rung `{}` ({model}) {why}", rung.name));
+            }
+        }
+        for model in self.routing_candidate_models() {
+            if !seen.insert(model.clone()) {
+                continue;
+            }
+            if let Some(why) = miss(&model) {
+                misses.push(format!("{model} {why}"));
+            }
+        }
+        misses
+    }
+
+    /// The words of [`ChatRunBlocker::NoToolLoopModel`]: what keeps each
+    /// model routing can pick from running such a run (no `[models.*]`
+    /// entry, no key, an agent that runs its own tools, ...) and the fix.
+    /// They never say "not found" nor start with "no ", which older hosts
+    /// read as a missing run or plan.
+    fn no_tool_loop_model_reason_with_env(&self, env: &dyn Fn(&str) -> Option<String>) -> String {
+        const SHOWN: usize = 6;
+        let providers = self.effective_providers_with_env(env);
+        let mut keys = std::collections::BTreeSet::new();
+        for model in self.routing_candidate_models() {
+            let Ok((_, _, provider)) = self.tool_model(&model, &providers) else {
+                continue;
+            };
+            if provider.runs_in_own_tool_loop()
+                && !self.is_provider_available_with_env(provider, env)
+                && let Some(key) = api_key_name(provider)
+            {
+                keys.insert(key.to_string());
+            }
+        }
+        let mut reason = "a run from a chat host needs a model that runs in roko's own tool \
+                          loop with its key set, and this workspace has none"
+            .to_string();
+        let misses = self.tool_loop_misses_with_env(env);
+        if !misses.is_empty() {
+            reason.push_str(": ");
+            reason.push_str(&misses[..misses.len().min(SHOWN)].join("; "));
+            if misses.len() > SHOWN {
+                reason.push_str(&format!("; and {} more", misses.len() - SHOWN));
+            }
+        }
+        if keys.is_empty() {
+            reason.push_str(
+                ". To fix it, add a [models.*] entry on an API provider (such as openai_compat) \
+                 to roko.toml, with its API key in ~/.roko/.env (roko serve reads that file when \
+                 it starts)",
+            );
+        } else {
+            let keys: Vec<&str> = keys.iter().map(String::as_str).take(4).collect();
+            let named = match keys.as_slice() {
+                [key] => (*key).to_string(),
+                _ => format!("one of {}", keys.join(", ")),
+            };
+            reason.push_str(&format!(
+                ". To fix it, put {named} in ~/.roko/.env and restart roko serve, which reads \
+                 that file when it starts"
+            ));
+        }
+        reason
+    }
+}
+
+/// Whether a `[models.*]` entry has `model` as its key or slug, as a ladder
+/// rung's model must.
+fn has_model_entry(
+    models: &indexmap::IndexMap<String, super::provider::ModelProfile>,
+    model: &str,
+) -> bool {
+    let model = model.trim();
+    models.contains_key(model) || models.values().any(|profile| profile.slug.trim() == model)
+}
+
+/// `model` as the key of the `[models.*]` entry that has it as key or slug,
+/// else as given.
+fn model_key_of(
+    models: &indexmap::IndexMap<String, super::provider::ModelProfile>,
+    model: &str,
+) -> String {
+    let model = model.trim();
+    if models.contains_key(model) {
+        return model.to_string();
+    }
+    models
+        .iter()
+        .find(|(_, profile)| profile.slug.trim() == model)
+        .map_or_else(|| model.to_string(), |(key, _)| key.clone())
+}
+
+/// The name of the variable that holds `provider`'s API key, when it names
+/// one.
+fn api_key_name(provider: &super::provider::ProviderConfig) -> Option<&str> {
+    provider
+        .api_key_env
+        .as_deref()
+        .map(str::trim)
+        .filter(|name| !name.is_empty())
 }
 
 impl Default for ServeConfig {
@@ -1106,5 +1574,287 @@ mod statehub_tests {
             };
             assert!(config.history_retention_duration().is_err(), "{configured}");
         }
+    }
+}
+
+#[cfg(test)]
+mod chat_run_tests {
+    use super::super::provider::{ModelProfile, ProviderConfig};
+    use super::super::schema::RokoConfig;
+    use super::*;
+    use crate::agent::ProviderKind;
+
+    /// The environment of these tests: only `KEY_SET` holds a value.
+    fn env(name: &str) -> Option<String> {
+        (name == "KEY_SET").then(|| "sk-test".to_string())
+    }
+
+    fn provider(kind: ProviderKind, key: Option<&str>) -> ProviderConfig {
+        ProviderConfig {
+            kind,
+            api_key_env: key.map(str::to_string),
+            base_url: (kind == ProviderKind::OpenAiCompat).then(|| "http://127.0.0.1:9".into()),
+            command: (kind == ProviderKind::ClaudeCli).then(|| "claude".into()),
+            ..ProviderConfig::default()
+        }
+    }
+
+    fn model(provider: &str, slug: &str, price: Option<f64>) -> ModelProfile {
+        ModelProfile {
+            provider: provider.to_string(),
+            slug: slug.to_string(),
+            supports_tools: true,
+            cost_input_per_m: price,
+            cost_output_per_m: price,
+            ..ModelProfile::default()
+        }
+    }
+
+    /// A workspace whose only provider is the Claude CLI, routed to it
+    /// everywhere: the ladder is off and every model routing names is the
+    /// CLI's.
+    fn cli_only() -> RokoConfig {
+        let mut config = RokoConfig::default();
+        config.routing.ladder.enabled = false;
+        config.routing.fallback_models.clear();
+        config.agent.fallback_model = None;
+        config.agent.default_model = "cli-sonnet".to_string();
+        config.providers.clear();
+        config.models.clear();
+        config
+            .providers
+            .insert("claude_cli".into(), provider(ProviderKind::ClaudeCli, None));
+        config.models.insert(
+            "cli-sonnet".into(),
+            model("claude_cli", "claude-sonnet-4-6", None),
+        );
+        config
+    }
+
+    /// gap-cf427e: without the boundary and without a model roko's tool loop
+    /// runs, both blockers apply, the boundary first, in words older hosts
+    /// still match ("data-model boundary") and never read as a missing plan.
+    #[test]
+    fn chat_run_refusal_names_each_blocker_in_order() {
+        let refusal = cli_only()
+            .chat_run_refusal_with_env(&env)
+            .expect("the run is refused");
+        assert_eq!(refusal.codes(), ["no_data_boundary", "no_tool_loop_model"]);
+        assert_eq!(refusal.code(), "no_data_boundary");
+        assert!(refusal.message.starts_with(NO_DATA_BOUNDARY), "{refusal:?}");
+        assert!(
+            refusal
+                .message
+                .contains("cli-sonnet runs on claude_cli, an agent that runs its own tools"),
+            "{refusal:?}"
+        );
+        let lower = refusal.message.to_lowercase();
+        assert!(
+            !lower.contains("not found") && !lower.starts_with("no "),
+            "{lower}"
+        );
+
+        let mut allowed = cli_only();
+        allowed.serve.mcp.allow_without_data_llm = true;
+        let refusal = allowed
+            .chat_run_refusal_with_env(&env)
+            .expect("still refused");
+        assert_eq!(refusal.codes(), ["no_tool_loop_model"]);
+        assert!(!refusal.message.to_lowercase().starts_with("no "));
+        assert!(
+            !refusal.message.contains("data-model boundary"),
+            "{refusal:?}"
+        );
+    }
+
+    /// An API model whose key is set lifts `no_tool_loop_model`; one whose key
+    /// is missing does not, and the refusal names the key to set.
+    #[test]
+    fn an_api_model_with_its_key_set_can_run_a_chat_run() {
+        let mut config = cli_only();
+        config.serve.mcp.allow_without_data_llm = true;
+        config.providers.insert(
+            "api".into(),
+            provider(ProviderKind::OpenAiCompat, Some("KEY_UNSET")),
+        );
+        config
+            .models
+            .insert("api-mini".into(), model("api", "api-mini-1", Some(0.5)));
+        let refusal = config
+            .chat_run_refusal_with_env(&env)
+            .expect("the key is missing");
+        assert_eq!(refusal.codes(), ["no_tool_loop_model"]);
+        assert!(
+            refusal
+                .message
+                .contains("api-mini runs on api, whose key KEY_UNSET is not set"),
+            "{refusal:?}"
+        );
+        assert!(
+            refusal.message.contains("put KEY_UNSET in ~/.roko/.env"),
+            "{refusal:?}"
+        );
+
+        config.providers.get_mut("api").expect("api").api_key_env = Some("KEY_SET".into());
+        assert_eq!(config.chat_run_refusal_with_env(&env), None);
+        assert_eq!(config.tool_loop_models_with_env(&env), ["api-mini"]);
+
+        // A disabled provider runs nothing.
+        config.routing.disabled_providers = vec!["api".into()];
+        assert!(config.chat_run_refusal_with_env(&env).is_some());
+    }
+
+    /// The Claude CLI's model counts once the Anthropic API, which failover
+    /// moves its slug to, has its key.
+    #[test]
+    fn the_same_model_on_an_api_provider_of_its_family_counts() {
+        let mut config = cli_only();
+        config.serve.mcp.allow_without_data_llm = true;
+        config.providers.insert(
+            "anthropic".into(),
+            provider(ProviderKind::AnthropicApi, Some("KEY_SET")),
+        );
+        assert_eq!(config.chat_run_refusal_with_env(&env), None);
+        assert!(config.tool_loop_models_with_env(&env).is_empty());
+    }
+
+    /// A data model roko cannot call over an API, or whose key is missing,
+    /// fails every agent of roko's tool loop, so it is no boundary either.
+    #[test]
+    fn a_data_model_roko_cannot_call_is_no_boundary() {
+        let mut config = cli_only();
+        config.providers.insert(
+            "api".into(),
+            provider(ProviderKind::OpenAiCompat, Some("KEY_SET")),
+        );
+        config
+            .models
+            .insert("api-mini".into(), model("api", "api-mini-1", Some(0.5)));
+        config.agent.data_llm = Some(data_llm("cli-sonnet"));
+        let refusal = config
+            .chat_run_refusal_with_env(&env)
+            .expect("the CLI cannot be the data model");
+        assert_eq!(refusal.codes(), ["no_data_boundary"]);
+        assert!(
+            refusal.message.contains("data-model boundary"),
+            "{refusal:?}"
+        );
+        assert!(
+            refusal.message.contains("cannot call over an API"),
+            "{refusal:?}"
+        );
+
+        config.agent.data_llm = Some(data_llm("api-mini"));
+        assert_eq!(config.chat_run_refusal_with_env(&env), None);
+
+        config.providers.get_mut("api").expect("api").api_key_env = Some("KEY_UNSET".into());
+        let refusal = config
+            .chat_run_refusal_with_env(&env)
+            .expect("the data model's key is missing");
+        assert!(refusal.message.contains("KEY_UNSET"), "{refusal:?}");
+    }
+
+    /// The ladder's rungs come first, in the ladder's order, then the other
+    /// models by their configured price; CLI rungs never qualify.
+    #[test]
+    fn tool_loop_models_list_rungs_first_then_by_price() {
+        let mut config = cli_only();
+        config.providers.insert(
+            "api".into(),
+            provider(ProviderKind::OpenAiCompat, Some("KEY_SET")),
+        );
+        for (key, price) in [
+            ("dear", 9.0),
+            ("cheap", 0.1),
+            ("rung-low", 3.0),
+            ("rung-high", 1.0),
+        ] {
+            config.models.insert(
+                key.into(),
+                model("api", &format!("{key}-slug"), Some(price)),
+            );
+        }
+        config.routing.ladder.enabled = true;
+        config.routing.ladder.roles.clear();
+        config.routing.ladder.rungs = [
+            ("low", "rung-low"),
+            ("mid", "rung-high"),
+            ("top", "cli-sonnet"),
+        ]
+        .into_iter()
+        .map(|(name, model)| crate::config::routing::LadderRung {
+            name: name.into(),
+            model: model.into(),
+        })
+        .collect();
+        assert_eq!(
+            config.tool_loop_models_with_env(&env),
+            ["rung-low", "rung-high", "cheap", "dear"]
+        );
+    }
+
+    /// The refusal says what keeps each rung, and each other model routing
+    /// names, from a chat host's run: no `[models.*]` entry, a key that is not
+    /// set, or an agent that runs its own tools; a rung named by its model's
+    /// slug counts once.
+    #[test]
+    fn the_refusal_names_why_each_rung_is_skipped() {
+        let mut config = cli_only();
+        config.serve.mcp.allow_without_data_llm = true;
+        config.providers.insert(
+            "zai".into(),
+            provider(ProviderKind::OpenAiCompat, Some("ZAI_KEY_UNSET")),
+        );
+        config
+            .models
+            .insert("glm".into(), model("zai", "glm-4.7", Some(1.0)));
+        config.routing.ladder.enabled = true;
+        config.routing.ladder.roles.clear();
+        config.routing.ladder.rungs = [
+            ("cheap", "gpt-oss-120b"),
+            ("mid", "glm-4.7"),
+            ("top", "claude-sonnet-4-6"),
+        ]
+        .into_iter()
+        .map(|(name, model)| crate::config::routing::LadderRung {
+            name: name.into(),
+            model: model.into(),
+        })
+        .collect();
+        let refusal = config
+            .chat_run_refusal_with_env(&env)
+            .expect("no model qualifies");
+        assert_eq!(refusal.codes(), ["no_tool_loop_model"]);
+        let message = &refusal.message;
+        for cause in [
+            "rung `cheap` (gpt-oss-120b) has no [models.*] entry",
+            "rung `mid` (glm-4.7) runs on zai, whose key ZAI_KEY_UNSET is not set",
+            "rung `top` (claude-sonnet-4-6) runs on claude_cli, an agent that runs its own tools",
+            "put ZAI_KEY_UNSET in ~/.roko/.env and restart roko serve",
+        ] {
+            assert!(message.contains(cause), "{cause}: {message}");
+        }
+        assert_eq!(
+            message.matches("runs on claude_cli").count(),
+            1,
+            "{message}"
+        );
+        assert_eq!(message.matches("runs on zai").count(), 1, "{message}");
+        let lower = message.to_lowercase();
+        assert!(
+            !lower.contains("not found") && !lower.starts_with("no "),
+            "{lower}"
+        );
+
+        // With the key set, the rung runs; routing names it by its key, once.
+        config.providers.get_mut("zai").expect("zai").api_key_env = Some("KEY_SET".into());
+        config.routing.fallback_models = vec!["glm-4.7".into()];
+        assert_eq!(config.chat_run_refusal_with_env(&env), None);
+        assert_eq!(config.tool_loop_models_with_env(&env), ["glm"]);
+    }
+
+    /// `[agent.data_llm]` naming `model`, with the defaults otherwise.
+    fn data_llm(model: &str) -> super::super::agent::DataLlmConfig {
+        toml::from_str(&format!("model = \"{model}\"")).expect("a data_llm table")
     }
 }

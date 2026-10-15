@@ -542,6 +542,38 @@ impl ProviderConfig {
         }
     }
 
+    /// Whether roko's own tool loop drives this provider's models: an API
+    /// provider roko calls over HTTP (gap-cf427e). A CLI, ACP or agent-runtime
+    /// provider (Claude Code, Codex, Gemini CLI, Cursor, Hermes, OpenClaw) runs
+    /// its own tools, out of reach of roko's tool dispatcher, so it can neither
+    /// stage nor refuse a tool call that acts on the outside world (9131), as
+    /// a chat host's run requires. An `openai_compat` provider whose `command`
+    /// is a Codex binary runs as Codex. Dispatch classifies a resolved target
+    /// the same way (`roko-cli`'s `dispatch_v2::runs_own_tools`).
+    #[must_use]
+    pub fn runs_in_own_tool_loop(&self) -> bool {
+        match self.kind {
+            ProviderKind::AnthropicApi
+            | ProviderKind::PerplexityApi
+            | ProviderKind::GeminiApi
+            | ProviderKind::CerebrasApi => true,
+            ProviderKind::OpenAiCompat => !self
+                .command
+                .as_deref()
+                .map(str::trim)
+                .and_then(|command| std::path::Path::new(command).file_name())
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| name.to_ascii_lowercase().contains("codex")),
+            ProviderKind::ClaudeCli
+            | ProviderKind::CodexCli
+            | ProviderKind::CursorAcp
+            | ProviderKind::CursorCli
+            | ProviderKind::GeminiCli
+            | ProviderKind::Hermes
+            | ProviderKind::OpenClaw => false,
+        }
+    }
+
     /// Derive a typed [`ProviderAuth`] from the flat config fields.
     ///
     /// When `api_key_env` is set, the auth policy is [`ProviderAuth::EnvVar`].

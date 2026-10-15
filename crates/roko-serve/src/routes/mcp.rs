@@ -588,7 +588,7 @@ async fn call_tool(
     };
     Ok(match outcome {
         Ok(value) => tool_result(&value),
-        Err(error) => tool_error(&error.message),
+        Err(error) => tool_failure(&error),
     })
 }
 
@@ -850,11 +850,20 @@ async fn operation_state(state: &AppState, id: &str) -> Option<Value> {
 }
 
 /// Refuse a run a chat host starts while the workspace has no data-model
-/// boundary and does not allow running without one (9117): the host reads
-/// why, before anything is queued.
+/// boundary and does not allow running without one (9117), or while no
+/// model its tasks can be routed to runs in roko's own tool loop
+/// (gap-cf427e): the host reads why, before anything is queued and before
+/// the plan is looked up. The error's details carry the machine-readable
+/// codes, `refusal` (the first) and `refusals` (all that apply).
 fn refuse_unscreened_run(state: &AppState) -> Result<(), ApiError> {
     match state.load_roko_config().chat_run_refusal() {
-        Some(reason) => Err(ApiError::forbidden(reason)),
+        Some(refusal) => Err(ApiError {
+            details: Some(Box::new(json!({
+                "refusal": refusal.code(),
+                "refusals": refusal.codes(),
+            }))),
+            ..ApiError::forbidden(refusal.message)
+        }),
         None => Ok(()),
     }
 }
@@ -969,6 +978,20 @@ fn tool_error(message: &str) -> Value {
     })
 }
 
+/// The failure `error` of a tool, for the calling model to read, and for a
+/// host as `structuredContent.error`: its `code` (`not_found`, `forbidden`,
+/// …), its `message`, and its machine-readable `data` when it has some, such
+/// as a refused chat run's `refusal` (gap-cf427e).
+fn tool_failure(error: &ApiError) -> Value {
+    let mut failure = tool_error(&error.message);
+    let mut detail = json!({ "code": error.code, "message": error.message });
+    if let Some(data) = error.details.as_deref() {
+        detail["data"] = data.clone();
+    }
+    failure["structuredContent"] = json!({ "error": detail });
+    failure
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -987,12 +1010,91 @@ mod tests {
     }
 
     /// A workspace config with auth off, whose chat runs may start without
-    /// the data-model boundary.
+    /// the data-model boundary, and whose tasks run on a model roko's own
+    /// tool loop runs (gap-cf427e).
     fn open_config() -> RokoConfig {
+        let mut config = cli_only_config();
+        config.serve.mcp.allow_without_data_llm = true;
+        add_tool_loop_model(&mut config);
+        config
+    }
+
+    /// A workspace config with auth off whose only provider is the Claude
+    /// CLI, which every model routing names runs on. The providers keys in
+    /// the environment would synthesize are configured without a key, so
+    /// none of them can run a task.
+    fn cli_only_config() -> RokoConfig {
+        use roko_core::agent::ProviderKind;
+        use roko_core::config::schema::{ModelProfile, ProviderConfig};
+
         let mut config = RokoConfig::default();
         config.serve.auth = no_auth();
-        config.serve.mcp.allow_without_data_llm = true;
+        config.providers.clear();
+        config.models.clear();
+        config.routing.fallback_models.clear();
+        config.agent.fallback_model = None;
+        config.agent.default_model = "cli-sonnet".to_string();
+        config.providers.insert(
+            "claude_cli".to_string(),
+            ProviderConfig {
+                kind: ProviderKind::ClaudeCli,
+                command: Some("claude".to_string()),
+                ..ProviderConfig::default()
+            },
+        );
+        for (id, kind) in [
+            ("anthropic", ProviderKind::AnthropicApi),
+            ("openai", ProviderKind::OpenAiCompat),
+            ("gemini", ProviderKind::GeminiApi),
+            ("perplexity", ProviderKind::PerplexityApi),
+        ] {
+            let keyless = ProviderConfig {
+                kind,
+                api_key_env: Some("ROKO_TEST_MCP_KEY_NEVER_SET".to_string()),
+                ..ProviderConfig::default()
+            };
+            config.providers.insert(id.to_string(), keyless);
+        }
+        config.models.insert(
+            "cli-sonnet".to_string(),
+            ModelProfile {
+                provider: "claude_cli".to_string(),
+                slug: "claude-sonnet-4-6".to_string(),
+                supports_tools: true,
+                ..ModelProfile::default()
+            },
+        );
         config
+    }
+
+    /// Add `api-model`, on an OpenAI-compatible API whose key `config`'s
+    /// `[agent] env` sets, so roko's own tool loop can run it.
+    fn add_tool_loop_model(config: &mut RokoConfig) {
+        use roko_core::agent::ProviderKind;
+        use roko_core::config::schema::{ModelProfile, ProviderConfig};
+
+        config.providers.insert(
+            "api".to_string(),
+            ProviderConfig {
+                kind: ProviderKind::OpenAiCompat,
+                base_url: Some("http://127.0.0.1:9/v1".to_string()),
+                api_key_env: Some("ROKO_TEST_MCP_API_KEY".to_string()),
+                ..ProviderConfig::default()
+            },
+        );
+        config.agent.env = Some(vec![(
+            "ROKO_TEST_MCP_API_KEY".to_string(),
+            "test-key".to_string(),
+        )]);
+        config.models.insert(
+            "api-model".to_string(),
+            ModelProfile {
+                provider: "api".to_string(),
+                slug: "api-model-1".to_string(),
+                supports_tools: true,
+                ..ModelProfile::default()
+            },
+        );
     }
 
     /// The server state and full router over `runtime` in a fresh workspace
@@ -1663,12 +1765,94 @@ mod tests {
         assert!(state.active_runs.read().await.is_empty());
         assert!(state.active_plans.read().await.is_empty());
 
-        config.agent.data_llm = Some(roko_core::config::DataLlmConfig::default());
+        // A data model roko calls over an API, with its key set.
+        config.agent.data_llm = Some(roko_core::config::DataLlmConfig {
+            model: "api-model".to_string(),
+            ..roko_core::config::DataLlmConfig::default()
+        });
         state.store_roko_config(config);
         let prompt = json!({ "prompt": "fix the parser", "max_usd": 1.0 });
         let (_, body) = post_mcp(&open, &call(3, "run_prompt", prompt), &[]).await;
         assert_eq!(body["result"]["isError"], false, "{body}");
         runtime.gate.add_permits(1);
+    }
+
+    /// gap-cf427e: a chat host's run stages its outbound tool calls, which a
+    /// CLI agent cannot, so a workspace whose only provider is a CLI agent
+    /// refuses `run_prompt` and `plan_run` before anything is queued, with
+    /// the machine-readable `refusal` under `structuredContent.error.data`.
+    /// The doctor's probe, a `plan_run` of a plan that does not exist, gets
+    /// the refusal first, and "not found" once a model roko's own tool loop
+    /// runs is configured.
+    #[tokio::test]
+    async fn chat_run_refused_without_a_tool_loop_model() {
+        let mut config = cli_only_config();
+        config.serve.mcp.allow_without_data_llm = true;
+        let runtime = Arc::new(crate::runtime::NoOpRuntime);
+        let (_dir, state, open) = state_and_router(runtime, config.clone());
+
+        let calls = [
+            (
+                "run_prompt",
+                json!({ "prompt": "fix the parser", "max_usd": 1.0 }),
+            ),
+            (
+                "plan_run",
+                json!({ "plan_id": "roko-doctor-probe-1a2b", "max_usd": 0.01 }),
+            ),
+        ];
+        for (id, (name, arguments)) in (1..).zip(calls.clone()) {
+            let (_, body) = post_mcp(&open, &call(id, name, arguments), &[]).await;
+            let result = &body["result"];
+            assert_eq!(result["isError"], true, "{body}");
+            let error = &result["structuredContent"]["error"];
+            assert_eq!(error["code"], "forbidden", "{body}");
+            assert_eq!(error["data"]["refusal"], "no_tool_loop_model", "{body}");
+            assert_eq!(error["data"]["refusals"], json!(["no_tool_loop_model"]));
+            let text = result["content"][0]["text"].as_str().unwrap_or_default();
+            assert_eq!(error["message"], text, "{body}");
+            assert!(text.contains("roko's own tool loop"), "{text}");
+            assert!(
+                text.contains("runs on claude_cli, an agent that runs its own tools"),
+                "{text}"
+            );
+            assert!(text.contains("has no [models.*] entry"), "{text}");
+            assert!(!text.to_lowercase().contains("not found"), "{text}");
+            assert!(!text.to_lowercase().starts_with("no "), "{text}");
+        }
+        assert!(state.active_runs.read().await.is_empty());
+        assert!(state.active_plans.read().await.is_empty());
+
+        // Without the boundary as well, both blockers apply, the boundary
+        // first and in the words older hosts match.
+        let mut unscreened = config.clone();
+        unscreened.serve.mcp.allow_without_data_llm = false;
+        state.store_roko_config(unscreened);
+        let (_, body) = post_mcp(&open, &call(3, calls[1].0, calls[1].1.clone()), &[]).await;
+        let data = &body["result"]["structuredContent"]["error"]["data"];
+        assert_eq!(data["refusal"], "no_data_boundary", "{body}");
+        assert_eq!(
+            data["refusals"],
+            json!(["no_data_boundary", "no_tool_loop_model"])
+        );
+        let text = body["result"]["content"][0]["text"]
+            .as_str()
+            .unwrap_or_default();
+        assert!(text.contains("data-model boundary"), "{text}");
+
+        // With a model roko's own tool loop runs, the probe's plan is simply
+        // not found.
+        add_tool_loop_model(&mut config);
+        state.store_roko_config(config);
+        let (_, body) = post_mcp(&open, &call(4, calls[1].0, calls[1].1.clone()), &[]).await;
+        assert_eq!(body["result"]["isError"], true, "{body}");
+        let error = &body["result"]["structuredContent"]["error"];
+        assert_eq!(error["code"], "not_found", "{body}");
+        assert!(error.get("data").is_none(), "{body}");
+        let text = body["result"]["content"][0]["text"]
+            .as_str()
+            .unwrap_or_default();
+        assert!(text.contains("not found"), "{text}");
     }
 
     /// gap-25d9cc: `confirm_pending` lists each confirmation with the rung's

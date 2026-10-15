@@ -8,13 +8,13 @@ severity = "p2"
 goal = "features"
 subsystem = ["workspace"]
 created = 2026-09-01
-updated = 2026-10-01
+updated = 2026-10-15
 last_verified = 2026-10-01
 last_verified_rev = "ebdc0f5d5"
 source = "tmp/backlog/archive/367-tui-agent-output-history-search.md#367 — Paged Agent Output History and Search"
 discovered_from = "audit:tmp/backlog/archive/367-tui-agent-output-history-search.md#367 — Paged Agent Output History and Search"
 anchors = ["crates/roko-cli/src/tui/state/mod.rs::AgentOutputHistory", "crates/roko-cli/src/tui/state/mod.rs::bounded_output_lines", "crates/roko-cli/src/tui/state/snapshot.rs:806", "crates/roko-cli/src/tui/input.rs:35"]
-links = { depends_on = [], blocks = [], related = ["spec-5c8b9c", "gap-aabeff"], supersedes = [], duplicate_of = "" }
+links = { depends_on = ["gap-aabeff"], blocks = [], related = ["spec-5c8b9c", "gap-aabeff"], supersedes = [], duplicate_of = "" }
 
 [[verify]]
 command = "! grep -q \"bounded_output_lines\" crates/roko-cli/src/tui/state/snapshot.rs && grep -rqE \"\\.before\\(\" crates/roko-cli/src/tui --include='*.rs' --exclude=tests.rs"
@@ -49,3 +49,5 @@ Re-checked 2026-09-29: unchanged in substance; the line numbers moved. AgentOutp
   byte offset in the run index), read an agent's page of events from the run index through the shared
   event-to-record conversion, page it in when the output pane scrolls past its oldest record (through
   `AgentOutputHistory::before`), and run the search over the same pages.
+
+2026-10-15 decision (Will delegated it to the coordinator's recommendation, tmp/status-quo/2026-10-15/DECISIONS-2026-10-15.md, decision 9; he can veto it): Key paging on a per-agent sequence number added to persisted AgentOutput events (an additive field with a serde default), not on byte offsets in the run index. Page through AgentOutputHistory::before using the shared event-to-record conversion, and run search over the same pages. Remove bounded_output_lines only when the paged history replaces the 50-line rings. Do it after gap-aabeff, which reworks push_agent_output_record; add gap-aabeff to depends_on. Why: AgentOutput text is already persisted in .roko/events.jsonl and the per-run event logs, but a TUI record carries only a local seq and a push-time timestamp, so nothing maps an evicted record back to its event (item note). A sequence stored in the event survives index rebuilds (roko run-index repair rebuilds the derived per-run indexes) and copies of the log. Byte offsets would not, so the sequence is the more robust and still additive key. The defensive cap is pinned by connected_snapshot_output_is_bounded_to_source_ring_limit and stays until paging replaces it. If vetoed: With byte offsets, the run index stores each event's offset and no event schema change is needed, but every index rebuild or log copy must keep the offsets valid.

@@ -9,7 +9,7 @@ goal = "whitepaper"
 size = "L"
 subsystem = ["paper", "companion", "tldr"]
 created = 2026-09-29
-updated = 2026-09-29
+updated = 2026-10-15
 last_verified = 2026-09-29
 source = "tmp/cybernetic-harness/workstreams/PLAN.md#e18"
 discovered_from = "tmp/cybernetic-harness/workstreams/assessment/W9-paper-workstream.md"
@@ -104,3 +104,5 @@ This is the implementation plan.
 
 - Human raters for companion E2 and E3 are still needed (Will).
 - Status tags carry a commit. Results never replace a `[[RESULT]]` slot without an S09 bundle.
+
+2026-10-15 (status-quo assessment at 7b6a5af44, finding 41): this epic's verify can never fail: it runs `paperlint --report`, which always exits 0 (`tools/paperlint.py:966`; tmp/status-quo/2026-10-15/work-items/C1-*.md line 197), so it passes while 2 of its 39 children are open. Replace it with a check that can fail, for example `python3 tools/paperlint.py --strict` over the paper's sections (A12 counted 81 strict problems at 7b6a5af44), or the remaining children's own verifies. Will's 2026-10-15 decision 4 drops the companion report (PK97, PK98, 9524), so the epic's Done when should drop those children too.

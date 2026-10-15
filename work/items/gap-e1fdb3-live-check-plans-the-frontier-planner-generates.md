@@ -7,10 +7,9 @@ triage = "verified"
 severity = "p2"
 goal = "golden-path"
 size = "S"
-hold = "needs Will's approval for live planner calls"
 subsystem = ["roko-cli/plan_generate"]
 created = 2026-10-02
-updated = 2026-10-02
+updated = 2026-10-15
 last_verified = 2026-10-02
 source = "tmp/backlog/2026-10-02-complete-and-wire 3223 (blocked in wave 3, PK18)"
 anchors = ["crates/roko-cli/src/plan_generate/pipeline.rs::generate_plan", "benchmarks/viabilitybench/speclint/speclint.py"]
@@ -63,3 +62,5 @@ At 509e3e807 the generator scores and retries, but no generated sample set exist
 - The live planner calls are spend: get Will's approval first (subscription or API).
 - Full spec: `tmp/backlog/2026-10-02-complete-and-wire/3223-live-check-five-prd-plans-score-70.md`.
 - 2026-10-02 (roko-7d): the workflow-audit migration (merge bfd36512f) removed the PRD pipeline, `roko do` and `roko develop`; `roko run` is the one entry point and plans come from a prompt. The hold now waits only on Will's approval for the live planner calls.
+
+2026-10-15 (Will, 2026-10-15; tmp/status-quo/2026-10-15/DECISIONS-2026-10-15.md), decision 6: live frontier-planner calls approved. Hold lifted.

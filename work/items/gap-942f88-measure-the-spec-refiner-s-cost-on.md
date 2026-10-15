@@ -7,10 +7,9 @@ triage = "verified"
 severity = "p3"
 goal = "proof"
 size = "S"
-hold = "needs Will's spend approval for one live gpt-oss-120b run"
 subsystem = ["benchmarks/viabilitybench/specops"]
 created = 2026-10-03
-updated = 2026-10-03
+updated = 2026-10-15
 last_verified = 2026-10-03
 source = "tmp/backlog/2026-10-02-complete-and-wire 3236 (blocked in wave 6, PK24)"
 anchors = ["benchmarks/viabilitybench/specops"]
@@ -52,3 +51,5 @@ The refiner, critic and ambiguity probe exist and are tested against a stub mode
 ## Notes
 
 - Full spec: `tmp/backlog/2026-10-02-complete-and-wire/3236-*.md`.
+
+2026-10-15 (Will, 2026-10-15; tmp/status-quo/2026-10-15/DECISIONS-2026-10-15.md), decision 5: one live gpt-oss-120b spec-refiner run approved, at most $0.40. Hold lifted.

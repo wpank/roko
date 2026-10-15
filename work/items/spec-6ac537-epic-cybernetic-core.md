@@ -9,7 +9,7 @@ goal = "cybernetic"
 size = "L"
 subsystem = ["roko-learn/cascade-router", "roko-cli/runtime-feedback", "roko-cli/graph-dispatch", "roko-serve/state"]
 created = 2026-09-29
-updated = 2026-09-29
+updated = 2026-10-15
 source = "tmp/cybernetic-harness/workstreams/PLAN.md#e17"
 discovered_from = "tmp/cybernetic-harness/tldr/05-GAPS-AND-PROPOSALS.md (P2 #17–22); workstreams/assessment/W3a-crosswalk-core.md"
 anchors = ["crates/roko-learn/src/cascade_router.rs::CascadeRouter::observe_multi_objective", "crates/roko-cli/src/runtime_feedback/routing.rs::RoutingObservationSink", "crates/roko-cli/src/graph_execution/feedback.rs::RoutingSink", "crates/roko-cli/src/graph_task_dispatch.rs::GraphTaskDispatcher::dispatch"]
@@ -154,3 +154,5 @@ verify commands that read E4's attempt record, set `triage = "verified"`, add th
 - **Related:** bug-6f1685 (parked) duplicates bug-8da8ba; bug-cfe0be (provider health, goal `core`) needs the same
   locked merge-save as bug-9c88ac.
 - **Still open (not accepted on 2026-09-29):** parking LinUCB behind a flag (tldr/05 P2 #18).
+
+2026-10-15 (status-quo assessment at 7b6a5af44, finding 41): the epic's verify names `gate_pass_increments_selected_playbook`, a test that has never existed in code (`git log -S` finds the name only in work/ commits), so the epic can't close on it. Point it at a test that exists for the playbook-selection path, or write that test; the other blocker is dec-af63cc (Will's 2026-10-15 default: reflexes stay narrow).

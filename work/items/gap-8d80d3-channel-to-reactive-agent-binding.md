@@ -10,7 +10,7 @@ goal = "features"
 hold = "Set aside per tldr/05 §3; Will chose hold over park on 2026-09-29 (dec-e70592). Remove this line to revive."
 subsystem = ["roko-runtime"]
 created = 2026-09-21
-updated = 2026-09-29
+updated = 2026-10-15
 last_verified = 2026-09-29
 last_verified_rev = "a17d9d766"
 source = "tmp/backlog/archive/428-channel-to-reactive-agent-binding.md#428 — Channel-to-Reactive-Agent Binding"
@@ -141,3 +141,5 @@ How to verify: Check: `AgentTriggerSpec::Channel { channel, filter }` deserializ
 Verified 2026-09-28: commit 9c6ec420c added crates/roko-runtime/src/channel_binding.rs (ChannelBindingRouter, #428) and adapters/{discord,matrix,mattermost,slack,telegram,whatsapp}.rs. These are orphan files: roko-runtime has no `mod channel_binding` or `mod adapters`, so none of it compiles. There is no AgentTriggerSpec::Channel, and ReactiveAgentSupervisor has no production caller (only tests and the lib.rs:96 re-export).
 
 Re-verified 2026-09-29: unchanged. The router, the adapters it would bind (roko-runtime adapters/) and the ChatBridge trait (platforms.rs) are all outside the roko-runtime module tree, so none of it is compiled. This depends on the umbrella gap-63055e wiring those modules first.
+
+2026-10-15 (status-quo decision 12, tmp/status-quo/2026-10-15/DECISIONS-2026-10-15.md): stays held. The files this item anchors (crates/roko-runtime/src/platforms.rs, channel_binding.rs, adapters/) are not declared in crates/roko-runtime/src/lib.rs at b42578bab, so they are never compiled; gap-7ebc4f parks them behind an off-by-default `channels` feature so they build and test on demand. Reviving this item starts from that feature.

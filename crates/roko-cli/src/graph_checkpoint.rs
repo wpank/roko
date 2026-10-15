@@ -1231,6 +1231,30 @@ impl PreparedGraphCheckpoint {
         Ok(())
     }
 
+    /// Record what the plan's run left on its plan branch, `work`, under
+    /// [`BATCH_EXTENSION`] (bug-db89d4): beside this run's delivery record
+    /// when it has one, else in `record`, which names the run's batch. The
+    /// next terminal write persists it.
+    pub fn record_batch_work(
+        &mut self,
+        record: serde_json::Value,
+        work: serde_json::Value,
+    ) -> Result<()> {
+        let mut value = self
+            .manifest
+            .extensions
+            .get(BATCH_EXTENSION)
+            .map(|extension| extension.value.clone())
+            .filter(|recorded| recorded["run_id"] == record["run_id"])
+            .unwrap_or(record);
+        value["work"] = work;
+        self.manifest.extensions.insert(
+            BATCH_EXTENSION.to_string(),
+            host_extension(BATCH_EXTENSION, value)?,
+        );
+        Ok(())
+    }
+
     /// Record the plan's whole-plan check (gap-60233f) under
     /// [`PLAN_VERIFY_EXTENSION`]. The next terminal write persists it.
     pub fn record_plan_verify(&mut self, value: serde_json::Value) -> Result<()> {

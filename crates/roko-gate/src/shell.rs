@@ -63,6 +63,16 @@ impl ShellGate {
         }
     }
 
+    /// A gate that runs `command` as a plan's verify steps run.
+    ///
+    /// It runs under `bash -o pipefail`, with any reader that may stop
+    /// reading early drained so its writer is not cut off by a broken pipe
+    /// ([`crate::verify_shell`], bug-11901c).
+    #[must_use]
+    pub fn verify_step(command: &str) -> Self {
+        Self::new("bash", crate::verify_shell::bash_args(command))
+    }
+
     /// Override the timeout in milliseconds (default: 5 minutes).
     #[must_use]
     pub const fn with_timeout_ms(mut self, ms: u64) -> Self {

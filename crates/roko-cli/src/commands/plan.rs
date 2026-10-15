@@ -2340,6 +2340,7 @@ pub(crate) async fn cmd_plan_dry_run(
                 .and_then(|content| roko_cli::orchestrator::parse_frontmatter(&content))
         })
         .collect();
+    let plan_checks = dry_run_plan_checks(workdir, &plans).await;
 
     let mut plan_summaries: Vec<serde_json::Value> = Vec::new();
     let mut total_tasks: usize = 0;
@@ -2377,6 +2378,7 @@ pub(crate) async fn cmd_plan_dry_run(
             "priority": frontmatter.as_ref().and_then(|f| f.priority),
             "tags": frontmatter.as_ref().map(|f| &f.tags),
             "tasks": task_details,
+            "plan_check": plan_checks.get(&plan.id),
             "checkpoint": match checkpoint {
                 Ok(preview) => serde_json::to_value(preview)?,
                 Err(error) => json!({ "error": format!("{error:#}") }),
@@ -2444,6 +2446,9 @@ pub(crate) async fn cmd_plan_dry_run(
                 }
                 Err(error) => println!("     checkpoint: unknown ({error:#})"),
             }
+            for command in plan_checks.get(&plan.id).into_iter().flatten() {
+                println!("     plan check: {command}");
+            }
         }
 
         if total_estimated_minutes > 0 {
@@ -2454,6 +2459,34 @@ pub(crate) async fn cmd_plan_dry_run(
     }
 
     Ok(EXIT_SUCCESS)
+}
+
+/// The commands of each plan's whole-plan check (gap-60233f), as a run of
+/// `plans` in `workdir` would end with: its `[meta] verify`, else in a Cargo
+/// workspace the default over the crates it affects (bug-a7e018).
+async fn dry_run_plan_checks(
+    workdir: &Path,
+    plans: &[roko_cli::runner::plan_loader::Plan],
+) -> HashMap<String, Vec<String>> {
+    use roko_cli::graph_execution::plan_set::{CargoWorkspace, PlanFootprint};
+
+    let rust_workspace = workdir.join("Cargo.toml").is_file();
+    let cargo = if rust_workspace && plans.iter().any(|plan| plan.tasks.meta.verify.is_empty()) {
+        CargoWorkspace::load(workdir).await
+    } else {
+        None
+    };
+    plans
+        .iter()
+        .map(|plan| {
+            let footprint =
+                rust_workspace.then(|| PlanFootprint::of(plan, workdir, cargo.as_ref()));
+            let steps =
+                roko_cli::graph_execution::plan_verify::plan_verify_steps(plan, footprint.as_ref());
+            let commands = steps.into_iter().map(|step| step.command).collect();
+            (plan.id.clone(), commands)
+        })
+        .collect()
 }
 
 /// 3228: `roko plan revise`: revise the plan with the planner model

@@ -9,7 +9,7 @@ goal = "tooling"
 size = "L"
 subsystem = ["tools/work"]
 created = 2026-09-29
-updated = 2026-09-29
+updated = 2026-10-15
 source = "tmp/cybernetic-harness/workstreams/PLAN.md#e14"
 discovered_from = "tmp/cybernetic-harness/workstreams/assessment/W1-work-graph-audit.md (R1–R7); W7-orchestration-model.md; W13-active-sessions-coordination.md"
 anchors = ["tools/work.py::validate", "tools/work.py::pick_next", "tools/work.py::cmd_claim", "work/lanes.toml"]
@@ -90,3 +90,5 @@ This is the implementation plan. One agent at a time works on `tools/work.py`.
 - Every change keeps today's item files and `.roko/work-claims/` readable.
 - **Needs Will:** the first `work/lanes.toml` (lane caps), and dec-b75b96.
 - **Decided 2026-09-29 (Will):** the work skills are installed at user level (dec-b75b96), done by gap-d6fd3c.
+
+2026-10-15 decision (Will delegated it to the coordinator's recommendation, tmp/status-quo/2026-10-15/DECISIONS-2026-10-15.md, decision 9; he can veto it): Confirm work/lanes.toml as committed in 648ec3184, with one change: lane.rust-hot max goes from 4 to 2. The other values stay: pool rust = 4, rust-cold 2, paper 3, bench 2, tracker 1, frontend 1, docs 1, tests 1. With this change Rust work tops out at 4 agents (2 cold plus 2 hot), which matches decision 8's limit of at most 4 agents per batch. The epic stays open for gap-25065c and gap-d6fd3c. Why: The file exists and its own header says the caps were proposed by gap-130a3e at the upper end of PLAN.md section 2's ranges and are Will's call (work/lanes.toml:8-9). Section 2 gives rust-hot as '1 per file or module, serial within it' (tmp/cybernetic-harness/workstreams/PLAN.md, section 2 table), but the file lets rust-hot take the whole Rust pool of 4. The hot modules (graph_task_dispatch, graph_execution, dispatch, main.rs, serve routes) are where batch merges conflict, and decision 8 already caps a batch at 4 agents with cargo through the shared limiter. Lowering one number is the cheapest reversible change. The other caps already sit inside section 2's ranges. If vetoed: With the file kept exactly as committed, rust-hot can take all four Rust slots at once. Footprints still keep two items off one file, but adjacent edits in hot modules can still conflict at merge.

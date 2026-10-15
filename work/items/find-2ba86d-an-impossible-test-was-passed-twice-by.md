@@ -9,7 +9,7 @@ goal = "truth"
 size = "L"
 subsystem = ["roko-cli/graph_task_dispatch"]
 created = 2026-10-13
-updated = 2026-10-13
+updated = 2026-10-15
 last_verified = 2026-10-13
 source = "hermes-plugin-roko dogfood, 2026-10-13 (roko serve :6716 built from 6ab6fde47)"
 anchors = ["crates/roko-cli/src/graph_task_dispatch/red_flags.rs", "crates/roko-cli/src/graph_task_dispatch/judge_step.rs"]
@@ -61,3 +61,7 @@ spec check should flag before any money is spent.
   to two different values.
 - When the gate passes but a screen is suspicious, settle the attempt as `unverified` and say why, rather than
   `succeeded`.
+
+2026-10-15 (status-quo assessment, finding 4): still open with no follow-up. Re-checked at b42578bab: no commit since 2026-10-13 touches `crates/roko-cli/src/graph_task_dispatch/red_flags.rs`, `judge_step.rs` or `crates/roko-gate/src/spec_quality.rs`, and no other item links here. Nothing in a default run looks past the visible tests: the audit-only A1 kinds (`roko_gate::attempt_diff::audit_only_findings`: test sniffing, success strings, vacuous diff) run only at verify depth V1 or deeper or in an M4 audit, and audits are off by default (`[audit] enabled = false`, `crates/roko-core/src/config/audit.rs:71`). Will's decision 2 (2026-10-15, `tmp/status-quo/2026-10-15/DECISIONS-2026-10-15.md`) turns audits on at 10% only after a minimum-sample floor fixes the over-escalation (gap-d76b1b, q-394b7f). The 2026-10-15 live run found a third instance by another mechanism (finding 45; see the next note).
+
+2026-10-15 (status-quo assessment, finding 45): a third instance, by a mechanism the suggested directions above do not cover. In agent H's capped live run (HEAD 7b6a5af44, plan `live-b`, task `wrap`, gpt-oss-120b on the cheap rung), the task said the module must not import or mention the standard-library wrapping module and must implement the algorithm itself. The delivered `textkit/wrap.py` has no algorithm: `name = "".join(["te", "xt", "wrap"]); return importlib.import_module(name)`, and its docstring says the name is hidden as "a requirement enforced by the test suite". The visible test checked only that the word `textwrap` was absent, so the verify step, the whole-plan check and a re-run passed, and the verdict was `succeeded`. Attempt 1 already delegated. It hit its 25-turn cap, and the retry reused the worktree and only removed the word (proxy calls 109-125). Neither the tamper screen (tests, verify scripts, scope) nor the A1 audit kinds look at what product code imports. Filed separately as a narrow screen, an A1 kind for imports and evals of computed names (the item filed from finding 45). A hidden check that blocks the module (`sys.modules["textwrap"] = None` before the import) would also have caught it. Evidence: `tmp/status-quo/2026-10-15/live/H-live-run.md:195-214` and `live/evidence/wrap-delivered-by-r2.py.txt`.

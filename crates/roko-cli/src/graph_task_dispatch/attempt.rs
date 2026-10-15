@@ -176,7 +176,7 @@ impl RunAttempts {
         };
         let written = serde_json::to_string(&kept)
             .map_err(std::io::Error::other)
-            .and_then(|line| append_line(path, &line));
+            .and_then(|line| roko_core::io::append_jsonl_line(path, &line));
         if let Err(error) = written {
             tracing::warn!(
                 path = %path.display(),
@@ -223,20 +223,6 @@ fn read_arm_sets(path: &Path) -> Vec<KeptArmSet> {
         .lines()
         .filter_map(|line| serde_json::from_str(line).ok())
         .collect()
-}
-
-/// Append `line` to the file at `path`, making its directory.
-fn append_line(path: &Path, line: &str) -> std::io::Result<()> {
-    use std::io::Write as _;
-
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
-    let mut file = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(path)?;
-    writeln!(file, "{line}")
 }
 
 impl Drop for RunAttempts {

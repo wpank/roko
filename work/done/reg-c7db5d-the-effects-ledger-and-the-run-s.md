@@ -2,7 +2,7 @@
 id = "reg-c7db5d"
 kind = "regression"
 title = "The effects ledger and the run's arm-set file append each JSONL row in one write, through roko_core::io::append_jsonl_line"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p2"
 goal = "truth"
@@ -11,6 +11,7 @@ subsystem = ["roko-cli/graph-task-dispatch", "roko-cli/effects"]
 created = 2026-10-15
 updated = 2026-10-15
 last_verified = 2026-10-15
+last_verified_rev = "56ee2a6a4"
 source = "status-quo-2026-10-15#finding-2"
 anchors = ["crates/roko-cli/src/effects_apply.rs::append_record", "crates/roko-cli/src/graph_task_dispatch/attempt.rs::append_line", "crates/roko-core/src/io.rs::append_jsonl_line"]
 lane = "rust-hot"
@@ -21,6 +22,18 @@ command = "! grep -rqF --include='*.rs' 'writeln!(file, \"{line}\")' crates/ && 
 
 [[verify]]
 command = "grep -q 'append_jsonl' crates/roko-cli/src/effects_apply.rs && grep -q 'append_jsonl' crates/roko-cli/src/graph_task_dispatch/attempt.rs"
+
+[closed]
+at = 2026-10-15
+at_ts = "2026-10-15T19:31:14Z"
+commit = "56ee2a6a4"
+by = "commit trailer"
+executor = "claude-agent"
+via = "work-batch"
+size = "S"
+claimed_at = "2026-10-15T16:33:12Z"
+forced = false
+evidence = "Closed by 56ee2a6a4: effects/attempt: append the ledger and arm-set rows through append_jsonl"
 +++
 
 ## Problem

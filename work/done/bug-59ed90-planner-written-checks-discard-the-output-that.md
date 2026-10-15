@@ -2,7 +2,7 @@
 id = "bug-59ed90"
 kind = "bug"
 title = "Planner-written checks discard the output that explains a failure, and the retry prompt drops it too, so neither the retrying agent nor the person sees why a check failed"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p1"
 goal = "core"
@@ -10,7 +10,7 @@ size = "M"
 subsystem = ["roko-cli/plan_generate", "roko-gate/spec_quality", "roko-cli/plan_validate", "roko-cli/dispatch"]
 created = 2026-10-15
 updated = 2026-10-15
-last_verified_rev = "a8e27e4b7"
+last_verified_rev = "b6581dc62"
 last_verified = 2026-10-15
 source = "tmp/hermes-roko-v5/findings/fresh-guide.md item 28 (2026-10-15, roko main 7b6a5af44)"
 anchors = ["crates/roko-cli/src/plan_generate.rs::PLAN_GENERATOR_SYSTEM_PROMPT", "crates/roko-gate/src/spec_quality/shell.rs::hidden_runner_output", "crates/roko-cli/src/plan_validate.rs::validate_tasks_file", "crates/roko-cli/src/plan_generate/pipeline.rs::generate_plan", "crates/roko-cli/src/dispatch/prompt_builder.rs::render_gate_feedback"]
@@ -18,6 +18,16 @@ links = { depends_on = [], blocks = [], related = ["bug-11901c", "bug-6fa025", "
 
 [[verify]]
 command = "grep -rqw 'fn a_test_runners_hidden_output_is_flagged' crates/roko-gate/src && grep -rqw 'fn plan_validate_warns_on_a_check_that_hides_its_runner_output' crates/roko-cli/src && grep -rqw 'fn generator_prompt_runs_test_runners_plainly' crates/roko-cli/src && grep -rqw 'fn generation_asks_once_more_when_a_check_hides_its_runner_output' crates/roko-cli/src && grep -rqw 'fn retry_prompt_keeps_a_failed_tests_output' crates/roko-cli/src && grep -rqw 'fn a_check_that_hides_its_runner_names_the_runner' crates/roko-cli/src && grep -rqw 'fn a_failed_planner_call_says_what_the_planner_printed' crates/roko-cli/src && cargo test -p roko-gate -p roko-cli --lib -- a_test_runners_hidden_output_is_flagged plan_validate_warns_on_a_check_that_hides_its_runner_output generator_prompt_runs_test_runners_plainly generation_asks_once_more_when_a_check_hides_its_runner_output retry_prompt_keeps_a_failed_tests_output a_check_that_hides_its_runner_names_the_runner a_failed_planner_call_says_what_the_planner_printed"
+
+[closed]
+at = 2026-10-15
+at_ts = "2026-10-15T21:36:13Z"
+commit = "b6581dc62"
+by = "roko-planner"
+executor = "claude-agent"
+via = "manual"
+forced = false
+evidence = "b6581dc62: roko-gate spec_quality::hidden_runner_output finds a test runner whose output a step pipes, redirects or captures; roko plan validate warns PLAN_050 (verify steps, [task.accept] runners, [[meta.verify]]); plan generation re-asks the planner once and keeps the plan that hides fewer; the planner prompt teaches a grep guard or a named test instead of the pass-count pipe; the retry prompt keeps a failed test's raw output unless compile errors explain it, and a check that hid its runner's output names the runner to run; a failing planner call quotes what it printed. The active plans are PLAN_050-free. Checked: the item's [[verify]] tests, roko-gate 690 and roko-cli 3638 lib tests, clippy -D warnings, fmt; live: plan validate flags item 28's plan, the scripted retry demo shows the AssertionError and the runner note in the retry prompt, gpt-5.4-mini now writes a grep guard plus the plain runner (findings: tmp/hermes-roko-v5/findings/roko-planner.md)."
 +++
 
 ## Problem

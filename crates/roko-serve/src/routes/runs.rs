@@ -173,6 +173,9 @@ async fn get_run_detail(
     ensure_observability_allowed(&state)?;
     validate_id(&run_id, "run id")?;
     let active = state.active_runs.read().await.contains_key(&run_id);
+    if run_state_in_memory(&state, &run_id).await.is_none() {
+        settle_if_process_gone(&state, &run_id).await?;
+    }
     let io_state = Arc::clone(&state);
     let io_run_id = run_id.clone();
     let (page, bundle) = blocking_io(move || {
@@ -349,6 +352,9 @@ async fn summary_and_plans(
     ensure_observability_allowed(state)?;
     validate_id(run_id, "run id")?;
     let in_memory = run_state_in_memory(state, run_id).await;
+    if in_memory.is_none() {
+        settle_if_process_gone(state, run_id).await?;
+    }
     let io_state = Arc::clone(state);
     let io_run_id = run_id.to_string();
     let page = blocking_io(move || {
@@ -396,6 +402,16 @@ async fn run_state_in_memory(state: &AppState, run_id: &str) -> Option<(RunState
     state
         .queue_position(run_id)
         .map(|position| (RunState::Queued, Some(position)))
+}
+
+/// End run `run_id` as `interrupted` when the roko process its manifest names
+/// is gone (bug-dceafd), so that its index records the end before it is read.
+/// For a run this server holds no handle of: a handle is the run's own word.
+async fn settle_if_process_gone(state: &AppState, run_id: &str) -> Result<(), ApiError> {
+    let workdir = state.workdir.clone();
+    let run_id = run_id.to_string();
+    blocking_io(move || Ok(crate::interrupted_runs::settle(&workdir, &run_id))).await?;
+    Ok(())
 }
 
 /// `GET /api/runs/{run_id}/events` — cursor-paginated JSON, or SSE when the
@@ -1198,7 +1214,19 @@ fn discover_indexed_runs(state: &AppState) -> (Vec<Value>, bool, u64) {
                 .then(|| event_data(&item.value).get("prompt").cloned())
                 .flatten()
             });
-            let status = aggregate["status"].clone();
+            let mut status = aggregate["status"].clone();
+            let complete = |status: &Value| {
+                matches!(
+                    status.as_str(),
+                    Some("completed" | "failed" | "cancelled" | "interrupted")
+                )
+            };
+            // A run whose roko process is gone ends interrupted (bug-dceafd).
+            if !complete(&status)
+                && crate::interrupted_runs::settle(&state.workdir, &run_id).is_some()
+            {
+                status = json!(crate::interrupted_runs::INTERRUPTED);
+            }
             summaries.insert(
                 run_id.clone(),
                 json!({
@@ -1210,7 +1238,7 @@ fn discover_indexed_runs(state: &AppState) -> (Vec<Value>, bool, u64) {
                     "gates_passed": aggregate["metrics"]["gates_passed"],
                     "gates_failed": aggregate["metrics"]["gates_failed"],
                     "agents_spawned": count_event_types(&page.events, &["agent.dispatch.started", "agent_spawned"]),
-                    "is_complete": matches!(status.as_str(), Some("completed" | "failed" | "cancelled")),
+                    "is_complete": complete(&status),
                     "outcome": status,
                     "source": source.label(),
                     "truncated": page.has_more,
@@ -1951,6 +1979,10 @@ fn completion_status(value: &Value) -> &'static str {
     if bool_field(value, "success") == Some(true) {
         return "completed";
     }
+    // The end serve records for a run whose roko process was gone (bug-dceafd).
+    if string_field(value, "outcome") == Some(crate::interrupted_runs::INTERRUPTED) {
+        return crate::interrupted_runs::INTERRUPTED;
+    }
     let serialized = serde_json::to_string(event_data(value))
         .unwrap_or_default()
         .to_ascii_lowercase();
@@ -1970,7 +2002,10 @@ fn completion_status(value: &Value) -> &'static str {
 /// records the run's end, its state is [`RunState::of_ended_run`] over the
 /// end and the last outcome of each task, the words `GET
 /// /api/plans/{id}/status` uses too. A run with neither is still running, as
-/// a run another process writes the index of is.
+/// a run another process writes the index of is, until serve finds that
+/// process gone and records the run's end as `interrupted`
+/// ([`crate::interrupted_runs`]); the summary then says why under
+/// `interrupted`.
 ///
 /// Each task the run dispatched an agent for also gets its untrusted-input
 /// boundary under `config` ([`untrusted_input_boundary`]).
@@ -2054,13 +2089,13 @@ fn run_summary(
         }
     }
 
-    let ended = completion.map(|(_, value)| {
-        let end = completion_status(value);
-        RunState::of_ended_run(
+    let ended = completion.map(|(_, value)| match completion_status(value) {
+        crate::interrupted_runs::INTERRUPTED => RunState::Interrupted,
+        end => RunState::of_ended_run(
             end == "cancelled",
             end == "completed",
             tasks.values().copied(),
-        )
+        ),
     });
     let (state, position) = match in_memory {
         Some((live, position)) if !live.is_terminal() => (live, position),
@@ -2075,6 +2110,17 @@ fn run_summary(
         let text = format!("run {}", state.as_str());
         milestones.insert("completed", (place, milestone("completed", text, value)));
     }
+    // Why a run whose roko process stopped ended, and its last sign of life
+    // (bug-dceafd).
+    let interrupted = completion
+        .filter(|_| state == RunState::Interrupted)
+        .map(|(_, value)| {
+            json!({
+                "reason": string_field(value, "reason")
+                    .unwrap_or(crate::interrupted_runs::INTERRUPTED_REASON),
+                "at": event_time_text(value),
+            })
+        });
     let mut milestones = milestones.into_values().collect::<Vec<_>>();
     milestones.sort_by_key(|(place, _)| *place);
     let milestones = milestones
@@ -2105,6 +2151,7 @@ fn run_summary(
         "verdict": state.is_terminal().then_some(state),
         "position": position,
         "active": !state.is_terminal(),
+        "interrupted": interrupted,
         "cost_usd": summary["metrics"]["cost_usd"],
         "tasks": {
             "total": tasks.len(),
@@ -2821,6 +2868,136 @@ mod tests {
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         let body: String = rows.iter().map(|row| format!("{row}\n")).collect();
         std::fs::write(path, body).unwrap();
+    }
+
+    /// bug-dceafd: a run whose roko process died (a machine restart, a crash,
+    /// `kill -9`) left an open manifest and an index with no end. Its summary
+    /// reads `interrupted`, not active, with why and its last sign of life,
+    /// and its detail and the dashboard's run list agree, the list even for a
+    /// run nobody asked about; its cancel answers 200, every time, and leaves
+    /// it interrupted. A run whose process still runs keeps reading
+    /// `running`, and an id no run has is still 404.
+    #[tokio::test]
+    async fn a_run_whose_process_died_reads_interrupted() {
+        use roko_learn::telemetry::RunProvenanceManifest;
+        use roko_learn::telemetry::records::RunInvocation;
+
+        let dir = tempfile::tempdir().unwrap();
+        let deploy_backend = Arc::from(
+            crate::deploy::create_backend("manual", None, None, None).expect("manual backend"),
+        );
+        let state = Arc::new(
+            AppState::new(
+                dir.path().to_path_buf(),
+                Arc::new(crate::runtime::NoOpRuntime),
+                roko_core::config::schema::RokoConfig::default(),
+                deploy_backend,
+            )
+            .expect("AppState::new"),
+        );
+        let open_run = |run_id: &str, pid: u32, started_at: &str| {
+            write_rows(
+                &roko_fs::run_index::run_index_path(&state.layout.events_jsonl_path(), run_id)
+                    .unwrap(),
+                &[
+                    json!({"type":"plan_started","run_id":run_id,"ts_millis":1_792_076_316_479_u64,"plan_id":"p1","tasks_total":2}),
+                    json!({"type":"task_completed","run_id":run_id,"ts_millis":1_792_076_328_281_u64,"plan_id":"p1","task_id":"t1","outcome":"passed"}),
+                    json!({"type":"task_started","run_id":run_id,"ts_millis":1_792_076_329_000_u64,"plan_id":"p1","task_id":"t2","phase":"graph-executing"}),
+                ],
+            );
+            let mut manifest = RunProvenanceManifest::new(run_id, "plan_run");
+            manifest.begin_invocation(RunInvocation {
+                started_at: started_at.to_string(),
+                pid,
+                host: "local".to_string(),
+                ..RunInvocation::default()
+            });
+            manifest.store(&state.layout.run_dir(run_id)).unwrap();
+        };
+        // A pid no process has any more.
+        let mut child = std::process::Command::new("true").spawn().unwrap();
+        let gone = child.id();
+        child.wait().unwrap();
+        open_run("r-crashed", gone, "2026-10-15T14:58:36.254Z");
+        // Only ever listed, never asked for by id.
+        open_run("r-listed", gone, "2026-10-15T14:58:36.254Z");
+        let now = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
+        open_run("r-going", std::process::id(), &now);
+
+        let Json(summary) = get_run_summary(State(Arc::clone(&state)), Path("r-crashed".into()))
+            .await
+            .unwrap();
+        assert_eq!(summary["state"], "interrupted", "{summary}");
+        assert_eq!(summary["verdict"], "interrupted", "{summary}");
+        assert_eq!(summary["active"], false, "{summary}");
+        assert_eq!(
+            summary["interrupted"]["reason"],
+            crate::interrupted_runs::INTERRUPTED_REASON,
+            "{summary}"
+        );
+        assert!(summary["interrupted"]["at"].is_string(), "{summary}");
+        assert_eq!(
+            summary["finished_at"], summary["interrupted"]["at"],
+            "{summary}"
+        );
+        assert_eq!(summary["tasks"]["passed"], 1, "{summary}");
+        let Json(detail) = get_run_detail(State(Arc::clone(&state)), Path("r-crashed".into()))
+            .await
+            .unwrap();
+        assert_eq!(detail["status"], "interrupted", "{detail}");
+        let Json(listed) = get_dashboard_runs(State(Arc::clone(&state))).await.unwrap();
+        let row = |run_id: &str| {
+            listed["runs"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|row| row["run_id"] == run_id)
+                .cloned()
+                .unwrap_or_else(|| panic!("{run_id} is listed: {listed}"))
+        };
+        assert_eq!(row("r-crashed")["outcome"], "interrupted", "{listed}");
+        assert_eq!(row("r-crashed")["is_complete"], true, "{listed}");
+        assert_eq!(row("r-going")["is_complete"], false, "{listed}");
+        assert_eq!(row("r-listed")["outcome"], "interrupted", "{listed}");
+        assert_eq!(row("r-listed")["is_complete"], true, "{listed}");
+
+        for _ in 0..2 {
+            let answer = crate::routes::plans::cancel_plan_run(&state, "r-crashed")
+                .await
+                .unwrap();
+            assert_eq!(answer["cancelled"], true, "{answer}");
+            assert_eq!(answer["state"], "interrupted", "{answer}");
+            assert_eq!(answer["already_ended"], true, "{answer}");
+            assert_eq!(
+                answer["reason"],
+                crate::interrupted_runs::INTERRUPTED_REASON,
+                "{answer}"
+            );
+        }
+        let Json(summary) = get_run_summary(State(Arc::clone(&state)), Path("r-crashed".into()))
+            .await
+            .unwrap();
+        assert_eq!(summary["state"], "interrupted", "{summary}");
+        let index = std::fs::read_to_string(
+            roko_fs::run_index::run_index_path(&state.layout.events_jsonl_path(), "r-crashed")
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(index.matches("run_completed").count(), 1, "{index}");
+
+        let Json(going) = get_run_summary(State(Arc::clone(&state)), Path("r-going".into()))
+            .await
+            .unwrap();
+        assert_eq!(going["state"], "running", "{going}");
+        assert_eq!(going["active"], true, "{going}");
+        assert_eq!(going["interrupted"], Value::Null, "{going}");
+        let refused = crate::routes::plans::cancel_plan_run(&state, "r-going").await;
+        assert!(
+            refused.is_err(),
+            "its process runs, and serve has no handle"
+        );
+        let unknown = crate::routes::plans::cancel_plan_run(&state, "r-unknown").await;
+        assert!(unknown.is_err());
     }
 
     /// B9 B4: a run's summary gives one state with its verdict and cost, how

@@ -52,6 +52,7 @@ pub mod fswatcher;
 #[cfg(feature = "groups")]
 pub mod group_runtime;
 pub mod integrations;
+pub mod interrupted_runs;
 pub mod job_runner;
 pub mod jwks;
 pub mod openapi;
@@ -422,6 +423,7 @@ impl ServerBuilder {
         if let Err(err) = state.restore_snapshot().await {
             warn!(error = %err, "failed to restore server state snapshot; starting fresh");
         }
+        settle_interrupted_runs(&state).await;
         for feed_id in [
             "file-watch-roko-dir",
             "provider-health-feed",
@@ -1059,6 +1061,7 @@ pub async fn run_server_with_state(state: Arc<AppState>, bind: &str, port: u16) 
     if let Err(err) = state.restore_snapshot().await {
         warn!(error = %err, "failed to restore server state snapshot; starting fresh");
     }
+    settle_interrupted_runs(&state).await;
     let _github_event_subscriber = events::start_github_event_subscriber(Arc::clone(&state));
     let _telemetry_producer_bridge = start_telemetry_producer_bridge(Arc::clone(&state));
     start_builtin_event_sources(Arc::clone(&state), roko_config.clone());
@@ -1118,6 +1121,24 @@ pub async fn run_server_with_state(state: Arc<AppState>, bind: &str, port: u16) 
 
     info!("server stopped");
     Ok(())
+}
+
+/// End the runs whose roko process stopped while they ran, a machine restart
+/// or a crash (bug-dceafd), before the server answers: each reads
+/// `interrupted` from then on, so no host shows it running or holds its
+/// budget.
+async fn settle_interrupted_runs(state: &AppState) {
+    let workdir = state.workdir.clone();
+    match tokio::task::spawn_blocking(move || interrupted_runs::settle_open_runs(&workdir)).await {
+        Ok(settled) if !settled.is_empty() => warn!(
+            runs = ?settled,
+            "closed {} run(s) as interrupted: roko stopped while they were going (machine restart \
+             or crash)",
+            settled.len()
+        ),
+        Ok(_) => {}
+        Err(error) => warn!(%error, "could not look for runs whose roko process stopped"),
+    }
 }
 
 fn normalize_serve_dispatch_config(config: &mut RokoConfig) -> Result<()> {

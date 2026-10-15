@@ -39,8 +39,8 @@ pub use refine::{
     refine_verdict,
 };
 pub use shell::{
-    Scope, StepAnalysis, VerifyClass, analyze_step, is_test_path, named_paths, normpath,
-    runs_program, vacuous_reason,
+    HiddenRunnerOutput, Hiding, Scope, StepAnalysis, VerifyClass, analyze_step,
+    hidden_runner_output, is_test_path, named_paths, normpath, runs_program, vacuous_reason,
 };
 
 /// The linter id. The rule definitions in this module are frozen under it.

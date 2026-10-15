@@ -12,8 +12,8 @@ estimated_total_minutes = 2
 # `sh`, so it pipes into grep where the task steps use bash's `<<<`.
 [[meta.verify]]
 phase = "unit-tests"
-command = '''out="$(CARGO_TARGET_DIR="${TMPDIR:-/tmp}/roko-demo-hello-color" cargo test --quiet --manifest-path demo/hello-color/Cargo.toml 2>&1)" && printf '%s\n' "$out" | grep -Eq "test result: ok\. [1-9][0-9]* passed"'''
-fail_msg = "demo/hello-color's unit tests must pass."
+command = '''grep -Fq '#[test]' demo/hello-color/src/greeting.rs && CARGO_TARGET_DIR="${TMPDIR:-/tmp}/roko-demo-hello-color" cargo test --quiet --manifest-path demo/hello-color/Cargo.toml'''
+fail_msg = "demo/hello-color's unit tests, the greeting test among them, must pass."
 
 [[meta.verify]]
 phase = "runs"
@@ -53,8 +53,8 @@ fail_msg = "greeting.rs must define pub fn greeting, and main.rs must declare mo
 
 [[task.verify]]
 phase = "unit-tests"
-command = '''out="$(CARGO_TARGET_DIR="${TMPDIR:-/tmp}/roko-demo-hello-color" cargo test --quiet --manifest-path demo/hello-color/Cargo.toml 2>&1)" && grep -Eq 'test result: ok\. [1-9][0-9]* passed' <<<"$out"'''
-fail_msg = "cargo test must pass at least one test (the greeting unit test)."
+command = '''grep -Fq '#[test]' demo/hello-color/src/greeting.rs && CARGO_TARGET_DIR="${TMPDIR:-/tmp}/roko-demo-hello-color" cargo test --quiet --manifest-path demo/hello-color/Cargo.toml'''
+fail_msg = "greeting.rs must hold its unit test, and cargo test must pass."
 
 [[task.verify]]
 phase = "runs"

@@ -60,3 +60,10 @@ limits, and the plan has no readable overview for the person to review (goal `he
 ## Done when
 
 `[[verify]]` passes: a finished plan generation's status reports its cost.
+
+## Notes
+
+- 2026-10-15 (bug-59ed90): a planner call that keeps failing, or fails auth, now ends its error with "The planner
+  said: …" (the provider's own message, first 500 characters), where it used to say only "Agent crashed for an
+  unknown reason; inspect the full stderr output" with nothing to inspect. A timed-out attempt is still classed as a
+  crash (Plan step 2 remains), and the op's status still carries no cost.

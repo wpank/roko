@@ -9,7 +9,7 @@ goal = "core"
 size = "S"
 subsystem = ["roko-cli/init"]
 created = 2026-10-13
-updated = 2026-10-13
+updated = 2026-10-15
 last_verified = 2026-10-13
 source = "hermes-plugin-roko docs walkthrough 2026-10-13 (roko 5de43f9ab)"
 anchors = ["crates/roko-cli/src/dispatch/model_routing.rs::RoutingLadder"]
@@ -46,3 +46,5 @@ host's runs cannot run at all (see the related up-front refusal item).
 ## Done when
 
 `init_writes_a_runnable_ladder_and_honours_model` passes (the `[[verify]]` command).
+
+2026-10-15 (status-quo assessment, finding 9): still open at b42578bab. No commit since 2026-10-13 touches `graph_task_dispatch/verification.rs` or `plan_generate/`, and no other item links here. Seen again in the 10-14 tally runs: all 28 ladder records are rung `top`, reason `start`, because the workspace's cheap, mid and strong rungs (gpt-oss-120b, glm-4.7, gpt-5.4-mini) had no usable provider (`tmp/status-quo/2026-10-15/programme/E2a-matrix-retag-AU-EX-IS-QA-RC.md:168`, row EX7). The 49-run sweep found no climb anywhere (71 ladder records, all step 0). The cheap-model ladder claim (gap-f30b8e, funded by decision 5) can't be shown on a workspace `roko init` made until this is fixed.

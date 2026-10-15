@@ -9,7 +9,7 @@ goal = "proof"
 size = "S"
 subsystem = ["benchmarks/viabilitybench/experiments"]
 created = 2026-09-29
-updated = 2026-09-29
+updated = 2026-10-15
 source = "tmp/cybernetic-harness/workstreams/PLAN.md#e12"
 discovered_from = "tmp/cybernetic-harness/specs/S09-experiments.md (§6 E1b; checklist S09.E1b); workstreams/assessment/W10-benchmarks-proof.md (rec 7)"
 anchors = ["benchmarks/viabilitybench/experiments/pilot_b.toml", "benchmarks/viabilitybench/reports/pilot_b/"]
@@ -79,3 +79,5 @@ Checked at `41c7ffbd6`: nothing can run yet. Two answers are still missing:
 - **Subscription limits.** The weekly limits are shared with the development agents.
 - **Infra errors.** Exclude them and count them. Treat the first `roko_fixed` runs as a shakedown.
 - **No hot files.**
+
+2026-10-15 (Will, 2026-10-15; tmp/status-quo/2026-10-15/DECISIONS-2026-10-15.md), decision 6: dec-20744e accepted (option a), so Pilot B's subscription arms may run once Pilot A has passed its G0 checks.

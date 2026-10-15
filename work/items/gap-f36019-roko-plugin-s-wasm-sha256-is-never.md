@@ -9,12 +9,14 @@ goal = "tooling"
 size = "S"
 subsystem = ["roko-plugin"]
 created = 2026-10-08
-updated = 2026-10-08
+updated = 2026-10-15
 last_verified = 2026-10-08
 source = "stash-triage-2026-10-08 (roko-worktree-archive/2026-10-08-stash-triage/TRIAGE.md)"
 discovered_from = "stash triage side finding"
 anchors = ["crates/roko-plugin/src/manifest.rs::PluginManifestFile"]
 links = { depends_on = [], blocks = [], related = [], supersedes = [], duplicate_of = "" }
+
+hold = "until WASM extension loading returns; then refuse to load on a wasm_sha256 mismatch (q-67bb42 (5), 2026-10-15). Its old verify passed vacuously (crates/roko-plugin/src/dependency.rs:279 writes wasm_sha256: None); replace it when the work starts"
 
 [[verify]]
 command = "grep -rn 'wasm_sha256' crates/roko-plugin/src --include='*.rs' | grep -v 'src/manifest.rs' | grep -q ."
@@ -49,3 +51,5 @@ not planned, remove the field.
 
 - [ ] Installation records the hash and loading refuses a mismatched binary, or the field is removed.
 - [ ] `[[verify]]` passes.
+
+2026-10-15 decision q-67bb42 (Will's decision 9, the coordinator's recommendation; he can veto it): (5) implement the wasm_sha256 check (refuse to load on a mismatch) in the change that brings WASM extension loading back; held until then.

@@ -9,7 +9,7 @@ goal = "core"
 size = "M"
 subsystem = ["roko-cli/graph_task_dispatch"]
 created = 2026-10-13
-updated = 2026-10-13
+updated = 2026-10-15
 last_verified = 2026-10-13
 source = "hermes-plugin-roko dogfood, 2026-10-13 (roko serve :6716 built from 6ab6fde47)"
 anchors = ["crates/roko-cli/src/graph_task_dispatch/verification.rs::run_verify_steps", "crates/roko-cli/src/graph_task_dispatch/ladder.rs"]
@@ -72,3 +72,5 @@ that names the command, and nothing is retried.
 Evidence: run `e7fef800` in the dogfood's scratch workspace, saved by the plugin work as
 `failed_run_events.json`, which is not in this repo. The Hermes model diagnosed it correctly from the error rows,
 which `bug-103bce` made available.
+
+2026-10-15 (status-quo assessment, finding 9): still open at b42578bab. No commit since 2026-10-13 touches `graph_task_dispatch/verification.rs` or `plan_generate/`, and no other item links here. The assessment's 49-run sweep of the 10-13/10-14 dogfood workspaces found `ladder_exhausted` twice, both from this cause, and the spec gate scored the uncheckable task `allow` (`tmp/status-quo/2026-10-15/programme/E2a-matrix-retag-AU-EX-IS-QA-RC.md`, rows AU3, EX6, EX7, QA1). Decision 5 (2026-10-15) funds the golden-path live reruns (gap-c013c5, then gap-f30b8e). A missing command retried up the ladder would burn that money, so this should land first.

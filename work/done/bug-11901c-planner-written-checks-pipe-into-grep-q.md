@@ -153,3 +153,5 @@ Nothing warns about a pipeline whose consumer exits early under `pipefail`; the 
 ## Done when
 
 `[[verify]]` passes: plan lint warns on a `… | grep -q …` verify command, and the planner's prompt carries the rule.
+
+2026-10-15 (status-quo assessment, finding 9): still open at b42578bab. No commit since 2026-10-13 touches `graph_task_dispatch/verification.rs` or `plan_generate/`, and no other item links here. E2a's rows AU2, EX6, QA1 and RC5 (`tmp/status-quo/2026-10-15/programme/E2a-matrix-retag-AU-EX-IS-QA-RC.md`) still list it: there is no lint for `| grep -q` under pipefail, and run `b7bca0f3` sat at $0.89 of its $1.00 cap until it was cancelled. Decision 5 (2026-10-15) funds the golden-path live reruns (gap-c013c5, gap-f30b8e). Planner-written checks that fail at random would make that spend unreadable, so this should land first.

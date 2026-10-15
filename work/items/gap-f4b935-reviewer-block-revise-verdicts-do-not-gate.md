@@ -8,7 +8,7 @@ severity = "p2"
 goal = "core"
 subsystem = ["roko-cli/graph-dispatch", "roko-gate/review"]
 created = 2026-09-29
-updated = 2026-10-01
+updated = 2026-10-15
 last_verified = 2026-10-01
 last_verified_rev = "ebdc0f5d5"
 source = "dogfood:tmp/dogfood/2026-09-28-portal-programme-continuation.md"
@@ -17,7 +17,7 @@ anchors = ["crates/roko-cli/src/graph_task_dispatch/verification.rs::settle_task
 links = { depends_on = [], blocks = [], related = ["bug-6dc672", "bug-82d47b", "gap-85f102"], supersedes = [], duplicate_of = "" }
 
 [[verify]]
-command = "grep -q 'parse_structured_review_verdict' crates/roko-cli/src/graph_task_dispatch.rs && cargo test -p roko-cli --lib review_revise_cap_emits_forced_accept"
+command = "grep -rq 'parse_structured_review_verdict' crates/roko-cli/src/graph_task_dispatch && grep -rqw 'fn reviewer_verdict_is_recorded_and_listed' crates/roko-cli/ && cargo test -p roko-cli --lib reviewer_verdict_is_recorded_and_listed"
 +++
 
 Since bug-82d47b, failing authored verify steps can no longer be force-accepted, and every Graph task output carries a `roko.gate.verdict` tag. The Graph dispatcher still never evaluates a review or judge verdict:
@@ -47,3 +47,5 @@ Fix: parse structured review verdicts (`roko_gate::review_verdict::parse_structu
   Next step: choose a review-cycle model and an unstructured-output policy. A safe first step is then to parse and
   record reviewer verdicts in the attempt record, advisory only, and measure how often BLOCK/REVISE would fire
   before gating on them.
+
+2026-10-15 decision (Will delegated it to the coordinator's recommendation, tmp/status-quo/2026-10-15/DECISIONS-2026-10-15.md, decision 9; he can veto it): Advisory first. What is reviewed: the output of reviewer-role tasks only, with no new review step. REVISE in a DAG: not now. The Graph path parses each reviewer task's answer with parse_structured_review_verdict and records the verdict on the attempt record (prose answers are recorded as needs_human), and the run summary lists reviewer tasks that answered BLOCK or REVISE. The verdict gates nothing, no ForcedAccept is produced, and execution_succeeded is unchanged. Re-scope the item to that step and replace its verify with `grep -rq 'parse_structured_review_verdict' crates/roko-cli/src/graph_task_dispatch && cargo test -p roko-cli --lib reviewer_verdict_is_recorded_and_listed`. Gating and review cycles are decided once the records show how often BLOCK and REVISE fire. Why: Nothing under crates/roko-cli/src calls parse_structured_review_verdict today (grep), so a reviewer that answers BLOCK completes green. That is a silent false green, and listing it fixes the silence. Gating now would fail every prose reviewer, because the parser fails closed to needs_human. REVISE cannot re-run the reviewed upstream node in the Graph engine, which runs each task's node independently. execution_succeeded is computed at crates/roko-cli/src/graph_execution/plan_runner.rs:3773. Recording and listing is the cheapest reversible step and gives the data for the gating decision. If vetoed: With gating now, a structured BLOCK fails the reviewer task, REVISE retries it up to gates.max_review_cycles and then emits ForcedAccept (the item's original verify), and prose reviews fail as needs_human.

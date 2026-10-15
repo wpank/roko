@@ -7,10 +7,9 @@ triage = "verified"
 severity = "p2"
 goal = "proof"
 size = "S"
-hold = "needs live claude -p and codex exec runs on Will's subscriptions: D42 re-confirmed and his approval"
 subsystem = ["config/prices"]
 created = 2026-10-03
-updated = 2026-10-03
+updated = 2026-10-15
 last_verified = 2026-10-03
 source = "tmp/backlog/2026-10-02-complete-and-wire 6107 (blocked in wave 6, PK47)"
 discovered_from = "gap-62e1b9"
@@ -64,3 +63,5 @@ probe has run. gap-154f93's saved fd_claude probe, if it exists, can serve as on
 
 - Full spec: `tmp/backlog/2026-10-02-complete-and-wire/6107-probe-claude-code-and-codex-cli-costs-by-hand-and-file-a.md`.
 - Left PK47's package item at gate 6b (2026-10-03), as 3236 left PK24's (gap-942f88).
+
+2026-10-15 (Will, 2026-10-15; tmp/status-quo/2026-10-15/DECISIONS-2026-10-15.md), decision 6: D42 re-confirmed ('permitted', dec-b78874) and the six live CLI cost probes approved. Hold lifted.

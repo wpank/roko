@@ -8,10 +8,10 @@ severity = "p2"
 goal = "release"
 rank = 87
 size = "S"
-hold = "waits on Will's deferred decision(s) 9302, 9304 (tmp/backlog/2026-10-02-complete-and-wire/DECISIONS.md)"
+hold = "waits on Will's deferred decision 9302 (private Fly showcase) for 9339; 9304 answered 2026-10-15 (keep deploys guarded; D18: reject Privy mismatches), and 9340 is filed separately as bug-17213a"
 subsystem = ["deploy/fly"]
 created = 2026-10-02
-updated = 2026-10-02
+updated = 2026-10-15
 last_verified = 2026-10-02
 source = "tmp/backlog/2026-10-02-complete-and-wire PK87"
 anchors = ["crates/roko-serve/src/routes/middleware.rs"]
@@ -63,3 +63,5 @@ The tasks were checked against `2c3ea9f73` on 2026-10-02. Re-check each task's a
 - Waits on: PK82 (gap-9ecd37), PK85 (gap-fcb44c), PK86 (gap-3516d6).
 - On hold until Will takes the deferred decision(s) 9302, 9304 (spend or a public release); see `DECISIONS.md`.
 - Suggested model: sonnet.
+
+2026-10-15 (status-quo decision 3, tmp/status-quo/2026-10-15/DECISIONS-2026-10-15.md): Will accepted 9304's defaults — keep both deploy workflows guarded and rewrite their comments; D18: reject a Privy JWT on a role or user-id mismatch. Backlog task 9340 (part of this package) is filed on its own as bug-17213a so it is not held with the showcase (9302); drop 9340 from this package's scope. 9304 itself is answered: its remaining workflow-comment rewrite stays here or goes to whoever files decision 3's 9304 part.

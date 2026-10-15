@@ -2,7 +2,7 @@
 id = "bug-db89d4"
 kind = "bug"
 title = "An unverified run ends with a 'N failed' engine error, and nothing says where its unchecked work is"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p2"
 goal = "hermes"
@@ -11,6 +11,7 @@ subsystem = ["roko-cli/graph_execution", "roko-serve/runs"]
 created = 2026-10-15
 updated = 2026-10-15
 last_verified = 2026-10-15
+last_verified_rev = "43d3e3cbd"
 source = "tmp/hermes-roko-v5/findings/fresh-guide.md items 15, 20 (fresh-guide, 2026-10-15)"
 discovered_from = "hermes-roko-v5 round: a newcomer's first session"
 anchors = ["crates/roko-cli/src/graph_execution/plan_runner.rs::run_graph_plan_body", "crates/roko-cli/src/graph_execution/batch.rs", "crates/roko-serve/src/routes/run_result.rs::run_result"]
@@ -21,6 +22,15 @@ command = "grep -rqw 'fn an_unverified_run_says_where_its_unchecked_work_is' cra
 
 [[verify]]
 command = "grep -rqw 'fn run_summary_names_unverified_work' crates/roko-serve/ && cargo test -p roko-serve --lib run_summary_names_unverified_work"
+
+[closed]
+at = 2026-10-15
+at_ts = "2026-10-15T19:09:31Z"
+commit = "43d3e3cbd"
+by = "commit trailer"
+executor = "unknown"
+forced = false
+evidence = "43d3e3cbd: the closing tally counts plan outcomes (outcome_tally) and is an error only when a plan failed, else a graph.run_outcome log line; RunCompleted is 'unverified' when every plan succeeded or ended unverified; PlanWork (batch.rs) reads a run's accepted commits on its plan branch by trailers, a non-succeeded plan records work.unverified in roko.batch@1, and the plan_unverified event, the CLI lines and roko run's report name the branch and a git diff command; roko-serve result.unverified[] and diff?work=unverified. Verify: an_unverified_run_says_where_its_unchecked_work_is and the_closing_tally_names_each_outcome (roko-cli), run_summary_names_unverified_work (roko-serve) pass; full roko-cli lib (3630 passed, 6 ignored, gist test skipped) and roko-serve lib (1018) pass; clippy -D warnings clean. Live: real /mcp run 35041d23 (gpt-5.4-mini, $0.003) ended run_completed unverified with result.unverified naming roko/plan/35041d23 and its file."
 +++
 
 ## Problem

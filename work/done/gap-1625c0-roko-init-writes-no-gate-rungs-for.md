@@ -2,7 +2,7 @@
 id = "gap-1625c0"
 kind = "gap"
 title = "roko init writes no gate rungs for a Python project (and none without --profile anywhere), so its prompt runs end unverified"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p2"
 goal = "hermes"
@@ -11,13 +11,24 @@ subsystem = ["roko-cli/init"]
 created = 2026-10-13
 updated = 2026-10-15
 last_verified = 2026-10-15
-last_verified_rev = "7b6a5af44"
+last_verified_rev = "dcbd485d7"
 source = "hermes-plugin-roko dogfood, 2026-10-13 (roko serve :6716 built from 6ab6fde47)"
 anchors = ["crates/roko-cli/src/commands/init.rs::ProjectGates", "crates/roko-cli/src/commands/init.rs::InitProfile", "crates/roko-core/src/project.rs::detect_from_files", "crates/roko-cli/src/run.rs::prompt_verify_steps"]
 links = { depends_on = [], blocks = [], related = ["bug-4e336b"], supersedes = [], duplicate_of = "" }
 
 [[verify]]
 command = "grep -rqw 'fn python_profile_writes_a_test_rung' crates/roko-cli/ && cargo test -p roko-cli --lib python_profile_writes_a_test_rung"
+
+[closed]
+at = 2026-10-15
+at_ts = "2026-10-15T19:07:24Z"
+commit = "dcbd485d7"
+by = "roko-init"
+executor = "claude-agent"
+size = "M"
+claimed_at = "2026-10-15T13:48:09Z"
+forced = false
+evidence = "230eae2a7, verified at dcbd485d7 (main merged in). roko init detects the project (roko-core detect_from_files, plus Python sources or tests with no packaging file) and writes gate rungs whose tools are on PATH: unittest or pytest, else a syntax check, for Python; the package's npm scripts for Node; cargo check/test (+ optional clippy) for Rust; go and forge rungs. python_profile_writes_a_test_rung and the other init tests pass at dcbd485d7. Fresh inits wrote rungs that pass by hand on the unchanged projects: Python unittest, Node npm test, Rust cargo check. A live roko run in the Python project (run-20261015-183516-099) ran the init-written unittest rung as its verify step: gate_verdict passed, exit 0. The same rung fails when the change is broken. Evidence: tmp/hermes-roko-v5/findings/roko-init.md"
 +++
 
 ## Problem

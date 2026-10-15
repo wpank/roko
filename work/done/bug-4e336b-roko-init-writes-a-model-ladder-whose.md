@@ -2,7 +2,7 @@
 id = "bug-4e336b"
 kind = "bug"
 title = "roko init writes a model ladder whose lower rungs name models the workspace cannot run, so every task starts on the top rung; init --model is ignored"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p2"
 goal = "core"
@@ -11,7 +11,7 @@ subsystem = ["roko-cli/init"]
 created = 2026-10-13
 updated = 2026-10-15
 last_verified = 2026-10-15
-last_verified_rev = "7b6a5af44"
+last_verified_rev = "dcbd485d7"
 source = "hermes-plugin-roko docs walkthrough 2026-10-13 (roko 5de43f9ab)"
 anchors = ["crates/roko-cli/src/commands/init.rs::InitModels", "crates/roko-cli/src/commands/init.rs::render_init", "crates/roko-cli/src/commands/util.rs::cmd_init", "crates/roko-cli/src/dispatch/model_routing.rs::RoutingLadder", "crates/roko-cli/src/dispatch/model_routing.rs::ladder_report", "crates/roko-core/src/agent.rs::resolve_model", "crates/roko-cli/src/doctor.rs::check_routing_ladder", "crates/roko-cli/src/commands/setup.rs::ensure_global_env"]
 links = { depends_on = [], blocks = [], related = ["gap-1625c0", "gap-cf427e"], supersedes = [], duplicate_of = "" }
@@ -21,6 +21,17 @@ command = "grep -rqw 'fn init_writes_a_runnable_ladder_and_honours_model' crates
 
 [[verify]]
 command = "grep -rqw 'fn ladder_binds_builtin_rungs_and_reports_the_rest' crates/roko-cli/ && cargo test -p roko-cli --lib ladder_binds_builtin_rungs_and_reports_the_rest"
+
+[closed]
+at = 2026-10-15
+at_ts = "2026-10-15T19:07:23Z"
+commit = "dcbd485d7"
+by = "roko-init"
+executor = "claude-agent"
+size = "S"
+claimed_at = "2026-10-15T13:48:08Z"
+forced = false
+evidence = "230eae2a7, verified at dcbd485d7 (main merged in). roko init writes ladder rungs only for models whose provider this machine reaches; on Will's machine: cheap gpt-oss-120b (cerebras), mid glm-4-7 (zai), strong gpt-5-4-mini (openai), top claude-sonnet-4-6 (claude_cli). --model pins it. A rung that names a built-in model binds once its provider has its key: resolve_model prefers the provider holding the built-in's key, and the synthesized openai provider has the /v1 base URL. roko doctor (routing_ladder) and roko init in an existing workspace print skipped rungs; models list shows built-in key status as routing decides it; roko setup creates ~/.roko/.env. Checks at dcbd485d7: cargo test -p roko-core -p roko-cli --lib --bin roko plus cli_fallback, doctor and agent_lifecycle all pass (incl. init_writes_a_runnable_ladder_and_honours_model, ladder_binds_builtin_rungs_and_reports_the_rest); clippy -D warnings and fmt clean. Live, $0.016 recorded: a fresh init's Python task started on rung cheap and failed over to mid after Cerebras rate limits; on a key-only HOME, a workspace from main's init ran its task on built-in gpt-5.4-mini over the synthesized openai provider. Evidence: tmp/hermes-roko-v5/findings/roko-init.md"
 +++
 ## Problem
 

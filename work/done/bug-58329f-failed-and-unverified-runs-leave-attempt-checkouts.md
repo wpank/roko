@@ -2,15 +2,16 @@
 id = "bug-58329f"
 kind = "bug"
 title = "Failed and unverified runs leave attempt checkouts behind, and a run that did nothing leaves an empty worktree, attempt branch and batch branch"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p2"
 goal = "hermes"
 size = "M"
 subsystem = ["roko-cli/orchestrator", "roko-cli/graph_execution"]
 created = 2026-10-15
-updated = 2026-10-15
-last_verified = 2026-10-15
+updated = 2026-10-16
+last_verified = 2026-10-16
+last_verified_rev = "320c9998f"
 source = "tmp/hermes-roko-v5/findings/fresh-guide.md items 12, 25, 29 (fresh-guide, 2026-10-15)"
 discovered_from = "hermes-roko-v5 round: a newcomer's first session"
 anchors = ["crates/roko-cli/src/orchestrator/worktree/cleanup.rs", "crates/roko-cli/src/orchestrator/worktree/mod.rs::WorktreeManager", "crates/roko-cli/src/graph_execution/plan_runner.rs::run_one_plan"]
@@ -21,6 +22,15 @@ command = "grep -rqw 'fn a_run_that_did_nothing_leaves_no_checkout_or_branch' cr
 
 [[verify]]
 command = "grep -rqw 'fn an_unverified_plan_releases_its_accepted_checkout' crates/roko-cli/ && cargo test -p roko-cli --lib an_unverified_plan_releases_its_accepted_checkout"
+
+[closed]
+at = 2026-10-16
+at_ts = "2026-10-15T23:13:43Z"
+commit = "320c9998f"
+by = "commit trailer"
+executor = "unknown"
+forced = false
+evidence = "320c9998f: at a plan's end (any outcome) release_plan_checkouts removes its accepted attempts' checkouts (release_accepted) and its no-work ones (WorktreeManager::remove_idle_attempts: clean and still at their base commit, branch deleted by CAS while at that commit); a run that delivered and accepted nothing removes the batch branch it created (BatchIntegration::discard_if_unused); failed checkouts with work stay (bug-06bd18 untouched); events graph.attempt_checkouts_removed and graph.batch_discarded; --json batch.discarded. Verify: a_run_that_did_nothing_leaves_no_checkout_or_branch and an_unverified_plan_releases_its_accepted_checkout pass; full roko-cli lib 3650 passed (6 ignored, gist skipped) and roko-serve lib 1025 passed with a scratch HOME; clippy -D warnings clean; integration graph_timeout_matrix (7), plan_branch_integration (4), operator_checkout_clean, honest_verdicts_canary, attempt_diff_canary pass (scratch HOME); worktree_task_diff's fails-verify test updated for the removed batch branch and still fails on bug-ee2752. Live: an offline run (HTTPS_PROXY blocked, $0) left no checkout, attempt branch or batch branch (worktrees 8 and roko/* branches 31 before and after); an unverified run ($0.004) had its accepted checkout removed and kept its work on roko/plan/<run>."
 +++
 
 ## Problem

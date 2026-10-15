@@ -286,9 +286,17 @@ pub async fn run_doctor(options: &DoctorOptions) -> Result<DoctorReport> {
         &workdir,
         options.config_override.as_deref(),
     ));
+    checks.extend(check_routing_ladder(
+        &workdir,
+        options.config_override.as_deref(),
+    ));
     checks.push(check_rust_version());
     checks.push(check_node_version());
     checks.push(check_serve_auth(&loaded_config));
+    checks.push(check_chat_host_runs(
+        &workdir,
+        options.config_override.as_deref(),
+    ));
     checks.push(check_serve_health(options.serve_url.as_deref(), &loaded_config).await?);
     let conductor = load_conductor_config(&workdir, options.config_override.as_deref());
     checks.push(check_dead_conductor_config(&conductor));
@@ -830,20 +838,30 @@ fn check_default_model_configured(loaded_config: &LoadedConfig) -> DoctorCheck {
 
 /// Validate that `routing.{fast,standard,complex}_task_model` slugs match a
 /// configured `[models.*]` key or a well-known builtin model.
-fn check_routing_tier_models(workdir: &Path, config_override: Option<&Path>) -> Vec<DoctorCheck> {
-    let roko_cfg = if let Some(path) = config_override
+/// The workspace config: the `--config` file, else what a run loads (the
+/// workspace's `roko.toml` with the global config merged). `None` when it
+/// does not load.
+fn doctor_roko_config(
+    workdir: &Path,
+    config_override: Option<&Path>,
+) -> Option<roko_core::config::schema::RokoConfig> {
+    if let Some(path) = config_override
         && let Ok(text) = std::fs::read_to_string(path)
         && let Ok(config) = roko_core::config::schema::RokoConfig::from_toml(&text)
     {
-        config
-    } else {
-        match roko_core::config::loader::load_config_validated_with_options(
-            workdir,
-            &roko_core::config::loader::LoadOptions::default(),
-        ) {
-            Ok(loaded) => loaded.config().clone(),
-            Err(_) => return vec![],
-        }
+        return Some(config);
+    }
+    roko_core::config::loader::load_config_validated_with_options(
+        workdir,
+        &roko_core::config::loader::LoadOptions::default(),
+    )
+    .ok()
+    .map(|loaded| loaded.config().clone())
+}
+
+fn check_routing_tier_models(workdir: &Path, config_override: Option<&Path>) -> Vec<DoctorCheck> {
+    let Some(roko_cfg) = doctor_roko_config(workdir, config_override) else {
+        return vec![];
     };
 
     let model_keys: std::collections::HashSet<&str> =
@@ -900,6 +918,179 @@ fn check_routing_tier_models(workdir: &Path, config_override: Option<&Path>) -> 
         });
     }
     checks
+}
+
+/// `[routing.ladder]` bound as a run binds it: the rungs that run here, and
+/// why each other rung cannot. A run only logs the rungs it skips, so this is
+/// where a person sees that tasks start higher up the ladder than their tier
+/// asks, as they did in workspaces whose ladder names models nothing defines
+/// (bug-4e336b).
+fn check_routing_ladder(workdir: &Path, config_override: Option<&Path>) -> Option<DoctorCheck> {
+    use crate::dispatch::model_routing::{LadderRungReport, ladder_report};
+
+    let config = doctor_roko_config(workdir, config_override)?;
+    let check = |status, message: String, detail: Option<String>, fix: Option<&str>| DoctorCheck {
+        id: "routing_ladder".to_string(),
+        status,
+        message,
+        detail,
+        path: None,
+        url: None,
+        fix: fix.map(str::to_string),
+    };
+    if !config.routing.ladder.enabled {
+        return Some(check(
+            DoctorStatus::Ok,
+            "routing.ladder is off: the router picks each task's model".to_string(),
+            None,
+            None,
+        ));
+    }
+    let report = ladder_report(&config);
+    let (runs, skipped): (Vec<&LadderRungReport>, Vec<&LadderRungReport>) =
+        report.iter().partition(|rung| rung.dispatch.is_ok());
+    let names = |rungs: &[&LadderRungReport]| {
+        rungs
+            .iter()
+            .map(|rung| format!("{} ({})", rung.rung, rung.model))
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
+    if report.is_empty() {
+        return Some(check(
+            DoctorStatus::Warn,
+            "routing.ladder has no rung: the router picks each task's model".to_string(),
+            None,
+            Some(
+                "set a provider's API key (in ~/.roko/.env), then add [routing.ladder] rungs; \
+                 `roko init` writes them for a new workspace",
+            ),
+        ));
+    }
+    if skipped.is_empty() {
+        return Some(check(
+            DoctorStatus::Ok,
+            format!("routing.ladder: every rung can run here: {}", names(&runs)),
+            None,
+            None,
+        ));
+    }
+    let reasons = skipped
+        .iter()
+        .map(|rung| {
+            let reason = rung.dispatch.as_ref().err().map_or("", String::as_str);
+            format!("{} ({}): {reason}", rung.rung, rung.model)
+        })
+        .collect::<Vec<_>>()
+        .join("; ");
+    let message = if runs.is_empty() {
+        format!(
+            "routing.ladder: no rung can run here, so the router picks each task's model; \
+             {reasons}"
+        )
+    } else {
+        format!(
+            "routing.ladder: {} of {} rungs cannot run here, so a task that would start on one \
+             starts on the next rung up that can; {reasons}",
+            skipped.len(),
+            report.len()
+        )
+    };
+    let runnable = if runs.is_empty() {
+        "none".to_string()
+    } else {
+        names(&runs)
+    };
+    Some(check(
+        DoctorStatus::Warn,
+        message,
+        Some(format!("rungs that run here: {runnable}")),
+        Some(
+            "give each skipped rung's model a [models.*] entry and its [providers.*] table, and \
+             set the provider's key; or remove the rung from [routing.ladder]",
+        ),
+    ))
+}
+
+/// Whether a chat host (Hermes, OpenClaw) can start runs in this workspace
+/// over roko serve's `/mcp`, from the workspace config as a run loads it.
+fn check_chat_host_runs(workdir: &Path, config_override: Option<&Path>) -> DoctorCheck {
+    chat_host_runs_check(doctor_roko_config(workdir, config_override).as_ref())
+}
+
+/// [`check_chat_host_runs`] of `config` (`None` when it did not load): ok
+/// with what such a run's tasks run on, or a warning with the refusal serve
+/// gives such a run (gap-cf427e) and the fix, `roko config preset
+/// chat-host` for the data-model boundary.
+fn chat_host_runs_check(config: Option<&roko_core::config::schema::RokoConfig>) -> DoctorCheck {
+    use roko_core::config::serve::ChatRunBlocker;
+
+    let check = |status, message: String, detail: Option<String>, fix: Option<&str>| DoctorCheck {
+        id: "chat_host_runs".to_string(),
+        status,
+        message,
+        detail,
+        path: None,
+        url: None,
+        fix: fix.map(str::to_string),
+    };
+    let Some(config) = config else {
+        return check(
+            DoctorStatus::Skipped,
+            "config unavailable; runs from chat hosts not evaluated".to_string(),
+            None,
+            None,
+        );
+    };
+    let Some(refusal) = config.chat_run_refusal() else {
+        let boundary = config.agent.data_llm.as_ref().map_or_else(
+            || "without the data-model boundary ([serve.mcp] allow_without_data_llm)".to_string(),
+            |data_llm| format!("with data model {}", data_llm.model.trim()),
+        );
+        let models = config.tool_loop_models();
+        let shown = models
+            .iter()
+            .take(3)
+            .cloned()
+            .collect::<Vec<_>>()
+            .join(", ");
+        let tasks = match models.len() {
+            0 => "their tasks fail over to the API side of a CLI model's family".to_string(),
+            1..=3 => format!("their tasks run on {shown}"),
+            more => format!("their tasks run on {shown} and {} more", more - 3),
+        };
+        return check(
+            DoctorStatus::Ok,
+            "chat hosts (Hermes, OpenClaw) can start runs here".to_string(),
+            Some(format!("{boundary}; {tasks}")),
+            None,
+        );
+    };
+    let fix = match (
+        refusal.blockers.contains(&ChatRunBlocker::NoToolLoopModel),
+        refusal.blockers.contains(&ChatRunBlocker::NoDataBoundary),
+    ) {
+        (true, true) => {
+            "give roko an API model with its key (the detail says what each model lacks), then run \
+             roko config preset chat-host --yes"
+        }
+        (true, false) => {
+            "give roko an API model with its key: the detail says what each model lacks"
+        }
+        _ => {
+            "roko config preset chat-host --yes (--allow-without-data-llm instead, for local \
+             use)"
+        }
+    };
+    check(
+        DoctorStatus::Warn,
+        format!(
+            "chat hosts (Hermes, OpenClaw) cannot start runs here ({})",
+            refusal.codes().join(", ")
+        ),
+        Some(refusal.message),
+        Some(fix),
+    )
 }
 
 fn check_serve_auth(loaded_config: &LoadedConfig) -> DoctorCheck {
@@ -3519,6 +3710,118 @@ pub fn clean_orphaned_files(workdir: &Path) -> Vec<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// gap-115bae: `roko doctor` says whether a chat host can start runs here,
+    /// with serve's refusal and the fix when it cannot.
+    #[test]
+    fn doctor_says_whether_chat_hosts_can_start_runs() {
+        use roko_core::config::schema::{ModelProfile, ProviderConfig, RokoConfig};
+
+        let mut config = RokoConfig::default();
+        config.providers.clear();
+        config.models.clear();
+        config.routing.ladder.enabled = false;
+        config.routing.fallback_models.clear();
+        config.agent.fallback_model = None;
+        config.agent.default_model = "cli-sonnet".to_string();
+        for (id, kind, key) in [
+            ("claude_cli", ProviderKind::ClaudeCli, None),
+            (
+                "anthropic",
+                ProviderKind::AnthropicApi,
+                Some("ROKO_TEST_DOCTOR_KEY_NEVER_SET"),
+            ),
+            (
+                "openai",
+                ProviderKind::OpenAiCompat,
+                Some("ROKO_TEST_DOCTOR_KEY_NEVER_SET"),
+            ),
+            (
+                "gemini",
+                ProviderKind::GeminiApi,
+                Some("ROKO_TEST_DOCTOR_KEY_NEVER_SET"),
+            ),
+            (
+                "perplexity",
+                ProviderKind::PerplexityApi,
+                Some("ROKO_TEST_DOCTOR_KEY_NEVER_SET"),
+            ),
+        ] {
+            let provider = ProviderConfig {
+                kind,
+                api_key_env: key.map(str::to_string),
+                command: (kind == ProviderKind::ClaudeCli).then(|| "claude".to_string()),
+                ..ProviderConfig::default()
+            };
+            config.providers.insert(id.to_string(), provider);
+        }
+        let model = |provider: &str, slug: &str| ModelProfile {
+            provider: provider.to_string(),
+            slug: slug.to_string(),
+            supports_tools: true,
+            ..ModelProfile::default()
+        };
+        config.models.insert(
+            "cli-sonnet".to_string(),
+            model("claude_cli", "claude-sonnet-4-6"),
+        );
+
+        let check = chat_host_runs_check(Some(&config));
+        assert_eq!(check.id, "chat_host_runs");
+        assert_eq!(check.status, DoctorStatus::Warn);
+        assert!(
+            check
+                .message
+                .contains("no_data_boundary, no_tool_loop_model"),
+            "{check:?}"
+        );
+        let detail = check.detail.clone().unwrap_or_default();
+        assert!(detail.contains("data-model boundary"), "{detail}");
+        assert!(detail.contains("runs its own tools"), "{detail}");
+        assert!(
+            check
+                .fix
+                .as_deref()
+                .is_some_and(|fix| fix.contains("API model"))
+        );
+
+        // An API model whose key is set (`PATH` always is) leaves only the
+        // boundary, which the preset sets.
+        config.providers.insert(
+            "api".to_string(),
+            ProviderConfig {
+                kind: ProviderKind::OpenAiCompat,
+                base_url: Some("http://127.0.0.1:9/v1".to_string()),
+                api_key_env: Some("PATH".to_string()),
+                ..ProviderConfig::default()
+            },
+        );
+        config
+            .models
+            .insert("api-mini".to_string(), model("api", "api-mini-1"));
+        let check = chat_host_runs_check(Some(&config));
+        assert_eq!(check.status, DoctorStatus::Warn);
+        assert!(check.message.ends_with("(no_data_boundary)"), "{check:?}");
+        assert_eq!(
+            check.fix.as_deref(),
+            Some(
+                "roko config preset chat-host --yes (--allow-without-data-llm instead, for local \
+                 use)"
+            )
+        );
+
+        config.agent.data_llm = Some(roko_core::config::DataLlmConfig {
+            model: "api-mini".to_string(),
+            ..roko_core::config::DataLlmConfig::default()
+        });
+        let check = chat_host_runs_check(Some(&config));
+        assert_eq!(check.status, DoctorStatus::Ok, "{check:?}");
+        assert_eq!(
+            check.detail.as_deref(),
+            Some("with data model api-mini; their tasks run on api-mini")
+        );
+        assert_eq!(chat_host_runs_check(None).status, DoctorStatus::Skipped);
+    }
     use tempfile::tempdir;
 
     #[test]

@@ -454,6 +454,76 @@ pub fn process_env() -> Vec<(String, OsString)> {
         .collect()
 }
 
+// ---- Gate command limits ----------------------------------------------------
+
+/// How hard a gate command may push the machine: `[gates] cargo_jobs` and
+/// `[gates] nice` (bug-b3849c). A run's checks share the machine with the
+/// person using it, and a whole-workspace build of a large Cargo workspace
+/// otherwise takes every core for tens of minutes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct GateLimits {
+    /// What `CARGO_BUILD_JOBS` (the jobs a cargo build runs at once) and
+    /// `RUST_TEST_THREADS` (the tests a test binary runs at once) say, unless
+    /// the command already sets them. `None`: no cap.
+    pub cargo_jobs: Option<usize>,
+    /// The niceness a gate command runs at: one roko would start less nice
+    /// is raised to it. 0 leaves the priority alone.
+    pub nice: i32,
+}
+
+impl GateLimits {
+    /// The default niceness of a gate command.
+    pub const DEFAULT_NICE: i32 = 10;
+
+    /// The default job cap: half the CPUs, at least 2.
+    #[must_use]
+    pub fn default_cargo_jobs() -> usize {
+        let cpus = std::thread::available_parallelism().map_or(2, std::num::NonZeroUsize::get);
+        (cpus / 2).max(2)
+    }
+}
+
+impl Default for GateLimits {
+    fn default() -> Self {
+        Self {
+            cargo_jobs: Some(Self::default_cargo_jobs()),
+            nice: Self::DEFAULT_NICE,
+        }
+    }
+}
+
+static GATE_LIMITS: Mutex<Option<GateLimits>> = Mutex::new(None);
+
+/// Make `limits` the limits of the gate commands this process starts from
+/// now on. A plan run sets its workspace's `[gates]` limits before anything
+/// runs.
+pub fn set_gate_limits(limits: GateLimits) {
+    *GATE_LIMITS.lock() = Some(limits);
+}
+
+/// The limits gate commands start with: the ones [`set_gate_limits`] set
+/// last, else [`GateLimits::default`].
+#[must_use]
+pub fn gate_limits() -> GateLimits {
+    GATE_LIMITS.lock().unwrap_or_default()
+}
+
+/// Give `cmd`, whose environment [`apply_gate_env`] set, the job cap of
+/// `limits`: `CARGO_BUILD_JOBS` and `RUST_TEST_THREADS`, each unless `cmd`
+/// already sets (or removes) it, so a value in roko's own environment, or
+/// one a gate sets, wins. The niceness is the gate runner's to apply: it
+/// takes a hook in the child.
+pub fn apply_gate_job_cap(cmd: &mut Command, limits: &GateLimits) {
+    let Some(jobs) = limits.cargo_jobs else {
+        return;
+    };
+    for name in ["CARGO_BUILD_JOBS", "RUST_TEST_THREADS"] {
+        if !cmd.get_envs().any(|(set, _)| set == name) {
+            cmd.env(name, jobs.to_string());
+        }
+    }
+}
+
 /// Give `cmd` the variables of `inherited` that [`gate_env`] admits, in place
 /// of the environment it would inherit. Variables already set on `cmd` stay.
 ///

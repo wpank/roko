@@ -586,7 +586,8 @@ fn synthesize_standard_providers_with_env(
             "openai",
             "OPENAI_API_KEY",
             ProviderKind::OpenAiCompat,
-            Some("https://api.openai.com"),
+            // OpenAI-compatible adapters append `/chat/completions`.
+            Some("https://api.openai.com/v1"),
         ),
         (
             "gemini",
@@ -1377,6 +1378,12 @@ impl RokoConfig {
         );
         let _ = writeln!(out, "impact_max_targets = {}", c.gates.impact_max_targets);
         let _ = writeln!(out, "compile_concurrency = {}", c.gates.compile_concurrency);
+        let _ = writeln!(
+            out,
+            "# Checks build with a job cap (unset: half the CPUs; 0: no cap) at a lower priority:"
+        );
+        let _ = writeln!(out, "# cargo_jobs = 4");
+        let _ = writeln!(out, "nice = {}", c.gates.nice);
         let _ = writeln!(
             out,
             "# Gate commands inherit only allowlisted variables; add more (names or PREFIX*):"
@@ -3248,6 +3255,21 @@ pheromone_decay_rate = 0.5
 
         let providers = cfg.effective_providers_with_env(|_| None);
         assert!(providers.is_empty());
+    }
+
+    /// bug-4e336b: an OpenAI key alone gives an `openai` provider whose
+    /// chat endpoint, `{base_url}/chat/completions`, is OpenAI's.
+    #[test]
+    fn synthesized_openai_provider_has_the_v1_base_url() {
+        let cfg = RokoConfig::default();
+        let providers = cfg.effective_providers_with_env(|name| {
+            (name == "OPENAI_API_KEY").then(|| "sk-test".to_string())
+        });
+        let openai = providers.get("openai").expect("synthesized from the key");
+        assert_eq!(
+            openai.base_url.as_deref(),
+            Some("https://api.openai.com/v1")
+        );
     }
 
     #[test]

@@ -1770,30 +1770,12 @@ pub(crate) fn cmd_model_list(workdir: &Path, names_only: bool) -> Result<()> {
         println!();
 
         let mut rows: Vec<ModelListRow> = Vec::new();
-        // Cache CLI binary probe results so we don't fork per model.
-        let claude_cli_ok = roko_cli::auth_detect::claude_cli_available();
         for b in &builtins {
-            let key_ok = {
-                // Check API key first.
-                if !b.api_key_env.is_empty()
-                    && std::env::var(b.api_key_env)
-                        .ok()
-                        .map_or(false, |v| !v.trim().is_empty())
-                {
-                    true
-                } else if matches!(
-                    b.provider_kind,
-                    roko_core::agent::ProviderKind::AnthropicApi
-                        | roko_core::agent::ProviderKind::ClaudeCli
-                ) && claude_cli_ok
-                {
-                    // Anthropic/ClaudeCli models are reachable via the CLI binary
-                    // without an API key.
-                    true
-                } else {
-                    false
-                }
-            };
+            // As routing decides it: the provider dispatch runs this model
+            // on (the one that holds its key, else another of its kind) has
+            // its key. A `claude` CLI on PATH does not run the Anthropic
+            // API's models, so it does not count (bug-4e336b).
+            let key_ok = config.provider_available_for_model_key(b.slug);
 
             // Derive cost from builtin pricing table.
             let cost = if let Some(pricing) = builtin_pricing(b.slug) {

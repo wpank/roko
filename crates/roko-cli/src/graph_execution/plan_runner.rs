@@ -1055,7 +1055,12 @@ pub(crate) async fn run_graph_plan_observed(
 
     let result = run_graph_plan_body(params, run_id).await;
 
-    let outcome = graph_run_outcome(&result, &interrupt_handle);
+    let outcome = match &result {
+        // Its plans ran no check, and none failed (bug-db89d4).
+        Ok(exit) if exit.unverified => "unverified",
+        Ok(exit) => graph_run_outcome(Some(exit.code), &interrupt_handle),
+        Err(_) => graph_run_outcome(None, &interrupt_handle),
+    };
     hub_sender.publish(roko_core::DashboardEvent::RunCompleted {
         run_id: Some(completed_run_id),
         outcome: outcome.to_string(),
@@ -1069,32 +1074,50 @@ pub(crate) async fn run_graph_plan_observed(
         events.finish().await;
     }
 
-    result
+    result.map(|exit| exit.code)
 }
 
-/// Map the run result to an outcome label for `DashboardEvent::RunCompleted`.
+/// How the body of a plan run ended: its exit code, and whether it failed
+/// only because a plan ended unverified (bug-db89d4).
+struct RunExit {
+    code: i32,
+    /// Every plan succeeded or ended unverified, at least one unverified,
+    /// and nothing stopped the run.
+    unverified: bool,
+}
+
+impl From<i32> for RunExit {
+    fn from(code: i32) -> Self {
+        Self {
+            code,
+            unverified: false,
+        }
+    }
+}
+
+/// Map the run's exit code (`None`: it ended in an error) to an outcome
+/// label for `DashboardEvent::RunCompleted`.
 ///
 /// - `"succeeded"`: exit code `EXIT_SUCCESS`.
 /// - `"cancelled"`: a stop request whose exit code matches the returned code
 ///   (TUI cancel routes through the same handle via `PlanRunInterrupt`).
-/// - `"failed"`: any `Err` and every other non-zero exit code.
-fn graph_run_outcome(
-    result: &anyhow::Result<i32>,
-    interrupt: &PlanRunInterruptHandle,
-) -> &'static str {
-    match result {
-        Ok(code) if *code == EXIT_SUCCESS => "succeeded",
-        Ok(code) => {
+/// - `"failed"`: an error and every other non-zero exit code.
+///
+/// A run whose plans ended unverified is `"unverified"`, decided before this.
+fn graph_run_outcome(code: Option<i32>, interrupt: &PlanRunInterruptHandle) -> &'static str {
+    match code {
+        Some(EXIT_SUCCESS) => "succeeded",
+        Some(code) => {
             if interrupt
                 .requested()
-                .is_some_and(|req| req.exit_code() == *code)
+                .is_some_and(|req| req.exit_code() == code)
             {
                 "cancelled"
             } else {
                 "failed"
             }
         }
-        Err(_) => "failed",
+        None => "failed",
     }
 }
 
@@ -1131,7 +1154,7 @@ pub(crate) async fn attach_tool_observability(
 async fn run_graph_plan_body(
     params: GraphPlanRunParams,
     run_id: Option<String>,
-) -> anyhow::Result<i32> {
+) -> anyhow::Result<RunExit> {
     use roko_graph::cells::TaskDispatcher;
 
     let GraphPlanRunParams {
@@ -1231,6 +1254,16 @@ async fn run_graph_plan_body(
     // the manifest, the feedback facade and the dispatcher are built, so
     // every reader sees one value.
     apply_run_switches(&mut roko_config, frozen_learning, no_holdout);
+    // Every check the run starts builds with a job cap at a lower priority
+    // (bug-b3849c): `[gates] cargo_jobs` and `[gates] nice`.
+    let gate_limits = roko_config.gates.gate_limits();
+    roko_core::child_env::set_gate_limits(gate_limits);
+    tracing::info!(
+        cargo_jobs = ?gate_limits.cargo_jobs,
+        nice = gate_limits.nice,
+        cargo_build_jobs_from_env = ?std::env::var("CARGO_BUILD_JOBS").ok(),
+        "gate commands run with a job cap at a lower priority"
+    );
     if roko_config.learning.frozen {
         tracing::info!(
             "learning is frozen for this run: it reads learned state and writes none \
@@ -1261,7 +1294,7 @@ async fn run_graph_plan_body(
             Ok(report) => report,
             Err(interrupted) => {
                 tracing::error!("{interrupted}");
-                return Ok(128 + interrupted.signal);
+                return Ok(RunExit::from(128 + interrupted.signal));
             }
         };
     if spec_gate.blocks() {
@@ -1273,7 +1306,7 @@ async fn run_graph_plan_body(
                 sender.publish(event);
             }
         }
-        return Ok(1);
+        return Ok(RunExit::from(1));
     }
 
     // Merge CLI flag with config (same logic as runner-v2).
@@ -1826,6 +1859,9 @@ async fn run_graph_plan_body(
     let mut plan_outcomes = std::collections::BTreeMap::<String, bool>::new();
     // How the tasks of each plan that ran settled, for the run metrics.
     let mut plan_task_verdicts = std::collections::BTreeMap::<String, TaskVerdictCounts>::new();
+    // The work each plan that was not delivered left that no check ran on
+    // (bug-db89d4).
+    let mut plan_unverified_work = std::collections::BTreeMap::<String, UnverifiedWork>::new();
     // Set once a stop request (a signal, closing the TUI, the FAST deadline
     // or the conductor) stops the run; later plans are left unstarted.
     let mut stopped_by: Option<PlanRunInterrupt> = None;
@@ -2020,6 +2056,10 @@ async fn run_graph_plan_body(
                     Ok(result) => {
                         total_output_count += result.output_count;
                         plan_task_verdicts.insert(plan_id.clone(), result.tasks);
+                        match result.unverified_work {
+                            Some(work) => plan_unverified_work.insert(plan_id.clone(), work),
+                            None => plan_unverified_work.remove(&plan_id),
+                        };
                         result.outcome
                     }
                     Err(error) => {
@@ -2194,17 +2234,25 @@ async fn run_graph_plan_body(
 
     // ── Run summary for the TUI ────────────────────────────────────
     // The TUI closes on its own once the whole plan set is terminal; it is
-    // stopped explicitly below once post-run persistence finishes.
+    // stopped explicitly below once post-run persistence finishes. The tally
+    // names how each plan ended, and is an error only when one failed: an
+    // unverified, cancelled or blocked plan did not fail (bug-db89d4).
     if !all_succeeded {
-        state_hub
-            .sender()
-            .publish(roko_core::DashboardEvent::Error {
-                message: format!(
-                    "Graph Engine: {plan_count} plan(s), {} succeeded, {} failed",
-                    plan_outcomes.values().filter(|v| **v).count(),
-                    plan_outcomes.values().filter(|v| !**v).count(),
-                ),
-            });
+        let outcomes = plan_execution_order
+            .iter()
+            .map(|plan_id| scheduler.outcome(plan_id))
+            .collect::<Vec<_>>();
+        let message = format!(
+            "Graph Engine: {plan_count} plan(s): {}",
+            outcome_tally(&outcomes)
+        );
+        if outcomes.contains(&Some(PlanOutcome::Failed)) {
+            state_hub
+                .sender()
+                .publish(roko_core::DashboardEvent::Error { message });
+        } else {
+            graph_tui_bridge.log_event("graph.run_outcome", &message);
+        }
     }
     // ── Save or propose the run's learning (UX34; P21, 8138) ─────────
     //
@@ -2363,6 +2411,19 @@ async fn run_graph_plan_body(
                 "interrupted_by": stopped_by.map(PlanRunInterrupt::label),
                 "batch": batch.as_ref().map(|batch| serde_json::json!({
                     "branch": batch.branch(),
+                    // Work no check ran on, which was not delivered
+                    // (bug-db89d4).
+                    "unverified": plan_unverified_work
+                        .iter()
+                        .map(|(plan_id, work)| serde_json::json!({
+                            "plan_id": plan_id,
+                            "branch": work.branch,
+                            "commit": work.commit,
+                            "base": work.base,
+                            "tasks": work.tasks,
+                            "review_command": work.review_command(),
+                        }))
+                        .collect::<Vec<_>>(),
                     "deliveries": batch
                         .receipts()
                         .iter()
@@ -2396,14 +2457,32 @@ async fn run_graph_plan_body(
             );
         }
         // Name the plans that did not succeed, such as one whose delivery
-        // into the batch branch failed its regression check (spec-f830c4).
+        // into the batch branch failed its regression check (spec-f830c4),
+        // with how each ended (bug-db89d4).
         let failed_plans = plan_outcomes
             .iter()
             .filter(|(_, succeeded)| !**succeeded)
-            .map(|(plan_id, _)| plan_id.as_str())
+            .map(|(plan_id, _)| {
+                let label = scheduler
+                    .outcome(plan_id)
+                    .map_or("not started", PlanOutcome::label);
+                format!("{plan_id} ({label})")
+            })
             .collect::<Vec<_>>();
         if !failed_plans.is_empty() {
             println!("Plans that did not succeed: {}", failed_plans.join(", "));
+        }
+        // Work no check ran on is never delivered: say where it is
+        // (bug-db89d4).
+        for (plan_id, work) in &plan_unverified_work {
+            println!(
+                "Plan {plan_id}: no check ran on the work of {}, so it was not delivered. \
+                 It is on {} at {}; to see it:\n  {}",
+                work.tasks.join(", "),
+                work.branch,
+                short_oid(&work.commit),
+                work.review_command()
+            );
         }
         // Where each delivered plan's work landed (gap-415c54).
         if let Some(batch) = batch.as_ref() {
@@ -2411,8 +2490,25 @@ async fn run_graph_plan_body(
                 if receipt.state.is_success()
                     && let Some(merge) = &receipt.merge_commit
                 {
+                    // A plan that did not finish delivered its verified
+                    // tasks only (bug-74164c).
+                    let partial = receipt
+                        .extensions
+                        .get(super::batch::PARTIAL_EXTENSION)
+                        .and_then(|partial| partial["tasks"].as_array())
+                        .map(|tasks| {
+                            let tasks = tasks
+                                .iter()
+                                .filter_map(serde_json::Value::as_str)
+                                .collect::<Vec<_>>();
+                            format!(
+                                " (partial: the plan did not finish; only its verified task(s) {})",
+                                tasks.join(", ")
+                            )
+                        })
+                        .unwrap_or_default();
                     println!(
-                        "Plan {} delivered into {} at {merge}",
+                        "Plan {} delivered into {} at {merge}{partial}",
                         receipt.request.plan_id,
                         batch.branch()
                     );
@@ -2449,10 +2545,28 @@ async fn run_graph_plan_body(
         }
     }
 
-    Ok(match stopped_by {
-        Some(reason) => reason.exit_code(),
-        None if all_succeeded => EXIT_SUCCESS,
-        None => EXIT_FAILURE,
+    // An unverified plan is not a failure: the run ends unverified when every
+    // plan succeeded or ended unverified (bug-db89d4).
+    let outcomes = plan_execution_order
+        .iter()
+        .map(|plan_id| scheduler.outcome(plan_id))
+        .collect::<Vec<_>>();
+    let unverified = stopped_by.is_none()
+        && !all_succeeded
+        && outcomes.contains(&Some(PlanOutcome::Unverified))
+        && outcomes.iter().all(|outcome| {
+            matches!(
+                outcome,
+                Some(PlanOutcome::Succeeded | PlanOutcome::Unverified)
+            )
+        });
+    Ok(RunExit {
+        code: match stopped_by {
+            Some(reason) => reason.exit_code(),
+            None if all_succeeded => EXIT_SUCCESS,
+            None => EXIT_FAILURE,
+        },
+        unverified,
     })
 }
 
@@ -2957,6 +3071,9 @@ struct PlanRunResult {
     output_count: usize,
     /// How the plan's tasks settled.
     tasks: TaskVerdictCounts,
+    /// The work it left on its plan branch that no check ran on, when it was
+    /// not delivered (bug-db89d4).
+    unverified_work: Option<UnverifiedWork>,
 }
 
 impl PlanRunResult {
@@ -2966,8 +3083,53 @@ impl PlanRunResult {
             outcome: PlanOutcome::Failed,
             output_count: 0,
             tasks: TaskVerdictCounts::not_run(task_count),
+            unverified_work: None,
         }
     }
+}
+
+/// Work a plan that was not delivered left on its plan branch, which no
+/// check ran on (bug-db89d4). It is never delivered; the run's summary says
+/// where it is.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct UnverifiedWork {
+    /// The plan branch, `roko/plan/<plan>`.
+    branch: String,
+    /// The commit the work ends at.
+    commit: String,
+    /// The commit it starts from.
+    base: String,
+    /// The tasks whose work it holds.
+    tasks: Vec<String>,
+}
+
+impl UnverifiedWork {
+    /// The unverified part of `work`, run `plan_id`'s accepted work, if any.
+    fn of(plan_id: &str, work: &super::batch::PlanWork) -> Option<Self> {
+        let unverified = work.unverified();
+        let mut tasks = Vec::new();
+        for accepted in unverified {
+            if !tasks.contains(&accepted.task_id) {
+                tasks.push(accepted.task_id.clone());
+            }
+        }
+        Some(Self {
+            branch: crate::orchestrator::worktree::format_branch_name(plan_id),
+            commit: unverified.last()?.commit.clone(),
+            base: work.verified_tip().unwrap_or(&work.base).to_string(),
+            tasks,
+        })
+    }
+
+    /// The command that shows the work: its diff from where it starts.
+    fn review_command(&self) -> String {
+        format!("git diff {}..{}", short_oid(&self.base), self.branch)
+    }
+}
+
+/// The first 12 characters of an object id, as a person types it.
+fn short_oid(oid: &str) -> &str {
+    oid.get(..12).unwrap_or(oid)
 }
 
 /// Outcome of a plan that ran. A graph that ran to completion settles by its
@@ -2988,6 +3150,32 @@ const fn plan_outcome(
     } else {
         PlanOutcome::Failed
     }
+}
+
+/// How many plans ended each way, in a fixed order and leaving out the ways
+/// none did, such as "1 succeeded, 1 unverified" (bug-db89d4). `None` is a
+/// plan that never started.
+fn outcome_tally(outcomes: &[Option<PlanOutcome>]) -> String {
+    const LABELS: [Option<PlanOutcome>; 7] = [
+        Some(PlanOutcome::Succeeded),
+        Some(PlanOutcome::Unverified),
+        Some(PlanOutcome::Failed),
+        Some(PlanOutcome::Blocked),
+        Some(PlanOutcome::Cancelled),
+        Some(PlanOutcome::Interrupted),
+        None,
+    ];
+    LABELS
+        .iter()
+        .filter_map(|label| {
+            let count = outcomes.iter().filter(|outcome| *outcome == label).count();
+            (count > 0).then(|| {
+                let word = label.map_or("not started", PlanOutcome::label);
+                format!("{count} {word}")
+            })
+        })
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 /// Publish that a plan will never start.
@@ -3823,6 +4011,7 @@ async fn run_one_plan(
             outcome,
             output_count: 0,
             tasks: task_verdicts,
+            unverified_work: None,
         });
     };
 
@@ -3848,6 +4037,8 @@ async fn run_one_plan(
     // regression check runs its steps on the merge (spec-f830c4); otherwise
     // in the shared working tree. It succeeds only when that check passes.
     let plan_checks = ctx.plan_checks.get(&plan.id).map_or(&[][..], Vec::as_slice);
+    // Whether the tasks all passed, before the whole-plan check judged them.
+    let tasks_succeeded = outcome.succeeded();
     let outcome = match ctx.batch {
         Some(batch) if outcome.succeeded() => {
             deliver_plan_to_batch(
@@ -3874,6 +4065,26 @@ async fn run_one_plan(
             .await?
         }
         _ => outcome,
+    };
+    // How the plan's tasks that did not complete were left.
+    let task_outcomes = task_outcomes(&output, &node_titles);
+    // A plan that did not succeed still delivers the verified part of what
+    // this run accepted onto its plan branch, marked partial, unless its tasks
+    // all passed and its whole-plan check refused them. The rest stays on the
+    // plan branch: its batch record says what no check ran on, and the run's
+    // summary where it is (bug-db89d4, bug-74164c).
+    let unverified_work = match ctx.batch {
+        Some(batch) if !outcome.succeeded() => {
+            let settle = UndeliveredPlan {
+                plan,
+                run_id: &run_id,
+                outcome,
+                deliver_verified: !tasks_succeeded,
+                task_outcomes: &task_outcomes,
+            };
+            settle_undelivered_plan(ctx, batch, &settle, &mut checkpoint).await?
+        }
+        _ => None,
     };
 
     // ── Graph TUI bridge: final status diff + PlanCompleted ──
@@ -3905,7 +4116,6 @@ async fn run_one_plan(
     }
     // Say why each task that did not run was held back; a resume runs them
     // and the failed tasks again.
-    let task_outcomes = task_outcomes(&output, &node_titles);
     // The live views list each such task as blocked, with its blocker or
     // reason (gap-f59fe9).
     for (task_id, blocker) in &task_outcomes.blocked_by {
@@ -3954,12 +4164,31 @@ async fn run_one_plan(
             )
             .await;
     }
+    // Work no check ran on is never delivered: say where it is instead
+    // (bug-db89d4).
+    let unverified_at = unverified_work.as_ref().map_or_else(String::new, |work| {
+        format!(
+            ". Its work is on {} at {} and was not delivered; see it with `{}`",
+            work.branch,
+            short_oid(&work.commit),
+            work.review_command()
+        )
+    });
     if outcome == PlanOutcome::Unverified {
         graph_tui_bridge.log_event(
             "graph.plan_unverified",
             &format!(
-                "plan '{}': {} task(s) ran no verify step, so the plan did not succeed",
+                "plan '{}' is unverified: {} task(s) ran no verify step{unverified_at}",
                 plan.id, task_verdicts.unverified
+            ),
+        );
+    } else if let Some(work) = &unverified_work {
+        graph_tui_bridge.log_event(
+            "graph.plan_unverified",
+            &format!(
+                "plan '{}': task(s) {} ran no verify step{unverified_at}",
+                plan.id,
+                work.tasks.join(", ")
             ),
         );
     }
@@ -4047,6 +4276,7 @@ async fn run_one_plan(
         outcome,
         output_count,
         tasks: task_verdicts,
+        unverified_work,
     })
 }
 
@@ -4109,39 +4339,8 @@ async fn deliver_plan_to_batch(
             merge_commit = receipt.merge_commit.as_deref().unwrap_or_default(),
             "plan delivered into the run's batch branch"
         );
-        // Its work is on the plan and batch branches now, so the attempt
-        // checkouts kept for review have done their job. What went and what
-        // stayed is on the receipt, for the run summary.
-        if receipt.release_policy == roko_graph::delivery::ReleasePolicy::Delete
-            && let Some(worktrees) = worktrees
-        {
-            match worktrees
-                .release_accepted(&plan.id, delete_attempt_branches)
-                .await
-            {
-                Ok(released) => {
-                    tracing::info!(
-                        plan_id = %plan.id,
-                        removed = released.removed_checkouts.len(),
-                        kept_branches = released.kept_branches.len(),
-                        deleted_branches = released.deleted_branches.len(),
-                        "removed the delivered plan's attempt checkouts"
-                    );
-                    if let Ok(cleanup) = serde_json::to_value(&released) {
-                        let mut receipt = receipt;
-                        receipt
-                            .extensions
-                            .insert(super::batch::ATTEMPT_CLEANUP_EXTENSION.to_string(), cleanup);
-                        batch.store().update(&receipt);
-                    }
-                }
-                Err(error) => tracing::warn!(
-                    plan_id = %plan.id,
-                    %error,
-                    "kept the delivered plan's attempt checkouts"
-                ),
-            }
-        }
+        release_delivered_attempts(worktrees, &plan.id, delete_attempt_branches, batch, receipt)
+            .await;
         return Ok(PlanOutcome::Succeeded);
     }
     let reason = receipt.error.as_deref().unwrap_or("no reason recorded");
@@ -4159,6 +4358,247 @@ async fn deliver_plan_to_batch(
         receipt.state
     ));
     Ok(PlanOutcome::Failed)
+}
+
+/// A plan that ended without succeeding, as [`settle_undelivered_plan`]
+/// takes it (bug-74164c).
+struct UndeliveredPlan<'a> {
+    plan: &'a crate::runner::plan_loader::Plan,
+    /// The plan's checkpoint run, which the commits on its branch name.
+    run_id: &'a str,
+    outcome: PlanOutcome,
+    /// Whether the verified part of its work may be delivered: not when its
+    /// tasks all passed and its whole-plan check refused them.
+    deliver_verified: bool,
+    task_outcomes: &'a TaskOutcomeSummary,
+}
+
+/// Settle `undelivered`, a plan that did not succeed under `batch`
+/// (bug-db89d4, bug-74164c). The verified part of what its run accepted onto its
+/// plan branch, when it may be delivered, goes into the batch as a partial
+/// delivery. Its checkpoint records which tasks' work was delivered, which
+/// was not and why, and the work no check ran on, which is returned. `Err`
+/// only when the checkpoint cannot record it.
+async fn settle_undelivered_plan(
+    ctx: &PlanRunContext<'_>,
+    batch: &super::batch::BatchIntegration,
+    undelivered: &UndeliveredPlan<'_>,
+    checkpoint: &mut crate::graph_checkpoint::PreparedGraphCheckpoint,
+) -> anyhow::Result<Option<UnverifiedWork>> {
+    let plan = undelivered.plan;
+    let Some(work) = super::batch::PlanWork::read(batch.repo(), &plan.id, undelivered.run_id).await
+    else {
+        return Ok(None);
+    };
+    let mut delivered_tasks = Vec::new();
+    if undelivered.deliver_verified
+        && let Some(tip) = work.verified_tip()
+    {
+        let tasks = distinct_tasks(&work.commits[..work.verified_len()]);
+        if deliver_partial_to_batch(ctx, batch, plan, tip.to_string(), &tasks, checkpoint).await? {
+            delivered_tasks = tasks;
+        }
+    }
+    let mut record = serde_json::json!({
+        "partial": !delivered_tasks.is_empty(),
+        "delivered_tasks": delivered_tasks,
+        "missing_tasks": missing_tasks(undelivered, &work, &delivered_tasks),
+    });
+    if let Some(unverified) = work.unverified_record() {
+        record["unverified"] = unverified;
+    }
+    checkpoint.record_batch_work(batch.plan_record(&plan.id), record)?;
+    Ok(UnverifiedWork::of(&plan.id, &work))
+}
+
+/// The tasks `commits` hold, each once, in their order.
+fn distinct_tasks(commits: &[super::batch::AcceptedCommit]) -> Vec<String> {
+    let mut tasks: Vec<String> = Vec::new();
+    for accepted in commits {
+        if !tasks.contains(&accepted.task_id) {
+            tasks.push(accepted.task_id.clone());
+        }
+    }
+    tasks
+}
+
+/// Each task of `undelivered`'s plan whose work is not on the batch branch,
+/// with why (bug-74164c): its work ran no check, or builds on work that did not;
+/// the whole-plan check refused the plan, or the delivery failed; it failed,
+/// was cancelled or interrupted; it was blocked, or never started.
+fn missing_tasks(
+    undelivered: &UndeliveredPlan<'_>,
+    work: &super::batch::PlanWork,
+    delivered: &[String],
+) -> Vec<serde_json::Value> {
+    let outcomes = undelivered.task_outcomes;
+    undelivered
+        .plan
+        .tasks
+        .tasks
+        .iter()
+        .filter(|task| !delivered.contains(&task.id))
+        .map(|task| {
+            let accepted = work
+                .commits
+                .iter()
+                .rev()
+                .find(|accepted| accepted.task_id == task.id);
+            let why = match accepted {
+                Some(accepted) if !accepted.verified() => "ran no check".to_string(),
+                Some(_)
+                    if work
+                        .unverified()
+                        .iter()
+                        .any(|later| later.task_id == task.id) =>
+                {
+                    "builds on work no check ran on".to_string()
+                }
+                Some(_) if !undelivered.deliver_verified => {
+                    "the plan's whole-plan check failed".to_string()
+                }
+                Some(_) => "its delivery failed".to_string(),
+                None if outcomes.failed.contains(&task.id) => match undelivered.outcome {
+                    PlanOutcome::Cancelled => "cancelled".to_string(),
+                    PlanOutcome::Interrupted => "interrupted".to_string(),
+                    _ => "failed".to_string(),
+                },
+                None => match outcomes.blocked_by.get(&task.id) {
+                    Some(blocker) => format!("blocked by {blocker}"),
+                    None if outcomes.not_started.contains_key(&task.id) => {
+                        "not started".to_string()
+                    }
+                    None => "not accepted".to_string(),
+                },
+            };
+            serde_json::json!({ "task_id": task.id, "why": why })
+        })
+        .collect()
+}
+
+/// Deliver `verified`, the tip of the verified part of `plan`'s work, into
+/// the run's batch branch as a partial delivery (bug-74164c): a merge only, since
+/// the plan did not finish and its whole-plan check does not apply. Its
+/// receipt says it is partial and which `tasks` it holds, the plan's
+/// checkpoint records it, and the delivered attempts' checkouts are removed
+/// as a full delivery's are. Returns whether it was delivered; `Err` only
+/// when the checkpoint cannot record it.
+async fn deliver_partial_to_batch(
+    ctx: &PlanRunContext<'_>,
+    batch: &super::batch::BatchIntegration,
+    plan: &crate::runner::plan_loader::Plan,
+    verified: String,
+    tasks: &[String],
+    checkpoint: &mut crate::graph_checkpoint::PreparedGraphCheckpoint,
+) -> anyhow::Result<bool> {
+    let backend = super::delivery::GitDeliveryBackend::new(batch.repo().to_path_buf())
+        .with_regression_steps(Vec::new());
+    let service = super::delivery::CliCompletionDeliveryService::with_store(
+        batch.store().clone(),
+        Arc::new(backend),
+    );
+    let request = batch.partial_request(&plan.id, verified);
+    let mut receipt = match batch
+        .deliver(&service, request, checkpoint.recorded_delivery())
+        .await
+    {
+        Ok(receipt) => receipt,
+        Err(error) => {
+            tracing::warn!(plan_id = %plan.id, %error, "the plan's verified tasks could not be delivered");
+            ctx.graph_tui_bridge.error(&format!(
+                "plan '{}': its verified tasks could not be delivered into {}: {error}",
+                plan.id,
+                batch.branch()
+            ));
+            return Ok(false);
+        }
+    };
+    receipt.extensions.insert(
+        super::batch::PARTIAL_EXTENSION.to_string(),
+        serde_json::json!({ "tasks": tasks }),
+    );
+    batch.store().update(&receipt);
+    checkpoint.record_batch_delivery(batch.record(&receipt), &receipt)?;
+    let Some(merge) = receipt
+        .merge_commit
+        .clone()
+        .filter(|_| receipt.state.is_success())
+    else {
+        let reason = receipt.error.as_deref().unwrap_or("no reason recorded");
+        tracing::warn!(plan_id = %plan.id, state = ?receipt.state, reason, "the plan's verified tasks were not delivered");
+        ctx.graph_tui_bridge.error(&format!(
+            "plan '{}': its verified tasks were not delivered into {} ({:?}): {reason}",
+            plan.id,
+            batch.branch(),
+            receipt.state
+        ));
+        return Ok(false);
+    };
+    tracing::info!(plan_id = %plan.id, batch = batch.branch(), merge_commit = %merge, "delivered the plan's verified tasks");
+    ctx.graph_tui_bridge.log_event(
+        "graph.plan_partially_delivered",
+        &format!(
+            "plan '{}' did not finish: the work of its verified task(s) {} was delivered into {} at {}",
+            plan.id,
+            tasks.join(", "),
+            batch.branch(),
+            short_oid(&merge)
+        ),
+    );
+    release_delivered_attempts(
+        ctx.worktrees,
+        &plan.id,
+        ctx.delete_attempt_branches,
+        batch,
+        receipt,
+    )
+    .await;
+    Ok(true)
+}
+
+/// Remove the checkouts of the attempts plan `plan_id` accepted, once
+/// `receipt` delivered their work into `batch` (gap-415c54): it is on the
+/// plan and batch branches now, so the checkouts kept for review have done
+/// their job. With `delete_attempt_branches` their branches go too. What
+/// went and what stayed is on the receipt, for the run summary.
+async fn release_delivered_attempts(
+    worktrees: Option<&crate::orchestrator::worktree::WorktreeManager>,
+    plan_id: &str,
+    delete_attempt_branches: bool,
+    batch: &super::batch::BatchIntegration,
+    mut receipt: roko_graph::delivery::CompletionDeliveryReceiptV1,
+) {
+    let Some(worktrees) = worktrees else {
+        return;
+    };
+    if receipt.release_policy != roko_graph::delivery::ReleasePolicy::Delete {
+        return;
+    }
+    match worktrees
+        .release_accepted(plan_id, delete_attempt_branches)
+        .await
+    {
+        Ok(released) => {
+            tracing::info!(
+                plan_id,
+                removed = released.removed_checkouts.len(),
+                kept_branches = released.kept_branches.len(),
+                deleted_branches = released.deleted_branches.len(),
+                "removed the delivered plan's attempt checkouts"
+            );
+            if let Ok(cleanup) = serde_json::to_value(&released) {
+                receipt
+                    .extensions
+                    .insert(super::batch::ATTEMPT_CLEANUP_EXTENSION.to_string(), cleanup);
+                batch.store().update(&receipt);
+            }
+        }
+        Err(error) => tracing::warn!(
+            plan_id,
+            %error,
+            "kept the delivered plan's attempt checkouts"
+        ),
+    }
 }
 
 /// Run `plan`'s whole-plan check (gap-60233f) in the shared working tree at
@@ -8269,5 +8709,245 @@ printf '%s\n' '{"type":"result","session_id":"sess-batch","model":"claude-sonnet
                 );
             }
         }
+    }
+
+    /// bug-db89d4: the closing tally counts each way a plan ended, and leaves
+    /// out the ways none did.
+    #[test]
+    fn the_closing_tally_names_each_outcome() {
+        assert_eq!(
+            outcome_tally(&[Some(PlanOutcome::Unverified)]),
+            "1 unverified"
+        );
+        assert_eq!(
+            outcome_tally(&[
+                Some(PlanOutcome::Failed),
+                None,
+                Some(PlanOutcome::Succeeded),
+                Some(PlanOutcome::Blocked),
+                Some(PlanOutcome::Succeeded),
+            ]),
+            "2 succeeded, 1 failed, 1 blocked, 1 not started"
+        );
+    }
+
+    /// bug-db89d4: a plan whose one task ran no verify step ends unverified.
+    /// Its work is not delivered, so the batch stays at its base, but the
+    /// plan's checkpoint names the commit no check ran on, the tip of its
+    /// plan branch, and an event says where it is and how to see it. The
+    /// run's closing tally says "unverified" and is not an error.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn an_unverified_run_says_where_its_unchecked_work_is() {
+        let dir = repo_with_file_plans(&["alpha"], None);
+        let repo = dir.path();
+        let tasks = repo.join("plans/01-alpha/tasks.toml");
+        let text = std::fs::read_to_string(&tasks).expect("tasks.toml");
+        let (task, _verify) = text.split_once("\n[[task.verify]]").expect("a verify step");
+        let task = task.replace(
+            "skip_enrichment = true\n",
+            "skip_enrichment = true\nallow_unverified = true\n",
+        );
+        std::fs::write(&tasks, format!("{task}\n")).expect("tasks.toml");
+        git_in(repo, &["commit", "-am", "no verify step"]);
+        let base = git_stdout(repo, &["rev-parse", "HEAD"]);
+        let hub = crate::state_hub::shared_state_hub();
+        let params = GraphPlanRunParams {
+            state_hub: Some(hub.clone()),
+            ..worktree_run_params(repo)
+        };
+
+        let exit_code = run_graph_plan_in_run(params, Some("run-unverified".into()))
+            .await
+            .expect("run the plan");
+
+        assert_ne!(exit_code, EXIT_SUCCESS);
+        assert_eq!(
+            crate::graph_checkpoint::canonical_checkpoint_status(repo, "01-alpha"),
+            Some(GraphCheckpointStatus::Unverified)
+        );
+        assert_eq!(
+            git_stdout(repo, &["rev-parse", "roko/batch/run-unverified"]),
+            base,
+            "unverified work is not delivered"
+        );
+        let tip = git_stdout(repo, &["rev-parse", "roko/plan/01-alpha"]);
+        assert!(
+            git_stdout(repo, &["ls-tree", "--name-only", &tip]).contains("alpha.txt"),
+            "the plan branch holds the work"
+        );
+        let manifest: serde_json::Value = serde_json::from_slice(
+            &std::fs::read(repo.join(".roko/state/graph/01-alpha/checkpoint.json"))
+                .expect("checkpoint"),
+        )
+        .expect("checkpoint json");
+        let record = &manifest["extensions"]["roko.batch@1"]["value"];
+        assert_eq!(record["run_id"], "run-unverified", "{record}");
+        assert_eq!(record["branch"], "roko/batch/run-unverified", "{record}");
+        assert_eq!(record["plan_branch"], "roko/plan/01-alpha", "{record}");
+        assert!(
+            record.get("state").is_none(),
+            "nothing was delivered: {record}"
+        );
+        let unverified = &record["work"]["unverified"];
+        assert_eq!(unverified["commit"], tip.as_str(), "{record}");
+        assert_eq!(unverified["base"], base.as_str(), "{record}");
+        assert_eq!(
+            unverified["tasks"],
+            serde_json::json!([{ "task_id": "T1", "verdict": "unverified" }]),
+            "{record}"
+        );
+
+        let events = hub.subscribe_events_from(0).replay;
+        let errors = events
+            .iter()
+            .filter_map(|envelope| match &envelope.payload {
+                roko_core::DashboardEvent::Error { message } => Some(message.as_str()),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert!(
+            errors
+                .iter()
+                .all(|message| !message.starts_with("Graph Engine")),
+            "{errors:?}"
+        );
+        let logs = events
+            .iter()
+            .filter_map(|envelope| match &envelope.payload {
+                roko_core::DashboardEvent::EventLogEntry {
+                    event_type,
+                    message,
+                    ..
+                } => Some((event_type.as_str(), message.as_str())),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert!(
+            logs.contains(&("graph.run_outcome", "Graph Engine: 1 plan(s): 1 unverified")),
+            "{logs:?}"
+        );
+        let (_, said) = logs
+            .iter()
+            .find(|(kind, _)| *kind == "graph.plan_unverified")
+            .expect("the plan's unverified event");
+        assert!(
+            said.contains("roko/plan/01-alpha")
+                && said.contains(&format!("git diff {}..roko/plan/01-alpha", &base[..12])),
+            "{said}"
+        );
+        let ended = events
+            .iter()
+            .find_map(|envelope| match &envelope.payload {
+                roko_core::DashboardEvent::RunCompleted { outcome, .. } => Some(outcome.as_str()),
+                _ => None,
+            })
+            .expect("the run's end");
+        assert_eq!(ended, "unverified");
+    }
+
+    /// bug-74164c: a plan whose T1 passed and whose T2 failed delivers T1's work,
+    /// and only T1's, into the run's batch branch, marked partial. The plan's
+    /// batch record names the delivered task and why the other was not
+    /// delivered, an event says what was delivered, T1's accepted checkout is
+    /// removed and T2's failed one is kept. The run still failed.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_plan_that_did_not_finish_delivers_its_verified_tasks() {
+        let dir = repo_with_file_plans(&["alpha"], None);
+        let repo = dir.path();
+        let tasks = repo.join("plans/01-alpha/tasks.toml");
+        let mut text = std::fs::read_to_string(&tasks).expect("tasks.toml");
+        text.push_str(
+            "\n[[task]]\nid = \"T2\"\ntitle = \"Write beta.txt\"\n\
+             description = \"Write beta.txt.\"\nrole = \"implementer\"\nstatus = \"ready\"\n\
+             tier = \"focused\"\nfiles = [\"beta.txt\"]\ndepends_on = [\"T1\"]\nmax_retries = 0\n\n\
+             [[task.verify]]\nphase = \"structural\"\ncommand = \"test -f gamma.txt\"\n",
+        );
+        std::fs::write(&tasks, text).expect("tasks.toml");
+        git_in(repo, &["commit", "-am", "a second task whose check fails"]);
+        let hub = crate::state_hub::shared_state_hub();
+        let params = GraphPlanRunParams {
+            state_hub: Some(hub.clone()),
+            ..worktree_run_params(repo)
+        };
+
+        let exit_code = run_graph_plan_in_run(params, Some("run-partial".into()))
+            .await
+            .expect("run the plan");
+
+        assert_ne!(exit_code, EXIT_SUCCESS);
+        assert_eq!(
+            crate::graph_checkpoint::canonical_checkpoint_status(repo, "01-alpha"),
+            Some(GraphCheckpointStatus::Failed)
+        );
+        let batch = "roko/batch/run-partial";
+        let files = git_stdout(repo, &["ls-tree", "--name-only", batch]);
+        assert!(
+            files.contains("alpha.txt") && !files.contains("beta.txt"),
+            "only T1's work is delivered: {files}"
+        );
+        let manifest: serde_json::Value = serde_json::from_slice(
+            &std::fs::read(repo.join(".roko/state/graph/01-alpha/checkpoint.json"))
+                .expect("checkpoint"),
+        )
+        .expect("checkpoint json");
+        let record = &manifest["extensions"]["roko.batch@1"]["value"];
+        assert_eq!(record["state"], "delivered", "{record}");
+        assert_eq!(record["partial"], true, "{record}");
+        assert_eq!(
+            record["work"],
+            serde_json::json!({
+                "partial": true,
+                "delivered_tasks": ["T1"],
+                "missing_tasks": [{ "task_id": "T2", "why": "failed" }],
+            }),
+            "{record}"
+        );
+        let delivery = crate::graph_checkpoint::recorded_batch_delivery(repo, "01-alpha")
+            .expect("a recorded delivery");
+        assert!(delivery.partial);
+        assert_eq!(
+            delivery.merge_commit,
+            git_stdout(repo, &["rev-parse", batch])
+        );
+        // T1's checkout went with its delivery; T2's, holding beta.txt, stays.
+        let worktrees = git_stdout(repo, &["worktree", "list", "--porcelain"]);
+        let checkouts = worktrees
+            .lines()
+            .filter_map(|line| line.strip_prefix("worktree "))
+            .collect::<Vec<_>>();
+        assert_eq!(checkouts.len(), 2, "{worktrees}");
+        assert!(
+            Path::new(checkouts[1]).join("beta.txt").is_file(),
+            "{worktrees}"
+        );
+
+        let events = hub.subscribe_events_from(0).replay;
+        let logs = events
+            .iter()
+            .filter_map(|envelope| match &envelope.payload {
+                roko_core::DashboardEvent::EventLogEntry {
+                    event_type,
+                    message,
+                    ..
+                } => Some((event_type.as_str(), message.as_str())),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        let (_, said) = logs
+            .iter()
+            .find(|(kind, _)| *kind == "graph.plan_partially_delivered")
+            .expect("the partial delivery's event");
+        assert!(said.contains("T1") && said.contains(batch), "{said}");
+        let errors = events
+            .iter()
+            .filter_map(|envelope| match &envelope.payload {
+                roko_core::DashboardEvent::Error { message } => Some(message.as_str()),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert!(
+            errors.contains(&"Graph Engine: 1 plan(s): 1 failed"),
+            "{errors:?}"
+        );
     }
 }

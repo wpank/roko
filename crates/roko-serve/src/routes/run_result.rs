@@ -10,6 +10,12 @@
 //! reads them, with read-only git plumbing, so that the run summary can tell a
 //! chat host what the run changed and how to take it, and the run's diff can
 //! show it (gap-0d6d21).
+//!
+//! A plan that was not delivered keeps the work its run accepted on its plan
+//! branch, `roko/plan/<plan>`, and its batch record says which part of it no
+//! check ran on (`work.unverified`, bug-db89d4). That work is never
+//! delivered; the summary names it apart from the batch, so that a host can
+//! show it as unverified.
 
 use std::collections::HashMap;
 use std::io::{BufRead, BufReader};
@@ -169,23 +175,103 @@ pub(super) fn run_result(workdir: &Path, run_id: &str, plan_ids: &[String]) -> O
         };
         result["merge_command"] = json!(command);
     }
+    let records = batch_records(workdir, run_id, plan_ids);
+    // A plan that did not succeed delivered only its verified tasks, or
+    // nothing (bug-74164c): the branch holds part of the run's work.
+    let plans = records
+        .iter()
+        .filter(|(_, record)| record["work"].is_object())
+        .map(|(plan_id, record)| {
+            let work = &record["work"];
+            json!({
+                "plan_id": plan_id,
+                "partial": work["partial"].as_bool().unwrap_or(false),
+                "delivered_tasks": work["delivered_tasks"].as_array().cloned().unwrap_or_default(),
+                "missing_tasks": work["missing_tasks"].as_array().cloned().unwrap_or_default(),
+            })
+        })
+        .collect::<Vec<_>>();
+    let missing = plans.iter().any(|plan| {
+        plan["missing_tasks"]
+            .as_array()
+            .is_some_and(|tasks| !tasks.is_empty())
+    });
+    result["partial"] = json!(delivered && missing);
+    if !plans.is_empty() {
+        result["plans"] = json!(plans);
+    }
+    let unverified = records
+        .iter()
+        .filter_map(|(plan_id, record)| unverified_work(workdir, plan_id, record))
+        .collect::<Vec<_>>();
+    if !unverified.is_empty() {
+        result["unverified"] = json!(unverified);
+    }
     Some(result)
 }
 
-/// The commit run `run_id`'s batch started from, as the run recorded it: its
-/// manifest's `workspace.base_commit`, else the `base_oid` of a plan's batch
-/// record that names the run. Only a commit the batch's tip `tip` descends
-/// from counts.
-fn recorded_base(workdir: &Path, run_id: &str, plan_ids: &[String], tip: &str) -> Option<String> {
-    let manifest = read_record(
-        &RokoLayout::for_project(workdir)
-            .run_dir(run_id)
-            .join("manifest.json"),
-    );
+/// The work plan `plan_id` left on its plan branch that no check ran on, as
+/// its batch `record` names it (bug-db89d4): the `commit` it ends at, the
+/// `base` it starts from, its `tasks` with their verdicts, the files it
+/// changes, the plan `branch` while it still points there, and the command
+/// that shows it. It is never delivered, so it has no merge command. `None`
+/// when the record names none, or its commits are gone.
+fn unverified_work(workdir: &Path, plan_id: &str, record: &Value) -> Option<Value> {
+    let work = &record["work"]["unverified"];
+    let commit = rev_parse(
+        workdir,
+        work["commit"].as_str().filter(|oid| is_object_id(oid))?,
+    )?;
+    let base = rev_parse(
+        workdir,
+        work["base"].as_str().filter(|oid| is_object_id(oid))?,
+    )?;
+    let branch = record["plan_branch"].as_str().filter(|branch| {
+        rev_parse(workdir, &format!("refs/heads/{branch}")).as_ref() == Some(&commit)
+    });
+    let shown = branch.unwrap_or(&commit);
+    let mut entry = json!({
+        "plan_id": plan_id,
+        "commit": commit,
+        "base": base,
+        "tasks": work["tasks"],
+        "review_command": format!("git diff {}..{shown}", &base[..12]),
+    });
+    if let Some(branch) = branch {
+        entry["branch"] = json!(branch);
+    }
+    if let Some((files, insertions, deletions)) = changed_files(workdir, &base, &commit) {
+        entry["diffstat"] = json!({
+            "files": files.len(),
+            "insertions": insertions,
+            "deletions": deletions,
+        });
+        entry["files_changed"] = json!(files.into_iter().take(MAX_FILES).collect::<Vec<_>>());
+    }
+    Some(entry)
+}
+
+/// The plans of run `run_id` whose checkpoint keeps a batch record of the
+/// run (`roko.batch@1`), each with its record: `plan_ids`, then the plans
+/// the run's manifest names.
+fn batch_records(workdir: &Path, run_id: &str, plan_ids: &[String]) -> Vec<(String, Value)> {
+    run_plan_ids(workdir, run_id, plan_ids)
+        .into_iter()
+        .filter_map(|plan_id| {
+            let checkpoint =
+                read_record(&graph_plan_state_dir(workdir, &plan_id).join("checkpoint.json"))?;
+            let record = checkpoint["extensions"][BATCH_EXTENSION]["value"].clone();
+            (record["run_id"].as_str() == Some(run_id)).then_some((plan_id, record))
+        })
+        .collect()
+}
+
+/// `plan_ids`, then the plans run `run_id`'s manifest names that they leave
+/// out.
+fn run_plan_ids(workdir: &Path, run_id: &str, plan_ids: &[String]) -> Vec<String> {
     let mut plans = plan_ids.to_vec();
-    if let Some(recorded) = manifest
-        .as_ref()
-        .and_then(|manifest| manifest["plan_ids"].as_array())
+    if let Some(manifest) = read_record(&run_manifest_path(workdir, run_id))
+        && let Some(recorded) = manifest["plan_ids"].as_array()
     {
         for plan_id in recorded.iter().filter_map(Value::as_str) {
             if !plans.iter().any(|known| known == plan_id) {
@@ -193,19 +279,29 @@ fn recorded_base(workdir: &Path, run_id: &str, plan_ids: &[String], tip: &str) -
             }
         }
     }
-    let from_manifest = manifest
-        .as_ref()
-        .and_then(|manifest| manifest["workspace"]["base_commit"].as_str())
-        .map(str::to_owned);
-    let from_checkpoints = plans.iter().filter_map(|plan_id| {
-        let checkpoint =
-            read_record(&graph_plan_state_dir(workdir, plan_id).join("checkpoint.json"))?;
-        let record = &checkpoint["extensions"][BATCH_EXTENSION]["value"];
-        if record["run_id"].as_str() != Some(run_id) {
-            return None;
-        }
-        record["base_oid"].as_str().map(str::to_owned)
+    plans
+}
+
+/// Run `run_id`'s `manifest.json`.
+fn run_manifest_path(workdir: &Path, run_id: &str) -> PathBuf {
+    RokoLayout::for_project(workdir)
+        .run_dir(run_id)
+        .join("manifest.json")
+}
+
+/// The commit run `run_id`'s batch started from, as the run recorded it: its
+/// manifest's `workspace.base_commit`, else the `base_oid` of a plan's batch
+/// record that names the run. Only a commit the batch's tip `tip` descends
+/// from counts.
+fn recorded_base(workdir: &Path, run_id: &str, plan_ids: &[String], tip: &str) -> Option<String> {
+    let from_manifest = read_record(&run_manifest_path(workdir, run_id)).and_then(|manifest| {
+        manifest["workspace"]["base_commit"]
+            .as_str()
+            .map(str::to_owned)
     });
+    let from_checkpoints = batch_records(workdir, run_id, plan_ids)
+        .into_iter()
+        .filter_map(|(_, record)| record["base_oid"].as_str().map(str::to_owned));
     from_manifest
         .into_iter()
         .chain(from_checkpoints)
@@ -276,7 +372,43 @@ pub(super) fn run_diff(
 ) -> Option<Value> {
     let range = result_range(workdir, run_id, plan_ids)?;
     let base = range.base.as_deref()?;
-    let entries = diff_entries(workdir, base, &range.commit)?;
+    let mut diff = range_diff(workdir, base, &range.commit, limits)?;
+    diff["run_id"] = json!(run_id);
+    diff["branch"] = json!(range.branch);
+    Some(diff)
+}
+
+/// The diff of the work run `run_id` left on a plan branch that no check
+/// ran on (bug-db89d4), in [`run_diff`]'s shape with `work: "unverified"`
+/// and its `plan_id`: plan `plan_id`'s, or the first such plan's. Its
+/// `branch` is the plan branch while that still points at the work. `None`
+/// when the run left no such work, or git cannot tell.
+pub(super) fn unverified_diff(
+    workdir: &Path,
+    run_id: &str,
+    plan_ids: &[String],
+    plan_id: Option<&str>,
+    limits: DiffLimits,
+) -> Option<Value> {
+    let entry = batch_records(workdir, run_id, plan_ids)
+        .into_iter()
+        .filter(|(id, _)| plan_id.is_none_or(|wanted| wanted == id))
+        .find_map(|(id, record)| unverified_work(workdir, &id, &record))?;
+    let (base, commit) = (entry["base"].as_str()?, entry["commit"].as_str()?);
+    let mut diff = range_diff(workdir, base, commit, limits)?;
+    diff["run_id"] = json!(run_id);
+    diff["work"] = json!("unverified");
+    diff["plan_id"] = entry["plan_id"].clone();
+    diff["branch"] = entry.get("branch").cloned().unwrap_or(Value::Null);
+    Some(diff)
+}
+
+/// Each file `commit` changes from `base`, with its status, line counts,
+/// whether it is binary and its unified patch (`null` for a binary file),
+/// within `limits`, plus totals over every file. `None` when git cannot
+/// tell.
+fn range_diff(workdir: &Path, base: &str, commit: &str, limits: DiffLimits) -> Option<Value> {
+    let entries = diff_entries(workdir, base, commit)?;
     let kept = &entries[..entries.len().min(limits.max_files)];
     let paths = kept
         .iter()
@@ -286,7 +418,7 @@ pub(super) fn run_diff(
     let mut patches = if paths.is_empty() {
         HashMap::new()
     } else {
-        file_patches(workdir, base, &range.commit, &paths, limits.max_patch_bytes)?
+        file_patches(workdir, base, commit, &paths, limits.max_patch_bytes)?
     };
     let files = kept
         .iter()
@@ -316,10 +448,8 @@ pub(super) fn run_diff(
         .iter()
         .fold(0_u64, |sum, entry| sum.saturating_add(entry.deletions));
     Some(json!({
-        "run_id": run_id,
-        "branch": range.branch,
         "base": base,
-        "commit": range.commit,
+        "commit": commit,
         "files": files,
         "totals": {
             "files": entries.len(),

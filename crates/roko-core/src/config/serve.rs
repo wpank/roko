@@ -419,9 +419,9 @@ impl super::schema::RokoConfig {
     }
 
     /// The `[models.*]` keys of the ladder's rungs, its roles' own included,
-    /// cheapest first, each once; none while the ladder is off. A rung runs
-    /// only a model a `[models.*]` entry names by key or slug, so the others
-    /// are left out.
+    /// cheapest first, each once; none while the ladder is off. A rung runs a
+    /// model a `[models.*]` entry names by key or slug, or a built-in model
+    /// (bug-4e336b), so the others are left out.
     fn ladder_rung_models(&self) -> Vec<String> {
         if !self.routing.ladder.enabled {
             return Vec::new();
@@ -431,7 +431,7 @@ impl super::schema::RokoConfig {
         self.routing
             .ladder
             .all_rungs()
-            .filter(|rung| has_model_entry(&models, &rung.model))
+            .filter(|rung| rung_model_known(&models, &rung.model))
             .map(|rung| model_key_of(&models, &rung.model))
             .filter(|model| seen.insert(model.clone()))
             .collect()
@@ -560,7 +560,7 @@ impl super::schema::RokoConfig {
 
     /// Why each model routing can put a task on cannot run a task of a chat
     /// host's run, as `<model> <why>`: the ladder's rungs first, in its
-    /// order and named with their rung, a rung no `[models.*]` entry names
+    /// order and named with their rung, a rung that names no model roko knows
     /// (which the ladder skips) included; then the other models
     /// [`Self::routing_candidate_models`] lists.
     fn tool_loop_misses_with_env(&self, env: &dyn Fn(&str) -> Option<String>) -> Vec<String> {
@@ -580,10 +580,13 @@ impl super::schema::RokoConfig {
             if model.is_empty() || !seen.insert(model_key_of(&models, model)) {
                 continue;
             }
-            let why = if has_model_entry(&models, model) {
+            let why = if rung_model_known(&models, model) {
                 miss(model)
             } else {
-                Some("has no [models.*] entry".to_string())
+                Some(
+                    "has no [models.*] entry, and roko has no built-in model of this name"
+                        .to_string(),
+                )
             };
             if let Some(why) = why {
                 misses.push(format!("rung `{}` ({model}) {why}", rung.name));
@@ -652,14 +655,17 @@ impl super::schema::RokoConfig {
     }
 }
 
-/// Whether a `[models.*]` entry has `model` as its key or slug, as a ladder
-/// rung's model must.
-fn has_model_entry(
+/// Whether a ladder rung's `model` names a model roko knows, as the ladder
+/// needs to run it: a `[models.*]` entry by key or slug, or a built-in model
+/// (bug-4e336b).
+fn rung_model_known(
     models: &indexmap::IndexMap<String, super::provider::ModelProfile>,
     model: &str,
 ) -> bool {
     let model = model.trim();
-    models.contains_key(model) || models.values().any(|profile| profile.slug.trim() == model)
+    models.contains_key(model)
+        || models.values().any(|profile| profile.slug.trim() == model)
+        || super::model_registry::builtin_model(model).is_some()
 }
 
 /// `model` as the key of the `[models.*]` entry that has it as key or slug,
@@ -1827,7 +1833,7 @@ mod chat_run_tests {
         assert_eq!(refusal.codes(), ["no_tool_loop_model"]);
         let message = &refusal.message;
         for cause in [
-            "rung `cheap` (gpt-oss-120b) has no [models.*] entry",
+            "rung `cheap` (gpt-oss-120b) has no [models.*] entry, and roko has no built-in model",
             "rung `mid` (glm-4.7) runs on zai, whose key ZAI_KEY_UNSET is not set",
             "rung `top` (claude-sonnet-4-6) runs on claude_cli, an agent that runs its own tools",
             "put ZAI_KEY_UNSET in ~/.roko/.env and restart roko serve",
@@ -1851,6 +1857,44 @@ mod chat_run_tests {
         config.routing.fallback_models = vec!["glm-4.7".into()];
         assert_eq!(config.chat_run_refusal_with_env(&env), None);
         assert_eq!(config.tool_loop_models_with_env(&env), ["glm"]);
+    }
+
+    /// A rung that names a built-in model counts once a provider of its kind
+    /// has the key, as the ladder runs such a rung (bug-4e336b).
+    #[test]
+    fn a_rung_naming_a_builtin_model_counts() {
+        let mut config = cli_only();
+        config.serve.mcp.allow_without_data_llm = true;
+        config.providers.insert(
+            "openai".into(),
+            provider(ProviderKind::OpenAiCompat, Some("KEY_UNSET")),
+        );
+        config.routing.ladder.enabled = true;
+        config.routing.ladder.roles.clear();
+        config.routing.ladder.rungs = [("strong", "gpt-5.4-mini"), ("top", "cli-sonnet")]
+            .into_iter()
+            .map(|(name, model)| crate::config::routing::LadderRung {
+                name: name.into(),
+                model: model.into(),
+            })
+            .collect();
+        let refusal = config
+            .chat_run_refusal_with_env(&env)
+            .expect("its key is missing");
+        assert!(
+            refusal
+                .message
+                .contains("rung `strong` (gpt-5.4-mini) runs on openai, whose key KEY_UNSET"),
+            "{refusal:?}"
+        );
+
+        config
+            .providers
+            .get_mut("openai")
+            .expect("openai")
+            .api_key_env = Some("KEY_SET".into());
+        assert_eq!(config.chat_run_refusal_with_env(&env), None);
+        assert_eq!(config.tool_loop_models_with_env(&env), ["gpt-5.4-mini"]);
     }
 
     /// `[agent.data_llm]` naming `model`, with the defaults otherwise.

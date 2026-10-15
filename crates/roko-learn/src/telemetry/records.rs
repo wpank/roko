@@ -1668,6 +1668,11 @@ pub struct RunProvenanceManifest {
     /// (`roko plan budget raise`, backlog 2118).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub budget_raises: Vec<BudgetRaise>,
+    /// Times the process running the run was found gone before the run ended
+    /// (a machine restart or a crash), oldest first; each closed the run
+    /// `interrupted` (bug-dceafd). A resume reopens the run but keeps them.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub interruptions: Vec<RunInterruption>,
     /// Where the run's request came from, when a server started it: `http`,
     /// or `mcp:<client>` for a chat host (backlog 9116).
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1693,6 +1698,7 @@ impl RunProvenanceManifest {
             experiment: ExperimentProvenance::default(),
             workspace: WorkspaceProvenance::default(),
             budget_raises: Vec::new(),
+            interruptions: Vec::new(),
             origin: None,
             closed: None,
         }
@@ -1808,6 +1814,23 @@ pub struct BudgetRaise {
     pub spent_usd: f64,
     /// Who raised it: the control surface the raise came through.
     pub by: String,
+}
+
+/// The process running a run found gone before the run ended (bug-dceafd).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct RunInterruption {
+    /// ISO-8601 UTC time of the run's last sign of life: the latest write to
+    /// its records before the process was found gone.
+    pub at: String,
+    /// ISO-8601 UTC time the process was found gone.
+    pub detected_at: String,
+    /// The invocation whose process was gone ([`RunInvocation::inv`]).
+    pub inv: u32,
+    /// That process's id.
+    pub pid: u32,
+    /// What happened, in words a host can show its person.
+    pub reason: String,
 }
 
 /// Terminal counts of a run.

@@ -688,6 +688,8 @@ Per-complexity overrides: `[routing.weights.mechanical]`, `[routing.weights.focu
 | `cargo_fix_enabled` | bool | `true` | Attempt `cargo fix --allow-dirty` before agent retry |
 | `impact_timeout_ms` | u64 | `5000` | Timeout for changed-target analysis |
 | `compile_concurrency` | usize | `1` | Per-repository Cargo command ownership limit |
+| `cargo_jobs` | usize | half the CPUs, at least 2 | Jobs a check's cargo builds run at once, and tests a test binary runs at once (`CARGO_BUILD_JOBS`, `RUST_TEST_THREADS`), for task verify steps and rungs, whole-plan checks and post-merge regression checks; `0`: no cap. A value in roko's own environment wins |
+| `nice` | i32 | `10` | Niceness those checks run at, so the person's own work keeps the machine; `0` leaves their priority alone |
 | `env_passthrough` | Vec\<String\> | `[]` | Extra variables gate commands inherit beyond the allowlist, secret-looking or not: exact names or `PREFIX*` patterns, e.g. `["DATABASE_URL", "AWS_*"]` (see *Child process environments* under `[agent]`) |
 | `rungs` | Vec\<GateRungConfig\> | `[]` | Custom gate rungs (alias: `custom_rungs`) |
 

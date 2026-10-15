@@ -82,12 +82,17 @@ struct EventQuery {
     source: Option<String>,
 }
 
-/// `GET /api/runs/{run_id}/diff`'s limits (gap-0d6d21).
+/// `GET /api/runs/{run_id}/diff`'s limits (gap-0d6d21), and which work it
+/// shows: the run's verified work (`work=verified`, the default), or the work
+/// a plan left that no check ran on (`work=unverified`, bug-db89d4), of plan
+/// `plan_id` when given.
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(default)]
 struct DiffQuery {
     max_files: Option<usize>,
     max_patch_bytes: Option<usize>,
+    work: Option<String>,
+    plan_id: Option<String>,
 }
 
 /// How many files a run's diff lists unless asked, and at most.
@@ -169,6 +174,9 @@ async fn get_run_detail(
     ensure_observability_allowed(&state)?;
     validate_id(&run_id, "run id")?;
     let active = state.active_runs.read().await.contains_key(&run_id);
+    if run_state_in_memory(&state, &run_id).await.is_none() {
+        settle_if_process_gone(&state, &run_id).await?;
+    }
     let io_state = Arc::clone(&state);
     let io_run_id = run_id.clone();
     let (page, bundle) = blocking_io(move || {
@@ -253,7 +261,9 @@ pub(super) async fn summarize_run(state: &Arc<AppState>, run_id: &str) -> Result
 /// makes from the base its batch started at (gap-0d6d21): each file's status,
 /// line counts, whether it is binary and its unified patch, within
 /// `max_files` and `max_patch_bytes` per file, and totals over every file.
-/// 409 while the run is active; 404 when it has no result to diff.
+/// With `work=unverified`, the same for the work a plan of the run left that
+/// no check ran on, which was never delivered (bug-db89d4). 409 while the run
+/// is active; 404 when it has no such work to diff.
 async fn get_run_diff(
     State(state): State<Arc<AppState>>,
     Path(run_id): Path<String>,
@@ -275,6 +285,16 @@ async fn get_run_diff(
             MAX_DIFF_PATCH_BYTES,
         )?,
     };
+    let unverified = match query.work.as_deref() {
+        None | Some("verified") => false,
+        Some("unverified") => true,
+        Some(_) => {
+            return Err(ApiError::bad_request("work must be verified or unverified"));
+        }
+    };
+    if let Some(plan_id) = &query.plan_id {
+        validate_id(plan_id, "plan id")?;
+    }
     let (summary, plan_ids) = summary_and_plans(&state, &run_id).await?;
     if summary["active"] != Value::Bool(false) {
         return Err(ApiError::conflict(format!(
@@ -284,13 +304,26 @@ async fn get_run_diff(
     let workdir = state.workdir.clone();
     let io_run_id = run_id.clone();
     let diff = blocking_io(move || {
-        Ok(super::run_result::run_diff(
-            &workdir, &io_run_id, &plan_ids, limits,
-        ))
+        Ok(if unverified {
+            super::run_result::unverified_diff(
+                &workdir,
+                &io_run_id,
+                &plan_ids,
+                query.plan_id.as_deref(),
+                limits,
+            )
+        } else {
+            super::run_result::run_diff(&workdir, &io_run_id, &plan_ids, limits)
+        })
     })
     .await?;
-    diff.map(Json)
-        .ok_or_else(|| ApiError::not_found(format!("run '{run_id}' has no result to diff")))
+    diff.map(Json).ok_or_else(|| {
+        ApiError::not_found(if unverified {
+            format!("run '{run_id}' left no unverified work to diff")
+        } else {
+            format!("run '{run_id}' has no result to diff")
+        })
+    })
 }
 
 /// `value`, or `default` when it is not given, refused when it falls outside
@@ -320,6 +353,9 @@ async fn summary_and_plans(
     ensure_observability_allowed(state)?;
     validate_id(run_id, "run id")?;
     let in_memory = run_state_in_memory(state, run_id).await;
+    if in_memory.is_none() {
+        settle_if_process_gone(state, run_id).await?;
+    }
     let io_state = Arc::clone(state);
     let io_run_id = run_id.to_string();
     let page = blocking_io(move || {
@@ -367,6 +403,16 @@ async fn run_state_in_memory(state: &AppState, run_id: &str) -> Option<(RunState
     state
         .queue_position(run_id)
         .map(|position| (RunState::Queued, Some(position)))
+}
+
+/// End run `run_id` as `interrupted` when the roko process its manifest names
+/// is gone (bug-dceafd), so that its index records the end before it is read.
+/// For a run this server holds no handle of: a handle is the run's own word.
+async fn settle_if_process_gone(state: &AppState, run_id: &str) -> Result<(), ApiError> {
+    let workdir = state.workdir.clone();
+    let run_id = run_id.to_string();
+    blocking_io(move || Ok(crate::interrupted_runs::settle(&workdir, &run_id))).await?;
+    Ok(())
 }
 
 /// `GET /api/runs/{run_id}/events` — cursor-paginated JSON, or SSE when the
@@ -1169,7 +1215,19 @@ fn discover_indexed_runs(state: &AppState) -> (Vec<Value>, bool, u64) {
                 .then(|| event_data(&item.value).get("prompt").cloned())
                 .flatten()
             });
-            let status = aggregate["status"].clone();
+            let mut status = aggregate["status"].clone();
+            let complete = |status: &Value| {
+                matches!(
+                    status.as_str(),
+                    Some("completed" | "failed" | "cancelled" | "interrupted")
+                )
+            };
+            // A run whose roko process is gone ends interrupted (bug-dceafd).
+            if !complete(&status)
+                && crate::interrupted_runs::settle(&state.workdir, &run_id).is_some()
+            {
+                status = json!(crate::interrupted_runs::INTERRUPTED);
+            }
             summaries.insert(
                 run_id.clone(),
                 json!({
@@ -1181,7 +1239,7 @@ fn discover_indexed_runs(state: &AppState) -> (Vec<Value>, bool, u64) {
                     "gates_passed": aggregate["metrics"]["gates_passed"],
                     "gates_failed": aggregate["metrics"]["gates_failed"],
                     "agents_spawned": count_event_types(&page.events, &["agent.dispatch.started", "agent_spawned"]),
-                    "is_complete": matches!(status.as_str(), Some("completed" | "failed" | "cancelled")),
+                    "is_complete": complete(&status),
                     "outcome": status,
                     "source": source.label(),
                     "truncated": page.has_more,
@@ -1923,6 +1981,10 @@ fn completion_status(value: &Value) -> &'static str {
     if bool_field(value, "success") == Some(true) {
         return "completed";
     }
+    // The end serve records for a run whose roko process was gone (bug-dceafd).
+    if string_field(value, "outcome") == Some(crate::interrupted_runs::INTERRUPTED) {
+        return crate::interrupted_runs::INTERRUPTED;
+    }
     let serialized = serde_json::to_string(event_data(value))
         .unwrap_or_default()
         .to_ascii_lowercase();
@@ -1942,7 +2004,10 @@ fn completion_status(value: &Value) -> &'static str {
 /// records the run's end, its state is [`RunState::of_ended_run`] over the
 /// end and the last outcome of each task, the words `GET
 /// /api/plans/{id}/status` uses too. A run with neither is still running, as
-/// a run another process writes the index of is.
+/// a run another process writes the index of is, until serve finds that
+/// process gone and records the run's end as `interrupted`
+/// ([`crate::interrupted_runs`]); the summary then says why under
+/// `interrupted`.
 ///
 /// Each task the run dispatched an agent for also gets its untrusted-input
 /// boundary under `config` ([`untrusted_input_boundary`]).
@@ -2026,13 +2091,13 @@ fn run_summary(
         }
     }
 
-    let ended = completion.map(|(_, value)| {
-        let end = completion_status(value);
-        RunState::of_ended_run(
+    let ended = completion.map(|(_, value)| match completion_status(value) {
+        crate::interrupted_runs::INTERRUPTED => RunState::Interrupted,
+        end => RunState::of_ended_run(
             end == "cancelled",
             end == "completed",
             tasks.values().copied(),
-        )
+        ),
     });
     let (state, position) = match in_memory {
         Some((live, position)) if !live.is_terminal() => (live, position),
@@ -2047,6 +2112,17 @@ fn run_summary(
         let text = format!("run {}", state.as_str());
         milestones.insert("completed", (place, milestone("completed", text, value)));
     }
+    // Why a run whose roko process stopped ended, and its last sign of life
+    // (bug-dceafd).
+    let interrupted = completion
+        .filter(|_| state == RunState::Interrupted)
+        .map(|(_, value)| {
+            json!({
+                "reason": string_field(value, "reason")
+                    .unwrap_or(crate::interrupted_runs::INTERRUPTED_REASON),
+                "at": event_time_text(value),
+            })
+        });
     let mut milestones = milestones.into_values().collect::<Vec<_>>();
     milestones.sort_by_key(|(place, _)| *place);
     let milestones = milestones
@@ -2078,6 +2154,7 @@ fn run_summary(
         "verdict": state.is_terminal().then_some(state),
         "position": position,
         "active": !state.is_terminal(),
+        "interrupted": interrupted,
         "cost_usd": summary["metrics"]["cost_usd"],
         "tasks": {
             "total": tasks.len(),
@@ -2798,6 +2875,136 @@ mod tests {
         std::fs::write(path, body).unwrap();
     }
 
+    /// bug-dceafd: a run whose roko process died (a machine restart, a crash,
+    /// `kill -9`) left an open manifest and an index with no end. Its summary
+    /// reads `interrupted`, not active, with why and its last sign of life,
+    /// and its detail and the dashboard's run list agree, the list even for a
+    /// run nobody asked about; its cancel answers 200, every time, and leaves
+    /// it interrupted. A run whose process still runs keeps reading
+    /// `running`, and an id no run has is still 404.
+    #[tokio::test]
+    async fn a_run_whose_process_died_reads_interrupted() {
+        use roko_learn::telemetry::RunProvenanceManifest;
+        use roko_learn::telemetry::records::RunInvocation;
+
+        let dir = tempfile::tempdir().unwrap();
+        let deploy_backend = Arc::from(
+            crate::deploy::create_backend("manual", None, None, None).expect("manual backend"),
+        );
+        let state = Arc::new(
+            AppState::new(
+                dir.path().to_path_buf(),
+                Arc::new(crate::runtime::NoOpRuntime),
+                roko_core::config::schema::RokoConfig::default(),
+                deploy_backend,
+            )
+            .expect("AppState::new"),
+        );
+        let open_run = |run_id: &str, pid: u32, started_at: &str| {
+            write_rows(
+                &roko_fs::run_index::run_index_path(&state.layout.events_jsonl_path(), run_id)
+                    .unwrap(),
+                &[
+                    json!({"type":"plan_started","run_id":run_id,"ts_millis":1_792_076_316_479_u64,"plan_id":"p1","tasks_total":2}),
+                    json!({"type":"task_completed","run_id":run_id,"ts_millis":1_792_076_328_281_u64,"plan_id":"p1","task_id":"t1","outcome":"passed"}),
+                    json!({"type":"task_started","run_id":run_id,"ts_millis":1_792_076_329_000_u64,"plan_id":"p1","task_id":"t2","phase":"graph-executing"}),
+                ],
+            );
+            let mut manifest = RunProvenanceManifest::new(run_id, "plan_run");
+            manifest.begin_invocation(RunInvocation {
+                started_at: started_at.to_string(),
+                pid,
+                host: "local".to_string(),
+                ..RunInvocation::default()
+            });
+            manifest.store(&state.layout.run_dir(run_id)).unwrap();
+        };
+        // A pid no process has any more.
+        let mut child = std::process::Command::new("true").spawn().unwrap();
+        let gone = child.id();
+        child.wait().unwrap();
+        open_run("r-crashed", gone, "2026-10-15T14:58:36.254Z");
+        // Only ever listed, never asked for by id.
+        open_run("r-listed", gone, "2026-10-15T14:58:36.254Z");
+        let now = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
+        open_run("r-going", std::process::id(), &now);
+
+        let Json(summary) = get_run_summary(State(Arc::clone(&state)), Path("r-crashed".into()))
+            .await
+            .unwrap();
+        assert_eq!(summary["state"], "interrupted", "{summary}");
+        assert_eq!(summary["verdict"], "interrupted", "{summary}");
+        assert_eq!(summary["active"], false, "{summary}");
+        assert_eq!(
+            summary["interrupted"]["reason"],
+            crate::interrupted_runs::INTERRUPTED_REASON,
+            "{summary}"
+        );
+        assert!(summary["interrupted"]["at"].is_string(), "{summary}");
+        assert_eq!(
+            summary["finished_at"], summary["interrupted"]["at"],
+            "{summary}"
+        );
+        assert_eq!(summary["tasks"]["passed"], 1, "{summary}");
+        let Json(detail) = get_run_detail(State(Arc::clone(&state)), Path("r-crashed".into()))
+            .await
+            .unwrap();
+        assert_eq!(detail["status"], "interrupted", "{detail}");
+        let Json(listed) = get_dashboard_runs(State(Arc::clone(&state))).await.unwrap();
+        let row = |run_id: &str| {
+            listed["runs"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|row| row["run_id"] == run_id)
+                .cloned()
+                .unwrap_or_else(|| panic!("{run_id} is listed: {listed}"))
+        };
+        assert_eq!(row("r-crashed")["outcome"], "interrupted", "{listed}");
+        assert_eq!(row("r-crashed")["is_complete"], true, "{listed}");
+        assert_eq!(row("r-going")["is_complete"], false, "{listed}");
+        assert_eq!(row("r-listed")["outcome"], "interrupted", "{listed}");
+        assert_eq!(row("r-listed")["is_complete"], true, "{listed}");
+
+        for _ in 0..2 {
+            let answer = crate::routes::plans::cancel_plan_run(&state, "r-crashed")
+                .await
+                .unwrap();
+            assert_eq!(answer["cancelled"], true, "{answer}");
+            assert_eq!(answer["state"], "interrupted", "{answer}");
+            assert_eq!(answer["already_ended"], true, "{answer}");
+            assert_eq!(
+                answer["reason"],
+                crate::interrupted_runs::INTERRUPTED_REASON,
+                "{answer}"
+            );
+        }
+        let Json(summary) = get_run_summary(State(Arc::clone(&state)), Path("r-crashed".into()))
+            .await
+            .unwrap();
+        assert_eq!(summary["state"], "interrupted", "{summary}");
+        let index = std::fs::read_to_string(
+            roko_fs::run_index::run_index_path(&state.layout.events_jsonl_path(), "r-crashed")
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(index.matches("run_completed").count(), 1, "{index}");
+
+        let Json(going) = get_run_summary(State(Arc::clone(&state)), Path("r-going".into()))
+            .await
+            .unwrap();
+        assert_eq!(going["state"], "running", "{going}");
+        assert_eq!(going["active"], true, "{going}");
+        assert_eq!(going["interrupted"], Value::Null, "{going}");
+        let refused = crate::routes::plans::cancel_plan_run(&state, "r-going").await;
+        assert!(
+            refused.is_err(),
+            "its process runs, and serve has no handle"
+        );
+        let unknown = crate::routes::plans::cancel_plan_run(&state, "r-unknown").await;
+        assert!(unknown.is_err());
+    }
+
     /// B9 B4: a run's summary gives one state with its verdict and cost, how
     /// its tasks ended and at most five milestones, in the order they
     /// happened. A completed run whose tasks passed is `succeeded`; one with
@@ -2874,6 +3081,315 @@ mod tests {
         assert_eq!(summary["verdict"], "unverified", "{summary}");
         assert_eq!(summary["tasks"]["unverified"], 1, "{summary}");
         assert_eq!(summary["tasks"]["failed"], 0, "{summary}");
+    }
+
+    /// bug-74164c: a plan that did not finish delivered only its verified tasks, so
+    /// its run's summary says the batch is partial and, per plan, which
+    /// tasks' work it holds and why the others' is missing. A run whose
+    /// plans all delivered whole is not partial.
+    #[tokio::test]
+    async fn run_summary_says_which_work_is_partial() {
+        let dir = tempfile::tempdir().unwrap();
+        let repo = dir.path().to_path_buf();
+        let git = |args: &[&str]| -> String {
+            let output = std::process::Command::new("git")
+                .current_dir(&repo)
+                .args([
+                    "-c",
+                    "user.name=roko-test",
+                    "-c",
+                    "user.email=roko@test.invalid",
+                    "-c",
+                    "commit.gpgsign=false",
+                ])
+                .args(args)
+                .env_remove("GIT_DIR")
+                .env_remove("GIT_WORK_TREE")
+                .env_remove("GIT_INDEX_FILE")
+                .output()
+                .expect("run git");
+            assert!(
+                output.status.success(),
+                "git {args:?}: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            String::from_utf8_lossy(&output.stdout).trim().to_string()
+        };
+        git(&["init", "--quiet", "-b", "main"]);
+        std::fs::write(repo.join("lib.py"), "def one():\n    return 1\n").unwrap();
+        git(&["add", "lib.py"]);
+        git(&["commit", "--quiet", "-m", "base"]);
+        let base = git(&["rev-parse", "HEAD"]);
+        git(&["switch", "--quiet", "-c", "roko/batch/p1"]);
+        std::fs::write(repo.join("one.py"), "ONE = 1\n").unwrap();
+        git(&["add", "one.py"]);
+        git(&["commit", "--quiet", "-m", "roko: pp/T1: one"]);
+        git(&["switch", "--quiet", "main"]);
+        git(&["branch", "roko/batch/w1", "roko/batch/p1"]);
+
+        let deploy_backend = Arc::from(
+            crate::deploy::create_backend("manual", None, None, None).expect("manual backend"),
+        );
+        let state = Arc::new(
+            AppState::new(
+                repo.clone(),
+                Arc::new(crate::runtime::NoOpRuntime),
+                roko_core::config::schema::RokoConfig::default(),
+                deploy_backend,
+            )
+            .expect("AppState::new"),
+        );
+        let ended = |run_id: &str, plan_id: &str, outcome: &str| {
+            let index =
+                roko_fs::run_index::run_index_path(&state.layout.events_jsonl_path(), run_id)
+                    .unwrap();
+            write_rows(
+                &index,
+                &[
+                    json!({"type":"run.started","run_id":run_id,"timestamp_ms":1,"plan_id":plan_id}),
+                    json!({"type":"task_completed","run_id":run_id,"timestamp_ms":2,"plan_id":plan_id,"task_id":"T1","outcome":"passed"}),
+                    json!({"type":"task_completed","run_id":run_id,"timestamp_ms":3,"plan_id":plan_id,"task_id":"T2","outcome":outcome}),
+                    json!({"type":"run.completed","run_id":run_id,"timestamp_ms":4,"outcome":"failed","duration_ms":10}),
+                ],
+            );
+        };
+        ended("p1", "pp", "failed");
+        ended("w1", "pw", "passed");
+        let record = |plan_id: &str, value: Value| {
+            let checkpoint = super::super::run_result::graph_plan_state_dir(&repo, plan_id)
+                .join("checkpoint.json");
+            std::fs::create_dir_all(checkpoint.parent().unwrap()).unwrap();
+            std::fs::write(
+                &checkpoint,
+                json!({"extensions":{"roko.batch@1":{"value": value}}}).to_string(),
+            )
+            .unwrap();
+        };
+        record(
+            "pp",
+            json!({
+                "run_id":"p1","branch":"roko/batch/p1","base_oid":base,"plan_id":"pp",
+                "plan_branch":"roko/plan/pp","state":"delivered","partial":true,
+                "work":{"partial":true,"delivered_tasks":["T1"],
+                    "missing_tasks":[{"task_id":"T2","why":"failed"}]}
+            }),
+        );
+        record(
+            "pw",
+            json!({"run_id":"w1","branch":"roko/batch/w1","base_oid":base,"state":"delivered"}),
+        );
+        let summary = |run_id: &'static str| {
+            let state = Arc::clone(&state);
+            async move {
+                let Json(summary) = get_run_summary(State(state), Path(run_id.into()))
+                    .await
+                    .unwrap();
+                summary
+            }
+        };
+
+        let partial = summary("p1").await["result"].clone();
+        assert_eq!(partial["partial"], true, "{partial}");
+        assert_eq!(partial["files_changed"], json!(["one.py"]), "{partial}");
+        assert_eq!(
+            partial["merge_command"], "git merge --ff-only roko/batch/p1",
+            "the verified part can be taken: {partial}"
+        );
+        assert_eq!(
+            partial["plans"],
+            json!([{
+                "plan_id": "pp",
+                "partial": true,
+                "delivered_tasks": ["T1"],
+                "missing_tasks": [{"task_id": "T2", "why": "failed"}],
+            }]),
+            "{partial}"
+        );
+        let whole = summary("w1").await["result"].clone();
+        assert_eq!(whole["partial"], false, "{whole}");
+        assert!(whole.get("plans").is_none(), "{whole}");
+    }
+
+    /// bug-db89d4: a plan that ended unverified was not delivered, so its
+    /// run's batch is still at its base and has nothing to merge. Its batch
+    /// record names the work no check ran on, which the summary's
+    /// `result.unverified` reports with its plan branch, files and the command
+    /// that shows it, and which `diff?work=unverified` returns. Once the plan
+    /// branch moves on, the work is still named by its commit.
+    #[tokio::test]
+    async fn run_summary_names_unverified_work() {
+        use axum::http::StatusCode;
+
+        let dir = tempfile::tempdir().unwrap();
+        let repo = dir.path().to_path_buf();
+        let git = |args: &[&str]| -> String {
+            let output = std::process::Command::new("git")
+                .current_dir(&repo)
+                .args([
+                    "-c",
+                    "user.name=roko-test",
+                    "-c",
+                    "user.email=roko@test.invalid",
+                    "-c",
+                    "commit.gpgsign=false",
+                ])
+                .args(args)
+                .env_remove("GIT_DIR")
+                .env_remove("GIT_WORK_TREE")
+                .env_remove("GIT_INDEX_FILE")
+                .output()
+                .expect("run git");
+            assert!(
+                output.status.success(),
+                "git {args:?}: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            String::from_utf8_lossy(&output.stdout).trim().to_string()
+        };
+        git(&["init", "--quiet", "-b", "main"]);
+        std::fs::write(repo.join("lib.py"), "def one():\n    return 1\n").unwrap();
+        git(&["add", "lib.py"]);
+        git(&["commit", "--quiet", "-m", "base"]);
+        let base = git(&["rev-parse", "HEAD"]);
+        git(&["branch", "roko/batch/u1"]);
+        git(&["switch", "--quiet", "-c", "roko/plan/pu"]);
+        std::fs::write(repo.join("new.py"), "def two():\n    return 2\n").unwrap();
+        git(&["add", "new.py"]);
+        git(&["commit", "--quiet", "-m", "roko: pu/T1: add two"]);
+        let tip = git(&["rev-parse", "HEAD"]);
+        git(&["switch", "--quiet", "main"]);
+
+        let deploy_backend = Arc::from(
+            crate::deploy::create_backend("manual", None, None, None).expect("manual backend"),
+        );
+        let state = Arc::new(
+            AppState::new(
+                repo.clone(),
+                Arc::new(crate::runtime::NoOpRuntime),
+                roko_core::config::schema::RokoConfig::default(),
+                deploy_backend,
+            )
+            .expect("AppState::new"),
+        );
+        let index =
+            roko_fs::run_index::run_index_path(&state.layout.events_jsonl_path(), "u1").unwrap();
+        write_rows(
+            &index,
+            &[
+                json!({"type":"run.started","run_id":"u1","timestamp_ms":1,"plan_id":"pu"}),
+                json!({"type":"task_completed","run_id":"u1","timestamp_ms":2,"plan_id":"pu","task_id":"T1","outcome":"unverified"}),
+                json!({"type":"run.completed","run_id":"u1","timestamp_ms":3,"outcome":"failed","duration_ms":10}),
+            ],
+        );
+        let checkpoint =
+            super::super::run_result::graph_plan_state_dir(&repo, "pu").join("checkpoint.json");
+        std::fs::create_dir_all(checkpoint.parent().unwrap()).unwrap();
+        std::fs::write(
+            &checkpoint,
+            json!({"extensions":{"roko.batch@1":{"value":{
+                "run_id":"u1","branch":"roko/batch/u1","base_oid":base,"plan_id":"pu",
+                "plan_branch":"roko/plan/pu",
+                "work":{"unverified":{"commit":tip,"base":base,
+                    "tasks":[{"task_id":"T1","verdict":"unverified"}]}}
+            }}}})
+            .to_string(),
+        )
+        .unwrap();
+        let summary = || {
+            let state = Arc::clone(&state);
+            async move {
+                let Json(summary) = get_run_summary(State(state), Path("u1".into()))
+                    .await
+                    .unwrap();
+                summary
+            }
+        };
+        let diff = |query: DiffQuery| {
+            let state = Arc::clone(&state);
+            async move { get_run_diff(State(state), Path("u1".into()), Query(query)).await }
+        };
+
+        let ended = summary().await;
+        assert_eq!(ended["verdict"], "unverified", "{ended}");
+        let result = &ended["result"];
+        assert_eq!(result["branch"], "roko/batch/u1", "{result}");
+        assert_eq!(
+            result["commit"],
+            base.as_str(),
+            "nothing was delivered: {result}"
+        );
+        assert_eq!(result["merged"], false, "{result}");
+        assert!(result.get("merge_command").is_none(), "{result}");
+        assert_eq!(
+            result["unverified"],
+            json!([{
+                "plan_id": "pu",
+                "branch": "roko/plan/pu",
+                "commit": tip,
+                "base": base,
+                "tasks": [{"task_id": "T1", "verdict": "unverified"}],
+                "files_changed": ["new.py"],
+                "diffstat": {"files": 1, "insertions": 2, "deletions": 0},
+                "review_command": format!("git diff {}..roko/plan/pu", &base[..12]),
+            }]),
+            "{result}"
+        );
+
+        let Json(unverified) = diff(DiffQuery {
+            work: Some("unverified".into()),
+            ..DiffQuery::default()
+        })
+        .await
+        .unwrap();
+        assert_eq!(unverified["work"], "unverified", "{unverified}");
+        assert_eq!(unverified["plan_id"], "pu", "{unverified}");
+        assert_eq!(unverified["branch"], "roko/plan/pu", "{unverified}");
+        assert_eq!(unverified["commit"], tip.as_str(), "{unverified}");
+        assert_eq!(unverified["files"][0]["path"], "new.py", "{unverified}");
+        assert!(
+            unverified["files"][0]["patch"]
+                .as_str()
+                .unwrap()
+                .contains("+def two():"),
+            "{unverified}"
+        );
+        let Json(verified) = diff(DiffQuery::default()).await.unwrap();
+        assert_eq!(verified["totals"]["files"], 0, "{verified}");
+        let other_plan = diff(DiffQuery {
+            work: Some("unverified".into()),
+            plan_id: Some("other".into()),
+            ..DiffQuery::default()
+        })
+        .await
+        .unwrap_err();
+        assert_eq!(
+            other_plan.status,
+            StatusCode::NOT_FOUND,
+            "{}",
+            other_plan.message
+        );
+        let refused = diff(DiffQuery {
+            work: Some("everything".into()),
+            ..DiffQuery::default()
+        })
+        .await
+        .unwrap_err();
+        assert_eq!(
+            refused.status,
+            StatusCode::BAD_REQUEST,
+            "{}",
+            refused.message
+        );
+
+        // Another run moved the plan branch on: the work is named by its commit.
+        git(&["branch", "--force", "roko/plan/pu", "main"]);
+        let moved = summary().await["result"]["unverified"][0].clone();
+        assert!(moved.get("branch").is_none(), "{moved}");
+        assert_eq!(
+            moved["review_command"],
+            format!("git diff {}..{tip}", &base[..12]),
+            "{moved}"
+        );
     }
 
     /// gap-8409d0: an ended run's summary names its batch branch, the branch's

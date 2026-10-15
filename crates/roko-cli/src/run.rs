@@ -992,9 +992,27 @@ async fn record_workflow_feedback(
     }
 }
 
-/// Print a [`run_prompt`] result: what ran, the outcome, cost, gate
-/// verdicts, and where the run's plan and records are.
-pub fn print_workflow_run_report(prompt: &str, tier: &str, report: &WorkflowRunReport) {
+/// The status run `run_id`'s manifest in `workdir` closed with, such as
+/// `succeeded`, `unverified` or `failed`, once the run has closed it.
+#[must_use]
+pub fn closed_run_status(workdir: &Path, run_id: &str) -> Option<String> {
+    let manifest = roko_fs::RokoLayout::for_project(workdir)
+        .run_dir(run_id)
+        .join("manifest.json");
+    let manifest: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(manifest).ok()?).ok()?;
+    manifest["closed"]["status"].as_str().map(str::to_owned)
+}
+
+/// Print a [`run_prompt`] result in `workdir`: what ran, the outcome, cost,
+/// gate verdicts, and where the run's plan and records are. A run whose task
+/// ran no check is unverified, not failed (bug-db89d4).
+pub fn print_workflow_run_report(
+    workdir: &Path,
+    prompt: &str,
+    tier: &str,
+    report: &WorkflowRunReport,
+) {
     output_format::intro("roko run");
     output_format::step("prompt", &output_format::dim(&truncate(prompt, 60)));
     output_format::step("engine", &format!("graph, one {tier} task"));
@@ -1007,6 +1025,10 @@ pub fn print_workflow_run_report(prompt: &str, tier: &str, report: &WorkflowRunR
             report.agent_turns,
             if report.agent_turns == 1 { "" } else { "s" },
         ));
+    } else if closed_run_status(workdir, &report.run_id).as_deref() == Some("unverified") {
+        output_format::warning(
+            "workflow unverified: no check ran on its work, so it was not delivered",
+        );
     } else {
         output_format::error("workflow failed");
     }

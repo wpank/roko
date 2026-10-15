@@ -503,12 +503,17 @@ fn is_subcommand(cmd: &clap::Command, word: &str) -> bool {
 enum Command {
     // ── Core workflow ────────────────────────────────────────────────
     /// Create `.roko/` and a default `roko.toml` in `path` (default: cwd).
+    ///
+    /// The model ladder climbs only models this machine runs: the providers
+    /// whose API key is set (in the shell or `~/.roko/.env`) or whose agent
+    /// CLI is on PATH. The gate rungs check the project found in `path`.
     #[command(after_help = "\
 Examples:
   roko init                         Initialize in the current directory
   roko init /path/to/project        Initialize in a specific directory
   roko init --cloud                 Initialize with cloud-ready defaults
-  roko init --profile rust          Initialize with Rust project profile
+  roko init --profile rust          Write the Rust profile's gate rungs
+  roko init --model glm-4-7         Run every task on one model
   roko init --demo                  Initialize and seed demo data")]
     Init {
         /// Directory to initialize (default: current dir).
@@ -516,7 +521,9 @@ Examples:
         /// Generate cloud-ready defaults for deployment.
         #[arg(long)]
         cloud: bool,
-        /// Project profile to use (e.g. rust, typescript, go, python, general).
+        /// Project profile whose gate rungs to write (rust, typescript, go,
+        /// python, solidity, general); detected from the project's files when
+        /// not given.
         #[arg(long)]
         profile: Option<String>,
         /// Seed realistic demo data after initialization.
@@ -1873,7 +1880,7 @@ async fn dispatch_subcommand(command: Command, cli: &Cli) -> Result<i32> {
             profile,
             demo,
         } => {
-            commands::util::cmd_init(path, cloud, profile, demo).await?;
+            commands::util::cmd_init(path, cloud, profile, cli.model.clone(), demo).await?;
             Ok(EXIT_SUCCESS)
         }
         Command::Run {

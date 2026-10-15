@@ -184,7 +184,8 @@ without it, force one rebuild with `touch crates/roko-serve/build.rs`.
 
 ### 2. Set up a workspace
 
-Run `roko init` at the root of an existing Rust or Go project:
+Put your API keys in `~/.roko/.env` first (`roko setup` creates the file), then run `roko init`
+at the root of your project:
 
 ```bash
 cd path/to/your-project
@@ -192,11 +193,22 @@ roko init
 roko config providers list
 ```
 
-`roko init` writes `roko.toml` and a `.roko/` state directory. If the `claude` CLI is on your
-`PATH`, it becomes the provider, and `roko config providers list` shows it. For any other provider,
-`roko config providers available` lists each kind and the credentials it needs. Add the provider
-under `[providers.<name>]` in `roko.toml` and point the `[models.*]` entries at it (see
-[Configuration](#configuration)).
+`roko init` writes `roko.toml` and a `.roko/` state directory. Its model ladder climbs only the
+models this machine runs, cheapest first: Cerebras gpt-oss-120b (`CEREBRAS_API_KEY`), Z.ai GLM-4.7
+(`ZAI_API_KEY`) or Moonshot Kimi K2.6 (`MOONSHOT_API_KEY`), OpenAI gpt-5.4-mini (`OPENAI_API_KEY`) or
+Claude Haiku 4.5 (`ANTHROPIC_API_KEY`), then Claude Sonnet through the `claude` CLI or the Anthropic
+API. `OPENROUTER_API_KEY` fills every rung. A run a chat host such as Hermes starts needs an API
+model, so a key gets one on the ladder even next to the `claude` CLI. `roko init --model <model>`
+runs every task on one model instead. For any other provider, `roko config providers available`
+lists each kind and the credentials it needs; add it under `[providers.<name>]` in `roko.toml` and
+point the `[models.*]` entries and ladder rungs at it (see [Configuration](#configuration)).
+`roko doctor` names any ladder rung that cannot run on this machine, and why.
+
+`roko init` also writes gate rungs for the project it finds: `cargo check`, `cargo test` and an
+optional clippy rung for a Cargo project; `go build`, `go test` and `go vet` for Go; the package's
+`typecheck`, `test` and `lint` scripts for a Node project; pytest, or unittest when pytest is not
+installed and the tests use only unittest, for Python; `forge build` and `forge test` for Foundry.
+`--profile <name>` picks another profile's rungs.
 
 ### 3. Run a prompt
 
@@ -212,19 +224,16 @@ roko run "add a unit test for the config parser"
 - A larger prompt first has the agent write a plan, then runs that plan the way `roko plan run`
   does.
 
-In a directory with neither build file, add a rung to `roko.toml` before running a prompt, or the
-run stops with `no gate can verify this change`:
+In a project `roko init` wrote no rung for, add one to `roko.toml` before running a prompt, or
+the run ends `unverified`:
 
 ```toml
 [[gates.rungs]]
 name = "test"
-command = "npm test"
+command = "make test"
 timeout_secs = 300
 required = true
 ```
-
-`roko init --profile rust` writes compile, test and lint rungs for a Cargo workspace.
-`roko init --profile typescript` writes `tsc` and `npm test` rungs.
 
 ### 4. Run a plan
 

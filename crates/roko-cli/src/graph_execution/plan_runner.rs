@@ -2139,6 +2139,27 @@ async fn run_graph_plan_body(
         );
     }
 
+    // A run that delivered nothing and accepted nothing leaves no batch
+    // branch behind (bug-58329f).
+    let mut batch_discarded = false;
+    if let Some(batch) = batch.as_ref()
+        && run_accepted_nothing(batch, &plans, &graph_task_dispatcher).await
+        && batch.discard_if_unused().await
+    {
+        tracing::info!(
+            batch = batch.branch(),
+            "the run left no work; removed its batch branch"
+        );
+        graph_tui_bridge.log_event(
+            "graph.batch_discarded",
+            &format!(
+                "the run left no work, so its batch branch {} was removed",
+                batch.branch()
+            ),
+        );
+        batch_discarded = true;
+    }
+
     // spec-f830c4: with --promote, a run whose plans were all delivered
     // promotes its batch into the target branch and tags it. The run summary
     // reports it (gap-415c54).
@@ -2411,6 +2432,7 @@ async fn run_graph_plan_body(
                 "interrupted_by": stopped_by.map(PlanRunInterrupt::label),
                 "batch": batch.as_ref().map(|batch| serde_json::json!({
                     "branch": batch.branch(),
+                    "discarded": batch_discarded,
                     // Work no check ran on, which was not delivered
                     // (bug-db89d4).
                     "unverified": plan_unverified_work
@@ -3150,6 +3172,27 @@ const fn plan_outcome(
     } else {
         PlanOutcome::Failed
     }
+}
+
+/// Whether no plan of the run accepted anything onto its plan branch in its
+/// run (bug-58329f), so that the run left no work for `batch` to hold.
+async fn run_accepted_nothing(
+    batch: &super::batch::BatchIntegration,
+    plans: &[crate::runner::plan_loader::Plan],
+    dispatcher: &crate::graph_task_dispatch::GraphTaskDispatcher,
+) -> bool {
+    for plan in plans {
+        let Some(run_id) = dispatcher.plan_run_id(&plan.id) else {
+            continue;
+        };
+        if super::batch::PlanWork::read(batch.repo(), &plan.id, &run_id)
+            .await
+            .is_some()
+        {
+            return false;
+        }
+    }
+    true
 }
 
 /// How many plans ended each way, in a fixed order and leaving out the ways
@@ -4270,6 +4313,19 @@ async fn run_one_plan(
             }
         }
     }
+    // The plan's checkouts that hold nothing to inspect or resume go now
+    // (bug-58329f): those of its accepted attempts, whose work is on its plan
+    // branch, and those of attempts that changed nothing. A failed attempt's
+    // checkout with work stays.
+    if let Some(worktrees) = ctx.worktrees {
+        release_plan_checkouts(
+            worktrees,
+            &plan.id,
+            ctx.delete_attempt_branches,
+            graph_tui_bridge,
+        )
+        .await;
+    }
     close_run_manifest(ctx, &run_id, plan_checkpoint_status(outcome));
     checkpoint.finish_with_status(plan_checkpoint_status(outcome))?;
     Ok(PlanRunResult {
@@ -4559,6 +4615,47 @@ async fn deliver_partial_to_batch(
     )
     .await;
     Ok(true)
+}
+
+/// Remove plan `plan_id`'s attempt checkouts that hold nothing to inspect or
+/// resume once the plan ended (bug-58329f): the accepted attempts' that a delivery
+/// did not already remove, whose work is on the plan branch, and the ones
+/// whose attempts changed nothing, with their branches. Says what went in the
+/// run's events.
+async fn release_plan_checkouts(
+    worktrees: &crate::orchestrator::worktree::WorktreeManager,
+    plan_id: &str,
+    delete_attempt_branches: bool,
+    graph_tui_bridge: &crate::runner::graph_tui_bridge::GraphTuiBridge,
+) {
+    let mut removed = match worktrees
+        .release_accepted(plan_id, delete_attempt_branches)
+        .await
+    {
+        Ok(released) => released.removed_checkouts,
+        Err(error) => {
+            tracing::warn!(plan_id, %error, "kept the plan's accepted attempt checkouts");
+            Vec::new()
+        }
+    };
+    match worktrees.remove_idle_attempts(plan_id).await {
+        Ok(idle) => removed.extend(idle),
+        Err(error) => tracing::warn!(plan_id, %error, "kept the plan's idle attempt checkouts"),
+    }
+    if !removed.is_empty() {
+        tracing::info!(
+            plan_id,
+            removed = removed.len(),
+            "removed the plan's finished attempt checkouts"
+        );
+        graph_tui_bridge.log_event(
+            "graph.attempt_checkouts_removed",
+            &format!(
+                "plan '{plan_id}': removed {} attempt checkout(s) that held nothing to inspect or resume",
+                removed.len()
+            ),
+        );
+    }
 }
 
 /// Remove the checkouts of the attempts plan `plan_id` accepted, once
@@ -8973,5 +9070,91 @@ printf '%s\n' '{"type":"result","session_id":"sess-batch","model":"claude-sonnet
             errors.contains(&"Graph Engine: 1 plan(s): 1 failed"),
             "{errors:?}"
         );
+    }
+
+    /// A scripted provider that fails at once and changes nothing.
+    const FAILS_AT_ONCE_AGENT: &str =
+        "#!/bin/sh\ncat >/dev/null\necho 'provider down' >&2\nexit 1\n";
+
+    /// bug-58329f: a run whose one task fails at once, changing nothing, leaves no
+    /// attempt checkout, no attempt branch and no batch branch behind.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_run_that_did_nothing_leaves_no_checkout_or_branch() {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let dir = repo_with_file_plans(&["alpha"], None);
+        let repo = dir.path();
+        std::fs::write(repo.join("agent.sh"), FAILS_AT_ONCE_AGENT).expect("agent");
+        std::fs::set_permissions(
+            repo.join("agent.sh"),
+            std::fs::Permissions::from_mode(0o755),
+        )
+        .expect("chmod");
+        let tasks = repo.join("plans/01-alpha/tasks.toml");
+        let text = std::fs::read_to_string(&tasks).expect("tasks.toml");
+        let text = text.replace(
+            "files = [\"alpha.txt\"]\n",
+            "files = [\"alpha.txt\"]\nmax_retries = 0\n",
+        );
+        std::fs::write(&tasks, text).expect("tasks.toml");
+        git_in(repo, &["commit", "-am", "an agent that fails at once"]);
+
+        let exit_code =
+            run_graph_plan_in_run(worktree_run_params(repo), Some("run-nothing".into()))
+                .await
+                .expect("run the plan");
+
+        assert_ne!(exit_code, EXIT_SUCCESS);
+        let worktrees = git_stdout(repo, &["worktree", "list", "--porcelain"]);
+        assert_eq!(
+            worktrees
+                .lines()
+                .filter(|line| line.starts_with("worktree "))
+                .count(),
+            1,
+            "{worktrees}"
+        );
+        assert_eq!(
+            git_stdout(repo, &["for-each-ref", "refs/heads/roko/"]),
+            "",
+            "no attempt, plan or batch branch is left"
+        );
+    }
+
+    /// bug-58329f: an unverified plan's accepted checkout is removed when the plan
+    /// ends; its work stays on its plan branch, and its batch branch stays,
+    /// since the run's summary names that work.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn an_unverified_plan_releases_its_accepted_checkout() {
+        let dir = repo_with_file_plans(&["alpha"], None);
+        let repo = dir.path();
+        let tasks = repo.join("plans/01-alpha/tasks.toml");
+        let text = std::fs::read_to_string(&tasks).expect("tasks.toml");
+        let (task, _verify) = text.split_once("\n[[task.verify]]").expect("a verify step");
+        let task = task.replace(
+            "skip_enrichment = true\n",
+            "skip_enrichment = true\nallow_unverified = true\n",
+        );
+        std::fs::write(&tasks, format!("{task}\n")).expect("tasks.toml");
+        git_in(repo, &["commit", "-am", "no verify step"]);
+
+        let exit_code =
+            run_graph_plan_in_run(worktree_run_params(repo), Some("run-released".into()))
+                .await
+                .expect("run the plan");
+
+        assert_ne!(exit_code, EXIT_SUCCESS);
+        let worktrees = git_stdout(repo, &["worktree", "list", "--porcelain"]);
+        assert_eq!(
+            worktrees
+                .lines()
+                .filter(|line| line.starts_with("worktree "))
+                .count(),
+            1,
+            "{worktrees}"
+        );
+        let tip = git_stdout(repo, &["rev-parse", "roko/plan/01-alpha"]);
+        assert!(git_stdout(repo, &["ls-tree", "--name-only", &tip]).contains("alpha.txt"));
+        assert!(!git_stdout(repo, &["rev-parse", "roko/batch/run-released"]).is_empty());
     }
 }

@@ -66,6 +66,8 @@ pub struct BatchIntegration {
     /// Where the batch started: the operator's `HEAD` when the run created
     /// it, its tip when a resumed run continued it.
     base_oid: String,
+    /// Whether this run created the branch, rather than continuing it.
+    created: bool,
     store: DeliveryReceiptStore,
     /// Deliveries take turns: each merges into the tip the last one left.
     queue: tokio::sync::Mutex<()>,
@@ -82,6 +84,7 @@ impl BatchIntegration {
     pub async fn open(repo: &Path, run_id: &str) -> Result<Self, String> {
         let branch = format!("{BATCH_BRANCH_PREFIX}{run_id}");
         let branch_ref = format!("refs/heads/{branch}");
+        let mut created = false;
         let base_oid = match commit_of(repo, &branch_ref).await {
             Some(tip) => tip,
             None => {
@@ -102,6 +105,7 @@ impl BatchIntegration {
                 )
                 .await
                 .map_err(|e| format!("could not create {branch}: {e}"))?;
+                created = true;
                 head
             }
         };
@@ -110,6 +114,7 @@ impl BatchIntegration {
             run_id: run_id.to_string(),
             branch,
             base_oid,
+            created,
             store: DeliveryReceiptStore::new(),
             queue: tokio::sync::Mutex::new(()),
         })
@@ -131,6 +136,30 @@ impl BatchIntegration {
     #[must_use]
     pub fn run_id(&self) -> &str {
         &self.run_id
+    }
+
+    /// Delete the batch branch when this run created it and it is still at
+    /// its base, so that a run that left no work leaves no branch behind
+    /// (bug-58329f). A branch that moved, or that an earlier run made, is kept.
+    /// Returns whether it was deleted.
+    pub async fn discard_if_unused(&self) -> bool {
+        let branch_ref = format!("refs/heads/{}", self.branch);
+        if !self.created || !self.receipts().is_empty() {
+            return false;
+        }
+        git_output(
+            &self.repo,
+            &[
+                "update-ref",
+                "-m",
+                "roko: the run left no work",
+                "-d",
+                &branch_ref,
+                &self.base_oid,
+            ],
+        )
+        .await
+        .is_ok()
     }
 
     /// The command that takes the batch into the operator's checkout, which

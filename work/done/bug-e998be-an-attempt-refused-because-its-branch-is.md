@@ -2,7 +2,7 @@
 id = "bug-e998be"
 kind = "bug"
 title = "An attempt refused because its branch is still checked out gets no safe way forward, so a chat model removed the checkout with git worktree remove --force"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p2"
 goal = "core"
@@ -11,13 +11,26 @@ subsystem = ["roko-cli/orchestrator"]
 created = 2026-10-15
 updated = 2026-10-15
 last_verified = 2026-10-15
+last_verified_rev = "f6f61d459"
 source = "tmp/hermes-roko-v5/findings/repro-will.md#F2,F3 (repro-will, 2026-10-15)"
 discovered_from = "hermes-roko-v5 round: Will's Mac crashed at 17:02 with roko runs in flight"
-anchors = ["crates/roko-cli/src/orchestrator/worktree/mod.rs::create_locked", "crates/roko-cli/src/orchestrator/worktree/acceptance.rs::set_aside_kept_checkout", "crates/roko-cli/src/orchestrator/worktree/git_ops.rs::worktree_list_contains_branch"]
+anchors = ["crates/roko-cli/src/orchestrator/worktree/mod.rs::create_locked", "crates/roko-cli/src/orchestrator/worktree/acceptance.rs::set_aside_kept_checkout", "crates/roko-cli/src/orchestrator/worktree/git_ops.rs::branch_checked_out_reason"]
 links = { depends_on = [], blocks = [], related = ["bug-06bd18", "bug-dceafd"], supersedes = [], duplicate_of = "" }
 
 [[verify]]
 command = "grep -rqw 'fn a_refused_attempt_says_where_its_branch_is_and_how_to_move_it_aside' crates/roko-cli/ && cargo test -p roko-cli a_refused_attempt_says_where_its_branch_is_and_how_to_move_it_aside"
+
+[closed]
+at = 2026-10-15
+at_ts = "2026-10-15T20:52:46Z"
+commit = "f6f61d459"
+by = "commit trailer"
+executor = "claude-agent"
+via = "manual"
+size = "S"
+model = "claude-opus-5-5"
+forced = false
+evidence = "create_locked's refusal for an attempt branch that is still checked out (git_ops::worktree_with_branch, branch_checked_out_reason) now names the checkout that has the branch, says roko left it as it is and deleted nothing, and gives the move-aside command set-aside itself runs (git worktree move <path> <path>-kept && git branch -m <branch> <branch>-kept); it never suggests a forced removal. set_aside_kept_checkout logs why it left a checkout alone. cargo test -p roko-cli a_refused_attempt_says_where_its_branch_is_and_how_to_move_it_aside passes: it runs the given command and the attempt then starts, the old checkout's uncommitted file kept; a_new_run_sets_aside_the_checkouts_another_run_kept still passes; roko-cli --lib 3636 passed, 0 failed (gist test skipped); clippy -p roko-cli -D warnings clean. The crash case itself (kill -9 of serve mid-attempt, then a re-run) already worked on main through bug-06bd18, checked live (tmp/hermes-roko-v5/findings/roko-recovery.md)."
 +++
 
 ## Problem

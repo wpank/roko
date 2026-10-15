@@ -994,15 +994,16 @@ fn run_plan_on_local_runtime(
         let events_offset = runner_events_offset(&workdir);
 
         // Create the interrupt handle shared between the cancel bridge and the
-        // graph run. The first `cancel.cancelled()` fires `PlanRunInterrupt::Interrupt`,
+        // graph run. The first `cancel.cancelled()` fires `PlanRunInterrupt::Cancel`,
         // which cancels the in-flight graph, SIGTERMs/SIGKILLs agent processes,
         // finalizes the checkpoint as `interrupted`, and returns exit code 130.
+        // The run names the cancel as such, not as a SIGINT (bug-1d09e8).
         let interrupt_handle = PlanRunInterruptHandle::default();
         if let Some(cancel_token) = cancel {
             let handle_for_cancel = interrupt_handle.clone();
             tokio::spawn(async move {
                 cancel_token.cancelled().await;
-                handle_for_cancel.request(PlanRunInterrupt::Interrupt);
+                handle_for_cancel.request(PlanRunInterrupt::Cancel);
             });
         }
 

@@ -4,7 +4,7 @@
 //! from the binary-side `cmd_plan_run_engine` so that `serve_runtime` and
 //! other library callers can invoke it without depending on the binary crate.
 
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::io::IsTerminal as _;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -160,7 +160,7 @@ fn plan_set_group(plans_root: &Path, plan_dir: &Path) -> Option<String> {
 /// Why a CLI plan run stopped before its plan set finished.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PlanRunInterrupt {
-    /// SIGINT, or the operator closed the TUI while plans were still running.
+    /// SIGINT.
     Interrupt,
     /// SIGTERM.
     Terminate,
@@ -172,30 +172,39 @@ pub enum PlanRunInterrupt {
     /// A conductor watcher failed the run (gap-fab2cc); the run ends with
     /// the watcher's error.
     Conductor,
+    /// A cancel request: a host cancelled the run through its cancel token,
+    /// as `roko serve` does for `run_cancel` over `/mcp` and for
+    /// `POST /plans/{id}/cancel` (bug-1d09e8). It exits as SIGINT does.
+    Cancel,
+    /// The operator closed the TUI while plans were still running. It exits
+    /// as SIGINT does.
+    TuiClosed,
 }
 
 impl PlanRunInterrupt {
     /// Every stop cause, e.g. to tell a stopped run's exit status apart.
-    pub const ALL: [Self; 5] = [
+    pub const ALL: [Self; 7] = [
         Self::Interrupt,
         Self::Terminate,
         Self::Hangup,
         Self::Deadline,
         Self::Conductor,
+        Self::Cancel,
+        Self::TuiClosed,
     ];
 
     /// Conventional shell status for the signal: 128 + signal number.
     #[must_use]
     pub const fn exit_code(self) -> i32 {
         match self {
-            Self::Interrupt => 130,
+            Self::Interrupt | Self::Cancel | Self::TuiClosed => 130,
             Self::Terminate | Self::Deadline | Self::Conductor => 143,
             Self::Hangup => 129,
         }
     }
 
-    /// Signal name, `deadline` or `conductor`, for logs, summaries and the
-    /// checkpoint's stop cause.
+    /// Signal name, `deadline`, `conductor`, `cancel` or `tui-closed`, for
+    /// logs, summaries and the checkpoint's stop cause.
     #[must_use]
     pub const fn label(self) -> &'static str {
         match self {
@@ -204,6 +213,23 @@ impl PlanRunInterrupt {
             Self::Hangup => "SIGHUP",
             Self::Deadline => "deadline",
             Self::Conductor => "conductor",
+            Self::Cancel => "cancel",
+            Self::TuiClosed => "tui-closed",
+        }
+    }
+
+    /// What stopped the run, for the person reading its events: "a cancel
+    /// request stopped the run" (bug-1d09e8).
+    #[must_use]
+    pub const fn cause(self) -> &'static str {
+        match self {
+            Self::Interrupt => "SIGINT",
+            Self::Terminate => "SIGTERM",
+            Self::Hangup => "SIGHUP",
+            Self::Deadline => "the FAST deadline",
+            Self::Conductor => "a conductor watcher",
+            Self::Cancel => "a cancel request",
+            Self::TuiClosed => "closing the TUI",
         }
     }
 
@@ -214,6 +240,8 @@ impl PlanRunInterrupt {
             Self::Hangup => 3,
             Self::Deadline => 4,
             Self::Conductor => 5,
+            Self::Cancel => 6,
+            Self::TuiClosed => 7,
         }
     }
 
@@ -224,6 +252,8 @@ impl PlanRunInterrupt {
             3 => Some(Self::Hangup),
             4 => Some(Self::Deadline),
             5 => Some(Self::Conductor),
+            6 => Some(Self::Cancel),
+            7 => Some(Self::TuiClosed),
             _ => None,
         }
     }
@@ -665,7 +695,7 @@ impl Drop for TuiSession {
     }
 }
 
-/// The recorded stop request, or a new `Interrupt` when the operator just
+/// The recorded stop request, or a new `TuiClosed` when the operator just
 /// closed the TUI mid-run (no terminal output would remain otherwise).
 fn pending_interrupt(
     interrupt: &PlanRunInterruptHandle,
@@ -673,7 +703,7 @@ fn pending_interrupt(
 ) -> Option<PlanRunInterrupt> {
     if interrupt.requested().is_none() && tui.as_mut().is_some_and(TuiSession::closed_by_operator) {
         tracing::warn!("operator closed the TUI mid-run; stopping the plan run");
-        interrupt.request(PlanRunInterrupt::Interrupt);
+        interrupt.request(PlanRunInterrupt::TuiClosed);
     }
     interrupt.requested()
 }
@@ -2058,12 +2088,14 @@ async fn run_graph_plan_body(
             unstarted,
             "plan run stopped early; resume with --resume-plan"
         );
+        let not_started = if unstarted > 0 {
+            format!("; {unstarted} plan(s) not started")
+        } else {
+            String::new()
+        };
         graph_tui_bridge.log_event(
             "graph.run_interrupted",
-            &format!(
-                "{}: run stopped, {unstarted} plan(s) not started",
-                reason.label()
-            ),
+            &format!("{} stopped the run{not_started}", reason.cause()),
         );
     }
 
@@ -2349,9 +2381,9 @@ async fn run_graph_plan_body(
         // line is still useful (and harmless) after the terminal is restored.
         if let Some(reason) = stopped_by {
             println!(
-                "Graph Engine interrupted by {}: {}/{} plan(s) attempted, {} task(s), ${:.2}; \
+                "Graph Engine stopped by {}: {}/{} plan(s) attempted, {} task(s), ${:.2}; \
                  resume with --resume-plan",
-                reason.label(),
+                reason.cause(),
                 plan_outcomes.len(),
                 plan_count,
                 total_tasks,
@@ -3667,11 +3699,13 @@ async fn run_one_plan(
                 signalled,
                 "plan run interrupted: cancelling graph"
             );
+            // Name what stops the run: an API cancel is not a SIGINT
+            // (bug-1d09e8).
             graph_tui_bridge.log_event(
                 "graph.run_interrupted",
                 &format!(
-                    "{}: cancelling plan '{}' and stopping the run",
-                    reason.label(),
+                    "{} is stopping the run: cancelling plan '{}'",
+                    reason.cause(),
                     plan.id
                 ),
             );
@@ -3689,12 +3723,18 @@ async fn run_one_plan(
         // rich topology adds helper nodes absent from `node_titles`). A
         // completed task is reported with the gate verdict of its recorded
         // output (bug-7e1b6b).
-        let current_statuses: HashMap<String, roko_graph::engine::NodeStatus> = flow_handle
+        let mut current_statuses: HashMap<String, roko_graph::engine::NodeStatus> = flow_handle
             .status()
             .node_statuses
             .into_iter()
             .filter(|(id, _)| node_titles.contains_key(id))
             .collect();
+        // While the run stops, a task whose node fails is reported once its
+        // error says how it ended (the final diff below), so a task the stop
+        // cut off reads as cancelled, not failed (bug-1d09e8).
+        if interrupted_by.is_some() {
+            hold_back_failures(&previous_statuses, &mut current_statuses);
+        }
         graph_tui_bridge.poll_status_changes(
             &plan.id,
             &previous_statuses,
@@ -3733,17 +3773,39 @@ async fn run_one_plan(
         // Flow was cancelled before producing a result (e.g. validation
         // failure inside start(), the task panicked, or an interrupted
         // graph did not settle in time).
-        let cancelled_msg = if let Some(reason) = interrupted_by {
-            format!("plan '{}' interrupted by {}", plan.id, reason.label())
-        } else if was_cancelled_by_tui {
-            format!("plan '{}' cancelled by user", plan.id)
+        if let Some(reason) = interrupted_by {
+            // The tasks the stop cut off never settled, or failed while the
+            // run stopped (held back above): each ends cancelled, and the stop
+            // is not reported as a failure (bug-1d09e8).
+            let mut running = previous_statuses
+                .iter()
+                .filter(|(_, status)| **status == roko_graph::engine::NodeStatus::Running)
+                .map(|(task_id, _)| task_id.as_str())
+                .collect::<Vec<_>>();
+            running.sort_unstable();
+            for task_id in running {
+                graph_tui_bridge.task_cancelled(&plan.id, task_id);
+            }
+            graph_tui_bridge.log_event(
+                "graph.plan_stopped",
+                &format!(
+                    "plan '{}' stopped by {} before its running tasks settled",
+                    plan.id,
+                    reason.cause()
+                ),
+            );
+            tracing::warn!(plan_id = %plan.id, "plan stopped before its graph settled");
         } else {
-            format!("plan '{}' execution failed (no output)", plan.id)
-        };
-        graph_tui_bridge.error(&cancelled_msg);
+            let message = if was_cancelled_by_tui {
+                format!("plan '{}' cancelled by user", plan.id)
+            } else {
+                format!("plan '{}' execution failed (no output)", plan.id)
+            };
+            graph_tui_bridge.error(&message);
+            tracing::error!(plan_id = %plan.id, "plan execution failed: no output");
+        }
         graph_tui_bridge.plan_completed(&plan.id, false);
 
-        tracing::error!(plan_id = %plan.id, "plan execution failed: no output");
         // Without the graph's result no task's verdict is known, so none
         // counts as passed.
         let task_verdicts = TaskVerdictCounts::not_run(tasks.len());
@@ -3817,11 +3879,14 @@ async fn run_one_plan(
     // ── Graph TUI bridge: final status diff + PlanCompleted ──
     // Emit any transitions (Running→Complete/Failed/Skipped, or
     // Pending→Running for tasks that started and finished between ticks)
-    // that the polling loop did not yet publish, then close the plan.
+    // that the polling loop did not yet publish, then close the plan. A task
+    // a stop cut off is reported as cancelled, with why, not as failed
+    // (bug-1d09e8).
+    let cancelled = cancelled_tasks(&output, &node_titles);
     let final_statuses: HashMap<String, roko_graph::engine::NodeStatus> = output
         .node_results
         .iter()
-        .filter(|r| node_titles.contains_key(&r.node_id))
+        .filter(|r| node_titles.contains_key(&r.node_id) && !cancelled.contains_key(&r.node_id))
         .map(|r| (r.node_id.clone(), r.status))
         .collect();
     graph_tui_bridge.poll_status_changes(
@@ -3831,6 +3896,13 @@ async fn run_one_plan(
         &node_titles,
         || output.gate_verdicts.clone(),
     );
+    for (task_id, reason) in &cancelled {
+        graph_tui_bridge.log_event(
+            "graph.task_cancelled",
+            &format!("plan '{}': task '{task_id}' cancelled: {reason}", plan.id),
+        );
+        graph_tui_bridge.task_cancelled(&plan.id, task_id);
+    }
     // Say why each task that did not run was held back; a resume runs them
     // and the failed tasks again.
     let task_outcomes = task_outcomes(&output, &node_titles);
@@ -3896,6 +3968,14 @@ async fn run_one_plan(
     // log below, which `roko serve` does not print by default.
     for message in task_failure_errors(&plan.id, &output, &node_titles) {
         graph_tui_bridge.error(&message);
+    }
+    // A stopped plan says what stopped it and where its tasks stand, as a
+    // notice rather than a failure (bug-1d09e8).
+    if let Some(reason) = interrupted_by {
+        graph_tui_bridge.log_event(
+            "graph.plan_stopped",
+            &plan_stopped_message(&plan.id, reason, task_verdicts, plan_task_count),
+        );
     }
     graph_tui_bridge.plan_completed(&plan.id, outcome.succeeded());
 
@@ -4136,9 +4216,10 @@ const MAX_TASK_ERROR_CHARS: usize = 1_500;
 
 /// Why each of the plan's tasks that failed by its own error did, as the
 /// `error` events a run shows a host (bug-103bce), such as a dispatch that
-/// found no provider able to run the task. A task blocked by another, a
-/// failure without an error, and the helper nodes of the rich topology,
-/// which are absent from `node_titles`, are left out.
+/// found no provider able to run the task. A task blocked by another, a task
+/// a stop cut off ([`cancelled_tasks`]), a failure without an error, and the
+/// helper nodes of the rich topology, which are absent from `node_titles`,
+/// are left out.
 fn task_failure_errors(
     plan_id: &str,
     output: &roko_graph::GraphOutput,
@@ -4152,6 +4233,7 @@ fn task_failure_errors(
         .filter(|result| {
             result.status == NodeStatus::Failed
                 && result.blocked_by.is_none()
+                && cancel_reason(result).is_none()
                 && node_titles.contains_key(&result.node_id)
         })
         .filter_map(|result| {
@@ -4173,6 +4255,58 @@ fn task_failure_errors(
         .collect()
 }
 
+/// Keep the nodes that failed since `previous` at their `previous` status in
+/// `current`, or out of it when they had none, so the poll does not report
+/// them yet: while a run stops, a failed node's error, which the poll does not
+/// see, says whether the stop cut its task off ([`cancel_reason`]).
+fn hold_back_failures(
+    previous: &HashMap<String, roko_graph::engine::NodeStatus>,
+    current: &mut HashMap<String, roko_graph::engine::NodeStatus>,
+) {
+    use roko_graph::engine::NodeStatus;
+
+    current.retain(|node_id, status| {
+        if *status != NodeStatus::Failed {
+            return true;
+        }
+        match previous.get(node_id) {
+            Some(&before) => {
+                *status = before;
+                true
+            }
+            None => false,
+        }
+    });
+}
+
+/// Why a stop cut off the task of node `result`, when it did: the node failed
+/// with a cancellation (bug-1d09e8), because its plan run was stopping or the
+/// operator stopped the task. Such a task is cancelled, not failed.
+fn cancel_reason(result: &roko_graph::NodeResult) -> Option<&str> {
+    if result.status != roko_graph::engine::NodeStatus::Failed {
+        return None;
+    }
+    result
+        .error
+        .as_deref()
+        .and_then(roko_core::RokoError::cancelled_reason)
+}
+
+/// The plan's tasks in `output` that a stop cut off ([`cancel_reason`]), each
+/// with the reason. Helper nodes of the rich topology, which are absent from
+/// `node_titles`, are left out.
+fn cancelled_tasks<'a>(
+    output: &'a roko_graph::GraphOutput,
+    node_titles: &HashMap<String, String>,
+) -> BTreeMap<String, &'a str> {
+    output
+        .node_results
+        .iter()
+        .filter(|result| node_titles.contains_key(&result.node_id))
+        .filter_map(|result| Some((result.node_id.clone(), cancel_reason(result)?)))
+        .collect()
+}
+
 /// How `output` left the plan's tasks that did not complete. Helper nodes of
 /// the rich topology, which are absent from `node_titles`, are left out.
 fn task_outcomes(
@@ -4188,6 +4322,9 @@ fn task_outcomes(
         .filter(|result| node_titles.contains_key(&result.node_id))
     {
         match (result.status, &result.blocked_by) {
+            (NodeStatus::Failed, _) if cancel_reason(result).is_some() => {
+                summary.cancelled.insert(result.node_id.clone());
+            }
             (NodeStatus::Failed, _) => {
                 summary.failed.insert(result.node_id.clone());
             }
@@ -4206,6 +4343,40 @@ fn task_outcomes(
         }
     }
     summary
+}
+
+/// What a plan that `reason` stopped tells its person (bug-1d09e8): what
+/// stopped it, how its `task_count` tasks stand, and that a resume keeps the
+/// ones that passed.
+fn plan_stopped_message(
+    plan_id: &str,
+    reason: PlanRunInterrupt,
+    tasks: TaskVerdictCounts,
+    task_count: usize,
+) -> String {
+    let passed = tasks.passed + tasks.already_satisfied;
+    let settled = passed + tasks.unverified + tasks.failed + tasks.cancelled;
+    let mut stand = vec![format!("{passed} task(s) passed")];
+    for (count, word) in [
+        (tasks.unverified, "unverified"),
+        (tasks.failed, "failed"),
+        (tasks.cancelled, "cancelled"),
+        (task_count.saturating_sub(settled), "did not run"),
+    ] {
+        if count > 0 {
+            stand.push(format!("{count} {word}"));
+        }
+    }
+    let resume = if passed > 0 {
+        "; a resume keeps the passed tasks and runs the rest"
+    } else {
+        ""
+    };
+    format!(
+        "plan '{plan_id}' stopped by {}: {}{resume}",
+        reason.cause(),
+        stand.join(", ")
+    )
 }
 
 /// Graph cell type that runs a plan task: one node per task in either
@@ -4232,6 +4403,8 @@ struct TaskVerdictCounts {
     skipped: usize,
     /// Failed, or completed over a failed verify step (`forced_accept`).
     failed: usize,
+    /// Cut off by a stop ([`cancel_reason`]): not a failure (bug-1d09e8).
+    cancelled: usize,
 }
 
 impl TaskVerdictCounts {
@@ -4255,6 +4428,9 @@ impl TaskVerdictCounts {
                 (NodeStatus::Complete, Some(TaskGateVerdict::AlreadySatisfied)) => {
                     counts.already_satisfied += 1;
                 }
+                (NodeStatus::Failed, _) if cancel_reason(result).is_some() => {
+                    counts.cancelled += 1;
+                }
                 (NodeStatus::Complete, Some(TaskGateVerdict::ForcedAccept))
                 | (NodeStatus::Failed, _) => counts.failed += 1,
                 (NodeStatus::Complete, _) => counts.unverified += 1,
@@ -4273,16 +4449,20 @@ impl TaskVerdictCounts {
             unverified: 0,
             skipped: task_count,
             failed: 0,
+            cancelled: 0,
         }
     }
 
     /// Outcome of a plan whose graph ran to completion (gap-29a84b): it
     /// succeeded only when every task passed its verify steps (an
     /// already-satisfied task did), and is unverified when the rest passed but
-    /// some ran no verify step. Anything else failed.
+    /// some ran no verify step. A task the operator stopped cancels the plan
+    /// unless another failed. Anything else failed.
     const fn outcome(self) -> PlanOutcome {
         if self.failed > 0 || self.skipped > 0 {
             PlanOutcome::Failed
+        } else if self.cancelled > 0 {
+            PlanOutcome::Cancelled
         } else if self.unverified > 0 {
             PlanOutcome::Unverified
         } else {
@@ -4292,7 +4472,9 @@ impl TaskVerdictCounts {
 }
 
 /// The run-metrics row of one plan: whether it succeeded, and its tasks
-/// counted by verdict. The caller adds the plan's checkpoint run.
+/// counted by verdict. A task a stop cut off counts in none of them: it says
+/// nothing about its model or prompt (bug-1d09e8). The caller adds the plan's
+/// checkpoint run.
 fn plan_metrics(
     plan_id: &str,
     succeeded: bool,
@@ -6058,6 +6240,180 @@ exec sleep 60
         assert_eq!(exit_code, PlanRunInterrupt::Interrupt.exit_code());
     }
 
+    /// Where [`a_cancelled_run_reports_interrupted_tasks_as_cancelled`] tells
+    /// [`cancelled_run_child`] to run its plan.
+    #[cfg(unix)]
+    const CANCELLED_RUN_DIR: &str = "ROKO_CANCELLED_RUN_CHILD_DIR";
+
+    /// bug-1d09e8: a run that a cancel request stops after T1 passed and
+    /// while T2 ran reads as a stop, not a failure. T2 ends `cancelled` with
+    /// no failure event; the run names the cancel, not a SIGINT, says where
+    /// its tasks stand, and publishes no error; the checkpoint keeps T2 apart
+    /// from the failed tasks. The cancel signals every agent its process
+    /// runs, so the run happens in a child test process.
+    #[cfg(unix)]
+    #[test]
+    fn a_cancelled_run_reports_interrupted_tasks_as_cancelled() {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        // T2 runs on a provider that marks the start of its agent call (one
+        // with `--print`; a probe gets a version) and then works until it is
+        // stopped.
+        let hanging = dir.path().join("hanging-provider.sh");
+        std::fs::write(
+            &hanging,
+            "#!/bin/sh\n\
+             case \" $* \" in *\" --print \"*) ;; *) echo '2.1.0 (Claude Code)'; exit 0 ;; esac\n\
+             cat >/dev/null\n\
+             touch \"$(dirname \"$0\")/hanging-started\"\n\
+             exec sleep 60\n",
+        )
+        .expect("hanging provider");
+        std::fs::set_permissions(&hanging, std::fs::Permissions::from_mode(0o755))
+            .expect("make the provider executable");
+        fake_provider_workspace(
+            dir.path(),
+            0.0,
+            &format!(
+                "\n[providers.hanging-cli]\nkind = \"claude_cli\"\ncommand = {:?}\n\n\
+                 [models.hanging-model]\nprovider = \"hanging-cli\"\nslug = \"claude-haiku-4-5\"\n\
+                 context_window = 200000\n",
+                hanging.display().to_string()
+            ),
+        );
+        write_verify_plan(
+            dir.path(),
+            "cancelled",
+            "",
+            &[("T1", &[], "touch T1.verified"), ("T2", &["T1"], "true")],
+        );
+        let tasks = dir.path().join("plans/cancelled/tasks.toml");
+        let plan = std::fs::read_to_string(&tasks).expect("tasks.toml");
+        let (first, second) = plan.split_once("id = \"T2\"").expect("T2");
+        std::fs::write(
+            &tasks,
+            format!(
+                "{first}id = \"T2\"{}",
+                second.replacen("\"graph-model\"", "\"hanging-model\"", 1)
+            ),
+        )
+        .expect("route T2 to the hanging provider");
+
+        let output = std::process::Command::new(std::env::current_exe().expect("test binary"))
+            .args([
+                "--exact",
+                "graph_execution::plan_runner::tests::cancelled_run_child",
+                "--nocapture",
+            ])
+            .env(CANCELLED_RUN_DIR, dir.path())
+            .output()
+            .expect("run the child test");
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(output.status.success(), "{stdout}\n{stderr}");
+        assert!(
+            stdout.contains("1 passed"),
+            "the child test did not run: {stdout}"
+        );
+
+        let outcomes = crate::graph_checkpoint::canonical_task_outcomes(dir.path(), "cancelled")
+            .expect("the checkpoint's task outcomes");
+        assert_eq!(outcomes.cancelled, BTreeSet::from(["T2".to_string()]));
+        assert!(outcomes.failed.is_empty(), "{outcomes:?}");
+        assert_eq!(
+            crate::graph_checkpoint::canonical_stop_cause(dir.path(), "cancelled").as_deref(),
+            Some("cancel")
+        );
+    }
+
+    /// The cancelled run of
+    /// [`a_cancelled_run_reports_interrupted_tasks_as_cancelled`]: it runs the
+    /// plan in that test's workspace, cancels it once T2's provider runs, and
+    /// checks what the run published. Without the workspace it does nothing.
+    #[cfg(unix)]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn cancelled_run_child() {
+        use roko_core::DashboardEvent;
+
+        let Some(workdir) = std::env::var_os(CANCELLED_RUN_DIR).map(PathBuf::from) else {
+            return;
+        };
+        let interrupt = PlanRunInterruptHandle::default();
+        let run = tokio::spawn({
+            let workdir = workdir.clone();
+            let interrupt = interrupt.clone();
+            async move { run_plan_set(&workdir, Some(1), Some(interrupt)).await }
+        });
+        let started = workdir.join("hanging-started");
+        for _ in 0..800 {
+            if started.exists() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+        assert!(started.exists(), "T2's provider started");
+
+        interrupt.request(PlanRunInterrupt::Cancel);
+        let (exit_code, _, hub) = run.await.expect("the plan run");
+        assert_eq!(exit_code, PlanRunInterrupt::Cancel.exit_code());
+
+        let events = hub
+            .subscribe_events_from(0)
+            .replay
+            .into_iter()
+            .map(|envelope| envelope.payload)
+            .collect::<Vec<_>>();
+        let outcomes = |task: &str| {
+            events
+                .iter()
+                .filter_map(|event| match event {
+                    DashboardEvent::TaskCompleted {
+                        task_id, outcome, ..
+                    } if task_id == task => Some(outcome.as_str()),
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(outcomes("T1"), ["passed"]);
+        assert_eq!(outcomes("T2"), ["cancelled"]);
+        // A cancel raises no error. The run's closing tally is bug-db89d4's:
+        // until it counts plans by outcome, it says "Graph Engine: … failed".
+        let errors = events
+            .iter()
+            .filter_map(|event| match event {
+                DashboardEvent::Error { message } => Some(message.as_str()),
+                _ => None,
+            })
+            .filter(|message| !message.starts_with("Graph Engine:"))
+            .collect::<Vec<_>>();
+        assert!(errors.is_empty(), "a cancel is not a failure: {errors:?}");
+        let notes = events
+            .iter()
+            .filter_map(|event| match event {
+                DashboardEvent::EventLogEntry { message, .. } => Some(message.as_str()),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        for note in [
+            "a cancel request is stopping the run: cancelling plan 'cancelled'",
+            "plan 'cancelled' stopped by a cancel request: 1 task(s) passed, 1 cancelled; a \
+             resume keeps the passed tasks and runs the rest",
+            "a cancel request stopped the run",
+        ] {
+            assert!(notes.contains(&note), "no {note:?} in {notes:#?}");
+        }
+        assert!(
+            notes.iter().any(|note| note
+                .starts_with("plan 'cancelled': task 'T2' cancelled: agent for cancelled/T2")),
+            "{notes:#?}"
+        );
+        assert!(
+            !notes.iter().any(|note| note.contains("SIGINT")),
+            "{notes:#?}"
+        );
+    }
+
     /// Where [`interrupt_stops_running_gate_command`] tells
     /// [`interrupted_gate_run_child`] to run its plan.
     #[cfg(unix)]
@@ -6221,6 +6577,16 @@ exec sleep 60
         assert_eq!(PlanRunInterrupt::Deadline.exit_code(), 143);
         assert_eq!(PlanRunInterrupt::Deadline.label(), "deadline");
         assert_eq!(PlanRunInterrupt::Conductor.label(), "conductor");
+        // bug-1d09e8: a cancel request and a closed TUI exit as SIGINT does,
+        // each named for what it was.
+        for (interrupt, label, cause) in [
+            (PlanRunInterrupt::Cancel, "cancel", "a cancel request"),
+            (PlanRunInterrupt::TuiClosed, "tui-closed", "closing the TUI"),
+        ] {
+            assert_eq!(interrupt.exit_code(), 130);
+            assert_eq!(interrupt.label(), label);
+            assert_eq!(interrupt.cause(), cause);
+        }
         for interrupt in PlanRunInterrupt::ALL {
             assert_eq!(
                 PlanRunInterrupt::from_code(interrupt.code()),
@@ -6416,6 +6782,7 @@ exec sleep 60
             unverified,
             skipped,
             failed,
+            cancelled: 0,
         };
 
         assert_eq!(counts(3, 0, 0, 0).outcome(), PlanOutcome::Succeeded);
@@ -6430,6 +6797,19 @@ exec sleep 60
             ..counts(1, 0, 0, 0)
         };
         assert_eq!(rerun.outcome(), PlanOutcome::Succeeded);
+
+        // bug-1d09e8: a task the operator stopped cancels the plan, unless
+        // another failed.
+        let stopped = TaskVerdictCounts {
+            cancelled: 1,
+            ..counts(2, 0, 0, 0)
+        };
+        assert_eq!(stopped.outcome(), PlanOutcome::Cancelled);
+        let stopped_and_failed = TaskVerdictCounts {
+            cancelled: 1,
+            ..counts(2, 0, 0, 1)
+        };
+        assert_eq!(stopped_and_failed.outcome(), PlanOutcome::Failed);
     }
 
     /// bug-103bce: each task that failed by its own error says why in the
@@ -6489,6 +6869,101 @@ exec sleep 60
             "x".repeat(MAX_TASK_ERROR_CHARS)
         );
         assert_eq!(messages[1], clipped);
+    }
+
+    /// bug-1d09e8: while a run stops, the poll holds a newly failed node back
+    /// until its error says whether the stop cut it off, and reports every
+    /// other change.
+    #[test]
+    fn a_stopping_run_holds_back_failures_from_the_poll() {
+        use roko_graph::engine::NodeStatus;
+
+        let statuses = |entries: &[(&str, NodeStatus)]| {
+            entries
+                .iter()
+                .map(|(id, status)| ((*id).to_string(), *status))
+                .collect::<HashMap<_, _>>()
+        };
+        let previous = statuses(&[
+            ("T1", NodeStatus::Running),
+            ("T2", NodeStatus::Running),
+            ("T4", NodeStatus::Failed),
+        ]);
+        let mut current = statuses(&[
+            ("T1", NodeStatus::Failed),
+            ("T2", NodeStatus::Complete),
+            ("T3", NodeStatus::Failed),
+            ("T4", NodeStatus::Failed),
+        ]);
+        hold_back_failures(&previous, &mut current);
+        assert_eq!(
+            current,
+            statuses(&[
+                ("T1", NodeStatus::Running),
+                ("T2", NodeStatus::Complete),
+                ("T4", NodeStatus::Failed),
+            ])
+        );
+    }
+
+    /// bug-1d09e8: a task a stop cut off, whose node failed with a
+    /// cancellation, is cancelled: no failure event names it, the checkpoint
+    /// and the counts keep it apart from the failed tasks, and its reason is
+    /// kept.
+    #[test]
+    fn a_task_a_stop_cut_off_is_cancelled_not_failed() {
+        use roko_graph::cells::task_executor::TaskGateVerdict;
+        use roko_graph::engine::NodeStatus;
+
+        let node = |id: &str, status: NodeStatus, error: Option<&str>| roko_graph::NodeResult {
+            node_id: id.to_string(),
+            cell_type: TASK_EXECUTOR_CELL_TYPE.to_string(),
+            status,
+            duration: Duration::ZERO,
+            error: error.map(str::to_string),
+            output_count: 0,
+            is_stub: false,
+            blocked_by: None,
+            timing: roko_graph::NodeTiming::default(),
+        };
+        let stopped =
+            roko_core::RokoError::cancelled("agent for p1/T2 stopped: its plan run is stopping");
+        let output = roko_graph::GraphOutput {
+            graph_name: "stopped".to_string(),
+            success: false,
+            node_results: vec![
+                node("T1", NodeStatus::Complete, None),
+                node("T2", NodeStatus::Failed, Some(&stopped.to_string())),
+                node(
+                    "T3",
+                    NodeStatus::Failed,
+                    Some("gate rejected: tests failed"),
+                ),
+            ],
+            total_duration: Duration::ZERO,
+            gate_verdicts: BTreeMap::from([("T1".to_string(), TaskGateVerdict::Passed)]),
+        };
+        let node_titles = ["T1", "T2", "T3"]
+            .into_iter()
+            .map(|id| (id.to_string(), format!("task {id}")))
+            .collect::<HashMap<_, _>>();
+
+        assert_eq!(
+            task_failure_errors("p1", &output, &node_titles),
+            ["plan 'p1': task 'T3' failed: gate rejected: tests failed"]
+        );
+        assert_eq!(
+            cancelled_tasks(&output, &node_titles),
+            BTreeMap::from([(
+                "T2".to_string(),
+                "agent for p1/T2 stopped: its plan run is stopping"
+            )])
+        );
+        let outcomes = task_outcomes(&output, &node_titles);
+        assert_eq!(outcomes.cancelled, BTreeSet::from(["T2".to_string()]));
+        assert_eq!(outcomes.failed, BTreeSet::from(["T3".to_string()]));
+        let counts = TaskVerdictCounts::of(&output);
+        assert_eq!((counts.passed, counts.cancelled, counts.failed), (1, 1, 1));
     }
 
     /// bug-7eb27e: run metrics count each task under its own verdict, not
@@ -6574,9 +7049,9 @@ exec sleep 60
 
         assert_eq!(
             pending_interrupt(&interrupt, &mut tui),
-            Some(PlanRunInterrupt::Interrupt)
+            Some(PlanRunInterrupt::TuiClosed)
         );
-        assert_eq!(interrupt.requested(), Some(PlanRunInterrupt::Interrupt));
+        assert_eq!(interrupt.requested(), Some(PlanRunInterrupt::TuiClosed));
     }
 
     #[test]

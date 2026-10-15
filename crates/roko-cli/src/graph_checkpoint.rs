@@ -273,6 +273,10 @@ pub struct TaskOutcomeSummary {
     /// budget or a fail-fast stop, each with that reason.
     #[serde(default)]
     pub not_started: BTreeMap<String, String>,
+    /// Tasks a stop cut off while they ran: the run was cancelled, or the
+    /// operator stopped them (bug-1d09e8). Not failed.
+    #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
+    pub cancelled: BTreeSet<String>,
 }
 
 /// Value stored under [`INTERRUPTED_ATTEMPT_EXTENSION`]: the tasks whose

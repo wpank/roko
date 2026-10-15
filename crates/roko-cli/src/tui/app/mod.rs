@@ -308,6 +308,7 @@ fn task_status_label(status: TaskRowStatus) -> &'static str {
         TaskRowStatus::Unverified => roko_core::dashboard_snapshot::TASK_OUTCOME_UNVERIFIED,
         TaskRowStatus::Skipped => "skipped",
         TaskRowStatus::Blocked => "blocked",
+        TaskRowStatus::Cancelled => roko_core::dashboard_snapshot::TASK_OUTCOME_CANCELLED,
     }
 }
 

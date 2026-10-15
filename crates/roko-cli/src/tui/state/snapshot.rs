@@ -1366,6 +1366,7 @@ fn snapshot_task_status(task: &roko_core::dashboard_snapshot::TaskState) -> Task
         Some(TaskOutcomeClass::Unverified) => TaskStatus::Unverified,
         Some(TaskOutcomeClass::Skipped) => TaskStatus::Skipped,
         Some(TaskOutcomeClass::Blocked) => TaskStatus::Blocked,
+        Some(TaskOutcomeClass::Cancelled) => TaskStatus::Cancelled,
         None => TaskStatus::from(task.phase.as_str()),
     }
 }

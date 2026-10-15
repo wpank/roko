@@ -23,7 +23,8 @@ use roko_core::agent::resolve_model;
 use roko_core::config::schema::RokoConfig;
 use roko_core::dashboard_snapshot::{
     TASK_OUTCOME_ACCEPTED_WITH_FAILURES, TASK_OUTCOME_ALREADY_SATISFIED, TASK_OUTCOME_BLOCKED,
-    TASK_OUTCOME_PASSED, TASK_OUTCOME_UNVERIFIED, TaskOutcomeClass, classify_task_outcome,
+    TASK_OUTCOME_CANCELLED, TASK_OUTCOME_PASSED, TASK_OUTCOME_UNVERIFIED, TaskOutcomeClass,
+    classify_task_outcome,
 };
 use roko_core::obs::LogScrubber;
 use serde::Deserialize;
@@ -1701,6 +1702,7 @@ fn outcome_status(outcome: &str) -> &'static str {
         TaskOutcomeClass::Unverified => TASK_OUTCOME_UNVERIFIED,
         TaskOutcomeClass::Skipped => "skipped",
         TaskOutcomeClass::Blocked => TASK_OUTCOME_BLOCKED,
+        TaskOutcomeClass::Cancelled => TASK_OUTCOME_CANCELLED,
     }
 }
 
@@ -2053,10 +2055,11 @@ fn run_summary(
         .collect::<Vec<_>>();
 
     let count = |class: TaskOutcomeClass| tasks.values().filter(|&&each| each == class).count();
-    let (passed, failed, unverified) = (
+    let (passed, failed, unverified, cancelled) = (
         count(TaskOutcomeClass::Passed),
         count(TaskOutcomeClass::Failed),
         count(TaskOutcomeClass::Unverified),
+        count(TaskOutcomeClass::Cancelled),
     );
     let boundaries = task_models
         .iter()
@@ -2081,7 +2084,9 @@ fn run_summary(
             "passed": passed,
             "failed": failed,
             "unverified": unverified,
-            "other": tasks.len() - passed - failed - unverified,
+            // A task a cancel cut off is not a failure (bug-1d09e8).
+            "cancelled": cancelled,
+            "other": tasks.len() - passed - failed - unverified - cancelled,
         },
         "untrusted_input_boundary": boundaries,
         "milestones": milestones,

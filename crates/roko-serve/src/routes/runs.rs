@@ -81,12 +81,17 @@ struct EventQuery {
     source: Option<String>,
 }
 
-/// `GET /api/runs/{run_id}/diff`'s limits (gap-0d6d21).
+/// `GET /api/runs/{run_id}/diff`'s limits (gap-0d6d21), and which work it
+/// shows: the run's verified work (`work=verified`, the default), or the work
+/// a plan left that no check ran on (`work=unverified`, bug-db89d4), of plan
+/// `plan_id` when given.
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(default)]
 struct DiffQuery {
     max_files: Option<usize>,
     max_patch_bytes: Option<usize>,
+    work: Option<String>,
+    plan_id: Option<String>,
 }
 
 /// How many files a run's diff lists unless asked, and at most.
@@ -252,7 +257,9 @@ pub(super) async fn summarize_run(state: &Arc<AppState>, run_id: &str) -> Result
 /// makes from the base its batch started at (gap-0d6d21): each file's status,
 /// line counts, whether it is binary and its unified patch, within
 /// `max_files` and `max_patch_bytes` per file, and totals over every file.
-/// 409 while the run is active; 404 when it has no result to diff.
+/// With `work=unverified`, the same for the work a plan of the run left that
+/// no check ran on, which was never delivered (bug-db89d4). 409 while the run
+/// is active; 404 when it has no such work to diff.
 async fn get_run_diff(
     State(state): State<Arc<AppState>>,
     Path(run_id): Path<String>,
@@ -274,6 +281,16 @@ async fn get_run_diff(
             MAX_DIFF_PATCH_BYTES,
         )?,
     };
+    let unverified = match query.work.as_deref() {
+        None | Some("verified") => false,
+        Some("unverified") => true,
+        Some(_) => {
+            return Err(ApiError::bad_request("work must be verified or unverified"));
+        }
+    };
+    if let Some(plan_id) = &query.plan_id {
+        validate_id(plan_id, "plan id")?;
+    }
     let (summary, plan_ids) = summary_and_plans(&state, &run_id).await?;
     if summary["active"] != Value::Bool(false) {
         return Err(ApiError::conflict(format!(
@@ -283,13 +300,26 @@ async fn get_run_diff(
     let workdir = state.workdir.clone();
     let io_run_id = run_id.clone();
     let diff = blocking_io(move || {
-        Ok(super::run_result::run_diff(
-            &workdir, &io_run_id, &plan_ids, limits,
-        ))
+        Ok(if unverified {
+            super::run_result::unverified_diff(
+                &workdir,
+                &io_run_id,
+                &plan_ids,
+                query.plan_id.as_deref(),
+                limits,
+            )
+        } else {
+            super::run_result::run_diff(&workdir, &io_run_id, &plan_ids, limits)
+        })
     })
     .await?;
-    diff.map(Json)
-        .ok_or_else(|| ApiError::not_found(format!("run '{run_id}' has no result to diff")))
+    diff.map(Json).ok_or_else(|| {
+        ApiError::not_found(if unverified {
+            format!("run '{run_id}' left no unverified work to diff")
+        } else {
+            format!("run '{run_id}' has no result to diff")
+        })
+    })
 }
 
 /// `value`, or `default` when it is not given, refused when it falls outside
@@ -2869,6 +2899,188 @@ mod tests {
         assert_eq!(summary["verdict"], "unverified", "{summary}");
         assert_eq!(summary["tasks"]["unverified"], 1, "{summary}");
         assert_eq!(summary["tasks"]["failed"], 0, "{summary}");
+    }
+
+    /// bug-db89d4: a plan that ended unverified was not delivered, so its
+    /// run's batch is still at its base and has nothing to merge. Its batch
+    /// record names the work no check ran on, which the summary's
+    /// `result.unverified` reports with its plan branch, files and the command
+    /// that shows it, and which `diff?work=unverified` returns. Once the plan
+    /// branch moves on, the work is still named by its commit.
+    #[tokio::test]
+    async fn run_summary_names_unverified_work() {
+        use axum::http::StatusCode;
+
+        let dir = tempfile::tempdir().unwrap();
+        let repo = dir.path().to_path_buf();
+        let git = |args: &[&str]| -> String {
+            let output = std::process::Command::new("git")
+                .current_dir(&repo)
+                .args([
+                    "-c",
+                    "user.name=roko-test",
+                    "-c",
+                    "user.email=roko@test.invalid",
+                    "-c",
+                    "commit.gpgsign=false",
+                ])
+                .args(args)
+                .env_remove("GIT_DIR")
+                .env_remove("GIT_WORK_TREE")
+                .env_remove("GIT_INDEX_FILE")
+                .output()
+                .expect("run git");
+            assert!(
+                output.status.success(),
+                "git {args:?}: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            String::from_utf8_lossy(&output.stdout).trim().to_string()
+        };
+        git(&["init", "--quiet", "-b", "main"]);
+        std::fs::write(repo.join("lib.py"), "def one():\n    return 1\n").unwrap();
+        git(&["add", "lib.py"]);
+        git(&["commit", "--quiet", "-m", "base"]);
+        let base = git(&["rev-parse", "HEAD"]);
+        git(&["branch", "roko/batch/u1"]);
+        git(&["switch", "--quiet", "-c", "roko/plan/pu"]);
+        std::fs::write(repo.join("new.py"), "def two():\n    return 2\n").unwrap();
+        git(&["add", "new.py"]);
+        git(&["commit", "--quiet", "-m", "roko: pu/T1: add two"]);
+        let tip = git(&["rev-parse", "HEAD"]);
+        git(&["switch", "--quiet", "main"]);
+
+        let deploy_backend = Arc::from(
+            crate::deploy::create_backend("manual", None, None, None).expect("manual backend"),
+        );
+        let state = Arc::new(
+            AppState::new(
+                repo.clone(),
+                Arc::new(crate::runtime::NoOpRuntime),
+                roko_core::config::schema::RokoConfig::default(),
+                deploy_backend,
+            )
+            .expect("AppState::new"),
+        );
+        let index =
+            roko_fs::run_index::run_index_path(&state.layout.events_jsonl_path(), "u1").unwrap();
+        write_rows(
+            &index,
+            &[
+                json!({"type":"run.started","run_id":"u1","timestamp_ms":1,"plan_id":"pu"}),
+                json!({"type":"task_completed","run_id":"u1","timestamp_ms":2,"plan_id":"pu","task_id":"T1","outcome":"unverified"}),
+                json!({"type":"run.completed","run_id":"u1","timestamp_ms":3,"outcome":"failed","duration_ms":10}),
+            ],
+        );
+        let checkpoint =
+            super::super::run_result::graph_plan_state_dir(&repo, "pu").join("checkpoint.json");
+        std::fs::create_dir_all(checkpoint.parent().unwrap()).unwrap();
+        std::fs::write(
+            &checkpoint,
+            json!({"extensions":{"roko.batch@1":{"value":{
+                "run_id":"u1","branch":"roko/batch/u1","base_oid":base,"plan_id":"pu",
+                "plan_branch":"roko/plan/pu",
+                "work":{"unverified":{"commit":tip,"base":base,
+                    "tasks":[{"task_id":"T1","verdict":"unverified"}]}}
+            }}}})
+            .to_string(),
+        )
+        .unwrap();
+        let summary = || {
+            let state = Arc::clone(&state);
+            async move {
+                let Json(summary) = get_run_summary(State(state), Path("u1".into()))
+                    .await
+                    .unwrap();
+                summary
+            }
+        };
+        let diff = |query: DiffQuery| {
+            let state = Arc::clone(&state);
+            async move { get_run_diff(State(state), Path("u1".into()), Query(query)).await }
+        };
+
+        let ended = summary().await;
+        assert_eq!(ended["verdict"], "unverified", "{ended}");
+        let result = &ended["result"];
+        assert_eq!(result["branch"], "roko/batch/u1", "{result}");
+        assert_eq!(
+            result["commit"],
+            base.as_str(),
+            "nothing was delivered: {result}"
+        );
+        assert_eq!(result["merged"], false, "{result}");
+        assert!(result.get("merge_command").is_none(), "{result}");
+        assert_eq!(
+            result["unverified"],
+            json!([{
+                "plan_id": "pu",
+                "branch": "roko/plan/pu",
+                "commit": tip,
+                "base": base,
+                "tasks": [{"task_id": "T1", "verdict": "unverified"}],
+                "files_changed": ["new.py"],
+                "diffstat": {"files": 1, "insertions": 2, "deletions": 0},
+                "review_command": format!("git diff {}..roko/plan/pu", &base[..12]),
+            }]),
+            "{result}"
+        );
+
+        let Json(unverified) = diff(DiffQuery {
+            work: Some("unverified".into()),
+            ..DiffQuery::default()
+        })
+        .await
+        .unwrap();
+        assert_eq!(unverified["work"], "unverified", "{unverified}");
+        assert_eq!(unverified["plan_id"], "pu", "{unverified}");
+        assert_eq!(unverified["branch"], "roko/plan/pu", "{unverified}");
+        assert_eq!(unverified["commit"], tip.as_str(), "{unverified}");
+        assert_eq!(unverified["files"][0]["path"], "new.py", "{unverified}");
+        assert!(
+            unverified["files"][0]["patch"]
+                .as_str()
+                .unwrap()
+                .contains("+def two():"),
+            "{unverified}"
+        );
+        let Json(verified) = diff(DiffQuery::default()).await.unwrap();
+        assert_eq!(verified["totals"]["files"], 0, "{verified}");
+        let other_plan = diff(DiffQuery {
+            work: Some("unverified".into()),
+            plan_id: Some("other".into()),
+            ..DiffQuery::default()
+        })
+        .await
+        .unwrap_err();
+        assert_eq!(
+            other_plan.status,
+            StatusCode::NOT_FOUND,
+            "{}",
+            other_plan.message
+        );
+        let refused = diff(DiffQuery {
+            work: Some("everything".into()),
+            ..DiffQuery::default()
+        })
+        .await
+        .unwrap_err();
+        assert_eq!(
+            refused.status,
+            StatusCode::BAD_REQUEST,
+            "{}",
+            refused.message
+        );
+
+        // Another run moved the plan branch on: the work is named by its commit.
+        git(&["branch", "--force", "roko/plan/pu", "main"]);
+        let moved = summary().await["result"]["unverified"][0].clone();
+        assert!(moved.get("branch").is_none(), "{moved}");
+        assert_eq!(
+            moved["review_command"],
+            format!("git diff {}..{tip}", &base[..12]),
+            "{moved}"
+        );
     }
 
     /// gap-8409d0: an ended run's summary names its batch branch, the branch's

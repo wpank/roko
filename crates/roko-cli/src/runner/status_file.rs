@@ -448,18 +448,20 @@ impl GraphRunStatus {
 }
 
 /// The terminal phase for a `RunCompleted` outcome label, in the vocabulary
-/// the Runner-v2 status file used.
+/// the Runner-v2 status file used, plus `unverified` for a run whose plans
+/// ran no check (bug-db89d4).
 fn terminal_phase(outcome: &str) -> &'static str {
     match outcome {
         "succeeded" | "completed" => "completed",
         "cancelled" | "canceled" => "cancelled",
+        "unverified" => "unverified",
         _ => "failed",
     }
 }
 
 /// Whether `phase` says the run ended (see [`terminal_phase`]).
 fn is_terminal_phase(phase: &str) -> bool {
-    matches!(phase, "completed" | "failed" | "cancelled")
+    matches!(phase, "completed" | "failed" | "cancelled" | "unverified")
 }
 
 /// Keeps `<state_dir>/status.json` current for one Graph run.

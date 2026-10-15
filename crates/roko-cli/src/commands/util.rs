@@ -586,7 +586,7 @@ pub(crate) async fn cmd_run(
             if cli.json {
                 println!("{}", serde_json::to_string_pretty(&report)?);
             } else if !cli.quiet {
-                roko_cli::run::print_workflow_run_report(&prompt, tier, &report);
+                roko_cli::run::print_workflow_run_report(&workdir, &prompt, tier, &report);
             }
 
             if !report.success {

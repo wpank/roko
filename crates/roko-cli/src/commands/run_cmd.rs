@@ -512,7 +512,7 @@ async fn run_one_task(
     })
     .await;
 
-    handle_workflow_result(cli, prompt, tier, result)
+    handle_workflow_result(cli, workdir, prompt, tier, result)
 }
 
 // ─── Plan: write a plan from the prompt, then run it ────────────────────
@@ -869,6 +869,7 @@ fn print_run_preview(
 
 fn handle_workflow_result(
     cli: &Cli,
+    workdir: &Path,
     prompt: &str,
     tier: &str,
     result: anyhow::Result<roko_runtime::workflow_contract::WorkflowRunReport>,
@@ -878,7 +879,7 @@ fn handle_workflow_result(
             if cli.json {
                 println!("{}", serde_json::to_string_pretty(&report)?);
             } else if !cli.quiet {
-                roko_cli::run::print_workflow_run_report(prompt, tier, &report);
+                roko_cli::run::print_workflow_run_report(workdir, prompt, tier, &report);
             }
 
             if report.success {

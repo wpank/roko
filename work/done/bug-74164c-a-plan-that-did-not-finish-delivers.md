@@ -2,7 +2,7 @@
 id = "bug-74164c"
 kind = "bug"
 title = "A plan that did not finish delivers none of its verified tasks' work: the batch branch stays at its base and the passed tasks' commits sit on branches nothing names"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p2"
 goal = "hermes"
@@ -11,6 +11,7 @@ subsystem = ["roko-cli/graph_execution", "roko-serve/runs"]
 created = 2026-10-15
 updated = 2026-10-15
 last_verified = 2026-10-15
+last_verified_rev = "903e35f30"
 source = "tmp/hermes-roko-v5/findings/fresh-guide.md item 29 (fresh-guide, 2026-10-15)"
 discovered_from = "hermes-roko-v5 round: a newcomer's first session"
 anchors = ["crates/roko-cli/src/graph_execution/plan_runner.rs::run_one_plan", "crates/roko-cli/src/graph_execution/batch.rs::BatchIntegration", "crates/roko-serve/src/routes/run_result.rs::run_result"]
@@ -21,6 +22,15 @@ command = "grep -rqw 'fn a_plan_that_did_not_finish_delivers_its_verified_tasks'
 
 [[verify]]
 command = "grep -rqw 'fn run_summary_says_which_work_is_partial' crates/roko-serve/ && cargo test -p roko-serve --lib run_summary_says_which_work_is_partial"
+
+[closed]
+at = 2026-10-15
+at_ts = "2026-10-15T20:30:08Z"
+commit = "903e35f30"
+by = "commit trailer"
+executor = "unknown"
+forced = false
+evidence = "903e35f30: a plan under a batch that did not succeed, and whose tasks did not all pass, delivers the verified prefix of what its run accepted onto its plan branch (PlanWork::verified_tip) into the batch: a plumbing merge with no whole-plan check, delivery id <run>:<plan>:partial, receipt extension roko.partial; its roko.batch@1 record says partial, delivered_tasks and missing_tasks[{task_id, why}]; delivered checkouts are released; CLI, event graph.plan_partially_delivered and roko plan status say partial; roko-serve result.partial and result.plans[]. Verify: a_plan_that_did_not_finish_delivers_its_verified_tasks (roko-cli) and run_summary_says_which_work_is_partial (roko-serve) pass; full roko-cli lib (3643 passed, 6 ignored, gist test skipped) and roko-serve lib (1020) pass, including bug-db89d4's verify tests on this tree; clippy -D warnings clean. Integration: attempt_diff_canary, honest_verdicts_canary, operator_checkout_clean pass; with a scratch HOME plan_branch_integration c3 passes (worktree_task_diff's fails-verify test fails on an operator-checkout write by a cheap helper agent, unrelated). Live: plan partial-demo over /mcp (gpt-5.4-mini, $0.010): T1 passed, T2 failed, roko/batch/a71da6cd holds only T1's wordy/cli.py change, result.partial true, plans[0] delivered T1, missing T2 failed; T1's checkout removed, T2's kept."
 +++
 
 ## Problem

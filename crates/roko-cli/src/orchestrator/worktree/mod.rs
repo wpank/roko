@@ -700,10 +700,10 @@ impl WorktreeManager {
                 });
             }
             let branch_ref = format!("refs/heads/{branch}");
-            if git_ops::worktree_list_contains_branch(&listed.stdout, &branch_ref) {
+            if let Some(holder) = git_ops::worktree_with_branch(&listed.stdout, &branch_ref) {
                 return Err(reattach_rejected(
                     id,
-                    format!("branch `{branch}` is already checked out in this repository"),
+                    git_ops::branch_checked_out_reason(&self.config.repo_root, branch, &holder),
                 ));
             }
         }

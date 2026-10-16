@@ -208,9 +208,9 @@ impl RequestPayload for GenerateRequest {
 /// before the background work starts so the portal's generate hook can use it
 /// immediately.
 ///
-/// The operation ends `Completed { result: {"slug", "task_count"} }` only when
-/// plan `slug` loads afterwards. A generation that fails, or that finishes
-/// without writing that plan, ends it `Failed { error }`.
+/// The operation ends `Completed { result: {"slug", "task_count", "cost_usd"} }`
+/// only when plan `slug` loads afterwards. A generation that fails, or that
+/// finishes without writing that plan, ends it `Failed { error }`.
 ///
 /// The operation handle is registered in `state.operations` before the spawned
 /// task can finish (a oneshot start signal gates the task exactly as

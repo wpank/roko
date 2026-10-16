@@ -2,8 +2,10 @@
 //!
 //! A task that `[routing.ladder]` routes climbs one runnable rung after
 //! [`FAILURES_PER_RUNG`] agent-blamed failures on the rung it runs on (a
-//! failed verify step, a turn-cap stop, or a timeout after the first token),
-//! at most [`MAX_ESCALATIONS`] times and never past its top rung. Provider and
+//! failed verify step, a turn-cap stop, a try that spent its rung's
+//! allowance, or a timeout after the first token), at most
+//! [`MAX_ESCALATIONS`] times and never past its top rung. Each try on a rung
+//! the task can still climb from is bounded (`try_allowance`). Provider and
 //! harness failures never count; they stay with provider failover. A pinned
 //! model (`--model`, a task's `model_hint`, express routing) never moves, and
 //! the dispatch log says so.
@@ -34,6 +36,7 @@ use roko_learn::telemetry::{AttemptLadder, AttemptVerdictRecord, Blame, LadderRe
 
 use super::attempt::AttemptContext;
 use super::retry_feedback::LadderStanding;
+use super::try_allowance::RungAllowance;
 use super::*;
 use crate::dispatch::model_routing::SELF_MODEL_LOOP;
 use crate::dispatch::{RoutingLadder, RunnerDispatchPlan};
@@ -239,11 +242,7 @@ impl GraphTaskDispatcher {
                 );
                 // The task's last attempt, with no rung left to climb: M1's
                 // cap stops the climb as the top rung does (8124).
-                let capped = self
-                    .tier_bounds(task, attempt.harness_decision())
-                    .caps(rung);
-                let top =
-                    step >= MAX_ESCALATIONS || capped || ladder.runnable_above(role, rung) == 0;
+                let top = self.climbs_left(task, attempt.harness_decision(), rung, step) == 0;
                 let task_key = format!("{}/{}", spec.plan_id, task.id);
                 (
                     record,
@@ -274,6 +273,58 @@ impl GraphTaskDispatcher {
             | ModelChoiceSource::Default => return,
         };
         attempt.record_ladder(record, last_chance);
+    }
+
+    /// How many rungs `task` can still climb from rung `rung`, `step` rungs
+    /// above its start rung: the runnable rungs above it, at most the climbs
+    /// [`MAX_ESCALATIONS`] leaves, and none from a rung at or above the cap
+    /// of `decision`'s θ (8124).
+    fn climbs_left(
+        &self,
+        task: &TaskDef,
+        decision: Option<&HarnessDecision>,
+        rung: usize,
+        step: u32,
+    ) -> u32 {
+        let Some(ladder) = self.routing_ladder() else {
+            return 0;
+        };
+        if self.tier_bounds(task, decision).caps(rung) {
+            return 0;
+        }
+        let role = task.role.as_deref().unwrap_or("implementer");
+        let above = u32::try_from(ladder.runnable_above(role, rung)).unwrap_or(u32::MAX);
+        above.min(MAX_ESCALATIONS.saturating_sub(step))
+    }
+
+    /// What one try of `task` may use on the rung `plan` routed `attempt`
+    /// to, `step` rungs above its start rung, when its tier gives an attempt
+    /// `tier_turns` (gap-3e770b): the rung's turns and spend allowance from
+    /// `[routing.ladder]`. `None` for an attempt the ladder did not route (a
+    /// pin among them), and on a rung with neither bound, such as the
+    /// highest one the task can reach.
+    pub(super) fn rung_allowance(
+        &self,
+        task: &TaskDef,
+        attempt: &AttemptContext,
+        plan: &RunnerDispatchPlan,
+        step: u32,
+        tier_turns: u32,
+    ) -> Option<RungAllowance> {
+        let rung = match plan.source {
+            ModelChoiceSource::Ladder { rung } | ModelChoiceSource::SelfModel { rung } => rung,
+            _ => return None,
+        };
+        let role = task.role.as_deref().unwrap_or("implementer");
+        let name = self.routing_ladder()?.rung_name(role, rung)?;
+        let climbs_left = self.climbs_left(task, attempt.harness_decision(), rung, step);
+        let ladder = &self.config.routing.ladder;
+        let allowance = RungAllowance {
+            rung: name.to_string(),
+            turns: ladder.try_turns(name, climbs_left, tier_turns),
+            usd: ladder.try_usd(name),
+        };
+        (allowance.turns.is_some() || allowance.usd.is_some()).then_some(allowance)
     }
 
     /// Count `settled`, an attempt of `task`, toward the task's standing on
@@ -479,11 +530,20 @@ printf '%s\n' '{"type":"result","session_id":"sess-l","model":"claude-sonnet-4-6
         temp: &tempfile::TempDir,
         configure: impl FnOnce(&mut RokoConfig),
     ) -> (GraphTaskDispatcher, TaskDef) {
+        ladder_fixture_scripted(temp, PROVIDER, configure).await
+    }
+
+    /// [`ladder_fixture_with`], with `provider` as the fake Claude CLI.
+    async fn ladder_fixture_scripted(
+        temp: &tempfile::TempDir,
+        provider: &str,
+        configure: impl FnOnce(&mut RokoConfig),
+    ) -> (GraphTaskDispatcher, TaskDef) {
         let helper = temp.path().join("helper.sh");
         std::fs::write(&helper, VERIFY_PROVIDER).expect("write helper provider");
         std::fs::set_permissions(&helper, std::fs::Permissions::from_mode(0o755))
             .expect("make helper executable");
-        let (dispatcher, mut task) = make_scripted_batch_dispatcher(temp, PROVIDER, |config| {
+        let (dispatcher, mut task) = make_scripted_batch_dispatcher(temp, provider, |config| {
             no_auto_fix(config);
             config
                 .models
@@ -1096,5 +1156,167 @@ printf '%s\n' '{"type":"result","session_id":"sess-l","model":"claude-sonnet-4-6
                 ("agent", "top", "escalated", true),
             ]
         );
+    }
+
+    /// Fake Claude CLI that records each call's model, `--max-turns` and
+    /// `--max-budget-usd` (`-` when not given) and its prompt, and never
+    /// finishes: given a spend limit it stops there, otherwise at its turn
+    /// cap.
+    const BOUNDED_PROVIDER: &str = r#"#!/bin/sh
+dir=$(dirname -- "$0")
+n=$(( $(cat "$dir/calls" 2>/dev/null || echo 0) + 1 ))
+echo "$n" > "$dir/calls"
+cat > "$dir/prompt-$n"
+previous=
+model=-
+turns=-
+budget=-
+for arg in "$@"; do
+  case "$previous" in
+    --model) model=$arg ;;
+    --max-turns) turns=$arg ;;
+    --max-budget-usd) budget=$arg ;;
+  esac
+  previous=$arg
+done
+printf '%s %s %s\n' "$model" "$turns" "$budget" >> "$dir/provider-calls"
+if [ "$budget" != "-" ]; then
+  printf '{"type":"result","subtype":"error_max_budget_usd","is_error":true,"num_turns":3,"total_cost_usd":%s,"errors":["Reached maximum budget"]}\n' "$budget"
+else
+  printf '{"type":"result","subtype":"error_max_turns","is_error":true,"num_turns":%s,"total_cost_usd":0.01}\n' "$turns"
+fi
+exit 1
+"#;
+
+    /// Three tries of a focused task (60 turns) on [`BOUNDED_PROVIDER`],
+    /// under `configure`: what each call was given, each prompt, and the
+    /// outcome, blame, rung and ladder reason of each verdict.
+    async fn three_bounded_tries(
+        configure: impl FnOnce(&mut RokoConfig),
+    ) -> (Vec<String>, Vec<String>, Vec<[String; 4]>) {
+        let temp = tempdir().expect("tempdir");
+        let runs_dir = temp.path().join(".roko/runs");
+        let (dispatcher, mut task) =
+            ladder_fixture_scripted(&temp, BOUNDED_PROVIDER, configure).await;
+        task.tier = "focused".to_string();
+        let dispatcher = dispatcher.with_feedback(GraphFeedbackContext {
+            runs_dir: Some(runs_dir.clone()),
+            ..GraphFeedbackContext::default()
+        });
+        let mut spec = make_spec(&task);
+        spec.max_retries = 4;
+        let ctx = CellContext::new().with_run_id(RUN.to_string());
+        for _ in 0..3 {
+            dispatcher
+                .dispatch(&spec, Vec::new(), &ctx)
+                .await
+                .expect_err("no try finishes");
+        }
+        let calls: Vec<String> = std::fs::read_to_string(temp.path().join("provider-calls"))
+            .expect("the provider recorded its calls")
+            .lines()
+            .map(str::to_string)
+            .collect();
+        let prompts = (1..=3)
+            .map(|n| {
+                std::fs::read_to_string(temp.path().join(format!("prompt-{n}"))).expect("prompt")
+            })
+            .collect();
+        dispatcher.close_run_attempts(RUN);
+        let verdicts = std::fs::read_to_string(runs_dir.join(RUN).join("attempts.jsonl"))
+            .expect("the run's attempt log")
+            .lines()
+            .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+            .filter(|line| line["schema_version"] == "roko.verdict/1")
+            .map(|verdict| {
+                let field = |value: &serde_json::Value| value.as_str().unwrap_or("-").to_string();
+                [
+                    field(&verdict["outcome"]),
+                    field(&verdict["blame"]),
+                    field(&verdict["ladder"]["rung"]),
+                    field(&verdict["ladder"]["reason"]),
+                ]
+            })
+            .collect();
+        (calls, prompts, verdicts)
+    }
+
+    /// gap-3e770b: a try on a rung the task can still climb from gets half
+    /// the tier's turns. A try that uses them up fails on the rung, its
+    /// retry keeps the same bound and resumes the work, and the second such
+    /// failure climbs; the top rung gets the tier's cap.
+    #[tokio::test]
+    async fn a_turn_bounded_try_climbs_the_ladder() {
+        let (calls, prompts, verdicts) = three_bounded_tries(|_| {}).await;
+        assert_eq!(
+            calls,
+            [
+                format!("{CHEAP} 30 -"),
+                format!("{CHEAP} 30 -"),
+                format!("{TOP} 60 -"),
+            ]
+        );
+        let turn_cap =
+            |rung: &str, reason: &str| ["turn_cap", "agent", rung, reason].map(str::to_string);
+        assert_eq!(
+            verdicts,
+            [
+                turn_cap("cheap", "start"),
+                turn_cap("cheap", "start"),
+                turn_cap("top", "escalated"),
+            ]
+        );
+        assert!(!prompts[0].contains("Resuming"));
+        assert!(
+            prompts[1].contains("stopped at its 30-turn cap")
+                && prompts[1].contains("This attempt has a 30-turn cap."),
+            "{}",
+            prompts[1]
+        );
+        assert!(
+            prompts[2].contains("This attempt has a 60-turn cap."),
+            "{}",
+            prompts[2]
+        );
+    }
+
+    /// gap-3e770b: `[routing.ladder] max_turns` and `max_usd` set a rung's
+    /// try allowance. The Claude CLI is handed the rung's spend as its own
+    /// limit; a try that stops there fails on the rung like a turn-cap stop,
+    /// the next try is told to resume, and the second such failure climbs to
+    /// a rung with no allowance of its own.
+    #[tokio::test]
+    async fn a_spend_bounded_try_climbs_the_ladder() {
+        let (calls, prompts, verdicts) = three_bounded_tries(|config| {
+            let ladder = &mut config.routing.ladder;
+            ladder.max_turns.insert("cheap".to_string(), 9);
+            ladder.max_usd.insert("cheap".to_string(), 0.015);
+        })
+        .await;
+        assert_eq!(
+            calls,
+            [
+                format!("{CHEAP} 9 0.015000"),
+                format!("{CHEAP} 9 0.015000"),
+                format!("{TOP} 60 -"),
+            ]
+        );
+        let place =
+            |rung: &str, reason: &str| ["turn_cap", "agent", rung, reason].map(str::to_string);
+        assert_eq!(
+            verdicts,
+            [
+                place("cheap", "start"),
+                place("cheap", "start"),
+                place("top", "escalated"),
+            ]
+        );
+        for prompt in &prompts[1..] {
+            assert!(
+                prompt.contains("was stopped: the try spent its allowance on rung `cheap`"),
+                "{prompt}"
+            );
+        }
+        assert!(!prompts[0].contains("Resuming"));
     }
 }

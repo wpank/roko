@@ -866,6 +866,22 @@ impl Settlement {
         }
     }
 
+    /// A try that spent its rung's allowance, for `reason` (gap-3e770b): the
+    /// agent's failure on the rung, as a turn-cap stop is, so it counts
+    /// toward a climb. Its reason's class says it was the spend.
+    pub(super) fn allowance_spent(reason: &str) -> Self {
+        Self {
+            outcome: AttemptOutcome::TurnCap,
+            gate_verdict: None,
+            first_token_seen: true,
+            failure_reason: Some(super::turn_policy::attempt_failure_reason(
+                super::try_allowance::RUNG_ALLOWANCE,
+                reason,
+            )),
+            rung: None,
+        }
+    }
+
     /// An attempt the stall watchdog cancelled, failed with `message`: a
     /// timeout, whatever its message says (bug-4c553b). After its first token
     /// the timeout is the agent's, before it the provider's.

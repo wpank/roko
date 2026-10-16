@@ -131,8 +131,10 @@ pub fn plan_source_document(plan_dir: &Path) -> Result<PathBuf> {
 const FAILURE_OUTPUT_CHARS: usize = 2000;
 /// Characters of the model's output that a non-retriable agent error quotes.
 const AGENT_ERROR_PREVIEW_CHARS: usize = 500;
-/// Characters of the model's last output that a retry prompt quotes.
-const RETRY_OUTPUT_CHARS: usize = 2000;
+/// Where, under the workspace's `.roko/`, a generation keeps the planner's
+/// replies that held no plan that validates, one directory per plan slug
+/// (bug-f0d60c).
+const REJECTED_DRAFTS_DIR: &str = "plan-drafts";
 /// Characters of a validation error that a progress report quotes.
 const PROGRESS_REASON_CHARS: usize = 200;
 
@@ -669,6 +671,82 @@ fn hidden_output_regeneration_prompt(task_prompt: &str, plan: &str, hidden: &[St
          the tests it pins.",
         hidden.join("\n")
     )
+}
+
+/// The prompt that asks the planner again when its `reply` held no plan that
+/// validates (bug-f0d60c): the original request with its source, the reply
+/// quoted up to `reply_chars` characters, and what was wrong with it. A retry
+/// that saw only the error, the reply's first 2,000 characters and a one-task
+/// template rebuilt a smaller plan from the template, and the source's
+/// acceptance checks were lost.
+fn extraction_retry_prompt(
+    task_prompt: &str,
+    kind: &str,
+    reply: &str,
+    error: &str,
+    reply_chars: usize,
+) -> String {
+    let quoted = crate::run::truncate(reply, reply_chars);
+    let cut = if quoted.len() < reply.len() {
+        format!("\n[reply truncated at {reply_chars} chars]")
+    } else {
+        String::new()
+    };
+    format!(
+        "{task_prompt}\n\n---\n\nYour reply below held no plan that validates:\n{error}\n\n\
+         ````text\n{quoted}{cut}\n````\n\n\
+         Fix only what the errors name. Keep every task and every verify step of your reply, \
+         and every requirement and acceptance criterion of the {kind} above: do not shorten \
+         the plan or start again from a smaller one. Output the complete plan as a single \
+         ```toml fenced block, followed only by the ```accept:accept/<file> blocks of the \
+         tests it pins. The meta field is `plan`, not `name`."
+    )
+}
+
+/// Keep the planner's `reply`, rejected for `error`, as `rejected-<n>.md` in
+/// `.roko/plan-drafts/<slug>/` of `workdir` (bug-f0d60c), so what a retry
+/// changed can be read afterwards. The first draft a generation keeps
+/// replaces the drafts an earlier generation of the slug kept. A draft that
+/// cannot be written is only logged.
+fn keep_rejected_draft(
+    workdir: &Path,
+    slug: &str,
+    n: u32,
+    reply: &str,
+    error: &str,
+) -> Option<PathBuf> {
+    let dir = workdir
+        .join(".roko")
+        .join(REJECTED_DRAFTS_DIR)
+        .join(slug);
+    if n == 1
+        && let Ok(entries) = std::fs::read_dir(&dir)
+    {
+        for entry in entries.flatten() {
+            let name = entry.file_name();
+            let name = name.to_string_lossy();
+            if name.starts_with("rejected-") && name.ends_with(".md") {
+                let _ = std::fs::remove_file(entry.path());
+            }
+        }
+    }
+    let path = dir.join(format!("rejected-{n}.md"));
+    let text = format!(
+        "# Rejected draft {n} of plan `{slug}`\n\n\
+         It held no plan that validates:\n\n{error}\n\n\
+         ## The planner's reply\n\n{reply}\n"
+    );
+    match std::fs::create_dir_all(&dir).and_then(|()| atomic_write_str(&path, &text)) {
+        Ok(()) => Some(path),
+        Err(error) => {
+            tracing::warn!(
+                path = %path.display(),
+                %error,
+                "plan generate: could not keep a rejected draft"
+            );
+            None
+        }
+    }
 }
 
 /// A plan source, read for the planner.
@@ -1290,8 +1368,8 @@ pub async fn generate_plan(request: PlanRequest<'_>) -> Result<(PathBuf, Generat
         // Write files from agent output (strategist can't write files directly).
         // Try fenced ```toml block first, then ```tasks.toml, then unfenced TOML.
         //
-        // If extraction or validation fails, retry up to 2 times with a
-        // stricter prompt requesting only the TOML block.
+        // If extraction or validation fails, retry up to 2 times with the
+        // request, the reply and its errors (bug-f0d60c).
         let extract_and_validate =
             |raw: &str| -> std::result::Result<String, String> {
                 let toml_content = extract_fenced_block(raw, "toml")
@@ -1503,6 +1581,18 @@ pub async fn generate_plan(request: PlanRequest<'_>) -> Result<(PathBuf, Generat
 
         // First attempt uses the output we already have.
         let mut validated_toml = try_extract_and_validate(&output);
+        // bug-f0d60c: each reply that held no plan that validates is kept.
+        let mut rejected_drafts = 0u32;
+        let mut keep_draft = |reply: &str, error: &str| {
+            rejected_drafts += 1;
+            if let Some(path) = keep_rejected_draft(workdir_ref, slug, rejected_drafts, reply, error)
+            {
+                eprintln!("  Kept the rejected draft in {}", path.display());
+            }
+        };
+        if let Err(error) = &validated_toml {
+            keep_draft(&output, error);
+        }
 
         // Retry up to 2 times on extraction/validation failure, escalating
         // to a higher-tier model when TOML validation keeps failing.
@@ -1550,7 +1640,8 @@ pub async fn generate_plan(request: PlanRequest<'_>) -> Result<(PathBuf, Generat
                     "plan generate: TOML extraction/validation failed, retrying"
                 );
                 eprintln!(
-                    "⚠️  Plan TOML extraction failed (attempt {}/{}), retrying with stricter prompt…",
+                    "⚠️  The planner's reply held no plan that validates (attempt {}/{}); asking \
+                     again with its errors…",
                     attempt,
                     max_retries + 1,
                 );
@@ -1564,41 +1655,12 @@ pub async fn generate_plan(request: PlanRequest<'_>) -> Result<(PathBuf, Generat
                     )),
                     retry_model.unwrap_or(planner_model.as_str()),
                 );
-                let head = crate::run::truncate(&last_output, RETRY_OUTPUT_CHARS);
-                let truncated_output = if head.len() < last_output.len() {
-                    format!("{head}…(truncated)")
-                } else {
-                    last_output.clone()
-                };
-                let retry_prompt = format!(
-                    "Previous attempt produced invalid TOML. Error: {error}\n\n\
-                     Invalid output (truncated):\n```\n{truncated_output}\n```\n\n\
-                     Please regenerate a valid tasks.toml. Your response must be a single \
-                     ```toml fenced block, followed only by an ```accept:accept/<file> block for \
-                     each test its [task.accept] entries name.\n\n\
-                     MINIMUM REQUIRED STRUCTURE:\n\
-                     ```toml\n\
-                     [meta]\n\
-                     plan = \"{slug}\"\n\
-                     total = 1\n\
-                     done = 0\n\
-                     status = \"ready\"\n\
-                     # max_parallel is omitted: tasks that do not depend on each other run together\n\n\
-                     [[task]]\n\
-                     id = \"T1\"\n\
-                     title = \"Task title\"\n\
-                     description = \"What this task does.\"\n\
-                     status = \"ready\"\n\
-                     tier = \"focused\"\n\
-                     max_loc = 50\n\
-                     files = [\"crates/roko-core/src/lib.rs\"]\n\
-                     allowed_tools = [\"read_file\", \"grep\"]\n\
-                     denied_tools = []\n\
-                     depends_on = []\n\
-                     role = \"implementer\"\n\
-                     ```\n\n\
-                     Do NOT include Rust code, markdown prose, or explanations outside the TOML block.\n\
-                     Note: the meta field is `plan`, not `name`."
+                let retry_prompt = extraction_retry_prompt(
+                    &task_prompt,
+                    &source.kind,
+                    &last_output,
+                    error,
+                    budget.source_chars,
                 );
                 let retry_result = run_agent_capture_silent_with_usage(AgentExecOpts {
                     prompt: &retry_prompt,
@@ -1619,18 +1681,21 @@ pub async fn generate_plan(request: PlanRequest<'_>) -> Result<(PathBuf, Generat
 
                 match retry_result.map(|retry| (retry.exit_code, retry.output)) {
                     Ok((0, retry_output)) if !retry_output.trim().is_empty() => {
-                        last_output = retry_output.clone();
                         validated_toml = try_extract_and_validate(&retry_output);
-                        if validated_toml.is_ok() {
-                            tracing::info!(
-                                attempt,
-                                model = retry_model.unwrap_or("<default>"),
-                                retry_ms = t_retry.elapsed().as_millis() as u64,
-                                "plan generate: retry succeeded"
-                            );
-                            eprintln!("✅ Retry {attempt} succeeded");
-                            break;
+                        match &validated_toml {
+                            Ok(_) => {
+                                tracing::info!(
+                                    attempt,
+                                    model = retry_model.unwrap_or("<default>"),
+                                    retry_ms = t_retry.elapsed().as_millis() as u64,
+                                    "plan generate: retry succeeded"
+                                );
+                                eprintln!("✅ Retry {attempt} succeeded");
+                                break;
+                            }
+                            Err(error) => keep_draft(&retry_output, error),
                         }
+                        last_output = retry_output;
                     }
                     // Non-zero exit (auth/network errors) — do NOT escalate model,
                     // just log and retry with the same model.
@@ -1849,11 +1914,24 @@ pub async fn generate_plan(request: PlanRequest<'_>) -> Result<(PathBuf, Generat
             eprintln!("--- Raw model output (first {FAILURE_OUTPUT_CHARS} chars) ---");
             eprintln!("{}", crate::run::truncate(&output, FAILURE_OUTPUT_CHARS));
             eprintln!("--- End raw model output ---");
+            // A dry run's drafts went with its scratch copy of the workspace.
+            let drafts = if rejected_drafts > 0 && !dry_run {
+                format!(
+                    "\nThe rejected drafts are in {}.",
+                    workdir_ref
+                        .join(".roko")
+                        .join(REJECTED_DRAFTS_DIR)
+                        .join(slug)
+                        .display()
+                )
+            } else {
+                String::new()
+            };
             return Err(anyhow!(
                 "Plan generation failed after retries: no valid tasks.toml was produced.\n\
                  Last error: {final_err}\n\
                  The agent output ({} bytes) did not contain a parseable ```toml block.\n\
-                 hint: Try again, or create plans/{slug}/tasks.toml manually.{toml_hint}",
+                 hint: Try again, or create plans/{slug}/tasks.toml manually.{toml_hint}{drafts}",
                 output.len()
             ));
         }
@@ -2621,7 +2699,6 @@ mod tests {
         assert!(printed.ends_with('é'));
         let preview = crate::run::truncate(&output, AGENT_ERROR_PREVIEW_CHARS);
         assert_eq!(preview, "x".repeat(AGENT_ERROR_PREVIEW_CHARS));
-        assert_eq!(crate::run::truncate(&output, RETRY_OUTPUT_CHARS), printed);
         assert_eq!(crate::run::truncate("short", FAILURE_OUTPUT_CHARS), "short");
     }
 
@@ -3107,6 +3184,70 @@ mod tests {
             scored.min <= scored.mean && scored.mean < 100.0,
             "{scored:?}"
         );
+    }
+
+    /// bug-f0d60c: a reply that holds no plan that validates is retried with
+    /// the request, its source document included, the whole reply and its
+    /// error, and no one-task template; the rejected reply is kept with its
+    /// error.
+    #[cfg(unix)]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn extraction_retry_keeps_the_source_document() {
+        let source = PlanSource::Text {
+            text: "# Widget\n\nAdd a widget module.\n\n## Verification\n\n\
+                   - `widget::spin(3)` returns three turns\n",
+            kind: "file",
+        };
+        // Longer than the 2,000 characters a retry used to quote, with a key
+        // given twice.
+        let draft = format!(
+            "{WIDGET_PLAN}phase = \"check\"\n# {}\n# the end of the draft\n",
+            "padding ".repeat(400)
+        );
+        let temp = tempfile::tempdir().expect("tempdir");
+        let workdir = temp.path();
+        let bin = tempfile::tempdir().expect("tempdir");
+        let calls = write_scripted_planner(
+            workdir,
+            bin.path(),
+            &[&draft, WIDGET_PLAN],
+            "allow_threshold = 0.0\nblock_threshold = 0.0\n",
+        );
+        let request = PlanRequest {
+            model: Some("planner"),
+            ..PlanRequest::new(source, "widget", workdir)
+        };
+        generate_plan(request)
+            .await
+            .expect("generate the widget plan");
+        let log = std::fs::read_to_string(&calls).expect("planner call log");
+        assert_eq!(
+            log.lines().count(),
+            2,
+            "the rejected draft, then the retry"
+        );
+        assert!(workdir.join("plans/widget/tasks.toml").is_file());
+
+        let first = std::fs::read_to_string(bin.path().join("prompt-0.txt")).expect("first call");
+        let retry = std::fs::read_to_string(bin.path().join("prompt-1.txt")).expect("retry");
+        for expected in [
+            "`widget::spin(3)` returns three turns",
+            "# the end of the draft",
+            "generated plan has invalid TOML",
+        ] {
+            assert!(retry.contains(expected), "{expected}: {retry}");
+        }
+        assert!(!retry.contains("MINIMUM REQUIRED STRUCTURE"), "{retry}");
+        // The system prompt's example names the file; the retry adds no
+        // mention of its own.
+        let named = |text: &str| text.matches("crates/roko-core/src/lib.rs").count();
+        assert_eq!(named(&retry), named(&first));
+
+        let drafts = workdir.join(".roko/plan-drafts/widget");
+        let kept = std::fs::read_to_string(drafts.join("rejected-1.md")).expect("the draft");
+        assert!(kept.contains("generated plan has invalid TOML"), "{kept}");
+        assert!(kept.contains("# the end of the draft"), "{kept}");
+        assert!(!drafts.join("rejected-2.md").exists());
     }
 
     /// bug-59ed90: a plan whose check pipes its test runner's output away is

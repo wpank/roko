@@ -31,6 +31,7 @@ use roko_graph::delivery::ReleasePolicy;
 use tracing::{debug, info, warn};
 
 use super::plan_check_events::PlanCheckEvents;
+use super::plan_runner::PlanRunInterruptHandle;
 use crate::runner::merge::{MergeTree, git_command, git_merge_tree, git_output};
 
 // ---------------------------------------------------------------------------
@@ -87,6 +88,11 @@ pub struct DeliveryCheck {
     pub duration_ms: u64,
     /// The last [`CHECK_TAIL_LINES`] lines it wrote, stdout then stderr.
     pub output_tail: String,
+    /// What stopped it before it ended, such as `cancel` or `SIGINT`, when
+    /// the run was asked to stop (bug-7b62ff); its `exit_code` is then
+    /// `None`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stopped_by: Option<String>,
 }
 
 /// Outcome of a publication-phase operation.
@@ -167,6 +173,9 @@ pub struct GitDeliveryBackend {
     /// Publishes each regression command's start, heartbeats and end
     /// (gap-6b6ec1).
     check_events: PlanCheckEvents,
+    /// The run's stop request: a regression command still running when it
+    /// comes is killed with its process group (bug-7b62ff).
+    stop: PlanRunInterruptHandle,
 }
 
 impl GitDeliveryBackend {
@@ -190,7 +199,17 @@ impl GitDeliveryBackend {
             env_passthrough: Vec::new(),
             parent_env: None,
             check_events: PlanCheckEvents::none(),
+            stop: PlanRunInterruptHandle::default(),
         }
+    }
+
+    /// Stop the regression check when `stop` asks the run to stop: the
+    /// running command and everything it started are killed, and the check
+    /// ends with what stopped it (bug-7b62ff).
+    #[must_use]
+    pub fn with_stop(mut self, stop: PlanRunInterruptHandle) -> Self {
+        self.stop = stop;
+        self
     }
 
     /// Publish each regression command's start, heartbeats and end through
@@ -364,12 +383,25 @@ impl GitDeliveryBackend {
     /// this one's output for every crate the commits share, and the target
     /// dir holds one set of artifacts instead of one per delivery. One
     /// delivery at a time uses it, across processes.
+    ///
+    /// Each command leads a process group of its own. A stop request
+    /// (`with_stop`) kills the running command's group and ends the check
+    /// with a [`DeliveryCheck`] that says what stopped it; one that comes
+    /// while another delivery holds the checkout ends the wait (bug-7b62ff).
     async fn regression_output(
         &self,
         commit: &str,
     ) -> Result<(Vec<DeliveryCheck>, String), String> {
         let checkout = regression_checkout_path(&self.workdir);
-        let _held = lock_regression_checkout(&checkout).await?;
+        let _held = tokio::select! {
+            held = lock_regression_checkout(&checkout) => held?,
+            interrupt = self.stop.stopped() => {
+                return Err(format!(
+                    "{} stopped the post-merge regression check before it started",
+                    interrupt.cause()
+                ));
+            }
+        };
         self.reset_regression_checkout(&checkout, commit).await?;
 
         let parent_env = self
@@ -396,13 +428,31 @@ impl GitDeliveryBackend {
                 watched.finish(false, None, Some(reason.clone()));
                 return Err(reason);
             }
-            let run = regression
+            regression
                 .args(args)
                 .current_dir(&checkout)
-                .env("CARGO_TARGET_DIR", &self.regression_target_dir)
-                .kill_on_drop(true)
-                .output();
-            let output = match watched.watch(run).await {
+                .env("CARGO_TARGET_DIR", &self.regression_target_dir);
+            let run = watched.watch(roko_gate::output_in_own_group(regression));
+            // A stop drops the command, which kills its process group.
+            let ran = tokio::select! {
+                ran = run => ran,
+                interrupt = self.stop.stopped() => {
+                    let reason = format!("{} stopped it", interrupt.cause());
+                    watched.finish(false, None, Some(reason.clone()));
+                    let check = DeliveryCheck {
+                        command: check_command(command),
+                        source: self.regression_source.clone(),
+                        exit_code: None,
+                        duration_ms: started.elapsed().as_millis() as u64,
+                        output_tail: reason.clone(),
+                        stopped_by: Some(interrupt.label().to_string()),
+                    };
+                    log.push_str(&format!("$ {}\n[{reason}]\n\n", check.command));
+                    checks.push(check);
+                    break;
+                }
+            };
+            let output = match ran {
                 Ok(output) => output,
                 Err(e) => {
                     let reason = format!("failed to spawn regression gate: {e}");
@@ -417,6 +467,7 @@ impl GitDeliveryBackend {
                 exit_code: output.status.code(),
                 duration_ms: started.elapsed().as_millis() as u64,
                 output_tail: check_tail(&output),
+                stopped_by: None,
             };
             log.push_str(&check_log(&check, &output));
             checks.push(check);
@@ -731,6 +782,10 @@ impl DeliveryBackend for GitDeliveryBackend {
         };
         let summary = match checks.iter().find(|check| check.exit_code != Some(0)) {
             None => format!("post-merge regression passed for {plan_id}"),
+            Some(stopped) if stopped.stopped_by.is_some() => format!(
+                "post-merge regression stopped for {plan_id}: `{}`: {}",
+                stopped.command, stopped.output_tail
+            ),
             Some(failed) => {
                 let lines: Vec<&str> = failed
                     .output_tail
@@ -1870,6 +1925,64 @@ mod tests {
                 "finished 2 false Some(4)",
             ]
         );
+    }
+
+    /// bug-7b62ff: a cancel stops the post-merge regression check at once.
+    /// The running step dies with everything it started (its process group),
+    /// the delivery says the check was stopped and by what, and the
+    /// regression checkout is free for the next delivery.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_cancel_stops_the_post_merge_regression_check() {
+        use super::super::plan_runner::PlanRunInterrupt;
+        use crate::check_process_probe::{sleeping_step, wait_for_exit, wait_for_pids};
+        use fs2::FileExt as _;
+
+        let repo = diverged_repo();
+        let path = repo.path().to_path_buf();
+        git(&path, &["checkout", "--quiet", "-b", "work"]);
+        let scratch = tempfile::tempdir().expect("tempdir");
+        let pids = scratch.path().join("pids");
+        let stop = PlanRunInterruptHandle::default();
+        let backend = GitDeliveryBackend::new(path.clone())
+            .with_regression_steps(vec![sleeping_step(&pids), "touch never".to_string()])
+            .with_stop(stop.clone());
+        let commit = git(&path, &["rev-parse", "roko/plan-a"]);
+        let request = git_request("d-git-cancel", &path);
+        let regression =
+            tokio::spawn(async move { backend.run_regression(&request, &commit).await });
+        let running = wait_for_pids(&pids).await;
+
+        stop.request(PlanRunInterrupt::Cancel);
+        let outcome = tokio::time::timeout(std::time::Duration::from_secs(10), regression)
+            .await
+            .expect("the stopped check ends at once")
+            .expect("the regression task");
+
+        assert!(!outcome.passed, "{}", outcome.summary);
+        assert!(
+            outcome
+                .summary
+                .contains("post-merge regression stopped for plan-a"),
+            "{}",
+            outcome.summary
+        );
+        assert!(
+            outcome.summary.contains("a cancel request stopped it"),
+            "{}",
+            outcome.summary
+        );
+        let stopped = outcome.checks.last().expect("the stopped check");
+        assert_eq!(stopped.stopped_by.as_deref(), Some("cancel"));
+        assert_eq!(stopped.exit_code, None);
+        assert_eq!(outcome.checks.len(), 1, "the step after it ran");
+        for pid in running {
+            wait_for_exit(pid).await;
+        }
+        let lock = regression_checkout_path(&path).with_extension("lock");
+        let lock = std::fs::File::open(&lock).expect("the checkout's lock file");
+        lock.try_lock_exclusive()
+            .expect("the regression checkout is free");
     }
 
     /// bug-3c4600: the post-merge regression check, which every serve and

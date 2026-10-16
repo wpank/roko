@@ -2,21 +2,36 @@
 id = "bug-7b62ff"
 kind = "bug"
 title = "Cancelling a plan run during its post-merge regression check leaves the check running and the workspace runner lock held, so the next run fails at once"
-status = "open"
-triage = "unverified"
+status = "done"
+triage = "verified"
 severity = "p2"
 goal = "core"
 size = "M"
 subsystem = ["roko-cli/graph_execution"]
 created = 2026-10-15
-updated = 2026-10-15
+updated = 2026-10-16
+last_verified = 2026-10-16
+last_verified_rev = "6dd936e4b"
 source = "tmp/hermes-roko-v5/findings/roko-demos.md (roko-demos, 2026-10-15)"
 discovered_from = "hermes-roko-v5 round: demo plans run from Hermes in the roko repo"
 anchors = ["crates/roko-cli/src/graph_execution/delivery.rs", "crates/roko-cli/src/graph_execution/plan_verify.rs::run_plan_verify", "crates/roko-cli/src/workspace_lock.rs"]
 links = { depends_on = [], blocks = [], related = ["bug-1d09e8", "bug-0c7f25"], supersedes = [], duplicate_of = "" }
 
 [[verify]]
-command = "grep -rqw 'fn a_cancel_stops_the_post_merge_regression_check' crates/roko-cli/ && cargo test -p roko-cli a_cancel_stops_the_post_merge_regression_check"
+command = "grep -rqw 'fn a_cancel_stops_the_post_merge_regression_check' crates/roko-cli/ && cargo test -p roko-cli --lib -- a_cancel_stops_the_post_merge_regression_check a_cancel_stops_the_whole_plan_check_and_frees_the_workspace a_stop_ends_the_plan_check_and_kills_its_steps a_lock_held_by_this_process_is_not_a_process_to_kill"
+
+[closed]
+at = 2026-10-16
+at_ts = "2026-10-16T01:39:19Z"
+commit = "6dd936e4b"
+by = "roko-credfix"
+executor = "claude-agent"
+via = "manual"
+size = "M"
+claimed_at = "2026-10-16T00:58:34Z"
+model = "claude-opus-5-5"
+forced = false
+evidence = "Whole-plan and post-merge regression check steps now run in their own process group (roko_gate::output_in_own_group, registered with the process registry) and race the run's stop request (PlanRunInterruptHandle::stopped). A stop kills the group, records stopped_by=cancel (PlanVerifyFailure / DeliveryCheck, summary 'post-merge regression stopped'), and the plan ends Interrupted, so the run ends cancelled (exit 130) and releases its runner lock. A lock refusal held by this process no longer says to kill it. Tests pass: a_cancel_stops_the_post_merge_regression_check (group gone, regression checkout free), a_cancel_stops_the_whole_plan_check_and_frees_the_workspace (end to end in both modes: exit 130, sh and its sleep gone, stop cause cancel, runner lock free), a_stop_ends_the_plan_check_and_kills_its_steps, a_lock_held_by_this_process_is_not_a_process_to_kill. roko-cli 3688 + roko-gate 701 lib tests pass; clippy -D warnings clean (tmp/hermes-roko-v5/findings/roko-credfix.md section 10b)"
 +++
 
 ## Problem
@@ -55,4 +70,6 @@ fails at once, and (see the related item on pre-start failures) its card does no
 
 ## Done when
 
-`a_cancel_stops_the_post_merge_regression_check` passes (the `[[verify]]` command).
+`a_cancel_stops_the_post_merge_regression_check` passes (the `[[verify]]` command), with the end-to-end test
+`a_cancel_stops_the_whole_plan_check_and_frees_the_workspace` (both check modes: the run ends cancelled, the check's
+processes are gone, the runner lock is free). `--lib` keeps the verify from building the ~70 integration test binaries.

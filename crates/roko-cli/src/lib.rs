@@ -138,6 +138,8 @@ pub mod chat_inline;
 pub mod chat_session;
 #[cfg(all(test, unix))]
 mod check_env_probe;
+#[cfg(all(test, unix))]
+mod check_process_probe;
 pub mod clean;
 /// Subcommand implementations that live in the library; the `roko` binary's
 /// own `commands` module re-exports them.

@@ -53,9 +53,14 @@ pub fn acquire_workspace_lock(roko_dir: &Path) -> Result<WorkspaceLockGuard> {
             } else {
                 existing_pid
             };
+            let holder = if held_by_this_process(&pid) {
+                "A run in this roko process"
+            } else {
+                "Another roko process"
+            };
             bail!(
-                "Another roko process is running in this workspace (PID {pid}).\n  \
-                 hint: wait for it to finish, or kill it with `kill {pid}`"
+                "{holder} is running in this workspace (PID {pid}).\n  hint: {}",
+                holder_hint(&pid)
             );
         }
     }
@@ -110,10 +115,28 @@ pub fn acquire_runner_lock(roko_dir: &Path) -> Result<WorkspaceLockGuard> {
                 existing_pid
             };
             bail!(
-                "A roko plan runner is already active in this workspace (PID {pid}).\n  \
-                 hint: wait for it to finish, or kill it with `kill {pid}`"
+                "A roko plan runner is already active in this workspace (PID {pid}).\n  hint: {}",
+                holder_hint(&pid)
             );
         }
+    }
+}
+
+/// Whether `pid`, as a lock file records it, is this process: one of its own
+/// runs holds the lock, as a run of `roko serve` can while it starts another
+/// (bug-7b62ff).
+fn held_by_this_process(pid: &str) -> bool {
+    pid.parse::<u32>()
+        .is_ok_and(|pid| pid == std::process::id())
+}
+
+/// What to do about a lock `pid` holds: a run of this process is waited for
+/// or cancelled, never killed with the process; another process may be.
+fn holder_hint(pid: &str) -> String {
+    if held_by_this_process(pid) {
+        "it is a run of this roko process: wait for that run to finish, or cancel it".to_string()
+    } else {
+        format!("wait for it to finish, or kill it with `kill {pid}`")
     }
 }
 
@@ -487,6 +510,32 @@ mod tests {
             error.to_string().contains("plan runner is already active"),
             "unexpected error: {error}"
         );
+    }
+
+    /// bug-7b62ff: when a run of this very process holds the runner lock, as
+    /// one `roko serve` run can while another starts, the refusal says to
+    /// wait for or cancel that run, not to kill the process. Another
+    /// process's lock keeps the kill hint.
+    #[test]
+    fn a_lock_held_by_this_process_is_not_a_process_to_kill() {
+        let dir = tempfile::tempdir().unwrap();
+        let _first = acquire_runner_lock(dir.path()).unwrap();
+        let ours = acquire_runner_lock(dir.path()).err().unwrap().to_string();
+        assert!(ours.contains("a run of this roko process"), "{ours}");
+        assert!(!ours.contains("kill"), "{ours}");
+
+        // The same lock as another process's: its file names another PID.
+        fs::write(dir.path().join("runtime/roko.runner.lock"), "4194304\n").unwrap();
+        let theirs = acquire_runner_lock(dir.path()).err().unwrap().to_string();
+        assert!(theirs.contains("kill it with `kill 4194304`"), "{theirs}");
+
+        let _workspace = acquire_workspace_lock(dir.path()).unwrap();
+        let ours = acquire_workspace_lock(dir.path())
+            .err()
+            .unwrap()
+            .to_string();
+        assert!(ours.starts_with("A run in this roko process"), "{ours}");
+        assert!(!ours.contains("kill"), "{ours}");
     }
 
     #[test]

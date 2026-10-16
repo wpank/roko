@@ -31,7 +31,8 @@
 //! call streamed is priced against its plan budget, and it is stopped as
 //! budget-exhausted, not retried, once the attempt's hold cannot cover one
 //! more message like its last (gap-ca1c92). An agent that reports its usage
-//! only at the end (the Codex CLI) is bounded by its turn cap and timeout.
+//! only at the end is not: the Codex and Gemini CLIs stop only at their
+//! timeout, and the Cursor CLI at a count of its tool calls (gap-ccbf26).
 //!
 //! Silence counts only while the agent waits on its model:
 //!

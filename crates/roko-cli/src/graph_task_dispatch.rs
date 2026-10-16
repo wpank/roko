@@ -1590,7 +1590,7 @@ impl TaskDispatcher for GraphTaskDispatcher {
                         self.pricing_snapshot().as_deref(),
                     );
                     let cost_usd = f64::from(dispatch.result.usage.cost_usd);
-                    self.record_task_spend(&spec.plan_id, &task.id, &dispatch.result.usage);
+                    self.record_dispatch_spend(&spec.plan_id, &task.id, &dispatch);
                     if let Err(budget_error) = budget_reservation.settle(cost_usd) {
                         tracing::warn!(
                             plan_id = %spec.plan_id,
@@ -1639,7 +1639,7 @@ impl TaskDispatcher for GraphTaskDispatcher {
 
         // Account for every completed provider call, including unsuccessful
         // results: callers may still have incurred the reported cost.
-        self.record_task_spend(&spec.plan_id, &task.id, &dispatch.result.usage);
+        self.record_dispatch_spend(&spec.plan_id, &task.id, &dispatch);
         if let Err(error) = budget_reservation.settle(f64::from(dispatch.result.usage.cost_usd)) {
             // The call ran, but the plan budget could not settle its spend,
             // so the attempt ends here: its dashboard row says why and

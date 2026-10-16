@@ -2,15 +2,16 @@
 id = "bug-dd4524"
 kind = "bug"
 title = "Plan prompts still carry a 'Prompt section effectiveness' block read from section-effects.json, which nothing writes since the section bandit took over"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p3"
 goal = "learning"
 size = "S"
 subsystem = ["roko-cli/dispatch", "roko-compose/context_provider"]
 created = 2026-10-15
-updated = 2026-10-15
-last_verified = 2026-10-15
+updated = 2026-10-16
+last_verified = 2026-10-16
+last_verified_rev = "61c0b4387"
 source = "status-quo-2026-10-15#finding-19"
 anchors = ["crates/roko-cli/src/dispatch/prompt_builder.rs::SectionEffectivenessSource", "crates/roko-cli/src/dispatch/prompt_cache.rs::load_effectiveness", "crates/roko-compose/src/context_provider.rs::section_effects_path", "crates/roko-learn/src/section_effect.rs::DEFAULT_SECTION_EFFECTS_PATH"]
 lane = "rust-hot"
@@ -22,6 +23,18 @@ command = "grep -rqw 'fn prompt_has_no_section_effectiveness_block_from_a_stale_
 
 [[verify]]
 command = "! grep -rq 'DEFAULT_SECTION_EFFECTS_PATH' crates/roko-cli/src/dispatch/ crates/roko-compose/src/"
+
+[closed]
+at = 2026-10-16
+at_ts = "2026-10-16T13:24:15Z"
+commit = "61c0b4387"
+by = "commit trailer"
+executor = "claude-agent"
+via = "work-batch"
+size = "S"
+claimed_at = "2026-10-16T05:11:51Z"
+forced = false
+evidence = "Removed the stale section-effects.json reader: SectionEffectivenessSource + PromptAssembler.section_effectiveness (crates/roko-cli/src/dispatch/prompt_builder.rs), PromptCache.effectiveness/load_effectiveness (dispatch/prompt_cache.rs), PromptBuildOptions.section_effectiveness (prompting.rs), and context_provider.rs::section_effects_path (now cold-starts LearningContextBidder from an empty registry since that path has no production caller). Added prompt_has_no_section_effectiveness_block_from_a_stale_file, which fails before this change and passes after. Both verify commands pass at 61c0b4387: 'grep ... && cargo test -p roko-cli prompt_has_no_section_effectiveness_block_from_a_stale_file' (ok, 1 passed, plus all 70+ other roko-cli test binaries built and ran clean) and '! grep -rq DEFAULT_SECTION_EFFECTS_PATH crates/roko-cli/src/dispatch/ crates/roko-compose/src/' (no matches). cargo +nightly fmt --all applied; cargo clippy -p roko-cli -p roko-compose --no-deps -- -D warnings clean. roko-compose's canonical_system_prompts_match_snapshots still fails exactly as bug-a66fef already tracks (an unrelated Relevant Context section on quick-reviewer) -- unchanged by this work."
 +++
 
 ## Problem

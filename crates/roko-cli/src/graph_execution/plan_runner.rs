@@ -4442,8 +4442,9 @@ async fn run_one_plan(
 }
 
 /// Deliver `plan`, whose tasks all passed, into the run's batch branch
-/// (spec-f830c4): merge its verified plan-branch tip into the batch, run the
-/// regression check on the merge, and record the delivery in the plan's
+/// (spec-f830c4): merge its verified plan-branch tip with the batch's tip, run
+/// the regression check on the merge, move the batch to the merge only once
+/// the check passed (bug-700d7c), and record the delivery in the plan's
 /// checkpoint. The plan succeeds only when the delivery does. A delivered
 /// plan's accepted attempt checkouts are then removed from `worktrees`, and
 /// with `delete_attempt_branches` their branches too (gap-415c54). `Err`
@@ -9480,8 +9481,8 @@ printf '%s\n' '{"type":"result","session_id":"sess-batch","model":"claude-sonnet
     /// gap-60233f: a plan whose tasks all passed but whose `[meta] verify`
     /// fails does not succeed, whether the check runs in the shared working
     /// tree or as the regression of its delivery into the batch branch, which
-    /// then keeps its old tip. The checkpoint records why, for
-    /// `roko plan status`.
+    /// keeps its old tip: it never moved (bug-700d7c). The checkpoint records
+    /// why, for `roko plan status`.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn meta_verify_failure_fails_a_plan_whose_tasks_passed() {
         for worktree_per_task in [false, true] {
@@ -9518,10 +9519,141 @@ printf '%s\n' '{"type":"result","session_id":"sess-batch","model":"claude-sonnet
                 assert_eq!(
                     git_stdout(repo, &["rev-parse", "roko/batch/run-check"]),
                     head,
-                    "the failed plan was taken back out of the batch"
+                    "the failed plan stayed out of the batch"
+                );
+                // The batch never pointed at the failed plan's merge: its
+                // reflog holds its creation alone (bug-700d7c).
+                assert_eq!(
+                    git_stdout(
+                        repo,
+                        &[
+                            "log",
+                            "--walk-reflogs",
+                            "--format=%H",
+                            "roko/batch/run-check"
+                        ]
+                    ),
+                    head,
+                    "the batch moved to the failed plan's merge"
                 );
             }
         }
+    }
+
+    /// bug-700d7c: with plans running side by side, a plan that starts while
+    /// another plan's whole-plan check runs starts from the run's batch
+    /// branch as it was, not from the merge under check. Here 01-alpha's
+    /// check waits until 03-gamma's first attempt has started, which happens
+    /// once 02-beta failed, and then fails. gamma neither builds on alpha's
+    /// work nor brings it into the batch when it is delivered, and the batch
+    /// never pointed at alpha's merge.
+    #[cfg(unix)]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_plan_started_during_a_failing_check_does_not_build_on_its_merge() {
+        let dir = repo_with_file_plans(&["alpha", "beta", "gamma"], None);
+        let repo = dir.path();
+        let scratch = tempfile::tempdir().expect("scratch");
+        let checking = scratch.path().join("alpha-checking");
+        let saw_gamma = scratch.path().join("alpha-saw-gamma");
+        // gamma's first attempt branch exists once its checkout was made.
+        let gamma_attempts = (0..=3)
+            .map(|attempt| {
+                format!(
+                    "refs/heads/{}",
+                    crate::orchestrator::worktree::format_attempt_branch_name(
+                        "03-gamma", "T1", attempt
+                    )
+                )
+            })
+            .collect::<Vec<_>>()
+            .join(" ");
+        // alpha's whole-plan check waits (60 s at most) for gamma's attempt,
+        // and fails.
+        let alpha_check = format!(
+            "touch '{checking}'; i=0; while [ ! -e '{saw}' ] && [ $i -lt 1200 ]; do \
+             for ref in {gamma_attempts}; do \
+             git rev-parse --verify --quiet $ref >/dev/null && touch '{saw}'; done; \
+             sleep 0.05; i=$((i+1)); done; exit 1",
+            checking = checking.display(),
+            saw = saw_gamma.display(),
+        );
+        // beta's one task fails once alpha's check runs, which frees the slot
+        // gamma starts in.
+        let beta_verify = format!(
+            "i=0; while [ ! -e '{checking}' ] && [ $i -lt 1200 ]; do sleep 0.05; i=$((i+1)); \
+             done; exit 1",
+            checking = checking.display(),
+        );
+        let alpha_tasks = repo.join("plans/01-alpha/tasks.toml");
+        let text = std::fs::read_to_string(&alpha_tasks).expect("tasks.toml");
+        let text = text.replacen(
+            "skip_enrichment = true\n",
+            &format!("skip_enrichment = true\n\n[[meta.verify]]\ncommand = {alpha_check:?}\n"),
+            1,
+        );
+        std::fs::write(&alpha_tasks, text).expect("tasks.toml");
+        let beta_tasks = repo.join("plans/02-beta/tasks.toml");
+        let text = std::fs::read_to_string(&beta_tasks)
+            .expect("tasks.toml")
+            .replace(
+                "files = [\"beta.txt\"]\n",
+                "files = [\"beta.txt\"]\nmax_retries = 0\n",
+            )
+            .replace(
+                "command = \"test -f beta.txt\"",
+                &format!("command = {beta_verify:?}"),
+            );
+        std::fs::write(&beta_tasks, text).expect("tasks.toml");
+        git_in(repo, &["commit", "-am", "alpha's check waits for gamma"]);
+        let head = git_stdout(repo, &["rev-parse", "HEAD"]);
+        let params = GraphPlanRunParams {
+            max_parallel_plans: Some(2),
+            ..worktree_run_params(repo)
+        };
+
+        let exit_code = run_graph_plan_in_run(params, Some("run-overlap".into()))
+            .await
+            .expect("run the plans");
+
+        assert_ne!(exit_code, EXIT_SUCCESS);
+        assert!(
+            saw_gamma.exists(),
+            "gamma's first attempt did not start while alpha's check ran"
+        );
+        assert_eq!(
+            crate::graph_checkpoint::canonical_checkpoint_status(repo, "01-alpha"),
+            Some(GraphCheckpointStatus::Failed)
+        );
+        let batch = "roko/batch/run-overlap";
+        let delivered = crate::graph_checkpoint::recorded_batch_delivery(repo, "03-gamma")
+            .expect("gamma was delivered");
+        assert_eq!(
+            delivered.merge_commit,
+            git_stdout(repo, &["rev-parse", batch])
+        );
+        let files = git_stdout(repo, &["ls-tree", "--name-only", batch]);
+        assert!(
+            files.contains("gamma.txt") && !files.contains("alpha.txt"),
+            "alpha's work reached the batch: {files}"
+        );
+        let alpha = git_stdout(repo, &["rev-parse", "roko/plan/01-alpha"]);
+        for branch in ["roko/plan/03-gamma", batch] {
+            let holds_alpha = std::process::Command::new("git")
+                .current_dir(repo)
+                .args(["merge-base", "--is-ancestor", alpha.as_str(), branch])
+                .env_remove("GIT_DIR")
+                .env_remove("GIT_WORK_TREE")
+                .status()
+                .expect("git merge-base");
+            assert!(!holds_alpha.success(), "{branch} builds on alpha's work");
+        }
+        // The batch held its base, and then gamma's delivery: never alpha's
+        // merge.
+        let held = git_stdout(repo, &["log", "--walk-reflogs", "--format=%H", batch]);
+        assert_eq!(
+            held.lines().collect::<Vec<_>>(),
+            [delivered.merge_commit.as_str(), head.as_str()]
+        );
     }
 
     /// bug-7b62ff: a cancel that comes while a plan's whole-plan check runs,
@@ -9573,8 +9705,8 @@ printf '%s\n' '{"type":"result","session_id":"sess-batch","model":"claude-sonnet
             let _next = crate::workspace_lock::acquire_runner_lock(&repo.join(".roko"))
                 .unwrap_or_else(|error| panic!("{mode}: the run kept the workspace: {error}"));
             if worktree_per_task {
-                // The delivery is cancelled, not failed, and its merge left
-                // the batch (or the batch branch went with the run).
+                // The delivery is cancelled, not failed, and its merge never
+                // reached the batch (or the batch branch went with the run).
                 let checkpoint = repo.join(".roko/state/graph/01-alpha/checkpoint.json");
                 let checkpoint: serde_json::Value =
                     serde_json::from_slice(&std::fs::read(checkpoint).expect("checkpoint"))

@@ -207,12 +207,13 @@ impl ModelCallService {
 
     /// Use an explicit Roko configuration for provider dispatch. Unless the
     /// caller sets a pricing table, calls are priced at the config's
-    /// `[models.*]` rates, then the built-in ones (bug-4e5731).
+    /// `[models.*]` rates as their providers bill them (bug-dc1273), then the
+    /// built-in ones (bug-4e5731).
     #[must_use]
     pub fn with_config(mut self, config: RokoConfig) -> Self {
         self.fallback_models = configured_fallback_models(&config, &self.default_model);
         if !self.cost_table_set {
-            self.cost_table = CostTable::from_config_with_defaults(&config.models);
+            self.cost_table = CostTable::from_config_with_defaults(&config.billed_models());
         }
         self.config = Arc::new(config);
         self
@@ -3701,6 +3702,40 @@ printf '%s\n' '{"type":"result","session_id":"s","total_cost_usd":0.0,"usage":{"
             "{:?} vs {charged}",
             response.usage
         );
+    }
+
+    /// bug-dc1273: a service built from a config prices a Cerebras model's
+    /// cache reads at its input rate, as Cerebras bills them, where the
+    /// profile's own rates would price them at a tenth of it.
+    #[test]
+    fn a_service_prices_cerebras_cache_reads_at_the_input_rate() {
+        let mut config = RokoConfig::default();
+        config.providers.insert(
+            "cerebras".to_string(),
+            roko_core::config::schema::ProviderConfig {
+                kind: roko_core::agent::ProviderKind::CerebrasApi,
+                ..Default::default()
+            },
+        );
+        config.models.insert(
+            "glm".to_string(),
+            roko_core::config::schema::ModelProfile {
+                provider: "cerebras".to_string(),
+                slug: "zai-glm-4.7".to_string(),
+                cost_input_per_m: Some(2.25),
+                cost_output_per_m: Some(2.75),
+                ..Default::default()
+            },
+        );
+        let svc = ModelCallService::new("glm".into()).with_config(config);
+        let cache_reads = Usage {
+            cache_read_tokens: 1_000_000,
+            ..Usage::zero()
+        };
+        let cost = svc
+            .cost_table
+            .calculate(pricing_slug(&svc.config, "glm"), &cache_reads);
+        assert!((cost - 2.25).abs() < 1e-9, "{cost}");
     }
 
     /// bug-4e5731: a service given a config prices a model the config sets a

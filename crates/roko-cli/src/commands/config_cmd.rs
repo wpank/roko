@@ -1945,7 +1945,7 @@ pub(crate) fn cmd_model_route(
         (!available_candidates.is_empty()).then_some(available_candidates.as_slice()),
     );
     let confidence = router.confidence_snapshot();
-    let cost_table = CostTable::from_config(&models).with_defaults();
+    let cost_table = CostTable::from_config(&config.billed_models()).with_defaults();
 
     match selection {
         Ok(selection) => {

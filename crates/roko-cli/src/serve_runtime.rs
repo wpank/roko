@@ -1674,7 +1674,8 @@ async fn call_bench_model(
     };
 
     // Build and call ModelCallService.
-    let cost_table = roko_agent::CostTable::from_config_with_defaults(&model_config.models);
+    let cost_table =
+        roko_agent::CostTable::from_config_with_defaults(&model_config.billed_models());
     let mut service = ModelCallService::new(model.to_string())
         .with_config(model_config.clone())
         .with_working_dir(workdir)

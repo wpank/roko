@@ -2,15 +2,16 @@
 id = "gap-8d1463"
 kind = "gap"
 title = "The development-record rollup (work/telemetry/ROLLUP.md) has not been regenerated since 2026-10-01, and the field-capture watcher captured no run after 2026-09-29"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p3"
 goal = "proof"
 size = "S"
 subsystem = ["tools/work_telemetry", "tools/field_capture"]
 created = 2026-10-15
-updated = 2026-10-15
-last_verified = 2026-10-15
+updated = 2026-10-16
+last_verified = 2026-10-16
+last_verified_rev = "6156795d7"
 source = "status-quo-2026-10-15#finding-40"
 anchors = ["tools/work_telemetry.py::cmd_rollup", "work/telemetry/ROLLUP.md", "tmp/cybernetic-harness/tools/field_capture.py"]
 lane = "tracker"
@@ -18,6 +19,18 @@ links = { depends_on = [], blocks = [], related = [], supersedes = [], duplicate
 
 [[verify]]
 command = "grep -qw 'def test_render_refreshes_the_rollup' tools/test_work.py && python3 tools/test_work.py -k test_render_refreshes_the_rollup"
+
+[closed]
+at = 2026-10-16
+at_ts = "2026-10-16T14:11:19Z"
+commit = "6156795d7"
+by = "commit trailer"
+executor = "claude-agent"
+via = "work-batch"
+size = "S"
+claimed_at = "2026-10-16T08:07:06Z"
+forced = false
+evidence = "6156795d7: render_root in tools/work.py now calls work_telemetry.cmd_rollup for the \"work\" root, right after render_now/render_epics (local import, so work_telemetry's own `import work` stays load-time-cycle-free), so `work.py render` -- already run after every batch of item changes -- carries ROLLUP.md and rollup.json along instead of leaving them to a schedule nobody wired up. Added test_render_refreshes_the_rollup (tools/test_work.py): seeds a stale ROLLUP.md dated 2026-10-01, logs one claim event, runs `work.py render` as a subprocess the way the skills do, and checks the regenerated files carry today's date and the new event's count; the item's [[verify]] command passes this test. Ran `work.py render` for real against this repo too: work/telemetry/ROLLUP.md and rollup.json went from report date 2026-10-01 / HEAD ad14d38d7 / 14 merged items to report date 2026-10-16 / HEAD 5e32264ce / 57 merged items; the other generated views it also refreshed (NOW.md, STATUS.md, DRIFT.md, EPICS.md, TRIAGE.md, CLAUDE-OPEN.md) were discarded, not committed, per instruction. Field capture (tmp/cybernetic-harness/tools/field_capture.py, field_rollup.py; untracked, outside this worktree, process not running since before 2026-10-15): retired rather than repointed, recorded in work/telemetry/README.md's new \"Field capture (retired)\" section -- the whitepaper's frozen citations in docs/whitepaper/evidence/ stand as they are, and the per-run data field_capture copied is already live in .roko/runs/<run>/ on whatever host ran the plan."
 +++
 
 ## Problem

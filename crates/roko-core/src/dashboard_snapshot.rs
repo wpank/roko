@@ -196,6 +196,39 @@ pub enum DashboardEvent {
         #[serde(default)]
         candidates: Vec<RouteCandidate>,
     },
+    /// What a Graph attempt's prompt carried (gap-5f6d0b): the stored
+    /// lessons (knowledge entries), playbooks and earlier episodes it used,
+    /// what it retrieved and left out and why, and its sections. Published
+    /// after the attempt's `route_decided`. `exposures.jsonl` keeps the same
+    /// items with their ranks and scores.
+    PromptAssembled {
+        plan_id: String,
+        task_id: String,
+        /// The attempt, from 1.
+        attempt: u32,
+        /// The knowledge entries the prompt carried.
+        #[serde(default)]
+        knowledge_ids: Vec<String>,
+        /// The playbooks it carried.
+        #[serde(default)]
+        playbook_ids: Vec<String>,
+        /// The earlier episodes it cited.
+        #[serde(default)]
+        episode_ids: Vec<String>,
+        /// What it retrieved and left out: knowledge entries, playbooks,
+        /// episodes and sections.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        left_out: Vec<PromptLeftOut>,
+        /// The sections it carried.
+        #[serde(default)]
+        included_sections: Vec<String>,
+        /// The sections it dropped, for whatever reason.
+        #[serde(default)]
+        dropped_sections: Vec<String>,
+        /// Its estimated size in tokens.
+        #[serde(default)]
+        estimated_tokens: u32,
+    },
     /// A Graph task's `confirm` rung asked its person whether the outcome is
     /// what they asked for; the task waits until they answer or the rung
     /// times out (gap-7c6663). MCP `confirm_answer` names the attempt key.
@@ -922,6 +955,21 @@ pub struct RouteCandidate {
     /// Why it could not be picked.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ineligible_reason: Option<String>,
+}
+
+/// One item a prompt retrieved and left out, as
+/// [`DashboardEvent::PromptAssembled`] carries it.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PromptLeftOut {
+    /// What it is: `knowledge`, `playbook`, `episode` or `section`.
+    pub kind: String,
+    /// Its id: a knowledge entry, playbook or episode id, or a section name.
+    pub id: String,
+    /// Why: `withheld_arm` (the attempt's control arm withholds its source),
+    /// `bandit_excluded` (the section bandit left its section out),
+    /// `token_budget` (its section did not fit), `role_filter` or
+    /// `screened`.
+    pub reason: String,
 }
 
 /// One plan announced by [`DashboardEvent::PlanSetLoaded`].
@@ -3014,6 +3062,31 @@ impl DashboardSnapshot {
                     plan_id.clone(),
                     task_id.clone(),
                     format!("attempt {attempt}: {model} ({by})"),
+                );
+            }
+            DashboardEvent::PromptAssembled {
+                plan_id,
+                task_id,
+                attempt,
+                knowledge_ids,
+                playbook_ids,
+                episode_ids,
+                left_out,
+                ..
+            } => {
+                self.push_event_log(
+                    ts,
+                    "prompt_assembled".to_string(),
+                    plan_id.clone(),
+                    task_id.clone(),
+                    format!(
+                        "attempt {attempt}: {} lesson(s), {} playbook(s), {} episode(s) in its \
+                         prompt; {} left out",
+                        knowledge_ids.len(),
+                        playbook_ids.len(),
+                        episode_ids.len(),
+                        left_out.len()
+                    ),
                 );
             }
             // S10's Loop Health view reads health from the event stream; the

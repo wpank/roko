@@ -17,7 +17,7 @@ anchors = ["crates/roko-cli/src/graph_execution/delivery.rs::drive_delivery", "c
 links = { depends_on = [], blocks = [], related = ["bug-7b62ff"], supersedes = [], duplicate_of = "" }
 
 [[verify]]
-command = "grep -rqw 'fn a_graph_run_publishes_its_delivery_end' crates/roko-cli && cargo test -p roko-cli a_graph_run_publishes_its_delivery_end"
+command = "grep -rqw 'fn a_graph_run_publishes_its_delivery_end' crates/roko-cli && cargo test -p roko-cli --lib a_graph_run_publishes_its_delivery_end"
 +++
 
 ## Problem

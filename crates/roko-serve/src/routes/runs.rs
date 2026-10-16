@@ -2096,11 +2096,15 @@ fn run_summary(
         ) {
             completion = Some((place, value));
         }
-        if let Some(delivery) = delivery_end(value) {
+        // The first delivery that did not complete says how the run's
+        // delivery ended, else the first that did (gap-4f6cbe).
+        if let Some(delivery) = delivery_end(value)
+            && milestones.get("delivery").is_none_or(|(_, held)| {
+                delivery != "completed" && held["text"] == "delivery completed"
+            })
+        {
             let text = format!("delivery {delivery}");
-            milestones
-                .entry("delivery")
-                .or_insert_with(|| (place, milestone("delivery", text, value)));
+            milestones.insert("delivery", (place, milestone("delivery", text, value)));
         }
     }
 
@@ -2224,17 +2228,33 @@ fn event_time(value: &Value) -> Value {
         .unwrap_or(Value::Null)
 }
 
-/// How a run's delivery ended, `completed` or `failed`, when `value` is the
-/// Graph run's delivery event that says so.
-fn delivery_end(value: &Value) -> Option<&str> {
+/// How a plan's delivery ended, as the run's `delivery` milestone says it,
+/// when `value` is the event that says so: a Graph run's `delivery_finished`
+/// (gap-4f6cbe), or a `graph.delivery` `completed` or `failed` runtime event.
+/// A delivery a stop cut short was `cancelled`: it stopped, it did not fail.
+fn delivery_end(value: &Value) -> Option<&'static str> {
+    if event_type(value) == Some("delivery_finished") {
+        return Some(match string_field(value, "state")? {
+            "delivered" => "completed",
+            "cancelled" => "cancelled",
+            "conflict" => "failed: its merge conflicted",
+            "regression_failed" => "failed: the check on its merge failed",
+            _ => "failed",
+        });
+    }
     let data = event_data(value);
     if data.get("namespace").and_then(Value::as_str) != Some("graph.delivery") {
         return None;
     }
-    data.get("value")?
-        .get("kind")?
-        .as_str()
-        .filter(|kind| matches!(*kind, "completed" | "failed"))
+    let end = data.get("value")?;
+    match end.get("kind")?.as_str()? {
+        "completed" => Some("completed"),
+        "failed" if end.get("failure_state").and_then(Value::as_str) == Some("cancelled") => {
+            Some("cancelled")
+        }
+        "failed" => Some("failed"),
+        _ => None,
+    }
 }
 
 fn string_field<'a>(value: &'a Value, field: &str) -> Option<&'a str> {
@@ -3017,6 +3037,89 @@ mod tests {
         );
         let unknown = crate::routes::plans::cancel_plan_run(&state, "r-unknown").await;
         assert!(unknown.is_err());
+    }
+
+    /// gap-4f6cbe: a run's `delivery` milestone says how its plans'
+    /// deliveries ended, from a Graph run's `delivery_finished` or a
+    /// `graph.delivery` runtime event. A delivery a stop cut short reads
+    /// `cancelled`, not failed, and one that did not complete wins over an
+    /// earlier one that did.
+    #[tokio::test]
+    async fn run_summary_says_how_its_delivery_ended() {
+        let dir = tempfile::tempdir().unwrap();
+        let deploy_backend = Arc::from(
+            crate::deploy::create_backend("manual", None, None, None).expect("manual backend"),
+        );
+        let state = Arc::new(
+            AppState::new(
+                dir.path().to_path_buf(),
+                Arc::new(crate::runtime::NoOpRuntime),
+                roko_core::config::schema::RokoConfig::default(),
+                deploy_backend,
+            )
+            .expect("AppState::new"),
+        );
+        let finished = |run_id: &str, plan_id: &str, at: u64, state: &str| {
+            json!({"type":"delivery_finished","run_id":run_id,"ts_millis":at,"plan_id":plan_id,
+                "delivery_id":format!("{run_id}:{plan_id}"),"target":format!("roko/batch/{run_id}"),
+                "state":state})
+        };
+        for (run_id, ends, said) in [
+            ("d1", vec![("p1", "delivered")], "delivery completed"),
+            ("d2", vec![("p1", "cancelled")], "delivery cancelled"),
+            (
+                "d3",
+                vec![("p1", "delivered"), ("p2", "regression_failed")],
+                "delivery failed: the check on its merge failed",
+            ),
+            (
+                "d4",
+                vec![("p1", "conflict"), ("p2", "delivered")],
+                "delivery failed: its merge conflicted",
+            ),
+        ] {
+            let mut rows = vec![json!({"type":"run.started","run_id":run_id,"timestamp_ms":1})];
+            for (at, &(plan_id, end)) in (2..).zip(&ends) {
+                rows.push(finished(run_id, plan_id, at, end));
+            }
+            rows.push(
+                json!({"type":"run.completed","run_id":run_id,"timestamp_ms":9,
+                "outcome":"failed"}),
+            );
+            write_rows(
+                &roko_fs::run_index::run_index_path(&state.layout.events_jsonl_path(), run_id)
+                    .unwrap(),
+                &rows,
+            );
+            let Json(summary) = get_run_summary(State(Arc::clone(&state)), Path(run_id.into()))
+                .await
+                .unwrap();
+            let delivery = summary["milestones"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|milestone| milestone["kind"] == "delivery")
+                .unwrap_or_else(|| panic!("{run_id}: no delivery milestone: {summary}"));
+            assert_eq!(delivery["text"], said, "{run_id}: {summary}");
+        }
+
+        let extension = |kind: &str, failure_state: Option<&str>| {
+            json!({"event":{"payload":{"kind":"extension","data":{"namespace":"graph.delivery",
+                "version":"1","value":{"kind":kind,"failure_state":failure_state}}}}})
+        };
+        assert_eq!(
+            delivery_end(&extension("completed", None)),
+            Some("completed")
+        );
+        assert_eq!(
+            delivery_end(&extension("failed", Some("cancelled"))),
+            Some("cancelled")
+        );
+        assert_eq!(
+            delivery_end(&extension("failed", Some("regression_failed"))),
+            Some("failed")
+        );
+        assert_eq!(delivery_end(&extension("started", None)), None);
     }
 
     /// B9 B4: a run's summary gives one state with its verdict and cost, how

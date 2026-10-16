@@ -2,15 +2,16 @@
 id = "bug-f90bd0"
 kind = "bug"
 title = "LOG1 block C's vague H3 stream cannot materialize 32 of its 48 instances: only F1 and F4 have a vague spec variant, and 3329's verify samples only those two"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p1"
 goal = "proof"
 size = "M"
 subsystem = ["viabilitybench/driver", "viabilitybench/families"]
 created = 2026-10-15
-updated = 2026-10-15
-last_verified = 2026-10-15
+updated = 2026-10-16
+last_verified = 2026-10-16
+last_verified_rev = "646e96648"
 source = "status-quo-2026-10-15#finding-26"
 anchors = ["benchmarks/viabilitybench/driver/materialize.py::_add_vague_spec", "benchmarks/viabilitybench/driver/materialize.py::VAGUE_FAMILIES", "benchmarks/viabilitybench/streams/log1_p1_h3_vague.toml", "benchmarks/viabilitybench/driver/test_materialize.py::test_h3_variants_pass_the_manipulation_check", "benchmarks/viabilitybench/families/f2_apipager/gen.py", "benchmarks/viabilitybench/families/f5_sqlmigrate/gen.py"]
 lane = "bench"
@@ -18,6 +19,17 @@ links = { depends_on = [], blocks = ["gap-394f28"], related = ["gap-76fd1c", "ga
 
 [[verify]]
 command = "grep -qw 'def test_every_h3_vague_instance_materializes' benchmarks/viabilitybench/driver/test_materialize.py && benchmarks/viabilitybench/.venv/bin/python -m pytest benchmarks/viabilitybench/driver/test_materialize.py -k test_every_h3_vague_instance_materializes -q"
+
+[closed]
+at = 2026-10-16
+at_ts = "2026-10-16T15:07:26Z"
+commit = "646e96648"
+executor = "claude-agent"
+via = "work-batch"
+size = "M"
+claimed_at = "2026-10-16T08:07:04Z"
+forced = false
+evidence = "646e96648: F2, F3, F5 and F7 render spec/precise.template.md (S07 TSS v1 in F1's section layout) to spec.precise.md and list recoverability; their manifests now validate as vb.task/1 (the forbidden visible/migration/protected_hashes/task_name keys are derived from (level, seed) by gen.visible_fixture and gen.migration, and F5's gaming detector reads the protected files from the pristine tree); materialize.VAGUE_FAMILIES is F1-F5 and F7. The verify passes: test_every_h3_vague_instance_materializes materializes all 48 instances of streams/log1_p1_h3_vague.toml vague, with 0 recoverability violations, every evidence path present in the workdir, and manipulation gaps of F2 68, F3 67, F5 66, F7 66-68 SQS points (F1 70, F4 50); on main it fails with 32 'invalid manifest: missing required field spec'. The agent's task repos are byte-identical across 72 instances (pristine commit and tree, visible test hashes). verify_verifiers --families f2,f3,f5,f8 --levels 1-5 --seeds 3: 60/60 green; bench pytest 762 passed, 16 skipped (no roko binary, opt-in sweeps, analysis stack). F7's cargo CI was not run (the crate is unchanged). Filed bug-ca1de5 (F8 manifests block LOG1 block E) and gap-871b89 (the verifier CI never validates manifests; F6)."
 +++
 
 ## Problem

@@ -2,7 +2,7 @@
 id = "bug-4fabd0"
 kind = "bug"
 title = "A run's spend cap is checked only between attempts, so one attempt can spend many times what is left (a $0.50 run spent $0.753)"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p1"
 goal = "hermes"
@@ -11,6 +11,7 @@ subsystem = ["roko-cli/budget", "roko-agent/tool-loop"]
 created = 2026-10-16
 updated = 2026-10-16
 last_verified = 2026-10-16
+last_verified_rev = "eb26a6fe5"
 source = "tmp/hermes-roko-v5/findings/dogfood-desktop.md#P2 (dogfood-desktop, 2026-10-16)"
 discovered_from = "hermes-roko-v5 round: run 27d30ffc started from the Hermes desktop page"
 anchors = ["crates/roko-cli/src/graph_task_dispatch/budget.rs::GraphPlanBudgetLedger", "crates/roko-agent/src/tool_loop/mod.rs::ToolLoop", "crates/roko-cli/src/dispatch_v2.rs::AgentDispatchRequest"]
@@ -18,6 +19,15 @@ links = { depends_on = [], blocks = [], related = ["gap-8548e3", "bug-1bc222", "
 
 [[verify]]
 command = "grep -rqw 'fn a_looping_agent_cannot_push_a_run_past_its_cap' crates/roko-cli/src && cargo test -p roko-cli --lib a_looping_agent_cannot_push_a_run_past_its_cap"
+
+[closed]
+at = 2026-10-16
+at_ts = "2026-10-16T03:25:04Z"
+commit = "eb26a6fe5"
+by = "commit trailer"
+executor = "unknown"
+forced = false
+evidence = "eb26a6fe5: the plan budget holds inside an attempt. roko's tool loop asks a TurnBudget before each model call; dispatch_v2 prices each call for the attempt's CallAllowance; budget.rs keeps a hold per attempt that grows into the unreserved budget and is trimmed after each call, and refuses a call the plan cannot pay for; an attempt starts only with room for 3 calls at the costliest so far (min $0.01); a budget stop settles as AttemptOutcome::BudgetExhausted and is not retried. a_looping_agent_cannot_push_a_run_past_its_cap and 6 more tests pass; roko-agent and roko-cli lib suites pass; clippy clean. Live, scratch project, $0.03 cap: main 1630fa1bf spent $0.0434, this change $0.0264 with the verified task delivered (tmp/hermes-roko-v5/findings/roko-caps.md)."
 +++
 
 ## Problem

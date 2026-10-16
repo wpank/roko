@@ -8,7 +8,7 @@ severity = "p2"
 goal = "core"
 subsystem = ["roko-cli/prd"]
 created = 2026-09-29
-updated = 2026-10-01
+updated = 2026-10-16
 last_verified = 2026-10-01
 last_verified_rev = "aec267cac"
 source = "plan:portal-programme/04-backend-plan-authoring#T15"
@@ -21,6 +21,8 @@ command = "ls plans/ | wc -l && cargo run -p roko-cli -- prd plan <any-slug> && 
 
 [[verify]]
 command = "grep -q 'fn test_prd_plan_does_not_regenerate_other_plans' crates/roko-cli/src/prd.rs && cargo test -p roko-cli --lib prd::tests::test_prd_plan_does_not_regenerate_other_plans"
+superseded = "2026-10-16: 7f2776fc1 deleted crates/roko-cli/src/prd.rs with the PRD pipeline, roko prd plan and its test."
+superseded_by = "7f2776fc1"
 
 [closed]
 at = 2026-10-01

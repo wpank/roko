@@ -9,7 +9,7 @@ goal = "whitepaper"
 size = "M"
 subsystem = ["paper"]
 created = 2026-09-29
-updated = 2026-09-29
+updated = 2026-10-16
 last_verified = 2026-09-29
 last_verified_rev = "cac54e574"
 source = "tmp/cybernetic-harness/workstreams/PROGRESS.md"
@@ -21,6 +21,8 @@ links = { depends_on = [], blocks = [], related = ["gap-aad48c", "gap-3c430e", "
 
 [[verify]]
 command = "grep -q 'F11' tmp/cybernetic-harness/paper/OUTLINE.md && grep -q 'T10' tmp/cybernetic-harness/paper/OUTLINE.md && test -f tmp/cybernetic-harness/paper/NOTATION.md"
+superseded = "2026-10-16: The 2026-10-02 design-paper rewrite of the research paper (session roko-55, in untracked tmp/; 6f85e5efc records it) replaced OUTLINE.md's figure and table plan, so F11 and T10 are gone (NOTATION.md is still there); the old text is archived whole in tmp/cybernetic-harness/paper/archive/2026-10-02-empirical-draft/."
+superseded_by = "6f85e5efc"
 
 [[verify]]
 command = "test -f tmp/cybernetic-harness/paper/FIGURES-TABLES.md && ! grep -q 'provider_usage_x_snapshot' tmp/cybernetic-harness/paper/FIGURES-TABLES.md && ! grep -q 'budget line B0–B9' tmp/cybernetic-harness/paper/FIGURES-TABLES.md"

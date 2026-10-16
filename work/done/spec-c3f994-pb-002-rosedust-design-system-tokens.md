@@ -7,7 +7,7 @@ triage = "verified"
 severity = "p1"
 subsystem = ["apps/portal"]
 created = 2026-09-23
-updated = 2026-09-28
+updated = 2026-10-16
 last_verified = 2026-09-28
 source = "tmp/portal-backlog/PB-002-rosedust-tokens.md#PB-002"
 discovered_from = "audit:tmp/portal-backlog/PB-002-rosedust-tokens.md#PB-002"
@@ -16,6 +16,8 @@ links = { depends_on = [], blocks = [], related = [], supersedes = [], duplicate
 
 [[verify]]
 command = "test -f apps/portal/src/styles/rosedust.css && test -f apps/portal/src/lib/motion-tokens.ts && grep -q -- '--radius-sm: *0px' apps/portal/src/styles/globals.css"
+superseded = "2026-10-16: The one-screen portal (39e72deef) deleted src/lib/motion-tokens.ts; rosedust.css and the 0px radius still pass."
+superseded_by = "39e72deef"
 
 [closed]
 at = 2026-09-28

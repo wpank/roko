@@ -9,7 +9,7 @@ goal = "whitepaper"
 size = "S"
 subsystem = ["paper"]
 created = 2026-09-29
-updated = 2026-09-29
+updated = 2026-10-16
 last_verified = 2026-09-29
 last_verified_rev = "80fa2171b"
 source = "tmp/cybernetic-harness/workstreams/PROGRESS.md"
@@ -21,6 +21,8 @@ links = { depends_on = ["gap-29a64e"], blocks = [], related = ["gap-04b0ff", "ga
 
 [[verify]]
 command = "test -f tmp/cybernetic-harness/paper/sections/08-discussion.md && ! grep -q 'TODO: cite the frozen rollup' tmp/cybernetic-harness/paper/sections/08-discussion.md && grep -q 'docs/whitepaper/evidence/2026-09-29-field-rollup' tmp/cybernetic-harness/paper/sections/E-reproducibility.md && grep -q 'docs/whitepaper/evidence/' tmp/cybernetic-harness/paper/sections/09-limitations.md"
+superseded = "2026-10-16: The 2026-10-02 design-paper rewrite of the research paper (session roko-55, in untracked tmp/; 6f85e5efc records it) replaced 08-discussion.md, 09-limitations.md and E-reproducibility.md (the new 11-in-use.md and 13-discussion.md cite the frozen evidence); the old text is archived whole in tmp/cybernetic-harness/paper/archive/2026-10-02-empirical-draft/."
+superseded_by = "6f85e5efc"
 
 [closed]
 at = 2026-09-29

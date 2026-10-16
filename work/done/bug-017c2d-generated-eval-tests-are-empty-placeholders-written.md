@@ -8,7 +8,7 @@ severity = "p2"
 goal = "learning"
 subsystem = ["roko-gate/eval-generator", "roko-cli/graph-dispatch"]
 created = 2026-09-28
-updated = 2026-10-01
+updated = 2026-10-16
 last_verified = 2026-10-01
 last_verified_rev = "db778db9b"
 source = "local-audit-2026-09-26"
@@ -21,6 +21,8 @@ command = 'test -z "$(ls generated-tests 2>/dev/null)"'
 
 [[verify]]
 command = "test -z \"$(ls generated-tests 2>/dev/null)\" && ! grep -qE 'verified by (ClippyGate|TestGate)|this is a placeholder' crates/roko-gate/src/eval_generator.rs && grep -q 'generate_checked' crates/roko-cli/src/graph_task_dispatch.rs"
+superseded = "2026-10-16: c20dc5f5c deleted the dormant EvalGenerator pre-dispatch write, so graph_task_dispatch.rs no longer calls generate_checked; nothing writes generated tests, and the no-placeholder clauses still pass."
+superseded_by = "c20dc5f5c"
 
 [closed]
 at = 2026-10-01

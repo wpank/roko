@@ -10,7 +10,7 @@ rank = 29
 size = "S"
 subsystem = ["paper"]
 created = 2026-10-02
-updated = 2026-10-02
+updated = 2026-10-16
 last_verified = 2026-10-02
 last_verified_rev = "e53136640"
 source = "tmp/backlog/2026-10-02-complete-and-wire PK29"
@@ -21,6 +21,8 @@ links = { depends_on = [], blocks = [], related = ["dec-39c781"], supersedes = [
 
 [[verify]]
 command = "! (python3 tools/paperlint.py --strict tmp/cybernetic-harness/paper/sections/05-evaluation-protocol.md tmp/cybernetic-harness/paper/sections/D-metrics-statistics.md 2>&1 | grep -qE '\\[(marker|banned|header|citation|identifier|status-tag|link)\\]') && grep -q 'S09 v1.4' tmp/cybernetic-harness/paper/sections/05-evaluation-protocol.md && grep -q 'S09 v1.4' tmp/cybernetic-harness/paper/sections/D-metrics-statistics.md"
+superseded = "2026-10-16: The 2026-10-02 design-paper rewrite of the research paper (session roko-55, in untracked tmp/; 6f85e5efc records it) replaced 05-evaluation-protocol.md and D-metrics-statistics.md, where S09 v1.4 was reconciled; the old text is archived whole in tmp/cybernetic-harness/paper/archive/2026-10-02-empirical-draft/."
+superseded_by = "6f85e5efc"
 
 [closed]
 at = 2026-10-02

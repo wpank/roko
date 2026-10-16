@@ -7,7 +7,7 @@ triage = "verified"
 severity = "p1"
 subsystem = ["apps/portal"]
 created = 2026-09-23
-updated = 2026-09-28
+updated = 2026-10-16
 last_verified = 2026-09-28
 source = "tmp/portal-backlog/00-INDEX.md#PB-008"
 discovered_from = "audit:tmp/portal-backlog/00-INDEX.md#PB-008"
@@ -16,6 +16,8 @@ links = { depends_on = [], blocks = [], related = [], supersedes = [], duplicate
 
 [[verify]]
 command = "grep -q 'Bearer' apps/portal/src/api/client.ts && test -f apps/portal/src/app/settings/connection/page.tsx"
+superseded = "2026-10-16: The one-screen portal (39e72deef) deleted app/settings/connection/page.tsx and with it named connection profiles; Bearer auth survives in src/api/client.ts."
+superseded_by = "39e72deef"
 
 [closed]
 at = 2026-09-28

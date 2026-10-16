@@ -8,7 +8,7 @@ severity = "p2"
 goal = "core"
 subsystem = ["roko-serve/routes/prds"]
 created = 2026-09-29
-updated = 2026-10-01
+updated = 2026-10-16
 last_verified = 2026-10-01
 last_verified_rev = "db778db9b"
 source = "plan:portal-programme/04-backend-plan-authoring#T15"
@@ -18,6 +18,8 @@ links = { depends_on = [], blocks = [], related = ["bug-d7c5dd"], supersedes = [
 
 [[verify]]
 command = "grep -q 'fn test_prd_plan_uses_generate_pipeline' crates/roko-serve/src/routes/prds.rs && ! sed -n '/async fn queue_plan_generation_op/,/^}/p' crates/roko-serve/src/routes/prds.rs | grep -q 'run_once' && cargo test -p roko-serve -- prds::tests::test_prd_plan_uses_generate_pipeline"
+superseded = "2026-10-16: d3f73bb45 deleted crates/roko-serve/src/routes/prds.rs with the PRD routes and their tests."
+superseded_by = "d3f73bb45"
 
 [closed]
 at = 2026-10-01

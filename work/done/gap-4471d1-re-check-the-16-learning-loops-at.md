@@ -9,7 +9,7 @@ goal = "whitepaper"
 size = "M"
 subsystem = ["paper"]
 created = 2026-09-29
-updated = 2026-09-29
+updated = 2026-10-16
 last_verified = 2026-09-29
 last_verified_rev = "bdfe1776c"
 source = "tmp/cybernetic-harness/workstreams/PROGRESS.md"
@@ -21,6 +21,8 @@ links = { depends_on = ["gap-8f6206"], blocks = [], related = ["gap-fcea53", "ga
 
 [[verify]]
 command = "! grep -q '98ee1418f' docs/whitepaper/05-cybernetic-mechanisms.md && python3 tools/paperlint.py --strict --require-status reviewed docs/whitepaper/*.md && (cd docs/whitepaper/evidence && shasum -a 256 -c SHA256SUMS)"
+superseded = "2026-10-16: The whitepaper rewrite as a design paper (7898493f2, 2026-10-08) reset every section to Status: draft, so --require-status reviewed fails until the new text is reviewed (gap-6a83de); the 98ee1418f clause and the frozen evidence SHA256SUMS still pass."
+superseded_by = "7898493f2"
 
 [closed]
 at = 2026-09-29

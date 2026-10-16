@@ -9,7 +9,7 @@ goal = "whitepaper"
 size = "M"
 subsystem = ["docs/whitepaper", "tools/status_matrix"]
 created = 2026-09-29
-updated = 2026-09-29
+updated = 2026-10-16
 last_verified = 2026-09-29
 last_verified_rev = "dc371b1ae"
 source = "tmp/cybernetic-harness/workstreams/PLAN.md#e1"
@@ -21,9 +21,13 @@ links = { depends_on = ["gap-af0b57"], blocks = [], related = ["gap-ac4646", "ga
 
 [[verify]]
 command = "test -f tools/status_matrix.py && python3 tools/status_matrix.py --check"
+superseded = "2026-10-16: The whitepaper rewrite as a design paper (7898493f2, 2026-10-08) dropped the status-matrix appendix and Figure 3 by design, so status_matrix.py --check reports them missing; bug-ac2a01 retires or re-targets the tool."
+superseded_by = "7898493f2"
 
 [[verify]]
 command = "test -f docs/whitepaper/appendix-status-matrix.md && test -f tools/paperlint.py && python3 tools/paperlint.py --strict docs/whitepaper/appendix-status-matrix.md"
+superseded = "2026-10-16: The whitepaper rewrite as a design paper (7898493f2, 2026-10-08) dropped appendix-status-matrix.md by design (the design paper has no status tags); the old text is at 7898493f2^."
+superseded_by = "7898493f2"
 
 [closed]
 at = 2026-09-29

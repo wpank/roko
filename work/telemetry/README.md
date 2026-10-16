@@ -27,6 +27,22 @@ trailers and the harvest per item, and computes each metric exactly as `DEFINITI
 item) in its own row. Backfilled rows are tabled apart. `python3 tools/work_telemetry.py manifest` freezes the day's
 inputs; the work skills commit it with their bookkeeping, and git is the freeze.
 
+`python3 tools/work.py render` also runs the rollup, so it moves with the views instead of needing its own schedule
+(gap-8d1463: nothing ran `work_telemetry.py rollup` by itself, and the rollup went 15 days stale before anyone
+noticed). `render` is already run after every batch of item changes (`work/README.md`), so that is the rollup's
+cadence too; run `work_telemetry.py rollup` by hand only to pin a `--today` other than the real date.
+
+## Field capture (retired)
+
+A second, untracked watcher (`tmp/cybernetic-harness/tools/field_capture.py` and `field_rollup.py`, outside this
+tree) snapshotted finished plan runs into `tmp/cybernetic-harness/evidence/field/` as evidence for the whitepaper
+(frozen citations of its output live in `docs/whitepaper/evidence/`, e.g. `2026-09-29-field-rollup.md`). It polled
+the repo and its git worktrees; once plan runs moved to scratch workspaces outside its reach it captured nothing
+(last capture 2026-09-29), and by 2026-10-15 its process was no longer running. Retired as of 2026-10-16
+(gap-8d1463) rather than repointed: the frozen whitepaper citations stand as they are, and the per-run data it
+copied is already live in `.roko/runs/<run>/` on whatever host ran the plan. Revive it only if the papers need new
+field evidence, and then point it at the workspaces actually in use instead of a fixed set of paths.
+
 ## Events
 
 `tools/work.py` appends one JSON object per line to `events/<session>.jsonl` in the main checkout. The session is

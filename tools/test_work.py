@@ -350,6 +350,26 @@ class TestEpicsAndViews(RepoTest):
         self.assertEqual(status["lane"]["x"], {"open": 1, "claimed": 1, "done": 1})
 
 
+class TestTelemetryRollup(RepoTest):
+    def test_render_refreshes_the_rollup(self):
+        """gap-8d1463: nothing ran `work_telemetry.py rollup` on its own, so it went stale; render now carries
+        it along, picking up events logged since the last stale copy was written."""
+        telemetry = self.root / "work" / "telemetry"
+        telemetry.mkdir()
+        (telemetry / "ROLLUP.md").write_text(
+            "# Development record: rollup\n\nDEFINITIONS.md sha256 `x` · report date 2026-10-01 · HEAD `deadbeef0` · "
+            "prices `prices-2026-09-28`.\n")
+        self.run_work("claim", "gap-cccccc", "--by", "t", "--session", "s1", "--branch", "work/gap-cccccc")
+        self.run_work("render")
+        today = dt.datetime.now(dt.timezone.utc).date().isoformat()
+        text = (telemetry / "ROLLUP.md").read_text()
+        self.assertNotIn("report date 2026-10-01", text)
+        self.assertIn(f"report date {today}", text)
+        rollup = json.loads((telemetry / "rollup.json").read_text())
+        self.assertEqual(rollup["date"], today)
+        self.assertEqual(rollup["inputs"]["live_events"], 1)  # the claim just logged
+
+
 class TestClaims(RepoTest):
     def claim_file(self, iid, **fields):
         d = work.claims_dir()

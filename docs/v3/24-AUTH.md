@@ -366,8 +366,8 @@ a request-driven refresh storm.
    (fail closed). With no `privy_allowed_roles`, members receive `"admin"`.
 4. **Role authorization** -- if `privy_allowed_roles` is non-empty, the JWT
    `role` claim must be present and contained in the allowed list. Tokens with
-   an unrecognized or missing role are downgraded to `"read"` scope instead of
-   receiving `"admin"`.
+   an unrecognized or missing role are rejected (fail closed, D18 2026-10-15),
+   not downgraded to a lesser scope.
 
 ### 7.3 Additional JWKS Providers
 

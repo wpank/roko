@@ -871,7 +871,7 @@ pub struct ServeAuthConfig {
     /// Allowed Privy roles (matched against the JWT `role` claim).
     ///
     /// When non-empty, only tokens whose `role` claim is in this list receive
-    /// admin scope; others are downgraded to `"read"`. When empty, roles are
+    /// admin scope; others are rejected (fail closed). When empty, roles are
     /// not checked, and Privy JWTs are rejected unless `privy_workspace_id`
     /// is set.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]

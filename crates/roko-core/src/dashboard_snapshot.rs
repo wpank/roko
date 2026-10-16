@@ -267,6 +267,21 @@ pub enum DashboardEvent {
         #[serde(default)]
         errors: Vec<String>,
     },
+    /// A Graph task's attempt settled (gap-4e852d): how it ended, who it is
+    /// charged to, where it ran on the model ladder and why, the task's
+    /// standing once it counts, and what it used. One per attempt, after its
+    /// verdict is written to the run's `attempts.jsonl`.
+    AttemptSettled {
+        plan_id: String,
+        task_id: String,
+        /// The attempt, from 1.
+        #[serde(default)]
+        attempt: u32,
+        /// How it ended, where it ran on the ladder and what it used, as the
+        /// event's own fields. Boxed, so every other event stays small.
+        #[serde(flatten)]
+        settled: Box<AttemptSettlement>,
+    },
     /// A Graph task's `confirm` rung asked its person whether the outcome is
     /// what they asked for; the task waits until they answer or the rung
     /// times out (gap-7c6663). MCP `confirm_answer` names the attempt key.
@@ -1031,6 +1046,86 @@ pub struct RouteLadder {
     /// never changes the route in shadow mode.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub forecast: Option<RouteForecast>,
+}
+
+/// How a Graph attempt ended, where it ran on the model ladder and what it
+/// used, as [`DashboardEvent::AttemptSettled`] carries it (gap-4e852d).
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct AttemptSettlement {
+    /// The `[routing.ladder]` rung it ran on; `None` when the ladder did
+    /// not route it.
+    #[serde(default)]
+    pub rung: Option<String>,
+    /// Rungs the task has climbed above its start rung once this try
+    /// counts; for a pass, the rungs it had climbed when it ran.
+    #[serde(default)]
+    pub escalations: u32,
+    /// The task's agent-blamed failures on the rung its next try runs
+    /// on: 0 after a pass or a climb. A rung gives 2 tries.
+    #[serde(default)]
+    pub failures_on_rung: u32,
+    /// Whether this try moved the task up a rung: its next try runs
+    /// higher.
+    #[serde(default)]
+    pub climbed: bool,
+    /// Why it ran where it did: `start`, `retry`, `climb`, `failover`
+    /// or `pinned`, as its `route_decided` says.
+    #[serde(default)]
+    pub reason: String,
+    /// How it ended: `passed`, `gate_failed`, `turn_cap` (a turn cap,
+    /// or the rung's spend allowance), `timeout`, `provider_error`,
+    /// `budget_exhausted`, `cancelled`, and so on.
+    #[serde(default)]
+    pub verdict: String,
+    /// Who it is charged to: `none`, `agent`, `infra` or `harness`.
+    /// Only an agent-blamed failure counts toward a climb.
+    #[serde(default)]
+    pub blame: String,
+    /// The check that failed it (`verify:0/test`), when one did.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub failed_check: Option<String>,
+    /// The first line of why it failed (`turn_cap: agent turn cap
+    /// reached (turns=15, cap=15)`), when it did.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub detail: Option<String>,
+    /// The model that ran.
+    #[serde(default)]
+    pub model: String,
+    /// The provider it ran on.
+    #[serde(default)]
+    pub provider: String,
+    /// Its tokens.
+    #[serde(default)]
+    pub usage: AttemptTokens,
+    /// What it cost in USD, as the plan's budget counted it; `None` when
+    /// unknown.
+    #[serde(default)]
+    pub cost_usd: Option<f64>,
+    /// From the attempt's start to its verdict, in ms.
+    #[serde(default)]
+    pub duration_ms: Option<u64>,
+    /// Whether its failure exhausted the ladder: no rung or retry left.
+    #[serde(default)]
+    pub exhausted: bool,
+}
+
+/// The tokens of one attempt, as [`DashboardEvent::AttemptSettled`]
+/// carries them (gap-4e852d); a count the provider did not report is
+/// `None`, never 0.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AttemptTokens {
+    /// Uncached input.
+    #[serde(rename = "in", default)]
+    pub input: Option<u64>,
+    /// Output, reasoning included.
+    #[serde(rename = "out", default)]
+    pub output: Option<u64>,
+    /// Input read from the prompt cache.
+    #[serde(default)]
+    pub cache_read: Option<u64>,
+    /// Reasoning tokens, already inside `out`.
+    #[serde(default)]
+    pub reasoning: Option<u64>,
 }
 
 /// The self-model's forecast of a Graph attempt, as
@@ -3230,6 +3325,27 @@ impl DashboardSnapshot {
                     task_id.clone(),
                     format!(
                         "attempt {attempt} failed {check}; attempt {next_attempt} gets: {gets}"
+                    ),
+                );
+            }
+            DashboardEvent::AttemptSettled {
+                plan_id,
+                task_id,
+                attempt,
+                settled,
+            } => {
+                let on = settled
+                    .rung
+                    .as_deref()
+                    .map_or_else(String::new, |rung| format!(" on {rung}"));
+                self.push_event_log(
+                    ts,
+                    "attempt_settled".to_string(),
+                    plan_id.clone(),
+                    task_id.clone(),
+                    format!(
+                        "attempt {attempt}{on} ({}): {}",
+                        settled.model, settled.verdict
                     ),
                 );
             }

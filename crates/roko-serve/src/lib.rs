@@ -2501,6 +2501,7 @@ fn dashboard_event_to_server(event: &roko_core::DashboardEvent) -> Option<Server
         | DashboardEvent::RouteDecided { .. }
         | DashboardEvent::PromptAssembled { .. }
         | DashboardEvent::RetryFeedback { .. }
+        | DashboardEvent::AttemptSettled { .. }
         | DashboardEvent::KnowledgeWritten { .. }
         | DashboardEvent::PlaybookWritten { .. }
         | DashboardEvent::EffectStaged { .. }

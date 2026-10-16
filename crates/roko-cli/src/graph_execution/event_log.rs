@@ -740,6 +740,14 @@ fn logged_event(event: &DashboardEvent, scrubber: &LogScrubber) -> serde_json::V
             DashboardEvent::GateOutputLine { line, .. } => {
                 replace_with_digest(fields, "line", line);
             }
+            DashboardEvent::AttemptSettled { settled, .. } => {
+                if let Some(detail) = &settled.detail {
+                    fields.insert(
+                        "detail".to_string(),
+                        serde_json::json!(gate_output_excerpt(detail, scrubber)),
+                    );
+                }
+            }
             DashboardEvent::TaskOutputAppended { lines, .. } => {
                 replace_with_digest(fields, "lines", &lines.join("\n"));
             }

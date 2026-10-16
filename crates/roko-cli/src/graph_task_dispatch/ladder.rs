@@ -371,6 +371,105 @@ impl GraphTaskDispatcher {
         }
     }
 
+    /// Why the attempt `verdict` settles ran where it did, once: the reason
+    /// routing recorded ([`Self::try_reason`]), `failover` when failover ran
+    /// another model, and for an attempt never routed `start` or `retry` by
+    /// its ordinal.
+    fn take_try_reason(&self, verdict: &AttemptVerdictRecord) -> TryReason {
+        let routed = self
+            .tries
+            .lock()
+            .reasons
+            .remove(&verdict.identity.attempt_key);
+        if !verdict.executed.failover_chain.is_empty() {
+            return TryReason::Failover;
+        }
+        routed.unwrap_or(if verdict.identity.key().attempt <= 1 {
+            TryReason::Start
+        } else {
+            TryReason::Retry
+        })
+    }
+
+    /// Tell the hub how `settled`, an attempt of `task`, ended
+    /// (gap-4e852d): its verdict and blame, where it ran on the ladder and
+    /// why, the task's standing once the try counts (`before` is the
+    /// standing it ran under), and what it used.
+    pub(super) fn publish_attempt_settled(
+        &self,
+        spec: &TaskExecutionSpec,
+        task: &TaskDef,
+        settled: &SettledAttempt,
+        before: LadderStanding,
+    ) {
+        let verdict = &settled.verdict;
+        let reason = self.take_try_reason(verdict);
+        let Some(tui) = &self.tui_bridge else {
+            return;
+        };
+        let after = self
+            .gate_retry_context
+            .ladder_standing(&spec.plan_id, &task.id);
+        let ladder = verdict.ladder.as_ref();
+        // A pass clears the standing: it reports the rungs it had climbed.
+        let (escalations, failures_on_rung) = if settled.succeeded() {
+            (ladder.map_or(before.escalations, |ladder| ladder.step), 0)
+        } else {
+            (after.escalations, after.failures_on_rung)
+        };
+        let failed_check = verdict
+            .failure_class
+            .as_ref()
+            .and_then(|class| class.rung.clone())
+            .or_else(|| {
+                verdict
+                    .steps
+                    .iter()
+                    .find(|step| step.passed == Some(false))
+                    .map(|step| step.rung.clone())
+            });
+        let executed = &verdict.executed;
+        let timing = &verdict.timing;
+        let cost = &verdict.cost;
+        let settlement = roko_core::dashboard_snapshot::AttemptSettlement {
+            rung: ladder.and_then(|ladder| ladder.rung.clone()),
+            escalations,
+            failures_on_rung,
+            climbed: after.escalations > before.escalations,
+            reason: reason.as_str().to_string(),
+            verdict: wire_word(&verdict.outcome),
+            blame: wire_word(&verdict.blame),
+            failed_check,
+            detail: settled.failure_reason.as_deref().map(first_line),
+            model: executed
+                .model_dispatched
+                .clone()
+                .or_else(|| executed.model_requested.clone())
+                .unwrap_or_default(),
+            provider: executed.provider.clone().unwrap_or_default(),
+            usage: roko_core::dashboard_snapshot::AttemptTokens {
+                input: verdict.usage.tokens_in,
+                output: verdict.usage.tokens_out,
+                cache_read: verdict.usage.tokens_cache_read,
+                reasoning: verdict.usage.tokens_reasoning,
+            },
+            // What the plan's budget counted: a CLI agent's own figure, else
+            // the provider's charge, else the snapshot's price.
+            cost_usd: cost.vendor_usd.or(cost.billed_usd).or(cost.api_equiv_usd),
+            duration_ms: timing
+                .settled_at
+                .zip(timing.attempt_started_at)
+                .and_then(|(settled, started)| u64::try_from(settled - started).ok()),
+            exhausted: ladder.is_some_and(|ladder| ladder.exhausted),
+        };
+        tui.publish_event(roko_core::DashboardEvent::AttemptSettled {
+            plan_id: spec.plan_id.clone(),
+            task_id: task.id.clone(),
+            attempt: settled.key().attempt,
+            settled: Box::new(settlement),
+        });
+    }
+
     /// How many rungs `task` can still climb from rung `rung`, `step` rungs
     /// above its start rung: the runnable rungs above it, at most the climbs
     /// [`MAX_ESCALATIONS`] leaves, and none from a rung at or above the cap
@@ -550,6 +649,31 @@ impl GraphTaskDispatcher {
             });
         }
     }
+}
+
+/// `value`'s wire word, as its records spell it (`gate_failed`, `agent`).
+fn wire_word(value: &impl serde::Serialize) -> String {
+    serde_json::to_value(value)
+        .ok()
+        .and_then(|value| value.as_str().map(str::to_string))
+        .unwrap_or_default()
+}
+
+/// Most bytes of a failure's first line an `attempt_settled` event carries.
+const DETAIL_BYTES: usize = 200;
+
+/// The first line of `reason`, at most [`DETAIL_BYTES`], cut at a character
+/// boundary and marked `…` when cut.
+fn first_line(reason: &str) -> String {
+    let line = reason.lines().next().unwrap_or_default().trim_end();
+    if line.len() <= DETAIL_BYTES {
+        return line.to_string();
+    }
+    let mut end = DETAIL_BYTES;
+    while !line.is_char_boundary(end) {
+        end -= 1;
+    }
+    format!("{}…", &line[..end])
 }
 
 /// The cascade router's shadow pick beside the rung (G56), from the attempt's route row
@@ -1563,6 +1687,93 @@ exit 1
             assert!(candidate["p_vs"].as_f64().is_some(), "{forecast}");
             assert!(candidate["cost_q50"].as_f64().is_some(), "{forecast}");
             assert!(candidate.get("cost_q90").is_none(), "{forecast}");
+        }
+    }
+
+    /// gap-4e852d: every try publishes `attempt_settled` with its verdict,
+    /// blame, the check that failed it, what it used, and the standing it
+    /// leaves: two failed checks on the cheap rung climb (the second says
+    /// so), and the first try on the top rung starts its count there.
+    #[tokio::test]
+    async fn each_try_publishes_attempt_settled() {
+        let temp = tempdir().expect("tempdir");
+        let hub = StateHub::new(4096);
+        let mut events = hub.subscribe_events();
+        let (dispatcher, task) = ladder_fixture(&temp).await;
+        let dispatcher = dispatcher.with_tui_bridge(TuiBridge::new(hub.sender()));
+        let mut spec = make_spec(&task);
+        spec.max_retries = 4;
+        let ctx = CellContext::new().with_run_id(RUN.to_string());
+        for _ in 0..3 {
+            dispatcher
+                .dispatch(&spec, Vec::new(), &ctx)
+                .await
+                .expect_err("every attempt fails its verify step");
+        }
+
+        let settled = published(&mut events, &["attempt_settled"]);
+        let tries: Vec<serde_json::Value> = settled
+            .iter()
+            .map(|event| {
+                serde_json::json!([
+                    event["attempt"],
+                    event["rung"],
+                    event["model"],
+                    event["escalations"],
+                    event["failures_on_rung"],
+                    event["climbed"],
+                    event["reason"],
+                    event["verdict"],
+                    event["blame"],
+                ])
+            })
+            .collect();
+        assert_eq!(
+            tries,
+            [
+                serde_json::json!([
+                    1,
+                    "cheap",
+                    CHEAP,
+                    0,
+                    1,
+                    false,
+                    "start",
+                    "gate_failed",
+                    "agent"
+                ]),
+                serde_json::json!([
+                    2,
+                    "cheap",
+                    CHEAP,
+                    1,
+                    0,
+                    true,
+                    "retry",
+                    "gate_failed",
+                    "agent"
+                ]),
+                serde_json::json!([3, "top", TOP, 1, 1, false, "climb", "gate_failed", "agent"]),
+            ]
+        );
+        for event in &settled {
+            assert_eq!(event["task_id"], task.id.as_str());
+            assert!(
+                event["failed_check"]
+                    .as_str()
+                    .is_some_and(|check| check.contains("test")),
+                "{event}"
+            );
+            assert!(
+                event["detail"]
+                    .as_str()
+                    .is_some_and(|detail| detail.starts_with("verify:")),
+                "{event}"
+            );
+            assert_eq!(event["usage"]["out"], 10, "{event}");
+            assert_eq!(event["cost_usd"], 0.01, "{event}");
+            assert!(event["duration_ms"].as_u64().is_some(), "{event}");
+            assert_eq!(event["exhausted"], false, "{event}");
         }
     }
 }

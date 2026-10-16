@@ -16,7 +16,7 @@ anchors = ["crates/roko-cli/src/serve_runtime.rs::load_plan_tasks", "crates/roko
 links = { depends_on = [], blocks = [], related = ["bug-0c7f25", "gap-8f84d1"], supersedes = [], duplicate_of = "" }
 
 [[verify]]
-command = "grep -rqw 'fn plan_tasks_title_is_the_listing_title' crates/ && cargo test -p roko-cli plan_tasks_title_is_the_listing_title"
+command = "grep -rqw 'fn plan_tasks_title_is_the_listing_title' crates/ && cargo test -p roko-cli --lib plan_tasks_title_is_the_listing_title"
 +++
 
 ## Problem

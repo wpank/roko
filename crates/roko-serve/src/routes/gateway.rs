@@ -724,6 +724,8 @@ async fn batch_submit(
         kind: "inference_batch".to_string(),
         status: OperationStatus::Running,
         handle,
+        started: std::time::Instant::now(),
+        progress: None,
     };
 
     state.operations.write().await.insert(batch_id.clone(), op);
@@ -1363,6 +1365,8 @@ mod tests {
                 kind: "test".to_string(),
                 status: OperationStatus::Running,
                 handle: tokio::spawn(async {}),
+                started: std::time::Instant::now(),
+                progress: None,
             },
         );
 

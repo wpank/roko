@@ -862,6 +862,12 @@ impl AuthoringSpend {
         self.spent_micro_usd.load(Ordering::Relaxed) as f64 / 1e6
     }
 
+    /// How many calls were recorded so far (gap-11d870).
+    #[must_use]
+    pub fn calls(&self) -> u32 {
+        self.calls.load(Ordering::Relaxed)
+    }
+
     /// Record one agent call. Best-effort: a failed write is logged and never
     /// fails the operation.
     pub async fn record(&self, call: &AgentCapture) {

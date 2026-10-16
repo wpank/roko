@@ -254,8 +254,11 @@ their files. Three layers prevent that.
 
 1. **Close at the source.** When work finishes, the item is closed in the same flow:
    - workers close their item as step 8 above;
-   - any commit whose message says `Closes: <id>` (or `Fixes:` / `Resolves:`) is picked up by
-     `python3 tools/work.py sync`, which closes the item with that commit as evidence;
+   - any commit with a trailer line `Closes: <id>` (or `Fixes:` / `Resolves:`), or whose subject starts with a
+     closing keyword (`close <id>, …`, also behind a type prefix: `work: close <id>`), is picked up by
+     `python3 tools/work.py sync`, which closes the item with that commit as evidence. A mention anywhere else
+     in the message, such as "fixed <id>'s Tools line" or "this does not close <id>" in the body, closes nothing
+     (bug-586260); `touched` and `drift` still report it;
    - a plan task with `closes = ["<id>"]` that passes its gates is picked up by `sync` from the Graph checkpoint
      (`.roko/state/graph/<plan>/checkpoint.json`), with the `run_id` as evidence.
    `sync` will not close an item whose verify command fails; it reports a conflict instead. The orchestrator

@@ -2,7 +2,7 @@
 id = "find-c3da60"
 kind = "finding"
 title = "A model priced without a cache rate counts cache reads at a tenth of input, and the tool loop's profile pricing pre-empts the price snapshot"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p3"
 goal = "hermes"
@@ -11,6 +11,7 @@ subsystem = ["roko-core/pricing", "roko-agent/tool-loop"]
 created = 2026-10-16
 updated = 2026-10-16
 last_verified = 2026-10-16
+last_verified_rev = "b9dc50f17"
 source = "tmp/hermes-roko-v5/findings/roko-caps.md (roko-caps, 2026-10-16)"
 discovered_from = "bug-4fabd0: checking the cache-read pricing of the $0.753 overrun"
 anchors = ["crates/roko-core/src/chat_types.rs::fill_cost_from_pricing", "crates/roko-cli/src/dispatch_v2.rs::fill_usage_cost_from_pricing"]
@@ -18,6 +19,18 @@ links = { depends_on = [], blocks = [], related = ["bug-4fabd0"], supersedes = [
 
 [[verify]]
 command = "grep -rqw 'fn cerebras_cache_reads_cost_the_input_rate' crates/roko-cli/src && cargo test -p roko-cli --lib cerebras_cache_reads_cost_the_input_rate"
+
+[closed]
+at = 2026-10-16
+at_ts = "2026-10-16T09:11:36Z"
+commit = "b9dc50f17"
+by = "commit trailer"
+executor = "claude-agent"
+via = "manual"
+size = "S"
+claimed_at = "2026-10-16T09:11:20Z"
+forced = false
+evidence = "b9dc50f17: decision (a) per provider: a profile with no cache-read rate on a provider that bills cached input at its input rate (Cerebras, by kind or by its API's address, as roko init writes it) takes its input rate for cache reads (ModelProfile::with_provider_cache_rate), in roko's tool loop and in dispatch; the 0.1 default stays for everyone else (bug-0c0747). Decision (b): dispatch prices every call through price_target_usage, where the dated snapshot's row replaces a tool loop's profile estimate (decision 2113) and a CLI agent's reported cost stands; interrupted calls and the per-call allowance use it too. (c) not done (it would flag roko init's OpenRouter rows). cerebras_cache_reads_cost_the_input_rate and a_cerebras_model_without_a_cache_rate_pays_its_input_rate pass. On the stacked tip 0216a4cbd (with find-c3da60 and gap-ca1c92): fmt --check, clippy -D warnings and the lib tests of roko-core (2034), roko-agent (2353), roko-cli (3707) and roko-serve (1033) pass (tmp/hermes-roko-v5/roko-caps/logs/stack-checks.log)."
 +++
 
 ## Problem

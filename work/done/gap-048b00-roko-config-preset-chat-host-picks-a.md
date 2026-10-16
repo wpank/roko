@@ -2,7 +2,7 @@
 id = "gap-048b00"
 kind = "gap"
 title = "roko config preset chat-host picks a Cerebras data model without saying that its rate limits can withhold tool output from the agent"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p3"
 goal = "hermes"
@@ -11,12 +11,24 @@ subsystem = ["roko-cli/config"]
 created = 2026-10-16
 updated = 2026-10-16
 last_verified = 2026-10-16
+last_verified_rev = "b6cb698f3"
 source = "hermes-roko round v5, the round's lead and roko-demos, 2026-10-15"
 anchors = ["crates/roko-cli/src/chat_host.rs::plan_chat_host", "crates/roko-cli/src/commands/tune.rs::cmd_chat_host_preset"]
 links = { depends_on = [], blocks = [], related = ["gap-115bae"], supersedes = [], duplicate_of = "" }
 
 [[verify]]
 command = "grep -rqw 'fn chat_host_preset_notes_a_cerebras_data_model' crates/ && cargo test -p roko-cli --lib chat_host_preset_notes_a_cerebras_data_model"
+
+[closed]
+at = 2026-10-16
+at_ts = "2026-10-16T12:34:16Z"
+commit = "b6cb698f3"
+by = "roko-chathost"
+executor = "claude-agent"
+size = "S"
+claimed_at = "2026-10-16T11:06:22Z"
+forced = false
+evidence = "b6cb698f3: roko config preset chat-host picks a data model roko can price (model_registry::model_has_price), then one on its maker's own API (OpenAI, Anthropic, Google), then the cheapest, as the Hermes plugin's own fix does (chat_host::DataModelCandidate); a pick on Cerebras adds a note to the output and --json (`note`). Tests: chat_host::tests::chat_host_preset_notes_a_cerebras_data_model (the verify) and chat_host_preset_prefers_a_makers_own_api; roko-cli lib 3715 and bin 466 passed under a scratch HOME; clippy -D warnings clean. Live (a scratch project with Will's ladder plus gpt-4o-mini on OpenAI, scratch HOME, placeholder keys, no provider called): before, the dry run picked cerebras-gptoss ('the cheapest model of the ladder') with no note; after, gpt-4o-mini ('on openai, its maker's own API, at $0.75 per million tokens') with all keys, and cerebras-gptoss with the rate-limit note when only Cerebras has a key; against a live roko serve on :6791 the plugin's probe went from no_data_boundary to not_found 3 s after --yes, with no restart warning."
 +++
 
 ## Problem

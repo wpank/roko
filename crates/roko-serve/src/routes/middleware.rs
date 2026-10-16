@@ -464,8 +464,8 @@ fn authenticate_api_key(
 ///    rejected (fail closed).
 /// 4. Role authorization: if `privy_allowed_roles` is non-empty the JWT
 ///    `role` claim must be present and contained in the allowed list.
-///    Tokens with an unrecognised or missing role are downgraded to
-///    `"read"` scope instead of receiving `"admin"`.
+///    Tokens with an unrecognised or missing role are rejected (fail
+///    closed), not downgraded to a lesser scope.
 async fn try_privy_jwt(
     token: &str,
     auth: &ServeAuthConfig,
@@ -499,26 +499,27 @@ async fn try_privy_jwt(
         }
     }
 
-    // --- Role authorization ---
-    let scope = if auth.privy_allowed_roles.is_empty() {
-        // The allow-list is the workspace alone, and the caller is a member.
-        "admin".to_string()
-    } else {
+    // --- Role authorization (fail closed) ---
+    if !auth.privy_allowed_roles.is_empty() {
         match claims.role.as_deref() {
-            Some(role) if auth.privy_allowed_roles.iter().any(|r| r == role) => "admin".to_string(),
+            Some(role) if auth.privy_allowed_roles.iter().any(|r| r == role) => {
+                /* role confirmed */
+            }
             _ => {
-                tracing::info!(
+                tracing::warn!(
                     sub = %claims.sub,
                     role = ?claims.role,
                     allowed = ?auth.privy_allowed_roles,
-                    "Privy JWT role not in allowed list — downgrading to read scope"
+                    "Privy JWT rejected: role not in allowed list"
                 );
-                "read".to_string()
+                return None;
             }
         }
-    };
+    }
+    // Either the role was confirmed above, or `privy_allowed_roles` is empty
+    // and the workspace check above already confirmed membership.
 
-    Some((AuthMethod::Jwt, scope, Some(claims.sub)))
+    Some((AuthMethod::Jwt, "admin".to_string(), Some(claims.sub)))
 }
 
 /// Attempt to validate a Bearer token as an agent token.
@@ -2758,15 +2759,37 @@ mod tests {
         );
         for role in [Some("viewer"), None] {
             let jwt = privy_test_jwt(PRIVY_TEST_APP_ID, role, None);
-            let scope = try_privy_jwt(&jwt, &auth, &state)
-                .await
-                .map(|(_, scope, _)| scope);
-            assert_eq!(scope.as_deref(), Some("read"), "role {role:?}");
+            assert_eq!(
+                try_privy_jwt(&jwt, &auth, &state).await,
+                None,
+                "role {role:?}"
+            );
         }
         assert_eq!(
             privy_middleware_status(state, &admin).await,
             StatusCode::NO_CONTENT
         );
+    }
+
+    #[tokio::test]
+    async fn privy_jwt_role_mismatch_is_rejected() {
+        // D18 (2026-10-15, status-quo decision 3): a role outside the
+        // allow-list must be refused outright, not downgraded to `read`.
+        let auth = privy_auth(&["admin"], None);
+        for role in [Some("viewer"), None] {
+            let state = privy_test_state(auth.clone()).await;
+            let jwt = privy_test_jwt(PRIVY_TEST_APP_ID, role, None);
+            assert_eq!(
+                try_privy_jwt(&jwt, &auth, &state).await,
+                None,
+                "role {role:?}"
+            );
+            assert_eq!(
+                privy_middleware_status(state, &jwt).await,
+                StatusCode::UNAUTHORIZED,
+                "role {role:?}"
+            );
+        }
     }
 
     #[tokio::test]

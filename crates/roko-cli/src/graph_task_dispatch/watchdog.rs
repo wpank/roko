@@ -26,6 +26,13 @@
 //! its progress saw stream (bug-2b1ddc). The operator can stop one task's
 //! attempt the same way ([`OperatorStops`], gap-c002bb); it is not retried.
 //!
+//! An agent that runs its own loop (a CLI agent) cannot be asked before each
+//! model call, as roko's tool loop is: every [`BUDGET_CHECK_INTERVAL`] what its
+//! call streamed is priced against its plan budget, and it is stopped as
+//! budget-exhausted, not retried, once the attempt's hold cannot cover one
+//! more message like its last (gap-ca1c92). An agent that reports its usage
+//! only at the end (the Codex CLI) is bounded by its turn cap and timeout.
+//!
 //! Silence counts only while the agent waits on its model:
 //!
 //! - every event the agent streams is progress, text and reasoning deltas
@@ -56,6 +63,7 @@ use roko_core::{DiagnosisSeverity, DiagnosisSummary};
 use super::failover::FailoverChain;
 use super::supervision::{AttemptFeed, ConductorRestart, SupervisedAttempt};
 use super::*;
+use crate::dispatch_v2::CallAllowance;
 
 /// How often a running attempt's [`StallWatch`] is checked. The thresholds
 /// are whole seconds, so this is precise enough.
@@ -68,6 +76,10 @@ const STOP_CHECK_INTERVAL: Duration = Duration::from_millis(250);
 /// How often a watched attempt looks for outbound calls its agent proposed
 /// and roko held (gap-f439c1).
 const EFFECT_CHECK_INTERVAL: Duration = Duration::from_secs(2);
+
+/// How often a watched attempt whose agent runs its own loop prices what it
+/// streamed against its plan budget (gap-ca1c92).
+const BUDGET_CHECK_INTERVAL: Duration = Duration::from_millis(250);
 
 /// How long a call whose provider streams as it goes may report nothing from
 /// its start before that counts as silence. Starting the CLI and the model's
@@ -143,6 +155,9 @@ struct ProgressState {
     open_tool_calls: HashSet<String>,
     /// The provider call the attempt waits on, once one started.
     call: Option<CallInFlight>,
+    /// How many provider calls the attempt started: the number of the one in
+    /// flight.
+    calls: u64,
     /// What that call streamed of its token usage.
     usage: StreamedUsage,
     /// The watchdog, the conductor or a stopping plan run cancelled the
@@ -180,6 +195,26 @@ impl StreamedUsage {
             (ended, open) => ended.or(open),
         }
     }
+}
+
+/// The provider call in flight and what it streamed of its usage so far
+/// ([`AttemptProgress::streamed_call`]).
+#[derive(Debug)]
+struct StreamedCall {
+    /// Its number among the attempt's calls, from 1.
+    number: u64,
+    target: crate::dispatch_v2::ProviderDispatchSpec,
+    usage: roko_core::Usage,
+}
+
+/// What a watched attempt told its plan budget of the spend its provider
+/// call streamed (gap-ca1c92).
+#[derive(Debug, Default)]
+struct StreamedSpend {
+    /// The call, by [`StreamedCall::number`].
+    call: u64,
+    /// What that call had streamed, in USD.
+    usd: f64,
 }
 
 /// A provider call the watchdog, the conductor or a stopping plan run
@@ -300,6 +335,7 @@ impl AttemptProgress {
         state.reports_at_end = !streams_as_it_goes(target.provider_kind);
         state.queued = false;
         state.call = Some(CallInFlight { target, failover });
+        state.calls += 1;
         state.usage = StreamedUsage::default();
     }
 
@@ -307,6 +343,19 @@ impl AttemptProgress {
     /// the agent's, before it the provider's.
     pub(super) fn reported_progress(&self) -> bool {
         self.inner.lock().last_event.is_some()
+    }
+
+    /// The provider call in flight, by its number, with the usage it
+    /// streamed so far; `None` before one starts or streams any usage
+    /// (gap-ca1c92).
+    fn streamed_call(&self) -> Option<StreamedCall> {
+        let state = self.inner.lock();
+        let call = state.call.as_ref()?;
+        Some(StreamedCall {
+            number: state.calls,
+            target: call.target.clone(),
+            usage: state.usage.total()?,
+        })
     }
 
     /// The watchdog, the conductor or a stopping plan run cancelled the call
@@ -472,6 +521,9 @@ pub(super) enum AttemptInterrupted {
     Stopped,
     /// The operator stopped its task ([`OperatorStops::stop`]).
     StoppedByOperator,
+    /// Its agent runs its own loop, and what it streamed reached what its
+    /// plan budget can pay for, for this reason (gap-ca1c92).
+    BudgetExhausted(String),
 }
 
 impl AttemptInterrupted {
@@ -499,6 +551,8 @@ impl AttemptInterrupted {
                 "agent for {}/{} stopped by the operator",
                 attempt.plan_id, attempt.task_id
             )),
+            // No retry can pay for it (bug-4fabd0).
+            Self::BudgetExhausted(reason) => RokoError::gateway("budget", false, reason.clone()),
         }
     }
 
@@ -509,6 +563,7 @@ impl AttemptInterrupted {
             Self::Restarted(_) | Self::Stopped | Self::StoppedByOperator => {
                 TaskDispatchOutcomeKind::Cancelled
             }
+            Self::BudgetExhausted(_) => TaskDispatchOutcomeKind::Failed,
         }
     }
 }
@@ -523,6 +578,7 @@ impl AttemptInterrupted {
 ///   before.
 /// - A cancellation, a stopping plan run's or the operator's included,
 ///   teaches nothing (bug-2b1ddc).
+/// - A stop for the plan budget is the harness's (gap-ca1c92).
 /// - Anything else, a conductor restart included, is a provider failure.
 pub(super) fn failed_call_settlement(
     interrupted: Option<&AttemptInterrupted>,
@@ -534,6 +590,7 @@ pub(super) fn failed_call_settlement(
             &error.to_string(),
             progress.is_some_and(AttemptProgress::reported_progress),
         ),
+        Some(AttemptInterrupted::BudgetExhausted(reason)) => Settlement::budget_exhausted(reason),
         Some(
             AttemptInterrupted::Restarted(_)
             | AttemptInterrupted::Stopped
@@ -688,11 +745,12 @@ impl GraphTaskDispatcher {
     /// [`STALL_CHECK_INTERVAL`]. An attempt that stalls, that the conductor
     /// restarts through `supervised`, whose plan run asks it to stop
     /// ([`WatchedAttempt::stop`]), or whose task the operator stops
-    /// ([`OperatorStops`]) returns [`AttemptInterrupted`]; `dispatch`
-    /// is dropped with it, which cancels the provider call, and `progress`
-    /// then gives the call and what it streamed
-    /// ([`AttemptProgress::interrupted_call`]), with or without a `watch`
-    /// (bug-3a3b0f).
+    /// ([`OperatorStops`]) returns [`AttemptInterrupted`], as does one whose
+    /// agent runs its own loop once what it streamed reaches what `allowance`
+    /// can pay for (gap-ca1c92); `dispatch` is dropped with it, which cancels
+    /// the provider call, and `progress` then gives the call and what it
+    /// streamed ([`AttemptProgress::interrupted_call`]), with or without a
+    /// `watch` (bug-3a3b0f).
     pub(super) async fn run_watched<T>(
         &self,
         dispatch: impl Future<Output = T>,
@@ -700,6 +758,7 @@ impl GraphTaskDispatcher {
         mut watch: Option<StallWatch>,
         supervised: Option<&SupervisedAttempt>,
         attempt: &WatchedAttempt<'_>,
+        allowance: Option<&AttemptAllowance>,
     ) -> std::result::Result<T, AttemptInterrupted> {
         let started_at = Instant::now();
         let mut heartbeat = tokio::time::interval(AGENT_HEARTBEAT_INTERVAL);
@@ -718,6 +777,10 @@ impl GraphTaskDispatcher {
         effect_check.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         effect_check.tick().await;
         let mut effects_seen = std::collections::HashSet::new();
+        let mut budget_check = tokio::time::interval(BUDGET_CHECK_INTERVAL);
+        budget_check.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        budget_check.tick().await;
+        let mut streamed_spend = StreamedSpend::default();
         let restarted = async {
             match supervised {
                 Some(supervised) => supervised.restarted().await,
@@ -768,6 +831,21 @@ impl GraphTaskDispatcher {
                     {
                         progress.interrupted();
                         return Err(stalled);
+                    }
+                }
+                _ = budget_check.tick(), if allowance.is_some() => {
+                    if let Some(reason) = allowance.and_then(|allowance| {
+                        self.streamed_spend_refusal(allowance, progress, &mut streamed_spend)
+                    }) {
+                        tracing::warn!(
+                            plan_id = attempt.plan_id,
+                            task_id = attempt.task_id,
+                            attempt = attempt.attempt_key,
+                            %reason,
+                            "the plan budget stopped an agent that runs its own loop"
+                        );
+                        progress.interrupted();
+                        return Err(AttemptInterrupted::BudgetExhausted(reason));
                     }
                 }
             }
@@ -832,6 +910,54 @@ impl GraphTaskDispatcher {
                 proposed_at: hold.proposed_at,
             });
         }
+    }
+
+    /// Why an attempt whose agent runs its own loop must stop now
+    /// (gap-ca1c92). Such an agent cannot be asked before each model call, as
+    /// roko's own tool loop is (bug-4fabd0), so what its call streamed since
+    /// the last look, `counted`, is priced as `InterruptedCall::into_dispatch`
+    /// prices it and told to `allowance` as one model call, and the agent
+    /// stops once the plan cannot pay for one more like it. `None` for an
+    /// agent roko's tool loop runs, and while what it streamed has no price:
+    /// the cost it reports is counted when it ends.
+    fn streamed_spend_refusal(
+        &self,
+        allowance: &AttemptAllowance,
+        progress: &AttemptProgress,
+        counted: &mut StreamedSpend,
+    ) -> Option<String> {
+        let StreamedCall {
+            number,
+            target,
+            mut usage,
+        } = progress.streamed_call()?;
+        if !crate::dispatch_v2::runs_own_tools(&target) {
+            return None;
+        }
+        let snapshot = self.pricing_snapshot();
+        let pricing = crate::dispatch_v2::fill_usage_cost_from_pricing(
+            &mut usage,
+            snapshot.as_deref(),
+            target.model_profile.as_ref(),
+            &target.model_slug,
+        );
+        if pricing == crate::dispatch_v2::CallPricing::Unpriced {
+            return None;
+        }
+        if counted.call != number {
+            *counted = StreamedSpend {
+                call: number,
+                usd: 0.0,
+            };
+        }
+        let streamed = f64::from(usage.cost_usd);
+        let spent = streamed - counted.usd;
+        if spent <= 0.0 {
+            return None;
+        }
+        counted.usd = streamed;
+        allowance.record_call(spent, true);
+        allowance.refuse_call()
     }
 
     /// Check `watch` now and publish what it found: a warning for a silent
@@ -1793,6 +1919,129 @@ exec sleep 60
         .await;
         assert_eq!(costs[0]["input_tokens"], 1_000, "{}", costs[0]);
         assert_eq!(costs[0]["output_tokens"], 200, "{}", costs[0]);
+    }
+
+    /// gap-ca1c92: an agent that runs its own loop cannot be asked before a
+    /// model call, so its attempt is priced as its call streams. A Claude CLI
+    /// that streams priced messages without end is stopped budget-exhausted
+    /// once the plan cannot pay for one more message like its last: the
+    /// run's spend stays within one message of its cap, and the plan starts
+    /// no further attempt.
+    #[tokio::test]
+    async fn a_cli_agent_cannot_stream_a_run_past_its_cap() {
+        let temp = tempdir().expect("tempdir");
+        let script = temp.path().join("fake-claude.sh");
+        // Each message reads 10,000 tokens and writes 100: $0.0315 at
+        // Sonnet's $3 in and $15 out per million.
+        write_provider(
+            &script,
+            r#"#!/bin/sh
+set -eu
+cat >/dev/null
+echo launched >> "$(dirname -- "$0")/launches.log"
+i=0
+while [ "$i" -lt 120 ]; do
+  i=$((i + 1))
+  printf '{"type":"assistant","message":{"id":"msg-%s","model":"claude-sonnet-4-6","content":[{"type":"text","text":"working"}],"usage":{"input_tokens":10000,"output_tokens":100}}}\n' "$i"
+  sleep 1
+done
+"#,
+        );
+        let message_usd = (10_000.0 * 3.0 + 100.0 * 15.0) / 1e6;
+        let mut config = watched_config(&script);
+        // Nothing but the plan budget ends the attempt.
+        config.conductor.silence_timeout_secs = 0;
+        config.conductor.task_stall_secs = 0;
+        let config = Arc::new(config);
+        let factory =
+            Arc::new(SharedAgentFactory::new(Arc::clone(&config), None, None, None).await);
+        let ceiling = 0.10;
+        let dispatcher =
+            GraphTaskDispatcher::new(factory, Arc::clone(&config), temp.path().to_path_buf())
+                .with_plan_budget(ceiling, 0.0, false)
+                .with_feedback(crate::graph_task_dispatch::tests::recording_feedback(
+                    temp.path(),
+                ));
+        let spec = TaskExecutionSpec {
+            plan_id: "p1".to_string(),
+            title: STALLED_TASK_TITLE.to_string(),
+            timeout_secs: 60,
+            task_def_json: stalled_task_json(0),
+            ..TaskExecutionSpec::default()
+        };
+        let run = "capped-cli";
+        let ctx = || {
+            CellContext::new()
+                .with_cell_id("T01".to_string())
+                .with_run_id(run.to_string())
+        };
+
+        let started = Instant::now();
+        let error = dispatcher
+            .dispatch(&spec, Vec::new(), &ctx())
+            .await
+            .expect_err("the cap stops the attempt");
+
+        assert!(started.elapsed() < secs(30), "{:?}", started.elapsed());
+        let RokoError::Gateway {
+            category: "budget",
+            retryable: false,
+            message,
+        } = &error
+        else {
+            panic!("a budget stop the task executor does not retry: {error:?}");
+        };
+        assert!(
+            message.starts_with("plan budget exhausted: the attempt's next model call"),
+            "{message}"
+        );
+        let spent = dispatcher.plan_budget_snapshot(&spec.plan_id).spent_usd;
+        assert!(spent >= message_usd, "what it streamed counts: ${spent}");
+        assert!(
+            spent <= ceiling + message_usd,
+            "spent ${spent} of ${ceiling}"
+        );
+        let verdicts = crate::graph_task_dispatch::tests::jsonl_rows_where(
+            &temp
+                .path()
+                .join(".roko/runs")
+                .join(run)
+                .join("attempts.jsonl"),
+            1,
+            |row| row["schema_version"] == "roko.verdict/1",
+        )
+        .await;
+        assert_eq!(
+            verdicts[0]["outcome"], "budget_exhausted",
+            "{}",
+            verdicts[0]
+        );
+        assert_eq!(
+            verdicts[0]["cost"]["source"], "estimated",
+            "{}",
+            verdicts[0]
+        );
+
+        let stop = dispatcher
+            .plan_dispatch_stop(&spec.plan_id)
+            .expect("the plan starts no further task");
+        assert!(stop.starts_with("plan budget exhausted: $"), "{stop}");
+        let again = dispatcher
+            .dispatch(&spec, Vec::new(), &ctx())
+            .await
+            .expect_err("no attempt starts");
+        assert!(
+            matches!(
+                again,
+                RokoError::Gateway {
+                    category: "budget",
+                    ..
+                }
+            ),
+            "{again:?}"
+        );
+        let launched = std::fs::read_to_string(temp.path().join("launches.log")).expect("launches");
+        assert_eq!(launched.lines().count(), 1, "the agent launched once");
     }
 
     /// Write `body` as an executable provider script at `path`.

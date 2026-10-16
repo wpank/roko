@@ -977,7 +977,9 @@ impl TaskDispatcher for GraphTaskDispatcher {
             .reserve_waiting(&spec.plan_id, self.budget_policy, || ctx.is_cancelled())
             .await?;
         // The plan ceiling holds inside the attempt: its agent's tool loop
-        // asks the reservation's hold before each model call (bug-4fabd0).
+        // asks the reservation's hold before each model call (bug-4fabd0),
+        // and an agent that runs its own loop is priced as it streams
+        // (gap-ca1c92).
         let allowance = budget_reservation.allowance(&self.budget_ledger);
 
         let task: TaskDef = serde_json::from_str(&spec.task_def_json).map_err(|error| {
@@ -1528,6 +1530,7 @@ impl TaskDispatcher for GraphTaskDispatcher {
                 stall_watch,
                 supervised.as_ref(),
                 &watched,
+                allowance.as_deref(),
             )
             .await;
         let ended_by = watched_result.as_ref().err().cloned();
@@ -1575,9 +1578,10 @@ impl TaskDispatcher for GraphTaskDispatcher {
                         attempt_ordinal,
                     );
                 }
-                // A call the stall watchdog, the conductor or a stopping plan
-                // run cancelled is accounted like any failed call, with the
-                // usage it streamed (bug-aa2044, bug-2b1ddc).
+                // A call the stall watchdog, the conductor, a stopping plan
+                // run or the plan budget cancelled is accounted like any
+                // failed call, with the usage it streamed (bug-aa2044,
+                // bug-2b1ddc, gap-ca1c92).
                 if let Some(interrupted) = progress.interrupted_call() {
                     let wall_duration = started_at.elapsed();
                     let (dispatch, failover) = interrupted.into_dispatch(

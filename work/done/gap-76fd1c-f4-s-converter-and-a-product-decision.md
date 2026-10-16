@@ -2,15 +2,16 @@
 id = "gap-76fd1c"
 kind = "gap"
 title = "F4's converter and a product decision for F2/F3/F5/F7 are still needed for the full 48-instance H3 report"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p2"
 goal = "proof"
 size = "M"
 subsystem = ["benchmarks/viabilitybench"]
 created = 2026-10-05
-updated = 2026-10-15
-last_verified = 2026-10-05
+updated = 2026-10-16
+last_verified = 2026-10-16
+last_verified_rev = "068c4719e"
 source = "wave-19 follow-up reports 2026-10-05 (gap-c71dbb, work/gap-6e7a86)"
 discovered_from = "gap-c71dbb (open, work/gap-6e7a86; own Progress note recorded this but deliberately did not file it)"
 anchors = ["benchmarks/viabilitybench/specops/manipulation_check.py", "benchmarks/viabilitybench/families/f4_kvtool/gen.py"]
@@ -19,6 +20,18 @@ links = { depends_on = [], blocks = [], related = [], supersedes = [], duplicate
 
 [[verify]]
 command = "grep -qw 'def test_full_48_instance_h3_report_runs_from_generators' benchmarks/viabilitybench/specops/tests/test_manipulation.py && benchmarks/viabilitybench/.venv/bin/python -m pytest benchmarks/viabilitybench/specops/tests/test_manipulation.py -k test_full_48_instance_h3_report_runs_from_generators -q"
+
+[closed]
+at = 2026-10-16
+at_ts = "2026-10-16T19:59:48Z"
+commit = "068c4719e"
+by = "commit trailer"
+executor = "claude-agent"
+via = "work-batch"
+size = "M"
+claimed_at = "2026-10-16T19:19:34Z"
+forced = false
+evidence = "068c4719e: dated note in this item's body (2026-10-16) records that bug-f90bd0 (closed, merged 980678432) gave F2/F3/F5/F7 a spec.precise.md in F1's own TSS v1 layout while fixing LOG1 block C's vague H3 stream, confirmed empirically by generating real instances of all 6 H3 families and running them through the unmodified specops.from_generator.task_from_instance (F1/F2/F3/F5/F7 all convert; only F4 raised ConversionError). Built from_generator.py::parse_precise_spec_f4 for F4's own layout ('## Goal'/'## Constraints'/'## Visible check', no '## Non-goals', no max_loc sentence) plus a _join_bullets helper for its line-wrapped AC sentences, dispatched from task_from_instance on manifest['family']. test_full_48_instance_h3_report_runs_from_generators (specops/tests/test_manipulation.py) now generates and converts 8 real instances of each of the 6 H3 families (48 total) and runs them through check_many: report.ok True, every pair's gap >= MIN_GAP (observed minimum 53.17 vs bar 30). Added test_task_from_instance_round_trips_a_fresh_f4_generator_output mirroring the F1 round-trip test. Verify: benchmarks/viabilitybench/.venv/bin/python -m pytest benchmarks/viabilitybench/specops/tests/test_manipulation.py -k test_full_48_instance_h3_report_runs_from_generators -q passes; full specops/ (56 tests) and speclint/ (98 tests) suites pass with no regression."
 +++
 
 ## Problem

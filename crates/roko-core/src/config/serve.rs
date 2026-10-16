@@ -221,15 +221,21 @@ pub enum ChatRunBlocker {
     /// outside world for approval (`stage`, decision 9107), which a CLI agent
     /// cannot do, so every task would fail at dispatch.
     NoToolLoopModel,
+    /// No model such a run can be put on has a price. The run is held to its
+    /// `max_usd`, a cap can count only priced calls, and dispatch refuses an
+    /// unpriced model under a cap (gap-8548e3), so every task would fail.
+    NoPrice,
 }
 
 impl ChatRunBlocker {
-    /// The machine-readable code: `no_data_boundary` or `no_tool_loop_model`.
+    /// The machine-readable code: `no_data_boundary`, `no_tool_loop_model` or
+    /// `no_price`.
     #[must_use]
     pub const fn code(self) -> &'static str {
         match self {
             Self::NoDataBoundary => "no_data_boundary",
             Self::NoToolLoopModel => "no_tool_loop_model",
+            Self::NoPrice => "no_price",
         }
     }
 }
@@ -272,15 +278,22 @@ impl super::schema::RokoConfig {
     /// allow_without_data_llm` is set. Such a run stages its tool calls that
     /// act on the outside world (decision 9107), which only roko's own tool
     /// loop can do, so it is refused too when no model it can be routed to
-    /// runs there with its credentials set ([`Self::tool_loop_models`]).
+    /// runs there with its credentials set ([`Self::tool_loop_models`]). The
+    /// run is held to its `max_usd`, so it is refused as well when none of
+    /// those models has a price in `prices`, the workspace's price snapshot,
+    /// its `[models.*]` rates or the built-in table (gap-8548e3).
     #[must_use]
-    pub fn chat_run_refusal(&self) -> Option<ChatRunRefusal> {
-        self.chat_run_refusal_with_env(&|name| std::env::var(name).ok())
+    pub fn chat_run_refusal(
+        &self,
+        prices: Option<&crate::pricing_snapshot::PriceSnapshot>,
+    ) -> Option<ChatRunRefusal> {
+        self.chat_run_refusal_with_env(prices, &|name| std::env::var(name).ok())
     }
 
     /// [`Self::chat_run_refusal`] with the environment `env` holds.
     pub(crate) fn chat_run_refusal_with_env(
         &self,
+        prices: Option<&crate::pricing_snapshot::PriceSnapshot>,
         env: &dyn Fn(&str) -> Option<String>,
     ) -> Option<ChatRunRefusal> {
         let mut blockers = Vec::new();
@@ -306,6 +319,9 @@ impl super::schema::RokoConfig {
         if !self.chat_run_has_tool_loop_model_with_env(env) {
             blockers.push(ChatRunBlocker::NoToolLoopModel);
             reasons.push(self.no_tool_loop_model_reason_with_env(env));
+        } else if let Some(reason) = self.no_price_reason_with_env(prices, env) {
+            blockers.push(ChatRunBlocker::NoPrice);
+            reasons.push(reason);
         }
         (!blockers.is_empty()).then(|| ChatRunRefusal {
             blockers,
@@ -609,6 +625,39 @@ impl super::schema::RokoConfig {
             }
         }
         misses
+    }
+
+    /// The words of [`ChatRunBlocker::NoPrice`] when none of
+    /// [`Self::tool_loop_models`] has a price in `prices`, its `[models.*]`
+    /// rates or the built-in table, and `None` when one has.
+    fn no_price_reason_with_env(
+        &self,
+        prices: Option<&crate::pricing_snapshot::PriceSnapshot>,
+        env: &dyn Fn(&str) -> Option<String>,
+    ) -> Option<String> {
+        const SHOWN: usize = 6;
+        let models = self.tool_loop_models_with_env(env);
+        let priced = |model: &String| {
+            let resolved = crate::agent::resolve_model(self, model);
+            super::model_registry::model_has_price(
+                prices,
+                resolved.profile.as_ref(),
+                &resolved.slug,
+            )
+        };
+        if models.is_empty() || models.iter().any(priced) {
+            return None;
+        }
+        let mut named = models[..models.len().min(SHOWN)].join(", ");
+        if models.len() > SHOWN {
+            named.push_str(&format!(" and {} more", models.len() - SHOWN));
+        }
+        Some(format!(
+            "a run from a chat host is held to its max_usd, and a cap can count only the calls of \
+             a model with a price; the models it can run on have none ({named}). To fix it, set \
+             cost_input_per_m and cost_output_per_m on one's [models.*] entry in roko.toml (0 for \
+             a free local model)"
+        ))
     }
 
     /// The words of [`ChatRunBlocker::NoToolLoopModel`]: what keeps each
@@ -1651,7 +1700,7 @@ mod chat_run_tests {
     #[test]
     fn chat_run_refusal_names_each_blocker_in_order() {
         let refusal = cli_only()
-            .chat_run_refusal_with_env(&env)
+            .chat_run_refusal_with_env(None, &env)
             .expect("the run is refused");
         assert_eq!(refusal.codes(), ["no_data_boundary", "no_tool_loop_model"]);
         assert_eq!(refusal.code(), "no_data_boundary");
@@ -1671,7 +1720,7 @@ mod chat_run_tests {
         let mut allowed = cli_only();
         allowed.serve.mcp.allow_without_data_llm = true;
         let refusal = allowed
-            .chat_run_refusal_with_env(&env)
+            .chat_run_refusal_with_env(None, &env)
             .expect("still refused");
         assert_eq!(refusal.codes(), ["no_tool_loop_model"]);
         assert!(!refusal.message.to_lowercase().starts_with("no "));
@@ -1695,7 +1744,7 @@ mod chat_run_tests {
             .models
             .insert("api-mini".into(), model("api", "api-mini-1", Some(0.5)));
         let refusal = config
-            .chat_run_refusal_with_env(&env)
+            .chat_run_refusal_with_env(None, &env)
             .expect("the key is missing");
         assert_eq!(refusal.codes(), ["no_tool_loop_model"]);
         assert!(
@@ -1710,12 +1759,12 @@ mod chat_run_tests {
         );
 
         config.providers.get_mut("api").expect("api").api_key_env = Some("KEY_SET".into());
-        assert_eq!(config.chat_run_refusal_with_env(&env), None);
+        assert_eq!(config.chat_run_refusal_with_env(None, &env), None);
         assert_eq!(config.tool_loop_models_with_env(&env), ["api-mini"]);
 
         // A disabled provider runs nothing.
         config.routing.disabled_providers = vec!["api".into()];
-        assert!(config.chat_run_refusal_with_env(&env).is_some());
+        assert!(config.chat_run_refusal_with_env(None, &env).is_some());
     }
 
     /// The Claude CLI's model counts once the Anthropic API, which failover
@@ -1728,7 +1777,7 @@ mod chat_run_tests {
             "anthropic".into(),
             provider(ProviderKind::AnthropicApi, Some("KEY_SET")),
         );
-        assert_eq!(config.chat_run_refusal_with_env(&env), None);
+        assert_eq!(config.chat_run_refusal_with_env(None, &env), None);
         assert!(config.tool_loop_models_with_env(&env).is_empty());
     }
 
@@ -1746,7 +1795,7 @@ mod chat_run_tests {
             .insert("api-mini".into(), model("api", "api-mini-1", Some(0.5)));
         config.agent.data_llm = Some(data_llm("cli-sonnet"));
         let refusal = config
-            .chat_run_refusal_with_env(&env)
+            .chat_run_refusal_with_env(None, &env)
             .expect("the CLI cannot be the data model");
         assert_eq!(refusal.codes(), ["no_data_boundary"]);
         assert!(
@@ -1759,11 +1808,11 @@ mod chat_run_tests {
         );
 
         config.agent.data_llm = Some(data_llm("api-mini"));
-        assert_eq!(config.chat_run_refusal_with_env(&env), None);
+        assert_eq!(config.chat_run_refusal_with_env(None, &env), None);
 
         config.providers.get_mut("api").expect("api").api_key_env = Some("KEY_UNSET".into());
         let refusal = config
-            .chat_run_refusal_with_env(&env)
+            .chat_run_refusal_with_env(None, &env)
             .expect("the data model's key is missing");
         assert!(refusal.message.contains("KEY_UNSET"), "{refusal:?}");
     }
@@ -1836,7 +1885,7 @@ mod chat_run_tests {
         })
         .collect();
         let refusal = config
-            .chat_run_refusal_with_env(&env)
+            .chat_run_refusal_with_env(None, &env)
             .expect("no model qualifies");
         assert_eq!(refusal.codes(), ["no_tool_loop_model"]);
         let message = &refusal.message;
@@ -1863,7 +1912,7 @@ mod chat_run_tests {
         // With the key set, the rung runs; routing names it by its key, once.
         config.providers.get_mut("zai").expect("zai").api_key_env = Some("KEY_SET".into());
         config.routing.fallback_models = vec!["glm-4.7".into()];
-        assert_eq!(config.chat_run_refusal_with_env(&env), None);
+        assert_eq!(config.chat_run_refusal_with_env(None, &env), None);
         assert_eq!(config.tool_loop_models_with_env(&env), ["glm"]);
     }
 
@@ -1887,7 +1936,7 @@ mod chat_run_tests {
             })
             .collect();
         let refusal = config
-            .chat_run_refusal_with_env(&env)
+            .chat_run_refusal_with_env(None, &env)
             .expect("its key is missing");
         assert!(
             refusal
@@ -1901,8 +1950,48 @@ mod chat_run_tests {
             .get_mut("openai")
             .expect("openai")
             .api_key_env = Some("KEY_SET".into());
-        assert_eq!(config.chat_run_refusal_with_env(&env), None);
+        assert_eq!(config.chat_run_refusal_with_env(None, &env), None);
         assert_eq!(config.tool_loop_models_with_env(&env), ["gpt-5.4-mini"]);
+    }
+
+    /// gap-8548e3: a chat host's run is held to its max_usd, so it is refused
+    /// while no model it can run on has a price: in the price snapshot it is
+    /// given, its `[models.*]` rates or the built-in table. One priced model,
+    /// at a rate of 0 too, lifts the refusal.
+    #[test]
+    fn a_chat_run_needs_a_model_with_a_price() {
+        let mut config = cli_only();
+        config.serve.mcp.allow_without_data_llm = true;
+        config.providers.insert(
+            "api".into(),
+            provider(ProviderKind::OpenAiCompat, Some("KEY_SET")),
+        );
+        config
+            .models
+            .insert("oss".into(), model("api", "gpt-oss-120b", None));
+        let refusal = config
+            .chat_run_refusal_with_env(None, &env)
+            .expect("no model has a price");
+        assert_eq!(refusal.codes(), ["no_price"]);
+        assert!(refusal.message.contains("(oss)"), "{refusal:?}");
+        assert!(refusal.message.contains("cost_input_per_m"), "{refusal:?}");
+        let lower = refusal.message.to_lowercase();
+        assert!(
+            !lower.contains("not found") && !lower.starts_with("no "),
+            "{lower}"
+        );
+
+        // The price snapshot has a row for gpt-oss-120b.
+        let snapshot = crate::pricing_snapshot::PriceSnapshot::builtin().expect("built-in");
+        assert_eq!(
+            config.chat_run_refusal_with_env(Some(&snapshot), &env),
+            None
+        );
+
+        config
+            .models
+            .insert("free".into(), model("api", "free-local-1", Some(0.0)));
+        assert_eq!(config.chat_run_refusal_with_env(None, &env), None);
     }
 
     /// `[agent.data_llm]` naming `model`, with the defaults otherwise.

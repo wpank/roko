@@ -169,8 +169,11 @@ pub fn plan_chat_host(
                 .then_some(default_model)
         });
     let Some(model) = picked else {
+        // Prices only matter once a model can run a chat host's run: the
+        // built-in snapshot is the one a workspace prices from by default.
+        let prices = roko_core::pricing_snapshot::PriceSnapshot::builtin().ok();
         let reason = config
-            .chat_run_refusal()
+            .chat_run_refusal(prices.as_ref())
             .map(|refusal| refusal.message)
             .unwrap_or_default();
         bail!(
@@ -275,7 +278,8 @@ fn prepare_with(
         }
         None => before.clone(),
     };
-    let refusal = after_config.chat_run_refusal();
+    let prices = roko_core::pricing_snapshot::PriceSnapshot::shared(&after_config.pricing, workdir);
+    let refusal = after_config.chat_run_refusal(prices.as_deref());
     Ok(ChatHostPreset {
         diff: unified_diff("roko.toml", &before, &text),
         edit: plan.edit.as_ref().map(|edit| ChatHostEditJson {

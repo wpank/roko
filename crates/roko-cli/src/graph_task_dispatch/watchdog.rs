@@ -239,12 +239,7 @@ impl InterruptedCall {
         let target = self.call.target;
         let usage_obs = match self.usage {
             Some(mut usage) => {
-                crate::dispatch_v2::fill_usage_cost_from_pricing(
-                    &mut usage,
-                    snapshot,
-                    target.model_profile.as_ref(),
-                    &target.model_slug,
-                );
+                crate::dispatch_v2::price_target_usage(&mut usage, &target, snapshot);
                 roko_core::UsageObservation {
                     source: roko_core::UsageSource::Estimated,
                     wall_ms,

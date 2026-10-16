@@ -930,12 +930,8 @@ impl GraphTaskDispatcher {
             return None;
         }
         let snapshot = self.pricing_snapshot();
-        let pricing = crate::dispatch_v2::fill_usage_cost_from_pricing(
-            &mut usage,
-            snapshot.as_deref(),
-            target.model_profile.as_ref(),
-            &target.model_slug,
-        );
+        let pricing =
+            crate::dispatch_v2::price_target_usage(&mut usage, &target, snapshot.as_deref());
         if pricing == crate::dispatch_v2::CallPricing::Unpriced {
             return None;
         }

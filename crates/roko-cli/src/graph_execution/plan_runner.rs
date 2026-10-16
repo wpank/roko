@@ -2453,6 +2453,15 @@ async fn run_graph_plan_body(
         if let Err(err) = roko_learn::run_metrics::append_run_metrics(&metrics_path, &record) {
             tracing::warn!(error = %err, "failed to persist run metrics (non-fatal)");
         }
+        // The recent runs' cost per verified task, this one last, for a host's
+        // trend (gap-de0e96).
+        match roko_learn::run_metrics::read_recent(&metrics_path, RUN_COST_TREND_RUNS) {
+            Ok(runs) if !runs.is_empty() => graph_tui_bridge
+                .tui()
+                .efficiency_trend_updated(run_cost_trend(&runs)),
+            Ok(_) => {}
+            Err(err) => tracing::warn!(error = %err, "the run cost trend was not published"),
+        }
     }
 
     // Restores the terminal (and stderr) before the summary is printed.
@@ -4881,6 +4890,47 @@ async fn check_plan_in_place(
             Ok(PlanOutcome::Failed)
         }
     }
+}
+
+/// How many plan runs the cost trend a run publishes as it ends covers
+/// (gap-de0e96).
+const RUN_COST_TREND_RUNS: usize = 20;
+
+/// The trend a Graph run publishes as it ends (gap-de0e96): one
+/// [`roko_core::EfficiencyBucket`] per plan run of `runs` (newest first, as
+/// `run-metrics.jsonl` gives them), oldest first, each with its cost, its
+/// tasks, the tasks that passed every verify step and its cost per verified
+/// task.
+fn run_cost_trend(
+    runs: &[roko_learn::run_metrics::RunMetricsRecord],
+) -> Vec<roko_core::EfficiencyBucket> {
+    runs.iter()
+        .rev()
+        .map(|run| {
+            let ended = chrono::DateTime::parse_from_rfc3339(&run.timestamp).map_or_else(
+                |_| chrono::Utc::now(),
+                |ended| ended.with_timezone(&chrono::Utc),
+            );
+            let took = i64::try_from(run.duration_ms)
+                .ok()
+                .and_then(chrono::TimeDelta::try_milliseconds)
+                .unwrap_or_default();
+            let verified = run.tasks_completed as u64;
+            roko_core::EfficiencyBucket {
+                start: ended - took,
+                turns: run.total_agent_calls as u64,
+                tokens_in: run.total_tokens_in,
+                tokens_out: run.total_tokens_out,
+                cost_usd_cents: (run.total_cost_usd * 100.0).round() as u64,
+                latency_ms_avg: run.duration_ms as f64 / run.total_agent_calls.max(1) as f64,
+                run_id: Some(run.run_id.clone()),
+                cost_usd: Some(run.total_cost_usd),
+                tasks: Some(run.total_tasks as u64),
+                verified_tasks: Some(verified),
+                cost_per_verified_usd: (verified > 0).then(|| run.total_cost_usd / verified as f64),
+            }
+        })
+        .collect()
 }
 
 /// The events of a plan's delivery, published through the run's bridge
@@ -9729,6 +9779,99 @@ printf '%s\n' '{"type":"result","session_id":"sess-batch","model":"claude-sonnet
             delivery_milestone(&repo, "run-stopped").await,
             "delivery cancelled"
         );
+    }
+
+    /// gap-de0e96: the run trend has one bucket per plan run, oldest first,
+    /// with its cost and its cost per verified task; a run with no verified
+    /// task has none.
+    #[test]
+    fn the_run_trend_gives_each_runs_cost_per_verified_task() {
+        let run = |run_id: &str, timestamp: &str, cost: f64, verified: usize| {
+            roko_learn::run_metrics::RunMetricsRecord {
+                run_id: run_id.to_string(),
+                timestamp: timestamp.to_string(),
+                duration_ms: 4_000,
+                total_tasks: 2,
+                tasks_completed: verified,
+                tasks_already_satisfied: 0,
+                tasks_failed: 2 - verified,
+                tasks_unverified: 0,
+                tasks_skipped: 0,
+                total_cost_usd: cost,
+                total_tokens_in: 100,
+                total_tokens_out: 10,
+                total_agent_calls: 4,
+                budget_exhausted: false,
+                plans: Vec::new(),
+            }
+        };
+        // Newest first, as `run-metrics.jsonl` gives them.
+        let runs = [
+            run("r3", "2026-10-16T10:02:00Z", 0.0, 0),
+            run("r2", "2026-10-16T10:01:00Z", 0.01, 2),
+            run("r1", "2026-10-16T10:00:00Z", 0.03, 1),
+        ];
+
+        let trend = run_cost_trend(&runs);
+
+        let rows: Vec<(Option<&str>, Option<u64>, Option<f64>)> = trend
+            .iter()
+            .map(|bucket| {
+                (
+                    bucket.run_id.as_deref(),
+                    bucket.verified_tasks,
+                    bucket.cost_per_verified_usd,
+                )
+            })
+            .collect();
+        assert_eq!(
+            rows,
+            [
+                (Some("r1"), Some(1), Some(0.03)),
+                (Some("r2"), Some(2), Some(0.005)),
+                (Some("r3"), Some(0), None),
+            ]
+        );
+        assert_eq!(trend[0].start.to_rfc3339(), "2026-10-16T09:59:56+00:00");
+        assert_eq!((trend[0].turns, trend[0].cost_usd), (4, Some(0.03)));
+    }
+
+    /// gap-de0e96: a Graph run publishes the recent runs' cost per verified
+    /// task as it ends, this run's bucket last, in its own events: a trend a
+    /// host can draw without reading `run-metrics.jsonl`.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn run_end_publishes_cost_per_verified_task() {
+        let dir = repo_with_file_plans(&["alpha"], None);
+        let repo = dir.path();
+        let hub = crate::state_hub::shared_state_hub();
+        let params = GraphPlanRunParams {
+            state_hub: Some(hub.clone()),
+            ..worktree_run_params(repo)
+        };
+
+        let exit_code = run_graph_plan_in_run(params, Some("run-trend".into()))
+            .await
+            .expect("run the plan");
+
+        assert_eq!(exit_code, EXIT_SUCCESS);
+        let trends: Vec<Vec<roko_core::EfficiencyBucket>> = hub
+            .subscribe_events_from(0)
+            .replay
+            .into_iter()
+            .filter_map(|envelope| match envelope.payload {
+                roko_core::DashboardEvent::EfficiencyTrendUpdated { buckets } => Some(buckets),
+                _ => None,
+            })
+            .collect();
+        let [trend] = trends.as_slice() else {
+            panic!("one trend at the run's end: {trends:?}");
+        };
+        let last = trend.last().expect("this run's bucket");
+        assert_eq!(last.tasks, Some(1), "{last:?}");
+        assert_eq!(last.verified_tasks, Some(1), "{last:?}");
+        let cost = last.cost_usd.expect("the run's cost");
+        assert!(cost > 0.0, "{last:?}");
+        assert_eq!(last.cost_per_verified_usd, Some(cost), "{last:?}");
     }
 
     /// bug-db89d4: the closing tally counts each way a plan ended, and leaves

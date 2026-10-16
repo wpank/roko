@@ -642,7 +642,10 @@ async fn api_not_found(req: Request) -> Response {
 ///   stored lessons, playbooks and episodes its prompt carried and what it
 ///   left out (gap-5f6d0b);
 /// - `retry_feedback_events`: a failed check publishes `retry_feedback`, the
-///   diagnosis and errors the task's next attempt gets (gap-655ea5).
+///   diagnosis and errors the task's next attempt gets (gap-655ea5);
+/// - `run_cost_trend`: a Graph run's end publishes `efficiency_trend_updated`,
+///   one bucket per recent plan run with its cost per verified task
+///   (gap-de0e96).
 pub(crate) const FEATURES: &[&str] = &[
     "chat_refusals",
     "loop_events",
@@ -651,6 +654,7 @@ pub(crate) const FEATURES: &[&str] = &[
     "delivery_events",
     "prompt_events",
     "retry_feedback_events",
+    "run_cost_trend",
 ];
 
 /// The summary of run `run_id`, as `GET /api/runs/{run_id}/summary` gives it.

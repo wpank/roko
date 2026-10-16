@@ -1195,6 +1195,7 @@ fn update_from_dashboard_snapshot_populates_connected_learning_state() {
             tokens_out: 60,
             cost_usd_cents: 30,
             latency_ms_avg: 600.0,
+            ..CoreEfficiencyBucket::default()
         }],
         ..Default::default()
     };

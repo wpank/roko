@@ -413,6 +413,7 @@ sequenceDiagram
 | `gate_result` | `plan_id`, `task_id`, `gate`, `rung`, `passed` |
 | `phase_transition` | `plan_id`, `from`, `to` |
 | `efficiency_event` | `plan_id`, `task_id`, `agent_id`, `cost_usd`, `tokens`, `duration_ms` |
+| `efficiency_trend_updated` | `buckets`: at a Graph run's end, one per recent plan run (at most 20, oldest first, this run last), each with `start`, `run_id`, `cost_usd`, `tasks`, `verified_tasks` (tasks that passed every verify step), `cost_per_verified_usd` (absent when none passed), `turns` (agent calls), `tokens_in`, `tokens_out`, `cost_usd_cents`, `latency_ms_avg` (the run's wall time per agent call): the cost per verified task, run by run (gap-de0e96) |
 | `episode_recorded` | `agent_id`, `role`, `episode_id`, `passed` |
 
 **Loop events of a Graph run.** A run's event index (`GET /api/runs/{run_id}/events`, its SSE

@@ -1493,6 +1493,21 @@ pub fn format_dashboard_event(
                 ),
             )
         }
+        DashboardEvent::LadderExhausted {
+            plan_id,
+            task_id,
+            rung,
+            model,
+            suggestion,
+            ..
+        } => {
+            let rung = rung.as_deref().unwrap_or("-");
+            (
+                format!("[{plan_id}/{task_id}]"),
+                "x",
+                format!("Ladder exhausted on {rung} ({model}): {suggestion}"),
+            )
+        }
         DashboardEvent::Error { message } => {
             let trunc = truncate_chars(message, 120);
             (String::new(), "x", format!("Error: {trunc}"))

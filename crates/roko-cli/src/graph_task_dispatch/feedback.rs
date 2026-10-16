@@ -739,9 +739,13 @@ impl GraphTaskDispatcher {
         let standing = self
             .gate_retry_context
             .ladder_standing(&spec.plan_id, &task.id);
-        self.note_ladder_outcome(spec, task, settled);
-        // The hub hears how the try ended once it counts (gap-4e852d).
+        let exhausted = self.note_ladder_outcome(spec, task, settled);
+        // The hub hears how the try ended once it counts (gap-4e852d), then
+        // that it exhausted the ladder (gap-22c4b1).
         self.publish_attempt_settled(spec, task, settled, standing);
+        if exhausted {
+            self.publish_ladder_exhausted(spec, task, &settled.verdict);
+        }
         let Some(facade) = &self.feedback.feedback_facade else {
             return;
         };

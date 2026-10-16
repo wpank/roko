@@ -48,6 +48,9 @@ const FAILURES_PER_RUNG: u32 = 2;
 /// Most rungs a task climbs above its start rung (`K_max`).
 const MAX_ESCALATIONS: u32 = 2;
 
+/// What a person should do about a task that exhausted the ladder.
+const SPLIT_OR_REPLAN: &str = "Split the task into smaller tasks, or replan it.";
+
 /// Retry budget of a task that does not author `max_retries` while the
 /// ladder routes it: [`FAILURES_PER_RUNG`] attempts on its start rung and on
 /// each rung it may climb, less the first attempt.
@@ -528,24 +531,25 @@ impl GraphTaskDispatcher {
     /// task one runnable rung up, unless it already climbed
     /// [`MAX_ESCALATIONS`] rungs or stands on its top rung. Other failures,
     /// pinned attempts, and attempts a failover substitute ran in place of
-    /// the rung's model (backlog 1118), change nothing.
+    /// the rung's model (backlog 1118), change nothing. Returns whether the
+    /// attempt exhausted the ladder, which it reports.
     pub(super) fn note_ladder_outcome(
         &self,
         spec: &TaskExecutionSpec,
         task: &TaskDef,
         settled: &SettledAttempt,
-    ) {
+    ) -> bool {
         if settled.succeeded() {
             self.gate_retry_context
                 .clear_ladder(&spec.plan_id, &task.id);
-            return;
+            return false;
         }
         let verdict = &settled.verdict;
         let Some(ladder) = verdict.ladder.as_ref() else {
-            return;
+            return false;
         };
         if verdict.blame != Blame::Agent || ladder.reason == LadderReason::Pinned {
-            return;
+            return false;
         }
         if !verdict.executed.failover_chain.is_empty() {
             tracing::debug!(
@@ -555,10 +559,10 @@ impl GraphTaskDispatcher {
                 substitute = verdict.executed.model_dispatched.as_deref().unwrap_or("-"),
                 "a substitute ran; the rung's standing is unchanged"
             );
-            return;
+            return false;
         }
         let Some(routing) = self.routing_ladder() else {
-            return;
+            return false;
         };
         let role = task.role.as_deref().unwrap_or("implementer");
         let index = ladder.index.and_then(|index| usize::try_from(index).ok());
@@ -612,6 +616,7 @@ impl GraphTaskDispatcher {
         if ladder.exhausted {
             self.report_ladder_exhausted(spec, task, verdict, ladder);
         }
+        ladder.exhausted
     }
 
     /// Log that `task` exhausted the ladder on `ladder`'s rung, and tell the
@@ -644,10 +649,32 @@ impl GraphTaskDispatcher {
                      rung it can climb, and has no retries left (ladder_exhausted).",
                     task.id, spec.plan_id
                 ),
-                suggested_action: Some("Split the task into smaller tasks, or replan it.".into()),
+                suggested_action: Some(SPLIT_OR_REPLAN.into()),
                 ..DiagnosisSummary::default()
             });
         }
+    }
+
+    /// Tell the hub that `verdict`'s attempt of `task` exhausted the ladder
+    /// (gap-22c4b1), after the attempt's `attempt_settled`.
+    pub(super) fn publish_ladder_exhausted(
+        &self,
+        spec: &TaskExecutionSpec,
+        task: &TaskDef,
+        verdict: &AttemptVerdictRecord,
+    ) {
+        let (Some(tui), Some(ladder)) = (&self.tui_bridge, verdict.ladder.as_ref()) else {
+            return;
+        };
+        tui.publish_event(roko_core::DashboardEvent::LadderExhausted {
+            plan_id: spec.plan_id.clone(),
+            task_id: task.id.clone(),
+            attempt: verdict.identity.key().attempt,
+            rung: ladder.rung.clone(),
+            model: verdict.executed.model_requested.clone().unwrap_or_default(),
+            escalations: ladder.step,
+            suggestion: SPLIT_OR_REPLAN.to_string(),
+        });
     }
 }
 
@@ -1775,5 +1802,65 @@ exit 1
             assert!(event["duration_ms"].as_u64().is_some(), "{event}");
             assert_eq!(event["exhausted"], false, "{event}");
         }
+    }
+
+    /// gap-22c4b1: a task that fails on its top rung with no retries left
+    /// publishes `ladder_exhausted` once, right after that try's
+    /// `attempt_settled`; a pinned task never does.
+    #[tokio::test]
+    async fn ladder_exhausted_is_a_hub_event() {
+        let temp = tempdir().expect("tempdir");
+        let hub = StateHub::new(4096);
+        let mut events = hub.subscribe_events();
+        let (dispatcher, task) = ladder_fixture(&temp).await;
+        let dispatcher = dispatcher.with_tui_bridge(TuiBridge::new(hub.sender()));
+        let mut spec = make_spec(&task);
+        spec.max_retries = 2;
+        let mut pinned = task.clone();
+        pinned.id = "T-PIN".to_string();
+        pinned.model_hint = Some("cheap-model".to_string());
+        let mut pinned_spec = make_spec(&pinned);
+        pinned_spec.max_retries = 2;
+        let ctx = CellContext::new().with_run_id(RUN.to_string());
+        for spec in [&spec, &pinned_spec] {
+            for _ in 0..3 {
+                dispatcher
+                    .dispatch(spec, Vec::new(), &ctx)
+                    .await
+                    .expect_err("every attempt fails its verify step");
+            }
+        }
+
+        let events = published(&mut events, &["attempt_settled", "ladder_exhausted"]);
+        let order: Vec<(String, String, u64)> = events
+            .iter()
+            .map(|event| {
+                (
+                    event["type"].as_str().unwrap_or_default().to_string(),
+                    event["task_id"].as_str().unwrap_or_default().to_string(),
+                    event["attempt"].as_u64().unwrap_or_default(),
+                )
+            })
+            .collect();
+        let line =
+            |kind: &str, task: &str, attempt: u64| (kind.to_string(), task.to_string(), attempt);
+        let id = task.id.as_str();
+        assert_eq!(
+            order,
+            [
+                line("attempt_settled", id, 1),
+                line("attempt_settled", id, 2),
+                line("attempt_settled", id, 3),
+                line("ladder_exhausted", id, 3),
+                line("attempt_settled", "T-PIN", 1),
+                line("attempt_settled", "T-PIN", 2),
+                line("attempt_settled", "T-PIN", 3),
+            ]
+        );
+        let exhausted = &events[3];
+        assert_eq!(exhausted["rung"], "top", "{exhausted}");
+        assert_eq!(exhausted["escalations"], 1, "{exhausted}");
+        assert_eq!(exhausted["suggestion"], SPLIT_OR_REPLAN, "{exhausted}");
+        assert_eq!(events[2]["exhausted"], true, "{}", events[2]);
     }
 }

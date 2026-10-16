@@ -282,6 +282,29 @@ pub enum DashboardEvent {
         #[serde(flatten)]
         settled: Box<AttemptSettlement>,
     },
+    /// A Graph task failed on the top rung it can climb with no retries left
+    /// (gap-22c4b1): nothing retries it, and a person should split or replan
+    /// it. Published after that attempt's `attempt_settled`, beside the
+    /// `ladder_exhausted:<plan>/<task>` diagnosis.
+    LadderExhausted {
+        plan_id: String,
+        task_id: String,
+        /// The attempt that exhausted it, from 1.
+        #[serde(default)]
+        attempt: u32,
+        /// The rung it failed on.
+        #[serde(default)]
+        rung: Option<String>,
+        /// The model that rung ran.
+        #[serde(default)]
+        model: String,
+        /// Rungs the task climbed above its start rung.
+        #[serde(default)]
+        escalations: u32,
+        /// What to do about it.
+        #[serde(default)]
+        suggestion: String,
+    },
     /// A Graph task's `confirm` rung asked its person whether the outcome is
     /// what they asked for; the task waits until they answer or the rung
     /// times out (gap-7c6663). MCP `confirm_answer` names the attempt key.
@@ -3347,6 +3370,23 @@ impl DashboardSnapshot {
                         "attempt {attempt}{on} ({}): {}",
                         settled.model, settled.verdict
                     ),
+                );
+            }
+            DashboardEvent::LadderExhausted {
+                plan_id,
+                task_id,
+                rung,
+                model,
+                suggestion,
+                ..
+            } => {
+                let rung = rung.as_deref().unwrap_or("-");
+                self.push_event_log(
+                    ts,
+                    "ladder_exhausted".to_string(),
+                    plan_id.clone(),
+                    task_id.clone(),
+                    format!("failed on its top rung {rung} ({model}): {suggestion}"),
                 );
             }
             // S10's Loop Health view reads health from the event stream; the

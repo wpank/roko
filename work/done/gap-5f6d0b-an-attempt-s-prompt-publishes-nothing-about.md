@@ -2,7 +2,7 @@
 id = "gap-5f6d0b"
 kind = "gap"
 title = "An attempt's prompt publishes nothing about the lessons, playbooks and episodes it carried or left out, so no host can show a kept lesson being used"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p1"
 goal = "hermes"
@@ -11,6 +11,7 @@ subsystem = ["roko-cli/graph_task_dispatch", "roko-core/dashboard"]
 created = 2026-10-16
 updated = 2026-10-16
 last_verified = 2026-10-16
+last_verified_rev = "f2a4e07a9"
 source = "tmp/hermes-roko-v6/findings/learning-research.md §4 item 7; design/spec-v3.md §10 R3 (learning-research, 2026-10-16)"
 discovered_from = "hermes-roko-v6 round: make learning visible on the hub"
 anchors = ["crates/roko-cli/src/graph_task_dispatch/decision_log.rs::record_planned_attempt", "crates/roko-cli/src/dispatch/prompt_builder.rs::PromptDiagnostics", "crates/roko-core/src/dashboard_snapshot.rs::DashboardEvent"]
@@ -18,6 +19,15 @@ links = { depends_on = [], blocks = [], related = [], supersedes = [], duplicate
 
 [[verify]]
 command = "grep -rqw 'fn an_attempt_publishes_what_its_prompt_carried' crates/roko-cli && cargo test -p roko-cli --lib an_attempt_publishes_what_its_prompt_carried"
+
+[closed]
+at = 2026-10-16
+at_ts = "2026-10-16T21:12:44Z"
+commit = "f2a4e07a9"
+by = "commit trailer"
+executor = "unknown"
+forced = false
+evidence = "f2a4e07a9: each Graph attempt publishes prompt_assembled after its route_decided (decision_log.rs::record_planned_attempt): plan_id, task_id, attempt (from 1), knowledge_ids, playbook_ids, episode_ids carried, left_out [{kind, id, reason}] (withheld_arm, bandit_excluded, token_budget, role_filter, screened), included_sections, dropped_sections, estimated_tokens; /health feature prompt_events; docs/v3/26-HTTP-API.md. Verify: an_attempt_publishes_what_its_prompt_carried and prompt_event_names_what_it_carried_and_left_out pass; roko-cli lib 3735 passed (6 ignored, gist skipped), roko-serve lib 1047 passed, roko-core lib 2035 passed, clippy -D warnings clean on roko-core, roko-cli and roko-serve, scratch HOME. Scripted showcase, $0 (tmp/hermes-roko-v6/roko-delivery/evidence/r3): p1-slugify's three attempts carry no lesson and its pass keeps runtime_8338198bc7f35156; p2's and p3's first attempts publish knowledge_ids [runtime_8338198bc7f35156] with playbooks and episodes, and pass on the cheap rung."
 +++
 
 ## Problem

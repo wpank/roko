@@ -2,15 +2,16 @@
 id = "gap-07c4a4"
 kind = "gap"
 title = "CLAUDE.md calls run_gate_once the per-task gate entry point, but only tests call it; Graph runs verify in graph_task_dispatch/verification.rs"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p3"
 goal = "tooling"
 size = "S"
 subsystem = ["docs/claude-md"]
 created = 2026-10-15
-updated = 2026-10-15
-last_verified = 2026-10-15
+updated = 2026-10-16
+last_verified = 2026-10-16
+last_verified_rev = "c1a537d2e"
 source = "status-quo-2026-10-15#finding-38"
 anchors = ["CLAUDE.md", "crates/roko-cli/src/runner/gate_dispatch.rs::run_gate_once", "crates/roko-cli/src/graph_task_dispatch/verification.rs"]
 lane = "docs"
@@ -18,6 +19,18 @@ links = { depends_on = [], blocks = [], related = ["gap-fd9dfb", "gap-c42c8e"], 
 
 [[verify]]
 command = "! grep -q 'the per-task entry point is `run_gate_once`' CLAUDE.md && grep -q 'graph_task_dispatch/verification.rs' CLAUDE.md"
+
+[closed]
+at = 2026-10-16
+at_ts = "2026-10-16T14:00:51Z"
+commit = "c1a537d2e"
+by = "commit trailer"
+executor = "claude-agent"
+via = "work-batch"
+size = "S"
+claimed_at = "2026-10-16T08:07:03Z"
+forced = false
+evidence = "c1a537d2e rewrites CLAUDE.md's Gates row: it no longer calls run_gate_once (crates/roko-cli/src/runner/gate_dispatch.rs) the per-task entry point — confirmed at HEAD that every call to run_gate_once outside its own doc comment sits inside that file's #[cfg(test)] mod tests (from line 2078) — and instead says a Graph run checks a task through its authored verify steps and then [[gates.rungs]] in crates/roko-cli/src/graph_task_dispatch/verification.rs, matching run_verify_steps's own doc comment; run_gate_once is kept only until gap-c42c8e ports its seven test-pinned capabilities into ProductionGateService, which runs the rich-topology plan.gate cells (graph_execution/plan_runner.rs::plan_cell_resources) and the audit re-run (audit/rerun.rs, decision 7102). The same commit adds a roko safety controls/release row to the CLI reference (gap-fd9dfb's CLAUDE.md half; its docs/v3/26-HTTP-API.md half is still open, so gap-fd9dfb stays open). Both verify clauses pass at c1a537d2e: CLAUDE.md no longer contains the string the per-task entry point is run_gate_once, and it now contains graph_task_dispatch/verification.rs."
 +++
 
 ## Problem

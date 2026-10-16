@@ -1796,8 +1796,9 @@ exec sleep 60
             .expect_err("the attempt stalls");
 
         assert!(matches!(error, RokoError::Timeout { .. }), "{error}");
-        // Sonnet per million: $3 in, $15 out, $0.30 cache read, $3.75 cache write.
-        let expected = (1_000.0 * 3.0 + 200.0 * 15.0 + 4_000.0 * 0.30 + 3_000.0 * 3.75) / 1e6;
+        // Sonnet per million: $3 in, $15 out, $0.30 cache read, $6 for a cache
+        // write with no TTL split (1-hour, as print mode writes, bug-acfced).
+        let expected = (1_000.0 * 3.0 + 200.0 * 15.0 + 4_000.0 * 0.30 + 3_000.0 * 6.0) / 1e6;
         assert!(
             dispatcher.task_spend.admit("p1/T01", 0.01).is_err(),
             "the streamed ${expected} counts against the task"

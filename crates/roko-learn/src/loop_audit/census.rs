@@ -28,6 +28,11 @@
 //! candidate's `audit_trust` reason, S05 DP4). L-M4's log rule checks those
 //! rows against DP4's own count on each verdict, which tells an exclusion
 //! lost before logging from none (gap-595e28).
+//!
+//! The section bandit's rows (`sections`) belong to L-sec, and every
+//! attempt's placebo row to L-placebo (S03 §4.3; gap-6f31c3). The placebo's
+//! arms propose the same no-op, so its influence must stay 0: the auditor
+//! reads a placebo whose influence interval leaves 0 as a broken audit.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -53,7 +58,8 @@ use crate::runtime_feedback::LearningPaths;
 use crate::telemetry::RunProvenanceManifest;
 use crate::telemetry::records::{
     AuditFields, ContentCandidate, ContentDecisionPoint, ContentDecisionRecord, DecisionSource,
-    ExecutedModel, ExposureItemKind, HarnessPolicyDecisionRecord, HarnessStamp, RunFile, Stamped,
+    ExecutedModel, ExposureItemKind, HarnessPolicyDecisionRecord, HarnessStamp, PLACEBO_LOOP_ID,
+    PlaceboDecisionRecord, RunFile, Stamped,
 };
 use crate::telemetry::report::{RunRecords, SrmFold, srm_fold, undated};
 
@@ -61,8 +67,10 @@ use crate::telemetry::report::{RunRecords, SrmFold, srm_fold, undated};
 pub const CENSUS_STATE_FILE: &str = "loop-census-state.json";
 
 /// Schema of [`CENSUS_STATE_FILE`]. Version 2 counts the rows that measure
-/// a reader's degeneracy (gap-a13544).
-pub const CENSUS_STATE_SCHEMA: &str = "roko.loop_census_state/2";
+/// a reader's degeneracy (gap-a13544). Version 3 folds the placebo's rows
+/// and the section bandit's (gap-6f31c3), so the next tick reads every run
+/// once more, those rows included.
+pub const CENSUS_STATE_SCHEMA: &str = "roko.loop_census_state/3";
 
 /// How long an attempt without a verdict holds back the rows after it, in a
 /// run that has not closed: one open longer than this died with its process.
@@ -443,11 +451,12 @@ pub fn read_runs(runs_dir: &Path) -> Vec<RunRecords> {
 
 /// Each loop's exposure and influence over the decision rows of `runs`
 /// (S03 §4.4), by loop id. A route row belongs to its `loop_id`, L-route by
-/// default; knowledge and playbook rows belong to L-know and L-play; M1's
-/// `harness_policy` rows to L-M1; and a route row in which audit feedback
-/// left a candidate out counts for L-M4 too (S03 §4.8). A row without S03's
-/// fields counts as pre-instrumentation, and a pin (a task hint, an
-/// override, a ladder rung outside L-M3's epochs) is no opportunity.
+/// default; knowledge, playbook and sections rows belong to L-know, L-play
+/// and L-sec; M1's `harness_policy` rows to L-M1; placebo rows to
+/// L-placebo; and a route row in which audit feedback left a candidate out
+/// counts for L-M4 too (S03 §4.8). A row without S03's fields counts as
+/// pre-instrumentation, and a pin (a task hint, an override, a ladder rung
+/// outside L-M3's epochs) is no opportunity.
 #[must_use]
 pub fn measure(runs: &[RunRecords]) -> BTreeMap<String, MeasuredLoop> {
     measure_at(runs, &AuditParams::default())
@@ -759,13 +768,22 @@ fn fold_run(
         if !loop_tally.count(&row.audit) {
             continue;
         }
-        if let Some(flat) = flat_scores(&row.candidates) {
+        // A sections row scores its candidates by the composer's priority,
+        // not by the section bandit's state, so its scores say nothing of
+        // L-sec's degeneracy.
+        let scored = row.decision_point != ContentDecisionPoint::Sections;
+        if scored && let Some(flat) = flat_scores(&row.candidates) {
             loop_tally.scored_rows += 1;
             loop_tally.flat_rows += u64::from(flat);
         }
         if let Some(opportunity) = content_opportunity(row) {
             loop_tally.push(&opportunity);
         }
+    }
+    for line in window(&run.placebo_decisions, from, until) {
+        let placebo = tally_of(tallies, PLACEBO_LOOP_ID, alpha);
+        placebo.rows += 1;
+        placebo.push(&placebo_opportunity(&line.record));
     }
     let stamps: HashMap<&str, &HarnessStamp> = run
         .verdicts
@@ -805,11 +823,13 @@ fn tally_of<'a>(
 }
 
 /// The loop that reads a content decision point's outcome, for the points
-/// whose rows carry proposals (backlog 5125).
+/// whose rows carry proposals (backlog 5125): the section bandit's L-sec at
+/// `sections` (gap-6f31c3).
 const fn content_loop(point: ContentDecisionPoint) -> Option<&'static str> {
     match point {
         ContentDecisionPoint::Knowledge => Some("L-know"),
         ContentDecisionPoint::Playbooks => Some("L-play"),
+        ContentDecisionPoint::Sections => Some("L-sec"),
         _ => None,
     }
 }
@@ -1014,6 +1034,27 @@ fn harness_opportunity(
         receipt: !row.params_digest.is_empty(),
         cites: None,
     })
+}
+
+/// The opportunity a placebo row records (S03 §4.3): every attempt is one.
+/// Its arms propose the same no-op, and the realised arm's proposal is the
+/// row's choice. A sham reads no learned state and proves nothing reached
+/// a request (receipt `sham`), so the read, the label and the receipt hold
+/// by construction: its exposure is whole and its influence 0, unless its
+/// rows say otherwise.
+fn placebo_opportunity(row: &PlaceboDecisionRecord) -> Opportunity<String> {
+    Opportunity {
+        learned_arm: !takes_default(row.assignment.arm),
+        propensity: row.assignment.propensity,
+        learned: row.proposals.learned.clone(),
+        default: row.proposals.default.clone(),
+        learned_again: None,
+        executed: row.chosen.clone(),
+        honest: true,
+        read: ReadStatus::Loaded,
+        receipt: true,
+        cites: None,
+    }
 }
 
 /// Whether S03's fields leave the row an opportunity: they say so, or say
@@ -1474,6 +1515,8 @@ fn read_jsonl(path: &Path) -> Vec<Value> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::loop_audit::LoopObservation;
+    use crate::loop_audit::ledger::{HealthRow, LoopAuditRow};
     use crate::telemetry::assign::{Arm, Assignment, AssignmentUnit};
     use crate::telemetry::records::{
         ATTEMPT_OPEN_SCHEMA, AttemptIdentity, AttemptKey, AttemptOpenRecord, AttemptOutcome,
@@ -2214,5 +2257,383 @@ mod tests {
 
         let logged = l_m4(2, true);
         assert_eq!(logged.reason, None, "{:?}", logged.facts);
+    }
+
+    /// Attempt `key`'s sections decision with S03's fields but no loop id,
+    /// so the decision point names the loop: the prompt offered `role`,
+    /// which the bandit may not drop, and the droppable `conventions`,
+    /// `tool_hints` and `model_format`, which the composer scores alike. On
+    /// the learned arm the section bandit left `left_out` out, and π⁰ would
+    /// have kept it; on the default arm the prompt kept every section, and
+    /// the bandit's draw only proposed leaving `left_out` out.
+    fn section_row(key: &AttemptKey, arm: Arm, left_out: Option<&str>) -> ContentDecisionRecord {
+        let offered = ["role", "conventions", "tool_hints", "model_format"];
+        let learned_arm = arm == Arm::Learned;
+        let dropped = |id: &str| left_out == Some(id);
+        let included: Vec<String> = offered
+            .iter()
+            .filter(|id| !(learned_arm && dropped(id)))
+            .map(|id| (*id).to_string())
+            .collect();
+        let (learned, default) = if learned_arm {
+            let default = included.iter().cloned().chain(left_out.map(str::to_string));
+            (included.clone(), default.collect())
+        } else {
+            let learned = included.iter().filter(|id| !dropped(id)).cloned();
+            (learned.collect(), included.clone())
+        };
+        let candidates = offered
+            .iter()
+            .map(|id| ContentCandidate {
+                id: (*id).to_string(),
+                rank: None,
+                score: Some(1.0),
+                eligible: true,
+                p: None,
+            })
+            .collect();
+        ContentDecisionRecord {
+            identity: AttemptIdentity::new(key),
+            decision_point: ContentDecisionPoint::Sections,
+            policy: "section_bandit_token_budget".to_string(),
+            candidates,
+            chosen: included,
+            chosen_propensity: Some(1.0),
+            source: None,
+            state: Some(read_state()),
+            thresholds_digest: None,
+            arm_set: None,
+            section_draws: Vec::new(),
+            proposals: Some(ContentProposals {
+                learned: Some(learned),
+                default: Some(default),
+            }),
+            audit: AuditFields {
+                layer: Some("sections".to_string()),
+                assignment: Some(draw("sections", &key.chain_key(), arm)),
+                decided_at: Some(2),
+                receipt: Some(DecisionReceipt {
+                    kind: "content".to_string(),
+                    ok: true,
+                    request_hash: Some("b3:request".to_string()),
+                    exposure_hashes: vec!["b3:sections".to_string()],
+                }),
+                ..AuditFields::default()
+            },
+        }
+    }
+
+    /// Attempt `key`'s placebo row, its chain on `arm` of the placebo's
+    /// layer (h = 0.5), as dispatch writes it; `default` replaces the
+    /// default arm's proposal, as a broken writer would.
+    fn placebo_row(key: &AttemptKey, arm: Arm, default: &str) -> PlaceboDecisionRecord {
+        let draw = Assignment {
+            unit: AssignmentUnit::Chain,
+            layer: "placebo".to_string(),
+            salt_id: "placebo@2026-10-03".to_string(),
+            u: 0.5,
+            h: 0.5,
+            g: 0.0,
+            arm,
+            propensity: 0.5,
+        };
+        let mut row = PlaceboDecisionRecord::new(AttemptIdentity::new(key), draw);
+        row.proposals.default = default.to_string();
+        row
+    }
+
+    /// A time to audit at.
+    fn audit_time() -> DateTime<Utc> {
+        use chrono::TimeZone;
+
+        Utc.with_ymd_and_hms(2026, 10, 16, 10, 0, 0)
+            .single()
+            .expect("a valid time")
+    }
+
+    /// `observation`'s health row.
+    fn health_row(observation: &LoopObservation) -> &HealthRow {
+        match &observation.health.row {
+            LoopAuditRow::Health(health) => health,
+            other => panic!("{}'s health row is {other:?}", observation.health.loop_id),
+        }
+    }
+
+    /// The health row of `loop_id` among `observations`.
+    fn health_of<'a>(observations: &'a [LoopObservation], loop_id: &str) -> &'a HealthRow {
+        observations
+            .iter()
+            .find(|observation| observation.health.loop_id == loop_id)
+            .map(health_row)
+            .unwrap_or_else(|| panic!("{loop_id} has no health row: {observations:?}"))
+    }
+
+    /// gap-6f31c3: the census folds the section bandit's rows into L-sec
+    /// and every attempt's placebo row into L-placebo, and the auditor gives
+    /// both a health row, the placebo's first. L-sec: 40 chains, every
+    /// fifth on the default arm; the bandit left a section out of every
+    /// other learned-arm prompt and proposed one on each default-arm prompt,
+    /// so ι is 0.25 on 24 rows and 0, its ε whole; the composer's flat
+    /// scores say nothing of its degeneracy, and a row from before S03's
+    /// fields is pre-instrumentation. L-placebo: 40 chains on its h = 0.5
+    /// layer, its proposals the same no-op, so ι is 0 and nothing moves.
+    #[test]
+    fn census_measures_l_sec_and_the_placebo() {
+        use roko_core::config::learning::LearningAuditConfig;
+
+        use crate::loop_audit::{LoopAuditor, RowOrigin};
+        use crate::telemetry::records::PLACEBO_PROPOSAL;
+
+        let dir = tempfile::tempdir().expect("temp dir");
+        let runs_dir = dir.path().join(".roko").join(RUNS_DIR);
+        let run_dir = runs_dir.join("gr-sec");
+        std::fs::create_dir_all(&run_dir).expect("the run dir");
+        let (mut decisions, mut seq) = (String::new(), 0_u64);
+        let mut next = || {
+            seq += 1;
+            seq
+        };
+        for index in 0..40 {
+            let key = AttemptKey::new("gr-sec", "plan", format!("t{index}"), 1);
+            let arm = if index % 5 == 0 {
+                Arm::Default
+            } else {
+                Arm::Learned
+            };
+            let left_out = match arm {
+                Arm::Learned => (index % 2 == 0).then_some("model_format"),
+                _ => Some("tool_hints"),
+            };
+            let sections = section_row(&key, arm, left_out);
+            decisions.push_str(&line(DECISION_SCHEMA, next(), sections));
+            let side = if index % 2 == 0 {
+                Arm::Default
+            } else {
+                Arm::Learned
+            };
+            let placebo = placebo_row(&key, side, PLACEBO_PROPOSAL);
+            decisions.push_str(&line(DECISION_SCHEMA, next(), placebo));
+        }
+        let old = AttemptKey::new("gr-sec", "plan", "old", 1);
+        let mut unaudited = section_row(&old, Arm::Learned, None);
+        unaudited.audit = AuditFields::default();
+        decisions.push_str(&line(DECISION_SCHEMA, next(), unaudited));
+        std::fs::write(RunFile::Decisions.path_in(&run_dir), decisions).expect("decisions");
+
+        let registry = Registry::embedded().expect("the embedded registry");
+        let report = run(dir.path(), &registry, None);
+        let sec = report.row("L-sec").expect("L-sec");
+        let measured = sec.measured.as_ref().expect("L-sec is measured");
+        let counts = (measured.n_opp, measured.n_learned, measured.n_default);
+        assert_eq!(counts, (40, 32, 8));
+        assert_eq!(measured.pre_instrumentation, 1);
+        assert_eq!(measured.eps.est, 1.0, "{measured:?}");
+        assert!((measured.iota_net - 0.15).abs() < 1e-12, "{measured:?}");
+        let verdict = (sec.state, sec.reason, sec.evidence);
+        assert_eq!(
+            verdict,
+            (Some(AuditState::Probation), None, Some(Evidence::Measured))
+        );
+        let placebo = report.row("L-placebo").expect("L-placebo");
+        let measured = placebo.measured.as_ref().expect("L-placebo is measured");
+        let counts = (measured.n_opp, measured.n_learned, measured.n_default);
+        assert_eq!(counts, (40, 20, 20));
+        assert_eq!((measured.eps.est, measured.iota_net), (1.0, 0.0));
+        assert_eq!(
+            (placebo.state, placebo.reason),
+            (Some(AuditState::Probation), None)
+        );
+
+        let config = LearningAuditConfig::default();
+        let mut auditor = LoopAuditor::from_records(registry, &config, &[]);
+        let runs = read_runs(&runs_dir);
+        let observations = auditor.observe(&runs, &RowOrigin::default(), audit_time());
+        assert_eq!(
+            observations[0].health.loop_id, PLACEBO_LOOP_ID,
+            "the placebo first"
+        );
+        let sec = health_of(&observations, "L-sec");
+        assert_eq!((sec.state, sec.reason), (AuditState::Probation, None));
+        assert_eq!((sec.n_opp, sec.n_learned, sec.n_default), (40, 32, 8));
+        assert!(sec.placebo_ok);
+        let placebo = health_of(&observations, PLACEBO_LOOP_ID);
+        assert_eq!(
+            (placebo.state, placebo.reason),
+            (AuditState::Probation, None)
+        );
+        assert_eq!((placebo.n_opp, placebo.h, placebo.iota.net), (40, 0.5, 0.0));
+        assert!(placebo.placebo_ok);
+        assert!(observations.iter().all(|seen| seen.transition.is_none()));
+        assert!(!auditor.audit_broken());
+    }
+
+    /// gap-6f31c3: a census an earlier tick kept, which read a run to its
+    /// end before placebo rows were folded, is read afresh under schema 3,
+    /// so the next tick folds the run's placebo rows once; one kept under
+    /// schema 3 is not read again.
+    #[test]
+    fn census_kept_before_the_placebo_is_folded_again() {
+        use crate::telemetry::records::PLACEBO_PROPOSAL;
+
+        let dir = tempfile::tempdir().expect("temp dir");
+        let runs_dir = dir.path().join(RUNS_DIR);
+        let run_dir = runs_dir.join("gr-old");
+        std::fs::create_dir_all(&run_dir).expect("the run dir");
+        let rows: String = (0..10_u64)
+            .map(|index| {
+                let key = AttemptKey::new("gr-old", "plan", format!("t{index}"), 1);
+                let placebo = placebo_row(&key, Arm::Learned, PLACEBO_PROPOSAL);
+                line(DECISION_SCHEMA, index + 1, placebo)
+            })
+            .collect();
+        std::fs::write(RunFile::Decisions.path_in(&run_dir), rows).expect("decisions");
+        let params = AuditParams::default();
+        let alpha = params.loop_alpha();
+        let placebo_opps = |census: &CensusState| {
+            let measured = census.measurements(&params);
+            measured
+                .get(PLACEBO_LOOP_ID)
+                .map(|placebo| placebo.measured.n_opp)
+        };
+
+        // What an earlier tick kept: the run read to its end, and no
+        // placebo tally.
+        let mut read = CensusState::new(alpha);
+        read.fold_pending(&runs_dir, "gr-old", audit_time());
+        let mut kept = serde_json::to_value(&read).expect("the census as JSON");
+        let tallies = kept["tallies"].as_object_mut().expect("the tallies");
+        tallies.remove(PLACEBO_LOOP_ID);
+        let path = dir.path().join(CENSUS_STATE_FILE);
+        let at = |schema: &str| {
+            let mut census = kept.clone();
+            census["schema_version"] = Value::from(schema);
+            std::fs::write(&path, census.to_string()).expect("keep the census");
+            let mut census = CensusState::load(&path, alpha);
+            census.fold_pending(&runs_dir, "gr-old", audit_time());
+            placebo_opps(&census)
+        };
+        assert_eq!(at("roko.loop_census_state/2"), Some(10), "read afresh");
+        assert_eq!(at(CENSUS_STATE_SCHEMA), None, "the run was read");
+    }
+
+    /// gap-6f31c3 (S03 §4.3, §4.6): the placebo is the auditor's own
+    /// control. Over 300 chains whose placebo rows propose the same no-op
+    /// on both arms, its ι is 0, well past N_ι, and it stays on probation:
+    /// its null is no move, the audit runs, and L-play, whose rows carry no
+    /// receipt, is flagged. When a broken writer logs another proposal on
+    /// the placebo's default arm, the placebo's ι_net interval excludes 0:
+    /// the tick trips the audit before any loop moves, every health row
+    /// says `placebo_ok: false`, a `loop.audit_broken` row (`*`) says why,
+    /// and the ledger keeps the audit broken; a later tick writes no second
+    /// trip.
+    #[test]
+    fn placebo_influence_trips_audit_broken() {
+        use roko_core::config::learning::LearningAuditConfig;
+
+        use crate::loop_audit::ledger::{Ledger, LoopAuditRecord};
+        use crate::loop_audit::{ALL_LOOPS, LoopAuditor};
+        use crate::telemetry::records::PLACEBO_PROPOSAL;
+
+        const RUN: &str = "gr-placebo";
+        // A workspace whose run has 300 one-attempt chains, every fifth on
+        // L-play's default arm and every other one on the placebo's: an
+        // L-play row without a receipt each, and a placebo row whose
+        // default arm proposes `default`.
+        let workspace = |default: &str| {
+            let dir = tempfile::tempdir().expect("temp dir");
+            let run_dir = dir.path().join(".roko").join(RUNS_DIR).join(RUN);
+            std::fs::create_dir_all(&run_dir).expect("the run dir");
+            let mut decisions = String::new();
+            for index in 0..300_u64 {
+                let key = AttemptKey::new(RUN, "plan", format!("t{index}"), 1);
+                let arm = if index % 5 == 0 {
+                    Arm::Default
+                } else {
+                    Arm::Learned
+                };
+                let play = ContentDecisionPoint::Playbooks;
+                let play = content_row(&key, play, "playbooks", "pb-1", arm, false);
+                decisions.push_str(&line(DECISION_SCHEMA, 2 * index + 1, play));
+                let side = if index % 2 == 0 {
+                    Arm::Default
+                } else {
+                    Arm::Learned
+                };
+                let placebo = placebo_row(&key, side, default);
+                decisions.push_str(&line(DECISION_SCHEMA, 2 * index + 2, placebo));
+            }
+            let decided = RunFile::Decisions.path_in(&run_dir);
+            std::fs::write(decided, decisions).expect("decisions");
+            dir
+        };
+        let config = LearningAuditConfig::default();
+        let ledger_of = |dir: &Path| Ledger::in_learn_dir(&dir.join(".roko").join("learn"));
+        let broken_rows = |rows: &[LoopAuditRecord]| {
+            rows.iter()
+                .filter(|row| matches!(row.row, LoopAuditRow::AuditBroken(_)))
+                .count()
+        };
+
+        let healthy = workspace(PLACEBO_PROPOSAL);
+        let mut auditor = LoopAuditor::load(healthy.path(), &config).expect("the auditor");
+        let observations = auditor
+            .observe_run(healthy.path(), RUN, audit_time())
+            .expect("the tick");
+        let placebo = health_of(&observations, PLACEBO_LOOP_ID);
+        assert_eq!(
+            (placebo.state, placebo.reason),
+            (AuditState::Probation, None)
+        );
+        assert_eq!((placebo.n_opp, placebo.iota.net), (300, 0.0));
+        assert!(placebo.iota.lcb <= 0.0, "{placebo:?}");
+        let play = health_of(&observations, "L-play");
+        assert_eq!(play.reason, Some(ReasonCode::Unlogged));
+        assert!(
+            observations
+                .iter()
+                .map(health_row)
+                .all(|health| health.placebo_ok)
+        );
+        assert!(!auditor.audit_broken());
+        let rows = ledger_of(healthy.path()).read().expect("the ledger");
+        assert_eq!(broken_rows(&rows), 0, "{rows:?}");
+
+        let broken = workspace("not-the-placebo");
+        let mut auditor = LoopAuditor::load(broken.path(), &config).expect("the auditor");
+        let observations = auditor
+            .observe_run(broken.path(), RUN, audit_time())
+            .expect("the tick");
+        let placebo = health_of(&observations, PLACEBO_LOOP_ID);
+        assert_eq!(placebo.iota.net, 1.0);
+        assert!(placebo.iota.lcb > 0.0, "{placebo:?}");
+        for seen in &observations {
+            let health = health_row(seen);
+            assert!(!health.placebo_ok, "{}: {health:?}", seen.health.loop_id);
+            assert!(seen.transition.is_none(), "{seen:?}");
+        }
+        let play = health_of(&observations, "L-play");
+        assert_eq!(
+            (play.state, play.reason),
+            (AuditState::Probation, None),
+            "frozen"
+        );
+        assert!(auditor.audit_broken());
+        let rows = ledger_of(broken.path()).read().expect("the ledger");
+        assert_eq!(rows[0].loop_id, ALL_LOOPS, "the trip comes first: {rows:?}");
+        let LoopAuditRow::AuditBroken(trip) = &rows[0].row else {
+            panic!("the trip's row: {:?}", rows[0]);
+        };
+        assert!(trip.reason.contains("placebo"), "{trip:?}");
+        assert_eq!(rows[0].run_id, Some(Some(RUN.to_string())));
+        let reloaded = LoopAuditor::load(broken.path(), &config).expect("the auditor");
+        assert!(reloaded.audit_broken(), "the ledger keeps the audit broken");
+
+        let mut again = reloaded;
+        let later = audit_time() + chrono::Duration::hours(1);
+        again
+            .observe_run(broken.path(), RUN, later)
+            .expect("a later tick");
+        let rows = ledger_of(broken.path()).read().expect("the ledger");
+        assert_eq!(broken_rows(&rows), 1, "one trip, one row");
     }
 }

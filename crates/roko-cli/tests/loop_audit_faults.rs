@@ -22,7 +22,8 @@
 //!   90% of the injections it can see: CUT and STALE at P2, MASK at P4, and
 //!   UNLOGGED at P6, where every dry trace that gets past P4 stops, since a
 //!   dry canary writes no decision rows.
-//! - A4: the placebo never moves, and no injection breaks the auditor.
+//! - A4: the placebo, whose rows the census folds (gap-6f31c3), never
+//!   moves, and no injection breaks the auditor.
 //!
 //! The healthy replay flags no loop, and a fault flags no loop but its own.
 
@@ -45,6 +46,7 @@ use roko_learn::loop_audit::faults::{self, FaultActor, FaultKind, FaultSpec};
 use roko_learn::loop_audit::ledger::LoopAuditRow;
 use roko_learn::loop_audit::{LoopAuditor, ReasonCode, Registry, RowOrigin};
 use roko_learn::model_router::RoutingContext;
+use roko_learn::section_effect::{SECTION_BANDIT_PATH, SectionBandit};
 use roko_learn::telemetry::records::{
     AttemptOutcome, AttemptVerdictRecord, DECISION_SCHEMA, PlaceboDecisionRecord, RunFile, Stamped,
     VERDICT_SCHEMA,
@@ -91,8 +93,10 @@ const HEADER: &str = "case               reason               n_L n_opp probe co
 
 /// A workspace whose knowledge covers each topic with a strong entry, all
 /// three of its words, and a weak one, two of them, so a healthy reader
-/// scores a task's candidates apart; and whose cascade router is
-/// [`ROUTER`].
+/// scores a task's candidates apart; whose cascade router is [`ROUTER`];
+/// and whose section bandit has learned from one outcome, on a section
+/// these prompts never carry, so L-sec reads a learned state while every
+/// draw the prompts make is the uniform prior's (gap-6f31c3).
 fn workspace() -> tempfile::TempDir {
     let dir = tempfile::tempdir().expect("temp dir");
     let roko = dir.path().join(".roko");
@@ -104,6 +108,11 @@ fn workspace() -> tempfile::TempDir {
     }
     std::fs::write(roko.join("neuro/knowledge.jsonl"), knowledge).expect("seed the knowledge");
     std::fs::write(roko.join("learn/cascade-router.json"), ROUTER).expect("seed the router");
+    let bandit = dir.path().join(SECTION_BANDIT_PATH);
+    SectionBandit::transaction(&bandit, |bandit| {
+        bandit.record("pheromone_signals", false, Some(1));
+    })
+    .expect("seed the section bandit");
     dir
 }
 

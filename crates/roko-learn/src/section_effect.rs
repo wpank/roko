@@ -451,6 +451,23 @@ impl SectionBandit {
             arm.observe(label == 1);
         }
     }
+
+    /// The labelled outcomes its posteriors hold: each arm's counts past the
+    /// uniform prior Beta(1, 1), over every section. 0 for a bandit that has
+    /// learned nothing, which draws from its prior alone (L-sec's empty
+    /// state; gap-6f31c3).
+    #[must_use]
+    pub fn labelled_outcomes(&self) -> u64 {
+        let outcomes: f64 = self
+            .sections
+            .values()
+            .map(|arms| {
+                let (included, excluded) = (&arms.included, &arms.excluded);
+                included.alpha + included.beta + excluded.alpha + excluded.beta - 4.0
+            })
+            .sum();
+        outcomes.max(0.0).round() as u64
+    }
 }
 
 /// The seed of a section decision: the top 53 bits of the assignment hash

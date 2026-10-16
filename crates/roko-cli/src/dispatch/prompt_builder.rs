@@ -986,6 +986,13 @@ pub struct PromptDiagnostics {
     /// `sections` arm runs the default policy.
     #[serde(default)]
     pub section_decisions: Vec<SectionDecision>,
+    /// The section bandit's draws on a chain whose `sections` arm runs the
+    /// default policy (the default or all-off arm), outside maximize mode:
+    /// what it would have left out, which the prompt does not apply. The
+    /// sections decision row logs them as L-sec's learned proposal (S03
+    /// §4.4; gap-6f31c3). Empty wherever `section_decisions` is not.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub section_proposals: Vec<SectionDecision>,
     /// What each content reader loaded for the prompt, when it had an
     /// opportunity (gap-a13544): the decision records mark a reader that
     /// loaded none of its state as cut and one that loaded an older part of
@@ -1292,6 +1299,21 @@ const SECTIONS_LAYER: &str = "sections";
 fn section_draw(arms: Option<&ArmSet>) -> Option<&Assignment> {
     let arms = arms.filter(|arms| arms.condition_id != MAXIMIZE_CONDITION)?;
     if arms.takes_default(SECTIONS_LAYER) {
+        return None;
+    }
+    arms.get(SECTIONS_LAYER)
+}
+
+/// The `sections` assignment of the chain `arms` names when its arm runs the
+/// default policy (the default or all-off arm), outside maximize mode. The
+/// prompt keeps every section there, and the section bandit's draws are only
+/// its proposal, which the sections decision row logs beside π⁰'s (S03 §4.4:
+/// both proposals on both arms; gap-6f31c3). `None` outside Graph dispatch,
+/// in maximize mode, and on the learned arm, whose draws the prompt applies
+/// ([`section_draw`]).
+fn section_proposal_draw(arms: Option<&ArmSet>) -> Option<&Assignment> {
+    let arms = arms.filter(|arms| arms.condition_id != MAXIMIZE_CONDITION)?;
+    if !arms.takes_default(SECTIONS_LAYER) {
         return None;
     }
     arms.get(SECTIONS_LAYER)
@@ -2078,6 +2100,18 @@ impl PromptAssembler {
             ),
             None => Vec::new(),
         };
+        // On the arm that runs π⁰ the bandit still draws, so the decision
+        // row can log its proposal (gap-6f31c3); the prompt keeps every
+        // section.
+        let section_proposals = match section_proposal_draw(ctx.arm_set.as_deref()) {
+            Some(assignment) => draw_sections(
+                &self.resolve_section_bandit(&ctx.workdir),
+                assignment,
+                &canonical_sections,
+                &self.pinned_sections,
+            ),
+            None => Vec::new(),
+        };
         let left_out: HashSet<&str> = section_decisions
             .iter()
             .filter(|decision| decision.excluded)
@@ -2202,6 +2236,7 @@ impl PromptAssembler {
             experiment_assignments: experiment_assignment_diagnostics,
             items,
             section_decisions,
+            section_proposals,
             reads,
         };
 
@@ -4331,15 +4366,36 @@ mod tests {
         assert!((decision.propensity - decision.p_exclude).abs() < 1e-12);
 
         // Maximize mode, and the bandit's default arm, leave nothing out.
-        let default_arm = (0..1_000)
+        // On the default arm the bandit still draws, and the diagnostics
+        // keep its draws as its proposal (gap-6f31c3): one that would leave
+        // `conventions` out leaves the prompt whole.
+        let prompt = assemble(arms_of(&ArmMode::Maximize, 0));
+        assert!(prompt.diagnostics.section_decisions.is_empty());
+        assert!(prompt.diagnostics.section_proposals.is_empty());
+        assert!(prompt.system_prompt.contains("Keep changes minimal"));
+        let proposed = |prompt: &AssembledPrompt| -> (Vec<String>, bool) {
+            let proposals = &prompt.diagnostics.section_proposals;
+            let drawn = proposals.iter().map(|draw| draw.section.clone()).collect();
+            let left_out = proposals
+                .iter()
+                .any(|draw| draw.section == "conventions" && draw.excluded);
+            (drawn, left_out)
+        };
+        let prompt = (0..1_000)
             .map(|index| arms_of(&ArmMode::Normal, index))
-            .find(|arms| arms.takes_default("sections"))
-            .expect("a chain on the default arm");
-        for arms in [arms_of(&ArmMode::Maximize, 0), default_arm] {
-            let prompt = assemble(arms);
-            assert!(prompt.diagnostics.section_decisions.is_empty());
-            assert!(prompt.system_prompt.contains("Keep changes minimal"));
-        }
+            .filter(|arms| arms.takes_default("sections"))
+            .map(&mut assemble)
+            .find(|prompt| proposed(prompt).1)
+            .expect("a default-arm chain whose bandit proposes leaving conventions out");
+        assert!(prompt.diagnostics.section_decisions.is_empty());
+        let drawn = proposed(&prompt).0;
+        assert!(
+            drawn.iter().any(|section| section == "conventions"),
+            "{drawn:?}"
+        );
+        assert!(prompt.system_prompt.contains("Keep changes minimal"));
+        let item = prompt_item(&prompt, Section, "conventions");
+        assert_eq!((item.included, item.excluded_reason), (true, None));
     }
 
     #[test]

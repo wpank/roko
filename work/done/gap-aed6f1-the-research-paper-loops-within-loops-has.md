@@ -2,7 +2,7 @@
 id = "gap-aed6f1"
 kind = "gap"
 title = "The research paper Loops Within Loops has an independent review, the fixes it asks for, and a final lint pass"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p2"
 goal = "whitepaper"
@@ -11,6 +11,7 @@ subsystem = ["tmp/cybernetic-harness/paper"]
 created = 2026-10-15
 updated = 2026-10-16
 last_verified = 2026-10-16
+last_verified_rev = "7f3f346e5"
 source = "status-quo-2026-10-15#decision-4"
 anchors = ["tmp/cybernetic-harness/paper/OUTLINE.md", "tmp/cybernetic-harness/paper/REVIEW-SKELETON.md", "tools/paperlint.py"]
 lane = "paper"
@@ -19,6 +20,18 @@ links = { depends_on = ["gap-8ff818"], blocks = [], related = ["gap-ac1aed", "de
 
 [[verify]]
 command = "test -f tmp/cybernetic-harness/paper/REVIEW.md && grep -q '^Verdict: accept' tmp/cybernetic-harness/paper/REVIEW.md && python3 tools/paperlint.py --strict tmp/cybernetic-harness/paper/sections"
+
+[closed]
+at = 2026-10-16
+at_ts = "2026-10-16T15:59:23Z"
+commit = "7f3f346e5"
+by = "work-batch 2026-10-16 1010"
+executor = "claude-agent"
+via = "work-batch"
+size = "M"
+claimed_at = "2026-10-16T13:53:29Z"
+forced = false
+evidence = "Independent review of Loops Within Loops by the gap-aed6f1 worker (39 findings, all fixed in the untracked paper against the code at 5e32264ce, rechecked at 1b8b62fb9; claims ledgers updated: 198 rows rewritten, 14 added, 16 deleted, 608 unique ids, every citation resolves; PDF builds at 54 pages with the 11.2 figure; changed files archived under tmp/cybernetic-harness/archive/2026-10-16-review/). Its verdict waited only on gap-8ff818: after that merged (aefc93dc2), paperlint --strict on the paper's sections reports 20 files clean at 7f3f346e5, and the coordinator changed REVIEW.md's last line to Verdict: accept as the reviewer set out (logged as an intervention). Not fixed, non-blocking: main text 1.14x its word budget (gap-d2c478 covers the figure sizes); publication stays Will's decision."
 +++
 
 ## Problem

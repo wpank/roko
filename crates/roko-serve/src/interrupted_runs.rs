@@ -10,9 +10,10 @@
 //! [`settle`] ends such a run as [`INTERRUPTED`]. Its manifest records the
 //! interruption and closes, and its own event index, when it has one, gets a
 //! `run_completed` row with that outcome and [`INTERRUPTED_REASON`], stamped
-//! at the run's last sign of life. The row goes to that index only, never to
-//! the shared state hub or `.roko/events.jsonl`, as a refused run's rows do
-//! (bug-09e21e): a live run's dashboard would take it for its own end. Serve
+//! at the run's last sign of life. The row goes to that index only
+//! ([`crate::run_end`]), never to the shared state hub or `.roko/events.jsonl`,
+//! as a refused run's rows do (bug-09e21e): a live run's dashboard would take
+//! it for its own end. Serve
 //! settles the open runs when it starts ([`settle_open_runs`]), and a run it
 //! holds no handle of when its summary, detail or cancel is asked for.
 //!
@@ -21,7 +22,6 @@
 //! was recycled. An invocation on another host, or a process whose start this
 //! host cannot tell, counts as alive. Nothing is ever signalled.
 
-use std::io::{Read as _, Seek as _, SeekFrom, Write as _};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::SystemTime;
@@ -29,7 +29,7 @@ use std::time::SystemTime;
 use roko_fs::RokoLayout;
 use roko_learn::telemetry::records::{MANIFEST_FILE, RunClosed, RunInvocation};
 use roko_learn::telemetry::{AttemptTally, RunInterruption, RunProvenanceManifest};
-use serde_json::{Value, json};
+use serde_json::json;
 
 /// The state and `run_completed` outcome of a run whose process was gone.
 pub const INTERRUPTED: &str = "interrupted";
@@ -46,9 +46,6 @@ const MAX_SETTLED_AT_START: usize = 256;
 /// be the invocation's own. The invocation is recorded after its process
 /// starts; `ps` reports a start to the second, and a clock may step.
 const START_SLACK_MS: i64 = 5_000;
-
-/// How much of the end of a run's index is searched for an end it already has.
-const END_SCAN_BYTES: u64 = 64 * 1024;
 
 /// One settle at a time, so no run gets two ends.
 static SETTLING: parking_lot::Mutex<()> = parking_lot::Mutex::new(());
@@ -301,27 +298,8 @@ fn record_end(
     at_ms: i64,
     duration_ms: u64,
 ) -> std::io::Result<()> {
-    let path =
-        roko_fs::run_index::run_index_path(global_log, run_id).map_err(std::io::Error::other)?;
-    let mut index = match roko_fs::run_index::open_existing_run_index(&path) {
-        Ok(index) => index,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
-        Err(error) => return Err(error),
-    };
-    let length = index.metadata()?.len();
-    let start = length.saturating_sub(END_SCAN_BYTES);
-    index.seek(SeekFrom::Start(start))?;
-    let mut tail = Vec::new();
-    index.read_to_end(&mut tail)?;
-    let has_end = tail.split(|byte| *byte == b'\n').any(|line| {
-        serde_json::from_slice::<Value>(line).is_ok_and(|row| {
-            matches!(
-                row.get("type").and_then(Value::as_str),
-                Some("run_completed" | "run.completed" | "workflow_completed")
-            )
-        })
-    });
-    if has_end {
+    let end = crate::run_end::index_end(global_log, run_id)?;
+    if !end.exists || end.ended {
         return Ok(());
     }
     let mut row = serde_json::to_value(roko_core::DashboardEvent::RunCompleted {
@@ -338,16 +316,7 @@ fn record_end(
         fields.insert("ts_millis".into(), json!(at_ms));
         fields.insert("detected_at_ms".into(), json!(now_ms()));
     }
-    let mut line = Vec::new();
-    // A writer killed mid-line leaves a partial row: start on a line of its own.
-    if tail.last().is_some_and(|byte| *byte != b'\n') {
-        line.push(b'\n');
-    }
-    serde_json::to_writer(&mut line, &row).map_err(std::io::Error::other)?;
-    line.push(b'\n');
-    let (_, mut append) = roko_fs::run_index::open_run_index_append(global_log, run_id)?;
-    append.write_all(&line)?;
-    append.sync_data()
+    crate::run_end::append(global_log, run_id, &[row], end.partial)
 }
 
 fn parse_ms(text: &str) -> Option<i64> {
@@ -368,6 +337,8 @@ fn now_ms() -> i64 {
 
 #[cfg(test)]
 mod tests {
+    use serde_json::Value;
+
     use super::*;
 
     /// An open manifest for run `run_id` in `workdir` whose one invocation

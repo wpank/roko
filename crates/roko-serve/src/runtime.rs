@@ -84,6 +84,10 @@ pub struct PlanGenerationResult {
     pub cost_usd: f64,
 }
 
+/// Where a long operation reports what it is doing, as a JSON object, each
+/// time it moves on (gap-11d870): the operation's status shows the latest.
+pub type ProgressReporter = std::sync::Arc<dyn Fn(serde_json::Value) + Send + Sync>;
+
 /// Structured gate result collected while executing a plan.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RuntimeGateResult {
@@ -584,6 +588,28 @@ pub trait CliRuntime: Send + Sync + 'static {
         prompt: &str,
     ) -> anyhow::Result<PlanGenerationResult> {
         self.generate_plan_from_prompt(workdir, slug, prompt).await
+    }
+
+    /// [`Self::generate_plan_for_chat_host`] when `for_chat_host`, else
+    /// [`Self::generate_plan_from_prompt`], reporting what the generation is
+    /// doing to `progress` each time it moves on (gap-11d870): a JSON object
+    /// with its `stage`, `attempt` of `attempts`, `reason`, `model`, `calls`
+    /// and `cost_usd` so far. The default reports nothing.
+    async fn generate_plan_reporting(
+        &self,
+        workdir: &std::path::Path,
+        slug: &str,
+        prompt: &str,
+        for_chat_host: bool,
+        progress: ProgressReporter,
+    ) -> anyhow::Result<PlanGenerationResult> {
+        let _ = progress;
+        if for_chat_host {
+            self.generate_plan_for_chat_host(workdir, slug, prompt)
+                .await
+        } else {
+            self.generate_plan_from_prompt(workdir, slug, prompt).await
+        }
     }
 
     /// Execute a plan target.

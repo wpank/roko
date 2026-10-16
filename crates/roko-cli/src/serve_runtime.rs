@@ -21,8 +21,9 @@ use roko_serve::plan_types::{
     PlanTaskDto, PlanTaskVerifyDto, PlanTasksDto, PlanValidationDto, RevisionDto, TaskChangeDto,
 };
 use roko_serve::runtime::{
-    CliRuntime, DashboardInfo, PlanExecutionResult, PlanGenerationResult, PlanRunOptions, RepoInfo,
-    RunResult, RunResultUsage, RuntimeGateResult, SessionStatusInfo, TriggerExecutionScope,
+    CliRuntime, DashboardInfo, PlanExecutionResult, PlanGenerationResult, PlanRunOptions,
+    ProgressReporter, RepoInfo, RunResult, RunResultUsage, RuntimeGateResult, SessionStatusInfo,
+    TriggerExecutionScope,
 };
 
 use crate::config::{Config, RepoRegistry};
@@ -262,7 +263,7 @@ impl CliRuntime for RokoCliRuntime {
         slug: &str,
         prompt: &str,
     ) -> anyhow::Result<PlanGenerationResult> {
-        self.generate_plan(workdir, slug, prompt, false).await
+        self.generate_plan(workdir, slug, prompt, false, None).await
     }
 
     async fn generate_plan_for_chat_host(
@@ -271,7 +272,27 @@ impl CliRuntime for RokoCliRuntime {
         slug: &str,
         prompt: &str,
     ) -> anyhow::Result<PlanGenerationResult> {
-        self.generate_plan(workdir, slug, prompt, true).await
+        self.generate_plan(workdir, slug, prompt, true, None).await
+    }
+
+    async fn generate_plan_reporting(
+        &self,
+        workdir: &Path,
+        slug: &str,
+        prompt: &str,
+        for_chat_host: bool,
+        progress: ProgressReporter,
+    ) -> anyhow::Result<PlanGenerationResult> {
+        // gap-11d870: each stage the generator reports, as the JSON object
+        // the operation's status shows.
+        let progress: plan_generate::PlanProgressSink =
+            Arc::new(move |stage: &plan_generate::PlanProgress| {
+                if let Ok(stage) = serde_json::to_value(stage) {
+                    progress(stage);
+                }
+            });
+        self.generate_plan(workdir, slug, prompt, for_chat_host, Some(progress))
+            .await
     }
 
     async fn run_plan(
@@ -829,13 +850,14 @@ impl RokoCliRuntime {
     /// questions, so the planner decides them (bug-7a08a8), and only a model
     /// roko's own tool loop runs writes it (bug-a0432b). A plan that cannot
     /// run is an error that names why and what it cost, so the operation
-    /// fails.
+    /// fails. Each stage goes to `progress` as it starts (gap-11d870).
     async fn generate_plan(
         &self,
         workdir: &Path,
         slug: &str,
         prompt: &str,
         for_chat_host: bool,
+        progress: Option<plan_generate::PlanProgressSink>,
     ) -> anyhow::Result<PlanGenerationResult> {
         let plans_root = workspace_paths::plans_dir(workdir);
         let before = snapshot_plan_artifacts(&plans_root);
@@ -843,6 +865,7 @@ impl RokoCliRuntime {
             live: Some(self.spend_bridge()),
             unattended: for_chat_host,
             for_chat_host,
+            progress,
             ..plan_generate::PlanRequest::new(
                 plan_generate::PlanSource::Text {
                     text: prompt,
@@ -1140,7 +1163,9 @@ fn run_prompt_plan_on_local_runtime(
         Err(error) => {
             let error = error.context("a run is active in this workspace");
             if let Some(run_id) = &options.run_id {
-                record_refused_run(&workdir, run_id, &format!("run failed: {error:#}"));
+                let why = format!("{error:#}");
+                let reason = roko_serve::run_end::first_line(&why);
+                record_refused_run(&workdir, run_id, &format!("run failed: {why}"), reason);
             }
             return Err(error);
         }
@@ -1185,32 +1210,16 @@ fn run_prompt_plan_on_local_runtime(
 }
 
 /// Write into run `run_id`'s own index the rows of a run that ended before it
-/// started: the `error` that says why and its `run_completed` (bug-09e21e).
-/// They go to the index only, never to the shared state hub, whose events the
-/// run holding the workspace would record as its own.
-fn record_refused_run(workdir: &Path, run_id: &str, message: &str) {
-    let now = u64::try_from(chrono::Utc::now().timestamp_millis()).unwrap_or_default();
-    let events = [
-        roko_core::DashboardEvent::Error {
-            message: message.to_string(),
-        },
-        roko_core::DashboardEvent::RunCompleted {
-            run_id: Some(run_id.to_string()),
-            outcome: "failed".to_string(),
-            duration_ms: 0,
-            cleanup_degraded: false,
-            surviving_agent_ids: Vec::new(),
-            surviving_agent_pids: Vec::new(),
-        },
-    ];
+/// started: the `error` that says why (`message`) and its `run_completed`,
+/// outcome `refused` with `reason` (bug-09e21e, bug-9a5970; the rows serve
+/// writes for a plan run refused at its start). They go to the index only,
+/// never to the shared state hub, whose events the run holding the workspace
+/// would record as its own.
+fn record_refused_run(workdir: &Path, run_id: &str, message: &str, reason: &str) {
+    let rows = roko_serve::run_end::refused_rows(run_id, message, reason, 0);
     let recorded = crate::runner::persist::PersistPaths::from_workdir(workdir).and_then(|paths| {
-        for event in &events {
-            let mut row = serde_json::to_value(event)?;
-            if let Some(fields) = row.as_object_mut() {
-                fields.insert("run_id".into(), serde_json::json!(run_id));
-                fields.insert("ts_millis".into(), serde_json::json!(now));
-            }
-            crate::runner::persist::append_run_index_event(&paths, run_id, &row, true)?;
+        for row in &rows {
+            crate::runner::persist::append_run_index_event(&paths, run_id, row, true)?;
         }
         crate::runner::persist::flush_run_index(&paths, run_id)
     });

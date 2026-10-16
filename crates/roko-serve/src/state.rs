@@ -325,6 +325,12 @@ pub struct OperationHandle {
     pub status: OperationStatus,
     /// Background task driving the operation.
     pub handle: JoinHandle<()>,
+    /// When the operation started: a running one reports how long it has
+    /// run (gap-11d870).
+    pub started: Instant,
+    /// What the operation is doing, for a producer that reports it as it
+    /// moves on (plan generation, gap-11d870): its latest JSON object.
+    pub progress: Option<tokio::sync::watch::Receiver<serde_json::Value>>,
 }
 
 /// Status of an async operation.

@@ -2,14 +2,16 @@
 id = "bug-e0624e"
 kind = "bug"
 title = "GET /api/plans/{id}/tasks gives the plan id as the plan's title, so Hermes' Run dialog and run label show demo-hello-world instead of plan.md's title"
-status = "open"
-triage = "unverified"
+status = "done"
+triage = "verified"
 severity = "p3"
 goal = "hermes"
 size = "S"
 subsystem = ["roko-serve/plans"]
 created = 2026-10-15
-updated = 2026-10-15
+updated = 2026-10-16
+last_verified = 2026-10-16
+last_verified_rev = "3b1655bc4"
 source = "tmp/hermes-roko-v5/findings/roko-demos.md (roko-demos, 2026-10-15)"
 discovered_from = "hermes-roko-v5 round: demo plans run from Hermes in the roko repo"
 anchors = ["crates/roko-cli/src/serve_runtime.rs::load_plan_tasks", "crates/roko-cli/src/plan.rs::extract_markdown_title", "crates/roko-serve/src/plan_types.rs::PlanTasksDto"]
@@ -17,6 +19,15 @@ links = { depends_on = [], blocks = [], related = ["bug-0c7f25", "gap-8f84d1"], 
 
 [[verify]]
 command = "grep -rqw 'fn plan_tasks_title_is_the_listing_title' crates/ && cargo test -p roko-cli --lib plan_tasks_title_is_the_listing_title"
+
+[closed]
+at = 2026-10-16
+at_ts = "2026-10-16T11:17:00Z"
+commit = "bf57527fd"
+size = "S"
+claimed_at = "2026-10-16T08:08:07Z"
+forced = false
+evidence = "plan::plan_title gives the plan listing and GET /api/plans/{id}/tasks the same title (the first heading of plan.md, else the plan id); load_plan_tasks used [meta].plan, the id. Fix bf57527fd, merged into main as 3b1655bc4. The verify passes on the merged tree 3b1655bc4 (cargo test -p roko-cli --lib plan_tasks_title_is_the_listing_title); before the merge, at c76e78ae3, the roko-cli lib suite passed (3706) and clippy -p roko-cli -p roko-serve was clean. Live, roko serve on a scratch workspace with the 11 demo plans: /api/plans/demo-hello-world/tasks gave title demo-hello-world before (roko-main-1630fa1bf) and 'Start here: hello world demo' after; /tasks and the listing disagreed for 11 of 11 plans before, none after; the 0.4.0 plugin's plan detail now shows the plan.md title."
 +++
 
 ## Problem

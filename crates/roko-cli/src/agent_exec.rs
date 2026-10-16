@@ -442,6 +442,9 @@ pub enum AgentCrashClass {
     ContextOverflow,
     ModelNotFound,
     NetworkError,
+    /// The agent ran into roko's time limit for one call and was stopped
+    /// (gap-11d870): the adapters' `"timed out after <N> ms"`.
+    Timeout,
     Unknown,
 }
 
@@ -453,7 +456,10 @@ impl AgentCrashClass {
     /// invocation will not reproduce. Callers should cap Unknown retries lower
     /// than the cap used for `RateLimited`/`NetworkError`.
     pub fn is_retriable(&self) -> bool {
-        matches!(self, Self::RateLimited | Self::NetworkError | Self::Unknown)
+        matches!(
+            self,
+            Self::RateLimited | Self::NetworkError | Self::Timeout | Self::Unknown
+        )
     }
 
     /// Human-readable hint for recovering from this crash class.
@@ -474,6 +480,10 @@ impl AgentCrashClass {
             Self::NetworkError => {
                 "Network error reaching the provider; check your connection and try again"
             }
+            Self::Timeout => {
+                "The agent ran into roko's time limit for one call and was stopped; a faster \
+                 model, or a smaller request, finishes in time"
+            }
             Self::Unknown => "Agent crashed for an unknown reason; inspect the full stderr output",
         }
     }
@@ -483,6 +493,11 @@ impl AgentCrashClass {
 ///
 /// Uses simple `contains()` checks — no regex needed.
 pub fn classify_agent_crash(stderr: &str) -> AgentCrashClass {
+    // An adapter that stopped the agent at its time limit says so in its own
+    // words, which name no provider error (gap-11d870).
+    if timed_out_after_secs(stderr).is_some() {
+        return AgentCrashClass::Timeout;
+    }
     // Check most-specific patterns first.
     if stderr.contains("401")
         || stderr.contains("invalid_api_key")
@@ -506,6 +521,26 @@ pub fn classify_agent_crash(stderr: &str) -> AgentCrashClass {
         return AgentCrashClass::NetworkError;
     }
     AgentCrashClass::Unknown
+}
+
+/// The time limit, in whole seconds, that an agent call whose output is
+/// `output` ran into, when an adapter stopped it there: its
+/// `"timed out after <N> ms"`, the form `detect_attempt_timeout` reads
+/// (gap-11d870).
+pub fn timed_out_after_secs(output: &str) -> Option<u64> {
+    use roko_agent::provider::error_classify::ATTEMPT_TIMEOUT_MARKER;
+
+    output
+        .match_indices(ATTEMPT_TIMEOUT_MARKER)
+        .find_map(|(at, marker)| {
+            let rest = output[at + marker.len()..].trim_start();
+            let digits = rest.chars().take_while(char::is_ascii_digit).count();
+            let millis: u64 = rest[..digits].parse().ok()?;
+            rest[digits..]
+                .trim_start()
+                .starts_with("ms")
+                .then_some(millis / 1000)
+        })
 }
 
 #[cfg(test)]
@@ -785,6 +820,26 @@ tool_format = "openai_json"
             classify_agent_crash("segfault at 0xdeadbeef"),
             AgentCrashClass::Unknown
         );
+    }
+
+    /// gap-11d870: an agent an adapter stopped at its time limit is a
+    /// timeout, with the limit in seconds; a provider's own request timeout
+    /// is not.
+    #[test]
+    fn classify_agent_crash_timeout() {
+        for output in [
+            "timed out after 300000 ms",
+            "exit 1: timed out after 300000ms",
+        ] {
+            assert_eq!(classify_agent_crash(output), AgentCrashClass::Timeout);
+            assert_eq!(timed_out_after_secs(output), Some(300), "{output}");
+        }
+        assert_eq!(timed_out_after_secs("request timed out after 90s"), None);
+        assert_ne!(
+            classify_agent_crash("request timed out after 90s"),
+            AgentCrashClass::Timeout
+        );
+        assert!(AgentCrashClass::Timeout.is_retriable());
     }
 
     #[test]

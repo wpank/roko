@@ -106,6 +106,7 @@ impl SuiteAuthor for FactoryAuthor {
             live_output: None,
             attempt_key: None,
             knowledge_ids: Vec::new(),
+            allowance: None,
         };
         let dispatch = self.factory.run_shared_agent_bridge(request).await?;
         let usage = dispatch.result.usage;

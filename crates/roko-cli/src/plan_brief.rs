@@ -282,6 +282,7 @@ impl DocumentWriter {
             live_output: None,
             attempt_key: None,
             knowledge_ids: Vec::new(),
+            allowance: None,
         };
         let started = Instant::now();
         let dispatch = self

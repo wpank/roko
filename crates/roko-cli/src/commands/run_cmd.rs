@@ -588,8 +588,18 @@ async fn run_prompt_plan(
             format!("<context>\n{loaded}</context>")
         }
     };
-    let Some(generated) =
-        generate_prompt_plan(cli, workdir, prompt, &model_key, &context_block, &out).await
+    // Only `--dry-run` leaves the plan for a person to review before it runs.
+    let unattended = !args.dry_run;
+    let Some(generated) = generate_prompt_plan(
+        cli,
+        workdir,
+        prompt,
+        &model_key,
+        &context_block,
+        unattended,
+        &out,
+    )
+    .await
     else {
         return Ok(EXIT_AGENT_FAILURE);
     };
@@ -798,12 +808,15 @@ pub(crate) async fn run_plan_execution(
 /// the plan and writes it to the workspace plans directory; `context` follows
 /// the prompt. Returns the new plan's directory, so `roko run` runs that plan
 /// and no other plan beside it, or `None` after reporting a failure on `out`.
+/// An `unattended` plan runs with nobody to answer its open questions
+/// (bug-7a08a8).
 async fn generate_prompt_plan(
     cli: &Cli,
     workdir: &Path,
     prompt: &str,
     model_key: &str,
     context: &str,
+    unattended: bool,
     out: &roko_cli::cli_output::CliOutput,
 ) -> Option<PathBuf> {
     let effort = cli.effort.map(|e| e.to_string());
@@ -812,6 +825,7 @@ async fn generate_prompt_plan(
         context: Some(context),
         model: Some(model_key),
         effort: Some(effort.as_deref().unwrap_or("high")),
+        unattended,
         ..roko_cli::plan_generate::PlanRequest::new(
             roko_cli::plan_generate::PlanSource::Text {
                 text: prompt,

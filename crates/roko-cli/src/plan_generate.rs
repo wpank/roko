@@ -17,8 +17,8 @@ mod dry_run_fs;
 mod pipeline;
 
 pub use pipeline::{
-    ArtifactValidationReport, GenerationOutcome, PlanRequest, PlanSource, generate_plan,
-    plan_dir_slug, plan_source_document, slugify,
+    ArtifactValidationReport, GenerationOutcome, PlanFailsValidation, PlanRequest, PlanSource,
+    generate_plan, plan_dir_slug, plan_source_document, slugify,
 };
 pub(crate) use pipeline::{
     extract_fenced_block, extract_toml_content_fallback, planner_context_window,

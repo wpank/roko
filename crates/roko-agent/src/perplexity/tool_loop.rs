@@ -360,9 +360,9 @@ impl Agent for PerplexityToolLoopAgent {
                 metadata,
             ))
             .with_usage(output.total_usage),
-            StopReason::BudgetExhausted => AgentResult::fail(self.output_signal(
+            StopReason::BudgetExhausted(reason) => AgentResult::fail(self.output_signal(
                 input,
-                "Budget exhausted",
+                &format!("Budget exhausted: {reason}"),
                 "budget_exhausted",
                 output.iterations,
                 metadata,

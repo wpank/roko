@@ -373,7 +373,7 @@ impl GraphTaskDispatcher {
             }
 
             self.record_task_spend(&spec.plan_id, &task.id, &call.usage);
-            if let Err(error) = self.budget_ledger.settle(&spec.plan_id, 0, cost_usd) {
+            if let Err(error) = self.budget_ledger.settle(&spec.plan_id, None, cost_usd) {
                 tracing::warn!(
                     plan_id = %spec.plan_id,
                     task_id = %task.id,

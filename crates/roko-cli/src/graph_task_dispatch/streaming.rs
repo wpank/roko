@@ -58,6 +58,9 @@ impl StreamingTaskDispatcher for GraphTaskDispatcher {
             .budget_ledger
             .reserve_waiting(&spec.plan_id, self.budget_policy, || ctx.is_cancelled())
             .await?;
+        // The plan ceiling holds inside the attempt, as on the batch path
+        // (bug-4fabd0).
+        let allowance = budget_reservation.allowance(&self.budget_ledger);
 
         // ── Attempt identity ─────────────────────────────────────────────
         let attempt_id = format!(
@@ -250,6 +253,9 @@ impl StreamingTaskDispatcher for GraphTaskDispatcher {
             live_output: None,
             attempt_key: Some(attempt_key.clone()),
             knowledge_ids: super::decision_log::included_knowledge_ids(&dispatch_plan),
+            allowance: allowance
+                .clone()
+                .map(|allowance| -> Arc<dyn crate::dispatch_v2::CallAllowance> { allowance }),
         };
         // FAST lane: fewer turns, a shorter attempt, a patch-only prompt.
         let request = self.fast_bounded(request);
@@ -445,6 +451,8 @@ impl StreamingTaskDispatcher for GraphTaskDispatcher {
         }
 
         // ── Settle cost and build outcome ────────────────────────────────
+        // An agent its plan budget stopped before a model call (bug-4fabd0).
+        let budget_stop = allowance.as_deref().and_then(AttemptAllowance::refusal);
         let (outcome, output_signals, verification, denial) = match dispatch_result {
             Ok(dispatch) => {
                 let cost_usd = f64::from(dispatch.result.usage.cost_usd);
@@ -516,10 +524,13 @@ impl StreamingTaskDispatcher for GraphTaskDispatcher {
                         &error.to_string(),
                         first_token_seen(&dispatch),
                     ),
-                    (None, None) => Settlement::provider_failure(
-                        dispatch.result.output.body.as_text().unwrap_or_default(),
-                        first_token_seen(&dispatch),
-                    ),
+                    (None, None) => match &budget_stop {
+                        Some(reason) => Settlement::budget_exhausted(reason),
+                        None => Settlement::provider_failure(
+                            dispatch.result.output.body.as_text().unwrap_or_default(),
+                            first_token_seen(&dispatch),
+                        ),
+                    },
                 };
                 let settled =
                     attempt.settle(settlement, &dispatch_plan.model.slug, Some(&dispatch));
@@ -645,6 +656,9 @@ impl StreamingTaskDispatcher for GraphTaskDispatcher {
         }
         if let Some(denial) = denial {
             return Err(denial);
+        }
+        if let Some(reason) = budget_stop {
+            return Err(RokoError::gateway("budget", false, reason));
         }
         if outcome.outcome == TaskDispatchOutcomeKind::Failed {
             return Err(RokoError::Agent {
@@ -1322,8 +1336,15 @@ printf '%s\n' '{"type":"result","session_id":"sess-x","model":"claude-sonnet-4-6
             .expect_err("budget-exhausted dispatch must fail");
 
         assert!(
-            matches!(error, RokoError::BudgetExceeded { .. }),
-            "error must be BudgetExceeded, got: {error:?}"
+            matches!(
+                error,
+                RokoError::Gateway {
+                    category: "budget",
+                    retryable: false,
+                    ..
+                }
+            ),
+            "error must be a budget stop, got: {error:?}"
         );
     }
 

@@ -109,8 +109,8 @@ pub use wiring::{LoopWiring, WiringComponent, WiringKind, WiringReport};
 
 use attempt::{AttemptBook, SettledAttempt, Settlement, attempt_agent_id, first_token_seen};
 use budget::{
-    GraphDailyBudget, GraphPlanBudgetLedger, GraphTaskSpendLedger, effective_routing_budget,
-    task_budget_ceiling_usd,
+    AttemptAllowance, GraphDailyBudget, GraphPlanBudgetLedger, GraphTaskSpendLedger,
+    effective_routing_budget, task_budget_ceiling_usd,
 };
 use helper_calls::{HelperAgent, HelperCalls};
 use inert_settings::warn_inert_graph_settings_once;
@@ -976,6 +976,9 @@ impl TaskDispatcher for GraphTaskDispatcher {
             .budget_ledger
             .reserve_waiting(&spec.plan_id, self.budget_policy, || ctx.is_cancelled())
             .await?;
+        // The plan ceiling holds inside the attempt: its agent's tool loop
+        // asks the reservation's hold before each model call (bug-4fabd0).
+        let allowance = budget_reservation.allowance(&self.budget_ledger);
 
         let task: TaskDef = serde_json::from_str(&spec.task_def_json).map_err(|error| {
             RokoError::Planning(format!(
@@ -1413,6 +1416,9 @@ impl TaskDispatcher for GraphTaskDispatcher {
             live_output: None,
             attempt_key: Some(attempt.key.attempt_key()),
             knowledge_ids: decision_log::included_knowledge_ids(&dispatch_plan),
+            allowance: allowance
+                .clone()
+                .map(|allowance| -> Arc<dyn crate::dispatch_v2::CallAllowance> { allowance }),
         };
         // FAST lane: fewer turns, a shorter attempt, a patch-only prompt.
         self.fast_bound(&mut request);
@@ -1700,12 +1706,17 @@ impl TaskDispatcher for GraphTaskDispatcher {
             // An agent that exited on its run's SIGTERM was cancelled, not a
             // failed provider (bug-28b604).
             let stopped = self.stopped_call(&spec.plan_id, &task.id, &message);
+            // An agent its plan budget stopped before a model call the budget
+            // could not pay for (bug-4fabd0): the harness stopped it, and no
+            // retry can pay for that call either.
+            let budget_stop = allowance.as_deref().and_then(AttemptAllowance::refusal);
             // A failed provider call is settled now; a successful one is
             // settled after its verify steps so learning sees the verified
             // outcome.
-            let settlement = match &stopped {
-                Some(cancelled) => Settlement::provider_call_error(cancelled),
-                None => Settlement::provider_failure(&message, first_token_seen(&dispatch)),
+            let settlement = match (&stopped, &budget_stop) {
+                (Some(cancelled), _) => Settlement::provider_call_error(cancelled),
+                (None, Some(reason)) => Settlement::budget_exhausted(reason),
+                (None, None) => Settlement::provider_failure(&message, first_token_seen(&dispatch)),
             };
             let settled = attempt.settle(settlement, &dispatch_plan.model.slug, Some(&dispatch));
             self.emit_feedback(
@@ -1729,6 +1740,16 @@ impl TaskDispatcher for GraphTaskDispatcher {
             }
             if let Some(cancelled) = stopped {
                 return Err(cancelled);
+            }
+            if let Some(reason) = budget_stop {
+                tracing::warn!(
+                    plan_id = %spec.plan_id,
+                    task_id = %task.id,
+                    %reason,
+                    "the plan budget stopped the attempt before a model call; its work stays \
+                     in its checkout"
+                );
+                return Err(RokoError::gateway("budget", false, reason));
             }
 
             // Detect billing/credit errors and log a clear warning so
@@ -2089,7 +2110,17 @@ exit 1
             )
             .await
             .expect_err("later dispatch must fail closed after plan budget exhaustion");
-        assert!(matches!(blocked, RokoError::BudgetExceeded { .. }));
+        assert!(
+            matches!(
+                blocked,
+                RokoError::Gateway {
+                    category: "budget",
+                    retryable: false,
+                    ..
+                }
+            ),
+            "{blocked:?}"
+        );
     }
 
     /// Answers with a content-hash mismatch on its first call (a tamper

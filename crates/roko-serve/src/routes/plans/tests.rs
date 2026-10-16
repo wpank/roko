@@ -331,6 +331,22 @@ impl CliRuntime for RecordingRuntime {
             artifacts: vec![],
         })
     }
+
+    /// Plan for a chat host: records the call as `plan_generate_chat_host`,
+    /// then plans as any request.
+    async fn generate_plan_for_chat_host(
+        &self,
+        workdir: &std::path::Path,
+        slug: &str,
+        prompt: &str,
+    ) -> anyhow::Result<crate::runtime::PlanGenerationResult> {
+        self.calls.lock().expect("lock calls").push(RecordedCall {
+            kind: "plan_generate_chat_host",
+            workdir: workdir.to_path_buf(),
+            arg: prompt.to_string(),
+        });
+        self.generate_plan_from_prompt(workdir, slug, prompt).await
+    }
 }
 
 fn test_state() -> (tempfile::TempDir, Arc<AppState>) {
@@ -2827,4 +2843,73 @@ async fn validate_plan_returns_404_for_missing_plan() {
     .expect_err("missing plan should return 404");
 
     assert_eq!(err.status, axum::http::StatusCode::NOT_FOUND);
+}
+
+/// bug-7a08a8: a run that `roko plan run` would refuse says which errors keep
+/// it from running, not only how many, and keeps the report in `details`.
+#[test]
+fn plan_run_rejected_names_the_errors() {
+    let validation = crate::plan_types::PlanValidationDto::from_diagnostics(vec![
+        crate::plan_types::PlanDiagnosticDto {
+            severity: "error".to_string(),
+            rule_id: "PLAN_045".to_string(),
+            task_id: Some("T2".to_string()),
+            message: "task 'T2' has open questions, so its plan cannot run; answer each in the \
+                      spec, then delete it from open_questions:\n- Should n cap the list?"
+                .to_string(),
+        },
+    ]);
+    let error = plan_run_rejected("plan 'wordy-top'", &validation);
+    assert_eq!(error.status, axum::http::StatusCode::UNPROCESSABLE_ENTITY);
+    assert_eq!(
+        error.message,
+        "plan 'wordy-top' failed validation with 1 error(s); fix them before running it\n- \
+         PLAN_045: task 'T2' has open questions, so its plan cannot run; answer each in the \
+         spec, then delete it from open_questions:\n  - Should n cap the list?"
+    );
+    assert!(error.details.is_some(), "{error:?}");
+}
+
+/// bug-7a08a8: a plan a chat host asks for over `/mcp` is generated as one
+/// nobody reviews before it runs; one asked for over HTTP is not.
+#[tokio::test]
+async fn a_chat_host_plan_is_generated_for_a_chat_host() {
+    for (origin, kinds) in [
+        (
+            crate::runtime::RunOrigin::Mcp {
+                client: "hermes".into(),
+            },
+            vec!["plan_generate_chat_host", "plan_generate"],
+        ),
+        (crate::runtime::RunOrigin::Http, vec!["plan_generate"]),
+    ] {
+        let runtime = Arc::new(RecordingRuntime {
+            calls: Arc::new(Mutex::new(Vec::new())),
+            notify: Arc::new(Notify::new()),
+            success: true,
+            call_count: Arc::new(AtomicUsize::new(0)),
+            group: None,
+            last_options: Arc::new(Mutex::new(None)),
+            known_plan_id: None,
+            plan_tasks: vec![],
+            summary_estimated_minutes: None,
+        });
+        let notify = Arc::clone(&runtime.as_ref().notify);
+        let calls = Arc::clone(&runtime.as_ref().calls);
+        let (_dir, state) = test_state_with_runtime(runtime);
+
+        let notified = notify.notified();
+        start_plan_generation(&state, "Build a widget library".into(), &origin, None).await;
+        tokio::time::timeout(std::time::Duration::from_secs(1), notified)
+            .await
+            .expect("runtime should be called");
+
+        let recorded: Vec<&str> = calls
+            .lock()
+            .expect("lock calls")
+            .iter()
+            .map(|call| call.kind)
+            .collect();
+        assert_eq!(recorded, kinds, "{origin:?}");
+    }
 }

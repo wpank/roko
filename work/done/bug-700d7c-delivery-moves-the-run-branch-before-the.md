@@ -2,7 +2,7 @@
 id = "bug-700d7c"
 kind = "bug"
 title = "Delivery moves the run branch before the whole-plan check and resets it on failure; the papers say it moves only once the check passes, and parallel plans can start from the unchecked merge"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p2"
 goal = "golden-path"
@@ -11,6 +11,7 @@ subsystem = ["roko-cli/graph_execution"]
 created = 2026-10-16
 updated = 2026-10-16
 last_verified = 2026-10-16
+last_verified_rev = "32ca2fade"
 source = "gap-0212ef worker, 2026-10-16"
 discovered_from = "gap-0212ef"
 anchors = ["crates/roko-cli/src/graph_execution/delivery.rs::git_merge", "crates/roko-cli/src/graph_execution/batch.rs::deliver", "crates/roko-cli/src/orchestrator/worktree/mod.rs::attempt_base"]
@@ -19,6 +20,18 @@ links = { depends_on = [], blocks = [], related = ["gap-0212ef"], supersedes = [
 
 [[verify]]
 command = "grep -rqw 'fn delivery_moves_the_run_branch_only_after_its_check_passes' crates/roko-cli/ && cargo test -p roko-cli delivery_moves_the_run_branch_only_after_its_check_passes"
+
+[closed]
+at = 2026-10-16
+at_ts = "2026-10-16T21:46:48Z"
+commit = "32ca2fade"
+by = "commit trailer"
+executor = "claude-agent"
+via = "work-batch"
+size = "M"
+claimed_at = "2026-10-16T19:19:20Z"
+forced = false
+evidence = "delivery.rs: GitDeliveryBackend::merge (git_merge) only makes the merge and records the target tip it was made on (receipt extension roko.delivery.target_tip@1); the new DeliveryBackend::move_target moves the target by compare-and-swap from that tip in the RegressionPassed step, after the whole-plan check passed and before publication. A target that moved since, has no recorded tip, or is checked out (the merge is parked, as before) ends the delivery in Conflict; the merge slot is held until the move; a resumed Merged receipt reruns its check and a RegressionPassed one only moves the target. batch.rs: BatchIntegration::deliver no longer resets the batch after a failed or cancelled check (it never moved); promote merges and moves at once (merge_into_target). Verify: the grep passes and delivery_moves_the_run_branch_only_after_its_check_passes passes (batch.rs: a passing and a failing check each record roko/batch/<run> while they run, which equals the pre-delivery tip; an attempt checkout the WorktreeManager makes during each check gets that tip as its base_commit; a passed check moves the batch to the merge; the batch reflog never names the failed merge). New a_plan_started_during_a_failing_check_does_not_build_on_its_merge (plan_runner.rs: three plans, two at a time) passes; it and the strengthened meta_verify_failure_fails_a_plan_whose_tasks_passed both fail with main's delivery.rs and batch.rs (the failed plan's alpha.txt reached the batch through the later plan; the batch reflog named the failed merge). 55 targeted roko-cli lib tests pass at load 105-138 (every graph_execution::delivery and ::batch test, the delivery-related plan_runner tests, recorded_batch_delivery_reads_only_a_delivered_plan); a_cancel_stops_the_post_merge_regression_check, the known load flake bug-3203c4, failed once at load ~90 and passed alone. cargo clippy -p roko-cli -p roko-graph --no-deps -- -D warnings is clean; nightly fmt is clean. Not run: the full cargo test -p roko-cli <name> form, which also builds the 74 integration-test binaries, because the cargo limiter refuses jobs below 25 GB free and the disk was at 15 GB; no integration test uses the changed API."
 +++
 
 ## Problem

@@ -2,15 +2,16 @@
 id = "gap-9aca5d"
 kind = "gap"
 title = "The self-model defaults to off, so it never forecasts: make shadow the default (decision 2 of 2026-10-15 supersedes 6102's off)"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p2"
 goal = "cybernetic"
 size = "S"
 subsystem = ["roko-core/config", "roko-cli/graph_task_dispatch"]
 created = 2026-10-15
-updated = 2026-10-15
-last_verified = 2026-10-15
+updated = 2026-10-16
+last_verified = 2026-10-16
+last_verified_rev = "5284b641a"
 source = "status-quo-2026-10-15#decision-2"
 anchors = ["crates/roko-core/src/config/self_model.rs::SelfModelMode", "crates/roko-core/src/config/self_model.rs::SelfModelConfig", "crates/roko-core/src/config/self_model.rs::self_model_config_defaults_off", "crates/roko-cli/src/graph_task_dispatch/self_model.rs::SelfModelRuntime"]
 lane = "rust-cold"
@@ -22,6 +23,18 @@ command = "grep -rqw 'fn self_model_config_defaults_shadow' crates/roko-core/ &&
 
 [[verify]]
 command = "grep -rqw 'fn default_plan_run_forecasts_in_shadow' crates/roko-cli/ && cargo test -p roko-cli default_plan_run_forecasts_in_shadow"
+
+[closed]
+at = 2026-10-16
+at_ts = "2026-10-15T23:13:12Z"
+commit = "5284b641a"
+by = "commit trailer"
+executor = "claude-agent"
+via = "work-batch"
+size = "S"
+claimed_at = "2026-10-15T16:33:42Z"
+forced = false
+evidence = "5284b641a. roko-core: SelfModelMode's #[default] moved from Off to Shadow and SelfModelConfig::default().mode = Shadow; self_model_config_defaults_shadow passes (cargo test -p roko-core). roko-cli: build_graph_feedback_context gates SelfModelRuntime::load on `learning` (!config.learning.frozen), matching M1's homeostasis sink, so a frozen run still saves none of it (frozen_learning_run_writes_no_learned_state still passes). Added default_plan_run_forecasts_in_shadow (cargo test -p roko-cli): a fake-provider plan run with no [self_model] section writes one predictions.jsonl row and learn/self-model/state-v1.json for its one routed attempt, and dispatches the same model an explicit mode = \"off\" run dispatches -- shadow forecasts and records, it never routes. Also reran frozen_run_registers_no_learning_sinks and tests/learning_wiring_census.rs's graph_dispatcher_production_wiring_census (self-model is not a named census component, so the new shadow-mode facade sink does not disturb its exact-match assertions): both still pass. Checked docs/v3, roko.toml and the CLI's config/doctor/learn-self-model output for stale \"off by default\" text: none found outside the two files changed."
 +++
 
 ## Problem

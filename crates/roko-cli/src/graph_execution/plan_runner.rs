@@ -6131,8 +6131,7 @@ max_retries = 0
         let (shadow_exit, _, _) = run_plan_set(shadow_dir.path(), Some(1), None).await;
         assert_eq!(shadow_exit, EXIT_SUCCESS);
 
-        let off_dir =
-            verified_plan_set(&[("a", "a.txt", &[])], "[self_model]\nmode = \"off\"\n");
+        let off_dir = verified_plan_set(&[("a", "a.txt", &[])], "[self_model]\nmode = \"off\"\n");
         let (off_exit, _, _) = run_plan_set(off_dir.path(), Some(1), None).await;
         assert_eq!(off_exit, EXIT_SUCCESS);
 
@@ -6150,7 +6149,11 @@ max_retries = 0
             .lines()
             .filter(|line| !line.is_empty())
             .collect();
-        assert_eq!(rows.len(), 1, "one routed attempt, one prediction: {rows:?}");
+        assert_eq!(
+            rows.len(),
+            1,
+            "one routed attempt, one prediction: {rows:?}"
+        );
 
         let state_path = shadow_dir
             .path()

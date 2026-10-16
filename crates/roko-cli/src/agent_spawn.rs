@@ -15,6 +15,9 @@ pub struct SpawnAgentSpec {
     pub command: Option<String>,
     /// Optional timeout for the child agent.
     pub timeout_ms: Option<u64>,
+    /// Optional turn cap. `None` keeps the provider's own default
+    /// ([`AgentOptions::max_turns`]).
+    pub max_turns: Option<u32>,
     /// Optional system prompt override.
     pub system_prompt: Option<String>,
     /// Optional cached content hint.
@@ -47,6 +50,7 @@ impl SpawnAgentSpec {
         AgentOptions {
             command: self.command,
             timeout_ms: self.timeout_ms,
+            max_turns: self.max_turns,
             system_prompt: self.system_prompt,
             cached_content: self.cached_content,
             tools: self.tools,

@@ -2,6 +2,8 @@
 
 mod common;
 
+use common::Isolated;
+
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -100,6 +102,7 @@ impl Drop for TestRelay {
 fn agent_serve_help_exposes_batch_flags() {
     Command::cargo_bin("roko")
         .expect("roko binary")
+        .isolated()
         .arg("agent")
         .arg("serve")
         .arg("--help")

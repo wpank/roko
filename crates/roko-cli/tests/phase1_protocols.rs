@@ -5,6 +5,9 @@
 //! traits (Cell, Observe, Connect, Trigger) are compiled into and
 //! reachable from the CLI binary.
 
+mod common;
+use common::Isolated;
+
 use assert_cmd::Command;
 use predicates::str::contains;
 use roko_fs::{LayoutVersion, RokoLayout};
@@ -39,6 +42,7 @@ fn doctor_human_output_contains_v2_abstractions() {
 
     Command::cargo_bin("roko")
         .unwrap()
+        .isolated()
         .current_dir(temp.path())
         .args(["doctor", "--workdir"])
         .arg(temp.path())
@@ -60,6 +64,7 @@ fn doctor_json_output_contains_v2_abstractions() {
 
     Command::cargo_bin("roko")
         .unwrap()
+        .isolated()
         .current_dir(temp.path())
         .args(["doctor", "--workdir"])
         .arg(temp.path())
@@ -78,6 +83,7 @@ fn doctor_v2_abstractions_passes_even_when_workspace_unhealthy() {
 
     let output = Command::cargo_bin("roko")
         .unwrap()
+        .isolated()
         .current_dir(temp.path())
         .args(["doctor", "--workdir"])
         .arg(temp.path())

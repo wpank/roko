@@ -2,6 +2,9 @@
 
 //! End-to-end coverage for resume-durable Graph provider-cost accounting.
 
+mod common;
+use common::Isolated;
+
 use assert_cmd::Command;
 use assert_cmd::cargo::cargo_bin;
 use serde_json::Value;
@@ -101,6 +104,7 @@ max_retries = 0
 
 fn run_graph(workdir: &Path, resume: bool) -> Value {
     let mut command = Command::new(cargo_bin("roko"));
+    command.isolated();
     command
         .current_dir(workdir)
         .arg("--json")
@@ -150,6 +154,7 @@ fn cli_graph_resume_restores_actual_provider_cost_without_reinvocation() {
     )
     .expect("corrupt cost ledger");
     Command::new(cargo_bin("roko"))
+        .isolated()
         .current_dir(temp.path())
         .arg("--json")
         .args([

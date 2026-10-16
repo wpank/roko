@@ -16,6 +16,8 @@
 
 mod common;
 
+use common::Isolated;
+
 use std::fs;
 use std::path::Path;
 use std::process::{Command as StdCommand, Stdio};
@@ -94,6 +96,7 @@ fn operator_state(repo: &Path) -> [String; 3] {
 /// into `target`.
 fn plan_run(repo: &Path, plan: &str, target: &Path) -> StdCommand {
     let mut command = StdCommand::new(cargo_bin("roko"));
+    command.isolated();
     command.arg("--json");
     command
         .current_dir(repo)
@@ -320,6 +323,7 @@ command = "grep -q 'pub fn quad' b/src/lib.rs"
 
     // A plain-text run, whose summary names the plans that failed.
     let run = StdCommand::new(cargo_bin("roko"))
+        .isolated()
         .current_dir(&repo)
         .args(["plan", "run", "plans/c4", "--worktree-per-task", "--no-tui"])
         .arg("--workdir")
@@ -362,6 +366,7 @@ command = "grep -q 'pub fn quad' b/src/lib.rs"
     // The delivery ended `RegressionFailed`, and `roko plan status` names the
     // plan and the failed step.
     let status = Command::new(cargo_bin("roko"))
+        .isolated()
         .current_dir(&repo)
         .args(["--json", "plan", "status", "plans/c4", "--workdir"])
         .arg(&repo)
@@ -424,6 +429,7 @@ fn a_plain_plan_run_isolates_its_tasks_by_default() {
     let before = operator_state(&repo);
 
     let run = StdCommand::new(cargo_bin("roko"))
+        .isolated()
         .current_dir(&repo)
         .args(["plan", "run", "plans/isolated", "--no-tui", "--workdir"])
         .arg(&repo)
@@ -457,6 +463,7 @@ fn a_plain_plan_run_isolates_its_tasks_by_default() {
     let command = format!("git merge --ff-only {batch}");
     assert!(stdout.contains(&command), "{log}");
     let status = Command::new(cargo_bin("roko"))
+        .isolated()
         .current_dir(&repo)
         .args(["--json", "plan", "status", "plans/isolated", "--workdir"])
         .arg(&repo)
@@ -502,6 +509,7 @@ fn roko_run_follows_worktree_per_task() {
         let before = operator_state(&repo);
 
         let run = StdCommand::new(cargo_bin("roko"))
+            .isolated()
             .current_dir(&repo)
             .args(["run", "--complexity", "simple", "Write edit.txt"])
             .arg("--workdir")

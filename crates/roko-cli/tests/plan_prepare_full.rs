@@ -8,6 +8,8 @@
 
 mod common;
 
+use common::Isolated;
+
 use assert_cmd::cargo::cargo_bin;
 use common::scripted_provider::{Call, Script, ScriptedProvider, Turn};
 use std::fs;
@@ -66,6 +68,7 @@ context_window = 200000
 
 fn prepare_full(workdir: &Path) -> Output {
     Command::new(cargo_bin("roko"))
+        .isolated()
         .current_dir(workdir)
         .args(["plan", "prepare", "plans/demo", "--full", "--workdir"])
         .arg(workdir)

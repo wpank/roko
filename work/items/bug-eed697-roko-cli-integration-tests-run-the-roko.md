@@ -13,8 +13,11 @@ updated = 2026-10-16
 last_verified = 2026-10-16
 source = "tmp/hermes-roko-v5/findings/roko-delivery.md (roko-delivery, 2026-10-15)"
 discovered_from = "hermes-roko-v5 round: testing bug-74164c"
-anchors = ["crates/roko-cli/tests/worktree_task_diff.rs::run_plan", "crates/roko-cli/tests/plan_branch_integration.rs", "crates/roko-cli/src/dispatch/model_routing.rs"]
+anchors = ["crates/roko-cli/tests/common/mod.rs::Isolated", "crates/roko-cli/tests/spawn_isolation.rs", "crates/roko-cli/tests/worktree_task_diff.rs::run_plan", "crates/roko-cli/tests/plan_branch_integration.rs", "crates/roko-cli/src/dispatch/model_routing.rs"]
 links = { depends_on = [], blocks = [], related = ["bug-c63cca", "bug-4e336b"], supersedes = [], duplicate_of = "" }
+
+[[verify]]
+command = "grep -rqw 'fn every_test_that_spawns_roko_isolates_it' crates/roko-cli/ && cargo test -p roko-cli --test spawn_isolation"
 +++
 
 ## Problem
@@ -55,8 +58,11 @@ c4 also failed with the real `HOME` and c3 passes with a scratch one.
 
 ## Done when
 
-`cargo test -p roko-cli --test worktree_task_diff` passes with `HOME` pointing at a home whose `.roko/.env` holds a
-(dummy) OpenAI key, and no test process opens a connection to a provider.
+`spawn_isolation` passes (the `[[verify]]` command): every test file that spawns `roko` isolates each spawn,
+through `common::Isolated` or by setting `HOME` itself, and an isolated `roko` reads its global config from the
+scratch home. The integration tests, run with a `HOME` whose `.roko/.env` holds a (dummy) OpenAI key, open no
+connection to a provider. `worktree_task_that_fails_verify_keeps_its_worktree_and_merges_nothing` still fails,
+for another reason (bug-ee2752).
 
 ## Notes
 

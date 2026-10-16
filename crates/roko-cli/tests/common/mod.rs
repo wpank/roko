@@ -118,6 +118,7 @@ pub fn process_stdout(workdir: &Path, args: &[&str]) -> String {
 pub fn init_workspace(workdir: &Path) {
     Command::cargo_bin("roko")
         .expect("roko binary")
+        .isolated()
         .current_dir(workdir)
         .arg("init")
         .arg(workdir)
@@ -279,18 +280,17 @@ pub fn run_sample_plan(workdir: &Path) -> Value {
     // enforce a timeout. If it doesn't finish, we kill and read partial output.
     let mut command = ProcessCommand::new(cargo_bin("roko"));
     command
+        .isolated()
         .current_dir(workdir)
         .arg("--json")
         .arg("plan")
         .arg("run")
         .arg("plans");
     let mut child = command
-        // Isolate from user's global config / API keys so the mock
-        // agent command from roko.toml is used.
+        // The workdir is home, so the mock agent command from roko.toml is
+        // used.
         .env("HOME", workdir)
         .env("ROKO_LOG", "error")
-        .env_remove("ANTHROPIC_API_KEY")
-        .env_remove("XDG_CONFIG_HOME")
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
@@ -505,28 +505,17 @@ spec_quality.red_on_base = false
     }
 
     /// `roko --json plan run plans/<plan>` in the repository, as a user whose
-    /// home is the workspace's: provider keys, `ROKO_*` variables and the
-    /// log and config variables of the invoking environment are removed,
-    /// then `env` is added. The exit status is not checked.
+    /// home is the workspace's, isolated from the invoking environment
+    /// ([`Isolated`]), then with `env` added. The exit status is not checked.
     pub fn run_plan(&self, plan: &str, env: &[(&str, &str)]) -> Output {
         let mut command = ProcessCommand::new(cargo_bin("roko"));
         command
+            .isolated()
             .current_dir(&self.repo)
             .arg("--json")
             .args(["plan", "run", &format!("plans/{plan}"), "--workdir"])
             .arg(&self.repo)
             .env("HOME", &self.home);
-        for name in roko_core::child_env::PROVIDER_KEY_VARS {
-            command.env_remove(name);
-        }
-        for (name, _) in std::env::vars_os() {
-            if name.to_string_lossy().starts_with("ROKO_") {
-                command.env_remove(name);
-            }
-        }
-        for name in ["RUST_LOG", "XDG_CONFIG_HOME", "CLAUDECODE"] {
-            command.env_remove(name);
-        }
         command.envs(env.iter().copied());
         command.output().expect("run roko plan run")
     }
@@ -588,25 +577,88 @@ pub fn describe_leak(path: &Path, secret: &str) -> String {
 pub fn run_roko(workdir: &Path, args: &[&str]) -> Assert {
     Command::cargo_bin("roko")
         .expect("roko binary")
+        .isolated()
         .current_dir(workdir)
         .args(args)
         .assert()
 }
 
-/// Like `run_roko` but isolates from the user's global config and API keys.
-///
-/// Sets `HOME` to the workdir so `~/.roko/config.toml` is not found, and
-/// removes `ANTHROPIC_API_KEY` / `XDG_CONFIG_HOME` to prevent provider
-/// auto-synthesis that would override the test's `roko.toml`.
+/// Like `run_roko`, with the workdir as `HOME`.
 pub fn run_roko_isolated(workdir: &Path, args: &[&str]) -> Assert {
     Command::cargo_bin("roko")
         .expect("roko binary")
+        .isolated()
         .current_dir(workdir)
         .args(args)
         .env("HOME", workdir)
-        .env_remove("ANTHROPIC_API_KEY")
-        .env_remove("XDG_CONFIG_HOME")
         .assert()
+}
+
+/// The empty directory a spawned `roko` uses as `HOME`: one per test
+/// process, under the test target's scratch directory, so outside the
+/// repository and every git repository a test builds.
+pub fn scratch_home() -> &'static Path {
+    static HOME: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
+    HOME.get_or_init(|| {
+        let home = Path::new(env!("CARGO_TARGET_TMPDIR"))
+            .join(format!("roko-test-home-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&home);
+        fs::create_dir_all(&home).expect("create the scratch HOME");
+        home
+    })
+}
+
+/// The variables a spawned `roko` must not inherit from the shell that runs
+/// the tests: provider keys, `ROKO_*` settings, and the log and config
+/// overrides.
+fn inherited_vars_to_drop() -> Vec<std::ffi::OsString> {
+    let mut names: Vec<std::ffi::OsString> = roko_core::child_env::PROVIDER_KEY_VARS
+        .iter()
+        .map(std::ffi::OsString::from)
+        .collect();
+    names.extend(
+        std::env::vars_os()
+            .map(|(name, _)| name)
+            .filter(|name| name.to_string_lossy().starts_with("ROKO_")),
+    );
+    names.extend(["RUST_LOG", "XDG_CONFIG_HOME", "CLAUDECODE"].map(std::ffi::OsString::from));
+    names
+}
+
+/// A `roko` command isolated from the machine that runs the tests
+/// (bug-eed697). With the developer's `HOME`, roko loads `~/.roko/.env`,
+/// whose provider keys can route a fixture's task to a real, paid model, and
+/// merges `~/.roko/config.toml`'s providers and models. Every test that
+/// spawns `roko` goes through it.
+pub trait Isolated {
+    /// Run with the scratch `HOME` and a test `USER`, and without the
+    /// invoking environment's provider keys and `ROKO_*`, log and config
+    /// variables. Call it before the test sets variables of its own.
+    fn isolated(&mut self) -> &mut Self;
+}
+
+impl Isolated for ProcessCommand {
+    fn isolated(&mut self) -> &mut Self {
+        self.env("HOME", scratch_home())
+            .env("USER", "roko-test")
+            .env("LOGNAME", "roko-test");
+        for name in inherited_vars_to_drop() {
+            self.env_remove(name);
+        }
+        self
+    }
+}
+
+impl Isolated for Command {
+    fn isolated(&mut self) -> &mut Self {
+        self.env("HOME", scratch_home())
+            .env("USER", "roko-test")
+            .env("LOGNAME", "roko-test");
+        for name in inherited_vars_to_drop() {
+            self.env_remove(name);
+        }
+        self
+    }
 }
 
 pub fn run_cargo(args: &[&str], workdir: &Path) -> Output {
@@ -660,6 +712,7 @@ pub fn spawn_roko_serve_on_random_port(workdir: &Path) -> ServeHandle {
     let base_url = format!("http://127.0.0.1:{port}");
     let bin = cargo_bin("roko");
     let child = ProcessCommand::new(bin)
+        .isolated()
         .current_dir(workdir)
         .arg("serve")
         .arg("--bind")
@@ -686,6 +739,7 @@ pub fn spawn_roko_agent_serve_on_random_port(
     let bin = cargo_bin("roko");
     let mut command = ProcessCommand::new(bin);
     command
+        .isolated()
         .current_dir(workdir)
         .arg("agent")
         .arg("serve")

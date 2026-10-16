@@ -1,0 +1,93 @@
+[meta]
+plan = "refactor-roko-cli-has-three-identical-private-truncate-chars-value-str-max-chars-usize-string-helpers-that-keep-the-first-max-chars-characters-and-append-when-the-text-is-longer-in-crates-roko-cli"
+iteration = 0
+total = 1
+done = 0
+status = "ready"
+estimated_total_minutes = 0
+skip_enrichment = false
+
+[[task]]
+id = "T1"
+title = "Replace the three identical truncate_chars helpers with one shared roko-cli function"
+description = """
+Three private copies of `fn truncate_chars(value: &str, max_chars: usize) -> String` behave the same way. Each keeps the first `max_chars` chars, counted with `chars()` rather than bytes, and appends `...` when `value.chars().count() > max_chars`. The copies are at crates/roko-cli/src/runner/inline_output.rs:325-331, crates/roko-cli/src/runner/output_sink.rs:1622-1628 and crates/roko-cli/src/commands/think.rs:253-259.
+
+Steps:
+1. Create crates/roko-cli/src/text_util.rs with a module doc comment and one function, `pub fn truncate_chars(value: &str, max_chars: usize) -> String`. Copy the body exactly from inline_output.rs:325-331. Add a doc comment that states the `...` suffix rule.
+2. Declare `pub mod text_util;` in crates/roko-cli/src/lib.rs. Put it in the alphabetical `pub mod` list, between `pub mod task_parser;` (line 233) and `pub mod transcript;` (line 234).
+3. In inline_output.rs, delete the private copy and add `use crate::text_util::truncate_chars;` next to the other `use crate::...` lines (lines 15-20). In output_sink.rs, delete the private copy and add the same `use` line next to `use crate::inline::DiffEntry;` (line 28). Leave every call site unchanged.
+4. think.rs is compiled into the `roko` binary crate (main.rs line 38 has `mod commands;`), not into the library. Its `crate::` is the binary, so it reaches library items through `roko_cli::`. Delete its private copy and add `use roko_cli::text_util::truncate_chars;` below its `use` lines (lines 3-4). Leave its call sites unchanged.
+5. Run `cargo check -p roko-cli --lib --bins`. It must pass with no unused-import warnings.
+"""
+role = "implementer"
+status = "ready"
+tier = "focused"
+max_loc = 50
+files = [
+    "crates/roko-cli/src/text_util.rs",
+    "crates/roko-cli/src/lib.rs",
+    "crates/roko-cli/src/runner/inline_output.rs",
+    "crates/roko-cli/src/runner/output_sink.rs",
+    "crates/roko-cli/src/commands/think.rs",
+]
+allowed_tools = [
+    "read_file",
+    "grep",
+    "edit_file",
+    "write_file",
+]
+denied_tools = []
+depends_on = []
+depends_on_plan = []
+timeout_secs = 0
+max_retries = 3
+acceptance = [
+    'AC1: roko_cli::text_util::truncate_chars returns "abc..." for ("abcdef", 3), "abc" for ("abc", 3), "" for ("", 0), "..." for ("a", 0) and "hé..." for ("héllo wörld", 2).',
+    "AC2: Exactly one file under crates/roko-cli/src (text_util.rs) defines `fn truncate_chars(value`, and `cargo check -p roko-cli --lib --bins` exits 0.",
+]
+sequence = 0
+goal = "roko-cli defines the '...'-suffix truncate_chars once, as roko_cli::text_util::truncate_chars, and inline_output.rs, output_sink.rs and think.rs call it with unchanged output."
+non_goals = [
+    "Do not change crates/roko-cli/src/dispatch/prompt_builder.rs: its `truncate_chars(text, limit)` is a separate helper and stays as it is.",
+    "Do not change any call site, the truncation semantics or the `...` suffix.",
+    "Do not move the helper into another crate (roko-core or similar).",
+]
+
+[task.context]
+symbols = ["truncate_chars — the duplicated helper, kept once in text_util.rs"]
+anti_patterns = [
+    "Do NOT write `use crate::text_util` in think.rs: it is in the binary crate and must import through `roko_cli::text_util`.",
+    "Do NOT leave a private truncate_chars in any of the three files, and do NOT keep a wrapper that forwards to the shared one.",
+    "Do NOT edit dispatch/prompt_builder.rs.",
+]
+prior_failures = []
+
+[[task.context.read_files]]
+path = "crates/roko-cli/src/runner/inline_output.rs"
+lines = "1-331"
+why = "The use block (lines 7-22) and the canonical truncate_chars body (lines 325-331) to copy into text_util.rs."
+
+[[task.context.read_files]]
+path = "crates/roko-cli/src/runner/output_sink.rs"
+lines = "20-30"
+why = "The use block where the shared import goes; the private copy to delete is at lines 1622-1628."
+
+[[task.context.read_files]]
+path = "crates/roko-cli/src/commands/think.rs"
+lines = "1-260"
+why = "The binary-crate use lines (lines 3-4) and the private copy to delete (lines 253-259)."
+
+[[task.verify]]
+phase = "compile"
+command = """test "$(grep -rl 'fn truncate_chars(value' crates/roko-cli/src | wc -l | tr -d ' ')" = 1 && grep -q 'pub fn truncate_chars' crates/roko-cli/src/text_util.rs && cargo check -p roko-cli --lib --bins"""
+fail_msg = "A private truncate_chars copy remains, text_util.rs is missing, or roko-cli does not compile."
+timeout_ms = 900000
+covers = ["AC2"]
+expect = "fail_on_base"
+
+[[task.accept.files]]
+src = "accept/text_util_accept.rs"
+dest = "crates/roko-cli/tests/text_util_accept.rs"
+runner = "cargo test -p roko-cli --test text_util_accept"
+count = 5

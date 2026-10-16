@@ -747,6 +747,47 @@ fn keep_rejected_draft(
     }
 }
 
+/// Repair a generated draft's mechanical defects before it is checked
+/// (gap-b95913), rather than send it back to the planner for them: its
+/// `meta.total` becomes its number of tasks, each task keeps its first
+/// `policy.max_read_files_per_task` `read_files`, and its line ranges in files
+/// no earlier task changes fit those files
+/// ([`crate::plan_policy::fit_ranges_to_files`]). Returns one line per repair.
+fn repair_generated_draft(
+    plan: &mut TasksFile,
+    policy: crate::plan_policy::PlanExecutionPolicy,
+    workdir: &Path,
+) -> Vec<String> {
+    let mut repairs = Vec::new();
+    let total = u32::try_from(plan.tasks.len()).unwrap_or(u32::MAX);
+    if plan.meta.total != total {
+        repairs.push(format!(
+            "meta.total {} became {total}, its number of tasks",
+            plan.meta.total
+        ));
+        plan.meta.total = total;
+    }
+    let keep = policy.max_read_files_per_task;
+    for task in &mut plan.tasks {
+        if let Some(context) = task.context.as_mut()
+            && context.read_files.len() > keep
+        {
+            let dropped: Vec<String> = context
+                .read_files
+                .drain(keep..)
+                .map(|read_file| read_file.path)
+                .collect();
+            repairs.push(format!(
+                "{}: kept its first {keep} read_files and dropped {}",
+                task.id,
+                dropped.join(", ")
+            ));
+        }
+    }
+    repairs.extend(crate::plan_policy::fit_ranges_to_files(plan, workdir));
+    repairs
+}
+
 /// A plan source, read for the planner.
 struct ReadSource<'a> {
     origin: PlanSource<'a>,
@@ -1414,12 +1455,24 @@ pub async fn generate_plan(request: PlanRequest<'_>) -> Result<(PathBuf, Generat
                     &ladder,
                 )
                 .map_err(|e| format!("{e:#}"))?;
-                let parsed = TasksFile::parse_str(&validated).map_err(|error| {
+                let mut parsed = TasksFile::parse_str(&validated).map_err(|error| {
                     format!("generated plan failed runtime parsing after repair: {error:#}")
                 })?;
                 let policy = crate::plan_policy::PlanExecutionPolicy::generated_for_environment(
                     template_kind.max_task_count(),
                 );
+                // gap-b95913: what the planner need not be asked to fix.
+                let repairs = repair_generated_draft(&mut parsed, policy, workdir_ref);
+                let validated = if repairs.is_empty() {
+                    validated
+                } else {
+                    for repair in &repairs {
+                        eprintln!("  Repaired the draft: {repair}");
+                    }
+                    tracing::info!(?repairs, "plan generate: repaired the draft");
+                    toml::to_string_pretty(&parsed)
+                        .map_err(|error| format!("re-serialize the repaired draft: {error}"))?
+                };
                 let policy_issues = crate::plan_policy::validate_plan_budgets(&parsed, policy);
                 if !policy_issues.is_empty() {
                     return Err(format!(
@@ -3275,6 +3328,58 @@ mod tests {
             scored.min <= scored.mean && scored.mean < 100.0,
             "{scored:?}"
         );
+    }
+
+    /// gap-b95913: a draft whose `meta.total` is 0, whose task reads four
+    /// files, and whose range starts past the end of its file is repaired,
+    /// not sent back: the plan is written after one planner call.
+    #[cfg(unix)]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn generated_draft_repairs_total_ranges_and_read_files() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let workdir = temp.path();
+        std::fs::create_dir_all(workdir.join("docs")).expect("docs");
+        for name in ["a", "b", "c", "d"] {
+            std::fs::write(workdir.join(format!("docs/{name}.md")), "line\n".repeat(71))
+                .expect("a doc");
+        }
+        let draft = WIDGET_PLAN.replace("total = 1", "total = 0").replace(
+            "read_files = []",
+            "read_files = [\n\
+             { path = \"docs/a.md\", lines = \"200-400\", why = \"the spec\" },\n\
+             { path = \"docs/b.md\", why = \"the second part\" },\n\
+             { path = \"docs/c.md\", why = \"the third part\" },\n\
+             { path = \"docs/d.md\", why = \"the last part\" },\n]",
+        );
+        assert!(draft.contains("total = 0") && draft.contains("docs/d.md"));
+        let bin = tempfile::tempdir().expect("tempdir");
+        let calls = write_scripted_planner(
+            workdir,
+            bin.path(),
+            &[&draft],
+            "allow_threshold = 0.0\nblock_threshold = 0.0\n",
+        );
+        let request = PlanRequest {
+            model: Some("planner"),
+            ..PlanRequest::new(WIDGET_REQUEST, "widget", workdir)
+        };
+        generate_plan(request)
+            .await
+            .expect("generate the widget plan");
+        let log = std::fs::read_to_string(&calls).expect("planner call log");
+        assert_eq!(log.lines().count(), 1, "the draft, repaired; no retry");
+
+        let written =
+            TasksFile::parse(&workdir.join("plans/widget/tasks.toml")).expect("the widget plan");
+        assert_eq!(written.meta.total, 1);
+        let read_files = &written.tasks[0]
+            .context
+            .as_ref()
+            .expect("the task's context")
+            .read_files;
+        let paths: Vec<&str> = read_files.iter().map(|file| file.path.as_str()).collect();
+        assert_eq!(paths, ["docs/a.md", "docs/b.md", "docs/c.md"]);
+        assert_eq!(read_files[0].lines, None, "the range past the end is gone");
     }
 
     /// gap-dc5d7c: generation from a file with a Verification section lists

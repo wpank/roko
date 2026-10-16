@@ -832,48 +832,81 @@ pub(crate) fn fit_ranges_to_earlier_changes(
         .map(|task| (task.id.as_str(), task))
         .collect::<HashMap<_, _>>();
     let changed_earlier = transitive_dependency_outputs(task, &task_by_id);
-    let mut fitted = Vec::new();
     let Some(context) = task.context.as_mut() else {
-        return fitted;
+        return Vec::new();
     };
-    for read_file in &mut context.read_files {
-        let Some(range) = read_file.lines.clone() else {
+    context
+        .read_files
+        .iter_mut()
+        .filter(|read_file| changed_earlier.contains(&read_file.path))
+        .filter_map(|read_file| fit_range(read_file, workspace_root))
+        .collect()
+}
+
+/// Fit `plan`'s declared line ranges in files no earlier task of the plan
+/// changes to those files as `workspace_root` holds them (gap-b95913), the
+/// way [`fit_ranges_to_earlier_changes`] fits the others once their task has
+/// run: the planner guessed how long the file is. Returns one line per range
+/// it changed, naming its task.
+pub(crate) fn fit_ranges_to_files(plan: &mut TasksFile, workspace_root: &Path) -> Vec<String> {
+    let changed_earlier: Vec<HashSet<String>> = {
+        let task_by_id = plan
+            .tasks
+            .iter()
+            .map(|task| (task.id.as_str(), task))
+            .collect::<HashMap<_, _>>();
+        plan.tasks
+            .iter()
+            .map(|task| transitive_dependency_outputs(task, &task_by_id))
+            .collect()
+    };
+    let mut fitted = Vec::new();
+    for (task, changed_earlier) in plan.tasks.iter_mut().zip(changed_earlier) {
+        let Some(context) = task.context.as_mut() else {
             continue;
         };
-        if !changed_earlier.contains(&read_file.path) {
-            continue;
+        for read_file in &mut context.read_files {
+            if !changed_earlier.contains(&read_file.path)
+                && let Some(change) = fit_range(read_file, workspace_root)
+            {
+                fitted.push(format!("{}: {change}", task.id));
+            }
         }
-        let Ok(relative) = validate_repo_relative_path(&read_file.path) else {
-            continue;
-        };
-        let Ok((start, end)) = parse_line_range(&range, usize::MAX) else {
-            continue;
-        };
-        if end.is_some_and(|end| start > end) {
-            continue;
-        }
-        let Ok(content) = std::fs::read_to_string(workspace_root.join(relative)) else {
-            continue;
-        };
-        let line_count = content.lines().count();
-        let lines = if start > line_count {
-            None
-        } else if end.is_some_and(|end| end > line_count) {
-            Some(format!("{start}-{line_count}"))
-        } else {
-            continue;
-        };
-        fitted.push(format!(
-            "`{range}` of `{}` ({line_count} lines) became {}",
-            read_file.path,
-            lines.as_deref().map_or_else(
-                || "the whole file".to_string(),
-                |lines| format!("`{lines}`")
-            )
-        ));
-        read_file.lines = lines;
     }
     fitted
+}
+
+/// Fit `read_file`'s line range to its file as `workspace_root` holds it: a
+/// range that runs past the end of the file is cut at its last line, and one
+/// that starts past it becomes an unranged entry, which shows the file within
+/// the context budget. A range inside the file, or a malformed one, is left
+/// alone. Returns what changed, for the log.
+fn fit_range(read_file: &mut ReadFile, workspace_root: &Path) -> Option<String> {
+    let range = read_file.lines.clone()?;
+    let relative = validate_repo_relative_path(&read_file.path).ok()?;
+    let (start, end) = parse_line_range(&range, usize::MAX).ok()?;
+    if start == 0 || end.is_some_and(|end| start > end) {
+        return None;
+    }
+    let content = std::fs::read_to_string(workspace_root.join(relative)).ok()?;
+    let line_count = content.lines().count();
+    let lines = if start > line_count {
+        None
+    } else if end.is_some_and(|end| end > line_count) {
+        Some(format!("{start}-{line_count}"))
+    } else {
+        return None;
+    };
+    let change = format!(
+        "`{range}` of `{}` ({line_count} lines) became {}",
+        read_file.path,
+        lines.as_deref().map_or_else(
+            || "the whole file".to_string(),
+            |lines| format!("`{lines}`")
+        )
+    );
+    read_file.lines = lines;
+    Some(change)
 }
 
 /// Render exact, line-numbered context for prompt assembly. Unlike preflight,

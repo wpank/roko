@@ -2,15 +2,16 @@
 id = "bug-1e97dc"
 kind = "bug"
 title = "The audit strictness ladder steps up on sampling noise: it must ignore windows below a minimum effective sample"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p2"
 goal = "cybernetic"
 size = "S"
 subsystem = ["roko-gate/audit", "roko-core/config"]
 created = 2026-10-15
-updated = 2026-10-15
-last_verified = 2026-10-15
+updated = 2026-10-16
+last_verified = 2026-10-16
+last_verified_rev = "4783dbe91"
 source = "status-quo-2026-10-15#finding-15"
 anchors = ["crates/roko-gate/src/audit/feedback.rs::step", "crates/roko-gate/src/audit/feedback.rs::Signal", "crates/roko-gate/src/audit/estimate.rs", "crates/roko-core/src/config/audit.rs::AuditConfig"]
 lane = "rust-cold"
@@ -22,6 +23,18 @@ command = "grep -rqw 'fn ladder_holds_below_the_minimum_effective_sample' crates
 
 [[verify]]
 command = "grep -rqw 'fn ladder_steps_up_below_the_floor_on_clear_evidence' crates/roko-gate/ && cargo test -p roko-gate ladder_steps_up_below_the_floor_on_clear_evidence"
+
+[closed]
+at = 2026-10-16
+at_ts = "2026-10-16T15:07:07Z"
+commit = "4783dbe91"
+by = "commit trailer"
+executor = "claude-agent"
+via = "work-batch"
+size = "S"
+claimed_at = "2026-10-16T08:06:53Z"
+forced = false
+evidence = "crates/roko-gate/src/audit/feedback.rs (4783dbe91), per the q-394b7f decision: step() steps a task type up only when LCB95 > the limit at any n_eff, or when n_eff >= min_n_eff(max) = ceil(Z95^2*(1-max)/max) (73 for theta_max 0.05, 189 for gamma_max 0.02) and UCB95 > the limit; otherwise the level holds; step-down is unchanged. Signal now carries a Reading (LCB95, UCB95, Kish n_eff) per rate, and the audit.policy_change reason names the clause. No new [audit] key (the minimum is derived from theta_max/gamma_max) and no window pooling (the decision: pooled prior not now), so the Plan's config key and pooled case were dropped. Tests: ladder_holds_below_the_minimum_effective_sample (20 clean audited units hold window after window, also through close_due_windows; 1-2 false greens or 1 gaming finding in 20 hold; one false green holds at n_eff 72 and steps at 73; a window below the minimum never counts as quiet) and ladder_steps_up_below_the_floor_on_clear_evidence (8 false greens in 20 step once; 3 false greens or 2 gaming findings in 20 step). Both [[verify]] commands passed (1 passed each) at base 5e32264ce plus this change; the branch then fast-forwarded to 16c73f352, whose new commits touch only roko-agent, roko-serve and work items. cargo test -p roko-gate --lib audit:: 18 passed; cargo +nightly fmt --all and cargo clippy -p roko-gate --no-deps -- -D warnings clean. gap-d76b1b (audits on at 10%) can now go ahead."
 +++
 
 ## Problem

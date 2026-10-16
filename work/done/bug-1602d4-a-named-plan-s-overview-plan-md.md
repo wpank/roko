@@ -2,7 +2,7 @@
 id = "bug-1602d4"
 kind = "bug"
 title = "A named plan's overview plan.md keeps the plan id as its title, and the plan-writing stage line shows no spend until the plan is written"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p3"
 goal = "hermes"
@@ -11,6 +11,7 @@ subsystem = ["roko-serve/plans", "roko-cli/plan_generate"]
 created = 2026-10-16
 updated = 2026-10-16
 last_verified = 2026-10-16
+last_verified_rev = "00a291d6e"
 source = "tmp/hermes-roko-v5/findings/dogfood-will.md Run 2, R2-5 and R2-6 (2026-10-16)"
 anchors = ["crates/roko-serve/src/routes/plans/authoring.rs::name_generated_plan", "crates/roko-cli/src/plan_generate/pipeline.rs::generate_plan"]
 links = { depends_on = [], blocks = [], related = ["gap-11d870", "gap-c2efe7", "bug-e0624e"], supersedes = [], duplicate_of = "" }
@@ -20,6 +21,17 @@ command = "grep -rqw 'fn a_named_plan_retitles_its_overview' crates/roko-serve/s
 
 [[verify]]
 command = "grep -rqw 'fn plan_writing_reports_its_spend_as_each_call_ends' crates/roko-cli/src && cargo test -p roko-cli --lib -- plan_writing_reports_its_spend_as_each_call_ends"
+
+[closed]
+at = 2026-10-16
+at_ts = "2026-10-16T16:29:40Z"
+commit = "74815b189"
+by = "roko-planner"
+executor = "claude-agent"
+via = "manual"
+model = "claude-opus-5-5"
+forced = false
+evidence = "74815b189: R2-5: serve's name_generated_plan also retitles the overview plan.md roko wrote (frontmatter title and the first heading, kept the body's first # line; a planner-written plan.md keeps its own), found by the shared paragraph roko_serve::runtime::PLAN_OVERVIEW_INTRO. R2-6: generate_plan reports the stage again as soon as each planner call ends, with the call counted and its spend in. Checked: both [[verify]] tests (a_named_plan_retitles_its_overview, plan_writing_reports_its_spend_as_each_call_ends) pass on the merged tree 240671626 with main 3e05c6f06 (gap-e1fdb3 included); lib suites roko-cli 3728 and roko-serve 1046 pass; clippy -D warnings; fmt; integration failures only bug-2a31bc, bug-c63cca, bug-ee2752. Live, no spend (serve :6794, scripted OpenAI-compatible planner on localhost, /mcp plan_generate titled \"Word count demo\"): before, plan.md and /api/plans and /api/plans/{id}/tasks said word-count-demo; after, all say Word count demo; the stage reported planning $0.00915 with calls 1 the moment the first call ended (before: $0.00 until the next stage). In-call spend filed as gap-0b7478. Findings: tmp/hermes-roko-v5/findings/roko-planner.md (round 6)"
 +++
 
 ## Problem

@@ -2,15 +2,16 @@
 id = "gap-d2c64f"
 kind = "gap"
 title = "docs/v3 config schema reference doesn't document the [pricing] section"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p3"
 goal = "release"
 size = "S"
 subsystem = ["docs"]
 created = 2026-10-02
-updated = 2026-10-02
-last_verified = 2026-10-02
+updated = 2026-10-16
+last_verified = 2026-10-16
+last_verified_rev = "e0f6466b4"
 source = "backlog wave reports 2026-10-02 (PK12 gap-08120e)"
 discovered_from = "gap-08120e"
 anchors = ["docs/v3/depth/21-config/01-schema-sections.md"]
@@ -19,6 +20,18 @@ links = { depends_on = [], blocks = [], related = [], supersedes = [], duplicate
 
 [[verify]]
 command = "grep -qi 'pricing' docs/v3/depth/21-config/01-schema-sections.md"
+
+[closed]
+at = 2026-10-16
+at_ts = "2026-10-16T14:14:06Z"
+commit = "e0f6466b4"
+by = "commit trailer"
+executor = "claude-agent"
+via = "work-batch"
+size = "S"
+claimed_at = "2026-10-16T08:07:11Z"
+forced = false
+evidence = "e0f6466b4 added a `[pricing] -- PricingConfig` section to docs/v3/depth/21-config/01-schema-sections.md documenting its one field, `snapshot` (crates/roko-core/src/pricing_snapshot.rs), plus PriceSnapshot::for_workspace's resolution order. Verify 'grep -qi pricing docs/v3/depth/21-config/01-schema-sections.md' passes at e0f6466b4. Also added, per the item's own notes inviting it in the same pass: a `stream_usage` row in the existing [providers.<name>] table (provider.rs:332), and an `[experiments] -- ExperimentsConfig` section (maximize, force_arms; experiments.rs). [sections] (SectionsConfig), the item's fourth flagged omission, was already documented at HEAD by an earlier unrelated fix, so left untouched."
 +++
 
 ## Problem

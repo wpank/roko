@@ -43,7 +43,7 @@ const MAX_LESSON_CHARS: usize = 300;
 const EVENT_LESSON_CHARS: usize = 160;
 
 /// A task attempt whose every authored verify step passed.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct VerifiedAttempt {
     pub plan_id: String,
     pub task_id: String,
@@ -51,6 +51,12 @@ pub struct VerifiedAttempt {
     /// (`source_episodes`) cites it.
     pub attempt_id: String,
     pub title: String,
+    /// The task's description; empty when it has none.
+    pub description: String,
+    /// The task's topic terms, sorted: the words prompt assembly matches
+    /// knowledge and playbooks against (backlogs 4211-4213). A playbook the
+    /// attempt teaches is keyed by them (gap-89f985).
+    pub topic_terms: Vec<String>,
     /// Tier or task type (`"focused"`, ...).
     pub task_type: String,
     pub role: String,
@@ -63,8 +69,27 @@ pub struct VerifiedAttempt {
     pub verify_steps: Vec<(String, String)>,
     /// Knowledge entry ids the attempt's prompt surfaced.
     pub knowledge_ids: Vec<String>,
+    /// The playbooks the attempt's prompt included, which dispatch credits
+    /// with the attempt's learning label (W07).
+    pub playbook_ids: Vec<String>,
+    /// The tool calls the attempt made, in order, as its live output showed
+    /// them.
+    pub tool_calls: Vec<AttemptToolCall>,
     /// The agent's final output.
     pub agent_output: String,
+}
+
+/// One tool call of a verified attempt (gap-89f985).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct AttemptToolCall {
+    /// The tool's name, such as `Read` or `Bash`; empty when only the call's
+    /// result was seen.
+    pub name: String,
+    /// What it acted on, as its tool step showed it: a scrubbed path or the
+    /// first line of a command; empty when unknown.
+    pub target: String,
+    /// Whether it succeeded; `None` when no result for it was seen.
+    pub succeeded: Option<bool>,
 }
 
 impl VerifiedAttempt {
@@ -357,6 +382,7 @@ mod tests {
             )],
             knowledge_ids,
             agent_output: format!("Created hello/main.rs printing hello world.\nLesson: {LESSON}"),
+            ..VerifiedAttempt::default()
         }
     }
 

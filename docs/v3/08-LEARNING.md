@@ -19,7 +19,8 @@ and autonomous structural L4 evolution remain target design. The 10/10 counts
 built components, not loops that run on plans: on Graph runs (checked at
 `7c556bc0a`) two of the eight loops in section 11 close, the per-rung gate EMA
 sets retry budgets, and playbook outcomes are credited to the injected playbooks.
-No loop has a measured effect on outcomes yet.
+Since gap-89f985 a Graph run's verified passes also write the playbooks that
+prompts read (section 2). No loop has a measured effect on outcomes yet.
 
 ### Authoritative sources
 
@@ -183,6 +184,20 @@ and **PlaybookRules** (if-then rules with trigger matching and confidence
 dynamics). Together they implement a structured form of Reflexion (Shinn et al.
 2023) and ExpeL (Zhao et al. 2024): instead of free-form natural language
 reflection, Roko extracts typed rules with bounded confidence tracking.
+
+**Where playbooks come from.** A Graph plan run writes them from its verified
+work (gap-89f985): when every authored verify step of an attempt passes, the
+`verified_playbooks` feedback sink
+(`crates/roko-cli/src/runtime_feedback/verified_playbooks.rs`) turns the
+attempt's tool calls (each call that did not fail, with the path or command it
+acted on) into a playbook whose goal is the task's title and description,
+keyed by the task's topic terms, the words prompt assembly matches playbooks
+against. A stored playbook with the same topic and steps gains the success
+instead, unless the attempt's prompt included it (dispatch credits those). A
+run creates at most three new playbooks, a task with fewer than two topic
+terms creates none, a frozen run (`[learning] frozen`) writes none, and the
+producer makes no model call. Each write is published as a `playbook_written`
+event. `roko bench` writes playbooks from its own runs too.
 
 ### 2.1 Playbooks in the Learning Stack
 

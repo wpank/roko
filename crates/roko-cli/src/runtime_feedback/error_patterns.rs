@@ -402,6 +402,7 @@ mod tests {
             verify_steps: vec![("verify[0:test]".into(), "cargo test -p app".into())],
             knowledge_ids: vec![],
             agent_output: answer.into(),
+            ..VerifiedAttempt::default()
         })
     }
 

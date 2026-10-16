@@ -6,7 +6,9 @@
 //! ([`GraphTaskDispatcher::live_output_tap`]) does see them: a tool step for
 //! each call and, once the tap is trusted, the provider's tool result, which
 //! says whether the call failed. The tap records them here, and the
-//! attempt's efficiency row reads them once the tap has drained.
+//! attempt's efficiency row reads them once the tap has drained. Each call
+//! keeps the target its tool step showed, so a verified attempt's calls can
+//! become a playbook's steps (gap-89f985).
 //!
 //! The tap is best-effort: the provider boundary drops live events while the
 //! tap's channel is full, so a burst can cost a call or its outcome.
@@ -34,6 +36,10 @@ pub(super) struct LiveToolCalls {
 #[derive(Default)]
 struct LiveToolCallsState {
     calls: Vec<ToolCallRecord>,
+    /// What each of `calls` acted on, as its tool step showed it (a path,
+    /// the first line of a command); empty for a call whose step never
+    /// arrived.
+    targets: Vec<String>,
     tap: Option<tokio::task::JoinHandle<()>>,
 }
 
@@ -44,11 +50,14 @@ impl LiveToolCalls {
     pub(super) fn observe(&self, event: &LiveAgentEvent) {
         let mut state = self.state.lock();
         match event {
-            LiveAgentEvent::ToolStep { id, name, .. } => state.calls.push(ToolCallRecord {
-                id: id.clone(),
-                name: name.clone(),
-                succeeded: None,
-            }),
+            LiveAgentEvent::ToolStep { id, name, target } => {
+                state.calls.push(ToolCallRecord {
+                    id: id.clone(),
+                    name: name.clone(),
+                    succeeded: None,
+                });
+                state.targets.push(target.clone());
+            }
             LiveAgentEvent::Unscreened(StreamEventKind::ToolResult { id, is_error, .. }) => {
                 let succeeded = Some(!is_error);
                 let open = state
@@ -57,11 +66,14 @@ impl LiveToolCalls {
                     .find(|call| call.id == *id && call.succeeded.is_none());
                 match open {
                     Some(call) => call.succeeded = succeeded,
-                    None => state.calls.push(ToolCallRecord {
-                        id: id.clone(),
-                        name: String::new(),
-                        succeeded,
-                    }),
+                    None => {
+                        state.calls.push(ToolCallRecord {
+                            id: id.clone(),
+                            name: String::new(),
+                            succeeded,
+                        });
+                        state.targets.push(String::new());
+                    }
                 }
             }
             _ => {}
@@ -77,13 +89,31 @@ impl LiveToolCalls {
     /// The calls recorded, once the tap has read everything the dispatch
     /// sent, or after [`TAP_DRAIN_WAIT`].
     pub(super) async fn finish(&self) -> Vec<ToolCallRecord> {
+        self.drain().await;
+        self.state.lock().calls.clone()
+    }
+
+    /// [`Self::finish`], each call with the target its tool step showed.
+    pub(super) async fn finish_with_targets(&self) -> Vec<(ToolCallRecord, String)> {
+        self.drain().await;
+        let state = self.state.lock();
+        state
+            .calls
+            .iter()
+            .cloned()
+            .zip(state.targets.iter().cloned())
+            .collect()
+    }
+
+    /// Wait for the tap to read everything the dispatch sent, at most
+    /// [`TAP_DRAIN_WAIT`]. Only the first wait waits.
+    async fn drain(&self) {
         let tap = self.state.lock().tap.take();
         if let Some(tap) = tap
             && tokio::time::timeout(TAP_DRAIN_WAIT, tap).await.is_err()
         {
             tracing::debug!("live output still open; reading the tool calls recorded so far");
         }
-        self.state.lock().calls.clone()
     }
 }
 
@@ -164,6 +194,34 @@ mod tests {
                 name: "Read".to_string(),
                 succeeded: Some(false),
             }]
+        );
+    }
+
+    /// gap-89f985: each call keeps the target its tool step showed; a call
+    /// whose step never arrived has none.
+    #[tokio::test]
+    async fn live_tool_calls_keep_each_steps_target() {
+        let calls = LiveToolCalls::default();
+        for event in [
+            LiveAgentEvent::ToolStep {
+                id: "tu_1".to_string(),
+                name: "Read".to_string(),
+                target: "src/lib.rs".to_string(),
+            },
+            result("tu_1", false),
+            result("tu_9", true),
+        ] {
+            calls.observe(&event);
+        }
+
+        let recorded = calls.finish_with_targets().await;
+        let targets: Vec<(&str, &str, Option<bool>)> = recorded
+            .iter()
+            .map(|(call, target)| (call.name.as_str(), target.as_str(), call.succeeded))
+            .collect();
+        assert_eq!(
+            targets,
+            [("Read", "src/lib.rs", Some(true)), ("", "", Some(false))]
         );
     }
 }

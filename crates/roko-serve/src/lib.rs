@@ -2493,6 +2493,7 @@ fn dashboard_event_to_server(event: &roko_core::DashboardEvent) -> Option<Server
         | DashboardEvent::SelfModelCalibration { .. }
         | DashboardEvent::RouteDecided { .. }
         | DashboardEvent::KnowledgeWritten { .. }
+        | DashboardEvent::PlaybookWritten { .. }
         | DashboardEvent::EffectStaged { .. }
         | DashboardEvent::EffectDecided { .. }
         | DashboardEvent::ConfirmWaiting { .. }

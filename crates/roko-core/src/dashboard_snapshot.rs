@@ -301,6 +301,25 @@ pub enum DashboardEvent {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         lesson: Option<String>,
     },
+    /// A verified Graph attempt wrote L-play's playbook store (gap-89f985):
+    /// its tool calls became a new playbook, or one more success of the
+    /// stored playbook whose topic and steps they match. Published only when
+    /// the store changed.
+    PlaybookWritten {
+        plan_id: String,
+        task_id: String,
+        /// `created` (a new playbook) or `credited` (a stored one gained the
+        /// success).
+        admission: String,
+        /// The playbook created or credited.
+        playbook_id: String,
+        /// Its goal, at most 160 characters.
+        #[serde(default)]
+        goal: String,
+        /// Its steps.
+        #[serde(default)]
+        steps: u32,
+    },
     /// Incremental agent output.
     AgentOutput {
         agent_id: String,
@@ -2962,6 +2981,22 @@ impl DashboardSnapshot {
                     plan_id.clone(),
                     task_id.clone(),
                     format!("{admission}, {reinforced} reinforced, {promoted} promoted{lesson}"),
+                );
+            }
+            DashboardEvent::PlaybookWritten {
+                plan_id,
+                task_id,
+                admission,
+                playbook_id,
+                goal,
+                steps,
+            } => {
+                self.push_event_log(
+                    ts,
+                    "playbook_written".to_string(),
+                    plan_id.clone(),
+                    task_id.clone(),
+                    format!("{admission} {playbook_id} ({steps} steps): {goal}"),
                 );
             }
             DashboardEvent::RouteDecided {

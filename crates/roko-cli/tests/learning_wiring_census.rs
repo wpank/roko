@@ -47,6 +47,7 @@ const CENSUS_COMPONENTS: &[&str] = &[
     "sink.routing",
     "sink.knowledge_ingestion",
     "sink.playbook_outcome",
+    "sink.playbook_producer",
     "sink.error_pattern",
     "sink.section_effect",
     "store.attempt_log",

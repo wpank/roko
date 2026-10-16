@@ -2,15 +2,16 @@
 id = "gap-b38ed2"
 kind = "gap"
 title = "M3's calibration window restarts every run and calibration.json is never written, so the self-model can never become eligible or report calibration"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p2"
 goal = "cybernetic"
 size = "M"
 subsystem = ["roko-cli/graph_task_dispatch", "roko-learn/self_model", "roko-cli/graph_execution"]
 created = 2026-10-15
-updated = 2026-10-15
-last_verified = 2026-10-15
+updated = 2026-10-17
+last_verified = 2026-10-17
+last_verified_rev = "da755982a"
 source = "status-quo-2026-10-15#finding-14"
 anchors = ["crates/roko-cli/src/graph_task_dispatch/self_model.rs::SelfModelRuntime", "crates/roko-learn/src/self_model/gate.rs::CalibrationWindow", "crates/roko-learn/src/self_model/gate.rs::write_calibration", "crates/roko-learn/src/self_model/model.rs", "crates/roko-cli/src/graph_execution/plan_runner.rs::run_graph_plan_body"]
 lane = "rust-hot"
@@ -22,6 +23,18 @@ command = "grep -rqw 'fn calibration_window_survives_across_runs' crates/roko-cl
 
 [[verify]]
 command = "grep -rqw 'fn plan_run_writes_calibration_json' crates/roko-cli/ && cargo test -p roko-cli plan_run_writes_calibration_json"
+
+[closed]
+at = 2026-10-17
+at_ts = "2026-10-16T22:05:57Z"
+commit = "da755982a"
+by = "commit trailer"
+executor = "claude-agent"
+via = "work-batch"
+size = "M"
+claimed_at = "2026-10-16T19:19:20Z"
+forced = false
+evidence = "da755982a keeps M3's calibration window across runs in learn/self-model/window-v1.json beside state-v1.json: CalibrationWindow::load restores it for the model's predictor version (another version starts afresh) and CalibrationWindow::save_outcomes folds a run's outcomes in under the file's lock, capped at W = 100. SelfModelRuntime::save() saves both, and run_graph_plan_body then calls write_calibration(), so a non-frozen run leaves .roko/learn/self-model/calibration.json with the ev.m3.* values; a frozen run loads no self-model and writes neither. settle() now finds the forecast's candidate by the verdict's model_requested ([models.*] key) before the slug: without that the window got no outcome when a key differs from its slug (the same mismatch in what M3 learns is filed as bug-a400d0). Checks: `cargo test -p roko-cli --lib -- self_model plan_run_writes_calibration_json default_plan_run_forecasts_in_shadow` gave 14 passed, 0 failed, among them calibration_window_survives_across_runs (60, then W = 100 after a second run of 60, which the next load starts from) and plan_run_writes_calibration_json (a default shadow run exports n = 1 with the ev.m3.* fields, the next run n = 2, a frozen run writes no state, window or export); only a local variable in that test's assertion was renamed afterwards. `cargo test -p roko-learn --lib self_model::gate`: 5 passed, among them the_window_file_keeps_each_runs_outcomes. `cargo clippy -p roko-learn -p roko-cli --no-deps -- -D warnings` and `cargo +nightly fmt --all` are clean on the committed tree. Both [[verify]] grep guards pass. The two all-targets commands (`cargo test -p roko-cli <name>`) were queued but had not started at closure: the shared machine's free disk was below heavy.sh's 25 GB cargo floor."
 +++
 
 ## Problem

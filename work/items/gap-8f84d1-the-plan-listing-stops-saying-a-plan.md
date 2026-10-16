@@ -16,7 +16,10 @@ anchors = ["crates/roko-serve/src/plan_types.rs::PlanSummaryDto", "crates/roko-c
 links = { depends_on = [], blocks = [], related = ["bug-0c7f25", "gap-8409d0"], supersedes = [], duplicate_of = "" }
 
 [[verify]]
-command = "grep -rqw 'fn plan_listing_marks_fixture_plans_after_a_run' crates/ && cargo test -p roko-serve plan_listing_marks_fixture_plans_after_a_run"
+command = "grep -rqw 'fn plan_listing_marks_fixture_plans_after_a_run' crates/roko-cli/ && cargo test -p roko-cli --lib plan_listing_marks_fixture_plans_after_a_run"
+
+[[verify]]
+command = "grep -rqw 'fn run_summary_result_marks_a_fixture_run' crates/roko-serve/ && cargo test -p roko-serve --lib run_summary_result_marks_a_fixture_run"
 +++
 
 ## Problem
@@ -50,4 +53,7 @@ for Hermes is an item, not a side change).
 
 ## Done when
 
-`plan_listing_marks_fixture_plans_after_a_run` passes (the `[[verify]]` command).
+`plan_listing_marks_fixture_plans_after_a_run` (roko-cli, where the listing is built) and
+`run_summary_result_marks_a_fixture_run` (roko-serve, where the run summary is) pass: the two `[[verify]]` commands.
+The first version of this item named one roko-serve test for both, but roko-serve's tests cannot reach roko-cli's
+listing code.

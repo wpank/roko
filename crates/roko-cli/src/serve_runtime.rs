@@ -21,8 +21,9 @@ use roko_serve::plan_types::{
     PlanTaskDto, PlanTaskVerifyDto, PlanTasksDto, PlanValidationDto, RevisionDto, TaskChangeDto,
 };
 use roko_serve::runtime::{
-    CliRuntime, DashboardInfo, PlanExecutionResult, PlanGenerationResult, PlanRunOptions, RepoInfo,
-    RunResult, RunResultUsage, RuntimeGateResult, SessionStatusInfo, TriggerExecutionScope,
+    CliRuntime, DashboardInfo, PlanExecutionResult, PlanGenerationResult, PlanRunOptions,
+    ProgressReporter, RepoInfo, RunResult, RunResultUsage, RuntimeGateResult, SessionStatusInfo,
+    TriggerExecutionScope,
 };
 
 use crate::config::{Config, RepoRegistry};
@@ -262,7 +263,7 @@ impl CliRuntime for RokoCliRuntime {
         slug: &str,
         prompt: &str,
     ) -> anyhow::Result<PlanGenerationResult> {
-        self.generate_plan(workdir, slug, prompt, false).await
+        self.generate_plan(workdir, slug, prompt, false, None).await
     }
 
     async fn generate_plan_for_chat_host(
@@ -271,7 +272,27 @@ impl CliRuntime for RokoCliRuntime {
         slug: &str,
         prompt: &str,
     ) -> anyhow::Result<PlanGenerationResult> {
-        self.generate_plan(workdir, slug, prompt, true).await
+        self.generate_plan(workdir, slug, prompt, true, None).await
+    }
+
+    async fn generate_plan_reporting(
+        &self,
+        workdir: &Path,
+        slug: &str,
+        prompt: &str,
+        for_chat_host: bool,
+        progress: ProgressReporter,
+    ) -> anyhow::Result<PlanGenerationResult> {
+        // gap-11d870: each stage the generator reports, as the JSON object
+        // the operation's status shows.
+        let progress: plan_generate::PlanProgressSink =
+            Arc::new(move |stage: &plan_generate::PlanProgress| {
+                if let Ok(stage) = serde_json::to_value(stage) {
+                    progress(stage);
+                }
+            });
+        self.generate_plan(workdir, slug, prompt, for_chat_host, Some(progress))
+            .await
     }
 
     async fn run_plan(
@@ -829,13 +850,14 @@ impl RokoCliRuntime {
     /// questions, so the planner decides them (bug-7a08a8), and only a model
     /// roko's own tool loop runs writes it (bug-a0432b). A plan that cannot
     /// run is an error that names why and what it cost, so the operation
-    /// fails.
+    /// fails. Each stage goes to `progress` as it starts (gap-11d870).
     async fn generate_plan(
         &self,
         workdir: &Path,
         slug: &str,
         prompt: &str,
         for_chat_host: bool,
+        progress: Option<plan_generate::PlanProgressSink>,
     ) -> anyhow::Result<PlanGenerationResult> {
         let plans_root = workspace_paths::plans_dir(workdir);
         let before = snapshot_plan_artifacts(&plans_root);
@@ -843,6 +865,7 @@ impl RokoCliRuntime {
             live: Some(self.spend_bridge()),
             unattended: for_chat_host,
             for_chat_host,
+            progress,
             ..plan_generate::PlanRequest::new(
                 plan_generate::PlanSource::Text {
                     text: prompt,
@@ -1842,6 +1865,7 @@ fn plan_summary_to_dto(summary: crate::plan::PlanSummary) -> PlanSummaryDto {
         completed: summary.completed,
         status: summary.status,
         superseded_by: summary.superseded_by,
+        fixture: summary.fixture,
         old_format: summary.old_format,
         last_error: summary.last_error,
         group: summary.group,
@@ -2139,6 +2163,57 @@ mod tests {
                 .expect("the plan is found");
             assert_eq!(detail.title.as_deref(), Some(title), "{id}");
         }
+    }
+
+    /// gap-8f84d1: a fixture plan (`[meta].status = "fixture"`, such as a
+    /// demo) stays marked `fixture` in the listing once it has run, when its
+    /// Graph checkpoint's state replaces `status`. No other plan is marked.
+    #[tokio::test]
+    async fn plan_listing_marks_fixture_plans_after_a_run() {
+        let workdir = tempfile::tempdir().unwrap();
+        for (id, status, ran) in [
+            ("demo-ran", "fixture", true),
+            ("demo-new", "fixture", false),
+            ("work-ran", "ready", true),
+        ] {
+            let plan = workdir.path().join("plans").join(id);
+            std::fs::create_dir_all(&plan).unwrap();
+            std::fs::write(
+                plan.join("tasks.toml"),
+                format!(
+                    "[meta]\nplan = {id:?}\nstatus = {status:?}\n\n\
+                     [[task]]\nid = \"T1\"\ntitle = \"One\"\n"
+                ),
+            )
+            .unwrap();
+            if ran {
+                let state = workdir.path().join(".roko/state/graph").join(id);
+                std::fs::create_dir_all(&state).unwrap();
+                std::fs::write(state.join("checkpoint.json"), r#"{"status":"succeeded"}"#).unwrap();
+            }
+        }
+
+        let runtime = RokoCliRuntime::new(Config::default(), RepoRegistry::default());
+        let listed = runtime.list_plans(workdir.path()).await.unwrap();
+        let row = |id: &str| listed.iter().find(|plan| plan.id == id).expect("listed");
+        assert_eq!(
+            row("demo-ran").status,
+            "done",
+            "the run's state replaces the status"
+        );
+        assert!(
+            row("demo-ran").fixture,
+            "a demo that has run is still a fixture"
+        );
+        assert_eq!(row("demo-new").status, "fixture");
+        assert!(row("demo-new").fixture);
+        assert!(!row("work-ran").fixture);
+        let one = runtime
+            .load_plan_summary(workdir.path(), "demo-ran")
+            .await
+            .unwrap()
+            .expect("the plan is found");
+        assert!(one.fixture);
     }
 
     /// gap-655d19: a server run is validated as `roko plan run` validates it.

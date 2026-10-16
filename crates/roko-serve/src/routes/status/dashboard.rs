@@ -146,9 +146,12 @@ mod tests {
 /// `GET /api/operations/:id` — look up a background operation by ID.
 ///
 /// Returns `{ "id", "kind", "status": "running"|"completed"|"failed",
-/// "result"?, "error"? }` (section 6, P-2 of the portal contract).
-/// `result` is parsed from the stored JSON string back into an object so
-/// the portal can read its fields without a second parse step.
+/// "result"?, "error"?, "elapsed_secs"?, "progress"? }` (section 6, P-2 of
+/// the portal contract). `result` is parsed from the stored JSON string back
+/// into an object so the portal can read its fields without a second parse
+/// step. A running operation says how long it has run (`elapsed_secs`), and
+/// one whose producer reports progress carries its latest report
+/// (`progress`), and keeps it once it ends (gap-11d870).
 pub async fn operation_status(
     State(state): State<Arc<AppState>>,
     AxumPath(id): AxumPath<String>,
@@ -183,6 +186,15 @@ pub async fn operation_status(
     }
     if !error_val.is_null() {
         response["error"] = error_val;
+    }
+    if matches!(handle.status, OperationStatus::Running) {
+        response["elapsed_secs"] = json!(handle.started.elapsed().as_secs());
+    }
+    if let Some(progress) = &handle.progress {
+        let progress = progress.borrow().clone();
+        if !progress.is_null() {
+            response["progress"] = progress;
+        }
     }
     drop(ops);
     Ok(Json(response))

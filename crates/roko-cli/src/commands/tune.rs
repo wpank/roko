@@ -100,8 +100,9 @@ pub(crate) enum ConfigPresetCmd {
     },
     /// Make this workspace ready for runs a chat host (Hermes, OpenClaw)
     /// starts over roko serve's /mcp: give roko.toml the data-model boundary
-    /// they need, [agent.data_llm] with the cheapest model roko calls over an
-    /// API with its key set, keeping the file's comments. It writes only the
+    /// they need, [agent.data_llm] with a model roko calls over an API with its
+    /// key set (one on its maker's own API first, then the cheapest), keeping
+    /// the file's comments. It writes only the
     /// project's roko.toml, never the global config.
     ChatHost {
         /// Working directory (default: cwd).
@@ -474,6 +475,9 @@ fn cmd_chat_host_preset(
     }
     if change {
         println!("{}", preset.diff.trim_end());
+    }
+    if let Some(note) = &preset.note {
+        println!("note: {note}");
     }
     match (&preset.refusal, written) {
         (None, true) => println!(

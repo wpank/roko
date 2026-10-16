@@ -326,6 +326,121 @@ mod tests {
         assert!(report.findings.iter().any(|f| f.code == "git_not_repo"));
     }
 
+    /// bug-8bafc0: the `git_dirty` fix was `git add -A && git commit`, which would also commit
+    /// files nobody meant to, such as a checkout's local-only untracked files.
+    #[test]
+    fn git_dirty_names_the_paths_and_never_adds_everything() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let repo = dir.path();
+        let git = |workdir: &std::path::Path, args: &[&str]| {
+            let output = std::process::Command::new("git")
+                .args([
+                    "-c",
+                    "user.name=doctor",
+                    "-c",
+                    "user.email=doctor@example.invalid",
+                    "-c",
+                    "commit.gpgsign=false",
+                ])
+                .args(args)
+                .current_dir(workdir)
+                .env_remove("GIT_DIR")
+                .env_remove("GIT_WORK_TREE")
+                .env_remove("GIT_INDEX_FILE")
+                .output()
+                .expect("run git");
+            assert!(output.status.success(), "git {args:?} failed");
+            String::from_utf8_lossy(&output.stdout).into_owned()
+        };
+        // Each file holds its own path, so git pairs a rename only with the file it moved.
+        let write = |path: &str| {
+            let file = repo.join(path);
+            std::fs::create_dir_all(file.parent().expect("parent")).expect("create parent");
+            std::fs::write(file, path).expect("write");
+        };
+        let git_finding = |workdir: &std::path::Path| {
+            let report = DiagnosticService::run(&DiagnosticRequest {
+                workdir: workdir.to_path_buf(),
+                selected: BTreeSet::from([DiagnosticCheckId::Git]),
+                profile: None,
+                allow_repairs: false,
+            });
+            assert_eq!(report.findings.len(), 1, "{:?}", report.findings);
+            let finding = report.findings[0].clone();
+            let command = finding
+                .remediation
+                .as_ref()
+                .and_then(|remediation| remediation.command.clone());
+            (finding, command)
+        };
+
+        git(repo, &["init", "-q"]);
+        write("plans/README.md");
+        git(repo, &["add", "plans/README.md"]);
+        git(repo, &["commit", "-q", "-m", "init"]);
+        assert_eq!(git_finding(repo).0.code, "git_clean");
+
+        // The plan folder a planner left: the fix names it.
+        write("plans/word-count-demo/tasks.toml");
+        let (finding, command) = git_finding(repo);
+        assert_eq!(finding.code, "git_dirty");
+        assert!(
+            finding
+                .message
+                .starts_with("working tree has 1 uncommitted change(s): plans/word-count-demo/ "),
+            "{}",
+            finding.message
+        );
+        assert_eq!(
+            command.as_deref(),
+            Some("git add -- plans/word-count-demo/ && git commit")
+        );
+
+        // From a subdirectory the paths lead back to the top; a staged rename is named once, by
+        // its new path; a path the shell would split is quoted.
+        git(repo, &["mv", "plans/README.md", "plans/index.md"]);
+        write("it's here.txt");
+        let plans = repo.join("plans");
+        let (_, command) = git_finding(&plans);
+        let command = command.expect("a fix for three paths");
+        assert_eq!(
+            command,
+            r"git add -- ../plans/index.md '../it'\''s here.txt' ../plans/word-count-demo/ && git commit"
+        );
+        // Its `git add` stages those three, from where doctor ran.
+        let add = command
+            .strip_suffix(" && git commit")
+            .expect("git add, then git commit");
+        let status = std::process::Command::new("sh")
+            .args(["-c", add])
+            .current_dir(&plans)
+            .env_remove("GIT_DIR")
+            .env_remove("GIT_WORK_TREE")
+            .env_remove("GIT_INDEX_FILE")
+            .status()
+            .expect("run the fix's git add");
+        assert!(status.success(), "{add}");
+        assert_eq!(
+            git(repo, &["status", "--porcelain"]),
+            "A  \"it's here.txt\"\nR  plans/README.md -> plans/index.md\n\
+             A  plans/word-count-demo/tasks.toml\n"
+        );
+
+        // More than a few: list them, say to commit or remove them, and give no command.
+        for n in 1..=10 {
+            write(&format!("n{n:02}.txt"));
+        }
+        let (finding, command) = git_finding(repo);
+        assert_eq!(command, None);
+        assert_eq!(
+            finding.message,
+            "working tree has 13 uncommitted change(s): it's here.txt, plans/index.md, \
+             plans/word-count-demo/tasks.toml, n01.txt, n02.txt, n03.txt, n04.txt, n05.txt, \
+             n06.txt, n07.txt and 3 more \u{2014} commit or remove these before a plan run to \
+             avoid worktree merge conflicts"
+        );
+    }
+
     #[test]
     fn findings_are_sorted_by_check_id_code_message() {
         let dir = tempfile::tempdir().expect("tempdir");

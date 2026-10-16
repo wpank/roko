@@ -2,15 +2,16 @@
 id = "gap-8ff818"
 kind = "gap"
 title = "paperlint --strict flags every number in a Claims ledger table: exempt ledger sections from the number rule (dec-536bbd option 1)"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p2"
 goal = "whitepaper"
 size = "S"
 subsystem = ["tools/paperlint"]
 created = 2026-10-15
-updated = 2026-10-15
-last_verified = 2026-10-15
+updated = 2026-10-16
+last_verified = 2026-10-16
+last_verified_rev = "cdee502fb"
 source = "status-quo-2026-10-15#decision-3"
 anchors = ["tools/paperlint.py::check_numbers", "tools/paperlint.py::LEDGER", "tools/test_paperlint.py::test_ledger_skip_is_limited_to_ledger_sections"]
 lane = "docs"
@@ -18,6 +19,18 @@ links = { depends_on = [], blocks = [], related = ["dec-536bbd", "gap-ac1aed", "
 
 [[verify]]
 command = "grep -qw 'def test_strict_number_rule_skips_the_claims_ledger' tools/test_paperlint.py && python3 -m unittest tools.test_paperlint -k test_strict_number_rule_skips_the_claims_ledger"
+
+[closed]
+at = 2026-10-16
+at_ts = "2026-10-16T14:06:33Z"
+commit = "cdee502fb"
+by = "commit trailer"
+executor = "claude-agent"
+via = "work-batch"
+size = "S"
+claimed_at = "2026-10-16T13:53:30Z"
+forced = false
+evidence = "Verify passes: grep + python3 -m unittest tools.test_paperlint -k test_strict_number_rule_skips_the_claims_ledger -> OK. Full suite python3 tools/test_paperlint.py: 30 tests, OK (was 29). Added Doc._headings()/_ledger_lines() and a check_numbers skip for blocks starting inside a Claims ledger heading section (cdee502fb). Over tmp/cybernetic-harness/paper/sections (20 files, main checkout), paperlint --strict findings dropped from 81 (25 number, 56 identifier) to 72 (16 number, 56 identifier); the 9 removed findings are exactly the ones inside a Claims ledger table, confirmed by diffing the before/after finding lists line by line. Editorial sections (Placeholder map, Alternative ...) and ledger-adjacent prose still fail, per the new regression test."
 +++
 
 ## Problem

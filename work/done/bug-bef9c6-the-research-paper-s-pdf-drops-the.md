@@ -2,15 +2,16 @@
 id = "bug-bef9c6"
 kind = "bug"
 title = "The research paper's PDF drops the 11.2 portal figure: build.sh strips every blockquote right under a heading, so 11.2 starts with \"The figure counts…\" and no figure"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p2"
 goal = "whitepaper"
 size = "S"
 subsystem = ["papers/research-paper"]
 created = 2026-10-15
-updated = 2026-10-15
-last_verified = 2026-10-15
+updated = 2026-10-16
+last_verified = 2026-10-16
+last_verified_rev = "5e32264ce"
 source = "status-quo-2026-10-15#finding-32"
 anchors = ["tmp/cybernetic-harness/paper/tools/build.sh", "tmp/cybernetic-harness/paper/sections/11-in-use.md"]
 lane = "paper"
@@ -18,6 +19,17 @@ links = { depends_on = [], blocks = [], related = ["gap-ac1aed", "spec-f8d196"],
 
 [[verify]]
 command = "python3 tmp/cybernetic-harness/paper/tools/clean_body.py tmp/cybernetic-harness/paper/sections/11-in-use.md | grep -q 'Illustration (recorded figure)'"
+
+[closed]
+at = 2026-10-16
+at_ts = "2026-10-16T14:07:12Z"
+commit = "5e32264ce"
+executor = "claude-agent"
+via = "work-batch"
+size = "S"
+claimed_at = "2026-10-16T08:06:59Z"
+forced = true
+evidence = "Fixed tmp/cybernetic-harness/paper/tools/build.sh (untracked, lives only in the main checkout at /Users/will/dev/nunchi/roko/roko/tmp/cybernetic-harness/paper/tools/): moved its inline blockquote-stripping step into new tools/clean_body.py (also untracked), which now drops a blockquote right under a heading only when it opens with '> **Drafting note' -- any other blockquote there, including the 11.2 recorded-figure illustration, stays. build.sh's cleaning step now imports and calls clean_body.clean_files(). Added tools/test_clean_body.py (17 unittest cases, all passing) covering the kept-illustration / dropped-drafting-note split plus every pre-existing cleaning rule. Archived the pre-fix build.sh at tmp/cybernetic-harness/archive/2026-10-16-build-fix/tools/build.sh. Verified from the main checkout (repo root), where these untracked files live: 'python3 tmp/cybernetic-harness/paper/tools/clean_body.py tmp/cybernetic-harness/paper/sections/11-in-use.md | grep -q \"Illustration (recorded figure)\"' exits 0. Diffed clean_body.py's output against the prior inline logic across all 20 paper/sections/*.md files: byte-identical except the 4 restored figure lines in 11-in-use.md. --force because tools/work.py's own static verify check runs with cwd=this worktree, which never has the untracked paper tree; the command only resolves from the main checkout, as the item's Notes section expects."
 +++
 
 ## Problem

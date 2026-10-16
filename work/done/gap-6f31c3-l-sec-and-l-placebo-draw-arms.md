@@ -2,15 +2,16 @@
 id = "gap-6f31c3"
 kind = "gap"
 title = "L-sec and L-placebo draw arms on every attempt but the census never folds their rows, so the placebo check that flags a broken audit never runs"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p2"
 goal = "cybernetic"
 size = "M"
 subsystem = ["roko-learn/loop_audit"]
 created = 2026-10-15
-updated = 2026-10-15
-last_verified = 2026-10-15
+updated = 2026-10-16
+last_verified = 2026-10-16
+last_verified_rev = "01ba25759"
 source = "status-quo-2026-10-15#finding-18"
 anchors = ["crates/roko-learn/src/loop_audit/census.rs::fold_run", "crates/roko-learn/src/loop_audit/census.rs::content_loop", "crates/roko-learn/src/loop_audit/census.rs::RunRecords", "crates/roko-learn/src/loop_audit/mod.rs::observe_census", "crates/roko-learn/src/loop_audit/arm_set.rs::ARM_SET_LOOPS"]
 lane = "rust-cold"
@@ -22,6 +23,17 @@ command = "grep -rqw 'fn census_measures_l_sec_and_the_placebo' crates/roko-lear
 
 [[verify]]
 command = "grep -rqw 'fn placebo_influence_trips_audit_broken' crates/roko-learn/ && cargo test -p roko-learn placebo_influence_trips_audit_broken"
+
+[closed]
+at = 2026-10-16
+at_ts = "2026-10-16T05:05:48Z"
+commit = "01ba25759"
+executor = "claude-agent"
+via = "work-batch"
+size = "M"
+claimed_at = "2026-10-15T16:33:47Z"
+forced = false
+evidence = "census.rs folds every attempt's placebo row into L-placebo and maps sections rows to L-sec (census state schema 3, so the next tick folds each workspace's history once); decision_log.rs gives sections rows L-sec's A-DEC fields with both proposals on both arms (prompt_builder logs the bandit's draw on the arm that runs π⁰ as section_proposals); mod.rs/state.rs: a placebo whose ι_net interval (or β, once estimated) excludes 0 trips audit_broken before any loop is evaluated, writes placebo_ok false on every health row and a loop.audit_broken (*) row, and the placebo's designed null (inert, null) no longer counts as a move. On the branch rebased onto a7155a117: both [[verify]] commands pass; loop_audit_census_run (200 chains through the real binary on a fake provider, scratch HOME) asserts its ledger has loop.health rows for L-sec and L-placebo, the placebo never moved and the audit never broke; E1 (fault-injection) passes with no collateral; clippy -D warnings clean on roko-learn and roko-cli."
 +++
 
 ## Problem

@@ -2,7 +2,7 @@
 id = "bug-ea8c66"
 kind = "bug"
 title = "roko learn knowledge-stats (alias knowledge) always fails with \"unknown learning area 'knowledge'\""
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p2"
 goal = "hermes"
@@ -11,6 +11,7 @@ subsystem = ["roko-cli/learn"]
 created = 2026-10-16
 updated = 2026-10-16
 last_verified = 2026-10-16
+last_verified_rev = "f870523c0"
 source = "tmp/hermes-roko-v6/findings/learning-research.md §4 item 12 (learning-research, 2026-10-16)"
 discovered_from = "hermes-roko-v6 round: make learning visible on the hub"
 anchors = ["crates/roko-cli/src/commands/learn.rs::cmd_learn", "crates/roko-cli/src/commands/learn.rs::cmd_learn_json"]
@@ -18,6 +19,15 @@ links = { depends_on = [], blocks = [], related = [], supersedes = [], duplicate
 
 [[verify]]
 command = "grep -rqw 'fn learn_knowledge_stats_counts_the_store' crates/roko-cli && cargo test -p roko-cli --bin roko learn_knowledge_stats_counts_the_store"
+
+[closed]
+at = 2026-10-16
+at_ts = "2026-10-16T21:14:58Z"
+commit = "f870523c0"
+by = "commit trailer"
+executor = "unknown"
+forced = false
+evidence = "f870523c0: cmd_learn and cmd_learn_json accept knowledge (one LEARN_AREAS list, which the error names), and the view counts KnowledgeStore::stats by tier and source with the average confidence (--json: total_entries, by_tier, by_source, average_confidence). Verify: learn_knowledge_stats_counts_the_store passes (roko bin test). Checked as a stack on f870523c0 (main 8357603f0 + gap-655ea5 + gap-de0e96 + bug-ea8c66): roko-cli lib 3738 passed (6 ignored, gist skipped), roko-serve lib 1047, roko-core lib 2035, the roko bin's learn test, clippy -D warnings clean on roko-core, roko-cli and roko-serve, fmt, plan_branch_integration (4) and connected_efficiency_render (1), with a scratch HOME. On the showcase workspace `roko learn knowledge-stats` prints 1 durable entry, by tier consolidated 1, by source runtime:gate_verdict 1, average confidence 0.934, exit 0; main 47b3cdd20 failed it with \"unknown learning area 'knowledge'\" (exit 2)."
 +++
 
 ## Problem

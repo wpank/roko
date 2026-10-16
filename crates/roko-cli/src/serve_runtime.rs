@@ -1231,7 +1231,9 @@ fn refuse_unscreened_chat_run(
     if !origin.is_chat() {
         return Ok(());
     }
-    match load_effective_roko_config(workdir, repo_registry)?.chat_run_refusal() {
+    let config = load_effective_roko_config(workdir, repo_registry)?;
+    let prices = roko_core::pricing_snapshot::PriceSnapshot::shared(&config.pricing, workdir);
+    match config.chat_run_refusal(prices.as_deref()) {
         Some(refusal) => anyhow::bail!("{}", refusal.message),
         None => Ok(()),
     }

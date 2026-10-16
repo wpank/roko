@@ -234,6 +234,7 @@ fn tools() -> Vec<(Value, &'static str)> {
                     "type": "object",
                     "properties": {
                         "prompt": { "type": "string", "description": "The work to do" },
+                        "title": title_schema(),
                         "domain": {
                             "type": "string",
                             "description": "The kind of work, such as code, research or docs"
@@ -283,7 +284,8 @@ fn tools() -> Vec<(Value, &'static str)> {
                 json!({
                     "type": "object",
                     "properties": {
-                        "prompt": { "type": "string", "description": "What the plan is for" }
+                        "prompt": { "type": "string", "description": "What the plan is for" },
+                        "title": title_schema()
                     },
                     "required": ["prompt"],
                     "additionalProperties": false
@@ -444,6 +446,20 @@ fn starts_paid_work() -> Value {
 }
 
 /// The schema of a run's `max_usd`, its spending cap.
+/// The most characters of a run's title a tool takes (gap-c2efe7).
+const MAX_TITLE_CHARS: usize = 120;
+
+/// The `title` argument of the tools that start work (gap-c2efe7).
+fn title_schema() -> Value {
+    json!({
+        "type": "string",
+        "maxLength": MAX_TITLE_CHARS,
+        "description": "A short name for the work, for people: the run's title, its branch's \
+                        description and its commit's subject. Default: the request's first \
+                        sentence"
+    })
+}
+
 fn max_usd_schema() -> Value {
     json!({
         "type": "number",
@@ -518,6 +534,7 @@ async fn call_tool(
                 domain: optional_domain(&arguments)?,
                 max_usd: Some(run_cap(state, &arguments)?),
                 origin: mcp_origin(auth),
+                title: optional_title(&arguments)?,
                 ..PromptPlanOptions::default()
             };
             start_prompt_run(state, prompt, options).await
@@ -531,7 +548,8 @@ async fn call_tool(
         }
         "plan_generate" => {
             let prompt = required_str(&arguments, name, "prompt")?.to_string();
-            Ok(generate_plan(state, prompt, &mcp_origin(auth)).await)
+            let title = optional_title(&arguments)?;
+            Ok(generate_plan(state, prompt, &mcp_origin(auth), title).await)
         }
         "run_cancel" => {
             let run_id = required_str(&arguments, name, "run_id")?;
@@ -786,6 +804,22 @@ fn mcp_origin(auth: Option<&AuthContext>) -> RunOrigin {
 }
 
 /// The optional `domain` argument, as the task domain its label names.
+/// The `title` argument (gap-c2efe7), when given and not blank.
+fn optional_title(arguments: &Value) -> Result<Option<String>, JsonRpcError> {
+    match arguments.get("title") {
+        None | Some(Value::Null) => Ok(None),
+        Some(Value::String(title)) if title.chars().count() > MAX_TITLE_CHARS => {
+            Err(JsonRpcError::invalid_params(format!(
+                "title is longer than {MAX_TITLE_CHARS} characters"
+            )))
+        }
+        Some(Value::String(title)) => {
+            Ok(Some(title.trim().to_string()).filter(|title| !title.is_empty()))
+        }
+        Some(_) => Err(JsonRpcError::invalid_params("title must be a string")),
+    }
+}
+
 fn optional_domain(arguments: &Value) -> Result<Option<TaskDomain>, JsonRpcError> {
     match arguments.get("domain") {
         None | Some(Value::Null) => Ok(None),
@@ -933,8 +967,14 @@ async fn start_plan(
 /// id, which `run_status` follows, and the plan's id, which `plan_run` takes
 /// once the plan is written. The planner gets `prompt` fenced as a request
 /// from `origin`, a chat host (9117).
-async fn generate_plan(state: &Arc<AppState>, prompt: String, origin: &RunOrigin) -> Value {
-    let (operation_id, plan_id) = super::plans::start_plan_generation(state, prompt, origin).await;
+async fn generate_plan(
+    state: &Arc<AppState>,
+    prompt: String,
+    origin: &RunOrigin,
+    title: Option<String>,
+) -> Value {
+    let (operation_id, plan_id) =
+        super::plans::start_plan_generation(state, prompt, origin, title).await;
     json!({
         "run_id": operation_id,
         "plan_id": plan_id,
@@ -1379,6 +1419,63 @@ mod tests {
             crate::runtime::DashboardInfo {
                 rendered: String::new(),
             }
+        }
+    }
+
+    /// gap-c2efe7: `run_prompt` and `plan_generate` take an optional `title`, which a
+    /// prompt run's options carry; a title over 120 characters, or one that
+    /// is not a string, is refused.
+    #[tokio::test]
+    async fn mcp_run_prompt_takes_a_title() {
+        let runtime = Arc::new(HeldPlans::new());
+        let (_dir, _state, open) = state_and_router(runtime.clone(), open_config());
+
+        let list = json!({ "jsonrpc": "2.0", "id": 1, "method": "tools/list" });
+        let (_, body) = post_mcp(&open, &list, &[]).await;
+        let tools = body["result"]["tools"].as_array().expect("a tool list");
+        for name in ["run_prompt", "plan_generate"] {
+            let tool = tools
+                .iter()
+                .find(|tool| tool["name"] == name)
+                .expect("the tool is listed");
+            assert_eq!(
+                tool["inputSchema"]["properties"]["title"]["type"], "string",
+                "{tool}"
+            );
+        }
+
+        let named = call(
+            2,
+            "run_prompt",
+            json!({ "prompt": "Add a flag. Then a test.", "title": " Version flag ", "max_usd": 1.0 }),
+        );
+        let (_, body) = post_mcp(&open, &named, &[]).await;
+        assert!(
+            body["result"]["structuredContent"]["run_id"].is_string(),
+            "{body}"
+        );
+        eventually("the prompt run starts", || {
+            !runtime.prompts.lock().expect("lock prompt runs").is_empty()
+        })
+        .await;
+        let title = runtime.prompts.lock().expect("lock prompt runs")[0]
+            .title
+            .clone();
+        assert_eq!(title.as_deref(), Some("Version flag"));
+
+        for (id, title) in [(3, json!("x".repeat(121))), (4, json!(7))] {
+            let refused = call(
+                id,
+                "run_prompt",
+                json!({ "prompt": "Add a flag.", "title": title, "max_usd": 1.0 }),
+            );
+            let (_, body) = post_mcp(&open, &refused, &[]).await;
+            assert!(
+                body["error"]["message"]
+                    .as_str()
+                    .is_some_and(|m| m.contains("title")),
+                "{body}"
+            );
         }
     }
 

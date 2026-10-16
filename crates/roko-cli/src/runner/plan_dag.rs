@@ -637,6 +637,7 @@ mod tests {
             tasks: TasksFile {
                 meta: TaskMeta {
                     plan: id.to_string(),
+                    title: None,
                     iteration: 0,
                     total: 1,
                     done: 0,

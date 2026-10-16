@@ -296,7 +296,9 @@ pub async fn run_doctor(options: &DoctorOptions) -> Result<DoctorReport> {
     ));
     checks.push(check_rust_version());
     checks.push(check_node_version());
-    checks.push(check_serve_auth(&loaded_config));
+    let serve_bind = doctor_roko_config(&workdir, options.config_override.as_deref())
+        .map(|config| config.server.bind);
+    checks.push(check_serve_auth(&loaded_config, serve_bind.as_deref()));
     checks.push(check_chat_host_runs(
         &workdir,
         options.config_override.as_deref(),
@@ -1183,7 +1185,9 @@ fn chat_host_runs_check(config: Option<&roko_core::config::schema::RokoConfig>) 
     )
 }
 
-fn check_serve_auth(loaded_config: &LoadedConfig) -> DoctorCheck {
+/// Whether `roko serve` can authenticate its clients. `serve_bind` is the
+/// `[server] bind` serve listens on (roko's default, loopback, when unknown).
+fn check_serve_auth(loaded_config: &LoadedConfig, serve_bind: Option<&str>) -> DoctorCheck {
     let Some(config) = &loaded_config.resolved else {
         return DoctorCheck {
             id: "serve_auth".to_string(),
@@ -1215,11 +1219,39 @@ fn check_serve_auth(loaded_config: &LoadedConfig) -> DoctorCheck {
     }
 
     let auth = &config.serve.auth;
-    if auth.enabled && auth.api_key.trim().is_empty() {
+    if auth.enabled && auth.api_key.trim().is_empty() && auth.api_keys.is_empty() {
+        // With no key, `roko serve` on a loopback bind mints a one-time launch
+        // token and prints a portal URL that carries it: `roko init`'s default,
+        // so a fresh workspace is fine (bug-557dd1). Bound beyond this
+        // machine, it mints none, and every request gets 401.
+        let bind = serve_bind.map_or("127.0.0.1", str::trim);
+        if crate::runner::extension_registry::is_loopback_host(bind) {
+            return DoctorCheck {
+                id: "serve_auth".to_string(),
+                status: DoctorStatus::Ok,
+                message: format!(
+                    "serve auth is on with no API key: `roko serve` on {bind} prints a portal \
+                     URL with a one-time launch token"
+                ),
+                detail: Some(
+                    "set serve.auth.api_key for clients that do not start from that URL"
+                        .to_string(),
+                ),
+                path: loaded_config
+                    .active_path
+                    .as_ref()
+                    .map(|path| path.display().to_string()),
+                url: None,
+                fix: None,
+            };
+        }
         return DoctorCheck {
             id: "serve_auth".to_string(),
             status: DoctorStatus::Fail,
-            message: "serve auth is enabled but api_key is empty".to_string(),
+            message: format!(
+                "serve auth is enabled but api_key is empty, and serve binds {bind}, beyond this \
+                 machine, where it mints no launch token: every request gets 401"
+            ),
             detail: None,
             path: loaded_config
                 .active_path
@@ -4118,23 +4150,50 @@ mod tests {
         );
     }
 
+    /// bug-557dd1: a workspace a fresh `roko init` wrote, whose serve auth is
+    /// on with no key, is healthy: `roko serve` on its loopback bind mints a
+    /// launch token. The same auth bound beyond this machine fails.
     #[tokio::test]
-    async fn run_doctor_fails_when_serve_auth_enabled_without_api_key() {
+    async fn fresh_init_workspace_passes_serve_auth() {
+        let serve_auth = |report: &DoctorReport| {
+            report
+                .checks
+                .iter()
+                .find(|check| check.id == "serve_auth")
+                .cloned()
+                .expect("serve_auth check")
+        };
         let temp = tempdir().unwrap();
-        let mut config = Config::default();
-        config.serve.auth.enabled = true;
-        config.serve.auth.api_key.clear();
-        write_project_config(temp.path(), config);
+        crate::init::write_init(temp.path(), &crate::init::InitOptions::default())
+            .expect("roko init's roko.toml");
         bootstrap_layout(temp.path()).await;
-
         let report = run_doctor(&test_options(temp.path())).await.unwrap();
-
-        let auth_check = report
+        let check = serve_auth(&report);
+        assert_eq!(check.status, DoctorStatus::Ok, "{check:?}");
+        assert!(check.message.contains("launch token"), "{check:?}");
+        let failed: Vec<&str> = report
             .checks
             .iter()
-            .find(|check| check.id == "serve_auth")
-            .expect("serve_auth check");
-        assert_eq!(auth_check.status, DoctorStatus::Fail);
+            .filter(|check| check.status == DoctorStatus::Fail)
+            .map(|check| check.id.as_str())
+            .collect();
+        assert!(report.healthy, "failed checks: {failed:?}");
+
+        let temp = tempdir().unwrap();
+        let mut config = roko_core::config::RokoConfig::default();
+        config.serve.auth.enabled = true;
+        config.serve.auth.api_key.clear();
+        config.server.bind = "0.0.0.0".to_string();
+        std::fs::write(
+            temp.path().join("roko.toml"),
+            config.to_toml_pretty().expect("serialize the config"),
+        )
+        .expect("write roko.toml");
+        bootstrap_layout(temp.path()).await;
+        let report = run_doctor(&test_options(temp.path())).await.unwrap();
+        let check = serve_auth(&report);
+        assert_eq!(check.status, DoctorStatus::Fail, "{check:?}");
+        assert!(check.message.contains("0.0.0.0"), "{check:?}");
         assert!(!report.healthy);
     }
 

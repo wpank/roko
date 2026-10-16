@@ -338,6 +338,7 @@ fn run(
             origin: RunOrigin::Cli,
             no_holdout: false,
             live_agent_output: crate::graph_task_dispatch::LiveAgentOutput::ToolSteps,
+            title: None,
         })
         .await?;
         let snapshot = hub.current_snapshot();

@@ -267,6 +267,9 @@ pub struct PromptPlanOptions {
     /// server's effective `[serve] live_agent_output`, as a plan run's
     /// (gap-5fda00). `None` publishes tool steps only.
     pub live_agent_output: Option<roko_core::config::serve::LiveAgentOutput>,
+    /// The run's name for people, such as a chat host gives it (gap-c2efe7).
+    /// `None` names it by its request's first sentence.
+    pub title: Option<String>,
 }
 
 /// How a prompt run through [`CliRuntime::run_prompt_plan`] ended.

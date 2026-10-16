@@ -495,6 +495,9 @@ pub struct PromptRun<'a> {
     /// The live agent output the run publishes while its attempts run, as
     /// `roko plan run` and a server's plan runs choose it (gap-5fda00).
     pub live_agent_output: crate::graph_task_dispatch::LiveAgentOutput,
+    /// The run's name for people, such as a chat host gives it (gap-c2efe7);
+    /// `None` names it by its request's first sentence.
+    pub title: Option<String>,
 }
 
 /// Execute one prompt through the Graph engine.
@@ -574,7 +577,7 @@ pub async fn run_prompt(run: PromptRun<'_>) -> Result<WorkflowRunReport> {
     let run_dir = layout.run_dir(&run_id);
     std::fs::create_dir_all(&run_dir)
         .with_context(|| format!("create run directory {}", run_dir.display()))?;
-    prompt_tasks_file(
+    let mut tasks = prompt_tasks_file(
         &run_id,
         run.prompt,
         run.tier,
@@ -583,8 +586,9 @@ pub async fn run_prompt(run: PromptRun<'_>) -> Result<WorkflowRunReport> {
         run.domain,
         &run.origin,
         run.workdir,
-    )
-    .write(&run_dir.join("tasks.toml"))?;
+    );
+    tasks.meta.title = prompt_run_title(run.title.as_deref(), run.prompt);
+    tasks.write(&run_dir.join("tasks.toml"))?;
 
     // A model or provider override pins the task's model; otherwise the
     // Graph engine routes by tier, as for authored plans.
@@ -797,6 +801,7 @@ fn prompt_tasks_file(
     TasksFile {
         meta: TaskMeta {
             plan: run_id.to_string(),
+            title: None,
             iteration: 1,
             total: 1,
             done: 0,
@@ -850,6 +855,70 @@ fn prompt_tasks_file(
             hints: Default::default(),
         }],
     }
+}
+
+/// The most characters a run's title takes from its request (gap-c2efe7).
+const MAX_DERIVED_TITLE_CHARS: usize = 72;
+
+/// The most characters a given title keeps (gap-c2efe7).
+const MAX_TITLE_CHARS: usize = 120;
+
+/// The name for people of a prompt run (gap-c2efe7): `title` when one is given,
+/// else the first sentence of its `request`. It is the one-task plan's
+/// `[meta] title`, never part of the agent's prompt, so a chat host's request
+/// stays fenced (9117).
+fn prompt_run_title(title: Option<&str>, request: &str) -> Option<String> {
+    let given = title.map(one_line).filter(|title| !title.is_empty());
+    Some(match given {
+        Some(title) => clip_title(&title, MAX_TITLE_CHARS),
+        None => derive_title(request),
+    })
+    .filter(|title| !title.is_empty())
+}
+
+/// `text` on one line: its whitespace runs, line breaks included, become
+/// single spaces, and control characters go.
+fn one_line(text: &str) -> String {
+    text.split_whitespace()
+        .map(|word| word.chars().filter(|c| !c.is_control()).collect::<String>())
+        .filter(|word| !word.is_empty())
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// A title for a run from its `request` (gap-c2efe7): the request's first
+/// sentence, on one line, at most [`MAX_DERIVED_TITLE_CHARS`] characters.
+#[must_use]
+pub fn derive_title(request: &str) -> String {
+    let first_line = request
+        .lines()
+        .map(str::trim)
+        .find(|line| !line.is_empty())
+        .unwrap_or_default();
+    // The first sentence ends at `.`, `!` or `?` before a space or the end of
+    // the line, so "wordy.cli" or "v1.2" do not end it.
+    let mut sentence = first_line;
+    for (at, character) in first_line.char_indices() {
+        if matches!(character, '.' | '!' | '?') {
+            let next = first_line[at + character.len_utf8()..].chars().next();
+            if next.is_none_or(char::is_whitespace) {
+                sentence = &first_line[..at];
+                break;
+            }
+        }
+    }
+    clip_title(&one_line(sentence), MAX_DERIVED_TITLE_CHARS)
+}
+
+/// `title` cut to at most `max` characters, at the last word that fits,
+/// with an ellipsis when cut.
+fn clip_title(title: &str, max: usize) -> String {
+    if title.chars().count() <= max {
+        return title.to_string();
+    }
+    let cut = truncate(title, max.saturating_sub(1));
+    let words = cut.rsplit_once(' ').map_or(cut, |(head, _)| head);
+    format!("{}…", words.trim_end_matches([',', ';', ':', ' ']))
 }
 
 /// A free-form prompt may touch any file, so its task's scope is the
@@ -1269,6 +1338,7 @@ command = "test -f README.md"
             origin: RunOrigin::Cli,
             no_holdout: false,
             live_agent_output: crate::graph_task_dispatch::LiveAgentOutput::ToolSteps,
+            title: None,
         })
         .await
         .expect("roko run completes");
@@ -1353,6 +1423,7 @@ frozen = {frozen}
                 origin: RunOrigin::Cli,
                 no_holdout: false,
                 live_agent_output: crate::graph_task_dispatch::LiveAgentOutput::ToolSteps,
+                title: None,
             })
             .await
             .expect("roko run completes");
@@ -1412,6 +1483,7 @@ printf '%s\n' '{"type":"result","session_id":"run","model":"claude-sonnet-4-6","
                 origin: RunOrigin::Cli,
                 no_holdout: false,
                 live_agent_output: crate::graph_task_dispatch::LiveAgentOutput::ToolSteps,
+                title: None,
             })
             .await
             .expect("roko run completes");
@@ -1456,6 +1528,7 @@ command = "test -f README.md"
                 origin: RunOrigin::Cli,
                 no_holdout,
                 live_agent_output: crate::graph_task_dispatch::LiveAgentOutput::ToolSteps,
+                title: None,
             })
             .await
             .expect("roko run completes");
@@ -1494,6 +1567,7 @@ command = "test -f README.md"
             origin: RunOrigin::Cli,
             no_holdout: false,
             live_agent_output: crate::graph_task_dispatch::LiveAgentOutput::ToolSteps,
+            title: None,
         })
         .await
         .expect("roko run completes");
@@ -1603,6 +1677,7 @@ sibling_settle_secs = 0
             origin: RunOrigin::Cli,
             no_holdout: false,
             live_agent_output: crate::graph_task_dispatch::LiveAgentOutput::ToolSteps,
+            title: None,
         })
         .await
         .expect("roko run dispatches without a build manifest");
@@ -2149,5 +2224,66 @@ sibling_settle_secs = 0
             .await
             .expect_err("a turn cap below the estimate refuses the run");
         assert!(err.to_string().contains("exceeds max_turn_usd"), "{err}");
+    }
+
+    /// gap-c2efe7: a run is named by the title it is given, on one line and cut at
+    /// 120 characters, else by its request's first sentence, cut at a word
+    /// within 72 characters. The name is the prompt plan's `[meta] title`; a
+    /// chat host's task keeps the title that names the host (9117).
+    #[test]
+    fn a_run_is_named_by_its_title_or_its_requests_first_sentence() {
+        assert_eq!(
+            derive_title("Add a --version flag to the wordy CLI.\n\nFiles: - wordy/cli.py"),
+            "Add a --version flag to the wordy CLI"
+        );
+        assert_eq!(
+            derive_title("  \nFix wordy.cli's count! Then add tests."),
+            "Fix wordy.cli's count"
+        );
+        let long = derive_title(
+            "Rewrite the counting loop of the wordy command line tool so that it streams its input \
+             instead of reading it whole",
+        );
+        assert!(long.chars().count() <= 72, "{long}");
+        assert!(
+            long.ends_with('…') && long.starts_with("Rewrite the counting loop"),
+            "{long}"
+        );
+        assert_eq!(
+            prompt_run_title(Some("  Version\n flag  "), "Add a flag."),
+            Some("Version flag".to_string())
+        );
+        assert_eq!(
+            prompt_run_title(Some("   "), "Add a flag."),
+            Some("Add a flag".to_string())
+        );
+        assert_eq!(prompt_run_title(None, "   "), None);
+
+        let tmp = TempDir::new().unwrap();
+        std::fs::write(tmp.path().join("roko.toml"), "").unwrap();
+        let run_dir = tmp.path().join(".roko").join("runs").join("run-named");
+        std::fs::create_dir_all(&run_dir).unwrap();
+        let hermes = RunOrigin::Mcp {
+            client: "hermes".to_string(),
+        };
+        let mut tasks = prompt_tasks_file(
+            "run-named",
+            "Add a --version flag to the wordy CLI. Print 0.1.0.",
+            "focused",
+            "implementer",
+            Vec::new(),
+            None,
+            &hermes,
+            tmp.path(),
+        );
+        tasks.meta.title =
+            prompt_run_title(None, "Add a --version flag to the wordy CLI. Print 0.1.0.");
+        tasks.write(&run_dir.join("tasks.toml")).unwrap();
+        let plan = crate::runner::plan_loader::load_plan(&run_dir).unwrap();
+        assert_eq!(
+            plan.tasks.meta.title.as_deref(),
+            Some("Add a --version flag to the wordy CLI")
+        );
+        assert_eq!(plan.tasks.tasks[0].title, "Request from chat host hermes");
     }
 }

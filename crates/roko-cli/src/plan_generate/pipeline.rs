@@ -723,9 +723,7 @@ fn keep_rejected_draft(
         && let Ok(entries) = std::fs::read_dir(&dir)
     {
         for entry in entries.flatten() {
-            let name = entry.file_name();
-            let name = name.to_string_lossy();
-            if name.starts_with("rejected-") && name.ends_with(".md") {
+            if entry.file_name().to_string_lossy().starts_with("rejected-") {
                 let _ = std::fs::remove_file(entry.path());
             }
         }

@@ -2,7 +2,7 @@
 id = "gap-c2efe7"
 kind = "gap"
 title = "Runs started by a chat host have no name: the task is 'Request from chat host hermes', the commit subject a UUID, and /mcp takes no title"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p3"
 goal = "hermes"
@@ -11,6 +11,7 @@ subsystem = ["roko-serve/mcp", "roko-cli/run", "roko-cli/graph_execution"]
 created = 2026-10-15
 updated = 2026-10-16
 last_verified = 2026-10-16
+last_verified_rev = "0f0d42048"
 source = "tmp/hermes-roko-v5/findings/fresh-guide.md items 22, 25 (fresh-guide, 2026-10-15)"
 discovered_from = "hermes-roko-v5 round: a newcomer's first session"
 anchors = ["crates/roko-serve/src/routes/mcp.rs", "crates/roko-cli/src/run.rs::prompt_tasks_file", "crates/roko-cli/src/task_parser.rs::TaskMeta"]
@@ -21,6 +22,15 @@ command = "grep -rqw 'fn a_named_plan_titles_its_commit_branch_and_plan_set' cra
 
 [[verify]]
 command = "grep -rqw 'fn mcp_run_prompt_takes_a_title' crates/roko-serve/ && cargo test -p roko-serve --lib mcp_run_prompt_takes_a_title"
+
+[closed]
+at = 2026-10-16
+at_ts = "2026-10-16T00:46:43Z"
+commit = "0f0d42048"
+by = "commit trailer"
+executor = "unknown"
+forced = false
+evidence = "0f0d42048: /mcp run_prompt and plan_generate and POST /api/run take an optional title (one line, at most 120 characters); a prompt run's one-task plan gets [meta] title (the given title, else its request's first sentence cut at a word within 72 characters; never in an agent's prompt; a chat host's task keeps 'Request from chat host ...'); plan_generate takes its slug from the title and writes [meta] title; a plan's title names its plan_set_loaded entry, the run summary's title, the batch branch's description (removed with a discarded batch) and a named one-task plan's accepted commit subject. Verify: a_named_plan_titles_its_commit_branch_and_plan_set, mcp_run_prompt_takes_a_title, a_run_is_named_by_its_title_or_its_requests_first_sentence and title_tests::a_generated_plan_takes_the_given_title pass; full roko-cli lib 3669 passed plus the fixed suggest_correction_finds_typos (6 ignored, gist skipped) and roko-serve lib 1027 passed, scratch HOME; clippy -D warnings clean; plan_branch_integration (4) and operator_checkout_clean pass. Live (/mcp run_prompt on a project copy, gpt-5.4-mini, $0.008): titled run 0114d71d has summary title, [meta] title, commit subject 'roko: 0114d71d-.../T1: Comment on count_words' and batch description 'Comment on count_words', its task title unchanged; an untitled run e4d74a1f is named by its request's first sentence (72 characters)."
 +++
 
 ## Problem

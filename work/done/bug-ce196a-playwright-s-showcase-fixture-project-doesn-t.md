@@ -2,15 +2,16 @@
 id = "bug-ce196a"
 kind = "bug"
 title = "Playwright's showcase-fixture project doesn't ignore fly-smoke.spec.ts, so a whole-project fixture run fails without SHOWCASE_PASSPHRASE"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p3"
 goal = "visibility"
 size = "S"
 subsystem = ["demo-app/e2e"]
 created = 2026-10-15
-updated = 2026-10-15
-last_verified = 2026-10-15
+updated = 2026-10-16
+last_verified = 2026-10-16
+last_verified_rev = "7b695c7fe"
 source = "status-quo-2026-10-15#finding-43"
 anchors = ["demo/demo-app/playwright.config.ts", "demo/demo-app/e2e/showcase/fly-smoke.spec.ts"]
 lane = "frontend"
@@ -18,6 +19,18 @@ links = { depends_on = [], blocks = [], related = ["bug-92808a"], supersedes = [
 
 [[verify]]
 command = "grep -Eq \"testIgnore: \\[[^]]*fly-smoke\\.spec\\.ts\" demo/demo-app/playwright.config.ts"
+
+[closed]
+at = 2026-10-16
+at_ts = "2026-10-16T14:09:38Z"
+commit = "7b695c7fe"
+by = "commit trailer"
+executor = "claude-agent"
+via = "work-batch"
+size = "S"
+claimed_at = "2026-10-16T08:07:09Z"
+forced = false
+evidence = "demo/demo-app/playwright.config.ts:29 showcase-fixture's testIgnore now includes '**/fly-smoke.spec.ts' alongside the existing auth-gate.spec.ts and serve-manifest.spec.ts entries. Verify command (grep -Eq on the testIgnore line) passes. Did not run the fixture project itself (no SHOWCASE_PASSPHRASE needed for the verify). The S11 §6.2 runbook's --project=fly-smoke step (untracked tmp/cybernetic-harness/specs/S11-fly-deploy-security.md) is left uncorrected, out of this change's scope. Commit 7b695c7fe."
 +++
 
 ## Problem

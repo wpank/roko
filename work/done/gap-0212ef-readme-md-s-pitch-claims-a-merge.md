@@ -2,22 +2,35 @@
 id = "gap-0212ef"
 kind = "gap"
 title = "README.md's pitch claims a merge queue with back-out, automatic split and replan, a controller that retunes itself and routing from what has passed, beyond what the code and both papers describe"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p2"
 goal = "whitepaper"
 size = "S"
 subsystem = ["docs/readme"]
 created = 2026-10-15
-updated = 2026-10-15
-last_verified = 2026-10-15
+updated = 2026-10-16
+last_verified = 2026-10-16
+last_verified_rev = "da707bd99"
 source = "status-quo-2026-10-15#finding-33"
 anchors = ["README.md"]
 lane = "docs"
-links = { depends_on = [], blocks = [], related = ["gap-d76b1b", "q-6b7cca", "gap-ac1aed", "gap-ebd656"], supersedes = [], duplicate_of = "" }
+links = { depends_on = [], blocks = [], related = ["gap-d76b1b", "q-6b7cca", "gap-ac1aed", "gap-ebd656", "bug-700d7c"], supersedes = [], duplicate_of = "" }
 
 [[verify]]
 command = "! grep -Eq 'merges through a queue|merged through a queue|merge queue|is backed out|then split or replan the task|retunes itself when they drift|comes from what has actually passed' README.md && grep -q 'run branch' README.md"
+
+[closed]
+at = 2026-10-16
+at_ts = "2026-10-16T14:10:09Z"
+commit = "da707bd99"
+by = "commit trailer"
+executor = "claude-agent"
+via = "work-batch"
+size = "S"
+claimed_at = "2026-10-16T08:07:02Z"
+forced = false
+evidence = "README.md at da707bd99, each claim checked against the code at 5e32264ce. Delivery: finished plans merge into one run branch, which keeps a plan only if the whole-plan check passes on the merge (Why Roko, comparison table, Verify > Whole-plan checks; the crate table says 'plan delivery'), as graph_execution/batch.rs::deliver and delivery.rs::git_merge/run_regression do; the merge queue was deleted (runner/merge.rs). Escalation: a task that still fails at the top of its ladder goes to a person, who decides whether to split or replan it (graph_task_dispatch/ladder.rs, ladder_exhausted; ReplanController has no production caller). Routing: the forecaster learns from verified results (shadow by default, config/self_model.rs), each task starts on its tier's ladder rung and climbs only on failure, and the forecaster picks the start rung once calibrated and switched on (graph_task_dispatch/self_model.rs); the same claim is fixed in the comparison table, How it works and Providers (dispatch/model_routing.rs precedence). Self-regulation: the four essential variables are tracked against the policy file, and a move applies one notch at a time only once a person switches the controller on (config/homeostasis.rs, shadow by default). Verify: exit 1 before, exit 0 at da707bd99. Filed bug-700d7c (59a083690): delivery moves the run branch before the check and resets it on failure, which the papers rule out."
 +++
 
 ## Problem
@@ -80,3 +93,11 @@ The `[[verify]]` command passes and the edited lines match the papers' descripti
 Don't edit the papers (decision 2 keeps them as written). Follow memory `readme_pitch_framing.md`: no "not yet",
 no status tags, never lead with "a frontier model plans, cheap models execute". The verify's `grep -q 'run branch'`
 expects the new delivery wording to name the run branch, as both papers do; adjust it if the final wording differs.
+
+2026-10-16 (closing worker): the code does take a failed plan back out. `GitDeliveryBackend::git_merge` moves the run
+branch to the merge before the whole-plan check runs, and `BatchIntegration::deliver` resets it when the check fails
+(`graph_execution/batch.rs:288-316`), so the old "backed out" wording described the code, and the papers' "the run
+branch moves only once it passes" does not. The new wording ("the run branch keeps a plan only if that check passes")
+holds under either order; bug-700d7c tracks making the code match the papers. The README's comparison table
+("routed per task by what has passed before"), "How it works" and "Providers" repeated the routing claim, so they
+were fixed too. CLAUDE.md's key-crates table still says "merge queue" for roko-cli (outside this item's README scope).

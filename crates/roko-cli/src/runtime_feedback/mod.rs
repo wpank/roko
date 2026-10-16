@@ -47,7 +47,7 @@ pub use error_patterns::ErrorPatternSink;
 pub use hindsight::HindsightSink;
 pub use homeostasis::HomeostasisSink;
 pub use knowledge::{KnowledgeIngestionSink, KnowledgeIngestor, NeuroKnowledgeIngestor};
-pub use plan_completion::{DaimonPersistenceSink, DreamConsolidationSink};
+pub use plan_completion::DaimonPersistenceSink;
 #[cfg(feature = "cognitive-clock")]
 pub use plan_completion::{DeltaConsolidationSink, ThetaReflectionSink};
 pub use routing::RoutingObservationSink;
@@ -143,7 +143,8 @@ pub enum FeedbackEvent {
         attempt: u32,
         backoff_secs: u64,
     },
-    /// A plan completed (success or terminal failure).
+    /// A plan completed (success or terminal failure). A Graph plan run
+    /// sends one for each plan it runs, as the plan closes (gap-a960a1).
     PlanCompleted {
         plan_id: String,
         succeeded: bool,

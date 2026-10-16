@@ -2,15 +2,16 @@
 id = "gap-a960a1"
 kind = "gap"
 title = "Graph plan runs never emit PlanCompleted: emit it once per plan and keep only the daimon sink (q-6b7cca option 2)"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p2"
 goal = "learning"
 size = "M"
 subsystem = ["roko-cli/graph_execution", "roko-cli/runtime_feedback"]
 created = 2026-10-15
-updated = 2026-10-15
-last_verified = 2026-10-15
+updated = 2026-10-16
+last_verified = 2026-10-16
+last_verified_rev = "fba578a72"
 source = "status-quo-2026-10-15#finding-20"
 anchors = ["crates/roko-cli/src/graph_execution/plan_runner.rs::run_one_plan", "crates/roko-cli/src/graph_execution/plan_runner.rs::build_graph_feedback_facade", "crates/roko-cli/src/graph_execution/plan_runner.rs::build_graph_feedback_context", "crates/roko-cli/src/runtime_feedback/plan_completion.rs::DreamConsolidationSink", "crates/roko-cli/src/runtime_feedback/plan_completion.rs::DaimonPersistenceSink", "crates/roko-cli/src/runtime_feedback/mod.rs::FeedbackEvent"]
 lane = "rust-hot"
@@ -22,6 +23,18 @@ command = "grep -rqw 'fn graph_plan_run_emits_plan_completed_once_per_plan' crat
 
 [[verify]]
 command = "! grep -q 'DreamConsolidationSink::new' crates/roko-cli/src/graph_execution/plan_runner.rs && ! grep -q 'cognitive_clock_sinks()' crates/roko-cli/src/graph_execution/plan_runner.rs"
+
+[closed]
+at = 2026-10-16
+at_ts = "2026-10-16T11:38:38Z"
+commit = "fba578a72"
+by = "commit trailer"
+executor = "claude-agent"
+via = "work-batch"
+size = "M"
+claimed_at = "2026-10-16T05:11:50Z"
+forced = false
+evidence = "fba578a72 (on main 3b1655bc4): close_plan in graph_execution/plan_runner.rs sends one FeedbackEvent::PlanCompleted for each plan run_one_plan runs, before the live views close it, with succeeded, the plan's run-metrics task counts and its settled spend; a blocked or never-started plan sends none. build_graph_feedback_facade keeps only DaimonPersistenceSink for plan completion: DreamConsolidationSink, which started a `claude` dream after every plan, is deleted, and the cognitive-clock loop is gone (the theta and delta sinks stay parked, unregistered). A frozen run registers no daimon sink, so it saves no affect. Both [[verify]] commands pass at fba578a72. graph_plan_run_emits_plan_completed_once_per_plan runs four plans through run_graph_plan with affect on: one event each for the passed, failed and unverified plans, with their counts and the spend in costs.json; none for the blocked plan; affect saved at the unverified plan's end. Also passing: plan_completion_reaches_only_the_daimon_sink, a_frozen_run_saves_no_affect_when_a_plan_completes, and 148 neighbouring lib tests. clippy -p roko-cli -D warnings is clean. Follow-ups: bug-050398 (affect already autosaves on each appraisal, and the plan-end save can put back an older state) and gap-01fb50 (the two dream switches now do nothing)."
 +++
 
 ## Problem

@@ -1,171 +1,24 @@
-//! Plan-completion feedback sinks — dream consolidation, daimon affect
-//! persistence, theta reflection, and delta consolidation.
+//! Plan-completion feedback sinks: daimon affect persistence, and the parked
+//! cognitive clock's theta reflection and delta consolidation.
 //!
-//! ## Backlog items
-//!
-//! - **#143**: Wire dream consolidation trigger after plan completion.
-//! - **#144**: Wire daimon affect persistence on plan completion.
-//!
-//! All hooks fire only on [`FeedbackEvent::PlanCompleted`] and run
-//! non-blocking: the dream cycle is spawned with a bounded timeout so it
-//! never blocks the runner event loop, and the daimon persist is a
-//! fire-and-forget blocking write on the tokio thread pool.
+//! Each reacts only to [`FeedbackEvent::PlanCompleted`], which a Graph plan
+//! run sends once for each plan it runs. Will's answer to q-6b7cca (option 2,
+//! gap-a960a1) keeps one of them on the run's feedback facade: the daimon
+//! sink (#144), which saves the affect state at each plan's end when
+//! `[daimon] enabled` gives the run one. The dream consolidation sink (#143),
+//! which started a `claude` dream after every plan, is gone; dreams run on
+//! demand, through `roko knowledge dream run`.
 //!
 //! The theta and delta sinks drive the cognitive clock, which is parked: they
-//! compile only with the `cognitive-clock` feature (9222).
+//! compile only with the `cognitive-clock` feature (9222), and no plan run
+//! registers them.
 
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
 
 use async_trait::async_trait;
 
 use super::{FeedbackEvent, FeedbackSink};
-
-/// Maximum wall-clock time for a background dream consolidation before it
-/// is aborted. Dreams are heavyweight (they dispatch an LLM review agent),
-/// so the default is generous.
-const DREAM_TIMEOUT: Duration = Duration::from_secs(300);
-
-// ---------------------------------------------------------------------------
-// Dream consolidation sink (#143)
-// ---------------------------------------------------------------------------
-
-/// Spawns a non-blocking dream consolidation cycle on [`PlanCompleted`].
-///
-/// The sink checks two config flags before firing:
-/// - `learning.dream_on_completion` (top-level opt-in, default `false`)
-/// - `learning.dreams.trigger_on_plan_complete` (per-subsystem toggle, default `true`)
-///
-/// Both must be `true` for the trigger to fire, so by default no dream runs.
-/// A single background dream is allowed at a time; additional triggers are
-/// dropped.
-#[derive(Debug)]
-pub struct DreamConsolidationSink {
-    workdir: PathBuf,
-    dream_on_completion: bool,
-    trigger_on_plan_complete: bool,
-    /// Guard: `true` while a dream cycle is already in flight.
-    running: Arc<Mutex<bool>>,
-}
-
-impl DreamConsolidationSink {
-    /// Construct the sink.
-    ///
-    /// - `workdir`: workspace root (passed to `DreamRunner`).
-    /// - `dream_on_completion`: value of `learning.dream_on_completion`.
-    /// - `trigger_on_plan_complete`: value of `learning.dreams.trigger_on_plan_complete`.
-    #[must_use]
-    pub fn new(
-        workdir: PathBuf,
-        dream_on_completion: bool,
-        trigger_on_plan_complete: bool,
-    ) -> Self {
-        Self {
-            workdir,
-            dream_on_completion,
-            trigger_on_plan_complete,
-            running: Arc::new(Mutex::new(false)),
-        }
-    }
-}
-
-#[async_trait]
-impl FeedbackSink for DreamConsolidationSink {
-    fn name(&self) -> &'static str {
-        "dream_consolidation"
-    }
-
-    fn interested(&self, event: &FeedbackEvent) -> bool {
-        matches!(event, FeedbackEvent::PlanCompleted { .. })
-    }
-
-    async fn on_event(&self, event: &FeedbackEvent) -> Result<(), anyhow::Error> {
-        let FeedbackEvent::PlanCompleted { plan_id, .. } = event else {
-            return Ok(());
-        };
-
-        // Both flags must be true.
-        if !self.dream_on_completion || !self.trigger_on_plan_complete {
-            tracing::debug!(plan_id, "dream consolidation skipped: disabled by config");
-            return Ok(());
-        }
-
-        // Prevent concurrent dreams.
-        {
-            let mut guard = self.running.lock().unwrap_or_else(|e| e.into_inner());
-            if *guard {
-                tracing::info!(plan_id, "dream consolidation skipped: already running");
-                return Ok(());
-            }
-            *guard = true;
-        }
-
-        let running = Arc::clone(&self.running);
-        let workdir = self.workdir.clone();
-        let plan_id = plan_id.clone();
-
-        tokio::spawn(async move {
-            tracing::info!(plan_id, "starting background dream consolidation");
-
-            let result = tokio::time::timeout(DREAM_TIMEOUT, async {
-                // Build a minimal DreamRunner with defaults. The dream cycle
-                // reads episodes and knowledge from the workdir layout.
-                let dream_config = roko_dreams::DreamLoopConfig {
-                    auto_dream: true,
-                    idle_threshold_mins: 0,
-                    min_episodes_for_dream: 1,
-                    schedule: roko_dreams::DreamSchedulePolicy::default(),
-                    agent: roko_dreams::DreamAgentConfig {
-                        command: "claude".to_string(),
-                        args: vec![],
-                        model: None,
-                        bare_mode: true,
-                        effort: "low".to_string(),
-                        fallback_model: None,
-                        timeout_ms: 120_000,
-                        env: vec![],
-                    },
-                };
-                let mut runner = roko_dreams::DreamRunner::new(workdir, dream_config);
-                runner.consolidate_async().await
-            })
-            .await;
-
-            match result {
-                Ok(Ok(report)) => {
-                    tracing::info!(
-                        plan_id,
-                        episodes = report.processed_episodes,
-                        knowledge = report.knowledge_entries_written,
-                        "dream consolidation completed"
-                    );
-                }
-                Ok(Err(err)) => {
-                    tracing::warn!(
-                        plan_id,
-                        error = %err,
-                        "dream consolidation failed (non-fatal)"
-                    );
-                }
-                Err(_elapsed) => {
-                    tracing::warn!(
-                        plan_id,
-                        timeout_secs = DREAM_TIMEOUT.as_secs(),
-                        "dream consolidation timed out (non-fatal)"
-                    );
-                }
-            }
-
-            // Release the running guard.
-            if let Ok(mut guard) = running.lock() {
-                *guard = false;
-            }
-        });
-
-        Ok(())
-    }
-}
 
 // ---------------------------------------------------------------------------
 // Daimon affect persistence sink (#144)
@@ -173,9 +26,9 @@ impl FeedbackSink for DreamConsolidationSink {
 
 /// Persists the current [`DaimonState`] to disk on [`PlanCompleted`].
 ///
-/// The persist is dispatched to `spawn_blocking` so it never blocks the
-/// async event loop. Errors are logged but not propagated — affect
-/// persistence is best-effort.
+/// The persist runs on the blocking pool, and the sink waits for it, so the
+/// affect state is on disk once the facade has delivered the event. Errors
+/// are logged but not propagated — affect persistence is best-effort.
 #[derive(Debug)]
 pub struct DaimonPersistenceSink {
     affect_path: PathBuf,
@@ -248,7 +101,8 @@ impl FeedbackSink for DaimonPersistenceSink {
 // ---------------------------------------------------------------------------
 
 /// The theta reflection and delta consolidation sinks, sharing one cortical
-/// state. Only a build with `cognitive-clock` has them (9222).
+/// state. Only a build with `cognitive-clock` has them (9222), and no plan
+/// run registers them (q-6b7cca option 2).
 #[cfg(feature = "cognitive-clock")]
 #[must_use]
 pub fn cognitive_clock_sinks() -> [Arc<dyn FeedbackSink>; 2] {
@@ -507,33 +361,6 @@ impl FeedbackSink for DeltaConsolidationSink {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[tokio::test]
-    async fn dream_sink_skips_non_plan_events() {
-        let sink = DreamConsolidationSink::new(PathBuf::from("/tmp/test"), true, true);
-        let event = FeedbackEvent::IdleTick {
-            ticks_since_last_work: 1,
-        };
-        assert!(!sink.interested(&event));
-    }
-
-    #[tokio::test]
-    async fn dream_sink_skips_when_disabled() {
-        let sink = DreamConsolidationSink::new(
-            PathBuf::from("/tmp/test"),
-            false, // dream_on_completion disabled
-            true,
-        );
-        let event = FeedbackEvent::PlanCompleted {
-            plan_id: "p".into(),
-            succeeded: true,
-            tasks_completed: 1,
-            tasks_failed: 0,
-            total_cost_usd: 0.001,
-        };
-        // Should return Ok without spawning.
-        sink.on_event(&event).await.unwrap();
-    }
 
     #[tokio::test]
     async fn daimon_sink_skips_non_plan_events() {

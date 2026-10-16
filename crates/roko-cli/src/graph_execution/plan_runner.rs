@@ -1487,6 +1487,9 @@ async fn run_graph_plan_body(
     // M1's sink, whose open chains resolve and whose controller state is
     // saved at the run's end (8122).
     let homeostasis = graph_feedback.homeostasis.clone();
+    // The facade the dispatcher takes hears each plan's completion too
+    // (q-6b7cca option 2, gap-a960a1).
+    let plan_feedback = graph_feedback.feedback_facade.clone();
     // Its runs' manifests name the θ M1 dispatches with (8123).
     run_manifests.set_params_digest(homeostasis.as_ref().map(|sink| sink.params_digest()));
 
@@ -1933,6 +1936,7 @@ async fn run_graph_plan_body(
         launch_tui,
         task_dispatcher: &task_dispatcher,
         graph_task_dispatcher: &graph_task_dispatcher,
+        feedback: plan_feedback.as_ref(),
         plan_failure_policy: roko_config.conductor.plan_failure_policy,
         graph_tui_bridge: &graph_tui_bridge,
         graph_telemetry: &graph_telemetry,
@@ -2716,19 +2720,24 @@ pub fn build_graph_feedback_context(
         None
     };
 
+    let feedback_facade = build_graph_feedback_facade(
+        workdir,
+        config,
+        cascade_router,
+        cascade_journal,
+        shared_daimon_state.as_ref(),
+        error_patterns,
+        self_model.as_ref(),
+        homeostasis.as_ref(),
+        knowledge_batch,
+        publisher,
+    );
+    // A test can listen to what a real run's facade hears (gap-a960a1).
+    #[cfg(test)]
+    let feedback_facade = tests::with_attached_sinks(workdir, feedback_facade);
+
     crate::graph_task_dispatch::GraphFeedbackContext {
-        feedback_facade: Some(build_graph_feedback_facade(
-            workdir,
-            config,
-            cascade_router,
-            cascade_journal,
-            shared_daimon_state.as_ref(),
-            error_patterns,
-            self_model.as_ref(),
-            homeostasis.as_ref(),
-            knowledge_batch,
-            publisher,
-        )),
+        feedback_facade: Some(feedback_facade),
         efficiency_path: Some(graph_learn_dir.join("efficiency.jsonl")),
         costs_path: Some(graph_learn_dir.join("costs.jsonl")),
         playbook_dir: learning.then(|| graph_learn_dir.join("playbooks")),
@@ -2796,8 +2805,8 @@ fn graph_daimon_state(
 
 /// The feedback facade of a Graph plan run: the sinks each settled task
 /// attempt fans out to, in order (episodes, hindsight, verified knowledge,
-/// error patterns, routing when there is a cascade router, and the
-/// plan-completion dream, daimon, theta and delta sinks). The routing sink
+/// error patterns, routing when there is a cascade router, and the daimon
+/// sink, the one that hears each plan's completion). The routing sink
 /// journals its observations in `cascade_journal`, when there is one, and the
 /// hindsight sink its retractions of them;
 /// `daimon_state` is the state dispatch modulates, persisted when a plan
@@ -2818,9 +2827,8 @@ pub fn build_graph_feedback_facade(
 ) -> Arc<crate::runtime_feedback::FeedbackFacade> {
     // A frozen run (decision 2218) registers no learning sink. Each one
     // writes learned state: episodes, hindsight, knowledge, error patterns,
-    // the router, dreams and the daimon state. The theta and delta sinks
-    // keep only in-memory state and wait for plan completion, which Graph
-    // runs never emit (q-6b7cca). Its episodes go to each run's own
+    // the router and the daimon state, so a frozen run saves no affect when
+    // a plan completes (gap-a960a1). Its episodes go to each run's own
     // `runs/<run_id>/episodes.jsonl`, telemetry that no later run reads and
     // the bench driver's attempt evidence (gap-127263).
     if config.learning.frozen {
@@ -2892,16 +2900,12 @@ pub fn build_graph_feedback_facade(
             facade.with_sink(Arc::clone(sink) as Arc<dyn crate::runtime_feedback::FeedbackSink>);
     }
 
-    // ── #143: Dream consolidation trigger on plan completion ────────
-    facade = facade.with_sink(std::sync::Arc::new(
-        crate::runtime_feedback::DreamConsolidationSink::new(
-            workdir.to_path_buf(),
-            config.learning.dream_on_completion,
-            config.learning.dreams.trigger_on_plan_complete,
-        ),
-    ));
-
     // ── #144: Daimon affect persistence on plan completion ──────────
+    //
+    // The one sink that hears a plan's completion (q-6b7cca option 2,
+    // gap-a960a1). No dream starts when a plan completes: dreams run on
+    // demand, through `roko knowledge dream run`. The parked cognitive
+    // clock's theta and delta sinks are not registered either.
     if let Some(daimon) = daimon_state {
         facade = facade.with_sink(std::sync::Arc::new(
             crate::runtime_feedback::DaimonPersistenceSink::new(
@@ -2909,15 +2913,6 @@ pub fn build_graph_feedback_facade(
                 std::sync::Arc::clone(daimon),
             ),
         ));
-    }
-
-    // ── Theta reflection and delta consolidation on plan completion ─
-    //
-    // The cognitive clock is parked (9222): only a build with
-    // `cognitive-clock` registers these two sinks.
-    #[cfg(feature = "cognitive-clock")]
-    for sink in crate::runtime_feedback::plan_completion::cognitive_clock_sinks() {
-        facade = facade.with_sink(sink);
     }
 
     std::sync::Arc::new(facade)
@@ -2964,6 +2959,9 @@ struct PlanRunContext<'a> {
     launch_tui: bool,
     task_dispatcher: &'a Arc<dyn roko_graph::cells::TaskDispatcher>,
     graph_task_dispatcher: &'a Arc<crate::graph_task_dispatch::GraphTaskDispatcher>,
+    /// The run's feedback facade, which hears each plan close
+    /// ([`close_plan`]).
+    feedback: Option<&'a Arc<crate::runtime_feedback::FeedbackFacade>>,
     /// `[conductor] plan_failure_policy`; a plan's `[meta] failure_policy`
     /// overrides it.
     plan_failure_policy: roko_core::config::PlanFailurePolicy,
@@ -3049,6 +3047,42 @@ fn close_run_manifest(ctx: &PlanRunContext<'_>, run_id: &str, status: GraphCheck
     let writer = ctx.graph_task_dispatcher.close_run_attempts(run_id);
     ctx.run_manifests.close(run_id, status, writer);
     super::loop_audit::audit_tick(ctx.workdir, ctx.learning, run_id, ctx.graph_tui_bridge);
+}
+
+/// Close plan `plan_id`, which [`run_one_plan`] ran and which ended
+/// `succeeded` with its tasks settled as `tasks`. The run's feedback facade
+/// hears it first, as one [`FeedbackEvent::PlanCompleted`] (q-6b7cca option
+/// 2, gap-a960a1), then the live views do; so with affect on, the daimon
+/// sink has saved the affect state by the time a live view sees the plan
+/// close. The event counts the tasks as the plan's run-metrics row does
+/// ([`plan_metrics`]) and carries the plan's settled spend. A plan that never
+/// started (blocked, or cancelled before it started) is closed by the
+/// plan-set driver and sends no event; a plan the operator runs again closes
+/// once per run.
+///
+/// [`FeedbackEvent::PlanCompleted`]: crate::runtime_feedback::FeedbackEvent::PlanCompleted
+async fn close_plan(
+    ctx: &PlanRunContext<'_>,
+    plan_id: &str,
+    succeeded: bool,
+    tasks: TaskVerdictCounts,
+) {
+    if let Some(facade) = ctx.feedback {
+        let event = crate::runtime_feedback::FeedbackEvent::PlanCompleted {
+            plan_id: plan_id.to_string(),
+            succeeded,
+            tasks_completed: tasks.passed,
+            tasks_failed: tasks.failed,
+            total_cost_usd: ctx
+                .graph_task_dispatcher
+                .plan_budget_snapshot(plan_id)
+                .spent_usd,
+        };
+        if let Err(error) = facade.on_event(&event).await {
+            tracing::warn!(plan_id, %error, "plan completion feedback failed (non-fatal)");
+        }
+    }
+    ctx.graph_tui_bridge.plan_completed(plan_id, succeeded);
 }
 
 /// Operator controls the plan-set driver routes to one running plan.
@@ -3601,8 +3635,9 @@ fn with_live_budgets(
 
 /// Run one admitted plan to a terminal checkpoint.
 ///
-/// A plan that cannot be converted or validated still gets a terminal
-/// PlanCompleted. `Err` is reserved for checkpoint and budget-ledger
+/// Every plan it runs closes once ([`close_plan`]): its PlanCompleted reaches
+/// the run's feedback facade and the live views, even when the plan cannot be
+/// converted or validated. `Err` is reserved for checkpoint and budget-ledger
 /// failures, which stop the whole run.
 async fn run_one_plan(
     ctx: &PlanRunContext<'_>,
@@ -3704,8 +3739,9 @@ async fn run_one_plan(
                     plan.id
                 ));
                 tracing::error!(plan_id = %plan.id, error = %e, "failed to build rich topology for plan");
-                graph_tui_bridge.plan_completed(&plan.id, false);
-                return Ok(PlanRunResult::failed(tasks.len()));
+                let result = PlanRunResult::failed(tasks.len());
+                close_plan(ctx, &plan.id, false, result.tasks).await;
+                return Ok(result);
             }
         }
     } else {
@@ -3721,14 +3757,17 @@ async fn run_one_plan(
                 (g, reg)
             }
             Err(e) => {
-                let e = e.root_cause();
+                // Text, not the `&dyn Error` itself, which is not `Send` and
+                // would be held across the close below.
+                let e = e.root_cause().to_string();
                 graph_tui_bridge.error(&format!(
                     "failed to convert plan '{}' to graph: {e}",
                     plan.id
                 ));
                 tracing::error!(plan_id = %plan.id, error = %e, "failed to convert plan to graph");
-                graph_tui_bridge.plan_completed(&plan.id, false);
-                return Ok(PlanRunResult::failed(tasks.len()));
+                let result = PlanRunResult::failed(tasks.len());
+                close_plan(ctx, &plan.id, false, result.tasks).await;
+                return Ok(result);
             }
         }
     };
@@ -3889,10 +3928,11 @@ async fn run_one_plan(
         for issue in &issues {
             tracing::error!(plan_id = %plan.id, issue, "validation error");
         }
-        graph_tui_bridge.plan_completed(&plan.id, false);
+        let result = PlanRunResult::failed(tasks.len());
+        close_plan(ctx, &plan.id, false, result.tasks).await;
         close_run_manifest(ctx, &run_id, GraphCheckpointStatus::Failed);
         checkpoint.finish(false)?;
-        return Ok(PlanRunResult::failed(tasks.len()));
+        return Ok(result);
     }
 
     if replayed_entries > 0 && !ctx.quiet && !ctx.json {
@@ -4082,11 +4122,11 @@ async fn run_one_plan(
             graph_tui_bridge.error(&message);
             tracing::error!(plan_id = %plan.id, "plan execution failed: no output");
         }
-        graph_tui_bridge.plan_completed(&plan.id, false);
 
         // Without the graph's result no task's verdict is known, so none
         // counts as passed.
         let task_verdicts = TaskVerdictCounts::not_run(tasks.len());
+        close_plan(ctx, &plan.id, false, task_verdicts).await;
         let outcome = plan_outcome(
             false,
             task_verdicts,
@@ -4303,7 +4343,7 @@ async fn run_one_plan(
             &plan_stopped_message(&plan.id, reason, task_verdicts, plan_task_count),
         );
     }
-    graph_tui_bridge.plan_completed(&plan.id, outcome.succeeded());
+    close_plan(ctx, &plan.id, outcome.succeeded(), task_verdicts).await;
 
     if !ctx.quiet && !ctx.json {
         if was_cancelled_by_tui {
@@ -5259,6 +5299,78 @@ mod tests {
         assert!(graph_daimon_state(workdir.path(), &config).is_some());
     }
 
+    /// The sinks a plan's completion reaches on the feedback facade a plan
+    /// run under `workdir` builds for `config`, and whether the workspace's
+    /// affect file is on disk once they have heard it.
+    async fn plan_completion_listeners(
+        workdir: &Path,
+        config: &roko_core::config::schema::RokoConfig,
+    ) -> (Vec<&'static str>, bool) {
+        let error_patterns = Arc::new(std::sync::RwLock::new(
+            roko_learn::error_pattern_store::ErrorPatternStore::load(&workdir.join("none.json")),
+        ));
+        let feedback =
+            build_graph_feedback_context(workdir, config, None, None, &error_patterns, None, None);
+        let facade = feedback.feedback_facade.expect("a plan run's facade");
+        let completed = crate::runtime_feedback::FeedbackEvent::PlanCompleted {
+            plan_id: "p".to_string(),
+            succeeded: true,
+            tasks_completed: 1,
+            tasks_failed: 0,
+            total_cost_usd: 0.0,
+        };
+        facade.on_event(&completed).await.expect("deliver it");
+        let listeners = facade
+            .stats()
+            .per_sink
+            .into_iter()
+            .filter(|sink| sink.delivered > 0)
+            .map(|sink| sink.name)
+            .collect();
+        (listeners, daimon_affect_path(workdir).exists())
+    }
+
+    /// q-6b7cca option 2 (gap-a960a1): a plan's completion reaches the
+    /// daimon sink alone, which saves the affect state, and only when
+    /// `[daimon] enabled` gives the run one. Both dream switches are on: the
+    /// dream sink they gated started a `claude` dream after every plan, and
+    /// it is gone, with the theta and delta sinks.
+    #[tokio::test]
+    async fn plan_completion_reaches_only_the_daimon_sink() {
+        let mut config = roko_core::config::schema::RokoConfig::default();
+        config.learning.dream_on_completion = true;
+        config.learning.dreams.trigger_on_plan_complete = true;
+        let held = tempfile::tempdir().expect("tempdir");
+        assert_eq!(
+            plan_completion_listeners(held.path(), &config).await,
+            (vec![], false),
+            "affect is held by default"
+        );
+
+        config.daimon.enabled = true;
+        let on = tempfile::tempdir().expect("tempdir");
+        assert_eq!(
+            plan_completion_listeners(on.path(), &config).await,
+            (vec!["daimon_persistence"], true)
+        );
+    }
+
+    /// gap-a960a1: a frozen run (decision 2218) writes no learned state, and
+    /// the plan-completion save follows it: with affect on, no sink hears a
+    /// plan's completion, and no affect file is written.
+    #[tokio::test]
+    async fn a_frozen_run_saves_no_affect_when_a_plan_completes() {
+        let mut config = roko_core::config::schema::RokoConfig::default();
+        config.daimon.enabled = true;
+        config.learning.frozen = true;
+        let dir = tempfile::tempdir().expect("tempdir");
+
+        assert_eq!(
+            plan_completion_listeners(dir.path(), &config).await,
+            (vec![], false)
+        );
+    }
+
     #[test]
     fn plan_set_entries_follow_execution_order_with_task_totals() {
         let plans = vec![
@@ -5631,6 +5743,234 @@ max_retries = 0
                 _ => None,
             })
             .collect()
+    }
+
+    /// The sinks a test attached to the feedback facade of the plan runs
+    /// under a workdir ([`attach_sink`]).
+    static ATTACHED_SINKS: std::sync::Mutex<
+        Vec<(PathBuf, Arc<dyn crate::runtime_feedback::FeedbackSink>)>,
+    > = std::sync::Mutex::new(Vec::new());
+
+    /// `facade` with the sinks a test attached for `workdir` after its own,
+    /// so the test hears what a real plan run's facade delivers.
+    pub(super) fn with_attached_sinks(
+        workdir: &Path,
+        facade: Arc<crate::runtime_feedback::FeedbackFacade>,
+    ) -> Arc<crate::runtime_feedback::FeedbackFacade> {
+        let attached = ATTACHED_SINKS
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .iter()
+            .filter(|(dir, _)| dir == workdir)
+            .map(|(_, sink)| Arc::clone(sink))
+            .collect::<Vec<_>>();
+        if attached.is_empty() {
+            return facade;
+        }
+        let facade = attached
+            .into_iter()
+            .fold(Arc::unwrap_or_clone(facade), |facade, sink| {
+                facade.with_sink(sink)
+            });
+        Arc::new(facade)
+    }
+
+    /// Detaches the sinks attached for its workdir when dropped.
+    #[cfg(unix)]
+    struct AttachedSinks(PathBuf);
+
+    #[cfg(unix)]
+    impl Drop for AttachedSinks {
+        fn drop(&mut self) {
+            ATTACHED_SINKS
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .retain(|(dir, _)| *dir != self.0);
+        }
+    }
+
+    /// Attach `sink` to the feedback facade of each plan run under
+    /// `workdir`, after the run's own sinks, until the guard drops.
+    #[cfg(unix)]
+    fn attach_sink(
+        workdir: &Path,
+        sink: Arc<dyn crate::runtime_feedback::FeedbackSink>,
+    ) -> AttachedSinks {
+        ATTACHED_SINKS
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .push((workdir.to_path_buf(), sink));
+        AttachedSinks(workdir.to_path_buf())
+    }
+
+    /// One `PlanCompleted` a plan run's facade delivered, and whether the
+    /// workspace's affect file was on disk by then.
+    #[cfg(unix)]
+    #[derive(Debug, Clone, PartialEq)]
+    struct HeardCompletion {
+        plan_id: String,
+        succeeded: bool,
+        tasks_completed: usize,
+        tasks_failed: usize,
+        total_cost_usd: f64,
+        affect_saved: bool,
+    }
+
+    /// Hears each `PlanCompleted` a plan run's facade delivers, after the
+    /// run's own sinks (gap-a960a1), and whether the affect file is on disk
+    /// then. An attempt without a learning label is not appraised, so nothing
+    /// autosaves affect for it: when one settles, the log removes the affect
+    /// file and notes the attempt's plan, and at that plan's end the file is
+    /// back only if the plan-completion save wrote it.
+    #[cfg(unix)]
+    #[derive(Debug)]
+    struct PlanCompletionLog {
+        affect_path: PathBuf,
+        heard: parking_lot::Mutex<Vec<HeardCompletion>>,
+        /// The plans an attempt without a learning label settled in.
+        unlabelled: parking_lot::Mutex<BTreeSet<String>>,
+    }
+
+    #[cfg(unix)]
+    impl PlanCompletionLog {
+        fn new(workdir: &Path) -> Arc<Self> {
+            Arc::new(Self {
+                affect_path: daimon_affect_path(workdir),
+                heard: parking_lot::Mutex::default(),
+                unlabelled: parking_lot::Mutex::default(),
+            })
+        }
+
+        /// The plans an attempt without a learning label settled in.
+        fn unlabelled(&self) -> BTreeSet<String> {
+            self.unlabelled.lock().clone()
+        }
+
+        /// What it heard, by plan id.
+        fn heard(&self) -> Vec<HeardCompletion> {
+            let mut heard = self.heard.lock().clone();
+            heard.sort_by(|a, b| a.plan_id.cmp(&b.plan_id));
+            heard
+        }
+    }
+
+    #[cfg(unix)]
+    #[async_trait::async_trait]
+    impl crate::runtime_feedback::FeedbackSink for PlanCompletionLog {
+        fn name(&self) -> &'static str {
+            "plan_completion_log"
+        }
+
+        fn interested(&self, event: &crate::runtime_feedback::FeedbackEvent) -> bool {
+            matches!(
+                event,
+                crate::runtime_feedback::FeedbackEvent::PlanCompleted { .. }
+                    | crate::runtime_feedback::FeedbackEvent::AttemptSettled(_)
+            )
+        }
+
+        async fn on_event(
+            &self,
+            event: &crate::runtime_feedback::FeedbackEvent,
+        ) -> Result<(), anyhow::Error> {
+            use crate::runtime_feedback::FeedbackEvent;
+            match event {
+                FeedbackEvent::AttemptSettled(verdict) if verdict.learning_success().is_none() => {
+                    let _ = std::fs::remove_file(&self.affect_path);
+                    self.unlabelled
+                        .lock()
+                        .insert(verdict.identity.plan_id.clone());
+                }
+                FeedbackEvent::PlanCompleted {
+                    plan_id,
+                    succeeded,
+                    tasks_completed,
+                    tasks_failed,
+                    total_cost_usd,
+                } => self.heard.lock().push(HeardCompletion {
+                    plan_id: plan_id.clone(),
+                    succeeded: *succeeded,
+                    tasks_completed: *tasks_completed,
+                    tasks_failed: *tasks_failed,
+                    total_cost_usd: *total_cost_usd,
+                    affect_saved: self.affect_path.exists(),
+                }),
+                _ => {}
+            }
+            Ok(())
+        }
+    }
+
+    /// q-6b7cca option 2 (gap-a960a1): a plan run sends one `PlanCompleted`
+    /// for each plan it runs, with how the plan ended, its tasks counted as
+    /// its run-metrics row counts them, and its settled spend; `d`, which
+    /// never starts, sends none. With `[daimon] enabled` the affect state is
+    /// on disk as each plan closes: `c`'s unverified attempt has no learning
+    /// label, so nothing autosaves affect for it, and the file the log
+    /// removed when it settled is back by `c`'s end.
+    #[cfg(unix)]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn graph_plan_run_emits_plan_completed_once_per_plan() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        fake_provider_workspace(dir.path(), 0.004, "\n[daimon]\nenabled = true\n");
+        // `a` passes its check, `b` fails it, `c` has none, and `d` needs `b`.
+        write_single_task_plan(dir.path(), "a", "a.txt", &[], Some("true"));
+        write_single_task_plan(dir.path(), "b", "b.txt", &[], Some("false"));
+        write_single_task_plan(dir.path(), "c", "c.txt", &[], None);
+        write_single_task_plan(dir.path(), "d", "d.txt", &["b"], Some("true"));
+        let log = PlanCompletionLog::new(dir.path());
+        let _attached = attach_sink(dir.path(), log.clone());
+
+        let (exit_code, lifecycle, _) = run_plan_set(dir.path(), Some(1), None).await;
+
+        assert_eq!(exit_code, EXIT_FAILURE);
+        assert!(
+            lifecycle.contains(&"end d false".to_string())
+                && !lifecycle.contains(&"start d".to_string()),
+            "d never starts: {lifecycle:?}"
+        );
+        let heard = log.heard();
+        let summary = heard
+            .iter()
+            .map(|heard| {
+                (
+                    heard.plan_id.as_str(),
+                    heard.succeeded,
+                    heard.tasks_completed,
+                    heard.tasks_failed,
+                )
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            summary,
+            [("a", true, 1, 0), ("b", false, 0, 1), ("c", false, 0, 0)],
+            "one PlanCompleted for each plan that ran: {heard:?}"
+        );
+        assert!(
+            log.unlabelled().contains("c"),
+            "c's attempt has no learning label, so only the plan-end save puts affect back"
+        );
+        for completion in &heard {
+            let ledger_path = dir
+                .path()
+                .join(".roko/state/graph")
+                .join(&completion.plan_id)
+                .join("costs.json");
+            let ledger: serde_json::Value =
+                serde_json::from_slice(&std::fs::read(&ledger_path).expect("the plan's ledger"))
+                    .expect("ledger json");
+            let spent = ledger["spent_micro_usd"].as_u64().expect("spent") as f64 / 1e6;
+            assert!(spent > 0.0, "{ledger}");
+            assert!(
+                (completion.total_cost_usd - spent).abs() < 1e-9,
+                "{completion:?} carries the plan's settled spend: {ledger}"
+            );
+            assert!(
+                completion.affect_saved,
+                "affect is on disk when {} closes",
+                completion.plan_id
+            );
+        }
     }
 
     #[cfg(unix)]

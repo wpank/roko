@@ -12,7 +12,7 @@
 //! This code lived in `prd.rs` until the PRD pipeline was removed on
 //! 2026-10-02 (tmp/workflow-audit).
 
-use super::{accept_blocks, dry_run_fs, overview};
+use super::{accept_blocks, dry_run_fs, overview, source_checks};
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -1176,6 +1176,18 @@ pub async fn generate_plan(request: PlanRequest<'_>) -> Result<(PathBuf, Generat
             extra.push_str("\n\n---\n\n");
             extra.push_str(&patterns);
         }
+        // gap-dc5d7c: the checks the source states, each to be kept as a
+        // verify step or dropped with a reason.
+        let checks = source_checks::source_checks(&source.content);
+        if !checks.is_empty() {
+            tracing::info!(
+                slug,
+                checks = checks.len(),
+                "plan generate: source checks in the planner prompt"
+            );
+            extra.push_str("\n\n---\n\n");
+            extra.push_str(&source_checks::planner_block(&checks, &source.kind));
+        }
         if unattended {
             extra.push_str("\n\n---\n\n");
             extra.push_str(UNATTENDED_PLANNER_NOTE);
@@ -1577,6 +1589,18 @@ pub async fn generate_plan(request: PlanRequest<'_>) -> Result<(PathBuf, Generat
             }
         };
 
+        // gap-dc5d7c: what became of the source's checks in a candidate
+        // plan, and how many it leaves in no verify step (all of them when it
+        // does not parse).
+        let coverage_of = |candidate: &str| {
+            TasksFile::parse_str(candidate)
+                .ok()
+                .map(|plan| source_checks::SourceCoverage::of(&checks, &plan))
+        };
+        let missing_of = |candidate: &str| {
+            coverage_of(candidate).map_or(checks.len(), |coverage| coverage.missing().len())
+        };
+
         // First attempt uses the output we already have.
         let mut validated_toml = try_extract_and_validate(&output);
         // bug-f0d60c: each reply that held no plan that validates is kept.
@@ -1761,9 +1785,53 @@ pub async fn generate_plan(request: PlanRequest<'_>) -> Result<(PathBuf, Generat
                     && retry.exit_code == 0
                     && let Ok(better) = try_extract_and_validate(&retry.output)
                     && hidden_output_lines(&better).len() < hidden.len()
+                    && missing_of(&better) <= missing_of(candidate)
                 {
                     validated_toml = Ok(better);
                 }
+            }
+        }
+
+        // gap-dc5d7c: a plan that leaves some of the source's checks in no
+        // verify step, with no reason given, is sent back once, naming them,
+        // and the plan that leaves fewer is kept.
+        let mut checks_regenerated = false;
+        if let Ok(candidate) = &validated_toml
+            && let Some(coverage) = coverage_of(candidate)
+            && !coverage.missing().is_empty()
+        {
+            let missing = coverage.missing().len();
+            let why = format!(
+                "{missing} of the source's {} checks are in no verify step",
+                checks.len()
+            );
+            eprintln!("  {why}; asking the planner once more");
+            report("regenerating", (1, 1), Some(why), planner_model.as_str());
+            let prompt = source_checks::regeneration_prompt(&task_prompt, candidate, &coverage);
+            let retry = run_agent_capture_silent_with_usage(AgentExecOpts {
+                prompt: &prompt,
+                workdir: workdir_ref,
+                model: effective_model,
+                effort: Some(planner_effort),
+                system_prompt: Some(&system),
+                resume_session: None,
+                env_vars: &resolved.config.agent.env,
+                role: Some("strategist"),
+                allowed_tools: Some("Read,Grep,Glob"),
+            })
+            .await;
+            if let Ok(retry) = &retry {
+                spend.record(retry).await;
+                report_spend();
+            }
+            checks_regenerated = true;
+            if let Ok(retry) = retry
+                && retry.exit_code == 0
+                && let Ok(better) = try_extract_and_validate(&retry.output)
+                && missing_of(&better) < missing
+                && hidden_output_lines(&better).len() <= hidden_output_lines(candidate).len()
+            {
+                validated_toml = Ok(better);
             }
         }
 
@@ -1816,6 +1884,7 @@ pub async fn generate_plan(request: PlanRequest<'_>) -> Result<(PathBuf, Generat
                     && let Some(better_scores) = spec_scores(&better, workdir_ref, &spec_config)
                     && better_scores.mean > kept.1.mean
                     && hidden_output_lines(&better).len() <= hidden_output_lines(&kept.0).len()
+                    && missing_of(&better) <= missing_of(&kept.0)
                 {
                     kept = (better, better_scores);
                 }
@@ -1825,8 +1894,28 @@ pub async fn generate_plan(request: PlanRequest<'_>) -> Result<(PathBuf, Generat
             validated_toml = Ok(kept.0);
         }
 
+        // gap-dc5d7c: what became of each of the source's checks.
+        let source_coverage = validated_toml
+            .as_ref()
+            .ok()
+            .filter(|_| !checks.is_empty())
+            .and_then(|plan| coverage_of(plan));
+        if let Some(coverage) = &source_coverage {
+            println!("📋 {}", coverage.summary_line());
+            for line in coverage.detail_lines() {
+                println!("   {line}");
+            }
+        }
+
         if let Ok(validated_toml) = validated_toml {
-            report("writing", (1, 1), None, planner_model.as_str());
+            report(
+                "writing",
+                (1, 1),
+                source_coverage
+                    .as_ref()
+                    .map(source_checks::SourceCoverage::summary_line),
+                planner_model.as_str(),
+            );
             let accept = accept_for
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -2052,6 +2141,7 @@ pub async fn generate_plan(request: PlanRequest<'_>) -> Result<(PathBuf, Generat
             artifact_valid,
             validation_report,
             spec_quality,
+            source_checks: source_coverage.map(|coverage| coverage.record(checks_regenerated)),
             cost_usd: spend.spent_usd(),
         };
 
@@ -2742,6 +2832,7 @@ mod tests {
             artifact_valid: true,
             validation_report: None,
             spec_quality: None,
+            source_checks: None,
             cost_usd: 0.0,
         };
         let partial = GenerationOutcome {
@@ -2749,6 +2840,7 @@ mod tests {
             artifact_valid: false,
             validation_report: None,
             spec_quality: None,
+            source_checks: None,
             cost_usd: 0.0,
         };
         let failure = GenerationOutcome {
@@ -2756,6 +2848,7 @@ mod tests {
             artifact_valid: true,
             validation_report: None,
             spec_quality: None,
+            source_checks: None,
             cost_usd: 0.0,
         };
 
@@ -3182,6 +3275,87 @@ mod tests {
             scored.min <= scored.mean && scored.mean < 100.0,
             "{scored:?}"
         );
+    }
+
+    /// gap-dc5d7c: generation from a file with a Verification section lists
+    /// its checks for the planner, asks once more for a plan that leaves one
+    /// in no verify step, and reports each check: kept, by the task and the
+    /// criterion that keep it, or dropped, with the planner's reason.
+    #[cfg(unix)]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn from_file_generation_reports_dropped_source_checks() {
+        let source = PlanSource::Text {
+            text: "# Widget\n\nAdd a widget module.\n\n## Verification\n\n\
+                   - `src/widget.rs` exists\n- the widget spins\n- a person enjoys the widget\n",
+            kind: "file",
+        };
+        let plan = |acceptance: &str, verify: &str, dropped: &str| {
+            format!(
+                "[meta]\nplan = \"widget\"\ntotal = 1\ndone = 0\nstatus = \"ready\"\n{dropped}\n\
+                 [[task]]\nid = \"T1\"\ntitle = \"Add the widget module\"\n\
+                 description = \"Create src/widget.rs.\"\nstatus = \"ready\"\n\
+                 role = \"implementer\"\ntier = \"focused\"\nfiles = [\"src/widget.rs\"]\n\
+                 depends_on = []\nacceptance = [{acceptance}]\n\n\
+                 [task.context]\nread_files = []\n{verify}"
+            )
+        };
+        let exists = "\n[[task.verify]]\nphase = \"check\"\ncommand = \"test -f src/widget.rs\"\n\
+                      covers = [\"AC1\"]\n";
+        let spins = "\n[[task.verify]]\nphase = \"check\"\n\
+                     command = \"grep -q spin src/widget.rs\"\ncovers = [\"AC2\"]\n";
+        let first = plan("\"AC1: SC1: src/widget.rs exists\"", exists, "");
+        let second = plan(
+            "\"AC1: SC1: src/widget.rs exists\", \"AC2: SC2: the widget spins\"",
+            &format!("{exists}{spins}"),
+            "dropped_checks = [\"SC3: needs a person to judge it\"]",
+        );
+        let temp = tempfile::tempdir().expect("tempdir");
+        let workdir = temp.path();
+        let bin = tempfile::tempdir().expect("tempdir");
+        let calls = write_scripted_planner(
+            workdir,
+            bin.path(),
+            &[&first, &second],
+            "allow_threshold = 0.0\nblock_threshold = 0.0\n",
+        );
+        let request = PlanRequest {
+            model: Some("planner"),
+            ..PlanRequest::new(source, "widget", workdir)
+        };
+        let (_, outcome) = generate_plan(request)
+            .await
+            .expect("generate the widget plan");
+        let log = std::fs::read_to_string(&calls).expect("planner call log");
+        assert_eq!(
+            log.lines().count(),
+            2,
+            "the plan, then the plan that keeps every check"
+        );
+        let asked = std::fs::read_to_string(bin.path().join("prompt-0.txt")).expect("first call");
+        assert!(asked.contains("## Source checks"), "{asked}");
+        assert!(asked.contains("- SC3: a person enjoys the widget"), "{asked}");
+        let again = std::fs::read_to_string(bin.path().join("prompt-1.txt")).expect("the retry");
+        assert!(again.contains("keeps 1 of the 3 source checks"), "{again}");
+        assert!(again.contains("- SC2: the widget spins"), "{again}");
+
+        let checks = outcome.source_checks.expect("the source's checks are reported");
+        assert_eq!(
+            (checks.total, checks.kept, checks.dropped, checks.missing),
+            (3, 2, 1, 0),
+            "{checks:?}"
+        );
+        assert!(checks.regenerated);
+        let spin = &checks.checks[1];
+        assert_eq!(
+            (spin.status.as_str(), spin.task.as_deref(), spin.criterion.as_deref()),
+            ("kept", Some("T1"), Some("AC2"))
+        );
+        let person = &checks.checks[2];
+        assert_eq!(person.status, "dropped");
+        assert_eq!(person.reason.as_deref(), Some("needs a person to judge it"));
+        let written = std::fs::read_to_string(workdir.join("plans/widget/tasks.toml"))
+            .expect("the widget plan");
+        assert!(written.contains("SC3: needs a person to judge it"), "{written}");
     }
 
     /// bug-f0d60c: a reply that holds no plan that validates is retried with

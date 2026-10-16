@@ -32,7 +32,8 @@ pub use persistence::{
 };
 pub use records::{
     ApplyStatus, ArtifactValidationReport, CompletedRunInput, EfficiencyScope,
-    EfficiencySummaryRecord, GateOutcomeRecord, GenerationOutcome, GenerationSpecQuality,
+    EfficiencySummaryRecord, GateOutcomeRecord, GenerationOutcome, GenerationSourceCheck,
+    GenerationSourceChecks, GenerationSpecQuality,
     KnowledgeSeedEvidence, KnowledgeSeedRecord, LearningPaths, LearningRuntimeError,
     LearningUpdate, RUNTIME_FEEDBACK_SCHEMA_VERSION, RegressionConfig, RetryOutcomeRecord,
     RetryOutcomeStatus, RunnerFeedbackEvent, RuntimeFeedbackQuery, RuntimeFeedbackSnapshot,

@@ -2,21 +2,33 @@
 id = "gap-2da1ff"
 kind = "gap"
 title = "A task's git worktree has no node_modules (or in-project venv), so a Node project's tests fail there before the agent changes anything"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p2"
 goal = "hermes"
 size = "M"
 subsystem = ["roko-cli/worktree"]
 created = 2026-10-15
-updated = 2026-10-15
-last_verified = 2026-10-15
+updated = 2026-10-16
+last_verified = 2026-10-16
+last_verified_rev = "ddd0d074f"
 source = "roko-init round v5, 2026-10-15 (tmp/hermes-roko-v5/findings/roko-init.md)"
 anchors = ["crates/roko-cli/src/orchestrator/worktree/git_ops.rs::isolate_worktree_config"]
 links = { depends_on = [], blocks = [], related = ["bug-4e336b", "gap-1625c0"], supersedes = [], duplicate_of = "" }
 
 [[verify]]
 command = "grep -rqw 'fn worktree_gets_the_checkouts_node_modules' crates/roko-cli/ && cargo test -p roko-cli --lib worktree_gets_the_checkouts_node_modules"
+
+[closed]
+at = 2026-10-16
+at_ts = "2026-10-16T09:22:43Z"
+commit = "ddd0d074f"
+by = "roko-init"
+executor = "claude-agent"
+size = "M"
+claimed_at = "2026-10-16T08:07:41Z"
+forced = false
+evidence = "ddd0d074f (on main 19c468604). A new worktree gets a copy-on-write clone of each git-ignored node_modules of the checkout, nested ones too: clonefile via cp -c on APFS, cp --reflink=always on Linux, only on the checkout's device. Never a link and never a full copy. Absolute symlinks into the checkout are repointed into the worktree, a clone the worktree's git does not ignore is removed, and virtualenvs are not cloned (documented in docs/v3/04-EXECUTION.md). Checks at ddd0d074f: worktree_gets_the_checkouts_node_modules (the [[verify]] command) passes; it asserts the clone, that editing it leaves the checkout unchanged, the relative and repointed absolute links, and a clean worktree status. roko-cli lib 3705 / bin 466 tests pass; all 73 integration targets ran, failing only on known items (bug-2a31bc x2, bug-c63cca item_03, bug-ee2752); clippy -D warnings and fmt clean. Live, a scratch Node project whose test needs node_modules (local file: dependency), plain 'npm test' rung, scratch HOME: before, npm test in a git worktree of HEAD fails 'Cannot find module localdep'. After, run-20261016-084014-926: roko logged 'gave the worktree a copy-on-write clone ... dir=node_modules elapsed_ms=42', and verify:0/test ran in the attempt worktree and passed (exit 0, 439 ms), gpt-oss-120b, $0.0172. The operator checkout was unchanged and the attempt committed no node_modules path. Evidence: tmp/hermes-roko-v5/findings/roko-init.md"
 +++
 
 ## Problem

@@ -79,6 +79,9 @@ pub struct PlanGenerationResult {
     pub plan_targets: Vec<PathBuf>,
     /// Plan-related files to attach to the job submission.
     pub artifacts: Vec<PathBuf>,
+    /// What writing the plan cost, in USD (bug-a0432b).
+    #[serde(default)]
+    pub cost_usd: f64,
 }
 
 /// Structured gate result collected while executing a plan.

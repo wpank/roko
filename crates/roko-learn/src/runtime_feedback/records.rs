@@ -1150,6 +1150,9 @@ pub struct GenerationOutcome {
     /// The generated plan's spec-quality scores, when it was scored (3218).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub spec_quality: Option<GenerationSpecQuality>,
+    /// What the generation's agent calls cost together, in USD (bug-a0432b).
+    #[serde(default)]
+    pub cost_usd: f64,
 }
 
 /// The spec-quality scores of a generated plan (S07.10, backlog 3218), by

@@ -338,6 +338,14 @@ impl super::schema::RokoConfig {
         self.tool_loop_models_with_env(&|name| std::env::var(name).ok())
     }
 
+    /// Why no model roko's own tool loop runs is set up here, and how to fix
+    /// it: the reason a chat host's run is refused with `no_tool_loop_model`,
+    /// which a chat host's plan writing gives too (bug-a0432b).
+    #[must_use]
+    pub fn no_tool_loop_model_reason(&self) -> String {
+        self.no_tool_loop_model_reason_with_env(&|name| std::env::var(name).ok())
+    }
+
     /// [`Self::tool_loop_models`] with the environment `env` holds.
     pub(crate) fn tool_loop_models_with_env(
         &self,

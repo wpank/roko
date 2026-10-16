@@ -52,8 +52,8 @@ Progress per epic: its children (items whose `parent` is the epic, plus its `dep
 
 ## [spec-7a71d6](items/spec-7a71d6-epic-turn-the-cybernetic-layer-on-in.md) turn the cybernetic layer on in safe stages
 
-- **0/15 closed** · goal `cybernetic` · severity p2
-- open by lane: rust-hot 9, rust-cold 6
+- **3/15 closed** · goal `cybernetic` · severity p2
+- open by lane: rust-hot 9, rust-cold 3
 - next: [gap-d76b1b](items/gap-d76b1b-decision-7103-s-audit-on-by-default.md) Decision 7103's audit-on-by-default outcome was never implemented: enabled stays false, no --no-audit flag
 
 ## [spec-1e1b45](items/spec-1e1b45-epic-tracker-tooling-for-parallel-work.md) tracker tooling for parallel work
@@ -107,9 +107,9 @@ Progress per epic: its children (items whose `parent` is the epic, plus its `dep
 | bench | 85 | 122 | 37 (28) |
 | docs | 22 | 30 | 8 (8) |
 | frontend | 3 | 7 | 4 (4) |
-| none | 390 | 479 | 89 (81) |
+| none | 418 | 516 | 98 (90) |
 | paper | 69 | 83 | 14 (12) |
-| rust-cold | 239 | 285 | 46 (38) |
-| rust-hot | 234 | 262 | 28 (27) |
+| rust-cold | 242 | 288 | 46 (38) |
+| rust-hot | 235 | 262 | 27 (26) |
 | tests | 1 | 1 | 0 (0) |
 | tracker | 22 | 28 | 6 (5) |

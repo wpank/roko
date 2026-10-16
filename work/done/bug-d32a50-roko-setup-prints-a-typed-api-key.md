@@ -2,21 +2,33 @@
 id = "bug-d32a50"
 kind = "bug"
 title = "roko setup prints a typed API key back in full and never stores it"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p2"
 goal = "hermes"
 size = "S"
 subsystem = ["roko-cli/setup"]
 created = 2026-10-15
-updated = 2026-10-15
-last_verified = 2026-10-15
+updated = 2026-10-16
+last_verified = 2026-10-16
+last_verified_rev = "33259e1d3"
 source = "roko-init round v5, 2026-10-15 (tmp/hermes-roko-v5/findings/roko-init.md)"
 anchors = ["crates/roko-cli/src/commands/setup.rs::prompt_for_api_key"]
 links = { depends_on = [], blocks = [], related = ["bug-4e336b"], supersedes = [], duplicate_of = "" }
 
 [[verify]]
 command = "grep -rqw 'fn setup_stores_a_typed_key_without_printing_it' crates/roko-cli/ && cargo test -p roko-cli --bin roko setup_stores_a_typed_key_without_printing_it"
+
+[closed]
+at = 2026-10-16
+at_ts = "2026-10-16T01:15:52Z"
+commit = "33259e1d3"
+by = "roko-init"
+executor = "claude-agent"
+size = "S"
+claimed_at = "2026-10-16T00:17:50Z"
+forced = false
+evidence = "33259e1d3 on main 1630fa1bf. roko setup reads a typed key without echo on a terminal, shows only its last four characters, and keeps it in ~/.roko/.env: it replaces that variable's line or the template's commented one, keeps other lines, and rewrites the file through one created 0600. The variable comes from a prefix that names one provider, else setup asks; the key is loaded into the process for the init setup runs next. Checks: setup_stores_a_typed_key_without_printing_it passes (the [[verify]] command, run at 8e68930c1); all roko-cli lib/bin and roko-core tests pass; clippy -D warnings and fmt clean. Live: roko setup with a dummy sk-ant- key piped in, scratch HOME, outbound HTTPS blackholed: the key appears 0 times in the output ('Saved ANTHROPIC_API_KEY (…4242)'), ~/.roko/.env is -rw------- with exactly that line, and the init setup ran gave Anthropic a rung (strong: claude-haiku-4-5). Evidence: tmp/hermes-roko-v5/findings/roko-init.md"
 +++
 
 ## Problem

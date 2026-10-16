@@ -2678,7 +2678,7 @@ fn harmful_playbook() -> roko_learn::playbook::Playbook {
 /// Distinct topic terms ([`task_topic_terms`]) a knowledge entry, a playbook
 /// or an episode must share with a task to reach its prompt (backlogs 4211,
 /// 4212, 4213).
-const MIN_TOPIC_OVERLAP: usize = 2;
+pub(crate) const MIN_TOPIC_OVERLAP: usize = 2;
 
 /// The least confidence of a knowledge entry a prompt shows (backlog 4211).
 const MIN_KNOWLEDGE_CONFIDENCE: f64 = 0.3;
@@ -2726,13 +2726,20 @@ const GENERIC_TOPIC_TERMS: &[&str] = &[
 /// knowledge, episodes and playbooks (backlogs 4211-4213) and group
 /// knowledge (gap-a40021). The others choose by another signal on purpose:
 /// error patterns are keyed to the task and its verify commands (backlogs
-/// 4209, 4210), and sections are cut by the token budget.
-fn task_topic_terms(task: &TaskDef) -> HashSet<String> {
+/// 4209, 4210), and sections are cut by the token budget. A verified pass's
+/// playbook is keyed by them too (gap-89f985).
+pub(crate) fn task_topic_terms(task: &TaskDef) -> HashSet<String> {
     let mut text = vec![task.title.clone()];
     text.extend(task.description.clone());
     text.extend(task.acceptance.iter().cloned());
     text.extend(task.files.iter().flat_map(|file| file_topic_words(file)));
-    let mut terms = query_words(&text.join(" "));
+    topic_terms(&text.join(" "))
+}
+
+/// The topic terms of `text`: its words ([`query_words`]) longer than two
+/// characters, less stopwords, generic path pieces and generic verbs.
+pub(crate) fn topic_terms(text: &str) -> HashSet<String> {
+    let mut terms = query_words(text);
     terms.retain(|word| {
         word.len() > 2
             && !QUERY_STOPWORDS.contains(&word.as_str())

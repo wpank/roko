@@ -2671,7 +2671,8 @@ pub fn apply_run_switches(
 ///
 /// It builds the same feedback infrastructure that Runner-v2 used, so Graph
 /// engine runs produce episodes, efficiency events, playbook outcomes,
-/// routing observations, experiment settlements, and daimon feedback.
+/// routing observations, experiment settlements, and daimon feedback; their
+/// verified passes also write playbooks (gap-89f985).
 /// [`run_graph_plan`] wires its dispatcher with it, and the learning wiring
 /// census (`tests/learning_wiring_census.rs`, S01 §4.8) inspects the same
 /// object graph through `GraphTaskDispatcher::wiring_report`.
@@ -2805,10 +2806,10 @@ fn graph_daimon_state(
 
 /// The feedback facade of a Graph plan run: the sinks each settled task
 /// attempt fans out to, in order (episodes, hindsight, verified knowledge,
-/// error patterns, routing when there is a cascade router, and the daimon
-/// sink, the one that hears each plan's completion). The routing sink
-/// journals its observations in `cascade_journal`, when there is one, and the
-/// hindsight sink its retractions of them;
+/// verified playbooks, error patterns, routing when there is a cascade
+/// router, and the daimon sink, the one that hears each plan's completion).
+/// The routing sink journals its observations in `cascade_journal`, when
+/// there is one, and the hindsight sink its retractions of them;
 /// `daimon_state` is the state dispatch modulates, persisted when a plan
 /// completes; `error_patterns` is the store dispatch formats into prompts;
 /// `self_model` is the run's self-model, which its outcome sink teaches;
@@ -2826,9 +2827,10 @@ pub fn build_graph_feedback_facade(
     publisher: Option<crate::state_hub::StateHubSender>,
 ) -> Arc<crate::runtime_feedback::FeedbackFacade> {
     // A frozen run (decision 2218) registers no learning sink. Each one
-    // writes learned state: episodes, hindsight, knowledge, error patterns,
-    // the router and the daimon state, so a frozen run saves no affect when
-    // a plan completes (gap-a960a1). Its episodes go to each run's own
+    // writes learned state: episodes, hindsight, knowledge, playbooks, error
+    // patterns, the router and the daimon state, so a frozen run creates no
+    // playbook (gap-89f985) and saves no affect when a plan completes
+    // (gap-a960a1). Its episodes go to each run's own
     // `runs/<run_id>/episodes.jsonl`, telemetry that no later run reads and
     // the bench driver's attempt evidence (gap-127263).
     if config.learning.frozen {
@@ -2849,10 +2851,17 @@ pub fn build_graph_feedback_facade(
         Some(batch) => verified_knowledge.with_commit_batch(batch),
         None => verified_knowledge,
     };
-    // What it writes is published on the run's hub (gap-7576c7).
-    let verified_knowledge = match publisher {
-        Some(publisher) => verified_knowledge.with_publisher(publisher),
-        None => verified_knowledge,
+    // Gate-verified passes write L-play's playbooks, where prompts read
+    // them (gap-89f985).
+    let verified_playbooks =
+        crate::runtime_feedback::VerifiedPlaybookSink::new(graph_learn_dir.join("playbooks"));
+    // What each writes is published on the run's hub (gap-7576c7).
+    let (verified_knowledge, verified_playbooks) = match publisher {
+        Some(publisher) => (
+            verified_knowledge.with_publisher(publisher.clone()),
+            verified_playbooks.with_publisher(publisher),
+        ),
+        None => (verified_knowledge, verified_playbooks),
     };
     let mut facade = crate::runtime_feedback::FeedbackFacade::new()
         .with_sink(std::sync::Arc::new(
@@ -2870,8 +2879,10 @@ pub fn build_graph_feedback_facade(
             .with_journal(cascade_journal.cloned()),
         ))
         // Gate-verified attempts grow durable knowledge (tier
-        // progression included) under `.roko/neuro/`.
+        // progression included) under `.roko/neuro/`, and playbooks under
+        // `.roko/learn/playbooks/`.
         .with_sink(std::sync::Arc::new(verified_knowledge))
+        .with_sink(std::sync::Arc::new(verified_playbooks))
         // A failure of the agent's work goes into the error-pattern store
         // dispatch formats into prompts, and to `learn/error-patterns.json`.
         .with_sink(std::sync::Arc::new(
@@ -5973,6 +5984,180 @@ max_retries = 0
         }
     }
 
+    /// A stand-in `claude_cli` agent that writes `greeting.txt` and prints
+    /// it: two tool calls that succeed, then a finished turn at no cost.
+    #[cfg(unix)]
+    const GREETING_AGENT: &str = r#"#!/bin/sh
+set -eu
+cat >/dev/null
+printf '%s\n' '{"type":"assistant","message":{"id":"msg_1","model":"claude-sonnet-4-6","content":[{"type":"tool_use","id":"tu_1","name":"Write","input":{"file_path":"greeting.txt","content":"hello"}},{"type":"tool_use","id":"tu_2","name":"Bash","input":{"command":"cat greeting.txt"}}],"usage":{"input_tokens":10,"output_tokens":5}}}'
+printf '%s\n' '{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"tu_1","content":"written"},{"type":"tool_result","tool_use_id":"tu_2","content":"hello"}]}}'
+printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"session_id":"greet","model":"claude-sonnet-4-6","total_cost_usd":0.0,"num_turns":2,"usage":{"input_tokens":5,"output_tokens":10}}'
+"#;
+
+    /// A workspace of [`fake_provider_workspace`] whose provider is
+    /// [`GREETING_AGENT`], with `extra_config` after its `[gates]` table.
+    #[cfg(unix)]
+    fn greeting_agent_workspace(extra_config: &str) -> tempfile::TempDir {
+        let dir = tempfile::tempdir().expect("tempdir");
+        fake_provider_workspace(dir.path(), 0.0, extra_config);
+        std::fs::write(dir.path().join("fake-provider.sh"), GREETING_AGENT)
+            .expect("the greeting agent");
+        dir
+    }
+
+    /// Write plan `plan_id` with one implementer task about the greeting
+    /// banner for [`GREETING_AGENT`], whose verify command is `verify`.
+    #[cfg(unix)]
+    fn write_greeting_plan(dir: &Path, plan_id: &str, verify: &str) {
+        let plan_dir = dir.join("plans").join(plan_id);
+        std::fs::create_dir_all(&plan_dir).expect("plan dir");
+        std::fs::write(
+            plan_dir.join("tasks.toml"),
+            format!(
+                r#"[meta]
+plan = "{plan_id}"
+max_parallel = 1
+skip_enrichment = true
+
+[[task]]
+id = "T1"
+title = "Write the greeting banner"
+description = "Print a friendly greeting banner from greeting.txt."
+role = "implementer"
+status = "ready"
+tier = "focused"
+model_hint = "graph-model"
+files = ["greeting.txt"]
+timeout_secs = 60
+max_retries = 0
+verify = [{{ phase = "structural", command = {verify:?} }}]
+"#
+            ),
+        )
+        .expect("tasks.toml");
+    }
+
+    /// The `playbook_written` events `hub` saw, as `(plan, admission,
+    /// playbook id)`.
+    #[cfg(unix)]
+    fn playbooks_written(hub: &crate::state_hub::SharedStateHub) -> Vec<(String, String, String)> {
+        hub.subscribe_events_from(0)
+            .replay
+            .into_iter()
+            .filter_map(|envelope| match envelope.payload {
+                roko_core::DashboardEvent::PlaybookWritten {
+                    plan_id,
+                    admission,
+                    playbook_id,
+                    ..
+                } => Some((plan_id, admission, playbook_id)),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// gap-89f985: plan runs write L-play's playbooks. A task that passes its
+    /// verify step leaves one playbook in `.roko/learn/playbooks/`: its
+    /// agent's tool calls, keyed by the task's topic terms, which the run's
+    /// hub announces (`playbook_written`). A task that fails its check, or
+    /// has none, leaves none. The next run of a task on that topic retrieves
+    /// the playbook into its prompt (one exposure row, included, or withheld
+    /// on L-play's arm), and repeating its steps credits it once, by dispatch
+    /// when the prompt included it and by the sink otherwise, instead of
+    /// adding another. A frozen run writes none.
+    #[cfg(unix)]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn verified_plan_task_writes_a_playbook() {
+        use roko_learn::playbook::PlaybookStore;
+        use roko_learn::telemetry::ExposureItemKind;
+        use roko_learn::telemetry::report::RunRecords;
+
+        let dir = greeting_agent_workspace("");
+        // `greet` passes its check, `broken` fails it, and `unchecked` has none.
+        write_greeting_plan(dir.path(), "greet", "true");
+        write_greeting_plan(dir.path(), "broken", "false");
+        write_single_task_plan(dir.path(), "unchecked", "c.txt", &[], None);
+        let store = PlaybookStore::new(dir.path().join(".roko/learn/playbooks"));
+
+        let (exit_code, _, hub) = run_plan_set(dir.path(), Some(1), None).await;
+
+        assert_eq!(exit_code, EXIT_FAILURE, "broken and unchecked fail");
+        let playbooks = store.list().await.expect("read the playbooks");
+        let [playbook] = playbooks.as_slice() else {
+            panic!("greet's verified pass alone writes a playbook: {playbooks:#?}");
+        };
+        let id = playbook.id.clone();
+        assert!(id.starts_with("ep-greet-T1-"), "{playbook:#?}");
+        assert_eq!(
+            playbook.goal,
+            "Write the greeting banner: Print a friendly greeting banner from greeting.txt."
+        );
+        assert_eq!(
+            playbook.when_pattern.as_deref(),
+            Some("banner friendly greeting print"),
+            "keyed by the task's topic terms"
+        );
+        let steps: Vec<(&str, &str)> = playbook
+            .steps
+            .iter()
+            .map(|step| (step.action_kind.as_str(), step.description.as_str()))
+            .collect();
+        assert_eq!(
+            steps,
+            [("Write", "greeting.txt"), ("Bash", "cat greeting.txt")]
+        );
+        assert_eq!((playbook.success_count, playbook.failure_count), (1, 0));
+        assert_eq!(
+            playbooks_written(&hub),
+            [("greet".to_string(), "created".to_string(), id.clone())]
+        );
+
+        // The next run: the same task in another plan.
+        for plan in ["greet", "broken", "unchecked"] {
+            std::fs::remove_dir_all(dir.path().join("plans").join(plan)).expect("drop the plan");
+        }
+        write_greeting_plan(dir.path(), "greet-again", "true");
+        let (exit_code, _, _) = run_plan_set(dir.path(), Some(1), None).await;
+
+        assert_eq!(exit_code, EXIT_SUCCESS);
+        let exposures: Vec<bool> = std::fs::read_dir(dir.path().join(".roko/runs"))
+            .expect("read .roko/runs")
+            .map(|entry| RunRecords::load(&entry.expect("run directory").path()))
+            .flat_map(|run| run.expect("read the run's records").exposures)
+            .filter(|line| {
+                line.record.identity.plan_id == "greet-again"
+                    && line.record.item_kind == ExposureItemKind::Playbook
+                    && line.record.item_id == id
+            })
+            .map(|line| line.record.included)
+            .collect();
+        assert_eq!(
+            exposures.len(),
+            1,
+            "one playbook exposure row: {exposures:?}"
+        );
+        let playbooks = store.list().await.expect("read the playbooks");
+        let [playbook] = playbooks.as_slice() else {
+            panic!("the repeat credits the playbook: {playbooks:#?}");
+        };
+        assert_eq!(playbook.id, id);
+        assert_eq!((playbook.success_count, playbook.failure_count), (2, 0));
+
+        let frozen = greeting_agent_workspace("\n[learning]\nfrozen = true\n");
+        write_greeting_plan(frozen.path(), "greet", "true");
+        let (exit_code, _, hub) = run_plan_set(frozen.path(), Some(1), None).await;
+
+        assert_eq!(exit_code, EXIT_SUCCESS);
+        let frozen_store = PlaybookStore::new(frozen.path().join(".roko/learn/playbooks"));
+        let playbooks = frozen_store.list().await.expect("read the playbooks");
+        assert!(
+            playbooks.is_empty(),
+            "a frozen run writes none: {playbooks:#?}"
+        );
+        assert!(playbooks_written(&hub).is_empty());
+    }
+
     #[cfg(unix)]
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn one_plan_at_a_time_keeps_the_execution_order() {
@@ -6652,6 +6837,7 @@ max_retries = 0
                 "sink.routing",
                 "sink.knowledge_ingestion",
                 "sink.playbook_outcome",
+                "sink.playbook_producer",
                 "sink.error_pattern",
                 "sink.section_effect",
                 "store.attempt_log",
@@ -7090,11 +7276,12 @@ max_retries = 0
     /// frozen facade's one sink is the run's own episode log (gap-127263).
     #[tokio::test]
     async fn frozen_run_registers_no_learning_sinks() {
-        const LEARNING: [&str; 8] = [
+        const LEARNING: [&str; 9] = [
             "sink.episode",
             "sink.routing",
             "sink.knowledge_ingestion",
             "sink.playbook_outcome",
+            "sink.playbook_producer",
             "sink.error_pattern",
             "sink.section_effect",
             "sink.router_source_credit",

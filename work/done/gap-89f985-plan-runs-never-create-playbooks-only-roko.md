@@ -2,15 +2,16 @@
 id = "gap-89f985"
 kind = "gap"
 title = "Plan runs never create playbooks (only roko bench does), so L-play never acts on a real run: write one from each verified plan task"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p2"
 goal = "learning"
 size = "M"
 subsystem = ["roko-cli/runtime_feedback", "roko-learn/playbook"]
 created = 2026-10-15
-updated = 2026-10-15
-last_verified = 2026-10-15
+updated = 2026-10-16
+last_verified = 2026-10-16
+last_verified_rev = "3e0faf389"
 source = "status-quo-2026-10-15#finding-16"
 anchors = ["crates/roko-cli/src/run.rs::extract_bench_playbook", "crates/roko-learn/src/playbook.rs::extract_playbook_from_episode", "crates/roko-learn/src/playbook.rs::PlaybookStore", "crates/roko-cli/src/runtime_feedback/verified_knowledge.rs::VerifiedKnowledgeSink", "crates/roko-cli/src/graph_execution/plan_runner.rs::build_graph_feedback_facade"]
 lane = "rust-hot"
@@ -19,6 +20,18 @@ links = { depends_on = [], blocks = [], related = [], supersedes = [], duplicate
 
 [[verify]]
 command = "grep -rqw 'fn verified_plan_task_writes_a_playbook' crates/roko-cli/ && cargo test -p roko-cli verified_plan_task_writes_a_playbook"
+
+[closed]
+at = 2026-10-16
+at_ts = "2026-10-16T15:50:02Z"
+commit = "3e0faf389"
+executor = "claude-agent"
+via = "work-batch"
+size = "M"
+claimed_at = "2026-10-16T13:53:24Z"
+model = "claude-opus-5-5"
+forced = false
+evidence = "VerifiedPlaybookSink (crates/roko-cli/src/runtime_feedback/verified_playbooks.rs), registered on the Graph facade in plan_runner.rs::build_graph_feedback_facade, turns each TaskVerified attempt's tool calls (LiveToolCalls now keeps each live tool step's target; VerifiedAttempt carries the task's topic terms, description, included playbook ids and tool calls, set in graph_task_dispatch/feedback.rs) into a playbook via extract_playbook_from_episode, keyed by the task's topic terms (prompt_builder::task_topic_terms); a stored playbook with the same topic and steps is credited instead unless the prompt included it (W07 credits those); at most 3 new playbooks per run; a frozen run registers no sink and writes none; each write publishes DashboardEvent::PlaybookWritten (playbook_written, kept in .roko/events.jsonl). Verify: cargo test -p roko-cli verified_plan_task_writes_a_playbook passes after rebasing on main 1b8b62fb9 (fake-provider plan runs: the verified task leaves one playbook, the failed and unverified tasks none; the next run of the same task has one playbook exposure row and credits it once, no duplicate; a frozen run writes none). Also passing: 71 related roko-cli lib tests (frozen, census, knowledge, error patterns, hindsight, playbooks, topic terms), learning_wiring_census graph_dispatcher_production_wiring_census with the new sink.playbook_producer component, roko-core dashboard_snapshot and roko-serve health/events tests; clippy -D warnings clean on roko-core, roko-serve and roko-cli; nightly fmt clean. Follow-up filed: gap-137930."
 +++
 
 ## Problem

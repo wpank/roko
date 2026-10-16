@@ -205,6 +205,13 @@ impl GraphTaskDispatcher {
                 "playbook outcomes recorded after each attempt (`learn/playbooks/`)",
             ),
             component(
+                "sink.playbook_producer",
+                WiringKind::Sink,
+                has_sink("verified_playbooks"),
+                "`verified_playbooks` sink: a gate-verified pass's tool calls become a playbook, \
+                 or credit the stored one they repeat (`learn/playbooks/`)",
+            ),
+            component(
                 "sink.error_pattern",
                 WiringKind::Sink,
                 has_sink("error_patterns"),

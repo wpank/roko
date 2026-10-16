@@ -2,21 +2,33 @@
 id = "bug-1f5406"
 kind = "bug"
 title = "roko doctor cannot run while roko serve runs: serve holds the exclusive workspace lock for its lifetime and doctor's shared lock is refused"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p3"
 goal = "hermes"
 size = "S"
 subsystem = ["roko-cli/doctor"]
 created = 2026-10-15
-updated = 2026-10-15
-last_verified = 2026-10-15
+updated = 2026-10-16
+last_verified = 2026-10-16
+last_verified_rev = "64c6b4394"
 source = "hermes-roko round v5, roko-chathost, 2026-10-15"
 anchors = ["crates/roko-cli/src/commands/util.rs::cmd_doctor", "crates/roko-cli/src/commands/server.rs::cmd_serve"]
 links = { depends_on = [], blocks = [], related = ["gap-115bae"], supersedes = [], duplicate_of = "" }
 
 [[verify]]
 command = "grep -rqw 'fn doctor_recognizes_the_serve_that_holds_the_workspace' crates/ && cargo test -p roko-cli --lib doctor_recognizes_the_serve_that_holds_the_workspace"
+
+[closed]
+at = 2026-10-16
+at_ts = "2026-10-16T08:46:45Z"
+commit = "64c6b4394"
+by = "roko-chathost"
+executor = "claude-agent"
+size = "S"
+claimed_at = "2026-10-16T08:09:06Z"
+forced = false
+evidence = "64c6b4394 + b05d0581e: when the shared workspace lock is refused and the lock's owner PID is the one the workspace's roko serve advertises in .roko/runtime/serve.json (doctor::serve_holding_workspace), cmd_doctor's read-only variants read beside it without the lock. The report's first line is `[ok] workspace_lock: roko serve (PID N) holds this workspace, so doctor read it without the workspace lock`; doctor disk and doctor network print it as a note; the one check that writes, the stale-lock-file cleanup, is skipped (`[skipped] stale_locks`); the shared lock diagnostic no longer calls serve's lock a conflict to kill. doctor clean and doctor disk --fix still refuse. Tests: doctor::tests::doctor_recognizes_the_serve_that_holds_the_workspace (the verify) and doctor_beside_serve_says_so_and_leaves_lock_files_alone; roko-cli lib 3706 and bin 466 passed under a scratch HOME; clippy -D warnings clean. Live (scratch project, scratch HOME, roko serve on :6791): before, roko doctor exited 2 with 'Another roko process holds an exclusive lock on this workspace'; after, the whole report with the workspace_lock line first and no lock failure; doctor disk notes it and exits 0; doctor clean still refuses."
 +++
 
 ## Problem

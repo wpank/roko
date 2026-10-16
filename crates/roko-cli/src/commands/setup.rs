@@ -242,6 +242,7 @@ async fn cmd_setup_interactive(cli: &Cli, workdir: &std::path::Path, yes: bool) 
         config_override: cli.config.clone(),
         serve_url: None,
         credentials: CredentialProbe::Environment,
+        beside_serve: None,
     })
     .await?;
 

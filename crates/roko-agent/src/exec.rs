@@ -545,6 +545,9 @@ pub struct ExecAgent {
     /// the process and fails the turn with a policy-violation error.
     /// Only meaningful when `extract_codex_jsonl` is `true`.
     codex_operation_policy: Option<CodexOperationPolicy>,
+    /// Files the subprocess reads, such as a run-scoped settings file, which
+    /// live as long as the agent.
+    scratch_files: Vec<tempfile::TempPath>,
 }
 
 impl ExecAgent {
@@ -567,7 +570,16 @@ impl ExecAgent {
             stdin_prefix: None,
             extract_codex_jsonl: false,
             codex_operation_policy: None,
+            scratch_files: Vec::new(),
         }
+    }
+
+    /// Keep `file` for as long as this agent lives: the subprocess reads it,
+    /// and it is removed when the agent is dropped.
+    #[must_use]
+    pub fn with_scratch_file(mut self, file: tempfile::TempPath) -> Self {
+        self.scratch_files.push(file);
+        self
     }
 
     /// Override the subprocess timeout in milliseconds (default 2 minutes).

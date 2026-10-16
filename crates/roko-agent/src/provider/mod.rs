@@ -2023,7 +2023,7 @@ mod tests {
             (ProviderKind::CursorCli, TurnCapEnforcement::ToolCalls),
             (ProviderKind::CodexCli, TurnCapEnforcement::Advisory),
             (ProviderKind::CursorAcp, TurnCapEnforcement::Advisory),
-            (ProviderKind::GeminiCli, TurnCapEnforcement::Advisory),
+            (ProviderKind::GeminiCli, TurnCapEnforcement::Native),
         ] {
             assert_eq!(enforcement(&provider(kind)), expected, "{kind:?}");
         }

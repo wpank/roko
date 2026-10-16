@@ -362,6 +362,9 @@ impl App {
                     if let Err(err) = written {
                         tracing::warn!("failed to write roko.toml: {err:#}");
                     }
+                    if let Err(err) = crate::init::ensure_roko_gitignored(&self.workdir) {
+                        tracing::warn!("failed to add .roko/ to .gitignore: {err:#}");
+                    }
                 }
                 // Update workspace state
                 self.tui_state.workdir = self.workdir.clone();

@@ -361,6 +361,18 @@ pub(crate) async fn cmd_init(
         existing
     };
 
+    // roko's state stays out of git (bug-2e887e).
+    match roko_cli::init::ensure_roko_gitignored(&target) {
+        Ok(roko_cli::init::GitignoreChange::Created) => {
+            println!("created .gitignore with .roko/, so git does not track roko's state");
+        }
+        Ok(roko_cli::init::GitignoreChange::Appended) => {
+            println!("added .roko/ to .gitignore, so git does not track roko's state");
+        }
+        Ok(roko_cli::init::GitignoreChange::Covered) => {}
+        Err(err) => println!("note: could not add .roko/ to .gitignore: {err:#}"),
+    }
+
     if demo {
         let report = roko_cli::demo_seed::seed_demo_workspace(&target, demo_config.as_ref())?;
         if report.any_seeded() {

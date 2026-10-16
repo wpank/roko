@@ -1196,6 +1196,79 @@ pub fn needs_init(workdir: &Path) -> bool {
     !workdir.join("roko.toml").is_file()
 }
 
+/// What `roko init` did about `.roko/` in the project's `.gitignore`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum GitignoreChange {
+    /// Created `.gitignore` holding the rule.
+    Created,
+    /// Added the rule to the existing `.gitignore`.
+    Appended,
+    /// Changed nothing: git already ignores `.roko/`, or a rule names it.
+    Covered,
+}
+
+/// The rule `roko init` adds to `.gitignore`, after a comment saying why.
+const GITIGNORE_ENTRY: &str =
+    "# roko's workspace state, run records and .roko/.env keys (roko init)\n.roko/\n";
+
+/// Keep roko's state out of git (bug-2e887e): add `.roko/` to `target`'s
+/// `.gitignore`, creating the file if needed and keeping what is there. It
+/// changes nothing when git already ignores `.roko/` in `target` (the
+/// repository's rules, `.git/info/exclude`, global excludes) or when a rule in
+/// `.gitignore` names `.roko`: a repository that tracks part of `.roko/` on
+/// purpose, as roko's own does, keeps its rules.
+pub fn ensure_roko_gitignored(target: &Path) -> Result<GitignoreChange> {
+    let path = target.join(".gitignore");
+    let existing = match std::fs::read_to_string(&path) {
+        Ok(text) => Some(text),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => None,
+        Err(err) => return Err(err).with_context(|| format!("read {}", path.display())),
+    };
+    if existing.as_deref().is_some_and(names_roko_dir) || git_ignores_roko_dir(target) {
+        return Ok(GitignoreChange::Covered);
+    }
+    let created = existing.is_none();
+    let mut text = existing.unwrap_or_default();
+    if !text.is_empty() {
+        if !text.ends_with('\n') {
+            text.push('\n');
+        }
+        text.push('\n');
+    }
+    text.push_str(GITIGNORE_ENTRY);
+    std::fs::write(&path, text).with_context(|| format!("write {}", path.display()))?;
+    Ok(if created {
+        GitignoreChange::Created
+    } else {
+        GitignoreChange::Appended
+    })
+}
+
+/// Whether a rule of the `.gitignore` text names `.roko`, negated or not.
+fn names_roko_dir(text: &str) -> bool {
+    text.lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty() && !line.starts_with('#'))
+        .map(|line| {
+            let line = line.trim_start_matches('!').trim_start_matches('/');
+            line.strip_prefix("**/").unwrap_or(line)
+        })
+        .any(|rule| rule == ".roko" || rule.starts_with(".roko/") || rule.starts_with(".roko*"))
+}
+
+/// Whether git ignores `.roko/` in `target`; false when `target` is in no git
+/// repository, or git cannot say.
+fn git_ignores_roko_dir(target: &Path) -> bool {
+    std::process::Command::new("git")
+        .args(["check-ignore", "-q", ".roko/"])
+        .current_dir(target)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .is_ok_and(|status| status.success())
+}
+
 /// Write the default `roko.toml` into `target` for a machine with only
 /// `provider`, and no gate rungs, and return the text written.
 pub fn write_init_config(target: &Path, cloud: bool, provider: InitProvider) -> Result<String> {
@@ -1619,6 +1692,63 @@ mod tests {
                 model.key,
                 model.slug
             );
+        }
+    }
+
+    /// bug-2e887e: `roko init` keeps roko's state out of git. It adds `.roko/`
+    /// to `.gitignore` (creating it, or keeping what is there), once, and
+    /// leaves a repository's own `.roko` rules and git's excludes alone.
+    #[test]
+    fn init_adds_roko_state_to_gitignore() {
+        let read = |dir: &tempfile::TempDir| {
+            std::fs::read_to_string(dir.path().join(".gitignore")).expect("read .gitignore")
+        };
+        let empty = project(&[]);
+        assert_eq!(
+            ensure_roko_gitignored(empty.path()).unwrap(),
+            GitignoreChange::Created
+        );
+        assert_eq!(read(&empty), GITIGNORE_ENTRY);
+        assert_eq!(
+            ensure_roko_gitignored(empty.path()).unwrap(),
+            GitignoreChange::Covered
+        );
+        assert_eq!(read(&empty), GITIGNORE_ENTRY);
+
+        let kept = project(&[(".gitignore", "target\nnode_modules")]);
+        assert_eq!(
+            ensure_roko_gitignored(kept.path()).unwrap(),
+            GitignoreChange::Appended
+        );
+        assert_eq!(
+            read(&kept),
+            format!("target\nnode_modules\n\n{GITIGNORE_ENTRY}")
+        );
+
+        // roko's own repository tracks part of .roko/ on purpose.
+        let rules = "**/.roko/\n!/.roko/\n/.roko/*\n!/.roko/GAPS.md\n";
+        let own = project(&[(".gitignore", rules)]);
+        assert_eq!(
+            ensure_roko_gitignored(own.path()).unwrap(),
+            GitignoreChange::Covered
+        );
+        assert_eq!(read(&own), rules);
+
+        // git's own excludes count too.
+        if command_on_path("git") {
+            let repo = project(&[]);
+            let git = std::process::Command::new("git")
+                .args(["init", "-q"])
+                .current_dir(repo.path())
+                .status()
+                .expect("git init");
+            assert!(git.success());
+            std::fs::write(repo.path().join(".git/info/exclude"), ".roko/\n").unwrap();
+            assert_eq!(
+                ensure_roko_gitignored(repo.path()).unwrap(),
+                GitignoreChange::Covered
+            );
+            assert!(!repo.path().join(".gitignore").exists());
         }
     }
 

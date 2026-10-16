@@ -6907,8 +6907,9 @@ exec sleep 60
             "the child test did not run: {stdout}"
         );
 
-        // Sonnet per million: $3 in, $15 out, $0.30 cache read, $3.75 cache write.
-        let expected = (1_000.0 * 3.0 + 200.0 * 15.0 + 4_000.0 * 0.30 + 3_000.0 * 3.75) / 1e6;
+        // Sonnet per million: $3 in, $15 out, $0.30 cache read, $6 for a cache
+        // write with no TTL split (1-hour, as print mode writes, bug-acfced).
+        let expected = (1_000.0 * 3.0 + 200.0 * 15.0 + 4_000.0 * 0.30 + 3_000.0 * 6.0) / 1e6;
         let ledger: serde_json::Value = serde_json::from_slice(
             &std::fs::read(dir.path().join(".roko/state/graph/interrupted/costs.json"))
                 .expect("the plan's cost ledger"),

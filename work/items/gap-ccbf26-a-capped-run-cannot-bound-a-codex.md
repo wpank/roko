@@ -81,5 +81,5 @@ Codex or Gemini CLI that never reports usage is stopped by a budget-derived cap,
 
 ## Notes
 
-Filed by roko-caps at the lead's request, after gap-ca1c92 and gap-e14344 covered the Claude CLI. CLI versions and
+Filed by roko-caps at the lead's request, after gap-ca1c92 and gap-e14344 covered the Claude CLI. Step 2 (Gemini's `model.maxSessionTurns`) is done as gap-130413. CLI versions and
 options were checked on this machine on 2026-10-16 (`--help`; Gemini's settings schema in its bundle).

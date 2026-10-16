@@ -2,7 +2,7 @@
 id = "gap-130413"
 kind = "gap"
 title = "Gemini CLI attempts ignore roko's turn cap: write it as the CLI's model.maxSessionTurns setting (gap-ccbf26 step 2)"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p3"
 goal = "hermes"
@@ -11,6 +11,7 @@ subsystem = ["roko-agent/gemini-cli"]
 created = 2026-10-16
 updated = 2026-10-16
 last_verified = 2026-10-16
+last_verified_rev = "4f647ebd5"
 source = "tmp/hermes-roko-v5/findings/roko-caps.md (roko-caps, 2026-10-16)"
 discovered_from = "gap-ccbf26 step 2"
 anchors = ["crates/roko-agent/src/provider/gemini_cli.rs::GeminiCliAdapter", "crates/roko-agent/src/provider/error_classify.rs::detect_turn_cap"]
@@ -18,6 +19,15 @@ links = { depends_on = [], blocks = [], related = ["gap-ccbf26"], supersedes = [
 
 [[verify]]
 command = "grep -rqw 'fn a_gemini_cli_attempt_runs_under_roko_s_turn_cap' crates/roko-agent/src && cargo test -p roko-agent --lib a_gemini_cli_attempt_runs_under_roko_s_turn_cap"
+
+[closed]
+at = 2026-10-16
+at_ts = "2026-10-16T13:36:45Z"
+commit = "4f647ebd5"
+by = "commit trailer"
+executor = "unknown"
+forced = false
+evidence = "4f647ebd5: with a turn cap, the Gemini CLI adapter writes a run-scoped system settings file (removed with the agent) with model.maxSessionTurns at the cap, merged with the system settings the run would read and keeping a lower limit set there, and points the CLI at it with GEMINI_CLI_SYSTEM_SETTINGS_PATH, whose settings override the user's and the project's in Gemini CLI 0.41.2. The CLI's stop there ('Reached max session turns for this session', exit 53) counts as a turn-cap hit (detect_turn_cap), and the adapter reports TurnCapEnforcement::Native. a_gemini_cli_attempt_runs_under_roko_s_turn_cap passes (scripted CLI: the cap of 7 written; a lower system limit of 3 and other system settings kept; the file removed with the agent; the stop detected). At 4f647ebd5: fmt --check, clippy -D warnings (roko-agent, roko-cli), roko-agent lib tests 2363 passed, roko-cli lib tests 3725 passed, and the [[verify]] command passes. Checked against the Gemini CLI 0.41.2 bundle, not a live Gemini run."
 +++
 
 ## Problem

@@ -593,6 +593,11 @@ pub enum DashboardEvent {
         /// 600 s`.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         reason: Option<String>,
+        /// What stopped the step before it ended, such as `cancel` or
+        /// `SIGINT`, when the run was asked to stop (bug-7b62ff): the check
+        /// was stopped, it did not fail.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        stopped_by: Option<String>,
         /// Milliseconds the step ran.
         elapsed_ms: u64,
     },
@@ -2710,10 +2715,15 @@ impl DashboardSnapshot {
                 steps,
                 name,
                 passed,
+                stopped_by,
                 elapsed_ms,
                 ..
             } => {
-                let verdict = if *passed { "passed" } else { "failed" };
+                let verdict = match (passed, stopped_by) {
+                    (true, _) => "passed",
+                    (false, Some(_)) => "stopped",
+                    (false, None) => "failed",
+                };
                 self.push_event_log(
                     ts,
                     "plan_check_finished".to_string(),

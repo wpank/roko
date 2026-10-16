@@ -176,8 +176,7 @@ async fn run_plan_verify_from(
         let ran = tokio::select! {
             ran = tokio::time::timeout(timeout, run) => ran,
             interrupt = stop.stopped() => {
-                let reason = format!("{} stopped it", interrupt.cause());
-                watched.finish(false, None, Some(reason.clone()));
+                let reason = watched.stopped(interrupt);
                 return Err(PlanVerifyFailure {
                     stopped_by: Some(interrupt.label().to_string()),
                     ..failure(reason)
@@ -475,6 +474,9 @@ mod tests {
     #[cfg(unix)]
     #[tokio::test]
     async fn a_stop_ends_the_plan_check_and_kills_its_steps() {
+        use roko_core::DashboardEvent;
+
+        use super::super::plan_check_events::CheckStage;
         use crate::check_process_probe::{sleeping_step, wait_for_exit, wait_for_pids};
         use crate::graph_execution::plan_runner::PlanRunInterrupt;
 
@@ -484,11 +486,19 @@ mod tests {
             verify_step(&sleeping_step(&pids)),
             verify_step("touch never"),
         ];
+        let hub = crate::state_hub::StateHub::new(64);
+        let mut published = hub.subscribe_events();
+        let events = PlanCheckEvents::new(
+            crate::runner::tui_bridge::TuiBridge::new(hub.sender()),
+            "demo",
+            CheckStage::InPlace,
+            "authored",
+        );
         let stop = PlanRunInterruptHandle::default();
         let check = tokio::spawn({
             let dir = dir.path().to_path_buf();
             let stop = stop.clone();
-            async move { run_plan_verify(&dir, &steps, &[], &PlanCheckEvents::none(), &stop).await }
+            async move { run_plan_verify(&dir, &steps, &[], &events, &stop).await }
         });
         let running = wait_for_pids(&pids).await;
 
@@ -510,5 +520,16 @@ mod tests {
             wait_for_exit(pid).await;
         }
         assert!(!dir.path().join("never").exists());
+        // The step's end says it was stopped, not that it failed.
+        let mut finished = Vec::new();
+        while let Ok(envelope) = published.try_recv() {
+            if let DashboardEvent::PlanCheckFinished {
+                passed, stopped_by, ..
+            } = envelope.payload
+            {
+                finished.push((passed, stopped_by));
+            }
+        }
+        assert_eq!(finished, [(false, Some("cancel".to_string()))]);
     }
 }

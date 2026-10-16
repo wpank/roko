@@ -430,7 +430,7 @@ as soon as it is published; heartbeats, efficiency rows and gate output lines re
 | `knowledge_written` | `plan_id`, `task_id`, `admission` (`light_admitted`, `full_admitted`, `full_deferred`, `full_rejected`, `full_suppressed`, `deferred`, `duplicate`, `no_candidate`), `entry_id` (the entry admitted or confirmed), `reinforced`, `promoted`, `lesson` (≤160 characters): what a verified attempt taught the knowledge store (gap-7576c7). Only when it changed something |
 | `plan_check_started` | `plan_id`, `stage` (`regression`: the delivery's post-merge check in the regression checkout; `in_place`: the working tree the tasks edited), `step` (from 1) of `steps`, `name` (`cargo clippy`, `cargo test`, … or the program the step runs), `command`, `scope` (`workspace`, `packages`, or `command`), `packages` (of a `packages` step), `source` (`authored` or `cargo-default`): a step of the plan's whole-plan check started (gap-6b6ec1) |
 | `plan_check_heartbeat` | `plan_id`, `stage`, `step`, `steps`, `name`, `scope`, `packages`, `elapsed_ms`: every 15 s while the step runs |
-| `plan_check_finished` | `plan_id`, `stage`, `step`, `steps`, `name`, `scope`, `packages`, `passed`, `exit_code` (absent when it did not exit), `reason` (why a step that did not exit ended), `elapsed_ms`. A failed step ends the check |
+| `plan_check_finished` | `plan_id`, `stage`, `step`, `steps`, `name`, `scope`, `packages`, `passed`, `exit_code` (absent when it did not exit), `reason` (why a step that did not exit ended), `stopped_by` (present when a stop request, such as `cancel`, ended the step: the check was stopped, not failed, bug-7b62ff), `elapsed_ms`. A failed or stopped step ends the check |
 
 **Inference and deployment events:**
 

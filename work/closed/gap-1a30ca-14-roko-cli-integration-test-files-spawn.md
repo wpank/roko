@@ -2,7 +2,7 @@
 id = "gap-1a30ca"
 kind = "gap"
 title = "16 roko-cli integration test files spawn roko with the real HOME, so ~/.roko keys and global config leak into fixtures"
-status = "open"
+status = "superseded"
 triage = "verified"
 severity = "p1"
 goal = "hermes"
@@ -11,12 +11,20 @@ subsystem = ["roko-cli/tests"]
 created = 2026-10-16
 updated = 2026-10-16
 last_verified = 2026-10-16
+last_verified_rev = "34baabd5b"
 source = "roko-delivery, 2026-10-15 (team lead): integration tests spent on Will's OpenAI key and failed at random"
 anchors = ["crates/roko-cli/tests/plan_control_ack.rs", "crates/roko-cli/tests/worktree_task_diff.rs", "crates/roko-cli/tests/plan_branch_integration.rs"]
-links = { depends_on = [], blocks = [], related = ["reg-e2038b", "bug-c63cca"], supersedes = [], duplicate_of = "" }
+links = { depends_on = [], blocks = [], related = ["reg-e2038b", "bug-c63cca"], supersedes = [], duplicate_of = "bug-eed697" }
 
 [[verify]]
 command = "test -z \"$(grep -rl 'cargo_bin(\\\"roko\\\")' crates/roko-cli/tests/*.rs | xargs grep -L 'env(\\\"HOME\\\"')\""
+
+[closed]
+at = 2026-10-16
+at_ts = "2026-10-15T23:18:23Z"
+by = "roko-init"
+forced = false
+evidence = "Duplicate of bug-eed697 (filed by roko-delivery the same night), whose plan step 1 is exactly this: one helper that runs roko with a scratch HOME in every integration test that spawns it. Its step 2 (an explicit model wins over the built-in ladder) is done by reg-e2038b."
 +++
 
 ## Problem

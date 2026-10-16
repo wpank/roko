@@ -2,7 +2,7 @@
 id = "reg-e2038b"
 kind = "regression"
 title = "A workspace's own models lose to the default ladder's built-in rungs, so its tasks go to gpt-5.4-mini on a key from ~/.roko/.env"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p1"
 goal = "hermes"
@@ -11,12 +11,22 @@ subsystem = ["roko-cli/routing"]
 created = 2026-10-16
 updated = 2026-10-16
 last_verified = 2026-10-16
+last_verified_rev = "34baabd5b"
 source = "roko-delivery, 2026-10-15 (team lead): fake claude_cli fixtures dispatched to real gpt-5.4-mini with Will's HOME"
 anchors = ["crates/roko-cli/src/dispatch/model_routing.rs::builtin_rung_model"]
 links = { depends_on = [], blocks = [], related = ["bug-4e336b"], supersedes = [], duplicate_of = "" }
 
 [[verify]]
 command = "grep -rqw 'fn explicit_models_win_over_builtin_rungs' crates/roko-cli/ && cargo test -p roko-cli --lib explicit_models_win_over_builtin_rungs"
+
+[closed]
+at = 2026-10-16
+at_ts = "2026-10-16T00:17:13Z"
+commit = "34baabd5b"
+by = "roko-init"
+executor = "claude-agent"
+forced = false
+evidence = "34baabd5b (branch work/reg-e2038b on main 3a3ecca45). A ladder rung runs a built-in model only when the ladder is the workspace's own (rungs other than roko's default, or role ladders) or the workspace configures no model at all (no [models.*] entry, [agent] default_model left at roko's default). Checks at 34baabd5b: explicit_models_win_over_builtin_rungs and every roko-cli lib/bin and roko-core test pass; clippy -D warnings and fmt clean. With HOME holding a dummy OPENAI_API_KEY (so routing to gpt-5.4-mini would fail with 401), plan_branch_integration (4) and worktree_task_diff_is_gated_merged_and_cleaned pass. worktree_task_that_fails_verify_keeps_its_worktree_and_merges_nothing still fails, with an empty HOME too: a helper agent runs in the operator's checkout (bug-ee2752, pre-existing). Live, Will's real HOME: roko doctor in a workspace shaped like the fixture listed strong (gpt-5.4-mini) as runnable before; after, it skips strong with the new reason. Evidence: tmp/hermes-roko-v5/findings/roko-init.md"
 +++
 
 ## Problem

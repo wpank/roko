@@ -10,6 +10,10 @@
 //! is not made. After each call the hold gives back what it no longer needs,
 //! so the plan's other attempts can grow into it. An attempt starts only with
 //! room for a few calls left; below that the plan stops as budget-exhausted.
+//! An agent that runs its own loop (a CLI agent) cannot be asked before a
+//! call: what its call streams is told to the hold as it streams instead, and
+//! the attempt is stopped once the hold cannot cover one more message like
+//! its last (gap-ca1c92).
 
 use roko_core::dashboard_snapshot::{InboxCategory, inbox_routing};
 use roko_core::disturbance::{
@@ -932,7 +936,9 @@ impl Drop for GraphPlanBudgetReservation<'_> {
 
 /// What one attempt may spend on its model calls: its hold on the plan
 /// budget (bug-4fabd0). Its agent's tool loop asks it before each model
-/// call, and a call the plan cannot pay for is not made.
+/// call, and a call the plan cannot pay for is not made. For an agent that
+/// runs its own loop, the attempt's watch tells it what the call streamed
+/// and stops the call it refuses (gap-ca1c92).
 #[derive(Debug)]
 pub(super) struct AttemptAllowance {
     ledger: Arc<GraphPlanBudgetLedger>,

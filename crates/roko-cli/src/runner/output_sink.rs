@@ -1567,6 +1567,7 @@ pub fn format_dashboard_event(
         | DashboardEvent::SelfModelCalibration { .. }
         | DashboardEvent::RouteDecided { .. }
         | DashboardEvent::PromptAssembled { .. }
+        | DashboardEvent::RetryFeedback { .. }
         | DashboardEvent::KnowledgeWritten { .. }
         | DashboardEvent::PlaybookWritten { .. }
         | DashboardEvent::EffectStaged { .. }

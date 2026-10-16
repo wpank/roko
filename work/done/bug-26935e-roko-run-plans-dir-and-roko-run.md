@@ -2,15 +2,16 @@
 id = "bug-26935e"
 kind = "bug"
 title = "roko run plans/<dir> and roko run --plan leave the operator checkout as they found it, without rebuilding plans/INDEX.md after the run"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p2"
 goal = "core"
 size = "S"
 subsystem = ["roko-cli/run"]
 created = 2026-10-15
-updated = 2026-10-15
-last_verified = 2026-10-15
+updated = 2026-10-16
+last_verified = 2026-10-16
+last_verified_rev = "2b06f806d"
 source = "status-quo-2026-10-15#finding-3"
 anchors = ["crates/roko-cli/src/commands/run_cmd.rs::run_plan_dir", "crates/roko-cli/src/commands/run_cmd.rs::run_prompt_plan", "crates/roko-cli/src/main.rs::finish_with_index_rebuild", "crates/roko-cli/tests/operator_checkout_clean.rs::plan_run_leaves_operator_checkout_clean"]
 lane = "rust-cold"
@@ -21,6 +22,18 @@ command = "grep -rqw 'fn run_plan_dir_leaves_operator_checkout_clean' crates/rok
 
 [[verify]]
 command = "test \"$(grep -c 'index::rebuild_all' crates/roko-cli/src/commands/run_cmd.rs)\" -le 1"
+
+[closed]
+at = 2026-10-16
+at_ts = "2026-10-16T08:34:21Z"
+commit = "2b06f806d"
+by = "commit trailer"
+executor = "claude-agent"
+via = "work-batch"
+size = "S"
+claimed_at = "2026-10-16T05:11:49Z"
+forced = false
+evidence = "Deleted the post-run plans/INDEX.md rebuilds in run_cmd.rs::run_plan_dir and run_cmd.rs::run_prompt_plan (and their now-false comments), keeping only the rebuild in run_prompt_plan that follows plan generation (lists the new plan, as `plan generate` does); run_cmd.rs now calls index::rebuild_all exactly once (verify #2: grep -c is 1). Added tests/operator_checkout_clean.rs::run_plan_dir_leaves_operator_checkout_clean, covering `roko --json run plans/clean-checkout --workdir <repo>` with the same fixture and assertions as plan_run_leaves_operator_checkout_clean (both now share setup() and assert_checkout_clean()), via a new ScriptedPlanWorkspace::run_args helper in tests/common/mod.rs (run_plan delegates to it; same Command construction, repo path appended as its native PathBuf, not re-quoted through &str). On commit 2b06f806d (work/bug-26935e, rebased onto main 19c468604): cargo test -p roko-cli --test operator_checkout_clean passes both tests, 2 passed; 0 failed (verify #1); cargo +nightly fmt --all and cargo clippy -p roko-cli --no-deps -- -D warnings are both clean."
 +++
 
 ## Problem

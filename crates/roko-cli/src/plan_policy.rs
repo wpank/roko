@@ -50,6 +50,10 @@ pub struct PlanExecutionPolicy {
     pub max_range_lines: usize,
     pub max_declared_context_bytes: usize,
     pub max_serial_owners_per_file: Option<usize>,
+    /// Verify steps every task must have: one in a FAST or generated plan,
+    /// whose tasks a runner-owned check settles.
+    pub min_verify_steps_per_task: usize,
+    /// Exactly one verify step per task (the FAST lane).
     pub require_one_verify: bool,
     pub reject_duplicate_verify: bool,
     pub bounded_context_only: bool,
@@ -70,6 +74,7 @@ impl PlanExecutionPolicy {
             max_range_lines: NORMAL_MAX_RANGE_LINES,
             max_declared_context_bytes: NORMAL_MAX_DECLARED_CONTEXT_BYTES,
             max_serial_owners_per_file: None,
+            min_verify_steps_per_task: 0,
             require_one_verify: false,
             reject_duplicate_verify: false,
             bounded_context_only: false,
@@ -91,6 +96,7 @@ impl PlanExecutionPolicy {
             max_range_lines: FAST_MAX_RANGE_LINES,
             max_declared_context_bytes: FAST_MAX_DECLARED_CONTEXT_BYTES,
             max_serial_owners_per_file: Some(FAST_MAX_SERIAL_OWNERS_PER_FILE),
+            min_verify_steps_per_task: 1,
             require_one_verify: true,
             reject_duplicate_verify: true,
             bounded_context_only: true,
@@ -98,21 +104,25 @@ impl PlanExecutionPolicy {
     }
 
     /// Limits for a newly generated artifact. The template-specific task
-    /// ceiling is binding rather than prompt-only guidance.
+    /// ceiling is binding rather than prompt-only guidance. A task has at
+    /// least one verify step and at most its tier's limit
+    /// ([`TierSizeLimits::max_verify_steps`]), so each acceptance criterion
+    /// can have its own (gap-dde99e).
     #[must_use]
     pub const fn generated(max_tasks: usize) -> Self {
         Self {
             max_tasks,
             max_files_per_task: FAST_MAX_FILES_PER_TASK,
             max_read_files_per_task: FAST_MAX_READ_FILES,
-            max_verify_steps_per_task: FAST_MAX_VERIFY_STEPS,
+            max_verify_steps_per_task: NORMAL_MAX_VERIFY_STEPS,
             max_symbols_per_task: FAST_MAX_CONTEXT_ITEMS,
             max_anti_patterns_per_task: FAST_MAX_CONTEXT_ITEMS,
             max_prior_failures_per_task: FAST_MAX_PRIOR_FAILURES,
             max_range_lines: FAST_MAX_RANGE_LINES,
             max_declared_context_bytes: FAST_MAX_DECLARED_CONTEXT_BYTES,
             max_serial_owners_per_file: Some(FAST_MAX_SERIAL_OWNERS_PER_FILE),
-            require_one_verify: true,
+            min_verify_steps_per_task: 1,
+            require_one_verify: false,
             reject_duplicate_verify: true,
             bounded_context_only: true,
         }
@@ -121,10 +131,19 @@ impl PlanExecutionPolicy {
     /// Generated-plan budget aligned with the lane that will execute it.
     /// Without this clamp a FAST generation could spend a full strategist
     /// turn producing eight tasks that the four-task execution policy then
-    /// rejects before dispatch.
+    /// rejects before dispatch. A FAST plan's tasks keep their one check.
     #[must_use]
     pub fn generated_for_environment(max_tasks: usize) -> Self {
-        Self::generated(effective_generated_task_limit(max_tasks))
+        let policy = Self::generated(effective_generated_task_limit(max_tasks));
+        if env_flag_enabled("ROKO_FAST_MODE") {
+            Self {
+                max_verify_steps_per_task: FAST_MAX_VERIFY_STEPS,
+                require_one_verify: true,
+                ..policy
+            }
+        } else {
+            policy
+        }
     }
 
     /// Resolve the execution lane without exposing environment reads across
@@ -413,6 +432,17 @@ pub fn validate_plan_budgets(
                 "PLAN_VERIFY_OWNER",
                 format!(
                     "the bounded lane requires exactly one runner-owned focused verify step; found {}",
+                    task.verify.len()
+                ),
+            ));
+        } else if task.verify.len() < policy.min_verify_steps_per_task {
+            issues.push(PlanPolicyViolation::task(
+                task,
+                "PLAN_VERIFY_OWNER",
+                format!(
+                    "every task needs at least {} runner-owned verify step(s), one per acceptance \
+                     criterion; found {}",
+                    policy.min_verify_steps_per_task,
                     task.verify.len()
                 ),
             ));
@@ -1726,6 +1756,68 @@ mod tests {
             issues
                 .iter()
                 .any(|issue| issue.code == "PLAN_FRAGMENTED_OWNERSHIP")
+        );
+    }
+
+    /// gap-dde99e: a generated task gives each acceptance criterion its own
+    /// verify step, up to its tier's limit, and still needs one. The FAST
+    /// lane keeps exactly one.
+    #[test]
+    fn generated_policy_keeps_a_step_per_acceptance_criterion() {
+        let step = |test: &str, criterion: &str| VerifyStep {
+            phase: "test".into(),
+            command: format!("python3 -m unittest tests.test_widget.WidgetTest.{test}"),
+            fail_msg: None,
+            timeout_ms: 1_000,
+            scope: Vec::new(),
+            covers: vec![criterion.into()],
+            expect: None,
+        };
+        let mut plan_task = task();
+        plan_task.acceptance = vec![
+            "AC1: a widget spins once per call".into(),
+            "AC2: a stopped widget stays still".into(),
+            "AC3: a reset widget starts at zero".into(),
+        ];
+        plan_task.verify = vec![
+            step("test_spins", "AC1"),
+            step("test_stops", "AC2"),
+            step("test_resets", "AC3"),
+        ];
+        let plan = tasks(plan_task.clone());
+        let generated = PlanExecutionPolicy::generated(8);
+        let issues = validate_plan_budgets(&plan, generated);
+        assert!(issues.is_empty(), "{issues:?}");
+        let sizes = validate_tier_sizes(&plan, generated);
+        assert!(sizes.is_empty(), "{sizes:?}");
+
+        // A focused task has at most four: split it, or raise its tier.
+        let mut over = plan_task.clone();
+        over.verify = (1..=5)
+            .map(|n| step(&format!("test_{n}"), "AC1"))
+            .collect();
+        let sizes = validate_tier_sizes(&tasks(over), generated);
+        assert!(
+            sizes
+                .iter()
+                .any(|issue| issue.message.contains("5 verify steps (limit 4)")),
+            "{sizes:?}"
+        );
+
+        let mut unchecked = plan_task;
+        unchecked.verify.clear();
+        let issues = validate_plan_budgets(&tasks(unchecked), generated);
+        assert!(
+            issues
+                .iter()
+                .any(|issue| issue.code == "PLAN_VERIFY_OWNER"),
+            "{issues:?}"
+        );
+
+        let fast = validate_plan_budgets(&plan, PlanExecutionPolicy::fast());
+        assert!(
+            fast.iter().any(|issue| issue.code == "PLAN_VERIFY_OWNER"),
+            "{fast:?}"
         );
     }
 

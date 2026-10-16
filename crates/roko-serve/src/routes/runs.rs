@@ -244,17 +244,43 @@ pub(super) async fn summarize_run(state: &Arc<AppState>, run_id: &str) -> Result
     if summary["active"] == Value::Bool(false) {
         let workdir = state.workdir.clone();
         let io_run_id = run_id.to_string();
+        let io_plan_ids = plan_ids.clone();
         let result = blocking_io(move || {
             Ok(super::run_result::run_result(
-                &workdir, &io_run_id, &plan_ids,
+                &workdir,
+                &io_run_id,
+                &io_plan_ids,
             ))
         })
         .await?;
-        if let Some(result) = result {
+        if let Some(mut result) = result {
+            // gap-8f84d1: a run of demo plans says so, so a host can leave its
+            // output on its branch instead of offering to merge it.
+            result["fixture"] = json!(plans_are_fixtures(state, &plan_ids).await);
             summary["result"] = result;
         }
     }
     Ok(summary)
+}
+
+/// Whether every plan in `plan_ids` is a fixture, a demo or test plan whose
+/// output is not meant for the operator's branch (gap-8f84d1). A plan the
+/// runtime does not find counts as not one.
+async fn plans_are_fixtures(state: &AppState, plan_ids: &[String]) -> bool {
+    if plan_ids.is_empty() {
+        return false;
+    }
+    for plan_id in plan_ids {
+        match state
+            .runtime
+            .load_plan_summary(&state.workdir, plan_id)
+            .await
+        {
+            Ok(Some(plan)) if plan.fixture => {}
+            _ => return false,
+        }
+    }
+    true
 }
 
 /// `GET /api/runs/{run_id}/diff` — every change an ended run's verified work
@@ -3222,6 +3248,138 @@ mod tests {
         let whole = summary("w1").await["result"].clone();
         assert_eq!(whole["partial"], false, "{whole}");
         assert!(whole.get("plans").is_none(), "{whole}");
+    }
+
+    /// gap-8f84d1: an ended run's `result` says whether every plan it ran is
+    /// a fixture (a demo), whose output a host should leave on its branch
+    /// rather than offer to merge.
+    #[tokio::test]
+    async fn run_summary_result_marks_a_fixture_run() {
+        /// A runtime whose plans named `demo-…` are fixtures.
+        struct Demos;
+
+        #[async_trait::async_trait]
+        impl crate::runtime::CliRuntime for Demos {
+            async fn run_once(
+                &self,
+                _workdir: &FsPath,
+                _prompt: &str,
+            ) -> anyhow::Result<crate::runtime::RunResult> {
+                anyhow::bail!("no runs in this test")
+            }
+
+            async fn load_plan_summary(
+                &self,
+                _workdir: &FsPath,
+                plan_id: &str,
+            ) -> anyhow::Result<Option<crate::plan_types::PlanSummaryDto>> {
+                Ok(Some(serde_json::from_value(json!({
+                    "id": plan_id, "title": plan_id, "task_count": 1, "tasks_done": 1,
+                    "tasks_failed": 0, "completed": true, "status": "done (1m ago)",
+                    "old_format": false, "fixture": plan_id.starts_with("demo-"),
+                }))?))
+            }
+
+            fn session_status(&self, workdir: PathBuf) -> crate::runtime::SessionStatusInfo {
+                crate::runtime::SessionStatusInfo {
+                    session_id: None,
+                    workdir,
+                    daemon_running: false,
+                    signal_count: None,
+                    episode_count: None,
+                    last_episode_passed: None,
+                }
+            }
+
+            fn dashboard_scaffold(&self, _workdir: &FsPath) -> crate::runtime::DashboardInfo {
+                crate::runtime::DashboardInfo {
+                    rendered: String::new(),
+                }
+            }
+        }
+
+        let dir = tempfile::tempdir().unwrap();
+        let repo = dir.path().to_path_buf();
+        let git = |args: &[&str]| -> String {
+            let output = std::process::Command::new("git")
+                .current_dir(&repo)
+                .args([
+                    "-c",
+                    "user.name=roko-test",
+                    "-c",
+                    "user.email=roko@test.invalid",
+                    "-c",
+                    "commit.gpgsign=false",
+                ])
+                .args(args)
+                .env_remove("GIT_DIR")
+                .env_remove("GIT_WORK_TREE")
+                .env_remove("GIT_INDEX_FILE")
+                .output()
+                .expect("run git");
+            assert!(
+                output.status.success(),
+                "git {args:?}: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            String::from_utf8_lossy(&output.stdout).trim().to_string()
+        };
+        git(&["init", "--quiet", "-b", "main"]);
+        std::fs::write(repo.join("README.md"), "base\n").unwrap();
+        git(&["add", "README.md"]);
+        git(&["commit", "--quiet", "-m", "base"]);
+        git(&["switch", "--quiet", "-c", "roko/batch/d1"]);
+        std::fs::write(repo.join("hello.txt"), "demo output\n").unwrap();
+        git(&["add", "hello.txt"]);
+        git(&["commit", "--quiet", "-m", "roko: demo-hello/T1: hello"]);
+        git(&["switch", "--quiet", "main"]);
+        git(&["branch", "roko/batch/w1", "roko/batch/d1"]);
+
+        let deploy_backend = Arc::from(
+            crate::deploy::create_backend("manual", None, None, None).expect("manual backend"),
+        );
+        let state = Arc::new(
+            AppState::new(
+                repo.clone(),
+                Arc::new(Demos),
+                roko_core::config::schema::RokoConfig::default(),
+                deploy_backend,
+            )
+            .expect("AppState::new"),
+        );
+        let ended = |run_id: &str, plan_id: &str| {
+            let index =
+                roko_fs::run_index::run_index_path(&state.layout.events_jsonl_path(), run_id)
+                    .unwrap();
+            write_rows(
+                &index,
+                &[
+                    json!({"type":"run.started","run_id":run_id,"timestamp_ms":1,"plan_id":plan_id}),
+                    json!({"type":"task_completed","run_id":run_id,"timestamp_ms":2,"plan_id":plan_id,"task_id":"T1","outcome":"passed"}),
+                    json!({"type":"run.completed","run_id":run_id,"timestamp_ms":3,"outcome":"succeeded","duration_ms":10}),
+                ],
+            );
+        };
+        ended("d1", "demo-hello");
+        ended("w1", "real-work");
+        let result = |run_id: &'static str| {
+            let state = Arc::clone(&state);
+            async move {
+                let Json(summary) = get_run_summary(State(state), Path(run_id.into()))
+                    .await
+                    .unwrap();
+                summary["result"].clone()
+            }
+        };
+
+        let demo = result("d1").await;
+        assert_eq!(demo["fixture"], true, "{demo}");
+        assert_eq!(
+            demo["merge_command"], "git merge --ff-only roko/batch/d1",
+            "the summary still says how to take it: {demo}"
+        );
+        let work = result("w1").await;
+        assert_eq!(work["fixture"], false, "{work}");
     }
 
     /// bug-db89d4: a plan that ended unverified was not delivered, so its

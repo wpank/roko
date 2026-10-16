@@ -200,6 +200,7 @@ fn stub_summary(plan_id: &str) -> PlanSummaryDto {
         completed: false,
         status: "ready".to_string(),
         superseded_by: None,
+        fixture: false,
         old_format: false,
         last_error: None,
         group: None,

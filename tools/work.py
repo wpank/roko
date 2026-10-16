@@ -9,7 +9,7 @@ Usage:
               [--blocks ids] [--body-file F] [--no-verify-yet] [--dry-run]
                                      # a gap, bug or regression needs an --anchor, and a --verify unless --no-verify-yet
   work.py check [--strict]                                               # validate both roots (+ verify-command lint)
-  work.py render                                                         # regenerate views, including DRIFT.md and EPICS.md
+  work.py render                                        # regenerate views (incl. DRIFT.md, EPICS.md) and the telemetry rollup
   work.py list [--goal G] [--lane L] [--kind K] [--status open|all|<status>] [--parent ID] [--json]   # one line per item
   work.py show <id> [--json]                                             # an item with its children, dependents and claim
   work.py status [--json]                                                # open, claimed and done counts by goal, lane and epic
@@ -1180,6 +1180,11 @@ def render_root(root_key: str, items):
     if root_key == "work":
         render_now(root, opened, drift)
         render_epics(root, items)
+        # The development record (work/telemetry/) drifts stale unless something regenerates it on the same
+        # cadence as the views: render already runs after every batch of item changes, so it carries the
+        # rollup along instead of relying on a schedule nobody wired up (gap-8d1463).
+        import work_telemetry  # local: work_telemetry imports this module, so keep the cycle load-time-free
+        work_telemetry.cmd_rollup(argparse.Namespace(today=None))
     return len(opened), len(verified), len(unverified), len(closed), len(parked)
 
 

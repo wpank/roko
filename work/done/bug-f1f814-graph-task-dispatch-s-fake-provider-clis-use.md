@@ -9,7 +9,7 @@ goal = "tooling"
 size = "S"
 subsystem = ["roko-cli/graph_task_dispatch"]
 created = 2026-10-01
-updated = 2026-10-01
+updated = 2026-10-16
 last_verified = 2026-10-01
 last_verified_rev = "479bec688"
 source = "tmp/cybernetic-harness/workstreams/PROGRESS.md"
@@ -21,9 +21,14 @@ links = { depends_on = [], blocks = [], related = ["bug-779ae7", "bug-ea9959"], 
 
 [[verify]]
 command = "! grep -q 'timeout_ms: Some(5_000)' crates/roko-cli/src/graph_task_dispatch.rs"
+superseded = "2026-10-16: Written loosely: the substring also matches connect_timeout_ms, and df746d76c added a mock API provider with connect_timeout_ms: Some(5_000). No fake provider CLI has a 5 s timeout; verify 3 matches the field as a whole word."
+superseded_by = "df746d76c"
 
 [[verify]]
 command = "grep -q 'Some(FIXTURE_PROVIDER_TIMEOUT_MS)' crates/roko-cli/src/graph_task_dispatch/failover.rs && grep -q 'Some(FIXTURE_PROVIDER_TIMEOUT_MS)' crates/roko-cli/src/graph_task_dispatch/helper_calls.rs && grep -q 'Some(FIXTURE_PROVIDER_TIMEOUT_MS)' crates/roko-cli/src/graph_task_dispatch/served_model.rs && ! grep -qF -e 'timeout_ms: Some(5_000)' -e 'timeout_ms: Some(15_000)' crates/roko-cli/src/graph_task_dispatch/failover.rs crates/roko-cli/src/graph_task_dispatch/helper_calls.rs crates/roko-cli/src/graph_task_dispatch/served_model.rs"
+
+[[verify]]
+command = "grep -q 'timeout_ms: Some(FIXTURE_PROVIDER_TIMEOUT_MS)' crates/roko-cli/src/graph_task_dispatch.rs && ! grep -qw 'timeout_ms: Some(5_000)' crates/roko-cli/src/graph_task_dispatch.rs"
 
 [closed]
 at = 2026-10-01

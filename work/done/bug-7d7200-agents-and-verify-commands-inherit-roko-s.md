@@ -8,7 +8,7 @@ severity = "p1"
 goal = "release"
 subsystem = ["roko-gate/shell"]
 created = 2026-09-28
-updated = 2026-09-29
+updated = 2026-10-16
 last_verified = 2026-09-29
 last_verified_rev = "33e107da1"
 source = "tmp/cybernetic-harness/assessment-2026-09-28/s10-s11-demo-deploy.md"
@@ -18,6 +18,11 @@ links = { depends_on = [], blocks = [], related = ["bug-7eef96"], supersedes = [
 
 [[verify]]
 command = "grep -q 'env_clear()' crates/roko-gate/src/gate_env.rs && grep -q 'fn gate_env_keeps_allowlist_and_drops_everything_else' crates/roko-core/src/child_env.rs && grep -q 'apply_credential_scrub' crates/roko-agent/src/claude_cli_agent.rs && cargo test -p roko-core --lib child_env"
+superseded = "2026-10-16: 74ad452f7 moved env_clear() out of roko-gate's gate_env.rs into roko_core::child_env::apply_gate_env, which gate_env.rs now calls. Verify 2 checks that call and that apply_gate_env clears the environment, then runs the same tests."
+superseded_by = "74ad452f7"
+
+[[verify]]
+command = "grep -q 'child_env::apply_gate_env' crates/roko-gate/src/gate_env.rs && awk '/^pub fn apply_gate_env\\(/,/^}$/' crates/roko-core/src/child_env.rs | grep -q 'env_clear()' && grep -q 'fn gate_env_keeps_allowlist_and_drops_everything_else' crates/roko-core/src/child_env.rs && grep -q 'apply_credential_scrub' crates/roko-agent/src/claude_cli_agent.rs && cargo test -p roko-core --lib child_env"
 
 [closed]
 at = 2026-09-29

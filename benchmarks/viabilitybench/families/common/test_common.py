@@ -623,10 +623,12 @@ def test_sandbox_denies_the_agents_code_the_private_paths(tmp_path):
     profile = sandbox.profile([*deny, quoted])
     assert f'(subpath "{os.path.realpath(secret_file)}")' in profile and 'odd \\"dir\\"' in profile
     assert profile.startswith("(version 1) (allow default)")
-    assert sandbox.command(["cat", "x"], deny=()) == ["cat", "x"] and sandbox.kind(()) == "none"
+    assert sandbox.command(["cat", "x"], deny=(), network=None) == ["cat", "x"] and sandbox.kind((), None) == "none"
     argv = ["sh", "-c", f"cat {secret_file} {task_file}; ls {task_file.parent}; echo done"]
     run = subprocess.run(sandbox.command(argv, deny=deny), capture_output=True, text=True, check=False)
-    assert sandbox.kind(deny) == sandbox.KIND and "done" in run.stdout
+    assert sandbox.kind(deny, None) == sandbox.KIND and "done" in run.stdout
+    # By default the code also gets no network (gap-0bd49a), which the kind says where a sandbox applies it.
+    assert sandbox.kind(deny) == ("none" if sandbox.KIND == "none" else sandbox.KIND + sandbox.NETWORK_SUFFIX)
     value = next(line for line in secret_file.read_text().splitlines() if not line.startswith("#"))
     if sandbox.KIND == "none":  # no confinement on this host: the command runs as given
         assert sandbox.command(argv, deny=deny) == argv and value in run.stdout

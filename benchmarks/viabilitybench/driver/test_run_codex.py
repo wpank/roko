@@ -26,7 +26,8 @@ import secret
 import validate
 import vb
 from common import canary
-from test_run_cli import CORRECT, LOOPBACK, TOY_STREAM, places, read_jsonl  # noqa: F401 (places is a fixture)
+from test_run_cli import CORRECT, HIDDEN_URL, LOOPBACK, TOY_STREAM, places, read_jsonl  # noqa: F401 (a fixture)
+from test_sandbox_net import Listener, macos_only
 
 MODEL = "gpt-5.5"
 VERSION = "0.152.0"
@@ -94,6 +95,12 @@ if scenario == "web":
 for path, text in CONFIG["files"].items():
     with open(path, "w") as handle:
         handle.write(text)
+if CONFIG.get("shell"):  # the agent's commands, run by Codex's shell tool inside the session's process tree
+    import subprocess
+    ran = {name: subprocess.run(["bash", "-c", command], capture_output=True, text=True, timeout=60)
+           for name, command in CONFIG["shell"].items()}
+    with open(CONFIG["log"], "a") as handle:
+        handle.write(json.dumps({"shell": {name: done.stdout + done.stderr for name, done in ran.items()}}) + "\n")
 emit({"type": "item.completed", "item": {"id": "item_1", "type": "file_change", "status": "completed",
                                          "changes": [{"path": "calc/ops.py", "kind": "update"}]}})
 emit({"type": "item.completed", "item": {"id": "item_2", "type": "agent_message", "text": "Done."}})
@@ -257,6 +264,35 @@ def test_the_wallclock_limit_kills_a_hung_session(places, login):
     assert record["execution"]["status"] == "timeout"
     [attempt] = record["execution"]["attempts"]
     assert attempt["cli"]["killed"] == "wallclock" and record["costs"]["source"] == "unknown"  # no turn completed
+
+
+@macos_only
+def test_codex_arm_shell_cannot_reach_the_network(places, login):
+    """gap-0bd49a: Codex's shell tool runs inside the session's sandbox, whose rule admits only its egress proxy's port
+    (and the offline endpoint's). An offline run's proxy admits no host, so a fetch of a truth suite through it is
+    refused there and recorded, a fetch that skips it cannot resolve the host, and a socket to a local listener is
+    denied by the sandbox. The census then runs the agent's code with no network either."""
+    with Listener() as other:
+        shell = {"fetch_suite": f"curl -sS --max-time 5 {HIDDEN_URL}; echo exit=$?",
+                 "skip_proxy": f"curl -sS --max-time 5 --noproxy '*' {HIDDEN_URL}; echo exit=$?",
+                 "local_port": f"curl -sS --max-time 5 http://127.0.0.1:{other.port}/; echo exit=$?"}
+        program, log = fake_codex(places, "solve", shell=shell)
+        assert run_vb(places, arm_file(places, program)) == 0
+        assert other.connections == 0
+    record = record_of(places)
+    assert (record["execution"]["status"], record["vs"]["label"]) == ("completed", 1)
+    [seen] = [line for line in read_jsonl(log) if "env" in line]
+    [tried] = [line["shell"] for line in read_jsonl(log) if "shell" in line]
+    outcome = {name: re.search(r"exit=\d+", text)[0] for name, text in tried.items()}
+    assert outcome == {"fetch_suite": "exit=56", "skip_proxy": "exit=6", "local_port": "exit=7"}, tried
+    assert "403" in tried["fetch_suite"]
+    egress_port = int(seen["env"]["HTTPS_PROXY"].rsplit(":", 1)[1])
+    policy = record["provenance"]["network_policy"]
+    assert (policy["network"], policy["sandbox"]) == (f"loopback:{egress_port},9", "sandbox-exec+net")
+    assert (policy["egress"]["allow"], policy["egress"]["admitted"]) == ([], 0)
+    assert [(row["method"], row["target"]) for row in policy["egress"]["refused"]] == [
+        ("CONNECT", "raw.githubusercontent.com:443")]
+    assert record["provenance"]["census_network_policy"] == {"network": "none", "sandbox": "sandbox-exec+net"}
 
 
 def test_setup_refuses_an_api_key_login_flaky_verify_and_a_missing_codex(places, login):

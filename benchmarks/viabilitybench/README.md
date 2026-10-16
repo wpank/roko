@@ -108,11 +108,12 @@ $PY benchmarks/viabilitybench/driver/vb.py run --experiment PILOT-A --stream pil
   manifest, which holds the canary, and the pristine bundle live in the run's `private/` directory, never in a
   workdir. Agent processes get an allowlisted environment (`agent_env.py`): no `VB_*` variables, no provider keys, a
   per-task HOME. The truth suites and the census's visible re-run run the agent's code through
-  `families/common/sandbox.py`. On macOS, `sandbox-exec` denies that code the secret file and the task's private
-  directory. Elsewhere there is no confinement yet, and the run record says so (`vs.sandbox`, gap-8c3752). Agents can
-  read the driver's own start-up environment (`ps -E`, `/proc`), so once its checks pass,
+  `families/common/sandbox.py`. On macOS, `sandbox-exec` denies that code the secret file, the task's private
+  directory and the network. Elsewhere there is no confinement yet, and the run record says so (`vs.sandbox`,
+  gap-8c3752). Agents can read the driver's own start-up environment (`ps -E`, `/proc`), so once its checks pass,
   `vb run` starts itself again with an allowlisted environment (`agent_env.exec_scrubbed`). Every other process of
-  your user stays readable (`ps -E -ax`), so run the benchmark from a session that exports no credential.
+  your user stays readable (`ps -E -ax`, or `sysctl` from inside the sandbox), so run the benchmark from a session
+  that exports no credential.
 - **Rust toolchain** (F7, gap-46fd19; Will's decision of 2026-10-02). A per-task HOME hides `~/.rustup`, so
   `families/common/toolchain.py` resolves the host's toolchain in the operator's environment (`rustup show home`,
   `rustup which cargo`). Agent processes, the census and `ci/verify_verifiers.py` get the toolchain's own bin
@@ -121,12 +122,17 @@ $PY benchmarks/viabilitybench/driver/vb.py run --experiment PILOT-A --stream pil
   and the operator's `CARGO_HOME` read-only.
 - **Network** (gap-0bd49a). On macOS every agent process runs under a network rule of `sandbox.py`, and is denied the
   secret file, the key file and the run's private task directories. The direct loop's shell gets no network at all,
-  since the driver makes every model call. The Roko arm's process tree, whose tools run the agent's commands, reaches
-  only the loopback port of the endpoint Roko calls (the metering proxy's) and Unix sockets in its workspace. The
-  Claude Code arm reaches the network only through an egress proxy of its own (`driver/egress.py`), which admits the
-  targets of `[cli] egress_allow` (default `api.anthropic.com:443`) and logs every request to `egress.jsonl`. The
-  record names the rule and the confinement that applied (`provenance.network_policy`), and for Claude Code every
-  refused request. Off macOS the rule is not applied, and the record says "none" (gap-29ac83).
+  since the driver makes every model call. The Roko and mini-swe-agent arms' process trees, whose tools run the
+  agent's commands, reach only the loopback port of the endpoint they call (the metering proxy's), and Roko's also
+  Unix sockets in its workspace. The Claude Code and Codex arms, and the roko_plan arm's planner, reach the network
+  only through an egress proxy of their own (`driver/egress.py`), which admits the targets of `[cli] egress_allow`
+  (default `api.anthropic.com:443`) and logs every request to `egress.jsonl`. The census shares the sandbox: the
+  truth suites, its visible re-run and the audit battery run the agent's code with no network at all, the sandbox's
+  default rule, and so does the plan slice's census. The record names the rule and the confinement that applied to
+  the agent (`provenance.network_policy`, with every refused egress request) and to the census
+  (`provenance.census_network_policy`; the truth suite's own report is `vs.sandbox`). Off macOS no rule is applied,
+  and the record says "none" (gap-29ac83). Two things the sandbox does not confine: a system service the code asks
+  over Mach IPC, and the start-up environment of any other process of your user, which `sysctl` still reads.
 - **Label.** The driver commits the final tree as c_i with `families/common/repo.export_tree`, never with git in the
   agent's repo, then archives it (a git bundle, a tarball and the diff). The census (`census.py`) re-runs the visible
   checks on a clean export with the test files restored, runs the family's `hidden.py --secret-file` and the integrity

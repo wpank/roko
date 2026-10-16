@@ -1,0 +1,1 @@
+{"schema": "roko.work_event/1", "ts": "2026-10-16T08:12:32Z", "event": "claim", "item": "bug-9a5970", "executor": "claude-agent", "via": "manual", "session": "roko-recovery", "branch": "work/bug-9a5970", "concurrency": 31, "source": "live", "by": "roko-recovery", "size": "S", "claimed_at": "2026-10-16T08:12:32Z"}

@@ -4,7 +4,7 @@
 
 What to work on next: the top checked, open items of each goal, highest-priority goal first. Reorder or change goals in `goals.toml`; pin an item higher with `rank = 1` (lower first).
 
-**Drift:** 7 anchor gone · 121 changed since checked · 3 mentioned in commits. Re-check them before relying on this list: `DRIFT.md`.
+**Drift:** 7 anchor gone · 124 changed since checked · 4 mentioned in commits. Re-check them before relying on this list: `DRIFT.md`.
 
 ## 1. Public release: security, licence, CI, first run
 
@@ -60,7 +60,7 @@ _23 more open · on hold: gap-799698, gap-8a26fc, gap-93c748 · 1 unchecked (`TR
 - **P1** [gap-d58ae8](items/gap-d58ae8-tp2-36-p0-0-37-mori-shaped.md) Mori-shaped workflow contract unproven end-to-end · size L · verified 2026-10-01
 - **P2** [gap-5420f3](items/gap-5420f3-a-check-that-hides-its-test-runner.md) A check that hides its test runner's output fails silently; re-run the runner on its own to recover the failure text for the retry and the person · size M · verified 2026-10-15
 
-_14 more open · on hold: find-70edcb · 4 unchecked (`TRIAGE.md`) · `goal = "core"`_
+_15 more open · on hold: find-70edcb · 4 unchecked (`TRIAGE.md`) · `goal = "core"`_
 
 ## 8. Live visibility: serve, dashboard, portal
 
@@ -73,8 +73,8 @@ _2 more open · `goal = "visibility"`_
 ## 9. Learning loops on the Graph path
 
 - **P2** [gap-b1f7b9](items/gap-b1f7b9-a-plan-s-own-verify-steps-feed.md) A plan's own verify steps feed gate history under the rung they check, so gate-thresholds.json learns from authored test steps · size S · verified 2026-10-15
-- **P2** [gap-a960a1](items/gap-a960a1-graph-plan-runs-never-emit-plancompleted-emit.md) Graph plan runs never emit PlanCompleted: emit it once per plan and keep only the daimon sink (q-6b7cca option 2) · size M · verified 2026-10-15
 - **P2** [gap-89f985](items/gap-89f985-plan-runs-never-create-playbooks-only-roko.md) Plan runs never create playbooks (only roko bench does), so L-play never acts on a real run: write one from each verified plan task · size M · verified 2026-10-15
+- **P2** [gap-a4fbf8](items/gap-a4fbf8-the-model-ladder-retry-budget-floor-overrides.md) The model-ladder retry-budget floor overrides the adaptive gate-history suggestion instead of composing with it (QA7) · size M · verified 2026-10-02
 
 _5 more open · on hold: bug-429315, bug-8c5d32, bug-b9be1d, bug-dd5dca, bug-dee062, find-3d8bd4, find-3f99f2, gap-47356e, gap-4d1bff, reg-d76ab0 · `goal = "learning"`_
 
@@ -97,9 +97,9 @@ _4 more open · on hold: gap-63055e, gap-8d80d3, gap-ebd656, spec-743a7e, spec-b
 ## 12. Hermes and ACP integration
 
 - **P1** [spec-704c28](items/spec-704c28-acp-v2-spec-compliance-refactor-and-best.md) ACP v2 Spec Compliance, Refactor, and Best-in-Class Editor UX [spec] · size L · verified 2026-09-29
-- **P2** [gap-8548e3](items/gap-8548e3-a-run-under-a-budget-cap-starts.md) A run under a budget cap starts with models it cannot price, and the cap stops it only after the first unpriced call ran · size M · verified 2026-10-15
-- **P2** [gap-2da1ff](items/gap-2da1ff-a-task-s-git-worktree-has-no.md) A task's git worktree has no node_modules (or in-project venv), so a Node project's tests fail there before the agent changes anything · size M · verified 2026-10-15
+- **P2** [gap-ccbf26](items/gap-ccbf26-a-capped-run-cannot-bound-a-codex.md) A capped run cannot bound a Codex, Gemini or Cursor CLI attempt: none streams its usage or takes a spend limit, and Codex's and Gemini's turn caps are advisory, so only the attempt timeout ends one · size M · verified 2026-10-16
+- **P2** [gap-ac78fb](items/gap-ac78fb-acp-elicitation-notices-and-interactive-ux-primitives.md) ACP Elicitation, Notices, and Interactive UX Primitives · size L · verified 2026-09-29
 
-_11 more open · 3 unchecked (`TRIAGE.md`) · `goal = "hermes"`_
+_5 more open · `goal = "hermes"`_
 
-9 open items have no goal (later); they are listed in `STATUS.md`.
+10 open items have no goal (later); they are listed in `STATUS.md`.

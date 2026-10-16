@@ -2,20 +2,31 @@
 id = "spec-90b030"
 kind = "spec"
 title = "S11 says /api/session and 200 for passphrase login; the shipped route is /api/auth/session and 204"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p3"
 goal = "release"
 size = "S"
 subsystem = ["roko-serve"]
 created = 2026-10-04
-updated = 2026-10-04
-last_verified = 2026-10-04
+updated = 2026-10-16
+last_verified = 2026-10-16
+last_verified_rev = "5e32264ce"
 source = "gate-13c follow-up reports 2026-10-04 (PK86 gap-3516d6, task 9337)"
 discovered_from = "gap-3516d6 (closed; preflight.sh built correctly against the real route, spec never updated)"
 anchors = ["tmp/cybernetic-harness/specs/S11-fly-deploy-security.md"]
 lane = "paper"
 links = { depends_on = [], blocks = [], related = [], supersedes = [], duplicate_of = "" }
+
+[closed]
+at = 2026-10-16
+at_ts = "2026-10-16T14:09:29Z"
+executor = "claude-agent"
+via = "manual"
+size = "S"
+claimed_at = "2026-10-16T08:07:10Z"
+forced = false
+evidence = "Confirmed at main HEAD (crates/roko-serve/src/routes/auth_session.rs: module doc lines 13-15 mount GET/POST/DELETE at /api/auth/session; routes() registers it at /api/auth/session; passphrase_login's success arm returns (StatusCode::NO_CONTENT, [(SET_COOKIE, cookie)]).into_response(), i.e. 204 with no body) that the code is correct and S11's prose was stale, per the item. Fixed all 8 bare /api/session occurrences (lines 81, 82, 87, 214, 306, 307, 308, 407) to /api/auth/session, and the 3 incorrect 200 claims for the passphrase-login success response (interface table line 306, P7, A9) to 204, dropping the now-wrong JSON success body at line 306 (a 204 has none); DELETE's 204 at line 308 was already correct and only its path changed. tmp/cybernetic-harness/ is gitignored repo-wide with no tracked exceptions and git worktrees do not share untracked files, so the only copy of S11-fly-deploy-security.md reachable from this worktree is this worker's own worktree-local copy, not the main checkout's; the fix is applied there (full diff checked: only the 8 path occurrences, the 3 status/body corrections, and one added v1.2 changelog line changed, nothing else) but is not git-trackable (tmp/ has no exception for this path) and so is not part of this commit. The authoritative copy in the main checkout still needs the identical edit applied by someone with write access there."
 +++
 
 ## Problem

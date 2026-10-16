@@ -164,7 +164,15 @@ impl Verify for ClippyGate {
         }
         cmd.current_dir(&payload.working_dir);
         cmd.kill_on_drop(true);
-        payload.apply_env(&mut cmd);
+        if let Err(error) = payload.apply_env(&mut cmd) {
+            let elapsed = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
+            let reason = crate::gate_env::check_env_error(&error);
+            let classification =
+                structured_gate_failure(&self.name, &reason, reason.clone(), elapsed);
+            return Verdict::fail(&self.name, reason)
+                .with_error_digest(render_failure_classification(&classification))
+                .with_duration(elapsed);
+        }
 
         let output = match timeout(Duration::from_millis(self.timeout_ms), cmd.output()).await {
             Ok(Ok(out)) => out,

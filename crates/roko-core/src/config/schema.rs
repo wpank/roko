@@ -1388,7 +1388,12 @@ impl RokoConfig {
             out,
             "# Gate commands inherit only allowlisted variables; add more (names or PREFIX*):"
         );
-        let _ = writeln!(out, "# env_passthrough = [\"DATABASE_URL\"]\n");
+        let _ = writeln!(out, "# env_passthrough = [\"DATABASE_URL\"]");
+        let _ = writeln!(
+            out,
+            "# They never see your gh login, GitHub tokens or .env provider keys; remove more:"
+        );
+        let _ = writeln!(out, "# strip_env = [\"SCCACHE_*\"]\n");
     }
     fn write_example_routing(out: &mut String, c: &Self) {
         let _ = writeln!(out, "# -- Model routing --");

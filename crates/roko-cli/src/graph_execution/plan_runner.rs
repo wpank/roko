@@ -1264,6 +1264,10 @@ async fn run_graph_plan_body(
         cargo_build_jobs_from_env = ?std::env::var("CARGO_BUILD_JOBS").ok(),
         "gate commands run with a job cap at a lower priority"
     );
+    // ... and without the person's credentials (bug-3c4600): `[gates]
+    // env_passthrough` and `strip_env`, and an empty GH_CONFIG_DIR for this
+    // run, removed when it ends. The first check logs what it left out.
+    let _check_run = roko_core::child_env::begin_check_run(roko_config.gates.check_env_settings());
     if roko_config.learning.frozen {
         tracing::info!(
             "learning is frozen for this run: it reads learned state and writes none \

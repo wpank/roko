@@ -15,10 +15,12 @@
 //! Tasks that are not implementers, or have neither a pinned acceptance test
 //! nor a verify step, are not run. A run stops at its first failing step, as
 //! `plan run` does. Each step runs as `plan run` runs it (`bash -o pipefail -c
-//! <command>`, early readers drained: `roko_gate::verify_shell`) in the
-//! workspace root of the base checkout, in a process group of its own, for at
-//! most the timeout (120 s by default) or its own `timeout_ms` when that is
-//! shorter; a timeout kills the whole group. Cargo steps build into a
+//! <command>`, early readers drained: `roko_gate::verify_shell`; the check
+//! environment, without the provider keys roko loaded or the person's GitHub
+//! login: `roko_gate::inherit_gate_env_std`) in the workspace root of the
+//! base checkout, in a process group of its own, for at most the timeout
+//! (120 s by default) or its own `timeout_ms` when that is shorter; a timeout
+//! kills the whole group. Cargo steps build into a
 //! `CARGO_TARGET_DIR` inside the scratch directory, so the reset between runs
 //! keeps the build.
 //!
@@ -676,6 +678,15 @@ fn run_step(
         .stderr(out.try_clone().context("share a step's output file")?);
     for name in GIT_REDIRECTS {
         bash.env_remove(name);
+    }
+    // The environment `plan run` gives its checks: no provider key roko
+    // loaded and no GitHub login (bug-3c4600). A step without it does not run.
+    let env = roko_core::child_env::process_env();
+    if let Err(error) = roko_gate::inherit_gate_env_std(&mut bash, env, &[]) {
+        return Ok(StepResult {
+            error: Some(roko_gate::check_env_error(&error)),
+            ..StepResult::default()
+        });
     }
     #[cfg(unix)]
     std::os::unix::process::CommandExt::process_group(&mut bash, 0);
@@ -1652,5 +1663,36 @@ command = 'n=$(cat COUNTER 2>/dev/null || echo 0); echo $((n + 1)) > COUNTER; te
         std::fs::copy(&plan, outside.join("tasks.toml")).expect("copy the plan");
         let results = gate_results(&[outside.join("tasks.toml")], plain.path(), &config);
         assert!(results.expect("not interrupted").is_empty());
+    }
+
+    /// bug-3c4600: a red-on-base step, which runs at plan load, gets the
+    /// environment `plan run` gives its checks, not roko's whole one.
+    #[cfg(unix)]
+    #[test]
+    fn red_on_base_steps_get_the_check_environment() {
+        crate::check_env_probe::run_child("spec_red_on_base::tests::red_on_base_check_env_child");
+    }
+
+    /// Run by [`red_on_base_steps_get_the_check_environment`] only.
+    #[cfg(unix)]
+    #[test]
+    fn red_on_base_check_env_child() {
+        use crate::check_env_probe::{assert_check_env, begin_child, dump_env_command};
+        let Some(_run) = begin_child() else {
+            return;
+        };
+        let dir = tempfile::tempdir().expect("tempdir");
+        let out = dir.path().join("step.env");
+
+        let result = run_step(
+            &dump_env_command(&out),
+            dir.path(),
+            Duration::from_secs(30),
+            &dir.path().join("target"),
+        )
+        .expect("the step runs");
+
+        assert_eq!(result.exit, Some(0), "{result:?}");
+        assert_check_env(&out, "a red-on-base step");
     }
 }

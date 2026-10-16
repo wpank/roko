@@ -238,7 +238,11 @@ impl Verify for PropertyTestGate {
         // Payload env first, proptest env second so gate config wins on
         // collision (deterministic gate behavior, even if the caller sets
         // a stray PROPTEST_CASES in extra_env).
-        payload.apply_env(&mut cmd);
+        if let Err(error) = payload.apply_env(&mut cmd) {
+            let elapsed = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
+            return Verdict::fail(&self.name, crate::gate_env::check_env_error(&error))
+                .with_duration(elapsed);
+        }
         for (k, v) in self.proptest_env() {
             cmd.env(k, v);
         }

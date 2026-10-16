@@ -342,7 +342,8 @@ async fn probe_passing_tests(
     let _staged = StagedTestFile::stage(&test_path, &source).ok()?;
 
     let mut command = Command::new("cargo");
-    inherit_gate_env(&mut command, &[]);
+    // A probe whose check environment cannot be set up does not run.
+    inherit_gate_env(&mut command, &[]).ok()?;
     command
         .arg("test")
         .arg("--test")

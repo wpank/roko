@@ -6,14 +6,14 @@
 //! [`GatePayload`] if present (for `working_dir` and environment).
 //!
 //! The command does not inherit roko's whole environment, which holds the
-//! provider keys roko loads from its `.env` files: it gets the allowlisted
-//! variables described in [`crate::gate_env`] plus the payload's explicit
-//! ones.
+//! provider keys roko loads from its `.env` files: it gets the check
+//! environment described in [`crate::gate_env`] (allowlisted variables, no
+//! GitHub login) plus the payload's explicit ones.
 
 use crate::compile_errors::{
     GateFailureClassification, classify_step_failure, render_failure_classification,
 };
-use crate::gate_env::{inherit_gate_env, inherit_gate_env_from};
+use crate::gate_env::{check_env_error, inherit_gate_env, inherit_gate_env_from};
 use crate::payload::GatePayload;
 use async_trait::async_trait;
 use roko_core::{Context, Signal, Verdict, Verify};
@@ -164,9 +164,18 @@ impl Verify for ShellGate {
         let passthrough = payload
             .as_ref()
             .map_or(&[][..], |p| p.env_passthrough.as_slice());
-        match &self.parent_env {
+        let prepared = match &self.parent_env {
             Some(vars) => inherit_gate_env_from(&mut cmd, vars.iter().cloned(), passthrough),
             None => inherit_gate_env(&mut cmd, passthrough),
+        };
+        if let Err(error) = prepared {
+            #[allow(clippy::cast_possible_truncation)]
+            let elapsed = started.elapsed().as_millis() as u64;
+            let reason = check_env_error(&error);
+            let classification = self.classify_failure(&reason, reason.clone(), elapsed);
+            return Verdict::fail(&self.name, reason)
+                .with_error_digest(render_failure_classification(&classification))
+                .with_duration(elapsed);
         }
         if let Some(ref p) = payload {
             cmd.current_dir(&p.working_dir);
@@ -476,6 +485,86 @@ mod tests {
             assert!(detail.contains(kept), "{kept} missing:\n{detail}");
         }
         assert!(detail.lines().any(|line| line.starts_with("PATH=/")));
+    }
+
+    /// bug-3c4600: a verify step or rung runs without GitHub tokens, the
+    /// person's `gh` login or a key roko loaded, and with the names
+    /// `[gates] env_passthrough` lists.
+    #[cfg(unix)]
+    #[test]
+    fn verify_steps_get_the_check_environment() {
+        crate::check_env_probe::run_child("shell::tests::verify_step_check_env_child");
+    }
+
+    /// Run by [`verify_steps_get_the_check_environment`] only.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn verify_step_check_env_child() {
+        use crate::check_env_probe::{PASSED, assert_check_env, begin_child, dump_env_command};
+        let Some(_run) = begin_child() else {
+            return;
+        };
+        let dir = tempfile::tempdir().expect("tempdir");
+        let out = dir.path().join("step.env");
+        let payload = GatePayload::in_dir(dir.path()).with_env_passthrough([PASSED]);
+        let signal = Signal::builder(Kind::Task)
+            .body(Body::from_json(&payload).expect("payload serializes"))
+            .build();
+        let gate = ShellGate::verify_step(&dump_env_command(&out));
+
+        let v = gate.verify(&signal, &Context::at(0)).await;
+
+        assert!(v.passed, "{}", v.reason);
+        assert_check_env(&out, "a verify step");
+    }
+
+    /// Tells [`verify_step_fail_closed_child`] where its step would leave a
+    /// mark.
+    const FAIL_CLOSED_CHILD: &str = "ROKO_SHELL_GATE_FAIL_CLOSED_CHILD";
+
+    /// bug-3c4600: a verify step whose check environment cannot be set up
+    /// (no temp directory for its empty `GH_CONFIG_DIR`) fails, saying why,
+    /// and does not run. The temp directory is set for a child test process.
+    #[cfg(unix)]
+    #[test]
+    fn a_verify_step_without_its_environment_does_not_run() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let marker = dir.path().join("ran");
+        let output = std::process::Command::new(std::env::current_exe().expect("test binary"))
+            .args([
+                "--exact",
+                "shell::tests::verify_step_fail_closed_child",
+                "--nocapture",
+            ])
+            .env(FAIL_CLOSED_CHILD, &marker)
+            .env("TMPDIR", dir.path().join("gone"))
+            .output()
+            .expect("run the child test");
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(output.status.success(), "{stdout}\n{stderr}");
+        assert!(
+            stdout.contains("1 passed"),
+            "the child test did not run: {stdout}"
+        );
+        assert!(!marker.exists(), "the step ran");
+    }
+
+    /// Run by [`a_verify_step_without_its_environment_does_not_run`] only.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn verify_step_fail_closed_child() {
+        let Some(marker) = std::env::var_os(FAIL_CLOSED_CHILD) else {
+            return;
+        };
+        let marker = std::path::Path::new(&marker);
+        let gate = ShellGate::verify_step(&format!("touch '{}'", marker.display()));
+
+        let v = gate.verify(&empty_signal(), &Context::at(0)).await;
+
+        assert!(!v.passed, "the step passed");
+        assert!(v.reason.contains("the check did not run"), "{}", v.reason);
+        assert!(v.reason.contains("GH_CONFIG_DIR"), "{}", v.reason);
     }
 
     #[cfg(unix)]

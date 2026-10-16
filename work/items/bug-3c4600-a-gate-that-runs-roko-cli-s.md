@@ -13,7 +13,13 @@ updated = 2026-10-15
 source = "tmp/hermes-roko-v5/findings/roko-gates.md (roko-gates, 2026-10-15)"
 discovered_from = "hermes-roko-v5 round: fixing bug-a7e018 restores the default whole-plan check's cargo test -p in the roko repo"
 anchors = ["crates/roko-cli/src/share.rs::share_run", "crates/roko-core/src/child_env.rs::GATE_ENV_NAMES", "crates/roko-cli/src/graph_execution/plan_verify.rs::default_plan_verify"]
-links = { depends_on = [], blocks = [], related = ["bug-a7e018", "bug-c63cca"], supersedes = [], duplicate_of = "" }
+links = { depends_on = [], blocks = [], related = ["bug-a7e018", "bug-c63cca", "gap-ebd5e0", "gap-3a5ce8"], supersedes = [], duplicate_of = "" }
+
+[[verify]]
+command = "grep -rqw 'fn verify_steps_get_the_check_environment' crates/roko-gate/ && cargo test -p roko-gate --lib -- verify_steps_get_the_check_environment a_verify_step_without_its_environment_does_not_run"
+
+[[verify]]
+command = "grep -rqw 'fn plan_checks_get_the_check_environment' crates/roko-cli/ && cargo test -p roko-cli --lib -- plan_checks_get_the_check_environment regression_checks_get_the_check_environment red_on_base_steps_get_the_check_environment"
 +++
 
 ## Problem
@@ -58,3 +64,19 @@ A gate-run `cargo test -p roko-cli` on a machine with a logged-in `gh` publishes
 ## Notes
 
 Found by roko-gates (hermes-roko-v5) while fixing bug-a7e018; not changed here.
+
+## Decision (2026-10-16)
+
+The round's orchestrator chose option 2, widened to every check roko runs, and left the test and the gists alone
+(they wait for Will). Every check command gets one environment, `roko_core::child_env::apply_check_env`:
+
+- the gate allowlist;
+- `GH_CONFIG_DIR` pointing at an empty, read-only directory per run;
+- no `GH_TOKEN`, `GITHUB_TOKEN`, `GH_ENTERPRISE_TOKEN` or `GITHUB_ENTERPRISE_TOKEN`;
+- no provider key roko loaded from `.env` unless `[gates] env_passthrough` names it exactly;
+- a new `[gates] strip_env`.
+
+A check whose environment cannot be set up does not run. Under a check, `gh` finds no login, so
+`share_run`'s `gh gist create` fails and the test falls back to its local file: it passes and publishes nothing.
+
+Agent tools stay as they were (gap-ebd5e0). Git's own credentials (gap-3a5ce8) are not covered.

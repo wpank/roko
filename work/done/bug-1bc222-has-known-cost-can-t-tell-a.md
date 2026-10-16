@@ -2,15 +2,16 @@
 id = "bug-1bc222"
 kind = "bug"
 title = "has_known_cost can't tell a free-rate model from an unpriced one, so it wrongly trips the daily (and soon plan) spend ceiling"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p2"
 goal = "truth"
 size = "M"
 subsystem = ["roko-cli/graph-task-dispatch", "roko-core/chat-types"]
 created = 2026-10-02
-updated = 2026-10-02
-last_verified = 2026-10-02
+updated = 2026-10-16
+last_verified = 2026-10-16
+last_verified_rev = "5e44a2510"
 source = "backlog wave reports 2026-10-02 (PK07 gap-f548c1)"
 discovered_from = "gap-f548c1 (backlog task 2111, implemented at 4add4f8b0 on work/gap-f548c1; reported directly by its executor, w3-pk07)"
 anchors = ["crates/roko-cli/src/graph_task_dispatch/budget.rs::record_task_spend", "crates/roko-cli/src/graph_task_dispatch/budget.rs::GraphTaskSpendLedger", "crates/roko-core/src/chat_types.rs::has_known_cost"]
@@ -19,6 +20,18 @@ links = { depends_on = ["gap-f548c1"], blocks = [], related = [], supersedes = [
 
 [[verify]]
 command = "grep -rqw 'fn unpriced_ceiling_ignores_a_genuinely_free_rate' crates/roko-cli/ && cargo test -p roko-cli unpriced_ceiling_ignores_a_genuinely_free_rate"
+
+[closed]
+at = 2026-10-16
+at_ts = "2026-10-16T20:35:31Z"
+commit = "5e44a2510"
+by = "commit trailer"
+executor = "claude-agent"
+via = "work-batch"
+size = "M"
+claimed_at = "2026-10-16T19:19:20Z"
+forced = false
+evidence = "5e44a2510: record_task_spend and GraphTaskSpendLedger::record (graph_task_dispatch/budget.rs) take a priced flag instead of reading Usage::has_known_cost alone. Provider calls are judged by GraphTaskDispatcher::dispatch_priced (served_model.rs: dispatch_v2::usage_is_priced, by the served model for an API substitute), and helper and audit-check calls by SideCall::priced. A model priced at 0/0 adds no unpriced call to the day or the plan; a model with no rate still stops both. The verify passes at 5e44a2510 (rc 0), as does spend_ceilings_judge_a_substitute_by_the_model_that_served. The 171 tests of the touched graph_task_dispatch modules pass, and clippy -p roko-core -p roko-cli --no-deps -D warnings is clean. Follow-ups filed: bug-a56ba1 (a substituted call's cost row) and bug-91bceb (the verdict's billed_usd and the helper totals)."
 +++
 
 ## Problem

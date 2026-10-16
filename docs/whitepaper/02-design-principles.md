@@ -1,8 +1,8 @@
-Status: draft · budget 650 words · owner spec-ce1484
+Status: reviewed · budget 650 words · owner spec-ce1484
 
 # 2 Design goals and principles
 
-This section states Roko's design goals, defines the cybernetic terms the paper uses, and sets out eight principles.
+This section states Roko's design goals, defines its cybernetic terms and sets out eight principles.
 
 ## 2.1 Goals
 
@@ -11,14 +11,14 @@ This section states Roko's design goals, defines the cybernetic terms the paper 
 | Goal | Main mechanisms | § |
 |---|---|---|
 | **Trustworthy completion:** done means a check the worker cannot change has passed | Planned checks; the pre-verify screen; the gate rungs; the verdict record | 4, 6 |
-| **Right-sized models:** the cheapest model that passes | The escalation ladder; provider failover; the learned model router; per-call budget reservations | 4, 5 |
+| **Right-sized models:** the cheapest model that passes | The escalation ladder; provider failover; the learned model router; per-call budget checks | 4, 5 |
 | **Parallel without collisions** | Write sets; a worktree per task; plan and run branches; the whole-plan check on the merge | 4 |
 | **Recoverable:** stop and resume, keeping verified work | Checkpoints; verdict records; operator controls | 4 |
-| **Learns from outcomes, not self-report** | One learning label, read by every learner; the loop registry | 5 |
+| **Learns from outcomes, not self-report** | One learning label for success; the loop registry | 5 |
 | **Checks its own checks and learning** | Random deep audits; the loop audit; the bounded controller; guarded commit | 5, 6 |
-| **Safe by default:** unknown actions are denied | The tool-call guard; role contracts; fail-closed tools; the git guard; credential scrubbing; isolation controls | 8 |
+| **Safe by default:** unknown actions are denied | The tool-call guard; role contracts; the git guard; credential scrubbing; isolation controls | 8 |
 | **Provider- and domain-neutral** | One adapter per provider kind; any shell command as a check | 3, 4 |
-| **Observable** | Content-addressed signals with lineage; verdict, episode and cost records; the state hub | 3, 6 |
+| **Observable** | Verdict, episode and cost records; signals with lineage; the state hub | 3, 6 |
 
 ## 2.2 Cybernetic terms
 
@@ -34,16 +34,15 @@ records.
 ## 2.3 Principles
 
 **1. Make every loop explicit.** An undeclared loop cannot be audited, and implicit feedback loops are hidden technical
-debt in machine-learning systems [@sculley2015hidden]. Each Roko loop has a regulator card, and a registry declares
-each learning loop's decision, default and receipt.
+debt in machine-learning systems [@sculley2015hidden]. Each Roko loop fits a regulator card (Table 4.1), and a
+registry declares each learning loop's decision, default and receipt.
 
 **2. Write the reference before the work.** The planner, never the implementer, writes each task's checks: in Java
-projects, model-written test oracles tended to encode what code does, not what it should do [@konstantinou2024do]. A
-check for new behaviour must fail on the unchanged base.
+projects, model-written test oracles tended to encode what code does, not what it should do [@konstantinou2024do].
 
 **3. Keep each sensor out of its actor's reach.** On systems-programming tasks, agents passed visible tests more often
-than held-out ones, smaller models most [@zhao2026specbench]. Roko pins the planner's acceptance tests outside every
-working tree, screens attempts for tampering before tests run, and audits with hidden tests.
+than held-out ones, smaller models most [@zhao2026specbench]. Roko rejects attempts that tamper with their checks,
+pins a plan's declared acceptance tests outside every worktree, and audits with hidden tests.
 
 **4. Separate the clocks.** Each loop runs much slower than the loop it tunes and changes its settings, never its
 decisions in flight [@ashby1960design]; correction that is too fast or too strong oscillates [@wiener1948cybernetics].
@@ -52,15 +51,14 @@ decisions in flight [@ashby1960design]; correction that is too fast or too stron
 latency, against bounds that people set. In a model cascade on math questions, the error its dashboard showed stayed
 flat while the delivered error rose [@rajput2026cheap], so false greens are estimated from independent audits.
 
-**6. Match variety to disturbance.** Each declared disturbance has a designed response: retry with gate feedback, a
-stronger model, a provider switch, a split, a replan, or a halt with an alert. The failure's blame picks among them
-(§4).
+**6. Match variety to disturbance.** Each declared disturbance has a designed response, picked by the failure's blame
+(§4): retry with gate feedback, a stronger model, a provider switch, or a halt that asks a person to split or replan.
 
-**7. Bound and isolate every action.** Each attempt runs in its own worktree, and integration runs the whole-plan
-check on the merge, since clean merges can still break the build [@brun2011proactive].
-Regulators tune how Roko spends and checks, never what counts as correct: no slower loop widens permissions or removes
-an authored check, and guarded commit can roll back any self-modification.
+**7. Bound and isolate every action.** Each task runs in its own worktree, and integration checks the whole plan on
+the merge. Regulators tune spending and checking, never what counts as correct: no slower loop widens permissions or
+removes an authored check, and guarded commit can roll back what the router, knowledge store and controller learn.
 
-**8. Record once, audit every loop.** Every decision leaves one attributable record, and every learner reads the same
-learning label. Deutero-learning asks whether learning helped [@argyris1978organizational]; the loop audit asks it of
-every learning loop against a holdout, and a loop that shows no benefit reverts to its default.
+**8. Record once, audit every loop.** Every decision leaves one attributable record, and every learner takes success
+from the same learning label. Deutero-learning asks whether learning helped [@argyris1978organizational]; the loop
+audit asks it of every learning loop against a holdout, and with enforcement on, a loop that shows no benefit
+reverts to its default.

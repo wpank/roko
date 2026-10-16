@@ -4,7 +4,7 @@ Status: reviewed · budget none · owner gap-8d2c79
 > Roko's feedback loops, without status tags or the status appendix. The review below applies to the earlier
 > text, which git history keeps; the rewritten text needs its own independent review. A same-day editing pass applied
 > a fact-check of the rewrite against the code and brought each section within its word budget; that pass is an edit,
-> not an independent review.
+> not an independent review. The independent review of the rewrite is the last section of this file (2026-10-16).
 
 # Whitepaper review
 
@@ -157,3 +157,104 @@ again. Findings 32 to 37 can go in the same pass, 38 and 39 wait for gap-08d9b2'
 author's call.
 
 Verdict: revise
+
+## Review of the 2026-10-02 rewrite
+
+- **Reviewer:** a Claude agent working gap-6a83de, which wrote none of the rewritten text and had no drafting
+  context. Another agent reviewed the research paper at the same commit (gap-aed6f1) and shared its code facts;
+  where both found the same thing, the two papers now say it the same way.
+- **Read at:** `5e32264ce`, 2026-10-16. The text read was the rewrite as committed in `7898493f2`, unchanged since.
+- **Direction:** Will's decisions of 2026-10-15 (2 and 4): fix every claim that is contradicted, not built or wrong
+  in detail, in design voice; keep as written what the staged turn-on epic (spec-7a71d6) switches on; trim to the
+  budget; re-cite or drop the orphaned evidence files; fix "the operator's checkout is never touched".
+- **Fixes:** the commit that adds this section: §0–§10, this directory's `README.md`, both figures, `evidence/` and
+  this file.
+
+### How the read was done
+
+- **Claims:** the status-quo assessment of 2026-10-15 checked 210 claims at `7b6a5af44` and found 94 less than
+  plainly true. I re-checked each of the 94 in the code at `5e32264ce`, then every claim it found true whose code
+  changed in the 219 commits since: delivery, budgets, failover, worktrees, supervision, the safety step and check
+  environments. Its comparison of the two papers was checked the same way.[^rv-sources]
+- **Literature:** the rewrite's citation pass read about 45 citations against their sources on 2026-10-02 and found
+  one overstated sentence (finding 68); the cited sentences have not changed since. I re-read five numeric results
+  against their abstracts [@bjarnason2026randomness; @zhao2026specbench; @rajput2026cheap; @wang2026compound;
+  @lewis2026same], and each says what the text says.
+- **Numbers:** §7's figures against the frozen files (`shasum -a 256 -c SHA256SUMS` passes), and every footnoted
+  default against the code at `5e32264ce`.[^rv-sources]
+- **Checks:** `python3 tools/paperlint.py --strict --check-identifiers` is clean on the sections, on the README and on
+  this file. `build.sh` builds the PDF with no pandoc warning; the references start on page 14 of 18. Both figures
+  were rendered to check that the changed labels fit. No cargo build or test ran, and no paid call.[^rv-sources]
+
+### Findings
+
+| # | Where | Finding[^rv-sources] | Disposition |
+|---|---|---|---|
+| 43 | §4.4 | "Provider failover sends it to the same model on another provider, then to configured fallbacks …, so an outage never pushes work to a costlier tier." Since `bfc8eb72b`, after the text's pin, a task on the ladder fails over to the same model elsewhere and then up its runnable rungs, never to a cheaper model (`failover_candidates` in `crates/roko-cli/src/graph_task_dispatch/failover.rs`) | Fixed: that order, and why |
+| 44 | §4.5 | "The run branch moves only once it passes." Since `903e35f30` a plan that stops short delivers its verified tasks' work to the run branch, marked partial, with no whole-plan check | Fixed: one sentence on partial delivery |
+| 45 | §4.3 | "Each call reserves its share (`max_turn_usd`) against the plan's spending ceiling." Since `eb26a6fe5` an attempt holds part of the plan's budget and asks it before every model call, and a CLI agent is stopped once its streamed spend leaves no room; `max_plan_usd` sets no ceiling by default | Fixed: "under a spending ceiling", with the hold as built |
+| 46 | §4.2 | "The operator's checkout is never touched." The frozen R3 run records an untracked `plans/INDEX.md` in it, and `roko run plans/<dir>` wrote that file until `f3334ba30`. At `5e32264ce` a run leaves the checkout as it found it apart from `.roko/` (`crates/roko-cli/tests/operator_checkout_clean.rs`) | Fixed: "leaves the operator's checkout as it found it, apart from its records under `.roko/`" |
+| 47 | §4.3 | "Plan complexity sets how many of the seven rungs run; failures add more." Contradicted: `run_gate_once` runs only under test; a Graph attempt runs its authored checks, then the required rungs and the optional ones its hints ask for (`task_runs_rung`) | Fixed |
+| 48 | §4.6 | "A task whose definition changed is queued again." Contradicted: the checkpoint fingerprints the whole plan, and an edited plan resumes only if forced, then afresh (`preview_refuses_an_edited_plan_unless_forced`) | Fixed |
+| 49 | §4.6 | The supervisor's five decisions: nudge and force-advance are computed and logged, never carried out (`crates/roko-cli/src/graph_task_dispatch/supervision.rs`; gap-ebd656 is held) | Fixed: continue, restart or fail, with other advice posted to the dashboard |
+| 50 | §4.4 | "Cheapest model first … Failure on the top rung goes to a person." A task starts on its tier's rung, so two climbs from the cheapest rung end below the top one; an exhausted ladder fails the task and asks a person on the dashboard, with no hand-off record | Fixed: start rung by tier, and "the highest reachable rung" |
+| 51 | §4.1 | Writes outside a task's files are recorded, not refused (`diff_scope` defaults to record); acceptance criteria are prompt text, not checks; the spec check's base run has been on by default since `e53f21502` | Fixed |
+| 52 | §6.2 | pass^k is computed nowhere in Roko (not built); cost per verified success sums attempt spend only, and the controller reads it, not the router; the false-green estimate discounts only that denominator | Fixed: the pass^k row removed; definition, reader and discount corrected |
+| 53 | §6.3 | "A visible pass rate is reported only beside the audited false-green rate." Contradicted: the dashboard, `roko learn` and `roko show` report pass rates alone. The judge is advisory unless `llm_judge_blocking` is set, and out-of-scope writes are recorded, not rejected | Fixed |
+| 54 | §2.3, §6.1, §9.3, §10.6 | "Out of the agent's reach": the commands are, but the tests they run sit in the task's worktree, guarded by the pre-verify screen; pinned acceptance tests apply only where a plan declares them | Fixed in all four |
+| 55 | §2–§6 | "Every learner reads the learning label": learners take success from it, but the adaptive retry budgets learn from each rung's results, and the router also reads cost and latency | Fixed: "take success from" throughout; §5.2 names the rung results |
+| 56 | §5.2 | Prompt experiments draw variants uniformly with logged odds and conclude by confidence sequences (since `a043c553f`), not by bandit; adaptive retry budgets never go below what climbing the ladder takes | Fixed |
+| 57 | §2.3, §5.3, §6.2 | "A loop that shows no benefit reverts to its default": the loop audit only flags until a person turns enforcement on, which the epic leaves to Will | Fixed: "once a person turns enforcement on" |
+| 58 | §2.3, §5.3, §8.5, Figure 2 | "Every self-modification passes guarded commit, which keeps it only if it helps on held-out work." It covers three stores (the router, the knowledge store, the controller's settings), observes for the first two until a person switches it to enforce, and checks "no worse than the last known good version within a tolerance" and people's anchor cases (the knowledge store: anchors only) | Fixed in all four |
+| 59 | §0, §1.3, §8.2, Figure 1 | "The tool-call loop permits, bounds and screens every action": only Roko's own tool loop checks each call. Codex, Cursor and Gemini CLI commands are not checked before they run, so those agents run only in task worktrees (`crates/roko-cli/src/graph_task_dispatch/failover.rs`); the Codex CLI's turn cap is advisory; the safety step runs eleven ordered checks, the role's tool list second | Fixed |
+| 60 | §0, §1.2, §10, README, Figure 2 | "The one fact every loop reads": the tool-call loop acts before any verdict exists, and Figure 2's rail feeds L1 to L4 | Fixed: "every loop above the tool-call loop"; the rail reads "L1 to L4" and "checks the worker did not write" |
+| 61 | §3 | Plan runs keep their records beside their checkpoint, not in the signal store, so `roko replay` cannot walk a plan run; a signal's id also hashes its tags; OpenHands is not one of the twelve provider kinds; surfaces share one control vocabulary, not per-surface contracts | Fixed; "Observers never steer", which nothing in the code can show, was cut |
+| 62 | §2.3 | Principle 1: regulator cards are this paper's device (Table 4.1), not code. Principle 6: split and replan are a person's call once the ladder is exhausted | Fixed |
+| 63 | §7.1 | "Roko develops itself", in the present tense: no Roko plan run has left a record in this workspace since 2026-10-02, and the work-item sync is a separate script that no plan task has used | Fixed: "is built to develop itself"; the sync sentence removed |
+| 64 | §7.2 | "The build exercised … a worktree per attempt, integration and resume": B7's "Isolation and merge" row says the operator made the worktrees and merged by hand | Fixed: what the build exercised, and what the frontier sessions did, per B7's TL;DR |
+| 65 | §7.3 | The walk-through implied a clean climb to Sonnet. Per R3, a finished answer that output screening withheld and a failover substitute's turn cap were counted on the middle rung, and the run needed four operator interventions | Fixed: the path and the interventions; R4 re-cited |
+| 66 | §2.3, §9.1 | "A worktree per attempt": each task's worktree is shared by its retries, with a fresh checkout after a conflict or a tamper or scope rejection (`worktree_generation`) | Fixed to per task; the figures already said so |
+| 67 | §9.1 | "A task that needs an unlisted tool waits for a person": the call is refused, and only outbound effects wait for approval | Fixed |
+| 68 | §10.7 | "Most work … makes the model the manager", on one citation; the rewrite's citation pass asked for this change, and it was never made | Fixed: "usually …, e.g." |
+| 69 | §5.3 | The audit floor was unstated, unlike in the research paper | Added: 5%, from `AUDIT_FLOOR` |
+| 70 | §0–§10 | 6,720 words, 1.034× the 6,500 budget | Trimmed to 6,496. Table 5.1 (a copy of §1.3 and Figure 2), §1's section roadmap and repeated citations went; the only claims cut are §6.2's census-test sentence (accurate) and finding 61's unverifiable one |
+| 71 | `evidence/` | Eight of the eleven frozen files were cited by no section | Seven removed with their `SHA256SUMS` lines and provenance rows (git history keeps them); R4, which the cited R3 links to, is now cited from §7.3 |
+| 72 | Footnotes | Pinned at `1f860d408` | Re-pinned at `5e32264ce`, where every pinned default holds |
+
+### Kept as written: the staged turn-on epic
+
+By decision 2 these sentences stay as written. Until each child item lands, they describe the design as it will run,
+not what a default build does today.
+
+| Mechanism (where)[^rv-sources] | At `5e32264ce` | Epic child |
+|---|---|---|
+| Random deep audits, the false-green estimate, verification depth and per-model trust, hidden-suite rotation (§0, §1.3, §2.3, §3.3, §5.3, §6, §9, §10.6, both figures) | `[audit] enabled` is false | bug-1e97dc, then gap-d76b1b (on at a 10% rate); gap-618548 (audits feed the controller) |
+| The loop audit's benefit estimate, a loop going live at the 5% holdout, "tests whether each learning loop helps" (§0, §1.3, §2.3, §5.3, §6.2, §10.4) | exposure and influence are measured; `beta_fields` never estimates benefit | gap-03fcd0 |
+| The bounded controller in shadow (§1.3, §2.3, §5.3, §6.2, §10.4) | runs only with a hand-written `.roko/policy/viability.toml` | gap-cad57a; switching it on stays Will's call, as §5.3 says |
+| The learned router's picks, exploration and learning on plan runs (§0, §1.3, §5.2) | the ladder routes unpinned tasks and only logs the router's pick | gap-51d2ca |
+| Playbooks learned on plan runs (§0, §1.3, §5.2) | only `roko bench` creates them | gap-89f985 |
+| The forecaster in shadow (§5.2, §6.2) | `SelfModelMode` defaults to shadow | gap-9aca5d, done |
+
+### This file and the author
+
+- The paragraph "Checks that read this file", in the re-read above, is out of date: the epic's check reads the last
+  `Verdict:` line, so it reads this section's verdict.
+- The cited R3 file opens with `The golden path ran on real models and delivered twice.` A frozen file cannot
+  change, and the phrase is the run note's, not the paper's; freezing a new excerpt without it is the author's call.
+- The rewrite's framing rules, kept outside the repository, still state seven facts the code no longer matches: the
+  untouched checkout, rungs chosen by complexity, the cheapest start, ten safety checks, per-call `max_turn_usd`
+  reservations, five supervisor decisions and a signal hash without tags. The papers follow the code.
+- `data/mechanisms.toml` and `tools/status_matrix.py` belong to the text before the rewrite; bug-ac2a01 covers them.
+- Filed: bug-86f6cb, the self-model's `mode` field comment, which still says off is the default.
+- Publishing, gap-8117a8, stays Will's decision.
+
+Every claim found contradicted, not built or wrong in detail is fixed or cut, except the mechanisms in the table
+above, which decision 2 keeps as written. The text is within its budget and passes the strict lint.
+
+[^rv-sources]: The code at `5e32264ce`, and at `7b6a5af44` for the assessment's claims; the commits named in each
+    row; the frozen `evidence/2026-10-02-live-cheap-model-run.md` (sha256 `813172c96b88`), its root causes,
+    `evidence/2026-10-02-live-defect-root-causes.md` (sha256 `5df7d5221539`), and
+    `evidence/2026-09-29-b7-real-run-evidence.md` (sha256 `799b6a2b6184`); and gap-6a83de, whose source names the
+    assessment's reports.
+
+Verdict: accept

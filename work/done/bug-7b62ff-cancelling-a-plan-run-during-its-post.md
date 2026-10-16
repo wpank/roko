@@ -73,3 +73,11 @@ fails at once, and (see the related item on pre-start failures) its card does no
 `a_cancel_stops_the_post_merge_regression_check` passes (the `[[verify]]` command), with the end-to-end test
 `a_cancel_stops_the_whole_plan_check_and_frees_the_workspace` (both check modes: the run ends cancelled, the check's
 processes are gone, the runner lock is free). `--lib` keeps the verify from building the ~70 integration test binaries.
+
+## Follow-up (2026-10-16)
+
+`2359ba4ec` also records the stopped check and its delivery as cancelled, not failed:
+- the delivery ends in roko-graph's new `CompletionDeliveryState::Cancelled`, written `"cancelled"`; it is not
+  resumed, and the batch undoes its merge as it does a failed one's;
+- the check's `plan_check_finished` event carries `stopped_by`, so the CLI and dashboard print "stopped".
+

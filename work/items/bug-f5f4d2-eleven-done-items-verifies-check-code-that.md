@@ -73,5 +73,5 @@ The `[[verify]]` command passes: no FAIL for these items, and none of them is le
 
 Item files only (`work/done/`); no code changes. Find the moving commits with `git log --diff-filter=D -- <old path>`
 or `git log -S'<symbol>'`. The rest of the 60: bug-d1dea8 (the stale route snapshot) is a real regression and is
-reg-48b7ba's; gap-c4d630's stale claims aggregate has its own regression item; bug-8417d9's verify passes again since
-reg-c7db5d.
+reg-48b7ba's; gap-c4d630's stale claims aggregate is reg-3621b1's; bug-8417d9's verify passes again since reg-c7db5d.
+Eight more failing done items outside the 60 are bug-ec244b's.

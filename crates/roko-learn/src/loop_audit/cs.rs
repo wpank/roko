@@ -14,8 +14,9 @@
 //! Every increment x_t carries its own bound B_t ≥ |x_t|, fixed before its
 //! arm is drawn (S03 §4.5's table). Each step is rescaled by its own bound,
 //! y_t = (x_t + B_t)/(2B_t) ∈ [0, 1], so a bet never exceeds 1/(2B_t) in the
-//! increment's units. [`DifferenceCs`] runs a betting CS over the two-arm
-//! IPW increments of [`ipw_difference`] at logged propensities, and
+//! increment's units. The loop audit's β runs on the empirical-Bernstein CS
+//! ([`super::estimators`]). [`DifferenceCs`] runs a betting CS over the
+//! two-arm IPW increments of [`ipw_difference`] at logged propensities, and
 //! [`SrmEvalue`] is the sequential multinomial e-value on arm counts against
 //! logged propensities (`lindon2020anytimevalid`). The Bonferroni split α/K
 //! is the caller's.
@@ -217,8 +218,10 @@ impl BettingCs {
 /// the center Σ λ̃_i x_i / Σ λ̃_i and the radius
 /// (log(2/α) + Σ v_i ψ_E(λ_i)) / Σ λ̃_i, where λ_i = min(λ̇_i, c) bets on the
 /// scaled value, λ̃_i = λ_i/(2B_i) in the increment's units,
-/// v_i = 4(y_i − μ̂_{i−1})² and ψ_E(λ) = (−log(1 − λ) − λ)/4.
-#[derive(Debug, Clone)]
+/// v_i = 4(y_i − μ̂_{i−1})² and ψ_E(λ) = (−log(1 − λ) − λ)/4. It
+/// serializes, so the audit tick's census can carry a loop's β from one
+/// plan-run close to the next (gap-03fcd0).
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EmpiricalBernsteinCs {
     log_term: f64,
     plug_in: PlugIn,

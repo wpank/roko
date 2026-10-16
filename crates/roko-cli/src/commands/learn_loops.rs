@@ -172,7 +172,10 @@ fn break_loop(
     let mut out = render_canary(loop_id, &row, json)?;
     if !json {
         // E1's replay (backlog 5130) measures the time to detection.
-        out.push_str("time to detection: not measured by this command (E1, backlog 5130)\n");
+        out.push_str(
+            "time to detection: measured by E1's replay, not by this command (cargo test -p \
+             roko-cli --features fault-injection --test loop_audit_faults)\n",
+        );
     }
     Ok((out, 0))
 }
@@ -193,9 +196,10 @@ fn break_loop(
     Ok((why, EXIT_NO_FAULTS))
 }
 
-/// What `roko learn loops` prints for `workdir`: the report-only census, the
-/// only mode until the measured audit (backlog 5123) lands, as
-/// `roko.loop_census/1` JSON or as a table.
+/// What `roko learn loops` prints for `workdir`: the report-only census, as
+/// `roko.loop_census/1` JSON or as a table. It folds the logs, the
+/// registry's declared findings and the runs' decision rows, whose measured
+/// ε, ι and β (gap-03fcd0) decide a loop's row once they are judged.
 ///
 /// # Errors
 ///

@@ -2,17 +2,18 @@
 id = "gap-03fcd0"
 kind = "gap"
 title = "The loop audit never estimates benefit β on any path, so no loop can go live, null or harm and the census can never say live"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p2"
 goal = "cybernetic"
 size = "L"
 subsystem = ["roko-learn/loop_audit", "roko-cli/learn"]
 created = 2026-10-15
-updated = 2026-10-15
-last_verified = 2026-10-15
+updated = 2026-10-16
+last_verified = 2026-10-16
+last_verified_rev = "026f99006"
 source = "status-quo-2026-10-15#finding-10"
-anchors = ["crates/roko-learn/src/loop_audit/mod.rs::beta_fields", "crates/roko-learn/src/loop_audit/mod.rs::loop_evidence", "crates/roko-learn/src/loop_audit/mod.rs::observe_census", "crates/roko-learn/src/loop_audit/estimators.rs", "crates/roko-learn/src/loop_audit/cs.rs::ipw_difference", "crates/roko-learn/src/loop_audit/census.rs::census_row"]
+anchors = ["crates/roko-learn/src/loop_audit/census.rs::beta_fields", "crates/roko-learn/src/loop_audit/mod.rs::loop_evidence", "crates/roko-learn/src/loop_audit/mod.rs::observe_census", "crates/roko-learn/src/loop_audit/estimators.rs", "crates/roko-learn/src/loop_audit/cs.rs::ipw_difference", "crates/roko-learn/src/loop_audit/census.rs::census_row"]
 lane = "rust-cold"
 parent = "spec-7a71d6"
 links = { depends_on = ["gap-6f31c3"], blocks = [], related = ["spec-c6e21b", "gap-0132c2", "gap-50346f"], supersedes = [], duplicate_of = "" }
@@ -22,6 +23,18 @@ command = "grep -rqw 'fn census_estimates_beta_once_n_beta_opportunities' crates
 
 [[verify]]
 command = "grep -rqw 'fn beta_takes_an_oracle_loop_live_and_a_harmful_one_to_harm' crates/roko-learn/ && cargo test -p roko-learn beta_takes_an_oracle_loop_live_and_a_harmful_one_to_harm"
+
+[closed]
+at = 2026-10-16
+at_ts = "2026-10-16T15:23:35Z"
+commit = "026f99006"
+by = "commit trailer"
+executor = "claude-agent"
+via = "work-batch"
+size = "L"
+claimed_at = "2026-10-16T08:06:54Z"
+forced = false
+evidence = "026f99006 (rebased from 639d02769): the census fold (census.rs Attempts::benefit) joins each chain's first-attempt opportunity to its learning label at the draw's logged propensity and feeds BenefitEstimator::adjusted (estimators.rs: AIPW with predictable per-arm stratum means plus CUPED's covariate shift, empirical-Bernstein CS at α/K); guard 2 reports eps_below_min, n_below_n_beta or no_outcome; health rows and the state machine's evidence carry β, β_pass and β_cost (mod.rs), a placebo β interval leaving 0 trips audit_broken, and census_row says live, demoted/harm or flagged/null. Checks at 026f99006: both [[verify]] commands pass, 54/54 loop_audit tests, clippy -D warnings on roko-learn and roko-cli, roko-cli's loop_audit_census_run (real binary, 200 chains) passes; roko learn loops --json on a 1,200-chain synthetic workspace prints L-know live β 0.580 [0.288, 0.873], L-play demoted/harm β -0.620 [-0.908, -0.332], placebo probation β -0.045 [-0.199, 0.067]. Enforce stays off. Follow-ups: gap-03a394 (M4 false-green penalty), gap-ca63ee (census uses default params)."
 +++
 
 ## Problem

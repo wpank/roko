@@ -2556,17 +2556,7 @@ pub(crate) fn fill_usage_cost_from_pricing(
 /// [`fill_usage_cost_from_pricing`] applies one: the price snapshot's row,
 /// the profile's per-million prices, or the model's built-in pricing. A rate
 /// of 0 is free, and still a rate (backlog 2109).
-pub(crate) fn model_has_price(
-    snapshot: Option<&PriceSnapshot>,
-    profile: Option<&ModelProfile>,
-    model_slug: &str,
-) -> bool {
-    snapshot.is_some_and(|snapshot| snapshot.row(model_slug).is_some())
-        || profile.is_some_and(|profile| {
-            profile.cost_input_per_m.is_some() || profile.cost_output_per_m.is_some()
-        })
-        || roko_core::config::model_registry::builtin_pricing(model_slug).is_some()
-}
+pub(crate) use roko_core::config::model_registry::model_has_price;
 
 /// Whether a call's `usage` is priced, for its cost row (backlog 2109): its
 /// cost is known, or roko has a rate for the model, which prices even a

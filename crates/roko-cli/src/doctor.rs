@@ -1021,10 +1021,11 @@ fn check_routing_ladder(workdir: &Path, config_override: Option<&Path>) -> Optio
 /// The models a task can be routed to that roko has no price for: every
 /// `[models.*]` entry, each ladder rung's model and the default model, priced
 /// as a run prices a call (`dispatch_v2::model_has_price`: the run's price
-/// snapshot, the entry's rates, or the built-in table). A call on one is
-/// recorded at an unknown cost, so a budget cap cannot count it: a plan under
-/// `[budget] max_plan_usd`, or a chat host's run under its `max_usd`, stops
-/// only after that call ran (gap-c8f388).
+/// snapshot, the entry's rates, or the built-in table). A budget cap cannot
+/// count a call on one, so a run under a cap (a plan under `[budget]
+/// max_plan_usd`, or a chat host's run under its `max_usd`) never calls it:
+/// failover passes it over, and a task with nothing priced left fails
+/// (gap-c8f388, gap-8548e3).
 fn check_model_prices(workdir: &Path, config_override: Option<&Path>) -> Option<DoctorCheck> {
     use crate::dispatch::model_routing::ladder_report;
     use std::collections::{BTreeMap, BTreeSet};
@@ -1092,9 +1093,9 @@ fn check_model_prices(workdir: &Path, config_override: Option<&Path>) -> Option<
     Some(check(
         DoctorStatus::Warn,
         format!(
-            "{} model(s) a task can be routed to have no price: {models}. A call on one is \
-             recorded at an unknown cost, so a budget cap ([budget] max_plan_usd, or a chat \
-             run's max_usd) stops the run only after that call ran",
+            "{} model(s) a task can be routed to have no price: {models}. A budget cap cannot \
+             count a call on one, so a run under a cap ([budget] max_plan_usd, or a chat run's \
+             max_usd) never calls it, and a task with no priced model left fails",
             unpriced.len()
         ),
         Some(
@@ -1107,14 +1108,21 @@ fn check_model_prices(workdir: &Path, config_override: Option<&Path>) -> Option<
 /// Whether a chat host (Hermes, OpenClaw) can start runs in this workspace
 /// over roko serve's `/mcp`, from the workspace config as a run loads it.
 fn check_chat_host_runs(workdir: &Path, config_override: Option<&Path>) -> DoctorCheck {
-    chat_host_runs_check(doctor_roko_config(workdir, config_override).as_ref())
+    let config = doctor_roko_config(workdir, config_override);
+    let prices = config.as_ref().and_then(|config| {
+        roko_core::pricing_snapshot::PriceSnapshot::shared(&config.pricing, workdir)
+    });
+    chat_host_runs_check(config.as_ref(), prices.as_deref())
 }
 
-/// [`check_chat_host_runs`] of `config` (`None` when it did not load): ok
-/// with what such a run's tasks run on, or a warning with the refusal serve
-/// gives such a run (gap-cf427e) and the fix, `roko config preset
-/// chat-host` for the data-model boundary.
-fn chat_host_runs_check(config: Option<&roko_core::config::schema::RokoConfig>) -> DoctorCheck {
+/// [`check_chat_host_runs`] of `config` (`None` when it did not load), with
+/// the workspace's `prices`: ok with what such a run's tasks run on, or a
+/// warning with the refusal serve gives such a run (gap-cf427e, gap-8548e3)
+/// and the fix, `roko config preset chat-host` for the data-model boundary.
+fn chat_host_runs_check(
+    config: Option<&roko_core::config::schema::RokoConfig>,
+    prices: Option<&roko_core::pricing_snapshot::PriceSnapshot>,
+) -> DoctorCheck {
     use roko_core::config::serve::ChatRunBlocker;
 
     let check = |status, message: String, detail: Option<String>, fix: Option<&str>| DoctorCheck {
@@ -1134,7 +1142,7 @@ fn chat_host_runs_check(config: Option<&roko_core::config::schema::RokoConfig>) 
             None,
         );
     };
-    let Some(refusal) = config.chat_run_refusal() else {
+    let Some(refusal) = config.chat_run_refusal(prices) else {
         let boundary = config.agent.data_llm.as_ref().map_or_else(
             || "without the data-model boundary ([serve.mcp] allow_without_data_llm)".to_string(),
             |data_llm| format!("with data model {}", data_llm.model.trim()),
@@ -1158,21 +1166,29 @@ fn chat_host_runs_check(config: Option<&roko_core::config::schema::RokoConfig>) 
             None,
         );
     };
+    // A model for the runs comes first; the preset then sets the data-model
+    // boundary.
+    let model_fix = if refusal.blockers.contains(&ChatRunBlocker::NoToolLoopModel) {
+        Some("give roko an API model with its key")
+    } else if refusal.blockers.contains(&ChatRunBlocker::NoPrice) {
+        Some("give one of its API models a price (cost_input_per_m and cost_output_per_m)")
+    } else {
+        None
+    };
     let fix = match (
-        refusal.blockers.contains(&ChatRunBlocker::NoToolLoopModel),
+        model_fix,
         refusal.blockers.contains(&ChatRunBlocker::NoDataBoundary),
     ) {
-        (true, true) => {
-            "give roko an API model with its key (the detail says what each model lacks), then run \
-             roko config preset chat-host --yes"
+        (Some(model_fix), true) => format!(
+            "{model_fix} (the detail says what each model lacks), then run roko config preset \
+             chat-host --yes"
+        ),
+        (Some(model_fix), false) => {
+            format!("{model_fix}: the detail says what each model lacks")
         }
-        (true, false) => {
-            "give roko an API model with its key: the detail says what each model lacks"
-        }
-        _ => {
-            "roko config preset chat-host --yes (--allow-without-data-llm instead, for local \
-             use)"
-        }
+        (None, _) => "roko config preset chat-host --yes (--allow-without-data-llm instead, for \
+                      local use)"
+            .to_string(),
     };
     check(
         DoctorStatus::Warn,
@@ -1181,7 +1197,7 @@ fn chat_host_runs_check(config: Option<&roko_core::config::schema::RokoConfig>) 
             refusal.codes().join(", ")
         ),
         Some(refusal.message),
-        Some(fix),
+        Some(&fix),
     )
 }
 
@@ -3888,7 +3904,7 @@ mod tests {
             model("claude_cli", "claude-sonnet-4-6"),
         );
 
-        let check = chat_host_runs_check(Some(&config));
+        let check = chat_host_runs_check(Some(&config), None);
         assert_eq!(check.id, "chat_host_runs");
         assert_eq!(check.status, DoctorStatus::Warn);
         assert!(
@@ -3921,7 +3937,24 @@ mod tests {
         config
             .models
             .insert("api-mini".to_string(), model("api", "api-mini-1"));
-        let check = chat_host_runs_check(Some(&config));
+        // Its runs are held to a cap, which counts only priced calls
+        // (gap-8548e3).
+        let check = chat_host_runs_check(Some(&config), None);
+        assert!(
+            check.message.ends_with("(no_data_boundary, no_price)"),
+            "{check:?}"
+        );
+        assert!(
+            check
+                .fix
+                .as_deref()
+                .is_some_and(|fix| fix.starts_with("give one of its API models a price")),
+            "{check:?}"
+        );
+        let priced = config.models.get_mut("api-mini").expect("api-mini");
+        priced.cost_input_per_m = Some(0.15);
+        priced.cost_output_per_m = Some(0.6);
+        let check = chat_host_runs_check(Some(&config), None);
         assert_eq!(check.status, DoctorStatus::Warn);
         assert!(check.message.ends_with("(no_data_boundary)"), "{check:?}");
         assert_eq!(
@@ -3936,13 +3969,16 @@ mod tests {
             model: "api-mini".to_string(),
             ..roko_core::config::DataLlmConfig::default()
         });
-        let check = chat_host_runs_check(Some(&config));
+        let check = chat_host_runs_check(Some(&config), None);
         assert_eq!(check.status, DoctorStatus::Ok, "{check:?}");
         assert_eq!(
             check.detail.as_deref(),
             Some("with data model api-mini; their tasks run on api-mini")
         );
-        assert_eq!(chat_host_runs_check(None).status, DoctorStatus::Skipped);
+        assert_eq!(
+            chat_host_runs_check(None, None).status,
+            DoctorStatus::Skipped
+        );
     }
     use tempfile::tempdir;
 

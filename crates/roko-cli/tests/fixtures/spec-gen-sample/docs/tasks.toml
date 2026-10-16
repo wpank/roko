@@ -1,0 +1,79 @@
+[meta]
+done = 0
+plan = "docs-task-document-the-authoring-and-spec-quality-sections-of-roko-toml-in-docs-v3-21-config-md-for-each-section-add-a-table-of-every-key-with-its-type-default-and-effect-taken-from-crates-roko-core"
+status = "ready"
+total = 1
+
+[[task]]
+acceptance = [
+    "AC1: docs/v3/21-CONFIG.md contains the heading '## 12. Plan Authoring and Spec Quality' followed, in order, by '## 13. Minimal Config', '## 14. Verification' and '## 15. References'.",
+    """AC2: The [authoring] subsection has a '| Key | Type | Default | Effect |' table whose planner_model row gives type string and default "".""",
+    "AC3: The [spec_quality] subsection has a '| Key | Type | Default | Effect |' table with rows for mode, allow_threshold, block_threshold, red_on_base, red_on_base_cargo, red_on_base_timeout_secs and holdout_frac, with defaults advise, 70, 40, true, false, 120 and 0.05.",
+    "AC4: Each subsection has a toml code block that starts with its section header line.",
+]
+allowed_tools = [
+    "read_file",
+    "grep",
+    "edit_file",
+]
+denied_tools = []
+depends_on = []
+description = """Add a new top-level section headed exactly '## 12. Plan Authoring and Spec Quality' to docs/v3/21-CONFIG.md, placed after section 11 (Deprecated and Transitional Sections, which ends with the '---' rule at line 588) and before the current '## 12. Minimal Config'. Renumber the headings after it: '## 12. Minimal Config' becomes '## 13. Minimal Config', '## 13. Verification' becomes '## 14. Verification', '## 14. References' becomes '## 15. References'. End the new section with a '---' rule like the other sections. Inside it add two subsections whose headings are exactly: ### then a space then the section name in backticks, i.e. the heading text is [authoring] in backticks and [spec_quality] in backticks. Each subsection has: (1) one or two sentences on what the section controls, from the struct doc comment; (2) a markdown table with header row '| Key | Type | Default | Effect |' and one row per struct field, with the key in backticks in the first cell (for example a row starting '| `planner_model` |'); (3) a short fenced code block tagged toml that starts with the section header line ([authoring] or [spec_quality]). FACTS for [authoring] (AuthoringConfig, crates/roko-core/src/config/authoring.rs): one key planner_model, type string, default written as "" (empty, meaning unset); the model that generates and revises plans, as a key from [models]; when empty, planning falls back to the strategist role's model, then [agent] model; surrounding whitespace is trimmed and a blank value counts as unset; a --model flag overrides it. Unknown keys in the section are rejected. FACTS for [spec_quality] (SpecQualityConfig, crates/roko-core/src/config/spec_quality.rs): what the spec-quality gate does with a plan before plan run dispatches its tasks; in every mode but off a hard fail (HF2 verify that can never fail, HF3 verify that already passes on base) refuses the plan; no per-run override. Keys: mode, string enum off|advise|enforce, default "advise" (off: no scoring; advise: hard fails refuse, scores only reported; enforce: also stops tasks scoring below block_threshold); allow_threshold, float 0-100, default 70.0, score at or above which a task goes to its agent as written; block_threshold, float 0-100, default 40.0, score below which enforce stops a task, must not exceed allow_threshold; red_on_base, bool, default true, run each implementer task's verify steps on the unchanged base first to score SQ06 and find HF3, cargo steps skipped unless red_on_base_cargo; red_on_base_cargo, bool, default false, also run cargo steps in that check; red_on_base_timeout_secs, integer seconds, default 120, longest one verify step may run in that check; holdout_frac, float 0-1, default 0.05, share of score-based gate decisions skipped at random to measure the gate's effect, hard fails never held out. roko config validate and the loader reject thresholds outside 0-100, block_threshold above allow_threshold, and holdout_frac outside 0-1; unknown keys are rejected."""
+files = ["docs/v3/21-CONFIG.md"]
+goal = "docs/v3/21-CONFIG.md has a new section 12 with an [authoring] subsection and a [spec_quality] subsection, each with a Key | Type | Default | Effect table listing every field of its config struct and a short toml example."
+id = "T1"
+max_loc = 80
+non_goals = [
+    "Do not change any Rust source; the structs in crates/roko-core/src/config/ are the source of truth, not edit targets.",
+    "Do not rewrite or reorder sections 1-11 or the bodies of the renumbered sections; only their heading numbers change.",
+    "Do not document keys that are not fields of AuthoringConfig or SpecQualityConfig.",
+]
+open_questions = []
+role = "scribe"
+status = "ready"
+tier = "integrative"
+title = "Document [authoring] and [spec_quality] in docs/v3/21-CONFIG.md"
+
+[[task.accept.files]]
+count = 4
+dest = "tools/docs_integrity/test_config_doc_sections.py"
+runner = "python3 -m unittest discover -s tools/docs_integrity -p test_config_doc_sections.py"
+src = "accept/test_config_doc_sections.py"
+
+[task.context]
+anti_patterns = [
+    "Do NOT invent keys, defaults or ranges not in the two struct files.",
+    "Do NOT leave two '## 12.' headings; renumber Minimal Config, Verification and References.",
+    "Do NOT put the key name without backticks in the first table cell.",
+]
+symbols = [
+    "AuthoringConfig — [authoring] struct with planner_model",
+    "SpecQualityConfig — [spec_quality] struct with seven fields",
+    "SpecQualityMode — off | advise | enforce enum, default advise",
+]
+
+[[task.context.read_files]]
+lines = "565-660"
+path = "docs/v3/21-CONFIG.md"
+why = "Insertion point after section 11 and the three headings to renumber; follow the existing heading and '---' separator style."
+
+[[task.context.read_files]]
+lines = "1-37"
+path = "crates/roko-core/src/config/authoring.rs"
+why = "AuthoringConfig field, default, doc comment and trimming rule."
+
+[[task.context.read_files]]
+lines = "1-158"
+path = "crates/roko-core/src/config/spec_quality.rs"
+why = "SpecQualityConfig fields, defaults, SpecQualityMode variants and validation rules."
+
+[[task.verify]]
+command = '''grep -q '^## 12\. Plan Authoring and Spec Quality' docs/v3/21-CONFIG.md && grep -q '^## 15\. References' docs/v3/21-CONFIG.md && grep -q '^| `planner_model`' docs/v3/21-CONFIG.md && grep -q '^| `holdout_frac`' docs/v3/21-CONFIG.md'''
+covers = [
+    "AC1",
+    "AC2",
+    "AC3",
+]
+expect = "fail_on_base"
+fail_msg = "The new section 12, the renumbered References heading, or the planner_model/holdout_frac table rows are missing from docs/v3/21-CONFIG.md"
+phase = "test"

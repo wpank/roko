@@ -9,7 +9,7 @@ goal = "whitepaper"
 size = "M"
 subsystem = ["paper"]
 created = 2026-09-29
-updated = 2026-09-29
+updated = 2026-10-16
 last_verified = 2026-09-29
 last_verified_rev = "12a8d7793"
 source = "tmp/cybernetic-harness/workstreams/PROGRESS.md"
@@ -21,6 +21,8 @@ links = { depends_on = ["gap-8d2c79"], blocks = [], related = ["gap-8d2c79", "ga
 
 [[verify]]
 command = "python3 tools/status_matrix.py --check && ! grep -q 'pin = \"a17d4dadd\"' docs/whitepaper/data/mechanisms.toml && python3 tools/paperlint.py --strict --require-status reviewed docs/whitepaper/*.md"
+superseded = "2026-10-16: The whitepaper rewrite as a design paper (7898493f2, 2026-10-08) dropped the status matrix, so there is nothing to re-pin: status_matrix.py --check fails on the deleted appendix (bug-ac2a01), and the sections are draft until gap-6a83de reviews them."
+superseded_by = "7898493f2"
 
 [closed]
 at = 2026-09-29

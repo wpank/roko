@@ -9,7 +9,7 @@ goal = "whitepaper"
 size = "S"
 subsystem = ["paper"]
 created = 2026-09-29
-updated = 2026-09-29
+updated = 2026-10-16
 last_verified = 2026-09-29
 last_verified_rev = "ebffa7842"
 source = "tmp/cybernetic-harness/workstreams/PROGRESS.md"
@@ -21,6 +21,8 @@ links = { depends_on = [], blocks = [], related = ["gap-bb619d", "gap-ec516e"], 
 
 [[verify]]
 command = "grep -q 'gao2026pinsieve' docs/whitepaper/10-related-work.md && grep -q '{gao2026pinsieve,' docs/whitepaper/references.bib && python3 tools/paperlint.py --strict --require-status reviewed docs/whitepaper/*.md"
+superseded = "2026-10-16: The whitepaper rewrite as a design paper (7898493f2, 2026-10-08) reset every section to draft, so only --require-status reviewed fails; gao2026pinsieve is still cited in 10-related-work.md and references.bib. The new review is gap-6a83de."
+superseded_by = "7898493f2"
 
 [closed]
 at = 2026-09-29

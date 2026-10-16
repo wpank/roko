@@ -56,10 +56,10 @@ use roko_core::config::learning::{AuditEpoch, LearningAuditConfig};
 
 use self::arm_set::{ArmDraws, MAXIMIZE_CONDITION, NORMAL_CONDITION, PLACEBO_LAYER};
 use self::assign::{EXPLORE_EPSILON, HoldoutSchedule, LoopLayer};
-use self::census::{CensusState, LoopMeasurement, MeasuredLoop};
+use self::census::{CensusState, LoopMeasurement};
 use self::exposure::InfluenceEstimate;
 use self::ledger::{
-    AuditBrokenRow, AuditClearedRow, BetaFields, HealthRow, IotaFields, LOOP_AUDIT_SCHEMA, Ledger,
+    AuditBrokenRow, AuditClearedRow, HealthRow, IotaFields, LOOP_AUDIT_SCHEMA, Ledger,
     LoopAuditRecord, LoopAuditRow, TransitionRow,
 };
 use self::state::{
@@ -564,21 +564,23 @@ impl LoopAuditor {
     /// the result as its standing.
     ///
     /// Every registered loop that is not retired and has decision rows with
-    /// S03's fields gets a `loop.health` row: its opportunities, ε and ι_net
-    /// over every row folded, at α/K ([`CensusState::measurements`]), its
-    /// layer's SRM e-value, and the state the state machine leaves it in,
-    /// with the dwell its ledger rows carry across runs. A loop that moves
-    /// gets a `loop.transition` row too. β is not estimated yet, so no loop
-    /// goes live, `null` or `harm` here.
+    /// S03's fields gets a `loop.health` row: its opportunities, ε, ι_net
+    /// and β over every row folded, at α/K ([`CensusState::measurements`]),
+    /// its layer's SRM e-value, and the state the state machine leaves it
+    /// in, with the dwell its ledger rows carry across runs. A loop that
+    /// moves gets a `loop.transition` row too. β is judged once guard 2
+    /// allows (gap-03fcd0), so a loop can go `live`, `demoted` for `harm` or
+    /// `flagged` `null`.
     ///
     /// The placebo is the auditor's own control (S03 §4.3; gap-6f31c3). It
     /// is evaluated first, so a placebo that would move breaks the auditor
-    /// before any other loop moves; and a placebo whose ι_net interval
-    /// excludes 0, or its β interval once β is estimated, is a signal that
-    /// breaks it before any loop is evaluated. An SRM alarm, either placebo
-    /// tripwire, or an auditor the ledger says is broken freezes every
-    /// transition, and every health row says `placebo_ok: false`. Nothing
-    /// here changes what a loop executes.
+    /// before any other loop moves; and a placebo whose ι_net or β interval
+    /// excludes 0 is a signal that breaks it before any loop is evaluated.
+    /// An SRM alarm, either placebo tripwire, or an auditor the ledger says
+    /// is broken freezes every transition, and every health row says
+    /// `placebo_ok: false`. Nothing here changes what a loop executes:
+    /// attempt open reads the states, and runs π⁰ for a demotion only with
+    /// `[learning.audit] enforce` and the loop's own `enforce` on.
     pub fn observe_census(
         &mut self,
         census: &CensusState,
@@ -652,7 +654,7 @@ impl LoopAuditor {
                 n_default: measurement.measured.n_default,
                 eps: measurement.measured.eps,
                 iota: iota_fields(&measurement.influence),
-                beta: beta_fields(&measurement.measured, &params),
+                beta: measurement.measured.beta.clone(),
                 srm_evalue: census.srm_evalue(spec.assignment_layer().as_str()),
                 placebo_ok: !evaluation.audit_broken,
                 evidence: MEASURED_EVIDENCE.to_string(),
@@ -749,8 +751,11 @@ fn unix_seconds(ts: &str) -> Option<i64> {
 /// (unix seconds): the structural pre-checks its rows show (an arm assigned
 /// at or after its decision; N_ε rows whose reader scored its candidates
 /// alike, and none it did not, gap-a13544; N_ε rows and not one
-/// opportunity), ε and ι_net. Rows from before S03's fields add the
-/// `pre_instrumentation` qualifier.
+/// opportunity), ε, ι_net, and β once guard 2 lets it be judged, as its
+/// health row shows it (gap-03fcd0). The census's outcome is U^pass (M4's
+/// false-green labels are not joined), so β_pass is β; β_cost is the
+/// saving over the units whose usage was reported. Rows from before S03's
+/// fields add the `pre_instrumentation` qualifier.
 fn loop_evidence(measurement: &LoopMeasurement, params: &AuditParams, now: i64) -> LoopEvidence {
     let n_opp = measurement.measured.n_opp;
     let mut qualifiers = Vec::new();
@@ -769,6 +774,9 @@ fn loop_evidence(measurement: &LoopMeasurement, params: &AuditParams, now: i64) 
         },
         exposure: Some(measurement.exposure.clone()),
         influence: Some(measurement.influence.clone()),
+        beta: measurement.beta.clone(),
+        beta_pass: measurement.beta.clone(),
+        beta_cost: measurement.beta_cost.clone(),
         qualifiers,
         ..LoopEvidence::default()
     }
@@ -784,24 +792,6 @@ fn iota_fields(influence: &InfluenceEstimate) -> IotaFields {
         lcb: influence
             .interval
             .map_or(influence.iota_net, |(low, _)| low),
-    }
-}
-
-/// A health row's β fields: no estimate yet, and why. Guard 2 comes first:
-/// β waits for ε̂ ≥ ε_min, then for N_β opportunities.
-fn beta_fields(measured: &MeasuredLoop, params: &AuditParams) -> BetaFields {
-    let reason = if measured.eps.est < params.eps_min {
-        "eps_below_min"
-    } else if measured.n_opp < params.n_beta {
-        "n_below_n_beta"
-    } else {
-        "not_estimated"
-    };
-    BetaFields {
-        est: None,
-        lcb: None,
-        ucb: None,
-        reason: Some(reason.to_string()),
     }
 }
 

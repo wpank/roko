@@ -9,7 +9,7 @@ goal = "golden-path"
 size = "M"
 subsystem = ["roko-cli/prd", "roko-cli/plan_generate"]
 created = 2026-09-29
-updated = 2026-10-01
+updated = 2026-10-16
 last_verified = 2026-10-01
 last_verified_rev = "1bf49188d"
 source = "tmp/cybernetic-harness/workstreams/PLAN.md#e8"
@@ -21,6 +21,8 @@ links = { depends_on = ["gap-853b31"], blocks = [], related = ["find-84bfa8", "b
 
 [[verify]]
 command = "grep -rqw 'fn generator_prompt_keeps_a_long_prd_whole' crates/roko-cli/src/ && cargo test -p roko-cli --lib generator_prompt_keeps_a_long_prd_whole && ! grep -rq 'build_generation_prompt' crates/roko-cli/src/commands/"
+superseded = "2026-10-16: 7f2776fc1 removed the PRD pipeline and its test generator_prompt_keeps_a_long_prd_whole; plan_generate is the one generator, and the old 8,000-char and 5-file caps are only the PlannerBudget::SMALL floor."
+superseded_by = "7f2776fc1"
 
 [closed]
 at = 2026-10-01

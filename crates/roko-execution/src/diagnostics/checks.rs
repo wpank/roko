@@ -221,9 +221,9 @@ pub fn check_git(workdir: &Path) -> Vec<DiagnosticFinding> {
         }
     }
 
-    // Check for uncommitted changes.
+    // Check for uncommitted changes. `-z` keeps each path as it is, unquoted.
     let dirty = std::process::Command::new("git")
-        .args(["status", "--porcelain"])
+        .args(["status", "--porcelain", "-z"])
         .current_dir(workdir)
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
@@ -231,8 +231,8 @@ pub fn check_git(workdir: &Path) -> Vec<DiagnosticFinding> {
 
     match dirty {
         Ok(out) if out.status.success() => {
-            let stdout = String::from_utf8_lossy(&out.stdout);
-            if stdout.trim().is_empty() {
+            let paths = porcelain_paths(&out.stdout);
+            if paths.is_empty() {
                 vec![DiagnosticFinding {
                     check_id: DiagnosticCheckId::Git,
                     code: "git_clean".into(),
@@ -242,22 +242,7 @@ pub fn check_git(workdir: &Path) -> Vec<DiagnosticFinding> {
                     evidence: BTreeMap::new(),
                 }]
             } else {
-                let changed = stdout.lines().count();
-                vec![DiagnosticFinding {
-                    check_id: DiagnosticCheckId::Git,
-                    code: "git_dirty".into(),
-                    severity: DiagnosticSeverity::Warning,
-                    message: format!(
-                        "working tree has {changed} uncommitted change(s) \u{2014} \
-                         consider committing before plan run to avoid worktree merge conflicts"
-                    ),
-                    remediation: Some(DiagnosticRemediation {
-                        summary: "commit or stash changes".into(),
-                        command: Some("git add -A && git commit".into()),
-                        mutation_required: true,
-                    }),
-                    evidence: evidence([("changed_count", changed.to_string())]),
-                }]
+                vec![git_dirty_finding(workdir, &paths)]
             }
         }
         _ => vec![DiagnosticFinding {
@@ -269,6 +254,79 @@ pub fn check_git(workdir: &Path) -> Vec<DiagnosticFinding> {
             evidence: BTreeMap::new(),
         }],
     }
+}
+
+/// Up to this many uncommitted paths, the `git_dirty` fix is a `git add` that names them.
+const DIRTY_PATHS_IN_COMMAND: usize = 3;
+
+/// How many uncommitted paths the `git_dirty` message lists before "and N more".
+const DIRTY_PATHS_SHOWN: usize = 10;
+
+/// The `git_dirty` finding for the uncommitted `paths` (bug-8bafc0).
+///
+/// It names the paths and, for a few of them, gives a `git add` of exactly those; past
+/// [`DIRTY_PATHS_IN_COMMAND`] it says to commit or remove them and gives no command. It never
+/// suggests `git add -A`, which would also commit files nobody meant to, such as a checkout's
+/// local-only untracked files.
+fn git_dirty_finding(workdir: &Path, paths: &[String]) -> DiagnosticFinding {
+    // `git status` names paths from the top of the repository; the fix runs in `workdir`.
+    let to_top = std::process::Command::new("git")
+        .args(["rev-parse", "--show-cdup"])
+        .current_dir(workdir)
+        .stderr(std::process::Stdio::null())
+        .output()
+        .map(|out| String::from_utf8_lossy(&out.stdout).trim().to_string())
+        .unwrap_or_default();
+    let paths: Vec<String> = paths.iter().map(|path| format!("{to_top}{path}")).collect();
+    let changed = paths.len();
+    let mut listed = paths[..changed.min(DIRTY_PATHS_SHOWN)].join(", ");
+    if changed > DIRTY_PATHS_SHOWN {
+        listed = format!("{listed} and {} more", changed - DIRTY_PATHS_SHOWN);
+    }
+    let (advice, summary, command) = if changed <= DIRTY_PATHS_IN_COMMAND {
+        let words: Vec<String> = paths.iter().map(|path| shell_word(path)).collect();
+        (
+            "consider committing",
+            "commit the changes",
+            Some(format!("git add -- {} && git commit", words.join(" "))),
+        )
+    } else {
+        ("commit or remove these", "commit or remove these", None)
+    };
+    DiagnosticFinding {
+        check_id: DiagnosticCheckId::Git,
+        code: "git_dirty".into(),
+        severity: DiagnosticSeverity::Warning,
+        message: format!(
+            "working tree has {changed} uncommitted change(s): {listed} \u{2014} {advice} \
+             before a plan run to avoid worktree merge conflicts"
+        ),
+        remediation: Some(DiagnosticRemediation {
+            summary: summary.into(),
+            command,
+            mutation_required: true,
+        }),
+        evidence: evidence([("changed_count", changed.to_string())]),
+    }
+}
+
+/// The paths of the entries in `git status --porcelain -z` output.
+///
+/// A rename or copy's entry is followed by the path it came from, which is skipped.
+fn porcelain_paths(stdout: &[u8]) -> Vec<String> {
+    let mut fields = stdout.split(|byte| *byte == 0);
+    let mut paths = Vec::new();
+    while let Some(entry) = fields.next() {
+        // An entry is "XY path"; X or Y is R for a rename, C for a copy.
+        let Some((status, path)) = entry.split_at_checked(3) else {
+            continue;
+        };
+        if status.contains(&b'R') || status.contains(&b'C') {
+            fields.next();
+        }
+        paths.push(String::from_utf8_lossy(path).into_owned());
+    }
+    paths
 }
 
 // ── plans ─────────────────────────────────────────────────────────────────
@@ -943,4 +1001,17 @@ fn global_config_path() -> Option<std::path::PathBuf> {
 /// Build a `BTreeMap` from an array of key-value pairs.
 fn evidence<const N: usize>(pairs: [(&str, String); N]) -> BTreeMap<String, String> {
     pairs.into_iter().map(|(k, v)| (k.to_string(), v)).collect()
+}
+
+/// `word` as one shell word: as it is when nothing in it is special, in single quotes otherwise.
+fn shell_word(word: &str) -> String {
+    let plain = !word.is_empty()
+        && word
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || b"/._-+:@%,=".contains(&byte));
+    if plain {
+        word.to_string()
+    } else {
+        format!("'{}'", word.replace('\'', "'\\''"))
+    }
 }

@@ -1,0 +1,84 @@
+[meta]
+done = 0
+plan = "record-what-a-closed-work-item-cost-python3-tools-work-py-close-gets-a-spend-usd-amount-option-that-writes-spend-usd-amount-a-number-at-least-0-into-the-item-s-closed-table-items-closed-without-the"
+status = "ready"
+total = 1
+
+[[task]]
+acceptance = [
+    "AC1: `work.py close gap-cccccc --evidence x --spend-usd 1.25` exits 0. The item file has `spend_usd = 1.25` (unquoted), and `work.py show gap-cccccc --json` gives closed.spend_usd == 1.25 as a number. `--spend-usd 0` is accepted and stores 0.",
+    "AC2: `work.py close <id> --evidence x` without --spend-usd writes a [closed] table that has no spend_usd key.",
+    "AC3: `--spend-usd -1` and `--spend-usd abc` each exit non-zero and leave the item open with no [closed] table.",
+    'AC4: check_closed returns an error naming spend_usd for -0.5, "1.0", True and nan, and returns [] for 0, 2.5 and 3.',
+    "AC5: the existing suite `python3 -m unittest discover -s tools -p test_work.py` still passes.",
+]
+allowed_tools = [
+    "read_file",
+    "grep",
+    "edit_file",
+]
+denied_tools = []
+depends_on = []
+description = """
+All edits are in tools/work.py.
+
+1. Close subparser (lines 2039-2045): add `p.add_argument("--spend-usd", type=<parser>, help="what the work cost in USD")`. The parser function turns the text into a float. It raises `argparse.ArgumentTypeError` if the text does not parse, is not finite (nan or inf) or is below 0. argparse then exits 2 before anything changes. The default is None.
+2. close_item (line 1495): add a keyword `spend_usd=None` and put `"spend_usd": spend_usd` into its `closed` dict. rewrite_item (line 1487) already drops None values, so an item closed without the option gets no key. cmd_close (line 1536) passes `spend_usd=a.spend_usd`.
+3. closed_value (line 1449): write an int or float that is not a bool as a bare TOML number (`repr(v)`), not as a quoted string. The `at` case and the bool case stay as they are.
+4. check_closed (line 1064): if `spend_usd` is present, add the error `[closed].spend_usd must be a number at least 0` when the value is a bool, is not an int or float, is not finite, or is below 0.
+5. cmd_show --json already returns the whole `closed` dict, so spend_usd appears there with no change.
+"""
+files = ["tools/work.py"]
+goal = "`python3 tools/work.py close <id> --evidence x --spend-usd 1.25` writes the TOML number `spend_usd = 1.25` into the item's [closed] table. An item closed without the option has no spend_usd key. A negative or non-numeric amount is rejected, and the item is left open."
+id = "T1"
+max_loc = 50
+non_goals = [
+    "Do not change any other [closed] field, the event log format (log_event), or close semantics for --status/--force.",
+    "Do not add a spend total or a report command; this task only records the amount and checks it.",
+    "Do not edit tools/test_work.py; the pinned acceptance test covers the new behaviour.",
+]
+open_questions = []
+role = "implementer"
+status = "ready"
+tier = "focused"
+title = "Add --spend-usd to work.py close and check [closed].spend_usd"
+
+[[task.accept.files]]
+count = 5
+dest = "tools/test_work_spend.py"
+runner = "python3 -m unittest discover -s tools -p test_work_spend.py"
+src = "accept/test_work_spend.py"
+
+[task.context]
+anti_patterns = [
+    "Do NOT write spend_usd as a quoted string; closed_value must give a bare number so show --json returns a float.",
+    "Do NOT write spend_usd = 0 or an empty value when the option is absent; leave it None so rewrite_item drops it.",
+    "Do NOT treat a bool as a valid amount: isinstance(True, int) is True, so check for bool first.",
+]
+symbols = [
+    "check_closed — validates [closed] fields; validate() adds its errors for every item",
+    "closed_value — renders one [closed] value as TOML",
+    "close_item / cmd_close — build the closed dict from CLI args",
+]
+
+[[task.context.read_files]]
+lines = "1064-1078"
+path = "tools/work.py"
+why = "check_closed: where the spend_usd validation goes, following the forced/size checks."
+
+[[task.context.read_files]]
+lines = "1449-1540"
+path = "tools/work.py"
+why = "closed_value, rewrite_item, close_item and cmd_close: where the value is written and passed through."
+
+[[task.context.read_files]]
+lines = "2039-2045"
+path = "tools/work.py"
+why = "The close subparser where --spend-usd is added."
+
+[[task.verify]]
+command = "grep -q -- '--spend-usd' tools/work.py && python3 -m unittest discover -s tools -p test_work.py"
+covers = ["AC5"]
+expect = "fail_on_base"
+fail_msg = "work.py has no --spend-usd option, or the existing work.py test suite now fails"
+phase = "test"

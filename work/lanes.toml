@@ -16,7 +16,7 @@ rust = 4  # Rust builders on the cargo lock, across rust-cold and rust-hot
 
 [lane.paper]
 paths = ["docs/whitepaper/**", "tmp/cybernetic-harness/paper/**", "tmp/cybernetic-harness/companion-audit/**",
-         "tmp/cybernetic-harness/tldr/**", "tmp/cybernetic-harness/specs/**", "tools/status_matrix.py"]
+         "tmp/cybernetic-harness/tldr/**", "tmp/cybernetic-harness/specs/**"]
 max = 3  # one agent per section file
 
 [lane.bench]

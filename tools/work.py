@@ -9,7 +9,7 @@ Usage:
               [--blocks ids] [--body-file F] [--no-verify-yet] [--dry-run]
                                      # a gap, bug or regression needs an --anchor, and a --verify unless --no-verify-yet
   work.py check [--strict]                                               # validate both roots (+ verify-command lint)
-  work.py render                                                         # regenerate views, including DRIFT.md and EPICS.md
+  work.py render                                        # regenerate views (incl. DRIFT.md, EPICS.md) and the telemetry rollup
   work.py list [--goal G] [--lane L] [--kind K] [--status open|all|<status>] [--parent ID] [--json]   # one line per item
   work.py show <id> [--json]                                             # an item with its children, dependents and claim
   work.py status [--json]                                                # open, claimed and done counts by goal, lane and epic
@@ -40,7 +40,9 @@ Keeping the graph current (work/README.md, "Keeping the graph current"):
   work.py sync [--dry-run]                   # close items from `Closes: <id>` commit trailers and passed plan tasks with closes=[…]
   work.py drift [--json]                     # open items whose evidence may be out of date
   work.py touched [--rev REV|A..B]           # open items a commit (or range) touched or mentioned
-  work.py verify [<id>…] [--closed-since DATE] [--static-only]   # run [[verify]] commands
+  work.py verify [<id>…] [--closed-since DATE] [--static-only]   # run [[verify]] commands (a retired one prints RETIRED)
+  work.py retire-verify <id> --index N --reason "…" [--by REV|ID] [--static-only]   # a done item's verify that a later
+        # change made unrunnable stays as the record, marked superseded; refused unless the item is done and it fails now
   work.py apply-verdicts --snapshot drift.json <verdicts.jsonl>… [--dry-run]   # apply a sweep's agent verdicts
   work.py hook                               # Claude Code PostToolUse adapter (reads the hook payload on stdin)
 """
@@ -236,6 +238,8 @@ def validate(items):
             for ref in links.get(key, []) or []:
                 if ID_RE.match(ref) and ref not in ids:
                     errs.append(f"{it['_path'].relative_to(REPO)}: links.{key} → unknown {ref}")
+        for n, v in enumerate(it.get("verify") or [], 1):
+            errs += [f"{it['_path'].relative_to(REPO)}: [[verify]] {n}: {e}" for e in check_retired(it, v, ids)]
     return errs
 
 
@@ -305,6 +309,60 @@ def static_verify_state(it) -> str:
     if not prefixes:
         return "none"
     return "green" if all(run_shell(p, 60) == 0 for p in prefixes) else "red"
+
+
+# A done item's [[verify]] records what proved the fix when it closed. When a later change deletes or replaces what it
+# checks, `retire-verify` marks it superseded instead of deleting it (gap-6ee3c5): `superseded = "<date>: <reason>"`
+# and `superseded_by = "<commit or item id>"`. `verify` reports such an entry as RETIRED and does not run it. An open
+# item's verify always runs, and `check` refuses a retired one there.
+SUPERSEDED_RE = re.compile(r"^(\d{4}-\d{2}-\d{2}): \S")
+COMMIT_RE = re.compile(r"^[0-9a-f]{7,40}$")
+
+
+def is_retired(it, v) -> bool:
+    """Whether `verify` skips this [[verify]] entry: it is marked superseded and its item is closed."""
+    return isinstance(v, dict) and bool(v.get("superseded")) and it.get("status") in CLOSED
+
+
+def dated_reason(text) -> bool:
+    """Whether `text` reads "<YYYY-MM-DD>: <reason>" with a real date."""
+    m = SUPERSEDED_RE.match(text) if isinstance(text, str) else None
+    try:
+        return bool(m) and bool(dt.date.fromisoformat(m.group(1)))
+    except ValueError:
+        return False
+
+
+def check_retired(it, v, ids) -> list[str]:
+    """Why a [[verify]] entry's retirement is malformed: a retired entry needs both `superseded` and `superseded_by`
+    (an item id among `ids`, or a commit), and only a closed item's verify can be retired."""
+    if not isinstance(v, dict) or ("superseded" not in v and "superseded_by" not in v):
+        return []
+    errs = []
+    by = v.get("superseded_by")
+    if not dated_reason(v.get("superseded")):
+        errs.append('a retired verify needs superseded = "<YYYY-MM-DD>: <reason>"')
+    if not (isinstance(by, str) and (COMMIT_RE.match(by) or ID_RE.match(by))):
+        errs.append('a retired verify needs superseded_by = "<commit or item id>"')
+    elif ID_RE.match(by) and by not in ids:
+        errs.append(f"superseded_by → unknown {by}")
+    if it.get("status") not in CLOSED:
+        errs.append(f"is retired, but the item is {it.get('status')}: only a closed item's verify can be retired; "
+                    "an open item's must run")
+    return errs
+
+
+def verify_fails_now(cmd: str, static_only: bool = False) -> bool | None:
+    """Whether a verify command fails now. A failing static part settles it without running the cargo/npm/network
+    steps after it; otherwise the whole command runs, or with `static_only` the answer is None (cannot tell)."""
+    static = static_prefix(cmd)
+    if static and run_shell(static) != 0:
+        return True
+    if len(split_and(static)) == len(split_and(cmd)):  # nothing but static parts, and they passed
+        return False
+    if static_only:
+        return None
+    return run_shell(cmd, timeout=3600) != 0
 
 
 def _test_filter_exists(crate: str, filt: str) -> bool:
@@ -1180,6 +1238,11 @@ def render_root(root_key: str, items):
     if root_key == "work":
         render_now(root, opened, drift)
         render_epics(root, items)
+        # The development record (work/telemetry/) drifts stale unless something regenerates it on the same
+        # cadence as the views: render already runs after every batch of item changes, so it carries the
+        # rollup along instead of relying on a schedule nobody wired up (gap-8d1463).
+        import work_telemetry  # local: work_telemetry imports this module, so keep the cycle load-time-free
+        work_telemetry.cmd_rollup(argparse.Namespace(today=None))
     return len(opened), len(verified), len(unverified), len(closed), len(parked)
 
 
@@ -1283,6 +1346,8 @@ def cmd_show(a):
         out = {**item_row(it), "anchors": it.get("anchors") or [], "links": it.get("links") or {},
                "milestone": it.get("milestone"), "closed": it.get("closed"),
                "verify": [v.get("command") for v in it.get("verify") or []],
+               "verify_retired": [{"index": n, "superseded": v.get("superseded"), "superseded_by": v.get("superseded_by")}
+                                  for n, v in enumerate(it.get("verify") or [], 1) if v.get("superseded")],
                "children": [item_row(k) for k in kids], "dependents": [item_row(d) for d in deps],
                "claim": {k: v for k, v in claim.items() if k != "title"} if claim else None}
         json.dump(out, sys.stdout, indent=1, default=str)
@@ -1299,8 +1364,9 @@ def cmd_show(a):
     if claim:
         life = f"stale {claim['age_h']}h" if claim["stale"] else f"{claim['ttl_h'] - claim['age_h']:.1f}h left"
         print(f"  claim: {claim.get('by')} · {claim.get('branch') or 'no branch'} · {life}")
-    for v in it.get("verify") or []:
-        print(f"  verify: {v.get('command')}")
+    for n, v in enumerate(it.get("verify") or [], 1):
+        retired = f" (retired {v['superseded']}; superseded by {v.get('superseded_by')})" if v.get("superseded") else ""
+        print(f"  verify {n}{retired}: {v.get('command')}")
     if it.get("closed"):
         print(f"  closed: {json.dumps(it['closed'], default=str)}")
     print(f"children ({len(kids)}):" if kids else "children: none")
@@ -1661,9 +1727,15 @@ def cmd_verify(a):
         sel = [i for i in items if i.get("status") == "done" and str((i.get("closed") or {}).get("at") or "") >= a.closed_since]
     else:
         sel = [i for i in items if i["id"] in set(a.ids)]
-    bad = 0
+    bad, unchecked = 0, []
     for it in sel:
-        for v in it.get("verify") or []:
+        live = 0
+        for n, v in enumerate(it.get("verify") or [], 1):
+            if is_retired(it, v):  # a later change made it unrunnable: not run, not a failure (gap-6ee3c5)
+                print(f"RETIRED {it['id']} ({it['status']}): [[verify]] {n} superseded {str(v['superseded'])[:140]}"
+                      f" [by {v.get('superseded_by')}]")
+                continue
+            live += 1
             cmd = static_prefix(v["command"]) if a.static_only else v["command"]
             if not cmd:
                 continue
@@ -1672,7 +1744,85 @@ def cmd_verify(a):
             print(f"{'PASS' if rc == 0 else 'FAIL'} {it['id']} ({it['status']}): {cmd[:140]}")
         if not it.get("verify"):
             print(f"NONE {it['id']} ({it['status']}): no [[verify]] command")
+        elif not live:
+            unchecked.append(it)
+    if unchecked:  # listed apart: retired is not passing, and nothing checks these items any more
+        print(f"{len(unchecked)} item(s) have every [[verify]] retired, so nothing checks them now:")
+        for it in unchecked:
+            print(f"  {it['id']} ({it['status']}): {it.get('title', '')[:120]}")
     sys.exit(1 if bad else 0)
+
+
+def superseder(ref: str | None, idx) -> str:
+    """retire-verify --by: an item id that exists, or a commit of this repository (shortened); HEAD when not given."""
+    ref = (ref or "HEAD").strip()
+    if ID_RE.match(ref):
+        if ref not in idx:
+            sys.exit(f"--by {ref}: no such item")
+        return ref
+    sha = git("rev-parse", "--verify", "-q", "--short=9", f"{ref}^{{commit}}").strip()
+    if not sha:
+        sys.exit(f"--by {ref}: not an item id or a commit of this repository")
+    return sha
+
+
+def retire_verify_text(it, n: int, superseded: str, by: str, today: str) -> str:
+    """The item file's text with its n-th [[verify]] table (the first is 1) marked superseded. Nothing else changes but
+    `updated`; raises ValueError if the rewrite would change anything more."""
+    m = re.match(r"(\+\+\+\n)(.*?)(\n\+\+\+\n?)(.*)", it["_path"].read_text(), re.S)
+    top, blocks = split_front(m.group(2))
+    tables = [b for b in blocks if b[0].strip() == "[[verify]]"]
+    if len(tables) != len(it.get("verify") or []):
+        raise ValueError("its verify entries are not all written as [[verify]] tables")
+    table = tables[n - 1]
+    table[:] = [ln for ln in table if not ln.startswith(("superseded = ", "superseded_by = "))]
+    while table and not table[-1].strip():
+        table.pop()
+    table += [f"superseded = {tomlstr(superseded)}", f"superseded_by = {tomlstr(by)}"]
+    set_key(top, "updated", today)
+    fm = join_front(top, blocks)
+    want = tomllib.loads(m.group(2))
+    want["updated"] = dt.date.fromisoformat(today)
+    want["verify"][n - 1].update(superseded=superseded, superseded_by=by)
+    if tomllib.loads(fm) != want:
+        raise ValueError("rewriting its front matter would change more than that [[verify]]")
+    return m.group(1) + fm + m.group(3) + m.group(4)
+
+
+def cmd_retire_verify(a):
+    """Retire a done item's [[verify]] that a later change made unrunnable (gap-6ee3c5): the feature was removed, the
+    document rewritten. The entry stays as the record of what proved the fix, marked `superseded` and
+    `superseded_by`; `verify` reports it as RETIRED and does not run it. When code only moved, retire the stale verify
+    and add a new [[verify]] that checks the new place."""
+    idx = index()
+    it = idx.get(a.id)
+    if it is None:
+        sys.exit(f"{a.id}: no such item")
+    if it.get("status") != "done":
+        sys.exit(f"{a.id}: it is {it.get('status')}; only a done item's verify can be retired (an open item's must run)")
+    entries = it.get("verify") or []
+    if not 1 <= a.index <= len(entries):
+        sys.exit(f"{a.id}: it has no [[verify]] {a.index}: it has {len(entries)}, the first is 1 (`show {a.id}` lists them)")
+    v = entries[a.index - 1]
+    if v.get("superseded"):
+        sys.exit(f"{a.id}: [[verify]] {a.index} is already retired: {v['superseded']}")
+    reason = " ".join(a.reason.split())
+    if not reason:
+        sys.exit("--reason must say why the verify can no longer pass")
+    by = superseder(a.by, idx)
+    fails = verify_fails_now(v.get("command", ""), static_only=a.static_only)
+    if fails is None:
+        sys.exit(f"{a.id}: the static part of [[verify]] {a.index} passes and --static-only does not run the rest; "
+                 "run without --static-only to run the whole command")
+    if not fails:
+        sys.exit(f"{a.id}: [[verify]] {a.index} passes now; only a verify that fails can be retired")
+    today = dt.date.today().isoformat()
+    try:
+        text = retire_verify_text(it, a.index, f"{today}: {reason}", by, today)
+    except ValueError as e:
+        sys.exit(f"{a.id}: not retired: {e}")
+    it["_path"].write_text(text)
+    print(f"{a.id}: retired [[verify]] {a.index} (superseded by {by})")
 
 
 def cmd_hook(a):
@@ -2047,6 +2197,11 @@ def main():
     p = sp.add_parser("drift"); p.add_argument("--json", action="store_true"); p.add_argument("--stale-days", type=int, default=STALE_DAYS)
     p = sp.add_parser("touched"); p.add_argument("--rev", default="HEAD")
     p = sp.add_parser("verify"); p.add_argument("ids", nargs="*"); p.add_argument("--closed-since"); p.add_argument("--static-only", action="store_true")
+    p = sp.add_parser("retire-verify", help="mark a done item's [[verify]] superseded by a later change; verify stops running it")
+    p.add_argument("id"); p.add_argument("--index", type=int, required=True, help="which [[verify]] (the first is 1)")
+    p.add_argument("--reason", required=True, help='why it can no longer pass; stored as superseded = "<today>: <reason>"')
+    p.add_argument("--by", help="the commit or item id that superseded it (default: HEAD)")
+    p.add_argument("--static-only", action="store_true", help="judge it by its static part; never run a cargo/npm/network step")
     p = sp.add_parser("apply-verdicts"); p.add_argument("files", nargs="+"); p.add_argument("--snapshot", required=True)
     p.add_argument("--dry-run", action="store_true"); p.add_argument("--by")
     sp.add_parser("hook")
@@ -2084,7 +2239,8 @@ def main():
     p.add_argument("--json", action="store_true")
     a = ap.parse_args()
     simple = {"new": cmd_new, "park": cmd_park, "unpark": cmd_unpark, "tidy": cmd_tidy, "close": cmd_close, "sync": cmd_sync, "drift": cmd_drift,
-              "touched": cmd_touched, "verify": cmd_verify, "apply-verdicts": cmd_apply_verdicts, "hook": cmd_hook,
+              "touched": cmd_touched, "verify": cmd_verify, "retire-verify": cmd_retire_verify,
+              "apply-verdicts": cmd_apply_verdicts, "hook": cmd_hook,
               "next": cmd_next, "claim": cmd_claim, "release": cmd_release, "claims": cmd_claims, "event": cmd_event,
               "list": cmd_list, "show": cmd_show, "status": cmd_status}
     if a.cmd == "id":

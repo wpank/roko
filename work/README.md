@@ -164,6 +164,8 @@ command = "cargo test -p roko-serve --test job_lifecycle -- --include-ignored te
 
 [[verify]]                        # required to close as done: fails now, passes once fixed
 command = "grep -rqw 'fn cancel_from_assigned_state' crates/roko-serve/ && cargo test -p roko-serve --test job_lifecycle cancel_from_assigned_state"
+# superseded = "2026-10-16: …"    # done items only, set by `work.py retire-verify`: see "Retired verify commands"
+# superseded_by = "7898493f2"     # the commit or item id that made the check obsolete
 
 [closed]                          # filled when status leaves open: evidence of the transition
 # at = 2026-10-02, commit = "abc1234", run_id = "graph-…", by = "plan:…#T03", evidence = "…"
@@ -202,6 +204,30 @@ make it pass while the bug is still there:
 Prefer a named test that the fix adds, guarded as above, plus a static check where one is distinctive.
 `python3 tools/work.py check --lint` flags the first three.
 
+### Retired verify commands
+
+A done item's `[[verify]]` records what proved the fix when it closed. A later change can delete or replace what it
+checks (a feature removed, a document rewritten), and then the command fails although nothing regressed. Do not
+delete or edit the command, and do not reopen the item: retire the verify.
+
+```bash
+python3 tools/work.py retire-verify <id> --index N --reason "why it can no longer pass" --by <commit or item id>
+```
+
+- `--index` counts the item's `[[verify]]` tables from 1, in file order (`show <id>` numbers them).
+- It refuses unless the item is `done` and that verify fails now. A failing static part settles it; otherwise the
+  whole command runs (`--static-only` refuses instead of running a cargo, npm or network step). A verify that reads
+  untracked files (`tmp/`) gives its real answer only in the main checkout.
+- It adds two keys to that table and changes nothing else but `updated`: `superseded = "<date>: <reason>"` (the day it
+  was retired) and `superseded_by`, the commit (default: HEAD) or the item whose work made the check obsolete.
+- `verify` prints `RETIRED <id>` for that entry instead of running it and does not count it as a failure. It lists
+  apart the items whose every verify is retired, because nothing checks them any more.
+- `check` requires both keys, well formed, on a retired entry, and refuses a retired entry on an item that is not
+  closed: an open item's verify always runs.
+
+When code only moved, retire the stale verify and add a new `[[verify]]` table that checks the new place, so the item
+keeps a live check. When the fix itself broke, the verify is not stale: that is a regression (see the closure rules).
+
 ### IDs
 
 `<prefix>-<first 6 hex of sha256("<kind>|<title>|<created>|<source>")>`; on collision use 8 hex.
@@ -214,7 +240,9 @@ Hash IDs never collide across parallel agents or worktrees, unlike counters. Fil
   declaring `closes = ["<id>"]` succeeded (record `run_id`). `tools/work.py close` fills `[closed]` and refuses
   if the static part of the verify command fails.
 - `wontfix` / `superseded` require a reason in `[closed].evidence` (and `links.duplicate_of` or a pointer).
-- A `done` item whose verify command later fails is reopened as `kind = "regression"` linking the old item.
+- A `done` item whose verify command later fails is reopened as `kind = "regression"` linking the old item, unless
+  the check broke rather than the fix: when a later change removed or replaced what the verify checks, retire it
+  instead (see "Retired verify commands"). `work.py verify --closed-since <date>` is the regression sweep.
 - `triage = "unverified"` items (bulk imports) are listed in `TRIAGE.md` until someone checks them against the
   code and sets `triage = "verified"` and `last_verified`.
 - Moving or renaming files is never closure: the `status` field is. The file follows its status: `close` moves a done item to `done/` and a won't-fix or superseded one to `closed/`, `park` and `unpark` move it to and from `parked/`, and `work.py tidy` moves any item that sits in the wrong folder (for example one closed by an older `work.py` on a branch). `check` reports a misplaced item.

@@ -18,14 +18,14 @@ Progress per epic: its children (items whose `parent` is the epic, plus its `dep
 
 ## [spec-f8d196](items/spec-f8d196-epic-research-paper-companion-report-and-tl.md) research paper, companion report and TL;DR upkeep
 
-- **38/40 closed** · goal `whitepaper` · severity p1
+- **39/41 closed** · goal `whitepaper` · severity p1
 - open by lane: paper 2
-- next: [gap-aed6f1](items/gap-aed6f1-the-research-paper-loops-within-loops-has.md) The research paper Loops Within Loops has an independent review, the fixes it asks for, and a final lint pass
+- next: [gap-d2c478](items/gap-d2c478-the-research-paper-s-figures-print-their.md) The research paper's figures print their labels at 5.5 to 6.9 pt, below the 8 pt its review checklist asks for
 
 ## [spec-ce1484](items/spec-ce1484-epic-whitepaper-v1.md) whitepaper v1
 
-- **26/28 closed** · goal `whitepaper` · severity p1
-- open by lane: paper 2
+- **27/28 closed** · goal `whitepaper` · severity p1
+- open by lane: paper 1
 - next: [gap-8117a8](items/gap-8117a8-publish-the-whitepaper-pdf-build-release-tag.md) Publish the whitepaper: PDF build, release tag and venue
 
 ## [spec-f09094](items/spec-f09094-epic-golden-path-acceptance-tests.md) golden-path acceptance tests
@@ -52,8 +52,8 @@ Progress per epic: its children (items whose `parent` is the epic, plus its `dep
 
 ## [spec-7a71d6](items/spec-7a71d6-epic-turn-the-cybernetic-layer-on-in.md) turn the cybernetic layer on in safe stages
 
-- **5/15 closed** · goal `cybernetic` · severity p2
-- open by lane: rust-hot 7, rust-cold 3
+- **8/16 closed** · goal `cybernetic` · severity p2
+- open by lane: rust-hot 6, rust-cold 2
 - next: [gap-d76b1b](items/gap-d76b1b-decision-7103-s-audit-on-by-default.md) Decision 7103's audit-on-by-default outcome was never implemented: enabled stays false, no --no-audit flag
 
 ## [spec-1e1b45](items/spec-1e1b45-epic-tracker-tooling-for-parallel-work.md) tracker tooling for parallel work
@@ -104,12 +104,12 @@ Progress per epic: its children (items whose `parent` is the epic, plus its `dep
 
 | Lane | Closed | Total | Open (verified) |
 |---|---|---|---|
-| bench | 85 | 122 | 37 (28) |
-| docs | 22 | 30 | 8 (8) |
-| frontend | 3 | 7 | 4 (4) |
-| none | 437 | 529 | 92 (87) |
-| paper | 69 | 83 | 14 (12) |
-| rust-cold | 243 | 289 | 46 (38) |
-| rust-hot | 237 | 263 | 26 (25) |
+| bench | 87 | 125 | 38 (29) |
+| docs | 27 | 31 | 4 (3) |
+| frontend | 4 | 7 | 3 (3) |
+| none | 440 | 534 | 94 (88) |
+| paper | 74 | 85 | 11 (9) |
+| rust-cold | 247 | 299 | 52 (44) |
+| rust-hot | 239 | 265 | 26 (24) |
 | tests | 1 | 1 | 0 (0) |
-| tracker | 22 | 28 | 6 (5) |
+| tracker | 24 | 29 | 5 (4) |

@@ -1,0 +1,252 @@
+{
+ "schema": "roko.work_manifest/1",
+ "date": "2026-10-16",
+ "head": "1b83f0052",
+ "files": [
+  {
+   "path": "work/telemetry/events/9f227c4b-a4d2-4e84-a0a4-9da0d8904d57.jsonl",
+   "sha256": "67c1b02924e406a4cac57be5767c1f8a742203be4f8e181ca16cb59f7f776084",
+   "rows": 1
+  },
+  {
+   "path": "work/telemetry/events/backfill.jsonl",
+   "sha256": "f3c105215d13ad3904f0d19c1c7427e360ff418f39584a83854a3964123248cd",
+   "rows": 705
+  },
+  {
+   "path": "work/telemetry/events/claude-session-9cf6b7db-hermes-plugin-roko-fork-roko-diff.jsonl",
+   "sha256": "74e448d2ce7e2dbacabe5279a995cc7986f22800bed42e4f196bbc716855a92b",
+   "rows": 1
+  },
+  {
+   "path": "work/telemetry/events/claude-session-9cf6b7db-hermes-plugin-roko.jsonl",
+   "sha256": "1f46a52f6b084ef8ab5b64b21b65dd4812fa70cdc78bf06ba56b05f85e00faec",
+   "rows": 8
+  },
+  {
+   "path": "work/telemetry/events/coordinator-session-7622b882.jsonl",
+   "sha256": "fb3d8aad72caa9c1cb659fcf89743563a40a3d6f2df7ec106f137f522b0582ae",
+   "rows": 299
+  },
+  {
+   "path": "work/telemetry/events/coordinator-session-roko-90.jsonl",
+   "sha256": "d3e6c1274959c378539b22d95d9ce48ab5e5b4c3262d0c46a4810b2ac3ddc8b9",
+   "rows": 460
+  },
+  {
+   "path": "work/telemetry/events/roko-7d.jsonl",
+   "sha256": "9e9f45cd17ea7dcec32c25862b708e689295781d1f4348113a00122aca0c8234",
+   "rows": 24
+  },
+  {
+   "path": "work/telemetry/events/roko-caps.jsonl",
+   "sha256": "53b9874cddd8376804f50a6132b28f7024e8508b36928d410e8bd6dabb9b3545",
+   "rows": 7
+  },
+  {
+   "path": "work/telemetry/events/roko-chathost.jsonl",
+   "sha256": "5f3b10169a71b416d0e1395079cbda8c127d05cb4695a5b2f3a677ee887152ec",
+   "rows": 1
+  },
+  {
+   "path": "work/telemetry/events/roko-checks.jsonl",
+   "sha256": "b945984b45937b4134de32c620710480a81d90f82c9fde069c8123f1a60a251f",
+   "rows": 2
+  },
+  {
+   "path": "work/telemetry/events/roko-credfix.jsonl",
+   "sha256": "18b71fbf0ef4ffd428aee31338390a20c6016893603c2a2202607836a148479a",
+   "rows": 2
+  },
+  {
+   "path": "work/telemetry/events/roko-delivery.jsonl",
+   "sha256": "b4c405300579ee4e0805038bcc23ebfdca3e3e7722532340e65043de7c8c0f81",
+   "rows": 1
+  },
+  {
+   "path": "work/telemetry/events/roko-demos.jsonl",
+   "sha256": "7ed9f74606fbe369925225e727ae0022363ec145e0f785fba4eef590d1c67ec8",
+   "rows": 2
+  },
+  {
+   "path": "work/telemetry/events/roko-fixes-claude-fork-hermes-plugin-dogfood.jsonl",
+   "sha256": "ec652cd5c77c2505ed7ebd4ef5b72edd724e95fc046263a17b063607c9e3ae3b",
+   "rows": 5
+  },
+  {
+   "path": "work/telemetry/events/roko-gates.jsonl",
+   "sha256": "89a3aa0d9926aeaa04cf82d48b740bcc1c5f30e8f536e35857ebe0a7f2bb264f",
+   "rows": 1
+  },
+  {
+   "path": "work/telemetry/events/roko-init.jsonl",
+   "sha256": "5f74b03093c467943654d9d07e7f8fcd4a917f390484896ba7d818427d9744b5",
+   "rows": 3
+  },
+  {
+   "path": "work/telemetry/events/roko-loops-worker.jsonl",
+   "sha256": "daa4f82a885ccb43f043f34a8aefb5a75c4f524e803f5d7f170e7379ebbc5155",
+   "rows": 6
+  },
+  {
+   "path": "work/telemetry/events/roko-planner.jsonl",
+   "sha256": "f91b3d0f90d1a20289e226ce0dac1f6b2af8d2ef67805cd523051fb37cdaf5ff",
+   "rows": 5
+  },
+  {
+   "path": "work/telemetry/events/roko-recovery.jsonl",
+   "sha256": "74cb91141b881ce0f3886dc62658c77047eefb6a975f1282a24da8cc4218ba7c",
+   "rows": 1
+  },
+  {
+   "path": "work/telemetry/events/roko-stream.jsonl",
+   "sha256": "fbe983329bdd302e47a579e48b86a0a408fd4ff1759f14114a6ebaf50df7d711",
+   "rows": 3
+  },
+  {
+   "path": "work/telemetry/events/status-quo-2026-10-15.jsonl",
+   "sha256": "815ad2c3738ab3c8caa7a76db60a8e656cc489d642b3f7150311841e835d2d4e",
+   "rows": 38
+  },
+  {
+   "path": "work/telemetry/events/unnamed.jsonl",
+   "sha256": "0a228d4dc7a331bb8c7ada3569d99877e524c593485ae325f833295ee9ecb161",
+   "rows": 9
+  },
+  {
+   "path": "work/telemetry/events/wk-cfg.jsonl",
+   "sha256": "b174ba9209112f3bb6adcbf3e32b9fd770ac6ef3f846bc36c0ec2f8de1751ee9",
+   "rows": 13
+  },
+  {
+   "path": "work/telemetry/events/wk-childenv.jsonl",
+   "sha256": "1f56ca64548ffc1c2a751eade34033bd585fb14c4c576f921462db9ec409babc",
+   "rows": 19
+  },
+  {
+   "path": "work/telemetry/events/wk-climain.jsonl",
+   "sha256": "8019de77810fd1b7b98e94830ee4cb46811911fe2604474149c342cf1a331ef7",
+   "rows": 13
+  },
+  {
+   "path": "work/telemetry/events/wk-filer4.jsonl",
+   "sha256": "c04adf2c222db4b3a3f8cac0653c449c239f3e2a67945644a202e7fdcff8f7f3",
+   "rows": 17
+  },
+  {
+   "path": "work/telemetry/events/wk-gates.jsonl",
+   "sha256": "c481cb8593798aee03cc1c7749491017cf0e61a024e2c0f0e288f6cf453c09f2",
+   "rows": 14
+  },
+  {
+   "path": "work/telemetry/events/wk-guard2.jsonl",
+   "sha256": "ea988a89f78f82bb62c4f822da576b892bcf03b7fc177304f944612fae2f48e2",
+   "rows": 22
+  },
+  {
+   "path": "work/telemetry/events/wk-honestbench.jsonl",
+   "sha256": "aecefa39402f8469af969203cc03c2e90b4c27b5ee6b3720942e63d95dc22b50",
+   "rows": 13
+  },
+  {
+   "path": "work/telemetry/events/wk-learn2.jsonl",
+   "sha256": "04313a3883ed8741102e39f640559c745be1c2fa8b05d9d7303623bf944d0044",
+   "rows": 16
+  },
+  {
+   "path": "work/telemetry/events/wk-model-truth.jsonl",
+   "sha256": "e4c0a7a5c7a4de309f8733d4b165576ff25bf5c6d863b1351cc5798ddf785903",
+   "rows": 17
+  },
+  {
+   "path": "work/telemetry/events/wk-planrun.jsonl",
+   "sha256": "ebedbf27ecf3704e2749338a4fe4061c64c9ad1e9b2f7affac89f32a718760c5",
+   "rows": 13
+  },
+  {
+   "path": "work/telemetry/events/wk-rp-cite.jsonl",
+   "sha256": "20e970cbb2b3b6c1291adece0117c4c380adeee0a5a4a3ff2db8927fc657b6ff",
+   "rows": 3
+  },
+  {
+   "path": "work/telemetry/events/wk-runstate.jsonl",
+   "sha256": "58fb8d5c40746f960da9e3ab199cfba795e31c82623c90aa4ebed7fa68645ae8",
+   "rows": 18
+  },
+  {
+   "path": "work/telemetry/events/wk-scheduler.jsonl",
+   "sha256": "77feefb0ee84faf7fe36e9552553b19eef659ebb41e9b47289ca3c60ca2802f6",
+   "rows": 15
+  },
+  {
+   "path": "work/telemetry/events/wk-serve2.jsonl",
+   "sha256": "edbaf68addd229b9ded309ce7a55292b192486ce7c3ea30848be55ee54db2931",
+   "rows": 14
+  },
+  {
+   "path": "work/telemetry/events/wk-settle.jsonl",
+   "sha256": "f9c62d2733edca533680eee0ff9b95e8a7fce1bf6a9d82a0d3033b9eff3a057c",
+   "rows": 12
+  },
+  {
+   "path": "work/telemetry/events/wk-specq.jsonl",
+   "sha256": "5562aa517ae41681de72563c5805edf1974ad014691a3a3c9bd40632474d05d7",
+   "rows": 17
+  },
+  {
+   "path": "work/telemetry/events/wk-streams.jsonl",
+   "sha256": "50e135b4d623289c7fcf77b2c03df29f8f4946aebd748f27eb74428a4a7ecfbf",
+   "rows": 17
+  },
+  {
+   "path": "work/telemetry/events/wk-tamper.jsonl",
+   "sha256": "f58ff35183e055a2f22c6c7a3dfaae1dc99be49694e5fe75420fb9531cce1bb6",
+   "rows": 12
+  },
+  {
+   "path": "work/telemetry/events/wk-taskdef.jsonl",
+   "sha256": "cee6be2dbc700260b4f79e10a69b1bf50ef0988ebb116a78521669d15c5e9c80",
+   "rows": 12
+  },
+  {
+   "path": "work/telemetry/events/wk-tiers.jsonl",
+   "sha256": "e8f4fb2e4a1e19a0b8f27ae19e30c848d4756799628cb5d907ebd4ed477b23df",
+   "rows": 15
+  },
+  {
+   "path": "work/telemetry/events/wk-tuiv.jsonl",
+   "sha256": "b299311e18b8bf67e2af45a5a09f19ed1a088dd6a25f4011acfcb18f388a17aa",
+   "rows": 13
+  },
+  {
+   "path": "work/telemetry/events/work-batch-2026-10-15-1850.jsonl",
+   "sha256": "a3cca1d7371f50f1342347ce8525d1305b7704094821127abb528991aa9eea0e",
+   "rows": 12
+  },
+  {
+   "path": "work/telemetry/events/work-batch-2026-10-16-0720.jsonl",
+   "sha256": "f98cef8783f6ff0c43f0bf5d042d14e68f2bd9b19d4d9d649c28c289bf9b28fc",
+   "rows": 9
+  },
+  {
+   "path": "work/telemetry/events/work-batch-2026-10-16-1010.jsonl",
+   "sha256": "71ad0bfa36e8cf73812f54b61a4e3f8d68fc31bdcf6d425754e75a6e32681c61",
+   "rows": 68
+  },
+  {
+   "path": "work/telemetry/DEFINITIONS.md",
+   "sha256": "ee0525db5ff09afe9f0b1509cb0d22162b795f2beae153cf859a98b999f86720",
+   "rows": 175
+  },
+  {
+   "path": "config/prices/2026-09-28.toml",
+   "sha256": "e39403657edc6ec66fc9cd9ed648ad03800a05dc263d8be3b291db4f727bd0b0",
+   "rows": 27
+  },
+  {
+   "path": "work/{done,closed}/*.md [closed]",
+   "sha256": "37b7e8c9a18b978f0867aeee1614964cd096fc444b8c964c76a3845e1ea947a0",
+   "rows": 1143
+  }
+ ]
+}

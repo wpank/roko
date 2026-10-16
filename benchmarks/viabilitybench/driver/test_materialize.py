@@ -8,6 +8,8 @@ from __future__ import annotations
 
 import json
 import sys
+import tomllib
+from collections import Counter
 from pathlib import Path
 
 import pytest
@@ -18,10 +20,14 @@ sys.path.insert(0, str(DRIVER_DIR))
 sys.path.insert(0, str(VB_ROOT))
 sys.path.insert(0, str(VB_ROOT / "speclint"))
 import materialize  # noqa: E402
-from specops import manipulation_check  # noqa: E402
+from specops import VAGUE, degrade, manipulation_check  # noqa: E402
 
-H3_SAMPLE = [("f1_pyconv", "F1-l1-0001"), ("f1_pyconv", "F1-l5-0002"), ("f4_kvtool", "F4-l1-0001"),
-            ("f4_kvtool", "F4-l3-0005")]  # one low and one high level of each 3329-covered family
+H3_SAMPLE = [("f1_pyconv", "F1-l1-0001"), ("f1_pyconv", "F1-l5-0002"), ("f2_apipager", "F2-l1-0001"),
+             ("f2_apipager", "F2-l5-0002"), ("f3_moneyround", "F3-l1-0001"), ("f3_moneyround", "F3-l5-0002"),
+             ("f4_kvtool", "F4-l1-0001"), ("f4_kvtool", "F4-l3-0005"), ("f5_sqlmigrate", "F5-l1-0001"),
+             ("f5_sqlmigrate", "F5-l5-0002"), ("f7_rustiter", "F7-l1-0001"),
+             ("f7_rustiter", "F7-l5-0002")]  # one low and one high level of each H3 family
+H3_VAGUE_STREAM = VB_ROOT / "streams" / "log1_p1_h3_vague.toml"  # LOG1 block C (S09 §4.3), all 48 H3 instances
 
 
 def _materialize(tmp_path, family: str, instance_id: str, *, spec_variant: str = "precise", tag: str = ""):
@@ -59,12 +65,56 @@ def test_the_vague_variant_is_cached_in_the_manifest(tmp_path, family, instance_
     assert reloaded["spec"]["vague"]["sha256"] == vague.manifest["spec"]["vague"]["sha256"]
 
 
-def test_a_family_with_no_vague_support_yet_refuses_clearly(tmp_path):
-    # A minimal manifest, not a real materialize() call: F7's own task.json fails schema validation before this
-    # point even for the precise variant (gap filed separately, 3329 does not touch F7), so this checks
-    # VAGUE_FAMILIES directly, the first thing _add_vague_spec does.
-    manifest = {"instance_id": "F7-l1-0001", "family": "F7", "spec": {"precise": {"path": "x", "sha256": "x"}}}
-    with pytest.raises(materialize.MaterializeError, match="F7 has no vague variant"):
+def test_every_h3_vague_instance_materializes(tmp_path):
+    """bug-f90bd0: LOG1 block C runs all 48 H3 instances (8 each of F1-F5 and F7) under their vague spec. Every one
+    materializes with spec_variant="vague"; its cached spec.vague.md is D-v1's full VAGUE composition of its own
+    precise spec; no requirement the vague spec drops is left without evidence in the workdir (the recoverability
+    rule, S08 §4.5); and the vague twin scores at least MIN_GAP below the precise spec (S07.3)."""
+    stream = tomllib.loads(H3_VAGUE_STREAM.read_text(encoding="utf-8"))["stream"]
+    instances = stream["instances"]
+    assert stream["spec_variant"] == "vague" and len(instances) == 48
+    assert Counter(instance_id.split("-")[0] for instance_id in instances) == dict.fromkeys(
+        materialize.VAGUE_FAMILIES, 8)
+    problems: list[str] = []
+    for instance_id in instances:
+        family_dir = VB_ROOT / stream["families"][instance_id.split("-")[0]]
+        root = tmp_path / instance_id
+        try:
+            vague = materialize.materialize(family_dir=family_dir, instance_id=instance_id, workdir=root / "work",
+                                            private_dir=root / "private", spec_variant="vague")
+        except materialize.MaterializeError as err:
+            problems.append(str(err))
+            continue
+        manifest = vague.manifest
+        entry = manifest["spec"]["vague"]
+        if (vague.spec_variant, entry["operator"], entry["operator_version"]) != ("vague", "D-v1", "1") \
+                or entry["levels"] != list(VAGUE):
+            problems.append(f"{instance_id}: the vague entry is {entry}")
+        precise_text = (vague.manifest_path.parent / manifest["spec"]["precise"]["path"]).read_text(encoding="utf-8")
+        task = materialize.task_dict(manifest, precise_text)
+        if not (task["title"] and task["goal"] and task["acceptance"] and task["context"] and task["non_goals"]):
+            problems.append(f"{instance_id}: the precise spec's sections did not parse: {task}")
+        degraded, _manifest = degrade(task, VAGUE, manifest["seed"])
+        if materialize.render_vague_markdown(degraded) != vague.spec_text:
+            problems.append(f"{instance_id}: spec.vague.md is not D-v1's output for the precise spec")
+        problems += [f"{instance_id}: {violation}" for violation in
+                     materialize.recoverability_violations(manifest, degraded)]
+        for requirement in manifest["recoverability"]:
+            in_repo = [item for item in requirement["evidence"] if not item.startswith("spec.precise.md#")]
+            missing = [item for item in in_repo if not (vague.workdir / item.split(" ")[0]).exists()]
+            if not in_repo or missing:
+                problems.append(f"{instance_id}: {requirement['req']!r} has no evidence in the workdir: {missing}")
+        report = manipulation_check.check_pair(instance_id, task, seed=manifest["seed"], workspace_root=VB_ROOT)
+        if not report.ok:
+            problems.append(f"{instance_id}: manipulation check failed: gap {report.gap}")
+    assert not problems, "\n".join(problems)
+
+
+def test_a_family_with_no_vague_support_refuses_clearly(tmp_path):
+    # A minimal manifest, not a real materialize() call: only H3's families have a vague variant, and F6 is in no
+    # H3 stream, so this checks VAGUE_FAMILIES directly, the first thing _add_vague_spec does.
+    manifest = {"instance_id": "F6-l1-0001", "family": "F6", "spec": {"precise": {"path": "x", "sha256": "x"}}}
+    with pytest.raises(materialize.MaterializeError, match="F6 has no vague variant"):
         materialize._add_vague_spec(manifest, tmp_path / "task.json", tmp_path)
 
 

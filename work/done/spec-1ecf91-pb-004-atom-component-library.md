@@ -7,7 +7,7 @@ triage = "verified"
 severity = "p1"
 subsystem = ["apps/portal"]
 created = 2026-09-23
-updated = 2026-09-28
+updated = 2026-10-16
 last_verified = 2026-09-28
 source = "tmp/portal-backlog/00-INDEX.md#PB-004"
 discovered_from = "audit:tmp/portal-backlog/00-INDEX.md#PB-004"
@@ -16,6 +16,8 @@ links = { depends_on = [], blocks = [], related = [], supersedes = [], duplicate
 
 [[verify]]
 command = "test -f apps/portal/src/components/atoms/index.ts && test -f apps/portal/src/components/molecules/index.ts"
+superseded = "2026-10-16: The one-screen portal (39e72deef) deleted components/atoms/index.ts and components/molecules/ after this closed; atoms/ keeps Button and Spinner, and components/primitives/ replaces the rest."
+superseded_by = "39e72deef"
 
 [closed]
 at = 2026-09-28

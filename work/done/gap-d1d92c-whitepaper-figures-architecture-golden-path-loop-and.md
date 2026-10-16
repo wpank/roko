@@ -9,7 +9,7 @@ goal = "whitepaper"
 size = "M"
 subsystem = ["docs/whitepaper", "tools/status_matrix"]
 created = 2026-09-29
-updated = 2026-09-29
+updated = 2026-10-16
 last_verified = 2026-09-29
 last_verified_rev = "d12ab8a79"
 source = "tmp/cybernetic-harness/workstreams/PLAN.md#e1"
@@ -21,6 +21,8 @@ links = { depends_on = ["gap-4161ea", "gap-ac4646"], blocks = [], related = ["ga
 
 [[verify]]
 command = "test -f docs/whitepaper/figures/fig1-architecture.svg && test -f docs/whitepaper/figures/fig2-golden-path.svg && test -f docs/whitepaper/figures/fig3-status-matrix.svg && grep -q 'figures/fig1-architecture.svg' docs/whitepaper/03-architecture.md && grep -q 'figures/fig2-golden-path.svg' docs/whitepaper/04-golden-path.md && grep -q 'figures/fig3-status-matrix.svg' docs/whitepaper/09-status-and-roadmap.md"
+superseded = "2026-10-16: The whitepaper rewrite as a design paper (7898493f2, 2026-10-08) dropped Figures 2 and 3 (fig2-golden-path.svg, fig3-status-matrix.svg) with the chapters that used them; the old text is at 7898493f2^."
+superseded_by = "7898493f2"
 
 [closed]
 at = 2026-09-29

@@ -9,7 +9,7 @@ goal = "whitepaper"
 size = "M"
 subsystem = ["companion"]
 created = 2026-09-29
-updated = 2026-09-29
+updated = 2026-10-16
 last_verified = 2026-09-29
 last_verified_rev = "847384ae2"
 source = "tmp/cybernetic-harness/workstreams/PLAN.md#e18"
@@ -21,6 +21,8 @@ links = { depends_on = [], blocks = [], related = [], supersedes = [], duplicate
 
 [[verify]]
 command = "ls tmp/cybernetic-harness/companion-audit/E10-*.md >/dev/null 2>&1 && grep -q '\\[\\[E1:' tmp/cybernetic-harness/companion-audit/E10-*.md"
+superseded = "2026-10-16: gap-b409fa filled all 364 [[E1: markers in E10-DRAFT.md with the re-derived numbers, so the markers this checked for are gone by design."
+superseded_by = "gap-b409fa"
 
 [closed]
 at = 2026-09-29

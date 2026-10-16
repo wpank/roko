@@ -23,8 +23,22 @@
 //! predictions are clipped to `[0, 1]`. Without a covariate or predictions,
 //! the post-stratified estimator is AIPW with the stratum-and-arm running
 //! means of earlier rows as its predictions.
+//!
+//! The loop audit judges β by [`BenefitEstimator::adjusted`] (gap-03fcd0):
+//! S03's AIPW increment with predictions it builds from earlier rows alone,
+//! never from the row's arm. Each arm's prediction is its running mean in
+//! the row's stratum (else in every stratum): the post-stratified
+//! estimator, which is the Hájek difference of the arms' means made
+//! predictable. When the row carries the covariate, CUPED's κ(X − X̄) shifts
+//! both predictions. Unbiased whatever its predictions, it centres the IPW
+//! increments on each arm's mean, so its sequence narrows where the
+//! difference in means' stays as wide as the outcome's level makes it.
+//! Every estimator serializes, so the audit tick's census carries it from
+//! one plan-run close to the next.
 
-use std::collections::HashMap;
+use std::collections::BTreeMap;
+
+use serde::{Deserialize, Serialize};
 
 use super::cs::EmpiricalBernsteinCs;
 use crate::telemetry::records::{CostSource, GateVerdictTag};
@@ -39,11 +53,13 @@ pub const KAPPA_MAX: f64 = 2.0;
 pub const COST_CAP_USD: f64 = 1.0;
 
 /// The estimators' parameters.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct BenefitConfig {
     /// Level of each confidence sequence (the caller's α/K).
     pub alpha: f64,
-    /// The audit floor q.
+    /// The audit floor q. Rows that carry no audit draw have outcomes in
+    /// `[0, 1]`, and an audit floor of 1 gives their bounds (S03 §4.5's
+    /// β_pass row).
     pub audit_floor: f64,
     /// CUPED's κ_max.
     pub kappa_max: f64,
@@ -194,6 +210,10 @@ pub struct Increments {
     pub aipw: Option<Increment>,
     /// The post-stratified estimator, with a stratum.
     pub post_stratified: Option<Increment>,
+    /// The audit's estimator ([`BenefitEstimator::adjusted`]): AIPW whose
+    /// predictions are each arm's running stratum mean, shifted by CUPED's
+    /// κ(X − X̄) when the row carries the covariate.
+    pub adjusted: Increment,
     /// IPW difference in means on U^pass.
     pub pass: Increment,
     /// The cost saving, with reported usage.
@@ -226,7 +246,7 @@ impl Estimate {
 }
 
 /// One estimator's increments: their sums and confidence sequence.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 struct Track {
     cs: EmpiricalBernsteinCs,
     n: u64,
@@ -280,20 +300,22 @@ pub enum Admission {
 }
 
 /// A loop's benefit estimators over its settled chains, in order.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BenefitEstimator {
     config: BenefitConfig,
     dim: Track,
     cuped: Track,
     aipw: Track,
     post_stratified: Track,
+    adjusted: Track,
     pass: Track,
     cost: Track,
     global: Track,
     /// CUPED's pooled, arm-blind sums over earlier rows: n, ΣX, ΣU, ΣXU, ΣX².
     covariate_sums: (f64, f64, f64, f64, f64),
-    /// The post-stratified predictions: per stratum and arm, n and ΣU.
-    strata: HashMap<(String, bool), (u64, f64)>,
+    /// The running means' sums: per stratum (`""` for a row without one),
+    /// the learned and the default arm's n and ΣU.
+    strata: BTreeMap<String, [(u64, f64); 2]>,
     /// Per arm (learned, default): Unverified chains and all chains.
     unverified: [(u64, u64); 2],
 }
@@ -309,13 +331,37 @@ impl BenefitEstimator {
             cuped: track(),
             aipw: track(),
             post_stratified: track(),
+            adjusted: track(),
             pass: track(),
             cost: track(),
             global: track(),
             covariate_sums: (0.0, 0.0, 0.0, 0.0, 0.0),
-            strata: HashMap::new(),
+            strata: BTreeMap::new(),
             unverified: [(0, 0); 2],
         }
+    }
+
+    /// The running mean of U over earlier rows of `stratum` on the learned
+    /// or the default arm; else over that arm's rows in every stratum, else
+    /// over every row, else 1/2. It reads earlier rows only, so a prediction
+    /// made from it is predictable.
+    fn arm_mean(&self, stratum: &str, learned: bool) -> f64 {
+        let slot = usize::from(!learned);
+        let mean = |(n, sum): (u64, f64)| (n > 0).then(|| sum / n as f64);
+        let add = |left: (u64, f64), right: (u64, f64)| (left.0 + right.0, left.1 + right.1);
+        self.strata
+            .get(stratum)
+            .and_then(|arms| mean(arms[slot]))
+            .or_else(|| {
+                mean(
+                    self.strata
+                        .values()
+                        .map(|arms| arms[slot])
+                        .fold((0, 0.0), add),
+                )
+            })
+            .or_else(|| mean(self.strata.values().flatten().copied().fold((0, 0.0), add)))
+            .unwrap_or(0.5)
     }
 
     /// CUPED's predictable κ and covariate mean from earlier rows; κ = 0
@@ -365,22 +411,26 @@ impl BenefitEstimator {
                 bound: 1.0 + 1.0 / (q * p_min),
             }
         };
-        let cuped = row.pre.covariate.map(|x| {
+        // CUPED's predictable shift κ(X − X̄), fit on earlier rows.
+        let shift = row.pre.covariate.map(|x| {
             let (kappa, mean) = self.cuped_fit();
-            Increment {
-                value: (u - kappa * (x.clamp(0.0, 1.0) - mean)) * weight,
-                bound: (1.0 / q + self.config.kappa_max) / p_min,
-            }
+            kappa * (x.clamp(0.0, 1.0) - mean)
+        });
+        let cuped = shift.map(|shift| Increment {
+            value: (u - shift) * weight,
+            bound: (1.0 / q + self.config.kappa_max) / p_min,
         });
         let post_stratified = row.pre.stratum.as_ref().map(|stratum| {
             let mean = |learned: bool| {
-                let key = (stratum.clone(), learned);
-                self.strata
-                    .get(&key)
-                    .map_or(0.0, |(n, sum)| sum / *n as f64)
+                self.strata.get(stratum).map_or(0.0, |arms| {
+                    let (n, sum) = arms[usize::from(!learned)];
+                    if n == 0 { 0.0 } else { sum / n as f64 }
+                })
             };
             doubly_robust((mean(true), mean(false)))
         });
+        let stratum = row.pre.stratum.as_deref().unwrap_or_default();
+        let predict = |learned: bool| self.arm_mean(stratum, learned) + shift.unwrap_or(0.0);
         Some(Increments {
             dim: Increment {
                 value: u * weight,
@@ -389,6 +439,7 @@ impl BenefitEstimator {
             cuped,
             aipw: row.pre.predictions.map(doubly_robust),
             post_stratified,
+            adjusted: doubly_robust((predict(true), predict(false))),
             pass: Increment {
                 value: pass * weight,
                 bound: 1.0 / p_min,
@@ -427,6 +478,7 @@ impl BenefitEstimator {
             return Admission::Excluded;
         };
         self.dim.push(increments.dim);
+        self.adjusted.push(increments.adjusted);
         self.pass.push(increments.pass);
         for (track, increment) in [
             (&mut self.cuped, increments.cuped),
@@ -449,13 +501,10 @@ impl BenefitEstimator {
                 sums.4 + x * x,
             );
         }
-        if let Some(stratum) = &row.pre.stratum {
-            let entry = self
-                .strata
-                .entry((stratum.clone(), row.learned_arm))
-                .or_insert((0, 0.0));
-            *entry = (entry.0 + 1, entry.1 + u);
-        }
+        let stratum = row.pre.stratum.clone().unwrap_or_default();
+        let arms = self.strata.entry(stratum).or_insert([(0, 0.0); 2]);
+        let slot = &mut arms[usize::from(!row.learned_arm)];
+        *slot = (slot.0 + 1, slot.1 + u);
         let arm = &mut self.unverified[usize::from(!row.learned_arm)];
         arm.1 += 1;
         let unverified = row.outcome == ChainOutcome::Tagged(GateVerdictTag::Unverified);
@@ -485,6 +534,15 @@ impl BenefitEstimator {
     #[must_use]
     pub fn post_stratified(&self) -> Estimate {
         self.post_stratified.estimate()
+    }
+
+    /// β as the loop audit judges it, over every loop row (gap-03fcd0):
+    /// AIPW whose predictions are each arm's running mean in the row's
+    /// stratum, shifted by CUPED's κ(X − X̄) when the row carries the
+    /// covariate, at AIPW's bound 1 + 1/(q·p_t).
+    #[must_use]
+    pub fn adjusted(&self) -> Estimate {
+        self.adjusted.estimate()
     }
 
     /// β_pass.
@@ -647,6 +705,7 @@ mod tests {
                 increments.cuped,
                 increments.aipw,
                 increments.post_stratified,
+                Some(increments.adjusted),
                 Some(increments.pass),
                 increments.cost,
             ];
@@ -680,5 +739,112 @@ mod tests {
         uninstrumented.outcome = ChainOutcome::PreInstrumentation;
         assert_eq!(estimator.push(&uninstrumented), Admission::Excluded);
         assert_eq!(estimator.global().n, global_before + 1);
+    }
+
+    /// A row of an A/A layer at p = 0.2 with no audit draw: the covariate
+    /// X ~ U[0, 1] sets the pass rate 0.3 + 0.5·X on both arms (β = 0), and
+    /// the row falls in one of three strata.
+    fn aa_row(rng: &mut SplitMix64) -> BenefitRow {
+        let x = rng.next_f64();
+        let learned = rng.next_f64() >= 0.2;
+        let mut chain = row(learned, 0.2, rng.next_f64() < 0.3 + 0.5 * x);
+        chain.pre.covariate = Some(x);
+        chain.pre.stratum = Some(format!("stratum-{}", rng.next_u64() % 3));
+        chain
+    }
+
+    /// gap-03fcd0: the audit's estimator ([`BenefitEstimator::adjusted`]) is
+    /// a valid confidence sequence, and the reason the audit uses it. With
+    /// outcomes in `[0, 1]` (audit floor 1, S03 §4.5's β_pass bounds), over
+    /// 10³ A/A paths of 300 rows its interval holds β = 0 at every step on at
+    /// least 1 − α of them, and it ends narrower than the difference in
+    /// means' on the same rows. With a planted effect it estimates it.
+    #[test]
+    fn adjusted_estimator_covers_beta_and_narrows_the_ipw_interval() {
+        const PATHS: u64 = 1_000;
+        const ROWS: usize = 300;
+        let config = BenefitConfig {
+            audit_floor: 1.0,
+            ..BenefitConfig::default()
+        };
+        let (mut covered, mut adjusted_width, mut dim_width) = (0_u64, 0.0, 0.0);
+        for path in 0..PATHS {
+            let mut rng = SplitMix64::new(path);
+            let mut estimator = BenefitEstimator::new(config);
+            let mut holds = true;
+            for _ in 0..ROWS {
+                assert_eq!(estimator.push(&aa_row(&mut rng)), Admission::Loop);
+                let interval = estimator.adjusted().interval.expect("an interval");
+                holds &= interval.0 <= 0.0 && 0.0 <= interval.1;
+            }
+            covered += u64::from(holds);
+            let width =
+                |estimate: Estimate| estimate.interval.map_or(0.0, |(low, high)| high - low);
+            adjusted_width += width(estimator.adjusted());
+            dim_width += width(estimator.dim());
+        }
+        let coverage = covered as f64 / PATHS as f64;
+        let (adjusted_width, dim_width) = (adjusted_width / PATHS as f64, dim_width / PATHS as f64);
+        println!(
+            "adjusted β: A/A coverage {coverage:.4}, mean width {adjusted_width:.3} against the \
+             difference in means' {dim_width:.3}"
+        );
+        assert!(coverage >= 0.95, "coverage {coverage}");
+        assert!(adjusted_width < dim_width, "{adjusted_width} ≥ {dim_width}");
+
+        let mut rng = SplitMix64::new(5113);
+        let mut estimator = BenefitEstimator::new(config);
+        for _ in 0..10_000 {
+            let mut chain = aa_row(&mut rng);
+            if chain.learned_arm && rng.next_f64() < 0.5 {
+                chain.outcome = ChainOutcome::Tagged(GateVerdictTag::Passed);
+            }
+            estimator.push(&chain);
+        }
+        // The learned arm passes 0.5 + 0.5·(0.3 + 0.5·X) of the time: β =
+        // 0.5·(1 − 0.55) = 0.225.
+        let adjusted = estimator.adjusted();
+        let (low, high) = adjusted.interval.expect("an interval");
+        assert!(
+            low > 0.0 && low <= 0.225 && 0.225 <= high,
+            "[{low}, {high}]"
+        );
+        assert!(
+            (adjusted.mean - 0.225).abs() < 4.0 * adjusted.standard_error(),
+            "{adjusted:?}"
+        );
+    }
+
+    /// The estimators serialize, so the audit tick's census keeps them: one
+    /// read back from JSON takes the next rows exactly as the one that never
+    /// left memory.
+    #[test]
+    fn benefit_estimator_round_trips_through_json() {
+        let mut rng = SplitMix64::new(42);
+        let mut kept = BenefitEstimator::new(BenefitConfig::default());
+        for _ in 0..50 {
+            let mut chain = aa_row(&mut rng);
+            chain.cost = Some((rng.next_f64(), CostSource::ProviderUsage));
+            kept.push(&chain);
+        }
+        let json = serde_json::to_string(&kept).expect("serialize the estimator");
+        let mut read: BenefitEstimator = serde_json::from_str(&json).expect("read it back");
+        for _ in 0..50 {
+            let chain = aa_row(&mut rng);
+            kept.push(&chain);
+            read.push(&chain);
+        }
+        let estimates = |estimator: &BenefitEstimator| {
+            [
+                estimator.dim(),
+                estimator.cuped(),
+                estimator.post_stratified(),
+                estimator.adjusted(),
+                estimator.pass(),
+                estimator.cost(),
+                estimator.global(),
+            ]
+        };
+        assert_eq!(estimates(&read), estimates(&kept));
     }
 }

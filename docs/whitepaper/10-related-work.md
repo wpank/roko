@@ -1,26 +1,24 @@
-Status: draft · budget 550 words · owner spec-ce1484
+Status: reviewed · budget 550 words · owner spec-ce1484
 
 # 10 Related work
 
 This section places Roko among seven groups of related work. Its mechanisms all have precedents; what differs is how it
-connects them around the executable verdict that every loop reads. Sources were accessed between 2026-09-28 and
-2026-10-02.
+connects them around one executable verdict. Sources were accessed between 2026-09-28 and 2026-10-02.
 
 ## 10.1 Agent-building frameworks
 
 AutoGen [@wu2024autogen] and its successor, the Microsoft Agent Framework [@microsoft2026agentframework], CrewAI
 [@crewai2026docs], LangGraph [@campos2025building], the OpenAI Agents SDK [@openai2025agentssdk] and Google's ADK
 [@google2026adk] supply parts for agent applications: conversations, graphs with checkpoints, guardrails on what an
-agent returns. Roko shares their checkpoints, graph-shaped control and provider neutrality, but decides that
-work is done by commands written before the work and run on the artifact, not by a guardrail on the agent's
-answer.
+agent returns. Roko shares their checkpoints, graphs and provider neutrality, but judges work by commands written
+before it and run on the artifact, not by a guardrail on the agent's answer.
 
 ## 10.2 Agent loops as Roko's workers
 
 Coding agents run the inner tool-using loop: Claude Code and Codex, which also run headless
 [@anthropic2026cchheadless; @openai2026codexexec], OpenHands [@wang2025openhands], SWE-agent [@yang2024sweagent],
-Goose [@aaif2026goose] and Aider [@aider2024architect]. Roko runs such loops as workers, one adapter per provider
-kind, and adds what a single session does not hold (§3.1).
+Goose [@aaif2026goose] and Aider [@aider2024architect]. Roko runs Claude Code, Codex and other CLI agents as workers,
+one adapter per provider kind (§3.1).
 
 ## 10.3 Harness-level orchestrators
 
@@ -52,14 +50,14 @@ found learns cross-vendor routing from benchmark outcomes [@li2026rsirouter].
 LLM judges show systematic biases [@zheng2023judging], weak tests inflate results [@yu2025utboost], and agents exploit
 visible tests, up to editing them [@zhong2025impossiblebench]. Acceptance error has been estimated from planted mutants
 [@bhardwaj2026bounded] and from audit samples with logged selection probabilities [@gao2026pinsieve]. Roko's
-acceptance check is executable and out of the actor's reach, and random deep audits estimate how often it passes
-wrong work.
+acceptance check is executable and screened for tampering, and random deep audits estimate how often it passes wrong
+work.
 
 ## 10.7 Self-adaptive systems and cybernetics
 
 Roko follows autonomic computing [@kephart2003vision] and self-adaptive software [@weyns2020introduction] in
-separating a managed system, the agents, from a managing one, the harness loops. Most work joining LLMs with such
-loops makes the model the manager [@nascimento2023selfadaptive]; in Roko, models are managed workers and the
+separating a managed system, the agents, from a managing one, the harness loops. Work joining LLMs with such loops
+usually makes the model the manager [e.g., @nascimento2023selfadaptive]; in Roko, models are managed workers and the
 regulators are code. The closest framing we know of, *Agent Cybernetics* [@wang2026agent], is a position paper that
 maps cybernetic laws, Ashby's ultrastability among them, onto principles for a single agent. Roko applies kindred
 ideas to a multi-agent harness and claims no priority over it.

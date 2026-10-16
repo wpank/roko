@@ -21,7 +21,9 @@ Python 3 and git, and never writes. Code identifiers, paths and commits are look
       number       a $ amount, percentage, N× ratio, "N of M" or N/M count in a paragraph, list item or table with
                    neither an inline [@key] nor a footnote naming a commit, work item, [@key], snapshot or rollup,
                    or an existing evidence/ file ("95% CI" and "step 3 of 11" are not counts); a sha256 that a
-                   footnote gives with an evidence/ file must start the file's line in the SHA256SUMS beside it
+                   footnote gives with an evidence/ file must start the file's line in the SHA256SUMS beside it.
+                   A section headed exactly "Claims ledger" (optionally "Claims ledger (…)") is exempt from this
+                   rule: its evidence column is the source (dec-536bbd)
       banned       a word the README's conventions ban (a bullet that says "banned", or `No "…"` under Conventions)
       link         a broken local link or figure path (tools/docs_integrity/check_markdown_links.py)
   --budget F           budget: the word count is more than F times the budget
@@ -272,6 +274,7 @@ class Doc:
         self.blocks = self._blocks()
         self.units = self._units()
         self.unit_starts = [u[0] for u in self.units]
+        self.ledger_lines = self._ledger_lines()
         self._words: int | None = None
 
     def line_of(self, offset: int) -> int:
@@ -304,6 +307,29 @@ class Doc:
             else:
                 cur.end = end
         return out
+
+    def _headings(self) -> list[tuple[int, int, str]]:
+        """(0-indexed line, level, title) for every heading in `self.code`."""
+        out = []
+        for i, line in enumerate(self.code.split("\n")):
+            h = HEADING.match(line)
+            if h:
+                out.append((i, len(h.group(1)), h.group(2).strip()))
+        return out
+
+    def _ledger_lines(self) -> set[int]:
+        """1-indexed line numbers (the heading line included) inside a section whose heading fully matches
+        "Claims ledger": check_numbers skips them (dec-536bbd), the same sections word_count already drops from
+        the budget. Unlike word_count, this never includes the editorial "Placeholder map" or "Alternative …"
+        sections, which still get the number rule."""
+        headings = self._headings()
+        total = self.code.count("\n") + 1
+        skip: set[int] = set()
+        for n, (i, level, title) in enumerate(headings):
+            if LEDGER.fullmatch(title):
+                end = next((j for j, lv, _ in headings[n + 1:] if lv <= level), total)
+                skip.update(range(i + 1, end + 1))
+        return skip
 
     def _units(self) -> list[tuple[int, int]]:
         """Sentences, table rows and headings: the scope of a "(designed)" or MISSING tag."""
@@ -355,11 +381,7 @@ class Doc:
                 chars[b.start:b.end] = blank(self.code[b.start:b.end])
         lines = "".join(chars).split("\n")
         skip = set()
-        headings = []
-        for i, line in enumerate(self.code.split("\n")):
-            h = HEADING.match(line)
-            if h:
-                headings.append((i, len(h.group(1)), h.group(2).strip()))
+        headings = self._headings()
         for n, (i, level, title) in enumerate(headings):
             if LEDGER.fullmatch(title) or EDITORIAL.match(re.sub(r"^[\d.§\s]+", "", title)):
                 end = next((j for j, lv, _ in headings[n + 1:] if lv <= level), len(lines))
@@ -835,6 +857,8 @@ def check_numbers(doc: Doc, repo: Repo | None) -> list[tuple[int, str]]:
             out += [(b.start + off, f"[^{b.label}]: {msg}")
                     for off, msg in wrong_digests(doc.code[b.start:b.end], roots)]
             continue
+        if doc.line_of(b.start) in doc.ledger_lines:
+            continue  # a Claims ledger row: the evidence column is its source (dec-536bbd)
         text = LINK_TARGET.sub(lambda m: blank(m.group(0)), doc.bare[b.start:b.end])
         hits = sorted((m.start(), what, m.group(0)) for what, rx in NUMBER_CLAIMS for m in rx.finditer(text)
                       if not (what == "count" and ORDINAL.search(text[:m.start()])))

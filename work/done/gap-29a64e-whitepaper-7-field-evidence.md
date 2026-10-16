@@ -9,7 +9,7 @@ goal = "whitepaper"
 size = "M"
 subsystem = ["docs/whitepaper"]
 created = 2026-09-29
-updated = 2026-09-29
+updated = 2026-10-16
 last_verified = 2026-09-29
 last_verified_rev = "dc371b1ae"
 source = "tmp/cybernetic-harness/workstreams/PLAN.md#e1"
@@ -21,6 +21,8 @@ links = { depends_on = ["gap-0191eb", "bug-7b37c4", "gap-af0b57"], blocks = [], 
 
 [[verify]]
 command = "test -f docs/whitepaper/07-field-evidence.md && grep -qi 'observational' docs/whitepaper/07-field-evidence.md && test -f tools/paperlint.py && python3 tools/paperlint.py --strict docs/whitepaper/07-field-evidence.md"
+superseded = "2026-10-16: The whitepaper rewrite as a design paper (7898493f2, 2026-10-08) replaced section 7, 07-field-evidence.md, with 07-in-use.md, which still cites the frozen field evidence; the old text is at 7898493f2^."
+superseded_by = "7898493f2"
 
 [closed]
 at = 2026-09-29

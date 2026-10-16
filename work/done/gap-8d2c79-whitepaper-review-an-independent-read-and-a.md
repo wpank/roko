@@ -9,7 +9,7 @@ goal = "whitepaper"
 size = "S"
 subsystem = ["docs/whitepaper"]
 created = 2026-09-29
-updated = 2026-09-29
+updated = 2026-10-16
 last_verified = 2026-09-29
 last_verified_rev = "e84bd3462"
 source = "tmp/cybernetic-harness/workstreams/PLAN.md#e1"
@@ -21,6 +21,8 @@ links = { depends_on = ["gap-353d57", "gap-370d3c", "gap-4161ea", "gap-ac4646", 
 
 [[verify]]
 command = "test -f docs/whitepaper/REVIEW.md && grep -q '^Verdict: accept' docs/whitepaper/REVIEW.md && test -f tools/paperlint.py && python3 tools/paperlint.py --strict --require-status reviewed docs/whitepaper"
+superseded = "2026-10-16: The whitepaper rewrite (7898493f2) needs its own review: gap-6a83de checks REVIEW.md's review of the 2026-10-02 rewrite and paperlint --strict --require-status reviewed, as this did for the old text."
+superseded_by = "gap-6a83de"
 
 [closed]
 at = 2026-09-29

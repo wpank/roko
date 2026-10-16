@@ -542,6 +542,32 @@ class TestBudgets(FixtureRepo):
         # "4 Method" 2, "4.1 Claims ledger" 3, "One row per claim." 4, "Building the claims ledger" 4, "Two rows." 2
         self.assertEqual(paperlint.Doc(p, "x").word_count(), 15)
 
+    def test_strict_number_rule_skips_the_claims_ledger(self):
+        """dec-536bbd option 1: a ledger row's numbers are exempt (its evidence column is the source), but the
+        same number in prose above the ledger still fails, and so does one in an editorial section below it."""
+        s = self.research_paper()
+        p = self.section(s, "09-ledger-numbers.md", """\
+            Status: stable-draft · owner PS3
+
+            # 9 Related work
+
+            Cheap models reach 80% parity with frontier plans.
+
+            ## Claims ledger (§9)
+
+            | ID | Claim | Type | Evidence | Status |
+            |---|---|---|---|---|
+            | C9.1 | Cheap models reach 80% parity with frontier plans | result | S05 | supported |
+
+            ## Placeholder map
+
+            Still unsourced at 80% here.
+            """)
+        code, out = run("--strict", p)
+        self.assertEqual(code, 1, out)
+        self.assertEqual(out.count("[number]"), 2, out)
+        self.assertIn('[number] percentage "80%" has no source', out)
+
     def test_banned_words_from_the_research_style_rules(self):
         s = self.research_paper()
         p = self.section(s, "01-intro.md", "Status: stable-draft · owner PS1\n\n# T\n\nThe first harness, provably "

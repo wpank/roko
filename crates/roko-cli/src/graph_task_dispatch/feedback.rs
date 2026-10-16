@@ -211,8 +211,8 @@ impl GraphTaskDispatcher {
     /// `settled` is the attempt's settlement ([`AttemptContext::settle`]).
     /// Learners read only its learning label (S01 §4.1): the router, through
     /// the facade's routing sink, the playbooks, the daimon, the prompt
-    /// experiments and durable knowledge, which only a pass grows
-    /// ([`FeedbackEvent::TaskVerified`]). An attempt without a label
+    /// experiments, and durable knowledge and new playbooks, which only a
+    /// pass grows ([`FeedbackEvent::TaskVerified`]). An attempt without a label
     /// (unverified, provider or harness failures) updates none of them. The
     /// analysis rows record every attempt under its attempt key: the
     /// episode, with the bounded class-prefixed failure reason and the
@@ -337,13 +337,33 @@ impl GraphTaskDispatcher {
             // verify step passed (`TaskGateVerdict::Passed`), or failed only
             // on tests that failed before the run too
             // (`PassedWithPreexistingFailures`). Only those grow durable
-            // knowledge.
+            // knowledge and playbooks.
             if learning == Some(true) {
+                let mut topic_terms: Vec<String> =
+                    crate::dispatch::prompt_builder::task_topic_terms(task)
+                        .into_iter()
+                        .collect();
+                topic_terms.sort_unstable();
+                // The calls its live output showed (gap-89f985): a playbook's
+                // steps, when the attempt teaches one.
+                let tool_calls = settled
+                    .live_tool_calls
+                    .finish_with_targets()
+                    .await
+                    .into_iter()
+                    .map(|(call, target)| crate::runtime_feedback::AttemptToolCall {
+                        name: call.name,
+                        target,
+                        succeeded: call.succeeded,
+                    })
+                    .collect();
                 let verified = crate::runtime_feedback::VerifiedAttempt {
                     plan_id: spec.plan_id.clone(),
                     task_id: task.id.clone(),
                     attempt_id: attempt_key.to_string(),
                     title: task.title.clone(),
+                    description: task.description.clone().unwrap_or_default(),
+                    topic_terms,
                     task_type: task.tier.clone(),
                     role: role.to_string(),
                     model: model_slug.clone(),
@@ -357,6 +377,8 @@ impl GraphTaskDispatcher {
                         })
                         .collect(),
                     knowledge_ids: diagnostics.knowledge_ids.clone(),
+                    playbook_ids: diagnostics.playbook_ids.clone(),
+                    tool_calls,
                     agent_output: dispatch
                         .result
                         .output

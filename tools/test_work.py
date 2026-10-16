@@ -350,6 +350,26 @@ class TestEpicsAndViews(RepoTest):
         self.assertEqual(status["lane"]["x"], {"open": 1, "claimed": 1, "done": 1})
 
 
+class TestTelemetryRollup(RepoTest):
+    def test_render_refreshes_the_rollup(self):
+        """gap-8d1463: nothing ran `work_telemetry.py rollup` on its own, so it went stale; render now carries
+        it along, picking up events logged since the last stale copy was written."""
+        telemetry = self.root / "work" / "telemetry"
+        telemetry.mkdir()
+        (telemetry / "ROLLUP.md").write_text(
+            "# Development record: rollup\n\nDEFINITIONS.md sha256 `x` · report date 2026-10-01 · HEAD `deadbeef0` · "
+            "prices `prices-2026-09-28`.\n")
+        self.run_work("claim", "gap-cccccc", "--by", "t", "--session", "s1", "--branch", "work/gap-cccccc")
+        self.run_work("render")
+        today = dt.datetime.now(dt.timezone.utc).date().isoformat()
+        text = (telemetry / "ROLLUP.md").read_text()
+        self.assertNotIn("report date 2026-10-01", text)
+        self.assertIn(f"report date {today}", text)
+        rollup = json.loads((telemetry / "rollup.json").read_text())
+        self.assertEqual(rollup["date"], today)
+        self.assertEqual(rollup["inputs"]["live_events"], 1)  # the claim just logged
+
+
 class TestClaims(RepoTest):
     def claim_file(self, iid, **fields):
         d = work.claims_dir()
@@ -616,6 +636,120 @@ class TestNew(RepoTest):
             self.assertIn(why, refused.stderr, extra)
         self.assertEqual(self.item_files(), before, "a refused item is never written")
         self.assertEqual(new("--anchor", "src/a.rs", "--no-verify-yet").returncode, 0)
+
+
+class TestRetiredVerify(RepoTest):
+    """gap-6ee3c5: a done item's [[verify]] that a later change made unrunnable is retired, not deleted or failed."""
+
+    CLOSED = '\n[closed]\nat = 2026-10-01\nevidence = "done in test"'
+
+    def setUp(self):
+        super().setUp()
+        (self.root / "work" / "done").mkdir()
+        (self.root / "src" / "gone.rs").write_text("fn old() {}\n")
+        # D's first verify checks a file that a later commit deletes; its second still passes. E's fix regressed. F has
+        # one verify, on the deleted file. G's static part passes and a heavy step follows.
+        self.write_done("gap-dddddd", item("gap-dddddd", "D", status="done", anchors=["src/a.rs"], extra=self.CLOSED,
+                                           verify=["test -f src/gone.rs", "grep -q foo src/a.rs"]))
+        self.write_done("gap-eeeeee", item("gap-eeeeee", "E", status="done", anchors=["src/c.rs"], extra=self.CLOSED,
+                                           verify=["grep -q bar src/c.rs"]))
+        self.write_done("gap-ffffff", item("gap-ffffff", "F", status="done", anchors=["src/a.rs"], extra=self.CLOSED,
+                                           verify=["test -f src/gone.rs"]))
+        self.write_done("gap-999999", item("gap-999999", "G", status="done", anchors=["src/a.rs"], extra=self.CLOSED,
+                                           verify=["grep -q foo src/a.rs && ./target/debug/no-such-binary"]))
+        self.commit("done items")
+        (self.root / "src" / "gone.rs").unlink()
+        self.commit("delete gone.rs")
+        self.sha = self.git("rev-parse", "--short=9", "HEAD").strip()
+        self.today = dt.date.today().isoformat()
+
+    def write_done(self, iid, text):
+        (self.root / "work" / "done" / f"{iid}-x.md").write_text(text)
+
+    def path(self, iid):
+        return next((self.root / "work").glob(f"*/{iid}-x.md"))
+
+    def retire(self, iid, index, *extra, check=True):
+        return self.run_work("retire-verify", iid, "--index", str(index), "--reason", "src/gone.rs was deleted",
+                             *extra, check=check)
+
+    def test_superseded_verify_is_reported_apart(self):
+        before = self.path("gap-dddddd").read_text()
+        self.assertIn("retired [[verify]] 1", self.retire("gap-dddddd", 1, "--by", self.sha).stdout)
+        added = f'\nsuperseded = "{self.today}: src/gone.rs was deleted"\nsuperseded_by = "{self.sha}"'
+        after = self.path("gap-dddddd").read_text()
+        # The entry stays, with the two fields added to its table; nothing else changes but `updated`.
+        self.assertEqual(after.replace(added, "", 1).replace(f"updated = {self.today}", "updated = 2026-09-01"), before)
+        d = {i["id"]: i for i in self.items()}["gap-dddddd"]
+        self.assertEqual(d["verify"], [{"command": "test -f src/gone.rs", "superseded": f"{self.today}: src/gone.rs was deleted",
+                                        "superseded_by": self.sha}, {"command": "grep -q foo src/a.rs"}])
+        self.assertEqual(work.validate(self.items()), [])
+        # One retired and one passing verify: verify passes, and reports the retired one apart without running it.
+        ok = self.run_work("verify", "gap-dddddd", check=False)
+        self.assertEqual(ok.returncode, 0, ok.stdout)
+        self.assertIn(f"RETIRED gap-dddddd (done): [[verify]] 1 superseded {self.today}: src/gone.rs was deleted "
+                      f"[by {self.sha}]", ok.stdout)
+        self.assertIn("PASS gap-dddddd (done): grep -q foo src/a.rs", ok.stdout)
+        self.assertNotIn("FAIL", ok.stdout)
+        # A failing verify that nobody retired still fails, in the regression sweep too.
+        for args in (("gap-dddddd", "gap-eeeeee"), ("--closed-since", "2026-09-26")):
+            bad = self.run_work("verify", *args, check=False)
+            self.assertEqual(bad.returncode, 1, bad.stdout)
+            self.assertIn("FAIL gap-eeeeee (done): grep -q bar src/c.rs", bad.stdout)
+            self.assertNotIn("FAIL gap-dddddd", bad.stdout)
+        # An item whose every verify is retired is listed apart: nothing checks it now.
+        self.retire("gap-ffffff", 1, "--by", "gap-dddddd")
+        out = self.run_work("verify", "gap-dddddd", "gap-ffffff", "--static-only").stdout
+        self.assertIn("RETIRED gap-ffffff (done): [[verify]] 1", out)
+        self.assertIn("1 item(s) have every [[verify]] retired, so nothing checks them now:\n  gap-ffffff (done): F", out)
+        self.assertNotIn("  gap-dddddd (done)", out)
+        shown = json.loads(self.run_work("show", "gap-ffffff", "--json").stdout)
+        self.assertEqual((shown["verify"], shown["verify_retired"]), (["test -f src/gone.rs"], [
+            {"index": 1, "superseded": f"{self.today}: src/gone.rs was deleted", "superseded_by": "gap-dddddd"}]))
+        self.assertIn("verify 1 (retired ", self.run_work("show", "gap-ffffff").stdout)
+        self.assertEqual(self.run_work("check").returncode, 0)
+
+    def test_retire_verify_refuses_unless_done_and_failing(self):
+        files = {i: self.path(i).read_text() for i in ("gap-dddddd", "gap-999999")}
+        for args, why in [(("gap-cccccc", 1), "it is open; only a done item's verify can be retired"),
+                          (("gap-dddddd", 2), "[[verify]] 2 passes now"),
+                          (("gap-dddddd", 3), "it has no [[verify]] 3: it has 2"),
+                          (("gap-dddddd", 1, "--by", "gap-123456"), "--by gap-123456: no such item"),
+                          (("gap-dddddd", 1, "--by", "no-such-branch"), "not an item id or a commit"),
+                          (("gap-999999", 1, "--static-only"), "--static-only does not run the rest")]:
+            refused = self.retire(*args, check=False)
+            self.assertNotEqual(refused.returncode, 0, args)
+            self.assertIn(why, refused.stderr, args)
+        self.assertEqual({i: self.path(i).read_text() for i in files}, files, "a refused retirement writes nothing")
+        # Without --static-only the whole command runs (its heavy step fails here), and --by defaults to HEAD.
+        self.assertIn(f"superseded by {self.sha}", self.retire("gap-999999", 1).stdout)
+        self.retire("gap-dddddd", 1)
+        again = self.retire("gap-dddddd", 1, check=False)
+        self.assertIn("is already retired", again.stderr)
+
+    def test_check_requires_both_fields_and_a_closed_item(self):
+        def with_fields(iid, title, status, fields):
+            text = item(iid, title, status=status, verify=["test -f src/gone.rs"],
+                        extra=self.CLOSED if status == "done" else "")
+            return text.replace('command = "test -f src/gone.rs"', 'command = "test -f src/gone.rs"\n' + fields)
+        self.write_done("gap-ffffff", with_fields("gap-ffffff", "F", "done", 'superseded = "2026-10-16: gone"'))
+        self.write_done("gap-999999", with_fields("gap-999999", "G", "done", 'superseded_by = "abc1234"'))
+        self.write_done("gap-eeeeee", with_fields("gap-eeeeee", "E", "done",
+                                                  'superseded = "yesterday: gone"\nsuperseded_by = "gap-123456"'))
+        self.write("gap-cccccc", with_fields("gap-cccccc", "C", "open",
+                                             'superseded = "2026-10-16: gone"\nsuperseded_by = "abc1234"'))
+        errs = sorted(e.split(": ", 1)[1] for e in work.validate(self.items()))
+        self.assertEqual(errs, sorted([
+            '[[verify]] 1: a retired verify needs superseded = "<YYYY-MM-DD>: <reason>"',  # E
+            "[[verify]] 1: superseded_by → unknown gap-123456",  # E
+            '[[verify]] 1: a retired verify needs superseded_by = "<commit or item id>"',  # F
+            '[[verify]] 1: a retired verify needs superseded = "<YYYY-MM-DD>: <reason>"',  # G
+            "[[verify]] 1: is retired, but the item is open: only a closed item's verify can be retired; an open "
+            "item's must run",  # C
+        ]))
+        self.assertNotEqual(self.run_work("check", check=False).returncode, 0)
+        # An open item's verify runs as before, even when it is marked retired.
+        self.assertIn("FAIL gap-cccccc (open): test -f src/gone.rs", self.run_work("verify", "gap-cccccc", check=False).stdout)
 
 
 if __name__ == "__main__":

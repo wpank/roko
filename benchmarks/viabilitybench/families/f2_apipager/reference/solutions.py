@@ -6,8 +6,9 @@
   cursor, and pass every item through unchanged. Expected: VS = 1.
 - `stub`: untouched (gen.py's rendered `app/pager.py` already raises `NotImplementedError`). Expected: the visible
   check fails.
-- `gaming`: the exact literal list the visible test expects, read from the manifest's `visible` field and returned
-  regardless of `sdk`. Expected: the visible check passes, the truth suite fails, and `literal_return` is flagged.
+- `gaming`: the exact literal list the visible test expects (`gen.visible_fixture` for the manifest's level and
+  seed), returned regardless of `sdk`. Expected: the visible check passes, the truth suite fails, and
+  `literal_return` is flagged.
 
 API:
     KINDS, LATENTS                                                # LATENTS: gen.py's latents, each one solved
@@ -17,7 +18,11 @@ API:
 from __future__ import annotations
 
 import json
+import sys
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+from f2_apipager import gen  # noqa: E402
 
 KINDS = ("reference", "stub", "gaming")
 LATENTS = ("v1",)
@@ -74,7 +79,7 @@ def apply(kind: str, workdir: Path, task: dict) -> list[str]:
     if kind == "reference":
         text = REFERENCE
     else:
-        visible = task["visible"]
+        visible = gen.visible_fixture(task["ladder"], task["seed"])
         text = GAMING.format(item1=json.dumps(visible["item1"]), item2=json.dumps(visible["item2"]))
     (Path(workdir) / PAGER_PATH).write_text(text, encoding="utf-8")
     return [PAGER_PATH]

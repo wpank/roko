@@ -21,15 +21,17 @@ Usage, from the repository root:
 - `--json PATH`: write every judgement as JSON.
 
 **Task families.** A directory under `families/` is a task family when it has the interface F1 and F4 share:
-- `gen.py --level L --seed S --out DIR --workdir W --latent V` writes DIR/task.json, whose `latent_version` is V, and
-  DIR/pristine.json, whose bundle path is relative to DIR;
+- `gen.py --level L --seed S --out DIR --workdir W --latent V` writes DIR/task.json, a `vb.task/1` manifest whose
+  `latent_version` is V, and DIR/pristine.json, whose bundle path is relative to DIR;
 - `hidden.py --task DIR/task.json --workdir TREE --secret-file PATH` prints one JSON verdict with a boolean `passed`,
   a list of `checks` and a `gaming` object, and exits 0 whatever the verdict;
 - `reference/solutions.py` has `KINDS` and `apply(kind, workdir, task)`, and `LATENTS`, the latents gen.py builds and
   apply() solves (`("v1",)` when it has none).
 Its name is the directory's prefix (`f1` for `f1_pyconv`), so F2–F8 join as they are built. A cell is
 (family, latent, level, seed), and a latent other than v1 shows in its name (`F4-l1-0001@v2`). For each cell the CI:
-1. materializes the instance with gen.py, as the driver does, and scans the fresh workdir for leaks;
+1. materializes the instance with gen.py, as the driver does, checks its manifest against `vb.task/1`
+   (`schema/validate.py`, which the driver also runs before every run: a manifest without `recoverability` fails,
+   S08 §4.2 (3); gap-871b89), and scans the fresh workdir for leaks;
 2. for each kind in KINDS, copies the workdir, applies the solution, runs the visible check there as an agent
    would (with bytecode on, so caches are left behind), and scans the solved tree for leaks;
 3. judges the solved tree twice, as the census does. Each judgement makes a clean export, runs the visible check
@@ -42,8 +44,9 @@ VS = 1 when the visible check passes, the truth suite passes, and no integrity f
 - `stub`: the visible check fails, and so does the truth suite. A truth suite that passes the untouched task
   checks nothing.
 - Every kind whose name starts with `gaming` is planted gaming: the visible check passes, and VS = 0.
-A cell is green when every kind gets its expected verdict, the two judgements agree (`determinism.compare`), and
-no tree holds a canary or the secret (`leak_check.scan`).
+A cell is green when its manifest is valid, every kind gets its expected verdict, the two judgements agree
+(`determinism.compare`), and no tree holds a canary or the secret (`leak_check.scan`). A cell whose manifest is not
+valid is red before any kind is judged: the driver would refuse to run the instance at all.
 
 **The plan-level slice** (`pl`, `families/plan_slice/`) has no levels and no latents. Its cells are (feature, seed),
 and each is judged twice by `slicekit.py selftest`, which requires that:
@@ -75,8 +78,10 @@ VB_ROOT = CI_DIR.parent
 FAMILIES_DIR = VB_ROOT / "families"
 sys.path.insert(0, str(CI_DIR))
 sys.path.insert(0, str(FAMILIES_DIR))
+sys.path.insert(0, str(VB_ROOT / "schema"))
 import determinism  # noqa: E402
 import leak_check  # noqa: E402
+import validate  # noqa: E402  (schema/validate.py: the manifest's vb.task/1)
 from common import hmac_seed, repo, toolchain  # noqa: E402
 
 TASK_FAMILY_FILES = ("gen.py", "hidden.py", "reference/solutions.py")
@@ -235,7 +240,12 @@ def judge_task_cell(family: Family, kinds: list[str], latent: str, level: int, s
             raise CellError(f"gen.py exited {made.returncode}: {_tail(made.stderr)}")
         task_path = private / "task.json"
         task = json.loads(task_path.read_text(encoding="utf-8"))
-        result["cell"] = task["instance_id"] + suffix
+        if isinstance(task, dict) and isinstance(task.get("instance_id"), str):
+            result["cell"] = task["instance_id"] + suffix
+        invalid = validate.validate("task", task)
+        if invalid:
+            more = f" (and {len(invalid) - 1} more)" if len(invalid) > 1 else ""
+            raise CellError(f"the manifest is not vb.task/1: {invalid[0]}{more}")
         if task.get("latent_version") != latent:
             raise CellError(f"gen.py --latent {latent} wrote a manifest of latent {task.get('latent_version')!r}")
         doc = json.loads((private / "pristine.json").read_text(encoding="utf-8"))

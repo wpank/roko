@@ -15,7 +15,8 @@
 //! 2. `ErrorPatternStore::upsert_observation` normalises the observation to a
 //!    stable `key` (e.g. `E0425::src/lib.rs`) and merges it into an existing
 //!    [`ErrorPattern`] or inserts a new one.
-//! 3. `occurrences`, `plan_ids`, and `task_ids` are updated atomically.
+//! 3. `occurrences`, `plan_ids`, `task_ids` and `task_keys` are updated
+//!    atomically.
 //! 4. `ErrorPatternStore::top_patterns` returns the most frequent unresolved
 //!    patterns for prompt injection.
 //! 5. After a verified attempt fixes it, `ErrorPatternStore::record_resolution`
@@ -130,9 +131,17 @@ pub struct ErrorPattern {
     pub last_seen_at: String,
     /// Plan IDs that have hit this error.
     pub plan_ids: BTreeSet<String>,
-    /// Task IDs that have hit this error.
+    /// Task IDs that have hit this error, whatever their plan. Nearly every
+    /// plan has a `T1`, so a task id alone keys the pattern to no task;
+    /// [`Self::task_keys`] does.
     #[serde(default)]
     pub task_ids: BTreeSet<String>,
+    /// The tasks that have hit this error, each named by its plan and its
+    /// own id, `"<plan>/<task>"`: a keyed summary selects the pattern for
+    /// the same task of the same plan only (bug-56e072). Loading gives a
+    /// pattern saved without them its keys when it saw a single plan.
+    #[serde(default)]
+    pub task_keys: BTreeSet<String>,
     /// Whether this pattern has been resolved.
     #[serde(default)]
     pub resolved: bool,
@@ -251,9 +260,11 @@ pub struct FailurePatternUpdate {
 /// Query used to select relevant failure patterns for retry context.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct FailurePatternQuery<'a> {
-    /// Plan to prefer.
+    /// Plan to prefer, and the plan of `task_id`.
     pub plan_id: Option<&'a str>,
-    /// Task to prefer.
+    /// Task of `plan_id` to prefer. Without `plan_id` it matches no
+    /// pattern's task, since another plan may have a task of the same id
+    /// (bug-56e072).
     pub task_id: Option<&'a str>,
     /// Verify to prefer.
     pub gate: Option<&'a str>,
@@ -470,10 +481,13 @@ impl ErrorPatternStore {
             let existing = &mut self.patterns[idx];
             existing.occurrences = existing.occurrences.saturating_add(1);
             existing.last_seen_at = now;
-            existing.plan_ids.insert(observation.plan_id);
             if let Some(task_id) = observation.task_id {
+                existing
+                    .task_keys
+                    .insert(task_key(&observation.plan_id, &task_id));
                 existing.task_ids.insert(task_id);
             }
+            existing.plan_ids.insert(observation.plan_id);
             if existing.gate.is_none() && !observation.gate.trim().is_empty() {
                 existing.gate = Some(observation.gate);
             }
@@ -491,6 +505,11 @@ impl ErrorPatternStore {
 
         let idx = self.patterns.len();
         self.key_index.insert(key.clone(), idx);
+        let task_keys = observation
+            .task_id
+            .iter()
+            .map(|task_id| task_key(&observation.plan_id, task_id))
+            .collect();
         self.patterns.push(ErrorPattern {
             key,
             digest: truncate_chars(&observation.digest, 200),
@@ -501,6 +520,7 @@ impl ErrorPatternStore {
             last_seen_at: now,
             plan_ids: std::iter::once(observation.plan_id).collect(),
             task_ids: observation.task_id.into_iter().collect(),
+            task_keys,
             resolved: false,
             resolution: None,
             resolved_by: None,
@@ -620,10 +640,11 @@ impl ErrorPatternStore {
     }
 
     /// [`Self::bounded_summary`] for a prompt (backlog 4209): a pattern
-    /// qualifies only when it was seen on the query's task, or its gate is
-    /// one of the query's verify commands, compared with whitespace
-    /// collapsed. Plan and class only order the qualifying patterns. A query
-    /// with neither a task nor commands selects none.
+    /// qualifies only when it was seen on the query's task of the query's
+    /// plan (bug-56e072), or its gate is one of the query's verify commands,
+    /// compared with whitespace collapsed. Plan and class only order the
+    /// qualifying patterns. A query with neither a plan's task nor commands
+    /// selects none.
     #[must_use]
     pub fn bounded_summary_keyed(
         &self,
@@ -728,6 +749,7 @@ impl ErrorPatternStore {
                 pattern.key = pattern.digest.clone();
             }
             pattern.digest = truncate_chars(&pattern.digest, 200);
+            pattern.key_tasks_saved_without_keys();
         }
     }
 
@@ -819,9 +841,7 @@ impl ErrorPattern {
 
     fn relevance_score(&self, query: FailurePatternQuery<'_>) -> usize {
         let mut score = 0usize;
-        if let Some(task_id) = query.task_id
-            && self.task_ids.contains(task_id)
-        {
+        if self.seen_on_task(query) {
             score += 8;
         }
         if let Some(plan_id) = query.plan_id
@@ -843,12 +863,10 @@ impl ErrorPattern {
     }
 
     /// Whether the pattern is about the query's work (backlog 4209): it was
-    /// seen on the query's task, or it is the failure of one of the query's
-    /// verify commands (its gate), compared with whitespace collapsed.
+    /// seen on the query's task ([`Self::seen_on_task`]), or it is the
+    /// failure of one of the query's verify commands (its gate), compared
+    /// with whitespace collapsed.
     fn keyed_to(&self, query: FailurePatternQuery<'_>) -> bool {
-        let same_task = query
-            .task_id
-            .is_some_and(|task_id| self.task_ids.contains(task_id));
         let same_command = self.gate.as_deref().is_some_and(|gate| {
             let gate = collapse_whitespace(gate);
             query
@@ -856,7 +874,34 @@ impl ErrorPattern {
                 .iter()
                 .any(|command| collapse_whitespace(command) == gate)
         });
-        same_task || same_command
+        self.seen_on_task(query) || same_command
+    }
+
+    /// Whether the pattern was seen on the query's task of the query's plan
+    /// (bug-56e072). The task id alone would match another plan's task of
+    /// the same id, so a query without a plan matches no task.
+    fn seen_on_task(&self, query: FailurePatternQuery<'_>) -> bool {
+        query
+            .plan_id
+            .zip(query.task_id)
+            .is_some_and(|(plan_id, task_id)| self.task_keys.contains(&task_key(plan_id, task_id)))
+    }
+
+    /// Key the tasks of a pattern saved before the store kept task keys
+    /// (bug-56e072). When it saw a single plan, each of its task ids was
+    /// that plan's. When it saw several, which task was whose is unknown, so
+    /// it gets no key, and only its verify command selects it for a prompt.
+    fn key_tasks_saved_without_keys(&mut self) {
+        if self.task_keys.is_empty()
+            && self.plan_ids.len() == 1
+            && let Some(plan_id) = self.plan_ids.first()
+        {
+            self.task_keys = self
+                .task_ids
+                .iter()
+                .map(|task_id| task_key(plan_id, task_id))
+                .collect();
+        }
     }
 }
 
@@ -970,6 +1015,13 @@ fn is_file_path_token(token: &str) -> bool {
 
 fn collapse_whitespace(text: &str) -> String {
     text.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+/// The key of task `task_id` of plan `plan_id` in
+/// [`ErrorPattern::task_keys`]: `"<plan>/<task>"`, as Graph dispatch keys a
+/// plan's task.
+fn task_key(plan_id: &str, task_id: &str) -> String {
+    format!("{plan_id}/{task_id}")
 }
 
 fn truncate_chars(text: &str, max: usize) -> String {
@@ -1104,6 +1156,96 @@ mod tests {
         let keyed = store.bounded_summary_keyed(unkeyed, 5, 2_000);
         assert!(keyed.patterns.is_empty(), "no key selects nothing");
         assert_eq!(store.bounded_summary(unkeyed, 5, 2_000).patterns.len(), 3);
+    }
+
+    /// bug-56e072: a pattern is keyed to the plan's task it was seen on, not
+    /// to the bare task id, which nearly every plan repeats (`T1`). One seen
+    /// on plan A's `T1` is selected for A's `T1`, skipped for plan B's `T1`
+    /// with another verify command, and still selected for B's `T1` when B
+    /// runs the pattern's verify command. Nor does the bare id rank it for
+    /// B's `T1` in an unkeyed summary.
+    #[test]
+    fn keyed_summary_skips_the_same_task_id_in_another_plan() {
+        const SIGN_OFF: &str = "grep -q '^Approved-by:' REPORT.md";
+        let mut store = ErrorPatternStore::empty();
+        store.observe_gate_failure(GateFailureObservation::new(
+            "verify::REPORT.md has no Approved-by line",
+            "plan-a",
+            Some("T1".to_string()),
+            SIGN_OFF,
+            "verify",
+            "REPORT.md has no Approved-by line",
+            GateFailureSource::GateClassification,
+        ));
+        let query = |plan_id, verify_commands| FailurePatternQuery {
+            plan_id: Some(plan_id),
+            task_id: Some("T1"),
+            verify_commands,
+            ..FailurePatternQuery::default()
+        };
+        let keys = |query| -> Vec<String> {
+            let summary = store.bounded_summary_keyed(query, 5, 2_000);
+            summary.patterns.into_iter().map(|item| item.key).collect()
+        };
+        let other_command = ["cargo test -p tally".to_string()];
+        let pattern_command = [SIGN_OFF.to_string()];
+
+        let pattern = ["verify::REPORT.md has no Approved-by line"];
+        assert_eq!(keys(query("plan-a", &other_command)), pattern);
+        assert!(keys(query("plan-b", &other_command)).is_empty());
+        assert_eq!(keys(query("plan-b", &pattern_command)), pattern);
+        let unkeyed = store.bounded_summary(query("plan-b", &[]), 5, 2_000);
+        assert!(unkeyed.patterns.is_empty(), "{:?}", unkeyed.patterns);
+    }
+
+    /// bug-56e072: a pattern saved before the store kept task keys holds
+    /// its plans and its tasks apart. Loading keys its tasks when it saw a
+    /// single plan, whose tasks they all were. One seen in two plans gets
+    /// none, since which plan's `T1` hit it is unknown: only its verify
+    /// command selects it, even for a plan and a task id it saw.
+    #[test]
+    fn load_keys_an_old_patterns_tasks_only_when_it_saw_one_plan() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let path = tmp.path().join(ERROR_PATTERNS_FILE);
+        let now = Utc::now().to_rfc3339();
+        let old = |key: &str, plans: &[&str]| {
+            serde_json::json!({
+                "key": key,
+                "digest": format!("{key} failed"),
+                "gate": format!("cargo test -p {key}"),
+                "category": "verify",
+                "occurrences": plans.len(),
+                "first_seen_at": now,
+                "last_seen_at": now,
+                "plan_ids": plans,
+                "task_ids": ["T1"],
+                "resolution": null,
+                "suggestion": null,
+            })
+        };
+        let patterns = [
+            old("one-plan", &["plan-a"]),
+            old("two-plans", &["plan-a", "plan-b"]),
+        ];
+        let file = serde_json::json!({ "patterns": patterns });
+        std::fs::write(&path, file.to_string()).expect("write a store of old patterns");
+
+        let store = ErrorPatternStore::load(&path);
+        assert_eq!(store.len(), 2);
+        let keys = |plan_id, verify_commands: &[String]| -> Vec<String> {
+            let query = FailurePatternQuery {
+                plan_id: Some(plan_id),
+                task_id: Some("T1"),
+                verify_commands,
+                ..FailurePatternQuery::default()
+            };
+            let summary = store.bounded_summary_keyed(query, 5, 2_000);
+            summary.patterns.into_iter().map(|item| item.key).collect()
+        };
+        assert_eq!(keys("plan-a", &[]), ["one-plan"]);
+        assert!(keys("plan-b", &[]).is_empty());
+        let command = ["cargo test -p two-plans".to_string()];
+        assert_eq!(keys("plan-b", &command), ["two-plans"]);
     }
 
     /// backlog 4208: loading drops the turn-cap and timeout rows older runs
@@ -1423,6 +1565,11 @@ mod tests {
             store.patterns[0].task_ids,
             BTreeSet::from(["task-a".to_string(), "task-b".to_string()])
         );
+        // Each task is keyed with its own plan (bug-56e072).
+        assert_eq!(
+            store.patterns[0].task_keys,
+            BTreeSet::from(["plan-a/task-a".to_string(), "plan-b/task-b".to_string()])
+        );
     }
 
     #[test]
@@ -1515,6 +1662,7 @@ mod tests {
             ));
         }
         let query = FailurePatternQuery {
+            plan_id: Some("plan-a"),
             task_id: Some("task-a"),
             ..FailurePatternQuery::default()
         };

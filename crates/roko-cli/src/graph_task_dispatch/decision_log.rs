@@ -95,6 +95,68 @@ pub(super) fn route_event(
     }
 }
 
+/// What the prompt of attempt `attempt` of `task_id` carried, from its
+/// `diagnostics`, as the [`DashboardEvent::PromptAssembled`] a host follows
+/// (gap-5f6d0b): the knowledge entries, playbooks and episodes that reached
+/// it, each retrieved one that did not with why, and its sections.
+///
+/// [`DashboardEvent::PromptAssembled`]: roko_core::DashboardEvent::PromptAssembled
+pub(super) fn prompt_event(
+    diagnostics: &crate::dispatch::PromptDiagnostics,
+    plan_id: &str,
+    task_id: &str,
+    attempt: u32,
+) -> roko_core::DashboardEvent {
+    let carried = |kind: ExposureItemKind| {
+        diagnostics
+            .items
+            .iter()
+            .filter(|item| item.kind == kind && item.included)
+            .map(|item| item.id.clone())
+            .collect::<Vec<_>>()
+    };
+    let left_out = diagnostics
+        .items
+        .iter()
+        .filter(|item| {
+            !item.included
+                && matches!(
+                    item.kind,
+                    ExposureItemKind::Knowledge
+                        | ExposureItemKind::Playbook
+                        | ExposureItemKind::Episode
+                        | ExposureItemKind::Section
+                )
+        })
+        .map(|item| roko_core::PromptLeftOut {
+            kind: item.kind.as_str().to_string(),
+            id: item.id.clone(),
+            reason: item
+                .excluded_reason
+                .and_then(|reason| serde_json::to_value(reason).ok())
+                .and_then(|reason| reason.as_str().map(str::to_string))
+                .unwrap_or_default(),
+        })
+        .collect::<Vec<_>>();
+    let dropped_sections = left_out
+        .iter()
+        .filter(|item| item.kind == ExposureItemKind::Section.as_str())
+        .map(|item| item.id.clone())
+        .collect();
+    roko_core::DashboardEvent::PromptAssembled {
+        plan_id: plan_id.to_string(),
+        task_id: task_id.to_string(),
+        attempt,
+        knowledge_ids: carried(ExposureItemKind::Knowledge),
+        playbook_ids: carried(ExposureItemKind::Playbook),
+        episode_ids: carried(ExposureItemKind::Episode),
+        left_out,
+        included_sections: diagnostics.included_sections.clone(),
+        dropped_sections,
+        estimated_tokens: diagnostics.estimated_tokens,
+    }
+}
+
 /// Most exposure rows one attempt writes (S01 §5.9
 /// `max_exposures_per_attempt`; a constant until a `[telemetry]` key
 /// exists). The attempt's counts include the items past it.
@@ -131,6 +193,16 @@ impl GraphTaskDispatcher {
                 ));
             }
             attempt.record_decision(decision);
+        }
+        // What its prompt carried and left out, for the same host
+        // (gap-5f6d0b).
+        if let Some(tui) = &self.tui_bridge {
+            tui.publish_event(prompt_event(
+                &plan.prompt.diagnostics,
+                &attempt.key.plan_id,
+                &task.id,
+                attempt.key.attempt,
+            ));
         }
         record_exposures(attempt, plan);
         self.record_content_decisions(attempt, plan);
@@ -1343,6 +1415,143 @@ mod tests {
         assert!(entries[0].last_accessed.is_some());
         let passed = Settlement::verified(&Ok(TaskGateVerdict::Passed));
         attempt.settle(passed, "stream-model", None);
+    }
+
+    /// gap-5f6d0b: `prompt_assembled` names what the prompt carried by kind,
+    /// and each retrieved knowledge entry, playbook, episode or section it
+    /// left out with why. The error-pattern block is none of them.
+    #[test]
+    fn prompt_event_names_what_it_carried_and_left_out() {
+        let left_out = |item: PromptItemDiagnostic, reason: ExcludedReason| PromptItemDiagnostic {
+            included: false,
+            excluded_reason: Some(reason),
+            ..item
+        };
+        let kind = |kind: ExposureItemKind, id: &str| PromptItemDiagnostic {
+            kind,
+            ..knowledge_item(id, 1, true)
+        };
+        let diagnostics = PromptDiagnostics {
+            items: vec![
+                knowledge_item("kn-1", 1, true),
+                left_out(
+                    knowledge_item("kn-2", 2, true),
+                    ExcludedReason::BanditExcluded,
+                ),
+                playbook_item("pb-1"),
+                left_out(playbook_item("pb-2"), ExcludedReason::WithheldArm),
+                kind(ExposureItemKind::Episode, "ep-1"),
+                left_out(
+                    kind(ExposureItemKind::ErrorPattern, "test::abc"),
+                    ExcludedReason::TokenBudget,
+                ),
+                section_item("role_identity", None),
+                section_item("domain_context", Some(ExcludedReason::BanditExcluded)),
+            ],
+            included_sections: vec!["role_identity".to_string()],
+            estimated_tokens: 900,
+            ..PromptDiagnostics::default()
+        };
+
+        let event = prompt_event(&diagnostics, "plan", "T1", 2);
+
+        assert_eq!(
+            serde_json::to_value(&event).expect("the event as JSON"),
+            serde_json::json!({
+                "type": "prompt_assembled",
+                "plan_id": "plan",
+                "task_id": "T1",
+                "attempt": 2,
+                "knowledge_ids": ["kn-1"],
+                "playbook_ids": ["pb-1"],
+                "episode_ids": ["ep-1"],
+                "left_out": [
+                    {"kind": "knowledge", "id": "kn-2", "reason": "bandit_excluded"},
+                    {"kind": "playbook", "id": "pb-2", "reason": "withheld_arm"},
+                    {"kind": "section", "id": "domain_context", "reason": "bandit_excluded"},
+                ],
+                "included_sections": ["role_identity"],
+                "dropped_sections": ["domain_context"],
+                "estimated_tokens": 900,
+            })
+        );
+    }
+
+    /// gap-5f6d0b: an attempt publishes `prompt_assembled` as it is planned,
+    /// after its `route_decided`, naming the stored lesson its prompt carried
+    /// because it shares the task's words. The run is in maximize mode, so no
+    /// arm withholds the entry.
+    #[tokio::test]
+    async fn an_attempt_publishes_what_its_prompt_carried() {
+        let temp = tempdir().expect("tempdir");
+        let roko = temp.path().join(".roko");
+        // The task is "Streaming graph task": the entry shares its words.
+        seed_knowledge(
+            temp.path(),
+            &[(
+                "kn-stream",
+                "Streaming graph task output flushes each chunk",
+            )],
+        );
+        let feedback = GraphFeedbackContext {
+            runs_dir: Some(roko.join("runs")),
+            ..GraphFeedbackContext::default()
+        };
+        let hub = crate::state_hub::shared_state_hub();
+        let mut events = hub.subscribe_events();
+        let bridge = TuiBridge::new(hub.sender());
+        let (dispatcher, mut task) = crate::graph_task_dispatch::tests::make_test_dispatcher_with(
+            &temp,
+            VERIFY_PROVIDER,
+            no_auto_fix_maximize,
+            feedback,
+            |dispatcher| dispatcher.with_tui_bridge(bridge),
+        )
+        .await;
+        task.verify = vec![verify_step("structural", "true")];
+        let ctx = CellContext::new().with_run_id(RUN.to_string());
+        dispatcher
+            .dispatch(&make_spec(&task), Vec::new(), &ctx)
+            .await
+            .expect("the verified attempt passes");
+
+        let mut order = Vec::new();
+        let mut carried = Vec::new();
+        loop {
+            match events.try_recv() {
+                Ok(envelope) => match envelope.payload {
+                    roko_core::DashboardEvent::RouteDecided { .. } => order.push("route_decided"),
+                    roko_core::DashboardEvent::PromptAssembled {
+                        task_id,
+                        attempt,
+                        knowledge_ids,
+                        included_sections,
+                        ..
+                    } => {
+                        order.push("prompt_assembled");
+                        carried.push((task_id, attempt, knowledge_ids, included_sections));
+                    }
+                    _ => {}
+                },
+                Err(tokio::sync::broadcast::error::TryRecvError::Lagged(_)) => {}
+                Err(_) => break,
+            }
+        }
+        let [(task_id, attempt, knowledge_ids, included_sections)] = carried.as_slice() else {
+            panic!("one prompt_assembled: {carried:?}");
+        };
+        assert_eq!((task_id.as_str(), *attempt), (task.id.as_str(), 1));
+        assert_eq!(knowledge_ids, &["kn-stream"]);
+        assert!(
+            included_sections
+                .iter()
+                .any(|section| section == "domain_context"),
+            "{included_sections:?}"
+        );
+        let prompt = order.iter().position(|kind| *kind == "prompt_assembled");
+        if let Some(route) = order.iter().position(|kind| *kind == "route_decided") {
+            assert!(Some(route) < prompt, "the route comes first: {order:?}");
+        }
     }
 
     /// bug-eaa318: the provider bridge's `model_call` row of an attempt whose

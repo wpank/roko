@@ -637,13 +637,17 @@ async fn api_not_found(req: Request) -> Response {
 ///   (gap-6b6ec1);
 /// - `delivery_events`: a plan's delivery into its run's batch branch
 ///   publishes `delivery_started` and `delivery_finished` with the state it
-///   ended in, and a run's summary milestones say how it ended (gap-4f6cbe).
+///   ended in, and a run's summary milestones say how it ended (gap-4f6cbe);
+/// - `prompt_events`: each Graph attempt publishes `prompt_assembled`, the
+///   stored lessons, playbooks and episodes its prompt carried and what it
+///   left out (gap-5f6d0b).
 pub(crate) const FEATURES: &[&str] = &[
     "chat_refusals",
     "loop_events",
     "live_tool_steps",
     "plan_check_events",
     "delivery_events",
+    "prompt_events",
 ];
 
 /// The summary of run `run_id`, as `GET /api/runs/{run_id}/summary` gives it.

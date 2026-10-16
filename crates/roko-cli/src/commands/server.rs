@@ -414,8 +414,11 @@ pub(crate) async fn cmd_serve(
     };
     #[cfg(unix)]
     let ipc_hub = state_hub.clone();
+    // `--bind`, `--port` and `--enable-terminal` hold for the server's life,
+    // also when it reloads roko.toml (bug-3eec27).
     let server_config =
         roko_serve::ServerBuildConfig::new(wd.clone(), runtime, roko_config, bind, port)
+            .with_terminal_enabled(enable_terminal)
             .with_state_hub(state_hub)
             .with_metrics(metrics)
             .with_advertised_endpoint();

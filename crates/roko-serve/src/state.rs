@@ -911,6 +911,39 @@ impl LocalAccess {
 // AppState
 // ---------------------------------------------------------------------------
 
+/// Settings `roko serve` takes from its command line instead of from
+/// `roko.toml`: `--bind`, `--port` and `--enable-terminal`.
+///
+/// They hold for the server's life: a reload of the file keeps them, so it
+/// neither reports them as changed, which would ask for a restart that
+/// changes nothing, nor stores the file's values over the ones the server
+/// runs with (bug-3eec27).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ConfigOverrides {
+    /// `--bind`: the address the listener is bound to.
+    pub bind: Option<String>,
+    /// `--port`: the port the listener is bound to.
+    pub port: Option<u16>,
+    /// `--enable-terminal`: the terminal routes are on whatever `[serve]`
+    /// says.
+    pub terminal_enabled: bool,
+}
+
+impl ConfigOverrides {
+    /// Put these settings in `config` in place of the file's.
+    pub fn apply(&self, config: &mut RokoConfig) {
+        if let Some(bind) = &self.bind {
+            config.server.bind.clone_from(bind);
+        }
+        if let Some(port) = self.port {
+            config.server.port = port;
+        }
+        if self.terminal_enabled {
+            config.serve.terminal_enabled = true;
+        }
+    }
+}
+
 const LISTENER_PROTECTED_BY_LOOPBACK: u8 = 1;
 const LISTENER_PROTECTED_BY_AUTH: u8 = 2;
 
@@ -1002,6 +1035,9 @@ pub struct AppState {
     pub gateway_http: roko_gateway::GatewayHttpState,
     /// Full `roko.toml` schema configuration with lock-free reads.
     pub roko_config: ArcSwap<RokoConfig>,
+    /// The settings serve took from its command line, which every config it
+    /// loads again from disk keeps ([`ConfigOverrides`]).
+    config_overrides: ArcSwap<ConfigOverrides>,
     /// Startup-owned listener/auth facts used by routes that expose private run
     /// evidence. Config reloads must not reclassify an already-bound listener
     /// or claim authentication middleware was installed after router creation.
@@ -1709,6 +1745,7 @@ impl AppState {
             model_call_service,
             gateway_http,
             roko_config: ArcSwap::from_pointee(roko_config.clone()),
+            config_overrides: ArcSwap::from_pointee(ConfigOverrides::default()),
             listener_security: ListenerSecurity::new(
                 &roko_config.server.bind,
                 roko_config.serve.auth.enabled,
@@ -1857,6 +1894,18 @@ impl AppState {
     /// Atomically swap in a new config snapshot.
     pub fn store_roko_config(&self, roko_config: RokoConfig) {
         self.roko_config.store(Arc::new(roko_config));
+    }
+
+    /// Record the settings serve took from its command line, which every
+    /// config it loads again from disk keeps (bug-3eec27).
+    pub fn set_config_overrides(&self, overrides: ConfigOverrides) {
+        self.config_overrides.store(Arc::new(overrides));
+    }
+
+    /// The settings serve took from its command line ([`ConfigOverrides`]).
+    #[must_use]
+    pub fn config_overrides(&self) -> Arc<ConfigOverrides> {
+        self.config_overrides.load_full()
     }
 
     /// Record the listener and authentication boundary selected during server

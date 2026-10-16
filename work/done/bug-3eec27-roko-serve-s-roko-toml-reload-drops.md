@@ -2,18 +2,33 @@
 id = "bug-3eec27"
 kind = "bug"
 title = "roko serve's roko.toml reload drops its --port/--bind/--enable-terminal overrides, so every reload warns that [server] needs a restart and stores the file's port"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p3"
 goal = "core"
 size = "S"
 subsystem = ["roko-serve/config"]
 created = 2026-10-15
-updated = 2026-10-15
-last_verified = 2026-10-15
+updated = 2026-10-16
+last_verified = 2026-10-16
+last_verified_rev = "fe0d20412"
 source = "hermes-roko round v5, roko-chathost, 2026-10-15"
 anchors = ["crates/roko-serve/src/routes/config.rs::reload_config_from_disk_with_hook", "crates/roko-cli/src/commands/server.rs::cmd_serve"]
 links = { depends_on = [], blocks = [], related = ["gap-115bae"], supersedes = [], duplicate_of = "" }
+
+[[verify]]
+command = "grep -rqw 'fn reload_keeps_the_settings_serve_took_from_its_command_line' crates/ && cargo test -p roko-serve --lib reload_keeps_the_settings_serve_took_from_its_command_line"
+
+[closed]
+at = 2026-10-16
+at_ts = "2026-10-16T00:02:22Z"
+commit = "fe0d20412"
+by = "roko-chathost"
+executor = "claude-agent"
+size = "S"
+claimed_at = "2026-10-15T21:09:36Z"
+forced = false
+evidence = "fe0d20412: roko serve keeps the settings it took from its command line (--bind, --port, --enable-terminal) as roko_serve::state::ConfigOverrides on AppState, recorded in ServerBuilder::start_background (and run_server_with_state), and re-applies them to every config it loads again (routes/config.rs: the file watcher's reload and PUT /config), so a reload reports only what the file changed. A serve started without flags already reloaded a no-op edit with no warning (live, logs/reload-noflags.log). Tests: routes::config::tests::reload_keeps_the_settings_serve_took_from_its_command_line (the verify; a budget edit under --port 6791 --enable-terminal asks for no restart and keeps both, a file [server] port changes nothing, PUT /config keeps both) and tests::command_line_settings_are_the_config_overrides. Lib suites roko-cli 3649, roko bin 463, roko-core 2023, roko-learn 1352, roko-serve 1025 passed (plus the verify test on rerun; the one other failure is the racy JWKS test, bug-904a1c); clippy -D warnings clean."
 +++
 
 ## Problem

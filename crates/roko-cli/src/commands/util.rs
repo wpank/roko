@@ -373,6 +373,17 @@ pub(crate) async fn cmd_init(
         Err(err) => println!("note: could not add .roko/ to .gitignore: {err:#}"),
     }
 
+    // M1's shipped viability bounds, for a person to edit; an existing
+    // policy stays (gap-cad57a).
+    match roko_cli::init::write_viability_policy(&target) {
+        Ok(true) => println!(
+            "wrote .roko/policy/viability.toml: M1's shipped viability bounds, which keep it in \
+             shadow until you edit them"
+        ),
+        Ok(false) => {}
+        Err(err) => println!("note: could not write .roko/policy/viability.toml: {err:#}"),
+    }
+
     if demo {
         let report = roko_cli::demo_seed::seed_demo_workspace(&target, demo_config.as_ref())?;
         if report.any_seeded() {

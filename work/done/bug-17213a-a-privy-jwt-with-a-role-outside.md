@@ -11,7 +11,7 @@ subsystem = ["roko-serve/auth"]
 created = 2026-10-15
 updated = 2026-10-16
 last_verified = 2026-10-16
-last_verified_rev = "7904eaf1b"
+last_verified_rev = "90097ec23"
 source = "status-quo-2026-10-15#decision-3"
 anchors = ["crates/roko-serve/src/routes/middleware.rs::try_privy_jwt", "crates/roko-serve/src/routes/middleware.rs::privy_jwt_scope_follows_the_role_allow_list"]
 lane = "rust-hot"
@@ -23,14 +23,14 @@ command = "! grep -q 'downgrading to read scope' crates/roko-serve/src/routes/mi
 [closed]
 at = 2026-10-16
 at_ts = "2026-10-16T15:12:40Z"
-commit = "7904eaf1b"
+commit = "90097ec23"
 by = "commit trailer"
 executor = "claude-agent"
 via = "work-batch"
 size = "S"
 claimed_at = "2026-10-16T08:06:55Z"
 forced = false
-evidence = "Closed by 7904eaf1b: fix: reject a Privy JWT whose role is outside the allow-list (D18)"
+evidence = "crates/roko-serve/src/routes/middleware.rs::try_privy_jwt (90097ec23, rebased onto main 1b8b62fb9; committed first as 7904eaf1b): the role-authorization branch (was :502-519) now returns None instead of computing a \"read\" scope for a missing or unlisted role, with a warn! naming sub, role and the allowed list; the doc comment's step 4 and crates/roko-core/src/config/serve.rs's privy_allowed_roles doc comment and docs/v3/24-AUTH.md section 7.2 were updated to match (no remaining \"downgrading to read scope\" string). Rewrote privy_jwt_scope_follows_the_role_allow_list's unlisted-role case to assert try_privy_jwt returns None, and added privy_jwt_role_mismatch_is_rejected, which pushes a real signed ES256 token through the middleware for a missing and an unlisted role and asserts 401 both from try_privy_jwt directly and through privy_middleware_status. gap-47e0de (the privy_allowed_user_ids branch, same D18 decision) touches the same function and lands separately. Checks: cargo test -p roko-serve --lib privy_jwt_role_mismatch_is_rejected (the item's exact verify command) passed standalone both before and after the rebase; cargo test -p roko-serve --lib privy_jwt (all 8 Privy middleware tests) passed both times; cargo +nightly fmt --all touched only the three files already edited; cargo clippy -p roko-serve -p roko-core --no-deps -- -D warnings was clean both before and after the rebase."
 +++
 
 ## Problem

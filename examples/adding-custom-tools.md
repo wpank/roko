@@ -22,11 +22,6 @@ Examples in this repo:
    - If the task spec has a Verification section, run those exact commands
 5. **If something fails**, fix it before finishing. Don't leave broken code.
 
-## Context files (read these first)
-
-- `/Users/will/dev/nunchi/roko/roko-mr-stream-beta/tmp/implementation-plans/modelrouting/18-structural-cleanup.md`
-- `/Users/will/dev/nunchi/roko/roko-mr-stream-beta/tmp/implementation-plans/modelrouting/01-architecture.md`
-
 ## What Roko expects from an MCP server
 
 Roko's current MCP path is simple:

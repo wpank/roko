@@ -3373,6 +3373,94 @@ async fn prune_runs_without_error() {
 
 // ── G08 config isolation tests ─────────────────────────────────────
 
+/// gap-2da1ff: a new worktree gets each git-ignored `node_modules` of the
+/// checkout, nested ones too, as an independent copy-on-write clone, so the
+/// project's checks find their dependencies there. Editing the clone leaves
+/// the operator's checkout alone, an absolute link into the checkout now
+/// leads into the worktree, a `node_modules` git does not ignore stays out,
+/// and the worktree's status stays clean.
+#[tokio::test]
+async fn worktree_gets_the_checkouts_node_modules() {
+    let Some((tmp, mgr)) = make_manager() else {
+        return;
+    };
+    let repo = tmp.path().join("repo");
+    let write = |path: &str, text: &str| {
+        let path = repo.join(path);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, text).unwrap();
+    };
+    write(".gitignore", "node_modules/\n!tools/node_modules/\n");
+    write("package.json", "{\"name\": \"app\"}\n");
+    write("lib/x.js", "module.exports = 2;\n");
+    write("packages/a/package.json", "{\"name\": \"a\"}\n");
+    write("tools/README.md", "tools\n");
+    for args in [&["add", "-A"][..], &["commit", "-q", "-m", "project"]] {
+        let ok = StdCommand::new("git")
+            .current_dir(&repo)
+            .args(args)
+            .status()
+            .unwrap()
+            .success();
+        assert!(ok, "git {args:?}");
+    }
+    write("node_modules/dep/index.js", "module.exports = 1;\n");
+    std::fs::create_dir_all(repo.join("node_modules/.bin")).unwrap();
+    std::os::unix::fs::symlink("../dep/index.js", repo.join("node_modules/.bin/dep")).unwrap();
+    std::os::unix::fs::symlink(repo.join("lib"), repo.join("node_modules/linked")).unwrap();
+    write("packages/a/node_modules/inner/i.js", "inner\n");
+    write("tools/node_modules/kept/k.js", "not ignored\n");
+
+    let handle = mgr.create("01-deps", "feature/deps").await.unwrap();
+    let cloned = handle.path.join("node_modules");
+    assert!(
+        !handle.path.join("tools/node_modules").exists(),
+        "a node_modules git does not ignore stays out"
+    );
+    if !cloned.exists() {
+        // Without copy-on-write clones the worktree gets none, as before.
+        assert!(
+            !cfg!(target_os = "macos"),
+            "macOS (APFS) clones node_modules"
+        );
+        assert!(!handle.path.join("packages/a/node_modules").exists());
+        return;
+    }
+    assert_eq!(
+        std::fs::read_to_string(cloned.join("dep/index.js")).unwrap(),
+        "module.exports = 1;\n"
+    );
+    assert_eq!(
+        std::fs::read_to_string(handle.path.join("packages/a/node_modules/inner/i.js")).unwrap(),
+        "inner\n"
+    );
+    std::fs::write(cloned.join("dep/index.js"), "changed\n").unwrap();
+    assert_eq!(
+        std::fs::read_to_string(repo.join("node_modules/dep/index.js")).unwrap(),
+        "module.exports = 1;\n",
+        "editing the clone changed the operator's checkout"
+    );
+    assert_eq!(
+        std::fs::read_link(cloned.join(".bin/dep")).unwrap(),
+        Path::new("../dep/index.js")
+    );
+    assert_eq!(
+        std::fs::read_link(cloned.join("linked")).unwrap(),
+        handle.path.join("lib")
+    );
+    let status = StdCommand::new("git")
+        .current_dir(&handle.path)
+        .args(["status", "--porcelain", "--untracked-files=all"])
+        .output()
+        .unwrap();
+    assert!(status.status.success());
+    assert_eq!(
+        String::from_utf8_lossy(&status.stdout),
+        "",
+        "the worktree is clean"
+    );
+}
+
 #[test]
 fn isolate_worktree_config_copies_cursor_dir() {
     let tmp = tempfile::tempdir().unwrap();

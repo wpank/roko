@@ -564,6 +564,13 @@ closed.
 > batch branch one at a time, each merged into the tip the last one left. The per-plan path
 > (`ensure_for_plan`, `create_for_plan`) and `reclaim_idle` have no production caller, and
 > `max_live` is unset.
+> Updated 2026-10-16 (gap-2da1ff): a new worktree holds only tracked files, so it also gets
+> a copy-on-write clone of each `node_modules` the checkout has and git ignores, nested ones
+> too, so the project's checks find their dependencies there. The clone is made with
+> `clonefile` on APFS or a reflink on Linux. It is never a link, so an agent's edits there
+> never reach the operator's checkout. Where the filesystem cannot clone, the worktree gets
+> none. A virtualenv is not cloned: its scripts name its absolute path, so a copy would
+> still install into the operator's. Activate the virtualenv before running roko.
 
 Git worktrees provide per-plan filesystem isolation. Each active plan gets
 its own worktree -- a separate working directory on its own branch, sharing

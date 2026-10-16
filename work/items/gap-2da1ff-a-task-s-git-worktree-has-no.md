@@ -16,7 +16,7 @@ anchors = ["crates/roko-cli/src/orchestrator/worktree/git_ops.rs::isolate_worktr
 links = { depends_on = [], blocks = [], related = ["bug-4e336b", "gap-1625c0"], supersedes = [], duplicate_of = "" }
 
 [[verify]]
-command = "grep -rqw 'fn worktree_gets_the_checkouts_node_modules' crates/roko-cli/ && cargo test -p roko-cli worktree_gets_the_checkouts_node_modules"
+command = "grep -rqw 'fn worktree_gets_the_checkouts_node_modules' crates/roko-cli/ && cargo test -p roko-cli --lib worktree_gets_the_checkouts_node_modules"
 +++
 
 ## Problem
@@ -52,16 +52,26 @@ in-project `.venv` do not.
 
 ## Plan
 
-1. When the checkout has `node_modules/` (and it is git-ignored), give the worktree one: an APFS/reflink clone where
-   the filesystem has it, else a hardlink copy; never a symlink, which `node_modules/` in `.gitignore` does not
-   ignore, so roko would commit it.
-2. Consider the same for an in-project `.venv`, or document that roko needs it activated.
-3. Test: a worktree of a package whose test needs a dependency passes `npm test`.
+1. When the checkout has a `node_modules/` that git ignores, at any depth, give a new worktree a copy-on-write
+   clone of it: `clonefile` on APFS (`cp -c`), a reflink on Linux (`cp --reflink=always`).
+   - Never a symlink or a hardlink: both let an agent's in-place edit reach the operator's checkout. A symlink
+     is also not ignored by `node_modules/`, so roko would commit it.
+   - Only on the checkout's device, and never a full copy: where no clone can be made, the worktree gets none,
+     as today.
+   - An absolute symlink in the clone that leads into the checkout is pointed at the worktree's copy.
+   - The worktree's git must ignore the clone too, or it is removed.
+2. Do not clone a virtualenv. Its scripts name its absolute path, so a clone would still install into the
+   operator's. Document that roko needs it activated.
+3. Test: a worktree of a package with ignored dependencies gets an independent clone of them (nested ones too),
+   and its status stays clean.
 
 ## Done when
 
 `worktree_gets_the_checkouts_node_modules` passes (the `[[verify]]` command).
 
 ## Notes
+
+- 2026-10-16 (roko-init): fixed as planned above, in `orchestrator/worktree/git_ops.rs`
+  (`give_worktree_dependency_dirs`, called from `isolate_worktree_config` for every new worktree).
 
 Mind disk use: a clone is cheap on APFS, a copy is not. Do not write into the operator's checkout.

@@ -363,6 +363,8 @@ pub struct ClaudeCliAgent {
     allowed_tools: Option<String>,
     disallowed_tools: Option<String>,
     max_turns: Option<u32>,
+    /// The CLI's own spend limit, `--max-budget-usd` (gap-e14344).
+    max_budget_usd: Option<f64>,
     settings_json: String,
     isolation: ClaudeIsolation,
     extra_args: Vec<String>,
@@ -408,6 +410,7 @@ impl ClaudeCliAgent {
             allowed_tools: None,
             disallowed_tools: None,
             max_turns: Some(OperatingFrequency::Theta.turn_limit()),
+            max_budget_usd: None,
             settings_json: build_settings_json(),
             extra_args: Vec::new(),
             env: Vec::new(),
@@ -566,6 +569,16 @@ impl ClaudeCliAgent {
         self
     }
 
+    /// Stop the run once it has spent `usd`, by the CLI's own count
+    /// (`--max-budget-usd`, Claude Code 2.0.28 and later): a second fence
+    /// behind roko's own check of what the run streams (gap-e14344). A run
+    /// stopped there fails as budget-exhausted.
+    #[must_use]
+    pub const fn with_max_budget_usd(mut self, usd: f64) -> Self {
+        self.max_budget_usd = Some(usd);
+        self
+    }
+
     /// Override the settings JSON passed via `--settings`.
     #[must_use]
     pub fn with_settings_json(mut self, json: impl Into<String>) -> Self {
@@ -655,12 +668,28 @@ impl ClaudeCliAgent {
         started: Instant,
         stream_usage: &StreamUsage,
     ) -> AgentResult {
+        self.stopped_with_stream_usage(input, reason, None, started, stream_usage)
+    }
+
+    /// [`Self::failure_with_stream_usage`], tagged with the `stop_reason` that
+    /// ended the run when it has one.
+    fn stopped_with_stream_usage(
+        &self,
+        input: &Signal,
+        reason: &str,
+        stop_reason: Option<&str>,
+        started: Instant,
+        stream_usage: &StreamUsage,
+    ) -> AgentResult {
         let wall_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
         let mut output = input
             .derive(Kind::AgentOutput, Body::text(reason))
             .provenance(Provenance::agent(&self.name))
             .tag("agent", &self.name)
             .tag("failed", "true");
+        if let Some(stop_reason) = stop_reason {
+            output = output.tag("stop_reason", stop_reason);
+        }
         for (key, value) in self.isolation.tags() {
             output = output.tag(key, value);
         }
@@ -699,6 +728,31 @@ impl ClaudeCliAgent {
                     .and_then(|turns| u32::try_from(turns).ok()),
                 cap: self.max_turns,
             }
+        })
+    }
+
+    /// The run stopped at `--max-budget-usd`: the final stream-json `result`
+    /// has subtype `error_max_budget_usd` (gap-e14344). Its failure text, in
+    /// the words of a stop for the plan budget.
+    fn budget_cap_hit(&self, stdout: &str, stderr: &str) -> Option<String> {
+        let result = [stdout, stderr].into_iter().find_map(|output| {
+            output
+                .lines()
+                .filter_map(Self::parse_stream_event)
+                .rfind(|event| event.get("type").and_then(Value::as_str) == Some("result"))
+        })?;
+        (result.get("subtype").and_then(Value::as_str) == Some("error_max_budget_usd")).then(|| {
+            let spent = result
+                .get("total_cost_usd")
+                .and_then(Value::as_f64)
+                .map_or_else(String::new, |usd| format!(" after ${usd:.4}"));
+            let limit = self
+                .max_budget_usd
+                .map_or_else(String::new, |usd| format!(" ${usd:.4}"));
+            format!(
+                "Budget exhausted: the Claude CLI stopped at its spend limit \
+                 (--max-budget-usd{limit}){spent}"
+            )
         })
     }
 
@@ -771,6 +825,9 @@ impl ClaudeCliAgent {
         }
         if let Some(max_turns) = self.max_turns {
             cmd.arg("--max-turns").arg(max_turns.to_string());
+        }
+        if let Some(usd) = self.max_budget_usd {
+            cmd.arg("--max-budget-usd").arg(format!("{usd:.6}"));
         }
 
         if let Some(fallback_model) = &self.fallback_model
@@ -1683,6 +1740,16 @@ impl ClaudeCliAgent {
         if let Some(hit) = self.turn_cap_hit(&stdout, &stderr) {
             tracing::warn!(agent = %self.name, elapsed_s = elapsed_secs, "{hit}");
             return self.failure_with_stream_usage(input, &hit.to_string(), started, &stream_usage);
+        }
+        if let Some(reason) = self.budget_cap_hit(&stdout, &stderr) {
+            tracing::warn!(agent = %self.name, elapsed_s = elapsed_secs, "{reason}");
+            return self.stopped_with_stream_usage(
+                input,
+                &reason,
+                Some("budget_exhausted"),
+                started,
+                &stream_usage,
+            );
         }
 
         if !status.success() {
@@ -3468,6 +3535,31 @@ mod tests {
             .collect()
     }
 
+    /// gap-e14344: a spend limit reaches the CLI as `--max-budget-usd`;
+    /// without one the flag is not passed.
+    #[test]
+    fn a_spend_limit_reaches_the_cli_as_max_budget_usd() {
+        let limited = ClaudeCliAgent::new("claude", ".", "claude-test-model")
+            .with_max_budget_usd(0.0273)
+            .build_command()
+            .expect("build command");
+        let args = args_of(&limited);
+        let flag = args
+            .iter()
+            .position(|arg| arg == "--max-budget-usd")
+            .expect("the spend limit flag");
+        assert_eq!(args[flag + 1], "0.027300");
+
+        let unlimited = ClaudeCliAgent::new("claude", ".", "claude-test-model")
+            .build_command()
+            .expect("build command");
+        assert!(
+            !args_of(&unlimited)
+                .iter()
+                .any(|arg| arg == "--max-budget-usd")
+        );
+    }
+
     /// The value `command` sets for `name`, or `None` when it sets none.
     fn env_of(command: &Command, name: &str) -> Option<String> {
         command
@@ -4794,6 +4886,33 @@ mod turn_cap_tests {
         );
         assert!(detect_provider_exhaustion(text).is_none(), "{text}");
         assert_eq!(result.output.tag("num_turns"), Some("2"));
+    }
+
+    /// gap-e14344: a run the CLI stopped at `--max-budget-usd` (result
+    /// subtype `error_max_budget_usd`) fails as budget-exhausted, at the cost
+    /// the CLI reported, not as a provider failure.
+    #[tokio::test]
+    async fn error_max_budget_usd_is_a_budget_stop() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let script = fake_claude(
+            tmp.path(),
+            r#"{"type":"result","subtype":"error_max_budget_usd","is_error":true,"num_turns":4,"total_cost_usd":0.0612,"errors":["Reached maximum budget"]}"#,
+            1,
+        );
+        let agent =
+            ClaudeCliAgent::new(&script, tmp.path(), "claude-test-model").with_max_budget_usd(0.05);
+
+        let result = agent.run(&prompt(), &Context::now()).await;
+        assert!(!result.success);
+        assert_eq!(result.output.tag("stop_reason"), Some("budget_exhausted"));
+        let text = result.output.body.as_text().expect("failure text");
+        assert_eq!(
+            text,
+            "Budget exhausted: the Claude CLI stopped at its spend limit (--max-budget-usd \
+             $0.0500) after $0.0612"
+        );
+        assert!(detect_provider_exhaustion(text).is_none(), "{text}");
+        assert!((f64::from(result.usage.cost_usd) - 0.0612).abs() < 1e-6);
     }
 
     #[tokio::test]

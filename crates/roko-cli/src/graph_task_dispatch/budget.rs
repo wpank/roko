@@ -857,6 +857,29 @@ impl GraphPlanBudgetLedger {
         }
     }
 
+    /// The most hold `hold` of `plan_id` can still spend under `policy`: what
+    /// it holds beyond its spend, and the plan's unreserved budget it could
+    /// grow into (gap-e14344). `None` without a ceiling to hold against.
+    fn headroom(&self, plan_id: &str, hold: u64, policy: GraphPlanBudgetPolicy) -> Option<u64> {
+        let plans = self.plans.lock();
+        let state = plans.get(plan_id)?;
+        let policy = state.policy(policy);
+        let ceiling = policy
+            .ceiling_micro_usd
+            .filter(|_| !policy.continue_on_exhaustion)?;
+        let held = state.holds.get(&hold)?;
+        let unreserved = ceiling.saturating_sub(
+            state
+                .spent_micro_usd
+                .saturating_add(state.reserved_micro_usd),
+        );
+        Some(
+            held.reserved_micro_usd
+                .saturating_sub(held.spent_micro_usd)
+                .saturating_add(unreserved),
+        )
+    }
+
     fn release(&self, plan_id: &str, hold: Option<u64>) {
         if hold.is_none() {
             return;
@@ -971,6 +994,29 @@ impl CallAllowance for AttemptAllowance {
         self.ledger
             .record_call(&self.plan_id, self.hold, cost_usd, priced);
     }
+
+    fn spend_limit_usd(&self) -> Option<f64> {
+        self.ledger
+            .headroom(&self.plan_id, self.hold, self.policy)
+            .map(micro_usd_to_usd)
+    }
+}
+
+/// Why an agent that keeps a spend limit of its own stopped there, as the
+/// Claude CLI does at the `--max-budget-usd` its attempt gave it
+/// (gap-e14344): its run ended `budget_exhausted`, in its own words. `None`
+/// for any other end.
+pub(super) fn own_budget_stop(
+    dispatch: &crate::dispatch_v2::AgentResultDispatch,
+) -> Option<String> {
+    let output = &dispatch.result.output;
+    (output.tag("stop_reason") == Some("budget_exhausted")).then(|| {
+        output
+            .body
+            .as_text()
+            .unwrap_or("budget exhausted")
+            .to_string()
+    })
 }
 
 /// Effective per-task spend ceiling in USD (`0.0` = unlimited): the tighter
@@ -2880,6 +2926,30 @@ exit 1
         assert_eq!(ledger.snapshot("plan-a", policy).reserved_usd, 0.0);
     }
 
+    /// gap-e14344: what an attempt's own spend limit can be is what its hold
+    /// keeps beyond its spend plus the plan's unreserved budget, which it
+    /// could grow into; what other attempts hold is not its to spend.
+    #[test]
+    fn an_attempts_spend_limit_is_its_hold_and_the_unreserved_budget() {
+        let ledger = Arc::new(GraphPlanBudgetLedger::default());
+        let policy = GraphPlanBudgetPolicy::from_ceiling(1.0, false).with_concurrent_calls(4);
+        let first = ledger.reserve("plan-a", policy).expect("reservation");
+        let second = ledger.reserve("plan-a", policy).expect("reservation");
+        let first_allowance = first.allowance(&ledger).expect("a capped plan holds");
+        let second_allowance = second.allowance(&ledger).expect("a capped plan holds");
+        // Each holds $0.25 of $1.00; the first spends $0.05 and keeps $0.10.
+        first_allowance.record_call(0.05, true);
+        let limit = |allowance: &AttemptAllowance| allowance.spend_limit_usd().expect("a limit");
+        assert!((limit(&first_allowance) - 0.70).abs() < 1e-9);
+        assert!((limit(&second_allowance) - 0.90).abs() < 1e-9);
+
+        let unlimited = ledger
+            .reserve("plan-b", GraphPlanBudgetPolicy::unlimited())
+            .expect("reservation");
+        assert!(unlimited.allowance(&ledger).is_none(), "nothing to limit");
+        drop((first, second));
+    }
+
     /// bug-4fabd0: a call with no price leaves the attempt's spend unknown,
     /// so its next call is refused, as a plan's is (decision 2110); a plan
     /// without a ceiling holds nothing to ask.
@@ -3139,5 +3209,82 @@ exit 1
             .await
             .expect("without a cap the model runs");
         assert_eq!(requests.lock().len(), 1);
+    }
+
+    /// gap-e14344: a capped attempt on the Claude CLI also gets the CLI's
+    /// own spend limit, `--max-budget-usd`, at what the attempt can still
+    /// spend, as a second fence behind roko's check of what it streams. A
+    /// run the CLI stopped there is a budget stop: settled budget_exhausted
+    /// at the cost the CLI reported, not retried, not a provider failure.
+    /// Without a cap the flag is not passed.
+    #[tokio::test]
+    async fn a_capped_claude_cli_attempt_gets_a_native_spend_limit() {
+        // Like Claude Code 2.1.282: given --max-budget-usd, this run passes
+        // it and ends with the CLI's own budget stop.
+        let script = r#"#!/bin/sh
+set -eu
+cat >/dev/null
+printf '%s\n' "$*" >> "$(dirname -- "$0")/provider-args"
+case " $* " in
+  *" --max-budget-usd "*)
+    printf '%s\n' '{"type":"result","subtype":"error_max_budget_usd","is_error":true,"num_turns":3,"total_cost_usd":0.06,"usage":{"input_tokens":5,"output_tokens":10},"errors":["Reached maximum budget"]}'
+    exit 1
+    ;;
+esac
+printf '%s\n' '{"type":"content_block_delta","delta":{"text":"batch-output"}}'
+printf '%s\n' '{"type":"result","session_id":"sess-b","model":"claude-sonnet-4-6","total_cost_usd":0.01,"usage":{"input_tokens":5,"output_tokens":10}}'
+"#;
+        let temp = tempdir().expect("tempdir");
+        let (dispatcher, task) = make_scripted_batch_dispatcher(&temp, script, |_| {}).await;
+        let dispatcher = dispatcher
+            .with_plan_budget(0.10, 0.0, false)
+            .with_feedback(recording_feedback(temp.path()));
+        let spec = make_spec(&task);
+        let ctx = CellContext::new()
+            .with_cell_id("T01".to_string())
+            .with_run_id("native-limit".to_string());
+
+        let error = dispatcher
+            .dispatch(&spec, Vec::new(), &ctx)
+            .await
+            .expect_err("the CLI stops at its limit");
+
+        let RokoError::Gateway {
+            category: "budget",
+            retryable: false,
+            message,
+        } = &error
+        else {
+            panic!("a budget stop the task executor does not retry: {error:?}");
+        };
+        assert!(
+            message.contains("stopped at its spend limit (--max-budget-usd $0.1000) after $0.0600"),
+            "{message}"
+        );
+        let args = std::fs::read_to_string(temp.path().join("provider-args")).expect("args");
+        assert_eq!(args.lines().count(), 1, "one run, no retry or failover");
+        assert!(args.contains("--max-budget-usd 0.100000"), "{args}");
+        let spent = dispatcher.plan_budget_snapshot(&spec.plan_id).spent_usd;
+        assert!((spent - 0.06).abs() < 1e-9, "the CLI's own cost: {spent}");
+        let verdicts = jsonl_rows_where(
+            &temp.path().join(".roko/runs/native-limit/attempts.jsonl"),
+            1,
+            |row| row["schema_version"] == "roko.verdict/1",
+        )
+        .await;
+        assert_eq!(
+            verdicts[0]["outcome"], "budget_exhausted",
+            "{}",
+            verdicts[0]
+        );
+
+        let temp = tempdir().expect("tempdir");
+        let (dispatcher, task) = make_scripted_batch_dispatcher(&temp, script, |_| {}).await;
+        dispatcher
+            .dispatch(&make_spec(&task), Vec::new(), &batch_ctx())
+            .await
+            .expect("without a cap the run has no limit of its own");
+        let args = std::fs::read_to_string(temp.path().join("provider-args")).expect("args");
+        assert!(!args.contains("--max-budget-usd"), "{args}");
     }
 }

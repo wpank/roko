@@ -154,7 +154,8 @@ pub async fn dispatch_via_model_call_service(prompt: &str) -> AnyhowResult<Dispa
         ),
         None => Arc::new(feedback_service),
     };
-    let cost_table = roko_agent::CostTable::from_config_with_defaults(&model_config.models);
+    let cost_table =
+        roko_agent::CostTable::from_config_with_defaults(&model_config.billed_models());
     let mut service = ModelCallService::new(model.clone())
         .with_config(model_config.clone())
         .with_working_dir(workdir.clone())
@@ -1534,6 +1535,7 @@ impl AgentDispatcherV2 {
 
         let mut options = self.agent_options(request);
         options.turn_budget = self.turn_budget(request, &target);
+        options.max_budget_usd = spend_limit_usd(request);
         let agent =
             create_agent_for_model(&self.config, &request.model_key, options).map_err(|err| {
                 DispatchV2Error::AgentCreation {
@@ -1753,6 +1755,7 @@ impl AgentDispatcherV2 {
 
         let mut options = self.agent_options(&request);
         options.turn_budget = self.turn_budget(&request, &target);
+        options.max_budget_usd = spend_limit_usd(&request);
         if let Some(runtime) = mcp_runtime {
             options.pre_discovered_mcp_runtime = Some(runtime);
         }
@@ -2248,6 +2251,21 @@ pub trait CallAllowance: Send + Sync + fmt::Debug {
     /// A model call finished, costing `cost_usd`; `priced` is false when no
     /// rate priced it, so what it cost is unknown.
     fn record_call(&self, cost_usd: f64, priced: bool);
+
+    /// The most the attempt can still spend, in USD, for an agent that runs
+    /// its own loop and keeps a spend limit of its own, as the Claude CLI
+    /// does (gap-e14344); `None` without one.
+    fn spend_limit_usd(&self) -> Option<f64> {
+        None
+    }
+}
+
+/// What `request`'s attempt can still spend, as its agent's own limit: the
+/// Claude CLI stops itself there (`--max-budget-usd`), a second fence behind
+/// roko's check of what it streams (gap-e14344). Read when the agent is made,
+/// just before it starts.
+fn spend_limit_usd(request: &AgentDispatchRequest) -> Option<f64> {
+    request.allowance.as_ref()?.spend_limit_usd()
 }
 
 /// An attempt's [`CallAllowance`] as the tool loop of one model sees it:

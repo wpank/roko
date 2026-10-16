@@ -530,6 +530,12 @@ pub const DEFAULT_CACHE_READ_MULTIPLIER: f64 = 0.1;
 /// names no cache-write price of its own: Anthropic's 5-minute write.
 pub const DEFAULT_CACHE_WRITE_MULTIPLIER: f64 = 1.25;
 
+/// Anthropic's price for a cache write with a 1-hour TTL, as a multiple of
+/// the input price (<https://docs.claude.com/en/docs/build-with-claude/prompt-caching>).
+/// A Claude Code session in print mode writes its prompt cache with that TTL
+/// (bug-acfced).
+pub const ONE_HOUR_CACHE_WRITE_MULTIPLIER: f64 = 2.0;
+
 /// Price of one Perplexity Search API request (`POST /search`), which runs
 /// no model and reports no usage: a flat $5 per 1,000 requests, the rate
 /// `roko_agent::perplexity::search` documents. Not yet checked against

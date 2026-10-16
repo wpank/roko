@@ -2,7 +2,7 @@
 id = "bug-acfced"
 kind = "bug"
 title = "A Claude CLI attempt's streamed cost estimate prices its cache writes at the 5-minute rate, so the plan budget counts a Claude Code session's 1-hour cache writes about 37% low"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p2"
 goal = "hermes"
@@ -11,6 +11,7 @@ subsystem = ["roko-agent/claude-cli"]
 created = 2026-10-16
 updated = 2026-10-16
 last_verified = 2026-10-16
+last_verified_rev = "6d1e05b0c"
 source = "tmp/hermes-roko-v5/findings/roko-caps.md (roko-caps, 2026-10-16, gap-ca1c92 live check)"
 discovered_from = "gap-ca1c92: live check on claude-haiku-4-5 under a $0.04 cap"
 anchors = ["crates/roko-agent/src/claude_cli_agent.rs::stream_usage", "crates/roko-agent/src/claude_cli_agent.rs::StreamedMessages"]
@@ -18,6 +19,18 @@ links = { depends_on = ["gap-a960a1"], blocks = [], related = ["gap-ca1c92", "bu
 
 [[verify]]
 command = "grep -rqw 'fn a_streamed_claude_cli_estimate_prices_cache_writes_at_the_session_ttl' crates/roko-agent/src && cargo test -p roko-agent --lib a_streamed_claude_cli_estimate_prices_cache_writes_at_the_session_ttl"
+
+[closed]
+at = 2026-10-16
+at_ts = "2026-10-16T12:12:48Z"
+commit = "6d1e05b0c"
+by = "commit trailer"
+executor = "claude-agent"
+via = "manual"
+size = "S"
+claimed_at = "2026-10-16T12:09:49Z"
+forced = false
+evidence = "6d1e05b0c: a Claude CLI attempt's streamed estimate keeps each message's cache-write TTL split (usage.cache_creation) and prices 5-minute writes at the table's write price and 1-hour writes at 2x input (ONE_HOUR_CACHE_WRITE_MULTIPLIER); a message with no split counts as 1-hour, as the verdict's CacheWriteClass::OneHour does. A probe of Claude Code 2.1.282 in print mode with roko's flags showed every assistant event splitting its writes, all 1-hour (10,889 of 10,889), with the CLI's own $0.022718 charging them at 2x input (tmp/hermes-roko-v5/roko-caps/ttl-probe). a_streamed_claude_cli_estimate_prices_cache_writes_at_the_session_ttl passes; the four tests that pinned the 5-minute price for unsplit streams now expect the 1-hour one (one line of a test in plan_runner.rs, about 1,000 lines from gap-a960a1's hunks; that item was closed on its branch, so the claim took --force). With gap-e14344 and main (7e6eb60bc) merged in, at 31e147d4d: fmt --check, clippy -D warnings (roko-core, roko-agent, roko-cli, roko-serve, roko-dreams), roko-cli lib tests 3725 passed and the [[verify]] command passes; roko-agent lib tests 2358 passed at 395b435d1. The probe also found bug-a877bf (the stream's output counts)."
 +++
 
 ## Problem

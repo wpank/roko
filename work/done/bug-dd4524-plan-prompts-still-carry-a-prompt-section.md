@@ -2,15 +2,16 @@
 id = "bug-dd4524"
 kind = "bug"
 title = "Plan prompts still carry a 'Prompt section effectiveness' block read from section-effects.json, which nothing writes since the section bandit took over"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p3"
 goal = "learning"
 size = "S"
 subsystem = ["roko-cli/dispatch", "roko-compose/context_provider"]
 created = 2026-10-15
-updated = 2026-10-15
-last_verified = 2026-10-15
+updated = 2026-10-16
+last_verified = 2026-10-16
+last_verified_rev = "5cc79b9a0"
 source = "status-quo-2026-10-15#finding-19"
 anchors = ["crates/roko-cli/src/dispatch/prompt_builder.rs::SectionEffectivenessSource", "crates/roko-cli/src/dispatch/prompt_cache.rs::load_effectiveness", "crates/roko-compose/src/context_provider.rs::section_effects_path", "crates/roko-learn/src/section_effect.rs::DEFAULT_SECTION_EFFECTS_PATH"]
 lane = "rust-hot"
@@ -22,6 +23,18 @@ command = "grep -rqw 'fn prompt_has_no_section_effectiveness_block_from_a_stale_
 
 [[verify]]
 command = "! grep -rq 'DEFAULT_SECTION_EFFECTS_PATH' crates/roko-cli/src/dispatch/ crates/roko-compose/src/"
+
+[closed]
+at = 2026-10-16
+at_ts = "2026-10-16T13:24:15Z"
+commit = "5cc79b9a0"
+by = "commit trailer"
+executor = "claude-agent"
+via = "work-batch"
+size = "S"
+claimed_at = "2026-10-16T05:11:51Z"
+forced = false
+evidence = "Removed the stale section-effects.json reader: SectionEffectivenessSource + PromptAssembler.section_effectiveness (crates/roko-cli/src/dispatch/prompt_builder.rs), PromptCache.effectiveness/load_effectiveness (dispatch/prompt_cache.rs), PromptBuildOptions.section_effectiveness (prompting.rs), and context_provider.rs::section_effects_path (now cold-starts LearningContextBidder from an empty registry since that path has no production caller). Added prompt_has_no_section_effectiveness_block_from_a_stale_file, which fails before this change and passes after. At 61c0b4387 (pre-rebase, same diff): both verify commands passed in full -- 'grep ... && cargo test -p roko-cli prompt_has_no_section_effectiveness_block_from_a_stale_file' (ok, 1 passed, plus all ~80 other roko-cli test binaries and the roko bin linked and ran clean) and '! grep -rq DEFAULT_SECTION_EFFECTS_PATH crates/roko-cli/src/dispatch/ crates/roko-compose/src/' (no matches); cargo +nightly fmt --all applied; cargo clippy -p roko-cli -p roko-compose --no-deps -- -D warnings clean; roko-cli's prompt_builder (53/53), prompt_cache (1/1) and roko-compose's context_provider (29/29) lib tests passed. Rebased onto main (65a66027c -> 5cc79b9a0's parent f7dbaba72) with zero file overlap, confirmed by empty `git diff --stat` on the touched files between the two mainline tips. Re-verified on the rebased tree at 5cc79b9a0: fmt clean, clippy clean, and 'cargo test -p roko-cli --lib prompt_has_no_section_effectiveness_block_from_a_stale_file' passes; the plain grep verify command still passes. The full non-lib verify command (which links on the order of 80 separate roko-cli test binaries plus the roko bin) became flaky post-rebase under extreme host load (vm.loadavg ~150-165, other agents + the user's own concurrent work): repeated runs failed the generic 'linking with cc failed: exit status 1' on a different, unrelated target each time (plan_validate, golden_path_acceptance, connected_efficiency_render, engine_convergence_contract, the roko bin itself) with no content-specific diagnostic -- never on anything this change touches. roko-compose's canonical_system_prompts_match_snapshots still fails exactly as bug-a66fef already tracks (an unrelated Relevant Context section on quick-reviewer) -- unchanged by this work."
 +++
 
 ## Problem

@@ -453,8 +453,13 @@ impl StreamingTaskDispatcher for GraphTaskDispatcher {
         }
 
         // ── Settle cost and build outcome ────────────────────────────────
-        // An agent its plan budget stopped before a model call (bug-4fabd0).
-        let budget_stop = allowance.as_deref().and_then(AttemptAllowance::refusal);
+        // An agent its plan budget stopped before a model call (bug-4fabd0),
+        // or that stopped itself at the spend limit the attempt gave it
+        // (gap-e14344).
+        let budget_stop = allowance
+            .as_deref()
+            .and_then(AttemptAllowance::refusal)
+            .or_else(|| dispatch_result.as_ref().ok().and_then(own_budget_stop));
         let (outcome, output_signals, verification, denial) = match dispatch_result {
             Ok(dispatch) => {
                 let cost_usd = f64::from(dispatch.result.usage.cost_usd);

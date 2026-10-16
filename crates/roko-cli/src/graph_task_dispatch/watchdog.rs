@@ -31,7 +31,8 @@
 //! call streamed is priced against its plan budget, and it is stopped as
 //! budget-exhausted, not retried, once the attempt's hold cannot cover one
 //! more message like its last (gap-ca1c92). An agent that reports its usage
-//! only at the end (the Codex CLI) is bounded by its turn cap and timeout.
+//! only at the end is not: the Codex and Gemini CLIs stop only at their
+//! timeout, and the Cursor CLI at a count of its tool calls (gap-ccbf26).
 //!
 //! Silence counts only while the agent waits on its model:
 //!
@@ -1796,8 +1797,9 @@ exec sleep 60
             .expect_err("the attempt stalls");
 
         assert!(matches!(error, RokoError::Timeout { .. }), "{error}");
-        // Sonnet per million: $3 in, $15 out, $0.30 cache read, $3.75 cache write.
-        let expected = (1_000.0 * 3.0 + 200.0 * 15.0 + 4_000.0 * 0.30 + 3_000.0 * 3.75) / 1e6;
+        // Sonnet per million: $3 in, $15 out, $0.30 cache read, $6 for a cache
+        // write with no TTL split (1-hour, as print mode writes, bug-acfced).
+        let expected = (1_000.0 * 3.0 + 200.0 * 15.0 + 4_000.0 * 0.30 + 3_000.0 * 6.0) / 1e6;
         assert!(
             dispatcher.task_spend.admit("p1/T01", 0.01).is_err(),
             "the streamed ${expected} counts against the task"

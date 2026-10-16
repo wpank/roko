@@ -1054,6 +1054,7 @@ impl TuiState {
                 completed: plan.status.is_done(),
                 status: plan.phase.clone(),
                 superseded_by: None,
+                fixture: false,
                 old_format: false,
                 last_error: None,
                 group: self

@@ -2,7 +2,7 @@
 id = "bug-7a08a8"
 kind = "bug"
 title = "A plan written for a chat host keeps open questions its planner already answered, so it cannot run, and plan generation still reports it written"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p1"
 goal = "hermes"
@@ -11,12 +11,23 @@ subsystem = ["roko-cli/plan_generate", "roko-serve/plans"]
 created = 2026-10-16
 updated = 2026-10-16
 last_verified = 2026-10-16
+last_verified_rev = "ddf727b7c"
 source = "tmp/hermes-roko-v5/findings/dogfood-desktop.md P1 (2026-10-16, roko 1630fa1bf)"
 anchors = ["crates/roko-cli/src/plan_generate/pipeline.rs::generate_plan", "crates/roko-cli/src/serve_runtime.rs::generate_plan_from_prompt", "crates/roko-serve/src/routes/plans/authoring.rs::start_plan_generation", "crates/roko-serve/src/routes/plans/run_control.rs::plan_run_rejected", "crates/roko-cli/src/commands/run_cmd.rs::generate_prompt_plan"]
 links = { depends_on = [], blocks = [], related = ["bug-59ed90", "gap-1f08f4"], supersedes = [], duplicate_of = "" }
 
 [[verify]]
 command = "grep -rqw 'fn an_unattended_plan_decides_its_answered_questions' crates/roko-cli/src && grep -rqw 'fn generation_fails_when_the_written_plan_cannot_run' crates/roko-cli/src && grep -rqw 'fn plan_run_rejected_names_the_errors' crates/roko-serve/src && grep -rqw 'fn a_chat_host_plan_is_generated_for_a_chat_host' crates/roko-serve/src && cargo test -p roko-cli -p roko-serve --lib -- an_unattended_plan_decides_its_answered_questions generation_fails_when_the_written_plan_cannot_run plan_run_rejected_names_the_errors a_chat_host_plan_is_generated_for_a_chat_host"
+
+[closed]
+at = 2026-10-16
+at_ts = "2026-10-16T03:29:27Z"
+commit = "ddf727b7c"
+by = "roko-planner"
+executor = "claude-agent"
+via = "manual"
+forced = false
+evidence = "ddf727b7c: unattended plans (a chat host's /mcp request, roko run unless --dry-run) tell the planner nobody answers questions, and a post-pass folds open questions carrying their own 'Assumption:' into the task description (pipeline.rs fold_answered_questions); generate_plan returns PlanFailsValidation naming each error when the written plan fails validation, so serve's op ends failed with the errors named and roko run stops; serve routes /mcp generation through CliRuntime::generate_plan_for_chat_host; the run refusal lists the errors. Checked: the item's [[verify]] tests plus roko-cli 3694 and roko-serve 1031 lib tests, clippy -D warnings, fmt; integration failures only the known bug-2a31bc, bug-c63cca, bug-ee2752. Live (zero cost, /mcp on serve :6794, scripted planner): an unanswered question now ends the op failed naming PLAN_045, the task and the question (main's binary: completed); answered ones are folded and the op completes with a plan that validates clean. Real gpt-5.4-mini via /mcp: no open_questions, an Assumption line per task, 0 diagnostics (/bin/zsh.02). Findings: tmp/hermes-roko-v5/findings/roko-planner.md"
 +++
 
 ## Problem

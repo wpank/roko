@@ -198,6 +198,7 @@ impl StreamingTaskDispatcher for GraphTaskDispatcher {
             concurrent_plans: self.concurrent_plans(&spec.plan_id),
             attempt_key: Some(attempt.key.clone()),
             arm_set: attempt.arm_set(),
+            knowledge_section: attempt.knowledge_section(),
             self_model_rung: None,
             skip_enrichment: self.plan_skips_enrichment(spec),
         };

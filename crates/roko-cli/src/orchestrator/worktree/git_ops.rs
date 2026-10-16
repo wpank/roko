@@ -1019,6 +1019,196 @@ pub(super) fn isolate_worktree_config(repo_root: &Path, worktree_path: &Path) {
             );
         }
     }
+    give_worktree_dependency_dirs(repo_root, worktree_path);
+}
+
+/// Dependency directories a new worktree gets from the checkout (gap-2da1ff):
+/// what a package manager installs into the project, which git ignores, so a
+/// fresh worktree lacks it and the project's checks fail there before the
+/// agent changes anything.
+pub(super) const DEPENDENCY_DIRS: &[&str] = &["node_modules"];
+
+/// Give `worktree_path` a copy-on-write clone of each git-ignored
+/// [`DEPENDENCY_DIRS`] directory of the checkout at `repo_root`, at any depth
+/// (an npm or pnpm workspace has one per package).
+///
+/// A clone, never a link: an agent that edits a file in its worktree must not
+/// change the operator's checkout, so an absolute symlink in the clone that
+/// leads into the checkout is pointed at the worktree's copy instead. Where no
+/// clone can be made (no APFS or reflink filesystem, or the worktree on
+/// another device), the worktree gets nothing, as before: a full copy would
+/// cost every attempt time and disk. A virtualenv is not cloned either: its
+/// scripts name its absolute path, so a clone would still install into the
+/// operator's. Failures are logged, never fatal.
+fn give_worktree_dependency_dirs(repo_root: &Path, worktree_path: &Path) {
+    for relative in ignored_dependency_dirs(repo_root) {
+        let target = worktree_path.join(&relative);
+        let started = std::time::Instant::now();
+        match clone_dependency_dir(repo_root, worktree_path, &relative) {
+            Ok(true) => tracing::info!(
+                dir = %relative.display(),
+                elapsed_ms = started.elapsed().as_millis(),
+                "gave the worktree a copy-on-write clone of the checkout's dependency directory"
+            ),
+            Ok(false) => {}
+            Err(error) => {
+                let _ = std::fs::remove_dir_all(&target);
+                tracing::warn!(
+                    dir = %relative.display(),
+                    %error,
+                    "could not clone the checkout's dependency directory into the worktree \
+                     (non-fatal)"
+                );
+            }
+        }
+    }
+}
+
+/// The checkout's git-ignored [`DEPENDENCY_DIRS`] directories, relative to
+/// `repo_root`. `git ls-files` lists each ignored directory once, without
+/// descending into it. Empty when `repo_root` is no git checkout.
+fn ignored_dependency_dirs(repo_root: &Path) -> Vec<PathBuf> {
+    let output = std::process::Command::new("git")
+        .args([
+            "ls-files",
+            "--others",
+            "--ignored",
+            "--exclude-standard",
+            "--directory",
+            "-z",
+        ])
+        .current_dir(repo_root)
+        .stdin(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .output();
+    let Some(output) = output.ok().filter(|output| output.status.success()) else {
+        return Vec::new();
+    };
+    output
+        .stdout
+        .split(|byte| *byte == 0)
+        .filter_map(|entry| std::str::from_utf8(entry).ok())
+        .map(|entry| entry.trim_end_matches('/'))
+        .filter(|entry| {
+            Path::new(entry)
+                .file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| DEPENDENCY_DIRS.contains(&name))
+        })
+        .map(PathBuf::from)
+        .collect()
+}
+
+/// Clone the checkout's dependency directory `relative` into the worktree.
+/// False when there is nothing to do or no clone can be made here.
+fn clone_dependency_dir(
+    repo_root: &Path,
+    worktree_path: &Path,
+    relative: &Path,
+) -> std::io::Result<bool> {
+    let source = repo_root.join(relative);
+    let target = worktree_path.join(relative);
+    // A real directory only: a symlinked one would hand out the operator's.
+    let Ok(metadata) = std::fs::symlink_metadata(&source) else {
+        return Ok(false);
+    };
+    if !metadata.is_dir() || std::fs::symlink_metadata(&target).is_ok() {
+        return Ok(false);
+    }
+    // Its parent is a directory the worktree tracks.
+    let Some(parent) = target.parent().filter(|parent| parent.is_dir()) else {
+        return Ok(false);
+    };
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt as _;
+        if metadata.dev() != std::fs::metadata(parent)?.dev() {
+            return Ok(false);
+        }
+    }
+    if !clone_tree(&source, &target)? {
+        return Ok(false);
+    }
+    repoint_links_into_checkout(&target, repo_root, worktree_path)?;
+    // The worktree's git must ignore it too, or the task's commit adds it.
+    let check = std::process::Command::new("git")
+        .arg("check-ignore")
+        .arg("-q")
+        .arg(format!("{}/", relative.display()))
+        .current_dir(worktree_path)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()?;
+    if !check.success() {
+        std::fs::remove_dir_all(&target)?;
+        return Ok(false);
+    }
+    Ok(true)
+}
+
+/// A copy-on-write clone of the directory `source` at `target`, made by the
+/// platform's `cp`: `clonefile` on macOS, `--reflink=always` on Linux. False,
+/// and nothing left at `target`, where the filesystem cannot clone.
+fn clone_tree(source: &Path, target: &Path) -> std::io::Result<bool> {
+    let mut cp = std::process::Command::new("cp");
+    if cfg!(target_os = "macos") {
+        cp.arg("-cRp");
+    } else if cfg!(target_os = "linux") {
+        cp.args(["-a", "--reflink=always"]);
+    } else {
+        return Ok(false);
+    }
+    let status = cp
+        .arg(source)
+        .arg(target)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()?;
+    if status.success() {
+        return Ok(true);
+    }
+    let _ = std::fs::remove_dir_all(target);
+    Ok(false)
+}
+
+/// Point every absolute symlink under `dir` that leads into the checkout at
+/// `repo_root` to the same path in the worktree, so the clone holds no way
+/// back into the operator's files. Relative links already resolve in the
+/// worktree.
+fn repoint_links_into_checkout(
+    dir: &Path,
+    repo_root: &Path,
+    worktree_path: &Path,
+) -> std::io::Result<()> {
+    let roots = [
+        repo_root.to_path_buf(),
+        repo_root
+            .canonicalize()
+            .unwrap_or_else(|_| repo_root.to_path_buf()),
+    ];
+    let mut pending = vec![dir.to_path_buf()];
+    while let Some(dir) = pending.pop() {
+        for entry in std::fs::read_dir(&dir)? {
+            let entry = entry?;
+            let file_type = entry.file_type()?;
+            if file_type.is_dir() {
+                pending.push(entry.path());
+            } else if file_type.is_symlink() {
+                let link = std::fs::read_link(entry.path())?;
+                if let Some(inside) = roots.iter().find_map(|root| link.strip_prefix(root).ok()) {
+                    let path = entry.path();
+                    std::fs::remove_file(&path)?;
+                    #[cfg(unix)]
+                    {
+                        std::os::unix::fs::symlink(worktree_path.join(inside), &path)?;
+                    }
+                }
+            }
+        }
+    }
+    Ok(())
 }
 
 /// Shallow copy of a directory: creates the target directory and copies all

@@ -11,7 +11,7 @@ use crate::agent_config::{command_from_config, model_from_config};
 use crate::agent_episode::build_capture_episode;
 use crate::agent_spawn::{SpawnAgentSpec, spawn_agent_scoped};
 use crate::learning_helpers::{
-    capture_runtime_model_slugs, distillation_model_caller, install_capture_distillation,
+    capture_runtime_model_slugs, distillation_model_caller_on, install_capture_distillation,
     provider_id_for_model, record_persisted_provider_outcome, resolve_capture_model_slug,
 };
 use anyhow::{Context as _, Result};
@@ -351,6 +351,39 @@ pub async fn persist_capture_episode(
     wall_time_ms: u64,
     resume_session: Option<&str>,
 ) -> Result<()> {
+    persist_capture_episode_distilled_by(
+        workdir,
+        agent_command,
+        model,
+        task_kind,
+        task_id,
+        prompt,
+        output,
+        success,
+        wall_time_ms,
+        resume_session,
+        None,
+    )
+    .await
+}
+
+/// [`persist_capture_episode`] whose episode is distilled by `distiller`, a
+/// model, instead of `[agent] default_model` (bug-a0432b). A chat host's plan
+/// writing keeps its distillation on the model that wrote the plan, which
+/// roko's own tool loop runs.
+pub async fn persist_capture_episode_distilled_by(
+    workdir: &Path,
+    agent_command: &str,
+    model: Option<&str>,
+    task_kind: &str,
+    task_id: &str,
+    prompt: &str,
+    output: &str,
+    success: bool,
+    wall_time_ms: u64,
+    resume_session: Option<&str>,
+    distiller: Option<&str>,
+) -> Result<()> {
     let config = roko_core::config::loader::load_config_unified(workdir).unwrap_or_default();
     let capture_model = resolve_capture_model_slug(&config, model);
     let provider_from_config = capture_model
@@ -384,7 +417,11 @@ pub async fn persist_capture_episode(
         LearningRuntime::open_for_project_with_models(workdir, model_slugs).await
     }
     .map_err(|e| anyhow::anyhow!("open learning runtime: {e}"))?;
-    install_capture_distillation(&mut runtime, workdir, distillation_model_caller(workdir));
+    install_capture_distillation(
+        &mut runtime,
+        workdir,
+        distillation_model_caller_on(workdir, distiller),
+    );
 
     let mut completed = CompletedRunInput::from_episode(episode);
     completed.provider = (!provider.trim().is_empty()).then_some(provider.clone());
@@ -897,9 +934,14 @@ mode = "off"
             "demo",
             workspace.path(),
         );
-        crate::plan_generate::generate_plan(request)
+        let (_, outcome) = crate::plan_generate::generate_plan(request)
             .await
             .expect("generate plan");
+        // bug-a0432b: the outcome says what the generation cost.
+        assert!(
+            (outcome.cost_usd - CALL_COST_USD).abs() < 1e-6,
+            "{outcome:?}"
+        );
 
         let rows = agent_cost_rows(workspace.path());
         assert_eq!(rows.len(), 1, "{rows:?}");

@@ -2,21 +2,33 @@
 id = "gap-1f08f4"
 kind = "gap"
 title = "Plan generation over /mcp takes 4 to 9 minutes for a five-task plan, reports a timed-out attempt as a crash, and reports no cost"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p2"
 goal = "hermes"
 size = "M"
 subsystem = ["roko-cli/plan_generate"]
 created = 2026-10-13
-updated = 2026-10-13
-last_verified = 2026-10-13
+updated = 2026-10-16
+last_verified = 2026-10-16
+last_verified_rev = "8a30c535c"
 source = "hermes-plugin-roko dogfood, 2026-10-13 (roko serve :6716 built from 6ab6fde47)"
 anchors = ["crates/roko-serve/src/routes/mcp.rs::generate_plan", "crates/roko-cli/src/plan_generate/pipeline.rs", "crates/roko-cli/src/agent_exec.rs"]
 links = { depends_on = [], blocks = [], related = [], supersedes = [], duplicate_of = "" }
 
 [[verify]]
 command = "grep -rqw 'fn plan_generation_status_reports_its_cost' crates/roko-serve/ && cargo test -p roko-serve plan_generation_status_reports_its_cost"
+
+[closed]
+at = 2026-10-16
+at_ts = "2026-10-16T05:22:24Z"
+commit = "8a30c535c"
+by = "roko-planner"
+executor = "claude-agent"
+via = "manual"
+model = "claude-opus-5-5"
+forced = false
+evidence = "8a30c535c (bug-a0432b): a finished plan generation's status reports its cost: the op's result is {slug, task_count, cost_usd}, summed by AuthoringSpend over the planner's calls; the [[verify]] test plan_generation_status_reports_its_cost passes (roko-serve lib 1032 pass). Live: /mcp plan_generate on serve :6794 completed with cost_usd 0.01152, matching costs.jsonl. The other points (a timed-out call classed as a crash, no stage while running, the \"Generated plan.\" plan.md, the slug from the prompt's first words, the 18k-token output) are filed as gap-11d870; the op forgotten a minute after it ends is bug-a0f01e part (1)."
 +++
 
 ## Problem

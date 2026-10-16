@@ -413,6 +413,57 @@ pub fn resolve_planner_model(
     Ok(selection.effective_model_key)
 }
 
+/// The model that writes a plan a chat host asked for (bug-a0432b): the
+/// planner [`resolve_planner_selection`] picks when roko's own tool loop runs
+/// it, else the highest ladder rung that loop runs, else the first model it
+/// runs (`RokoConfig::tool_loop_models`). A chat host's runs go only to such
+/// models (gap-cf427e), and its plans follow the same rule, so a host's
+/// request never runs on the person's own CLI agent and its login. `Err` says
+/// why no model qualifies, as a chat host's refused run does.
+pub fn chat_host_planner(config: &RokoConfig) -> Result<String, String> {
+    let qualifying = config.tool_loop_models();
+    if let Ok(selection) = resolve_planner_selection(None, config)
+        && qualifying.contains(&selection.effective_model_key)
+    {
+        return Ok(selection.effective_model_key);
+    }
+    let models = config.effective_models();
+    let rung_key = |model: &str| -> Option<String> {
+        if models.contains_key(model) {
+            return Some(model.to_string());
+        }
+        models
+            .iter()
+            .find(|(_, profile)| profile.slug == model)
+            .map(|(key, _)| key.clone())
+    };
+    let ladder = &config.routing.ladder;
+    let strongest_rung = ladder
+        .rungs
+        .iter()
+        .rev()
+        .filter(|_| ladder.enabled)
+        .filter_map(|rung| rung_key(&rung.model))
+        .find(|key| qualifying.contains(key));
+    strongest_rung
+        .or_else(|| qualifying.first().cloned())
+        .ok_or_else(|| config.no_tool_loop_model_reason())
+}
+
+/// [`chat_host_planner`] for the workspace at `workdir`, with the choice
+/// printed to stderr. `context` names the caller in the error.
+pub fn resolve_chat_host_planner_model(workdir: &Path, context: &str) -> anyhow::Result<String> {
+    let config = roko_core::config::loader::load_config_unified(workdir)
+        .map_err(|e| anyhow::anyhow!("{e}"))?;
+    let model = chat_host_planner(&config)
+        .map_err(|why| anyhow::anyhow!("no model can write the plan for {context}: {why}"))?;
+    eprintln!(
+        "model: {model} writes the plan (a chat host's plan is written by a model roko's own \
+         tool loop runs)"
+    );
+    Ok(model)
+}
+
 /// #162: advisory check that the selected model has the capabilities `role`
 /// requires. Dispatch goes ahead either way.
 fn warn_unmet_role_capabilities(config: &RokoConfig, role: &str, model_key: &str) {
@@ -676,6 +727,69 @@ mod tests {
                 .insert(slug.to_string(), explicit_profile("claude_cli", slug));
         }
         config
+    }
+
+    /// bug-a0432b: a chat host's plan is written by a model roko's own tool
+    /// loop runs: the planner the chain picks when it qualifies, else the
+    /// highest ladder rung that does; with none, the reason a chat host's run
+    /// is refused.
+    #[test]
+    fn a_chat_host_plan_is_written_by_a_tool_loop_model() {
+        let mut config = config_with_available_claude_models();
+        for profile in config.models.values_mut() {
+            profile.supports_tools = true;
+        }
+        config.agent.default_model = "claude-sonnet-4-6".to_string();
+        config.agent.env = Some(vec![(
+            "ROKO_TEST_PLANNER_KEY".to_string(),
+            "set".to_string(),
+        )]);
+        config.providers.insert(
+            "openai".to_string(),
+            ProviderConfig {
+                kind: ProviderKind::OpenAiCompat,
+                base_url: Some("http://127.0.0.1:9/v1".to_string()),
+                api_key_env: Some("ROKO_TEST_PLANNER_KEY".to_string()),
+                command: None,
+                ..claude_provider()
+            },
+        );
+        for (key, slug) in [("cheap", "gpt-oss-120b"), ("mini", "gpt-5.4-mini")] {
+            let mut profile = explicit_profile("openai", slug);
+            profile.supports_tools = true;
+            config.models.insert(key.to_string(), profile);
+        }
+        config.routing.ladder.enabled = true;
+        config.routing.ladder.rungs = [
+            ("cheap", "cheap"),
+            ("strong", "gpt-5.4-mini"),
+            ("top", "claude-sonnet-4-6"),
+        ]
+        .into_iter()
+        .map(|(name, model)| roko_core::config::routing::LadderRung {
+            name: name.to_string(),
+            model: model.to_string(),
+        })
+        .collect();
+
+        // The chain's planner, Claude on claude_cli, runs its own tools: the
+        // strongest rung that qualifies writes the plan.
+        assert_eq!(chat_host_planner(&config).as_deref(), Ok("mini"));
+
+        // A planner the person named that qualifies is kept.
+        config.authoring.planner_model = "cheap".to_string();
+        assert_eq!(chat_host_planner(&config).as_deref(), Ok("cheap"));
+
+        // With the API key unset no model qualifies: the reason a chat host's
+        // run is refused, naming the key.
+        config.authoring.planner_model = String::new();
+        config.agent.env = None;
+        let why = chat_host_planner(&config).expect_err("no model qualifies");
+        assert!(
+            why.contains("needs a model that runs in roko's own tool loop"),
+            "{why}"
+        );
+        assert!(why.contains("ROKO_TEST_PLANNER_KEY"), "{why}");
     }
 
     fn cascade_router(model: &str) -> CascadeRouter {

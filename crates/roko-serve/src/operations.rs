@@ -135,6 +135,7 @@ mod tests {
                 plan_targets: vec![plans_root.join(slug)],
                 plans_root,
                 artifacts: Vec::new(),
+                cost_usd: 0.0,
             })
         }
 

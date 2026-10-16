@@ -57,3 +57,10 @@ Open at a8e27e4b7. The fallback is shared by every `resolve_effective_model` cal
 
 `[[verify]]` passes: with `default_model` on a missing CLI and runnable cheap and strong rungs, the planner is the
 strong rung's model.
+
+## Notes
+
+- 2026-10-16 (bug-a0432b): a chat host's plan now picks its planner with
+  `model_selection::chat_host_planner`, which already follows this item's order among the models roko's own tool
+  loop runs: the chain's planner when it qualifies, else the strongest ladder rung that does, else the first one.
+  Every other caller of the planner's chain still falls back as described above.

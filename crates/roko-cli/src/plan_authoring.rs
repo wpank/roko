@@ -18,7 +18,7 @@
 //! - [`AuthoringSpend`] — record what the agent calls of a generation or revision cost.
 
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 
 use anyhow::{Context as _, Result};
 use indexmap::IndexMap;
@@ -801,6 +801,8 @@ pub struct AuthoringSpend {
     role: String,
     live: Option<TuiBridge>,
     calls: AtomicU32,
+    /// What the recorded calls cost together, in micro-USD (bug-a0432b).
+    spent_micro_usd: AtomicU64,
 }
 
 impl AuthoringSpend {
@@ -850,7 +852,14 @@ impl AuthoringSpend {
             role: role.to_string(),
             live,
             calls: AtomicU32::new(0),
+            spent_micro_usd: AtomicU64::new(0),
         }
+    }
+
+    /// What the calls recorded so far cost together, in USD (bug-a0432b).
+    #[must_use]
+    pub fn spent_usd(&self) -> f64 {
+        self.spent_micro_usd.load(Ordering::Relaxed) as f64 / 1e6
     }
 
     /// Record one agent call. Best-effort: a failed write is logged and never
@@ -859,6 +868,8 @@ impl AuthoringSpend {
         let attempt = self.calls.fetch_add(1, Ordering::Relaxed) + 1;
         let usage = call.usage;
         let cost_usd = f64::from(usage.cost_usd);
+        self.spent_micro_usd
+            .fetch_add((cost_usd.max(0.0) * 1e6).round() as u64, Ordering::Relaxed);
         let input_tokens = u64::from(usage.input_tokens);
         let output_tokens = u64::from(usage.output_tokens);
         let cache_read_tokens = u64::from(usage.cache_read_tokens);

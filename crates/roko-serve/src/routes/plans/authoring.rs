@@ -208,9 +208,9 @@ impl RequestPayload for GenerateRequest {
 /// before the background work starts so the portal's generate hook can use it
 /// immediately.
 ///
-/// The operation ends `Completed { result: {"slug", "task_count"} }` only when
-/// plan `slug` loads afterwards. A generation that fails, or that finishes
-/// without writing that plan, ends it `Failed { error }`.
+/// The operation ends `Completed { result: {"slug", "task_count", "cost_usd"} }`
+/// only when plan `slug` loads afterwards. A generation that fails, or that
+/// finishes without writing that plan, ends it `Failed { error }`.
 ///
 /// The operation handle is registered in `state.operations` before the spawned
 /// task can finish (a oneshot start signal gates the task exactly as
@@ -304,10 +304,10 @@ pub(crate) async fn start_plan_generation(
             };
             let generated = match generation {
                 Ok(gen_result) if gen_result.plan_targets.is_empty() => Err(no_plan()),
-                Ok(_) => {
+                Ok(gen_result) => {
                     name_generated_plan(&workdir, &slug_for_task, title.as_deref());
                     match runtime.load_plan_summary(&workdir, &slug_for_task).await {
-                        Ok(Some(summary)) => Ok(summary.task_count),
+                        Ok(Some(summary)) => Ok((summary.task_count, gen_result.cost_usd)),
                         Ok(None) => Err(no_plan()),
                         Err(err) => Err(format!(
                             "plan '{slug_for_task}' does not load after generation: {err}"
@@ -318,10 +318,13 @@ pub(crate) async fn start_plan_generation(
             };
 
             match generated {
-                Ok(task_count) => {
-                    let result_json = serde_json::to_string(
-                        &json!({ "slug": slug_for_task, "task_count": task_count }),
-                    )
+                Ok((task_count, cost_usd)) => {
+                    // bug-a0432b: the result says what writing the plan cost.
+                    let result_json = serde_json::to_string(&json!({
+                        "slug": slug_for_task,
+                        "task_count": task_count,
+                        "cost_usd": cost_usd,
+                    }))
                     .unwrap_or_default();
 
                     // Update the handle to Completed.

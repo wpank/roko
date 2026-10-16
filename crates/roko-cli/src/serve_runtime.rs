@@ -829,21 +829,25 @@ impl CliRuntime for RokoCliRuntime {
 impl RokoCliRuntime {
     /// Generate the plan `slug` from `prompt` with the plan generator. The
     /// planner model writes the plan; each call's spend reaches the server's
-    /// hub as it returns. An `unattended` plan runs with nobody to answer its
-    /// open questions, so the planner decides them (bug-7a08a8). A plan that
-    /// cannot run is an error that names why, so the operation fails.
+    /// hub as it returns, and the result says what they cost together
+    /// (bug-a0432b). A chat host's plan runs with nobody to answer its open
+    /// questions, so the planner decides them (bug-7a08a8), and only a model
+    /// roko's own tool loop runs writes it (bug-a0432b). A plan that cannot
+    /// run is an error that names why and what it cost, so the operation
+    /// fails.
     async fn generate_plan(
         &self,
         workdir: &Path,
         slug: &str,
         prompt: &str,
-        unattended: bool,
+        for_chat_host: bool,
     ) -> anyhow::Result<PlanGenerationResult> {
         let plans_root = workspace_paths::plans_dir(workdir);
         let before = snapshot_plan_artifacts(&plans_root);
         let request = plan_generate::PlanRequest {
             live: Some(self.spend_bridge()),
-            unattended,
+            unattended: for_chat_host,
+            for_chat_host,
             ..plan_generate::PlanRequest::new(
                 plan_generate::PlanSource::Text {
                     text: prompt,
@@ -853,7 +857,18 @@ impl RokoCliRuntime {
                 workdir,
             )
         };
-        let (generated_root, _) = plan_generate::generate_plan(request).await?;
+        let (generated_root, outcome) =
+            plan_generate::generate_plan(request)
+                .await
+                .map_err(|error| {
+                    match error.downcast_ref::<plan_generate::PlanFailsValidation>() {
+                        Some(failure) => anyhow::anyhow!(
+                            "{failure}\nWriting the plan cost ${:.4}.",
+                            failure.cost_usd
+                        ),
+                        None => error,
+                    }
+                })?;
         let after = snapshot_plan_artifacts(&generated_root);
 
         let mut plan_targets = changed_plan_targets(&generated_root, &before, &after);
@@ -865,6 +880,7 @@ impl RokoCliRuntime {
             plans_root: generated_root,
             artifacts: plan_artifact_paths(&plan_targets),
             plan_targets,
+            cost_usd: outcome.cost_usd,
         })
     }
 

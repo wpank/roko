@@ -19,10 +19,10 @@ use std::time::Instant;
 
 use crate::agent_config::command_from_config;
 use crate::agent_exec::{
-    AgentCrashClass, AgentExecOpts, classify_agent_crash, persist_capture_episode,
+    AgentCrashClass, AgentExecOpts, classify_agent_crash, persist_capture_episode_distilled_by,
     run_agent_capture_silent_with_usage,
 };
-use crate::model_selection::resolve_planner_model;
+use crate::model_selection::{resolve_chat_host_planner_model, resolve_planner_model};
 use crate::plan_authoring::AuthoringSpend;
 use crate::runner::tui_bridge::TuiBridge;
 use crate::task_parser::{META_KEYS, TASK_KEYS, TasksFile, VERIFY_KEYS, suggest_field_correction};
@@ -268,6 +268,11 @@ pub struct PlanRequest<'a> {
     /// written into its task, since an open question keeps a plan from
     /// running (PLAN_045).
     pub unattended: bool,
+    /// A chat host asked for the plan (bug-a0432b): only a model roko's own
+    /// tool loop runs writes it, as only such models run a chat host's tasks
+    /// (gap-cf427e), so the host's request never runs on the person's own CLI
+    /// agent.
+    pub for_chat_host: bool,
 }
 
 impl<'a> PlanRequest<'a> {
@@ -286,6 +291,7 @@ impl<'a> PlanRequest<'a> {
             effort: None,
             live: None,
             unattended: false,
+            for_chat_host: false,
         }
     }
 }
@@ -299,6 +305,8 @@ pub struct PlanFailsValidation {
     pub plan_dir: PathBuf,
     /// One line per error, as `PLAN_045 task 'T2': …`.
     pub errors: Vec<String>,
+    /// What writing the plan cost, in USD (bug-a0432b).
+    pub cost_usd: f64,
 }
 
 impl std::fmt::Display for PlanFailsValidation {
@@ -859,6 +867,7 @@ pub async fn generate_plan(request: PlanRequest<'_>) -> Result<(PathBuf, Generat
         effort,
         live,
         unattended,
+        for_chat_host,
     } = request;
     let requested_plans_root = requested_plans_root.or(match source {
         PlanSource::Regenerate(plan_dir) => plan_dir.parent(),
@@ -892,7 +901,20 @@ pub async fn generate_plan(request: PlanRequest<'_>) -> Result<(PathBuf, Generat
         // planner model.
         let planner_model = match model {
             Some(model) => model.to_string(),
+            None if for_chat_host => {
+                resolve_chat_host_planner_model(workdir_ref, "a chat host's request")?
+            }
             None => resolve_planner_model(workdir_ref, None, "plan generation")?,
+        };
+        // bug-a0432b: a chat host's plan writing is distilled by its planner,
+        // and its retries escalate only to a model roko's own tool loop runs.
+        let distiller = for_chat_host.then_some(planner_model.as_str());
+        let tool_loop_models = if for_chat_host {
+            roko_core::config::loader::load_config_unified(workdir_ref)
+                .map(|config| config.tool_loop_models())
+                .unwrap_or_default()
+        } else {
+            Vec::new()
         };
         let system = augment_generator_system_prompt(
             crate::plan_generate::build_generator_system_prompt(workdir_ref),
@@ -1036,7 +1058,7 @@ pub async fn generate_plan(request: PlanRequest<'_>) -> Result<(PathBuf, Generat
         // ── Crash classification and retry for non-zero exit codes ──────
         let (_exit_code, output) = if exit_code != 0 {
             let crash_class = classify_agent_crash(&output);
-            let _ = persist_capture_episode(
+            let _ = persist_capture_episode_distilled_by(
                 workdir_ref,
                 &plan_agent_command,
                 effective_model,
@@ -1047,6 +1069,7 @@ pub async fn generate_plan(request: PlanRequest<'_>) -> Result<(PathBuf, Generat
                 false,
                 plan_started.elapsed().as_millis() as u64,
                 None,
+                distiller,
             )
             .await;
 
@@ -1132,7 +1155,7 @@ pub async fn generate_plan(request: PlanRequest<'_>) -> Result<(PathBuf, Generat
             (exit_code, output)
         };
         if output.trim().is_empty() {
-            let _ = persist_capture_episode(
+            let _ = persist_capture_episode_distilled_by(
                 workdir_ref,
                 &plan_agent_command,
                 effective_model,
@@ -1143,6 +1166,7 @@ pub async fn generate_plan(request: PlanRequest<'_>) -> Result<(PathBuf, Generat
                 false,
                 plan_started.elapsed().as_millis() as u64,
                 None,
+                distiller,
             )
             .await;
             return Err(anyhow!(
@@ -1389,7 +1413,8 @@ pub async fn generate_plan(request: PlanRequest<'_>) -> Result<(PathBuf, Generat
                         current_model,
                         &resolved.config.agent.tier_models,
                         &resolved.config.models,
-                    ) {
+                    ) && (!for_chat_host || tool_loop_models.contains(&next))
+                    {
                         tracing::info!(
                             from = current_model.unwrap_or("<default>"),
                             to = next.as_str(),
@@ -1658,7 +1683,7 @@ pub async fn generate_plan(request: PlanRequest<'_>) -> Result<(PathBuf, Generat
             } else {
                 ""
             };
-            let _ = persist_capture_episode(
+            let _ = persist_capture_episode_distilled_by(
                 workdir_ref,
                 &plan_agent_command,
                 effective_model,
@@ -1669,6 +1694,7 @@ pub async fn generate_plan(request: PlanRequest<'_>) -> Result<(PathBuf, Generat
                 false,
                 plan_started.elapsed().as_millis() as u64,
                 None,
+                distiller,
             )
             .await;
             eprintln!("--- Raw model output (first {FAILURE_OUTPUT_CHARS} chars) ---");
@@ -1801,9 +1827,10 @@ pub async fn generate_plan(request: PlanRequest<'_>) -> Result<(PathBuf, Generat
             artifact_valid,
             validation_report,
             spec_quality,
+            cost_usd: spend.spent_usd(),
         };
 
-        let _ = persist_capture_episode(
+        let _ = persist_capture_episode_distilled_by(
             workdir_ref,
             &plan_agent_command,
             effective_model,
@@ -1814,6 +1841,7 @@ pub async fn generate_plan(request: PlanRequest<'_>) -> Result<(PathBuf, Generat
             outcome.fully_successful(),
             plan_started.elapsed().as_millis() as u64,
             None,
+            distiller,
         )
         .await;
 
@@ -1826,6 +1854,7 @@ pub async fn generate_plan(request: PlanRequest<'_>) -> Result<(PathBuf, Generat
             return Err(PlanFailsValidation {
                 plan_dir,
                 errors: invalid,
+                cost_usd: outcome.cost_usd,
             }
             .into());
         }
@@ -2488,18 +2517,21 @@ mod tests {
             artifact_valid: true,
             validation_report: None,
             spec_quality: None,
+            cost_usd: 0.0,
         };
         let partial = GenerationOutcome {
             process_success: true,
             artifact_valid: false,
             validation_report: None,
             spec_quality: None,
+            cost_usd: 0.0,
         };
         let failure = GenerationOutcome {
             process_success: false,
             artifact_valid: true,
             validation_report: None,
             spec_quality: None,
+            cost_usd: 0.0,
         };
 
         assert!(success.fully_successful());
@@ -3099,6 +3131,44 @@ mod tests {
             );
             assert!(workdir.join("plans/widget/tasks.toml").exists());
         }
+    }
+
+    /// bug-a0432b: a chat host's plan is written only by a model roko's own
+    /// tool loop runs. In a workspace whose models all run on CLI agents it is
+    /// refused with the reason a chat host's run gets, and the CLI planner is
+    /// never called.
+    #[cfg(unix)]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_chat_host_plan_is_never_written_on_a_cli_agent() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let workdir = temp.path();
+        let bin = tempfile::tempdir().expect("tempdir");
+        let calls = write_fake_planner(workdir, bin.path(), WIDGET_PLAN);
+        // No built-in ladder rung may qualify through a key in the
+        // environment, so the test never reaches a real provider.
+        let config = workdir.join("roko.toml");
+        let mut toml = std::fs::read_to_string(&config).expect("roko.toml");
+        toml.push_str("\n[routing.ladder]\nenabled = false\n");
+        std::fs::write(&config, toml).expect("roko.toml");
+        let request = PlanRequest {
+            for_chat_host: true,
+            unattended: true,
+            ..PlanRequest::new(WIDGET_REQUEST, "widget", workdir)
+        };
+        let error = generate_plan(request)
+            .await
+            .expect_err("no model roko's own tool loop runs is set up");
+        let message = format!("{error:#}");
+        assert!(
+            message.contains("no model can write the plan for a chat host's request"),
+            "{message}"
+        );
+        assert!(
+            message.contains("needs a model that runs in roko's own tool loop"),
+            "{message}"
+        );
+        assert!(!calls.exists(), "the CLI planner was called");
+        assert!(!workdir.join("plans/widget").exists());
     }
 
     /// 3221: the planner can write its acceptance tests into the plan. A

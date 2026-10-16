@@ -329,6 +329,7 @@ impl CliRuntime for RecordingRuntime {
             plans_root: workdir.join("plans"),
             plan_targets: vec![plan_dir],
             artifacts: vec![],
+            cost_usd: 0.0125,
         })
     }
 
@@ -969,6 +970,7 @@ impl CliRuntime for NoPlanRuntime {
             plans_root: workdir.join("plans"),
             plan_targets: Vec::new(),
             artifacts: Vec::new(),
+            cost_usd: 0.0,
         })
     }
 }
@@ -2912,4 +2914,49 @@ async fn a_chat_host_plan_is_generated_for_a_chat_host() {
             .collect();
         assert_eq!(recorded, kinds, "{origin:?}");
     }
+}
+
+/// bug-a0432b (gap-1f08f4): a finished plan generation's status reports what
+/// writing the plan cost, so a chat host can show it and count it.
+#[tokio::test]
+async fn plan_generation_status_reports_its_cost() {
+    let runtime = Arc::new(RecordingRuntime {
+        calls: Arc::new(Mutex::new(Vec::new())),
+        notify: Arc::new(Notify::new()),
+        success: true,
+        call_count: Arc::new(AtomicUsize::new(0)),
+        group: None,
+        last_options: Arc::new(Mutex::new(None)),
+        known_plan_id: None,
+        plan_tasks: vec![],
+        summary_estimated_minutes: None,
+    });
+    let (_dir, state) = test_state_with_runtime(runtime);
+    let origin = crate::runtime::RunOrigin::Mcp {
+        client: "hermes".into(),
+    };
+    let (op_id, slug) =
+        start_plan_generation(&state, "Build a widget library".into(), &origin, None).await;
+
+    let status = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        loop {
+            if let Some(op) = state.operations.read().await.get(&op_id)
+                && !matches!(op.status, OperationStatus::Running)
+            {
+                return op.status.clone();
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("the operation finishes");
+    let OperationStatus::Completed {
+        result: Some(result),
+    } = status
+    else {
+        panic!("the generation completes with a result, got {status:?}");
+    };
+    let result: Value = serde_json::from_str(&result).expect("result json");
+    assert_eq!(result["slug"], slug.as_str(), "{result}");
+    assert_eq!(result["cost_usd"], 0.0125, "{result}");
 }

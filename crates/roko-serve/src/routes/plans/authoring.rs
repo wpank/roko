@@ -246,6 +246,8 @@ pub(crate) async fn start_plan_generation(
 ) -> (String, String) {
     let slug = derive_unique_slug(&state.workdir, title.as_deref().unwrap_or(&prompt_text)).await;
     let prompt_text = origin.request_text(&prompt_text).into_owned();
+    // bug-7a08a8: a chat host's plan runs with nobody to answer its questions.
+    let for_chat_host = origin.is_chat();
 
     let op_id = uuid::Uuid::new_v4().to_string();
     let bus = state.event_bus.clone();
@@ -291,10 +293,16 @@ pub(crate) async fn start_plan_generation(
                      '{slug_for_task}'"
                 )
             };
-            let generated = match runtime
-                .generate_plan_from_prompt(&workdir, &slug_for_task, &prompt_text)
-                .await
-            {
+            let generation = if for_chat_host {
+                runtime
+                    .generate_plan_for_chat_host(&workdir, &slug_for_task, &prompt_text)
+                    .await
+            } else {
+                runtime
+                    .generate_plan_from_prompt(&workdir, &slug_for_task, &prompt_text)
+                    .await
+            };
+            let generated = match generation {
                 Ok(gen_result) if gen_result.plan_targets.is_empty() => Err(no_plan()),
                 Ok(_) => {
                     name_generated_plan(&workdir, &slug_for_task, title.as_deref());

@@ -801,13 +801,19 @@ fn launch_plan_set_run(
     active.insert(spec.key, plan_handle);
 }
 
-/// 422 for a run `roko plan run` would refuse: `details` is the validation
-/// report, shaped as `POST /api/plans/{id}/validate` returns it.
+/// 422 for a run `roko plan run` would refuse: the message names each error
+/// (bug-7a08a8), and `details` is the validation report, shaped as `POST
+/// /api/plans/{id}/validate` returns it.
 pub(super) fn plan_run_rejected(what: &str, validation: &PlanValidationDto) -> ApiError {
-    let mut error = ApiError::unprocessable_entity(format!(
+    let mut message = format!(
         "{what} failed validation with {} error(s); fix them before running it",
         validation.errors.len()
-    ));
+    );
+    for error in &validation.errors {
+        message.push_str("\n- ");
+        message.push_str(&error.replace('\n', "\n  "));
+    }
+    let mut error = ApiError::unprocessable_entity(message);
     error.details = serde_json::to_value(validation).ok().map(Box::new);
     error
 }

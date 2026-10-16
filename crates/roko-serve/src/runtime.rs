@@ -570,6 +570,19 @@ pub trait CliRuntime: Send + Sync + 'static {
         anyhow::bail!("runtime does not support plan generation")
     }
 
+    /// [`Self::generate_plan_from_prompt`] for a request a chat host made
+    /// (bug-7a08a8). Nobody reviews such a plan before it runs, so the
+    /// planner decides its open questions itself. The default plans it as any
+    /// other request.
+    async fn generate_plan_for_chat_host(
+        &self,
+        workdir: &std::path::Path,
+        slug: &str,
+        prompt: &str,
+    ) -> anyhow::Result<PlanGenerationResult> {
+        self.generate_plan_from_prompt(workdir, slug, prompt).await
+    }
+
     /// Execute a plan target.
     ///
     /// The default delegates to `run_once()` with a plan-execution prompt so

@@ -14,6 +14,9 @@ last_verified = 2026-10-15
 source = "hermes-roko round v5, roko-chathost, 2026-10-15"
 anchors = ["crates/roko-cli/src/commands/util.rs::cmd_doctor", "crates/roko-cli/src/commands/server.rs::cmd_serve"]
 links = { depends_on = [], blocks = [], related = ["gap-115bae"], supersedes = [], duplicate_of = "" }
+
+[[verify]]
+command = "grep -rqw 'fn doctor_recognizes_the_serve_that_holds_the_workspace' crates/ && cargo test -p roko-cli --lib doctor_recognizes_the_serve_that_holds_the_workspace"
 +++
 
 ## Problem
@@ -50,3 +53,20 @@ Let the read-only doctor variants run beside a server: either serve holds a lock
 
 With `roko serve` running in a workspace, `roko doctor` prints its report (including `chat_host_runs`), and `roko
 doctor clean` / `doctor disk --fix` still refuse.
+
+## Notes
+
+2026-10-16, roko-chathost (hermes-roko round v5): a fix is drafted but not applied, compiled or tested; stopped to
+keep usage free for the round's final dogfood. The draft is
+`tmp/hermes-roko-v5/roko-chathost/tmp/next/patch_1f5406.py` in the main checkout (local, gitignored); apply it on a
+branch from main with `python3 <it> <worktree root>`. It adds:
+- `workspace_lock::workspace_lock_owner_pid` (the PID the exclusive holder wrote, read without the lock);
+- `doctor::serve_holding_workspace` (the holder is this workspace's serve when that PID is the one
+  `.roko/runtime/serve.json` advertises) and `doctor::beside_serve_check` (a first `[ok] workspace_lock: roko serve
+  (PID N) holds this workspace, so doctor read it without the workspace lock` line), and `DoctorReport::with_check`;
+- in `commands/util.rs::cmd_doctor`: when the shared lock is refused and serve holds it, the read-only variants run
+  without the lock (`doctor clean` and `doctor disk --fix` still take the exclusive lock and refuse);
+- the test `doctor::tests::doctor_recognizes_the_serve_that_holds_the_workspace` (the `[[verify]]` above).
+Probing the running serve's health automatically was left out on purpose: a serve whose `public_routes` leave out
+`health` would turn that into a new failure.
+

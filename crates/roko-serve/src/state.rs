@@ -1602,7 +1602,8 @@ impl AppState {
         let gateway_config = roko_gateway::GatewayConfig::from_model_caller(
             Arc::clone(&cascade_router),
             gateway_caller,
-            roko_learn::cost_table::CostTable::from_config(&effective_models).with_defaults(),
+            roko_learn::cost_table::CostTable::from_config(&roko_config.billed_models())
+                .with_defaults(),
         )
         .with_event_writer(Arc::new(roko_agent::GatewayEventWriter::for_workdir(
             &workdir,

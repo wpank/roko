@@ -2,15 +2,16 @@
 id = "bug-ac2a01"
 kind = "bug"
 title = "tools/status_matrix.py --check fails at HEAD: it still renders the whitepaper's status-matrix appendix and Figure 3, which the design-paper rewrite deleted"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p3"
 goal = "whitepaper"
 size = "S"
 subsystem = ["tools/status_matrix"]
 created = 2026-10-15
-updated = 2026-10-15
-last_verified = 2026-10-15
+updated = 2026-10-16
+last_verified = 2026-10-16
+last_verified_rev = "5e32264ce"
 source = "status-quo-2026-10-15#finding-34"
 anchors = ["tools/status_matrix.py", "tools/test_status_matrix.py", "docs/whitepaper/data/mechanisms.toml"]
 lane = "paper"
@@ -18,6 +19,17 @@ links = { depends_on = [], blocks = [], related = ["gap-08d9b2", "gap-d4a1c1", "
 
 [[verify]]
 command = "{ test ! -e tools/status_matrix.py && ! grep -rq 'status_matrix' tools/ docs/whitepaper/; } || python3 tools/status_matrix.py --check"
+
+[closed]
+at = 2026-10-16
+at_ts = "2026-10-16T14:18:57Z"
+commit = "5e32264ce"
+executor = "claude-agent"
+via = "work-batch"
+size = "S"
+claimed_at = "2026-10-16T08:07:01Z"
+forced = false
+evidence = "Retired tools/status_matrix.py (option 1 of the item's Plan, per F3's recommendation under decision 9): deleted tools/status_matrix.py and tools/test_status_matrix.py (its only importer). Moved docs/whitepaper/data/mechanisms.toml to work/history/status-matrix-2026-10-02/mechanisms.toml as a dated record, with a frozen-copy header note; docs/whitepaper/data/ keeps only the unrelated citation-content-audit.json. Updated docs/whitepaper/REVIEW.md: added a 2026-10-16 note explaining the retirement, and reworded its 5 historical mentions of the tool (to 'the matrix tool') so no literal 'status_matrix' remains under tools/ or docs/whitepaper/ -- confirmed by 'grep -rn status_matrix tools/ docs/whitepaper/' (exit 1, no matches). Fixed spec-ce1484's Tools line to drop the retired tool and note why. Also dropped the now-dead 'tools/status_matrix.py' path from work/lanes.toml's paper lane (grep -rln status_matrix across the repo turned it up; not in the item's listed Where, but directly obsoleted by the deletion). Left historical mentions alone in work/done/, work/closed/, gap-a4fbf8 and gap-8f8544 (citations of a past pin, not live checks; gap-a4fbf8 explicitly says not to edit docs/whitepaper/* to close it) and a precedent comment in benchmarks/viabilitybench/analysis/figlib.py (outside the item's tools/.github/work-items/docs scope). Verify passes: ran the exact [[verify]] command via a saved script (cd into the worktree; the brace-grouped command trips the sandbox's complexity check inline) -- exit 0. Also ran python3 tools/paperlint.py --strict docs/whitepaper (11 files clean), python3 tools/test_work.py (39 tests OK) and python3 tools/work.py check (2060 items; 0 problems) with no new findings."
 +++
 
 ## Problem

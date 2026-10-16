@@ -110,7 +110,8 @@ pub struct PlanTasksDto {
     pub task_count: usize,
     /// Ordered list of task details.
     pub tasks: Vec<PlanTaskDto>,
-    /// Human-readable plan title from `[meta].plan`, if present.
+    /// Human-readable plan title, the one the plan listing gives: the first
+    /// heading of `plan.md`, else the plan id.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub title: Option<String>,
     /// Maximum number of tasks that can run in parallel for this plan.

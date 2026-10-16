@@ -443,13 +443,10 @@ async fn run_plan_dir(
         max_parallel_plans: None,
         fail_fast: false,
     };
-    let result = super::plan::cmd_plan(cli, plan_cmd).await;
-    // `roko plan run` rebuilds the plan indexes after a run that succeeds
-    // (main.rs wraps it); this is the same run, so it does too.
-    if !args.dry_run && matches!(result, Ok(EXIT_SUCCESS)) {
-        roko_cli::index::rebuild_all(workdir)?;
-    }
-    result
+    // Leaves the operator checkout as it found it: `roko plan run` does not
+    // rebuild the plan indexes after a run that succeeds (1222, bug-26935e),
+    // and this is the same run, so it does not either.
+    super::plan::cmd_plan(cli, plan_cmd).await
 }
 
 // ─── One task: a one-task plan through the Graph engine ─────────────────
@@ -660,10 +657,8 @@ async fn run_prompt_plan(
         args.no_holdout,
     )
     .await?;
-    // As after `roko plan run`, the indexes show the run's result.
-    if code == EXIT_SUCCESS {
-        roko_cli::index::rebuild_all(workdir)?;
-    }
+    // Leaves the operator checkout as it found it: the run's results go to
+    // the plan branch and `.roko/`, not to a rebuilt `plans/INDEX.md` (bug-26935e).
     Ok(code)
 }
 

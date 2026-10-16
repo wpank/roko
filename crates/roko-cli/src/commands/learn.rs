@@ -178,13 +178,15 @@ pub(crate) enum LearnCmd {
         min_sample: usize,
     },
     /// The M2 loop census: one row per registered learning loop with its
-    /// state, reason, qualifiers and evidence (S03; read-only, $0).
+    /// state, reason, qualifiers and evidence, and what the runs' decision
+    /// rows measure of it: exposure ε, influence ι and benefit β (S03;
+    /// read-only, $0).
     Loops {
         /// Working directory (default: cwd).
         #[arg(long)]
         workdir: Option<PathBuf>,
-        /// The report-only census over the logs, the only mode until the
-        /// measured audit (backlog 5123) lands.
+        /// The census, which is what this command always prints: the flag
+        /// is kept so that scripts which pass it still parse.
         #[arg(long)]
         census: bool,
         /// Trace a loop's canary, break a loop (S03 §5; backlog 5134), or
@@ -550,7 +552,7 @@ pub(crate) async fn dispatch_learn(cli: &Cli, cmd: LearnCmd) -> Result<i32> {
         }
         LearnCmd::Loops {
             workdir,
-            census,
+            census: _,
             cmd,
         } => {
             let wd = workdir.unwrap_or_else(|| resolve_workdir(cli));
@@ -559,11 +561,6 @@ pub(crate) async fn dispatch_learn(cli: &Cli, cmd: LearnCmd) -> Result<i32> {
                     roko_cli::commands::learn_loops::loops_cmd_output(&wd, &cmd, json)?;
                 print!("{printed}");
                 return Ok(code);
-            }
-            if !census {
-                tracing::info!(
-                    "the measured loop audit is not built yet (backlog 5123); printing the census"
-                );
             }
             print!(
                 "{}",

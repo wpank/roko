@@ -567,7 +567,8 @@ impl ProviderAdapter for OpenAiCompatAdapter {
                 .with_context_token_limit(
                     usize::try_from(model.context_window).unwrap_or(usize::MAX),
                 )
-                .with_model_profile(model.clone())
+                // Priced as its provider bills it (find-c3da60).
+                .with_model_profile(model.clone().with_provider_cache_rate(provider))
                 .with_optional_data_llm(options.data_llm.clone())
                 .with_optional_turn_budget(options.turn_budget.clone());
 

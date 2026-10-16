@@ -281,6 +281,9 @@ pub struct PlanRequest<'a> {
     /// Where generation reports what it is doing as it moves on
     /// (gap-11d870), for a caller that shows it while the plan is written.
     pub progress: Option<PlanProgressSink>,
+    /// What the planner calls may cost together, in USD (gap-18bfa2); 0
+    /// sets no cap. `None` is `[authoring] max_generation_usd`.
+    pub max_usd: Option<f64>,
 }
 
 impl<'a> PlanRequest<'a> {
@@ -301,6 +304,7 @@ impl<'a> PlanRequest<'a> {
             unattended: false,
             for_chat_host: false,
             progress: None,
+            max_usd: None,
         }
     }
 }
@@ -332,6 +336,9 @@ pub struct PlanProgress {
     pub calls: u32,
     /// What the planner calls that returned cost together, in USD.
     pub cost_usd: f64,
+    /// What they may cost together (gap-18bfa2); none when uncapped.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_usd: Option<f64>,
 }
 
 /// Where [`generate_plan`] reports its [`PlanProgress`].
@@ -1036,6 +1043,7 @@ pub async fn generate_plan(request: PlanRequest<'_>) -> Result<(PathBuf, Generat
         unattended,
         for_chat_host,
         progress,
+        max_usd,
     } = request;
     let requested_plans_root = requested_plans_root.or(match source {
         PlanSource::Regenerate(plan_dir) => plan_dir.parent(),
@@ -1063,6 +1071,37 @@ pub async fn generate_plan(request: PlanRequest<'_>) -> Result<(PathBuf, Generat
         let spend = AuthoringSpend::generation(workdir_ref, slug, live);
 
         let resolved = crate::load_resolved_config(workdir_ref)?;
+        // gap-18bfa2: what the planner calls may cost together. Once they
+        // have, no further call is made.
+        let cap = max_usd
+            .unwrap_or_else(|| {
+                roko_core::config::loader::load_config_unified(workdir_ref).map_or(
+                    roko_core::config::schema::DEFAULT_MAX_GENERATION_USD,
+                    |config| config.authoring.max_generation_usd,
+                )
+            })
+            .max(0.0);
+        let capped = (cap > 0.0).then_some(cap);
+        let cap_reached = || {
+            capped
+                .filter(|cap| spend.spent_usd() >= *cap)
+                .map(|cap| {
+                    format!(
+                        "plan generation reached its spend cap: its {} planner call(s) cost \
+                         ${:.4} of ${cap:.2}",
+                        spend.calls(),
+                        spend.spent_usd()
+                    )
+                })
+        };
+        // An improvement the cap leaves out is said, and skipped.
+        let skip_for_cap = |improvement: &str| match cap_reached() {
+            Some(reached) => {
+                eprintln!("  {reached}, so the planner is not asked to {improvement}");
+                true
+            }
+            None => false,
+        };
         // Generated `rung` hints must name a rung of this ladder.
         let ladder = crate::plan_validate::workspace_ladder(workdir_ref);
         // Callers that pass no model (the serve runtime) plan with the
@@ -1108,6 +1147,7 @@ pub async fn generate_plan(request: PlanRequest<'_>) -> Result<(PathBuf, Generat
                 model: model.to_string(),
                 calls: spend.calls() + u32::from(calling),
                 cost_usd: spend.spent_usd(),
+                max_usd: capped,
             });
         };
         // bug-1602d4: the stage again once its planner call has ended, with
@@ -1334,6 +1374,15 @@ pub async fn generate_plan(request: PlanRequest<'_>) -> Result<(PathBuf, Generat
 
             for attempt in 1..=max_crash_retries {
                 let retry_class = classify_agent_crash(&last_output);
+                if let Some(reached) = cap_reached() {
+                    return Err(anyhow!(
+                        "{reached}, so it stopped before retrying a planner call that failed: \
+                         {}{}\nHint: raise `[authoring] max_generation_usd`, or pass \
+                         `--max-usd` to `roko plan generate`",
+                        retry_class.recovery_hint(),
+                        agent_said(&last_output)
+                    ));
+                }
                 report(
                     "retrying",
                     (attempt + 1, max_crash_retries + 1),
@@ -1669,6 +1718,8 @@ pub async fn generate_plan(request: PlanRequest<'_>) -> Result<(PathBuf, Generat
             keep_draft(&output, error);
         }
 
+        // gap-18bfa2: why the retries stopped early, if the cap stopped them.
+        let mut stopped_at_cap: Option<String> = None;
         // Retry up to 2 times on extraction/validation failure, escalating
         // to a higher-tier model when TOML validation keeps failing.
         if validated_toml.is_err() {
@@ -1678,6 +1729,11 @@ pub async fn generate_plan(request: PlanRequest<'_>) -> Result<(PathBuf, Generat
 
             for attempt in 1..=max_retries {
                 let t_retry = Instant::now();
+                if let Some(reached) = cap_reached() {
+                    eprintln!("  {reached}; not asking the planner again");
+                    stopped_at_cap = Some(reached);
+                    break;
+                }
 
                 // Escalate model on format/validation failures (not auth/network),
                 // only ever upward from the planner model, and only to a model
@@ -1803,7 +1859,7 @@ pub async fn generate_plan(request: PlanRequest<'_>) -> Result<(PathBuf, Generat
         // such checks, and the plan that hides fewer is kept.
         if let Ok(candidate) = &validated_toml {
             let hidden = hidden_output_lines(candidate);
-            if !hidden.is_empty() {
+            if !hidden.is_empty() && !skip_for_cap("rewrite the checks that hide their output") {
                 eprintln!(
                     "  {} check(s) hide their test runner's output; asking the planner once more",
                     hidden.len()
@@ -1852,6 +1908,7 @@ pub async fn generate_plan(request: PlanRequest<'_>) -> Result<(PathBuf, Generat
         if let Ok(candidate) = &validated_toml
             && let Some(coverage) = coverage_of(candidate)
             && !coverage.missing().is_empty()
+            && !skip_for_cap("keep the source checks it left out")
         {
             let missing = coverage.missing().len();
             let why = format!(
@@ -1899,7 +1956,7 @@ pub async fn generate_plan(request: PlanRequest<'_>) -> Result<(PathBuf, Generat
         {
             let mut kept = (candidate.clone(), scores);
             let weak = kept.1.is_weak(&spec_config);
-            if weak {
+            if weak && !skip_for_cap("raise the plan's spec quality") {
                 eprintln!(
                     "  Spec quality is low (mean {:.1}, lowest task {:.1}); asking the planner \
                      once more",
@@ -2067,6 +2124,14 @@ pub async fn generate_plan(request: PlanRequest<'_>) -> Result<(PathBuf, Generat
             } else {
                 String::new()
             };
+            if let Some(reached) = stopped_at_cap {
+                return Err(anyhow!(
+                    "{reached}, and no draft validated, so no plan was written.\n\
+                     Last error: {final_err}\n\
+                     hint: raise `[authoring] max_generation_usd`, or pass `--max-usd` to `roko \
+                     plan generate`.{drafts}"
+                ));
+            }
             return Err(anyhow!(
                 "Plan generation failed after retries: no valid tasks.toml was produced.\n\
                  Last error: {final_err}\n\
@@ -3328,6 +3393,71 @@ mod tests {
             scored.min <= scored.mean && scored.mean < 100.0,
             "{scored:?}"
         );
+    }
+
+    /// gap-18bfa2: once a generation's planner calls have cost its cap, it
+    /// makes no further call. A retry it needs stops it, with an error that
+    /// names the cap; an improvement it would ask for is skipped and the plan
+    /// in hand is written. Each stage reports the cap.
+    #[cfg(unix)]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn plan_generation_stops_at_its_spend_cap() {
+        // Any call costs more than this cap.
+        const CAP: f64 = 1e-9;
+
+        let temp = tempfile::tempdir().expect("tempdir");
+        let workdir = temp.path();
+        let bin = tempfile::tempdir().expect("tempdir");
+        let calls = write_scripted_planner(
+            workdir,
+            bin.path(),
+            &["```text\nNo plan yet.\n```\n", WIDGET_PLAN],
+            "allow_threshold = 0.0\nblock_threshold = 0.0\n",
+        );
+        let (sink, stages) = recorded_progress();
+        let request = PlanRequest {
+            model: Some("planner"),
+            progress: Some(sink),
+            max_usd: Some(CAP),
+            ..PlanRequest::new(WIDGET_REQUEST, "widget", workdir)
+        };
+        let error = generate_plan(request)
+            .await
+            .expect_err("the retry is over the cap");
+        let message = format!("{error:#}");
+        assert!(message.contains("reached its spend cap"), "{message}");
+        assert!(message.contains("no plan was written"), "{message}");
+        let log = std::fs::read_to_string(&calls).expect("planner call log");
+        assert_eq!(log.lines().count(), 1, "the first call, and no retry");
+        assert!(!workdir.join("plans/widget").exists());
+        let stages = stages.lock().expect("stages");
+        assert!(
+            stages.iter().all(|stage| stage.max_usd == Some(CAP)),
+            "{stages:?}"
+        );
+
+        // A weak plan is written as it is, without the regeneration.
+        let temp = tempfile::tempdir().expect("tempdir");
+        let workdir = temp.path();
+        let bin = tempfile::tempdir().expect("tempdir");
+        let calls = write_scripted_planner(
+            workdir,
+            bin.path(),
+            &[WIDGET_PLAN],
+            "allow_threshold = 100.0\n",
+        );
+        let request = PlanRequest {
+            model: Some("planner"),
+            max_usd: Some(CAP),
+            ..PlanRequest::new(WIDGET_REQUEST, "widget", workdir)
+        };
+        let (_, outcome) = generate_plan(request)
+            .await
+            .expect("the plan in hand is written");
+        let log = std::fs::read_to_string(&calls).expect("planner call log");
+        assert_eq!(log.lines().count(), 1, "no regeneration over the cap");
+        assert!(outcome.cost_usd > CAP, "{outcome:?}");
+        assert!(workdir.join("plans/widget/tasks.toml").is_file());
     }
 
     /// gap-b95913: a draft whose `meta.total` is 0, whose task reads four

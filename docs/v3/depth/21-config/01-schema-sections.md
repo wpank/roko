@@ -90,11 +90,13 @@ execute, so the planner is chosen apart from the models that run tasks.
 ```toml
 [authoring]
 planner_model = "claude-opus-4-6"   # a key from [models], or a builtin slug
+max_generation_usd = 2.0            # what one plan writing may spend
 ```
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `planner_model` | String | `""` (unset) | Model for every plan generate and revise path: `roko plan generate` / `regenerate`, `roko run --plan` and the plan-writing sizes of `roko run`, and the serve runtime's generate and revise |
+| `max_generation_usd` | Float | `2.0` | What one plan generation's planner calls may cost together, in USD. Once they have, the generation makes no further call: a retry it needs stops it with an error that names the cap, and an improvement it would ask for (hidden runner output, missing source checks, spec quality) is skipped. `0` sets no cap; `roko plan generate --max-usd` overrides it. The cap shows in the generation's progress (`max_usd`) |
 
 Precedence (`model_selection::resolve_planner_model`): `--model`, then
 `[authoring] planner_model`, then `[agent.roles.strategist] model`, then

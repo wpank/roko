@@ -8929,6 +8929,7 @@ printf '%s\n' '{"type":"result","session_id":"sess-batch","model":"claude-sonnet
             let pids = scratch.path().join("pids");
             let dir = repo_with_file_plans(&["alpha"], Some(sleeping_step(&pids).as_str()));
             let repo = dir.path().to_path_buf();
+            let head = git_stdout(&repo, &["rev-parse", "HEAD"]);
             let interrupt = PlanRunInterruptHandle::default();
             let params = GraphPlanRunParams {
                 worktree_per_task,
@@ -8956,6 +8957,34 @@ printf '%s\n' '{"type":"result","session_id":"sess-batch","model":"claude-sonnet
             );
             let _next = crate::workspace_lock::acquire_runner_lock(&repo.join(".roko"))
                 .unwrap_or_else(|error| panic!("{mode}: the run kept the workspace: {error}"));
+            if worktree_per_task {
+                // The delivery is cancelled, not failed, and its merge left
+                // the batch (or the batch branch went with the run).
+                let checkpoint = repo.join(".roko/state/graph/01-alpha/checkpoint.json");
+                let checkpoint: serde_json::Value =
+                    serde_json::from_slice(&std::fs::read(checkpoint).expect("checkpoint"))
+                        .expect("checkpoint json");
+                let delivery = crate::graph_checkpoint::DELIVERY_EXTENSION;
+                assert_eq!(
+                    checkpoint["extensions"][delivery]["value"]["receipt"]["state"],
+                    "cancelled"
+                );
+                let batch = std::process::Command::new("git")
+                    .current_dir(&repo)
+                    .args([
+                        "rev-parse",
+                        "--verify",
+                        "--quiet",
+                        "refs/heads/roko/batch/run-cancel",
+                    ])
+                    .output()
+                    .expect("git rev-parse");
+                let tip = String::from_utf8_lossy(&batch.stdout).trim().to_string();
+                assert!(
+                    tip.is_empty() || tip == head,
+                    "the stopped plan stayed in the batch at {tip}"
+                );
+            }
         }
     }
 

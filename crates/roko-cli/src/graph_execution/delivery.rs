@@ -61,6 +61,9 @@ pub struct DeliveryRegressionOutcome {
     /// The checks that ran, in order, up to the first that failed; the
     /// receipt keeps them under [`DELIVERY_CHECKS_EXTENSION`].
     pub checks: Vec<DeliveryCheck>,
+    /// What stopped the check before it ended, such as `cancel` (bug-7b62ff):
+    /// the delivery is then cancelled, not failed.
+    pub stopped_by: Option<String>,
 }
 
 /// Receipt extension holding the [`DeliveryCheck`]s of a delivery's
@@ -437,8 +440,7 @@ impl GitDeliveryBackend {
             let ran = tokio::select! {
                 ran = run => ran,
                 interrupt = self.stop.stopped() => {
-                    let reason = format!("{} stopped it", interrupt.cause());
-                    watched.finish(false, None, Some(reason.clone()));
+                    let reason = watched.stopped(interrupt);
                     let check = DeliveryCheck {
                         command: check_command(command),
                         source: self.regression_source.clone(),
@@ -757,6 +759,7 @@ impl DeliveryBackend for GitDeliveryBackend {
                 summary: format!("no post-merge regression check is configured for {plan_id}"),
                 evidence_ref: None,
                 checks: Vec::new(),
+                stopped_by: None,
             };
         }
         let (checks, log) = match self.regression_output(merge_commit).await {
@@ -767,6 +770,9 @@ impl DeliveryBackend for GitDeliveryBackend {
                     summary,
                     evidence_ref: None,
                     checks: Vec::new(),
+                    // A check that ends while the run stops, before a step
+                    // or between them, was stopped (bug-7b62ff).
+                    stopped_by: self.stop.requested().map(|stop| stop.label().to_string()),
                 };
             }
         };
@@ -803,6 +809,7 @@ impl DeliveryBackend for GitDeliveryBackend {
             passed: checks.iter().all(|check| check.exit_code == Some(0)),
             summary,
             evidence_ref,
+            stopped_by: checks.iter().find_map(|check| check.stopped_by.clone()),
             checks,
         }
     }
@@ -987,6 +994,26 @@ impl CliCompletionDeliveryService {
                             .insert(DELIVERY_CHECKS_EXTENSION.to_string(), checks);
                     }
 
+                    // A stop request that cut the check short cancels the
+                    // delivery: the check did not fail (bug-7b62ff).
+                    if !outcome.passed && outcome.stopped_by.is_some() {
+                        receipt.error = Some(outcome.summary.clone());
+                        receipt.regression_evidence_ref = outcome.evidence_ref;
+                        receipt
+                            .advance(CompletionDeliveryState::Cancelled)
+                            .map_err(DeliveryError::Transition)?;
+                        self.store.update(receipt);
+                        warn!(
+                            delivery_id = %receipt.request.delivery_id,
+                            reason = %outcome.summary,
+                            "delivery cancelled during its regression check (terminal)"
+                        );
+                        return Err(DeliveryError::Cancelled {
+                            delivery_id: receipt.request.delivery_id.clone(),
+                            details: outcome.summary,
+                        });
+                    }
+
                     if !outcome.passed {
                         receipt.error = Some(outcome.summary.clone());
                         receipt.regression_evidence_ref = outcome.evidence_ref;
@@ -1081,6 +1108,7 @@ impl CliCompletionDeliveryService {
                 CompletionDeliveryState::Delivered
                 | CompletionDeliveryState::Conflict
                 | CompletionDeliveryState::RegressionFailed
+                | CompletionDeliveryState::Cancelled
                 | CompletionDeliveryState::TerminalFailed => {
                     return Ok(());
                 }
@@ -1130,6 +1158,7 @@ impl CompletionDeliveryService for CliCompletionDeliveryService {
             Ok(()) => Ok(receipt),
             Err(DeliveryError::MergeConflict { .. })
             | Err(DeliveryError::RegressionFailed { .. })
+            | Err(DeliveryError::Cancelled { .. })
             | Err(DeliveryError::PublicationFailed { .. }) => {
                 // The receipt is already in a terminal failure state.
                 Ok(self.store.get(&request.delivery_id).unwrap_or(receipt))
@@ -1162,6 +1191,7 @@ impl CompletionDeliveryService for CliCompletionDeliveryService {
             Ok(()) => Ok(receipt),
             Err(DeliveryError::MergeConflict { .. })
             | Err(DeliveryError::RegressionFailed { .. })
+            | Err(DeliveryError::Cancelled { .. })
             | Err(DeliveryError::PublicationFailed { .. }) => {
                 Ok(self.store.get(delivery_id).unwrap_or(receipt))
             }
@@ -1201,6 +1231,8 @@ mod tests {
     struct FakeDeliveryBackend {
         merge_succeeds: AtomicBool,
         regression_succeeds: AtomicBool,
+        /// Whether a stop request cuts the regression check short.
+        regression_stopped: AtomicBool,
         publish_succeeds: AtomicBool,
     }
 
@@ -1209,6 +1241,7 @@ mod tests {
             Self {
                 merge_succeeds: AtomicBool::new(true),
                 regression_succeeds: AtomicBool::new(true),
+                regression_stopped: AtomicBool::new(false),
                 publish_succeeds: AtomicBool::new(true),
             }
         }
@@ -1217,6 +1250,7 @@ mod tests {
             Self {
                 merge_succeeds: AtomicBool::new(false),
                 regression_succeeds: AtomicBool::new(true),
+                regression_stopped: AtomicBool::new(false),
                 publish_succeeds: AtomicBool::new(true),
             }
         }
@@ -1225,6 +1259,7 @@ mod tests {
             Self {
                 merge_succeeds: AtomicBool::new(true),
                 regression_succeeds: AtomicBool::new(false),
+                regression_stopped: AtomicBool::new(false),
                 publish_succeeds: AtomicBool::new(true),
             }
         }
@@ -1233,7 +1268,17 @@ mod tests {
             Self {
                 merge_succeeds: AtomicBool::new(true),
                 regression_succeeds: AtomicBool::new(true),
+                regression_stopped: AtomicBool::new(false),
                 publish_succeeds: AtomicBool::new(false),
+            }
+        }
+
+        fn regression_stopped() -> Self {
+            Self {
+                merge_succeeds: AtomicBool::new(true),
+                regression_succeeds: AtomicBool::new(false),
+                regression_stopped: AtomicBool::new(true),
+                publish_succeeds: AtomicBool::new(true),
             }
         }
     }
@@ -1261,12 +1306,24 @@ mod tests {
             _request: &CompletionDeliveryRequest,
             _merge_commit: &str,
         ) -> DeliveryRegressionOutcome {
+            if self.regression_stopped.load(Ordering::Relaxed) {
+                return DeliveryRegressionOutcome {
+                    passed: false,
+                    summary: "post-merge regression stopped for p: `cargo test`: a cancel request \
+                              stopped it"
+                        .to_string(),
+                    evidence_ref: None,
+                    checks: Vec::new(),
+                    stopped_by: Some("cancel".to_string()),
+                };
+            }
             if self.regression_succeeds.load(Ordering::Relaxed) {
                 DeliveryRegressionOutcome {
                     passed: true,
                     summary: "regression passed".to_string(),
                     evidence_ref: Some("/tmp/regression.log".to_string()),
                     checks: Vec::new(),
+                    stopped_by: None,
                 }
             } else {
                 DeliveryRegressionOutcome {
@@ -1274,6 +1331,7 @@ mod tests {
                     summary: "cargo check failed: error[E0308]".to_string(),
                     evidence_ref: Some("/tmp/regression-fail.log".to_string()),
                     checks: Vec::new(),
+                    stopped_by: None,
                 }
             }
         }
@@ -1383,6 +1441,25 @@ mod tests {
         assert_eq!(receipt.release_policy, ReleasePolicy::RetainForFailure);
         assert!(receipt.error.is_some());
         assert!(receipt.regression_evidence_ref.is_some());
+    }
+
+    // ── Regression stopped: cancelled ───────────────────────────────────
+
+    /// bug-7b62ff: a regression check a stop request cut short cancels the
+    /// delivery. It ends, keeps its workspace, and is not a failed
+    /// regression.
+    #[tokio::test]
+    async fn a_stopped_regression_cancels_the_delivery() {
+        let backend = Arc::new(FakeDeliveryBackend::regression_stopped());
+        let service = CliCompletionDeliveryService::new(backend);
+        let request = test_request("d-reg-stopped");
+
+        let receipt = service.deliver(request).await.unwrap();
+
+        assert_eq!(receipt.state, CompletionDeliveryState::Cancelled);
+        assert_eq!(receipt.release_policy, ReleasePolicy::RetainForFailure);
+        let error = receipt.error.as_deref().unwrap_or_default();
+        assert!(error.contains("a cancel request stopped it"), "{error}");
     }
 
     // ── Publication failure: terminal ───────────────────────────────────
@@ -1972,6 +2049,7 @@ mod tests {
             "{}",
             outcome.summary
         );
+        assert_eq!(outcome.stopped_by.as_deref(), Some("cancel"));
         let stopped = outcome.checks.last().expect("the stopped check");
         assert_eq!(stopped.stopped_by.as_deref(), Some("cancel"));
         assert_eq!(stopped.exit_code, None);

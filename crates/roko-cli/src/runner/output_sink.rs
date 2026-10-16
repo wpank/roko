@@ -1418,13 +1418,14 @@ pub fn format_dashboard_event(
             steps,
             name,
             passed,
+            stopped_by,
             elapsed_ms,
             ..
         } => {
-            let (icon, word) = if *passed {
-                ("+", "passed")
-            } else {
-                ("x", "failed")
+            let (icon, word) = match (passed, stopped_by) {
+                (true, _) => ("+", "passed"),
+                (false, Some(_)) => ("-", "stopped"),
+                (false, None) => ("x", "failed"),
             };
             (
                 format!("[{plan_id}]"),

@@ -2,15 +2,16 @@
 id = "gap-8c2535"
 kind = "gap"
 title = "Probe Claude Code and Codex CLI costs by hand and file the vendor-versus-snapshot table, task 6107"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p2"
 goal = "proof"
 size = "S"
 subsystem = ["config/prices"]
 created = 2026-10-03
-updated = 2026-10-15
-last_verified = 2026-10-03
+updated = 2026-10-16
+last_verified = 2026-10-16
+last_verified_rev = "4b88bc41d"
 source = "tmp/backlog/2026-10-02-complete-and-wire 6107 (blocked in wave 6, PK47)"
 discovered_from = "gap-62e1b9"
 anchors = ["config/prices/2026-09-28.toml", "benchmarks/viabilitybench/driver/ledger.py"]
@@ -19,6 +20,19 @@ links = { depends_on = [], blocks = [], related = ["gap-62e1b9", "gap-154f93"], 
 
 [[verify]]
 command = "test -f config/prices/2026-09-28.probes.md && grep -q 'reasoning_output_tokens' config/prices/2026-09-28.probes.md && grep -q 'costBasis' config/prices/2026-09-28.probes.md"
+
+[closed]
+at = 2026-10-16
+at_ts = "2026-10-16T14:11:49Z"
+commit = "4b88bc41d"
+by = "commit trailer"
+executor = "claude-agent"
+via = "work-batch"
+size = "S"
+claimed_at = "2026-10-16T08:07:15Z"
+forced = false
+model = "claude-opus-5-5"
+evidence = "4b88bc41d adds config/prices/2026-09-28.probes.md: six live probes on 2026-10-16 (14:04-14:07Z), each a fresh session run once (decision 6, 2026-10-15; D42 re-confirmed). Claude Code 2.1.282, claude -p --output-format json on the Max login (claude auth status: authMethod claude.ai), clean env and scratch CLAUDE_CONFIG_DIR: opus-5-5 $0.0374676, sonnet-5 $0.0245506, haiku-4-5 $0.0103786; each total_cost_usd equals the snapshot re-price (run_cli.parse_result over driver/ledger.py, 1-hour cache writes) with delta 0.0%; costBasis 'list' for every model; thinking inside outputTokens (haiku 120 of 127). Codex 0.152.0, codex exec --json --ephemeral --ignore-user-config on the ChatGPT login: gpt-5.5 refused (400, not supported with a ChatGPT account; no usage); gpt-5.6-terra/high output 16 reasoning 9, gpt-5.6-luna/xhigh output 24 reasoning 17, so reasoning_output_tokens is inside output_tokens (reasoning_in_output = true holds), but neither model has a snapshot row (U' unknown): filed gap-8672dd (e9a7dc9e2). Spend: $0.00 billed; API-equivalent $0.0723968 (Claude) + unknown (Codex); six ledger rows (line probe, billed false) and scrubbed raw JSON under tmp/status-quo/2026-10-16-live/vb-results/PROBE-6107/probes-6107-20261016T1404Z/. [[verify]] passes on 4b88bc41d. Not done here: the S04 section 3 citation in the local, untracked tmp/cybernetic-harness/specs/ (the isolated worktree cannot edit the main checkout's copy)."
 +++
 
 ## Problem

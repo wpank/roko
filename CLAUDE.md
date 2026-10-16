@@ -22,7 +22,7 @@ What each subsystem is and where it lives. The table makes no maturity or status
 | Graph plan execution (host side) | Plan runner, control, delivery, feedback, workspaces and per-task dispatch for Graph runs | `crates/roko-cli/src/graph_execution/`, `crates/roko-cli/src/graph_task_dispatch.rs` |
 | Runner support modules | Gate dispatch, persistence, output sinks, preflight, merge, resume, plan loading/DAG, queue manifests. The Runner-v2 event loop was deleted on 2026-09-06, and the `runner::run()` stub was removed in `725f21e05` | `crates/roko-cli/src/runner/` |
 | Agent dispatch | Provider-neutral dispatch, prompt building, model routing; provider adapters | `crates/roko-cli/src/dispatch/`, `crates/roko-agent/` (`src/dispatcher/mod.rs`) |
-| Gates | Gate implementations and the rung pipeline; the per-task entry point is `run_gate_once` | `crates/roko-gate/`, `crates/roko-cli/src/runner/gate_dispatch.rs` |
+| Gates | Gate implementations and the rung pipeline; a Graph run checks a task through its authored verify steps and then `[[gates.rungs]]` in `graph_task_dispatch/verification.rs`; `run_gate_once` is kept only for its own tests until gap-c42c8e removes it; `ProductionGateService` runs the rich-topology plan-gate cells and the audit re-run | `crates/roko-gate/`, `crates/roko-cli/src/graph_task_dispatch/verification.rs`, `crates/roko-cli/src/runner/gate_dispatch.rs` |
 | Prompt assembly | Layered system prompt builder and role templates | `crates/roko-compose/` (`src/system_prompt_builder.rs`, `src/templates/`), `crates/roko-cli/src/dispatch/prompt_builder.rs` |
 | Safety | Role authorization, pre/post checks, tool policy | `crates/roko-agent/src/safety/` |
 | Runtime services | Shared `RuntimeServices` builder (the service facade for CLI, serve and ACP) | `crates/roko-execution/` |
@@ -296,6 +296,7 @@ safety, auth, persistence, migration, payment, or other high-risk changes. FAST 
 | `roko run-index repair` | Inspect or rebuild derived per-run event indexes |
 | `roko bench demo/swe` | Run benchmark evaluations and write learning telemetry |
 | `roko new <type> <name>` | Scaffold boilerplate |
+| `roko safety controls/release` | List immune isolation controls that deny agents before dispatch, and release one with an audit record |
 | `roko effects list/show/approve/reject` | List, inspect and approve or reject a staged (held) tool call |
 | `roko explain <topic>` | Concept explainer (3 depth levels) |
 | `roko completions <shell>` | Shell completion scripts |

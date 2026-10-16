@@ -349,7 +349,8 @@ fn parse_signing_key(
     Ok(SigningKey::from_bytes(&bytes))
 }
 
-fn is_loopback_host(host: &str) -> bool {
+/// Whether `host` is `localhost` or a loopback IP address.
+pub(crate) fn is_loopback_host(host: &str) -> bool {
     host.eq_ignore_ascii_case("localhost")
         || host
             .parse::<std::net::IpAddr>()

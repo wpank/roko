@@ -24,8 +24,9 @@ export default defineConfig({
       // preview, roko serve, a remote URL) get their own config file.
       name: 'showcase-fixture',
       testDir: './e2e/showcase',
-      // Specs against a running `roko serve` have their own config (and web server).
-      testIgnore: ['**/auth-gate.spec.ts', '**/serve-manifest.spec.ts'],
+      // Specs against a running `roko serve` have their own config (and web server). fly-smoke
+      // needs SHOWCASE_PASSPHRASE and its own config (playwright.fly-smoke.config.ts, task 9338).
+      testIgnore: ['**/auth-gate.spec.ts', '**/serve-manifest.spec.ts', '**/fly-smoke.spec.ts'],
       use: { ...devices['Desktop Chrome'] },
     },
   ],

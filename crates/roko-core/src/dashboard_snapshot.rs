@@ -229,6 +229,36 @@ pub enum DashboardEvent {
         #[serde(default)]
         estimated_tokens: u32,
     },
+    /// What a failed check of a Graph attempt leaves for the task's next
+    /// attempt (gap-655ea5): the diagnosis its prompt leads with, the
+    /// failing steps and the key error lines. Published as the feedback is
+    /// kept, before the next attempt's `route_decided`; `retry-feedback.json`
+    /// keeps it for a resumed run.
+    RetryFeedback {
+        plan_id: String,
+        task_id: String,
+        /// The attempt that failed, from 1.
+        attempt: u32,
+        /// The attempt the feedback is for, from 1.
+        next_attempt: u32,
+        /// What failed: `verify` (the task's verify steps),
+        /// `pre_verify:<check>` (the screen before them), `plan-branch` (its
+        /// work conflicts with the plan's accepted work),
+        /// `scratch-copy-back` or `review`.
+        check: String,
+        /// The failing steps, one line each, such as ``verify[0:test]
+        /// (`cargo test`): exit code: 101``.
+        #[serde(default)]
+        failing_steps: Vec<String>,
+        /// The diagnosis the next attempt's prompt leads with: a cheap
+        /// model's reading of the failure, or the check's own.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        diagnosis: Option<String>,
+        /// The key error lines the prompt lists: compile errors, failed
+        /// tests and warnings.
+        #[serde(default)]
+        errors: Vec<String>,
+    },
     /// A Graph task's `confirm` rung asked its person whether the outcome is
     /// what they asked for; the task waits until they answer or the rung
     /// times out (gap-7c6663). MCP `confirm_answer` names the attempt key.
@@ -3086,6 +3116,30 @@ impl DashboardSnapshot {
                         playbook_ids.len(),
                         episode_ids.len(),
                         left_out.len()
+                    ),
+                );
+            }
+            DashboardEvent::RetryFeedback {
+                plan_id,
+                task_id,
+                attempt,
+                next_attempt,
+                check,
+                diagnosis,
+                errors,
+                ..
+            } => {
+                let gets = diagnosis
+                    .as_deref()
+                    .or_else(|| errors.first().map(String::as_str))
+                    .unwrap_or("its output");
+                self.push_event_log(
+                    ts,
+                    "retry_feedback".to_string(),
+                    plan_id.clone(),
+                    task_id.clone(),
+                    format!(
+                        "attempt {attempt} failed {check}; attempt {next_attempt} gets: {gets}"
                     ),
                 );
             }

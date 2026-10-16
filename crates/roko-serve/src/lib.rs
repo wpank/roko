@@ -64,6 +64,7 @@ pub mod rbac;
 pub mod relay;
 pub mod retention;
 pub mod routes;
+pub mod run_end;
 pub mod runtime;
 pub mod runtime_event_bridge;
 pub mod sanitize;

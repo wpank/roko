@@ -311,6 +311,9 @@ pub async fn run_doctor(options: &DoctorOptions) -> Result<DoctorReport> {
             .iter()
             .copied()
             .filter(|id| fixed_sources.is_none() || *id != DiagnosticCheckId::Credentials)
+            // Beside a running serve the lock is serve's own, which the
+            // workspace_lock line says, not a conflict to kill (bug-1f5406).
+            .filter(|id| options.beside_serve.is_none() || *id != DiagnosticCheckId::Lock)
             .collect(),
         profile: None,
         allow_repairs: false,
@@ -3957,9 +3960,18 @@ mod tests {
         let runner_lock = runtime.join("roko.runner.lock");
         // PID 4294967294 (u32::MAX - 1) cannot exist on any real system.
         std::fs::write(&runner_lock, "4294967294\n").expect("stale runner lock");
+        // The workspace lock names a live process, as serve's does.
+        let holder = std::os::unix::process::parent_id();
+        std::fs::write(runtime.join("roko.lock"), format!("{holder}\n")).expect("lock");
         let serve = ServeHolder {
-            pid: 4242,
+            pid: holder,
             url: "http://127.0.0.1:6791".to_string(),
+        };
+        let conflict = |report: &DoctorReport| {
+            report
+                .checks
+                .iter()
+                .any(|check| check.id == "shared_lock_conflict")
         };
 
         let report = run_doctor(&DoctorOptions {
@@ -3973,10 +3985,11 @@ mod tests {
         assert!(
             report.checks[0]
                 .message
-                .contains("roko serve (PID 4242) holds this workspace"),
+                .contains(&format!("roko serve (PID {holder}) holds this workspace")),
             "{:?}",
             report.checks[0]
         );
+        assert!(!conflict(&report), "serve's own lock is no conflict");
         let stale = report
             .checks
             .iter()
@@ -3986,7 +3999,7 @@ mod tests {
         assert!(runner_lock.exists(), "nothing is removed beside serve");
         let text = report.render_human();
         assert!(
-            text.contains("[ok] workspace_lock: roko serve (PID 4242)"),
+            text.contains(&format!("[ok] workspace_lock: roko serve (PID {holder})")),
             "{text}"
         );
 
@@ -3999,6 +4012,7 @@ mod tests {
                 .iter()
                 .all(|check| check.id != "workspace_lock")
         );
+        assert!(conflict(&report), "an unknown live holder is a conflict");
         assert!(
             !runner_lock.exists(),
             "with the lock, the stale file is removed"

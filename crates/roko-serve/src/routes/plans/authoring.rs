@@ -867,15 +867,11 @@ pub(crate) fn slug_from_title(title: &str) -> String {
     slug.trim_end_matches('-').to_string()
 }
 
-/// Derive a unique plan slug for a free-text prompt.
-///
-/// Takes the first line of the prompt (up to 80 chars) as the title, converts
-/// it to a kebab-case slug via [`slug_from_title`], then checks whether a
-/// plan directory already uses that name. If there is a collision it appends
-/// `-2`, `-3`, and so on until a free name is found.
 /// Set plan `slug`'s `[meta] title` to `title` (gap-c2efe7), in the `tasks.toml`
 /// its generation wrote: the line after its `plan = …` key, replacing a
-/// `title` the planner wrote. Nothing to do without a title; a plan that
+/// `title` the planner wrote. The overview `plan.md` roko wrote for the plan
+/// takes the title too (bug-1602d4): plan listings read a plan's title from
+/// that file's first heading. Nothing to do without a title; a plan that
 /// cannot be named keeps none, which is logged.
 fn name_generated_plan(workdir: &std::path::Path, slug: &str, title: Option<&str>) {
     let Some(title) = title else {
@@ -883,7 +879,49 @@ fn name_generated_plan(workdir: &std::path::Path, slug: &str, title: Option<&str
     };
     if let Err(error) = write_plan_title(workdir, slug, title) {
         tracing::warn!(plan = slug, %error, "the generated plan keeps no title");
+        return;
     }
+    let plan_md = plans_dir(workdir).join(slug).join("plan.md");
+    if let Some(retitled) = std::fs::read_to_string(&plan_md)
+        .ok()
+        .and_then(|text| retitle_overview(&text, title))
+        && let Err(error) = std::fs::write(&plan_md, retitled)
+    {
+        tracing::warn!(plan = slug, %error, "the plan's overview keeps its old title");
+    }
+}
+
+/// `plan_md` titled `title`, when it is the overview roko wrote
+/// ([`crate::runtime::PLAN_OVERVIEW_INTRO`]): its frontmatter `title:` and its
+/// first `#` heading, which stays the body's first `#` line. `None` for a
+/// `plan.md` the planner wrote, which keeps its own title.
+fn retitle_overview(plan_md: &str, title: &str) -> Option<String> {
+    if !plan_md.contains(crate::runtime::PLAN_OVERVIEW_INTRO) {
+        return None;
+    }
+    let title = title.split_whitespace().collect::<Vec<_>>().join(" ");
+    let mut in_frontmatter = false;
+    let mut headed = false;
+    let mut lines = Vec::new();
+    for (index, line) in plan_md.lines().enumerate() {
+        let trimmed = line.trim();
+        if index == 0 && trimmed == "---" {
+            in_frontmatter = true;
+        } else if in_frontmatter && trimmed == "---" {
+            in_frontmatter = false;
+        } else if in_frontmatter && trimmed.starts_with("title:") {
+            // A JSON string is a YAML scalar whatever the title holds.
+            let scalar = serde_json::to_string(&title).unwrap_or_default();
+            lines.push(format!("title: {scalar}"));
+            continue;
+        } else if !in_frontmatter && !headed && trimmed.starts_with('#') {
+            headed = true;
+            lines.push(format!("# {title}"));
+            continue;
+        }
+        lines.push(line.to_string());
+    }
+    Some(lines.join("\n") + "\n")
 }
 
 /// [`name_generated_plan`]'s edit of plan `slug`'s `tasks.toml`.
@@ -918,6 +956,12 @@ fn write_plan_title(workdir: &std::path::Path, slug: &str, title: &str) -> anyho
     Ok(())
 }
 
+/// Derive a unique plan slug for a free-text prompt.
+///
+/// Takes the first line of the prompt (up to 80 chars) as the title, converts
+/// it to a kebab-case slug via [`slug_from_title`], then checks whether a
+/// plan directory already uses that name. If there is a collision it appends
+/// `-2`, `-3`, and so on until a free name is found.
 pub(super) async fn derive_unique_slug(workdir: &std::path::Path, prompt: &str) -> String {
     let first_line = prompt.lines().next().unwrap_or("").trim();
     // At most 80 characters: cutting at byte 80 can split a multi-byte
@@ -977,5 +1021,54 @@ mod title_tests {
         assert_eq!(parsed["meta"]["title"].as_str(), Some("Count \"vowels\""));
         assert_eq!(parsed["task"][0]["title"].as_str(), Some("A task"));
         assert_eq!(named.matches("title = ").count(), 2, "{named}");
+    }
+
+    /// bug-1602d4: naming a generated plan titles the overview `plan.md`
+    /// roko wrote for it too, its frontmatter and its first heading, which
+    /// stays the body's first `#` line, so plan listings show the name. A
+    /// `plan.md` the planner wrote keeps its own title.
+    #[test]
+    fn a_named_plan_retitles_its_overview() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let write_plan = |slug: &str, plan_md: &str| {
+            let plan_dir = plans_dir(dir.path()).join(slug);
+            std::fs::create_dir_all(&plan_dir).expect("plan dir");
+            std::fs::write(
+                plan_dir.join("tasks.toml"),
+                format!("[meta]\nplan = \"{slug}\"\ntotal = 1\n\n[[task]]\nid = \"T1\"\n"),
+            )
+            .expect("tasks.toml");
+            std::fs::write(plan_dir.join("plan.md"), plan_md).expect("plan.md");
+            plan_dir.join("plan.md")
+        };
+        let overview = write_plan(
+            "word-count-demo",
+            &format!(
+                "---\nplan: word-count-demo\ntitle: word-count-demo\n---\n\n\
+                 # word-count-demo\n\n{}\n\n## Request\n\nA chat host asked for this plan.\n\n\
+                 ## Tasks\n\n### Wave 1\n\n- **T1: Count words** (implementer, focused)\n",
+                crate::runtime::PLAN_OVERVIEW_INTRO
+            ),
+        );
+        let own = "---\nplan: planner-titled\ntitle: Planner title\n---\n\n# Planner title\n\n\
+                   The planner's own words.\n";
+        let planner = write_plan("planner-titled", own);
+
+        name_generated_plan(dir.path(), "word-count-demo", Some("Word count demo"));
+        name_generated_plan(dir.path(), "planner-titled", Some("Word count demo"));
+
+        let retitled = std::fs::read_to_string(&overview).expect("plan.md");
+        assert!(
+            retitled.starts_with("---\nplan: word-count-demo\ntitle: \"Word count demo\"\n---\n"),
+            "{retitled}"
+        );
+        let body = retitled
+            .splitn(3, "---\n")
+            .nth(2)
+            .expect("a body after the frontmatter");
+        let first_heading = body.lines().find(|line| line.trim_start().starts_with('#'));
+        assert_eq!(first_heading, Some("# Word count demo"), "{retitled}");
+        assert!(retitled.contains("### Wave 1"), "{retitled}");
+        assert_eq!(std::fs::read_to_string(&planner).expect("plan.md"), own);
     }
 }

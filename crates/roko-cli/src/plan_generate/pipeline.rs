@@ -969,20 +969,43 @@ pub async fn generate_plan(request: PlanRequest<'_>) -> Result<(PathBuf, Generat
         };
         // gap-11d870: say what the generation is doing each time it moves
         // on. A stage that makes a planner call counts that call.
+        let last_stage = std::sync::Mutex::new(None::<PlanProgress>);
+        let emit = |stage: PlanProgress| {
+            if let Some(progress) = &progress {
+                progress(&stage);
+            }
+            *last_stage
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(stage);
+        };
         let report = |stage: &'static str,
                       (attempt, attempts): (u32, u32),
                       reason: Option<String>,
                       model: &str| {
-            if let Some(progress) = &progress {
-                let calling = !matches!(stage, "writing" | "recording");
-                progress(&PlanProgress {
-                    stage,
-                    attempt,
-                    attempts,
-                    reason,
-                    model: model.to_string(),
-                    calls: spend.calls() + u32::from(calling),
+            let calling = !matches!(stage, "writing" | "recording");
+            emit(PlanProgress {
+                stage,
+                attempt,
+                attempts,
+                reason,
+                model: model.to_string(),
+                calls: spend.calls() + u32::from(calling),
+                cost_usd: spend.spent_usd(),
+            });
+        };
+        // bug-1602d4: the stage again once its planner call has ended, with
+        // the call counted and its spend in, rather than only when the next
+        // stage starts.
+        let report_spend = || {
+            let last = last_stage
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .clone();
+            if let Some(stage) = last {
+                emit(PlanProgress {
+                    calls: spend.calls(),
                     cost_usd: spend.spent_usd(),
+                    ..stage
                 });
             }
         };
@@ -1112,6 +1135,7 @@ pub async fn generate_plan(request: PlanRequest<'_>) -> Result<(PathBuf, Generat
         })
         .await?;
         spend.record(&call).await;
+        report_spend();
         let (exit_code, output) = (call.exit_code, call.output);
         let agent_ms = t_phase.elapsed().as_millis();
         let t_phase = Instant::now();
@@ -1210,6 +1234,7 @@ pub async fn generate_plan(request: PlanRequest<'_>) -> Result<(PathBuf, Generat
                 })
                 .await?;
                 spend.record(&retry).await;
+                report_spend();
                 last_exit_code = retry.exit_code;
                 last_output = retry.output;
                 if last_exit_code == 0 {
@@ -1589,6 +1614,7 @@ pub async fn generate_plan(request: PlanRequest<'_>) -> Result<(PathBuf, Generat
                 .await;
                 if let Ok(retry) = &retry_result {
                     spend.record(retry).await;
+                    report_spend();
                 }
 
                 match retry_result.map(|retry| (retry.exit_code, retry.output)) {
@@ -1666,6 +1692,7 @@ pub async fn generate_plan(request: PlanRequest<'_>) -> Result<(PathBuf, Generat
                 .await;
                 if let Ok(retry) = &retry {
                     spend.record(retry).await;
+                    report_spend();
                 }
                 if let Ok(retry) = retry
                     && retry.exit_code == 0
@@ -1718,6 +1745,7 @@ pub async fn generate_plan(request: PlanRequest<'_>) -> Result<(PathBuf, Generat
                 .await;
                 if let Ok(retry) = &retry {
                     spend.record(retry).await;
+                    report_spend();
                 }
                 if let Ok(retry) = retry
                     && retry.exit_code == 0
@@ -3352,8 +3380,13 @@ mod tests {
 
         let stages = stages.lock().expect("stages");
         let names: Vec<&str> = stages.iter().map(|stage| stage.stage).collect();
-        assert_eq!(names, ["planning", "retrying"], "{stages:?}");
-        let retry = &stages[1];
+        // Each stage is reported again once its call has ended (bug-1602d4).
+        assert_eq!(
+            names,
+            ["planning", "planning", "retrying", "retrying"],
+            "{stages:?}"
+        );
+        let retry = &stages[2];
         assert_eq!((retry.attempt, retry.attempts, retry.calls), (2, 2, 2));
         assert!(
             retry
@@ -3404,10 +3437,52 @@ mod tests {
 
         let stages = stages.lock().expect("stages");
         let names: Vec<&str> = stages.iter().map(|stage| stage.stage).collect();
-        assert_eq!(names, ["planning", "writing", "recording"], "{stages:?}");
+        // `planning` is reported again once its call has ended (bug-1602d4).
+        assert_eq!(
+            names,
+            ["planning", "planning", "writing", "recording"],
+            "{stages:?}"
+        );
         assert_eq!(stages[0].calls, 1, "{stages:?}");
         assert_eq!(stages[0].model, "planner", "{stages:?}");
-        assert_eq!(stages[2].calls, 1, "{stages:?}");
+        assert_eq!(stages[3].calls, 1, "{stages:?}");
+    }
+
+    /// bug-1602d4: a planner call's spend is reported as soon as the call
+    /// ends, as the same stage with the call counted, not first when the
+    /// plan is being written, a moment before the generation completes.
+    #[cfg(unix)]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn plan_writing_reports_its_spend_as_each_call_ends() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let workdir = temp.path();
+        let bin = tempfile::tempdir().expect("tempdir");
+        write_fake_planner(workdir, bin.path(), WIDGET_PLAN);
+        let (sink, stages) = recorded_progress();
+        let request = PlanRequest {
+            model: Some("planner"),
+            progress: Some(sink),
+            ..PlanRequest::new(WIDGET_REQUEST, "widget", workdir)
+        };
+        let (_, outcome) = generate_plan(request)
+            .await
+            .expect("generate the widget plan");
+        assert!(outcome.cost_usd > 0.0, "{outcome:?}");
+
+        let stages = stages.lock().expect("stages");
+        let (started, ended) = (&stages[0], &stages[1]);
+        assert_eq!(
+            (started.stage, started.calls),
+            ("planning", 1),
+            "{stages:?}"
+        );
+        assert!(started.cost_usd.abs() < 1e-12, "{stages:?}");
+        assert_eq!((ended.stage, ended.calls), ("planning", 1), "{stages:?}");
+        assert!(
+            (ended.cost_usd - outcome.cost_usd).abs() < 1e-9,
+            "{stages:?} vs {outcome:?}"
+        );
+        assert_eq!(stages[2].stage, "writing", "{stages:?}");
     }
 
     /// 3221: the planner can write its acceptance tests into the plan. A

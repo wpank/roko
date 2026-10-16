@@ -11,7 +11,7 @@ subsystem = ["roko-cli/budget"]
 created = 2026-10-15
 updated = 2026-10-16
 last_verified = 2026-10-16
-last_verified_rev = "0216a4cbd"
+last_verified_rev = "ad869974f"
 source = "roko-init round v5, 2026-10-15 (team lead: plugin wrote unpriced [models.*], caps did not hold)"
 anchors = ["crates/roko-cli/src/graph_task_dispatch/budget.rs::unpriced_plan_stop", "crates/roko-cli/src/dispatch_v2.rs::model_has_price", "crates/roko-core/src/config/serve.rs::chat_run_refusal"]
 links = { depends_on = [], blocks = [], related = ["bug-4e336b", "bug-1bc222", "gap-ceffb3", "gap-2bec05", "gap-cf427e", "gap-c8f388"], supersedes = [], duplicate_of = "" }
@@ -21,14 +21,14 @@ command = "grep -rqw 'fn capped_run_with_an_unpriced_model_is_refused_up_front' 
 
 [closed]
 at = 2026-10-16
-at_ts = "2026-10-16T09:12:26Z"
+at_ts = "2026-10-16T09:11:02Z"
 commit = "ad869974f"
 by = "commit trailer"
 executor = "unknown"
 size = "M"
 claimed_at = "2026-10-16T08:10:23Z"
 forced = false
-evidence = "Closed by ad869974f: budget: a capped run never calls a model it cannot price"
+evidence = "ad869974f: under a budget cap (a plan ceiling or max_daily_usd; --no-budget lifts it) failover passes over a model roko has no price for (no snapshot row, no [models.*] rates, no built-in rate) before any call, as a definitive unpriced_under_cap refusal. A priced fallback takes the task, even on the same provider; a --model pin is refused the same way; with nothing priced left the task fails at once, not retried, naming the model and the fix (cost_input_per_m and cost_output_per_m, 0 for a free local model, or --no-budget). The Claude CLI is exempt: it reports what each run cost. A chat host's run is refused up front with refusal code no_price (structuredContent.error.data.refusal and refusals) when none of the models it can run on has a price; model_registry::model_has_price in roko-core is the one rule for dispatch, serve and roko doctor (model_prices, chat_host_runs). capped_run_with_an_unpriced_model_is_refused_up_front, a_chat_run_needs_a_model_with_a_price, chat_run_refused_without_a_priced_model and the doctor chat-host test pass. On the stacked tip 0216a4cbd (with find-c3da60 and gap-ca1c92): fmt --check, clippy -D warnings and the lib tests of roko-core (2034), roko-agent (2353), roko-cli (3707) and roko-serve (1033) pass (tmp/hermes-roko-v5/roko-caps/logs/stack-checks.log)."
 +++
 
 ## Problem

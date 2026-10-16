@@ -2,14 +2,16 @@
 id = "gap-0bd49a"
 kind = "gap"
 title = "Agent shells in every ViabilityBench arm can reach the network, so an agent can fetch the public repo's hidden suites"
-status = "open"
-triage = "unverified"
+status = "done"
+triage = "verified"
 severity = "p1"
 goal = "proof"
 size = "L"
 subsystem = ["benchmarks/viabilitybench/driver"]
 created = 2026-09-29
-updated = 2026-09-30
+updated = 2026-10-16
+last_verified = 2026-10-16
+last_verified_rev = "09fafe3bd"
 source = "tmp/cybernetic-harness/workstreams/PROGRESS.md"
 discovered_from = "tmp/cybernetic-harness/workstreams/PROGRESS.md (wk-bench-fix2's report)"
 anchors = ["benchmarks/viabilitybench/driver/harness.py", "benchmarks/viabilitybench/driver/agent_env.py", "benchmarks/viabilitybench/driver/mini_loop.py", "benchmarks/viabilitybench/driver/run_cli.py", "benchmarks/viabilitybench/driver/run_roko.py", "benchmarks/viabilitybench/families/common/sandbox.py", "benchmarks/viabilitybench/driver/census.py"]
@@ -19,6 +21,18 @@ links = { depends_on = [], blocks = [], related = ["gap-f253cf", "gap-8c3752", "
 
 [[verify]]
 command = "grep -qw 'def test_an_agent_shell_cannot_reach_the_network' benchmarks/viabilitybench/driver/test_driver.py && benchmarks/viabilitybench/.venv/bin/python -m pytest benchmarks/viabilitybench/driver/test_driver.py -k test_an_agent_shell_cannot_reach_the_network -q"
+
+[closed]
+at = 2026-10-16
+at_ts = "2026-10-16T20:32:50Z"
+commit = "09fafe3bd"
+by = "commit trailer"
+executor = "claude-agent"
+via = "work-batch"
+size = "L"
+claimed_at = "2026-10-16T19:19:20Z"
+forced = false
+evidence = "09fafe3bd: common.sandbox now denies the network unless a rule admits loopback ports (common-1.4.0). So every truth suite, the census's visible re-run (census.NETWORK), the audit battery and the plan slice's census run agent code with no network. Records carry provenance.census_network_policy, and the roko_plan arm's network_policy adds the planner session's rule and egress summary. sandbox.BACKENDS and _host_kind are the seam for gap-29ac83's Linux backend. The [[verify]] passes: test_an_agent_shell_cannot_reach_the_network runs vb run --proxy on cheap_direct, roko_fixed and cheap_direct_msa. In each, the shell's curl to a local listener exits 7, the metering proxy forwards every model call, and the agent's planted clamp is refused (PermissionError) in its own visible check, the truth suite and the census re-run, so the listener sees 0 connections. All 3 cases fail with the old no-rule default. Every runner an arm file names has a network test (test_every_runner_has_a_network_test, plus the new test_codex_arm_shell_cannot_reach_the_network and test_roko_plan_planner_and_ladder_cannot_reach_the_network). Verifier CI: 39/39 cells green, every verdict sandbox-exec+net. benchmarks/viabilitybench: 768 passed, 16 skipped (no roko binary in the worktree, no analysis stack, opt-in sweeps). With VB_TEST_ROKO_BIN set to roko at 3e05c6f06, the real-Roko driver tests passed 47/47. Follow-ups filed: gap-bccf58, gap-b94a2c, gap-1db29e."
 +++
 
 ## Problem

@@ -2,15 +2,16 @@
 id = "gap-6a83de"
 kind = "gap"
 title = "The rewritten whitepaper has an independent review, the fixes it asks for, and a strict paperlint pass"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p1"
 goal = "whitepaper"
 size = "M"
 subsystem = ["docs/whitepaper"]
 created = 2026-10-15
-updated = 2026-10-15
-last_verified = 2026-10-15
+updated = 2026-10-16
+last_verified = 2026-10-16
+last_verified_rev = "5464da5b8"
 source = "status-quo-2026-10-15#decision-4"
 anchors = ["docs/whitepaper/REVIEW.md", "tools/paperlint.py"]
 lane = "paper"
@@ -19,6 +20,18 @@ links = { depends_on = [], blocks = [], related = ["gap-8117a8", "gap-ac1aed"], 
 
 [[verify]]
 command = "grep -q '^## Review of the 2026-10-02 rewrite' docs/whitepaper/REVIEW.md && sed -n '/^## Review of the 2026-10-02 rewrite/,$p' docs/whitepaper/REVIEW.md | grep -q '^Verdict: accept' && python3 tools/paperlint.py --strict --require-status reviewed docs/whitepaper"
+
+[closed]
+at = 2026-10-16
+at_ts = "2026-10-16T14:45:54Z"
+commit = "5464da5b8"
+by = "commit trailer"
+executor = "claude-agent"
+via = "work-batch"
+size = "M"
+claimed_at = "2026-10-16T08:06:57Z"
+forced = false
+evidence = "REVIEW.md gains '## Review of the 2026-10-02 rewrite' (findings 43-72, plus a table of what stays as written under decision 2 with each spec-7a71d6 child), ending 'Verdict: accept'. Every section read against the code at 5e32264ce, from D1/D2's 94 non-true claims plus the claims whose code changed since 7b6a5af44. Fixed: complexity-chosen rungs, resume of an edited plan, failover 'never costlier' (bfc8eb72b), run branch vs partial delivery (903e35f30), pass rate beside FG, portal worktrees and integration (contradicted); pass^k (not built, row removed); 'checkout never touched' -> left as found apart from .roko/ (tests/operator_checkout_clean.rs); per-call budget holds (eb26a6fe5); start rung by tier; the supervisor's three acted decisions; learners take success from the label; uniform prompt-experiment draws; loop-audit revert needs enforcement; guarded commit's three stores, observe mode and real checks; unchecked CLI agents only in task worktrees, Codex cap advisory, eleven safety checks; 'every loop above the tool-call loop'; signal hash tags; 7.3's real path and four interventions; 'Most work' (V4 fix 9); worktree per task. Trimmed 6,720 -> 6,496 words (budget 6,500); footnotes re-pinned to 5e32264ce; four figure labels fixed; seven orphaned evidence files removed (SHA256SUMS and provenance updated), R4 re-cited from 7.3. The [[verify]] passes; paperlint --strict --check-identifiers --require-status reviewed is clean on all 13 files; shasum -c OK; build.sh builds the PDF with no pandoc warning. Filed bug-86f6cb."
 +++
 
 ## Problem

@@ -9,13 +9,13 @@ goal = "whitepaper"
 size = "M"
 subsystem = ["tmp/cybernetic-harness/paper"]
 created = 2026-10-15
-updated = 2026-10-15
-last_verified = 2026-10-15
+updated = 2026-10-16
+last_verified = 2026-10-16
 source = "status-quo-2026-10-15#decision-4"
 anchors = ["tmp/cybernetic-harness/paper/OUTLINE.md", "tmp/cybernetic-harness/paper/REVIEW-SKELETON.md", "tools/paperlint.py"]
 lane = "paper"
 parent = "spec-f8d196"
-links = { depends_on = [], blocks = [], related = ["gap-ac1aed", "dec-536bbd"], supersedes = [], duplicate_of = "" }
+links = { depends_on = ["gap-8ff818"], blocks = [], related = ["gap-ac1aed", "dec-536bbd", "gap-6a83de", "gap-c22583", "gap-d2c478", "bug-f12b2d"], supersedes = [], duplicate_of = "" }
 
 [[verify]]
 command = "test -f tmp/cybernetic-harness/paper/REVIEW.md && grep -q '^Verdict: accept' tmp/cybernetic-harness/paper/REVIEW.md && python3 tools/paperlint.py --strict tmp/cybernetic-harness/paper/sections"
@@ -78,3 +78,5 @@ passes (the `[[verify]]` command).
 - Publication (9539: authors, licence, arXiv) is Will's later decision.
 
 2026-10-15 (status-quo assessment, finding 5): for the independent review (decision 4). The papers' "every tool call passes a seven-step guard" (research paper C0.4, C1.21, C3.12, C3.29; appendix A.1, Sensor and Bounds) holds only for API models and, by its PreToolUse hook, the Claude CLI. Codex is checked only after a command starts (its stream broker). Cursor runs `agent --force` with no check (`crates/roko-agent/src/cursor_cli_agent.rs:259`). Gemini CLI has no check. All three are contained only by per-task worktrees (decision 1214, `crates/roko-cli/src/graph_task_dispatch/failover.rs:33-42`). Evidence: `tmp/status-quo/2026-10-15/papers/D3-paper-00-03.md:76-81,222-224` and `papers/D7-paper-appendices.md:56,91-93`. Code gaps were filed from the same finding (Cursor; Codex and Gemini).
+
+2026-10-16 (independent review, a Claude agent on work/gap-aed6f1): the review is written (`tmp/cybernetic-harness/paper/REVIEW.md`, 39 findings, each fixed in the paper except the staged turn-on epic's mechanisms, which decision 2 keeps as written). Originals are in `tmp/cybernetic-harness/archive/2026-10-16-review/paper/`. The verdict is `revise` only because main's `tools/paperlint.py` still flags numbers inside the nine "Claims ledger" tables; gap-8ff818's exemption (closed on its branch at `f2f1b6ef6`) removes them, and with its paperlint the sections lint clean. Once gap-8ff818 is on main and the strict lint passes, the last line of REVIEW.md becomes `Verdict: accept` with no paper change, and this item can close. Filed from the review: gap-c22583 (verdict records never fill the request and diff hashes), gap-d2c478 (figure text below 8 pt), bug-f12b2d (`--force-resume`'s help text).

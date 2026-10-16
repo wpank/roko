@@ -2,7 +2,7 @@
 id = "gap-c013c5"
 kind = "gap"
 title = "PK16 Defaults that apply: Three live golden-path runs pass (pass^3), with an independent review of each merged diff (+1 more)"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p1"
 goal = "golden-path"
@@ -10,8 +10,9 @@ rank = 16
 size = "M"
 subsystem = ["self-hosting"]
 created = 2026-10-02
-updated = 2026-10-15
-last_verified = 2026-10-02
+updated = 2026-10-16
+last_verified = 2026-10-16
+last_verified_rev = "db6e21b00"
 source = "tmp/backlog/2026-10-02-complete-and-wire PK16"
 anchors = ["work/history/"]
 lane = "rust-cold"
@@ -23,6 +24,18 @@ command = "set -- work/history/golden-path-live-*.md; test -f \"$1\" && test \"$
 
 [[verify]]
 command = "set -- work/history/plan-set-live-*.md; test -f \"$1\" && grep -q -- '--max-parallel-plans 3' \"$1\" && grep -Eq 'graph-(run-)?[0-9a-f]' \"$1\" && grep -q 'all three plans started before the first finished' \"$1\""
+
+[closed]
+at = 2026-10-16
+at_ts = "2026-10-16T15:05:03Z"
+commit = "db6e21b00"
+by = "L1-golden (c013 live operator)"
+executor = "claude-agent"
+via = "work-batch"
+size = "M"
+claimed_at = "2026-10-16T08:07:13Z"
+forced = false
+evidence = "Backlog 3118: the steps of golden_path_live ran 3 times at 5e32264ce on the D11 ladder (gpt-oss-120b, glm-4.7, gpt-5.4-mini, gpt-5.4). roko loaded the keys itself from ~/.roko/.env through a symlink in a scratch HOME; nobody read them. 3 of 3 live runs passed every check, with 0 interventions: graph-795d816a (230 s, $0.283094, $0.0315 per verified task, 0 escalations), graph-c0012506 (125 s, $0.282566, $0.0314, 0) and graph-6bf8aeb4 (316 s, $0.610246, $0.0678, 1 escalation: T5 cheap to mid). pass^3 on the live test: 3/3. In each run the tamper screen caught one edit of a pinned acceptance test; none landed. The reviews (Claude Opus, read-only) found low-severity escapes in all three runs: T5 ASCII-only upper-casing, T1 docstring rewrite, T4 doc example switched off. So W8's GP bar (the review finds no escape) is unmet: filed find-4003b9 (p1), gap-f9fa2c and gap-2dea57. Backlog 3119: plan set graph-3cc12de7 with --max-parallel-plans 3. All three plans started before the first finished (within 24 ms of each other, 9.2 s before the first finished), and 3 of 3 were delivered into roko/batch/20261016T144458Z-651be4f6 for $0.141548. Spend: $1.33 by the wire count ($1.32 by roko) of the $14 approved. ~/.roko unchanged (sha256 and file tree); no roko serve; no fence tripped. Records: work/history/golden-path-live-2026-10-16.md and work/history/plan-set-live-2026-10-16.md; write-up tmp/status-quo/2026-10-16-live/golden-path.md."
 +++
 
 ## Problem

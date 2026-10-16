@@ -12,6 +12,8 @@
 //! failure, and publication failure are terminal. The service writes the
 //! `roko.delivery@1` checkpoint extension before queue submission and after
 //! every state transition so resume can continue at the first unproved step.
+//! A delivery's start and the state it ended in are published on the run's
+//! hub ([`DeliveryEvents`]).
 //!
 //! The adapter never writes the execution terminal state or releases a workspace
 //! lease -- those are outer-controller concerns.
@@ -20,6 +22,7 @@ use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+use roko_core::DashboardEvent;
 use roko_graph::delivery::{
     CompletionDeliveryReceiptV1, CompletionDeliveryRequest, CompletionDeliveryService,
     CompletionDeliveryState, DELIVERY_EXTENSION_KEY, DeliveryError, DeliveryReceiptStore,
@@ -33,6 +36,7 @@ use tracing::{debug, info, warn};
 use super::plan_check_events::PlanCheckEvents;
 use super::plan_runner::PlanRunInterruptHandle;
 use crate::runner::merge::{MergeTree, git_command, git_merge_tree, git_output};
+use crate::runner::tui_bridge::TuiBridge;
 
 // ---------------------------------------------------------------------------
 // Merge backend port (subset of runner::merge for this service)
@@ -856,6 +860,83 @@ impl DeliveryBackend for GitDeliveryBackend {
 }
 
 // ---------------------------------------------------------------------------
+// Delivery events
+// ---------------------------------------------------------------------------
+
+/// Publishes a delivery's start and its end on the run's hub (gap-4f6cbe).
+///
+/// `delivery_started` comes when [`CliCompletionDeliveryService`] starts
+/// driving a delivery, and `delivery_finished` with the state it ended in,
+/// so that `roko serve`'s run summary and a chat host can tell a delivered
+/// plan from one whose merge conflicted, whose check failed or that a stop
+/// cut short. Without a hub ([`Self::none`]) it publishes nothing.
+#[derive(Clone, Default)]
+pub struct DeliveryEvents {
+    tui: Option<TuiBridge>,
+}
+
+impl std::fmt::Debug for DeliveryEvents {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("DeliveryEvents")
+            .field("publishes", &self.tui.is_some())
+            .finish_non_exhaustive()
+    }
+}
+
+impl DeliveryEvents {
+    /// Events published through `tui`.
+    #[must_use]
+    pub fn new(tui: TuiBridge) -> Self {
+        Self { tui: Some(tui) }
+    }
+
+    /// Events published nowhere.
+    #[must_use]
+    pub fn none() -> Self {
+        Self::default()
+    }
+
+    fn started(&self, request: &CompletionDeliveryRequest) {
+        self.publish(|| DashboardEvent::DeliveryStarted {
+            plan_id: request.plan_id.clone(),
+            delivery_id: request.delivery_id.clone(),
+            target: request.target_branch.clone(),
+            branch: request.branch.clone(),
+            commit: request.commit_oid.clone(),
+        });
+    }
+
+    /// `receipt`'s delivery ended in `state`, for `reason`; `stopped_by` says
+    /// what stopped a cancelled one.
+    fn finished(
+        &self,
+        receipt: &CompletionDeliveryReceiptV1,
+        state: CompletionDeliveryState,
+        reason: Option<String>,
+        stopped_by: Option<String>,
+    ) {
+        self.publish(|| DashboardEvent::DeliveryFinished {
+            plan_id: receipt.request.plan_id.clone(),
+            delivery_id: receipt.request.delivery_id.clone(),
+            target: receipt.request.target_branch.clone(),
+            state: serde_json::to_value(state)
+                .ok()
+                .and_then(|state| state.as_str().map(str::to_string))
+                .unwrap_or_else(|| format!("{state:?}")),
+            merge_commit: receipt.merge_commit.clone(),
+            reason,
+            stopped_by,
+        });
+    }
+
+    fn publish(&self, event: impl FnOnce() -> DashboardEvent) {
+        if let Some(tui) = &self.tui {
+            tui.publish_event(event());
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // CliCompletionDeliveryService
 // ---------------------------------------------------------------------------
 
@@ -868,6 +949,7 @@ impl DeliveryBackend for GitDeliveryBackend {
 ///   serialization.
 /// - Writes the `roko.delivery@1` checkpoint extension on every transition
 ///   (via a callback the outer controller supplies).
+/// - Publishes the delivery's start and end ([`Self::with_events`]).
 /// - Never writes the plan terminal state or releases workspace leases.
 ///
 /// # Resume semantics
@@ -880,22 +962,31 @@ impl DeliveryBackend for GitDeliveryBackend {
 pub struct CliCompletionDeliveryService {
     store: DeliveryReceiptStore,
     backend: Arc<dyn DeliveryBackend>,
+    events: DeliveryEvents,
 }
 
 impl CliCompletionDeliveryService {
     /// Create a new delivery service.
     #[must_use]
     pub fn new(backend: Arc<dyn DeliveryBackend>) -> Self {
-        Self {
-            store: DeliveryReceiptStore::new(),
-            backend,
-        }
+        Self::with_store(DeliveryReceiptStore::new(), backend)
     }
 
     /// Create a delivery service with a pre-populated store (for resume).
     #[must_use]
     pub fn with_store(store: DeliveryReceiptStore, backend: Arc<dyn DeliveryBackend>) -> Self {
-        Self { store, backend }
+        Self {
+            store,
+            backend,
+            events: DeliveryEvents::none(),
+        }
+    }
+
+    /// Publish each delivery's start and end through `events` (gap-4f6cbe).
+    #[must_use]
+    pub fn with_events(mut self, events: DeliveryEvents) -> Self {
+        self.events = events;
+        self
     }
 
     /// Return a reference to the underlying receipt store.
@@ -904,10 +995,39 @@ impl CliCompletionDeliveryService {
         &self.store
     }
 
-    /// Drive the delivery state machine from its current state to terminal.
+    /// Drive the delivery state machine from its current state to terminal,
+    /// publishing its start and how it ended (gap-4f6cbe).
     async fn drive_delivery(
         &self,
         receipt: &mut CompletionDeliveryReceiptV1,
+    ) -> Result<(), DeliveryError> {
+        if receipt.state.is_terminal() {
+            return Ok(());
+        }
+        self.events.started(&receipt.request);
+        let mut stopped_by = None;
+        let driven = self.advance_delivery(receipt, &mut stopped_by).await;
+        if receipt.state.is_terminal() {
+            self.events
+                .finished(receipt, receipt.state, receipt.error.clone(), stopped_by);
+        } else if let Err(error) = &driven {
+            // It could not reach a terminal state.
+            self.events.finished(
+                receipt,
+                CompletionDeliveryState::TerminalFailed,
+                Some(error.to_string()),
+                None,
+            );
+        }
+        driven
+    }
+
+    /// Advance the delivery state machine from its current state to
+    /// terminal. `stopped_by` gets what stopped a cancelled one.
+    async fn advance_delivery(
+        &self,
+        receipt: &mut CompletionDeliveryReceiptV1,
+        stopped_by: &mut Option<String>,
     ) -> Result<(), DeliveryError> {
         loop {
             if receipt.state.is_terminal() {
@@ -997,6 +1117,7 @@ impl CliCompletionDeliveryService {
                     // A stop request that cut the check short cancels the
                     // delivery: the check did not fail (bug-7b62ff).
                     if !outcome.passed && outcome.stopped_by.is_some() {
+                        *stopped_by = outcome.stopped_by;
                         receipt.error = Some(outcome.summary.clone());
                         receipt.regression_evidence_ref = outcome.evidence_ref;
                         receipt
@@ -1460,6 +1581,85 @@ mod tests {
         assert_eq!(receipt.release_policy, ReleasePolicy::RetainForFailure);
         let error = receipt.error.as_deref().unwrap_or_default();
         assert!(error.contains("a cancel request stopped it"), "{error}");
+    }
+
+    /// gap-4f6cbe: a delivery publishes its start and the state it ended in,
+    /// with the merge, why it was not delivered and what stopped a cancelled
+    /// one. A delivery already recorded publishes nothing again.
+    #[tokio::test]
+    async fn a_delivery_publishes_its_start_and_how_it_ended() {
+        for (backend, state, merged, stopped_by) in [
+            (FakeDeliveryBackend::all_pass(), "delivered", true, None),
+            (FakeDeliveryBackend::merge_fails(), "conflict", false, None),
+            (
+                FakeDeliveryBackend::regression_fails(),
+                "regression_failed",
+                true,
+                None,
+            ),
+            (
+                FakeDeliveryBackend::regression_stopped(),
+                "cancelled",
+                true,
+                Some("cancel"),
+            ),
+            (
+                FakeDeliveryBackend::publish_fails(),
+                "terminal_failed",
+                true,
+                None,
+            ),
+        ] {
+            let hub = crate::state_hub::StateHub::new(64);
+            let mut published = hub.subscribe_events();
+            let service = CliCompletionDeliveryService::new(Arc::new(backend)).with_events(
+                DeliveryEvents::new(crate::runner::tui_bridge::TuiBridge::new(hub.sender())),
+            );
+            let request = test_request("d-events");
+
+            let receipt = service.deliver(request.clone()).await.unwrap();
+            service.deliver(request).await.unwrap();
+
+            let mut events = Vec::new();
+            while let Ok(envelope) = published.try_recv() {
+                events.push(envelope.payload);
+            }
+            let [
+                DashboardEvent::DeliveryStarted {
+                    plan_id,
+                    delivery_id,
+                    target,
+                    branch,
+                    commit,
+                },
+                DashboardEvent::DeliveryFinished {
+                    state: ended,
+                    merge_commit,
+                    reason,
+                    stopped_by: stopped,
+                    ..
+                },
+            ] = events.as_slice()
+            else {
+                panic!("{state}: {events:?}");
+            };
+            assert_eq!(
+                (
+                    plan_id.as_str(),
+                    delivery_id.as_str(),
+                    target.as_str(),
+                    branch.as_str(),
+                    commit.as_str()
+                ),
+                ("plan-a", "d-events", "main", "roko/plan-a", "abc123"),
+                "{state}"
+            );
+            assert_eq!(ended, state);
+            assert_eq!(merge_commit.is_some(), merged, "{state}");
+            assert_eq!(*reason, receipt.error, "{state}");
+            assert_eq!(reason.is_some(), state != "delivered", "{state}");
+            assert_eq!(stopped.as_deref(), stopped_by, "{state}");
+        }
     }
 
     // ── Publication failure: terminal ───────────────────────────────────

@@ -634,13 +634,34 @@ async fn api_not_found(req: Request) -> Response {
 ///   `[meta] verify` or the Cargo default, in place or as the delivery's
 ///   post-merge regression check) publishes `plan_check_started`,
 ///   `plan_check_heartbeat` every 15 s and `plan_check_finished`
-///   (gap-6b6ec1).
+///   (gap-6b6ec1);
+/// - `delivery_events`: a plan's delivery into its run's batch branch
+///   publishes `delivery_started` and `delivery_finished` with the state it
+///   ended in, and a run's summary milestones say how it ended (gap-4f6cbe).
 pub(crate) const FEATURES: &[&str] = &[
     "chat_refusals",
     "loop_events",
     "live_tool_steps",
     "plan_check_events",
+    "delivery_events",
 ];
+
+/// The summary of run `run_id`, as `GET /api/runs/{run_id}/summary` gives it.
+///
+/// The `/mcp` `run_status` tool gives the same. This is for a caller in the
+/// same process, such as a test that checks what a run's events tell a host
+/// (gap-4f6cbe).
+///
+/// # Errors
+///
+/// As the route: the id is not valid, or `state`'s workspace has no such
+/// run.
+pub async fn run_summary(
+    state: &Arc<AppState>,
+    run_id: &str,
+) -> Result<Value, crate::error::ApiError> {
+    runs::summarize_run(state, run_id).await
+}
 
 /// `GET /health` — bare liveness probe for load balancers and external tools.
 ///

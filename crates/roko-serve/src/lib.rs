@@ -2478,6 +2478,8 @@ fn dashboard_event_to_server(event: &roko_core::DashboardEvent) -> Option<Server
         | DashboardEvent::PlanCheckStarted { .. }
         | DashboardEvent::PlanCheckHeartbeat { .. }
         | DashboardEvent::PlanCheckFinished { .. }
+        | DashboardEvent::DeliveryStarted { .. }
+        | DashboardEvent::DeliveryFinished { .. }
         | DashboardEvent::AffectUpdated { .. }
         | DashboardEvent::AgentTopologyUpdated { .. }
         | DashboardEvent::CriticalPathEtaUpdated { .. }

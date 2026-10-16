@@ -47,7 +47,9 @@ These files are all new. Every child item uses this naming scheme:
     `09-status-and-roadmap.md`, `10-related-work.md`;
   - `appendix-status-matrix.md`, `data/mechanisms.toml`, `figures/`, `evidence/`, `references.bib`, `REVIEW.md` and
     `build.sh`.
-- **Tools:** `tools/paperlint.py` and `tools/status_matrix.py`, each with its tests.
+- **Tools:** `tools/paperlint.py`, with its tests. (The status-matrix tool this line used to also name was retired
+  in bug-ac2a01, 2026-10-16: the 2026-10-02 design-paper rewrite carries no status tags or appendix, so there was
+  nothing left for it to check.)
 
 ## Current state
 

@@ -6,10 +6,15 @@ Status: reviewed · budget none · owner gap-8d2c79
 > a fact-check of the rewrite against the code and brought each section within its word budget; that pass is an edit,
 > not an independent review.
 
+> **Note, 2026-10-16.** The status-matrix tool and the appendix and Figure 3 it generated were retired (bug-ac2a01):
+> the rewrite above carries no status tags, so every mention of the matrix or its `--check` below describes a check
+> that ran before the retirement. Its data file moved to `work/history/status-matrix-2026-10-02/mechanisms.toml`,
+> a dated record; the work graph in `work/items` is the live status.
+
 # Whitepaper review
 
 - **Reviewer:** wk-wp-review, a Claude agent that drafted no section and had no drafting context (gap-8d2c79).
-- **Read at:** `9947af4d2`, with the status matrix pinned at `a17d4dadd` (71 rows; `tools/status_matrix.py --check`
+- **Read at:** `9947af4d2`, with the status matrix pinned at `a17d4dadd` (71 rows; the matrix tool's `--check`
   passes).
 - **Fixes:** `f173fa9e1` (section text), `97c0c22e1` (`references.bib`), `7df1354b5` (frozen S09 excerpt and §8's
   footnotes), `d8cd83b23` (this directory's `README.md`), `856e52cac` (trims after the sync) and `5c144601f` (§5.2's
@@ -58,7 +63,7 @@ Status: reviewed · budget none · owner gap-8d2c79
 | 15 | §10 | Wrote opusplan as plain text, where §6 marks it as code | Fixed in `f173fa9e1` |
 | 16 | §3, §4, §9 | The sections cite merge commits (`1d923e377`, `33e107da1`); the matrix cites the commits they merged (`dc99a9e81`, and `763596768`, `189a14e65`, `ebf274ada`, `fb87e3738`) | Accepted: each merge contains its row's commit, so both references are right |
 | 17 | §2 | At 1.18×, the most over budget | Accepted: every sentence carries a sourced result or its design response, and the paper as a whole is within 10% |
-| 18 | §4.10, §4.12 | Said that no epic covers the review step. Matrix row SS6 names gap-25065c, which imports the research checklist and does not cover it. gap-0d64d5 (the approval hold with a per-task diff, under E6) was filed after the pin | Fixed in `c2f4772e8`: §4.10 and §4.12 name gap-0d64d5. The matrix keeps gap-25065c, because `tools/status_matrix.py` checks each item at the pinned commit, where gap-0d64d5 does not yet exist |
+| 18 | §4.10, §4.12 | Said that no epic covers the review step. Matrix row SS6 names gap-25065c, which imports the research checklist and does not cover it. gap-0d64d5 (the approval hold with a per-task diff, under E6) was filed after the pin | Fixed in `c2f4772e8`: §4.10 and §4.12 name gap-0d64d5. The matrix keeps gap-25065c, because the matrix tool checks each item at the pinned commit, where gap-0d64d5 does not yet exist |
 | 19 | paperlint | The number rule takes a footnote as a source only if it names a commit, a work item, a `[@key]` or a rollup or snapshot id. A frozen file cited with its sha256 does not count, so two footnotes also name gap-29a64e, the item that froze their files | Accepted; a possible refinement for the tool |
 | 20 | paperlint | `--strict docs/whitepaper/*.md` includes this directory's `README.md`, which fails by design: it has no status header, and it lists the banned words and the bare tag vocabulary. The verify runs the directory form, which reads only section files | Accepted |
 | 21 | Literature | Checked against the papers: kim2025towards (six benchmarks, +80.8% and −70.0%), rajput2026cheap (0.12–0.55, about 0.05, 46%, 3% against 32%), zhao2026specbench (30 tasks, 28 points per tenfold), bhola2026scrouting (266 tasks, a fifth of the cost, the ablation tie), wang2026compound, wang2026rethinking (Terminal-Bench 2.1), lin2026evopath, edwards2026askorassume (69.4%), narayan2025minions (97.9% at 5.7×), prasad2024adapt (up to 33%), brun2011proactive (5,355 merges, 16% textual, 1% build and 6% test) | Accepted: all match |
@@ -83,7 +88,7 @@ Status: reviewed · budget none · owner gap-8d2c79
 
 ## Reported, not changed here
 
-- **Matrix rows SS6 and IS6** could not take their new items, gap-0d64d5 and gap-8f8544. `tools/status_matrix.py`
+- **Matrix rows SS6 and IS6** could not take their new items, gap-0d64d5 and gap-8f8544. The matrix tool
   checks items at the pinned commit, and both were filed after it. SS6 still names gap-25065c, an import task; IS6
   names none. EX8, SS3 and DM2 took theirs in `eee9c3dd5`. Both remaining rows can move at the next refresh.
 - **Rows IS4, IS5, LM1 and RC6** may move at that refresh (finding 28).
@@ -95,7 +100,7 @@ Verdict: accept
 - **Reader:** w3-pk95, a Claude agent that wrote none of the re-pinned text and had no drafting context (backlog task
   9504, gap-d4a1c1). Another agent wrote task 9503's sections.
 - **Read at:** `79ba9911f`, where the whitepaper is as `ec12c7513` left it, with the matrix pinned at `a43288b5f` (71
-  rows; `tools/status_matrix.py --check` passes, with the warnings of finding 39).
+  rows; the matrix tool's `--check` passes, with the warnings of finding 39).
 - **Scope:** every sentence of §0, §1, §3, §4, §5, §6, §8, §9 and the README that changed after the first read: the
   re-pins at `ed0c33bd5` (`12a8d7793`), at `41228d7b2` (`9a37ad4d4`) and at `a43288b5f` (`29996ca33`, `ec12c7513`),
   read in the current text; the 13 rows `9d059cc72` moved, with its claims and figures; and the two files `ac644b6d7`
@@ -134,7 +139,7 @@ Verdict: accept
 | 36 | §4.8 | "The budget gate history sets (`99adacd6d`) is PARTIAL@a43288b5f" reads as if "budget gate history" were one noun; the claim is right | Should change: "the retry budget that gate history sets" |
 | 37 | §9.3 | "Four goals follow in order" lists E2 (spec-e9d7ec) under Truth and E13 (spec-f2463d) under Proof as work to come, but both closed before the pin, E2 in `a43288b5f` itself and E13 in `d7070e368`; §4.12 and §8.5 already treat E2 as done. Five of the six Golden-path epics had closed by the pin, which "most of them merged" understates. E4 (spec-b7303f) closed after the pin | Should change: mark the closed epics |
 | 38 | §3.1; §9.1, V10's row | gap-198c9c, cited for pause (SS5) and for V10, closed in wave 1 (`f37936858`), after 9503 was written: its tasks 1207 and 1208 make pause hold. At the pin pause is as row SS5 says, so the text holds as a snapshot, as in finding 28 | For gap-08d9b2's final re-pin: move SS5 if the fix holds there, and cite what is still open |
-| 39 | Matrix | `tools/status_matrix.py --check` warns that eight rows have a fix, wire or build verdict but no item: RC1, RC3, RC6, LM3, SS3, SS5, SS6 and DM2. The items the text cites for them (gap-625195, gap-e00238, gap-f548c1, gap-843aef, gap-ce1d11) were filed after the pin, where the tool looks; LM3 could name gap-644040, open at the pin. RC1, RC3 and RC5 take the verdict fix where the audit's matrix says keep, though `9d059cc72` says the verdicts follow the audit's; fix suits their live defects. QA7 (PARTIAL, keep) has no item | For the final re-pin |
+| 39 | Matrix | The matrix tool's `--check` warns that eight rows have a fix, wire or build verdict but no item: RC1, RC3, RC6, LM3, SS3, SS5, SS6 and DM2. The items the text cites for them (gap-625195, gap-e00238, gap-f548c1, gap-843aef, gap-ce1d11) were filed after the pin, where the tool looks; LM3 could name gap-644040, open at the pin. RC1, RC3 and RC5 take the verdict fix where the audit's matrix says keep, though `9d059cc72` says the verdicts follow the audit's; fix suits their live defects. QA7 (PARTIAL, keep) has no item | For the final re-pin |
 | 40 | §0–§10 | 7,755 words, 1.19× the 6,500 decided in dec-2cd76a, against 7,135 (1.10×) at the first read; the re-pins added 620 words, 238 of them in `29996ca33`. §0, §3, §4 and §9 sit at 1.27–1.29× their budgets, 3 to 15 words under strict lint's limit, so the changes above must be close to word-neutral there. Finding 17 accepted §2's 1.18× because the whole was within 10%; it no longer is | For the author: trim before the tag, or accept 1.19× |
 | 41 | Tags, numbers, figures | Every tag in the changed text matches its row or claim at the pin. QA7, RC3, RC4, RC5 and SS3 say what the live run showed, and so does RC1 but for finding 31; EX4 and IS5, lowered on the static re-check, rest on the code and the canaries, and EX4 says no live run has used it. The run's numbers in the text match the frozen files: about $1.2–1.4, ten tasks verified, seven on gpt-oss-120b, failover down to the cheap rung four times, a rate-limited call retried about 1 s later, three knowledge entries per prompt, retries raised to five. Figures 1 and 2 and their text versions carry the matrix's marks, and the re-pin changed only §6's tags | Accepted |
 | 42 | `evidence/` | The two 2026-10-02 files match their sources but for the rewrites their rows list. The run's copy still names the audit's own README, a gitignored file, as its row records | Accepted |

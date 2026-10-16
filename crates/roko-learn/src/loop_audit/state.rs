@@ -14,8 +14,11 @@
 //!    dormant loop is never `null` or `harm`;
 //! 3. at most one transition per loop per dwell (24 h and 100 opportunities);
 //! 4. `null` needs a narrow sequence after N_null opportunities;
-//! 5. a placebo transition, an SRM alarm or an ordering violation on a clean
-//!    loop sets `audit_broken`, which freezes every transition;
+//! 5. a placebo transition, a placebo whose ι_net or β interval excludes 0
+//!    ([`placebo_shows_effect`]), an SRM alarm or an ordering violation on a
+//!    clean loop sets `audit_broken`, which freezes every transition. The
+//!    placebo's arms are identical, so no influence (`inert`) and a null
+//!    benefit (`null`) are what it is built to show: neither moves it;
 //! 6. `enforce = false` keeps the learned policy, and exempt loops are never
 //!    demoted. `outcome_sensor_degraded` also freezes β-based transitions for
 //!    loops whose outcome uses the false-green label.
@@ -164,7 +167,8 @@ pub struct LoopStatus {
     pub enforce: bool,
     /// Audited but never demoted.
     pub exempt: bool,
-    /// The placebo loop: any transition of it breaks the auditor.
+    /// The placebo loop: no influence and a null benefit, its design, do
+    /// not move it, and any other transition of it breaks the auditor.
     pub placebo: bool,
 }
 
@@ -245,8 +249,25 @@ pub struct AuditorSignals {
     pub srm_alarm: bool,
     /// An ordering violation on a clean loop.
     pub ordering_on_clean_loop: bool,
+    /// The placebo shows an effect its identical arms cannot have
+    /// ([`placebo_shows_effect`]; S03 §4.3).
+    pub placebo_effect: bool,
     /// The M4 sensor's catch rate fell below its floor.
     pub outcome_sensor_degraded: bool,
+}
+
+/// Whether `evidence`, the placebo loop's, shows an effect its identical
+/// arms cannot have (S03 §4.3): the interval of its ι_net, or of its β once
+/// β is estimated, excludes 0. Its proposals are the same no-op on both
+/// arms, so either says the audit's own measurement is broken. `false`
+/// while every interval holds 0 or none is estimated yet.
+#[must_use]
+pub fn placebo_shows_effect(evidence: &LoopEvidence) -> bool {
+    let excludes_zero =
+        |interval: Option<(f64, f64)>| interval.is_some_and(|(low, high)| low > 0.0 || high < 0.0);
+    let influence = evidence.influence.as_ref().and_then(|iota| iota.interval);
+    let benefit = evidence.beta.as_ref().and_then(|beta| beta.interval);
+    excludes_zero(influence) || excludes_zero(benefit)
 }
 
 /// A loop's move, with its rule and evidence.
@@ -336,6 +357,9 @@ impl Auditor {
         if self.broken.is_none() {
             if signals.srm_alarm {
                 self.broken = Some("SRM e-value above 1/α_srm".to_string());
+            } else if signals.placebo_effect {
+                let why = "the placebo shows an effect: its ι_net or β interval excludes 0";
+                self.broken = Some(why.to_string());
             } else if signals.ordering_on_clean_loop {
                 self.broken = Some("ordering violation on a clean loop".to_string());
             }
@@ -424,7 +448,10 @@ impl Auditor {
                 ),
             );
         }
+        // The placebo's arms are identical, so its ι is 0 by design (S03
+        // §4.2): that is no move. The placebo signal reads its intervals.
         if audited
+            && !status.placebo
             && let Some(influence) = &evidence.influence
             && n >= p.n_iota
             && influence
@@ -471,8 +498,10 @@ impl Auditor {
                 format!("UCB(β) {:.3}", upper(&evidence.beta).unwrap_or_default()),
             );
         }
+        // A narrow null is the placebo's design too.
         if judge_beta
             && in_probation
+            && !status.placebo
             && n >= p.n_null
             && lower(&evidence.beta).is_some_and(|low| low > -p.delta_min)
             && upper(&evidence.beta).is_some_and(|high| high < p.delta_min)
@@ -674,6 +703,73 @@ mod tests {
         };
         let alarmed = srm.evaluate(&real, &harmful, &signals);
         assert!(alarmed.audit_broken && alarmed.transition.is_none());
+    }
+
+    /// S03 §4.2-§4.3 (gap-6f31c3): the placebo's identical arms give it no
+    /// influence and a null benefit by design, so neither moves it, where the
+    /// same evidence flags a real loop `inert` or `null`. An interval of its
+    /// ι_net or β that leaves 0 is the placebo signal, which breaks the
+    /// auditor before any loop moves.
+    #[test]
+    fn placebo_null_is_no_move_and_its_effect_breaks_the_auditor() {
+        let flat = InfluenceEstimate {
+            opportunities: 2_000,
+            iota: 0.0,
+            aa_floor: 0.0,
+            iota_net: 0.0,
+            interval: Some((-0.01, 0.01)),
+            iota_cite: None,
+        };
+        let null = exposed(2_000, estimate(0.0, 0.01, 2_000));
+        let inert = LoopEvidence {
+            influence: Some(flat.clone()),
+            ..null.clone()
+        };
+        let signals = AuditorSignals::default();
+        let mut auditor = Auditor::new(AuditParams::default());
+        let real = LoopStatus::registered(false, false, false);
+        let placebo = LoopStatus::registered(false, false, true);
+        let moved = auditor.evaluate(&real, &inert, &signals);
+        assert_eq!(moved.reason, Some(ReasonCode::Inert), "{moved:?}");
+        let moved = auditor.evaluate(&real, &null, &signals);
+        assert_eq!(moved.reason, Some(ReasonCode::Null), "{moved:?}");
+        for evidence in [&inert, &null] {
+            let held = auditor.evaluate(&placebo, evidence, &signals);
+            assert!(held.transition.is_none(), "{held:?}");
+            assert!(!held.audit_broken, "{held:?}");
+            assert!(!placebo_shows_effect(evidence));
+        }
+
+        // Influence or a benefit away from 0 is an effect no placebo has.
+        let influenced = LoopEvidence {
+            influence: Some(InfluenceEstimate {
+                iota_net: 0.3,
+                interval: Some((0.2, 0.4)),
+                ..flat
+            }),
+            ..LoopEvidence::default()
+        };
+        assert!(placebo_shows_effect(&influenced));
+        let harmful = LoopEvidence {
+            beta: Some(estimate(-0.3, 0.05, 500)),
+            ..LoopEvidence::default()
+        };
+        assert!(placebo_shows_effect(&harmful));
+        assert!(!placebo_shows_effect(&LoopEvidence::default()));
+
+        // The signal freezes every loop, even one whose harm is conclusive.
+        let tripped = AuditorSignals {
+            placebo_effect: true,
+            ..AuditorSignals::default()
+        };
+        let mut auditor = Auditor::new(AuditParams::default());
+        let harm = exposed(2_000, estimate(-0.4, 0.05, 2_000));
+        let frozen = auditor.evaluate(&real, &harm, &tripped);
+        assert!(
+            frozen.audit_broken && frozen.transition.is_none(),
+            "{frozen:?}"
+        );
+        assert!(auditor.broken().is_some_and(|why| why.contains("placebo")));
     }
 
     /// Guard 6: an exempt loop is audited but never demoted.

@@ -52,6 +52,9 @@ pub struct PromptCacheDigest {
     pub episodes: SnapshotPart,
     /// The playbooks.
     pub playbooks: SnapshotPart,
+    /// The section bandit: the labelled outcomes its posteriors hold, and a
+    /// digest of its state (L-sec; gap-6f31c3).
+    pub sections: SnapshotPart,
 }
 
 /// One store's part of a [`PromptCacheDigest`].
@@ -69,6 +72,16 @@ impl SnapshotPart {
         Self {
             count: ids.len(),
             digest: roko_learn::telemetry::records::b3_digest(ids.join("\n").as_bytes()),
+        }
+    }
+
+    /// The section bandit's part: the labelled outcomes its posteriors hold,
+    /// and a digest of its state as JSON.
+    fn of_bandit(bandit: &SectionBandit) -> Self {
+        let state = serde_json::to_vec(bandit).unwrap_or_default();
+        Self {
+            count: usize::try_from(bandit.labelled_outcomes()).unwrap_or(usize::MAX),
+            digest: roko_learn::telemetry::records::b3_digest(&state),
         }
     }
 }
@@ -114,13 +127,15 @@ impl PromptCache {
 
     /// What this snapshot holds, for the decision records that name it (S01
     /// P0-10, backlog 4214): each store's item count and a digest of their
-    /// ids. What is written after the snapshot changes neither.
+    /// ids, and the section bandit's labelled outcomes and state. What is
+    /// written after the snapshot changes none of them.
     #[must_use]
     pub fn digest(&self) -> PromptCacheDigest {
         PromptCacheDigest {
             knowledge: SnapshotPart::of(self.neuro_entries.iter().map(|entry| entry.id.as_str())),
             episodes: SnapshotPart::of(self.episodes.iter().map(|episode| episode.id.as_str())),
             playbooks: SnapshotPart::of(self.playbooks.iter().map(|playbook| playbook.id.as_str())),
+            sections: SnapshotPart::of_bandit(&self.section_bandit),
         }
     }
 }

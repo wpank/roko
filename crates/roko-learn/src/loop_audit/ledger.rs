@@ -5,8 +5,9 @@
 //! - [`LoopAuditRecord`], `roko.loop_audit/1`: the cross-run loop-audit
 //!   ledger, `.roko/learn/loop-audit.jsonl`, since a loop's state spans runs
 //!   (its dwell is 24 h). Its kinds are `loop.registered`, `loop.health`,
-//!   `loop.transition`, `loop.canary`, `loop.paired_replay` and
-//!   `loop.audit_cleared`, a person's clear of a tripped audit.
+//!   `loop.transition`, `loop.canary`, `loop.paired_replay`,
+//!   `loop.audit_broken`, why the audit tripped, and `loop.audit_cleared`, a
+//!   person's clear of a tripped audit.
 //! - [`FaultRecord`], `roko.fault/1`: the `loop.fault` ground truth, per run
 //!   in `.roko/runs/<run_id>/faults.jsonl`, which only the evaluation joins.
 //!
@@ -103,6 +104,9 @@ pub enum LoopAuditRow {
     /// One paired replay for ι_beh.
     #[serde(rename = "loop.paired_replay")]
     PairedReplay(PairedReplayRow),
+    /// The audit tripped, and why.
+    #[serde(rename = "loop.audit_broken")]
+    AuditBroken(AuditBrokenRow),
     /// A person cleared the tripped audit.
     #[serde(rename = "loop.audit_cleared")]
     AuditCleared(AuditClearedRow),
@@ -274,6 +278,19 @@ pub struct PairedReplayRow {
     pub distance: f64,
     /// What the pair cost.
     pub cost_usd: f64,
+}
+
+/// `loop.audit_broken`: the audit tick that tripped the audit (S03 §4.6's
+/// `audit_broken`) says why: a placebo that showed an effect or would have
+/// moved, or an SRM alarm (gap-6f31c3). The row's `loop_id` is `*`: the trip
+/// freezes every loop. The tick's health rows say `placebo_ok: false`, which
+/// keeps the audit tripped until a person clears it (`loop.audit_cleared`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AuditBrokenRow {
+    /// What tripped it, in words.
+    pub reason: String,
+    /// Always `auditor`.
+    pub actor: Actor,
 }
 
 /// `loop.audit_cleared`: a person cleared the tripped audit (S03 §4.6's

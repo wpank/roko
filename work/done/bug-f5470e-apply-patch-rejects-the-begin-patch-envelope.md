@@ -2,14 +2,16 @@
 id = "bug-f5470e"
 kind = "bug"
 title = "apply_patch rejects the *** Begin Patch envelope that OpenAI-family models send to a tool of that name, and its error does not say which format it takes, so gpt-oss-120b retries it a dozen times"
-status = "open"
-triage = "unverified"
+status = "done"
+triage = "verified"
 severity = "p2"
 goal = "core"
 size = "S"
 subsystem = ["roko-std/tools"]
 created = 2026-10-15
-updated = 2026-10-15
+updated = 2026-10-16
+last_verified = 2026-10-16
+last_verified_rev = "cbc68e101"
 source = "tmp/hermes-roko-v5/findings/roko-demos.md (roko-demos, 2026-10-15)"
 discovered_from = "hermes-roko-v5 round: demo plans run from Hermes in the roko repo"
 anchors = ["crates/roko-std/src/tool/builtin/apply_patch.rs::parse_single_file_patch", "crates/roko-std/src/tool/builtin/apply_patch.rs::DESCRIPTION"]
@@ -17,6 +19,17 @@ links = { depends_on = [], blocks = [], related = ["bug-0c7f25"], supersedes = [
 
 [[verify]]
 command = "grep -rqw 'fn apply_patch_accepts_the_begin_patch_envelope' crates/roko-std/ && cargo test -p roko-std apply_patch_accepts_the_begin_patch_envelope"
+
+[closed]
+at = 2026-10-16
+at_ts = "2026-10-16T04:13:31Z"
+commit = "cbc68e101"
+by = "commit trailer"
+executor = "unknown"
+size = "S"
+claimed_at = "2026-10-16T02:38:08Z"
+forced = false
+evidence = "cbc68e101: apply_patch accepts the *** Begin Patch envelope (one *** Update File section; @@ hunks located by their context and removed lines, after their @@ line; *** End of File), refuses Add/Delete/Move and a second file with what it takes, patches the call path for a header-less unified diff, and answers a patch it cannot read with both formats and an example of each. apply_patch_accepts_the_begin_patch_envelope (the demo-multistage STAGE-3 envelope) and 3 more new tests pass with the 7 old ones (cargo test -p roko-std --lib apply_patch: 11 passed)."
 +++
 
 ## Problem

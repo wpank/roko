@@ -50,10 +50,8 @@
 - **P3** [bug-e0624e](items/bug-e0624e-get-api-plans-id-tasks-gives-the.md) GET /api/plans/{id}/tasks gives the plan id as the plan's title, so Hermes' Run dialog and run label show demo-hello-world instead of plan.md's title [bug] · size S
 - **P3** [gap-8f84d1](items/gap-8f84d1-the-plan-listing-stops-saying-a-plan.md) The plan listing stops saying a plan is a demo once it has run, so hosts cannot hide fixtures, group demos or keep demo output out of Merge · size S
 
-### roko-cli/graph_execution (3)
-- **P2** [bug-7b62ff](items/bug-7b62ff-cancelling-a-plan-run-during-its-post.md) Cancelling a plan run during its post-merge regression check leaves the check running and the workspace runner lock held, so the next run fails at once [bug] · size M
-- **P2** [bug-a7e018](items/bug-a7e018-cargo-metadata-offline-fails-in-the-roko.md) cargo metadata --offline fails in the roko repo, so plan footprints and gate impact analysis treat every .rs edit as touching every package [bug] · size S
-- **P3** [bug-7973a6](items/bug-7973a6-whole-plan-and-regression-checks-run-under.md) Whole-plan and regression checks run under sh while task verify steps run under bash -o pipefail, so a copied step behaves differently [bug] · size S
+### roko-core/child_env (1)
+- **P2** [gap-3a5ce8](items/gap-3a5ce8-check-commands-keep-home-so-git-s.md) Check commands keep HOME, so git's credential helper (osxkeychain) and ~/.ssh keys still let a check push to GitHub as the person · size S
 
 ### roko-learn/cascade-router (1)
 - **P2** [spec-6ac537](items/spec-6ac537-epic-cybernetic-core.md) Epic: cybernetic core [spec] · size L
@@ -67,9 +65,15 @@
 ### roko-cli/runner (1)
 - **P2** [bug-3f3990](items/bug-3f3990-the-linux-firejail-plugin-sandbox-ignores.md) The Linux firejail plugin sandbox ignores sandbox.allowed_paths and filesystem_write, which macOS Seatbelt enforces [bug] · size M
 
-### roko-std/tools (1)
-- **P2** [bug-f5470e](items/bug-f5470e-apply-patch-rejects-the-begin-patch-envelope.md) apply_patch rejects the *** Begin Patch envelope that OpenAI-family models send to a tool of that name, and its error does not say which format it takes, so gpt-oss-120b retries it a dozen times [bug] · size S
+### roko-std (1)
+- **P2** [gap-ebd5e0](items/gap-ebd5e0-roko-s-own-agent-tools-bash-run.md) roko's own agent tools (bash, run_tests, ACP bash, approved staged calls, ShellExec cells) still let an agent's command use the person's gh login · size S
 
 ### paper (1)
 - **P3** [gap-85f86a](items/gap-85f86a-research-paper-re-run-the-prior-art.md) Research paper: re-run the prior-art listing sweep (Q13–Q15, Q17) in submission week and read the Li 2026 lead · size S · **on hold:** runs in submission week
+
+### roko-cli/graph_execution (1)
+- **P3** [bug-7973a6](items/bug-7973a6-whole-plan-and-regression-checks-run-under.md) Whole-plan and regression checks run under sh while task verify steps run under bash -o pipefail, so a copied step behaves differently [bug] · size S
+
+### roko-core/config (1)
+- **P3** [bug-a0d05b](items/bug-a0d05b-roko-core-s-resolve-api-key-child.md) roko-core's resolve_api_key child tests run no test: --exact with a bare test name matches nothing, and the parent checks only the exit status [bug] · size S
 

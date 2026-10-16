@@ -2,14 +2,16 @@
 id = "bug-72e919"
 kind = "bug"
 title = "plan validate --dynamic counts a check that cannot run (exit 127, command not found) as red on the base"
-status = "open"
-triage = "unverified"
+status = "done"
+triage = "verified"
 severity = "p3"
 goal = "golden-path"
 size = "S"
 subsystem = ["roko-cli/plan_validate"]
 created = 2026-10-16
 updated = 2026-10-16
+last_verified = 2026-10-16
+last_verified_rev = "089ccb340"
 source = "tmp/hermes-roko-v6/findings/plans-research.md (plans-research, 2026-10-16), proposed item 6"
 discovered_from = "hermes-roko-v6 round: mori-style plans in roko"
 anchors = ["crates/roko-cli/src/spec_red_on_base.rs::classify", "crates/roko-cli/src/spec_red_on_base.rs::Outcome"]
@@ -17,6 +19,15 @@ links = { depends_on = [], blocks = [], related = ["bug-6fa025"], supersedes = [
 
 [[verify]]
 command = "grep -rqw 'fn red_on_base_treats_a_missing_command_as_unknown' crates/roko-cli/ && cargo test -p roko-cli --lib red_on_base_treats_a_missing_command_as_unknown"
+
+[closed]
+at = 2026-10-16
+at_ts = "2026-10-16T21:16:30Z"
+commit = "089ccb340"
+by = "commit trailer"
+executor = "claude-agent"
+forced = false
+evidence = "Closed by 089ccb340. Verify passed (cargo test -p roko-cli --lib red_on_base_treats_a_missing_command_as_unknown); roko-cli lib tests 3734 passed (gist test skipped); clippy -p roko-cli -D warnings and nightly fmt clean. Live, plan validate --spec-quality --dynamic --fixture on a scratch plan checked by pytest (not installed), ./bin/tool and test -f: before (roko-main 47b3cdd20) all three tasks were red with SQ06 = 1; after, T1 is unknown/cannot_run (`pytest` is not installed, exit 127) with SQ06 = 0 and the other two stay red. speclint dynamic.py has no cannot_run outcome yet."
 +++
 
 ## Problem

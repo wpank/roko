@@ -39,6 +39,8 @@ command = "claude"
 timeout_ms = 120000
 ttft_timeout_ms = 15000
 connect_timeout_ms = 5000
+# Logs in with a subscription on this machine (dec-55532d).
+billing = "subscription"
 
 [providers.codex_cli]
 kind = "codex_cli"
@@ -46,6 +48,8 @@ command = "codex"
 timeout_ms = 120000
 ttft_timeout_ms = 15000
 connect_timeout_ms = 5000
+# Logs in with a subscription on this machine (dec-55532d).
+billing = "subscription"
 
 [providers.groq]
 kind = "openai_compat"

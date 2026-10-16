@@ -2,21 +2,34 @@
 id = "gap-8f36f6"
 kind = "gap"
 title = "roko.toml sets no billing for the Claude and Codex CLI providers, so their attempts' billed_usd is unknown: mark both subscription (dec-55532d)"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p3"
 goal = "golden-path"
 size = "S"
 subsystem = ["roko.toml"]
 created = 2026-10-15
-updated = 2026-10-15
-last_verified = 2026-10-15
+updated = 2026-10-16
+last_verified = 2026-10-16
+last_verified_rev = "398212ed3"
 source = "status-quo-2026-10-15#decision-3"
 anchors = ["roko.toml", "crates/roko-core/src/config/provider.rs::ProviderBilling", "crates/roko-core/src/config/provider.rs::ProviderConfig"]
 links = { depends_on = [], blocks = [], related = ["dec-55532d"], supersedes = [], duplicate_of = "" }
 
 [[verify]]
 command = "python3 -c 'import sys, tomllib; p = tomllib.load(open(\"roko.toml\", \"rb\"))[\"providers\"]; sys.exit(0 if all(p[n].get(\"billing\") == \"subscription\" for n in (\"claude_cli\", \"codex_cli\")) else 1)'"
+
+[closed]
+at = 2026-10-16
+at_ts = "2026-10-16T13:57:59Z"
+commit = "398212ed3"
+by = "commit trailer"
+executor = "claude-agent"
+via = "work-batch"
+size = "S"
+claimed_at = "2026-10-16T08:07:07Z"
+forced = false
+evidence = "roko.toml [providers.claude_cli] and [providers.codex_cli] now set billing = \"subscription\" (dec-55532d), each with a one-line comment citing the decision. Verify command (tomllib check on both providers) passes. `roko config validate` (prebuilt target/debug/roko) still reports 0 errors, 1 pre-existing unrelated warning (groq API key env unset). Commit 398212ed3."
 +++
 
 ## Problem

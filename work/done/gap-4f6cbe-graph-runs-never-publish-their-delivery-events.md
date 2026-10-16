@@ -2,7 +2,7 @@
 id = "gap-4f6cbe"
 kind = "gap"
 title = "Graph runs never publish their delivery events, so roko serve and hosts cannot say how a delivery ended"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p2"
 goal = "hermes"
@@ -11,13 +11,23 @@ subsystem = ["roko-cli/delivery"]
 created = 2026-10-16
 updated = 2026-10-16
 last_verified = 2026-10-16
+last_verified_rev = "47cd7b9dc"
 source = "tmp/hermes-roko-v5/findings/plugin-runs.md (plugin-runs, 2026-10-16)"
 discovered_from = "bug-7b62ff follow-up 2359ba4ec: a cancelled delivery is recorded only in the checkpoint"
 anchors = ["crates/roko-cli/src/graph_execution/delivery.rs::drive_delivery", "crates/roko-serve/src/routes/runs.rs::delivery_end"]
 links = { depends_on = [], blocks = [], related = ["bug-7b62ff"], supersedes = [], duplicate_of = "" }
 
 [[verify]]
-command = "grep -rqw 'fn a_graph_run_publishes_its_delivery_end' crates/roko-cli && cargo test -p roko-cli a_graph_run_publishes_its_delivery_end"
+command = "grep -rqw 'fn a_graph_run_publishes_its_delivery_end' crates/roko-cli && cargo test -p roko-cli --lib a_graph_run_publishes_its_delivery_end"
+
+[closed]
+at = 2026-10-16
+at_ts = "2026-10-16T10:46:24Z"
+commit = "ec56c37da"
+size = "M"
+claimed_at = "2026-10-16T08:07:50Z"
+forced = false
+evidence = "ec56c37da: CliCompletionDeliveryService (graph_execution/delivery.rs::drive_delivery) publishes hub events delivery_started (plan_id, delivery_id, target, branch, commit) and delivery_finished (state delivered|conflict|regression_failed|cancelled|terminal_failed, merge_commit, reason, stopped_by) through DeliveryEvents, which the plan runner gives both deliveries (whole and partial); the run index writes both durably. roko serve's delivery milestone reads delivery_finished (and still graph.delivery): 'delivery completed', 'delivery cancelled' (a stop, not a failure), 'delivery failed: ...'; /health features list delivery_events. Verify: a_graph_run_publishes_its_delivery_end (end to end, read back through serve's summary), a_delivery_publishes_its_start_and_how_it_ended and run_summary_says_how_its_delivery_ended pass; roko-cli lib 3707 passed (6 ignored, gist skipped) and roko-serve lib 1033 passed on 47cd7b9dc (main 7a68db4c5 merged in), roko-core lib 2032 passed, clippy -D warnings clean (roko-core, roko-cli, roko-serve), plan_branch_integration 4 passed, all with a scratch HOME. Live, $0: the built binary with a fake claude_cli agent: a delivered plan run publishes started/finished delivered; a run stopped by SIGINT during its regression check publishes finished cancelled stopped_by SIGINT and its batch is back at the base; roko serve's summaries say 'delivery completed' and 'delivery cancelled'."
 +++
 
 ## Problem

@@ -605,6 +605,64 @@ async fn run_plans(
         .await
 }
 
+/// What the spec gate refused in plan run `run_id` before any agent ran,
+/// as the words that follow what was refused (bug-9a5970), or `None` when it
+/// refused nothing. A run's status and the portal's alert band say so,
+/// instead of task-level failures.
+async fn spec_gate_refusal(state: &AppState, run_id: &str) -> Option<String> {
+    let global_log = state.layout.events_jsonl_path();
+    let run_id = run_id.to_string();
+    let refusals = tokio::task::spawn_blocking(move || {
+        crate::run_end::spec_gate_refusals(&global_log, &run_id)
+    })
+    .await
+    .unwrap_or_default();
+    (!refusals.is_empty()).then(|| {
+        format!(
+            "was refused by the spec gate before any agent ran: {}",
+            refusals.join("; ")
+        )
+    })
+}
+
+/// Record in run `run_id`'s own index why roko did not run it (bug-9a5970):
+/// `message`, the run's error, and, unless the run began and recorded its own
+/// end, a `run_completed` with outcome `refused` whose reason is `error`'s
+/// first line, `started` being when the run's task began. Without it a run
+/// that failed before its plan started, such as one that found the runner
+/// lock taken, had no events: its id answered 404, and once serve restarted
+/// nothing said why. The rows go to the run's index only
+/// ([`crate::run_end`]); the unscoped `error` on the bus stays for the
+/// portal's alert band.
+async fn record_refused_start(
+    state: &AppState,
+    run_id: &str,
+    message: &str,
+    error: &anyhow::Error,
+    started: std::time::Instant,
+) {
+    let global_log = state.layout.events_jsonl_path();
+    let run_id = run_id.to_string();
+    let message = message.to_string();
+    let reason = crate::run_end::first_line(&error.to_string()).to_string();
+    let duration_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
+    let recorded = tokio::task::spawn_blocking(move || {
+        let end = crate::run_end::index_end(&global_log, &run_id)?;
+        let mut rows = crate::run_end::refused_rows(&run_id, &message, &reason, duration_ms);
+        if end.ended {
+            // The run began, and its own end says how it ended: only the error is new.
+            rows.truncate(1);
+        }
+        crate::run_end::append(&global_log, &run_id, &rows, end.partial)
+    })
+    .await;
+    match recorded {
+        Ok(Ok(())) => {}
+        Ok(Err(error)) => tracing::warn!(%error, "a refused run's index does not say why"),
+        Err(error) => tracing::warn!(%error, "a refused run's index was not written"),
+    }
+}
+
 /// Spawn the single-plan run `spec` describes and insert its handle into
 /// `active` under the plan's id.
 fn launch_single_plan_run(
@@ -635,6 +693,7 @@ fn launch_single_plan_run(
         let max_usd = spec.max_usd;
         let state_for_task = Arc::clone(state);
         async move {
+            let started = std::time::Instant::now();
             // Do NOT publish PlanStarted here. The runtime publishes its own
             // PlanStarted event (with the correct tasks_total) into the server
             // hub. A duplicate from the handler would be forwarded by the
@@ -664,8 +723,14 @@ fn launch_single_plan_run(
                     // embedded in the message string because
                     // DashboardEvent::Error carries no structured plan_id
                     // field; the portal cannot recover it separately.
-                    let failure = (!success)
-                        .then(|| format!("plan {plan_id} completed with task-level failures"));
+                    let failure = if success {
+                        None
+                    } else {
+                        Some(match spec_gate_refusal(&state_for_task, &run_id).await {
+                            Some(refusal) => format!("plan {plan_id} {refusal}"),
+                            None => format!("plan {plan_id} completed with task-level failures"),
+                        })
+                    };
                     if let Some(message) = &failure {
                         bus.publish(ServerEvent::Error {
                             message: message.clone(),
@@ -678,6 +743,7 @@ fn launch_single_plan_run(
                     bus.publish(ServerEvent::Error {
                         message: message.clone(),
                     });
+                    record_refused_start(&state_for_task, &run_id, &message, &err, started).await;
                     (false, Some(message))
                 }
             };
@@ -745,6 +811,7 @@ fn launch_plan_set_run(
     let first_run_seq = hub.total_published();
 
     let handle = tokio::spawn(async move {
+        let started = std::time::Instant::now();
         let options = PlanRunOptions {
             cancel: Some(task_cancel.clone()),
             fresh: !resume,
@@ -762,8 +829,14 @@ fn launch_plan_set_run(
         let outcome = run_plans(&state_for_task, &plan_target, options, revalidate).await;
         let (success, failure) = match outcome {
             Ok(result) => {
-                let failure = (!result.success)
-                    .then(|| format!("plan set run {run_id} completed with failures"));
+                let failure = if result.success {
+                    None
+                } else {
+                    Some(match spec_gate_refusal(&state_for_task, &run_id).await {
+                        Some(refusal) => format!("plan set run {run_id} {refusal}"),
+                        None => format!("plan set run {run_id} completed with failures"),
+                    })
+                };
                 (result.success, failure)
             }
             Err(err) => {
@@ -771,6 +844,7 @@ fn launch_plan_set_run(
                 bus.publish(ServerEvent::Error {
                     message: message.clone(),
                 });
+                record_refused_start(&state_for_task, &run_id, &message, &err, started).await;
                 (false, Some(message))
             }
         };

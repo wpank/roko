@@ -65,6 +65,57 @@ pub struct DoctorOptions {
     pub serve_url: Option<String>,
     /// Where the provider-credential checks get their answers: the machine, or fixed answers.
     pub credentials: CredentialProbe,
+    /// The roko serve that holds the workspace lock, when doctor reads beside
+    /// it without the lock (bug-1f5406): the report says so first, and the
+    /// check that removes stale lock files is skipped.
+    pub beside_serve: Option<ServeHolder>,
+}
+
+/// The roko serve that holds a workspace's lock for its life, which `roko
+/// doctor` reads beside without the lock (bug-1f5406).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ServeHolder {
+    /// Its process id, the one the workspace lock records.
+    pub pid: u32,
+    /// The URL it advertises in `.roko/runtime/serve.json`.
+    pub url: String,
+}
+
+/// The roko serve that holds this workspace's lock, when the lock's holder
+/// is one: the PID the exclusive holder wrote is the PID serve advertises in
+/// `.roko/runtime/serve.json` (bug-1f5406). Call it after a lock attempt
+/// failed; `None` when the holder is not this workspace's serve.
+#[must_use]
+pub fn serve_holding_workspace(workdir: &Path) -> Option<ServeHolder> {
+    let holder = crate::workspace_lock::workspace_lock_owner_pid(&workdir.join(".roko"))?;
+    roko_serve::endpoint::read_endpoint(workdir)
+        .filter(|endpoint| endpoint.pid == holder)
+        .map(|endpoint| ServeHolder {
+            pid: endpoint.pid,
+            url: endpoint.url,
+        })
+}
+
+/// The `workspace_lock` line of a doctor run that read the workspace beside
+/// the roko serve holding it, without the workspace lock (bug-1f5406).
+fn beside_serve_check(serve: &ServeHolder) -> DoctorCheck {
+    DoctorCheck {
+        id: "workspace_lock".to_string(),
+        status: DoctorStatus::Ok,
+        message: format!(
+            "roko serve (PID {}) holds this workspace, so doctor read it without the workspace \
+             lock",
+            serve.pid
+        ),
+        detail: Some(
+            "the checks only read; state a run is writing right now can look half-written, and \
+             stale lock files are left for a doctor run without serve"
+                .to_string(),
+        ),
+        path: None,
+        url: Some(serve.url.clone()),
+        fix: None,
+    }
 }
 
 /// Where `roko doctor`'s provider-credential checks (`provider_usable` and the shared
@@ -243,6 +294,9 @@ pub async fn run_doctor(options: &DoctorOptions) -> Result<DoctorReport> {
     let loaded_config = load_active_config(&workdir, options.config_override.as_deref())?;
 
     let mut checks = Vec::new();
+    if let Some(serve) = &options.beside_serve {
+        checks.push(beside_serve_check(serve));
+    }
 
     // ── Shared diagnostic service checks (#279) ─────────────────────────
     // Run all 11 shared checks via the consolidated DiagnosticService.
@@ -257,6 +311,9 @@ pub async fn run_doctor(options: &DoctorOptions) -> Result<DoctorReport> {
             .iter()
             .copied()
             .filter(|id| fixed_sources.is_none() || *id != DiagnosticCheckId::Credentials)
+            // Beside a running serve the lock is serve's own, which the
+            // workspace_lock line says, not a conflict to kill (bug-1f5406).
+            .filter(|id| options.beside_serve.is_none() || *id != DiagnosticCheckId::Lock)
             .collect(),
         profile: None,
         allow_repairs: false,
@@ -313,7 +370,24 @@ pub async fn run_doctor(options: &DoctorOptions) -> Result<DoctorReport> {
     checks.extend(check_mcp_allowlist(&workdir, &loaded_config));
     checks.push(check_orphaned_tmp_files(&workdir));
     checks.push(check_plans_dir_conflict(&workdir));
-    checks.extend(check_stale_runtime_locks(&workdir));
+    match &options.beside_serve {
+        // Removing a stale lock file while serve runs could race the next lock
+        // serve takes, so that cleanup waits for a doctor run that holds the
+        // workspace lock itself (bug-1f5406).
+        Some(serve) => checks.push(DoctorCheck {
+            id: "stale_locks".to_string(),
+            status: DoctorStatus::Skipped,
+            message: format!(
+                "stale lock files not checked: roko serve (PID {}) holds the workspace lock",
+                serve.pid
+            ),
+            detail: None,
+            path: None,
+            url: None,
+            fix: None,
+        }),
+        None => checks.extend(check_stale_runtime_locks(&workdir)),
+    }
     let resources = load_resources_config(&workdir, options.config_override.as_deref());
     let (disk_health_check, disk_health) = check_disk_health(&workdir, &resources).await;
     checks.push(disk_health_check);
@@ -1021,10 +1095,11 @@ fn check_routing_ladder(workdir: &Path, config_override: Option<&Path>) -> Optio
 /// The models a task can be routed to that roko has no price for: every
 /// `[models.*]` entry, each ladder rung's model and the default model, priced
 /// as a run prices a call (`dispatch_v2::model_has_price`: the run's price
-/// snapshot, the entry's rates, or the built-in table). A call on one is
-/// recorded at an unknown cost, so a budget cap cannot count it: a plan under
-/// `[budget] max_plan_usd`, or a chat host's run under its `max_usd`, stops
-/// only after that call ran (gap-c8f388).
+/// snapshot, the entry's rates, or the built-in table). A budget cap cannot
+/// count a call on one, so a run under a cap (a plan under `[budget]
+/// max_plan_usd`, or a chat host's run under its `max_usd`) never calls it:
+/// failover passes it over, and a task with nothing priced left fails
+/// (gap-c8f388, gap-8548e3).
 fn check_model_prices(workdir: &Path, config_override: Option<&Path>) -> Option<DoctorCheck> {
     use crate::dispatch::model_routing::ladder_report;
     use std::collections::{BTreeMap, BTreeSet};
@@ -1092,9 +1167,9 @@ fn check_model_prices(workdir: &Path, config_override: Option<&Path>) -> Option<
     Some(check(
         DoctorStatus::Warn,
         format!(
-            "{} model(s) a task can be routed to have no price: {models}. A call on one is \
-             recorded at an unknown cost, so a budget cap ([budget] max_plan_usd, or a chat \
-             run's max_usd) stops the run only after that call ran",
+            "{} model(s) a task can be routed to have no price: {models}. A budget cap cannot \
+             count a call on one, so a run under a cap ([budget] max_plan_usd, or a chat run's \
+             max_usd) never calls it, and a task with no priced model left fails",
             unpriced.len()
         ),
         Some(
@@ -1107,14 +1182,21 @@ fn check_model_prices(workdir: &Path, config_override: Option<&Path>) -> Option<
 /// Whether a chat host (Hermes, OpenClaw) can start runs in this workspace
 /// over roko serve's `/mcp`, from the workspace config as a run loads it.
 fn check_chat_host_runs(workdir: &Path, config_override: Option<&Path>) -> DoctorCheck {
-    chat_host_runs_check(doctor_roko_config(workdir, config_override).as_ref())
+    let config = doctor_roko_config(workdir, config_override);
+    let prices = config.as_ref().and_then(|config| {
+        roko_core::pricing_snapshot::PriceSnapshot::shared(&config.pricing, workdir)
+    });
+    chat_host_runs_check(config.as_ref(), prices.as_deref())
 }
 
-/// [`check_chat_host_runs`] of `config` (`None` when it did not load): ok
-/// with what such a run's tasks run on, or a warning with the refusal serve
-/// gives such a run (gap-cf427e) and the fix, `roko config preset
-/// chat-host` for the data-model boundary.
-fn chat_host_runs_check(config: Option<&roko_core::config::schema::RokoConfig>) -> DoctorCheck {
+/// [`check_chat_host_runs`] of `config` (`None` when it did not load), with
+/// the workspace's `prices`: ok with what such a run's tasks run on, or a
+/// warning with the refusal serve gives such a run (gap-cf427e, gap-8548e3)
+/// and the fix, `roko config preset chat-host` for the data-model boundary.
+fn chat_host_runs_check(
+    config: Option<&roko_core::config::schema::RokoConfig>,
+    prices: Option<&roko_core::pricing_snapshot::PriceSnapshot>,
+) -> DoctorCheck {
     use roko_core::config::serve::ChatRunBlocker;
 
     let check = |status, message: String, detail: Option<String>, fix: Option<&str>| DoctorCheck {
@@ -1134,7 +1216,7 @@ fn chat_host_runs_check(config: Option<&roko_core::config::schema::RokoConfig>) 
             None,
         );
     };
-    let Some(refusal) = config.chat_run_refusal() else {
+    let Some(refusal) = config.chat_run_refusal(prices) else {
         let boundary = config.agent.data_llm.as_ref().map_or_else(
             || "without the data-model boundary ([serve.mcp] allow_without_data_llm)".to_string(),
             |data_llm| format!("with data model {}", data_llm.model.trim()),
@@ -1158,21 +1240,29 @@ fn chat_host_runs_check(config: Option<&roko_core::config::schema::RokoConfig>) 
             None,
         );
     };
+    // A model for the runs comes first; the preset then sets the data-model
+    // boundary.
+    let model_fix = if refusal.blockers.contains(&ChatRunBlocker::NoToolLoopModel) {
+        Some("give roko an API model with its key")
+    } else if refusal.blockers.contains(&ChatRunBlocker::NoPrice) {
+        Some("give one of its API models a price (cost_input_per_m and cost_output_per_m)")
+    } else {
+        None
+    };
     let fix = match (
-        refusal.blockers.contains(&ChatRunBlocker::NoToolLoopModel),
+        model_fix,
         refusal.blockers.contains(&ChatRunBlocker::NoDataBoundary),
     ) {
-        (true, true) => {
-            "give roko an API model with its key (the detail says what each model lacks), then run \
-             roko config preset chat-host --yes"
+        (Some(model_fix), true) => format!(
+            "{model_fix} (the detail says what each model lacks), then run roko config preset \
+             chat-host --yes"
+        ),
+        (Some(model_fix), false) => {
+            format!("{model_fix}: the detail says what each model lacks")
         }
-        (true, false) => {
-            "give roko an API model with its key: the detail says what each model lacks"
-        }
-        _ => {
-            "roko config preset chat-host --yes (--allow-without-data-llm instead, for local \
-             use)"
-        }
+        (None, _) => "roko config preset chat-host --yes (--allow-without-data-llm instead, for \
+                      local use)"
+            .to_string(),
     };
     check(
         DoctorStatus::Warn,
@@ -1181,7 +1271,7 @@ fn chat_host_runs_check(config: Option<&roko_core::config::schema::RokoConfig>) 
             refusal.codes().join(", ")
         ),
         Some(refusal.message),
-        Some(fix),
+        Some(&fix),
     )
 }
 
@@ -3833,6 +3923,118 @@ pub fn clean_orphaned_files(workdir: &Path) -> Vec<PathBuf> {
 mod tests {
     use super::*;
 
+    /// bug-1f5406: a roko serve holds its workspace's lock exclusively for its
+    /// life. Doctor recognizes it by the PID the lock file and serve.json
+    /// share; no other process counts.
+    #[test]
+    fn doctor_recognizes_the_serve_that_holds_the_workspace() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let roko_dir = dir.path().join(".roko");
+        let serve_lock =
+            crate::workspace_lock::acquire_workspace_lock(&roko_dir).expect("serve's lock");
+        assert!(crate::workspace_lock::acquire_workspace_lock_shared(&roko_dir).is_err());
+        assert_eq!(
+            serve_holding_workspace(dir.path()),
+            None,
+            "without serve.json the holder is unknown"
+        );
+
+        let mut endpoint = roko_serve::endpoint::ServeEndpoint {
+            pid: std::process::id().wrapping_add(1),
+            url: "http://127.0.0.1:6791".to_string(),
+            workdir: dir.path().to_path_buf(),
+            started_at: "2026-10-16T10:00:00Z".to_string(),
+        };
+        roko_serve::endpoint::write_endpoint(dir.path(), &endpoint).expect("serve.json");
+        assert_eq!(
+            serve_holding_workspace(dir.path()),
+            None,
+            "a serve.json of another process is not the holder"
+        );
+        endpoint.pid = std::process::id();
+        roko_serve::endpoint::write_endpoint(dir.path(), &endpoint).expect("serve.json");
+        assert_eq!(
+            serve_holding_workspace(dir.path()),
+            Some(ServeHolder {
+                pid: std::process::id(),
+                url: "http://127.0.0.1:6791".to_string(),
+            })
+        );
+        drop(serve_lock);
+        assert!(crate::workspace_lock::acquire_workspace_lock_shared(&roko_dir).is_ok());
+    }
+
+    /// bug-1f5406: beside a running serve, the report says first that doctor
+    /// read the workspace without the lock, and skips the one check that
+    /// writes: a stale lock file stays for a doctor run that holds the lock.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn doctor_beside_serve_says_so_and_leaves_lock_files_alone() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let runtime = temp.path().join(".roko").join("runtime");
+        std::fs::create_dir_all(&runtime).expect("runtime dir");
+        let runner_lock = runtime.join("roko.runner.lock");
+        // PID 4294967294 (u32::MAX - 1) cannot exist on any real system.
+        std::fs::write(&runner_lock, "4294967294\n").expect("stale runner lock");
+        // The workspace lock names a live process, as serve's does.
+        let holder = std::os::unix::process::parent_id();
+        std::fs::write(runtime.join("roko.lock"), format!("{holder}\n")).expect("lock");
+        let serve = ServeHolder {
+            pid: holder,
+            url: "http://127.0.0.1:6791".to_string(),
+        };
+        let conflict = |report: &DoctorReport| {
+            report
+                .checks
+                .iter()
+                .any(|check| check.id == "shared_lock_conflict")
+        };
+
+        let report = run_doctor(&DoctorOptions {
+            beside_serve: Some(serve),
+            ..test_options(temp.path())
+        })
+        .await
+        .expect("a report");
+        assert_eq!(report.checks[0].id, "workspace_lock");
+        assert_eq!(report.checks[0].status, DoctorStatus::Ok);
+        assert!(
+            report.checks[0]
+                .message
+                .contains(&format!("roko serve (PID {holder}) holds this workspace")),
+            "{:?}",
+            report.checks[0]
+        );
+        assert!(!conflict(&report), "serve's own lock is no conflict");
+        let stale = report
+            .checks
+            .iter()
+            .find(|check| check.id == "stale_locks")
+            .expect("the skipped lock check");
+        assert_eq!(stale.status, DoctorStatus::Skipped);
+        assert!(runner_lock.exists(), "nothing is removed beside serve");
+        let text = report.render_human();
+        assert!(
+            text.contains(&format!("[ok] workspace_lock: roko serve (PID {holder})")),
+            "{text}"
+        );
+
+        let report = run_doctor(&test_options(temp.path()))
+            .await
+            .expect("a report");
+        assert!(
+            report
+                .checks
+                .iter()
+                .all(|check| check.id != "workspace_lock")
+        );
+        assert!(conflict(&report), "an unknown live holder is a conflict");
+        assert!(
+            !runner_lock.exists(),
+            "with the lock, the stale file is removed"
+        );
+    }
+
     /// gap-115bae: `roko doctor` says whether a chat host can start runs here,
     /// with serve's refusal and the fix when it cannot.
     #[test]
@@ -3888,7 +4090,7 @@ mod tests {
             model("claude_cli", "claude-sonnet-4-6"),
         );
 
-        let check = chat_host_runs_check(Some(&config));
+        let check = chat_host_runs_check(Some(&config), None);
         assert_eq!(check.id, "chat_host_runs");
         assert_eq!(check.status, DoctorStatus::Warn);
         assert!(
@@ -3921,7 +4123,24 @@ mod tests {
         config
             .models
             .insert("api-mini".to_string(), model("api", "api-mini-1"));
-        let check = chat_host_runs_check(Some(&config));
+        // Its runs are held to a cap, which counts only priced calls
+        // (gap-8548e3).
+        let check = chat_host_runs_check(Some(&config), None);
+        assert!(
+            check.message.ends_with("(no_data_boundary, no_price)"),
+            "{check:?}"
+        );
+        assert!(
+            check
+                .fix
+                .as_deref()
+                .is_some_and(|fix| fix.starts_with("give one of its API models a price")),
+            "{check:?}"
+        );
+        let priced = config.models.get_mut("api-mini").expect("api-mini");
+        priced.cost_input_per_m = Some(0.15);
+        priced.cost_output_per_m = Some(0.6);
+        let check = chat_host_runs_check(Some(&config), None);
         assert_eq!(check.status, DoctorStatus::Warn);
         assert!(check.message.ends_with("(no_data_boundary)"), "{check:?}");
         assert_eq!(
@@ -3936,13 +4155,16 @@ mod tests {
             model: "api-mini".to_string(),
             ..roko_core::config::DataLlmConfig::default()
         });
-        let check = chat_host_runs_check(Some(&config));
+        let check = chat_host_runs_check(Some(&config), None);
         assert_eq!(check.status, DoctorStatus::Ok, "{check:?}");
         assert_eq!(
             check.detail.as_deref(),
             Some("with data model api-mini; their tasks run on api-mini")
         );
-        assert_eq!(chat_host_runs_check(None).status, DoctorStatus::Skipped);
+        assert_eq!(
+            chat_host_runs_check(None, None).status,
+            DoctorStatus::Skipped
+        );
     }
     use tempfile::tempdir;
 
@@ -3978,6 +4200,7 @@ mod tests {
                 auth: Some("claude CLI".to_string()),
                 sources: vec!["claude-cli".to_string()],
             },
+            beside_serve: None,
         }
     }
 

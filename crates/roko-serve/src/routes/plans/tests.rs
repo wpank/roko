@@ -1594,6 +1594,9 @@ struct ScriptedPlanRuntime {
     task_outcome: Option<&'static str>,
     gate: Option<Arc<tokio::sync::Semaphore>>,
     run_ids: Arc<Mutex<Vec<String>>>,
+    /// When set, a run fails with this error before its plan starts, as one
+    /// that finds the workspace's runner lock taken does.
+    refuse: Option<&'static str>,
 }
 
 #[async_trait::async_trait]
@@ -1637,6 +1640,9 @@ impl CliRuntime for ScriptedPlanRuntime {
             .lock()
             .expect("lock run ids")
             .push(options.run_id.unwrap_or_default());
+        if let Some(refusal) = self.refuse {
+            anyhow::bail!("{refusal}");
+        }
         if let Some(gate) = &self.gate {
             gate.acquire().await.expect("the gate stays open").forget();
         }
@@ -1691,6 +1697,7 @@ fn scripted_runtime(
         task_outcome,
         gate,
         run_ids: Arc::default(),
+        refuse: None,
     })
 }
 
@@ -1779,6 +1786,76 @@ async fn plan_status_reports_terminal_state() {
             expected == "failed",
             "{status}"
         );
+    }
+}
+
+/// bug-9a5970: a plan run that fails before its plan starts, here because a
+/// run outside the server holds the workspace's runner lock, records why
+/// under its own id. Its index holds the error and a `run_completed` with
+/// outcome `refused`, its stage and the reason without the hint after it.
+/// Its summary, read again by a server that holds no handle of it (as after
+/// a restart), says `failed`, not active, with `refused: {stage, reason}`,
+/// and does not call it interrupted.
+#[tokio::test]
+async fn a_run_refused_before_dispatch_records_why_in_its_events() {
+    let runtime = Arc::new(ScriptedPlanRuntime {
+        hub: roko_runtime::SharedStateHub::new_in_process(),
+        success: false,
+        task_outcome: None,
+        gate: None,
+        run_ids: Arc::default(),
+        refuse: Some(
+            "A roko plan runner is already active in this workspace (PID 4242).\n  hint: wait \
+             for it to finish, or kill it with `kill 4242`",
+        ),
+    });
+    let (dir, state) = scripted_state(&runtime);
+    let started = start_plan_run(&state, "hello".into(), false)
+        .await
+        .expect("start the run");
+    let status = ended_plan_status(&state, "hello").await;
+    assert_eq!(status["status"], "failed", "{status}");
+    let run_id = started.run_id;
+    let reason = "A roko plan runner is already active in this workspace (PID 4242).";
+
+    let index =
+        roko_fs::run_index::run_index_path(&state.layout.events_jsonl_path(), &run_id).unwrap();
+    let rows: Vec<Value> = std::fs::read_to_string(&index)
+        .expect("the run has an index")
+        .lines()
+        .map(|line| serde_json::from_str(line).expect("a row"))
+        .collect();
+    assert_eq!(rows.len(), 2, "{rows:?}");
+    assert_eq!(rows[0]["type"], "error", "{rows:?}");
+    assert_eq!(rows[0]["run_id"], run_id.as_str(), "{rows:?}");
+    let message = rows[0]["message"].as_str().unwrap_or_default();
+    assert!(
+        message.starts_with(&format!("plan execution failed for hello: {reason}")),
+        "{rows:?}"
+    );
+    assert_eq!(rows[1]["type"], "run_completed", "{rows:?}");
+    assert_eq!(rows[1]["outcome"], crate::run_end::REFUSED, "{rows:?}");
+    assert_eq!(rows[1]["stage"], crate::run_end::START_STAGE, "{rows:?}");
+    assert_eq!(rows[1]["reason"], reason, "{rows:?}");
+
+    let restarted = Arc::new(
+        AppState::new(
+            dir.path().to_path_buf(),
+            Arc::new(NoOpRuntime),
+            roko_core::config::schema::RokoConfig::default(),
+            Arc::from(create_backend("manual", None, None, None).expect("manual backend")),
+        )
+        .expect("AppState::new"),
+    );
+    for server in [&state, &restarted] {
+        let summary = crate::routes::runs::summarize_run(server, &run_id)
+            .await
+            .expect("the run's summary");
+        assert_eq!(summary["state"], "failed", "{summary}");
+        assert_eq!(summary["active"], false, "{summary}");
+        assert_eq!(summary["refused"]["stage"], "start", "{summary}");
+        assert_eq!(summary["refused"]["reason"], reason, "{summary}");
+        assert_eq!(summary["interrupted"], Value::Null, "{summary}");
     }
 }
 

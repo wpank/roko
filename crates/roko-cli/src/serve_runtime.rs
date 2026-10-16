@@ -589,17 +589,12 @@ impl CliRuntime for RokoCliRuntime {
         let task_count = tasks_file.tasks.len();
         let tasks: Vec<PlanTaskDto> = tasks_file.tasks.iter().map(task_to_dto).collect();
 
-        // Plan title from [meta].plan; absent for old plans that leave it blank.
-        let title = {
-            let t = tasks_file.meta.plan.trim().to_string();
-            if t.is_empty() { None } else { Some(t) }
-        };
-
         Ok(Some(PlanTasksDto {
             plan_id: plan_id.to_string(),
             task_count,
             tasks,
-            title,
+            // The listing's title, not `[meta].plan`, which is the plan id (bug-e0624e).
+            title: Some(crate::plan::plan_title(&plan_info)),
             max_parallel: crate::plan_policy::plan_max_parallel(&tasks_file),
         }))
     }
@@ -1168,7 +1163,9 @@ fn run_prompt_plan_on_local_runtime(
         Err(error) => {
             let error = error.context("a run is active in this workspace");
             if let Some(run_id) = &options.run_id {
-                record_refused_run(&workdir, run_id, &format!("run failed: {error:#}"));
+                let why = format!("{error:#}");
+                let reason = roko_serve::run_end::first_line(&why);
+                record_refused_run(&workdir, run_id, &format!("run failed: {why}"), reason);
             }
             return Err(error);
         }
@@ -1213,32 +1210,16 @@ fn run_prompt_plan_on_local_runtime(
 }
 
 /// Write into run `run_id`'s own index the rows of a run that ended before it
-/// started: the `error` that says why and its `run_completed` (bug-09e21e).
-/// They go to the index only, never to the shared state hub, whose events the
-/// run holding the workspace would record as its own.
-fn record_refused_run(workdir: &Path, run_id: &str, message: &str) {
-    let now = u64::try_from(chrono::Utc::now().timestamp_millis()).unwrap_or_default();
-    let events = [
-        roko_core::DashboardEvent::Error {
-            message: message.to_string(),
-        },
-        roko_core::DashboardEvent::RunCompleted {
-            run_id: Some(run_id.to_string()),
-            outcome: "failed".to_string(),
-            duration_ms: 0,
-            cleanup_degraded: false,
-            surviving_agent_ids: Vec::new(),
-            surviving_agent_pids: Vec::new(),
-        },
-    ];
+/// started: the `error` that says why (`message`) and its `run_completed`,
+/// outcome `refused` with `reason` (bug-09e21e, bug-9a5970; the rows serve
+/// writes for a plan run refused at its start). They go to the index only,
+/// never to the shared state hub, whose events the run holding the workspace
+/// would record as its own.
+fn record_refused_run(workdir: &Path, run_id: &str, message: &str, reason: &str) {
+    let rows = roko_serve::run_end::refused_rows(run_id, message, reason, 0);
     let recorded = crate::runner::persist::PersistPaths::from_workdir(workdir).and_then(|paths| {
-        for event in &events {
-            let mut row = serde_json::to_value(event)?;
-            if let Some(fields) = row.as_object_mut() {
-                fields.insert("run_id".into(), serde_json::json!(run_id));
-                fields.insert("ts_millis".into(), serde_json::json!(now));
-            }
-            crate::runner::persist::append_run_index_event(&paths, run_id, &row, true)?;
+        for row in &rows {
+            crate::runner::persist::append_run_index_event(&paths, run_id, row, true)?;
         }
         crate::runner::persist::flush_run_index(&paths, run_id)
     });
@@ -1259,7 +1240,9 @@ fn refuse_unscreened_chat_run(
     if !origin.is_chat() {
         return Ok(());
     }
-    match load_effective_roko_config(workdir, repo_registry)?.chat_run_refusal() {
+    let config = load_effective_roko_config(workdir, repo_registry)?;
+    let prices = roko_core::pricing_snapshot::PriceSnapshot::shared(&config.pricing, workdir);
+    match config.chat_run_refusal(prices.as_deref()) {
         Some(refusal) => anyhow::bail!("{}", refusal.message),
         None => Ok(()),
     }
@@ -2135,6 +2118,50 @@ mod tests {
             (summary.task_count, summary.tasks_done, summary.tasks_failed),
             (9, 4, 1)
         );
+    }
+
+    /// bug-e0624e: `GET /api/plans/{id}/tasks` titles a plan as the listing
+    /// does, with the first heading of its `plan.md`, not with `[meta].plan`,
+    /// which is the plan id. A plan with no `plan.md` keeps its id.
+    #[tokio::test]
+    async fn plan_tasks_title_is_the_listing_title() {
+        let workdir = tempfile::tempdir().unwrap();
+        let plans = workdir.path().join("plans");
+        let tasks =
+            |id: &str| format!("[meta]\nplan = {id:?}\n\n[[task]]\nid = \"T1\"\ntitle = \"One\"\n");
+        std::fs::create_dir_all(plans.join("demo-titled")).unwrap();
+        std::fs::write(
+            plans.join("demo-titled").join("plan.md"),
+            "---\nplan: demo-titled\n---\n\n# Start here: a titled demo\n\nThe body.\n",
+        )
+        .unwrap();
+        std::fs::write(
+            plans.join("demo-titled").join("tasks.toml"),
+            tasks("demo-titled"),
+        )
+        .unwrap();
+        std::fs::create_dir_all(plans.join("tasks-only")).unwrap();
+        std::fs::write(
+            plans.join("tasks-only").join("tasks.toml"),
+            tasks("tasks-only"),
+        )
+        .unwrap();
+
+        let runtime = RokoCliRuntime::new(Config::default(), RepoRegistry::default());
+        let listed = runtime.list_plans(workdir.path()).await.unwrap();
+        for (id, title) in [
+            ("demo-titled", "Start here: a titled demo"),
+            ("tasks-only", "tasks-only"),
+        ] {
+            let listing = listed.iter().find(|plan| plan.id == id).expect("listed");
+            assert_eq!(listing.title, title);
+            let detail = runtime
+                .load_plan_tasks(workdir.path(), id)
+                .await
+                .unwrap()
+                .expect("the plan is found");
+            assert_eq!(detail.title.as_deref(), Some(title), "{id}");
+        }
     }
 
     /// gap-655d19: a server run is validated as `roko plan run` validates it.

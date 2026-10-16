@@ -309,6 +309,7 @@ impl StreamingTaskDispatcher for GraphTaskDispatcher {
                 stall_watch,
                 supervised.as_ref(),
                 &watched,
+                allowance.as_deref(),
             )
             .await;
         attempt.dispatch_ended();
@@ -317,7 +318,8 @@ impl StreamingTaskDispatcher for GraphTaskDispatcher {
             // The stall watchdog, the conductor or a stopping plan run
             // cancelled the provider call: the attempt ends timed out or
             // cancelled, and the engine retries it unless its run is
-            // stopping.
+            // stopping. One the plan budget stopped fails, not retried
+            // (gap-ca1c92).
             Err(interrupted) => {
                 let error = interrupted.error(&watched);
                 let settlement =

@@ -327,13 +327,17 @@ pub fn log_blocked(report: &SpecGateReport) {
     );
 }
 
-/// The refusal as event-log entries, one per finding of each blocked task,
-/// for the run's event log and SSE: the plan runner publishes them on the
-/// run's hub.
+/// The refusal as the run's events, which the plan runner publishes on the
+/// run's hub for its event log and SSE.
+///
+/// They are one event-log entry per finding of each blocked task, then the
+/// run's `error`, which says why it did not run ([`refusal_message`],
+/// bug-9a5970). A host that reads a run's errors gets the reason from it,
+/// and serve's run summary reads the entries as the refusal.
 #[must_use]
 pub fn blocked_events(report: &SpecGateReport) -> Vec<roko_core::DashboardEvent> {
     let timestamp_ms = u64::try_from(chrono::Utc::now().timestamp_millis()).unwrap_or_default();
-    report
+    let mut events: Vec<roko_core::DashboardEvent> = report
         .blocked()
         .flat_map(|decision| {
             decision
@@ -347,7 +351,24 @@ pub fn blocked_events(report: &SpecGateReport) -> Vec<roko_core::DashboardEvent>
                     message: format!("{}: {}", finding.rule, finding.detail),
                 })
         })
-        .collect()
+        .collect();
+    if report.blocks() {
+        events.push(roko_core::DashboardEvent::Error {
+            message: refusal_message(report),
+        });
+    }
+    events
+}
+
+/// Why the gate refused a run, in one line: each blocked task's findings
+/// ([`blocked_lines`]) and what sets them.
+#[must_use]
+pub fn refusal_message(report: &SpecGateReport) -> String {
+    format!(
+        "the spec gate refused the plan before any agent ran: {}. Fix the task specs; \
+         [spec_quality] in roko.toml sets what the gate checks",
+        blocked_lines(report).join("; ")
+    )
 }
 
 /// One task's `spec.gate` record (S07 §5): what the gate decided and why.
@@ -634,6 +655,51 @@ verify = [{{ phase = "test", command = "{verify}" }}]
         let blocked: Vec<&SpecGateDecision> = report.blocked().collect();
         assert_eq!(blocked.len(), 1, "{report:?}");
         assert_eq!(blocked[0].findings[0].rule, "score");
+    }
+
+    /// bug-9a5970: a run the gate refuses records why in its events: an
+    /// entry per finding, which serve's run summary reads as the refusal, and
+    /// then the run's error, which names the plan, the task and the rule, so a
+    /// host that reads the run's errors has the reason. A run the gate lets
+    /// through gets neither.
+    #[test]
+    fn a_run_refused_before_dispatch_records_why_in_its_events() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let none = BTreeMap::new();
+        let advise = config(SpecQualityMode::Advise);
+
+        let vacuous = write_plan(temp.path(), "cargo check -p demo || true");
+        let report = check_plans(&[vacuous], temp.path(), &advise, &none);
+        let events = blocked_events(&report);
+        let Some((roko_core::DashboardEvent::Error { message }, entries)) = events.split_last()
+        else {
+            panic!("the run's error comes last: {events:?}");
+        };
+        assert!(
+            message.starts_with("the spec gate refused the plan before any agent ran: "),
+            "{message}"
+        );
+        assert!(
+            message.contains("tasks.toml T1: HF2: step 1: ends in `|| true`"),
+            "{message}"
+        );
+        assert_eq!(entries.len(), 1, "{events:?}");
+        let roko_core::DashboardEvent::EventLogEntry {
+            event_type,
+            task_id,
+            message,
+            ..
+        } = &entries[0]
+        else {
+            panic!("a refusal entry: {events:?}");
+        };
+        assert_eq!(event_type, "spec.gate.refused");
+        assert_eq!(task_id, "T1");
+        assert_eq!(message, "HF2: step 1: ends in `|| true`");
+
+        let scoped = write_plan(temp.path(), "cargo test -p demo --lib retry");
+        let report = check_plans(&[scoped], temp.path(), &advise, &none);
+        assert!(blocked_events(&report).is_empty(), "{report:?}");
     }
 
     /// 3232: with `holdout_frac = 1.0` under enforce, a low-score task is

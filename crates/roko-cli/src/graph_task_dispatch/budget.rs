@@ -10,6 +10,10 @@
 //! is not made. After each call the hold gives back what it no longer needs,
 //! so the plan's other attempts can grow into it. An attempt starts only with
 //! room for a few calls left; below that the plan stops as budget-exhausted.
+//! An agent that runs its own loop (a CLI agent) cannot be asked before a
+//! call: what its call streams is told to the hold as it streams instead, and
+//! the attempt is stopped once the hold cannot cover one more message like
+//! its last (gap-ca1c92).
 
 use roko_core::dashboard_snapshot::{InboxCategory, inbox_routing};
 use roko_core::disturbance::{
@@ -932,7 +936,9 @@ impl Drop for GraphPlanBudgetReservation<'_> {
 
 /// What one attempt may spend on its model calls: its hold on the plan
 /// budget (bug-4fabd0). Its agent's tool loop asks it before each model
-/// call, and a call the plan cannot pay for is not made.
+/// call, and a call the plan cannot pay for is not made. For an agent that
+/// runs its own loop, the attempt's watch tells it what the call streamed
+/// and stops the call it refuses (gap-ca1c92).
 #[derive(Debug)]
 pub(super) struct AttemptAllowance {
     ledger: Arc<GraphPlanBudgetLedger>,
@@ -1389,6 +1395,35 @@ impl GraphTaskDispatcher {
         }
     }
 
+    /// Whether `target`'s model must not be called because this run is held
+    /// to a budget cap, which can count only priced calls, and roko has no
+    /// price for it: no row in the price snapshot, no `[models.*]` rates and
+    /// no built-in rate (gap-8548e3). Failover then passes it over before
+    /// any call. Never without a cap (`--no-budget`), and never for the
+    /// Claude CLI, which reports what each of its runs cost.
+    pub(super) fn unpriced_under_cap(
+        &self,
+        target: &crate::dispatch_v2::ProviderDispatchSpec,
+    ) -> bool {
+        target.provider_kind != roko_core::agent::ProviderKind::ClaudeCli
+            && self.holds_a_cap()
+            && !crate::dispatch_v2::model_has_price(
+                self.pricing_snapshot().as_deref(),
+                target.model_profile.as_ref(),
+                &target.model_slug,
+            )
+    }
+
+    /// Whether a budget cap bounds this run's spend: a plan ceiling, or
+    /// `budget.max_daily_usd`, unless `--no-budget` lifted them.
+    fn holds_a_cap(&self) -> bool {
+        let policy = self.budget_policy;
+        !policy.continue_on_exhaustion
+            && (policy.ceiling_micro_usd.is_some()
+                || DailyCeiling::from_config(self.config.budget.max_daily_usd)
+                    != DailyCeiling::Unlimited)
+    }
+
     /// Record a provider call of `plan_id/task_id` toward the task's ceiling,
     /// and keep the task's spend with the run's retry state, so a resumed run
     /// counts it as well (gap-34b2ed).
@@ -1536,9 +1571,9 @@ mod tests {
     use super::*;
     use crate::graph_task_dispatch::tests::{
         FIXTURE_HANG_GUARD_SECS, STREAMS_THEN_TIMES_OUT_PROVIDER, TIMEOUT_SECS_UNDER_LOAD,
-        VERIFY_PROVIDER, batch_ctx, cli_provider, jsonl_rows_where, make_bare_dispatcher,
-        make_batch_dispatcher, make_scripted_batch_dispatcher, make_spec, make_task_def, model,
-        recording_feedback, spawn_openai_mock, tool_call_turn,
+        VERIFY_PROVIDER, batch_ctx, cli_provider, final_turn, jsonl_rows_where,
+        make_bare_dispatcher, make_batch_dispatcher, make_scripted_batch_dispatcher, make_spec,
+        make_task_def, model, recording_feedback, spawn_openai_mock, tool_call_turn,
     };
     use crate::state_hub::StateHub;
 
@@ -3010,5 +3045,99 @@ exit 1
             "{again:?}"
         );
         assert_eq!(requests.lock().len(), 2, "and no model call is made");
+    }
+
+    /// gap-8548e3: a run held to a budget cap never calls a model roko has no
+    /// price for, since the cap could not count the call. With no priced
+    /// model to fall back on, the task fails before any call, naming the
+    /// model and the fix, and is not retried; a priced model on the same
+    /// provider takes the task instead; and without a cap the unpriced model
+    /// runs as before.
+    #[tokio::test]
+    async fn capped_run_with_an_unpriced_model_is_refused_up_front() {
+        let unpriced = |base_url: String| {
+            let mut config = priced_api_config(base_url);
+            let profile = config.models.get_mut("api-model").expect("api-model");
+            profile.cost_input_per_m = None;
+            profile.cost_output_per_m = None;
+            config
+        };
+        let task = TaskDef {
+            id: "T01".to_string(),
+            title: "Read the notes".to_string(),
+            model_hint: Some("api-model".to_string()),
+            timeout_secs: FIXTURE_HANG_GUARD_SECS,
+            ..make_task_def("focused")
+        };
+        let spec = make_spec(&task);
+
+        let temp = tempdir().expect("tempdir");
+        let (base_url, requests) = spawn_openai_mock(vec![final_turn("done")]);
+        // Its fallback has no price either.
+        let mut config = unpriced(base_url);
+        let other = ModelProfile {
+            slug: "api-other-1".to_string(),
+            ..config.models["api-model"].clone()
+        };
+        config.models.insert("api-other".to_string(), other);
+        config.routing.fallback_models = vec!["api-other".to_string()];
+        let dispatcher = make_bare_dispatcher(config, temp.path())
+            .await
+            .with_plan_budget(0.50, 0.0, false);
+        let error = dispatcher
+            .dispatch(&spec, Vec::new(), &batch_ctx())
+            .await
+            .expect_err("refused before any call");
+        let RokoError::Gateway {
+            retryable: false,
+            message,
+            ..
+        } = &error
+        else {
+            panic!("a refusal the task executor does not retry: {error:?}");
+        };
+        assert!(
+            message.contains("`api-model` on `mock_api`: has no price"),
+            "{message}"
+        );
+        assert!(message.contains("Give api-model a price"), "{message}");
+        assert!(
+            message.contains("(api-other: has no price") && !message.contains("API key"),
+            "{message}"
+        );
+        assert!(requests.lock().is_empty(), "no call was made");
+
+        let temp = tempdir().expect("tempdir");
+        let (base_url, requests) = spawn_openai_mock(vec![final_turn("done")]);
+        let mut config = unpriced(base_url);
+        let priced = ModelProfile {
+            slug: "api-priced-1".to_string(),
+            cost_input_per_m: Some(1.0),
+            cost_output_per_m: Some(2.0),
+            ..config.models["api-model"].clone()
+        };
+        config.models.insert("api-priced".to_string(), priced);
+        config.routing.fallback_models = vec!["api-priced".to_string()];
+        let dispatcher = make_bare_dispatcher(config, temp.path())
+            .await
+            .with_plan_budget(0.50, 0.0, false);
+        dispatcher
+            .dispatch(&spec, Vec::new(), &batch_ctx())
+            .await
+            .expect("the priced model takes the task");
+        {
+            let requests = requests.lock();
+            assert_eq!(requests.len(), 1, "{requests:?}");
+            assert_eq!(requests[0]["model"], "api-priced-1");
+        }
+
+        let temp = tempdir().expect("tempdir");
+        let (base_url, requests) = spawn_openai_mock(vec![final_turn("done")]);
+        let dispatcher = make_bare_dispatcher(unpriced(base_url), temp.path()).await;
+        dispatcher
+            .dispatch(&spec, Vec::new(), &batch_ctx())
+            .await
+            .expect("without a cap the model runs");
+        assert_eq!(requests.lock().len(), 1);
     }
 }

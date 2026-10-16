@@ -1862,8 +1862,7 @@ impl AgentDispatcherV2 {
         Some(Arc::new(PricedCalls {
             allowance,
             snapshot: self.pricing_snapshot_for(request),
-            profile: target.model_profile.clone(),
-            model_slug: target.model_slug.clone(),
+            target: target.clone(),
         }))
     }
 
@@ -2257,8 +2256,7 @@ pub trait CallAllowance: Send + Sync + fmt::Debug {
 struct PricedCalls {
     allowance: Arc<dyn CallAllowance>,
     snapshot: Option<Arc<PriceSnapshot>>,
-    profile: Option<ModelProfile>,
-    model_slug: String,
+    target: ProviderDispatchSpec,
 }
 
 impl roko_agent::tool_loop::TurnBudget for PricedCalls {
@@ -2268,12 +2266,7 @@ impl roko_agent::tool_loop::TurnBudget for PricedCalls {
 
     fn record_turn(&self, usage: &roko_core::Usage) {
         let mut usage = *usage;
-        let pricing = fill_usage_cost_from_pricing(
-            &mut usage,
-            self.snapshot.as_deref(),
-            self.profile.as_ref(),
-            &self.model_slug,
-        );
+        let pricing = price_target_usage(&mut usage, &self.target, self.snapshot.as_deref());
         // A call that used no tokens cost nothing, priced or not.
         let priced = pricing != CallPricing::Unpriced || usage.has_known_cost();
         self.allowance
@@ -2485,18 +2478,39 @@ pub(crate) fn usage_token_counts(usage: &roko_core::Usage) -> TokenCounts {
     }
 }
 
-/// [`fill_usage_cost_from_pricing`] for a dispatch result and its target.
+/// [`price_target_usage`] for a dispatch result and its target.
 fn fill_cost_from_profile(
     result: &mut AgentResult,
     target: &ProviderDispatchSpec,
     snapshot: Option<&PriceSnapshot>,
 ) {
-    fill_usage_cost_from_pricing(
-        &mut result.usage,
-        snapshot,
-        target.model_profile.as_ref(),
-        &target.model_slug,
-    );
+    price_target_usage(&mut result.usage, target, snapshot);
+}
+
+/// Price `usage` of a call to `target` ([`fill_usage_cost_from_pricing`]),
+/// the dated `snapshot` first (decision 2113). An agent roko's own tool loop
+/// runs reports tokens and no dollar amount, so the cost it carries is the
+/// loop's estimate from the model's profile: the snapshot's row prices it
+/// instead when there is one (find-c3da60). The profile is priced as the
+/// target's provider bills it ([`ModelProfile::with_provider_cache_rate`]).
+pub(crate) fn price_target_usage(
+    usage: &mut roko_core::Usage,
+    target: &ProviderDispatchSpec,
+    snapshot: Option<&PriceSnapshot>,
+) -> CallPricing {
+    if !runs_own_tools(target)
+        && snapshot.is_some_and(|snapshot| snapshot.row(&target.model_slug).is_some())
+    {
+        usage.cost_usd = 0.0;
+    }
+    let profile = target
+        .model_profile
+        .clone()
+        .map(|profile| match &target.provider_config {
+            Some(provider) => profile.with_provider_cache_rate(provider),
+            None => profile,
+        });
+    fill_usage_cost_from_pricing(usage, snapshot, profile.as_ref(), &target.model_slug)
 }
 
 /// Back-fill `usage.cost_usd` when the provider did not report a dollar
@@ -2556,17 +2570,7 @@ pub(crate) fn fill_usage_cost_from_pricing(
 /// [`fill_usage_cost_from_pricing`] applies one: the price snapshot's row,
 /// the profile's per-million prices, or the model's built-in pricing. A rate
 /// of 0 is free, and still a rate (backlog 2109).
-pub(crate) fn model_has_price(
-    snapshot: Option<&PriceSnapshot>,
-    profile: Option<&ModelProfile>,
-    model_slug: &str,
-) -> bool {
-    snapshot.is_some_and(|snapshot| snapshot.row(model_slug).is_some())
-        || profile.is_some_and(|profile| {
-            profile.cost_input_per_m.is_some() || profile.cost_output_per_m.is_some()
-        })
-        || roko_core::config::model_registry::builtin_pricing(model_slug).is_some()
-}
+pub(crate) use roko_core::config::model_registry::model_has_price;
 
 /// Whether a call's `usage` is priced, for its cost row (backlog 2109): its
 /// cost is known, or roko has a rate for the model, which prices even a
@@ -4623,6 +4627,67 @@ exit 1
             "profile-priced cost, got {}",
             result.usage.cost_usd
         );
+    }
+
+    /// find-c3da60: a Cerebras model priced in roko.toml without a cache-read
+    /// rate pays its input rate for cache reads, which Cerebras bills in full,
+    /// not a tenth of it; a call of an agent roko's own tool loop runs is
+    /// priced at the dated snapshot's row, not at the cost the loop estimated
+    /// from the model's profile (decision 2113); and a CLI agent's own cost
+    /// stands.
+    #[test]
+    fn cerebras_cache_reads_cost_the_input_rate() {
+        let snapshot = PriceSnapshot::from_toml(
+            include_str!("../../../config/prices/2026-09-28.toml"),
+            "config/prices/2026-09-28.toml",
+        )
+        .expect("the 2026-09-28 snapshot");
+        let cerebras = ProviderConfig {
+            kind: ProviderKind::OpenAiCompat,
+            base_url: Some("https://api.cerebras.ai/v1".to_string()),
+            ..ProviderConfig::default()
+        };
+        let target = |slug: &str| {
+            let profile = ModelProfile {
+                provider: "cerebras".to_string(),
+                slug: slug.to_string(),
+                cost_input_per_m: Some(0.65),
+                cost_output_per_m: Some(1.0),
+                ..ModelProfile::default()
+            };
+            ProviderDispatchSpec {
+                provider_config: Some(cerebras.clone()),
+                ..cost_test_target(slug, Some(profile))
+            }
+        };
+        let cached = || roko_core::Usage {
+            cache_read_tokens: 1_000_000,
+            ..roko_core::Usage::zero()
+        };
+
+        let mut usage = cached();
+        let pricing = price_target_usage(&mut usage, &target("llama-4-scout"), Some(&snapshot));
+        assert_eq!(pricing, CallPricing::Profile);
+        let cost = f64::from(usage.cost_usd);
+        assert!((cost - 0.65).abs() < 1e-6, "{cost}");
+
+        // What the loop priced at the profile's rates gives way to the row.
+        let mut usage = cached();
+        usage.cost_usd = 0.065;
+        let pricing = price_target_usage(&mut usage, &target("gpt-oss-120b"), Some(&snapshot));
+        assert_eq!(pricing, CallPricing::Snapshot);
+        let cost = f64::from(usage.cost_usd);
+        assert!((cost - 0.35).abs() < 1e-6, "{cost}");
+
+        let mut cli = target("gpt-oss-120b");
+        cli.runtime = ProviderRuntime::AgentResultBridge {
+            provider_kind: ProviderKind::ClaudeCli,
+        };
+        let mut usage = cached();
+        usage.cost_usd = 0.5;
+        let pricing = price_target_usage(&mut usage, &cli, Some(&snapshot));
+        assert_eq!(pricing, CallPricing::Reported);
+        assert!((f64::from(usage.cost_usd) - 0.5).abs() < 1e-6);
     }
 
     /// backlog 2114: a call to a model the dated price snapshot lists is

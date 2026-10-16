@@ -52,7 +52,7 @@ const AUTH_FAILURE: &str = "auth_failure";
 /// Failover refusal classes that waiting does not end: a login or a change
 /// to the workspace's configuration does, such as a key for a model, or an
 /// API model for a task a CLI agent cannot run (backlog 1115, gap-cf427e).
-const WAITING_DOES_NOT_HELP: [&str; 7] = [
+const WAITING_DOES_NOT_HELP: [&str; 8] = [
     AUTH_FAILURE,
     "not_configured",
     "not_dispatchable",
@@ -60,7 +60,16 @@ const WAITING_DOES_NOT_HELP: [&str; 7] = [
     "disabled",
     "no_credentials",
     UNGUARDED_IN_CHECKOUT,
+    UNPRICED_UNDER_CAP,
 ];
+
+/// Failover refusal class of a model roko has no price for, which a run held
+/// to a budget cap passes over before any call: the cap could not count the
+/// call (gap-8548e3).
+const UNPRICED_UNDER_CAP: &str = "unpriced_under_cap";
+
+/// Why a model of [`UNPRICED_UNDER_CAP`] is passed over.
+const UNPRICED_REASON: &str = "has no price, and a budget cap can count only priced calls";
 
 /// `RokoError::Gateway` category of an attempt denied in a way no retry can
 /// change (backlog 1116). The error is non-retryable like
@@ -317,6 +326,22 @@ impl GraphTaskDispatcher {
                 );
                 return Err(no_guarded_provider(&[pinned_model]));
             }
+            // A pinned model is never called unpriced under a cap either.
+            if self.unpriced_under_cap(&target) {
+                let refusal = ProviderRefusal {
+                    model_key: candidate.model_key.clone(),
+                    model_slug: target.model_slug.clone(),
+                    provider_id: target.provider_id.clone(),
+                    provider_kind: target.provider_kind,
+                    reason: UNPRICED_REASON.to_string(),
+                    until_ms: None,
+                    definitive: true,
+                    class: UNPRICED_UNDER_CAP,
+                    called: false,
+                    at_ms: chrono::Utc::now().timestamp_millis(),
+                };
+                return Err(self.no_usable_provider(&[refusal], &[], true, None));
+            }
         }
         loop {
             if !pinned && let Some(refusal) = self.blocked_provider(&candidate, &request) {
@@ -512,8 +537,9 @@ impl GraphTaskDispatcher {
     /// The refusal for `candidate` when its provider must not be called now:
     /// missing, not dispatchable, unable to enforce `request`'s agent
     /// contract, an agent that would run unguarded in the operator's shared
-    /// checkout, without credentials, statically disabled, or its circuit is
-    /// open in the health registry.
+    /// checkout, without credentials, statically disabled, a model with no
+    /// price under a budget cap (gap-8548e3), or its circuit is open in the
+    /// health registry.
     fn blocked_provider(
         &self,
         candidate: &DispatchCandidate,
@@ -593,6 +619,14 @@ impl GraphTaskDispatcher {
             return Some(refusal(
                 "no_credentials",
                 missing_credentials_reason(provider, &provider_id),
+                None,
+                true,
+            ));
+        }
+        if self.unpriced_under_cap(&target) {
+            return Some(refusal(
+                UNPRICED_UNDER_CAP,
+                UNPRICED_REASON.to_string(),
                 None,
                 true,
             ));
@@ -841,10 +875,10 @@ impl GraphTaskDispatcher {
         else {
             return Err(format!("provider `{provider_id}` is not configured"));
         };
-        if refusals
-            .iter()
-            .any(|refusal| &refusal.provider_id == provider_id)
-        {
+        // A model passed over for want of a price leaves its provider usable.
+        if refusals.iter().any(|refusal| {
+            &refusal.provider_id == provider_id && refusal.class != UNPRICED_UNDER_CAP
+        }) {
             return Err(format!("provider `{provider_id}` is unavailable too"));
         }
         if let crate::dispatch_v2::ProviderRuntime::Unsupported(unsupported) = &target.runtime {
@@ -864,6 +898,9 @@ impl GraphTaskDispatcher {
         let config = candidate.config.as_ref().unwrap_or(&self.config);
         if !config.provider_available_for_model_key(&candidate.model_key) {
             return Err(missing_credentials_reason(provider, provider_id));
+        }
+        if self.unpriced_under_cap(&target) {
+            return Err(UNPRICED_REASON.to_string());
         }
         let registry = &self.factory.health_registry;
         if !registry.is_available(provider_id) {
@@ -927,6 +964,13 @@ impl GraphTaskDispatcher {
                  and put that provider's API key in ~/.roko/.env (loaded automatically at startup).",
                 self.api_key_model_examples()
             )
+        } else if skipped.iter().all(|skip| skip.contains(UNPRICED_REASON)) {
+            // A price, not a key, would make them usable (gap-8548e3).
+            format!(
+                "No fallback model is usable ({}): extend [routing] fallback_models with a model \
+                 that has a price.",
+                skipped.join("; ")
+            )
         } else {
             format!(
                 "No fallback model is usable ({}): put the missing API key in ~/.roko/.env \
@@ -942,6 +986,23 @@ impl GraphTaskDispatcher {
             .filter(|refusal| refusal.class == AUTH_FAILURE)
             .map(|refusal| self.credentials_hint(refusal))
             .collect();
+        // A model with no price under a cap needs a price (gap-8548e3).
+        let unpriced: Vec<&str> = refusals
+            .iter()
+            .filter(|refusal| refusal.class == UNPRICED_UNDER_CAP)
+            .map(|refusal| refusal.model_key.as_str())
+            .collect();
+        if !unpriced.is_empty() || skipped.iter().any(|skip| skip.contains(UNPRICED_REASON)) {
+            let named = if unpriced.is_empty() {
+                "each model".to_string()
+            } else {
+                unpriced.join(", ")
+            };
+            fixes.push(format!(
+                "Give {named} a price: cost_input_per_m and cost_output_per_m on its [models.*] \
+                 entry in roko.toml (0 for a free local model), or run with --no-budget."
+            ));
+        }
         let waiting_helps =
             |refusal: &ProviderRefusal| !WAITING_DOES_NOT_HELP.contains(&refusal.class);
         fixes.push(fallback);

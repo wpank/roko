@@ -1981,9 +1981,14 @@ fn completion_status(value: &Value) -> &'static str {
     if bool_field(value, "success") == Some(true) {
         return "completed";
     }
-    // The end serve records for a run whose roko process was gone (bug-dceafd).
-    if string_field(value, "outcome") == Some(crate::interrupted_runs::INTERRUPTED) {
-        return crate::interrupted_runs::INTERRUPTED;
+    match string_field(value, "outcome") {
+        // The end serve records for a run whose roko process was gone
+        // (bug-dceafd).
+        Some(crate::interrupted_runs::INTERRUPTED) => return crate::interrupted_runs::INTERRUPTED,
+        // A run roko refused to start ended, and not as a success (bug-9a5970),
+        // whatever words its reason uses.
+        Some(crate::run_end::REFUSED) => return "failed",
+        _ => {}
     }
     let serialized = serde_json::to_string(event_data(value))
         .unwrap_or_default()
@@ -2007,7 +2012,9 @@ fn completion_status(value: &Value) -> &'static str {
 /// a run another process writes the index of is, until serve finds that
 /// process gone and records the run's end as `interrupted`
 /// ([`crate::interrupted_runs`]); the summary then says why under
-/// `interrupted`.
+/// `interrupted`. A run roko refused to run, before its plan started or at
+/// the spec gate before any dispatch, ends `failed` and says why under
+/// `refused` (bug-9a5970).
 ///
 /// Each task the run dispatched an agent for also gets its untrusted-input
 /// boundary under `config` ([`untrusted_input_boundary`]).
@@ -2025,9 +2032,25 @@ fn run_summary(
     let mut task_models = BTreeMap::<(String, String), BTreeSet<String>>::new();
     // The first milestone of each kind, with its event's place in the run.
     let mut milestones = BTreeMap::<&str, (usize, Value)>::new();
+    // What the spec gate refused before any dispatch, `<task>: <rule>: <detail>`.
+    let mut gate_refusals = Vec::<String>::new();
     for (place, item) in events.iter().enumerate() {
         let value = &item.value;
         let kind = event_type(value).unwrap_or_default();
+        if kind == "event_log_entry"
+            && string_field(value, "event_type") == Some("spec.gate.refused")
+        {
+            let message = string_field(value, "message").unwrap_or_default();
+            let line = event_task_id(value)
+                .filter(|task_id| !task_id.is_empty())
+                .map_or_else(
+                    || message.to_string(),
+                    |task_id| format!("{task_id}: {message}"),
+                );
+            if !line.is_empty() && !gate_refusals.contains(&line) {
+                gate_refusals.push(line);
+            }
+        }
         if matches!(kind, "agent_spawned" | "agent.dispatch.started")
             && let Some(task_id) = event_task_id(value)
             && let Some(model) = string_field(value, "model")
@@ -2096,11 +2119,15 @@ fn run_summary(
         ) {
             completion = Some((place, value));
         }
-        if let Some(delivery) = delivery_end(value) {
+        // The first delivery that did not complete says how the run's
+        // delivery ended, else the first that did (gap-4f6cbe).
+        if let Some(delivery) = delivery_end(value)
+            && milestones.get("delivery").is_none_or(|(_, held)| {
+                delivery != "completed" && held["text"] == "delivery completed"
+            })
+        {
             let text = format!("delivery {delivery}");
-            milestones
-                .entry("delivery")
-                .or_insert_with(|| (place, milestone("delivery", text, value)));
+            milestones.insert("delivery", (place, milestone("delivery", text, value)));
         }
     }
 
@@ -2136,6 +2163,24 @@ fn run_summary(
                 "at": event_time_text(value),
             })
         });
+    // Why roko did not run it (bug-9a5970): refused before its plan started,
+    // or by the spec gate before any dispatch.
+    let refused = completion
+        .filter(|_| state == RunState::Failed)
+        .and_then(|(_, value)| {
+            if string_field(value, "outcome") == Some(crate::run_end::REFUSED) {
+                return Some(json!({
+                    "stage": string_field(value, "stage").unwrap_or(crate::run_end::START_STAGE),
+                    "reason": string_field(value, "reason").unwrap_or_default(),
+                }));
+            }
+            (!gate_refusals.is_empty() && tasks.is_empty()).then(|| {
+                json!({
+                    "stage": crate::run_end::SPEC_GATE_STAGE,
+                    "reason": gate_refusals.join("; "),
+                })
+            })
+        });
     let mut milestones = milestones.into_values().collect::<Vec<_>>();
     milestones.sort_by_key(|(place, _)| *place);
     let milestones = milestones
@@ -2169,6 +2214,7 @@ fn run_summary(
         "position": position,
         "active": !state.is_terminal(),
         "interrupted": interrupted,
+        "refused": refused,
         "cost_usd": summary["metrics"]["cost_usd"],
         "tasks": {
             "total": tasks.len(),
@@ -2224,17 +2270,33 @@ fn event_time(value: &Value) -> Value {
         .unwrap_or(Value::Null)
 }
 
-/// How a run's delivery ended, `completed` or `failed`, when `value` is the
-/// Graph run's delivery event that says so.
-fn delivery_end(value: &Value) -> Option<&str> {
+/// How a plan's delivery ended, as the run's `delivery` milestone says it,
+/// when `value` is the event that says so: a Graph run's `delivery_finished`
+/// (gap-4f6cbe), or a `graph.delivery` `completed` or `failed` runtime event.
+/// A delivery a stop cut short was `cancelled`: it stopped, it did not fail.
+fn delivery_end(value: &Value) -> Option<&'static str> {
+    if event_type(value) == Some("delivery_finished") {
+        return Some(match string_field(value, "state")? {
+            "delivered" => "completed",
+            "cancelled" => "cancelled",
+            "conflict" => "failed: its merge conflicted",
+            "regression_failed" => "failed: the check on its merge failed",
+            _ => "failed",
+        });
+    }
     let data = event_data(value);
     if data.get("namespace").and_then(Value::as_str) != Some("graph.delivery") {
         return None;
     }
-    data.get("value")?
-        .get("kind")?
-        .as_str()
-        .filter(|kind| matches!(*kind, "completed" | "failed"))
+    let end = data.get("value")?;
+    match end.get("kind")?.as_str()? {
+        "completed" => Some("completed"),
+        "failed" if end.get("failure_state").and_then(Value::as_str) == Some("cancelled") => {
+            Some("cancelled")
+        }
+        "failed" => Some("failed"),
+        _ => None,
+    }
 }
 
 fn string_field<'a>(value: &'a Value, field: &str) -> Option<&'a str> {
@@ -2889,6 +2951,71 @@ mod tests {
         std::fs::write(path, body).unwrap();
     }
 
+    /// bug-9a5970: a run whose plans the spec gate refused before any
+    /// dispatch has, in its index, a refusal entry per finding, the run's
+    /// error and its end. Its summary says `failed`, not active, with
+    /// `refused: {stage: spec_gate, reason}` naming each task and rule, and
+    /// does not call it interrupted. A run that failed at its work has no
+    /// `refused`.
+    #[tokio::test]
+    async fn a_run_refused_before_dispatch_records_why_in_its_events_at_the_spec_gate() {
+        let dir = tempfile::tempdir().unwrap();
+        let deploy_backend = Arc::from(
+            crate::deploy::create_backend("manual", None, None, None).expect("manual backend"),
+        );
+        let state = Arc::new(
+            AppState::new(
+                dir.path().to_path_buf(),
+                Arc::new(crate::runtime::NoOpRuntime),
+                roko_core::config::schema::RokoConfig::default(),
+                deploy_backend,
+            )
+            .expect("AppState::new"),
+        );
+        let index = |run_id: &str| {
+            roko_fs::run_index::run_index_path(&state.layout.events_jsonl_path(), run_id).unwrap()
+        };
+        let path = "plans/demos/demo-hello/tasks.toml";
+        write_rows(
+            &index("r-gated"),
+            &[
+                json!({"type":"plan_set_loaded","run_id":"r-gated","ts_millis":1,"plans":[{"plan_id":"demo-hello","title":"Hello"}]}),
+                json!({"type":"event_log_entry","run_id":"r-gated","ts_millis":2,"event_type":"spec.gate.refused","plan_id":path,"task_id":"DEMO-T01","message":"HF3: verify passes on the unchanged base"}),
+                json!({"type":"event_log_entry","run_id":"r-gated","ts_millis":2,"event_type":"spec.gate.refused","plan_id":path,"task_id":"DEMO-T02","message":"HF2: step 1: ends in `|| true`"}),
+                json!({"type":"error","run_id":"r-gated","ts_millis":2,"message":"the spec gate refused the plan before any agent ran: …"}),
+                json!({"type":"run_completed","run_id":"r-gated","ts_millis":3,"outcome":"failed","duration_ms":2}),
+            ],
+        );
+        write_rows(
+            &index("r-failed"),
+            &[
+                json!({"type":"plan_started","run_id":"r-failed","ts_millis":1,"plan_id":"p1"}),
+                json!({"type":"task_completed","run_id":"r-failed","ts_millis":2,"plan_id":"p1","task_id":"t1","outcome":"failed"}),
+                json!({"type":"run_completed","run_id":"r-failed","ts_millis":3,"outcome":"failed","duration_ms":2}),
+            ],
+        );
+
+        let Json(summary) = get_run_summary(State(Arc::clone(&state)), Path("r-gated".into()))
+            .await
+            .unwrap();
+        assert_eq!(summary["state"], "failed", "{summary}");
+        assert_eq!(summary["active"], false, "{summary}");
+        assert_eq!(summary["refused"]["stage"], "spec_gate", "{summary}");
+        assert_eq!(
+            summary["refused"]["reason"],
+            "DEMO-T01: HF3: verify passes on the unchanged base; DEMO-T02: HF2: step 1: ends in \
+             `|| true`",
+            "{summary}"
+        );
+        assert_eq!(summary["interrupted"], Value::Null, "{summary}");
+
+        let Json(summary) = get_run_summary(State(Arc::clone(&state)), Path("r-failed".into()))
+            .await
+            .unwrap();
+        assert_eq!(summary["state"], "failed", "{summary}");
+        assert_eq!(summary["refused"], Value::Null, "{summary}");
+    }
+
     /// bug-dceafd: a run whose roko process died (a machine restart, a crash,
     /// `kill -9`) left an open manifest and an index with no end. Its summary
     /// reads `interrupted`, not active, with why and its last sign of life,
@@ -3017,6 +3144,89 @@ mod tests {
         );
         let unknown = crate::routes::plans::cancel_plan_run(&state, "r-unknown").await;
         assert!(unknown.is_err());
+    }
+
+    /// gap-4f6cbe: a run's `delivery` milestone says how its plans'
+    /// deliveries ended, from a Graph run's `delivery_finished` or a
+    /// `graph.delivery` runtime event. A delivery a stop cut short reads
+    /// `cancelled`, not failed, and one that did not complete wins over an
+    /// earlier one that did.
+    #[tokio::test]
+    async fn run_summary_says_how_its_delivery_ended() {
+        let dir = tempfile::tempdir().unwrap();
+        let deploy_backend = Arc::from(
+            crate::deploy::create_backend("manual", None, None, None).expect("manual backend"),
+        );
+        let state = Arc::new(
+            AppState::new(
+                dir.path().to_path_buf(),
+                Arc::new(crate::runtime::NoOpRuntime),
+                roko_core::config::schema::RokoConfig::default(),
+                deploy_backend,
+            )
+            .expect("AppState::new"),
+        );
+        let finished = |run_id: &str, plan_id: &str, at: u64, state: &str| {
+            json!({"type":"delivery_finished","run_id":run_id,"ts_millis":at,"plan_id":plan_id,
+                "delivery_id":format!("{run_id}:{plan_id}"),"target":format!("roko/batch/{run_id}"),
+                "state":state})
+        };
+        for (run_id, ends, said) in [
+            ("d1", vec![("p1", "delivered")], "delivery completed"),
+            ("d2", vec![("p1", "cancelled")], "delivery cancelled"),
+            (
+                "d3",
+                vec![("p1", "delivered"), ("p2", "regression_failed")],
+                "delivery failed: the check on its merge failed",
+            ),
+            (
+                "d4",
+                vec![("p1", "conflict"), ("p2", "delivered")],
+                "delivery failed: its merge conflicted",
+            ),
+        ] {
+            let mut rows = vec![json!({"type":"run.started","run_id":run_id,"timestamp_ms":1})];
+            for (at, &(plan_id, end)) in (2..).zip(&ends) {
+                rows.push(finished(run_id, plan_id, at, end));
+            }
+            rows.push(
+                json!({"type":"run.completed","run_id":run_id,"timestamp_ms":9,
+                "outcome":"failed"}),
+            );
+            write_rows(
+                &roko_fs::run_index::run_index_path(&state.layout.events_jsonl_path(), run_id)
+                    .unwrap(),
+                &rows,
+            );
+            let Json(summary) = get_run_summary(State(Arc::clone(&state)), Path(run_id.into()))
+                .await
+                .unwrap();
+            let delivery = summary["milestones"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|milestone| milestone["kind"] == "delivery")
+                .unwrap_or_else(|| panic!("{run_id}: no delivery milestone: {summary}"));
+            assert_eq!(delivery["text"], said, "{run_id}: {summary}");
+        }
+
+        let extension = |kind: &str, failure_state: Option<&str>| {
+            json!({"event":{"payload":{"kind":"extension","data":{"namespace":"graph.delivery",
+                "version":"1","value":{"kind":kind,"failure_state":failure_state}}}}})
+        };
+        assert_eq!(
+            delivery_end(&extension("completed", None)),
+            Some("completed")
+        );
+        assert_eq!(
+            delivery_end(&extension("failed", Some("cancelled"))),
+            Some("cancelled")
+        );
+        assert_eq!(
+            delivery_end(&extension("failed", Some("regression_failed"))),
+            Some("failed")
+        );
+        assert_eq!(delivery_end(&extension("started", None)), None);
     }
 
     /// B9 B4: a run's summary gives one state with its verdict and cost, how

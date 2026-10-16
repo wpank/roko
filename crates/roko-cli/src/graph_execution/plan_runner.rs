@@ -4431,7 +4431,8 @@ async fn deliver_plan_to_batch(
     let service = super::delivery::CliCompletionDeliveryService::with_store(
         batch.store().clone(),
         Arc::new(backend),
-    );
+    )
+    .with_events(delivery_events(graph_tui_bridge));
     let request = batch.request(&plan.id, verified);
     let receipt = match batch
         .deliver(&service, request, checkpoint.recorded_delivery())
@@ -4633,7 +4634,8 @@ async fn deliver_partial_to_batch(
     let service = super::delivery::CliCompletionDeliveryService::with_store(
         batch.store().clone(),
         Arc::new(backend),
-    );
+    )
+    .with_events(delivery_events(ctx.graph_tui_bridge));
     let request = batch.partial_request(&plan.id, verified);
     let mut receipt = match batch
         .deliver(&service, request, checkpoint.recorded_delivery())
@@ -4828,6 +4830,14 @@ async fn check_plan_in_place(
             Ok(PlanOutcome::Failed)
         }
     }
+}
+
+/// The events of a plan's delivery, published through the run's bridge
+/// (gap-4f6cbe).
+fn delivery_events(
+    graph_tui_bridge: &crate::runner::graph_tui_bridge::GraphTuiBridge,
+) -> super::delivery::DeliveryEvents {
+    super::delivery::DeliveryEvents::new(graph_tui_bridge.tui().clone())
 }
 
 /// The hub events of `plan`'s whole-plan check at `stage` (gap-6b6ec1).
@@ -9063,6 +9073,134 @@ printf '%s\n' '{"type":"result","session_id":"sess-batch","model":"claude-sonnet
                 );
             }
         }
+    }
+
+    /// gap-4f6cbe: a Graph run publishes its plan's delivery into the batch
+    /// branch, `delivery_started` and then `delivery_finished` with the
+    /// state it ended in, and records both in the run's events. A delivered
+    /// plan's ends `delivered`, and `roko serve`'s summary of the run says
+    /// "delivery completed". One whose regression check a cancel cut short
+    /// ends `cancelled`, says the cancel stopped it, and the summary says
+    /// "delivery cancelled": it stopped, it did not fail.
+    #[cfg(unix)]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_graph_run_publishes_its_delivery_end() {
+        use crate::check_process_probe::{sleeping_step, wait_for_exit, wait_for_pids};
+
+        fn deliveries(hub: &crate::state_hub::SharedStateHub) -> Vec<String> {
+            hub.subscribe_events_from(0)
+                .replay
+                .iter()
+                .filter_map(|envelope| match &envelope.payload {
+                    roko_core::DashboardEvent::DeliveryStarted {
+                        plan_id,
+                        target,
+                        branch,
+                        ..
+                    } => Some(format!("started {plan_id}: {branch} into {target}")),
+                    roko_core::DashboardEvent::DeliveryFinished {
+                        plan_id,
+                        state,
+                        stopped_by,
+                        ..
+                    } => Some(format!(
+                        "finished {plan_id}: {state}, stopped by {}",
+                        stopped_by.as_deref().unwrap_or("nothing")
+                    )),
+                    _ => None,
+                })
+                .collect()
+        }
+        async fn delivery_milestone(repo: &Path, run_id: &str) -> String {
+            let deploy_backend = Arc::from(
+                roko_serve::deploy::create_backend("manual", None, None, None)
+                    .expect("manual backend"),
+            );
+            let runtime = crate::serve_runtime::RokoCliRuntime::new(
+                crate::config::Config::default(),
+                crate::config::RepoRegistry::default(),
+            );
+            let state = Arc::new(
+                roko_serve::state::AppState::new(
+                    repo.to_path_buf(),
+                    runtime.into_arc(),
+                    roko_core::config::schema::RokoConfig::default(),
+                    deploy_backend,
+                )
+                .expect("serve state"),
+            );
+            let summary = roko_serve::routes::run_summary(&state, run_id)
+                .await
+                .unwrap_or_else(|error| panic!("{run_id}: no summary: {error:?}"));
+            summary["milestones"]
+                .as_array()
+                .and_then(|milestones| {
+                    milestones
+                        .iter()
+                        .find(|milestone| milestone["kind"] == "delivery")
+                })
+                .and_then(|milestone| milestone["text"].as_str())
+                .unwrap_or_else(|| panic!("{run_id}: no delivery milestone: {summary}"))
+                .to_string()
+        }
+
+        let dir = repo_with_file_plans(&["alpha"], Some("test -f alpha.txt"));
+        let repo = dir.path();
+        let hub = crate::state_hub::shared_state_hub();
+        let params = GraphPlanRunParams {
+            state_hub: Some(hub.clone()),
+            ..worktree_run_params(repo)
+        };
+        let exit_code = run_graph_plan_in_run(params, Some("run-delivered".into()))
+            .await
+            .expect("run the plan");
+        assert_eq!(exit_code, EXIT_SUCCESS);
+        assert_eq!(
+            deliveries(&hub),
+            [
+                "started 01-alpha: roko/plan/01-alpha into roko/batch/run-delivered",
+                "finished 01-alpha: delivered, stopped by nothing",
+            ]
+        );
+        assert_eq!(
+            delivery_milestone(repo, "run-delivered").await,
+            "delivery completed"
+        );
+
+        let scratch = tempfile::tempdir().expect("tempdir");
+        let pids = scratch.path().join("pids");
+        let dir = repo_with_file_plans(&["alpha"], Some(sleeping_step(&pids).as_str()));
+        let repo = dir.path().to_path_buf();
+        let hub = crate::state_hub::shared_state_hub();
+        let interrupt = PlanRunInterruptHandle::default();
+        let params = GraphPlanRunParams {
+            state_hub: Some(hub.clone()),
+            interrupt: Some(interrupt.clone()),
+            ..worktree_run_params(&repo)
+        };
+        let run = tokio::spawn(run_graph_plan_in_run(params, Some("run-stopped".into())));
+        let running = wait_for_pids(&pids).await;
+        interrupt.request(PlanRunInterrupt::Cancel);
+        let exit_code = tokio::time::timeout(Duration::from_secs(30), run)
+            .await
+            .expect("the cancelled run ends")
+            .expect("the run task")
+            .expect("the run");
+        assert_eq!(exit_code, PlanRunInterrupt::Cancel.exit_code());
+        for pid in running {
+            wait_for_exit(pid).await;
+        }
+        assert_eq!(
+            deliveries(&hub),
+            [
+                "started 01-alpha: roko/plan/01-alpha into roko/batch/run-stopped",
+                "finished 01-alpha: cancelled, stopped by cancel",
+            ]
+        );
+        assert_eq!(
+            delivery_milestone(&repo, "run-stopped").await,
+            "delivery cancelled"
+        );
     }
 
     /// bug-db89d4: the closing tally counts each way a plan ended, and leaves

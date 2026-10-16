@@ -77,7 +77,8 @@ impl ProviderAdapter for CerebrasAdapter {
                     usize::try_from(model.context_window).unwrap_or(usize::MAX),
                 )
                 .with_few_shot_messages(coding_few_shot_examples())
-                .with_optional_data_llm(options.data_llm.clone());
+                .with_optional_data_llm(options.data_llm.clone())
+                .with_optional_turn_budget(options.turn_budget.clone());
 
             // Prepend a tool-call instruction for small models that tend to
             // emit tool invocations as text instead of using the API.

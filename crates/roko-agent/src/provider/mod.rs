@@ -1171,6 +1171,10 @@ pub struct AgentOptions {
     /// for a provider whose tool loop roko runs, and that loop sends untrusted
     /// tool output through it (gap-b0d514).
     pub data_llm: Option<Arc<DataLlmBoundary>>,
+    /// What this agent's model calls may spend. The tool loop of a provider
+    /// whose loop roko runs asks it before each model call and stops once it
+    /// refuses one; a plan run's attempt sets it from the plan budget.
+    pub turn_budget: Option<Arc<dyn crate::tool_loop::TurnBudget>>,
     /// The operator's `[pricing]` snapshot pin (bug-1809d7).
     ///
     /// [`create_agent_for_model`] fills this from `RokoConfig.pricing` so every adapter that
@@ -1209,6 +1213,7 @@ impl std::fmt::Debug for AgentOptions {
             .field("tool_correlation", &self.tool_correlation)
             .field("provenance_sink", &self.provenance_sink.is_some())
             .field("data_llm", &self.data_llm.is_some())
+            .field("turn_budget", &self.turn_budget.is_some())
             .finish_non_exhaustive()
     }
 }

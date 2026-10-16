@@ -277,21 +277,27 @@ pub fn task_status_is_complete(status: &str) -> bool {
     matches!(status, "done" | "completed" | "passed" | "skipped")
 }
 
-/// Build a display summary from a discovered plan entry.
+/// A discovered plan's title: the first heading of its `plan.md`, else its
+/// plan id. The plan listing and the plan API title a plan with it.
 #[must_use]
-pub fn summarize_plan_info(plan_info: &PlanInfo) -> PlanSummary {
-    let title = if plan_info
+pub fn plan_title(plan_info: &PlanInfo) -> String {
+    if plan_info
         .path
         .file_name()
         .is_some_and(|name| name == "tasks.toml")
     {
-        stable_plan_id(plan_info).to_string()
-    } else {
-        fs::read_to_string(&plan_info.path)
-            .ok()
-            .and_then(|content| extract_markdown_title(&content))
-            .unwrap_or_else(|| stable_plan_id(plan_info).to_string())
-    };
+        return stable_plan_id(plan_info).to_string();
+    }
+    fs::read_to_string(&plan_info.path)
+        .ok()
+        .and_then(|content| extract_markdown_title(&content))
+        .unwrap_or_else(|| stable_plan_id(plan_info).to_string())
+}
+
+/// Build a display summary from a discovered plan entry.
+#[must_use]
+pub fn summarize_plan_info(plan_info: &PlanInfo) -> PlanSummary {
+    let title = plan_title(plan_info);
     let tasks_path = tasks_path(plan_info);
     let mut meta_status = String::new();
     let mut superseded_by = None;

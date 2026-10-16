@@ -52,8 +52,9 @@ pub mod workspaces;
 // Re-export primary public types for convenient access.
 pub use control_adapter::{GraphCommandEffect, GraphExecutionControlAdapter};
 pub use delivery::{
-    CliCompletionDeliveryService, DELIVERY_CHECKPOINT_KEY, DeliveryBackend, DeliveryMergeOutcome,
-    DeliveryPublicationOutcome, DeliveryRegressionOutcome, GitDeliveryBackend,
+    CliCompletionDeliveryService, DELIVERY_CHECKPOINT_KEY, DeliveryBackend, DeliveryEvents,
+    DeliveryMergeOutcome, DeliveryPublicationOutcome, DeliveryRegressionOutcome,
+    GitDeliveryBackend,
 };
 pub use event_log::{EventTap, RunEventLog, Tapped};
 pub use identity_map::{GraphIdentityMap, NodeIdentity};

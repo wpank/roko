@@ -568,17 +568,12 @@ impl CliRuntime for RokoCliRuntime {
         let task_count = tasks_file.tasks.len();
         let tasks: Vec<PlanTaskDto> = tasks_file.tasks.iter().map(task_to_dto).collect();
 
-        // Plan title from [meta].plan; absent for old plans that leave it blank.
-        let title = {
-            let t = tasks_file.meta.plan.trim().to_string();
-            if t.is_empty() { None } else { Some(t) }
-        };
-
         Ok(Some(PlanTasksDto {
             plan_id: plan_id.to_string(),
             task_count,
             tasks,
-            title,
+            // The listing's title, not `[meta].plan`, which is the plan id (bug-e0624e).
+            title: Some(crate::plan::plan_title(&plan_info)),
             max_parallel: crate::plan_policy::plan_max_parallel(&tasks_file),
         }))
     }
@@ -2114,6 +2109,50 @@ mod tests {
             (summary.task_count, summary.tasks_done, summary.tasks_failed),
             (9, 4, 1)
         );
+    }
+
+    /// bug-e0624e: `GET /api/plans/{id}/tasks` titles a plan as the listing
+    /// does, with the first heading of its `plan.md`, not with `[meta].plan`,
+    /// which is the plan id. A plan with no `plan.md` keeps its id.
+    #[tokio::test]
+    async fn plan_tasks_title_is_the_listing_title() {
+        let workdir = tempfile::tempdir().unwrap();
+        let plans = workdir.path().join("plans");
+        let tasks =
+            |id: &str| format!("[meta]\nplan = {id:?}\n\n[[task]]\nid = \"T1\"\ntitle = \"One\"\n");
+        std::fs::create_dir_all(plans.join("demo-titled")).unwrap();
+        std::fs::write(
+            plans.join("demo-titled").join("plan.md"),
+            "---\nplan: demo-titled\n---\n\n# Start here: a titled demo\n\nThe body.\n",
+        )
+        .unwrap();
+        std::fs::write(
+            plans.join("demo-titled").join("tasks.toml"),
+            tasks("demo-titled"),
+        )
+        .unwrap();
+        std::fs::create_dir_all(plans.join("tasks-only")).unwrap();
+        std::fs::write(
+            plans.join("tasks-only").join("tasks.toml"),
+            tasks("tasks-only"),
+        )
+        .unwrap();
+
+        let runtime = RokoCliRuntime::new(Config::default(), RepoRegistry::default());
+        let listed = runtime.list_plans(workdir.path()).await.unwrap();
+        for (id, title) in [
+            ("demo-titled", "Start here: a titled demo"),
+            ("tasks-only", "tasks-only"),
+        ] {
+            let listing = listed.iter().find(|plan| plan.id == id).expect("listed");
+            assert_eq!(listing.title, title);
+            let detail = runtime
+                .load_plan_tasks(workdir.path(), id)
+                .await
+                .unwrap()
+                .expect("the plan is found");
+            assert_eq!(detail.title.as_deref(), Some(title), "{id}");
+        }
     }
 
     /// gap-655d19: a server run is validated as `roko plan run` validates it.

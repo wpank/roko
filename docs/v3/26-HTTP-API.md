@@ -431,6 +431,8 @@ as soon as it is published; heartbeats, efficiency rows and gate output lines re
 | `plan_check_started` | `plan_id`, `stage` (`regression`: the delivery's post-merge check in the regression checkout; `in_place`: the working tree the tasks edited), `step` (from 1) of `steps`, `name` (`cargo clippy`, `cargo test`, … or the program the step runs), `command`, `scope` (`workspace`, `packages`, or `command`), `packages` (of a `packages` step), `source` (`authored` or `cargo-default`): a step of the plan's whole-plan check started (gap-6b6ec1) |
 | `plan_check_heartbeat` | `plan_id`, `stage`, `step`, `steps`, `name`, `scope`, `packages`, `elapsed_ms`: every 15 s while the step runs |
 | `plan_check_finished` | `plan_id`, `stage`, `step`, `steps`, `name`, `scope`, `packages`, `passed`, `exit_code` (absent when it did not exit), `reason` (why a step that did not exit ended), `stopped_by` (present when a stop request, such as `cancel`, ended the step: the check was stopped, not failed, bug-7b62ff), `elapsed_ms`. A failed or stopped step ends the check |
+| `delivery_started` | `plan_id`, `delivery_id` (`<run>:<plan>`; `…:partial` for the verified part of a plan that did not finish), `target` (the run's batch branch the work is merged into), `branch` (`roko/plan/<plan>`), `commit` (the verified tip delivered): a plan's delivery started (gap-4f6cbe). Its regression check's `plan_check_*` events follow |
+| `delivery_finished` | `plan_id`, `delivery_id`, `target`, `state` (`delivered`; `conflict`: the merge failed; `regression_failed`: the check on the merge failed; `cancelled`: a stop cut the check short, so the delivery stopped and did not fail; `terminal_failed`: it could not finish), `merge_commit` (once the merge was made; a run's batch takes a `regression_failed` or `cancelled` merge back out of `target`), `reason` (why it was not delivered), `stopped_by` (what stopped a `cancelled` one, such as `cancel`). The run summary's `delivery` milestone says `delivery completed`, `delivery cancelled` or `delivery failed: …`, from the first delivery that did not complete |
 
 **Inference and deployment events:**
 
@@ -498,7 +500,7 @@ aliases (both are mounted).
 | GET | `/api/plans` | List all plans |
 | POST | `/api/plans` | Create a new plan |
 | GET | `/api/plans/{id}` | Full plan details |
-| GET | `/api/plans/{id}/tasks` | Tasks for a plan |
+| GET | `/api/plans/{id}/tasks` | Tasks for a plan, and its `title` as `GET /api/plans` gives it: the first heading of its `plan.md`, else its id |
 | POST | `/api/plans/{id}/execute` | Execute plan (background, 202 Accepted with the run's `id`; 422 with the validation report in `details` when `roko plan run` would refuse the plan). While another plan run is live the run is queued instead: 202 with `queued: true` and its `position`, started under its `id` when the live run ends; 409 only when the queue's 8 places are taken |
 | POST | `/api/plans/execute` | Execute a plan set, named plans or every plan (body `plans`, `target`, `resume`, `max_parallel_plans`); queued like a single plan |
 | GET | `/api/plans/{id}/status` | Execution status of the run `{id}` names (plan id, member plan id or run id): `running`, then `succeeded`, `failed` (with `error`), `unverified` or `cancelled`, with `finished` and `finished_at`; a run that ended keeps answering for an hour |

@@ -306,6 +306,8 @@ fn dashboard_event_type(event: &roko_core::dashboard_snapshot::DashboardEvent) -
         DashboardEvent::PlanCheckStarted { .. } => "plan_check_started",
         DashboardEvent::PlanCheckHeartbeat { .. } => "plan_check_heartbeat",
         DashboardEvent::PlanCheckFinished { .. } => "plan_check_finished",
+        DashboardEvent::DeliveryStarted { .. } => "delivery_started",
+        DashboardEvent::DeliveryFinished { .. } => "delivery_finished",
         DashboardEvent::AffectUpdated { .. } => "affect_updated",
         DashboardEvent::AgentTopologyUpdated { .. } => "agent_topology_updated",
         DashboardEvent::CriticalPathEtaUpdated { .. } => "critical_path_eta_updated",
@@ -346,6 +348,8 @@ fn dashboard_event_plan_id(event: &roko_core::dashboard_snapshot::DashboardEvent
         | DashboardEvent::PlanCheckStarted { plan_id, .. }
         | DashboardEvent::PlanCheckHeartbeat { plan_id, .. }
         | DashboardEvent::PlanCheckFinished { plan_id, .. }
+        | DashboardEvent::DeliveryStarted { plan_id, .. }
+        | DashboardEvent::DeliveryFinished { plan_id, .. }
         | DashboardEvent::EventLogEntry { plan_id, .. } => Some(plan_id),
         _ => None,
     }

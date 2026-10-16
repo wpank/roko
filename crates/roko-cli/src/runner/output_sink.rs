@@ -1436,6 +1436,31 @@ pub fn format_dashboard_event(
                 ),
             )
         }
+        DashboardEvent::DeliveryStarted {
+            plan_id, target, ..
+        } => (
+            format!("[{plan_id}]"),
+            ">",
+            format!("Delivering into {target}"),
+        ),
+        DashboardEvent::DeliveryFinished {
+            plan_id,
+            target,
+            state,
+            ..
+        } => {
+            // A delivery a stop cut short stopped; it did not fail.
+            let icon = match state.as_str() {
+                "delivered" => "+",
+                "cancelled" => "-",
+                _ => "x",
+            };
+            (
+                format!("[{plan_id}]"),
+                icon,
+                format!("Delivery into {target}: {state}"),
+            )
+        }
         DashboardEvent::Error { message } => {
             let trunc = truncate_chars(message, 120);
             (String::new(), "x", format!("Error: {trunc}"))

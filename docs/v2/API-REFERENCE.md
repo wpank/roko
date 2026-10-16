@@ -656,8 +656,9 @@ Generate a plan from a natural language prompt with the plan generator. `prompt`
 ```
 
 Response: `202 Accepted` with `{ "id": "op-uuid", "plan_id": "implement-rate-limiting-for-the-api" }`.
-Poll `GET /api/operations/{id}`: it completes with `result.slug` and `result.task_count` once the
-plan loads, and fails if no plan was written.
+Poll `GET /api/operations/{id}`: it completes with `result.slug`, `result.task_count` and
+`result.cost_usd` (what the planner's calls cost, in USD) once the plan loads, and fails if no plan was
+written or the plan cannot run.
 
 </details>
 

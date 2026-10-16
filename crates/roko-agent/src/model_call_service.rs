@@ -93,8 +93,13 @@ pub struct ModelCallService {
     default_model: String,
     /// Provider/model configuration used by `create_agent_for_model`.
     config: Arc<RokoConfig>,
-    /// Optional pricing table for calculating cost from raw token usage.
+    /// Pricing table for calculating cost from raw token usage: the
+    /// config's `[models.*]` rates and the built-in ones, unless the caller
+    /// set one ([`Self::with_cost_table`]).
     cost_table: CostTable,
+    /// Whether the caller set `cost_table`; until it does, the table
+    /// follows [`Self::with_config`] (bug-4e5731).
+    cost_table_set: bool,
     /// Optional event consumers for runtime observability.
     event_consumers: Vec<Arc<dyn EventConsumer>>,
     /// Optional observer for backend inference lifecycle events.
@@ -173,6 +178,7 @@ impl ModelCallService {
             default_model,
             config: Arc::new(RokoConfig::default()),
             cost_table: CostTable::default(),
+            cost_table_set: false,
             event_consumers: Vec::new(),
             inference_observer: None,
             feedback_sink: None,
@@ -199,10 +205,15 @@ impl ModelCallService {
         }
     }
 
-    /// Use an explicit Roko configuration for provider dispatch.
+    /// Use an explicit Roko configuration for provider dispatch. Unless the
+    /// caller sets a pricing table, calls are priced at the config's
+    /// `[models.*]` rates, then the built-in ones (bug-4e5731).
     #[must_use]
     pub fn with_config(mut self, config: RokoConfig) -> Self {
         self.fallback_models = configured_fallback_models(&config, &self.default_model);
+        if !self.cost_table_set {
+            self.cost_table = CostTable::from_config_with_defaults(&config.models);
+        }
         self.config = Arc::new(config);
         self
     }
@@ -230,6 +241,7 @@ impl ModelCallService {
     #[must_use]
     pub fn with_cost_table(mut self, cost_table: CostTable) -> Self {
         self.cost_table = cost_table;
+        self.cost_table_set = true;
         self
     }
 
@@ -472,7 +484,9 @@ impl ModelCallService {
             output_tokens: max_output_tokens.min(u64::from(u32::MAX)) as u32,
             ..Usage::zero()
         };
-        let predicted_cost_usd = self.cost_table.calculate(&model, &usage_estimate);
+        let predicted_cost_usd = self
+            .cost_table
+            .calculate(pricing_slug(&self.config, &model), &usage_estimate);
 
         CostEstimate {
             model,
@@ -1434,6 +1448,19 @@ fn output_text(output: &Signal) -> String {
     }
 }
 
+/// The name a call on `model` is priced under: the slug of the `[models.*]`
+/// entry `model` is the key of, else `model` itself. Cost tables and the
+/// built-in prices are keyed by slug, so a key that is not its slug
+/// (`gpt-5-4-mini` for `gpt-5.4-mini`) priced its calls at $0 (bug-4e5731).
+fn pricing_slug<'a>(config: &'a RokoConfig, model: &'a str) -> &'a str {
+    config
+        .models
+        .get(model)
+        .map(|profile| profile.slug.trim())
+        .filter(|slug| !slug.is_empty())
+        .unwrap_or(model)
+}
+
 fn token_usage(usage: &Usage, cost_usd: f64) -> TokenUsage {
     TokenUsage {
         input_tokens: u64::from(usage.input_tokens),
@@ -2086,7 +2113,9 @@ impl ProviderCallCell {
                     )
                     .await;
             }
-            let calculated_cost = self.cost_table.calculate(attempt_model, &result.usage);
+            let calculated_cost = self
+                .cost_table
+                .calculate(pricing_slug(&self.config, attempt_model), &result.usage);
             let cost_usd = if calculated_cost > 0.0 {
                 calculated_cost
             } else {
@@ -3601,6 +3630,107 @@ printf '%s\n' '{"type":"result","session_id":"s","model":"glm-4.7","total_cost_u
         assert_eq!(estimate.estimated_input_tokens, 250);
         assert_eq!(estimate.max_output_tokens, 2048);
         assert!(estimate.predicted_cost_usd > 0.0);
+    }
+
+    /// bug-4e5731: a call on a `[models.*]` key that is not its slug is priced
+    /// at the slug's rate, predicted and charged, where it used to cost $0.
+    #[tokio::test]
+    async fn a_model_key_is_priced_at_its_slugs_rate() {
+        use std::os::unix::fs::PermissionsExt;
+
+        // A CLI that reports its usage but no cost, as the OpenAI adapter does.
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let script = tmp.path().join("cli-fake.sh");
+        std::fs::write(
+            &script,
+            r#"#!/bin/sh
+set -eu
+cat >/dev/null
+printf '%s\n' '{"type":"content_block_delta","delta":{"text":"hello"}}'
+printf '%s\n' '{"type":"result","session_id":"s","total_cost_usd":0.0,"usage":{"input_tokens":1000,"output_tokens":100}}'
+"#,
+        )
+        .expect("write script");
+        let mut permissions = std::fs::metadata(&script).expect("metadata").permissions();
+        permissions.set_mode(0o755);
+        std::fs::set_permissions(&script, permissions).expect("chmod");
+
+        let mut config = RokoConfig::default();
+        config.providers.clear();
+        config.models.clear();
+        config.agent.bare_mode = false;
+        config.providers.insert(
+            "fake_cli".to_string(),
+            roko_core::config::schema::ProviderConfig {
+                kind: roko_core::agent::ProviderKind::ClaudeCli,
+                command: Some(script.display().to_string()),
+                timeout_ms: Some(10_000),
+                ..Default::default()
+            },
+        );
+        config.models.insert(
+            "house-sonnet".to_string(),
+            roko_core::config::schema::ModelProfile {
+                provider: "fake_cli".to_string(),
+                slug: "claude-sonnet-4-6".to_string(),
+                ..Default::default()
+            },
+        );
+        let rate = roko_core::config::model_registry::builtin_pricing("claude-sonnet-4-6")
+            .expect("a built-in rate");
+        let svc = ModelCallService::new("house-sonnet".into())
+            .with_config(config)
+            .with_working_dir(tmp.path());
+
+        let mut request = user_request("house-sonnet", "x".repeat(4_000));
+        request.max_tokens = Some(1_000);
+        let predicted = svc.cost_predict(&request).predicted_cost_usd;
+        let expected = (1_000.0 * rate.input_per_m + 1_000.0 * rate.output_per_m) / 1e6;
+        assert!(
+            (predicted - expected).abs() < 1e-9,
+            "{predicted} vs {expected}"
+        );
+
+        let response = svc
+            .call(user_request("house-sonnet", "hello"))
+            .await
+            .expect("the fake CLI answers");
+        let charged = (1_000.0 * rate.input_per_m + 100.0 * rate.output_per_m) / 1e6;
+        assert!(
+            (response.usage.cost_usd - charged).abs() < 1e-9,
+            "{:?} vs {charged}",
+            response.usage
+        );
+    }
+
+    /// bug-4e5731: a service given a config prices a model the config sets a
+    /// rate for, unless the caller set its own pricing table.
+    #[test]
+    fn a_service_prices_at_its_configs_rates() {
+        let mut config = RokoConfig::default();
+        config.models.insert(
+            "local-coder".to_string(),
+            roko_core::config::schema::ModelProfile {
+                provider: "local".to_string(),
+                slug: "acme-coder-7b".to_string(),
+                cost_input_per_m: Some(2.0),
+                cost_output_per_m: Some(8.0),
+                ..Default::default()
+            },
+        );
+        let mut request = user_request("local-coder", "x".repeat(4_000));
+        request.max_tokens = Some(1_000);
+
+        let svc = ModelCallService::new("local-coder".into()).with_config(config.clone());
+        let predicted = svc.cost_predict(&request).predicted_cost_usd;
+        assert!((predicted - 0.01).abs() < 1e-9, "{predicted}");
+
+        // The caller's own table wins, whichever builder ran first.
+        let svc = ModelCallService::new("local-coder".into())
+            .with_cost_table(CostTable::default())
+            .with_config(config);
+        let predicted = svc.cost_predict(&request).predicted_cost_usd;
+        assert!(predicted.abs() < 1e-12, "{predicted}");
     }
 
     #[test]

@@ -2,7 +2,7 @@
 //! read, write and validate a plan's source.
 
 use super::*;
-use crate::runtime::RunOrigin;
+use crate::runtime::{ProgressReporter, RunOrigin};
 
 #[derive(Deserialize, Validate)]
 pub(super) struct CreatePlanRequest {
@@ -260,6 +260,9 @@ pub(crate) async fn start_plan_generation(
     // Gate the task on a start signal so the handle is always registered before
     // the task can write back its result (mirrors `spawn_background_run`).
     let (start_tx, start_rx) = tokio::sync::oneshot::channel::<()>();
+    // gap-11d870: the generation reports what it is doing, and the
+    // operation's status shows its latest report.
+    let (progress_tx, progress_rx) = tokio::sync::watch::channel(Value::Null);
 
     let handle = tokio::spawn({
         let op_id = op_id.clone();
@@ -293,15 +296,18 @@ pub(crate) async fn start_plan_generation(
                      '{slug_for_task}'"
                 )
             };
-            let generation = if for_chat_host {
-                runtime
-                    .generate_plan_for_chat_host(&workdir, &slug_for_task, &prompt_text)
-                    .await
-            } else {
-                runtime
-                    .generate_plan_from_prompt(&workdir, &slug_for_task, &prompt_text)
-                    .await
-            };
+            let report: ProgressReporter = Arc::new(move |progress| {
+                progress_tx.send_replace(progress);
+            });
+            let generation = runtime
+                .generate_plan_reporting(
+                    &workdir,
+                    &slug_for_task,
+                    &prompt_text,
+                    for_chat_host,
+                    report,
+                )
+                .await;
             let generated = match generation {
                 Ok(gen_result) if gen_result.plan_targets.is_empty() => Err(no_plan()),
                 Ok(gen_result) => {
@@ -391,6 +397,8 @@ pub(crate) async fn start_plan_generation(
         kind,
         status: OperationStatus::Running,
         handle,
+        started: std::time::Instant::now(),
+        progress: Some(progress_rx),
     };
 
     state.operations.write().await.insert(op_id.clone(), op);
@@ -624,6 +632,8 @@ pub(super) async fn revise_plan(
         kind,
         status: OperationStatus::Running,
         handle,
+        started: std::time::Instant::now(),
+        progress: None,
     };
 
     state.operations.write().await.insert(op_id.clone(), op);

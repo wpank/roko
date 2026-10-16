@@ -863,7 +863,9 @@ async fn run_or_operation(state: &Arc<AppState>, id: &str) -> Result<Value, ApiE
 }
 
 /// The state of operation `id` as `run_status` reports a run's: `running`,
-/// then `succeeded` with its result or `failed` with its error.
+/// then `succeeded` with its result or `failed` with its error. A running
+/// operation says how long it has run, and one that reports progress
+/// carries its latest report, and keeps it once it ends (gap-11d870).
 async fn operation_state(state: &AppState, id: &str) -> Option<Value> {
     let operations = state.operations.read().await;
     let operation = operations.get(id)?;
@@ -873,14 +875,24 @@ async fn operation_state(state: &AppState, id: &str) -> Option<Value> {
         OperationStatus::Failed { error } => (RunState::Failed, None, Some(error.as_str())),
     };
     let result = result.and_then(|result| serde_json::from_str::<Value>(result).ok());
-    Some(json!({
+    let mut summary = json!({
         "run_id": id,
         "kind": operation.kind,
         "state": run_state.as_str(),
         "active": !run_state.is_terminal(),
         "result": result,
         "error": error,
-    }))
+    });
+    if !run_state.is_terminal() {
+        summary["elapsed_secs"] = json!(operation.started.elapsed().as_secs());
+    }
+    if let Some(progress) = &operation.progress {
+        let progress = progress.borrow().clone();
+        if !progress.is_null() {
+            summary["progress"] = progress;
+        }
+    }
+    Some(summary)
 }
 
 /// Refuse a run a chat host starts while the workspace has no data-model

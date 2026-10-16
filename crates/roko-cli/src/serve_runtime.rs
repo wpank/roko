@@ -21,8 +21,9 @@ use roko_serve::plan_types::{
     PlanTaskDto, PlanTaskVerifyDto, PlanTasksDto, PlanValidationDto, RevisionDto, TaskChangeDto,
 };
 use roko_serve::runtime::{
-    CliRuntime, DashboardInfo, PlanExecutionResult, PlanGenerationResult, PlanRunOptions, RepoInfo,
-    RunResult, RunResultUsage, RuntimeGateResult, SessionStatusInfo, TriggerExecutionScope,
+    CliRuntime, DashboardInfo, PlanExecutionResult, PlanGenerationResult, PlanRunOptions,
+    ProgressReporter, RepoInfo, RunResult, RunResultUsage, RuntimeGateResult, SessionStatusInfo,
+    TriggerExecutionScope,
 };
 
 use crate::config::{Config, RepoRegistry};
@@ -262,7 +263,7 @@ impl CliRuntime for RokoCliRuntime {
         slug: &str,
         prompt: &str,
     ) -> anyhow::Result<PlanGenerationResult> {
-        self.generate_plan(workdir, slug, prompt, false).await
+        self.generate_plan(workdir, slug, prompt, false, None).await
     }
 
     async fn generate_plan_for_chat_host(
@@ -271,7 +272,27 @@ impl CliRuntime for RokoCliRuntime {
         slug: &str,
         prompt: &str,
     ) -> anyhow::Result<PlanGenerationResult> {
-        self.generate_plan(workdir, slug, prompt, true).await
+        self.generate_plan(workdir, slug, prompt, true, None).await
+    }
+
+    async fn generate_plan_reporting(
+        &self,
+        workdir: &Path,
+        slug: &str,
+        prompt: &str,
+        for_chat_host: bool,
+        progress: ProgressReporter,
+    ) -> anyhow::Result<PlanGenerationResult> {
+        // gap-11d870: each stage the generator reports, as the JSON object
+        // the operation's status shows.
+        let progress: plan_generate::PlanProgressSink =
+            Arc::new(move |stage: &plan_generate::PlanProgress| {
+                if let Ok(stage) = serde_json::to_value(stage) {
+                    progress(stage);
+                }
+            });
+        self.generate_plan(workdir, slug, prompt, for_chat_host, Some(progress))
+            .await
     }
 
     async fn run_plan(
@@ -829,13 +850,14 @@ impl RokoCliRuntime {
     /// questions, so the planner decides them (bug-7a08a8), and only a model
     /// roko's own tool loop runs writes it (bug-a0432b). A plan that cannot
     /// run is an error that names why and what it cost, so the operation
-    /// fails.
+    /// fails. Each stage goes to `progress` as it starts (gap-11d870).
     async fn generate_plan(
         &self,
         workdir: &Path,
         slug: &str,
         prompt: &str,
         for_chat_host: bool,
+        progress: Option<plan_generate::PlanProgressSink>,
     ) -> anyhow::Result<PlanGenerationResult> {
         let plans_root = workspace_paths::plans_dir(workdir);
         let before = snapshot_plan_artifacts(&plans_root);
@@ -843,6 +865,7 @@ impl RokoCliRuntime {
             live: Some(self.spend_bridge()),
             unattended: for_chat_host,
             for_chat_host,
+            progress,
             ..plan_generate::PlanRequest::new(
                 plan_generate::PlanSource::Text {
                     text: prompt,

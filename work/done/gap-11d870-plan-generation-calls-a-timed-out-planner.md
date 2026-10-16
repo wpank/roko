@@ -2,7 +2,7 @@
 id = "gap-11d870"
 kind = "gap"
 title = "Plan generation calls a timed-out planner call a crash, says only running while it works, and writes a plan.md with no overview"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p2"
 goal = "hermes"
@@ -11,6 +11,7 @@ subsystem = ["roko-cli/plan_generate", "roko-serve/plans"]
 created = 2026-10-16
 updated = 2026-10-16
 last_verified = 2026-10-16
+last_verified_rev = "2bc299caf"
 source = "gap-1f08f4's leftovers after bug-a0432b (Hermes dogfood 2026-10-13, ops 0af7526b and 92204a56)"
 discovered_from = "gap-1f08f4"
 anchors = ["crates/roko-cli/src/agent_exec.rs::classify_agent_crash", "crates/roko-serve/src/routes/plans/authoring.rs::start_plan_generation", "crates/roko-cli/src/plan_generate/pipeline.rs::generate_plan", "crates/roko-cli/src/plan_generate/pipeline.rs::slugify"]
@@ -24,6 +25,19 @@ command = "grep -rqw 'fn plan_generation_status_reports_its_stage' crates/roko-s
 
 [[verify]]
 command = "grep -rqw 'fn a_plan_without_a_plan_md_block_gets_an_overview' crates/roko-cli/src && cargo test -p roko-cli --lib -- a_plan_without_a_plan_md_block_gets_an_overview"
+
+[closed]
+at = 2026-10-16
+at_ts = "2026-10-16T12:31:39Z"
+commit = "d138a7ced"
+by = "roko-planner"
+executor = "claude-agent"
+via = "manual"
+size = "M"
+claimed_at = "2026-10-16T10:16:28Z"
+model = "claude-opus-5-5"
+forced = false
+evidence = "d138a7ced: generate_plan reports a PlanProgress at each stage (planning, retrying, fixing, regenerating, writing, recording; attempt of attempts, reason, model, calls, cost_usd so far) to PlanRequest.progress; serve passes a reporter through the new CliRuntime::generate_plan_reporting into a watch channel on the OperationHandle, and GET /api/operations/{id} and /mcp run_status show progress (kept once the op ends) and a running op's elapsed_secs. AgentCrashClass::Timeout reads the adapters' \"timed out after <N> ms\" (timed_out_after_secs); a timed-out planner call is retried once and the error says it ran into roko's 300 s limit. A plan whose reply has no plan.md block gets an overview from its tasks.toml (plan_generate/overview.rs; a chat host's request is not quoted). Checked: all three [[verify]] tests pass on the merged tree 2bc299caf; lib suites roko-cli 3710 and roko-serve 1033 pass (plus the known load flake bug-8d8f98, which passes alone); clippy -D warnings; fmt; integration failures only bug-2a31bc, bug-c63cca, bug-ee2752. Live on serve :6794: /mcp plan_generate on gpt-5-4-mini showed progress planning then completed with progress recording and cost_usd 0.013156; a stand-in planner that times out showed retrying 2/2 with the limit as reason, then failed with the error and the progress kept. Steps 4-5 and leftovers filed as gap-143b5c. Findings: tmp/hermes-roko-v5/findings/roko-planner.md (round 4)"
 +++
 
 ## Problem

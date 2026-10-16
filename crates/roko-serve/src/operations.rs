@@ -59,6 +59,8 @@ pub(crate) async fn spawn_operation<F>(
             kind,
             status: OperationStatus::Running,
             handle,
+            started: std::time::Instant::now(),
+            progress: None,
         },
     );
 }

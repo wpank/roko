@@ -1,6 +1,6 @@
-//! Cached prompt context data — loads knowledge, episodes, playbooks, and
-//! section effectiveness once, then serves them from memory for subsequent
-//! prompt assemblies within the same run.
+//! Cached prompt context data — loads knowledge, episodes, and playbooks
+//! once, then serves them from memory for subsequent prompt assemblies
+//! within the same run.
 //!
 //! ## Lifecycle
 //!
@@ -18,7 +18,7 @@ use std::time::Instant;
 
 use roko_learn::episode_logger::Episode;
 use roko_learn::playbook::Playbook;
-use roko_learn::section_effect::{SectionBandit, SectionEffectivenessRegistry};
+use roko_learn::section_effect::SectionBandit;
 use roko_neuro::KnowledgeEntry;
 use tracing::debug;
 
@@ -36,8 +36,6 @@ pub struct PromptCache {
     pub episodes: Vec<Episode>,
     /// Playbooks loaded from the playbook directory.
     pub playbooks: Vec<Playbook>,
-    /// Section effectiveness registry loaded from disk.
-    pub effectiveness: SectionEffectivenessRegistry,
     /// The section bandit (S02 L9) the run's prompts draw from.
     pub section_bandit: SectionBandit,
 }
@@ -94,7 +92,6 @@ impl PromptCache {
     ///   them against each task)
     /// - Episode JSONL scan (all episode files)
     /// - Playbook directory iteration
-    /// - Section effectiveness registry load
     ///
     /// Any individual load failure is silently ignored (the corresponding
     /// vec/registry will be empty), matching the existing fallback behavior
@@ -105,7 +102,6 @@ impl PromptCache {
         let neuro_entries = load_neuro_entries(workdir);
         let episodes = load_episodes(workdir);
         let playbooks = load_playbooks(workdir);
-        let effectiveness = load_effectiveness(workdir);
         let section_bandit = load_section_bandit(workdir);
 
         debug!(
@@ -120,7 +116,6 @@ impl PromptCache {
             neuro_entries,
             episodes,
             playbooks,
-            effectiveness,
             section_bandit,
         }
     }
@@ -186,12 +181,6 @@ fn load_playbooks(workdir: &Path) -> Vec<Playbook> {
         }
     }
     playbooks
-}
-
-fn load_effectiveness(workdir: &Path) -> SectionEffectivenessRegistry {
-    let path = workdir.join(roko_learn::section_effect::DEFAULT_SECTION_EFFECTS_PATH);
-    // load_or_new handles missing files gracefully (returns empty registry).
-    SectionEffectivenessRegistry::load_or_new(&path)
 }
 
 /// The section bandit saved under `workdir`; a missing file is the uniform

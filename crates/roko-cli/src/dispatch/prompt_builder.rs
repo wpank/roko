@@ -1547,14 +1547,6 @@ struct WorkdirPlaybookSource {
     cache: Option<Arc<PromptCache>>,
 }
 
-/// Applies learned section-effectiveness priority adjustments.
-///
-/// When `cache` is present, reads from the pre-loaded registry.
-#[derive(Debug, Clone)]
-struct SectionEffectivenessSource {
-    cache: Option<Arc<PromptCache>>,
-}
-
 // ─── Assembler ─────────────────────────────────────────────────────────
 
 /// Parse a role label string into [`AgentRole`].
@@ -1770,11 +1762,6 @@ pub struct PromptAssembler {
     sources: Vec<Arc<dyn PromptSectionSource>>,
     /// Requested allocation strategy from `[prompt]` configuration.
     composition_strategy: CompositionStrategy,
-    /// Learned section-effectiveness registry for the compose builder.
-    ///
-    /// When present, the canonical compose path adjusts section priorities
-    /// based on historical effectiveness data.
-    section_effectiveness: Option<roko_learn::section_effect::SectionEffectivenessRegistry>,
     /// The section bandit (S02 L9) the run's prompts draw from: the prompt
     /// cache's snapshot, so every draw of a run reads the state it started
     /// with. `None` reads it per prompt ([`Self::resolve_section_bandit`]).
@@ -1793,10 +1780,8 @@ impl PromptAssembler {
             sources: vec![
                 Arc::new(WorkdirKnowledgeSource { cache: None }),
                 Arc::new(WorkdirPlaybookSource { cache: None }),
-                Arc::new(SectionEffectivenessSource { cache: None }),
             ],
             composition_strategy: CompositionStrategy::Auto,
-            section_effectiveness: None,
             section_bandit: None,
             pinned_sections: Vec::new(),
         }
@@ -1808,7 +1793,6 @@ impl PromptAssembler {
     /// reading from the filesystem, eliminating per-task I/O.
     #[must_use]
     pub fn with_cache(cache: Arc<PromptCache>) -> Self {
-        let effectiveness = cache.effectiveness.clone();
         let section_bandit = Arc::new(cache.section_bandit.clone());
         Self {
             token_budget: DEFAULT_TOKEN_BUDGET,
@@ -1816,13 +1800,9 @@ impl PromptAssembler {
                 Arc::new(WorkdirKnowledgeSource {
                     cache: Some(Arc::clone(&cache)),
                 }),
-                Arc::new(WorkdirPlaybookSource {
-                    cache: Some(Arc::clone(&cache)),
-                }),
-                Arc::new(SectionEffectivenessSource { cache: Some(cache) }),
+                Arc::new(WorkdirPlaybookSource { cache: Some(cache) }),
             ],
             composition_strategy: CompositionStrategy::Auto,
-            section_effectiveness: Some(effectiveness),
             section_bandit: Some(section_bandit),
             pinned_sections: Vec::new(),
         }
@@ -1835,7 +1815,6 @@ impl PromptAssembler {
             token_budget: 8_000,
             sources: Vec::new(),
             composition_strategy: CompositionStrategy::Auto,
-            section_effectiveness: None,
             section_bandit: None,
             pinned_sections: Vec::new(),
         }
@@ -1867,28 +1846,6 @@ impl PromptAssembler {
     pub fn with_pinned_sections(mut self, sections: Vec<String>) -> Self {
         self.pinned_sections = sections;
         self
-    }
-
-    /// Resolve the section-effectiveness registry for the compose builder.
-    ///
-    /// If the assembler was constructed with a cache (via [`with_cache`]), the
-    /// cached registry is returned. Otherwise, loads it from disk using the
-    /// standard `.roko/learn/` path under `workdir`. Returns `None` for
-    /// minimal assemblers (no sources, no workdir lookup).
-    fn resolve_section_effectiveness(
-        &self,
-        workdir: &Path,
-    ) -> Option<roko_learn::section_effect::SectionEffectivenessRegistry> {
-        if let Some(ref registry) = self.section_effectiveness {
-            return Some(registry.clone());
-        }
-        // Fallback: load from disk (matches the non-cached SectionEffectivenessSource path).
-        // For minimal assemblers (no sources), skip the disk load entirely.
-        if self.sources.is_empty() {
-            return None;
-        }
-        let path = workdir.join(roko_learn::section_effect::DEFAULT_SECTION_EFFECTS_PATH);
-        Some(roko_learn::section_effect::SectionEffectivenessRegistry::load_or_new(&path))
     }
 
     /// The section bandit a prompt draws from: the cache's snapshot, else the
@@ -1965,7 +1922,7 @@ impl PromptAssembler {
             if !sec.body.is_empty()
                 && matches!(
                     sec.name.as_str(),
-                    "knowledge" | "episode_knowledge" | "playbooks" | "section_effectiveness"
+                    "knowledge" | "episode_knowledge" | "playbooks"
                 )
             {
                 code_context.push(sec.body.clone());
@@ -2029,7 +1986,6 @@ impl PromptAssembler {
         // token budget. The manifest is the authoritative scoring receipt:
         // every entry carries the source Signal's content hash and the exact
         // score result used by selection.
-        let section_effectiveness = self.resolve_section_effectiveness(&ctx.workdir);
         let group_context = load_group_context(&ctx.workdir, &ctx.role, task);
         let has_mcp = task.mcp_servers.as_ref().is_some_and(|s| !s.is_empty());
         let mut spec = RoleSystemPromptSpec::new(role, task_context, tools_csv)
@@ -2041,11 +1997,7 @@ impl PromptAssembler {
         let composer = PromptComposer::new()
             .with_strategy(self.composition_strategy)
             .with_foraging(default_forager());
-        let mut canonical_sections = if let Some(registry) = section_effectiveness.as_ref() {
-            spec.build_sections_with_section_effectiveness(registry)
-        } else {
-            spec.build_sections()
-        };
+        let mut canonical_sections = spec.build_sections();
         // P1-20: Apply model-aware attention-curve-driven dynamic placement.
         // Non-critical sections are reassigned to higher-attention prompt
         // edges (start/end) based on information density relative to the
@@ -2368,45 +2320,6 @@ impl PromptSectionSource for WorkdirPlaybookSource {
             collect_playbooks(task, ctx).into_iter().collect()
         }
     }
-}
-
-impl PromptSectionSource for SectionEffectivenessSource {
-    fn collect(&self, _task: &TaskDef, ctx: &PromptContext) -> Vec<PromptSection> {
-        let registry = if let Some(cache) = &self.cache {
-            &cache.effectiveness
-        } else {
-            let path = ctx
-                .workdir
-                .join(roko_learn::section_effect::DEFAULT_SECTION_EFFECTS_PATH);
-            // load_or_new handles missing files gracefully (returns empty registry).
-            let loaded =
-                roko_learn::section_effect::SectionEffectivenessRegistry::load_or_new(&path);
-            return render_effectiveness_section(&loaded, &ctx.role);
-        };
-        render_effectiveness_section(registry, &ctx.role)
-    }
-}
-
-fn render_effectiveness_section(
-    registry: &roko_learn::section_effect::SectionEffectivenessRegistry,
-    role: &str,
-) -> Vec<PromptSection> {
-    let positive = registry.positive_lift_sections(role);
-    if positive.is_empty() {
-        return Vec::new();
-    }
-    let mut body = String::from(
-        "# Prompt section effectiveness\nHistorically high-signal prompt sections for this role:\n",
-    );
-    for effect in positive.into_iter().take(5) {
-        body.push_str(&format!(
-            "- {} (lift {:+.2}, weight {:.2})\n",
-            effect.section_name,
-            effect.lift(),
-            effect.lift_weight()
-        ));
-    }
-    vec![PromptSection::new("section_effectiveness", body, 7)]
 }
 
 fn collect_neuro_knowledge(task: &TaskDef, ctx: &PromptContext) -> Option<PromptSection> {
@@ -4925,6 +4838,39 @@ covers = ["AC1"]
             .expect("prompt");
         assert!(
             !prompt.system_prompt.contains("# Collective calibration"),
+            "{}",
+            prompt.system_prompt
+        );
+    }
+
+    /// bug-dd4524: the section bandit replaced the old section-effectiveness
+    /// reader, so a plan prompt carries no `# Prompt section effectiveness`
+    /// block even in a workspace holding a stale `section-effects.json`
+    /// that nothing writes any more.
+    #[test]
+    fn prompt_has_no_section_effectiveness_block_from_a_stale_file() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        // The path the retired reader used (bug-dd4524): a literal here, not
+        // the constant, so this test still builds the stale file even once
+        // nothing in `crates/roko-cli/src/dispatch/` names that constant.
+        let path = temp.path().join(".roko/learn/section-effects.json");
+        let mut registry = roko_learn::section_effect::SectionEffectivenessRegistry::new();
+        // A clear positive lift for "implementer" (the test task's role):
+        // the old reader rendered the block whenever this was non-empty.
+        for _ in 0..10 {
+            registry.record_outcome("workspace_map", "implementer", true, true);
+            registry.record_outcome("workspace_map", "implementer", false, false);
+        }
+        registry
+            .save(&path)
+            .expect("save stale section-effects.json");
+
+        let prompt = assemble_cached(&task(), temp.path());
+
+        assert!(
+            !prompt
+                .system_prompt
+                .contains("# Prompt section effectiveness"),
             "{}",
             prompt.system_prompt
         );

@@ -87,3 +87,20 @@ even correctly converted and scored, is 8 of the 48 instances the spec calls for
   scope.
 
 2026-10-15 (status-quo assessment at 7b6a5af44, findings 28 and 41; tmp/status-quo/2026-10-15/backlog/A03-31-32-defaults-and-specs.md row 3234, work-items/C1-*.md line 12): still open and still the only item for backlog 3234's full 48-instance H3 manipulation-check report, which has never run (the check has run on the four fixture families and on 8 fresh F1 instances only). Its verify is now vacuous: `test_full_48_instance_h3_report_runs_from_generators` exists and passes, but it converts and checks only 8 F1 instances (its own docstring says so), so this item's static verify passes while its Done when does not hold. Replace the verify with a test that needs all 48, for example `grep -qw 'def test_h3_manipulation_report_covers_all_48_instances' benchmarks/viabilitybench/specops/tests/test_manipulation.py && benchmarks/viabilitybench/.venv/bin/python -m pytest benchmarks/viabilitybench/specops/tests/test_manipulation.py -k test_h3_manipulation_report_covers_all_48_instances -q` (48 pairs from the instances `streams/p1_h3.toml` names, each with gap >= MIN_GAP). The product decision for F2/F3/F5/F7 is shared with a new item from finding 26 (LOG1 block C's vague stream cannot materialize those 32 instances either): rendering a `spec.precise.md` in F1's layout for those families would serve both, and both should land before the pre-registration lock (gap-394f28), which hashes the streams. `benchmarks/viabilitybench/.venv` does not exist in the main checkout at HEAD, so the Python half of this verify cannot run there yet.
+
+- 2026-10-16: the premise above changed, in exactly the direction the 2026-10-15 note anticipated. `bug-f90bd0`
+  (closed; merged as `980678432`, "LOG1 block C's vague H3 stream cannot materialize 32 of its 48 instances"),
+  fixing a different, `driver/materialize.py`-side problem, gave F2, F3, F5 and F7 a `spec.precise.md` each --
+  new `spec/precise.template.md` files plus matching `gen.py` changes -- reversing part of `gap-46fd19`'s
+  README-only simplification. Checked directly: that new markdown is in exactly F1's own TSS v1 section layout
+  ("## Acceptance criteria", "## Verify", "## Context", "## Scope", "## Non-goals"), so
+  `specops.from_generator.task_from_instance` converts real F1, F2, F3, F5 and F7 `generate()` output unchanged,
+  with no further code or product decision needed for those four. Only F4's converter was still missing --
+  confirmed by generating real instances of all six families and running each through `task_from_instance`
+  before writing any new code. Built here: `parse_precise_spec_f4`, for F4's own layout ("## Goal",
+  "## Constraints", "## Visible check"; no "## Non-goals"; no "Change at most N lines" sentence, so `max_loc` is
+  a fixed constant -- unused by `check_pair`/`degrade`'s actual scoring, confirmed by grep), dispatched from
+  `task_from_instance` on the manifest's own `family` field. `test_full_48_instance_h3_report_runs_from_generators`
+  now generates and converts 8 real instances of each of the 6 H3 families (48 total, F1-F5 and F7) and runs them
+  through `check_many`: `report.ok` is true, every pair's gap clears `MIN_GAP` (observed minimum 53.17 against a
+  bar of 30). The full 48-instance H3 report runs end to end from real generator output.

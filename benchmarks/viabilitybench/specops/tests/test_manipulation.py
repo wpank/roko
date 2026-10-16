@@ -1,10 +1,12 @@
 """Tests for the manipulation check (S07.3; SC2; task 3234): a vague twin must score at least 30 SQS points
 below its precise twin, scored under the same suite and workspace.
 
-Runs on the four 3233 fixtures (F1, F2, F4, F7), and on fresh instances of the one family (F1) that
+Runs on the four 3233 fixtures (F1, F2, F4, F7), and on fresh instances of every H3 family that
 `specops.from_generator` can convert from real `gen.py generate()` output into this module's `[[task]]` shape
-today (gap-c71dbb; that module's own docstring says which families it does not cover yet, and why). The full
-48-instance H3 report (F1-F5 and F7) still cannot run from real generator output alone.
+(gap-c71dbb, gap-76fd1c; that module's own docstring, "Coverage", says what each family's layout needs). Since
+bug-f90bd0 gave F2, F3, F5 and F7 a `spec.precise.md` in F1's own layout, and gap-76fd1c added F4's own parser
+for its differently headed one, the full 48-instance H3 report (F1-F5 and F7, 8 each) now runs end to end from
+real generator output alone -- no family is left to a hand-built fixture.
 Run: benchmarks/viabilitybench/.venv/bin/python -m pytest benchmarks/viabilitybench/specops/tests/test_manipulation.py
 """
 
@@ -22,7 +24,14 @@ sys.path.insert(0, str(SPECOPS_DIR.parent / "speclint"))
 sys.path.insert(0, str(SPECOPS_DIR.parent / "families"))
 import speclint  # noqa: E402
 from f1_pyconv import gen as f1_gen  # noqa: E402 (gap-c71dbb: one real family generator to round-trip)
+from f2_apipager import gen as f2_gen  # noqa: E402 (gap-76fd1c: H3's remaining five real family generators)
+from f3_moneyround import gen as f3_gen  # noqa: E402
+from f4_kvtool import gen as f4_gen  # noqa: E402
+from f5_sqlmigrate import gen as f5_gen  # noqa: E402
+from f7_rustiter import gen as f7_gen  # noqa: E402
 from specops import VAGUE, from_generator, manipulation_check  # noqa: E402
+
+H3_GENERATORS = {"F1": f1_gen, "F2": f2_gen, "F3": f3_gen, "F4": f4_gen, "F5": f5_gen, "F7": f7_gen}
 
 FIXTURES = SPECOPS_DIR / "fixtures"
 NAMES = ["f4_kvtool", "f2_api_pager", "f7_rust_iter", "f1_pyconv_errors"]
@@ -79,26 +88,50 @@ def test_task_from_instance_round_trips_a_fresh_f1_generator_output(tmp_path):
     assert task == from_generator.task_from_instance(out), "converting the same output twice agrees"
 
 
+def test_task_from_instance_round_trips_a_fresh_f4_generator_output(tmp_path):
+    """gap-76fd1c: `from_generator.task_from_instance` dispatches F4's own `spec.precise.md` layout ("## Goal",
+    "## Constraints", "## Visible check"; no "## Non-goals", no "Change at most N lines" sentence) to
+    `parse_precise_spec_f4`, converting one real `f4_kvtool.gen.generate()` output the same way F1's is
+    converted above, and the result clears a real manipulation-check gap too."""
+    out = tmp_path / "instance"
+    f4_gen.generate(level=3, seed=555, out=out)
+    task = from_generator.task_from_instance(out)
+
+    assert task["id"] == "F4-l3-0555"
+    assert task["files"] == ["scripts/migrate_prefix.sh"]
+    assert task["non_goals"] == []
+    assert task["acceptance"] and all(entry.startswith("AC") for entry in task["acceptance"])
+    assert len(task["acceptance"]) == 4, "AC1-AC4, including the two wrapped across lines in the template"
+    assert task["context"]["read_files"] and {"path", "why"} <= task["context"]["read_files"][0].keys()
+    assert task["verify"] == [{"phase": "test", "command": "sh tests/visible/run.sh",
+                               "covers": ["AC1", "AC2", "AC3", "AC4"], "expect": "fail_on_base"}]
+
+    report = manipulation_check.check_pair(task["id"], task, seed=7, workspace_root=VB_ROOT)
+    assert report.ok and report.gap >= manipulation_check.MIN_GAP, report.as_json()
+    assert task == from_generator.task_from_instance(out), "converting the same output twice agrees"
+
+
 def test_full_48_instance_h3_report_runs_from_generators(tmp_path):
-    """gap-c71dbb: the full 48-instance H3 report (8 each of F1-F5 and F7) cannot run end to end from real
-    generator output yet -- F2, F3, F5 and F7 render no `spec.precise.md` at all, by design (F5's `gen.py`
-    module docstring: "this family also skips a separate `template/` directory and `spec.precise.md`
-    generation", gap-46fd19), and F4 renders one from a differently headed template this converter does not
-    parse (`from_generator`'s module docstring). What runs end to end today is the one family the converter
-    does support, at the stream's own per-family count (8): fresh `f1_pyconv` instances, generated here and
-    converted by `from_generator`, not the four hand-built fixtures the tests above use."""
+    """gap-c71dbb, gap-76fd1c: the full 48-instance H3 report (8 each of F1-F5 and F7) runs end to end from real
+    generator output -- bug-f90bd0 gave F2, F3, F5 and F7 a `spec.precise.md` in F1's own TSS v1 layout while
+    fixing LOG1 block C's vague H3 stream (reversing part of gap-46fd19's README-only simplification), and
+    `from_generator.parse_precise_spec_f4` now covers F4's own, differently headed one. Every instance here is
+    generated fresh and converted by `from_generator`, not one of the four hand-built fixtures the tests
+    above use."""
     specs = {}
-    for index in range(8):
-        out = tmp_path / f"f1-{index}"
-        f1_gen.generate(level=index % 5 + 1, seed=9000 + index, out=out)
-        task = from_generator.task_from_instance(out)
-        specs[task["id"]] = task
-    assert len(specs) == 8
+    for family, gen in H3_GENERATORS.items():
+        for index in range(8):
+            out = tmp_path / f"{family}-{index}"
+            gen.generate(level=index % 5 + 1, seed=9000 + index, out=out)
+            task = from_generator.task_from_instance(out)
+            specs[task["id"]] = task
+    assert len(specs) == 48
+    assert {task_id.split("-")[0] for task_id in specs} == set(H3_GENERATORS)
     assert set(specs).isdisjoint(spec["id"] for spec in fixtures().values()), "real instances, not the fixtures"
 
     report = manipulation_check.check_many(specs, seed=7, workspace_root=VB_ROOT)
     assert report.ok and not report.failures
-    assert len(report.pairs) == 8
+    assert len(report.pairs) == 48
     assert all(pair.gap >= manipulation_check.MIN_GAP for pair in report.pairs)
     assert {pair.instance_id for pair in report.pairs} == set(specs)
 

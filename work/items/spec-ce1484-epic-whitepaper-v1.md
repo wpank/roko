@@ -9,7 +9,7 @@ goal = "whitepaper"
 size = "L"
 subsystem = ["docs/whitepaper", "tools/paperlint"]
 created = 2026-09-29
-updated = 2026-09-29
+updated = 2026-10-16
 source = "tmp/cybernetic-harness/workstreams/PLAN.md#e1"
 discovered_from = "tmp/cybernetic-harness/workstreams/PLAN.md (§1, the author's answers of 2026-09-29; §3 E1)"
 anchors = ["docs/whitepaper/README.md", "tools/paperlint.py"]
@@ -18,7 +18,7 @@ lane = "paper"
 links = { depends_on = ["dec-2cd76a", "gap-0191eb", "gap-af0b57", "gap-35a614", "gap-353d57", "gap-370d3c", "gap-4161ea", "gap-ac4646", "gap-e8cb4d", "gap-424bf8", "gap-29a64e", "gap-2aad7d", "gap-c19902", "gap-ec516e", "gap-d1d92c", "gap-8d2c79", "gap-8117a8", "bug-7a6da3", "gap-9cb0b9", "gap-fcea53", "gap-65ed57", "gap-274092", "gap-daa246", "gap-4471d1", "gap-08d9b2", "bug-1f098f", "gap-6e0a95"], blocks = [], related = ["spec-567e52", "spec-f2463d", "spec-ae5f94", "gap-cdf3fc"], supersedes = [], duplicate_of = "" }
 
 [[verify]]
-command = "test -f tools/paperlint.py && python3 tools/paperlint.py --strict --require-status reviewed docs/whitepaper && grep '^Verdict:' docs/whitepaper/REVIEW.md | tail -1 | grep -q '^Verdict: accept'"
+command = "test -f tools/paperlint.py && python3 tools/paperlint.py --strict --require-status reviewed docs/whitepaper && grep '^Verdict:' docs/whitepaper/REVIEW.md | tail -1 | grep -q '^Verdict: accept' && ! ls work/items/gap-8117a8-*.md >/dev/null 2>&1"
 +++
 
 ## Problem
@@ -132,3 +132,9 @@ This is the implementation plan, in order.
 - **Addition to PLAN's outline:** an abstract, `00-abstract.md`, written with §1.
 - **Later:** the empirical research paper (`tmp/cybernetic-harness/paper/`) can reuse paperlint and the matrix.
 - **Decided 2026-09-29 (Will):** title 'Roko: a Cybernetic Harness for Spec'd Agent Work'; audience engineering leads; 10-14 pages; the repo plus a generated PDF (no arXiv for now); cite tracked files and frozen evidence only; no AI-assistance disclosure; install librsvg for SVG figures. See dec-2cd76a.
+- **2026-10-16 (coordinator):** the review half is done. gap-6a83de accepted the rewritten whitepaper (merge
+  `64a574a0e`), so the paperlint and verdict parts of the verify pass. A `work.py sync` then closed this epic by
+  mistake: commit `b91be1473`'s body says "fixed spec-ce1484's Tools line", which the sync's closing-keyword
+  match reads as a closure (bug filed the same day). The closure was undone before it was committed. Only
+  gap-8117a8 (publication, Will's decision) remains, so the verify now also requires that item to have left
+  `work/items/`.

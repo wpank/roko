@@ -2,15 +2,16 @@
 id = "gap-2eea20"
 kind = "gap"
 title = "examples/adding-custom-tools.md cites two files in a deleted worktree (roko-mr-stream-beta); the rest of old backlog 76's example-config fixes have landed"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p3"
 goal = "tooling"
 size = "S"
 subsystem = ["docs/examples"]
 created = 2026-10-15
-updated = 2026-10-15
-last_verified = 2026-10-15
+updated = 2026-10-16
+last_verified = 2026-10-16
+last_verified_rev = "3b5d17354"
 source = "status-quo-2026-10-15#finding-44"
 anchors = ["examples/adding-custom-tools.md", "examples/adding-a-provider.md"]
 lane = "docs"
@@ -18,6 +19,18 @@ links = { depends_on = [], blocks = [], related = [], supersedes = [], duplicate
 
 [[verify]]
 command = "! grep -rq 'roko-mr-stream-beta' examples/"
+
+[closed]
+at = 2026-10-16
+at_ts = "2026-10-16T13:58:19Z"
+commit = "3b5d17354"
+by = "commit trailer"
+executor = "claude-agent"
+via = "work-batch"
+size = "S"
+claimed_at = "2026-10-16T08:07:09Z"
+forced = false
+evidence = "3b5d17354 dropped examples/adding-custom-tools.md's 'Context files' section (lines 25-29), which pointed at /Users/will/dev/nunchi/roko/roko-mr-stream-beta/tmp/implementation-plans/modelrouting/{18-structural-cleanup,01-architecture}.md, a deleted worktree. Verify '! grep -rq roko-mr-stream-beta examples/' passes at 3b5d17354. Compared adding-a-provider.md's provider list against CLAUDE.md's roko-agent row (12 kinds): that doc only covers the openai_compat zero-code path and never enumerates provider kinds, so no gap found there."
 +++
 
 ## Problem

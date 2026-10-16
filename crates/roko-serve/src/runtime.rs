@@ -255,6 +255,14 @@ pub const CHAT_REQUEST_OPEN: &str = "<<<CHAT REQUEST>>>";
 /// The line that closes a chat host's request.
 pub const CHAT_REQUEST_CLOSE: &str = "<<<END CHAT REQUEST>>>";
 
+/// The paragraph that opens the overview `plan.md` of gap-11d870.
+///
+/// The plan generator writes that overview when the planner writes no
+/// `plan.md`; serve looks for this paragraph to keep the overview's title in
+/// step with the name a host gives the plan (bug-1602d4).
+pub const PLAN_OVERVIEW_INTRO: &str = "roko wrote this overview from the plan's `tasks.toml`, \
+     because the planner wrote no `plan.md`. Where the two differ, `tasks.toml` decides.";
+
 /// Options for a prompt run through [`CliRuntime::run_prompt_plan`].
 #[derive(Debug, Clone, Default)]
 pub struct PromptPlanOptions {

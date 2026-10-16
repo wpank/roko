@@ -7,7 +7,7 @@
 use std::collections::{HashMap, HashSet};
 use std::fmt::Write as _;
 
-use roko_serve::runtime::CHAT_REQUEST_OPEN;
+use roko_serve::runtime::{CHAT_REQUEST_OPEN, PLAN_OVERVIEW_INTRO};
 
 use crate::task_parser::{TaskDef, TasksFile};
 
@@ -46,11 +46,7 @@ pub(super) fn overview_plan_md(slug: &str, request: &str, tasks: &TasksFile) -> 
         "---\nplan: {slug}\ntitle: {}\n---\n",
         yaml_scalar(&title)
     );
-    let _ = writeln!(out, "# {title}\n");
-    out.push_str(
-        "roko wrote this overview from the plan's `tasks.toml`, because the planner wrote no \
-         `plan.md`. Where the two differ, `tasks.toml` decides.\n\n## Request\n\n",
-    );
+    let _ = writeln!(out, "# {title}\n\n{PLAN_OVERVIEW_INTRO}\n\n## Request\n");
     match &quoted {
         Some(request) => {
             for line in request.lines() {

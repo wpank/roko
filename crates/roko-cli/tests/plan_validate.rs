@@ -1,5 +1,8 @@
 //! Integration coverage for `roko plan validate`.
 
+mod common;
+use common::Isolated;
+
 use assert_cmd::Command;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -15,6 +18,7 @@ fn write_plan(root: &Path, plan_id: &str, tasks_toml: &str) -> PathBuf {
 fn run_validate(temp: &TempDir, args: &[&str]) -> assert_cmd::assert::Assert {
     Command::cargo_bin("roko")
         .unwrap()
+        .isolated()
         .current_dir(temp.path())
         .arg("plan")
         .arg("validate")
@@ -46,6 +50,7 @@ slug = "claude-opus-4-6"
 fn plan_validate_help_shows_new_flags() {
     let assert = Command::cargo_bin("roko")
         .unwrap()
+        .isolated()
         .arg("plan")
         .arg("validate")
         .arg("--help")
@@ -1190,6 +1195,7 @@ fn five_stale_plans_pass_plan_validate() {
     ] {
         let assert = Command::cargo_bin("roko")
             .unwrap()
+            .isolated()
             .current_dir(&repo)
             .arg("plan")
             .arg("validate")

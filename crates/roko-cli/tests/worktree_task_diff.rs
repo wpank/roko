@@ -8,6 +8,9 @@
 //! for inspection. An edit that fails its verify step is kept in its
 //! worktree and merged nowhere.
 
+mod common;
+use common::Isolated;
+
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
@@ -106,6 +109,7 @@ fn operator_state(repo: &Path) -> [String; 3] {
 /// in `repo`.
 fn run_plan(repo: &Path, target: &Path) -> Output {
     Command::new(cargo_bin("roko"))
+        .isolated()
         .current_dir(repo)
         .args([
             "--json",

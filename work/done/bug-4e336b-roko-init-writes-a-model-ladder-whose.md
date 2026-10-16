@@ -105,6 +105,9 @@ the four API/CLI rungs his keys allow.
 - Behaviour change: a workspace without `[routing.ladder]` uses D11's default ladder, whose `strong` and `top`
   rungs name the built-ins `gpt-5.4-mini` and `claude-sonnet-4-6`. Those rungs now run wherever their key is set,
   so such a workspace's tasks start on them instead of on the router's pick.
+- 2026-10-16: narrowed by reg-e2038b. That behaviour change overrode workspaces' own models: integration fixtures
+  with a fake `claude_cli` model ran on the real `gpt-5.4-mini`. A rung now runs a built-in model only when the
+  ladder is the workspace's own, or the workspace configures no model at all.
 - Gemini is left out: its tool loop needs `tool_format = "gemini_native"`, which config validation does not
   list, and no key was available to check it.
 - 2026-10-15 (status-quo assessment, finding 9): still open at b42578bab. No commit since 2026-10-13 touches `graph_task_dispatch/verification.rs` or `plan_generate/`, and no other item links here. Seen again in the 10-14 tally runs: all 28 ladder records are rung `top`, reason `start`, because the workspace's cheap, mid and strong rungs (gpt-oss-120b, glm-4.7, gpt-5.4-mini) had no usable provider (`tmp/status-quo/2026-10-15/programme/E2a-matrix-retag-AU-EX-IS-QA-RC.md:168`, row EX7). The 49-run sweep found no climb anywhere (71 ladder records, all step 0). The cheap-model ladder claim (gap-f30b8e, funded by decision 5) can't be shown on a workspace `roko init` made until this is fixed.

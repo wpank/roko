@@ -1625,7 +1625,8 @@ roko config providers test [<provider>] [--all] [--workdir <path>]
 List configured models and their capabilities, then the built-in models (such as
 `gpt-5.4-mini`) that need no `[models.*]` entry. The Key column says whether the provider
 dispatch would run the model on has its key set. A ladder rung may name a built-in model; it runs
-once its provider's key is set.
+once its provider's key is set, if the ladder is the workspace's own or the workspace configures no
+model of its own. A workspace's own models always win over roko's default ladder.
 
 ```
 roko config models list [--workdir <path>]

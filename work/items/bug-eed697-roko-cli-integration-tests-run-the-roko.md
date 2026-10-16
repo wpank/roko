@@ -57,3 +57,12 @@ c4 also failed with the real `HOME` and c3 passes with a scratch one.
 
 `cargo test -p roko-cli --test worktree_task_diff` passes with `HOME` pointing at a home whose `.roko/.env` holds a
 (dummy) OpenAI key, and no test process opens a connection to a provider.
+
+## Notes
+
+- 2026-10-16 (roko-init): plan step 2 is done by reg-e2038b (commit 34baabd5b, branch `work/reg-e2038b`). A ladder
+  rung now runs a built-in model only when the ladder is the workspace's own or the workspace configures no model
+  at all, so a fixture with a fake `claude_cli` model and `default_model = "fake"` keeps every task on it whatever
+  keys `~/.roko/.env` holds. Step 1, one helper that isolates `HOME` for every test that spawns `roko`, remains:
+  16 of the 34 files that spawn it set no `HOME`. gap-1a30ca, filed for step 1 the same night, is closed as a
+  duplicate of this item.

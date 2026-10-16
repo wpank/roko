@@ -1679,6 +1679,7 @@ fn ladder_report_with(
         return Vec::new();
     }
     let models = config.effective_models();
+    let builtins = builtin_rungs_allowed(config);
     let mut seen = HashSet::new();
     ladder
         .all_rungs()
@@ -1686,19 +1687,38 @@ fn ladder_report_with(
         .map(|rung| LadderRungReport {
             rung: rung.name.clone(),
             model: rung.model.clone(),
-            dispatch: rung_dispatch_model(config, &models, &rung.model, &available),
+            dispatch: rung_dispatch_model(config, &models, &rung.model, builtins, &available),
         })
         .collect()
 }
 
+/// Whether a ladder rung may run a built-in model, one no `[models.*]` entry
+/// defines: only where it cannot take a task off a model the workspace chose
+/// (reg-e2038b). That is when the workspace's ladder is its own (rungs other
+/// than roko's default ladder, or role ladders), or when it configures no
+/// model at all (no `[models.*]` entry, and `[agent] default_model` left at
+/// roko's default). Otherwise the default ladder's `gpt-5.4-mini` would run a
+/// workspace's tasks on OpenAI whenever a key is set, past the models it
+/// configured. A `--model` pin and a task's `model_hint` win over the ladder
+/// anyway.
+fn builtin_rungs_allowed(config: &RokoConfig) -> bool {
+    let ladder = &config.routing.ladder;
+    let own_ladder = ladder.rungs != LadderConfig::default().rungs || !ladder.roles.is_empty();
+    let own_model = !config.effective_models().is_empty()
+        || config.agent.default_model.trim() != RokoConfig::default().agent.default_model.trim();
+    own_ladder || !own_model
+}
+
 /// The model name dispatch runs for a rung's model, or why the rung cannot
 /// run. The model must name a `[models.*]` entry (by key, else by slug), or
-/// else a built-in model, that can call tools, whose provider is not in
+/// else, where `builtins` allows it ([`builtin_rungs_allowed`]), a built-in
+/// model, that can call tools, whose provider is not in
 /// `routing.disabled_providers` and is `available`.
 fn rung_dispatch_model(
     config: &RokoConfig,
     models: &IndexMap<String, ModelProfile>,
     model: &str,
+    builtins: bool,
     available: impl Fn(&str) -> bool,
 ) -> Result<String, String> {
     let model = model.trim();
@@ -1706,7 +1726,7 @@ fn rung_dispatch_model(
         .get_key_value(model)
         .or_else(|| models.iter().find(|(_, profile)| profile.slug == model))
     else {
-        return builtin_rung_model(config, model, available);
+        return builtin_rung_model(config, model, builtins, available);
     };
     if profile.is_embedding_model || !profile.supports_tools {
         return Err("the model cannot call tools".to_string());
@@ -1741,6 +1761,7 @@ fn rung_dispatch_model(
 fn builtin_rung_model(
     config: &RokoConfig,
     model: &str,
+    allowed: bool,
     available: impl Fn(&str) -> bool,
 ) -> Result<String, String> {
     let Some(builtin) = roko_core::config::model_registry::builtin_model(model) else {
@@ -1750,6 +1771,15 @@ fn builtin_rung_model(
                 .to_string(),
         );
     };
+    if !allowed {
+        return Err(
+            "no [models.*] entry has this key or slug; it names a built-in model, which a rung \
+             of roko's default ladder runs only in a workspace that configures no model of its \
+             own, so its tasks stay on the models it configured; give it a [models.*] entry to \
+             run it here"
+                .to_string(),
+        );
+    }
     if !builtin.supports_tools {
         return Err("the model cannot call tools".to_string());
     }
@@ -2339,6 +2369,70 @@ mod tests {
         assert!(strong.contains("disabled_providers"), "{strong}");
         config.routing.ladder.enabled = false;
         assert!(ladder_report_with(&config, |_| true).is_empty());
+    }
+
+    /// reg-e2038b: a workspace that configures its own model, here only a
+    /// fake `claude_cli` one as roko-cli's integration fixtures do, keeps
+    /// every task on it. The default ladder's built-in rungs never bind
+    /// there, even with every provider available (`OPENAI_API_KEY` set). A
+    /// workspace with a ladder of its own still gets the built-ins it names.
+    #[test]
+    fn explicit_models_win_over_builtin_rungs() {
+        let fixture = "[agent]\ndefault_model = \"fake\"\n\n\
+                       [providers.fake]\nkind = \"claude_cli\"\ncommand = \"/bin/false\"\n\n\
+                       [models.fake]\nprovider = \"fake\"\nslug = \"claude-sonnet-4-6\"\n";
+        let dispatch = |report: &[LadderRungReport], rung: &str| {
+            report
+                .iter()
+                .find(|report| report.rung == rung)
+                .map(|report| report.dispatch.clone())
+                .expect("a rung")
+        };
+
+        let config = RokoConfig::from_toml(fixture).expect("parse");
+        let report = ladder_report_with(&config, |_| true);
+        let strong = dispatch(&report, "strong").unwrap_err();
+        assert!(
+            strong.contains("configures no model of its own"),
+            "{strong}"
+        );
+        // The top rung names the fixture's model by slug, so it runs there.
+        assert_eq!(
+            dispatch(&report, "top"),
+            Ok("claude-sonnet-4-6".to_string())
+        );
+        assert!(
+            report
+                .iter()
+                .filter_map(|rung| rung.dispatch.as_ref().ok())
+                .all(|model| model == "claude-sonnet-4-6"),
+            "{report:?}"
+        );
+        let mut t = task();
+        for tier in TaskTier::ALL {
+            t.tier = tier.label().into();
+            let choice = ladder_route(ladder(&config, |_| true), &t, &ctx());
+            assert_eq!(choice.model.slug, "claude-sonnet-4-6", "{tier}");
+        }
+        // A fixture model whose slug no rung names leaves no rung, and the
+        // router keeps the workspace's default model.
+        let other = fixture.replace("claude-sonnet-4-6", "fake-model");
+        let config = RokoConfig::from_toml(&other).expect("parse");
+        assert!(RoutingLadder::from_config_with(&config, |_| true).is_none());
+        // `[agent] default_model` alone is a model choice too.
+        let mut config = RokoConfig::default();
+        config.agent.default_model = "gpt-5.5".to_string();
+        let report = ladder_report_with(&config, |_| true);
+        assert!(dispatch(&report, "strong").is_err(), "{report:?}");
+
+        // A ladder of the workspace's own runs the built-ins it names.
+        let own = format!(
+            "{fixture}\n[routing.ladder]\n\n[[routing.ladder.rungs]]\nname = \"cheap\"\n\
+             model = \"gpt-5.4-mini\"\n\n[[routing.ladder.rungs]]\nname = \"top\"\nmodel = \"fake\"\n"
+        );
+        let config = RokoConfig::from_toml(&own).expect("parse");
+        let report = ladder_report_with(&config, |_| true);
+        assert_eq!(dispatch(&report, "cheap"), Ok("gpt-5.4-mini".to_string()));
     }
 
     /// gap-c8f388: a rung that names a built-in model binds only at a known

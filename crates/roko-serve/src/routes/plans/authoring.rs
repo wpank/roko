@@ -222,7 +222,7 @@ pub(super) async fn generate_plan(
 ) -> Result<impl IntoResponse, ApiError> {
     // `validate_payload` guarantees a non-blank prompt.
     let prompt_text = body.prompt.clone().unwrap_or_default();
-    let (op_id, slug) = start_plan_generation(&state, prompt_text, &RunOrigin::Http).await;
+    let (op_id, slug) = start_plan_generation(&state, prompt_text, &RunOrigin::Http, None).await;
 
     Ok((
         axum::http::StatusCode::ACCEPTED,
@@ -235,12 +235,16 @@ pub(super) async fn generate_plan(
 /// plan's slug: the route and the MCP `plan_generate` tool (9115) share it.
 /// The slug comes from the request; the planner gets a chat host's request
 /// fenced as untrusted data ([`RunOrigin::request_text`], 9117).
+///
+/// With a `title` (gap-c2efe7), the slug comes from the title, and the written
+/// plan's `[meta] title` is it.
 pub(crate) async fn start_plan_generation(
     state: &Arc<AppState>,
     prompt_text: String,
     origin: &RunOrigin,
+    title: Option<String>,
 ) -> (String, String) {
-    let slug = derive_unique_slug(&state.workdir, &prompt_text).await;
+    let slug = derive_unique_slug(&state.workdir, title.as_deref().unwrap_or(&prompt_text)).await;
     let prompt_text = origin.request_text(&prompt_text).into_owned();
 
     let op_id = uuid::Uuid::new_v4().to_string();
@@ -292,13 +296,16 @@ pub(crate) async fn start_plan_generation(
                 .await
             {
                 Ok(gen_result) if gen_result.plan_targets.is_empty() => Err(no_plan()),
-                Ok(_) => match runtime.load_plan_summary(&workdir, &slug_for_task).await {
-                    Ok(Some(summary)) => Ok(summary.task_count),
-                    Ok(None) => Err(no_plan()),
-                    Err(err) => Err(format!(
-                        "plan '{slug_for_task}' does not load after generation: {err}"
-                    )),
-                },
+                Ok(_) => {
+                    name_generated_plan(&workdir, &slug_for_task, title.as_deref());
+                    match runtime.load_plan_summary(&workdir, &slug_for_task).await {
+                        Ok(Some(summary)) => Ok(summary.task_count),
+                        Ok(None) => Err(no_plan()),
+                        Err(err) => Err(format!(
+                            "plan '{slug_for_task}' does not load after generation: {err}"
+                        )),
+                    }
+                }
                 Err(err) => Err(format!("plan generation failed for {slug_for_task}: {err}")),
             };
 
@@ -827,6 +834,51 @@ pub(crate) fn slug_from_title(title: &str) -> String {
 /// it to a kebab-case slug via [`slug_from_title`], then checks whether a
 /// plan directory already uses that name. If there is a collision it appends
 /// `-2`, `-3`, and so on until a free name is found.
+/// Set plan `slug`'s `[meta] title` to `title` (gap-c2efe7), in the `tasks.toml`
+/// its generation wrote: the line after its `plan = …` key, replacing a
+/// `title` the planner wrote. Nothing to do without a title; a plan that
+/// cannot be named keeps none, which is logged.
+fn name_generated_plan(workdir: &std::path::Path, slug: &str, title: Option<&str>) {
+    let Some(title) = title else {
+        return;
+    };
+    if let Err(error) = write_plan_title(workdir, slug, title) {
+        tracing::warn!(plan = slug, %error, "the generated plan keeps no title");
+    }
+}
+
+/// [`name_generated_plan`]'s edit of plan `slug`'s `tasks.toml`.
+fn write_plan_title(workdir: &std::path::Path, slug: &str, title: &str) -> anyhow::Result<()> {
+    let path = plans_dir(workdir).join(slug).join("tasks.toml");
+    let text = std::fs::read_to_string(&path)?;
+    let line = format!("title = {}", toml::Value::String(title.to_string()));
+    let mut lines: Vec<String> = Vec::new();
+    let mut in_meta = false;
+    let mut named = false;
+    for current in text.lines() {
+        let trimmed = current.trim_start();
+        if trimmed.starts_with('[') {
+            in_meta = trimmed.starts_with("[meta]");
+        }
+        let is_key = |key: &str| {
+            trimmed
+                .strip_prefix(key)
+                .is_some_and(|rest| rest.trim_start().starts_with('='))
+        };
+        if in_meta && is_key("title") {
+            continue;
+        }
+        lines.push(current.to_string());
+        if in_meta && !named && is_key("plan") {
+            lines.push(line.clone());
+            named = true;
+        }
+    }
+    anyhow::ensure!(named, "{} has no [meta] plan key", path.display());
+    std::fs::write(&path, lines.join("\n") + "\n")?;
+    Ok(())
+}
+
 pub(super) async fn derive_unique_slug(workdir: &std::path::Path, prompt: &str) -> String {
     let first_line = prompt.lines().next().unwrap_or("").trim();
     // At most 80 characters: cutting at byte 80 can split a multi-byte
@@ -855,4 +907,36 @@ pub(super) async fn derive_unique_slug(workdir: &std::path::Path, prompt: &str) 
         }
     }
     base // unreachable in practice
+}
+
+#[cfg(test)]
+mod title_tests {
+    use super::*;
+
+    /// gap-c2efe7: a title given to plan generation becomes the written
+    /// plan's `[meta] title`, the line after its `plan` key, in place of one
+    /// the planner wrote; no title leaves the file as it was.
+    #[test]
+    fn a_generated_plan_takes_the_given_title() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let plan_dir = plans_dir(dir.path()).join("named");
+        std::fs::create_dir_all(&plan_dir).expect("plan dir");
+        let tasks = plan_dir.join("tasks.toml");
+        let written = "[meta]\nplan = \"named\"\ntitle = \"The planner's\"\ntotal = 1\n\n\
+                       [[task]]\nid = \"T1\"\ntitle = \"A task\"\n";
+        std::fs::write(&tasks, written).expect("tasks.toml");
+
+        name_generated_plan(dir.path(), "named", None);
+        assert_eq!(
+            std::fs::read_to_string(&tasks).expect("tasks.toml"),
+            written
+        );
+
+        name_generated_plan(dir.path(), "named", Some("Count \"vowels\""));
+        let named = std::fs::read_to_string(&tasks).expect("tasks.toml");
+        let parsed: toml::Value = toml::from_str(&named).expect("still TOML");
+        assert_eq!(parsed["meta"]["title"].as_str(), Some("Count \"vowels\""));
+        assert_eq!(parsed["task"][0]["title"].as_str(), Some("A task"));
+        assert_eq!(named.matches("title = ").count(), 2, "{named}");
+    }
 }

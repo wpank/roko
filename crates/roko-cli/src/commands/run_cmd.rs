@@ -509,6 +509,7 @@ async fn run_one_task(
         origin: roko_serve::runtime::RunOrigin::Cli,
         no_holdout: args.no_holdout,
         live_agent_output: roko_cli::graph_task_dispatch::LiveAgentOutput::for_local_run(workdir),
+        title: None,
     })
     .await;
 

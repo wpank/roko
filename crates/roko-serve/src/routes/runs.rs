@@ -2018,6 +2018,8 @@ fn run_summary(
     config: &RokoConfig,
 ) -> Value {
     let mut completion = None;
+    // What the run's plans are called (gap-c2efe7), from the plan set it loaded.
+    let mut titles = Vec::<String>::new();
     let mut tasks = BTreeMap::<(String, String), TaskOutcomeClass>::new();
     // The models each task's agents were dispatched to.
     let mut task_models = BTreeMap::<(String, String), BTreeSet<String>>::new();
@@ -2037,6 +2039,17 @@ fn run_summary(
                 .entry((plan_id, task_id.to_string()))
                 .or_default()
                 .insert(model.to_string());
+        }
+        if kind == "plan_set_loaded" && titles.is_empty() {
+            titles = value["plans"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(|plan| plan["title"].as_str())
+                .map(str::trim)
+                .filter(|title| !title.is_empty())
+                .map(str::to_string)
+                .collect();
         }
         if matches!(
             kind,
@@ -2150,6 +2163,7 @@ fn run_summary(
     let summary = summarize_events(events);
     json!({
         "run_id": run_id,
+        "title": (!titles.is_empty()).then(|| titles.join("; ")),
         "state": state.as_str(),
         "verdict": state.is_terminal().then_some(state),
         "position": position,

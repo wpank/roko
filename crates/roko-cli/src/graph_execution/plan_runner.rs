@@ -102,7 +102,8 @@ fn plan_set_entries(
         .iter()
         .filter_map(|plan_id| plans.iter().find(|plan| &plan.id == plan_id))
         .map(|plan| {
-            let title = plan.tasks.meta.plan.trim();
+            // A plan named for people goes by its title (gap-c2efe7).
+            let title = plan_title(plan);
             roko_core::dashboard_snapshot::PlanSetEntry {
                 plan_id: plan.id.clone(),
                 title: if title.is_empty() {
@@ -130,6 +131,17 @@ fn plan_set_entries(
             }
         })
         .collect()
+}
+
+/// What `plan` is called: its `[meta] title` (gap-c2efe7), else its `[meta]
+/// plan` id.
+fn plan_title(plan: &crate::runner::plan_loader::Plan) -> &str {
+    let meta = &plan.tasks.meta;
+    meta.title
+        .as_deref()
+        .map(str::trim)
+        .filter(|title| !title.is_empty())
+        .unwrap_or_else(|| meta.plan.trim())
 }
 
 /// The plan set containing `plan_dir`: its parent directory relative to
@@ -1601,6 +1613,10 @@ async fn run_graph_plan_body(
         let batch = super::batch::BatchIntegration::open(workdir, &batch_run)
             .await
             .map_err(|error| anyhow!("open the run's batch branch: {error}"))?;
+        // The branch says which run it is for, as `git branch -v` and hosts
+        // show it (gap-c2efe7).
+        let titles = plans.iter().map(plan_title).collect::<Vec<_>>();
+        batch.describe(&titles.join("; ")).await;
         if !quiet && !json {
             tracing::info!(
                 branch = batch.branch(),
@@ -1688,6 +1704,16 @@ async fn run_graph_plan_body(
     graph_task_dispatcher.prime_daily_budget().await;
     for plan_id in &held_plans {
         graph_task_dispatcher.hold_for_approval(plan_id);
+    }
+    // The accepted commit of a named one-task plan, such as a prompt run's,
+    // takes the plan's title (gap-c2efe7).
+    for plan in &plans {
+        if let ([_], Some(title)) = (
+            plan.tasks.tasks.as_slice(),
+            plan.tasks.meta.title.as_deref(),
+        ) {
+            graph_task_dispatcher.name_commits(&plan.id, title);
+        }
     }
     let conductor_stop = Arc::new(parking_lot::Mutex::new(
         None::<crate::graph_task_dispatch::ConductorStop>,
@@ -9195,5 +9221,55 @@ printf '%s\n' '{"type":"result","session_id":"sess-batch","model":"claude-sonnet
                 vec![serde_json::json!({ "task_id": "T1", "why": why })]
             );
         }
+    }
+
+    /// gap-c2efe7: a one-task plan named for people takes its title for its plan set
+    /// entry, its accepted commit's subject and its batch branch's
+    /// description; its task's own title stays for the agent.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_named_plan_titles_its_commit_branch_and_plan_set() {
+        let dir = repo_with_file_plans(&["alpha"], None);
+        let repo = dir.path();
+        let tasks = repo.join("plans/01-alpha/tasks.toml");
+        let text = std::fs::read_to_string(&tasks).expect("tasks.toml");
+        let text = text.replacen(
+            "plan = \"01-alpha\"\n",
+            "plan = \"01-alpha\"\ntitle = \"Alpha, written for people\"\n",
+            1,
+        );
+        std::fs::write(&tasks, text).expect("tasks.toml");
+        git_in(repo, &["commit", "-am", "a titled plan"]);
+        let hub = crate::state_hub::shared_state_hub();
+        let params = GraphPlanRunParams {
+            state_hub: Some(hub.clone()),
+            ..worktree_run_params(repo)
+        };
+
+        let exit_code = run_graph_plan_in_run(params, Some("run-named".into()))
+            .await
+            .expect("run the plan");
+
+        assert_eq!(exit_code, EXIT_SUCCESS);
+        let subject = git_stdout(repo, &["log", "-1", "--format=%s", "roko/plan/01-alpha"]);
+        assert_eq!(subject, "roko: 01-alpha/T1: Alpha, written for people");
+        assert_eq!(
+            git_stdout(
+                repo,
+                &["config", "--get", "branch.roko/batch/run-named.description"]
+            ),
+            "Alpha, written for people"
+        );
+        let titles = hub
+            .subscribe_events_from(0)
+            .replay
+            .into_iter()
+            .find_map(|envelope| match envelope.payload {
+                roko_core::DashboardEvent::PlanSetLoaded { plans, .. } => {
+                    Some(plans.into_iter().map(|plan| plan.title).collect::<Vec<_>>())
+                }
+                _ => None,
+            })
+            .expect("the plan set");
+        assert_eq!(titles, ["Alpha, written for people"]);
     }
 }

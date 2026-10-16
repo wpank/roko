@@ -2,7 +2,7 @@
 id = "bug-8bafc0"
 kind = "bug"
 title = "roko doctor's git_dirty fix says git add -A && git commit, which would also commit unrelated untracked files such as work/telemetry/events/*.jsonl"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p3"
 goal = "core"
@@ -11,12 +11,21 @@ subsystem = ["roko-execution/diagnostics"]
 created = 2026-10-16
 updated = 2026-10-16
 last_verified = 2026-10-16
+last_verified_rev = "7e9de51d5"
 source = "hermes-roko round v5, dogfood-will run 2 (R2-7), 2026-10-16"
 anchors = ["crates/roko-execution/src/diagnostics/checks.rs::check_git"]
 links = { depends_on = [], blocks = [], related = [], supersedes = [], duplicate_of = "" }
 
 [[verify]]
 command = "grep -rqw 'fn git_dirty_names_the_paths_and_never_adds_everything' crates/ && cargo test -p roko-execution --lib git_dirty_names_the_paths_and_never_adds_everything"
+
+[closed]
+at = 2026-10-16
+at_ts = "2026-10-16T15:55:56Z"
+commit = "7e9de51d5"
+by = "roko-chathost"
+forced = false
+evidence = "verify passed at 7e9de51d5 (scratch HOME): git_dirty_names_the_paths_and_never_adds_everything ok; roko-execution lib tests 191 passed; cargo clippy -p roko-execution --no-deps -D warnings clean. roko doctor in a scratch workspace with the planner folder plans/word-count-demo/ untracked: before \"fix: git add -A && git commit\", after \"fix: git add -- plans/word-count-demo/ && git commit\"; with 5 uncommitted paths it lists them, says \"commit or remove these\" and gives no command. No paid calls."
 +++
 
 ## Problem

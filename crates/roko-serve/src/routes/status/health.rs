@@ -319,6 +319,8 @@ fn dashboard_event_type(event: &roko_core::dashboard_snapshot::DashboardEvent) -
         DashboardEvent::M1Episode { .. } => "m1.episode",
         DashboardEvent::SelfModelCalibration { .. } => "self_model.calibration",
         DashboardEvent::RouteDecided { .. } => "route_decided",
+        DashboardEvent::PromptAssembled { .. } => "prompt_assembled",
+        DashboardEvent::RetryFeedback { .. } => "retry_feedback",
         DashboardEvent::KnowledgeWritten { .. } => "knowledge_written",
         DashboardEvent::PlaybookWritten { .. } => "playbook_written",
         DashboardEvent::EffectStaged { .. } => "effect_staged",
@@ -341,6 +343,8 @@ fn dashboard_event_plan_id(event: &roko_core::dashboard_snapshot::DashboardEvent
         | DashboardEvent::PhaseTransition { plan_id, .. }
         | DashboardEvent::EfficiencyEvent { plan_id, .. }
         | DashboardEvent::RouteDecided { plan_id, .. }
+        | DashboardEvent::PromptAssembled { plan_id, .. }
+        | DashboardEvent::RetryFeedback { plan_id, .. }
         | DashboardEvent::KnowledgeWritten { plan_id, .. }
         | DashboardEvent::PlaybookWritten { plan_id, .. }
         | DashboardEvent::EffectStaged { plan_id, .. }
@@ -367,6 +371,8 @@ fn dashboard_event_task_id(event: &roko_core::dashboard_snapshot::DashboardEvent
         | DashboardEvent::EfficiencyEvent { task_id, .. }
         | DashboardEvent::TaskOutputAppended { task_id, .. }
         | DashboardEvent::RouteDecided { task_id, .. }
+        | DashboardEvent::PromptAssembled { task_id, .. }
+        | DashboardEvent::RetryFeedback { task_id, .. }
         | DashboardEvent::KnowledgeWritten { task_id, .. }
         | DashboardEvent::PlaybookWritten { task_id, .. }
         | DashboardEvent::EffectStaged { task_id, .. }

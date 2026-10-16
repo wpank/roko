@@ -10,6 +10,7 @@ use roko_graph::workspace::{
     WorkspaceLease, WorkspaceReleasePolicy,
 };
 
+use super::retry_feedback::RetryNotice;
 use super::*;
 use crate::orchestrator::scratch::{CopyBackError, ScratchLease};
 
@@ -151,9 +152,15 @@ impl GraphTaskDispatcher {
                 let key = format!("{}/{}", spec.plan_id, task.id);
                 *self.worktree_generations.lock().entry(key).or_default() += 1;
                 if let Some(feedback) = scratch_conflict_feedback(&paths) {
-                    self.gate_retry_context.record(
+                    let notice = RetryNotice {
+                        attempt: settled.key().attempt,
+                        check: "scratch-copy-back",
+                        failing_steps: &[],
+                    };
+                    self.leave_retry_feedback(
                         &spec.plan_id,
                         &task.id,
+                        &notice,
                         feedback,
                         settled.key().attempt.saturating_add(1),
                     );
@@ -309,9 +316,15 @@ impl GraphTaskDispatcher {
                 // instead of starting blind (backlog 1123).
                 let changed = self.take_changed_files(settled.attempt_key());
                 if let Some(feedback) = conflict_feedback(&reason, &changed) {
-                    self.gate_retry_context.record(
+                    let notice = RetryNotice {
+                        attempt: settled.key().attempt,
+                        check: "plan-branch",
+                        failing_steps: &[],
+                    };
+                    self.leave_retry_feedback(
                         &spec.plan_id,
                         &task.id,
+                        &notice,
                         feedback,
                         settled.key().attempt.saturating_add(1),
                     );
@@ -587,9 +600,15 @@ impl GraphTaskDispatcher {
             tui.gate_result_with_output(&spec.plan_id, &task.id, "review", false, Some(&message));
         }
         if let Some(feedback) = GateFeedback::from_raw(&message) {
-            self.gate_retry_context.record(
+            let notice = RetryNotice {
+                attempt: settled.key().attempt,
+                check: "review",
+                failing_steps: std::slice::from_ref(&message),
+            };
+            self.leave_retry_feedback(
                 &spec.plan_id,
                 &task.id,
+                &notice,
                 feedback,
                 settled.key().attempt.saturating_add(1),
             );

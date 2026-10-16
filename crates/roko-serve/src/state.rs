@@ -2380,7 +2380,9 @@ impl AppState {
     /// Remove completed/failed handles from active collections (§15.6).
     ///
     /// Should be called periodically (e.g. from a background interval task)
-    /// to prevent unbounded memory growth from accumulated handles.
+    /// to prevent unbounded memory growth from accumulated handles. A
+    /// finished operation's status stays readable after its handle goes:
+    /// the kept record of finished operations holds it (bug-a0f01e).
     pub async fn gc_completed_handles(&self) {
         self.active_runs
             .write()

@@ -35,7 +35,7 @@ use roko_learn::model_router::RoutingContext;
 use crate::error::ApiError;
 use crate::events::ServerEvent;
 use crate::extract::{RequestPayload, ValidJson, validate_with_validator};
-use crate::state::{AppState, BatchProgress, OperationHandle, OperationStatus};
+use crate::state::{AppState, BatchProgress, OperationStatus};
 
 /// Register inference gateway routes.
 pub fn routes() -> Router<Arc<AppState>> {
@@ -638,7 +638,10 @@ async fn batch_submit(
     let batch_id_for_task = batch_id.clone();
     let requests = body.requests;
 
-    let handle = tokio::spawn(async move {
+    // bug-a0f01e: the handle is registered before the batch can finish, and
+    // the batch ends completed, or failed should it panic, in the handle and
+    // the kept record of finished operations.
+    let work = async move {
         let config = state_for_task.load_roko_config();
 
         // B2: process batch items concurrently with a bounded stream.
@@ -698,37 +701,26 @@ async fn batch_submit(
             .collect()
             .await;
 
-        // Serialize results and store them in the operation handle.
-        let results_json = serde_json::to_string(&results).unwrap_or_else(|_| "[]".to_string());
-        if let Some(op) = state_for_task
-            .operations
-            .write()
-            .await
-            .get_mut(&batch_id_for_task)
-        {
-            op.status = OperationStatus::Completed {
-                result: Some(results_json),
-            };
-        }
-
         // Clean up progress entry now that the batch is done.
         state_for_task
             .batch_progress
             .write()
             .await
             .remove(&batch_id_for_task);
-    });
 
-    let op = OperationHandle {
-        id: batch_id.clone(),
-        kind: "inference_batch".to_string(),
-        status: OperationStatus::Running,
-        handle,
-        started: std::time::Instant::now(),
-        progress: None,
+        // The results are the operation's result.
+        Ok::<_, String>(Some(
+            serde_json::to_value(&results).unwrap_or_else(|_| serde_json::json!([])),
+        ))
     };
-
-    state.operations.write().await.insert(batch_id.clone(), op);
+    crate::operations::spawn_operation(
+        &state,
+        batch_id.clone(),
+        "inference_batch".to_string(),
+        "inference_batch",
+        work,
+    )
+    .await;
 
     state.event_bus.publish(ServerEvent::OperationStarted {
         op_id: batch_id.clone(),
@@ -751,12 +743,22 @@ async fn batch_status(
     State(state): State<Arc<AppState>>,
     Path(batch_id): Path<String>,
 ) -> Result<Json<BatchStatusResponse>, ApiError> {
-    let ops = state.operations.read().await;
-    let op = ops
+    // A batch whose handle was collected, or that ended before a restart,
+    // says how it ended from the kept record (bug-a0f01e).
+    let held = state
+        .operations
+        .read()
+        .await
         .get(&batch_id)
-        .ok_or_else(|| ApiError::not_found(format!("batch {batch_id} not found")))?;
+        .map(|op| op.status.clone());
+    let status = match held {
+        Some(status) => status,
+        None => crate::operations::finished_operation(&state, &batch_id)
+            .map(|finished| finished.status)
+            .ok_or_else(|| ApiError::not_found(format!("batch {batch_id} not found")))?,
+    };
 
-    match &op.status {
+    match &status {
         OperationStatus::Running => {
             // B3: read incremental progress from the shared counter.
             let progress = state.batch_progress.read().await;
@@ -1091,6 +1093,7 @@ mod tests {
     use crate::deploy::create_backend;
     use crate::routes::build_router;
     use crate::runtime::NoOpRuntime;
+    use crate::state::OperationHandle;
 
     fn test_state() -> (tempfile::TempDir, Arc<AppState>) {
         let dir = tempdir().expect("tempdir");

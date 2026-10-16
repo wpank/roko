@@ -865,11 +865,28 @@ async fn run_or_operation(state: &Arc<AppState>, id: &str) -> Result<Value, ApiE
 /// The state of operation `id` as `run_status` reports a run's: `running`,
 /// then `succeeded` with its result or `failed` with its error. A running
 /// operation says how long it has run, and one that reports progress
-/// carries its latest report, and keeps it once it ends (gap-11d870).
+/// carries its latest report, and keeps it once it ends (gap-11d870). A
+/// finished one whose handle is gone is read from the kept record of
+/// finished operations (bug-a0f01e).
 async fn operation_state(state: &AppState, id: &str) -> Option<Value> {
-    let operations = state.operations.read().await;
-    let operation = operations.get(id)?;
-    let (run_state, result, error) = match &operation.status {
+    let held = state.operations.read().await.get(id).map(|operation| {
+        let elapsed_secs = matches!(operation.status, OperationStatus::Running)
+            .then(|| operation.started.elapsed().as_secs());
+        (
+            operation.kind.clone(),
+            operation.status.clone(),
+            elapsed_secs,
+            crate::operations::latest_progress(operation),
+        )
+    });
+    let (kind, status, elapsed_secs, progress) = match held {
+        Some(held) => held,
+        None => {
+            let finished = crate::operations::finished_operation(state, id)?;
+            (finished.kind, finished.status, None, finished.progress)
+        }
+    };
+    let (run_state, result, error) = match &status {
         OperationStatus::Running => (RunState::Running, None, None),
         OperationStatus::Completed { result } => (RunState::Succeeded, result.as_deref(), None),
         OperationStatus::Failed { error } => (RunState::Failed, None, Some(error.as_str())),
@@ -877,20 +894,17 @@ async fn operation_state(state: &AppState, id: &str) -> Option<Value> {
     let result = result.and_then(|result| serde_json::from_str::<Value>(result).ok());
     let mut summary = json!({
         "run_id": id,
-        "kind": operation.kind,
+        "kind": kind,
         "state": run_state.as_str(),
         "active": !run_state.is_terminal(),
         "result": result,
         "error": error,
     });
-    if !run_state.is_terminal() {
-        summary["elapsed_secs"] = json!(operation.started.elapsed().as_secs());
+    if let Some(elapsed_secs) = elapsed_secs {
+        summary["elapsed_secs"] = json!(elapsed_secs);
     }
-    if let Some(progress) = &operation.progress {
-        let progress = progress.borrow().clone();
-        if !progress.is_null() {
-            summary["progress"] = progress;
-        }
+    if let Some(progress) = progress {
+        summary["progress"] = progress;
     }
     Some(summary)
 }
@@ -2172,5 +2186,37 @@ mod tests {
         let (_, body) = post_mcp(&router, &call(3, "effect_decide", decide), &[]).await;
         assert_eq!(body["result"]["isError"], true, "{body}");
         assert_eq!(*runtime.applied.lock().expect("applied"), 1);
+    }
+
+    /// bug-a0f01e: `run_status` of an operation whose handle was collected
+    /// answers how it ended, from the kept record of finished operations.
+    #[tokio::test]
+    async fn run_status_answers_for_a_collected_operation() {
+        let (_dir, state, _router) =
+            state_and_router(Arc::new(crate::runtime::NoOpRuntime), RokoConfig::default());
+        crate::operations::spawn_operation(
+            &state,
+            "op-1".into(),
+            "test:op".into(),
+            "test",
+            async { Ok::<_, String>(Some(json!({ "answer": 42 }))) },
+        )
+        .await;
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while state.operations.read().await.contains_key("op-1") {
+                state.gc_completed_handles().await;
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("handle GC drops the finished operation");
+
+        let summary = operation_state(&state, "op-1")
+            .await
+            .expect("the kept record answers");
+        assert_eq!(summary["state"], "succeeded", "{summary}");
+        assert_eq!(summary["active"], false, "{summary}");
+        assert_eq!(summary["result"]["answer"], 42, "{summary}");
+        assert!(operation_state(&state, "op-2").await.is_none());
     }
 }

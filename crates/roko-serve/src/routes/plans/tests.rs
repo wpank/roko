@@ -3194,3 +3194,76 @@ async fn plan_generation_status_reports_its_stage() {
     assert_eq!(done["progress"]["stage"], "recording", "{done}");
     assert!(done.get("elapsed_secs").is_none(), "{done}");
 }
+
+/// bug-a0f01e: a finished plan generation's status, with its result and its
+/// last progress, outlives its handle's collection and a restart.
+#[tokio::test]
+async fn plan_generation_status_outlives_its_handle() {
+    let gate = Arc::new(Notify::new());
+    // The staged generation runs straight through.
+    gate.notify_one();
+    let (dir, state) = test_state_with_runtime(Arc::new(StagedRuntime { gate }));
+    let (op_id, slug) = start_plan_generation(
+        &state,
+        "Build a widget library".into(),
+        &crate::runtime::RunOrigin::Http,
+        None,
+    )
+    .await;
+    tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        while state.operations.read().await.contains_key(&op_id) {
+            state.gc_completed_handles().await;
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("handle GC drops the finished generation");
+
+    let reported = |state: Arc<AppState>| {
+        let uri = format!("/api/operations/{op_id}");
+        async move {
+            let app = build_router(
+                state,
+                &[],
+                ServeAuthConfig {
+                    enabled: false,
+                    ..ServeAuthConfig::default()
+                },
+            );
+            let response = app
+                .oneshot(
+                    Request::builder()
+                        .uri(uri)
+                        .body(Body::empty())
+                        .expect("request"),
+                )
+                .await
+                .expect("response");
+            let bytes = to_bytes(response.into_body(), usize::MAX)
+                .await
+                .expect("body");
+            serde_json::from_slice::<Value>(&bytes).expect("status json")
+        }
+    };
+    let collected = reported(Arc::clone(&state)).await;
+    drop(state);
+    let deploy_backend =
+        Arc::from(create_backend("manual", None, None, None).expect("manual backend"));
+    let restarted = Arc::new(
+        AppState::new(
+            dir.path().to_path_buf(),
+            Arc::new(NoOpRuntime),
+            roko_core::config::schema::RokoConfig::default(),
+            deploy_backend,
+        )
+        .expect("AppState::new"),
+    );
+    let restarted = reported(restarted).await;
+    for status in [collected, restarted] {
+        assert_eq!(status["status"], "completed", "{status}");
+        assert_eq!(status["result"]["slug"], slug.as_str(), "{status}");
+        assert_eq!(status["result"]["cost_usd"], 0.0125, "{status}");
+        assert_eq!(status["progress"]["stage"], "recording", "{status}");
+        assert!(status.get("elapsed_secs").is_none(), "{status}");
+    }
+}

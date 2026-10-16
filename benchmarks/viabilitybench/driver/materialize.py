@@ -21,15 +21,16 @@
 The agent gets the chosen spec's text as its task message. The spec files stay private, so an agent given one
 variant cannot read another.
 
-**The vague variant** (S08 §4.5, S07.3; task 3329), for F1 and F4 only (the other families' own task gives them
-one): `gen.py` renders only `spec.precise.md`. The first `materialize(..., spec_variant="vague")` of an instance
-builds `spec.vague.md` itself, caches it in the manifest (`spec.vague`, written back to `task.json`) so every
-later call for the same instance reads the same file, and:
+**The vague variant** (S08 §4.5, S07.3; task 3329), for the six families of H3's instances, F1-F5 and F7
+(`VAGUE_FAMILIES`; F2, F3, F5 and F7 since bug-f90bd0): `gen.py` renders only `spec.precise.md`. The first
+`materialize(..., spec_variant="vague")` of an instance builds `spec.vague.md` itself, caches it in the manifest
+(`spec.vague`, written back to `task.json`) so every later call for the same instance reads the same file, and:
 
 1. reads `spec.precise.md` into a `[[task]]`-shaped dict good enough for `specops.degrade`/`speclint.score_task`
    (`_task_dict`): the structured manifest fields (`files_in_scope`, `visible_verify`) plus a prose extraction
-   from the markdown's own ``## `` sections (`_spec_prose`) -- the same two-family extraction the manipulation
-   check (task 3234) needs, so it is written once, here;
+   from the markdown's own ``## `` sections (`_spec_prose`): F1's section layout, which F2, F3, F5 and F7 share,
+   and F4's (`## Goal`, `## Constraints`). The manipulation check (task 3234) needs the same extraction, so it is
+   written once, here;
 2. applies D-v1's full `VAGUE` composition (`specops.degrade`) at the instance's own seed, and checks
    recoverability: a `recoverability` entry whose evidence is *only* `spec.precise.md#ACn` references, for an AC
    id the vague spec no longer states, has nothing left to recover from and fails materialization (`_recoverability_violations`);
@@ -42,7 +43,7 @@ API:
     materialize(*, family_dir, instance_id, workdir, private_dir, spec_variant="precise", timeout_s=300.0,
                 latent=None)
     MaterializeError
-    VAGUE_FAMILIES = ("F1", "F4")
+    VAGUE_FAMILIES = ("F1", "F2", "F3", "F4", "F5", "F7")
     task_dict(manifest: dict, precise_text: str) -> dict           # the module docstring's [[task]] projection
     recoverability_violations(manifest: dict, vague: dict) -> list[str]
     render_vague_markdown(task: dict) -> str
@@ -71,7 +72,9 @@ TASK_DIR = ".vb"  # gen.py's --out directory, under the private directory
 MANIFEST = "task.json"
 PRISTINE = "pristine.json"
 VAGUE_SPEC_FILE = "spec.vague.md"
-VAGUE_FAMILIES = ("F1", "F4")  # the families 3329 covers; the rest get a vague variant from their own task
+# H3's families (S09 §4.3 block C: streams/p1_h3.toml's 48 instances are 8 each of these). F6 is in no P1 stream and
+# F8 is a honeypot wrapper, so neither has a vague variant.
+VAGUE_FAMILIES = ("F1", "F2", "F3", "F4", "F5", "F7")
 _SECTION_RE = re.compile(r"(?m)^## (.+)$")
 _AC_PREFIX_RE = re.compile(r"^(?:\*\*)?(AC\d+)[.:](?:\*\*)?\s*")
 _CONTEXT_BULLET_RE = re.compile(r"^`([^`]+)`:\s*(.*)$")
@@ -170,7 +173,7 @@ def _add_vague_spec(manifest: dict, manifest_path: Path, task_dir: Path) -> dict
     `manifest_path` so every later call for the same instance reads the cached file (the module docstring)."""
     instance_id, family = manifest["instance_id"], manifest["family"]
     if family not in VAGUE_FAMILIES:
-        raise MaterializeError(f"{instance_id}: {family} has no vague variant yet (3329 covers {VAGUE_FAMILIES})")
+        raise MaterializeError(f"{instance_id}: {family} has no vague variant (H3's families are {VAGUE_FAMILIES})")
     precise = manifest["spec"]["precise"]
     precise_path = _private_file(precise["path"], task_dir, "spec")
     precise_text = precise_path.read_text(encoding="utf-8")
@@ -201,7 +204,7 @@ def _add_vague_spec(manifest: dict, manifest_path: Path, task_dir: Path) -> dict
 def task_dict(manifest: dict, precise_text: str) -> dict:
     """A `[[task]]`-shaped dict for `specops.degrade`/`speclint.score_task`: `files_in_scope` and
     `visible_verify` straight from the manifest, plus a prose extraction from `precise_text`'s own
-    ``## `` sections (`_spec_prose`), common to F1's and F4's rendered spec.precise.md."""
+    ``## `` sections (`_spec_prose`), common to every H3 family's rendered spec.precise.md."""
     prose = _spec_prose(precise_text)
     return {
         "id": manifest["instance_id"], "title": prose["title"], "goal": prose["goal"],

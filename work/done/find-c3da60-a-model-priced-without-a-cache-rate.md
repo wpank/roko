@@ -2,7 +2,7 @@
 id = "find-c3da60"
 kind = "finding"
 title = "A model priced without a cache rate counts cache reads at a tenth of input, and the tool loop's profile pricing pre-empts the price snapshot"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p3"
 goal = "hermes"
@@ -11,6 +11,7 @@ subsystem = ["roko-core/pricing", "roko-agent/tool-loop"]
 created = 2026-10-16
 updated = 2026-10-16
 last_verified = 2026-10-16
+last_verified_rev = "0216a4cbd"
 source = "tmp/hermes-roko-v5/findings/roko-caps.md (roko-caps, 2026-10-16)"
 discovered_from = "bug-4fabd0: checking the cache-read pricing of the $0.753 overrun"
 anchors = ["crates/roko-core/src/chat_types.rs::fill_cost_from_pricing", "crates/roko-cli/src/dispatch_v2.rs::fill_usage_cost_from_pricing"]
@@ -18,6 +19,18 @@ links = { depends_on = [], blocks = [], related = ["bug-4fabd0"], supersedes = [
 
 [[verify]]
 command = "grep -rqw 'fn cerebras_cache_reads_cost_the_input_rate' crates/roko-cli/src && cargo test -p roko-cli --lib cerebras_cache_reads_cost_the_input_rate"
+
+[closed]
+at = 2026-10-16
+at_ts = "2026-10-16T09:12:25Z"
+commit = "b9dc50f17"
+by = "commit trailer"
+executor = "claude-agent"
+via = "manual"
+size = "S"
+claimed_at = "2026-10-16T09:11:20Z"
+forced = false
+evidence = "Closed by b9dc50f17: pricing: a call costs what its provider bills, and the price snapshot wins over a tool loop's estimate"
 +++
 
 ## Problem

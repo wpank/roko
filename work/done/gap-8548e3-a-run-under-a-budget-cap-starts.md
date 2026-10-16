@@ -2,21 +2,33 @@
 id = "gap-8548e3"
 kind = "gap"
 title = "A run under a budget cap starts with models it cannot price, and the cap stops it only after the first unpriced call ran"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p2"
 goal = "hermes"
 size = "M"
 subsystem = ["roko-cli/budget"]
 created = 2026-10-15
-updated = 2026-10-15
-last_verified = 2026-10-15
+updated = 2026-10-16
+last_verified = 2026-10-16
+last_verified_rev = "0216a4cbd"
 source = "roko-init round v5, 2026-10-15 (team lead: plugin wrote unpriced [models.*], caps did not hold)"
 anchors = ["crates/roko-cli/src/graph_task_dispatch/budget.rs::unpriced_plan_stop", "crates/roko-cli/src/dispatch_v2.rs::model_has_price", "crates/roko-core/src/config/serve.rs::chat_run_refusal"]
 links = { depends_on = [], blocks = [], related = ["bug-4e336b", "bug-1bc222", "gap-ceffb3", "gap-2bec05", "gap-cf427e", "gap-c8f388"], supersedes = [], duplicate_of = "" }
 
 [[verify]]
 command = "grep -rqw 'fn capped_run_with_an_unpriced_model_is_refused_up_front' crates/ && cargo test -p roko-cli --lib capped_run_with_an_unpriced_model_is_refused_up_front"
+
+[closed]
+at = 2026-10-16
+at_ts = "2026-10-16T09:12:26Z"
+commit = "ad869974f"
+by = "commit trailer"
+executor = "unknown"
+size = "M"
+claimed_at = "2026-10-16T08:10:23Z"
+forced = false
+evidence = "Closed by ad869974f: budget: a capped run never calls a model it cannot price"
 +++
 
 ## Problem

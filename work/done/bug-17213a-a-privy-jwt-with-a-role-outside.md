@@ -2,15 +2,16 @@
 id = "bug-17213a"
 kind = "bug"
 title = "A Privy JWT with a role outside the allow-list gets read scope instead of being rejected (D18, backlog 9340)"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p2"
 goal = "release"
 size = "S"
 subsystem = ["roko-serve/auth"]
 created = 2026-10-15
-updated = 2026-10-15
-last_verified = 2026-10-15
+updated = 2026-10-16
+last_verified = 2026-10-16
+last_verified_rev = "7904eaf1b"
 source = "status-quo-2026-10-15#decision-3"
 anchors = ["crates/roko-serve/src/routes/middleware.rs::try_privy_jwt", "crates/roko-serve/src/routes/middleware.rs::privy_jwt_scope_follows_the_role_allow_list"]
 lane = "rust-hot"
@@ -18,6 +19,18 @@ links = { depends_on = [], blocks = [], related = ["gap-47e0de", "gap-00e882", "
 
 [[verify]]
 command = "! grep -q 'downgrading to read scope' crates/roko-serve/src/routes/middleware.rs && grep -rqw 'fn privy_jwt_role_mismatch_is_rejected' crates/roko-serve/src/ && cargo test -p roko-serve --lib privy_jwt_role_mismatch_is_rejected"
+
+[closed]
+at = 2026-10-16
+at_ts = "2026-10-16T15:12:40Z"
+commit = "7904eaf1b"
+by = "commit trailer"
+executor = "claude-agent"
+via = "work-batch"
+size = "S"
+claimed_at = "2026-10-16T08:06:55Z"
+forced = false
+evidence = "Closed by 7904eaf1b: fix: reject a Privy JWT whose role is outside the allow-list (D18)"
 +++
 
 ## Problem

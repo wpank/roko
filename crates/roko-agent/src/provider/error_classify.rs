@@ -717,10 +717,21 @@ impl std::fmt::Display for TurnCapHit {
     }
 }
 
-/// Recognise [`TurnCapHit`] text anywhere in `text`.
+/// What the Gemini CLI says when it stops at its `model.maxSessionTurns`
+/// setting, the turn cap roko writes there (gap-130413). It names neither
+/// count.
+pub const GEMINI_TURN_LIMIT: &str = "Reached max session turns for this session";
+
+/// Recognise [`TurnCapHit`] text anywhere in `text`, or the Gemini CLI's
+/// stop at its turn limit ([`GEMINI_TURN_LIMIT`]).
 #[must_use]
 pub fn detect_turn_cap(text: &str) -> Option<TurnCapHit> {
-    let rest = after(text, TURN_CAP_MARKER)?;
+    let Some(rest) = after(text, TURN_CAP_MARKER) else {
+        return text.contains(GEMINI_TURN_LIMIT).then_some(TurnCapHit {
+            num_turns: None,
+            cap: None,
+        });
+    };
     let number = |key: &str| {
         after(rest, key).and_then(|tail| {
             tail.chars()

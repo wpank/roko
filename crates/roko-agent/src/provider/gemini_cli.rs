@@ -32,10 +32,72 @@ use crate::provider::{
 use roko_core::agent::ProviderKind;
 use roko_core::config::schema::{ModelProfile, ProviderConfig};
 use serde_json::Value;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 /// Default Gemini CLI binary name.
 const DEFAULT_GEMINI_COMMAND: &str = "gemini";
+
+/// The environment variable that points the Gemini CLI at its system
+/// settings file, whose settings override the user's and the project's.
+const SYSTEM_SETTINGS_ENV: &str = "GEMINI_CLI_SYSTEM_SETTINGS_PATH";
+
+/// The Gemini CLI's own system settings file on this platform. This crate's
+/// tests look at a path that never exists instead, so that they do not
+/// depend on the host's settings.
+fn default_system_settings() -> PathBuf {
+    if cfg!(test) {
+        return PathBuf::from("/nonexistent/roko-tests/gemini-cli-system-settings.json");
+    }
+    PathBuf::from(if cfg!(target_os = "macos") {
+        "/Library/Application Support/GeminiCli/settings.json"
+    } else if cfg!(windows) {
+        r"C:\ProgramData\gemini-cli\settings.json"
+    } else {
+        "/etc/gemini-cli/settings.json"
+    })
+}
+
+/// A system settings file for a run held to `max_turns` turns
+/// (gap-130413): the system settings at `inherited` (else the platform's),
+/// with `model.maxSessionTurns` at `max_turns`, or at the lower limit they
+/// already set. The file is removed when the returned path is dropped.
+fn turn_capped_settings(
+    max_turns: u32,
+    inherited: Option<&Path>,
+) -> std::io::Result<tempfile::TempPath> {
+    let source = inherited.map_or_else(default_system_settings, Path::to_path_buf);
+    let settings = std::fs::read_to_string(&source)
+        .ok()
+        .and_then(|text| serde_json::from_str::<Value>(&text).ok());
+    let turns = settings
+        .as_ref()
+        .and_then(|settings| settings.pointer("/model/maxSessionTurns"))
+        .and_then(Value::as_i64)
+        .filter(|turns| *turns >= 0)
+        .map_or(i64::from(max_turns), |turns| {
+            turns.min(i64::from(max_turns))
+        });
+    let mut root = match settings {
+        Some(Value::Object(root)) => root,
+        _ => serde_json::Map::new(),
+    };
+    let model = root
+        .entry("model")
+        .or_insert_with(|| Value::Object(serde_json::Map::new()));
+    if !model.is_object() {
+        *model = Value::Object(serde_json::Map::new());
+    }
+    if let Value::Object(model) = model {
+        model.insert("maxSessionTurns".to_string(), Value::from(turns));
+    }
+    let text = serde_json::to_vec_pretty(&Value::Object(root)).map_err(std::io::Error::other)?;
+    let mut file = tempfile::Builder::new()
+        .prefix("roko-gemini-settings-")
+        .suffix(".json")
+        .tempfile()?;
+    std::io::Write::write_all(&mut file, &text)?;
+    Ok(file.into_temp_path())
+}
 
 /// Gemini headless stream-JSON translation.
 pub mod stream;
@@ -117,6 +179,30 @@ impl ProviderAdapter for GeminiCliAdapter {
         if let Some(prompt) = &options.system_prompt {
             agent = agent.with_stdin_prefix(prompt.clone());
         }
+        // The CLI has no turn flag: the turn cap goes in as its
+        // `model.maxSessionTurns` setting, through a system settings file of
+        // the run's own (gap-130413).
+        if let Some(max_turns) = options.max_turns {
+            let inherited = options
+                .env
+                .iter()
+                .rev()
+                .find(|(key, _)| key == SYSTEM_SETTINGS_ENV)
+                .map(|(_, path)| PathBuf::from(path))
+                .or_else(|| std::env::var_os(SYSTEM_SETTINGS_ENV).map(PathBuf::from));
+            match turn_capped_settings(max_turns, inherited.as_deref()) {
+                Ok(settings) => {
+                    agent = agent
+                        .with_env_var(SYSTEM_SETTINGS_ENV, settings.to_string_lossy().into_owned())
+                        .with_scratch_file(settings);
+                }
+                Err(error) => tracing::warn!(
+                    %error,
+                    "the Gemini CLI's turn cap could not be written: only the attempt timeout \
+                     bounds this run"
+                ),
+            }
+        }
 
         Ok(Box::new(agent))
     }
@@ -126,10 +212,11 @@ impl ProviderAdapter for GeminiCliAdapter {
     }
 
     /// The Gemini CLI has no turn flag; its cap is the `model.maxSessionTurns`
-    /// setting, which this one-shot path does not write, so the cap is
-    /// advisory here.
+    /// setting, which this adapter writes into the run's own system settings
+    /// file (gap-130413). The CLI stops there, and the stop counts as a
+    /// turn-cap hit.
     fn turn_cap_enforcement(&self, _provider: &ProviderConfig) -> TurnCapEnforcement {
-        TurnCapEnforcement::Advisory
+        TurnCapEnforcement::Native
     }
 }
 
@@ -251,5 +338,82 @@ mod tests {
     fn gemini_cli_adapter_classify_server_error() {
         let err = GeminiCliAdapter.classify_error(503, &serde_json::Value::Null);
         assert!(matches!(err, ProviderError::ServerError(503)));
+    }
+
+    /// gap-130413: a run with a turn cap gets it as the Gemini CLI's
+    /// `model.maxSessionTurns`, in a system settings file of its own that
+    /// keeps the system settings it would otherwise read and a lower limit
+    /// they set, and is removed with the agent; the CLI's stop there is a
+    /// turn-cap hit.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_gemini_cli_attempt_runs_under_roko_s_turn_cap() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let tmp = tempfile::tempdir().expect("tempdir");
+        // Prints the settings file it was pointed at, and what is in it.
+        let script = tmp.path().join("gemini-fake.sh");
+        std::fs::write(
+            &script,
+            "#!/bin/sh\ncat >/dev/null\nprintf '%s\\n' \"$GEMINI_CLI_SYSTEM_SETTINGS_PATH\"\ncat \"$GEMINI_CLI_SYSTEM_SETTINGS_PATH\"\n",
+        )
+        .expect("write fake gemini");
+        let mut permissions = std::fs::metadata(&script).expect("metadata").permissions();
+        permissions.set_mode(0o755);
+        std::fs::set_permissions(&script, permissions).expect("make executable");
+        let provider = gemini_cli_provider(Some(&script.display().to_string()));
+        let prompt = roko_core::Signal::builder(roko_core::Kind::Prompt)
+            .body(roko_core::Body::text("hi"))
+            .build();
+        let run = |options: AgentOptions| {
+            let provider = provider.clone();
+            let prompt = prompt.clone();
+            async move {
+                let agent = GeminiCliAdapter
+                    .create_agent(&provider, &gemini_cli_model(), &options)
+                    .expect("create agent");
+                let result = agent.run(&prompt, &roko_core::Context::now()).await;
+                assert!(result.success, "{:?}", result.output.body.as_text());
+                let text = result.output.body.as_text().expect("output").to_string();
+                drop(agent);
+                let (path, settings) = text.split_once('\n').expect("path, then settings");
+                let settings: Value = serde_json::from_str(settings).expect("settings JSON");
+                (PathBuf::from(path), settings)
+            }
+        };
+
+        let (path, settings) = run(AgentOptions {
+            max_turns: Some(7),
+            ..AgentOptions::default()
+        })
+        .await;
+        assert_eq!(settings["model"]["maxSessionTurns"], 7, "{settings}");
+        assert!(!path.exists(), "removed with the agent: {}", path.display());
+
+        let system = tmp.path().join("system-settings.json");
+        std::fs::write(
+            &system,
+            r#"{"general": {"vimMode": true}, "model": {"maxSessionTurns": 3}}"#,
+        )
+        .expect("write system settings");
+        let (_, settings) = run(AgentOptions {
+            max_turns: Some(7),
+            env: vec![(
+                SYSTEM_SETTINGS_ENV.to_string(),
+                system.display().to_string(),
+            )],
+            ..AgentOptions::default()
+        })
+        .await;
+        assert_eq!(settings["model"]["maxSessionTurns"], 3, "{settings}");
+        assert_eq!(settings["general"]["vimMode"], true, "{settings}");
+
+        let stop = "exit 53: Reached max session turns for this session. Increase the number of \
+                    turns by specifying maxSessionTurns in settings.json.";
+        assert!(super::super::error_classify::detect_turn_cap(stop).is_some());
+        assert_eq!(
+            GeminiCliAdapter.turn_cap_enforcement(&provider),
+            TurnCapEnforcement::Native
+        );
     }
 }

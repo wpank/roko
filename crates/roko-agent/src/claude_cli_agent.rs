@@ -810,6 +810,9 @@ impl ClaudeCliAgent {
             .arg("--verbose")
             .arg("--output-format")
             .arg("stream-json")
+            // Each message's final usage, and its deltas, as it streams: what
+            // the run spends while it runs (bug-a877bf).
+            .arg("--include-partial-messages")
             .arg("--model")
             .arg(&self.model)
             .arg("--effort")
@@ -932,11 +935,13 @@ impl ClaudeCliAgent {
                 continue;
             };
             let kind = event.get("type").and_then(Value::as_str);
-            if kind == Some("assistant") {
+            if matches!(kind, Some("assistant" | "stream_event")) {
                 streamed.observe(&event);
                 continue;
             }
             if kind == Some("system") {
+                // A thinking estimate counts toward a cut-short message.
+                streamed.observe(&event);
                 // The `init` event names the CLI's version (backlog 6105).
                 if let Some(version) = ["claude_code_version", "version"]
                     .iter()
@@ -1306,12 +1311,19 @@ impl ClaudeCliAgent {
     /// - `user` messages with `tool_result` blocks (older CLI format) →
     ///   `ToolResult`, with content flattened to a single text string.
     /// - Either result's `is_error` mark → the `ToolResult`'s `is_error`.
-    /// - partial-message deltas ([`Self::delta_kind`]) → `TextDelta` or
-    ///   `ReasoningDelta`.
+    /// - a bare `content_block_delta` line ([`Self::delta_kind`]) →
+    ///   `TextDelta` or `ReasoningDelta`.
+    ///
+    /// The `stream_event`s of `--include-partial-messages`, which roko asks
+    /// for to count what a message spends while it streams (bug-a877bf), add
+    /// none: a message's text reaches the stream whole, from its `assistant`
+    /// event, as watchers that read a text event as a turn expect, and its
+    /// deltas reach it as usage updates ([`StreamedMessages::observe_live`]),
+    /// which are progress too.
     fn event_kinds_from_value(event: &Value) -> Vec<StreamEventKind> {
         let mut events = Vec::new();
         match event.get("type").and_then(Value::as_str) {
-            Some("content_block_delta" | "stream_event") => {
+            Some("content_block_delta") => {
                 events.extend(Self::delta_kind(event));
             }
             Some("assistant") => {
@@ -1417,15 +1429,9 @@ impl ClaudeCliAgent {
         events
     }
 
-    /// The text or reasoning a partial-message delta carries: a bare
-    /// `content_block_delta` line, or one wrapped in the `stream_event` of
-    /// `--include-partial-messages`. Deltas are progress, which the stall
-    /// watchdog reads (bug-2aa55f).
+    /// The text or reasoning a bare `content_block_delta` line carries.
+    /// Deltas are progress, which the stall watchdog reads (bug-2aa55f).
     fn delta_kind(event: &Value) -> Option<StreamEventKind> {
-        let event = match event.get("type").and_then(Value::as_str) {
-            Some("stream_event") => event.get("event")?,
-            _ => event,
-        };
         if event.get("type").and_then(Value::as_str) != Some("content_block_delta") {
             return None;
         }
@@ -2044,13 +2050,37 @@ impl StreamUsage {
     }
 }
 
-/// Usage of the API messages a run streamed as stream-json `assistant`
-/// events. The CLI emits one event per content block, each repeating its
-/// message's usage, so a message id counts once (its largest values).
+/// Characters per output token in the estimate a message's partial deltas
+/// give its output until its final usage arrives (bug-a877bf). Claude's
+/// tokens average fewer characters than this, so the estimate stays under
+/// the count.
+const STREAMED_CHARS_PER_TOKEN: usize = 4;
+
+/// How far a message's estimated output must grow, in tokens, before the
+/// live stream hears of it again: a long reply sends tens of usage updates,
+/// not one per delta.
+const STREAMED_TOKENS_PER_REPORT: u32 = 32;
+
+/// Usage of the API messages a run streamed. The CLI emits one `assistant`
+/// event per content block, each repeating its message's usage as it stood
+/// when the message started, so a message id counts once (its largest
+/// values), and its output is only the first few tokens. With
+/// `--include-partial-messages` each message also streams as `stream_event`s
+/// (bug-a877bf): `message_start` with its id and input usage; the deltas of
+/// its text, tool input and thinking, which with the CLI's own running
+/// thinking estimate (`system`/`thinking_tokens`; most thinking streams
+/// summarised or not at all) estimate its output while it streams; and
+/// `message_delta` with its final usage, which settles it.
 #[derive(Debug, Default)]
 struct StreamedMessages {
     messages: Vec<StreamedMessage>,
     by_id: HashMap<String, usize>,
+    /// The message each loop streams partially, by the loop's
+    /// `parent_tool_use_id` (`None` for the main loop): its deltas and its
+    /// final usage do not name it.
+    open: HashMap<Option<String>, usize>,
+    /// The totals the live stream last heard.
+    reported: StreamUsage,
 }
 
 #[derive(Debug, Default)]
@@ -2064,9 +2094,46 @@ struct StreamedMessage {
     /// does not: a Claude Code session in print mode writes 1-hour caches
     /// (bug-acfced).
     cache_write_5m: Option<u32>,
+    /// What its partial deltas streamed of its text and tool input, in
+    /// characters.
+    text_chars: usize,
+    /// What its partial deltas streamed of its thinking, in characters.
+    thinking_chars: usize,
+    /// The CLI's own running estimate of its thinking tokens.
+    thinking_estimate: u32,
+    /// Its final usage arrived (`message_delta`): its output count is exact.
+    settled: bool,
 }
 
 impl StreamedMessage {
+    /// Apply `change` to what it streamed: true when that grew its estimated
+    /// output a reporting step ([`STREAMED_TOKENS_PER_REPORT`]) before its
+    /// final usage settled it.
+    fn grow(&mut self, change: impl FnOnce(&mut Self)) -> bool {
+        let before = self.streamed_tokens() / STREAMED_TOKENS_PER_REPORT;
+        change(self);
+        !self.settled && self.streamed_tokens() / STREAMED_TOKENS_PER_REPORT > before
+    }
+
+    /// Its output so far: the count its final usage reports once it has
+    /// one, else the larger of its reported count and what it streamed.
+    fn output_tokens(&self) -> u32 {
+        if self.settled {
+            return self.usage.output_tokens;
+        }
+        self.usage.output_tokens.max(self.streamed_tokens())
+    }
+
+    /// The output its partial deltas and the CLI's thinking estimate give:
+    /// its text and tool input at [`STREAMED_CHARS_PER_TOKEN`], and its
+    /// thinking at that or the CLI's estimate, whichever is larger.
+    fn streamed_tokens(&self) -> u32 {
+        let tokens =
+            |chars: usize| u32::try_from(chars / STREAMED_CHARS_PER_TOKEN).unwrap_or(u32::MAX);
+        tokens(self.text_chars)
+            .saturating_add(tokens(self.thinking_chars).max(self.thinking_estimate))
+    }
+
     /// What this message's cache writes cost per million under `pricing`:
     /// its 5-minute writes at the table's write price, the others at the
     /// 1-hour price, which Claude Code's print mode writes (bug-acfced).
@@ -2085,13 +2152,44 @@ impl StreamedMessage {
 }
 
 impl StreamedMessages {
-    fn observe(&mut self, event: &Value) {
-        let Some(message) = event.get("message") else {
-            return;
+    /// Take in `event`: true when it changed the run's usage enough for the
+    /// live stream to hear of it.
+    fn observe(&mut self, event: &Value) -> bool {
+        match event.get("type").and_then(Value::as_str) {
+            Some("assistant") => event
+                .get("message")
+                .and_then(|message| self.observe_message(message, event))
+                .is_some(),
+            Some("stream_event") => self.observe_partial(event),
+            Some("system") => self.observe_thinking_estimate(event),
+            _ => false,
+        }
+    }
+
+    /// Take in the CLI's running estimate of the thinking tokens of the
+    /// main loop's message (`system`/`thinking_tokens`): true when it grew
+    /// that message's estimated output a reporting step.
+    fn observe_thinking_estimate(&mut self, event: &Value) -> bool {
+        if event.get("subtype").and_then(Value::as_str) != Some("thinking_tokens") {
+            return false;
+        }
+        let (Some(&index), Some(estimate)) = (
+            self.open.get(&None),
+            event.get("estimated_tokens").and_then(Value::as_u64),
+        ) else {
+            return false;
         };
-        let Some(usage) = message.get("usage").filter(|usage| usage.is_object()) else {
-            return;
-        };
+        let estimate = u32::try_from(estimate).unwrap_or(u32::MAX);
+        self.messages[index].grow(|message| {
+            message.thinking_estimate = message.thinking_estimate.max(estimate);
+        })
+    }
+
+    /// Take in an API `message` that `event` streamed, an `assistant`
+    /// event's or a `message_start`'s: the index of its entry, `None` when
+    /// it carries no usage.
+    fn observe_message(&mut self, message: &Value, event: &Value) -> Option<usize> {
+        let usage = message.get("usage").filter(|usage| usage.is_object())?;
         let index = match message.get("id").and_then(Value::as_str) {
             Some(id) => *self.by_id.entry(id.to_string()).or_insert_with(|| {
                 self.messages.push(StreamedMessage::default());
@@ -2134,19 +2232,99 @@ impl StreamedMessages {
                 .map_or(0, |count| u32::try_from(count).unwrap_or(u32::MAX));
             streamed.cache_write_5m = Some(streamed.cache_write_5m.unwrap_or(0).max(five));
         }
+        Some(index)
     }
 
-    /// [`Self::observe`] `event` and, when it changed what the run streamed,
-    /// return the new totals for the live stream: the run's usage so far,
-    /// which the stall watchdog records for a run it drops (bug-aa2044).
+    /// Take in a `stream_event` of `--include-partial-messages` (bug-a877bf):
+    /// true when it changed the run's usage enough to report.
+    fn observe_partial(&mut self, event: &Value) -> bool {
+        let Some(inner) = event.get("event") else {
+            return false;
+        };
+        let parent = event
+            .get("parent_tool_use_id")
+            .and_then(Value::as_str)
+            .map(str::to_string);
+        match inner.get("type").and_then(Value::as_str) {
+            Some("message_start") => {
+                let Some(index) = inner
+                    .get("message")
+                    .and_then(|message| self.observe_message(message, event))
+                else {
+                    return false;
+                };
+                self.open.insert(parent, index);
+                true
+            }
+            Some("content_block_delta") => {
+                let (Some(&index), Some(delta)) = (self.open.get(&parent), inner.get("delta"))
+                else {
+                    return false;
+                };
+                let chars = |keys: &[&str]| -> usize {
+                    keys.iter()
+                        .filter_map(|key| delta.get(*key).and_then(Value::as_str))
+                        .map(|text| text.chars().count())
+                        .sum()
+                };
+                let (text, thinking) = (chars(&["text", "partial_json"]), chars(&["thinking"]));
+                self.messages[index].grow(|message| {
+                    message.text_chars += text;
+                    message.thinking_chars += thinking;
+                })
+            }
+            Some("message_delta") => {
+                let (Some(&index), Some(usage)) = (
+                    self.open.get(&parent),
+                    inner.get("usage").filter(|usage| usage.is_object()),
+                ) else {
+                    return false;
+                };
+                let count = |keys: &[&str]| {
+                    ClaudeCliAgent::stream_usage_u64(usage, keys)
+                        .map(|count| u32::try_from(count).unwrap_or(u32::MAX))
+                };
+                let message = &mut self.messages[index];
+                let tokens = &mut message.usage;
+                tokens.input_tokens = tokens
+                    .input_tokens
+                    .max(count(&["input_tokens"]).unwrap_or(0));
+                tokens.cache_create_tokens = tokens.cache_create_tokens.max(
+                    count(&["cache_creation_input_tokens", "cache_creation_tokens"]).unwrap_or(0),
+                );
+                tokens.cache_read_tokens = tokens
+                    .cache_read_tokens
+                    .max(count(&["cache_read_input_tokens", "cache_read_tokens"]).unwrap_or(0));
+                // The message's whole output, thinking included: exact.
+                if let Some(output) = count(&["output_tokens"]) {
+                    tokens.output_tokens = output;
+                    message.settled = true;
+                }
+                true
+            }
+            Some("message_stop") => {
+                self.open.remove(&parent);
+                false
+            }
+            _ => false,
+        }
+    }
+
+    /// [`Self::observe`] `event` and, when the run's totals changed since the
+    /// live stream last heard them, return them: the run's usage so far,
+    /// which the stall watchdog records for a run it drops (bug-aa2044) and
+    /// the plan budget's watch prices (gap-ca1c92).
     fn observe_live(&mut self, event: &Value, fallback_model: &str) -> Option<Usage> {
-        if event.get("type").and_then(Value::as_str) != Some("assistant") {
+        if !self.observe(event) {
             return None;
         }
-        let before = self.stream_usage(fallback_model);
-        self.observe(event);
-        let after = self.stream_usage(fallback_model);
-        (after != before).then(|| ClaudeCliAgent::usage_observation(&after, 0).into())
+        let usage = self.stream_usage(fallback_model);
+        if usage == self.reported {
+            return None;
+        }
+        let observed = ClaudeCliAgent::usage_observation(&usage, 0).into();
+        self.reported = usage;
+        Some(observed)
     }
 
     /// The streamed totals as [`UsageSource::Estimated`] usage, each message
@@ -2162,6 +2340,7 @@ impl StreamedMessages {
         let mut cost_usd = None;
         for message in &self.messages {
             let mut usage = message.usage;
+            usage.output_tokens = message.output_tokens();
             input += u64::from(usage.input_tokens);
             output += u64::from(usage.output_tokens);
             cache_creation += u64::from(usage.cache_create_tokens);
@@ -4590,32 +4769,29 @@ printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"total_cost
         assert!(matches!(&kinds[0], StreamEventKind::TextDelta(t) if t == "hello"));
     }
 
-    /// Partial-message deltas, bare or wrapped in a `stream_event`, reach a
-    /// streaming receiver as text and reasoning deltas (bug-2aa55f).
+    /// A bare partial-message delta reaches a streaming receiver as a text or
+    /// reasoning delta (bug-2aa55f). The `stream_event`s of
+    /// `--include-partial-messages` reach it as usage updates instead
+    /// (bug-a877bf): their message's text arrives whole from its `assistant`
+    /// event.
     #[test]
     fn event_kinds_partial_message_deltas() {
-        let cases = [
-            serde_json::json!({"type": "content_block_delta", "delta": {"text": "hi"}}),
-            serde_json::json!({
-                "type": "stream_event",
-                "event": {"type": "content_block_delta", "delta": {"type": "text_delta", "text": "hi"}}
-            }),
-        ];
-        for event in cases {
-            let kinds = ClaudeCliAgent::event_kinds_from_value(&event);
-            assert!(
-                matches!(kinds.as_slice(), [StreamEventKind::TextDelta(t)] if t == "hi"),
-                "{event}"
-            );
-        }
+        let bare = serde_json::json!({"type": "content_block_delta", "delta": {"text": "hi"}});
+        let kinds = ClaudeCliAgent::event_kinds_from_value(&bare);
+        assert!(matches!(kinds.as_slice(), [StreamEventKind::TextDelta(t)] if t == "hi"));
         let thinking = serde_json::json!({
-            "type": "stream_event",
-            "event": {"type": "content_block_delta", "delta": {"type": "thinking_delta", "thinking": "hmm"}}
+            "type": "content_block_delta",
+            "delta": {"type": "thinking_delta", "thinking": "hmm"}
         });
         let kinds = ClaudeCliAgent::event_kinds_from_value(&thinking);
         assert!(matches!(kinds.as_slice(), [StreamEventKind::ReasoningDelta(t)] if t == "hmm"));
-        let start = serde_json::json!({"type": "stream_event", "event": {"type": "message_start"}});
-        assert!(ClaudeCliAgent::event_kinds_from_value(&start).is_empty());
+        for inner in [
+            serde_json::json!({"type": "content_block_delta", "delta": {"type": "text_delta", "text": "hi"}}),
+            serde_json::json!({"type": "message_start"}),
+        ] {
+            let wrapped = serde_json::json!({"type": "stream_event", "event": inner});
+            assert!(ClaudeCliAgent::event_kinds_from_value(&wrapped).is_empty());
+        }
     }
 
     #[test]
@@ -4726,6 +4902,170 @@ printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"total_cost
     }
 
     // ── run_streaming integration tests ───────────────────────────────
+
+    /// bug-a877bf: a real Claude Code 2.1.282 run (Haiku 4.5: two messages,
+    /// a Read call between them), captured with roko's flags. Its `assistant`
+    /// events report 6 and 1 output tokens; each message's final usage
+    /// (`message_delta`) reports 182 and 500, thinking included. Fed as the
+    /// live stream sees it, the estimate reaches the CLI's own cost before
+    /// the `result` event, with far fewer updates than deltas; the
+    /// `assistant` events alone count 7 output tokens.
+    #[test]
+    fn a_streamed_claude_cli_estimate_counts_a_message_s_whole_output() {
+        let stream = include_str!("../tests/fixtures/claude-cli/partial_messages_haiku.jsonl");
+        let events: Vec<Value> = stream
+            .lines()
+            .map(|line| serde_json::from_str(line).expect("a stream-json line"))
+            .collect();
+        let kind = |event: &Value| {
+            event
+                .get("type")
+                .and_then(Value::as_str)
+                .map(str::to_string)
+        };
+        let mut streamed = StreamedMessages::default();
+        let mut last = None;
+        let mut reports = 0;
+        for event in events
+            .iter()
+            .take_while(|event| kind(event).as_deref() != Some("result"))
+        {
+            if let Some(usage) = streamed.observe_live(event, "claude-haiku-4-5") {
+                reports += 1;
+                last = Some(usage);
+            }
+        }
+        let result = events
+            .iter()
+            .find(|event| kind(event).as_deref() == Some("result"))
+            .expect("the run's result");
+        let last = last.expect("the run streamed usage");
+        let reported = |key: &str| result["usage"][key].as_u64().expect("reported usage");
+        assert_eq!(u64::from(last.input_tokens), reported("input_tokens"));
+        assert_eq!(u64::from(last.output_tokens), reported("output_tokens"));
+        let total = result["total_cost_usd"]
+            .as_f64()
+            .expect("the CLI's own cost");
+        let estimate = f64::from(last.cost_usd);
+        assert!(
+            (estimate - total).abs() <= total * 0.01,
+            "estimated ${estimate}, the CLI reported ${total}"
+        );
+        let deltas = events
+            .iter()
+            .filter(|event| {
+                event.pointer("/event/type").and_then(Value::as_str) == Some("content_block_delta")
+            })
+            .count();
+        assert!(
+            reports * 2 < deltas,
+            "{reports} usage updates for {deltas} deltas"
+        );
+
+        let mut assistant_only = StreamedMessages::default();
+        for event in events
+            .iter()
+            .filter(|event| kind(event).as_deref() == Some("assistant"))
+        {
+            assistant_only.observe(event);
+        }
+        assert_eq!(
+            assistant_only
+                .stream_usage("claude-haiku-4-5")
+                .output_tokens,
+            Some(7)
+        );
+    }
+
+    /// bug-a877bf: a message cut short before its final usage still counts
+    /// what it streamed (its deltas' characters give its output a floor), and
+    /// its final usage, when it comes, settles the count.
+    #[test]
+    fn a_message_cut_short_counts_the_output_it_streamed() {
+        let partial = |inner: Value| serde_json::json!({ "type": "stream_event", "event": inner, "parent_tool_use_id": null });
+        let mut streamed = StreamedMessages::default();
+        streamed.observe(&partial(serde_json::json!({
+            "type": "message_start",
+            "message": {
+                "id": "msg_1",
+                "model": "claude-sonnet-4-6",
+                "usage": { "input_tokens": 100, "output_tokens": 1 }
+            }
+        })));
+        streamed.observe(&partial(serde_json::json!({
+            "type": "content_block_delta",
+            "index": 0,
+            "delta": { "type": "text_delta", "text": "x".repeat(4_000) }
+        })));
+        let output =
+            |streamed: &StreamedMessages| streamed.stream_usage("claude-sonnet-4-6").output_tokens;
+        assert_eq!(output(&streamed), Some(1_000));
+        streamed.observe(&partial(serde_json::json!({
+            "type": "message_delta",
+            "usage": { "output_tokens": 900 }
+        })));
+        assert_eq!(output(&streamed), Some(900), "the final usage settles it");
+    }
+
+    /// bug-a877bf: with partial messages, a message's text reaches the live
+    /// stream once and whole, from its `assistant` event, and its deltas as
+    /// usage updates: the final one carries its exact output.
+    #[tokio::test]
+    #[cfg(unix)]
+    async fn partial_messages_send_their_text_live_once() {
+        use tokio::sync::mpsc;
+        let tmp = tempdir().unwrap();
+        let script = tmp.path().join("claude-fake.sh");
+        let script_body = r#"#!/bin/sh
+cat >/dev/null
+printf '%s\n' '{"type":"stream_event","event":{"type":"message_start","message":{"id":"msg_1","model":"claude-sonnet-4-6","usage":{"input_tokens":10,"output_tokens":1}}},"parent_tool_use_id":null}'
+printf '%s\n' '{"type":"stream_event","event":{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"hel"}},"parent_tool_use_id":null}'
+printf '%s\n' '{"type":"stream_event","event":{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"lo"}},"parent_tool_use_id":null}'
+printf '%s\n' '{"type":"assistant","message":{"id":"msg_1","model":"claude-sonnet-4-6","content":[{"type":"text","text":"hello"}],"usage":{"input_tokens":10,"output_tokens":1}},"parent_tool_use_id":null}'
+printf '%s\n' '{"type":"stream_event","event":{"type":"message_delta","usage":{"output_tokens":2}},"parent_tool_use_id":null}'
+printf '%s\n' '{"type":"stream_event","event":{"type":"message_stop"},"parent_tool_use_id":null}'
+printf '%s\n' '{"type":"assistant","message":{"id":"msg_2","model":"claude-sonnet-4-6","content":[{"type":"text","text":"whole"}],"usage":{"input_tokens":12,"output_tokens":1}},"parent_tool_use_id":null}'
+printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"result":"hello whole"}'
+"#;
+        fs::write(&script, script_body).unwrap();
+        {
+            let mut perms = fs::metadata(&script).unwrap().permissions();
+            std::os::unix::fs::PermissionsExt::set_mode(&mut perms, 0o755);
+            fs::set_permissions(&script, perms).unwrap();
+        }
+
+        let agent = ClaudeCliAgent::new(&script, tmp.path(), "claude-test-model");
+        let (tx, mut rx) = mpsc::channel(64);
+        let result = agent
+            .run_streaming(&prompt("hi"), &Context::now(), tx)
+            .await;
+        assert!(result.success, "{:?}", result.output.body.as_text());
+        let mut texts = Vec::new();
+        let mut outputs = Vec::new();
+        while let Ok(event) = rx.try_recv() {
+            match event.kind {
+                StreamEventKind::TextDelta(text) => texts.push(text),
+                StreamEventKind::Usage(usage) => outputs.push(usage.output_tokens),
+                _ => {}
+            }
+        }
+        assert_eq!(texts, ["hello", "whole"]);
+        assert_eq!(outputs.last(), Some(&3), "msg_1's final 2, msg_2's 1");
+    }
+
+    /// bug-a877bf: every run asks for partial messages.
+    #[test]
+    fn a_run_asks_for_partial_messages() {
+        let command = ClaudeCliAgent::new("claude", ".", "claude-test-model")
+            .build_command()
+            .expect("build command");
+        assert!(
+            command
+                .as_std()
+                .get_args()
+                .any(|arg| arg == "--include-partial-messages")
+        );
+    }
 
     #[tokio::test]
     #[cfg(unix)]

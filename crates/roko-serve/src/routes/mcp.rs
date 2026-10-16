@@ -884,13 +884,17 @@ async fn operation_state(state: &AppState, id: &str) -> Option<Value> {
 }
 
 /// Refuse a run a chat host starts while the workspace has no data-model
-/// boundary and does not allow running without one (9117), or while no
-/// model its tasks can be routed to runs in roko's own tool loop
-/// (gap-cf427e): the host reads why, before anything is queued and before
-/// the plan is looked up. The error's details carry the machine-readable
-/// codes, `refusal` (the first) and `refusals` (all that apply).
+/// boundary and does not allow running without one (9117), while no model
+/// its tasks can be routed to runs in roko's own tool loop (gap-cf427e), or
+/// while none of those has a price its `max_usd` could count (gap-8548e3):
+/// the host reads why, before anything is queued and before the plan is
+/// looked up. The error's details carry the machine-readable codes,
+/// `refusal` (the first) and `refusals` (all that apply).
 fn refuse_unscreened_run(state: &AppState) -> Result<(), ApiError> {
-    match state.load_roko_config().chat_run_refusal() {
+    let config = state.load_roko_config();
+    let prices =
+        roko_core::pricing_snapshot::PriceSnapshot::shared(&config.pricing, &state.workdir);
+    match config.chat_run_refusal(prices.as_deref()) {
         Some(refusal) => Err(ApiError {
             details: Some(Box::new(json!({
                 "refusal": refusal.code(),
@@ -1116,7 +1120,8 @@ mod tests {
     }
 
     /// Add `api-model`, on an OpenAI-compatible API whose key `config`'s
-    /// `[agent] env` sets, so roko's own tool loop can run it.
+    /// `[agent] env` sets, so roko's own tool loop can run it, with a price, so
+    /// a chat run's `max_usd` can count its calls (gap-8548e3).
     fn add_tool_loop_model(config: &mut RokoConfig) {
         use roko_core::agent::ProviderKind;
         use roko_core::config::schema::{ModelProfile, ProviderConfig};
@@ -1140,6 +1145,8 @@ mod tests {
                 provider: "api".to_string(),
                 slug: "api-model-1".to_string(),
                 supports_tools: true,
+                cost_input_per_m: Some(1.0),
+                cost_output_per_m: Some(2.0),
                 ..ModelProfile::default()
             },
         );
@@ -1881,6 +1888,41 @@ mod tests {
         let (_, body) = post_mcp(&open, &call(3, "run_prompt", prompt), &[]).await;
         assert_eq!(body["result"]["isError"], false, "{body}");
         runtime.gate.add_permits(1);
+    }
+
+    /// gap-8548e3: a chat host's run is held to its `max_usd`, so it is
+    /// refused before anything is queued while no model it can run on has a
+    /// price, with `no_price` as its machine-readable refusal, and runs once
+    /// one has.
+    #[tokio::test]
+    async fn chat_run_refused_without_a_priced_model() {
+        let mut config = cli_only_config();
+        config.serve.mcp.allow_without_data_llm = true;
+        add_tool_loop_model(&mut config);
+        let unpriced = config.models.get_mut("api-model").expect("api-model");
+        unpriced.cost_input_per_m = None;
+        unpriced.cost_output_per_m = None;
+        let runtime = Arc::new(crate::runtime::NoOpRuntime);
+        let (_dir, state, open) = state_and_router(runtime, config.clone());
+
+        let probe = json!({ "plan_id": "roko-doctor-probe-1a2b", "max_usd": 0.01 });
+        let (_, body) = post_mcp(&open, &call(1, "plan_run", probe.clone()), &[]).await;
+        let error = &body["result"]["structuredContent"]["error"];
+        assert_eq!(error["code"], "forbidden", "{body}");
+        assert_eq!(error["data"]["refusal"], "no_price", "{body}");
+        assert_eq!(error["data"]["refusals"], json!(["no_price"]));
+        let text = body["result"]["content"][0]["text"]
+            .as_str()
+            .unwrap_or_default();
+        assert!(text.contains("(api-model)"), "{text}");
+        assert!(text.contains("cost_input_per_m"), "{text}");
+        assert!(state.active_plans.read().await.is_empty());
+
+        add_tool_loop_model(&mut config);
+        state.store_roko_config(config);
+        let (_, body) = post_mcp(&open, &call(2, "plan_run", probe), &[]).await;
+        let error = &body["result"]["structuredContent"]["error"];
+        assert_eq!(error["code"], "not_found", "{body}");
     }
 
     /// gap-cf427e: a chat host's run stages its outbound tool calls, which a

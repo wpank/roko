@@ -536,6 +536,24 @@ pub const DEFAULT_CACHE_WRITE_MULTIPLIER: f64 = 1.25;
 /// <https://docs.perplexity.ai/getting-started/pricing>.
 pub const PERPLEXITY_SEARCH_REQUEST_USD: f64 = 0.005;
 
+/// Whether roko has a rate for `model_slug`, as a run prices its calls
+/// (backlog 2114): the price `snapshot`'s row, the `profile`'s per-million
+/// prices, or the model's built-in pricing ([`builtin_pricing`]). A rate of 0
+/// is free, and still a rate (backlog 2109). A budget cap can count only the
+/// calls of a model that has one (gap-8548e3).
+#[must_use]
+pub fn model_has_price(
+    snapshot: Option<&crate::pricing_snapshot::PriceSnapshot>,
+    profile: Option<&crate::config::provider::ModelProfile>,
+    model_slug: &str,
+) -> bool {
+    snapshot.is_some_and(|snapshot| snapshot.row(model_slug).is_some())
+        || profile.is_some_and(|profile| {
+            profile.cost_input_per_m.is_some() || profile.cost_output_per_m.is_some()
+        })
+        || builtin_pricing(model_slug).is_some()
+}
+
 /// Look up pricing for a model slug.
 ///
 /// Tries an exact match first, then a table key the slug is a snapshot of

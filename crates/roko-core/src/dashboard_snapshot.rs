@@ -601,6 +601,43 @@ pub enum DashboardEvent {
         /// Milliseconds the step ran.
         elapsed_ms: u64,
     },
+    /// A plan's delivery started (gap-4f6cbe): its verified work is merged
+    /// into `target`, the run's batch branch, and the plan's regression
+    /// check then runs on the merge. A `delivery_finished` ends it.
+    DeliveryStarted {
+        plan_id: String,
+        /// The delivery's id, `<run>:<plan>`; the delivery of the verified
+        /// part of a plan that did not finish ends in `:partial`.
+        delivery_id: String,
+        /// The branch the work is merged into.
+        target: String,
+        /// The branch the work is on, `roko/plan/<plan>`.
+        branch: String,
+        /// The commit delivered: the verified tip of `branch`.
+        commit: String,
+    },
+    /// A plan's delivery ended (gap-4f6cbe).
+    DeliveryFinished {
+        plan_id: String,
+        delivery_id: String,
+        target: String,
+        /// How it ended: `delivered`; `conflict` (the merge failed);
+        /// `regression_failed` (the check on the merge failed);
+        /// `cancelled` (a stop cut the check short: the delivery stopped,
+        /// it did not fail); or `terminal_failed` (it could not finish).
+        state: String,
+        /// The merge, once it was made. A run's batch takes a
+        /// `regression_failed` or `cancelled` merge back out of `target`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        merge_commit: Option<String>,
+        /// Why it was not delivered.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        reason: Option<String>,
+        /// What stopped a `cancelled` delivery, such as `cancel` or
+        /// `SIGINT`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        stopped_by: Option<String>,
+    },
     /// Daimon affect state updated after a task turn.
     AffectUpdated {
         /// PAD pleasure dimension [-1.0, 1.0].
@@ -2733,6 +2770,36 @@ impl DashboardSnapshot {
                         "plan check {step}/{steps} {verdict}: {name} after {} s",
                         elapsed_ms / 1_000
                     ),
+                );
+            }
+            DashboardEvent::DeliveryStarted {
+                plan_id, target, ..
+            } => {
+                self.push_event_log(
+                    ts,
+                    "delivery_started".to_string(),
+                    plan_id.clone(),
+                    String::new(),
+                    format!("delivering into {target}"),
+                );
+            }
+            DashboardEvent::DeliveryFinished {
+                plan_id,
+                target,
+                state,
+                reason,
+                ..
+            } => {
+                let message = match reason {
+                    Some(reason) => format!("delivery into {target} {state}: {reason}"),
+                    None => format!("delivery into {target} {state}"),
+                };
+                self.push_event_log(
+                    ts,
+                    "delivery_finished".to_string(),
+                    plan_id.clone(),
+                    String::new(),
+                    message,
                 );
             }
             DashboardEvent::AffectUpdated {

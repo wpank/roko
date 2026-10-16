@@ -2,21 +2,32 @@
 id = "gap-1c990a"
 kind = "gap"
 title = "Eleven answered backlog decisions fail their own verifies because nobody wrote the outcome rows they look for (5101, 7102, 7103, 9105-9110, 9301, 9305)"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p3"
 goal = "tooling"
 size = "S"
 subsystem = ["programme/decisions"]
 created = 2026-10-15
-updated = 2026-10-15
-last_verified = 2026-10-15
+updated = 2026-10-16
+last_verified = 2026-10-16
+last_verified_rev = "5e32264ce"
 source = "status-quo-2026-10-15#finding-36"
 anchors = ["tmp/cybernetic-harness/DECISIONS.md", "tmp/backlog/2026-10-02-complete-and-wire/DECISIONS.md", "tmp/backlog/2026-10-02-complete-and-wire/9301-confirm-the-showcase-design-defaults-d23.md", "tmp/backlog/2026-10-02-complete-and-wire/9305-owner-registry-and-identity-for-public-artefacts.md"]
 links = { depends_on = [], blocks = [], related = [], supersedes = [], duplicate_of = "" }
 
 [[verify]]
 command = "F=tmp/cybernetic-harness/DECISIONS.md; B=tmp/backlog/2026-10-02-complete-and-wire; grep -q 'S03 §9.10' $F && grep -F '| D6 |' $F | grep -q Decided && grep -F '| D13 |' $F | grep -q Decided && grep -F '| D7 |' $F | grep -i audit | grep -q Decided && grep -qE '^[|] *DEC-RUNQ [|]' $F && grep -qE '^[|] *T06-2 [|]' $F && grep -qE '^[|] *T06-3 [|]' $F && grep -qE '^[|] *T06-4 [|]' $F && grep -qE '^[|] *T06-5 [|]' $F && grep -qE '^[|] *DEC10 [|]' $F && grep -q '^## Outcome' $B/9301-confirm-the-showcase-design-defaults-d23.md && grep -q '^## Outcome' $B/9305-owner-registry-and-identity-for-public-artefacts.md"
+
+[closed]
+at = 2026-10-16
+at_ts = "2026-10-16T14:06:56Z"
+executor = "claude-agent"
+via = "work-batch"
+size = "S"
+claimed_at = "2026-10-16T08:07:12Z"
+forced = false
+evidence = "Recorded the eleven decisions' answers where their verifies read them. tmp/cybernetic-harness/DECISIONS.md (untracked, rebuilt in this worktree from the main checkout's copy): marked D6 and D13 Decided (7102), added the audit half to D7 marked Decided (7103), and added a new 'Recorded from the backlog's answered decisions' table with rows D44 (5101, cites literal 'S03 §9.10'), DEC-RUNQ (9105), T06-2..T06-5 (9106-9109), and DEC10 (9110) -- each copied verbatim from tmp/backlog/2026-10-02-complete-and-wire/DECISIONS.md's Decided table and the eleven backlog task files' own [Decided (Will, 2026-10-02)] sections. Added a ## Outcome heading restating the front-matter outcome to 9301 and 9305 (also untracked). No new decision made; every answer traces to an existing decision=accepted task file. Ran the item's combined [[verify]] (12 grep checks) directly: all 12 passed."
 +++
 
 ## Problem

@@ -2369,13 +2369,24 @@ async fn run_graph_plan_body(
     // ── Persist the self-model (S04, 6129) ──────────────────────────
     //
     // Save what the run's settled verdicts taught the self-model, atomically,
-    // so the next run, a resumed one included, loads it. A frozen run
-    // registered no outcome sink, so it has nothing to save.
+    // and add the run's settled forecasts to the calibration window kept
+    // beside it, so the next run, a resumed one included, loads both: no
+    // single run settles the gate's W outcomes (gap-b38ed2). Then export the
+    // gate's report on the window, the `ev.m3.*` values S06 and the
+    // dashboard read (`learn/self-model/calibration.json`, S04 §4.7). A
+    // frozen run loaded no self-model, so it saves and exports nothing.
     if !roko_config.learning.frozen
         && let Some(runtime) = &self_model
-        && let Err(err) = runtime.save()
     {
-        tracing::warn!(error = %err, "failed to persist the self-model state (non-fatal)");
+        if let Err(err) = runtime.save() {
+            tracing::warn!(error = %err, "failed to persist the self-model state (non-fatal)");
+        }
+        if let Err(err) = runtime.write_calibration(graph_layout.root()) {
+            tracing::warn!(
+                error = %err,
+                "failed to export the self-model's calibration (non-fatal)"
+            );
+        }
     }
 
     // ── M1, the ultrastable controller (S06, 8122) ───────────────────
@@ -6797,6 +6808,63 @@ max_retries = 0
         assert_eq!(
             shadow_model, off_model,
             "shadow forecasts; it never changes the route"
+        );
+    }
+
+    /// gap-b38ed2: a default plan run, in shadow, ends by exporting the calibration gate's
+    /// report on the window it keeps beside the self-model's state: the `ev.m3.*` values in
+    /// `learn/self-model/calibration.json`. The next run adds its attempt to that window, and
+    /// a frozen run writes no state, window or export.
+    #[cfg(unix)]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn plan_run_writes_calibration_json() {
+        use roko_learn::self_model::gate::{
+            CALIBRATION_FILE, CALIBRATION_SCHEMA, WINDOW_FILE_NAME,
+        };
+
+        let export = |dir: &Path| -> serde_json::Value {
+            let path = dir.join(".roko").join(CALIBRATION_FILE);
+            let text = std::fs::read_to_string(&path).expect("the run exports its calibration");
+            serde_json::from_str(&text).expect("the export is JSON")
+        };
+        let dir = verified_plan_set(&[("a", "a.txt", &[])], "");
+        let (exit_code, _, _) = run_plan_set(dir.path(), Some(1), None).await;
+        assert_eq!(exit_code, EXIT_SUCCESS);
+        let first = export(dir.path());
+        assert_eq!(first["schema_version"], CALIBRATION_SCHEMA, "{first}");
+        let version = first["predictor_version"].as_str().unwrap_or_default();
+        assert!(version.starts_with("m3-l1-"), "{first}");
+        assert_eq!(first["n"], 1, "the run's one labelled attempt: {first}");
+        for field in ["ev.m3.ece", "ev.m3.cal_in_large", "ev.m3.route_pass"] {
+            assert!(first.get(field).is_some(), "{field}: {first}");
+        }
+        let resolution = &first["ev.m3.resolution"];
+        assert!(resolution.get("bss").is_some() && resolution.get("auroc").is_some());
+        assert_eq!(first["eligible"], false, "{first}");
+        let reasons = first["reasons"].as_array().expect("the failed bounds");
+        let below = "n = 1, below the window of 100";
+        assert!(reasons.iter().any(|reason| reason == below), "{first}");
+
+        // The next run starts from the window the first one kept.
+        write_single_task_plan(dir.path(), "b", "b.txt", &[], Some("true"));
+        let (exit_code, _, _) = run_plan_set(dir.path(), Some(1), None).await;
+        assert_eq!(exit_code, EXIT_SUCCESS);
+        let second = export(dir.path());
+        assert_eq!(second["n"], 2, "{second}");
+        assert_eq!(second["predictor_version"], version, "{second}");
+        let state = dir
+            .path()
+            .join(roko_core::config::self_model::DEFAULT_STATE_PATH);
+        assert!(state.with_file_name(WINDOW_FILE_NAME).exists());
+
+        // A frozen run writes no learned state.
+        let frozen = verified_plan_set(&[("a", "a.txt", &[])], "");
+        let (exit_code, _, _) = run_plan_set_with(frozen.path(), Some(1), None, true, true).await;
+        assert_eq!(exit_code, EXIT_SUCCESS);
+        let self_model_dir = frozen.path().join(".roko/learn/self-model");
+        assert!(
+            !self_model_dir.exists(),
+            "a frozen run saves no state, window or export"
         );
     }
 

@@ -4,9 +4,10 @@
 //! Labels follow S01 §4.1 through `Label::of_verdict`, as the offline fit's do (bug-9099b7): a
 //! learning label of 1 or 0 is a gate label. Unverified, forced-accept, provider, infra and
 //! harness outcomes teach nothing, and neither does an attempt a provider failover ran on a
-//! substitute model, since nobody chose it. The plan runner saves the state when the run ends,
-//! and a resumed run loads it again. A frozen run registers no such sink (decision 2218). Late
-//! VS labels from S05 come in through [`SelfModelOutcomeSink::observe_label`].
+//! substitute model, since nobody chose it. The plan runner saves the state and the calibration
+//! window when the run ends, and the next run, a resumed one included, loads both again
+//! (gap-b38ed2). A frozen run registers no such sink (decision 2218). Late VS labels from S05
+//! come in through [`SelfModelOutcomeSink::observe_label`].
 
 use std::sync::Arc;
 
@@ -69,8 +70,10 @@ impl FeedbackSink for SelfModelOutcomeSink {
                 .ladder
                 .as_ref()
                 .is_some_and(|ladder| ladder.reason == LadderReason::SelfModel);
+            // Routing's `[models.*]` key, as the forecast names the candidate.
+            let requested = verdict.executed.model_requested.as_deref();
             self.runtime
-                .settle(unit, AttemptForecast { routed, ..forecast });
+                .settle(unit, AttemptForecast { routed, ..forecast }, requested);
         }
         Ok(())
     }
@@ -250,5 +253,71 @@ mod tests {
             2,
             "a late VS label is not another outcome"
         );
+    }
+
+    /// gap-b38ed2: the calibration window survives across runs. Each run loads the self-model
+    /// as a plan run does, settles 60 labelled attempts through the sink and saves: the first
+    /// leaves a window of 60, and the second one of 120 capped at the gate's W, which the next
+    /// load starts from. As in a plan run, each forecast names its candidate by the
+    /// `[models.*]` key routing asked for, while the verdict names the slug the provider
+    /// launched, and the window still scores it.
+    #[tokio::test]
+    async fn calibration_window_survives_across_runs() {
+        use roko_core::config::schema::RokoConfig;
+        use roko_core::config::self_model::DEFAULT_STATE_PATH;
+        use roko_learn::self_model::gate::{WINDOW, WINDOW_FILE_NAME};
+
+        let temp = tempfile::tempdir().expect("tempdir");
+        let config = RokoConfig::default();
+        let arm = ArmKey::roko("cerebras", "cheap-model");
+        for (run, before, after) in [("run-1", 0, 60), ("run-2", 60, WINDOW)] {
+            let runtime = SelfModelRuntime::load(temp.path(), &config).expect("shadow loads M3");
+            assert_eq!(
+                runtime.gate().n,
+                before,
+                "{run} starts from the saved window"
+            );
+            let sink = SelfModelOutcomeSink::new(Arc::clone(&runtime));
+            for index in 0..60 {
+                let key = AttemptKey::new(run, "plan", format!("T{index:02}"), 1);
+                let forecast = AttemptForecast {
+                    version: runtime.version(),
+                    features: task(),
+                    candidates: runtime.forecast(&task(), std::slice::from_ref(&arm)),
+                    would_choose: Some(0),
+                    default: 0,
+                    pinned: false,
+                    routed: false,
+                };
+                runtime.remember(key.attempt_key(), forecast);
+                let outcome = if index % 4 == 0 {
+                    AttemptOutcome::GateFailed
+                } else {
+                    AttemptOutcome::Passed
+                };
+                let identity = AttemptIdentity::new(&key);
+                let mut verdict = AttemptVerdictRecord::settle(identity, outcome, true);
+                verdict.executed.provider = Some("cerebras".to_string());
+                verdict.executed.model_requested = Some("cheap-model".to_string());
+                verdict.executed.model_dispatched = Some("gpt-oss-120b".to_string());
+                let event = FeedbackEvent::AttemptSettled(Arc::new(verdict));
+                sink.on_event(&event)
+                    .await
+                    .expect("the sink takes the verdict");
+            }
+            assert_eq!(runtime.gate().n, after, "{run}");
+            runtime.save().expect("save the state and the window");
+        }
+
+        let window = temp
+            .path()
+            .join(DEFAULT_STATE_PATH)
+            .with_file_name(WINDOW_FILE_NAME);
+        assert!(window.exists(), "{}", window.display());
+        let next = SelfModelRuntime::load(temp.path(), &config).expect("shadow loads M3");
+        let report = next.gate();
+        assert_eq!(report.n, WINDOW);
+        assert_eq!(report.predictor_version, next.version());
+        assert_eq!(next.outcomes(), 120, "the state learned every outcome");
     }
 }

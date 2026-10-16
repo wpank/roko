@@ -844,6 +844,19 @@ impl Settlement {
         }
     }
 
+    /// An attempt its plan budget stopped before a model call the budget
+    /// could not pay for, for `reason` (bug-4fabd0): the harness stopped it,
+    /// so it teaches nothing.
+    pub(super) fn budget_exhausted(reason: &str) -> Self {
+        Self {
+            outcome: AttemptOutcome::BudgetExhausted,
+            gate_verdict: None,
+            first_token_seen: true,
+            failure_reason: Some(super::turn_policy::attempt_failure_reason("budget", reason)),
+            rung: None,
+        }
+    }
+
     /// An attempt the stall watchdog cancelled, failed with `message`: a
     /// timeout, whatever its message says (bug-4c553b). After its first token
     /// the timeout is the agent's, before it the provider's.

@@ -658,8 +658,9 @@ pub enum StopReason {
     Cancelled,
     /// The backend returned an error (API, parse, or network).
     BackendError(String),
-    /// The cost budget was exhausted (daily or lifetime limit reached).
-    BudgetExhausted,
+    /// The loop's [`TurnBudget`] refused the next model call, for this
+    /// reason.
+    BudgetExhausted(String),
 }
 
 /// Output from a completed [`ToolLoop::run`] or [`ToolLoop::resume`].
@@ -765,15 +766,63 @@ fn truncate_preview(text: &str, max_chars: usize) -> String {
 
 // ─── ToolLoop ────────────────────────────────────────────────────────
 
-/// Multi-turn tool-calling loop (§36.f).
-///
-/// Drives the `prompt -> LLM -> tool_calls -> dispatch -> results -> LLM`
-/// cycle until the LLM stops calling tools, the iteration cap is
-/// reached, the cancel token fires, or the backend errors.
 /// Shared budget guard that can be attached to a [`ToolLoop`] to enforce
 /// budget constraints before each LLM invocation.
 pub type SharedBudgetTracker = Arc<parking_lot::Mutex<BudgetTracker>>;
 
+/// What a [`ToolLoop`]'s model calls may spend (LIFE-03). The loop asks
+/// before each model call and reports each call's usage after it.
+pub trait TurnBudget: Send + Sync + std::fmt::Debug {
+    /// Why the next model call must not start, when it must not: the loop
+    /// then stops with [`StopReason::BudgetExhausted`] and this reason.
+    fn refuse_turn(&self) -> Option<String>;
+
+    /// Record the usage of a model call that finished, priced by the loop's
+    /// model profile when that has rates.
+    fn record_turn(&self, usage: &Usage);
+}
+
+/// A daily and lifetime [`BudgetTracker`]: no model call starts once it is
+/// exhausted.
+impl TurnBudget for parking_lot::Mutex<BudgetTracker> {
+    fn refuse_turn(&self) -> Option<String> {
+        let tracker = self.lock();
+        (tracker.check() == BudgetStatus::Exhausted).then(|| {
+            format!(
+                "budget exhausted: daily ${:.2} / ${:.2} (lifetime ${:.2})",
+                tracker.daily_cost_usd,
+                tracker.config.max_daily_inference_usd,
+                tracker.lifetime_cost_usd,
+            )
+        })
+    }
+
+    fn record_turn(&self, usage: &Usage) {
+        let mut tracker = self.lock();
+        let turn = TurnCostRecord {
+            turn_id: format!("turn-{}", tracker.total_turns),
+            model: String::new(),
+            input_tokens: u64::from(usage.input_tokens),
+            output_tokens: u64::from(usage.output_tokens),
+            cache_read_tokens: u64::from(usage.cache_read_tokens),
+            estimated_cost_usd: f64::from(usage.cost_usd),
+            cognitive_tier: CognitiveTier::Gamma,
+            t0_suppressed: false,
+            timestamp: std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_secs())
+                .unwrap_or(0),
+        };
+        tracker.record_turn(&turn);
+    }
+}
+
+/// Multi-turn tool-calling loop (§36.f).
+///
+/// Drives the `prompt -> LLM -> tool_calls -> dispatch -> results -> LLM`
+/// cycle until the LLM stops calling tools, the iteration cap is
+/// reached, the cancel token fires, the budget refuses the next call, or
+/// the backend errors.
 #[derive(Clone)]
 pub struct ToolLoop {
     translator: Arc<dyn Translator>,
@@ -785,8 +834,8 @@ pub struct ToolLoop {
     model_profile: Option<ModelProfile>,
     retry_policy: RetryPolicy,
     monitor: Option<MetacognitiveMonitor>,
-    /// Optional budget tracker checked before each LLM call (LIFE-03).
-    budget: Option<SharedBudgetTracker>,
+    /// Optional budget checked before each LLM call (LIFE-03).
+    budget: Option<Arc<dyn TurnBudget>>,
     /// Optional callback fired after each tool-dispatch iteration.
     on_turn: Option<OnTurnCallback>,
     /// Few-shot example messages inserted between system and user prompt.
@@ -880,9 +929,27 @@ impl ToolLoop {
     /// terminates with [`StopReason::BudgetExhausted`]. After each
     /// successful LLM call, the turn cost is recorded into the tracker.
     #[must_use]
-    pub fn with_budget(mut self, budget: SharedBudgetTracker) -> Self {
+    pub fn with_budget(self, budget: SharedBudgetTracker) -> Self {
+        self.with_turn_budget(budget)
+    }
+
+    /// Ask `budget` before each model call, and tell it each call's usage
+    /// after it ([`TurnBudget`]). A call it refuses is not made: the loop
+    /// stops with [`StopReason::BudgetExhausted`].
+    #[must_use]
+    pub fn with_turn_budget(mut self, budget: Arc<dyn TurnBudget>) -> Self {
         self.budget = Some(budget);
         self
+    }
+
+    /// [`Self::with_turn_budget`] when `budget` is set, as an agent's options
+    /// carry it; the loop unchanged otherwise.
+    #[must_use]
+    pub fn with_optional_turn_budget(self, budget: Option<Arc<dyn TurnBudget>>) -> Self {
+        match budget {
+            Some(budget) => self.with_turn_budget(budget),
+            None => self,
+        }
     }
 
     /// Attach a callback fired after each tool-dispatch iteration.
@@ -1210,22 +1277,24 @@ impl ToolLoop {
             }
 
             // LIFE-03: Budget check before each LLM invocation.
-            if let Some(ref budget) = self.budget {
-                let guard = budget.lock();
-                if guard.check() == BudgetStatus::Exhausted {
-                    let cp = Checkpoint::new(iterations, all_calls.clone(), messages)
-                        .with_session(session.clone());
-                    return ToolLoopOutput {
-                        final_text: String::new(),
-                        iterations,
-                        tool_calls: all_calls,
-                        total_usage,
-                        stop_reason: StopReason::BudgetExhausted,
-                        checkpoint: Some(cp),
-                        turn_traces,
-                        mcp_errors: Vec::new(),
-                    };
-                }
+            if let Some(reason) = self.budget.as_ref().and_then(|budget| budget.refuse_turn()) {
+                tracing::info!(
+                    iteration = iterations,
+                    %reason,
+                    "tool_loop: the budget refused the next model call; stopping"
+                );
+                let cp = Checkpoint::new(iterations, all_calls.clone(), messages)
+                    .with_session(session.clone());
+                return ToolLoopOutput {
+                    final_text: String::new(),
+                    iterations,
+                    tool_calls: all_calls,
+                    total_usage,
+                    stop_reason: StopReason::BudgetExhausted(reason),
+                    checkpoint: Some(cp),
+                    turn_traces,
+                    mcp_errors: Vec::new(),
+                };
             }
 
             // Send current conversation to the backend. When a streaming
@@ -1299,28 +1368,8 @@ impl ToolLoop {
             total_usage.add(&turn_usage);
 
             // LIFE-03: Record turn cost in budget tracker after LLM call.
-            if let Some(ref budget) = self.budget {
-                let mut guard = budget.lock();
-                let model_name = self
-                    .model_profile
-                    .as_ref()
-                    .map(|p| p.slug.clone())
-                    .unwrap_or_default();
-                let cost_record = TurnCostRecord {
-                    turn_id: format!("turn-{iterations}"),
-                    model: model_name,
-                    input_tokens: u64::from(turn_usage.input_tokens),
-                    output_tokens: u64::from(turn_usage.output_tokens),
-                    cache_read_tokens: u64::from(turn_usage.cache_read_tokens),
-                    estimated_cost_usd: f64::from(turn_usage.cost_usd),
-                    cognitive_tier: CognitiveTier::Gamma,
-                    t0_suppressed: false,
-                    timestamp: std::time::SystemTime::now()
-                        .duration_since(std::time::UNIX_EPOCH)
-                        .map(|d| d.as_secs())
-                        .unwrap_or(0),
-                };
-                guard.record_turn(&cost_record);
+            if let Some(budget) = &self.budget {
+                budget.record_turn(&turn_usage);
             }
 
             // Parse tool calls from the response.
@@ -2980,6 +3029,106 @@ mod tests {
         let cp = out.checkpoint.expect("checkpoint should be present");
         assert_eq!(cp.iterations, 25);
         assert_eq!(cp.tool_calls.len(), 25);
+    }
+
+    /// Calls a tool on every turn, reporting 100 input and 10 output tokens,
+    /// and counts the turns it answered.
+    #[derive(Default)]
+    struct MeteredToolCallBackend {
+        calls: AtomicUsize,
+    }
+
+    #[async_trait]
+    impl LlmBackend for MeteredToolCallBackend {
+        async fn send_turn(
+            &self,
+            _messages: &[serde_json::Value],
+            _tools: &RenderedTools,
+            _session: &SessionState,
+        ) -> Result<BackendResponse, LlmError> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            Ok(BackendResponse::Json(serde_json::json!({
+                "tool_calls": [{"id": "c1", "name": "echo", "arguments": {}}],
+                "usage": {"prompt_tokens": 100, "completion_tokens": 10}
+            })))
+        }
+    }
+
+    /// A budget that allows `allowed` model calls and keeps each call's
+    /// usage.
+    #[derive(Debug, Default)]
+    struct CallCountBudget {
+        allowed: usize,
+        recorded: parking_lot::Mutex<Vec<Usage>>,
+    }
+
+    impl TurnBudget for CallCountBudget {
+        fn refuse_turn(&self) -> Option<String> {
+            (self.recorded.lock().len() >= self.allowed)
+                .then(|| format!("{} model calls allowed", self.allowed))
+        }
+
+        fn record_turn(&self, usage: &Usage) {
+            self.recorded.lock().push(*usage);
+        }
+    }
+
+    /// bug-4fabd0: the loop asks its budget before each model call and tells
+    /// it each call's usage; a call it refuses is never made, and the loop
+    /// stops resumably with the budget's reason.
+    #[tokio::test]
+    async fn a_refused_turn_stops_the_loop_before_its_model_call() {
+        let backend = Arc::new(MeteredToolCallBackend::default());
+        let budget = Arc::new(CallCountBudget {
+            allowed: 3,
+            ..CallCountBudget::default()
+        });
+        let tl =
+            make_tool_loop(backend.clone(), 25).with_optional_turn_budget(Some(budget.clone()));
+        let ctx = ToolContext::testing("/tmp");
+
+        let out = tl.run("system", "user", &test_tools(), &ctx).await;
+
+        assert_eq!(
+            out.stop_reason,
+            StopReason::BudgetExhausted("3 model calls allowed".to_string())
+        );
+        assert_eq!(backend.calls.load(Ordering::SeqCst), 3);
+        assert_eq!(out.iterations, 3);
+        let recorded = budget.recorded.lock();
+        assert_eq!(recorded.len(), 3);
+        assert!(
+            recorded.iter().all(|usage| usage.input_tokens == 100),
+            "{recorded:?}"
+        );
+        assert_eq!(out.total_usage.input_tokens, 300);
+        assert_eq!(out.checkpoint.expect("resumable").iterations, 3);
+    }
+
+    /// LIFE-03's daily tracker is one such budget: an exhausted day makes no
+    /// model call.
+    #[tokio::test]
+    async fn an_exhausted_tracker_makes_no_model_call() {
+        let backend = Arc::new(MeteredToolCallBackend::default());
+        let tracker = Arc::new(parking_lot::Mutex::new(BudgetTracker::new(
+            crate::lifecycle::BudgetConfig {
+                max_daily_inference_usd: 1.0,
+                ..crate::lifecycle::BudgetConfig::default()
+            },
+        )));
+        tracker.lock().daily_cost_usd = 1.5;
+        let tl = make_tool_loop(backend.clone(), 25).with_budget(tracker);
+        let ctx = ToolContext::testing("/tmp");
+
+        let out = tl.run("system", "user", &test_tools(), &ctx).await;
+
+        match &out.stop_reason {
+            StopReason::BudgetExhausted(reason) => {
+                assert!(reason.contains("daily $1.50 / $1.00"), "{reason}");
+            }
+            other => panic!("expected BudgetExhausted, got {other:?}"),
+        }
+        assert_eq!(backend.calls.load(Ordering::SeqCst), 0);
     }
 
     #[tokio::test]

@@ -14,6 +14,9 @@ last_verified = 2026-10-15
 source = "hermes-roko round v5, roko-chathost, 2026-10-15"
 anchors = ["crates/roko-serve/src/routes/config.rs::reload_config_from_disk_with_hook", "crates/roko-cli/src/commands/server.rs::cmd_serve"]
 links = { depends_on = [], blocks = [], related = ["gap-115bae"], supersedes = [], duplicate_of = "" }
+
+[[verify]]
+command = "grep -rqw 'fn reload_keeps_the_settings_serve_took_from_its_command_line' crates/ && cargo test -p roko-serve --lib reload_keeps_the_settings_serve_took_from_its_command_line"
 +++
 
 ## Problem

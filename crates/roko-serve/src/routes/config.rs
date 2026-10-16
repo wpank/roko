@@ -185,6 +185,9 @@ where
     .map_err(map_load_config_error)?;
     normalize_source_and_effective_dispatch_models(&mut source_updated, &mut effective_updated)
         .map_err(map_load_config_error)?;
+    // The live generation keeps the settings serve took from its command
+    // line; the file keeps its own (bug-3eec27).
+    state.config_overrides().apply(&mut effective_updated);
 
     let source_toml = toml::to_string_pretty(&source_updated)
         .map_err(|e| ApiError::internal(format!("serialize toml: {e}")))?;
@@ -344,6 +347,10 @@ where
     after_lock();
 
     let mut new_config = load_config_unified(&state.workdir)?;
+    // The settings serve took from its command line hold until it restarts,
+    // so a reload neither reports them as changed nor undoes them
+    // (bug-3eec27).
+    state.config_overrides().apply(&mut new_config);
     normalize_and_validate_dispatch_models(&mut new_config)?;
     let mut warnings = validate_references(&new_config);
 
@@ -1035,6 +1042,79 @@ mod tests {
             !text.contains("test-secret-key"),
             "TOML response leaked api key: {text}"
         );
+    }
+
+    /// bug-3eec27: a reload keeps what serve took from its command line. A
+    /// server started with `--port 6791 --enable-terminal` reloads an edit to
+    /// `[budget]` without asking for a restart and keeps its port and
+    /// terminal; the file's own `[server] port` changes nothing while the
+    /// flag holds; and a `PUT /config` keeps them in the live config too.
+    #[tokio::test]
+    async fn reload_keeps_the_settings_serve_took_from_its_command_line() {
+        use axum::body::Body;
+        use axum::http::{Request, StatusCode, header::CONTENT_TYPE};
+        use tower::ServiceExt;
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("roko.toml");
+        let source = |plan_usd: f32, port: Option<u16>| {
+            let mut config = RokoConfig::default();
+            config.budget.max_plan_usd = plan_usd;
+            config.budget.max_turn_usd = 1.0;
+            if let Some(port) = port {
+                config.server.port = port;
+            }
+            config
+        };
+        let write = |config: &RokoConfig| {
+            let text = toml::to_string_pretty(config).expect("serialize source config");
+            std::fs::write(&path, text).expect("write roko.toml");
+        };
+        write(&source(10.0, None));
+        let overrides = crate::state::ConfigOverrides {
+            bind: None,
+            port: Some(6791),
+            terminal_enabled: true,
+        };
+        // Loaded as a reload loads it, so only what the file changes differs.
+        let mut config = load_config_unified(dir.path()).expect("load roko.toml");
+        normalize_and_validate_dispatch_models(&mut config).expect("normalize models");
+        overrides.apply(&mut config);
+        let state = test_state(dir.path().to_path_buf(), config);
+        state.set_config_overrides(overrides);
+        let restart = |warnings: &[String]| warnings.iter().any(|w| w.contains("restart"));
+
+        write(&source(9.0, None));
+        let warnings = reload_config_from_disk(&state).expect("reload");
+        assert!(!restart(&warnings), "{warnings:?}");
+        let live = state.load_roko_config();
+        assert_eq!(live.server.port, 6791);
+        assert!(live.serve.terminal_enabled);
+        assert!((live.budget.max_plan_usd - 9.0).abs() < f32::EPSILON);
+
+        // The flag wins over the file's port until serve restarts.
+        write(&source(9.0, Some(4567)));
+        let warnings = reload_config_from_disk(&state).expect("reload");
+        assert!(!restart(&warnings), "{warnings:?}");
+        assert_eq!(state.load_roko_config().server.port, 6791);
+
+        let response = routes()
+            .with_state(Arc::clone(&state))
+            .oneshot(
+                Request::builder()
+                    .method("PUT")
+                    .uri("/config")
+                    .header(CONTENT_TYPE, "application/json")
+                    .body(Body::from(r#"{"budget":{"max_plan_usd":8.0}}"#))
+                    .expect("request"),
+            )
+            .await
+            .expect("response");
+        assert_eq!(response.status(), StatusCode::OK);
+        let live = state.load_roko_config();
+        assert_eq!(live.server.port, 6791);
+        assert!(live.serve.terminal_enabled);
+        assert!((live.budget.max_plan_usd - 8.0).abs() < f32::EPSILON);
     }
 
     #[tokio::test]

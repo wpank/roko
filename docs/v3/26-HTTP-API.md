@@ -497,7 +497,7 @@ aliases (both are mounted).
 
 | Method | Path | Description |
 |--------|------|-------------|
-| GET | `/api/plans` | List all plans |
+| GET | `/api/plans` | List all plans: `id`, `title`, task counts, `status` (its `[meta].status` until the plan has run, then its last run's state), `group` (its plan set) and `fixture`, true for a demo or test plan (`[meta].status = "fixture"`), also once it has run |
 | POST | `/api/plans` | Create a new plan |
 | GET | `/api/plans/{id}` | Full plan details |
 | GET | `/api/plans/{id}/tasks` | Tasks for a plan, and its `title` as `GET /api/plans` gives it: the first heading of its `plan.md`, else its id |
@@ -560,6 +560,9 @@ whether the checkout's `HEAD` already has the work. A run promoted with
 `--promote` adds `tag` (`roko/run/<run_id>`) and `promoted_into`; otherwise,
 while the checkout lacks the work, `merge_command` is the command that takes it
 (`git merge --ff-only <branch>`, or `git merge <branch>` once `HEAD` moved on).
+`fixture` is true when every plan the run ran is a fixture, a demo or test plan
+(gap-8f84d1): its output belongs on its branch, so a host should not offer to
+merge it.
 `result` is absent while the run is active, and for a run with no batch branch
 in this workspace, such as one whose tasks ran in the shared working tree.
 | POST | `/api/runs/{run_id}/share` | Mint a share link for the run (`admin` scope, see 3.2). Body: `{"public": bool, "no_expire": bool, "prompt": "…"}`, the prompt run once when the run does not exist. A link expires after `serve.share_ttl_days` (7); `no_expire` asks for one that never does, and only a server bound to loopback grants it (400 on any other bind) |

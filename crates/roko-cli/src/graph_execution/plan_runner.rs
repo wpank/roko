@@ -4578,9 +4578,12 @@ fn missing_tasks(
                 {
                     "builds on work no check ran on".to_string()
                 }
-                Some(_) if !undelivered.deliver_verified => {
-                    "the plan's whole-plan check failed".to_string()
+                Some(_) if !undelivered.deliver_verified => match undelivered.outcome {
+                    // A stop cut the check short (bug-7b62ff).
+                    PlanOutcome::Interrupted => "the plan's whole-plan check was interrupted",
+                    _ => "the plan's whole-plan check failed",
                 }
+                .to_string(),
                 Some(_) => "its delivery failed".to_string(),
                 // A stop cut it off (bug-1d09e8).
                 None if outcomes.cancelled.contains(&task.id) => match undelivered.outcome {
@@ -9280,6 +9283,42 @@ printf '%s\n' '{"type":"result","session_id":"sess-batch","model":"claude-sonnet
         let tip = git_stdout(repo, &["rev-parse", "roko/plan/01-alpha"]);
         assert!(git_stdout(repo, &["ls-tree", "--name-only", &tip]).contains("alpha.txt"));
         assert!(!git_stdout(repo, &["rev-parse", "roko/batch/run-released"]).is_empty());
+    }
+
+    /// bug-7b62ff: the tasks of a plan whose whole-plan check a stop cut
+    /// short are missing as interrupted, not as refused by a failed check.
+    #[test]
+    fn a_stopped_whole_plan_check_leaves_its_tasks_interrupted() {
+        let plan = test_plan("p", "P", 1);
+        let outcomes = TaskOutcomeSummary::default();
+        let work = crate::graph_execution::batch::PlanWork {
+            base: "b".repeat(40),
+            commits: vec![crate::graph_execution::batch::AcceptedCommit {
+                commit: "c".repeat(40),
+                task_id: "T0".to_string(),
+                verdict: "passed".to_string(),
+            }],
+        };
+        for (outcome, why) in [
+            (
+                PlanOutcome::Interrupted,
+                "the plan's whole-plan check was interrupted",
+            ),
+            (PlanOutcome::Failed, "the plan's whole-plan check failed"),
+        ] {
+            let undelivered = UndeliveredPlan {
+                plan: &plan,
+                run_id: "r",
+                outcome,
+                deliver_verified: false,
+                task_outcomes: &outcomes,
+            };
+            let missing = missing_tasks(&undelivered, &work, &[]);
+            assert_eq!(
+                missing,
+                vec![serde_json::json!({ "task_id": "T0", "why": why })]
+            );
+        }
     }
 
     /// bug-74164c, bug-1d09e8: a task a stop cut off is missing from a

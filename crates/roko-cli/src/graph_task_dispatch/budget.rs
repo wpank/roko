@@ -3224,6 +3224,7 @@ exit 1
         let script = r#"#!/bin/sh
 set -eu
 cat >/dev/null
+echo run >> "$(dirname -- "$0")/runs"
 printf '%s\n' "$*" >> "$(dirname -- "$0")/provider-args"
 case " $* " in
   *" --max-budget-usd "*)
@@ -3261,8 +3262,9 @@ printf '%s\n' '{"type":"result","session_id":"sess-b","model":"claude-sonnet-4-6
             message.contains("stopped at its spend limit (--max-budget-usd $0.1000) after $0.0600"),
             "{message}"
         );
+        let runs = std::fs::read_to_string(temp.path().join("runs")).expect("runs");
+        assert_eq!(runs.lines().count(), 1, "one run, no retry or failover");
         let args = std::fs::read_to_string(temp.path().join("provider-args")).expect("args");
-        assert_eq!(args.lines().count(), 1, "one run, no retry or failover");
         assert!(args.contains("--max-budget-usd 0.100000"), "{args}");
         let spent = dispatcher.plan_budget_snapshot(&spec.plan_id).spent_usd;
         assert!((spent - 0.06).abs() < 1e-9, "the CLI's own cost: {spent}");

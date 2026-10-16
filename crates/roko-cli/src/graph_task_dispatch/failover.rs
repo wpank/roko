@@ -964,6 +964,13 @@ impl GraphTaskDispatcher {
                  and put that provider's API key in ~/.roko/.env (loaded automatically at startup).",
                 self.api_key_model_examples()
             )
+        } else if skipped.iter().all(|skip| skip.contains(UNPRICED_REASON)) {
+            // A price, not a key, would make them usable (gap-8548e3).
+            format!(
+                "No fallback model is usable ({}): extend [routing] fallback_models with a model \
+                 that has a price.",
+                skipped.join("; ")
+            )
         } else {
             format!(
                 "No fallback model is usable ({}): put the missing API key in ~/.roko/.env \

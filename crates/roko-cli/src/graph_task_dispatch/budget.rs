@@ -3067,7 +3067,15 @@ exit 1
 
         let temp = tempdir().expect("tempdir");
         let (base_url, requests) = spawn_openai_mock(vec![final_turn("done")]);
-        let dispatcher = make_bare_dispatcher(unpriced(base_url), temp.path())
+        // Its fallback has no price either.
+        let mut config = unpriced(base_url);
+        let other = ModelProfile {
+            slug: "api-other-1".to_string(),
+            ..config.models["api-model"].clone()
+        };
+        config.models.insert("api-other".to_string(), other);
+        config.routing.fallback_models = vec!["api-other".to_string()];
+        let dispatcher = make_bare_dispatcher(config, temp.path())
             .await
             .with_plan_budget(0.50, 0.0, false);
         let error = dispatcher
@@ -3087,6 +3095,10 @@ exit 1
             "{message}"
         );
         assert!(message.contains("Give api-model a price"), "{message}");
+        assert!(
+            message.contains("(api-other: has no price") && !message.contains("API key"),
+            "{message}"
+        );
         assert!(requests.lock().is_empty(), "no call was made");
 
         let temp = tempdir().expect("tempdir");

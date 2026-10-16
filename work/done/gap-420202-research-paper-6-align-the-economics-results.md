@@ -9,7 +9,7 @@ goal = "whitepaper"
 size = "M"
 subsystem = ["paper"]
 created = 2026-09-29
-updated = 2026-09-29
+updated = 2026-10-16
 last_verified = 2026-09-29
 last_verified_rev = "d5c1dc6be"
 source = "tmp/cybernetic-harness/workstreams/PLAN.md#e18"
@@ -21,9 +21,13 @@ links = { depends_on = [], blocks = [], related = [], supersedes = [], duplicate
 
 [[verify]]
 command = "test -f tools/paperlint.py && python3 tools/paperlint.py --budget 1.2 --check-identifiers tmp/cybernetic-harness/paper/sections/06-results-economics.md"
+superseded = "2026-10-16: The 2026-10-02 design-paper rewrite of the research paper (session roko-55, in untracked tmp/; 6f85e5efc records it) dropped the results section 06-results-economics.md: the design paper reports no results; the old text is archived whole in tmp/cybernetic-harness/paper/archive/2026-10-02-empirical-draft/."
+superseded_by = "6f85e5efc"
 
 [[verify]]
 command = "grep -q 'RESULT PL' tmp/cybernetic-harness/paper/sections/06-results-economics.md"
+superseded = "2026-10-16: The 2026-10-02 design-paper rewrite of the research paper (session roko-55, in untracked tmp/; 6f85e5efc records it) dropped the results section 06-results-economics.md and its RESULT PL template; the old text is archived whole in tmp/cybernetic-harness/paper/archive/2026-10-02-empirical-draft/."
+superseded_by = "6f85e5efc"
 
 [closed]
 at = 2026-09-29

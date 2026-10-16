@@ -9,7 +9,7 @@ goal = "whitepaper"
 size = "S"
 subsystem = ["paper"]
 created = 2026-09-29
-updated = 2026-09-29
+updated = 2026-10-16
 last_verified = 2026-09-29
 last_verified_rev = "db453298c"
 source = "tmp/cybernetic-harness/workstreams/PROGRESS.md"
@@ -21,6 +21,8 @@ links = { depends_on = [], blocks = [], related = ["gap-455aef", "gap-204848"], 
 
 [[verify]]
 command = "! grep -q 'no visible-check condition' tmp/cybernetic-harness/paper/sections/D-metrics-statistics.md && ! grep -q 'no visible-check condition' tmp/cybernetic-harness/paper/sections/05-evaluation-protocol.md && python3 tools/paperlint.py --budget 1.2 --check-identifiers tmp/cybernetic-harness/paper/sections/D-metrics-statistics.md tmp/cybernetic-harness/paper/sections/05-evaluation-protocol.md"
+superseded = "2026-10-16: The 2026-10-02 design-paper rewrite of the research paper (session roko-55, in untracked tmp/; 6f85e5efc records it) replaced 05-evaluation-protocol.md and D-metrics-statistics.md; the old text is archived whole in tmp/cybernetic-harness/paper/archive/2026-10-02-empirical-draft/."
+superseded_by = "6f85e5efc"
 
 [closed]
 at = 2026-09-29

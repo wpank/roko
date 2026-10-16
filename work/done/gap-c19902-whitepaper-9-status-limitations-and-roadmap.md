@@ -9,7 +9,7 @@ goal = "whitepaper"
 size = "S"
 subsystem = ["docs/whitepaper"]
 created = 2026-09-29
-updated = 2026-09-29
+updated = 2026-10-16
 last_verified = 2026-09-29
 last_verified_rev = "dc371b1ae"
 source = "tmp/cybernetic-harness/workstreams/PLAN.md#e1"
@@ -21,6 +21,8 @@ links = { depends_on = ["gap-35a614", "gap-af0b57"], blocks = [], related = ["ga
 
 [[verify]]
 command = "test -f docs/whitepaper/09-status-and-roadmap.md && grep -q 'appendix-status-matrix' docs/whitepaper/09-status-and-roadmap.md && test -f tools/paperlint.py && python3 tools/paperlint.py --strict docs/whitepaper/09-status-and-roadmap.md"
+superseded = "2026-10-16: The whitepaper rewrite as a design paper (7898493f2, 2026-10-08) replaced section 9, 09-status-and-roadmap.md, with 09-open-problems.md and dropped the status appendix it pointed to; the old text is at 7898493f2^."
+superseded_by = "7898493f2"
 
 [closed]
 at = 2026-09-29

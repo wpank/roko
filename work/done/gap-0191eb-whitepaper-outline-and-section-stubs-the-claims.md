@@ -9,7 +9,7 @@ goal = "whitepaper"
 size = "S"
 subsystem = ["docs/whitepaper"]
 created = 2026-09-29
-updated = 2026-09-29
+updated = 2026-10-16
 last_verified = 2026-09-29
 last_verified_rev = "5eac79f0d"
 source = "tmp/cybernetic-harness/workstreams/PLAN.md#e1"
@@ -21,6 +21,8 @@ links = { depends_on = [], blocks = [], related = ["dec-2cd76a", "gap-af0b57"], 
 
 [[verify]]
 command = "test -f docs/whitepaper/README.md && grep -q '^## Outline' docs/whitepaper/README.md && grep -q '^## Conventions' docs/whitepaper/README.md && test -f docs/whitepaper/references.bib && test -f docs/whitepaper/appendix-status-matrix.md && test $(ls docs/whitepaper/[01][0-9]-*.md | wc -l) -ge 11"
+superseded = "2026-10-16: The whitepaper rewrite as a design paper (7898493f2, 2026-10-08) dropped appendix-status-matrix.md by design; the README outline, conventions, bibliography and numbered sections this also checks are still there."
+superseded_by = "7898493f2"
 
 [closed]
 at = 2026-09-29

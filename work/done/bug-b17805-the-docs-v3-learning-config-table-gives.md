@@ -9,7 +9,7 @@ goal = "tooling"
 size = "S"
 subsystem = ["docs/v3"]
 created = 2026-09-29
-updated = 2026-09-29
+updated = 2026-10-16
 last_verified = 2026-09-29
 last_verified_rev = "1fcc5d810"
 source = "tmp/cybernetic-harness/workstreams/PROGRESS.md"
@@ -21,6 +21,8 @@ links = { depends_on = [], blocks = [], related = ["bug-470de8", "gap-7a3527", "
 
 [[verify]]
 command = '''grep -q '^| `auto_playbook_refresh` | bool | true |' docs/v3/depth/21-config/01-schema-sections.md && grep -q '^| `knowledge_file_intel` | bool | true |' docs/v3/depth/21-config/01-schema-sections.md && grep -q '^| `replan_on_gate_failure` | bool | true |' docs/v3/depth/21-config/01-schema-sections.md && grep -q '^| `gate_threshold_flush_interval` | u64 | 10 |' docs/v3/depth/21-config/01-schema-sections.md'''
+superseded = "2026-10-16: 348cb6c3f removed the [learning] replan_on_gate_failure key, and 01-schema-sections.md now records its removal instead of the table row this greps for."
+superseded_by = "348cb6c3f"
 
 [closed]
 at = 2026-09-29

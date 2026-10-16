@@ -9,7 +9,7 @@ goal = "whitepaper"
 size = "S"
 subsystem = ["companion"]
 created = 2026-09-29
-updated = 2026-09-29
+updated = 2026-10-16
 last_verified = 2026-09-29
 last_verified_rev = "b88ea1150"
 source = "tmp/cybernetic-harness/workstreams/PROGRESS.md"
@@ -21,6 +21,8 @@ links = { depends_on = [], blocks = [], related = ["gap-cb86e4", "gap-5d95a5", "
 
 [[verify]]
 command = "python3 tools/paperlint.py --budget 1.0 tmp/cybernetic-harness/companion-audit/E10-DRAFT.md && ! grep -q 'Token-level blame robust to moved code' tmp/cybernetic-harness/companion-audit/BIBLIOGRAPHY.md && ! grep -q 'Roko research paper: 400 verified references' tmp/cybernetic-harness/companion-audit/references.bib"
+superseded = "2026-10-16: Will dropped the companion report on 2026-10-15 (decision 4; gap-b90650, its release, closed as wontfix): it will not be posted, so E10-DRAFT.md's word budget no longer gates anything (the draft was edited after this closed and is 1.02x its budget)."
+superseded_by = "gap-b90650"
 
 [closed]
 at = 2026-09-29

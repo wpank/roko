@@ -9,7 +9,7 @@ goal = "whitepaper"
 size = "S"
 subsystem = ["paper"]
 created = 2026-09-29
-updated = 2026-09-29
+updated = 2026-10-16
 last_verified = 2026-09-29
 last_verified_rev = "cac54e574"
 source = "tmp/cybernetic-harness/workstreams/PROGRESS.md"
@@ -21,6 +21,8 @@ links = { depends_on = [], blocks = [], related = ["gap-419298", "gap-3c430e"], 
 
 [[verify]]
 command = "grep -q 'BL13' tmp/cybernetic-harness/paper/sections/05-evaluation-protocol.md && grep -q 'BL13' tmp/cybernetic-harness/paper/sections/D-metrics-statistics.md && ! grep -q 'no S09 budget line yet' tmp/cybernetic-harness/paper/sections/D-metrics-statistics.md && ! grep -q 'not yet registered in S09' tmp/cybernetic-harness/paper/sections/A-benchmark.md && python3 tools/paperlint.py --budget 1.2 --check-identifiers tmp/cybernetic-harness/paper/sections/05-evaluation-protocol.md tmp/cybernetic-harness/paper/sections/A-benchmark.md tmp/cybernetic-harness/paper/sections/D-metrics-statistics.md tmp/cybernetic-harness/paper/sections/E-reproducibility.md"
+superseded = "2026-10-16: The 2026-10-02 design-paper rewrite of the research paper (session roko-55, in untracked tmp/; 6f85e5efc records it) replaced 05-evaluation-protocol.md and D-metrics-statistics.md, where BL13 was registered; the old text is archived whole in tmp/cybernetic-harness/paper/archive/2026-10-02-empirical-draft/."
+superseded_by = "6f85e5efc"
 
 [closed]
 at = 2026-09-29

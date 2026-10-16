@@ -9,7 +9,7 @@ goal = "whitepaper"
 size = "M"
 subsystem = ["paper"]
 created = 2026-09-29
-updated = 2026-09-29
+updated = 2026-10-16
 last_verified = 2026-09-29
 last_verified_rev = "860b10a88"
 source = "tmp/cybernetic-harness/workstreams/PROGRESS.md"
@@ -21,6 +21,8 @@ links = { depends_on = [], blocks = [], related = ["gap-bb619d"], supersedes = [
 
 [[verify]]
 command = "! grep -q 'We know of no harness that estimates how often its passes are still' tmp/cybernetic-harness/paper/sections/01-introduction.md && grep -q 'kill-search D13 run 2026-09-29' tmp/cybernetic-harness/paper/sections/03a-related-work.md && grep -q 'kill-search D13 run 2026-09-29' tmp/cybernetic-harness/paper/sections/03b-related-work.md && python3 tools/paperlint.py --budget 1.2 --check-identifiers tmp/cybernetic-harness/paper/sections/01-introduction.md tmp/cybernetic-harness/paper/sections/03a-related-work.md tmp/cybernetic-harness/paper/sections/03b-related-work.md tmp/cybernetic-harness/paper/sections/08-discussion.md tmp/cybernetic-harness/paper/sections/B-spec-standard.md"
+superseded = "2026-10-16: The 2026-10-02 design-paper rewrite of the research paper (session roko-55, in untracked tmp/; 6f85e5efc records it) replaced 03a-related-work.md and 03b-related-work.md with 12-related-work.md, which still cites the D13 closest matches; the old text is archived whole in tmp/cybernetic-harness/paper/archive/2026-10-02-empirical-draft/."
+superseded_by = "6f85e5efc"
 
 [closed]
 at = 2026-09-29

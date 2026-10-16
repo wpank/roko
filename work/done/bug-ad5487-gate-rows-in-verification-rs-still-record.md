@@ -9,7 +9,7 @@ goal = "truth"
 size = "S"
 subsystem = ["roko-cli/graph_task_dispatch"]
 created = 2026-09-29
-updated = 2026-09-30
+updated = 2026-10-16
 last_verified = 2026-09-30
 last_verified_rev = "9c0b9aed0"
 source = "tmp/cybernetic-harness/workstreams/PROGRESS.md"
@@ -21,6 +21,8 @@ links = { depends_on = ["bug-31438d"], blocks = [], related = ["bug-31438d", "bu
 
 [[verify]]
 command = "grep -rqw 'fn gate_rows_carry_the_attempts_turns_or_unknown' crates/roko-cli/src/graph_task_dispatch/ && cargo test -p roko-cli --lib gate_rows_carry_the_attempts_turns_or_unknown"
+superseded = "2026-10-16: 685c53311 stopped writing per-gate efficiency rows (one settled row per attempt) and removed gate_rows_carry_the_attempts_turns_or_unknown; the attempt row's TurnsRow marks unknown turns."
+superseded_by = "685c53311"
 
 [closed]
 at = 2026-09-30

@@ -9,7 +9,7 @@ goal = "whitepaper"
 size = "S"
 subsystem = ["paper"]
 created = 2026-09-29
-updated = 2026-09-29
+updated = 2026-10-16
 last_verified = 2026-09-29
 last_verified_rev = "751bc8f13"
 source = "tmp/cybernetic-harness/workstreams/PROGRESS.md"
@@ -21,6 +21,8 @@ links = { depends_on = [], blocks = [], related = ["gap-184da5"], supersedes = [
 
 [[verify]]
 command = "! grep -rqE 'tldr/research/(B7|B5)|assessment/W12|CASES\\.md' tmp/cybernetic-harness/paper/sections/01-introduction.md tmp/cybernetic-harness/paper/sections/07-results-regulation.md && grep -q 'docs/whitepaper/evidence/' tmp/cybernetic-harness/paper/sections/01-introduction.md"
+superseded = "2026-10-16: The 2026-10-02 design-paper rewrite of the research paper (session roko-55, in untracked tmp/; 6f85e5efc records it) rewrote 01-introduction.md, which no longer cites the frozen evidence (11-in-use.md and 13-discussion.md do), and dropped 07-results-regulation.md; the old text is archived whole in tmp/cybernetic-harness/paper/archive/2026-10-02-empirical-draft/."
+superseded_by = "6f85e5efc"
 
 [closed]
 at = 2026-09-29

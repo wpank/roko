@@ -8,7 +8,7 @@ severity = "p2"
 goal = "tooling"
 subsystem = ["roko-cli/backlog"]
 created = 2026-09-28
-updated = 2026-10-01
+updated = 2026-10-16
 last_verified = 2026-10-01
 last_verified_rev = "db778db9b"
 source = "tmp/work-management/03-roko-native-capabilities.md"
@@ -18,6 +18,8 @@ links = { depends_on = [], blocks = [], related = [], supersedes = [], duplicate
 
 [[verify]]
 command = "grep -rqw 'fn backlog_import_check_writes_nothing' crates/roko-cli/ && cargo test -p roko-cli --bin roko backlog_import_check_writes_nothing"
+superseded = "2026-10-16: 0debf4769 removed roko backlog import with do, develop and prd, and its test backlog_import_check_writes_nothing with it."
+superseded_by = "0debf4769"
 
 [closed]
 at = 2026-10-01

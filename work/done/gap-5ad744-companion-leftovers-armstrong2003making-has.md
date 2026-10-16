@@ -9,7 +9,7 @@ goal = "whitepaper"
 size = "S"
 subsystem = ["companion"]
 created = 2026-09-29
-updated = 2026-09-30
+updated = 2026-10-16
 last_verified = 2026-09-30
 last_verified_rev = "4d79f0016"
 source = "tmp/cybernetic-harness/workstreams/PROGRESS.md"
@@ -21,6 +21,8 @@ links = { depends_on = [], blocks = [], related = ["gap-4ec886", "gap-cb86e4"], 
 
 [[verify]]
 command = "awk '/@[a-z]+\\{armstrong2003making,/,/^\\}/' tmp/cybernetic-harness/companion-audit/references.bib | grep -qE 'school|institution' && grep -q 'argparse' tmp/cybernetic-harness/companion-audit/telemetry/scripts/ledger_classify_commits.py && python3 tools/paperlint.py --budget 0.97 tmp/cybernetic-harness/companion-audit/E10-DRAFT.md"
+superseded = "2026-10-16: Will dropped the companion report on 2026-10-15 (decision 4; gap-b90650, its release, closed as wontfix): it will not be posted, so E10-DRAFT.md's 0.97x budget no longer gates anything; the armstrong2003making institution fix still holds."
+superseded_by = "gap-b90650"
 
 [closed]
 at = 2026-09-30

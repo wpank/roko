@@ -279,6 +279,18 @@ impl PlanRunInterruptHandle {
     pub fn requested(&self) -> Option<PlanRunInterrupt> {
         PlanRunInterrupt::from_code(self.requested.load(Ordering::SeqCst))
     }
+
+    /// Wait for a stop request and return it, looking every
+    /// [`PLAN_WATCH_INTERVAL`] as the run's own loop does. A whole-plan check
+    /// races its steps against it (bug-7b62ff).
+    pub async fn stopped(&self) -> PlanRunInterrupt {
+        loop {
+            if let Some(interrupt) = self.requested() {
+                return interrupt;
+            }
+            tokio::time::sleep(PLAN_WATCH_INTERVAL).await;
+        }
+    }
 }
 
 /// How long a stopping plan waits for its cancelled graph to settle before
@@ -4095,6 +4107,7 @@ async fn run_one_plan(
                 ctx.gate_env_passthrough,
                 ctx.worktrees,
                 ctx.delete_attempt_branches,
+                &ctx.interrupt,
                 &mut checkpoint,
                 graph_tui_bridge,
             )
@@ -4106,6 +4119,7 @@ async fn run_one_plan(
                 plan,
                 plan_checks,
                 ctx.gate_env_passthrough,
+                &ctx.interrupt,
                 &mut checkpoint,
                 graph_tui_bridge,
             )
@@ -4113,6 +4127,11 @@ async fn run_one_plan(
         }
         _ => outcome,
     };
+    // A stop request that came during the whole-plan check stopped the plan
+    // there: it reads as stopped, with what stopped it (bug-7b62ff).
+    if outcome == PlanOutcome::Interrupted && interrupted_by.is_none() {
+        interrupted_by = ctx.interrupt.requested();
+    }
     // How the plan's tasks that did not complete were left.
     let task_outcomes = task_outcomes(&output, &node_titles);
     // A plan that did not succeed still delivers the verified part of what
@@ -4354,6 +4373,7 @@ async fn deliver_plan_to_batch(
     env_passthrough: &[String],
     worktrees: Option<&crate::orchestrator::worktree::WorktreeManager>,
     delete_attempt_branches: bool,
+    stop: &PlanRunInterruptHandle,
     checkpoint: &mut crate::graph_checkpoint::PreparedGraphCheckpoint,
     graph_tui_bridge: &crate::runner::graph_tui_bridge::GraphTuiBridge,
 ) -> anyhow::Result<PlanOutcome> {
@@ -4375,7 +4395,8 @@ async fn deliver_plan_to_batch(
             graph_tui_bridge,
             plan,
             super::plan_check_events::CheckStage::Regression,
-        ));
+        ))
+        .with_stop(stop.clone());
     let service = super::delivery::CliCompletionDeliveryService::with_store(
         batch.store().clone(),
         Arc::new(backend),
@@ -4409,6 +4430,17 @@ async fn deliver_plan_to_batch(
         return Ok(PlanOutcome::Succeeded);
     }
     let reason = receipt.error.as_deref().unwrap_or("no reason recorded");
+    // A stop request cut the delivery's regression check short: the plan
+    // stopped, it did not fail (bug-7b62ff).
+    if stop.requested().is_some() {
+        tracing::warn!(
+            plan_id = %plan.id,
+            batch = batch.branch(),
+            reason,
+            "the run was asked to stop during the plan's delivery; it was not delivered"
+        );
+        return Ok(PlanOutcome::Interrupted);
+    }
     tracing::error!(
         plan_id = %plan.id,
         batch = batch.branch(),
@@ -4717,6 +4749,7 @@ async fn check_plan_in_place(
     plan: &crate::runner::plan_loader::Plan,
     checks: &[crate::task_parser::VerifyStep],
     env_passthrough: &[String],
+    stop: &PlanRunInterruptHandle,
     checkpoint: &mut crate::graph_checkpoint::PreparedGraphCheckpoint,
     graph_tui_bridge: &crate::runner::graph_tui_bridge::GraphTuiBridge,
 ) -> anyhow::Result<PlanOutcome> {
@@ -4726,7 +4759,7 @@ async fn check_plan_in_place(
         super::plan_check_events::CheckStage::InPlace,
     );
     let result =
-        super::plan_verify::run_plan_verify(workdir, checks, env_passthrough, &events).await;
+        super::plan_verify::run_plan_verify(workdir, checks, env_passthrough, &events, stop).await;
     let commands: Vec<&str> = checks.iter().map(|step| step.command.as_str()).collect();
     checkpoint.record_plan_verify(serde_json::json!({
         "passed": result.is_ok(),
@@ -4738,6 +4771,11 @@ async fn check_plan_in_place(
         Ok(()) => {
             tracing::info!(plan_id = %plan.id, steps = checks.len(), "plan check passed");
             Ok(PlanOutcome::Succeeded)
+        }
+        // A stop request ended the check: the plan stopped (bug-7b62ff).
+        Err(failure) if failure.stopped_by.is_some() => {
+            tracing::warn!(plan_id = %plan.id, step = %failure.command, "plan check stopped");
+            Ok(PlanOutcome::Interrupted)
         }
         Err(failure) => {
             tracing::error!(
@@ -8833,6 +8871,56 @@ printf '%s\n' '{"type":"result","session_id":"sess-batch","model":"claude-sonnet
                     "the failed plan was taken back out of the batch"
                 );
             }
+        }
+    }
+
+    /// bug-7b62ff: a cancel that comes while a plan's whole-plan check runs,
+    /// in the shared working tree or as its delivery's post-merge regression
+    /// check, stops the check at once and kills what it started. The run
+    /// ends cancelled, its checkpoint names the cancel, and it releases the
+    /// workspace's runner lock, so the next run can start.
+    #[cfg(unix)]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_cancel_stops_the_whole_plan_check_and_frees_the_workspace() {
+        use crate::check_process_probe::{sleeping_step, wait_for_exit, wait_for_pids};
+
+        for worktree_per_task in [false, true] {
+            let mode = if worktree_per_task {
+                "regression check"
+            } else {
+                "shared tree"
+            };
+            let scratch = tempfile::tempdir().expect("tempdir");
+            let pids = scratch.path().join("pids");
+            let dir = repo_with_file_plans(&["alpha"], Some(sleeping_step(&pids).as_str()));
+            let repo = dir.path().to_path_buf();
+            let interrupt = PlanRunInterruptHandle::default();
+            let params = GraphPlanRunParams {
+                worktree_per_task,
+                interrupt: Some(interrupt.clone()),
+                ..worktree_run_params(&repo)
+            };
+            let run = tokio::spawn(run_graph_plan_in_run(params, Some("run-cancel".into())));
+            let running = wait_for_pids(&pids).await;
+
+            interrupt.request(PlanRunInterrupt::Cancel);
+            let exit_code = tokio::time::timeout(Duration::from_secs(30), run)
+                .await
+                .unwrap_or_else(|_| panic!("{mode}: the cancelled run did not end"))
+                .expect("the run task")
+                .expect("the run");
+
+            assert_eq!(exit_code, PlanRunInterrupt::Cancel.exit_code(), "{mode}");
+            for pid in running {
+                wait_for_exit(pid).await;
+            }
+            assert_eq!(
+                crate::graph_checkpoint::canonical_stop_cause(&repo, "01-alpha").as_deref(),
+                Some("cancel"),
+                "{mode}"
+            );
+            let _next = crate::workspace_lock::acquire_runner_lock(&repo.join(".roko"))
+                .unwrap_or_else(|error| panic!("{mode}: the run kept the workspace: {error}"));
         }
     }
 

@@ -16,7 +16,7 @@ anchors = ["crates/roko-cli/src/graph_execution/delivery.rs", "crates/roko-cli/s
 links = { depends_on = [], blocks = [], related = ["bug-1d09e8", "bug-0c7f25"], supersedes = [], duplicate_of = "" }
 
 [[verify]]
-command = "grep -rqw 'fn a_cancel_stops_the_post_merge_regression_check' crates/roko-cli/ && cargo test -p roko-cli a_cancel_stops_the_post_merge_regression_check"
+command = "grep -rqw 'fn a_cancel_stops_the_post_merge_regression_check' crates/roko-cli/ && cargo test -p roko-cli --lib -- a_cancel_stops_the_post_merge_regression_check a_cancel_stops_the_whole_plan_check_and_frees_the_workspace a_stop_ends_the_plan_check_and_kills_its_steps a_lock_held_by_this_process_is_not_a_process_to_kill"
 +++
 
 ## Problem
@@ -55,4 +55,6 @@ fails at once, and (see the related item on pre-start failures) its card does no
 
 ## Done when
 
-`a_cancel_stops_the_post_merge_regression_check` passes (the `[[verify]]` command).
+`a_cancel_stops_the_post_merge_regression_check` passes (the `[[verify]]` command), with the end-to-end test
+`a_cancel_stops_the_whole_plan_check_and_frees_the_workspace` (both check modes: the run ends cancelled, the check's
+processes are gone, the runner lock is free). `--lib` keeps the verify from building the ~70 integration test binaries.

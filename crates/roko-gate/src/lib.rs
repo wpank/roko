@@ -159,6 +159,9 @@ pub use adaptive_threshold::{AdaptiveThresholds, RungStats, TOTAL_RUNGS};
 pub use agent_judge::AgentJudgeOracle;
 pub use artifact_store::ArtifactStore;
 pub use benchmark_gate::{BenchmarkComparison, BenchmarkRegressionGate};
+/// Run a check command in a process group of its own that dies with its
+/// future (bug-7b62ff).
+pub use cancel_safe_command::output as output_in_own_group;
 pub use citation_gate::{
     Citation, CitationResolver, HttpCitationResolver, Resolution, check_citations,
     extract_citations,

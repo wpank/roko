@@ -3,8 +3,19 @@ use std::process::{Output, Stdio};
 
 use tokio::process::Command;
 
-/// Run a command whose whole process group is terminated if this future is dropped.
-pub(crate) async fn output(mut command: Command) -> io::Result<Output> {
+/// Run `command` as the leader of a process group of its own and collect its
+/// output, as [`Command::output`] does.
+///
+/// The command is registered with the process registry an interrupted plan
+/// run signals (gap-b367bf), and if this future is dropped before the command
+/// ends, by a timeout or a stop that stops waiting for it, the whole group is
+/// killed: nothing the command started, such as cargo, rustc or a test
+/// binary, outlives it (bug-7b62ff).
+///
+/// # Errors
+///
+/// When the command cannot be spawned or waited for.
+pub async fn output(mut command: Command) -> io::Result<Output> {
     command
         .stdin(Stdio::null())
         .stdout(Stdio::piped())

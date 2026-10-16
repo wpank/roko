@@ -22,6 +22,7 @@ use std::time::Duration;
 use serde::Serialize;
 
 use super::plan_check_events::PlanCheckEvents;
+use super::plan_runner::PlanRunInterruptHandle;
 use super::plan_set::{Area, PlanFootprint};
 use crate::runner::plan_loader::Plan;
 use crate::task_parser::VerifyStep;
@@ -85,7 +86,8 @@ fn step(phase: &str, command: impl Into<String>) -> VerifyStep {
     }
 }
 
-/// Why a plan's check failed: the step, and the end of its output.
+/// Why a plan's check failed, or was stopped: the step, and the end of its
+/// output.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct PlanVerifyFailure {
     /// The failed step's phase.
@@ -94,11 +96,20 @@ pub struct PlanVerifyFailure {
     pub command: String,
     /// The last lines the step wrote, or why it did not finish.
     pub output: String,
+    /// What stopped the step before it ended, such as `cancel` or `SIGINT`,
+    /// when the run was asked to stop (bug-7b62ff): the check did not fail.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub stopped_by: Option<String>,
 }
 
 impl std::fmt::Display for PlanVerifyFailure {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "`{}` failed: {}", self.command, self.output)
+        let ended = if self.stopped_by.is_some() {
+            "stopped"
+        } else {
+            "failed"
+        };
+        write!(f, "`{}` {ended}: {}", self.command, self.output)
     }
 }
 
@@ -111,18 +122,25 @@ impl std::fmt::Display for PlanVerifyFailure {
 /// other secrets or the person's GitHub login, plus the names
 /// `env_passthrough` (`[gates] env_passthrough`) lists.
 ///
+/// Each step leads a process group of its own. When `stop` asks the run to
+/// stop, or the step runs out of time, the step is killed with everything it
+/// started, such as cargo and its test binaries, and the check ends at once
+/// (bug-7b62ff).
+///
 /// # Errors
 ///
 /// The first step that exits unsuccessfully, cannot start (its environment
-/// included), or runs out of time.
+/// included), runs out of time, or is stopped (with
+/// [`PlanVerifyFailure::stopped_by`] set).
 pub async fn run_plan_verify(
     dir: &Path,
     steps: &[VerifyStep],
     env_passthrough: &[String],
     events: &PlanCheckEvents,
+    stop: &PlanRunInterruptHandle,
 ) -> Result<(), PlanVerifyFailure> {
     let parent_env = roko_core::child_env::process_env();
-    run_plan_verify_from(dir, steps, &parent_env, env_passthrough, events).await
+    run_plan_verify_from(dir, steps, &parent_env, env_passthrough, events, stop).await
 }
 
 /// [`run_plan_verify`], with `parent_env` standing in for roko's own
@@ -133,19 +151,17 @@ async fn run_plan_verify_from(
     parent_env: &[(String, OsString)],
     passthrough: &[String],
     events: &PlanCheckEvents,
+    stop: &PlanRunInterruptHandle,
 ) -> Result<(), PlanVerifyFailure> {
     for (index, step) in steps.iter().enumerate() {
         let failure = |output: String| PlanVerifyFailure {
             phase: step.phase.clone(),
             command: step.command.clone(),
             output,
+            stopped_by: None,
         };
         let mut command = tokio::process::Command::new("sh");
-        command
-            .arg("-c")
-            .arg(&step.command)
-            .current_dir(dir)
-            .kill_on_drop(true);
+        command.arg("-c").arg(&step.command).current_dir(dir);
         let prepared =
             roko_gate::inherit_gate_env_from(&mut command, parent_env.iter().cloned(), passthrough);
         let watched = events.start(index, steps.len(), &step.command);
@@ -154,9 +170,21 @@ async fn run_plan_verify_from(
             watched.finish(false, None, Some(reason.clone()));
             return Err(failure(reason));
         }
-        let run = watched.watch(command.output());
+        let run = watched.watch(roko_gate::output_in_own_group(command));
         let timeout = Duration::from_millis(step.timeout_ms.max(1));
-        let output = match tokio::time::timeout(timeout, run).await {
+        // A stop drops the step, which kills its process group.
+        let ran = tokio::select! {
+            ran = tokio::time::timeout(timeout, run) => ran,
+            interrupt = stop.stopped() => {
+                let reason = format!("{} stopped it", interrupt.cause());
+                watched.finish(false, None, Some(reason.clone()));
+                return Err(PlanVerifyFailure {
+                    stopped_by: Some(interrupt.label().to_string()),
+                    ..failure(reason)
+                });
+            }
+        };
+        let output = match ran {
             Ok(Ok(output)) => output,
             Ok(Err(error)) => {
                 let reason = format!("could not start: {error}");
@@ -211,7 +239,9 @@ mod tests {
             verify_step("touch never"),
         ];
 
-        let failure = run_plan_verify(dir.path(), &steps, &[], &PlanCheckEvents::none())
+        let none = PlanCheckEvents::none();
+        let go = PlanRunInterruptHandle::default();
+        let failure = run_plan_verify(dir.path(), &steps, &[], &none, &go)
             .await
             .expect_err("the second step fails");
 
@@ -222,9 +252,8 @@ mod tests {
         );
         assert!(dir.path().join("first").exists());
         assert!(!dir.path().join("never").exists());
-        let none = PlanCheckEvents::none();
         assert!(
-            run_plan_verify(dir.path(), &steps[..1], &[], &none)
+            run_plan_verify(dir.path(), &steps[..1], &[], &none, &go)
                 .await
                 .is_ok()
         );
@@ -254,7 +283,8 @@ mod tests {
             verify_step("touch never"),
         ];
 
-        let failure = run_plan_verify(dir.path(), &steps, &[], &events)
+        let go = PlanRunInterruptHandle::default();
+        let failure = run_plan_verify(dir.path(), &steps, &[], &events, &go)
             .await
             .expect_err("the second step fails");
 
@@ -332,6 +362,7 @@ mod tests {
             &parent_env,
             &["PLAN_VERIFY_PROBE".to_string()],
             &PlanCheckEvents::none(),
+            &PlanRunInterruptHandle::default(),
         )
         .await
         .expect("the step runs");
@@ -374,6 +405,7 @@ mod tests {
             &steps,
             &[PASSED.to_string()],
             &PlanCheckEvents::none(),
+            &PlanRunInterruptHandle::default(),
         )
         .await
         .expect("the check passes");
@@ -425,7 +457,9 @@ mod tests {
             .expect("the marker's directory");
         let command = format!("touch '{}'", std::path::Path::new(&marker).display());
 
-        let failure = run_plan_verify(dir, &[verify_step(&command)], &[], &PlanCheckEvents::none())
+        let steps = [verify_step(&command)];
+        let go = PlanRunInterruptHandle::default();
+        let failure = run_plan_verify(dir, &steps, &[], &PlanCheckEvents::none(), &go)
             .await
             .expect_err("no check environment, no check");
 
@@ -433,5 +467,48 @@ mod tests {
             failure.output.contains("the check did not run"),
             "{failure}"
         );
+    }
+
+    /// bug-7b62ff: a stop request ends a whole-plan check at once. The
+    /// running step dies with everything it started (its process group), the
+    /// failure says what stopped it, and the steps after it do not run.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_stop_ends_the_plan_check_and_kills_its_steps() {
+        use crate::check_process_probe::{sleeping_step, wait_for_exit, wait_for_pids};
+        use crate::graph_execution::plan_runner::PlanRunInterrupt;
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let pids = dir.path().join("pids");
+        let steps = [
+            verify_step(&sleeping_step(&pids)),
+            verify_step("touch never"),
+        ];
+        let stop = PlanRunInterruptHandle::default();
+        let check = tokio::spawn({
+            let dir = dir.path().to_path_buf();
+            let stop = stop.clone();
+            async move { run_plan_verify(&dir, &steps, &[], &PlanCheckEvents::none(), &stop).await }
+        });
+        let running = wait_for_pids(&pids).await;
+
+        stop.request(PlanRunInterrupt::Cancel);
+        let failure = tokio::time::timeout(Duration::from_secs(10), check)
+            .await
+            .expect("the stopped check ends at once")
+            .expect("the check task")
+            .expect_err("a stopped check does not pass");
+
+        assert_eq!(failure.stopped_by.as_deref(), Some("cancel"), "{failure}");
+        assert!(
+            failure
+                .to_string()
+                .contains("stopped: a cancel request stopped it"),
+            "{failure}"
+        );
+        for pid in running {
+            wait_for_exit(pid).await;
+        }
+        assert!(!dir.path().join("never").exists());
     }
 }

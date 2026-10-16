@@ -147,7 +147,7 @@ impl BatchIntegration {
         if !self.created || !self.receipts().is_empty() {
             return false;
         }
-        git_output(
+        let deleted = git_output(
             &self.repo,
             &[
                 "update-ref",
@@ -159,7 +159,26 @@ impl BatchIntegration {
             ],
         )
         .await
-        .is_ok()
+        .is_ok();
+        if deleted {
+            // Its description goes with it; a branch never described has none.
+            let section = format!("branch.{}", self.branch);
+            let _ = git_output(&self.repo, &["config", "--remove-section", &section]).await;
+        }
+        deleted
+    }
+
+    /// Describe the batch branch as `description`, the run's plans' titles
+    /// (gap-c2efe7), in `branch.<batch>.description`, which `git branch` and hosts
+    /// read. Only a branch this run created; a failure is logged.
+    pub async fn describe(&self, description: &str) {
+        if !self.created || description.trim().is_empty() {
+            return;
+        }
+        let key = format!("branch.{}.description", self.branch);
+        if let Err(error) = git_output(&self.repo, &["config", &key, description.trim()]).await {
+            tracing::warn!(branch = %self.branch, %error, "the batch branch has no description");
+        }
     }
 
     /// The command that takes the batch into the operator's checkout, which

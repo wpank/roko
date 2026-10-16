@@ -309,6 +309,9 @@ pub struct GraphTaskDispatcher {
     /// Plans whose verified tasks wait for a person's approval before they
     /// are accepted (gap-0d64d5, [`Self::hold_for_approval`]).
     approval_plans: parking_lot::Mutex<std::collections::HashSet<String>>,
+    /// The subjects the accepted commits of named one-task plans take, by
+    /// plan (gap-c2efe7, [`Self::name_commits`]).
+    commit_titles: parking_lot::Mutex<std::collections::HashMap<String, String>>,
     /// How long a streaming provider call may report nothing from its start
     /// before the stall watchdog counts its silence
     /// ([`watchdog::FIRST_OUTPUT_GRACE`]; tests shorten it).
@@ -385,6 +388,7 @@ impl GraphTaskDispatcher {
             gate_threshold_writes: gate_learning::GateThresholdWrites::new(flush_interval),
             conductor: None,
             approval_plans: parking_lot::Mutex::default(),
+            commit_titles: parking_lot::Mutex::default(),
             first_output_grace: watchdog::FIRST_OUTPUT_GRACE,
             running_plans: parking_lot::Mutex::default(),
             metrics: None,
@@ -585,6 +589,25 @@ impl GraphTaskDispatcher {
     /// "per_task"`). See [`Self::await_review`].
     pub fn hold_for_approval(&self, plan_id: &str) {
         self.approval_plans.lock().insert(plan_id.to_string());
+    }
+
+    /// Name the commit an accepted attempt of `plan_id`, a one-task plan
+    /// named for people, leaves on its plan branch: `title` in place of its
+    /// task's title (gap-c2efe7). A chat host's task keeps its own title, which
+    /// names the host and not the request (9117), for its agent's prompt.
+    pub fn name_commits(&self, plan_id: &str, title: &str) {
+        self.commit_titles
+            .lock()
+            .insert(plan_id.to_string(), title.to_string());
+    }
+
+    /// The title the accepted commit of `task` of `plan_id` takes.
+    fn commit_title(&self, plan_id: &str, task: &TaskDef) -> String {
+        self.commit_titles
+            .lock()
+            .get(plan_id)
+            .cloned()
+            .unwrap_or_else(|| task.title.clone())
     }
 
     /// Whether `plan_id`'s verified tasks wait for approval.

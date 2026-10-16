@@ -1339,6 +1339,7 @@ mod tests {
         TasksFile {
             meta: TaskMeta {
                 plan: "p1".into(),
+                title: None,
                 iteration: 0,
                 total: 1,
                 done: 0,

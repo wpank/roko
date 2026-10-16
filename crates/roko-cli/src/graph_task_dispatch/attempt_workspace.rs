@@ -263,7 +263,7 @@ impl GraphTaskDispatcher {
                 run_id: settled.key().run_id,
                 attempt_key: settled.attempt_key().to_string(),
                 verdict: verdict.as_str().to_string(),
-                title: task.title.clone(),
+                title: self.commit_title(&spec.plan_id, task),
             };
             Some(provider.accept(lease, &request).await)
         } else {

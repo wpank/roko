@@ -572,6 +572,7 @@ pub(crate) async fn cmd_run(
             || roko_cli::graph_task_dispatch::LiveAgentOutput::for_local_run(&workdir),
             |(state, _)| state.effective_live_agent_output().into(),
         ),
+        title: None,
     })
     .await;
 

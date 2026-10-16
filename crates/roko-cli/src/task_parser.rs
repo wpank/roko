@@ -26,6 +26,12 @@ use serde::{Deserialize, Deserializer, Serialize};
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TaskMeta {
     pub plan: String,
+    /// The plan's name for people (gap-c2efe7): its run's title, its batch
+    /// branch's description, and the subject of a one-task plan's accepted
+    /// commit. Never part of an agent's prompt. Unset, the plan is named by
+    /// its id.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
     #[serde(default)]
     pub iteration: u32,
     #[serde(default)]
@@ -1088,6 +1094,7 @@ pub const VERIFY_KEYS: &[&str] = &[
 /// counts SQ12 (`roko_gate::spec_quality`, sq-3).
 pub const META_KEYS: &[&str] = &[
     "plan",
+    "title",
     "iteration",
     "total",
     "done",
@@ -3016,6 +3023,7 @@ depends_on = []
         let mut tasks = TasksFile {
             meta: TaskMeta {
                 plan: "test".into(),
+                title: None,
                 iteration: 0,
                 total: 21,
                 done: 0,
@@ -4094,6 +4102,7 @@ files = ["README.md"]
         };
         let meta = TaskMeta {
             plan: "keys".into(),
+            title: Some("Keys".into()),
             iteration: 1,
             total: 1,
             done: 0,
@@ -4296,7 +4305,7 @@ expect = "pass_on_base"
             Some("verify".to_string())
         );
         // A typo-table correction counts only for a key of the table checked.
-        assert_eq!(suggest_field_correction("file", META_KEYS), None);
+        assert_eq!(suggest_field_correction("desc", META_KEYS), None);
         // Unknown field with no close match returns None.
         assert_eq!(suggest_field_correction("zzzzunknown", TASK_KEYS), None);
     }

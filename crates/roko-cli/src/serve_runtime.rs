@@ -1138,6 +1138,7 @@ fn run_prompt_plan_on_local_runtime(
             origin: options.origin,
             no_holdout: false,
             live_agent_output: config_live_output_to_dispatcher(options.live_agent_output),
+            title: options.title.clone(),
         })
         .await?;
         let snapshot = state_hub.current_snapshot();

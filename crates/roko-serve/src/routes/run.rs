@@ -43,6 +43,11 @@ struct RunRequest {
     /// Default: the project's `default_domain`.
     #[serde(default)]
     domain: Option<String>,
+    /// The run's name for people (gap-c2efe7); default: the prompt's first
+    /// sentence.
+    #[serde(default)]
+    #[validate(length(max = 120))]
+    title: Option<String>,
 }
 
 impl RequestPayload for RunRequest {
@@ -65,6 +70,7 @@ async fn start_run(
     let domain = body.domain.as_deref().and_then(TaskDomain::from_label);
     let options = PromptPlanOptions {
         domain,
+        title: body.title.clone(),
         ..PromptPlanOptions::default()
     };
     let started = start_gated_run(
@@ -1139,6 +1145,7 @@ mod tests {
             prompt: "add a test for the parser".into(),
             workdir: None,
             domain: None,
+            title: None,
         };
         let response = start_run(State(Arc::clone(&state)), ValidJson(request))
             .await
@@ -1186,6 +1193,7 @@ mod tests {
             prompt: "add a test".into(),
             workdir: None,
             domain: None,
+            title: None,
         };
         let response = start_run(State(Arc::clone(&state)), ValidJson(request))
             .await

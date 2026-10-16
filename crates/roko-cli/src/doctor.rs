@@ -65,6 +65,57 @@ pub struct DoctorOptions {
     pub serve_url: Option<String>,
     /// Where the provider-credential checks get their answers: the machine, or fixed answers.
     pub credentials: CredentialProbe,
+    /// The roko serve that holds the workspace lock, when doctor reads beside
+    /// it without the lock (bug-1f5406): the report says so first, and the
+    /// check that removes stale lock files is skipped.
+    pub beside_serve: Option<ServeHolder>,
+}
+
+/// The roko serve that holds a workspace's lock for its life, which `roko
+/// doctor` reads beside without the lock (bug-1f5406).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ServeHolder {
+    /// Its process id, the one the workspace lock records.
+    pub pid: u32,
+    /// The URL it advertises in `.roko/runtime/serve.json`.
+    pub url: String,
+}
+
+/// The roko serve that holds this workspace's lock, when the lock's holder
+/// is one: the PID the exclusive holder wrote is the PID serve advertises in
+/// `.roko/runtime/serve.json` (bug-1f5406). Call it after a lock attempt
+/// failed; `None` when the holder is not this workspace's serve.
+#[must_use]
+pub fn serve_holding_workspace(workdir: &Path) -> Option<ServeHolder> {
+    let holder = crate::workspace_lock::workspace_lock_owner_pid(&workdir.join(".roko"))?;
+    roko_serve::endpoint::read_endpoint(workdir)
+        .filter(|endpoint| endpoint.pid == holder)
+        .map(|endpoint| ServeHolder {
+            pid: endpoint.pid,
+            url: endpoint.url,
+        })
+}
+
+/// The `workspace_lock` line of a doctor run that read the workspace beside
+/// the roko serve holding it, without the workspace lock (bug-1f5406).
+fn beside_serve_check(serve: &ServeHolder) -> DoctorCheck {
+    DoctorCheck {
+        id: "workspace_lock".to_string(),
+        status: DoctorStatus::Ok,
+        message: format!(
+            "roko serve (PID {}) holds this workspace, so doctor read it without the workspace \
+             lock",
+            serve.pid
+        ),
+        detail: Some(
+            "the checks only read; state a run is writing right now can look half-written, and \
+             stale lock files are left for a doctor run without serve"
+                .to_string(),
+        ),
+        path: None,
+        url: Some(serve.url.clone()),
+        fix: None,
+    }
 }
 
 /// Where `roko doctor`'s provider-credential checks (`provider_usable` and the shared
@@ -243,6 +294,9 @@ pub async fn run_doctor(options: &DoctorOptions) -> Result<DoctorReport> {
     let loaded_config = load_active_config(&workdir, options.config_override.as_deref())?;
 
     let mut checks = Vec::new();
+    if let Some(serve) = &options.beside_serve {
+        checks.push(beside_serve_check(serve));
+    }
 
     // ── Shared diagnostic service checks (#279) ─────────────────────────
     // Run all 11 shared checks via the consolidated DiagnosticService.
@@ -313,7 +367,24 @@ pub async fn run_doctor(options: &DoctorOptions) -> Result<DoctorReport> {
     checks.extend(check_mcp_allowlist(&workdir, &loaded_config));
     checks.push(check_orphaned_tmp_files(&workdir));
     checks.push(check_plans_dir_conflict(&workdir));
-    checks.extend(check_stale_runtime_locks(&workdir));
+    match &options.beside_serve {
+        // Removing a stale lock file while serve runs could race the next lock
+        // serve takes, so that cleanup waits for a doctor run that holds the
+        // workspace lock itself (bug-1f5406).
+        Some(serve) => checks.push(DoctorCheck {
+            id: "stale_locks".to_string(),
+            status: DoctorStatus::Skipped,
+            message: format!(
+                "stale lock files not checked: roko serve (PID {}) holds the workspace lock",
+                serve.pid
+            ),
+            detail: None,
+            path: None,
+            url: None,
+            fix: None,
+        }),
+        None => checks.extend(check_stale_runtime_locks(&workdir)),
+    }
     let resources = load_resources_config(&workdir, options.config_override.as_deref());
     let (disk_health_check, disk_health) = check_disk_health(&workdir, &resources).await;
     checks.push(disk_health_check);
@@ -3833,6 +3904,107 @@ pub fn clean_orphaned_files(workdir: &Path) -> Vec<PathBuf> {
 mod tests {
     use super::*;
 
+    /// bug-1f5406: a roko serve holds its workspace's lock exclusively for its
+    /// life. Doctor recognizes it by the PID the lock file and serve.json
+    /// share; no other process counts.
+    #[test]
+    fn doctor_recognizes_the_serve_that_holds_the_workspace() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let roko_dir = dir.path().join(".roko");
+        let serve_lock =
+            crate::workspace_lock::acquire_workspace_lock(&roko_dir).expect("serve's lock");
+        assert!(crate::workspace_lock::acquire_workspace_lock_shared(&roko_dir).is_err());
+        assert_eq!(
+            serve_holding_workspace(dir.path()),
+            None,
+            "without serve.json the holder is unknown"
+        );
+
+        let mut endpoint = roko_serve::endpoint::ServeEndpoint {
+            pid: std::process::id().wrapping_add(1),
+            url: "http://127.0.0.1:6791".to_string(),
+            workdir: dir.path().to_path_buf(),
+            started_at: "2026-10-16T10:00:00Z".to_string(),
+        };
+        roko_serve::endpoint::write_endpoint(dir.path(), &endpoint).expect("serve.json");
+        assert_eq!(
+            serve_holding_workspace(dir.path()),
+            None,
+            "a serve.json of another process is not the holder"
+        );
+        endpoint.pid = std::process::id();
+        roko_serve::endpoint::write_endpoint(dir.path(), &endpoint).expect("serve.json");
+        assert_eq!(
+            serve_holding_workspace(dir.path()),
+            Some(ServeHolder {
+                pid: std::process::id(),
+                url: "http://127.0.0.1:6791".to_string(),
+            })
+        );
+        drop(serve_lock);
+        assert!(crate::workspace_lock::acquire_workspace_lock_shared(&roko_dir).is_ok());
+    }
+
+    /// bug-1f5406: beside a running serve, the report says first that doctor
+    /// read the workspace without the lock, and skips the one check that
+    /// writes: a stale lock file stays for a doctor run that holds the lock.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn doctor_beside_serve_says_so_and_leaves_lock_files_alone() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let runtime = temp.path().join(".roko").join("runtime");
+        std::fs::create_dir_all(&runtime).expect("runtime dir");
+        let runner_lock = runtime.join("roko.runner.lock");
+        // PID 4294967294 (u32::MAX - 1) cannot exist on any real system.
+        std::fs::write(&runner_lock, "4294967294\n").expect("stale runner lock");
+        let serve = ServeHolder {
+            pid: 4242,
+            url: "http://127.0.0.1:6791".to_string(),
+        };
+
+        let report = run_doctor(&DoctorOptions {
+            beside_serve: Some(serve),
+            ..test_options(temp.path())
+        })
+        .await
+        .expect("a report");
+        assert_eq!(report.checks[0].id, "workspace_lock");
+        assert_eq!(report.checks[0].status, DoctorStatus::Ok);
+        assert!(
+            report.checks[0]
+                .message
+                .contains("roko serve (PID 4242) holds this workspace"),
+            "{:?}",
+            report.checks[0]
+        );
+        let stale = report
+            .checks
+            .iter()
+            .find(|check| check.id == "stale_locks")
+            .expect("the skipped lock check");
+        assert_eq!(stale.status, DoctorStatus::Skipped);
+        assert!(runner_lock.exists(), "nothing is removed beside serve");
+        let text = report.render_human();
+        assert!(
+            text.contains("[ok] workspace_lock: roko serve (PID 4242)"),
+            "{text}"
+        );
+
+        let report = run_doctor(&test_options(temp.path()))
+            .await
+            .expect("a report");
+        assert!(
+            report
+                .checks
+                .iter()
+                .all(|check| check.id != "workspace_lock")
+        );
+        assert!(
+            !runner_lock.exists(),
+            "with the lock, the stale file is removed"
+        );
+    }
+
     /// gap-115bae: `roko doctor` says whether a chat host can start runs here,
     /// with serve's refusal and the fix when it cannot.
     #[test]
@@ -3978,6 +4150,7 @@ mod tests {
                 auth: Some("claude CLI".to_string()),
                 sources: vec!["claude-cli".to_string()],
             },
+            beside_serve: None,
         }
     }
 

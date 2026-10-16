@@ -1466,11 +1466,33 @@ pub(crate) async fn cmd_doctor(
     // `doctor clean` removes orphaned files and `doctor disk --fix` leftover
     // attempt checkouts (exclusive); all other doctor variants are read-only
     // and use a shared lock so they can coexist with an active plan runner.
+    // A running roko serve holds the workspace exclusively for its life: the
+    // read-only variants then read beside it without the lock, and say so
+    // (bug-1f5406).
+    let roko_dir = workdir.join(".roko");
+    let mut beside_serve = None;
     let _lock = if matches!(subject, Some(DoctorSubject::Clean)) || fix {
-        roko_cli::workspace_lock::acquire_workspace_lock(&workdir.join(".roko"))?
+        Some(roko_cli::workspace_lock::acquire_workspace_lock(&roko_dir)?)
     } else {
-        roko_cli::workspace_lock::acquire_workspace_lock_shared(&workdir.join(".roko"))?
+        match roko_cli::workspace_lock::acquire_workspace_lock_shared(&roko_dir) {
+            Ok(lock) => Some(lock),
+            Err(error) => {
+                let serve = roko_cli::doctor::serve_holding_workspace(&workdir).ok_or(error)?;
+                beside_serve = Some(serve);
+                None
+            }
+        }
     };
+    if let Some(serve) = &beside_serve
+        && !cli.json
+        && matches!(subject, Some(DoctorSubject::Disk | DoctorSubject::Network))
+    {
+        println!(
+            "note: roko serve (PID {}, {}) holds this workspace, so doctor read it without the \
+             workspace lock",
+            serve.pid, serve.url
+        );
+    }
     if matches!(subject, Some(DoctorSubject::Clean)) {
         let removed = roko_cli::doctor::clean_orphaned_files(&workdir);
         if cli.json {
@@ -1537,6 +1559,7 @@ pub(crate) async fn cmd_doctor(
         config_override: cli.config.clone(),
         serve_url,
         credentials: roko_cli::doctor::CredentialProbe::Environment,
+        beside_serve,
     })
     .await?;
 

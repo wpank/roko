@@ -160,6 +160,18 @@ pub fn runner_lock_holder(roko_dir: &Path) -> Option<String> {
     })
 }
 
+/// The PID the exclusive holder of the workspace lock wrote, read without
+/// taking the lock. A crash can leave a stale PID behind, so pair it with a
+/// lock attempt that failed (bug-1f5406).
+#[must_use]
+pub fn workspace_lock_owner_pid(roko_dir: &Path) -> Option<u32> {
+    fs::read_to_string(roko_dir.join("runtime").join("roko.lock"))
+        .ok()?
+        .trim()
+        .parse()
+        .ok()
+}
+
 /// Acquires a shared advisory lock on the workspace.
 /// Returns a guard that releases the lock on drop.
 /// Multiple shared locks can coexist; fails immediately if another process

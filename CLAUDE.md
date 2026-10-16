@@ -411,9 +411,9 @@ Long-term priorities that still hold:
    end. The blockers from the first dogfood run have regression fixes, but no live rerun has been
    recorded.
 2. **Learning loops on the Graph path**: several feedback paths were attached to the deleted
-   Runner-v2 event loop and have not been re-attached to Graph runs. For example, Graph runs never
-   emit `FeedbackEvent::PlanCompleted`, so the dream, daimon, theta and delta plan-completion sinks
-   never fire (q-6b7cca).
+   Runner-v2 event loop and have not been re-attached to Graph runs. Graph runs emit
+   `FeedbackEvent::PlanCompleted` once per plan again, now for the daimon sink alone (q-6b7cca
+   option 2); the loops still to turn on are staged in spec-7a71d6.
 3. **roko tracks its own work**: the `roko work` CLI (it extends `roko backlog`, per
    `work/README.md`) plus plan-task `closes = [...]` links, so that roko itself maintains the work
    graph.

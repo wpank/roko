@@ -1,13 +1,15 @@
 #![cfg(unix)]
-//! A plan run leaves the operator's checkout as it found it (1222). Its
-//! results go to the plan branch and `.roko/`; before, every successful
-//! `roko plan run` also rebuilt `plans/INDEX.md` and the `.roko` indexes in
-//! the checkout (`finish_with_index_rebuild` in `main.rs`), which showed up
-//! as an untracked or changed file.
+//! A plan run leaves the operator's checkout as it found it (1222), however
+//! it is started: `roko plan run`, or `roko run plans/<dir>` (bug-26935e).
+//! Its results go to the plan branch and `.roko/`; before, every successful
+//! run also rebuilt `plans/INDEX.md` and the `.roko` indexes in the
+//! checkout (`finish_with_index_rebuild` in `main.rs`, and two more call
+//! sites in `run_cmd.rs`), which showed up as an untracked or changed file.
 
 mod common;
 
 use std::fs;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
 use common::ScriptedPlanWorkspace;
@@ -71,16 +73,13 @@ fn git(workspace: &ScriptedPlanWorkspace, args: &[&str]) -> String {
         .to_string()
 }
 
-/// 1222: after a successful run with the default per-task worktrees, the
-/// task's commit is on the plan branch, while the checkout keeps its HEAD,
-/// `git status` lists nothing outside `.roko/`, and `plans/INDEX.md` is
-/// still absent.
-#[test]
-fn plan_run_leaves_operator_checkout_clean() {
+/// Build the fixture shared by both tests below: a plan with the default
+/// per-task worktrees (gap-4ec59f, rather than the fixture's usual shared
+/// working tree), committed, with no `plans/INDEX.md` yet. Returns the
+/// workspace, the pre-run `HEAD`, and the index path.
+fn setup() -> (ScriptedPlanWorkspace, String, PathBuf) {
     let script = Script::new().task("T1", [Turn::reply().write("one.txt", "1\n")]);
     let (workspace, _provider) = ScriptedPlanWorkspace::with_provider(PLAN, TASKS, &script, "");
-    // The fixture runs tasks in the shared working tree; this run takes the
-    // default, a worktree per task (gap-4ec59f).
     let config_path = workspace.repo.join("roko.toml");
     let config = fs::read_to_string(&config_path).expect("read roko.toml");
     assert!(
@@ -93,20 +92,30 @@ fn plan_run_leaves_operator_checkout_clean() {
     let base = git(&workspace, &["rev-parse", "HEAD"]);
     let index = workspace.repo.join("plans").join("INDEX.md");
     assert!(!index.exists(), "the fixture has no plan index");
+    (workspace, base, index)
+}
 
-    let run = workspace.run_plan(PLAN, &[]);
-    assert!(run.status.success(), "{}", log(&run));
+/// After `run`: the task's commit is on the plan branch, the checkout keeps
+/// its pre-run `HEAD` (`base`), `git status` lists nothing outside
+/// `.roko/`, and `index` (`plans/INDEX.md`) is still absent.
+fn assert_checkout_clean(
+    workspace: &ScriptedPlanWorkspace,
+    base: &str,
+    index: &Path,
+    run: &Output,
+) {
+    assert!(run.status.success(), "{}", log(run));
 
     // The task's work is on the plan branch.
     let accepted = git(
-        &workspace,
+        workspace,
         &["rev-list", &format!("{base}..roko/plan/{PLAN}")],
     );
-    assert_eq!(accepted.lines().count(), 1, "{}", log(&run));
+    assert_eq!(accepted.lines().count(), 1, "{}", log(run));
     // The checkout is as the run found it.
-    assert_eq!(git(&workspace, &["rev-parse", "HEAD"]), base);
+    assert_eq!(git(workspace, &["rev-parse", "HEAD"]), base);
     let status = git(
-        &workspace,
+        workspace,
         &["status", "--porcelain", "--untracked-files=all"],
     );
     let changed: Vec<&str> = status
@@ -116,12 +125,31 @@ fn plan_run_leaves_operator_checkout_clean() {
     assert!(
         changed.is_empty(),
         "the run changed the checkout: {changed:?}\n{}",
-        log(&run)
+        log(run)
     );
     assert!(
         !index.exists(),
         "the run wrote {}\n{}",
         index.display(),
-        log(&run)
+        log(run)
     );
+}
+
+/// 1222: after a successful `roko plan run` with the default per-task
+/// worktrees, the checkout is left clean.
+#[test]
+fn plan_run_leaves_operator_checkout_clean() {
+    let (workspace, base, index) = setup();
+    let run = workspace.run_plan(PLAN, &[]);
+    assert_checkout_clean(&workspace, &base, &index, &run);
+}
+
+/// bug-26935e: `roko run plans/<dir>` leaves the checkout clean too. Before
+/// the fix, it rebuilt the plan indexes after a successful run
+/// (`run_cmd.rs::run_plan_dir`), unlike `roko plan run` (1222).
+#[test]
+fn run_plan_dir_leaves_operator_checkout_clean() {
+    let (workspace, base, index) = setup();
+    let run = workspace.run_args(&["run", &format!("plans/{PLAN}"), "--workdir"], &[]);
+    assert_checkout_clean(&workspace, &base, &index, &run);
 }

@@ -28,9 +28,7 @@ use roko_core::{Body, InclusionMode, Kind, OperatingFrequency, PromptPolicy, Rol
 use roko_learn::error_pattern_store::{
     ERROR_PATTERNS_FILE, ErrorPatternStore, FailurePatternQuery,
 };
-use roko_learn::section_effect::{
-    DEFAULT_SECTION_EFFECTS_PATH, SectionEffect, SectionEffectivenessRegistry,
-};
+use roko_learn::section_effect::{SectionEffect, SectionEffectivenessRegistry};
 pub use roko_neuro::{ContextSource, ReadFileSpec, TaskInput, VerifySpec};
 use serde::{Deserialize, Serialize};
 use tracing::info;
@@ -1495,10 +1493,6 @@ impl ContextProvider {
             .join(ERROR_PATTERNS_FILE)
     }
 
-    fn section_effects_path(&self) -> PathBuf {
-        self.workdir.join(DEFAULT_SECTION_EFFECTS_PATH)
-    }
-
     /// Resolve context for a task at the given operating frequency.
     ///
     /// This is the main entry point — called from the runner-v2 dispatch
@@ -1564,11 +1558,14 @@ impl ContextProvider {
             role_profile: role_profile.cloned(),
             prompt_policy: prompt_policy.cloned(),
         };
-        let registry =
-            ContextBidderRegistry::cold_start_with_learning(LearningContextBidder::load_or_new(
-                &self.section_effects_path(),
-                self.learning_attention_config,
-            ));
+        // Cold-start only: nothing writes `section-effects.json` any more
+        // (bug-dd4524; the section bandit took over under a different
+        // file), so the learning bidder always starts from an empty
+        // registry rather than reading a possibly-stale file off disk.
+        let registry = ContextBidderRegistry::cold_start_with_learning(LearningContextBidder::new(
+            SectionEffectivenessRegistry::new(),
+            self.learning_attention_config,
+        ));
         let mut candidates = registry.propose_context(self, &request);
 
         // ── Rolling-average demotion ────────────────────────────────

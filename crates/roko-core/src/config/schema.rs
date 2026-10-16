@@ -783,6 +783,34 @@ impl RokoConfig {
         self.models.clone()
     }
 
+    /// [`Self::effective_models`], each priced as its provider bills it
+    /// ([`ModelProfile::with_provider_cache_rate`]). A price table built from
+    /// these counts a Cerebras model's cache reads at its input rate, where
+    /// the profiles alone would count them at a tenth of it (bug-dc1273).
+    #[must_use]
+    pub fn billed_models(&self) -> IndexMap<String, ModelProfile> {
+        self.billed_models_with_env(|key| std::env::var(key).ok())
+    }
+
+    /// [`Self::billed_models`] with the providers the environment `env_fn`
+    /// holds.
+    pub(crate) fn billed_models_with_env(
+        &self,
+        env_fn: impl Fn(&str) -> Option<String>,
+    ) -> IndexMap<String, ModelProfile> {
+        let providers = self.effective_providers_with_env(env_fn);
+        self.effective_models()
+            .into_iter()
+            .map(|(key, profile)| {
+                let billed = match providers.get(&profile.provider) {
+                    Some(provider) => profile.with_provider_cache_rate(provider),
+                    None => profile,
+                };
+                (key, billed)
+            })
+            .collect()
+    }
+
     fn synthesized_model_profile(&self, slug: &str) -> ModelProfile {
         let tool_profile = profile_for_model(slug);
 
@@ -3275,6 +3303,61 @@ pheromone_decay_rate = 0.5
             openai.base_url.as_deref(),
             Some("https://api.openai.com/v1")
         );
+    }
+
+    /// bug-dc1273: each model is priced as its provider bills it. Cerebras,
+    /// by kind or by its URL behind openai_compat, bills cached input at the
+    /// input rate; another provider keeps the default multiple, and a rate
+    /// the profile names stands.
+    #[test]
+    fn billed_models_price_cerebras_cache_reads_at_the_input_rate() {
+        let cfg = RokoConfig::from_toml(
+            r#"
+[providers.cerebras]
+kind = "cerebras_api"
+api_key_env = "CEREBRAS_API_KEY"
+
+[providers.cerebras_compat]
+kind = "openai_compat"
+base_url = "https://api.cerebras.ai/v1"
+
+[providers.openai]
+kind = "openai_compat"
+base_url = "https://api.openai.com/v1"
+
+[models.glm]
+provider = "cerebras"
+slug = "zai-glm-4.7"
+cost_input_per_m = 2.25
+cost_output_per_m = 2.75
+
+[models.qwen]
+provider = "cerebras_compat"
+slug = "qwen-3-235b-a22b-instruct-2507"
+cost_input_per_m = 0.6
+cost_output_per_m = 1.2
+
+[models.mini]
+provider = "openai"
+slug = "gpt-5.4-mini"
+cost_input_per_m = 0.75
+cost_output_per_m = 4.5
+
+[models.named]
+provider = "cerebras"
+slug = "gpt-oss-120b"
+cost_input_per_m = 0.35
+cost_output_per_m = 0.75
+cost_cache_read_per_m = 0.1
+"#,
+        )
+        .expect("config");
+        let billed = cfg.billed_models_with_env(|_| None);
+        let cache_read = |key: &str| billed[key].cost_cache_read_per_m;
+        assert_eq!(cache_read("glm"), Some(2.25));
+        assert_eq!(cache_read("qwen"), Some(0.6));
+        assert_eq!(cache_read("mini"), None);
+        assert_eq!(cache_read("named"), Some(0.1));
     }
 
     #[test]

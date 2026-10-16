@@ -508,16 +508,27 @@ spec_quality.red_on_base = false
     /// home is the workspace's, isolated from the invoking environment
     /// ([`Isolated`]), then with `env` added. The exit status is not checked.
     pub fn run_plan(&self, plan: &str, env: &[(&str, &str)]) -> Output {
+        self.run_args(&["plan", "run", &format!("plans/{plan}"), "--workdir"], env)
+    }
+
+    /// `roko --json <args> <repo>` in the repository, as a user whose home is
+    /// the workspace's, isolated from the invoking environment ([`Isolated`]),
+    /// then with `env` added. The exit status is not checked. The repository
+    /// path is always appended as the final argument (as its native
+    /// `PathBuf`, not a re-quoted `&str`), so `args` should end with
+    /// `--workdir` for a subcommand that takes it, as `plan run` and `run`
+    /// both do.
+    pub fn run_args(&self, args: &[&str], env: &[(&str, &str)]) -> Output {
         let mut command = ProcessCommand::new(cargo_bin("roko"));
         command
             .isolated()
             .current_dir(&self.repo)
             .arg("--json")
-            .args(["plan", "run", &format!("plans/{plan}"), "--workdir"])
+            .args(args)
             .arg(&self.repo)
             .env("HOME", &self.home);
         command.envs(env.iter().copied());
-        command.output().expect("run roko plan run")
+        command.output().expect("run roko")
     }
 }
 

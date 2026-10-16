@@ -15,8 +15,10 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use anyhow::{Context as _, Result, anyhow, bail};
+use roko_core::agent::ProviderKind;
 use roko_core::config::DataLlmConfig;
 use roko_core::config::loader::{LoadOptions, load_config_file};
+use roko_core::config::model_registry;
 use roko_core::config::schema::RokoConfig;
 use serde::Serialize;
 
@@ -75,6 +77,9 @@ pub struct ChatHostPlan {
     pub edit: Option<ChatHostEdit>,
     /// Why that setting, or why none, in words for the person.
     pub why: String,
+    /// What to weigh about the data model it picked, when there is
+    /// something: a pick on Cerebras ([`DataModelCandidate::rate_limit_note`]).
+    pub note: Option<String>,
 }
 
 /// The setting that gives `config`'s workspace a data-model boundary.
@@ -115,12 +120,14 @@ pub fn plan_chat_host(
             return Ok(ChatHostPlan {
                 edit: None,
                 why: format!("the data-model boundary is set: [agent.data_llm] uses `{model}`"),
+                note: None,
             });
         }
         if config.serve.mcp.allow_without_data_llm {
             return Ok(ChatHostPlan {
                 edit: None,
                 why: "[serve.mcp] allow_without_data_llm is already true".to_string(),
+                note: None,
             });
         }
         return Ok(ChatHostPlan {
@@ -128,6 +135,7 @@ pub fn plan_chat_host(
             why: "for local use: runs a chat host starts go without the data-model boundary, so \
                   what they read is not screened"
                 .to_string(),
+            note: None,
         });
     }
     if let Some(model) = data_llm_model
@@ -141,11 +149,13 @@ pub fn plan_chat_host(
             return Ok(ChatHostPlan {
                 edit: None,
                 why: format!("[agent.data_llm] already uses `{model}`"),
+                note: None,
             });
         }
         return Ok(ChatHostPlan {
             edit: Some(ChatHostEdit::DataModel(model.to_string())),
             why: "the data model you named".to_string(),
+            note: None,
         });
     }
     if let (Some(model), None) = (&current, &current_problem) {
@@ -155,23 +165,38 @@ pub fn plan_chat_host(
                 "[agent.data_llm] already uses `{model}`, which roko calls over an API with its \
                  key set"
             ),
+            note: None,
         });
     }
+    // A capped run calls only a model it can price, and a data-model call
+    // that fails withholds what the agent fetched: a priced model comes
+    // first, then one on its maker's own API, as the Hermes plugin's own fix
+    // picks it, then the cheapest (gap-048b00). The built-in price snapshot is
+    // the one a workspace prices from by default.
+    let prices = roko_core::pricing_snapshot::PriceSnapshot::builtin().ok();
     let default_model = DataLlmConfig::default().model;
-    let picked = config
+    let mut candidates: Vec<DataModelCandidate> = config
         .tool_loop_models()
         .into_iter()
-        .find(|model| config.data_llm_model_problem(model).is_none())
-        .or_else(|| {
-            config
-                .data_llm_model_problem(&default_model)
-                .is_none()
-                .then_some(default_model)
-        });
-    let Some(model) = picked else {
-        // Prices only matter once a model can run a chat host's run: the
-        // built-in snapshot is the one a workspace prices from by default.
-        let prices = roko_core::pricing_snapshot::PriceSnapshot::builtin().ok();
+        .filter(|model| config.data_llm_model_problem(model).is_none())
+        .map(|model| DataModelCandidate::of(config, prices.as_ref(), model))
+        .filter(|candidate| candidate.kind != ProviderKind::PerplexityApi)
+        .collect();
+    candidates.sort_by(|a, b| {
+        b.priced
+            .cmp(&a.priced)
+            .then_with(|| b.first_party.cmp(&a.first_party))
+            .then_with(|| a.price.is_none().cmp(&b.price.is_none()))
+            .then_with(|| a.price.unwrap_or(0.0).total_cmp(&b.price.unwrap_or(0.0)))
+            .then_with(|| a.model.cmp(&b.model))
+    });
+    let picked = candidates.into_iter().next().or_else(|| {
+        config
+            .data_llm_model_problem(&default_model)
+            .is_none()
+            .then(|| DataModelCandidate::of(config, prices.as_ref(), default_model))
+    });
+    let Some(picked) = picked else {
         let reason = config
             .chat_run_refusal(prices.as_ref())
             .map(|refusal| refusal.message)
@@ -182,26 +207,126 @@ pub fn plan_chat_host(
              use, but a chat host's run still needs such a model"
         );
     };
-    let why = if ladder_runs(config, &model) {
-        "the cheapest model of the ladder that roko calls over an API with its key set"
-    } else {
-        "the cheapest model roko calls over an API with its key set"
-    };
     Ok(ChatHostPlan {
-        edit: Some(ChatHostEdit::DataModel(model)),
-        why: why.to_string(),
+        why: picked.why(),
+        note: picked.rate_limit_note(),
+        edit: Some(ChatHostEdit::DataModel(picked.model)),
     })
 }
 
-/// Whether one of `config`'s ladder rungs runs `model`, a `[models.*]` key.
-fn ladder_runs(config: &RokoConfig, model: &str) -> bool {
-    let ladder = &config.routing.ladder;
-    let slug = config.models.get(model).map(|profile| profile.slug.trim());
-    ladder.enabled
-        && ladder.all_rungs().any(|rung| {
-            let rung = rung.model.trim();
-            rung == model || slug == Some(rung)
+/// The hosts of the makers' own APIs (OpenAI, Anthropic, Google), the ones
+/// the Hermes plugin also counts.
+const FIRST_PARTY_HOSTS: [&str; 3] = [
+    "api.openai.com",
+    "api.anthropic.com",
+    "generativelanguage.googleapis.com",
+];
+
+/// A model the preset can make the data model, with what decides the pick.
+struct DataModelCandidate {
+    /// The `[models.*]` key (or built-in name).
+    model: String,
+    /// The provider it runs on, by id.
+    provider: String,
+    /// The provider's kind.
+    kind: ProviderKind,
+    /// It runs on its maker's own API: a base URL on one of
+    /// [`FIRST_PARTY_HOSTS`], or an Anthropic or Gemini provider with none.
+    first_party: bool,
+    /// It runs on Cerebras.
+    on_cerebras: bool,
+    /// Its configured price, input plus output, in USD per million tokens.
+    price: Option<f64>,
+    /// roko can price its calls, as a capped run needs
+    /// ([`model_registry::model_has_price`]).
+    priced: bool,
+}
+
+impl DataModelCandidate {
+    /// `model` as `config` resolves it, priced from `prices`.
+    fn of(
+        config: &RokoConfig,
+        prices: Option<&roko_core::pricing_snapshot::PriceSnapshot>,
+        model: String,
+    ) -> Self {
+        let resolved = roko_core::agent::resolve_model(config, &model);
+        let host = resolved
+            .provider_config
+            .as_ref()
+            .and_then(|provider| provider.base_url.as_deref())
+            .map(|url| {
+                reqwest::Url::parse(url)
+                    .ok()
+                    .and_then(|url| url.host_str().map(str::to_string))
+                    .unwrap_or_default()
+            });
+        let first_party = match &host {
+            Some(host) => FIRST_PARTY_HOSTS.contains(&host.as_str()),
+            None => matches!(
+                resolved.provider_kind,
+                ProviderKind::AnthropicApi | ProviderKind::GeminiApi
+            ),
+        };
+        let on_cerebras = resolved.provider_kind == ProviderKind::CerebrasApi
+            || host
+                .as_deref()
+                .is_some_and(|host| host == "cerebras.ai" || host.ends_with(".cerebras.ai"));
+        let profile = resolved.profile.as_ref();
+        let priced = model_registry::model_has_price(prices, profile, &resolved.slug);
+        Self {
+            provider: profile
+                .map(|profile| profile.provider.clone())
+                .unwrap_or_default(),
+            price: profile
+                .and_then(|profile| Some(profile.cost_input_per_m? + profile.cost_output_per_m?)),
+            kind: resolved.provider_kind,
+            first_party,
+            on_cerebras,
+            priced,
+            model,
+        }
+    }
+
+    /// Why the preset picked this model, in words for the person.
+    fn why(&self) -> String {
+        let price = self
+            .price
+            .map(|price| format!(", at ${price:.2} per million tokens"))
+            .unwrap_or_default();
+        let which = if self.price.is_some() {
+            "the cheapest model"
+        } else {
+            "a model"
+        };
+        if self.first_party {
+            format!(
+                "{which} with its key set on {}, its maker's own API{price}",
+                self.provider
+            )
+        } else {
+            format!(
+                "{which} with its key set, on {}{price}; no model on a maker's own API (OpenAI, \
+                 Anthropic, Google) has its key set",
+                self.provider
+            )
+        }
+    }
+
+    /// The trade-off of a data model on Cerebras, whose rate limits a busy
+    /// run meets: when a data-model call fails, the agent gets a notice
+    /// instead of what the tool returned (`roko_agent::safety::data_llm`).
+    /// `None` for a model on any other provider.
+    fn rate_limit_note(&self) -> Option<String> {
+        self.on_cerebras.then(|| {
+            format!(
+                "`{}` runs on Cerebras, whose rate limits can hold back tool output: when a \
+                 data-model call fails, the agent gets a notice instead of what the tool \
+                 returned. --data-llm-model <model> picks another data model; \
+                 --allow-without-data-llm runs without one (local use)",
+                self.model
+            )
         })
+    }
 }
 
 /// What `roko config preset chat-host` shows and writes for one workspace.
@@ -214,6 +339,8 @@ pub struct ChatHostPreset {
     pub edit: Option<ChatHostEditJson>,
     /// Why that setting, or why none.
     pub why: String,
+    /// What to weigh about the data model it picked, if anything.
+    pub note: Option<String>,
     /// The change as a unified diff of `roko.toml`; empty when nothing
     /// changes.
     pub diff: String,
@@ -290,6 +417,7 @@ fn prepare_with(
             },
         }),
         why: plan.why,
+        note: plan.note,
         ready: refusal.is_none(),
         refusals: refusal
             .as_ref()
@@ -498,8 +626,8 @@ rungs = [{ name = "cheap", model = "api-mini" }, { name = "top", model = "cli-so
     }
 
     /// gap-115bae: the preset gives a workspace without the data-model
-    /// boundary `[agent.data_llm]` with the cheapest model of the ladder
-    /// that roko calls over an API, shown first as a diff; the written
+    /// boundary `[agent.data_llm]` with the cheapest model roko calls over an
+    /// API with its key set, shown first as a diff; the written
     /// `roko.toml` keeps every comment, and chat hosts' runs may start.
     #[test]
     fn chat_host_preset_sets_the_data_model_and_keeps_comments() {
@@ -513,10 +641,13 @@ rungs = [{ name = "cheap", model = "api-mini" }, { name = "top", model = "cli-so
             })
         );
         assert!(
-            preset.why.contains("cheapest model of the ladder"),
+            preset
+                .why
+                .starts_with("the cheapest model with its key set, on api, at $1.00"),
             "{}",
             preset.why
         );
+        assert_eq!(preset.note, None);
         assert!(preset.ready, "{preset:?}");
         assert!(preset.refusals.is_empty());
         assert!(
@@ -685,7 +816,7 @@ rungs = [{ name = "cheap", model = "api-mini" }, { name = "top", model = "cli-so
             Some(ChatHostEdit::DataModel("api-cheap".to_string()))
         );
         assert!(
-            plan.why.contains("cheapest model roko calls"),
+            plan.why.contains("the cheapest model with its key set"),
             "{}",
             plan.why
         );
@@ -714,6 +845,61 @@ rungs = [{ name = "cheap", model = "api-mini" }, { name = "top", model = "cli-so
             error.to_string().contains("fix or remove that table"),
             "{error}"
         );
+    }
+
+    /// gap-048b00: a model on its maker's own API comes first even when a
+    /// cheaper one runs elsewhere, as the Hermes plugin's own fix picks.
+    #[test]
+    fn chat_host_preset_prefers_a_makers_own_api() {
+        let text = ROKO_TOML.replace(
+            "[providers.anthropic]",
+            "[providers.maker]\n\
+             kind = \"openai_compat\"\n\
+             base_url = \"https://api.openai.com/v1\"\n\
+             api_key_env = \"PATH\"\n\n\
+             [models.maker-mini]\n\
+             provider = \"maker\"\n\
+             slug = \"maker-mini-1\"\n\
+             cost_input_per_m = 2.0\n\
+             cost_output_per_m = 3.0\n\n\
+             [providers.anthropic]",
+        );
+        let dir = workspace(&text);
+        let preset = prepare_with(dir.path(), &file_only(), false, None).expect("a preset");
+        assert_eq!(
+            preset.edit.map(|edit| edit.value),
+            Some(serde_json::json!("maker-mini"))
+        );
+        assert_eq!(
+            preset.why,
+            "the cheapest model with its key set on maker, its maker's own API, at $5.00 per \
+             million tokens"
+        );
+        assert_eq!(preset.note, None);
+    }
+
+    /// gap-048b00: a data model on Cerebras comes with a note on its rate
+    /// limits and the two ways around them.
+    #[test]
+    fn chat_host_preset_notes_a_cerebras_data_model() {
+        let dir = workspace(&ROKO_TOML.replace(
+            "base_url = \"http://127.0.0.1:9/v1\"",
+            "base_url = \"https://api.cerebras.ai/v1\"",
+        ));
+        let preset = prepare_with(dir.path(), &file_only(), false, None).expect("a preset");
+        assert_eq!(
+            preset.edit.map(|edit| edit.value),
+            Some(serde_json::json!("api-mini"))
+        );
+        let note = preset.note.as_deref().unwrap_or_default();
+        for part in [
+            "`api-mini` runs on Cerebras",
+            "the agent gets a notice instead of what the tool returned",
+            "--data-llm-model",
+            "--allow-without-data-llm",
+        ] {
+            assert!(note.contains(part), "{part}: {note}");
+        }
     }
 
     /// The edit keeps a replaced value's comment and adds an implicit

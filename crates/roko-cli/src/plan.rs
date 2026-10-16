@@ -60,6 +60,10 @@ pub struct PlanSummary {
     pub status: String,
     /// Replacement queue or plan declared by `[meta].superseded_by`.
     pub superseded_by: Option<String>,
+    /// Whether `[meta].status` marks the plan a fixture, a demo or test plan.
+    /// It stays set once [`overlay_graph_checkpoint_status`] has replaced
+    /// `status` with the state of the plan's last run (gap-8f84d1).
+    pub fixture: bool,
     /// Whether the plan's `tasks.toml` is missing modern fields.
     pub old_format: bool,
     /// Last error message from executor state, if any.
@@ -192,6 +196,7 @@ impl Plan {
             completed,
             status: if completed { "done" } else { "ready" }.into(),
             superseded_by: None,
+            fixture: false,
             old_format: false,
             last_error: None,
             group: None,
@@ -333,6 +338,7 @@ pub fn summarize_plan_info(plan_info: &PlanInfo) -> PlanSummary {
     };
 
     let completed = task_count > 0 && tasks_done == task_count;
+    let fixture = meta_status.trim() == "fixture";
     let status = if meta_status.trim().is_empty() {
         if completed { "done" } else { "ready" }.to_string()
     } else {
@@ -347,6 +353,7 @@ pub fn summarize_plan_info(plan_info: &PlanInfo) -> PlanSummary {
         completed,
         status,
         superseded_by,
+        fixture,
         old_format,
         last_error: None,
         group: plan_info.group.clone(),
@@ -672,6 +679,7 @@ mod tests {
             completed: false,
             status: "ready".into(),
             superseded_by: None,
+            fixture: false,
             old_format: false,
             last_error: None,
             group: None,
@@ -694,6 +702,7 @@ mod tests {
                 completed: true,
                 status: "done".into(),
                 superseded_by: None,
+                fixture: false,
                 old_format: false,
                 last_error: None,
                 group: None,
@@ -707,6 +716,7 @@ mod tests {
                 completed: false,
                 status: "ready".into(),
                 superseded_by: None,
+                fixture: false,
                 old_format: true,
                 last_error: None,
                 group: None,
@@ -889,6 +899,7 @@ mod tests {
             completed: true,
             status: "done".into(),
             superseded_by: None,
+            fixture: false,
             old_format: true,
             last_error: None,
             group: None,
@@ -911,6 +922,7 @@ mod tests {
             completed: false,
             status: "ready".into(),
             superseded_by: None,
+            fixture: false,
             old_format: false,
             last_error: None,
             group: None,
@@ -933,6 +945,7 @@ mod tests {
             completed: false,
             status: "ready".into(),
             superseded_by: None,
+            fixture: false,
             old_format: false,
             last_error: None,
             group: None,
@@ -952,6 +965,7 @@ mod tests {
             completed: false,
             status: "superseded".into(),
             superseded_by: Some("new-plan".into()),
+            fixture: false,
             old_format: false,
             last_error: None,
             group: None,
@@ -981,6 +995,7 @@ mod tests {
             completed: false,
             status: "ready".into(),
             superseded_by: None,
+            fixture: false,
             old_format: false,
             last_error: None,
             group: None,

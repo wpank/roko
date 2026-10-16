@@ -110,7 +110,7 @@ pub use wiring::{LoopWiring, WiringComponent, WiringKind, WiringReport};
 use attempt::{AttemptBook, SettledAttempt, Settlement, attempt_agent_id, first_token_seen};
 use budget::{
     AttemptAllowance, GraphDailyBudget, GraphPlanBudgetLedger, GraphTaskSpendLedger,
-    effective_routing_budget, task_budget_ceiling_usd,
+    effective_routing_budget, own_budget_stop, task_budget_ceiling_usd,
 };
 use helper_calls::{HelperAgent, HelperCalls};
 use inert_settings::warn_inert_graph_settings_once;
@@ -1711,9 +1711,13 @@ impl TaskDispatcher for GraphTaskDispatcher {
             // failed provider (bug-28b604).
             let stopped = self.stopped_call(&spec.plan_id, &task.id, &message);
             // An agent its plan budget stopped before a model call the budget
-            // could not pay for (bug-4fabd0): the harness stopped it, and no
-            // retry can pay for that call either.
-            let budget_stop = allowance.as_deref().and_then(AttemptAllowance::refusal);
+            // could not pay for (bug-4fabd0), or that stopped itself at the
+            // spend limit the attempt gave it (gap-e14344): the harness
+            // stopped it, and no retry can pay for that call either.
+            let budget_stop = allowance
+                .as_deref()
+                .and_then(AttemptAllowance::refusal)
+                .or_else(|| own_budget_stop(&dispatch));
             // A failed provider call is settled now; a successful one is
             // settled after its verify steps so learning sees the verified
             // outcome.

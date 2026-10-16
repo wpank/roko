@@ -1175,6 +1175,11 @@ pub struct AgentOptions {
     /// whose loop roko runs asks it before each model call and stops once it
     /// refuses one; a plan run's attempt sets it from the plan budget.
     pub turn_budget: Option<Arc<dyn crate::tool_loop::TurnBudget>>,
+    /// The most this agent's run may spend, in USD, for an agent that runs
+    /// its own loop and keeps a spend limit of its own (the Claude CLI's
+    /// `--max-budget-usd`). A plan run's attempt sets it from the plan budget
+    /// as a second fence behind roko's own check (gap-e14344).
+    pub max_budget_usd: Option<f64>,
     /// The operator's `[pricing]` snapshot pin (bug-1809d7).
     ///
     /// [`create_agent_for_model`] fills this from `RokoConfig.pricing` so every adapter that

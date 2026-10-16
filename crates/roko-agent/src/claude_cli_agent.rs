@@ -20,7 +20,9 @@ use crate::usage::{Usage, UsageObservation, UsageSource};
 use async_trait::async_trait;
 use roko_core::agent::ProviderKind;
 use roko_core::child_env::{CredentialScrub, KEY_FILE_NAMES};
-use roko_core::config::model_registry::model_meta;
+use roko_core::config::model_registry::{
+    ModelPricing, ONE_HOUR_CACHE_WRITE_MULTIPLIER, model_meta,
+};
 use roko_core::defaults::DEFAULT_REQUEST_TIMEOUT_MS;
 use roko_core::pricing_snapshot::{PriceSnapshot, PricedUsage, PricingConfig, TokenCounts};
 use roko_core::{Body, Context, Kind, OperatingFrequency, Provenance, Signal};
@@ -361,6 +363,8 @@ pub struct ClaudeCliAgent {
     allowed_tools: Option<String>,
     disallowed_tools: Option<String>,
     max_turns: Option<u32>,
+    /// The CLI's own spend limit, `--max-budget-usd` (gap-e14344).
+    max_budget_usd: Option<f64>,
     settings_json: String,
     isolation: ClaudeIsolation,
     extra_args: Vec<String>,
@@ -406,6 +410,7 @@ impl ClaudeCliAgent {
             allowed_tools: None,
             disallowed_tools: None,
             max_turns: Some(OperatingFrequency::Theta.turn_limit()),
+            max_budget_usd: None,
             settings_json: build_settings_json(),
             extra_args: Vec::new(),
             env: Vec::new(),
@@ -564,6 +569,16 @@ impl ClaudeCliAgent {
         self
     }
 
+    /// Stop the run once it has spent `usd`, by the CLI's own count
+    /// (`--max-budget-usd`, Claude Code 2.0.28 and later): a second fence
+    /// behind roko's own check of what the run streams (gap-e14344). A run
+    /// stopped there fails as budget-exhausted.
+    #[must_use]
+    pub const fn with_max_budget_usd(mut self, usd: f64) -> Self {
+        self.max_budget_usd = Some(usd);
+        self
+    }
+
     /// Override the settings JSON passed via `--settings`.
     #[must_use]
     pub fn with_settings_json(mut self, json: impl Into<String>) -> Self {
@@ -653,12 +668,28 @@ impl ClaudeCliAgent {
         started: Instant,
         stream_usage: &StreamUsage,
     ) -> AgentResult {
+        self.stopped_with_stream_usage(input, reason, None, started, stream_usage)
+    }
+
+    /// [`Self::failure_with_stream_usage`], tagged with the `stop_reason` that
+    /// ended the run when it has one.
+    fn stopped_with_stream_usage(
+        &self,
+        input: &Signal,
+        reason: &str,
+        stop_reason: Option<&str>,
+        started: Instant,
+        stream_usage: &StreamUsage,
+    ) -> AgentResult {
         let wall_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
         let mut output = input
             .derive(Kind::AgentOutput, Body::text(reason))
             .provenance(Provenance::agent(&self.name))
             .tag("agent", &self.name)
             .tag("failed", "true");
+        if let Some(stop_reason) = stop_reason {
+            output = output.tag("stop_reason", stop_reason);
+        }
         for (key, value) in self.isolation.tags() {
             output = output.tag(key, value);
         }
@@ -697,6 +728,31 @@ impl ClaudeCliAgent {
                     .and_then(|turns| u32::try_from(turns).ok()),
                 cap: self.max_turns,
             }
+        })
+    }
+
+    /// The run stopped at `--max-budget-usd`: the final stream-json `result`
+    /// has subtype `error_max_budget_usd` (gap-e14344). Its failure text, in
+    /// the words of a stop for the plan budget.
+    fn budget_cap_hit(&self, stdout: &str, stderr: &str) -> Option<String> {
+        let result = [stdout, stderr].into_iter().find_map(|output| {
+            output
+                .lines()
+                .filter_map(Self::parse_stream_event)
+                .rfind(|event| event.get("type").and_then(Value::as_str) == Some("result"))
+        })?;
+        (result.get("subtype").and_then(Value::as_str) == Some("error_max_budget_usd")).then(|| {
+            let spent = result
+                .get("total_cost_usd")
+                .and_then(Value::as_f64)
+                .map_or_else(String::new, |usd| format!(" after ${usd:.4}"));
+            let limit = self
+                .max_budget_usd
+                .map_or_else(String::new, |usd| format!(" ${usd:.4}"));
+            format!(
+                "Budget exhausted: the Claude CLI stopped at its spend limit \
+                 (--max-budget-usd{limit}){spent}"
+            )
         })
     }
 
@@ -769,6 +825,9 @@ impl ClaudeCliAgent {
         }
         if let Some(max_turns) = self.max_turns {
             cmd.arg("--max-turns").arg(max_turns.to_string());
+        }
+        if let Some(usd) = self.max_budget_usd {
+            cmd.arg("--max-budget-usd").arg(format!("{usd:.6}"));
         }
 
         if let Some(fallback_model) = &self.fallback_model
@@ -1682,6 +1741,16 @@ impl ClaudeCliAgent {
             tracing::warn!(agent = %self.name, elapsed_s = elapsed_secs, "{hit}");
             return self.failure_with_stream_usage(input, &hit.to_string(), started, &stream_usage);
         }
+        if let Some(reason) = self.budget_cap_hit(&stdout, &stderr) {
+            tracing::warn!(agent = %self.name, elapsed_s = elapsed_secs, "{reason}");
+            return self.stopped_with_stream_usage(
+                input,
+                &reason,
+                Some("budget_exhausted"),
+                started,
+                &stream_usage,
+            );
+        }
 
         if !status.success() {
             let code = status
@@ -1990,6 +2059,29 @@ struct StreamedMessage {
     /// Main-loop message; a sub-agent's messages set `parent_tool_use_id`.
     top_level: bool,
     usage: Usage,
+    /// Its cache writes with a 5-minute TTL, when its usage splits them by
+    /// TTL (`cache_creation`); the rest are 1-hour writes. `None` when it
+    /// does not: a Claude Code session in print mode writes 1-hour caches
+    /// (bug-acfced).
+    cache_write_5m: Option<u32>,
+}
+
+impl StreamedMessage {
+    /// What this message's cache writes cost per million under `pricing`:
+    /// its 5-minute writes at the table's write price, the others at the
+    /// 1-hour price, which Claude Code's print mode writes (bug-acfced).
+    fn cache_write_per_m(&self, pricing: &ModelPricing) -> f64 {
+        let one_hour = pricing.input_per_m * ONE_HOUR_CACHE_WRITE_MULTIPLIER;
+        let writes = self.usage.cache_create_tokens;
+        if writes == 0 {
+            return one_hour;
+        }
+        let five = self.cache_write_5m.unwrap_or(0).min(writes);
+        f64::from(five).mul_add(
+            pricing.cache_write_per_m,
+            f64::from(writes - five) * one_hour,
+        ) / f64::from(writes)
+    }
 }
 
 impl StreamedMessages {
@@ -2034,6 +2126,14 @@ impl StreamedMessages {
         tokens.cache_read_tokens = tokens
             .cache_read_tokens
             .max(count(&["cache_read_input_tokens", "cache_read_tokens"]));
+        if let Some(split) = usage
+            .get("cache_creation")
+            .filter(|split| split.is_object())
+        {
+            let five = ClaudeCliAgent::stream_usage_u64(split, &["ephemeral_5m_input_tokens"])
+                .map_or(0, |count| u32::try_from(count).unwrap_or(u32::MAX));
+            streamed.cache_write_5m = Some(streamed.cache_write_5m.unwrap_or(0).max(five));
+        }
     }
 
     /// [`Self::observe`] `event` and, when it changed what the run streamed,
@@ -2051,7 +2151,9 @@ impl StreamedMessages {
 
     /// The streamed totals as [`UsageSource::Estimated`] usage, each message
     /// priced from the model pricing table (`fallback_model` when it names
-    /// none). Unknown when nothing was streamed.
+    /// none), its cache writes at their TTL's price
+    /// ([`StreamedMessage::cache_write_per_m`]). Unknown when nothing was
+    /// streamed.
     fn stream_usage(&self, fallback_model: &str) -> StreamUsage {
         if self.messages.is_empty() {
             return StreamUsage::default();
@@ -2070,7 +2172,7 @@ impl StreamedMessages {
                     Some(pricing.input_per_m),
                     Some(pricing.output_per_m),
                     Some(pricing.cache_read_per_m),
-                    Some(pricing.cache_write_per_m),
+                    Some(message.cache_write_per_m(&pricing)),
                 );
                 *cost_usd.get_or_insert(0.0) += f64::from(usage.cost_usd);
             }
@@ -3308,15 +3410,39 @@ mod tests {
         assert_eq!(usage.output_tokens, Some(350));
         assert_eq!(usage.cache_creation_tokens, Some(3_000));
         assert_eq!(usage.cache_read_tokens, Some(11_000));
-        // Per million: Sonnet $3 in, $15 out, $0.30 cache read, $3.75 cache
-        // write (msg_1, and msg_3 at the fallback model); Haiku $1 in, $5
-        // out (msg_2).
-        let sonnet = 1_010.0 * 3.0 + 250.0 * 15.0 + 11_000.0 * 0.30 + 3_000.0 * 3.75;
+        // Per million: Sonnet $3 in, $15 out, $0.30 cache read, $6 for a
+        // write with no TTL split, a 1-hour write in print mode (msg_1, and
+        // msg_3 at the fallback model); Haiku $1 in, $5 out (msg_2).
+        let sonnet = 1_010.0 * 3.0 + 250.0 * 15.0 + 11_000.0 * 0.30 + 3_000.0 * 6.0;
         let haiku = 500.0 * 1.0 + 100.0 * 5.0;
         let cost = usage.cost_usd.expect("priced from the model table");
         assert!((cost - (sonnet + haiku) / 1e6).abs() < 1e-6, "{usage:?}");
         assert_eq!(usage.model.as_deref(), Some("claude-sonnet-4-6"));
         assert_eq!(usage.num_turns, Some(2), "main-loop messages only");
+    }
+
+    /// bug-acfced: a streamed message's cache writes are priced at their
+    /// TTL. Claude Code 2.1.282 in print mode splits them by TTL in each
+    /// `assistant` event and writes 1-hour caches (msg_1 is such an event:
+    /// its CLI reported $0.022718 for the call, thinking included); 5-minute
+    /// writes keep the table's price; a message with no split, from an older
+    /// CLI, is priced as 1-hour writes.
+    #[test]
+    fn a_streamed_claude_cli_estimate_prices_cache_writes_at_the_session_ttl() {
+        let usage = ClaudeCliAgent::parse_stream_usage(
+            r#"{"type":"assistant","message":{"id":"msg_1","model":"claude-haiku-4-5","content":[{"type":"text","text":"OK"}],"usage":{"input_tokens":10,"output_tokens":6,"cache_creation_input_tokens":10889,"cache_read_input_tokens":0,"cache_creation":{"ephemeral_5m_input_tokens":0,"ephemeral_1h_input_tokens":10889}}},"parent_tool_use_id":null}
+{"type":"assistant","message":{"id":"msg_2","model":"claude-sonnet-4-6","content":[{"type":"text","text":"mixed"}],"usage":{"input_tokens":0,"output_tokens":0,"cache_creation_input_tokens":4000,"cache_creation":{"ephemeral_5m_input_tokens":1000,"ephemeral_1h_input_tokens":3000}}},"parent_tool_use_id":null}
+{"type":"assistant","message":{"id":"msg_3","model":"claude-sonnet-4-6","content":[{"type":"text","text":"five"}],"usage":{"input_tokens":0,"output_tokens":0,"cache_creation_input_tokens":2000,"cache_creation":{"ephemeral_5m_input_tokens":2000,"ephemeral_1h_input_tokens":0}}},"parent_tool_use_id":null}
+{"type":"assistant","message":{"id":"msg_4","model":"claude-sonnet-4-6","content":[{"type":"text","text":"old"}],"usage":{"input_tokens":0,"output_tokens":0,"cache_creation_input_tokens":2000}},"parent_tool_use_id":null}"#,
+            "claude-sonnet-4-6",
+        );
+        assert_eq!(usage.cache_creation_tokens, Some(18_889));
+        // Per million: Haiku $1 in, $5 out, $2 a 1-hour write; Sonnet $3.75 a
+        // 5-minute write, $6 a 1-hour one.
+        let haiku = 10.0 * 1.0 + 6.0 * 5.0 + 10_889.0 * 2.0;
+        let sonnet = 1_000.0 * 3.75 + 3_000.0 * 6.0 + 2_000.0 * 3.75 + 2_000.0 * 6.0;
+        let cost = usage.cost_usd.expect("priced from the model table");
+        assert!((cost - (haiku + sonnet) / 1e6).abs() < 1e-6, "{usage:?}");
     }
 
     #[test]
@@ -3407,6 +3533,31 @@ mod tests {
             .get_args()
             .map(|arg| arg.to_string_lossy().into_owned())
             .collect()
+    }
+
+    /// gap-e14344: a spend limit reaches the CLI as `--max-budget-usd`;
+    /// without one the flag is not passed.
+    #[test]
+    fn a_spend_limit_reaches_the_cli_as_max_budget_usd() {
+        let limited = ClaudeCliAgent::new("claude", ".", "claude-test-model")
+            .with_max_budget_usd(0.0273)
+            .build_command()
+            .expect("build command");
+        let args = args_of(&limited);
+        let flag = args
+            .iter()
+            .position(|arg| arg == "--max-budget-usd")
+            .expect("the spend limit flag");
+        assert_eq!(args[flag + 1], "0.027300");
+
+        let unlimited = ClaudeCliAgent::new("claude", ".", "claude-test-model")
+            .build_command()
+            .expect("build command");
+        assert!(
+            !args_of(&unlimited)
+                .iter()
+                .any(|arg| arg == "--max-budget-usd")
+        );
     }
 
     /// The value `command` sets for `name`, or `None` when it sets none.
@@ -4026,8 +4177,9 @@ sleep 30
             assert_eq!(result.usage.output_tokens, 250);
             assert_eq!(result.usage.cache_create_tokens, 3_000);
             assert_eq!(result.usage.cache_read_tokens, 11_000);
-            // Sonnet per million: $3 in, $15 out, $0.30 cache read, $3.75 cache write.
-            let expected = (1_010.0 * 3.0 + 250.0 * 15.0 + 11_000.0 * 0.30 + 3_000.0 * 3.75) / 1e6;
+            // Sonnet per million: $3 in, $15 out, $0.30 cache read, $6 for a
+            // cache write with no TTL split (1-hour, as print mode writes).
+            let expected = (1_010.0 * 3.0 + 250.0 * 15.0 + 11_000.0 * 0.30 + 3_000.0 * 6.0) / 1e6;
             assert!(
                 (f64::from(result.usage.cost_usd) - expected).abs() < 1e-6,
                 "{:?}",
@@ -4734,6 +4886,33 @@ mod turn_cap_tests {
         );
         assert!(detect_provider_exhaustion(text).is_none(), "{text}");
         assert_eq!(result.output.tag("num_turns"), Some("2"));
+    }
+
+    /// gap-e14344: a run the CLI stopped at `--max-budget-usd` (result
+    /// subtype `error_max_budget_usd`) fails as budget-exhausted, at the cost
+    /// the CLI reported, not as a provider failure.
+    #[tokio::test]
+    async fn error_max_budget_usd_is_a_budget_stop() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let script = fake_claude(
+            tmp.path(),
+            r#"{"type":"result","subtype":"error_max_budget_usd","is_error":true,"num_turns":4,"total_cost_usd":0.0612,"errors":["Reached maximum budget"]}"#,
+            1,
+        );
+        let agent =
+            ClaudeCliAgent::new(&script, tmp.path(), "claude-test-model").with_max_budget_usd(0.05);
+
+        let result = agent.run(&prompt(), &Context::now()).await;
+        assert!(!result.success);
+        assert_eq!(result.output.tag("stop_reason"), Some("budget_exhausted"));
+        let text = result.output.body.as_text().expect("failure text");
+        assert_eq!(
+            text,
+            "Budget exhausted: the Claude CLI stopped at its spend limit (--max-budget-usd \
+             $0.0500) after $0.0612"
+        );
+        assert!(detect_provider_exhaustion(text).is_none(), "{text}");
+        assert!((f64::from(result.usage.cost_usd) - 0.0612).abs() < 1e-6);
     }
 
     #[tokio::test]

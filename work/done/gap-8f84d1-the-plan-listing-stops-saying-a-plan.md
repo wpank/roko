@@ -2,21 +2,35 @@
 id = "gap-8f84d1"
 kind = "gap"
 title = "The plan listing stops saying a plan is a demo once it has run, so hosts cannot hide fixtures, group demos or keep demo output out of Merge"
-status = "open"
-triage = "unverified"
+status = "done"
+triage = "verified"
 severity = "p3"
 goal = "hermes"
 size = "S"
 subsystem = ["roko-serve/plans"]
 created = 2026-10-15
-updated = 2026-10-15
+updated = 2026-10-16
+last_verified = 2026-10-16
+last_verified_rev = "70182b957"
 source = "tmp/hermes-roko-v5/findings/roko-demos.md (roko-demos, 2026-10-15)"
 discovered_from = "hermes-roko-v5 round: demo plans run from Hermes in the roko repo"
 anchors = ["crates/roko-serve/src/plan_types.rs::PlanSummaryDto", "crates/roko-cli/src/plan.rs::overlay_graph_checkpoint_status"]
 links = { depends_on = [], blocks = [], related = ["bug-0c7f25", "gap-8409d0"], supersedes = [], duplicate_of = "" }
 
 [[verify]]
-command = "grep -rqw 'fn plan_listing_marks_fixture_plans_after_a_run' crates/ && cargo test -p roko-serve plan_listing_marks_fixture_plans_after_a_run"
+command = "grep -rqw 'fn plan_listing_marks_fixture_plans_after_a_run' crates/roko-cli/ && cargo test -p roko-cli --lib plan_listing_marks_fixture_plans_after_a_run"
+
+[[verify]]
+command = "grep -rqw 'fn run_summary_result_marks_a_fixture_run' crates/roko-serve/ && cargo test -p roko-serve --lib run_summary_result_marks_a_fixture_run"
+
+[closed]
+at = 2026-10-16
+at_ts = "2026-10-16T13:05:48Z"
+commit = "dc6296f07"
+size = "S"
+claimed_at = "2026-10-16T10:35:49Z"
+forced = false
+evidence = "PlanSummary and PlanSummaryDto gain fixture, set from [meta].status == 'fixture' before the Graph checkpoint overlay replaces status, so it survives a run; every struct literal carries it. An ended run's summary result gains fixture, true when every plan the run ran is a fixture (routes/runs.rs::plans_are_fixtures, through the runtime's plan summary). HTTP API doc updated; the verify is split into a roko-cli test (the listing) and a roko-serve test (the result). Fix dc6296f07, merged into main as 70182b957. Both verifies and clippy -p roko-cli -p roko-serve pass on the merged tree 70182b957; at b35c56b26 the roko-cli lib suite (3715), the roko-serve lib suite (1040) and the 5 integration files whose literals changed passed. Live, roko serve on a scratch workspace with the 11 demo plans, a plain plan and a fake agent: after a demo run, GET /api/plans gave status 'done (12s ago)' and no flag before (roko-main-1630fa1bf); after, 'done (3h ago)' with fixture true, the plain plan fixture false before and after its own run, and run summaries' result.fixture true for the demo run and false for the plain one."
 +++
 
 ## Problem
@@ -50,4 +64,7 @@ for Hermes is an item, not a side change).
 
 ## Done when
 
-`plan_listing_marks_fixture_plans_after_a_run` passes (the `[[verify]]` command).
+`plan_listing_marks_fixture_plans_after_a_run` (roko-cli, where the listing is built) and
+`run_summary_result_marks_a_fixture_run` (roko-serve, where the run summary is) pass: the two `[[verify]]` commands.
+The first version of this item named one roko-serve test for both, but roko-serve's tests cannot reach roko-cli's
+listing code.

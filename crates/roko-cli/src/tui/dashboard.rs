@@ -1426,6 +1426,7 @@ fn load_plan_summaries(root: &Path, state: &Value) -> Vec<PlanSummary> {
             }
             .into(),
             superseded_by: None,
+            fixture: false,
             old_format: false,
             last_error,
             group: plan_dirs

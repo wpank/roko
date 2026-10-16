@@ -2,15 +2,16 @@
 id = "bug-56e072"
 kind = "bug"
 title = "Error patterns keyed by bare task id leak into other plans' tasks with the same id: key them by plan and task"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p2"
 goal = "learning"
 size = "S"
 subsystem = ["roko-learn/error_pattern_store"]
 created = 2026-10-15
-updated = 2026-10-15
-last_verified = 2026-10-15
+updated = 2026-10-16
+last_verified = 2026-10-16
+last_verified_rev = "c3fb80cc5"
 source = "status-quo-2026-10-15#finding-6"
 anchors = ["crates/roko-learn/src/error_pattern_store.rs::keyed_to", "crates/roko-learn/src/error_pattern_store.rs::relevance_score", "crates/roko-learn/src/error_pattern_store.rs::ErrorPattern", "crates/roko-learn/src/error_pattern_store.rs::FailurePatternQuery", "crates/roko-cli/src/dispatch/factory.rs::error_patterns_for_task"]
 lane = "rust-cold"
@@ -19,6 +20,18 @@ links = { depends_on = [], blocks = [], related = [], supersedes = [], duplicate
 
 [[verify]]
 command = "grep -rqw 'fn keyed_summary_skips_the_same_task_id_in_another_plan' crates/roko-learn/ && cargo test -p roko-learn keyed_summary_skips_the_same_task_id_in_another_plan"
+
+[closed]
+at = 2026-10-16
+at_ts = "2026-10-16T01:21:05Z"
+commit = "c3fb80cc5"
+by = "commit trailer"
+executor = "claude-agent"
+via = "work-batch"
+size = "S"
+claimed_at = "2026-10-15T16:33:44Z"
+forced = false
+evidence = "c3fb80cc5: ErrorPattern::task_keys records each observation's <plan>/<task> (serde default); keyed_to and relevance_score count the same task only for the same key (seen_on_task), and a query without a plan matches no task. The same-verify-command rule and plan_ids/task_ids are unchanged, so graduation (4128) and the planner block (4126) count plans as before. Old patterns without keys still load: one that saw exactly one plan gets that plan paired with each of its task ids on load; one seen in several plans gets no key and is selected by its verify command only. Checks, on this worktree's own target through heavy.sh: the verify passes (cargo test -p roko-learn keyed_summary_skips_the_same_task_id_in_another_plan, which failed before the fix: plan B's T1 got plan A's pattern); cargo test -p roko-learn --lib error_pattern_store 23/23, including load_keys_an_old_patterns_tasks_only_when_it_saw_one_plan and graduation_candidates_need_recurrence_and_a_resolution; cargo test -p roko-cli --test prompt_relevance_canary 2/2 with a new seeded pattern from another plan's T01 (4220); cargo test -p roko-compose --lib failure_patterns_bidder cold_start_static_bidders 2/2; cargo clippy -p roko-learn --no-deps -- -D warnings clean; cargo +nightly fmt --all. Filed gap-94cef2 (stale module doc names)."
 +++
 
 ## Problem
@@ -71,3 +84,19 @@ The `[[verify]]` command passes, and a planner block or graduation listing (4126
 ## Notes
 
 F1 skips this finding; F2 owns it. `error-patterns.json` is shared across plans by design; do not split the file.
+
+2026-10-16 (claude-agent, `work/bug-56e072`), how it was done and what old patterns do:
+
+- Each observation with a task records `"<plan>/<task>"` in `ErrorPattern::task_keys` (`#[serde(default)]`), the
+  form Graph dispatch keys a plan's task by. `plan_ids` and `task_ids` keep their meaning and fill as before, so
+  `graduation_candidates` (4128), the planner block (4126) and `roko-mcp-code`'s pass-through count plans as before.
+- `keyed_to` and `relevance_score` count "same task" only for the same key (`ErrorPattern::seen_on_task`). A query
+  with a task but no plan matches no pattern's task; the one prompt caller, `error_patterns_for_task`, always passes
+  the plan. The same-verify-command rule is unchanged.
+- **Old, unkeyed patterns** (saved before `task_keys`): `load` keeps reading them. A pattern that saw exactly one
+  plan gets that plan paired with each of its task ids, since every task id it holds was that plan's. A pattern
+  that saw several plans gets no key, because which plan's task hit it is unknown: only its verify command selects
+  it for a prompt, never a bare task id. A later observation adds its own key as usual. Binaries without this
+  change ignore the new field.
+- Canary (4220): `prompt_relevance_canary.rs` seeds a pattern another plan's `T01` hit, with a command no task runs;
+  run 1's `T01` must show no pattern on its first attempt and no prompt may show that command.

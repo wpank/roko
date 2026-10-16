@@ -16,6 +16,7 @@ use std::time::{Duration, Instant};
 
 use roko_core::DashboardEvent;
 
+use super::plan_runner::PlanRunInterrupt;
 use crate::runner::tui_bridge::TuiBridge;
 
 /// How often a running step's heartbeat is published.
@@ -285,6 +286,30 @@ impl CheckStep<'_> {
     /// Publish that the step ended: whether it passed, its exit code, and,
     /// for a step that did not exit, why it ended.
     pub fn finish(&self, passed: bool, exit_code: Option<i32>, reason: Option<String>) {
+        self.end(passed, exit_code, reason, None);
+    }
+
+    /// Publish that `interrupt`, a stop request, ended the step before it
+    /// did (bug-7b62ff): it did not pass, and it did not fail. Returns the
+    /// reason it gives, `a cancel request stopped it`.
+    pub fn stopped(&self, interrupt: PlanRunInterrupt) -> String {
+        let reason = format!("{} stopped it", interrupt.cause());
+        self.end(
+            false,
+            None,
+            Some(reason.clone()),
+            Some(interrupt.label().to_string()),
+        );
+        reason
+    }
+
+    fn end(
+        &self,
+        passed: bool,
+        exit_code: Option<i32>,
+        reason: Option<String>,
+        stopped_by: Option<String>,
+    ) {
         self.publish(|scope| DashboardEvent::PlanCheckFinished {
             plan_id: self.events.plan_id.clone(),
             stage: self.events.stage.as_str().to_string(),
@@ -296,6 +321,7 @@ impl CheckStep<'_> {
             passed,
             exit_code,
             reason,
+            stopped_by,
             elapsed_ms: self.elapsed_ms(),
         });
     }

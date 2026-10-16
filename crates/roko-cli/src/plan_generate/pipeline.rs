@@ -262,6 +262,12 @@ pub struct PlanRequest<'a> {
     pub effort: Option<&'a str>,
     /// Where each agent call's spend is published.
     pub live: Option<TuiBridge>,
+    /// Nobody reviews the plan before it runs: a chat host asked for it, or
+    /// `roko run` runs it next (bug-7a08a8). The planner decides every open
+    /// choice itself, and an open question that carries its own answer is
+    /// written into its task, since an open question keeps a plan from
+    /// running (PLAN_045).
+    pub unattended: bool,
 }
 
 impl<'a> PlanRequest<'a> {
@@ -279,8 +285,124 @@ impl<'a> PlanRequest<'a> {
             model: None,
             effort: None,
             live: None,
+            unattended: false,
         }
     }
+}
+
+/// A generated plan that was written but cannot run: `roko plan validate`
+/// finds errors in it (bug-7a08a8). [`generate_plan`] returns it as its
+/// error, so no caller reports such a plan as written and ready.
+#[derive(Debug)]
+pub struct PlanFailsValidation {
+    /// Where the plan was written.
+    pub plan_dir: PathBuf,
+    /// One line per error, as `PLAN_045 task 'T2': …`.
+    pub errors: Vec<String>,
+}
+
+impl std::fmt::Display for PlanFailsValidation {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "the plan was written to {}, but it cannot run: {} error(s)",
+            self.plan_dir.display(),
+            self.errors.len()
+        )?;
+        for error in &self.errors {
+            write!(f, "\n- {error}")?;
+        }
+        Ok(())
+    }
+}
+
+impl std::error::Error for PlanFailsValidation {}
+
+/// What an unattended plan's planner reads after the request (bug-7a08a8).
+const UNATTENDED_PLANNER_NOTE: &str = "Nobody will review this plan or answer questions \
+     about it before it runs. Decide every choice the request leaves open yourself, write each \
+     decision into the task it affects (its description or an acceptance criterion, starting \
+     with \"Assumption:\"), and leave every task's `open_questions` empty.";
+
+/// Words that start an open question's own answer, as in "…? Assumption: …".
+const ANSWER_MARKERS: &[&str] = &[
+    "assumption:",
+    "assume:",
+    "assuming:",
+    "default:",
+    "decision:",
+];
+
+/// Whether an open question carries its own answer after one of
+/// [`ANSWER_MARKERS`].
+fn has_own_answer(question: &str) -> bool {
+    let lower = question.to_ascii_lowercase();
+    ANSWER_MARKERS.iter().any(|marker| {
+        lower
+            .find(marker)
+            .is_some_and(|at| !lower[at + marker.len()..].trim().is_empty())
+    })
+}
+
+/// The plan `plan` (a tasks.toml) with each open question that carries its own
+/// answer moved into its task's description, and one `task <id>: <question>`
+/// line per question moved (bug-7a08a8). A question with no answer stays, and
+/// keeps the plan from running (PLAN_045).
+fn fold_answered_questions(plan: &str) -> Result<(String, Vec<String>)> {
+    let mut root: toml::Value = toml::from_str(plan).context("parse the plan")?;
+    let mut folded = Vec::new();
+    let tasks = root.get_mut("task").and_then(toml::Value::as_array_mut);
+    for task in tasks
+        .into_iter()
+        .flatten()
+        .filter_map(toml::Value::as_table_mut)
+    {
+        let questions: Vec<String> = task
+            .get("open_questions")
+            .and_then(toml::Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter_map(toml::Value::as_str)
+            .map(str::trim)
+            .filter(|question| !question.is_empty())
+            .map(str::to_string)
+            .collect();
+        let (answered, open): (Vec<String>, Vec<String>) = questions
+            .into_iter()
+            .partition(|question| has_own_answer(question));
+        if answered.is_empty() {
+            continue;
+        }
+        let id = task
+            .get("id")
+            .and_then(toml::Value::as_str)
+            .unwrap_or("?")
+            .to_string();
+        let mut description = task
+            .get("description")
+            .and_then(toml::Value::as_str)
+            .unwrap_or_default()
+            .trim_end()
+            .to_string();
+        description.push_str("\n\nDecided while planning, with nobody to ask:");
+        for question in answered {
+            description.push_str("\n- ");
+            description.push_str(&question);
+            folded.push(format!("task {id}: {question}"));
+        }
+        task.insert("description".to_string(), toml::Value::String(description));
+        if open.is_empty() {
+            task.remove("open_questions");
+        } else {
+            let open = open.into_iter().map(toml::Value::String).collect();
+            task.insert("open_questions".to_string(), toml::Value::Array(open));
+        }
+    }
+    if folded.is_empty() {
+        return Ok((plan.to_string(), folded));
+    }
+    let plan = toml::to_string_pretty(&root).context("write the plan back")?;
+    Ok((plan, folded))
 }
 
 /// How much of its source a planner reads inline, and how many repository
@@ -736,6 +858,7 @@ pub async fn generate_plan(request: PlanRequest<'_>) -> Result<(PathBuf, Generat
         model,
         effort,
         live,
+        unattended,
     } = request;
     let requested_plans_root = requested_plans_root.or(match source {
         PlanSource::Regenerate(plan_dir) => plan_dir.parent(),
@@ -861,6 +984,10 @@ pub async fn generate_plan(request: PlanRequest<'_>) -> Result<(PathBuf, Generat
             );
             extra.push_str("\n\n---\n\n");
             extra.push_str(&patterns);
+        }
+        if unattended {
+            extra.push_str("\n\n---\n\n");
+            extra.push_str(UNATTENDED_PLANNER_NOTE);
         }
 
         // A planner with a large context window sees the whole source
@@ -1196,8 +1323,25 @@ pub async fn generate_plan(request: PlanRequest<'_>) -> Result<(PathBuf, Generat
         // the serve route needs this future to be Send.
         let accept_for: std::sync::Mutex<HashMap<String, Vec<accept_blocks::AcceptBlock>>> =
             std::sync::Mutex::default();
+        // bug-7a08a8: the open questions an unattended plan's planner answered
+        // itself, moved into their tasks, by the plan they were moved in.
+        let folded_for: std::sync::Mutex<HashMap<String, Vec<String>>> =
+            std::sync::Mutex::default();
         let try_extract_and_validate = |raw: &str| -> std::result::Result<String, String> {
             let validated = extract_and_validate(raw)?;
+            let validated = if unattended {
+                let (plan, folded) =
+                    fold_answered_questions(&validated).map_err(|error| format!("{error:#}"))?;
+                if !folded.is_empty() {
+                    folded_for
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .insert(plan.clone(), folded);
+                }
+                plan
+            } else {
+                validated
+            };
             let accept = accept_blocks::extract(raw)?;
             accept_blocks::check_sources(&validated, &accept, &plan_dir)?;
             match spec_scores(&validated, workdir_ref, &spec_config) {
@@ -1457,6 +1601,11 @@ pub async fn generate_plan(request: PlanRequest<'_>) -> Result<(PathBuf, Generat
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .remove(&validated_toml)
                 .unwrap_or_default();
+            let folded = folded_for
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .remove(&validated_toml)
+                .unwrap_or_default();
             if let Some(regeneration) = &source.regeneration {
                 write_regenerated_plan(regeneration, &plan_dir, &validated_toml)?;
             } else {
@@ -1495,6 +1644,9 @@ pub async fn generate_plan(request: PlanRequest<'_>) -> Result<(PathBuf, Generat
             // plan already had stays unless the planner wrote it again.
             accept_blocks::write(&plan_dir, &accept)
                 .with_context(|| format!("write the accept tests to {}", plan_dir.display()))?;
+            for question in &folded {
+                println!("📋 Decided while planning, with nobody to ask: {question}");
+            }
         } else {
             // All attempts (initial + retries) failed to produce valid TOML.
             let final_err = validated_toml.unwrap_err();
@@ -1542,15 +1694,19 @@ pub async fn generate_plan(request: PlanRequest<'_>) -> Result<(PathBuf, Generat
         let changed = dry_run_fs::changed_tasks_files(&plans_root, &tasks_before);
         let mut artifact_valid = true;
         let mut validation_report: Option<ArtifactValidationReport> = None;
+        // bug-7a08a8: why the written plan cannot run, one line each.
+        let mut invalid: Vec<String> = Vec::new();
 
         if dry_run {
             if changed.is_empty() {
                 artifact_valid = false;
+                invalid.push("no tasks.toml was written".to_string());
                 eprintln!("warning: dry-run plan generation did not produce any tasks.toml files");
             } else {
                 for path in &changed {
                     if let Err(err) = dry_run_fs::validate_and_print_preview(path) {
                         artifact_valid = false;
+                        invalid.push(format!("{}: {err:#}", path.display()));
                         eprintln!(
                             "warning: dry-run validation failed for {}: {err:#}",
                             path.display()
@@ -1589,6 +1745,19 @@ pub async fn generate_plan(request: PlanRequest<'_>) -> Result<(PathBuf, Generat
                         report.totals.errors, report.totals.warnings, slug
                     );
                 }
+                invalid.extend(
+                    report
+                        .plans
+                        .iter()
+                        .flat_map(|plan| &plan.diagnostics)
+                        .filter(|diagnostic| {
+                            diagnostic.severity == crate::plan_validate::Severity::Error
+                        })
+                        .map(|diagnostic| {
+                            format!("{} {}", diagnostic.rule_id, diagnostic.message)
+                                .replace('\n', "\n  ")
+                        }),
+                );
                 // bug-59ed90: a check the planner left hiding its runner's
                 // output is said out loud, so the person can fix it first.
                 for diagnostic in report
@@ -1602,10 +1771,12 @@ pub async fn generate_plan(request: PlanRequest<'_>) -> Result<(PathBuf, Generat
                 validation_report = serde_json::to_value(&report).ok();
                 if validation_report.is_none() {
                     artifact_valid = false;
+                    invalid.push("its validation report could not be recorded".to_string());
                 }
             }
             Err(err) => {
                 artifact_valid = false;
+                invalid.push(format!("it could not be validated: {err:#}"));
                 eprintln!(
                     "warning: artifact validation could not be completed for {}: {err:#}",
                     slug
@@ -1645,6 +1816,19 @@ pub async fn generate_plan(request: PlanRequest<'_>) -> Result<(PathBuf, Generat
             None,
         )
         .await;
+
+        // bug-7a08a8: a plan that cannot run is an error, which names why, so
+        // no caller reports it as written and ready.
+        if !outcome.artifact_valid {
+            let plan_dir = plan_dir
+                .strip_prefix(workdir_ref)
+                .map_or_else(|_| plan_dir.clone(), Path::to_path_buf);
+            return Err(PlanFailsValidation {
+                plan_dir,
+                errors: invalid,
+            }
+            .into());
+        }
 
         Ok((
             requested_plans_root
@@ -2796,6 +2980,124 @@ mod tests {
                 ),
                 "{ask}"
             );
+        }
+    }
+
+    /// bug-7a08a8: an unattended plan's planner is told nobody answers its
+    /// questions, and a question it answered itself goes into its task
+    /// instead of keeping the plan from running; an unanswered one stays.
+    #[cfg(unix)]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn an_unattended_plan_decides_its_answered_questions() {
+        let answered = WIDGET_PLAN.replace(
+            "depends_on = []\n",
+            "depends_on = []\nopen_questions = [\"Should the widget module be public? \
+             Assumption: yes, it is declared pub.\"]\n",
+        );
+        assert_ne!(answered, WIDGET_PLAN);
+
+        let temp = tempfile::tempdir().expect("tempdir");
+        let workdir = temp.path();
+        let bin = tempfile::tempdir().expect("tempdir");
+        write_scripted_planner(
+            workdir,
+            bin.path(),
+            &[&answered],
+            "allow_threshold = 0.0\nblock_threshold = 0.0\n",
+        );
+        let request = PlanRequest {
+            model: Some("planner"),
+            unattended: true,
+            ..PlanRequest::new(WIDGET_REQUEST, "widget", workdir)
+        };
+        generate_plan(request)
+            .await
+            .expect("an answered question no longer keeps the plan from running");
+        let written = std::fs::read_to_string(workdir.join("plans/widget/tasks.toml"))
+            .expect("the widget plan");
+        assert!(!written.contains("open_questions"), "{written}");
+        assert!(
+            written.contains("Decided while planning, with nobody to ask:"),
+            "{written}"
+        );
+        assert!(
+            written.contains("Should the widget module be public? Assumption: yes"),
+            "{written}"
+        );
+        let prompt = std::fs::read_to_string(bin.path().join("prompt-0.txt")).expect("prompt");
+        assert!(
+            prompt.contains("Nobody will review this plan or answer questions"),
+            "{prompt}"
+        );
+
+        let mixed = answered.replace(
+            "open_questions = [",
+            "open_questions = [\"Which colour should it be?\", ",
+        );
+        let (folded, moved) = fold_answered_questions(&mixed).expect("fold the questions");
+        assert_eq!(moved.len(), 1, "{moved:?}");
+        assert!(
+            moved[0].starts_with("task T1: Should the widget"),
+            "{moved:?}"
+        );
+        let tasks = TasksFile::parse_str(&folded).expect("the folded plan parses");
+        assert_eq!(
+            tasks.tasks[0].spec.open_questions,
+            ["Which colour should it be?"]
+        );
+    }
+
+    /// bug-7a08a8: a written plan that cannot run ends the generation with an
+    /// error that names why (an open question nobody answered, PLAN_045), so
+    /// no caller reports it as written and ready. The plan stays on disk.
+    #[cfg(unix)]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn generation_fails_when_the_written_plan_cannot_run() {
+        let open = WIDGET_PLAN.replace(
+            "depends_on = []\n",
+            "depends_on = []\nopen_questions = [\"Which colour should the widget be?\"]\n",
+        );
+        for unattended in [false, true] {
+            let temp = tempfile::tempdir().expect("tempdir");
+            let workdir = temp.path();
+            let bin = tempfile::tempdir().expect("tempdir");
+            write_scripted_planner(
+                workdir,
+                bin.path(),
+                &[&open],
+                "allow_threshold = 0.0\nblock_threshold = 0.0\n",
+            );
+            let request = PlanRequest {
+                model: Some("planner"),
+                unattended,
+                ..PlanRequest::new(WIDGET_REQUEST, "widget", workdir)
+            };
+            let error = generate_plan(request)
+                .await
+                .expect_err("an open question keeps the plan from running");
+            let failure = error
+                .downcast_ref::<PlanFailsValidation>()
+                .unwrap_or_else(|| panic!("a validation failure: {error:#}"));
+            assert_eq!(failure.plan_dir, Path::new("plans/widget"), "{failure}");
+            assert!(
+                failure
+                    .errors
+                    .iter()
+                    .any(|line| line.starts_with("PLAN_045 task 'T1' has open questions")),
+                "{failure}"
+            );
+            let message = failure.to_string();
+            assert!(
+                message.starts_with(
+                    "the plan was written to plans/widget, but it cannot run: 1 error(s)"
+                ),
+                "{message}"
+            );
+            assert!(
+                message.contains("Which colour should the widget be?"),
+                "{message}"
+            );
+            assert!(workdir.join("plans/widget/tasks.toml").exists());
         }
     }
 

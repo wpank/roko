@@ -315,9 +315,10 @@ impl ToolLoopAgent {
             )),
             StopReason::Cancelled => AgentResult::fail(signal("Tool loop cancelled", "cancelled")),
             StopReason::BackendError(err) => AgentResult::fail(signal(err, "backend_error")),
-            StopReason::BudgetExhausted => {
-                AgentResult::fail(signal("Budget exhausted", "budget_exhausted"))
-            }
+            StopReason::BudgetExhausted(reason) => AgentResult::fail(signal(
+                &format!("Budget exhausted: {reason}"),
+                "budget_exhausted",
+            )),
         }
         .with_usage(output.total_usage);
         let mut result = Self::attach_trace_metadata(result, input, output);
@@ -1020,5 +1021,42 @@ mod tests {
             result.output.body.as_text().expect("text output"),
             "Max iterations (3) reached"
         );
+    }
+
+    /// Refuses every model call.
+    #[derive(Debug)]
+    struct NoBudget;
+
+    impl crate::tool_loop::TurnBudget for NoBudget {
+        fn refuse_turn(&self) -> Option<String> {
+            Some("the plan's cap is spent".to_string())
+        }
+
+        fn record_turn(&self, _usage: &crate::usage::Usage) {}
+    }
+
+    /// bug-4fabd0: a loop its budget stopped fails with the budget's reason
+    /// and says so in its `stop_reason`, which dispatch reads.
+    #[tokio::test]
+    async fn a_loop_its_budget_stopped_reports_the_reason() {
+        let input = Signal::builder(Kind::Prompt)
+            .body(Body::text("keep calling the tool"))
+            .build();
+        let budget: Arc<dyn crate::tool_loop::TurnBudget> = Arc::new(NoBudget);
+        let agent = ToolLoopAgent::new(
+            make_tool_loop(Arc::new(LoopingBackend)).with_optional_turn_budget(Some(budget)),
+        )
+        .with_tools(test_tools())
+        .with_worktree_path("/tmp");
+
+        let result = agent.run(&input, &Context::now()).await;
+
+        assert!(!result.success);
+        assert_eq!(
+            result.output.body.as_text().expect("text output"),
+            "Budget exhausted: the plan's cap is spent"
+        );
+        assert_eq!(result.output.tag("stop_reason"), Some("budget_exhausted"));
+        assert_eq!(result.output.tag("num_turns"), Some("0"));
     }
 }

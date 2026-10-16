@@ -1453,12 +1453,18 @@ pub(crate) async fn cmd_plan(cli: &Cli, cmd: PlanCmd) -> Result<i32> {
                         )
                     };
                     match roko_cli::plan_generate::generate_plan(request).await {
-                        Ok((_, outcome)) if outcome.artifact_valid => {
+                        Ok(_) => {
                             tracing::info!(id, %slug, "plan generated");
                             results.push((*id, slug, "generated"));
                         }
-                        Ok(_) => {
-                            tracing::warn!(id, %slug, "plan generated but validation failed");
+                        // bug-7a08a8: a written plan that cannot run.
+                        Err(err)
+                            if err
+                                .downcast_ref::<roko_cli::plan_generate::PlanFailsValidation>()
+                                .is_some() =>
+                        {
+                            let error = format!("{err:#}");
+                            tracing::warn!(id, %slug, %error, "plan generated but validation failed");
                             results.push((*id, slug, "validation-failed"));
                         }
                         Err(err) => {
@@ -1623,15 +1629,10 @@ pub(crate) async fn cmd_plan(cli: &Cli, cmd: PlanCmd) -> Result<i32> {
                     &workdir,
                 )
             };
-            let (_, outcome) = roko_cli::plan_generate::generate_plan(request).await?;
-            if outcome.artifact_valid {
-                Ok(EXIT_SUCCESS)
-            } else {
-                tracing::error!(
-                    "plan generate: the generated plans failed validation (see warnings above)"
-                );
-                Ok(1)
-            }
+            // A plan that fails validation is an error that names each one
+            // (bug-7a08a8).
+            roko_cli::plan_generate::generate_plan(request).await?;
+            Ok(EXIT_SUCCESS)
         }
         PlanCmd::Regenerate { plan_dir, dry_run } => {
             let workdir = std::env::current_dir().context("resolve cwd")?;
@@ -1687,20 +1688,15 @@ pub(crate) async fn cmd_plan(cli: &Cli, cmd: PlanCmd) -> Result<i32> {
                     &workdir,
                 )
             };
-            let (_, outcome) = roko_cli::plan_generate::generate_plan(request).await?;
-            if outcome.artifact_valid {
-                let after = std::fs::read_to_string(&tasks_path).unwrap_or_default();
-                print_plan_diff(
-                    &roko_cli::plan_authoring::plan_diff(&before, &after),
-                    cli.json,
-                )?;
-                Ok(EXIT_SUCCESS)
-            } else {
-                tracing::error!(
-                    "plan regenerate: the regenerated plan failed validation (see warnings above)"
-                );
-                Ok(1)
-            }
+            // A plan that fails validation is an error that names each one
+            // (bug-7a08a8).
+            roko_cli::plan_generate::generate_plan(request).await?;
+            let after = std::fs::read_to_string(&tasks_path).unwrap_or_default();
+            print_plan_diff(
+                &roko_cli::plan_authoring::plan_diff(&before, &after),
+                cli.json,
+            )?;
+            Ok(EXIT_SUCCESS)
         }
         PlanCmd::Revise { plan, feedback } => cmd_plan_revise(cli, &plan, &feedback).await,
         PlanCmd::Queue { cmd } => cmd_plan_queue(cli, cmd).await,

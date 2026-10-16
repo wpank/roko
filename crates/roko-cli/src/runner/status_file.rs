@@ -790,6 +790,7 @@ mod tests {
             passed: true,
             exit_code: Some(0),
             reason: None,
+            stopped_by: None,
             elapsed_ms: 61_000,
         });
         assert_eq!(status.phase(), "idle");

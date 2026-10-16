@@ -1532,7 +1532,8 @@ impl AgentDispatcherV2 {
         }
         validate_contract_support(request, &target)?;
 
-        let options = self.agent_options(request);
+        let mut options = self.agent_options(request);
+        options.turn_budget = self.turn_budget(request, &target);
         let agent =
             create_agent_for_model(&self.config, &request.model_key, options).map_err(|err| {
                 DispatchV2Error::AgentCreation {
@@ -1751,6 +1752,7 @@ impl AgentDispatcherV2 {
         validate_contract_support(&request, &target)?;
 
         let mut options = self.agent_options(&request);
+        options.turn_budget = self.turn_budget(&request, &target);
         if let Some(runtime) = mcp_runtime {
             options.pre_discovered_mcp_runtime = Some(runtime);
         }
@@ -1847,6 +1849,22 @@ impl AgentDispatcherV2 {
                 "an attempt timeout is a task outcome; the provider's health is unchanged"
             ),
         }
+    }
+
+    /// `request`'s allowance as the tool loop of `target`'s model sees it:
+    /// each call priced at the rates that price the attempt (bug-4fabd0).
+    fn turn_budget(
+        &self,
+        request: &AgentDispatchRequest,
+        target: &ProviderDispatchSpec,
+    ) -> Option<Arc<dyn roko_agent::tool_loop::TurnBudget>> {
+        let allowance = Arc::clone(request.allowance.as_ref()?);
+        Some(Arc::new(PricedCalls {
+            allowance,
+            snapshot: self.pricing_snapshot_for(request),
+            profile: target.model_profile.clone(),
+            model_slug: target.model_slug.clone(),
+        }))
     }
 
     fn agent_options(&self, request: &AgentDispatchRequest) -> AgentOptions {
@@ -2048,15 +2066,19 @@ enum ProviderHealthOutcome {
 
 impl ProviderHealthOutcome {
     /// Read `result`'s provider-health outcome. Any unsuccessful run that is
-    /// neither an immune denial, a turn cap nor an attempt timeout is a
-    /// provider failure, classified from its text.
+    /// neither an immune denial, a turn cap, a stop of its budget
+    /// (bug-4fabd0) nor an attempt timeout is a provider failure, classified
+    /// from its text.
     fn of(result: &AgentResult) -> Self {
         use roko_agent::provider::error_classify::{detect_attempt_timeout, detect_turn_cap};
 
         let text = result.output.body.as_text().unwrap_or_default();
         if result.output.tag("immune_denied") == Some("true") {
             Self::ImmuneDenied
-        } else if result.success || detect_turn_cap(text).is_some() {
+        } else if result.success
+            || detect_turn_cap(text).is_some()
+            || result.output.tag("stop_reason") == Some("budget_exhausted")
+        {
             Self::Success
         } else if detect_attempt_timeout(text) {
             Self::AttemptTimeout
@@ -2208,6 +2230,55 @@ pub struct AgentDispatchRequest {
     /// efficiency log (bug-eaa318). Empty for a prompt that carries none.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub knowledge_ids: Vec<String>,
+    /// What the attempt may still spend on model calls (bug-4fabd0): the
+    /// tool loop of a provider whose loop roko runs asks it before each call,
+    /// and stops once it refuses one. `None` leaves the calls unbounded.
+    /// Skipped by serde.
+    #[serde(skip)]
+    pub allowance: Option<Arc<dyn CallAllowance>>,
+}
+
+/// What an attempt may still spend on its model calls, as its dispatch
+/// request carries it (bug-4fabd0). The agent's tool loop asks it before each
+/// model call; [`AgentDispatcherV2`] prices each call at the rates of the
+/// model that served it, as the attempt's settlement does, and reports it.
+pub trait CallAllowance: Send + Sync + fmt::Debug {
+    /// Why the next model call must not start, when it must not.
+    fn refuse_call(&self) -> Option<String>;
+
+    /// A model call finished, costing `cost_usd`; `priced` is false when no
+    /// rate priced it, so what it cost is unknown.
+    fn record_call(&self, cost_usd: f64, priced: bool);
+}
+
+/// An attempt's [`CallAllowance`] as the tool loop of one model sees it:
+/// each call priced as [`fill_usage_cost_from_pricing`] prices it.
+#[derive(Debug)]
+struct PricedCalls {
+    allowance: Arc<dyn CallAllowance>,
+    snapshot: Option<Arc<PriceSnapshot>>,
+    profile: Option<ModelProfile>,
+    model_slug: String,
+}
+
+impl roko_agent::tool_loop::TurnBudget for PricedCalls {
+    fn refuse_turn(&self) -> Option<String> {
+        self.allowance.refuse_call()
+    }
+
+    fn record_turn(&self, usage: &roko_core::Usage) {
+        let mut usage = *usage;
+        let pricing = fill_usage_cost_from_pricing(
+            &mut usage,
+            self.snapshot.as_deref(),
+            self.profile.as_ref(),
+            &self.model_slug,
+        );
+        // A call that used no tokens cost nothing, priced or not.
+        let priced = pricing != CallPricing::Unpriced || usage.has_known_cost();
+        self.allowance
+            .record_call(f64::from(usage.cost_usd), priced);
+    }
 }
 
 impl AgentDispatchRequest {
@@ -3131,6 +3202,7 @@ mod tests {
                 live_output: None,
                 attempt_key: None,
                 knowledge_ids: Vec::new(),
+                allowance: None,
             };
             let error = request.validate().expect_err("invalid identity must fail");
             assert_eq!(error, DispatchV2Error::InvalidAgentId);
@@ -3823,6 +3895,7 @@ mod tests {
             live_output: None,
             attempt_key: None,
             knowledge_ids: Vec::new(),
+            allowance: None,
         };
         // All provider kinds are now in the contract support whitelist,
         // so OpenClaw with a contract should pass validation.
@@ -3895,6 +3968,7 @@ printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"total_cost
             live_output: None,
             attempt_key: None,
             knowledge_ids: Vec::new(),
+            allowance: None,
         };
         let health_path = tmp.path().join(".roko/learn/provider-health.json");
         let registry = Arc::new(ProviderHealthRegistry::new());
@@ -4038,6 +4112,7 @@ printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"total_cost
             live_output: None,
             attempt_key: None,
             knowledge_ids: Vec::new(),
+            allowance: None,
         }
     }
 

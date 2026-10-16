@@ -287,9 +287,12 @@ impl BatchIntegration {
             }
         };
         // The batch holds only plans that passed their regression check: a
-        // merge whose check failed is undone, so no later plan builds on it.
-        if receipt.state == CompletionDeliveryState::RegressionFailed
-            && let (Some(merge), Some(before)) = (receipt.merge_commit.clone(), before)
+        // merge whose check failed, or was cut short by a stop (bug-7b62ff),
+        // is undone, so no later plan builds on it.
+        if matches!(
+            receipt.state,
+            CompletionDeliveryState::RegressionFailed | CompletionDeliveryState::Cancelled
+        ) && let (Some(merge), Some(before)) = (receipt.merge_commit.clone(), before)
             && merge != before
         {
             let undone = git_output(
@@ -297,7 +300,7 @@ impl BatchIntegration {
                 &[
                     "update-ref",
                     "-m",
-                    "roko: undo a delivery whose regression check failed",
+                    "roko: undo a delivery whose regression check did not pass",
                     &branch_ref,
                     &before,
                     &merge,
@@ -1096,6 +1099,7 @@ mod tests {
                 summary: "passed".to_string(),
                 evidence_ref: None,
                 checks: Vec::new(),
+                stopped_by: None,
             }
         }
 

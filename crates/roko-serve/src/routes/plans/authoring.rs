@@ -333,12 +333,15 @@ pub(crate) async fn start_plan_generation(
                     }))
                     .unwrap_or_default();
 
-                    // Update the handle to Completed.
-                    if let Some(h) = state_for_task.operations.write().await.get_mut(&op_id) {
-                        h.status = crate::state::OperationStatus::Completed {
+                    // Completed, in the handle and the kept record (bug-a0f01e).
+                    crate::operations::finish_operation(
+                        &state_for_task,
+                        &op_id,
+                        crate::state::OperationStatus::Completed {
                             result: Some(result_json),
-                        };
-                    }
+                        },
+                    )
+                    .await;
 
                     {
                         use roko_core::DashboardEvent;
@@ -363,12 +366,15 @@ pub(crate) async fn start_plan_generation(
                         message: error_msg.clone(),
                     });
 
-                    // Update the handle to Failed.
-                    if let Some(h) = state_for_task.operations.write().await.get_mut(&op_id) {
-                        h.status = crate::state::OperationStatus::Failed {
+                    // Failed, in the handle and the kept record (bug-a0f01e).
+                    crate::operations::finish_operation(
+                        &state_for_task,
+                        &op_id,
+                        crate::state::OperationStatus::Failed {
                             error: error_msg.clone(),
-                        };
-                    }
+                        },
+                    )
+                    .await;
 
                     {
                         use roko_core::DashboardEvent;
@@ -529,11 +535,14 @@ pub(super) async fn revise_plan(
                             "diff": dto.diff,
                         }))
                         .unwrap_or_default();
-                        if let Some(h) = state_for_task.operations.write().await.get_mut(&op_id) {
-                            h.status = crate::state::OperationStatus::Completed {
+                        crate::operations::finish_operation(
+                            &state_for_task,
+                            &op_id,
+                            crate::state::OperationStatus::Completed {
                                 result: Some(result_json),
-                            };
-                        }
+                            },
+                        )
+                        .await;
                         ("plan_revise.completed", true)
                     } else {
                         // Rejected by validation.
@@ -541,11 +550,14 @@ pub(super) async fn revise_plan(
                             "plan revision rejected: {} error(s)",
                             dto.validation.errors.len()
                         );
-                        if let Some(h) = state_for_task.operations.write().await.get_mut(&op_id) {
-                            h.status = crate::state::OperationStatus::Failed {
+                        crate::operations::finish_operation(
+                            &state_for_task,
+                            &op_id,
+                            crate::state::OperationStatus::Failed {
                                 error: error_msg.clone(),
-                            };
-                        }
+                            },
+                        )
+                        .await;
                         bus.publish(ServerEvent::Error { message: error_msg });
                         ("plan_revise.failed", false)
                     };
@@ -571,11 +583,14 @@ pub(super) async fn revise_plan(
                 Ok(None) => {
                     // Plan disappeared between the pre-check and now.
                     let error_msg = format!("plan '{plan_id_for_task}' not found during revision");
-                    if let Some(h) = state_for_task.operations.write().await.get_mut(&op_id) {
-                        h.status = crate::state::OperationStatus::Failed {
+                    crate::operations::finish_operation(
+                        &state_for_task,
+                        &op_id,
+                        crate::state::OperationStatus::Failed {
                             error: error_msg.clone(),
-                        };
-                    }
+                        },
+                    )
+                    .await;
                     {
                         use roko_core::DashboardEvent;
                         state_for_task.state_hub.publish_batch(vec![
@@ -600,11 +615,14 @@ pub(super) async fn revise_plan(
                     bus.publish(ServerEvent::Error {
                         message: error_msg.clone(),
                     });
-                    if let Some(h) = state_for_task.operations.write().await.get_mut(&op_id) {
-                        h.status = crate::state::OperationStatus::Failed {
+                    crate::operations::finish_operation(
+                        &state_for_task,
+                        &op_id,
+                        crate::state::OperationStatus::Failed {
                             error: error_msg.clone(),
-                        };
-                    }
+                        },
+                    )
+                    .await;
                     {
                         use roko_core::DashboardEvent;
                         state_for_task.state_hub.publish_batch(vec![

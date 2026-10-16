@@ -450,6 +450,7 @@ impl AttemptBook {
             harness: None,
             trust_exclusions: None,
             verify_depth: None,
+            forecast: std::sync::OnceLock::new(),
             run,
         }
     }
@@ -497,6 +498,9 @@ pub(super) struct AttemptContext {
     /// DP3's verify depth for the attempt, for its verdict (gap-595e28);
     /// `None` until verification reaches DP3.
     verify_depth: Option<VerifyDepthRecord>,
+    /// The self-model's forecast of the attempt, as its route event carries
+    /// it (gap-aaaaae); unset until the self-model forecasts it.
+    forecast: std::sync::OnceLock<roko_core::dashboard_snapshot::RouteForecast>,
     run: Arc<RunAttempts>,
 }
 
@@ -578,6 +582,20 @@ impl AttemptContext {
     /// it, so an agent-blamed failure exhausts the ladder (gap-460230).
     pub(super) fn record_ladder(&mut self, ladder: AttemptLadder, last_chance: bool) {
         self.ladder = Some((ladder, last_chance));
+    }
+
+    /// The rung the attempt runs on and the rungs its task climbed, as
+    /// [`Self::record_ladder`] recorded them; `(None, 0)` off the ladder.
+    pub(super) fn ladder_place(&self) -> (Option<String>, u32) {
+        self.ladder
+            .as_ref()
+            .map_or((None, 0), |(ladder, _)| (ladder.rung.clone(), ladder.step))
+    }
+
+    /// The self-model's forecast of the attempt, once it made one
+    /// (gap-aaaaae).
+    pub(super) fn forecast(&self) -> Option<&roko_core::dashboard_snapshot::RouteForecast> {
+        self.forecast.get()
     }
 
     /// Queue the attempt's route decision, with its chain's arms, for the
@@ -672,6 +690,10 @@ impl AttemptContext {
         &self,
         prediction: roko_learn::telemetry::records::AttemptPredictionRecord,
     ) {
+        // The attempt's route event carries it (gap-aaaaae).
+        let _ = self
+            .forecast
+            .set(super::decision_log::route_forecast(&prediction));
         if let Some(audit) = &self.run.audit {
             audit.note_prediction(&prediction.identity.attempt_key, &prediction.prediction_id);
         }

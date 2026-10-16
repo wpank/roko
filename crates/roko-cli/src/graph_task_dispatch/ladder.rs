@@ -53,6 +53,44 @@ const MAX_ESCALATIONS: u32 = 2;
 /// each rung it may climb, less the first attempt.
 pub(super) const LADDER_MIN_RETRIES: u32 = FAILURES_PER_RUNG * (MAX_ESCALATIONS + 1) - 1;
 
+/// Why a try runs where it does, as `route_decided` and `attempt_settled`
+/// say it (gap-aaaaae).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum TryReason {
+    /// The task's first try.
+    Start,
+    /// Another try on the rung its last try ran on.
+    Retry,
+    /// Its first try on a higher rung.
+    Climb,
+    /// Failover moved the try to another model.
+    Failover,
+    /// A pin chose the model.
+    Pinned,
+}
+
+impl TryReason {
+    /// The reason's word.
+    pub(super) const fn as_str(self) -> &'static str {
+        match self {
+            Self::Start => "start",
+            Self::Retry => "retry",
+            Self::Climb => "climb",
+            Self::Failover => "failover",
+            Self::Pinned => "pinned",
+        }
+    }
+}
+
+/// What dispatch remembers of each task's tries (gap-aaaaae): the step of
+/// its last routed try, by task (`"{plan_id}/{task_id}"`), and why each
+/// unsettled try runs where it does, by attempt key.
+#[derive(Debug, Default)]
+pub(super) struct TryBook {
+    last_step: HashMap<String, u32>,
+    reasons: HashMap<String, TryReason>,
+}
+
 /// M1's B1 bounds on one task's rungs, as indices among its role's rungs.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 struct TierBounds {
@@ -186,8 +224,9 @@ impl GraphTaskDispatcher {
     }
 
     /// Record on `attempt` where `plan` put it on the ladder, `step` rungs
-    /// above the task's start rung, and log it. An attempt the ladder did not
-    /// route (it is off, or no rung of the task can run) records nothing.
+    /// above the task's start rung, and log it, with why the try runs there
+    /// ([`Self::try_reason`]). An attempt the ladder did not route (it is
+    /// off, or no rung of the task can run) records no rung.
     pub(super) fn record_attempt_ladder(
         &self,
         attempt: &mut AttemptContext,
@@ -196,6 +235,11 @@ impl GraphTaskDispatcher {
         plan: &RunnerDispatchPlan,
         step: u32,
     ) {
+        let reason = self.try_reason(spec, task, attempt, plan, step);
+        self.tries
+            .lock()
+            .reasons
+            .insert(attempt.key.attempt_key(), reason);
         let Some(ladder) = self.routing_ladder() else {
             return;
         };
@@ -273,6 +317,58 @@ impl GraphTaskDispatcher {
             | ModelChoiceSource::Default => return,
         };
         attempt.record_ladder(record, last_chance);
+    }
+
+    /// Why the attempt keyed `attempt_key` runs where it does, as routing
+    /// recorded it ([`Self::try_reason`]); `None` before it is routed.
+    pub(super) fn routed_try_reason(&self, attempt_key: &str) -> Option<TryReason> {
+        self.tries.lock().reasons.get(attempt_key).copied()
+    }
+
+    /// Why `attempt` of `task` runs where `plan` put it, `step` rungs above
+    /// the task's start rung (gap-aaaaae): a pin is `pinned`, the task's
+    /// first try `start`, a try on a higher step than the task's last try
+    /// `climb`, and any other try `retry`. A resumed run has not seen the
+    /// task's last try: there a task whose standing climbed and has failed
+    /// nothing since climbed just before.
+    fn try_reason(
+        &self,
+        spec: &TaskExecutionSpec,
+        task: &TaskDef,
+        attempt: &AttemptContext,
+        plan: &RunnerDispatchPlan,
+        step: u32,
+    ) -> TryReason {
+        if matches!(
+            plan.source,
+            ModelChoiceSource::Override | ModelChoiceSource::TaskHint
+        ) {
+            return TryReason::Pinned;
+        }
+        let last = self
+            .tries
+            .lock()
+            .last_step
+            .insert(format!("{}/{}", spec.plan_id, task.id), step);
+        if attempt.key.attempt <= 1 {
+            return TryReason::Start;
+        }
+        let climbed = last.map_or_else(
+            || {
+                step > 0
+                    && self
+                        .gate_retry_context
+                        .ladder_standing(&spec.plan_id, &task.id)
+                        .failures_on_rung
+                        == 0
+            },
+            |last| step > last,
+        );
+        if climbed {
+            TryReason::Climb
+        } else {
+            TryReason::Retry
+        }
     }
 
     /// How many rungs `task` can still climb from rung `rung`, `step` rungs
@@ -1318,5 +1414,155 @@ exit 1
             );
         }
         assert!(!prompts[0].contains("Resuming"));
+    }
+
+    /// The events of the types `kinds` that `events` received so far, as
+    /// JSON, in order.
+    fn published(
+        events: &mut tokio::sync::broadcast::Receiver<
+            roko_runtime::event_bus::Envelope<roko_core::DashboardEvent>,
+        >,
+        kinds: &[&str],
+    ) -> Vec<serde_json::Value> {
+        let mut found = Vec::new();
+        loop {
+            match events.try_recv() {
+                Ok(envelope) => {
+                    let event = serde_json::to_value(&envelope.payload).expect("event json");
+                    if kinds.contains(&event["type"].as_str().unwrap_or_default()) {
+                        found.push(event);
+                    }
+                }
+                Err(tokio::sync::broadcast::error::TryRecvError::Lagged(_)) => {}
+                Err(_) => return found,
+            }
+        }
+    }
+
+    /// gap-aaaaae: `route_decided` names the rung each try runs on, the rungs
+    /// its task climbed, and why it runs there: the first try `start`, a try
+    /// on the rung of the last one `retry`, the first try on a higher rung
+    /// `climb`, and a pinned model `pinned`, with no rung.
+    #[tokio::test]
+    async fn route_decided_names_its_rung_step_and_reason() {
+        let temp = tempdir().expect("tempdir");
+        let hub = StateHub::new(4096);
+        let mut events = hub.subscribe_events();
+        let (dispatcher, task) = ladder_fixture(&temp).await;
+        let dispatcher = dispatcher.with_tui_bridge(TuiBridge::new(hub.sender()));
+        let mut spec = make_spec(&task);
+        spec.max_retries = 4;
+        let mut pinned = task.clone();
+        pinned.id = "T-PIN".to_string();
+        pinned.model_hint = Some("cheap-model".to_string());
+        let ctx = CellContext::new().with_run_id(RUN.to_string());
+        for _ in 0..4 {
+            dispatcher
+                .dispatch(&spec, Vec::new(), &ctx)
+                .await
+                .expect_err("every attempt fails its verify step");
+        }
+        dispatcher
+            .dispatch(&make_spec(&pinned), Vec::new(), &ctx)
+            .await
+            .expect_err("the pinned attempt fails its verify step");
+
+        let routes: Vec<(String, u64, Option<String>, u64, String)> =
+            published(&mut events, &["route_decided"])
+                .iter()
+                .map(|route| {
+                    (
+                        route["task_id"].as_str().unwrap_or_default().to_string(),
+                        route["attempt"].as_u64().unwrap_or_default(),
+                        route["rung"].as_str().map(str::to_string),
+                        route["ladder_step"].as_u64().unwrap_or(99),
+                        route["ladder_reason"]
+                            .as_str()
+                            .unwrap_or_default()
+                            .to_string(),
+                    )
+                })
+                .collect();
+        let route = |task: &str, attempt: u64, rung: Option<&str>, step: u64, reason: &str| {
+            (
+                task.to_string(),
+                attempt,
+                rung.map(str::to_string),
+                step,
+                reason.to_string(),
+            )
+        };
+        let id = task.id.as_str();
+        assert_eq!(
+            routes,
+            [
+                route(id, 1, Some("cheap"), 0, "start"),
+                route(id, 2, Some("cheap"), 0, "retry"),
+                route(id, 3, Some("top"), 1, "climb"),
+                route(id, 4, Some("top"), 1, "retry"),
+                route("T-PIN", 1, None, 0, "pinned"),
+            ]
+        );
+    }
+
+    /// gap-aaaaae: with the self-model on, an attempt's `route_decided`
+    /// carries its forecast: the mode it ran in, its action, the model it
+    /// would choose, and each candidate rung's model with its P(verified
+    /// success) and median cost, but not the 90th-percentile cost.
+    #[tokio::test]
+    async fn route_decided_carries_the_self_model_forecast() {
+        use roko_core::config::self_model::{SelfModelConfig, SelfModelMode};
+        use roko_core::pricing_snapshot::PriceSnapshot;
+        use roko_learn::self_model::model::SelfModel;
+
+        use crate::graph_task_dispatch::self_model::SelfModelRuntime;
+
+        let temp = tempdir().expect("tempdir");
+        let roko = temp.path().join(".roko");
+        let settings = SelfModelConfig {
+            mode: SelfModelMode::Shadow,
+            ..SelfModelConfig::default()
+        };
+        let snapshot = PriceSnapshot::builtin().expect("the built-in snapshot");
+        let state = roko.join("learn/self-model/state-v1.json");
+        let runtime = Arc::new(SelfModelRuntime::new(
+            settings,
+            state,
+            SelfModel::new(&snapshot),
+        ));
+        let hub = StateHub::new(4096);
+        let mut events = hub.subscribe_events();
+        let (dispatcher, task) = ladder_fixture(&temp).await;
+        let dispatcher = dispatcher
+            .with_feedback(GraphFeedbackContext {
+                runs_dir: Some(roko.join("runs")),
+                self_model: Some(runtime),
+                ..GraphFeedbackContext::default()
+            })
+            .with_tui_bridge(TuiBridge::new(hub.sender()));
+        let ctx = CellContext::new().with_run_id(RUN.to_string());
+        dispatcher
+            .dispatch(&make_spec(&task), Vec::new(), &ctx)
+            .await
+            .expect_err("the attempt fails its verify step");
+
+        let routes = published(&mut events, &["route_decided"]);
+        let forecast = &routes[0]["forecast"];
+        assert_eq!(forecast["mode"], "shadow", "{forecast}");
+        assert!(forecast["action"].as_str().is_some(), "{forecast}");
+        let candidates = forecast["candidates"].as_array().expect("candidates");
+        assert_eq!(candidates.len(), 2, "one per rung: {forecast}");
+        let models: Vec<&str> = candidates
+            .iter()
+            .filter_map(|candidate| candidate["model"].as_str())
+            .collect();
+        if let Some(choice) = forecast["would_choose"].as_str() {
+            assert!(models.contains(&choice), "{forecast}");
+        }
+        for candidate in candidates {
+            assert!(candidate["p_vs"].as_f64().is_some(), "{forecast}");
+            assert!(candidate["cost_q50"].as_f64().is_some(), "{forecast}");
+            assert!(candidate.get("cost_q90").is_none(), "{forecast}");
+        }
     }
 }

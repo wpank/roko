@@ -1252,6 +1252,10 @@ mod tests {
             reason: "task hint".to_string(),
             source: "task_hint".to_string(),
             candidates: Vec::new(),
+            ladder: Box::new(roko_core::dashboard_snapshot::RouteLadder {
+                ladder_reason: "pinned".to_string(),
+                ..Default::default()
+            }),
         });
         assert_eq!(
             rows(&index, 3).await,

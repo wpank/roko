@@ -285,6 +285,9 @@ pub struct GraphTaskDispatcher {
     /// allowance, with why; the next attempt resumes the partial work
     /// (gap-3e770b).
     allowance_stops: parking_lot::Mutex<HashMap<String, String>>,
+    /// Each task's last routed step and why each unsettled try runs where it
+    /// does, which its events say (gap-aaaaae).
+    tries: parking_lot::Mutex<ladder::TryBook>,
     /// Dispatch attempts this process started per task
     /// (`"{plan_id}/{task_id}"`); [`Self::attempt_in_run`] counts the Graph
     /// engine's retries from it.
@@ -386,6 +389,7 @@ impl GraphTaskDispatcher {
             turn_cap_retries: parking_lot::Mutex::new(HashMap::new()),
             timeout_retries: parking_lot::Mutex::new(HashMap::new()),
             allowance_stops: parking_lot::Mutex::new(HashMap::new()),
+            tries: parking_lot::Mutex::default(),
             task_attempts: parking_lot::Mutex::new(HashMap::new()),
             attempts: AttemptBook::default(),
             in_flight: sibling_settle::InFlightTasks::default(),
@@ -1551,7 +1555,7 @@ impl TaskDispatcher for GraphTaskDispatcher {
                     attempt.key.attempt_key(),
                     request,
                     Some(&progress),
-                    failover::LadderRoute::of(&task, &dispatch_plan),
+                    failover::LadderRoute::of(&task, &dispatch_plan, ladder_step),
                     Some(failover::DashboardRow {
                         agent_id: &pre_dispatch_agent_id,
                         role: task.role.as_deref().unwrap_or("implementer"),

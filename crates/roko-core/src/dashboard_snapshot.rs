@@ -167,7 +167,9 @@ pub enum DashboardEvent {
     /// The router picked the model for a Graph attempt (gap-2a3298): the
     /// route row `decisions.jsonl` keeps, as it happens. Published before
     /// the attempt's `agent_spawned`, and again with `source: "failover"`
-    /// when failover passes the planned model over for another one.
+    /// when failover passes the planned model over for another one. It says
+    /// where the attempt runs on the model ladder and why, and what the
+    /// self-model forecast for it (gap-aaaaae).
     RouteDecided {
         plan_id: String,
         task_id: String,
@@ -195,6 +197,12 @@ pub enum DashboardEvent {
         /// rest by score, at most [`ROUTE_EVENT_CANDIDATES`].
         #[serde(default)]
         candidates: Vec<RouteCandidate>,
+        /// Where the attempt runs on the model ladder and why, and the
+        /// self-model's forecast of it, as the event's own fields (`rung`,
+        /// `ladder_step`, `ladder_reason`, `forecast`). Boxed, so every
+        /// other event stays small.
+        #[serde(flatten)]
+        ladder: Box<RouteLadder>,
     },
     /// What a Graph attempt's prompt carried (gap-5f6d0b): the stored
     /// lessons (knowledge entries), playbooks and earlier episodes it used,
@@ -1000,6 +1008,66 @@ pub struct PromptLeftOut {
     /// `token_budget` (its section did not fit), `role_filter` or
     /// `screened`.
     pub reason: String,
+}
+
+/// Where a Graph attempt runs on the model ladder and why, and the
+/// self-model's forecast of it, as [`DashboardEvent::RouteDecided`] carries
+/// them (gap-aaaaae).
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct RouteLadder {
+    /// The `[routing.ladder]` rung the attempt runs on; `None` when the
+    /// ladder did not route it, as for a pinned model.
+    pub rung: Option<String>,
+    /// Rungs the task has climbed above its start rung.
+    pub ladder_step: u32,
+    /// Why this try runs where it does: `start` (the task's first try),
+    /// `retry` (another try on the rung its last try ran on), `climb` (its
+    /// first try on a higher rung), `failover` (failover moved it to another
+    /// model) or `pinned` (a pin chose its model). Empty from an emitter
+    /// that does not say.
+    pub ladder_reason: String,
+    /// The self-model's forecast of the attempt, when it made one (M3); it
+    /// never changes the route in shadow mode.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub forecast: Option<RouteForecast>,
+}
+
+/// The self-model's forecast of a Graph attempt, as
+/// [`DashboardEvent::RouteDecided`] carries it (M3, gap-aaaaae).
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct RouteForecast {
+    /// The routing mode the self-model ran in: `shadow` or `active`.
+    #[serde(default)]
+    pub mode: String,
+    /// What it would do: `dispatch`, `climb`, `skip`, `retry`,
+    /// `refine_spec` or `abandon`.
+    #[serde(default)]
+    pub action: String,
+    /// The model it would choose; `None` when it would dispatch nothing.
+    #[serde(default)]
+    pub would_choose: Option<String>,
+    /// Its forecast for each candidate, the likeliest verified success
+    /// first, at most [`ROUTE_EVENT_CANDIDATES`].
+    #[serde(default)]
+    pub candidates: Vec<ForecastCandidate>,
+}
+
+/// One candidate of a [`RouteForecast`].
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct ForecastCandidate {
+    /// The model.
+    pub model: String,
+    /// The provider it runs on.
+    #[serde(default)]
+    pub provider: String,
+    /// P(verified success): every check passes and the pass is not a false
+    /// green.
+    #[serde(default)]
+    pub p_vs: f64,
+    /// The median cost of an attempt, in USD at the run's price snapshot.
+    #[serde(default)]
+    pub cost_q50: f64,
 }
 
 /// One plan announced by [`DashboardEvent::PlanSetLoaded`].

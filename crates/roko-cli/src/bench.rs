@@ -731,11 +731,15 @@ fn git_apply(workdir: &Path, patch: &str, check_only: bool) -> Result<(bool, Opt
     }
 }
 
+/// Run an instance's test command, the check that grades it, with the check
+/// environment: no provider key roko loaded, no GitHub login (bug-3c4600).
 fn run_shell(workdir: &Path, command: &str) -> Result<(bool, Option<String>)> {
-    let output = Command::new("sh")
-        .arg("-lc")
-        .arg(command)
-        .current_dir(workdir)
+    let mut shell = Command::new("sh");
+    shell.arg("-lc").arg(command).current_dir(workdir);
+    let env = roko_core::child_env::process_env();
+    roko_gate::inherit_gate_env_std(&mut shell, env, &[])
+        .map_err(|error| anyhow!(roko_gate::check_env_error(&error)))?;
+    let output = shell
         .output()
         .with_context(|| format!("run test command `{command}`"))?;
     if output.status.success() {
@@ -1576,5 +1580,31 @@ mod tests {
                 .contains("not a relative path inside the repo"),
             "unexpected error: {err:#}"
         );
+    }
+
+    /// bug-3c4600: `roko bench swe` grades an instance with the check
+    /// environment.
+    #[cfg(unix)]
+    #[test]
+    fn swe_grading_gets_the_check_environment() {
+        crate::check_env_probe::run_child("bench::tests::swe_grading_check_env_child");
+    }
+
+    /// Run by [`swe_grading_gets_the_check_environment`] only.
+    #[cfg(unix)]
+    #[test]
+    fn swe_grading_check_env_child() {
+        use crate::check_env_probe::{assert_check_env, begin_child, dump_env_command};
+        let Some(_run) = begin_child() else {
+            return;
+        };
+        let dir = tempfile::tempdir().expect("tempdir");
+        let out = dir.path().join("grade.env");
+
+        let (passed, failure) =
+            run_shell(dir.path(), &dump_env_command(&out)).expect("the test command runs");
+
+        assert!(passed, "{failure:?}");
+        assert_check_env(&out, "SWE grading");
     }
 }

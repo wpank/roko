@@ -6,9 +6,10 @@
 //! The tools keep agents away from provider keys as roko-std's tools do: the
 //! file tools, `grep` and `bash` refuse key files such as `.roko/.env`
 //! ([`refuse_key_file`], [`refuse_key_file_in_command`]), and `bash` runs with
-//! the environment verify steps get ([`roko_gate::inherit_gate_env`]). `bash`
-//! also refuses the git commands that discard work or move branches
-//! ([`check_git_command`]), as roko's own tool loop does.
+//! the gate policy's environment, as roko-std's `bash` does
+//! ([`roko_gate::gate_env::inherit_tool_env_from`]). `bash` also refuses the
+//! git commands that discard work or move branches ([`check_git_command`]), as
+//! roko's own tool loop does.
 
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
@@ -983,10 +984,8 @@ async fn exec_bash(
         .stderr(std::process::Stdio::piped());
     // No provider key, secret-looking name or `.env`-loaded name reaches the
     // command unless `env_passthrough` names it.
-    match parent_env {
-        Some(vars) => roko_gate::inherit_gate_env_from(&mut cmd, vars, env_passthrough),
-        None => roko_gate::inherit_gate_env(&mut cmd, env_passthrough),
-    }
+    let inherited = parent_env.unwrap_or_else(roko_core::child_env::process_env);
+    roko_gate::gate_env::inherit_tool_env_from(&mut cmd, inherited, env_passthrough);
     let mut child = cmd.spawn().map_err(|e| format!("bash: spawn: {e}"))?;
 
     // Read stdout/stderr concurrently with wait to avoid pipe deadlocks.

@@ -388,11 +388,12 @@ pub struct GatesConfig {
     /// pinned acceptance tests or gate config fail it either way.
     #[serde(default)]
     pub diff_scope: DiffScope,
-    /// Extra roko environment variables that gate commands (task `verify`
-    /// steps, build and test gates) may inherit: exact names or `PREFIX*`
-    /// patterns, e.g. `["DATABASE_URL", "AWS_*"]`.
+    /// Extra roko environment variables that check commands (task `verify`
+    /// steps, rungs, build and test gates, whole-plan and post-merge
+    /// regression checks, red-on-base and audit re-runs) may inherit: exact
+    /// names or `PREFIX*` patterns, e.g. `["DATABASE_URL", "AWS_*"]`.
     ///
-    /// Gate commands start from an empty environment and inherit only an
+    /// Check commands start from an empty environment and inherit only an
     /// allowlist: system basics (`PATH`, `HOME`, `USER`, `SHELL`, `TERM`,
     /// `TMPDIR`, `TZ`, `CI`), locale (`LANG`, `LC_*`), `XDG_*`, toolchain and
     /// build settings (`CARGO_*`, `RUSTUP_*`, `RUSTC*`, `RUST_*`, `NODE_*`,
@@ -400,10 +401,23 @@ pub struct GatesConfig {
     /// proxies, and `ROKO_*`. Names that look like credentials (`*_KEY`,
     /// `*_TOKEN`, `*_SECRET`, `*_PASSWORD`, ...) and names roko loaded from
     /// `~/.roko/.env` or `.roko/.env` are dropped even then. A name listed
-    /// here is always inherited, secret-looking or not. See
-    /// `roko_core::child_env`.
+    /// here is inherited, secret-looking or not, except as `strip_env` says.
+    ///
+    /// GitHub credentials and the provider keys roko loaded from a `.env`
+    /// file need an exact name here: a `PREFIX*` pattern does not admit them
+    /// (bug-3c4600). Checks get `GH_CONFIG_DIR` pointing at an empty
+    /// directory, so `gh` finds no login, and lose `GH_TOKEN`,
+    /// `GITHUB_TOKEN`, `GH_ENTERPRISE_TOKEN` and `GITHUB_ENTERPRISE_TOKEN`.
+    /// Listing `GH_CONFIG_DIR` gives them the person's `gh` login back.
+    /// See `roko_core::child_env`.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub env_passthrough: Vec<String>,
+    /// Variables check commands never inherit, even when the allowlist or
+    /// `env_passthrough` admits them: exact names or `PREFIX*` patterns, e.g.
+    /// `["CARGO_REGISTRIES_*", "SCCACHE_*"]` (bug-3c4600). Variables roko
+    /// sets for a check itself, such as its `CARGO_TARGET_DIR`, stay.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub strip_env: Vec<String>,
     /// Custom gate rungs. When non-empty, these replace the built-in defaults.
     /// `roko run` and every `roko plan run` task run the required ones as
     /// verify steps ([`Self::required_rungs`]).
@@ -494,6 +508,7 @@ impl Default for GatesConfig {
             max_output_tokens: HashMap::new(),
             diff_scope: DiffScope::Record,
             env_passthrough: Vec::new(),
+            strip_env: Vec::new(),
             custom_rungs: Vec::new(),
             packs: BTreeMap::new(),
             max_rung: None,
@@ -520,6 +535,16 @@ impl GatesConfig {
         crate::child_env::GateLimits {
             cargo_jobs,
             nice: self.nice.max(0),
+        }
+    }
+
+    /// What every check command of a run inherits beyond its caller's list
+    /// (`env_passthrough`) and never inherits (`strip_env`).
+    #[must_use]
+    pub fn check_env_settings(&self) -> crate::child_env::CheckEnvSettings {
+        crate::child_env::CheckEnvSettings {
+            passthrough: self.env_passthrough.clone(),
+            strip: self.strip_env.clone(),
         }
     }
 

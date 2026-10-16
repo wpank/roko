@@ -134,19 +134,23 @@ impl GatePayload {
         self
     }
 
-    /// Give `cmd` the gate environment: the variables of roko's environment
-    /// the gate policy admits (see [`inherit_gate_env`]), variables already
-    /// set on `cmd`, then `CARGO_TARGET_DIR` and `extra_env`.
+    /// Give `cmd` the check environment (see [`inherit_gate_env`]), variables
+    /// already set on `cmd`, then `CARGO_TARGET_DIR` and `extra_env`.
+    ///
+    /// # Errors
+    ///
+    /// When the check environment cannot be set up; `cmd` must not run then.
     ///
     /// [`inherit_gate_env`]: crate::gate_env::inherit_gate_env
-    pub fn apply_env(&self, cmd: &mut tokio::process::Command) {
-        crate::gate_env::inherit_gate_env(cmd, &self.env_passthrough);
+    pub fn apply_env(&self, cmd: &mut tokio::process::Command) -> std::io::Result<()> {
+        crate::gate_env::inherit_gate_env(cmd, &self.env_passthrough)?;
         if let Some(target_dir) = &self.target_dir {
             cmd.env("CARGO_TARGET_DIR", target_dir);
         }
         for (key, value) in &self.extra_env {
             cmd.env(key, value);
         }
+        Ok(())
     }
 }
 

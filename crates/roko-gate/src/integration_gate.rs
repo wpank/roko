@@ -348,11 +348,14 @@ async fn run_build_test(
         }
     }
 
-    if let Some(ref p) = payload {
+    let prepared = if let Some(ref p) = payload {
         cmd.current_dir(&p.working_dir);
-        p.apply_env(&mut cmd);
+        p.apply_env(&mut cmd)
     } else {
-        inherit_gate_env(&mut cmd, &[]);
+        inherit_gate_env(&mut cmd, &[])
+    };
+    if let Err(error) = prepared {
+        return Verdict::fail(gate_name, crate::gate_env::check_env_error(&error));
     }
     cmd.kill_on_drop(true);
 
@@ -409,11 +412,14 @@ async fn run_script(
     let payload: Option<GatePayload> = signal.body.as_json().ok();
     let mut cmd = Command::new("bash");
     cmd.arg(path);
-    if let Some(ref p) = payload {
+    let prepared = if let Some(ref p) = payload {
         cmd.current_dir(&p.working_dir);
-        p.apply_env(&mut cmd);
+        p.apply_env(&mut cmd)
     } else {
-        inherit_gate_env(&mut cmd, &[]);
+        inherit_gate_env(&mut cmd, &[])
+    };
+    if let Err(error) = prepared {
+        return Verdict::fail(gate_name, crate::gate_env::check_env_error(&error));
     }
     cmd.kill_on_drop(true);
 

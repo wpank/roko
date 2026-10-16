@@ -335,7 +335,10 @@ impl Verify for GeneratedTestGate {
         }
         cmd.current_dir(&payload.working_dir);
         cmd.kill_on_drop(true);
-        payload.apply_env(&mut cmd);
+        if let Err(error) = payload.apply_env(&mut cmd) {
+            return Verdict::fail(&self.name, crate::gate_env::check_env_error(&error))
+                .with_duration(elapsed_ms(started));
+        }
 
         let output = match timeout(Duration::from_millis(self.timeout_ms), cmd.output()).await {
             Ok(Ok(out)) => out,

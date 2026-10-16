@@ -107,14 +107,14 @@ impl std::fmt::Display for PlanVerifyFailure {
 /// heartbeats and end (gap-6b6ec1).
 ///
 /// Each step starts from the environment a task's verify steps get
-/// ([`roko_gate::inherit_gate_env`]): roko's own, without provider keys or
-/// other secrets, plus the names `env_passthrough` (`[gates]
-/// env_passthrough`) lists.
+/// ([`roko_gate::inherit_gate_env`]): roko's own, without provider keys,
+/// other secrets or the person's GitHub login, plus the names
+/// `env_passthrough` (`[gates] env_passthrough`) lists.
 ///
 /// # Errors
 ///
-/// The first step that exits unsuccessfully, cannot start, or runs out of
-/// time.
+/// The first step that exits unsuccessfully, cannot start (its environment
+/// included), or runs out of time.
 pub async fn run_plan_verify(
     dir: &Path,
     steps: &[VerifyStep],
@@ -146,8 +146,14 @@ async fn run_plan_verify_from(
             .arg(&step.command)
             .current_dir(dir)
             .kill_on_drop(true);
-        roko_gate::inherit_gate_env_from(&mut command, parent_env.iter().cloned(), passthrough);
+        let prepared =
+            roko_gate::inherit_gate_env_from(&mut command, parent_env.iter().cloned(), passthrough);
         let watched = events.start(index, steps.len(), &step.command);
+        if let Err(error) = prepared {
+            let reason = roko_gate::check_env_error(&error);
+            watched.finish(false, None, Some(reason.clone()));
+            return Err(failure(reason));
+        }
         let run = watched.watch(command.output());
         let timeout = Duration::from_millis(step.timeout_ms.max(1));
         let output = match tokio::time::timeout(timeout, run).await {
@@ -336,6 +342,96 @@ mod tests {
         assert!(
             !env.contains("sk-plan-verify-canary"),
             "a provider key reached the plan check:\n{env}"
+        );
+    }
+
+    /// bug-3c4600: a whole-plan check (`[[meta.verify]]`, or the default
+    /// `cargo fmt`/`clippy`/`test` of the packages a plan writes) runs
+    /// without GitHub tokens, the person's `gh` login or a key roko loaded,
+    /// so a test that would publish with `gh` finds no login.
+    #[cfg(unix)]
+    #[test]
+    fn plan_checks_get_the_check_environment() {
+        crate::check_env_probe::run_child(
+            "graph_execution::plan_verify::tests::plan_check_env_child",
+        );
+    }
+
+    /// Run by [`plan_checks_get_the_check_environment`] only.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn plan_check_env_child() {
+        use crate::check_env_probe::{PASSED, assert_check_env, begin_child, dump_env_command};
+        let Some(_run) = begin_child() else {
+            return;
+        };
+        let dir = tempfile::tempdir().expect("tempdir");
+        let out = dir.path().join("check.env");
+        let steps = [verify_step(&dump_env_command(&out))];
+
+        run_plan_verify(
+            dir.path(),
+            &steps,
+            &[PASSED.to_string()],
+            &PlanCheckEvents::none(),
+        )
+        .await
+        .expect("the check passes");
+
+        assert_check_env(&out, "a whole-plan check");
+    }
+
+    /// Tells [`plan_check_fail_closed_child`] where its step would leave a
+    /// mark.
+    #[cfg(unix)]
+    const FAIL_CLOSED_CHILD: &str = "ROKO_PLAN_CHECK_FAIL_CLOSED_CHILD";
+
+    /// bug-3c4600: a whole-plan check whose environment cannot be set up
+    /// fails, saying why, and its step does not run.
+    #[cfg(unix)]
+    #[test]
+    fn a_plan_check_without_its_environment_does_not_run() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let marker = dir.path().join("ran");
+        let output = std::process::Command::new(std::env::current_exe().expect("test binary"))
+            .args([
+                "--exact",
+                "graph_execution::plan_verify::tests::plan_check_fail_closed_child",
+                "--nocapture",
+            ])
+            .env(FAIL_CLOSED_CHILD, &marker)
+            .env("TMPDIR", dir.path().join("gone"))
+            .output()
+            .expect("run the child test");
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(output.status.success(), "{stdout}\n{stderr}");
+        assert!(
+            stdout.contains("1 passed"),
+            "the child test did not run: {stdout}"
+        );
+        assert!(!marker.exists(), "the step ran");
+    }
+
+    /// Run by [`a_plan_check_without_its_environment_does_not_run`] only.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn plan_check_fail_closed_child() {
+        let Some(marker) = std::env::var_os(FAIL_CLOSED_CHILD) else {
+            return;
+        };
+        let dir = std::path::Path::new(&marker)
+            .parent()
+            .expect("the marker's directory");
+        let command = format!("touch '{}'", std::path::Path::new(&marker).display());
+
+        let failure = run_plan_verify(dir, &[verify_step(&command)], &[], &PlanCheckEvents::none())
+            .await
+            .expect_err("no check environment, no check");
+
+        assert!(
+            failure.output.contains("the check did not run"),
+            "{failure}"
         );
     }
 }

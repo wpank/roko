@@ -85,6 +85,8 @@ pub mod audit;
 /// Criterion benchmark regression detection: parse JSON output, compare against baselines.
 pub mod benchmark_gate;
 mod cancel_safe_command;
+#[cfg(all(test, unix))]
+mod check_env_probe;
 pub mod citation_gate;
 pub mod clippy_gate;
 pub mod code_exec;
@@ -189,7 +191,9 @@ pub use feedback::{FeedbackItem, GateFeedback, Severity, feedback_for_agent};
 pub use forensic::{
     ArtifactMetadata, CausalChain, ForensicError, ForensicReplayBuilder, TurnRecord,
 };
-pub use gate_env::{inherit_gate_env, inherit_gate_env_from};
+pub use gate_env::{
+    check_env_error, inherit_gate_env, inherit_gate_env_from, inherit_gate_env_std,
+};
 pub use gate_pipeline::{ComposedGatePipeline, GateComposition, GatePipeline};
 pub use gate_service::GateService;
 pub use generated::{GateGenerator, GeneratedCheck};

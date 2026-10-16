@@ -26,15 +26,26 @@
 //! [`CredentialScrub::apply`] and [`apply_credential_scrub_from`] put either
 //! policy on a [`Command`].
 //!
+//! **Check commands** (every command roko runs as a check: task verify steps
+//! and rungs, whole-plan and post-merge regression checks, red-on-base and
+//! audit re-runs) get the gate policy plus more, through one builder,
+//! [`apply_check_env`] (bug-3c4600). The gate policy keeps `HOME` and `USER`,
+//! so `gh` would find the person's login there and act as them: a check gets
+//! `GH_CONFIG_DIR` pointing at an empty directory instead. GitHub tokens and
+//! the provider keys roko loaded from a `.env` file reach it only when a
+//! passthrough list names them exactly, and `[gates] strip_env` removes more.
+//!
 //! Keeping keys out of a child's environment is moot while the child can read
 //! the files they come from, so this module also lists those files: see
 //! [`key_file_paths`] and [`is_key_file`].
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::{OsStr, OsString};
+use std::io;
 use std::path::{Component, Path, PathBuf};
 use std::process::Command;
 use std::sync::OnceLock;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use parking_lot::Mutex;
 
@@ -622,6 +633,357 @@ fn restore_env(cmd: &mut Command, explicit: Vec<(OsString, Option<OsString>)>) {
     }
 }
 
+// ---- Check commands --------------------------------------------------------
+
+/// GitHub tokens, which `gh` and other tools read. A check command inherits
+/// one only when a passthrough list names it exactly.
+pub const GITHUB_TOKEN_VARS: &[&str] = &[
+    "GH_TOKEN",
+    "GITHUB_TOKEN",
+    "GH_ENTERPRISE_TOKEN",
+    "GITHUB_ENTERPRISE_TOKEN",
+];
+
+/// Where `gh` keeps its login (`hosts.yml`; the token itself may sit in the
+/// system keychain, which `gh` reads only for a host listed there). A check
+/// command gets an empty directory here ([`check_gh_config_dir`]), so `gh`
+/// finds no login, unless a passthrough list names `GH_CONFIG_DIR` exactly.
+pub const GH_CONFIG_DIR: &str = "GH_CONFIG_DIR";
+
+/// Why a check command does not inherit a variable of roko's environment.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum CheckEnvRemoval {
+    /// `[gates] strip_env` names it.
+    Strip,
+    /// A GitHub token, or `GH_CONFIG_DIR`.
+    GithubCredential,
+    /// A provider key roko loaded from a `.env` file.
+    DotenvProviderKey,
+    /// Another name a loaded `.env` file lists.
+    Dotenv,
+    /// A name that looks like a credential ([`is_secret_env_name`]).
+    Credential,
+    /// Not on the gate allowlist ([`gate_env_allowlisted`]).
+    NotAllowlisted,
+}
+
+impl CheckEnvRemoval {
+    /// The class, as the run's log names it.
+    #[must_use]
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Strip => "named in [gates] strip_env",
+            Self::GithubCredential => "GitHub credentials",
+            Self::DotenvProviderKey => "provider keys roko loaded from .env",
+            Self::Dotenv => "other names roko loaded from .env",
+            Self::Credential => "names that look like credentials",
+            Self::NotAllowlisted => "not on the allowlist",
+        }
+    }
+}
+
+/// Why a check command does not inherit `name`, or `None` when it does.
+///
+/// `strip` (`[gates] strip_env`) wins over everything. GitHub credentials
+/// ([`GITHUB_TOKEN_VARS`], [`GH_CONFIG_DIR`]) and the provider keys roko
+/// loaded from a `.env` file are inherited only when `passthrough` names them
+/// exactly: a `PREFIX*` pattern does not admit them. Everything else follows
+/// the gate policy ([`gate_env_keeps`]).
+#[must_use]
+pub fn check_env_removal(
+    name: &str,
+    passthrough: &[String],
+    dotenv: &DotenvNames,
+    strip: &[String],
+) -> Option<CheckEnvRemoval> {
+    if matches_any(name, strip) {
+        return Some(CheckEnvRemoval::Strip);
+    }
+    let named = passthrough.iter().any(|pattern| pattern.trim() == name);
+    let github = GITHUB_TOKEN_VARS
+        .iter()
+        .chain([&GH_CONFIG_DIR])
+        .any(|var| var.eq_ignore_ascii_case(name));
+    if github && !named {
+        return Some(CheckEnvRemoval::GithubCredential);
+    }
+    if is_provider_key_var(name) && dotenv.supplied_value(name) && !named {
+        return Some(CheckEnvRemoval::DotenvProviderKey);
+    }
+    if gate_env_keeps(name, passthrough, dotenv) {
+        return None;
+    }
+    Some(if dotenv.is_listed(name) {
+        CheckEnvRemoval::Dotenv
+    } else if is_secret_env_name(name) {
+        CheckEnvRemoval::Credential
+    } else {
+        CheckEnvRemoval::NotAllowlisted
+    })
+}
+
+/// The variables of `parent` a check command inherits, and the names it does
+/// not, each with why ([`check_env_removal`]).
+pub fn check_env<V>(
+    parent: impl IntoIterator<Item = (String, V)>,
+    passthrough: &[String],
+    dotenv: &DotenvNames,
+    strip: &[String],
+) -> (Vec<(String, V)>, Vec<(String, CheckEnvRemoval)>) {
+    let mut kept = Vec::new();
+    let mut removed = Vec::new();
+    for (name, value) in parent {
+        match check_env_removal(&name, passthrough, dotenv, strip) {
+            None => kept.push((name, value)),
+            Some(reason) => removed.push((name, reason)),
+        }
+    }
+    (kept, removed)
+}
+
+/// What `[gates]` says about every check command of a run.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct CheckEnvSettings {
+    /// `[gates] env_passthrough`: names or `PREFIX*` patterns a check inherits
+    /// beyond the allowlist, on top of the ones its caller passes.
+    pub passthrough: Vec<String>,
+    /// `[gates] strip_env`: names or `PREFIX*` patterns a check never
+    /// inherits, even when allowlisted or passed through.
+    pub strip: Vec<String>,
+}
+
+/// The check settings of the run going on, its empty `GH_CONFIG_DIR`, and
+/// whether its checks' environment was logged.
+struct CheckEnvState {
+    settings: CheckEnvSettings,
+    gh_config_dir: Option<PathBuf>,
+    logged: bool,
+}
+
+static CHECK_ENV: Mutex<CheckEnvState> = Mutex::new(CheckEnvState {
+    settings: CheckEnvSettings {
+        passthrough: Vec::new(),
+        strip: Vec::new(),
+    },
+    gh_config_dir: None,
+    logged: false,
+});
+
+/// Start a run's checks. From now on they follow `settings`, the next one
+/// logs what its environment leaves out, and they get a fresh empty
+/// `GH_CONFIG_DIR`, removed when the returned guard drops at the end of the
+/// run. A plan run calls this before anything runs; checks outside a run
+/// follow the defaults.
+#[must_use = "dropping the guard ends the run's checks"]
+pub fn begin_check_run(settings: CheckEnvSettings) -> CheckRun {
+    let previous = {
+        let mut state = CHECK_ENV.lock();
+        state.settings = settings;
+        state.logged = false;
+        state.gh_config_dir.take()
+    };
+    remove_if_empty(previous.as_deref());
+    CheckRun { _run: () }
+}
+
+/// The checks of one run ([`begin_check_run`]). Dropping it removes their
+/// empty `GH_CONFIG_DIR`; a check still running elsewhere then finds no
+/// directory there, which `gh` reads as no login, and the next check gets a
+/// new one.
+#[derive(Debug)]
+pub struct CheckRun {
+    _run: (),
+}
+
+impl Drop for CheckRun {
+    fn drop(&mut self) {
+        let dir = CHECK_ENV.lock().gh_config_dir.take();
+        remove_if_empty(dir.as_deref());
+    }
+}
+
+/// Remove `dir` if it is an empty directory; leave anything else alone.
+fn remove_if_empty(dir: Option<&Path>) {
+    if let Some(dir) = dir {
+        // `remove_dir` refuses a directory that holds anything.
+        let _ = std::fs::remove_dir(dir);
+    }
+}
+
+/// The empty directory check commands get as `GH_CONFIG_DIR`: the run's,
+/// made on first use and made again when it is gone or a check left
+/// something in it. It is read-only, so a check cannot log `gh` in there.
+///
+/// # Errors
+///
+/// When no new directory can be made in the temp directory.
+pub fn check_gh_config_dir() -> io::Result<PathBuf> {
+    let mut state = CHECK_ENV.lock();
+    if let Some(dir) = &state.gh_config_dir
+        && is_empty_dir(dir)
+    {
+        return Ok(dir.clone());
+    }
+    let dir = make_empty_dir()?;
+    state.gh_config_dir = Some(dir.clone());
+    Ok(dir)
+}
+
+/// Whether `dir` is a directory, not a link to one, with nothing in it.
+fn is_empty_dir(dir: &Path) -> bool {
+    std::fs::symlink_metadata(dir).is_ok_and(|meta| meta.is_dir())
+        && std::fs::read_dir(dir).is_ok_and(|mut entries| entries.next().is_none())
+}
+
+/// Make a new read-only directory in the temp directory.
+fn make_empty_dir() -> io::Result<PathBuf> {
+    let parent = std::env::temp_dir();
+    let stamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |since| since.as_nanos());
+    let mut taken = None;
+    for attempt in 0..8 {
+        let name = format!("roko-check-gh-{}-{stamp:x}-{attempt}", std::process::id());
+        let dir = parent.join(name);
+        #[cfg(unix)]
+        let created = {
+            use std::os::unix::fs::DirBuilderExt as _;
+            std::fs::DirBuilder::new().mode(0o500).create(&dir)
+        };
+        #[cfg(not(unix))]
+        let created = std::fs::create_dir(&dir);
+        match created {
+            Ok(()) => return Ok(dir),
+            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => taken = Some(error),
+            Err(error) => return Err(error),
+        }
+    }
+    Err(taken.unwrap_or_else(|| io::Error::other("every name was taken")))
+}
+
+/// Give `cmd` the environment of a check command (bug-3c4600), in place of
+/// the one it would inherit:
+///
+/// - the variables of `inherited` that [`check_env`] keeps: the gate
+///   allowlist plus `passthrough` and the run's `[gates] env_passthrough`,
+///   minus `[gates] strip_env`, and minus GitHub tokens and the provider keys
+///   roko loaded from a `.env` file unless a passthrough list names them
+///   exactly;
+/// - `GH_CONFIG_DIR` pointing at an empty directory ([`check_gh_config_dir`]),
+///   so `gh` finds no login although the command keeps `HOME` and `USER`,
+///   unless a passthrough list names `GH_CONFIG_DIR` exactly;
+/// - the variables already set on `cmd`.
+///
+/// `inherited` is roko's own environment ([`process_env`]) in production;
+/// tests pass their own. The first check of a run logs which classes of
+/// variables it left out: counts at info, names at debug, never values.
+///
+/// # Errors
+///
+/// When the empty `GH_CONFIG_DIR` cannot be made. `cmd` is then left with an
+/// empty environment, and the caller must not run it: a check whose
+/// environment cannot be set up does not run.
+pub fn apply_check_env(
+    cmd: &mut Command,
+    inherited: impl IntoIterator<Item = (String, OsString)>,
+    passthrough: &[String],
+) -> io::Result<()> {
+    let settings = CHECK_ENV.lock().settings.clone();
+    let mut patterns = passthrough.to_vec();
+    patterns.extend(settings.passthrough.iter().cloned());
+    let own_gh_config = patterns
+        .iter()
+        .any(|pattern| pattern.trim() == GH_CONFIG_DIR);
+    let gh_config_dir = if own_gh_config {
+        None
+    } else {
+        match check_gh_config_dir() {
+            Ok(dir) => Some(dir),
+            Err(error) => {
+                cmd.env_clear();
+                return Err(io::Error::new(
+                    error.kind(),
+                    format!(
+                        "could not make an empty GH_CONFIG_DIR in {}: {error}",
+                        std::env::temp_dir().display()
+                    ),
+                ));
+            }
+        }
+    };
+    let removed = apply_check_env_with(
+        cmd,
+        inherited,
+        &patterns,
+        startup_dotenv(),
+        &settings.strip,
+        gh_config_dir.as_deref(),
+    );
+    log_check_env(&removed, gh_config_dir.as_deref());
+    Ok(())
+}
+
+/// [`apply_check_env`] with every input given: `gh_config_dir` is the empty
+/// directory, or `None` to keep the inherited `GH_CONFIG_DIR` (a passthrough
+/// list names it). Returns the names left out, each with why.
+fn apply_check_env_with(
+    cmd: &mut Command,
+    inherited: impl IntoIterator<Item = (String, OsString)>,
+    passthrough: &[String],
+    dotenv: &DotenvNames,
+    strip: &[String],
+    gh_config_dir: Option<&Path>,
+) -> Vec<(String, CheckEnvRemoval)> {
+    let explicit = explicit_env(cmd);
+    let (kept, removed) = check_env(inherited, passthrough, dotenv, strip);
+    cmd.env_clear();
+    cmd.envs(kept);
+    if let Some(dir) = gh_config_dir {
+        cmd.env(GH_CONFIG_DIR, dir);
+    }
+    restore_env(cmd, explicit);
+    removed
+}
+
+/// Log, once per run ([`begin_check_run`]), which classes of variables check
+/// commands leave out and where `gh` looks for a login: counts at info, names
+/// at debug, never values.
+fn log_check_env(removed: &[(String, CheckEnvRemoval)], gh_config_dir: Option<&Path>) {
+    {
+        let mut state = CHECK_ENV.lock();
+        if state.logged {
+            return;
+        }
+        state.logged = true;
+    }
+    let mut classes: BTreeMap<CheckEnvRemoval, Vec<&str>> = BTreeMap::new();
+    for (name, reason) in removed {
+        classes.entry(*reason).or_default().push(name);
+    }
+    let summary = classes
+        .iter()
+        .map(|(reason, names)| format!("{} {}", names.len(), reason.label()))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let gh_config = gh_config_dir.map_or_else(
+        || "inherited: [gates] env_passthrough names GH_CONFIG_DIR".to_string(),
+        |dir| format!("an empty directory, {}", dir.display()),
+    );
+    tracing::info!(
+        left_out = %summary,
+        gh_config_dir = %gh_config,
+        "check commands run without the person's credentials; a project whose own checks \
+         need one of these variables gets it by naming it exactly in [gates] env_passthrough"
+    );
+    for (reason, names) in &classes {
+        tracing::debug!(
+            class = reason.label(),
+            names = %names.join(","),
+            "left out of check commands"
+        );
+    }
+}
+
 // ---- Key files -------------------------------------------------------------
 
 /// Files in a `.roko` directory that hold provider keys or roko credentials:
@@ -1179,5 +1541,288 @@ mod tests {
         let scrub = CredentialScrub::for_kind(ProviderKind::Hermes);
         assert!(!scrub.strips("OPENAI_API_KEY", &dotenv));
         assert!(scrub.strips("OPENROUTER_API_KEY", &dotenv));
+    }
+
+    /// Tests that use the run's check state ([`begin_check_run`]) take this
+    /// lock, so that one's run does not remove another's directory.
+    static CHECK_STATE: Mutex<()> = Mutex::new(());
+
+    fn removals(removed: &[(String, CheckEnvRemoval)]) -> Vec<(&str, CheckEnvRemoval)> {
+        removed
+            .iter()
+            .map(|(name, reason)| (name.as_str(), *reason))
+            .collect()
+    }
+
+    /// bug-3c4600: a check keeps `HOME` and `USER`, but no GitHub token, and
+    /// no `GH_CONFIG_DIR` of its own, unless a passthrough list names one
+    /// exactly: a pattern does not.
+    #[test]
+    fn check_env_drops_github_credentials_unless_named_exactly() {
+        let parent = parent(&[
+            ("PATH", "/usr/bin"),
+            ("HOME", "/home/dev"),
+            ("USER", "dev"),
+            ("GH_TOKEN", "gho_test"),
+            ("GITHUB_TOKEN", "ghp_test"),
+            ("GH_ENTERPRISE_TOKEN", "ghe_test"),
+            ("GITHUB_ENTERPRISE_TOKEN", "ghe_test"),
+            ("GH_CONFIG_DIR", "/home/dev/.config/gh"),
+        ]);
+        let wide = patterns(&["GH_*", "GITHUB_*", "*"]);
+        let (kept, removed) = check_env(parent.clone(), &wide, &DotenvNames::new(), &[]);
+        assert_eq!(kept_names(&kept), vec!["PATH", "HOME", "USER"]);
+        assert_eq!(
+            removals(&removed),
+            [
+                "GH_TOKEN",
+                "GITHUB_TOKEN",
+                "GH_ENTERPRISE_TOKEN",
+                "GITHUB_ENTERPRISE_TOKEN",
+                "GH_CONFIG_DIR",
+            ]
+            .map(|name| (name, CheckEnvRemoval::GithubCredential))
+        );
+
+        let named = patterns(&["GH_TOKEN", "GH_CONFIG_DIR"]);
+        let (kept, _) = check_env(parent, &named, &DotenvNames::new(), &[]);
+        assert_eq!(
+            kept_names(&kept),
+            vec!["PATH", "HOME", "USER", "GH_TOKEN", "GH_CONFIG_DIR"]
+        );
+    }
+
+    /// The provider keys roko loaded from a `.env` file reach a check only by
+    /// exact name; a key the person exported keeps the gate policy's rule.
+    #[test]
+    fn check_env_drops_provider_keys_roko_loaded_unless_named_exactly() {
+        let mut dotenv = DotenvNames::new();
+        dotenv.insert("OPENAI_API_KEY", true);
+        dotenv.insert("CEREBRAS_API_KEY", true);
+        dotenv.insert("DATABASE_URL", true);
+        let parent = parent(&[
+            ("OPENAI_API_KEY", "sk-test-not-real"),
+            ("CEREBRAS_API_KEY", "csk-test-not-real"),
+            ("DATABASE_URL", "postgres://db"),
+            ("ANTHROPIC_API_KEY", "sk-ant-exported-not-real"),
+            ("PATH", "/bin"),
+        ]);
+
+        let (kept, removed) = check_env(parent.clone(), &[], &dotenv, &[]);
+        assert_eq!(kept_names(&kept), vec!["PATH"]);
+        assert_eq!(
+            removals(&removed),
+            vec![
+                ("OPENAI_API_KEY", CheckEnvRemoval::DotenvProviderKey),
+                ("CEREBRAS_API_KEY", CheckEnvRemoval::DotenvProviderKey),
+                ("DATABASE_URL", CheckEnvRemoval::Dotenv),
+                ("ANTHROPIC_API_KEY", CheckEnvRemoval::Credential),
+            ]
+        );
+
+        // A pattern admits other `.env` names and exported keys, as the gate
+        // policy does, but not a provider key roko loaded.
+        let wide = patterns(&["*"]);
+        let (kept, _) = check_env(parent.clone(), &wide, &dotenv, &[]);
+        assert_eq!(
+            kept_names(&kept),
+            vec!["DATABASE_URL", "ANTHROPIC_API_KEY", "PATH"]
+        );
+        let named = patterns(&["OPENAI_API_KEY"]);
+        let (kept, _) = check_env(parent, &named, &dotenv, &[]);
+        assert_eq!(kept_names(&kept), vec!["OPENAI_API_KEY", "PATH"]);
+    }
+
+    /// `[gates] strip_env` removes allowlisted and passed-through names alike.
+    #[test]
+    fn strip_env_wins_over_the_allowlist_and_passthrough() {
+        let parent = parent(&[
+            ("PATH", "/bin"),
+            ("RUSTC_WRAPPER", "sccache"),
+            ("CARGO_REGISTRIES_CORP_INDEX", "https://corp/index"),
+            ("CARGO_HOME", "/home/dev/.cargo"),
+            ("DATABASE_URL", "postgres://db"),
+        ]);
+        let (kept, removed) = check_env(
+            parent,
+            &patterns(&["DATABASE_URL"]),
+            &DotenvNames::new(),
+            &patterns(&["RUSTC_WRAPPER", "CARGO_REGISTRIES_*", "DATABASE_URL"]),
+        );
+        assert_eq!(kept_names(&kept), vec!["PATH", "CARGO_HOME"]);
+        assert_eq!(
+            removals(&removed),
+            vec![
+                ("RUSTC_WRAPPER", CheckEnvRemoval::Strip),
+                ("CARGO_REGISTRIES_CORP_INDEX", CheckEnvRemoval::Strip),
+                ("DATABASE_URL", CheckEnvRemoval::Strip),
+            ]
+        );
+    }
+
+    /// On a command: `GH_CONFIG_DIR` points at the empty directory, no token
+    /// or `.env`-loaded key is left, a passed-through name is, and so are the
+    /// variables the caller set.
+    #[test]
+    fn check_env_on_a_command() {
+        let mut dotenv = DotenvNames::new();
+        dotenv.insert("OPENAI_API_KEY", true);
+        let empty = tempfile::tempdir().expect("tempdir");
+        let mut cmd = Command::new("true");
+        cmd.env("CARGO_TARGET_DIR", "/tmp/target");
+        let removed = apply_check_env_with(
+            &mut cmd,
+            os_parent(&[
+                ("PATH", "/usr/bin:/bin"),
+                ("HOME", "/home/dev"),
+                ("GH_TOKEN", "gho_test"),
+                ("GITHUB_TOKEN", "ghp_test"),
+                ("GH_CONFIG_DIR", "/home/dev/.config/gh"),
+                ("OPENAI_API_KEY", "sk-test-not-real"),
+                ("DATABASE_URL", "postgres://db"),
+            ]),
+            &patterns(&["DATABASE_URL"]),
+            &dotenv,
+            &[],
+            Some(empty.path()),
+        );
+        assert_eq!(
+            command_env(&cmd),
+            vec![
+                set("CARGO_TARGET_DIR", "/tmp/target"),
+                set("DATABASE_URL", "postgres://db"),
+                set("GH_CONFIG_DIR", &empty.path().to_string_lossy()),
+                set("HOME", "/home/dev"),
+                set("PATH", "/usr/bin:/bin"),
+            ]
+        );
+        assert_eq!(removed.len(), 4, "{removed:?}");
+
+        // A passthrough list that names GH_CONFIG_DIR keeps the person's.
+        let mut cmd = Command::new("true");
+        apply_check_env_with(
+            &mut cmd,
+            os_parent(&[("GH_CONFIG_DIR", "/home/dev/.config/gh")]),
+            &patterns(&["GH_CONFIG_DIR"]),
+            &DotenvNames::new(),
+            &[],
+            None,
+        );
+        assert_eq!(
+            command_env(&cmd),
+            vec![set("GH_CONFIG_DIR", "/home/dev/.config/gh")]
+        );
+    }
+
+    /// The directory is empty and read-only; one a check wrote into, or one
+    /// that is gone, is replaced; a run's directory goes with the run.
+    #[test]
+    fn checks_get_an_empty_gh_config_dir_per_run() {
+        let _state = CHECK_STATE.lock();
+        let run = begin_check_run(CheckEnvSettings::default());
+        let dir = check_gh_config_dir().expect("an empty directory");
+        assert!(is_empty_dir(&dir), "{}", dir.display());
+        assert_eq!(check_gh_config_dir().expect("the same directory"), dir);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            let mode = std::fs::metadata(&dir)
+                .expect("metadata")
+                .permissions()
+                .mode();
+            assert_eq!(mode & 0o222, 0, "writable: {mode:o}");
+            // A check that makes it writable and logs in there.
+            std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700)).expect("chmod");
+        }
+        std::fs::write(dir.join("hosts.yml"), "github.com:\n").expect("a login");
+        let fresh = check_gh_config_dir().expect("a new directory");
+        assert_ne!(fresh, dir);
+        assert!(is_empty_dir(&fresh));
+        std::fs::remove_dir_all(&dir).expect("clean up the written one");
+
+        drop(run);
+        assert!(!fresh.exists(), "the run's directory stays after the run");
+        let next = begin_check_run(CheckEnvSettings::default());
+        let after = check_gh_config_dir().expect("a directory for the next run");
+        assert!(is_empty_dir(&after));
+        drop(next);
+        assert!(!after.exists());
+    }
+
+    /// The first check of a run logs what it left out; later ones do not,
+    /// until the next run begins.
+    #[test]
+    fn a_run_logs_its_check_environment_once() {
+        let _state = CHECK_STATE.lock();
+        let run = begin_check_run(CheckEnvSettings {
+            passthrough: patterns(&["DATABASE_URL"]),
+            strip: patterns(&["RUSTC_WRAPPER"]),
+        });
+        let mut cmd = Command::new("true");
+        apply_check_env(
+            &mut cmd,
+            os_parent(&[
+                ("PATH", "/bin"),
+                ("DATABASE_URL", "postgres://db"),
+                ("RUSTC_WRAPPER", "sccache"),
+                ("GITHUB_TOKEN", "ghp_test"),
+            ]),
+            &[],
+        )
+        .expect("the check environment");
+        // The run's settings apply without the caller passing them.
+        let env = command_env(&cmd);
+        let names: Vec<&str> = env.iter().map(|(name, _)| name.as_str()).collect();
+        assert_eq!(names, vec!["DATABASE_URL", "GH_CONFIG_DIR", "PATH"]);
+        assert!(CHECK_ENV.lock().logged, "the first check logs");
+        drop(run);
+        let next = begin_check_run(CheckEnvSettings::default());
+        assert!(!CHECK_ENV.lock().logged, "a new run logs again");
+        drop(next);
+    }
+
+    /// Where [`a_check_without_its_environment_does_not_run`] tells its child
+    /// test process to look.
+    const FAIL_CLOSED_CHILD: &str = "ROKO_CHECK_ENV_FAIL_CLOSED_CHILD";
+
+    /// A check whose empty `GH_CONFIG_DIR` cannot be made gets an error and
+    /// an empty environment: it must not run. The temp directory is set for
+    /// a child test process, away from other tests.
+    #[test]
+    fn a_check_without_its_environment_does_not_run() {
+        let missing = tempfile::tempdir().expect("tempdir").path().join("gone");
+        let output = Command::new(std::env::current_exe().expect("test binary"))
+            .args([
+                "--exact",
+                "child_env::tests::check_env_fail_closed_child",
+                "--nocapture",
+            ])
+            .env(FAIL_CLOSED_CHILD, "1")
+            .env("TMPDIR", &missing)
+            .env("TMP", &missing)
+            .env("TEMP", &missing)
+            .output()
+            .expect("run the child test");
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(output.status.success(), "{stdout}\n{stderr}");
+        assert!(
+            stdout.contains("1 passed"),
+            "the child test did not run: {stdout}"
+        );
+    }
+
+    /// Run by [`a_check_without_its_environment_does_not_run`] only.
+    #[test]
+    fn check_env_fail_closed_child() {
+        if std::env::var_os(FAIL_CLOSED_CHILD).is_none() {
+            return;
+        }
+        let mut cmd = Command::new("true");
+        cmd.env("CARGO_TARGET_DIR", "/tmp/target");
+        let error = apply_check_env(&mut cmd, os_parent(&[("PATH", "/bin")]), &[])
+            .expect_err("no temp directory, no check environment");
+        assert!(error.to_string().contains("GH_CONFIG_DIR"), "{error}");
+        assert_eq!(command_env(&cmd), Vec::new(), "the environment was cleared");
     }
 }

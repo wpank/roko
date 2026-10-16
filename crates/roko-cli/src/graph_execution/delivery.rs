@@ -356,7 +356,8 @@ impl GitDeliveryBackend {
     /// ran, stopping after the first that fails, and the full text of their
     /// output for the evidence log. The commands run the merged code the
     /// agents wrote, so they start from the environment verify steps get,
-    /// without provider keys.
+    /// without provider keys or the person's GitHub login. One whose
+    /// environment cannot be set up does not run, and the delivery fails.
     ///
     /// The checkout stays for the next delivery (bug-8cf581): Cargo keys
     /// workspace crates by path, so at a stable path the next build reuses
@@ -383,12 +384,18 @@ impl GitDeliveryBackend {
             };
             let mut regression = tokio::process::Command::new(program);
             let env = parent_env.iter().cloned();
-            roko_gate::inherit_gate_env_from(&mut regression, env, &self.env_passthrough);
+            let prepared =
+                roko_gate::inherit_gate_env_from(&mut regression, env, &self.env_passthrough);
             // Only the build output is shared: the sources are the checkout's.
             let started = std::time::Instant::now();
             let watched =
                 self.check_events
                     .start(index, self.regression.len(), &check_command(command));
+            if let Err(error) = prepared {
+                let reason = roko_gate::check_env_error(&error);
+                watched.finish(false, None, Some(reason.clone()));
+                return Err(reason);
+            }
             let run = regression
                 .args(args)
                 .current_dir(&checkout)
@@ -1863,6 +1870,43 @@ mod tests {
                 "finished 2 false Some(4)",
             ]
         );
+    }
+
+    /// bug-3c4600: the post-merge regression check, which every serve and
+    /// Hermes run delivers through, runs without GitHub tokens, the person's
+    /// `gh` login or a key roko loaded.
+    #[cfg(unix)]
+    #[test]
+    fn regression_checks_get_the_check_environment() {
+        crate::check_env_probe::run_child(
+            "graph_execution::delivery::tests::regression_check_env_child",
+        );
+    }
+
+    /// Run by [`regression_checks_get_the_check_environment`] only.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn regression_check_env_child() {
+        use crate::check_env_probe::{PASSED, assert_check_env, begin_child, dump_env_command};
+        let Some(_run) = begin_child() else {
+            return;
+        };
+        let repo = diverged_repo();
+        let path = repo.path();
+        git(path, &["checkout", "--quiet", "-b", "work"]);
+        let dumps = tempfile::tempdir().expect("tempdir");
+        let out = dumps.path().join("regression.env");
+        let backend = GitDeliveryBackend::new(path.to_path_buf())
+            .with_regression_steps(vec![dump_env_command(&out)])
+            .with_env_passthrough(vec![PASSED.to_string()]);
+        let commit = git(path, &["rev-parse", "roko/plan-a"]);
+
+        let outcome = backend
+            .run_regression(&git_request("d-git-check-env", path), &commit)
+            .await;
+
+        assert!(outcome.passed, "{}", outcome.summary);
+        assert_check_env(&out, "the post-merge regression check");
     }
 
     /// backlog 3111: a delivery records each whole-plan check it ran on its

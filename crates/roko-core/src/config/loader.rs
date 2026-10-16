@@ -1856,6 +1856,7 @@ fn build_schema_tree() -> toml::Value {
     config.routing.disabled_providers = vec![String::new()];
     config.routing.fallback_models = vec![String::new()];
     config.gates.env_passthrough = vec![String::new()];
+    config.gates.strip_env = vec![String::new()];
     // Populate Optional/skip_serializing_if GitHubConfig fields so they
     // appear in the serialized schema tree and are not stripped.
     config.github.owner = Some(String::new());

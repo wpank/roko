@@ -15,6 +15,9 @@ source = "tmp/hermes-roko-v5/findings/roko-caps.md (roko-caps, 2026-10-16)"
 discovered_from = "bug-4fabd0: checking the cache-read pricing of the $0.753 overrun"
 anchors = ["crates/roko-core/src/chat_types.rs::fill_cost_from_pricing", "crates/roko-cli/src/dispatch_v2.rs::fill_usage_cost_from_pricing"]
 links = { depends_on = [], blocks = [], related = ["bug-4fabd0"], supersedes = [], duplicate_of = "" }
+
+[[verify]]
+command = "grep -rqw 'fn cerebras_cache_reads_cost_the_input_rate' crates/roko-cli/src && cargo test -p roko-cli --lib cerebras_cache_reads_cost_the_input_rate"
 +++
 
 ## Problem
@@ -56,3 +59,16 @@ have `roko doctor` warn about an API model priced without a cache rate.
 ## Notes
 
 Found by roko-caps (bug-4fabd0) while checking the $0.753 overrun's pricing: that run was priced right.
+
+## Decision (roko-caps, 2026-10-16)
+
+- (a), per provider: the 0.1 default stays, since it is right for OpenAI, Anthropic and Gemini and every cost path
+  shares it (bug-0c0747). A provider that bills cached input at its input rate (Cerebras, by kind or by its API's
+  address, as `roko init` writes it) gives a profile that names no cache-read rate its input rate
+  (`ProviderConfig::bills_cached_input_at_input_rate`, `ModelProfile::with_provider_cache_rate`), in roko's tool loop
+  (openai_compat adapter) and in dispatch's pricing.
+- (b): dispatch prices every call through `dispatch_v2::price_target_usage`. For an agent roko's tool loop runs, the
+  cost a call carries is the loop's estimate from the profile, so the dated snapshot's row prices it instead when
+  there is one (decision 2113); a CLI agent's own reported cost stands.
+- (c) not done: with (a) the known undercount is gone; a warning for every profile without a cache rate would flag
+  `roko init`'s OpenRouter rows, whose discount OpenRouter passes through from the serving provider.

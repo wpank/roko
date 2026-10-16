@@ -1366,7 +1366,9 @@ pub struct AgentTopologyEdge {
     pub edge_type: String,
 }
 
-/// One bucket of aggregated efficiency telemetry.
+/// One bucket of aggregated efficiency telemetry: a span of time, or one plan
+/// run in the trend a Graph run publishes as it ends (gap-de0e96), whose
+/// buckets carry the run's fields.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct EfficiencyBucket {
     /// Bucket start timestamp in UTC.
@@ -1387,6 +1389,21 @@ pub struct EfficiencyBucket {
     /// Average latency in milliseconds for turns in the bucket.
     #[serde(default)]
     pub latency_ms_avg: f64,
+    /// The plan run a run trend's bucket is.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub run_id: Option<String>,
+    /// The run's cost in USD, unrounded: model calls and helper calls.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cost_usd: Option<f64>,
+    /// The run's tasks.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tasks: Option<u64>,
+    /// The run's tasks that passed every verify step.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub verified_tasks: Option<u64>,
+    /// `cost_usd` per verified task; absent when no task passed its checks.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cost_per_verified_usd: Option<f64>,
 }
 
 impl Default for EfficiencyBucket {
@@ -1398,6 +1415,11 @@ impl Default for EfficiencyBucket {
             tokens_out: 0,
             cost_usd_cents: 0,
             latency_ms_avg: 0.0,
+            run_id: None,
+            cost_usd: None,
+            tasks: None,
+            verified_tasks: None,
+            cost_per_verified_usd: None,
         }
     }
 }

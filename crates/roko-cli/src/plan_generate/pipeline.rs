@@ -3600,9 +3600,10 @@ mod tests {
     #[cfg(unix)]
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn extraction_retry_keeps_the_source_document() {
+        // A source with no check headings, so no source check asks for a
+        // third call (gap-dc5d7c).
         let source = PlanSource::Text {
-            text: "# Widget\n\nAdd a widget module.\n\n## Verification\n\n\
-                   - `widget::spin(3)` returns three turns\n",
+            text: "# Widget\n\nAdd a widget module: `widget::spin(3)` returns three turns.\n",
             kind: "file",
         };
         // Longer than the 2,000 characters a retry used to quote, with a key

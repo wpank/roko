@@ -1,5 +1,3 @@
-# Emitted by the ViabilityBench driver (planemit-4) for one benchmark task. Roko's agent sees this file and its
-# verify command; the benchmark's hidden checks never enter it.
 [meta]
 plan = "vb-86da757b9e"
 total = 1

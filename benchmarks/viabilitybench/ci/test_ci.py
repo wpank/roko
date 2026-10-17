@@ -73,6 +73,18 @@ Path(sys.argv[sys.argv.index("--workdir") + 1], "NOTES.md").write_text(f"see {ca
 sys.exit(done.returncode)
 '''
 LAX_VISIBLE = "#!/bin/sh\n# A broken visible check: it passes whatever the script does.\nexit 0\n"
+DROPS_A_FIELD = '''#!/usr/bin/env python3
+"""A broken generator: the real one, whose manifest then loses `recoverability`, a field vb.task/1 requires."""
+import json, subprocess, sys
+from pathlib import Path
+
+done = subprocess.run([sys.executable, str(Path(__file__).with_name("gen_real.py")), *sys.argv[1:]])
+manifest = Path(sys.argv[sys.argv.index("--out") + 1], "task.json")
+task = json.loads(manifest.read_text(encoding="utf-8"))
+del task["recoverability"]
+manifest.write_text(json.dumps(task, indent=2) + "\\n", encoding="utf-8")
+sys.exit(done.returncode)
+'''
 
 
 @pytest.fixture(scope="module")
@@ -144,6 +156,21 @@ def test_every_broken_verifier_turns_ci_red(tmp_path, secret_file):
     }
     for name, problem in expected.items():
         assert any(found.startswith(problem) for found in problems[name]), (name, problems[name])
+
+
+def test_an_invalid_manifest_turns_ci_red(tmp_path, secret_file, capsys):
+    """gap-871b89: S08 §4.2 (3), "CI fails an instance without [recoverability]". A generator whose manifest is not
+    vb.task/1 turns its cell red before any solution is judged, as the driver refuses the instance before any run,
+    although every verifier would still judge it right."""
+    broken = f4_copy(tmp_path / "invalid", wrap="gen")
+    (broken / "gen.py").write_text(DROPS_A_FIELD)
+    code, result = run_ci(tmp_path, "--families", "f4", "--family", f"f4={broken}", *ONE_CELL,
+                          "--secret-file", str(secret_file))
+    assert code == 1
+    [cell] = result["cells"]
+    assert (cell["cell"], cell["kinds"]) == ("F4-l1-0001", {})
+    assert cell["problems"] == ["the manifest is not vb.task/1: $: missing required field 'recoverability'"]
+    assert "0 of 1 cells green (f4 0/1)" in capsys.readouterr().out
 
 
 def test_canary_planted_in_a_workdir_is_found(tmp_path):

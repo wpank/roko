@@ -317,11 +317,13 @@ pub struct CandidateForecast {
     pub lat_q90_s: f64,
     /// The forecast comes from L0 alone: the model has fewer outcomes than it needs (6116).
     pub cold_start: bool,
-    /// The cost quantiles are a prior anchored on the price snapshot: the model has observed
-    /// no cost of the arm (bug-09173e).
+    /// The cost quantiles are a bounded prior: the cost model's rows do not support the
+    /// attempt. It sits at the arm's observed costs, as for an arm on a family it has not run
+    /// (bug-f6682e), or at the price snapshot's price for an arm with none (bug-09173e).
     #[serde(default)]
     pub cost_prior: bool,
-    /// The latency quantiles are a prior: the model has observed no latency of the arm.
+    /// The latency quantiles are a bounded prior, at the arm's observed latencies, else the
+    /// observed attempts'.
     #[serde(default)]
     pub latency_prior: bool,
 }

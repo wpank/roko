@@ -474,33 +474,38 @@ fn prepare_run(
                 .chars()
                 .take(60)
                 .collect();
-            let agent_label = agent_target.as_deref().unwrap_or("claude");
+            // The run names an agent only when it has one, as an agent's chat
+            // reply does. A prompt run's agents are its Graph plan's, which
+            // name each try's model and provider, again when the ladder
+            // climbs or fails over (bug-c7de28).
+            let agent = agent_target.as_deref();
             {
                 use roko_core::DashboardEvent;
-                state_for_task.state_hub.publish_batch(vec![
-                    DashboardEvent::TaskStarted {
-                        plan_id: plan_id.clone(),
-                        task_id: task_id.clone(),
-                        title: String::new(),
-                        phase: "implementing".into(),
-                    },
-                    DashboardEvent::AgentSpawned {
-                        agent_id: agent_label.to_string(),
+                let mut events = vec![DashboardEvent::TaskStarted {
+                    plan_id: plan_id.clone(),
+                    task_id: task_id.clone(),
+                    title: String::new(),
+                    phase: "implementing".into(),
+                }];
+                if let Some(agent) = agent {
+                    events.push(DashboardEvent::AgentSpawned {
+                        agent_id: agent.to_string(),
                         plan_id: plan_id.clone(),
                         task_id: task_id.clone(),
                         attempt: 0,
                         role: "run".into(),
-                        model: agent_label.to_string(),
+                        model: agent.to_string(),
                         provider: String::new(),
-                    },
-                    DashboardEvent::EventLogEntry {
-                        timestamp_ms: run_now_millis(),
-                        event_type: "run_started".into(),
-                        plan_id: plan_id.clone(),
-                        task_id: task_id.clone(),
-                        message: format!("▶ {agent_label}: {task_id}"),
-                    },
-                ]);
+                    });
+                }
+                events.push(DashboardEvent::EventLogEntry {
+                    timestamp_ms: run_now_millis(),
+                    event_type: "run_started".into(),
+                    plan_id: plan_id.clone(),
+                    task_id: task_id.clone(),
+                    message: run_log_line("▶", agent, &task_id),
+                });
+                state_for_task.state_hub.publish_batch(events);
             }
 
             // A gated run takes the id this route returns, and publishes the
@@ -519,7 +524,11 @@ fn prepare_run(
                 options,
             );
             let hub = &state_for_task.state_hub;
-            match run_with_heartbeats(hub, agent_label, &plan_id, &task_id, run).await {
+            let ended = match agent {
+                Some(agent) => run_with_heartbeats(hub, agent, &plan_id, &task_id, run).await,
+                None => run.await,
+            };
+            match ended {
                 Ok((verdict, result)) => {
                     record_run_result(&state_for_task, &run_id, verdict, result.clone()).await;
                     publish_run_completed(
@@ -544,35 +553,37 @@ fn prepare_run(
                             RunState::Unverified => (TASK_OUTCOME_UNVERIFIED, "?"),
                             _ => ("failed", "✗"),
                         };
-                        let mut events = vec![
-                            DashboardEvent::TaskCompleted {
-                                plan_id: plan_id.clone(),
-                                task_id: task_id.clone(),
-                                outcome: outcome.into(),
-                            },
-                            DashboardEvent::EpisodeRecorded {
-                                agent_id: agent_label.to_string(),
+                        let mut events = vec![DashboardEvent::TaskCompleted {
+                            plan_id: plan_id.clone(),
+                            task_id: task_id.clone(),
+                            outcome: outcome.into(),
+                        }];
+                        if let Some(agent) = agent {
+                            events.push(DashboardEvent::EpisodeRecorded {
+                                agent_id: agent.to_string(),
                                 role: "run".into(),
                                 episode_id: run_id.clone(),
                                 passed: verdict == RunState::Succeeded,
-                            },
-                            DashboardEvent::EventLogEntry {
-                                timestamp_ms: run_now_millis(),
-                                event_type: "run_completed".into(),
-                                plan_id: plan_id.clone(),
-                                task_id: task_id.clone(),
-                                message: format!("{mark} {agent_label}: {task_id}"),
-                            },
-                        ];
-                        if let Some(ref text) = result.output_text {
-                            let preview: String = text.chars().take(200).collect();
-                            events.push(DashboardEvent::AgentOutput {
-                                agent_id: agent_label.to_string(),
-                                plan_id: plan_id.clone(),
-                                task_id: task_id.clone(),
-                                attempt: 0,
-                                content: preview,
                             });
+                        }
+                        events.push(DashboardEvent::EventLogEntry {
+                            timestamp_ms: run_now_millis(),
+                            event_type: "run_completed".into(),
+                            plan_id: plan_id.clone(),
+                            task_id: task_id.clone(),
+                            message: run_log_line(mark, agent, &task_id),
+                        });
+                        if let Some(ref text) = result.output_text {
+                            if let Some(agent) = agent {
+                                let preview: String = text.chars().take(200).collect();
+                                events.push(DashboardEvent::AgentOutput {
+                                    agent_id: agent.to_string(),
+                                    plan_id: plan_id.clone(),
+                                    task_id: task_id.clone(),
+                                    attempt: 0,
+                                    content: preview,
+                                });
+                            }
                             events.push(DashboardEvent::TaskOutputAppended {
                                 task_id: task_id.clone(),
                                 lines: text.lines().take(10).map(String::from).collect(),
@@ -680,6 +691,15 @@ async fn run_with_heartbeats<T>(
         attempt: 0,
     });
     result
+}
+
+/// The event-log line that starts or ends a run: `mark`, the run's agent when
+/// it has one, and its task.
+fn run_log_line(mark: &str, agent: Option<&str>, task_id: &str) -> String {
+    match agent {
+        Some(agent) => format!("{mark} {agent}: {task_id}"),
+        None => format!("{mark} {task_id}"),
+    }
 }
 
 async fn record_run_result(state: &AppState, run_id: &str, verdict: RunState, result: RunResult) {
@@ -1079,10 +1099,14 @@ mod tests {
     }
 
     /// A runtime whose prompt runs end as gated plans that succeeded, which
-    /// records the run id each ran under.
+    /// records the run id each ran under. Given a hub, each run publishes
+    /// there what a Graph run of a two-rung prompt run does: its task's agent
+    /// on rung one's model and a heartbeat, the same agent on rung two's model
+    /// once the ladder climbs and a heartbeat, then the agent's completion.
     #[derive(Default)]
     struct GatedPrompts {
         run_ids: std::sync::Mutex<Vec<Option<String>>>,
+        hub: Option<roko_runtime::SharedStateHub>,
     }
 
     #[async_trait::async_trait]
@@ -1106,6 +1130,32 @@ mod tests {
                 .lock()
                 .expect("lock run ids")
                 .push(options.run_id);
+            if let Some(hub) = &self.hub {
+                let agent_id = format!("{run_id}/T1");
+                for (attempt, model) in [(1, "rung-one-model"), (2, "rung-two-model")] {
+                    hub.publish(DashboardEvent::AgentSpawned {
+                        agent_id: agent_id.clone(),
+                        plan_id: run_id.clone(),
+                        task_id: "T1".into(),
+                        attempt,
+                        role: "implementer".into(),
+                        model: model.into(),
+                        provider: "fake".into(),
+                    });
+                    hub.publish(DashboardEvent::AgentHeartbeat {
+                        agent_id: agent_id.clone(),
+                        plan_id: run_id.clone(),
+                        task_id: "T1".into(),
+                        elapsed_ms: 15_000,
+                    });
+                }
+                hub.publish(DashboardEvent::AgentCompleted {
+                    agent_id,
+                    plan_id: run_id.clone(),
+                    task_id: "T1".into(),
+                    attempt: 2,
+                });
+            }
             Ok(crate::runtime::PromptPlanResult {
                 run_id,
                 verdict: RunState::Succeeded,
@@ -1225,22 +1275,122 @@ mod tests {
         assert_eq!(ran, [Some(run_id)]);
     }
 
+    /// bug-c7de28: a prompt run names no agent of its own on the hub. Serve
+    /// published one, `claude` with model `claude`, beating every five
+    /// seconds and in the `▶ claude:` log lines, whatever model ran. The hub's
+    /// agent is now the run's Graph task's, named for the model of each try,
+    /// and the run's log lines name its task alone.
+    #[tokio::test]
+    async fn prompt_run_events_name_no_default_vendor() {
+        let hub = roko_runtime::SharedStateHub::new_in_process();
+        let runtime = Arc::new(GatedPrompts {
+            hub: Some(hub.clone()),
+            ..GatedPrompts::default()
+        });
+        let dir = tempfile::tempdir().expect("tempdir");
+        let deploy_backend = Arc::from(
+            crate::deploy::create_backend("manual", None, None, None).expect("manual backend"),
+        );
+        let state = Arc::new(
+            AppState::new_with_state_hub(
+                dir.path().to_path_buf(),
+                runtime,
+                roko_core::config::schema::RokoConfig::default(),
+                deploy_backend,
+                hub.clone(),
+            )
+            .expect("AppState::new_with_state_hub"),
+        );
+
+        let prompt = "add a test for the parser";
+        let started = start_gated_run(&state, prompt.into(), None, PromptPlanOptions::default())
+            .await
+            .expect("start the run");
+        // Its task ends after the events that end the run.
+        let run = state
+            .active_runs
+            .write()
+            .await
+            .remove(&started.run_id)
+            .expect("the run is tracked");
+        tokio::time::timeout(std::time::Duration::from_secs(10), run.handle)
+            .await
+            .expect("the run ends in time")
+            .expect("the run's task");
+
+        let events: Vec<DashboardEvent> = hub
+            .subscribe_events_from(0)
+            .replay
+            .into_iter()
+            .map(|envelope| envelope.payload)
+            .collect();
+        let agent_id = format!("{}/T1", started.run_id);
+        let mut spawned = Vec::new();
+        let mut log_lines = Vec::new();
+        for event in &events {
+            let named = match event {
+                DashboardEvent::AgentSpawned {
+                    agent_id: id,
+                    model,
+                    ..
+                } => {
+                    spawned.push((id.as_str(), model.as_str()));
+                    vec![id, model]
+                }
+                DashboardEvent::AgentHeartbeat { agent_id: id, .. }
+                | DashboardEvent::AgentCompleted { agent_id: id, .. }
+                | DashboardEvent::AgentOutput { agent_id: id, .. }
+                | DashboardEvent::EpisodeRecorded { agent_id: id, .. } => {
+                    assert_eq!(id, &agent_id, "an agent other than the task's: {event:?}");
+                    vec![id]
+                }
+                DashboardEvent::EventLogEntry {
+                    event_type,
+                    message,
+                    ..
+                } => {
+                    if event_type == "run_started" || event_type == "run_completed" {
+                        log_lines.push(message.as_str());
+                    }
+                    vec![message]
+                }
+                _ => Vec::new(),
+            };
+            assert!(
+                named.iter().all(|name| !name.contains("claude")),
+                "{event:?}"
+            );
+        }
+        assert_eq!(
+            spawned,
+            [
+                (agent_id.as_str(), "rung-one-model"),
+                (agent_id.as_str(), "rung-two-model")
+            ]
+        );
+        assert_eq!(log_lines, [format!("▶ {prompt}"), format!("✓ {prompt}")]);
+        let snapshot = hub.current_snapshot();
+        let agents: Vec<&String> = snapshot.agents.keys().collect();
+        assert_eq!(agents, [&agent_id]);
+        assert_eq!(snapshot.agents[&agent_id].model, "rung-two-model");
+    }
+
     /// gap-8a1fb3: a one-shot run's agent reports how long it has worked while
     /// the run goes on, as a plan run's agents do, and completes with it.
     #[tokio::test(start_paused = true)]
     async fn one_shot_run_agent_beats_while_it_works_then_completes() {
         let hub = roko_runtime::SharedStateHub::new_in_process();
         hub.publish(DashboardEvent::AgentSpawned {
-            agent_id: "claude".into(),
+            agent_id: "helper".into(),
             plan_id: "run-0123abcd".into(),
             task_id: "say hi".into(),
             attempt: 0,
             role: "run".into(),
-            model: "claude".into(),
+            model: "helper".into(),
             provider: String::new(),
         });
         let work = tokio::time::sleep(std::time::Duration::from_secs(12));
-        run_with_heartbeats(&hub, "claude", "run-0123abcd", "say hi", work).await;
+        run_with_heartbeats(&hub, "helper", "run-0123abcd", "say hi", work).await;
 
         let beats: Vec<u64> = hub
             .subscribe_events_from(0)
@@ -1253,7 +1403,7 @@ mod tests {
             .collect();
         assert_eq!(beats, [5_000, 10_000]);
         let snapshot = hub.current_snapshot();
-        let agent = snapshot.agents.get("claude").expect("the run's agent");
+        let agent = snapshot.agents.get("helper").expect("the run's agent");
         assert!(!agent.active, "the agent completes with the run");
         assert_eq!(agent.elapsed_ms, 10_000);
     }

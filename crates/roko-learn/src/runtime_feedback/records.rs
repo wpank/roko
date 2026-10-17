@@ -1185,6 +1185,9 @@ pub struct GenerationSourceChecks {
     /// Checks only a grep, a file test or a build covers.
     #[serde(default)]
     pub shallow: usize,
+    /// Checks whose only real test step cannot pass as written (gap-ecafde).
+    #[serde(default)]
+    pub cannot_run: usize,
     /// Checks the plan drops with a reason (`[meta] dropped_checks`).
     pub dropped: usize,
     /// Checks the plan neither keeps nor drops.
@@ -1202,7 +1205,7 @@ pub struct GenerationSourceCheck {
     pub id: String,
     /// The check as the source states it, on one line.
     pub check: String,
-    /// `kept`, `shallow`, `dropped` or `missing`.
+    /// `kept`, `cannot_run`, `shallow`, `dropped` or `missing`.
     pub status: String,
     /// The task that keeps it.
     #[serde(default, skip_serializing_if = "Option::is_none")]

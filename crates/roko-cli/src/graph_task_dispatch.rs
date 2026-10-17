@@ -28,7 +28,7 @@ use roko_core::{Body, Context, Kind, Signal, Verify};
 use roko_gate::GatePayload;
 use roko_gate::ShellGate;
 use roko_gate::TurnSnapshot;
-use roko_gate::rung_for_gate_name;
+use roko_gate::rung_for_verify_phase;
 use roko_graph::cell::CellContext;
 use roko_graph::cells::task_executor::TaskGateVerdict;
 use roko_graph::cells::{
@@ -102,6 +102,7 @@ pub use budget::{
 pub use decision_log::planned_content_decisions;
 pub use feedback::{GraphFeedbackContext, SectionOutcomes};
 pub use inert_settings::{InertGraphSetting, graph_engine_inert_settings};
+pub(crate) use ladder::{FAILURES_PER_RUNG, LADDER_MIN_RETRIES, MAX_ESCALATIONS};
 pub use operator_directives::OperatorDirectives;
 pub use operator_stop::OperatorStops;
 pub(crate) use retry_budget::TaskRetryBudgets;

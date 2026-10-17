@@ -43,10 +43,10 @@ use crate::dispatch::{RoutingLadder, RunnerDispatchPlan};
 use crate::runtime_feedback::homeostasis::HarnessDecision;
 
 /// Agent-blamed failures on one rung before the task climbs to the next.
-const FAILURES_PER_RUNG: u32 = 2;
+pub(crate) const FAILURES_PER_RUNG: u32 = 2;
 
 /// Most rungs a task climbs above its start rung (`K_max`).
-const MAX_ESCALATIONS: u32 = 2;
+pub(crate) const MAX_ESCALATIONS: u32 = 2;
 
 /// What a person should do about a task that exhausted the ladder.
 const SPLIT_OR_REPLAN: &str = "Split the task into smaller tasks, or replan it.";
@@ -54,7 +54,7 @@ const SPLIT_OR_REPLAN: &str = "Split the task into smaller tasks, or replan it."
 /// Retry budget of a task that does not author `max_retries` while the
 /// ladder routes it: [`FAILURES_PER_RUNG`] attempts on its start rung and on
 /// each rung it may climb, less the first attempt.
-pub(super) const LADDER_MIN_RETRIES: u32 = FAILURES_PER_RUNG * (MAX_ESCALATIONS + 1) - 1;
+pub(crate) const LADDER_MIN_RETRIES: u32 = FAILURES_PER_RUNG * (MAX_ESCALATIONS + 1) - 1;
 
 /// Why a try runs where it does, as `route_decided` and `attempt_settled`
 /// say it (gap-aaaaae).

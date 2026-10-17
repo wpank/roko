@@ -33,7 +33,6 @@ import layout
 import ledger
 import materialize
 import planemit
-import provider
 import records
 import run_roko
 import validate
@@ -196,18 +195,25 @@ def plan_spec(task: materialize.Materialized, **changes: object) -> planemit.Pla
     return planemit.PlanSpec(**{**fields, **changes})
 
 
-def real_arm_spec(arm_name: str, model: str = PIN) -> planemit.PlanSpec:
-    """`run_roko._plan_spec` over the real arm file `arm_name` names (`vb.load_arm`), the construction a real
-    dispatch does (3360): confirms the arm's `[overlay]` table, if it has one, reaches `PlanSpec.overlay`."""
+def real_arm_spec(arm_name: str, model: str | None = None) -> planemit.PlanSpec:
+    """`run_roko._plan_spec` over the real arm file `arm_name` names (`vb.load_arm`) on `model` (default: the arm's
+    first models_allow entry), from the endpoint `vb.make_plan` builds for it: the construction a real dispatch does
+    (3360), which confirms the arm's `[overlay]` table, if it has one, reaches `PlanSpec.overlay`."""
     arm = vb.load_arm(arm_name)
-    first = next(iter(arm["providers"]))
-    endpoint = provider.Endpoint(provider=first, base_url=arm["providers"][first]["base_url"],
-                                 api_key_env=arm["providers"][first]["api_key_env"])
+    model = model or arm["arm"]["models_allow"][0]
     snapshot = ledger.load_snapshot()
     limits = caps.Caps.from_table(arm["caps"])
-    return run_roko._plan_spec(arm, model, endpoint, limits, snapshot.row(model), limits.usd_per_task,
-                               alias=ALIAS, spec_text="# T\n\nTest.\n", files=("f.py",),
+    return run_roko._plan_spec(arm, model, vb._endpoint(arm, snapshot.row(model), None), limits, snapshot.row(model),
+                               limits.usd_per_task, alias=ALIAS, spec_text="# T\n\nTest.\n", files=("f.py",),
                                visible=("true",), snapshot=snapshot)
+
+
+def roko_arms(*, pinned_only: bool = False) -> dict[str, dict]:
+    """The arm files `run_roko` runs, by file name (`vb.load_arm`); with `pinned_only`, those with one models_allow
+    entry, which emit pinned mode (a routed arm's several models emit ladder mode, `run_roko._plan_spec`)."""
+    arms = {path.stem: vb.load_arm(str(path)) for path in sorted(layout.ARMS_DIR.glob("*.toml"))}
+    return {name: arm for name, arm in arms.items() if arm["arm"].get("runner") == "run_roko" and (
+        not pinned_only or len(arm["arm"]["models_allow"]) == 1)}
 
 
 def fake_roko(tmp_path: Path, models: list[str], *, status: str = "succeeded", **extra: object) -> tuple[Path, Path]:
@@ -328,6 +334,65 @@ def test_roko_full_arm_overlay_reaches_the_emitted_config(tmp_path, monkeypatch)
         # Byte-identical to before the overlay existed: nothing is appended after CONFIG_TAIL's own last line.
         assert emitted.config_text.endswith("[learning.dreams]\ntrigger_on_plan_complete = false\n")
     assert planemit.TEMPLATE_SHA256 == "392ef78bd0db0e9e65256a77aaee191a339e0c12a326021249322d855892c5f8"
+
+
+# What planemit writes a Roko arm's two files from (bug-85e982): its templates, and `_overlay_text`, which writes
+# roko_full's overlay tables.
+PLANEMIT_TEMPLATES = ("TASKS_TEMPLATE", "CONFIG_TEMPLATE", "CLAUDE_CLI_CONFIG_TEMPLATE", "LADDER_TASKS_TEMPLATE",
+                      "LADDER_CONFIG_TEMPLATE", "PROVIDER_TABLE", "MODEL_TABLE", "_overlay_text")
+
+
+def one_more_newline(template: str | object) -> str | object:
+    """A planemit template, or `_overlay_text`, changed to write one more newline at its end (and still TOML)."""
+    if isinstance(template, str):
+        return template + "\n"
+    return lambda resolved: (template(resolved) + "\n") if resolved else ""
+
+
+def test_the_roko_arms_prompt_hash_covers_every_template(places, tmp_path, monkeypatch):
+    """bug-85e982: the prompt `vb run` records for a Roko arm (`vb.runner_prompt`: the run config's `prompt`, and so its
+    `config_hash`) names the planemit templates that arm's plans are emitted from (`run_roko.arm_prompt`), not only
+    pinned mode's openai_compat ones. Changing any one template (monkeypatched: one more newline) changes the
+    recorded prompt of exactly the arms whose emitted files it changes: ladder mode's of roko_ladder and roko_full,
+    the Claude CLI config of fr_claude, the overlay's tables of roko_full, the pinned ones of roko_fixed on each of
+    its four models (and the pinned tasks.toml of fr_claude). roko_fixed's prompt is what it was before, and `vb run`
+    records exactly what `vb.runner_prompt` says."""
+    monkeypatch.setattr(campaign, "census_report", lambda repo=None, roko_bin=None: {
+        "schema": campaign.LOOPS_SCHEMA, "harness_sha": "f1x3d", "rows": [{"loop": "L-M1", "state": "live"}]})
+    arms = roko_arms()
+
+    def recorded() -> dict[str, dict]:
+        return {name: vb.runner_prompt(run_roko, arm) for name, arm in arms.items()}
+
+    def emitted(where: Path) -> dict[str, str]:
+        files = {name: planemit.emit(real_arm_spec(name), where / name) for name in arms}
+        return {name: one.tasks_text + "\0" + one.config_text for name, one in files.items()}
+
+    prompts, texts = recorded(), emitted(tmp_path / "as-is")
+    assert prompts["roko_fixed"] == {"version": planemit.TEMPLATE_VERSION, "sha256": planemit.TEMPLATE_SHA256}
+    assert prompts["fr_claude"] == {"version": planemit.TEMPLATE_VERSION,
+                                    "sha256": planemit.CLAUDE_CLI_TEMPLATE_SHA256}
+    assert prompts["roko_ladder"] == {"version": planemit.LADDER_VERSION, "sha256": planemit.LADDER_TEMPLATE_SHA256}
+    assert prompts["roko_full"]["version"] == f"{planemit.LADDER_VERSION}+{planemit.OVERLAY_VERSION}"
+    assert len({prompt["sha256"] for prompt in prompts.values()}) == 4  # pinned, Claude CLI, ladder, ladder + overlay
+    assert set(planemit.OVERLAY_PROBE) == planemit.SUPPORTED_OVERLAY_KEYS  # every overlay key's table is covered
+    users = {}
+    for template in PLANEMIT_TEMPLATES:
+        with monkeypatch.context() as patch:
+            patch.setattr(planemit, template, one_more_newline(getattr(planemit, template)))
+            now, changed = recorded(), emitted(tmp_path / template)
+        users[template] = {name for name in arms if changed[name] != texts[name]}
+        assert {name for name in arms if now[name] != prompts[name]} == users[template], template
+    pinned = {"roko_fixed", "roko_fixed_glm", "roko_fixed_kimi", "roko_fixed_mini"}
+    assert users["TASKS_TEMPLATE"] >= pinned | {"fr_claude"} and users["CONFIG_TEMPLATE"] >= pinned
+    assert users["CLAUDE_CLI_CONFIG_TEMPLATE"] == {"fr_claude"} and users["_overlay_text"] == {"roko_full"}
+    for template in ("LADDER_TASKS_TEMPLATE", "LADDER_CONFIG_TEMPLATE", "PROVIDER_TABLE", "MODEL_TABLE"):
+        assert users[template] >= {"roko_ladder", "roko_full"}, template
+    # `vb run` records that prompt in its run's config, so in its config_hash: roko_fixed's, through the fake roko.
+    binary, _ = fake_roko(tmp_path, [PIN])
+    assert run_vb(places, arm_with(tmp_path, binary)) == 0
+    manifest = json.loads((places["results"] / "TEST-ROKO" / "run-1" / "manifest.json").read_text())
+    assert manifest["config"]["prompt"] == prompts["roko_fixed"]
 
 
 def test_vb_run_refuses_a_binary_that_rejects_the_emitted_plan(places, tmp_path, capsys):

@@ -502,10 +502,10 @@ aliases (both are mounted).
 
 | Method | Path | Description |
 |--------|------|-------------|
-| GET | `/api/plans` | List all plans: `id`, `title`, task counts, `status` (its `[meta].status` until the plan has run, then its last run's state), `group` (its plan set) and `fixture`, true for a demo or test plan (`[meta].status = "fixture"`), also once it has run |
+| GET | `/api/plans` | List all plans: `id`, `title` (its `[meta] title`, else its `plan.md`'s first `# ` heading, else its id), task counts, `status` (its `[meta].status` until the plan has run, then its last run's state), `group` (its plan set) and `fixture`, true for a demo or test plan (`[meta].status = "fixture"`), also once it has run |
 | POST | `/api/plans` | Create a new plan |
 | GET | `/api/plans/{id}` | Full plan details |
-| GET | `/api/plans/{id}/tasks` | Tasks for a plan, and its `title` as `GET /api/plans` gives it: the first heading of its `plan.md`, else its id |
+| GET | `/api/plans/{id}/tasks` | Tasks for a plan, and its `title` as `GET /api/plans` and the run events give it: its `[meta] title`, else the first `# ` heading of its `plan.md`, else its id |
 | POST | `/api/plans/{id}/execute` | Execute plan (background, 202 Accepted with the run's `id`; 422 with the validation report in `details` when `roko plan run` would refuse the plan). While another plan run is live the run is queued instead: 202 with `queued: true` and its `position`, started under its `id` when the live run ends; 409 only when the queue's 8 places are taken |
 | POST | `/api/plans/execute` | Execute a plan set, named plans or every plan (body `plans`, `target`, `resume`, `max_parallel_plans`); queued like a single plan |
 | GET | `/api/plans/{id}/status` | Execution status of the run `{id}` names (plan id, member plan id or run id): `running`, then `succeeded`, `failed` (with `error`), `unverified` or `cancelled`, with `finished` and `finished_at`; a run that ended keeps answering for an hour |
@@ -518,7 +518,7 @@ aliases (both are mounted).
 | POST | `/api/plans/{id}/tasks/{task_id}/review` | Submit a human review |
 | GET | `/api/plans/{id}/tasks/{task_id}/diff` | Code diff from task agent |
 | POST | `/api/plans/{id}/chat` | Chat in plan context |
-| POST | `/api/plans/{id}/estimate` | Cost and duration estimate |
+| POST | `/api/plans/{id}/estimate` | Cost and duration of the plan's remaining tasks. Each task is priced on the rung dispatch would start it on (`per_task[]`: `start_rung`, `model`, `start_cost_usd` for one attempt there, `likely_cost_usd` and `likely_duration_secs` weighted by similar tasks' first-try rate, `worst_cost_usd` and `worst_rungs` when every attempt fails and climbs, `first_try_rate`, `basis`, `samples`), from the recent attempts of tasks with the same role and tier in `.roko/runs/` and the rates of the price snapshot. `estimate` holds the totals (`total_cost_usd`, `total_duration_secs`, `worst_cost_usd`, `cap_usd`, `unpriced_tasks`); `by_rung`, `confidence`, `note` and `price_snapshot` say what it rests on (gap-6605f7) |
 
 ### 8.3 One-Shot Runs
 

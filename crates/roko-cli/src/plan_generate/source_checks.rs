@@ -19,6 +19,7 @@ use regex::Regex;
 use roko_gate::spec_quality::ac_id;
 use roko_learn::runtime_feedback::{GenerationSourceCheck, GenerationSourceChecks};
 
+use super::runnable::Unrunnable;
 use crate::task_parser::TasksFile;
 
 /// The most of one check that a prompt or a report quotes, in characters.
@@ -398,7 +399,7 @@ fn builds_only(words: &[&str]) -> bool {
 
 /// The commands of a shell line, split at `&&`, `||`, `|`, `;` and line
 /// breaks outside quotes, without `2>&1`-style redirections.
-fn shell_segments(command: &str) -> Vec<String> {
+pub(super) fn shell_segments(command: &str) -> Vec<String> {
     let mut segments = vec![String::new()];
     let mut quote: Option<char> = None;
     let mut chars = command.chars().peekable();
@@ -407,13 +408,21 @@ fn shell_segments(command: &str) -> Vec<String> {
             (Some(open), _) if c == open => quote = None,
             (None, '\'' | '"') => quote = Some(c),
             (None, '>' | '<') if chars.peek() == Some(&'&') => {
-                // A redirection to a file descriptor (`2>&1`), not a split.
+                // A redirection to a file descriptor (`2>&1`), not a split:
+                // it goes, with the descriptor before it.
+                if let Some(segment) = segments.last_mut() {
+                    while segment.ends_with(|c: char| c.is_ascii_digit()) {
+                        segment.pop();
+                    }
+                }
                 chars.next();
                 while chars.peek().is_some_and(char::is_ascii_digit) {
                     chars.next();
                 }
                 continue;
             }
+            // `&>file` sends both streams to a file: a redirection.
+            (None, '&') if chars.peek() == Some(&'>') => continue,
             (None, '&' | '|' | ';' | '\n') => {
                 segments.push(String::new());
                 continue;
@@ -516,17 +525,22 @@ pub(super) struct SourceCoverage {
     /// By check id: the task, and the command of the step that covers it,
     /// when every such step only greps, tests files or builds.
     shallow: BTreeMap<String, (String, String)>,
+    /// By check id: the task, and why its step cannot pass as written, when
+    /// no step that can run checks it (gap-ecafde).
+    cannot_run: BTreeMap<String, (String, String)>,
     /// By check id: why the plan drops it (`[meta] dropped_checks`).
     dropped: BTreeMap<String, String>,
 }
 
 impl SourceCoverage {
-    /// What became of `checks` in `plan`. A check is kept when a verify step
+    /// What became of `checks` in `plan`, whose `unrunnable` steps cannot
+    /// pass as written. A check is kept when a verify step that can run
     /// covers it (or an acceptance criterion that names it) and runs more than
-    /// a grep, a file test or a build; shallow when only such steps cover it;
-    /// dropped when `[meta] dropped_checks` gives a reason for it that does
-    /// more than restate it; and missing otherwise.
-    pub(super) fn of(checks: &[SourceCheck], plan: &TasksFile) -> Self {
+    /// a grep, a file test or a build; it cannot run when only steps that
+    /// cannot pass cover it otherwise; shallow when only grep, file test or
+    /// build steps do; dropped when `[meta] dropped_checks` gives a reason for
+    /// it that does more than restate it; and missing otherwise.
+    pub(super) fn of(checks: &[SourceCheck], plan: &TasksFile, unrunnable: &[Unrunnable]) -> Self {
         let text_of = |id: &str| {
             checks
                 .iter()
@@ -535,10 +549,11 @@ impl SourceCoverage {
         };
         let mut kept = BTreeMap::new();
         let mut shallow = BTreeMap::new();
+        let mut cannot_run = BTreeMap::new();
         for task in &plan.tasks {
             // Each check a step covers: through a criterion, or named.
-            let mut covering: Vec<(String, String, &str)> = Vec::new();
-            for step in &task.verify {
+            let mut covering: Vec<(String, String, &str, usize)> = Vec::new();
+            for (number, step) in (1..).zip(&task.verify) {
                 for cover in step.covers.iter().map(|cover| cover.trim()) {
                     let named = task
                         .acceptance
@@ -548,24 +563,33 @@ impl SourceCoverage {
                         .flat_map(|(_, item)| named_checks(item))
                         .chain(named_checks(cover));
                     for id in named {
-                        covering.push((id, cover.to_string(), step.command.as_str()));
+                        covering.push((id, cover.to_string(), step.command.as_str(), number));
                     }
                 }
             }
-            for (id, criterion, command) in covering {
+            for (id, criterion, command, number) in covering {
                 if text_of(&id).is_none() || kept.contains_key(&id) {
                     continue;
                 }
-                if is_shallow(command) {
+                let stuck = unrunnable
+                    .iter()
+                    .find(|step| step.task == task.id && step.step == number);
+                if let Some(stuck) = stuck {
+                    cannot_run
+                        .entry(id)
+                        .or_insert_with(|| (task.id.clone(), stuck.why.clone()));
+                } else if is_shallow(command) {
                     shallow
                         .entry(id)
                         .or_insert_with(|| (task.id.clone(), command.to_string()));
                 } else {
                     shallow.remove(&id);
+                    cannot_run.remove(&id);
                     kept.insert(id, (task.id.clone(), criterion));
                 }
             }
         }
+        shallow.retain(|id, _| !cannot_run.contains_key(id));
         let dropped = plan
             .meta
             .dropped_checks
@@ -579,10 +603,12 @@ impl SourceCoverage {
             })
             .collect::<BTreeMap<_, _>>();
         shallow.retain(|id, _| !dropped.contains_key(id));
+        cannot_run.retain(|id, _| !dropped.contains_key(id));
         Self {
             checks: checks.to_vec(),
             kept,
             shallow,
+            cannot_run,
             dropped,
         }
     }
@@ -595,13 +621,14 @@ impl SourceCoverage {
             .filter(|check| {
                 !self.kept.contains_key(&check.id)
                     && !self.shallow.contains_key(&check.id)
+                    && !self.cannot_run.contains_key(&check.id)
                     && !self.dropped.contains_key(&check.id)
             })
             .collect()
     }
 
     /// How many checks the plan neither keeps nor drops with a reason: the
-    /// missing ones and the shallow ones.
+    /// missing ones, the shallow ones and the ones whose step cannot run.
     pub(super) fn unkept(&self) -> usize {
         self.checks.len() - self.kept.len() - self.dropped.len()
     }
@@ -618,6 +645,13 @@ impl SourceCoverage {
                 line,
                 ", {} checked only by a grep, a file test or a build",
                 self.shallow.len()
+            );
+        }
+        if !self.cannot_run.is_empty() {
+            let _ = write!(
+                line,
+                ", {} checked by a step that cannot pass as written",
+                self.cannot_run.len()
             );
         }
         if !self.dropped.is_empty() {
@@ -638,6 +672,11 @@ impl SourceCoverage {
             .filter_map(|check| {
                 if self.kept.contains_key(&check.id) {
                     None
+                } else if let Some((task, why)) = self.cannot_run.get(&check.id) {
+                    Some(format!(
+                        "cannot run {}: {} ({task}: {why})",
+                        check.id, check.text
+                    ))
                 } else if let Some((task, command)) = self.shallow.get(&check.id) {
                     Some(format!(
                         "shallow {}: {} ({task} runs only `{}`)",
@@ -662,22 +701,31 @@ impl SourceCoverage {
             .map(|check| {
                 let kept = self.kept.get(&check.id);
                 let shallow = self.shallow.get(&check.id);
+                let stuck = self.cannot_run.get(&check.id);
                 let dropped = self.dropped.get(&check.id);
-                let status = match (kept, shallow, dropped) {
-                    (Some(_), _, _) => "kept",
-                    (None, Some(_), _) => "shallow",
-                    (None, None, Some(_)) => "dropped",
-                    (None, None, None) => "missing",
+                let status = if kept.is_some() {
+                    "kept"
+                } else if stuck.is_some() {
+                    "cannot_run"
+                } else if shallow.is_some() {
+                    "shallow"
+                } else if dropped.is_some() {
+                    "dropped"
+                } else {
+                    "missing"
                 };
                 GenerationSourceCheck {
                     id: check.id.clone(),
                     check: check.text.clone(),
                     status: status.to_string(),
-                    task: kept.or(shallow).map(|(task, _)| task.clone()),
+                    task: kept.or(stuck).or(shallow).map(|(task, _)| task.clone()),
                     criterion: kept.map(|(_, criterion)| criterion.clone()),
-                    reason: dropped.cloned().or_else(|| {
-                        shallow.map(|(_, command)| format!("only `{}`", one_line(command)))
-                    }),
+                    reason: dropped
+                        .cloned()
+                        .or_else(|| stuck.map(|(_, why)| why.clone()))
+                        .or_else(|| {
+                            shallow.map(|(_, command)| format!("only `{}`", one_line(command)))
+                        }),
                 }
             })
             .collect();
@@ -685,6 +733,7 @@ impl SourceCoverage {
             total: self.checks.len(),
             kept: self.kept.len(),
             shallow: self.shallow.len(),
+            cannot_run: self.cannot_run.len(),
             dropped: self.dropped.len(),
             missing: self.missing().len(),
             regenerated,
@@ -720,12 +769,14 @@ pub(super) fn planner_block(checks: &[SourceCheck], kind: &str) -> String {
 }
 
 /// The prompt that asks the planner once more for a plan that leaves some of
-/// the source's checks unkept: the original request, the plan it wrote, and
-/// each check it leaves out or checks only shallowly.
+/// the source's checks unkept, or has verify steps that cannot pass as
+/// written (gap-ecafde): the original request, the plan it wrote, each check
+/// it leaves out or checks only shallowly, and each step that cannot run.
 pub(super) fn regeneration_prompt(
     task_prompt: &str,
     plan: &str,
     coverage: &SourceCoverage,
+    unrunnable: &[Unrunnable],
 ) -> String {
     let mut problems = String::new();
     let missing = coverage.missing();
@@ -755,17 +806,34 @@ pub(super) fn regeneration_prompt(
             }
         }
     }
+    if !unrunnable.is_empty() {
+        problems.push_str(
+            "These verify steps cannot pass as written, whatever the work does; use a runner \
+             this machine has (see Test runners), name only tests that exist or that the task \
+             writes, and put each test file a task writes in its `files`:\n",
+        );
+        for step in unrunnable {
+            let _ = writeln!(problems, "- {} step {}: {}", step.task, step.step, step.why);
+        }
+    }
+    let kept = if coverage.checks.is_empty() {
+        String::new()
+    } else {
+        format!(
+            "Your plan below keeps {} of the {} source checks as verify steps that check them.\n",
+            coverage.kept.len(),
+            coverage.checks.len()
+        )
+    };
     format!(
-        "{task_prompt}\n\n---\n\nYour plan below keeps {} of the {} source checks as verify \
-         steps that check them.\n{problems}\n```toml\n{plan}\n```\n\n\
-         Keep each of them as a verify step whose `covers` names it and whose command runs a \
-         test of what it states: a test the repository has, or one the task writes, named in its \
-         description and guarded by a `grep -q` for it. When no command can check one, list it \
-         in `[meta] dropped_checks` as `\"SCk: <why no command can check it>\"`. Keep the rest of \
-         the plan as it is. Output the complete plan as a single ```toml fenced block, followed \
-         only by the ```accept:accept/<file> blocks of the tests it pins.",
-        coverage.kept.len(),
-        coverage.checks.len(),
+        "{task_prompt}\n\n---\n\n{kept}{problems}\n```toml\n{plan}\n```\n\n\
+         Keep each source check as a verify step whose `covers` names it and whose command runs \
+         a test of what it states: a test the repository has, or one the task writes, named in \
+         its description and guarded by a `grep -q` for it. When no command can check one, list \
+         it in `[meta] dropped_checks` as `\"SCk: <why no command can check it>\"`. Fix each \
+         step that cannot pass. Keep the rest of the plan as it is. Output the complete plan as \
+         a single ```toml fenced block, followed only by the ```accept:accept/<file> blocks of \
+         the tests it pins."
     )
 }
 
@@ -911,7 +979,7 @@ mod tests {
         assert_eq!(task.acceptance[1], "AC2: SC1: the widget spins");
         assert_eq!(task.verify[0].covers, ["AC2"]);
 
-        let coverage = SourceCoverage::of(&checks, &plan);
+        let coverage = SourceCoverage::of(&checks, &plan, &[]);
         assert_eq!(coverage.kept.len(), 1, "{coverage:?}");
         assert_eq!(coverage.shallow.len(), 1, "{coverage:?}");
         assert_eq!(coverage.unkept(), 1);
@@ -919,6 +987,24 @@ mod tests {
             coverage.summary_line(),
             "Source checks: 1 of 2 kept as verify steps, 1 checked only by a grep, a file test \
              or a build"
+        );
+
+        // gap-ecafde: a check whose only test step cannot run is not kept.
+        let stuck = [Unrunnable {
+            task: "T1".to_string(),
+            step: 1,
+            why: "`pytest` is not installed".to_string(),
+        }];
+        let coverage = SourceCoverage::of(&checks, &plan, &stuck);
+        assert!(coverage.kept.is_empty(), "{coverage:?}");
+        assert_eq!(coverage.unkept(), 2);
+        let record = coverage.record(false);
+        assert_eq!(
+            (
+                record.checks[0].status.as_str(),
+                record.checks[0].reason.as_deref()
+            ),
+            ("cannot_run", Some("`pytest` is not installed"))
         );
     }
 

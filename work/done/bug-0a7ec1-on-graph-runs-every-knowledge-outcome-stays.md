@@ -2,7 +2,7 @@
 id = "bug-0a7ec1"
 kind = "bug"
 title = "On Graph runs every knowledge outcome stays 'partial': dispatch feedback records run_id None in a per-call FeedbackService, so no verdict credits or debits the lessons a prompt carried"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p3"
 goal = "learning"
@@ -11,6 +11,7 @@ subsystem = ["roko-cli/dispatch_v2", "roko-learn/feedback_service"]
 created = 2026-10-17
 updated = 2026-10-17
 last_verified = 2026-10-17
+last_verified_rev = "0969fdc2a"
 source = "round-v6-dogfood-will#R3-9"
 discovered_from = "agent:dogfood-will (round v6 run 3, 2026-10-16)"
 anchors = ["crates/roko-cli/src/dispatch_v2.rs::record_agent_dispatch_feedback", "crates/roko-learn/src/feedback_service.rs::FeedbackService::record_outcome_for_run"]
@@ -19,7 +20,19 @@ parent = "spec-6ac537"
 links = { depends_on = [], blocks = [], related = ["find-96f541", "bug-eaa318"], supersedes = [], duplicate_of = "" }
 
 [[verify]]
-command = "grep -rqw 'fn graph_attempt_verdict_settles_its_knowledge_outcome' crates/roko-cli/ && cargo test -p roko-cli graph_attempt_verdict_settles_its_knowledge_outcome"
+command = "grep -rqw 'fn graph_attempt_verdict_settles_its_knowledge_outcome' crates/roko-cli/ && cargo test -p roko-cli --lib graph_attempt_verdict_settles_its_knowledge_outcome"
+
+[closed]
+at = 2026-10-17
+at_ts = "2026-10-17T14:16:41Z"
+commit = "67716f4d5"
+by = "roko-delivery"
+executor = "claude-agent"
+via = "manual"
+size = "M"
+claimed_at = "2026-10-17T11:11:35Z"
+forced = false
+evidence = "67716f4d5 (on the merged stack efc9f0443, main 7a5dd6046): graph_attempt_verdict_settles_its_knowledge_outcome and attempt_knowledge_outcome_carries_its_run_and_moves_scores pass (roko-cli lib 3777, roko-learn lib 1373 passed; the verify now names --lib, where the test lives). A passing verify leaves one success row with the run id and the attempt key and a score of 1; a failing one failure and -1. Scripted showcase at no cost (tmp/hermes-roko-v6/roko-delivery/evidence/trio): p2 and p3 each leave a success row with their run id and attempt key for the stored lesson, and knowledge-scores.json holds 2 for it, where main eb7b98ad0 wrote partial rows with run_id null and no scores (evidence/trio-before). The scripted model fails no attempt that carried the lesson, so the showcase has no failure row."
 +++
 
 ## Problem

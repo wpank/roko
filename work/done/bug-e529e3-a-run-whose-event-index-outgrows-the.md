@@ -2,7 +2,7 @@
 id = "bug-e529e3"
 kind = "bug"
 title = "A run whose event index outgrows the summary's scan window (10,000 events or 8 MB) reads 'running' forever in GET /api/runs/{id}/summary and the MCP run_status, and its diff route answers 409"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p2"
 goal = "visibility"
@@ -11,6 +11,7 @@ subsystem = ["roko-serve/routes"]
 created = 2026-10-17
 updated = 2026-10-17
 last_verified = 2026-10-17
+last_verified_rev = "9d6f7b6ec"
 source = "round-v6-dogfood-will#R3-5"
 discovered_from = "agent:dogfood-will (round v6 run 3, 2026-10-16)"
 anchors = ["crates/roko-serve/src/routes/runs.rs::summary_and_plans", "crates/roko-serve/src/routes/runs.rs::run_summary", "crates/roko-serve/src/routes/runs.rs::MAX_DETAIL_EVENTS"]
@@ -18,7 +19,19 @@ lane = "rust-hot"
 links = { depends_on = [], blocks = [], related = ["bug-dceafd", "gap-5fda00"], supersedes = [], duplicate_of = "" }
 
 [[verify]]
-command = "grep -rqw 'fn summary_sees_the_end_of_a_run_longer_than_its_scan_window' crates/roko-serve/ && cargo test -p roko-serve summary_sees_the_end_of_a_run_longer_than_its_scan_window"
+command = "grep -rqw 'fn summary_sees_the_end_of_a_run_longer_than_its_scan_window' crates/roko-serve/ && cargo test -p roko-serve --lib summary_sees_the_end_of_a_run_longer_than_its_scan_window"
+
+[closed]
+at = 2026-10-17
+at_ts = "2026-10-17T14:16:28Z"
+commit = "53dadaab1"
+by = "roko-delivery"
+executor = "claude-agent"
+via = "manual"
+size = "M"
+claimed_at = "2026-10-17T11:11:34Z"
+forced = false
+evidence = "53dadaab1 (main 7a5dd6046 merged in 9d6f7b6ec): summary_sees_the_end_of_a_run_longer_than_its_scan_window passes (roko-serve lib 1054 passed on the merged stack efc9f0443; the verify now names --lib, where the test lives). On the real index of dogfood run 3 (ea0c32cb: 21,409 events, 8.57 MB) a loopback roko serve answers GET /api/runs/{id}/summary with state failed, active false, finished_at 2026-10-16T20:47:41.521Z and tasks 2 passed, 1 failed, 1 other, where main eb7b98ad0 answered running, active, finished_at null; GET /api/runs/{id} reads all 8.57 MB (was 4.0 MB) and says failed (tmp/hermes-roko-v6/roko-delivery/evidence/e529e3, scripts/prove_summary.sh). No model ran."
 +++
 
 ## Problem
@@ -91,3 +104,14 @@ Add the test `summary_sees_the_end_of_a_run_longer_than_its_scan_window`: an ind
 
 - Keep the read bounded: the limits stop a huge index from stalling the route.
 - Related: bug-dceafd (an interrupted run's end state) and gap-5fda00 (live agent output).
+
+2026-10-17, round v6 dogfood run 4 (dogfood-will, roko b2970cb12): reproduced on a short run.
+- **The run.** A chat-started prompt run on kimi-k2.6 (Moonshot), with `[serve] live_agent_output = "trusted"`,
+  streamed 11,087 `agent_output` events (reasoning deltas) in its first 145 s. That is 11,181 events in all.
+- **What serve said.** The run was cancelled at 145 s and its index ends with `plan_completed` and
+  `run_completed {outcome: cancelled}`. `GET /api/runs/c7ba9c64-…/summary` still said `state: running`,
+  `active: true`, cost $0, 0 tasks, minutes later.
+- **Why it matters more.** With a reasoning model, any trusted-mode run longer than about 2 minutes now passes the
+  10,000-event window. The MCP `run_status` a chat host polls then never reports the end.
+- **Workaround.** The G5 runs that followed were made with `live_agent_output = "tool_steps"`.
+- **Evidence:** `tmp/hermes-roko-v6/dogfood-will/logs/run4-g5a-summary.json`, `logs/hub-4.jsonl`.

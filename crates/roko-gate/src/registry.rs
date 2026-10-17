@@ -161,6 +161,63 @@ pub fn rung_for_gate_name(name: &str) -> Option<Rung> {
     GateRegistry::new().canonical_rung_for_name(name)
 }
 
+/// Verify-step phase names, besides the test gate's own, that mean the test
+/// rung (gap-e2d2e5).
+///
+/// What plans call a step that runs a test suite, matched in lower case with
+/// `-` and spaces as `_`.
+pub const TEST_PHASE_NAMES: &[&str] = &[
+    "tests",
+    "unit",
+    "unit_test",
+    "unit_tests",
+    "unittest",
+    "integration",
+    "integration_test",
+    "integration_tests",
+    "acceptance",
+    "acceptance_test",
+    "acceptance_tests",
+    "e2e",
+    "smoke",
+    "smoke_test",
+    "smoke_tests",
+    "regression",
+];
+
+/// The canonical [`Rung`] of a verify step's `phase`, the one gate learning
+/// observes (gap-e2d2e5).
+///
+/// It is the rung of the gate the phase names ([`rung_for_gate_name`], in any
+/// case), or [`Rung::Test`] for a phase that plans give a test suite
+/// ([`TEST_PHASE_NAMES`]), such as `acceptance` or `unit_test`. `None` for any
+/// other phase: a custom check, such as `structural`. Gate names keep their
+/// own meaning: this reads verify steps.
+#[must_use]
+pub fn rung_for_verify_phase(phase: &str) -> Option<Rung> {
+    rung_for_gate_name(phase).or_else(|| {
+        let key = verify_phase_key(phase);
+        rung_for_gate_name(&key).or_else(|| {
+            TEST_PHASE_NAMES
+                .contains(&key.as_str())
+                .then_some(Rung::Test)
+        })
+    })
+}
+
+/// `phase` as [`TEST_PHASE_NAMES`] spells it: trimmed and in lower case,
+/// with `-` and spaces as `_`.
+fn verify_phase_key(phase: &str) -> String {
+    phase
+        .trim()
+        .chars()
+        .map(|c| match c {
+            '-' | ' ' => '_',
+            c => c.to_ascii_lowercase(),
+        })
+        .collect()
+}
+
 /// Whether the gate maps to a deterministic canonical rung.
 ///
 /// Deterministic rungs (Compile, Lint, Test) produce binary pass/fail with
@@ -377,5 +434,36 @@ mod tests {
         assert!(!is_deterministic_gate("custom"));
         assert!(!is_deterministic_gate("judge"));
         assert!(!is_deterministic_gate("nonexistent"));
+    }
+
+    /// gap-e2d2e5: a verify step whose phase plans give a test suite names
+    /// the test rung, in any case or spelling; a custom check and a
+    /// standalone gate name none, and gate names keep their meaning.
+    #[test]
+    fn verify_phases_that_run_tests_name_the_test_rung() {
+        for phase in [
+            "test",
+            "acceptance",
+            "unit_test",
+            "Unit-Test",
+            "integration",
+            " smoke ",
+        ] {
+            assert_eq!(rung_for_verify_phase(phase), Some(Rung::Test), "{phase}");
+        }
+        assert_eq!(rung_for_verify_phase("compile"), Some(Rung::Compile));
+        assert_eq!(rung_for_verify_phase("Clippy"), Some(Rung::Lint));
+        for phase in [
+            "structural",
+            "check",
+            "content",
+            "fmt",
+            "custom",
+            "judge",
+            "",
+        ] {
+            assert_eq!(rung_for_verify_phase(phase), None, "{phase}");
+        }
+        assert_eq!(rung_for_gate_name("acceptance"), None);
     }
 }

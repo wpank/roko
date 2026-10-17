@@ -113,10 +113,12 @@ $PY benchmarks/viabilitybench/driver/vb.py run --experiment PILOT-A --stream pil
   answers are neutral, since the benchmark's repository is public. The task manifest, which holds the canary, and
   the pristine bundle live in the run's `private/` directory, never in a workdir. Agent processes get an allowlisted
   environment (`agent_env.py`): no `VB_*` variables, no provider keys, a per-task HOME. On macOS every agent process
-  is denied the secret file, the key file and the whole run directory, whose proxy logs name the running task's key
-  and whose order and records give its position (bug-d308f7). Off macOS nothing applies that deny list
-  (`sandbox.KIND` "none", gap-29ac83), so there an agent can read the run directory, its task key included. The
-  truth suites and the census's visible re-run run the agent's code through `families/common/sandbox.py`. On
+  is denied the secret file, the key file and the whole results root: its own run directory, whose proxy logs name
+  the running task's key and whose order and records give its position (bug-d308f7), and every other run there,
+  whose ids, archived final trees, records and `private/` are other runs' (bug-935cfa). So `vb run` refuses a results
+  root that holds the repository, the Rust toolchain, the agents' Python or your home. Off macOS nothing applies that
+  deny list (`sandbox.KIND` "none", gap-29ac83), so there an agent can read the results root, its task key included.
+  The truth suites and the census's visible re-run run the agent's code through `families/common/sandbox.py`. On
   macOS, `sandbox-exec` denies that code the secret file, the task's private directory and the network. Elsewhere
   there is no confinement yet, and the run record says so (`vs.sandbox`, gap-8c3752). Agents can read the driver's
   own start-up environment (`ps -E`, `/proc`), so once its checks pass, `vb run` starts itself again with an
@@ -129,8 +131,8 @@ $PY benchmarks/viabilitybench/driver/vb.py run --experiment PILOT-A --stream pil
   and a `CARGO_HOME` under their own HOME, so cargo's registry cache is per run. Every sandbox keeps `RUSTUP_HOME`
   and the operator's `CARGO_HOME` read-only.
 - **Network** (gap-0bd49a). On macOS every agent process runs under a network rule of `sandbox.py`, and is denied the
-  secret file, the key file and the run directory (bug-d308f7). The direct loop's shell gets no network at all,
-  since the driver makes every model call. The Roko and mini-swe-agent arms' process trees, whose tools run the
+  secret file, the key file and the results root (bug-d308f7, bug-935cfa). The direct loop's shell gets no network at
+  all, since the driver makes every model call. The Roko and mini-swe-agent arms' process trees, whose tools run the
   agent's commands, reach only the loopback port of the endpoint they call (the metering proxy's), and Roko's also
   Unix sockets in its workspace. Since an agent's shell can then call the proxy itself, the proxy forwards only plain
   chat completions with the arm's own models and function tools (gap-bccf58). It refuses a server-side search or fetch
@@ -186,7 +188,9 @@ $PY benchmarks/viabilitybench/driver/vb.py run --experiment PILOT-A --stream pil
   It forwards only `POST /chat/completions` with the run's models and no server-side tool or search option
   (gap-bccf58: z.ai's `web_search` tool, Moonshot's `$web_search`, OpenAI's search models and `web_search_options`,
   each provider's own search and fetch endpoints). An arm file's `[providers.<name>] proxy_allow` can admit a
-  server-side tool a harness needs; none does.
+  server-side tool a harness needs; none does. What it answers itself, a refusal or an injected fault, is in a
+  provider's words and names neither the task, the run, a cap nor that a fault was injected (bug-fd8200), with the
+  status and `Retry-After` it always had; why it answered is in its log (`refused`, `detail`, `fault_injected`).
 - **Disturbances** (`vb run --disturbance SPEC.toml`, `disturb.py`, S08 §4.6) apply H6's hooks to stream positions.
   `flaky_verify` routes every arm's visible checks through the visible-verify wrapper (`vb_verify.py`), which fails
   some of them at random; the census's own rerun never meets a flake. `model_swap` has the metering proxy serve

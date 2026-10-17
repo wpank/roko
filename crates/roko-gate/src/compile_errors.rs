@@ -6,7 +6,7 @@
 use roko_core::Verdict;
 use serde::{Deserialize, Serialize};
 
-use crate::registry::rung_for_gate_name;
+use crate::registry::rung_for_verify_phase;
 use crate::rung_selector::Rung;
 
 /// Category of compile error.
@@ -561,7 +561,7 @@ pub fn classify_step_failure(
     let lower = output.to_ascii_lowercase();
 
     let runs_tests = gate.starts_with("test")
-        || phase.is_some_and(|phase| matches!(rung_for_gate_name(phase.trim()), Some(Rung::Test)));
+        || phase.is_some_and(|phase| matches!(rung_for_verify_phase(phase), Some(Rung::Test)));
     let built = !summary.errors.iter().any(CompileError::is_compiler_error);
     if runs_tests
         && built

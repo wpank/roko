@@ -1743,6 +1743,67 @@ mod tests {
         }
     }
 
+    /// bug-0a7ec1: a Graph attempt's verdict settles the knowledge outcome of
+    /// the stored entry its prompt carried. A passing verify leaves one
+    /// `success` row, with the run id and the attempt key, and a score of 1;
+    /// a failing one leaves `failure` and -1. The provider call leaves no
+    /// `partial` row of its own.
+    #[tokio::test]
+    async fn graph_attempt_verdict_settles_its_knowledge_outcome() {
+        for (check, outcome, score) in [("true", "success", 1), ("false", "failure", -1)] {
+            let temp = tempdir().expect("tempdir");
+            let roko = temp.path().join(".roko");
+            // The task is "Streaming graph task": the entry shares its words.
+            seed_knowledge(
+                temp.path(),
+                &[(
+                    "kn-stream",
+                    "Streaming graph task output flushes each chunk",
+                )],
+            );
+            let feedback = GraphFeedbackContext {
+                runs_dir: Some(roko.join("runs")),
+                ..GraphFeedbackContext::default()
+            };
+            let (dispatcher, mut task) =
+                make_test_dispatcher(&temp, VERIFY_PROVIDER, no_auto_fix_maximize, feedback).await;
+            task.verify = vec![verify_step("structural", check)];
+            let ctx = CellContext::new().with_run_id(RUN.to_string());
+            let dispatched = dispatcher
+                .dispatch(&make_spec(&task), Vec::new(), &ctx)
+                .await;
+            assert_eq!(dispatched.is_ok(), check == "true", "{check}");
+            drop(dispatcher);
+            crate::background_writes::settled(&roko).await;
+
+            let run = RunRecords::load(&roko.join("runs").join(RUN)).expect("load the run");
+            let [verdict] = run.verdicts.as_slice() else {
+                panic!("one verdict: {:?}", run.verdicts);
+            };
+            let log = std::fs::read_to_string(roko.join("learn/knowledge-feedback.jsonl"))
+                .expect("the knowledge feedback log");
+            let rows: Vec<serde_json::Value> = log
+                .lines()
+                .map(|line| serde_json::from_str(line).expect("a JSON row"))
+                .collect();
+            let [row] = rows.as_slice() else {
+                panic!("one row: {rows:?}");
+            };
+            assert_eq!(row["type"], "knowledge_outcome", "{row}");
+            assert_eq!(row["outcome"], outcome, "{row}");
+            assert_eq!(row["run_id"], RUN, "{row}");
+            assert_eq!(
+                row["request_id"], verdict.record.identity.attempt_key,
+                "{row}"
+            );
+            assert_eq!(row["knowledge_ids"], serde_json::json!(["kn-stream"]));
+            let scores = std::fs::read_to_string(roko.join("learn/knowledge-scores.json"))
+                .expect("the knowledge scores");
+            let scores: serde_json::Value = serde_json::from_str(&scores).expect("JSON scores");
+            assert_eq!(scores["scores"]["kn-stream"], score, "{scores}");
+        }
+    }
+
     /// G29: a dispatch whose prompt retrieved a matching knowledge entry logs
     /// the entry as included, and its verdict counts the inclusion. The run
     /// is in maximize mode, so no arm withholds the entry.

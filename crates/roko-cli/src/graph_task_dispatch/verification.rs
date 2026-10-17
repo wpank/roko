@@ -1130,9 +1130,9 @@ pub(super) fn verify_cancelled(spec: &TaskExecutionSpec, task: &TaskDef, at: &st
 
 /// The verdict record's rung of verify step `index` with `phase` (S01
 /// §5.5): `verify:<index>/<phase>` for a phase the gate pipeline knows
-/// ([`rung_for_gate_name`]), `custom:<phase>` for any other.
+/// ([`rung_for_verify_phase`]), `custom:<phase>` for any other.
 fn verdict_step_rung(index: usize, phase: &str) -> String {
-    if rung_for_gate_name(phase).is_some() {
+    if rung_for_verify_phase(phase).is_some() {
         format!("verify:{index}/{phase}")
     } else {
         format!("custom:{phase}")
@@ -1376,7 +1376,10 @@ fn task_runs_rung(task: &TaskDef, rung: &roko_core::config::GateRungConfig) -> b
         return false;
     }
     let invariants = task.hints.test_invariants.as_deref().unwrap_or_default();
-    let test_rung = matches!(rung_for_gate_name(&rung.name), Some(roko_gate::Rung::Test));
+    let test_rung = matches!(
+        rung_for_verify_phase(&rung.name),
+        Some(roko_gate::Rung::Test)
+    );
     rung.required
         || task.hints.quality_profile == Some(roko_core::TaskQualityProfile::Hardened)
         || (test_rung && !invariants.is_empty())
@@ -1567,7 +1570,7 @@ fn failed_step_rung(step_outcomes: &[(String, bool)]) -> u32 {
 /// 1 clippy, 2 test), else the custom shell gate's rung, since every Graph
 /// verify step is a shell command.
 pub(super) fn verify_step_rung(phase: &str) -> u32 {
-    rung_for_gate_name(phase).map_or_else(
+    rung_for_verify_phase(phase).map_or_else(
         || {
             roko_gate::GateRegistry::new()
                 .rung_for_name("custom")

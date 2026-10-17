@@ -644,6 +644,18 @@ impl GraphTaskDispatcher {
             }
         }
 
+        // ── W07a: Knowledge outcome (bug-0a7ec1) ─────────────────────────
+        //
+        // The knowledge entries the prompt included take the attempt's
+        // learning label. An attempt without one records none, nor does a
+        // frozen run (decision 2218).
+        if let Some(passed) = learning
+            && !self.learning_frozen()
+        {
+            self.record_knowledge_outcome(settled, dispatch_plan, passed)
+                .await;
+        }
+
         // ── W07b: Section bandit settlement (S02 L9) ─────────────────────
         //
         // Each droppable section the prompt drew for is one more opportunity
@@ -684,6 +696,49 @@ impl GraphTaskDispatcher {
             )
             .await;
         }
+    }
+
+    /// Settle the knowledge outcome of the attempt `settled`, whose prompt
+    /// `plan` assembled, on its learning label, `passed` (bug-0a7ec1): one
+    /// `success` or `failure` row in the workspace's
+    /// `learn/knowledge-feedback.jsonl` for the entries the prompt included,
+    /// with the run id and the attempt key, and a score of ±1 for each. The
+    /// provider bridge writes no `partial` row for an attempt's call, which
+    /// left every outcome unsettled. A failed write is logged.
+    async fn record_knowledge_outcome(
+        &self,
+        settled: &SettledAttempt,
+        plan: &crate::dispatch::RunnerDispatchPlan,
+        passed: bool,
+    ) {
+        let included = super::decision_log::included_knowledge_ids(plan);
+        if included.is_empty() {
+            return;
+        }
+        let learn_dir = roko_fs::RokoLayout::for_project(&self.workdir).learn_dir();
+        let run_id = settled.key().run_id;
+        let attempt_key = settled.attempt_key().to_string();
+        let outcome = if passed {
+            roko_learn::KnowledgeOutcome::Success
+        } else {
+            roko_learn::KnowledgeOutcome::Failure
+        };
+        let written = tokio::task::spawn_blocking(move || {
+            let service = roko_learn::FeedbackService::new(learn_dir);
+            service.record_attempt_knowledge_outcome(&run_id, &attempt_key, &included, outcome)?;
+            service.flush()
+        })
+        .await;
+        let error = match written {
+            Ok(Ok(())) => return,
+            Ok(Err(error)) => error.to_string(),
+            Err(error) => error.to_string(),
+        };
+        tracing::warn!(
+            attempt_key = %settled.attempt_key(),
+            %error,
+            "graph knowledge outcome write failed (best-effort)"
+        );
     }
 
     /// Publish an attempt's settlement through the feedback facade as

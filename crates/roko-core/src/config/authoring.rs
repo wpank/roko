@@ -13,8 +13,9 @@ use serde::{Deserialize, Serialize};
 /// ```toml
 /// [authoring]
 /// planner_model = "claude-opus-4-6"   # a key from [models]
+/// max_generation_usd = 2.0            # what one plan writing may spend
 /// ```
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct AuthoringConfig {
     /// Model that generates and revises plans, as a key from `[models]`.
@@ -25,6 +26,30 @@ pub struct AuthoringConfig {
     /// any key that the serialized default config lacks.
     #[serde(default)]
     pub planner_model: String,
+    /// What one plan generation's planner calls may cost together, in USD
+    /// (gap-18bfa2). Once they have cost this much, the generation makes no
+    /// further call: a retry it needs stops it, and an improvement it would
+    /// ask for is skipped. 0 sets no cap. `roko plan generate --max-usd`
+    /// overrides it.
+    #[serde(default = "default_max_generation_usd")]
+    pub max_generation_usd: f64,
+}
+
+/// The default `[authoring] max_generation_usd`: a few planner calls of a
+/// frontier model.
+pub const DEFAULT_MAX_GENERATION_USD: f64 = 2.0;
+
+const fn default_max_generation_usd() -> f64 {
+    DEFAULT_MAX_GENERATION_USD
+}
+
+impl Default for AuthoringConfig {
+    fn default() -> Self {
+        Self {
+            planner_model: String::new(),
+            max_generation_usd: DEFAULT_MAX_GENERATION_USD,
+        }
+    }
 }
 
 impl AuthoringConfig {
@@ -69,6 +94,18 @@ mod tests {
         assert_eq!(config.authoring.planner_model_key(), None);
     }
 
+    /// gap-18bfa2: plan generation has a spend cap by default, and a
+    /// workspace sets its own.
+    #[test]
+    fn max_generation_usd_defaults_and_is_read() {
+        let config = RokoConfig::from_toml("").expect("parse empty config");
+        assert!((config.authoring.max_generation_usd - DEFAULT_MAX_GENERATION_USD).abs() < 1e-12);
+
+        let config = RokoConfig::from_toml("[authoring]\nmax_generation_usd = 0.25\n")
+            .expect("parse authoring section");
+        assert!((config.authoring.max_generation_usd - 0.25).abs() < 1e-12);
+    }
+
     #[test]
     fn authoring_rejects_unknown_keys() {
         assert!(RokoConfig::from_toml("[authoring]\nplaner_model = \"x\"\n").is_err());
@@ -80,8 +117,11 @@ mod tests {
     fn planner_model_survives_the_config_loader() {
         let dir = tempfile::tempdir().expect("tempdir");
         let path = dir.path().join("roko.toml");
-        std::fs::write(&path, "[authoring]\nplanner_model = \"claude-opus-4-6\"\n")
-            .expect("write roko.toml");
+        std::fs::write(
+            &path,
+            "[authoring]\nplanner_model = \"claude-opus-4-6\"\nmax_generation_usd = 0.5\n",
+        )
+        .expect("write roko.toml");
         let opts = LoadOptions {
             merge_global: false,
             apply_env_overrides: false,
@@ -95,5 +135,6 @@ mod tests {
             config.authoring.planner_model_key(),
             Some("claude-opus-4-6")
         );
+        assert!((config.authoring.max_generation_usd - 0.5).abs() < 1e-12);
     }
 }

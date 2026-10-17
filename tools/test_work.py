@@ -50,13 +50,32 @@ class TestVerifyCommands(unittest.TestCase):
         for cmd in ("for i in $(seq 1 20); do cargo test -p roko-cli --lib x; done",
                     "CARGO_TARGET_DIR=t cargo test -p c t",
                     "bash -c 'cargo build -p c' && grep -q x f",
-                    'test -n "$(cargo --version)" && grep -q x f'):
+                    'test -n "$(cargo --version)" && grep -q x f',
+                    # bug-2f0b39: a runner's options, image builds, deploy scripts, the built binary named in the env.
+                    "env -i HOME=x cargo test -p c t",
+                    'env -i HOME="$(mktemp -d)" PATH="$HOME/.cargo/bin:/usr/bin" cargo test -p c t',
+                    "env -u RUSTFLAGS --ignore-environment cargo build -p c",
+                    "nice -n 10 cargo build -p c",
+                    "timeout -k 5 600 cargo test -p c t",
+                    "ls crates | xargs -n 1 cargo test -p",
+                    "docker build --target t -t t:verify .",
+                    "podman build -t t .",
+                    "make -C docs html",
+                    "deploy/showcase/preflight.sh --local",
+                    "VB_REQUIRE_REAL_ROKO=1 .venv/bin/python -m pytest driver/test_shakedown.py -q",
+                    "ROKO_BIN=target/debug/roko python3 drive.py"):
             self.assertEqual(work.static_prefix(cmd), "", cmd)
         self.assertEqual(work.static_prefix("grep -q x f && ! grep -q s g || (grep -q z h && cargo test -p c t)"), "grep -q x f")
         self.assertEqual(work.static_prefix("grep -q x f && (cd apps/portal && npx vitest run)"), "grep -q x f")
+        self.assertEqual(work.static_prefix("grep -q x f && docker build -t t ."), "grep -q x f")
+        self.assertEqual(work.static_prefix("test -x deploy/a.sh && bash -n deploy/a.sh && deploy/a.sh https://x.dev"),
+                         "test -x deploy/a.sh && bash -n deploy/a.sh")
         # A heavy word in a quoted pattern or a path is not a command.
         quoted = "grep -q 'cargo test' f && grep -rq \"roko serve\" crates/roko-cli/src"
         self.assertEqual(work.static_prefix(quoted), quoted)
+        paths = ("grep -q 'docker build' Dockerfile && test -f docker/RAILWAY.md && test -x target/debug/roko && "
+                 "command -v cargo && grep -q 'VB_REQUIRE_REAL_ROKO=1' t.py && timeout 5 grep -q x f")
+        self.assertEqual(work.static_prefix(paths), paths)
 
     def test_lint_flags_head_pipeline_and_whole_suite(self):
         self.assertTrue(any("head" in w for w in work.lint_verify("grep -n 'x' f | head -5")))

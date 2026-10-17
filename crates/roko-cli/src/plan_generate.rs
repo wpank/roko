@@ -16,6 +16,7 @@ mod accept_blocks;
 mod dry_run_fs;
 mod overview;
 mod pipeline;
+mod source_checks;
 
 pub use pipeline::{
     ArtifactValidationReport, GenerationOutcome, PlanFailsValidation, PlanProgress,
@@ -204,7 +205,7 @@ You are a task decomposition engine for software projects. Your job is to take a
 
 1. **Sized for its executor**: A task's tier picks the model that runs it, so every task stays within its tier's size limits below. Split work with independent outputs into tasks with disjoint `files`; keep sequential or integrative work that must land together (a type, its wiring and its test) as one task on a higher tier, never as a chain of serial microtasks.
 2. **Precise context**: For each task, specify EXACTLY which files and line ranges to read. Not "read the crate" — "read lines 40-80 of src/lib.rs".
-3. **Single-owner executable verification**: Give each task exactly one focused command that proves its observable outcome. Combine structural assertions into that command when necessary. Do not repeat equivalent compile/test/clippy commands across tasks; the runner and release lane own broader validation.
+3. **One check per acceptance criterion**: Give each acceptance criterion its own verify step that names it in `covers`, so a failure says which criterion broke. One command may cover several criteria when one run checks them all (one test file). Keep the steps of different criteria separate, never chained into one command with `&&`: the first failure of a chain hides the rest. A task has at least one verify step and at most its tier's limit below. Do not repeat equivalent compile/test/clippy commands across tasks; the runner and release lane own broader validation.
 4. **Dependency ordering**: Types before implementations. Implementations before wiring. Wiring before tests.
 5. **Model hints**: NEVER set `model_hint`. The task's `tier` and `role` pick its model on the runtime's routing ladder; set `rung` only when a task needs more than its tier's start rung. Hardcoded model names break across providers.
 6. **Executable spec (TSS v1)**: Every task states its `goal`, one observable outcome in a sentence. Its `acceptance` criteria are `AC1: …`, `AC2: …` items, each an input and its output, a state, an exit code or a message that a check can observe. Every test-class verify step names the criteria it proves in `covers = ["AC1"]` and says `expect = "fail_on_base"` (it fails on the unchanged code and passes once the task is done), or `expect = "pass_on_base"` for a regression check that must pass before and after. Every `read_files` entry has a `why`. `non_goals` lists what the task must not do or change. A compile check passes on the unchanged code, and a test filter that matches no test passes too, so a `fail_on_base` step checks what the task adds: a `grep -q` for the new item before the compile or the test run (`grep -q 'fn new_test' crates/x/src/lib.rs && cargo test -p x new_test`), or a runner that fails while the test it names is missing (`python3 -m unittest tests.test_x.XTests.test_new`, `pytest tests/test_x.py::test_new`). Never check a count of tests: correct work with a different number of tests fails it.
@@ -370,7 +371,7 @@ Detect the project language and use the right commands:
 
 ## Verify steps by role
 
-- **implementer**: MUST have exactly one focused verify step. Use a target-aware compile for ordinary Rust edits, an exact test for behavioral logic, or one shell command that combines a structural assertion with the selected check.
+- **implementer**: MUST have at least one verify step, one per acceptance criterion (Core principle 3). Use a target-aware compile for ordinary Rust edits, an exact test for behavioral logic, or a shell command that puts a structural assertion before the selected check.
 - **Weak verify steps** (any role): a verify step must fail on the unchanged code and pass once the task is done. Prefer the crate's own gate (e.g. `cargo check -p roko-core`, `cargo test -p roko-core parse_config`) to a check that reads only the edited file, which lets a regression elsewhere in the crate through. Never negate a grep (`! grep -q ...`): correct code that mentions the text fails it (`roko plan validate` warns, PLAN_042). Never use a command that cannot fail (`echo ok`, `true`).
 - **Test runners** (any role): a test runner's exit status already says whether its tests passed, so run it on its own (`python3 -m unittest tests.test_budgets`, `pytest tests/test_x.py`). Do not pipe it into `grep -q OK`: that adds nothing and hides the runner's output, which a retry needs. Nor pipe it into any other program (`awk`, `tail`), send it to `/dev/null` or a file, or compare a count of its tests: when the check fails, that output is all the retry and the person see of why (`roko plan validate` warns, PLAN_050). Put any other assertion in its own command joined with `&&`.
 - **architect/researcher/strategist**: MUST have only structural checks on files that already exist (e.g. `grep -q ...`). These roles cannot write, so never verify an output file they would have to create, and do NOT add compile/test verify steps.
@@ -417,13 +418,13 @@ files = [
 Before finalizing, verify your tasks against:
 - [ ] `meta.plan` matches the plan slug exactly (e.g. slug "add-funding-rate" → `plan = "add-funding-rate"`)
 - [ ] `meta.max_parallel` is omitted, and two tasks that share a file depend on each other, directly or through other tasks
-- [ ] Every task is within its tier's limits (files, max_loc, description words); a larger one is split or given a higher tier
-- [ ] Every task has exactly one focused verify step and no semantic duplicate exists elsewhere in the plan
+- [ ] Every task is within its tier's limits (files, max_loc, description words, verify steps); a larger one is split or given a higher tier
+- [ ] Every acceptance criterion has a verify step that covers it, steps of different criteria are not chained into one command, and no semantic duplicate exists elsewhere in the plan
 - [ ] No verify step negates a grep, cannot fail, or checks only the edited file where the crate's gate would catch a regression
 - [ ] A test runner's own exit status is its check: no pipe, redirection or test count around it
 - [ ] Architect/researcher/strategist tasks have ONLY structural verify steps (no cargo check, no cargo test)
 - [ ] Every task with a non-empty `files` list uses a role that can write (see Role-Tool Constraints)
-- [ ] Every task is within the generated-plan limits: its `read_files` entries, verify step, `lines` ranges, declared context and symbol anchors
+- [ ] Every task is within the generated-plan limits: its `read_files` entries, verify steps, `lines` ranges, declared context and symbol anchors
 - [ ] Anti-patterns are specific (not generic "be careful")
 - [ ] Dependencies form a DAG (no cycles)
 - [ ] `model_hint` is NEVER set, and `rung` is set only where a task needs more than its tier's start rung
@@ -569,8 +570,11 @@ pub fn render_tier_size_limits() -> String {
         .map(|tier| {
             let limits = policy.tier_size_limits(tier);
             format!(
-                "{tier} at most {} files, max_loc {} and {} description words",
-                limits.max_files, limits.max_loc, limits.max_description_words
+                "{tier} at most {} files, max_loc {}, {} description words and {} verify steps",
+                limits.max_files,
+                limits.max_loc,
+                limits.max_description_words,
+                limits.max_verify_steps
             )
         })
         .join("; ");
@@ -591,21 +595,13 @@ pub fn render_tier_size_limits() -> String {
 #[must_use]
 pub fn render_generated_plan_limits() -> String {
     let policy = PlanExecutionPolicy::generated(DEFAULT_GENERATED_TASK_LIMIT);
-    let verify_steps = if policy.require_one_verify {
-        "exactly 1 step per task (PLAN_VERIFY_OWNER)".to_string()
-    } else {
-        format!(
-            "at most {} steps per task (PLAN_BUDGET_VERIFY)",
-            policy.max_verify_steps_per_task
-        )
-    };
     format!(
         "Each draft is checked against these limits before the plan is written. A draft that \
          breaks one comes back to you, and every retry costs a full planner call, so meet them in \
          the first draft.\n\
          - `[task.context] read_files`: at most {read_files} entries per task \
          (PLAN_BUDGET_READ_FILES); keep the files the task needs most.\n\
-         - `[[task.verify]]`: {verify_steps}; join further checks into its command with `&&`.\n\
+         - `[[task.verify]]`: {verify_steps}.\n\
          - `lines`: one range `START-END` inside the file, at most {range_lines} lines long \
          (PLAN_CONTEXT_RANGE, PLAN_CONTEXT_RANGE_BUDGET). Never a list such as `1-25,320-332`: \
          give each part of a file its own `read_files` entry, which counts toward the limit \
@@ -618,9 +614,29 @@ pub fn render_generated_plan_limits() -> String {
          `read_files` declares (PLAN_CONTEXT_SYMBOL); declare that file, or describe the symbol \
          in words without an anchor.",
         read_files = policy.max_read_files_per_task,
+        verify_steps = verify_step_limits(policy),
         range_lines = policy.max_range_lines,
         context_bytes = policy.max_declared_context_bytes,
     )
+}
+
+/// How many verify steps a task of `policy`'s plans has, as the generator
+/// prompt states it: exactly one in the FAST lane, else at least
+/// `min_verify_steps_per_task` and at most the task's tier limit, one per
+/// acceptance criterion (gap-dde99e).
+fn verify_step_limits(policy: PlanExecutionPolicy) -> String {
+    if policy.require_one_verify {
+        "exactly 1 step per task (PLAN_VERIFY_OWNER); join further checks into its command with \
+         `&&`"
+            .to_string()
+    } else {
+        format!(
+            "at least {} step per task (PLAN_VERIFY_OWNER) and at most its tier's limit in the \
+             size line above (PLAN_TIER_SIZE): one per acceptance criterion, naming it in \
+             `covers`, never chained into one command",
+            policy.min_verify_steps_per_task
+        )
+    }
 }
 
 /// Build the shared system prompt for plan generation and regeneration.
@@ -876,7 +892,7 @@ pub fn build_regeneration_prompt(workdir: &Path, existing_tasks_toml: &str) -> S
          - `max_loc` (estimated lines of change)\n\
          - `allowed_tools`, `denied_tools`, and `mcp_servers` (per-task tool/MCP constraints)\n\
          - `[task.context]` with read_files, symbols, anti_patterns\n\
-         - exactly one focused `[[task.verify]]` command per task\n\
+         - `[[task.verify]]` steps: one per acceptance criterion, at least one per task\n\
          Do NOT set `model_hint`: the task's tier and role pick its model. Set `rung` only when a \
          task needs more than its tier's start rung.\n\n\
          ## Existing tasks.toml:\n\n```toml\n{existing_tasks_toml}\n```"
@@ -1267,7 +1283,9 @@ mod tests {
     fn generator_prompt_states_the_tier_size_limits() {
         let line = render_tier_size_limits();
         assert!(
-            line.contains("mechanical at most 3 files, max_loc 20 and 300 description words"),
+            line.contains(
+                "mechanical at most 3 files, max_loc 20, 300 description words and 3 verify steps"
+            ),
             "{line}"
         );
         assert!(
@@ -1277,6 +1295,9 @@ mod tests {
         let prompt = build_generator_system_prompt(std::path::Path::new("/test"));
         assert!(prompt.contains(&line));
         assert!(!prompt.contains("{TIER_SIZE_LIMITS}"));
+        // gap-dde99e: each acceptance criterion gets its own verify step.
+        assert!(!prompt.contains("exactly one focused"), "{prompt}");
+        assert!(prompt.contains("**One check per acceptance criterion**"));
     }
 
     /// gap-f8a6ea: the generator is told the limits each draft is checked
@@ -1288,14 +1309,14 @@ mod tests {
     #[test]
     fn generator_prompt_states_the_generated_plan_limits() {
         let policy = PlanExecutionPolicy::generated(DEFAULT_GENERATED_TASK_LIMIT);
-        let verify_steps = if policy.require_one_verify {
-            "exactly 1 step per task (PLAN_VERIFY_OWNER)".to_string()
-        } else {
-            format!(
-                "at most {} steps per task (PLAN_BUDGET_VERIFY)",
-                policy.max_verify_steps_per_task
-            )
-        };
+        let verify_steps = verify_step_limits(policy);
+        // gap-dde99e: a generated task has a step per acceptance criterion.
+        assert!(
+            verify_steps.contains("one per acceptance criterion"),
+            "{verify_steps}"
+        );
+        let fast = verify_step_limits(PlanExecutionPolicy::fast());
+        assert!(fast.starts_with("exactly 1 step per task"), "{fast}");
         let limits = render_generated_plan_limits();
         for expected in [
             format!(

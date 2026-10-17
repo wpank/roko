@@ -265,6 +265,7 @@ mod tests {
                 plans_root,
                 artifacts: Vec::new(),
                 cost_usd: 0.0,
+                source_checks: None,
             })
         }
 

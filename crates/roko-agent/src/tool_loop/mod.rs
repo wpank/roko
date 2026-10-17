@@ -1592,23 +1592,36 @@ impl ToolLoop {
                         "tool_loop: closing text is empty after tool work; \
                          the verify steps judge the work"
                     );
+                } else if hit_length_limit && !all_calls.is_empty() {
+                    tracing::warn!(
+                        iterations,
+                        tool_calls = all_calls.len(),
+                        output_tokens = turn_usage.output_tokens,
+                        "tool_loop: the closing text ran past the model's output limit \
+                         (finish_reason=length) after tool work; the verify steps judge the work"
+                    );
                 }
 
                 // A run that made no tool call and wrote no text produced
                 // nothing: it fails as a provider error that retry, failover
                 // and the ladder understand, whatever the finish reason
                 // (backlog 1102). A blank closing turn after tool work stays
-                // `Stop`: the work is in the tree.
+                // `Stop`: the work is in the tree. So does a closing turn cut
+                // at the output limit after tool work: the verify steps judge
+                // what it left (bug-f6b99f). A cut with no tool work behind it
+                // fails as the model's own limit, which dispatch counts
+                // against the model (`error_classify::detect_output_limit`).
                 let stop_reason = if blank && all_calls.is_empty() {
                     StopReason::BackendError(format!(
                         "empty_response: the model returned no text and no tool call \
                          (finish_reason={})",
                         finish_reason_raw.as_deref().unwrap_or("none")
                     ))
-                } else if hit_length_limit {
-                    StopReason::BackendError(
-                        "model hit output token limit (finish_reason=length)".to_string(),
-                    )
+                } else if hit_length_limit && all_calls.is_empty() {
+                    StopReason::BackendError(format!(
+                        "{} (finish_reason=length)",
+                        crate::provider::error_classify::OUTPUT_LIMIT_MARKER
+                    ))
                 } else {
                     StopReason::Stop
                 };
@@ -2907,6 +2920,70 @@ mod tests {
                 assert!(message.contains("finish_reason=length"), "{message}");
             }
             other => panic!("expected empty_response, got {other:?}"),
+        }
+    }
+
+    /// bug-f6b99f: a closing turn cut at the output limit after tool work
+    /// ends the run as `Stop`, so the verify steps judge the work it left; a
+    /// cut with no tool work fails with the output-limit marker.
+    #[tokio::test]
+    async fn a_closing_turn_cut_at_the_output_limit_after_tool_work_is_stop() {
+        struct ToolThenCutBackend {
+            calls: AtomicUsize,
+            tool_first: bool,
+        }
+
+        #[async_trait]
+        impl LlmBackend for ToolThenCutBackend {
+            async fn send_turn(
+                &self,
+                _messages: &[serde_json::Value],
+                _tools: &RenderedTools,
+                _session: &SessionState,
+            ) -> Result<BackendResponse, LlmError> {
+                let first = self.calls.fetch_add(1, Ordering::SeqCst) == 0;
+                let response = if first && self.tool_first {
+                    serde_json::json!({
+                        "tool_calls": [{"id": "call-1", "name": "echo", "arguments": {}}]
+                    })
+                } else {
+                    serde_json::json!({
+                        "message": {"content": "The filter is done; in summary, the"},
+                        "stop_reason": "length"
+                    })
+                };
+                Ok(BackendResponse::Json(response))
+            }
+        }
+
+        let run = |tool_first: bool| async move {
+            let backend = Arc::new(ToolThenCutBackend {
+                calls: AtomicUsize::new(0),
+                tool_first,
+            });
+            make_tool_loop(backend, 25)
+                .run(
+                    "system",
+                    "user",
+                    &test_tools(),
+                    &ToolContext::testing("/tmp"),
+                )
+                .await
+        };
+        let after_tools = run(true).await;
+        assert_eq!(after_tools.stop_reason, StopReason::Stop);
+        assert_eq!(after_tools.tool_calls.len(), 1);
+
+        let no_tools = run(false).await;
+        match &no_tools.stop_reason {
+            StopReason::BackendError(message) => {
+                assert!(
+                    crate::provider::error_classify::detect_output_limit(message),
+                    "{message}"
+                );
+                assert!(message.contains("finish_reason=length"), "{message}");
+            }
+            other => panic!("expected an output-limit failure, got {other:?}"),
         }
     }
 

@@ -2,15 +2,16 @@
 id = "gap-ac2f31"
 kind = "gap"
 title = "Serve's M1 route reports on while M1 runs in shadow on roko's shipped viability policy, and stamps a person's rows with policy_version 0"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p3"
 goal = "cybernetic"
 size = "S"
 subsystem = ["roko-serve/learning"]
 created = 2026-10-16
-updated = 2026-10-16
-last_verified = 2026-10-16
+updated = 2026-10-17
+last_verified = 2026-10-17
+last_verified_rev = "d57ab941f"
 source = "gap-cad57a"
 discovered_from = "gap-cad57a"
 anchors = ["crates/roko-serve/src/routes/learning/homeostasis.rs::view", "crates/roko-serve/src/routes/learning/homeostasis.rs::record"]
@@ -20,6 +21,18 @@ links = { depends_on = ["gap-cad57a"], blocks = [], related = [], supersedes = [
 
 [[verify]]
 command = "grep -rqw 'fn homeostasis_route_reports_shadow_on_the_shipped_policy' crates/roko-serve/ && cargo test -p roko-serve homeostasis_route_reports_shadow_on_the_shipped_policy"
+
+[closed]
+at = 2026-10-17
+at_ts = "2026-10-17T03:02:39Z"
+commit = "d57ab941f"
+by = "commit trailer"
+executor = "claude-agent"
+via = "work-batch"
+size = "S"
+claimed_at = "2026-10-17T02:10:41Z"
+forced = false
+evidence = "d57ab941f: crates/roko-serve/src/routes/learning/homeostasis.rs `view` now computes mode via ViabilityPolicy::load_or_shipped + mode_on_policy (the same check roko learn homeostasis status and HomeostasisSink::for_workdir already use) and returns a new policy: \"person\"|\"shipped\" field; `record` takes policy_version from load_or_shipped instead of load_optional, so a fresh workspace's controller.mode/hold rows carry 1, not 0. Proven by the new test homeostasis_route_reports_shadow_on_the_shipped_policy (fresh workspace: admin sets on, view reads mode=shadow/policy=shipped, ledger row policy_version=1; after a person's policy file is written, view reads mode=on/policy=person) and a new policy=\"person\" assertion added to the pre-existing homeostasis_route_reports_mode_state_theta_lkg; both pass under cargo test -p roko-serve."
 +++
 
 ## Problem

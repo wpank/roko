@@ -57,7 +57,14 @@ const IMMUNE_STAGE_ORDER: [&str; 5] = [
 ];
 const MAX_PROVIDER_OUTPUT_BYTES: usize = 4 * 1024 * 1024;
 const MAX_PROVIDER_SECURITY_METADATA_BYTES: usize = 64 * 1024;
-const MAX_PROVIDER_STREAM_CHUNKS: usize = 4_096;
+/// The most events one model call may stream: a ceiling that only a runaway
+/// stream of tiny or empty events reaches (bug-91796d). A call's content is
+/// bounded by its bytes ([`MAX_PROVIDER_STREAM_BYTES`]). A reasoning model
+/// streams about one delta per token, so a long call streams tens of
+/// thousands of them: a cap of 4,096 denied glm-4.7 on a hard task, which
+/// streamed 7,915 reasoning deltas, about 24 KB, in one call. No model call
+/// outputs anywhere near 256K tokens.
+const MAX_PROVIDER_STREAM_EVENTS: usize = 262_144;
 const MAX_PROVIDER_STREAM_BYTES: usize = 4 * 1024 * 1024;
 /// Version of [`ProviderBoundaryRecord`] this build writes. Version 2 scores
 /// a record's anomaly without the blank-output dimensions (backlog 1101).
@@ -500,7 +507,7 @@ impl ImmuneScreenedAgent {
                 if !matches!(event.kind, StreamEventKind::ToolResult { .. }) {
                     chunk_count = chunk_count.saturating_add(1);
                     byte_count = byte_count.saturating_add(stream_event_bytes(&event));
-                    exceeded |= chunk_count > MAX_PROVIDER_STREAM_CHUNKS
+                    exceeded |= chunk_count > MAX_PROVIDER_STREAM_EVENTS
                         || byte_count > MAX_PROVIDER_STREAM_BYTES;
                 }
                 if matches!(event.kind, StreamEventKind::Done { .. }) {
@@ -1925,15 +1932,17 @@ mod tests {
             _ctx: &Context,
             event_tx: mpsc::Sender<StreamEvent>,
         ) -> AgentResult {
-            let count = if self.overflow {
-                MAX_PROVIDER_STREAM_CHUNKS + 1
+            // An overflow is a runaway stream of empty deltas: only the event
+            // ceiling stops it, not the byte limit.
+            let (count, content) = if self.overflow {
+                (MAX_PROVIDER_STREAM_EVENTS + 1, "")
             } else {
-                1
+                (1, "divergent streamed content")
             };
             for _ in 0..count {
                 let _ = event_tx
                     .send(StreamEvent::now(StreamEventKind::TextDelta(
-                        "divergent streamed content".to_string(),
+                        content.to_string(),
                     )))
                     .await;
             }
@@ -2073,6 +2082,111 @@ mod tests {
         );
     }
 
+    /// Streams `deltas` one-token reasoning deltas in one model call, as a
+    /// reasoning model thinks, then its answer, its usage and `Done`.
+    struct ReasoningStreamAgent {
+        deltas: usize,
+    }
+
+    #[async_trait::async_trait]
+    impl Agent for ReasoningStreamAgent {
+        async fn run(&self, input: &Signal, _ctx: &Context) -> AgentResult {
+            AgentResult::ok(
+                input
+                    .derive(Kind::AgentOutput, Body::text("the filter is stable"))
+                    .build(),
+            )
+        }
+
+        fn name(&self) -> &str {
+            "reasoning-stream-agent"
+        }
+
+        fn supports_streaming(&self) -> bool {
+            true
+        }
+
+        async fn run_streaming(
+            &self,
+            input: &Signal,
+            ctx: &Context,
+            event_tx: mpsc::Sender<StreamEvent>,
+        ) -> AgentResult {
+            for _ in 0..self.deltas {
+                let _ = event_tx
+                    .send(StreamEvent::now(StreamEventKind::ReasoningDelta(
+                        "tok".to_string(),
+                    )))
+                    .await;
+            }
+            let _ = event_tx
+                .send(StreamEvent::now(StreamEventKind::TextDelta(
+                    "the filter is stable".to_string(),
+                )))
+                .await;
+            let _ = event_tx
+                .send(StreamEvent::now(StreamEventKind::Usage(
+                    crate::usage::Usage {
+                        input_tokens: 1_500,
+                        output_tokens: u32::try_from(self.deltas).unwrap_or(u32::MAX),
+                        ..crate::usage::Usage::zero()
+                    },
+                )))
+                .await;
+            let _ = event_tx
+                .send(StreamEvent::now(StreamEventKind::Done {
+                    finish_reason: "stop".to_string(),
+                }))
+                .await;
+            self.run(input, ctx).await
+        }
+    }
+
+    /// bug-91796d: a reasoning model streams about one delta per token, so
+    /// one call on a hard task streams thousands of them (glm-4.7 streamed
+    /// 7,915 in one call). 8,000 one-token reasoning deltas in one call pass
+    /// the boundary, with its answer and usage; a runaway call over the event
+    /// ceiling is still denied.
+    #[tokio::test]
+    async fn a_long_reasoning_stream_passes_the_boundary() {
+        let boundary = ImmuneScreenedAgent::with_store(
+            Box::new(ReasoningStreamAgent { deltas: 8_000 }),
+            "reasoning-stream-agent",
+            Arc::new(MemorySubstrate::new()),
+        );
+        let (tx, mut rx) = mpsc::channel(8);
+        let result = boundary.run_streaming(&prompt(), &Context::now(), tx).await;
+        assert!(result.success, "{:?}", result.output.tags);
+        assert_eq!(
+            result.output.body.as_text().expect("text output"),
+            "the filter is stable"
+        );
+        assert_eq!(result.output.tag("immune_reason"), None);
+        let mut events = Vec::new();
+        while let Some(event) = rx.recv().await {
+            events.push(event.kind);
+        }
+        assert!(
+            matches!(&events[0], StreamEventKind::TextDelta(text) if text == "the filter is stable"),
+            "{events:?}"
+        );
+
+        let runaway = ImmuneScreenedAgent::with_store(
+            Box::new(ReasoningStreamAgent {
+                deltas: MAX_PROVIDER_STREAM_EVENTS + 1,
+            }),
+            "runaway-stream-agent",
+            Arc::new(MemorySubstrate::new()),
+        );
+        let (tx, _rx) = mpsc::channel(8);
+        let denied = runaway.run_streaming(&prompt(), &Context::now(), tx).await;
+        assert!(!denied.success);
+        assert_eq!(
+            denied.output.tag("immune_reason"),
+            Some("provider_stream_limit_exceeded")
+        );
+    }
+
     /// Records the fields of every tracing event as `name=value` text.
     #[derive(Clone, Default)]
     struct CapturedEvents(Arc<std::sync::Mutex<Vec<String>>>);
@@ -2117,7 +2231,7 @@ mod tests {
         let _guard = tracing::subscriber::set_default(captured.clone());
         let boundary = ImmuneScreenedAgent::with_store(
             Box::new(MultiCallStreamingAgent {
-                deltas: MAX_PROVIDER_STREAM_CHUNKS + 1,
+                deltas: MAX_PROVIDER_STREAM_EVENTS + 1,
                 calls: 1,
             }),
             "oversized-call-agent",

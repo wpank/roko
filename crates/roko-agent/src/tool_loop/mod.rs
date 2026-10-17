@@ -333,8 +333,11 @@ pub struct TurnConfig {
     /// Timeout for the first token to arrive. After this, the backend
     /// should return `LlmError::Timeout` rather than waiting indefinitely.
     pub ttft_timeout: Duration,
-    /// Total request timeout including all streaming. The backend must
-    /// complete the stream within this duration or return `LlmError::Timeout`.
+    /// Request timeout. A request that does not stream must complete
+    /// within it. A streamed one must get its response, and each next chunk,
+    /// within it, and ends at [`crate::streaming::MAX_STREAM_DURATION`], so a
+    /// long stream that keeps delivering is not cut (bug-91796d). The backend
+    /// returns `LlmError::Timeout` when either runs out.
     pub request_timeout: Duration,
     /// Stop sequences. Provider-specific; pass through verbatim.
     pub stop_sequences: Vec<String>,

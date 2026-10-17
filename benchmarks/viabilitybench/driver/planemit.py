@@ -9,10 +9,11 @@
   visible-verify wrapper, as `'<vb-verify>' '<check>'` (`PlanSpec.verify_wrapper`, `vb_verify`), in the verify step
   and the gate rung alike. The slug is opaque (`plan-<sha256(alias)[:10]>`, `plan_slug`) and the title is the spec's
   first heading, so Roko's prompt holds nothing the direct arm's task message does not.
-- `roko.toml`: one provider and one model, the pinned one (its key equals its slug), with no fallback models, so
-  nothing can fail over (bug-35379d); the routing ladder off (`[routing.ladder] enabled = false`), so the pin is
-  the only routing input and `plan validate` has no ladder for the task's `model_hint` to bypass (PLAN_041,
-  bug-a05c53); explicit `[[gates.rungs]]` holding only the visible check, so no path that
+- `roko.toml`: one provider and one model, the pinned one (its key is its slug, quoted in TOML as ladder mode's are,
+  so a slug's dots stay in one key: `[models."glm-4.7"]`, never `models` -> `glm-4` -> `7`, bug-562ee6), with no
+  fallback models, so nothing can fail over (bug-35379d); the routing ladder off (`[routing.ladder] enabled =
+  false`), so the pin is the only routing input and `plan validate` has no ladder for the task's `model_hint` to
+  bypass (PLAN_041, bug-a05c53); explicit `[[gates.rungs]]` holding only the visible check, so no path that
   reads rungs falls back to `cargo check` (bug-1410e8); the per-attempt turn cap in `[pipeline.<tier>]`; a budget at
   the arm's dollar cap, priced at the snapshot's rates rather than roko.toml's defaults (S08 D9), whose per-dispatch
   reservation (`max_turn_usd`, a tenth of it, with one agent) satisfies Roko's config invariants and still leaves
@@ -384,9 +385,9 @@ def emit(spec: PlanSpec, workspace: Path) -> Emitted:
         model=_s(spec.model), visible=_s(visible))
     common = dict(max_retries=spec.max_retries, visible=_s(visible), verify_timeout_s=spec.verify_timeout_s,
                  tier_key=spec.tier, max_turns=spec.max_turns, usd_cap=round(spec.usd_cap, 6),
-                 turn_usd=max(round(spec.usd_cap / 10, 6), 1e-06), model=_s(spec.model), model_key=spec.model,
-                 provider_key=spec.provider, provider=_s(spec.provider), context_window=spec.context_window,
-                 max_output=spec.max_output, frozen=_b(frozen))
+                 turn_usd=max(round(spec.usd_cap / 10, 6), 1e-06), model=_s(spec.model), model_key=_key(spec.model),
+                 provider_key=_key(spec.provider), provider=_s(spec.provider), context_window=spec.context_window,
+                 max_output=spec.max_output, frozen=_b(frozen))  # keys quoted as ladder mode's are (bug-562ee6)
     if spec.provider_kind == "claude_cli":  # 3318: the CLI signs in by itself, no base_url or api_key_env
         config_text = CLAUDE_CLI_CONFIG_TEMPLATE.format(**common)
     else:

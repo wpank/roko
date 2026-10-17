@@ -1,6 +1,7 @@
 """Tests of planemit's ladder mode (3310): the cheap-model ladder of decision 3302 instead of one pinned model, with the
-pinned mode unchanged byte for byte. The `real_roko` test runs `plan validate --strict --dag` on the emitted ladder
-plan when there is a binary (`target/debug/roko`, or `$VB_TEST_ROKO_BIN`).
+pinned mode unchanged byte for byte. The `real_roko` tests run `plan validate --strict --dag` on the emitted ladder
+plan, and `run_roko.preflight` on every Roko arm file's plan, when there is a binary (`target/debug/roko`, or
+`$VB_TEST_ROKO_BIN`).
 
 Run from the repository root with the benchmark venv:
     benchmarks/viabilitybench/.venv/bin/python -m pytest benchmarks/viabilitybench/driver/test_planemit.py -q -rs
@@ -9,6 +10,7 @@ Run from the repository root with the benchmark venv:
 from __future__ import annotations
 
 import dataclasses
+import json
 import re
 import subprocess
 import tomllib
@@ -18,11 +20,14 @@ import pytest
 
 import agent_env
 import campaign
+import caps
 import layout
 import ledger
 import materialize
 import planemit
-from test_run_roko import REAL_ROKO, real_roko
+import run_roko
+import vb
+from test_run_roko import REAL_ROKO, fake_roko, real_roko, roko_arms
 
 SNAPSHOT = ledger.load_snapshot()
 GOLDEN = layout.DRIVER_DIR / "testdata" / "planemit"
@@ -94,6 +99,38 @@ def test_pinned_mode_is_byte_identical_to_before_ladder_mode(tmp_path):
     assert emitted.config_text == (GOLDEN / "pinned.roko.toml").read_text()
     assert planemit.TEMPLATE_VERSION == "planemit-6"  # bug-c1b04b: 4's files had a header; bug-d68575: 5's `vb-` slug
     assert planemit.TEMPLATE_SHA256 == "392ef78bd0db0e9e65256a77aaee191a339e0c12a326021249322d855892c5f8"
+
+
+def test_pinned_mode_emits_a_model_whose_slug_has_a_dot(tmp_path):
+    """bug-562ee6: pinned mode writes roko.toml's model and provider keys as ladder mode does (`_key`): quoted when the
+    slug is not a bare TOML key, so `[models."glm-4.7"]` is one key, where `[models.glm-4.7]` was `models` -> `glm-4`
+    -> `7` and `_check` refused the file. Every pinned Roko arm file (roko_fixed on each of LOG1 block A's four models,
+    and fr_claude), through the spec `run_roko._plan_spec` builds for it on the endpoint `vb.make_plan` builds, emits
+    a roko.toml whose `models` table has the pinned slug as its one key, and `run_roko.preflight`, which `vb run` calls
+    before any task, no longer refuses the arm ("the arm cannot emit a plan"). A slug that is a bare key stays bare,
+    so the golden files and TEMPLATE_SHA256 do not change (test_pinned_mode_is_byte_identical_to_before_ladder_mode)."""
+    snapshot = ledger.load_snapshot()
+    pinned = roko_arms(pinned_only=True)
+    assert {"roko_fixed", "roko_fixed_glm", "roko_fixed_kimi", "roko_fixed_mini", "fr_claude"} <= set(pinned)
+    binary, log = fake_roko(tmp_path, [])  # it accepts every plan: what this test checks is that the arm emits one
+    dotted = []
+    for name, arm in pinned.items():
+        [model] = arm["arm"]["models_allow"]
+        endpoint, limits = vb._endpoint(arm, snapshot.row(model), None), caps.Caps.from_table(arm["caps"])
+        spec = run_roko._plan_spec(arm, model, endpoint, limits, snapshot.row(model), limits.usd_per_task,
+                                   alias=name, spec_text="# T\n\nTest.\n", files=("f.py",), visible=("true",),
+                                   snapshot=snapshot)
+        emitted = planemit.emit(spec, workspace(tmp_path, name))
+        config = tomllib.loads(emitted.config_text)
+        assert list(config["models"]) == [model] and config["models"][model]["slug"] == model, name
+        assert list(config["providers"]) == [endpoint.provider] and config["agent"]["default_model"] == model, name
+        assert tomllib.loads(emitted.tasks_text)["task"][0]["model_hint"] == model, name
+        assert f"\n[models.{json.dumps(model) if '.' in model else model}]\n" in emitted.config_text, name
+        dotted += [model] if "." in model else []
+        run_roko.preflight({**arm, "roko": {**arm["roko"], "binary": str(binary)}}, model, endpoint, limits, snapshot)
+    assert sorted(dotted) == ["glm-4.7", "gpt-5.4-mini", "kimi-k2.6"]  # three of LOG1 block A's four Roko models
+    validated = [json.loads(line)["argv"] for line in log.read_text().splitlines() if line.strip()]
+    assert len(validated) == len(pinned) and all("validate" in argv for argv in validated)
 
 
 @pytest.mark.parametrize(("changes", "error"), [
@@ -227,3 +264,23 @@ def test_real_roko_validates_the_ladder_plan(tmp_path):
                              text=True, timeout=120, check=False)
     assert checked.returncode == 0, checked.stdout + checked.stderr
     assert "0 diagnostics in 1 plan" in checked.stdout and "Tasks: 1" in checked.stdout
+
+
+@real_roko
+def test_real_roko_accepts_every_roko_arms_preflight_plan(monkeypatch):
+    """bug-562ee6: `run_roko.preflight`, the `plan validate --strict --dag` that `vb run` runs on the plan an arm
+    emits before any task, passes with a real binary for every arm file run_roko runs, on every model the arm may
+    start on: the pinned arms' quoted keys (`[models."glm-4.7"]`) as well as the ladder's. roko_full's loop census
+    is faked, as in the overlay tests."""
+    monkeypatch.setattr(campaign, "census_report", fake_census(live=True))
+    snapshot = ledger.load_snapshot()
+    checked = []
+    for name, arm in roko_arms().items():
+        pointed = {**arm, "roko": {**arm["roko"], "binary": str(REAL_ROKO)}}
+        for model in arm["arm"]["models_allow"]:
+            endpoint = vb._endpoint(arm, snapshot.row(model), None)
+            run_roko.preflight(pointed, model, endpoint, caps.Caps.from_table(arm["caps"]), snapshot)
+            checked.append((name, model))
+    assert {("roko_fixed", "gpt-oss-120b"), ("roko_fixed_glm", "glm-4.7"), ("roko_fixed_kimi", "kimi-k2.6"),
+            ("roko_fixed_mini", "gpt-5.4-mini"), ("fr_claude", "claude-opus-5-5"), ("roko_ladder", "glm-4.7"),
+            ("roko_full", "gpt-oss-120b")} <= set(checked)

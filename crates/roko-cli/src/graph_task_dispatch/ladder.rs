@@ -2155,4 +2155,43 @@ exit 1
             );
         }
     }
+
+    /// bug-f6b99f: a try whose reply ran past its model's output limit
+    /// settles as the agent's failure on its rung, as a turn cap does, so two
+    /// of them climb the task; its reason says it was the output limit.
+    #[tokio::test]
+    async fn output_limit_failure_counts_towards_the_climb() {
+        const CUT: &str = "model hit output token limit (finish_reason=length)";
+
+        let temp = tempdir().expect("tempdir");
+        let (dispatcher, task) = ladder_fixture(&temp).await;
+        let spec = make_spec(&task);
+        let ctx = CellContext::new().with_run_id(RUN.to_string());
+        for _ in 0..FAILURES_PER_RUNG {
+            let mut attempt = dispatcher.open_attempt(&spec, &task, &ctx);
+            attempt.record_ladder(
+                AttemptLadder {
+                    rung: Some("cheap".to_string()),
+                    index: Some(0),
+                    step: 0,
+                    reason: LadderReason::Start,
+                    exhausted: false,
+                    router_pick: None,
+                },
+                false,
+            );
+            let settled = attempt.settle(Settlement::provider_failure(CUT, true), CHEAP, None);
+            assert_eq!(settled.verdict.blame, Blame::Agent);
+            assert!(
+                settled
+                    .failure_reason
+                    .as_deref()
+                    .is_some_and(|reason| reason.starts_with("output_limit:")),
+                "{:?}",
+                settled.failure_reason
+            );
+            dispatcher.note_ladder_outcome(&spec, &task, &settled);
+        }
+        assert_eq!(dispatcher.ladder_step(&spec, &task), 1);
+    }
 }

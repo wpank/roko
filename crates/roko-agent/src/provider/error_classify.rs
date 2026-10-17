@@ -760,6 +760,22 @@ pub fn detect_turn_cap(text: &str) -> Option<TurnCapHit> {
     })
 }
 
+// ---- Output limit --------------------------------------------------------
+
+/// What roko's tool loop says when the model's reply ran past its output
+/// limit (`finish_reason=length`) with no tool work behind it, so dispatch
+/// can tell the model's own limit from a provider fault after the text has
+/// crossed the `AgentResult` boundary (bug-f6b99f). A blank reply cut there
+/// is an `empty_response` instead, and does not carry it.
+pub const OUTPUT_LIMIT_MARKER: &str = "model hit output token limit";
+
+/// Whether `text` reports a reply cut at the model's output limit
+/// ([`OUTPUT_LIMIT_MARKER`]).
+#[must_use]
+pub fn detect_output_limit(text: &str) -> bool {
+    text.contains(OUTPUT_LIMIT_MARKER)
+}
+
 // ---- Attempt timeout -----------------------------------------------------
 
 /// Failure text a subprocess adapter emits when it kills an agent run at its

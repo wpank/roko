@@ -916,9 +916,16 @@ impl Draft {
         self.checks.len() + usize::from(!self.file_checks.is_empty())
     }
 
-    /// Add a runnable check, unless it can never fail or the task has it.
+    /// Add a runnable check, unless it can never fail or the task has it,
+    /// under a phase gate learning observes when it runs tests, compiles or
+    /// lints ([`observed_phase`]).
     fn add_check(&mut self, phase: &str, command: &str, fail_msg: &str) -> bool {
-        push_step(&mut self.checks, phase, command, fail_msg)
+        push_step(
+            &mut self.checks,
+            observed_phase(command, phase),
+            command,
+            fail_msg,
+        )
     }
 
     fn add_file_check(&mut self, file: &str, command: String, exists: bool) -> bool {
@@ -1273,16 +1280,12 @@ impl<'a> Importer<'a> {
         }
         for command in acceptance_commands(&draft.acceptance) {
             let message = format!("Checkpoint from the acceptance criteria: {command}");
-            if draft.add_check(check_phase(&command, "checkpoint"), &command, &message) {
+            if draft.add_check("checkpoint", &command, &message) {
                 self.report.checks.acceptance += 1;
             }
         }
         if let Some(command) = str_of(task, "command").filter(|command| !is_mori_internal(command))
-            && draft.add_check(
-                check_phase(command, "command"),
-                command,
-                "the mori task's own check",
-            )
+            && draft.add_check("command", command, "the mori task's own check")
         {
             self.report.checks.task_command += 1;
         }
@@ -2679,17 +2682,25 @@ fn guarded(command: &str, tests: &[String], dir: &str) -> String {
     format!("{} && {command}", guards.join(" && "))
 }
 
-/// Add a check to `steps` unless it can never fail or `steps` has it.
-/// The phase of an imported check that runs `command`: `test` when it runs a
-/// test runner, which gate learning observes (gap-e2d2e5), else `phase`.
-fn check_phase<'a>(command: &str, phase: &'a str) -> &'a str {
-    if analyze_step(command, &BTreeSet::new()).class == VerifyClass::Test {
-        "test"
-    } else {
-        phase
+/// The phase of a task's imported check that runs `command`: `phase` when
+/// gate learning observes it ([`roko_gate::rung_for_verify_phase`]), else
+/// `test` when the command runs tests, `clippy` when it lints and `compile`
+/// when it compiles, so the plan's runs teach the gate thresholds and
+/// PLAN_051 stays quiet (gap-e2d2e5, bug-308b5e); any other check keeps
+/// `phase`, such as mori's `invariant` for a check that runs a program.
+fn observed_phase<'a>(command: &str, phase: &'a str) -> &'a str {
+    if roko_gate::rung_for_verify_phase(phase).is_some() {
+        return phase;
+    }
+    match analyze_step(command, &BTreeSet::new()).class {
+        VerifyClass::Test => "test",
+        VerifyClass::Compile if command.contains("clippy") => "clippy",
+        VerifyClass::Compile => "compile",
+        _ => phase,
     }
 }
 
+/// Add a check to `steps` unless it can never fail or `steps` has it.
 fn push_step(steps: &mut Vec<Step>, phase: &str, command: &str, fail_msg: &str) -> bool {
     let command = unpiped(command);
     if never_fails(&command) || steps.iter().any(|step| step.command == command) {
@@ -2779,9 +2790,12 @@ fn cargo_test_parts(command: &str) -> Option<(Vec<String>, String, String)> {
     ))
 }
 
-/// Add `step` to `steps` unless `steps` has its command.
-fn push_owned_step(steps: &mut Vec<Step>, step: Step) {
+/// Add `step` to `steps` unless `steps` has its command, under a phase gate
+/// learning observes ([`observed_phase`]), since a whole-plan check a task
+/// takes over keeps its `verify.sh` or `rubric` phase until then.
+fn push_owned_step(steps: &mut Vec<Step>, mut step: Step) {
     if !steps.iter().any(|known| known.command == step.command) {
+        step.phase = observed_phase(&step.command, &step.phase).to_string();
         steps.push(step);
     }
 }
@@ -3389,6 +3403,84 @@ depends_on = ["01:T2", "07z:T1"]
         .expect("forced import");
     }
 
+    /// bug-308b5e: a task's imported check that runs tests, compiles or lints
+    /// takes a phase gate learning observes when mori's is not one, so the
+    /// plan raises no PLAN_051 (gap-e2d2e5); a phase it observes stays.
+    #[test]
+    fn plan_import_names_test_runs_with_a_phase_gate_learning_observes() {
+        let tasks = r#"[meta]
+plan = "02-gates"
+
+[[task]]
+id = "T1"
+title = "Implement the gate"
+files = ["crates/demo-gates/src/lib.rs"]
+acceptance = [
+  "INV-1: `test_gate_opens` passes",
+  "Checkpoint: `cargo check -p demo-gates` exits 0",
+]
+command = "cargo clippy -p demo-gates -- -D warnings"
+"#;
+        let verify = r#"
+[[task]]
+id = "INV1"
+title = "INV: the gate opens"
+type = "invariant"
+invariant = "INV-1"
+command = "cargo test -p demo-gates test_gate_opens"
+test_fns = ["test_gate_opens"]
+blocking = true
+"#;
+        let temp = tempfile::tempdir().expect("tempdir");
+        let mori_root = temp.path().join("mori");
+        mori_plan(
+            &mori_root,
+            "02-gates",
+            &[("tasks.toml", tasks), ("verify-tasks.toml", verify)],
+        );
+        let workspace = temp.path().join("ws");
+        let plans = workspace.join("plans");
+        import_mori_plans(
+            &[mori_root],
+            &workspace,
+            &plans,
+            MoriImportOptions::default(),
+            false,
+        )
+        .expect("import");
+
+        let plan = TasksFile::parse(&plans.join("02-gates/tasks.toml")).expect("plan");
+        let t1 = plan.tasks.iter().find(|task| task.id == "T1").expect("T1");
+        let phase = |part: &str| {
+            t1.verify
+                .iter()
+                .find(|step| step.command.contains(part))
+                .map(|step| step.phase.as_str())
+                .unwrap_or_else(|| panic!("a step runs {part}: {:#?}", t1.verify))
+        };
+        assert_eq!(phase("test_gate_opens"), "test", "mori's invariant");
+        assert_eq!(phase("cargo check"), "compile", "a checkpoint");
+        assert_eq!(phase("cargo clippy"), "clippy", "the task's command");
+        assert_eq!(
+            observed_phase("cargo test -p demo-gates", "integration"),
+            "integration"
+        );
+        assert_eq!(
+            observed_phase("test -f README.md", "invariant"),
+            "invariant"
+        );
+
+        let report =
+            validate_plans_dir_with_workdir(&plans, None, Some(&workspace)).expect("validate");
+        let rules: Vec<&str> = report
+            .plans
+            .iter()
+            .flat_map(|plan| &plan.diagnostics)
+            .map(|diagnostic| diagnostic.rule_id.as_str())
+            .collect();
+        assert!(!rules.contains(&"PLAN_051"), "{rules:?}");
+    }
+
     /// bug-dfe4c5: a fresh import takes no workspace lock, so it runs beside
     /// the roko serve that holds the workspace, and moves each new plan into
     /// place whole; replacing plans (`--force`) needs the lock, and the
@@ -3614,8 +3706,8 @@ depends_on = ["D1"]
     }
 
     /// The mori corpus (`ROKO_MORI_CORPUS`, a `.mori/plans` directory) as roko
-    /// plans: every plan imports, and the counts `plan validate` passes
-    /// with and without `--strict` are printed. Run it with
+    /// plans: every plan imports and passes `plan validate --strict`, and the
+    /// counts are printed. Run it with
     /// `ROKO_MORI_CORPUS=<bardo>/.mori/plans cargo test -p roko-cli --lib
     /// plan_import_mori_corpus -- --ignored --nocapture`.
     #[test]
@@ -3640,6 +3732,7 @@ depends_on = ["D1"]
         let report =
             validate_plans_dir_with_workdir(&plans, None, Some(workspace)).expect("validate");
         let mut by_rule: BTreeMap<(String, String), usize> = BTreeMap::new();
+        let mut first: BTreeMap<String, String> = BTreeMap::new();
         let mut with_errors = 0;
         let mut with_diagnostics = 0;
         for plan in &report.plans {
@@ -3654,6 +3747,9 @@ depends_on = ["D1"]
                 *by_rule
                     .entry((severity, diagnostic.rule_id.clone()))
                     .or_default() += 1;
+                first
+                    .entry(diagnostic.rule_id.clone())
+                    .or_insert_with(|| format!("{}: {}", plan.plan_id, diagnostic.message));
             }
         }
         let total = report.totals.plans_checked;
@@ -3693,8 +3789,10 @@ depends_on = ["D1"]
         for ((severity, rule), count) in &by_rule {
             eprintln!("  {severity} {rule}: {count}");
         }
-        // The prototype (plans-research's mori2roko.py) passed 132 and 19.
-        assert!(total - with_errors >= 132, "{by_rule:#?}");
-        assert!(total - with_diagnostics >= 19, "{by_rule:#?}");
+        // Every plan passes `plan validate --strict` (the prototype,
+        // plans-research's mori2roko.py, passed 132 and 19); a new rule that
+        // warns on an imported plan shows here (bug-308b5e).
+        assert_eq!(with_errors, 0, "{by_rule:#?} {first:#?}");
+        assert_eq!(with_diagnostics, 0, "{by_rule:#?} {first:#?}");
     }
 }

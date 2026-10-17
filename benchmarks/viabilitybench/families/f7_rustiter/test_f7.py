@@ -11,13 +11,17 @@ runs every kind (`ci/verify_verifiers.py --families f7`). Run from the repositor
 from __future__ import annotations
 
 import sys
+import tarfile
 from pathlib import Path
 
 FAMILY_DIR = Path(__file__).resolve().parent
 sys.path.insert(0, str(FAMILY_DIR.parent))
+sys.path.insert(0, str(FAMILY_DIR.parent.parent / "driver"))
 from common import astcheck, repo  # noqa: E402
 from f7_rustiter import gaming, gen, hidden  # noqa: E402
 from f7_rustiter.reference import solutions  # noqa: E402
+
+import archive  # noqa: E402
 
 # One failing run of `cargo test --test hidden`, as cargo prints it; `{n}` marks what changes from run to run.
 STDOUT = """
@@ -125,3 +129,25 @@ def test_the_truth_suite_builds_the_crate_gen_made(tmp_path):
                    if path.is_file() and ".git" not in path.relative_to(export).parts)
     assert files == [".gitignore", "Cargo.toml", "README.md", "src/lib.rs", "tests/visible.rs"]
     assert (export / "Cargo.toml").read_text() == gen.CARGO_TOML
+
+
+def test_f7_archive_excludes_the_cargo_target_dir(tmp_path):
+    """gap-a2f86a: VISIBLE_VERIFY's in-tree `CARGO_TARGET_DIR=.cargo-target` build directory, and a plain `target`
+    the same way, must not survive into c_i -- `commit_final`'s committed tree, and `archive_task`'s tarball and
+    diff -- the way `hidden.py`'s own, separate audit copy already excludes them (`prepare`'s `REMOVED`)."""
+    task_path = gen.generate(1, 11, tmp_path / "instance")
+    instance = gen.load_instance(task_path)
+    workdir = tmp_path / "instance" / gen.REPO_DIR
+    for cache in ("target/debug/x", ".cargo-target/debug/deps/f7_task-0123456789abcdef"):
+        (workdir / cache).parent.mkdir(parents=True, exist_ok=True)
+        (workdir / cache).write_text("artifact\n")
+
+    final = archive.commit_final(workdir, tmp_path / "c_i")
+    exported = {path.name for path in final.repo.rglob("*") if ".git" not in path.relative_to(final.repo).parts}
+    assert not exported & {"target", ".cargo-target"}
+
+    archived = archive.archive_task(final, instance.pristine, tmp_path / "archives", "f7-test")
+    assert "target" not in archived.diff_text and ".cargo-target" not in archived.diff_text
+    with tarfile.open(archived.tarball) as tar:
+        members = {part for name in tar.getnames() for part in name.split("/")}
+    assert not members & {"target", ".cargo-target"}

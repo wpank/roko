@@ -123,6 +123,22 @@ def test_tree_hash_matches_git_write_tree(tmp_path):
     assert repo.tree_hash(root) == agent_git(root, "write-tree")
 
 
+def test_scan_skips_cargo_build_caches_like_git(tmp_path):
+    """gap-a2f86a: `target` and `.cargo-target`, wherever they sit in the tree, count no more than `.git` does
+    (the module docstring's "what counts as the tree"). A Cargo crate's own in-tree `CARGO_TARGET_DIR` must not
+    survive an export or change a tree hash."""
+    dirty = make_instance(tmp_path / "dirty")
+    for cache in ("target/debug/x", ".cargo-target/debug/deps/y", "crate/target/z"):
+        (dirty / cache).parent.mkdir(parents=True, exist_ok=True)
+        (dirty / cache).write_text("artifact\n")
+    clean = make_instance(tmp_path / "clean")
+    assert repo.tree_hash(dirty) == repo.tree_hash(clean)
+    export = tmp_path / "export"
+    repo.export_tree(dirty, export)
+    names = {path.name for path in export.rglob("*")}
+    assert not names & {"target", ".cargo-target"}
+
+
 def test_init_is_deterministic_and_bundle_stays_outside(tmp_path):
     first = repo.init_task_repo(make_instance(tmp_path / "one"), tmp_path / "one.bundle")
     second = repo.init_task_repo(make_instance(tmp_path / "two"), tmp_path / "two.bundle")

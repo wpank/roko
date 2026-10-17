@@ -2,7 +2,7 @@
 id = "gap-871b89"
 kind = "gap"
 title = "The verifier CI never validates a generated task.json against vb.task/1 (S08 §4.2 (3)), so F6 still emits no recoverability"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p2"
 goal = "proof"
@@ -11,6 +11,7 @@ subsystem = ["viabilitybench/ci"]
 created = 2026-10-16
 updated = 2026-10-16
 last_verified = 2026-10-16
+last_verified_rev = "e0fc8fa05"
 source = "bug-f90bd0 worker, 2026-10-16 (materialize F6-l1-0001: invalid manifest)"
 discovered_from = "bug-f90bd0"
 anchors = ["benchmarks/viabilitybench/ci/verify_verifiers.py", "benchmarks/viabilitybench/ci/test_ci.py", "benchmarks/viabilitybench/families/f6_tsresult/gen.py::generate"]
@@ -22,6 +23,18 @@ command = "grep -qw 'def test_an_invalid_manifest_turns_ci_red' benchmarks/viabi
 
 [[verify]]
 command = "grep -qw 'def test_f6_manifest_is_a_valid_task' benchmarks/viabilitybench/families/f6_tsresult/test_f6.py && benchmarks/viabilitybench/.venv/bin/python -m pytest benchmarks/viabilitybench/families/f6_tsresult/test_f6.py -k test_f6_manifest_is_a_valid_task -q"
+
+[closed]
+at = 2026-10-16
+at_ts = "2026-10-16T20:50:00Z"
+commit = "e0fc8fa05"
+by = "commit trailer"
+executor = "claude-agent"
+via = "work-batch"
+size = "S"
+claimed_at = "2026-10-16T19:19:33Z"
+forced = false
+evidence = "e0fc8fa05: ci/verify_verifiers.py runs schema/validate.py's validate('task', ...) on every cell's manifest, as driver/materialize.py does, and an invalid one makes the cell red with a CellError ('the manifest is not vb.task/1: ...') before any kind is judged. F6's gen.py lists recoverability (one entry per truth-suite check, citing spec.precise.md#AC1-AC4 and README.md, src/domain/errors/, the visible test and tsconfig.json); generator f6-1.1.0, its task repos and spec byte-identical across 40 instances (both latents). Both verifies pass: test_an_invalid_manifest_turns_ci_red (an F4 copy whose gen drops recoverability: cell F4-l1-0001 red, no kind judged; main's CI judges the same copy green) and test_f6_manifest_is_a_valid_task (v1 and v2 validate, every cited criterion in the spec and every file in the workdir; main's F6 fails with missing required field 'recoverability'). F6-l1-0001 and F6-l5-0002 now materialize, both latents. verify_verifiers on every family: f1,f2,f3,f4,f5,f8 levels 1-5 seeds 2 (the workflow's job) 80/80, f6 levels 1-5 seeds 2 (node, no tsc) 20/20, pl seeds 3 18/18, f7 levels 1-5 seeds 2 through the cargo limiter 10/10. test_ci.py 9 passed; bench pytest 772 passed, 16 skipped (no roko binary, opt-in sweeps, analysis stack)."
 +++
 
 ## Problem

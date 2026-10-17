@@ -2499,6 +2499,8 @@ fn dashboard_event_to_server(event: &roko_core::DashboardEvent) -> Option<Server
         | DashboardEvent::M1Episode { .. }
         | DashboardEvent::SelfModelCalibration { .. }
         | DashboardEvent::RouteDecided { .. }
+        | DashboardEvent::PromptAssembled { .. }
+        | DashboardEvent::RetryFeedback { .. }
         | DashboardEvent::KnowledgeWritten { .. }
         | DashboardEvent::PlaybookWritten { .. }
         | DashboardEvent::EffectStaged { .. }

@@ -202,6 +202,7 @@ pub mod plan_authoring;
 pub mod plan_brief;
 pub mod plan_generate;
 pub mod plan_generator;
+pub mod plan_import;
 pub mod plan_policy;
 pub mod plan_validate;
 pub mod projection;

@@ -47,8 +47,10 @@ credential the operator's shell exports would reach every agent: `ANTHROPIC_API_
   in it is still refused rather than hidden (`secret.preflight`).
 - **Limit.** Every other process of the operator's user stays readable: `ps -E -ax` shows the start-up environment of
   any of them that is not an Apple system binary (a shell started with a credential, an editor, another session).
-  Only a separate user or a container per task hides those (S08 decision 4). Until then, run the benchmark from a
-  session that exports no credential.
+  Inside the agents' sandbox the setuid `ps` cannot start, but `sysctl(KERN_PROCARGS2)` reads the same, and no
+  sandbox-exec rule tried on macOS 26.4 stops it without stopping Python too (gap-0bd49a). Only a separate user or a
+  container per task hides those (S08 decision 4). Until then, run the benchmark from a session that exports no
+  credential.
 
 API:
     build(*, home: Path, extra: Mapping[str, str] | None = None, forbidden_values: Iterable[str] = ()) -> dict

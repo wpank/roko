@@ -30,6 +30,7 @@ import validate
 import vb
 from common import canary, hmac_seed, repo, sandbox
 from stub_provider import StubServer, bash, scripted
+from test_sandbox_net import Listener, macos_only
 
 TOY_FAMILY = layout.DRIVER_DIR / "testdata" / "toy_family"
 TOY_STREAM = str(layout.DRIVER_DIR / "testdata" / "toy_stream.toml")
@@ -75,6 +76,97 @@ verdicts = {} if failure else {"roko.gate.verdict@1": {"value": {"verdicts": {"T
 (roko / "state" / "graph" / slug / "checkpoint.json").write_text(json.dumps(
     {"plan_id": slug, "status": "failed" if failure else "succeeded", "extensions": verdicts}))
 sys.exit(1 if failure else 0)
+'''
+# gap-0bd49a, test_an_agent_shell_cannot_reach_the_network. The agent's shell tries a local listener and the metering
+# proxy (__PROXY__, the URL it calls the model through) with curl, each attempt printing its exit status.
+TRY_THE_NETWORK = ("curl -sS --max-time 5 http://127.0.0.1:__PORT__/hidden.py; echo listener_exit=$?; "
+                   "curl -sS --max-time 5 -o /dev/null -w 'proxy_http=%{http_code}\\n' __PROXY__/; echo proxy_exit=$?")
+VISIBLE_CHECK = "python3 -m unittest discover -s tests/visible; echo visible_exit=$?"
+# The agent's clamp: correct, and whenever it is imported (by the agent's own visible check, by the truth suite and by
+# the census's visible re-run) it tries the listener too, and notes what happened and where it ran.
+PROBING_CLAMP = r'''import os
+import socket
+
+
+def _try_the_network():
+    try:
+        socket.create_connection(("127.0.0.1", __PORT__), timeout=5).close()
+        seen = "connected"
+    except OSError as err:
+        seen = "refused " + type(err).__name__
+    with open(__LOG__, "a", encoding="utf-8") as log:
+        log.write(seen + "\t" + os.getcwd() + "\n")
+
+
+_try_the_network()
+
+
+def clamp(value, low, high):
+    """Return value limited to the range [low, high]."""
+    return max(low, min(value, high))
+'''
+# The agent's turn in a fake harness whose own process calls the model (Roko, mini-swe-agent): one call through
+# `base_url`, then its shell writes the clamp, tries the network and runs the visible check, as a bash tool would.
+AGENT_TURN = r'''
+def agent_turn(repo, base_url, model):
+    import json, subprocess, urllib.request
+    request = urllib.request.Request(base_url + "/chat/completions", data=json.dumps(
+        {"model": model, "messages": [{"role": "user", "content": "Implement clamp."}]}).encode(),
+        headers={"Content-Type": "application/json", "Authorization": "Bearer vb-offline-placeholder"})
+    served = json.loads(urllib.request.build_opener(urllib.request.ProxyHandler({})).open(request, timeout=30).read())
+    (repo / "calc" / "ops.py").write_text(__SOLUTION__, encoding="utf-8")
+    shell = subprocess.run(["bash", "-c", __SHELL__.replace("__PROXY__", base_url)], cwd=repo, capture_output=True,
+                           text=True, timeout=120)
+    with open(__SHELL_LOG__, "a", encoding="utf-8") as log:
+        log.write(shell.stdout + shell.stderr)
+    return served
+'''
+NET_AGENT_ROKO = r'''#!__PYTHON__
+"""A stand-in for roko whose bash tool tries the network: on `plan run`, the agent's turn through the endpoint its
+roko.toml names, then one passed attempt recorded as Roko records it."""
+import datetime, json, os, sys, tomllib
+from pathlib import Path
+
+args = sys.argv[1:]
+if args == ["--version"]:
+    print("roko 0.1.0 (git 0fa4e0fa4e)")
+    sys.exit(0)
+if "validate" in args:
+    sys.exit(0)
+repo, slug = Path(args[args.index("--repo") + 1]), Path(args[args.index("run") + 1]).name
+config = tomllib.loads(Path(os.environ["ROKO_CONFIG"]).read_text())
+[provider], [model] = config["providers"].values(), config["models"]
+__AGENT_TURN__
+served = agent_turn(repo, provider["base_url"], model)
+roko, now = repo / ".roko", datetime.datetime.now(datetime.UTC).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
+(roko / "state" / "graph" / slug).mkdir(parents=True)
+(roko / "episodes.jsonl").write_text(json.dumps({
+    "task_id": "T01", "model": model, "backend": "cerebras", "success": True, "turns": 1, "completed_at": now,
+    "extra": {"plan_id": slug, "attempt_key": "graph-%s-1:%s:T01:1" % (slug, slug),
+              "model_reported": served["model"], "model_mismatch": served["model"] != model}}) + "\n")
+(roko / "state" / "graph" / slug / "checkpoint.json").write_text(json.dumps(
+    {"plan_id": slug, "status": "succeeded", "extensions": {"roko.gate.verdict@1": {"value": {"verdicts": {
+        "T01": "passed"}}}}}))
+'''
+NET_AGENT_MINI = r'''#!__PYTHON__
+"""A stand-in for mini-swe-agent's `mini` whose shell tries the network: the agent's turn through the api_base of
+its config, then a submitted trajectory."""
+import json, re, sys
+from pathlib import Path
+
+args = sys.argv[1:]
+config = Path(args[args.index("-c") + 1]).read_text(encoding="utf-8")
+
+
+def field(name):
+    return json.loads('"' + re.search(name + r':\s*"((?:[^"\\]|\\.)*)"', config).group(1) + '"')
+
+
+__AGENT_TURN__
+agent_turn(Path.cwd(), field("api_base"), field("model_name").split("/", 1)[-1])
+Path(args[args.index("-o") + 1]).write_text(json.dumps({
+    "info": {"model_stats": {"instance_cost": 0.0, "api_calls": 1}, "exit_status": "Submitted", "submission": ""},
+    "messages": [], "trajectory_format": 1}))
 '''
 
 
@@ -228,7 +320,8 @@ def test_hidden_suite_runs_agent_code_without_the_secret_file(places, tmp_path):
                         "--results", str(places["results"]), "--work", str(places["work"]),
                         "--secret-file", str(places["secret"])]) == 0
     [record] = read_jsonl(run_dir / "records.jsonl")
-    assert validate.validate("run-record", record) == [] and record["vs"]["sandbox"] == sandbox.KIND
+    assert validate.validate("run-record", record) == []
+    assert record["vs"]["sandbox"] == sandbox.kind([places["secret"]], sandbox.NETWORK_NONE)  # and no network
     seen = evidence.read_text()
     assert f"read {places['secret']}" in seen and f"read {task_json}" in seen  # control: hidden.py ran the script
     value = next(line for line in places["secret"].read_text().splitlines() if not line.startswith("#"))
@@ -237,6 +330,111 @@ def test_hidden_suite_runs_agent_code_without_the_secret_file(places, tmp_path):
         return
     assert value not in seen and '"instance_id"' not in seen and seen.count("Operation not permitted") >= 4
     assert record["execution"]["status"] == "completed" and record["provenance"]["canary_places"] == []
+
+
+@macos_only
+@pytest.mark.parametrize("arm", ["cheap_direct", "roko_fixed", "cheap_direct_msa"])
+def test_an_agent_shell_cannot_reach_the_network(places, tmp_path, monkeypatch, arm):
+    """gap-0bd49a, through `vb run --proxy`: in the direct loop, the Roko arm and the mini-swe-agent arm, the agent's
+    shell curls a local listener and the metering proxy, and writes a clamp that tries the listener whenever it is
+    imported: by the agent's own visible check, by the truth suite and by the census's visible re-run, which share
+    the agents' sandbox. Nothing reaches the listener, every model call still goes through the proxy, the direct
+    loop's shell cannot reach even the proxy (the driver makes its calls) while the harnesses that call the model
+    themselves can, and the record names the rule of the agent's processes and of the census's."""
+    shell_log, probe_log = tmp_path / "shell.log", tmp_path / "probe.log"
+    run_dir = places["results"] / "TEST-NET" / "run-1"
+    proxies: list[faultproxy.FaultProxy] = []
+    start_proxy = vb._start_proxy
+
+    def keep_proxy(*args, **kwargs) -> faultproxy.FaultProxy:  # the run's metering proxy, for its port
+        proxies.append(start_proxy(*args, **kwargs))
+        return proxies[-1]
+
+    monkeypatch.setattr(vb, "_start_proxy", keep_proxy)
+    with Listener() as target:
+        tries = TRY_THE_NETWORK.replace("__PORT__", str(target.port))
+        solution = PROBING_CLAMP.replace("__PORT__", str(target.port)).replace("__LOG__", repr(str(probe_log)))
+        if arm == "cheap_direct":  # the stub plays the agent, and the driver runs its commands
+            def respond(body: dict) -> str:
+                return scripted({"": [bash(tries.replace("__PROXY__", proxies[0].url), "Try the network."),
+                                      bash(f"cat > calc/ops.py <<'EOF'\n{solution}EOF", "Implement it."),
+                                      bash(VISIBLE_CHECK, "Check it."), bash("echo VB_SUBMIT")]})(body)
+            arm_file = arm
+        else:  # a fake harness plays the agent, and its own process calls the model
+            fake, name = (NET_AGENT_ROKO, "roko") if arm == "roko_fixed" else (NET_AGENT_MINI, "mini")
+            binary = tmp_path / "bin" / name
+            binary.parent.mkdir()
+            filled = {"__AGENT_TURN__": AGENT_TURN, "__PYTHON__": sys.executable, "__SOLUTION__": repr(solution),
+                      "__SHELL__": repr(f"{tries}; {VISIBLE_CHECK}"), "__SHELL_LOG__": repr(str(shell_log))}
+            for placeholder, value in filled.items():  # in this order: AGENT_TURN holds the later placeholders
+                fake = fake.replace(placeholder, value)
+            binary.write_text(fake)
+            binary.chmod(0o755)
+            old = 'binary = "target/debug/roko"' if name == "roko" else 'binary = ".venv-msa/bin/mini"'
+            text = (layout.ARMS_DIR / f"{arm}.toml").read_text()
+            assert old in text
+            arm_file = str(tmp_path / f"{arm}.test.toml")
+            Path(arm_file).write_text(text.replace(old, f"binary = {json.dumps(str(binary))}"))
+
+            def respond(body: dict) -> str:
+                return "Done."
+        with StubServer(respond) as stub:
+            assert vb.main(["run", "--experiment", "TEST-NET", "--run-id", "run-1", "--stream", TOY_STREAM, "--arm",
+                            arm_file, "--model", "gpt-oss-120b", "--seeds", "1", "--limit", "1", "--provider-url",
+                            stub.url, "--proxy", "--results", str(places["results"]), "--work", str(places["work"]),
+                            "--secret-file", str(places["secret"]), "--transcripts"]) == 0
+            model_calls = len(stub.requests)
+        assert target.connections == 0
+        socket.create_connection(("127.0.0.1", target.port), timeout=5).close()  # control: unconfined, it is reached
+        assert target.connections == 1
+
+    # Every model call went through the proxy, which still works.
+    [proxy] = proxies
+    proxy_port = int(proxy.url.rsplit(":", 1)[1])
+    rows = read_jsonl(run_dir / "proxy.jsonl")
+    assert len(rows) == model_calls >= 1
+    assert all((row["task"], row["forwarded"], row["status"]) == ("F1-l1-0001.s1", True, 200) for row in rows)
+    # The agent's shell: no listener; the proxy only where the harness itself calls the model.
+    [record] = read_jsonl(run_dir / "records.jsonl")
+    if arm == "cheap_direct":
+        transcript = json.loads((run_dir / record["provenance"]["transcript_ref"]).read_text())
+        said = "\n".join(event["content"] for event in transcript if event.get("role") == "user" and "command" in event)
+        assert "proxy_http=000" in said and "proxy_exit=7" in said
+    else:
+        said = shell_log.read_text()
+        assert "proxy_http=404" in said and "proxy_exit=0" in said  # the proxy answered: no such route
+    assert "listener_exit=7" in said and "visible_exit=0" in said, said
+    # The clamp ran three times, in the agent's tree, in the truth suite and in the census's re-run, and each time
+    # its connection was refused.
+    ran = [line.split("\t") for line in probe_log.read_text().splitlines()]
+    assert {seen for seen, _ in ran} == {"refused PermissionError"}, ran
+    assert sorted("census" + where.rsplit("/census", 1)[1] if "/census/" in where else "agent" for _, where in ran) == [
+        "agent", "census/hidden", "census/visible"]
+
+    assert validate.validate("run-record", record) == []
+    assert (record["execution"]["status"], record["vs"]["label"]) == ("completed", 1), record["execution"]["reason"]
+    assert record["provenance"]["canary_hits"] == 0
+    policy = record["provenance"]["network_policy"]
+    assert (policy["network"], policy["sandbox"]) == ("none" if arm == "cheap_direct" else f"loopback:{proxy_port}",
+                                                      "sandbox-exec+net")
+    assert record["provenance"]["census_network_policy"] == {"network": "none", "sandbox": "sandbox-exec+net"}
+    assert record["vs"]["sandbox"] == "sandbox-exec+net"  # the truth suite's own report
+
+
+def test_every_runner_has_a_network_test():
+    """gap-0bd49a: each runner an arm file names has a test showing that its agent's processes cannot reach the
+    network, so no harness joins the benchmark without one."""
+    tests = {"mini_loop": "test_driver.py::test_an_agent_shell_cannot_reach_the_network",
+             "run_roko": "test_driver.py::test_an_agent_shell_cannot_reach_the_network",
+             "run_msa": "test_driver.py::test_an_agent_shell_cannot_reach_the_network",
+             "run_cli": "test_run_cli.py::test_cli_arm_shell_cannot_reach_the_network",
+             "run_codex": "test_run_codex.py::test_codex_arm_shell_cannot_reach_the_network",
+             "run_roko_plan": "test_run_roko_plan.py::test_roko_plan_planner_and_ladder_cannot_reach_the_network"}
+    runners = {vb.load_runner(vb.load_arm(path.stem)).__name__ for path in layout.ARMS_DIR.glob("*.toml")}
+    assert runners == set(tests)
+    for test in tests.values():
+        module, name = test.split("::")
+        assert f"\ndef {name}(" in (layout.DRIVER_DIR / module).read_text(), test
 
 
 def test_runaway_agent_is_killed_within_30_calls(places):

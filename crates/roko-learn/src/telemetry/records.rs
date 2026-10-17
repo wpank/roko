@@ -1223,6 +1223,10 @@ pub enum ExcludedReason {
     TokenBudget,
     /// The attempt's arm withholds it (S02, S03).
     WithheldArm,
+    /// The θ the attempt runs leaves its section out: M1's B4 knob
+    /// `knowledge_section` is off (S06 §4.3; gap-6bb6d8). The controller
+    /// decided, not the section's loop, so no arm of that loop is credited.
+    HarnessPolicy,
     /// A bandit left it out.
     BanditExcluded,
     /// A screen removed it.

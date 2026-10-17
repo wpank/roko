@@ -351,6 +351,12 @@ pub fn full_inventory() -> Vec<SurfaceEntry> {
         "Regenerates an existing plan in place",
     ));
     v.push(SurfaceEntry::cli(
+        "plan import",
+        SurfaceStatus::Wired,
+        "roko-cli plan_import",
+        "Imports mori plan directories as roko plans with their checks; no model runs",
+    ));
+    v.push(SurfaceEntry::cli(
         "research topic",
         SurfaceStatus::Wired,
         "roko-cli research",

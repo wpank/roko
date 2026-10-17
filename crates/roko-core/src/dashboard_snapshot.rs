@@ -196,6 +196,69 @@ pub enum DashboardEvent {
         #[serde(default)]
         candidates: Vec<RouteCandidate>,
     },
+    /// What a Graph attempt's prompt carried (gap-5f6d0b): the stored
+    /// lessons (knowledge entries), playbooks and earlier episodes it used,
+    /// what it retrieved and left out and why, and its sections. Published
+    /// after the attempt's `route_decided`. `exposures.jsonl` keeps the same
+    /// items with their ranks and scores.
+    PromptAssembled {
+        plan_id: String,
+        task_id: String,
+        /// The attempt, from 1.
+        attempt: u32,
+        /// The knowledge entries the prompt carried.
+        #[serde(default)]
+        knowledge_ids: Vec<String>,
+        /// The playbooks it carried.
+        #[serde(default)]
+        playbook_ids: Vec<String>,
+        /// The earlier episodes it cited.
+        #[serde(default)]
+        episode_ids: Vec<String>,
+        /// What it retrieved and left out: knowledge entries, playbooks,
+        /// episodes and sections.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        left_out: Vec<PromptLeftOut>,
+        /// The sections it carried.
+        #[serde(default)]
+        included_sections: Vec<String>,
+        /// The sections it dropped, for whatever reason.
+        #[serde(default)]
+        dropped_sections: Vec<String>,
+        /// Its estimated size in tokens.
+        #[serde(default)]
+        estimated_tokens: u32,
+    },
+    /// What a failed check of a Graph attempt leaves for the task's next
+    /// attempt (gap-655ea5): the diagnosis its prompt leads with, the
+    /// failing steps and the key error lines. Published as the feedback is
+    /// kept, before the next attempt's `route_decided`; `retry-feedback.json`
+    /// keeps it for a resumed run.
+    RetryFeedback {
+        plan_id: String,
+        task_id: String,
+        /// The attempt that failed, from 1.
+        attempt: u32,
+        /// The attempt the feedback is for, from 1.
+        next_attempt: u32,
+        /// What failed: `verify` (the task's verify steps),
+        /// `pre_verify:<check>` (the screen before them), `plan-branch` (its
+        /// work conflicts with the plan's accepted work),
+        /// `scratch-copy-back` or `review`.
+        check: String,
+        /// The failing steps, one line each, such as ``verify[0:test]
+        /// (`cargo test`): exit code: 101``.
+        #[serde(default)]
+        failing_steps: Vec<String>,
+        /// The diagnosis the next attempt's prompt leads with: a cheap
+        /// model's reading of the failure, or the check's own.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        diagnosis: Option<String>,
+        /// The key error lines the prompt lists: compile errors, failed
+        /// tests and warnings.
+        #[serde(default)]
+        errors: Vec<String>,
+    },
     /// A Graph task's `confirm` rung asked its person whether the outcome is
     /// what they asked for; the task waits until they answer or the rung
     /// times out (gap-7c6663). MCP `confirm_answer` names the attempt key.
@@ -924,6 +987,21 @@ pub struct RouteCandidate {
     pub ineligible_reason: Option<String>,
 }
 
+/// One item a prompt retrieved and left out, as
+/// [`DashboardEvent::PromptAssembled`] carries it.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PromptLeftOut {
+    /// What it is: `knowledge`, `playbook`, `episode` or `section`.
+    pub kind: String,
+    /// Its id: a knowledge entry, playbook or episode id, or a section name.
+    pub id: String,
+    /// Why: `withheld_arm` (the attempt's control arm withholds its source),
+    /// `bandit_excluded` (the section bandit left its section out),
+    /// `token_budget` (its section did not fit), `role_filter` or
+    /// `screened`.
+    pub reason: String,
+}
+
 /// One plan announced by [`DashboardEvent::PlanSetLoaded`].
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PlanSetEntry {
@@ -1288,7 +1366,9 @@ pub struct AgentTopologyEdge {
     pub edge_type: String,
 }
 
-/// One bucket of aggregated efficiency telemetry.
+/// One bucket of aggregated efficiency telemetry: a span of time, or one plan
+/// run in the trend a Graph run publishes as it ends (gap-de0e96), whose
+/// buckets carry the run's fields.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct EfficiencyBucket {
     /// Bucket start timestamp in UTC.
@@ -1309,6 +1389,21 @@ pub struct EfficiencyBucket {
     /// Average latency in milliseconds for turns in the bucket.
     #[serde(default)]
     pub latency_ms_avg: f64,
+    /// The plan run a run trend's bucket is.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub run_id: Option<String>,
+    /// The run's cost in USD, unrounded: model calls and helper calls.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cost_usd: Option<f64>,
+    /// The run's tasks.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tasks: Option<u64>,
+    /// The run's tasks that passed every verify step.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub verified_tasks: Option<u64>,
+    /// `cost_usd` per verified task; absent when no task passed its checks.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cost_per_verified_usd: Option<f64>,
 }
 
 impl Default for EfficiencyBucket {
@@ -1320,6 +1415,11 @@ impl Default for EfficiencyBucket {
             tokens_out: 0,
             cost_usd_cents: 0,
             latency_ms_avg: 0.0,
+            run_id: None,
+            cost_usd: None,
+            tasks: None,
+            verified_tasks: None,
+            cost_per_verified_usd: None,
         }
     }
 }
@@ -3014,6 +3114,55 @@ impl DashboardSnapshot {
                     plan_id.clone(),
                     task_id.clone(),
                     format!("attempt {attempt}: {model} ({by})"),
+                );
+            }
+            DashboardEvent::PromptAssembled {
+                plan_id,
+                task_id,
+                attempt,
+                knowledge_ids,
+                playbook_ids,
+                episode_ids,
+                left_out,
+                ..
+            } => {
+                self.push_event_log(
+                    ts,
+                    "prompt_assembled".to_string(),
+                    plan_id.clone(),
+                    task_id.clone(),
+                    format!(
+                        "attempt {attempt}: {} lesson(s), {} playbook(s), {} episode(s) in its \
+                         prompt; {} left out",
+                        knowledge_ids.len(),
+                        playbook_ids.len(),
+                        episode_ids.len(),
+                        left_out.len()
+                    ),
+                );
+            }
+            DashboardEvent::RetryFeedback {
+                plan_id,
+                task_id,
+                attempt,
+                next_attempt,
+                check,
+                diagnosis,
+                errors,
+                ..
+            } => {
+                let gets = diagnosis
+                    .as_deref()
+                    .or_else(|| errors.first().map(String::as_str))
+                    .unwrap_or("its output");
+                self.push_event_log(
+                    ts,
+                    "retry_feedback".to_string(),
+                    plan_id.clone(),
+                    task_id.clone(),
+                    format!(
+                        "attempt {attempt} failed {check}; attempt {next_attempt} gets: {gets}"
+                    ),
                 );
             }
             // S10's Loop Health view reads health from the event stream; the

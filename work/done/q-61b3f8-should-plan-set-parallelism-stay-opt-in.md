@@ -9,7 +9,7 @@ goal = "core"
 size = "S"
 subsystem = ["roko-cli/graph_execution"]
 created = 2026-10-01
-updated = 2026-10-15
+updated = 2026-10-16
 last_verified = 2026-10-15
 last_verified_rev = "b883db4e6"
 source = "tmp/cybernetic-harness/workstreams/PROGRESS.md"
@@ -20,6 +20,11 @@ links = { depends_on = [], blocks = [], related = ["gap-7c9e48"], supersedes = [
 
 [[verify]]
 command = "grep -n 'max_parallel_plans' crates/roko-core/src/config/"
+superseded = "2026-10-16: Written wrongly: it greps a directory without -r, so grep exits 2 and it can never pass. Verify 2 checks the decided default, default_max_parallel_plans() returning 1."
+superseded_by = "bug-ec244b"
+
+[[verify]]
+command = "grep -A1 'const fn default_max_parallel_plans()' crates/roko-core/src/config/schema.rs | grep -qxE '[[:space:]]*1'"
 
 [closed]
 at = 2026-10-15

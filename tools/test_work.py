@@ -50,13 +50,32 @@ class TestVerifyCommands(unittest.TestCase):
         for cmd in ("for i in $(seq 1 20); do cargo test -p roko-cli --lib x; done",
                     "CARGO_TARGET_DIR=t cargo test -p c t",
                     "bash -c 'cargo build -p c' && grep -q x f",
-                    'test -n "$(cargo --version)" && grep -q x f'):
+                    'test -n "$(cargo --version)" && grep -q x f',
+                    # bug-2f0b39: a runner's options, image builds, deploy scripts, the built binary named in the env.
+                    "env -i HOME=x cargo test -p c t",
+                    'env -i HOME="$(mktemp -d)" PATH="$HOME/.cargo/bin:/usr/bin" cargo test -p c t',
+                    "env -u RUSTFLAGS --ignore-environment cargo build -p c",
+                    "nice -n 10 cargo build -p c",
+                    "timeout -k 5 600 cargo test -p c t",
+                    "ls crates | xargs -n 1 cargo test -p",
+                    "docker build --target t -t t:verify .",
+                    "podman build -t t .",
+                    "make -C docs html",
+                    "deploy/showcase/preflight.sh --local",
+                    "VB_REQUIRE_REAL_ROKO=1 .venv/bin/python -m pytest driver/test_shakedown.py -q",
+                    "ROKO_BIN=target/debug/roko python3 drive.py"):
             self.assertEqual(work.static_prefix(cmd), "", cmd)
         self.assertEqual(work.static_prefix("grep -q x f && ! grep -q s g || (grep -q z h && cargo test -p c t)"), "grep -q x f")
         self.assertEqual(work.static_prefix("grep -q x f && (cd apps/portal && npx vitest run)"), "grep -q x f")
+        self.assertEqual(work.static_prefix("grep -q x f && docker build -t t ."), "grep -q x f")
+        self.assertEqual(work.static_prefix("test -x deploy/a.sh && bash -n deploy/a.sh && deploy/a.sh https://x.dev"),
+                         "test -x deploy/a.sh && bash -n deploy/a.sh")
         # A heavy word in a quoted pattern or a path is not a command.
         quoted = "grep -q 'cargo test' f && grep -rq \"roko serve\" crates/roko-cli/src"
         self.assertEqual(work.static_prefix(quoted), quoted)
+        paths = ("grep -q 'docker build' Dockerfile && test -f docker/RAILWAY.md && test -x target/debug/roko && "
+                 "command -v cargo && grep -q 'VB_REQUIRE_REAL_ROKO=1' t.py && timeout 5 grep -q x f")
+        self.assertEqual(work.static_prefix(paths), paths)
 
     def test_lint_flags_head_pipeline_and_whole_suite(self):
         self.assertTrue(any("head" in w for w in work.lint_verify("grep -n 'x' f | head -5")))
@@ -70,6 +89,24 @@ class TestVerifyCommands(unittest.TestCase):
         self.assertEqual(found("fixes bug-1a2b3c and gap-4d5e6f"), ["bug-1a2b3c", "gap-4d5e6f"])
         self.assertEqual(found("fix(engine): settle verify failures"), [])
         self.assertEqual(found("ci: hold deploys until bug-7eef96 is fixed"), [])
+
+    def test_commit_closes_reads_only_trailers_and_the_subject_start(self):
+        closes = work.commit_closes
+        self.assertEqual(closes("fix the thing", "Body.\n\nCloses: bug-1a2b3c, gap-4d5e6f\nFixes: q-123abc"),
+                         ["bug-1a2b3c", "gap-4d5e6f", "q-123abc"])
+        self.assertEqual(closes("close gap-4d5e6f, the review accepts", ""), ["gap-4d5e6f"])
+        self.assertEqual(closes("work: close bug-1a2b3c and gap-4d5e6f", ""), ["bug-1a2b3c", "gap-4d5e6f"])
+        self.assertEqual(closes("work: close bug-1a2b3c, and file gap-4d5e6f", ""), ["bug-1a2b3c"])
+        self.assertEqual(closes("Fixes: bug-1a2b3c", ""), ["bug-1a2b3c"])
+        # Prose is not a closure: mid-sentence, at the start of a body line without the colon, mid-subject, negated or
+        # possessive (bug-586260; the first two are b91be1473's and c1a537d2e's wording).
+        self.assertEqual(closes("work: close bug-1a2b3c", "the docs), fixed spec-ce1484's Tools line, and dropped"),
+                         ["bug-1a2b3c"])
+        self.assertEqual(closes("docs: a row", "Its other half is still open, so this does not close\ngap-4d5e6f."), [])
+        self.assertEqual(closes("work: evidence", "Close gap-4d5e6f with tools/work.py close and evidence."), [])
+        self.assertEqual(closes("serve: name a test after gap-5e645b, and close bug-1a2b3c", ""), [])
+        self.assertEqual(closes("work: fix gap-4d5e6f's verify", "Closes: q-123abc's part"), [])
+        self.assertEqual(closes("fix(engine): settle verify failures", "Work-Item: bug-1a2b3c"), [])
 
     def test_anchor_parts(self):
         self.assertEqual(work.anchor_parts("crates/x/src/a.rs::Foo::bar"), ("crates/x/src/a.rs", "bar"))
@@ -181,6 +218,25 @@ class TestDriftAndSync(RepoTest):
         self.assertTrue(c["closed"]["commit"])
         self.assertIn("## Problem", c["_body"])
         self.assertEqual(work.validate(self.items()), [])
+
+    def test_sync_ignores_a_fix_mention_in_prose(self):
+        # bug-586260: b91be1473's body said "fixed spec-ce1484's Tools line", and sync closed that epic. c1a537d2e's said
+        # "so this does not close\ngap-fd9dfb". Only the trailer closes an item.
+        (self.root / "src" / "c.rs").write_text("fn fixed() {}\n")
+        self.commit("work: close bug-aaaaaa, retire tools/status_matrix.py\n\n"
+                    "Updated the docs that name the retired module literally), fixed gap-cccccc's Tools line, and\n"
+                    "dropped the stale rows. Its other half is still open, so this does not close\nbug-bbbbbb.\n\n"
+                    "Work-Item: bug-aaaaaa\nCloses: bug-aaaaaa")
+        sync = lambda: work.cmd_sync(type("A", (), {"dry_run": False})(), quiet=True)  # noqa: E731
+        closed, conflicts = sync()
+        self.assertEqual(([c.split(":")[0] for c in closed], conflicts), (["bug-aaaaaa"], []))
+        status = lambda: {i["id"]: i["status"] for i in self.items()}  # noqa: E731
+        self.assertEqual(status(), {"bug-aaaaaa": "done", "bug-bbbbbb": "open", "gap-cccccc": "open"})
+        # `touched` still reports the mentions; a `Closes:` trailer still closes.
+        self.assertIn("closes gap-cccccc (open): C", work.touched_report("HEAD", self.items()))
+        self.commit("make c work\n\nWork-Item: gap-cccccc\nCloses: gap-cccccc")
+        self.assertEqual([c.split(":")[0] for c in sync()[0]], ["gap-cccccc"])
+        self.assertEqual(status(), {"bug-aaaaaa": "done", "bug-bbbbbb": "open", "gap-cccccc": "done"})
 
     def test_sync_refuses_when_the_verify_command_fails(self):
         self.write("gap-cccccc", item("gap-cccccc", "C", severity="p3", anchors=["src/c.rs"], verify=["grep -q fixed src/c.rs"]))

@@ -1358,6 +1358,7 @@ impl PlanCmd {
             | Self::Generate { .. }
             | Self::Revise { .. }
             | Self::Prepare { .. }
+            | Self::Import { .. }
             | Self::Shorthand(_) => true,
         }
     }
@@ -1366,6 +1367,10 @@ impl PlanCmd {
     fn index_rebuild_workdir(&self, cli: &Cli) -> PathBuf {
         match self {
             Self::Create {
+                workdir: Some(workdir),
+                ..
+            }
+            | Self::Import {
                 workdir: Some(workdir),
                 ..
             } => workdir.clone(),

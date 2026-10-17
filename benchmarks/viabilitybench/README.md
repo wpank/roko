@@ -124,13 +124,17 @@ $PY benchmarks/viabilitybench/driver/vb.py run --experiment PILOT-A --stream pil
   secret file, the key file and the run's private task directories. The direct loop's shell gets no network at all,
   since the driver makes every model call. The Roko and mini-swe-agent arms' process trees, whose tools run the
   agent's commands, reach only the loopback port of the endpoint they call (the metering proxy's), and Roko's also
-  Unix sockets in its workspace. The Claude Code and Codex arms, and the roko_plan arm's planner, reach the network
+  Unix sockets in its workspace. Since an agent's shell can then call the proxy itself, the proxy forwards only plain
+  chat completions with the arm's own models and function tools (gap-bccf58). It refuses a server-side search or fetch
+  tool, another model and another path, so the agent cannot have the provider search the web for it, and the census
+  flags any task with such a refusal. The Claude Code and Codex arms, and the roko_plan arm's planner, reach the network
   only through an egress proxy of their own (`driver/egress.py`), which admits the targets of `[cli] egress_allow`
   (default `api.anthropic.com:443`) and logs every request to `egress.jsonl`. The census shares the sandbox: the
   truth suites, its visible re-run and the audit battery run the agent's code with no network at all, the sandbox's
   default rule, and so does the plan slice's census. The record names the rule and the confinement that applied to
   the agent (`provenance.network_policy`, with every refused egress request) and to the census
-  (`provenance.census_network_policy`; the truth suite's own report is `vs.sandbox`). Off macOS no rule is applied,
+  (`provenance.census_network_policy`; the truth suite's own report is `vs.sandbox`), and what the metering proxy
+  forwarded, with the task's refused calls (`provenance.proxy_policy`). Off macOS no rule is applied,
   and the record says "none" (gap-29ac83). Two things the sandbox does not confine: a system service the code asks
   over Mach IPC, and the start-up environment of any other process of your user, which `sysctl` still reads.
 - **Label.** The driver commits the final tree as c_i with `families/common/repo.export_tree`, never with git in the
@@ -171,6 +175,10 @@ $PY benchmarks/viabilitybench/driver/vb.py run --experiment PILOT-A --stream pil
   need `driver/fingerprint.py` and its golden vectors, which this tree does not have.
 - **The metering and fault proxy** (`faultproxy.py`, S08 §4.11) meters every model call independently of the
   client and injects provider faults. The Roko arm reads its log, `proxy.jsonl`, when the run directory holds one.
+  It forwards only `POST /chat/completions` with the run's models and no server-side tool or search option
+  (gap-bccf58: z.ai's `web_search` tool, Moonshot's `$web_search`, OpenAI's search models and `web_search_options`,
+  each provider's own search and fetch endpoints). An arm file's `[providers.<name>] proxy_allow` can admit a
+  server-side tool a harness needs; none does.
 - **Disturbances** (`vb run --disturbance SPEC.toml`, `disturb.py`, S08 §4.6) apply H6's hooks to stream positions.
   `flaky_verify` routes every arm's visible checks through the visible-verify wrapper (`vb_verify.py`), which fails
   some of them at random; the census's own rerun never meets a flake. `model_swap` has the metering proxy serve

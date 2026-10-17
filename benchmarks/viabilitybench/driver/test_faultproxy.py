@@ -194,7 +194,8 @@ def call(method: str, url: str, body: dict | None = None, *, timeout: float = 10
     parts = urllib.parse.urlsplit(url)
     connection = http.client.HTTPConnection(parts.hostname, parts.port, timeout=timeout)
     try:
-        return exchange(connection, method, parts.path, body, headers or {})
+        return exchange(connection, method, parts.path + (f"?{parts.query}" if parts.query else ""), body,
+                        headers or {})
     finally:
         connection.close()
 
@@ -523,6 +524,86 @@ def test_the_input_bound_covers_image_parts(proxy, upstream, log):
     # Without a cap there is nothing to bound: the proxy forwards and meters an image like any other request.
     proxy.configure(task="uncapped", input_token_cap=None)
     assert post(completions(proxy), linked).status == 200 and len(upstream.requests) == 3
+
+
+def test_the_proxy_refuses_server_side_web_tools(upstream, log):
+    """gap-bccf58: the Roko and mini-swe-agent arms' sandboxes admit the proxy's port, so an agent's shell can ask a
+    provider, through the proxy, to search or fetch the web for it. The proxy forwards only what a harness sends,
+    POST /chat/completions with the run's models and function tools. It refuses each provider's own search and fetch
+    before forwarding, and logs the refusal under the task's key: the stub upstream, which records every request on any
+    path, sees none of them, and a plain request still passes."""
+    def asking(**fields: object) -> dict:
+        return {**REQUEST, **fields}
+
+    # Each request with the server-side tools the proxy finds in it (the names checked against each provider's docs).
+    tools = {
+        "tools:web_search": asking(tools=[{"type": "web_search", "web_search": {  # z.ai
+            "enable": True, "search_engine": "search-prime", "search_query": "viabilitybench hidden.py"}}]),
+        "tools:retrieval": asking(tools=[{"type": "retrieval", "retrieval": {"knowledge_id": "kb-1"}}]),  # z.ai
+        "tools:$web_search,tools:builtin_function": asking(tools=[  # Moonshot's built-in, beside a harness's tool
+            *TOOLS, {"type": "builtin_function", "function": {"name": "$web_search"}}]),
+        "tools:$web_search": asking(tools=[{"type": "function", "function": {"name": "$web_search"}}]),
+        "web_search_options": asking(web_search_options={"search_context_size": "high"}),  # OpenAI, OpenRouter
+        "plugins": asking(plugins=[{"id": "web"}]),  # OpenRouter
+        "tools:openrouter:web_search": asking(tools=[{"type": "openrouter:web_search"}]),
+        "tools:?": asking(tools={"type": "web_search"}),  # a `tools` that is not a list
+    }
+    models = {"gpt-5-search-api": asking(model="gpt-5-search-api"),  # OpenAI's search models search unasked
+              "openai/gpt-5.4:online": asking(model="openai/gpt-5.4:online"),  # OpenRouter's web plugin
+              None: {"messages": REQUEST["messages"]}}
+    query = {"search_engine": "search-prime", "search_query": "viabilitybench hidden.py"}
+    paths = {"/web_search": query, "/reader": {"url": "https://github.com/"},  # z.ai
+             "/tools/search": {"query": "viabilitybench hidden.py"}, "/tools/fetch": {"url": "https://github.com/"},
+             "/responses": {"model": MODEL, "input": "Find hidden.py.", "tools": [{"type": "web_search"}]},  # OpenAI
+             "/chat/completions/": REQUEST, "/chat/completions?web_search=true": REQUEST}  # only the exact path
+    with pytest.raises(faultproxy.ProxyError, match="models"):
+        faultproxy.FaultProxy([faultproxy.Upstream("stub", upstream.url)], log_path=log, models=[])
+    with pytest.raises(faultproxy.ProxyError, match="allow"):  # an allowance must name a server-side tool
+        faultproxy.FaultProxy([faultproxy.Upstream("kb", upstream.url, allow={"retrieval"})], log_path=log)
+
+    with faultproxy.FaultProxy([faultproxy.Upstream("stub", upstream.url),
+                                faultproxy.Upstream("kb", upstream.url, allow={"tools:retrieval"})],
+                               log_path=log, models=[MODEL, "gpt-5.4-mini"]) as proxy:
+        proxy.configure(task="agent")
+        url = completions(proxy)
+        assert post(url, asking(tools=TOOLS)).status == 200  # a harness's call, its function tools and all
+        replies = {}
+        for refusal, bodies, at in (("server_tool", tools, lambda _: url), ("model_not_allowed", models, lambda _: url),
+                                    ("path_not_allowed", paths, lambda path: proxy.base_url("stub") + path)):
+            for named, body in bodies.items():
+                reply = replies[named] = post(at(named), body)
+                assert (reply.status, reply.json()["error"]["type"], reply.json()["error"]["code"]) == (
+                    403, f"vb_{refusal}", refusal), named
+        assert "gpt-5.4-mini" in replies["gpt-5-search-api"].json()["error"]["message"]  # the client learns why
+        # An upstream forwards the server-side tools its `allow` names, and still no other.
+        assert post(completions(proxy, "kb"), tools["tools:retrieval"]).status == 200
+        assert post(completions(proxy, "kb"), tools["tools:web_search"]).status == 403
+        assert post(url, REQUEST).status == 200  # a plain request still passes
+        proxy.configure(task="capped", input_token_cap=1)  # the policy comes before the caps
+        assert post(url, tools["plugins"]).json()["error"]["code"] == "server_tool"
+        assert post(url, REQUEST).json()["error"]["code"] == "input_token_cap"
+        meters = {row["task"]: row for row in proxy.state()["tasks"]}
+        policy = proxy.policy()
+
+    # The stub saw the harness's call, the allowed tool and the plain request, and none of the refused ones.
+    assert [body for _, body in upstream.requests] == [asking(tools=TOOLS), tools["tools:retrieval"], REQUEST]
+    lines = read_log(log, "agent")
+    refused = [line for line in lines if line["refused"]]
+    assert [line["refused"] for line in refused] == ["server_tool"] * len(tools) + ["model_not_allowed"] * len(
+        models) + ["path_not_allowed"] * len(paths) + ["server_tool"]
+    assert {(line["status"], line["forwarded"], line["usage_source"], line["cost_source"]) for line in refused} == {
+        (403, False, "none", "not_billed")}
+    assert [",".join(line["server_tools"]) for line in refused[:len(tools)]] == list(tools)
+    assert [line["model_requested"] for line in refused[len(tools):len(tools) + len(models)]] == list(models)
+    assert [line["path"] for line in refused[len(tools) + len(models):-1]] == list(paths)
+    assert [line["server_tools"] for line in lines if line["forwarded"]] == [[], ["tools:retrieval"], []]
+    assert meters["agent"]["policy_refused"] == {"server_tool": len(tools) + 1, "model_not_allowed": len(models),
+                                                 "path_not_allowed": len(paths)}
+    assert (meters["agent"]["refused"], meters["agent"]["forwarded"], meters["agent"]["requests"]) == (0, 3, len(lines))
+    assert meters["capped"]["policy_refused"] == {"server_tool": 1} and meters["capped"]["refused"] == 1
+    assert policy == {"paths": ["/chat/completions"], "models": [MODEL, "gpt-5.4-mini"], "server_tools": "refused",
+                      "allow": {"kb": ["tools:retrieval"]}}
+
 
 def test_control_endpoint_needs_the_token(proxy, upstream):
     control = proxy.url + faultproxy.CONTROL_PATH

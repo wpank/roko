@@ -9,10 +9,11 @@
   visible-verify wrapper, as `'<vb-verify>' '<check>'` (`PlanSpec.verify_wrapper`, `vb_verify`), in the verify step
   and the gate rung alike. The slug is opaque (`plan-<sha256(alias)[:10]>`, `plan_slug`) and the title is the spec's
   first heading, so Roko's prompt holds nothing the direct arm's task message does not.
-- `roko.toml`: one provider and one model, the pinned one (its key equals its slug), with no fallback models, so
-  nothing can fail over (bug-35379d); the routing ladder off (`[routing.ladder] enabled = false`), so the pin is
-  the only routing input and `plan validate` has no ladder for the task's `model_hint` to bypass (PLAN_041,
-  bug-a05c53); explicit `[[gates.rungs]]` holding only the visible check, so no path that
+- `roko.toml`: one provider and one model, the pinned one (its key is its slug, quoted in TOML as ladder mode's are,
+  so a slug's dots stay in one key: `[models."glm-4.7"]`, never `models` -> `glm-4` -> `7`, bug-562ee6), with no
+  fallback models, so nothing can fail over (bug-35379d); the routing ladder off (`[routing.ladder] enabled =
+  false`), so the pin is the only routing input and `plan validate` has no ladder for the task's `model_hint` to
+  bypass (PLAN_041, bug-a05c53); explicit `[[gates.rungs]]` holding only the visible check, so no path that
   reads rungs falls back to `cargo check` (bug-1410e8); the per-attempt turn cap in `[pipeline.<tier>]`; a budget at
   the arm's dollar cap, priced at the snapshot's rates rather than roko.toml's defaults (S08 D9), whose per-dispatch
   reservation (`max_turn_usd`, a tenth of it, with one agent) satisfies Roko's config invariants and still leaves
@@ -62,8 +63,11 @@ escaped TOML basic strings and each file is parsed back before it is written.
 
 **No header** (bug-c1b04b). Neither file holds a comment. Both used to open with one that named the driver, the
 template's version, a "benchmark task" and its "hidden checks", which only the Roko arms' agents could read in their
-workspace. The versions stay in this module: `TEMPLATE_VERSION` and `TEMPLATE_SHA256` reach the run manifest as the
-Roko runner's prompt version and hash (`run_roko.PROMPT_VERSION`, the config's `prompt`), and the transcript's `emit`
+workspace. The versions stay in this module, and reach the run manifest with the templates' sha256 as the prompt the
+Roko runner reports for the arm (`run_roko.arm_prompt`, the config's `prompt`, in `config_hash`; bug-85e982):
+`template_identity` names the templates `emit` writes from, pinned mode's (`TEMPLATE_VERSION`; `TEMPLATE_SHA256`, or
+`CLAUDE_CLI_TEMPLATE_SHA256` for a claude_cli provider) or ladder mode's (`LADDER_VERSION`, `LADDER_TEMPLATE_SHA256`),
+and the overlay's tables too for a spec with an overlay (`OVERLAY_VERSION`, `OVERLAY_PROBE`). The transcript's `emit`
 event keeps both files as written.
 
 `emit` refuses a workspace that already has `roko.toml`, `plans/` or `.roko/`: the runner removes those after the
@@ -78,6 +82,8 @@ API:
     TEMPLATE_VERSION, TEMPLATE_SHA256                 # the pinned mode's, provider_kind openai_compat
     LADDER_VERSION, LADDER_TEMPLATE_SHA256            # ladder mode's
     CLAUDE_CLI_TEMPLATE_SHA256                        # the pinned mode's, provider_kind claude_cli (3318)
+    OVERLAY_VERSION, OVERLAY_PROBE                    # the overlay's tables, as template_identity hashes them
+    template_identity(*, ladder, provider_kind="openai_compat", overlay=False) -> {"version", "sha256"}  # bug-85e982
     SUPPORTED_OVERLAY_KEYS, HOMEOSTASIS_LOOP          # the overlay (3360)
     resolve_overlay(overlay: Mapping[str, object]) -> dict        # raises PlanEmitError on an unknown key
     is_frozen(spec: PlanSpec) -> bool                 # [learning] frozen's resolved value (gap-b001ca)
@@ -100,6 +106,7 @@ from common import canary
 
 TEMPLATE_VERSION = "planemit-6"
 LADDER_VERSION = "planemit-ladder-3"
+OVERLAY_VERSION = "planemit-overlay-1"  # the overlay's tables (3360), versioned since bug-85e982
 SLUG_PREFIX = "plan-"  # the plan's id and directory, which Roko's agents see: it names no benchmark (bug-d68575)
 TIERS = ("mechanical", "focused", "integrative", "architectural")  # Roko's task tiers, each with a start rung
 # The frontier models of S09 §4.2's arms (fd_claude, fd_claude_lite, fd_codex, fd_api, the optional Fable arm) and of
@@ -117,6 +124,10 @@ MODEL_KEY = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")
 SUPPORTED_OVERLAY_KEYS = frozenset({"gate_mode", "audit_floor", "routing_mode", "routing_policy", "holdout",
                                     "homeostasis"})
 HOMEOSTASIS_LOOP = "L-M1"  # S06's own loop id (S09 §9.5: roko_full includes S06 only when the census says LIVE)
+# What `template_identity` hashes of the overlay (bug-85e982): its tables as `_overlay_text` writes them for an overlay
+# holding every supported key, these values standing in for an arm's own (the arm file is in the run's config).
+OVERLAY_PROBE = {"gate_mode": "<gate_mode>", "audit_floor": 0.0, "routing_mode": "<routing_mode>",
+                 "routing_policy": "<routing_policy>", "holdout": 0.0, "homeostasis": "<homeostasis>"}
 
 TASKS_TEMPLATE = """\
 [meta]
@@ -277,10 +288,14 @@ max_output = {max_output}
 tool_format = "openai_json"
 {rates}"""
 
-TEMPLATE_SHA256 = hashlib.sha256((TASKS_TEMPLATE + "\0" + CONFIG_TEMPLATE).encode()).hexdigest()
-LADDER_TEMPLATE_SHA256 = hashlib.sha256("\0".join(
-    [LADDER_TASKS_TEMPLATE, LADDER_CONFIG_TEMPLATE, PROVIDER_TABLE, MODEL_TABLE]).encode()).hexdigest()
-CLAUDE_CLI_TEMPLATE_SHA256 = hashlib.sha256((TASKS_TEMPLATE + "\0" + CLAUDE_CLI_CONFIG_TEMPLATE).encode()).hexdigest()
+def _sha256(*templates: str) -> str:
+    """The sha256 of a mode's templates joined by NULs: the constants below, and `template_identity`'s."""
+    return hashlib.sha256("\0".join(templates).encode()).hexdigest()
+
+
+TEMPLATE_SHA256 = _sha256(TASKS_TEMPLATE, CONFIG_TEMPLATE)
+LADDER_TEMPLATE_SHA256 = _sha256(LADDER_TASKS_TEMPLATE, LADDER_CONFIG_TEMPLATE, PROVIDER_TABLE, MODEL_TABLE)
+CLAUDE_CLI_TEMPLATE_SHA256 = _sha256(TASKS_TEMPLATE, CLAUDE_CLI_CONFIG_TEMPLATE)
 
 
 class PlanEmitError(ValueError):
@@ -384,9 +399,9 @@ def emit(spec: PlanSpec, workspace: Path) -> Emitted:
         model=_s(spec.model), visible=_s(visible))
     common = dict(max_retries=spec.max_retries, visible=_s(visible), verify_timeout_s=spec.verify_timeout_s,
                  tier_key=spec.tier, max_turns=spec.max_turns, usd_cap=round(spec.usd_cap, 6),
-                 turn_usd=max(round(spec.usd_cap / 10, 6), 1e-06), model=_s(spec.model), model_key=spec.model,
-                 provider_key=spec.provider, provider=_s(spec.provider), context_window=spec.context_window,
-                 max_output=spec.max_output, frozen=_b(frozen))
+                 turn_usd=max(round(spec.usd_cap / 10, 6), 1e-06), model=_s(spec.model), model_key=_key(spec.model),
+                 provider_key=_key(spec.provider), provider=_s(spec.provider), context_window=spec.context_window,
+                 max_output=spec.max_output, frozen=_b(frozen))  # keys quoted as ladder mode's are (bug-562ee6)
     if spec.provider_kind == "claude_cli":  # 3318: the CLI signs in by itself, no base_url or api_key_env
         config_text = CLAUDE_CLI_CONFIG_TEMPLATE.format(**common)
     else:
@@ -455,6 +470,23 @@ def is_frozen(spec: PlanSpec) -> bool:
     """`[learning] frozen`'s resolved value for `spec` (module docstring, gap-b001ca): `spec.learning_frozen`
     when the arm overrides it explicitly, else pinned mode (no `rungs`) freezes and ladder mode does not."""
     return (not spec.rungs) if spec.learning_frozen is None else spec.learning_frozen
+
+
+def template_identity(*, ladder: bool, provider_kind: str = "openai_compat", overlay: bool = False) -> dict[str, str]:
+    """The version and sha256 of the templates `emit` writes a spec's two files from (module docstring, "No header";
+    bug-85e982): ladder mode's when `ladder` (a spec with rungs), else pinned mode's, for a claude_cli provider when
+    `provider_kind` says so; with `overlay` (a non-empty `PlanSpec.overlay`) also the overlay's tables, and the
+    version names `OVERLAY_VERSION` after the mode's. Read from the templates on every call, so a changed template
+    changes it."""
+    if ladder:
+        version, used = LADDER_VERSION, [LADDER_TASKS_TEMPLATE, LADDER_CONFIG_TEMPLATE, PROVIDER_TABLE, MODEL_TABLE]
+    elif provider_kind == "claude_cli":
+        version, used = TEMPLATE_VERSION, [TASKS_TEMPLATE, CLAUDE_CLI_CONFIG_TEMPLATE]
+    else:
+        version, used = TEMPLATE_VERSION, [TASKS_TEMPLATE, CONFIG_TEMPLATE]
+    if overlay:
+        version, used = f"{version}+{OVERLAY_VERSION}", [*used, _overlay_text(OVERLAY_PROBE)]
+    return {"version": version, "sha256": _sha256(*used)}
 
 
 def _overlay_text(resolved: Mapping[str, object]) -> str:

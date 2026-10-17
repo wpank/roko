@@ -45,7 +45,7 @@
 //! rubric and the decomposition. What has no roko equivalent is named in the
 //! [`MoriImportReport`].
 
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::fmt::Write as _;
 use std::fs;
 use std::path::{Component, Path, PathBuf};
@@ -54,7 +54,7 @@ use std::sync::LazyLock;
 use anyhow::{Context as _, Result, bail};
 use regex::Regex;
 use roko_core::task::TaskTier;
-use roko_gate::spec_quality::vacuous_reason;
+use roko_gate::spec_quality::{VerifyClass, analyze_step, vacuous_reason};
 use serde::Serialize;
 use toml::{Table, Value};
 
@@ -1207,12 +1207,16 @@ impl<'a> Importer<'a> {
         }
         for command in acceptance_commands(&draft.acceptance) {
             let message = format!("Checkpoint from the acceptance criteria: {command}");
-            if draft.add_check("checkpoint", &command, &message) {
+            if draft.add_check(check_phase(&command, "checkpoint"), &command, &message) {
                 self.report.checks.acceptance += 1;
             }
         }
         if let Some(command) = str_of(task, "command").filter(|command| !is_mori_internal(command))
-            && draft.add_check("command", command, "the mori task's own check")
+            && draft.add_check(
+                check_phase(command, "command"),
+                command,
+                "the mori task's own check",
+            )
         {
             self.report.checks.task_command += 1;
         }
@@ -2610,6 +2614,16 @@ fn guarded(command: &str, tests: &[String], dir: &str) -> String {
 }
 
 /// Add a check to `steps` unless it can never fail or `steps` has it.
+/// The phase of an imported check that runs `command`: `test` when it runs a
+/// test runner, which gate learning observes (gap-e2d2e5), else `phase`.
+fn check_phase<'a>(command: &str, phase: &'a str) -> &'a str {
+    if analyze_step(command, &BTreeSet::new()).class == VerifyClass::Test {
+        "test"
+    } else {
+        phase
+    }
+}
+
 fn push_step(steps: &mut Vec<Step>, phase: &str, command: &str, fail_msg: &str) -> bool {
     let command = unpiped(command);
     if never_fails(&command) || steps.iter().any(|step| step.command == command) {

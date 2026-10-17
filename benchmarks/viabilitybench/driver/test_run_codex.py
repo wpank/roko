@@ -324,8 +324,8 @@ def test_setup_refuses_an_api_key_login_flaky_verify_and_a_missing_codex(places,
     assert invocation.jail == () and invocation.network is None  # no proxy given: unconfined, as run_cli's
     assert [path.name for path in invocation.config_dir.iterdir()] == ["auth.json"]
     assert invocation.config_dir_sha256 == run_codex.home_digest(invocation.config_dir)
-    denied = run_codex.denied(context("denied"))
-    for path in (layout.REPO_ROOT, Path.home() / ".roko", login):
+    denied = run_codex.denied(context("denied", deny=(places["results"],)))  # vb run's results root (bug-935cfa)
+    for path in (layout.REPO_ROOT, Path.home() / ".roko", login, places["results"]):
         assert path in denied
 
     (login / "auth.json").write_text(json.dumps({"OPENAI_API_KEY": "sk-not-a-real-key-7c41", "tokens": None}))

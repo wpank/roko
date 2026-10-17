@@ -2,7 +2,7 @@
 id = "bug-c7de28"
 kind = "bug"
 title = "Prompt runs started through roko serve name their agent and model 'claude' on the hub (agent_spawned, every heartbeat, the event log), whatever model runs"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p3"
 goal = "visibility"
@@ -11,6 +11,7 @@ subsystem = ["roko-serve/routes"]
 created = 2026-10-17
 updated = 2026-10-17
 last_verified = 2026-10-17
+last_verified_rev = "373c3f761"
 source = "round-v6-dogfood-will#R3-7"
 discovered_from = "agent:dogfood-will (round v6 run 3, 2026-10-16)"
 anchors = ["crates/roko-serve/src/routes/run.rs::prepare_run", "crates/roko-serve/src/routes/run.rs::run_with_heartbeats"]
@@ -19,6 +20,16 @@ links = { depends_on = [], blocks = [], related = [], supersedes = [], duplicate
 
 [[verify]]
 command = "! grep -q 'unwrap_or(\"claude\")' crates/roko-serve/src/routes/run.rs && grep -rqw 'fn prompt_run_events_name_no_default_vendor' crates/roko-serve/ && cargo test -p roko-serve prompt_run_events_name_no_default_vendor"
+
+[closed]
+at = 2026-10-17
+at_ts = "2026-10-17T17:18:36Z"
+commit = "f6fca2fc4"
+by = "roko-chathost"
+size = "S"
+claimed_at = "2026-10-17T14:46:48Z"
+forced = false
+evidence = "verify passed at 373c3f761 (main merged in, scratch HOME, TMPDIR outside the repo): no unwrap_or(\"claude\") in run.rs; prompt_run_events_name_no_default_vendor ok; roko-serve tests all pass (1054 lib + integration suites); clippy -p roko-serve -D warnings clean. Zero-cost proof through roko serve (POST /api/run, a two-rung ladder on a stand-in OpenAI-compatible provider, hub followed on GET /api/events): before (main b2970cb12) agent_spawned {agent_id: claude, model: claude}, claude heartbeats every 5 s, agent_completed/episode_recorded/agent_output claude, \"▶ claude: …\" and \"✓ claude: …\"; after, no event names claude: the only agent is <run>/T1, spawned on fake-cheap-1 (attempts 1-2, rung cheap) then fake-strong-2 (attempt 3, rung strong), its heartbeats between, and the log lines read \"▶ <prompt>\" / \"✓ <prompt>\". Evidence: tmp/hermes-roko-v6/roko-chathost/proof/{before,after}.out, hub.json."
 +++
 
 ## Problem

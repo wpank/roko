@@ -351,6 +351,39 @@ impl FeedbackService {
         )
     }
 
+    /// Record how attempt `attempt_key` of run `run_id` ended for the
+    /// knowledge entries its prompt included (bug-0a7ec1).
+    ///
+    /// One `knowledge_outcome` row, with the run id and with the attempt key
+    /// as its request id, and a score of ±1 for each entry. Only a verdict is
+    /// recorded, never [`KnowledgeOutcome::Partial`], and nothing while the
+    /// service remembers no knowledge (decision 2218). The scores are saved
+    /// on the next flush.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if `attempt_key` is empty, the data directory cannot
+    /// be created, or the JSONL row cannot be written.
+    pub fn record_attempt_knowledge_outcome(
+        &self,
+        run_id: &str,
+        attempt_key: &str,
+        knowledge_ids: &[String],
+        outcome: KnowledgeOutcome,
+    ) -> Result<()> {
+        if !self.knowledge_feedback || outcome == KnowledgeOutcome::Partial {
+            return Ok(());
+        }
+        self.record_prompt_knowledge_outcome_for(
+            Some(run_id),
+            None,
+            attempt_key,
+            &[],
+            knowledge_ids,
+            outcome,
+        )
+    }
+
     /// Return learned prompt-section weights for prompt assembly.
     #[must_use]
     pub fn section_effectiveness(&self) -> HashMap<String, f64> {
@@ -1244,6 +1277,62 @@ mod tests {
             .unwrap();
 
         assert!(!dir.path().join(KNOWLEDGE_FEEDBACK_FILE).exists());
+    }
+
+    /// bug-0a7ec1: an attempt's verdict settles the knowledge its prompt
+    /// included, in a `success` or `failure` row with the run id and the
+    /// attempt key, and moves the entries' scores, saved on flush. A partial
+    /// outcome, or a service that remembers no knowledge, records nothing.
+    #[test]
+    fn attempt_knowledge_outcome_carries_its_run_and_moves_scores() {
+        let dir = tempfile::tempdir().unwrap();
+        let svc = FeedbackService::new(dir.path().to_path_buf());
+        let one = vec!["kn-a".to_string()];
+        let two = vec!["kn-a".to_string(), "kn-b".to_string()];
+
+        svc.record_attempt_knowledge_outcome("r1", "r1:p:t:1", &one, KnowledgeOutcome::Failure)
+            .unwrap();
+        svc.record_attempt_knowledge_outcome("r1", "r1:p:t:2", &two, KnowledgeOutcome::Success)
+            .unwrap();
+        svc.record_attempt_knowledge_outcome("r1", "r1:p:t:3", &one, KnowledgeOutcome::Partial)
+            .unwrap();
+        svc.flush().unwrap();
+        FeedbackService::new(dir.path().to_path_buf())
+            .without_knowledge_feedback()
+            .record_attempt_knowledge_outcome("r2", "r2:p:t:1", &one, KnowledgeOutcome::Success)
+            .unwrap();
+
+        let content = std::fs::read_to_string(dir.path().join(KNOWLEDGE_FEEDBACK_FILE)).unwrap();
+        let rows: Vec<serde_json::Value> = content
+            .lines()
+            .map(|line| serde_json::from_str(line).unwrap())
+            .collect();
+        let settled: Vec<_> = rows
+            .iter()
+            .map(|row| {
+                (
+                    row["run_id"].as_str(),
+                    row["request_id"].as_str(),
+                    row["outcome"].as_str(),
+                )
+            })
+            .collect();
+        assert_eq!(
+            settled,
+            [
+                (Some("r1"), Some("r1:p:t:1"), Some("failure")),
+                (Some("r1"), Some("r1:p:t:2"), Some("success")),
+            ]
+        );
+        assert_eq!(
+            rows[1]["knowledge_ids"],
+            serde_json::json!(["kn-a", "kn-b"])
+        );
+        let rates = svc.compute_knowledge_scores().unwrap();
+        assert_eq!(rates.get("kn-a"), Some(&(1, 2)));
+        assert_eq!(rates.get("kn-b"), Some(&(1, 1)));
+        let saved = load_knowledge_scores(&dir.path().join(KNOWLEDGE_SCORES_FILE));
+        assert_eq!((saved.get("kn-a"), saved.get("kn-b")), (Some(&0), Some(&1)));
     }
 
     #[test]

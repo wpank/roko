@@ -4,6 +4,10 @@
 //! `DispatchContext` stay as they were. The forecast waits, by attempt key, for the attempt's
 //! verdict, which the outcome sink teaches the model (6129).
 //!
+//! The forecast's features carry what the attempt's prompt will carry from L-know and L-play
+//! (gap-dd89ff): the chain's arms on their layers, and the stored knowledge entries and
+//! playbooks the prompt's readers pick for the task that neither an arm nor θ withholds.
+//!
 //! A pinned attempt (`--model`, a task's `model_hint`) is forecast for its pinned model and
 //! marked as not routable. Without a ladder rung that can run, nothing is forecast.
 //!
@@ -38,7 +42,7 @@ use roko_learn::self_model::cascade::{
     BREAK_EVEN_MARGIN, DepthOption, FALSE_GREEN_RISK_MAX, FailureContext, PassAction, StepAction,
     after_failure, after_pass, start_rung,
 };
-use roko_learn::self_model::features::TaskFeatures;
+use roko_learn::self_model::features::{ContentFeatures, FEATURE_SCHEMA_VERSION, TaskFeatures};
 use roko_learn::self_model::gate::{
     CalibrationGate, CalibrationWindow, GateReport, WINDOW_FILE_NAME, WindowOutcome,
 };
@@ -55,10 +59,8 @@ use roko_learn::telemetry::{AttemptIdentity, AttemptVerdictRecord};
 
 use super::attempt::AttemptContext;
 use super::*;
+use crate::dispatch::prompt_builder::{CarriedContent, KNOWLEDGE_LAYER, PLAYBOOKS_LAYER};
 use crate::dispatch::{LadderStartRung, RoutingInputs, RoutingLadder};
-
-/// The version of the feature schema a prediction row names (`m3-features/1`).
-const FEATURES_SCHEMA: u32 = 1;
 
 /// Settled attempts a run keeps for late VS labels (6129); older ones are let go.
 const SETTLED_KEPT: usize = 4_096;
@@ -501,7 +503,7 @@ impl SelfModelRuntime {
             class: MODEL_CLASS.to_string(),
             mode: mode_name(self.settings.mode).to_string(),
             trained_on_n: model.outcomes as u64,
-            features_schema: FEATURES_SCHEMA,
+            features_schema: FEATURE_SCHEMA_VERSION,
             features_hash: b3_digest(&features_json),
         };
         let rows = forecasts.iter().map(prediction_candidate).collect();
@@ -844,7 +846,15 @@ impl GraphTaskDispatcher {
         let used = self.attempt_in_run(&task_key);
         let retries_left = spec.max_retries.saturating_sub(used);
         let identity = attempt.identity();
-        let mut features = task_features(task, &inputs);
+        // What the prompt will carry from L-know and L-play (gap-dd89ff): the readers' picks
+        // for the task as its prompt shows it, less what the chain's arms or θ withhold.
+        let prompt_task = self.prompt_task(spec, task);
+        let carried = self
+            .factory
+            .dispatcher()
+            .prompt_assembler()
+            .carried_content(&prompt_task, dispatch_ctx);
+        let mut features = task_features(task, &inputs, carried);
         // S07's spec features join the attempt by plan and task (3240).
         if let Some(runs) = &self.feedback.runs_dir {
             let run_dir = runs.join(&identity.run_id);
@@ -1211,8 +1221,14 @@ const fn depth_at(level: u8) -> VerifyDepth {
 }
 
 /// What the self-model knows of `task` before its attempt runs. Plan tasks have no benchmark
-/// family, so the tier stands in, as it does for the units the model learns (S04 §4.2).
-fn task_features(task: &TaskDef, inputs: &RoutingInputs) -> TaskFeatures {
+/// family, so the tier stands in, as it does for the units the model learns (S04 §4.2). The
+/// content group (gap-dd89ff) holds the chain's L-know and L-play arms, from `inputs`, and
+/// `carried`, what the attempt's prompt carries from them.
+fn task_features(task: &TaskDef, inputs: &RoutingInputs, carried: CarriedContent) -> TaskFeatures {
+    let arm = |layer: &str| {
+        let arms = inputs.arm_set.as_deref()?;
+        arms.get(layer).map(|assignment| assignment.arm)
+    };
     TaskFeatures {
         title: task.title.clone(),
         description: task.description.clone().unwrap_or_default(),
@@ -1228,6 +1244,12 @@ fn task_features(task: &TaskDef, inputs: &RoutingInputs) -> TaskFeatures {
         has_prior_failure: inputs.attempt > 0,
         error_class: None,
         spec: BTreeMap::new(),
+        content: ContentFeatures {
+            knowledge_arm: arm(KNOWLEDGE_LAYER),
+            playbook_arm: arm(PLAYBOOKS_LAYER),
+            knowledge: carried.knowledge,
+            playbooks: carried.playbooks,
+        },
     }
 }
 
@@ -2024,5 +2046,120 @@ mod tests {
             2 * N_MIN,
             "every outcome reached the window"
         );
+    }
+
+    /// The features a shadow self-model forecast the one attempt of task `T-LESSON` with, and
+    /// its prediction row, in a workspace whose knowledge store holds one lesson on the task's
+    /// topic, on a chain whose L-know arm is `knowledge_arm` and whose L-play arm is learned
+    /// (gap-dd89ff).
+    async fn lesson_forecast(knowledge_arm: &str) -> (TaskFeatures, serde_json::Value) {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let roko = temp.path().join(".roko");
+        let lesson = serde_json::json!({
+            "id": "k-manifest-header",
+            "content": "The manifest parser rejects a header line without a version field",
+            "confidence": 0.8,
+            "created_at": chrono::Utc::now(),
+        });
+        let lesson: roko_neuro::KnowledgeEntry =
+            serde_json::from_value(lesson).expect("a knowledge entry");
+        let neuro = roko.join("neuro");
+        std::fs::create_dir_all(&neuro).expect("the neuro dir");
+        let line = serde_json::to_string(&lesson).expect("knowledge json") + "\n";
+        std::fs::write(neuro.join("knowledge.jsonl"), line).expect("write the lesson");
+
+        let snapshot = PriceSnapshot::builtin().expect("the built-in snapshot");
+        let settings = SelfModelConfig {
+            mode: SelfModelMode::Shadow,
+            ..SelfModelConfig::default()
+        };
+        let state = roko.join("learn/self-model/state-v1.json");
+        let fresh = SelfModel::new(&snapshot);
+        let runtime = Arc::new(SelfModelRuntime::new(settings, state, fresh));
+        let feedback = GraphFeedbackContext {
+            runs_dir: Some(roko.join("runs")),
+            self_model: Some(Arc::clone(&runtime)),
+            ..GraphFeedbackContext::default()
+        };
+        // Both chains pin L-play, so that L-know's arm is all that tells them apart.
+        let knowledge_arm = knowledge_arm.to_string();
+        let configure = move |config: &mut RokoConfig| {
+            no_auto_fix(config);
+            config.self_model.mode = SelfModelMode::Shadow;
+            let arms = &mut config.experiments.force_arms;
+            arms.insert("L-know".to_string(), knowledge_arm);
+            arms.insert("L-play".to_string(), "learned".to_string());
+        };
+        let (dispatcher, mut task) =
+            make_test_dispatcher(&temp, VERIFY_PROVIDER, configure, feedback).await;
+        task.id = "T-LESSON".to_string();
+        task.title = "Fix the manifest parser".to_string();
+        task.description = Some("Reject a header line that has no version".to_string());
+        let ctx = CellContext::new().with_run_id(RUN.to_string());
+        dispatcher
+            .dispatch(&make_spec(&task), Vec::new(), &ctx)
+            .await
+            .expect("the attempt completes");
+        drop(dispatcher);
+
+        let run_dir = roko.join("runs").join(RUN);
+        let rows = jsonl_rows_where(&run_dir.join("predictions.jsonl"), 1, |row| {
+            row["schema_version"] == "roko.prediction/1"
+        })
+        .await;
+        let key = roko_learn::telemetry::AttemptKey::new(RUN, "stream-plan", "T-LESSON", 1);
+        let forecast = runtime.take_forecast(&key.attempt_key());
+        let forecast = forecast.expect("the attempt's forecast waits for its verdict");
+        (forecast.features, rows[0].clone())
+    }
+
+    /// gap-dd89ff: the self-model's features carry what the attempt's prompt carries from L-know
+    /// and L-play. Two attempts of one task, in workspaces holding one stored lesson on its
+    /// topic, one on L-know's learned arm and one on its default arm, which withholds the
+    /// lesson: the first's features carry the lesson and the learned arm, the second's the
+    /// default arm and no lesson, and their feature vectors differ only in the content group.
+    /// The prediction rows name the features schema that carries it.
+    #[tokio::test]
+    async fn task_features_carry_the_knowledge_given() {
+        use std::collections::BTreeSet;
+
+        use roko_learn::self_model::features::{CONTENT_GROUP, PassEma, feature_vector};
+        use roko_learn::telemetry::Arm;
+
+        let (given, row) = lesson_forecast("learned").await;
+        let (withheld, _) = lesson_forecast("default").await;
+        let content = (given.content.knowledge_arm, given.content.knowledge);
+        assert_eq!(content, (Some(Arm::Learned), 1), "{given:?}");
+        let content = (withheld.content.knowledge_arm, withheld.content.knowledge);
+        assert_eq!(content, (Some(Arm::Default), 0), "{withheld:?}");
+        for features in [&given, &withheld] {
+            let playbooks = (features.content.playbook_arm, features.content.playbooks);
+            assert_eq!(playbooks, (Some(Arm::Learned), 0), "{features:?}");
+        }
+        let elsewhere = TaskFeatures {
+            content: given.content,
+            ..withheld.clone()
+        };
+        assert_eq!(elsewhere, given, "only the content group tells them apart");
+
+        let arm = ArmKey::roko("stream-cli", "claude-sonnet-4-6");
+        let history = PassEma::default();
+        let with = feature_vector(&given, &arm, None, &history);
+        let without = feature_vector(&withheld, &arm, None, &history);
+        let names: BTreeSet<&str> = with
+            .pairs()
+            .chain(without.pairs())
+            .map(|(n, _)| n)
+            .collect();
+        let differ: Vec<&str> = names
+            .into_iter()
+            .filter(|name| with.get(name) != without.get(name))
+            .collect();
+        let in_group = |name: &&str| CONTENT_GROUP.iter().any(|group| name.starts_with(group));
+        assert!(
+            !differ.is_empty() && differ.iter().all(in_group),
+            "{differ:?}"
+        );
+        assert_eq!(row["predictor"]["features_schema"], FEATURE_SCHEMA_VERSION);
     }
 }

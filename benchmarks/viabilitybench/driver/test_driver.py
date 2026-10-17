@@ -457,6 +457,95 @@ def test_an_agent_cannot_read_its_run_directory(places, tmp_path, arm):
         assert record["execution"]["status"] == "completed", record["execution"]["reason"]
 
 
+# bug-935cfa, test_an_agent_cannot_read_another_run. While its task runs, the agent's shell lists the results root
+# (__RESULTS__), the experiments and the runs in it, then reads what another run keeps of its tasks: the agents' final
+# diffs (archives/), the records, and the task manifests and precise specs (private/). It knows no run id and no task
+# key, so it globs, as an agent would; each step prints its exit status.
+READ_OTHER_RUNS = ('R="__RESULTS__"; ls -a "$R" "$R"/* "$R"/*/*; echo "listing exit=$?"; '
+                   'cat "$R"/*/*/archives/*.diff; echo "diff exit=$?"; '
+                   'head -c 300 "$R"/*/*/records.jsonl; echo "records exit=$?"; '
+                   'head -c 300 "$R"/*/*/private/*/.vb/task.json; echo "manifest exit=$?"; '
+                   'cat "$R"/*/*/private/*/.vb/spec.precise.md; echo "spec exit=$?"')
+
+
+@macos_only
+@pytest.mark.parametrize("arm", ["cheap_direct", "roko_fixed", "cheap_direct_msa"])
+def test_an_agent_cannot_read_another_run(places, tmp_path, arm):
+    """bug-935cfa, through `vb run --proxy`: every agent process is denied the whole results root, not only its own
+    run directory (bug-d308f7). A campaign runs its units one after another in one experiment directory, so a later
+    run's agent could list the run ids (a campaign's name its block), copy an earlier agent's final diff of its own
+    instance, read which hidden checks failed and read the precise spec while it runs the vague one. Run 1 of an
+    experiment solves a task; in run 2 of the same experiment, in the direct loop, the Roko arm and the mini-swe-agent
+    arm, the agent lists the results root and its runs and reads run 1's archive, records, manifest and spec
+    (READ_OTHER_RUNS). Every listing and read is refused, and nothing the agent printed names the experiment, a run, an
+    instance, or holds a line of run 1's files. Run 1's files hold what the agent would have read (the control)."""
+    results = places["results"]
+
+    def run(run_id: str, arm_file: str, url: str, *extra: str) -> int:
+        return vb.main(["run", "--experiment", "TEST-RUNS", "--run-id", run_id, "--stream", TOY_STREAM, "--arm",
+                        arm_file, "--model", "gpt-oss-120b", "--seeds", "1", "--limit", "1", "--provider-url", url,
+                        "--proxy", "--results", str(results), "--work", str(places["work"]),
+                        "--secret-file", str(places["secret"]), *extra])
+
+    with StubServer(scripted({"": [bash(CORRECT, "Solve."), bash("echo SUBMIT_TASK")]})) as stub:
+        assert run("run-1", "cheap_direct", stub.url) == 0
+    earlier = results / "TEST-RUNS" / "run-1"
+    [done] = read_jsonl(earlier / "records.jsonl")
+    key = f"{done['task']['instance_id']}.s1"
+    # The control: run 1 holds its agent's final diff, its record and its task's private files, under its key.
+    assert "+" in (earlier / "archives" / f"{key}.diff").read_text() and done["vs"]["failed"] is not None
+    assert (earlier / "private" / key / ".vb" / "task.json").is_file()
+    assert (earlier / "private" / key / ".vb" / "spec.precise.md").is_file()
+
+    shell_log = tmp_path / "shell.log"
+    reads = READ_OTHER_RUNS.replace("__RESULTS__", str(results))
+    if arm == "cheap_direct":  # the stub plays the agent, and the driver runs its commands
+        arm_file, respond = arm, scripted({"": [bash(reads, "What else is here?"), bash("echo SUBMIT_TASK")]})
+    else:  # a fake harness plays the agent: its own process calls the model through the proxy, then its shell reads
+        arm_file = fake_harness_arm(tmp_path, arm, solution=CLAMP, shell=reads, shell_log=shell_log)
+
+        def respond(body: dict) -> str:
+            return "Done."
+    with StubServer(respond) as stub:
+        assert run("run-2", arm_file, stub.url, "--transcripts") == 0
+    out = results / "TEST-RUNS" / "run-2"
+    [record] = read_jsonl(out / "records.jsonl")
+    if arm == "cheap_direct":  # what the direct loop's agent was shown of its commands
+        transcript = json.loads((out / record["provenance"]["transcript_ref"]).read_text())
+        printed = "\n".join(event["content"] for event in transcript if event.get("role") == "user"
+                            and "command" in event)
+    else:
+        printed = shell_log.read_text()
+    for step in ("listing", "diff", "records", "manifest", "spec"):
+        assert f"{step} exit=1" in printed, (step, printed)
+    assert "exit=0" not in printed and f"{results}: Operation not permitted" in printed, printed
+    lines = [line for name in ("records.jsonl", f"archives/{key}.diff", f"private/{key}/.vb/task.json")
+             for line in (earlier / name).read_text().splitlines() if len(line) > 20]
+    leaked = [name for name in ("TEST-RUNS", "run-1", "run-2", "F1-l1-0001", "F1-l1-0002", '"task"', "vb.task/1",
+                                *lines) if name in printed]
+    assert leaked == [], printed
+    assert record["execution"]["status"] == "completed", record["execution"]["reason"]
+    assert record["provenance"]["network_policy"]["sandbox"] == "sandbox-exec+net"
+
+
+def test_vb_run_refuses_a_results_root_agents_need(places, tmp_path, monkeypatch, capsys):
+    """bug-935cfa: every agent process is denied the whole results root, so `vb run` refuses, before it makes any
+    directory, a results root that holds what agents read or run: the repository (the Roko binary, `.venv-msa/`), the
+    Rust toolchain the sandbox keeps readable, the Python agents run, or the operator's home."""
+    assert vb._results_hold(places["results"]) == []
+    for root, held in ((layout.REPO_ROOT.parent, "the repository"), (Path.home(), "your home directory"),
+                       (agent_env._base_python().parent, "the Python agents run")):
+        assert any(text.startswith(f"{held} (") for text in vb._results_hold(root)), (root, vb._results_hold(root))
+    rustup = places["results"] / "rustup"  # a toolchain under --results
+    rustup.mkdir(parents=True)
+    monkeypatch.setattr(vb.toolchain, "read_only", lambda environ=None: (rustup,))
+    with StubServer(scripted({"": [bash("echo SUBMIT_TASK")]})) as stub:
+        assert run_vb(places, stub.url) == 2
+    assert f"holds the Rust toolchain ({rustup})" in capsys.readouterr().err
+    assert sorted(path.name for path in places["results"].iterdir()) == ["rustup"] and stub.requests == []
+    assert not places["work"].exists()
+
+
 # bug-d68575, test_no_agent_sees_the_benchmark_name. The agent's shell prints its environment, its repo's log with the
 # author and committer, its reflog and refs, its HOME's names and files (the visible-verify wrapper's among them),
 # Roko's plan and config and mini-swe-agent's config where it has them, and what the metering proxy answers a path it
@@ -533,8 +622,9 @@ def test_no_agent_sees_the_benchmark_name(places, tmp_path, arm):
     assert [node for node in ast.walk(ast.parse(copy)) if isinstance(node, (ast.Module, ast.FunctionDef))
             and ast.get_docstring(node)] == []
     assert [line for line in copy.splitlines() if line.lstrip().startswith("#")] == []
-    if arm != "cheap_direct":  # the proxy's refusal, as the agent's shell got it
-        assert '"type": "path_not_allowed"' in seen, seen
+    if arm != "cheap_direct":  # the proxy's refusal, as the agent's shell got it: a provider's words (bug-fd8200)
+        assert json.dumps(faultproxy._refusal("path_not_allowed", None)) in seen, seen
+        assert "path_not_allowed" not in seen, seen
     if arm == "roko_fixed":
         assert planemit.plan_slug(alias) in seen and f"CEREBRAS_API_KEY={run_roko.OFFLINE_KEY}\n" in seen, seen
     # Every name, link and text file the agents' processes could reach under the work directory.

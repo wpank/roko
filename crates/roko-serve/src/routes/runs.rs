@@ -180,15 +180,7 @@ async fn get_run_detail(
     let io_state = Arc::clone(&state);
     let io_run_id = run_id.clone();
     let (page, bundle) = blocking_io(move || {
-        let page = read_for_run(
-            &io_state,
-            &io_run_id,
-            None,
-            0,
-            MAX_DETAIL_EVENTS,
-            MAX_DETAIL_SCAN_BYTES,
-            &BTreeSet::new(),
-        )?;
+        let page = read_for_summary(&io_state, &io_run_id)?;
         Ok((page, find_bundle_dir(&io_state, &io_run_id)))
     })
     .await?;
@@ -384,18 +376,7 @@ async fn summary_and_plans(
     }
     let io_state = Arc::clone(state);
     let io_run_id = run_id.to_string();
-    let page = blocking_io(move || {
-        read_for_run(
-            &io_state,
-            &io_run_id,
-            None,
-            0,
-            MAX_DETAIL_EVENTS,
-            MAX_DETAIL_SCAN_BYTES,
-            &BTreeSet::new(),
-        )
-    })
-    .await?;
+    let page = blocking_io(move || read_for_summary(&io_state, &io_run_id)).await?;
     if page.is_none() && in_memory.is_none() {
         return Err(ApiError::not_found(format!("run '{run_id}' not found")));
     }
@@ -1417,6 +1398,138 @@ fn read_for_run_filtered(
     Ok(None)
 }
 
+/// Event types that stream a run's words and progress, which no summary
+/// reads (bug-e529e3). A summary's read skips them, so they do not use up its
+/// event budget: with trusted live output every reasoning token is one.
+const STREAM_EVENT_TYPES: [&str; 5] = [
+    "agent_output",
+    "agent_heartbeat",
+    "gate_output_line",
+    "task_output_appended",
+    "plan_check_heartbeat",
+];
+
+/// The `type` fields of [`STREAM_EVENT_TYPES`] as the index writes them
+/// (compact JSON), so that a summary skips those records without parsing them.
+const STREAM_TYPE_FIELDS: [&str; 5] = [
+    "\"type\":\"agent_output\"",
+    "\"type\":\"agent_heartbeat\"",
+    "\"type\":\"gate_output_line\"",
+    "\"type\":\"task_output_appended\"",
+    "\"type\":\"plan_check_heartbeat\"",
+];
+
+/// How much of a run's index a summary reads from the start (bug-e529e3). It
+/// skips streamed records unparsed, so this is a scan, at most tens of
+/// milliseconds; a trusted-output run streams about 4 MB of reasoning in 2
+/// minutes, so this covers a run of most of an hour.
+const SUMMARY_SCAN_BYTES: u64 = 64 * 1024 * 1024;
+
+/// How much of the end of a run's index a summary reads when its read from the
+/// start stopped short of the end (bug-e529e3): a run that ended keeps its end
+/// events last.
+const SUMMARY_TAIL_BYTES: u64 = 1024 * 1024;
+
+/// The events a summary of run `run_id` reads (bug-e529e3): its index from the
+/// start, up to [`SUMMARY_SCAN_BYTES`] and the detail event cap, without
+/// [`STREAM_EVENT_TYPES`], and, when that read stopped short of the end, the
+/// last [`SUMMARY_TAIL_BYTES`] of it. A run longer than that still reads as it
+/// ended; only events in the middle that neither read reaches are left out.
+fn read_for_summary(state: &AppState, run_id: &str) -> Result<Option<IndexedPage>, ApiError> {
+    read_for_summary_within(state, run_id, SUMMARY_SCAN_BYTES, SUMMARY_TAIL_BYTES)
+}
+
+/// [`read_for_summary`] with a read of `scan_bytes` from the start and of
+/// `tail_bytes` at the end.
+fn read_for_summary_within(
+    state: &AppState,
+    run_id: &str,
+    scan_bytes: u64,
+    tail_bytes: u64,
+) -> Result<Option<IndexedPage>, ApiError> {
+    let summarized =
+        |value: &Value| !event_type(value).is_some_and(|kind| STREAM_EVENT_TYPES.contains(&kind));
+    let streamed = |line: &str| STREAM_TYPE_FIELDS.iter().any(|field| line.contains(field));
+    let found = [EventSource::Runner, EventSource::Runtime]
+        .into_iter()
+        .find_map(|source| {
+            source_path(state, run_id, source)
+                .filter(|path| roko_fs::run_index::open_existing_run_index(path).is_ok())
+                .map(|path| (source, path))
+        });
+    let Some((source, path)) = found else {
+        return Ok(None);
+    };
+    let scrubber = state.scrubber.as_ref();
+    let none = BTreeSet::new();
+    let mut page = read_index_page_scan(
+        &path,
+        run_id,
+        source,
+        0,
+        MAX_DETAIL_EVENTS,
+        scan_bytes,
+        &none,
+        scrubber,
+        &summarized,
+        &streamed,
+    )?;
+    if !page.has_more {
+        return Ok(Some(page));
+    }
+    let start = tail_start(&path, page.next_cursor, tail_bytes)?;
+    let tail = read_index_page_scan(
+        &path,
+        run_id,
+        source,
+        start,
+        MAX_DETAIL_EVENTS,
+        tail_bytes,
+        &none,
+        scrubber,
+        &summarized,
+        &streamed,
+    )?;
+    page.events.extend(tail.events);
+    page.next_cursor = tail.next_cursor;
+    page.has_more = tail.has_more;
+    page.scanned_bytes = page.scanned_bytes.saturating_add(tail.scanned_bytes);
+    page.quarantined_records = page
+        .quarantined_records
+        .saturating_add(tail.quarantined_records);
+    page.partial_tail = tail.partial_tail;
+    Ok(Some(page))
+}
+
+/// Where a read of the last `tail_bytes` of the index at `path` starts: the
+/// first record that begins `tail_bytes` or fewer before its end, and never
+/// before `after`, where what was read already ends. A record too long to
+/// find the end of starts the read at `after`.
+fn tail_start(path: &FsPath, after: u64, tail_bytes: u64) -> Result<u64, ApiError> {
+    let mut file = roko_fs::run_index::open_existing_run_index(path)
+        .map_err(|error| ApiError::internal(error.to_string()))?;
+    let len = file
+        .metadata()
+        .map_err(|error| ApiError::internal(error.to_string()))?
+        .len();
+    let from = len.saturating_sub(tail_bytes);
+    if from <= after {
+        return Ok(after);
+    }
+    // The record holding byte `from - 1` ends at the first newline from there.
+    file.seek(SeekFrom::Start(from - 1))
+        .map_err(|error| ApiError::internal(error.to_string()))?;
+    let mut skipped = Vec::new();
+    let read = BufReader::new(file)
+        .take((MAX_LINE_BYTES + 1) as u64)
+        .read_until(b'\n', &mut skipped)
+        .map_err(|error| ApiError::internal(format!("read run event index: {error}")))?;
+    if skipped.last() != Some(&b'\n') {
+        return Ok(after);
+    }
+    Ok(from - 1 + read as u64)
+}
+
 fn read_index_page(
     path: &FsPath,
     run_id: &str,
@@ -1451,6 +1564,35 @@ fn read_index_page_filtered(
     types: &BTreeSet<String>,
     scrubber: &LogScrubber,
     include: &dyn Fn(&Value) -> bool,
+) -> Result<IndexedPage, ApiError> {
+    read_index_page_scan(
+        path,
+        run_id,
+        source,
+        cursor,
+        limit,
+        scan_bytes,
+        types,
+        scrubber,
+        include,
+        &|_| false,
+    )
+}
+
+/// [`read_index_page_filtered`], which also passes over each whole record
+/// whose raw text `skip` matches before it is parsed or checked.
+#[allow(clippy::too_many_arguments)]
+fn read_index_page_scan(
+    path: &FsPath,
+    run_id: &str,
+    source: EventSource,
+    cursor: u64,
+    limit: usize,
+    scan_bytes: u64,
+    types: &BTreeSet<String>,
+    scrubber: &LogScrubber,
+    include: &dyn Fn(&Value) -> bool,
+    skip: &dyn Fn(&str) -> bool,
 ) -> Result<IndexedPage, ApiError> {
     let mut file = roko_fs::run_index::open_existing_run_index(path)
         .map_err(|error| ApiError::internal(error.to_string()))?;
@@ -1508,6 +1650,9 @@ fn read_index_page_filtered(
             offset = record_start;
             partial_tail = true;
             break;
+        }
+        if skip(&line) {
+            continue;
         }
         let parsed = serde_json::from_str::<Value>(line.trim_end());
         let Ok(mut value) = parsed else {
@@ -3170,6 +3315,135 @@ mod tests {
         );
         let unknown = crate::routes::plans::cancel_plan_run(&state, "r-unknown").await;
         assert!(unknown.is_err());
+    }
+
+    /// The state of a test of the summary routes, over `dir`.
+    fn summary_state(dir: &tempfile::TempDir) -> Arc<AppState> {
+        let deploy_backend = Arc::from(
+            crate::deploy::create_backend("manual", None, None, None).expect("manual backend"),
+        );
+        Arc::new(
+            AppState::new(
+                dir.path().to_path_buf(),
+                Arc::new(crate::runtime::NoOpRuntime),
+                roko_core::config::schema::RokoConfig::default(),
+                deploy_backend,
+            )
+            .expect("AppState::new"),
+        )
+    }
+
+    /// Index rows of a long run, as a trusted-output run writes them: its start
+    /// and two passed tasks, `first` streamed output rows of 700 characters,
+    /// task t3's failure and an `efficiency_event` of $0.25, `then` more
+    /// streamed rows, and a failed end that names no cost.
+    fn long_run_rows(run_id: &str, first: u64, then: u64) -> Vec<Value> {
+        let task = |at: u64, task_id: &str, outcome: &str| {
+            json!({"type":"task_completed","run_id":run_id,"timestamp_ms":at,"plan_id":"p1",
+                "task_id":task_id,"outcome":outcome})
+        };
+        let token = "x".repeat(700);
+        let streamed = |at: u64| {
+            json!({"type":"agent_output","run_id":run_id,"timestamp_ms":at,"plan_id":"p1",
+                "task_id":"t3","attempt":1,"content":token})
+        };
+        let mut rows = vec![
+            json!({"type":"run.started","run_id":run_id,"timestamp_ms":1,"plan_id":"p1"}),
+            task(2, "t1", "passed"),
+            task(3, "t2", "passed"),
+        ];
+        rows.extend((0..first).map(|at| streamed(10 + at)));
+        rows.push(task(30_000, "t3", "failed"));
+        rows.push(
+            json!({"type":"efficiency_event","run_id":run_id,"timestamp_ms":30_001,
+            "plan_id":"p1","task_id":"t3","metric":"cost_usd","value":0.25}),
+        );
+        rows.extend((0..then).map(|at| streamed(30_010 + at)));
+        rows.push(
+            json!({"type":"run.completed","run_id":run_id,"timestamp_ms":60_000,
+            "outcome":"failed"}),
+        );
+        rows
+    }
+
+    /// bug-e529e3: a run whose index outgrows the old scan window (10,000
+    /// events or 8 MB; here 12,000 streamed output rows, then a failed task and
+    /// the run's spend, then 2,000 more past 1 MB, then a failed end) reads as
+    /// it ended, in the summary and the detail route: streamed rows do not use
+    /// up the summary's event budget, and its read from the start goes past 8
+    /// MB, so the task and the spend in the middle count too.
+    #[tokio::test]
+    async fn summary_sees_the_end_of_a_run_longer_than_its_scan_window() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = summary_state(&dir);
+        let run_id = "long-run";
+        let index =
+            roko_fs::run_index::run_index_path(&state.layout.events_jsonl_path(), run_id).unwrap();
+        write_rows(&index, &long_run_rows(run_id, 12_000, 2_000));
+        assert!(std::fs::metadata(&index).unwrap().len() > MAX_DETAIL_SCAN_BYTES + 1024 * 1024);
+
+        let Json(summary) = get_run_summary(State(Arc::clone(&state)), Path(run_id.into()))
+            .await
+            .unwrap();
+
+        assert_eq!(summary["state"], "failed", "{summary}");
+        assert_eq!(summary["active"], false, "{summary}");
+        assert_eq!(summary["tasks"]["passed"], 2, "{summary}");
+        assert_eq!(summary["tasks"]["failed"], 1, "{summary}");
+        assert_eq!(summary["cost_usd"], 0.25, "{summary}");
+        assert!(summary["finished_at"].is_string(), "{summary}");
+        let Json(detail) = get_run_detail(State(Arc::clone(&state)), Path(run_id.into()))
+            .await
+            .unwrap();
+        assert!(detail["finished_at"].is_string(), "{detail}");
+        assert_eq!(detail["status"], "failed", "{detail}");
+    }
+
+    /// bug-e529e3: an index longer than the summary's read from the start
+    /// still reads as the run ended, from the read of its last bytes; only the
+    /// events between the two reads are left out (here t3's failure and the
+    /// spend). Streamed rows are passed over unparsed.
+    #[test]
+    fn a_summary_past_its_scan_reads_the_index_end() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = summary_state(&dir);
+        let run_id = "longer-run";
+        let index =
+            roko_fs::run_index::run_index_path(&state.layout.events_jsonl_path(), run_id).unwrap();
+        write_rows(&index, &long_run_rows(run_id, 200, 100));
+        // A streamed row the summary never parses: had it been read, it would
+        // count as a quarantined record.
+        let mut file = std::fs::OpenOptions::new()
+            .append(true)
+            .open(&index)
+            .unwrap();
+        let end = json!({"type":"run.completed","run_id":run_id,"timestamp_ms":60_001,
+            "outcome":"failed"});
+        let tail = format!("{{\"type\":\"agent_output\",\"content\":\n{end}\n");
+        std::io::Write::write_all(&mut file, tail.as_bytes()).unwrap();
+
+        let page = read_for_summary_within(&state, run_id, 16 * 1024, 16 * 1024)
+            .unwrap()
+            .expect("the run's index");
+
+        assert!(!page.has_more, "the read reaches the end");
+        assert_eq!(page.quarantined_records, 0);
+        let kinds: Vec<_> = page
+            .events
+            .iter()
+            .filter_map(|item| event_type(&item.value))
+            .collect();
+        assert_eq!(
+            kinds,
+            [
+                "run.started",
+                "task_completed",
+                "task_completed",
+                "run.completed",
+                "run.completed"
+            ],
+            "{kinds:?}"
+        );
     }
 
     /// gap-4f6cbe: a run's `delivery` milestone says how its plans'

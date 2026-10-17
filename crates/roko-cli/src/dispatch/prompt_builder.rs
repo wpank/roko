@@ -308,28 +308,38 @@ impl PromptContext {
     }
 
     /// Whether the attempt's arm set withholds the loop that fills the source
-    /// section `section` (S02 L7, decision 4115): `knowledge` for L-know and
-    /// `playbooks` for L-play, on their default arm or the all-off arm.
-    /// Maximize mode, and dispatch without an arm set, withhold nothing.
+    /// section `section` ([`arm_withholds`]).
     fn withholds(&self, section: &str) -> bool {
-        let layer = match section {
-            "knowledge" => "knowledge",
-            "playbooks" => "playbooks",
-            _ => return false,
-        };
-        self.arm_set
-            .as_deref()
-            .is_some_and(|arms| arms.takes_default(layer))
+        arm_withholds(self.arm_set.as_deref(), section)
     }
 
     /// Whether the θ the attempt runs leaves the source section `section`
-    /// out of the prompt (M1's B4, gap-6bb6d8): `knowledge` while its
-    /// `knowledge_section` is off, as [`Self::withholds`] leaves it out on
-    /// L-know's default arm. The controller decides that, not L-know, so its
-    /// items are logged as θ's exclusion, never as the arm's.
+    /// out of the prompt ([`theta_withholds`]).
     fn harness_withholds(&self, section: &str) -> bool {
-        section == "knowledge" && !self.knowledge_section
+        theta_withholds(self.knowledge_section, section)
     }
+}
+
+/// Whether `arm_set`, the arms of an attempt's chain, withholds the loop that
+/// fills the source section `section` (S02 L7, decision 4115): `knowledge`
+/// for L-know and `playbooks` for L-play, on their default arm or the all-off
+/// arm. Maximize mode, and dispatch without an arm set, withhold nothing.
+fn arm_withholds(arm_set: Option<&ArmSet>, section: &str) -> bool {
+    let layer = match section {
+        "knowledge" => KNOWLEDGE_LAYER,
+        "playbooks" => PLAYBOOKS_LAYER,
+        _ => return false,
+    };
+    arm_set.is_some_and(|arms| arms.takes_default(layer))
+}
+
+/// Whether a θ whose `knowledge_section` is `knowledge_section` leaves the
+/// source section `section` out of the prompt (M1's B4, gap-6bb6d8):
+/// `knowledge` while it is off, as [`arm_withholds`] leaves it out on
+/// L-know's default arm. The controller decides that, not L-know, so its
+/// items are logged as θ's exclusion, never as the arm's.
+fn theta_withholds(knowledge_section: bool, section: &str) -> bool {
+    section == "knowledge" && !knowledge_section
 }
 
 fn declared_impact_context(task: &TaskDef, bounded_context_only: bool) -> String {
@@ -1299,6 +1309,17 @@ impl PromptItem {
     }
 }
 
+/// How many stored knowledge entries and playbooks an attempt's prompt
+/// carries from its readers ([`PromptAssembler::carried_content`];
+/// gap-dd89ff).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) struct CarriedContent {
+    /// The stored knowledge entries.
+    pub(crate) knowledge: u32,
+    /// The playbooks.
+    pub(crate) playbooks: u32,
+}
+
 /// The canonical section the knowledge, episode, playbook and
 /// section-effectiveness sources render into: their bodies are its domain
 /// notes.
@@ -1310,6 +1331,14 @@ const RUNNER_CONTEXT_SECTION: &str = "context_layer";
 
 /// The arm-set layer of the section bandit (L-sec).
 const SECTIONS_LAYER: &str = "sections";
+
+/// The arm-set layer of L-know, whose default arm withholds the knowledge
+/// section (S02 L7).
+pub(crate) const KNOWLEDGE_LAYER: &str = "knowledge";
+
+/// The arm-set layer of L-play, whose default arm withholds the playbooks
+/// section (S02 L7).
+pub(crate) const PLAYBOOKS_LAYER: &str = "playbooks";
 
 /// The `sections` assignment of the chain `arms` names, when its prompts run
 /// the section bandit (S02 L9): on its learned arm, outside maximize mode.
@@ -1544,9 +1573,10 @@ fn sha256_hex(text: &str) -> String {
     format!("{:x}", sha2::Sha256::digest(text.as_bytes()))
 }
 
-/// Pluggable prompt context provider.
+/// Pluggable prompt context provider: a reader of learned content, which reads
+/// the stores under the attempt's `workdir` when it has no cache.
 trait PromptSectionSource: Send + Sync + std::fmt::Debug {
-    fn collect(&self, task: &TaskDef, ctx: &PromptContext) -> Vec<PromptSection>;
+    fn collect(&self, task: &TaskDef, workdir: &Path) -> Vec<PromptSection>;
 }
 
 /// Reads durable `.roko` knowledge stores and prior episodes.
@@ -1867,6 +1897,40 @@ impl PromptAssembler {
         self
     }
 
+    /// What the prompt [`Self::assemble`] builds for `task` under `ctx`
+    /// carries from the knowledge and playbook readers (gap-dd89ff): the
+    /// stored entries and playbooks each reader picks for it, at most three
+    /// that clear the task's topic floor, whose exposure rows the prompt
+    /// writes, less a section the chain's arm set or the attempt's θ withholds.
+    /// The token budget and the section bandit act on the composed prompt and
+    /// can still leave the section out. The self-model reads this before
+    /// routing, when the prompt is not built yet; its reads of the loops'
+    /// fault flags are the attempt's decision, as planning's are.
+    pub(crate) fn carried_content(&self, task: &TaskDef, ctx: &DispatchContext) -> CarriedContent {
+        super::attempt_decision(ctx, || {
+            let mut carried = CarriedContent::default();
+            let sections = self
+                .sources
+                .iter()
+                .flat_map(|source| source.collect(task, &ctx.workdir));
+            for section in sections {
+                if arm_withholds(ctx.arm_set.as_deref(), &section.name)
+                    || theta_withholds(ctx.knowledge_section, &section.name)
+                {
+                    continue;
+                }
+                for item in &section.items {
+                    match item.kind {
+                        ExposureItemKind::Knowledge => carried.knowledge += 1,
+                        ExposureItemKind::Playbook => carried.playbooks += 1,
+                        _ => {}
+                    }
+                }
+            }
+            carried
+        })
+    }
+
     /// The section bandit a prompt draws from: the cache's snapshot, else the
     /// bandit saved under `workdir`. A minimal assembler (no sources) reads no
     /// file and starts from the uniform prior, as does an unreadable file,
@@ -1909,7 +1973,7 @@ impl PromptAssembler {
         // for diagnostics.
         let mut source_sections: Vec<PromptSection> = Vec::new();
         for source in &self.sources {
-            source_sections.extend(source.collect(task, ctx));
+            source_sections.extend(source.collect(task, &ctx.workdir));
         }
         // What each content reader loaded, whether or not its section stays
         // in (gap-a13544).
@@ -2322,7 +2386,7 @@ impl PromptAssembler {
 }
 
 impl PromptSectionSource for WorkdirKnowledgeSource {
-    fn collect(&self, task: &TaskDef, ctx: &PromptContext) -> Vec<PromptSection> {
+    fn collect(&self, task: &TaskDef, workdir: &Path) -> Vec<PromptSection> {
         let mut sections = Vec::new();
         if let Some(cache) = &self.cache {
             if let Some(section) = collect_neuro_knowledge_cached(task, &cache.neuro_entries) {
@@ -2332,10 +2396,10 @@ impl PromptSectionSource for WorkdirKnowledgeSource {
                 sections.push(section);
             }
         } else {
-            if let Some(section) = collect_neuro_knowledge(task, ctx) {
+            if let Some(section) = collect_neuro_knowledge(task, workdir) {
                 sections.push(section);
             }
-            if let Some(section) = collect_episode_knowledge(task, ctx) {
+            if let Some(section) = collect_episode_knowledge(task, workdir) {
                 sections.push(section);
             }
         }
@@ -2344,29 +2408,29 @@ impl PromptSectionSource for WorkdirKnowledgeSource {
 }
 
 impl PromptSectionSource for WorkdirPlaybookSource {
-    fn collect(&self, task: &TaskDef, ctx: &PromptContext) -> Vec<PromptSection> {
+    fn collect(&self, task: &TaskDef, workdir: &Path) -> Vec<PromptSection> {
         if let Some(cache) = &self.cache {
             collect_playbooks_cached(task, &cache.playbooks)
                 .into_iter()
                 .collect()
         } else {
-            collect_playbooks(task, ctx).into_iter().collect()
+            collect_playbooks(task, workdir).into_iter().collect()
         }
     }
 }
 
-fn collect_neuro_knowledge(task: &TaskDef, ctx: &PromptContext) -> Option<PromptSection> {
+fn collect_neuro_knowledge(task: &TaskDef, workdir: &Path) -> Option<PromptSection> {
     // The uncached path ranks the hot entries as a plan run's cache does
     // (backlog 4211).
-    let entries = roko_neuro::KnowledgeStore::for_workdir(&ctx.workdir)
+    let entries = roko_neuro::KnowledgeStore::for_workdir(workdir)
         .hot_entries()
         .ok()?;
     collect_neuro_knowledge_cached(task, &entries)
 }
 
-fn collect_episode_knowledge(task: &TaskDef, ctx: &PromptContext) -> Option<PromptSection> {
+fn collect_episode_knowledge(task: &TaskDef, workdir: &Path) -> Option<PromptSection> {
     let mut episodes: Vec<roko_learn::episode_logger::Episode> = Vec::new();
-    for path in episode_paths(&ctx.workdir) {
+    for path in episode_paths(workdir) {
         let Ok(text) = std::fs::read_to_string(&path) else {
             continue;
         };
@@ -2407,10 +2471,10 @@ fn cited_episode_id(episode: &roko_learn::episode_logger::Episode) -> &str {
     }
 }
 
-fn collect_playbooks(task: &TaskDef, ctx: &PromptContext) -> Option<PromptSection> {
-    let root = roko_core::Workspace::open(&ctx.workdir)
+fn collect_playbooks(task: &TaskDef, workdir: &Path) -> Option<PromptSection> {
+    let root = roko_core::Workspace::open(workdir)
         .map(|ws| ws.playbooks_dir())
-        .unwrap_or_else(|_| ctx.workdir.join(".roko").join("learn").join("playbooks"));
+        .unwrap_or_else(|_| workdir.join(".roko").join("learn").join("playbooks"));
     let playbooks: Vec<roko_learn::playbook::Playbook> = std::fs::read_dir(&root)
         .ok()?
         .filter_map(Result::ok)
@@ -3589,7 +3653,8 @@ mod tests {
         assert!(!rendered.contains("must remain hidden"));
         assert!(load_group_context(temp.path(), "outsider", &task()).is_empty());
 
-        let ordinary = collect_neuro_knowledge(&task(), &prompt_ctx).expect("public knowledge");
+        let ordinary =
+            collect_neuro_knowledge(&task(), &prompt_ctx.workdir).expect("public knowledge");
         assert!(ordinary.body.contains("public wiring knowledge"));
         assert!(!ordinary.body.contains("visible wiring group knowledge"));
     }

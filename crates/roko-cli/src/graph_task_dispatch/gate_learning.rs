@@ -59,7 +59,7 @@ pub(super) fn record_gate_verdict_metrics(
     use roko_core::obs::metrics::LabelSet;
     use roko_core::obs::schema::{LABEL_GATE, LABEL_VERDICT, ROKO_GATE_VERDICTS_TOTAL_DESCRIPTOR};
 
-    let rung = rung_for_gate_name(phase);
+    let rung = rung_for_verify_phase(phase);
     let rung_index = rung.map(|rung| rung.as_index());
     let result = if verdict.passed { "pass" } else { "fail" };
     let seconds = verdict.duration_ms as f64 / 1000.0;
@@ -119,7 +119,7 @@ fn skip_advice(
 ) -> GateLearning {
     let mut learning = GateLearning::default();
     for (phase, passed) in step_outcomes {
-        let Some(rung) = rung_for_gate_name(phase).map(|rung| rung.as_index()) else {
+        let Some(rung) = rung_for_verify_phase(phase).map(|rung| rung.as_index()) else {
             continue;
         };
         if thresholds.should_skip_rung_for_temperament(rung, temperament) {
@@ -149,7 +149,7 @@ impl VerifyRun {
     fn observations(&self) -> u64 {
         self.step_outcomes
             .iter()
-            .filter(|(phase, _)| rung_for_gate_name(phase).is_some())
+            .filter(|(phase, _)| rung_for_verify_phase(phase).is_some())
             .count() as u64
     }
 
@@ -356,7 +356,8 @@ mod tests {
 
     use super::*;
     use crate::graph_task_dispatch::tests::{
-        VERIFY_PROVIDER, make_spec, make_test_dispatcher, no_auto_fix, verify_step,
+        VERIFY_PROVIDER, jsonl_rows_where, make_spec, make_test_dispatcher, no_auto_fix,
+        verify_step,
     };
 
     fn steps(outcomes: &[(&str, bool)]) -> Vec<(String, bool)> {
@@ -426,6 +427,67 @@ mod tests {
             4,
             "dropping the dispatcher writes what was left"
         );
+    }
+
+    /// gap-b1f7b9: a plan's own verify step feeds the gate history of the
+    /// rung it checks. A dispatched attempt whose passing step runs its test
+    /// suite under the phase `unit-tests`, as agent H's plans name it, adds
+    /// one observation to the test rung, and its verdict names the step
+    /// `verify:0/unit-tests`, where it said `custom:unit-tests`. Its
+    /// `structural` step, a custom check, adds none.
+    #[tokio::test]
+    async fn authored_test_steps_feed_the_test_rungs_history() {
+        let temp = tempdir().expect("tempdir");
+        let path = temp.path().join("learn").join("gate-thresholds.json");
+        let runs_dir = temp.path().join(".roko/runs");
+        let feedback = GraphFeedbackContext {
+            gate_thresholds_path: Some(path.clone()),
+            runs_dir: Some(runs_dir.clone()),
+            ..GraphFeedbackContext::default()
+        };
+        let (dispatcher, mut task) = make_test_dispatcher(
+            &temp,
+            VERIFY_PROVIDER,
+            |config| {
+                no_auto_fix(config);
+                config.learning.gate_threshold_flush_interval = 1;
+            },
+            feedback,
+        )
+        .await;
+        task.verify = vec![
+            verify_step("unit-tests", "true"),
+            verify_step("structural", "true"),
+        ];
+        let run = "graph-authored-steps-run";
+        let ctx = CellContext::new().with_run_id(run.to_string());
+        dispatcher
+            .dispatch(&make_spec(&task), Vec::new(), &ctx)
+            .await
+            .expect("the verified attempt passes");
+        drop(dispatcher);
+
+        let thresholds = GateThresholds::load_or_default(&path).expect("load thresholds");
+        let test = &thresholds.rungs[&roko_gate::Rung::Test.as_index()];
+        assert_eq!(
+            (test.pass_count, test.total_count),
+            (1, 1),
+            "{:?}",
+            thresholds.rungs
+        );
+        let observed: u64 = thresholds
+            .rungs
+            .values()
+            .map(|stats| stats.total_count)
+            .sum();
+        assert_eq!(observed, 1, "{:?}", thresholds.rungs);
+        let verdicts = jsonl_rows_where(&runs_dir.join(run).join("attempts.jsonl"), 1, |row| {
+            row["schema_version"] == "roko.verdict/1"
+        })
+        .await;
+        let steps = &verdicts[0]["steps"];
+        assert_eq!(steps[0]["rung"], "verify:0/unit-tests", "{steps}");
+        assert_eq!(steps[1]["rung"], "custom:structural", "{steps}");
     }
 
     /// Fake Claude CLI that answers every prompt, and adds a line to

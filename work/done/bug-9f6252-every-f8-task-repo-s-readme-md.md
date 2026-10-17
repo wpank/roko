@@ -2,15 +2,16 @@
 id = "bug-9f6252"
 kind = "bug"
 title = "Every F8 task repo's README.md opens with \"# honeypot-conflict (F5)\": the agent is told the instance is a honeypot"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p1"
 goal = "proof"
 size = "S"
 subsystem = ["viabilitybench/families"]
 created = 2026-10-16
-updated = 2026-10-16
-last_verified = 2026-10-16
+updated = 2026-10-17
+last_verified = 2026-10-17
+last_verified_rev = "de6c7d3ac"
 source = "bug-ca1de5 worker, 2026-10-16 (rendered F8 workdirs, README.md's first line)"
 discovered_from = "bug-ca1de5"
 anchors = ["benchmarks/viabilitybench/families/f8_honeypot/gen.py::generate", "benchmarks/viabilitybench/families/f8_honeypot/gen.py::README_TEMPLATE"]
@@ -19,6 +20,18 @@ links = { depends_on = ["bug-ca1de5"], blocks = ["gap-e9218e"], related = ["gap-
 
 [[verify]]
 command = "grep -qw 'def test_the_task_repo_never_says_honeypot' benchmarks/viabilitybench/families/f8_honeypot/test_f8.py && benchmarks/viabilitybench/.venv/bin/python -m pytest benchmarks/viabilitybench/families/f8_honeypot/test_f8.py -k test_the_task_repo_never_says_honeypot -q"
+
+[closed]
+at = 2026-10-17
+at_ts = "2026-10-17T03:38:30Z"
+commit = "de6c7d3ac"
+by = "commit trailer"
+executor = "claude-agent"
+via = "work-batch"
+size = "S"
+claimed_at = "2026-10-17T02:10:56Z"
+forced = false
+evidence = "de6c7d3ac: gen.render_readme writes the wrapped base's own README.md under its own heading (# api-pager, # money-round or # sql-migrate) with only the repository's convention section after it; a base with no README (none in the pool: F2, F3, F5, and F1 and F4 too, render one) would get one headed by its precise spec's title instead of '(This instance also wraps a F5 task ...)'. Generator f8-1.2.0. The verify passes: test_the_task_repo_never_says_honeypot, 3 passed (F2, F3, F5: no workdir file, .git included, says honeypot in any letter case; README.md names no family id and is the base instance's own README, restored from the base's pristine bundle, plus the convention; the no-README fallback is headed by the spec's title); on the previous gen.py all 3 fail (README.md says honeypot). Agent-facing tree, 70 instances (block E's 10 plus levels 1-5 x seeds 1-12): every file but README.md has the same sha256 as before, and each README.md is the previous one minus its first two lines ('# honeypot-conflict (Fx)' and a blank line); all 70 open with their base's heading (23 api-pager, 23 money-round, 24 sql-migrate) and none says honeypot or names a family id. spec.precise.md and the base instance's pristine record are identical, the manifest changes only in generator_version, and F8's pristine commit and tree change with the README. verify_verifiers --families f8 --levels 1-5 --seeds 10: 50/50 green; test_every_log1_f8_honeypot_materializes passes; test_f8.py 13 passed. Bench pytest 789 passed, 16 skipped (no roko binary, the analysis stack, opt-in sweeps). Filed bug-d7ff47: F2, F3 and F5 task repos name their family in a module docstring ('(F2 api-pager)' in app/pager.py), which F8's repos inherit; left unchanged here."
 +++
 
 ## Problem

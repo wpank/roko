@@ -194,7 +194,11 @@ $PY benchmarks/viabilitybench/driver/vb.py run --experiment PILOT-A --stream pil
   each provider's own search and fetch endpoints). An arm file's `[providers.<name>] proxy_allow` can admit a
   server-side tool a harness needs; none does. What it answers itself, a refusal or an injected fault, is in a
   provider's words and names neither the task, the run, a cap nor that a fault was injected (bug-fd8200), with the
-  status and `Retry-After` it always had; why it answered is in its log (`refused`, `detail`, `fault_injected`).
+  status and `Retry-After` it always had; why it answered is in its log (`refused`, `detail`, `fault_injected`). An
+  injected fault answers as its upstream does (bug-2224eb): in that provider's error shape and words
+  (`faultproxy.UPSTREAM_ERRORS`: Cerebras's flat object, z.ai's business code, Moonshot's types, OpenAI's), with the
+  headers of the upstream's last forwarded answer and fresh ids in their form; gap-db8dab holds the captures that
+  would settle what the providers' documents leave open.
 - **Disturbances** (`vb run --disturbance SPEC.toml`, `disturb.py`, S08 §4.6) apply H6's hooks to stream positions.
   `flaky_verify` routes every arm's visible checks through the visible-verify wrapper (`vb_verify.py`), which fails
   some of them at random; the census's own rerun never meets a flake. `model_swap` has the metering proxy serve

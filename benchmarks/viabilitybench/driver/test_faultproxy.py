@@ -13,7 +13,8 @@ import socket
 import threading
 import time
 import urllib.parse
-from dataclasses import dataclass
+from collections import Counter
+from dataclasses import dataclass, field
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
@@ -60,13 +61,16 @@ class StubUpstream:
     """A local OpenAI-compatible model: a JSON body, or server-sent events in a chunked body, with `raw_usage`.
 
     With `stream_usage=False` it plays a provider that ignores `stream_options.include_usage`; with `redirect_to` it
-    answers every request with a 307 there. `requests` holds every request as (lower-cased headers, body),
-    `reported` every usage object sent, in order, and `ports` the client ports the requests came from.
+    answers every request with a 307 there; `headers` are sent with each answer, as a provider's own. `requests`
+    holds every request as (lower-cased headers, body), `reported` every usage object sent, in order, and `ports` the
+    client ports the requests came from.
     """
 
-    def __init__(self, *, stream_usage: bool = True, redirect_to: str | None = None) -> None:
+    def __init__(self, *, stream_usage: bool = True, redirect_to: str | None = None,
+                 headers: list[tuple[str, str]] | None = None) -> None:
         self.stream_usage = stream_usage
         self.redirect_to = redirect_to
+        self.headers = list(headers or ())
         self.requests: list[tuple[dict, dict]] = []
         self.reported: list[dict] = []
         self.ports: set[int] = set()
@@ -119,6 +123,8 @@ class StubUpstream:
                 self.send_response(200)
                 self.send_header("Content-Type", "application/json")
                 self.send_header("Content-Length", str(len(data)))
+                for header, value in stub.headers:
+                    self.send_header(header, value)
                 self.end_headers()
                 self.wfile.write(data)
 
@@ -155,6 +161,7 @@ class Reply:
     headers: dict
     body: bytes
     error: str | None  # disconnected | incomplete | timeout
+    pairs: list[tuple[str, str]] = field(default_factory=list)  # every header in order, a repeated name repeated
 
     def json(self) -> dict:
         return json.loads(self.body)
@@ -185,9 +192,9 @@ def exchange(connection: http.client.HTTPConnection, method: str, path: str, bod
         return Reply(None, {}, b"", "timeout")
     received = dict(response.getheaders())
     try:
-        return Reply(response.status, received, response.read(), None)
+        return Reply(response.status, received, response.read(), None, response.getheaders())
     except http.client.IncompleteRead as err:
-        return Reply(response.status, received, err.partial, "incomplete")
+        return Reply(response.status, received, err.partial, "incomplete", response.getheaders())
 
 
 def call(method: str, url: str, body: dict | None = None, *, timeout: float = 10.0,
@@ -718,6 +725,151 @@ def test_no_proxy_answer_names_the_task_or_a_fault(upstream, log):
     assert [(row["fault_injected"], row["detail"]) for row in rows[7:11]] == [("http_5xx", None)] * 3 + [
         ("rate_limit", None)]
     assert (rows[11]["upstream"], rows[11]["status"], rows[11]["detail"]) == ("gone", 502, None)
+
+
+# bug-2224eb, test_an_injected_fault_looks_like_the_upstreams_own. What each arm provider's answers carry besides the
+# body's own headers, in their form with made-up values: Cerebras's from a captured 401 and a reported 429 (its
+# Cloudflare edge, and its per-day and per-minute limits), z.ai's from its documented 401 (its gateway's cookie and
+# three vary lines), OpenAI's from its rate-limit guide and its usual id headers. Moonshot documents none, so its stub
+# sends a request id and a rate-limit header.
+PROVIDER_HEADERS = {
+    "cerebras": [("x-ratelimit-limit-requests-day", "14400"), ("x-ratelimit-limit-tokens-minute", "60000"),
+                 ("x-ratelimit-remaining-requests-day", "14390"), ("x-ratelimit-remaining-tokens-minute", "59124"),
+                 ("x-ratelimit-reset-requests-day", "41726.2840924263"),
+                 ("x-ratelimit-reset-tokens-minute", "26.28409242630005"),
+                 ("referrer-policy", "strict-origin-when-cross-origin"), ("x-content-type-options", "nosniff"),
+                 ("strict-transport-security", "max-age=3600; includeSubDomains"), ("cf-cache-status", "DYNAMIC"),
+                 ("set-cookie", "__cf_bm=Q2t9vWzLx3pK8mN1rT5yB7cD0fG4hJ6kL9aS2dF5gH8-1792260000.1234567-1.0.1.1-aB3dE5f"
+                                "G7hJ9kL1mN3pQ5rS7tU9vW1; HttpOnly; Secure; Path=/; Domain=example.invalid; "
+                                "Expires=Sat, 17 Oct 2026 19:30:00 GMT"),
+                 ("cf-ray", "9c4c60c008df4f64-AMS"), ("alt-svc", 'h3=":443"; ma=86400')],
+    "zai": [("set-cookie", "acw_tc=76b20a1c9d3e4f5a6b7c8d9e0f1a2b3c4d5e6f7a8b9ca0e42;path=/;HttpOnly;Max-Age=1800"),
+            ("vary", "Origin"), ("vary", "Access-Control-Request-Method"), ("vary", "Access-Control-Request-Headers")],
+    "moonshot": [("msh-request-id", "6f3c2b1a0e9d8c7b6a5f4e3d2c1b0a99"), ("x-ratelimit-remaining-requests", "199")],
+    "openai": [("x-request-id", "req_8f3e2b1c9d0a4e5f6a7b8c9d0e1f2a3b"), ("openai-organization", "user-a1b2c3d4"),
+               ("openai-processing-ms", "523"), ("openai-version", "2020-10-01"), ("x-ratelimit-limit-requests", "500"),
+               ("x-ratelimit-remaining-requests", "499"), ("x-ratelimit-reset-requests", "120ms"),
+               ("cf-ray", "8f3e2b1c9d0a4e5f-SJC"),
+               ("strict-transport-security", "max-age=31536000; includeSubDomains; preload")],
+}
+# Each provider's own error bodies (docs.z.ai, platform.kimi.ai, OpenAI's error codes, a captured Cerebras 401): its
+# 429, its 500, its 503, and whether it sends compact JSON.
+PROVIDER_ERRORS = {
+    "cerebras": ({"message": "Requests per minute limit exceeded - too many requests sent.",
+                  "type": "too_many_requests_error", "param": None, "code": None},
+                 {"message": "Internal error", "type": "server_error", "param": None, "code": None}, None, True),
+    "zai": ({"error": {"code": "1302", "message": "Rate limit reached for requests"}},
+            {"error": {"message": "Internal Error"}}, None, True),
+    "moonshot": ({"error": {"type": "rate_limit_reached_error", "message": "Organization-level RPM limit reached"}},
+                 {"error": {"type": "server_error", "message": "Internal error"}},
+                 {"error": {"type": "server_unavailable",
+                            "message": "The service is unavailable, please try again later"}}, False),
+    "openai": ({"error": {"message": faultproxy.RATE_LIMITED, "type": "requests", "param": None,
+                          "code": "rate_limit_exceeded"}},
+               {"error": {"message": faultproxy.SERVER_ERROR, "type": "server_error", "param": None, "code": None}},
+               None, False),
+}
+# The words no 429 of the proxy's may hold: Roko reads them as billing, a quota, a usage window, an auth failure or a
+# context overflow, and litellm as a context window or a bad request, so a rate limit would not read as one.
+NOT_A_RATE_LIMIT = ("quota", "billing", "credit", "insufficient", "payment", "usage limit", "usage_limit", "hit your",
+                    "resets", "forbidden", "unauthorized", "authentication", "api key", "api_key", "context",
+                    "token limit", "too many tokens", "maximum input length", "invalid_request_error",
+                    "does not exist", "not found")
+PER_ANSWER_NAMES = {"x-request-id", "msh-request-id", "cf-ray", "set-cookie"}  # PROVIDER_HEADERS' that change
+
+
+def drawn_anew(old: str, new: str) -> bool:
+    """Whether `new` is `old` with its identifiers drawn anew (faultproxy's PER_ANSWER values): the same text between
+    the runs of letters and digits, each run as long, its words (letters only, under nine) kept, each other run drawn
+    from its own alphabet, and something changed."""
+    split = re.compile(r"[A-Za-z0-9]+")
+    old_runs, new_runs = split.findall(old), split.findall(new)
+    if new == old or split.split(old) != split.split(new) or len(old_runs) != len(new_runs):
+        return False
+    for was, now in zip(old_runs, new_runs):
+        if len(was) != len(now) or (len(was) < 9 and was.isalpha() and now != was):
+            return False
+        alphabet = next((letters for letters in ("0123456789", "0123456789abcdef", "0123456789ABCDEF")
+                         if set(was) <= set(letters)), None)
+        if alphabet is not None and not set(now) <= set(alphabet):
+            return False
+        kinds = [(char.isdigit(), char.islower()) for char in was]
+        if alphabet is None and kinds != [(char.isdigit(), char.islower()) for char in now]:
+            return False
+    return True
+
+
+@pytest.mark.parametrize("name", sorted(PROVIDER_HEADERS))
+def test_an_injected_fault_looks_like_the_upstreams_own(name, log):
+    """bug-2224eb: an injected fault answers as its upstream does. Behind a stub that answers with a provider's own
+    headers (PROVIDER_HEADERS), a rate_limit fault and an http_5xx fault at 500 and at 503 carry the header names of a
+    forwarded answer of that provider, each as often (z.ai's three vary lines), and a rate limit's Retry-After; the
+    values that are new on every answer (a request id, cf-ray, a cookie's token) are drawn anew in the same form for
+    each fault, and the others are the provider's; the body has the provider's own shape and words, compact where
+    the provider's is (PROVIDER_ERRORS); and the statuses, Retry-After and the log are as before. A 429 holds no word
+    a harness reads as anything but a rate limit, a 5xx none a harness classifies by, and no answer names the task or
+    a fault. A fault before the upstream has answered anything carries none of its headers."""
+    rate_limited, server_error, unavailable, compact = PROVIDER_ERRORS[name]
+    with StubUpstream(headers=PROVIDER_HEADERS[name]) as stub, faultproxy.FaultProxy(
+            [faultproxy.Upstream(name, stub.url)], log_path=log) as proxy:
+        url = completions(proxy, name)
+        proxy.configure(task="F8-l3-0038.s1", profile={"name": "rate_limit", "p": 1.0, "retry_after": 7})
+        early = post(url, REQUEST)  # nothing forwarded yet: no header of the provider's to carry
+        proxy.configure(profile="clean")
+        forwarded = post(url, REQUEST)
+        proxy.configure(profile={"name": "rate_limit", "p": 1.0, "retry_after": 7})
+        faults = {"rate_limit": post(url, REQUEST), "rate_limit:again": post(url, REQUEST)}
+        for status in (500, 503):
+            proxy.configure(profile={"name": "http_5xx", "p": 1.0, "status": status})
+            faults[f"http_5xx:{status}"] = post(url, REQUEST)
+    assert len(stub.requests) == 1  # only the clean call was forwarded
+
+    def names(reply: Reply) -> Counter:
+        return Counter(header.lower() for header, _ in reply.pairs)
+
+    def values(reply: Reply) -> dict[str, list[str]]:
+        found: dict[str, list[str]] = {}
+        for header, value in reply.pairs:
+            found.setdefault(header.lower(), []).append(value)
+        return found
+
+    own = {header.lower() for header, _ in PROVIDER_HEADERS[name]}
+    assert forwarded.status == 200 and own <= set(names(forwarded)), forwarded.pairs
+    assert early.status == 429 and not own & set(names(early)) and early.headers["Retry-After"] == "7"
+    assert {reply.status for key, reply in faults.items() if key.startswith("rate_limit")} == {429}
+    assert (faults["http_5xx:500"].status, faults["http_5xx:503"].status) == (500, 503)
+    for key, reply in faults.items():
+        retry = Counter({"retry-after": 1}) if key.startswith("rate_limit") else Counter()
+        assert names(reply) == names(forwarded) + retry, (key, reply.pairs, forwarded.pairs)
+        assert reply.headers.get("Retry-After") == ("7" if retry else None), key
+        assert reply.headers["Content-Type"] == "application/json", key
+        for header, forwarded_values in values(forwarded).items():
+            if header not in own:
+                continue
+            for was, now in zip(forwarded_values, values(reply)[header]):
+                if header in PER_ANSWER_NAMES:
+                    assert drawn_anew(was, now), (key, header, was, now)
+                else:
+                    assert now == was, (key, header, was, now)
+    for header in own & PER_ANSWER_NAMES:  # a new value for every fault, not one per run
+        assert values(faults["rate_limit"])[header] != values(faults["rate_limit:again"])[header], header
+    separators = (",", ":") if compact else None
+    for key, body in (("rate_limit", rate_limited), ("rate_limit:again", rate_limited),
+                      ("http_5xx:500", server_error), ("http_5xx:503", unavailable or server_error)):
+        assert faults[key].body == json.dumps(body, separators=separators).encode(), (key, faults[key].body)
+    for key, reply in faults.items():  # what the proxy writes itself names nothing (the provider's own headers aside)
+        seen = reply.body.decode() + "".join(f"{header}: {value}\n" for header, value in reply.pairs
+                                             if header.lower() not in own)
+        assert not LEAKS.search(seen) and "F8-l3-0038" not in seen, (key, seen)
+        lower = reply.body.decode().lower()
+        banned = NOT_A_RATE_LIMIT if reply.status == 429 else HARNESS_WORDS
+        assert [word for word in banned if word in lower] == [], (key, lower)
+        if reply.status == 429:  # Roko's text classifiers read it as a rate limit, even without its status
+            assert any(word in lower for word in ("rate limit", "rate_limit", "too many requests")), (key, lower)
+    rows = read_log(log, "F8-l3-0038.s1")
+    assert [(row["fault_injected"], row["status"], row["forwarded"]) for row in rows] == [
+        ("rate_limit", 429, False), (None, 200, True), ("rate_limit", 429, False), ("rate_limit", 429, False),
+        ("http_5xx", 500, False), ("http_5xx", 503, False)]
 
 
 def test_control_endpoint_needs_the_token(proxy, upstream):

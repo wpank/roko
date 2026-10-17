@@ -104,10 +104,12 @@ $PY benchmarks/viabilitybench/driver/vb.py run --experiment PILOT-A --stream pil
   attempt starts. Per task: 30 turns, 300K input tokens and 20 minutes. The runaway detector stops a task at 30 model
   calls, 5 identical commands in a row, or its dollar cap. Caps are checked before each call, so none is exceeded; a
   capped task ends `aborted_cap` (or `timeout`) with VS = 0.
-- **Isolation.** Each (task, seed) gets a fresh workdir under `$VB_WORK` (default `~/vb-work/<run_id>/`). The task
-  manifest, which holds the canary, and the pristine bundle live in the run's `private/` directory, never in a
-  workdir. Agent processes get an allowlisted environment (`agent_env.py`): no `VB_*` variables, no provider keys, a
-  per-task HOME. The truth suites and the census's visible re-run run the agent's code through
+- **Isolation.** Each (task, seed) gets a fresh workdir under `$VB_WORK` (default `~/vb-work/`). It, its agent's HOME
+  and the run's directory above them are named by random ids, so no path an agent sees names its instance (family
+  and ladder level) or its run (bug-3c921e); the record's `provenance.alias` and the manifest's `work_dir` map them
+  back. The task manifest, which holds the canary, and the pristine bundle live in the run's `private/` directory,
+  never in a workdir. Agent processes get an allowlisted environment (`agent_env.py`): no `VB_*` variables, no
+  provider keys, a per-task HOME. The truth suites and the census's visible re-run run the agent's code through
   `families/common/sandbox.py`. On macOS, `sandbox-exec` denies that code the secret file, the task's private
   directory and the network. Elsewhere there is no confinement yet, and the run record says so (`vs.sandbox`,
   gap-8c3752). Agents can read the driver's own start-up environment (`ps -E`, `/proc`), so once its checks pass,

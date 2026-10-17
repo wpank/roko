@@ -10,14 +10,25 @@ and `replay`.
     vb campaign --manifest experiments/pilot_a.toml --dry-run        # an experiment's blocks (campaign.py)
 
 `vb run` runs every (task, seed) of a stream on one arm and one model, in a fresh workdir under `$VB_WORK` (default
-`~/vb-work/<run_id>/`), outside the repository. For each one it: materializes the task (`materialize`); runs the
-arm's runner module (`harness`: the arm file's `runner`, or its `harness` id with "-" read as "_", so a new arm adds
-files and never edits this one); commits the final tree as c_i without touching the agent's repo and archives it
-(`archive`); labels c_i by VS-census (`census`); and appends a `vb.run_record/1` row (`records`). Ledger rows
-(`ledger`) are appended by the runner as attempts end. Everything lands in `$VB_RESULTS/<experiment>/<run_id>/`
-(default `~/.roko-bench/viability`): `manifest.json`, `order-<seed>.json`, `records.jsonl`, `ledger.jsonl`,
-`archives/`, `private/` (task manifests and pristine bundles, never an agent's), `errors.jsonl` and, with
-`--transcripts`, `transcripts/`. Stream positions in records are 1-based.
+`~/vb-work/`), outside the repository, whose path names neither the task nor the run (below). For each one it:
+materializes the task (`materialize`); runs the arm's runner module (`harness`: the arm file's `runner`, or its
+`harness` id with "-" read as "_", so a new arm adds files and never edits this one); commits the final tree as c_i
+without touching the agent's repo and archives it (`archive`); labels c_i by VS-census (`census`); and appends a
+`vb.run_record/1` row (`records`). Ledger rows (`ledger`) are appended by the runner as attempts end. Everything lands
+in `$VB_RESULTS/<experiment>/<run_id>/` (default `~/.roko-bench/viability`): `manifest.json`, `order-<seed>.json`,
+`records.jsonl`, `ledger.jsonl`, `archives/`, `private/` (task manifests and pristine bundles, never an agent's),
+`errors.jsonl` and, with `--transcripts`, `transcripts/`. Stream positions in records are 1-based.
+
+**What an agent's paths say** (bug-3c921e). An instance id names its family and its ladder level (`F8-l3-0038` is a
+level-3 instance of the honeypot family), and a campaign's run id names its block (`e-oss-1`: LOG1's block E, the
+honeypots), so neither may show in a path an agent can see: Claude Code even writes its working directory into its own
+system prompt. The run's work directory is `$VB_WORK/<16 random hex digits>`, which the manifest's `work_dir` names.
+Each task's workdir is `<work_dir>/<alias>`, its agent's HOME (and so TMPDIR) `<work_dir>/_home/<alias>` and the
+census's HOME `<work_dir>/_home/<alias>.census`, where the alias is another random id, kept in the task's record
+(`provenance.alias`) and its error lines, and handed to the runner (`TaskContext.alias`): Roko's plan directory and the
+visible-verify wrapper's draws are keyed by it as well. A hash of the task key would not do, since the keys are few and
+their scheme is public: an agent could hash every one. The task key stays on the driver's side: `private/<key>/`,
+`archives/<key>.*`, `transcripts/<key>.json`, the ledger's attempt keys and the proxies' task.
 
 **The pre-registration lock** (S09 SC1, 3341). `vb run` of an experiment that runs only under the lock (LOG1, a live
 `E-` experiment, or one whose manifest says `requires_lock`: `campaign.requires_lock`) stops before anything else,
@@ -405,7 +416,7 @@ def cmd_run(args: argparse.Namespace) -> int:
     if run_dir.exists():
         raise DriverError(f"{run_dir} already exists; pick another --run-id")
     run_dir.mkdir(mode=0o700, parents=True)
-    work_dir = work_root / run_id
+    work_dir = work_root / _alias(work_root)  # never the run id, which an agent would see (module docstring)
     work_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
 
     line = args.line or plan.arm["arm"]["line"]
@@ -477,8 +488,9 @@ def _run_one(run: Run, instance_id: str, seed: int, stream_position: dict) -> bo
     """One (task, seed): materialize, run, commit and archive c_i, label it, and append its record."""
     args, plan, run_dir, work_dir = run.args, run.plan, run.run_dir, run.work_dir
     key = f"{instance_id}.s{seed}"
-    workdir, private = work_dir / key, run_dir / "private" / key
-    homes = [work_dir / "_home" / key, work_dir / "_home" / f"{key}.census"]
+    alias = _alias(work_dir)  # names all of the task that its agent can see (module docstring)
+    workdir, private = work_dir / alias, run_dir / "private" / key
+    homes = [work_dir / "_home" / alias, work_dir / "_home" / f"{alias}.census"]
     position = stream_position["position"]
     limits = disturb.scaled(plan.caps, run.disturbances, position)  # the arm's caps, cut by a budget_cut
     try:
@@ -486,18 +498,19 @@ def _run_one(run: Run, instance_id: str, seed: int, stream_position: dict) -> bo
                                        workdir=workdir, private_dir=private, spec_variant=plan.stream.spec_variant,
                                        latent=disturb.latent(run.disturbances, position))
     except (materialize.MaterializeError, repo.RepoError, OSError, ValueError) as err:
-        _log_error(run_dir, key, "materialize", err)
+        _log_error(run_dir, key, "materialize", err, alias=alias)
         _cleanup(args, [workdir])
         return False
     env = agent_env.build(home=homes[0])
-    wrapper = _verify_wrapper(run, key, task.manifest, env, position)
+    wrapper = _verify_wrapper(run, alias, task.manifest, env, position)
     swap = disturb.swap(run.disturbances, position)  # the model the proxy serves in place of the pin, if any
     ctx = harness.TaskContext(
         experiment_id=args.experiment, run_id=run.run_id, arm=run.arm, model=plan.model, endpoint=run.endpoint,
         provider=run.chat, snapshot=plan.snapshot, caps=limits, ledger=run.book, billed=plan.arm["arm"]["billed"],
-        instance_id=instance_id, seed=seed, key=key, workdir=workdir, spec_text=task.spec_text, agent_env=env,
-        visible_verify=tuple(task.manifest["visible_verify"]), files_in_scope=tuple(task.manifest["files_in_scope"]),
-        verify_wrapper=wrapper, model_swap=swap, deny=_agent_deny(run))
+        instance_id=instance_id, seed=seed, key=key, alias=alias, workdir=workdir, spec_text=task.spec_text,
+        agent_env=env, visible_verify=tuple(task.manifest["visible_verify"]),
+        files_in_scope=tuple(task.manifest["files_in_scope"]), verify_wrapper=wrapper, model_swap=swap,
+        deny=_agent_deny(run))
     if run.proxy:  # the proxy's rows for this task carry its key, which is how the Roko arm finds them
         held = getattr(run.runner, "PROXY_CAPS", ())  # the caps a runner's harness cannot hold itself
         run.proxy.configure(task=ctx.key, profile=disturb.profile(run.disturbances, position),
@@ -511,7 +524,8 @@ def _run_one(run: Run, instance_id: str, seed: int, stream_position: dict) -> bo
         outcome = harness.TaskOutcome("infra_error", f"runner crashed: {type(err).__name__}: {err}", [], [], now, now)
     verify_log = vb_verify.read_log(wrapper) if wrapper else None
     if wrapper and verify_log is None:
-        _log_error(run_dir, key, "verify wrapper", "its log is gone, so the record cannot count the visible checks")
+        _log_error(run_dir, key, "verify wrapper", "its log is gone, so the record cannot count the visible checks",
+                   alias=alias)
     meter = _task_meter(run.proxy, key)
     _end_on_proxy_cap(outcome, meter)
     if run.proxy:
@@ -546,16 +560,17 @@ def _run_one(run: Run, instance_id: str, seed: int, stream_position: dict) -> bo
                            stream=stream_position, materialized=task, outcome=outcome, result=result, final=final,
                            archived=archived, transcript_ref=transcript_ref, meter_usd=meter_usd,
                            verify_log=verify_log, model_swap=swap,
-                           proxy_policy={**run.proxy.policy(), "refused": refused} if run.proxy else None)
+                           proxy_policy={**run.proxy.policy(), "refused": refused} if run.proxy else None,
+                           alias=alias)
     if meter_usd is not None and record["costs"]["api_equiv_usd"] is not None:  # as `vb ledger reconcile` flags drift
         check = ledger._compare(record["costs"]["api_equiv_usd"], meter_usd, ledger.TOLERANCE)
         if check["flagged"]:
             _log_error(run_dir, key, "meter check", f"the ledger's ${check['ledger']} and the proxy's "
-                       f"${check['export']} differ by more than ±{ledger.TOLERANCE:.0%}")
+                       f"${check['export']} differ by more than ±{ledger.TOLERANCE:.0%}", alias=alias)
     try:
         records.append(run_dir / "records.jsonl", record)
     except records.RecordError as err:
-        _log_error(run_dir, key, "record", err)
+        _log_error(run_dir, key, "record", err, alias=alias)
         return False
     finally:
         _cleanup(args, [workdir, *homes, private / "final", private / "census"])
@@ -574,15 +589,16 @@ def _agent_deny(run: Run) -> tuple[Path, ...]:
     return tuple(dict.fromkeys([run.secret_file, *(wire.path for wire in secret.tripwires()), run.run_dir / "private"]))
 
 
-def _verify_wrapper(run: Run, key: str, manifest: dict, env: dict[str, str], position: int) -> Path | None:
+def _verify_wrapper(run: Run, alias: str, manifest: dict, env: dict[str, str], position: int) -> Path | None:
     """In a run with `flaky_verify`, the task's visible-verify wrapper, installed in the agent's `.vb-bin/` with the
-    covering disturbance's p and seed (p = 0 at the positions it does not cover); None in any other run."""
+    covering disturbance's p and seed (p = 0 at the positions it does not cover); None in any other run. Its draws
+    are keyed by the task's alias, which is all its config, in the agent's HOME, shows of the task (bug-3c921e)."""
     if not any(one.kind == "flaky_verify" for one in run.disturbances):
         return None
     p, seed = disturb.flake(run.disturbances, position)
     bin_dir = Path(env["PATH"].split(os.pathsep, 1)[0])  # agent_env's per-task .vb-bin/, which PATH starts with
     shell = shutil.which("bash", path=env["PATH"]) or "/bin/bash"  # the shell the direct loop would use
-    return vb_verify.install(bin_dir, key=key, visible=manifest["visible_verify"], p=p, seed=seed, shell=shell)
+    return vb_verify.install(bin_dir, key=alias, visible=manifest["visible_verify"], p=p, seed=seed, shell=shell)
 
 
 def _preflight(runner: ModuleType, plan: Plan) -> None:
@@ -769,8 +785,19 @@ def _write_json(path: Path, value: object) -> None:
     path.write_text(json.dumps(value, indent=2, sort_keys=True, ensure_ascii=False) + "\n", encoding="utf-8")
 
 
-def _log_error(run_dir: Path, key: str, stage: str, err: object) -> None:
-    line = json.dumps({"ts": harness.utc_now(), "task": key, "stage": stage, "error": str(err)[:1000]})
+def _alias(parent: Path) -> str:
+    """16 random hex digits that name nothing under `parent` yet: the name of a run's work directory, or a task's
+    alias (module docstring). Random, not a hash of the run id or the task key, which an agent could invert."""
+    while True:
+        alias = secrets.token_hex(8)
+        if not os.path.lexists(parent / alias):
+            return alias
+
+
+def _log_error(run_dir: Path, key: str, stage: str, err: object, *, alias: str | None = None) -> None:
+    """One line of errors.jsonl; a task's own errors name its alias too, so that a kept workdir can be found."""
+    line = json.dumps({"ts": harness.utc_now(), "task": key, **({"alias": alias} if alias else {}), "stage": stage,
+                       "error": str(err)[:1000]})
     with (run_dir / "errors.jsonl").open("a", encoding="utf-8") as handle:
         handle.write(line + "\n")
     print(f"vb: {key}: {stage} failed: {str(err)[:300]}", file=sys.stderr)

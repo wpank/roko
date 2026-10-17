@@ -68,7 +68,7 @@ API:
     Rung(name, model, provider, base_url, api_key_env, price_row=None, ...)      # one rung of ladder mode
     emit(spec: PlanSpec, workspace: Path) -> Emitted              # raises PlanEmitError
     Emitted(slug, plan_dir, tasks_path, config_path, tasks_text, config_text, visible_command)
-    plan_slug(key: str) -> str; SCAFFOLDING; TASK_ID; TIERS; FRONTIER_MODELS
+    plan_slug(alias: str) -> str; SCAFFOLDING; TASK_ID; TIERS; FRONTIER_MODELS
     TEMPLATE_VERSION, TEMPLATE_SHA256                 # the pinned mode's, provider_kind openai_compat
     LADDER_VERSION, LADDER_TEMPLATE_SHA256            # ladder mode's
     CLAUDE_CLI_TEMPLATE_SHA256                        # the pinned mode's, provider_kind claude_cli (3318)
@@ -294,7 +294,7 @@ class PlanEmitError(ValueError):
 
 @dataclass(frozen=True)
 class PlanSpec:
-    key: str  # "<instance_id>.s<seed>"
+    alias: str  # the task's alias (`TaskContext.alias`), which names the plan (`plan_slug`); never its task key
     spec_text: str  # the task text every arm gets
     files: tuple[str, ...]  # the manifest's files_in_scope
     visible: tuple[str, ...]  # the manifest's visible_verify commands
@@ -350,9 +350,11 @@ class Emitted:
     visible_command: str
 
 
-def plan_slug(key: str) -> str:
-    """An opaque plan id: the instance id names the ladder level, which the direct arm's agent never sees."""
-    return "vb-" + hashlib.sha256(key.encode("utf-8")).hexdigest()[:10]
+def plan_slug(alias: str) -> str:
+    """The plan id, which the agents in the workspace see: a hash of the task's alias (`TaskContext.alias`), never of
+    its task key (bug-3c921e). The instance id names the family and the ladder level, and the keys are few and their
+    scheme public, so a hash of a key could be inverted by hashing every one."""
+    return "vb-" + hashlib.sha256(alias.encode("utf-8")).hexdigest()[:10]
 
 
 def emit(spec: PlanSpec, workspace: Path) -> Emitted:
@@ -371,7 +373,7 @@ def emit(spec: PlanSpec, workspace: Path) -> Emitted:
         raise PlanEmitError("max_retries must be 0-5, and max_turns and the verify timeout at least 1")
     if not (spec.usd_cap > 0 and math.isfinite(spec.usd_cap)):
         raise PlanEmitError(f"the dollar cap must be a finite number above 0, not {spec.usd_cap!r}")
-    slug = plan_slug(spec.key)
+    slug = plan_slug(spec.alias)
     overlay = resolve_overlay(spec.overlay)
     frozen = is_frozen(spec)
     if spec.rungs:

@@ -33,7 +33,8 @@ from test_sandbox_net import Listener, macos_only
 
 PLAN_MODEL = "claude-opus-5-5"
 CHEAP, MID = "gpt-oss-120b", "glm-4.7"
-SLUG_KEY = "PL01-0001.s1"
+KEY = "PL01-0001.s1"
+ALIAS = "5d0c1f9e3a7b2468"  # the task's alias, which names its workdir and its plan (bug-3c921e)
 PLANNER_RESULT = {
     "type": "result", "subtype": "success", "is_error": False, "duration_ms": 9000, "duration_api_ms": 8000,
     "num_turns": 3, "result": "Wrote the plan.", "session_id": "fake-plan-session", "total_cost_usd": 0.42,
@@ -151,7 +152,7 @@ def task_context(places: dict[str, Path], arm: dict, binary: Path) -> harness.Ta
     snapshot = ledger.load_snapshot()
     run_dir = places["results"] / "TEST-PLAN" / "run-1"
     run_dir.mkdir(parents=True)
-    work = places["work"] / SLUG_KEY
+    work = places["work"] / ALIAS
     work.mkdir(parents=True)
     subprocess.run(["git", "init", "-q"], cwd=work, check=True)
     subprocess.run(["git", "-c", "user.email=a@b.c", "-c", "user.name=a", "commit", "--allow-empty", "-qm", "x"],
@@ -162,14 +163,14 @@ def task_context(places: dict[str, Path], arm: dict, binary: Path) -> harness.Ta
         experiment_id="TEST-PLAN", run_id="run-1", arm=arm, model=CHEAP,
         endpoint=provider.Endpoint("cerebras", "http://127.0.0.1:9/cerebras"), provider=None,
         snapshot=snapshot, caps=caps.Caps.from_table(arm["caps"]), ledger=book, billed=True,
-        instance_id="PL01-0001", seed=1, key=SLUG_KEY, workdir=work,
+        instance_id="PL01-0001", seed=1, key=KEY, alias=ALIAS, workdir=work,
         spec_text="# Feature\n\nAdd a widget with three parts.\n", files_in_scope=("a.py",), visible_verify=("true",),
         agent_env=agent_env.build(home=places["work"] / "_home"))
 
 
 def test_roko_plan_runner_records_planner_and_executor_costs(places):
     arm = vb.load_arm("roko_plan")
-    slug = run_roko_plan.planemit.plan_slug(SLUG_KEY)
+    slug = run_roko_plan.planemit.plan_slug(ALIAS)
     fake_claude(places, slug, three_task_plan(slug))
     ctx = task_context(places, arm, fake_roko(places))
     outcome = run_roko_plan.run_task(ctx)
@@ -211,7 +212,7 @@ def test_roko_plan_planner_and_ladder_cannot_reach_the_network(places):
     network only through its egress proxy, which refuses a truth suite's host, and cannot open a socket to a local
     listener; the ladder's roko processes, whose tools run the agent's commands, cannot reach the listener either."""
     arm = vb.load_arm("roko_plan")
-    slug = run_roko_plan.planemit.plan_slug(SLUG_KEY)
+    slug = run_roko_plan.planemit.plan_slug(ALIAS)
     ladder_log = places["tmp"] / "ladder-shell.log"
     with Listener() as other:
         local = f"curl -sS --max-time 5 http://127.0.0.1:{other.port}/; echo exit=$?"

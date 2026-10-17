@@ -1944,8 +1944,7 @@ pub struct PredictionPredictor {
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ForecastBasis {
-    /// L0, the per-arm hierarchical prior: while the model is cold, and for a first try on an
-    /// arm that has started too few tasks.
+    /// L0, the per-arm hierarchical prior: while the model is cold, and for every first try.
     #[default]
     Prior,
     /// L1, the logit over the task's and the arm's features.

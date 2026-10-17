@@ -34,12 +34,6 @@ pub const STATE_SCHEMA: &str = "roko.self_model_state/1";
 pub const STATE_FILE: &str = "learn/self-model/state-v1.json";
 /// Below this many labelled outcomes, forecasts use L0 alone (S04 §4.10).
 pub const N_MIN: usize = 30;
-/// The first tries of an arm L1 needs to have learned before it forecasts the arm's first try;
-/// below it, L0's per-arm rate does (gap-3f36a6). The ladder runs a higher rung only after
-/// failures, so on an arm that has rarely started a task, L1 credits the attempt order rather
-/// than the arm: warm on ladder data it forecast mid's first try at 0.01 though mid passed
-/// 20/20, and would have started tasks on a rung that never ran.
-pub const FIRST_TRIES_MIN: u32 = 5;
 /// The outcomes a new version spends in shadow before its forecasts may count (S04 §4.2).
 pub const SHADOW_OUTCOMES: usize = 30;
 /// The rung L1 learns while units carry one gate verdict.
@@ -78,10 +72,6 @@ pub struct SelfModel {
     history: PassEma,
     /// Labelled outcomes learned under this version.
     pub outcomes: usize,
-    /// The labelled first tries learned of each model, which decide whether L1 forecasts the
-    /// model's first try ([`FIRST_TRIES_MIN`]).
-    #[serde(default)]
-    first_tries: BTreeMap<String, u32>,
 }
 
 /// What a [`TYPICAL_ATTEMPT`] costs at a price snapshot, in USD: on each model it prices, and
@@ -160,7 +150,6 @@ impl SelfModel {
             recal: Recalibrator::default(),
             history: PassEma::default(),
             outcomes: 0,
-            first_tries: BTreeMap::new(),
         }
     }
 
@@ -184,17 +173,24 @@ impl SelfModel {
             .collect()
     }
 
-    /// The forecast for `arm` on `task`.
+    /// The forecast for `arm` on `task`. A first try takes L0's per-arm rate, also once the
+    /// model is warm (gap-3f36a6): the ladder runs a higher rung only after failures, so in its
+    /// data, and in an active self-model's, the arm and the attempt order move together, and
+    /// L1 credits the order. Warm on ladder data it forecast mid's first try at 0.01 though mid
+    /// passed 20/20; once mid started tasks it gave cheap's first try 0.95 after seven failures.
+    /// L1 forecasts retries and climbs. Its task features, the lessons a prompt carries
+    /// included, wait on an arm-by-order fix to inform a first try (gap-e464e6).
     fn forecast_arm(&self, task: &TaskFeatures, arm: &ArmKey) -> CandidateForecast {
         let l0 = self.prior.forecast(&arm.model, &task.family, &task.role);
+        let l0_lcb = l0.lcb.min(l0.p);
         let cold_start = self.cold_start();
         let (p_gate, p_gate_lcb, p_fg, basis) = if cold_start {
-            (l0.p, l0.lcb, FALSE_GREEN_PRIOR, ForecastBasis::Prior)
+            (l0.p, l0_lcb, FALSE_GREEN_PRIOR, ForecastBasis::Prior)
         } else {
             let x = self.features(task, arm);
             let gate = self.gates.forecast(&x, l0.p, &[GATE_RUNG]);
-            if self.first_try_unsupported(task, arm) {
-                (l0.p, l0.lcb, gate.p_fg, ForecastBasis::Prior)
+            if task.attempt <= 1 {
+                (l0.p, l0_lcb, gate.p_fg, ForecastBasis::Prior)
             } else {
                 let p_gate = self.recal.apply(gate.p_gate);
                 (
@@ -222,13 +218,6 @@ impl SelfModel {
             cost_prior: costs.cost_prior,
             latency_prior: costs.latency_prior,
         }
-    }
-
-    /// Whether `task` is a first try of `arm` and the model has learned fewer than
-    /// [`FIRST_TRIES_MIN`] first tries of it, so L0 forecasts it (gap-3f36a6).
-    fn first_try_unsupported(&self, task: &TaskFeatures, arm: &ArmKey) -> bool {
-        let learned = self.first_tries.get(&arm.model).copied().unwrap_or(0);
-        task.attempt <= 1 && learned < FIRST_TRIES_MIN
     }
 
     /// L1's feature vector for `arm` on `task`.
@@ -267,9 +256,6 @@ impl SelfModel {
             w,
         );
         self.history.observe(&task.family, &arm.model, passed);
-        if task.attempt <= 1 {
-            *self.first_tries.entry(arm.model.clone()).or_default() += 1;
-        }
         self.outcomes += 1;
     }
 
@@ -511,11 +497,11 @@ mod tests {
         assert!(mid >= 0.7, "P(mid, first try) {mid}: {first:?}");
         assert!(cheap <= 0.2, "P(cheap, first try) {cheap}: {first:?}");
         assert_eq!(start_rung(&first, BREAK_EVEN_MARGIN), Some(1), "{first:?}");
-        // Cheap started 14 tasks, so L1 forecasts its first try; mid started none and strong
-        // never ran, so L0 forecasts theirs.
-        let bases: Vec<ForecastBasis> = first.iter().map(|forecast| forecast.basis).collect();
         let (prior, logit) = (ForecastBasis::Prior, ForecastBasis::Logit);
-        assert_eq!(bases, [logit, prior, prior]);
+        assert!(
+            first.iter().all(|forecast| forecast.basis == prior),
+            "{first:?}"
+        );
         // Mid's own third try keeps L1's forecast, which the order features belong to.
         let third = TaskFeatures {
             attempt: 3,
@@ -524,13 +510,25 @@ mod tests {
         };
         let retry = model.forecast(&third, &ladder[1..2]);
         assert_eq!(retry[0].basis, logit, "{retry:?}");
-        // Five first tries of its own let L1 forecast mid's first try too.
-        for index in 0..FIRST_TRIES_MIN {
+
+        // Then the self-model starts eleven tasks on mid, as an active one does, and they pass:
+        // L1 learns "a first try passes" from mid and credited it to cheap's first try (0.95
+        // after seven failures in learning-research's active run) and, freshly warm, dipped
+        // mid's to 0.11. Every first try still takes L0's per-arm rate.
+        for index in 0..11 {
             let mut started = unit("glm-4.7", &format!("M{index}"), 1, true);
             started.arm = ladder[1].clone();
             model.observe(&started, 1.0);
         }
-        assert_eq!(model.forecast(&task(), &ladder)[1].basis, logit);
+        let first = model.forecast(&task(), &ladder);
+        let (cheap, mid) = (first[0].p_vs, first[1].p_vs);
+        assert!(mid >= 0.7, "P(mid, first try) {mid}: {first:?}");
+        assert!(cheap <= 0.2, "P(cheap, first try) {cheap}: {first:?}");
+        assert!(
+            first.iter().all(|forecast| forecast.basis == prior),
+            "{first:?}"
+        );
+        assert_eq!(start_rung(&first, BREAK_EVEN_MARGIN), Some(1), "{first:?}");
     }
 
     #[test]

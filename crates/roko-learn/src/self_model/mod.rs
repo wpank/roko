@@ -317,9 +317,8 @@ pub struct CandidateForecast {
     pub lat_q90_s: f64,
     /// The forecast comes from L0 alone: the model has fewer outcomes than it needs (6116).
     pub cold_start: bool,
-    /// The layer that forecast `p_gate`: L0 while the model is cold, and for a first try on an
-    /// arm with fewer than [`model::FIRST_TRIES_MIN`] first tries learned; L1 otherwise
-    /// (gap-3f36a6).
+    /// The layer that forecast `p_gate`: L0 while the model is cold and for every first try,
+    /// L1 for a retry or a climb (gap-3f36a6).
     #[serde(default)]
     pub basis: ForecastBasis,
     /// The cost quantiles are a bounded prior: the cost model's rows do not support the

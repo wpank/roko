@@ -103,3 +103,21 @@ Then test `ladder_ordered_outcomes_do_not_confound_the_start_forecast`:
 The `[[verify]]` command passes, and re-running the round-v6 `shadow` series
 (`tmp/hermes-roko-v6/learning-research/scripts/rung_demo.sh`, 20 tasks) keeps "would start on" at glm-4.7 through
 task 20.
+
+## Notes
+
+2026-10-17 (roko-recovery, the lead's decisions):
+- **The first fix was not enough.** It forecast an arm's first try from L0 only while the arm had fewer than 5
+  learned first tries. That fixed shadow mode (would_choose stayed glm-4.7 through task 20), but not active mode,
+  in learning-research's re-run (`tmp/hermes-roko-v6/learning-research/evidence/start-rung/merged/`):
+  - at task 19, the first warm task, mid had 11 learned first tries, so L1 forecast it; L1 dipped mid's first try
+    to 0.11–0.32 and the pick went to the untried strong rung;
+  - from task 20, L1 forecast cheap's first try at 0.92–0.95 after 7 straight first-try failures.
+
+  L1 at about 30 online outcomes cannot forecast a first try. The order features are shared across arms, and its
+  warm forecast swings (gap-e464e6).
+- **Decision A, now the fix.** Every first try is forecast by L0's per-arm rate (`basis: "prior"` in
+  `predictions.jsonl`); L1 forecasts retries and climbs.
+- **Left for later:**
+  - L1 for first tries waits on an arm-by-order fix (gap-e464e6);
+  - until then, a first try's start pick does not use L1's task features, gap-dd89ff's lessons feature included.

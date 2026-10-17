@@ -623,6 +623,27 @@ def test_a_loopback_proxy_url_still_needs_network_admission(places, monkeypatch)
     assert record["execution"]["status"] == "infra_error" and validate.validate("run-record", record) == []
 
 
+def test_a_bad_credential_fingerprint_creates_nothing(places, monkeypatch):
+    # bug-d58954: a malformed --credential-fingerprint is a usage error, checked with --experiment and --run-id before
+    # anything exists: no run directory or manifest, no work directory, no proxy. Each refused call has its own run id,
+    # so each would leave its own phantom run. Then the run id is free: the same run, with the flag right, runs.
+    started = []
+    real_start = vb._start_proxy
+    monkeypatch.setattr(vb, "_start_proxy", lambda *args, **kwargs: started.append(args) or real_start(*args, **kwargs))
+    bad = (["xyz"], ["nothex!!"], ["0123abc"], ["0123abcd", "xyz"])  # short, not hex, 7 hex, one bad of two
+    for number, (fingerprints, proxy) in enumerate(itertools.product(bad, ([], ["--proxy"])), 1):
+        flags = [part for fp in fingerprints for part in ("--credential-fingerprint", fp)]
+        assert vb.main(["run", "--experiment", "TEST-OFFLINE", "--run-id", f"run-{number}", "--stream", TOY_STREAM,
+                        "--arm", "cheap_direct", "--model", "gpt-oss-120b", "--provider-url", "http://127.0.0.1:9/v1",
+                        "--results", str(places["results"]), "--work", str(places["work"]),
+                        "--secret-file", str(places["secret"]), *flags, *proxy]) == 2, (fingerprints, proxy)
+    assert started == [] and not places["results"].exists() and not places["work"].exists()
+    with StubServer(lambda body: bash("echo VB_SUBMIT")) as stub:
+        assert run_vb(places, stub.url, "--limit", "1", "--credential-fingerprint", "0123ABCD") == 0
+    [record] = read_jsonl(run_dir(places) / "records.jsonl")
+    assert record["execution"]["status"] == "completed"
+
+
 def test_vb_run_meters_every_task_through_the_proxy(places):
     def respond(body: dict) -> str:  # look once, then submit
         return bash("echo VB_SUBMIT") if any(m["role"] == "assistant" for m in body["messages"]) else bash("ls")

@@ -2,7 +2,7 @@
 id = "bug-d58954"
 kind = "bug"
 title = "vb run checks --credential-fingerprint only after it has made the run directory, written the manifest and started the proxy, so a typo leaves a phantom run"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p3"
 goal = "proof"
@@ -11,6 +11,7 @@ subsystem = ["benchmarks/viabilitybench/driver"]
 created = 2026-10-17
 updated = 2026-10-17
 last_verified = 2026-10-17
+last_verified_rev = "2c8713247"
 source = "gap-bccf58 worker (claude-agent), 2026-10-17"
 discovered_from = "gap-bccf58: moving _start_proxy ahead of the manifest left the fingerprint check after both"
 anchors = ["benchmarks/viabilitybench/driver/vb.py::cmd_run"]
@@ -20,6 +21,18 @@ links = { depends_on = [], blocks = [], related = ["gap-3cfe4f", "gap-bccf58"], 
 
 [[verify]]
 command = "grep -qw 'def test_a_bad_credential_fingerprint_creates_nothing' benchmarks/viabilitybench/driver/test_driver.py && benchmarks/viabilitybench/.venv/bin/python -m pytest benchmarks/viabilitybench/driver/test_driver.py -k test_a_bad_credential_fingerprint_creates_nothing -q"
+
+[closed]
+at = 2026-10-17
+at_ts = "2026-10-17T04:48:53Z"
+commit = "2c8713247"
+by = "commit trailer"
+executor = "claude-agent"
+via = "work-batch"
+size = "S"
+claimed_at = "2026-10-17T04:27:06Z"
+forced = false
+evidence = "2c8713247: vb.cmd_run parses and checks --credential-fingerprint beside the --experiment and --run-id checks, before run_dir.mkdir, and passes the same tuple on to Run; nothing before that point creates a file or directory (lock check, make_plan, admission, _secret_file, _outside_repo, secret.preflight and the runner's preflight only read). The verify passes: test_a_bad_credential_fingerprint_creates_nothing (driver/test_driver.py), 1 passed: four malformed values (xyz, nothex!!, seven hex characters, one bad among two), each with and without --proxy under a run id of its own, exit 2 and leave no results or work directory, and _start_proxy is never called; the same run id then runs with a valid upper-case fingerprint (exit 0, one completed record). On the previous vb.py the test fails (the proxy started for the four --proxy calls and the directories stayed). The item's offline repro (toy stream, cheap_direct, --provider-url http://127.0.0.1:9/v1, --credential-fingerprint xyz): before, exit 2 left results/TEST-FP/run-1/manifest.json and an empty work/run-1/, and the rerun without the flag failed with 'already exists; pick another --run-id'; now exit 2 leaves nothing and the rerun writes 1/1 records. test_run_cli.py's gap-3cfe4f fingerprint tests still pass. Bench pytest: 794 passed, 16 skipped (no roko binary, the analysis stack, opt-in sweeps)."
 +++
 
 ## Problem

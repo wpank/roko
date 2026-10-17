@@ -394,6 +394,12 @@ def cmd_run(args: argparse.Namespace) -> int:
     for value, flag in ((args.experiment, "--experiment"), (args.run_id or "x", "--run-id")):
         if not ID_RE.fullmatch(value):
             raise DriverError(f"{flag} must match {ID_RE.pattern}")
+    # A usage error like the two above, so checked with them: a typo must leave no run directory, manifest, workdir or
+    # proxy behind, since a phantom run blocks its run id and fails `vb report --check` (bug-d58954).
+    fingerprints = tuple(dict.fromkeys(fp.strip().lower() for fp in args.credential_fingerprint if fp.strip()))
+    for fp in fingerprints:
+        if len(fp) < 8 or any(char not in "0123456789abcdef" for char in fp):
+            raise DriverError(f"--credential-fingerprint must be a sha256-hex prefix of at least 8 characters, not {fp!r}")
     run_id = args.run_id or f"vb-{dt.datetime.now(dt.UTC):%Y%m%d}-{secrets.token_hex(3)}"
     run_dir = results_root / args.experiment / run_id
     if run_dir.exists():
@@ -433,10 +439,6 @@ def cmd_run(args: argparse.Namespace) -> int:
         tables = {name: ({**table, "base_url": proxy.base_url(name)} if name in proxy.upstreams else table)
                   for name, table in plan.arm.get("providers", {}).items()}
         arm = {**plan.arm, "providers": tables}
-    fingerprints = tuple(dict.fromkeys(fp.strip().lower() for fp in args.credential_fingerprint if fp.strip()))
-    for fp in fingerprints:
-        if len(fp) < 8 or any(char not in "0123456789abcdef" for char in fp):
-            raise DriverError(f"--credential-fingerprint must be a sha256-hex prefix of at least 8 characters, not {fp!r}")
     run = Run(args=args, plan=plan, runner=runner, arm=arm, endpoint=endpoint, chat=provider.OpenAICompatible(endpoint),
               book=book, secret_file=secret_file, run_dir=run_dir, work_dir=work_dir, run_id=run_id,
               config_hash=config_hash, head=head, suite=suite, proxy=proxy, disturbances=disturbances,

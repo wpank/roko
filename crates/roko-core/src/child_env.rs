@@ -34,6 +34,11 @@
 //! `GH_CONFIG_DIR` pointing at an empty directory instead. GitHub tokens and
 //! the provider keys roko loaded from a `.env` file reach it only when a
 //! passthrough list names them exactly, and `[gates] strip_env` removes more.
+//! A check also builds in its own checkout (bug-be2a53): an inherited
+//! `CARGO_TARGET_DIR` that names a directory outside the command's is left
+//! out ([`CARGO_BUILD_DIR_VARS`]), because cargo takes another checkout's
+//! build of a crate in a shared target dir for this checkout's whenever this
+//! checkout's copy of the crate is older.
 //!
 //! Keeping keys out of a child's environment is moot while the child can read
 //! the files they come from, so this module also lists those files: see
@@ -650,6 +655,18 @@ pub const GITHUB_TOKEN_VARS: &[&str] = &[
 /// finds no login, unless a passthrough list names `GH_CONFIG_DIR` exactly.
 pub const GH_CONFIG_DIR: &str = "GH_CONFIG_DIR";
 
+/// The variables that tell cargo where a build keeps its output and the
+/// fingerprints that decide what is fresh: `CARGO_TARGET_DIR`, and the
+/// environment forms of the `build.target-dir` and `build.build-dir` config
+/// values. A check command inherits one only when it names a directory inside
+/// the command's own directory ([`build_dir_is_own`]), or when a passthrough
+/// list names it exactly (bug-be2a53).
+pub const CARGO_BUILD_DIR_VARS: &[&str] = &[
+    "CARGO_TARGET_DIR",
+    "CARGO_BUILD_TARGET_DIR",
+    "CARGO_BUILD_BUILD_DIR",
+];
+
 /// Why a check command does not inherit a variable of roko's environment.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum CheckEnvRemoval {
@@ -663,6 +680,9 @@ pub enum CheckEnvRemoval {
     Dotenv,
     /// A name that looks like a credential ([`is_secret_env_name`]).
     Credential,
+    /// One of [`CARGO_BUILD_DIR_VARS`] naming a directory outside the
+    /// command's own: other checkouts build there too (bug-be2a53).
+    SharedBuildDir,
     /// Not on the gate allowlist ([`gate_env_allowlisted`]).
     NotAllowlisted,
 }
@@ -677,6 +697,7 @@ impl CheckEnvRemoval {
             Self::DotenvProviderKey => "provider keys roko loaded from .env",
             Self::Dotenv => "other names roko loaded from .env",
             Self::Credential => "names that look like credentials",
+            Self::SharedBuildDir => "cargo build dirs outside the check's directory",
             Self::NotAllowlisted => "not on the allowlist",
         }
     }
@@ -739,6 +760,121 @@ pub fn check_env<V>(
         }
     }
     (kept, removed)
+}
+
+/// Whether `name` is one of [`CARGO_BUILD_DIR_VARS`], in any case on Windows,
+/// whose environment names are case-insensitive.
+fn is_cargo_build_dir_var(name: &str) -> bool {
+    CARGO_BUILD_DIR_VARS.iter().any(|var| {
+        if cfg!(windows) {
+            var.eq_ignore_ascii_case(name)
+        } else {
+            *var == name
+        }
+    })
+}
+
+/// Whether `value`, the value of `name`, one of [`CARGO_BUILD_DIR_VARS`],
+/// names a directory that belongs to the checkout a command runs in: one
+/// inside `dir`, the command's directory, where no other checkout builds
+/// (bug-be2a53).
+///
+/// Cargo names a workspace crate's build alike in every checkout of a
+/// repository, and takes it as fresh whenever the checkout's sources are
+/// older than it. In a build dir two checkouts share, one checkout's build
+/// of a crate then stands in for the other's, and a gate passes code that
+/// does not compile.
+///
+/// A relative value is relative to the command's directory, as cargo takes
+/// it, and stays inside unless it climbs out with `..`. An absolute one is
+/// compared with both paths resolved as far as they exist, symlinks
+/// included. A `CARGO_BUILD_BUILD_DIR` template is the checkout's own when it
+/// starts at `{workspace-root}` or holds `{workspace-path-hash}`, a hash of
+/// the checkout's manifest path; any other template is not. An empty value
+/// names no directory.
+#[must_use]
+pub fn build_dir_is_own(name: &str, value: &OsStr, dir: &Path) -> bool {
+    if value.is_empty() {
+        return true;
+    }
+    if name.eq_ignore_ascii_case("CARGO_BUILD_BUILD_DIR") {
+        let Some(text) = value.to_str() else {
+            return false;
+        };
+        if text.contains("{workspace-path-hash}") {
+            return true;
+        }
+        if let Some(rest) = text.strip_prefix("{workspace-root}") {
+            let rest = rest.trim_start_matches(['/', '\\']);
+            return !rest.contains('{') && stays_inside(Path::new(rest));
+        }
+        if text.contains('{') {
+            return false;
+        }
+    }
+    let path = Path::new(value);
+    if path.is_relative() {
+        return stays_inside(path);
+    }
+    match (resolve_existing(dir), resolve_existing(path)) {
+        (Some(dir), Some(path)) => path.starts_with(dir),
+        _ => false,
+    }
+}
+
+/// Whether the relative path `path` stays inside the directory it is taken
+/// from: no `..`, root or prefix component.
+fn stays_inside(path: &Path) -> bool {
+    path.components()
+        .all(|component| matches!(component, Component::Normal(_) | Component::CurDir))
+}
+
+/// `path` with its symlinks resolved as far as it exists: its longest
+/// existing ancestor canonicalized, the rest appended. `None` when no
+/// ancestor exists or the part that does not exist climbs with `..`.
+fn resolve_existing(path: &Path) -> Option<PathBuf> {
+    let mut existing = path;
+    let mut rest = Vec::new();
+    loop {
+        if let Ok(mut resolved) = std::fs::canonicalize(existing) {
+            resolved.extend(rest.iter().rev());
+            return Some(resolved);
+        }
+        rest.push(existing.file_name()?);
+        existing = existing.parent()?;
+    }
+}
+
+/// Move the [`CARGO_BUILD_DIR_VARS`] of `kept` that a command running in
+/// `dir` does not inherit to `removed` (bug-be2a53): each one naming a
+/// directory outside `dir` ([`build_dir_is_own`]), and each one when `dir` is
+/// not known, unless `passthrough` names it exactly. Cargo then builds in
+/// the checkout's own `target/`.
+fn drop_shared_build_dirs(
+    kept: &mut Vec<(String, OsString)>,
+    removed: &mut Vec<(String, CheckEnvRemoval)>,
+    dir: Option<&Path>,
+    passthrough: &[String],
+) {
+    kept.retain(|(name, value)| {
+        let shared = is_cargo_build_dir_var(name)
+            && !passthrough.iter().any(|pattern| pattern.trim() == name)
+            && !dir.is_some_and(|dir| build_dir_is_own(name, value, dir));
+        if shared {
+            removed.push((name.clone(), CheckEnvRemoval::SharedBuildDir));
+        }
+        !shared
+    });
+}
+
+/// The directory `cmd` runs in, when one was set on it: absolute, taken from
+/// roko's own working directory when relative.
+fn command_dir(cmd: &Command) -> Option<PathBuf> {
+    let dir = cmd.get_current_dir()?;
+    if dir.is_absolute() {
+        return Some(dir.to_path_buf());
+    }
+    std::env::current_dir().ok().map(|cwd| cwd.join(dir))
 }
 
 /// What `[gates]` says about every check command of a run.
@@ -872,6 +1008,11 @@ fn make_empty_dir() -> io::Result<PathBuf> {
 /// - `GH_CONFIG_DIR` pointing at an empty directory ([`check_gh_config_dir`]),
 ///   so `gh` finds no login although the command keeps `HOME` and `USER`,
 ///   unless a passthrough list names `GH_CONFIG_DIR` exactly;
+/// - none of [`CARGO_BUILD_DIR_VARS`] that names a directory outside the one
+///   `cmd` runs in ([`build_dir_is_own`]), unless a passthrough list names it
+///   exactly, so cargo builds in the checkout's own `target/` and no other
+///   checkout's build of a crate passes for this one's (bug-be2a53). Set the
+///   command's directory first: without one, each of them is left out;
 /// - the variables already set on `cmd`.
 ///
 /// `inherited` is roko's own environment ([`process_env`]) in production;
@@ -935,7 +1076,13 @@ fn apply_check_env_with(
     gh_config_dir: Option<&Path>,
 ) -> Vec<(String, CheckEnvRemoval)> {
     let explicit = explicit_env(cmd);
-    let (kept, removed) = check_env(inherited, passthrough, dotenv, strip);
+    let (mut kept, mut removed) = check_env(inherited, passthrough, dotenv, strip);
+    drop_shared_build_dirs(
+        &mut kept,
+        &mut removed,
+        command_dir(cmd).as_deref(),
+        passthrough,
+    );
     cmd.env_clear();
     cmd.envs(kept);
     if let Some(dir) = gh_config_dir {
@@ -972,8 +1119,9 @@ fn log_check_env(removed: &[(String, CheckEnvRemoval)], gh_config_dir: Option<&P
     tracing::info!(
         left_out = %summary,
         gh_config_dir = %gh_config,
-        "check commands run without the person's credentials; a project whose own checks \
-         need one of these variables gets it by naming it exactly in [gates] env_passthrough"
+        "check commands run without the person's credentials or a cargo build dir other \
+         checkouts share; a project whose own checks need one of these variables gets it by \
+         naming it exactly in [gates] env_passthrough"
     );
     for (reason, names) in &classes {
         tracing::debug!(
@@ -1711,6 +1859,113 @@ mod tests {
         assert_eq!(
             command_env(&cmd),
             vec![set("GH_CONFIG_DIR", "/home/dev/.config/gh")]
+        );
+    }
+
+    /// bug-be2a53: a cargo build dir is a check's own when it lies inside the
+    /// check's directory; not when it lies outside, climbs out of it, leads
+    /// out through a symlink, or is a template no checkout owns.
+    #[test]
+    fn a_build_dir_is_the_checks_own_only_inside_its_directory() {
+        let repo = tempfile::tempdir().expect("tempdir");
+        let checkout = repo.path().join(".roko").join("worktrees").join("a");
+        std::fs::create_dir_all(&checkout).expect("checkout");
+        let own = |name: &str, value: &Path| build_dir_is_own(name, value.as_os_str(), &checkout);
+        let target = "CARGO_TARGET_DIR";
+        assert!(
+            !own(target, &repo.path().join("target")),
+            "the main checkout's target dir"
+        );
+        assert!(
+            own(target, &checkout.join("target")),
+            "its own, not built yet"
+        );
+        assert!(own(target, Path::new("target")));
+        assert!(own(target, Path::new("./build/target")));
+        assert!(!own(target, Path::new("../target")));
+        assert!(!own(target, Path::new("out/../../target")));
+        assert!(!own(target, &checkout.join("..").join("b").join("target")));
+        assert!(
+            own(target, Path::new("")),
+            "an empty value names no directory"
+        );
+        #[cfg(unix)]
+        {
+            let shared = repo.path().join("shared");
+            std::fs::create_dir(&shared).expect("shared dir");
+            std::os::unix::fs::symlink(&shared, checkout.join("link")).expect("a link out");
+            assert!(!own(target, &checkout.join("link").join("target")));
+            let alias = repo.path().join("alias");
+            std::os::unix::fs::symlink(&checkout, &alias).expect("a link to the checkout");
+            assert!(
+                own(target, &alias.join("target")),
+                "the checkout by another path"
+            );
+        }
+        let build = "CARGO_BUILD_BUILD_DIR";
+        assert!(own(build, Path::new("{workspace-root}/target/build")));
+        assert!(own(
+            build,
+            Path::new("{cargo-cache-home}/build/{workspace-path-hash}")
+        ));
+        assert!(!own(build, Path::new("{cargo-cache-home}/build")));
+        assert!(!own(build, Path::new("{workspace-root}/../build")));
+        assert!(!own(build, &repo.path().join("build")));
+    }
+
+    /// bug-be2a53: on a command, a check keeps the cargo build dirs inside
+    /// its directory and loses the rest, and all of them when its directory
+    /// is not set yet. An exact passthrough name keeps one wherever it
+    /// points, a pattern does not, and one the caller sets stays.
+    #[test]
+    fn check_env_keeps_only_the_build_dirs_of_the_checks_directory() {
+        let repo = tempfile::tempdir().expect("tempdir");
+        let checkout = repo.path().join("checkout");
+        std::fs::create_dir(&checkout).expect("checkout");
+        let shared = repo.path().join("target");
+        let shared = shared.to_str().expect("a UTF-8 path");
+        let inherited = || {
+            os_parent(&[
+                ("PATH", "/bin"),
+                ("CARGO_TARGET_DIR", shared),
+                ("CARGO_BUILD_TARGET_DIR", "target"),
+                ("CARGO_BUILD_BUILD_DIR", "{cargo-cache-home}/build"),
+            ])
+        };
+        let none = DotenvNames::new();
+
+        let mut cmd = Command::new("true");
+        cmd.current_dir(&checkout);
+        let removed = apply_check_env_with(&mut cmd, inherited(), &[], &none, &[], None);
+        assert_eq!(
+            command_env(&cmd),
+            vec![set("CARGO_BUILD_TARGET_DIR", "target"), set("PATH", "/bin")]
+        );
+        assert_eq!(
+            removals(&removed),
+            vec![
+                ("CARGO_TARGET_DIR", CheckEnvRemoval::SharedBuildDir),
+                ("CARGO_BUILD_BUILD_DIR", CheckEnvRemoval::SharedBuildDir),
+            ]
+        );
+
+        let mut unplaced = Command::new("true");
+        apply_check_env_with(&mut unplaced, inherited(), &[], &none, &[], None);
+        assert_eq!(command_env(&unplaced), vec![set("PATH", "/bin")]);
+
+        let mut cmd = Command::new("true");
+        cmd.current_dir(&checkout)
+            .env("CARGO_BUILD_BUILD_DIR", "/own/build");
+        let named = patterns(&["CARGO_TARGET_DIR", "CARGO_*"]);
+        apply_check_env_with(&mut cmd, inherited(), &named, &none, &[], None);
+        assert_eq!(
+            command_env(&cmd),
+            vec![
+                set("CARGO_BUILD_BUILD_DIR", "/own/build"),
+                set("CARGO_BUILD_TARGET_DIR", "target"),
+                set("CARGO_TARGET_DIR", shared),
+                set("PATH", "/bin"),
+            ]
         );
     }
 

@@ -409,6 +409,14 @@ pub struct GatesConfig {
     /// directory, so `gh` finds no login, and lose `GH_TOKEN`,
     /// `GITHUB_TOKEN`, `GH_ENTERPRISE_TOKEN` and `GITHUB_ENTERPRISE_TOKEN`.
     /// Listing `GH_CONFIG_DIR` gives them the person's `gh` login back.
+    ///
+    /// A check builds in its own checkout (bug-be2a53): an inherited
+    /// `CARGO_TARGET_DIR`, `CARGO_BUILD_TARGET_DIR` or `CARGO_BUILD_BUILD_DIR`
+    /// that names a directory outside the check's is dropped, so cargo builds
+    /// in the checkout's `target/`. Naming one exactly here keeps it, and
+    /// lets checks in different checkouts, such as a plan's task worktrees,
+    /// share builds again: cargo then takes one checkout's build of a crate
+    /// for another's, and a check can pass code that does not compile.
     /// See `roko_core::child_env`.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub env_passthrough: Vec<String>,

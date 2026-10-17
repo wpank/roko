@@ -38,7 +38,12 @@ pub struct GatePayload {
     /// Directory to run the gate in (the repo root or a worktree).
     pub working_dir: PathBuf,
 
-    /// Optional `CARGO_TARGET_DIR` override (for shared-cache setups).
+    /// Optional `CARGO_TARGET_DIR` override. It must be a directory no other
+    /// checkout builds in: cargo takes another checkout's build of a crate in
+    /// a shared one as this checkout's whenever this checkout's copy is older
+    /// (bug-be2a53). Without it the gate builds in the checkout's own
+    /// `target/`, as the check environment drops an inherited target dir
+    /// outside `working_dir`.
     pub target_dir: Option<PathBuf>,
 
     /// Additional environment variables to set for the gate's subprocess.
@@ -86,7 +91,8 @@ impl GatePayload {
         }
     }
 
-    /// Set the `CARGO_TARGET_DIR` override.
+    /// Set the `CARGO_TARGET_DIR` override ([`Self::target_dir`]): a
+    /// directory no other checkout builds in.
     #[must_use]
     pub fn with_target_dir(mut self, target: impl Into<PathBuf>) -> Self {
         self.target_dir = Some(target.into());
@@ -135,7 +141,9 @@ impl GatePayload {
     }
 
     /// Give `cmd` the check environment (see [`inherit_gate_env`]), variables
-    /// already set on `cmd`, then `CARGO_TARGET_DIR` and `extra_env`.
+    /// already set on `cmd`, then `CARGO_TARGET_DIR` and `extra_env`. Set
+    /// `cmd`'s directory to `working_dir` first: an inherited cargo target
+    /// dir is kept only inside it (bug-be2a53).
     ///
     /// # Errors
     ///

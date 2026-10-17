@@ -2,7 +2,8 @@
 //!
 //! Run one check path in a child test process whose environment holds the
 //! person's credentials, and check what the path's command saw: no
-//! credential, and the run's job cap and niceness (bug-b3849c).
+//! credential, the run's job cap and niceness (bug-b3849c), and no cargo
+//! build dir that other checkouts share (bug-be2a53).
 //!
 //! The parent test calls [`run_child`] with the name of a child test. The
 //! child test starts with [`begin_child`], which returns `None` outside the
@@ -13,7 +14,8 @@ use std::collections::BTreeMap;
 use std::path::Path;
 
 use roko_core::child_env::{
-    self, CheckEnvSettings, CheckRun, DotenvNames, GITHUB_TOKEN_VARS, GateLimits,
+    self, CARGO_BUILD_DIR_VARS, CheckEnvSettings, CheckRun, DotenvNames, GITHUB_TOKEN_VARS,
+    GateLimits,
 };
 
 /// Set in the child process, to the directory that holds the fake `gh`
@@ -35,7 +37,9 @@ const PROBE_NICE: i32 = 15;
 
 /// Run test `child` (its full path, `module::tests::name`) in a child
 /// process whose environment holds every GitHub token, a `GH_CONFIG_DIR`
-/// with a `gh` login, a provider key and [`PASSED`], and assert it passed.
+/// with a `gh` login, a provider key, [`PASSED`], and each of
+/// [`CARGO_BUILD_DIR_VARS`] naming a directory outside every check's, as an
+/// exported `CARGO_TARGET_DIR` does, and assert it passed.
 pub fn run_child(child: &str) {
     let login = tempfile::tempdir().expect("tempdir");
     std::fs::write(
@@ -43,6 +47,7 @@ pub fn run_child(child: &str) {
         "github.com:\n    user: probe\n",
     )
     .expect("a gh login");
+    let shared = tempfile::tempdir().expect("tempdir");
     let mut command = std::process::Command::new(std::env::current_exe().expect("test binary"));
     command
         .args(["--exact", child, "--nocapture"])
@@ -56,6 +61,9 @@ pub fn run_child(child: &str) {
         .env_remove("RUST_TEST_THREADS");
     for name in GITHUB_TOKEN_VARS {
         command.env(name, "gh-probe-not-real");
+    }
+    for name in CARGO_BUILD_DIR_VARS {
+        command.env(name, shared.path().join(name));
     }
     let output = command.output().expect("run the child test");
     let stdout = String::from_utf8_lossy(&output.stdout);
@@ -97,7 +105,8 @@ pub fn dump_env_command(out: &Path) -> String {
 
 /// Assert that the environment the check of `path` wrote to `out` holds no
 /// GitHub token and no key roko loaded, points `gh` at an empty directory,
-/// keeps [`PASSED`], and that the check ran with the run's job cap at its
+/// keeps [`PASSED`], builds in none of the shared cargo build dirs
+/// [`run_child`] set, and that the check ran with the run's job cap at its
 /// niceness or nicer.
 pub fn assert_check_env(out: &Path, path: &str) {
     let dump = std::fs::read_to_string(out)
@@ -108,6 +117,14 @@ pub fn assert_check_env(out: &Path, path: &str) {
         .collect();
     for name in GITHUB_TOKEN_VARS {
         assert!(!env.contains_key(name), "{path}: {name} reached the check");
+    }
+    for name in CARGO_BUILD_DIR_VARS {
+        let shared = std::env::var(name).expect("the shared build dir run_child set");
+        assert_ne!(
+            env.get(name).copied(),
+            Some(shared.as_str()),
+            "{path}: the check builds in a {name} other checkouts share"
+        );
     }
     assert!(
         !env.contains_key(DOTENV_KEY),

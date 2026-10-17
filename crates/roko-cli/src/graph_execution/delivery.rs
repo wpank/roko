@@ -208,8 +208,8 @@ pub struct GitDeliveryBackend {
     /// Empty when no check is configured.
     regression: Vec<Vec<String>>,
     /// Where the regression's cargo builds (`CARGO_TARGET_DIR`): outside its
-    /// checkout, and shared with the gates, so the next delivery starts
-    /// warm.
+    /// checkout, which it outlives, so the next delivery starts warm, and
+    /// used by no other checkout ([`regression_target_dir`], bug-be2a53).
     regression_target_dir: PathBuf,
     /// Where the regression commands came from, for their
     /// [`DeliveryCheck::source`].
@@ -231,12 +231,12 @@ pub struct GitDeliveryBackend {
 impl GitDeliveryBackend {
     /// Create a git-backed delivery backend for the repository at `workdir`.
     ///
-    /// The regression builds into the target dir gates use: the process's
-    /// `CARGO_TARGET_DIR` when set, else `workdir`'s own `target/`.
+    /// The regression builds in a target dir of its own,
+    /// [`regression_target_dir`], whatever `CARGO_TARGET_DIR` says
+    /// (bug-be2a53).
     #[must_use]
     pub fn new(workdir: PathBuf) -> Self {
-        let regression_target_dir =
-            shared_target_dir(&workdir, std::env::var_os("CARGO_TARGET_DIR"));
+        let regression_target_dir = regression_target_dir(&workdir);
         Self {
             workdir,
             regression: vec![
@@ -300,11 +300,18 @@ impl GitDeliveryBackend {
         self
     }
 
-    /// Replace the regression's target dir. A relative dir is taken from
-    /// `workdir`, never from the regression checkout.
+    /// Replace the regression's target dir: one no other checkout builds in
+    /// (bug-be2a53). A relative dir is taken from `workdir`, never from the
+    /// regression checkout; an empty one keeps the default.
     #[must_use]
     pub fn with_regression_target_dir(mut self, target_dir: PathBuf) -> Self {
-        self.regression_target_dir = shared_target_dir(&self.workdir, Some(target_dir.into()));
+        self.regression_target_dir = if target_dir.as_os_str().is_empty() {
+            regression_target_dir(&self.workdir)
+        } else if target_dir.is_relative() {
+            self.workdir.join(target_dir)
+        } else {
+            target_dir
+        };
         self
     }
 
@@ -504,7 +511,10 @@ impl GitDeliveryBackend {
     /// workspace crates by path, so at a stable path the next build reuses
     /// this one's output for every crate the commits share, and the target
     /// dir holds one set of artifacts instead of one per delivery. One
-    /// delivery at a time uses it, across processes.
+    /// delivery at a time uses it, across processes. The target dir is the
+    /// checkout's alone ([`regression_target_dir`], bug-be2a53): in one that
+    /// gates or the person's checkout build in too, cargo would take their
+    /// build of a crate for the merge's whenever the checkout's copy is older.
     ///
     /// Each command leads a process group of its own. A stop request
     /// (`with_stop`) kills the running command's group and ends the check
@@ -540,7 +550,8 @@ impl GitDeliveryBackend {
             let env = parent_env.iter().cloned();
             let prepared =
                 roko_gate::inherit_gate_env_from(&mut regression, env, &self.env_passthrough);
-            // Only the build output is shared: the sources are the checkout's.
+            // The build output of earlier deliveries carries over, never that
+            // of another checkout (bug-be2a53).
             let started = std::time::Instant::now();
             let watched =
                 self.check_events
@@ -655,6 +666,20 @@ pub fn regression_checkout_path(workdir: &Path) -> PathBuf {
         .join("regression-checkout")
 }
 
+/// The target dir the regression checks of `workdir`'s deliveries build in:
+/// beside their checkout ([`regression_checkout_path`]), and used by no other
+/// checkout (bug-be2a53). Cargo names a workspace crate's build alike in every
+/// checkout of a repository and takes it as fresh whenever the checkout's
+/// sources are older, so in a target dir shared with the gates' or the
+/// person's checkout, their build of a crate would stand in for the merge's.
+#[must_use]
+pub fn regression_target_dir(workdir: &Path) -> PathBuf {
+    workdir
+        .join(".roko")
+        .join("state")
+        .join("regression-target")
+}
+
 /// Hold `checkout` for one delivery: an exclusive lock on its `.lock` file,
 /// released when the returned file drops. It serializes deliveries within a
 /// process and across processes.
@@ -736,17 +761,6 @@ fn write_check_log(path: &Path, log: &str) -> std::io::Result<()> {
         std::fs::create_dir_all(parent)?;
     }
     std::fs::write(path, log)
-}
-
-/// The target dir a build of `workdir` shares with gates and earlier
-/// deliveries: `configured` (a `CARGO_TARGET_DIR` value) when set, relative
-/// to `workdir` if it is relative, else `workdir`'s own `target/`.
-fn shared_target_dir(workdir: &Path, configured: Option<std::ffi::OsString>) -> PathBuf {
-    match configured.filter(|dir| !dir.is_empty()).map(PathBuf::from) {
-        Some(dir) if dir.is_absolute() => dir,
-        Some(dir) => workdir.join(dir),
-        None => workdir.join("target"),
-    }
 }
 
 /// The commit `request` verified, resolved in `workdir`: `request.commit_oid`
@@ -2889,20 +2903,75 @@ mod tests {
             "the target dir is inside the checkout"
         );
 
-        // By default: the configured CARGO_TARGET_DIR, else the checkout's own.
+        // By default its own, beside the checkout (bug-be2a53); a relative
+        // override is taken from the workdir, an empty one keeps the default.
         let workdir = Path::new("/repo");
-        assert_eq!(shared_target_dir(workdir, None), workdir.join("target"));
+        let own = regression_target_dir(workdir);
         assert_eq!(
-            shared_target_dir(workdir, Some("".into())),
-            workdir.join("target")
+            GitDeliveryBackend::new(workdir.into()).regression_target_dir,
+            own
         );
-        assert_eq!(
-            shared_target_dir(workdir, Some("/t".into())),
-            PathBuf::from("/t")
+        assert_eq!(own.parent(), regression_checkout_path(workdir).parent());
+        for (configured, expected) in [
+            ("", own.clone()),
+            ("/t", PathBuf::from("/t")),
+            ("out", workdir.join("out")),
+        ] {
+            let backend = GitDeliveryBackend::new(workdir.into())
+                .with_regression_target_dir(configured.into());
+            assert_eq!(backend.regression_target_dir, expected, "{configured:?}");
+        }
+    }
+
+    /// bug-be2a53: the regression builds in its own target dir although
+    /// roko's environment exports a `CARGO_TARGET_DIR` that the gates and the
+    /// person's checkout build in, and inherits no shared build dir: cargo
+    /// would take their builds of a crate for the merge's.
+    #[tokio::test]
+    async fn regression_builds_in_its_own_target_dir() {
+        let repo = diverged_repo();
+        let path = repo.path();
+        git(path, &["checkout", "--quiet", "-b", "work"]);
+        let record = tempfile::tempdir().unwrap();
+        let env_file = record.path().join("env.txt");
+        let shared = path.join("target");
+        let search_path = std::env::var_os("PATH")
+            .filter(|value| !value.is_empty())
+            .unwrap_or_else(|| "/usr/bin:/bin".into());
+        let parent_env = vec![
+            ("PATH".to_string(), search_path),
+            ("CARGO_TARGET_DIR".to_string(), shared.clone().into()),
+            (
+                "CARGO_BUILD_BUILD_DIR".to_string(),
+                shared.join("build").into(),
+            ),
+        ];
+        let backend = GitDeliveryBackend::new(path.to_path_buf())
+            .with_regression_steps(vec![format!("env > '{}'", env_file.display())])
+            .with_parent_env(parent_env);
+        let merge = git(path, &["rev-parse", "roko/plan-a"]);
+
+        let outcome = backend
+            .run_regression(&git_request("d-git-own-target", path), &merge)
+            .await;
+
+        assert!(outcome.passed, "{}", outcome.summary);
+        let env = std::fs::read_to_string(&env_file).unwrap();
+        let own = regression_target_dir(path);
+        assert!(
+            env.lines()
+                .any(|line| line == format!("CARGO_TARGET_DIR={}", own.display())),
+            "{env}"
         );
-        assert_eq!(
-            shared_target_dir(workdir, Some("out".into())),
-            workdir.join("out")
+        assert!(
+            !own.starts_with(regression_checkout_path(path)),
+            "{}",
+            own.display()
+        );
+        assert!(
+            !env.lines()
+                .any(|line| line.starts_with("CARGO_BUILD_BUILD_DIR=")),
+            "a shared build dir reached the regression:\n{env}"
         );
     }
 }

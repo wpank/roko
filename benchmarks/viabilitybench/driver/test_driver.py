@@ -6,6 +6,7 @@ Run from the repository root with the benchmark venv:
 
 from __future__ import annotations
 
+import ast
 import hashlib
 import itertools
 import json
@@ -14,6 +15,8 @@ import re
 import socket
 import subprocess
 import sys
+import tempfile
+from collections.abc import Callable
 from pathlib import Path
 
 import pytest
@@ -28,8 +31,10 @@ import materialize
 import mini_loop
 import planemit
 import provider
+import run_roko
 import validate
 import vb
+import vb_verify
 from common import canary, hmac_seed, repo, sandbox
 from stub_provider import StubServer, bash, scripted
 from test_sandbox_net import Listener, macos_only
@@ -242,9 +247,9 @@ def test_offline_run_writes_valid_records(places, tmp_path, monkeypatch):
                    " && git config core.fsmonitor \"$PWD/.git/hooks/post-commit\"")
     scripts = {
         "F1-l1-0001": [bash("env | sort && ls -a", "Look around."), bash(CORRECT, "Implement it."),
-                       bash("python3 -m unittest discover -s tests/visible", "Check."), bash("echo VB_SUBMIT")],
+                       bash("python3 -m unittest discover -s tests/visible", "Check."), bash("echo SUBMIT_TASK")],
         "F1-l1-0002": [bash(plant_hooks, "Plant hooks the driver must never run."),
-                       bash(VISIBLE_ONLY, "Satisfy the visible test only."), bash("echo VB_SUBMIT")],
+                       bash(VISIBLE_ONLY, "Satisfy the visible test only."), bash("echo SUBMIT_TASK")],
     }
     with StubServer(scripted(scripts)) as stub:
         assert run_vb(places, stub.url, "--transcripts") == 0
@@ -306,8 +311,8 @@ def test_offline_run_writes_valid_records(places, tmp_path, monkeypatch):
 # bug-3c921e, test_an_agent_never_sees_its_instance_id. The agent's shell prints where it is and what lies around it:
 # its directory, HOME and TMPDIR, its environment, the run's work directory (every task's workdir and HOME), its HOME's
 # files and the visible-verify wrapper's config, Roko's plan directory and config where there are, and its repo's log.
-LOOK_AROUND = ('pwd; echo "HOME=$HOME TMPDIR=$TMPDIR"; env | sort; ls -a .. ../_home "$HOME" "$HOME/.vb-bin" plans; '
-               'cat "$HOME/.vb-bin/vb-verify.json" roko.toml; git log --format=%s')
+LOOK_AROUND = ('pwd; echo "HOME=$HOME TMPDIR=$TMPDIR"; env | sort; ls -a .. ../_home "$HOME" "$HOME/.local/bin" plans; '
+               'cat "$HOME/.local/bin/run-shell.json" roko.toml; git log --format=%s')
 CLAMP = 'def clamp(value, low, high):\n    """Return value limited to the range [low, high]."""\n' \
         '    return max(low, min(value, high))\n'
 
@@ -327,7 +332,7 @@ def test_an_agent_never_sees_its_instance_id(places, tmp_path, arm):
     spec.write_text('schema_version = "vb.disturbance/1"\n\n[[disturbance]]\nkind = "flaky_verify"\n'
                     'params = { p = 0.5 }\n')
     if arm == "cheap_direct":  # the stub plays the agent, and the driver runs its commands
-        arm_file, respond = arm, scripted({"": [bash(LOOK_AROUND, "Where am I?"), bash("echo VB_SUBMIT")]})
+        arm_file, respond = arm, scripted({"": [bash(LOOK_AROUND, "Where am I?"), bash("echo SUBMIT_TASK")]})
     else:  # a fake harness plays the agent and logs what its shell printed
         arm_file = fake_harness_arm(tmp_path, arm, solution=CLAMP, shell=LOOK_AROUND, shell_log=shell_log)
 
@@ -391,6 +396,161 @@ def test_an_agent_never_sees_its_instance_id(places, tmp_path, arm):
     assert json.loads((again / "manifest.json").read_text())["work_dir"] != str(work_dir)
 
 
+# bug-d308f7, test_an_agent_cannot_read_its_run_directory. While its task runs, the agent's shell reads the files of
+# its run's results directory (__RUN__) that name the task or its place in the stream, then lists the directory; each
+# step prints its exit status.
+READ_THE_RUN = ('for name in proxy.jsonl order-1.json records.jsonl manifest.json; do cat "__RUN__/$name"; '
+                'echo "read $name exit=$?"; done; ls -a "__RUN__"; echo "listing exit=$?"')
+
+
+@macos_only
+@pytest.mark.parametrize("arm", ["cheap_direct", "roko_fixed", "cheap_direct_msa"])
+def test_an_agent_cannot_read_its_run_directory(places, tmp_path, arm):
+    """bug-d308f7, through `vb run --proxy`: every agent process is denied its whole run directory, not only the
+    private task directories in it. While a task runs, the metering proxy logs the task's key with each of its calls
+    (`proxy.jsonl`; the CLI arms' egress proxy does the same in `egress.jsonl`, test_run_cli.py), `order-1.json` holds
+    the stream's order and `records.jsonl` one row per finished task, so together the running task's position. In the
+    direct loop, the Roko arm and the mini-swe-agent arm, each task's agent reads those files and the manifest and
+    lists the directory (READ_THE_RUN). Every read and the listing are refused, and nothing the agents printed names an
+    instance or holds a line of those files. The files hold what the agents would have read (the control)."""
+    shell_log = tmp_path / "shell.log"
+    out = places["results"] / "TEST-RUN-DIR" / "run-1"
+    reads = READ_THE_RUN.replace("__RUN__", str(out))
+    if arm == "cheap_direct":  # the stub plays the agent, and the driver runs its commands
+        arm_file, respond = arm, scripted({"": [bash(reads, "Where are my results?"), bash("echo SUBMIT_TASK")]})
+    else:  # a fake harness plays the agent: its own process calls the model through the proxy, then its shell reads
+        arm_file = fake_harness_arm(tmp_path, arm, solution=CLAMP, shell=reads, shell_log=shell_log)
+
+        def respond(body: dict) -> str:
+            return "Done."
+    with StubServer(respond) as stub:
+        assert vb.main(["run", "--experiment", "TEST-RUN-DIR", "--run-id", "run-1", "--stream", TOY_STREAM, "--arm",
+                        arm_file, "--model", "gpt-oss-120b", "--seeds", "1", "--provider-url", stub.url, "--proxy",
+                        "--results", str(places["results"]), "--work", str(places["work"]),
+                        "--secret-file", str(places["secret"]), "--transcripts"]) == 0
+    records = sorted(read_jsonl(out / "records.jsonl"), key=lambda record: record["task"]["instance_id"])
+    instances = [record["task"]["instance_id"] for record in records]
+    assert instances == ["F1-l1-0001", "F1-l1-0002"]
+    # The control: the run directory names each task, where an agent that could read it would have found it.
+    assert {row["task"] for row in read_jsonl(out / "proxy.jsonl")} == {f"{name}.s1" for name in instances}
+    assert sorted(json.loads((out / "order-1.json").read_text())["order"]) == instances
+    assert json.loads((out / "manifest.json").read_text())["config"]["stream"]["instances"] == instances
+
+    def observed(record: dict) -> str:  # what the direct loop's agent was shown of its commands
+        transcript = json.loads((out / record["provenance"]["transcript_ref"]).read_text())
+        return "\n".join(event["content"] for event in transcript if event.get("role") == "user" and "command" in event)
+
+    said = [observed(record) for record in records] if arm == "cheap_direct" else [shell_log.read_text()]
+    printed = "\n".join(said)
+    for name in ("proxy.jsonl", "order-1.json", "records.jsonl", "manifest.json"):
+        assert printed.count(f"read {name} exit=1") == 2, printed  # one read per task, and each failed
+    assert printed.count("listing exit=1") == 2 and "exit=0" not in printed, printed
+    # Each file that existed was refused by the sandbox: all four but records.jsonl, which the first task to run
+    # finds missing; the second finds it there and is refused too.
+    for name in ("proxy.jsonl", "order-1.json", "manifest.json"):
+        assert printed.count(f"{out / name}: Operation not permitted") == 2, printed
+    assert printed.count(f"{out / 'records.jsonl'}: Operation not permitted") == 1, printed
+    assert printed.count(f"{out}: Operation not permitted") == 2, printed  # ls
+    assert [name for name in (*instances, '"task"', '"order"', '"experiment_id"') if name in printed] == [], printed
+    for record in records:
+        assert record["provenance"]["network_policy"]["sandbox"] == "sandbox-exec+net"
+        assert record["execution"]["status"] == "completed", record["execution"]["reason"]
+
+
+# bug-d68575, test_no_agent_sees_the_benchmark_name. The agent's shell prints its environment, its repo's log with the
+# author and committer, its reflog and refs, its HOME's names and files (the visible-verify wrapper's among them),
+# Roko's plan and config and mini-swe-agent's config where it has them, and what the metering proxy answers a path it
+# refuses (__PROXY__: the URL its harness calls the model through; the direct loop's shell has no network at all).
+LOOK_FOR_NAMES = ('env | sort; git log --format="%an <%ae> | %cn <%ce> | %s"; git reflog --format="%gn <%ge> | %gs"; '
+                  'ls -aR "$HOME" .git/refs; find "$HOME" -type f -exec cat {} +; cat roko.toml plans/*/tasks.toml '
+                  '"$(dirname "${MSWEA_GLOBAL_CONFIG_DIR:-/nonexistent/x}")/mini.yaml" 2>/dev/null; '
+                  "curl -sS --max-time 5 -d '{\"model\": \"gpt-oss-120b\"}' __PROXY__/models; echo")
+BENCHMARK_MARK = re.compile(r"\bvb\b|vb[-_]|[-_.]vb\b|viabilitybench", re.IGNORECASE)
+
+
+def host_paths_left_out(tmp_path: Path) -> Callable[[str], str]:
+    """A function that takes the host's own temporary directories out of a text: they hold the test's work directory,
+    and their names are the host's (a macOS per-user folder may hold `_vb` by chance)."""
+    roots = sorted({str(tmp_path), os.path.realpath(tmp_path), tempfile.gettempdir(),
+                    os.path.realpath(tempfile.gettempdir())}, key=len, reverse=True)
+
+    def left_out(text: str) -> str:
+        for root in roots:
+            text = text.replace(root, "<tmp>")
+        return text
+    return left_out
+
+
+@pytest.mark.parametrize("arm", ["cheap_direct", "roko_fixed", "cheap_direct_msa"])
+def test_no_agent_sees_the_benchmark_name(places, tmp_path, arm):
+    """bug-d68575: nothing an agent sees names the benchmark (`vb`, `viabilitybench`), whose repository, with the
+    driver, the generators and the truth suites, is public. Not its PATH, its git identity, its repo's commits, reflog
+    and refs, its HOME's files (the visible-verify wrapper's launcher, config and log, and its module copy, which keeps
+    no docstring to explain the flakes), the direct loop's prompt and submit word, the Roko arm's key placeholder and
+    plan, mini-swe-agent's config and scratch directory, or what the metering proxy answers. An offline flaky_verify run
+    through --proxy with --keep-workdirs, whose agent (the stub in the direct loop, a fake harness in the others) looks
+    for those names (LOOK_FOR_NAMES); the test also reads every name, link and text file under the kept work
+    directory. The host's own temporary directories are left out of what it matches."""
+    shell_log = tmp_path / "shell.log"
+    spec = tmp_path / "flaky.toml"
+    spec.write_text('schema_version = "vb.disturbance/1"\n\n[[disturbance]]\nkind = "flaky_verify"\n'
+                    'params = { p = 0.5 }\n')
+    if arm == "cheap_direct":  # the stub plays the agent, and the driver runs its commands
+        arm_file, respond = arm, scripted({"": [bash(LOOK_FOR_NAMES, "What is around me?"),
+                                                 bash(f"echo {mini_loop.SUBMIT}")]})
+    else:  # a fake harness plays the agent, and logs what its shell printed
+        arm_file = fake_harness_arm(tmp_path, arm, solution=CLAMP, shell=LOOK_FOR_NAMES, shell_log=shell_log)
+
+        def respond(body: dict) -> str:
+            return "Done."
+    with StubServer(respond) as stub:
+        assert vb.main(["run", "--experiment", "TEST-NAMES", "--run-id", "run-1", "--stream", TOY_STREAM, "--arm",
+                        arm_file, "--model", "gpt-oss-120b", "--limit", "1", "--provider-url", stub.url, "--proxy",
+                        "--results", str(places["results"]), "--work", str(places["work"]),
+                        "--secret-file", str(places["secret"]), "--disturbance", str(spec), "--transcripts",
+                        "--keep-workdirs"]) == 0
+    out = places["results"] / "TEST-NAMES" / "run-1"
+    [record] = read_jsonl(out / "records.jsonl")
+    transcript = json.loads((out / record["provenance"]["transcript_ref"]).read_text())
+    if arm == "cheap_direct":  # its prompt, its task message and every observation
+        seen = "\n".join(event["content"] for event in transcript if "content" in event)
+    else:  # what its shell printed, and for Roko the plan and config it was handed
+        seen = shell_log.read_text() + "".join(event.get("tasks_toml", "") + event.get("roko_toml", "")
+                                               for event in transcript if event.get("event") == "emit")
+    left_out = host_paths_left_out(tmp_path)
+    marks = sorted({match.group(0) for match in BENCHMARK_MARK.finditer(left_out(seen))})
+    assert marks == [], (marks, seen)
+    # The controls: the agent did see each place it looked, under its neutral name.
+    alias = record["provenance"]["alias"]
+    work_dir = Path(json.loads((out / "manifest.json").read_text())["work_dir"])
+    bin_dir = work_dir / "_home" / alias / agent_env.BIN_DIR
+    assert f"PATH={bin_dir}{os.pathsep}" in seen and "GIT_AUTHOR_EMAIL=agent@example.invalid" in seen, seen
+    assert "maintainer <maintainer@example.invalid> | maintainer <maintainer@example.invalid> | Initial commit" in seen
+    installed = {path.name for path in bin_dir.iterdir()}
+    assert {vb_verify.LAUNCHER, vb_verify.MODULE, vb_verify.CONFIG, vb_verify.LOG} <= installed, installed
+    assert f'"key": "{alias}"' in seen and "def visible_run(" in seen  # the wrapper's config and its module copy
+    copy = (bin_dir / vb_verify.MODULE).read_text(encoding="utf-8")  # it explains nothing: no docstring, no comment
+    assert [node for node in ast.walk(ast.parse(copy)) if isinstance(node, (ast.Module, ast.FunctionDef))
+            and ast.get_docstring(node)] == []
+    assert [line for line in copy.splitlines() if line.lstrip().startswith("#")] == []
+    if arm != "cheap_direct":  # the proxy's refusal, as the agent's shell got it
+        assert '"type": "path_not_allowed"' in seen, seen
+    if arm == "roko_fixed":
+        assert planemit.plan_slug(alias) in seen and f"CEREBRAS_API_KEY={run_roko.OFFLINE_KEY}\n" in seen, seen
+    # Every name, link and text file the agents' processes could reach under the work directory.
+    named = []
+    for path in [work_dir, *work_dir.rglob("*")]:
+        texts = [str(path.relative_to(work_dir)), os.readlink(path) if path.is_symlink() else ""]
+        if path.is_file() and not path.is_symlink():
+            try:
+                texts.append(path.read_bytes().decode("utf-8"))
+            except UnicodeDecodeError:  # git's objects and index: what they hold, `git log` showed
+                pass
+        named += [f"{path.relative_to(work_dir)}: {match.group(0)}" for text in texts
+                  for match in BENCHMARK_MARK.finditer(left_out(text))]
+    assert named == []
+
+
 def test_materialize_renders_real_family_instances(tmp_path, capsys):
     # bug-2930a8: F1 and F4 write the task repo to --workdir and everything private to --out, not to <workdir>/.vb/.
     for instance_id in ("F1-l1-0001", "F4-l1-0001"):
@@ -443,7 +603,7 @@ def test_hidden_suite_runs_agent_code_without_the_secret_file(places, tmp_path):
     stream = tmp_path / "f4.toml"
     stream.write_text('schema_version = "vb.stream/1"\n[stream]\nid = "f4-sandbox"\nspec_variant = "precise"\n'
                       'families = { F4 = "families/f4_kvtool" }\ninstances = ["F4-l1-0001"]\n')
-    with StubServer(scripted({"": [bash(snoop, "Plant the script."), bash("echo VB_SUBMIT")]})) as stub:
+    with StubServer(scripted({"": [bash(snoop, "Plant the script."), bash("echo SUBMIT_TASK")]})) as stub:
         assert vb.main(["run", "--experiment", "TEST-SANDBOX", "--run-id", "run-1", "--stream", str(stream),
                         "--arm", "cheap_direct", "--model", "gpt-oss-120b", "--provider-url", stub.url,
                         "--results", str(places["results"]), "--work", str(places["work"]),
@@ -487,7 +647,7 @@ def test_an_agent_shell_cannot_reach_the_network(places, tmp_path, monkeypatch, 
             def respond(body: dict) -> str:
                 return scripted({"": [bash(tries.replace("__PROXY__", proxies[0].url), "Try the network."),
                                       bash(f"cat > calc/ops.py <<'EOF'\n{solution}EOF", "Implement it."),
-                                      bash(VISIBLE_CHECK, "Check it."), bash("echo VB_SUBMIT")]})(body)
+                                      bash(VISIBLE_CHECK, "Check it."), bash("echo SUBMIT_TASK")]})(body)
             arm_file = arm
         else:  # a fake harness plays the agent, and its own process calls the model
             arm_file = fake_harness_arm(tmp_path, arm, solution=solution, shell=f"{tries}; {VISIBLE_CHECK}",
@@ -617,7 +777,7 @@ def test_identical_tool_calls_trip_the_runaway_detector(places):
 
 def test_canary_in_the_transcript_marks_the_run_leak_suspected(places):
     leaked = canary.new_canary()
-    with StubServer(lambda body: [bash(f"echo {leaked}"), bash("echo VB_SUBMIT")][
+    with StubServer(lambda body: [bash(f"echo {leaked}"), bash("echo SUBMIT_TASK")][
             sum(m["role"] == "assistant" for m in body["messages"]) > 0]) as stub:
         assert run_vb(places, stub.url, "--limit", "1") == 0
     [record] = read_jsonl(run_dir(places) / "records.jsonl")
@@ -641,7 +801,7 @@ def test_provider_errors_end_the_task_as_an_infra_error(places, monkeypatch):
 
 
 def test_a_model_without_a_price_row_costs_null(places):
-    with StubServer(lambda body: bash("echo VB_SUBMIT"), model_reported="mystery-model-9") as stub:
+    with StubServer(lambda body: bash("echo SUBMIT_TASK"), model_reported="mystery-model-9") as stub:
         assert run_vb(places, stub.url, "--limit", "1") == 0
     [record] = read_jsonl(run_dir(places) / "records.jsonl")
     [row] = read_jsonl(run_dir(places) / "ledger.jsonl")
@@ -734,7 +894,7 @@ def test_a_bad_credential_fingerprint_creates_nothing(places, monkeypatch):
                         "--results", str(places["results"]), "--work", str(places["work"]),
                         "--secret-file", str(places["secret"]), *flags, *proxy]) == 2, (fingerprints, proxy)
     assert started == [] and not places["results"].exists() and not places["work"].exists()
-    with StubServer(lambda body: bash("echo VB_SUBMIT")) as stub:
+    with StubServer(lambda body: bash("echo SUBMIT_TASK")) as stub:
         assert run_vb(places, stub.url, "--limit", "1", "--credential-fingerprint", "0123ABCD") == 0
     [record] = read_jsonl(run_dir(places) / "records.jsonl")
     assert record["execution"]["status"] == "completed"
@@ -742,7 +902,7 @@ def test_a_bad_credential_fingerprint_creates_nothing(places, monkeypatch):
 
 def test_vb_run_meters_every_task_through_the_proxy(places):
     def respond(body: dict) -> str:  # look once, then submit
-        return bash("echo VB_SUBMIT") if any(m["role"] == "assistant" for m in body["messages"]) else bash("ls")
+        return bash("echo SUBMIT_TASK") if any(m["role"] == "assistant" for m in body["messages"]) else bash("ls")
 
     with StubServer(respond) as stub:
         assert run_vb(places, stub.url, "--proxy") == 0
@@ -841,7 +1001,7 @@ def test_proxy_caps_meter_check_and_bundle(places, tmp_path, monkeypatch):
         return state
 
     monkeypatch.setattr(faultproxy.FaultProxy, "state", inflated)
-    with StubServer(lambda body: bash("echo VB_SUBMIT")) as stub:
+    with StubServer(lambda body: bash("echo SUBMIT_TASK")) as stub:
         assert run("run-2", "cheap_direct", stub.url) == 0
     drifted = places["results"] / "TEST-OFFLINE" / "run-2"
     for record in by_instance(drifted / "records.jsonl").values():
@@ -874,7 +1034,7 @@ def test_vb_run_applies_the_chosen_disturbance_profile(places, tmp_path, monkeyp
                         "--disturbance", str(spec_path), "--results", str(places["results"]), "--work",
                         str(places["work"]), "--secret-file", str(places["secret"]), *extra])
 
-    with StubServer(lambda body: bash("echo VB_SUBMIT")) as stub:
+    with StubServer(lambda body: bash("echo SUBMIT_TASK")) as stub:
         # A spec the run cannot apply is refused before anything runs.
         refused = {"model_swap": 'kind = "model_swap"', "convention_flip": 'kind = "convention_flip"',
                    "no proxy": 'kind = "provider_fault"\nparams = { name = "http_5xx", p = 1.0 }',
@@ -923,7 +1083,7 @@ def test_convention_flip_renders_a_v2_latent(places, tmp_path):
                       'instances = ["F1-l1-0001", "F4-l1-0001", "F1-l2-0001", "F4-l2-0001"]\n')
     spec = tmp_path / "flip-spec.toml"
     spec.write_text('schema_version = "vb.disturbance/1"\n\n[[disturbance]]\nkind = "convention_flip"\nstart_at = 3\n')
-    with StubServer(lambda body: bash("echo VB_SUBMIT")) as stub:
+    with StubServer(lambda body: bash("echo SUBMIT_TASK")) as stub:
         assert vb.main(["run", "--experiment", "TEST-FLIP", "--run-id", "run-1", "--stream", str(stream), "--arm",
                         "cheap_direct", "--model", "gpt-oss-120b", "--seeds", "1", "--provider-url", stub.url,
                         "--disturbance", str(spec), "--results", str(places["results"]), "--work",
@@ -958,7 +1118,7 @@ def test_flaky_verify_is_injected_through_the_visible_verify_wrapper(places, tmp
     visible = "python3 -m unittest discover -s tests/visible"
     script = [bash(CORRECT, "Implement clamp."), bash(visible, "Run the visible check."),
               bash(f"{visible} && echo again", "Once more."), bash("git status --short", "Look."),
-              bash("echo VB_SUBMIT")]
+              bash("echo SUBMIT_TASK")]
     spec = tmp_path / "flaky.toml"
     spec.write_text('schema_version = "vb.disturbance/1"\n\n[[disturbance]]\nkind = "flaky_verify"\nstart_at = 2\n'
                     'end_at = 2\nseed = 11\nparams = { p = 1.0 }\n')
@@ -993,7 +1153,7 @@ def test_a_declared_model_swap_runs_on_the_direct_arm(places, tmp_path):
     spec = tmp_path / "swap.toml"
     spec.write_text('schema_version = "vb.disturbance/1"\n\n[[disturbance]]\nkind = "model_swap"\nstart_at = 2\n'
                     'params = { to = "glm-4.7" }\n')
-    with StubServer(lambda body: bash("echo VB_SUBMIT")) as stub:
+    with StubServer(lambda body: bash("echo SUBMIT_TASK")) as stub:
         assert run_vb(places, stub.url, "--proxy", "--disturbance", str(spec)) == 0
         sent = [request["model"] for request in stub.requests]
     rows = {record["stream"]["position"]: record for record in read_jsonl(run_dir(places) / "records.jsonl")}
@@ -1104,7 +1264,7 @@ def test_replies_need_exactly_one_bash_block(tmp_path):
     assert mini_loop.parse_command(bash("ls -la")) == "ls -la"
     assert mini_loop.parse_command("no block here") is None
     assert mini_loop.parse_command(bash("ls") + bash("pwd")) is None
-    result = mini_loop.run_command("echo VB_SUBMIT", cwd=tmp_path, env=dict(os.environ), timeout_s=10,
+    result = mini_loop.run_command("echo SUBMIT_TASK", cwd=tmp_path, env=dict(os.environ), timeout_s=10,
                                    observation_chars=100)
     assert result.submitted and result.returncode == 0
     slow = mini_loop.run_command("sleep 5", cwd=tmp_path, env=dict(os.environ), timeout_s=0.5, observation_chars=100)

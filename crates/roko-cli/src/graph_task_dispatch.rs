@@ -56,6 +56,7 @@ mod audit_select;
 pub(crate) mod baseline_verify;
 mod bench_verify;
 mod budget;
+mod check_output;
 mod decision_log;
 mod diff_snapshot;
 mod failover;
@@ -84,6 +85,7 @@ mod sibling_settle;
 mod step_ratchet;
 mod streaming;
 mod supervision;
+mod try_allowance;
 mod tui_forward;
 mod turn_policy;
 mod verification;
@@ -109,8 +111,8 @@ pub use wiring::{LoopWiring, WiringComponent, WiringKind, WiringReport};
 
 use attempt::{AttemptBook, SettledAttempt, Settlement, attempt_agent_id, first_token_seen};
 use budget::{
-    AttemptAllowance, GraphDailyBudget, GraphPlanBudgetLedger, GraphTaskSpendLedger,
-    effective_routing_budget, own_budget_stop, task_budget_ceiling_usd,
+    GraphDailyBudget, GraphPlanBudgetLedger, GraphTaskSpendLedger, effective_routing_budget,
+    own_budget_stop, task_budget_ceiling_usd,
 };
 use helper_calls::{HelperAgent, HelperCalls};
 use inert_settings::warn_inert_graph_settings_once;
@@ -120,6 +122,7 @@ use routing_context::{
     select_cheap_model_key, upstream_outputs,
 };
 use supervision::SupervisedAttempt;
+use try_allowance::{RUNG_ALLOWANCE, TryAllowance, TryStop};
 use tui_forward::forward_live_event_to_tui;
 use turn_policy::{
     TurnCapRetry, base_attempt_timeout_ms_with, is_express_task, provider_failure_outcome,
@@ -279,6 +282,13 @@ pub struct GraphTaskDispatcher {
     /// with that attempt's timeout in ms; the next attempt gets more time
     /// and resumes the partial work.
     timeout_retries: parking_lot::Mutex<HashMap<String, u64>>,
+    /// Tasks (`"{plan_id}/{task_id}"`) whose last try spent its rung's
+    /// allowance, with why; the next attempt resumes the partial work
+    /// (gap-3e770b).
+    allowance_stops: parking_lot::Mutex<HashMap<String, String>>,
+    /// Each task's last routed step and why each unsettled try runs where it
+    /// does, which its events say (gap-aaaaae).
+    tries: parking_lot::Mutex<ladder::TryBook>,
     /// Dispatch attempts this process started per task
     /// (`"{plan_id}/{task_id}"`); [`Self::attempt_in_run`] counts the Graph
     /// engine's retries from it.
@@ -379,6 +389,8 @@ impl GraphTaskDispatcher {
             citation_resolver: Arc::new(roko_gate::HttpCitationResolver::new()),
             turn_cap_retries: parking_lot::Mutex::new(HashMap::new()),
             timeout_retries: parking_lot::Mutex::new(HashMap::new()),
+            allowance_stops: parking_lot::Mutex::new(HashMap::new()),
+            tries: parking_lot::Mutex::default(),
             task_attempts: parking_lot::Mutex::new(HashMap::new()),
             attempts: AttemptBook::default(),
             in_flight: sibling_settle::InFlightTasks::default(),
@@ -1205,6 +1217,8 @@ impl TaskDispatcher for GraphTaskDispatcher {
             express_active,
             self.turn_cap_mult(spec, &task, ctx),
         );
+        // The tier's cap, which a rung's try allowance is cut from.
+        let tier_turns = max_turns;
         // The last attempt stopped at its turn cap with partial work on disk:
         // raise the cap and tell the agent to resume, never rerun the same cap.
         let turn_cap_resume = self.take_turn_cap_retry(&spec.plan_id, &task.id);
@@ -1353,6 +1367,26 @@ impl TaskDispatcher for GraphTaskDispatcher {
         };
         attempt.prompt_assembled();
         self.record_attempt_ladder(&mut attempt, spec, &task, &dispatch_plan, ladder_step);
+        // A try on a rung the task can still climb from is bounded: it gets
+        // the rung's turns, however many a turn-cap stop raised the cap to,
+        // and may spend no more than the rung's allowance (gap-3e770b).
+        let rung_allowance =
+            self.rung_allowance(&task, &attempt, &dispatch_plan, ladder_step, tier_turns);
+        if let Some(allowance) = &rung_allowance {
+            if let Some(turns) = allowance.turns {
+                max_turns = max_turns.min(turns);
+            }
+            tracing::info!(
+                plan_id = %spec.plan_id,
+                task_id = %task.id,
+                rung = %allowance.rung,
+                max_turns,
+                max_usd = ?allowance.usd,
+                "the try on this rung is bounded; a try that uses its allowance up fails on the \
+                 rung"
+            );
+        }
+        let allowance = TryAllowance::new(allowance, rung_allowance.as_ref());
         self.record_planned_attempt(&mut attempt, &task, &dispatch_plan);
 
         let contract = self.task_contract(role, spec, &task);
@@ -1379,6 +1413,9 @@ impl TaskDispatcher for GraphTaskDispatcher {
         }
         if let Some(previous_ms) = timeout_resume {
             prompt.push_str(&timeout_resume_note(previous_ms, timeout_ms));
+        }
+        if let Some(note) = self.take_allowance_stop_note(&spec.plan_id, &task.id) {
+            prompt.push_str(&note);
         }
         // SC4: a hidden-suite canary in the composed prompt is a leak (7130).
         if let Some(audit) = self.attempts.audit() {
@@ -1413,8 +1450,8 @@ impl TaskDispatcher for GraphTaskDispatcher {
             bare_mode: self.config.agent.bare_mode,
             dangerously_skip_permissions: self.dangerously_skip_permissions,
             // Tier turn cap from `[pipeline.<tier>] max_turns`, lowered to
-            // EXPRESS_MAX_TURNS for express tasks and raised after a turn-cap
-            // stop. Never unbounded.
+            // EXPRESS_MAX_TURNS for express tasks, raised after a turn-cap
+            // stop, and cut to the rung's try allowance. Never unbounded.
             max_turns: Some(max_turns),
             live_output: None,
             attempt_key: Some(attempt.key.attempt_key()),
@@ -1519,7 +1556,7 @@ impl TaskDispatcher for GraphTaskDispatcher {
                     attempt.key.attempt_key(),
                     request,
                     Some(&progress),
-                    failover::LadderRoute::of(&task, &dispatch_plan),
+                    failover::LadderRoute::of(&task, &dispatch_plan, ladder_step),
                     Some(failover::DashboardRow {
                         agent_id: &pre_dispatch_agent_id,
                         role: task.role.as_deref().unwrap_or("implementer"),
@@ -1545,6 +1582,11 @@ impl TaskDispatcher for GraphTaskDispatcher {
         let (mut dispatch, failover) = match dispatch_result {
             Ok(dispatched) => dispatched,
             Err(error) => {
+                // An agent that runs its own loop and spent its rung's
+                // allowance resumes its work on its next try (gap-3e770b).
+                if let Some(watchdog::AttemptInterrupted::AllowanceSpent(reason)) = &ended_by {
+                    self.keep_allowance_stop(&spec.plan_id, &task.id, reason);
+                }
                 // A call that failed once the run began to stop, such as an
                 // agent that exited on the run's own SIGTERM, is a
                 // cancellation (bug-28b604).
@@ -1715,16 +1757,19 @@ impl TaskDispatcher for GraphTaskDispatcher {
             // could not pay for (bug-4fabd0), or that stopped itself at the
             // spend limit the attempt gave it (gap-e14344): the harness
             // stopped it, and no retry can pay for that call either.
-            let budget_stop = allowance
-                .as_deref()
-                .and_then(AttemptAllowance::refusal)
-                .or_else(|| own_budget_stop(&dispatch));
+            // A try that spent its rung's allowance stopped the same ways
+            // (gap-3e770b), and failed on its rung.
+            let budget_stop = match allowance.as_deref() {
+                Some(allowance) => allowance.stop(own_budget_stop(&dispatch)),
+                None => own_budget_stop(&dispatch).map(TryStop::Plan),
+            };
             // A failed provider call is settled now; a successful one is
             // settled after its verify steps so learning sees the verified
             // outcome.
             let settlement = match (&stopped, &budget_stop) {
                 (Some(cancelled), _) => Settlement::provider_call_error(cancelled),
-                (None, Some(reason)) => Settlement::budget_exhausted(reason),
+                (None, Some(TryStop::Plan(reason))) => Settlement::budget_exhausted(reason),
+                (None, Some(TryStop::Rung(reason))) => Settlement::allowance_spent(reason),
                 (None, None) => Settlement::provider_failure(&message, first_token_seen(&dispatch)),
             };
             let settled = attempt.settle(settlement, &dispatch_plan.model.slug, Some(&dispatch));
@@ -1750,15 +1795,32 @@ impl TaskDispatcher for GraphTaskDispatcher {
             if let Some(cancelled) = stopped {
                 return Err(cancelled);
             }
-            if let Some(reason) = budget_stop {
-                tracing::warn!(
-                    plan_id = %spec.plan_id,
-                    task_id = %task.id,
-                    %reason,
-                    "the plan budget stopped the attempt before a model call; its work stays \
-                     in its checkout"
-                );
-                return Err(RokoError::gateway("budget", false, reason));
+            match budget_stop {
+                Some(TryStop::Plan(reason)) => {
+                    tracing::warn!(
+                        plan_id = %spec.plan_id,
+                        task_id = %task.id,
+                        %reason,
+                        "the plan budget stopped the attempt before a model call; its work stays \
+                         in its checkout"
+                    );
+                    return Err(RokoError::gateway("budget", false, reason));
+                }
+                Some(TryStop::Rung(reason)) => {
+                    tracing::info!(
+                        plan_id = %spec.plan_id,
+                        task_id = %task.id,
+                        %reason,
+                        "the try spent its rung's allowance; it failed on the rung, and its work \
+                         stays in its checkout"
+                    );
+                    self.keep_allowance_stop(&spec.plan_id, &task.id, &reason);
+                    return Err(RokoError::Agent {
+                        backend: dispatch.target.provider_id,
+                        message: format!("{RUNG_ALLOWANCE}: {reason}"),
+                    });
+                }
+                None => {}
             }
 
             // Detect billing/credit errors and log a clear warning so

@@ -20,9 +20,7 @@ use roko_learn::self_model::baselines::{
     StaticArm,
 };
 use roko_learn::self_model::features::TaskFeatures;
-use roko_learn::self_model::gate::{
-    CalibrationGate, CalibrationWindow, GateReport, WINDOW, WindowOutcome,
-};
+use roko_learn::self_model::gate::{CalibrationGate, CalibrationWindow, GateReport, WindowOutcome};
 use roko_learn::self_model::ingest::{self, DataAudit, ForecastJoin};
 use roko_learn::self_model::legacy;
 use roko_learn::self_model::metrics::{
@@ -123,7 +121,9 @@ pub(crate) fn cmd_self_model(cli: &Cli, cmd: SelfModelCmd, json: bool) -> Result
                 bail!("only `--offline` fits exist: the fit reads the logs and dispatches nothing");
             }
             let layout = from.map_or_else(|| RokoLayout::for_project(&workdir), RokoLayout::new);
-            let report = fit_offline(&layout, &snapshot)?;
+            // The gate a plan run scores with: `[self_model] n_min` is its W (gap-4c531f).
+            let gate = CalibrationGate::of(&config.self_model);
+            let report = fit_offline(&layout, &snapshot, gate)?;
             if json {
                 println!("{}", serde_json::to_string(&report)?);
             } else {
@@ -184,6 +184,8 @@ pub(crate) struct FitReport {
     pub(crate) price_snapshot_id: String,
     /// Every training unit, forecast before the model learned it.
     pub(crate) prequential: Prequential,
+    /// W, the calibration gate's window: `[self_model] n_min` (gap-4c531f).
+    pub(crate) window: usize,
     /// `insufficient_n` below the gate's window, else `eligible` or `not_eligible`.
     pub(crate) calibration: &'static str,
     /// The calibration gate's report on the last window, once there is one.
@@ -262,9 +264,13 @@ impl ForecastReport {
 }
 
 /// Fit a fresh self-model over the logs under `layout`, scoring every training unit before the
-/// model learns it, and join the runs' shadow forecasts to their verdicts. Reads only: the
-/// fitted state is not saved.
-pub(crate) fn fit_offline(layout: &RokoLayout, snapshot: &PriceSnapshot) -> Result<FitReport> {
+/// model learns it and the last window of them with `gate`, and join the runs' shadow forecasts
+/// to their verdicts. Reads only: the fitted state is not saved.
+pub(crate) fn fit_offline(
+    layout: &RokoLayout,
+    snapshot: &PriceSnapshot,
+    gate: CalibrationGate,
+) -> Result<FitReport> {
     let runs = ingest::read_runs(&layout.runs_dir()).context("read the S01 runs")?;
     let forecasts =
         ingest::read_forecast_join(&layout.runs_dir()).context("read the S01 runs' forecasts")?;
@@ -277,7 +283,7 @@ pub(crate) fn fit_offline(layout: &RokoLayout, snapshot: &PriceSnapshot) -> Resu
         .filter(|unit| !held.contains(&plan_task(unit)))
         .collect();
     let mut model = SelfModel::new(snapshot);
-    let mut window = CalibrationWindow::new(model.version.clone());
+    let mut window = CalibrationWindow::new(model.version.clone()).keeping(gate.keeps());
     let mut scored = Vec::new();
     for unit in runs.units.iter().chain(fresh.iter().copied()) {
         let Some(passed) = unit.label.y_gate.filter(|_| !unit.failover) else {
@@ -299,8 +305,8 @@ pub(crate) fn fit_offline(layout: &RokoLayout, snapshot: &PriceSnapshot) -> Resu
         window.push(&model.version, outcome);
         model.observe_with(unit, &task, w);
     }
-    let gate = (scored.len() >= WINDOW).then(|| CalibrationGate::default().evaluate(&window));
-    let calibration = match &gate {
+    let report = (scored.len() >= gate.window).then(|| gate.evaluate(&window));
+    let calibration = match &report {
         None => "insufficient_n",
         Some(report) if report.eligible => "eligible",
         Some(_) => "not_eligible",
@@ -327,8 +333,9 @@ pub(crate) fn fit_offline(layout: &RokoLayout, snapshot: &PriceSnapshot) -> Resu
             calibration_in_the_large: calibration_in_the_large(&scored),
             auroc: auroc(&scored),
         },
+        window: gate.window,
         calibration,
-        gate,
+        gate: report,
         forecast_join: ForecastReport::of(forecasts),
     })
 }
@@ -375,8 +382,8 @@ pub(crate) fn render_fit(report: &FitReport) -> String {
         None => {
             let _ = writeln!(
                 out,
-                "calibration: {} (n = {} < {WINDOW})",
-                report.calibration, scores.n
+                "calibration: {} (n = {} < {})",
+                report.calibration, scores.n, report.window
             );
         }
         Some(gate) if gate.reasons.is_empty() => {
@@ -826,9 +833,12 @@ mod tests {
     }
 
     /// 6124: the legacy fixture alone holds nine training units, too few for the calibration
-    /// gate's window, and the fit says so.
+    /// gate's window, and the fit says so. gap-4c531f: `[self_model] n_min = 9` lowers the bar
+    /// to them, and the gate scores all nine.
     #[test]
     fn learn_self_model_fit_reports_insufficient_n() {
+        use roko_core::config::self_model::SelfModelConfig;
+
         let workspace = tempfile::tempdir().expect("tempdir");
         let layout = RokoLayout::for_project(workspace.path());
         std::fs::create_dir_all(layout.learn_dir()).expect("create .roko/learn");
@@ -839,11 +849,12 @@ mod tests {
             .expect("copy the episode log");
         let snapshot = PriceSnapshot::builtin().expect("the built-in snapshot");
 
-        let report = fit_offline(&layout, &snapshot).expect("fit");
+        let report = fit_offline(&layout, &snapshot, CalibrationGate::default()).expect("fit");
         assert_eq!(report.data_audit.runs.rows, 0);
         assert_eq!(report.data_audit.legacy.labelled, 9);
         assert_eq!(report.data_audit.duplicates, 0);
         assert_eq!(report.prequential.n, 9);
+        assert_eq!(report.window, 100);
         assert_eq!(report.calibration, "insufficient_n");
         assert!(report.gate.is_none());
         let json = serde_json::to_string(&report).expect("serialize the report");
@@ -851,6 +862,16 @@ mod tests {
         let text = render_fit(&report);
         assert!(text.contains("label sources: gate_passed 4, pre_gate_success 5"));
         assert!(text.contains("calibration: insufficient_n (n = 9 < 100)"));
+
+        let settings = SelfModelConfig {
+            n_min: 9,
+            ..SelfModelConfig::default()
+        };
+        let report = fit_offline(&layout, &snapshot, CalibrationGate::of(&settings)).expect("fit");
+        assert_eq!(report.window, 9);
+        assert_ne!(report.calibration, "insufficient_n");
+        let scored = report.gate.as_ref().map(|gate| (gate.window, gate.n));
+        assert_eq!(scored, Some((9, 9)));
     }
 
     /// gap-96547f: the fit joins each run's shadow forecasts to its routed attempts and their
@@ -872,7 +893,7 @@ mod tests {
         let workspace = tempfile::tempdir().expect("tempdir");
         let layout = RokoLayout::for_project(workspace.path());
         let snapshot = PriceSnapshot::builtin().expect("the built-in snapshot");
-        let empty = fit_offline(&layout, &snapshot).expect("fit");
+        let empty = fit_offline(&layout, &snapshot, CalibrationGate::default()).expect("fit");
         assert_eq!(empty.forecast_join.status, "insufficient_n");
         assert_eq!(empty.forecast_join.join_share, None);
         assert!(render_fit(&empty).contains("forecasts: insufficient_n"));
@@ -934,7 +955,7 @@ mod tests {
         }
         writer.close();
 
-        let report = fit_offline(&layout, &snapshot).expect("fit");
+        let report = fit_offline(&layout, &snapshot, CalibrationGate::default()).expect("fit");
         let join = &report.forecast_join;
         assert_eq!(join.status, "measured");
         assert_eq!(join.coverage, Some(0.75));
@@ -967,7 +988,7 @@ mod tests {
         let writer = TelemetryWriter::spawn(&run_dir, config).expect("the run's writer");
         assert!(writer.submit(verdict("T3", AttemptOutcome::Unverified)));
         writer.close();
-        let counts = fit_offline(&layout, &snapshot)
+        let counts = fit_offline(&layout, &snapshot, CalibrationGate::default())
             .expect("fit")
             .forecast_join
             .counts;

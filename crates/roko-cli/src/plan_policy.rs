@@ -1827,9 +1827,7 @@ mod tests {
 
         // A focused task has at most four: split it, or raise its tier.
         let mut over = plan_task.clone();
-        over.verify = (1..=5)
-            .map(|n| step(&format!("test_{n}"), "AC1"))
-            .collect();
+        over.verify = (1..=5).map(|n| step(&format!("test_{n}"), "AC1")).collect();
         let sizes = validate_tier_sizes(&tasks(over), generated);
         assert!(
             sizes
@@ -1842,9 +1840,7 @@ mod tests {
         unchecked.verify.clear();
         let issues = validate_plan_budgets(&tasks(unchecked), generated);
         assert!(
-            issues
-                .iter()
-                .any(|issue| issue.code == "PLAN_VERIFY_OWNER"),
+            issues.iter().any(|issue| issue.code == "PLAN_VERIFY_OWNER"),
             "{issues:?}"
         );
 

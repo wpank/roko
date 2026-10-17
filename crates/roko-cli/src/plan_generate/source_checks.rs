@@ -147,7 +147,8 @@ impl Reader {
             self.close();
             let header = next.is_some_and(|next| is_table_separator(next.trim()));
             if !header && !is_table_separator(trimmed) {
-                self.checks.push(one_line(&table_cells(trimmed).join(" | ")));
+                self.checks
+                    .push(one_line(&table_cells(trimmed).join(" | ")));
             }
         } else if line.starts_with([' ', '\t'])
             && let Some((check, Some(_))) = &mut self.open

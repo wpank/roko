@@ -1311,7 +1311,10 @@ mod tests {
         let policy = PlanExecutionPolicy::generated(DEFAULT_GENERATED_TASK_LIMIT);
         let verify_steps = verify_step_limits(policy);
         // gap-dde99e: a generated task has a step per acceptance criterion.
-        assert!(verify_steps.contains("one per acceptance criterion"), "{verify_steps}");
+        assert!(
+            verify_steps.contains("one per acceptance criterion"),
+            "{verify_steps}"
+        );
         let fast = verify_step_limits(PlanExecutionPolicy::fast());
         assert!(fast.starts_with("exactly 1 step per task"), "{fast}");
         let limits = render_generated_plan_limits();

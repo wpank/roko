@@ -158,7 +158,7 @@ def test_dispatch_over_line_cap_is_refused(tmp_path):
 
 def test_dispatch_over_line_cap_is_refused_before_any_provider_call(places):
     write_row(places["results"], experiment="TEST-BUDGET", usd=13.80)  # less than one task's $0.29 worst case left
-    with StubServer(lambda body: bash("echo VB_SUBMIT")) as stub:
+    with StubServer(lambda body: bash("echo SUBMIT_TASK")) as stub:
         assert run_vb(places, stub.url) == 1
         assert stub.requests == []
     run_dir = places["results"] / "TEST-BUDGET" / "run-2"
@@ -171,7 +171,7 @@ def test_attempt_over_line_cap_is_refused_by_the_runner(places, monkeypatch):
     """The runner's own reservation binds when the room went after the task's check (say, to a concurrent run)."""
     write_row(places["results"], experiment="TEST-BUDGET", usd=13.90)  # less than one attempt's $0.13 worst case left
     monkeypatch.setattr(ledger.Ledger, "refusal", lambda self, worst_usd: None)
-    with StubServer(lambda body: bash("echo VB_SUBMIT")) as stub:
+    with StubServer(lambda body: bash("echo SUBMIT_TASK")) as stub:
         assert run_vb(places, stub.url, "--limit", "1") == 0
         assert stub.requests == []
     run_dir = places["results"] / "TEST-BUDGET" / "run-2"

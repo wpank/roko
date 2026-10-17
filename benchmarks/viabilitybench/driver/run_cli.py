@@ -58,7 +58,7 @@ under a name suffixed with a hash of that directory, and misses the subscription
 with `security find-generic-password -a "$USER" -w -s "Claude Code-credentials"`, `security` found on its PATH, so
 `agent_env` must pass the operator's USER. macOS finds the login keychain through HOME, though, and the session's HOME
 is its own: the live probe (gap-154f93) ended "Not logged in". So the session's `security` is a wrapper in its
-`.vb-bin` (`KEYCHAIN_WRAPPER`) that runs /usr/bin/security with the operator's HOME, and the session keeps its own
+`.local/bin` (`KEYCHAIN_WRAPPER`) that runs /usr/bin/security with the operator's HOME, and the session keeps its own
 HOME. The agent's shell can run the wrapper too, as it could already run /usr/bin/security on the login keychain by
 its path: the same-uid limit `agent_env` describes. No host-only sandbox prevents this (gap-3cfe4f): the whole claude
 tree runs under one sandbox for the egress rule, a keychain deny there would stop Claude Code's own login, and macOS
@@ -569,7 +569,7 @@ def main(argv: list[str] | None = None) -> int:
     probe.add_argument("--arm", default="fd_claude", help="an arm name in arms/, or a path to one")
     probe.add_argument("--allow-network", action="store_true",
                        help="required: the probe runs claude for real, on the subscription")
-    probe.add_argument("--work", type=Path, help="default: $VB_WORK, then ~/vb-work")
+    probe.add_argument("--work", type=Path, help="default: $VB_WORK, then ~/workspaces")
     probe.add_argument("--out", type=Path, help="where the probe's JSON goes (default: its directory under --work)")
     args = parser.parse_args(argv)
     if argv is None and args.allow_network:  # a real probe: claude must not find the operator's credentials here
@@ -733,9 +733,10 @@ def _seed_config_dir(config_dir: Path, credentials: str) -> None:
 
 
 def _keychain_wrapper(home: Path) -> Path:
-    """The session's `security` for `credentials = "keychain"`, first on its PATH (`.vb-bin`): /usr/bin/security under
-    the operator's HOME, where macOS finds the login keychain (module docstring, gap-154f93)."""
-    wrapper = home / ".vb-bin" / "security"
+    """The session's `security` for `credentials = "keychain"`, first on its PATH (`agent_env.BIN_DIR`):
+    /usr/bin/security under the operator's HOME, where macOS finds the login keychain (module docstring,
+    gap-154f93)."""
+    wrapper = home / agent_env.BIN_DIR / "security"
     wrapper.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
     wrapper.write_text(KEYCHAIN_WRAPPER.format(home=shlex.quote(str(Path.home())), security=SECURITY))
     wrapper.chmod(0o755)

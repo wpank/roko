@@ -7,8 +7,8 @@
   `max_retries` (2: Roko's ≤ 3 attempts), `model_hint` = the pinned model, and exactly one `[[task.verify]]`: the
   manifest's visible check (several are joined with `&&`). In a run with `flaky_verify` the check runs through the
   visible-verify wrapper, as `'<vb-verify>' '<check>'` (`PlanSpec.verify_wrapper`, `vb_verify`), in the verify step
-  and the gate rung alike. The slug is opaque (`vb-<sha256(key)[:10]>`) and the title is the spec's first heading,
-  so Roko's prompt holds nothing the direct arm's task message does not.
+  and the gate rung alike. The slug is opaque (`plan-<sha256(alias)[:10]>`, `plan_slug`) and the title is the spec's
+  first heading, so Roko's prompt holds nothing the direct arm's task message does not.
 - `roko.toml`: one provider and one model, the pinned one (its key equals its slug), with no fallback models, so
   nothing can fail over (bug-35379d); the routing ladder off (`[routing.ladder] enabled = false`), so the pin is
   the only routing input and `plan validate` has no ladder for the task's `model_hint` to bypass (PLAN_041,
@@ -98,8 +98,9 @@ import campaign  # the overlay's homeostasis=if_live census check (3360): census
 import layout  # noqa: F401 (puts families/ on sys.path for common)
 from common import canary
 
-TEMPLATE_VERSION = "planemit-5"
-LADDER_VERSION = "planemit-ladder-2"
+TEMPLATE_VERSION = "planemit-6"
+LADDER_VERSION = "planemit-ladder-3"
+SLUG_PREFIX = "plan-"  # the plan's id and directory, which Roko's agents see: it names no benchmark (bug-d68575)
 TIERS = ("mechanical", "focused", "integrative", "architectural")  # Roko's task tiers, each with a start rung
 # The frontier models of S09 §4.2's arms (fd_claude, fd_claude_lite, fd_codex, fd_api, the optional Fable arm) and of
 # roko.toml's `top` rung: a ladder of the cheap pool never holds one (decision 3302).
@@ -347,8 +348,9 @@ class Emitted:
 def plan_slug(alias: str) -> str:
     """The plan id, which the agents in the workspace see: a hash of the task's alias (`TaskContext.alias`), never of
     its task key (bug-3c921e). The instance id names the family and the ladder level, and the keys are few and their
-    scheme public, so a hash of a key could be inverted by hashing every one."""
-    return "vb-" + hashlib.sha256(alias.encode("utf-8")).hexdigest()[:10]
+    scheme public, so a hash of a key could be inverted by hashing every one. Its prefix names no benchmark
+    (bug-d68575; planemit-5 and before used `vb-`)."""
+    return SLUG_PREFIX + hashlib.sha256(alias.encode("utf-8")).hexdigest()[:10]
 
 
 def emit(spec: PlanSpec, workspace: Path) -> Emitted:

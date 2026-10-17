@@ -12,7 +12,7 @@ makes its own, so its whole process tree needs that one loopback port, not none.
 Our own prompt (`_config`) replaces mini-swe-agent's bundled one, so the agent sees exactly the spec text every arm
 gets (A4, module docstring of `planemit.py`) and nothing SWE-bench-specific; its completion marker stays
 mini-swe-agent's own (`echo COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT`, checked by its `LocalEnvironment`), not
-`mini_loop.py`'s `VB_SUBMIT`. The arm's caps map onto its own limits: `agent.step_limit` from `caps.turns_per_task`
+`mini_loop.py`'s `SUBMIT`. The arm's caps map onto its own limits: `agent.step_limit` from `caps.turns_per_task`
 and its `--cost-limit` disabled (0), since litellm's cost tracking does not know our custom models even with
 `model.cost_tracking: ignore_errors` (it always reports $0 for one) — the metering proxy's input-token cap and this
 module's wallclock kill are what actually bound a task, as they are for Roko. `MSWEA_CONFIGURED=1` skips its
@@ -58,7 +58,8 @@ from common import repo, sandbox
 HARNESS = "mini-swe-agent"
 PROMPT_VERSION = "run-msa-1"
 DEFAULT_BINARY = ".venv-msa/bin/mini"  # relative to the benchmark tree (layout.VB_ROOT), like the Roko arm's binary
-OFFLINE_KEY = "vb-offline-placeholder"  # the proxy drops it and sends the real key; a stub ignores it
+OFFLINE_KEY = "placeholder"  # the proxy drops it and sends the real key; a stub ignores it. Neutral (bug-d68575)
+SCRATCH_PREFIX = "mini-"  # mini-swe-agent's config and trajectory directory, which its env and argv name
 STEP_LIMIT_FLOOR = 4  # mini-swe-agent counts a step as one model call; never ask for fewer than this
 WALLCLOCK_GRACE_S = 10.0  # given to mini-swe-agent to write its trajectory after its own session ends
 
@@ -115,7 +116,7 @@ def run_task(ctx: harness.TaskContext) -> harness.TaskOutcome:
     transcript: list[dict] = []
     status, reason = "infra_error", ""
     reserved = False
-    with tempfile.TemporaryDirectory(prefix="vb-msa-") as scratch_name:
+    with tempfile.TemporaryDirectory(prefix=SCRATCH_PREFIX) as scratch_name:
         scratch = Path(scratch_name)
         config_path = scratch / "mini.yaml"
         config_path.write_text(_config(ctx, task_bound), encoding="utf-8")

@@ -349,7 +349,7 @@ def test_setup_refuses_an_api_key_login_flaky_verify_and_a_missing_codex(places,
     (script.parent / "fakenode").chmod(0o755)
     env = agent_env.build(home=places["tmp"] / "npm-home")
     link = run_codex.interpreter_link(script, env)
-    assert link == Path(env["HOME"]) / ".vb-bin" / "fakenode"
+    assert link == Path(env["HOME"]) / agent_env.BIN_DIR / "fakenode"
     assert link.resolve() == (script.parent / "fakenode").resolve()
     assert run_codex.interpreter_link(program, env) is None  # python3 is on the session's PATH already
 

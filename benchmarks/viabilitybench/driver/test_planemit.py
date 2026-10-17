@@ -92,7 +92,7 @@ def test_pinned_mode_is_byte_identical_to_before_ladder_mode(tmp_path):
     emitted = planemit.emit(pinned_spec(), workspace(tmp_path))
     assert emitted.tasks_text == (GOLDEN / "pinned.tasks.toml").read_text()
     assert emitted.config_text == (GOLDEN / "pinned.roko.toml").read_text()
-    assert planemit.TEMPLATE_VERSION == "planemit-5"  # bug-c1b04b: planemit-4's files opened with a header
+    assert planemit.TEMPLATE_VERSION == "planemit-6"  # bug-c1b04b: 4's files had a header; bug-d68575: 5's `vb-` slug
     assert planemit.TEMPLATE_SHA256 == "392ef78bd0db0e9e65256a77aaee191a339e0c12a326021249322d855892c5f8"
 
 
@@ -221,7 +221,7 @@ def test_real_roko_validates_the_ladder_plan(tmp_path):
                        visible=tuple(task.manifest["visible_verify"]))
     emitted = planemit.emit(spec, task.workdir)
     env = {**agent_env.build(home=tmp_path / "home"), "ROKO_CONFIG": str(emitted.config_path),
-           **{key: "vb-offline-placeholder" for _, _, _, key in CASCADE}}
+           **{key: "placeholder" for _, _, _, key in CASCADE}}  # run_roko.OFFLINE_KEY
     checked = subprocess.run([str(REAL_ROKO), "--repo", str(task.workdir), "--no-serve", "plan", "validate", "--strict",
                               "--dag", str(task.workdir / "plans")], cwd=task.workdir, env=env, capture_output=True,
                              text=True, timeout=120, check=False)

@@ -9,7 +9,8 @@ proxy can serve another CLI arm (Codex) later.
 - **What passes.** Only `CONNECT host:port` for a target on the allowlist (exact matches, the host compared without
   case), and then the tunnel's bytes both ways, unread: TLS stays end to end between the client and the host. Every
   other request, a CONNECT to another target or a plain-HTTP proxy request (`GET http://…`), gets a 403, and the proxy
-  neither connects nor resolves anything for it.
+  neither connects nor resolves anything for it. Its answers, which the agent's shell reads, name no benchmark and no
+  run (bug-d68575).
 - **The log.** Every request is one row, kept in memory and appended to `log_path` (JSONL, one write per row): `ts`
   (to the microsecond), `task` (set by `configure` before each task), `method`, `target`, `admitted` and, for an
   admitted target the proxy could not reach, `error`. `summary(task)` gives a task's allowlist, its admitted count and
@@ -144,21 +145,21 @@ class EgressProxy:
         head, rest = _read_head(client)
         if head is None:
             self._log("?", "", admitted=False)
-            _reply(client, 400, "vb egress: no complete request head")
+            _reply(client, 400, "egress proxy: no complete request head")
             return
         method, raw = _request_line(head)
         target = _target(raw) if method == "CONNECT" else None
         if target is None or target not in self.allow:
             label = target or _label(raw)
             self._log(method, label, admitted=False)
-            _reply(client, 403, f"vb egress: {method} {label} is not on this run's allowlist")
+            _reply(client, 403, f"egress proxy: {method} {label} is not on the allowlist")
             return
         host, _, port = target.rpartition(":")
         try:
             upstream = socket.create_connection((host.strip("[]"), int(port)), timeout=self.connect_timeout_s)
         except OSError as err:
             self._log(method, target, admitted=True, error=type(err).__name__)
-            _reply(client, 502, f"vb egress: {target} cannot be reached")
+            _reply(client, 502, f"egress proxy: {target} cannot be reached")
             return
         with self._lock:
             self._open.add(upstream)

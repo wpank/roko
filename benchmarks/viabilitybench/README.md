@@ -19,7 +19,7 @@ what has run, is tracked in `work/items/` under epic `spec-567e52`.
 
 - **Source only.** This tree holds generators, verifiers, the driver and analysis code. Raw results live outside
   the repo in `$VB_RESULTS` (default `~/.roko-bench/viability`), and task workdirs in `$VB_WORK` (default
-  `~/vb-work`). Each pilot's small summary bundle (records, metrics, ledger and report page; no transcripts or
+  `~/workspaces`). Each pilot's small summary bundle (records, metrics, ledger and report page; no transcripts or
   archives) is committed under `reports/`.
 - **Stdlib-only Python 3.11 or newer** for everything the benchmark runs: families, verifiers, driver and
   analysis. pytest is a dev-only dependency, pinned in `requirements.lock`. The one exception (decision 3336): the
@@ -104,21 +104,24 @@ $PY benchmarks/viabilitybench/driver/vb.py run --experiment PILOT-A --stream pil
   attempt starts. Per task: 30 turns, 300K input tokens and 20 minutes. The runaway detector stops a task at 30 model
   calls, 5 identical commands in a row, or its dollar cap. Caps are checked before each call, so none is exceeded; a
   capped task ends `aborted_cap` (or `timeout`) with VS = 0.
-- **Isolation.** Each (task, seed) gets a fresh workdir under `$VB_WORK` (default `~/vb-work/`). It, its agent's HOME
-  and the run's directory above them are named by random ids, so no path an agent sees names its instance (family
-  and ladder level) or its run (bug-3c921e); the record's `provenance.alias` and the manifest's `work_dir` map them
-  back. The task manifest, which holds the canary, and the pristine bundle live in the run's `private/` directory,
-  never in a workdir. Agent processes get an allowlisted environment (`agent_env.py`): no `VB_*` variables, no
-  provider keys, a per-task HOME. On macOS every agent process is denied the secret file, the key file and the whole
-  run directory, whose proxy logs name the running task's key and whose order and records give its position
-  (bug-d308f7). Off macOS nothing applies that deny list (`sandbox.KIND` "none", gap-29ac83), so there an agent can
-  read the run directory, its task key included. The truth suites and the census's visible re-run run the agent's
-  code through `families/common/sandbox.py`. On macOS, `sandbox-exec` denies that code the secret file, the task's
-  private directory and the network. Elsewhere there is no confinement yet, and the run record says so (`vs.sandbox`,
-  gap-8c3752). Agents can read the driver's own start-up environment (`ps -E`, `/proc`), so once its checks pass,
-  `vb run` starts itself again with an allowlisted environment (`agent_env.exec_scrubbed`). Every other process of
-  your user stays readable (`ps -E -ax`, or `sysctl` from inside the sandbox), so run the benchmark from a session
-  that exports no credential.
+- **Isolation.** Each (task, seed) gets a fresh workdir under `$VB_WORK` (default `~/workspaces/`). It, its agent's
+  HOME and the run's directory above them are named by random ids, so no path an agent sees names its instance
+  (family and ladder level) or its run (bug-3c921e); the record's `provenance.alias` and the manifest's `work_dir` map
+  them back. Nothing an agent sees names the benchmark either (bug-d68575): its PATH's `.local/bin`, its git identity
+  (`agent <agent@example.invalid>`), its repo's pristine commit (`Initial commit`), the direct loop's `SUBMIT_TASK`,
+  Roko's `plan-<hash>` plan and key placeholder, the visible-verify wrapper's `run-shell` files and the proxies'
+  answers are neutral, since the benchmark's repository is public. The task manifest, which holds the canary, and
+  the pristine bundle live in the run's `private/` directory, never in a workdir. Agent processes get an allowlisted
+  environment (`agent_env.py`): no `VB_*` variables, no provider keys, a per-task HOME. On macOS every agent process
+  is denied the secret file, the key file and the whole run directory, whose proxy logs name the running task's key
+  and whose order and records give its position (bug-d308f7). Off macOS nothing applies that deny list
+  (`sandbox.KIND` "none", gap-29ac83), so there an agent can read the run directory, its task key included. The
+  truth suites and the census's visible re-run run the agent's code through `families/common/sandbox.py`. On
+  macOS, `sandbox-exec` denies that code the secret file, the task's private directory and the network. Elsewhere
+  there is no confinement yet, and the run record says so (`vs.sandbox`, gap-8c3752). Agents can read the driver's
+  own start-up environment (`ps -E`, `/proc`), so once its checks pass, `vb run` starts itself again with an
+  allowlisted environment (`agent_env.exec_scrubbed`). Every other process of your user stays readable (`ps -E -ax`,
+  or `sysctl` from inside the sandbox), so run the benchmark from a session that exports no credential.
 - **Rust toolchain** (F7, gap-46fd19; Will's decision of 2026-10-02). A per-task HOME hides `~/.rustup`, so
   `families/common/toolchain.py` resolves the host's toolchain in the operator's environment (`rustup show home`,
   `rustup which cargo`). Agent processes, the census and `ci/verify_verifiers.py` get the toolchain's own bin

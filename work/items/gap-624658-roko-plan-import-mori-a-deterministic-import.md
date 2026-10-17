@@ -48,8 +48,8 @@ them: it kept 0 of 8, 0 of 8 and 4 of 14 of the source's checks in three live ru
 
 ## Plan
 
-1. Add `roko plan import --mori <dir>`, taking a plan dir, or the `.mori/plans` root with `--all`. Port the
-   prototype's mapping:
+1. Add `roko plan import --mori <dir>`, taking a plan dir, or a directory of them (the `.mori/plans` root). Port
+   the prototype's mapping:
    - roles (`category = docs` gives a scribe, anything else an implementer), and tiers from `complexity_band`;
    - checks, from three sources:
      - verify-tasks entries whose `test_fns` the task's acceptance names, guarded by `grep -rqw 'fn <name>'`;

@@ -225,6 +225,8 @@ mod tests {
             lat_q50_s: 60.0,
             lat_q90_s: 90.0,
             cold_start: false,
+            cost_prior: false,
+            latency_prior: false,
         }
     }
 

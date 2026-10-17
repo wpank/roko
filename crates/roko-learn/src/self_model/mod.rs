@@ -317,6 +317,13 @@ pub struct CandidateForecast {
     pub lat_q90_s: f64,
     /// The forecast comes from L0 alone: the model has fewer outcomes than it needs (6116).
     pub cold_start: bool,
+    /// The cost quantiles are a prior anchored on the price snapshot: the model has observed
+    /// no cost of the arm (bug-09173e).
+    #[serde(default)]
+    pub cost_prior: bool,
+    /// The latency quantiles are a prior: the model has observed no latency of the arm.
+    #[serde(default)]
+    pub latency_prior: bool,
 }
 
 /// The version of a predictor: forecasts are never compared across versions (S04 §4.11.6).

@@ -1970,6 +1970,13 @@ pub struct PredictionCandidate {
     /// P(the attempt is retried), when the predictor gives one.
     #[serde(default)]
     pub p_retry: Option<f64>,
+    /// The cost quantiles are the predictor's prior, anchored on the price snapshot: it has
+    /// observed no cost of the arm yet (bug-09173e).
+    #[serde(default)]
+    pub cost_prior: bool,
+    /// The latency quantiles are its prior: it has observed no latency of the arm yet.
+    #[serde(default)]
+    pub latency_prior: bool,
 }
 
 /// What the predictor would do for the attempt, so that a shadow pick can be scored against the

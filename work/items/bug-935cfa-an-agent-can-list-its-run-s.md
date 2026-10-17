@@ -77,11 +77,37 @@ results root has never been denied; the old deny list named only the current run
 
 ## Done when
 
-- [ ] No agent process can list or read anything under the results root.
-- [ ] The `[[verify]]` command passes.
+- [x] No agent process can list or read anything under the results root.
+- [x] The `[[verify]]` command passes.
 
 ## Notes
 
 - Found by the bug-d308f7 worker, 2026-10-17, checking what its deny list leaves.
 - A name under a denied directory still answers a lookup with ENOENT or EPERM by whether it exists: the existence
   oracle, bug-3bab88. Claude Code's argv names the run directory: bug-4c3a83.
+- Fixed 2026-10-17. `vb._agent_deny` denies `Run.results_root` (new), which holds the run directory; `ctx.deny`
+  carries it to every arm's sandbox, so the direct loop's shell and the Roko, mini-swe-agent, Claude Code and Codex
+  sessions are all denied it. `run_cli.settings` denies Claude Code's file tools each directory of `ctx.deny` in
+  place of the run directory, and `run_codex.denied` takes the root from `ctx.deny` instead of the ledger's
+  directory. `vb run` refuses, before it makes a directory, a results root that holds the repository, the Rust
+  toolchain the sandbox keeps readable, the Python agents run or the operator's home (`vb._results_hold`); the work
+  root was refused already.
+- The census still runs the agent's code with only the secret file and the task's own `.vb/` denied: filed as
+  bug-42b214.
+
+## Decision (2026-10-17)
+
+Whether an agent process may read the rest of the results root, the other runs beside its own, had no recorded
+default. Under Will's decision 9 of 2026-10-15 (technical questions with no recorded default take the coordinator's
+recommendation, the conservative option, recorded on the item with the reasoning; Will can veto it later), the
+coordinator decided that no benchmark-internal identifier reaches an agent: every agent process is denied the whole
+results root, not only its own run directory. The change lands before the pre-registration lock (gap-394f28).
+
+Why: benchmark validity, and contamination through the public repository. A campaign runs its units one after
+another in one experiment directory, so a later run's agent could read every run id (a campaign's names its block,
+`e-oss-1` the honeypots), copy an earlier agent's final diff of its own instance, learn which hidden checks failed,
+and read the precise spec while it runs the vague one. The run ids and the task keys in the archives' names are also
+search keys into the public repository. Denying the root is the conservative option: no agent process reads or
+writes there (the driver writes the proxies' logs, the ledger, the records, the archives and the transcripts), and
+`vb run` refuses a root that would take from agents what they need, so the change takes away nothing an agent needs
+or is graded on, only what it can read.

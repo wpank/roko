@@ -10,6 +10,13 @@ description = "Roko kernel: Signal type and the six universal traits (Substrate,
 [lints]
 workspace = true
 
+[features]
+# The channel layer's config types: `[[platforms]]` (`config::platforms`) and
+# `[[channels]]` (`config::channels`). `RokoConfig` has no field for either
+# table and only roko-runtime's parked `channels` feature uses them, so they
+# are parked out of the default build (decision 12, gap-7ebc4f).
+channels = []
+
 [dependencies]
 anyhow = { workspace = true }
 roko-primitives = { path = "../roko-primitives" }

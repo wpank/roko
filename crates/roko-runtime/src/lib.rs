@@ -21,10 +21,14 @@
 //!    multi-task Tokio runtimes.
 //! 3. **Zero unsafe.** All concurrency goes through `tokio::sync` or `std::sync::atomic`.
 
+#[cfg(feature = "channels")]
+pub mod adapters;
 pub mod builtin_lenses_derived;
 pub mod builtin_lenses_health;
 pub mod builtin_lenses_performance;
 pub mod cancel;
+#[cfg(feature = "channels")]
+pub mod channel_binding;
 pub mod connector_runtime;
 #[cfg(feature = "cognitive-clock")]
 pub mod delta_consumer;
@@ -44,6 +48,8 @@ pub mod jsonl_logger;
 pub mod lens_executor;
 pub mod lifecycle;
 pub mod metrics;
+#[cfg(feature = "channels")]
+pub mod platforms;
 pub mod process;
 pub mod projection;
 pub mod pulse_bus;

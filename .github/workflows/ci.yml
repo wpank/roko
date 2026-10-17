@@ -132,6 +132,7 @@ jobs:
           cargo check -p roko-compose --features cross-cut-functors
           cargo check -p roko-gate --features spc
           cargo check -p roko-learn --features active-inference
+          cargo check -p roko-runtime --features channels
 
   portal:
     name: Portal (types, tests, export)

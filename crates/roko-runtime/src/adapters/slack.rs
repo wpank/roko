@@ -55,10 +55,7 @@ impl SlackBridge {
             .token
             .as_ref()
             .ok_or_else(|| {
-                RokoError::Invalid(format!(
-                    "slack platform `{}` requires a token",
-                    config.id
-                ))
+                RokoError::Invalid(format!("slack platform `{}` requires a token", config.id))
             })?
             .resolve()
             .map_err(|e| RokoError::Invalid(format!("slack `{}`: {e}", config.id)))?;
@@ -76,7 +73,7 @@ impl SlackBridge {
 
 #[async_trait]
 impl ChatBridge for SlackBridge {
-    fn platform_id(&self) -> &str {
+    fn platform_id(&self) -> &'static str {
         "slack"
     }
 
@@ -87,7 +84,10 @@ impl ChatBridge for SlackBridge {
             "stub send_message: {}",
             &text[..text.len().min(120)]
         );
-        Ok(MessageId::new(format!("slack-stub-{}", ChannelId::new(channel))))
+        Ok(MessageId::new(format!(
+            "slack-stub-{}",
+            ChannelId::new(channel)
+        )))
     }
 
     async fn send_rich(&self, channel: &str, msg: RichMessage) -> Result<MessageId> {
@@ -98,7 +98,10 @@ impl ChatBridge for SlackBridge {
             "stub send_rich: {}",
             &body[..body.len().min(120)]
         );
-        Ok(MessageId::new(format!("slack-stub-rich-{}", ChannelId::new(channel))))
+        Ok(MessageId::new(format!(
+            "slack-stub-rich-{}",
+            ChannelId::new(channel)
+        )))
     }
 
     fn incoming(&self) -> Pin<Box<dyn Stream<Item = IncomingMessage> + Send>> {
@@ -162,19 +165,17 @@ mod tests {
 
     #[test]
     fn platform_id_is_slack() {
-        let bridge = SlackBridge::connect(&config(Some(PlatformSecretRef::Literal(
-            "tok".to_string(),
-        ))))
-        .unwrap();
+        let bridge =
+            SlackBridge::connect(&config(Some(PlatformSecretRef::Literal("tok".to_string()))))
+                .unwrap();
         assert_eq!(bridge.platform_id(), "slack");
     }
 
     #[test]
     fn capabilities_match_slack() {
-        let bridge = SlackBridge::connect(&config(Some(PlatformSecretRef::Literal(
-            "tok".to_string(),
-        ))))
-        .unwrap();
+        let bridge =
+            SlackBridge::connect(&config(Some(PlatformSecretRef::Literal("tok".to_string()))))
+                .unwrap();
         let caps = bridge.capabilities();
         assert!(caps.markdown);
         assert!(caps.reactions);
@@ -184,20 +185,21 @@ mod tests {
 
     #[tokio::test]
     async fn send_message_returns_ok() {
-        let bridge = SlackBridge::connect(&config(Some(PlatformSecretRef::Literal(
-            "tok".to_string(),
-        ))))
-        .unwrap();
-        let id = bridge.send_message("#general", "hello slack").await.unwrap();
+        let bridge =
+            SlackBridge::connect(&config(Some(PlatformSecretRef::Literal("tok".to_string()))))
+                .unwrap();
+        let id = bridge
+            .send_message("#general", "hello slack")
+            .await
+            .unwrap();
         assert!(id.as_str().contains("slack-stub"));
     }
 
     #[tokio::test]
     async fn send_rich_returns_ok() {
-        let bridge = SlackBridge::connect(&config(Some(PlatformSecretRef::Literal(
-            "tok".to_string(),
-        ))))
-        .unwrap();
+        let bridge =
+            SlackBridge::connect(&config(Some(PlatformSecretRef::Literal("tok".to_string()))))
+                .unwrap();
         let msg = RichMessage::markdown("hello", "*hello*");
         let id = bridge.send_rich("#general", msg).await.unwrap();
         assert!(id.as_str().contains("slack-stub-rich"));

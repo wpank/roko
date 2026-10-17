@@ -48,9 +48,8 @@ impl PlatformSecretRef {
     pub fn resolve(&self) -> Result<String, String> {
         match self {
             Self::Literal(s) => Ok(s.clone()),
-            Self::Env { env } => std::env::var(env).map_err(|_| {
-                format!("platform secret env var `{env}` is not set")
-            }),
+            Self::Env { env } => std::env::var(env)
+                .map_err(|_| format!("platform secret env var `{env}` is not set")),
         }
     }
 }
@@ -245,7 +244,10 @@ platform_user_id = "987654321"
         let cfg: PlatformConfig = toml::from_str(raw).unwrap();
         let identity = cfg.identity.unwrap();
         assert_eq!(identity.display_name.as_deref(), Some("roko"));
-        assert_eq!(identity.avatar_url.as_deref(), Some("https://example.com/avatar.png"));
+        assert_eq!(
+            identity.avatar_url.as_deref(),
+            Some("https://example.com/avatar.png")
+        );
         assert_eq!(identity.platform_user_id.as_deref(), Some("987654321"));
     }
 

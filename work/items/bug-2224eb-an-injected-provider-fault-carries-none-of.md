@@ -3,18 +3,19 @@ id = "bug-2224eb"
 kind = "bug"
 title = "An injected provider_fault carries none of its upstream's own headers and the same OpenAI error shape for every upstream, so an agent that compares it with the answers it gets otherwise can tell the fault is not the provider's"
 status = "open"
-triage = "unverified"
+triage = "verified"
 severity = "p3"
 goal = "proof"
 size = "M"
 subsystem = ["benchmarks/viabilitybench/driver"]
 created = 2026-10-17
 updated = 2026-10-17
+last_verified = 2026-10-17
 source = "bug-fd8200 worker (claude-agent), 2026-10-17 (a stub upstream whose 200 carries x-request-id and x-ratelimit-remaining-requests, behind a FaultProxy: the forwarded answer relays both; a rate_limit fault at p=1 answers with content-length, content-type, date, retry-after and server only)"
 discovered_from = "bug-fd8200"
 anchors = ["benchmarks/viabilitybench/driver/faultproxy.py::_serve", "benchmarks/viabilitybench/driver/faultproxy.py::send_json"]
 lane = "bench"
-links = { depends_on = [], blocks = [], related = ["bug-fd8200", "gap-394f28"], supersedes = [], duplicate_of = "" }
+links = { depends_on = [], blocks = [], related = ["bug-fd8200", "gap-394f28", "gap-db8dab"], supersedes = [], duplicate_of = "" }
 
 [[verify]]
 command = "grep -qw 'def test_an_injected_fault_looks_like_the_upstreams_own' benchmarks/viabilitybench/driver/test_faultproxy.py && benchmarks/viabilitybench/.venv/bin/python -m pytest benchmarks/viabilitybench/driver/test_faultproxy.py -k test_an_injected_fault_looks_like_the_upstreams_own -q"
@@ -70,8 +71,8 @@ Nothing models a particular upstream's headers or error shape.
 
 ## Done when
 
-- [ ] An injected fault's answer carries the header names and the body shape of its upstream's own errors.
-- [ ] The `[[verify]]` command passes.
+- [x] An injected fault's answer carries the header names and the body shape of its upstream's own errors.
+- [x] The `[[verify]]` command passes.
 
 ## Notes
 
@@ -79,3 +80,49 @@ Nothing models a particular upstream's headers or error shape.
 - A z.ai template with code `1302` would change how Roko waits (`openai_compat::classify_error`: 5 s for 1302): that is
   what a real z.ai rate limit does, but it changes the instrument, so it belongs before the lock and in the
   pre-registration.
+- Fixed 2026-10-17 (faultproxy's "A fault looks like its upstream's own error"). The body is the upstream's own error,
+  keyed by its name (`UPSTREAM_ERRORS`, `upstream_errors`; OpenAI's for any other name): OpenAI's as before; z.ai's
+  `{"error":{"code":"1302","message":"Rate limit reached for requests"}}` for a rate limit and `{"error":{"message":
+  "Internal Error"}}` for a 5xx (docs.z.ai's codes: "-" for an internal error), compact; Moonshot's
+  `{"error": {"type": "rate_limit_reached_error", "message": "Organization-level RPM limit reached"}}`, its documented
+  literal, and `server_error` / `server_unavailable` (503) for a 5xx; Cerebras's flat, compact
+  `{"message", "type", "param", "code"}`, the shape of a captured 401, with "Requests per minute limit exceeded - too
+  many requests sent." The headers are those of the upstream's last forwarded answer (`FaultProxy._remember`,
+  `_mirrored`), minus the hop-by-hop ones, those that describe that answer's own body and Retry-After
+  (`NOT_MIRRORED`); a value that is new on every answer (`PER_ANSWER`: a request, trace or log id, `cf-ray`, a
+  cookie's token) is drawn anew in the same form (`_redrawn`), so no real id is sent twice. The proxy's own answers
+  take header pairs (`send_json`), so z.ai's three `vary` lines stay three.
+- What the sources leave open is chosen so that each harness reads a fault as before, and is filed as gap-db8dab (a
+  capture of each provider's own 429 and 5xx, with the operator's approval): Cerebras's 429 `type`, its null `param`
+  and `code` (no quota word, which Roko's `is_billing_message` reads as billing), Cerebras's and Moonshot's 5xx words
+  ("Internal error"; for Moonshot's 503 "The service is unavailable, please try again later", short of "server
+  error" and "temporarily unavailable", which Roko's provider health reads as a 30 s cooldown, not 5), and the
+  headers of a fault that comes before the upstream has answered anything, which carries none.
+- How each harness takes a fault, checked old against new: litellm 1.103.2 as run_msa calls it maps every new body by
+  its status as it mapped the old (429 RateLimitError, 500 InternalServerError, 503 ServiceUnavailableError; none is
+  one mini-swe-agent aborts on); the direct loop reads the status and Retry-After only; a scan of Roko's 68977 string
+  literals finds in the new bodies, beyond the old ones' words, only rate-limit words in the 429s ("rate limit
+  reached", "too many requests"; "limit reached" is a usage window only beside "resets") and no billing, quota,
+  usage-window, auth or context word. The one change is by design: z.ai's code 1302, for which
+  `openai_compat::classify_error` waits 5 s, as for a real z.ai rate limit (## Decision). Statuses, Retry-After, the
+  log rows and the meter are the same, old proxy against new, over 480 requests under every profile.
+- Refusals (the policy's and the caps' 403s) are unchanged: OpenAI's shape, bug-fd8200's words, no mirrored header.
+  Only an agent's own request outside the policy, or past a cap, meets one.
+
+## Decision (2026-10-17)
+
+Whether an injected fault may answer in OpenAI's shape and with none of its upstream's headers, whatever the
+upstream, had no recorded default beyond bug-fd8200's words. Under Will's decision 9 of 2026-10-15 (technical questions
+with no recorded default take the coordinator's recommendation, the conservative option, recorded on the item with the
+reasoning; Will can veto it later), the coordinator decided that nothing benchmark-internal reaches an agent: a fault
+answers in its upstream's own error shape and words, with the headers of that upstream's own answers and freshly
+drawn ids, and gives no other sign that the benchmark made it. The change lands before the pre-registration lock
+(gap-394f28), since it changes what the agents and their harnesses see.
+
+Why: benchmark validity. H6 measures how the arms take a provider's errors, not a benchmark's (S08 §4.6), and the
+Roko and mini-swe-agent shells reach the proxy's port and can read headers (`curl -i`), so a fault an agent can tell
+from its provider's own error is a benchmark signal, not a disturbance. The conservative option keeps every
+harness's reading of a fault as it was wherever the sources leave a field open, and follows the provider's own
+documentation where it is plain: so a z.ai rate limit carries code 1302, for which Roko waits 5 s as it does for a
+real one. That one changes how the instrument behaves under a z.ai `rate_limit` fault, and the pre-registration
+should name it.

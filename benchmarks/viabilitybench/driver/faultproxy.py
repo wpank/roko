@@ -107,12 +107,38 @@ mini-swe-agent's shells reach the port, and a harness may show its model a provi
 worded as a provider's own, in the OpenAI error shape (`message`, `type`, `param`, `code`), and names neither the task,
 the run, the refusal, a cap nor a fault: no benchmark-internal identifier reaches an agent (Will's decision 9, as
 bug-3c921e records it), and a `provider_fault` must look like the provider's (S08 §4.6). A refusal is a 403
-`permission_error` with the words of `REFUSALS`, an `http_5xx` fault the provider's `server_error` (`SERVER_ERROR`),
-and a `rate_limit` fault a 429 `rate_limit_exceeded` (`RATE_LIMITED`) with its `Retry-After`. The statuses and the
-headers are as they were, and so is how each harness takes the answer: the direct loop and Roko by its status,
-mini-swe-agent's litellm by its status and the words it looks for (none of which these answers hold). Why the proxy
-answered, with the task, the counts and the caps, is in the log, which only the driver reads (`refused`, `detail`,
-`fault_injected`, `fault`).
+`permission_error` with the words of `REFUSALS`, and a fault its upstream's own error (below). The statuses are as they
+were, and so is how each harness takes the answer: the direct loop and Roko by its status, mini-swe-agent's litellm by
+its status and the words it looks for (none of which these answers hold). Why the proxy answered, with the task, the
+counts and the caps, is in the log, which only the driver reads (`refused`, `detail`, `fault_injected`, `fault`).
+
+**A fault looks like its upstream's own error** (bug-2224eb). The proxy answers an `http_5xx` or `rate_limit` fault
+itself, and an agent that compares it with the answers it gets otherwise (`curl -i` from a Roko or mini-swe-agent
+shell) must not be able to tell it from its provider's own error. So:
+- **Its body** is the upstream's own error, in its shape and words (`UPSTREAM_ERRORS`, keyed by the upstream's name,
+  the arm's provider; an upstream of any other name gets OpenAI's): OpenAI's `{"error": {message, type, param,
+  code}}` with `RATE_LIMITED` and `SERVER_ERROR`, as before; z.ai's `{"error": {code, message}}`, business code 1302
+  for a rate limit and none for an internal error (docs.z.ai's error codes); Moonshot's `{"error": {type, message}}`
+  with `rate_limit_reached_error`, `server_error` and, for a 503, `server_unavailable` (platform.kimi.ai's error
+  reference); and Cerebras's flat `{message, type, param, code}`, the shape of a captured Cerebras 401, with the words
+  of its per-minute request limit. z.ai's and Cerebras's bodies are compact JSON, as theirs are. What the sources
+  leave open (Cerebras's 429 `type`, its and Moonshot's 5xx words; all checked 2026-10-17) is chosen so that every
+  harness takes the fault as before: `param` and `code` null, no quota word, which Roko reads as billing, and no
+  "server error", which its provider health reads as a longer cooldown. A capture of each provider's own 429 and 5xx
+  would settle the rest (gap-db8dab).
+- **Its headers** are those of the last answer the proxy forwarded from that upstream: its rate-limit headers, its
+  CDN's, its cookies, each `vary`. Left out are those that describe that answer's own body (`Content-Type`,
+  `Content-Encoding`, `ETag`, ...), the hop-by-hop ones (`NOT_RELAYED`) and `Retry-After`, which a rate limit sets
+  itself (`NOT_MIRRORED`). A value that is new on every answer (a request or trace id, Cloudflare's `cf-ray`, a
+  cookie's token: `PER_ANSWER`) is drawn anew in the same form, its length and alphabet, with its words and a cookie's
+  timestamps kept, so no real id is sent twice. A fault before the upstream has answered anything carries none of
+  them (gap-db8dab).
+The statuses, `Retry-After`, the meter and the log are as before, and so is how each harness takes a fault but for one
+thing, by design: litellm maps each by its status (`RateLimitError`, `InternalServerError`, `ServiceUnavailableError`,
+all of which mini-swe-agent retries), the direct loop reads only the status and `Retry-After`, and no body holds a
+word Roko's classifiers read as billing, a quota, a usage window, an auth failure or a context overflow; but a z.ai
+rate limit carries code 1302, for which Roko's `openai_compat::classify_error` waits 5 s, as it does for a real one
+(bug-2224eb's Decision).
 
 **The log.** Every request to an upstream is metered and logged before the client can see the end of its response, so
 a caller whose call has returned finds it in the log and in `state`. Each appends one JSON line to `log_path`, flushed
@@ -142,7 +168,9 @@ API:
     FaultProxy.configure(*, task=..., profile=..., input_token_cap=..., attempt_input_cap=..., model_swap=...) -> dict
     FaultProxy.state() -> dict; FaultProxy.policy() -> dict
     usage_classes(raw) -> dict | None; arm_hosts() -> frozenset[str]
-    ProxyError; CHAT_PATH; POLICY_REFUSALS; REFUSALS; SERVER_ERROR; RATE_LIMITED
+    UpstreamErrors(rate_limit, server_error, by_status={}, compact=False); .body(status) -> bytes
+    upstream_errors(name) -> UpstreamErrors          # UPSTREAM_ERRORS[name], else OpenAI's
+    ProxyError; CHAT_PATH; POLICY_REFUSALS; REFUSALS; SERVER_ERROR; RATE_LIMITED; UPSTREAM_ERRORS; NOT_MIRRORED
 """
 
 from __future__ import annotations
@@ -218,6 +246,17 @@ REFUSALS = {
 NO_MODEL = "you must provide a model parameter"  # model_not_allowed, for a request that names no model
 SERVER_ERROR = "The server had an error while processing your request. Sorry about that!"  # an http_5xx fault
 RATE_LIMITED = "Rate limit exceeded. Please try again later."  # a rate_limit fault
+# The headers a fault never takes from a forwarded answer (module docstring, "A fault looks like its upstream's own
+# error"): the hop-by-hop ones and the proxy's own, those that describe that answer's own body, and Retry-After, which
+# a rate limit sets itself.
+NOT_MIRRORED = NOT_RELAYED | frozenset({"content-type", "content-encoding", "content-language", "content-md5",
+                                        "content-range", "content-disposition", "etag", "last-modified",
+                                        "accept-ranges", "retry-after"})
+# A header whose value is new on every answer, which a fault draws anew in the same form: a request, trace or log id,
+# Cloudflare's ray, a cookie.
+PER_ANSWER = re.compile(r"request-?id|trace|log-?id|(?:^|-)id$|(?:^|-)ray$|^set-cookie$", re.IGNORECASE)
+_RUN = re.compile(r"[A-Za-z0-9]+")  # the identifiers in a per-answer value, and the words it keeps
+_HEX, _HEX_UPPER = "0123456789abcdef", "0123456789ABCDEF"
 _UNSET: Any = object()
 
 
@@ -267,6 +306,59 @@ class Upstream:
     def from_endpoint(cls, endpoint: provider.Endpoint, allow: Iterable[str] = ()) -> Upstream:
         return cls(name=endpoint.provider, base_url=endpoint.base_url, api_key_env=endpoint.api_key_env,
                    allow=frozenset(allow))
+
+
+@dataclass(frozen=True)
+class UpstreamErrors:
+    """An upstream's own error bodies (module docstring, "A fault looks like its upstream's own error"): its 429, its
+    5xx (`server_error`, or the one `by_status` gives a status of its own), and whether it sends compact JSON."""
+
+    rate_limit: dict
+    server_error: dict
+    by_status: Mapping[int, dict] = field(default_factory=dict)
+    compact: bool = False
+
+    def body(self, status: int) -> bytes:
+        """The body of a fault answered with `status`: a rate limit's for 429, else a 5xx's."""
+        payload = self.rate_limit if status == 429 else self.by_status.get(status, self.server_error)
+        return json.dumps(payload, separators=(",", ":") if self.compact else None).encode("utf-8")
+
+
+# Each arm provider's own errors, under the name its arm files give it (module docstring); `upstream_errors` gives any
+# other upstream OpenAI's. Checked 2026-10-17 against OpenAI's error codes (developers.openai.com), docs.z.ai's API
+# codes (a 429 with code 1302 "Rate limit reached for requests"; a 500 "Internal Error" with no business code, "-" in
+# its table), platform.kimi.ai's error reference (key order as in its example; a 429 rate_limit_reached_error with its
+# literal "Organization-level RPM limit reached"; 500 server_error and 503 server_unavailable, whose words it only
+# describes) and, for Cerebras, a captured 401, flat and compact ({"message":"Wrong API Key","type":
+# "invalid_request_error","param":"api_key","code":"wrong_api_key"}), with public reports of its per-minute limits
+# ("Tokens per minute limit exceeded - too many tokens processed."). What no source gives (Cerebras's 429 `type`, its
+# and Moonshot's 5xx words) is chosen so that every harness reads the fault as it read the old one: null `param` and
+# `code`, no quota word (Roko's billing), no "server error" (Roko's provider health would cool the provider down for
+# 30 s, not 5). gap-db8dab holds the capture that would settle them.
+UPSTREAM_ERRORS = {
+    "openai": UpstreamErrors(
+        rate_limit={"error": {"message": RATE_LIMITED, "type": "requests", "param": None,
+                              "code": "rate_limit_exceeded"}},
+        server_error={"error": {"message": SERVER_ERROR, "type": "server_error", "param": None, "code": None}}),
+    "zai": UpstreamErrors(
+        rate_limit={"error": {"code": "1302", "message": "Rate limit reached for requests"}},
+        server_error={"error": {"message": "Internal Error"}}, compact=True),
+    "moonshot": UpstreamErrors(
+        rate_limit={"error": {"type": "rate_limit_reached_error", "message": "Organization-level RPM limit reached"}},
+        server_error={"error": {"type": "server_error", "message": "Internal error"}},
+        by_status={503: {"error": {"type": "server_unavailable",
+                                   "message": "The service is unavailable, please try again later"}}}),
+    "cerebras": UpstreamErrors(
+        rate_limit={"message": "Requests per minute limit exceeded - too many requests sent.",
+                    "type": "too_many_requests_error", "param": None, "code": None},
+        server_error={"message": "Internal error", "type": "server_error", "param": None, "code": None},
+        compact=True),
+}
+
+
+def upstream_errors(name: str) -> UpstreamErrors:
+    """Upstream `name`'s own errors (`UPSTREAM_ERRORS`), or OpenAI's for a name it does not hold, such as a stub's."""
+    return UPSTREAM_ERRORS.get(name, UPSTREAM_ERRORS["openai"])
 
 
 @dataclass(frozen=True)
@@ -448,6 +540,8 @@ class FaultProxy:
         self._prompts: dict[str | None, dict[str, _Prompt]] = {}  # per task: a prompt's digest -> its latest call
         self._conversations: dict[str | None, list[_Conversation]] = {}  # per task, numbered from 1
         self._idle: dict[str, list[http.client.HTTPConnection]] = {}
+        # Per upstream, the headers of the last answer forwarded from it, which its faults carry (`_mirrored`).
+        self._answered: dict[str, list[tuple[str, str]]] = {}
         self._closed = False
         self._log = os.fdopen(os.open(log_path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600), "a", encoding="utf-8")
         self._server = _Server(self)
@@ -574,11 +668,10 @@ class FaultProxy:
             detail = profile.draw(task, ordinal)
             fault = None if detail is None else profile.name
             call.entry["fault_injected"], call.entry["fault"] = fault, detail
-            if fault == "http_5xx":
-                call.answer(profile.status, _error("server_error", SERVER_ERROR))
-            elif fault == "rate_limit":
-                call.answer(429, _error("requests", RATE_LIMITED, "rate_limit_exceeded"),
-                            {"Retry-After": str(profile.retry_after)})
+            if fault in ("http_5xx", "rate_limit"):  # the upstream's own error (module docstring)
+                status = profile.status if fault == "http_5xx" else 429
+                waits = [("Retry-After", str(profile.retry_after))] if fault == "rate_limit" else []
+                call.answer(status, upstream_errors(upstream.name).body(status), [*self._mirrored(upstream), *waits])
             elif fault == "hang":
                 handler.hold(profile.s)
                 call.settle()
@@ -644,6 +737,7 @@ class FaultProxy:
                 call.answer(502, _error("upstream_failed", f"{upstream.name}: {type(err).__name__}: {err}"))
                 return
             call.entry["status"] = response.status
+            self._remember(upstream, response.getheaders())
             if "text/event-stream" in (response.getheader("Content-Type") or "").lower():
                 reusable = self._relay_stream(call, response, relay, injected)
             else:
@@ -651,6 +745,20 @@ class FaultProxy:
             reusable = reusable and not response.will_close
         finally:
             self._release(upstream, connection, reusable)
+
+    def _remember(self, upstream: Upstream, headers: Iterable[tuple[str, str]]) -> None:
+        """Keep the headers of `upstream`'s latest answer that a fault may carry (module docstring, `NOT_MIRRORED`)."""
+        kept = [(name, value) for name, value in headers if name.lower() not in NOT_MIRRORED]
+        with self._lock:
+            self._answered[upstream.name] = kept
+
+    def _mirrored(self, upstream: Upstream) -> list[tuple[str, str]]:
+        """A fault's headers: those of `upstream`'s latest answer, each value that is new on every answer drawn anew in
+        the same form (`PER_ANSWER`); none before the upstream has answered."""
+        with self._lock:
+            kept = list(self._answered.get(upstream.name, ()))
+        return [(name, _redrawn(value, cookie=name.lower() == "set-cookie") if PER_ANSWER.search(name) else value)
+                for name, value in kept]
 
     def _connection(self, upstream: Upstream) -> http.client.HTTPConnection:
         """A kept-alive connection to `upstream` that its server has not closed, or a new one."""
@@ -848,8 +956,8 @@ class _Call:
             self.settled = True
             self.proxy._settle(self)
 
-    def answer(self, status: int, payload: dict, headers: Mapping[str, str] | None = None) -> None:
-        """Answer the client from the proxy itself."""
+    def answer(self, status: int, payload: dict | bytes, headers: Iterable[tuple[str, str]] = ()) -> None:
+        """Answer the client from the proxy itself: `payload` as JSON, or as the bytes it is."""
         self.entry["status"] = status
         self.settle()
         self.handler.send_json(status, payload, headers)
@@ -934,11 +1042,13 @@ class _Handler(BaseHTTPRequestHandler):
     def do_POST(self) -> None:  # noqa: N802 (the stdlib's name)
         self._dispatch(has_body=True)
 
-    def send_json(self, status: int, payload: dict, headers: Mapping[str, str] | None = None) -> int:
-        data = json.dumps(payload).encode("utf-8")
+    def send_json(self, status: int, payload: dict | bytes, headers: Iterable[tuple[str, str]] = ()) -> int:
+        """A JSON answer: `payload` serialized, or bytes already serialized (a fault's, `UpstreamErrors.body`), after
+        `headers` in order, a name repeated as often as it comes."""
+        data = payload if isinstance(payload, bytes) else json.dumps(payload).encode("utf-8")
         try:
             self.send_response(status)
-            for name, value in (headers or {}).items():
+            for name, value in headers:
                 self.send_header(name, value)
             self.send_header("Content-Type", "application/json")
             self.send_header("Content-Length", str(len(data)))
@@ -1044,6 +1154,33 @@ def _refusal(refusal: str, model: object) -> dict:
     if refusal != "model_not_allowed":
         return _error(REFUSAL_TYPE, REFUSALS[refusal])
     return _error(REFUSAL_TYPE, REFUSALS[refusal].format(model=model[:100]) if isinstance(model, str) else NO_MODEL)
+
+
+def _redrawn(value: str, *, cookie: bool) -> str:
+    """A header value that is new on every answer (`PER_ANSWER`), drawn anew in the same form: each identifier in it
+    (`_drawn_like`) gets as many characters of the same kinds, and the rest stays, so no real id is sent twice. A
+    cookie's name and attributes stay, and so do the numbers in its token (timestamps)."""
+    if not cookie:
+        return _RUN.sub(lambda run: _drawn_like(run.group(0), numbers=True), value)
+    name, equals, rest = value.partition("=")
+    token, semicolon, attributes = rest.partition(";")
+    token = _RUN.sub(lambda run: _drawn_like(run.group(0), numbers=False), token)
+    return name + equals + token + semicolon + attributes
+
+
+def _drawn_like(run: str, *, numbers: bool) -> str:
+    """`run`, a run of letters and digits, drawn anew in its own alphabet when it is an identifier: one that holds a
+    digit, or nine letters or more. A shorter word (a `req` prefix, a CDN's colo) stays, and with `numbers` False so
+    does a run of digits alone."""
+    if run.isdigit():
+        return "".join(secrets.choice("0123456789") for _ in run) if numbers else run
+    if len(run) < 9 and not any(char.isdigit() for char in run):
+        return run
+    for alphabet in (_HEX, _HEX_UPPER):
+        if set(run) <= set(alphabet):
+            return "".join(secrets.choice(alphabet) for _ in run)
+    return "".join(secrets.choice("0123456789" if char.isdigit() else "abcdefghijklmnopqrstuvwxyz" if char.islower()
+                                  else "ABCDEFGHIJKLMNOPQRSTUVWXYZ") for char in run)
 
 
 def _prompt_digests(request: dict) -> tuple[list[str], list[int]]:

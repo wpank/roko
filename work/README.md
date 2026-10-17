@@ -28,8 +28,17 @@ The tool is `python3 tools/work.py` (run it from the repo root; `--help` lists e
    `--size`; `close` copies them into `[closed]`.
 4. **Work in your own worktree and branch**, never in the main checkout:
    `git worktree add ../roko-work-<id> -b work/<id>` (from the current working branch). If you were started in
-   a worktree already, `git switch -c work/<id>` there. Rust: `export CARGO_TARGET_DIR=<main checkout>/target`
-   to reuse the warm build cache (builds queue on cargo's lock, so run at most 4-5 Rust workers at once).
+   a worktree already, `git switch -c work/<id>` there. Rust: give this worktree its own `target/`. Never
+   export a `CARGO_TARGET_DIR` that points at another checkout's: cargo names a workspace crate's build alike
+   in every checkout, and treats a cached build as fresh for any checkout whose sources are all older than it —
+   even one that never produced it. A shared target dir can therefore let a check pass code that does not
+   compile; that is bug-be2a53 (fixed on the gate side for roko's own checks, `work/done/`), and it still applies
+   in full to a worker's own manual `cargo` commands, which no gate stands between. To start warm instead of
+   cold, clone a recent build with an APFS copy-on-write copy — `cp -c -R <recent>/target ./target`, after
+   checking there is enough free disk — and delete the clone once the work is done; a safe, automatic version of
+   this is gap-7c3e13 (still open). Run cargo through the shared limiter when the round has one set up
+   (`tmp/hermes-roko-v5/tooling/heavy.sh cargo cargo <command…>`), and either way run at most 4-5 Rust workers at
+   once: with separate target dirs this bounds machine load, not cargo's lock on one shared dir.
    Portal (`apps/portal`): symlink `node_modules` from the main checkout instead of installing.
 5. **Read the item fully.** If its body lacks the sections of the template below, or is too thin to act on,
    rewrite it first from the code and the documents named in `source` / `discovered_from`, keeping the old

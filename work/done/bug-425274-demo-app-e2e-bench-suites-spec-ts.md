@@ -2,7 +2,7 @@
 id = "bug-425274"
 kind = "bug"
 title = "demo-app e2e bench-suites.spec.ts uses the pre-redirect /bench route"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p3"
 goal = "proof"
@@ -11,6 +11,7 @@ subsystem = ["demo-app/e2e"]
 created = 2026-10-17
 updated = 2026-10-17
 last_verified = 2026-10-17
+last_verified_rev = "d43385691"
 source = "found while fixing bug-636085, 2026-10-17"
 discovered_from = "bug-636085"
 anchors = ["demo/demo-app/e2e/bench-suites.spec.ts", "demo/demo-app/src/main.tsx"]
@@ -19,6 +20,18 @@ links = { depends_on = [], blocks = [], related = ["bug-636085"], supersedes = [
 
 [[verify]]
 command = "grep -q \"'/lab/bench'\" demo/demo-app/e2e/bench-suites.spec.ts"
+
+[closed]
+at = 2026-10-17
+at_ts = "2026-10-17T04:35:45Z"
+commit = "d43385691"
+by = "commit trailer"
+executor = "claude-agent"
+via = "work-batch"
+size = "S"
+claimed_at = "2026-10-17T04:27:08Z"
+forced = false
+evidence = "Confirmed against current main.tsx/Bench.tsx (d43385691): 'bench' is nested under /lab (main.tsx:161, <Route path=\"bench\" element={<Bench />} />) and is also in LAB_PATHS (main.tsx:64), so '/bench' only resolves via the <ToLab> redirect, same as bug-636085/bug-92808a established for the sibling spec files. Unlike those files, bench-suites.spec.ts has no .cw-pill/ConfigWidget assertion to resolve, so the fix is a pure path substitution: all five page.goto('/bench') calls (the five UI tests: 'bench page loads and displays suites', 'suite cards show task count', '\"No suites\" message is NOT shown when server is running', 'bench models load from API', 'RUN BENCHMARK button is present') now goto('/lab/bench'); the two API-only tests ('bench API returns correct suite data', 'bench API returns models') don't navigate and were untouched. Checked that every class/text the five tests assert on still exists: .bench-page-title and .bench-model-display in Bench.tsx; .suite-card/.suite-card-count in SuiteSelector.tsx (imported and rendered by Bench.tsx); the 'Run Benchmark' button text (Bench.tsx:377) matches the test's /run benchmark/i. Verify passes: grep -q \"'/lab/bench'\" demo/demo-app/e2e/bench-suites.spec.ts. Static fix only, no node_modules in this worktree: Playwright itself was not run, consistent with this item's own notes."
 +++
 
 ## Problem

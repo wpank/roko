@@ -1883,6 +1883,7 @@ mod tests {
             concurrent_plans: Vec::new(),
             attempt_key: None,
             arm_set: None,
+            knowledge_section: true,
             self_model_rung: None,
             skip_enrichment: false,
         }

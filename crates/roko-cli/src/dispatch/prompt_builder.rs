@@ -184,6 +184,9 @@ pub struct PromptContext {
     pub plan_brief: String,
     /// The arms of the attempt's chain ([`DispatchContext::arm_set`]).
     pub arm_set: Option<Arc<ArmSet>>,
+    /// Whether the θ the attempt runs keeps the knowledge section
+    /// ([`DispatchContext::knowledge_section`], M1's B4).
+    pub knowledge_section: bool,
 }
 
 impl PromptContext {
@@ -300,6 +303,7 @@ impl PromptContext {
             concurrent_plans: ctx.concurrent_plans.clone(),
             plan_brief,
             arm_set: ctx.arm_set.clone(),
+            knowledge_section: ctx.knowledge_section,
         }
     }
 
@@ -316,6 +320,15 @@ impl PromptContext {
         self.arm_set
             .as_deref()
             .is_some_and(|arms| arms.takes_default(layer))
+    }
+
+    /// Whether the θ the attempt runs leaves the source section `section`
+    /// out of the prompt (M1's B4, gap-6bb6d8): `knowledge` while its
+    /// `knowledge_section` is off, as [`Self::withholds`] leaves it out on
+    /// L-know's default arm. The controller decides that, not L-know, so its
+    /// items are logged as θ's exclusion, never as the arm's.
+    fn harness_withholds(&self, section: &str) -> bool {
+        section == "knowledge" && !self.knowledge_section
     }
 }
 
@@ -999,6 +1012,12 @@ pub struct PromptDiagnostics {
     /// it as stale.
     #[serde(default)]
     pub reads: Vec<ReaderRead>,
+    /// The θ the attempt runs had the knowledge section off (M1's B4,
+    /// gap-6bb6d8): the knowledge entries it retrieved reached neither the
+    /// prompt nor what learners credit, and its knowledge decision is the
+    /// controller's, not L-know's.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub knowledge_section_off: bool,
 }
 
 /// What a content reader loaded for one prompt (S03 §4.4's ε_read;
@@ -1900,7 +1919,13 @@ impl PromptAssembler {
             .collect();
         // S02 L7: a loop the attempt's arm set withholds still retrieves, so
         // its items are known, but its section stays out of the prompt and
-        // its ids out of what learners credit.
+        // its ids out of what learners credit. M1's B4 leaves the knowledge
+        // section out the same way while the θ the attempt runs turns it off
+        // (gap-6bb6d8); its items are θ's exclusion, not the arm's.
+        let (harness_withheld, source_sections): (Vec<PromptSection>, Vec<PromptSection>) =
+            source_sections
+                .into_iter()
+                .partition(|section| ctx.harness_withholds(&section.name));
         let (withheld_sections, source_sections): (Vec<PromptSection>, Vec<PromptSection>) =
             source_sections
                 .into_iter()
@@ -2176,6 +2201,13 @@ impl PromptAssembler {
                 .flat_map(|section| &section.items)
                 .map(|item| item_diagnostic(item, SOURCE_SECTION, withheld)),
         );
+        let theta = Some(ExcludedReason::HarnessPolicy);
+        items.extend(
+            harness_withheld
+                .iter()
+                .flat_map(|section| &section.items)
+                .map(|item| item_diagnostic(item, SOURCE_SECTION, theta)),
+        );
         let diagnostics = PromptDiagnostics {
             included_sections,
             dropped_sections,
@@ -2190,6 +2222,7 @@ impl PromptAssembler {
             section_decisions,
             section_proposals,
             reads,
+            knowledge_section_off: !ctx.knowledge_section,
         };
 
         // ── User prompt (unchanged) ────────────────────────────────────────
@@ -3177,6 +3210,7 @@ mod tests {
             concurrent_plans: Vec::new(),
             attempt_key: None,
             arm_set: None,
+            knowledge_section: true,
             self_model_rung: None,
             skip_enrichment: false,
         }
@@ -4937,6 +4971,7 @@ covers = ["AC1"]
             concurrent_plans: Vec::new(),
             plan_brief: String::new(),
             arm_set: None,
+            knowledge_section: true,
         };
         let ctx_str = build_runner_context(&t, &pctx).expect("runner context");
         assert!(ctx_str.contains("# Files in scope"));

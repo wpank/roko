@@ -2,15 +2,16 @@
 id = "gap-ea9ed8"
 kind = "gap"
 title = "roko deploy railway forwards no serve API key: dec-648cce's decision, the control plane only, is not implemented"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p2"
 goal = "release"
 size = "S"
 subsystem = ["roko-cli/deployment"]
 created = 2026-10-16
-updated = 2026-10-16
-last_verified = 2026-10-16
+updated = 2026-10-17
+last_verified = 2026-10-17
+last_verified_rev = "09782ce19"
 source = "bug-ec244b worker, 2026-10-16"
 discovered_from = "bug-ec244b: dec-648cce's verify greps deployment.rs, which never held the Railway env code"
 anchors = ["crates/roko-cli/src/commands/server.rs::collect_railway_env_vars", "crates/roko-cli/src/commands/server.rs::railway_worker_env"]
@@ -20,6 +21,18 @@ links = { depends_on = [], blocks = [], related = ["dec-648cce", "gap-ed511d", "
 
 [[verify]]
 command = "grep -rqw 'fn railway_env_forwards_the_serve_key_to_the_control_plane_only' crates/roko-cli/src/ && cargo test -p roko-cli --bin roko railway_env_forwards_the_serve_key_to_the_control_plane_only"
+
+[closed]
+at = 2026-10-17
+at_ts = "2026-10-17T03:35:36Z"
+commit = "09782ce19"
+by = "commit trailer"
+executor = "claude-agent"
+via = "work-batch"
+size = "S"
+claimed_at = "2026-10-17T02:10:54Z"
+forced = false
+evidence = "09782ce19: crates/roko-cli/src/commands/server.rs adds railway_control_plane_env(shared, serve_api_key), returning shared.clone() plus ROKO__SERVE__AUTH__API_KEY only when serve_api_key is non-blank; cmd_deploy_railway now reads config.serve.auth.api_key (resolved the way serve does, including from .roko/.env) and passes railway_control_plane_env(&env_vars, ...) as only the control plane's RailwayDeploySpec.env_vars, leaving env_vars (and so mirage_env and railway_worker_env's output) untouched. docker/RAILWAY.md's ROKO__SERVE__AUTH__API_KEY row updated to describe the automatic forward instead of a manual dashboard step. Proven by the new test railway_env_forwards_the_serve_key_to_the_control_plane_only (control plane env carries the key; the shared base, a simulated mirage env and a worker env via railway_worker_env do not; a blank key forwards nothing), run via cargo test -p roko-cli --bin roko (the item's own verify originally said --lib, which builds clean but matches 0 tests for commands::server since roko-cli's lib.rs only re-exports commands::diagnose/learn_loops; corrected in this commit). cargo clippy -p roko-cli --no-deps -- -D warnings and cargo +nightly fmt -p roko-cli -- --check both clean. No real deploy was run."
 +++
 
 ## Problem

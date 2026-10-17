@@ -26,8 +26,9 @@ measure that setup rather than Codex (W10). Every session gets:
   refuses a nested `sandbox_apply`), so the driver's is its only one, as for Claude Code's
   `--dangerously-skip-permissions`. The session's whole process tree runs under `common.sandbox`, which denies
   `ctx.deny` (the secret file, the key file and the whole results root) and, since Codex has no deny rules of its
-  own (S08 §4.9, "where the CLI supports them"), what `run_cli.settings` denies Claude Code's file tools: the
-  repository, `~/.roko` and the default secret directory, plus the operator's Codex home (`denied`);
+  own (S08 §4.9, "where the CLI supports them"), the repository, `~/.roko` and the default secret directory, which
+  `run_cli.settings` denies Claude Code's file tools too, plus the operator's Codex home (`denied`). The profile is
+  not on codex's own command line, so naming those paths there leaks nothing (bug-4c3a83);
 - `--cd <workdir>`, `--skip-git-repo-check`, `--color never` and `-c model_reasoning_effort=<[cli] effort>`, set
   explicitly as the Claude Code arm sets its effort. The runner refuses a workdir with an AGENTS.md above it;
 - no `OPENAI_API_KEY` or `CODEX_API_KEY`: `agent_env` passes no key, so Codex never bills the API.
@@ -264,8 +265,8 @@ def build_invocation(ctx: harness.TaskContext, cli: CodexConfig,
 
 def denied(ctx: harness.TaskContext) -> tuple[Path, ...]:
     """What the session's sandbox denies: `ctx.deny` (the secret file, the key file and the whole results root,
-    bug-935cfa), what `run_cli.settings` keeps from Claude Code's file tools besides (the repository, `~/.roko`, the
-    default secret directory), and the operator's Codex home."""
+    bug-935cfa), the repository, `~/.roko` and the default secret directory (which `run_cli.settings` keeps from Claude
+    Code's file tools too), and the operator's Codex home."""
     home = Path.home()
     return (*ctx.deny, layout.REPO_ROOT, home / ".roko", home / ".config" / "viabilitybench", operator_home())
 

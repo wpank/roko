@@ -2,18 +2,32 @@
 id = "bug-586260"
 kind = "bug"
 title = "work.py sync treats a mid-sentence \"fixed <id>'s …\" in any commit body as a closure, and closed the whitepaper epic by mistake"
-status = "open"
-triage = "unverified"
+status = "done"
+triage = "verified"
 severity = "p3"
 subsystem = ["unknown"]
 created = 2026-10-16
 updated = 2026-10-16
+last_verified = 2026-10-16
+last_verified_rev = "d33881bbc"
 source = "coordinator 2026-10-16: false sync closure of spec-ce1484 (commit b91be1473)"
 anchors = ["tools/work.py"]
 links = { depends_on = [], blocks = [], related = [], supersedes = [], duplicate_of = "" }
 
 [[verify]]
 command = "grep -qw 'def test_sync_ignores_a_fix_mention_in_prose' tools/test_work.py && python3 tools/test_work.py -k test_sync_ignores_a_fix_mention_in_prose"
+
+[closed]
+at = 2026-10-16
+at_ts = "2026-10-16T19:29:13Z"
+commit = "d33881bbc"
+by = "commit trailer"
+executor = "claude-agent"
+via = "work-batch"
+size = "S"
+claimed_at = "2026-10-16T19:19:21Z"
+forced = false
+evidence = "d33881bbc: tools/work.py sync_candidates (and so the commit hook) now closes only the ids commit_closes() returns, from a trailer line (Closes:/Fixes:/Resolves:, colon required) or a closing keyword starting the subject, also behind a type prefix such as `work: close <id>`; an id in the possessive never counts; CLOSE_RE is unchanged, so touched and drift still report mentions. Across the 5,157 commits in the log the new rule drops 11 old matches and adds none: 9 are done items, and the 2 open ones are the false positives spec-ce1484 (b91be1473's prose) and gap-fd9dfb (c1a537d2e's \"this does not close\" sentence). The old rule's sync --dry-run reported both as conflicts; the new rule finds nothing to sync. The verify passes (test_sync_ignores_a_fix_mention_in_prose, which fails with the old rule patched back in); test_work.py 45 OK; check 0 problems; README documents the rule."
 +++
 
 ## Problem

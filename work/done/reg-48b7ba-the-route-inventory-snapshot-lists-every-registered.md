@@ -2,15 +2,16 @@
 id = "reg-48b7ba"
 kind = "regression"
 title = "The route-inventory snapshot lists every registered route again, including GET /runs/{run_id}/diff, so CI's route check passes"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p1"
 goal = "release"
 size = "S"
 subsystem = ["tools", "roko-serve/routes"]
 created = 2026-10-15
-updated = 2026-10-15
-last_verified = 2026-10-15
+updated = 2026-10-17
+last_verified = 2026-10-17
+last_verified_rev = "486f2c521"
 source = "status-quo-2026-10-15#finding-1"
 anchors = ["tools/http_route_inventory.snapshot.json", "tools/http_route_inventory.py::check_snapshot", "crates/roko-serve/src/routes/runs.rs::get_run_diff"]
 lane = "tracker"
@@ -18,6 +19,16 @@ links = { depends_on = [], blocks = [], related = ["bug-d1dea8", "find-8cc7ac"],
 
 [[verify]]
 command = "python3 tools/http_route_inventory.py --check-snapshot"
+
+[closed]
+at = 2026-10-17
+at_ts = "2026-10-17T05:21:35Z"
+commit = "486f2c521"
+by = "coordinator 2026-10-17"
+executor = "claude-session"
+via = "manual"
+forced = false
+evidence = "At 486f2c521, tools/http_route_inventory.py --refresh adds exactly GET /runs/{run_id}/diff -> get_run_diff (crates/roko-serve/src/routes/runs.rs::routes), public since 4bc447702 (docs/v3/26-HTTP-API.md, openapi.rs): registrations 485 -> 486, canonical 425 -> 426, all other snapshot changes are line-number shifts. --check-snapshot: OK (486 registrations, snapshot matches); tools/test_http_route_inventory.py: 24 tests OK. Plan step 4 (run --check-snapshot in the local merge step) is a change to the local .claude/skills/work-batch skill, left for Will."
 +++
 
 ## Problem

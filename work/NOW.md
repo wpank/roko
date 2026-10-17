@@ -4,15 +4,15 @@
 
 What to work on next: the top checked, open items of each goal, highest-priority goal first. Reorder or change goals in `goals.toml`; pin an item higher with `rank = 1` (lower first).
 
-**Drift:** 2 likely done · 8 anchor gone · 118 changed since checked · 5 mentioned in commits. Re-check them before relying on this list: `DRIFT.md`.
+**Drift:** 2 likely done · 8 anchor gone · 124 changed since checked · 4 mentioned in commits. Re-check them before relying on this list: `DRIFT.md`.
 
 ## 1. Public release: security, licence, CI, first run
 
 - **P1** [find-8cc7ac](items/find-8cc7ac-some-github-workflows-fail-on-main-and.md) Some GitHub workflows fail on main and required checks are undefined [finding] · size M · verified 2026-09-29
-- **P1** [reg-48b7ba](items/reg-48b7ba-the-route-inventory-snapshot-lists-every-registered.md) The route-inventory snapshot lists every registered route again, including GET /runs/{run_id}/diff, so CI's route check passes [regression] · size S · verified 2026-10-15
 - **P2** [bug-911361](items/bug-911361-cargo-toml-s-repository-and-homepage-point.md) Cargo.toml's repository and homepage point at an unrelated GitHub account [bug] · size S · verified 2026-09-29
+- **P2** [gap-e44df9](items/gap-e44df9-cursor-cli-attempts-answer-each-acp-permission.md) Cursor CLI attempts answer each ACP permission request with roko's command guard instead of running with --force · size M · verified 2026-10-15
 
-_8 more open · on hold: gap-00e882, gap-7e375c, gap-8f8544, gap-fbd580 · 3 unchecked (`TRIAGE.md`) · `goal = "release"`_
+_6 more open · on hold: gap-00e882, gap-7e375c, gap-8f8544, gap-fbd580 · 3 unchecked (`TRIAGE.md`) · `goal = "release"`_
 
 ## 2. Whitepaper v1 and the research papers
 
@@ -20,7 +20,7 @@ _8 more open · on hold: gap-00e882, gap-7e375c, gap-8f8544, gap-fbd580 · 3 unc
 - **P1** [gap-8117a8](items/gap-8117a8-publish-the-whitepaper-pdf-build-release-tag.md) Publish the whitepaper: PDF build, release tag and venue · size S · verified 2026-09-29
 - **P1** [gap-d7b6a4](items/gap-d7b6a4-the-research-paper-exists-only-in-untracked.md) The research paper exists only in untracked tmp/cybernetic-harness/paper/, with no history and no backup · size S · verified 2026-10-15
 
-_3 more open · on hold: gap-85f86a · 1 unchecked (`TRIAGE.md`) · `goal = "whitepaper"`_
+_2 more open · on hold: gap-85f86a · 1 unchecked (`TRIAGE.md`) · `goal = "whitepaper"`_
 
 ## 3. Roko tells the truth and is safe (P0)
 
@@ -40,19 +40,19 @@ _2 more open · on hold: gap-634954 · 4 unchecked (`TRIAGE.md`) · `goal = "gol
 
 ## 5. Proof: the pilot benchmark and a record of the work
 
-- **P1** [bug-9f6252](items/bug-9f6252-every-f8-task-repo-s-readme-md.md) Every F8 task repo's README.md opens with "# honeypot-conflict (F5)": the agent is told the instance is a honeypot [bug] · size S · verified 2026-10-16
-- **P1** [bug-87ea7f](items/bug-87ea7f-f8-s-truth-suite-passes-the-spec.md) F8's truth suite passes the SPEC_CONFLICT flag check on every tree: the README it renders holds a matching line [bug] · size S · verified 2026-10-16
 - **P1** [dec-3d5714](items/dec-3d5714-s09-4-1-s-two-stage-bootstrap.md) S09 §4.1's two-stage bootstrap over-covers (0.975): change to task-only n_h-1 resampling, or accept, before the lock [decision] · size S · verified 2026-10-03
+- **P2** [gap-b94a2c](items/gap-b94a2c-a-sandboxed-agent-still-reads-any-same.md) A sandboxed agent still reads any same-user process's start-up environment with sysctl(KERN_PROCARGS2), and no sandbox-exec rule stops it · size L · verified 2026-10-16
+- **P2** [bug-3c921e](items/bug-3c921e-an-agent-s-workdir-and-home-are.md) An agent's workdir and HOME are named by its instance id (<work>/<run_id>/F8-l3-0038.s1), so pwd tells it its family and ladder level [bug] · size M · verified 2026-10-17
 
-_11 more open · on hold: gap-057cc7, gap-05c4c0, gap-11cec6, gap-31e1b0, gap-394f28, gap-4a5109, gap-50346f, gap-681741, gap-7c9a9c, gap-aa60f2, gap-b7f99e, gap-ba9965, gap-e9218e · 10 unchecked (`TRIAGE.md`) · `goal = "proof"`_
+_10 more open · on hold: gap-057cc7, gap-05c4c0, gap-11cec6, gap-31e1b0, gap-394f28, gap-4a5109, gap-50346f, gap-681741, gap-7c9a9c, gap-aa60f2, gap-b7f99e, gap-ba9965, gap-e9218e · 9 unchecked (`TRIAGE.md`) · `goal = "proof"`_
 
 ## 6. Learning from verified outcomes, M1-M4 (P2)
 
 - **P2** [gap-3d37e8](items/gap-3d37e8-pk54-m4-deep-audits-python-b1-hidden.md) PK54 M4 deep audits: Python: B1 hidden suites written from the spec by another model family, and validated… · size M · verified 2026-10-02
 - **P2** [gap-fd96c8](items/gap-fd96c8-pk56-m4-deep-audits-first-slice-audit.md) PK56 M4 deep audits: First slice: audit at least 60 recorded cheap-arm passes and publish the replay report… · size S · verified 2026-10-02
-- **P1** [gap-b38ed2](items/gap-b38ed2-m3-s-calibration-window-restarts-every-run.md) M3's calibration window restarts every run and calibration.json is never written, so the self-model can never become eligible or report calibration · size M · verified 2026-10-16
+- **P2** [spec-446a41](items/spec-446a41-backlog-phase-4-loops-re-closed-s02.md) Backlog Phase 4 — loops re-closed (S02) [spec] · verified 2026-10-02
 
-_26 more open · on hold: gap-799698, gap-8a26fc, gap-93c748 · 1 unchecked (`TRIAGE.md`) · `goal = "cybernetic"`_
+_23 more open · on hold: gap-799698, gap-8a26fc, gap-93c748 · 1 unchecked (`TRIAGE.md`) · `goal = "cybernetic"`_
 
 ## 7. Plan runs work reliably
 
@@ -60,7 +60,7 @@ _26 more open · on hold: gap-799698, gap-8a26fc, gap-93c748 · 1 unchecked (`TR
 - **P1** [gap-d58ae8](items/gap-d58ae8-tp2-36-p0-0-37-mori-shaped.md) Mori-shaped workflow contract unproven end-to-end · size L · verified 2026-10-01
 - **P2** [gap-5420f3](items/gap-5420f3-a-check-that-hides-its-test-runner.md) A check that hides its test runner's output fails silently; re-run the runner on its own to recover the failure text for the retry and the person · size M · verified 2026-10-15
 
-_15 more open · on hold: find-70edcb · 4 unchecked (`TRIAGE.md`) · `goal = "core"`_
+_16 more open · on hold: find-70edcb · 4 unchecked (`TRIAGE.md`) · `goal = "core"`_
 
 ## 8. Live visibility: serve, dashboard, portal
 
@@ -80,11 +80,11 @@ _8 more open · on hold: bug-429315, bug-8c5d32, bug-b9be1d, bug-dd5dca, bug-dee
 
 ## 10. Tooling, CLI polish and code hygiene
 
+- **P2** [bug-4b17d9](items/bug-4b17d9-a-cargo-config-build-target-dir-outside.md) A cargo config build.target-dir outside the checkout still makes every checkout's checks share one target dir, so a gate can pass another checkout's build [bug] · size M · verified 2026-10-17
 - **P2** [bug-c63cca](items/bug-c63cca-about-a-dozen-roko-cli-integration-tests.md) About a dozen roko-cli integration tests pass only with a real claude CLI on PATH, so they fail on CI [bug] · size M · verified 2026-10-11
-- **P2** [spec-0b3a32](items/spec-0b3a32-backlog-phase-9-domains-assistant-held-and.md) Backlog Phase 9 — domains, assistant, held and parked work, cleanup, showcase and deploy [spec] · verified 2026-10-02
-- **P2** [bug-13bbe9](items/bug-13bbe9-ci-coverage-canaries-that-run-a-nested.md) CI coverage: canaries that run a nested cargo fail under cargo-llvm-cov (the gate inherits its RUSTC_WRAPPER but not its marker variables) [bug] · size S · verified 2026-10-11
+- **P2** [bug-df2b12](items/bug-df2b12-agents-own-cargo-runs-still-build-in.md) Agents' own cargo runs still build in an exported CARGO_TARGET_DIR that every attempt worktree shares, so an agent can see a sibling attempt's build of a crate [bug] · size M · verified 2026-10-17
 
-_20 more open · on hold: gap-f36019 · 4 unchecked (`TRIAGE.md`) · `goal = "tooling"`_
+_25 more open · on hold: gap-f36019 · 3 unchecked (`TRIAGE.md`) · `goal = "tooling"`_
 
 ## 11. Feature ideas
 

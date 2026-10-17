@@ -1,7 +1,7 @@
 {
  "schema": "roko.work_manifest/1",
  "date": "2026-10-17",
- "head": "31e0c9255",
+ "head": "486f2c521",
  "files": [
   {
    "path": "work/telemetry/events/9f227c4b-a4d2-4e84-a0a4-9da0d8904d57.jsonl",
@@ -22,6 +22,11 @@
    "path": "work/telemetry/events/claude-session-9cf6b7db-hermes-plugin-roko.jsonl",
    "sha256": "1f46a52f6b084ef8ab5b64b21b65dd4812fa70cdc78bf06ba56b05f85e00faec",
    "rows": 8
+  },
+  {
+   "path": "work/telemetry/events/coordinator-2026-10-17.jsonl",
+   "sha256": "2ecf6d5e0266dc328bbfe2ba06f971b266f027be0f07c9ac667e6508f6d625c6",
+   "rows": 1
   },
   {
    "path": "work/telemetry/events/coordinator-session-7622b882.jsonl",
@@ -235,8 +240,18 @@
   },
   {
    "path": "work/telemetry/events/work-batch-2026-10-16-2120.jsonl",
-   "sha256": "be3a025280333d67151bb109b267920e9237c4fe9fc4068454defca2f3507242",
-   "rows": 68
+   "sha256": "7f73e58da077732c230ee3e6c4caa9b3b4c96203803e57803084ece30abf0c2d",
+   "rows": 74
+  },
+  {
+   "path": "work/telemetry/events/work-batch-2026-10-17-0410.jsonl",
+   "sha256": "338eabe6f9b2885e49959ae888be05312b97d5f4244fc68188c9ebadb8004dc5",
+   "rows": 46
+  },
+  {
+   "path": "work/telemetry/events/work-batch-2026-10-17-0627.jsonl",
+   "sha256": "58e7bf77b90709456f7e5f951d01f6ebab1b2eeda372779fea3968f86bbfd9ff",
+   "rows": 12
   },
   {
    "path": "work/telemetry/DEFINITIONS.md",
@@ -250,8 +265,8 @@
   },
   {
    "path": "work/{done,closed}/*.md [closed]",
-   "sha256": "929c853dfbde5c8eaa19f8ff8bccca426464ee9daaad723ec3194c6302a433fe",
-   "rows": 1173
+   "sha256": "09d420023d78f75caeb730c036d19dad94b483430c9934095543e6e8649a3a17",
+   "rows": 1194
   }
  ]
 }

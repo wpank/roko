@@ -117,8 +117,8 @@ pub(super) struct AuditSelector {
     call_log: Option<Arc<dyn CallLog>>,
     /// The workspace's gate-gaming detector (F1), fed every settled attempt.
     gaming: GamingWatch,
-    /// The self-model audited VS labels teach (DP5, 7134), whose `risk_fg`
-    /// tilts the draw (6132).
+    /// What audited VS labels teach: the self-model (DP5, 7134), whose
+    /// `risk_fg` tilts the draw (6132), and M1's E3 (gap-618548).
     learner: Option<Arc<dyn VsLearner>>,
     /// r^α of the green units lately drawn with a risk, oldest first, each
     /// with when it was drawn: the window of the tilt's mean r̄.
@@ -209,8 +209,8 @@ impl AuditSelector {
         self
     }
 
-    /// The lottery, whose audited VS labels teach `learner`, the run's
-    /// self-model (DP5).
+    /// The lottery, whose audited VS labels teach `learner`: the run's
+    /// self-model (DP5) and M1's E3 (gap-618548).
     #[must_use]
     pub(super) fn with_learner(mut self, learner: Option<Arc<dyn VsLearner>>) -> Self {
         self.learner = learner;
@@ -990,6 +990,100 @@ mod tests {
             !vault.worktrees_dir().join(&sel).exists(),
             "the audit worktree is gone"
         );
+    }
+
+    /// gap-618548: on a real run, M4's verdict reaches M1's E3. The run's
+    /// audit lottery, opened with M1's sink among its learners, teaches it
+    /// each audited label: the planted `cfg!(test)` pass is audited as gaming
+    /// (G = 1), a known false green, and E3, unmeasured before, counts it once
+    /// the run's worker drains, as the mean of Beta(2, 9).
+    #[tokio::test]
+    async fn a_planted_false_green_reaches_m1_e3_on_a_run() {
+        use roko_core::config::harness_params::{HarnessLadders, HarnessParams};
+        use roko_core::config::homeostasis::HomeostasisConfig;
+        use roko_learn::homeostasis::controller::Controller;
+        use roko_learn::homeostasis::detect::Baseline;
+        use roko_learn::homeostasis::policy::ViabilityPolicy;
+
+        use crate::graph_task_dispatch::GraphFeedbackContext;
+        use crate::graph_task_dispatch::tests::make_test_dispatcher_with;
+        use crate::runtime_feedback::{FeedbackFacade, FeedbackSink};
+
+        let temp = tempfile::tempdir().expect("tempdir");
+        commit_repo(
+            temp.path(),
+            &[("src/lib.rs", "pub fn n() -> u8 {\n    1\n}\n")],
+        );
+        let vault_home = tempfile::tempdir().expect("vault home");
+        let home = vault_home.path().join("audit");
+        let plant = "cat >/dev/null\n\
+                     printf 'pub fn n() -> u8 {\\n    if cfg!(test) { 2 } else { 1 }\\n}\\n' \
+                     > src/lib.rs\n";
+        // M1 in shadow, hearing each settled verdict as a run's facade has it
+        // hear them.
+        let mut m1 = None;
+        let finish = |dispatcher: GraphTaskDispatcher| {
+            let controller = Controller::new(
+                &HomeostasisConfig::default(),
+                ViabilityPolicy::shipped_default(),
+                HarnessParams::baseline(&dispatcher.config),
+                HarnessLadders::from_config(&dispatcher.config),
+                Baseline {
+                    pass_rate: 0.80,
+                    usd_per_resolution: 0.05,
+                    wall_ms: 300_000.0,
+                },
+                0,
+            );
+            // Every chain runs on M1's learned arm, whatever the day's draws.
+            let sink = HomeostasisSink::new(temp.path(), Some(controller), None);
+            let sink = Arc::new(sink.with_holdout(0.0));
+            let heard = Arc::clone(&sink) as Arc<dyn FeedbackSink>;
+            let mut feedback = recording_feedback(temp.path());
+            feedback.feedback_facade = Some(Arc::new(FeedbackFacade::new().with_sink(heard)));
+            feedback.homeostasis = Some(Arc::clone(&sink));
+            m1 = Some(sink);
+            dispatcher.with_feedback(feedback)
+        };
+        let (dispatcher, mut task) = make_test_dispatcher_with(
+            &temp,
+            &VERIFY_PROVIDER.replace("cat >/dev/null\n", plant),
+            |config| {
+                no_auto_fix(config);
+                config.audit.enabled = true;
+                config.audit.home = Some(home.clone());
+            },
+            GraphFeedbackContext::default(),
+            finish,
+        )
+        .await;
+        let m1 = m1.expect("M1's sink");
+        let ctx = CellContext::new().with_run_id(RUN.to_string());
+        // The run's first attempt opens its lottery, which then selects
+        // every green unit.
+        let mut opener = task.clone();
+        opener.id = "T0".to_string();
+        drop(dispatcher.open_attempt(&make_spec(&opener), &opener, &ctx));
+        dispatcher
+            .attempts
+            .audit()
+            .expect("the audit lottery")
+            .census();
+        task.id = "T1".to_string();
+        task.files = vec!["src/lib.rs".to_string()];
+        task.verify = vec![verify_step("check", "true")];
+        dispatcher
+            .dispatch(&make_spec(&task), Vec::new(), &ctx)
+            .await
+            .expect("the attempt passes verify");
+        // Closing the run drains its audit worker, whose label lands.
+        let _ = GraphTaskDispatcher::close_run_attempts(&dispatcher, RUN);
+        drop(dispatcher);
+
+        let e3 = m1.false_green().expect("a controller");
+        assert_eq!(e3.n, 1, "{e3:?}");
+        let mean = e3.value.expect("E3 is measured");
+        assert!((mean - 2.0 / 11.0).abs() < 1e-12, "{e3:?}");
     }
 
     /// bug-83a6eb: an implementer that changes nothing, at a task whose

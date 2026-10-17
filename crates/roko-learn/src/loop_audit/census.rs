@@ -7,6 +7,9 @@
 //! `verified_at`. The census spends nothing, makes no transitions and writes
 //! nothing: [`render_json`] (`roko.loop_census/1`) and [`render_text`] print
 //! it. A retired loop keeps its last reason, for its history, and no state.
+//! [`run_audited`] judges with a workspace's `[learning.audit]`, as the
+//! audit tick does, which `roko learn loops` needs to agree with the ledger
+//! it summarizes (gap-ca63ee); [`run`] judges with S03 §4.10's defaults.
 //!
 //! The measured mode (backlog 5123) reads every run's decision rows through
 //! `telemetry::report` ([`measure`]) and folds the ones that carry S03's
@@ -34,6 +37,16 @@
 //! arms propose the same no-op, so its influence must stay 0: the auditor
 //! reads a placebo whose influence interval leaves 0 as a broken audit.
 //!
+//! The section bandit can leave out the section L-know's and L-play's items
+//! render into. Their readers still proposed those items, so an item whose
+//! exposure row says `bandit_excluded` is in its loop's learned proposal and
+//! not in the executed action: the opportunity was not reached, and ε falls
+//! when L-sec removes the content (bug-550909). The writers record such
+//! items in the proposal; the census adds them for rows written before. Both
+//! loops' log rules say `dormant:unlogged` only when some prompt included
+//! one of their items and no episode or efficiency row names it; items that
+//! never reached a prompt are no exposure, which a fact says.
+//!
 //! The fold estimates each loop's benefit β too (S03 §4.4-§4.5;
 //! gap-03fcd0). The unit is the chain, whose arm every retry inherits, so β
 //! takes each chain once: the loop's opportunity in the chain's first
@@ -59,13 +72,14 @@ use std::path::{Path, PathBuf};
 use chrono::{DateTime, Utc};
 use roko_core::audit_types::VerifyDepth;
 use roko_core::config::homeostasis::HomeostasisMode;
+use roko_core::config::learning::LearningAuditConfig;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use super::arm_set::{ArmSet, PLACEBO_LAYER};
 use super::assign::takes_default;
 use super::estimators::{
-    BenefitConfig, BenefitEstimator, BenefitRow, ChainOutcome, Estimate, PreAssignment,
+    BenefitConfig, BenefitEstimator, BenefitRow, ChainOutcome, Estimate, KAPPA_MAX, PreAssignment,
 };
 use super::exposure::{
     Action, ExposureEstimate, ExposureEstimator, InfluenceEstimate, InfluenceEstimator,
@@ -79,9 +93,9 @@ use crate::routing_log::{DecisionState, RoutingDecisionLog};
 use crate::runtime_feedback::LearningPaths;
 use crate::telemetry::records::{
     AttemptOpenRecord, AttemptPredictionRecord, AttemptVerdictRecord, AuditFields,
-    ContentCandidate, ContentDecisionPoint, ContentDecisionRecord, DecisionSource, ExecutedModel,
-    ExposureItemKind, GateVerdictTag, HarnessPolicyDecisionRecord, HarnessStamp, PLACEBO_LOOP_ID,
-    PlaceboDecisionRecord, RunFile, Stamped,
+    ContentCandidate, ContentDecisionPoint, ContentDecisionRecord, DecisionSource, ExcludedReason,
+    ExecutedModel, ExposureItemKind, ExposureRecord, GateVerdictTag, HarnessPolicyDecisionRecord,
+    HarnessStamp, PLACEBO_LOOP_ID, PlaceboDecisionRecord, RunFile, Stamped,
 };
 use crate::telemetry::report::{RunRecords, SrmFold, srm_fold, undated};
 use crate::telemetry::{Arm, Assignment, AssignmentUnit, AttemptKey, RunProvenanceManifest};
@@ -92,9 +106,11 @@ pub const CENSUS_STATE_FILE: &str = "loop-census-state.json";
 /// Schema of [`CENSUS_STATE_FILE`]. Version 2 counts the rows that measure
 /// a reader's degeneracy (gap-a13544). Version 3 folds the placebo's rows
 /// and the section bandit's (gap-6f31c3). Version 4 keeps each loop's
-/// benefit estimators (gap-03fcd0). A census kept under an earlier version
-/// is read afresh, so the next tick reads every run once more.
-pub const CENSUS_STATE_SCHEMA: &str = "roko.loop_census_state/4";
+/// benefit estimators (gap-03fcd0). Version 5 counts the knowledge and
+/// playbook items the section bandit left out as proposed and not reached
+/// (bug-550909). A census kept under an earlier version is read afresh, so
+/// the next tick reads every run once more.
+pub const CENSUS_STATE_SCHEMA: &str = "roko.loop_census_state/5";
 
 /// How long an attempt without a verdict holds back the rows after it, in a
 /// run that has not closed: one open longer than this died with its process.
@@ -289,48 +305,65 @@ impl CensusReport {
     }
 }
 
-/// The census of `workdir`'s `.roko` logs against `registry`.
+/// The census of `workdir`'s `.roko` logs against `registry`, judged with
+/// S03 §4.10's default parameters, which `[learning.audit]`'s defaults
+/// equal.
 #[must_use]
 pub fn run(workdir: &Path, registry: &Registry, harness_sha: Option<&str>) -> CensusReport {
-    run_in(&LearningPaths::for_project(workdir), registry, harness_sha)
+    run_audited(
+        workdir,
+        registry,
+        harness_sha,
+        &LearningAuditConfig::default(),
+    )
+}
+
+/// The census of `workdir`'s `.roko` logs against `registry`, judged with
+/// `config`, the workspace's `[learning.audit]`, as the audit tick judges
+/// (gap-ca63ee).
+#[must_use]
+pub fn run_audited(
+    workdir: &Path,
+    registry: &Registry,
+    harness_sha: Option<&str>,
+    config: &LearningAuditConfig,
+) -> CensusReport {
+    let paths = LearningPaths::for_project(workdir);
+    run_in(&paths, registry, harness_sha, config)
 }
 
 /// The census of the logs at `paths`, and of the runs beside them in the
-/// `.roko` directory, against `registry`.
+/// `.roko` directory, against `registry`, judged with `config`.
 #[must_use]
 pub fn run_in(
     paths: &LearningPaths,
     registry: &Registry,
     harness_sha: Option<&str>,
+    config: &LearningAuditConfig,
 ) -> CensusReport {
     let runs = paths
         .root
         .parent()
         .map(|roko_dir| read_runs(&roko_dir.join(RUNS_DIR)))
         .unwrap_or_default();
-    run_with(paths, &runs, registry, harness_sha)
+    run_with(paths, &runs, registry, harness_sha, config)
 }
 
 /// The census of the logs at `paths` and of the run records `runs` against
-/// `registry`, its sequences at α/K over the registry's randomized loops,
-/// as the audit tick's are.
+/// `registry`, judged as the audit tick judges: with the parameters
+/// `config` sets ([`AuditParams::configured`]), its sequences at α/K over
+/// the registry's randomized loops and its benefit estimators at `config`'s
+/// κ_max.
 #[must_use]
 pub fn run_with(
     paths: &LearningPaths,
     runs: &[RunRecords],
     registry: &Registry,
     harness_sha: Option<&str>,
+    config: &LearningAuditConfig,
 ) -> CensusReport {
     let logs = Logs::read(paths, runs);
-    let randomized = registry
-        .loops()
-        .iter()
-        .filter(|spec| spec.lifecycle.is_randomized())
-        .count();
-    let params = AuditParams {
-        enforced_loops: randomized.max(1),
-        ..AuditParams::default()
-    };
+    let params = AuditParams::configured(config, registry);
     let measured: BTreeMap<String, MeasuredLoop> = measure_at(runs, &params)
         .into_iter()
         .map(|(loop_id, measurement)| (loop_id, measurement.measured))
@@ -573,23 +606,43 @@ pub fn measure(runs: &[RunRecords]) -> BTreeMap<String, MeasuredLoop> {
 }
 
 /// What [`measure`] gives, with the estimates behind it for the state
-/// machine (backlog 5126): their sequences at `params`' α/K, and judged
-/// against its N_ε and ε_min.
+/// machine (backlog 5126): their sequences at `params`' α/K, its benefit
+/// estimators at its κ_max, and judged against its N_ε, ε_min and N_β.
 #[must_use]
 pub fn measure_at(runs: &[RunRecords], params: &AuditParams) -> BTreeMap<String, LoopMeasurement> {
-    tallies(runs, params.loop_alpha())
+    tallies(runs, Level::of(params))
         .into_iter()
         .map(|(loop_id, tally)| (loop_id, tally.measurement(params)))
         .collect()
 }
 
+/// What a fold's sequences and estimators run at, which their states
+/// depend on: the level α/K of every confidence sequence, and κ_max, the
+/// clip on CUPED's coefficient in the benefit estimators (gap-ca63ee).
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct Level {
+    alpha: f64,
+    kappa_max: f64,
+}
+
+impl Level {
+    /// The level the parameters `params` fold at.
+    fn of(params: &AuditParams) -> Self {
+        Self {
+            alpha: params.loop_alpha(),
+            kappa_max: params.kappa_max,
+        }
+    }
+}
+
 /// What the audit tick keeps of the census between plan-run closes
 /// (gap-addf2a): each loop's tally and each layer's SRM check over the rows
-/// folded so far, the α its sequences run at, and how far it has read each
-/// run. A tick reads the run that closed from where the last tick left it,
-/// and the runs no tick has read; a run that had not ended at its last read
-/// is read again once its files change, or once the attempt that held it
-/// back stops counting as running. A run that ended is read again only at
+/// folded so far, the α its sequences run at and the κ_max its benefit
+/// estimators clip at, and how far it has read each run. A tick reads the
+/// run that closed from where the last tick left it, and the runs no tick
+/// has read; a run that had not ended at its last read is read again once
+/// its files change, or once the attempt that held it back stops counting
+/// as running. A run that ended is read again only at
 /// its next close. So a close costs what its new rows cost, not what the
 /// history under `.roko/runs/` does. The counts are those one read of every
 /// run gives; the confidence sequences take the rows in the order the ticks
@@ -598,9 +651,18 @@ pub fn measure_at(runs: &[RunRecords], params: &AuditParams) -> BTreeMap<String,
 pub struct CensusState {
     schema_version: String,
     alpha: f64,
+    /// κ_max of its benefit estimators (gap-ca63ee); a census kept before
+    /// this was recorded folded at the default.
+    #[serde(default = "default_kappa_max")]
+    kappa_max: f64,
     runs: BTreeMap<String, RunMark>,
     tallies: BTreeMap<String, Tally>,
     srm: BTreeMap<String, SrmFold>,
+}
+
+/// The κ_max a census kept without one folded at.
+const fn default_kappa_max() -> f64 {
+    KAPPA_MAX
 }
 
 /// How far a [`CensusState`] has read one run.
@@ -629,38 +691,55 @@ impl RunMark {
 }
 
 impl CensusState {
-    /// An empty census whose sequences run at level `alpha`.
+    /// An empty census that folds at `params`' level: its sequences at α/K,
+    /// its benefit estimators at κ_max.
     #[must_use]
-    pub fn new(alpha: f64) -> Self {
+    pub fn new(params: &AuditParams) -> Self {
+        Self::at(Level::of(params))
+    }
+
+    /// An empty census that folds at `level`.
+    fn at(level: Level) -> Self {
         Self {
             schema_version: CENSUS_STATE_SCHEMA.to_string(),
-            alpha,
+            alpha: level.alpha,
+            kappa_max: level.kappa_max,
             runs: BTreeMap::new(),
             tallies: BTreeMap::new(),
             srm: BTreeMap::new(),
         }
     }
 
-    /// The census kept at `path`; an empty one at `alpha` when the file is
-    /// missing, unreadable or damaged, or was folded under another schema
-    /// or α, which its sequences' states depend on. The next tick then reads
-    /// every run once.
+    /// The level it folds at.
+    const fn level(&self) -> Level {
+        Level {
+            alpha: self.alpha,
+            kappa_max: self.kappa_max,
+        }
+    }
+
+    /// The census kept at `path`; an empty one at `params`' level when the
+    /// file is missing, unreadable or damaged, or was folded under another
+    /// schema, α or κ_max, which its sequences' and estimators' states
+    /// depend on. The next tick then reads every run once.
     #[must_use]
-    pub fn load(path: &Path, alpha: f64) -> Self {
+    pub fn load(path: &Path, params: &AuditParams) -> Self {
+        let level = Level::of(params);
         let kept = std::fs::read(path)
             .ok()
             .and_then(|bytes| serde_json::from_slice::<Self>(&bytes).ok());
         match kept {
-            Some(state) if state.fits(alpha) => state,
-            _ => Self::new(alpha),
+            Some(state) if state.fits(level) => state,
+            _ => Self::at(level),
         }
     }
 
-    /// Whether a census read back can go on at `alpha`: its schema and α
-    /// are the current ones, and its sequences' states are whole.
-    fn fits(&self, alpha: f64) -> bool {
+    /// Whether a census read back can go on at `level`: its schema, α and
+    /// κ_max are the current ones, and its sequences' states are whole.
+    fn fits(&self, level: Level) -> bool {
         self.schema_version == CENSUS_STATE_SCHEMA
-            && self.alpha.to_bits() == alpha.to_bits()
+            && self.alpha.to_bits() == level.alpha.to_bits()
+            && self.kappa_max.to_bits() == level.kappa_max.to_bits()
             && self.tallies.values().all(Tally::is_consistent)
     }
 
@@ -726,10 +805,11 @@ impl CensusState {
             .map(|(_, seq)| seq.saturating_add(1))
             .max()
             .unwrap_or(0);
+        let level = self.level();
         let mark = self.runs.entry(run.run_id.clone()).or_default();
         let from = mark.next;
         mark.next = until.min(end).max(from);
-        fold_run(&mut self.tallies, run, from, until, self.alpha);
+        fold_run(&mut self.tallies, run, from, until, level);
         srm_fold(&mut self.srm, run, from, until);
     }
 
@@ -801,30 +881,30 @@ fn run_bytes(dir: &Path) -> u64 {
         .sum()
 }
 
-/// Each loop's tally over the decision rows of `runs`, its sequences at
-/// level `alpha`.
-fn tallies(runs: &[RunRecords], alpha: f64) -> BTreeMap<String, Tally> {
+/// Each loop's tally over the decision rows of `runs`, folded at `level`.
+fn tallies(runs: &[RunRecords], level: Level) -> BTreeMap<String, Tally> {
     let mut tallies: BTreeMap<String, Tally> = BTreeMap::new();
     for run in runs {
-        fold_run(&mut tallies, run, 0, u64::MAX, alpha);
+        fold_run(&mut tallies, run, 0, u64::MAX, level);
     }
     tallies
 }
 
-/// Fold into `tallies`, at level `alpha`, the decision rows of `run` with a
-/// `seq` in `from..until`. A row is scored against the run's verdicts and
-/// predictions wherever they are, so a fold that stops at an attempt still
-/// running leaves that attempt's rows for a later one (gap-addf2a). Each
-/// opportunity also goes to its loop's benefit estimators, when β takes it
-/// ([`Attempts::benefit`]).
+/// Fold into `tallies`, at `level`, the decision rows of `run` with a
+/// `seq` in `from..until`. A row is scored against the run's verdicts,
+/// predictions and exposures wherever they are, so a fold that stops at an
+/// attempt still running leaves that attempt's rows for a later one
+/// (gap-addf2a). Each opportunity also goes to its loop's benefit
+/// estimators, when β takes it ([`Attempts::benefit`]).
 fn fold_run(
     tallies: &mut BTreeMap<String, Tally>,
     run: &RunRecords,
     from: u64,
     until: u64,
-    alpha: f64,
+    level: Level,
 ) {
     let attempts = Attempts::of(run);
+    let left_out = bandit_excluded(&run.exposures);
     for line in window(&run.decisions, from, until) {
         let row = &line.record;
         let key = row.attempt_key.as_deref();
@@ -832,7 +912,7 @@ fn fold_run(
             .and_then(|key| attempts.verdicts.get(key))
             .map(|verdict| &verdict.executed);
         if let Some(opportunity) = audit_feedback_opportunity(row, ran) {
-            let feedback = tally_of(tallies, AUDIT_FEEDBACK_LOOP, alpha);
+            let feedback = tally_of(tallies, AUDIT_FEEDBACK_LOOP, level);
             if feedback.count(&row.audit) {
                 feedback.push(&opportunity);
                 let draw = row
@@ -843,7 +923,7 @@ fn fold_run(
             }
         }
         let loop_id = row.audit.loop_id.as_deref().unwrap_or(ROUTE_LOOP);
-        let loop_tally = tally_of(tallies, loop_id, alpha);
+        let loop_tally = tally_of(tallies, loop_id, level);
         if !loop_tally.count(&row.audit) {
             continue;
         }
@@ -865,7 +945,7 @@ fn fold_run(
         let Some(loop_id) = loop_id.or_else(|| content_loop(row.decision_point)) else {
             continue;
         };
-        let loop_tally = tally_of(tallies, loop_id, alpha);
+        let loop_tally = tally_of(tallies, loop_id, level);
         if !loop_tally.count(&row.audit) {
             continue;
         }
@@ -877,7 +957,8 @@ fn fold_run(
             loop_tally.scored_rows += 1;
             loop_tally.flat_rows += u64::from(flat);
         }
-        if let Some(opportunity) = content_opportunity(row) {
+        let point = (row.identity.attempt_key.as_str(), row.decision_point);
+        if let Some(opportunity) = content_opportunity(row, left_out.get(&point)) {
             loop_tally.push(&opportunity);
             let key = Some(row.identity.attempt_key.as_str());
             let draw = draw_of(&row.audit, row.arm_set.as_ref());
@@ -886,7 +967,7 @@ fn fold_run(
     }
     for line in window(&run.placebo_decisions, from, until) {
         let row = &line.record;
-        let placebo = tally_of(tallies, PLACEBO_LOOP_ID, alpha);
+        let placebo = tally_of(tallies, PLACEBO_LOOP_ID, level);
         placebo.rows += 1;
         placebo.push(&placebo_opportunity(row));
         let key = Some(row.identity.attempt_key.as_str());
@@ -902,7 +983,7 @@ fn fold_run(
         .collect();
     for line in window(&run.harness_decisions, from, until) {
         let row = &line.record;
-        let loop_tally = tally_of(tallies, HARNESS_LOOP, alpha);
+        let loop_tally = tally_of(tallies, HARNESS_LOOP, level);
         loop_tally.rows += 1;
         let stamp = stamps.get(row.identity.attempt_key.as_str()).copied();
         if let Some(opportunity) = harness_opportunity(row, stamp) {
@@ -1069,15 +1150,15 @@ fn window<T>(lines: &[Stamped<T>], from: u64, until: u64) -> impl Iterator<Item 
         .filter(move |line| (from..until).contains(&line.seq))
 }
 
-/// `loop_id`'s tally in `tallies`, started at level `alpha` when new.
+/// `loop_id`'s tally in `tallies`, started at `level` when new.
 fn tally_of<'a>(
     tallies: &'a mut BTreeMap<String, Tally>,
     loop_id: &str,
-    alpha: f64,
+    level: Level,
 ) -> &'a mut Tally {
     tallies
         .entry(loop_id.to_string())
-        .or_insert_with(|| Tally::new(alpha))
+        .or_insert_with(|| Tally::new(level))
 }
 
 /// The loop that reads a content decision point's outcome, for the points
@@ -1135,10 +1216,41 @@ fn route_opportunity(
     })
 }
 
+/// The items of each attempt's knowledge and playbook decisions that the
+/// section bandit left out with the section they render into, by attempt
+/// key and decision point, from the run's exposure rows (bug-550909). The
+/// reader proposed them all the same: the bandit, L-sec, removed them.
+fn bandit_excluded(
+    exposures: &[Stamped<ExposureRecord>],
+) -> HashMap<(&str, ContentDecisionPoint), BTreeSet<String>> {
+    let mut left_out: HashMap<(&str, ContentDecisionPoint), BTreeSet<String>> = HashMap::new();
+    for line in exposures {
+        let row = &line.record;
+        let reader = matches!(
+            row.decision_point,
+            ContentDecisionPoint::Knowledge | ContentDecisionPoint::Playbooks
+        );
+        if reader && row.excluded_reason == Some(ExcludedReason::BanditExcluded) {
+            let point = (row.identity.attempt_key.as_str(), row.decision_point);
+            left_out
+                .entry(point)
+                .or_default()
+                .insert(row.item_id.clone());
+        }
+    }
+    left_out
+}
+
 /// The opportunity a content row records, if it is one: the store offered
 /// candidates. Its proposals are id sets, and its receipt, the rendered
-/// sections found in the request, says whether the label is honest.
-fn content_opportunity(row: &ContentDecisionRecord) -> Option<Opportunity<BTreeSet<String>>> {
+/// sections found in the request, says whether the label is honest. The
+/// items the section bandit left out of the row's prompt, `left_out`, are
+/// in the learned proposal, as the writers have recorded them since
+/// bug-550909, and never in the executed action.
+fn content_opportunity(
+    row: &ContentDecisionRecord,
+    left_out: Option<&BTreeSet<String>>,
+) -> Option<Opportunity<BTreeSet<String>>> {
     let offered = !row.candidates.is_empty();
     let eligible = row
         .audit
@@ -1152,12 +1264,14 @@ fn content_opportunity(row: &ContentDecisionRecord) -> Option<Opportunity<BTreeS
     let set = |ids: Option<Vec<String>>| -> BTreeSet<String> {
         ids.unwrap_or_default().into_iter().collect()
     };
+    let mut learned = set(proposals.learned);
+    learned.extend(left_out.into_iter().flatten().cloned());
     let (learned_arm, propensity) = arm_of(&row.audit, row.arm_set.as_ref());
     let receipt = row.audit.receipt.as_ref();
     Some(Opportunity {
         learned_arm,
         propensity,
-        learned: set(proposals.learned),
+        learned,
         default: set(proposals.default),
         learned_again: None,
         executed: row.chosen.iter().cloned().collect(),
@@ -1406,17 +1520,18 @@ struct Tally {
 }
 
 impl Tally {
-    fn new(alpha: f64) -> Self {
+    fn new(level: Level) -> Self {
         // The outcome is U^pass: the rows carry no audit draw, so their
         // bounds take an audit floor of 1 (S03 §4.5's β_pass row).
         let benefit = BenefitConfig {
-            alpha,
+            alpha: level.alpha,
             audit_floor: 1.0,
+            kappa_max: level.kappa_max,
             ..BenefitConfig::default()
         };
         Self {
-            exposure: ExposureEstimator::new(alpha),
-            influence: InfluenceEstimator::new(alpha),
+            exposure: ExposureEstimator::new(level.alpha),
+            influence: InfluenceEstimator::new(level.alpha),
             benefit: BenefitEstimator::new(benefit),
             n_learned: 0,
             n_default: 0,
@@ -1590,6 +1705,61 @@ struct LogVerdict {
     qualifier: Option<Qualifier>,
 }
 
+/// What the runs' exposure rows say of one kind of retrieved item: how many
+/// the prompts retrieved, which of them reached a prompt, and why the rest
+/// did not (bug-550909).
+#[derive(Debug, Default)]
+struct Reached {
+    /// Exposure rows of the kind.
+    retrieved: usize,
+    /// The ids of the items some prompt included.
+    included: BTreeSet<String>,
+    /// Rows whose item the attempt's arm withheld (`withheld_arm`).
+    withheld: usize,
+    /// Rows whose item rendered into a section the section bandit left out
+    /// (`bandit_excluded`).
+    bandit_excluded: usize,
+}
+
+impl Reached {
+    /// Count the exposure row `row`.
+    fn push(&mut self, row: &ExposureRecord) {
+        self.retrieved += 1;
+        if row.included {
+            self.included.insert(row.item_id.clone());
+        }
+        match row.excluded_reason {
+            Some(ExcludedReason::WithheldArm) => self.withheld += 1,
+            Some(ExcludedReason::BanditExcluded) => self.bandit_excluded += 1,
+            _ => {}
+        }
+    }
+
+    /// Whether some prompt included an item, and no episode or efficiency
+    /// row names one that did (`logged` holds the ids they name): there was
+    /// an effect to log, and nothing logged it.
+    fn unlogged(&self, logged: &HashSet<String>) -> bool {
+        !self.included.is_empty() && !self.included.iter().any(|id| logged.contains(id))
+    }
+
+    /// The fact that no prompt included an `item` the prompts retrieved,
+    /// with why each one stayed out; `None` once one was included, or when
+    /// none was retrieved.
+    fn no_exposure(&self, item: &str) -> Option<String> {
+        if !self.included.is_empty() || self.retrieved == 0 {
+            return None;
+        }
+        let (withheld, bandit) = (self.withheld, self.bandit_excluded);
+        let other = self.retrieved.saturating_sub(withheld + bandit);
+        Some(format!(
+            "no prompt included a {item} ({} retrieved: {withheld} withheld by the attempt's arm, \
+             {bandit} in a section the section bandit left out, {other} cut otherwise): no \
+             exposure to log",
+            self.retrieved
+        ))
+    }
+}
+
 /// The counts the log rules read, gathered once per census.
 #[derive(Debug, Default)]
 struct Logs {
@@ -1600,8 +1770,11 @@ struct Logs {
     sections_included: usize,
     /// Exposure rows of every kind in the runs (S01 P0-9).
     exposures: usize,
-    /// Knowledge entries the runs' prompts retrieved, by their exposure rows.
-    knowledge_exposures: usize,
+    /// The knowledge entries the runs' prompts retrieved, by their exposure
+    /// rows.
+    knowledge: Reached,
+    /// The playbooks the runs' prompts retrieved, by their exposure rows.
+    played: Reached,
     /// Rows of the retired retrieval log, read only without exposures.
     legacy_retrievals: usize,
     episodes: usize,
@@ -1610,6 +1783,10 @@ struct Logs {
     efficiency_rows: usize,
     efficiency_with_knowledge: usize,
     efficiency_with_playbooks: usize,
+    /// The knowledge ids the episodes and efficiency rows name.
+    logged_knowledge: HashSet<String>,
+    /// The playbook ids they name.
+    logged_playbooks: HashSet<String>,
     playbooks: usize,
     holdout_costs: Option<(f64, f64)>,
     prompt_experiments: Option<usize>,
@@ -1651,8 +1828,14 @@ impl Logs {
         for exposure in runs.iter().flat_map(|run| &run.exposures) {
             let row = &exposure.record;
             logs.exposures += 1;
-            let knowledge = row.item_kind == ExposureItemKind::Knowledge && row.retrieved;
-            logs.knowledge_exposures += usize::from(knowledge);
+            let reached = match row.item_kind {
+                ExposureItemKind::Knowledge => &mut logs.knowledge,
+                ExposureItemKind::Playbook => &mut logs.played,
+                _ => continue,
+            };
+            if row.retrieved {
+                reached.push(row);
+            }
         }
         if logs.exposures == 0 {
             logs.legacy_retrievals = read_jsonl(&paths.root.join(RETRIEVAL_OUTCOMES)).len();
@@ -1677,16 +1860,23 @@ impl Logs {
         }
         for episode in read_jsonl(&paths.episodes_jsonl) {
             logs.episodes += 1;
-            let knowledge = has_ids(&episode["knowledge_ids_injected"]);
-            logs.episodes_with_knowledge += usize::from(knowledge);
+            let knowledge = &episode["knowledge_ids_injected"];
+            logs.episodes_with_knowledge += usize::from(has_ids(knowledge));
+            logs.logged_knowledge.extend(ids(knowledge));
             let extra = &episode["extra"];
-            let playbooks = has_ids(&extra["playbook_ids"]) || has_id(&extra["playbook_id"]);
+            let (playbook_ids, playbook_id) = (&extra["playbook_ids"], &extra["playbook_id"]);
+            let playbooks = has_ids(playbook_ids) || has_id(playbook_id);
             logs.episodes_with_playbooks += usize::from(playbooks);
+            logs.logged_playbooks.extend(ids(playbook_ids));
+            logs.logged_playbooks.extend(ids(playbook_id));
         }
         for row in read_jsonl(&paths.efficiency_jsonl) {
             logs.efficiency_rows += 1;
-            logs.efficiency_with_knowledge += usize::from(has_ids(&row["knowledge_ids"]));
-            logs.efficiency_with_playbooks += usize::from(has_ids(&row["playbook_ids"]));
+            let (knowledge, playbooks) = (&row["knowledge_ids"], &row["playbook_ids"]);
+            logs.efficiency_with_knowledge += usize::from(has_ids(knowledge));
+            logs.efficiency_with_playbooks += usize::from(has_ids(playbooks));
+            logs.logged_knowledge.extend(ids(knowledge));
+            logs.logged_playbooks.extend(ids(playbooks));
         }
         logs.playbooks = std::fs::read_dir(&paths.playbooks_dir).map_or(0, |entries| {
             entries
@@ -1764,13 +1954,10 @@ impl Logs {
                 // Exposure rows say what the prompts retrieved (4129); a
                 // workspace whose runs record none keeps its retired log.
                 let (retrievals, source) = if self.exposures > 0 {
-                    (self.knowledge_exposures, "knowledge exposures")
+                    (self.knowledge.retrieved, "knowledge exposures")
                 } else {
                     (self.legacy_retrievals, "retired retrieval-log rows")
                 };
-                let unlogged = retrievals > 0
-                    && self.episodes_with_knowledge == 0
-                    && self.efficiency_with_knowledge == 0;
                 facts.push(format!(
                     "{retrievals} {source}; {}/{} episodes and {}/{} efficiency rows carry \
                      knowledge ids",
@@ -1779,6 +1966,16 @@ impl Logs {
                     self.efficiency_with_knowledge,
                     self.efficiency_rows
                 ));
+                // bug-550909: only an entry some prompt included had an
+                // effect to log.
+                let unlogged = if self.exposures > 0 {
+                    facts.extend(self.knowledge.no_exposure("knowledge entry"));
+                    self.knowledge.unlogged(&self.logged_knowledge)
+                } else {
+                    retrievals > 0
+                        && self.episodes_with_knowledge == 0
+                        && self.efficiency_with_knowledge == 0
+                };
                 if unlogged {
                     reason(ReasonCode::Unlogged)
                 } else {
@@ -1786,9 +1983,6 @@ impl Logs {
                 }
             }
             "L-play" => {
-                let unlogged = self.playbooks > 0
-                    && self.episodes_with_playbooks == 0
-                    && self.efficiency_with_playbooks == 0;
                 facts.push(format!(
                     "{} playbooks; {}/{} episodes and {}/{} efficiency rows carry playbook ids",
                     self.playbooks,
@@ -1797,6 +1991,21 @@ impl Logs {
                     self.efficiency_with_playbooks,
                     self.efficiency_rows
                 ));
+                // bug-550909: once the runs record exposures, a playbook in
+                // the store that no prompt included is no exposure, so no
+                // log could name it. Without them the store stands in.
+                let unlogged = if self.exposures > 0 {
+                    facts.extend(self.played.no_exposure("playbook"));
+                    if self.playbooks > 0 && self.played.retrieved == 0 {
+                        let none = "no prompt retrieved a playbook: no exposure to log";
+                        facts.push(none.to_string());
+                    }
+                    self.played.unlogged(&self.logged_playbooks)
+                } else {
+                    self.playbooks > 0
+                        && self.episodes_with_playbooks == 0
+                        && self.efficiency_with_playbooks == 0
+                };
                 if unlogged {
                     reason(ReasonCode::Unlogged)
                 } else {
@@ -1856,6 +2065,16 @@ fn has_id(value: &Value) -> bool {
     value.as_str().is_some_and(|id| !id.is_empty())
 }
 
+/// The ids `value` names: itself, when it is a non-empty string, or the
+/// non-empty strings of an array.
+fn ids(value: &Value) -> Vec<String> {
+    let named = |id: &Value| id.as_str().filter(|id| !id.is_empty()).map(str::to_string);
+    match value {
+        Value::Array(values) => values.iter().filter_map(named).collect(),
+        other => named(other).into_iter().collect(),
+    }
+}
+
 /// The JSON document at `path`; `None` when it is missing or unreadable.
 fn read_json(path: &Path) -> Option<Value> {
     let text = std::fs::read_to_string(path).ok()?;
@@ -1903,7 +2122,7 @@ mod tests {
         use ReasonCode as R;
 
         let registry = Registry::embedded().expect("the embedded registry");
-        let report = run_in(&fixture(), &registry, None);
+        let report = run_in(&fixture(), &registry, None, &LearningAuditConfig::default());
         assert_eq!(report.rows.len(), registry.loops().len());
         let retired = |by: &str| Lifecycle::Retired { by: by.to_string() };
         let expected = [
@@ -2004,7 +2223,12 @@ mod tests {
     #[test]
     fn census_qualifies_stale_declared_findings() {
         let registry = Registry::embedded().expect("the embedded registry");
-        let report = run_in(&fixture(), &registry, Some(OTHER_SHA));
+        let report = run_in(
+            &fixture(),
+            &registry,
+            Some(OTHER_SHA),
+            &LearningAuditConfig::default(),
+        );
         let thresholds = report.row("L-gate-thr").expect("L-gate-thr");
         assert!(thresholds.findings.iter().all(|finding| finding.stale));
         assert!(thresholds.qualifiers.contains(&Qualifier::DeclaredStale));
@@ -2362,9 +2586,10 @@ mod tests {
     /// exposure rows say a prompt retrieved, since 4129 retired the
     /// retrieval log. A workspace whose runs record no exposures keeps its
     /// retired log's rows. Once a run records exposures the log is not read:
-    /// section exposures alone leave L-know unflagged, and two knowledge
-    /// exposures no episode names flag it unlogged, until an episode names
-    /// one.
+    /// section exposures alone leave L-know unflagged, two knowledge entries
+    /// retrieved but kept out of the prompt are no exposure (bug-550909),
+    /// and two that reached the prompt, which no episode names, flag it
+    /// unlogged, until an episode names one.
     #[test]
     fn census_l_know_counts_exposures_not_the_retired_retrieval_log() {
         let dir = tempfile::tempdir().expect("temp dir");
@@ -2375,7 +2600,7 @@ mod tests {
         let know = || {
             let report = run(dir.path(), &registry, None);
             let row = report.row("L-know").expect("L-know");
-            (row.reason, row.facts.first().cloned().unwrap_or_default())
+            (row.reason, row.facts.join(" | "))
         };
         let retired = "{\"query\":\"q\"}\n".repeat(5);
         std::fs::write(learn.join(RETRIEVAL_OUTCOMES), retired).expect("the retired log");
@@ -2386,36 +2611,255 @@ mod tests {
         let run_dir = roko.join(RUNS_DIR).join("gr-exposed");
         std::fs::create_dir_all(&run_dir).expect("the run dir");
         let identity = AttemptIdentity::new(&AttemptKey::new("gr-exposed", "plan", "t1", 1));
-        let exposures = |items: &[(ExposureItemKind, &str)]| {
+        let exposures = |items: &[(ExposureItemKind, &str, bool)]| {
             let rows: String = items
                 .iter()
                 .enumerate()
-                .map(|(index, &(kind, id))| {
-                    let row = ExposureRecord::new(identity.clone(), kind, id);
+                .map(|(index, &(kind, id, included))| {
+                    let mut row = ExposureRecord::new(identity.clone(), kind, id);
+                    row.included = included;
+                    row.excluded_reason = (!included).then_some(ExcludedReason::TokenBudget);
                     line(EXPOSURE_SCHEMA, index as u64 + 1, row)
                 })
                 .collect();
             std::fs::write(RunFile::Exposures.path_in(&run_dir), rows).expect("exposures");
         };
-        exposures(&[(ExposureItemKind::Section, "conventions")]);
+        let section = (ExposureItemKind::Section, "conventions", true);
+        exposures(&[section]);
         let (reason, fact) = know();
         assert_eq!(reason, None, "{fact}");
         assert!(fact.starts_with("0 knowledge exposures;"), "{fact}");
 
         let knowledge = ExposureItemKind::Knowledge;
         exposures(&[
-            (knowledge, "kn-1"),
-            (knowledge, "kn-2"),
-            (ExposureItemKind::Section, "conventions"),
+            (knowledge, "kn-1", false),
+            (knowledge, "kn-2", false),
+            section,
+        ]);
+        let (reason, fact) = know();
+        assert_eq!(reason, None, "no entry reached a prompt: {fact}");
+        assert!(fact.starts_with("2 knowledge exposures;"), "{fact}");
+        let no_exposure = "no prompt included a knowledge entry (2 retrieved: 0 withheld by the \
+                           attempt's arm, 0 in a section the section bandit left out, 2 cut \
+                           otherwise): no exposure to log";
+        assert!(fact.contains(no_exposure), "{fact}");
+
+        exposures(&[
+            (knowledge, "kn-1", true),
+            (knowledge, "kn-2", true),
+            section,
         ]);
         let (reason, fact) = know();
         assert_eq!(reason, Some(ReasonCode::Unlogged), "{fact}");
         assert!(fact.starts_with("2 knowledge exposures;"), "{fact}");
+        assert!(!fact.contains("no prompt included"), "{fact}");
 
         let episode = "{\"knowledge_ids_injected\":[\"kn-1\"]}\n";
         std::fs::write(roko.join("episodes.jsonl"), episode).expect("an episode");
         let (reason, fact) = know();
         assert_eq!(reason, None, "{fact}");
+    }
+
+    /// Attempt `key`'s exposure row of the `kind` item `id`, which renders
+    /// into `domain_context`: included, or left out for `reason`.
+    fn exposure(
+        key: &AttemptKey,
+        kind: ExposureItemKind,
+        id: &str,
+        reason: Option<ExcludedReason>,
+    ) -> ExposureRecord {
+        let mut row = ExposureRecord::new(AttemptIdentity::new(key), kind, id);
+        row.included = reason.is_none();
+        row.excluded_reason = reason;
+        row.section_id = Some("domain_context".to_string());
+        row
+    }
+
+    /// Attempt `key`'s L-know or L-play row at `point` as dispatch wrote it
+    /// before bug-550909: on `arm`, its reader proposing `learned` and its
+    /// prompt including `chosen`, whose digests the receipt names.
+    fn reader_row(
+        key: &AttemptKey,
+        point: ContentDecisionPoint,
+        arm: Arm,
+        learned: &[&str],
+        chosen: &[&str],
+    ) -> ContentDecisionRecord {
+        let (layer, item) = match point {
+            ContentDecisionPoint::Knowledge => ("knowledge", "kn-1"),
+            _ => ("playbooks", "pb-1"),
+        };
+        let ids =
+            |items: &[&str]| -> Vec<String> { items.iter().map(|id| (*id).to_string()).collect() };
+        let mut row = content_row(key, point, layer, item, arm, true);
+        row.chosen = ids(chosen);
+        row.proposals = Some(ContentProposals {
+            learned: Some(ids(learned)),
+            default: Some(Vec::new()),
+        });
+        if let Some(receipt) = row.audit.receipt.as_mut() {
+            receipt.exposure_hashes = chosen.iter().map(|id| format!("b3:{id}")).collect();
+        }
+        row
+    }
+
+    /// Write run `run_id` under `runs_dir`, one attempt per entry of
+    /// `attempts`: its exposure rows, its content rows, and its verdict,
+    /// a pass.
+    fn write_attempts(
+        runs_dir: &Path,
+        run_id: &str,
+        attempts: &[(Vec<ExposureRecord>, Vec<ContentDecisionRecord>)],
+    ) {
+        let run_dir = runs_dir.join(run_id);
+        std::fs::create_dir_all(&run_dir).expect("the run dir");
+        let (mut exposures, mut decisions, mut verdicts) =
+            (String::new(), String::new(), String::new());
+        let mut seq = 0_u64;
+        let mut next = || {
+            seq += 1;
+            seq
+        };
+        for (shown, decided) in attempts {
+            for row in shown {
+                exposures.push_str(&line(EXPOSURE_SCHEMA, next(), row));
+            }
+            for row in decided {
+                decisions.push_str(&line(DECISION_SCHEMA, next(), row));
+            }
+            let identity = decided[0].identity.clone();
+            let verdict = AttemptVerdictRecord::settle(identity, AttemptOutcome::Passed, true);
+            verdicts.push_str(&line(VERDICT_SCHEMA, next(), verdict));
+        }
+        std::fs::write(RunFile::Exposures.path_in(&run_dir), exposures).expect("exposures");
+        std::fs::write(RunFile::Decisions.path_in(&run_dir), decisions).expect("decisions");
+        std::fs::write(RunFile::Attempts.path_in(&run_dir), verdicts).expect("verdicts");
+    }
+
+    /// bug-550909, on the round-v6 repro's shape: the store holds two
+    /// playbooks, and no prompt ever included one. Run gr-2's one attempt
+    /// drew L-play's default arm, which withheld its playbook, while its
+    /// lesson reached the prompt and its episode names it. Run gr-3's chain
+    /// drew both loops' learned arms three times, and each time the section
+    /// bandit left out `domain_context`, which carries the playbooks and the
+    /// lesson, so the rows dispatch wrote name empty learned proposals. The
+    /// census's log rule calls neither loop unlogged and says no prompt
+    /// included a playbook; ε counts each attempt the bandit emptied as not
+    /// reached, for L-play and for L-know, in the census and in the tick
+    /// alike. A playbook that did reach a prompt, which no episode names, is
+    /// still unlogged, until an episode names it.
+    #[test]
+    fn log_rule_does_not_call_withheld_playbooks_unlogged() {
+        use roko_core::config::learning::LearningAuditConfig;
+
+        use crate::loop_audit::{LoopAuditor, RowOrigin};
+
+        let dir = tempfile::tempdir().expect("temp dir");
+        let roko = dir.path().join(".roko");
+        let store = roko.join("learn").join("playbooks");
+        std::fs::create_dir_all(&store).expect("the playbook store");
+        for id in ["pb-1", "pb-2"] {
+            let playbook = format!("{{\"id\":\"{id}\"}}");
+            std::fs::write(store.join(format!("{id}.json")), playbook).expect("a playbook");
+        }
+        let episodes = roko.join("episodes.jsonl");
+        std::fs::write(&episodes, "{\"knowledge_ids_injected\":[\"kn-1\"]}\n{}\n")
+            .expect("the episodes");
+        let runs_dir = roko.join(RUNS_DIR);
+        let (know, play) = (
+            ContentDecisionPoint::Knowledge,
+            ContentDecisionPoint::Playbooks,
+        );
+        let (lesson, playbook) = (ExposureItemKind::Knowledge, ExposureItemKind::Playbook);
+        let withheld = Some(ExcludedReason::WithheldArm);
+        let bandit = Some(ExcludedReason::BanditExcluded);
+
+        let key = AttemptKey::new("gr-2", "plan", "T1", 1);
+        let shown = vec![
+            exposure(&key, lesson, "kn-1", None),
+            exposure(&key, playbook, "pb-1", withheld),
+        ];
+        let decided = vec![
+            reader_row(&key, know, Arm::Learned, &["kn-1"], &["kn-1"]),
+            reader_row(&key, play, Arm::Default, &["pb-1"], &[]),
+        ];
+        write_attempts(&runs_dir, "gr-2", &[(shown, decided)]);
+        let emptied: Vec<_> = (1..=3)
+            .map(|attempt| {
+                let key = AttemptKey::new("gr-3", "plan", "T1", attempt);
+                let shown = vec![
+                    exposure(&key, lesson, "kn-1", bandit),
+                    exposure(&key, playbook, "pb-1", bandit),
+                    exposure(&key, playbook, "pb-2", bandit),
+                ];
+                let decided = vec![
+                    reader_row(&key, know, Arm::Learned, &[], &[]),
+                    reader_row(&key, play, Arm::Learned, &[], &[]),
+                ];
+                (shown, decided)
+            })
+            .collect();
+        write_attempts(&runs_dir, "gr-3", &emptied);
+
+        let registry = Registry::embedded().expect("the embedded registry");
+        let report = run(dir.path(), &registry, None);
+        let census_play = report.row("L-play").expect("L-play");
+        let verdict = (census_play.state, census_play.reason, census_play.evidence);
+        let facts = &census_play.facts;
+        assert_eq!(
+            verdict,
+            (Some(AuditState::Probation), None, None),
+            "{facts:?}"
+        );
+        let no_exposure = "no prompt included a playbook (7 retrieved: 1 withheld by the \
+                           attempt's arm, 6 in a section the section bandit left out, 0 cut \
+                           otherwise): no exposure to log";
+        assert!(facts.iter().any(|fact| fact == no_exposure), "{facts:?}");
+        let measured = census_play.measured.as_ref().expect("L-play is measured");
+        let counts = (measured.n_opp, measured.n_learned, measured.n_default);
+        assert_eq!(counts, (4, 3, 1), "{measured:?}");
+        assert!(measured.eps.reach < 1.0, "{measured:?}");
+        assert_eq!((measured.eps.est, measured.eps.reach), (0.0, 0.0));
+        assert_eq!(
+            measured.iota_net, 1.0,
+            "each learned proposal holds a playbook"
+        );
+        let census_know = report.row("L-know").expect("L-know");
+        assert_eq!(census_know.reason, None, "{:?}", census_know.facts);
+        let know_measured = census_know.measured.as_ref().expect("L-know is measured");
+        let know_eps = (know_measured.n_learned, know_measured.eps.reach);
+        assert_eq!(know_eps, (4, 0.25), "{know_measured:?}");
+
+        // The tick folds the same rows to the same ε.
+        let config = LearningAuditConfig::default();
+        let mut auditor = LoopAuditor::from_records(registry.clone(), &config, &[]);
+        let runs = read_runs(&runs_dir);
+        let observations = auditor.observe(&runs, &RowOrigin::default(), audit_time());
+        let tick_play = health_of(&observations, "L-play");
+        assert_eq!(
+            (tick_play.state, tick_play.reason),
+            (AuditState::Probation, None)
+        );
+        assert_eq!((tick_play.n_learned, tick_play.n_default), (3, 1));
+        assert_eq!(tick_play.eps, measured.eps);
+        assert_eq!(health_of(&observations, "L-know").eps, know_measured.eps);
+
+        // A playbook a prompt included, which nothing names, is unlogged.
+        let key = AttemptKey::new("gr-4", "plan", "T1", 1);
+        let shown = vec![exposure(&key, playbook, "pb-2", None)];
+        let decided = vec![reader_row(&key, play, Arm::Learned, &["pb-2"], &["pb-2"])];
+        write_attempts(&runs_dir, "gr-4", &[(shown, decided)]);
+        let play_row = || {
+            let report = run(dir.path(), &registry, None);
+            report.row("L-play").cloned().expect("L-play")
+        };
+        let unlogged = play_row();
+        let verdict = (unlogged.reason, unlogged.evidence);
+        let logged = (Some(ReasonCode::Unlogged), Some(Evidence::Log));
+        assert_eq!(verdict, logged, "{:?}", unlogged.facts);
+        append(&episodes, "{\"extra\":{\"playbook_ids\":[\"pb-2\"]}}\n");
+        let named = play_row();
+        assert_eq!(named.reason, None, "{:?}", named.facts);
     }
 
     /// Append `lines` to the file at `path`.
@@ -2487,7 +2931,6 @@ mod tests {
         let runs_dir = dir.path().join(RUNS_DIR);
         let kept = dir.path().join(CENSUS_STATE_FILE);
         let params = AuditParams::default();
-        let alpha = params.loop_alpha();
         let now = Utc
             .with_ymd_and_hms(2026, 10, 3, 10, 0, 0)
             .single()
@@ -2500,7 +2943,7 @@ mod tests {
 
         // gr-a closes with 20 chains, and the tick keeps its census.
         let next_a = append_chains(&runs_dir, "gr-a", 0..20, None, started, 1);
-        let mut census = CensusState::load(&kept, alpha);
+        let mut census = CensusState::load(&kept, &params);
         census.fold_pending(&runs_dir, "gr-a", now);
         census.save(&kept).expect("keep the census");
         assert_eq!(know_opps(&census), Some(20));
@@ -2509,7 +2952,7 @@ mod tests {
         // next close; gr-b is read up to its chain 4, still running, at seq
         // 13; gr-d's chain 1, open for two days, and gr-e's chain 0, in a run
         // whose manifest closed, hold nothing back.
-        let mut census = CensusState::load(&kept, alpha);
+        let mut census = CensusState::load(&kept, &params);
         assert_eq!(census.next_seq("gr-a"), Some(next_a));
         assert_eq!(know_opps(&census), Some(20));
         append_chains(&runs_dir, "gr-a", 20..25, None, started, next_a);
@@ -2849,7 +3292,6 @@ mod tests {
             .collect();
         std::fs::write(RunFile::Decisions.path_in(&run_dir), rows).expect("decisions");
         let params = AuditParams::default();
-        let alpha = params.loop_alpha();
         let placebo_opps = |census: &CensusState| {
             let measured = census.measurements(&params);
             measured
@@ -2859,7 +3301,7 @@ mod tests {
 
         // What an earlier tick kept: the run read to its end, and no
         // placebo tally.
-        let mut read = CensusState::new(alpha);
+        let mut read = CensusState::new(&params);
         read.fold_pending(&runs_dir, "gr-old", audit_time());
         let mut kept = serde_json::to_value(&read).expect("the census as JSON");
         let tallies = kept["tallies"].as_object_mut().expect("the tallies");
@@ -2869,12 +3311,60 @@ mod tests {
             let mut census = kept.clone();
             census["schema_version"] = Value::from(schema);
             std::fs::write(&path, census.to_string()).expect("keep the census");
-            let mut census = CensusState::load(&path, alpha);
+            let mut census = CensusState::load(&path, &params);
             census.fold_pending(&runs_dir, "gr-old", audit_time());
             placebo_opps(&census)
         };
         assert_eq!(at("roko.loop_census_state/2"), Some(10), "read afresh");
         assert_eq!(at(CENSUS_STATE_SCHEMA), None, "the run was read");
+    }
+
+    /// gap-ca63ee: a census folds its benefit estimators at the κ_max of
+    /// the parameters it is given, `[learning.audit] kappa_max` for the
+    /// tick, where it used to fold at the default whatever the section said.
+    /// A census kept at another κ_max is read afresh, since its estimators'
+    /// states depend on it, and one kept before κ_max was recorded folded at
+    /// the default.
+    #[test]
+    fn census_folds_benefit_at_the_configured_kappa_max() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let runs_dir = dir.path().join(RUNS_DIR);
+        let mut rng = SplitMix64::new(5);
+        let know = ContentDecisionPoint::Knowledge;
+        let chains: Vec<BetaChain> = (0..20)
+            .map(|_| planted_chain(&mut rng, know, (0.9, 0.3), true))
+            .collect();
+        append_beta_chains(&runs_dir, &chains, 0, 0);
+        let path = dir.path().join(CENSUS_STATE_FILE);
+        let defaults = AuditParams::default();
+        let tight = AuditParams {
+            kappa_max: 0.5,
+            ..AuditParams::default()
+        };
+        let keep = |params: &AuditParams| {
+            let mut census = CensusState::new(params);
+            census.fold_pending(&runs_dir, BETA_RUN, audit_time());
+            census.save(&path).expect("keep the census");
+            serde_json::to_value(&census).expect("the census as JSON")
+        };
+        let read = |params: &AuditParams| CensusState::load(&path, params).next_seq(BETA_RUN);
+
+        let kept = keep(&tight);
+        assert_eq!(kept["kappa_max"], 0.5);
+        let benefit = &kept["tallies"]["L-know"]["benefit"]["config"];
+        assert_eq!(benefit["kappa_max"], 0.5, "{benefit}");
+        assert!(read(&tight).is_some(), "kept at its κ_max");
+        assert_eq!(read(&defaults), None, "read afresh at another");
+
+        let mut kept = keep(&defaults);
+        let benefit = &kept["tallies"]["L-know"]["benefit"]["config"];
+        assert_eq!(benefit["kappa_max"], KAPPA_MAX, "{benefit}");
+        kept.as_object_mut()
+            .expect("the census object")
+            .remove("kappa_max");
+        std::fs::write(&path, kept.to_string()).expect("a census kept before κ_max");
+        assert!(read(&defaults).is_some(), "it folded at the default");
+        assert_eq!(read(&tight), None);
     }
 
     /// gap-6f31c3 (S03 §4.3, §4.6): the placebo is the auditor's own

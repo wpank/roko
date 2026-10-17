@@ -391,6 +391,7 @@ with the feature to bring one back. Measurements are in `benchmarks/park/`.
 | `cross-cut-functors` | `roko-compose` | The memory, daimon, dreams and safety functors, natural transformations, `CrossCutArbitrator` |
 | `spc` | `roko-gate` | CUSUM/EWMA/BOCPD detectors, PELT, Hotelling's T-squared in the adaptive thresholds |
 | `active-inference` | `roko-learn` | The expected-free-energy tier selector |
+| `channels` | `roko-core`, `roko-runtime` | The `ChatBridge` contract and `PlatformRegistry`, the six stub platform adapters (Discord, Slack, Matrix, Mattermost, Telegram, WhatsApp), `ChannelBindingRouter`, and the `[[platforms]]` and `[[channels]]` config types; decision 12 parked these files, which were never compiled before |
 
 ### Kernel layer
 

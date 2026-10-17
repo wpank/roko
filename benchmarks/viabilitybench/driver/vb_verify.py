@@ -15,7 +15,10 @@ output, the exit status, signals and the process group are bash's. A command is 
 of the task's visible commands (the manifest's `visible_verify`, as the spec states them) as whole words. Each such
 run gets the next number n and a line in the task's log, and fails with probability p: the wrapper then runs nothing,
 prints `Killed` on stderr and exits 137, as a check the host killed would. The draw is HMAC-SHA256 of the
-disturbance's seed and "<task key>:<n>", so a replay of the same spec injects the same flakes. p is the spec's
+disturbance's seed and "<key>:<n>". The key `vb run` installs is the task's alias, never its task key (bug-3c921e):
+the config lies in the agent's HOME, and a key there would tell the agent its family and level. So the seed and the
+record's `provenance.alias` give a run's draws again, and another run of the same spec, whose aliases are new, draws
+its own. p is the spec's
 `params.p`, which S08 calls `VB_FLAKE_P`; the wrapper reads it from its config, since no `VB_*` variable may reach an
 agent (`agent_env`). The agent is not told: no task text names the wrapper (Roko's prompt shows it only as the prefix
 of the verify command, A4), and a flake looks like a crashed check. Outside the positions the disturbance covers, p
@@ -63,7 +66,8 @@ BOUNDARY = frozenset(" \t\n;&|()<>'\"`{}")  # what may stand next to a visible c
 
 def install(bin_dir: Path, *, key: str, visible: Sequence[str], p: float, seed: int, shell: str,
             python: Path | None = None) -> Path:
-    """Put the wrapper for task `key` into `bin_dir`, with an empty log; returns the launcher's path."""
+    """Put the wrapper into `bin_dir`, with an empty log, its draws keyed by `key` (`vb run` passes the task's alias,
+    which the config shows the agent); returns the launcher's path."""
     bin_dir = Path(bin_dir).absolute()
     if python is None:  # agent_env links .vb-bin/python3 to the driver's base interpreter
         python = bin_dir / "python3" if (bin_dir / "python3").exists() else Path(sys.executable)

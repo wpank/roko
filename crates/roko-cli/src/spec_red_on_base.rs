@@ -9,8 +9,9 @@
 //! - `pass`: every step passes on the base in both runs. HF3, unless the task
 //!   pins no acceptance test and every step declares `expect = "pass_on_base"`.
 //! - `unknown`: the runs disagree, a step times out or cannot start, a
-//!   `pass_on_base` step fails, the plan has no known base, or the steps that
-//!   could tell run cargo and [`CargoSteps::Skip`] left them to the batch gate.
+//!   step's command is not installed (exit 127), a `pass_on_base` step fails,
+//!   the plan has no known base, or the steps that could tell run cargo and
+//!   [`CargoSteps::Skip`] left them to the batch gate.
 //!
 //! Tasks that are not implementers, or have neither a pinned acceptance test
 //! nor a verify step, are not run. A run stops at its first failing step, as
@@ -181,6 +182,9 @@ pub enum Outcome {
     Timeout,
     /// A step could not start, or a pinned acceptance test is missing.
     Error,
+    /// A step's command is not installed (bash: `command not found`, exit
+    /// 127), so the step cannot pass whatever the work does (bug-72e919).
+    CannotRun,
     /// A step that declares `expect = "pass_on_base"` fails on the base.
     BaseBroken,
     /// The plan has no known base.
@@ -193,12 +197,13 @@ pub enum Outcome {
 
 impl Outcome {
     /// Every outcome, in the order the summary lists them.
-    pub const ALL: [Self; 9] = [
+    pub const ALL: [Self; 10] = [
         Self::Fail,
         Self::Pass,
         Self::Flaky,
         Self::Timeout,
         Self::Error,
+        Self::CannotRun,
         Self::BaseBroken,
         Self::NoBase,
         Self::NotRun,
@@ -213,6 +218,7 @@ impl Outcome {
             Self::Flaky => "unknown: the runs disagree",
             Self::Timeout => "unknown: a step timed out",
             Self::Error => "unknown: a step could not start",
+            Self::CannotRun => "unknown: a command is not installed",
             Self::BaseBroken => "unknown: a pass_on_base step fails",
             Self::NoBase => "unknown: no known base",
             Self::NotRun => "not run: no implementer verify",
@@ -807,6 +813,14 @@ fn classify(steps: &[Step], runs: &[Vec<StepResult>]) -> (RedOnBase, Outcome, St
             verdicts.push(None);
             continue;
         }
+        if last.exit == Some(127)
+            && let Some(command) = missing_command(last.tail.as_deref().unwrap_or_default())
+        {
+            let reason = format!(
+                "step {step} cannot run: `{command}` is not installed (exit 127 in run {number})"
+            );
+            return unknown(Outcome::CannotRun, reason);
+        }
         let expect = steps
             .iter()
             .find(|candidate| candidate.number == step)
@@ -854,6 +868,23 @@ fn classify(steps: &[Step], runs: &[Vec<StepResult>]) -> (RedOnBase, Outcome, St
 
 fn exit_text(exit: Option<i32>) -> String {
     exit.map_or_else(|| "none".to_string(), |code| code.to_string())
+}
+
+/// The command bash could not find on `PATH`, from a step's output: bash
+/// reports one as `bash: line 1: <name>: command not found` and exits 127.
+/// A name with a `/` is a path, such as a program the task has not built yet,
+/// which bash reports as `No such file or directory`: that is a real failure,
+/// so it never counts here.
+fn missing_command(output: &str) -> Option<&str> {
+    output.lines().rev().find_map(|line| {
+        let name = line
+            .trim_end()
+            .strip_suffix(": command not found")?
+            .rsplit(": ")
+            .next()?
+            .trim();
+        (!name.is_empty() && !name.contains('/')).then_some(name)
+    })
 }
 
 // --------------------------------------------------------------------------
@@ -1663,6 +1694,61 @@ command = 'n=$(cat COUNTER 2>/dev/null || echo 0); echo $((n + 1)) > COUNTER; te
         std::fs::copy(&plan, outside.join("tasks.toml")).expect("copy the plan");
         let results = gate_results(&[outside.join("tasks.toml")], plain.path(), &config);
         assert!(results.expect("not interrupted").is_empty());
+    }
+
+    /// bug-72e919: a check whose command is not installed (bash: `command not
+    /// found`, exit 127) cannot pass whatever the work does, so its task is
+    /// `unknown`, not red. A program the task has not built yet (`./bin/tool`,
+    /// no such file) and a check that simply fails are still red.
+    #[test]
+    fn red_on_base_treats_a_missing_command_as_unknown() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let repo = temp.path().join("repo");
+        std::fs::create_dir_all(repo.join("plans/p")).expect("plan dir");
+        let task = |id: &str, file: &str, command: &str| {
+            format!(
+                "\n[[task]]\nid = {id:?}\ntitle = {id:?}\ndescription = \"Write `{file}`.\"\n\
+                 role = \"implementer\"\nfiles = [{file:?}]\n\n[[task.verify]]\n\
+                 phase = \"test\"\ncommand = {command:?}\n"
+            )
+        };
+        let plan_text = [
+            "[meta]\nplan = \"p\"\n".to_string(),
+            task(
+                "T1",
+                "tests/test_osc.py",
+                "roko-test-no-such-runner -q tests/test_osc.py",
+            ),
+            task("T2", "bin/tool", "./bin/tool --version"),
+            task("T3", "osc.py", "test -f osc.py"),
+        ]
+        .concat();
+        std::fs::write(repo.join("plans/p/tasks.toml"), plan_text).expect("write the plan");
+        run_git(&repo, &["init", "--quiet"]);
+        run_git(&repo, &["add", "--all"]);
+        run_git(&repo, &["commit", "--quiet", "-m", "base"]);
+        let plan = repo.join("plans/p/tasks.toml");
+
+        let options = RedOnBaseOptions::from_config(&SpecQualityConfig::default());
+        let report = check_plans(&[plan], &repo, &options).expect("check the plan");
+        let outcome = |id: &str| {
+            let check = report.checks.iter().find(|check| check.task_id == id);
+            let check = check.expect("checked");
+            (check.red_on_base, check.outcome, check.reason.clone())
+        };
+        let (red, cannot_run, reason) = outcome("T1");
+        assert_eq!((red, cannot_run), (RedOnBase::Unknown, Outcome::CannotRun));
+        assert!(
+            reason.contains("`roko-test-no-such-runner` is not installed"),
+            "{reason}"
+        );
+        assert_eq!(outcome("T2").0, RedOnBase::Fail, "{:?}", outcome("T2"));
+        assert_eq!(outcome("T3").0, RedOnBase::Fail, "{:?}", outcome("T3"));
+        assert_eq!(missing_command("sh: ./bin/tool: command not found"), None);
+        assert_eq!(
+            missing_command("bash: pytest: command not found"),
+            Some("pytest")
+        );
     }
 
     /// bug-3c4600: a red-on-base step, which runs at plan load, gets the

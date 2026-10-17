@@ -57,10 +57,7 @@ impl MatrixBridge {
             .token
             .as_ref()
             .ok_or_else(|| {
-                RokoError::Invalid(format!(
-                    "matrix platform `{}` requires a token",
-                    config.id
-                ))
+                RokoError::Invalid(format!("matrix platform `{}` requires a token", config.id))
             })?
             .resolve()
             .map_err(|e| RokoError::Invalid(format!("matrix `{}`: {e}", config.id)))?;
@@ -78,7 +75,7 @@ impl MatrixBridge {
 
 #[async_trait]
 impl ChatBridge for MatrixBridge {
-    fn platform_id(&self) -> &str {
+    fn platform_id(&self) -> &'static str {
         "matrix"
     }
 
@@ -89,7 +86,10 @@ impl ChatBridge for MatrixBridge {
             "stub send_message: {}",
             &text[..text.len().min(120)]
         );
-        Ok(MessageId::new(format!("matrix-stub-{}", ChannelId::new(channel))))
+        Ok(MessageId::new(format!(
+            "matrix-stub-{}",
+            ChannelId::new(channel)
+        )))
     }
 
     async fn send_rich(&self, channel: &str, msg: RichMessage) -> Result<MessageId> {
@@ -100,7 +100,10 @@ impl ChatBridge for MatrixBridge {
             "stub send_rich: {}",
             &body[..body.len().min(120)]
         );
-        Ok(MessageId::new(format!("matrix-stub-rich-{}", ChannelId::new(channel))))
+        Ok(MessageId::new(format!(
+            "matrix-stub-rich-{}",
+            ChannelId::new(channel)
+        )))
     }
 
     fn incoming(&self) -> Pin<Box<dyn Stream<Item = IncomingMessage> + Send>> {
@@ -163,19 +166,17 @@ mod tests {
 
     #[test]
     fn platform_id_is_matrix() {
-        let bridge = MatrixBridge::connect(&config(Some(PlatformSecretRef::Literal(
-            "tok".to_string(),
-        ))))
-        .unwrap();
+        let bridge =
+            MatrixBridge::connect(&config(Some(PlatformSecretRef::Literal("tok".to_string()))))
+                .unwrap();
         assert_eq!(bridge.platform_id(), "matrix");
     }
 
     #[test]
     fn capabilities_match_matrix() {
-        let bridge = MatrixBridge::connect(&config(Some(PlatformSecretRef::Literal(
-            "tok".to_string(),
-        ))))
-        .unwrap();
+        let bridge =
+            MatrixBridge::connect(&config(Some(PlatformSecretRef::Literal("tok".to_string()))))
+                .unwrap();
         let caps = bridge.capabilities();
         assert!(caps.markdown);
         assert!(caps.attachments);
@@ -187,10 +188,9 @@ mod tests {
 
     #[tokio::test]
     async fn send_message_returns_ok() {
-        let bridge = MatrixBridge::connect(&config(Some(PlatformSecretRef::Literal(
-            "tok".to_string(),
-        ))))
-        .unwrap();
+        let bridge =
+            MatrixBridge::connect(&config(Some(PlatformSecretRef::Literal("tok".to_string()))))
+                .unwrap();
         let id = bridge
             .send_message("!room:example.org", "hello matrix")
             .await
@@ -200,15 +200,11 @@ mod tests {
 
     #[tokio::test]
     async fn send_rich_returns_ok() {
-        let bridge = MatrixBridge::connect(&config(Some(PlatformSecretRef::Literal(
-            "tok".to_string(),
-        ))))
-        .unwrap();
+        let bridge =
+            MatrixBridge::connect(&config(Some(PlatformSecretRef::Literal("tok".to_string()))))
+                .unwrap();
         let msg = RichMessage::markdown("hello", "**hello**");
-        let id = bridge
-            .send_rich("!room:example.org", msg)
-            .await
-            .unwrap();
+        let id = bridge.send_rich("!room:example.org", msg).await.unwrap();
         assert!(id.as_str().contains("matrix-stub-rich"));
     }
 }

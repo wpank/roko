@@ -19,7 +19,7 @@ Run this from the repository root. It fails on the unchanged tree and covers ${c
 
 - `src/lib.rs`: ${stub}.
 - `tests/visible.rs`: the visible tests, two examples of the expected results.
-- `Cargo.toml`: the crate, `f7_task`, which has no dependencies.
+- `Cargo.toml`: the crate, `cinder`, which has no dependencies.
 
 ## Scope
 

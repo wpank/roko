@@ -45,6 +45,7 @@ use super::audit_select::AuditSelector;
 use super::failover::FailoverChain;
 use super::served_model::{ServedModel, is_cli_backend};
 use super::*;
+use crate::audit::labels::{VsLearner, VsLearners};
 
 /// `run_seed` of the arm-set draws (`telemetry::assign`): 0 until runs
 /// record an experiment seed (S01 `experiment.seed`), as the route's
@@ -625,6 +626,14 @@ impl AttemptContext {
         self.harness.as_ref().map(|decision| &decision.applied)
     }
 
+    /// Whether the attempt's prompt carries the knowledge section (M1's B4,
+    /// gap-6bb6d8): the `knowledge_section` of the θ it runs, and on without
+    /// an M1 sink, as θ₀ has it.
+    pub(super) fn knowledge_section(&self) -> bool {
+        self.harness_params()
+            .is_none_or(|theta| theta.knowledge_section)
+    }
+
     /// M1's decision for the attempt, with θ₀ beside the θ it runs; `None`
     /// without an M1 sink.
     pub(super) fn harness_decision(
@@ -985,9 +994,16 @@ impl GraphTaskDispatcher {
             self.load_audit_trust();
             let selector =
                 AuditSelector::for_config(&self.config.audit, &self.config.gates, &self.workdir)?;
-            // DP5: audited VS labels teach the run's self-model (7134).
-            let learner = self.feedback.self_model.clone();
-            let learner = learner.map(|model| model as Arc<dyn crate::audit::labels::VsLearner>);
+            // DP5: audited VS labels teach the run's self-model (7134), and
+            // M1's E3 counts them (gap-618548).
+            let mut learners: Vec<Arc<dyn VsLearner>> = Vec::new();
+            if let Some(model) = self.feedback.self_model.clone() {
+                learners.push(model);
+            }
+            if let Some(sink) = self.feedback.homeostasis.clone() {
+                learners.push(sink);
+            }
+            let learner = VsLearners::of(learners);
             let selector = selector.with_phase_b(self.audit_phase_b());
             // Its workers' model calls write cost and efficiency rows (gap-dd9c2e).
             let selector = selector.with_call_log(self.audit_call_log());

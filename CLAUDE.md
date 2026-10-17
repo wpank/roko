@@ -62,6 +62,7 @@ back. Line counts are in `benchmarks/park/`.
 | `cross-cut-functors` | roko-compose | The cross-cut functors and `CrossCutArbitrator` |
 | `spc` | roko-gate | CUSUM, EWMA and BOCPD detectors, PELT, Hotelling's T-squared |
 | `active-inference` | roko-learn | The expected-free-energy tier selector |
+| `channels` | roko-core, roko-runtime | The `ChatBridge` contract and `PlatformRegistry`, the six stub platform adapters (Discord, Slack, Matrix, Mattermost, Telegram, WhatsApp), `ChannelBindingRouter`, and the `[[platforms]]` and `[[channels]]` config types (decision 12) |
 
 ## Critical rules
 
@@ -187,6 +188,7 @@ safety, auth, persistence, migration, payment, or other high-risk changes. FAST 
 | `roko plan list/show/create` | Manage plans |
 | `roko plan run <dir>` | Execute plans through the Graph engine (the only engine; `--engine legacy`/`runner-v2` exits with an error); `--no-holdout` runs it in maximize mode (decision 4115) |
 | `roko plan generate/regenerate` | Generate a plan from a prompt, file, notes or backlog spec (runs nothing), or regenerate one in place |
+| `roko plan import --mori <dir>` | Import mori plan directories (`.mori/plans/<plan>/`) as roko plans, their checks included; no model runs |
 | `roko plan index` | Rebuild or verify the deterministic plans index |
 | `roko plan pause/resume/cancel` | Pause, resume, or cancel a running plan |
 | `roko plan retry <dir>` | Retry failed tasks in a plan |

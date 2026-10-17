@@ -11,8 +11,9 @@
 //!   a real `roko plan run` whose agent and verify command print the canary
 //!   leaves no copy of it in any file, in stdout or in stderr.
 //! - The other tests push contaminated records through the shared writers
-//!   (episodes, the JSONL boundary the efficiency log uses, gate failures)
-//!   with the production scrubber installed, and check the builder's rules.
+//!   (episodes, the JSONL boundary the efficiency log uses, gate failures,
+//!   the playbooks plan runs write) with the production scrubber installed,
+//!   and check the builder's rules.
 //!
 //! No live LLM runs: the plan run uses a scripted fake Claude CLI.
 //!
@@ -447,6 +448,108 @@ async fn canary_absent_from_all_output_sinks() {
             .scrub(&contaminated_transcript)
             .contains(CANARY_SECRET),
         "scrubber must catch canary in transcript"
+    );
+}
+
+// ── Test: playbooks do not contain canary ─────────────────────────────────────
+
+/// reg-d49ed1: a verified attempt whose tool call ran a command holding the
+/// canary, on a task whose text quotes it too, teaches a playbook through
+/// the plan runs' sink (`VerifiedPlaybookSink`) with the canary redacted:
+/// in the playbook's file, in the `playbook_written` events the run's hub
+/// hears, and in the steps and topic terms the sink matches a repeat by, so
+/// the same procedure again credits that playbook instead of adding another.
+#[tokio::test]
+async fn playbooks_from_verified_attempts_do_not_contain_canary() {
+    use roko_cli::runtime_feedback::{
+        AttemptToolCall, FeedbackEvent, FeedbackSink, VerifiedAttempt, VerifiedPlaybookSink,
+    };
+
+    install_canary_scrubber();
+    let (tmp, env_path) = setup_canary_workspace();
+    let playbook_dir = tmp.path().join(".roko").join("learn").join("playbooks");
+    let hub = roko_cli::state_hub::shared_state_hub();
+    let sink = VerifiedPlaybookSink::new(&playbook_dir).with_publisher(hub.sender());
+    let call = |name: &str, target: String| AttemptToolCall {
+        name: name.to_string(),
+        target,
+        succeeded: Some(true),
+    };
+    let attempt = VerifiedAttempt {
+        plan_id: "plan-canary".to_string(),
+        task_id: "T1".to_string(),
+        attempt_id: "run-canary:plan-canary/T1/a1".to_string(),
+        title: "Deploy the greeting banner".to_string(),
+        description: format!("Deploy it with the key {CANARY_SECRET}."),
+        topic_terms: vec![
+            "banner".to_string(),
+            CANARY_SECRET.to_string(),
+            "deploy".to_string(),
+            "greeting".to_string(),
+        ],
+        tool_calls: vec![
+            call("Write", "greeting.txt".to_string()),
+            call("Bash", format!("deploy --key {CANARY_SECRET} greeting.txt")),
+        ],
+        ..VerifiedAttempt::default()
+    };
+    for admission in ["create", "credit"] {
+        sink.on_event(&FeedbackEvent::TaskVerified(attempt.clone()))
+            .await
+            .expect(admission);
+    }
+
+    let playbooks = roko_learn::playbook::PlaybookStore::new(&playbook_dir)
+        .list()
+        .await
+        .expect("read the playbooks");
+    let [playbook] = playbooks.as_slice() else {
+        panic!(
+            "the repeat credits the one playbook; found {} playbooks",
+            playbooks.len()
+        );
+    };
+    assert_eq!(playbook.success_count, 2, "the repeat credited it");
+    let goal = format!("Deploy the greeting banner: Deploy it with the key {CANARY_REDACTED_TAG}.");
+    assert_eq!(playbook.goal, goal);
+    let steps: Vec<(&str, &str)> = playbook
+        .steps
+        .iter()
+        .map(|step| (step.action_kind.as_str(), step.description.as_str()))
+        .collect();
+    let command = format!("deploy --key {CANARY_REDACTED_TAG} greeting.txt");
+    assert_eq!(
+        steps,
+        [("Write", "greeting.txt"), ("Bash", command.as_str())]
+    );
+    assert!(
+        playbook.when_pattern.as_deref().is_some_and(
+            |terms| terms.contains(CANARY_REDACTED_TAG) && !terms.contains(CANARY_SECRET)
+        ),
+        "the topic terms keep the redaction"
+    );
+
+    let goals: Vec<String> = hub
+        .subscribe_events_from(0)
+        .replay
+        .into_iter()
+        .filter_map(|envelope| match envelope.payload {
+            roko_core::DashboardEvent::PlaybookWritten { goal, .. } => Some(goal),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(goals, [goal.clone(), goal], "created, then credited");
+
+    let leaks = common::files_containing(tmp.path(), CANARY_SECRET, &[env_path]);
+    assert!(
+        leaks.is_empty(),
+        "the canary reached {} file(s):\n{}",
+        leaks.len(),
+        leaks
+            .iter()
+            .map(|path| common::describe_leak(path, CANARY_SECRET))
+            .collect::<Vec<_>>()
+            .join("\n")
     );
 }
 

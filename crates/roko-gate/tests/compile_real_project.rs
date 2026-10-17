@@ -8,7 +8,8 @@ use async_trait::async_trait;
 use roko_core::{Body, Context, Kind, Signal, Store, Verify};
 use roko_gate::{BuildSystem, CompileGate, GatePayload};
 use roko_std::MemorySubstrate;
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use std::time::{Duration, SystemTime};
 use tempfile::TempDir;
 use tokio::fs;
 
@@ -78,6 +79,131 @@ async fn compile_gate_fails_on_syntax_error() {
         detail.contains("error"),
         "detail should contain compiler error: {detail}"
     );
+}
+
+/// Run git in `dir`, failing the test when it fails.
+fn git(dir: &Path, args: &[&str]) {
+    let output = std::process::Command::new("git")
+        .args(args)
+        .current_dir(dir)
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .env_remove("GIT_DIR")
+        .env_remove("GIT_WORK_TREE")
+        .env_remove("GIT_INDEX_FILE")
+        .output()
+        .expect("run git");
+    assert!(
+        output.status.success(),
+        "git {args:?} failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+/// Where [`a_shared_target_dir_does_not_pass_another_checkouts_build`] tells
+/// its child test process to make the repository.
+const SHARED_TARGET_CHILD: &str = "ROKO_GATE_SHARED_TARGET_CHILD";
+
+/// bug-be2a53: the gates of two checkouts of one repository inherit one
+/// `CARGO_TARGET_DIR`, the main checkout's `target/`, as when it is exported
+/// for every worktree. Attempt `b` broke the crate before attempt `a`'s gate
+/// built `a`'s valid edit, so `b`'s sources are older than that build. Cargo
+/// names the crate's build alike in both checkouts, so it took `a`'s build as
+/// fresh for `b`, and the gate passed code that does not compile. Each gate
+/// builds in its own checkout's target dir instead, and fails `b`.
+///
+/// The gate inherits roko's own environment, so the shared target dir is set
+/// for a child test process.
+#[test]
+fn a_shared_target_dir_does_not_pass_another_checkouts_build() {
+    let root = TempDir::new().expect("tempdir");
+    let repo = root.path().join("repo");
+    let output = std::process::Command::new(std::env::current_exe().expect("test binary"))
+        .args(["--exact", "shared_target_dir_child", "--nocapture"])
+        .env(SHARED_TARGET_CHILD, &repo)
+        .env("CARGO_TARGET_DIR", repo.join("target"))
+        .output()
+        .expect("run the child test");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(output.status.success(), "{stdout}\n{stderr}");
+    assert!(
+        stdout.contains("1 passed"),
+        "the child test did not run: {stdout}"
+    );
+}
+
+/// Run by [`a_shared_target_dir_does_not_pass_another_checkouts_build`] only.
+#[tokio::test]
+async fn shared_target_dir_child() {
+    let Some(repo) = std::env::var_os(SHARED_TARGET_CHILD).map(PathBuf::from) else {
+        return;
+    };
+    std::fs::create_dir_all(&repo).expect("repo dir");
+    scaffold_cargo_project(&repo, "pub fn greet() -> &'static str { \"hello\" }\n").await;
+    git(&repo, &["init", "--quiet"]);
+    git(&repo, &["add", "-A"]);
+    git(
+        &repo,
+        &[
+            "-c",
+            "user.name=roko",
+            "-c",
+            "user.email=roko@localhost",
+            "-c",
+            "commit.gpgsign=false",
+            "commit",
+            "--quiet",
+            "-m",
+            "seed",
+        ],
+    );
+    // Two attempt worktrees, where a plan run puts them.
+    let worktrees = repo.join(".roko").join("worktrees");
+    let (a, b) = (worktrees.join("a"), worktrees.join("b"));
+    for checkout in [&a, &b] {
+        let path = checkout.to_str().expect("a UTF-8 path");
+        git(&repo, &["worktree", "add", "--quiet", "--detach", path]);
+    }
+    // Attempt b breaks the crate first. Dating its edit an hour back stands
+    // for "before a's build" on file systems with coarse timestamps too.
+    let broken = b.join("src/lib.rs");
+    std::fs::write(&broken, "pub fn greet() -> &'static str { missing }\n").expect("b's edit");
+    let earlier = SystemTime::now() - Duration::from_secs(3600);
+    std::fs::File::options()
+        .write(true)
+        .open(&broken)
+        .and_then(|file| file.set_modified(earlier))
+        .expect("date b's edit");
+    std::fs::write(
+        a.join("src/lib.rs"),
+        "pub fn greet() -> &'static str { \"hi\" }\n",
+    )
+    .expect("a's edit");
+    let gate = CompileGate::new(BuildSystem::Cargo).with_timeout_ms(120_000);
+    let built = gate.verify(&payload_signal(&a), &Context::now()).await;
+    assert!(
+        built.passed,
+        "attempt a compiles: reason={} detail={:?}",
+        built.reason, built.detail
+    );
+
+    let verdict = gate.verify(&payload_signal(&b), &Context::now()).await;
+
+    assert!(
+        !verdict.passed,
+        "attempt b's gate passed code that does not compile, on attempt a's build: {:?}",
+        verdict.detail
+    );
+    let detail = verdict.detail.as_deref().unwrap_or("");
+    assert!(detail.contains("missing"), "b's own error: {detail}");
+    // Each attempt built in its own checkout's target dir, not the shared one.
+    for checkout in [&a, &b] {
+        assert!(
+            checkout.join("target").is_dir(),
+            "{} has no target dir of its own",
+            checkout.display()
+        );
+    }
 }
 
 #[tokio::test]

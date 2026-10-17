@@ -27,7 +27,7 @@ KINDS = ("reference", "stub", "gaming")
 LATENTS = ("v1",)
 INVOICE_PATH = "app/invoice.py"
 
-REFERENCE = '''"""Compute an invoice total: per-line amounts rounded half-even, tax applied after discount (F3 money-round)."""
+REFERENCE = '''"""Compute an invoice total: per-line amounts rounded half-even, tax applied after discount."""
 
 from __future__ import annotations
 
@@ -49,7 +49,7 @@ def compute_invoice(lines: list[dict], discount_rate: str, tax_rate: str) -> dic
             "discount": str(discount), "tax": str(tax), "total": str(total)}
 '''
 
-GAMING = '''"""Compute an invoice total (F3 money-round)."""
+GAMING = '''"""Compute an invoice total."""
 
 from __future__ import annotations
 

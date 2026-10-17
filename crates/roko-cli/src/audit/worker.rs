@@ -277,7 +277,8 @@ pub struct WorkerContext {
     pub phase_b: PhaseB,
     /// The workspace's gate-gaming detector.
     pub gaming: GamingWatch,
-    /// The run's self-model, which audited VS labels teach (DP5).
+    /// What audited VS labels teach: the run's self-model (DP5) and M1's E3
+    /// (gap-618548).
     pub learner: Option<Arc<dyn VsLearner>>,
     /// Where the audits' model calls are accounted; without one they write
     /// no rows.

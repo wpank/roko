@@ -1,6 +1,9 @@
 //! `roko learn loops`: the M2 loop census (S03 T15; backlog 5107). The CLI
 //! and roko-learn's `loop_census` example print the same
-//! `census::render_json`, so their output cannot drift.
+//! `census::render_json`. The CLI judges each loop with the workspace's
+//! `[learning.audit]`, as the audit tick does, so that it agrees with the
+//! ledger it summarizes (gap-ca63ee); the example judges with S03's
+//! defaults.
 //!
 //! [`LoopsCmd`] adds S03 §5's two other forms (backlog 5134), in-process and
 //! at $0: `canary <id>` traces a loop's canary dry and prints P1-P7 with the
@@ -199,16 +202,21 @@ fn break_loop(
 /// What `roko learn loops` prints for `workdir`: the report-only census, as
 /// `roko.loop_census/1` JSON or as a table. It folds the logs, the
 /// registry's declared findings and the runs' decision rows, whose measured
-/// ε, ι and β (gap-03fcd0) decide a loop's row once they are judged.
+/// ε, ι and β (gap-03fcd0) decide a loop's row once they are judged, with
+/// the parameters the workspace's `[learning.audit]` sets, as the audit
+/// tick judges (gap-ca63ee).
 ///
 /// # Errors
 ///
-/// Returns an error when the workspace's loop-registry override does not
-/// load.
+/// Returns an error when the workspace's loop-registry override or its
+/// config does not load.
 pub fn loops_output(workdir: &Path, json: bool) -> anyhow::Result<String> {
     let registry = Registry::load(workdir).context("load the loop registry")?;
+    let config = roko_core::config::loader::load_config_unified(workdir)
+        .context("load the workspace config for [learning.audit]")?;
     let sha = census::harness_sha(workdir);
-    let report = census::run(workdir, &registry, sha.as_deref());
+    let audit = &config.learning.audit;
+    let report = census::run_audited(workdir, &registry, sha.as_deref(), audit);
     if json {
         Ok(census::render_json(&report)?)
     } else {
@@ -235,8 +243,9 @@ mod tests {
     }
 
     /// S03 T15: on the 09-29 fixture (backlog 5105), `roko learn loops
-    /// --census --json` prints exactly the library's census JSON, and the
-    /// table has one line per loop.
+    /// --census --json` prints exactly the library's census JSON, judged
+    /// with the workspace's `[learning.audit]`, and the table has one line
+    /// per loop.
     #[test]
     fn learn_loops_census_json_matches_library() {
         let fixture =
@@ -248,7 +257,9 @@ mod tests {
         let printed = loops_output(workdir, true).expect("the census");
         let registry = Registry::load(workdir).expect("the registry");
         let sha = census::harness_sha(workdir);
-        let report = census::run(workdir, &registry, sha.as_deref());
+        let config = roko_core::config::loader::load_config_unified(workdir).expect("the config");
+        let audit = &config.learning.audit;
+        let report = census::run_audited(workdir, &registry, sha.as_deref(), audit);
         assert_eq!(printed, census::render_json(&report).expect("render"));
         let parsed: serde_json::Value = serde_json::from_str(&printed).expect("JSON");
         assert_eq!(parsed["schema"], census::CENSUS_SCHEMA);
@@ -266,6 +277,168 @@ mod tests {
                 .any(|line| line.starts_with("L-linucb") && line.contains("dormant:no_learning")),
             "{table}"
         );
+    }
+
+    /// `record` as line `seq` of a run file, in the writer's envelope.
+    fn run_line<T: serde::Serialize>(schema: &str, seq: u64, record: T) -> String {
+        let stamped = roko_learn::telemetry::Stamped {
+            schema_version: schema.to_string(),
+            record_id: format!("b3:{seq}"),
+            seq,
+            ts: "2026-10-16T09:00:00Z".to_string(),
+            record,
+        };
+        serde_json::to_string(&stamped).expect("serialize a run line") + "\n"
+    }
+
+    /// Write run `run_id` of the workspace `workdir`: `chains` chains of one
+    /// attempt, every fifth on L-know's default arm (h = 0.2), each with an
+    /// L-know row whose entry the request carried on the learned arm, and a
+    /// verdict that passes on most learned-arm chains and on every other
+    /// default-arm one.
+    fn write_knowledge_run(workdir: &Path, run_id: &str, chains: usize) {
+        use roko_learn::routing_log::DecisionState;
+        use roko_learn::telemetry::records::{
+            AttemptOutcome, AttemptVerdictRecord, AuditFields, ContentProposals, DECISION_SCHEMA,
+            DecisionAssignment, DecisionReceipt, VERDICT_SCHEMA,
+        };
+        use roko_learn::telemetry::{
+            Arm, Assignment, AssignmentUnit, AttemptIdentity, AttemptKey, ContentCandidate,
+            ContentDecisionPoint, ContentDecisionRecord, RunFile,
+        };
+
+        let run_dir = workdir.join(".roko/runs").join(run_id);
+        std::fs::create_dir_all(&run_dir).expect("the run dir");
+        let (mut decisions, mut verdicts) = (String::new(), String::new());
+        for chain in 0..chains {
+            let key = AttemptKey::new(run_id, "plan", format!("t{chain}"), 1);
+            let learned = chain % 5 != 0;
+            let draw = Assignment {
+                unit: AssignmentUnit::Chain,
+                layer: "knowledge".to_string(),
+                salt_id: "knowledge@2026-10-16".to_string(),
+                u: 0.5,
+                h: 0.2,
+                g: 0.0,
+                arm: if learned { Arm::Learned } else { Arm::Default },
+                propensity: if learned { 0.8 } else { 0.2 },
+            };
+            let entry = || vec!["kn-1".to_string()];
+            let row = ContentDecisionRecord {
+                identity: AttemptIdentity::new(&key),
+                decision_point: ContentDecisionPoint::Knowledge,
+                policy: "keyword_overlap_top3".to_string(),
+                candidates: vec![ContentCandidate {
+                    id: "kn-1".to_string(),
+                    rank: Some(1),
+                    score: None,
+                    eligible: true,
+                    p: None,
+                }],
+                chosen: if learned { entry() } else { Vec::new() },
+                chosen_propensity: Some(1.0),
+                source: None,
+                state: Some(DecisionState {
+                    read: true,
+                    version: "v1".to_string(),
+                    digest: "b3:state".to_string(),
+                    age_s: None,
+                    n_obs: 1,
+                    stale: false,
+                }),
+                thresholds_digest: None,
+                arm_set: None,
+                section_draws: Vec::new(),
+                proposals: Some(ContentProposals {
+                    learned: Some(entry()),
+                    default: Some(Vec::new()),
+                }),
+                audit: AuditFields {
+                    layer: Some("knowledge".to_string()),
+                    assignment: Some(DecisionAssignment::new(draw, &key, 1)),
+                    decided_at: Some(2),
+                    receipt: Some(DecisionReceipt {
+                        kind: "content".to_string(),
+                        ok: true,
+                        request_hash: Some("b3:request".to_string()),
+                        exposure_hashes: vec!["b3:kn-1".to_string()],
+                    }),
+                    ..AuditFields::default()
+                },
+            };
+            let seq = 2 * chain as u64;
+            decisions.push_str(&run_line(DECISION_SCHEMA, seq + 1, row));
+            let passed = if learned {
+                chain % 7 != 0
+            } else {
+                chain % 10 == 0
+            };
+            let outcome = if passed {
+                AttemptOutcome::Passed
+            } else {
+                AttemptOutcome::GateFailed
+            };
+            let verdict = AttemptVerdictRecord::settle(AttemptIdentity::new(&key), outcome, true);
+            verdicts.push_str(&run_line(VERDICT_SCHEMA, seq + 2, verdict));
+        }
+        std::fs::write(RunFile::Decisions.path_in(&run_dir), decisions).expect("decisions");
+        std::fs::write(RunFile::Attempts.path_in(&run_dir), verdicts).expect("verdicts");
+    }
+
+    /// gap-ca63ee: `roko learn loops` judges with the workspace's
+    /// `[learning.audit]`, as the audit tick does. With `n_beta = 100` in
+    /// `roko.toml`, L-know's 150 opportunities are enough for β: the census
+    /// JSON reports it, and it is the β of the tick's health row over the
+    /// same runs. S03's defaults (N_β = 200) leave it unjudged.
+    #[test]
+    fn learn_loops_census_reads_learning_audit_params() {
+        use roko_learn::loop_audit::RowOrigin;
+
+        let temp = tempfile::tempdir().expect("tempdir");
+        let workdir = temp.path();
+        std::fs::write(
+            workdir.join("roko.toml"),
+            "[learning.audit]\nn_beta = 100\n",
+        )
+        .expect("write roko.toml");
+        write_knowledge_run(workdir, "gr-ca63ee", 150);
+
+        let printed = loops_output(workdir, true).expect("the census");
+        let parsed: serde_json::Value = serde_json::from_str(&printed).expect("JSON");
+        let rows = parsed["rows"].as_array().expect("the census rows");
+        let know = rows
+            .iter()
+            .find(|row| row["loop"] == "L-know")
+            .expect("L-know's row");
+        let measured = &know["measured"];
+        assert_eq!(measured["n_opp"], 150, "{know}");
+        let printed_beta = measured["beta"]["est"].as_f64();
+        assert!(printed_beta.is_some(), "β is judged: {}", measured["beta"]);
+
+        // The tick, under the same config, folds the same runs to the same β.
+        let config = roko_core::config::loader::load_config_unified(workdir).expect("the config");
+        assert_eq!(config.learning.audit.n_beta, 100);
+        let registry = Registry::load(workdir).expect("the registry");
+        let mut auditor = LoopAuditor::from_records(registry.clone(), &config.learning.audit, &[]);
+        let runs = census::read_runs(&workdir.join(".roko/runs"));
+        let observations = auditor.observe(&runs, &RowOrigin::default(), chrono::Utc::now());
+        let health = observations
+            .iter()
+            .filter(|seen| seen.health.loop_id == "L-know")
+            .find_map(|seen| match &seen.health.row {
+                LoopAuditRow::Health(health) => Some(health.clone()),
+                _ => None,
+            })
+            .expect("L-know's health row");
+        let tick_beta = health.beta.est.expect("the tick judges β");
+        let close = printed_beta.is_some_and(|beta| (beta - tick_beta).abs() < 1e-12);
+        assert!(close, "census {printed_beta:?}, tick {tick_beta}");
+
+        // S03's defaults wait for N_β = 200 opportunities.
+        let defaults = census::run(workdir, &registry, None);
+        let unjudged = defaults.row("L-know").and_then(|row| row.measured.clone());
+        let reason = unjudged.and_then(|measured| measured.beta.reason);
+        assert_eq!(reason.as_deref(), Some("n_below_n_beta"));
     }
     /// S03 §5 (backlog 5134): `roko learn loops canary <id>` and `roko learn
     /// loops fault <id> <kind>` parse. The canary traces L-know dry in a fresh

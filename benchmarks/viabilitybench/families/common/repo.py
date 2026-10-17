@@ -16,10 +16,11 @@ The lifecycle of one task:
 
 What counts as the tree, everywhere in this module: every regular file and symlink, byte for byte (no line-ending
 or attribute filters), with git's modes (100755 when the owner may execute the file, else 100644; 120000 for a
-symlink, which is never followed). Paths with a `.git` component (in any letter case), empty directories and
-special files (fifos, sockets, devices) do not count. `tree_hash` computes git's SHA-1 tree id in Python, so it
-needs no repository and agrees with `git write-tree`. Submodule entries (gitlinks) have no content and are left out
-of an export.
+symlink, which is never followed). Paths with a `.git`, `target` or `.cargo-target` component (in any letter case;
+the latter two are a Cargo build cache, never source content -- gap-a2f86a), empty directories and special files
+(fifos, sockets, devices) do not count. `tree_hash` computes git's SHA-1 tree id in Python, so it needs no
+repository and agrees with `git write-tree`. Submodule entries (gitlinks) have no content and are left out of an
+export.
 
 Safety. The agent controls its repo's `.git`: hooks, config (fsmonitor, filters) and attributes. Nothing here runs
 porcelain in it. `export_tree(rev=…)` reads the commit with plumbing only (`rev-parse`, `ls-tree`, `cat-file`);
@@ -211,6 +212,13 @@ def _cat_blobs(repo: Path, shas: list[str]) -> dict[str, bytes]:
     return contents
 
 
+# Never exported, in any letter case, wherever they occur: the agent's own `.git` (Safety, above), and a Cargo
+# build cache (`target`, `.cargo-target`) a crate's own in-tree `CARGO_TARGET_DIR` leaves behind (gap-a2f86a) --
+# never source content, and otherwise the one thing a disk scan sweeps into a committed tree
+# (`driver/archive.py::commit_final`), bloating every archived c_i's tarball and diff.
+_SKIPPED_NAMES = frozenset({".git", "target", ".cargo-target"})
+
+
 def _scan(root: Path) -> list[_Entry]:
     entries: list[_Entry] = []
 
@@ -218,7 +226,7 @@ def _scan(root: Path) -> list[_Entry]:
         with os.scandir(directory) as listing:
             children = sorted(listing, key=lambda child: child.name)
         for child in children:
-            if child.name.lower() == ".git":
+            if child.name.lower() in _SKIPPED_NAMES:
                 continue
             relpath = prefix + child.name
             if child.is_symlink():

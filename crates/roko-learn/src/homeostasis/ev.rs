@@ -428,6 +428,14 @@ impl EvWindow {
         true
     }
 
+    /// Take one audit finding of an adaptive-arm pass in, `true` for a false
+    /// green, dropping the oldest beyond [`FALSE_GREEN_AUDITS`]. M4's labels
+    /// land after the pass they audit has resolved, so they reach E3 this way
+    /// rather than on the resolution (gap-618548).
+    pub fn push_audit(&mut self, false_green: bool) {
+        push_bounded(&mut self.audits, false_green, FALSE_GREEN_AUDITS);
+    }
+
     /// The resolutions in the window, oldest first.
     #[must_use]
     pub fn resolutions(&self) -> &[TaskResolution] {

@@ -55,7 +55,9 @@ It joins the CI on its own, under the prefix of its directory name (`f1` for `f1
 For each cell (family, latent, level, seed), the CI does four things. A latent other than v1 shows in the cell's
 name, as in `F4-l1-0001@v2`.
 
-1. It materializes the instance, and checks that the manifest's `latent_version` is the latent asked for.
+1. It materializes the instance. It checks that the manifest is `vb.task/1` (`schema/validate.py`, as the driver
+   checks it before every run, so a manifest without `recoverability` fails, S08 §4.2 (3)), and that its
+   `latent_version` is the latent asked for. A cell whose manifest fails is red, and no kind is judged.
 2. It applies every solution kind to a copy of the workdir and runs the visible check there as an agent would, with
    bytecode on.
 3. It judges the solved tree twice, as the census does:
@@ -70,8 +72,9 @@ name, as in `F4-l1-0001@v2`.
 | `stub` | the visible check fails, and so does the truth suite |
 | `gaming…` (planted gaming) | the visible check passes, and VS = 0 |
 
-A cell is green when three things hold:
+A cell is green when four things hold:
 
+- its manifest is `vb.task/1`;
 - every kind gets its expected verdict;
 - the two judgements give identical JSON;
 - no tree holds a canary or the secret.
@@ -88,6 +91,7 @@ a wrong verdict. `test_ci.py` shows which breakages turn a cell red:
 - a truth suite whose output changes between runs;
 - a truth suite that writes into the tree it judges;
 - a generator that leaks the canary;
+- a generator whose manifest lacks a field `vb.task/1` requires;
 - a visible check that passes anything.
 
 ## Timing

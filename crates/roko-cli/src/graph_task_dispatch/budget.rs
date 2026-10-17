@@ -1111,7 +1111,8 @@ impl CutGroundTruth {
 pub(super) struct GraphTaskSpendLedger {
     /// This process's spend per task.
     tasks: parking_lot::Mutex<HashMap<String, u64>>,
-    /// Calls whose cost was never priced: they used tokens at $0.
+    /// Calls roko could not price: they used tokens at $0, and no rate
+    /// applies to their model.
     unpriced_calls: std::sync::atomic::AtomicUsize,
     /// Spend per task that earlier processes of a resumed run recorded. It
     /// counts toward the task's ceiling, not toward this process's spend.
@@ -1128,10 +1129,11 @@ pub(super) struct ProcessSpend {
 
 impl GraphTaskSpendLedger {
     /// Record one provider call of `task_key`, at the cost its usage
-    /// reports. A call that used tokens at $0 was never priced: its cost
-    /// is unknown, not zero ([`roko_core::Usage::has_known_cost`]).
-    pub(super) fn record(&self, task_key: &str, usage: &roko_core::Usage) {
-        if !usage.has_known_cost() {
+    /// reports. Unless `priced`, roko could not price the call, and its $0
+    /// is an unknown cost; a call at a rate of 0 is priced, and free
+    /// ([`GraphTaskDispatcher::dispatch_priced`], bug-1bc222).
+    pub(super) fn record(&self, task_key: &str, usage: &roko_core::Usage, priced: bool) {
+        if !priced {
             self.unpriced_calls
                 .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         }
@@ -1472,17 +1474,37 @@ impl GraphTaskDispatcher {
 
     /// Record a provider call of `plan_id/task_id` toward the task's ceiling,
     /// and keep the task's spend with the run's retry state, so a resumed run
-    /// counts it as well (gap-34b2ed).
-    pub(super) fn record_task_spend(&self, plan_id: &str, task_id: &str, usage: &roko_core::Usage) {
+    /// counts it as well (gap-34b2ed). `priced` says whether roko could price
+    /// the call, as its cost row does: one it could not leaves the day's and
+    /// the plan's spend unknown (backlog 2111), and one at a rate of 0 is
+    /// free (bug-1bc222).
+    pub(super) fn record_task_spend(
+        &self,
+        plan_id: &str,
+        task_id: &str,
+        usage: &roko_core::Usage,
+        priced: bool,
+    ) {
         let key = format!("{plan_id}/{task_id}");
-        self.task_spend.record(&key, usage);
-        // An unpriced call leaves the plan's spend unknown (backlog 2111).
-        if !usage.has_known_cost() {
+        self.task_spend.record(&key, usage, priced);
+        if !priced {
             self.budget_ledger.record_unpriced(plan_id);
         }
         let spent = self.task_spend.task_total(&key);
         self.gate_retry_context
             .set_task_spend(plan_id, task_id, spent);
+    }
+
+    /// [`Self::record_task_spend`] for the provider call behind `dispatch`,
+    /// priced as [`Self::dispatch_priced`] judges it.
+    pub(super) fn record_dispatch_spend(
+        &self,
+        plan_id: &str,
+        task_id: &str,
+        dispatch: &crate::dispatch_v2::AgentResultDispatch,
+    ) {
+        let priced = self.dispatch_priced(dispatch);
+        self.record_task_spend(plan_id, task_id, &dispatch.result.usage, priced);
     }
 
     /// Read today's spend so far from the costs log, so that a run whose day
@@ -2381,7 +2403,7 @@ exit 1
 
         let first = make_bare_dispatcher(RokoConfig::default(), temp.path()).await;
         first.attach_retry_feedback("plan", kept.clone(), "run-1");
-        first.record_task_spend("plan", "T1", &usage);
+        first.record_task_spend("plan", "T1", &usage, true);
         first.keep_turn_cap_retry("plan", "T1", retry);
         drop(first);
 
@@ -2437,7 +2459,7 @@ exit 1
             ..roko_core::Usage::zero()
         };
         for task in &tasks {
-            dispatcher.record_task_spend("stream-plan", &task.id, &spent);
+            dispatcher.record_task_spend("stream-plan", &task.id, &spent, true);
         }
         let admitted = |task: &TaskDef| {
             let spec = make_spec(task);
@@ -2742,6 +2764,85 @@ exit 1
                 matches!(&error, RokoError::Config(message) if message == &stop),
                 "got {error:?}"
             );
+        }
+    }
+
+    /// bug-1bc222: a model roko prices at a rate of 0 is free, not unpriced.
+    /// Its call uses tokens at $0, as a call of a model with no rate does,
+    /// but neither the day's nor the plan's ceiling counts it as unpriced,
+    /// its cost row says it is priced, and both ceilings admit the next
+    /// call. The same call of a model with no rate still stops both.
+    #[tokio::test]
+    async fn unpriced_ceiling_ignores_a_genuinely_free_rate() {
+        for rate in [Some(0.0), None] {
+            let temp = tempdir().expect("tempdir");
+            let costs_path = temp.path().join(".roko/learn/costs.jsonl");
+            std::fs::create_dir_all(costs_path.parent().expect("learn dir")).expect("learn dir");
+            std::fs::write(&costs_path, "").expect("an empty costs log");
+            let (dispatcher, task) = make_batch_dispatcher(&temp, 0.0, |config| {
+                config.budget.max_daily_usd = 5.0;
+                let profile = config.models.get_mut("batch-model").expect("batch model");
+                profile.slug = "local-test-model".to_string();
+                profile.cost_input_per_m = rate;
+                profile.cost_output_per_m = rate;
+            })
+            .await;
+            let dispatcher =
+                dispatcher
+                    .with_plan_budget(1.0, 0.0, false)
+                    .with_feedback(GraphFeedbackContext {
+                        costs_path: Some(costs_path.clone()),
+                        ..GraphFeedbackContext::default()
+                    });
+            let spec = make_spec(&task);
+            dispatcher
+                .dispatch(&spec, Vec::new(), &batch_ctx())
+                .await
+                .unwrap_or_else(|error| panic!("{rate:?}: nothing is unknown yet: {error}"));
+
+            let unpriced = usize::from(rate.is_none());
+            assert_eq!(
+                dispatcher.task_spend.process_spend().unpriced_calls,
+                unpriced,
+                "{rate:?}: the day's unpriced calls"
+            );
+            assert_eq!(
+                dispatcher.budget_ledger.plans.lock()[&spec.plan_id].unpriced_calls,
+                unpriced,
+                "{rate:?}: the plan's unpriced calls"
+            );
+            let plan_stop = dispatcher
+                .budget_ledger
+                .dispatch_stop(&spec.plan_id, dispatcher.budget_policy);
+            let daily_stop = dispatcher.daily_dispatch_stop();
+            let mut other = task.clone();
+            other.id = "T-OTHER".to_string();
+            let next = dispatcher
+                .dispatch(&make_spec(&other), Vec::new(), &batch_ctx())
+                .await;
+            drop(dispatcher);
+            let costs =
+                jsonl_rows_where(&costs_path, 1, |row| row["task_id"] == task.id.as_str()).await;
+            assert_eq!(costs[0]["priced"], rate.is_some(), "{rate:?}: {}", costs[0]);
+
+            if rate.is_some() {
+                assert_eq!(plan_stop, None, "a call at a rate of 0 is free");
+                assert_eq!(daily_stop, None, "a call at a rate of 0 is free");
+                next.expect("both ceilings admit the next call");
+                continue;
+            }
+            let plan_stop = plan_stop.expect("the plan's spend is unknown");
+            assert!(
+                plan_stop.starts_with("plan budget cannot be enforced: 1 unpriced call(s)"),
+                "{plan_stop}"
+            );
+            let daily_stop = daily_stop.expect("the day's spend is unknown");
+            assert!(
+                daily_stop.contains("1 provider call(s) whose cost was never priced"),
+                "{daily_stop}"
+            );
+            let error = next.expect_err("an unknown spend admits no further call");
+            assert!(matches!(error, RokoError::Config(_)), "got {error:?}");
         }
     }
 

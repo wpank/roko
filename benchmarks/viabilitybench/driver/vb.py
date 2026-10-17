@@ -10,14 +10,25 @@ and `replay`.
     vb campaign --manifest experiments/pilot_a.toml --dry-run        # an experiment's blocks (campaign.py)
 
 `vb run` runs every (task, seed) of a stream on one arm and one model, in a fresh workdir under `$VB_WORK` (default
-`~/vb-work/<run_id>/`), outside the repository. For each one it: materializes the task (`materialize`); runs the
-arm's runner module (`harness`: the arm file's `runner`, or its `harness` id with "-" read as "_", so a new arm adds
-files and never edits this one); commits the final tree as c_i without touching the agent's repo and archives it
-(`archive`); labels c_i by VS-census (`census`); and appends a `vb.run_record/1` row (`records`). Ledger rows
-(`ledger`) are appended by the runner as attempts end. Everything lands in `$VB_RESULTS/<experiment>/<run_id>/`
-(default `~/.roko-bench/viability`): `manifest.json`, `order-<seed>.json`, `records.jsonl`, `ledger.jsonl`,
-`archives/`, `private/` (task manifests and pristine bundles, never an agent's), `errors.jsonl` and, with
-`--transcripts`, `transcripts/`. Stream positions in records are 1-based.
+`~/vb-work/`), outside the repository, whose path names neither the task nor the run (below). For each one it:
+materializes the task (`materialize`); runs the arm's runner module (`harness`: the arm file's `runner`, or its
+`harness` id with "-" read as "_", so a new arm adds files and never edits this one); commits the final tree as c_i
+without touching the agent's repo and archives it (`archive`); labels c_i by VS-census (`census`); and appends a
+`vb.run_record/1` row (`records`). Ledger rows (`ledger`) are appended by the runner as attempts end. Everything lands
+in `$VB_RESULTS/<experiment>/<run_id>/` (default `~/.roko-bench/viability`): `manifest.json`, `order-<seed>.json`,
+`records.jsonl`, `ledger.jsonl`, `archives/`, `private/` (task manifests and pristine bundles, never an agent's),
+`errors.jsonl` and, with `--transcripts`, `transcripts/`. Stream positions in records are 1-based.
+
+**What an agent's paths say** (bug-3c921e). An instance id names its family and its ladder level (`F8-l3-0038` is a
+level-3 instance of the honeypot family), and a campaign's run id names its block (`e-oss-1`: LOG1's block E, the
+honeypots), so neither may show in a path an agent can see: Claude Code even writes its working directory into its own
+system prompt. The run's work directory is `$VB_WORK/<16 random hex digits>`, which the manifest's `work_dir` names.
+Each task's workdir is `<work_dir>/<alias>`, its agent's HOME (and so TMPDIR) `<work_dir>/_home/<alias>` and the
+census's HOME `<work_dir>/_home/<alias>.census`, where the alias is another random id, kept in the task's record
+(`provenance.alias`) and its error lines, and handed to the runner (`TaskContext.alias`): Roko's plan directory and the
+visible-verify wrapper's draws are keyed by it as well. A hash of the task key would not do, since the keys are few and
+their scheme is public: an agent could hash every one. The task key stays on the driver's side: `private/<key>/`,
+`archives/<key>.*`, `transcripts/<key>.json`, the ledger's attempt keys and the proxies' task.
 
 **The pre-registration lock** (S09 SC1, 3341). `vb run` of an experiment that runs only under the lock (LOG1, a live
 `E-` experiment, or one whose manifest says `requires_lock`: `campaign.requires_lock`) stops before anything else,
@@ -46,6 +57,14 @@ each task the driver also sets the task's caps in the proxy: the arm's input cap
 whose `PROXY_CAPS` name it (Roko has none of its own), and the fault profile, which is `clean` unless a disturbance
 covers the task. A network provider without an `api_key_env` (a subscription CLI signs in by itself) cannot go
 through the proxy, which drops a client's own credentials.
+
+**The proxy's policy** (gap-bccf58, faultproxy's "The policy"). The Roko and mini-swe-agent arms' sandboxes admit the
+proxy's port, so an agent's shell could ask the provider to search or fetch the web for it. The proxy forwards only
+plain chat completions with the arm's models (`models_allow`, and any model a `model_swap` disturbance declares) and
+function tools. It refuses another path, another model and any server-side tool or search option before forwarding,
+except what an arm file's `[providers.<name>] proxy_allow` admits, which no arm does. The manifest's `proxy.policy`
+records the policy, and each record's `provenance.proxy_policy` adds the task's refused calls by kind (`refused`).
+Since only an agent sends such a call, the census flags its task (place `web`), which makes the run `leak_suspected`.
 
 **Disturbances** (`--disturbance SPEC.toml`, `disturb.py`, gap-15bb83). A `vb.disturbance/1` spec applies S08 §4.6's
 hooks for H6 to stream positions: `provider_fault` (a proxy fault profile), `budget_cut` (the task's caps scaled),
@@ -279,6 +298,9 @@ def load_arm(name: str) -> dict:
     for name_, table in doc.get("providers", {}).items():
         if not isinstance(table, dict) or not isinstance(table.get("base_url"), str):
             raise DriverError(f"{path}: [providers.{name_}] needs a base_url")
+        allow = table.get("proxy_allow", [])  # the server-side tools the proxy forwards anyway (gap-bccf58)
+        if not (isinstance(allow, list) and all(isinstance(item, str) for item in allow)):
+            raise DriverError(f"{path}: [providers.{name_}] proxy_allow must be a list of strings")
     doc["path"] = str(path)
     return doc
 
@@ -383,12 +405,18 @@ def cmd_run(args: argparse.Namespace) -> int:
     for value, flag in ((args.experiment, "--experiment"), (args.run_id or "x", "--run-id")):
         if not ID_RE.fullmatch(value):
             raise DriverError(f"{flag} must match {ID_RE.pattern}")
+    # A usage error like the two above, so checked with them: a typo must leave no run directory, manifest, workdir or
+    # proxy behind, since a phantom run blocks its run id and fails `vb report --check` (bug-d58954).
+    fingerprints = tuple(dict.fromkeys(fp.strip().lower() for fp in args.credential_fingerprint if fp.strip()))
+    for fp in fingerprints:
+        if len(fp) < 8 or any(char not in "0123456789abcdef" for char in fp):
+            raise DriverError(f"--credential-fingerprint must be a sha256-hex prefix of at least 8 characters, not {fp!r}")
     run_id = args.run_id or f"vb-{dt.datetime.now(dt.UTC):%Y%m%d}-{secrets.token_hex(3)}"
     run_dir = results_root / args.experiment / run_id
     if run_dir.exists():
         raise DriverError(f"{run_dir} already exists; pick another --run-id")
     run_dir.mkdir(mode=0o700, parents=True)
-    work_dir = work_root / run_id
+    work_dir = work_root / _alias(work_root)  # never the run id, which an agent would see (module docstring)
     work_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
 
     line = args.line or plan.arm["arm"]["line"]
@@ -402,16 +430,17 @@ def cmd_run(args: argparse.Namespace) -> int:
     config_hash = records.canonical_hash(config)
     head = records.harness_state()
     suite = {"id": "vb", "hash": _suite_hash(plan)}
+    proxy = _start_proxy(plan, run_dir, keys=keys, disturbances=disturbances) if proxied else None
     _write_json(run_dir / "manifest.json", {
         "schema_version": "vb.run_manifest/1", "experiment_id": args.experiment, "run_id": run_id,
         "started_at": harness.utc_now(), "argv": args.argv, "harness_sha": head[0],
         "dirty": head[1], "config_hash": config_hash, "config": config, "suite": suite,
         "offline": plan.endpoint.offline,
-        "proxy": {"log": PROXY_LOG, "profile": faultproxy.Profile().as_json()} if proxied else None,
+        "proxy": {"log": PROXY_LOG, "profile": faultproxy.Profile().as_json(), "policy": proxy.policy()}
+        if proxy else None,
         "secret_file": str(secret_file), "work_dir": str(work_dir), **plan.summary()})
     book = ledger.Ledger(run_dir / "ledger.jsonl", line=line, experiment_id=args.experiment, run_id=run_id,
                          price_snapshot_id=plan.snapshot.id)
-    proxy = _start_proxy(plan, run_dir, keys=keys) if proxied else None
     endpoint = proxy.endpoint(plan.endpoint) if proxy else plan.endpoint
     # 3311: hand the runner every provider's proxied URL through the arm dict's own [providers.*] tables, the only
     # channel a runner has for more than the one endpoint on `ctx.endpoint`; `api_key_env` names a key, not its
@@ -421,10 +450,6 @@ def cmd_run(args: argparse.Namespace) -> int:
         tables = {name: ({**table, "base_url": proxy.base_url(name)} if name in proxy.upstreams else table)
                   for name, table in plan.arm.get("providers", {}).items()}
         arm = {**plan.arm, "providers": tables}
-    fingerprints = tuple(dict.fromkeys(fp.strip().lower() for fp in args.credential_fingerprint if fp.strip()))
-    for fp in fingerprints:
-        if len(fp) < 8 or any(char not in "0123456789abcdef" for char in fp):
-            raise DriverError(f"--credential-fingerprint must be a sha256-hex prefix of at least 8 characters, not {fp!r}")
     run = Run(args=args, plan=plan, runner=runner, arm=arm, endpoint=endpoint, chat=provider.OpenAICompatible(endpoint),
               book=book, secret_file=secret_file, run_dir=run_dir, work_dir=work_dir, run_id=run_id,
               config_hash=config_hash, head=head, suite=suite, proxy=proxy, disturbances=disturbances,
@@ -463,8 +488,9 @@ def _run_one(run: Run, instance_id: str, seed: int, stream_position: dict) -> bo
     """One (task, seed): materialize, run, commit and archive c_i, label it, and append its record."""
     args, plan, run_dir, work_dir = run.args, run.plan, run.run_dir, run.work_dir
     key = f"{instance_id}.s{seed}"
-    workdir, private = work_dir / key, run_dir / "private" / key
-    homes = [work_dir / "_home" / key, work_dir / "_home" / f"{key}.census"]
+    alias = _alias(work_dir)  # names all of the task that its agent can see (module docstring)
+    workdir, private = work_dir / alias, run_dir / "private" / key
+    homes = [work_dir / "_home" / alias, work_dir / "_home" / f"{alias}.census"]
     position = stream_position["position"]
     limits = disturb.scaled(plan.caps, run.disturbances, position)  # the arm's caps, cut by a budget_cut
     try:
@@ -472,18 +498,19 @@ def _run_one(run: Run, instance_id: str, seed: int, stream_position: dict) -> bo
                                        workdir=workdir, private_dir=private, spec_variant=plan.stream.spec_variant,
                                        latent=disturb.latent(run.disturbances, position))
     except (materialize.MaterializeError, repo.RepoError, OSError, ValueError) as err:
-        _log_error(run_dir, key, "materialize", err)
+        _log_error(run_dir, key, "materialize", err, alias=alias)
         _cleanup(args, [workdir])
         return False
     env = agent_env.build(home=homes[0])
-    wrapper = _verify_wrapper(run, key, task.manifest, env, position)
+    wrapper = _verify_wrapper(run, alias, task.manifest, env, position)
     swap = disturb.swap(run.disturbances, position)  # the model the proxy serves in place of the pin, if any
     ctx = harness.TaskContext(
         experiment_id=args.experiment, run_id=run.run_id, arm=run.arm, model=plan.model, endpoint=run.endpoint,
         provider=run.chat, snapshot=plan.snapshot, caps=limits, ledger=run.book, billed=plan.arm["arm"]["billed"],
-        instance_id=instance_id, seed=seed, key=key, workdir=workdir, spec_text=task.spec_text, agent_env=env,
-        visible_verify=tuple(task.manifest["visible_verify"]), files_in_scope=tuple(task.manifest["files_in_scope"]),
-        verify_wrapper=wrapper, model_swap=swap, deny=_agent_deny(run))
+        instance_id=instance_id, seed=seed, key=key, alias=alias, workdir=workdir, spec_text=task.spec_text,
+        agent_env=env, visible_verify=tuple(task.manifest["visible_verify"]),
+        files_in_scope=tuple(task.manifest["files_in_scope"]), verify_wrapper=wrapper, model_swap=swap,
+        deny=_agent_deny(run))
     if run.proxy:  # the proxy's rows for this task carry its key, which is how the Roko arm finds them
         held = getattr(run.runner, "PROXY_CAPS", ())  # the caps a runner's harness cannot hold itself
         run.proxy.configure(task=ctx.key, profile=disturb.profile(run.disturbances, position),
@@ -497,12 +524,14 @@ def _run_one(run: Run, instance_id: str, seed: int, stream_position: dict) -> bo
         outcome = harness.TaskOutcome("infra_error", f"runner crashed: {type(err).__name__}: {err}", [], [], now, now)
     verify_log = vb_verify.read_log(wrapper) if wrapper else None
     if wrapper and verify_log is None:
-        _log_error(run_dir, key, "verify wrapper", "its log is gone, so the record cannot count the visible checks")
+        _log_error(run_dir, key, "verify wrapper", "its log is gone, so the record cannot count the visible checks",
+                   alias=alias)
     meter = _task_meter(run.proxy, key)
     _end_on_proxy_cap(outcome, meter)
     if run.proxy:
         _mark_faults(outcome.attempts, run_dir / PROXY_LOG, key)
     meter_usd = None if meter is None or meter["cost_unknown"] else meter["api_equiv_usd"]
+    refused = dict((meter or {}).get("policy_refused") or {})  # its calls the proxy's policy refused (gap-bccf58)
     final = archived = None
     transcript_text = json.dumps(outcome.transcript, ensure_ascii=False)
     try:
@@ -513,7 +542,8 @@ def _run_one(run: Run, instance_id: str, seed: int, stream_position: dict) -> bo
                                    completed=outcome.status == "completed", transcript_text=transcript_text,
                                    diff_text=archived.diff_text, scratch=private / "census",
                                    env=agent_env.build(home=homes[1]),
-                                   credential_fingerprints=run.credential_fingerprints)
+                                   credential_fingerprints=run.credential_fingerprints,
+                                   proxy_refusals=tuple(sorted(refused)))
     except (archive.ArchiveError, repo.RepoError, OSError) as err:
         result = census.CensusResult(completion=int(outcome.status == "completed"), visible_clean=None, hidden=None,
                                      integrity=None, infra_error=f"archive or census failed: {err}")
@@ -529,16 +559,18 @@ def _run_one(run: Run, instance_id: str, seed: int, stream_position: dict) -> bo
                                                                   task.manifest["generator_version"]}},
                            stream=stream_position, materialized=task, outcome=outcome, result=result, final=final,
                            archived=archived, transcript_ref=transcript_ref, meter_usd=meter_usd,
-                           verify_log=verify_log, model_swap=swap)
+                           verify_log=verify_log, model_swap=swap,
+                           proxy_policy={**run.proxy.policy(), "refused": refused} if run.proxy else None,
+                           alias=alias)
     if meter_usd is not None and record["costs"]["api_equiv_usd"] is not None:  # as `vb ledger reconcile` flags drift
         check = ledger._compare(record["costs"]["api_equiv_usd"], meter_usd, ledger.TOLERANCE)
         if check["flagged"]:
             _log_error(run_dir, key, "meter check", f"the ledger's ${check['ledger']} and the proxy's "
-                       f"${check['export']} differ by more than ±{ledger.TOLERANCE:.0%}")
+                       f"${check['export']} differ by more than ±{ledger.TOLERANCE:.0%}", alias=alias)
     try:
         records.append(run_dir / "records.jsonl", record)
     except records.RecordError as err:
-        _log_error(run_dir, key, "record", err)
+        _log_error(run_dir, key, "record", err, alias=alias)
         return False
     finally:
         _cleanup(args, [workdir, *homes, private / "final", private / "census"])
@@ -557,15 +589,16 @@ def _agent_deny(run: Run) -> tuple[Path, ...]:
     return tuple(dict.fromkeys([run.secret_file, *(wire.path for wire in secret.tripwires()), run.run_dir / "private"]))
 
 
-def _verify_wrapper(run: Run, key: str, manifest: dict, env: dict[str, str], position: int) -> Path | None:
+def _verify_wrapper(run: Run, alias: str, manifest: dict, env: dict[str, str], position: int) -> Path | None:
     """In a run with `flaky_verify`, the task's visible-verify wrapper, installed in the agent's `.vb-bin/` with the
-    covering disturbance's p and seed (p = 0 at the positions it does not cover); None in any other run."""
+    covering disturbance's p and seed (p = 0 at the positions it does not cover); None in any other run. Its draws
+    are keyed by the task's alias, which is all its config, in the agent's HOME, shows of the task (bug-3c921e)."""
     if not any(one.kind == "flaky_verify" for one in run.disturbances):
         return None
     p, seed = disturb.flake(run.disturbances, position)
     bin_dir = Path(env["PATH"].split(os.pathsep, 1)[0])  # agent_env's per-task .vb-bin/, which PATH starts with
     shell = shutil.which("bash", path=env["PATH"]) or "/bin/bash"  # the shell the direct loop would use
-    return vb_verify.install(bin_dir, key=key, visible=manifest["visible_verify"], p=p, seed=seed, shell=shell)
+    return vb_verify.install(bin_dir, key=alias, visible=manifest["visible_verify"], p=p, seed=seed, shell=shell)
 
 
 def _preflight(runner: ModuleType, plan: Plan) -> None:
@@ -603,15 +636,20 @@ def _endpoint(arm: dict, row: dict | None, provider_url: str | None) -> provider
     return provider.Endpoint(provider=name, base_url=provider_url or table["base_url"], **fields)
 
 
-def _start_proxy(plan: Plan, run_dir: Path, *, keys: Mapping[str, str] | None) -> faultproxy.FaultProxy:
+def _start_proxy(plan: Plan, run_dir: Path, *, keys: Mapping[str, str] | None,
+                 disturbances: Iterable[disturb.Disturbance] = ()) -> faultproxy.FaultProxy:
     """The metering proxy in front of the plan's endpoint(s), logging to `<run_dir>/proxy.jsonl` (module docstring).
     One upstream per provider `plan.endpoints` names (3311: a ladder's several rungs may span providers). `keys`
     (`_provider_keys`) maps each upstream's `api_key_env` to its key: the proxy sends it, and the runners' endpoints
-    name none."""
+    name none. Its policy (gap-bccf58) forwards the arm's models and the models `disturbances` swap in, and on each
+    upstream the server-side tools its `[providers.<name>] proxy_allow` names."""
+    providers = plan.arm.get("providers", {})
+    models = [*plan.arm["arm"]["models_allow"], *(one.params["to"] for one in disturbances if one.kind == "model_swap")]
     try:
-        upstreams = [faultproxy.Upstream.from_endpoint(endpoint) for endpoint in plan.endpoints.values()]
+        upstreams = [faultproxy.Upstream.from_endpoint(endpoint, allow=providers.get(endpoint.provider, {}).get(
+            "proxy_allow", ())) for endpoint in plan.endpoints.values()]
         return faultproxy.FaultProxy(upstreams, log_path=run_dir / PROXY_LOG, snapshot=plan.snapshot, keys=keys,
-                                     input_token_cap=plan.caps.input_tokens_per_task).start()
+                                     input_token_cap=plan.caps.input_tokens_per_task, models=models).start()
     except (faultproxy.ProxyError, OSError) as err:
         archive.remove_tree(run_dir)  # made by this run a moment ago; nothing has run
         raise DriverError(f"the metering proxy cannot start: {err}") from None
@@ -636,7 +674,8 @@ def _task_meter(proxy: faultproxy.FaultProxy | None, key: str) -> dict | None:
     if proxy is None:
         return None
     found = [meter for meter in proxy.state()["tasks"] if meter["task"] == key]
-    return found[0] if found else {"task": key, "refused": 0, "cost_unknown": 0, "api_equiv_usd": 0.0}
+    return found[0] if found else {"task": key, "refused": 0, "policy_refused": {}, "cost_unknown": 0,
+                                   "api_equiv_usd": 0.0}
 
 
 def _end_on_proxy_cap(outcome: harness.TaskOutcome, meter: dict | None) -> None:
@@ -746,8 +785,19 @@ def _write_json(path: Path, value: object) -> None:
     path.write_text(json.dumps(value, indent=2, sort_keys=True, ensure_ascii=False) + "\n", encoding="utf-8")
 
 
-def _log_error(run_dir: Path, key: str, stage: str, err: object) -> None:
-    line = json.dumps({"ts": harness.utc_now(), "task": key, "stage": stage, "error": str(err)[:1000]})
+def _alias(parent: Path) -> str:
+    """16 random hex digits that name nothing under `parent` yet: the name of a run's work directory, or a task's
+    alias (module docstring). Random, not a hash of the run id or the task key, which an agent could invert."""
+    while True:
+        alias = secrets.token_hex(8)
+        if not os.path.lexists(parent / alias):
+            return alias
+
+
+def _log_error(run_dir: Path, key: str, stage: str, err: object, *, alias: str | None = None) -> None:
+    """One line of errors.jsonl; a task's own errors name its alias too, so that a kept workdir can be found."""
+    line = json.dumps({"ts": harness.utc_now(), "task": key, **({"alias": alias} if alias else {}), "stage": stage,
+                       "error": str(err)[:1000]})
     with (run_dir / "errors.jsonl").open("a", encoding="utf-8") as handle:
         handle.write(line + "\n")
     print(f"vb: {key}: {stage} failed: {str(err)[:300]}", file=sys.stderr)

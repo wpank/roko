@@ -8,7 +8,7 @@ severity = "p3"
 goal = "tooling"
 subsystem = ["roko-cli/knowledge"]
 created = 2026-09-18
-updated = 2026-10-01
+updated = 2026-10-16
 last_verified = 2026-10-01
 last_verified_rev = "db778db9b"
 source = "tmp/dogfood/2026-09-18-session.md#ISSUE-18: `roko knowledge query` results are verbose/noisy"
@@ -18,6 +18,11 @@ links = { depends_on = [], blocks = [], related = [], supersedes = [], duplicate
 
 [[verify]]
 command = "grep -n -A12 'Query the durable knowledge store' crates/roko-cli/src/main.rs | grep -q verbose && grep -qw 'fn knowledge_query_previews_two_lines_unless_verbose' crates/roko-cli/src/commands/knowledge.rs && cargo test -p roko-cli --bin roko knowledge_query_previews_two_lines_unless_verbose"
+superseded = "2026-10-16: e80843ea0 moved the knowledge subcommand enum out of main.rs into commands/knowledge.rs, so this window grep of main.rs finds nothing. Verify 2 reads the whole Query variant there for its verbose flag, and runs the same test."
+superseded_by = "e80843ea0"
+
+[[verify]]
+command = "awk '/Query the durable knowledge store/,/^    },/' crates/roko-cli/src/commands/knowledge.rs | grep -q 'verbose: bool' && grep -rqw 'fn knowledge_query_previews_two_lines_unless_verbose' crates/roko-cli/src/ && cargo test -p roko-cli --bin roko knowledge_query_previews_two_lines_unless_verbose"
 
 [closed]
 at = 2026-10-01

@@ -1,0 +1,52 @@
+{
+  "schema": "roko-park-measurement/1",
+  "date": "2026-10-17",
+  "commit": "200ced75c",
+  "decision": "12 (2026-10-15, dec-e70592): put the orphaned channel-layer files behind an off-by-default feature, the way 9201 parked the other subsystems the plan path never uses",
+  "method": "Lines of the .rs files the feature gates as a whole (wc -l, tests included), at the commit above, before the change that gates them.",
+  "parked_features": [
+    {
+      "feature": "channels",
+      "crates": [
+        "roko-core",
+        "roko-runtime"
+      ],
+      "tasks": [
+        "gap-7ebc4f"
+      ],
+      "enable": "cargo build -p roko-runtime --features channels",
+      "whole_file_lines": 2900,
+      "files": {
+        "crates/roko-runtime/src/platforms.rs": 792,
+        "crates/roko-runtime/src/channel_binding.rs": 227,
+        "crates/roko-runtime/src/adapters": 1424,
+        "crates/roko-core/src/config/platforms.rs": 269,
+        "crates/roko-core/src/config/channels.rs": 188
+      }
+    }
+  ],
+  "whole_file_lines_total": 2900,
+  "workspace_tracked_rs_lines": 1336452,
+  "share_of_workspace": 0.0022,
+  "default_build_change": "None. Since 9c6ec420c (2026-09-25) these files sat outside every module tree, so no build compiled them. The 9201 features took compiled code out of the default build; this one brings code that was never compiled into an opt-in build, where CI's parked-feature step checks it.",
+  "not_counted": [
+    "roko-runtime's other channel-layer files from 9c6ec420c (command_dispatcher.rs, delivery.rs, message_audit.rs, message_formatter.rs, notification_batcher.rs, webhook_dead_letter.rs, webhook_metrics.rs: 2,184 lines) and roko-serve's routes/platforms.rs (109 lines), which stay outside the module tree: gap-092d24",
+    "roko-runtime's snapshot_checkpoint.rs (309 lines), also outside the module tree but StateHub code, not channel code: gap-d4da60"
+  ],
+  "cargo_tree_normal_deps": {
+    "default": 208,
+    "channels": 210,
+    "added_by_channels": [
+      "futures v0.3.33",
+      "futures-executor v0.3.33"
+    ],
+    "command": "cargo tree -p roko-runtime -e normal --prefix none | sort -u | wc -l, then the same with --features channels"
+  },
+  "cold_build_seconds": {
+    "default": null,
+    "channels": null,
+    "command": "cargo build -p roko-runtime (cold, idle machine), then the same with --features channels"
+  },
+  "pending": "The cold-build timings need an idle machine. The worker that wrote this file ran every cargo command under the shared heavy.sh limiter alongside other builds, so the timings are null.",
+  "conclusion": "The channels feature gates 2,900 lines (0.2% of 1,336,452 tracked .rs lines) that no build compiled before. With it on they compile, and their 81 tests (67 in roko-runtime, 14 in roko-core) pass, at the cost of two crates in roko-runtime's dependency tree (futures, futures-executor). The default build is unchanged."
+}

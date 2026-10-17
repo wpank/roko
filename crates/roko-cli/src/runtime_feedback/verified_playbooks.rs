@@ -19,6 +19,12 @@
 //! no such sink, so it writes no playbook. What the sink writes is published
 //! on the run's hub as `playbook_written`, which the workspace event log
 //! keeps.
+//!
+//! A tool call's target can quote a secret, such as a key on a command line,
+//! and so can the task's text: the candidate playbook is built from them with
+//! the process's secrets redacted ([`roko_core::obs::scrub_secrets`]), so its
+//! steps, the event and the keys it is matched by carry none (reg-d49ed1).
+//! The store redacts what it writes as well.
 
 use std::collections::HashSet;
 use std::hash::Hash;
@@ -155,7 +161,12 @@ impl FeedbackSink for VerifiedPlaybookSink {
                 task_id: attempt.task_id.clone(),
                 admission: admission.to_string(),
                 playbook_id: playbook.id.clone(),
-                goal: playbook.goal.chars().take(EVENT_GOAL_CHARS).collect(),
+                // A credited playbook was read back, and one an older roko
+                // wrote can hold a secret.
+                goal: redacted(&playbook.goal)
+                    .chars()
+                    .take(EVENT_GOAL_CHARS)
+                    .collect(),
                 steps: u32::try_from(playbook.steps.len()).unwrap_or(u32::MAX),
             });
         }
@@ -165,7 +176,8 @@ impl FeedbackSink for VerifiedPlaybookSink {
 
 /// The playbook `attempt` teaches: its goal the task's title and
 /// description, its steps the attempt's tool calls ([`playbook_steps`]), its
-/// `when_pattern` the task's topic terms. `None` for a task with fewer than
+/// `when_pattern` the task's topic terms, each with the process's secrets
+/// redacted ([`redacted`]). `None` for a task with fewer than
 /// [`MIN_TOPIC_OVERLAP`] topic terms, or an attempt without a step.
 fn candidate_playbook(attempt: &VerifiedAttempt) -> Option<Playbook> {
     if attempt.topic_terms.len() < MIN_TOPIC_OVERLAP {
@@ -177,18 +189,24 @@ fn candidate_playbook(attempt: &VerifiedAttempt) -> Option<Playbook> {
     } else {
         format!("{}: {description}", attempt.title.trim())
     };
-    let goal = goal.split_whitespace().collect::<Vec<_>>().join(" ");
-    let source = format!("{}-{}", attempt.plan_id, attempt.task_id);
+    // Redacted before its whitespace is collapsed, which a secret holding
+    // whitespace would no longer match.
+    let goal = redacted(&goal)
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
+    let source = redacted(&format!("{}-{}", attempt.plan_id, attempt.task_id));
     let mut playbook =
         extract_playbook_from_episode(&source, &goal, &playbook_steps(&attempt.tool_calls))?;
-    playbook.when_pattern = Some(attempt.topic_terms.join(" "));
+    playbook.when_pattern = Some(redacted(&attempt.topic_terms.join(" ")));
     Some(playbook)
 }
 
 /// The steps `calls` teach, as `(tool, what it acted on)`: each call that did
 /// not fail, in order, its tool's name standing in for a target it did not
-/// show. A call that repeats the step before it adds none, and the steps stop
-/// at [`MAX_PLAYBOOK_STEPS`].
+/// show, both with the process's secrets redacted ([`redacted`]). A call that
+/// repeats the step before it adds none, and the steps stop at
+/// [`MAX_PLAYBOOK_STEPS`].
 fn playbook_steps(calls: &[AttemptToolCall]) -> Vec<(String, String)> {
     let mut steps: Vec<(String, String)> = Vec::new();
     for call in calls {
@@ -196,9 +214,14 @@ fn playbook_steps(calls: &[AttemptToolCall]) -> Vec<(String, String)> {
         if name.is_empty() || call.succeeded == Some(false) {
             continue;
         }
-        let target = call.target.trim();
-        let target = if target.is_empty() { name } else { target };
-        let step = (name.to_string(), target.to_string());
+        let name = redacted(name);
+        let target = redacted(call.target.trim());
+        let target = if target.is_empty() {
+            name.clone()
+        } else {
+            target
+        };
+        let step = (name, target);
         if steps.last() != Some(&step) {
             steps.push(step);
         }
@@ -207,6 +230,13 @@ fn playbook_steps(calls: &[AttemptToolCall]) -> Vec<(String, String)> {
         }
     }
     steps
+}
+
+/// `text` with the process's secrets redacted
+/// ([`roko_core::obs::scrub_secrets`]): a tool call's target can quote one,
+/// such as a key on a command line, and so can a task's text (reg-d49ed1).
+fn redacted(text: &str) -> String {
+    roko_core::obs::scrub_secrets(text).into_owned()
 }
 
 /// The stored playbook `candidate` repeats: its topic terms and its steps

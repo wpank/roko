@@ -8,7 +8,8 @@
 //! The command does not inherit roko's whole environment, which holds the
 //! provider keys roko loads from its `.env` files: it gets the check
 //! environment described in [`crate::gate_env`] (allowlisted variables, no
-//! GitHub login) plus the payload's explicit ones.
+//! GitHub login, no cargo target dir outside its directory) plus the
+//! payload's explicit ones.
 
 use crate::compile_errors::{
     GateFailureClassification, classify_step_failure, render_failure_classification,
@@ -216,6 +217,11 @@ impl Verify for ShellGate {
         let passthrough = payload
             .as_ref()
             .map_or(&[][..], |p| p.env_passthrough.as_slice());
+        // The directory goes first: the check environment keeps a cargo
+        // target dir only inside it (bug-be2a53).
+        if let Some(ref p) = payload {
+            cmd.current_dir(&p.working_dir);
+        }
         let prepared = match &self.parent_env {
             Some(vars) => inherit_gate_env_from(&mut cmd, vars.iter().cloned(), passthrough),
             None => inherit_gate_env(&mut cmd, passthrough),
@@ -230,7 +236,6 @@ impl Verify for ShellGate {
                 .with_duration(elapsed);
         }
         if let Some(ref p) = payload {
-            cmd.current_dir(&p.working_dir);
             if let Some(ref tgt) = p.target_dir {
                 cmd.env("CARGO_TARGET_DIR", tgt);
             }

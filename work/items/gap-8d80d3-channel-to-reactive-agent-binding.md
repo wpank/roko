@@ -10,7 +10,7 @@ goal = "features"
 hold = "Set aside per tldr/05 §3; Will chose hold over park on 2026-09-29 (dec-e70592). Remove this line to revive."
 subsystem = ["roko-runtime"]
 created = 2026-09-21
-updated = 2026-10-15
+updated = 2026-10-17
 last_verified = 2026-09-29
 last_verified_rev = "a17d9d766"
 source = "tmp/backlog/archive/428-channel-to-reactive-agent-binding.md#428 — Channel-to-Reactive-Agent Binding"
@@ -143,3 +143,5 @@ Verified 2026-09-28: commit 9c6ec420c added crates/roko-runtime/src/channel_bind
 Re-verified 2026-09-29: unchanged. The router, the adapters it would bind (roko-runtime adapters/) and the ChatBridge trait (platforms.rs) are all outside the roko-runtime module tree, so none of it is compiled. This depends on the umbrella gap-63055e wiring those modules first.
 
 2026-10-15 (status-quo decision 12, tmp/status-quo/2026-10-15/DECISIONS-2026-10-15.md): stays held. The files this item anchors (crates/roko-runtime/src/platforms.rs, channel_binding.rs, adapters/) are not declared in crates/roko-runtime/src/lib.rs at b42578bab, so they are never compiled; gap-7ebc4f parks them behind an off-by-default `channels` feature so they build and test on demand. Reviving this item starts from that feature.
+
+2026-10-17 (gap-7ebc4f): parked, still not wired. `crates/roko-runtime/src/lib.rs` now declares `channel_binding`, `platforms` and `adapters` behind roko-runtime's `channels` feature, which is off by default and also turns on roko-core's `channels` (so `config::channels::ChannelConfig` compiles). `ChannelBindingRouter` compiled as it was apart from rustfmt, and its 4 tests pass with `cargo test -p roko-runtime --features channels channel_binding`. A default build still leaves it out, and it still has no caller. The other channel-layer orphans in `src/` (`command_dispatcher.rs`, `delivery.rs`, …) remain undeclared: gap-092d24.

@@ -695,6 +695,8 @@ mod tests {
             lat_q50_s: 95.0,
             lat_q90_s: 260.0,
             p_retry: None,
+            cost_prior: false,
+            latency_prior: false,
         };
         let decision = PredictionDecision {
             would_choose: Some(candidate.arm.clone()),

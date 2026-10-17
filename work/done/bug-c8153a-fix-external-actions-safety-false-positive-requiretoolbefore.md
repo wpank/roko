@@ -8,7 +8,7 @@ severity = "p1"
 goal = "core"
 subsystem = ["roko-agent/safety"]
 created = 2026-09-21
-updated = 2026-09-29
+updated = 2026-10-16
 last_verified = 2026-09-29
 last_verified_rev = "d9e79e9d8"
 source = "tmp/backlog/archive/392-external-actions-tracking-safety-false-positive.md#392 — Fix external_actions Safety False Positive (RequireToolBeforeEdit)"
@@ -18,6 +18,11 @@ links = { depends_on = [], blocks = [], related = [], supersedes = [], duplicate
 
 [[verify]]
 command = "grep -q 'TOOL_HISTORY_SERVICE' crates/roko-agent/src/dispatcher/mod.rs && cargo test -p roko-agent --lib safety::contract::tests::tool_history_satisfies_read_before_edit_without_counting_as_actions"
+superseded = "2026-10-16: 4165f6485 moved TOOL_HISTORY_SERVICE from dispatcher/mod.rs into safety/contract.rs, and the dispatcher now calls contract::begin_tool_turn. Verify 2 checks both and runs the same test."
+superseded_by = "4165f6485"
+
+[[verify]]
+command = "grep -q 'contract::begin_tool_turn' crates/roko-agent/src/dispatcher/mod.rs && grep -q 'pub const TOOL_HISTORY_SERVICE' crates/roko-agent/src/safety/contract.rs && grep -rqw 'fn tool_history_satisfies_read_before_edit_without_counting_as_actions' crates/roko-agent/src/ && cargo test -p roko-agent --lib safety::contract::tests::tool_history_satisfies_read_before_edit_without_counting_as_actions"
 
 [closed]
 at = 2026-09-29

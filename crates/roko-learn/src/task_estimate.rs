@@ -104,8 +104,9 @@ impl Rates {
     }
 }
 
-/// Which attempts an estimate drew on.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+/// Which attempts an estimate drew on, from the closest match to the
+/// weakest.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum EstimateBasis {
     /// Recent attempts of tasks with the same role and tier.
@@ -566,7 +567,7 @@ pub fn estimate_plan(
 fn confidence(tasks: &[TaskEstimate], totals: &PlanTotals) -> &'static str {
     if tasks
         .iter()
-        .any(|task| task.basis == EstimateBasis::Defaults)
+        .any(|task| task.basis >= EstimateBasis::AnyTask)
         || !totals.unpriced_tasks.is_empty()
     {
         "low"
@@ -579,32 +580,51 @@ fn confidence(tasks: &[TaskEstimate], totals: &PlanTotals) -> &'static str {
     }
 }
 
-/// What the estimate rests on, in a sentence.
+/// What the estimate rests on, in a sentence that names its weakest basis
+/// and how many tasks rest on it (bug-d88298): the attempts of tasks with
+/// each task's role and tier, of its tier, of any task, or none.
 fn note(tasks: &[TaskEstimate], totals: &PlanTotals) -> String {
     let samples = tasks.iter().map(|task| task.samples).max().unwrap_or(0);
-    let mut note = if tasks.is_empty() {
-        "Every task is done.".to_string()
-    } else if samples == 0 {
-        format!(
-            "No attempts yet: each task is one attempt of {} tokens in and {} out, priced on its \
-             start rung",
-            DEFAULT_ATTEMPT.tokens_in, DEFAULT_ATTEMPT.tokens_out
-        )
-    } else {
-        format!(
-            "Each task priced on its start rung from up to {samples} recent attempts of similar \
-             tasks; the worst case is every attempt failing and climbing the ladder"
-        )
+    let Some(weakest) = tasks.iter().map(|task| task.basis).max() else {
+        return "Every task is done.".to_string();
     };
+    let resting = tasks.iter().filter(|task| task.basis == weakest).count();
+    let share = format!("{resting} of {}", tasks.len());
+    let mut note = match weakest {
+        EstimateBasis::SameRoleAndTier => format!(
+            "Each task priced on its start rung from up to {samples} recent attempts of tasks \
+             with its role and tier"
+        ),
+        EstimateBasis::SameTier => format!(
+            "Each task priced on its start rung from up to {samples} recent attempts of tasks \
+             like it; {share} tasks have none with their role, so attempts of their tier stand \
+             in"
+        ),
+        EstimateBasis::AnyTask => format!(
+            "Low confidence: {share} tasks have no recent attempt of their tier, so up to \
+             {samples} attempts of any task stand in; each is priced on its start rung"
+        ),
+        EstimateBasis::Defaults if samples == 0 => format!(
+            "Low confidence: no attempts yet, so each task is one attempt of {} tokens in and {} \
+             out, priced on its start rung",
+            DEFAULT_ATTEMPT.tokens_in, DEFAULT_ATTEMPT.tokens_out
+        ),
+        EstimateBasis::Defaults => format!(
+            "Low confidence: {share} tasks have no recorded attempt, so each is one attempt of {} \
+             tokens in and {} out; the rest are priced from up to {samples} recent attempts",
+            DEFAULT_ATTEMPT.tokens_in, DEFAULT_ATTEMPT.tokens_out
+        ),
+    };
+    if samples > 0 {
+        note.push_str("; the worst case is every attempt failing and climbing the ladder");
+    }
     if !totals.unpriced_tasks.is_empty() {
         note.push_str(&format!(
             "; {} left out of the totals: no price for their models",
             totals.unpriced_tasks.join(", ")
         ));
     }
-    if !tasks.is_empty() {
-        note.push('.');
-    }
+    note.push('.');
     note
 }
 
@@ -822,5 +842,68 @@ mod tests {
             .map(|share| (share.rung.as_str(), share.tasks))
             .collect();
         assert_eq!(shares, [("cheap", 2), ("top", 1)]);
+    }
+
+    /// bug-d88298: the note names the weakest basis it rests on and how many
+    /// tasks rest on it, and attempts of any task make the confidence low.
+    #[test]
+    fn the_estimate_note_names_its_basis() {
+        let rung = RungPrice {
+            rung: Some("cheap".to_string()),
+            model: "m-cheap".to_string(),
+            rates: Some(Rates {
+                input_per_m: 1.0,
+                cache_read_per_m: 1.0,
+                output_per_m: 2.0,
+            }),
+        };
+        let route = |id: &str, tier: TaskTier| TaskRoute {
+            task_id: id.to_string(),
+            title: id.to_string(),
+            role: "implementer".to_string(),
+            tier,
+            pinned: false,
+            attempts: vec![rung.clone()],
+        };
+        let attempt = |tier: TaskTier| PastAttempt {
+            role: Some("implementer".to_string()),
+            tier: Some(tier),
+            attempt: 1,
+            passed: Some(true),
+            tokens_in: Some(1_000),
+            tokens_cache_read: Some(0),
+            tokens_out: Some(500),
+            secs: Some(20.0),
+            settled_at: Some(1),
+        };
+        let history = vec![attempt(TaskTier::Focused); 3];
+        let estimate = |routes: &[TaskRoute]| estimate_plan("p", routes, 0, &history, None, None);
+
+        let alike = estimate(&[route("T1", TaskTier::Focused)]);
+        assert_eq!(alike.per_task[0].basis, EstimateBasis::SameRoleAndTier);
+        assert_eq!(alike.confidence, "medium");
+        assert!(
+            alike
+                .note
+                .starts_with("Each task priced on its start rung from up to 3 recent attempts of tasks with its role and tier;"),
+            "{}",
+            alike.note
+        );
+        assert!(!alike.note.contains("similar"), "{}", alike.note);
+
+        let mixed = estimate(&[
+            route("T1", TaskTier::Focused),
+            route("T2", TaskTier::Integrative),
+        ]);
+        assert_eq!(mixed.per_task[1].basis, EstimateBasis::AnyTask);
+        assert_eq!(mixed.confidence, "low");
+        assert!(
+            mixed.note.starts_with(
+                "Low confidence: 1 of 2 tasks have no recent attempt of their tier, so up to 3 \
+                 attempts of any task stand in"
+            ),
+            "{}",
+            mixed.note
+        );
     }
 }

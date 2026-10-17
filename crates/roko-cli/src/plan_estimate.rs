@@ -397,7 +397,13 @@ files = ["done.py"]
             .filter_map(|task| task.likely_cost_usd)
             .sum();
         assert!(close(estimate.estimate.total_cost_usd, total));
-        assert_eq!(estimate.confidence, "medium");
+        // MIX rests on any task's attempts, which makes it low (bug-d88298).
+        assert_eq!(estimate.confidence, "low");
+        assert!(
+            estimate.note.starts_with("Low confidence: 1 of 3 tasks"),
+            "{}",
+            estimate.note
+        );
         assert_eq!(
             estimate.price_snapshot.as_deref(),
             Some(roko_core::pricing_snapshot::BUILTIN_SNAPSHOT_ID)

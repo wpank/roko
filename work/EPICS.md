@@ -6,8 +6,8 @@ Progress per epic: its children (items whose `parent` is the epic, plus its `dep
 
 ## [spec-ae5f94](items/spec-ae5f94-epic-release-blockers.md) release blockers
 
-- **21/24 closed** · goal `release` · severity p0
-- open by lane: none 3
+- **21/25 closed** · goal `release` · severity p0
+- open by lane: none 3, rust-cold 1
 - next: [find-8cc7ac](items/find-8cc7ac-some-github-workflows-fail-on-main-and.md) Some GitHub workflows fail on main and required checks are undefined
 
 ## [spec-ba7bea](items/spec-ba7bea-epic-secrets-and-git-guard.md) secrets and git guard
@@ -18,9 +18,9 @@ Progress per epic: its children (items whose `parent` is the epic, plus its `dep
 
 ## [spec-f8d196](items/spec-f8d196-epic-research-paper-companion-report-and-tl.md) research paper, companion report and TL;DR upkeep
 
-- **39/41 closed** · goal `whitepaper` · severity p1
+- **40/42 closed** · goal `whitepaper` · severity p1
 - open by lane: paper 2
-- next: [gap-d2c478](items/gap-d2c478-the-research-paper-s-figures-print-their.md) The research paper's figures print their labels at 5.5 to 6.9 pt, below the 8 pt its review checklist asks for
+- next: [gap-9ea13c](items/gap-9ea13c-claims-evidence-py-has-no-check-mode.md) claims_evidence.py has no --check mode, so the design paper's claims aggregate has no automated staleness check
 
 ## [spec-ce1484](items/spec-ce1484-epic-whitepaper-v1.md) whitepaper v1
 
@@ -42,9 +42,9 @@ Progress per epic: its children (items whose `parent` is the epic, plus its `dep
 
 ## [spec-567e52](items/spec-567e52-epic-pilot-benchmark.md) pilot benchmark
 
-- **53/65 closed** · goal `proof` · severity p1
+- **56/68 closed** · goal `proof` · severity p1
 - open by lane: bench 12
-- next: [gap-a2f86a](items/gap-a2f86a-f7-s-in-tree-cargo-target-build.md) F7's in-tree .cargo-target build directory lands in commit_final's archived c_i
+- next: [gap-b94a2c](items/gap-b94a2c-a-sandboxed-agent-still-reads-any-same.md) A sandboxed agent still reads any same-user process's start-up environment with sysctl(KERN_PROCARGS2), and no sandbox-exec rule stops it
 
 ## [spec-6ac537](items/spec-6ac537-epic-cybernetic-core.md) cybernetic core
 
@@ -52,9 +52,9 @@ Progress per epic: its children (items whose `parent` is the epic, plus its `dep
 
 ## [spec-7a71d6](items/spec-7a71d6-epic-turn-the-cybernetic-layer-on-in.md) turn the cybernetic layer on in safe stages
 
-- **8/16 closed** · goal `cybernetic` · severity p2
-- open by lane: rust-hot 6, rust-cold 2
-- next: [gap-d76b1b](items/gap-d76b1b-decision-7103-s-audit-on-by-default.md) Decision 7103's audit-on-by-default outcome was never implemented: enabled stays false, no --no-audit flag
+- **11/21 closed** · goal `cybernetic` · severity p2
+- open by lane: rust-hot 6, rust-cold 4
+- next: [gap-b38ed2](items/gap-b38ed2-m3-s-calibration-window-restarts-every-run.md) M3's calibration window restarts every run and calibration.json is never written, so the self-model can never become eligible or report calibration
 
 ## [spec-1e1b45](items/spec-1e1b45-epic-tracker-tooling-for-parallel-work.md) tracker tooling for parallel work
 
@@ -104,12 +104,12 @@ Progress per epic: its children (items whose `parent` is the epic, plus its `dep
 
 | Lane | Closed | Total | Open (verified) |
 |---|---|---|---|
-| bench | 87 | 125 | 38 (29) |
+| bench | 93 | 130 | 37 (27) |
 | docs | 27 | 31 | 4 (3) |
-| frontend | 4 | 7 | 3 (3) |
-| none | 440 | 534 | 94 (88) |
-| paper | 74 | 85 | 11 (9) |
-| rust-cold | 247 | 299 | 52 (44) |
-| rust-hot | 239 | 265 | 26 (24) |
+| frontend | 5 | 8 | 3 (3) |
+| none | 451 | 542 | 91 (86) |
+| paper | 76 | 86 | 10 (8) |
+| rust-cold | 250 | 305 | 55 (46) |
+| rust-hot | 245 | 274 | 29 (27) |
 | tests | 1 | 1 | 0 (0) |
-| tracker | 24 | 29 | 5 (4) |
+| tracker | 25 | 29 | 4 (3) |

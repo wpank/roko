@@ -23,7 +23,7 @@ pub use pipeline::{
     slugify,
 };
 pub(crate) use pipeline::{
-    extract_fenced_block, extract_toml_content_fallback, planner_context_window,
+    PLANNER_MAX_TURNS, extract_fenced_block, extract_toml_content_fallback, planner_context_window,
 };
 
 use std::fmt::Write as _;

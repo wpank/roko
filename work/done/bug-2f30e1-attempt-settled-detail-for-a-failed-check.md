@@ -2,7 +2,7 @@
 id = "bug-2f30e1"
 kind = "bug"
 title = "attempt_settled.detail for a failed check is the reason's summary line ('verify: 1/1 verify step(s) failed ...'), not the failing step's key line"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p2"
 goal = "golden-path"
@@ -11,6 +11,7 @@ subsystem = ["roko-cli/graph-task-dispatch"]
 created = 2026-10-17
 updated = 2026-10-17
 last_verified = 2026-10-17
+last_verified_rev = "c9b7757f9"
 source = "team-lead, round v6 (roko-caps' gap-2c9412 zero-cost run)"
 discovered_from = "gap-2c9412"
 anchors = ["crates/roko-cli/src/graph_task_dispatch/ladder.rs::publish_attempt_settled", "crates/roko-cli/src/graph_task_dispatch/verification.rs::verify_failure_summary"]
@@ -19,6 +20,13 @@ links = { depends_on = [], blocks = [], related = ["gap-4e852d", "gap-2c9412"], 
 
 [[verify]]
 command = "grep -rqw 'fn attempt_settled_names_the_failing_checks_key_line' crates/roko-cli/src && cargo test -p roko-cli --lib attempt_settled_names_the_failing_checks_key_line"
+
+[closed]
+at = 2026-10-17
+at_ts = "2026-10-17T20:12:50Z"
+commit = "c9b7757f9"
+forced = false
+evidence = "attempt_settled_names_the_failing_checks_key_line passes. each_try_publishes_attempt_settled now expects 'exit code: 1' for a silent check. At c9b7757f9: roko-cli lib 3815 passed, 1 failed (bug-8d8f98's load flake). Zero-cost plan run (keyline-wrong): both gate_failed attempt_settled events carry detail='AssertionError: answer.txt holds 41, not 42' (failed_check verify:0/test), where the run before this change had detail='verify: 1/1 verify step(s) failed for task ...'. The pass on the strong rung keeps an empty detail."
 +++
 
 ## Problem

@@ -2,7 +2,7 @@
 id = "bug-1e272c"
 kind = "bug"
 title = "The hub's retry_feedback event lists no error line for a check that fails with a plain assertion: errors holds only compile, test and clippy lines"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p2"
 goal = "golden-path"
@@ -11,6 +11,7 @@ subsystem = ["roko-cli/graph-task-dispatch"]
 created = 2026-10-17
 updated = 2026-10-17
 last_verified = 2026-10-17
+last_verified_rev = "c9b7757f9"
 source = "team-lead, round v6 (roko-caps' gap-2c9412 zero-cost run: errors=[] for 'AssertionError: answer.txt holds 41, not 42')"
 discovered_from = "gap-2c9412"
 anchors = ["crates/roko-cli/src/graph_task_dispatch/retry_feedback.rs::retry_feedback_event", "crates/roko-cli/src/graph_task_dispatch/verification.rs::step_failure"]
@@ -19,6 +20,13 @@ links = { depends_on = [], blocks = [], related = ["gap-655ea5", "gap-2c9412"], 
 
 [[verify]]
 command = "grep -rqw 'fn retry_feedback_carries_each_failing_checks_key_line' crates/roko-cli/src && cargo test -p roko-cli --lib retry_feedback_carries_each_failing_checks_key_line"
+
+[closed]
+at = 2026-10-17
+at_ts = "2026-10-17T20:12:49Z"
+commit = "c9b7757f9"
+forced = false
+evidence = "retry_feedback_carries_each_failing_checks_key_line and key_line_picks_the_line_that_says_why pass. key_line handles cargo test, rustc, unittest, import errors, pytest and silent checks. At c9b7757f9: roko-cli lib 3815 passed, 1 failed (bug-8d8f98's load flake in plan_verify; alone at load 140 it failed 2 of 3); clippy and fmt clean. Zero-cost plan run (tmp/hermes-roko-v5/roko-caps/e2e-judged, keyline-wrong): both retry_feedback events in .roko/events.jsonl carry errors=['AssertionError: answer.txt holds 41, not 42'], where the run before this change published errors=[]."
 +++
 
 ## Problem

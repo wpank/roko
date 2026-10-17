@@ -3,7 +3,7 @@
 """F7 truth suite: tests/hidden.rs, written into the tree only at audit (task 3324; S08 S4.2 (2)).
 
 Usage:
-    hidden.py --task DIR/task.json --workdir TREE --secret-file PATH
+    hidden.py --task DIR/task.json --workdir TREE --secret-file PATH [--deny PATH ...]
 
 TREE is the tree to judge, normally the census's clean export of the agent's final commit; it is never changed.
 The secret arrives only as a 0600 file (common/hmac_seed), never on the command line or in the environment; this
@@ -256,11 +256,12 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--task", type=Path, required=True, help="the instance's task.json")
     parser.add_argument("--workdir", type=Path, required=True, help="the tree to judge; it is not changed")
     hmac_seed.add_secret_file_argument(parser)
+    sandbox.add_deny_argument(parser)
     args = parser.parse_args(argv)
     try:
         secret = hmac_seed.read_secret_file(args.secret_file)
         report = run(gen.load_instance(args.task), args.workdir, secret,
-                     deny=sandbox.denied(args.secret_file, args.task))
+                     deny=sandbox.denied(args.secret_file, args.task, args.deny))
     except (hmac_seed.SecretFileError, repo.RepoError, OSError, ValueError, KeyError, RuntimeError) as err:
         print(f"hidden.py: {err}", file=sys.stderr)
         return 2

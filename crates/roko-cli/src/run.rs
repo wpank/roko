@@ -504,9 +504,13 @@ pub struct PromptRun<'a> {
 ///
 /// The prompt becomes a one-task plan in `.roko/runs/<run_id>/` (never under
 /// `plans/`): an `implementer` task whose verify steps are the workspace
-/// gates (see [`prompt_verify_steps`]). A workspace with none, such as a docs
-/// or Python repository with no declared rung, still runs: its task ends
-/// unverified, which is not a success (bug-1410e8). The Graph run takes the
+/// gates (see [`prompt_verify_steps`]). Its Python test checks run on the
+/// base commit first: one that already fails there passes when the change
+/// adds no failure, and the agent is told which tests already fail
+/// ([`prompt_base_checks`](crate::graph_task_dispatch::baseline_verify::prompt_base_checks),
+/// bug-5089fb). A workspace with no gate, such as a docs or Python
+/// repository with no declared rung, still runs: its task ends unverified,
+/// which is not a success (bug-1410e8). The Graph run takes the
 /// same run id, so its attempt records and manifest share that directory.
 /// [`run_graph_plan`] executes it with
 /// the provider dispatch, failover, safety contracts, budget, checkpoints,
@@ -527,6 +531,7 @@ pub async fn run_prompt(run: PromptRun<'_>) -> Result<WorkflowRunReport> {
         PlanRunInterrupt, PlanRunInterruptHandle, install_plan_run_signal_handlers,
         run_graph_plan_in_run,
     };
+    use crate::graph_task_dispatch::baseline_verify::{BaseCheck, prompt_base_checks};
 
     let (_config, model_config, selection) =
         resolve_workflow_model_selection(run.workdir, run.overrides)?;
@@ -577,33 +582,6 @@ pub async fn run_prompt(run: PromptRun<'_>) -> Result<WorkflowRunReport> {
     let run_dir = layout.run_dir(&run_id);
     std::fs::create_dir_all(&run_dir)
         .with_context(|| format!("create run directory {}", run_dir.display()))?;
-    let mut tasks = prompt_tasks_file(
-        &run_id,
-        run.prompt,
-        run.tier,
-        role,
-        verify,
-        run.domain,
-        &run.origin,
-        run.workdir,
-    );
-    tasks.meta.title = prompt_run_title(run.title.as_deref(), run.prompt);
-    tasks.write(&run_dir.join("tasks.toml"))?;
-
-    // A model or provider override pins the task's model; otherwise the
-    // Graph engine routes by tier, as for authored plans.
-    let cli_model_override = run.overrides.model.clone().or_else(|| {
-        run.overrides
-            .provider
-            .as_ref()
-            .map(|_| selection.effective_model_key.clone())
-    });
-    let episodes_path = layout.root_episodes_path();
-    let episodes_offset = std::fs::metadata(&episodes_path).map_or(0, |meta| meta.len());
-    let hub = run
-        .state_hub
-        .unwrap_or_else(crate::state_hub::shared_state_hub);
-
     // SIGINT, SIGTERM and SIGHUP stop the run gracefully for as long as the
     // guard lives. A run with a cancel token, as serve's are, stops when the
     // token fires instead and leaves the process's signals to its host.
@@ -619,6 +597,68 @@ pub async fn run_prompt(run: PromptRun<'_>) -> Result<WorkflowRunReport> {
         }
         None => Some(install_plan_run_signal_handlers(interrupt.clone())?),
     };
+
+    // The checks run on the base commit first (bug-5089fb): one that already
+    // fails there is judged by the failures the change adds, and the agent
+    // is told which tests already fail.
+    let base_checks = tokio::select! {
+        checks = prompt_base_checks(run.workdir, &verify, &model_config.gates) => checks,
+        _ = interrupt.stopped() => Vec::new(),
+    };
+    if !run.quiet {
+        for check in &base_checks {
+            eprintln!(
+                "note: {}; the run passes when the change adds no failure",
+                check.summary()
+            );
+        }
+    }
+    let mut tasks = prompt_tasks_file(
+        &run_id,
+        run.prompt,
+        run.tier,
+        role,
+        verify,
+        run.domain,
+        &run.origin,
+        run.workdir,
+    );
+    tasks.meta.title = prompt_run_title(run.title.as_deref(), run.prompt);
+    if let Some(task) = tasks.tasks.first_mut()
+        && !base_checks.is_empty()
+    {
+        let context = task.context.get_or_insert_with(Default::default);
+        context
+            .anti_patterns
+            .extend(base_checks.iter().map(BaseCheck::agent_note));
+    }
+    tasks.write(&run_dir.join("tasks.toml"))?;
+
+    // A model or provider override pins the task's model; otherwise the
+    // Graph engine routes by tier, as for authored plans.
+    let cli_model_override = run.overrides.model.clone().or_else(|| {
+        run.overrides
+            .provider
+            .as_ref()
+            .map(|_| selection.effective_model_key.clone())
+    });
+    let episodes_path = layout.root_episodes_path();
+    let episodes_offset = std::fs::metadata(&episodes_path).map_or(0, |meta| meta.len());
+    let hub = run
+        .state_hub
+        .unwrap_or_else(crate::state_hub::shared_state_hub);
+    let timestamp_ms = u64::try_from(Utc::now().timestamp_millis()).unwrap_or_default();
+    for check in &base_checks {
+        hub.sender()
+            .publish(roko_core::DashboardEvent::EventLogEntry {
+                timestamp_ms,
+                event_type: "run.base_check".to_string(),
+                plan_id: run_id.clone(),
+                task_id: "T1".to_string(),
+                message: check.summary(),
+            });
+    }
+
     let started = std::time::Instant::now();
     // The Graph run takes this run's id, so its attempt records and manifest
     // land in `run_dir` beside the plan (bug-ccc7c4).
@@ -737,8 +777,10 @@ pub async fn run_prompt(run: PromptRun<'_>) -> Result<WorkflowRunReport> {
 /// these rungs run once.
 ///
 /// They are regression checks: the workspace passes them before the change
-/// too. So each is `expect = "pass_on_base"`, which keeps the plan-load spec
-/// gate from refusing the run as green on the base (HF3), and the red-on-base
+/// too, or fails them the same way
+/// ([`prompt_base_checks`](crate::graph_task_dispatch::baseline_verify::prompt_base_checks)).
+/// So each is `expect = "pass_on_base"`, which keeps the plan-load spec gate
+/// from refusing the run as green on the base (HF3), and the red-on-base
 /// check does not run them (3231).
 fn prompt_verify_steps(
     workdir: &Path,
@@ -1370,6 +1412,211 @@ command = "test -f README.md"
             .expect("read the manifest")
             .expect("the run's manifest");
         assert_eq!(manifest.run_id, report.run_id);
+    }
+
+    /// pocket-synth's seed (bug-5089fb): a `synth` package none of whose
+    /// four test modules imports yet, so its suite is red before any change.
+    #[cfg(unix)]
+    const SYNTH_SEED: [(&str, &str); 5] = [
+        ("synth/__init__.py", ""),
+        (
+            "tests/test_env.py",
+            r#"import unittest
+
+from synth.env import adsr
+
+
+class ADSRTest(unittest.TestCase):
+    def test_attack_rises(self):
+        self.assertEqual(adsr(1.0), 1.0)
+
+    def test_release_falls(self):
+        self.assertEqual(adsr(3.0), 0.0)
+"#,
+        ),
+        ("tests/test_osc.py", "from synth.osc import saw\n"),
+        ("tests/test_render.py", "from synth.render import render\n"),
+        ("tests/test_svf.py", "from synth.svf import SVF\n"),
+    ];
+
+    /// A Claude CLI stand-in whose agent writes `synth/env.py` from `env_py`
+    /// and appends each prompt it gets to `prompts`.
+    #[cfg(unix)]
+    fn synth_provider(env_py: &Path, prompts: &Path) -> String {
+        let (env_py, prompts) = (env_py.display().to_string(), prompts.display().to_string());
+        format!(
+            r#"#!/bin/sh
+set -eu
+cat >> {prompts:?}
+mkdir -p synth
+cp {env_py:?} synth/env.py
+printf '%s\n' '{{"type":"content_block_delta","delta":{{"text":"done"}}}}'
+printf '%s\n' '{{"type":"result","session_id":"run","model":"claude-sonnet-4-6","total_cost_usd":0.0,"usage":{{"input_tokens":1,"output_tokens":1}},"is_error":false}}'
+"#
+        )
+    }
+
+    /// bug-5089fb: a prompt run on a project whose suite is red before the
+    /// change (pocket-synth's seed) runs its check on the base commit first,
+    /// keeps that run, tells the agent which tests already fail, and passes
+    /// when the change adds no failure, settled as passed with the
+    /// pre-existing failures it names. A change whose own test fails, or
+    /// whose module still does not import, fails.
+    #[cfg(unix)]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn prompt_run_on_a_red_base_judges_only_new_failures() {
+        const CHECK: &str = "PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s tests -q";
+        let cases = [
+            (
+                "def adsr(t):\n    return t if t <= 1.0 else max(0.0, 2.0 - t)\n",
+                "3 tests already failed before the change, on the plan run's start commit: \
+                 test_osc, test_render, test_svf",
+            ),
+            (
+                "def adsr(t):\n    return t\n",
+                "new failures, which did not fail on the plan run's start commit: \
+                 test_env.ADSRTest.test_release_falls",
+            ),
+            (
+                "def adsr(t)\n    return t\n",
+                "failed before this run too, but this task's to fix: test_env",
+            ),
+        ];
+        for (index, (env_py, settlement)) in cases.into_iter().enumerate() {
+            let tmp = fake_agent_workspace(&format!(
+                r#"
+[[gates.rungs]]
+name = "tests"
+command = "{CHECK}"
+timeout_secs = 120
+
+[runner]
+worktree_per_task = false
+"#
+            ));
+            let outside = TempDir::new().expect("tempdir");
+            let (source, prompts) = (
+                outside.path().join("env.py"),
+                outside.path().join("prompts"),
+            );
+            std::fs::write(&source, env_py).expect("env.py");
+            std::fs::write(
+                tmp.path().join("fake-provider.sh"),
+                synth_provider(&source, &prompts),
+            )
+            .expect("provider script");
+            for (path, text) in SYNTH_SEED {
+                let path = tmp.path().join(path);
+                std::fs::create_dir_all(path.parent().expect("a parent")).expect("mkdir");
+                std::fs::write(path, text).expect("seed file");
+            }
+            let git = |args: &[&str]| {
+                let output = std::process::Command::new("git")
+                    .args([
+                        "-c",
+                        "user.name=roko-test",
+                        "-c",
+                        "user.email=roko-test@localhost",
+                    ])
+                    .args([
+                        "-c",
+                        "commit.gpgsign=false",
+                        "-c",
+                        "core.hooksPath=/dev/null",
+                    ])
+                    .args(args)
+                    .current_dir(tmp.path())
+                    .env_remove("GIT_DIR")
+                    .env_remove("GIT_WORK_TREE")
+                    .output()
+                    .expect("run git");
+                assert!(output.status.success(), "git {args:?}");
+                String::from_utf8_lossy(&output.stdout).trim().to_string()
+            };
+            git(&["init", "--quiet"]);
+            git(&["add", "--all"]);
+            git(&["commit", "--quiet", "-m", "seed"]);
+            let base = git(&["rev-parse", "HEAD"]);
+
+            let hub = SharedStateHub::new(StateHub::new(4096));
+            let mut events = hub.subscribe_events();
+            let report = run_prompt(PromptRun {
+                prompt: "Write the ADSR envelope, adsr(t), in synth/env.py",
+                workdir: tmp.path(),
+                tier: "focused",
+                overrides: &CliOverrides::default(),
+                max_retries: Some(0),
+                quiet: true,
+                state_hub: Some(hub.clone()),
+                run_id: None,
+                cancel: None,
+                domain: None,
+                max_usd: None,
+                origin: RunOrigin::Cli,
+                no_holdout: false,
+                live_agent_output: crate::graph_task_dispatch::LiveAgentOutput::ToolSteps,
+                title: None,
+            })
+            .await
+            .expect("roko run completes");
+            let mut gates = Vec::new();
+            let mut base_checks = Vec::new();
+            loop {
+                match events.try_recv() {
+                    Ok(envelope) => match envelope.payload {
+                        roko_core::DashboardEvent::GateResult {
+                            gate,
+                            passed,
+                            output_text,
+                            ..
+                        } => gates.push((gate, passed, output_text.unwrap_or_default())),
+                        roko_core::DashboardEvent::EventLogEntry {
+                            event_type,
+                            message,
+                            ..
+                        } if event_type == "run.base_check" => base_checks.push(message),
+                        _ => {}
+                    },
+                    Err(tokio::sync::broadcast::error::TryRecvError::Lagged(_)) => {}
+                    Err(_) => break,
+                }
+            }
+
+            // The check ran on the base first, and its run is kept there.
+            let before = "4 tests already failed before the change: test_env, test_osc, \
+                          test_render, test_svf";
+            assert_eq!(base_checks.len(), 1, "case {index}: {base_checks:?}");
+            assert!(base_checks[0].ends_with(before), "{base_checks:?}");
+            let kept = tmp
+                .path()
+                .join(format!(".roko/state/baselines/{base}.json"));
+            assert!(kept.is_file(), "case {index}: the base run is kept");
+            // The agent was told.
+            let prompt = std::fs::read_to_string(&prompts).expect("the agent's prompt");
+            assert!(
+                prompt.contains("Avoid: chasing test failures that predate this change")
+                    && prompt.contains(before),
+                "case {index}: the prompt names the old failures"
+            );
+            // The settlement names what it judged.
+            let (gate, passed, output) = gates.last().expect("a gate result");
+            assert!(output.contains(settlement), "case {index}: {output}");
+            let run_dir = roko_fs::RokoLayout::for_project(tmp.path()).run_dir(&report.run_id);
+            let attempts =
+                std::fs::read_to_string(run_dir.join("attempts.jsonl")).expect("attempt records");
+            if index == 0 {
+                assert!(report.success, "a change that adds no failure passes");
+                assert!(*passed, "{gates:?}");
+                assert_eq!(gate, "pre-existing-filtered:verify[0:tests]");
+                assert!(
+                    attempts.contains("passed_with_preexisting_failures"),
+                    "never a clean pass: {attempts}"
+                );
+            } else {
+                assert!(!report.success, "case {index}: the change fails");
+                assert!(!*passed, "case {index}: {gates:?}");
+            }
+        }
     }
 
     /// The `kind` of each row of the workspace's `learn/efficiency.jsonl`

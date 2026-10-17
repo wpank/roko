@@ -14,6 +14,7 @@ import os
 import re
 import subprocess
 import sys
+import tomllib
 from pathlib import Path
 
 import pytest
@@ -204,6 +205,36 @@ def test_roko_plan_runner_records_planner_and_executor_costs(places):
     planner = policy["planner"]
     assert re.fullmatch(r"loopback:\d+", planner["network"]) and planner["sandbox"] == host
     assert planner["egress"] == {"allow": ["api.anthropic.com:443"], "admitted": 0, "refused": []}
+
+
+def test_the_plan_slice_arm_records_its_prompt(places, monkeypatch):
+    """bug-b19ce8: `vb run` records roko_plan's prompt (`vb.runner_prompt`, the config's `prompt`, and so its
+    `config_hash`) as `run_roko_plan.arm_prompt` reports it: a version and the sha256 of every text the runner writes
+    for the arm's agents. Changing any of them by one more newline (monkeypatched) changes the recorded sha256 and
+    keeps the version: the planner's prompt, roko.toml's templates (each of which changes the roko.toml the runner
+    writes, which still parses) and the planner session's fixed invocation (`run_cli.PROMPT_SHA256`)."""
+    arm = vb.load_arm("roko_plan")
+    runner = vb.load_runner(arm)
+    recorded = vb.runner_prompt(runner, arm)
+    assert runner is run_roko_plan and recorded["version"] == "run-roko-plan-1", recorded
+    assert re.fullmatch("[0-9a-f]{64}", recorded["sha256"] or ""), recorded
+    ctx = task_context(places, arm, fake_roko(places))
+    settings = ctx.arm["roko"]
+    written = run_roko_plan._roko_toml(ctx, settings)
+    assert tomllib.loads(written)["routing"]["ladder"]["rungs"][0]["model"] == CHEAP
+    texts = [(run_roko_plan, "PLANNER_PROMPT", False), (run_roko_plan, "ROKO_TOML_TAIL", True),
+             (run_roko_plan, "RUNG_LINE", True), (run_roko_plan.planemit, "LADDER_HEAD", True),
+             (run_roko_plan.planemit, "PROVIDER_TABLE", True), (run_roko_plan.planemit, "MODEL_TABLE", True),
+             (run_roko_plan.run_cli, "PROMPT_SHA256", False)]
+    for module, name, in_roko_toml in texts:
+        with monkeypatch.context() as patched:
+            patched.setattr(module, name, getattr(module, name) + "\n")
+            changed = vb.runner_prompt(runner, arm)
+            assert changed["version"] == recorded["version"] and changed["sha256"] != recorded["sha256"], name
+            if in_roko_toml:
+                rewritten = run_roko_plan._roko_toml(ctx, settings)
+                assert rewritten != written and tomllib.loads(rewritten), name
+    assert vb.runner_prompt(runner, arm) == recorded  # each text put back, the same prompt
 
 
 @macos_only

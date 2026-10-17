@@ -4,15 +4,18 @@
 //! rung's turns ([`LadderConfig::try_turns`]: fewer below the highest rung
 //! the task can reach, unless `[routing.ladder] max_turns` says otherwise)
 //! and, when `[routing.ladder] max_usd` names the rung, at most its spend. A
-//! try that uses either up fails on its rung, blamed on the agent as a
-//! turn-cap stop is, so two such tries climb the ladder as two failed checks
-//! do. The plan's budget still bounds every try and is asked first: a stop
-//! for the plan's budget stays the harness's, and ends the attempt as
-//! before.
+//! try that uses either up is judged by the task's checks on the work it
+//! left, as a finished try is (gap-2c9412): it passes when they pass, and
+//! otherwise fails on its check, blamed on the agent, so two such tries climb
+//! the ladder as two failed checks do. The plan's budget still bounds every
+//! try and is asked first: a stop for the plan's budget stays the harness's,
+//! and ends the attempt unchecked, as before.
 //!
 //! [`LadderConfig::try_turns`]: roko_core::config::routing::LadderConfig::try_turns
 
 use super::budget::AttemptAllowance;
+use super::failover::FailoverChain;
+use super::watchdog::{AttemptInterrupted, AttemptProgress};
 use super::*;
 use crate::dispatch_v2::CallAllowance;
 
@@ -40,6 +43,26 @@ pub(super) enum TryStop {
     Plan(String),
     /// It spent its rung's allowance: the agent's failure on the rung.
     Rung(String),
+}
+
+/// How a try ended at its rung's bound (gap-2c9412): the task's checks then
+/// judge the work it left.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) enum BoundedStop {
+    /// It used up the rung's turns.
+    Turns(TurnCapRetry),
+    /// It spent the rung's allowance, for this reason.
+    Spend(String),
+}
+
+impl BoundedStop {
+    /// The bound it reached, in words.
+    pub(super) fn describe(&self) -> String {
+        match self {
+            Self::Turns(stop) => format!("its {}-turn bound", stop.cap),
+            Self::Spend(_) => "its spend allowance".to_string(),
+        }
+    }
 }
 
 /// What one try's model calls may spend: its plan's hold, asked first, so
@@ -183,6 +206,79 @@ impl CallAllowance for TryAllowance {
 }
 
 impl GraphTaskDispatcher {
+    /// How `dispatch`, an unsuccessful try of `task_id` that ran with
+    /// `max_turns` turns, ended at its rung's bound (gap-2c9412): its rung's
+    /// spend `allowance` stopped it, or it used up the turns `rung` gave it.
+    /// `None` for any other end: the plan's budget stopping it, the run
+    /// stopping, a provider failure, or a turn cap that was the tier's, as
+    /// on the highest rung.
+    pub(super) fn bounded_stop(
+        &self,
+        plan_id: &str,
+        task_id: &str,
+        dispatch: &crate::dispatch_v2::AgentResultDispatch,
+        allowance: Option<&TryAllowance>,
+        rung: Option<&RungAllowance>,
+        max_turns: u32,
+    ) -> Option<BoundedStop> {
+        let message = dispatch.result.output.body.as_text().unwrap_or_default();
+        if self.stopped_call(plan_id, task_id, message).is_some() {
+            return None;
+        }
+        match allowance.and_then(|allowance| allowance.stop(own_budget_stop(dispatch))) {
+            Some(TryStop::Plan(_)) => return None,
+            Some(TryStop::Rung(reason)) => return Some(BoundedStop::Spend(reason)),
+            None => {}
+        }
+        let hit = roko_agent::provider::error_classify::detect_turn_cap(message)?;
+        (rung.and_then(|rung| rung.turns) == Some(max_turns)).then_some(BoundedStop::Turns(
+            TurnCapRetry {
+                cap: max_turns,
+                num_turns: hit.num_turns,
+            },
+        ))
+    }
+
+    /// The call of an agent that runs its own loop, which the watchdog
+    /// stopped once it spent its rung's allowance (gap-2c9412): the call,
+    /// with the usage it streamed, as a try that ended at its rung's bound,
+    /// for the task's checks to judge the work it left. `None` for any other
+    /// interruption, for a call that streamed nothing to account, and once
+    /// the run is stopping.
+    pub(super) fn interrupted_at_bound(
+        &self,
+        plan_id: &str,
+        task_id: &str,
+        error: &RokoError,
+        ended_by: Option<&AttemptInterrupted>,
+        progress: &AttemptProgress,
+        wall_ms: u64,
+    ) -> Option<(
+        (crate::dispatch_v2::AgentResultDispatch, FailoverChain),
+        BoundedStop,
+    )> {
+        let Some(AttemptInterrupted::AllowanceSpent(reason)) = ended_by else {
+            return None;
+        };
+        let message = error.to_string();
+        if self.stopped_call(plan_id, task_id, &message).is_some() {
+            return None;
+        }
+        let call = progress.interrupted_call()?;
+        let dispatched = call.into_dispatch(&message, wall_ms, self.pricing_snapshot().as_deref());
+        Some((dispatched, BoundedStop::Spend(reason.clone())))
+    }
+
+    /// Owe `plan_id/task_id`'s next attempt the resume note of a try that
+    /// ended at its rung's bound and failed its checks: its turn cap and
+    /// the work it left, or the allowance it spent.
+    pub(super) fn keep_bounded_stop(&self, plan_id: &str, task_id: &str, stop: &BoundedStop) {
+        match stop {
+            BoundedStop::Turns(retry) => self.keep_turn_cap_retry(plan_id, task_id, *retry),
+            BoundedStop::Spend(reason) => self.keep_allowance_stop(plan_id, task_id, reason),
+        }
+    }
+
     /// Owe `plan_id/task_id`'s next attempt a note that its last try
     /// stopped at one of its limits, for `reason`: its rung's spend
     /// allowance, or its model's output limit (bug-f6b99f). Its work is on

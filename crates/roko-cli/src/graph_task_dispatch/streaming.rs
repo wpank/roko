@@ -474,6 +474,20 @@ impl StreamingTaskDispatcher for GraphTaskDispatcher {
             Some(allowance) => allowance.stop(own_stop),
             None => own_stop.map(TryStop::Plan),
         };
+        // A try that ended at its rung's bound is judged by the task's checks
+        // on the work it left, as on the batch path (gap-2c9412).
+        let bounded = match &dispatch_result {
+            Ok(dispatch) if !dispatch.result.success && pinned_model_substituted.is_none() => self
+                .bounded_stop(
+                    &spec.plan_id,
+                    &task.id,
+                    dispatch,
+                    allowance.as_deref(),
+                    rung_allowance.as_ref(),
+                    max_turns,
+                ),
+            _ => None,
+        };
         let (outcome, output_signals, verification, denial) = match dispatch_result {
             Ok(dispatch) => {
                 let cost_usd = f64::from(dispatch.result.usage.cost_usd);
@@ -506,7 +520,8 @@ impl StreamingTaskDispatcher for GraphTaskDispatcher {
                 // Same verdict logic as the batch path; gates run in the lease
                 // path and progress streams through the event channel.
                 let helper_calls = HelperCalls::default();
-                let verification = if dispatch.result.success && pinned_model_substituted.is_none()
+                let verification = if (dispatch.result.success || bounded.is_some())
+                    && pinned_model_substituted.is_none()
                 {
                     let attempt_number = self.next_retry_attempt(&spec.plan_id, &task.id).attempt;
                     attempt.verify_started();
@@ -554,8 +569,9 @@ impl StreamingTaskDispatcher for GraphTaskDispatcher {
                         ),
                     },
                 };
-                let settled =
+                let mut settled =
                     attempt.settle(settlement, &dispatch_plan.model.slug, Some(&dispatch));
+                settled.bound = bounded.as_ref().map(BoundedStop::describe);
                 self.emit_feedback(
                     spec,
                     &task,
@@ -576,7 +592,10 @@ impl StreamingTaskDispatcher for GraphTaskDispatcher {
 
                 // A denial no retry can change fails the task at once
                 // (backlog 1116).
-                let denial = if dispatch.result.success || pinned_model_substituted.is_some() {
+                let denial = if dispatch.result.success
+                    || bounded.is_some()
+                    || pinned_model_substituted.is_some()
+                {
                     None
                 } else {
                     super::failover::permanent_provider_denial(&dispatch)
@@ -585,7 +604,17 @@ impl StreamingTaskDispatcher for GraphTaskDispatcher {
                 let output_signals = match &verification {
                     Some(Ok(verdict)) => {
                         let mut output = dispatch.result.output;
-                        if output.body.as_text().is_err() {
+                        if let Some(stop) = &bounded {
+                            output = Signal::builder(Kind::AgentOutput)
+                                .body(Body::text(format!(
+                                    "provider `{}` stopped task `{}` at {}; the task's checks \
+                                     passed on the work it left",
+                                    dispatch.target.provider_id,
+                                    spec.title,
+                                    stop.describe()
+                                )))
+                                .build();
+                        } else if output.body.as_text().is_err() {
                             output = Signal::builder(Kind::AgentOutput)
                                 .body(Body::text(format!(
                                     "provider `{}` completed task `{}`",
@@ -673,13 +702,15 @@ impl StreamingTaskDispatcher for GraphTaskDispatcher {
         if let Some(error) = pinned_model_substituted {
             return Err(error);
         }
+        // A try its checks judged ends as they say, a bounded one included.
+        let verified = verification.is_some();
         if let Some(Err(error)) = verification {
             return Err(error);
         }
         if let Some(denial) = denial {
             return Err(denial);
         }
-        match budget_stop {
+        match budget_stop.filter(|_| !verified) {
             Some(TryStop::Plan(reason)) => return Err(RokoError::gateway("budget", false, reason)),
             Some(TryStop::Rung(reason)) => {
                 return Err(RokoError::Agent {

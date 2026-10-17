@@ -4,7 +4,7 @@
 
 What to work on next: the top checked, open items of each goal, highest-priority goal first. Reorder or change goals in `goals.toml`; pin an item higher with `rank = 1` (lower first).
 
-**Drift:** 2 likely done · 8 anchor gone · 128 changed since checked · 4 mentioned in commits. Re-check them before relying on this list: `DRIFT.md`.
+**Drift:** 2 likely done · 8 anchor gone · 131 changed since checked · 5 mentioned in commits. Re-check them before relying on this list: `DRIFT.md`.
 
 ## 1. Public release: security, licence, CI, first run
 
@@ -36,23 +36,23 @@ _12 more open · `goal = "truth"`_
 - **P2** [spec-fef7c5](items/spec-fef7c5-backlog-phase-3-golden-path-proof.md) Backlog Phase 3 — golden-path proof [spec] · verified 2026-10-02
 - **P2** [gap-55f878](items/gap-55f878-the-specs-epic-s-two-exit-tests.md) The specs epic's two exit tests were never written: spec_gate_passes_an_exact_plan_and_refuses_its_vacuous_twin (backlog 3200) and spec_lints_reject_a_weak_plan_and_pass_its_fixed_twin (spec-e57870) · size S · verified 2026-10-15
 
-_3 more open · on hold: gap-634954 · 4 unchecked (`TRIAGE.md`) · `goal = "golden-path"`_
+_5 more open · on hold: gap-634954 · 4 unchecked (`TRIAGE.md`) · `goal = "golden-path"`_
 
 ## 5. Proof: the pilot benchmark and a record of the work
 
 - **P1** [dec-3d5714](items/dec-3d5714-s09-4-1-s-two-stage-bootstrap.md) S09 §4.1's two-stage bootstrap over-covers (0.975): change to task-only n_h-1 resampling, or accept, before the lock [decision] · size S · verified 2026-10-03
-- **P1** [bug-562ee6](items/bug-562ee6-planemit-s-pinned-mode-cannot-emit-a.md) planemit's pinned mode cannot emit a model whose slug holds a dot: [models.glm-4.7] parses as nested tables, so roko_fixed_glm, roko_fixed_kimi and roko_fixed_mini (LOG1 block A) fail emit and vb run refuses them at preflight [bug] · size S · verified 2026-10-17
 - **P2** [gap-b94a2c](items/gap-b94a2c-a-sandboxed-agent-still-reads-any-same.md) A sandboxed agent still reads any same-user process's start-up environment with sysctl(KERN_PROCARGS2), and no sandbox-exec rule stops it · size L · verified 2026-10-16
+- **P2** [gap-8f07ae](items/gap-8f07ae-claude-cli-re-pricing-backlog-6105-has.md) Claude CLI re-pricing (backlog 6105) has never had its live acceptance: 20 Claude CLI attempts with api_equiv_usd and price_snapshot_id and a median vendor gap of at most 5% · size S · verified 2026-10-15
 
-_14 more open · on hold: gap-057cc7, gap-05c4c0, gap-11cec6, gap-31e1b0, gap-394f28, gap-4a5109, gap-50346f, gap-681741, gap-7c9a9c, gap-aa60f2, gap-b7f99e, gap-ba9965, gap-e9218e · 9 unchecked (`TRIAGE.md`) · `goal = "proof"`_
+_11 more open · on hold: gap-057cc7, gap-05c4c0, gap-11cec6, gap-31e1b0, gap-394f28, gap-4a5109, gap-50346f, gap-681741, gap-7c9a9c, gap-aa60f2, gap-b7f99e, gap-ba9965, gap-e9218e · 11 unchecked (`TRIAGE.md`) · `goal = "proof"`_
 
 ## 6. Learning from verified outcomes, M1-M4 (P2)
 
 - **P2** [gap-3d37e8](items/gap-3d37e8-pk54-m4-deep-audits-python-b1-hidden.md) PK54 M4 deep audits: Python: B1 hidden suites written from the spec by another model family, and validated… · size M · verified 2026-10-02
 - **P2** [gap-fd96c8](items/gap-fd96c8-pk56-m4-deep-audits-first-slice-audit.md) PK56 M4 deep audits: First slice: audit at least 60 recorded cheap-arm passes and publish the replay report… · size S · verified 2026-10-02
-- **P2** [spec-446a41](items/spec-446a41-backlog-phase-4-loops-re-closed-s02.md) Backlog Phase 4 — loops re-closed (S02) [spec] · verified 2026-10-02
+- **P1** [bug-92cc56](items/bug-92cc56-the-calibration-gate-s-routed-pass-rate.md) The calibration gate's routed-pass-rate bound has no routed outcome until the self-model routes, and it routes only once the gate is eligible, so M3 can never become eligible [bug] · size S · verified 2026-10-17
 
-_24 more open · on hold: gap-799698, gap-8a26fc, gap-93c748 · 1 unchecked (`TRIAGE.md`) · `goal = "cybernetic"`_
+_25 more open · on hold: gap-799698, gap-8a26fc, gap-93c748 · 1 unchecked (`TRIAGE.md`) · `goal = "cybernetic"`_
 
 ## 7. Plan runs work reliably
 
@@ -60,23 +60,23 @@ _24 more open · on hold: gap-799698, gap-8a26fc, gap-93c748 · 1 unchecked (`TR
 - **P1** [gap-d58ae8](items/gap-d58ae8-tp2-36-p0-0-37-mori-shaped.md) Mori-shaped workflow contract unproven end-to-end · size L · verified 2026-10-01
 - **P2** [gap-5420f3](items/gap-5420f3-a-check-that-hides-its-test-runner.md) A check that hides its test runner's output fails silently; re-run the runner on its own to recover the failure text for the retry and the person · size M · verified 2026-10-15
 
-_16 more open · on hold: find-70edcb · 4 unchecked (`TRIAGE.md`) · `goal = "core"`_
+_17 more open · on hold: find-70edcb · 4 unchecked (`TRIAGE.md`) · `goal = "core"`_
 
 ## 8. Live visibility: serve, dashboard, portal
 
 - **P1** [gap-aabeff](items/gap-aabeff-tool-t003-tui-paths-still-consume-string.md) TUI paths still consume string/tail projections that lose semantics (TUI adoption unproven) · size L · verified 2026-10-01
-- **P2** [bug-e529e3](items/bug-e529e3-a-run-whose-event-index-outgrows-the.md) A run whose event index outgrows the summary's scan window (10,000 events or 8 MB) reads 'running' forever in GET /api/runs/{id}/summary and the MCP run_status, and its diff route answers 409 [bug] · size M · verified 2026-10-17
 - **P2** [bug-a0f01e](items/bug-a0f01e-long-running-operation-handles-never-record-completion.md) Long-running operation handles never record completion [bug] · verified 2026-10-01
+- **P3** [bug-eb55eb](items/bug-eb55eb-a-claude-cli-attempt-s-verdict-records.md) A Claude CLI attempt's verdict records its cost as source unknown with no API-equivalent, and /api/models gives claude-sonnet-4-6 no cache-write price, so estimates miss most of a CLI attempt's cost [bug] · size S · verified 2026-10-17
 
-_5 more open · `goal = "visibility"`_
+_6 more open · `goal = "visibility"`_
 
 ## 9. Learning loops on the Graph path
 
 - **P1** [bug-7e0556](items/bug-7e0556-a-dream-writes-templated-entries-as-consolidated.md) A dream writes templated entries as consolidated knowledge at confidence up to 1.0, and prompts inject them ahead of real lessons, so the next task costs more [bug] · size M · verified 2026-10-16
-- **P2** [gap-b1f7b9](items/gap-b1f7b9-a-plan-s-own-verify-steps-feed.md) A plan's own verify steps feed gate history under the rung they check, so gate-thresholds.json learns from authored test steps · size S · verified 2026-10-15
 - **P2** [gap-a4fbf8](items/gap-a4fbf8-the-model-ladder-retry-budget-floor-overrides.md) The model-ladder retry-budget floor overrides the adaptive gate-history suggestion instead of composing with it (QA7) · size M · verified 2026-10-02
+- **P2** [gap-ad9e03](items/gap-ad9e03-the-section-bandit-drops-domain-context-the.md) The section bandit drops domain_context, the section that carries lessons, playbooks and episodes, so L-sec withholds L-know and L-play content outside their own arms · size M · verified 2026-10-16
 
-_10 more open · on hold: bug-429315, bug-8c5d32, bug-b9be1d, bug-dd5dca, bug-dee062, find-3d8bd4, find-3f99f2, gap-47356e, gap-4d1bff, reg-d76ab0 · 1 unchecked (`TRIAGE.md`) · `goal = "learning"`_
+_7 more open · on hold: bug-429315, bug-8c5d32, bug-b9be1d, bug-dd5dca, bug-dee062, find-3d8bd4, find-3f99f2, gap-47356e, gap-4d1bff, reg-d76ab0 · 1 unchecked (`TRIAGE.md`) · `goal = "learning"`_
 
 ## 10. Tooling, CLI polish and code hygiene
 
@@ -100,6 +100,6 @@ _5 more open · on hold: gap-63055e, gap-8d80d3, gap-ebd656, spec-743a7e, spec-b
 - **P2** [gap-ccbf26](items/gap-ccbf26-a-capped-run-cannot-bound-a-codex.md) A capped run cannot bound a Codex, Gemini or Cursor CLI attempt: none streams its usage or takes a spend limit, and Codex's and Gemini's turn caps are advisory, so only the attempt timeout ends one · size M · verified 2026-10-16
 - **P2** [gap-ac78fb](items/gap-ac78fb-acp-elicitation-notices-and-interactive-ux-primitives.md) ACP Elicitation, Notices, and Interactive UX Primitives · size L · verified 2026-09-29
 
-_7 more open · 1 unchecked (`TRIAGE.md`) · `goal = "hermes"`_
+_7 more open · 2 unchecked (`TRIAGE.md`) · `goal = "hermes"`_
 
 10 open items have no goal (later); they are listed in `STATUS.md`.

@@ -710,7 +710,8 @@ roko plan regenerate <plan-dir> [--dry-run]
 
 Import mori plans as roko plans. Each `.mori/plans/<plan>/` directory becomes `plans/<plan>/`; the command validates
 the plans it writes, as `roko plan validate` does, and exits 1 when one has an error. No model runs, and the mori files
-are only read.
+are only read. Like `roko plan generate`, it takes no workspace lock, so it runs beside `roko serve`: each new plan is
+written beside its place and moved in whole, so serve lists all of it or none of it.
 
 ```
 roko plan import --mori <dir>... [--out <dir>] [--set <name>] [--force]
@@ -722,7 +723,7 @@ roko plan import --mori <dir>... [--out <dir>] [--set <name>] [--force]
 | `--mori <dir>...` | required | A mori plan directory, or a directory of them (`.mori/plans`) to import every plan it holds. |
 | `--out <dir>` | `plans/` | Plans directory to write into, inside the workspace. |
 | `--set <name>` | -- | Write the plans into `<out>/<name>/`, a plan set that runs as one (`roko run plans/<name>`). |
-| `--force` | false | Replace plan directories that hold a `tasks.toml` already. |
+| `--force` | false | Replace plan directories that hold a `tasks.toml` already. This takes the workspace lock, so it refuses while `roko serve` or a run holds the workspace. |
 | `--no-reviewer` / `--no-scribe` | false | Leave out the reviewer task (`review-tasks.toml`) or the docs tasks (`scribe-tasks.toml`). |
 | `--strict` | false | Fail on validation warnings, not only errors. |
 | `--json` | false | Print each import's report and the validation as JSON. |

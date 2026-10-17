@@ -51,7 +51,7 @@ use std::fs;
 use std::path::{Component, Path, PathBuf};
 use std::sync::LazyLock;
 
-use anyhow::{Context as _, Result, bail};
+use anyhow::{Context as _, Result, anyhow, bail};
 use regex::Regex;
 use roko_core::task::TaskTier;
 use roko_gate::spec_quality::{VerifyClass, analyze_step, vacuous_reason};
@@ -61,6 +61,7 @@ use toml::{Table, Value};
 use crate::plan_brief::{DECOMPOSITION_FILE, RUBRIC_FILE};
 use crate::plan_policy::{PlanExecutionPolicy, TierSizeLimits};
 use crate::task_parser::TasksFile;
+use crate::workspace_lock::WorkspaceLockGuard;
 
 /// mori hints roko acts on, kept as they are.
 const KEPT_HINTS: [&str; 8] = [
@@ -351,6 +352,34 @@ pub fn mori_plan_dirs(root: &Path) -> Result<Vec<PathBuf>> {
     Ok(dirs)
 }
 
+/// The workspace lock `roko plan import` takes. A fresh import takes none: as
+/// `roko plan generate` does (#226), it reads the workspace and writes only
+/// new plan directories, each moved into place whole, so it runs beside the
+/// roko serve that holds the workspace (bug-dfe4c5). Replacing plans
+/// (`force`) takes the exclusive lock, since a run may be using them.
+///
+/// # Errors
+///
+/// With `force`, when another process holds the workspace; the error names a
+/// roko serve that does.
+pub fn import_lock(workspace: &Path, force: bool) -> Result<Option<WorkspaceLockGuard>> {
+    if !force {
+        return Ok(None);
+    }
+    crate::workspace_lock::acquire_workspace_lock(&workspace.join(".roko"))
+        .map(Some)
+        .map_err(
+            |error| match crate::doctor::serve_holding_workspace(workspace) {
+                Some(serve) => anyhow!(
+                    "roko serve (PID {}) holds this workspace, and --force replaces plans a run \
+                     there may be using: import into a new --out or --set, or stop serve first",
+                    serve.pid
+                ),
+                None => error,
+            },
+        )
+}
+
 /// Import mori plans into `plans_root`, a directory inside `workspace`, and
 /// write them: each of `sources` is a mori plan directory or a directory of
 /// them (`.mori/plans/`). Nothing is written when an import fails, or when a
@@ -426,7 +455,9 @@ pub fn import_mori_plans(
 
 /// Write an import into `plan_dir`: `tasks.toml`, its companions, and the
 /// plan's `brief.md` (`roko plan prepare`). A `plan_dir` that holds a
-/// `tasks.toml` already is refused unless `force`.
+/// `tasks.toml` already is refused unless `force`. A new plan is written
+/// beside its place, in a hidden directory plan discovery skips, and moved in
+/// whole, so a reader such as roko serve sees all of it or none (bug-dfe4c5).
 ///
 /// # Errors
 ///
@@ -444,14 +475,49 @@ pub fn write_mori_import(
             plan_dir.display()
         );
     }
-    fs::create_dir_all(plan_dir).with_context(|| format!("create {}", plan_dir.display()))?;
-    let tasks = plan_dir.join("tasks.toml");
+    if plan_dir.exists() {
+        return write_plan_files(import, workspace, plan_dir);
+    }
+    let (Some(parent), Some(name)) = (
+        plan_dir.parent(),
+        plan_dir.file_name().and_then(|name| name.to_str()),
+    ) else {
+        bail!("{} names no plan directory", plan_dir.display());
+    };
+    fs::create_dir_all(parent).with_context(|| format!("create {}", parent.display()))?;
+    let staging = parent.join(format!(".{name}.import-{}", std::process::id()));
+    if staging.exists() {
+        fs::remove_dir_all(&staging).with_context(|| format!("remove {}", staging.display()))?;
+    }
+    let written = write_plan_files(import, workspace, &staging).and_then(|()| {
+        fs::rename(&staging, plan_dir).with_context(|| {
+            if plan_dir.exists() {
+                format!(
+                    "{} appeared while the import ran; pass --force to replace it",
+                    plan_dir.display()
+                )
+            } else {
+                format!("move {} to {}", staging.display(), plan_dir.display())
+            }
+        })
+    });
+    if written.is_err() {
+        let _ = fs::remove_dir_all(&staging);
+    }
+    written
+}
+
+/// Write an import's files into `dir`: `tasks.toml`, its companions and the
+/// plan's `brief.md`.
+fn write_plan_files(import: &MoriImport, workspace: &Path, dir: &Path) -> Result<()> {
+    fs::create_dir_all(dir).with_context(|| format!("create {}", dir.display()))?;
+    let tasks = dir.join("tasks.toml");
     fs::write(&tasks, &import.tasks_toml).with_context(|| format!("write {}", tasks.display()))?;
     for (name, contents) in &import.companions {
-        let path = plan_dir.join(name);
+        let path = dir.join(name);
         fs::write(&path, contents).with_context(|| format!("write {}", path.display()))?;
     }
-    crate::plan_brief::prepare(plan_dir, workspace, true)?;
+    crate::plan_brief::prepare(dir, workspace, true)?;
     Ok(())
 }
 
@@ -850,9 +916,16 @@ impl Draft {
         self.checks.len() + usize::from(!self.file_checks.is_empty())
     }
 
-    /// Add a runnable check, unless it can never fail or the task has it.
+    /// Add a runnable check, unless it can never fail or the task has it,
+    /// under a phase gate learning observes when it runs tests, compiles or
+    /// lints ([`observed_phase`]).
     fn add_check(&mut self, phase: &str, command: &str, fail_msg: &str) -> bool {
-        push_step(&mut self.checks, phase, command, fail_msg)
+        push_step(
+            &mut self.checks,
+            observed_phase(command, phase),
+            command,
+            fail_msg,
+        )
     }
 
     fn add_file_check(&mut self, file: &str, command: String, exists: bool) -> bool {
@@ -1207,16 +1280,12 @@ impl<'a> Importer<'a> {
         }
         for command in acceptance_commands(&draft.acceptance) {
             let message = format!("Checkpoint from the acceptance criteria: {command}");
-            if draft.add_check(check_phase(&command, "checkpoint"), &command, &message) {
+            if draft.add_check("checkpoint", &command, &message) {
                 self.report.checks.acceptance += 1;
             }
         }
         if let Some(command) = str_of(task, "command").filter(|command| !is_mori_internal(command))
-            && draft.add_check(
-                check_phase(command, "command"),
-                command,
-                "the mori task's own check",
-            )
+            && draft.add_check("command", command, "the mori task's own check")
         {
             self.report.checks.task_command += 1;
         }
@@ -2613,17 +2682,25 @@ fn guarded(command: &str, tests: &[String], dir: &str) -> String {
     format!("{} && {command}", guards.join(" && "))
 }
 
-/// Add a check to `steps` unless it can never fail or `steps` has it.
-/// The phase of an imported check that runs `command`: `test` when it runs a
-/// test runner, which gate learning observes (gap-e2d2e5), else `phase`.
-fn check_phase<'a>(command: &str, phase: &'a str) -> &'a str {
-    if analyze_step(command, &BTreeSet::new()).class == VerifyClass::Test {
-        "test"
-    } else {
-        phase
+/// The phase of a task's imported check that runs `command`: `phase` when
+/// gate learning observes it ([`roko_gate::rung_for_verify_phase`]), else
+/// `test` when the command runs tests, `clippy` when it lints and `compile`
+/// when it compiles, so the plan's runs teach the gate thresholds and
+/// PLAN_051 stays quiet (gap-e2d2e5, bug-308b5e); any other check keeps
+/// `phase`, such as mori's `invariant` for a check that runs a program.
+fn observed_phase<'a>(command: &str, phase: &'a str) -> &'a str {
+    if roko_gate::rung_for_verify_phase(phase).is_some() {
+        return phase;
+    }
+    match analyze_step(command, &BTreeSet::new()).class {
+        VerifyClass::Test => "test",
+        VerifyClass::Compile if command.contains("clippy") => "clippy",
+        VerifyClass::Compile => "compile",
+        _ => phase,
     }
 }
 
+/// Add a check to `steps` unless it can never fail or `steps` has it.
 fn push_step(steps: &mut Vec<Step>, phase: &str, command: &str, fail_msg: &str) -> bool {
     let command = unpiped(command);
     if never_fails(&command) || steps.iter().any(|step| step.command == command) {
@@ -2713,9 +2790,12 @@ fn cargo_test_parts(command: &str) -> Option<(Vec<String>, String, String)> {
     ))
 }
 
-/// Add `step` to `steps` unless `steps` has its command.
-fn push_owned_step(steps: &mut Vec<Step>, step: Step) {
+/// Add `step` to `steps` unless `steps` has its command, under a phase gate
+/// learning observes ([`observed_phase`]), since a whole-plan check a task
+/// takes over keeps its `verify.sh` or `rubric` phase until then.
+fn push_owned_step(steps: &mut Vec<Step>, mut step: Step) {
     if !steps.iter().any(|known| known.command == step.command) {
+        step.phase = observed_phase(&step.command, &step.phase).to_string();
         steps.push(step);
     }
 }
@@ -3323,6 +3403,148 @@ depends_on = ["01:T2", "07z:T1"]
         .expect("forced import");
     }
 
+    /// bug-308b5e: a task's imported check that runs tests, compiles or lints
+    /// takes a phase gate learning observes when mori's is not one, so the
+    /// plan raises no PLAN_051 (gap-e2d2e5); a phase it observes stays.
+    #[test]
+    fn plan_import_names_test_runs_with_a_phase_gate_learning_observes() {
+        let tasks = r#"[meta]
+plan = "02-gates"
+
+[[task]]
+id = "T1"
+title = "Implement the gate"
+files = ["crates/demo-gates/src/lib.rs"]
+acceptance = [
+  "INV-1: `test_gate_opens` passes",
+  "Checkpoint: `cargo check -p demo-gates` exits 0",
+]
+command = "cargo clippy -p demo-gates -- -D warnings"
+"#;
+        let verify = r#"
+[[task]]
+id = "INV1"
+title = "INV: the gate opens"
+type = "invariant"
+invariant = "INV-1"
+command = "cargo test -p demo-gates test_gate_opens"
+test_fns = ["test_gate_opens"]
+blocking = true
+"#;
+        let temp = tempfile::tempdir().expect("tempdir");
+        let mori_root = temp.path().join("mori");
+        mori_plan(
+            &mori_root,
+            "02-gates",
+            &[("tasks.toml", tasks), ("verify-tasks.toml", verify)],
+        );
+        let workspace = temp.path().join("ws");
+        let plans = workspace.join("plans");
+        import_mori_plans(
+            &[mori_root],
+            &workspace,
+            &plans,
+            MoriImportOptions::default(),
+            false,
+        )
+        .expect("import");
+
+        let plan = TasksFile::parse(&plans.join("02-gates/tasks.toml")).expect("plan");
+        let t1 = plan.tasks.iter().find(|task| task.id == "T1").expect("T1");
+        let phase = |part: &str| {
+            t1.verify
+                .iter()
+                .find(|step| step.command.contains(part))
+                .map(|step| step.phase.as_str())
+                .unwrap_or_else(|| panic!("a step runs {part}: {:#?}", t1.verify))
+        };
+        assert_eq!(phase("test_gate_opens"), "test", "mori's invariant");
+        assert_eq!(phase("cargo check"), "compile", "a checkpoint");
+        assert_eq!(phase("cargo clippy"), "clippy", "the task's command");
+        assert_eq!(
+            observed_phase("cargo test -p demo-gates", "integration"),
+            "integration"
+        );
+        assert_eq!(
+            observed_phase("test -f README.md", "invariant"),
+            "invariant"
+        );
+
+        let report =
+            validate_plans_dir_with_workdir(&plans, None, Some(&workspace)).expect("validate");
+        let rules: Vec<&str> = report
+            .plans
+            .iter()
+            .flat_map(|plan| &plan.diagnostics)
+            .map(|diagnostic| diagnostic.rule_id.as_str())
+            .collect();
+        assert!(!rules.contains(&"PLAN_051"), "{rules:?}");
+    }
+
+    /// bug-dfe4c5: a fresh import takes no workspace lock, so it runs beside
+    /// the roko serve that holds the workspace, and moves each new plan into
+    /// place whole; replacing plans (`--force`) needs the lock, and the
+    /// refusal names serve.
+    #[test]
+    fn plan_import_runs_beside_the_serve_that_holds_the_workspace() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let workspace = temp.path().join("ws");
+        let plans = workspace.join("plans");
+        let serve_lock = crate::workspace_lock::acquire_workspace_lock(&workspace.join(".roko"))
+            .expect("serve's lock");
+        let endpoint = roko_serve::endpoint::ServeEndpoint {
+            pid: std::process::id(),
+            url: "http://127.0.0.1:6792".to_string(),
+            workdir: workspace.clone(),
+            started_at: "2026-10-17T10:00:00Z".to_string(),
+        };
+        roko_serve::endpoint::write_endpoint(&workspace, &endpoint).expect("serve.json");
+        let tasks = "[meta]\nplan = \"08g-voices\"\n\n[[task]]\nid = \"T1\"\n\
+                     title = \"Write the voices doc\"\nfiles = [\"docs/voices.md\"]\n\
+                     acceptance = [\"File exists: docs/voices.md\"]\ncategory = \"docs\"\n";
+        let mori_root = temp.path().join("mori");
+        mori_plan(&mori_root, "08g-voices", &[("tasks.toml", tasks)]);
+
+        let lock = import_lock(&workspace, false).expect("a fresh import takes no lock");
+        assert!(lock.is_none());
+        let import = |force| {
+            import_mori_plans(
+                std::slice::from_ref(&mori_root),
+                &workspace,
+                &plans,
+                MoriImportOptions::default(),
+                force,
+            )
+        };
+        import(false).expect("import beside serve");
+        assert!(plans.join("08g-voices/tasks.toml").is_file());
+        assert!(plans.join("08g-voices/brief.md").is_file());
+        let left: Vec<String> = fs::read_dir(&plans)
+            .expect("plans")
+            .filter_map(Result::ok)
+            .map(|entry| entry.file_name().to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(left, ["08g-voices"], "no staging directory is left");
+        let found = crate::orchestrator::plan_discovery::discover_plans(&plans).expect("plans");
+        assert_eq!(found.len(), 1);
+
+        let again = import(false).expect_err("the plan exists");
+        assert!(again.to_string().contains("--force"), "{again:#}");
+        let Err(refused) = import_lock(&workspace, true) else {
+            panic!("serve holds the workspace, so --force gets no lock");
+        };
+        assert!(
+            refused
+                .to_string()
+                .starts_with(&format!("roko serve (PID {})", std::process::id())),
+            "{refused:#}"
+        );
+        drop(serve_lock);
+        let lock = import_lock(&workspace, true).expect("the lock is free");
+        assert!(lock.is_some());
+        import(true).expect("replace under the lock");
+    }
+
     /// gap-624658: a task whose files exist already gets a file check that
     /// says it passes on the base, so the spec gate does not refuse work
     /// mori finished; one with more crates than a task takes is split.
@@ -3484,8 +3706,8 @@ depends_on = ["D1"]
     }
 
     /// The mori corpus (`ROKO_MORI_CORPUS`, a `.mori/plans` directory) as roko
-    /// plans: every plan imports, and the counts `plan validate` passes
-    /// with and without `--strict` are printed. Run it with
+    /// plans: every plan imports and passes `plan validate --strict`, and the
+    /// counts are printed. Run it with
     /// `ROKO_MORI_CORPUS=<bardo>/.mori/plans cargo test -p roko-cli --lib
     /// plan_import_mori_corpus -- --ignored --nocapture`.
     #[test]
@@ -3510,6 +3732,7 @@ depends_on = ["D1"]
         let report =
             validate_plans_dir_with_workdir(&plans, None, Some(workspace)).expect("validate");
         let mut by_rule: BTreeMap<(String, String), usize> = BTreeMap::new();
+        let mut first: BTreeMap<String, String> = BTreeMap::new();
         let mut with_errors = 0;
         let mut with_diagnostics = 0;
         for plan in &report.plans {
@@ -3524,6 +3747,9 @@ depends_on = ["D1"]
                 *by_rule
                     .entry((severity, diagnostic.rule_id.clone()))
                     .or_default() += 1;
+                first
+                    .entry(diagnostic.rule_id.clone())
+                    .or_insert_with(|| format!("{}: {}", plan.plan_id, diagnostic.message));
             }
         }
         let total = report.totals.plans_checked;
@@ -3563,8 +3789,10 @@ depends_on = ["D1"]
         for ((severity, rule), count) in &by_rule {
             eprintln!("  {severity} {rule}: {count}");
         }
-        // The prototype (plans-research's mori2roko.py) passed 132 and 19.
-        assert!(total - with_errors >= 132, "{by_rule:#?}");
-        assert!(total - with_diagnostics >= 19, "{by_rule:#?}");
+        // Every plan passes `plan validate --strict` (the prototype,
+        // plans-research's mori2roko.py, passed 132 and 19); a new rule that
+        // warns on an imported plan shows here (bug-308b5e).
+        assert_eq!(with_errors, 0, "{by_rule:#?} {first:#?}");
+        assert_eq!(with_diagnostics, 0, "{by_rule:#?} {first:#?}");
     }
 }

@@ -736,6 +736,8 @@ What maps to what:
 | Blocking `verify-tasks.toml` entries | `[[task.verify]]` on each task whose acceptance names their tests or invariant, behind a `grep` for each named test; the rest join `[[meta.verify]]` |
 | Acceptance "Checkpoint: \`cmd\`" and "\`cmd\` exits 0", a task's `command` and `test_fns` | `[[task.verify]]` (mori's own `plans/context/` scripts are skipped) |
 | Acceptance "File exists: path" | One `test -f` step per task, with `expect = "pass_on_base"` when the files are in the workspace already |
+| Acceptance lines a step checks (a checkpoint, a line naming a verify-tasks entry's invariant or tests, a "File exists" line) | Stay in `acceptance`; each step's `covers` names the lines it checks |
+| Acceptance lines no step checks | Move, verbatim, to the end of the task's description, under "Also required, not checked automatically:" (and "(the review task judges these)" when the plan has a reviewer); the report counts them per task ("T1: 3 checked, 2 also required"). Lines past the description's room for its tier go to `mori-also-required-<task>.txt` beside the plan, which the task reads |
 | A task with no check | `cargo check -p <crate>`, or a check that its files exist |
 | `verify.sh` `run_check` steps, the rubric's commands | `[[meta.verify]]`; `-p apps/x` becomes `-p x` |
 | Non-blocking `verify-tasks.toml` entries | Listed in the reviewer task's description, as advice |

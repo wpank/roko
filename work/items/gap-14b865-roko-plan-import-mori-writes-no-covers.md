@@ -61,27 +61,37 @@ Across the bardo corpus's 1,738 tasks:
 
 ## Plan
 
-This is option A from roko-demos' note to the lead on 2026-10-17. The lead had not picked an option when this work
-started.
+The lead chose option B on 2026-10-17. Option A, where a checkpoint covers the prose lines, was dropped: it would
+show prose criteria as covered by a checkpoint that does not check them, which overstates verification.
 
-1. A step made from acceptance lines covers them, one to one:
-   - a checkpoint step covers its line;
-   - a `verify-tasks.toml` step covers the lines that name its invariant or its tests;
-   - a `test_fns` step covers the lines that name its tests;
-   - the file step covers its "File exists" lines.
-2. Prose lines:
-   - In a task with a checkpoint step, the checkpoint step also covers the prose lines, since mori accepts a task on
-     its checkpoint.
-   - A task with no checkpoint keeps `covers` only when every line is covered. Otherwise it writes none, so it gets
-     no PLAN_044 warning.
-3. When steps are joined, their covers are joined too. A step that moves to the whole-plan check, or that another
-   task takes over, drops its covers, because they name its own task's criteria.
-4. Tests:
+1. Each step covers the lines it checks:
+   - A checkpoint step covers its own line, plus every line whose named tests (`test_…` words) its suite defines.
+     The suite is the file a `python3 -m unittest <module>` names, or the crate a `cargo test -p <package>` with no
+     filter builds.
+   - A `verify-tasks.toml` step or a `test_fns` step covers the lines whose named tests it runs. A line naming no
+     test is covered by the step whose entry's invariant the line names.
+   - The steps that run every test a line names cover it. Failing that, the steps that run those tests between them
+     cover it. A line that names a test no step runs stays unchecked.
+   - The file step covers its "File exists" lines.
+2. `acceptance` keeps only the checked lines, renumbered, so `covers` stays one to one.
+3. The other lines move verbatim to the end of the description:
+   - They go in the block `Also required, not checked automatically:`, with the line
+     `(the review task judges these)` when the plan has a review task, then one `- ` line each.
+   - The tier fit counts the block. The lead is cut to the room the block leaves, but to no fewer than 60 words.
+   - Block lines past the description's room go to `mori-also-required-<task>.txt` beside the plan. The task reads
+     that file, and a closing sentence names it.
+4. Steps that are joined join their covers. A step that moves to the whole-plan check, or that another task takes
+   over, drops its covers.
+5. The import report counts each task's split, for example `acceptance: T1: 4 checked, 2 also required`.
+6. Tests:
    - `plan_import_links_a_checkpoint_step_to_the_criterion_it_proves`;
    - the corpus test stays at 156 of 156 under `--strict`.
 
 ## Done when
 
 - The `[[verify]]` passes.
-- The corpus test passes.
-- Importing pocket-sequencer gives every T1–T4 criterion a covering step.
+- The corpus test passes, with 156 of 156 plans clean under `--strict`.
+- Importing pocket-sequencer:
+  - covers each of T1–T4's checked lines with the steps that run their tests;
+  - lists the rest in the block;
+  - has 0 diagnostics under `--strict`.

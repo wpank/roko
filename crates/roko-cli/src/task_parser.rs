@@ -87,6 +87,12 @@ pub struct TaskMeta {
     /// domain decides.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub outbound: Option<roko_core::tool::OutboundPolicy>,
+    /// The checks of the plan's source that it does not keep as verify
+    /// steps, each `"SC<n>: <why>"` (gap-dc5d7c). Plan generation numbers
+    /// the source's checks and asks the planner to keep each one or say
+    /// here why not.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub dropped_checks: Vec<String>,
 }
 
 /// When a plan's verified tasks wait for a person's approval before their
@@ -1109,6 +1115,7 @@ pub const META_KEYS: &[&str] = &[
     "approval",
     "allow_unverified",
     "outbound",
+    "dropped_checks",
     // Read by `plan validate` and the spec-quality score.
     "queue_kind",
     "queue_schema",
@@ -3038,6 +3045,7 @@ depends_on = []
                 approval: None,
                 allow_unverified: false,
                 outbound: None,
+                dropped_checks: Vec::new(),
             },
             tasks: Vec::new(),
         };
@@ -4117,6 +4125,7 @@ files = ["README.md"]
             approval: Some(ApprovalMode::PerTask),
             allow_unverified: true,
             outbound: Some(roko_core::tool::OutboundPolicy::Stage),
+            dropped_checks: Vec::new(),
         };
 
         let task = TaskDef::from(raw.clone());

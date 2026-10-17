@@ -28,7 +28,7 @@ use roko_core::{Body, Context, Kind, Signal, Verify};
 use roko_gate::GatePayload;
 use roko_gate::ShellGate;
 use roko_gate::TurnSnapshot;
-use roko_gate::rung_for_gate_name;
+use roko_gate::rung_for_verify_phase;
 use roko_graph::cell::CellContext;
 use roko_graph::cells::task_executor::TaskGateVerdict;
 use roko_graph::cells::{

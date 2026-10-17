@@ -208,7 +208,8 @@ pub use process_reward::{
 };
 pub use ratchet::GateRatchet;
 pub use registry::{
-    GateKind, GateRegistry, GateSpec, GateStatus, is_deterministic_gate, rung_for_gate_name,
+    GateKind, GateRegistry, GateSpec, GateStatus, TEST_PHASE_NAMES, is_deterministic_gate,
+    rung_for_gate_name, rung_for_verify_phase,
 };
 pub use review_verdict::{
     ParsedReviewVerdict, ReviewParseSource, ReviewVerdict, ReviewVerdictContext,

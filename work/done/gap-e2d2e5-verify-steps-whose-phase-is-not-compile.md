@@ -2,7 +2,7 @@
 id = "gap-e2d2e5"
 kind = "gap"
 title = "Verify steps whose phase is not compile, clippy or test (acceptance, unit_test, structural, check …) never move the gate thresholds, and nothing says so"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p3"
 goal = "learning"
@@ -11,6 +11,7 @@ subsystem = ["roko-cli/runner", "roko-gate/registry"]
 created = 2026-10-17
 updated = 2026-10-17
 last_verified = 2026-10-17
+last_verified_rev = "211bd956a"
 source = "round-v6-dogfood-will#S1"
 discovered_from = "agent:dogfood-will (round v6 run 3, 2026-10-16)"
 anchors = ["crates/roko-cli/src/runner/persist.rs::GateThresholds::observe_verify_steps", "crates/roko-gate/src/registry.rs::rung_for_gate_name"]
@@ -19,7 +20,19 @@ parent = "spec-6ac537"
 links = { depends_on = [], blocks = [], related = [], supersedes = [], duplicate_of = "" }
 
 [[verify]]
-command = "grep -rqw 'fn verify_step_named_acceptance_moves_the_test_rung' crates/roko-cli/ && cargo test -p roko-cli verify_step_named_acceptance_moves_the_test_rung"
+command = "grep -rqw 'fn verify_step_named_acceptance_moves_the_test_rung' crates/roko-cli/ && cargo test -p roko-cli --lib verify_step_named_acceptance_moves_the_test_rung"
+
+[closed]
+at = 2026-10-17
+at_ts = "2026-10-17T14:16:55Z"
+commit = "47d78889f"
+by = "roko-delivery"
+executor = "claude-agent"
+via = "manual"
+size = "S"
+claimed_at = "2026-10-17T11:11:37Z"
+forced = false
+evidence = "47d78889f (on the merged stack efc9f0443, main 7a5dd6046): verify_step_named_acceptance_moves_the_test_rung, verify_phases_that_run_tests_name_the_test_rung and plan_validate_warns_when_no_verify_step_feeds_gate_learning pass (roko-cli lib 3777, roko-gate lib 706, plan_validation 38 passed; the verify now names --lib, where the test lives). The textkit scripted showcase with its checks named acceptance, as pocket-synth names them (tmp/hermes-roko-v6/roko-delivery/evidence/trio, no cost): rung 2 of gate-thresholds.json moves to 3 of 5 and the verdicts name the steps verify:0/acceptance, where main eb7b98ad0 left every rung at 0 of 0 and wrote custom:acceptance (evidence/trio-before). roko plan validate warns PLAN_051 on a copy whose unittest step is named structural, and not on a plan of custom checks only. The live pocket-synth showcase was not re-run (no live spend)."
 +++
 
 ## Problem

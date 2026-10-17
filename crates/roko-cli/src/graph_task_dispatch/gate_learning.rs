@@ -59,7 +59,7 @@ pub(super) fn record_gate_verdict_metrics(
     use roko_core::obs::metrics::LabelSet;
     use roko_core::obs::schema::{LABEL_GATE, LABEL_VERDICT, ROKO_GATE_VERDICTS_TOTAL_DESCRIPTOR};
 
-    let rung = rung_for_gate_name(phase);
+    let rung = rung_for_verify_phase(phase);
     let rung_index = rung.map(|rung| rung.as_index());
     let result = if verdict.passed { "pass" } else { "fail" };
     let seconds = verdict.duration_ms as f64 / 1000.0;
@@ -119,7 +119,7 @@ fn skip_advice(
 ) -> GateLearning {
     let mut learning = GateLearning::default();
     for (phase, passed) in step_outcomes {
-        let Some(rung) = rung_for_gate_name(phase).map(|rung| rung.as_index()) else {
+        let Some(rung) = rung_for_verify_phase(phase).map(|rung| rung.as_index()) else {
             continue;
         };
         if thresholds.should_skip_rung_for_temperament(rung, temperament) {
@@ -149,7 +149,7 @@ impl VerifyRun {
     fn observations(&self) -> u64 {
         self.step_outcomes
             .iter()
-            .filter(|(phase, _)| rung_for_gate_name(phase).is_some())
+            .filter(|(phase, _)| rung_for_verify_phase(phase).is_some())
             .count() as u64
     }
 

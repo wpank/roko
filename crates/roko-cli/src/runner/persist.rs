@@ -383,7 +383,8 @@ impl GateThresholds {
     }
 
     /// Feed one Graph verify sequence, as `(phase, passed)` per step, into
-    /// the thresholds: each step whose phase names a canonical rung updates
+    /// the thresholds: each step whose phase names a canonical rung
+    /// ([`roko_gate::rung_for_verify_phase`], gap-e2d2e5) updates
     /// that rung's EMA with smoothing factor `ema_alpha`. A test-rung step
     /// also feeds [`Self::observe_residual`] with how far the CodingOracle's
     /// test pass-rate forecast for the attempt missed, when that forecast
@@ -406,8 +407,9 @@ impl GateThresholds {
             .map(|(predicted, _)| predicted);
         let mut residuals = Vec::new();
         for (phase, passed) in step_outcomes {
-            // `rung_for_gate_name` is the registry the gate pipeline uses.
-            let Some(rung) = roko_gate::rung_for_gate_name(phase).map(|rung| rung.as_index())
+            // The registry the gate pipeline uses, with the phase names plans
+            // give a test suite (gap-e2d2e5).
+            let Some(rung) = roko_gate::rung_for_verify_phase(phase).map(|rung| rung.as_index())
             else {
                 continue;
             };
@@ -1785,5 +1787,26 @@ mod tests {
                 .is_empty()
         );
         assert_eq!(unforecast.rungs[&2].total_count, 2);
+    }
+
+    /// gap-e2d2e5: a verify step whose phase is `acceptance`, as the
+    /// showcase plans name the steps that run their unit tests, moves the
+    /// test rung's EMA; a custom check such as `structural` still moves none.
+    #[test]
+    fn verify_step_named_acceptance_moves_the_test_rung() {
+        let mut thresholds = GateThresholds::default();
+        let steps = [
+            ("acceptance".to_string(), true),
+            ("structural".to_string(), false),
+        ];
+
+        thresholds.observe_verify_steps(&steps, None, 0.1);
+        thresholds.observe_verify_steps(&[("unit_test".to_string(), false)], None, 0.1);
+
+        let test = &thresholds.rungs[&2];
+        assert_eq!((test.pass_count, test.total_count), (1, 2), "{test:?}");
+        // The first observation is the value: 1.0, then 0.9 * 1.0 = 0.9.
+        assert!((test.ema_pass_rate - 0.9).abs() < 1e-9, "{test:?}");
+        assert_eq!(thresholds.rungs.len(), 1, "{:?}", thresholds.rungs);
     }
 }

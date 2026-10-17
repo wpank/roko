@@ -645,6 +645,48 @@ pub fn hidden_output_checks(tasks_file: &TasksFile) -> Vec<HiddenOutputCheck> {
     checks
 }
 
+/// gap-e2d2e5: the PLAN_051 warning of a plan none of whose verify steps has
+/// a phase that gate learning observes ([`roko_gate::rung_for_verify_phase`])
+/// though one runs tests or compiles: its runs move no gate threshold. It
+/// names the first such step. A plan of custom checks only (a file exists, a
+/// grep) gets none: gate learning has nothing to learn from it.
+fn gate_learning_message(tasks_file: &TasksFile) -> Option<String> {
+    use roko_gate::spec_quality::{VerifyClass, analyze_step};
+
+    let mut steps = tasks_file.tasks.iter().flat_map(|task| {
+        task.verify
+            .iter()
+            .enumerate()
+            .map(move |(index, step)| (task, index, step))
+    });
+    if steps
+        .clone()
+        .any(|(_, _, step)| roko_gate::rung_for_verify_phase(&step.phase).is_some())
+    {
+        return None;
+    }
+    let (task, index, step, does) = steps.find_map(|(task, index, step)| {
+        let does = match analyze_step(&step.command, &BTreeSet::new()).class {
+            VerifyClass::Test => "runs tests",
+            VerifyClass::Compile => "compiles or lints",
+            _ => return None,
+        };
+        Some((task, index, step, does))
+    })?;
+    let phase = match step.phase.trim() {
+        "" => "no phase".to_string(),
+        phase => format!("the phase '{phase}'"),
+    };
+    Some(format!(
+        "no verify step has a phase that gate learning observes, so this plan's runs move no \
+         gate threshold, though task '{}' verify step {} {does} under {phase}; name a step's \
+         phase `test` (or `unit_test`, `acceptance`, `integration`) when it runs tests, \
+         `compile` when it compiles and `clippy` when it lints",
+        task.id,
+        index + 1
+    ))
+}
+
 /// 3206: one PLAN_043 warning per key of `parsed` that `plan run` does not
 /// read, naming its table, so `--strict` rejects it. The parser drops such a
 /// key without a word, which turns a precise spec into a vague one: R3's
@@ -967,6 +1009,17 @@ fn validate_tasks_file(
                     plan_id: Some(plan_id.clone()),
                     task_id: check.task_id.clone(),
                     message: check.message(),
+                });
+            }
+            // gap-e2d2e5: a plan whose verify steps all have phases gate
+            // learning does not observe teaches the gate thresholds nothing.
+            if let Some(message) = gate_learning_message(&tasks_file) {
+                diagnostics.push(Diagnostic {
+                    severity: Severity::Warning,
+                    rule_id: "PLAN_051".to_string(),
+                    plan_id: Some(plan_id.clone()),
+                    task_id: None,
+                    message,
                 });
             }
             // 3208: a verify step names the acceptance criteria it checks.
@@ -2543,6 +2596,69 @@ verify = [{ phase = "structural", command = "! grep -q TODO src/lib.rs" }]
         assert_eq!(negative.len(), 1, "{report:?}");
         assert_eq!(negative[0].severity, Severity::Warning);
         assert_eq!(negative[0].task_id.as_deref(), Some("T1"));
+    }
+
+    /// gap-e2d2e5: a plan none of whose verify steps has a phase gate
+    /// learning observes, though one runs tests, gets one PLAN_051 warning
+    /// that names the step; an `acceptance` phase on that step clears it, and
+    /// a plan of custom checks only gets none.
+    #[test]
+    fn plan_validate_warns_when_no_verify_step_feeds_gate_learning() {
+        let temp = TempDir::new().unwrap();
+        let root = temp.path();
+        let plan = |phase: &str, command: &str| {
+            format!(
+                r#"
+[meta]
+plan = "demo"
+
+[[task]]
+id = "T1"
+title = "Synth voice"
+role = "implementer"
+files = ["synth/voice.py"]
+depends_on = []
+verify = [{{ phase = "structural", command = "test -f synth/voice.py" }}]
+
+[[task]]
+id = "T2"
+title = "Synth envelope"
+role = "implementer"
+files = ["synth/env.py"]
+depends_on = ["T1"]
+verify = [{{ phase = "{phase}", command = "{command}" }}]
+"#
+            )
+        };
+        let warnings = |phase: &str, command: &str| {
+            fs::create_dir_all(root.join("plans/demo")).unwrap();
+            fs::write(root.join("plans/demo/tasks.toml"), plan(phase, command)).unwrap();
+            let report = validate_plans_dir(root.join("plans").as_path(), None).unwrap();
+            report
+                .plans
+                .iter()
+                .flat_map(|plan| &plan.diagnostics)
+                .filter(|diag| diag.rule_id == "PLAN_051")
+                .cloned()
+                .collect::<Vec<_>>()
+        };
+        let unittest = "python3 -m unittest tests.test_env";
+
+        let unobserved = warnings("check", unittest);
+        let [warning] = unobserved.as_slice() else {
+            panic!("one PLAN_051 warning: {unobserved:?}");
+        };
+        assert_eq!(warning.severity, Severity::Warning);
+        assert_eq!(warning.task_id, None);
+        assert!(
+            warning
+                .message
+                .contains("though task 'T2' verify step 1 runs tests under the phase 'check'"),
+            "{}",
+            warning.message
+        );
+        assert!(warnings("acceptance", unittest).is_empty());
+        assert!(warnings("content", "grep -q envelope synth/env.py").is_empty());
     }
 
     /// bug-59ed90: a check that pipes, redirects or captures its test

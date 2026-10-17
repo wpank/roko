@@ -210,6 +210,14 @@ def real_arm_spec(arm_name: str, model: str = PIN) -> planemit.PlanSpec:
                                visible=("true",), snapshot=snapshot)
 
 
+def roko_arms(*, pinned_only: bool = False) -> dict[str, dict]:
+    """The arm files `run_roko` runs, by file name (`vb.load_arm`); with `pinned_only`, those with one models_allow
+    entry, which emit pinned mode (a routed arm's several models emit ladder mode, `run_roko._plan_spec`)."""
+    arms = {path.stem: vb.load_arm(str(path)) for path in sorted(layout.ARMS_DIR.glob("*.toml"))}
+    return {name: arm for name, arm in arms.items() if arm["arm"].get("runner") == "run_roko" and (
+        not pinned_only or len(arm["arm"]["models_allow"]) == 1)}
+
+
 def fake_roko(tmp_path: Path, models: list[str], *, status: str = "succeeded", **extra: object) -> tuple[Path, Path]:
     """Write the fake roko and its behaviour (`extra` adds episode `completed` times and `durations`); return the binary
     and the log of its calls. It never writes the run's proxy log: no roko process may write the run directory

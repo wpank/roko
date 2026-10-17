@@ -869,10 +869,10 @@ pub(crate) fn slug_from_title(title: &str) -> String {
 
 /// Set plan `slug`'s `[meta] title` to `title` (gap-c2efe7), in the `tasks.toml`
 /// its generation wrote: the line after its `plan = …` key, replacing a
-/// `title` the planner wrote. The overview `plan.md` roko wrote for the plan
-/// takes the title too (bug-1602d4): plan listings read a plan's title from
-/// that file's first heading. Nothing to do without a title; a plan that
-/// cannot be named keeps none, which is logged.
+/// `title` the planner wrote. Every view names a plan by that title first
+/// (bug-ce2967). The overview `plan.md` roko wrote for the plan takes the
+/// title too (bug-1602d4), so the document agrees with it. Nothing to do
+/// without a title; a plan that cannot be named keeps none, which is logged.
 fn name_generated_plan(workdir: &std::path::Path, slug: &str, title: Option<&str>) {
     let Some(title) = title else {
         return;

@@ -102,15 +102,10 @@ fn plan_set_entries(
         .iter()
         .filter_map(|plan_id| plans.iter().find(|plan| &plan.id == plan_id))
         .map(|plan| {
-            // A plan named for people goes by its title (gap-c2efe7).
-            let title = plan_title(plan);
             roko_core::dashboard_snapshot::PlanSetEntry {
                 plan_id: plan.id.clone(),
-                title: if title.is_empty() {
-                    plan.id.clone()
-                } else {
-                    title.to_string()
-                },
+                // A plan named for people goes by its title (gap-c2efe7).
+                title: plan_title(plan),
                 group: plan_set_group(plans_root, &plan.dir),
                 tasks_total: plan.tasks.tasks.len(),
                 wave: dag
@@ -133,15 +128,16 @@ fn plan_set_entries(
         .collect()
 }
 
-/// What `plan` is called: its `[meta] title` (gap-c2efe7), else its `[meta]
-/// plan` id.
-fn plan_title(plan: &crate::runner::plan_loader::Plan) -> &str {
-    let meta = &plan.tasks.meta;
-    meta.title
-        .as_deref()
-        .map(str::trim)
-        .filter(|title| !title.is_empty())
-        .unwrap_or_else(|| meta.plan.trim())
+/// What `plan` is called, as the plan list names it
+/// ([`roko_core::task::plan_title`], bug-ce2967): its `[meta] title`
+/// (gap-c2efe7), else the title of its `plan.md`, else its id.
+fn plan_title(plan: &crate::runner::plan_loader::Plan) -> String {
+    let plan_md = std::fs::read_to_string(plan.dir.join("plan.md")).ok();
+    roko_core::task::plan_title(
+        plan.tasks.meta.title.as_deref(),
+        plan_md.as_deref(),
+        &plan.id,
+    )
 }
 
 /// The plan set containing `plan_dir`: its parent directory relative to
@@ -5269,8 +5265,14 @@ mod tests {
         let task_blocks = (0..task_count)
             .map(|index| format!("[[task]]\nid = \"T{index}\"\ntitle = \"Task {index}\"\n"))
             .collect::<String>();
+        // A plan named for people names itself in `[meta] title` (gap-c2efe7).
+        let title = if title.is_empty() {
+            String::new()
+        } else {
+            format!("title = \"{title}\"\n")
+        };
         let tasks = crate::task_parser::TasksFile::parse_str(&format!(
-            "[meta]\nplan = \"{title}\"\n\n{task_blocks}"
+            "[meta]\nplan = \"{id}\"\n{title}\n{task_blocks}"
         ))
         .expect("parse test plan");
         crate::runner::plan_loader::Plan {

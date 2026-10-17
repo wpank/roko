@@ -282,21 +282,40 @@ pub fn task_status_is_complete(status: &str) -> bool {
     matches!(status, "done" | "completed" | "passed" | "skipped")
 }
 
-/// A discovered plan's title: the first heading of its `plan.md`, else its
-/// plan id. The plan listing and the plan API title a plan with it.
+/// A discovered plan's title, by [`roko_core::task::plan_title`]: its
+/// `[meta] title`, else the title of its `plan.md`, else its plan id
+/// (bug-ce2967). The plan list, the plan API and run events all name a plan
+/// this way.
 #[must_use]
 pub fn plan_title(plan_info: &PlanInfo) -> String {
-    if plan_info
+    let meta_title = tasks_path(plan_info).and_then(|path| meta_title(&path));
+    let is_tasks_file = plan_info
         .path
         .file_name()
-        .is_some_and(|name| name == "tasks.toml")
-    {
-        return stable_plan_id(plan_info).to_string();
-    }
-    fs::read_to_string(&plan_info.path)
-        .ok()
-        .and_then(|content| extract_markdown_title(&content))
-        .unwrap_or_else(|| stable_plan_id(plan_info).to_string())
+        .is_some_and(|name| name == "tasks.toml");
+    // A task-only plan has no document; discovery names the plan's `plan.md`
+    // (or a legacy `.md` file) when there is one.
+    let plan_md = if is_tasks_file {
+        None
+    } else {
+        fs::read_to_string(&plan_info.path).ok()
+    };
+    roko_core::task::plan_title(
+        meta_title.as_deref(),
+        plan_md.as_deref(),
+        stable_plan_id(plan_info),
+    )
+}
+
+/// The `[meta] title` of the `tasks.toml` at `path`, when it has one.
+fn meta_title(path: &Path) -> Option<String> {
+    let text = fs::read_to_string(path).ok()?;
+    let table: toml::Table = toml::from_str(&text).ok()?;
+    table
+        .get("meta")?
+        .get("title")?
+        .as_str()
+        .map(ToOwned::to_owned)
 }
 
 /// Build a display summary from a discovered plan entry.
@@ -491,42 +510,6 @@ pub fn discover_plan_by_id(
     Ok(plans
         .into_iter()
         .find(|plan_info| stable_plan_id(plan_info) == plan_id || plan_info.base == plan_id))
-}
-
-fn extract_markdown_title(contents: &str) -> Option<String> {
-    let body = strip_frontmatter(contents);
-    body.lines()
-        .map(str::trim)
-        .find_map(|line| line.strip_prefix('#').map(str::trim))
-        .filter(|title| !title.is_empty())
-        .map(ToOwned::to_owned)
-}
-
-fn strip_frontmatter(contents: &str) -> &str {
-    let stripped = contents.strip_prefix('\u{FEFF}').unwrap_or(contents);
-    let trimmed = stripped.trim_start();
-    if !trimmed.starts_with("---") {
-        return stripped;
-    }
-
-    let after_open = &trimmed[3..];
-    let close_pos_lf = after_open.find("\n---");
-    let close_pos_crlf = after_open.find("\r\n---");
-    let Some(close_pos) = (match (close_pos_lf, close_pos_crlf) {
-        (Some(a), Some(b)) => Some(a.min(b)),
-        (a, b) => a.or(b),
-    }) else {
-        return stripped;
-    };
-
-    let after_close = &after_open[close_pos..];
-    if let Some(rest) = after_close.strip_prefix("\r\n---") {
-        rest.trim_start_matches(['\r', '\n'])
-    } else if let Some(rest) = after_close.strip_prefix("\n---") {
-        rest.trim_start_matches(['\r', '\n'])
-    } else {
-        stripped
-    }
 }
 
 /// Format a list of plan summaries for display.
@@ -1013,12 +996,6 @@ mod tests {
     }
 
     #[test]
-    fn strip_frontmatter_leaves_markdown_body() {
-        let body = strip_frontmatter("---\nplan: alpha\n---\n# Hello\n");
-        assert_eq!(body, "# Hello\n");
-    }
-
-    #[test]
     fn summarize_plan_info_uses_heading_and_tasks_count() {
         let tmp = tempfile::tempdir().unwrap();
         let dir = tmp.path().join("plans").join("01-alpha");
@@ -1042,6 +1019,66 @@ mod tests {
         assert_eq!(summary.id, "alpha");
         assert_eq!(summary.title, "Alpha Title");
         assert_eq!(summary.task_count, 1);
+    }
+
+    /// bug-ce2967: the plan list names a plan by its `[meta] title`, else
+    /// its `plan.md`'s first `# ` heading, else its id: the rule run events
+    /// and the plan API use too.
+    #[test]
+    fn plan_title_reads_meta_title_then_plan_md_then_slug() {
+        let tmp = tempfile::tempdir().unwrap();
+        let plan = |id: &str, title: Option<&str>, doc: Option<&str>| {
+            let dir = tmp.path().join("plans").join(id);
+            std::fs::create_dir_all(&dir).unwrap();
+            let title = title
+                .map(|title| format!("title = {title:?}\n"))
+                .unwrap_or_default();
+            let tasks = format!(
+                "[meta]\nplan = {id:?}\n{title}\n[[task]]\nid = \"t1\"\ntitle = \"Task\"\n"
+            );
+            std::fs::write(dir.join("tasks.toml"), tasks).unwrap();
+            if let Some(doc) = doc {
+                std::fs::write(dir.join("plan.md"), doc).unwrap();
+            }
+        };
+        plan(
+            "pocket-synth",
+            Some("pocket-synth: oscillator, filter, envelope, render"),
+            Some("# pocket-synth\n\nThe plan.\n"),
+        );
+        plan(
+            "from-doc",
+            None,
+            Some("---\nplan: from-doc\n---\n# Written for people\n"),
+        );
+        plan("bare", None, None);
+
+        let mut titles: Vec<(String, String)> = summarize_discovered_plans(tmp.path())
+            .unwrap()
+            .into_iter()
+            .map(|summary| (summary.id, summary.title))
+            .collect();
+        titles.sort();
+        let expected = [
+            ("bare", "bare"),
+            ("from-doc", "Written for people"),
+            (
+                "pocket-synth",
+                "pocket-synth: oscillator, filter, envelope, render",
+            ),
+        ];
+        let expected: Vec<(String, String)> = expected
+            .iter()
+            .map(|(id, title)| ((*id).to_string(), (*title).to_string()))
+            .collect();
+        assert_eq!(titles, expected);
+        let info = discover_plan_by_id(tmp.path(), "pocket-synth")
+            .unwrap()
+            .expect("plan");
+        assert_eq!(
+            plan_title(&info),
+            "pocket-synth: oscillator, filter, envelope, render"
+        );
     }
 
     #[test]

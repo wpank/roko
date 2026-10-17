@@ -756,9 +756,9 @@ fn parse_plan_dir(plan_dir: &Path) -> WorkflowPlan {
     let (tasks, estimated_minutes, meta_status, meta_title) =
         parse_tasks_toml(&task_text, &tasks_path);
     let status = derive_plan_status(meta_status.as_deref(), &tasks);
-    let title = meta_title
-        .or_else(|| extract_title(&plan_markdown))
-        .unwrap_or_else(|| title_from_slug(&id));
+    // The plan list's rule (bug-ce2967): `[meta] title`, `plan.md`'s title,
+    // the slug.
+    let title = roko_core::task::plan_title(meta_title.as_deref(), Some(&plan_markdown), &id);
 
     WorkflowPlan {
         id,
@@ -821,12 +821,7 @@ fn parse_tasks_toml(
     let meta_status = meta
         .and_then(|value| string_value(value, "status"))
         .or_else(|| meta.and_then(|value| string_value(value, "state")));
-    let meta_title = meta
-        .and_then(|value| string_value(value, "title"))
-        .or_else(|| {
-            meta.and_then(|value| string_value(value, "plan"))
-                .map(|plan| title_from_slug(&plan))
-        });
+    let meta_title = meta.and_then(|value| string_value(value, "title"));
 
     let tasks = parsed
         .get("task")
@@ -1245,41 +1240,6 @@ fn dashboard_snapshot_for_workdir(root: &Path, state: &AppState) -> DashboardSna
         }
     }
     snapshot
-}
-
-fn extract_title(markdown: &str) -> Option<String> {
-    markdown
-        .lines()
-        .find_map(|line| line.strip_prefix("# ").map(str::trim))
-        .filter(|line| !line.is_empty())
-        .map(str::to_string)
-        .or_else(|| frontmatter_string(markdown, "title"))
-}
-
-fn frontmatter_string(markdown: &str, key: &str) -> Option<String> {
-    let mut lines = markdown.lines();
-    if lines.next().map(str::trim) != Some("---") {
-        return None;
-    }
-    for line in lines {
-        let line = line.trim();
-        if line == "---" {
-            break;
-        }
-        let Some((candidate, value)) = line.split_once(':') else {
-            continue;
-        };
-        if candidate.trim() == key {
-            return Some(
-                value
-                    .trim()
-                    .trim_matches('"')
-                    .trim_matches('\'')
-                    .to_string(),
-            );
-        }
-    }
-    None
 }
 
 fn markdown_excerpt(markdown: &str, limit: usize) -> String {

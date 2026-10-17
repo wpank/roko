@@ -16,6 +16,7 @@ use std::fmt::Write as _;
 use std::sync::LazyLock;
 
 use regex::Regex;
+use roko_gate::spec_quality::ac_id;
 use roko_learn::runtime_feedback::{GenerationSourceCheck, GenerationSourceChecks};
 
 use crate::task_parser::TasksFile;
@@ -366,49 +367,202 @@ fn one_line(text: &str) -> String {
     }
 }
 
-/// The source check ids an acceptance item names (`AC2: SC5: …`).
-fn named_checks(item: &str) -> Vec<String> {
+/// The source check ids a text names (`AC2: SC5: …`).
+fn named_checks(text: &str) -> Vec<String> {
     static ID: LazyLock<Regex> =
         LazyLock::new(|| Regex::new(r"\bSC\d+\b").expect("valid source check id regex"));
-    ID.find_iter(item)
+    ID.find_iter(text)
         .map(|found| found.as_str().to_string())
         .collect()
+}
+
+/// Commands that only look at files or move around: a verify step made of
+/// nothing else passes when the behavior a check states is wrong.
+const SHALLOW_COMMANDS: &[&str] = &[
+    "[", "cat", "cd", "diff", "echo", "egrep", "export", "fgrep", "file", "find", "grep", "head",
+    "ls", "printf", "rg", "stat", "tail", "test", "true", "wc",
+];
+
+/// Whether a command's `words` only build or lint: a compile check passes
+/// whatever the code does.
+fn builds_only(words: &[&str]) -> bool {
+    matches!(
+        words,
+        ["cargo", "check" | "build" | "clippy" | "fmt", ..]
+            | ["python" | "python3", "-m", "py_compile" | "compileall", ..]
+            | ["tsc" | "eslint" | "ruff" | "mypy", ..]
+            | ["npx", "tsc" | "eslint", ..]
+            | ["go", "build" | "vet", ..]
+    )
+}
+
+/// The commands of a shell line, split at `&&`, `||`, `|`, `;` and line
+/// breaks outside quotes, without `2>&1`-style redirections.
+fn shell_segments(command: &str) -> Vec<String> {
+    let mut segments = vec![String::new()];
+    let mut quote: Option<char> = None;
+    let mut chars = command.chars().peekable();
+    while let Some(c) = chars.next() {
+        match (quote, c) {
+            (Some(open), _) if c == open => quote = None,
+            (None, '\'' | '"') => quote = Some(c),
+            (None, '>' | '<') if chars.peek() == Some(&'&') => {
+                // A redirection to a file descriptor (`2>&1`), not a split.
+                chars.next();
+                while chars.peek().is_some_and(char::is_ascii_digit) {
+                    chars.next();
+                }
+                continue;
+            }
+            (None, '&' | '|' | ';' | '\n') => {
+                segments.push(String::new());
+                continue;
+            }
+            _ => {}
+        }
+        if let Some(segment) = segments.last_mut() {
+            segment.push(c);
+        }
+    }
+    segments
+        .into_iter()
+        .map(|segment| segment.trim().to_string())
+        .filter(|segment| !segment.is_empty())
+        .collect()
+}
+
+/// Whether a verify step's `command` only greps, tests files, lists or
+/// builds (gap-dc5d7c): such a step keeps a check's wording, not what it
+/// states, since it passes when the behavior is wrong.
+fn is_shallow(command: &str) -> bool {
+    shell_segments(command).iter().all(|segment| {
+        let words: Vec<&str> = segment
+            .split_whitespace()
+            .skip_while(|word| *word == "!" || (word.contains('=') && !word.starts_with('-')))
+            .collect();
+        words
+            .first()
+            .is_none_or(|first| SHALLOW_COMMANDS.contains(first))
+            || builds_only(&words)
+    })
+}
+
+/// Whether a drop's `reason` only restates its `check` (gap-dc5d7c): most of
+/// its words are the check's own, so it says nothing about why no command
+/// can check it.
+fn is_restatement(reason: &str, check: &str) -> bool {
+    let words = |text: &str| -> Vec<String> {
+        text.to_lowercase()
+            .split(|c: char| !c.is_alphanumeric())
+            .filter(|word| word.len() > 2)
+            .map(str::to_string)
+            .collect()
+    };
+    let (reason, check) = (words(reason), words(check));
+    let shared = reason.iter().filter(|word| check.contains(word)).count();
+    !reason.is_empty() && shared * 10 >= reason.len() * 7
+}
+
+/// Point verify steps whose `covers` name a source check (`covers =
+/// ["SC3"]`) at an acceptance criterion of their task that states it, and
+/// add `ACn: SC3: <the check>` when the task has none (gap-dc5d7c): a step's
+/// `covers` names its own task's criteria (PLAN_044). Returns one line per
+/// cover it moved, for the log.
+pub(super) fn normalize_covers(plan: &mut TasksFile, checks: &[SourceCheck]) -> Vec<String> {
+    let mut moved = Vec::new();
+    for task in &mut plan.tasks {
+        for step in 0..task.verify.len() {
+            for cover in 0..task.verify[step].covers.len() {
+                let id = task.verify[step].covers[cover].trim().to_string();
+                let Some(check) = checks.iter().find(|check| check.id == id) else {
+                    continue;
+                };
+                let stated = task
+                    .acceptance
+                    .iter()
+                    .enumerate()
+                    .find(|(_, item)| named_checks(item).contains(&id))
+                    .map(|(index, item)| ac_id(item, index));
+                let criterion = stated.unwrap_or_else(|| {
+                    let taken: Vec<String> = task
+                        .acceptance
+                        .iter()
+                        .enumerate()
+                        .map(|(index, item)| ac_id(item, index))
+                        .collect();
+                    let mut n = task.acceptance.len() + 1;
+                    while taken.contains(&format!("AC{n}")) {
+                        n += 1;
+                    }
+                    task.acceptance
+                        .push(format!("AC{n}: {}: {}", check.id, check.text));
+                    format!("AC{n}")
+                });
+                moved.push(format!("{}: `covers` {id} became {criterion}", task.id));
+                task.verify[step].covers[cover] = criterion;
+            }
+        }
+    }
+    moved
 }
 
 /// What became of a source's checks in a plan.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub(super) struct SourceCoverage {
     checks: Vec<SourceCheck>,
-    /// By check id: the task and the acceptance criterion, a verify step
-    /// covers, that keep it.
+    /// By check id: the task, and the acceptance criterion a verify step
+    /// that runs a check of it covers.
     kept: BTreeMap<String, (String, String)>,
+    /// By check id: the task, and the command of the step that covers it,
+    /// when every such step only greps, tests files or builds.
+    shallow: BTreeMap<String, (String, String)>,
     /// By check id: why the plan drops it (`[meta] dropped_checks`).
     dropped: BTreeMap<String, String>,
 }
 
 impl SourceCoverage {
-    /// What became of `checks` in `plan`. A check is kept when an
-    /// acceptance criterion names it and a verify step of the same task
-    /// `covers` that criterion; dropped when `[meta] dropped_checks` gives a
-    /// reason for it; and missing otherwise.
+    /// What became of `checks` in `plan`. A check is kept when a verify step
+    /// covers it (or an acceptance criterion that names it) and runs more than
+    /// a grep, a file test or a build; shallow when only such steps cover it;
+    /// dropped when `[meta] dropped_checks` gives a reason for it that does
+    /// more than restate it; and missing otherwise.
     pub(super) fn of(checks: &[SourceCheck], plan: &TasksFile) -> Self {
-        let known = |id: &str| checks.iter().any(|check| check.id == id);
+        let text_of = |id: &str| {
+            checks
+                .iter()
+                .find(|check| check.id == id)
+                .map(|check| check.text.as_str())
+        };
         let mut kept = BTreeMap::new();
+        let mut shallow = BTreeMap::new();
         for task in &plan.tasks {
-            for (index, item) in task.acceptance.iter().enumerate() {
-                let criterion = roko_gate::spec_quality::ac_id(item, index);
-                let covered = task
-                    .verify
-                    .iter()
-                    .any(|step| step.covers.iter().any(|id| id.trim() == criterion));
-                if !covered {
+            // Each check a step covers: through a criterion, or named.
+            let mut covering: Vec<(String, String, &str)> = Vec::new();
+            for step in &task.verify {
+                for cover in step.covers.iter().map(|cover| cover.trim()) {
+                    let named = task
+                        .acceptance
+                        .iter()
+                        .enumerate()
+                        .filter(|(index, item)| ac_id(item, *index) == cover)
+                        .flat_map(|(_, item)| named_checks(item))
+                        .chain(named_checks(cover));
+                    for id in named {
+                        covering.push((id, cover.to_string(), step.command.as_str()));
+                    }
+                }
+            }
+            for (id, criterion, command) in covering {
+                if text_of(&id).is_none() || kept.contains_key(&id) {
                     continue;
                 }
-                for id in named_checks(item) {
-                    if known(&id) {
-                        kept.entry(id)
-                            .or_insert_with(|| (task.id.clone(), criterion.clone()));
-                    }
+                if is_shallow(command) {
+                    shallow
+                        .entry(id)
+                        .or_insert_with(|| (task.id.clone(), command.to_string()));
+                } else {
+                    shallow.remove(&id);
+                    kept.insert(id, (task.id.clone(), criterion));
                 }
             }
         }
@@ -419,25 +573,37 @@ impl SourceCoverage {
             .filter_map(|entry| {
                 let (id, reason) = entry.split_once(':')?;
                 let (id, reason) = (id.trim(), reason.trim());
-                (known(id) && !reason.is_empty() && !kept.contains_key(id))
+                let check = text_of(id)?;
+                (!reason.is_empty() && !kept.contains_key(id) && !is_restatement(reason, check))
                     .then(|| (id.to_string(), reason.to_string()))
             })
-            .collect();
+            .collect::<BTreeMap<_, _>>();
+        shallow.retain(|id, _| !dropped.contains_key(id));
         Self {
             checks: checks.to_vec(),
             kept,
+            shallow,
             dropped,
         }
     }
 
-    /// The checks the plan neither keeps nor drops with a reason.
+    /// The checks the plan neither keeps nor drops with a reason, and no
+    /// step covers.
     pub(super) fn missing(&self) -> Vec<&SourceCheck> {
         self.checks
             .iter()
             .filter(|check| {
-                !self.kept.contains_key(&check.id) && !self.dropped.contains_key(&check.id)
+                !self.kept.contains_key(&check.id)
+                    && !self.shallow.contains_key(&check.id)
+                    && !self.dropped.contains_key(&check.id)
             })
             .collect()
+    }
+
+    /// How many checks the plan neither keeps nor drops with a reason: the
+    /// missing ones and the shallow ones.
+    pub(super) fn unkept(&self) -> usize {
+        self.checks.len() - self.kept.len() - self.dropped.len()
     }
 
     /// One line for the person: how many checks the plan keeps.
@@ -447,6 +613,13 @@ impl SourceCoverage {
             self.kept.len(),
             self.checks.len()
         );
+        if !self.shallow.is_empty() {
+            let _ = write!(
+                line,
+                ", {} checked only by a grep, a file test or a build",
+                self.shallow.len()
+            );
+        }
         if !self.dropped.is_empty() {
             let _ = write!(line, ", {} dropped with a reason", self.dropped.len());
         }
@@ -457,16 +630,23 @@ impl SourceCoverage {
         line
     }
 
-    /// A line for each check the plan does not keep: why it was dropped, or
-    /// that it is missing.
+    /// A line for each check the plan does not keep: what covers it only
+    /// shallowly, why it was dropped, or that it is missing.
     pub(super) fn detail_lines(&self) -> Vec<String> {
         self.checks
             .iter()
             .filter_map(|check| {
-                if let Some(reason) = self.dropped.get(&check.id) {
-                    Some(format!("dropped {}: {} ({reason})", check.id, check.text))
-                } else if self.kept.contains_key(&check.id) {
+                if self.kept.contains_key(&check.id) {
                     None
+                } else if let Some((task, command)) = self.shallow.get(&check.id) {
+                    Some(format!(
+                        "shallow {}: {} ({task} runs only `{}`)",
+                        check.id,
+                        check.text,
+                        one_line(command)
+                    ))
+                } else if let Some(reason) = self.dropped.get(&check.id) {
+                    Some(format!("dropped {}: {} ({reason})", check.id, check.text))
                 } else {
                     Some(format!("missing {}: {}", check.id, check.text))
                 }
@@ -481,27 +661,30 @@ impl SourceCoverage {
             .iter()
             .map(|check| {
                 let kept = self.kept.get(&check.id);
-                let reason = self.dropped.get(&check.id);
+                let shallow = self.shallow.get(&check.id);
+                let dropped = self.dropped.get(&check.id);
+                let status = match (kept, shallow, dropped) {
+                    (Some(_), _, _) => "kept",
+                    (None, Some(_), _) => "shallow",
+                    (None, None, Some(_)) => "dropped",
+                    (None, None, None) => "missing",
+                };
                 GenerationSourceCheck {
                     id: check.id.clone(),
                     check: check.text.clone(),
-                    status: if kept.is_some() {
-                        "kept"
-                    } else if reason.is_some() {
-                        "dropped"
-                    } else {
-                        "missing"
-                    }
-                    .to_string(),
-                    task: kept.map(|(task, _)| task.clone()),
+                    status: status.to_string(),
+                    task: kept.or(shallow).map(|(task, _)| task.clone()),
                     criterion: kept.map(|(_, criterion)| criterion.clone()),
-                    reason: reason.cloned(),
+                    reason: dropped.cloned().or_else(|| {
+                        shallow.map(|(_, command)| format!("only `{}`", one_line(command)))
+                    }),
                 }
             })
             .collect();
         GenerationSourceChecks {
             total: self.checks.len(),
             kept: self.kept.len(),
+            shallow: self.shallow.len(),
             dropped: self.dropped.len(),
             missing: self.missing().len(),
             regenerated,
@@ -518,13 +701,16 @@ pub(super) fn planner_block(checks: &[SourceCheck], kind: &str) -> String {
     }
     let mut block = format!(
         "## Source checks\n\n\
-         The {kind} states the {} checks below. Keep every one as a verify step: put it in the \
-         `acceptance` of the task that delivers it as `ACn: SCk: <the check>`, and give that \
-         task a verify step whose `covers` names `ACn`. A check written as a command can be that \
-         step's command. Drop a check only when no command can check it (it needs a person, \
-         hardware, or another plan's work first), and then list it in `[meta] dropped_checks` \
-         as `\"SCk: <why>\"`. Never merge two checks into one criterion, reword one away, or \
-         leave one out.\n\n",
+         The {kind} states the {} checks below. Keep each one as a verify step of the task that \
+         delivers it: a step whose `covers` names the check (`covers = [\"SC3\"]`) and whose \
+         command checks what the check states, by running a test the repository has or a test \
+         the task writes. Name a test the task writes in its description, and put a `grep -q` \
+         for it before the run, so the step fails until the task is done. A grep, a file test \
+         or a compile check alone does not keep a check: it passes when the behavior is wrong. \
+         One command may cover several checks when one run checks them all. Drop a check only \
+         when no command can check it (it needs a person, hardware, or another plan's work \
+         first), and then list it in `[meta] dropped_checks` as `\"SCk: <why no command can \
+         check it>\"`. Never merge two checks, reword one away, or leave one out.\n\n",
         checks.len()
     );
     for check in checks {
@@ -533,31 +719,53 @@ pub(super) fn planner_block(checks: &[SourceCheck], kind: &str) -> String {
     block
 }
 
-/// The prompt that asks the planner once more for a plan that leaves
-/// source checks `missing`: the original request, the plan it wrote, and
-/// each such check.
+/// The prompt that asks the planner once more for a plan that leaves some of
+/// the source's checks unkept: the original request, the plan it wrote, and
+/// each check it leaves out or checks only shallowly.
 pub(super) fn regeneration_prompt(
     task_prompt: &str,
     plan: &str,
     coverage: &SourceCoverage,
 ) -> String {
-    let missing: Vec<String> = coverage
-        .missing()
-        .iter()
-        .map(|check| format!("- {}: {}", check.id, check.text))
-        .collect();
+    let mut problems = String::new();
+    let missing = coverage.missing();
+    if !missing.is_empty() {
+        problems.push_str(
+            "These are in no verify step, and `[meta] dropped_checks` gives no reason why no \
+             command can check them:\n",
+        );
+        for check in missing {
+            let _ = writeln!(problems, "- {}: {}", check.id, check.text);
+        }
+    }
+    if !coverage.shallow.is_empty() {
+        problems.push_str(
+            "These are checked only by a grep, a file test or a build, which passes when the \
+             behavior is wrong:\n",
+        );
+        for check in &coverage.checks {
+            if let Some((task, command)) = coverage.shallow.get(&check.id) {
+                let _ = writeln!(
+                    problems,
+                    "- {}: {} ({task} runs only `{}`)",
+                    check.id,
+                    check.text,
+                    one_line(command)
+                );
+            }
+        }
+    }
     format!(
         "{task_prompt}\n\n---\n\nYour plan below keeps {} of the {} source checks as verify \
-         steps. These are in no verify step, and `[meta] dropped_checks` does not list them:\n\
-         {}\n\n```toml\n{plan}\n```\n\n\
-         Add each of them to the `acceptance` of the task that delivers it as \
-         `ACn: SCk: <the check>`, with a verify step whose `covers` names `ACn`; or, when no \
-         command can check it, list it in `[meta] dropped_checks` as `\"SCk: <why>\"`. Keep the \
-         rest of the plan as it is. Output the complete plan as a single ```toml fenced block, \
-         followed only by the ```accept:accept/<file> blocks of the tests it pins.",
+         steps that check them.\n{problems}\n```toml\n{plan}\n```\n\n\
+         Keep each of them as a verify step whose `covers` names it and whose command runs a \
+         test of what it states: a test the repository has, or one the task writes, named in its \
+         description and guarded by a `grep -q` for it. When no command can check one, list it \
+         in `[meta] dropped_checks` as `\"SCk: <why no command can check it>\"`. Keep the rest of \
+         the plan as it is. Output the complete plan as a single ```toml fenced block, followed \
+         only by the ```accept:accept/<file> blocks of the tests it pins.",
         coverage.kept.len(),
         coverage.checks.len(),
-        missing.join("\n")
     )
 }
 
@@ -636,6 +844,81 @@ mod tests {
                  `0.0 ≤ fitness ≤ 1.0`",
                 "INV-002: Decay; **test_fn**: `test_decay`",
             ]
+        );
+    }
+
+    /// A step that only greps, tests files, lists or builds keeps no check;
+    /// one that runs a test does, whatever greps guard it.
+    #[test]
+    fn grep_file_test_and_build_steps_are_shallow() {
+        for command in [
+            "grep -q 'struct TuringMachine' src/turing_machine.rs && echo ok",
+            "test -f src/widget.rs",
+            "ls synth/ | grep -c osc",
+            "cargo check -p golem-sonification 2>&1",
+            "python3 -m py_compile synth/osc.py",
+            "grep -q 'a|b' src/x.rs",
+        ] {
+            assert!(is_shallow(command), "{command}");
+        }
+        for command in [
+            "grep -q 'fn locked_loop' src/tm.rs && cargo test -p golem-sonification locked_loop",
+            "python3 -m unittest tests.test_osc.OscillatorTest.test_pitch_tracks_midi",
+            "cd synth && pytest -q tests/test_osc.py",
+            "RUST_LOG=info cargo test quantizer 2>&1",
+        ] {
+            assert!(!is_shallow(command), "{command}");
+        }
+    }
+
+    /// A drop's reason must say why no command can check it, not restate
+    /// the check.
+    #[test]
+    fn a_restated_check_is_no_reason() {
+        let check = "`ProbabilityGate` at `probability=0.0`: blocks all gates (0 outputs)";
+        assert!(is_restatement(
+            "ProbabilityGate at probability=0.0 blocks all gates.",
+            check
+        ));
+        assert!(!is_restatement(
+            "needs a person to listen to the output",
+            check
+        ));
+    }
+
+    /// A step that covers a source check by its id is pointed at a criterion
+    /// of its task that states the check, which is added when missing; the
+    /// coverage then keeps the check, by that criterion.
+    #[test]
+    fn covers_naming_a_check_get_a_criterion_and_keep_it() {
+        let checks = source_checks("## Verification\n\n- the widget spins\n- the widget stops\n");
+        let mut plan = TasksFile::parse_str(
+            "[meta]\nplan = \"p\"\ntotal = 1\nstatus = \"ready\"\n\n\
+             [[task]]\nid = \"T1\"\ntitle = \"t\"\nstatus = \"ready\"\nrole = \"implementer\"\n\
+             tier = \"focused\"\nacceptance = [\"AC1: SC2: the widget stops\"]\n\n\
+             [[task.verify]]\nphase = \"test\"\ncommand = \"pytest tests/test_w.py::test_spins\"\n\
+             covers = [\"SC1\"]\n\n\
+             [[task.verify]]\nphase = \"test\"\ncommand = \"grep -q stop src/w.py\"\n\
+             covers = [\"SC2\"]\n",
+        )
+        .expect("a plan");
+        let moved = normalize_covers(&mut plan, &checks);
+        assert_eq!(
+            moved,
+            ["T1: `covers` SC1 became AC2", "T1: `covers` SC2 became AC1"]
+        );
+        let task = &plan.tasks[0];
+        assert_eq!(task.acceptance[1], "AC2: SC1: the widget spins");
+        assert_eq!(task.verify[0].covers, ["AC2"]);
+
+        let coverage = SourceCoverage::of(&checks, &plan);
+        assert_eq!(coverage.kept.len(), 1, "{coverage:?}");
+        assert_eq!(coverage.shallow.len(), 1, "{coverage:?}");
+        assert_eq!(coverage.unkept(), 1);
+        assert_eq!(
+            coverage.summary_line(),
+            "Source checks: 1 of 2 kept as verify steps, 1 checked only by a grep, a file test \
+             or a build"
         );
     }
 

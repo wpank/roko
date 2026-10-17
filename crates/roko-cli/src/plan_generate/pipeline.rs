@@ -1515,8 +1515,11 @@ pub async fn generate_plan(request: PlanRequest<'_>) -> Result<(PathBuf, Generat
             let policy = crate::plan_policy::PlanExecutionPolicy::generated_for_environment(
                 template_kind.max_task_count(),
             );
-            // gap-b95913: what the planner need not be asked to fix.
-            let repairs = repair_generated_draft(&mut parsed, policy, workdir_ref);
+            // gap-b95913: what the planner need not be asked to fix; and
+            // gap-dc5d7c: a step that covers a source check by its id names
+            // a criterion of its task that states the check.
+            let mut repairs = repair_generated_draft(&mut parsed, policy, workdir_ref);
+            repairs.extend(source_checks::normalize_covers(&mut parsed, &checks));
             let validated = if repairs.is_empty() {
                 validated
             } else {
@@ -1695,15 +1698,15 @@ pub async fn generate_plan(request: PlanRequest<'_>) -> Result<(PathBuf, Generat
         };
 
         // gap-dc5d7c: what became of the source's checks in a candidate
-        // plan, and how many it leaves in no verify step (all of them when it
-        // does not parse).
+        // plan, and how many it does not keep (all of them when it does not
+        // parse).
         let coverage_of = |candidate: &str| {
             TasksFile::parse_str(candidate)
                 .ok()
                 .map(|plan| source_checks::SourceCoverage::of(&checks, &plan))
         };
         let missing_of = |candidate: &str| {
-            coverage_of(candidate).map_or(checks.len(), |coverage| coverage.missing().len())
+            coverage_of(candidate).map_or(checks.len(), |coverage| coverage.unkept())
         };
 
         // First attempt uses the output we already have.
@@ -1890,18 +1893,19 @@ pub async fn generate_plan(request: PlanRequest<'_>) -> Result<(PathBuf, Generat
             }
         }
 
-        // gap-dc5d7c: a plan that leaves some of the source's checks in no
-        // verify step, with no reason given, is sent back once, naming them,
-        // and the plan that leaves fewer is kept.
+        // gap-dc5d7c: a plan that does not keep some of the source's
+        // checks (no step checks them, or only a grep or a build does, and no
+        // reason says why no command can) is sent back once, naming them,
+        // and the plan that keeps more is kept.
         let mut checks_regenerated = false;
         if let Ok(candidate) = &validated_toml
             && let Some(coverage) = coverage_of(candidate)
-            && !coverage.missing().is_empty()
+            && coverage.unkept() > 0
             && !skip_for_cap("keep the source checks it left out")
         {
-            let missing = coverage.missing().len();
+            let missing = coverage.unkept();
             let why = format!(
-                "{missing} of the source's {} checks are in no verify step",
+                "{missing} of the source's {} checks are not kept as verify steps",
                 checks.len()
             );
             eprintln!("  {why}; asking the planner once more");
@@ -3486,9 +3490,12 @@ mod tests {
     }
 
     /// gap-dc5d7c: generation from a file with a Verification section lists
-    /// its checks for the planner, asks once more for a plan that leaves one
-    /// in no verify step, and reports each check: kept, by the task and the
-    /// criterion that keep it, or dropped, with the planner's reason.
+    /// its checks for the planner. A plan that checks one only with a file
+    /// test, leaves one out and drops one with a reason that restates it is
+    /// sent back once; the plan that keeps every check is written, and each
+    /// check is reported: kept, by the task and the criterion that keep it
+    /// (a step that covers a check by its id gets a criterion that states
+    /// it), or dropped, with the planner's reason.
     #[cfg(unix)]
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn from_file_generation_reports_dropped_source_checks() {
@@ -3507,14 +3514,30 @@ mod tests {
                  [task.context]\nread_files = []\n{verify}"
             )
         };
-        let exists = "\n[[task.verify]]\nphase = \"check\"\ncommand = \"test -f src/widget.rs\"\n\
-                      covers = [\"AC1\"]\n";
-        let spins = "\n[[task.verify]]\nphase = \"check\"\n\
-                     command = \"grep -q spin src/widget.rs\"\ncovers = [\"AC2\"]\n";
-        let first = plan("\"AC1: SC1: src/widget.rs exists\"", exists, "");
+        let step = |command: &str, covers: &str| {
+            format!(
+                "\n[[task.verify]]\nphase = \"test\"\ncommand = \"{command}\"\n\
+                 covers = [\"{covers}\"]\n"
+            )
+        };
+        let first = plan(
+            "\"AC1: SC1: src/widget.rs exists\"",
+            &step("test -f src/widget.rs", "AC1"),
+            "dropped_checks = [\"SC3: a person enjoys the widget\"]",
+        );
         let second = plan(
-            "\"AC1: SC1: src/widget.rs exists\", \"AC2: SC2: the widget spins\"",
-            &format!("{exists}{spins}"),
+            "\"AC1: SC2: the widget spins\"",
+            &format!(
+                "{}{}",
+                step(
+                    "python3 -m unittest tests.test_widget.WidgetTest.test_module",
+                    "SC1"
+                ),
+                step(
+                    "python3 -m unittest tests.test_widget.WidgetTest.test_spins",
+                    "AC1"
+                ),
+            ),
             "dropped_checks = [\"SC3: needs a person to judge it\"]",
         );
         let temp = tempfile::tempdir().expect("tempdir");
@@ -3546,36 +3569,52 @@ mod tests {
             "{asked}"
         );
         let again = std::fs::read_to_string(bin.path().join("prompt-1.txt")).expect("the retry");
-        assert!(again.contains("keeps 1 of the 3 source checks"), "{again}");
-        assert!(again.contains("- SC2: the widget spins"), "{again}");
+        for expected in [
+            "keeps 0 of the 3 source checks",
+            "- SC2: the widget spins",
+            "- SC3: a person enjoys the widget",
+            "(T1 runs only `test -f src/widget.rs`)",
+        ] {
+            assert!(again.contains(expected), "{expected}: {again}");
+        }
 
         let checks = outcome
             .source_checks
             .expect("the source's checks are reported");
         assert_eq!(
-            (checks.total, checks.kept, checks.dropped, checks.missing),
-            (3, 2, 1, 0),
+            (
+                checks.total,
+                checks.kept,
+                checks.shallow,
+                checks.dropped,
+                checks.missing
+            ),
+            (3, 2, 0, 1, 0),
             "{checks:?}"
         );
         assert!(checks.regenerated);
-        let spin = &checks.checks[1];
-        assert_eq!(
+        let criterion = |index: usize| {
+            let check = &checks.checks[index];
             (
-                spin.status.as_str(),
-                spin.task.as_deref(),
-                spin.criterion.as_deref()
-            ),
-            ("kept", Some("T1"), Some("AC2"))
-        );
+                check.status.as_str(),
+                check.task.as_deref(),
+                check.criterion.as_deref(),
+            )
+        };
+        assert_eq!(criterion(0), ("kept", Some("T1"), Some("AC2")));
+        assert_eq!(criterion(1), ("kept", Some("T1"), Some("AC1")));
         let person = &checks.checks[2];
         assert_eq!(person.status, "dropped");
         assert_eq!(person.reason.as_deref(), Some("needs a person to judge it"));
         let written = std::fs::read_to_string(workdir.join("plans/widget/tasks.toml"))
             .expect("the widget plan");
-        assert!(
-            written.contains("SC3: needs a person to judge it"),
-            "{written}"
-        );
+        for expected in [
+            "AC2: SC1: `src/widget.rs` exists",
+            "covers = [\"AC2\"]",
+            "SC3: needs a person to judge it",
+        ] {
+            assert!(written.contains(expected), "{expected}: {written}");
+        }
     }
 
     /// bug-f0d60c: a reply that holds no plan that validates is retried with

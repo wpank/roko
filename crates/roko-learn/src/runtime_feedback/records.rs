@@ -1179,8 +1179,12 @@ pub struct GenerationSpecQuality {
 pub struct GenerationSourceChecks {
     /// The checks the source states.
     pub total: usize,
-    /// Checks an acceptance criterion names and a verify step covers.
+    /// Checks a verify step covers and runs more than a grep, a file test
+    /// or a build for.
     pub kept: usize,
+    /// Checks only a grep, a file test or a build covers.
+    #[serde(default)]
+    pub shallow: usize,
     /// Checks the plan drops with a reason (`[meta] dropped_checks`).
     pub dropped: usize,
     /// Checks the plan neither keeps nor drops.
@@ -1198,7 +1202,7 @@ pub struct GenerationSourceCheck {
     pub id: String,
     /// The check as the source states it, on one line.
     pub check: String,
-    /// `kept`, `dropped` or `missing`.
+    /// `kept`, `shallow`, `dropped` or `missing`.
     pub status: String,
     /// The task that keeps it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1206,7 +1210,7 @@ pub struct GenerationSourceCheck {
     /// The acceptance criterion that keeps it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub criterion: Option<String>,
-    /// Why the plan drops it.
+    /// Why the plan drops it, or the only command that covers a shallow one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reason: Option<String>,
 }

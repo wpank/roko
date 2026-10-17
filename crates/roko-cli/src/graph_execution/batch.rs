@@ -7,6 +7,9 @@
 //! delivered into it: [`CliCompletionDeliveryService`] merges the plan
 //! branch's verified tip by plumbing and runs the regression check on the
 //! merge in the repository's regression checkout, never the operator's.
+//! The batch moves to the merge only once that check passed (bug-700d7c), so
+//! an attempt that starts while another plan's check runs starts from checked
+//! work, and a plan whose check failed never reaches the batch.
 //! Deliveries run one at a time, since the
 //! batch has one tip, so a plan sees every plan delivered before it started.
 //!
@@ -17,12 +20,10 @@ use std::path::{Path, PathBuf};
 
 use roko_graph::delivery::{
     CompletionDeliveryReceiptV1, CompletionDeliveryRequest, CompletionDeliveryService,
-    CompletionDeliveryState, DeliveryError, DeliveryReceiptStore,
+    DeliveryError, DeliveryReceiptStore,
 };
 
-use super::delivery::{
-    CliCompletionDeliveryService, DeliveryBackend, GitDeliveryBackend, is_ancestor,
-};
+use super::delivery::{CliCompletionDeliveryService, GitDeliveryBackend, is_ancestor};
 use crate::orchestrator::worktree::format_branch_name;
 use crate::runner::merge::git_output;
 
@@ -252,10 +253,15 @@ impl BatchIntegration {
     ///
     /// A `recorded` receipt of the same request, left by an earlier process of
     /// the run, is continued from its next step: a delivered plan is not
-    /// merged again, and one that stopped after its merge only reruns its
-    /// regression check. A recorded failure, or a receipt of another request,
-    /// is delivered afresh. A merge whose regression check failed is taken
-    /// back out of the batch.
+    /// merged again, one that stopped after its merge only reruns its
+    /// regression check, and one whose check passed only moves the batch. A
+    /// recorded failure, or a receipt of another request, is delivered
+    /// afresh.
+    ///
+    /// The batch moves to a merge only once its regression check passed
+    /// (bug-700d7c): while the check runs, plans that start attempts from the
+    /// batch get its old tip, and a merge whose check failed, or was cut short
+    /// by a stop (bug-7b62ff), never reaches it.
     ///
     /// # Errors
     ///
@@ -268,53 +274,22 @@ impl BatchIntegration {
         recorded: Option<CompletionDeliveryReceiptV1>,
     ) -> Result<CompletionDeliveryReceiptV1, DeliveryError> {
         let _turn = self.queue.lock().await;
-        let branch_ref = format!("refs/heads/{}", self.branch);
-        let before = commit_of(&self.repo, &branch_ref).await;
         let resumable = recorded.filter(|receipt| {
             receipt.request.delivery_id == request.delivery_id
                 && receipt.request_fingerprint == request.fingerprint()
                 && !receipt.state.is_failed()
         });
-        let mut receipt = match resumable {
-            None => service.deliver(request).await?,
+        match resumable {
+            None => service.deliver(request).await,
             Some(receipt) => {
                 let delivery_id = receipt.request.delivery_id.clone();
                 if self.store.get(&delivery_id).is_none() {
                     self.store.insert_or_get(&receipt.request)?;
                     self.store.update(&receipt);
                 }
-                service.reconcile(&delivery_id).await?
+                service.reconcile(&delivery_id).await
             }
-        };
-        // The batch holds only plans that passed their regression check: a
-        // merge whose check failed, or was cut short by a stop (bug-7b62ff),
-        // is undone, so no later plan builds on it.
-        if matches!(
-            receipt.state,
-            CompletionDeliveryState::RegressionFailed | CompletionDeliveryState::Cancelled
-        ) && let (Some(merge), Some(before)) = (receipt.merge_commit.clone(), before)
-            && merge != before
-        {
-            let undone = git_output(
-                &self.repo,
-                &[
-                    "update-ref",
-                    "-m",
-                    "roko: undo a delivery whose regression check did not pass",
-                    &branch_ref,
-                    &before,
-                    &merge,
-                ],
-            )
-            .await;
-            let note = match undone {
-                Ok(_) => format!("; {} was reset to {before}", self.branch),
-                Err(e) => format!("; {} could not be reset to {before}: {e}", self.branch),
-            };
-            receipt.error = Some(receipt.error.unwrap_or_default() + &note);
-            self.store.update(&receipt);
         }
-        Ok(receipt)
     }
 
     /// Promote the batch into `target` once every plan is delivered: merge
@@ -353,7 +328,7 @@ impl BatchIntegration {
             publish: false,
         };
         let outcome = GitDeliveryBackend::new(self.repo.clone())
-            .merge(&request)
+            .merge_into_target(&request)
             .await;
         let (commit, moved) = match outcome.merge_commit {
             Some(commit) if outcome.merged => (commit, true),
@@ -723,12 +698,16 @@ async fn commit_of(repo: &Path, rev: &str) -> Option<String> {
 mod tests {
     use std::sync::Arc;
     use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::time::Duration;
+
+    use roko_graph::delivery::CompletionDeliveryState;
 
     use super::*;
     use crate::graph_execution::delivery::{
-        DeliveryBackend, DeliveryMergeOutcome, DeliveryPublicationOutcome,
+        DeliveryBackend, DeliveryMergeOutcome, DeliveryMoveOutcome, DeliveryPublicationOutcome,
         DeliveryRegressionOutcome, GitDeliveryBackend,
     };
+    use crate::orchestrator::worktree::{WorktreeConfig, WorktreeManager};
 
     fn git(repo: &Path, args: &[&str]) -> String {
         let output = std::process::Command::new("git")
@@ -1070,11 +1049,13 @@ mod tests {
         assert_eq!(merge_command(path, "roko/batch/gone").await, None);
     }
 
-    /// Counts the merges and regression checks it is asked for; both pass.
+    /// Counts the merges, regression checks and target moves it is asked
+    /// for; each succeeds.
     #[derive(Debug, Default)]
     struct CountingBackend {
         merges: AtomicUsize,
         regressions: AtomicUsize,
+        moves: AtomicUsize,
     }
 
     #[async_trait::async_trait]
@@ -1084,7 +1065,21 @@ mod tests {
             DeliveryMergeOutcome {
                 merged: true,
                 merge_commit: Some(request.commit_oid.clone()),
+                target_tip: None,
                 summary: "merged".to_string(),
+            }
+        }
+
+        async fn move_target(
+            &self,
+            _request: &CompletionDeliveryRequest,
+            _merge_commit: &str,
+            _target_tip: Option<&str>,
+        ) -> DeliveryMoveOutcome {
+            self.moves.fetch_add(1, Ordering::SeqCst);
+            DeliveryMoveOutcome {
+                moved: true,
+                summary: "moved".to_string(),
             }
         }
 
@@ -1117,8 +1112,10 @@ mod tests {
     }
 
     /// spec-f830c4: a resumed run continues a recorded delivery. One that
-    /// stopped after its merge only reruns its regression check, a delivered
-    /// one does nothing, and a failed one is delivered afresh.
+    /// stopped after its merge only reruns its regression check before it
+    /// moves the batch, one whose check passed only moves the batch
+    /// (bug-700d7c), a delivered one does nothing, and a failed one is
+    /// delivered afresh.
     #[tokio::test]
     async fn a_resumed_delivery_continues_after_its_merge() {
         let repo = repo_with_plan_branches();
@@ -1135,10 +1132,11 @@ mod tests {
             receipt
         };
         use CompletionDeliveryState::{Conflict, Delivered, Merged, Queued, RegressionPassed};
-        for (states, merges, regressions) in [
-            (vec![Queued, Merged], 0, 1),
-            (vec![Queued, Merged, RegressionPassed, Delivered], 0, 0),
-            (vec![Queued, Conflict], 1, 1),
+        for (states, merges, regressions, moves) in [
+            (vec![Queued, Merged], 0, 1, 1),
+            (vec![Queued, Merged, RegressionPassed], 0, 0, 1),
+            (vec![Queued, Merged, RegressionPassed, Delivered], 0, 0, 0),
+            (vec![Queued, Conflict], 1, 1, 1),
         ] {
             let batch = BatchIntegration::open(repo.path(), "run-3")
                 .await
@@ -1156,12 +1154,140 @@ mod tests {
             assert_eq!(
                 (
                     backend.merges.load(Ordering::SeqCst),
-                    backend.regressions.load(Ordering::SeqCst)
+                    backend.regressions.load(Ordering::SeqCst),
+                    backend.moves.load(Ordering::SeqCst)
                 ),
-                (merges, regressions),
+                (merges, regressions, moves),
                 "{states:?}"
             );
         }
         drop(batch);
+    }
+
+    /// Wait until `path` exists, for at most 60 s.
+    async fn wait_for_file(path: &Path) {
+        for _ in 0..1200 {
+            if path.exists() {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        panic!("{} never appeared", path.display());
+    }
+
+    /// bug-700d7c: a delivery moves the run's batch branch only once the
+    /// plan's whole-plan check passed. While the check runs, the branch is at
+    /// its old tip, so an attempt that another plan starts from it then starts
+    /// there, not from the unchecked merge. A check that fails leaves the
+    /// branch where it was: it never points at the failed merge, so nothing
+    /// can start from it. A check that passes moves the branch to the merge.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn delivery_moves_the_run_branch_only_after_its_check_passes() {
+        let repo = repo_with_plan_branches();
+        let path = repo.path();
+        let scratch = tempfile::tempdir().expect("scratch");
+        let batch = BatchIntegration::open(path, "run-order")
+            .await
+            .expect("batch");
+        let branch_ref = "refs/heads/roko/batch/run-order";
+        let base = git(path, &["rev-parse", branch_ref]);
+        // As in a plan run, an attempt of a plan with no accepted work starts
+        // from the batch branch.
+        let worktrees = WorktreeManager::new(WorktreeConfig {
+            repo_root: path.to_path_buf(),
+            base_branch: batch.branch().to_string(),
+            worktrees_root: scratch.path().join("worktrees"),
+            max_live: None,
+            idle_ttl: Duration::from_secs(3600),
+        });
+
+        // plan-a's check passes, and then plan-b's fails. Each records where
+        // the batch branch is while it runs, and waits until another plan's
+        // attempt has started.
+        let mut delivered = Vec::new();
+        for (attempt, plan, passes) in [(1, "plan-a", true), (2, "plan-b", false)] {
+            let [seen, running, release] = ["seen", "running", "release"]
+                .map(|name| scratch.path().join(format!("{plan}.{name}")));
+            let step = format!(
+                "git rev-parse {branch_ref} > '{seen}' && touch '{running}' && i=0 && \
+                 while [ ! -e '{release}' ] && [ $i -lt 1200 ]; do sleep 0.05; i=$((i+1)); done; \
+                 test -e '{release}' && {verdict}",
+                seen = seen.display(),
+                running = running.display(),
+                release = release.display(),
+                verdict = if passes { "true" } else { "false" },
+            );
+            let backend =
+                GitDeliveryBackend::new(path.to_path_buf()).with_regression_steps(vec![step]);
+            let delivering = service(&batch, backend);
+            let before = git(path, &["rev-parse", branch_ref]);
+            let verified = plan_branch_tip(path, plan).await.expect("plan branch");
+
+            let delivery = batch.deliver(&delivering, batch.request(plan, verified), None);
+            let other_plan = async {
+                wait_for_file(&running).await;
+                let started = worktrees
+                    .create_for_attempt("plan-c", "T1", attempt)
+                    .await
+                    .expect("another plan's attempt starts during the check");
+                std::fs::write(&release, "").expect("let the check end");
+                started
+            };
+            let (receipt, started) = tokio::join!(delivery, other_plan);
+
+            let receipt = receipt.expect("delivery runs");
+            let merge = receipt.merge_commit.clone().expect("the merge");
+            assert_ne!(merge, before, "{plan}");
+            let during = std::fs::read_to_string(&seen).expect("the check ran");
+            assert_eq!(
+                during.trim(),
+                before,
+                "{plan}: the batch moved during its check"
+            );
+            assert_eq!(
+                started.base_commit.as_deref(),
+                Some(before.as_str()),
+                "{plan}: an attempt that started during the check got the unchecked merge"
+            );
+            let after = git(path, &["rev-parse", branch_ref]);
+            if passes {
+                assert_eq!(
+                    receipt.state,
+                    CompletionDeliveryState::Delivered,
+                    "{plan}: {:?}",
+                    receipt.error
+                );
+                assert_eq!(after, merge, "{plan}: a passed check moves the batch");
+                delivered.push(merge);
+            } else {
+                assert_eq!(
+                    receipt.state,
+                    CompletionDeliveryState::RegressionFailed,
+                    "{plan}: {:?}",
+                    receipt.error
+                );
+                assert_eq!(
+                    after, before,
+                    "{plan}: a failed check leaves the batch alone"
+                );
+                let reached = std::process::Command::new("git")
+                    .args(["merge-base", "--is-ancestor", &merge, branch_ref])
+                    .current_dir(path)
+                    .env_remove("GIT_DIR")
+                    .env_remove("GIT_WORK_TREE")
+                    .status()
+                    .expect("git merge-base");
+                assert!(
+                    !reached.success(),
+                    "{plan}: the failed merge is in the batch"
+                );
+            }
+        }
+
+        // Every commit the batch branch ever pointed at is its base or a merge
+        // whose check passed: its reflog never names plan-b's merge.
+        let held = git(path, &["log", "--walk-reflogs", "--format=%H", branch_ref]);
+        let held: Vec<&str> = held.lines().collect();
+        assert_eq!(held, [delivered[0].as_str(), base.as_str()]);
     }
 }

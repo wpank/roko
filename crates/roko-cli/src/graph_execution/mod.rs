@@ -53,8 +53,8 @@ pub mod workspaces;
 pub use control_adapter::{GraphCommandEffect, GraphExecutionControlAdapter};
 pub use delivery::{
     CliCompletionDeliveryService, DELIVERY_CHECKPOINT_KEY, DeliveryBackend, DeliveryEvents,
-    DeliveryMergeOutcome, DeliveryPublicationOutcome, DeliveryRegressionOutcome,
-    GitDeliveryBackend,
+    DeliveryMergeOutcome, DeliveryMoveOutcome, DeliveryPublicationOutcome,
+    DeliveryRegressionOutcome, GitDeliveryBackend,
 };
 pub use event_log::{EventTap, RunEventLog, Tapped};
 pub use identity_map::{GraphIdentityMap, NodeIdentity};

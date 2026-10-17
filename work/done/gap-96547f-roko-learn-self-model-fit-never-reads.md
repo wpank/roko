@@ -2,15 +2,16 @@
 id = "gap-96547f"
 kind = "gap"
 title = "roko learn self-model fit never reads predictions.jsonl, so nothing measures shadow forecast coverage or the share joined to verdicts"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p3"
 goal = "cybernetic"
 size = "S"
 subsystem = ["roko-cli/learn", "roko-learn/self_model"]
 created = 2026-10-15
-updated = 2026-10-15
-last_verified = 2026-10-15
+updated = 2026-10-17
+last_verified = 2026-10-17
+last_verified_rev = "a900aa9ab"
 source = "status-quo-2026-10-15#finding-14"
 anchors = ["crates/roko-cli/src/commands/learn_self_model.rs::fit_offline", "crates/roko-learn/src/self_model/ingest.rs::read_runs", "crates/roko-learn/src/telemetry/records.rs::AttemptPredictionRecord"]
 lane = "rust-cold"
@@ -19,6 +20,17 @@ links = { depends_on = ["gap-9aca5d"], blocks = [], related = ["gap-b38ed2"], su
 
 [[verify]]
 command = "grep -rqw 'fn fit_reports_the_forecast_join_share' crates/roko-cli/ && cargo test -p roko-cli fit_reports_the_forecast_join_share"
+
+[closed]
+at = 2026-10-17
+at_ts = "2026-10-17T01:44:52Z"
+commit = "f90e8194f"
+executor = "claude-agent"
+via = "work-batch"
+size = "S"
+claimed_at = "2026-10-16T19:19:30Z"
+forced = false
+evidence = "f90e8194f makes `roko learn self-model fit` read each run's predictions.jsonl. roko-learn ingest.rs::read_forecast_join loads each run directory with telemetry::report::RunRecords and joins its forecasts by attempt key to the run's route decisions (the routed attempts) and verdicts. ForecastJoin counts runs, runs with a forecast, routed attempts and those forecast (coverage, over the runs with a forecast), forecasts, those whose attempt settled with a label through Label::of_verdict (join share), and the unjoined ones by reason (no verdict, or a verdict without a label). FitReport.forecast_join carries status insufficient_n with no forecast (else measured), both shares and the counts in --json, and `fit` prints one line for it. The literal verify, `grep -rqw 'fn fit_reports_the_forecast_join_share' crates/roko-cli/ && cargo test -p roko-cli fit_reports_the_forecast_join_share`, passes at a900aa9ab (work/gap-96547f after main and work/gap-b38ed2 were merged in): 76 test binaries ran with 0 failures, and fit_reports_the_forecast_join_share passed (4 routed attempts, 3 forecast, 2 of them with a labelled verdict give coverage 0.75 and join share 2/3, with 1 forecast that has no verdict, then 1 whose verdict has no label once it settles unverified; no forecast gives insufficient_n). It also passed on f90e8194f before the merge. At a900aa9ab, `cargo test -p roko-learn --lib self_model::` gives 57 passed, including the ingest tests on the shared run-directory listing; `cargo clippy -p roko-learn -p roko-cli --no-deps -- -D warnings` is clean; and `cargo +nightly fmt --all` changes nothing."
 +++
 
 ## Problem

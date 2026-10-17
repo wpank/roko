@@ -10,7 +10,7 @@ rank = 49
 size = "L"
 subsystem = ["roko-cli/graph_task_dispatch"]
 created = 2026-10-02
-updated = 2026-10-03
+updated = 2026-10-16
 last_verified = 2026-10-03
 last_verified_rev = "cf37d7628"
 source = "tmp/backlog/2026-10-02-complete-and-wire PK49"
@@ -30,6 +30,8 @@ command = "grep -rqw 'fn prediction_record_round_trips_and_lands_in_predictions_
 
 [[verify]]
 command = "grep -rqw 'fn self_model_config_defaults_off' crates/roko-core/src/config/ && cargo test -p roko-core self_model_config_defaults_off"
+superseded = "2026-10-16: gap-9aca5d (5350b2c14, Will's decision 2 of 2026-10-15) made [self_model] default to shadow and renamed this test to self_model_config_defaults_shadow: the off default it checked was changed on purpose."
+superseded_by = "5350b2c14"
 
 [[verify]]
 command = "grep -rqw 'fn self_model_shadow_writes_predictions_and_keeps_routing' crates/roko-cli/src/ && cargo test -p roko-cli self_model_shadow_writes_predictions_and_keeps_routing"

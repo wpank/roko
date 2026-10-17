@@ -2,7 +2,7 @@
 id = "gap-f8a6ea"
 kind = "gap"
 title = "The plan generator's prompt does not state the generated-plan limits (3 read_files, one line range, anchored symbols), so first drafts fail validation and each costs a planner call"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p2"
 goal = "golden-path"
@@ -11,6 +11,7 @@ subsystem = ["roko-cli/plan_generate"]
 created = 2026-10-16
 updated = 2026-10-16
 last_verified = 2026-10-16
+last_verified_rev = "b17f08741"
 source = "gap-e1fdb3 live check, 2026-10-16 (8 drafts failed validation; the docs request failed after 3 calls)"
 discovered_from = "gap-e1fdb3"
 anchors = ["crates/roko-cli/src/plan_generate.rs::build_generator_system_prompt", "crates/roko-cli/src/plan_policy.rs::PlanExecutionPolicy", "crates/roko-cli/src/plan_generate/pipeline.rs::generate_plan"]
@@ -19,6 +20,18 @@ links = { depends_on = [], blocks = [], related = ["gap-e1fdb3", "bug-09cc5f"], 
 
 [[verify]]
 command = "grep -rqw 'fn generator_prompt_states_the_generated_plan_limits' crates/roko-cli/src && cargo test -p roko-cli --lib -- generator_prompt_states_the_generated_plan_limits"
+
+[closed]
+at = 2026-10-16
+at_ts = "2026-10-16T21:16:22Z"
+commit = "b17f08741"
+by = "commit trailer"
+executor = "claude-agent"
+via = "work-batch"
+size = "S"
+claimed_at = "2026-10-16T19:19:32Z"
+forced = false
+evidence = "b17f08741: the generator's system prompt has a \"Generated-plan limits\" section, filled by plan_generate.rs::render_generated_plan_limits from PlanExecutionPolicy::generated itself (no hand-written numbers): at most 3 context.read_files entries per task (PLAN_BUDGET_READ_FILES), exactly 1 verify step (PLAN_VERIFY_OWNER), one START-END range of at most 240 lines per `lines`, never a list such as 1-25,320-332 (PLAN_CONTEXT_RANGE, PLAN_CONTEXT_RANGE_BUDGET), at most 24576 bytes of declared context (PLAN_BUDGET_CONTEXT), and symbol anchors that must appear in a declared read_files file (PLAN_CONTEXT_SYMBOL). The checklist's hand-written \"No task requires reading more than 3 files\" now points at the section. The validation retry already quotes the validator's message (plan step 3), unchanged. Checked: cargo test -p roko-cli --lib generator_prompt_states_the_generated_plan_limits passes (each limit with the policy's value, the placeholder filled, the hand-written limit gone); the plan_generate:: and plan_authoring:: lib tests pass (112); cargo clippy -p roko-cli --no-deps -- -D warnings is clean; nightly fmt. Not run: the live rerun of gap-e1fdb3's five requests in Done when (no paid calls in this round)."
 +++
 
 ## Problem

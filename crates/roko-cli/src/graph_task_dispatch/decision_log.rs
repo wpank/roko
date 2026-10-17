@@ -95,6 +95,68 @@ pub(super) fn route_event(
     }
 }
 
+/// What the prompt of attempt `attempt` of `task_id` carried, from its
+/// `diagnostics`, as the [`DashboardEvent::PromptAssembled`] a host follows
+/// (gap-5f6d0b): the knowledge entries, playbooks and episodes that reached
+/// it, each retrieved one that did not with why, and its sections.
+///
+/// [`DashboardEvent::PromptAssembled`]: roko_core::DashboardEvent::PromptAssembled
+pub(super) fn prompt_event(
+    diagnostics: &crate::dispatch::PromptDiagnostics,
+    plan_id: &str,
+    task_id: &str,
+    attempt: u32,
+) -> roko_core::DashboardEvent {
+    let carried = |kind: ExposureItemKind| {
+        diagnostics
+            .items
+            .iter()
+            .filter(|item| item.kind == kind && item.included)
+            .map(|item| item.id.clone())
+            .collect::<Vec<_>>()
+    };
+    let left_out = diagnostics
+        .items
+        .iter()
+        .filter(|item| {
+            !item.included
+                && matches!(
+                    item.kind,
+                    ExposureItemKind::Knowledge
+                        | ExposureItemKind::Playbook
+                        | ExposureItemKind::Episode
+                        | ExposureItemKind::Section
+                )
+        })
+        .map(|item| roko_core::PromptLeftOut {
+            kind: item.kind.as_str().to_string(),
+            id: item.id.clone(),
+            reason: item
+                .excluded_reason
+                .and_then(|reason| serde_json::to_value(reason).ok())
+                .and_then(|reason| reason.as_str().map(str::to_string))
+                .unwrap_or_default(),
+        })
+        .collect::<Vec<_>>();
+    let dropped_sections = left_out
+        .iter()
+        .filter(|item| item.kind == ExposureItemKind::Section.as_str())
+        .map(|item| item.id.clone())
+        .collect();
+    roko_core::DashboardEvent::PromptAssembled {
+        plan_id: plan_id.to_string(),
+        task_id: task_id.to_string(),
+        attempt,
+        knowledge_ids: carried(ExposureItemKind::Knowledge),
+        playbook_ids: carried(ExposureItemKind::Playbook),
+        episode_ids: carried(ExposureItemKind::Episode),
+        left_out,
+        included_sections: diagnostics.included_sections.clone(),
+        dropped_sections,
+        estimated_tokens: diagnostics.estimated_tokens,
+    }
+}
+
 /// Most exposure rows one attempt writes (S01 §5.9
 /// `max_exposures_per_attempt`; a constant until a `[telemetry]` key
 /// exists). The attempt's counts include the items past it.
@@ -131,6 +193,16 @@ impl GraphTaskDispatcher {
                 ));
             }
             attempt.record_decision(decision);
+        }
+        // What its prompt carried and left out, for the same host
+        // (gap-5f6d0b).
+        if let Some(tui) = &self.tui_bridge {
+            tui.publish_event(prompt_event(
+                &plan.prompt.diagnostics,
+                &attempt.key.plan_id,
+                &task.id,
+                attempt.key.attempt,
+            ));
         }
         record_exposures(attempt, plan);
         self.record_content_decisions(attempt, plan);
@@ -343,9 +415,31 @@ fn content_decisions(
             decision.proposals = Some(proposals);
             decision.audit = audit;
         }
+        if point == ContentDecisionPoint::Knowledge && diagnostics.knowledge_section_off {
+            controller_decided(&mut decision);
+        }
         decisions.push(decision);
     }
     decisions
+}
+
+/// The opportunity reason of a knowledge row whose prompt ran a θ with the
+/// knowledge section off (M1's B4, gap-6bb6d8).
+const KNOWLEDGE_SECTION_OFF: &str = "knowledge_section_off";
+
+/// Mark `decision`, the knowledge row of a prompt whose θ had the knowledge
+/// section off (M1's B4, gap-6bb6d8), as the controller's: θ chose what
+/// reached the prompt, so the row names the controller as its source, and it
+/// is no opportunity of L-know, so the census credits neither of L-know's
+/// arms, its holdout included, with what θ did. Whatever arm L-know drew, a
+/// chain whose θ turns the section off drops out alike. The proposals stay
+/// the reader's: what it would have shown, and π⁰'s none.
+fn controller_decided(decision: &mut ContentDecisionRecord) {
+    decision.source = Some(DecisionSource::Control);
+    decision.audit.opportunity = Some(DecisionOpportunity {
+        eligible: false,
+        reason: KNOWLEDGE_SECTION_OFF.to_string(),
+    });
 }
 
 /// The content decision rows dispatch writes for `plan`, the plan of the
@@ -533,17 +627,23 @@ pub(super) fn content_audit(
 
 /// L-know's or L-play's proposals at its reader's point, and whether the
 /// point was the loop's opportunity: the learned proposal is the ids the
-/// reader would include, on the withheld arm too, and π⁰ includes none. The
-/// point is an opportunity when it offered an item or its reader `read` had
-/// one, though it loaded nothing to show (gap-a13544).
+/// reader would include, on the withheld arm too, and under a θ that turns
+/// the knowledge section off (gap-6bb6d8); π⁰ includes none. The point is
+/// an opportunity when it offered an item or its reader `read` had one,
+/// though it loaded nothing to show (gap-a13544).
 fn reader_proposals(
     items: &[&PromptItemDiagnostic],
     read: Option<&ReaderRead>,
 ) -> (ContentProposals, DecisionOpportunity) {
-    let withheld = Some(ExcludedReason::WithheldArm);
     let learned = items
         .iter()
-        .filter(|item| item.included || item.excluded_reason == withheld)
+        .filter(|item| {
+            item.included
+                || matches!(
+                    item.excluded_reason,
+                    Some(ExcludedReason::WithheldArm | ExcludedReason::HarnessPolicy)
+                )
+        })
         .map(|item| item.id.clone())
         .collect();
     let retrieved = items
@@ -1345,6 +1445,143 @@ mod tests {
         attempt.settle(passed, "stream-model", None);
     }
 
+    /// gap-5f6d0b: `prompt_assembled` names what the prompt carried by kind,
+    /// and each retrieved knowledge entry, playbook, episode or section it
+    /// left out with why. The error-pattern block is none of them.
+    #[test]
+    fn prompt_event_names_what_it_carried_and_left_out() {
+        let left_out = |item: PromptItemDiagnostic, reason: ExcludedReason| PromptItemDiagnostic {
+            included: false,
+            excluded_reason: Some(reason),
+            ..item
+        };
+        let kind = |kind: ExposureItemKind, id: &str| PromptItemDiagnostic {
+            kind,
+            ..knowledge_item(id, 1, true)
+        };
+        let diagnostics = PromptDiagnostics {
+            items: vec![
+                knowledge_item("kn-1", 1, true),
+                left_out(
+                    knowledge_item("kn-2", 2, true),
+                    ExcludedReason::BanditExcluded,
+                ),
+                playbook_item("pb-1"),
+                left_out(playbook_item("pb-2"), ExcludedReason::WithheldArm),
+                kind(ExposureItemKind::Episode, "ep-1"),
+                left_out(
+                    kind(ExposureItemKind::ErrorPattern, "test::abc"),
+                    ExcludedReason::TokenBudget,
+                ),
+                section_item("role_identity", None),
+                section_item("domain_context", Some(ExcludedReason::BanditExcluded)),
+            ],
+            included_sections: vec!["role_identity".to_string()],
+            estimated_tokens: 900,
+            ..PromptDiagnostics::default()
+        };
+
+        let event = prompt_event(&diagnostics, "plan", "T1", 2);
+
+        assert_eq!(
+            serde_json::to_value(&event).expect("the event as JSON"),
+            serde_json::json!({
+                "type": "prompt_assembled",
+                "plan_id": "plan",
+                "task_id": "T1",
+                "attempt": 2,
+                "knowledge_ids": ["kn-1"],
+                "playbook_ids": ["pb-1"],
+                "episode_ids": ["ep-1"],
+                "left_out": [
+                    {"kind": "knowledge", "id": "kn-2", "reason": "bandit_excluded"},
+                    {"kind": "playbook", "id": "pb-2", "reason": "withheld_arm"},
+                    {"kind": "section", "id": "domain_context", "reason": "bandit_excluded"},
+                ],
+                "included_sections": ["role_identity"],
+                "dropped_sections": ["domain_context"],
+                "estimated_tokens": 900,
+            })
+        );
+    }
+
+    /// gap-5f6d0b: an attempt publishes `prompt_assembled` as it is planned,
+    /// after its `route_decided`, naming the stored lesson its prompt carried
+    /// because it shares the task's words. The run is in maximize mode, so no
+    /// arm withholds the entry.
+    #[tokio::test]
+    async fn an_attempt_publishes_what_its_prompt_carried() {
+        let temp = tempdir().expect("tempdir");
+        let roko = temp.path().join(".roko");
+        // The task is "Streaming graph task": the entry shares its words.
+        seed_knowledge(
+            temp.path(),
+            &[(
+                "kn-stream",
+                "Streaming graph task output flushes each chunk",
+            )],
+        );
+        let feedback = GraphFeedbackContext {
+            runs_dir: Some(roko.join("runs")),
+            ..GraphFeedbackContext::default()
+        };
+        let hub = crate::state_hub::shared_state_hub();
+        let mut events = hub.subscribe_events();
+        let bridge = TuiBridge::new(hub.sender());
+        let (dispatcher, mut task) = crate::graph_task_dispatch::tests::make_test_dispatcher_with(
+            &temp,
+            VERIFY_PROVIDER,
+            no_auto_fix_maximize,
+            feedback,
+            |dispatcher| dispatcher.with_tui_bridge(bridge),
+        )
+        .await;
+        task.verify = vec![verify_step("structural", "true")];
+        let ctx = CellContext::new().with_run_id(RUN.to_string());
+        dispatcher
+            .dispatch(&make_spec(&task), Vec::new(), &ctx)
+            .await
+            .expect("the verified attempt passes");
+
+        let mut order = Vec::new();
+        let mut carried = Vec::new();
+        loop {
+            match events.try_recv() {
+                Ok(envelope) => match envelope.payload {
+                    roko_core::DashboardEvent::RouteDecided { .. } => order.push("route_decided"),
+                    roko_core::DashboardEvent::PromptAssembled {
+                        task_id,
+                        attempt,
+                        knowledge_ids,
+                        included_sections,
+                        ..
+                    } => {
+                        order.push("prompt_assembled");
+                        carried.push((task_id, attempt, knowledge_ids, included_sections));
+                    }
+                    _ => {}
+                },
+                Err(tokio::sync::broadcast::error::TryRecvError::Lagged(_)) => {}
+                Err(_) => break,
+            }
+        }
+        let [(task_id, attempt, knowledge_ids, included_sections)] = carried.as_slice() else {
+            panic!("one prompt_assembled: {carried:?}");
+        };
+        assert_eq!((task_id.as_str(), *attempt), (task.id.as_str(), 1));
+        assert_eq!(knowledge_ids, &["kn-stream"]);
+        assert!(
+            included_sections
+                .iter()
+                .any(|section| section == "domain_context"),
+            "{included_sections:?}"
+        );
+        let prompt = order.iter().position(|kind| *kind == "prompt_assembled");
+        if let Some(route) = order.iter().position(|kind| *kind == "route_decided") {
+            assert!(Some(route) < prompt, "the route comes first: {order:?}");
+        }
+    }
+
     /// bug-eaa318: the provider bridge's `model_call` row of an attempt whose
     /// prompt included a knowledge entry names the entry, so the loop census
     /// finds knowledge ids on the efficiency log. A frozen run's row names it
@@ -1457,6 +1694,160 @@ mod tests {
         assert!(sections > 0);
         let content = run.exposures.len() - sections;
         assert_eq!(counts.retrieved as usize, content);
+    }
+
+    /// gap-6bb6d8 (M1's B4): the θ an attempt runs decides whether its prompt
+    /// carries the knowledge section. Every chain runs the θ of an `on`-mode
+    /// controller. Under θ₀ the matching entry reaches the prompt. Under a θ
+    /// whose `knowledge_section` is off the entry is still retrieved, but the
+    /// prompt has no `# Neuro knowledge` section, the exposure row says θ
+    /// left the entry out, nothing credits it, and the knowledge decision row
+    /// names the controller as its source and is no opportunity of L-know,
+    /// whose proposal stands. The run is in maximize mode, so no L-know arm
+    /// withholds the entry.
+    #[tokio::test]
+    async fn knowledge_section_knob_off_omits_the_knowledge_section() {
+        use roko_core::config::harness_params::{HarnessLadders, HarnessParams, Knob, Step};
+        use roko_core::config::homeostasis::{HomeostasisConfig, HomeostasisMode};
+        use roko_learn::homeostasis::controller::Controller;
+        use roko_learn::homeostasis::detect::Baseline;
+        use roko_learn::homeostasis::policy::ViabilityPolicy;
+
+        use crate::graph_task_dispatch::tests::make_test_dispatcher_with;
+        use crate::runtime_feedback::HomeostasisSink;
+
+        const POLICY: &str = "policy_version = 1\nholdout = 0.0\n\
+            ev.pass_rate = { lo = 0.70 }\nev.usd_per_verified_success = { hi = 0.12 }\n\
+            ev.false_green = { hi = 0.10 }\nev.latency_p90_s = { hi = 900 }\n";
+
+        for knowledge_section in [true, false] {
+            let temp = tempdir().expect("tempdir");
+            let roko = temp.path().join(".roko");
+            // The task is "Streaming graph task": the entry shares its words.
+            seed_knowledge(
+                temp.path(),
+                &[(
+                    "kn-stream",
+                    "Streaming graph task output flushes each chunk",
+                )],
+            );
+            let configure = |config: &mut RokoConfig| {
+                no_auto_fix_maximize(config);
+                config.runner.log_prompts = true;
+            };
+            // The θ the attempt runs: θ₀, or θ₀ with the section off.
+            let mut applied = None;
+            let finish = |dispatcher: GraphTaskDispatcher| {
+                let theta0 = HarnessParams::baseline(&dispatcher.config);
+                let ladders = HarnessLadders::from_config(&dispatcher.config);
+                let settings = HomeostasisConfig {
+                    mode: HomeostasisMode::On,
+                    ..HomeostasisConfig::default()
+                };
+                let baseline = Baseline {
+                    pass_rate: 0.80,
+                    usd_per_resolution: 0.05,
+                    wall_ms: 300_000.0,
+                };
+                let policy = ViabilityPolicy::parse(POLICY).expect("the policy parses");
+                let controller = Controller::new(
+                    &settings,
+                    policy,
+                    theta0.clone(),
+                    ladders.clone(),
+                    baseline,
+                    0,
+                );
+                // Every chain runs the controller's θ, whatever the day's draws.
+                let sink = HomeostasisSink::new(temp.path(), Some(controller), None);
+                let sink = Arc::new(sink.with_holdout(0.0));
+                let theta = if knowledge_section {
+                    theta0
+                } else {
+                    let off = theta0
+                        .step(Knob::KnowledgeSection, Step::Down, &ladders)
+                        .expect("the section switches off");
+                    assert_eq!(sink.handle().swap(off.clone(), "section off"), 1);
+                    off
+                };
+                assert_eq!(theta.knowledge_section, knowledge_section);
+                applied = Some(theta);
+                dispatcher.with_feedback(GraphFeedbackContext {
+                    runs_dir: Some(roko.join("runs")),
+                    homeostasis: Some(sink),
+                    ..GraphFeedbackContext::default()
+                })
+            };
+            let feedback = GraphFeedbackContext::default();
+            let (dispatcher, mut task) =
+                make_test_dispatcher_with(&temp, VERIFY_PROVIDER, configure, feedback, finish)
+                    .await;
+            let applied = applied.expect("the sink's θ");
+            task.verify = vec![verify_step("structural", "true")];
+            let ctx = CellContext::new().with_run_id(RUN.to_string());
+            dispatcher
+                .dispatch(&make_spec(&task), Vec::new(), &ctx)
+                .await
+                .expect("the verified attempt passes");
+            drop(dispatcher);
+            crate::background_writes::settled(&roko).await;
+
+            // The system prompt the agent got.
+            let logs: Vec<PathBuf> = std::fs::read_dir(roko.join("prompt-logs"))
+                .expect("the prompt log directory")
+                .map(|entry| entry.expect("a prompt log").path())
+                .collect();
+            assert_eq!(logs.len(), 1, "{logs:?}");
+            let log = std::fs::read_to_string(&logs[0]).expect("read the prompt log");
+            let (system, _) = log
+                .split_once("=== USER PROMPT ===")
+                .expect("the log holds both prompts");
+            let on = knowledge_section;
+            assert_eq!(system.contains("# Neuro knowledge"), on, "{system}");
+            assert_eq!(system.contains("[kn-stream]"), on, "{system}");
+
+            let run = RunRecords::load(&roko.join("runs").join(RUN)).expect("load the run");
+            assert!(run.invalid.is_empty(), "{:?}", run.invalid);
+            // The attempt ran θ, on the controller's learned arm.
+            let harness = &run.harness_decisions[0].record;
+            assert_eq!(harness.params_digest, applied.params_digest(), "on {on}");
+            // The entry was retrieved either way; θ alone kept it out.
+            let entry = run
+                .exposures
+                .iter()
+                .map(|line| &line.record)
+                .find(|row| row.item_id == "kn-stream")
+                .expect("the entry's exposure row");
+            let reason = (!on).then_some(ExcludedReason::HarnessPolicy);
+            assert_eq!((entry.included, entry.excluded_reason), (on, reason));
+            let counts = run.verdicts[0]
+                .record
+                .exposures
+                .expect("the verdict counts");
+            assert!(counts.retrieved > 0, "{counts:?}");
+            // The knowledge row: the reader's proposal stands; θ's choice is
+            // the controller's, and no opportunity of L-know.
+            let row = run
+                .content_decisions
+                .iter()
+                .map(|line| &line.record)
+                .find(|row| row.decision_point == ContentDecisionPoint::Knowledge)
+                .expect("the knowledge row");
+            let learned = row.proposals.as_ref().and_then(|p| p.learned.clone());
+            assert_eq!(learned, Some(vec!["kn-stream".to_string()]), "on {on}");
+            assert_eq!(row.audit.loop_id.as_deref(), Some("L-know"));
+            let opportunity = row.audit.opportunity.as_ref().expect("the opportunity");
+            let seen = (opportunity.eligible, opportunity.reason.as_str());
+            if on {
+                assert_eq!(row.chosen, ["kn-stream"]);
+                assert_eq!(row.source, Some(DecisionSource::Default));
+                assert_eq!(seen, (true, "items_retrieved"));
+            } else {
+                assert!(row.chosen.is_empty(), "{row:?}");
+                assert_eq!(row.source, Some(DecisionSource::Control));
+                assert_eq!(seen, (false, KNOWLEDGE_SECTION_OFF));
+            }
+        }
     }
 
     /// gap-a40021: the error-pattern decision lists one candidate per pattern

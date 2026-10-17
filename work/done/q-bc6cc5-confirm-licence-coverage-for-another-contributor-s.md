@@ -9,7 +9,7 @@ size = "S"
 goal = "release"
 subsystem = ["release/licensing"]
 created = 2026-09-29
-updated = 2026-10-15
+updated = 2026-10-16
 last_verified = 2026-10-15
 last_verified_rev = "b883db4e6"
 source = "work:gap-ae2f55"
@@ -18,6 +18,11 @@ links = { depends_on = [], blocks = [], related = ["gap-ae2f55"], supersedes = [
 
 [[verify]]
 command = "grep -q '^## Outcome' work/items/q-bc6cc5-confirm-licence-coverage-for-another-contributor-s.md"
+superseded = "2026-10-16: Closing moved the file to work/done/ (15243f788), so this path is gone, and the closure recorded Will's answer only in [closed].evidence. The ## Outcome section was added on 2026-10-16 from that record; verify 2 checks it wherever the file lives."
+superseded_by = "15243f788"
+
+[[verify]]
+command = "grep -q '^## Outcome' work/*/q-bc6cc5-confirm-licence-coverage-for-another-contributor-s.md"
 
 [closed]
 at = 2026-10-15
@@ -111,6 +116,14 @@ Related: `gap-ae2f55` (licence files, done; its closure points here).
   `[closed].evidence`.
 - For C or D, a follow-up item exists and is linked from `links.related`.
 - Verify: `grep -q '^## Outcome' work/items/q-bc6cc5-confirm-licence-coverage-for-another-contributor-s.md`
+
+## Outcome
+
+**A**: the contributor agrees in writing to MIT OR Apache-2.0 for their contributions. Will decided it on
+2026-10-15 (decision 10 in `tmp/status-quo/2026-10-15/DECISIONS-2026-10-15.md`). The coordinator drafted the request
+(`tmp/status-quo/2026-10-15/licence-request-mirage-rs.md`), Will sends it, and gap-7e375c records the written reply,
+which becomes the evidence pointer when it arrives. Options C and D stay the fallback. The closure (b883db4e6)
+recorded this in `[closed].evidence` only; this section was copied from that record on 2026-10-16 (bug-ec244b).
 
 ## Notes
 

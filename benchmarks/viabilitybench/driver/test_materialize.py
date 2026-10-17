@@ -20,7 +20,7 @@ sys.path.insert(0, str(DRIVER_DIR))
 sys.path.insert(0, str(VB_ROOT))
 sys.path.insert(0, str(VB_ROOT / "speclint"))
 import materialize  # noqa: E402
-from specops import VAGUE, degrade, manipulation_check  # noqa: E402
+from specops import VAGUE, degrade, from_generator, manipulation_check  # noqa: E402
 
 H3_SAMPLE = [("f1_pyconv", "F1-l1-0001"), ("f1_pyconv", "F1-l5-0002"), ("f2_apipager", "F2-l1-0001"),
              ("f2_apipager", "F2-l5-0002"), ("f3_moneyround", "F3-l1-0001"), ("f3_moneyround", "F3-l5-0002"),
@@ -28,6 +28,7 @@ H3_SAMPLE = [("f1_pyconv", "F1-l1-0001"), ("f1_pyconv", "F1-l5-0002"), ("f2_apip
              ("f5_sqlmigrate", "F5-l5-0002"), ("f7_rustiter", "F7-l1-0001"),
              ("f7_rustiter", "F7-l5-0002")]  # one low and one high level of each H3 family
 H3_VAGUE_STREAM = VB_ROOT / "streams" / "log1_p1_h3_vague.toml"  # LOG1 block C (S09 §4.3), all 48 H3 instances
+F8_STREAM = VB_ROOT / "streams" / "log1_f8_honeypots.toml"  # LOG1 block E (S09 §4.3), its 10 F8 honeypots
 
 
 def _materialize(tmp_path, family: str, instance_id: str, *, spec_variant: str = "precise", tag: str = ""):
@@ -108,6 +109,55 @@ def test_every_h3_vague_instance_materializes(tmp_path):
         if not report.ok:
             problems.append(f"{instance_id}: manipulation check failed: gap {report.gap}")
     assert not problems, "\n".join(problems)
+
+
+def test_every_log1_f8_honeypot_materializes(tmp_path):
+    """bug-ca1de5: LOG1 block E runs the 10 F8 honeypots of streams/log1_f8_honeypots.toml under their precise spec.
+    Every one materializes, so its manifest is vb.task/1. Its spec is its wrapped base instance's own, in F1's section
+    layout with every criterion kept, plus the repository's SPEC_CONFLICT convention as two more; it never tells the
+    agent that the instance is a honeypot (task 3325). Every hidden requirement is stated in the spec or evidenced
+    in the workdir (S08 §4.2 (3)): the base instance's own entries, then the flag and the untouched conflict files."""
+    stream = tomllib.loads(F8_STREAM.read_text(encoding="utf-8"))["stream"]
+    instances = stream["instances"]
+    assert stream["spec_variant"] == "precise" and len(instances) == 10
+    problems: list[str] = []
+    wrapped: Counter = Counter()
+    for instance_id in instances:
+        root = tmp_path / instance_id
+        try:
+            task = materialize.materialize(family_dir=VB_ROOT / stream["families"]["F8"], instance_id=instance_id,
+                                           workdir=root / "work", private_dir=root / "private")
+        except materialize.MaterializeError as err:
+            problems.append(str(err))
+            continue
+        manifest, spec, private = task.manifest, task.spec_text, task.manifest_path.parent
+        base = json.loads((private / "base" / "task.json").read_text(encoding="utf-8"))
+        wrapped[base["family"]] += 1
+        base_spec = (private / "base" / base["spec"]["precise"]["path"]).read_text(encoding="utf-8")
+        ours, theirs = materialize.task_dict(manifest, spec), materialize.task_dict(base, base_spec)
+        try:
+            from_generator.task_from_instance(private)  # F1's section layout, its Scope bullets = files_in_scope
+        except from_generator.ConversionError as err:
+            problems.append(f"{instance_id}: the spec is not in F1's section layout: {err}")
+        if (ours["title"], ours["goal"], ours["acceptance"][:-2]) != (theirs["title"], theirs["goal"],
+                                                                      theirs["acceptance"]):
+            problems.append(f"{instance_id}: the spec drops part of its base instance's: {ours}")
+        if "SPEC_CONFLICT: " not in ours["acceptance"][-2] or "`NOTES.md`" not in ours["acceptance"][-1]:
+            problems.append(f"{instance_id}: the spec's own criteria are {ours['acceptance'][-2:]}")
+        if "honeypot" in spec.lower():
+            problems.append(f"{instance_id}: the spec tells the agent that the instance is a honeypot")
+        if manifest["recoverability"][:-2] != base["recoverability"]:
+            problems.append(f"{instance_id}: the recoverability list does not start with the base instance's")
+        stated = {criterion.split(":")[0] for criterion in ours["acceptance"]}
+        for requirement in manifest["recoverability"]:
+            cited = {item.split("#")[1] for item in requirement["evidence"] if item.startswith("spec.precise.md#")}
+            in_repo = [item for item in requirement["evidence"] if not item.startswith("spec.precise.md#")]
+            missing = [item for item in in_repo if not (task.workdir / item).is_file()]
+            if not cited <= stated or not in_repo or missing:
+                problems.append(f"{instance_id}: {requirement['req']!r} cites {sorted(cited - stated)} that the "
+                                f"spec does not state, or no evidence in the workdir: {missing}")
+    assert not problems, "\n".join(problems)
+    assert sorted(wrapped) == ["F2", "F3", "F5"], wrapped  # the stream wraps every base family
 
 
 def test_a_family_with_no_vague_support_refuses_clearly(tmp_path):

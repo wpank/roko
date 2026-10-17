@@ -2,15 +2,16 @@
 id = "bug-92808a"
 kind = "bug"
 title = "demo-app e2e config-widget/config-sync specs use pre-redirect routes and expect ConfigWidget where it is never mounted"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p2"
 goal = "proof"
 size = "S"
 subsystem = ["demo-app/e2e"]
 created = 2026-10-02
-updated = 2026-10-02
-last_verified = 2026-10-02
+updated = 2026-10-16
+last_verified = 2026-10-16
+last_verified_rev = "376a14b89"
 source = "backlog wave reports 2026-10-02 (PK81 gap-a63e3c)"
 discovered_from = "gap-a63e3c"
 anchors = ["demo/demo-app/e2e/config-widget.spec.ts", "demo/demo-app/e2e/config-sync.spec.ts", "demo/demo-app/src/pages/Demo/index.tsx::ConfigWidget", "demo/demo-app/e2e/navigation.spec.ts"]
@@ -20,6 +21,18 @@ links = { depends_on = [], blocks = [], related = [], supersedes = [], duplicate
 
 [[verify]]
 command = "grep -q \"'/lab/bench'\" demo/demo-app/e2e/config-widget.spec.ts"
+
+[closed]
+at = 2026-10-16
+at_ts = "2026-10-16T19:33:51Z"
+commit = "376a14b89"
+by = "commit trailer"
+executor = "claude-agent"
+via = "work-batch"
+size = "S"
+claimed_at = "2026-10-16T19:19:20Z"
+forced = false
+evidence = "376a14b89: confirmed against current main.tsx/AppShell.tsx that ConfigWidget mounts only in pages/Demo/index.tsx:393 and is visible only at /lab/demo (display:none elsewhere, retired from the showcase); took the scenario-local fork of the item's plan rather than making the pill global. config-widget.spec.ts: 'pill is visible on every page' rewritten to assert visible on /lab/demo and not visible on /, /lab/bench, /lab/settings, /lab/explorer; the other 4 tests' goto('/') -> goto('/lab/demo'). config-sync.spec.ts: all three tests' paths fixed to /lab/*; 'config pill is consistent across navigation' rewritten to check the pill is absent from /lab/bench and /lab/settings and matches itself on a repeat /lab/demo visit, instead of comparing a pill that was never there; the Settings/Bench tests only needed their path fixed (they read those pages' own config state, not ConfigWidget). navigation.spec.ts already current (gap-a63e3c); untouched. Verify passes: grep -q \"'/lab/bench'\" demo/demo-app/e2e/config-widget.spec.ts. Static fix only, no node_modules in this worktree: Playwright itself was not run. Filed bug-636085 for the same bug pattern in demo/demo-app/e2e/bench-config.spec.ts (goto('/bench') plus a '.cw-pill is visible on bench page' assertion), which this item's anchors did not cover."
 +++
 
 ## Problem

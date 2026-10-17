@@ -49,3 +49,15 @@ The sandbox set-up in `census.py`, and the records' `sandbox` field.
 
 - [ ] Linux runs are confined, or are refused or labelled when they can't be.
 - [ ] The `[[verify]]` command passes.
+
+## Notes
+
+- 2026-10-16 (gap-0bd49a, 09fafe3bd): `families/common/sandbox.py` now has a backend seam. `command` asks
+  `BACKENDS[KIND]` for the argv prefix, and `_host_kind` picks `KIND`. A Linux backend adds its entry there and its
+  detection in `_host_kind`. It must raise ValueError for a rule or a deny list it cannot apply, since `kind` reports
+  what applied. The rules it must cover:
+  - "none": the default, used by the direct loop, the truth suites, the census's visible re-run and the audit
+    battery. `unshare -rn` would do.
+  - "loopback:<port>": the Roko and mini-swe-agent arms (the metering proxy's port), and the CLI arms and the
+    roko_plan planner (their egress proxy's port). A new network namespace has its own loopback, so this needs a
+    bridge (a Unix socket or port forwarding into the namespace) or bwrap with a seccomp filter.

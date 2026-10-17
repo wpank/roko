@@ -165,14 +165,7 @@ impl GraphTaskDispatcher {
             return;
         }
         let models = self.config.effective_models();
-        let profile = models
-            .values()
-            .find(|profile| profile.slug == served)
-            .or_else(|| {
-                models
-                    .values()
-                    .find(|profile| same_model(&profile.slug, served))
-            });
+        let profile = served_profile(&models, served);
         let usage = &mut dispatch.result.usage;
         usage.cost_usd = 0.0;
         let snapshot = self.pricing_snapshot();
@@ -187,6 +180,60 @@ impl GraphTaskDispatcher {
             observation.cost_usd = (cost_usd > 0.0).then_some(cost_usd);
         }
     }
+
+    /// Whether roko could price the call behind `dispatch`, as the day's and
+    /// the plan's spend ceilings count it ([`Self::record_dispatch_spend`]):
+    /// its cost is known, or the model whose rates price it has a rate, and a
+    /// rate of 0 is free, not unknown (bug-1bc222,
+    /// [`crate::dispatch_v2::usage_is_priced`]). On an API provider that
+    /// model is the one it reported serving in place of the one launched
+    /// ([`Self::price_by_served_model`]): with no rate for that one, the
+    /// call's cost is unknown whatever the launched model's rate.
+    pub(super) fn dispatch_priced(
+        &self,
+        dispatch: &crate::dispatch_v2::AgentResultDispatch,
+    ) -> bool {
+        let snapshot = self.pricing_snapshot();
+        let usage = &dispatch.result.usage;
+        let target = &dispatch.target;
+        let served = ServedModel::of(dispatch);
+        if served.mismatch
+            && !is_cli_backend(target.provider_kind)
+            && let Some(reported) = served.reported.as_deref()
+        {
+            let models = self.config.effective_models();
+            let profile = served_profile(&models, reported);
+            return crate::dispatch_v2::usage_is_priced(
+                usage,
+                snapshot.as_deref(),
+                profile,
+                reported,
+            );
+        }
+        crate::dispatch_v2::usage_is_priced(
+            usage,
+            snapshot.as_deref(),
+            target.model_profile.as_ref(),
+            &target.model_slug,
+        )
+    }
+}
+
+/// The `[models.*]` profile of `served`, a model a provider reported
+/// serving: the one with its slug, else one naming the same model
+/// ([`same_model`]).
+fn served_profile<'a>(
+    models: &'a indexmap::IndexMap<String, roko_core::config::schema::ModelProfile>,
+    served: &str,
+) -> Option<&'a roko_core::config::schema::ModelProfile> {
+    models
+        .values()
+        .find(|profile| profile.slug == served)
+        .or_else(|| {
+            models
+                .values()
+                .find(|profile| same_model(&profile.slug, served))
+        })
 }
 
 #[cfg(test)]
@@ -367,6 +414,56 @@ mod tests {
         let episode = episodes(pinned_dir.path()).await.remove(0);
         assert!(!episode.success);
         assert_eq!(episode.extra["model_reported"], "glm-4.7");
+    }
+
+    /// bug-1bc222: the spend ceilings judge a substituted call by the model
+    /// that served it, whose rates price it. A substitute at a rate of 0 is
+    /// free; one with no rate leaves the call's cost unknown though the
+    /// launched model has a rate, so the plan admits no further call.
+    #[tokio::test]
+    async fn spend_ceilings_judge_a_substitute_by_the_model_that_served() {
+        for (served, unpriced) in [("free-substitute", false), ("unpriced-substitute", true)] {
+            let temp = tempdir().expect("tempdir");
+            let mut answer = served_as(served, final_turn("done"));
+            answer["usage"] = serde_json::json!({
+                "prompt_tokens": 1_000,
+                "completion_tokens": 100,
+                "total_tokens": 1_100
+            });
+            let (base_url, _requests) = spawn_openai_mock(vec![answer]);
+            let mut config = openai_config(&base_url);
+            config.models.insert(
+                "free-substitute".to_string(),
+                ModelProfile {
+                    provider: "cerebras".to_string(),
+                    slug: "free-substitute".to_string(),
+                    cost_input_per_m: Some(0.0),
+                    cost_output_per_m: Some(0.0),
+                    ..ModelProfile::default()
+                },
+            );
+            let mut task = make_task_def("focused");
+            task.model_hint = Some("gpt-oss-120b".to_string());
+            task.timeout_secs = FIXTURE_HANG_GUARD_SECS;
+            let spec = make_spec(&task);
+            let dispatcher = make_bare_dispatcher(config, temp.path())
+                .await
+                .with_plan_budget(10.0, 0.0, false);
+            dispatcher
+                .dispatch(&spec, Vec::new(), &CellContext::new())
+                .await
+                .unwrap_or_else(|error| panic!("{served}: the call settles: {error}"));
+            let stop = dispatcher.plan_dispatch_stop(&spec.plan_id);
+            if !unpriced {
+                assert_eq!(stop, None, "{served}: a substitute at a rate of 0 is free");
+                continue;
+            }
+            let stop = stop.expect("the substitute's cost is unknown");
+            assert!(
+                stop.starts_with("plan budget cannot be enforced: 1 unpriced call(s)"),
+                "{stop}"
+            );
+        }
     }
 
     /// With the stall watchdog on, live output makes the tool loop stream

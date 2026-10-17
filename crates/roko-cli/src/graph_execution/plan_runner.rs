@@ -2464,6 +2464,15 @@ async fn run_graph_plan_body(
         if let Err(err) = roko_learn::run_metrics::append_run_metrics(&metrics_path, &record) {
             tracing::warn!(error = %err, "failed to persist run metrics (non-fatal)");
         }
+        // The recent runs' cost per verified task, this one last, for a host's
+        // trend (gap-de0e96).
+        match roko_learn::run_metrics::read_recent(&metrics_path, RUN_COST_TREND_RUNS) {
+            Ok(runs) if !runs.is_empty() => graph_tui_bridge
+                .tui()
+                .efficiency_trend_updated(run_cost_trend(&runs)),
+            Ok(_) => {}
+            Err(err) => tracing::warn!(error = %err, "the run cost trend was not published"),
+        }
     }
 
     // Restores the terminal (and stderr) before the summary is printed.
@@ -4453,8 +4462,9 @@ async fn run_one_plan(
 }
 
 /// Deliver `plan`, whose tasks all passed, into the run's batch branch
-/// (spec-f830c4): merge its verified plan-branch tip into the batch, run the
-/// regression check on the merge, and record the delivery in the plan's
+/// (spec-f830c4): merge its verified plan-branch tip with the batch's tip, run
+/// the regression check on the merge, move the batch to the merge only once
+/// the check passed (bug-700d7c), and record the delivery in the plan's
 /// checkpoint. The plan succeeds only when the delivery does. A delivered
 /// plan's accepted attempt checkouts are then removed from `worktrees`, and
 /// with `delete_attempt_branches` their branches too (gap-415c54). `Err`
@@ -4892,6 +4902,47 @@ async fn check_plan_in_place(
             Ok(PlanOutcome::Failed)
         }
     }
+}
+
+/// How many plan runs the cost trend a run publishes as it ends covers
+/// (gap-de0e96).
+const RUN_COST_TREND_RUNS: usize = 20;
+
+/// The trend a Graph run publishes as it ends (gap-de0e96): one
+/// [`roko_core::EfficiencyBucket`] per plan run of `runs` (newest first, as
+/// `run-metrics.jsonl` gives them), oldest first, each with its cost, its
+/// tasks, the tasks that passed every verify step and its cost per verified
+/// task.
+fn run_cost_trend(
+    runs: &[roko_learn::run_metrics::RunMetricsRecord],
+) -> Vec<roko_core::EfficiencyBucket> {
+    runs.iter()
+        .rev()
+        .map(|run| {
+            let ended = chrono::DateTime::parse_from_rfc3339(&run.timestamp).map_or_else(
+                |_| chrono::Utc::now(),
+                |ended| ended.with_timezone(&chrono::Utc),
+            );
+            let took = i64::try_from(run.duration_ms)
+                .ok()
+                .and_then(chrono::TimeDelta::try_milliseconds)
+                .unwrap_or_default();
+            let verified = run.tasks_completed as u64;
+            roko_core::EfficiencyBucket {
+                start: ended - took,
+                turns: run.total_agent_calls as u64,
+                tokens_in: run.total_tokens_in,
+                tokens_out: run.total_tokens_out,
+                cost_usd_cents: (run.total_cost_usd * 100.0).round() as u64,
+                latency_ms_avg: run.duration_ms as f64 / run.total_agent_calls.max(1) as f64,
+                run_id: Some(run.run_id.clone()),
+                cost_usd: Some(run.total_cost_usd),
+                tasks: Some(run.total_tasks as u64),
+                verified_tasks: Some(verified),
+                cost_per_verified_usd: (verified > 0).then(|| run.total_cost_usd / verified as f64),
+            }
+        })
+        .collect()
 }
 
 /// The events of a plan's delivery, published through the run's bridge
@@ -6866,6 +6917,65 @@ max_retries = 0
             !self_model_dir.exists(),
             "a frozen run saves no state, window or export"
         );
+    }
+
+    /// gap-cad57a, decision 2 of 2026-10-15: a plan run in a workspace with no
+    /// `[homeostasis]` section and no `.roko/policy/viability.toml` registers
+    /// M1 in shadow on roko's shipped policy. It leaves the controller's
+    /// state and one `harness_policy` row per attempt, each in shadow and
+    /// running θ₀, as the attempt's verdict says; no change M1 proposes is
+    /// applied, and M1 writes no policy file.
+    #[cfg(unix)]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn default_plan_run_registers_m1_in_shadow() {
+        use roko_core::config::homeostasis::HomeostasisMode;
+        use roko_learn::homeostasis::controller::{Controller, ControllerState};
+        use roko_learn::homeostasis::ledger::ledger_path;
+        use roko_learn::homeostasis::policy::ViabilityPolicy;
+        use roko_learn::telemetry::report::RunRecords;
+
+        let dir = verified_plan_set(&[("a", "a.txt", &[])], "");
+        let roko = dir.path().join(".roko");
+        let (exit_code, _, _) = run_plan_set(dir.path(), Some(1), None).await;
+        assert_eq!(exit_code, EXIT_SUCCESS);
+
+        // M1 ran in shadow, resolved the run's one chain and saved its state.
+        let text = std::fs::read_to_string(Controller::state_path(&roko))
+            .expect("a default run saves M1's state");
+        let state: ControllerState = serde_json::from_str(&text).expect("the state parses");
+        assert_eq!(state.mode, HomeostasisMode::Shadow);
+        assert_eq!(state.resolutions + state.holdout_resolutions, 1, "{text}");
+        assert!(
+            !ViabilityPolicy::path_in(&roko).exists(),
+            "M1 only reads its policy"
+        );
+
+        // One harness_policy row per attempt, in shadow: the attempt ran θ₀.
+        let manifest = only_run_manifest(dir.path());
+        let run_dir = roko.join("runs").join(&manifest.run_id);
+        let run = RunRecords::load(&run_dir).expect("read the run's records");
+        assert!(run.invalid.is_empty(), "{:?}", run.invalid);
+        assert_eq!(run.verdicts.len(), 1);
+        assert_eq!(run.harness_decisions.len(), run.verdicts.len());
+        let row = &run.harness_decisions[0].record;
+        assert_eq!(row.mode, HomeostasisMode::Shadow);
+        let theta0 = row.default.params_digest();
+        assert_eq!(row.params_digest, theta0, "shadow runs θ₀");
+        let stamp = run.verdicts[0]
+            .record
+            .harness
+            .as_ref()
+            .expect("the θ stamp");
+        assert_eq!(stamp.params_digest, theta0);
+
+        // No change M1 proposed was applied.
+        let ledger = std::fs::read_to_string(ledger_path(&roko)).unwrap_or_default();
+        for line in ledger.lines() {
+            let row: serde_json::Value = serde_json::from_str(line).expect("a controller row");
+            if row["kind"] == "param.change" {
+                assert_eq!(row["applied"], false, "{row}");
+            }
+        }
     }
 
     /// S01 §5.8: a plan run writes its run's `census.json` from the
@@ -9548,8 +9658,8 @@ printf '%s\n' '{"type":"result","session_id":"sess-batch","model":"claude-sonnet
     /// gap-60233f: a plan whose tasks all passed but whose `[meta] verify`
     /// fails does not succeed, whether the check runs in the shared working
     /// tree or as the regression of its delivery into the batch branch, which
-    /// then keeps its old tip. The checkpoint records why, for
-    /// `roko plan status`.
+    /// keeps its old tip: it never moved (bug-700d7c). The checkpoint records
+    /// why, for `roko plan status`.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn meta_verify_failure_fails_a_plan_whose_tasks_passed() {
         for worktree_per_task in [false, true] {
@@ -9586,10 +9696,141 @@ printf '%s\n' '{"type":"result","session_id":"sess-batch","model":"claude-sonnet
                 assert_eq!(
                     git_stdout(repo, &["rev-parse", "roko/batch/run-check"]),
                     head,
-                    "the failed plan was taken back out of the batch"
+                    "the failed plan stayed out of the batch"
+                );
+                // The batch never pointed at the failed plan's merge: its
+                // reflog holds its creation alone (bug-700d7c).
+                assert_eq!(
+                    git_stdout(
+                        repo,
+                        &[
+                            "log",
+                            "--walk-reflogs",
+                            "--format=%H",
+                            "roko/batch/run-check"
+                        ]
+                    ),
+                    head,
+                    "the batch moved to the failed plan's merge"
                 );
             }
         }
+    }
+
+    /// bug-700d7c: with plans running side by side, a plan that starts while
+    /// another plan's whole-plan check runs starts from the run's batch
+    /// branch as it was, not from the merge under check. Here 01-alpha's
+    /// check waits until 03-gamma's first attempt has started, which happens
+    /// once 02-beta failed, and then fails. gamma neither builds on alpha's
+    /// work nor brings it into the batch when it is delivered, and the batch
+    /// never pointed at alpha's merge.
+    #[cfg(unix)]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_plan_started_during_a_failing_check_does_not_build_on_its_merge() {
+        let dir = repo_with_file_plans(&["alpha", "beta", "gamma"], None);
+        let repo = dir.path();
+        let scratch = tempfile::tempdir().expect("scratch");
+        let checking = scratch.path().join("alpha-checking");
+        let saw_gamma = scratch.path().join("alpha-saw-gamma");
+        // gamma's first attempt branch exists once its checkout was made.
+        let gamma_attempts = (0..=3)
+            .map(|attempt| {
+                format!(
+                    "refs/heads/{}",
+                    crate::orchestrator::worktree::format_attempt_branch_name(
+                        "03-gamma", "T1", attempt
+                    )
+                )
+            })
+            .collect::<Vec<_>>()
+            .join(" ");
+        // alpha's whole-plan check waits (60 s at most) for gamma's attempt,
+        // and fails.
+        let alpha_check = format!(
+            "touch '{checking}'; i=0; while [ ! -e '{saw}' ] && [ $i -lt 1200 ]; do \
+             for ref in {gamma_attempts}; do \
+             git rev-parse --verify --quiet $ref >/dev/null && touch '{saw}'; done; \
+             sleep 0.05; i=$((i+1)); done; exit 1",
+            checking = checking.display(),
+            saw = saw_gamma.display(),
+        );
+        // beta's one task fails once alpha's check runs, which frees the slot
+        // gamma starts in.
+        let beta_verify = format!(
+            "i=0; while [ ! -e '{checking}' ] && [ $i -lt 1200 ]; do sleep 0.05; i=$((i+1)); \
+             done; exit 1",
+            checking = checking.display(),
+        );
+        let alpha_tasks = repo.join("plans/01-alpha/tasks.toml");
+        let text = std::fs::read_to_string(&alpha_tasks).expect("tasks.toml");
+        let text = text.replacen(
+            "skip_enrichment = true\n",
+            &format!("skip_enrichment = true\n\n[[meta.verify]]\ncommand = {alpha_check:?}\n"),
+            1,
+        );
+        std::fs::write(&alpha_tasks, text).expect("tasks.toml");
+        let beta_tasks = repo.join("plans/02-beta/tasks.toml");
+        let text = std::fs::read_to_string(&beta_tasks)
+            .expect("tasks.toml")
+            .replace(
+                "files = [\"beta.txt\"]\n",
+                "files = [\"beta.txt\"]\nmax_retries = 0\n",
+            )
+            .replace(
+                "command = \"test -f beta.txt\"",
+                &format!("command = {beta_verify:?}"),
+            );
+        std::fs::write(&beta_tasks, text).expect("tasks.toml");
+        git_in(repo, &["commit", "-am", "alpha's check waits for gamma"]);
+        let head = git_stdout(repo, &["rev-parse", "HEAD"]);
+        let params = GraphPlanRunParams {
+            max_parallel_plans: Some(2),
+            ..worktree_run_params(repo)
+        };
+
+        let exit_code = run_graph_plan_in_run(params, Some("run-overlap".into()))
+            .await
+            .expect("run the plans");
+
+        assert_ne!(exit_code, EXIT_SUCCESS);
+        assert!(
+            saw_gamma.exists(),
+            "gamma's first attempt did not start while alpha's check ran"
+        );
+        assert_eq!(
+            crate::graph_checkpoint::canonical_checkpoint_status(repo, "01-alpha"),
+            Some(GraphCheckpointStatus::Failed)
+        );
+        let batch = "roko/batch/run-overlap";
+        let delivered = crate::graph_checkpoint::recorded_batch_delivery(repo, "03-gamma")
+            .expect("gamma was delivered");
+        assert_eq!(
+            delivered.merge_commit,
+            git_stdout(repo, &["rev-parse", batch])
+        );
+        let files = git_stdout(repo, &["ls-tree", "--name-only", batch]);
+        assert!(
+            files.contains("gamma.txt") && !files.contains("alpha.txt"),
+            "alpha's work reached the batch: {files}"
+        );
+        let alpha = git_stdout(repo, &["rev-parse", "roko/plan/01-alpha"]);
+        for branch in ["roko/plan/03-gamma", batch] {
+            let holds_alpha = std::process::Command::new("git")
+                .current_dir(repo)
+                .args(["merge-base", "--is-ancestor", alpha.as_str(), branch])
+                .env_remove("GIT_DIR")
+                .env_remove("GIT_WORK_TREE")
+                .status()
+                .expect("git merge-base");
+            assert!(!holds_alpha.success(), "{branch} builds on alpha's work");
+        }
+        // The batch held its base, and then gamma's delivery: never alpha's
+        // merge.
+        let held = git_stdout(repo, &["log", "--walk-reflogs", "--format=%H", batch]);
+        assert_eq!(
+            held.lines().collect::<Vec<_>>(),
+            [delivered.merge_commit.as_str(), head.as_str()]
+        );
     }
 
     /// bug-7b62ff: a cancel that comes while a plan's whole-plan check runs,
@@ -9641,8 +9882,8 @@ printf '%s\n' '{"type":"result","session_id":"sess-batch","model":"claude-sonnet
             let _next = crate::workspace_lock::acquire_runner_lock(&repo.join(".roko"))
                 .unwrap_or_else(|error| panic!("{mode}: the run kept the workspace: {error}"));
             if worktree_per_task {
-                // The delivery is cancelled, not failed, and its merge left
-                // the batch (or the batch branch went with the run).
+                // The delivery is cancelled, not failed, and its merge never
+                // reached the batch (or the batch branch went with the run).
                 let checkpoint = repo.join(".roko/state/graph/01-alpha/checkpoint.json");
                 let checkpoint: serde_json::Value =
                     serde_json::from_slice(&std::fs::read(checkpoint).expect("checkpoint"))
@@ -9797,6 +10038,99 @@ printf '%s\n' '{"type":"result","session_id":"sess-batch","model":"claude-sonnet
             delivery_milestone(&repo, "run-stopped").await,
             "delivery cancelled"
         );
+    }
+
+    /// gap-de0e96: the run trend has one bucket per plan run, oldest first,
+    /// with its cost and its cost per verified task; a run with no verified
+    /// task has none.
+    #[test]
+    fn the_run_trend_gives_each_runs_cost_per_verified_task() {
+        let run = |run_id: &str, timestamp: &str, cost: f64, verified: usize| {
+            roko_learn::run_metrics::RunMetricsRecord {
+                run_id: run_id.to_string(),
+                timestamp: timestamp.to_string(),
+                duration_ms: 4_000,
+                total_tasks: 2,
+                tasks_completed: verified,
+                tasks_already_satisfied: 0,
+                tasks_failed: 2 - verified,
+                tasks_unverified: 0,
+                tasks_skipped: 0,
+                total_cost_usd: cost,
+                total_tokens_in: 100,
+                total_tokens_out: 10,
+                total_agent_calls: 4,
+                budget_exhausted: false,
+                plans: Vec::new(),
+            }
+        };
+        // Newest first, as `run-metrics.jsonl` gives them.
+        let runs = [
+            run("r3", "2026-10-16T10:02:00Z", 0.0, 0),
+            run("r2", "2026-10-16T10:01:00Z", 0.01, 2),
+            run("r1", "2026-10-16T10:00:00Z", 0.03, 1),
+        ];
+
+        let trend = run_cost_trend(&runs);
+
+        let rows: Vec<(Option<&str>, Option<u64>, Option<f64>)> = trend
+            .iter()
+            .map(|bucket| {
+                (
+                    bucket.run_id.as_deref(),
+                    bucket.verified_tasks,
+                    bucket.cost_per_verified_usd,
+                )
+            })
+            .collect();
+        assert_eq!(
+            rows,
+            [
+                (Some("r1"), Some(1), Some(0.03)),
+                (Some("r2"), Some(2), Some(0.005)),
+                (Some("r3"), Some(0), None),
+            ]
+        );
+        assert_eq!(trend[0].start.to_rfc3339(), "2026-10-16T09:59:56+00:00");
+        assert_eq!((trend[0].turns, trend[0].cost_usd), (4, Some(0.03)));
+    }
+
+    /// gap-de0e96: a Graph run publishes the recent runs' cost per verified
+    /// task as it ends, this run's bucket last, in its own events: a trend a
+    /// host can draw without reading `run-metrics.jsonl`.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn run_end_publishes_cost_per_verified_task() {
+        let dir = repo_with_file_plans(&["alpha"], None);
+        let repo = dir.path();
+        let hub = crate::state_hub::shared_state_hub();
+        let params = GraphPlanRunParams {
+            state_hub: Some(hub.clone()),
+            ..worktree_run_params(repo)
+        };
+
+        let exit_code = run_graph_plan_in_run(params, Some("run-trend".into()))
+            .await
+            .expect("run the plan");
+
+        assert_eq!(exit_code, EXIT_SUCCESS);
+        let trends: Vec<Vec<roko_core::EfficiencyBucket>> = hub
+            .subscribe_events_from(0)
+            .replay
+            .into_iter()
+            .filter_map(|envelope| match envelope.payload {
+                roko_core::DashboardEvent::EfficiencyTrendUpdated { buckets } => Some(buckets),
+                _ => None,
+            })
+            .collect();
+        let [trend] = trends.as_slice() else {
+            panic!("one trend at the run's end: {trends:?}");
+        };
+        let last = trend.last().expect("this run's bucket");
+        assert_eq!(last.tasks, Some(1), "{last:?}");
+        assert_eq!(last.verified_tasks, Some(1), "{last:?}");
+        let cost = last.cost_usd.expect("the run's cost");
+        assert!(cost > 0.0, "{last:?}");
+        assert_eq!(last.cost_per_verified_usd, Some(cost), "{last:?}");
     }
 
     /// bug-db89d4: the closing tally counts each way a plan ended, and leaves

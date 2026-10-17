@@ -38,6 +38,10 @@ Every function reads `vb.run_record/1` dicts, as `records.jsonl` holds them (S08
   features out of the features run, with a Clopper-Pearson 95% interval; the cost per verified feature; and the
   median and range of the makespan. Then the `roko_plan` / `fd_claude` ratios as point estimates, and the
   discordant features. Queue waits are read from `execution.queue_wait_s`, which no runner records yet.
+  `plan_level_false_greens` (App. D.12) is narrower than "the whole-plan gate passed and VF = 0": VF = 0 for three
+  independent reasons (the hidden suite failed, the base repo's visible tests regressed, or S05's A1 tamper check
+  tripped), and only the first is a plan-level false green. `plan_level_vf0_gate_passed` keeps the broader, older
+  count (any VF = 0 while the gate passed) beside it, for the two reasons it does not also cover.
 
 A `Cut` is a list of clauses over record fields and the runs they select. Every metric keeps its cut: the runs are
 the runs behind the number, and the clauses' text is the MetricRecord's `record_filter`, so the filter shown is the
@@ -46,7 +50,7 @@ filter applied. A metric with no run behind it is not emitted.
 API:
     Clause(field, op, value); Cut(clauses, rows); cut(records, clauses) -> Cut
     Metric(metric, value, n, estimator, cost_basis, cut, cell, ladder, ci, ci_method, model)
-    vs_minus(record) -> int; vs_plus(record) -> int; reported_pass(record) -> bool
+    vs_minus(record) -> int; vs_plus(record) -> int; reported_pass(record) -> bool; hidden_failed(record) -> bool
     check_unique(records) -> None                    # raises MetricsError when a run repeats or fits no cell
     harness_of(record) -> str                         # "" for the arm's own harness; 3317's marker otherwise
     run_models(records) -> {(experiment_id, arm, run_id): model | None}
@@ -171,6 +175,13 @@ def reported_pass(record: dict) -> bool:
     if record["arm"] in ROKO_ARMS:
         return final_verdict(record) == "passed"
     return record["visible"]["passed"] is True
+
+
+def hidden_failed(record: dict) -> bool:
+    """Whether the hidden (whole-feature) suite specifically failed: `vs.checks.hidden == 0`, a known result, not an
+    unknown one (`None`, the suite could not run). Narrower than `not vs_minus(record)`, which is 0 for two other,
+    independent reasons too: the base repo's visible tests regressed, or S05's A1 tamper check tripped (App. D.12)."""
+    return record["vs"]["checks"].get("hidden") == 0
 
 
 def task_key(record: dict) -> tuple[str, str]:
@@ -403,7 +414,9 @@ def plan_slice(records: Iterable[dict], experiment_id: str) -> tuple[dict | None
         "both_verified": sorted(feature for feature, _ in set.intersection(*verified.values())) if len(arms) > 1
         else [],
         "plan_level_false_greens": sorted(f"{row['arm']}:{row['task']['instance_id']}" for row in kept.rows
-                                          if row["arm"] in ROKO_ARMS and reported_pass(row) and not vs_minus(row)),
+                                          if row["arm"] in ROKO_ARMS and reported_pass(row) and hidden_failed(row)),
+        "plan_level_vf0_gate_passed": sorted(f"{row['arm']}:{row['task']['instance_id']}" for row in kept.rows
+                                             if row["arm"] in ROKO_ARMS and reported_pass(row) and not vs_minus(row)),
         "not_recorded": _not_recorded(summary),
     }
     return section, out

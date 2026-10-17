@@ -1,12 +1,13 @@
-"""Confine the agent's code: its files while a truth suite runs it (gap-8c3752), and its network while it runs as an
-agent (gap-0bd49a).
+"""Confine the agent's code wherever it runs: its files and its network while it runs as an agent, and again while a
+truth suite or the census runs it (gap-8c3752, gap-0bd49a).
 
 A truth suite (`hidden.py`) is trusted code. It reads the benchmark secret and the private task directory (DIR, which
 holds `task.json`, the spec variants and the pristine bundle), draws the hidden cases, and then runs the agent's code
 on them: F4 its migration script, F1 its converter in probe processes, the driver's toy family its `clamp`. That code
 runs as the driver's user, and the census opens the secret file (mode 0400) for exactly as long as `hidden.py` runs.
 So each suite starts the agent's code through `command`, which denies it every file operation on the paths it is
-given: the secret file and DIR (`denied`). The census's visible re-run does the same.
+given, the secret file and DIR (`denied`), and every outgoing connection. The census's visible re-run and the audit
+battery's re-runs do the same.
 
 - **macOS** (`KIND` "sandbox-exec"): `sandbox-exec` with a profile that allows everything else. Apple marks the tool
   deprecated, and it still works (checked on macOS 26.4). The sandbox matches resolved paths, so `profile` resolves
@@ -16,15 +17,25 @@ given: the secret file and DIR (`denied`). The census's visible re-run does the 
   `hidden.py`.
 - **Elsewhere** (`KIND` "none"): no confinement. Linux would need bubblewrap and unprivileged user namespaces, which
   this module does not use yet (gap-29ac83). The suites put the kind in their verdict, and the run record keeps it.
+- **The seam for another host** (gap-29ac83). `command` asks the host's backend (`BACKENDS[KIND]`) for the argv
+  prefix that applies the rules, and `_host_kind` picks `KIND`. sandbox-exec is the only backend. A Linux one
+  (`unshare -n` for the rule "none", bubblewrap for the rest) adds its entry here and its detection to `_host_kind`;
+  it must raise ValueError for a rule or a deny list it cannot apply, never return a prefix that applies less, since
+  `kind` reports what applied.
 
 **The network** (gap-0bd49a, decision 3301's option (b)). `command` takes a network rule, which binds every process
-the command starts:
-- None: no rule. The truth suites and the census's re-run pass none, so their network is left alone.
-- "none": no outgoing connection at all, Unix sockets and so DNS included (`(deny network-outbound)`). The direct
-  loop runs every agent command under it, since the driver makes every model call itself.
+the command starts. Confined code gets no network unless its rule names what it may reach:
+- "none" (`NETWORK_NONE`), the default: no outgoing connection at all, Unix sockets and so DNS included
+  (`(deny network-outbound)`). The direct loop runs every agent command under it, since the driver makes every model
+  call itself. Every truth suite and the audit battery run the agent's code under it too, by default, and the
+  census's visible re-run names it: none of them needs a network, and a fetch there could bring in what the agent
+  could not fetch while it ran.
 - "loopback:<port>[,<port>...]": outgoing connections only to those ports on this host's loopback (127.0.0.1 and
-  ::1). The Roko arm runs under the metering proxy's port, and the Claude Code arm under its egress proxy's.
-  `sockets` adds the Unix sockets under the given directories, such as Roko's per-run `inject` socket.
+  ::1). The Roko and mini-swe-agent arms run under the metering proxy's port, and the Claude Code and Codex arms under
+  their egress proxy's. `sockets` adds the Unix sockets under the given directories, such as Roko's per-run `inject`
+  socket.
+- None: no rule, so the network stays open. Nothing that runs the agent's code passes it; with nothing to deny
+  either, `command` returns argv as it is.
 Binding and accepting stay allowed, so a test may listen on a port, yet nothing inside can connect to a port the rule
 does not name. An unknown rule raises ValueError, on every host, rather than running unconfined. The rule confines
 the processes' own sockets: a system service the code asks over Mach IPC is not confined by it. `kind` reports
@@ -41,14 +52,15 @@ apply).
 
 API:
     KIND: str                                           # "sandbox-exec" or "none", on this host
-    NETWORK_NONE: str                                   # "none", the rule with no outgoing connection
-    command(argv: Sequence[str], *, deny: Iterable[str | Path], network: str | None = None,
+    NETWORK_NONE: str                                   # "none", the default rule: no outgoing connection
+    BACKENDS: dict                                      # KIND -> the argv prefix that applies the rules
+    command(argv: Sequence[str], *, deny: Iterable[str | Path], network: str | None = NETWORK_NONE,
             sockets: Iterable[str | Path] = (), read_only: Iterable[str | Path] | None = None) -> list[str]
-    kind(deny: Sequence[str | Path], network: str | None = None) -> str     # what `command` applies on this host
+    kind(deny: Sequence[str | Path], network: str | None = NETWORK_NONE) -> str   # what `command` applies here
     loopback(*ports: int) -> str                        # the rule for those loopback ports
     ports(network: str | None) -> tuple[int, ...]       # the loopback ports a rule admits; ValueError if unknown
     denied(secret_file: str | Path, task_file: str | Path) -> tuple[Path, Path]   # the secret file and DIR
-    profile(deny: Iterable[str | Path], network: str | None = None, sockets: Iterable[str | Path] = (),
+    profile(deny: Iterable[str | Path], network: str | None = NETWORK_NONE, sockets: Iterable[str | Path] = (),
             read_only: Iterable[str | Path] = ()) -> str
 """
 
@@ -57,35 +69,45 @@ from __future__ import annotations
 import os
 import re
 import sys
-from collections.abc import Iterable, Sequence
+from collections.abc import Callable, Iterable, Sequence
 from pathlib import Path
 
 from . import toolchain
 
 SANDBOX_EXEC = "/usr/bin/sandbox-exec"
-KIND = "sandbox-exec" if sys.platform == "darwin" and os.access(SANDBOX_EXEC, os.X_OK) else "none"
 NETWORK_NONE = "none"
 NETWORK_SUFFIX = "+net"  # on KIND when a network rule applies
 LOOPBACK_RULE = re.compile(r"loopback:([0-9]{1,5}(?:,[0-9]{1,5})*)")
 
 
-def command(argv: Sequence[str], *, deny: Iterable[str | Path], network: str | None = None,
+def _host_kind() -> str:
+    """The confinement this host can apply: "sandbox-exec" on macOS, else "none". A Linux backend (gap-29ac83) is
+    detected here, next to its entry in BACKENDS."""
+    if sys.platform == "darwin" and os.access(SANDBOX_EXEC, os.X_OK):
+        return "sandbox-exec"
+    return "none"
+
+
+KIND = _host_kind()
+
+
+def command(argv: Sequence[str], *, deny: Iterable[str | Path], network: str | None = NETWORK_NONE,
             sockets: Iterable[str | Path] = (), read_only: Iterable[str | Path] | None = None) -> list[str]:
     """`argv` run so that every file operation on a path in `deny` fails, every write to a path in `read_only` (by
-    default the Rust toolchain, `toolchain.read_only`) fails and, under a `network` rule, every outgoing connection
-    the rule does not admit fails; `argv` itself when neither `deny` nor a rule applies or there is no sandbox on
-    this host (`KIND`). An unknown rule raises ValueError on every host."""
+    default the Rust toolchain, `toolchain.read_only`) fails and every outgoing connection the `network` rule does not
+    admit fails, none by default; `argv` itself when there is no sandbox on this host (`KIND`), or when there is
+    nothing to deny and no rule (None). An unknown rule raises ValueError on every host."""
     deny, sockets = list(deny), list(sockets)
     ports(network)  # refuse an unknown rule here too, not only where a profile is built
-    if KIND != "sandbox-exec" or not (deny or network is not None):
+    if KIND == "none" or not (deny or network is not None):
         return list(argv)
     kept = toolchain.read_only() if read_only is None else list(read_only)
-    return [SANDBOX_EXEC, "-p", profile(deny, network, sockets, kept), *argv]
+    return [*BACKENDS[KIND](deny, network, sockets, kept), *argv]
 
 
-def kind(deny: Sequence[str | Path], network: str | None = None) -> str:
+def kind(deny: Sequence[str | Path], network: str | None = NETWORK_NONE) -> str:
     """The confinement `command` applies for `deny` and `network` on this host: "none" when there is nothing to apply
-    or no sandbox, else KIND, with "+net" when a network rule applies."""
+    or no sandbox, else KIND, with "+net" when a network rule applies (by default it does)."""
     ports(network)
     if KIND == "none" or not (deny or network is not None):
         return "none"
@@ -116,11 +138,11 @@ def denied(secret_file: str | Path, task_file: str | Path) -> tuple[Path, Path]:
     return Path(secret_file), Path(task_file).parent
 
 
-def profile(deny: Iterable[str | Path], network: str | None = None, sockets: Iterable[str | Path] = (),
+def profile(deny: Iterable[str | Path], network: str | None = NETWORK_NONE, sockets: Iterable[str | Path] = (),
             read_only: Iterable[str | Path] = ()) -> str:
     """A sandbox-exec profile that allows everything but file operations on the resolved `deny` paths, writes to the
-    resolved `read_only` paths and, under a `network` rule, outgoing connections the rule does not admit. A later
-    rule wins, so the allows follow the deny."""
+    resolved `read_only` paths and, under a `network` rule (by default "none"), outgoing connections the rule does
+    not admit. A later rule wins, so the allows follow the deny."""
     paths = sorted({os.path.realpath(path) for path in deny})
     rules = "".join(f' (deny file* (subpath "{_quoted(path)}"))' for path in paths)
     rules += "".join(f' (deny file-write* (subpath "{_quoted(path)}"))'
@@ -131,6 +153,17 @@ def profile(deny: Iterable[str | Path], network: str | None = None, sockets: Ite
         rules += "".join(f' (allow network-outbound (subpath "{_quoted(path)}"))'
                          for path in sorted({os.path.realpath(path) for path in sockets}))
     return "(version 1) (allow default)" + rules
+
+
+def _sandbox_exec(deny: list[str | Path], network: str | None, sockets: list[str | Path],
+                  read_only: list[str | Path]) -> list[str]:
+    return [SANDBOX_EXEC, "-p", profile(deny, network, sockets, read_only)]
+
+
+# KIND -> the argv prefix that applies `deny`, `network`, `sockets` and `read_only` (module docstring, "the seam").
+BACKENDS: dict[str, Callable[[list[str | Path], str | None, list[str | Path], list[str | Path]], list[str]]] = {
+    "sandbox-exec": _sandbox_exec,
+}
 
 
 def _quoted(path: str) -> str:

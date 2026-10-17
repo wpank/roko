@@ -8,7 +8,7 @@ severity = "p3"
 goal = "visibility"
 subsystem = ["roko-serve/plans", "roko-graph/engine"]
 created = 2026-09-29
-updated = 2026-10-01
+updated = 2026-10-16
 last_verified = 2026-10-01
 last_verified_rev = "db778db9b"
 source = "plan:portal-programme/03b-backend-workspace-server#T16"
@@ -18,6 +18,11 @@ links = { depends_on = [], blocks = [], related = [], supersedes = [], duplicate
 
 [[verify]]
 command = "grep -q 'skippable_task_ids' crates/roko-serve/src/routes/plans.rs && grep -rqw 'fn execute_resume_reports_skippable_tasks' crates/roko-serve/src && cargo test -p roko-serve --lib execute_resume_reports_skippable_tasks"
+superseded = "2026-10-16: 5772b602b split routes/plans.rs into modules: skippable_task_ids is in routes/plans/run_control.rs and the test in routes/plans/tests.rs. Verify 2 checks there and runs the same test."
+superseded_by = "5772b602b"
+
+[[verify]]
+command = "grep -q 'skippable_task_ids' crates/roko-serve/src/routes/plans/run_control.rs && grep -rqw 'fn execute_resume_reports_skippable_tasks' crates/roko-serve/src && cargo test -p roko-serve --lib execute_resume_reports_skippable_tasks"
 
 [closed]
 at = 2026-10-01

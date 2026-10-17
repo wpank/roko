@@ -6,6 +6,7 @@
 
 use anyhow::{Context, Result, bail};
 use std::collections::{BTreeMap, BTreeSet};
+use std::io::Write as _;
 use std::path::{Path, PathBuf};
 
 use roko_cli::config::command_on_path;
@@ -13,6 +14,7 @@ use roko_core::config::routing::{LadderRung, LadderStart};
 use roko_core::config::schema::RokoConfig;
 use roko_core::config::{GateRungConfig, TimeoutConfig};
 use roko_core::{Language, detect_from_files};
+use roko_learn::homeostasis::policy::{DEFAULT_VIABILITY_POLICY, ViabilityPolicy};
 
 /// Environment variable that holds the Anthropic API key.
 const ANTHROPIC_API_KEY_ENV: &str = "ANTHROPIC_API_KEY";
@@ -1242,6 +1244,32 @@ pub fn ensure_roko_gitignored(target: &Path) -> Result<GitignoreChange> {
     } else {
         GitignoreChange::Appended
     })
+}
+
+/// Write M1's shipped viability policy to `target`'s
+/// `.roko/policy/viability.toml` (gap-cad57a), where a person edits it.
+/// An existing file is never overwritten. Returns whether it wrote one.
+///
+/// # Errors
+///
+/// The policy directory or file cannot be written.
+pub fn write_viability_policy(target: &Path) -> Result<bool> {
+    let path = ViabilityPolicy::path_in(&target.join(".roko"));
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir).with_context(|| format!("create {}", dir.display()))?;
+    }
+    let mut file = match std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&path)
+    {
+        Ok(file) => file,
+        Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => return Ok(false),
+        Err(err) => return Err(err).with_context(|| format!("create {}", path.display())),
+    };
+    file.write_all(DEFAULT_VIABILITY_POLICY.as_bytes())
+        .with_context(|| format!("write {}", path.display()))?;
+    Ok(true)
 }
 
 /// Whether a rule of the `.gitignore` text names `.roko`, negated or not.

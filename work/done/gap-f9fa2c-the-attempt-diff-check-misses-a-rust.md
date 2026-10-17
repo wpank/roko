@@ -2,7 +2,7 @@
 id = "gap-f9fa2c"
 kind = "gap"
 title = "The attempt diff check misses a Rust doc example switched off: a rust,ignore fence or a commented-out assert in a /// example is not counted as a skip"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p2"
 goal = "truth"
@@ -11,6 +11,7 @@ subsystem = ["roko-gate/attempt_diff"]
 created = 2026-10-16
 updated = 2026-10-16
 last_verified = 2026-10-16
+last_verified_rev = "bf82d373e"
 source = "gap-c013c5 golden-path live run 3 (2026-10-16), independent review"
 discovered_from = "gap-c013c5"
 anchors = ["crates/roko-gate/src/attempt_diff.rs::Markers", "crates/roko-gate/src/attempt_diff.rs::Tally"]
@@ -19,6 +20,18 @@ links = { depends_on = [], blocks = [], related = ["find-2ba86d", "gap-c013c5", 
 
 [[verify]]
 command = "grep -rqw 'fn doc_example_switched_off_is_a_skip' crates/roko-gate/ && cargo test -p roko-gate doc_example_switched_off_is_a_skip"
+
+[closed]
+at = 2026-10-16
+at_ts = "2026-10-16T20:43:57Z"
+commit = "bf82d373e"
+by = "commit trailer"
+executor = "claude-agent"
+via = "work-batch"
+size = "S"
+claimed_at = "2026-10-16T19:19:20Z"
+forced = false
+evidence = "crates/roko-gate/src/attempt_diff.rs (bf82d373e): Tally::of now calls doc_example_tally over every .rs file's full text, not just the #[cfg(test)] region, so a doc example above the item it documents is no longer skipped entirely. A fence whose info string is `ignore` or `ignore-<target>` (is_ignored_doc_fence) adds to Tally.skips the same way #[ignore] does, and asserts inside a fence are added to Tally.asserts unless the line is commented out, so a commented-out assert reads as a removed assert; no_run alone is excluded per the item's notes. Proof: attempt_diff::tests::doc_example_switched_off_is_a_skip (the item's [[verify]] test, covering the switched-off case plus a pre-existing untouched ignore and a no_run-alone case for no false positives) passes, the full roko-gate suite (704 lib tests, 0 failed) passes, and cargo clippy -p roko-gate --no-deps -- -D warnings is clean."
 +++
 
 ## Problem

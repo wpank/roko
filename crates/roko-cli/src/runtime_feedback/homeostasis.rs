@@ -11,11 +11,12 @@
 //!   workspace's cross-run `learn/controller.jsonl` (S01 §5.10), and a θ it
 //!   commits goes through the guarded store (`learn/commits/harness/`). Its
 //!   state is saved to `learn/homeostat-state.json` when the run ends.
-//! - The sink exists only when `[homeostasis] mode` is not off and the
-//!   workspace has an S5 policy (`.roko/policy/viability.toml`): without
-//!   bounds a person wrote, M1 has nothing to regulate. A frozen run
-//!   registers no sink (decision 2218). In shadow mode, the default, nothing
-//!   it does changes dispatch.
+//! - The sink exists when `[homeostasis] mode` is not off, on the workspace's
+//!   S5 policy (`.roko/policy/viability.toml`) or, without one, on the policy
+//!   roko ships (gap-cad57a). Only a policy a person wrote lets M1 act: on the
+//!   shipped one, the text `roko init` writes included, `on` falls back to
+//!   shadow. A frozen run registers no sink (decision 2218). In shadow mode,
+//!   the default, nothing it does changes dispatch.
 //! - With `[homeostasis] m3_prior`, the controller's move priors come from
 //!   the run's self-model through [`SelfModelPredictor`] (8121, gap-d1ebc1).
 //!
@@ -58,7 +59,7 @@ use roko_learn::homeostasis::ledger::{
 };
 use roko_learn::homeostasis::lkg::ThetaLkg;
 use roko_learn::homeostasis::policy::{
-    AuditPolicy, DEFAULT_HOLDOUT, ViabilityPolicy, non_m1_fingerprint,
+    AuditPolicy, DEFAULT_HOLDOUT, PolicyOrigin, ViabilityPolicy, mode_on_policy, non_m1_fingerprint,
 };
 use roko_learn::homeostasis::priors::{Calibration, DrivePredictor, M3Prior, PredictedLevels};
 use roko_learn::homeostasis::resolution::{ResolutionFold, TaskResolution};
@@ -304,9 +305,12 @@ impl HomeostasisSink {
     }
 
     /// The sink of a plan run under `workdir`: `None` when `[homeostasis]
-    /// mode` is off or the workspace has no S5 policy. The controller resumes
-    /// its saved state, takes the committed θ, and draws its move priors from
-    /// `self_model` when `[homeostasis] m3_prior` is on.
+    /// mode` is off or the workspace's S5 policy does not load. A workspace
+    /// without a policy runs M1 on the shipped one, in shadow whatever the
+    /// mode says, as it does on the shipped text `roko init` wrote, unedited
+    /// (gap-cad57a). The controller resumes its saved state, takes the
+    /// committed θ, and draws its move priors from `self_model` when
+    /// `[homeostasis] m3_prior` is on.
     #[must_use]
     pub fn for_workdir(
         workdir: &Path,
@@ -317,23 +321,26 @@ impl HomeostasisSink {
             return None;
         }
         let layout = RokoLayout::for_project(workdir);
-        let policy = match ViabilityPolicy::load_optional(layout.root()) {
-            Ok(Some(policy)) => policy,
-            Ok(None) => {
-                tracing::debug!("no .roko/policy/viability.toml: M1 has nothing to regulate");
-                return None;
-            }
+        let (policy, origin) = match ViabilityPolicy::load_or_shipped(layout.root()) {
+            Ok(loaded) => loaded,
             Err(error) => {
                 tracing::warn!(%error, "M1 is off: the S5 viability policy does not load");
                 return None;
             }
         };
+        // A person's mode from serve's admin route beats the config's (8131),
+        // and only a person's policy lets M1 act: on the shipped one, `on` is
+        // shadow (gap-cad57a).
+        let operator = operator_mode(layout.root()).filter(|mode| *mode != HomeostasisMode::Off);
+        let requested = operator.unwrap_or(config.homeostasis.mode);
+        let mut settings = config.homeostasis.clone();
+        settings.mode = mode_on_policy(settings.mode, origin);
         let theta0 = HarnessParams::baseline(config);
         let ladders = HarnessLadders::from_config(config);
         let state_path = Controller::state_path(layout.root());
         let (mut controller, restart) = Controller::load(
             &state_path,
-            &config.homeostasis,
+            &settings,
             policy.clone(),
             theta0.clone(),
             ladders.clone(),
@@ -366,10 +373,8 @@ impl HomeostasisSink {
         {
             tracing::warn!(%error, "M1's committed θ does not restore");
         }
-        // A person's mode from serve's admin route beats the config's (8131).
-        let operator = operator_mode(layout.root()).filter(|mode| *mode != HomeostasisMode::Off);
         if let Some(mode) = operator {
-            let _ = controller.set_mode(mode);
+            let _ = controller.set_mode(mode_on_policy(mode, origin));
         }
         // M2 (S06 §4.6.8, 8128): the knowledge section switches on only for
         // a live loop, and a demoted L-M1 pushes M1 down to shadow.
@@ -380,6 +385,17 @@ impl HomeostasisSink {
         if state(M1_LOOP) == Some(AuditState::Demoted) {
             let events = controller.set_mode(HomeostasisMode::Shadow);
             record_m2_mode(&layout, &controller, &events);
+        }
+        match (origin, requested) {
+            (PolicyOrigin::Person, _) => {}
+            (PolicyOrigin::Shipped, HomeostasisMode::On) => tracing::warn!(
+                "M1 runs in shadow: `on` needs bounds a person wrote in \
+                 .roko/policy/viability.toml, and it holds roko's shipped policy"
+            ),
+            (PolicyOrigin::Shipped, _) => tracing::info!(
+                "M1 runs in shadow on roko's shipped viability policy; edit \
+                 .roko/policy/viability.toml to set your own bounds"
+            ),
         }
         Some(Self::new(workdir, Some(controller), lkg))
     }
@@ -859,17 +875,43 @@ ev.false_green = { hi = 0.10 }
 ev.latency_p90_s = { hi = 900, inner = 810 }
 "#;
 
+    /// M1 needs a mode other than off and a policy. Without a policy of the
+    /// workspace's own it runs on roko's shipped one, and only in shadow,
+    /// `on` asked for too; the text `roko init` writes is still the shipped
+    /// policy until a person edits it (gap-cad57a).
     #[tokio::test]
     async fn homeostasis_sink_needs_a_mode_and_a_policy() {
+        use roko_learn::homeostasis::controller::{MODE_FILE, set_operator_mode};
+        use roko_learn::homeostasis::policy::DEFAULT_VIABILITY_POLICY;
+
         let temp = tempfile::tempdir().expect("tempdir");
+        let roko = temp.path().join(".roko");
         let config = RokoConfig::default();
         assert_eq!(config.homeostasis.mode, HomeostasisMode::Shadow);
-        // No policy: nothing to regulate.
-        assert!(HomeostasisSink::for_workdir(temp.path(), &config, None).is_none());
-
-        let policy_path = ViabilityPolicy::path_in(&temp.path().join(".roko"));
+        let mut on = config.clone();
+        on.homeostasis.mode = HomeostasisMode::On;
+        let mode = |config: &RokoConfig| {
+            HomeostasisSink::for_workdir(temp.path(), config, None)
+                .expect("a sink")
+                .mode()
+        };
+        // No policy: shadow on the shipped one, and M1 writes no policy.
+        let policy_path = ViabilityPolicy::path_in(&roko);
+        assert_eq!(mode(&config), HomeostasisMode::Shadow);
+        assert_eq!(mode(&on), HomeostasisMode::Shadow);
+        assert!(!policy_path.exists(), "M1 only reads its policy");
+        // The shipped text `roko init` writes, unedited, keeps `on` in
+        // shadow, whether the config or a person's admin route asks for it.
         std::fs::create_dir_all(policy_path.parent().expect("policy dir")).expect("mkdir");
+        std::fs::write(&policy_path, DEFAULT_VIABILITY_POLICY).expect("write the shipped text");
+        assert_eq!(mode(&on), HomeostasisMode::Shadow);
+        set_operator_mode(&roko, HomeostasisMode::On).expect("a person's mode");
+        assert_eq!(mode(&config), HomeostasisMode::Shadow);
+        // A person's policy lets `on` stand.
         std::fs::write(&policy_path, POLICY).expect("write the policy");
+        assert_eq!(mode(&config), HomeostasisMode::On);
+        std::fs::remove_file(roko.join(MODE_FILE)).expect("drop the person's mode");
+        assert_eq!(mode(&on), HomeostasisMode::On);
         let mut off = config.clone();
         off.homeostasis.mode = HomeostasisMode::Off;
         assert!(HomeostasisSink::for_workdir(temp.path(), &off, None).is_none());

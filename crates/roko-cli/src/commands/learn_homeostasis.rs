@@ -22,6 +22,7 @@ use roko_learn::guarded_commit::{COMMITS_DIR, GuardMode, GuardedStore};
 use roko_learn::homeostasis::controller::{Controller, ControllerState, operator_mode};
 use roko_learn::homeostasis::ledger::{ControllerRecord, Envelope, ledger_path, write_jsonl};
 use roko_learn::homeostasis::lkg::STORE;
+use roko_learn::homeostasis::policy::{ViabilityPolicy, mode_on_policy};
 use roko_learn::homeostasis::replay::{Evaluator, ReplayArm};
 use roko_learn::homeostasis::streams::{
     IN_CONTROL, StepKind, StreamSpec, SyntheticStream, replay_theta0,
@@ -128,7 +129,8 @@ pub(crate) fn cmd_homeostasis(cli: &Cli, cmd: HomeostasisCmd, json: bool) -> Res
 /// What `status` reports.
 #[derive(Debug, Serialize)]
 pub(crate) struct Status {
-    /// The mode the next run opens in: a person's, else the config's.
+    /// The mode the next run opens in: a person's, else the config's, and
+    /// shadow for `on` on roko's shipped viability policy.
     mode: HomeostasisMode,
     /// `idle`, `search` or `hold`.
     phase: String,
@@ -200,8 +202,13 @@ pub(crate) fn status(workdir: &Path, config_mode: HomeostasisMode) -> Option<Sta
         .episode
         .as_ref()
         .and_then(|episode| serde_json::to_value(episode).ok());
+    // A person's mode beats the config's, and `on` needs a person's policy
+    // (gap-cad57a).
+    let requested = operator_mode(&roko).unwrap_or(config_mode);
+    let mode = ViabilityPolicy::load_or_shipped(&roko)
+        .map_or(requested, |(_, origin)| mode_on_policy(requested, origin));
     Some(Status {
-        mode: operator_mode(&roko).unwrap_or(config_mode),
+        mode,
         phase: label(state.phase),
         changed,
         lkg_versions: lkg_versions(&roko),
@@ -400,7 +407,8 @@ mod tests {
 
     /// S06 §5 (8133): `status` reads M1's saved state: its phase, the knob
     /// where θ left θ₀, and θ's two committed versions. A fresh workspace
-    /// has none, and the command says so.
+    /// has none, and the command says so. The mode it reports for `on` is
+    /// shadow until a person writes the policy (gap-cad57a).
     #[test]
     fn learn_homeostasis_status_reads_controller_state() {
         let dir = tempfile::tempdir().expect("tempdir");
@@ -451,6 +459,19 @@ mod tests {
         let text = report.render();
         assert!(text.contains("θ: retry_delta = 1 (θ₀ 0)"), "{text}");
         assert!(text.contains("committed versions of θ: 1, 2"), "{text}");
+
+        // `on` needs a person's policy: on roko's shipped one the next run
+        // opens in shadow (gap-cad57a).
+        let on = || {
+            status(dir.path(), HomeostasisMode::On)
+                .expect("a report")
+                .mode
+        };
+        assert_eq!(on(), HomeostasisMode::Shadow);
+        let policy_path = ViabilityPolicy::path_in(&roko);
+        std::fs::create_dir_all(policy_path.parent().expect("policy dir")).expect("mkdir");
+        std::fs::write(&policy_path, POLICY).expect("write the policy");
+        assert_eq!(on(), HomeostasisMode::On);
     }
 
     /// The JSON rows of the file at `path`.

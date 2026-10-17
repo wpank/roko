@@ -9,7 +9,7 @@ goal = "cybernetic"
 size = "S"
 subsystem = ["roko-cli/graph_task_dispatch", "roko-learn/reflex_store"]
 created = 2026-09-30
-updated = 2026-10-15
+updated = 2026-10-16
 last_verified = 2026-10-15
 last_verified_rev = "b883db4e6"
 source = "tmp/cybernetic-harness/workstreams/PROGRESS.md"
@@ -21,6 +21,11 @@ links = { depends_on = [], blocks = [], related = ["bug-b4c565", "gap-4468bd", "
 
 [[verify]]
 command = "grep -rqw 'fn a_reflex_on_a_checked_task_runs_verification_on_its_cached_output' crates/roko-cli/src/ && cargo test -p roko-cli --lib a_reflex_on_a_checked_task_runs_verification_on_its_cached_output"
+superseded = "2026-10-16: Will chose option (a) on 2026-10-15 (b883db4e6): reflexes stay narrow. The Done-when needed this test only under option (b), so a_reflex_on_a_checked_task_runs_verification_on_its_cached_output was never written. Verify 2 runs bug-b4c565's test of the narrow rule."
+superseded_by = "b883db4e6"
+
+[[verify]]
+command = "grep -rqw 'fn a_reflex_pass_still_runs_the_workspace_rungs' crates/roko-cli/src/ && cargo test -p roko-cli --lib a_reflex_pass_still_runs_the_workspace_rungs"
 
 [closed]
 at = 2026-10-15

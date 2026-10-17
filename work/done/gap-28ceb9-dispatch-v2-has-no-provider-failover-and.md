@@ -8,7 +8,7 @@ severity = "p3"
 goal = "core"
 subsystem = ["roko-cli/dispatch_v2"]
 created = 2026-09-29
-updated = 2026-10-02
+updated = 2026-10-16
 last_verified = 2026-10-02
 last_verified_rev = "f88210c84"
 source = "dogfood:tmp/dogfood/2026-09-28-portal-programme-continuation.md"
@@ -18,6 +18,11 @@ links = { depends_on = [], blocks = [], related = ["bug-35379d", "find-229e9c"],
 
 [[verify]]
 command = "grep -q 'detect_provider_exhaustion' crates/roko-cli/src/dispatch_v2.rs && cargo test -p roko-cli --lib classify_provider_error_detects_usage_exhaustion && cargo test -p roko-learn --lib provider_failover && cargo test -p roko-cli --lib tests_provider_failover && cargo test -p roko-acp --lib bridge_events::failover && cargo test -p roko-acp --test provider_failover"
+superseded = "2026-10-16: d562b56b2 made dispatch_v2's classify_provider_error delegate to roko-agent's shared classify_failure_text, which calls detect_provider_exhaustion first, so the name left dispatch_v2.rs. Verify 2 checks the delegation and the shared classifier, then runs the same tests."
+superseded_by = "d562b56b2"
+
+[[verify]]
+command = "grep -q 'error_classify::classify_failure_text' crates/roko-cli/src/dispatch_v2.rs && awk '/^pub fn classify_failure_text\\(/,/^}$/' crates/roko-agent/src/provider/error_classify.rs | grep -q 'detect_provider_exhaustion' && grep -rqw 'fn classify_provider_error_detects_usage_exhaustion' crates/roko-cli/src/ && cargo test -p roko-cli --lib classify_provider_error_detects_usage_exhaustion && cargo test -p roko-learn --lib provider_failover && cargo test -p roko-cli --lib tests_provider_failover && cargo test -p roko-acp --lib bridge_events::failover && cargo test -p roko-acp --test provider_failover"
 
 [closed]
 at = 2026-10-02

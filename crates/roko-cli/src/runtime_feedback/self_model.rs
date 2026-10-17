@@ -70,17 +70,16 @@ impl FeedbackSink for SelfModelOutcomeSink {
                 .ladder
                 .as_ref()
                 .is_some_and(|ladder| ladder.reason == LadderReason::SelfModel);
-            // Routing's `[models.*]` key, as the forecast names the candidate.
-            let requested = verdict.executed.model_requested.as_deref();
             self.runtime
-                .settle(unit, AttemptForecast { routed, ..forecast }, requested);
+                .settle(unit, AttemptForecast { routed, ..forecast });
         }
         Ok(())
     }
 }
 
 /// The unit `verdict` teaches, with the features its forecast kept; `None` when it teaches
-/// nothing.
+/// nothing. Its arm is the provider and slug dispatch launched, as the forecast's candidates
+/// name them (bug-a400d0).
 fn unit_of(verdict: &AttemptVerdictRecord, forecast: &AttemptForecast) -> Option<Unit> {
     let label = Label::of_verdict(verdict)?;
     let executed = &verdict.executed;
@@ -258,18 +257,26 @@ mod tests {
     /// gap-b38ed2: the calibration window survives across runs. Each run loads the self-model
     /// as a plan run does, settles 60 labelled attempts through the sink and saves: the first
     /// leaves a window of 60, and the second one of 120 capped at the gate's W, which the next
-    /// load starts from. As in a plan run, each forecast names its candidate by the
-    /// `[models.*]` key routing asked for, while the verdict names the slug the provider
-    /// launched, and the window still scores it.
+    /// load starts from. As in a plan run, routing asks for the `[models.*]` key `cheap-model`,
+    /// whose forecast names the slug the provider launches, as the verdict does (bug-a400d0).
     #[tokio::test]
     async fn calibration_window_survives_across_runs() {
-        use roko_core::config::schema::RokoConfig;
+        use roko_core::config::schema::{ModelProfile, RokoConfig};
         use roko_core::config::self_model::DEFAULT_STATE_PATH;
         use roko_learn::self_model::gate::{WINDOW, WINDOW_FILE_NAME};
 
+        use crate::graph_task_dispatch::self_model::arm_of;
+
         let temp = tempfile::tempdir().expect("tempdir");
-        let config = RokoConfig::default();
-        let arm = ArmKey::roko("cerebras", "cheap-model");
+        let mut config = RokoConfig::default();
+        let cheap = ModelProfile {
+            provider: "cerebras".to_string(),
+            slug: "gpt-oss-120b".to_string(),
+            ..ModelProfile::default()
+        };
+        config.models.insert("cheap-model".to_string(), cheap);
+        let arm = arm_of(&config, "cheap-model");
+        assert_eq!(arm, ArmKey::roko("cerebras", "gpt-oss-120b"));
         for (run, before, after) in [("run-1", 0, 60), ("run-2", 60, WINDOW)] {
             let runtime = SelfModelRuntime::load(temp.path(), &config).expect("shadow loads M3");
             assert_eq!(

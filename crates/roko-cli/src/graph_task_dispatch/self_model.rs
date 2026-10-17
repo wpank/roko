@@ -214,7 +214,7 @@ pub struct AttemptForecast {
 }
 
 impl AttemptForecast {
-    /// The forecast for `model`, the model the attempt ran.
+    /// The forecast for `model`, the slug of the model the attempt ran.
     #[must_use]
     pub fn for_model(&self, model: &str) -> Option<&CandidateForecast> {
         self.candidates
@@ -377,17 +377,13 @@ impl SelfModelRuntime {
     }
 
     /// Teach the model a settled attempt it forecast (6129): `unit` under the forecast's
-    /// features, and the calibration window with the forecast for the model that ran. Forecasts
-    /// name a candidate by its `[models.*]` key, which the verdict records as `requested`, and
-    /// the unit names the model by the slug its provider launched, so either finds it
-    /// (gap-b38ed2). The unit stays for a late VS label.
-    pub fn settle(&self, unit: Unit, forecast: AttemptForecast, requested: Option<&str>) {
+    /// features, and the calibration window with the forecast for the model that ran. Both name
+    /// the model by the slug its provider launched ([`arm_of`]; bug-a400d0), so the unit's arm
+    /// finds its candidate. The unit stays for a late VS label.
+    pub fn settle(&self, unit: Unit, forecast: AttemptForecast) {
         let w = unit.label.weight;
         self.observe(&unit, &forecast.features, w);
-        let ran = requested
-            .and_then(|model| forecast.for_model(model))
-            .or_else(|| forecast.for_model(&unit.arm.model));
-        if let Some(candidate) = ran {
+        if let Some(candidate) = forecast.for_model(&unit.arm.model) {
             let outcome = WindowOutcome {
                 p: candidate.p_gate,
                 y: unit.label.y_gate == Some(true),
@@ -1131,8 +1127,9 @@ impl GraphTaskDispatcher {
         })
     }
 
-    /// Whether `model`, an arm's model, is the one `executor` names: the same name, or the
-    /// `[models.*]` key of its slug.
+    /// Whether `model`, an arm's model, is the one `executor`, the slug dispatch sent, names:
+    /// the same name, as [`arm_of`] names arms (bug-a400d0), or the `[models.*]` key of that
+    /// slug.
     fn ran_model(&self, model: &str, executor: &str) -> bool {
         let profile = self.config.models.get(model);
         model == executor || profile.is_some_and(|profile| profile.slug == executor)
@@ -1234,14 +1231,26 @@ fn task_features(task: &TaskDef, inputs: &RoutingInputs) -> TaskFeatures {
     }
 }
 
-/// The arm that runs `model`: roko's harness on the model's `[models.*]` provider.
+/// The arm that runs `model`, a `[models.*]` key, a slug or another name dispatch resolves:
+/// roko's harness on the provider dispatch launches, naming the model by the slug it sends.
+/// A settled attempt's verdict records the same two names (`executed.provider` and
+/// `model_dispatched`), and the outcome sink teaches the self-model that arm, so what it learns
+/// of a model reaches that model's forecasts even when its key is not its slug (bug-a400d0).
+/// Dispatch reads a name as a key before a slug ([`roko_core::agent::resolve_model`]), as this
+/// does.
 pub(crate) fn arm_of(config: &RokoConfig, model: &str) -> ArmKey {
     let models = &config.models;
     let profile = models
         .get(model)
         .or_else(|| models.values().find(|profile| profile.slug == model));
-    let provider = profile.map_or("unknown", |profile| profile.provider.as_str());
-    ArmKey::roko(provider, model)
+    if let Some(profile) = profile {
+        return ArmKey::roko(profile.provider.as_str(), profile.slug.as_str());
+    }
+    // A name no `[models.*]` entry holds: a slug's prefix or a built-in model.
+    match roko_core::agent::resolve_model(config, model).profile {
+        Some(profile) => ArmKey::roko(profile.provider, profile.slug),
+        None => ArmKey::roko("unknown", model.trim()),
+    }
 }
 
 /// A forecast as a prediction row's candidate.
@@ -1363,9 +1372,9 @@ mod tests {
             .iter()
             .map(|row| {
                 let task = row["task_id"].as_str().unwrap_or_default().to_string();
-                // The route's model key, as arms name it (`model_dispatched`
-                // is the provider slug it resolves to).
-                let model = &row["executed"]["model_requested"];
+                // The slug the provider launched, as arms name the model (bug-a400d0), the
+                // pinned task's `stream-model` included.
+                let model = &row["executed"]["model_dispatched"];
                 (task, model.as_str().unwrap_or_default().to_string())
             })
             .collect();
@@ -1625,7 +1634,8 @@ mod tests {
             // pass there is a false green at 60%, at $0.10 an attempt.
             let key = AttemptKey::new(RUN, "stream-plan", "T-PASS", 1);
             let (attempt_key, chain) = (key.attempt_key(), key.chain_key());
-            let arms: Vec<ArmKey> = ["cheap-model", "stream-model"]
+            // Arms name the slugs the rungs dispatch (bug-a400d0).
+            let arms: Vec<ArmKey> = ["claude-haiku-4-5", "claude-sonnet-4-6"]
                 .into_iter()
                 .map(|model| ArmKey::roko("stream-cli", model))
                 .collect();
@@ -1776,7 +1786,7 @@ mod tests {
             row["schema_version"] == "roko.verdict/1"
         })
         .await;
-        let model = verdicts[0]["executed"]["model_requested"]
+        let model = verdicts[0]["executed"]["model_dispatched"]
             .as_str()
             .unwrap_or_default();
         assert!(
@@ -1867,6 +1877,135 @@ mod tests {
         assert!(
             report.reasons.iter().any(|reason| reason == short),
             "{report:?}"
+        );
+    }
+
+    /// bug-a400d0: M3 learns each settled attempt under the arm it forecast it on. Two ladder
+    /// rungs whose `[models.*]` keys are not their slugs, each slug shared with a second entry,
+    /// so that the ladder dispatches the key: the forecast's arms name the slugs dispatch
+    /// sends, as the verdicts do, and so does a pin or M1's predictor, which name a rung by its
+    /// key. The cheap rung always fails and the strong one always passes; after N_MIN settled
+    /// attempts of each through the outcome sink, the strong rung's forecast is clearly above
+    /// the cheap one's, and every outcome reached the calibration window.
+    #[tokio::test]
+    async fn self_model_learns_the_arm_it_forecasts() {
+        use roko_core::task::TaskTier;
+        use roko_learn::self_model::model::N_MIN;
+        use roko_learn::telemetry::{AttemptKey, AttemptOutcome, CostSource};
+
+        use crate::runtime_feedback::self_model::SelfModelOutcomeSink;
+        use crate::runtime_feedback::{FeedbackEvent, FeedbackSink as _};
+
+        let rungs = [
+            (
+                "cheap",
+                "cheap-model",
+                "claude-haiku-4-5",
+                AttemptOutcome::GateFailed,
+            ),
+            (
+                "strong",
+                "strong-model",
+                "claude-sonnet-4-6",
+                AttemptOutcome::Passed,
+            ),
+        ];
+        // Each rung's model also runs on `api`, under a second key with the same slug.
+        let mut config = RokoConfig::default();
+        config.models.clear();
+        for (_, key, slug, _) in rungs {
+            let models = &mut config.models;
+            models.insert(key.to_string(), model("stream-cli", slug, None));
+            models.insert(format!("{key}-api"), model("api", slug, None));
+        }
+        config.routing.ladder.rungs = rungs
+            .iter()
+            .map(|&(name, key, _, _)| LadderRung {
+                name: name.to_string(),
+                model: key.to_string(),
+            })
+            .collect();
+        let ladder = RoutingLadder::from_config_with(&config, |_| true).expect("both rungs run");
+        let start = ladder.start("implementer", TaskTier::Focused, None);
+        let start = start.expect("a start rung");
+        assert_eq!(
+            start.model, "cheap-model",
+            "a shared slug is dispatched by its key"
+        );
+        let inputs = RoutingInputs {
+            task_domain: None,
+            task_tier: TaskTier::Focused,
+            task_model_hint: None,
+            task_rung: None,
+            force_backend: None,
+            budget_remaining_usd: 1.0,
+            attempt: 0,
+            ladder_step: 0,
+            role: "implementer".to_string(),
+            routing_context: None,
+            attempt_key: None,
+            arm_set: None,
+            self_model_rung: None,
+        };
+        let candidates = Candidates::of(&inputs, Some(&ladder), &config).expect("two rungs");
+        let arms: Vec<String> = candidates.arms.iter().map(ToString::to_string).collect();
+        assert_eq!(
+            arms,
+            [
+                "roko/stream-cli/claude-haiku-4-5@default#V0",
+                "roko/stream-cli/claude-sonnet-4-6@default#V0",
+            ]
+        );
+        assert_eq!(arm_of(&config, "strong-model"), candidates.arms[1]);
+
+        let temp = tempfile::tempdir().expect("tempdir");
+        let snapshot = PriceSnapshot::builtin().expect("the built-in snapshot");
+        let settings = SelfModelConfig {
+            mode: SelfModelMode::Shadow,
+            ..SelfModelConfig::default()
+        };
+        let state = temp.path().join(".roko/learn/self-model/state-v1.json");
+        let fresh = SelfModel::new(&snapshot);
+        let runtime = Arc::new(SelfModelRuntime::new(settings, state, fresh));
+        let sink = SelfModelOutcomeSink::new(Arc::clone(&runtime));
+        let features = TaskFeatures {
+            title: "Fix the parser".to_string(),
+            family: "focused".to_string(),
+            tier: "focused".to_string(),
+            role: "implementer".to_string(),
+            attempt: 1,
+            ..TaskFeatures::default()
+        };
+        for index in 0..N_MIN {
+            for (name, key, slug, outcome) in rungs {
+                // Dispatch forecasts the attempt; its verdict names the key routing asked for
+                // and the slug the provider launched.
+                let attempt = AttemptKey::new(RUN, "plan", format!("T{index:02}-{name}"), 1);
+                let identity = AttemptIdentity::new(&attempt);
+                let _ = runtime.predict(&identity, features.clone(), &candidates, 0);
+                let mut verdict = AttemptVerdictRecord::settle(identity, outcome, true);
+                verdict.executed.provider = Some("stream-cli".to_string());
+                verdict.executed.model_requested = Some(key.to_string());
+                verdict.executed.model_dispatched = Some(slug.to_string());
+                verdict.cost.api_equiv_usd = Some(0.01);
+                verdict.cost.source = CostSource::ProviderUsage;
+                let event = FeedbackEvent::AttemptSettled(Arc::new(verdict));
+                sink.on_event(&event)
+                    .await
+                    .expect("the sink takes the verdict");
+            }
+        }
+        assert_eq!(runtime.outcomes(), 2 * N_MIN);
+        let forecasts = runtime.forecast(&features, &candidates.arms);
+        let (cheap, strong) = (&forecasts[0], &forecasts[1]);
+        assert!(
+            strong.p_vs > cheap.p_vs + 0.5,
+            "{cheap:?} against {strong:?}"
+        );
+        assert_eq!(
+            runtime.gate().n,
+            2 * N_MIN,
+            "every outcome reached the window"
         );
     }
 }

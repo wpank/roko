@@ -21,7 +21,8 @@ measure that setup rather than Claude Code (W10). Every session gets:
   version cannot change mid-run (each record keeps the version its `init` event reports);
 - `--settings` with no hooks, and deny rules for the repository, `~/.roko`, the run's results and the default secret
   directory (S08 §4.9, "where the CLI supports them": they bind Claude's file tools, not its shell, and canaries
-  catch the rest);
+  catch the rest). On macOS the sandbox below also denies the whole session, its shell included, the run's results
+  (`ctx.deny`, bug-d308f7);
 - no web tools (gap-f253cf): `--disallowed-tools WebFetch,WebSearch` takes them out of the model's context, and
   deny rules for both in `--settings` also bind subagents. The repository is public, so a web fetch could return a
   truth suite, and WebFetch hands back a model-written digest in which the canary may never appear. The tasks need

@@ -255,8 +255,8 @@ def test_run_refused_when_secret_is_in_roko_dotenv(operator, capsys, monkeypatch
 def readable_secret(monkeypatch) -> None:
     """Leave the files the tripwire holds out of the agent's sandbox, as on a host without one: on macOS the direct
     loop denies its agent those files (gap-0bd49a; test_sandbox_net.py), and the detection below needs a read to
-    detect."""
-    monkeypatch.setattr(vb, "_agent_deny", lambda run: (run.run_dir / "private",))
+    detect. The rest of the agent's deny list, the run directory (bug-d308f7), stays."""
+    monkeypatch.setattr(vb, "_agent_deny", lambda run: (run.run_dir,))
 
 
 def test_deliberate_reads_are_flagged_and_kept_out_of_records(operator, monkeypatch):

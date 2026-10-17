@@ -686,6 +686,35 @@ def test_cli_arm_shell_cannot_reach_the_network(places):
     assert run_cli.CliConfig.from_table({}).egress_allow == ("api.anthropic.com:443",)
 
 
+@macos_only
+def test_cli_arm_shell_cannot_read_its_run_directory(places):
+    """bug-d308f7: `--settings` keep the run's results from Claude's file tools only; the sandbox denies the whole
+    session, its Bash tool included, the run directory. The session's egress proxy logs each request with the task's
+    key to `<run_dir>/egress.jsonl` when it admits it, so the fake claude's own API call is there before its Bash tool
+    reads that log, the stream's order and the manifest and lists the directory: each is refused, and nothing it
+    printed names the task. The log holds what it would have read (the control)."""
+    out = run_dir(places)
+    with StubServer(lambda body: "Hi.") as api:
+        api_port = int(api.url.split(":")[2].split("/")[0])
+        shell = {name: f'cat "{out / name}"; echo exit=$?' for name in (run_cli.EGRESS_LOG, "order-1.json",
+                                                                         "manifest.json")}
+        shell["listing"] = f'ls -a "{out}"; echo exit=$?'
+        program, log = fake_claude(places, "egress", api=["127.0.0.1", api_port], shell=shell)
+        assert run_vb(places, arm_file(places, program, cli=f'egress_allow = ["127.0.0.1:{api_port}"]')) == 0
+    [tried] = [line["egress"] for line in read_jsonl(log) if "egress" in line]
+    assert tried["api"] == f"200 {MODEL}"  # the CLI's call, which the proxy logged before the shell ran
+    for name, said in tried["shell"].items():
+        target = out if name == "listing" else out / name
+        assert f"{target}: Operation not permitted" in said and "exit=1" in said and "exit=0" not in said, (name, said)
+        assert "F1-l1-0001" not in said and '"task"' not in said, (name, said)
+    rows = read_jsonl(out / run_cli.EGRESS_LOG)
+    assert [(row["task"], row["target"], row["admitted"]) for row in rows] == [
+        ("F1-l1-0001.s1", f"127.0.0.1:{api_port}", True)]
+    [record] = read_jsonl(out / "records.jsonl")
+    assert record["execution"]["status"] == "completed" and record["provenance"]["canary_places"] == []
+    assert record["provenance"]["network_policy"]["sandbox"] == "sandbox-exec+net"
+
+
 def test_egress_proxy_answers_every_request_and_ends_its_tunnels(tmp_path):
     """egress.py on any host: an allowlisted target it cannot reach gets a 502, a head that never ends a 400, and
     `close` ends a tunnel still open. Every request is logged."""

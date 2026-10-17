@@ -2068,17 +2068,20 @@ enum ProviderHealthOutcome {
 
 impl ProviderHealthOutcome {
     /// Read `result`'s provider-health outcome. Any unsuccessful run that is
-    /// neither an immune denial, a turn cap, a stop of its budget
-    /// (bug-4fabd0) nor an attempt timeout is a provider failure, classified
-    /// from its text.
+    /// neither an immune denial, a turn cap, a reply cut at the model's
+    /// output limit (bug-f6b99f), a stop of its budget (bug-4fabd0) nor an
+    /// attempt timeout is a provider failure, classified from its text.
     fn of(result: &AgentResult) -> Self {
-        use roko_agent::provider::error_classify::{detect_attempt_timeout, detect_turn_cap};
+        use roko_agent::provider::error_classify::{
+            detect_attempt_timeout, detect_output_limit, detect_turn_cap,
+        };
 
         let text = result.output.body.as_text().unwrap_or_default();
         if result.output.tag("immune_denied") == Some("true") {
             Self::ImmuneDenied
         } else if result.success
             || detect_turn_cap(text).is_some()
+            || detect_output_limit(text)
             || result.output.tag("stop_reason") == Some("budget_exhausted")
         {
             Self::Success

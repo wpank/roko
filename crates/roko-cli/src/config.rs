@@ -1463,7 +1463,8 @@ fn parse_value_for_key(key: &str, value: &str) -> Result<toml::Value> {
         // Floats
         ["dreams", "quality_gain"]
         | ["dreams", "quality_penalty"]
-        | ["learning", "lookahead_threshold"] => {
+        | ["learning", "lookahead_threshold"]
+        | ["authoring", "max_generation_usd"] => {
             let f = value
                 .parse::<f64>()
                 .with_context(|| format!("parse {key} as float"))?;

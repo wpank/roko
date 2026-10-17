@@ -375,6 +375,7 @@ impl CliRuntime for StubAuthoringRuntime {
             plan_targets: vec![plan_target],
             artifacts: Vec::new(),
             cost_usd: 0.0,
+            source_checks: None,
         })
     }
 }

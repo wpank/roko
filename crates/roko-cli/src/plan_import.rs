@@ -51,7 +51,7 @@ use std::fs;
 use std::path::{Component, Path, PathBuf};
 use std::sync::LazyLock;
 
-use anyhow::{Context as _, Result, bail};
+use anyhow::{Context as _, Result, anyhow, bail};
 use regex::Regex;
 use roko_core::task::TaskTier;
 use roko_gate::spec_quality::{VerifyClass, analyze_step, vacuous_reason};
@@ -61,6 +61,7 @@ use toml::{Table, Value};
 use crate::plan_brief::{DECOMPOSITION_FILE, RUBRIC_FILE};
 use crate::plan_policy::{PlanExecutionPolicy, TierSizeLimits};
 use crate::task_parser::TasksFile;
+use crate::workspace_lock::WorkspaceLockGuard;
 
 /// mori hints roko acts on, kept as they are.
 const KEPT_HINTS: [&str; 8] = [
@@ -351,6 +352,34 @@ pub fn mori_plan_dirs(root: &Path) -> Result<Vec<PathBuf>> {
     Ok(dirs)
 }
 
+/// The workspace lock `roko plan import` takes. A fresh import takes none: as
+/// `roko plan generate` does (#226), it reads the workspace and writes only
+/// new plan directories, each moved into place whole, so it runs beside the
+/// roko serve that holds the workspace (bug-dfe4c5). Replacing plans
+/// (`force`) takes the exclusive lock, since a run may be using them.
+///
+/// # Errors
+///
+/// With `force`, when another process holds the workspace; the error names a
+/// roko serve that does.
+pub fn import_lock(workspace: &Path, force: bool) -> Result<Option<WorkspaceLockGuard>> {
+    if !force {
+        return Ok(None);
+    }
+    crate::workspace_lock::acquire_workspace_lock(&workspace.join(".roko"))
+        .map(Some)
+        .map_err(
+            |error| match crate::doctor::serve_holding_workspace(workspace) {
+                Some(serve) => anyhow!(
+                    "roko serve (PID {}) holds this workspace, and --force replaces plans a run \
+                     there may be using: import into a new --out or --set, or stop serve first",
+                    serve.pid
+                ),
+                None => error,
+            },
+        )
+}
+
 /// Import mori plans into `plans_root`, a directory inside `workspace`, and
 /// write them: each of `sources` is a mori plan directory or a directory of
 /// them (`.mori/plans/`). Nothing is written when an import fails, or when a
@@ -426,7 +455,9 @@ pub fn import_mori_plans(
 
 /// Write an import into `plan_dir`: `tasks.toml`, its companions, and the
 /// plan's `brief.md` (`roko plan prepare`). A `plan_dir` that holds a
-/// `tasks.toml` already is refused unless `force`.
+/// `tasks.toml` already is refused unless `force`. A new plan is written
+/// beside its place, in a hidden directory plan discovery skips, and moved in
+/// whole, so a reader such as roko serve sees all of it or none (bug-dfe4c5).
 ///
 /// # Errors
 ///
@@ -444,14 +475,49 @@ pub fn write_mori_import(
             plan_dir.display()
         );
     }
-    fs::create_dir_all(plan_dir).with_context(|| format!("create {}", plan_dir.display()))?;
-    let tasks = plan_dir.join("tasks.toml");
+    if plan_dir.exists() {
+        return write_plan_files(import, workspace, plan_dir);
+    }
+    let (Some(parent), Some(name)) = (
+        plan_dir.parent(),
+        plan_dir.file_name().and_then(|name| name.to_str()),
+    ) else {
+        bail!("{} names no plan directory", plan_dir.display());
+    };
+    fs::create_dir_all(parent).with_context(|| format!("create {}", parent.display()))?;
+    let staging = parent.join(format!(".{name}.import-{}", std::process::id()));
+    if staging.exists() {
+        fs::remove_dir_all(&staging).with_context(|| format!("remove {}", staging.display()))?;
+    }
+    let written = write_plan_files(import, workspace, &staging).and_then(|()| {
+        fs::rename(&staging, plan_dir).with_context(|| {
+            if plan_dir.exists() {
+                format!(
+                    "{} appeared while the import ran; pass --force to replace it",
+                    plan_dir.display()
+                )
+            } else {
+                format!("move {} to {}", staging.display(), plan_dir.display())
+            }
+        })
+    });
+    if written.is_err() {
+        let _ = fs::remove_dir_all(&staging);
+    }
+    written
+}
+
+/// Write an import's files into `dir`: `tasks.toml`, its companions and the
+/// plan's `brief.md`.
+fn write_plan_files(import: &MoriImport, workspace: &Path, dir: &Path) -> Result<()> {
+    fs::create_dir_all(dir).with_context(|| format!("create {}", dir.display()))?;
+    let tasks = dir.join("tasks.toml");
     fs::write(&tasks, &import.tasks_toml).with_context(|| format!("write {}", tasks.display()))?;
     for (name, contents) in &import.companions {
-        let path = plan_dir.join(name);
+        let path = dir.join(name);
         fs::write(&path, contents).with_context(|| format!("write {}", path.display()))?;
     }
-    crate::plan_brief::prepare(plan_dir, workspace, true)?;
+    crate::plan_brief::prepare(dir, workspace, true)?;
     Ok(())
 }
 
@@ -3321,6 +3387,70 @@ depends_on = ["01:T2", "07z:T1"]
             true,
         )
         .expect("forced import");
+    }
+
+    /// bug-dfe4c5: a fresh import takes no workspace lock, so it runs beside
+    /// the roko serve that holds the workspace, and moves each new plan into
+    /// place whole; replacing plans (`--force`) needs the lock, and the
+    /// refusal names serve.
+    #[test]
+    fn plan_import_runs_beside_the_serve_that_holds_the_workspace() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let workspace = temp.path().join("ws");
+        let plans = workspace.join("plans");
+        let serve_lock = crate::workspace_lock::acquire_workspace_lock(&workspace.join(".roko"))
+            .expect("serve's lock");
+        let endpoint = roko_serve::endpoint::ServeEndpoint {
+            pid: std::process::id(),
+            url: "http://127.0.0.1:6792".to_string(),
+            workdir: workspace.clone(),
+            started_at: "2026-10-17T10:00:00Z".to_string(),
+        };
+        roko_serve::endpoint::write_endpoint(&workspace, &endpoint).expect("serve.json");
+        let tasks = "[meta]\nplan = \"08g-voices\"\n\n[[task]]\nid = \"T1\"\n\
+                     title = \"Write the voices doc\"\nfiles = [\"docs/voices.md\"]\n\
+                     acceptance = [\"File exists: docs/voices.md\"]\ncategory = \"docs\"\n";
+        let mori_root = temp.path().join("mori");
+        mori_plan(&mori_root, "08g-voices", &[("tasks.toml", tasks)]);
+
+        let lock = import_lock(&workspace, false).expect("a fresh import takes no lock");
+        assert!(lock.is_none());
+        let import = |force| {
+            import_mori_plans(
+                std::slice::from_ref(&mori_root),
+                &workspace,
+                &plans,
+                MoriImportOptions::default(),
+                force,
+            )
+        };
+        import(false).expect("import beside serve");
+        assert!(plans.join("08g-voices/tasks.toml").is_file());
+        assert!(plans.join("08g-voices/brief.md").is_file());
+        let left: Vec<String> = fs::read_dir(&plans)
+            .expect("plans")
+            .filter_map(Result::ok)
+            .map(|entry| entry.file_name().to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(left, ["08g-voices"], "no staging directory is left");
+        let found = crate::orchestrator::plan_discovery::discover_plans(&plans).expect("plans");
+        assert_eq!(found.len(), 1);
+
+        let again = import(false).expect_err("the plan exists");
+        assert!(again.to_string().contains("--force"), "{again:#}");
+        let Err(refused) = import_lock(&workspace, true) else {
+            panic!("serve holds the workspace, so --force gets no lock");
+        };
+        assert!(
+            refused
+                .to_string()
+                .starts_with(&format!("roko serve (PID {})", std::process::id())),
+            "{refused:#}"
+        );
+        drop(serve_lock);
+        let lock = import_lock(&workspace, true).expect("the lock is free");
+        assert!(lock.is_some());
+        import(true).expect("replace under the lock");
     }
 
     /// gap-624658: a task whose files exist already gets a file check that

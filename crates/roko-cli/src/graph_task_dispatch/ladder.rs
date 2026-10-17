@@ -462,7 +462,7 @@ impl GraphTaskDispatcher {
             detail: settled
                 .failure_reason
                 .as_deref()
-                .map(first_line)
+                .map(|reason| failure_detail(verdict.outcome, reason))
                 .or_else(|| {
                     settled
                         .bound
@@ -857,6 +857,18 @@ fn wire_word(value: &impl serde::Serialize) -> String {
 
 /// Most bytes of a failure's first line an `attempt_settled` event carries.
 const DETAIL_BYTES: usize = 200;
+
+/// What `attempt_settled` says of a try that failed for `reason`: for a
+/// failed check, the failing step's key line (bug-2f30e1), the line
+/// `retry_feedback` leads its errors with; otherwise the reason's first line.
+fn failure_detail(outcome: AttemptOutcome, reason: &str) -> String {
+    if outcome == AttemptOutcome::GateFailed
+        && let Some(line) = super::verification::failing_step_key_line(reason)
+    {
+        return first_line(line);
+    }
+    first_line(reason)
+}
 
 /// The first line of `reason`, at most [`DETAIL_BYTES`], cut at a character
 /// boundary and marked `…` when cut.
@@ -1965,6 +1977,37 @@ printf '%s\n' '{"type":"result","session_id":"sess-j","model":"claude-sonnet-4-6
         }
     }
 
+    /// bug-2f30e1: a try that fails its check publishes `attempt_settled`
+    /// with the check's key line as its detail, not the summary line its
+    /// failure reason starts with.
+    #[tokio::test]
+    async fn attempt_settled_names_the_failing_checks_key_line() {
+        let temp = tempdir().expect("tempdir");
+        let hub = StateHub::new(4096);
+        let mut events = hub.subscribe_events();
+        let (dispatcher, mut task) = ladder_fixture(&temp).await;
+        let dispatcher = dispatcher.with_tui_bridge(TuiBridge::new(hub.sender()));
+        task.verify = vec![verify_step(
+            "test",
+            "echo 'checking answer.txt'; echo 'AssertionError: answer.txt holds 41, not 42'; exit 1",
+        )];
+        let ctx = CellContext::new().with_run_id(RUN.to_string());
+        dispatcher
+            .dispatch(&make_spec(&task), Vec::new(), &ctx)
+            .await
+            .expect_err("the check fails");
+
+        let settled = published(&mut events, &["attempt_settled"]);
+        let [event] = settled.as_slice() else {
+            panic!("one attempt_settled: {settled:?}");
+        };
+        assert_eq!(event["verdict"], "gate_failed", "{event}");
+        assert_eq!(
+            event["detail"], "AssertionError: answer.txt holds 41, not 42",
+            "{event}"
+        );
+    }
+
     /// The events of the types `kinds` that `events` received so far, as
     /// JSON, in order.
     fn published(
@@ -2189,12 +2232,9 @@ printf '%s\n' '{"type":"result","session_id":"sess-j","model":"claude-sonnet-4-6
                     .is_some_and(|check| check.contains("test")),
                 "{event}"
             );
-            assert!(
-                event["detail"]
-                    .as_str()
-                    .is_some_and(|detail| detail.starts_with("verify:")),
-                "{event}"
-            );
+            // `false` prints nothing, so the detail is how its step ended
+            // (bug-2f30e1).
+            assert_eq!(event["detail"], "exit code: 1", "{event}");
             assert_eq!(event["usage"]["out"], 10, "{event}");
             assert_eq!(event["cost_usd"], 0.01, "{event}");
             assert!(event["duration_ms"].as_u64().is_some(), "{event}");

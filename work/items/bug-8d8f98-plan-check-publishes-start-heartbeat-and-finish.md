@@ -9,7 +9,7 @@ goal = "core"
 size = "S"
 subsystem = ["roko-cli/tests"]
 created = 2026-10-16
-updated = 2026-10-16
+updated = 2026-10-17
 last_verified = 2026-10-16
 source = "tmp/hermes-roko-v5/findings/roko-caps.md (roko-caps, 2026-10-16)"
 discovered_from = "roko-caps verify run at load ~120"
@@ -30,6 +30,10 @@ for step 1 (`sleep 0.4`), but none for step 2 (`exit 3`). When the machine is lo
 Seen 2026-10-16 in roko-caps' `cargo test -p roko-cli --lib` run at load average ~120 (3707 passed, this one
 failed). Run alone right afterwards from the same test binary, it passed 3 times out of 3. It also passed in the
 same agent's earlier full run that day.
+
+Seen again 2026-10-17 (round v6) in roko-caps' `cargo test -p roko-cli --lib` runs. This time it also failed when
+run alone, while the machine stayed loaded (all three heavy.sh cargo slots busy). So rerunning it on a busy machine
+does not clear it. It passes once the load drops.
 
 ## Why it matters
 

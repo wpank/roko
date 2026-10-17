@@ -115,13 +115,16 @@ struct ProviderRefusal {
 /// The [`DashboardEvent::RouteDecided`](roko_core::DashboardEvent::RouteDecided)
 /// of an attempt failover moved to `target` after `refusals` (gap-2a3298):
 /// the models passed over are its ineligible candidates, the last refusal
-/// its reason.
+/// its reason. `rung` is the ladder rung the target runs on, and `step` the
+/// rungs the task climbed, when the ladder routed the attempt (gap-aaaaae).
 fn failover_route_event(
     plan_id: &str,
     task_id: &str,
     attempt: u32,
     target: &crate::dispatch_v2::ProviderDispatchSpec,
     refusals: &[ProviderRefusal],
+    rung: Option<String>,
+    step: u32,
 ) -> roko_core::DashboardEvent {
     let reason = refusals.last().map_or_else(String::new, |refusal| {
         let words: String = refusal.reason.chars().take(200).collect();
@@ -164,6 +167,12 @@ fn failover_route_event(
         reason,
         source: "failover".to_string(),
         candidates,
+        ladder: Box::new(roko_core::dashboard_snapshot::RouteLadder {
+            rung,
+            ladder_step: step,
+            ladder_reason: super::ladder::TryReason::Failover.as_str().to_string(),
+            forecast: None,
+        }),
     }
 }
 
@@ -203,12 +212,19 @@ pub(super) struct LadderRoute {
     pub(super) role: String,
     /// Index of the routed rung among the role's rungs, cheapest first.
     pub(super) rung: usize,
+    /// Rungs the task climbed above its start rung.
+    pub(super) step: u32,
 }
 
 impl LadderRoute {
-    /// Where `plan` put `task` on the ladder; `None` for an attempt the
-    /// ladder did not route (a pin, a task hint, the router or a default).
-    pub(super) fn of(task: &TaskDef, plan: &crate::dispatch::RunnerDispatchPlan) -> Option<Self> {
+    /// Where `plan` put `task` on the ladder, `step` rungs above its start
+    /// rung; `None` for an attempt the ladder did not route (a pin, a task
+    /// hint, the router or a default).
+    pub(super) fn of(
+        task: &TaskDef,
+        plan: &crate::dispatch::RunnerDispatchPlan,
+        step: u32,
+    ) -> Option<Self> {
         let rung = match plan.source {
             ModelChoiceSource::Ladder { rung } | ModelChoiceSource::SelfModel { rung } => rung,
             _ => return None,
@@ -216,6 +232,7 @@ impl LadderRoute {
         Some(Self {
             role: task.role.as_deref().unwrap_or("implementer").to_string(),
             rung,
+            step,
         })
     }
 }
@@ -373,13 +390,19 @@ impl GraphTaskDispatcher {
             {
                 let target = self.resolve_candidate(&candidate);
                 // Failover re-routed the attempt: say to what, and why
-                // (gap-2a3298).
+                // (gap-2a3298), and on which rung (gap-aaaaae).
+                let rung = self
+                    .failover_chain(&refusals, &candidate, ladder)
+                    .rung
+                    .map(|rung| rung.name);
                 tui.publish_event(failover_route_event(
                     &spec.plan_id,
                     task_id,
                     row.attempt,
                     &target,
                     &refusals,
+                    rung,
+                    ladder.map_or(0, |ladder| ladder.step),
                 ));
                 tui.agent_spawned(
                     row.agent_id,

@@ -702,11 +702,7 @@ impl LlmBackend for OpenAiCompatLlmBackend {
         let body_bytes = self.build_body(messages, tools, session, true)?;
         self.rate_limiter.acquire(&self.provider_id).await;
 
-        let mut req = crate::provider::shared_http_client()
-            .post(self.endpoint())
-            .timeout(Duration::from_millis(
-                config.request_timeout.as_millis() as u64
-            ));
+        let mut req = crate::provider::shared_http_client().post(self.endpoint());
         for (key, value) in &self.computed_headers {
             req = req.header(key.as_str(), value.as_str());
         }
@@ -714,10 +710,13 @@ impl LlmBackend for OpenAiCompatLlmBackend {
         // Capture request start for TTFT and total duration measurement.
         let request_start = std::time::Instant::now();
 
-        let response = req
-            .body(body_bytes)
-            .send()
+        // The request has no total timeout: `request_timeout` bounds the wait
+        // for the response and each silence in its stream, and the stream
+        // ends at `MAX_STREAM_DURATION` (bug-91796d).
+        let wait = config.request_timeout;
+        let response = tokio::time::timeout(wait, req.body(body_bytes).send())
             .await
+            .map_err(|_| crate::streaming::response_timeout(wait))?
             .map_err(|e| LlmError::Network(self.decorate_error(&e)))?;
 
         let status = response.status();
@@ -810,7 +809,15 @@ impl LlmBackend for OpenAiCompatLlmBackend {
                         }
                     }
                 } else {
-                    chunk_fut.await
+                    let next = crate::streaming::chunk_wait(wait, request_start);
+                    if let Ok(chunk) = tokio::time::timeout(next, chunk_fut).await {
+                        chunk
+                    } else {
+                        let error = crate::streaming::chunk_timeout(wait, request_start);
+                        tracing::warn!(endpoint = %endpoint, %error, "streamed call cut");
+                        let _ = tx.send(Err(error)).await;
+                        return;
+                    }
                 };
 
                 let chunk = match chunk {
@@ -2125,8 +2132,45 @@ mod tests {
         (format!("http://{addr}/v1/"), server)
     }
 
+    /// Serve one streaming response that writes a content delta `"x"` after
+    /// each of `gaps`, then a `stop` finish and `[DONE]`.
+    fn serve_paced_sse(gaps: Vec<StdDuration>) -> (String, thread::JoinHandle<()>) {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind test server");
+        let addr = listener.local_addr().expect("listener addr");
+        let server = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("accept request");
+            let _ = read_http_request(&mut stream);
+            write!(
+                stream,
+                "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nConnection: close\r\n\r\n"
+            )
+            .expect("write response headers");
+            stream.flush().expect("flush response headers");
+            // The client may have gone by the time a write comes.
+            for gap in gaps {
+                thread::sleep(gap);
+                let delta = b"data: {\"choices\":[{\"delta\":{\"content\":\"x\"}}]}\n\n";
+                if stream.write_all(delta).is_err() || stream.flush().is_err() {
+                    return;
+                }
+            }
+            let _ = stream.write_all(
+                b"data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n",
+            );
+        });
+        (format!("http://{addr}/v1/"), server)
+    }
+
     /// Every item one streamed turn against `base_url` yields.
     async fn streamed_turn(base_url: &str) -> Vec<Result<StreamEvent, LlmError>> {
+        streamed_turn_with(base_url, &TurnConfig::default()).await
+    }
+
+    /// Every item one streamed turn against `base_url`, under `config`, yields.
+    async fn streamed_turn_with(
+        base_url: &str,
+        config: &TurnConfig,
+    ) -> Vec<Result<StreamEvent, LlmError>> {
         use futures::StreamExt;
 
         let backend = OpenAiCompatLlmBackend::new("test-key", "test-model").with_base_url(base_url);
@@ -2135,12 +2179,25 @@ mod tests {
                 &[serde_json::json!({ "role": "user", "content": "hello" })],
                 &RenderedTools::JsonArray(serde_json::json!([])),
                 &SessionState::default(),
-                &TurnConfig::default(),
+                config,
             )
             .await
             .expect("the request is sent")
             .collect()
             .await
+    }
+
+    fn streamed_text(items: &[Result<StreamEvent, LlmError>]) -> String {
+        items
+            .iter()
+            .filter_map(|item| match item {
+                Ok(StreamEvent {
+                    kind: StreamEventKind::TextDelta(text),
+                    ..
+                }) => Some(text.as_str()),
+                _ => None,
+            })
+            .collect()
     }
 
     fn finish_reasons(items: &[Result<StreamEvent, LlmError>]) -> Vec<String> {
@@ -2217,6 +2274,64 @@ mod tests {
         let items = streamed_turn(&base_url).await;
         server.join().expect("server thread");
         assert_eq!(finish_reasons(&items), vec!["unknown".to_string()]);
+    }
+
+    /// bug-91796d: a streamed call has no total timeout. A reasoning model
+    /// that streams for minutes ran into the 120 s `request_timeout` and broke
+    /// with "read chunk failed"; the timeout now bounds each silence, so a
+    /// stream that keeps delivering runs past it.
+    #[tokio::test]
+    async fn a_stream_that_keeps_delivering_outlives_the_request_timeout() {
+        let config = TurnConfig {
+            request_timeout: StdDuration::from_millis(800),
+            ..TurnConfig::default()
+        };
+        let (base_url, server) = serve_paced_sse(vec![StdDuration::from_millis(200); 8]);
+        let started = Instant::now();
+        let items = streamed_turn_with(&base_url, &config).await;
+        let elapsed = started.elapsed();
+        server.join().expect("server thread");
+
+        assert!(items.iter().all(Result::is_ok), "{items:?}");
+        assert_eq!(streamed_text(&items), "x".repeat(8));
+        assert_eq!(finish_reasons(&items), vec!["stop".to_string()]);
+        assert!(
+            elapsed > config.request_timeout,
+            "the stream took {elapsed:?}"
+        );
+    }
+
+    /// bug-91796d: a stream that goes silent for `request_timeout` fails as
+    /// a timeout, with what it streamed before the stall delivered.
+    #[tokio::test]
+    async fn a_stalled_stream_fails_at_the_request_timeout() {
+        let config = TurnConfig {
+            request_timeout: StdDuration::from_millis(300),
+            ..TurnConfig::default()
+        };
+        let gaps = vec![
+            StdDuration::from_millis(10),
+            StdDuration::from_millis(10),
+            StdDuration::from_secs(3),
+        ];
+        let (base_url, server) = serve_paced_sse(gaps);
+        let started = Instant::now();
+        let items = streamed_turn_with(&base_url, &config).await;
+        let elapsed = started.elapsed();
+
+        assert_eq!(streamed_text(&items), "xx");
+        let error = items
+            .iter()
+            .find_map(|item| item.as_ref().err())
+            .expect("the stalled stream fails");
+        assert!(matches!(error, LlmError::Timeout(_)), "{error:?}");
+        assert!(error.to_string().contains("stalled"), "{error}");
+        assert!(finish_reasons(&items).is_empty(), "{items:?}");
+        assert!(
+            elapsed < StdDuration::from_secs(2),
+            "the stall was cut after {elapsed:?}"
+        );
+        server.join().expect("server thread");
     }
 
     #[tokio::test]

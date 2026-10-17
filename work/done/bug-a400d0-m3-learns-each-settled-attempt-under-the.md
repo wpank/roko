@@ -2,15 +2,16 @@
 id = "bug-a400d0"
 kind = "bug"
 title = "M3 learns each settled attempt under the provider slug it ran but forecasts its candidates under their [models.*] keys, so per-model learning never reaches a forecast when the two differ"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p2"
 goal = "cybernetic"
 size = "M"
 subsystem = ["roko-cli/runtime_feedback", "roko-cli/graph_task_dispatch", "roko-learn/self_model"]
 created = 2026-10-16
-updated = 2026-10-16
-last_verified = 2026-10-16
+updated = 2026-10-17
+last_verified = 2026-10-17
+last_verified_rev = "21a6d8219"
 source = "gap-b38ed2 worker, 2026-10-16: the calibration window missed every outcome of a key-not-slug run"
 discovered_from = "gap-b38ed2"
 anchors = ["crates/roko-cli/src/runtime_feedback/self_model.rs::unit_of", "crates/roko-cli/src/graph_task_dispatch/self_model.rs::arm_of", "crates/roko-learn/src/self_model/prior.rs::HierarchicalBeta", "crates/roko-learn/src/self_model/model.rs::SelfModel"]
@@ -19,6 +20,18 @@ links = { depends_on = [], blocks = [], related = ["gap-b38ed2", "spec-7a71d6", 
 
 [[verify]]
 command = "grep -rqw 'fn self_model_learns_the_arm_it_forecasts' crates/roko-cli/ && cargo test -p roko-cli self_model_learns_the_arm_it_forecasts"
+
+[closed]
+at = 2026-10-17
+at_ts = "2026-10-17T03:47:57Z"
+commit = "21a6d8219"
+by = "commit trailer"
+executor = "claude-agent"
+via = "work-batch"
+size = "M"
+claimed_at = "2026-10-17T02:10:45Z"
+forced = false
+evidence = "21a6d8219 takes the item's option 1: forecasts name each arm by the slug dispatch sends, the name M3 already learned under. graph_task_dispatch/self_model.rs::arm_of now gives a [models.*] entry (by key, else by slug, the order dispatch reads a name in) as its provider and slug, and resolves any other name as roko_core::agent::resolve_model does (a slug prefix, a built-in model), so dispatch's candidates (Candidates::of), a --model pin or model_hint, and M1's SelfModelPredictor (which passes [routing.ladder]'s keys, so this repo's mid rung glm-4-7 now reads glm-4.7's strata) all name the arm the verdict records as executed.provider and model_dispatched, which runtime_feedback/self_model.rs::unit_of teaches. SelfModelRuntime::settle finds the window's candidate by the unit's slug; gap-b38ed2's model_requested lookup and the sink's `requested` argument are gone, and post_pass already compares the executor's slug. No predictor version bump: the saved state was always learned under slugs, which forecasts now read; a window may hold a few outcomes of key-named forecasts (pins, shared slugs) until W newer ones replace them. The literal verify, `grep -rqw 'fn self_model_learns_the_arm_it_forecasts' crates/roko-cli/ && cargo test -p roko-cli self_model_learns_the_arm_it_forecasts`, passes at 21a6d8219 (76 test binaries, the named test ok): two ladder rungs dispatched by key (each slug shared with a second entry), whose forecast arms name the slugs, as arm_of does for a key; after N_MIN settled attempts of each through SelfModelOutcomeSink, the always-passing rung's P(VS) is more than 0.5 above the always-failing one's, and all 60 outcomes reached the calibration window. With arm_of's old body restored, the test fails on the arm names (cheap-model and strong-model, not the slugs). Also passing at 21a6d8219 across all roko-cli targets: the 17 tests matching self_model, plan_run_writes_calibration_json, default_plan_run_forecasts_in_shadow, default_plan_run_registers_m1_in_shadow and the 5 learn_self_model tests; the shadow, refine-spec and post-pass tests and calibration_window_survives_across_runs now name arms by the dispatched slug. `cargo clippy -p roko-learn -p roko-core -p roko-cli --no-deps -- -D warnings` is clean, and the branch is formatted with `cargo +nightly fmt --all`."
 +++
 
 ## Problem

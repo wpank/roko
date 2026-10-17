@@ -7,6 +7,9 @@
 //! `verified_at`. The census spends nothing, makes no transitions and writes
 //! nothing: [`render_json`] (`roko.loop_census/1`) and [`render_text`] print
 //! it. A retired loop keeps its last reason, for its history, and no state.
+//! [`run_audited`] judges with a workspace's `[learning.audit]`, as the
+//! audit tick does, which `roko learn loops` needs to agree with the ledger
+//! it summarizes (gap-ca63ee); [`run`] judges with S03 §4.10's defaults.
 //!
 //! The measured mode (backlog 5123) reads every run's decision rows through
 //! `telemetry::report` ([`measure`]) and folds the ones that carry S03's
@@ -69,13 +72,14 @@ use std::path::{Path, PathBuf};
 use chrono::{DateTime, Utc};
 use roko_core::audit_types::VerifyDepth;
 use roko_core::config::homeostasis::HomeostasisMode;
+use roko_core::config::learning::LearningAuditConfig;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use super::arm_set::{ArmSet, PLACEBO_LAYER};
 use super::assign::takes_default;
 use super::estimators::{
-    BenefitConfig, BenefitEstimator, BenefitRow, ChainOutcome, Estimate, PreAssignment,
+    BenefitConfig, BenefitEstimator, BenefitRow, ChainOutcome, Estimate, KAPPA_MAX, PreAssignment,
 };
 use super::exposure::{
     Action, ExposureEstimate, ExposureEstimator, InfluenceEstimate, InfluenceEstimator,
@@ -301,48 +305,65 @@ impl CensusReport {
     }
 }
 
-/// The census of `workdir`'s `.roko` logs against `registry`.
+/// The census of `workdir`'s `.roko` logs against `registry`, judged with
+/// S03 §4.10's default parameters, which `[learning.audit]`'s defaults
+/// equal.
 #[must_use]
 pub fn run(workdir: &Path, registry: &Registry, harness_sha: Option<&str>) -> CensusReport {
-    run_in(&LearningPaths::for_project(workdir), registry, harness_sha)
+    run_audited(
+        workdir,
+        registry,
+        harness_sha,
+        &LearningAuditConfig::default(),
+    )
+}
+
+/// The census of `workdir`'s `.roko` logs against `registry`, judged with
+/// `config`, the workspace's `[learning.audit]`, as the audit tick judges
+/// (gap-ca63ee).
+#[must_use]
+pub fn run_audited(
+    workdir: &Path,
+    registry: &Registry,
+    harness_sha: Option<&str>,
+    config: &LearningAuditConfig,
+) -> CensusReport {
+    let paths = LearningPaths::for_project(workdir);
+    run_in(&paths, registry, harness_sha, config)
 }
 
 /// The census of the logs at `paths`, and of the runs beside them in the
-/// `.roko` directory, against `registry`.
+/// `.roko` directory, against `registry`, judged with `config`.
 #[must_use]
 pub fn run_in(
     paths: &LearningPaths,
     registry: &Registry,
     harness_sha: Option<&str>,
+    config: &LearningAuditConfig,
 ) -> CensusReport {
     let runs = paths
         .root
         .parent()
         .map(|roko_dir| read_runs(&roko_dir.join(RUNS_DIR)))
         .unwrap_or_default();
-    run_with(paths, &runs, registry, harness_sha)
+    run_with(paths, &runs, registry, harness_sha, config)
 }
 
 /// The census of the logs at `paths` and of the run records `runs` against
-/// `registry`, its sequences at α/K over the registry's randomized loops,
-/// as the audit tick's are.
+/// `registry`, judged as the audit tick judges: with the parameters
+/// `config` sets ([`AuditParams::configured`]), its sequences at α/K over
+/// the registry's randomized loops and its benefit estimators at `config`'s
+/// κ_max.
 #[must_use]
 pub fn run_with(
     paths: &LearningPaths,
     runs: &[RunRecords],
     registry: &Registry,
     harness_sha: Option<&str>,
+    config: &LearningAuditConfig,
 ) -> CensusReport {
     let logs = Logs::read(paths, runs);
-    let randomized = registry
-        .loops()
-        .iter()
-        .filter(|spec| spec.lifecycle.is_randomized())
-        .count();
-    let params = AuditParams {
-        enforced_loops: randomized.max(1),
-        ..AuditParams::default()
-    };
+    let params = AuditParams::configured(config, registry);
     let measured: BTreeMap<String, MeasuredLoop> = measure_at(runs, &params)
         .into_iter()
         .map(|(loop_id, measurement)| (loop_id, measurement.measured))
@@ -585,23 +606,43 @@ pub fn measure(runs: &[RunRecords]) -> BTreeMap<String, MeasuredLoop> {
 }
 
 /// What [`measure`] gives, with the estimates behind it for the state
-/// machine (backlog 5126): their sequences at `params`' α/K, and judged
-/// against its N_ε and ε_min.
+/// machine (backlog 5126): their sequences at `params`' α/K, its benefit
+/// estimators at its κ_max, and judged against its N_ε, ε_min and N_β.
 #[must_use]
 pub fn measure_at(runs: &[RunRecords], params: &AuditParams) -> BTreeMap<String, LoopMeasurement> {
-    tallies(runs, params.loop_alpha())
+    tallies(runs, Level::of(params))
         .into_iter()
         .map(|(loop_id, tally)| (loop_id, tally.measurement(params)))
         .collect()
 }
 
+/// What a fold's sequences and estimators run at, which their states
+/// depend on: the level α/K of every confidence sequence, and κ_max, the
+/// clip on CUPED's coefficient in the benefit estimators (gap-ca63ee).
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct Level {
+    alpha: f64,
+    kappa_max: f64,
+}
+
+impl Level {
+    /// The level the parameters `params` fold at.
+    fn of(params: &AuditParams) -> Self {
+        Self {
+            alpha: params.loop_alpha(),
+            kappa_max: params.kappa_max,
+        }
+    }
+}
+
 /// What the audit tick keeps of the census between plan-run closes
 /// (gap-addf2a): each loop's tally and each layer's SRM check over the rows
-/// folded so far, the α its sequences run at, and how far it has read each
-/// run. A tick reads the run that closed from where the last tick left it,
-/// and the runs no tick has read; a run that had not ended at its last read
-/// is read again once its files change, or once the attempt that held it
-/// back stops counting as running. A run that ended is read again only at
+/// folded so far, the α its sequences run at and the κ_max its benefit
+/// estimators clip at, and how far it has read each run. A tick reads the
+/// run that closed from where the last tick left it, and the runs no tick
+/// has read; a run that had not ended at its last read is read again once
+/// its files change, or once the attempt that held it back stops counting
+/// as running. A run that ended is read again only at
 /// its next close. So a close costs what its new rows cost, not what the
 /// history under `.roko/runs/` does. The counts are those one read of every
 /// run gives; the confidence sequences take the rows in the order the ticks
@@ -610,9 +651,18 @@ pub fn measure_at(runs: &[RunRecords], params: &AuditParams) -> BTreeMap<String,
 pub struct CensusState {
     schema_version: String,
     alpha: f64,
+    /// κ_max of its benefit estimators (gap-ca63ee); a census kept before
+    /// this was recorded folded at the default.
+    #[serde(default = "default_kappa_max")]
+    kappa_max: f64,
     runs: BTreeMap<String, RunMark>,
     tallies: BTreeMap<String, Tally>,
     srm: BTreeMap<String, SrmFold>,
+}
+
+/// The κ_max a census kept without one folded at.
+const fn default_kappa_max() -> f64 {
+    KAPPA_MAX
 }
 
 /// How far a [`CensusState`] has read one run.
@@ -641,38 +691,55 @@ impl RunMark {
 }
 
 impl CensusState {
-    /// An empty census whose sequences run at level `alpha`.
+    /// An empty census that folds at `params`' level: its sequences at α/K,
+    /// its benefit estimators at κ_max.
     #[must_use]
-    pub fn new(alpha: f64) -> Self {
+    pub fn new(params: &AuditParams) -> Self {
+        Self::at(Level::of(params))
+    }
+
+    /// An empty census that folds at `level`.
+    fn at(level: Level) -> Self {
         Self {
             schema_version: CENSUS_STATE_SCHEMA.to_string(),
-            alpha,
+            alpha: level.alpha,
+            kappa_max: level.kappa_max,
             runs: BTreeMap::new(),
             tallies: BTreeMap::new(),
             srm: BTreeMap::new(),
         }
     }
 
-    /// The census kept at `path`; an empty one at `alpha` when the file is
-    /// missing, unreadable or damaged, or was folded under another schema
-    /// or α, which its sequences' states depend on. The next tick then reads
-    /// every run once.
+    /// The level it folds at.
+    const fn level(&self) -> Level {
+        Level {
+            alpha: self.alpha,
+            kappa_max: self.kappa_max,
+        }
+    }
+
+    /// The census kept at `path`; an empty one at `params`' level when the
+    /// file is missing, unreadable or damaged, or was folded under another
+    /// schema, α or κ_max, which its sequences' and estimators' states
+    /// depend on. The next tick then reads every run once.
     #[must_use]
-    pub fn load(path: &Path, alpha: f64) -> Self {
+    pub fn load(path: &Path, params: &AuditParams) -> Self {
+        let level = Level::of(params);
         let kept = std::fs::read(path)
             .ok()
             .and_then(|bytes| serde_json::from_slice::<Self>(&bytes).ok());
         match kept {
-            Some(state) if state.fits(alpha) => state,
-            _ => Self::new(alpha),
+            Some(state) if state.fits(level) => state,
+            _ => Self::at(level),
         }
     }
 
-    /// Whether a census read back can go on at `alpha`: its schema and α
-    /// are the current ones, and its sequences' states are whole.
-    fn fits(&self, alpha: f64) -> bool {
+    /// Whether a census read back can go on at `level`: its schema, α and
+    /// κ_max are the current ones, and its sequences' states are whole.
+    fn fits(&self, level: Level) -> bool {
         self.schema_version == CENSUS_STATE_SCHEMA
-            && self.alpha.to_bits() == alpha.to_bits()
+            && self.alpha.to_bits() == level.alpha.to_bits()
+            && self.kappa_max.to_bits() == level.kappa_max.to_bits()
             && self.tallies.values().all(Tally::is_consistent)
     }
 
@@ -738,10 +805,11 @@ impl CensusState {
             .map(|(_, seq)| seq.saturating_add(1))
             .max()
             .unwrap_or(0);
+        let level = self.level();
         let mark = self.runs.entry(run.run_id.clone()).or_default();
         let from = mark.next;
         mark.next = until.min(end).max(from);
-        fold_run(&mut self.tallies, run, from, until, self.alpha);
+        fold_run(&mut self.tallies, run, from, until, level);
         srm_fold(&mut self.srm, run, from, until);
     }
 
@@ -813,17 +881,16 @@ fn run_bytes(dir: &Path) -> u64 {
         .sum()
 }
 
-/// Each loop's tally over the decision rows of `runs`, its sequences at
-/// level `alpha`.
-fn tallies(runs: &[RunRecords], alpha: f64) -> BTreeMap<String, Tally> {
+/// Each loop's tally over the decision rows of `runs`, folded at `level`.
+fn tallies(runs: &[RunRecords], level: Level) -> BTreeMap<String, Tally> {
     let mut tallies: BTreeMap<String, Tally> = BTreeMap::new();
     for run in runs {
-        fold_run(&mut tallies, run, 0, u64::MAX, alpha);
+        fold_run(&mut tallies, run, 0, u64::MAX, level);
     }
     tallies
 }
 
-/// Fold into `tallies`, at level `alpha`, the decision rows of `run` with a
+/// Fold into `tallies`, at `level`, the decision rows of `run` with a
 /// `seq` in `from..until`. A row is scored against the run's verdicts,
 /// predictions and exposures wherever they are, so a fold that stops at an
 /// attempt still running leaves that attempt's rows for a later one
@@ -834,7 +901,7 @@ fn fold_run(
     run: &RunRecords,
     from: u64,
     until: u64,
-    alpha: f64,
+    level: Level,
 ) {
     let attempts = Attempts::of(run);
     let left_out = bandit_excluded(&run.exposures);
@@ -845,7 +912,7 @@ fn fold_run(
             .and_then(|key| attempts.verdicts.get(key))
             .map(|verdict| &verdict.executed);
         if let Some(opportunity) = audit_feedback_opportunity(row, ran) {
-            let feedback = tally_of(tallies, AUDIT_FEEDBACK_LOOP, alpha);
+            let feedback = tally_of(tallies, AUDIT_FEEDBACK_LOOP, level);
             if feedback.count(&row.audit) {
                 feedback.push(&opportunity);
                 let draw = row
@@ -856,7 +923,7 @@ fn fold_run(
             }
         }
         let loop_id = row.audit.loop_id.as_deref().unwrap_or(ROUTE_LOOP);
-        let loop_tally = tally_of(tallies, loop_id, alpha);
+        let loop_tally = tally_of(tallies, loop_id, level);
         if !loop_tally.count(&row.audit) {
             continue;
         }
@@ -878,7 +945,7 @@ fn fold_run(
         let Some(loop_id) = loop_id.or_else(|| content_loop(row.decision_point)) else {
             continue;
         };
-        let loop_tally = tally_of(tallies, loop_id, alpha);
+        let loop_tally = tally_of(tallies, loop_id, level);
         if !loop_tally.count(&row.audit) {
             continue;
         }
@@ -900,7 +967,7 @@ fn fold_run(
     }
     for line in window(&run.placebo_decisions, from, until) {
         let row = &line.record;
-        let placebo = tally_of(tallies, PLACEBO_LOOP_ID, alpha);
+        let placebo = tally_of(tallies, PLACEBO_LOOP_ID, level);
         placebo.rows += 1;
         placebo.push(&placebo_opportunity(row));
         let key = Some(row.identity.attempt_key.as_str());
@@ -916,7 +983,7 @@ fn fold_run(
         .collect();
     for line in window(&run.harness_decisions, from, until) {
         let row = &line.record;
-        let loop_tally = tally_of(tallies, HARNESS_LOOP, alpha);
+        let loop_tally = tally_of(tallies, HARNESS_LOOP, level);
         loop_tally.rows += 1;
         let stamp = stamps.get(row.identity.attempt_key.as_str()).copied();
         if let Some(opportunity) = harness_opportunity(row, stamp) {
@@ -1083,15 +1150,15 @@ fn window<T>(lines: &[Stamped<T>], from: u64, until: u64) -> impl Iterator<Item 
         .filter(move |line| (from..until).contains(&line.seq))
 }
 
-/// `loop_id`'s tally in `tallies`, started at level `alpha` when new.
+/// `loop_id`'s tally in `tallies`, started at `level` when new.
 fn tally_of<'a>(
     tallies: &'a mut BTreeMap<String, Tally>,
     loop_id: &str,
-    alpha: f64,
+    level: Level,
 ) -> &'a mut Tally {
     tallies
         .entry(loop_id.to_string())
-        .or_insert_with(|| Tally::new(alpha))
+        .or_insert_with(|| Tally::new(level))
 }
 
 /// The loop that reads a content decision point's outcome, for the points
@@ -1453,17 +1520,18 @@ struct Tally {
 }
 
 impl Tally {
-    fn new(alpha: f64) -> Self {
+    fn new(level: Level) -> Self {
         // The outcome is U^pass: the rows carry no audit draw, so their
         // bounds take an audit floor of 1 (S03 §4.5's β_pass row).
         let benefit = BenefitConfig {
-            alpha,
+            alpha: level.alpha,
             audit_floor: 1.0,
+            kappa_max: level.kappa_max,
             ..BenefitConfig::default()
         };
         Self {
-            exposure: ExposureEstimator::new(alpha),
-            influence: InfluenceEstimator::new(alpha),
+            exposure: ExposureEstimator::new(level.alpha),
+            influence: InfluenceEstimator::new(level.alpha),
             benefit: BenefitEstimator::new(benefit),
             n_learned: 0,
             n_default: 0,
@@ -2054,7 +2122,7 @@ mod tests {
         use ReasonCode as R;
 
         let registry = Registry::embedded().expect("the embedded registry");
-        let report = run_in(&fixture(), &registry, None);
+        let report = run_in(&fixture(), &registry, None, &LearningAuditConfig::default());
         assert_eq!(report.rows.len(), registry.loops().len());
         let retired = |by: &str| Lifecycle::Retired { by: by.to_string() };
         let expected = [
@@ -2155,7 +2223,12 @@ mod tests {
     #[test]
     fn census_qualifies_stale_declared_findings() {
         let registry = Registry::embedded().expect("the embedded registry");
-        let report = run_in(&fixture(), &registry, Some(OTHER_SHA));
+        let report = run_in(
+            &fixture(),
+            &registry,
+            Some(OTHER_SHA),
+            &LearningAuditConfig::default(),
+        );
         let thresholds = report.row("L-gate-thr").expect("L-gate-thr");
         assert!(thresholds.findings.iter().all(|finding| finding.stale));
         assert!(thresholds.qualifiers.contains(&Qualifier::DeclaredStale));
@@ -2858,7 +2931,6 @@ mod tests {
         let runs_dir = dir.path().join(RUNS_DIR);
         let kept = dir.path().join(CENSUS_STATE_FILE);
         let params = AuditParams::default();
-        let alpha = params.loop_alpha();
         let now = Utc
             .with_ymd_and_hms(2026, 10, 3, 10, 0, 0)
             .single()
@@ -2871,7 +2943,7 @@ mod tests {
 
         // gr-a closes with 20 chains, and the tick keeps its census.
         let next_a = append_chains(&runs_dir, "gr-a", 0..20, None, started, 1);
-        let mut census = CensusState::load(&kept, alpha);
+        let mut census = CensusState::load(&kept, &params);
         census.fold_pending(&runs_dir, "gr-a", now);
         census.save(&kept).expect("keep the census");
         assert_eq!(know_opps(&census), Some(20));
@@ -2880,7 +2952,7 @@ mod tests {
         // next close; gr-b is read up to its chain 4, still running, at seq
         // 13; gr-d's chain 1, open for two days, and gr-e's chain 0, in a run
         // whose manifest closed, hold nothing back.
-        let mut census = CensusState::load(&kept, alpha);
+        let mut census = CensusState::load(&kept, &params);
         assert_eq!(census.next_seq("gr-a"), Some(next_a));
         assert_eq!(know_opps(&census), Some(20));
         append_chains(&runs_dir, "gr-a", 20..25, None, started, next_a);
@@ -3220,7 +3292,6 @@ mod tests {
             .collect();
         std::fs::write(RunFile::Decisions.path_in(&run_dir), rows).expect("decisions");
         let params = AuditParams::default();
-        let alpha = params.loop_alpha();
         let placebo_opps = |census: &CensusState| {
             let measured = census.measurements(&params);
             measured
@@ -3230,7 +3301,7 @@ mod tests {
 
         // What an earlier tick kept: the run read to its end, and no
         // placebo tally.
-        let mut read = CensusState::new(alpha);
+        let mut read = CensusState::new(&params);
         read.fold_pending(&runs_dir, "gr-old", audit_time());
         let mut kept = serde_json::to_value(&read).expect("the census as JSON");
         let tallies = kept["tallies"].as_object_mut().expect("the tallies");
@@ -3240,12 +3311,60 @@ mod tests {
             let mut census = kept.clone();
             census["schema_version"] = Value::from(schema);
             std::fs::write(&path, census.to_string()).expect("keep the census");
-            let mut census = CensusState::load(&path, alpha);
+            let mut census = CensusState::load(&path, &params);
             census.fold_pending(&runs_dir, "gr-old", audit_time());
             placebo_opps(&census)
         };
         assert_eq!(at("roko.loop_census_state/2"), Some(10), "read afresh");
         assert_eq!(at(CENSUS_STATE_SCHEMA), None, "the run was read");
+    }
+
+    /// gap-ca63ee: a census folds its benefit estimators at the κ_max of
+    /// the parameters it is given, `[learning.audit] kappa_max` for the
+    /// tick, where it used to fold at the default whatever the section said.
+    /// A census kept at another κ_max is read afresh, since its estimators'
+    /// states depend on it, and one kept before κ_max was recorded folded at
+    /// the default.
+    #[test]
+    fn census_folds_benefit_at_the_configured_kappa_max() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let runs_dir = dir.path().join(RUNS_DIR);
+        let mut rng = SplitMix64::new(5);
+        let know = ContentDecisionPoint::Knowledge;
+        let chains: Vec<BetaChain> = (0..20)
+            .map(|_| planted_chain(&mut rng, know, (0.9, 0.3), true))
+            .collect();
+        append_beta_chains(&runs_dir, &chains, 0, 0);
+        let path = dir.path().join(CENSUS_STATE_FILE);
+        let defaults = AuditParams::default();
+        let tight = AuditParams {
+            kappa_max: 0.5,
+            ..AuditParams::default()
+        };
+        let keep = |params: &AuditParams| {
+            let mut census = CensusState::new(params);
+            census.fold_pending(&runs_dir, BETA_RUN, audit_time());
+            census.save(&path).expect("keep the census");
+            serde_json::to_value(&census).expect("the census as JSON")
+        };
+        let read = |params: &AuditParams| CensusState::load(&path, params).next_seq(BETA_RUN);
+
+        let kept = keep(&tight);
+        assert_eq!(kept["kappa_max"], 0.5);
+        let benefit = &kept["tallies"]["L-know"]["benefit"]["config"];
+        assert_eq!(benefit["kappa_max"], 0.5, "{benefit}");
+        assert!(read(&tight).is_some(), "kept at its κ_max");
+        assert_eq!(read(&defaults), None, "read afresh at another");
+
+        let mut kept = keep(&defaults);
+        let benefit = &kept["tallies"]["L-know"]["benefit"]["config"];
+        assert_eq!(benefit["kappa_max"], KAPPA_MAX, "{benefit}");
+        kept.as_object_mut()
+            .expect("the census object")
+            .remove("kappa_max");
+        std::fs::write(&path, kept.to_string()).expect("a census kept before κ_max");
+        assert!(read(&defaults).is_some(), "it folded at the default");
+        assert_eq!(read(&tight), None);
     }
 
     /// gap-6f31c3 (S03 §4.3, §4.6): the placebo is the auditor's own

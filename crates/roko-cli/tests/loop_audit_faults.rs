@@ -313,7 +313,7 @@ fn replay_epoch(workdir: &Path, fault: Option<(&str, FaultKind)>, epoch: usize) 
     let registry = Registry::embedded().expect("the embedded loop registry");
     let config = LearningAuditConfig::default();
     let template = LoopAuditor::from_records(registry.clone(), &config, &[]);
-    let mut census = CensusState::new(template.params().loop_alpha());
+    let mut census = CensusState::new(&template.params());
     let dispatcher = dispatcher();
     let target = fault.map(|(loop_id, _)| loop_id);
     let label = fault.map_or_else(

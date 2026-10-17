@@ -2,14 +2,16 @@
 id = "gap-624658"
 kind = "gap"
 title = "roko plan import --mori: a deterministic import of a mori plan dir (tasks, verify-tasks, reviews, scribe tasks, rubric) into a roko plan that validates"
-status = "open"
-triage = "unverified"
+status = "done"
+triage = "verified"
 severity = "p2"
 goal = "golden-path"
 size = "L"
 subsystem = ["roko-cli/plan_import"]
 created = 2026-10-16
-updated = 2026-10-16
+updated = 2026-10-17
+last_verified = 2026-10-17
+last_verified_rev = "836c02b53"
 source = "tmp/hermes-roko-v6/findings/plans-research.md (plans-research, 2026-10-16), proposed item 1"
 discovered_from = "hermes-roko-v6 round: mori-style plans in roko"
 anchors = ["crates/roko-cli/src/commands/plan.rs::PlanCmd", "crates/roko-cli/src/plan_validate.rs::validate_plans_dir_with_workdir"]
@@ -17,6 +19,15 @@ links = { depends_on = [], blocks = [], related = [], supersedes = [], duplicate
 
 [[verify]]
 command = "grep -rqw 'fn plan_import_mori_writes_a_plan_that_validates' crates/roko-cli/ && cargo test -p roko-cli --lib plan_import_mori_writes_a_plan_that_validates"
+
+[closed]
+at = 2026-10-17
+at_ts = "2026-10-17T00:19:13Z"
+commit = "836c02b53"
+by = "commit trailer"
+executor = "claude-agent"
+forced = false
+evidence = "Closed by 836c02b53. Verify passed (cargo test -p roko-cli --lib plan_import_mori_writes_a_plan_that_validates); roko-cli lib tests 3736 passed (gist test skipped), bin tests plan_commands 2 passed, clippy -p roko-cli -D warnings and nightly fmt clean. Corpus (plan_import_mori_corpus_validates over bardo .mori/plans): 156 plans import (1738 mori tasks to 2027 tasks); plan validate passes 156 of 156 plain and 156 of 156 --strict (prototype mori2roko.py: 132 and 19); 326 cross-plan dependencies, all resolved. Live: plan import of all 156 as a plan set in 4.6 s, then plan validate --strict: 0 diagnostics in 156 plans; the mori-format pocket-sequencer showcase imports and passes plan validate --strict --spec-quality --dynamic with T1-T4 red on base (92.63 A)."
 +++
 
 ## Problem

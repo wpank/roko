@@ -821,6 +821,7 @@ fn prompt_tasks_file(
             outbound: origin
                 .is_chat()
                 .then_some(roko_core::tool::OutboundPolicy::Stage),
+            dropped_checks: Vec::new(),
         },
         tasks: vec![TaskDef {
             id: "T1".to_string(),

@@ -307,6 +307,7 @@ pub fn classify_failure_text(lower: &str) -> &'static str {
         || lower.contains("502")
         || lower.contains("server error")
         || lower.contains("temporarily unavailable")
+        || is_broken_stream(lower)
     {
         "server_error"
     } else if lower.contains("empty_response") {
@@ -314,6 +315,18 @@ pub fn classify_failure_text(lower: &str) -> &'static str {
     } else {
         "unknown"
     }
+}
+
+/// Whether lowercase failure text says the connection broke while a
+/// response streamed: the transport's own words for a cut connection
+/// ("read chunk failed: error decoding response body", a reset or a broken
+/// pipe). The provider failed, transiently, as a 5xx does (bug-9b65dc); the
+/// circuit breaker filed it as unknown before.
+fn is_broken_stream(lower: &str) -> bool {
+    lower.contains("read chunk failed")
+        || lower.contains("error decoding response body")
+        || lower.contains("connection reset")
+        || lower.contains("broken pipe")
 }
 
 /// What [`ProviderError::AuthFailure`] renders as, so an auth failure that has
@@ -745,6 +758,22 @@ pub fn detect_turn_cap(text: &str) -> Option<TurnCapHit> {
         num_turns: number("turns="),
         cap: number("cap="),
     })
+}
+
+// ---- Output limit --------------------------------------------------------
+
+/// What roko's tool loop says when the model's reply ran past its output
+/// limit (`finish_reason=length`) with no tool work behind it, so dispatch
+/// can tell the model's own limit from a provider fault after the text has
+/// crossed the `AgentResult` boundary (bug-f6b99f). A blank reply cut there
+/// is an `empty_response` instead, and does not carry it.
+pub const OUTPUT_LIMIT_MARKER: &str = "model hit output token limit";
+
+/// Whether `text` reports a reply cut at the model's output limit
+/// ([`OUTPUT_LIMIT_MARKER`]).
+#[must_use]
+pub fn detect_output_limit(text: &str) -> bool {
+    text.contains(OUTPUT_LIMIT_MARKER)
 }
 
 // ---- Attempt timeout -----------------------------------------------------
@@ -1429,5 +1458,27 @@ mod turn_cap_tests {
         ));
         assert!(!detect_attempt_timeout("openclaw-acp timed out after 1.5s"));
         assert!(!detect_attempt_timeout("the call timed out after a while"));
+    }
+
+    /// bug-9b65dc: a stream broken mid-response is a transient server
+    /// failure, which provider health filed as unknown before; a stalled one
+    /// stays a timeout.
+    #[test]
+    fn a_broken_stream_is_a_transient_server_failure() {
+        for text in [
+            "network error: read chunk failed: error decoding response body",
+            "error decoding response body: connection reset by peer",
+            "stream error: broken pipe",
+        ] {
+            assert_eq!(
+                classify_failure_text(&text.to_ascii_lowercase()),
+                "server_error",
+                "{text}"
+            );
+        }
+        assert_eq!(
+            classify_failure_text("timeout: stream stalled: no data within 120000ms"),
+            "timeout"
+        );
     }
 }

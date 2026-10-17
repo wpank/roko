@@ -303,13 +303,15 @@ pub(super) fn verify_failure_reason(error: &RokoError) -> String {
 }
 
 /// How an unsuccessful provider result, or a provider call that errored,
-/// ended (S01 §4.3), read from its message.
+/// ended (S01 §4.3), read from its message. A reply cut at the model's
+/// output limit is the model's own limit, as a turn cap is, so it counts
+/// against the model on its rung (bug-f6b99f).
 pub(super) fn provider_failure_outcome(message: &str) -> AttemptOutcome {
     use roko_agent::provider::error_classify::{
-        detect_attempt_timeout, detect_provider_exhaustion, detect_turn_cap,
+        detect_attempt_timeout, detect_output_limit, detect_provider_exhaustion, detect_turn_cap,
     };
 
-    if detect_turn_cap(message).is_some() {
+    if detect_turn_cap(message).is_some() || detect_output_limit(message) {
         AttemptOutcome::TurnCap
     } else if detect_provider_exhaustion(message).is_some() {
         AttemptOutcome::ProviderExhausted
@@ -320,6 +322,16 @@ pub(super) fn provider_failure_outcome(message: &str) -> AttemptOutcome {
     }
 }
 
+/// The failure class of a try whose reply ran past its model's output
+/// limit (bug-f6b99f).
+pub(super) const OUTPUT_LIMIT: &str = "output_limit";
+
+/// Why the next try of a task is told to write less, after one whose reply
+/// ran past its model's output limit (bug-f6b99f).
+pub(super) const OUTPUT_LIMIT_STOP: &str = "its reply ran past the model's output limit \
+     (finish_reason=length); write less per turn, for example a large file in several smaller \
+     edits";
+
 /// [`attempt_failure_reason`] for an attempt the stall watchdog cancelled
 /// (bug-4c553b).
 pub(super) fn stall_failure_reason(message: &str) -> String {
@@ -329,6 +341,11 @@ pub(super) fn stall_failure_reason(message: &str) -> String {
 /// [`attempt_failure_reason`] for an unsuccessful provider result.
 pub(super) fn provider_failure_reason(message: &str) -> String {
     let class = match provider_failure_outcome(message) {
+        AttemptOutcome::TurnCap
+            if roko_agent::provider::error_classify::detect_output_limit(message) =>
+        {
+            OUTPUT_LIMIT
+        }
         AttemptOutcome::TurnCap => "turn_cap",
         AttemptOutcome::ProviderExhausted => "provider_exhausted",
         AttemptOutcome::Timeout => "timeout",

@@ -525,7 +525,14 @@ processes do not inherit roko's environment wholesale (`roko_core::child_env`):
   `GITHUB_TOKEN`, `GH_ENTERPRISE_TOKEN` and `GITHUB_ENTERPRISE_TOKEN`. Those tokens and the
   provider keys roko loaded from a `.env` file reach a check only when `[gates]
   env_passthrough` names them exactly (a `PREFIX*` pattern does not admit them); naming
-  `GH_CONFIG_DIR` there gives checks the person's `gh` login back. `[gates] strip_env` removes
+  `GH_CONFIG_DIR` there gives checks the person's `gh` login back. A check also builds in its
+  own checkout (bug-be2a53): an inherited `CARGO_TARGET_DIR`, `CARGO_BUILD_TARGET_DIR` or
+  `CARGO_BUILD_BUILD_DIR` that names a directory outside the check's is dropped, so cargo
+  builds in the checkout's own `target/`, and the delivery's regression check builds in
+  `.roko/state/regression-target/`. In a target dir that several checkouts of one repository
+  share, such as a plan's task worktrees, cargo takes one checkout's build of a crate as fresh
+  for another whose copy is older, and a check passes code that does not compile. Naming one of
+  these exactly in `env_passthrough` keeps it, sharing included. `[gates] strip_env` removes
   more names or `PREFIX*` patterns, and wins over the allowlist and `env_passthrough`. A
   check whose environment cannot be set up (no empty directory can be made in the temp
   directory) does not run, and fails saying why. The first check of a run logs, at info, how

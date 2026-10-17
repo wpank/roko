@@ -12,7 +12,7 @@
 //! This code lived in `prd.rs` until the PRD pipeline was removed on
 //! 2026-10-02 (tmp/workflow-audit).
 
-use super::{accept_blocks, dry_run_fs, overview};
+use super::{accept_blocks, dry_run_fs, overview, source_checks};
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -131,8 +131,10 @@ pub fn plan_source_document(plan_dir: &Path) -> Result<PathBuf> {
 const FAILURE_OUTPUT_CHARS: usize = 2000;
 /// Characters of the model's output that a non-retriable agent error quotes.
 const AGENT_ERROR_PREVIEW_CHARS: usize = 500;
-/// Characters of the model's last output that a retry prompt quotes.
-const RETRY_OUTPUT_CHARS: usize = 2000;
+/// Where, under the workspace's `.roko/`, a generation keeps the planner's
+/// replies that held no plan that validates, one directory per plan slug
+/// (bug-f0d60c).
+const REJECTED_DRAFTS_DIR: &str = "plan-drafts";
 /// Characters of a validation error that a progress report quotes.
 const PROGRESS_REASON_CHARS: usize = 200;
 
@@ -287,6 +289,9 @@ pub struct PlanRequest<'a> {
     /// Where generation reports what it is doing as it moves on
     /// (gap-11d870), for a caller that shows it while the plan is written.
     pub progress: Option<PlanProgressSink>,
+    /// What the planner calls may cost together, in USD (gap-18bfa2); 0
+    /// sets no cap. `None` is `[authoring] max_generation_usd`.
+    pub max_usd: Option<f64>,
 }
 
 impl<'a> PlanRequest<'a> {
@@ -307,6 +312,7 @@ impl<'a> PlanRequest<'a> {
             unattended: false,
             for_chat_host: false,
             progress: None,
+            max_usd: None,
         }
     }
 }
@@ -338,6 +344,9 @@ pub struct PlanProgress {
     pub calls: u32,
     /// What the planner calls that returned cost together, in USD.
     pub cost_usd: f64,
+    /// What they may cost together (gap-18bfa2); none when uncapped.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_usd: Option<f64>,
 }
 
 /// Where [`generate_plan`] reports its [`PlanProgress`].
@@ -679,6 +688,118 @@ fn hidden_output_regeneration_prompt(task_prompt: &str, plan: &str, hidden: &[St
     )
 }
 
+/// The prompt that asks the planner again when its `reply` held no plan that
+/// validates (bug-f0d60c): the original request with its source, the reply
+/// quoted up to `reply_chars` characters, and what was wrong with it. A retry
+/// that saw only the error, the reply's first 2,000 characters and a one-task
+/// template rebuilt a smaller plan from the template, and the source's
+/// acceptance checks were lost.
+fn extraction_retry_prompt(
+    task_prompt: &str,
+    kind: &str,
+    reply: &str,
+    error: &str,
+    reply_chars: usize,
+) -> String {
+    let quoted = crate::run::truncate(reply, reply_chars);
+    let cut = if quoted.len() < reply.len() {
+        format!("\n[reply truncated at {reply_chars} chars]")
+    } else {
+        String::new()
+    };
+    format!(
+        "{task_prompt}\n\n---\n\nYour reply below held no plan that validates:\n{error}\n\n\
+         ````text\n{quoted}{cut}\n````\n\n\
+         Fix only what the errors name. Keep every task and every verify step of your reply, \
+         and every requirement and acceptance criterion of the {kind} above: do not shorten \
+         the plan or start again from a smaller one. Output the complete plan as a single \
+         ```toml fenced block, followed only by the ```accept:accept/<file> blocks of the \
+         tests it pins. The meta field is `plan`, not `name`."
+    )
+}
+
+/// Keep the planner's `reply`, rejected for `error`, as `rejected-<n>.md` in
+/// `.roko/plan-drafts/<slug>/` of `workdir` (bug-f0d60c), so what a retry
+/// changed can be read afterwards. The first draft a generation keeps
+/// replaces the drafts an earlier generation of the slug kept. A draft that
+/// cannot be written is only logged.
+fn keep_rejected_draft(
+    workdir: &Path,
+    slug: &str,
+    n: u32,
+    reply: &str,
+    error: &str,
+) -> Option<PathBuf> {
+    let dir = workdir.join(".roko").join(REJECTED_DRAFTS_DIR).join(slug);
+    if n == 1
+        && let Ok(entries) = std::fs::read_dir(&dir)
+    {
+        for entry in entries.flatten() {
+            if entry.file_name().to_string_lossy().starts_with("rejected-") {
+                let _ = std::fs::remove_file(entry.path());
+            }
+        }
+    }
+    let path = dir.join(format!("rejected-{n}.md"));
+    let text = format!(
+        "# Rejected draft {n} of plan `{slug}`\n\n\
+         It held no plan that validates:\n\n{error}\n\n\
+         ## The planner's reply\n\n{reply}\n"
+    );
+    match std::fs::create_dir_all(&dir).and_then(|()| atomic_write_str(&path, &text)) {
+        Ok(()) => Some(path),
+        Err(error) => {
+            tracing::warn!(
+                path = %path.display(),
+                %error,
+                "plan generate: could not keep a rejected draft"
+            );
+            None
+        }
+    }
+}
+
+/// Repair a generated draft's mechanical defects before it is checked
+/// (gap-b95913), rather than send it back to the planner for them: its
+/// `meta.total` becomes its number of tasks, each task keeps its first
+/// `policy.max_read_files_per_task` `read_files`, and its line ranges in files
+/// no earlier task changes fit those files
+/// ([`crate::plan_policy::fit_ranges_to_files`]). Returns one line per repair.
+fn repair_generated_draft(
+    plan: &mut TasksFile,
+    policy: crate::plan_policy::PlanExecutionPolicy,
+    workdir: &Path,
+) -> Vec<String> {
+    let mut repairs = Vec::new();
+    let total = u32::try_from(plan.tasks.len()).unwrap_or(u32::MAX);
+    if plan.meta.total != total {
+        repairs.push(format!(
+            "meta.total {} became {total}, its number of tasks",
+            plan.meta.total
+        ));
+        plan.meta.total = total;
+    }
+    let keep = policy.max_read_files_per_task;
+    for task in &mut plan.tasks {
+        if let Some(context) = task.context.as_mut()
+            && context.read_files.len() > keep
+        {
+            let dropped: Vec<String> = context
+                .read_files
+                .drain(keep..)
+                .map(|read_file| read_file.path)
+                .collect();
+            repairs.push(format!(
+                "{}: kept its first {keep} read_files and dropped {}",
+                task.id,
+                dropped.join(", ")
+            ));
+        }
+    }
+    repairs.extend(crate::plan_policy::fit_ranges_to_files(plan, workdir));
+    repairs
+}
+
 /// A plan source, read for the planner.
 struct ReadSource<'a> {
     origin: PlanSource<'a>,
@@ -927,6 +1048,7 @@ pub async fn generate_plan(request: PlanRequest<'_>) -> Result<(PathBuf, Generat
         unattended,
         for_chat_host,
         progress,
+        max_usd,
     } = request;
     let requested_plans_root = requested_plans_root.or(match source {
         PlanSource::Regenerate(plan_dir) => plan_dir.parent(),
@@ -954,6 +1076,35 @@ pub async fn generate_plan(request: PlanRequest<'_>) -> Result<(PathBuf, Generat
         let spend = AuthoringSpend::generation(workdir_ref, slug, live);
 
         let resolved = crate::load_resolved_config(workdir_ref)?;
+        // gap-18bfa2: what the planner calls may cost together. Once they
+        // have, no further call is made.
+        let cap = max_usd
+            .unwrap_or_else(|| {
+                roko_core::config::loader::load_config_unified(workdir_ref).map_or(
+                    roko_core::config::schema::DEFAULT_MAX_GENERATION_USD,
+                    |config| config.authoring.max_generation_usd,
+                )
+            })
+            .max(0.0);
+        let capped = (cap > 0.0).then_some(cap);
+        let cap_reached = || {
+            capped.filter(|cap| spend.spent_usd() >= *cap).map(|cap| {
+                format!(
+                    "plan generation reached its spend cap: its {} planner call(s) cost \
+                     ${:.4} of ${cap:.2}",
+                    spend.calls(),
+                    spend.spent_usd()
+                )
+            })
+        };
+        // An improvement the cap leaves out is said, and skipped.
+        let skip_for_cap = |improvement: &str| match cap_reached() {
+            Some(reached) => {
+                eprintln!("  {reached}, so the planner is not asked to {improvement}");
+                true
+            }
+            None => false,
+        };
         // Generated `rung` hints must name a rung of this ladder.
         let ladder = crate::plan_validate::workspace_ladder(workdir_ref);
         // Callers that pass no model (the serve runtime) plan with the
@@ -999,6 +1150,7 @@ pub async fn generate_plan(request: PlanRequest<'_>) -> Result<(PathBuf, Generat
                 model: model.to_string(),
                 calls: spend.calls() + u32::from(calling),
                 cost_usd: spend.spent_usd(),
+                max_usd: capped,
             });
         };
         // bug-1602d4: the stage again once its planner call has ended, with
@@ -1026,8 +1178,10 @@ pub async fn generate_plan(request: PlanRequest<'_>) -> Result<(PathBuf, Generat
         let plans_root = requested_plans_root.map_or_else(
             || workspace_plans_dir(workdir_ref),
             |root| {
-                root.strip_prefix(&workdir)
-                    .map_or_else(|_| root.to_path_buf(), |relative| workdir_ref.join(relative))
+                root.strip_prefix(&workdir).map_or_else(
+                    |_| root.to_path_buf(),
+                    |relative| workdir_ref.join(relative),
+                )
             },
         );
         // A regenerated plan keeps its directory, whatever its slug.
@@ -1107,6 +1261,18 @@ pub async fn generate_plan(request: PlanRequest<'_>) -> Result<(PathBuf, Generat
             );
             extra.push_str("\n\n---\n\n");
             extra.push_str(&patterns);
+        }
+        // gap-dc5d7c: the checks the source states, each to be kept as a
+        // verify step or dropped with a reason.
+        let checks = source_checks::source_checks(&source.content);
+        if !checks.is_empty() {
+            tracing::info!(
+                slug,
+                checks = checks.len(),
+                "plan generate: source checks in the planner prompt"
+            );
+            extra.push_str("\n\n---\n\n");
+            extra.push_str(&source_checks::planner_block(&checks, &source.kind));
         }
         if unattended {
             extra.push_str("\n\n---\n\n");
@@ -1229,6 +1395,15 @@ pub async fn generate_plan(request: PlanRequest<'_>) -> Result<(PathBuf, Generat
 
             for attempt in 1..=max_crash_retries {
                 let retry_class = classify_agent_crash(&last_output);
+                if let Some(reached) = cap_reached() {
+                    return Err(anyhow!(
+                        "{reached}, so it stopped before retrying a planner call that failed: \
+                         {}{}\nHint: raise `[authoring] max_generation_usd`, or pass \
+                         `--max-usd` to `roko plan generate`",
+                        retry_class.recovery_hint(),
+                        agent_said(&last_output)
+                    ));
+                }
                 report(
                     "retrying",
                     (attempt + 1, max_crash_retries + 1),
@@ -1303,161 +1478,169 @@ pub async fn generate_plan(request: PlanRequest<'_>) -> Result<(PathBuf, Generat
         // Write files from agent output (strategist can't write files directly).
         // Try fenced ```toml block first, then ```tasks.toml, then unfenced TOML.
         //
-        // If extraction or validation fails, retry up to 2 times with a
-        // stricter prompt requesting only the TOML block.
-        let extract_and_validate =
-            |raw: &str| -> std::result::Result<String, String> {
-                let toml_content = extract_fenced_block(raw, "toml")
-                    .or_else(|| extract_fenced_block(raw, "tasks.toml"))
-                    .or_else(|| extract_toml_content_fallback(raw));
-                tracing::info!(
-                    has_toml_block = toml_content.is_some(),
-                    toml_block_len = toml_content.map(|s| s.len()).unwrap_or(0),
-                    "plan generate: fenced block extraction"
-                );
-                let toml_content = toml_content
-                    .ok_or_else(|| "no TOML block found in agent output".to_string())?;
+        // If extraction or validation fails, retry up to 2 times with the
+        // request, the reply and its errors (bug-f0d60c).
+        let extract_and_validate = |raw: &str| -> std::result::Result<String, String> {
+            let toml_content = extract_fenced_block(raw, "toml")
+                .or_else(|| extract_fenced_block(raw, "tasks.toml"))
+                .or_else(|| extract_toml_content_fallback(raw));
+            tracing::info!(
+                has_toml_block = toml_content.is_some(),
+                toml_block_len = toml_content.map(|s| s.len()).unwrap_or(0),
+                "plan generate: fenced block extraction"
+            );
+            let toml_content =
+                toml_content.ok_or_else(|| "no TOML block found in agent output".to_string())?;
 
-                // Fast structural pre-check: verify required sections are present
-                // before attempting a full TOML parse.
-                if !toml_content.contains("[meta]") {
-                    return Err(
-                        "TOML block is missing the required [meta] section".to_string(),
-                    );
+            // Fast structural pre-check: verify required sections are present
+            // before attempting a full TOML parse.
+            if !toml_content.contains("[meta]") {
+                return Err("TOML block is missing the required [meta] section".to_string());
+            }
+            if !toml_content.contains("[[task]]") {
+                return Err("TOML block is missing required [[task]] entries".to_string());
+            }
+
+            let validated = validate_and_fix_generated_plan(
+                toml_content,
+                slug,
+                &resolved.config.models,
+                resolved.config.agent.model.as_deref(),
+                &ladder,
+            )
+            .map_err(|e| format!("{e:#}"))?;
+            let mut parsed = TasksFile::parse_str(&validated).map_err(|error| {
+                format!("generated plan failed runtime parsing after repair: {error:#}")
+            })?;
+            let policy = crate::plan_policy::PlanExecutionPolicy::generated_for_environment(
+                template_kind.max_task_count(),
+            );
+            // gap-b95913: what the planner need not be asked to fix; and
+            // gap-dc5d7c: a step that covers a source check by its id names
+            // a criterion of its task that states the check.
+            let mut repairs = repair_generated_draft(&mut parsed, policy, workdir_ref);
+            repairs.extend(source_checks::normalize_covers(&mut parsed, &checks));
+            let validated = if repairs.is_empty() {
+                validated
+            } else {
+                for repair in &repairs {
+                    eprintln!("  Repaired the draft: {repair}");
                 }
-                if !toml_content.contains("[[task]]") {
-                    return Err(
-                        "TOML block is missing required [[task]] entries".to_string(),
-                    );
-                }
-
-                let validated = validate_and_fix_generated_plan(
-                    toml_content,
-                    slug,
-                    &resolved.config.models,
-                    resolved.config.agent.model.as_deref(),
-                    &ladder,
-                )
-                .map_err(|e| format!("{e:#}"))?;
-                let parsed = TasksFile::parse_str(&validated).map_err(|error| {
-                    format!("generated plan failed runtime parsing after repair: {error:#}")
-                })?;
-                let policy = crate::plan_policy::PlanExecutionPolicy::generated_for_environment(
-                    template_kind.max_task_count(),
-                );
-                let policy_issues = crate::plan_policy::validate_plan_budgets(&parsed, policy);
-                if !policy_issues.is_empty() {
-                    return Err(format!(
-                        "generated plan violates the `{}` structural budget:\n{}",
-                        template_kind.label(),
-                        policy_issues
-                            .iter()
-                            .map(|issue| format!("  - {issue}"))
-                            .collect::<Vec<_>>()
-                            .join("\n")
-                    ));
-                }
-                // 3225 (decision 3203): a task over its tier's size limits is
-                // a spec defect the planner fixes before a cheap model meets
-                // it. Its tier is never raised here, since that would move
-                // the work to a pricier rung without the planner choosing to.
-                let size_issues = crate::plan_policy::validate_tier_sizes(&parsed, policy);
-                if !size_issues.is_empty() {
-                    return Err(format!(
-                        "generated plan has tasks over their tier's size limits; split each \
-                         on independent outputs with disjoint files, or raise its tier:\n{}",
-                        size_issues
-                            .iter()
-                            .map(|issue| format!("  - {issue}"))
-                            .collect::<Vec<_>>()
-                            .join("\n")
-                    ));
-                }
-
-                // Run the same context check that plan_loader.rs enforces at
-                // load time so the written tasks.toml is guaranteed to pass.
-                // PLAN_ARTIFACT_MISSING is suppressed because tasks.toml has
-                // not been written yet.
-                let mut ctx_violations = crate::plan_policy::validate_plan_context(
-                    &parsed,
-                    workdir_ref,
-                    &plan_dir,
-                    crate::plan_policy::PlanExecutionPolicy::for_environment(),
-                );
-                ctx_violations.retain(|v| v.code != "PLAN_ARTIFACT_MISSING");
-
-                if ctx_violations.is_empty() {
-                    return Ok(validated);
-                }
-
-                // Collect paths flagged as PLAN_CONTEXT_MISSING and drop them
-                // so the written tasks.toml always passes the loader's check.
-                let missing_paths: HashSet<String> = ctx_violations
-                    .iter()
-                    .filter(|v| v.code == "PLAN_CONTEXT_MISSING")
-                    .filter_map(|v| {
-                        v.message
-                            .strip_prefix("declared context file `")
-                            .and_then(|s| s.find('`').map(|end| s[..end].to_string()))
-                    })
-                    .collect();
-
-                // bug-1c75cc: a range that starts inside its file but ends past
-                // its end (a planner counting the empty line after the final
-                // newline) is clamped to the file instead of costing the plan.
-                let mut fixed = parsed.clone();
-                let clamped = clamp_context_ranges_past_eof(&mut fixed, workdir_ref);
-
-                if missing_paths.is_empty() && clamped == 0 {
-                    // Nothing here can be repaired.
-                    return Err(format!(
-                        "generated plan violates execution context policy:\n{}",
-                        ctx_violations
-                            .iter()
-                            .map(|v| format!("  - {v}"))
-                            .collect::<Vec<_>>()
-                            .join("\n")
-                    ));
-                }
-
-                // Drop the unreachable entries and re-serialize.
-                for task in &mut fixed.tasks {
-                    if let Some(ctx) = task.context.as_mut() {
-                        ctx.read_files.retain(|f| !missing_paths.contains(&f.path));
-                    }
-                }
-                let re_serialized = toml::to_string_pretty(&fixed).map_err(|e| {
-                    format!("re-serialize after dropping missing read_files: {e}")
-                })?;
-                let re_parsed = TasksFile::parse_str(&re_serialized).map_err(|e| {
-                    format!("re-parse after dropping missing read_files: {e}")
-                })?;
-
-                // Second context check — must be clean now.
-                let mut remaining = crate::plan_policy::validate_plan_context(
-                    &re_parsed,
-                    workdir_ref,
-                    &plan_dir,
-                    crate::plan_policy::PlanExecutionPolicy::for_environment(),
-                );
-                remaining.retain(|v| v.code != "PLAN_ARTIFACT_MISSING");
-
-                if remaining.is_empty() {
-                    Ok(re_serialized)
-                } else {
-                    Err(format!(
-                        "generated plan still violates execution context policy \
-                         after dropping {} missing read_files and clamping {clamped} line \
-                         ranges:\n{}",
-                        missing_paths.len(),
-                        remaining
-                            .iter()
-                            .map(|v| format!("  - {v}"))
-                            .collect::<Vec<_>>()
-                            .join("\n")
-                    ))
-                }
+                tracing::info!(?repairs, "plan generate: repaired the draft");
+                toml::to_string_pretty(&parsed)
+                    .map_err(|error| format!("re-serialize the repaired draft: {error}"))?
             };
+            let policy_issues = crate::plan_policy::validate_plan_budgets(&parsed, policy);
+            if !policy_issues.is_empty() {
+                return Err(format!(
+                    "generated plan violates the `{}` structural budget:\n{}",
+                    template_kind.label(),
+                    policy_issues
+                        .iter()
+                        .map(|issue| format!("  - {issue}"))
+                        .collect::<Vec<_>>()
+                        .join("\n")
+                ));
+            }
+            // 3225 (decision 3203): a task over its tier's size limits is
+            // a spec defect the planner fixes before a cheap model meets
+            // it. Its tier is never raised here, since that would move
+            // the work to a pricier rung without the planner choosing to.
+            let size_issues = crate::plan_policy::validate_tier_sizes(&parsed, policy);
+            if !size_issues.is_empty() {
+                return Err(format!(
+                    "generated plan has tasks over their tier's size limits; split each \
+                     on independent outputs with disjoint files, or raise its tier:\n{}",
+                    size_issues
+                        .iter()
+                        .map(|issue| format!("  - {issue}"))
+                        .collect::<Vec<_>>()
+                        .join("\n")
+                ));
+            }
+
+            // Run the same context check that plan_loader.rs enforces at
+            // load time so the written tasks.toml is guaranteed to pass.
+            // PLAN_ARTIFACT_MISSING is suppressed because tasks.toml has
+            // not been written yet.
+            let mut ctx_violations = crate::plan_policy::validate_plan_context(
+                &parsed,
+                workdir_ref,
+                &plan_dir,
+                crate::plan_policy::PlanExecutionPolicy::for_environment(),
+            );
+            ctx_violations.retain(|v| v.code != "PLAN_ARTIFACT_MISSING");
+
+            if ctx_violations.is_empty() {
+                return Ok(validated);
+            }
+
+            // Collect paths flagged as PLAN_CONTEXT_MISSING and drop them
+            // so the written tasks.toml always passes the loader's check.
+            let missing_paths: HashSet<String> = ctx_violations
+                .iter()
+                .filter(|v| v.code == "PLAN_CONTEXT_MISSING")
+                .filter_map(|v| {
+                    v.message
+                        .strip_prefix("declared context file `")
+                        .and_then(|s| s.find('`').map(|end| s[..end].to_string()))
+                })
+                .collect();
+
+            // bug-1c75cc: a range that starts inside its file but ends past
+            // its end (a planner counting the empty line after the final
+            // newline) is clamped to the file instead of costing the plan.
+            let mut fixed = parsed.clone();
+            let clamped = clamp_context_ranges_past_eof(&mut fixed, workdir_ref);
+
+            if missing_paths.is_empty() && clamped == 0 {
+                // Nothing here can be repaired.
+                return Err(format!(
+                    "generated plan violates execution context policy:\n{}",
+                    ctx_violations
+                        .iter()
+                        .map(|v| format!("  - {v}"))
+                        .collect::<Vec<_>>()
+                        .join("\n")
+                ));
+            }
+
+            // Drop the unreachable entries and re-serialize.
+            for task in &mut fixed.tasks {
+                if let Some(ctx) = task.context.as_mut() {
+                    ctx.read_files.retain(|f| !missing_paths.contains(&f.path));
+                }
+            }
+            let re_serialized = toml::to_string_pretty(&fixed)
+                .map_err(|e| format!("re-serialize after dropping missing read_files: {e}"))?;
+            let re_parsed = TasksFile::parse_str(&re_serialized)
+                .map_err(|e| format!("re-parse after dropping missing read_files: {e}"))?;
+
+            // Second context check — must be clean now.
+            let mut remaining = crate::plan_policy::validate_plan_context(
+                &re_parsed,
+                workdir_ref,
+                &plan_dir,
+                crate::plan_policy::PlanExecutionPolicy::for_environment(),
+            );
+            remaining.retain(|v| v.code != "PLAN_ARTIFACT_MISSING");
+
+            if remaining.is_empty() {
+                Ok(re_serialized)
+            } else {
+                Err(format!(
+                    "generated plan still violates execution context policy \
+                     after dropping {} missing read_files and clamping {clamped} line \
+                     ranges:\n{}",
+                    missing_paths.len(),
+                    remaining
+                        .iter()
+                        .map(|v| format!("  - {v}"))
+                        .collect::<Vec<_>>()
+                        .join("\n")
+                ))
+            }
+        };
 
         // 3218: a spec hard fail (a verify step that can never fail, a missing
         // context file, ...) is a validation failure, so the retries below
@@ -1514,9 +1697,36 @@ pub async fn generate_plan(request: PlanRequest<'_>) -> Result<(PathBuf, Generat
             }
         };
 
+        // gap-dc5d7c: what became of the source's checks in a candidate
+        // plan, and how many it does not keep (all of them when it does not
+        // parse).
+        let coverage_of = |candidate: &str| {
+            TasksFile::parse_str(candidate)
+                .ok()
+                .map(|plan| source_checks::SourceCoverage::of(&checks, &plan))
+        };
+        let missing_of = |candidate: &str| {
+            coverage_of(candidate).map_or(checks.len(), |coverage| coverage.unkept())
+        };
+
         // First attempt uses the output we already have.
         let mut validated_toml = try_extract_and_validate(&output);
+        // bug-f0d60c: each reply that held no plan that validates is kept.
+        let mut rejected_drafts = 0u32;
+        let mut keep_draft = |reply: &str, error: &str| {
+            rejected_drafts += 1;
+            if let Some(path) =
+                keep_rejected_draft(workdir_ref, slug, rejected_drafts, reply, error)
+            {
+                eprintln!("  Kept the rejected draft in {}", path.display());
+            }
+        };
+        if let Err(error) = &validated_toml {
+            keep_draft(&output, error);
+        }
 
+        // gap-18bfa2: why the retries stopped early, if the cap stopped them.
+        let mut stopped_at_cap: Option<String> = None;
         // Retry up to 2 times on extraction/validation failure, escalating
         // to a higher-tier model when TOML validation keeps failing.
         if validated_toml.is_err() {
@@ -1526,13 +1736,16 @@ pub async fn generate_plan(request: PlanRequest<'_>) -> Result<(PathBuf, Generat
 
             for attempt in 1..=max_retries {
                 let t_retry = Instant::now();
+                if let Some(reached) = cap_reached() {
+                    eprintln!("  {reached}; not asking the planner again");
+                    stopped_at_cap = Some(reached);
+                    break;
+                }
 
                 // Escalate model on format/validation failures (not auth/network),
                 // only ever upward from the planner model, and only to a model
                 // this workspace configures.
-                let current_model = escalated_model
-                    .as_deref()
-                    .or(effective_model);
+                let current_model = escalated_model.as_deref().or(effective_model);
                 if resolved.config.agent.escalation.escalate_model {
                     if let Some(next) = next_tier_model(
                         current_model,
@@ -1563,7 +1776,8 @@ pub async fn generate_plan(request: PlanRequest<'_>) -> Result<(PathBuf, Generat
                     "plan generate: TOML extraction/validation failed, retrying"
                 );
                 eprintln!(
-                    "⚠️  Plan TOML extraction failed (attempt {}/{}), retrying with stricter prompt…",
+                    "⚠️  The planner's reply held no plan that validates (attempt {}/{}); asking \
+                     again with its errors…",
                     attempt,
                     max_retries + 1,
                 );
@@ -1577,41 +1791,12 @@ pub async fn generate_plan(request: PlanRequest<'_>) -> Result<(PathBuf, Generat
                     )),
                     retry_model.unwrap_or(planner_model.as_str()),
                 );
-                let head = crate::run::truncate(&last_output, RETRY_OUTPUT_CHARS);
-                let truncated_output = if head.len() < last_output.len() {
-                    format!("{head}…(truncated)")
-                } else {
-                    last_output.clone()
-                };
-                let retry_prompt = format!(
-                    "Previous attempt produced invalid TOML. Error: {error}\n\n\
-                     Invalid output (truncated):\n```\n{truncated_output}\n```\n\n\
-                     Please regenerate a valid tasks.toml. Your response must be a single \
-                     ```toml fenced block, followed only by an ```accept:accept/<file> block for \
-                     each test its [task.accept] entries name.\n\n\
-                     MINIMUM REQUIRED STRUCTURE:\n\
-                     ```toml\n\
-                     [meta]\n\
-                     plan = \"{slug}\"\n\
-                     total = 1\n\
-                     done = 0\n\
-                     status = \"ready\"\n\
-                     # max_parallel is omitted: tasks that do not depend on each other run together\n\n\
-                     [[task]]\n\
-                     id = \"T1\"\n\
-                     title = \"Task title\"\n\
-                     description = \"What this task does.\"\n\
-                     status = \"ready\"\n\
-                     tier = \"focused\"\n\
-                     max_loc = 50\n\
-                     files = [\"crates/roko-core/src/lib.rs\"]\n\
-                     allowed_tools = [\"read_file\", \"grep\"]\n\
-                     denied_tools = []\n\
-                     depends_on = []\n\
-                     role = \"implementer\"\n\
-                     ```\n\n\
-                     Do NOT include Rust code, markdown prose, or explanations outside the TOML block.\n\
-                     Note: the meta field is `plan`, not `name`."
+                let retry_prompt = extraction_retry_prompt(
+                    &task_prompt,
+                    &source.kind,
+                    &last_output,
+                    error,
+                    budget.source_chars,
                 );
                 let retry_result = run_agent_capture_silent_with_usage(AgentExecOpts {
                     prompt: &retry_prompt,
@@ -1626,18 +1811,21 @@ pub async fn generate_plan(request: PlanRequest<'_>) -> Result<(PathBuf, Generat
 
                 match retry_result.map(|retry| (retry.exit_code, retry.output)) {
                     Ok((0, retry_output)) if !retry_output.trim().is_empty() => {
-                        last_output = retry_output.clone();
                         validated_toml = try_extract_and_validate(&retry_output);
-                        if validated_toml.is_ok() {
-                            tracing::info!(
-                                attempt,
-                                model = retry_model.unwrap_or("<default>"),
-                                retry_ms = t_retry.elapsed().as_millis() as u64,
-                                "plan generate: retry succeeded"
-                            );
-                            eprintln!("✅ Retry {attempt} succeeded");
-                            break;
+                        match &validated_toml {
+                            Ok(_) => {
+                                tracing::info!(
+                                    attempt,
+                                    model = retry_model.unwrap_or("<default>"),
+                                    retry_ms = t_retry.elapsed().as_millis() as u64,
+                                    "plan generate: retry succeeded"
+                                );
+                                eprintln!("✅ Retry {attempt} succeeded");
+                                break;
+                            }
+                            Err(error) => keep_draft(&retry_output, error),
                         }
+                        last_output = retry_output;
                     }
                     // Non-zero exit (auth/network errors) — do NOT escalate model,
                     // just log and retry with the same model.
@@ -1670,7 +1858,7 @@ pub async fn generate_plan(request: PlanRequest<'_>) -> Result<(PathBuf, Generat
         // such checks, and the plan that hides fewer is kept.
         if let Ok(candidate) = &validated_toml {
             let hidden = hidden_output_lines(candidate);
-            if !hidden.is_empty() {
+            if !hidden.is_empty() && !skip_for_cap("rewrite the checks that hide their output") {
                 eprintln!(
                     "  {} check(s) hide their test runner's output; asking the planner once more",
                     hidden.len()
@@ -1698,9 +1886,48 @@ pub async fn generate_plan(request: PlanRequest<'_>) -> Result<(PathBuf, Generat
                     && retry.exit_code == 0
                     && let Ok(better) = try_extract_and_validate(&retry.output)
                     && hidden_output_lines(&better).len() < hidden.len()
+                    && missing_of(&better) <= missing_of(candidate)
                 {
                     validated_toml = Ok(better);
                 }
+            }
+        }
+
+        // gap-dc5d7c: a plan that does not keep some of the source's
+        // checks (no step checks them, or only a grep or a build does, and no
+        // reason says why no command can) is sent back once, naming them,
+        // and the plan that keeps more is kept.
+        let mut checks_regenerated = false;
+        if let Ok(candidate) = &validated_toml
+            && let Some(coverage) = coverage_of(candidate)
+            && coverage.unkept() > 0
+            && !skip_for_cap("keep the source checks it left out")
+        {
+            let missing = coverage.unkept();
+            let why = format!(
+                "{missing} of the source's {} checks are not kept as verify steps",
+                checks.len()
+            );
+            eprintln!("  {why}; asking the planner once more");
+            report("regenerating", (1, 1), Some(why), planner_model.as_str());
+            let prompt = source_checks::regeneration_prompt(&task_prompt, candidate, &coverage);
+            let retry = run_agent_capture_silent_with_usage(AgentExecOpts {
+                prompt: &prompt,
+                ..planner_call
+            })
+            .await;
+            if let Ok(retry) = &retry {
+                spend.record(retry).await;
+                report_spend();
+            }
+            checks_regenerated = true;
+            if let Ok(retry) = retry
+                && retry.exit_code == 0
+                && let Ok(better) = try_extract_and_validate(&retry.output)
+                && missing_of(&better) < missing
+                && hidden_output_lines(&better).len() <= hidden_output_lines(candidate).len()
+            {
+                validated_toml = Ok(better);
             }
         }
 
@@ -1715,7 +1942,7 @@ pub async fn generate_plan(request: PlanRequest<'_>) -> Result<(PathBuf, Generat
         {
             let mut kept = (candidate.clone(), scores);
             let weak = kept.1.is_weak(&spec_config);
-            if weak {
+            if weak && !skip_for_cap("raise the plan's spec quality") {
                 eprintln!(
                     "  Spec quality is low (mean {:.1}, lowest task {:.1}); asking the planner \
                      once more",
@@ -1746,6 +1973,7 @@ pub async fn generate_plan(request: PlanRequest<'_>) -> Result<(PathBuf, Generat
                     && let Some(better_scores) = spec_scores(&better, workdir_ref, &spec_config)
                     && better_scores.mean > kept.1.mean
                     && hidden_output_lines(&better).len() <= hidden_output_lines(&kept.0).len()
+                    && missing_of(&better) <= missing_of(&kept.0)
                 {
                     kept = (better, better_scores);
                 }
@@ -1755,8 +1983,28 @@ pub async fn generate_plan(request: PlanRequest<'_>) -> Result<(PathBuf, Generat
             validated_toml = Ok(kept.0);
         }
 
+        // gap-dc5d7c: what became of each of the source's checks.
+        let source_coverage = validated_toml
+            .as_ref()
+            .ok()
+            .filter(|_| !checks.is_empty())
+            .and_then(|plan| coverage_of(plan));
+        if let Some(coverage) = &source_coverage {
+            println!("📋 {}", coverage.summary_line());
+            for line in coverage.detail_lines() {
+                println!("   {line}");
+            }
+        }
+
         if let Ok(validated_toml) = validated_toml {
-            report("writing", (1, 1), None, planner_model.as_str());
+            report(
+                "writing",
+                (1, 1),
+                source_coverage
+                    .as_ref()
+                    .map(source_checks::SourceCoverage::summary_line),
+                planner_model.as_str(),
+            );
             let accept = accept_for
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -1842,11 +2090,32 @@ pub async fn generate_plan(request: PlanRequest<'_>) -> Result<(PathBuf, Generat
             eprintln!("--- Raw model output (first {FAILURE_OUTPUT_CHARS} chars) ---");
             eprintln!("{}", crate::run::truncate(&output, FAILURE_OUTPUT_CHARS));
             eprintln!("--- End raw model output ---");
+            // A dry run's drafts went with its scratch copy of the workspace.
+            let drafts = if rejected_drafts > 0 && !dry_run {
+                format!(
+                    "\nThe rejected drafts are in {}.",
+                    workdir_ref
+                        .join(".roko")
+                        .join(REJECTED_DRAFTS_DIR)
+                        .join(slug)
+                        .display()
+                )
+            } else {
+                String::new()
+            };
+            if let Some(reached) = stopped_at_cap {
+                return Err(anyhow!(
+                    "{reached}, and no draft validated, so no plan was written.\n\
+                     Last error: {final_err}\n\
+                     hint: raise `[authoring] max_generation_usd`, or pass `--max-usd` to `roko \
+                     plan generate`.{drafts}"
+                ));
+            }
             return Err(anyhow!(
                 "Plan generation failed after retries: no valid tasks.toml was produced.\n\
                  Last error: {final_err}\n\
                  The agent output ({} bytes) did not contain a parseable ```toml block.\n\
-                 hint: Try again, or create plans/{slug}/tasks.toml manually.{toml_hint}",
+                 hint: Try again, or create plans/{slug}/tasks.toml manually.{toml_hint}{drafts}",
                 output.len()
             ));
         }
@@ -1887,9 +2156,8 @@ pub async fn generate_plan(request: PlanRequest<'_>) -> Result<(PathBuf, Generat
         }
 
         let task_count = generated_task_count(&generated_changed)?;
-        let max_tasks = crate::plan_policy::effective_generated_task_limit(
-            template_kind.max_task_count(),
-        );
+        let max_tasks =
+            crate::plan_policy::effective_generated_task_limit(template_kind.max_task_count());
         if task_count > max_tasks {
             eprintln!(
                 "⚠️  Generated {task_count} tasks, which exceeds the `{}` template budget of {}",
@@ -1969,6 +2237,7 @@ pub async fn generate_plan(request: PlanRequest<'_>) -> Result<(PathBuf, Generat
             artifact_valid,
             validation_report,
             spec_quality,
+            source_checks: source_coverage.map(|coverage| coverage.record(checks_regenerated)),
             cost_usd: spend.spent_usd(),
         };
 
@@ -2003,8 +2272,7 @@ pub async fn generate_plan(request: PlanRequest<'_>) -> Result<(PathBuf, Generat
         }
 
         Ok((
-            requested_plans_root
-                .map_or_else(|| workspace_plans_dir(&workdir), Path::to_path_buf),
+            requested_plans_root.map_or_else(|| workspace_plans_dir(&workdir), Path::to_path_buf),
             outcome,
         ))
     }
@@ -2614,7 +2882,6 @@ mod tests {
         assert!(printed.ends_with('é'));
         let preview = crate::run::truncate(&output, AGENT_ERROR_PREVIEW_CHARS);
         assert_eq!(preview, "x".repeat(AGENT_ERROR_PREVIEW_CHARS));
-        assert_eq!(crate::run::truncate(&output, RETRY_OUTPUT_CHARS), printed);
         assert_eq!(crate::run::truncate("short", FAILURE_OUTPUT_CHARS), "short");
     }
 
@@ -2660,6 +2927,7 @@ mod tests {
             artifact_valid: true,
             validation_report: None,
             spec_quality: None,
+            source_checks: None,
             cost_usd: 0.0,
         };
         let partial = GenerationOutcome {
@@ -2667,6 +2935,7 @@ mod tests {
             artifact_valid: false,
             validation_report: None,
             spec_quality: None,
+            source_checks: None,
             cost_usd: 0.0,
         };
         let failure = GenerationOutcome {
@@ -2674,6 +2943,7 @@ mod tests {
             artifact_valid: true,
             validation_report: None,
             spec_quality: None,
+            source_checks: None,
             cost_usd: 0.0,
         };
 
@@ -3100,6 +3370,312 @@ mod tests {
             scored.min <= scored.mean && scored.mean < 100.0,
             "{scored:?}"
         );
+    }
+
+    /// gap-18bfa2: once a generation's planner calls have cost its cap, it
+    /// makes no further call. A retry it needs stops it, with an error that
+    /// names the cap; an improvement it would ask for is skipped and the plan
+    /// in hand is written. Each stage reports the cap.
+    #[cfg(unix)]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn plan_generation_stops_at_its_spend_cap() {
+        // Any call costs more than this cap.
+        const CAP: f64 = 1e-9;
+
+        let temp = tempfile::tempdir().expect("tempdir");
+        let workdir = temp.path();
+        let bin = tempfile::tempdir().expect("tempdir");
+        let calls = write_scripted_planner(
+            workdir,
+            bin.path(),
+            &["```text\nNo plan yet.\n```\n", WIDGET_PLAN],
+            "allow_threshold = 0.0\nblock_threshold = 0.0\n",
+        );
+        let (sink, stages) = recorded_progress();
+        let request = PlanRequest {
+            model: Some("planner"),
+            progress: Some(sink),
+            max_usd: Some(CAP),
+            ..PlanRequest::new(WIDGET_REQUEST, "widget", workdir)
+        };
+        let error = generate_plan(request)
+            .await
+            .expect_err("the retry is over the cap");
+        let message = format!("{error:#}");
+        assert!(message.contains("reached its spend cap"), "{message}");
+        assert!(message.contains("no plan was written"), "{message}");
+        let log = std::fs::read_to_string(&calls).expect("planner call log");
+        assert_eq!(log.lines().count(), 1, "the first call, and no retry");
+        assert!(!workdir.join("plans/widget").exists());
+        let stages = stages.lock().expect("stages");
+        assert!(
+            stages.iter().all(|stage| stage.max_usd == Some(CAP)),
+            "{stages:?}"
+        );
+
+        // A weak plan is written as it is, without the regeneration.
+        let temp = tempfile::tempdir().expect("tempdir");
+        let workdir = temp.path();
+        let bin = tempfile::tempdir().expect("tempdir");
+        let calls = write_scripted_planner(
+            workdir,
+            bin.path(),
+            &[WIDGET_PLAN],
+            "allow_threshold = 100.0\n",
+        );
+        let request = PlanRequest {
+            model: Some("planner"),
+            max_usd: Some(CAP),
+            ..PlanRequest::new(WIDGET_REQUEST, "widget", workdir)
+        };
+        let (_, outcome) = generate_plan(request)
+            .await
+            .expect("the plan in hand is written");
+        let log = std::fs::read_to_string(&calls).expect("planner call log");
+        assert_eq!(log.lines().count(), 1, "no regeneration over the cap");
+        assert!(outcome.cost_usd > CAP, "{outcome:?}");
+        assert!(workdir.join("plans/widget/tasks.toml").is_file());
+    }
+
+    /// gap-b95913: a draft whose `meta.total` is 0, whose task reads four
+    /// files, and whose range starts past the end of its file is repaired,
+    /// not sent back: the plan is written after one planner call.
+    #[cfg(unix)]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn generated_draft_repairs_total_ranges_and_read_files() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let workdir = temp.path();
+        std::fs::create_dir_all(workdir.join("docs")).expect("docs");
+        for name in ["a", "b", "c", "d"] {
+            std::fs::write(workdir.join(format!("docs/{name}.md")), "line\n".repeat(71))
+                .expect("a doc");
+        }
+        let draft = WIDGET_PLAN.replace("total = 1", "total = 0").replace(
+            "read_files = []",
+            "read_files = [\n\
+             { path = \"docs/a.md\", lines = \"200-400\", why = \"the spec\" },\n\
+             { path = \"docs/b.md\", why = \"the second part\" },\n\
+             { path = \"docs/c.md\", why = \"the third part\" },\n\
+             { path = \"docs/d.md\", why = \"the last part\" },\n]",
+        );
+        assert!(draft.contains("total = 0") && draft.contains("docs/d.md"));
+        let bin = tempfile::tempdir().expect("tempdir");
+        let calls = write_scripted_planner(
+            workdir,
+            bin.path(),
+            &[&draft],
+            "allow_threshold = 0.0\nblock_threshold = 0.0\n",
+        );
+        let request = PlanRequest {
+            model: Some("planner"),
+            ..PlanRequest::new(WIDGET_REQUEST, "widget", workdir)
+        };
+        generate_plan(request)
+            .await
+            .expect("generate the widget plan");
+        let log = std::fs::read_to_string(&calls).expect("planner call log");
+        assert_eq!(log.lines().count(), 1, "the draft, repaired; no retry");
+
+        let written =
+            TasksFile::parse(&workdir.join("plans/widget/tasks.toml")).expect("the widget plan");
+        assert_eq!(written.meta.total, 1);
+        let read_files = &written.tasks[0]
+            .context
+            .as_ref()
+            .expect("the task's context")
+            .read_files;
+        let paths: Vec<&str> = read_files.iter().map(|file| file.path.as_str()).collect();
+        assert_eq!(paths, ["docs/a.md", "docs/b.md", "docs/c.md"]);
+        assert_eq!(read_files[0].lines, None, "the range past the end is gone");
+    }
+
+    /// gap-dc5d7c: generation from a file with a Verification section lists
+    /// its checks for the planner. A plan that checks one only with a file
+    /// test, leaves one out and drops one with a reason that restates it is
+    /// sent back once; the plan that keeps every check is written, and each
+    /// check is reported: kept, by the task and the criterion that keep it
+    /// (a step that covers a check by its id gets a criterion that states
+    /// it), or dropped, with the planner's reason.
+    #[cfg(unix)]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn from_file_generation_reports_dropped_source_checks() {
+        let source = PlanSource::Text {
+            text: "# Widget\n\nAdd a widget module.\n\n## Verification\n\n\
+                   - `src/widget.rs` exists\n- the widget spins\n- a person enjoys the widget\n",
+            kind: "file",
+        };
+        let plan = |acceptance: &str, verify: &str, dropped: &str| {
+            format!(
+                "[meta]\nplan = \"widget\"\ntotal = 1\ndone = 0\nstatus = \"ready\"\n{dropped}\n\
+                 [[task]]\nid = \"T1\"\ntitle = \"Add the widget module\"\n\
+                 description = \"Create src/widget.rs.\"\nstatus = \"ready\"\n\
+                 role = \"implementer\"\ntier = \"focused\"\nfiles = [\"src/widget.rs\"]\n\
+                 depends_on = []\nacceptance = [{acceptance}]\n\n\
+                 [task.context]\nread_files = []\n{verify}"
+            )
+        };
+        let step = |command: &str, covers: &str| {
+            format!(
+                "\n[[task.verify]]\nphase = \"test\"\ncommand = \"{command}\"\n\
+                 covers = [\"{covers}\"]\n"
+            )
+        };
+        let first = plan(
+            "\"AC1: SC1: src/widget.rs exists\"",
+            &step("test -f src/widget.rs", "AC1"),
+            "dropped_checks = [\"SC3: a person enjoys the widget\"]",
+        );
+        let second = plan(
+            "\"AC1: SC2: the widget spins\"",
+            &format!(
+                "{}{}",
+                step(
+                    "python3 -m unittest tests.test_widget.WidgetTest.test_module",
+                    "SC1"
+                ),
+                step(
+                    "python3 -m unittest tests.test_widget.WidgetTest.test_spins",
+                    "AC1"
+                ),
+            ),
+            "dropped_checks = [\"SC3: needs a person to judge it\"]",
+        );
+        let temp = tempfile::tempdir().expect("tempdir");
+        let workdir = temp.path();
+        let bin = tempfile::tempdir().expect("tempdir");
+        let calls = write_scripted_planner(
+            workdir,
+            bin.path(),
+            &[&first, &second],
+            "allow_threshold = 0.0\nblock_threshold = 0.0\n",
+        );
+        let request = PlanRequest {
+            model: Some("planner"),
+            ..PlanRequest::new(source, "widget", workdir)
+        };
+        let (_, outcome) = generate_plan(request)
+            .await
+            .expect("generate the widget plan");
+        let log = std::fs::read_to_string(&calls).expect("planner call log");
+        assert_eq!(
+            log.lines().count(),
+            2,
+            "the plan, then the plan that keeps every check"
+        );
+        let asked = std::fs::read_to_string(bin.path().join("prompt-0.txt")).expect("first call");
+        assert!(asked.contains("## Source checks"), "{asked}");
+        assert!(
+            asked.contains("- SC3: a person enjoys the widget"),
+            "{asked}"
+        );
+        let again = std::fs::read_to_string(bin.path().join("prompt-1.txt")).expect("the retry");
+        for expected in [
+            "keeps 0 of the 3 source checks",
+            "- SC2: the widget spins",
+            "- SC3: a person enjoys the widget",
+            "(T1 runs only `test -f src/widget.rs`)",
+        ] {
+            assert!(again.contains(expected), "{expected}: {again}");
+        }
+
+        let checks = outcome
+            .source_checks
+            .expect("the source's checks are reported");
+        assert_eq!(
+            (
+                checks.total,
+                checks.kept,
+                checks.shallow,
+                checks.dropped,
+                checks.missing
+            ),
+            (3, 2, 0, 1, 0),
+            "{checks:?}"
+        );
+        assert!(checks.regenerated);
+        let criterion = |index: usize| {
+            let check = &checks.checks[index];
+            (
+                check.status.as_str(),
+                check.task.as_deref(),
+                check.criterion.as_deref(),
+            )
+        };
+        assert_eq!(criterion(0), ("kept", Some("T1"), Some("AC2")));
+        assert_eq!(criterion(1), ("kept", Some("T1"), Some("AC1")));
+        let person = &checks.checks[2];
+        assert_eq!(person.status, "dropped");
+        assert_eq!(person.reason.as_deref(), Some("needs a person to judge it"));
+        let written = std::fs::read_to_string(workdir.join("plans/widget/tasks.toml"))
+            .expect("the widget plan");
+        for expected in [
+            "AC2: SC1: `src/widget.rs` exists",
+            "covers = [\"AC2\"]",
+            "SC3: needs a person to judge it",
+        ] {
+            assert!(written.contains(expected), "{expected}: {written}");
+        }
+    }
+
+    /// bug-f0d60c: a reply that holds no plan that validates is retried with
+    /// the request, its source document included, the whole reply and its
+    /// error, and no one-task template; the rejected reply is kept with its
+    /// error.
+    #[cfg(unix)]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn extraction_retry_keeps_the_source_document() {
+        // A source with no check headings, so no source check asks for a
+        // third call (gap-dc5d7c).
+        let source = PlanSource::Text {
+            text: "# Widget\n\nAdd a widget module: `widget::spin(3)` returns three turns.\n",
+            kind: "file",
+        };
+        // Longer than the 2,000 characters a retry used to quote, with a key
+        // given twice.
+        let draft = format!(
+            "{WIDGET_PLAN}phase = \"check\"\n# {}\n# the end of the draft\n",
+            "padding ".repeat(400)
+        );
+        let temp = tempfile::tempdir().expect("tempdir");
+        let workdir = temp.path();
+        let bin = tempfile::tempdir().expect("tempdir");
+        let calls = write_scripted_planner(
+            workdir,
+            bin.path(),
+            &[&draft, WIDGET_PLAN],
+            "allow_threshold = 0.0\nblock_threshold = 0.0\n",
+        );
+        let request = PlanRequest {
+            model: Some("planner"),
+            ..PlanRequest::new(source, "widget", workdir)
+        };
+        generate_plan(request)
+            .await
+            .expect("generate the widget plan");
+        let log = std::fs::read_to_string(&calls).expect("planner call log");
+        assert_eq!(log.lines().count(), 2, "the rejected draft, then the retry");
+        assert!(workdir.join("plans/widget/tasks.toml").is_file());
+
+        let first = std::fs::read_to_string(bin.path().join("prompt-0.txt")).expect("first call");
+        let retry = std::fs::read_to_string(bin.path().join("prompt-1.txt")).expect("retry");
+        for expected in [
+            "`widget::spin(3)` returns three turns",
+            "# the end of the draft",
+            "generated plan has invalid TOML",
+        ] {
+            assert!(retry.contains(expected), "{expected}: {retry}");
+        }
+        assert!(!retry.contains("MINIMUM REQUIRED STRUCTURE"), "{retry}");
+        // The system prompt's example names the file; the retry adds no
+        // mention of its own.
+        let named = |text: &str| text.matches("crates/roko-core/src/lib.rs").count();
+        assert_eq!(named(&retry), named(&first));
+
+        let drafts = workdir.join(".roko/plan-drafts/widget");
+        let kept = std::fs::read_to_string(drafts.join("rejected-1.md")).expect("the draft");
+        assert!(kept.contains("generated plan has invalid TOML"), "{kept}");
+        assert!(kept.contains("# the end of the draft"), "{kept}");
+        assert!(!drafts.join("rejected-2.md").exists());
     }
 
     /// bug-59ed90: a plan whose check pipes its test runner's output away is

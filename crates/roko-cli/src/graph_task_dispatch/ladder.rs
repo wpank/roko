@@ -92,6 +92,20 @@ impl TryReason {
 pub(super) struct TryBook {
     last_step: HashMap<String, u32>,
     reasons: HashMap<String, TryReason>,
+    /// Each task's run of infra failures of one class on one rung
+    /// (bug-9b65dc).
+    infra_runs: HashMap<String, InfraRun>,
+}
+
+/// A task's run of infra-blamed failures of one class on one rung.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct InfraRun {
+    /// The rung, by its index among the task's rungs.
+    rung: Option<u32>,
+    /// The failures' class ([`infra_failure_class`]).
+    class: String,
+    /// Failures in a row.
+    count: u32,
 }
 
 /// M1's B1 bounds on one task's rungs, as indices among its role's rungs.
@@ -539,18 +553,27 @@ impl GraphTaskDispatcher {
         task: &TaskDef,
         settled: &SettledAttempt,
     ) -> bool {
+        let task_key = format!("{}/{}", spec.plan_id, task.id);
         if settled.succeeded() {
             self.gate_retry_context
                 .clear_ladder(&spec.plan_id, &task.id);
+            self.tries.lock().infra_runs.remove(&task_key);
             return false;
         }
         let verdict = &settled.verdict;
         let Some(ladder) = verdict.ladder.as_ref() else {
             return false;
         };
-        if verdict.blame != Blame::Agent || ladder.reason == LadderReason::Pinned {
+        if ladder.reason == LadderReason::Pinned {
             return false;
         }
+        // A try that is not the agent's failure is not a failed try, but the
+        // same infra failure again on its rung climbs the task (bug-9b65dc).
+        if verdict.blame != Blame::Agent {
+            self.note_infra_failure(spec, task, settled, ladder);
+            return false;
+        }
+        self.tries.lock().infra_runs.remove(&task_key);
         if !verdict.executed.failover_chain.is_empty() {
             tracing::debug!(
                 plan_id = %spec.plan_id,
@@ -619,6 +642,92 @@ impl GraphTaskDispatcher {
         ladder.exhausted
     }
 
+    /// Count `settled`, a try of `task` on `ladder`'s rung that was not the
+    /// agent's failure, toward the task's run of infra failures of one class
+    /// there (bug-9b65dc). Such a failure is not a failed try; but the same
+    /// class [`INFRA_FAILURES_PER_RUNG`] times in a row on one rung (the
+    /// boundary denying the model's stream, a stream that stalls or breaks)
+    /// says the rung's model cannot run the task here, and the task climbs,
+    /// as two failed checks climb it. A failure of another class, a failure
+    /// of the provider account, which failover and the circuit breaker
+    /// answer, or a failover substitute's try breaks the run.
+    fn note_infra_failure(
+        &self,
+        spec: &TaskExecutionSpec,
+        task: &TaskDef,
+        settled: &SettledAttempt,
+        ladder: &AttemptLadder,
+    ) {
+        let task_key = format!("{}/{}", spec.plan_id, task.id);
+        let Some(class) = infra_failure_class(settled) else {
+            self.tries.lock().infra_runs.remove(&task_key);
+            return;
+        };
+        let count = {
+            let mut tries = self.tries.lock();
+            let run = tries
+                .infra_runs
+                .entry(task_key.clone())
+                .or_insert_with(|| InfraRun {
+                    rung: ladder.index,
+                    class: class.clone(),
+                    count: 0,
+                });
+            if run.rung != ladder.index || run.class != class {
+                *run = InfraRun {
+                    rung: ladder.index,
+                    class: class.clone(),
+                    count: 0,
+                };
+            }
+            run.count = run.count.saturating_add(1);
+            run.count
+        };
+        if count < INFRA_FAILURES_PER_RUNG {
+            return;
+        }
+        self.tries.lock().infra_runs.remove(&task_key);
+        let rung = ladder.rung.as_deref().unwrap_or("-");
+        let index = ladder.index.and_then(|index| usize::try_from(index).ok());
+        let role = task.role.as_deref().unwrap_or("implementer");
+        let bounds = self.tier_bounds(task, settled.harness.as_deref());
+        let can_climb = index
+            .zip(self.routing_ladder())
+            .is_some_and(|(index, routing)| {
+                !bounds.caps(index) && routing.runnable_above(role, index) >= 1
+            });
+        let standing = self
+            .gate_retry_context
+            .ladder_standing(&spec.plan_id, &task.id);
+        if !can_climb || standing.escalations >= MAX_ESCALATIONS {
+            tracing::warn!(
+                plan_id = %spec.plan_id,
+                task_id = %task.id,
+                rung,
+                class,
+                failures = count,
+                "this rung's model failed the same infra way again, and the task has no rung \
+                 left to climb"
+            );
+            return;
+        }
+        let standing = LadderStanding {
+            escalations: standing.escalations.saturating_add(1),
+            failures_on_rung: 0,
+        };
+        self.gate_retry_context
+            .set_ladder_standing(&spec.plan_id, &task.id, standing);
+        tracing::info!(
+            plan_id = %spec.plan_id,
+            task_id = %task.id,
+            rung,
+            class,
+            failures = count,
+            escalations = standing.escalations,
+            "this rung's model failed the same infra way again; the task climbs the ladder"
+        );
+    }
+
     /// Log that `task` exhausted the ladder on `ladder`'s rung, and tell the
     /// dashboard to split or replan it.
     fn report_ladder_exhausted(
@@ -676,6 +785,55 @@ impl GraphTaskDispatcher {
             suggestion: SPLIT_OR_REPLAN.to_string(),
         });
     }
+}
+
+/// Infra failures of one class in a row on one rung that count the rung's
+/// model as unable to run a task: the task then climbs, as after
+/// [`FAILURES_PER_RUNG`] failed checks (bug-9b65dc).
+const INFRA_FAILURES_PER_RUNG: u32 = 2;
+
+/// Failure kinds of the provider account, not of the model on the task:
+/// failover and the circuit breaker answer them, so a run of them never
+/// climbs.
+const ACCOUNT_FAILURES: [&str; 4] = [
+    "rate_limit",
+    "provider_exhausted",
+    "insufficient_credits",
+    "auth_failure",
+];
+
+/// What a try's failure reason says before the reason code of an immune
+/// denial of its provider result (the boundary's `denied_result`).
+const IMMUNE_DENIAL: &str = "denied by immune boundary (reason: ";
+
+/// The class of `settled`'s infra-blamed failure, as a run of them on one
+/// rung counts it (bug-9b65dc): an immune denial by its reason code
+/// (`denied:provider_stream_limit_exceeded`), any other failure by its
+/// outcome and the shared failure classifier's kind (`provider_error:timeout`
+/// for a stream that stalled, `provider_error:server_error` for one that
+/// broke). `None` for a failover substitute's try and for a failure of the
+/// provider account ([`ACCOUNT_FAILURES`]).
+fn infra_failure_class(settled: &SettledAttempt) -> Option<String> {
+    let verdict = &settled.verdict;
+    if !verdict.executed.failover_chain.is_empty() {
+        return None;
+    }
+    let reason = settled.failure_reason.as_deref().unwrap_or_default();
+    if let Some(code) = immune_denial(reason) {
+        return Some(format!("denied:{code}"));
+    }
+    let kind = crate::dispatch_v2::classify_provider_error(&reason.to_ascii_lowercase());
+    (!ACCOUNT_FAILURES.contains(&kind)).then(|| format!("{}:{kind}", wire_word(&verdict.outcome)))
+}
+
+/// The reason code of an immune denial of a try's provider result, from the
+/// try's `failure_reason` (`provider: provider result denied by immune
+/// boundary (reason: provider_stream_limit_exceeded)`); `None` for any other
+/// failure.
+fn immune_denial(failure_reason: &str) -> Option<&str> {
+    let (_, rest) = failure_reason.split_once(IMMUNE_DENIAL)?;
+    let reason = rest.split(')').next()?.trim();
+    (!reason.is_empty()).then_some(reason)
 }
 
 /// `value`'s wire word, as its records spell it (`gate_failed`, `agent`).
@@ -1862,5 +2020,178 @@ exit 1
         assert_eq!(exhausted["escalations"], 1, "{exhausted}");
         assert_eq!(exhausted["suggestion"], SPLIT_OR_REPLAN, "{exhausted}");
         assert_eq!(events[2]["exhausted"], true, "{}", events[2]);
+    }
+
+    /// A settled try of `task` on the cheap rung that the provider failed
+    /// with `failure` (infra-blamed), as attempt `attempt`. `substitute`
+    /// names the routed model failover replaced; `pinned` marks a pinned
+    /// try.
+    fn infra_failure_on_cheap_rung(
+        spec: &TaskExecutionSpec,
+        task: &TaskDef,
+        attempt: u32,
+        failure: &str,
+        substitute: Option<&str>,
+        pinned: bool,
+    ) -> SettledAttempt {
+        use roko_learn::telemetry::{AttemptIdentity, AttemptKey, AttemptOutcome};
+
+        let key = AttemptKey::new(RUN, &spec.plan_id, &task.id, attempt);
+        let identity = AttemptIdentity::new(&key);
+        let mut verdict =
+            AttemptVerdictRecord::settle(identity, AttemptOutcome::ProviderError, true);
+        verdict.ladder = Some(AttemptLadder {
+            rung: (!pinned).then(|| "cheap".to_string()),
+            index: (!pinned).then_some(0),
+            step: 0,
+            reason: if pinned {
+                LadderReason::Pinned
+            } else {
+                LadderReason::Start
+            },
+            exhausted: false,
+            router_pick: None,
+        });
+        verdict.executed.failover_chain = substitute.map(str::to_string).into_iter().collect();
+        SettledAttempt {
+            verdict: Arc::new(verdict),
+            failure_reason: Some(failure.to_string()),
+            reflex_rule: None,
+            live_tool_calls: LiveToolCalls::default(),
+            harness: None,
+        }
+    }
+
+    /// bug-9b65dc: an infra failure of a try is not a failed try, but the
+    /// same class of it twice in a row on one rung climbs the task: an immune
+    /// denial by its reason, a stalled or a broken stream by its kind. A
+    /// failure of another class in between breaks the run; a rate limit
+    /// never counts, nor does a pinned try or a failover substitute's.
+    #[tokio::test]
+    async fn a_repeated_infra_failure_on_a_rung_climbs() {
+        const STREAM: &str = "provider: provider result denied by immune boundary (reason: \
+                              provider_stream_limit_exceeded)";
+        const OTHER: &str = "provider: provider result denied by immune boundary (reason: \
+                             provider_output_too_large)";
+        const READ: &str = "provider: network error: read chunk failed: error decoding \
+                            response body";
+        const STALL: &str = "provider: timeout: stream stalled: no data within 120000ms";
+        const THROTTLED: &str = "provider: 429 too many requests";
+
+        let temp = tempdir().expect("tempdir");
+        let (dispatcher, task) = ladder_fixture(&temp).await;
+        let spec = make_spec(&task);
+        let settle = |attempt: u32, failure: &str| {
+            let settled = infra_failure_on_cheap_rung(&spec, &task, attempt, failure, None, false);
+            assert_eq!(settled.verdict.blame, Blame::Infra);
+            dispatcher.note_ladder_outcome(&spec, &task, &settled);
+        };
+
+        settle(1, STREAM);
+        assert_eq!(
+            dispatcher.ladder_step(&spec, &task),
+            0,
+            "one denial counts nothing"
+        );
+        settle(2, READ);
+        settle(3, STREAM);
+        settle(4, OTHER);
+        settle(5, STREAM);
+        assert_eq!(
+            dispatcher.ladder_step(&spec, &task),
+            0,
+            "denials broken up by other failures never climb"
+        );
+        settle(6, STREAM);
+        assert_eq!(dispatcher.ladder_step(&spec, &task), 1);
+        let standing = dispatcher
+            .gate_retry_context
+            .ladder_standing(&spec.plan_id, &task.id);
+        assert_eq!(standing.failures_on_rung, 0, "a denial is not a failed try");
+
+        let mut pinned = task.clone();
+        pinned.id = "T-PIN".to_string();
+        let mut substituted = task.clone();
+        substituted.id = "T-SUB".to_string();
+        for attempt in 1..=3 {
+            let settled = infra_failure_on_cheap_rung(&spec, &pinned, attempt, STREAM, None, true);
+            dispatcher.note_ladder_outcome(&spec, &pinned, &settled);
+            let settled = infra_failure_on_cheap_rung(
+                &spec,
+                &substituted,
+                attempt,
+                STREAM,
+                Some("cheap-model"),
+                false,
+            );
+            dispatcher.note_ladder_outcome(&spec, &substituted, &settled);
+        }
+        assert_eq!(dispatcher.ladder_step(&spec, &pinned), 0);
+        assert_eq!(dispatcher.ladder_step(&spec, &substituted), 0);
+        assert_eq!(
+            immune_denial(STREAM),
+            Some("provider_stream_limit_exceeded")
+        );
+        assert_eq!(immune_denial(READ), None);
+
+        // A stalled stream twice, or a broken one twice, climbs as well; a
+        // rate limit is the provider account's, and never does.
+        for (id, failure, climbs) in [
+            ("T-STALL", STALL, true),
+            ("T-READ", READ, true),
+            ("T-429", THROTTLED, false),
+        ] {
+            let mut other = task.clone();
+            other.id = id.to_string();
+            for attempt in 1..=2 {
+                let settled =
+                    infra_failure_on_cheap_rung(&spec, &other, attempt, failure, None, false);
+                dispatcher.note_ladder_outcome(&spec, &other, &settled);
+            }
+            assert_eq!(
+                dispatcher.ladder_step(&spec, &other),
+                u32::from(climbs),
+                "{failure}"
+            );
+        }
+    }
+
+    /// bug-f6b99f: a try whose reply ran past its model's output limit
+    /// settles as the agent's failure on its rung, as a turn cap does, so two
+    /// of them climb the task; its reason says it was the output limit.
+    #[tokio::test]
+    async fn output_limit_failure_counts_towards_the_climb() {
+        const CUT: &str = "model hit output token limit (finish_reason=length)";
+
+        let temp = tempdir().expect("tempdir");
+        let (dispatcher, task) = ladder_fixture(&temp).await;
+        let spec = make_spec(&task);
+        let ctx = CellContext::new().with_run_id(RUN.to_string());
+        for _ in 0..FAILURES_PER_RUNG {
+            let mut attempt = dispatcher.open_attempt(&spec, &task, &ctx);
+            attempt.record_ladder(
+                AttemptLadder {
+                    rung: Some("cheap".to_string()),
+                    index: Some(0),
+                    step: 0,
+                    reason: LadderReason::Start,
+                    exhausted: false,
+                    router_pick: None,
+                },
+                false,
+            );
+            let settled = attempt.settle(Settlement::provider_failure(CUT, true), CHEAP, None);
+            assert_eq!(settled.verdict.blame, Blame::Agent);
+            assert!(
+                settled
+                    .failure_reason
+                    .as_deref()
+                    .is_some_and(|reason| reason.starts_with("output_limit:")),
+                "{:?}",
+                settled.failure_reason
+            );
+            dispatcher.note_ladder_outcome(&spec, &task, &settled);
+        }
+        assert_eq!(dispatcher.ladder_step(&spec, &task), 1);
     }
 }

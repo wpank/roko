@@ -388,6 +388,10 @@ The legacy Runner-v2 engine has been removed. --engine legacy is accepted but ex
         /// slug, and writes the plan to `plans/<slug>/tasks.toml`.
         #[arg(long, value_name = "IDS")]
         from_backlog: Option<String>,
+        /// Stop writing a plan once its planner calls have cost this much, in
+        /// USD (default: `[authoring] max_generation_usd`; 0 sets no cap).
+        #[arg(long, value_name = "USD")]
+        max_usd: Option<f64>,
     },
     /// Pause the plan run in this workspace: no new plan, task or retry
     /// starts until resume, and running attempts finish. Prints the run's
@@ -1461,6 +1465,7 @@ pub(crate) async fn cmd_plan(cli: &Cli, cmd: PlanCmd) -> Result<i32> {
             from_notes,
             tag,
             from_backlog,
+            max_usd,
         } => {
             let workdir = std::env::current_dir().context("resolve cwd")?;
             // Plan generation is read-only on workspace state: it reads source
@@ -1514,6 +1519,7 @@ pub(crate) async fn cmd_plan(cli: &Cli, cmd: PlanCmd) -> Result<i32> {
                     let request = roko_cli::plan_generate::PlanRequest {
                         model: Some(model_key.as_str()),
                         effort: Some("high"),
+                        max_usd,
                         ..roko_cli::plan_generate::PlanRequest::new(
                             roko_cli::plan_generate::PlanSource::Text {
                                 text: &spec.source_text,
@@ -1612,6 +1618,7 @@ pub(crate) async fn cmd_plan(cli: &Cli, cmd: PlanCmd) -> Result<i32> {
                     let request = roko_cli::plan_generate::PlanRequest {
                         model: Some(model_key.as_str()),
                         effort: Some("high"),
+                        max_usd,
                         ..roko_cli::plan_generate::PlanRequest::new(
                             roko_cli::plan_generate::PlanSource::Text {
                                 text: &combined,
@@ -1691,6 +1698,7 @@ pub(crate) async fn cmd_plan(cli: &Cli, cmd: PlanCmd) -> Result<i32> {
                 context: Some(context_block.as_str()),
                 model: Some(model_key.as_str()),
                 effort: Some("high"),
+                max_usd,
                 ..roko_cli::plan_generate::PlanRequest::new(
                     roko_cli::plan_generate::PlanSource::Text {
                         text: &source_text,
@@ -1910,6 +1918,7 @@ pub(crate) async fn cmd_plan(cli: &Cli, cmd: PlanCmd) -> Result<i32> {
                     from_notes: false,
                     tag: None,
                     from_backlog: None,
+                    max_usd: None,
                 },
             ))
             .await

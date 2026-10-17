@@ -1861,6 +1861,11 @@ impl TaskDispatcher for GraphTaskDispatcher {
             if roko_agent::provider::error_classify::detect_attempt_timeout(&message) {
                 self.keep_timeout_retry(&spec.plan_id, &task.id, timeout_ms);
             }
+            // A reply cut at the model's output limit failed on its rung; the
+            // next try is told to write less per turn (bug-f6b99f).
+            if roko_agent::provider::error_classify::detect_output_limit(&message) {
+                self.keep_allowance_stop(&spec.plan_id, &task.id, turn_policy::OUTPUT_LIMIT_STOP);
+            }
             // A denial no retry can change fails the task at once, saying how
             // to recover (backlog 1116).
             if let Some(denial) = failover::permanent_provider_denial(&dispatch) {

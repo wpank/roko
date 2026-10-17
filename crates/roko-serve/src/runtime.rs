@@ -82,6 +82,11 @@ pub struct PlanGenerationResult {
     /// What writing the plan cost, in USD (bug-a0432b).
     #[serde(default)]
     pub cost_usd: f64,
+    /// What became of the checks the request states, each kept as a verify
+    /// step, dropped with a reason or missing (gap-dc5d7c); `None` when it
+    /// states none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_checks: Option<serde_json::Value>,
 }
 
 /// Where a long operation reports what it is doing, as a JSON object, each

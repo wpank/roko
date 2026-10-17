@@ -930,6 +930,10 @@ impl RokoCliRuntime {
             artifacts: plan_artifact_paths(&plan_targets),
             plan_targets,
             cost_usd: outcome.cost_usd,
+            source_checks: outcome
+                .source_checks
+                .as_ref()
+                .and_then(|checks| serde_json::to_value(checks).ok()),
         })
     }
 

@@ -184,7 +184,9 @@ impl CallAllowance for TryAllowance {
 
 impl GraphTaskDispatcher {
     /// Owe `plan_id/task_id`'s next attempt a note that its last try
-    /// stopped at its rung's spend allowance, with its work on disk.
+    /// stopped at one of its limits, for `reason`: its rung's spend
+    /// allowance, or its model's output limit (bug-f6b99f). Its work is on
+    /// disk.
     pub(super) fn keep_allowance_stop(&self, plan_id: &str, task_id: &str, reason: &str) {
         self.allowance_stops
             .lock()

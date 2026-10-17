@@ -72,3 +72,8 @@ The `[[verify]]` passes. Its static part checks that `run.rs` no longer contains
 
 A test in `crates/roko-serve/src/routes/run.rs` calls `run_with_heartbeats(&hub, "claude", …)` (around line 1243).
 Update it to the new label.
+
+2026-10-17, round v6 dogfood run 4 (dogfood-will, roko b2970cb12): still reproduces. Every chat-started prompt run
+published `agent_spawned {agent_id: "claude", model: "claude"}` and `▶ claude: …` / `✗ claude: …` event-log entries.
+The runs' attempts ran on kimi-k2.6 (Moonshot), and the Claude CLI was fenced off in serve's environment
+(`tmp/hermes-roko-v6/dogfood-will/logs/hub-4.jsonl`, `hub-4b.jsonl`).

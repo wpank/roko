@@ -104,3 +104,14 @@ Add the test `summary_sees_the_end_of_a_run_longer_than_its_scan_window`: an ind
 
 - Keep the read bounded: the limits stop a huge index from stalling the route.
 - Related: bug-dceafd (an interrupted run's end state) and gap-5fda00 (live agent output).
+
+2026-10-17, round v6 dogfood run 4 (dogfood-will, roko b2970cb12): reproduced on a short run.
+- **The run.** A chat-started prompt run on kimi-k2.6 (Moonshot), with `[serve] live_agent_output = "trusted"`,
+  streamed 11,087 `agent_output` events (reasoning deltas) in its first 145 s. That is 11,181 events in all.
+- **What serve said.** The run was cancelled at 145 s and its index ends with `plan_completed` and
+  `run_completed {outcome: cancelled}`. `GET /api/runs/c7ba9c64-…/summary` still said `state: running`,
+  `active: true`, cost $0, 0 tasks, minutes later.
+- **Why it matters more.** With a reasoning model, any trusted-mode run longer than about 2 minutes now passes the
+  10,000-event window. The MCP `run_status` a chat host polls then never reports the end.
+- **Workaround.** The G5 runs that followed were made with `live_agent_output = "tool_steps"`.
+- **Evidence:** `tmp/hermes-roko-v6/dogfood-will/logs/run4-g5a-summary.json`, `logs/hub-4.jsonl`.

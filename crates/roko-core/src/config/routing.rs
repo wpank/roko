@@ -1,5 +1,7 @@
 //! Model routing configuration.
 
+use std::collections::BTreeMap;
+
 use serde::{Deserialize, Serialize};
 
 use crate::task::TaskTier;
@@ -235,7 +237,18 @@ pub struct LadderRoleConfig {
 /// role = "reviewer"
 /// start = { mechanical = "top", focused = "top" }
 /// ```
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+///
+/// Each try on a rung is bounded (gap-3e770b): a try that uses up its rung's
+/// turns or spend fails on that rung, as a failed check does, so two such
+/// tries climb. `max_turns` and `max_usd` set a rung's allowance by name;
+/// a rung `max_turns` leaves out gets [`LadderConfig::try_turns`]'s default.
+///
+/// ```toml
+/// [routing.ladder]
+/// max_turns = { cheap = 12, mid = 30 }
+/// max_usd = { cheap = 0.06 }
+/// ```
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct LadderConfig {
     /// Route plan tasks by the ladder (decided 2026-09-29: on by default).
@@ -257,7 +270,21 @@ pub struct LadderConfig {
     /// (decision 1119, backlog 1121). FAST and `--no-budget` runs never probe.
     #[serde(default = "super::agent::default_true")]
     pub probe: bool,
+    /// Turns one try of a task may take on a rung, by rung name
+    /// ([`Self::try_turns`]).
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub max_turns: BTreeMap<String, u32>,
+    /// What one try of a task may spend on a rung, in USD, by rung name
+    /// ([`Self::try_usd`]). A rung it leaves out has no spend allowance of
+    /// its own; the plan's budget bounds every try either way, and is asked
+    /// first.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub max_usd: BTreeMap<String, f64>,
 }
+
+/// Fewest turns a try gets by default on a rung it can still climb from
+/// ([`LadderConfig::try_turns`]).
+pub const MIN_TRY_TURNS: u32 = 12;
 
 /// D11's cascade plus Sonnet, cheapest first.
 fn default_ladder_rungs() -> Vec<LadderRung> {
@@ -283,6 +310,8 @@ impl Default for LadderConfig {
             start: LadderStart::d11(),
             roles: Vec::new(),
             probe: true,
+            max_turns: BTreeMap::new(),
+            max_usd: BTreeMap::new(),
         }
     }
 }
@@ -373,8 +402,9 @@ impl LadderConfig {
     }
 
     /// Mistakes worth a warning: a rung without a name or model, a rung name
-    /// used twice, a role entry without a role, and a start name that
-    /// matches no rung (those tasks start on the first rung).
+    /// used twice, a role entry without a role, a start name that matches no
+    /// rung (those tasks start on the first rung), and a try allowance for no
+    /// rung or of no turns or no money.
     #[must_use]
     pub fn issues(&self) -> Vec<String> {
         let mut issues = Vec::new();
@@ -414,6 +444,28 @@ impl LadderConfig {
                 }
             }
         }
+        let named = |name: &str| self.all_rungs().any(|rung| rung.name == name);
+        for (name, turns) in &self.max_turns {
+            if !named(name) {
+                issues.push(format!(
+                    "routing.ladder.max_turns: no rung is named `{name}`"
+                ));
+            } else if *turns == 0 {
+                issues.push(format!(
+                    "routing.ladder.max_turns: `{name}` = 0 gives a try one turn"
+                ));
+            }
+        }
+        for (name, usd) in &self.max_usd {
+            if !named(name) {
+                issues.push(format!("routing.ladder.max_usd: no rung is named `{name}`"));
+            } else if !(usd.is_finite() && *usd > 0.0) {
+                issues.push(format!(
+                    "routing.ladder.max_usd: `{name}` = {usd} is not a positive amount, so its \
+                     tries have no spend allowance of their own"
+                ));
+            }
+        }
         issues
     }
 
@@ -442,6 +494,39 @@ impl LadderConfig {
     #[must_use]
     pub fn role_rungs(&self, role: &str) -> &[LadderRung] {
         self.rungs_for(self.role_entry(role))
+    }
+
+    /// Turns one try may take on rung `rung`, from which the task can still
+    /// climb `climbs_left` rungs, when its tier gives an attempt `tier_turns`
+    /// (gap-3e770b). The rung's `max_turns`, when set. Otherwise each rung
+    /// below the highest one the task can reach gets half the turns of the
+    /// rung above it, from `tier_turns` on that highest rung, and never fewer
+    /// than [`MIN_TRY_TURNS`] or more than `tier_turns`: a focused task (60
+    /// turns) that can climb two rungs gets 15 on its start rung, then 30.
+    /// `None` on the highest rung, where the tier's cap stands and is raised
+    /// after a turn-cap stop as before.
+    #[must_use]
+    pub fn try_turns(&self, rung: &str, climbs_left: u32, tier_turns: u32) -> Option<u32> {
+        if let Some(&turns) = self.max_turns.get(rung) {
+            return Some(turns.max(1));
+        }
+        (climbs_left > 0).then(|| {
+            tier_turns
+                .checked_shr(climbs_left)
+                .unwrap_or(0)
+                .max(MIN_TRY_TURNS)
+                .min(tier_turns)
+        })
+    }
+
+    /// What one try may spend on rung `rung`, in USD: its `max_usd`, when
+    /// that is a positive amount (gap-3e770b).
+    #[must_use]
+    pub fn try_usd(&self, rung: &str) -> Option<f64> {
+        self.max_usd
+            .get(rung)
+            .copied()
+            .filter(|usd| usd.is_finite() && *usd > 0.0)
     }
 }
 
@@ -939,6 +1024,8 @@ config_version = 2
 enabled = false
 rungs = [{ name = "only", model = "claude-sonnet" }]
 start = { architectural = "only" }
+max_turns = { only = 9 }
+max_usd = { only = 0.25 }
 
 [[routing.ladder.roles]]
 role = "reviewer"
@@ -968,6 +1055,49 @@ start = { mechanical = "only" }
         assert_eq!(
             ladder.roles[0].start.get(TaskTier::Mechanical),
             Some("only")
+        );
+        assert_eq!(ladder.try_turns("only", 0, 60), Some(9));
+        assert_eq!(ladder.try_usd("only"), Some(0.25));
+    }
+
+    /// gap-3e770b: a try on a rung the task can still climb from gets half
+    /// the turns of the rung above it, from the tier's cap on the highest
+    /// rung it can reach, at least [`MIN_TRY_TURNS`] and at most the tier's
+    /// cap; the highest rung keeps the tier's cap. `max_turns` and
+    /// `max_usd` set a rung's allowance outright, and a key that names no
+    /// rung, no turns or no money is an issue.
+    #[test]
+    fn a_try_s_turns_halve_below_the_highest_rung_it_can_reach() {
+        let ladder = LadderConfig::default();
+        assert_eq!(ladder.try_turns("cheap", 2, 60), Some(15));
+        assert_eq!(ladder.try_turns("mid", 1, 60), Some(30));
+        assert_eq!(ladder.try_turns("strong", 0, 60), None);
+        // Never below the floor, never above the tier's cap.
+        assert_eq!(ladder.try_turns("cheap", 2, 40), Some(MIN_TRY_TURNS));
+        assert_eq!(ladder.try_turns("cheap", 3, 8), Some(8));
+        assert_eq!(ladder.try_turns("cheap", 40, 60), Some(MIN_TRY_TURNS));
+        assert_eq!(ladder.try_usd("cheap"), None);
+
+        let bounded: LadderConfig = toml::from_str(
+            r#"
+            max_turns = { cheap = 6, top = 40, gone = 3 }
+            max_usd = { cheap = 0.05, mid = 0.0, nowhere = 1.0 }
+            "#,
+        )
+        .expect("ladder");
+        assert_eq!(bounded.try_turns("cheap", 2, 60), Some(6));
+        assert_eq!(bounded.try_turns("top", 0, 120), Some(40));
+        assert_eq!(bounded.try_turns("mid", 1, 60), Some(30));
+        assert_eq!(bounded.try_usd("cheap"), Some(0.05));
+        assert_eq!(bounded.try_usd("mid"), None);
+        assert_eq!(
+            bounded.issues(),
+            [
+                "routing.ladder.max_turns: no rung is named `gone`",
+                "routing.ladder.max_usd: `mid` = 0 is not a positive amount, so its tries have \
+                 no spend allowance of their own",
+                "routing.ladder.max_usd: no rung is named `nowhere`",
+            ]
         );
     }
 }

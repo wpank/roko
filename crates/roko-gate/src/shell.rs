@@ -26,6 +26,47 @@ use tokio::process::Command;
 use tokio::sync::mpsc;
 use tokio::time::timeout;
 
+/// The stream of a command a line of its output came from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OutputStream {
+    /// Standard output.
+    Stdout,
+    /// Standard error.
+    Stderr,
+}
+
+impl OutputStream {
+    /// `stdout` or `stderr`.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Stdout => "stdout",
+            Self::Stderr => "stderr",
+        }
+    }
+}
+
+/// One line a command wrote, without its newline, and the stream it wrote it
+/// to ([`ShellGate::with_output_sink`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OutputLine {
+    /// The stream.
+    pub stream: OutputStream,
+    /// The line.
+    pub line: String,
+}
+
+impl OutputLine {
+    /// `line`, written to `stream`.
+    #[must_use]
+    pub fn new(stream: OutputStream, line: &str) -> Self {
+        Self {
+            stream,
+            line: line.to_string(),
+        }
+    }
+}
+
 /// A gate that runs a fixed shell command; pass = exit code 0.
 ///
 /// The signal's body (if a [`GatePayload`]) provides `working_dir` and
@@ -42,6 +83,8 @@ pub struct ShellGate {
     /// Optional sender for live line-by-line output streaming.
     /// Each line from stdout/stderr is forwarded as it arrives.
     line_sink: Option<mpsc::UnboundedSender<String>>,
+    /// Like `line_sink`, with the stream each line came from.
+    output_sink: Option<mpsc::UnboundedSender<OutputLine>>,
     /// Variables inherited in place of roko's own environment, still
     /// filtered by the gate policy. `None` uses roko's environment.
     parent_env: Option<Vec<(String, OsString)>>,
@@ -60,6 +103,7 @@ impl ShellGate {
             name,
             phase: None,
             line_sink: None,
+            output_sink: None,
             parent_env: None,
         }
     }
@@ -116,6 +160,14 @@ impl ShellGate {
     #[must_use]
     pub fn with_line_sink(mut self, sink: mpsc::UnboundedSender<String>) -> Self {
         self.line_sink = Some(sink);
+        self
+    }
+
+    /// Attach a sink that gets each line of stdout and stderr as it arrives,
+    /// with the stream it came from.
+    #[must_use]
+    pub fn with_output_sink(mut self, sink: mpsc::UnboundedSender<OutputLine>) -> Self {
+        self.output_sink = Some(sink);
         self
     }
 
@@ -213,9 +265,10 @@ impl Verify for ShellGate {
         let stdout_pipe = child.stdout.take();
         let stderr_pipe = child.stderr.take();
         let line_sink = self.line_sink.clone();
+        let output_sink = self.output_sink.clone();
 
         // Stream stdout and stderr line-by-line, forwarding each line through
-        // the optional sink for live TUI display while accumulating the full
+        // the optional sinks for live display while accumulating the full
         // output for the final verdict.
         let stream_output = async {
             let mut stdout_buf = String::new();
@@ -223,6 +276,7 @@ impl Verify for ShellGate {
 
             let stdout_task = {
                 let sink = line_sink.clone();
+                let output = output_sink.clone();
                 async move {
                     if let Some(pipe) = stdout_pipe {
                         let reader = BufReader::new(pipe);
@@ -230,6 +284,9 @@ impl Verify for ShellGate {
                         while let Ok(Some(line)) = lines.next_line().await {
                             if let Some(ref sink) = sink {
                                 let _ = sink.send(line.clone());
+                            }
+                            if let Some(ref output) = output {
+                                let _ = output.send(OutputLine::new(OutputStream::Stdout, &line));
                             }
                             stdout_buf.push_str(&line);
                             stdout_buf.push('\n');
@@ -246,6 +303,9 @@ impl Verify for ShellGate {
                     while let Ok(Some(line)) = lines.next_line().await {
                         if let Some(ref line_sink) = line_sink {
                             let _ = line_sink.send(line.clone());
+                        }
+                        if let Some(ref output) = output_sink {
+                            let _ = output.send(OutputLine::new(OutputStream::Stderr, &line));
                         }
                         stderr_buf.push_str(&line);
                         stderr_buf.push('\n');
@@ -380,6 +440,32 @@ mod tests {
         assert_eq!(classification.summary, v.reason);
         assert_eq!(classification.duration_ms, Some(v.duration_ms));
         assert!(!crate::compile_errors::verdict_timed_out(&v));
+    }
+
+    /// gap-f45a6d: the output sink gets each line as it is written, with the
+    /// stream it came from.
+    #[tokio::test]
+    async fn output_sink_tags_each_line_with_its_stream() {
+        let (sink, mut lines) = mpsc::unbounded_channel();
+        let gate = ShellGate::new("sh", vec!["-c".into(), "echo out; echo err >&2".into()])
+            .with_output_sink(sink);
+
+        let v = gate.verify(&empty_signal(), &Context::at(0)).await;
+        drop(gate);
+
+        assert!(v.passed);
+        let mut got = Vec::new();
+        while let Some(line) = lines.recv().await {
+            got.push(line);
+        }
+        got.sort_by_key(|line| line.stream.as_str());
+        assert_eq!(
+            got,
+            [
+                OutputLine::new(OutputStream::Stderr, "err"),
+                OutputLine::new(OutputStream::Stdout, "out"),
+            ]
+        );
     }
 
     #[tokio::test]

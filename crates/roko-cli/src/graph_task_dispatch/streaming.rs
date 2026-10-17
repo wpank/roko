@@ -106,7 +106,7 @@ impl StreamingTaskDispatcher for GraphTaskDispatcher {
 
         // ── P3-AGT-2: Express mode check (streaming) ─────────────────────
         let express_active = is_express_task(&self.config, &task);
-        let max_turns = task_turn_limit_with(
+        let mut max_turns = task_turn_limit_with(
             &self.config,
             Some(self.learned_tier_limits()),
             &task,
@@ -216,6 +216,17 @@ impl StreamingTaskDispatcher for GraphTaskDispatcher {
         };
         attempt.prompt_assembled();
         self.record_attempt_ladder(&mut attempt, spec, &task, &dispatch_plan, ladder_step);
+        // A try on a rung the task can still climb from is bounded, as on the
+        // batch path (gap-3e770b).
+        let rung_allowance =
+            self.rung_allowance(&task, &attempt, &dispatch_plan, ladder_step, max_turns);
+        if let Some(turns) = rung_allowance
+            .as_ref()
+            .and_then(|allowance| allowance.turns)
+        {
+            max_turns = max_turns.min(turns);
+        }
+        let allowance = TryAllowance::new(allowance, rung_allowance.as_ref());
         self.record_planned_attempt(&mut attempt, &task, &dispatch_plan);
         let contract = self.task_contract(role, spec, &task);
         let timeout_ms =
@@ -456,11 +467,13 @@ impl StreamingTaskDispatcher for GraphTaskDispatcher {
         // ── Settle cost and build outcome ────────────────────────────────
         // An agent its plan budget stopped before a model call (bug-4fabd0),
         // or that stopped itself at the spend limit the attempt gave it
-        // (gap-e14344).
-        let budget_stop = allowance
-            .as_deref()
-            .and_then(AttemptAllowance::refusal)
-            .or_else(|| dispatch_result.as_ref().ok().and_then(own_budget_stop));
+        // (gap-e14344); or a try that spent its rung's allowance the same
+        // ways (gap-3e770b).
+        let own_stop = dispatch_result.as_ref().ok().and_then(own_budget_stop);
+        let budget_stop = match allowance.as_deref() {
+            Some(allowance) => allowance.stop(own_stop),
+            None => own_stop.map(TryStop::Plan),
+        };
         let (outcome, output_signals, verification, denial) = match dispatch_result {
             Ok(dispatch) => {
                 let cost_usd = f64::from(dispatch.result.usage.cost_usd);
@@ -533,7 +546,8 @@ impl StreamingTaskDispatcher for GraphTaskDispatcher {
                         first_token_seen(&dispatch),
                     ),
                     (None, None) => match &budget_stop {
-                        Some(reason) => Settlement::budget_exhausted(reason),
+                        Some(TryStop::Plan(reason)) => Settlement::budget_exhausted(reason),
+                        Some(TryStop::Rung(reason)) => Settlement::allowance_spent(reason),
                         None => Settlement::provider_failure(
                             dispatch.result.output.body.as_text().unwrap_or_default(),
                             first_token_seen(&dispatch),
@@ -665,8 +679,15 @@ impl StreamingTaskDispatcher for GraphTaskDispatcher {
         if let Some(denial) = denial {
             return Err(denial);
         }
-        if let Some(reason) = budget_stop {
-            return Err(RokoError::gateway("budget", false, reason));
+        match budget_stop {
+            Some(TryStop::Plan(reason)) => return Err(RokoError::gateway("budget", false, reason)),
+            Some(TryStop::Rung(reason)) => {
+                return Err(RokoError::Agent {
+                    backend: outcome.provider_id.clone(),
+                    message: format!("{RUNG_ALLOWANCE}: {reason}"),
+                });
+            }
+            None => {}
         }
         if outcome.outcome == TaskDispatchOutcomeKind::Failed {
             return Err(RokoError::Agent {

@@ -355,15 +355,19 @@ impl LlmBackend for GeminiNativeBackend {
         let headers = generate_content_headers(&self.api_key);
 
         let client = crate::provider::shared_http_client();
-        let mut req = client.post(&endpoint).timeout(config.request_timeout);
+        let mut req = client.post(&endpoint);
         for (k, v) in &headers {
             req = req.header(k.as_str(), v.as_str());
         }
 
-        let response = req
-            .body(body)
-            .send()
+        // The request has no total timeout: `request_timeout` bounds the wait
+        // for the response and each silence in its stream, and the stream
+        // ends at `MAX_STREAM_DURATION` (bug-91796d).
+        let wait = config.request_timeout;
+        let request_start = std::time::Instant::now();
+        let response = tokio::time::timeout(wait, req.body(body).send())
             .await
+            .map_err(|_| crate::streaming::response_timeout(wait))?
             .map_err(|e| LlmError::Network(format!("request failed: {e}")))?;
 
         let status = response.status();
@@ -402,8 +406,9 @@ impl LlmBackend for GeminiNativeBackend {
             let mut acc_model: Option<String> = None;
 
             loop {
-                match response.chunk().await {
-                    Ok(Some(bytes)) => {
+                let next = crate::streaming::chunk_wait(wait, request_start);
+                match tokio::time::timeout(next, response.chunk()).await {
+                    Ok(Ok(Some(bytes))) => {
                         let text = String::from_utf8_lossy(&bytes);
                         pending.push_str(&text);
 
@@ -517,7 +522,7 @@ impl LlmBackend for GeminiNativeBackend {
                             emit_gemini_content_events(&chunk_json, &tx).await;
                         }
                     }
-                    Ok(None) => {
+                    Ok(Ok(None)) => {
                         // Stream ended.
                         emit_accumulated_usage(
                             acc_input,
@@ -537,10 +542,15 @@ impl LlmBackend for GeminiNativeBackend {
                         }
                         break;
                     }
-                    Err(e) => {
+                    Ok(Err(e)) => {
                         let _ = tx
                             .send(Err(LlmError::Network(format!("stream read: {e}"))))
                             .await;
+                        break;
+                    }
+                    Err(_) => {
+                        let error = crate::streaming::chunk_timeout(wait, request_start);
+                        let _ = tx.send(Err(error)).await;
                         break;
                     }
                 }

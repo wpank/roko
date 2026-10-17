@@ -17,20 +17,20 @@ TLS setup to it.
 **The policy** (gap-bccf58). The Roko and mini-swe-agent arms' sandboxes admit the proxy's port, since those harnesses
 call the model themselves, so the agent's shell can send the proxy requests of its own. The proxy therefore forwards
 only what an arm's harness sends, plain chat completions with the run's models and function tools, and answers
-anything else with a 403 before it is forwarded, checked in this order:
-- `path_not_allowed` (`vb_path_not_allowed`): any path but `/chat/completions` (`CHAT_PATH`), or one with a query
-  string. A provider's other endpoints include its own search and fetch: z.ai's `/web_search` and `/reader`,
-  Moonshot's `/tools/search`, `/tools/search_pro` and `/tools/fetch`, and OpenAI's Responses API (`/responses`).
-- `model_not_allowed` (`vb_model_not_allowed`): a `model` outside `models` (`vb run` passes the arm's `models_allow`
-  and the models its `model_swap` disturbances declare). This holds back OpenAI's search models
-  (`gpt-5-search-api`, `gpt-4o-search-preview`), which search the web unasked, and OpenRouter's `:online` slugs. With
-  `models` None the proxy checks no model, as for a test's own proxy.
-- `server_tool` (`vb_server_tool`): a server-side tool or search option (`server_tools`): a `tools` entry whose `type`
-  is not `function` (z.ai's `web_search` and `retrieval`, Moonshot's `builtin_function`, OpenRouter's
-  `openrouter:web_search`, the Responses API's own), a function named like a Moonshot built-in (`$web_search`),
-  `web_search_options` (OpenAI's and OpenRouter's) and OpenRouter's `plugins`. An upstream still forwards those its
-  `allow` names, for a harness that needs one (`vb run`: the arm file's `[providers.<name>] proxy_allow`). No arm
-  names any.
+anything else with a 403 before it is forwarded, whose error type is the refusal's name (none names the benchmark,
+bug-d68575), checked in this order:
+- `path_not_allowed`: any path but `/chat/completions` (`CHAT_PATH`), or one with a query string. A provider's other
+  endpoints include its own search and fetch: z.ai's `/web_search` and `/reader`, Moonshot's `/tools/search`,
+  `/tools/search_pro` and `/tools/fetch`, and OpenAI's Responses API (`/responses`).
+- `model_not_allowed`: a `model` outside `models` (`vb run` passes the arm's `models_allow` and the models its
+  `model_swap` disturbances declare). This holds back OpenAI's search models (`gpt-5-search-api`,
+  `gpt-4o-search-preview`), which search the web unasked, and OpenRouter's `:online` slugs. With `models` None the
+  proxy checks no model, as for a test's own proxy.
+- `server_tool`: a server-side tool or search option (`server_tools`): a `tools` entry whose `type` is not `function`
+  (z.ai's `web_search` and `retrieval`, Moonshot's `builtin_function`, OpenRouter's `openrouter:web_search`, the
+  Responses API's own), a function named like a Moonshot built-in (`$web_search`), `web_search_options` (OpenAI's
+  and OpenRouter's) and OpenRouter's `plugins`. An upstream still forwards those its `allow` names, for a harness
+  that needs one (`vb run`: the arm file's `[providers.<name>] proxy_allow`). No arm names any.
 The names were checked against each provider's documentation on 2026-10-17; Cerebras documents no server-side tool.
 A refused call is logged and metered under the task's key like any other (`policy_refused` in its meter), and since
 only an agent sends one, `vb run` has the census flag the task (`census.run_census`'s `proxy_refusals`). The policy
@@ -49,7 +49,7 @@ end, even when a fault cuts or rewrites what the client gets, so the meter holds
   error status.
 
 Each task's input tokens (every input class) are counted against the `input_token_cap`. A call that could take them
-past it is refused with a 403 (`vb_cap_exceeded`) and never forwarded: the proxy adds an upper bound on the call's
+past it is refused with a 403 (`cap_exceeded`) and never forwarded: the proxy adds an upper bound on the call's
 input to what the task has counted and what its calls in flight may still count (bug-c30764). The bound is the
 request's bytes plus `PREAMBLE_TOKENS`, since a token is never shorter than a byte and a provider may put a header of
 its own before the first message (as `mini_loop` bounds its calls). When the request extends one the task sent
@@ -57,7 +57,7 @@ before, with the same settings and that request's messages first, the bound is t
 the bytes of the messages it adds, so a long conversation's bound stays close to its real size. A call whose usage is
 missing counts its bound. The bound holds for text only: an image, audio or a file costs tokens that are no function
 of its bytes (an image a request only links to can cost more tokens than its URL has bytes). So while a cap is set,
-a request with a part that is not text is refused with a 403 (`vb_unbounded_input`) before it is forwarded
+a request with a part that is not text is refused with a 403 (`unbounded_input`) before it is forwarded
 (bug-d34a29): the pilot's arms send text only, and a cap that such a request could cross would be no cap.
 
 **Attempts.** A harness that has no per-attempt input cap of its own (Roko) gets one from the proxy:
@@ -530,19 +530,19 @@ class FaultProxy:
             "conversation": conversation})
         try:
             if policy:  # gap-bccf58: a request only an agent sends never reaches the provider
-                call.answer(403, _error(f"vb_{refusal}", policy[1], refusal))
+                call.answer(403, _error(refusal, policy[1], refusal))
                 return
             if refusal == "unbounded_input":
-                call.answer(403, _error("vb_unbounded_input", f"task {task!r} has an input-token cap, and the proxy "
+                call.answer(403, _error("unbounded_input", f"task {task!r} has an input-token cap, and the proxy "
                                         f"cannot bound this request's input: it holds a {media!r} part",
                                         "unbounded_input"))
                 return
             if refusal == "input_token_cap":
-                call.answer(403, _error("vb_cap_exceeded", f"task {task!r} could pass its input-token cap of {cap}: "
+                call.answer(403, _error("cap_exceeded", f"task {task!r} could pass its input-token cap of {cap}: "
                                         f"{counted} counted, and this call may add up to {bound}", "input_token_cap"))
                 return
             if refusal:
-                call.answer(403, _error("vb_cap_exceeded", f"conversation {conversation} of task {task!r} could pass "
+                call.answer(403, _error("cap_exceeded", f"conversation {conversation} of task {task!r} could pass "
                                         f"its attempt's input-token cap of {attempt_cap}: {talked} counted, and this "
                                         f"call may add up to {bound}", "attempt_input_cap"))
                 return

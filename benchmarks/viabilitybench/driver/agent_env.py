@@ -7,15 +7,18 @@ key can reach an agent, and `check` asserts that on the finished environment.
 
 - HOME and TMPDIR point into a per-task directory outside the workdir, so `~` never reaches the real home and its
   `~/.roko/.env`.
-- PATH starts with a per-task `.vb-bin/`, whose `python3` and `python` link to the driver's own base interpreter (the
-  families need Python 3.11 or newer), followed by the host's Rust toolchain, when there is one, and the system
-  directories.
+- PATH starts with a per-task `.local/bin/` (`BIN_DIR`), whose `python3` and `python` link to the driver's own base
+  interpreter (the families need Python 3.11 or newer), followed by the host's Rust toolchain, when there is one, and
+  the system directories.
 - The Rust toolchain (F7; Will's decision of 2026-10-02, `common/toolchain`): its own bin directory on PATH (cargo,
   rustc, rustfmt, clippy; not `~/.cargo/bin`, which holds whatever `cargo install` put there), RUSTUP_HOME the
   real one, and CARGO_HOME under the task's HOME, so cargo's registry cache is per run. Every sandbox the agent's
   code runs in keeps the real toolchain read-only (`common/sandbox`).
 - PYTHONDONTWRITEBYTECODE keeps `__pycache__` out of the tree the census labels; git gets a fixed identity and no
   system config, so an agent's `git commit` behaves the same on every host.
+- Nothing in it names the benchmark (bug-d68575): the bin directory, the git identity (`agent
+  <agent@example.invalid>`) and the fallback user are neutral, as everything else an agent sees must be, since the
+  benchmark's repository is public and a name an agent can search for leads it to the driver and the truth suites.
 
 The benchmark secret (gap-a8a160): `secret.preflight` reads the secret file once before the first task and passes the
 secret and its canary to `forbid`, so every environment built or checked for the rest of the run is refused if any
@@ -60,7 +63,7 @@ API:
     exec_scrubbed() -> None                         # start again with `driver_env()`, once; returns if already done
     proxy_env(url: str) -> dict                     # the variables that send HTTP clients through the egress proxy
     FORBIDDEN_NAME, PASSTHROUGH, SYSTEM_PATH, TOOLCHAIN_NAMES, DRIVER_PASSTHROUGH, DRIVER_SCRUBBED, PROXY_NAMES,
-    NO_PROXY
+    NO_PROXY, BIN_DIR                               # BIN_DIR: the per-task bin directory, relative to the agent's HOME
 """
 
 from __future__ import annotations
@@ -80,10 +83,12 @@ SYSTEM_PATH = ("/usr/local/bin", "/usr/bin", "/bin", "/usr/sbin", "/sbin")
 TOOLCHAIN_NAMES = ("RUSTUP_HOME", "CARGO_HOME")  # what `build` sets for the host's Rust toolchain (common/toolchain)
 FORBIDDEN_NAME = re.compile(r"^VB_|API_?KEY|TOKEN|SECRET|PASSW|CREDENTIAL|^AWS_|^ANTHROPIC_|^OPENAI_|^CEREBRAS_",
                             re.IGNORECASE)
+BIN_DIR = Path(".local") / "bin"  # under the agent's HOME, first on its PATH; neutral, as all it sees (bug-d68575)
+AGENT_USER = "agent"  # USER and LOGNAME when the driver's environment has none
 FIXED = {"SHELL": "/bin/bash", "TERM": "dumb", "NO_COLOR": "1", "PAGER": "cat", "GIT_PAGER": "cat",
          "PYTHONDONTWRITEBYTECODE": "1", "GIT_CONFIG_NOSYSTEM": "1", "GIT_TERMINAL_PROMPT": "0",
-         "GIT_AUTHOR_NAME": "vb-agent", "GIT_AUTHOR_EMAIL": "agent@vb.invalid",
-         "GIT_COMMITTER_NAME": "vb-agent", "GIT_COMMITTER_EMAIL": "agent@vb.invalid"}
+         "GIT_AUTHOR_NAME": "agent", "GIT_AUTHOR_EMAIL": "agent@example.invalid",
+         "GIT_COMMITTER_NAME": "agent", "GIT_COMMITTER_EMAIL": "agent@example.invalid"}
 _forbidden: tuple[str, ...] = ()  # set by `forbid`: the benchmark secret and its canary, once `vb run` has read them
 # What the driver itself keeps of the operator's environment: paths, locale and its own settings, never a credential.
 # TOOLCHAIN_NAMES let `toolchain.find` see a toolchain installed outside ~/.rustup and ~/.cargo.
@@ -102,7 +107,7 @@ def build(*, home: Path, extra: Mapping[str, str] | None = None, forbidden_value
     home = Path(home).absolute()
     if layout.within(home, layout.REPO_ROOT):
         raise AgentEnvError(f"an agent's HOME must be outside the repository, not {home}")
-    bin_dir, tmp = home / ".vb-bin", home / "tmp"
+    bin_dir, tmp = home / BIN_DIR, home / "tmp"
     for directory in (home, bin_dir, tmp):
         directory.mkdir(mode=0o700, parents=True, exist_ok=True)
     python = _base_python()
@@ -115,7 +120,7 @@ def build(*, home: Path, extra: Mapping[str, str] | None = None, forbidden_value
     rust = toolchain.find()  # the host's Rust toolchain, or None (module docstring)
     path = [str(bin_dir), *([str(rust.bin_dir)] if rust is not None else []), *SYSTEM_PATH]
     env.update(HOME=str(home), TMPDIR=str(tmp), PATH=os.pathsep.join(path),
-               USER=os.environ.get("USER", "vb-agent"), LOGNAME=os.environ.get("LOGNAME", "vb-agent"))
+               USER=os.environ.get("USER", AGENT_USER), LOGNAME=os.environ.get("LOGNAME", AGENT_USER))
     if rust is not None:
         env.update(rust.env(home))
     env.update(extra or {})

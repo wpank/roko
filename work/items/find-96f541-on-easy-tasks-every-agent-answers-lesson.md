@@ -9,7 +9,7 @@ goal = "learning"
 size = "M"
 subsystem = ["roko-cli/runtime-feedback", "roko-neuro"]
 created = 2026-10-15
-updated = 2026-10-15
+updated = 2026-10-17
 last_verified = 2026-10-15
 source = "status-quo-2026-10-15#finding-50"
 anchors = ["crates/roko-cli/src/runtime_feedback/verified_knowledge.rs"]
@@ -60,3 +60,18 @@ A decision on (1) is recorded here, and (2) is filed as its own bug or rejected 
 
 Evidence: `tmp/status-quo/2026-10-15/live/H-live-run.md:322-338` (learning-data table and the paragraph after it),
 `:352` (N7). No verify yet: this is an observation.
+
+2026-10-17, from round v6's dogfood run 3 (dogfood-will; 2026-10-16, roko 47b3cdd20; harder DSP tasks, learning on):
+the same two patterns. Evidence: `tmp/hermes-roko-v6/dogfood-will/evidence/run3/neuro/`.
+- **Change notes stored as lessons.** Of 4 stored entries, 3 are change notes:
+  - "The oscillator now supports a configurable pulse_width parameter …";
+  - "The ADSR envelope must handle linear segments, retrigger …";
+  - "The oscillator and noise implementations rely only on standard library …".
+
+  One is a lesson (SVF): "small numeric details in DSP code matter enough that a one-coefficient change can be the
+  difference between failing and passing acceptance tests".
+- **Fast promotion.** Three of the entries were `consolidated` within minutes (retrieved 2, gated 2, cited 0).
+- **Unrelated confirmations.** `knowledge-confirmations.jsonl` records the pulse-width change note as confirming the
+  ADSR and SVF entries, with which it shares no topic.
+
+The knowledge outcome log never credits any of them on Graph runs (bug-0a7ec1).

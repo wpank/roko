@@ -50,16 +50,19 @@ from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 
 BRANCH = "main"
-PRISTINE_REF = "refs/vb/pristine"
+PRISTINE_REF = "refs/vb/pristine"  # in the bundles only (archives and the battery read it); never left in a workdir
 SYMLINK = "120000"
 HEX40 = re.compile(r"[0-9a-f]{40}")
 GIT_TIMEOUT_S = 120.0
-# One identity and date for every commit made here, so equal trees give equal commits.
+# One identity and date for every commit made here, so equal trees give equal commits. The agent reads them in its
+# repo's log and reflog, so they name no benchmark (bug-d68575), nor do the messages.
 GIT_IDENTITY = {
-    "GIT_AUTHOR_NAME": "ViabilityBench", "GIT_AUTHOR_EMAIL": "vb@localhost",
-    "GIT_COMMITTER_NAME": "ViabilityBench", "GIT_COMMITTER_EMAIL": "vb@localhost",
+    "GIT_AUTHOR_NAME": "maintainer", "GIT_AUTHOR_EMAIL": "maintainer@example.invalid",
+    "GIT_COMMITTER_NAME": "maintainer", "GIT_COMMITTER_EMAIL": "maintainer@example.invalid",
     "GIT_AUTHOR_DATE": "2026-09-28T00:00:00+00:00", "GIT_COMMITTER_DATE": "2026-09-28T00:00:00+00:00",
 }
+BASE_MESSAGE = "Initial commit"  # the pristine base's
+EXPORT_MESSAGE = "Export of {what}"  # an export's: the working tree, or a revision
 
 
 class RepoError(RuntimeError):
@@ -104,11 +107,12 @@ def init_task_repo(workdir: Path, bundle: Path) -> Pristine:
     if os.path.lexists(bundle):
         raise RepoError(f"refusing to overwrite {bundle}")
     _git(workdir, "init", "-q", "-b", BRANCH)
-    commit, tree = _commit_disk(workdir, "vb: pristine base")
+    commit, tree = _commit_disk(workdir, BASE_MESSAGE)
     bundle.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
     _git(workdir, "update-ref", PRISTINE_REF, commit)
     _git(workdir, "bundle", "create", str(bundle), PRISTINE_REF)
     _git(workdir, "update-ref", "-d", PRISTINE_REF)
+    _remove_empty_ref_dirs(workdir / ".git", PRISTINE_REF)  # git keeps `refs/vb/`, which the agent would list
     return Pristine(bundle=bundle, commit=commit, tree=tree)
 
 
@@ -128,7 +132,7 @@ def export_tree(source: Path, dest: Path, *, rev: str | None = None) -> str:
     dest.mkdir(mode=0o700, parents=True)
     _git(dest, "init", "-q", "-b", BRANCH)
     _write_entries(dest, entries)
-    _, tree = _commit_disk(dest, "vb: export of " + ("the working tree" if rev is None else rev))
+    _, tree = _commit_disk(dest, EXPORT_MESSAGE.format(what="the working tree" if rev is None else rev))
     return tree
 
 
@@ -341,6 +345,17 @@ def _safe_relpath(raw: str) -> str:
 
 def _within(path: Path, root: Path) -> bool:
     return path == root or root in path.parents
+
+
+def _remove_empty_ref_dirs(git_dir: Path, ref: str) -> None:
+    """Remove the directories a deleted loose `ref` leaves under `git_dir`, up to `refs/`, while they are empty."""
+    directory = git_dir / PurePosixPath(ref).parent
+    while directory != git_dir / "refs" and directory.is_relative_to(git_dir / "refs"):
+        try:
+            directory.rmdir()  # only an empty one; a directory with a ref in it stays
+        except OSError:
+            return
+        directory = directory.parent
 
 
 def _git(cwd: Path, *args: str, input: bytes | None = None) -> bytes:

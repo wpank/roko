@@ -59,7 +59,7 @@ def test_pilot_a_manifest_rehearses_offline(tmp_path):
     instances, 65 priced ledger rows on BL0 and BL8, and every model call on the loopback stub."""
     results, work = tmp_path / "results", tmp_path / "work"
     secret_file = hmac_seed.write_secret_file(tmp_path / "config" / "secret")
-    with StubServer(lambda body: bash("echo VB_SUBMIT", "Submit at once.")) as stub:
+    with StubServer(lambda body: bash("echo SUBMIT_TASK", "Submit at once.")) as stub:
         assert vb.main(["campaign", "--manifest", str(PILOT_A), "--provider-url", stub.url, "--results",
                         str(results), "--work", str(work), "--secret-file", str(secret_file)]) == 0
         calls = Counter(request["model"] for request in stub.requests)

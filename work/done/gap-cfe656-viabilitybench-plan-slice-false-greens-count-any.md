@@ -2,15 +2,16 @@
 id = "gap-cfe656"
 kind = "gap"
 title = "ViabilityBench plan-slice false greens count any VF=0, not specifically a failed hidden suite"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p2"
 goal = "proof"
 size = "S"
 subsystem = ["benchmarks/viabilitybench/analysis"]
 created = 2026-10-02
-updated = 2026-10-02
-last_verified = 2026-10-02
+updated = 2026-10-16
+last_verified = 2026-10-16
+last_verified_rev = "66cedd1ed"
 source = "backlog wave reports 2026-10-02 (PK29 gap-064c40)"
 discovered_from = "gap-064c40 (reconciling paper text against S09 v1.4 surfaced this, though gap-064c40 itself only touched paper sections)"
 anchors = ["benchmarks/viabilitybench/analysis/metrics.py::plan_slice", "tmp/cybernetic-harness/specs/S09-experiments.md"]
@@ -20,6 +21,18 @@ links = { depends_on = [], blocks = [], related = [], supersedes = [], duplicate
 
 [[verify]]
 command = "grep -qw 'def test_plan_level_false_green_matches_hidden_suite_failure' benchmarks/viabilitybench/analysis/test_analysis.py && benchmarks/viabilitybench/.venv/bin/python -m pytest benchmarks/viabilitybench/analysis/test_analysis.py -k test_plan_level_false_green_matches_hidden_suite_failure -q"
+
+[closed]
+at = 2026-10-16
+at_ts = "2026-10-16T19:32:28Z"
+commit = "66cedd1ed"
+by = "commit trailer"
+executor = "claude-agent"
+via = "work-batch"
+size = "S"
+claimed_at = "2026-10-16T19:19:20Z"
+forced = false
+evidence = "66cedd1ed: metrics.py::hidden_failed checks vs.checks.hidden == 0 specifically; plan_slice's plan_level_false_greens now filters on reported_pass(row) and hidden_failed(row) instead of reported_pass(row) and not vs_minus(row), so a visible_clean regression or an A1 tamper hit (integrity == 0) with hidden == 1 no longer counts as a false green. The old, broader VF=0-while-gate-passed count is kept as plan_level_vf0_gate_passed so nothing is lost. test_analysis.py::run_record gained a `checks` override to build synthetic rows that isolate one VF=0 cause from the others; test_plan_level_false_green_matches_hidden_suite_failure covers all three causes (hidden fails, visible_clean regresses, integrity/tamper trips) and asserts only the hidden-suite-failure row lands in plan_level_false_greens. Verify: benchmarks/viabilitybench/.venv/bin/python -m pytest benchmarks/viabilitybench/analysis/test_analysis.py -k test_plan_level_false_green_matches_hidden_suite_failure -q passes; the full benchmarks/viabilitybench/analysis/ suite (113 passed, 1 skipped, pre-existing) shows no regression."
 +++
 
 ## Problem

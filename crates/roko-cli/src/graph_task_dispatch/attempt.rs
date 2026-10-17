@@ -802,6 +802,7 @@ impl AttemptContext {
             reflex_rule: self.reflex_rule,
             live_tool_calls: self.live_tool_calls,
             harness: self.harness,
+            bound: None,
         }
     }
 }
@@ -973,6 +974,9 @@ pub(super) struct SettledAttempt {
     /// M1's decision for the attempt, whose θ caps the task's climb after
     /// it (8124); `None` without an M1 sink.
     pub(super) harness: Option<Arc<crate::runtime_feedback::homeostasis::HarnessDecision>>,
+    /// The bound the try reached, in words, when it ended at its rung's
+    /// bound and the task's checks judged the work it left (gap-2c9412).
+    pub(super) bound: Option<String>,
 }
 
 impl SettledAttempt {

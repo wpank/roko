@@ -170,8 +170,8 @@ fn router_model(config: &RokoConfig, tier: TaskTier) -> String {
 /// calls, by roko-core's rule ([`effective_rates`], the one `GET /api/models`
 /// shows): the price snapshot's row for its slug, else its `[models.*]` rates
 /// with its provider's cache-read rate, else its built-in pricing. `None`
-/// when nothing prices it. A cache read with no rate of its own costs as
-/// input.
+/// when nothing prices it. A cache read with no rate of its own costs a
+/// tenth of the input rate, as dispatch charges it (bug-1c0a66).
 fn rates_for(config: &RokoConfig, snapshot: Option<&PriceSnapshot>, model: &str) -> Option<Rates> {
     let resolved = roko_core::agent::resolve_model(config, model);
     let slug = if resolved.slug.trim().is_empty() {
@@ -189,7 +189,7 @@ fn rates_for(config: &RokoConfig, snapshot: Option<&PriceSnapshot>, model: &str)
     let rates = effective_rates(snapshot, profile.as_ref(), slug)?;
     Some(Rates {
         input_per_m: rates.input_per_m,
-        cache_read_per_m: rates.cache_read_per_m.unwrap_or(rates.input_per_m),
+        cache_read_per_m: rates.cache_read_per_m,
         output_per_m: rates.output_per_m,
     })
 }

@@ -1461,6 +1461,53 @@ pub fn format_dashboard_event(
                 format!("Delivery into {target}: {state}"),
             )
         }
+        DashboardEvent::AttemptSettled {
+            plan_id,
+            task_id,
+            attempt,
+            settled,
+        } => {
+            let icon = if settled.verdict == "passed" {
+                "+"
+            } else {
+                "x"
+            };
+            let on = settled
+                .rung
+                .as_deref()
+                .map_or_else(String::new, |rung| format!(" on {rung}"));
+            let cost = settled
+                .cost_usd
+                .map_or_else(String::new, |usd| format!(", ${usd:.4}"));
+            let climb = if settled.climbed {
+                "; climbs a rung"
+            } else {
+                ""
+            };
+            (
+                format!("[{plan_id}/{task_id}]"),
+                icon,
+                format!(
+                    "Try {attempt}{on} ({}): {}{cost}{climb}",
+                    settled.model, settled.verdict
+                ),
+            )
+        }
+        DashboardEvent::LadderExhausted {
+            plan_id,
+            task_id,
+            rung,
+            model,
+            suggestion,
+            ..
+        } => {
+            let rung = rung.as_deref().unwrap_or("-");
+            (
+                format!("[{plan_id}/{task_id}]"),
+                "x",
+                format!("Ladder exhausted on {rung} ({model}): {suggestion}"),
+            )
+        }
         DashboardEvent::Error { message } => {
             let trunc = truncate_chars(message, 120);
             (String::new(), "x", format!("Error: {trunc}"))

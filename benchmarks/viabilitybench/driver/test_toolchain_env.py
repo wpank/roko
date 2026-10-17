@@ -30,13 +30,13 @@ def test_agent_env_carries_the_toolchain_and_a_cargo_home_of_its_own(tmp_path, m
     home = tmp_path / "home"
     env = agent_env.build(home=home)
     # The toolchain's own bin directory, not the operator's ~/.cargo/bin with whatever `cargo install` put there.
-    assert env["PATH"].split(os.pathsep) == [str(home / ".vb-bin"), str(rust.bin_dir), *agent_env.SYSTEM_PATH]
+    assert env["PATH"].split(os.pathsep) == [str(home / agent_env.BIN_DIR), str(rust.bin_dir), *agent_env.SYSTEM_PATH]
     assert (env["RUSTUP_HOME"], env["CARGO_HOME"]) == (str(rust.rustup_home), str(home / ".cargo"))
     assert str(rust.cargo_home) not in "".join(env.values())  # the registry cache is the run's own
     agent_env.check(env)
     monkeypatch.setattr(agent_env.toolchain, "find", lambda environ=None: None)
     bare = agent_env.build(home=tmp_path / "bare")
-    assert bare["PATH"].split(os.pathsep) == [str(tmp_path / "bare" / ".vb-bin"), *agent_env.SYSTEM_PATH]
+    assert bare["PATH"].split(os.pathsep) == [str(tmp_path / "bare" / agent_env.BIN_DIR), *agent_env.SYSTEM_PATH]
     assert {"RUSTUP_HOME", "CARGO_HOME"}.isdisjoint(bare)
 
 

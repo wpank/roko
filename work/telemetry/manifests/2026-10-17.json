@@ -1,7 +1,7 @@
 {
  "schema": "roko.work_manifest/1",
  "date": "2026-10-17",
- "head": "f9318c6a0",
+ "head": "e61b1f30f",
  "files": [
   {
    "path": "work/telemetry/events/9f227c4b-a4d2-4e84-a0a4-9da0d8904d57.jsonl",
@@ -264,6 +264,11 @@
    "rows": 3
   },
   {
+   "path": "work/telemetry/events/work-batch-2026-10-17-1024.jsonl",
+   "sha256": "035b46e103827eb4c3169091413169532cadbb892bd807e4525e07b5775f316f",
+   "rows": 9
+  },
+  {
    "path": "work/telemetry/DEFINITIONS.md",
    "sha256": "ee0525db5ff09afe9f0b1509cb0d22162b795f2beae153cf859a98b999f86720",
    "rows": 175
@@ -275,8 +280,8 @@
   },
   {
    "path": "work/{done,closed}/*.md [closed]",
-   "sha256": "62a284855b798d2a51a15f7e84631caf1a9dd3baa12e9c9576ad3dc337f5fda0",
-   "rows": 1197
+   "sha256": "78826f3e429f844c12e78dc8ab50fb0c1e8fbd2df68aa0cd65ee6f6ac047a0fc",
+   "rows": 1200
   }
  ]
 }

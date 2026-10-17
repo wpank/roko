@@ -28,6 +28,7 @@ import agent_env
 import campaign
 import caps
 import census
+import harness
 import layout
 import ledger
 import materialize
@@ -90,9 +91,6 @@ for number, model in enumerate(models):
         handle.write(json.dumps(episode) + "\n")
     with open(roko / "learn" / "costs.jsonl", "a") as handle:
         handle.write(json.dumps({"model": model, "provider": "cerebras", "plan_id": slug, "task_id": "T01"}) + "\n")
-if behaviour.get("proxy_log"):  # what the metering proxy would have logged for these calls
-    with open(behaviour["proxy_log"], "a") as handle:
-        handle.writelines(json.dumps(row) + "\n" for row in behaviour["proxy"])
 if behaviour["solve"]:
     (repo / "calc" / "ops.py").write_text(behaviour["solution"])
 extensions = {"roko.gate.verdict@1": {"value": {"verdicts": {"T01": verdict or "passed"}}}} if succeeded else {}
@@ -213,8 +211,9 @@ def real_arm_spec(arm_name: str, model: str = PIN) -> planemit.PlanSpec:
 
 
 def fake_roko(tmp_path: Path, models: list[str], *, status: str = "succeeded", **extra: object) -> tuple[Path, Path]:
-    """Write the fake roko and its behaviour (`extra` adds episode `completed` times and `durations`, and `proxy` rows
-    to append to `proxy_log`); return the binary and the log of its calls."""
+    """Write the fake roko and its behaviour (`extra` adds episode `completed` times and `durations`); return the binary
+    and the log of its calls. It never writes the run's proxy log: no roko process may write the run directory
+    (bug-d308f7), and the metering proxy writes it from the driver's process."""
     log, behaviour = tmp_path / "fake-roko.jsonl", tmp_path / "fake-roko.json"
     behaviour.write_text(json.dumps({"models": models, "status": status, "solve": True, "solution": SOLUTION,
                                      "log": str(log), **extra}))
@@ -328,7 +327,7 @@ def test_roko_full_arm_overlay_reaches_the_emitted_config(tmp_path, monkeypatch)
         assert not {"spec_quality", "audit", "self_model", "homeostasis"} & set(config)
         # Byte-identical to before the overlay existed: nothing is appended after CONFIG_TAIL's own last line.
         assert emitted.config_text.endswith("[learning.dreams]\ntrigger_on_plan_complete = false\n")
-    assert planemit.TEMPLATE_SHA256 == "1b7b9906dd846ef598602bee770d0b6d3270e885f6262f76c3fbdd9e97b87f2b"
+    assert planemit.TEMPLATE_SHA256 == "392ef78bd0db0e9e65256a77aaee191a339e0c12a326021249322d855892c5f8"
 
 
 def test_vb_run_refuses_a_binary_that_rejects_the_emitted_plan(places, tmp_path, capsys):
@@ -848,10 +847,11 @@ def test_the_roko_arm_enforces_the_per_attempt_input_cap(places, tmp_path):
     assert [(attempt["calls"], attempt["ended_by"]) for attempt in attempts] == [(3, "attempt_input_tokens")] * 3
     assert record["execution"]["status"] == "failed" and validate.validate("run-record", record) == []
 
-def test_plan_slice_records_carry_queue_waits_and_class_costs(places, tmp_path):
+def test_plan_slice_records_carry_queue_waits_and_class_costs(places, tmp_path, monkeypatch):
     # gap-04e8e2: the fake roko records two attempts with their dispatch times, and the metering proxy's log holds
     # their calls, one of them rate limited. The record carries the queue wait, each attempt's class and busy time,
-    # and the cost per class; the schema accepts them; and the plan-level report prints them.
+    # and the cost per class; the schema accepts them; and the plan-level report prints them. The log is written from
+    # the driver's process, as the proxy writes it, since no roko process may write the run directory (bug-d308f7).
     out = places["results"] / "TEST-ROKO" / "run-1"
     usage = {"tokens_in": 900, "tokens_cache_read": 0, "tokens_out": 120, "tokens_reasoning": 0}
     call = {"task": "F1-l1-0001.s1", "model_requested": PIN, "model_reported": PIN, "usage": usage,
@@ -861,7 +861,15 @@ def test_plan_slice_records_carry_queue_waits_and_class_costs(places, tmp_path):
     calls = [{**row, "ordinal": ordinal, "ts": f"2026-09-29T15:00:{second:02d}Z"}
              for ordinal, (row, second) in enumerate(((call, 1), (limited, 2), (call, 4), (call, 11), (call, 13)), 1)]
     binary, _ = fake_roko(tmp_path, [PIN, PIN], completed=["2026-09-29T15:00:06Z", "2026-09-29T15:00:14Z"],
-                          durations=[5.5, 4.5], proxy=calls, proxy_log=str(out / "proxy.jsonl"))
+                          durations=[5.5, 4.5])
+    read_rows = run_roko._proxy_rows
+
+    def logged_then_read(ctx: harness.TaskContext) -> list[dict] | None:
+        with (ctx.ledger.path.parent / "proxy.jsonl").open("a", encoding="utf-8") as log:  # what the proxy logged
+            log.writelines(json.dumps(row) + "\n" for row in calls)
+        return read_rows(ctx)
+
+    monkeypatch.setattr(run_roko, "_proxy_rows", logged_then_read)
     assert run_vb(places, arm_with(tmp_path, binary)) == 0
     [record] = read_jsonl(out / "records.jsonl")
     assert validate.validate("run-record", record) == []
@@ -1025,9 +1033,10 @@ def test_real_roko_gate_meets_the_flaky_verify_wrapper(places, tmp_path):
     assert validate.validate("run-record", record) == []
     [emitted] = [event for event in json.loads((out / record["provenance"]["transcript_ref"]).read_text())
                  if event.get("event") == "emit"]
-    # Named by PATH, so no host path enters Roko's prompt, which shows its verify command (A4).
+    # Named by PATH, so no host path enters Roko's prompt, which shows its verify command (A4); a neutral name
+    # (bug-d68575).
     assert tomllib.loads(emitted["tasks_toml"])["task"][0]["verify"][0]["command"] == (
-        "vb-verify 'python3 -m unittest discover -s tests/visible'")
+        "run-shell 'python3 -m unittest discover -s tests/visible'")
     assert (record["execution"]["status"], record["execution"]["reason"]) == ("failed", "gate_failed")
     assert len(record["execution"]["attempts"]) == 3  # max_retries = 2: every attempt met a flake
     visible = record["visible"]

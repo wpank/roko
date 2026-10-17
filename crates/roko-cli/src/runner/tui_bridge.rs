@@ -376,13 +376,24 @@ impl TuiBridge {
         );
     }
 
-    /// A single line of gate output (streamed).
-    pub fn gate_output_line(&self, plan_id: &str, task_id: &str, gate: &str, line: &str) {
+    /// A single line of gate output (streamed): `line`, which the `gate` of
+    /// attempt `attempt` of `task_id` wrote to `stream`.
+    pub fn gate_output_line(
+        &self,
+        plan_id: &str,
+        task_id: &str,
+        attempt: u32,
+        gate: &str,
+        line: &str,
+        stream: &str,
+    ) {
         self.sender.publish(DashboardEvent::GateOutputLine {
             plan_id: plan_id.to_string(),
             task_id: task_id.to_string(),
+            attempt,
             gate: gate.to_string(),
             line: line.to_string(),
+            stream: stream.to_string(),
         });
     }
 

@@ -2,7 +2,7 @@
 id = "bug-72d775"
 kind = "bug"
 title = "A model call cut off mid-stream records no usage: the provider bills what it streamed while roko records $0, so caps and the spend counter undercount"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p2"
 goal = "core"
@@ -11,6 +11,7 @@ subsystem = ["roko-agent/tool_loop"]
 created = 2026-10-17
 updated = 2026-10-17
 last_verified = 2026-10-17
+last_verified_rev = "d9b2f60cb"
 source = "tmp/hermes-roko-v6/findings/dogfood-will.md#R3-3 (dogfood-will, 2026-10-16)"
 discovered_from = "hermes-roko-v6 round: dogfood-will Run 3, pocket-synth through Hermes"
 anchors = ["crates/roko-agent/src/tool_loop/mod.rs::send_turn_streaming", "crates/roko-agent/src/tool_loop/mod.rs::run_inner"]
@@ -18,6 +19,13 @@ links = { depends_on = [], blocks = [], related = [], supersedes = [], duplicate
 
 [[verify]]
 command = "grep -rqw 'fn a_call_cut_off_mid_stream_records_what_it_streamed' crates/roko-agent/ && cargo test -p roko-agent a_call_cut_off_mid_stream_records_what_it_streamed"
+
+[closed]
+at = 2026-10-17
+at_ts = "2026-10-17T11:48:44Z"
+commit = "159c7f825"
+forced = false
+evidence = "159c7f825: the tool loop tallies what each streamed model call delivers. A call cut off mid-stream, or whose stream ends without reporting usage, records the usage the provider reported, else an estimate (output at about 4 bytes a token and at least one token a delta, input from the request, uncached), priced, in the loop usage, the turn budget and an estimated turn trace; the attempt then records cost.source estimated with a billed_usd, and the plan cap counts it. A call that broke before it streamed anything stays unrecorded. Test a_call_cut_off_mid_stream_records_what_it_streamed (a cut call with no report, a reported input kept, nothing streamed, a stream closed without usage, the agent result). Zero-cost E2E (tmp/hermes-roko-v6/roko-recovery/e2e: roko plan run against a stand-in OpenAI-compatible glm-4.7 that streams 8,000 one-token reasoning deltas, then an overload error object): the v5 main binary 47b3cdd20 recorded 0 tokens, cost unknown and a plan spend of $0; this branch records 2,180 input tokens (estimated) and 8,000 output tokens, billed $0.0189 (estimated), and the plan budget spent_usd $0.018908. A stream that stalls after the same deltas records the same. Checks: cargo test -p roko-agent and clippy -D warnings pass; the [[verify]] passes with main 37088dc12 merged in."
 +++
 
 ## Problem

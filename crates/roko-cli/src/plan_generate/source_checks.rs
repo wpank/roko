@@ -13,13 +13,14 @@
 
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
+use std::path::Path;
 use std::sync::LazyLock;
 
 use regex::Regex;
 use roko_gate::spec_quality::ac_id;
 use roko_learn::runtime_feedback::{GenerationSourceCheck, GenerationSourceChecks};
 
-use super::runnable::Unrunnable;
+use super::runnable::{Probe, Unrunnable, check_command};
 use crate::task_parser::TasksFile;
 
 /// The most of one check that a prompt or a report quotes, in characters.
@@ -49,6 +50,9 @@ pub(super) struct SourceCheck {
     pub id: String,
     /// The check, on one line.
     pub text: String,
+    /// The command that runs it, when it names unittest ids, expanded by
+    /// roko rather than left to the planner (bug-8fe462).
+    pub run: Option<String>,
 }
 
 /// The checks `source` states, numbered in order.
@@ -66,6 +70,7 @@ pub(super) fn source_checks(source: &str) -> Vec<SourceCheck> {
         .map(|(index, text)| SourceCheck {
             id: format!("SC{}", index + 1),
             text,
+            run: None,
         })
         .collect()
 }
@@ -762,10 +767,88 @@ pub(super) fn planner_block(checks: &[SourceCheck], kind: &str) -> String {
          check it>\"`. Never merge two checks, reword one away, or leave one out.\n\n",
         checks.len()
     );
+    if checks.iter().any(|check| check.run.is_some()) {
+        block.push_str(
+            "A check given with `run:` names its tests already: use that command as its step's \
+             command, unchanged.\n\n",
+        );
+    }
     for check in checks {
-        let _ = writeln!(block, "- {}: {}", check.id, check.text);
+        let _ = write!(block, "- {}: {}", check.id, check.text);
+        if let Some(run) = &check.run {
+            let _ = write!(block, " (run: `{run}`)");
+        }
+        block.push('\n');
     }
     block
+}
+
+/// Give each of `checks` that names unittest ids the command that runs them
+/// (bug-8fe462): wildcards expanded from the workspace's test files.
+pub(super) fn attach_runs(checks: &mut [SourceCheck], workdir: &Path, probe: &Probe) {
+    for check in checks {
+        check.run = check_command(&check.text, workdir, probe);
+    }
+}
+
+/// Run each source check that has a command with that command (bug-8fe462),
+/// in every verify step that covers only such checks and cannot pass as
+/// written (`unrunnable`): a planner that invented test names for a
+/// wildcard check gets the real ones. Returns one line per step changed.
+pub(super) fn apply_runs(
+    plan: &mut TasksFile,
+    checks: &[SourceCheck],
+    unrunnable: &[Unrunnable],
+) -> Vec<String> {
+    let mut applied = Vec::new();
+    for task in &mut plan.tasks {
+        for (number, step) in (1..).zip(task.verify.iter_mut()) {
+            if !unrunnable
+                .iter()
+                .any(|stuck| stuck.task == task.id && stuck.step == number)
+            {
+                continue;
+            }
+            let named: Vec<String> = step
+                .covers
+                .iter()
+                .map(|cover| cover.trim())
+                .flat_map(|cover| {
+                    task.acceptance
+                        .iter()
+                        .enumerate()
+                        .filter(|(index, item)| ac_id(item, *index) == cover)
+                        .flat_map(|(_, item)| named_checks(item))
+                        .chain(named_checks(cover))
+                        .collect::<Vec<_>>()
+                })
+                .collect();
+            // Every check it covers must have a command of its own.
+            let Some(mut runs) = named
+                .iter()
+                .map(|id| {
+                    checks
+                        .iter()
+                        .find(|check| &check.id == id)
+                        .and_then(|check| check.run.as_deref())
+                })
+                .collect::<Option<Vec<&str>>>()
+            else {
+                continue;
+            };
+            runs.dedup();
+            if runs.is_empty() {
+                continue;
+            }
+            let command = runs.join(" && ");
+            applied.push(format!(
+                "{} step {number}: `{}` became `{command}`, the source check's own tests",
+                task.id, step.command
+            ));
+            step.command = command;
+        }
+    }
+    applied
 }
 
 /// The prompt that asks the planner once more for a plan that leaves some of

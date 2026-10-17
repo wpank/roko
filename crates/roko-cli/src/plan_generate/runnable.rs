@@ -145,6 +145,129 @@ pub(super) fn runners_block(workdir: &Path, probe: &Probe) -> Option<String> {
     })
 }
 
+/// The command that runs a source check stated as unittest ids (bug-8fe462),
+/// such as `tests.test_osc.NoiseTest.*` or
+/// `tests.test_svf.SVFTest.test_lowpass_*`, `test_bandpass_mode`, so the planner
+/// need not invent test names: a class wildcard runs the class, a method
+/// prefix runs the matching methods its file defines (or `-k <prefix>` over
+/// the module when the file does not exist yet), and a bare method name
+/// after an id belongs to that id's class. `None` when `text` names no
+/// unittest id or `python3` is not installed.
+pub(super) fn check_command(text: &str, workdir: &Path, probe: &Probe) -> Option<String> {
+    static SPAN: LazyLock<Regex> =
+        LazyLock::new(|| Regex::new(r"`([^`]+)`").expect("valid code span regex"));
+    static ID: LazyLock<Regex> = LazyLock::new(|| {
+        Regex::new(r"^[A-Za-z_]\w*(\.[A-Za-z_]\w*)+(\.\w*\*)?$").expect("valid unittest id regex")
+    });
+    static METHOD: LazyLock<Regex> =
+        LazyLock::new(|| Regex::new(r"^test\w*\*?$").expect("valid method regex"));
+    let mut ids: Vec<String> = Vec::new();
+    let mut selections: Vec<String> = Vec::new();
+    let mut class: Option<String> = None;
+    for span in SPAN
+        .captures_iter(text)
+        .filter_map(|captures| captures.get(1))
+    {
+        let span = span.as_str().trim();
+        let id = if ID.is_match(span) {
+            span.to_string()
+        } else if METHOD.is_match(span)
+            && let Some(class) = &class
+        {
+            format!("{class}.{span}")
+        } else {
+            continue;
+        };
+        let (Some((module, _)), Some((head, last))) =
+            (module_file(&id, workdir), id.rsplit_once('.'))
+        else {
+            continue;
+        };
+        if head != module {
+            class = Some(head.to_string());
+        }
+        match last.strip_suffix('*') {
+            None => ids.push(id.clone()),
+            Some("") => ids.push(head.to_string()),
+            Some(prefix) => {
+                let defined = class_methods(&head, workdir)
+                    .into_iter()
+                    .filter(|method| method.starts_with(prefix))
+                    .map(|method| format!("{head}.{method}"))
+                    .collect::<Vec<_>>();
+                if defined.is_empty() {
+                    selections.push(format!("python3 -m unittest -k {prefix} {module}"));
+                } else {
+                    ids.extend(defined);
+                }
+            }
+        }
+    }
+    if (ids.is_empty() && selections.is_empty()) || !probe.command("python3") {
+        return None;
+    }
+    let mut commands = Vec::new();
+    if !ids.is_empty() {
+        commands.push(format!("python3 -m unittest {}", ids.join(" ")));
+    }
+    commands.extend(selections);
+    Some(commands.join(" && "))
+}
+
+/// The dotted module of a unittest `id` and its file: the longest leading
+/// part that is a `.py` file in `workdir`, or, for a test module not written
+/// yet, the part up to the first capitalized name (a class). `None` when
+/// neither a file nor a `test` package or module names it.
+fn module_file(id: &str, workdir: &Path) -> Option<(String, String)> {
+    let parts: Vec<&str> = id.split('.').collect();
+    let existing = (1..parts.len()).rev().find_map(|split| {
+        let file = format!("{}.py", parts[..split].join("/"));
+        workdir
+            .join(&file)
+            .is_file()
+            .then(|| (parts[..split].join("."), file))
+    });
+    existing.or_else(|| {
+        let split = parts
+            .iter()
+            .position(|part| part.starts_with(char::is_uppercase))?;
+        let module = &parts[..split];
+        module
+            .iter()
+            .any(|part| part.starts_with("test"))
+            .then(|| (module.join("."), format!("{}.py", module.join("/"))))
+    })
+}
+
+/// The `test` methods class `id` (`module.Class`) defines in its file, in
+/// file order; none when the file or the class is not there.
+fn class_methods(id: &str, workdir: &Path) -> Vec<String> {
+    static DEF: LazyLock<Regex> =
+        LazyLock::new(|| Regex::new(r"^\s+def\s+(test\w*)\s*\(").expect("valid def regex"));
+    let Some((module, class)) = id.rsplit_once('.') else {
+        return Vec::new();
+    };
+    let file = format!("{}.py", module.replace('.', "/"));
+    let Ok(text) = std::fs::read_to_string(workdir.join(file)) else {
+        return Vec::new();
+    };
+    let header = format!("class {class}");
+    let mut inside = false;
+    let mut methods = Vec::new();
+    for line in text.lines() {
+        if !line.starts_with([' ', '\t']) && !line.trim().is_empty() {
+            inside = line
+                .strip_prefix(&header)
+                .is_some_and(|rest| rest.starts_with(['(', ':']));
+            continue;
+        }
+        if inside && let Some(name) = DEF.captures(line).and_then(|captures| captures.get(1)) {
+            methods.push(name.as_str().to_string());
+        }
+    }
+    methods
+}
+
 /// Repair what keeps `plan`'s verify steps from running and roko can fix
 /// itself (gap-ecafde): a pytest step on a machine without pytest, whose
 /// test files are unittest files, runs them with `python3 -m unittest`; and a
@@ -712,6 +835,60 @@ mod tests {
         assert_eq!(
             problems(&plan, temp.path(), &Probe::with(&[("grep", true)], &[]))[0].why,
             "it needs `docs/notes.md`, which does not exist and no task writes before it runs"
+        );
+    }
+
+    /// bug-8fe462: a check stated as a unittest wildcard gets the command
+    /// that runs its real tests: a class wildcard runs the class, a method
+    /// prefix the matching methods its file defines (or `-k` while the file
+    /// does not exist), and a bare method name joins the id before it.
+    #[test]
+    fn wildcard_checks_expand_to_their_tests() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        std::fs::create_dir_all(temp.path().join("tests")).expect("tests");
+        std::fs::write(
+            temp.path().join("tests/test_svf.py"),
+            "import unittest\n\nclass SVFTest(unittest.TestCase):\n    \
+             def test_lowpass_attenuates_highs(self):\n        pass\n\n    \
+             def test_lowpass_passes_lows(self):\n        pass\n\n    \
+             def test_highpass_mode(self):\n        pass\n\n\
+             class OtherTest(unittest.TestCase):\n    def test_lowpass_elsewhere(self):\n        pass\n",
+        )
+        .expect("a test module");
+        let probe = Probe::with(&[("python3", true)], &[]);
+        let run = |text: &str| check_command(text, temp.path(), &probe);
+        assert_eq!(
+            run("INV-4 | `tests.test_osc.NoiseTest.*` | white: |mean| < 0.05").as_deref(),
+            Some("python3 -m unittest tests.test_osc.NoiseTest")
+        );
+        assert_eq!(
+            run("INV-5 | `tests.test_svf.SVFTest.test_lowpass_*` | LP 400 Hz").as_deref(),
+            Some(
+                "python3 -m unittest tests.test_svf.SVFTest.test_lowpass_attenuates_highs \
+                 tests.test_svf.SVFTest.test_lowpass_passes_lows"
+            )
+        );
+        assert_eq!(
+            run("INV-6 | `tests.test_svf.SVFTest.test_highpass_mode`, `test_bandpass_mode` | HP")
+                .as_deref(),
+            Some(
+                "python3 -m unittest tests.test_svf.SVFTest.test_highpass_mode \
+                 tests.test_svf.SVFTest.test_bandpass_mode"
+            )
+        );
+        assert_eq!(
+            run("`tests.test_env.ADSRTest.test_adsr_*` shapes the envelope").as_deref(),
+            Some("python3 -m unittest -k test_adsr_ tests.test_env")
+        );
+        assert_eq!(run("`TuringMachine` at `change=0.0` repeats"), None);
+        assert_eq!(
+            check_command(
+                "`tests.test_osc.NoiseTest.*`",
+                temp.path(),
+                &Probe::with(&[], &[])
+            ),
+            None,
+            "no python3"
         );
     }
 

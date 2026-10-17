@@ -14,6 +14,9 @@ source = "round-v6-dogfood-desktop#L4-g1"
 discovered_from = "agent:dogfood-desktop (round v6 showcase take L4, 2026-10-18)"
 anchors = ["crates/roko-cli/src/plan_generate/runnable.rs::repair", "crates/roko-cli/src/plan_generate/runnable.rs::named_tests", "crates/roko-cli/src/plan_generate/source_checks.rs"]
 links = { depends_on = [], blocks = [], related = ["gap-ecafde"], supersedes = [], duplicate_of = "" }
+
+[[verify]]
+command = "grep -rqw 'fn wildcard_spec_checks_become_runnable_steps' crates/roko-cli/src && cargo test -p roko-cli --lib -- wildcard_spec_checks_become_runnable_steps wildcard_checks_expand_to_their_tests"
 +++
 
 ## Problem

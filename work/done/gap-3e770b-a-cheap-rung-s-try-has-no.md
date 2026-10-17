@@ -2,14 +2,16 @@
 id = "gap-3e770b"
 kind = "gap"
 title = "A cheap rung's try has no bound of its own: one gpt-oss-120b attempt looped 30 turns ($0.159) until the plan cap stopped it, blamed on the harness, so the ladder never climbed"
-status = "open"
-triage = "unverified"
+status = "done"
+triage = "verified"
 severity = "p1"
 goal = "golden-path"
 size = "M"
 subsystem = ["roko-core/config"]
 created = 2026-10-16
-updated = 2026-10-16
+updated = 2026-10-17
+last_verified = 2026-10-17
+last_verified_rev = "69361cb50"
 source = "tmp/hermes-roko-v6/findings/plans-research.md §3.3 (R1 pocket-synth run, 2026-10-16); round v6 brief"
 discovered_from = "plans-research proposed item 7"
 anchors = ["crates/roko-cli/src/graph_task_dispatch.rs::dispatch", "crates/roko-cli/src/graph_task_dispatch/streaming.rs", "crates/roko-cli/src/graph_task_dispatch/ladder.rs::record_attempt_ladder", "crates/roko-cli/src/graph_task_dispatch/watchdog.rs::run_watched", "crates/roko-core/src/config/routing.rs::LadderConfig"]
@@ -18,6 +20,13 @@ links = { depends_on = [], blocks = [], related = ["gap-460230", "bug-4fabd0", "
 
 [[verify]]
 command = "grep -rqw 'fn a_turn_bounded_try_climbs_the_ladder' crates/roko-cli/src && grep -rqw 'fn a_spend_bounded_try_climbs_the_ladder' crates/roko-cli/src && cargo test -p roko-cli --lib bounded_try_climbs_the_ladder"
+
+[closed]
+at = 2026-10-17
+at_ts = "2026-10-17T11:16:36Z"
+commit = "b0b57f6dd"
+forced = false
+evidence = "b0b57f6dd: a try on a rung the task can still climb from is bounded. [routing.ladder] max_turns and max_usd set a rung's allowance by name; by default each rung below the highest one the task can reach gets half the turns of the rung above it, from the tier's cap (focused 60: cheap 15, mid 30), never fewer than 12, and the highest rung and a pinned model keep the tier's cap. The bound applies once the attempt is routed, so a retry on the rung keeps it, with the resume note. A try's calls draw on the plan's hold first, then the rung's max_usd; a rung stop (roko's tool loop, the streamed-spend watch, or the Claude CLI at --max-budget-usd) settles turn_cap, blamed on the agent (reason rung_allowance), and is retried with a resume note; a plan stop stays budget_exhausted. a_turn_bounded_try_climbs_the_ladder and a_spend_bounded_try_climbs_the_ladder pass. Live run (pocket-synth from the plans-research showcase, binary 69361cb50, roko init --profile python defaults, no [pipeline.focused] override, --budget-override 0.60): ENV passed on cheap gpt-oss-120b (11 turns, $0.036); OSC hit its 15-turn bound ($0.069), then passed on its second cheap try (5 turns, $0.011); SVF hit the 15-turn bound twice on cheap ($0.057, $0.066) and climbed to mid glm-4.7 (route_decided ladder_reason climb, ladder_step 1), where the immune boundary denied its try after 136 s (provider_stream_limit_exceeded, R3-1); the run was stopped by SIGTERM during the next mid try, $0.2442 recorded. Before (R1, plans-research §3.3): $0.2477 under a $0.25 cap; SVF ran one 30-turn attempt ($0.159) until the plan cap stopped it as budget_exhausted, blamed on the harness, and never climbed. Checks at 69361cb50 (the stack rebuilt on main 9df2f5948): fmt --check, clippy -D warnings (roko-core, roko-cli, roko-serve), lib tests roko-core 2038 passed, roko-serve 1052 passed, roko-cli 3769 passed with one known load flake (plan_check_publishes_start_heartbeat_and_finish, bug-8d8f98, passes alone); the [[verify]] passes."
 +++
 
 ## Problem

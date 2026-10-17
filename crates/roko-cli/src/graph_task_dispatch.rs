@@ -102,6 +102,7 @@ pub use budget::{
 pub use decision_log::planned_content_decisions;
 pub use feedback::{GraphFeedbackContext, SectionOutcomes};
 pub use inert_settings::{InertGraphSetting, graph_engine_inert_settings};
+pub(crate) use ladder::{FAILURES_PER_RUNG, LADDER_MIN_RETRIES, MAX_ESCALATIONS};
 pub use operator_directives::OperatorDirectives;
 pub use operator_stop::OperatorStops;
 pub(crate) use retry_budget::TaskRetryBudgets;

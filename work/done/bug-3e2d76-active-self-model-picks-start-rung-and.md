@@ -2,15 +2,16 @@
 id = "bug-3e2d76"
 kind = "bug"
 title = "active_self_model_picks_start_rung_and_logs_propensity fails on days whose exploration draw lands on the greedy model"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p2"
 goal = "truth"
 size = "S"
 subsystem = ["roko-cli/dispatch"]
 created = 2026-10-14
-updated = 2026-10-15
-last_verified = 2026-10-14
+updated = 2026-10-16
+last_verified = 2026-10-16
+last_verified_rev = "4c1fc80b0"
 source = "roko-loops worker, full roko-cli lib run on 2026-10-14"
 anchors = ["crates/roko-cli/src/dispatch/model_routing.rs"]
 lane = "rust-hot"
@@ -18,6 +19,18 @@ links = { depends_on = [], blocks = [], related = [], supersedes = [], duplicate
 
 [[verify]]
 command = "cargo test -p roko-cli active_self_model_picks_start_rung_and_logs_propensity"
+
+[closed]
+at = 2026-10-16
+at_ts = "2026-10-16T21:06:15Z"
+commit = "4c1fc80b0"
+by = "commit trailer"
+executor = "claude-agent"
+via = "work-batch"
+size = "S"
+claimed_at = "2026-10-16T19:19:31Z"
+forced = false
+evidence = "4c1fc80b0, test only (dispatch/model_routing.rs): active_self_model_picks_start_rung_and_logs_propensity no longer infers the row's source from the chosen model. At ε = 0.25 it asserts what holds for any draw: the composed propensities, propensity = p(chosen), a source of SelfModel or Explore, and a draw that leaves the pick is Explore. At ε = 1 every draw explores, and attempts 1..=32 each log Explore at P = 1/4, the pick included. A Python replica of telemetry::assign::draw reproduces the root cause: on 2026-10-14 u = 0.1925 explores and lands on claude-sonnet-4-6; the old test fails on 52 of the 730 days of 2026-2027, next on 2026-10-19. The verify passes at 4c1fc80b0 (rc 0), and clippy -p roko-cli --no-deps -D warnings is clean. The router is unchanged."
 +++
 
 ## Problem

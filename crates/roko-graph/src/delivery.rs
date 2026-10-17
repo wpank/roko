@@ -80,9 +80,12 @@ pub enum CompletionDeliveryState {
     Prepared,
     /// Enqueued in the merge queue, waiting for the merge slot.
     Queued,
-    /// Branch successfully merged into the target branch.
+    /// The merge of the branch into the target branch exists. The target
+    /// moves to it only once its regression gate passed, so nothing builds
+    /// on a merge whose check failed.
     Merged,
-    /// Post-merge regression gate passed.
+    /// Post-merge regression gate passed; the target branch moves to the
+    /// merge next.
     RegressionPassed,
     /// Branch published to remote (GitHub push + PR/comment).
     Published,

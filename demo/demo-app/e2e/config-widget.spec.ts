@@ -1,15 +1,22 @@
 import { test, expect } from '@playwright/test';
 
 test.describe('ConfigWidget', () => {
-  test('pill is visible on every page', async ({ page }) => {
-    for (const path of ['/', '/bench', '/demo', '/settings', '/explorer']) {
+  // <ConfigWidget /> is mounted only inside the scenario player
+  // (src/pages/Demo/index.tsx), which AppShell renders at /lab/demo. AppShell
+  // keeps it mounted (display:none) while other /lab/* pages are open, but it
+  // is never visible outside /lab/demo, and it is retired from the showcase.
+  test('pill is visible on the scenario player and nowhere else', async ({ page }) => {
+    await page.goto('/lab/demo');
+    await expect(page.locator('.cw-pill')).toBeVisible({ timeout: 5000 });
+
+    for (const path of ['/', '/lab/bench', '/lab/settings', '/lab/explorer']) {
       await page.goto(path);
-      await expect(page.locator('.cw-pill')).toBeVisible({ timeout: 5000 });
+      await expect(page.locator('.cw-pill')).not.toBeVisible();
     }
   });
 
   test('click pill opens panel with sections', async ({ page }) => {
-    await page.goto('/');
+    await page.goto('/lab/demo');
     await page.locator('.cw-pill').click();
     await expect(page.locator('.cw-panel')).toBeVisible();
 
@@ -23,7 +30,7 @@ test.describe('ConfigWidget', () => {
   });
 
   test('expand Agent section shows model dropdown', async ({ page }) => {
-    await page.goto('/');
+    await page.goto('/lab/demo');
     await page.locator('.cw-pill').click();
 
     // Agent Model section is open by default
@@ -32,7 +39,7 @@ test.describe('ConfigWidget', () => {
   });
 
   test('change model and apply updates pill', async ({ page }) => {
-    await page.goto('/');
+    await page.goto('/lab/demo');
 
     // Get initial pill text
     const pill = page.locator('.cw-pill');
@@ -48,7 +55,7 @@ test.describe('ConfigWidget', () => {
   });
 
   test('close and reopen preserves state', async ({ page }) => {
-    await page.goto('/');
+    await page.goto('/lab/demo');
 
     // Open panel
     await page.locator('.cw-pill').click();

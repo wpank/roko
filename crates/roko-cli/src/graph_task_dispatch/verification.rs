@@ -5,6 +5,7 @@ use roko_core::config::harness_params::HarnessParams;
 use roko_learn::telemetry::records::VerifyDepthRecord;
 use roko_learn::telemetry::{ScopeFinding, VerifyStepVerdict};
 
+use super::retry_feedback::RetryNotice;
 use super::tui_forward::append_jsonl_line_async;
 use super::turn_policy::head_and_tail;
 use super::*;
@@ -946,9 +947,16 @@ impl GraphTaskDispatcher {
                         retries_left,
                         "storing gate feedback for retry injection"
                     );
-                    let kept_in = self.gate_retry_context.record(
+                    // A host sees what the next attempt gets (gap-655ea5).
+                    let notice = RetryNotice {
+                        attempt: attempt_number.saturating_add(1),
+                        check: "verify",
+                        failing_steps: &failures,
+                    };
+                    let kept_in = self.leave_retry_feedback(
                         &spec.plan_id,
                         &task.id,
+                        &notice,
                         feedback,
                         next_attempt,
                     );
@@ -1971,6 +1979,75 @@ printf '%s\n' '{"type":"result","session_id":"s","model":"claude-sonnet-4-6","to
         assert!(
             !feedback_file.exists(),
             "a pass clears the persisted feedback"
+        );
+    }
+
+    /// gap-655ea5: a failed verify publishes `retry_feedback` as it leaves the
+    /// feedback: the attempt that failed and the next one, the failing step,
+    /// the diagnosis the next prompt leads with and the failed test's line it
+    /// lists.
+    #[tokio::test]
+    async fn a_failed_check_publishes_its_retry_feedback() {
+        let temp = tempdir().expect("tempdir");
+        let hub = crate::state_hub::shared_state_hub();
+        let mut events = hub.subscribe_events();
+        let bridge = TuiBridge::new(hub.sender());
+        let (dispatcher, mut task) = crate::graph_task_dispatch::tests::make_test_dispatcher_with(
+            &temp,
+            FEEDBACK_PROVIDER,
+            diagnosing,
+            GraphFeedbackContext::default(),
+            |dispatcher| dispatcher.with_tui_bridge(bridge),
+        )
+        .await;
+        task.verify = vec![verify_step(
+            "test",
+            "echo 'test fixed_exists ... FAILED'; test -f fixed",
+        )];
+
+        let error = dispatcher
+            .dispatch(&make_spec(&task), Vec::new(), &CellContext::new())
+            .await
+            .expect_err("`fixed` does not exist yet");
+
+        assert!(matches!(error, RokoError::Verify { .. }), "{error}");
+        let mut published = Vec::new();
+        loop {
+            match events.try_recv() {
+                Ok(envelope) => {
+                    if matches!(
+                        envelope.payload,
+                        roko_core::DashboardEvent::RetryFeedback { .. }
+                    ) {
+                        published.push(serde_json::to_value(&envelope.payload).expect("json"));
+                    }
+                }
+                Err(tokio::sync::broadcast::error::TryRecvError::Lagged(_)) => {}
+                Err(_) => break,
+            }
+        }
+        let [event] = published.as_slice() else {
+            panic!("one retry_feedback: {published:?}");
+        };
+        assert_eq!(event["task_id"], task.id.as_str(), "{event}");
+        assert_eq!(event["attempt"], 1, "{event}");
+        assert_eq!(event["next_attempt"], 2, "{event}");
+        assert_eq!(event["check"], "verify", "{event}");
+        assert!(
+            event["failing_steps"][0]
+                .as_str()
+                .is_some_and(|step| step.contains("test -f fixed")),
+            "{event}"
+        );
+        assert_eq!(
+            event["diagnosis"], "The fixture file named fixed was never created. Create it first.",
+            "{event}"
+        );
+        assert!(
+            event["errors"].as_array().is_some_and(|errors| errors
+                .iter()
+                .any(|line| line == "test fixed_exists ... FAILED")),
+            "{event}"
         );
     }
 
@@ -3121,7 +3198,7 @@ printf '%s\n' '{"type":"result","session_id":"s","model":"claude-sonnet-4-6","to
                 cost_usd: 4.0,
                 ..roko_core::Usage::zero()
             };
-            dispatcher.record_task_spend(&spec.plan_id, &task.id, &spent);
+            dispatcher.record_task_spend(&spec.plan_id, &task.id, &spent, true);
             let task_spend_key = format!("{}/{}", spec.plan_id, task.id);
             // What the next attempt reads, in dispatch's order: its budget
             // admission, then, once it opens, its prompt and its verify run.

@@ -9,7 +9,7 @@ goal = "tooling"
 size = "S"
 subsystem = ["roko-cli/main"]
 created = 2026-09-29
-updated = 2026-10-01
+updated = 2026-10-16
 last_verified = 2026-10-01
 last_verified_rev = "db778db9b"
 source = "session:roko-b6 2026-09-29 direct-implementation batch"
@@ -19,6 +19,11 @@ links = { depends_on = [], blocks = [], related = ["bug-a727ff"], supersedes = [
 
 [[verify]]
 command = "grep -qw 'fn error_hint_ignores_401_outside_an_http_status' crates/roko-cli/src/main.rs && cargo test -p roko-cli --bin roko error_hint_ignores_401_outside_an_http_status"
+superseded = "2026-10-16: e80843ea0 moved main.rs's tests into main_tests.rs (still the roko binary's tests module), so this grep of main.rs no longer finds the test. The fix holds (error_hint calls error_classify::mentions_http_401); verify 2 finds the test anywhere under crates/roko-cli/src/."
+superseded_by = "e80843ea0"
+
+[[verify]]
+command = "grep -rqw 'fn error_hint_ignores_401_outside_an_http_status' crates/roko-cli/src/ && cargo test -p roko-cli --bin roko error_hint_ignores_401_outside_an_http_status"
 
 [closed]
 at = 2026-10-01

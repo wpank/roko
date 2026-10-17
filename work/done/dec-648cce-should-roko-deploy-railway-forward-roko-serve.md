@@ -9,7 +9,7 @@ goal = "release"
 size = "S"
 subsystem = ["roko-cli/deployment"]
 created = 2026-09-30
-updated = 2026-10-15
+updated = 2026-10-16
 last_verified = 2026-10-15
 last_verified_rev = "b883db4e6"
 source = "tmp/cybernetic-harness/workstreams/PROGRESS.md"
@@ -21,6 +21,8 @@ links = { depends_on = [], blocks = [], related = ["bug-524a3b", "gap-ed511d", "
 
 [[verify]]
 command = "grep -q 'ROKO__SERVE__AUTH__API_KEY' crates/roko-cli/src/deployment.rs"
+superseded = "2026-10-16: deployment.rs holds only the Sigstore verifier and never had the Railway environment code (commands/server.rs::collect_railway_env_vars, already there at f48cc207d), so this grep could never pass. Decision (a) is not implemented yet: gap-ea9ed8 implements it and carries its check."
+superseded_by = "gap-ea9ed8"
 
 [closed]
 at = 2026-10-15

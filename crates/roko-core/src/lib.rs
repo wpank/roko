@@ -433,8 +433,8 @@ pub use dashboard_snapshot::{
     AffectSnapshot, AgentState as DashboardAgentState, AgentTopology, AgentTopologyEdge,
     AgentTopologyNode, CFactorBucket, DashboardEvent, DashboardEventLogEntry, DashboardSnapshot,
     DiagnosisSeverity, DiagnosisSummary, EfficiencyBucket, ExperimentWinnerSummary, FailureEntry,
-    KnowledgeBrowseEntry as DashboardKnowledgeBrowseEntry, RouteCandidate, SnapshotStats,
-    TrendBucket, TrendBuckets,
+    KnowledgeBrowseEntry as DashboardKnowledgeBrowseEntry, PromptLeftOut, RouteCandidate,
+    SnapshotStats, TrendBucket, TrendBuckets,
 };
 pub use job::{
     CreateJobRequest, FileJobStore, JobError, JobEvaluation, JobExecutionMode, JobExecutionService,

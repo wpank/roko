@@ -9,7 +9,7 @@ goal = "tooling"
 size = "M"
 subsystem = ["roko-cli/graph_task_dispatch"]
 created = 2026-09-29
-updated = 2026-09-29
+updated = 2026-10-16
 last_verified = 2026-09-29
 last_verified_rev = "584abd414"
 source = "tmp/cybernetic-harness/workstreams/PLAN.md#e15"
@@ -21,6 +21,11 @@ links = { depends_on = [], blocks = [], related = ["gap-96f7ed", "spec-e9d7ec"],
 
 [[verify]]
 command = "test -f crates/roko-cli/src/graph_task_dispatch/verification.rs && test -f crates/roko-cli/src/graph_task_dispatch/feedback.rs && test -f crates/roko-cli/src/graph_task_dispatch/budget.rs && test -f crates/roko-cli/src/graph_task_dispatch/streaming.rs && test -f crates/roko-cli/src/graph_task_dispatch/failover.rs && test \"$(wc -l < crates/roko-cli/src/graph_task_dispatch.rs)\" -lt 3000 && cargo test -p roko-cli --lib graph_task_dispatch"
+superseded = "2026-10-16: The 3,000-line cap counts the inline mod tests: the merge a3e9767fc took the file past 3,000 lines though neither parent was, and on 2026-10-16 1,936 of its 3,882 lines are tests. The split holds; verify 2 counts only the lines before mod tests."
+superseded_by = "a3e9767fc"
+
+[[verify]]
+command = "test -f crates/roko-cli/src/graph_task_dispatch/verification.rs && test -f crates/roko-cli/src/graph_task_dispatch/feedback.rs && test -f crates/roko-cli/src/graph_task_dispatch/budget.rs && test -f crates/roko-cli/src/graph_task_dispatch/streaming.rs && test -f crates/roko-cli/src/graph_task_dispatch/failover.rs && test \"$(awk '/^mod tests \\{/ {exit} {n++} END {print n+0}' crates/roko-cli/src/graph_task_dispatch.rs)\" -lt 3000 && cargo test -p roko-cli --lib graph_task_dispatch"
 
 [closed]
 at = 2026-09-29

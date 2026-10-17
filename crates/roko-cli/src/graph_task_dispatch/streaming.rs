@@ -198,6 +198,7 @@ impl StreamingTaskDispatcher for GraphTaskDispatcher {
             concurrent_plans: self.concurrent_plans(&spec.plan_id),
             attempt_key: Some(attempt.key.clone()),
             arm_set: attempt.arm_set(),
+            knowledge_section: attempt.knowledge_section(),
             self_model_rung: None,
             skip_enrichment: self.plan_skips_enrichment(spec),
         };
@@ -335,7 +336,7 @@ impl StreamingTaskDispatcher for GraphTaskDispatcher {
                             self.pricing_snapshot().as_deref(),
                         );
                         let cost_usd = f64::from(dispatch.result.usage.cost_usd);
-                        self.record_task_spend(&spec.plan_id, &task.id, &dispatch.result.usage);
+                        self.record_dispatch_spend(&spec.plan_id, &task.id, &dispatch);
                         if let Err(budget_error) = budget_reservation.settle(cost_usd) {
                             tracing::warn!(
                                 attempt = %attempt_id,
@@ -472,7 +473,7 @@ impl StreamingTaskDispatcher for GraphTaskDispatcher {
                     );
                     None
                 };
-                self.record_task_spend(&spec.plan_id, &task.id, &dispatch.result.usage);
+                self.record_dispatch_spend(&spec.plan_id, &task.id, &dispatch);
                 if let Err(error) = budget_reservation.settle(cost_usd.max(0.0)) {
                     let routed = Some((dispatch_plan.model.slug.as_str(), &dispatch));
                     return Err(self.fail_attempt(spec, &task, attempt, routed, error).await);

@@ -2,15 +2,16 @@
 id = "gap-ca63ee"
 kind = "gap"
 title = "roko learn loops judges loops with S03's default parameters while the audit tick uses [learning.audit], so the two can disagree"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p3"
 goal = "cybernetic"
 size = "S"
 subsystem = ["roko-cli/learn"]
 created = 2026-10-16
-updated = 2026-10-16
-last_verified = 2026-10-16
+updated = 2026-10-17
+last_verified = 2026-10-17
+last_verified_rev = "0dace1e16"
 source = "gap-03fcd0 follow-up 2026-10-16"
 discovered_from = "gap-03fcd0"
 anchors = ["crates/roko-learn/src/loop_audit/census.rs::run_with", "crates/roko-cli/src/commands/learn_loops.rs::loops_output"]
@@ -19,6 +20,18 @@ links = { depends_on = [], blocks = [], related = ["gap-03fcd0", "spec-7a71d6"],
 
 [[verify]]
 command = "grep -rqw 'fn learn_loops_census_reads_learning_audit_params' crates/roko-cli/ && cargo test -p roko-cli --lib learn_loops_census_reads_learning_audit_params"
+
+[closed]
+at = 2026-10-17
+at_ts = "2026-10-17T04:09:43Z"
+commit = "0dace1e16"
+by = "commit trailer"
+executor = "claude-agent"
+via = "work-batch"
+size = "S"
+claimed_at = "2026-10-17T02:10:49Z"
+forced = false
+evidence = "0dace1e16. state.rs AuditParams::configured(config, registry) is now the one mapping of [learning.audit], kappa_max included, used by LoopAuditor::params and by census::run_with; census::run_audited/run_in/run_with take the LearningAuditConfig and census::run stays the defaults wrapper (loop_census example). The fold level is alpha/K plus kappa_max: Tally's BenefitConfig takes the configured kappa_max and CensusState records it (serde default 2.0), so a census kept at another kappa_max is folded afresh. learn_loops.rs loops_output loads load_config_unified(workdir) and calls census::run_audited. Checks: the verify command exits 0 (learn_loops_census_reads_learning_audit_params: n_beta = 100, 150 opportunities, beta in the --json output equal to the tick's health row; defaults say n_below_n_beta); roko-learn loop_audit 56/56 incl. census_folds_benefit_at_the_configured_kappa_max; roko-cli learn_loops/loop_audit/decision_log/loop_canary 29/29; E1 (cargo test -p roko-cli --features fault-injection --test loop_audit_faults) passes; clippy -p roko-learn -p roko-cli --no-deps -D warnings clean. target/debug/roko --json learn loops on a scratch copy of the round-v6 workspace: L-know beta reason eps_below_min with defaults, beta est -0.3125 with [learning.audit] eps_min = 0.2, n_beta = 2."
 +++
 
 ## Problem

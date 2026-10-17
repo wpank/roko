@@ -47,6 +47,14 @@ whose `PROXY_CAPS` name it (Roko has none of its own), and the fault profile, wh
 covers the task. A network provider without an `api_key_env` (a subscription CLI signs in by itself) cannot go
 through the proxy, which drops a client's own credentials.
 
+**The proxy's policy** (gap-bccf58, faultproxy's "The policy"). The Roko and mini-swe-agent arms' sandboxes admit the
+proxy's port, so an agent's shell could ask the provider to search or fetch the web for it. The proxy forwards only
+plain chat completions with the arm's models (`models_allow`, and any model a `model_swap` disturbance declares) and
+function tools. It refuses another path, another model and any server-side tool or search option before forwarding,
+except what an arm file's `[providers.<name>] proxy_allow` admits, which no arm does. The manifest's `proxy.policy`
+records the policy, and each record's `provenance.proxy_policy` adds the task's refused calls by kind (`refused`).
+Since only an agent sends such a call, the census flags its task (place `web`), which makes the run `leak_suspected`.
+
 **Disturbances** (`--disturbance SPEC.toml`, `disturb.py`, gap-15bb83). A `vb.disturbance/1` spec applies S08 §4.6's
 hooks for H6 to stream positions: `provider_fault` (a proxy fault profile), `budget_cut` (the task's caps scaled),
 `harder_mix` (the harder instances first from a position on), `convention_flip` (a family's other latent),
@@ -279,6 +287,9 @@ def load_arm(name: str) -> dict:
     for name_, table in doc.get("providers", {}).items():
         if not isinstance(table, dict) or not isinstance(table.get("base_url"), str):
             raise DriverError(f"{path}: [providers.{name_}] needs a base_url")
+        allow = table.get("proxy_allow", [])  # the server-side tools the proxy forwards anyway (gap-bccf58)
+        if not (isinstance(allow, list) and all(isinstance(item, str) for item in allow)):
+            raise DriverError(f"{path}: [providers.{name_}] proxy_allow must be a list of strings")
     doc["path"] = str(path)
     return doc
 
@@ -402,16 +413,17 @@ def cmd_run(args: argparse.Namespace) -> int:
     config_hash = records.canonical_hash(config)
     head = records.harness_state()
     suite = {"id": "vb", "hash": _suite_hash(plan)}
+    proxy = _start_proxy(plan, run_dir, keys=keys, disturbances=disturbances) if proxied else None
     _write_json(run_dir / "manifest.json", {
         "schema_version": "vb.run_manifest/1", "experiment_id": args.experiment, "run_id": run_id,
         "started_at": harness.utc_now(), "argv": args.argv, "harness_sha": head[0],
         "dirty": head[1], "config_hash": config_hash, "config": config, "suite": suite,
         "offline": plan.endpoint.offline,
-        "proxy": {"log": PROXY_LOG, "profile": faultproxy.Profile().as_json()} if proxied else None,
+        "proxy": {"log": PROXY_LOG, "profile": faultproxy.Profile().as_json(), "policy": proxy.policy()}
+        if proxy else None,
         "secret_file": str(secret_file), "work_dir": str(work_dir), **plan.summary()})
     book = ledger.Ledger(run_dir / "ledger.jsonl", line=line, experiment_id=args.experiment, run_id=run_id,
                          price_snapshot_id=plan.snapshot.id)
-    proxy = _start_proxy(plan, run_dir, keys=keys) if proxied else None
     endpoint = proxy.endpoint(plan.endpoint) if proxy else plan.endpoint
     # 3311: hand the runner every provider's proxied URL through the arm dict's own [providers.*] tables, the only
     # channel a runner has for more than the one endpoint on `ctx.endpoint`; `api_key_env` names a key, not its
@@ -503,6 +515,7 @@ def _run_one(run: Run, instance_id: str, seed: int, stream_position: dict) -> bo
     if run.proxy:
         _mark_faults(outcome.attempts, run_dir / PROXY_LOG, key)
     meter_usd = None if meter is None or meter["cost_unknown"] else meter["api_equiv_usd"]
+    refused = dict((meter or {}).get("policy_refused") or {})  # its calls the proxy's policy refused (gap-bccf58)
     final = archived = None
     transcript_text = json.dumps(outcome.transcript, ensure_ascii=False)
     try:
@@ -513,7 +526,8 @@ def _run_one(run: Run, instance_id: str, seed: int, stream_position: dict) -> bo
                                    completed=outcome.status == "completed", transcript_text=transcript_text,
                                    diff_text=archived.diff_text, scratch=private / "census",
                                    env=agent_env.build(home=homes[1]),
-                                   credential_fingerprints=run.credential_fingerprints)
+                                   credential_fingerprints=run.credential_fingerprints,
+                                   proxy_refusals=tuple(sorted(refused)))
     except (archive.ArchiveError, repo.RepoError, OSError) as err:
         result = census.CensusResult(completion=int(outcome.status == "completed"), visible_clean=None, hidden=None,
                                      integrity=None, infra_error=f"archive or census failed: {err}")
@@ -529,7 +543,8 @@ def _run_one(run: Run, instance_id: str, seed: int, stream_position: dict) -> bo
                                                                   task.manifest["generator_version"]}},
                            stream=stream_position, materialized=task, outcome=outcome, result=result, final=final,
                            archived=archived, transcript_ref=transcript_ref, meter_usd=meter_usd,
-                           verify_log=verify_log, model_swap=swap)
+                           verify_log=verify_log, model_swap=swap,
+                           proxy_policy={**run.proxy.policy(), "refused": refused} if run.proxy else None)
     if meter_usd is not None and record["costs"]["api_equiv_usd"] is not None:  # as `vb ledger reconcile` flags drift
         check = ledger._compare(record["costs"]["api_equiv_usd"], meter_usd, ledger.TOLERANCE)
         if check["flagged"]:
@@ -603,15 +618,20 @@ def _endpoint(arm: dict, row: dict | None, provider_url: str | None) -> provider
     return provider.Endpoint(provider=name, base_url=provider_url or table["base_url"], **fields)
 
 
-def _start_proxy(plan: Plan, run_dir: Path, *, keys: Mapping[str, str] | None) -> faultproxy.FaultProxy:
+def _start_proxy(plan: Plan, run_dir: Path, *, keys: Mapping[str, str] | None,
+                 disturbances: Iterable[disturb.Disturbance] = ()) -> faultproxy.FaultProxy:
     """The metering proxy in front of the plan's endpoint(s), logging to `<run_dir>/proxy.jsonl` (module docstring).
     One upstream per provider `plan.endpoints` names (3311: a ladder's several rungs may span providers). `keys`
     (`_provider_keys`) maps each upstream's `api_key_env` to its key: the proxy sends it, and the runners' endpoints
-    name none."""
+    name none. Its policy (gap-bccf58) forwards the arm's models and the models `disturbances` swap in, and on each
+    upstream the server-side tools its `[providers.<name>] proxy_allow` names."""
+    providers = plan.arm.get("providers", {})
+    models = [*plan.arm["arm"]["models_allow"], *(one.params["to"] for one in disturbances if one.kind == "model_swap")]
     try:
-        upstreams = [faultproxy.Upstream.from_endpoint(endpoint) for endpoint in plan.endpoints.values()]
+        upstreams = [faultproxy.Upstream.from_endpoint(endpoint, allow=providers.get(endpoint.provider, {}).get(
+            "proxy_allow", ())) for endpoint in plan.endpoints.values()]
         return faultproxy.FaultProxy(upstreams, log_path=run_dir / PROXY_LOG, snapshot=plan.snapshot, keys=keys,
-                                     input_token_cap=plan.caps.input_tokens_per_task).start()
+                                     input_token_cap=plan.caps.input_tokens_per_task, models=models).start()
     except (faultproxy.ProxyError, OSError) as err:
         archive.remove_tree(run_dir)  # made by this run a moment ago; nothing has run
         raise DriverError(f"the metering proxy cannot start: {err}") from None
@@ -636,7 +656,8 @@ def _task_meter(proxy: faultproxy.FaultProxy | None, key: str) -> dict | None:
     if proxy is None:
         return None
     found = [meter for meter in proxy.state()["tasks"] if meter["task"] == key]
-    return found[0] if found else {"task": key, "refused": 0, "cost_unknown": 0, "api_equiv_usd": 0.0}
+    return found[0] if found else {"task": key, "refused": 0, "policy_refused": {}, "cost_unknown": 0,
+                                   "api_equiv_usd": 0.0}
 
 
 def _end_on_proxy_cap(outcome: harness.TaskOutcome, meter: dict | None) -> None:

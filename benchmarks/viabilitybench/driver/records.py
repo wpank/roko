@@ -27,7 +27,10 @@ that applied it on this host (`sandbox`: "sandbox-exec+net", or "none" where not
 runner's own detail, such as the Claude Code arm's egress log. It is null when the runner did not say, as for a
 runner that crashed. `provenance.census_network_policy` is the same for the census's runs of the agent's code
 (`census.CensusResult.network_policy`: the rule "none" and its kind), null when the census stopped before it could
-run any; the truth suite's own kind is `vs.sandbox`.
+run any; the truth suite's own kind is `vs.sandbox`. `provenance.proxy_policy` is what the metering proxy forwarded
+(gap-bccf58, `faultproxy.FaultProxy.policy`: its one path, the run's models, server-side tools "refused" and any an
+upstream forwards anyway), with this task's calls the policy refused, by refusal (`refused`); null in a run with no
+proxy.
 
 `visible` is the census's clean rerun of the visible checks, which never meets a flake. In a run with `flaky_verify`
 it also carries what the visible-verify wrapper logged of the arm's own visible checks (`vb_verify`): `verify_runs`
@@ -41,7 +44,7 @@ named by their environment variable), so nothing needs redacting.
 API:
     build(*, experiment_id, run_id, arm_id, seed, head, billed, config_hash, snapshot_id, suite, stream,
           materialized, outcome, result, final, archived, transcript_ref, meter_usd=None, verify_log=None,
-          model_swap=None) -> dict
+          model_swap=None, proxy_policy=None) -> dict
     append(path: Path, record: dict) -> None           # raises RecordError on an invalid record
     canonical_hash(value) -> str; harness_state() -> (sha, dirty); final_status(outcome, census, model_swap=None) -> str
     same_model(requested, reported) -> bool; swapped(attempt, model_swap) -> bool
@@ -120,7 +123,8 @@ def build(*, experiment_id: str, run_id: str, arm_id: str, seed: int, head: tupl
           config_hash: str, snapshot_id: str, suite: dict, stream: dict, materialized: materialize.Materialized,
           outcome: harness.TaskOutcome, result: census.CensusResult, final: archive.Final | None,
           archived: archive.Archive | None, transcript_ref: str | None, meter_usd: float | None = None,
-          verify_log: list[dict] | None = None, model_swap: str | None = None) -> dict:
+          verify_log: list[dict] | None = None, model_swap: str | None = None,
+          proxy_policy: dict | None = None) -> dict:
     manifest = materialized.manifest
     runs = verify_log or []  # the visible-verify wrapper's log of the arm's visible check runs (vb_verify)
     task = {"family": manifest["family"], "instance_id": manifest["instance_id"], "ladder": manifest["ladder"],
@@ -171,7 +175,7 @@ def build(*, experiment_id: str, run_id: str, arm_id: str, seed: int, head: tupl
                        "diff_sha256": archived.diff_sha256 if archived else None, "transcript_ref": transcript_ref,
                        "s01_run_dir": outcome.s01_run_dir, "canary_hits": result.canary_hits,
                        "canary_places": sorted(result.canaries), "network_policy": outcome.network_policy,
-                       "census_network_policy": result.network_policy},
+                       "census_network_policy": result.network_policy, "proxy_policy": proxy_policy},
         "simulated": False,
     }
     record["costs"]["meter_cross_check_usd"] = meter_usd  # the metering proxy's own figure for the task, if one ran

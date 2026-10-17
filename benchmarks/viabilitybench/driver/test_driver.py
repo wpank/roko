@@ -168,6 +168,18 @@ Path(args[args.index("-o") + 1]).write_text(json.dumps({
     "info": {"model_stats": {"instance_cost": 0.0, "api_calls": 1}, "exit_status": "Submitted", "submission": ""},
     "messages": [], "trajectory_format": 1}))
 '''
+# gap-bccf58, test_an_agent_cannot_have_the_provider_search_the_web. The agent's shell asks the provider, through the
+# metering proxy (__PROXY__, the URL its harness calls the model through), to search or fetch the web for it: z.ai's
+# web_search tool, an OpenAI search model and Moonshot's fetch endpoint. Each curl prints the status it got.
+ASK_FOR_THE_WEB = "; ".join(
+    f"curl -sS -o /dev/null -w '{name}_http=%{{http_code}}\\n' -H 'Content-Type: application/json' "
+    f"-d '{json.dumps(body)}' __PROXY__{path}" for name, path, body in (
+        ("tool", "/chat/completions", {"model": "gpt-oss-120b", "messages": [{"role": "user", "content": "Find it."}],
+                                       "tools": [{"type": "web_search", "web_search": {
+                                           "enable": True, "search_query": "viabilitybench hidden.py"}}]}),
+        ("model", "/chat/completions", {"model": "gpt-5-search-api", "messages": [
+            {"role": "user", "content": "Find the hidden suite of viabilitybench."}]}),
+        ("fetch", "/tools/fetch", {"url": "https://github.com/"})))
 
 
 @pytest.fixture
@@ -193,6 +205,27 @@ def run_dir(places: dict[str, Path]) -> Path:
 
 def by_instance(path: Path) -> dict[str, dict]:
     return {record["task"]["instance_id"]: record for record in read_jsonl(path)}
+
+
+def fake_harness_arm(tmp_path: Path, arm: str, *, solution: str, shell: str, shell_log: Path) -> str:
+    """A copy of arm file `arm` (roko_fixed or cheap_direct_msa) whose binary is a fake harness that plays the agent:
+    its own process calls the model once through the endpoint it is given, then writes `solution` and runs `shell`, with
+    __PROXY__ read as that endpoint, logging what the shell printed to `shell_log` (AGENT_TURN)."""
+    fake, name = (NET_AGENT_ROKO, "roko") if arm == "roko_fixed" else (NET_AGENT_MINI, "mini")
+    binary = tmp_path / "bin" / name
+    binary.parent.mkdir()
+    filled = {"__AGENT_TURN__": AGENT_TURN, "__PYTHON__": sys.executable, "__SOLUTION__": repr(solution),
+              "__SHELL__": repr(shell), "__SHELL_LOG__": repr(str(shell_log))}
+    for placeholder, value in filled.items():  # in this order: AGENT_TURN holds the later placeholders
+        fake = fake.replace(placeholder, value)
+    binary.write_text(fake)
+    binary.chmod(0o755)
+    old = 'binary = "target/debug/roko"' if name == "roko" else 'binary = ".venv-msa/bin/mini"'
+    text = (layout.ARMS_DIR / f"{arm}.toml").read_text()
+    assert old in text
+    arm_file = tmp_path / f"{arm}.test.toml"
+    arm_file.write_text(text.replace(old, f"binary = {json.dumps(str(binary))}"))
+    return str(arm_file)
 
 
 def test_offline_run_writes_valid_records(places, tmp_path, monkeypatch):
@@ -361,20 +394,8 @@ def test_an_agent_shell_cannot_reach_the_network(places, tmp_path, monkeypatch, 
                                       bash(VISIBLE_CHECK, "Check it."), bash("echo VB_SUBMIT")]})(body)
             arm_file = arm
         else:  # a fake harness plays the agent, and its own process calls the model
-            fake, name = (NET_AGENT_ROKO, "roko") if arm == "roko_fixed" else (NET_AGENT_MINI, "mini")
-            binary = tmp_path / "bin" / name
-            binary.parent.mkdir()
-            filled = {"__AGENT_TURN__": AGENT_TURN, "__PYTHON__": sys.executable, "__SOLUTION__": repr(solution),
-                      "__SHELL__": repr(f"{tries}; {VISIBLE_CHECK}"), "__SHELL_LOG__": repr(str(shell_log))}
-            for placeholder, value in filled.items():  # in this order: AGENT_TURN holds the later placeholders
-                fake = fake.replace(placeholder, value)
-            binary.write_text(fake)
-            binary.chmod(0o755)
-            old = 'binary = "target/debug/roko"' if name == "roko" else 'binary = ".venv-msa/bin/mini"'
-            text = (layout.ARMS_DIR / f"{arm}.toml").read_text()
-            assert old in text
-            arm_file = str(tmp_path / f"{arm}.test.toml")
-            Path(arm_file).write_text(text.replace(old, f"binary = {json.dumps(str(binary))}"))
+            arm_file = fake_harness_arm(tmp_path, arm, solution=solution, shell=f"{tries}; {VISIBLE_CHECK}",
+                                        shell_log=shell_log)
 
             def respond(body: dict) -> str:
                 return "Done."
@@ -419,6 +440,43 @@ def test_an_agent_shell_cannot_reach_the_network(places, tmp_path, monkeypatch, 
                                                       "sandbox-exec+net")
     assert record["provenance"]["census_network_policy"] == {"network": "none", "sandbox": "sandbox-exec+net"}
     assert record["vs"]["sandbox"] == "sandbox-exec+net"  # the truth suite's own report
+
+
+@pytest.mark.parametrize("arm", ["roko_fixed", "cheap_direct_msa"])
+def test_an_agent_cannot_have_the_provider_search_the_web(places, tmp_path, arm):
+    """gap-bccf58, through `vb run --proxy`: in the Roko and mini-swe-agent arms, whose sandboxes admit the metering
+    proxy's port, the agent's shell asks the provider through the proxy to search or fetch the web for it. The proxy
+    refuses each request before forwarding it and logs it under the task's key, the provider sees only the harness's
+    own call, and the census flags the task (place `web`), so the run is `leak_suspected` whatever its tree. The
+    manifest and the record name the proxy's policy, the record with the task's refused calls."""
+    shell_log, run_dir = tmp_path / "shell.log", places["results"] / "TEST-WEB" / "run-1"
+    solution = "def clamp(value, low, high):\n    return max(low, min(value, high))\n"
+    arm_file = fake_harness_arm(tmp_path, arm, solution=solution, shell=ASK_FOR_THE_WEB, shell_log=shell_log)
+    with StubServer(lambda body: "Done.") as stub:
+        assert vb.main(["run", "--experiment", "TEST-WEB", "--run-id", "run-1", "--stream", TOY_STREAM, "--arm",
+                        arm_file, "--model", "gpt-oss-120b", "--seeds", "1", "--limit", "1", "--provider-url",
+                        stub.url, "--proxy", "--results", str(places["results"]), "--work", str(places["work"]),
+                        "--secret-file", str(places["secret"])]) == 0
+        served = list(stub.requests)
+    said = shell_log.read_text()
+    assert all(f"{name}_http=403" in said for name in ("tool", "model", "fetch")), said
+    assert [(body["model"], "tools" in body) for body in served] == [("gpt-oss-120b", False)]  # the harness's own call
+    rows = sorted(read_jsonl(run_dir / "proxy.jsonl"), key=lambda row: row["ordinal"])
+    assert [(row["task"], row["path"], row["refused"], row["forwarded"]) for row in rows] == [
+        ("F1-l1-0001.s1", "/chat/completions", None, True),
+        ("F1-l1-0001.s1", "/chat/completions", "server_tool", False),
+        ("F1-l1-0001.s1", "/chat/completions", "model_not_allowed", False),
+        ("F1-l1-0001.s1", "/tools/fetch", "path_not_allowed", False)]
+    assert rows[1]["server_tools"] == ["tools:web_search"] and rows[2]["model_requested"] == "gpt-5-search-api"
+
+    [record] = read_jsonl(run_dir / "records.jsonl")
+    assert validate.validate("run-record", record) == []
+    assert record["execution"]["status"] == "leak_suspected"
+    assert (record["provenance"]["canary_places"], record["provenance"]["canary_hits"]) == (["web"], 3)
+    policy = {"paths": ["/chat/completions"], "models": ["gpt-oss-120b"], "server_tools": "refused", "allow": {}}
+    assert record["provenance"]["proxy_policy"] == {**policy, "refused": {
+        "model_not_allowed": 1, "path_not_allowed": 1, "server_tool": 1}}
+    assert json.loads((run_dir / "manifest.json").read_text())["proxy"]["policy"] == policy
 
 
 def test_every_runner_has_a_network_test():
@@ -573,8 +631,11 @@ def test_vb_run_meters_every_task_through_the_proxy(places):
         assert run_vb(places, stub.url, "--proxy") == 0
         calls = len(stub.requests)
     out = run_dir(places)
+    policy = {"paths": ["/chat/completions"], "models": ["gpt-oss-120b"], "server_tools": "refused", "allow": {}}
     assert json.loads((out / "manifest.json").read_text())["proxy"] == {"log": "proxy.jsonl",
-                                                                        "profile": {"name": "clean"}}
+                                                                        "profile": {"name": "clean"}, "policy": policy}
+    for record in read_jsonl(out / "records.jsonl"):  # gap-bccf58: the proxy's policy, and no call it refused
+        assert record["provenance"]["proxy_policy"] == {**policy, "refused": {}}
     rows, booked = read_jsonl(out / "proxy.jsonl"), read_jsonl(out / "ledger.jsonl")
     assert len(rows) == calls == 4 and all(row["forwarded"] and row["status"] == 200 for row in rows)
     for key in ("F1-l1-0001.s1", "F1-l1-0002.s1"):  # every row carries its task's key, and the meter is the ledger

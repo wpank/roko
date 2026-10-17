@@ -2128,7 +2128,10 @@ async fn record_agent_dispatch_feedback(
     if health_recorded || !outcome.is_provider_outcome() {
         recorder = recorder.without_provider_health();
     }
-    if learning_frozen {
+    // A Graph attempt's verdict settles its knowledge outcome
+    // (bug-0a7ec1): its call's row could only say `partial`, which nothing
+    // ever settled.
+    if learning_frozen || request.attempt_key.is_some() {
         recorder = recorder.without_knowledge_feedback();
     }
     let error_class = match outcome {

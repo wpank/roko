@@ -14,11 +14,14 @@
 //!
 //! A known VS teaches the run's self-model with weight 1/π, through S04's
 //! late-label hook (6129, [`VsLearner`]): its target is P(VS), not P(gate
-//! pass), and the weight undoes the lottery's tilt. A unit the lottery did not
-//! select is never audited, so it teaches nothing.
+//! pass), and the weight undoes the lottery's tilt. It also reaches M1's E3,
+//! the false-green rate, whose only sensor the audits are (gap-618548):
+//! [`VsLearners`] hands every label to each learner. A unit the lottery did
+//! not select is never audited, so it teaches nothing.
 
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use roko_core::audit_types::{
     AuditLabels, HiddenResult, Integrity, LabelCosts, LabelFinding, VsLabel, VsSource,
@@ -29,12 +32,14 @@ use serde_json::{Map, Value};
 
 use super::worker::AuditUnit;
 use crate::graph_task_dispatch::self_model::SelfModelRuntime;
+use crate::runtime_feedback::HomeostasisSink;
 
 /// The file of a run's `vs.label` rows.
 pub const LABELS_FILE: &str = "labels.jsonl";
 
 /// What learns audited VS labels: the run's self-model, through S04's
-/// late-label hook (6129). Its false-green risk tilts the lottery (6132).
+/// late-label hook (6129), whose false-green risk tilts the lottery (6132),
+/// and M1's E3 (gap-618548).
 pub trait VsLearner: Send + Sync {
     /// Teach the attempt `attempt_key`'s VS label `vs` with weight 1/π;
     /// `false` when the learner does not know the attempt.
@@ -54,6 +59,50 @@ impl VsLearner for SelfModelRuntime {
 
     fn false_green_risk(&self, chain_key: &str) -> Option<f64> {
         self.risk_fg(chain_key)
+    }
+}
+
+impl VsLearner for HomeostasisSink {
+    /// M1's E3 counts the label of a pass that stood as a false green when
+    /// its VS is 0 (gap-618548). E3's Beta posterior counts audits
+    /// unweighted (S06 §4.2), so `weight` does not enter.
+    fn learn_vs(&self, attempt_key: &str, vs: bool, _weight: f64) -> bool {
+        self.audit_label(attempt_key, !vs)
+    }
+}
+
+/// Every learner of a run's audited VS labels, each taught every label
+/// (gap-618548): the self-model and M1's E3. The first risk any of them
+/// gives tilts the lottery.
+pub struct VsLearners(Vec<Arc<dyn VsLearner>>);
+
+impl VsLearners {
+    /// The learner that teaches each of `learners`: none without one, and
+    /// the one alone.
+    #[must_use]
+    pub fn of(learners: Vec<Arc<dyn VsLearner>>) -> Option<Arc<dyn VsLearner>> {
+        if learners.len() > 1 {
+            return Some(Arc::new(Self(learners)));
+        }
+        learners.into_iter().next()
+    }
+}
+
+impl VsLearner for VsLearners {
+    /// Teach every learner, whatever the others did (no short circuit);
+    /// `true` when one learned.
+    fn learn_vs(&self, attempt_key: &str, vs: bool, weight: f64) -> bool {
+        let mut learned = false;
+        for learner in &self.0 {
+            learned |= learner.learn_vs(attempt_key, vs, weight);
+        }
+        learned
+    }
+
+    fn false_green_risk(&self, chain_key: &str) -> Option<f64> {
+        self.0
+            .iter()
+            .find_map(|learner| learner.false_green_risk(chain_key))
     }
 }
 
@@ -174,7 +223,8 @@ pub fn labels_path(workdir: &Path, run_id: &str) -> PathBuf {
 }
 
 /// DP5: append `row` to `ledger` and to its run's labels file in `workdir`,
-/// and teach `learner` its VS, when known, with weight 1/π. Returns whether
+/// and teach `learner` its VS, when known, with weight 1/π: a run's
+/// [`VsLearners`] teaches the self-model and M1's E3 alike. Returns whether
 /// the learner learned it.
 ///
 /// # Errors

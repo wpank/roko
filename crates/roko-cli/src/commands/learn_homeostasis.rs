@@ -20,6 +20,7 @@ use roko_core::config::homeostasis::{HomeostasisConfig, HomeostasisMode};
 use roko_fs::RokoLayout;
 use roko_learn::guarded_commit::{COMMITS_DIR, GuardMode, GuardedStore};
 use roko_learn::homeostasis::controller::{Controller, ControllerState, operator_mode};
+use roko_learn::homeostasis::ev::{Estimate, estimate_false_green};
 use roko_learn::homeostasis::ledger::{ControllerRecord, Envelope, ledger_path, write_jsonl};
 use roko_learn::homeostasis::lkg::STORE;
 use roko_learn::homeostasis::policy::{ViabilityPolicy, mode_on_policy};
@@ -140,6 +141,9 @@ pub(crate) struct Status {
     lkg_versions: Vec<u64>,
     /// The open episode.
     episode: Option<Value>,
+    /// E3 over the audits the saved state keeps: unmeasured until M4 has
+    /// audited a pass (gap-618548).
+    false_green: Estimate,
     /// The last `ev.*` row of each essential variable in the ledger.
     evs: Vec<Value>,
 }
@@ -175,6 +179,11 @@ impl Status {
             .and_then(|episode| episode["id"].as_str())
             .unwrap_or("none");
         let _ = writeln!(text, "open episode: {episode}");
+        let e3 = &self.false_green;
+        let _ = match e3.value {
+            Some(value) => writeln!(text, "E3 false_green: {value:.3} over {} audit(s)", e3.n),
+            None => writeln!(text, "E3 false_green: unmeasured, no audit yet"),
+        };
         for row in &self.evs {
             let _ = writeln!(text, "{} {}: {}", row["kind"], row["ev"], row["value"]);
         }
@@ -202,17 +211,30 @@ pub(crate) fn status(workdir: &Path, config_mode: HomeostasisMode) -> Option<Sta
         .episode
         .as_ref()
         .and_then(|episode| serde_json::to_value(episode).ok());
+    // The policy M1 runs on: the workspace's, else the shipped one.
+    let loaded = ViabilityPolicy::load_or_shipped(&roko);
+    // E3 over the saved audits, against that policy's bound (gap-618548).
+    let audits: Vec<bool> = state
+        .audits
+        .iter()
+        .map(|finding| finding.false_green)
+        .collect();
+    let bound = loaded.as_ref().map_or_else(
+        |_| ViabilityPolicy::shipped_default().ev.false_green.outer(),
+        |(policy, _)| policy.ev.false_green.outer(),
+    );
+    let false_green = estimate_false_green(&audits, bound);
     // A person's mode beats the config's, and `on` needs a person's policy
     // (gap-cad57a).
     let requested = operator_mode(&roko).unwrap_or(config_mode);
-    let mode = ViabilityPolicy::load_or_shipped(&roko)
-        .map_or(requested, |(_, origin)| mode_on_policy(requested, origin));
+    let mode = loaded.map_or(requested, |(_, origin)| mode_on_policy(requested, origin));
     Some(Status {
         mode,
         phase: label(state.phase),
         changed,
         lkg_versions: lkg_versions(&roko),
         episode,
+        false_green,
         evs: last_evs(&roko),
     })
 }
@@ -472,6 +494,43 @@ mod tests {
         std::fs::create_dir_all(policy_path.parent().expect("policy dir")).expect("mkdir");
         std::fs::write(&policy_path, POLICY).expect("write the policy");
         assert_eq!(on(), HomeostasisMode::On);
+    }
+
+    /// gap-618548: `status` reports E3 over the audits M1's state keeps:
+    /// unmeasured before M4's first audit, measured after it.
+    #[test]
+    fn learn_homeostasis_status_reports_e3_from_saved_audits() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = Controller::state_path(&dir.path().join(".roko"));
+        let config = RokoConfig::default();
+        let baseline = Baseline {
+            pass_rate: 0.80,
+            usd_per_resolution: 0.05,
+            wall_ms: 300_000.0,
+        };
+        let mut controller = Controller::new(
+            &HomeostasisConfig::default(),
+            ViabilityPolicy::parse(POLICY).expect("the policy parses"),
+            HarnessParams::baseline(&config),
+            HarnessLadders::from_config(&config),
+            baseline,
+            0,
+        );
+        controller.save(&path).expect("the state is saved");
+        let report = status(dir.path(), HomeostasisMode::Shadow).expect("a report");
+        assert!(!report.false_green.is_measured());
+        let text = report.render();
+        assert!(text.contains("E3 false_green: unmeasured"), "{text}");
+
+        assert!(controller.on_audit("gr-1:plan:T1:1#settle", true));
+        controller.save(&path).expect("the state is saved");
+        let report = status(dir.path(), HomeostasisMode::Shadow).expect("a report");
+        assert_eq!(report.false_green.n, 1);
+        let text = report.render();
+        assert!(
+            text.contains("E3 false_green: 0.182 over 1 audit(s)"),
+            "{text}"
+        );
     }
 
     /// The JSON rows of the file at `path`.

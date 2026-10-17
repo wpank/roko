@@ -52,7 +52,7 @@ use roko_fs::layout::RokoLayout;
 use roko_learn::homeostasis::controller::{Controller, ControllerEvent, operator_mode};
 use roko_learn::homeostasis::coupling::{AuditBoosts, audit_rate};
 use roko_learn::homeostasis::detect::Baseline;
-use roko_learn::homeostasis::ev::{Ev, EvBounds};
+use roko_learn::homeostasis::ev::{Estimate, Ev, EvBounds};
 use roko_learn::homeostasis::holdout::HarnessHoldout;
 use roko_learn::homeostasis::ledger::{
     Actor, ControllerRecord, ControllerRow, Envelope, ParamChange, append, ledger_path,
@@ -66,7 +66,9 @@ use roko_learn::homeostasis::resolution::{ResolutionFold, TaskResolution};
 use roko_learn::loop_audit::assign::takes_default;
 use roko_learn::loop_audit::{AuditState, LoopAuditor};
 use roko_learn::self_model::{ArmKey, CandidateForecast};
-use roko_learn::telemetry::records::HARNESS_POLICY_DECISION_POINT;
+use roko_learn::telemetry::records::{
+    ATTEMPTS_FILE, HARNESS_POLICY_DECISION_POINT, VERDICT_SCHEMA,
+};
 use roko_learn::telemetry::{
     Arm, Assignment, AttemptIdentity, AttemptKey, AttemptOutcome, AttemptVerdictRecord,
     DecisionSource, HarnessPolicyDecisionRecord, HarnessStamp, TelemetryWriter,
@@ -177,10 +179,17 @@ struct SinkState {
     resolved: Vec<String>,
     /// Each chain's last harness stamp: its arm and the θ it ran.
     stamps: HashMap<String, HarnessStamp>,
+    /// The attempts settled `passed` in this process, by attempt key, with
+    /// their `harness_policy` arm: the passes an audit label may count for
+    /// in E3 (gap-618548).
+    passes: HashMap<String, Option<Arm>>,
     controller: Option<Controller>,
     lkg: Option<ThetaLkg>,
     /// Each run's writer; `None` when it did not start.
     writers: HashMap<String, Option<TelemetryWriter>>,
+    /// The run ended and the controller's state is saved: an audit label
+    /// that lands later saves it again (gap-618548).
+    finished: bool,
 }
 
 impl HomeostasisSink {
@@ -443,6 +452,18 @@ impl HomeostasisSink {
             .map(|controller| controller.theta().clone())
     }
 
+    /// E3, the false-green rate, as the controller estimates it now: its
+    /// Beta posterior over the audits counted so far, unmeasured before the
+    /// first (gap-618548); `None` without a controller.
+    #[must_use]
+    pub fn false_green(&self) -> Option<Estimate> {
+        let state = self.state.lock();
+        state
+            .controller
+            .as_ref()
+            .map(|controller| controller.estimates().false_green)
+    }
+
     /// The run ended: resolve the chains still open, save the controller's
     /// state, and close the writers.
     pub fn finish(&self) {
@@ -452,15 +473,55 @@ impl HomeostasisSink {
             let run_id = run_of(&resolution.chain_key).to_string();
             self.resolve(&mut state, resolution, &run_id);
         }
+        self.save(&state);
+        state.finished = true;
+        for writer in state.writers.drain().filter_map(|(_, writer)| writer) {
+            writer.close();
+        }
+    }
+
+    /// Save the controller's state, when there is a controller.
+    fn save(&self, state: &SinkState) {
         if let Some(controller) = &state.controller {
             let path = Controller::state_path(self.layout.root());
             if let Err(error) = controller.save(&path) {
                 tracing::warn!(%error, "failed to save M1's state (non-fatal)");
             }
         }
-        for writer in state.writers.drain().filter_map(|(_, writer)| writer) {
-            writer.close();
+    }
+
+    /// M4's audit of attempt `attempt_key` found it a false green, or found
+    /// it sound (S06 §4.2, gap-618548). When the attempt passed, E3, the
+    /// controller's false-green rate, counts it, whenever the label lands:
+    /// after its pass resolved, during the run or in a later run's audit
+    /// worker, which finds the pass in its run's records. One that lands
+    /// after this run ended is saved with the controller's state, so the
+    /// next run's controller reads it. An audit of a green attempt that is
+    /// no pass (unverified, already satisfied) is not counted, nor is a pass
+    /// on the holdout or all-off arm, which ran θ₀ and never steers M1, nor
+    /// an attempt twice. Returns whether E3 counted it.
+    pub fn audit_label(&self, attempt_key: &str, false_green: bool) -> bool {
+        let Some(key) = AttemptKey::parse(attempt_key) else {
+            return false;
+        };
+        let settled = self.state.lock().passes.get(attempt_key).copied();
+        let Some(arm) = settled.or_else(|| recorded_pass(&self.layout, &key)) else {
+            return false;
+        };
+        if arm.is_some_and(takes_default) {
+            return false;
         }
+        let mut state = self.state.lock();
+        let Some(controller) = state.controller.as_mut() else {
+            return false;
+        };
+        if !controller.on_audit(&key.settlement_id(), false_green) {
+            return false;
+        }
+        if state.finished {
+            self.save(&state);
+        }
+        true
     }
 
     /// Fold one settled verdict.
@@ -482,6 +543,10 @@ impl HomeostasisSink {
         }
         if let Some(stamp) = &verdict.harness {
             state.stamps.insert(chain.clone(), stamp.clone());
+        }
+        if verdict.outcome == AttemptOutcome::Passed {
+            let arm = verdict.harness.as_ref().map(|stamp| stamp.arm);
+            state.passes.insert(identity.attempt_key.clone(), arm);
         }
         let task = (identity.plan_id.clone(), identity.task_id.clone());
         let last = verdict.outcome == AttemptOutcome::Cancelled
@@ -681,6 +746,27 @@ fn writer<'a>(
             }
         })
         .as_ref()
+}
+
+/// The pass of attempt `key` as its run's `attempts.jsonl` records it, for
+/// an audit label that lands in a later run (gap-618548): its
+/// `harness_policy` arm, `None` when the verdict carries no stamp. `None`
+/// when the run or the verdict is not there, or the attempt did not pass.
+fn recorded_pass(layout: &RokoLayout, key: &AttemptKey) -> Option<Option<Arm>> {
+    let path = layout.run_dir(&key.run_id).join(ATTEMPTS_FILE);
+    let text = std::fs::read_to_string(path).ok()?;
+    let attempt_key = key.attempt_key();
+    let verdict = text
+        .lines()
+        .filter(|line| line.contains(attempt_key.as_str()))
+        .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+        .find(|row| {
+            row["schema_version"] == VERDICT_SCHEMA
+                && row["attempt_key"].as_str() == Some(attempt_key.as_str())
+        })?;
+    let outcome = serde_json::from_value::<AttemptOutcome>(verdict["outcome"].clone()).ok();
+    (outcome == Some(AttemptOutcome::Passed))
+        .then(|| serde_json::from_value(verdict["harness"]["arm"].clone()).ok())
 }
 
 /// The run of a chain key, `run:plan:task`.
@@ -1010,5 +1096,170 @@ ev.latency_p90_s = { hi = 900, inner = 810 }
             .filter(|row| row["kind"] == "param.change" && row["applied"] == true)
             .count();
         assert_eq!(applied, 0, "{rows:?}");
+    }
+
+    /// gap-618548: M4's audit verdicts reach M1's E3. A run's learners teach
+    /// each audited VS label to the self-model, as before, and to M1: a VS of
+    /// 0 on a pass that stood is a false green, which moves E3 from
+    /// unmeasured to the mean of Beta(2, 9). A held-out chain's label does
+    /// not count, nor does a label twice. A label that lands after the run
+    /// ended is saved with the controller's state, and the next run's
+    /// controller reads E3 with it, but not a label its earlier run's records
+    /// show held out.
+    #[tokio::test]
+    async fn audit_verdict_reaches_m1_false_green() {
+        use roko_core::audit_home::AuditVault;
+        use roko_core::audit_types::AuditLabels;
+        use roko_gate::audit::ledger::AuditLedger;
+        use roko_learn::telemetry::Stamped;
+        use serde_json::{Map, json};
+
+        use crate::audit::labels::{AuditReport, VsLearner, VsLearners, record_label, vs_label};
+        use crate::audit::worker::{AuditTask, AuditUnit};
+
+        /// A stand-in self-model that keeps each label it is taught.
+        #[derive(Default)]
+        struct SelfModel(parking_lot::Mutex<Vec<(String, bool)>>);
+
+        impl VsLearner for SelfModel {
+            fn learn_vs(&self, attempt_key: &str, vs: bool, _weight: f64) -> bool {
+                self.0.lock().push((attempt_key.to_string(), vs));
+                true
+            }
+        }
+
+        /// The `vs.label` row of an audit that found task `task`'s pass a
+        /// false green: its visible checks fail on a clean re-run.
+        fn false_green_label(task: &str) -> roko_core::audit_types::VsLabel {
+            let unit = AuditUnit {
+                sel_id: format!("sel-{task}"),
+                attempt_key: AttemptKey::new(RUN, PLAN, task, 1).attempt_key(),
+                run_id: RUN.to_string(),
+                plan_id: PLAN.to_string(),
+                task_id: task.to_string(),
+                pi: 0.5,
+                base_tree: Some("base".to_string()),
+                result_tree: Some("result".to_string()),
+                model: "glm-4.7".to_string(),
+                prediction_id: None,
+                task: AuditTask::default(),
+            };
+            let mut checks = Map::new();
+            checks.insert("a2".to_string(), json!({ "y": true }));
+            let labels = AuditLabels {
+                y: Some(true),
+                g: Some(false),
+                w: None,
+            };
+            let report = AuditReport {
+                labels,
+                checks: &checks,
+                findings: &[],
+                pi_eff: Some(0.5),
+                cost_usd: 0.01,
+            };
+            vs_label(&unit, &report)
+        }
+
+        /// Task `task`'s first attempt, settled `outcome` on `arm`.
+        fn settled_on(task: &str, outcome: AttemptOutcome, arm: Arm) -> AttemptVerdictRecord {
+            let mut record = verdict(task, 1, outcome);
+            record.harness = Some(HarnessStamp {
+                arm,
+                policy_version: 1,
+                params_digest: "b3:theta".to_string(),
+            });
+            record
+        }
+
+        let temp = tempfile::tempdir().expect("tempdir");
+        let workspace = temp.path().join("repo");
+        let roko = workspace.join(".roko");
+        let policy_path = ViabilityPolicy::path_in(&roko);
+        std::fs::create_dir_all(policy_path.parent().expect("policy dir")).expect("mkdir");
+        std::fs::write(&policy_path, POLICY).expect("write the policy");
+        let config = RokoConfig::default();
+        let sink = HomeostasisSink::for_workdir(&workspace, &config, None).expect("a sink");
+        let sink = Arc::new(sink);
+        // T1 and T2 passed on the learned arm, T4 on the holdout, and T3,
+        // which has no verify step, ended unverified.
+        let passed = AttemptOutcome::Passed;
+        let settled = [
+            settled_on("T1", passed, Arm::Learned),
+            settled_on("T2", passed, Arm::Learned),
+            settled_on("T3", AttemptOutcome::Unverified, Arm::Learned),
+            settled_on("T4", passed, Arm::Default),
+        ];
+        settle_all(&sink, &settled).await;
+        let e3 = sink.false_green().expect("a controller");
+        assert!(!e3.is_measured(), "no audit yet: {e3:?}");
+
+        let vault = AuditVault::resolve_with(&workspace, Some(&temp.path().join("vault")), None)
+            .expect("a vault");
+        let mut ledger = AuditLedger::open(&vault).expect("a ledger");
+        let self_model = Arc::new(SelfModel::default());
+        let m3: Arc<dyn VsLearner> = self_model.clone();
+        let m1: Arc<dyn VsLearner> = sink.clone();
+        let learners = VsLearners::of(vec![m3, m1]).expect("the run's learners");
+        let mut label = |row: &roko_core::audit_types::VsLabel| {
+            record_label(&mut ledger, &workspace, row, Some(learners.as_ref()))
+                .expect("the label is written")
+        };
+
+        // T1's audit found a false green: E3 counts it.
+        let t1 = false_green_label("T1");
+        assert_eq!(t1.vs, 0);
+        assert!(label(&t1));
+        let e3 = sink.false_green().expect("a controller");
+        let mean = e3.value.expect("E3 is measured");
+        assert!((mean - 2.0 / 11.0).abs() < 1e-12, "{e3:?}");
+        // T3 is no pass, T4 ran θ₀ on the holdout, and T1's label repeats:
+        // E3 counts none of them, and the self-model hears all four, as it
+        // did before.
+        for task in ["T3", "T4", "T1"] {
+            assert!(label(&false_green_label(task)), "{task}");
+        }
+        assert_eq!(sink.false_green().and_then(|e3| e3.value), Some(mean));
+        let taught: Vec<String> = self_model
+            .0
+            .lock()
+            .iter()
+            .map(|(key, _)| key.clone())
+            .collect();
+        let key = |task: &str| AttemptKey::new(RUN, PLAN, task, 1).attempt_key();
+        assert_eq!(taught, [key("T1"), key("T3"), key("T4"), key("T1")]);
+
+        // T2's label lands after the run ended: the saved state keeps it.
+        sink.finish();
+        assert!(label(&false_green_label("T2")));
+        // The next run's audit worker labels two passes of an earlier run,
+        // which its records show: T6 on the all-off arm, which E3 skips, and
+        // T7 on the learned arm, which it counts after T1's and T2's.
+        let attempts = RokoLayout::for_project(&workspace)
+            .run_dir(RUN)
+            .join(ATTEMPTS_FILE);
+        std::fs::create_dir_all(attempts.parent().expect("run dir")).expect("mkdir");
+        let lines: String = [("T6", Arm::GlobalOff), ("T7", Arm::Learned)]
+            .into_iter()
+            .enumerate()
+            .map(|(seq, (task, arm))| {
+                let line = Stamped {
+                    schema_version: VERDICT_SCHEMA.to_string(),
+                    record_id: format!("v-{task}"),
+                    seq: seq as u64,
+                    ts: "2026-10-16T00:00:00.000Z".to_string(),
+                    record: settled_on(task, passed, arm),
+                };
+                serde_json::to_string(&line).expect("a verdict line") + "\n"
+            })
+            .collect();
+        std::fs::write(&attempts, lines).expect("write the run's verdicts");
+        let next = HomeostasisSink::for_workdir(&workspace, &config, None).expect("a sink");
+        assert!(!next.audit_label(&key("T6"), true), "held out");
+        assert!(next.audit_label(&key("T7"), true));
+        let e3 = next.false_green().expect("a controller");
+        assert_eq!(e3.n, 3, "{e3:?}");
+        let mean = e3.value.expect("E3 is measured");
+        assert!((mean - 4.0 / 13.0).abs() < 1e-12, "{e3:?}");
     }
 }

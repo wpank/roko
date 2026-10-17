@@ -517,7 +517,7 @@ aliases (both are mounted).
 | POST | `/api/plans/{id}/tasks/{task_id}/review` | Submit a human review |
 | GET | `/api/plans/{id}/tasks/{task_id}/diff` | Code diff from task agent |
 | POST | `/api/plans/{id}/chat` | Chat in plan context |
-| POST | `/api/plans/{id}/estimate` | Cost and duration estimate |
+| POST | `/api/plans/{id}/estimate` | Cost and duration of the plan's remaining tasks. Each task is priced on the rung dispatch would start it on (`per_task[]`: `start_rung`, `model`, `start_cost_usd` for one attempt there, `likely_cost_usd` and `likely_duration_secs` weighted by similar tasks' first-try rate, `worst_cost_usd` and `worst_rungs` when every attempt fails and climbs, `first_try_rate`, `basis`, `samples`), from the recent attempts of tasks with the same role and tier in `.roko/runs/` and the rates of the price snapshot. `estimate` holds the totals (`total_cost_usd`, `total_duration_secs`, `worst_cost_usd`, `cap_usd`, `unpriced_tasks`); `by_rung`, `confidence`, `note` and `price_snapshot` say what it rests on (gap-6605f7) |
 
 ### 8.3 One-Shot Runs
 

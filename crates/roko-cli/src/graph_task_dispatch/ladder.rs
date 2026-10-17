@@ -40,15 +40,15 @@ use crate::dispatch::{RoutingLadder, RunnerDispatchPlan};
 use crate::runtime_feedback::homeostasis::HarnessDecision;
 
 /// Agent-blamed failures on one rung before the task climbs to the next.
-const FAILURES_PER_RUNG: u32 = 2;
+pub(crate) const FAILURES_PER_RUNG: u32 = 2;
 
 /// Most rungs a task climbs above its start rung (`K_max`).
-const MAX_ESCALATIONS: u32 = 2;
+pub(crate) const MAX_ESCALATIONS: u32 = 2;
 
 /// Retry budget of a task that does not author `max_retries` while the
 /// ladder routes it: [`FAILURES_PER_RUNG`] attempts on its start rung and on
 /// each rung it may climb, less the first attempt.
-pub(super) const LADDER_MIN_RETRIES: u32 = FAILURES_PER_RUNG * (MAX_ESCALATIONS + 1) - 1;
+pub(crate) const LADDER_MIN_RETRIES: u32 = FAILURES_PER_RUNG * (MAX_ESCALATIONS + 1) - 1;
 
 /// M1's B1 bounds on one task's rungs, as indices among its role's rungs.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]

@@ -599,6 +599,37 @@ impl CliRuntime for RokoCliRuntime {
         }))
     }
 
+    /// The plan's remaining tasks priced where dispatch would run them, from
+    /// the workspace's config, price snapshot and run records (gap-6605f7).
+    async fn estimate_plan(
+        &self,
+        workdir: &std::path::Path,
+        plan_id: &str,
+    ) -> anyhow::Result<Option<roko_learn::task_estimate::PlanEstimate>> {
+        let Some(plan_info) =
+            crate::plan::discover_plan_by_id(workdir, plan_id).with_context(|| {
+                format!(
+                    "failed to discover plan '{}' in {}",
+                    plan_id,
+                    workdir.display()
+                )
+            })?
+        else {
+            return Ok(None);
+        };
+        let Some(tasks_path) = crate::plan::tasks_path(&plan_info) else {
+            return Ok(None);
+        };
+        if !tasks_path.is_file() {
+            return Ok(None);
+        }
+        let tasks_toml = std::fs::read_to_string(&tasks_path)
+            .with_context(|| format!("read {}", tasks_path.display()))?;
+        let config = load_effective_roko_config(workdir, &self.repo_registry)?;
+        let plan_id = crate::plan::stable_plan_id(&plan_info);
+        crate::plan_estimate::estimate_plan_tasks(workdir, &config, plan_id, &tasks_toml).map(Some)
+    }
+
     async fn plan_source(
         &self,
         workdir: &Path,

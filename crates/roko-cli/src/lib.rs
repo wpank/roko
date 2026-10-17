@@ -200,6 +200,7 @@ pub mod pipe;
 pub mod plan;
 pub mod plan_authoring;
 pub mod plan_brief;
+pub mod plan_estimate;
 pub mod plan_generate;
 pub mod plan_generator;
 pub mod plan_import;

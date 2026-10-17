@@ -812,6 +812,21 @@ pub trait CliRuntime: Send + Sync + 'static {
         anyhow::bail!("runtime does not support plan discovery")
     }
 
+    /// Estimate the cost and time of the remaining tasks of plan `plan_id`
+    /// (gap-6605f7): each priced on the rung dispatch would start it on, with
+    /// its likely and worst case.
+    ///
+    /// Returns `Ok(None)` when the plan does not exist. The default returns
+    /// an explicit error so callers can detect unsupported runtimes.
+    async fn estimate_plan(
+        &self,
+        workdir: &std::path::Path,
+        plan_id: &str,
+    ) -> anyhow::Result<Option<roko_learn::task_estimate::PlanEstimate>> {
+        let _ = (workdir, plan_id);
+        anyhow::bail!("runtime does not support plan estimates")
+    }
+
     /// Return the raw TOML source of a plan's `tasks.toml`.
     ///
     /// Returns `Ok(None)` when no plan with `plan_id` is found in `workdir`.

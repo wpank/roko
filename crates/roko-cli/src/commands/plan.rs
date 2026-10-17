@@ -143,7 +143,9 @@ pub(crate) enum PlanCmd {
         /// Write the plans into `<out>/<SET>/`, a plan set that runs as one.
         #[arg(long, value_name = "SET")]
         set: Option<String>,
-        /// Replace plan directories that hold a `tasks.toml` already.
+        /// Replace plan directories that hold a `tasks.toml` already. This
+        /// takes the workspace lock, which a running roko serve holds; a
+        /// fresh import takes none.
         #[arg(long)]
         force: bool,
         /// Do not make a reviewer task of `review-tasks.toml`.
@@ -1207,7 +1209,9 @@ pub(crate) async fn cmd_plan(cli: &Cli, cmd: PlanCmd) -> Result<i32> {
                 Some(set) => out.join(set),
                 None => out,
             };
-            let _lock = roko_cli::workspace_lock::acquire_workspace_lock(&workdir.join(".roko"))?;
+            // A fresh import needs no workspace lock, so it runs beside roko
+            // serve; --force does (bug-dfe4c5).
+            let _lock = roko_cli::plan_import::import_lock(&workdir, force)?;
             let options = roko_cli::plan_import::MoriImportOptions {
                 reviewer: !no_reviewer,
                 scribe: !no_scribe,
@@ -1219,7 +1223,18 @@ pub(crate) async fn cmd_plan(cli: &Cli, cmd: PlanCmd) -> Result<i32> {
                 options,
                 force,
             )?;
-            cmd_plan_import_report(&imported, &workdir, strict, json || cli.json, cli.quiet)
+            let json = json || cli.json;
+            let code = cmd_plan_import_report(&imported, &workdir, strict, json, cli.quiet)?;
+            if !json
+                && !cli.quiet
+                && let Some(serve) = roko_cli::doctor::serve_holding_workspace(&workdir)
+            {
+                println!(
+                    "roko serve (PID {}) runs in this workspace and lists the new plans",
+                    serve.pid
+                );
+            }
+            Ok(code)
         }
         PlanCmd::Run {
             plans_dir,

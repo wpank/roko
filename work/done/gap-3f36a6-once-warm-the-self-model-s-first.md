@@ -17,7 +17,7 @@ discovered_from = "agent:learning-research (round v6, 2026-10-17, start-rung dem
 anchors = ["crates/roko-learn/src/self_model/model.rs::SelfModel::forecast", "crates/roko-learn/src/self_model/features.rs::TaskFeatures", "crates/roko-learn/src/self_model/logit.rs::LogitForecast", "crates/roko-cli/src/graph_task_dispatch/self_model.rs::task_features"]
 lane = "rust-hot"
 parent = "spec-7a71d6"
-links = { depends_on = [], blocks = [], related = ["bug-92cc56", "gap-e464e6", "gap-dd89ff", "gap-51d2ca"], supersedes = [], duplicate_of = "" }
+links = { depends_on = [], blocks = [], related = ["bug-92cc56", "gap-e464e6", "gap-dd89ff", "gap-51d2ca", "gap-7c041c"], supersedes = [], duplicate_of = "" }
 
 [[verify]]
 command = "grep -rqw 'fn ladder_ordered_outcomes_do_not_confound_the_start_forecast' crates/roko-learn/ && cargo test -p roko-learn ladder_ordered_outcomes_do_not_confound_the_start_forecast"
@@ -130,4 +130,6 @@ task 20.
   `predictions.jsonl`); L1 forecasts retries and climbs.
 - **Left for later:**
   - L1 for first tries waits on an arm-by-order fix (gap-e464e6);
-  - until then, a first try's start pick does not use L1's task features, gap-dd89ff's lessons feature included.
+  - until then, a first try's start pick does not use L1's task features, gap-dd89ff's lessons feature included,
+    so first-try starts are lesson-blind. Warm L1 forecasts are saturated and follow the last outcome, not the
+    lesson (gap-7c041c), and learning-research's lessons-on series on the A+B binary kept every start on cheap.

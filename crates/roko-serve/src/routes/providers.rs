@@ -89,8 +89,9 @@ async fn list_providers(State(state): State<Arc<AppState>>) -> Json<ProvidersRes
 ///
 /// A model's prices are the rates roko prices its calls at, in dispatch's
 /// order: the workspace's price snapshot, then its `[models.*]` prices (with
-/// its provider's cache-read rate), then roko's built-in pricing.
-/// `priced_by` says which; a model none of them prices has no prices.
+/// its provider's cache-read rate, else a tenth of its input rate), then
+/// roko's built-in pricing. `priced_by` says which; a model none of them
+/// prices has no prices.
 async fn list_models(State(state): State<Arc<AppState>>) -> Json<ModelsResponse> {
     let config = state.load_roko_config();
     let snapshot =
@@ -120,7 +121,7 @@ async fn list_models(State(state): State<Arc<AppState>>) -> Json<ModelsResponse>
                 supports_vision: profile.supports_vision,
                 cost_input_per_m: rates.map(|rates| rates.input_per_m),
                 cost_output_per_m: rates.map(|rates| rates.output_per_m),
-                cost_cache_read_per_m: rates.and_then(|rates| rates.cache_read_per_m),
+                cost_cache_read_per_m: rates.map(|rates| rates.cache_read_per_m),
                 priced_by: source.map(|source| source.as_str().to_string()),
                 price_snapshot: snapshot
                     .as_deref()
@@ -1242,7 +1243,9 @@ mod tests {
         assert_eq!(own["priced_by"], "profile", "{own}");
         assert_eq!(own["cost_input_per_m"], 1.0, "{own}");
         assert_eq!(own["cost_output_per_m"], 2.0, "{own}");
-        assert!(own.get("cost_cache_read_per_m").is_none(), "{own}");
+        // A tenth of its input rate, as dispatch charges a cache read the
+        // model names no rate for (bug-1c0a66).
+        assert_eq!(own["cost_cache_read_per_m"], 0.1, "{own}");
         assert!(own.get("price_snapshot").is_none(), "{own}");
 
         let top = model("top");

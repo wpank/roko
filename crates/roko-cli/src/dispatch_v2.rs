@@ -4780,6 +4780,86 @@ exit 1
         assert!((f64::from(reported.cost_usd) - 0.25).abs() < 1e-6);
     }
 
+    /// bug-1c0a66: the rates `/api/models` serves (`effective_rates`) price a
+    /// call, cache reads included, at what dispatch charges for it: from a
+    /// snapshot row, from a profile with a cache-read rate and without one,
+    /// from a profile that charges nothing, with a built-in price and
+    /// without one, and from built-in pricing.
+    #[test]
+    fn effective_rates_price_calls_as_dispatch_does() {
+        let snapshot = PriceSnapshot::from_toml(
+            include_str!("../../../config/prices/2026-09-28.toml"),
+            "config/prices/2026-09-28.toml",
+        )
+        .expect("the 2026-09-28 snapshot");
+        let profile =
+            |slug: &str, prices: Option<(f64, f64)>, cache_read: Option<f64>| ModelProfile {
+                provider: "openai".to_string(),
+                slug: slug.to_string(),
+                cost_input_per_m: prices.map(|(input, _)| input),
+                cost_output_per_m: prices.map(|(_, output)| output),
+                cost_cache_read_per_m: cache_read,
+                ..ModelProfile::default()
+            };
+        let cases = [
+            (
+                Some(&snapshot),
+                profile("glm-4.7", Some((9.0, 9.0)), None),
+                "snapshot",
+            ),
+            (
+                None,
+                profile("my-own-model", Some((1.0, 2.0)), None),
+                "profile",
+            ),
+            (
+                None,
+                profile("my-own-model", Some((1.0, 2.0)), Some(0.5)),
+                "profile",
+            ),
+            (
+                None,
+                profile("claude-sonnet-4-6", Some((0.0, 0.0)), None),
+                "builtin",
+            ),
+            (
+                None,
+                profile("my-local-model", Some((0.0, 0.0)), None),
+                "profile",
+            ),
+            (None, profile("claude-sonnet-4-6", None, None), "builtin"),
+        ];
+        for (snapshot, profile, source) in cases {
+            let rates = roko_core::config::model_registry::effective_rates(
+                snapshot,
+                Some(&profile),
+                &profile.slug,
+            )
+            .expect("rates");
+            assert_eq!(rates.source.as_str(), source, "{}", profile.slug);
+            let mut usage = roko_core::Usage::zero();
+            usage.input_tokens = 20_000;
+            usage.output_tokens = 4_000;
+            usage.cache_read_tokens = 300_000;
+            fill_usage_cost_from_pricing(&mut usage, snapshot, Some(&profile), &profile.slug);
+            let served = [
+                (20_000.0, rates.input_per_m),
+                (4_000.0, rates.output_per_m),
+                (300_000.0, rates.cache_read_per_m),
+            ]
+            .iter()
+            .map(|(tokens, rate)| tokens * rate)
+            .sum::<f64>()
+                / 1_000_000.0;
+            let charged = f64::from(usage.cost_usd);
+            assert!(
+                (charged - served).abs() < 1e-6,
+                "{}: dispatch charged {charged}, the rates say {served}",
+                profile.slug
+            );
+        }
+    }
+
     /// backlog 2114 (decision 2113): calls are priced from the newest
     /// snapshot in the workspace's `config/prices/`, else the built-in copy,
     /// loaded once per workspace.

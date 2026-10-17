@@ -6851,6 +6851,65 @@ max_retries = 0
         );
     }
 
+    /// gap-cad57a, decision 2 of 2026-10-15: a plan run in a workspace with no
+    /// `[homeostasis]` section and no `.roko/policy/viability.toml` registers
+    /// M1 in shadow on roko's shipped policy. It leaves the controller's
+    /// state and one `harness_policy` row per attempt, each in shadow and
+    /// running θ₀, as the attempt's verdict says; no change M1 proposes is
+    /// applied, and M1 writes no policy file.
+    #[cfg(unix)]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn default_plan_run_registers_m1_in_shadow() {
+        use roko_core::config::homeostasis::HomeostasisMode;
+        use roko_learn::homeostasis::controller::{Controller, ControllerState};
+        use roko_learn::homeostasis::ledger::ledger_path;
+        use roko_learn::homeostasis::policy::ViabilityPolicy;
+        use roko_learn::telemetry::report::RunRecords;
+
+        let dir = verified_plan_set(&[("a", "a.txt", &[])], "");
+        let roko = dir.path().join(".roko");
+        let (exit_code, _, _) = run_plan_set(dir.path(), Some(1), None).await;
+        assert_eq!(exit_code, EXIT_SUCCESS);
+
+        // M1 ran in shadow, resolved the run's one chain and saved its state.
+        let text = std::fs::read_to_string(Controller::state_path(&roko))
+            .expect("a default run saves M1's state");
+        let state: ControllerState = serde_json::from_str(&text).expect("the state parses");
+        assert_eq!(state.mode, HomeostasisMode::Shadow);
+        assert_eq!(state.resolutions + state.holdout_resolutions, 1, "{text}");
+        assert!(
+            !ViabilityPolicy::path_in(&roko).exists(),
+            "M1 only reads its policy"
+        );
+
+        // One harness_policy row per attempt, in shadow: the attempt ran θ₀.
+        let manifest = only_run_manifest(dir.path());
+        let run_dir = roko.join("runs").join(&manifest.run_id);
+        let run = RunRecords::load(&run_dir).expect("read the run's records");
+        assert!(run.invalid.is_empty(), "{:?}", run.invalid);
+        assert_eq!(run.verdicts.len(), 1);
+        assert_eq!(run.harness_decisions.len(), run.verdicts.len());
+        let row = &run.harness_decisions[0].record;
+        assert_eq!(row.mode, HomeostasisMode::Shadow);
+        let theta0 = row.default.params_digest();
+        assert_eq!(row.params_digest, theta0, "shadow runs θ₀");
+        let stamp = run.verdicts[0]
+            .record
+            .harness
+            .as_ref()
+            .expect("the θ stamp");
+        assert_eq!(stamp.params_digest, theta0);
+
+        // No change M1 proposed was applied.
+        let ledger = std::fs::read_to_string(ledger_path(&roko)).unwrap_or_default();
+        for line in ledger.lines() {
+            let row: serde_json::Value = serde_json::from_str(line).expect("a controller row");
+            if row["kind"] == "param.change" {
+                assert_eq!(row["applied"], false, "{row}");
+            }
+        }
+    }
+
     /// S01 §5.8: a plan run writes its run's `census.json` from the
     /// dispatcher it built: every learning component S01 names, in census
     /// order, with the attempt log wired, stamped with this harness build.

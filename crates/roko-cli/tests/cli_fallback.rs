@@ -249,6 +249,44 @@ fn init_creates_workspace_artifacts() {
     );
 }
 
+/// gap-cad57a: `roko init` writes M1's shipped viability policy to
+/// `.roko/policy/viability.toml` for a person to edit, the policy M1 runs on
+/// in shadow until one does, and never overwrites a policy already there.
+#[test]
+fn init_writes_the_default_viability_policy() {
+    use roko_learn::homeostasis::policy::{
+        DEFAULT_VIABILITY_POLICY, PolicyOrigin, ViabilityPolicy,
+    };
+
+    let tmp = TempDir::new().expect("tempdir");
+    let init = || {
+        Command::cargo_bin("roko")
+            .unwrap()
+            .isolated()
+            .current_dir(tmp.path())
+            .arg("init")
+            .arg(tmp.path())
+            .assert()
+            .success();
+    };
+    init();
+    let roko = tmp.path().join(".roko");
+    let path = ViabilityPolicy::path_in(&roko);
+    let text = fs::read_to_string(&path).expect("init wrote the policy");
+    assert_eq!(text, DEFAULT_VIABILITY_POLICY);
+    let (policy, origin) = ViabilityPolicy::load_or_shipped(&roko).expect("the policy loads");
+    assert_eq!(policy, ViabilityPolicy::shipped_default());
+    assert_eq!(origin, PolicyOrigin::Shipped);
+
+    // A person's edit survives another `roko init`, and makes it theirs.
+    let edited = text.replace("policy_version = 1", "policy_version = 2");
+    fs::write(&path, &edited).expect("edit the policy");
+    init();
+    assert_eq!(fs::read_to_string(&path).expect("read it back"), edited);
+    let (_, origin) = ViabilityPolicy::load_or_shipped(&roko).expect("the edited policy loads");
+    assert_eq!(origin, PolicyOrigin::Person);
+}
+
 // -----------------------------------------------------------------------
 // 3. status --surfaces produces parseable output
 // -----------------------------------------------------------------------

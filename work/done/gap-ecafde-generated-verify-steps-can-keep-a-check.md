@@ -2,7 +2,7 @@
 id = "gap-ecafde"
 kind = "gap"
 title = "Generated verify steps can keep a check but never pass: a runner that is not installed (pytest), a test name that does not exist, a test file no task writes"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p2"
 goal = "golden-path"
@@ -11,6 +11,7 @@ subsystem = ["roko-cli/plan_validate"]
 created = 2026-10-17
 updated = 2026-10-17
 last_verified = 2026-10-17
+last_verified_rev = "7ad5f98e5"
 source = "roko-planner, round v6 re-run of plans-research's docs (gap-dc5d7c)"
 discovered_from = "gap-dc5d7c"
 anchors = ["crates/roko-cli/src/plan_generate/pipeline.rs::generate_plan", "crates/roko-cli/src/plan_validate.rs::validate_tasks_file"]
@@ -18,6 +19,18 @@ links = { depends_on = [], blocks = [], related = ["gap-dc5d7c", "bug-6fa025", "
 
 [[verify]]
 command = "grep -rqw 'fn generation_flags_verify_steps_that_cannot_pass' crates/roko-cli/src && cargo test -p roko-cli --lib -- generation_flags_verify_steps_that_cannot_pass"
+
+[closed]
+at = 2026-10-17
+at_ts = "2026-10-17T14:55:46Z"
+commit = "e8e6eff0c"
+by = "roko-planner"
+executor = "claude-agent"
+via = "manual"
+size = "M"
+claimed_at = "2026-10-17T14:00:20Z"
+forced = false
+evidence = "plan_generate/runnable.rs checks every verify step of a draft: each program installed (each python3 -m module importable), each file it reads existing or written by its task or one before it, each pytest/unittest test it names defined in its file unless a task writes that file. Repairs: pytest over unittest files runs as python3 -m unittest when pytest is missing; a test file a task check needs joins its files. Prompt states the runners this machine has; steps that still cannot pass go back once (with missing source checks), and a check covered only by them is cannot_run, not kept (e8e6eff0c). Verify generation_flags_verify_steps_that_cannot_pass passes; roko-cli lib 3792 passed, 0 failed; clippy roko-cli/roko-learn clean. Live (pocket-synth, gpt-oss-120b, $0.0694, 2 calls, binary e8e6eff0c): 14 of 14 kept, every step python3 -m unittest <real test id> (no pytest, INV-5 names both real lowpass tests); plan validate --spec-quality --dynamic: 4 of 4 tasks red on the base, none cannot-run; each of the 18 steps exits 1 on the base and 0 on the plans-research reference implementation."
 +++
 
 ## Problem

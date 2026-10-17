@@ -40,7 +40,7 @@ use roko_learn::self_model::cascade::{
 };
 use roko_learn::self_model::features::TaskFeatures;
 use roko_learn::self_model::gate::{
-    CalibrationGate, CalibrationWindow, GateReport, WINDOW, WINDOW_FILE_NAME, WindowOutcome,
+    CalibrationGate, CalibrationWindow, GateReport, WINDOW_FILE_NAME, WindowOutcome,
 };
 use roko_learn::self_model::logit::FALSE_GREEN_PRIOR;
 use roko_learn::self_model::model::{MODEL_CLASS, SelfModel, StateLoad};
@@ -162,12 +162,12 @@ struct Calibration {
 }
 
 impl Calibration {
-    /// Add `outcome` of a forecast by `version`. Only the last [`WINDOW`] unsaved outcomes are
-    /// kept, since a save keeps no more.
+    /// Add `outcome` of a forecast by `version`. Only as many unsaved outcomes are kept as the
+    /// window keeps, since a save keeps no more.
     fn push(&mut self, version: &PredictorVersion, outcome: WindowOutcome) {
         self.window.push(version, outcome);
         self.unsaved.push_back((version.clone(), outcome));
-        if self.unsaved.len() > WINDOW {
+        if self.unsaved.len() > self.window.capacity() {
             self.unsaved.pop_front();
         }
     }
@@ -256,8 +256,9 @@ impl SelfModelRuntime {
             }
         };
         let window_path = state_path.with_file_name(WINDOW_FILE_NAME);
+        let keeps = CalibrationGate::of(&settings).keeps();
         let window =
-            CalibrationWindow::load(&window_path, &model.version).unwrap_or_else(|error| {
+            CalibrationWindow::load(&window_path, &model.version, keeps).unwrap_or_else(|error| {
                 tracing::warn!(
                     path = %window_path.display(),
                     %error,
@@ -285,8 +286,9 @@ impl SelfModelRuntime {
             target: settings.target,
             ..LcbAciConfig::default()
         });
+        let keeps = CalibrationGate::of(&settings).keeps();
         let window = Calibration {
-            window: CalibrationWindow::new(model.version.clone()),
+            window: CalibrationWindow::new(model.version.clone()).keeping(keeps),
             unsaved: VecDeque::new(),
         };
         let window_path = state_path.with_file_name(WINDOW_FILE_NAME);
@@ -310,11 +312,12 @@ impl SelfModelRuntime {
     }
 
     /// The runtime with `window`, the calibration window earlier runs kept, when it holds
-    /// forecasts of the model's version: forecasts are never compared across versions.
+    /// forecasts of the model's version: forecasts are never compared across versions. It
+    /// keeps as many outcomes as the run's gate needs.
     #[must_use]
     pub fn with_window(self, window: CalibrationWindow) -> Self {
         if window.version == self.version() {
-            self.window.lock().window = window;
+            self.window.lock().window = window.keeping(self.calibration_gate().keeps());
         }
         self
     }
@@ -422,13 +425,16 @@ impl SelfModelRuntime {
         self.lcb.lock().update(None, outcome.y, p_fg);
     }
 
+    /// The calibration gate `[self_model]` configures: π* = `target` and W = `n_min`
+    /// (gap-4c531f).
+    fn calibration_gate(&self) -> CalibrationGate {
+        CalibrationGate::of(&self.settings)
+    }
+
     /// The calibration gate's report on the window (6122).
     #[must_use]
     pub fn gate(&self) -> GateReport {
-        let gate = CalibrationGate {
-            target: self.settings.target,
-        };
-        gate.evaluate(&self.window.lock().window)
+        self.calibration_gate().evaluate(&self.window.lock().window)
     }
 
     /// Export the calibration gate's report on the window as the `ev.m3.*` values S06 and the
@@ -459,7 +465,8 @@ impl SelfModelRuntime {
         let mut calibration = self.window.lock();
         let outcomes: Vec<(PredictorVersion, WindowOutcome)> =
             calibration.unsaved.iter().cloned().collect();
-        let saved = CalibrationWindow::save_outcomes(&self.window_path, &outcomes)?;
+        let keeps = calibration.window.capacity();
+        let saved = CalibrationWindow::save_outcomes(&self.window_path, keeps, &outcomes)?;
         calibration.unsaved.clear();
         let version = calibration.window.version.clone();
         if let Some(saved) = saved.filter(|saved| saved.version == version) {
@@ -1805,5 +1812,61 @@ mod tests {
         assert_eq!(read.len(), 1, "{ledger}");
         assert_eq!(read[0].task_id, "T-REFINE");
         assert!(!read[0].acting, "{read:?}");
+    }
+
+    /// gap-4c531f: `[self_model] n_min` is the calibration gate's window W. With n_min = 10, ten
+    /// well-calibrated outcomes make the gate eligible and let an active self-model route, and
+    /// nine do not, for want of the tenth alone. The run saves them, and the next run with
+    /// n_min = 10 starts eligible, while one with the default n_min of 100 finds the ten short.
+    /// The window keeps 100 outcomes whatever W is, so the breaker keeps its fifty.
+    #[test]
+    fn self_model_gate_window_follows_n_min() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let config = |n_min: u32| {
+            let mut config = RokoConfig::default();
+            config.self_model.mode = SelfModelMode::Active;
+            config.self_model.n_min = n_min;
+            config
+        };
+        let small = SelfModelRuntime::load(temp.path(), &config(10)).expect("active loads M3");
+        assert_eq!(small.window.lock().window.capacity(), 100);
+        // Sharp and right: eight passes forecast at 0.96 and two failures at 0.04, the
+        // failures second and sixth, each on a rung the self-model chose.
+        let version = small.version();
+        for index in 0..10 {
+            let passed = index != 1 && index != 5;
+            let outcome = WindowOutcome {
+                p: if passed { 0.96 } else { 0.04 },
+                y: passed,
+                w: 1.0,
+                routed: true,
+            };
+            small.record_outcome(&version, outcome, FALSE_GREEN_PRIOR);
+            if index == 8 {
+                let nine = small.gate();
+                assert!(!nine.eligible && !small.routes(), "{nine:?}");
+                assert_eq!(nine.reasons, ["n = 9, below the window of 10"], "{nine:?}");
+            }
+        }
+        let ten = small.gate();
+        assert!(ten.eligible, "{ten:?}");
+        assert_eq!((ten.window, ten.n), (10, 10));
+        assert!(!ten.breaker_tripped);
+        assert!(
+            small.routes(),
+            "an active self-model acts at n_min outcomes"
+        );
+        small.save().expect("save the state and the window");
+
+        let next = SelfModelRuntime::load(temp.path(), &config(10)).expect("active loads M3");
+        assert!(next.gate().eligible && next.routes());
+        let default = SelfModelRuntime::load(temp.path(), &config(100)).expect("active loads M3");
+        let report = default.gate();
+        assert!(!report.eligible && !default.routes(), "{report:?}");
+        let short = "n = 10, below the window of 100";
+        assert!(
+            report.reasons.iter().any(|reason| reason == short),
+            "{report:?}"
+        );
     }
 }

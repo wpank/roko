@@ -51,7 +51,11 @@ pub struct SelfModelConfig {
     pub target: f64,
     /// δ, the error rate of the lower confidence bound on P(VS), in (0, 1).
     pub delta: f64,
-    /// Outcomes the calibration window needs before active mode may act.
+    /// W, the calibration gate's window: the last outcomes it scores, which it needs before
+    /// active mode may act (S04 §4.10's 100 by default; gap-4c531f). A small workspace may
+    /// lower it, at a cost: the gate's bounds stay as they are, and over a few outcomes they
+    /// are noisy (ECE's ten equal-mass bins hold one forecast each at W = 10, so only sharp
+    /// forecasts pass). The circuit breaker still reads its last 50 outcomes.
     pub n_min: u32,
     /// The state file, relative to the workspace.
     pub state_path: String,

@@ -3158,6 +3158,7 @@ mod tests {
 
         let gate = |eligible, breaker_tripped| GateReport {
             predictor_version: PredictorVersion("m3-l1-test".to_string()),
+            window: 100,
             n: 100,
             ece: Some(0.03),
             cal_in_large: Some(0.01),

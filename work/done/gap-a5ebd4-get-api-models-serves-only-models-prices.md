@@ -2,14 +2,16 @@
 id = "gap-a5ebd4"
 kind = "gap"
 title = "GET /api/models serves only [models.*] prices, so a model roko prices from its snapshot or built-in table (the top rung claude-sonnet-4-6) shows none, and no model shows a cache-read rate"
-status = "open"
-triage = "unverified"
+status = "done"
+triage = "verified"
 severity = "p2"
 goal = "hermes"
 size = "S"
 subsystem = ["roko-core/config"]
 created = 2026-10-17
 updated = 2026-10-17
+last_verified = 2026-10-17
+last_verified_rev = "79fbd4cb1"
 source = "team-lead, round v6 (spec-v3 §10 P1, P3: the Receipt's top-rung comparison)"
 anchors = ["crates/roko-serve/src/routes/providers.rs::list_models", "crates/roko-core/src/config/model_registry.rs::model_has_price"]
 lane = "rust-hot"
@@ -17,6 +19,13 @@ links = { depends_on = [], blocks = [], related = ["gap-8548e3"], supersedes = [
 
 [[verify]]
 command = "grep -rqw 'fn list_models_serves_the_rates_calls_are_priced_at' crates/roko-serve/src && cargo test -p roko-serve --lib list_models_serves_the_rates_calls_are_priced_at"
+
+[closed]
+at = 2026-10-17
+at_ts = "2026-10-17T12:27:35Z"
+commit = "79fbd4cb1"
+forced = false
+evidence = "79fbd4cb1: roko_core::config::model_registry::effective_rates returns a model's input, output and cache-read rates as a run prices its calls, in dispatch's order (the price snapshot's row, then the profile's prices with its provider's cache-read rate, then builtin_pricing), with the source; GET /api/models serves them as cost_input_per_m, cost_output_per_m and cost_cache_read_per_m, plus priced_by (snapshot, profile or builtin) and price_snapshot (the snapshot id) when the snapshot priced the model, and no prices for a model nothing prices. list_models_serves_the_rates_calls_are_priced_at passes: gpt-oss-120b from the snapshot over its [models.*] prices, a profile-priced model, claude-sonnet-4-6 from the built-in table (3.0, 15.0, cache read 0.3), an unpriced model; the older list_models test (glm-5.1, profile prices) still passes. Checks at 225c30b61 (79fbd4cb1 plus bug-9b65dc, on main 37088dc12): fmt --check, clippy -D warnings (roko-core, roko-cli, roko-serve), lib tests roko-core 2038 passed, roko-serve 1053 passed, roko-cli 3774 passed; the [[verify]] passes."
 +++
 
 ## Problem

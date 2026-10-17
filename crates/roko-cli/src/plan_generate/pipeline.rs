@@ -1264,7 +1264,11 @@ pub async fn generate_plan(request: PlanRequest<'_>) -> Result<(PathBuf, Generat
         }
         // gap-dc5d7c: the checks the source states, each to be kept as a
         // verify step or dropped with a reason.
-        let checks = source_checks::source_checks(&source.content);
+        let mut checks = source_checks::source_checks(&source.content);
+        // gap-ecafde: what this machine can run; bug-8fe462: the commands
+        // that run checks stated as unittest ids, wildcards expanded.
+        let probe = runnable::Probe::default();
+        source_checks::attach_runs(&mut checks, workdir_ref, &probe);
         if !checks.is_empty() {
             tracing::info!(
                 slug,
@@ -1276,7 +1280,6 @@ pub async fn generate_plan(request: PlanRequest<'_>) -> Result<(PathBuf, Generat
         }
         // gap-ecafde: the test runners this machine has, which a check must
         // use to be able to pass.
-        let probe = runnable::Probe::default();
         if let Some(runners) = runnable::runners_block(workdir_ref, &probe) {
             extra.push_str("\n\n---\n\n");
             extra.push_str(&runners);
@@ -1530,6 +1533,10 @@ pub async fn generate_plan(request: PlanRequest<'_>) -> Result<(PathBuf, Generat
             // gap-ecafde: a pytest step without pytest runs as unittest, and a
             // test file a task's check needs joins its files.
             repairs.extend(runnable::repair(&mut parsed, workdir_ref, &probe));
+            // bug-8fe462: a step that cannot run, over checks roko has the
+            // commands for, runs those commands.
+            let stuck = runnable::problems(&parsed, workdir_ref, &probe);
+            repairs.extend(source_checks::apply_runs(&mut parsed, &checks, &stuck));
             let validated = if repairs.is_empty() {
                 validated
             } else {
@@ -3590,6 +3597,96 @@ mod tests {
         assert_eq!(
             task.verify[1].command,
             "python3 -m unittest tests.test_widget.WidgetTest.test_spins"
+        );
+    }
+
+    /// bug-8fe462: a spec that states checks as unittest wildcards gets
+    /// their real tests. The planner is given the command for each, and a
+    /// step it wrote with invented test names runs the real ones instead,
+    /// without asking it again.
+    #[cfg(unix)]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn wildcard_spec_checks_become_runnable_steps() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let workdir = temp.path();
+        std::fs::create_dir_all(workdir.join("tests")).expect("tests");
+        for (file, body) in [
+            (
+                "tests/test_osc.py",
+                "class NoiseTest(unittest.TestCase):\n    def test_white_noise_is_centred(self):\n",
+            ),
+            (
+                "tests/test_svf.py",
+                "class SVFTest(unittest.TestCase):\n    \
+                 def test_lowpass_attenuates_highs(self):\n        pass\n    \
+                 def test_lowpass_passes_lows(self):\n        pass\n",
+            ),
+        ] {
+            std::fs::write(workdir.join(file), format!("import unittest\n\n{body}"))
+                .expect("a test module");
+        }
+        let source = PlanSource::Text {
+            text: "# Synth\n\n## Verification\n\n| INV | Test | Constraint |\n|---|---|---|\n\
+                   | INV-4 | `tests.test_osc.NoiseTest.*` | white noise is centred |\n\
+                   | INV-5 | `tests.test_svf.SVFTest.test_lowpass_*` | LP 400 Hz |\n",
+            kind: "file",
+        };
+        let invented = "[meta]\nplan = \"synth\"\ntotal = 1\ndone = 0\nstatus = \"ready\"\n\n\
+            [[task]]\nid = \"T1\"\ntitle = \"Add the noise and the filter\"\n\
+            description = \"Create synth/osc.py and synth/svf.py.\"\nstatus = \"ready\"\n\
+            role = \"implementer\"\ntier = \"focused\"\n\
+            files = [\"synth/osc.py\", \"synth/svf.py\"]\ndepends_on = []\n\n\
+            [task.context]\nread_files = []\n\n\
+            [[task.verify]]\nphase = \"test\"\n\
+            command = \"python3 -m unittest tests.test_osc.NoiseTest.test_white_noise\"\n\
+            covers = [\"SC1\"]\n\n\
+            [[task.verify]]\nphase = \"test\"\n\
+            command = \"python3 -m unittest tests.test_svf.SVFTest.test_lowpass_400hz\"\n\
+            covers = [\"SC2\"]\n";
+        let bin = tempfile::tempdir().expect("tempdir");
+        let calls = write_scripted_planner(
+            workdir,
+            bin.path(),
+            &[invented],
+            "allow_threshold = 0.0\nblock_threshold = 0.0\n",
+        );
+        let request = PlanRequest {
+            model: Some("planner"),
+            ..PlanRequest::new(source, "synth", workdir)
+        };
+        let (_, outcome) = generate_plan(request)
+            .await
+            .expect("generate the synth plan");
+        let log = std::fs::read_to_string(&calls).expect("planner call log");
+        assert_eq!(log.lines().count(), 1, "roko fixes the steps itself");
+        let asked = std::fs::read_to_string(bin.path().join("prompt-0.txt")).expect("first call");
+        assert!(
+            asked.contains("(run: `python3 -m unittest tests.test_osc.NoiseTest`)"),
+            "{asked}"
+        );
+
+        let written =
+            TasksFile::parse(&workdir.join("plans/synth/tasks.toml")).expect("the synth plan");
+        let commands: Vec<&str> = written.tasks[0]
+            .verify
+            .iter()
+            .map(|step| step.command.as_str())
+            .collect();
+        assert_eq!(
+            commands,
+            [
+                "python3 -m unittest tests.test_osc.NoiseTest",
+                "python3 -m unittest tests.test_svf.SVFTest.test_lowpass_attenuates_highs \
+                 tests.test_svf.SVFTest.test_lowpass_passes_lows",
+            ]
+        );
+        let checks = outcome
+            .source_checks
+            .expect("the source's checks are reported");
+        assert_eq!(
+            (checks.kept, checks.cannot_run, checks.total),
+            (2, 0, 2),
+            "{checks:?}"
         );
     }
 

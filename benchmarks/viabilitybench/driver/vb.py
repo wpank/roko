@@ -10,7 +10,7 @@ and `replay`.
     vb campaign --manifest experiments/pilot_a.toml --dry-run        # an experiment's blocks (campaign.py)
 
 `vb run` runs every (task, seed) of a stream on one arm and one model, in a fresh workdir under `$VB_WORK` (default
-`~/vb-work/`), outside the repository, whose path names neither the task nor the run (below). For each one it:
+`~/workspaces/`), outside the repository, whose path names neither the task nor the run (below). For each one it:
 materializes the task (`materialize`); runs the arm's runner module (`harness`: the arm file's `runner`, or its
 `harness` id with "-" read as "_", so a new arm adds files and never edits this one); commits the final tree as c_i
 without touching the agent's repo and archives it (`archive`); labels c_i by VS-census (`census`); and appends a
@@ -30,7 +30,10 @@ visible-verify wrapper's draws are keyed by it as well. A hash of the task key w
 their scheme is public: an agent could hash every one. The task key stays on the driver's side: `private/<key>/`,
 `archives/<key>.*`, `transcripts/<key>.json`, the ledger's attempt keys and the proxies' task. Every agent process is
 denied the whole run directory (`_agent_deny`, bug-d308f7), since its proxy logs name the running task's key and its
-order and records give the task's position; off macOS nothing applies that deny list (`sandbox.KIND` "none").
+order and records give the task's position; off macOS nothing applies that deny list (`sandbox.KIND` "none"). Nor
+does anything an agent sees name the benchmark, whose repository is public (bug-d68575): the default work root, the
+bin directory on its PATH (`agent_env.BIN_DIR`), its git identity, its repo's pristine commit, the direct loop's
+submit word, Roko's plan and key placeholder, the visible-verify wrapper's files and the proxies' answers are neutral.
 
 **The pre-registration lock** (S09 SC1, 3341). `vb run` of an experiment that runs only under the lock (LOG1, a live
 `E-` experiment, or one whose manifest says `requires_lock`: `campaign.requires_lock`) stops before anything else,
@@ -76,7 +79,7 @@ pin, which the model checks then accept as a declared swap). A spec the run cann
 runs. The config and so `config_hash` carry the spec, each record's `stream.perturbations_active` names the hooks
 that covered its task, each attempt's `fault_injected` names the fault the proxy injected into its calls, and its
 `model_swapped` says whether the swap's model served it. In a run with `flaky_verify`, every task gets the
-visible-verify wrapper (`vb_verify`) in its agent's `.vb-bin/`, and the arm's visible checks go through it: each
+visible-verify wrapper (`vb_verify`) in its agent's `.local/bin/`, and the arm's visible checks go through it: each
 record's `visible` says how many ran (`verify_runs`) and which ones the wrapper failed (`flakes`, `flake_injected`).
 
 The benchmark secret reaches only `hidden.py`, in the census, as a file path: `--secret-file`, else
@@ -138,7 +141,7 @@ from common import hmac_seed, knobs, repo
 DRIVER_VERSION = "vb-driver-1.0.0"
 DEFAULT_SECRET_FILE = Path("~/.config/viabilitybench/secret")
 DEFAULT_RESULTS = Path("~/.roko-bench/viability")
-DEFAULT_WORK = Path("~/vb-work")
+DEFAULT_WORK = Path("~/workspaces")  # every agent's path starts here: a neutral name (bug-d68575)
 ID_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}")
 SKIP_IN_SUITE_HASH = ("__pycache__", ".pytest_cache", ".venv")
 PROXY_LOG = "proxy.jsonl"  # in the run directory, where run_roko reads it
@@ -595,13 +598,13 @@ def _agent_deny(run: Run) -> tuple[Path, ...]:
 
 
 def _verify_wrapper(run: Run, alias: str, manifest: dict, env: dict[str, str], position: int) -> Path | None:
-    """In a run with `flaky_verify`, the task's visible-verify wrapper, installed in the agent's `.vb-bin/` with the
+    """In a run with `flaky_verify`, the task's visible-verify wrapper, installed in the agent's `.local/bin/` with the
     covering disturbance's p and seed (p = 0 at the positions it does not cover); None in any other run. Its draws
     are keyed by the task's alias, which is all its config, in the agent's HOME, shows of the task (bug-3c921e)."""
     if not any(one.kind == "flaky_verify" for one in run.disturbances):
         return None
     p, seed = disturb.flake(run.disturbances, position)
-    bin_dir = Path(env["PATH"].split(os.pathsep, 1)[0])  # agent_env's per-task .vb-bin/, which PATH starts with
+    bin_dir = Path(env["PATH"].split(os.pathsep, 1)[0])  # agent_env's per-task BIN_DIR, which PATH starts with
     shell = shutil.which("bash", path=env["PATH"]) or "/bin/bash"  # the shell the direct loop would use
     return vb_verify.install(bin_dir, key=alias, visible=manifest["visible_verify"], p=p, seed=seed, shell=shell)
 

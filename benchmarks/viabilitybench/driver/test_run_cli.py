@@ -13,6 +13,7 @@ import re
 import shlex
 import socket
 import sys
+import tempfile
 import time
 from pathlib import Path
 
@@ -33,6 +34,7 @@ import validate
 import vb
 from common import canary
 from stub_provider import StubServer
+from test_driver import BENCHMARK_MARK
 from test_sandbox_net import Listener, macos_only
 
 TOY_STREAM = str(layout.DRIVER_DIR / "testdata" / "toy_stream.toml")
@@ -311,7 +313,7 @@ def test_claude_arm_command_is_isolated_and_pinned(places, monkeypatch):
     assert env["CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD"] == "1"
     assert env["CLAUDE_SECURESTORAGE_CONFIG_DIR"] == ""  # keychain: the login's default entry name
     # ...read by the session's `security`, which alone sees the operator's HOME, where the login keychain is.
-    wrapper = home / ".vb-bin" / "security"
+    wrapper = home / agent_env.BIN_DIR / "security"
     assert wrapper.read_text() == run_cli.KEYCHAIN_WRAPPER.format(home=shlex.quote(str(Path.home())),
                                                                   security="/usr/bin/security")
     assert os.access(wrapper, os.X_OK)
@@ -321,7 +323,7 @@ def test_claude_arm_command_is_isolated_and_pinned(places, monkeypatch):
     assert not [name for name in env if agent_env.FORBIDDEN_NAME.search(name)]  # no VB_*, key or token
     for needle in (FAKE_KEY, str(places["secret"]), *secret.load(places["secret"]).needles):
         assert needle not in "".join(env.values())
-    assert env["PATH"].split(os.pathsep)[0] == str(home / ".vb-bin")  # the agent's PATH, not the driver's
+    assert env["PATH"].split(os.pathsep)[0] == str(home / agent_env.BIN_DIR)  # the agent's PATH, not the driver's
     assert run_cli.ancestor_instructions(ctx.workdir) == []
 
     # An offline run points claude at the loopback URL, so a real claude could not reach the API either.
@@ -338,7 +340,7 @@ def test_claude_arm_command_is_isolated_and_pinned(places, monkeypatch):
     assert [path.name for path in by_file.config_dir.iterdir()] == [".credentials.json"]
     assert (by_file.config_dir / ".credentials.json").stat().st_mode & 0o777 == 0o600
     assert "CLAUDE_SECURESTORAGE_CONFIG_DIR" not in by_file.env and by_file.env["CLAUDE_CONFIG_DIR"] != str(login)
-    assert not (Path(by_file.env["HOME"]) / ".vb-bin" / "security").exists()  # no keychain, so no wrapper
+    assert not (Path(by_file.env["HOME"]) / agent_env.BIN_DIR / "security").exists()  # no keychain, so no wrapper
     assert by_file.config_dir_sha256 == records.canonical_hash({".credentials.json": "login"})
 
     # Refused: a used config directory, a CLAUDE.md above the workdir, a fallback model, an unknown effort.
@@ -628,7 +630,7 @@ def test_flaky_verify_reaches_claude_code_through_its_shell_prefix(places, p, fl
     assert [flake["run"] for flake in record["visible"]["flakes"]] == ([1] if flaked else [])
     [session] = [line for line in read_jsonl(log) if "env" in line]
     [ran] = [line["bash"] for line in read_jsonl(log) if "bash" in line]
-    assert session["env"]["CLAUDE_CODE_SHELL_PREFIX"].endswith("/.vb-bin/vb-verify")
+    assert session["env"]["CLAUDE_CODE_SHELL_PREFIX"].endswith("/.local/bin/run-shell")  # neutral names (bug-d68575)
     assert ran["line"].startswith(shlex.quote(session["env"]["CLAUDE_CODE_SHELL_PREFIX"]) + " ")
     assert (ran["returncode"], "Killed" in ran["output"]) == ((137, True) if flaked else (0, False)), ran
 
@@ -713,6 +715,46 @@ def test_cli_arm_shell_cannot_read_its_run_directory(places):
     [record] = read_jsonl(out / "records.jsonl")
     assert record["execution"]["status"] == "completed" and record["provenance"]["canary_places"] == []
     assert record["provenance"]["network_policy"]["sandbox"] == "sandbox-exec+net"
+
+
+@macos_only
+def test_no_cli_agent_sees_the_benchmark_name(places):
+    """bug-d68575, on the Claude Code arm (test_driver.py's test_no_agent_sees_the_benchmark_name has the others): in
+    a run with flaky_verify, nothing the session's environment, its prompt, its Bash tool and its HOME show names the
+    benchmark: not the visible-verify wrapper that CLAUDE_CODE_SHELL_PREFIX names, the keychain wrapper on its PATH, its
+    git identity, its repo's log, reflog and refs, or what the egress proxy answers a plain-HTTP request it refuses.
+    Claude Code's own argv, whose --settings name the run directory and the default secret directory, is
+    bug-4c3a83's."""
+    spec = places["tmp"] / "flaky.toml"
+    spec.write_text('schema_version = "vb.disturbance/1"\n\n[[disturbance]]\nkind = "flaky_verify"\n'
+                    'params = { p = 0.5 }\n')
+    with StubServer(lambda body: "Hi.") as api:
+        api_port = int(api.url.split(":")[2].split("/")[0])
+        shell = {"env": "env | sort",
+                 "git": 'git log --format="%an <%ae> | %cn <%ce> | %s"; git reflog --format="%gn <%ge> | %gs"; '
+                        "ls -aR .git/refs",
+                 "home": 'ls -aR "$HOME"; find "$HOME" -type f -exec cat {} +',
+                 "egress": "curl -sS --max-time 5 http://example.com/; echo"}
+        program, log = fake_claude(places, "egress", api=["127.0.0.1", api_port], shell=shell)
+        arm = arm_file(places, program, cli=f'egress_allow = ["127.0.0.1:{api_port}"]')
+        assert run_vb(places, arm, "--disturbance", str(spec)) == 0
+    [seen] = [line for line in read_jsonl(log) if "env" in line]
+    [tried] = [line["egress"] for line in read_jsonl(log) if "egress" in line]
+    texts = {"env": json.dumps(seen["env"]), "prompt": seen["prompt"], "names": json.dumps(seen["names"]),
+             **{f"shell:{name}": said for name, said in tried["shell"].items()}}
+    roots = sorted({str(places["tmp"]), os.path.realpath(places["tmp"]), tempfile.gettempdir(),
+                    os.path.realpath(tempfile.gettempdir())}, key=len, reverse=True)  # the host's own paths
+    for name, text in texts.items():
+        for root in roots:
+            text = text.replace(root, "<tmp>")
+        marks = sorted({match.group(0) for match in BENCHMARK_MARK.finditer(text)})
+        assert marks == [], (name, marks, text)
+    # The controls: the agent did see each place it looked, under its neutral name.
+    assert seen["env"]["CLAUDE_CODE_SHELL_PREFIX"].endswith(f"/{agent_env.BIN_DIR}/run-shell")
+    assert "egress proxy: GET example.com:80 is not on the allowlist" in tried["shell"]["egress"]
+    assert "maintainer <maintainer@example.invalid> | maintainer <maintainer@example.invalid> | Initial commit" in \
+        tried["shell"]["git"]
+    assert "#!/bin/sh" in tried["shell"]["home"] and "/usr/bin/security" in tried["shell"]["home"]  # the wrapper
 
 
 def test_egress_proxy_answers_every_request_and_ends_its_tunnels(tmp_path):
@@ -821,14 +863,14 @@ def test_the_recorded_probe_parses():
 
 
 def test_agent_shell_cannot_read_the_real_keychain(places):
-    """gap-3cfe4f: the fd_claude arm's `.vb-bin/security` wrapper lets Claude Code find the subscription login under
+    """gap-3cfe4f: the fd_claude arm's `.local/bin/security` wrapper lets Claude Code find the subscription login under
     the session's own HOME, but a same-uid agent shell can read the operator's real Anthropic OAuth credential the same
     way -- the wrapper, a direct `security find-generic-password`, or the keychain file by its path. No host-only
     sandbox prevents it (the whole claude tree shares one sandbox for the egress rule, and macOS refuses a nested
     sandbox; S08 decision 4's container is the only prevention). So the census detects it: a run whose transcript shows
     the agent naming the keychain is `leak_suspected`, excluded and counted. The fake never runs the command and no
     real keychain is read."""
-    command = '"$HOME/.vb-bin/security" find-generic-password -a "$USER" -w -s "Claude Code-credentials"'
+    command = '"$HOME/.local/bin/security" find-generic-password -a "$USER" -w -s "Claude Code-credentials"'
     program, _ = fake_claude(places, "keychain", keychain_command=command,
                              keychain_result="(the fake does not run the command)")
     assert run_vb(places, arm_file(places, program), "--transcripts") == 0
@@ -846,7 +888,8 @@ def test_the_keychain_detector_flags_only_real_keychain_access():
     and leaves a bare mention of the word `security` alone, so an honest coding task is not falsely `leak_suspected`."""
     for flagged in ('security find-generic-password -s "Claude Code-credentials"',
                     "/usr/bin/security dump-keychain -d",
-                    "~/.vb-bin/security find-generic-password -w",
+                    "~/.local/bin/security find-generic-password -w",
+                    '"$HOME/.local/bin/security" list-keychains',  # the wrapper's path alone (agent_env.BIN_DIR)
                     "cat ~/Library/Keychains/login.keychain-db",
                     "open /Users/op/Library/Keychains/login.keychain-db"):
         assert census._keychain_access(flagged) == [census.KEYCHAIN_LABEL], flagged

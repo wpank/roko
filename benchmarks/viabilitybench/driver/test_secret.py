@@ -173,9 +173,9 @@ def test_secret_never_reaches_an_agent_env(operator, tmp_path):
     first, second = vb.load_stream(TOY_STREAM).order(1)
     scripts = {first: [bash("env | sort", "What is in my environment?"), bash(ENV_PROBE, "Try the obvious names."),
                        bash(PS_PROBE, "Read my parent's argv and environment."),
-                       bash(CENSUS_PROBE, "Implement it, and watch whoever imports it."), bash("echo VB_SUBMIT")],
+                       bash(CENSUS_PROBE, "Implement it, and watch whoever imports it."), bash("echo SUBMIT_TASK")],
                second: [bash(SEARCH, "Search every file around my workdir."), bash(CORRECT, "Implement it."),
-                        bash("echo VB_SUBMIT")]}
+                        bash("echo SUBMIT_TASK")]}
     driver_env = {"PATH": os.environ["PATH"], "HOME": str(operator["home"]), "VB_SECRET_FILE": str(loaded.path),
                   "VB_PROBE": MARKER}  # no provider key: `vb run` refuses one in its environment (bug-979a06)
     with StubServer(scripted(scripts)) as stub:
@@ -225,7 +225,7 @@ def test_run_refused_when_secret_is_in_roko_dotenv(operator, capsys, monkeypatch
         (user_dotenv, clean + f"# {loaded.canary}\n", "holds the secret"),
         (workspace_dotenv, f"VB_SECRET={value}\n", "defines VB_SECRET"),
     ]
-    with StubServer(lambda body: bash("echo VB_SUBMIT")) as stub:
+    with StubServer(lambda body: bash("echo SUBMIT_TASK")) as stub:
         for dotenv, text, reason in cases:
             dotenv.parent.mkdir(exist_ok=True)
             dotenv.write_text(text, encoding="utf-8")
@@ -269,9 +269,9 @@ def test_deliberate_reads_are_flagged_and_kept_out_of_records(operator, monkeypa
     scripts = {first: [bash(f"chmod 600 '{path}' && cat '{path}'", "Print it."),
                        bash(f"touch \"$(grep -v '^#' '{path}')\" && {CORRECT}",
                             "Keep a copy as a file name, silently."),
-                       bash("echo VB_SUBMIT")],
+                       bash("echo SUBMIT_TASK")],
                second: [bash(CENSUS_STASH.replace("__SECRET_DIR__", repr(str(path.parent))),
-                             "Copy the secret when the truth suite runs me."), bash("echo VB_SUBMIT")]}
+                             "Copy the secret when the truth suite runs me."), bash("echo SUBMIT_TASK")]}
     with StubServer(scripted(scripts)) as stub:
         assert vb.main(run_args(operator, stub.url, "--transcripts", "--keep-workdirs")) == 0
     out = operator["results"] / "TEST-SECRET" / "run-1"
@@ -305,8 +305,9 @@ def test_a_silent_read_of_the_secret_file_is_detected(operator, tmp_path, capsys
     silent = f"{split}; chmod 600 \"$f\" && s=$(grep -v '^#' \"$f\") && chmod 000 \"$f\" && {CORRECT}"
     plain = f"{split}; cat \"$f\"; true"
     first, second = vb.load_stream(TOY_STREAM).order(1)
-    scripts = {first: [bash(silent, "Read the secret quietly, put the mode back, and solve."), bash("echo VB_SUBMIT")],
-               second: [bash(plain, "Just read it."), bash(CORRECT, "Solve."), bash("echo VB_SUBMIT")]}
+    scripts = {first: [bash(silent, "Read the secret quietly, put the mode back, and solve."),
+                       bash("echo SUBMIT_TASK")],
+               second: [bash(plain, "Just read it."), bash(CORRECT, "Solve."), bash("echo SUBMIT_TASK")]}
     with StubServer(scripted(scripts)) as stub:
         assert vb.main(run_args(operator, stub.url, "--transcripts")) == 0
     out = operator["results"] / "TEST-SECRET" / "run-1"
@@ -372,10 +373,10 @@ def test_no_provider_key_in_the_driver_environment(operator, tmp_path, capsys, m
     key_file = secret.create_keys(operator["home"] / ".config" / "viabilitybench" / "keys", {"CEREBRAS_API_KEY": key})
     key_probe = f"cat '{key_file}'; true"
     silent = (f"{{ chmod 600 '{key_file}' && k=$(cat '{key_file}') && chmod 000 '{key_file}'; }} 2>/dev/null; "
-              "echo VB_SUBMIT")
+              "echo SUBMIT_TASK")
     first, second = vb.load_stream(TOY_STREAM).order(1)
     scripts = {first: [bash(PS_PROBE, "Read my parent's environment."), bash(key_probe, "Read the key file."),
-                       bash(CORRECT, "Solve."), bash("echo VB_SUBMIT")],
+                       bash(CORRECT, "Solve."), bash("echo SUBMIT_TASK")],
                second: [bash(silent, "Take the key quietly, and stop.")]}
     with StubServer(scripted(scripts)) as stub:
         # cheap_direct with its provider on the stub: an endpoint that names its key, with no network. The proxy, the
@@ -442,8 +443,8 @@ def test_the_driver_runs_with_a_scrubbed_environment(operator):
                    "DATABASE_URL": "postgres://bench:hunter2-operator-only@db.invalid/runs"}
     first, second = vb.load_stream(TOY_STREAM).order(1)
     scripts = {first: [bash(PS_PROBE, "Read my parent's environment."), bash("env | sort", "And my own."),
-                       bash(CORRECT, "Solve."), bash("echo VB_SUBMIT")],
-               second: [bash(CORRECT, "Solve."), bash("echo VB_SUBMIT")]}
+                       bash(CORRECT, "Solve."), bash("echo SUBMIT_TASK")],
+               second: [bash(CORRECT, "Solve."), bash("echo SUBMIT_TASK")]}
     driver_env = {"PATH": os.environ["PATH"], "HOME": str(operator["home"]), "LANG": "en_US.UTF-8", **credentials}
     command = [sys.executable, str(layout.DRIVER_DIR / "vb.py")]
     with StubServer(scripted(scripts)) as stub:

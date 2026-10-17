@@ -15,7 +15,7 @@ source = "bug-3c921e worker (claude-agent), 2026-10-17 (agent_env.FIXED and buil
 discovered_from = "bug-3c921e"
 anchors = ["benchmarks/viabilitybench/driver/agent_env.py::FIXED", "benchmarks/viabilitybench/driver/agent_env.py::build", "benchmarks/viabilitybench/families/common/repo.py::init_task_repo", "benchmarks/viabilitybench/driver/mini_loop.py::SUBMIT", "benchmarks/viabilitybench/driver/vb_verify.py::install"]
 lane = "bench"
-links = { depends_on = [], blocks = [], related = ["bug-3c921e", "bug-b5eab4", "gap-394f28"], supersedes = [], duplicate_of = "" }
+links = { depends_on = [], blocks = [], related = ["bug-3c921e", "bug-b5eab4", "gap-394f28", "bug-4c3a83", "bug-fd8200"], supersedes = [], duplicate_of = "" }
 
 [[verify]]
 command = "grep -qw 'def test_no_agent_sees_the_benchmark_name' benchmarks/viabilitybench/driver/test_driver.py && benchmarks/viabilitybench/.venv/bin/python -m pytest benchmarks/viabilitybench/driver/test_driver.py -k test_no_agent_sees_the_benchmark_name -q"
@@ -79,8 +79,8 @@ prefixes.
 
 ## Done when
 
-- [ ] Nothing an agent sees names the benchmark.
-- [ ] The `[[verify]]` command passes.
+- [x] Nothing an agent sees names the benchmark.
+- [x] The `[[verify]]` command passes.
 
 ## Notes
 
@@ -88,3 +88,42 @@ prefixes.
 - The generators and truth suites are public by design (`common/hmac_seed`: an agent may read them, but not compute
   the hidden cases without the secret). These marks only make them, and the family an instance belongs to, easy to
   find.
+- More marks than the Problem lists, found on the way (2026-10-17) and made neutral too: the pristine commit's
+  author and committer, `ViabilityBench <vb@localhost>` (`repo.GIT_IDENTITY`), shown by `git log` and kept in plain
+  text in the reflog; the empty `.git/refs/vb/` that the bundle's temporary ref left in every task repo; the
+  keychain wrapper in the bin directory (`run_cli`, and `census.KEYCHAIN_RE`, which names its path); Codex's
+  interpreter link; mini-swe-agent's scratch directory `vb-msa-*`, which its `MSWEA_GLOBAL_CONFIG_DIR` and argv name,
+  and the key placeholder in its config; the Roko arm's verify command in a flaky_verify run, `vb-verify '<check>'`,
+  which Roko renders into its prompt; and the proxies' answers, `vb egress: ... is not on this run's allowlist` and
+  the metering proxy's `vb_*` error types.
+- Left as they are: what only the driver and the operator see (record labels such as `vb-keychain`, schema ids,
+  driver-side temporary directories, the bundles' `refs/vb/pristine`, the proxy's `/_vb/control` path, which only
+  its token opens). Claude Code's argv still names `~/.config/viabilitybench` and the run directory in its
+  `--settings` (bug-4c3a83), and the metering proxy's messages still name the task key and say a fault was injected
+  (bug-fd8200).
+- The wrapper's copy keeps no docstring or comment, but its code still shows what it does, and its config and log
+  (`p`, `seed`, `flake`) are readable, as any file of the agent's own is: only a wrapper out of the agent's reach
+  hides that (S08 decision 4).
+- Versions: `mini_loop.PROMPT_VERSION` is `mini-loop-2` and its `PROMPT_SHA256` now covers the submit word, which
+  the templates only named as a placeholder; `planemit.TEMPLATE_VERSION` is `planemit-6` and `LADDER_VERSION`
+  `planemit-ladder-3` (the slug, and the wrapper's name in a flaky_verify plan). No generator needs a bump: no test,
+  fixture or lock pins a pristine commit, every task repo's files and tree are unchanged, and the suite hash, which
+  covers `families/common/`, changes with `repo.py`. The default work root moves from `~/vb-work` to `~/workspaces`;
+  `$VB_WORK` and `--work` override it as before.
+
+## Decision (2026-10-17)
+
+Whether what every agent sees may carry the benchmark's own abbreviation or name had no recorded default. Under
+Will's decision 9 of 2026-10-15 (technical questions with no recorded default take the coordinator's
+recommendation, the conservative option, recorded on the item with the reasoning; Will can veto it later), the
+coordinator decided that no benchmark-internal identifier reaches an agent: its PATH, its git identity, its repo's
+commits, the direct loop's submit word, the Roko arms' plan and key placeholder, the visible-verify wrapper's files
+and the proxies' answers name no benchmark. The change lands before the pre-registration lock (gap-394f28).
+
+Why: benchmark validity, and contamination through the public repository. These marks were the same for every
+family, but they told every agent that it is in a benchmark, `agent@vb.invalid`, `VB_SUBMIT` and `ViabilityBench`
+are search keys that lead to the driver, the generators and the truth suites, and in a flaky_verify run the wrapper's
+own source explained that its visible checks may be killed at random, which the disturbance is meant to hide. Neutral
+names are the conservative option: they change no task file, spec, check or caps, nothing an agent is graded on, and
+the instrument behaves as before (the same files and trees, the same wrapper code, the same detection), only under
+other names.

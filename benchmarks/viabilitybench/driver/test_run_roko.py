@@ -1033,9 +1033,10 @@ def test_real_roko_gate_meets_the_flaky_verify_wrapper(places, tmp_path):
     assert validate.validate("run-record", record) == []
     [emitted] = [event for event in json.loads((out / record["provenance"]["transcript_ref"]).read_text())
                  if event.get("event") == "emit"]
-    # Named by PATH, so no host path enters Roko's prompt, which shows its verify command (A4).
+    # Named by PATH, so no host path enters Roko's prompt, which shows its verify command (A4); a neutral name
+    # (bug-d68575).
     assert tomllib.loads(emitted["tasks_toml"])["task"][0]["verify"][0]["command"] == (
-        "vb-verify 'python3 -m unittest discover -s tests/visible'")
+        "run-shell 'python3 -m unittest discover -s tests/visible'")
     assert (record["execution"]["status"], record["execution"]["reason"]) == ("failed", "gate_failed")
     assert len(record["execution"]["attempts"]) == 3  # max_retries = 2: every attempt met a flake
     visible = record["visible"]

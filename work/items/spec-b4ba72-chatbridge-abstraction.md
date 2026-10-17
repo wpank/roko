@@ -9,7 +9,7 @@ goal = "features"
 hold = "Set aside per tldr/05 §3; Will chose hold over park on 2026-09-29 (dec-e70592). Remove this line to revive."
 subsystem = ["roko-cli"]
 created = 2026-09-21
-updated = 2026-09-29
+updated = 2026-10-17
 last_verified = 2026-09-29
 last_verified_rev = "d9e79e9d8"
 source = "tmp/backlog/archive/414-chat-bridge-abstraction.md#414 — ChatBridge Abstraction"
@@ -30,3 +30,5 @@ How to verify: Check: `ChatMessage` and `ChatBridge` trait defined in `roko-core
 Verified 2026-09-28: partially implemented - a ChatBridge trait exists in roko-runtime (platforms.rs:268, not roko-core as specified) with Telegram/WhatsApp/Discord/Matrix/Mattermost/Slack adapters (roko-runtime/src/adapters/*), but no terminal (`roko chat`, chat.rs) or portal WebSocket (roko-serve) bridge implements it. Severity lowered p1 -> p2: architecture refactor with no user-facing breakage.
 
 Re-verified 2026-09-29: unchanged. The trait is at roko-runtime/src/platforms.rs:289. The terminal (roko chat) and portal WebSocket bridges are still missing, and roko-cli and roko-serve do not reference ChatBridge.
+
+2026-10-17 (gap-7ebc4f): `ChatBridge` (`crates/roko-runtime/src/platforms.rs`) now compiles behind roko-runtime's off-by-default `channels` feature, and the 18 tests in `platforms::tests` pass with `cargo test -p roko-runtime --features channels --lib platforms::`. The terminal and portal bridges are still missing, and nothing outside the feature references `ChatBridge`.

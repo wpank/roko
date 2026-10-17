@@ -9,7 +9,7 @@ goal = "features"
 hold = "Set aside per tldr/05 §3; Will chose hold over park on 2026-09-29 (dec-e70592). Remove this line to revive."
 subsystem = ["roko-runtime/platforms"]
 created = 2026-09-07
-updated = 2026-09-29
+updated = 2026-10-17
 last_verified = 2026-09-29
 last_verified_rev = "d9e79e9d8"
 source = "tmp/backlog/archive/225-telegram-bot-integration.md#225 — Telegram Bot Integration"
@@ -32,3 +32,5 @@ How to verify: Check: `roko-mcp-telegram` crate builds and exposes 10 MCP tools;
 Verified 2026-09-28: still true. There is no roko-mcp-telegram crate; the codebase uses a ChatBridge adapter instead, and crates/roko-runtime/src/adapters/telegram.rs (added in 9c6ec420c) is a stub. It makes no Bot API calls, send_message returns `telegram-stub-...` IDs (:94-97), there is no /start, /status or other command handling, and nothing in serve or the CLI starts it. Subsystem corrected to roko-runtime/platforms. This is a child of the umbrella gap-63055e. Severity lowered p1 to p2 because this is a new product surface.
 
 Re-verified 2026-09-29: still a stub. The adapters/ module and the ChatBridge trait it implements (platforms.rs) are not declared in crates/roko-runtime/src/lib.rs, so telegram.rs is not compiled at all. Wiring those modules (umbrella gap-63055e) is a prerequisite.
+
+2026-10-17 (gap-7ebc4f): `telegram.rs` now compiles behind roko-runtime's off-by-default `channels` feature, together with the rest of `adapters/` and `platforms.rs`. Its 7 tests pass with `cargo test -p roko-runtime --features channels adapters::telegram`. It is still a stub that makes no Bot API call.

@@ -10,7 +10,7 @@ goal = "features"
 hold = "Set aside per tldr/05 §3; Will chose hold over park on 2026-09-29 (dec-e70592). Remove this line to revive."
 subsystem = ["roko-core/config"]
 created = 2026-09-21
-updated = 2026-09-29
+updated = 2026-10-17
 last_verified = 2026-09-29
 last_verified_rev = "a17d9d766"
 source = "tmp/backlog/archive/426-channel-config-schema.md#426 — Channel Config Schema"
@@ -187,3 +187,5 @@ Some cited files are gone: `crates/roko-cli/src/commands/config.rs`, `crates/rok
 How to verify: Check: `ChannelKind` enum with 7 variants exists in `roko-core`; `ChannelConfig` struct with `name`, `kind`, `enabled`, `access_control`, and; `RokoConfig.channels` field is a `HashMap<String, ChannelConfig>` [evidence: 00-INDEX (2026-09-21) listed active: 2026-09-21 Channel/Webhook/Reactive Audit (#409-#4]
 
 Verified 2026-09-28: commit 9c6ec420c added crates/roko-core/src/config/channels.rs (a `[[channels]]` table; ChannelConfig {platform_id, channel_id, agent_name, trigger_bindings}) and config/platforms.rs. Neither is declared in config/mod.rs, so both are orphan and uncompiled. RokoConfig (config/schema.rs, which has uncommitted concurrent edits) has no channels field, and the spec's ChannelKind (7 variants) and HashMap<String, ChannelConfig> shape is not implemented. The import's 'gone' warning for config/channel.rs is only a path difference (channels.rs).
+
+2026-10-17 (gap-7ebc4f): `crates/roko-core/src/config/mod.rs` now declares `channels` and `platforms` behind roko-core's `channels` feature, which is off by default; roko-runtime's `channels` feature turns it on. Both files compiled as they were apart from rustfmt, and their 14 tests pass with `cargo test -p roko-core --features channels --lib -- config::channels config::platforms`. `RokoConfig` still has no field for either table, so the rest of this item stands.

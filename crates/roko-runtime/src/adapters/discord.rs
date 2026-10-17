@@ -55,10 +55,7 @@ impl DiscordBridge {
             .token
             .as_ref()
             .ok_or_else(|| {
-                RokoError::Invalid(format!(
-                    "discord platform `{}` requires a token",
-                    config.id
-                ))
+                RokoError::Invalid(format!("discord platform `{}` requires a token", config.id))
             })?
             .resolve()
             .map_err(|e| RokoError::Invalid(format!("discord `{}`: {e}", config.id)))?;
@@ -76,7 +73,7 @@ impl DiscordBridge {
 
 #[async_trait]
 impl ChatBridge for DiscordBridge {
-    fn platform_id(&self) -> &str {
+    fn platform_id(&self) -> &'static str {
         "discord"
     }
 
@@ -87,7 +84,10 @@ impl ChatBridge for DiscordBridge {
             "stub send_message: {}",
             &text[..text.len().min(120)]
         );
-        Ok(MessageId::new(format!("discord-stub-{}", ChannelId::new(channel))))
+        Ok(MessageId::new(format!(
+            "discord-stub-{}",
+            ChannelId::new(channel)
+        )))
     }
 
     async fn send_rich(&self, channel: &str, msg: RichMessage) -> Result<MessageId> {
@@ -99,7 +99,10 @@ impl ChatBridge for DiscordBridge {
             "stub send_rich: {}",
             &body[..body.len().min(120)]
         );
-        Ok(MessageId::new(format!("discord-stub-rich-{}", ChannelId::new(channel))))
+        Ok(MessageId::new(format!(
+            "discord-stub-rich-{}",
+            ChannelId::new(channel)
+        )))
     }
 
     fn incoming(&self) -> Pin<Box<dyn Stream<Item = IncomingMessage> + Send>> {
@@ -162,19 +165,17 @@ mod tests {
 
     #[test]
     fn platform_id_is_discord() {
-        let bridge = DiscordBridge::connect(&config(Some(PlatformSecretRef::Literal(
-            "tok".to_string(),
-        ))))
-        .unwrap();
+        let bridge =
+            DiscordBridge::connect(&config(Some(PlatformSecretRef::Literal("tok".to_string()))))
+                .unwrap();
         assert_eq!(bridge.platform_id(), "discord");
     }
 
     #[test]
     fn capabilities_match_discord() {
-        let bridge = DiscordBridge::connect(&config(Some(PlatformSecretRef::Literal(
-            "tok".to_string(),
-        ))))
-        .unwrap();
+        let bridge =
+            DiscordBridge::connect(&config(Some(PlatformSecretRef::Literal("tok".to_string()))))
+                .unwrap();
         let caps = bridge.capabilities();
         assert!(caps.markdown);
         assert!(caps.attachments);
@@ -185,20 +186,21 @@ mod tests {
 
     #[tokio::test]
     async fn send_message_returns_ok() {
-        let bridge = DiscordBridge::connect(&config(Some(PlatformSecretRef::Literal(
-            "tok".to_string(),
-        ))))
-        .unwrap();
-        let id = bridge.send_message("123456789", "hello discord").await.unwrap();
+        let bridge =
+            DiscordBridge::connect(&config(Some(PlatformSecretRef::Literal("tok".to_string()))))
+                .unwrap();
+        let id = bridge
+            .send_message("123456789", "hello discord")
+            .await
+            .unwrap();
         assert!(id.as_str().contains("discord-stub"));
     }
 
     #[tokio::test]
     async fn send_rich_returns_ok() {
-        let bridge = DiscordBridge::connect(&config(Some(PlatformSecretRef::Literal(
-            "tok".to_string(),
-        ))))
-        .unwrap();
+        let bridge =
+            DiscordBridge::connect(&config(Some(PlatformSecretRef::Literal("tok".to_string()))))
+                .unwrap();
         let msg = RichMessage::markdown("hello", "**hello**");
         let id = bridge.send_rich("123456789", msg).await.unwrap();
         assert!(id.as_str().contains("discord-stub-rich"));

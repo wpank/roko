@@ -9,7 +9,7 @@ goal = "whitepaper"
 size = "S"
 subsystem = ["docs/whitepaper"]
 created = 2026-09-30
-updated = 2026-09-30
+updated = 2026-10-16
 last_verified = 2026-09-30
 last_verified_rev = "e6db226ee"
 source = "tmp/cybernetic-harness/workstreams/PROGRESS.md"
@@ -21,6 +21,11 @@ links = { depends_on = [], blocks = [], related = ["gap-daa246", "gap-08d9b2"], 
 
 [[verify]]
 command = "! grep -q '<tspan[^>]*> · ' docs/whitepaper/figures/fig2-golden-path.svg && python3 tools/status_matrix.py --check"
+superseded = "2026-10-16: The 2026-10-08 design-paper rewrite (7898493f2) deleted fig2-golden-path.svg and its status-tag chips, so the figure check passes vacuously, and b91be1473 (bug-ac2a01) deleted tools/status_matrix.py, so --check fails. Verify 2 checks what lasts of the fix: the figures README's librsvg rule, and no current figure starting a <tspan> with a space."
+superseded_by = "7898493f2"
+
+[[verify]]
+command = "grep -q 'never at its start: librsvg drops' docs/whitepaper/figures/README.md && ls docs/whitepaper/figures/*.svg >/dev/null && ! grep -q '<tspan[^>]*> ' docs/whitepaper/figures/*.svg"
 
 [closed]
 at = 2026-09-30

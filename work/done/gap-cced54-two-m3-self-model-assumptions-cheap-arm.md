@@ -9,7 +9,7 @@ goal = "cybernetic"
 size = "S"
 subsystem = ["roko-learn/self-model"]
 created = 2026-10-03
-updated = 2026-10-15
+updated = 2026-10-16
 last_verified = 2026-10-15
 last_verified_rev = "b883db4e6"
 source = "wave-7 follow-up reports 2026-10-03 (PK48 gap-d90ef6)"
@@ -20,6 +20,11 @@ links = { depends_on = [], blocks = [], related = [], supersedes = [], duplicate
 
 [[verify]]
 command = "grep -rqw 'fn matrix_replay_uses_the_registry_arm_key_not_the_replay_fallback' crates/roko-learn/ && cargo test -p roko-learn matrix_replay_uses_the_registry_arm_key_not_the_replay_fallback"
+superseded = "2026-10-16: Will confirmed the code as it is on 2026-10-15 (b883db4e6): matrix arms keep the roko/replay/<arm> stand-in key, and cheap arms are those at or below the median cost, so the registry-lookup test this names was never written. Verify 2 checks both confirmed choices in arm_key and cheap_arms."
+superseded_by = "b883db4e6"
+
+[[verify]]
+command = "awk '/^pub fn arm_key\\(arm: &str\\)/,/^}$/' crates/roko-learn/src/self_model/replay.rs | grep -q 'provider: \"replay\"' && awk '/^fn cheap_arms\\(/,/^}$/' crates/roko-learn/src/self_model/policy.rs | grep -q '<= median'"
 
 [closed]
 at = 2026-10-15

@@ -549,7 +549,9 @@ const RETRY_EVENT_LINE_CHARS: usize = 300;
 /// `feedback`, left for the attempt after the one `notice` names, as the
 /// [`DashboardEvent::RetryFeedback`] a host follows (gap-655ea5): the
 /// diagnosis the next prompt leads with, the failing steps and the key
-/// error lines it lists, a line each.
+/// error lines it lists, a line each. The errors lead with each failing
+/// step's key line, a plain assertion included (bug-1e272c), then the
+/// compile, test and clippy lines.
 ///
 /// [`DashboardEvent::RetryFeedback`]: roko_core::DashboardEvent::RetryFeedback
 pub(super) fn retry_feedback_event(
@@ -558,11 +560,22 @@ pub(super) fn retry_feedback_event(
     notice: &RetryNotice<'_>,
     feedback: &GateFeedback,
 ) -> roko_core::DashboardEvent {
-    let errors = feedback
+    let mut errors: Vec<String> = notice
+        .failing_steps
+        .iter()
+        .filter_map(|step| super::verification::step_key_line(step))
+        .map(str::to_string)
+        .collect();
+    for line in feedback
         .compile_errors
         .iter()
         .chain(&feedback.test_failures)
-        .chain(&feedback.clippy_warnings);
+        .chain(&feedback.clippy_warnings)
+    {
+        if !errors.contains(line) {
+            errors.push(line.clone());
+        }
+    }
     roko_core::DashboardEvent::RetryFeedback {
         plan_id: plan_id.to_string(),
         task_id: task_id.to_string(),
@@ -571,7 +584,7 @@ pub(super) fn retry_feedback_event(
         check: notice.check.to_string(),
         failing_steps: first_lines(notice.failing_steps),
         diagnosis: feedback.diagnosis.clone(),
-        errors: first_lines(errors),
+        errors: first_lines(&errors),
     }
 }
 

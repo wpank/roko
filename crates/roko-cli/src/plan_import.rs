@@ -54,7 +54,7 @@ use std::sync::LazyLock;
 use anyhow::{Context as _, Result, anyhow, bail};
 use regex::Regex;
 use roko_core::task::TaskTier;
-use roko_gate::spec_quality::{VerifyClass, analyze_step, vacuous_reason};
+use roko_gate::spec_quality::{VerifyClass, ac_id, analyze_step, vacuous_reason};
 use serde::Serialize;
 use toml::{Table, Value};
 
@@ -147,6 +147,19 @@ const MORI_INTERNAL: [&str; 2] = ["plans/context/", ".mori/"];
 /// The largest tier the import raises a task to.
 const TOP_TIER: TaskTier = TaskTier::Integrative;
 
+/// The head of the block, at the end of a task's description, that lists its
+/// acceptance lines no step checks (gap-14b865); the plugin's plan sheet reads
+/// it as `also_required`.
+const ALSO_REQUIRED: &str = "Also required, not checked automatically:";
+
+/// The block's second line when the plan has a review task.
+const JUDGED_IN_REVIEW: &str = "(the review task judges these)";
+
+/// The words of a description's lead that a long "Also required" block
+/// leaves at least; the block's lines past its room go to a file beside the
+/// plan.
+const MIN_LEAD_WORDS: usize = 60;
+
 /// The most `read_files` one task gets (`plan validate` allows 16).
 const MAX_READ_FILES: usize = 15;
 
@@ -166,6 +179,14 @@ static FILE_EXISTS: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"^File exists:\s*`?([^`\s]+)`?\s*$").expect("file exists regex"));
 static EXITS_ZERO: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"(?i)\bexits? 0\b").expect("exits regex"));
+static TEST_WORD: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"\btest_[A-Za-z0-9_]+\b").expect("test word regex"));
+static UNITTEST_MODULE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"^python3? -m unittest ((?:[A-Za-z_][A-Za-z0-9_]*\.)*[A-Za-z_][A-Za-z0-9_]*)$")
+        .expect("unittest module regex")
+});
+static CARGO_TEST_PACKAGE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"^cargo test -p ([\w.-]+)$").expect("cargo test package regex"));
 static PIPED_RUNNER: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(
         r"^(cargo (?:test|check|build)\b[^|>]*?)\s*(?:2>&1\s*)?\|\s*(?:grep|rg|tail|head|wc)\b.*$",
@@ -247,6 +268,9 @@ pub struct MoriImportReport {
     pub serialized: Vec<[String; 2]>,
     /// Tasks given a higher tier than their `complexity_band`.
     pub tier_changes: Vec<TierChange>,
+    /// Tasks whose acceptance lines are not all checked: the checked ones
+    /// stay in `acceptance`, and the rest move to the end of the description.
+    pub acceptance: Vec<AcceptanceSplit>,
     /// Tasks whose files were narrowed to directories.
     pub narrowed: Vec<NarrowedFiles>,
     /// Tasks split into parts.
@@ -289,6 +313,18 @@ pub struct CrossPlanDependency {
     pub reference: String,
     /// The plan the task now waits for as a whole, when one was found.
     pub plan: Option<String>,
+}
+
+/// A task's acceptance lines, split into those a step checks and those its
+/// description lists as also required.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct AcceptanceSplit {
+    /// The task.
+    pub task: String,
+    /// Lines a step checks, kept in `acceptance` with `covers`.
+    pub checked: usize,
+    /// Lines no step checks, at the end of the description.
+    pub also_required: usize,
 }
 
 /// A task given a higher tier than its `complexity_band`.
@@ -609,7 +645,7 @@ pub fn import_mori_plan(
     let meta = importer.meta(&drafts, &plan_checks);
     importer.report.tasks = drafts.len();
     importer.report.plan_checks = plan_checks.len();
-    let tasks_toml = render(&mori.id, src, &meta, &plan_checks, &drafts);
+    let tasks_toml = render(&mori.id, src, &meta, &plan_checks, &drafts, has_reviewer);
     TasksFile::parse_str(&tasks_toml)
         .with_context(|| format!("the plan imported from {} does not parse", src.display()))?;
     Ok(MoriImport {
@@ -655,6 +691,13 @@ pub fn render_report(report: &MoriImportReport, dir: &Path) -> String {
             out,
             "  cross-plan: {} needs {}: {target}",
             dependency.task, dependency.reference
+        );
+    }
+    for split in &report.acceptance {
+        let _ = writeln!(
+            out,
+            "  acceptance: {}: {} checked, {} also required",
+            split.task, split.checked, split.also_required
         );
     }
     for change in &report.tier_changes {
@@ -824,6 +867,13 @@ struct Step {
     fail_msg: String,
     /// The step already passes in the workspace (`expect = "pass_on_base"`).
     passes_on_base: bool,
+    /// The task's acceptance lines the step checks, by index; written as
+    /// `covers` (gap-14b865).
+    covers: BTreeSet<usize>,
+    /// The tests the step runs, as far as the import knows them.
+    tests: BTreeSet<String>,
+    /// The invariant of the `verify-tasks.toml` entry the step runs.
+    invariant: Option<String>,
 }
 
 /// A check of one file, joined with the task's other file checks into one
@@ -834,6 +884,8 @@ struct FileCheck {
     command: String,
     /// The file is in the workspace already.
     exists: bool,
+    /// The acceptance lines ("File exists: …") that name the file, by index.
+    lines: Vec<usize>,
 }
 
 /// A roko task under construction.
@@ -849,6 +901,12 @@ struct Draft {
     estimated_minutes: Option<i64>,
     hints: Vec<(String, Value)>,
     acceptance: Vec<String>,
+    /// Acceptance lines no step checks, listed at the end of the description
+    /// ([`Draft::description`]).
+    also_required: Vec<String>,
+    /// Lines of the block with no room in the description, written beside
+    /// the plan as `(name, contents)`, and how many.
+    also_required_file: Option<(String, String, usize)>,
     /// The description, before the sentence naming context files.
     lead: String,
     /// mori's `context_files`.
@@ -907,9 +965,102 @@ impl Draft {
                     .join(" && "),
                 fail_msg: format!("{}: {shown}", self.file_fail),
                 passes_on_base: self.file_checks.iter().all(|check| check.exists),
+                covers: self
+                    .file_checks
+                    .iter()
+                    .flat_map(|check| check.lines.iter().copied())
+                    .collect(),
+                tests: BTreeSet::new(),
+                invariant: None,
             });
         }
         steps
+    }
+
+    /// The acceptance lines no step checks, by index.
+    fn unchecked(&self) -> Vec<usize> {
+        let covered: BTreeSet<usize> = self
+            .steps()
+            .iter()
+            .flat_map(|step| step.covers.iter().copied())
+            .collect();
+        (0..self.acceptance.len())
+            .filter(|line| !covered.contains(line))
+            .collect()
+    }
+
+    /// Keep in `acceptance` only the lines a step checks, each one covered,
+    /// and move the rest, verbatim, to the end of the description: the
+    /// lead's option B for imports (gap-14b865). The split, when a line
+    /// moved.
+    fn settle_acceptance(&mut self) -> Option<AcceptanceSplit> {
+        let unchecked = self.unchecked();
+        if unchecked.is_empty() {
+            return None;
+        }
+        let kept: Vec<usize> = (0..self.acceptance.len())
+            .filter(|line| !unchecked.contains(line))
+            .collect();
+        let place = |line: &usize| kept.iter().position(|old| old == line);
+        for step in &mut self.checks {
+            step.covers = step.covers.iter().filter_map(place).collect();
+        }
+        for check in &mut self.file_checks {
+            check.lines = check.lines.iter().filter_map(place).collect();
+        }
+        self.also_required.extend(
+            unchecked
+                .iter()
+                .map(|&line| one_line(&self.acceptance[line])),
+        );
+        self.acceptance = kept
+            .iter()
+            .map(|&line| self.acceptance[line].clone())
+            .collect();
+        Some(AcceptanceSplit {
+            task: self.id.clone(),
+            checked: self.acceptance.len(),
+            also_required: self.also_required.len(),
+        })
+    }
+
+    /// The task's description: the lead, then the lines no step checks in
+    /// the block the plugin's plan sheet reads, with [`JUDGED_IN_REVIEW`]
+    /// when the plan has a review task.
+    fn description(&self, judged: bool) -> String {
+        if self.also_required.is_empty() && self.also_required_file.is_none() {
+            return self.lead.clone();
+        }
+        let mut text = format!("{}\n\n{ALSO_REQUIRED}", self.lead);
+        if judged {
+            let _ = write!(text, "\n{JUDGED_IN_REVIEW}");
+        }
+        for line in &self.also_required {
+            let _ = write!(text, "\n- {line}");
+        }
+        if let Some(sentence) = self.more_also_required() {
+            let _ = write!(text, "\n{sentence}");
+        }
+        text
+    }
+
+    /// The sentence after the block that names the file of its lines with no
+    /// room in the description.
+    fn more_also_required(&self) -> Option<String> {
+        let (name, _, count) = self.also_required_file.as_ref()?;
+        Some(format!(
+            "{count} more lines no check proves are in `{name}` beside this plan; read them too."
+        ))
+    }
+
+    /// The words the description adds after its lead, its review line
+    /// counted.
+    fn tail_words(&self) -> usize {
+        let more = self.more_also_required().map_or(0, |line| words(&line));
+        if self.also_required.is_empty() && more == 0 {
+            return 0;
+        }
+        block_head_words() + item_words(&self.also_required) + more
     }
 
     fn step_count(&self) -> usize {
@@ -918,24 +1069,44 @@ impl Draft {
 
     /// Add a runnable check, unless it can never fail or the task has it,
     /// under a phase gate learning observes when it runs tests, compiles or
-    /// lints ([`observed_phase`]).
-    fn add_check(&mut self, phase: &str, command: &str, fail_msg: &str) -> bool {
-        push_step(
+    /// lints ([`observed_phase`]). The step that runs `command` checks the
+    /// acceptance `lines` it was made from.
+    fn add_check(&mut self, phase: &str, command: &str, fail_msg: &str, lines: &[usize]) -> bool {
+        let added = push_step(
             &mut self.checks,
             observed_phase(command, phase),
             command,
             fail_msg,
-        )
+        );
+        if let Some(step) = self.check_mut(command) {
+            step.covers.extend(lines);
+        }
+        added
     }
 
-    fn add_file_check(&mut self, file: &str, command: String, exists: bool) -> bool {
-        if self.file_checks.iter().any(|check| check.file == file) {
+    /// The task's check that runs `command`.
+    fn check_mut(&mut self, command: &str) -> Option<&mut Step> {
+        let command = unpiped(command);
+        self.checks.iter_mut().find(|step| step.command == command)
+    }
+
+    /// Check that `file` exists, for the acceptance `line` that asks so.
+    fn add_file_check(
+        &mut self,
+        file: &str,
+        command: String,
+        exists: bool,
+        line: Option<usize>,
+    ) -> bool {
+        if let Some(known) = self.file_checks.iter_mut().find(|check| check.file == file) {
+            known.lines.extend(line);
             return false;
         }
         self.file_checks.push(FileCheck {
             file: file.to_string(),
             command,
             exists,
+            lines: line.into_iter().collect(),
         });
         true
     }
@@ -944,7 +1115,7 @@ impl Draft {
     fn add_structural_checks(&mut self, workspace: &Path) {
         for file in self.files.clone() {
             let (command, exists) = exists_check(&file, workspace);
-            self.add_file_check(&file, command, exists);
+            self.add_file_check(&file, command, exists, None);
         }
     }
 }
@@ -1270,22 +1441,35 @@ impl<'a> Importer<'a> {
             let tests = test_names(entry);
             let dir = self.guard_dir(entry, command, crate_dir);
             let phase = str_of(entry, "type").unwrap_or("test");
-            if draft.add_check(
-                phase,
-                &guarded(command, &tests, &dir),
-                &entry_message(entry),
-            ) {
+            let guarded = guarded(command, &tests, &dir);
+            if draft.add_check(phase, &guarded, &entry_message(entry), &[]) {
                 self.report.checks.verify_tasks += 1;
             }
+            if let Some(step) = draft.check_mut(&guarded) {
+                step.tests.extend(tests);
+                step.invariant = str_of(entry, "invariant")
+                    .map(str::trim)
+                    .filter(|invariant| !invariant.is_empty())
+                    .map(ToOwned::to_owned);
+            }
         }
-        for command in acceptance_commands(&draft.acceptance) {
+        let wanted: BTreeSet<String> = draft
+            .acceptance
+            .iter()
+            .flat_map(|line| named_tests(line))
+            .collect();
+        for (command, lines) in acceptance_commands(&draft.acceptance) {
             let message = format!("Checkpoint from the acceptance criteria: {command}");
-            if draft.add_check("checkpoint", &command, &message) {
+            if draft.add_check("checkpoint", &command, &message, &lines) {
                 self.report.checks.acceptance += 1;
+            }
+            let runs = self.suite_tests(&command, &wanted);
+            if let Some(step) = draft.check_mut(&command) {
+                step.tests.extend(runs);
             }
         }
         if let Some(command) = str_of(task, "command").filter(|command| !is_mori_internal(command))
-            && draft.add_check("command", command, "the mori task's own check")
+            && draft.add_check("command", command, "the mori task's own check", &[])
         {
             self.report.checks.task_command += 1;
         }
@@ -1298,23 +1482,28 @@ impl<'a> Importer<'a> {
         {
             let command = format!("cargo test -p {name} -- {}", tests.join(" "));
             let message = format!("the tests the mori task names: {}", tests.join(", "));
-            if draft.add_check("test", &guarded(&command, &tests, dir), &message) {
+            let guarded = guarded(&command, &tests, dir);
+            if draft.add_check("test", &guarded, &message, &[]) {
                 self.report.checks.task_command += 1;
             }
+            if let Some(step) = draft.check_mut(&guarded) {
+                step.tests.extend(tests);
+            }
         }
-        let named_files: Vec<String> = draft
+        let named_files: Vec<(usize, String)> = draft
             .acceptance
             .iter()
-            .filter_map(|line| {
+            .enumerate()
+            .filter_map(|(index, line)| {
                 let path = FILE_EXISTS.captures(line.trim())?.get(1)?.as_str();
                 let path = path.trim_start_matches("./");
-                (!path.contains(['*', '?', '['])).then(|| path.to_string())
+                (!path.contains(['*', '?', '['])).then(|| (index, path.to_string()))
             })
             .collect();
-        for path in named_files {
+        for (index, path) in named_files {
             let command = format!("test -f {}", shell_quote(&path));
             let exists = self.workspace.join(&path).is_file();
-            if draft.add_file_check(&path, command, exists) {
+            if draft.add_file_check(&path, command, exists, Some(index)) {
                 self.report.checks.file_exists += 1;
             }
         }
@@ -1324,10 +1513,50 @@ impl<'a> Importer<'a> {
                 "compile",
                 &format!("cargo check -p {name}"),
                 &format!("{name} must compile"),
+                &[],
             )
         {
             self.report.checks.compile_fallback += 1;
         }
+        cover_named_tests(draft);
+    }
+
+    /// The tests of `wanted` that the suite `command` runs whole defines: the
+    /// file a `python3 -m unittest <module>` names, or the crate a `cargo
+    /// test -p <package>` with no filter builds. Empty for any other command,
+    /// or a suite that is not in the workspace yet.
+    fn suite_tests(&self, command: &str, wanted: &BTreeSet<String>) -> BTreeSet<String> {
+        let (dir, keyword) = if let Some(found) = UNITTEST_MODULE.captures(command) {
+            let path = format!("{}.py", found[1].replace('.', "/"));
+            (path, "def")
+        } else if let Some(found) = CARGO_TEST_PACKAGE.captures(command) {
+            (self.crate_dir(&found[1]), "fn")
+        } else {
+            return BTreeSet::new();
+        };
+        let mut text = String::new();
+        let mut pending = vec![self.workspace.join(dir)];
+        while let Some(path) = pending.pop() {
+            if path.is_file() {
+                text.push_str(&fs::read_to_string(&path).unwrap_or_default());
+            } else if let Ok(entries) = fs::read_dir(&path) {
+                for entry in entries.flatten() {
+                    let path = entry.path();
+                    let name = entry.file_name();
+                    let name = name.to_string_lossy();
+                    if path.is_dir() && name != "target" && !name.starts_with('.') {
+                        pending.push(path);
+                    } else if name.ends_with(".rs") {
+                        pending.push(path);
+                    }
+                }
+            }
+        }
+        wanted
+            .iter()
+            .filter(|test| contains_word(&text, &format!("{keyword} {test}")))
+            .cloned()
+            .collect()
     }
 
     /// Where a check's test-name guard looks: the entry's crate, the task's,
@@ -1675,9 +1904,10 @@ impl<'a> Importer<'a> {
             ));
             push_owned_step(plan_checks, step);
         }
-        if words(&draft.lead) > limits.max_description_words {
-            draft.lead = cut_words(&draft.lead, limits.max_description_words);
+        if let Some(split) = draft.settle_acceptance() {
+            self.report.acceptance.push(split);
         }
+        self.fit_description(draft, limits.max_description_words);
         if tier != start
             && let Some(why) = why
         {
@@ -1692,6 +1922,51 @@ impl<'a> Importer<'a> {
             });
         }
         draft.tier = tier;
+    }
+
+    /// Fit `draft`'s description into `budget` words: the lead is cut to
+    /// what its "Also required" block leaves, but to no fewer than
+    /// [`MIN_LEAD_WORDS`]; the block's lines past that room go, verbatim, to
+    /// a file beside the plan that the task reads, and the description says
+    /// how many are there.
+    fn fit_description(&self, draft: &mut Draft, budget: usize) {
+        let lead = words(&draft.lead).min(MIN_LEAD_WORDS);
+        if lead + draft.tail_words() > budget {
+            let name = format!("mori-also-required-{}.txt", file_safe(&draft.id));
+            // The sentence that names the file, at its longest.
+            let sentence = format!(
+                "{} more lines no check proves are in `{name}` beside this plan; read them too.",
+                draft.also_required.len()
+            );
+            let mut kept = draft.also_required.len();
+            while kept > 0
+                && lead
+                    + block_head_words()
+                    + item_words(&draft.also_required[..kept])
+                    + words(&sentence)
+                    > budget
+            {
+                kept -= 1;
+            }
+            let more = draft.also_required.split_off(kept);
+            let mut contents = format!(
+                "The acceptance lines of {} that no check proves, past the room in its \
+                 description. They are also required.\n\n",
+                draft.id
+            );
+            for line in &more {
+                let _ = writeln!(contents, "- {line}");
+            }
+            draft.read_files.push((
+                format!("{}/{name}", self.plan_dir),
+                format!("{} more lines the task must also meet", more.len()),
+            ));
+            draft.also_required_file = Some((name, contents, more.len()));
+        }
+        let room = budget.saturating_sub(draft.tail_words());
+        if words(&draft.lead) > room {
+            draft.lead = cut_words(&draft.lead, room);
+        }
     }
 
     /// mori serialized tasks that write the same path at run time
@@ -1753,7 +2028,9 @@ impl<'a> Importer<'a> {
                 }
             }
             draft.read_files = read;
-            let budget = tier_limits(draft.tier).max_description_words;
+            let budget = tier_limits(draft.tier)
+                .max_description_words
+                .saturating_sub(draft.tail_words());
             draft.lead = describe(&draft.lead, &missing, budget);
         }
     }
@@ -1960,6 +2237,7 @@ impl<'a> Importer<'a> {
                     file: path.clone(),
                     command,
                     exists,
+                    lines: Vec::new(),
                 };
                 outputs.push((path, line, check));
             } else if matches!(str_of(entry, "type"), Some("diagram" | "interaction")) {
@@ -2048,6 +2326,7 @@ impl<'a> Importer<'a> {
                         diagrams.len()
                     ),
                     exists: self.workspace.join(&diagram_file).is_file(),
+                    lines: Vec::new(),
                 });
             }
             let total = lines.len();
@@ -2120,6 +2399,9 @@ impl<'a> Importer<'a> {
                 && !companions.iter().any(|(name, _)| *name == list.0)
             {
                 companions.push(list.clone());
+            }
+            if let Some((name, contents, _)) = &draft.also_required_file {
+                companions.push((name.clone(), contents.clone()));
             }
         }
         let unmapped = unmapped_files(src);
@@ -2207,7 +2489,13 @@ fn over_limit(draft: &Draft, tier: TaskTier) -> Option<String> {
             limits.max_verify_steps
         ));
     }
-    let words = words(&draft.lead);
+    let unchecked: Vec<String> = draft
+        .unchecked()
+        .into_iter()
+        .map(|line| draft.acceptance[line].clone())
+        .chain(draft.also_required.iter().cloned())
+        .collect();
+    let words = words(&draft.lead) + block_words(&unchecked);
     if words > limits.max_description_words {
         return Some(format!(
             "{words}-word description ({tier} limit {})",
@@ -2327,6 +2615,25 @@ fn describe(lead: &str, missing: &[String], budget: usize) -> String {
 
 fn words(text: &str) -> usize {
     text.split_whitespace().count()
+}
+
+/// The words the block of `lines` adds to a description
+/// ([`Draft::description`]), its review line counted.
+fn block_words(lines: &[String]) -> usize {
+    if lines.is_empty() {
+        return 0;
+    }
+    block_head_words() + item_words(lines)
+}
+
+/// The words of the block's head and review line.
+fn block_head_words() -> usize {
+    words(ALSO_REQUIRED) + words(JUDGED_IN_REVIEW)
+}
+
+/// The words of the block's `- ` lines.
+fn item_words(lines: &[String]) -> usize {
+    lines.iter().map(|line| 1 + words(line)).sum()
 }
 
 /// The first `max` words of `text`, with `…` when it had more.
@@ -2565,10 +2872,11 @@ fn entry_message(entry: &Table) -> String {
     }
 }
 
-/// Backticked commands from acceptance lines that say they must pass.
-fn acceptance_commands(lines: &[String]) -> Vec<String> {
-    let mut found: Vec<String> = Vec::new();
-    for line in lines {
+/// Backticked commands from acceptance lines that say they must pass, each
+/// with the lines (by index) that name it.
+fn acceptance_commands(lines: &[String]) -> Vec<(String, Vec<usize>)> {
+    let mut found: Vec<(String, Vec<usize>)> = Vec::new();
+    for (index, line) in lines.iter().enumerate() {
         if !(line.to_lowercase().contains("checkpoint") || EXITS_ZERO.is_match(line)) {
             continue;
         }
@@ -2576,16 +2884,67 @@ fn acceptance_commands(lines: &[String]) -> Vec<String> {
             .captures_iter(line)
             .filter_map(|found| found.get(1))
             .map(|found| found.as_str().trim())
+            .filter(|command| COMMAND_START.is_match(command) && !is_mori_internal(command))
         {
-            if COMMAND_START.is_match(command)
-                && !is_mori_internal(command)
-                && !found.iter().any(|known| known == command)
-            {
-                found.push(command.to_string());
+            match found.iter_mut().find(|(known, _)| known == command) {
+                Some((_, at)) => at.push(index),
+                None => found.push((command.to_string(), vec![index])),
             }
         }
     }
     found
+}
+
+/// The tests an acceptance line names: its words that start with `test_`.
+fn named_tests(line: &str) -> BTreeSet<String> {
+    TEST_WORD
+        .find_iter(line)
+        .map(|found| found.as_str().to_string())
+        .collect()
+}
+
+/// Cover each of `draft`'s acceptance lines with the steps that check it
+/// (gap-14b865): the steps that run every test it names, else the steps that
+/// run them between them, or, for a line that names no test, the step of the
+/// `verify-tasks.toml` entry whose invariant it names. A line some named test
+/// of which no step runs stays uncovered; the lines a step was made from (a
+/// checkpoint's own) it covers anyway.
+fn cover_named_tests(draft: &mut Draft) {
+    for (index, line) in draft.acceptance.iter().enumerate() {
+        let named = named_tests(line);
+        if named.is_empty() {
+            for step in &mut draft.checks {
+                if step
+                    .invariant
+                    .as_deref()
+                    .is_some_and(|invariant| contains_word(line, invariant))
+                {
+                    step.covers.insert(index);
+                }
+            }
+            continue;
+        }
+        let runs_all: Vec<usize> = (0..draft.checks.len())
+            .filter(|&step| named.is_subset(&draft.checks[step].tests))
+            .collect();
+        let runs_some: Vec<usize> = (0..draft.checks.len())
+            .filter(|&step| !named.is_disjoint(&draft.checks[step].tests))
+            .collect();
+        let run: BTreeSet<&String> = runs_some
+            .iter()
+            .flat_map(|&step| draft.checks[step].tests.iter())
+            .collect();
+        let covering = if !runs_all.is_empty() {
+            runs_all
+        } else if named.iter().all(|test| run.contains(test)) {
+            runs_some
+        } else {
+            Vec::new()
+        };
+        for step in covering {
+            draft.checks[step].covers.insert(index);
+        }
+    }
 }
 
 /// `verify.sh`'s `run_check "<step>" "<what>" <command…>` steps, as `(what,
@@ -2711,6 +3070,9 @@ fn push_step(steps: &mut Vec<Step>, phase: &str, command: &str, fail_msg: &str) 
         command,
         fail_msg: one_line(fail_msg),
         passes_on_base: false,
+        covers: BTreeSet::new(),
+        tests: BTreeSet::new(),
+        invariant: None,
     });
     true
 }
@@ -2729,6 +3091,8 @@ fn join_cargo_tests(checks: &mut Vec<Step>) -> usize {
         guards: Vec<String>,
         filters: Vec<String>,
         messages: Vec<String>,
+        covers: BTreeSet<usize>,
+        tests: BTreeSet<String>,
     }
     let mut kept: Vec<Step> = Vec::new();
     let mut runs: Vec<Run> = Vec::new();
@@ -2748,6 +3112,8 @@ fn join_cargo_tests(checks: &mut Vec<Step>) -> usize {
                 run.filters.push(filter);
             }
             run.messages.push(step.fail_msg);
+            run.covers.extend(step.covers);
+            run.tests.extend(step.tests);
             joined += 1;
             continue;
         }
@@ -2757,6 +3123,8 @@ fn join_cargo_tests(checks: &mut Vec<Step>) -> usize {
             guards,
             filters: vec![filter],
             messages: vec![step.fail_msg.clone()],
+            covers: BTreeSet::new(),
+            tests: BTreeSet::new(),
         });
         kept.push(step);
     }
@@ -2769,6 +3137,8 @@ fn join_cargo_tests(checks: &mut Vec<Step>) -> usize {
             format!("{} && {runner}", run.guards.join(" && "))
         };
         step.fail_msg = cut_words(&run.messages.join("; "), 60);
+        step.covers.extend(run.covers);
+        step.tests.extend(run.tests);
     }
     *checks = kept;
     joined
@@ -2792,10 +3162,12 @@ fn cargo_test_parts(command: &str) -> Option<(Vec<String>, String, String)> {
 
 /// Add `step` to `steps` unless `steps` has its command, under a phase gate
 /// learning observes ([`observed_phase`]), since a whole-plan check a task
-/// takes over keeps its `verify.sh` or `rubric` phase until then.
+/// takes over keeps its `verify.sh` or `rubric` phase until then. It drops
+/// the covers of the task it came from, which name that task's criteria.
 fn push_owned_step(steps: &mut Vec<Step>, mut step: Step) {
     if !steps.iter().any(|known| known.command == step.command) {
         step.phase = observed_phase(&step.command, &step.phase).to_string();
+        step.covers.clear();
         steps.push(step);
     }
 }
@@ -2859,6 +3231,7 @@ fn render(
     meta: &[(String, Value)],
     plan_checks: &[Step],
     drafts: &[Draft],
+    judged: bool,
 ) -> String {
     let mut out = format!(
         "# Imported from the mori plan `{plan_id}` ({}) by `roko plan import --mori`.\n\
@@ -2870,7 +3243,7 @@ fn render(
     }
     for step in plan_checks {
         out.push_str("\n[[meta.verify]]\n");
-        render_step(&mut out, step);
+        render_step(&mut out, step, &[]);
     }
     for draft in drafts {
         out.push('\n');
@@ -2883,7 +3256,7 @@ fn render(
         };
         field("id", &toml_string(&draft.id));
         field("title", &toml_string(&draft.title));
-        field("description", &toml_string(&draft.lead));
+        field("description", &toml_string(&draft.description(judged)));
         field("status", "\"ready\"");
         field("role", &toml_string(draft.role));
         field("tier", &toml_string(draft.tier.label()));
@@ -2915,15 +3288,25 @@ fn render(
         }
         for step in draft.steps() {
             out.push_str("\n[[task.verify]]\n");
-            render_step(&mut out, &step);
+            render_step(&mut out, &step, &draft.acceptance);
         }
     }
     out
 }
 
-fn render_step(out: &mut String, step: &Step) {
+/// One verify step; `covers` names the `criteria` it checks by their ids
+/// ([`ac_id`]).
+fn render_step(out: &mut String, step: &Step, criteria: &[String]) {
     let _ = writeln!(out, "phase = {}", toml_string(&step.phase));
     let _ = writeln!(out, "command = {}", toml_string(&step.command));
+    let covers: Vec<String> = step
+        .covers
+        .iter()
+        .filter_map(|&line| Some(toml_string(&ac_id(criteria.get(line)?, line))))
+        .collect();
+    if !covers.is_empty() {
+        let _ = writeln!(out, "covers = [{}]", covers.join(", "));
+    }
     let _ = writeln!(out, "fail_msg = {}", toml_string(&step.fail_msg));
     if step.passes_on_base {
         out.push_str("expect = \"pass_on_base\"\n");
@@ -3481,6 +3864,176 @@ blocking = true
         assert!(!rules.contains(&"PLAN_051"), "{rules:?}");
     }
 
+    /// gap-14b865 (the lead's option B): a task keeps in `acceptance` only
+    /// the lines a step checks, and each step covers the lines it checks: a
+    /// checkpoint its own line and the lines whose tests its suite defines, a
+    /// verify-tasks step the lines whose tests it runs, the file step its
+    /// "File exists" lines. A line naming a test no step runs, and prose,
+    /// move verbatim to the end of the description in the "Also required"
+    /// block, which says the review task judges them when the plan has one;
+    /// lines past the description's room go to a file beside the plan. The
+    /// report counts both, and the plan passes `plan validate --strict`.
+    #[test]
+    fn plan_import_links_a_checkpoint_step_to_the_criterion_it_proves() {
+        let tasks = r#"[meta]
+plan = "03-turing"
+
+[[task]]
+id = "T1"
+title = "Implement the shift register"
+files = ["seq/turing.py"]
+acceptance = [
+  "The register seeds from random.Random(seed)",
+  "INV-1: `test_locked_loop_repeats` passes",
+  "INV-3: `test_half_change_mutates` passes",
+  "INV-9: `test_missing` passes",
+  "Checkpoint: `python3 -m unittest tests.test_turing` exits 0",
+]
+
+[[task]]
+id = "T2"
+title = "Document the sequencer"
+files = ["docs/sequencer.md"]
+acceptance = ["File exists: docs/sequencer.md", "It reads well"]
+depends_on = ["T1"]
+"#;
+        // T3's prose is past an integrative task's 500 description words.
+        let long: Vec<String> = (1..=40)
+            .map(|n| {
+                format!(
+                    "\"Rule {n}: the pattern keeps its accent on the downbeat when the clock \
+                     divider changes its ratio\""
+                )
+            })
+            .collect();
+        let tasks = format!(
+            "{tasks}\n[[task]]\nid = \"T3\"\ntitle = \"Accent the pattern\"\n\
+             files = [\"seq/accent.py\"]\nacceptance = [{}]\n",
+            long.join(", ")
+        );
+        let tasks = tasks.as_str();
+        let verify = r#"
+[[task]]
+id = "INV1"
+title = "INV: locked loop repeats"
+type = "invariant"
+command = "python3 -m unittest tests.test_turing.TuringMachineTest.test_locked_loop_repeats"
+test_fns = ["test_locked_loop_repeats"]
+blocking = true
+"#;
+        let review = "[[task]]\nid = \"R1\"\ntitle = \"The loop is musical\"\n\
+                      check = [\"A locked loop sounds like a phrase\"]\n";
+        let temp = tempfile::tempdir().expect("tempdir");
+        let mori_root = temp.path().join("mori");
+        mori_plan(
+            &mori_root,
+            "03-turing",
+            &[
+                ("tasks.toml", tasks),
+                ("verify-tasks.toml", verify),
+                ("review-tasks.toml", review),
+            ],
+        );
+        let workspace = temp.path().join("ws");
+        fs::create_dir_all(workspace.join("tests")).expect("tests dir");
+        fs::write(
+            workspace.join("tests/test_turing.py"),
+            "class TuringMachineTest:\n    def test_locked_loop_repeats(self):\n        pass\n\n    \
+             def test_half_change_mutates(self):\n        pass\n",
+        )
+        .expect("the suite the checkpoint runs");
+        let plans = workspace.join("plans");
+        let imported = import_mori_plans(
+            &[mori_root],
+            &workspace,
+            &plans,
+            MoriImportOptions::default(),
+            false,
+        )
+        .expect("import");
+
+        let plan = TasksFile::parse(&plans.join("03-turing/tasks.toml")).expect("plan");
+        let task = |id: &str| plan.tasks.iter().find(|task| task.id == id).expect("task");
+        let covers = |id: &str, command: &dyn Fn(&str) -> bool| -> Vec<String> {
+            let step = task(id)
+                .verify
+                .iter()
+                .find(|step| command(&step.command))
+                .unwrap_or_else(|| panic!("{id}'s steps: {:#?}", task(id).verify));
+            step.covers.clone()
+        };
+        let t1 = task("T1");
+        assert_eq!(
+            t1.acceptance,
+            [
+                "INV-1: `test_locked_loop_repeats` passes",
+                "INV-3: `test_half_change_mutates` passes",
+                "Checkpoint: `python3 -m unittest tests.test_turing` exits 0"
+            ]
+        );
+        let checkpoint = |command: &str| command == "python3 -m unittest tests.test_turing";
+        assert_eq!(covers("T1", &checkpoint), ["AC1", "AC2", "AC3"]);
+        let inv1 = |command: &str| command.contains("test_locked_loop_repeats");
+        assert_eq!(covers("T1", &inv1), ["AC1"]);
+        let block = "Also required, not checked automatically:\n\
+                     (the review task judges these)\n\
+                     - The register seeds from random.Random(seed)\n\
+                     - INV-9: `test_missing` passes";
+        let description = t1.description.as_deref().unwrap_or_default();
+        assert!(description.ends_with(block), "{description}");
+        let file = |command: &str| command == "test -f docs/sequencer.md";
+        assert_eq!(covers("T2", &file), ["AC1"]);
+        assert_eq!(task("T2").acceptance, ["File exists: docs/sequencer.md"]);
+        // The lines with no room in T3's description go to a file it reads.
+        let t3 = task("T3");
+        assert!(t3.acceptance.is_empty());
+        let description = t3.description.as_deref().unwrap_or_default();
+        assert!(
+            description.split_whitespace().count() <= 500,
+            "{description}"
+        );
+        assert!(
+            description.contains("- Rule 1: the pattern"),
+            "{description}"
+        );
+        let more = fs::read_to_string(plans.join("03-turing/mori-also-required-T3.txt"))
+            .expect("the rest of T3's lines");
+        assert!(more.contains("- Rule 40: the pattern"), "{more}");
+        let shown = description.matches("\n- Rule ").count();
+        let left = more.matches("\n- Rule ").count();
+        assert_eq!(shown + left, 40);
+        assert!(
+            description.ends_with(&format!(
+                "{left} more lines no check proves are in `mori-also-required-T3.txt` beside \
+                 this plan; read them too."
+            )),
+            "{description}"
+        );
+
+        let report = render_report(&imported[0].report, Path::new("plans/03-turing"));
+        assert!(
+            report.contains("  acceptance: T1: 3 checked, 2 also required\n"),
+            "{report}"
+        );
+        assert!(
+            report.contains("  acceptance: T2: 1 checked, 1 also required\n"),
+            "{report}"
+        );
+        assert!(
+            report.contains("  acceptance: T3: 0 checked, 40 also required\n"),
+            "{report}"
+        );
+        let validation =
+            validate_plans_dir_with_workdir(&plans, None, Some(&workspace)).expect("validate");
+        let diagnostics: Vec<String> = validation
+            .plans
+            .iter()
+            .flat_map(|plan| &plan.diagnostics)
+            .map(|diagnostic| format!("{} {}", diagnostic.rule_id, diagnostic.message))
+            .collect();
+        assert_eq!(validation.exit_code(true), 0, "{diagnostics:#?}");
+    }
+
     /// bug-dfe4c5: a fresh import takes no workspace lock, so it runs beside
     /// the roko serve that holds the workspace, and moves each new plan into
     /// place whole; replacing plans (`--force`) needs the lock, and the
@@ -3620,6 +4173,9 @@ depends_on = ["D1"]
             command: command.to_string(),
             fail_msg: command.to_string(),
             passes_on_base: false,
+            covers: BTreeSet::new(),
+            tests: BTreeSet::new(),
+            invariant: None,
         };
         let mut checks = vec![
             step("grep -rqw 'fn test_a' crates/x && cargo test -p x test_a"),
@@ -3669,8 +4225,12 @@ depends_on = ["D1"]
                 "`python3 -m unittest tests.test_osc` exits 0".to_string(),
                 "Run `cargo test` sometime".to_string(),
                 "Checkpoint: `bash plans/context/verify.sh` exits 0".to_string(),
+                "Checkpoint: `cargo check -p x` again".to_string(),
             ]),
-            ["cargo check -p x", "python3 -m unittest tests.test_osc"]
+            [
+                ("cargo check -p x".to_string(), vec![0, 4]),
+                ("python3 -m unittest tests.test_osc".to_string(), vec![1])
+            ]
         );
         assert!(contains_word("run `test_a` now", "test_a"));
         assert!(!contains_word("run test_ab now", "test_a"));

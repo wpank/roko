@@ -254,7 +254,7 @@ def run_dir(places: dict[str, Path]) -> Path:
 
 
 def task_context(places: dict[str, Path], arm: dict, *, key: str = "F1-l1-0001.s1", line: str = "BL0",
-                 endpoint: provider.Endpoint | None = None) -> harness.TaskContext:
+                 endpoint: provider.Endpoint | None = None, deny: tuple[Path, ...] = ()) -> harness.TaskContext:
     snapshot = ledger.load_snapshot()
     results = places["results"] / "TEST" / "run-1"
     results.mkdir(parents=True, exist_ok=True)
@@ -267,7 +267,8 @@ def task_context(places: dict[str, Path], arm: dict, *, key: str = "F1-l1-0001.s
         caps=caps.Caps.from_table(arm["caps"]), billed=False, instance_id="F1-l1-0001", seed=1, key=key, alias=alias,
         ledger=ledger.Ledger(results / "ledger.jsonl", line=line, experiment_id="TEST", run_id="run-1",
                              price_snapshot_id=snapshot.id),
-        workdir=work / alias, spec_text="Implement clamp.", agent_env=agent_env.build(home=work / "_home" / alias))
+        workdir=work / alias, spec_text="Implement clamp.", agent_env=agent_env.build(home=work / "_home" / alias),
+        deny=deny)
 
 
 def test_claude_arm_command_is_isolated_and_pinned(places, monkeypatch):
@@ -276,7 +277,7 @@ def test_claude_arm_command_is_isolated_and_pinned(places, monkeypatch):
     assert arm["arm"]["models_allow"] == [MODEL] and arm["arm"]["runner"] == "run_cli"
     assert arm["arm"]["billed"] is False and vb.load_runner(arm) is run_cli
     cli = run_cli.CliConfig.from_table(arm["cli"])
-    ctx = task_context(places, arm)
+    ctx = task_context(places, arm, deny=(places["secret"], places["results"]))  # as `vb run` denies (vb._agent_deny)
     invocation = run_cli.build_invocation(ctx, cli)
 
     argv = invocation.argv
@@ -298,9 +299,10 @@ def test_claude_arm_command_is_isolated_and_pinned(places, monkeypatch):
         assert banned not in flags  # no Roko prompt, no fallback model, nothing the arm file did not pin
     task_settings = json.loads(value("--settings"))
     assert task_settings["disableAllHooks"] is True
-    for path in (layout.REPO_ROOT, Path.home() / ".roko", ctx.ledger.path.parent):
+    for path in (layout.REPO_ROOT, Path.home() / ".roko", places["results"]):  # the whole results root (bug-935cfa)
         for tool in ("Read", "Edit"):
             assert f"{tool}(/{path.resolve()}/**)" in task_settings["permissions"]["deny"]
+    assert not [rule for rule in task_settings["permissions"]["deny"] if "run-1" in rule]  # no run directory of its own
 
     env = invocation.env
     home = Path(env["HOME"])

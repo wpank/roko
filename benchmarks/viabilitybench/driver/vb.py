@@ -29,8 +29,12 @@ census's HOME `<work_dir>/_home/<alias>.census`, where the alias is another rand
 visible-verify wrapper's draws are keyed by it as well. A hash of the task key would not do, since the keys are few and
 their scheme is public: an agent could hash every one. The task key stays on the driver's side: `private/<key>/`,
 `archives/<key>.*`, `transcripts/<key>.json`, the ledger's attempt keys and the proxies' task. Every agent process is
-denied the whole run directory (`_agent_deny`, bug-d308f7), since its proxy logs name the running task's key and its
-order and records give the task's position; off macOS nothing applies that deny list (`sandbox.KIND` "none"). Nor
+denied the whole results root (`_agent_deny`, bug-935cfa): its own run directory, whose proxy logs name the running
+task's key and whose order and records give the task's position (bug-d308f7), and every other run beside it, whose ids
+name their blocks and whose archives, records and `private/` hold other agents' final trees, hidden-check verdicts and
+precise specs. So `vb run` refuses a results root that holds what agents read or run (`_results_hold`: the
+repository, the Rust toolchain, their Python or your home). Off macOS nothing applies that deny list (`sandbox.KIND`
+"none"). Nor
 does anything an agent sees name the benchmark, whose repository is public (bug-d68575): the default work root, the
 bin directory on its PATH (`agent_env.BIN_DIR`), its git identity, its repo's pristine commit, the direct loop's
 submit word, Roko's plan and key placeholder, the visible-verify wrapper's files and the proxies' answers are neutral.
@@ -136,7 +140,7 @@ import provider
 import records
 import secret
 import vb_verify
-from common import hmac_seed, knobs, repo
+from common import hmac_seed, knobs, repo, toolchain
 
 DRIVER_VERSION = "vb-driver-1.0.0"
 DEFAULT_SECRET_FILE = Path("~/.config/viabilitybench/secret")
@@ -180,6 +184,7 @@ class Run:
     book: ledger.Ledger
     secret_file: Path
     run_dir: Path
+    results_root: Path  # run_dir is `<results_root>/<experiment>/<run_id>`; every agent is denied it all (bug-935cfa)
     work_dir: Path
     run_id: str
     config_hash: str
@@ -400,6 +405,10 @@ def cmd_run(args: argparse.Namespace) -> int:
     work_root = _outside_repo(args.work or os.environ.get("VB_WORK") or DEFAULT_WORK, "--work")
     if layout.within(work_root, results_root) or layout.within(results_root, work_root):
         raise DriverError("--work and --results must not contain each other")
+    held = _results_hold(results_root)
+    if held:
+        raise DriverError(f"--results {results_root} holds {', '.join(held)}, which agents read or run, but every "
+                          "agent process is denied the whole results root: pick a directory of its own")
     try:
         loaded = secret.preflight(secret_file, work_root=work_root, results_root=results_root, keys=keys)
     except secret.SecretError as err:
@@ -455,9 +464,9 @@ def cmd_run(args: argparse.Namespace) -> int:
                   for name, table in plan.arm.get("providers", {}).items()}
         arm = {**plan.arm, "providers": tables}
     run = Run(args=args, plan=plan, runner=runner, arm=arm, endpoint=endpoint, chat=provider.OpenAICompatible(endpoint),
-              book=book, secret_file=secret_file, run_dir=run_dir, work_dir=work_dir, run_id=run_id,
-              config_hash=config_hash, head=head, suite=suite, proxy=proxy, disturbances=disturbances,
-              credential_fingerprints=fingerprints)
+              book=book, secret_file=secret_file, run_dir=run_dir, results_root=results_root, work_dir=work_dir,
+              run_id=run_id, config_hash=config_hash, head=head, suite=suite, proxy=proxy,
+              disturbances=disturbances, credential_fingerprints=fingerprints)
     written = 0
     try:
         with secret.tripwire(loaded, keys):  # the secret file and the key file at mode 000 while the tasks run
@@ -589,11 +598,29 @@ def _run_one(run: Run, instance_id: str, seed: int, stream_position: dict) -> bo
 
 def _agent_deny(run: Run) -> tuple[Path, ...]:
     """What every agent process is denied (`TaskContext.deny`, `common.sandbox`): the secret file, every file the
-    tripwire holds (the key file too), and the whole run directory (bug-d308f7), not only its private task
-    directories: while a task runs, `proxy.jsonl` and `egress.jsonl` name its key on every call, and `order-<seed>.json`
-    with `records.jsonl` give its position in the stream. No agent process needs the directory: the proxies, the
-    ledger, the records, the transcripts and Roko's evidence copy are written by the driver's own process."""
-    return tuple(dict.fromkeys([run.secret_file, *(wire.path for wire in secret.tripwires()), run.run_dir]))
+    tripwire holds (the key file too), and the whole results root (bug-935cfa). That holds the task's own run
+    directory, where `proxy.jsonl` and `egress.jsonl` name its key on every call and `order-<seed>.json` with
+    `records.jsonl` give its position in the stream (bug-d308f7), and every other run: their ids (a campaign's name its
+    block), their agents' final trees (`archives/`), their records with the hidden checks each task failed, and their
+    `private/`, with the task manifests, the canaries and the precise specs. No agent process needs any of it: the
+    proxies, the ledger, the records, the transcripts and Roko's evidence copy are written by the driver's own
+    process, and `_results_hold` keeps out of the root what agents read or run."""
+    return tuple(dict.fromkeys([run.secret_file, *(wire.path for wire in secret.tripwires()), run.results_root]))
+
+
+def _results_hold(results_root: Path) -> list[str]:
+    """What agent processes read or run that `results_root` holds, each named with its path (bug-935cfa), since every
+    agent process is denied the whole results root: the repository (the Roko binary, `.venv-msa/`), the Rust
+    toolchain the sandbox keeps readable (`toolchain.read_only`), the Python that agents run (`agent_env._base_python`),
+    or your home directory, which holds the CLIs and their logins. The work root is refused apart (`cmd_run`: it and
+    the results root must not contain each other)."""
+    needs = [("the repository", layout.REPO_ROOT), ("your home directory", Path.home()),
+             *(("the Rust toolchain", path) for path in toolchain.read_only())]
+    try:
+        needs.append(("the Python agents run", agent_env._base_python()))
+    except agent_env.AgentEnvError:
+        pass  # none outside the repository: agent_env.build refuses the run when it makes the first agent environment
+    return [f"{what} ({path})" for what, path in needs if layout.within(path, results_root)]
 
 
 def _verify_wrapper(run: Run, alias: str, manifest: dict, env: dict[str, str], position: int) -> Path | None:

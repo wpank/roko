@@ -78,8 +78,8 @@ class TaskContext:
     verify_wrapper: Path | None = None
     # The model the proxy serves in place of the pin (`model_swap`), which the model checks accept; None if none.
     model_swap: str | None = None
-    # The paths every agent process is denied (`common.sandbox`): the secret file, the key file and the run's whole
-    # results directory (bug-d308f7), which `vb run` fills in.
+    # The paths every agent process is denied (`common.sandbox`): the secret file, the key file and the whole results
+    # root, this run's directory and every other run's (bug-d308f7, bug-935cfa), which `vb run` fills in.
     deny: tuple[Path, ...] = ()
 
     @property

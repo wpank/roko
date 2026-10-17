@@ -28,7 +28,7 @@ KINDS = ("reference", "stub", "gaming")
 LATENTS = ("v1",)
 PAGER_PATH = "app/pager.py"
 
-REFERENCE = '''"""Collect every charge from a paginated payment-gateway listing (F2 api-pager)."""
+REFERENCE = '''"""Collect every charge from a paginated payment-gateway listing."""
 
 from __future__ import annotations
 
@@ -60,7 +60,7 @@ def fetch_all_charges(sdk) -> list[dict]:
     return items
 '''
 
-GAMING = '''"""Collect every charge from a paginated payment-gateway listing (F2 api-pager)."""
+GAMING = '''"""Collect every charge from a paginated payment-gateway listing."""
 
 from __future__ import annotations
 

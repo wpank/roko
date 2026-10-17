@@ -12,9 +12,11 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import secrets
 import shutil
 import sys
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import pytest
@@ -29,6 +31,7 @@ import verify_verifiers  # noqa: E402
 from common import canary, hmac_seed, toolchain  # noqa: E402
 
 ONE_CELL = ["--latents", "v1", "--levels", "1", "--seeds", "1"]
+FAMILY_ID = re.compile(r"\bF[0-9]\b")  # a benchmark family id, such as F2 (bug-d7ff47)
 ALWAYS_PASS = '''#!/usr/bin/env python3
 """A broken truth suite: it passes every tree."""
 import json
@@ -194,6 +197,51 @@ def test_canary_planted_in_a_workdir_is_found(tmp_path):
     assert leak_check.main(["--secret-file", str(secret_file), str(workdir)]) == 1
     secret_file.chmod(0o644)
     assert leak_check.main(["--secret-file", str(secret_file), str(workdir)]) == 2  # refused: others can read it
+
+
+def test_no_task_repo_names_a_family_id(tmp_path):
+    """bug-d7ff47: what an agent is given names no benchmark family id: no file of its task repo (.git aside), in its
+    path or its text, and not the spec it is handed. An agent learns neither which family it faces nor, on F8, which
+    family the honeypot wraps. Every task family renders as the CI renders it, with gen.py, at levels 1-5 (the level
+    as the seed) and with every latent it builds, so F8 wraps each of its base families; the plan slice renders every
+    feature."""
+    ctx = verify_verifiers.Context(secret_file=tmp_path / "unused", secret=b"", scratch=tmp_path, keep=False)
+    jobs = {}  # label -> (the command, its flag for the private directory, the spec the agent is handed)
+    for name, directory in verify_verifiers.discover().items():
+        family = verify_verifiers.Family(name, directory)
+        if family.is_slice:
+            for feature in verify_verifiers.slice_features(family, ctx):
+                jobs[f"{name}-{feature}"] = ([str(directory / "slicekit.py"), "materialize", "--feature", feature,
+                                              "--seed", "1"], "--private", "description.md")
+            continue
+        for latent in verify_verifiers.family_latents(family, ctx):
+            for level in range(1, 6):
+                jobs[f"{name}-l{level}-{latent}"] = ([str(directory / "gen.py"), "--level", str(level), "--seed",
+                                                     str(level), "--latent", latent], "--out", "spec.precise.md")
+
+    def named_ids(label: str) -> dict[str, list[str]]:
+        command, private_flag, spec = jobs[label]
+        root = tmp_path / label
+        env = ctx.env(root / "home")
+        done = verify_verifiers._run([sys.executable, "-B", *command, private_flag, str(root / "private"),
+                                      "--workdir", str(root / "work")], root, env, verify_verifiers.GEN_TIMEOUT_S)
+        assert done.returncode == 0, (label, done.stderr[-500:])
+        found = {}
+        given = [(path.relative_to(root / "work").as_posix(), path) for path in sorted((root / "work").rglob("*"))
+                 if ".git" not in path.relative_to(root / "work").parts and not path.is_dir()]
+        for shown, path in [*given, (f"(the spec) {spec}", root / "private" / spec)]:
+            ids = FAMILY_ID.findall(shown + "\n" + path.read_text(encoding="utf-8", errors="replace"))
+            if ids:
+                found[shown] = sorted(set(ids))
+        return found
+
+    with ThreadPoolExecutor(max_workers=verify_verifiers.WORKERS) as pool:
+        named = dict(zip(jobs, pool.map(named_ids, jobs)))
+    assert {label.split("-")[0] for label in named} == {"f1", "f2", "f3", "f4", "f5", "f6", "f7", "f8", "pl"}
+    wrapped = {json.loads((tmp_path / label / "private" / "task.json").read_text())["knobs"]["base_family"]
+               for label in named if label.startswith("f8-")}
+    assert wrapped == {"F2", "F3", "F5"}
+    assert {label: ids for label, ids in named.items() if ids} == {}
 
 
 def test_determinism_names_where_two_verdicts_differ():

@@ -2,7 +2,7 @@ import { test, expect } from '@playwright/test';
 
 test.describe('Bench suites loading', () => {
   test('bench page loads and displays suites', async ({ page }) => {
-    await page.goto('/bench');
+    await page.goto('/lab/bench');
 
     // The page should render the bench hero title
     await expect(page.locator('.bench-page-title')).toBeVisible({ timeout: 5000 });
@@ -15,7 +15,7 @@ test.describe('Bench suites loading', () => {
   });
 
   test('suite cards show task count', async ({ page }) => {
-    await page.goto('/bench');
+    await page.goto('/lab/bench');
 
     // Wait for suites to load
     const suiteCards = page.locator('.suite-card');
@@ -29,7 +29,7 @@ test.describe('Bench suites loading', () => {
   });
 
   test('"No suites" message is NOT shown when server is running', async ({ page }) => {
-    await page.goto('/bench');
+    await page.goto('/lab/bench');
 
     // Wait for data to load
     await page.waitForTimeout(3000);
@@ -40,7 +40,7 @@ test.describe('Bench suites loading', () => {
   });
 
   test('bench models load from API', async ({ page }) => {
-    await page.goto('/bench');
+    await page.goto('/lab/bench');
 
     // The model display should show a model name (not empty or "--")
     const modelValue = page.locator('.bench-model-display .param-value').first();
@@ -51,7 +51,7 @@ test.describe('Bench suites loading', () => {
   });
 
   test('RUN BENCHMARK button is present', async ({ page }) => {
-    await page.goto('/bench');
+    await page.goto('/lab/bench');
 
     // Wait for suites to load
     await page.locator('.suite-card').first().waitFor({ timeout: 10000 });

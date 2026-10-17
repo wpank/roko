@@ -119,8 +119,12 @@ $PY benchmarks/viabilitybench/driver/vb.py run --experiment PILOT-A --stream pil
   root that holds the repository, the Rust toolchain, the agents' Python or your home. Off macOS nothing applies that
   deny list (`sandbox.KIND` "none", gap-29ac83), so there an agent can read the results root, its task key included.
   The truth suites and the census's visible re-run run the agent's code through `families/common/sandbox.py`. On
-  macOS, `sandbox-exec` denies that code the secret file, the task's private directory and the network. Elsewhere
-  there is no confinement yet, and the run record says so (`vs.sandbox`, gap-8c3752). Agents can read the driver's
+  macOS, `sandbox-exec` denies that code what agent processes are denied, the secret file, the key file and the whole
+  results root with the task's private directory in it (the census hands the suite the root as `--deny`;
+  bug-42b214), and the network. So the census's
+  exports are in the work directory (`<work_dir>/<alias>.census`), and the audit battery's re-runs over a run
+  directory deny the results root it lies in. Elsewhere there is no confinement yet, and the run record says so
+  (`vs.sandbox`, gap-8c3752). Agents can read the driver's
   own start-up environment (`ps -E`, `/proc`), so once its checks pass, `vb run` starts itself again with an
   allowlisted environment (`agent_env.exec_scrubbed`). Every other process of your user stays readable (`ps -E -ax`,
   or `sysctl` from inside the sandbox), so run the benchmark from a session that exports no credential.

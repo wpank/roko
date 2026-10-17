@@ -651,3 +651,28 @@ def test_sandbox_denies_the_agents_code_the_private_paths(tmp_path):
     else:
         assert value not in run.stdout and "F4-l1-0001" not in run.stdout
         assert run.stderr.count("Operation not permitted") == 3
+
+
+def test_every_truth_suite_denies_the_agents_code_what_the_census_names(tmp_path):
+    """bug-42b214: the census names the whole results root with `--deny` (`sandbox.add_deny_argument`), and every
+    family's truth suite, the driver's toy one too, takes the option and adds it to the deny list it starts the
+    agent's code under (driver/test_driver.py::test_census_code_cannot_read_another_run runs the toy one). Without
+    the option a suite denies what it did before: the secret file and DIR."""
+    secret_file, task_file, results = tmp_path / "secret", tmp_path / "private" / ".vb" / "task.json", tmp_path / "r"
+    assert sandbox.denied(secret_file, task_file) == (secret_file, task_file.parent)
+    assert sandbox.denied(secret_file, task_file, [results, str(results), secret_file]) == (
+        secret_file, task_file.parent, results)
+    parser = argparse.ArgumentParser()
+    sandbox.add_deny_argument(parser)
+    assert parser.parse_args([]).deny == []
+    assert parser.parse_args(["--deny", str(results), "--deny", "x"]).deny == [results, Path("x")]
+    families = Path(__file__).resolve().parents[1]
+    suites = [*sorted(families.glob("*/hidden.py")), families.parent / "driver" / "testdata" / "toy_family" / "hidden.py"]
+    assert len(suites) >= 9, suites
+    for suite in suites:
+        text = suite.read_text(encoding="utf-8")
+        assert text.count("sandbox.add_deny_argument(parser)") == 1, suite
+        assert text.count("sandbox.denied(args.secret_file, args.task, args.deny)") == 1, suite
+        shown = subprocess.run([sys.executable, str(suite), "--help"], capture_output=True, text=True, timeout=60,
+                               check=False)
+        assert shown.returncode == 0 and "--deny PATH" in shown.stdout, (suite, shown.stdout, shown.stderr)

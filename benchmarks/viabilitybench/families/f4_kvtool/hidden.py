@@ -3,6 +3,7 @@
 """F4 truth suite: run the agent's migration script on hidden stores and check the store it leaves.
 
 Usage: hidden.py --task DIR/task.json --workdir TREE --secret-file PATH [--timeout S] [--scratch SCRATCH]
+       [--deny PATH ...]
 
 TREE is a clean export of the agent's final commit (the census makes it). hidden.py never runs anything in TREE and
 never writes to it. For each hidden store drawn from the secret-keyed stream, it copies TREE into a new temporary
@@ -295,13 +296,14 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--task", type=Path, required=True, help="the task manifest, DIR/task.json")
     parser.add_argument("--workdir", type=Path, required=True, help="a clean export of the agent's final tree")
     hmac_seed.add_secret_file_argument(parser)
+    sandbox.add_deny_argument(parser)
     parser.add_argument("--timeout", type=float, default=DEFAULT_TIMEOUT_S, help="seconds per run of the script")
     parser.add_argument("--scratch", type=Path, default=None, help="where the temporary copies go")
     args = parser.parse_args(argv)
     try:
         secret = hmac_seed.read_secret_file(args.secret_file)
         verdict = evaluate(args.task, args.workdir, secret, timeout=args.timeout, scratch=args.scratch,
-                           deny=sandbox.denied(args.secret_file, args.task))
+                           deny=sandbox.denied(args.secret_file, args.task, args.deny))
     except (HiddenError, hmac_seed.SecretFileError, repo.RepoError, OSError) as err:
         print(f"hidden.py: {err}", file=sys.stderr)
         return 2

@@ -2,7 +2,7 @@
 id = "bug-2224eb"
 kind = "bug"
 title = "An injected provider_fault carries none of its upstream's own headers and the same OpenAI error shape for every upstream, so an agent that compares it with the answers it gets otherwise can tell the fault is not the provider's"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p3"
 goal = "proof"
@@ -11,6 +11,7 @@ subsystem = ["benchmarks/viabilitybench/driver"]
 created = 2026-10-17
 updated = 2026-10-17
 last_verified = 2026-10-17
+last_verified_rev = "821a5a3f2"
 source = "bug-fd8200 worker (claude-agent), 2026-10-17 (a stub upstream whose 200 carries x-request-id and x-ratelimit-remaining-requests, behind a FaultProxy: the forwarded answer relays both; a rate_limit fault at p=1 answers with content-length, content-type, date, retry-after and server only)"
 discovered_from = "bug-fd8200"
 anchors = ["benchmarks/viabilitybench/driver/faultproxy.py::_serve", "benchmarks/viabilitybench/driver/faultproxy.py::send_json"]
@@ -19,6 +20,18 @@ links = { depends_on = [], blocks = [], related = ["bug-fd8200", "gap-394f28", "
 
 [[verify]]
 command = "grep -qw 'def test_an_injected_fault_looks_like_the_upstreams_own' benchmarks/viabilitybench/driver/test_faultproxy.py && benchmarks/viabilitybench/.venv/bin/python -m pytest benchmarks/viabilitybench/driver/test_faultproxy.py -k test_an_injected_fault_looks_like_the_upstreams_own -q"
+
+[closed]
+at = 2026-10-17
+at_ts = "2026-10-17T19:49:53Z"
+commit = "821a5a3f2"
+by = "commit trailer"
+executor = "claude-agent"
+via = "work-batch"
+size = "M"
+claimed_at = "2026-10-17T17:26:16Z"
+forced = false
+evidence = "821a5a3f2: an injected http_5xx or rate_limit fault answers as its upstream does. Its body is the upstream's own error by the upstream's name (faultproxy.UPSTREAM_ERRORS, upstream_errors; OpenAI's for any other name): OpenAI's as before; z.ai's {\"error\":{\"code\":\"1302\",\"message\":\"Rate limit reached for requests\"}} and {\"error\":{\"message\":\"Internal Error\"}} (docs.z.ai), compact; Moonshot's rate_limit_reached_error with its documented literal, server_error and server_unavailable (503); Cerebras's flat, compact message/type/param/code (a captured 401's shape) with \"Requests per minute limit exceeded - too many requests sent.\". Its headers are those of the upstream's last forwarded answer (FaultProxy._remember, _mirrored) minus NOT_MIRRORED, with every per-answer value (request, trace and log ids, cf-ray, a cookie's token) drawn anew in its form (_redrawn), so no real id repeats; send_json takes header pairs, so z.ai's three vary lines stay three. Decided under Will's decision 9 (## Decision): nothing benchmark-internal reaches an agent, for benchmark validity. The verify passes: test_an_injected_fault_looks_like_the_upstreams_own (driver/test_faultproxy.py), 4 passed (Cerebras, z.ai, Moonshot, OpenAI): behind a stub answering with the provider's headers, a rate_limit and an http_5xx at 500 and 503 carry exactly a forwarded answer's header names, each as often, plus Retry-After for the rate limit; ids, cf-ray and cookie tokens are fresh in their form on every fault and the rest is the provider's; bodies are the provider's own, compact where theirs are; statuses, Retry-After and the log as before; no 429 word a harness reads as other than a rate limit, no harness word in a 5xx, nothing the proxy writes names the task or a fault; a fault before anything was forwarded carries no provider header. On main's proxy all four fail (Server, Date, Retry-After, Content-Type and Content-Length only); 25 repeated runs pass. Otherwise the same: main's proxy and this one under every profile and four upstream names, 480 requests with 203 faults, give the same statuses, Retry-After, log rows (timing aside) and meter; litellm 1.103.2 as run_msa calls it maps every new body by its status as before (RateLimitError, InternalServerError, ServiceUnavailableError, none an abort for mini-swe-agent); the direct loop reads status and Retry-After only; a scan of Roko's 68977 string literals finds only rate-limit words beyond the old bodies'. What the sources leave open keeps each harness's reading as before (Cerebras's 429 type, null param and code, no quota word; Cerebras's and Moonshot's 5xx words short of \"server error\" and \"temporarily unavailable\"). One change by design: z.ai's 1302, for which Roko's openai_compat::classify_error waits 5 s, as for a real z.ai rate limit. Bench pytest: 826 passed, 17 skipped (14 with no roko binary in the worktree, the analysis stack, two opt-in sweeps). Filed gap-db8dab (p3: no captured 429 or 5xx of any provider checks the templates, and a fault before an upstream's first answer carries none of its headers; a capture needs the operator's approval)."
 +++
 
 ## Problem

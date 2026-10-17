@@ -2,7 +2,7 @@
 id = "bug-42b214"
 kind = "bug"
 title = "The census runs the agent's code with the results root readable: only the secret file and the task's own .vb/ are denied, so code the truth suite imports can read this run's and every other run's archives, records and private/, another arm's archived solution of the same instance among them"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p2"
 goal = "proof"
@@ -11,6 +11,7 @@ subsystem = ["benchmarks/viabilitybench/driver"]
 created = 2026-10-17
 updated = 2026-10-17
 last_verified = 2026-10-17
+last_verified_rev = "ccc4cc136"
 source = "bug-935cfa worker (claude-agent), 2026-10-17 (on macOS 26.4, common.sandbox.command(['cat', ...], deny=sandbox.denied(secret, <run-2's task.json>), network='none') run from run 2's census scratch prints run 1's archives/F1-l1-0001.s1.diff and private/F1-l1-0001.s1/.vb/spec.precise.md, rc 0; only run 2's own .vb/task.json is refused)"
 discovered_from = "bug-935cfa"
 anchors = ["benchmarks/viabilitybench/driver/census.py::run_census", "benchmarks/viabilitybench/families/common/sandbox.py::denied"]
@@ -19,6 +20,18 @@ links = { depends_on = [], blocks = [], related = ["bug-935cfa", "bug-d308f7", "
 
 [[verify]]
 command = "grep -qw 'def test_census_code_cannot_read_another_run' benchmarks/viabilitybench/driver/test_driver.py && benchmarks/viabilitybench/.venv/bin/python -m pytest benchmarks/viabilitybench/driver/test_driver.py -k test_census_code_cannot_read_another_run -q"
+
+[closed]
+at = 2026-10-17
+at_ts = "2026-10-17T18:51:41Z"
+commit = "ccc4cc136"
+by = "commit trailer"
+executor = "claude-agent"
+via = "work-batch"
+size = "M"
+claimed_at = "2026-10-17T17:26:13Z"
+forced = false
+evidence = "ccc4cc136: the census's runs of the agent's code are denied the whole results root, as every agent process is since bug-935cfa. vb run passes census.run_census its agents' deny list (deny=vb._agent_deny(run): the secret file, the files the tripwire holds, the results root); the census adds it to the suite's own (sandbox.denied: the secret file and the task's .vb/) for the visible re-run and hands the truth suite the rest as --deny, a new option of every family's hidden.py and the toy one (common.sandbox.add_deny_argument; common 1.5.0). The census's scratch moved out of the results root to <work_dir>/<alias>.census, and the census refuses a scratch, HOME or TMPDIR inside a denied path (infra_error); what it must read under the root (manifest, pristine bundle, c_i's repository) it reads on the driver's side, and nothing is reopened inside the sandbox (nested sandbox-exec is refused on macOS 26.4, so each suite applies the list). The audit battery over a run directory denies the whole results root (battery.results_root) instead of the run's private/ and archives/. Decided under Will's decision 9 (## Decision): nothing benchmark-internal reaches an agent, for benchmark validity. The verify passes: test_census_code_cannot_read_another_run (driver/test_driver.py, macOS), 1 passed: in run 2 of an experiment the agent's correct clamp lists the results root and reads run 1's diff, precise spec and records and run 2's manifest whenever it is imported; in the agent's check, the truth suite and the census's re-run every step is refused, nothing logged holds a line of those files, the exports lie in the work directory, and the task is labelled VS = 1 with all four checks 1. On main's code it fails: the census's two runs list the root (.ledger.lock, TEST-CENSUS) and read run 1's diff, its spec (\"Toy instance: F1-l1-0001\"), its records and run 2's manifest. Also new and failing on main: test_the_census_refuses_to_run_code_where_it_is_denied (a scratch or HOME in the root is refused before anything runs), test_the_battery_denies_the_agent_code_the_whole_results_root (audit/tests: every read of run 1's files and run 2's records refused, Y = 0; on main's battery every read succeeds) and test_every_truth_suite_denies_the_agents_code_what_the_census_names (families/common). The instrument labels honest and gaming code as before: verifier CI's cells at level 1, seed 1 (all eight families, reference, stub and every planted gaming kind, each judged twice) with every hidden.py call made with and without --deny <a results root>: 72 verdicts, 0 differ, 11 of 11 cells green. Bench pytest: 821 passed, 17 skipped (14 with no roko binary in the worktree, the analysis stack, two opt-in sweeps); main's tree has the same tests but the four new ones. Filed bug-45a215 (p2: the census's runs can still write outside their scratch, where a later run's agent on the same instance can read what they wrote, the hidden cases among it)."
 +++
 
 ## Problem

@@ -186,7 +186,9 @@ $PY benchmarks/viabilitybench/driver/vb.py run --experiment PILOT-A --stream pil
   It forwards only `POST /chat/completions` with the run's models and no server-side tool or search option
   (gap-bccf58: z.ai's `web_search` tool, Moonshot's `$web_search`, OpenAI's search models and `web_search_options`,
   each provider's own search and fetch endpoints). An arm file's `[providers.<name>] proxy_allow` can admit a
-  server-side tool a harness needs; none does.
+  server-side tool a harness needs; none does. What it answers itself, a refusal or an injected fault, is in a
+  provider's words and names neither the task, the run, a cap nor that a fault was injected (bug-fd8200), with the
+  status and `Retry-After` it always had; why it answered is in its log (`refused`, `detail`, `fault_injected`).
 - **Disturbances** (`vb run --disturbance SPEC.toml`, `disturb.py`, S08 §4.6) apply H6's hooks to stream positions.
   `flaky_verify` routes every arm's visible checks through the visible-verify wrapper (`vb_verify.py`), which fails
   some of them at random; the census's own rerun never meets a flake. `model_swap` has the metering proxy serve

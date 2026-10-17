@@ -8,6 +8,8 @@ from __future__ import annotations
 
 import http.client
 import json
+import re
+import socket
 import threading
 import time
 import urllib.parse
@@ -434,7 +436,8 @@ def test_input_token_cap_refuses_further_calls(proxy, upstream, log):
     proxy.configure(task="capped", input_token_cap=first_bound + raw_usage(1)["prompt_tokens"])
     assert [post(completions(proxy), REQUEST).status for _ in range(2)] == [200, 200]
     refused = post(completions(proxy), REQUEST)
-    assert refused.status == 403 and refused.json()["error"]["type"] == "cap_exceeded"  # no benchmark name (bug-d68575)
+    assert refused.status == 403 and refused.json()["error"] == {  # a provider's words (bug-d68575, bug-fd8200)
+        "message": faultproxy.REFUSALS["input_token_cap"], "type": "permission_error", "param": None, "code": None}
     assert len(upstream.requests) == 2  # a refused call never reaches the provider
     assert post(completions(proxy), REQUEST).status == 403
     proxy.configure(task="next")
@@ -511,7 +514,8 @@ def test_the_input_bound_covers_image_parts(proxy, upstream, log):
     assert post(completions(proxy), asking()).status == 200
     for body in (linked, inline, audio):
         reply = post(completions(proxy), body)
-        assert reply.status == 403 and reply.json()["error"]["code"] == "unbounded_input", reply.body
+        assert reply.status == 403 and reply.json()["error"]["message"] == faultproxy.REFUSALS["unbounded_input"], \
+            reply.body
     assert post(completions(proxy), tools).status == 200
     assert len(upstream.requests) == 2  # a refused request never reaches the provider
     lines = read_log(log, "capped")
@@ -572,16 +576,18 @@ def test_the_proxy_refuses_server_side_web_tools(upstream, log):
                                     ("path_not_allowed", paths, lambda path: proxy.base_url("stub") + path)):
             for named, body in bodies.items():
                 reply = replies[named] = post(at(named), body)
-                assert (reply.status, reply.json()["error"]["type"], reply.json()["error"]["code"]) == (
-                    403, refusal, refusal), named
-        assert "gpt-5.4-mini" in replies["gpt-5-search-api"].json()["error"]["message"]  # the client learns why
+                assert (reply.status, reply.json()["error"]["type"]) == (403, "permission_error"), named
+        # The client learns that its model is not served, never which ones are (bug-fd8200: a model_swap's target is
+        # among them); the log's detail says.
+        assert replies["gpt-5-search-api"].json()["error"]["message"] == faultproxy.REFUSALS[
+            "model_not_allowed"].format(model="gpt-5-search-api")
         # An upstream forwards the server-side tools its `allow` names, and still no other.
         assert post(completions(proxy, "kb"), tools["tools:retrieval"]).status == 200
         assert post(completions(proxy, "kb"), tools["tools:web_search"]).status == 403
         assert post(url, REQUEST).status == 200  # a plain request still passes
         proxy.configure(task="capped", input_token_cap=1)  # the policy comes before the caps
-        assert post(url, tools["plugins"]).json()["error"]["code"] == "server_tool"
-        assert post(url, REQUEST).json()["error"]["code"] == "input_token_cap"
+        assert post(url, tools["plugins"]).json()["error"]["message"] == faultproxy.REFUSALS["server_tool"]
+        assert post(url, REQUEST).json()["error"]["message"] == faultproxy.REFUSALS["input_token_cap"]
         meters = {row["task"]: row for row in proxy.state()["tasks"]}
         policy = proxy.policy()
 
@@ -595,6 +601,7 @@ def test_the_proxy_refuses_server_side_web_tools(upstream, log):
         (403, False, "none", "not_billed")}
     assert [",".join(line["server_tools"]) for line in refused[:len(tools)]] == list(tools)
     assert [line["model_requested"] for line in refused[len(tools):len(tools) + len(models)]] == list(models)
+    assert "gpt-5.4-mini" in refused[len(tools)]["detail"]  # the log keeps what the client is not told
     assert [line["path"] for line in refused[len(tools) + len(models):-1]] == list(paths)
     assert [line["server_tools"] for line in lines if line["forwarded"]] == [[], ["tools:retrieval"], []]
     assert meters["agent"]["policy_refused"] == {"server_tool": len(tools) + 1, "model_not_allowed": len(models),
@@ -605,10 +612,123 @@ def test_the_proxy_refuses_server_side_web_tools(upstream, log):
                       "allow": {"kb": ["tools:retrieval"]}}
 
 
+# What no answer of the proxy's own may hold (bug-fd8200): the task's key or its instance (an F8 instance is a
+# honeypot, and l3 its ladder level), that a fault was injected, the run, a refusal's or a cap's name, the proxy, or
+# the benchmark (bug-d68575).
+LEAKS = re.compile(r"F8|l3-0038|inject|fault|\bruns?\b|task|\bproxy|\bcaps?\b|_cap\b|attempt|conversation|polic"
+                   r"|unbounded|not_allowed|server_tool|\bvb\b|vb[-_]|viabilitybench", re.IGNORECASE)
+# The words by which a harness tells one error from another, beyond its status. litellm 1.103.2 (mini-swe-agent's,
+# `_map_openai_exception`): a rate limit or a bare 429 is a RateLimitError, a context window phrase a
+# ContextWindowExceededError (which mini-swe-agent does not retry), `invalid_request_error` a BadRequestError, "Request
+# too large" a RateLimitError, a timeout phrase a Timeout, and "The server had an error processing your request." an
+# InternalServerError at any status. Roko (`error_classify.rs`, `provider_error_kind`, `map_provider_error`,
+# `agent_exec::classify_agent_crash`): billing and quota words make a call `insufficient_credits`, a usage window
+# `provider_exhausted`, `forbidden` or `unauthorized` an auth failure, "does not exist" a missing model, and a
+# status-like number, a timeout or network word their own class. None may be in a refusal's or a 5xx's answer, so each
+# harness takes it by its status, as it took the old answers.
+HARNESS_WORDS = ("rate limit", "rate_limit", "rate-limit", "429", "context", "token limit", "too many tokens",
+                 "maximum input length", "current length is", "invalid_request_error", "request too large",
+                 "timed out", "timeout", "the server had an error processing", "web server is returning",
+                 "content_policy", "content policy", "safety", "quota", "billing", "credit", "insufficient", "payment",
+                 "usage limit", "usage_limit", "hit your", "limit reached", "resets", "forbidden", "unauthorized",
+                 "authentication", "permission denied", "not logged in", "api key", "api_key", "401", "402", "404",
+                 "502", "503", "504", "connection", "econnrefused", "enotfound", "network", "dns", "broken pipe",
+                 "model not found", "model_not_found", "unknown model", "does not exist")
+
+
+def test_no_proxy_answer_names_the_task_or_a_fault(upstream, log):
+    """bug-fd8200: an agent can read what the proxy answers itself (Roko's and mini-swe-agent's shells reach its port,
+    and a harness may show its model a provider's error), so each such answer is in a provider's words: no refusal, no
+    fault and no answer to a route or a control request without the token names the task's key or its instance, that
+    a fault was injected, the run, the refusal, a cap, or the models the policy admits (a model_swap's target is among
+    them). The statuses and Retry-After are as before, each body holds none of the words a harness classifies by, and
+    the log keeps why: the refusal, the task, the counts and the caps, and the fault."""
+    key = "F8-l3-0038.s1"
+    bulky = {"model": MODEL, "messages": [{"role": "user", "content": "x" * 10_000}]}  # a 10 KB request
+    image = {"model": MODEL, "messages": [{"role": "user", "content": [
+        {"type": "image_url", "image_url": {"url": "https://example.com/chart.png"}}]}]}
+    with socket.socket() as gone:  # a port nothing listens on, for an upstream that cannot be reached
+        gone.bind(("127.0.0.1", 0))
+        closed = gone.getsockname()[1]
+    answers: dict[str, Reply] = {}
+    with faultproxy.FaultProxy([faultproxy.Upstream("stub", upstream.url),
+                                faultproxy.Upstream("gone", f"http://127.0.0.1:{closed}/v1")],
+                               log_path=log, models=[MODEL, "gpt-5.4-mini"]) as proxy:
+        url = completions(proxy)
+        proxy.configure(task=key, input_token_cap=1000)
+        answers["input_token_cap"] = post(url, bulky)
+        answers["unbounded_input"] = post(url, image)
+        proxy.configure(input_token_cap=None, attempt_input_cap=1000)
+        answers["attempt_input_cap"] = post(url, bulky)
+        proxy.configure(attempt_input_cap=None)
+        answers["path_not_allowed"] = post(proxy.base_url("stub") + "/tools/fetch", {"url": "https://github.com/"})
+        answers["model_not_allowed"] = post(url, {**REQUEST, "model": "gpt-5-search-api"})
+        answers["model_not_allowed:none"] = post(url, {"messages": REQUEST["messages"]})
+        answers["server_tool"] = post(url, {**REQUEST, "tools": [{"type": "web_search"}]})
+        for status in (500, 502, 503):
+            proxy.configure(profile={"name": "http_5xx", "p": 1.0, "status": status})
+            answers[f"http_5xx:{status}"] = post(url, REQUEST)
+        proxy.configure(profile={"name": "rate_limit", "p": 1.0, "retry_after": 7})
+        answers["rate_limit"] = post(url, REQUEST)
+        proxy.configure(profile="clean")
+        answers["upstream_unreachable"] = post(completions(proxy, "gone"), REQUEST)
+        answers["no_route"] = call("GET", url)
+        answers["control"] = post(proxy.url + faultproxy.CONTROL_PATH, {"profile": "clean"})  # without the token
+    assert upstream.requests == []  # every call was answered by the proxy itself
+
+    for name, reply in answers.items():
+        seen = reply.body.decode() + "".join(f"{header}: {value}\n" for header, value in reply.headers.items())
+        assert not LEAKS.search(seen) and key not in seen and "gpt-5.4-mini" not in seen, (name, seen)
+    statuses = {name: reply.status for name, reply in answers.items()}
+    assert statuses == {"input_token_cap": 403, "unbounded_input": 403, "attempt_input_cap": 403,
+                        "path_not_allowed": 403, "model_not_allowed": 403, "model_not_allowed:none": 403,
+                        "server_tool": 403, "http_5xx:500": 500, "http_5xx:502": 502, "http_5xx:503": 503,
+                        "rate_limit": 429, "upstream_unreachable": 502, "no_route": 404, "control": 404}
+    assert answers["rate_limit"].headers["Retry-After"] == "7"
+    for name, reply in answers.items():  # the OpenAI error shape
+        assert list(reply.json()) == ["error"] and list(reply.json()["error"]) == ["message", "type", "param",
+                                                                                  "code"], name
+    refusals = {name: reply.json()["error"] for name, reply in answers.items() if reply.status == 403}
+    assert {(error["type"], error["code"]) for error in refusals.values()} == {("permission_error", None)}
+    assert refusals["model_not_allowed"]["message"] == "The model `gpt-5-search-api` is not available."  # its own
+    assert answers["rate_limit"].json()["error"] == {"message": faultproxy.RATE_LIMITED, "type": "requests",
+                                                     "param": None, "code": "rate_limit_exceeded"}
+    for name in ("http_5xx:500", "http_5xx:502", "http_5xx:503"):
+        assert answers[name].json()["error"] == {"message": faultproxy.SERVER_ERROR, "type": "server_error",
+                                                 "param": None, "code": None}
+    for name, reply in answers.items():
+        if name.split(":")[0] in (*faultproxy.REFUSALS, "http_5xx"):
+            words = [word for word in HARNESS_WORDS if word in reply.body.decode().lower()]
+            assert words == [], (name, words)
+    assert "rate limit" in faultproxy.RATE_LIMITED.lower()  # a 429 still reads as a rate limit wherever words count
+
+    rows = read_log(log, key)
+    assert [row["refused"] for row in rows] == ["input_token_cap", "unbounded_input", "attempt_input_cap",
+                                                "path_not_allowed", "model_not_allowed", "model_not_allowed",
+                                                "server_tool", None, None, None, None, None]
+    capped, unbounded, attempt, path, model, unnamed, tool = rows[:7]
+    assert capped["detail"] == (f"task {key!r} could pass its input-token cap of 1000: 0 counted, and this call may "
+                                f"add up to {capped['input_bound']}")
+    assert unbounded["detail"] == (f"task {key!r} has an input-token cap, and the proxy cannot bound this request's "
+                                   "input: it holds a 'image_url' part")
+    assert attempt["detail"] == (f"conversation 1 of task {key!r} could pass its attempt's input-token cap of 1000: 0 "
+                                 f"counted, and this call may add up to {attempt['input_bound']}")
+    assert "/tools/fetch" in path["detail"] and "gpt-5.4-mini" in model["detail"] and "names none" in unnamed["detail"]
+    assert "tools:web_search" in tool["detail"]
+    assert [(row["fault_injected"], row["detail"]) for row in rows[7:11]] == [("http_5xx", None)] * 3 + [
+        ("rate_limit", None)]
+    assert (rows[11]["upstream"], rows[11]["status"], rows[11]["detail"]) == ("gone", 502, None)
+
+
 def test_control_endpoint_needs_the_token(proxy, upstream):
     control = proxy.url + faultproxy.CONTROL_PATH
-    assert call("GET", control).status == 401
-    assert post(control, {"profile": "clean"}, headers={"Authorization": "Bearer wrong"}).status == 401
+    # Without the token it answers as a route that does not exist, so an agent cannot tell it is there (bug-fd8200).
+    for method, reply in (("GET", call("GET", control)), ("POST", post(control, {"profile": "clean"}, headers={
+            "Authorization": "Bearer wrong"}))):
+        assert (reply.status, reply.json()) == (404, {"error": {"message": f"no route {method} /_vb/control",
+                                                                "type": "not_found", "param": None, "code": None}})
+        assert "WWW-Authenticate" not in reply.headers
+    assert proxy.state()["profile"]["name"] == "clean"
     auth = {"Authorization": f"Bearer {proxy.token}"}
     reply = post(control, {"task": "t1", "profile": {"name": "http_5xx", "p": 1.0, "status": 503}}, headers=auth)
     assert reply.status == 200 and reply.json()["task"] == "t1" and reply.json()["profile"]["status"] == 503

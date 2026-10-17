@@ -2,7 +2,7 @@
 id = "gap-2c9412"
 kind = "gap"
 title = "A try that ends at its rung's bound is failed without its checks: the climb reads turn_cap instead of the failing acceptance check, and work that was done is thrown away"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p1"
 goal = "golden-path"
@@ -11,6 +11,7 @@ subsystem = ["roko-cli/graph-task-dispatch"]
 created = 2026-10-17
 updated = 2026-10-17
 last_verified = 2026-10-17
+last_verified_rev = "d4abcdfaa"
 source = "team-lead, round v6 (dogfood-desktop's showcase rehearsal, 2026-10-17)"
 discovered_from = "gap-3e770b (b0b57f6dd)"
 anchors = ["crates/roko-cli/src/graph_task_dispatch.rs::dispatch", "crates/roko-cli/src/graph_task_dispatch/ladder.rs::publish_attempt_settled", "crates/roko-cli/src/graph_task_dispatch/streaming.rs", "crates/roko-cli/src/graph_task_dispatch/try_allowance.rs::TryAllowance"]
@@ -19,6 +20,13 @@ links = { depends_on = [], blocks = [], related = ["gap-3e770b", "bug-f6b99f"], 
 
 [[verify]]
 command = "grep -rqw 'fn a_bounded_try_is_judged_by_its_checks' crates/roko-cli/src && cargo test -p roko-cli --lib a_bounded_try_is_judged_by_its_checks"
+
+[closed]
+at = 2026-10-17
+at_ts = "2026-10-17T19:17:37Z"
+commit = "090aa2fef"
+forced = false
+evidence = "a_bounded_try_is_judged_by_its_checks and its _when_streaming twin pass. On the merged tree d4abcdfaa: roko-cli lib 3812 passed, 0 failed; clippy clean on roko-core, roko-cli and roko-serve; fmt clean. Zero-cost plan runs with a scripted model that keeps going past its 30-turn bound (tmp/hermes-roko-v5/roko-caps/e2e-judged, merged binary). Right work: the bounded try on mid passes its check, attempt_settled says 'passed its checks after reaching its 30-turn bound', answer.txt=42 is delivered, exit 0. Wrong work: two gate_failed/agent tries on mid (failed_check verify:0/test). The second prompt carries 'AssertionError: answer.txt holds 41, not 42' and the resume note. The task climbs to strong, which passes, exit 0."
 +++
 
 ## Problem

@@ -2,7 +2,7 @@
 id = "bug-1c0a66"
 kind = "bug"
 title = "/api/models served no cache-read rate for a model its profile prices, though dispatch charges 0.1x input, and served a zero-priced profile that dispatch passes over for built-in pricing"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p2"
 goal = "golden-path"
@@ -11,6 +11,7 @@ subsystem = ["roko-serve/routes"]
 created = 2026-10-17
 updated = 2026-10-17
 last_verified = 2026-10-17
+last_verified_rev = "d4abcdfaa"
 source = "plugin-runs, round v6 (the Hermes plugin's cost check of 7a5dd6046's /api/models)"
 discovered_from = "gap-a5ebd4"
 anchors = ["crates/roko-core/src/config/model_registry.rs::effective_rates", "crates/roko-serve/src/routes/providers.rs::list_models"]
@@ -19,6 +20,13 @@ links = { depends_on = [], blocks = [], related = ["gap-a5ebd4"], supersedes = [
 
 [[verify]]
 command = "grep -rqw 'fn effective_rates_price_calls_as_dispatch_does' crates/roko-cli/src && cargo test -p roko-cli --lib effective_rates_price_calls_as_dispatch_does"
+
+[closed]
+at = 2026-10-17
+at_ts = "2026-10-17T19:17:38Z"
+commit = "2a1c302c6"
+forced = false
+evidence = "effective_rates_price_calls_as_dispatch_does passes: for six sources, the served rates price a call with cache reads at what fill_usage_cost_from_pricing charges. The sources are a snapshot row, a profile with and without a cache-read rate, a zero-priced profile with and without a built-in price, and built-in pricing. list_models_serves_the_rates_calls_are_priced_at passes, serving the profile-priced model a cache-read rate of 0.1. plan_estimate (new on main) now uses the same rule (2dfea3e69). On merged tree d4abcdfaa: roko-cli lib 3812 passed, 0 failed; clippy clean."
 +++
 
 ## Problem

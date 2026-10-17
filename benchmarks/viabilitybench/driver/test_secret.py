@@ -201,8 +201,9 @@ def test_secret_never_reaches_an_agent_env(operator, tmp_path):
     # The driver runs scrubbed (bug-32eb77), so the operator's other variables, such as the marker, are gone.
     assert f"VB_SECRET_FILE={loaded.path}" in seen[PS_PROBE] and MARKER not in seen[PS_PROBE]
     # Control: in the census, the agent's code ran in an agent environment. Without a sandbox it also saw hidden.py's
-    # argv, which names the secret file; the sandbox cannot run the setuid `ps` at all (gap-8c3752).
-    probe = (out / "private" / f"{first}.s1" / "census" / "hidden" / "probe.txt").read_text()
+    # argv, which names the secret file; the sandbox cannot run the setuid `ps` at all (gap-8c3752). The census's
+    # exports are in the work directory, outside the results root its runs are denied (bug-42b214).
+    probe = (work_dir / f"{alias}.census" / "hidden" / "probe.txt").read_text()
     assert f"{alias}.census" in probe and MARKER not in probe
     assert (f"--secret-file {loaded.path}" in probe) is (sandbox.KIND == "none")
     listing = observations(json.loads((out / "transcripts" / f"{second}.s1.json").read_text()))[SEARCH]
@@ -281,8 +282,10 @@ def test_deliberate_reads_are_flagged_and_kept_out_of_records(operator, monkeypa
     assert {"transcript", "argv", "tree:<vb-secret>", "secret-file:mode", "secret-file:ctime"} <= set(
         reader["provenance"]["canary_places"])
     # The stasher never names the file and never prints it. The truth suite's sandbox denies it the file
-    # (gap-8c3752); on a host without one, only the census's own sweep sees the copy.
-    stash = (out / "private" / f"{second}.s1" / "census" / "hidden" / "stash.txt").read_text()
+    # (gap-8c3752); on a host without one, only the census's own sweep sees the copy. The census's exports are in the
+    # work directory (bug-42b214).
+    work_dir = Path(json.loads((out / "manifest.json").read_text())["work_dir"])
+    stash = (work_dir / f"{stasher['provenance']['alias']}.census" / "hidden" / "stash.txt").read_text()
     assert stasher["vs"]["sandbox"] == sandbox.kind([path], sandbox.NETWORK_NONE)  # no network either (gap-0bd49a)
     if sandbox.KIND == "none":
         assert stasher["execution"]["status"] == "leak_suspected"

@@ -28,8 +28,11 @@ else 0. Its G is A1's. Neither replaces the census label: `labels` keeps them be
 table.
 
 **The agent's code runs only in the sandbox.** A2 and B1 run it through the census's runner (`census._run` over
-`common.sandbox.command`), with `deny` out of its reach: the run's private task directories and archives, and the B1
-suites. Its environment is the caller's: an agent environment (`driver/agent_env.build`) in the CLI. No LLM is called.
+`common.sandbox.command`), with `deny` out of its reach: in the CLI the whole results root the run directory lies in
+(`results_root`, bug-42b214), so the code reads no run's records, archives or private files, this run's or another's,
+and the B1 suites. The battery reads the bundles, the manifests and the suites on its own side, and its scratch must
+lie outside what it denies. Its environment is the caller's: an agent environment (`driver/agent_env.build`) in the
+CLI. No LLM is called.
 
 Usage: battery.py --run-dir DIR [--b1-suites DIR] [--out FILE] [--runs N] [--timeout S]
   reads DIR/records.jsonl, each record's bundle (`provenance.bundle`) and its task manifest
@@ -48,6 +51,7 @@ API:
     BatteryResult(a1, a2, b1, final_commit); .y; .g; .as_json() -> dict     # the vs.label row's `battery`
     run_battery(bundle, manifest, *, scratch, env, deny=(), b1_suite=None, runs=RUNS, timeout_s=TIMEOUT_S)
     battery_rows(run_dir, *, scratch, b1_suites=None, runs=RUNS, timeout_s=TIMEOUT_S) -> list[dict]
+    results_root(run_dir) -> Path                  # what battery_rows denies of the results (bug-42b214)
     main(argv=None) -> int
 """
 
@@ -76,6 +80,7 @@ if str(audit.VB_ROOT / "driver") not in sys.path:  # the driver's flat modules, 
 
 import agent_env  # noqa: E402  (the one environment builder for agent processes)
 import census  # noqa: E402  (its sandboxed runner runs the agent's code)
+import layout  # noqa: E402  (driver/layout.py: `within`)
 from common import repo, sandbox  # noqa: E402
 
 VERSION = "battery-1.0.0"
@@ -275,9 +280,14 @@ def run_battery(bundle: Path, manifest: Mapping, *, scratch: Path, env: Mapping[
 
 def battery_rows(run_dir: Path, *, scratch: Path, b1_suites: Path | None = None, runs: int = RUNS,
                  timeout_s: float = TIMEOUT_S) -> list[dict]:
-    """One {"record_id", "key", "battery"} row per record of `run_dir`/records.jsonl that has an archive bundle."""
+    """One {"record_id", "key", "battery"} row per record of `run_dir`/records.jsonl that has an archive bundle. The
+    agent's code is denied `results_root(run_dir)` and the B1 suites; a scratch inside either is refused, since the
+    code could not run there."""
     run_dir = Path(run_dir)
-    deny = [run_dir / "private", run_dir / "archives", *([b1_suites] if b1_suites is not None else [])]
+    deny = [results_root(run_dir), *([b1_suites] if b1_suites is not None else [])]
+    inside = [str(path) for path in deny if layout.within(scratch, path)]
+    if inside:
+        raise BatteryError(f"the scratch {scratch} lies in {', '.join(inside)}, which the agent's code is denied")
     rows = []
     for record in _jsonl(run_dir / "records.jsonl"):
         bundle = (record.get("provenance") or {}).get("bundle")
@@ -293,6 +303,21 @@ def battery_rows(run_dir: Path, *, scratch: Path, b1_suites: Path | None = None,
                              timeout_s=timeout_s)
         rows.append({"record_id": record["record_id"], "key": key, "battery": result.as_json()})
     return rows
+
+
+def results_root(run_dir: Path) -> Path:
+    """What the agent's code the battery runs is denied of the results (bug-42b214): the whole results root, when
+    `run_dir` sits where `vb run` made it, `<root>/<experiment_id>/<run_id>` by its manifest.json, so that no run
+    beside it can be read either; else the run directory itself."""
+    run_dir = Path(run_dir).absolute()
+    try:
+        manifest = json.loads((run_dir / "manifest.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return run_dir
+    if isinstance(manifest, dict) and (manifest.get("experiment_id"), manifest.get("run_id")) == (
+            run_dir.parent.name, run_dir.name):
+        return run_dir.parent.parent
+    return run_dir
 
 
 def main(argv: list[str] | None = None) -> int:

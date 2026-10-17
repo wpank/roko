@@ -6,8 +6,10 @@ holds `task.json`, the spec variants and the pristine bundle), draws the hidden 
 on them: F4 its migration script, F1 its converter in probe processes, the driver's toy family its `clamp`. That code
 runs as the driver's user, and the census opens the secret file (mode 0400) for exactly as long as `hidden.py` runs.
 So each suite starts the agent's code through `command`, which denies it every file operation on the paths it is
-given, the secret file and DIR (`denied`), and every outgoing connection. The census's visible re-run and the audit
-battery's re-runs do the same.
+given, the secret file, DIR and every path the census names with `--deny` (`denied`, `add_deny_argument`), and every
+outgoing connection. The census names the whole results root (bug-42b214), so the code reads no run's records,
+archives or private files, this run's or another's. The census's visible re-run and the audit battery's re-runs deny
+the same.
 
 - **macOS** (`KIND` "sandbox-exec"): `sandbox-exec` with a profile that allows everything else. Apple marks the tool
   deprecated, and it still works (checked on macOS 26.4). The sandbox matches resolved paths, so `profile` resolves
@@ -59,13 +61,16 @@ API:
     kind(deny: Sequence[str | Path], network: str | None = NETWORK_NONE) -> str   # what `command` applies here
     loopback(*ports: int) -> str                        # the rule for those loopback ports
     ports(network: str | None) -> tuple[int, ...]       # the loopback ports a rule admits; ValueError if unknown
-    denied(secret_file: str | Path, task_file: str | Path) -> tuple[Path, Path]   # the secret file and DIR
+    denied(secret_file: str | Path, task_file: str | Path, also: Iterable[str | Path] = ()) -> tuple[Path, ...]
+                                                        # the secret file, DIR and `also` (a suite's `--deny`)
+    add_deny_argument(parser: argparse.ArgumentParser) -> None   # a truth suite's `--deny PATH`, repeatable
     profile(deny: Iterable[str | Path], network: str | None = NETWORK_NONE, sockets: Iterable[str | Path] = (),
             read_only: Iterable[str | Path] = ()) -> str
 """
 
 from __future__ import annotations
 
+import argparse
 import os
 import re
 import sys
@@ -133,9 +138,18 @@ def ports(network: str | None) -> tuple[int, ...]:
     return found
 
 
-def denied(secret_file: str | Path, task_file: str | Path) -> tuple[Path, Path]:
-    """What a truth suite denies the agent's code: the secret file, and DIR, the directory of `task.json`."""
-    return Path(secret_file), Path(task_file).parent
+def denied(secret_file: str | Path, task_file: str | Path, also: Iterable[str | Path] = ()) -> tuple[Path, ...]:
+    """What a truth suite denies the agent's code: the secret file, DIR, the directory of `task.json`, and every path
+    in `also`, the suite's `--deny` (`add_deny_argument`), by which the census names the whole results root."""
+    return tuple(dict.fromkeys([Path(secret_file), Path(task_file).parent, *(Path(path) for path in also)]))
+
+
+def add_deny_argument(parser: argparse.ArgumentParser) -> None:
+    """Add a truth suite's `--deny PATH` option, repeatable: a path the agent's code is denied besides the secret file
+    and DIR, read with `denied(args.secret_file, args.task, args.deny)`. The census passes the results root this way
+    (bug-42b214), and a caller that passes none gets the deny list of before."""
+    parser.add_argument("--deny", type=Path, action="append", default=[], metavar="PATH",
+                        help="also deny the agent's code this path (repeatable); the census names the results root")
 
 
 def profile(deny: Iterable[str | Path], network: str | None = NETWORK_NONE, sockets: Iterable[str | Path] = (),

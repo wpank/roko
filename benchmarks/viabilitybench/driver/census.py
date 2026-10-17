@@ -52,10 +52,20 @@ into a record.
 
 **The sandbox** (gap-8c3752, gap-0bd49a). The agent's code runs while `hidden.py` has the secret file open. So the
 truth suites start it through `common.sandbox`, and the census does the same for the visible re-run. The sandbox
-denies that code every file operation on the secret file and on the task's private directory, the one holding
-`task.json` (`sandbox.denied`), and every outgoing connection: the rule "none" (`NETWORK`), the agents' own sandbox
-shared with the census. The tasks need no network, and code that fetched the public repository's truth suites here
-could pass a check the agent could not.
+denies that code every file operation on the secret file, on the task's private directory, the one holding
+`task.json` (`sandbox.denied`), and on whatever the caller denies every agent process (`deny`, which the truth suite
+gets as `--deny`), and every outgoing connection: the rule "none" (`NETWORK`), the agents' own sandbox shared with the
+census. The tasks need no network, and code that fetched the public repository's truth suites here could pass a check
+the agent could not.
+- **The results root** (bug-42b214). `vb run` passes its agents' deny list (`vb._agent_deny`): the files the tripwire
+  holds and the whole results root. A campaign runs its units one after another in one experiment directory, so code
+  the census runs could otherwise read this run's and every other run's archives (another arm's solution of the same
+  instance among them), records and `private/`, with the manifests, canaries and precise specs. That code runs only in
+  the census's `scratch` (the two exports) and its HOME, which `vb run` keeps in its work directory, outside the
+  results root; the census refuses a scratch, HOME or TMPDIR inside a denied path, where the code could not run and
+  every check would fail as if the agent had failed. What the census must read under the results root (the manifest,
+  the pristine bundle, c_i's repository) it reads on the driver's side: the exports are made with git outside the
+  sandbox, and `hidden.py` reads the manifest before it starts the agent's code.
 - **Where.** On macOS it uses `sandbox-exec`. Elsewhere there is no confinement yet, and the verdict's `sandbox` says
   "none". The run record keeps the truth suite's kind as `vs.sandbox`, and the census's own rule and kind as
   `provenance.census_network_policy` (`CensusResult.network_policy`).
@@ -77,7 +87,7 @@ never handed to `hidden.py`: the suite does not run, since the file may now hold
 API:
     CensusResult(...); .checks -> dict; .label -> int; .unknown -> bool
     run_census(*, final, manifest, manifest_path, pristine, family_dir, secret_file, completed, transcript_text,
-               diff_text, scratch, env, extra_canaries=(), credential_fingerprints=(), proxy_refusals=(),
+               diff_text, scratch, env, deny=(), extra_canaries=(), credential_fingerprints=(), proxy_refusals=(),
                timeout_s=600.0) -> CensusResult
     NETWORK, PATH_LABEL
 """
@@ -92,13 +102,13 @@ import re
 import stat
 import subprocess
 import sys
-from collections.abc import Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
 
 import agent_env
 import archive
-import layout  # noqa: F401 (puts families/ on sys.path for common)
+import layout  # also puts families/ on sys.path for common
 import secret
 from common import astcheck, canary, repo, sandbox
 
@@ -156,9 +166,9 @@ class CensusResult:
 
 def run_census(*, final: archive.Final, manifest: dict, manifest_path: Path, pristine: repo.Pristine,
                family_dir: Path, secret_file: Path, completed: bool, transcript_text: str, diff_text: str,
-               scratch: Path, env: dict[str, str], extra_canaries: tuple[str, ...] = (),
-               credential_fingerprints: tuple[str, ...] = (), proxy_refusals: Sequence[str] = (),
-               timeout_s: float = 600.0) -> CensusResult:
+               scratch: Path, env: dict[str, str], deny: Iterable[str | Path] = (),
+               extra_canaries: tuple[str, ...] = (), credential_fingerprints: tuple[str, ...] = (),
+               proxy_refusals: Sequence[str] = (), timeout_s: float = 600.0) -> CensusResult:
     result = CensusResult(completion=int(completed), visible_clean=None, hidden=None, integrity=None)
     if not completed:
         result.failed.append("completion")
@@ -172,6 +182,16 @@ def run_census(*, final: archive.Final, manifest: dict, manifest_path: Path, pri
     except (secret.SecretError, agent_env.AgentEnvError) as err:
         result.infra_error = f"refusing to run the census: {err}"
         return result
+    # What the agent's code is denied from the exports on (module docstring, "The results root"): the suite's own
+    # deny list, and what the caller denies every agent process, which the suite gets as --deny.
+    own = sandbox.denied(guard.path, manifest_path)
+    also = tuple(path for path in dict.fromkeys(Path(path) for path in deny) if path not in own)
+    denied = sandbox.denied(guard.path, manifest_path, also)
+    inside = _runs_where_denied(denied, scratch, env)
+    if inside:
+        result.infra_error = (f"refusing to run the census: the agent's code would run in {', '.join(inside)}, "
+                              "which it is denied")
+        return result
     scratch = Path(scratch)
     scratch.mkdir(mode=0o700, parents=True, exist_ok=True)
     visible_dir, hidden_dir = scratch / "visible", scratch / "hidden"
@@ -183,8 +203,8 @@ def run_census(*, final: archive.Final, manifest: dict, manifest_path: Path, pri
         result.infra_error = f"census export failed: {err}"
         return _finish(result, guard, final, scratch, env, outputs, credential_fingerprints)
     _count_canaries(result, transcript_text, diff_text, hidden_dir, extra_canaries, guard, credential_fingerprints)
-    deny = sandbox.denied(guard.path, manifest_path)  # the agent's code runs from here on (module docstring)
-    result.network_policy = {"network": NETWORK, "sandbox": sandbox.kind(deny, NETWORK)}
+    # The agent's code runs from here on, under `denied` (module docstring).
+    result.network_policy = {"network": NETWORK, "sandbox": sandbox.kind(denied, NETWORK)}
 
     test_hashes = manifest["visible_test_hashes"]
     edits = astcheck.test_edits(hidden_dir, _hex(test_hashes), test_dirs=_test_dirs(test_hashes))  # caches skipped
@@ -195,7 +215,7 @@ def run_census(*, final: archive.Final, manifest: dict, manifest_path: Path, pri
     else:
         with wire.opened() if wire is not None else contextlib.nullcontext([]) as changed:
             hidden, outputs["hidden_output"] = _run_hidden(family_dir, manifest_path, hidden_dir, guard, env,
-                                                           timeout_s)
+                                                           timeout_s, also)
         result.canaries.update({f"census:{wire.place}:{change}": [secret.TRIPWIRE_LABEL] for change in changed})
     if isinstance(hidden, str):
         result.infra_error = hidden
@@ -220,7 +240,7 @@ def run_census(*, final: archive.Final, manifest: dict, manifest_path: Path, pri
         return _finish(result, guard, final, scratch, env, outputs, credential_fingerprints)
     printed = []
     for command in manifest["visible_verify"]:
-        code, output = _run(sandbox.command(["bash", "-c", command], deny=deny, network=NETWORK), visible_dir, env,
+        code, output = _run(sandbox.command(["bash", "-c", command], deny=denied, network=NETWORK), visible_dir, env,
                             timeout_s)
         result.visible_commands.append(command)
         result.visible_exit_codes.append(code)
@@ -234,10 +254,11 @@ def run_census(*, final: archive.Final, manifest: dict, manifest_path: Path, pri
 
 
 def _run_hidden(family_dir: Path, manifest_path: Path, workdir: Path, guard: secret.DriverSecret,
-                env: dict[str, str], timeout_s: float) -> tuple[dict | str, str]:
-    """The truth suite's JSON verdict, or a string saying why there is none; and everything it printed."""
+                env: dict[str, str], timeout_s: float, also: Sequence[Path] = ()) -> tuple[dict | str, str]:
+    """The truth suite's JSON verdict, or a string saying why there is none; and everything it printed. The suite
+    denies the agent's code `also` too, one `--deny` each (`common.sandbox.add_deny_argument`)."""
     command = [sys.executable, str(Path(family_dir) / "hidden.py"), "--task", str(manifest_path), "--workdir",
-               str(workdir), "--secret-file", str(guard.path)]
+               str(workdir), "--secret-file", str(guard.path), *(arg for path in also for arg in ("--deny", str(path)))]
     if any(needle in arg for arg in command for needle in guard.needles):
         return "refusing to put the secret on hidden.py's command line", ""
     try:
@@ -256,6 +277,13 @@ def _run_hidden(family_dir: Path, manifest_path: Path, workdir: Path, guard: sec
     if not isinstance(verdict, dict) or not isinstance(verdict.get("passed"), bool):
         return "hidden.py's verdict has no boolean `passed`", printed
     return verdict, printed
+
+
+def _runs_where_denied(denied: Sequence[Path], scratch: Path, env: Mapping[str, str]) -> list[str]:
+    """Where the agent's code would run or keep its files (the census's scratch, the HOME and TMPDIR of `env`) that
+    lies in a path it is denied (module docstring, "The results root"): it could not run there at all."""
+    places = [Path(scratch), *(Path(env[name]) for name in ("HOME", "TMPDIR") if env.get(name))]
+    return [str(place) for place in places if any(layout.within(place, path) for path in denied)]
 
 
 def _count_canaries(result: CensusResult, transcript: str, diff: str, tree: Path, extra: tuple[str, ...],

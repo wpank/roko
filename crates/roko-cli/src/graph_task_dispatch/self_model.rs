@@ -1269,6 +1269,7 @@ fn prediction_candidate(forecast: &CandidateForecast) -> PredictionCandidate {
         p_retry: None,
         cost_prior: forecast.cost_prior,
         latency_prior: forecast.latency_prior,
+        basis: Some(forecast.basis),
     }
 }
 
@@ -1662,6 +1663,7 @@ mod tests {
                 lat_q50_s: 60.0,
                 lat_q90_s: 60.0,
                 cold_start: false,
+                basis: roko_learn::telemetry::ForecastBasis::Logit,
                 cost_prior: false,
                 latency_prior: false,
             };
@@ -1856,7 +1858,7 @@ mod tests {
         let small = SelfModelRuntime::load(temp.path(), &config(10)).expect("active loads M3");
         assert_eq!(small.window.lock().window.capacity(), 100);
         // Sharp and right: eight passes forecast at 0.96 and two failures at 0.04, the
-        // failures second and sixth, each on a rung the self-model chose.
+        // failures second and sixth, each on the rung the ladder chose.
         let version = small.version();
         for index in 0..10 {
             let passed = index != 1 && index != 5;

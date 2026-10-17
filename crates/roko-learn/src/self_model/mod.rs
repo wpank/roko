@@ -32,7 +32,7 @@ use std::str::FromStr;
 
 use serde::{Deserialize, Serialize};
 
-use crate::telemetry::{AttemptKey, AttemptVerdictRecord, CostSource};
+use crate::telemetry::{AttemptKey, AttemptVerdictRecord, CostSource, ForecastBasis};
 
 /// The harnesses an arm can run on (S04 §4.1), a fixed vocabulary. S09's arm registry maps
 /// every experiment arm to one of them.
@@ -317,6 +317,11 @@ pub struct CandidateForecast {
     pub lat_q90_s: f64,
     /// The forecast comes from L0 alone: the model has fewer outcomes than it needs (6116).
     pub cold_start: bool,
+    /// The layer that forecast `p_gate`: L0 while the model is cold, and for a first try on an
+    /// arm with fewer than [`model::FIRST_TRIES_MIN`] first tries learned; L1 otherwise
+    /// (gap-3f36a6).
+    #[serde(default)]
+    pub basis: ForecastBasis,
     /// The cost quantiles are a prior anchored on the price snapshot: the model has observed
     /// no cost of the arm (bug-09173e).
     #[serde(default)]

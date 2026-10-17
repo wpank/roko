@@ -1940,6 +1940,18 @@ pub struct PredictionPredictor {
     pub features_hash: String,
 }
 
+/// Which layer of the self-model forecast a candidate's pass probability (gap-3f36a6).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ForecastBasis {
+    /// L0, the per-arm hierarchical prior: while the model is cold, and for a first try on an
+    /// arm that has started too few tasks.
+    #[default]
+    Prior,
+    /// L1, the logit over the task's and the arm's features.
+    Logit,
+}
+
 /// One candidate arm's forecast. Probabilities are in [0, 1], costs in USD at the price
 /// snapshot, latencies in seconds; an unknown value is `null`, never 0.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -1977,6 +1989,10 @@ pub struct PredictionCandidate {
     /// The latency quantiles are its prior: it has observed no latency of the arm yet.
     #[serde(default)]
     pub latency_prior: bool,
+    /// The layer that forecast `p_gate`, `prior` or `logit`; rows written before gap-3f36a6
+    /// have none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub basis: Option<ForecastBasis>,
 }
 
 /// What the predictor would do for the attempt, so that a shadow pick can be scored against the

@@ -24,7 +24,7 @@ from stub_provider import StubServer, bash, scripted
 TOY_STREAM = str(layout.DRIVER_DIR / "testdata" / "toy_stream.toml")
 CORRECT = ("cat > calc/ops.py <<'EOF'\ndef clamp(value, low, high):\n"
            "    \"\"\"Return value limited to the range [low, high].\"\"\"\n    return max(low, min(value, high))\nEOF")
-SOLVE = scripted({"": [bash(CORRECT, "Implement it."), bash("echo VB_SUBMIT")]})
+SOLVE = scripted({"": [bash(CORRECT, "Implement it."), bash("echo SUBMIT_TASK")]})
 EXPERIMENT = "TEST-CAMPAIGN"
 
 

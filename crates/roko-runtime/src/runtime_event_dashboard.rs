@@ -473,8 +473,10 @@ impl RuntimeEventDashboardProjector {
             } => vec![DashboardEvent::GateOutputLine {
                 plan_id: plan_id_opt.to_string(),
                 task_id: task_id_opt.to_string(),
+                attempt: 0,
                 gate: gate_name.clone(),
                 line: chunk.clone(),
+                stream: String::new(),
             }],
             RuntimeEvent::GateRungCompleted {
                 gate_name, passed, ..

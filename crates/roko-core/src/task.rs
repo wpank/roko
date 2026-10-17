@@ -850,6 +850,74 @@ const fn default_iteration() -> u32 {
     1
 }
 
+// ─── Plan title ───────────────────────────────────────────────────────────
+
+/// What a plan is called, the one rule every view uses (bug-ce2967): its
+/// `[meta] title`, else the title of its `plan.md` ([`markdown_title`]),
+/// else its slug, the plan id. The plan list, the plan API, run events and
+/// the workflows view all name a plan with it.
+#[must_use]
+pub fn plan_title(meta_title: Option<&str>, plan_md: Option<&str>, slug: &str) -> String {
+    meta_title
+        .map(str::trim)
+        .filter(|title| !title.is_empty())
+        .map(ToOwned::to_owned)
+        .or_else(|| plan_md.and_then(markdown_title))
+        .unwrap_or_else(|| slug.trim().to_string())
+}
+
+/// The title of a markdown document: its first `# ` heading after any front
+/// matter, else the front matter's `title:`. `None` when it has neither.
+#[must_use]
+pub fn markdown_title(markdown: &str) -> Option<String> {
+    let text = markdown.strip_prefix('\u{FEFF}').unwrap_or(markdown);
+    let mut lines = text.lines();
+    let mut front_title = None;
+    let mut body: Vec<&str> = Vec::new();
+    if lines.clone().next().map(str::trim) == Some("---") {
+        lines.next();
+        let mut closed = false;
+        for line in lines.by_ref() {
+            if line.trim() == "---" {
+                closed = true;
+                break;
+            }
+            if let Some(value) = line.trim().strip_prefix("title:") {
+                front_title = front_matter_scalar(value);
+            }
+        }
+        if !closed {
+            // An unclosed fence is no front matter: the whole text is body.
+            front_title = None;
+            body.extend(text.lines());
+        }
+    }
+    body.extend(lines);
+    body.into_iter()
+        .find_map(|line| {
+            let heading = line.trim().strip_prefix('#')?;
+            heading
+                .starts_with([' ', '\t'])
+                .then(|| heading.trim().to_string())
+        })
+        .filter(|title| !title.is_empty())
+        .or(front_title)
+}
+
+/// A front matter value as text: a JSON string unquoted (roko writes titles
+/// that way), single quotes stripped, anything else trimmed.
+fn front_matter_scalar(value: &str) -> Option<String> {
+    let value = value.trim();
+    let text = if value.starts_with('"') {
+        serde_json::from_str::<String>(value)
+            .unwrap_or_else(|_| value.trim_matches('"').to_string())
+    } else {
+        value.trim_matches('\'').to_string()
+    };
+    let text = text.trim();
+    (!text.is_empty()).then(|| text.to_string())
+}
+
 // ─── GlobalTaskId (cross-plan task reference) ─────────────────────────────
 
 /// Globally unique task identifier — plan base name + task ID within plan.
@@ -1591,5 +1659,52 @@ mod tests {
         assert!(a < b, "same plan, task ordering");
         assert!(b < c, "plan ordering takes priority");
         assert!(a < c, "transitivity");
+    }
+
+    // ── Plan title ───────────────────────────────────────────────────
+
+    /// bug-ce2967: `[meta] title` first, then `plan.md`'s title, then the
+    /// slug.
+    #[test]
+    fn plan_title_prefers_meta_then_plan_md_then_slug() {
+        let doc = "# pocket-synth\n\nThe plan.\n";
+        assert_eq!(
+            plan_title(
+                Some("pocket-synth: oscillator, filter"),
+                Some(doc),
+                "pocket-synth"
+            ),
+            "pocket-synth: oscillator, filter"
+        );
+        assert_eq!(plan_title(Some("  "), Some(doc), "slug"), "pocket-synth");
+        assert_eq!(plan_title(None, Some("no heading\n"), " slug "), "slug");
+        assert_eq!(plan_title(None, None, "slug"), "slug");
+    }
+
+    #[test]
+    fn markdown_title_reads_the_first_h1_after_front_matter() {
+        let fronted =
+            "---\nplan: p\ntitle: \"Named \\\"plan\\\"\"\n---\n\n## Steps\n\n# The plan\n";
+        assert_eq!(markdown_title(fronted).as_deref(), Some("The plan"));
+        let front_only = "---\ntitle: 'From front matter'\n---\n\n## Steps\n";
+        assert_eq!(
+            markdown_title(front_only).as_deref(),
+            Some("From front matter")
+        );
+        let json_title = "---\ntitle: \"Named \\\"plan\\\"\"\n---\nbody\n";
+        assert_eq!(
+            markdown_title(json_title).as_deref(),
+            Some("Named \"plan\"")
+        );
+        assert_eq!(
+            markdown_title("\u{FEFF}#\tTabbed\n").as_deref(),
+            Some("Tabbed")
+        );
+        assert_eq!(markdown_title("#NoSpace\n## Two\n"), None);
+        // An unclosed fence is no front matter.
+        assert_eq!(
+            markdown_title("---\ntitle: x\n# Heading\n").as_deref(),
+            Some("Heading")
+        );
     }
 }

@@ -2,7 +2,7 @@
 id = "bug-fd8200"
 kind = "bug"
 title = "The metering proxy's answers tell a client its task key and that a fault was injected: cap refusals say task 'F8-l3-0038.s1' could pass its input-token cap, injected faults say 'injected rate limit' and 'injected upstream error', and the policy speaks of this run's models"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p2"
 goal = "proof"
@@ -11,6 +11,7 @@ subsystem = ["benchmarks/viabilitybench/driver"]
 created = 2026-10-17
 updated = 2026-10-17
 last_verified = 2026-10-17
+last_verified_rev = "f6627ba25"
 source = "bug-d68575 worker (claude-agent), 2026-10-17 (a FaultProxy with a stub upstream, configure(task='F8-l3-0038.s1', input_token_cap=1000) and a 10 KB request: 403 naming the key; profiles rate_limit and http_5xx at p=1: 429 'injected rate limit', 500 'injected upstream error')"
 discovered_from = "bug-d68575"
 anchors = ["benchmarks/viabilitybench/driver/faultproxy.py::_serve", "benchmarks/viabilitybench/driver/faultproxy.py::_policy"]
@@ -19,6 +20,18 @@ links = { depends_on = [], blocks = [], related = ["bug-d68575", "bug-3c921e", "
 
 [[verify]]
 command = "grep -qw 'def test_no_proxy_answer_names_the_task_or_a_fault' benchmarks/viabilitybench/driver/test_faultproxy.py && benchmarks/viabilitybench/.venv/bin/python -m pytest benchmarks/viabilitybench/driver/test_faultproxy.py -k test_no_proxy_answer_names_the_task_or_a_fault -q"
+
+[closed]
+at = 2026-10-17
+at_ts = "2026-10-17T12:47:18Z"
+commit = "f6627ba25"
+by = "commit trailer"
+executor = "claude-agent"
+via = "work-batch"
+size = "S"
+claimed_at = "2026-10-17T11:04:24Z"
+forced = false
+evidence = "f6627ba25: every answer the metering proxy makes itself is in a provider's words, in OpenAI's error shape with param (faultproxy's \"What a client is told\"): a refusal is a 403 permission_error with REFUSALS' words (\"This request exceeds the input limit.\" for both input caps, \"The model `x` is not available.\", \"The requested endpoint is not available.\", ...), an http_5xx fault a server_error (\"The server had an error while processing your request. Sorry about that!\"), a rate_limit fault a 429 requests / rate_limit_exceeded (\"Rate limit exceeded. Please try again later.\") with its Retry-After. The old messages, with the task key, the counts and the caps, are the proxy log's new detail field, which analysis/report.py's PROXY_FIELDS never publishes, and a control request without the token gets the 404 of a route that does not exist instead of a 401 naming the control endpoint. Decided under Will's decision 9 (## Decision below): no benchmark-internal identifier reaches an agent, for benchmark validity and against contamination through the public repository. The verify passes: test_no_proxy_answer_names_the_task_or_a_fault (driver/test_faultproxy.py), 1 passed: under the task F8-l3-0038.s1, the six refusals, http_5xx at 500, 502 and 503, rate_limit, an unreachable upstream, a GET on the chat path and a control request without the token keep their statuses and Retry-After, no body or header names the key, the instance, a fault, the run, a cap, a refusal, the proxy or the policy's models, none holds a word a harness classifies by (HARNESS_WORDS), and the log keeps each reason. On main's faultproxy.py (loaded by a pytest plugin) it fails on the cap refusal's \"task 'F8-l3-0038.s1'\", and test_control_endpoint_needs_the_token on the 401. The instrument behaves as before, old against new on every refusal, the 5xx at 500, 502, 503 and 504, rate_limit and an unreachable upstream: the same status, Retry-After and logged refusal; litellm 1.103.2 called as run_msa calls it (openai/ prefix, api_base) raises the same exception for each (APIError for every 403 it sends, InternalServerError, BadGatewayError, ServiceUnavailableError, Timeout, RateLimitError), so mini-swe-agent 2.4.6 retries or aborts as before; the direct loop reads only the status; and no Roko classifier (error_classify.rs, provider_error_kind, map_provider_error, classify_agent_crash) matches a phrase the new words hold and the old did not, by a scan of its 30196 Rust string literals (\"does not exist\" is classify_agent_crash's missing model, hence \"is not available\"). One difference by design: the old cap messages carried counts, so a bound holding 429 made Roko's provider_error_kind count a rate limit; the new words hold no number. Bench pytest: 810 passed, 16 skipped (13 with no roko binary in the worktree, the analysis stack, two opt-in sweeps), against 809 passed and the same 16 skipped on main. Filed bug-2224eb (p3: an injected fault carries none of its upstream's own headers, such as x-request-id, and the same OpenAI error shape for every upstream, so an agent comparing it with forwarded answers can tell it apart)."
 +++
 
 ## Problem

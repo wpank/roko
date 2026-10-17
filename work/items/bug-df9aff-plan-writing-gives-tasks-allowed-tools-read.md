@@ -14,6 +14,9 @@ source = "round-v6-dogfood-desktop#L4-g1-final"
 discovered_from = "agent:dogfood-desktop (round v6 showcase take L4, 2026-10-18)"
 anchors = ["crates/roko-cli/src/plan_generate/runnable.rs::repair", "crates/roko-cli/src/plan_generate/runnable.rs::problems"]
 links = { depends_on = [], blocks = [], related = ["bug-8fe462"], supersedes = [], duplicate_of = "" }
+
+[[verify]]
+command = "grep -rqw 'fn generated_g1_tasks_may_write_and_wait_for_their_imports' crates/roko-cli/src && cargo test -p roko-cli --lib -- generated_g1_tasks_may_write_and_wait_for_their_imports g1_tasks_may_write_their_modules_and_render_waits_for_them plan_validate_warns_about_g1_tasks_that_cannot_create_or_wait"
 +++
 
 ## Problem

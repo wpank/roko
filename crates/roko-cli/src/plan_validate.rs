@@ -198,6 +198,38 @@ fn validate_plans_dir_impl(
                     let diagnostics = ladder_diagnostics(&tasks_file, &plan.plan_id, ladder);
                     plan.diagnostics.extend(diagnostics);
                 }
+                // bug-df9aff: a task that creates a file it may not write, and
+                // one whose tests import what another task writes without
+                // waiting for it.
+                for (task, file) in
+                    roko_cli::plan_generate::creates_without_write(&tasks_file, workdir)
+                {
+                    plan.diagnostics.push(Diagnostic {
+                        severity: Severity::Warning,
+                        rule_id: "PLAN_052".to_string(),
+                        plan_id: Some(plan.plan_id.clone()),
+                        task_id: Some(task.clone()),
+                        message: format!(
+                            "task '{task}' creates `{file}`, but its allowed_tools do not include \
+                             write_file, so no try can create it"
+                        ),
+                    });
+                }
+                for (task, dependency, module) in
+                    roko_cli::plan_generate::missing_dependencies(&tasks_file, workdir)
+                {
+                    plan.diagnostics.push(Diagnostic {
+                        severity: Severity::Warning,
+                        rule_id: "PLAN_053".to_string(),
+                        plan_id: Some(plan.plan_id.clone()),
+                        task_id: Some(task.clone()),
+                        message: format!(
+                            "task '{task}' runs tests that import `{module}`, which task \
+                             '{dependency}' writes, but it does not depend on '{dependency}', so \
+                             it can run first"
+                        ),
+                    });
+                }
                 let diagnostics = speed_priority_diagnostics(&tasks_file, &plan.plan_id);
                 plan.diagnostics.extend(diagnostics);
                 let diagnostics =
@@ -2200,6 +2232,33 @@ fn validate_no_greenfield_duplicates(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// bug-df9aff: `plan validate` warns about G1's plan: each task creates
+    /// a module it may not write (PLAN_052), and the render task's tests
+    /// import modules other tasks write without waiting for them (PLAN_053).
+    #[test]
+    fn plan_validate_warns_about_g1_tasks_that_cannot_create_or_wait() {
+        let (temp, plan) = crate::plan_generate::g1_plan();
+        let plan_dir = temp.path().join("plans/g1");
+        std::fs::create_dir_all(&plan_dir).expect("the plan directory");
+        std::fs::write(
+            plan_dir.join("tasks.toml"),
+            toml::to_string_pretty(&plan).expect("the plan as TOML"),
+        )
+        .expect("tasks.toml");
+        let report =
+            validate_plans_dir_with_workdir(&temp.path().join("plans"), None, Some(temp.path()))
+                .expect("validate");
+        let found = |rule: &str| {
+            report.plans[0]
+                .diagnostics
+                .iter()
+                .filter(|diagnostic| diagnostic.rule_id == rule)
+                .count()
+        };
+        assert_eq!(found("PLAN_052"), 4, "{:?}", report.plans[0].diagnostics);
+        assert_eq!(found("PLAN_053"), 3, "{:?}", report.plans[0].diagnostics);
+    }
     use std::fs;
     use tempfile::TempDir;
 

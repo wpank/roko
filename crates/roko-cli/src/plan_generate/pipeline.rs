@@ -1533,6 +1533,10 @@ pub async fn generate_plan(request: PlanRequest<'_>) -> Result<(PathBuf, Generat
             // gap-ecafde: a pytest step without pytest runs as unittest, and a
             // test file a task's check needs joins its files.
             repairs.extend(runnable::repair(&mut parsed, workdir_ref, &probe));
+            // bug-df9aff: a task that creates a file may write it, and a task
+            // waits for the tasks that write the modules its tests import.
+            repairs.extend(runnable::repair_write_tools(&mut parsed, workdir_ref));
+            repairs.extend(runnable::repair_dependencies(&mut parsed, workdir_ref));
             // bug-8fe462: a step that cannot run, over checks roko has the
             // commands for, runs those commands.
             let stuck = runnable::problems(&parsed, workdir_ref, &probe);
@@ -3598,6 +3602,46 @@ mod tests {
             task.verify[1].command,
             "python3 -m unittest tests.test_widget.WidgetTest.test_spins"
         );
+    }
+
+    /// bug-df9aff: G1's plan, written by a planner, comes out with every
+    /// task able to create its module and the render task after the three
+    /// whose modules its tests import, with no second call.
+    #[cfg(unix)]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn generated_g1_tasks_may_write_and_wait_for_their_imports() {
+        let (temp, plan) = super::super::runnable::tests::g1_plan();
+        let workdir = temp.path();
+        let toml = toml::to_string_pretty(&plan).expect("the G1 plan as TOML");
+        let bin = tempfile::tempdir().expect("tempdir");
+        let calls = write_scripted_planner(
+            workdir,
+            bin.path(),
+            &[&toml],
+            "allow_threshold = 0.0\nblock_threshold = 0.0\n",
+        );
+        let request = PlanRequest {
+            model: Some("planner"),
+            ..PlanRequest::new(WIDGET_REQUEST, "g1", workdir)
+        };
+        generate_plan(request).await.expect("generate the G1 plan");
+        let log = std::fs::read_to_string(&calls).expect("planner call log");
+        assert_eq!(log.lines().count(), 1, "roko repairs the plan itself");
+        let written = TasksFile::parse(&workdir.join("plans/g1/tasks.toml")).expect("the plan");
+        for task in &written.tasks {
+            let tools = task.allowed_tools.clone().unwrap_or_default();
+            assert!(
+                tools.iter().any(|tool| tool == "write_file"),
+                "{}: {tools:?}",
+                task.id
+            );
+        }
+        let render = written
+            .tasks
+            .iter()
+            .find(|task| task.id == "T4")
+            .expect("the render task");
+        assert_eq!(render.depends_on, ["T1", "T2", "T3"]);
     }
 
     /// bug-8fe462: a spec that states checks as unittest wildcards gets

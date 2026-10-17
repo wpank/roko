@@ -19,6 +19,10 @@ mod pipeline;
 mod runnable;
 mod source_checks;
 
+#[cfg(test)]
+pub(crate) use runnable::tests::g1_plan;
+pub(crate) use runnable::{creates_without_write, missing_dependencies};
+
 pub use pipeline::{
     ArtifactValidationReport, GenerationOutcome, PlanFailsValidation, PlanProgress,
     PlanProgressSink, PlanRequest, PlanSource, generate_plan, plan_dir_slug, plan_source_document,

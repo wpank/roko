@@ -311,6 +311,197 @@ pub(super) fn repair(plan: &mut TasksFile, workdir: &Path, probe: &Probe) -> Vec
     repairs
 }
 
+/// The files of `plan.tasks[index]` that neither exist in `workdir` nor are
+/// written by a task it depends on: what the task itself creates.
+fn created_by(plan: &TasksFile, index: usize, workdir: &Path) -> Vec<String> {
+    let task = &plan.tasks[index];
+    let before: Vec<String> = written_before_and_by(plan, index)
+        .into_iter()
+        .skip(task.files.len())
+        .collect();
+    task.files
+        .iter()
+        .filter(|file| !workdir.join(file).exists() && !is_written(&before, file))
+        .cloned()
+        .collect()
+}
+
+/// The tasks of `plan` that create a file (one that neither exists nor is
+/// written by a task before them) while their `allowed_tools` lack
+/// `write_file`, or their `denied_tools` hold it (bug-df9aff): no try can
+/// create the file. Each with the first such file.
+pub(crate) fn creates_without_write(plan: &TasksFile, workdir: &Path) -> Vec<(String, String)> {
+    (0..plan.tasks.len())
+        .filter_map(|index| {
+            let task = &plan.tasks[index];
+            let barred = task
+                .allowed_tools
+                .as_ref()
+                .is_some_and(|allowed| !allowed.iter().any(|tool| tool == "write_file"))
+                || task
+                    .denied_tools
+                    .as_ref()
+                    .is_some_and(|denied| denied.iter().any(|tool| tool == "write_file"));
+            let created = barred.then(|| created_by(plan, index, workdir))?;
+            created
+                .into_iter()
+                .next()
+                .map(|file| (task.id.clone(), file))
+        })
+        .collect()
+}
+
+/// Give each task that creates a file the tool to write it (bug-df9aff):
+/// `write_file` joins an `allowed_tools` that lacks it and leaves a
+/// `denied_tools` that holds it. Returns one line per task repaired.
+pub(super) fn repair_write_tools(plan: &mut TasksFile, workdir: &Path) -> Vec<String> {
+    let barred = creates_without_write(plan, workdir);
+    let mut repairs = Vec::new();
+    for (id, file) in barred {
+        let Some(task) = plan.tasks.iter_mut().find(|task| task.id == id) else {
+            continue;
+        };
+        if let Some(allowed) = task.allowed_tools.as_mut()
+            && !allowed.iter().any(|tool| tool == "write_file")
+        {
+            allowed.push("write_file".to_string());
+        }
+        if let Some(denied) = task.denied_tools.as_mut() {
+            denied.retain(|tool| tool != "write_file");
+        }
+        repairs.push(format!(
+            "{id}: may use write_file, since it creates `{file}`"
+        ));
+    }
+    repairs
+}
+
+/// The dependencies `plan` misses (bug-df9aff): for each task, each other
+/// task whose `files` write a Python module that a test file of the task's
+/// own checks (one that exists in `workdir`) imports, when the task does not
+/// already wait for it and waiting would not make a cycle. Each as the task,
+/// the task to wait for, and the module's file.
+pub(crate) fn missing_dependencies(
+    plan: &TasksFile,
+    workdir: &Path,
+) -> Vec<(String, String, String)> {
+    let mut missing = Vec::new();
+    for task in &plan.tasks {
+        let mut imported: Vec<String> = Vec::new();
+        for step in &task.verify {
+            for test_file in step_files(&step.command, workdir) {
+                let is_python = Path::new(&test_file)
+                    .extension()
+                    .is_some_and(|extension| extension == "py");
+                if !is_python {
+                    continue;
+                }
+                let Ok(text) = std::fs::read_to_string(workdir.join(&test_file)) else {
+                    continue;
+                };
+                imported.extend(imported_files(&text));
+            }
+        }
+        for other in &plan.tasks {
+            if other.id == task.id || task.depends_on.contains(&other.id) {
+                continue;
+            }
+            let Some(module) = other.files.iter().find(|file| imported.contains(file)) else {
+                continue;
+            };
+            if waits_for(plan, &task.id, &other.id) || waits_for(plan, &other.id, &task.id) {
+                continue;
+            }
+            missing.push((task.id.clone(), other.id.clone(), module.clone()));
+        }
+    }
+    missing
+}
+
+/// Make each task wait for the tasks that write the modules its checks'
+/// tests import ([`missing_dependencies`]). Returns one line per
+/// dependency added.
+pub(super) fn repair_dependencies(plan: &mut TasksFile, workdir: &Path) -> Vec<String> {
+    let mut repairs = Vec::new();
+    for (task, dependency, module) in missing_dependencies(plan, workdir) {
+        // An earlier addition may have made this one a cycle.
+        if waits_for(plan, &dependency, &task) {
+            continue;
+        }
+        if let Some(waiting) = plan.tasks.iter_mut().find(|candidate| candidate.id == task)
+            && !waiting.depends_on.contains(&dependency)
+        {
+            waiting.depends_on.push(dependency.clone());
+            repairs.push(format!(
+                "{task}: depends on {dependency}, which writes `{module}` its checks import"
+            ));
+        }
+    }
+    repairs
+}
+
+/// Whether task `from` waits for task `target`, directly or not.
+fn waits_for(plan: &TasksFile, from: &str, target: &str) -> bool {
+    let mut pending = vec![from];
+    let mut seen: Vec<&str> = Vec::new();
+    while let Some(id) = pending.pop() {
+        if seen.contains(&id) {
+            continue;
+        }
+        seen.push(id);
+        let Some(task) = plan.tasks.iter().find(|task| task.id == id) else {
+            continue;
+        };
+        if task
+            .depends_on
+            .iter()
+            .any(|dependency| dependency == target)
+        {
+            return true;
+        }
+        pending.extend(task.depends_on.iter().map(String::as_str));
+    }
+    false
+}
+
+/// The workspace files a Python source's absolute imports may name:
+/// `import a.b` gives `a/b.py` and `a/b/__init__.py`, and `from a.b import
+/// c` gives `a/b/c.py` (a submodule) and `a/b.py`.
+fn imported_files(text: &str) -> Vec<String> {
+    static IMPORT: LazyLock<Regex> = LazyLock::new(|| {
+        Regex::new(r"^\s*import\s+([\w.]+(?:\s+as\s+\w+)?(?:\s*,\s*[\w.]+(?:\s+as\s+\w+)?)*)")
+            .expect("valid import regex")
+    });
+    static FROM: LazyLock<Regex> = LazyLock::new(|| {
+        Regex::new(r"^\s*from\s+([A-Za-z_][\w.]*)\s+import\s+\(?([\w\s,]+)")
+            .expect("valid from-import regex")
+    });
+    let as_file = |module: &str| module.replace('.', "/");
+    let mut files = Vec::new();
+    for line in text.lines() {
+        if let Some(modules) = IMPORT.captures(line).and_then(|captures| captures.get(1)) {
+            for module in modules.as_str().split(',') {
+                let module = module.split_whitespace().next().unwrap_or_default();
+                files.push(format!("{}.py", as_file(module)));
+                files.push(format!("{}/__init__.py", as_file(module)));
+            }
+        } else if let Some(captures) = FROM.captures(line) {
+            let (Some(module), Some(names)) = (captures.get(1), captures.get(2)) else {
+                continue;
+            };
+            let module = module.as_str();
+            files.push(format!("{}.py", as_file(module)));
+            for name in names.as_str().split(',') {
+                let name = name.split_whitespace().next().unwrap_or_default();
+                if !name.is_empty() {
+                    files.push(format!("{}/{name}.py", as_file(module)));
+                }
+            }
+        }
+    }
+    files
+}
+
 /// The verify steps of `plan` that cannot pass as written, in plan order.
 pub(super) fn problems(plan: &TasksFile, workdir: &Path, probe: &Probe) -> Vec<Unrunnable> {
     let mut found = Vec::new();
@@ -740,7 +931,7 @@ fn pytest_as_unittest(command: &str, workdir: &Path, probe: &Probe) -> Option<St
 }
 
 #[cfg(test)]
-mod tests {
+pub(super) mod tests {
     use super::*;
 
     /// A unittest test module and a plan whose one task runs a test of it
@@ -890,6 +1081,105 @@ mod tests {
             None,
             "no python3"
         );
+    }
+
+    /// The shape of round v6's G1 plan (bug-df9aff): four tasks that each
+    /// create a module with `allowed_tools = ["read_file", "edit_file",
+    /// "grep"]`, and a render task whose tests import the other three
+    /// modules but that waits for no task. Returns the workspace and plan.
+    pub(crate) fn g1_plan() -> (tempfile::TempDir, TasksFile) {
+        let temp = tempfile::tempdir().expect("tempdir");
+        for dir in ["synth", "tests"] {
+            std::fs::create_dir_all(temp.path().join(dir)).expect("a directory");
+        }
+        std::fs::write(
+            temp.path().join("synth/__init__.py"),
+            "SAMPLE_RATE = 48_000\n",
+        )
+        .expect("the package");
+        for (module, imports) in [
+            ("osc", "from synth.osc import Oscillator\n"),
+            ("svf", "from synth.svf import SVF\n"),
+            ("env", "from synth.env import ADSR\n"),
+            (
+                "render",
+                "from synth import osc, svf\nimport synth.env\nfrom synth.render import render\n",
+            ),
+        ] {
+            std::fs::write(
+                temp.path().join(format!("tests/test_{module}.py")),
+                format!("import unittest\n{imports}\nclass T(unittest.TestCase):\n    pass\n"),
+            )
+            .expect("a test module");
+        }
+        let task = |id: &str, module: &str| {
+            format!(
+                "[[task]]\nid = \"{id}\"\ntitle = \"{module}\"\nstatus = \"ready\"\n\
+                 role = \"implementer\"\ntier = \"focused\"\nfiles = [\"synth/{module}.py\"]\n\
+                 allowed_tools = [\"read_file\", \"edit_file\", \"grep\"]\ndepends_on = []\n\n\
+                 [[task.verify]]\nphase = \"test\"\n\
+                 command = \"python3 -m unittest tests.test_{module}\"\n\n"
+            )
+        };
+        let plan = TasksFile::parse_str(&format!(
+            "[meta]\nplan = \"g1\"\ntotal = 4\nstatus = \"ready\"\n\n{}{}{}{}",
+            task("T1", "osc"),
+            task("T2", "svf"),
+            task("T3", "env"),
+            task("T4", "render")
+        ))
+        .expect("a plan");
+        (temp, plan)
+    }
+
+    /// bug-df9aff: in G1's plan no task could create its module, and render
+    /// could run before the modules its tests import. Repaired, every task
+    /// may write, and render waits for the three.
+    #[test]
+    fn g1_tasks_may_write_their_modules_and_render_waits_for_them() {
+        let (temp, mut plan) = g1_plan();
+        let barred = creates_without_write(&plan, temp.path());
+        assert_eq!(
+            barred,
+            [
+                ("T1".to_string(), "synth/osc.py".to_string()),
+                ("T2".to_string(), "synth/svf.py".to_string()),
+                ("T3".to_string(), "synth/env.py".to_string()),
+                ("T4".to_string(), "synth/render.py".to_string()),
+            ]
+        );
+        let missing: Vec<(String, String)> = missing_dependencies(&plan, temp.path())
+            .into_iter()
+            .map(|(task, dependency, _)| (task, dependency))
+            .collect();
+        assert_eq!(
+            missing,
+            [
+                ("T4".to_string(), "T1".to_string()),
+                ("T4".to_string(), "T2".to_string()),
+                ("T4".to_string(), "T3".to_string()),
+            ]
+        );
+
+        let written = repair_write_tools(&mut plan, temp.path());
+        assert_eq!(written.len(), 4, "{written:?}");
+        assert_eq!(
+            written[0],
+            "T1: may use write_file, since it creates `synth/osc.py`"
+        );
+        let waits = repair_dependencies(&mut plan, temp.path());
+        assert_eq!(
+            waits[0],
+            "T4: depends on T1, which writes `synth/osc.py` its checks import"
+        );
+        assert_eq!(plan.tasks[3].depends_on, ["T1", "T2", "T3"]);
+        assert!(plan.tasks.iter().all(|task| {
+            task.allowed_tools
+                .as_ref()
+                .is_some_and(|tools| tools.iter().any(|tool| tool == "write_file"))
+        }));
+        assert!(creates_without_write(&plan, temp.path()).is_empty());
+        assert!(missing_dependencies(&plan, temp.path()).is_empty());
     }
 
     /// The prompt says which runners this machine has.

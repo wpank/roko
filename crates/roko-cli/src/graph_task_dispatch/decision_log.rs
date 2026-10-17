@@ -45,17 +45,20 @@ use super::*;
 use crate::dispatch::RunnerDispatchPlan;
 use crate::dispatch::prompt_builder::{PromptItemDiagnostic, ReaderRead};
 
-/// `decision`, the route row of attempt `attempt` of a task of `plan_id`, as
-/// the [`DashboardEvent::RouteDecided`](roko_core::DashboardEvent::RouteDecided)
+/// `decision`, the route row of `attempt`, as the
+/// [`DashboardEvent::RouteDecided`](roko_core::DashboardEvent::RouteDecided)
 /// a host follows: the pick, the stage, source and reason, and its
 /// candidates, the pick first and the rest by score. A pick by rung or by
 /// hint can score below the models it passed over, and must not fall out of
-/// the list.
+/// the list. It says where the attempt runs on the ladder and why (`reason`),
+/// and carries the self-model's forecast of it, when there is one
+/// (gap-aaaaae).
 pub(super) fn route_event(
     decision: &roko_learn::routing_log::RoutingDecisionLog,
-    plan_id: &str,
-    attempt: u32,
+    attempt: &AttemptContext,
+    reason: Option<super::ladder::TryReason>,
 ) -> roko_core::DashboardEvent {
+    let (rung, ladder_step) = attempt.ladder_place();
     let mut candidates: Vec<&roko_learn::routing_log::CandidateEntry> =
         decision.candidates.iter().collect();
     let picked = |candidate: &roko_learn::routing_log::CandidateEntry| {
@@ -72,9 +75,9 @@ pub(super) fn route_event(
         .and_then(|value| value.as_str().map(str::to_string))
         .unwrap_or_default();
     roko_core::DashboardEvent::RouteDecided {
-        plan_id: plan_id.to_string(),
+        plan_id: attempt.key.plan_id.clone(),
         task_id: decision.task_id.clone(),
-        attempt,
+        attempt: attempt.key.attempt,
         model: decision.selected_model.clone(),
         provider: decision.selected_provider.clone(),
         stage: decision.routing_stage.clone(),
@@ -92,6 +95,51 @@ pub(super) fn route_event(
                 ineligible_reason: candidate.ineligible_reason.clone(),
             })
             .collect(),
+        ladder: Box::new(roko_core::dashboard_snapshot::RouteLadder {
+            rung,
+            ladder_step,
+            ladder_reason: reason.map_or_else(String::new, |reason| reason.as_str().to_string()),
+            forecast: attempt.forecast().cloned(),
+        }),
+    }
+}
+
+/// The self-model's `prediction` of an attempt, as its route event carries
+/// it (gap-aaaaae): its mode and action, the model it would choose, and per
+/// candidate the model, provider, P(verified success) and median cost, the
+/// likeliest first. The 90th-percentile cost stays in `predictions.jsonl`:
+/// for an arm with no history it is far from anything a run spends.
+pub(super) fn route_forecast(
+    prediction: &roko_learn::telemetry::records::AttemptPredictionRecord,
+) -> roko_core::dashboard_snapshot::RouteForecast {
+    let arm = |key: &str| key.parse::<roko_learn::self_model::ArmKey>().ok();
+    let mut candidates: Vec<roko_core::dashboard_snapshot::ForecastCandidate> = prediction
+        .candidates
+        .iter()
+        .map(|candidate| {
+            let (model, provider) = arm(&candidate.arm).map_or_else(
+                || (candidate.arm.clone(), String::new()),
+                |arm| (arm.model, arm.provider),
+            );
+            roko_core::dashboard_snapshot::ForecastCandidate {
+                model,
+                provider,
+                p_vs: candidate.p_vs,
+                cost_q50: candidate.cost_q50,
+            }
+        })
+        .collect();
+    candidates.sort_by(|a, b| b.p_vs.total_cmp(&a.p_vs));
+    candidates.truncate(roko_core::dashboard_snapshot::ROUTE_EVENT_CANDIDATES);
+    roko_core::dashboard_snapshot::RouteForecast {
+        mode: prediction.predictor.mode.clone(),
+        action: prediction.decision.action.clone(),
+        would_choose: prediction
+            .decision
+            .would_choose
+            .as_deref()
+            .map(|key| arm(key).map_or_else(|| key.to_string(), |arm| arm.model)),
+        candidates,
     }
 }
 
@@ -186,11 +234,8 @@ impl GraphTaskDispatcher {
             // The decision as it happens, for whoever follows the run
             // (gap-2a3298); the attempt's `agent_spawned` follows it.
             if let Some(tui) = &self.tui_bridge {
-                tui.publish_event(route_event(
-                    &decision,
-                    &attempt.key.plan_id,
-                    attempt.key.attempt,
-                ));
+                let reason = self.routed_try_reason(&attempt.key.attempt_key());
+                tui.publish_event(route_event(&decision, attempt, reason));
             }
             attempt.record_decision(decision);
         }

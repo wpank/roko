@@ -2,20 +2,29 @@
 id = "gap-14b865"
 kind = "gap"
 title = "roko plan import --mori writes no covers: a step made from an acceptance line never says which criterion it proves, so the plan sheet shows every imported criterion with no check of its own"
-status = "open"
-triage = "unverified"
+status = "done"
+triage = "verified"
 severity = "p2"
 goal = "hermes"
 size = "M"
 subsystem = ["roko-cli/plan"]
 created = 2026-10-17
 updated = 2026-10-17
+last_verified = 2026-10-17
+last_verified_rev = "c42c5c8cd"
 source = "tmp/hermes-roko-v6 (ui-dash's plan sheet, via team-lead)"
 anchors = ["crates/roko-cli/src/plan_import.rs"]
 links = { depends_on = [], blocks = [], related = ["gap-624658", "bug-308b5e", "bug-dfe4c5"], supersedes = [], duplicate_of = "" }
 
 [[verify]]
 command = "grep -rqw 'fn plan_import_links_a_checkpoint_step_to_the_criterion_it_proves' crates/roko-cli/ && cargo test -p roko-cli --lib plan_import_links_a_checkpoint_step_to_the_criterion_it_proves"
+
+[closed]
+at = 2026-10-17
+at_ts = "2026-10-17T20:39:33Z"
+commit = "c42c5c8cd"
+forced = false
+evidence = "Option B (the lead, 2026-10-17): roko plan import --mori keeps in acceptance only the lines a step checks, each step covers the lines it checks (a checkpoint its own line and those whose named tests its suite defines; a verify-tasks or test_fns step those whose named tests it runs, else its invariant; the file step its File exists lines; never a line naming a test it does not run), and the other lines move verbatim to the end of the description under Also required, not checked automatically: (plus (the review task judges these) with a reviewer); lines past the description room go to mori-also-required-<task>.txt, which the task reads; the report counts each split. Live, zero cost, pocket-sequencer: before, 16 acceptance lines with no covers; after, T1 4 checked + 2 also required, T2 3 + 2, T3 3 + 2, T4 3 + 1, every checked line covered by the steps that run its tests (INV-11 by the checkpoint suite, not by the step that runs only test_cli), 0 diagnostics under --strict. On c42c5c8cd (main 4bae170bb plus the change): the verify, the 6 importer tests, the mori corpus test (156 of 156 under --strict), clippy -D warnings (roko-cli) and nightly fmt pass."
 +++
 
 ## Problem

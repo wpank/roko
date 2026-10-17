@@ -2,7 +2,7 @@
 id = "bug-91796d"
 kind = "bug"
 title = "A long reasoning stream is cut by roko's own per-call limits: a 4,096-event cap denies glm-4.7's calls and a 120 s total request timeout breaks streams still delivering"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p1"
 goal = "core"
@@ -11,6 +11,7 @@ subsystem = ["roko-agent/streaming"]
 created = 2026-10-17
 updated = 2026-10-17
 last_verified = 2026-10-17
+last_verified_rev = "f7e55a3a7"
 source = "tmp/hermes-roko-v6/findings/dogfood-will.md#R3-1 (dogfood-will, 2026-10-16)"
 discovered_from = "hermes-roko-v6 round: dogfood-will Run 3, pocket-synth through Hermes"
 anchors = ["crates/roko-agent/src/immune_boundary.rs::drive_streaming_inner", "crates/roko-agent/src/openai_compat_backend.rs::stream_turn", "crates/roko-agent/src/provider/anthropic_api/tool_loop.rs::stream_turn", "crates/roko-agent/src/tool_loop/backends/gemini_native.rs::stream_turn"]
@@ -18,6 +19,13 @@ links = { depends_on = [], blocks = [], related = [], supersedes = [], duplicate
 
 [[verify]]
 command = "grep -rqw 'fn a_long_reasoning_stream_passes_the_boundary' crates/roko-agent/ && grep -rqw 'fn a_stream_that_keeps_delivering_outlives_the_request_timeout' crates/roko-agent/ && cargo test -p roko-agent a_long_reasoning_stream_passes_the_boundary && cargo test -p roko-agent a_stream_that_keeps_delivering_outlives_the_request_timeout"
+
+[closed]
+at = 2026-10-17
+at_ts = "2026-10-17T11:48:33Z"
+commit = "83e601003"
+forced = false
+evidence = "83e601003: the immune boundary bounds a model call by its bytes (4 MiB, as before) and its event ceiling is 262,144 (was 4,096). Streamed requests (openai_compat, anthropic, gemini) have no total timeout: request_timeout bounds the wait for the response and each silence between chunks, and a stream ends at a 30-minute ceiling (streaming::MAX_STREAM_DURATION); a stall fails as LlmError::Timeout \"stream stalled: no data within <N>ms\". Tests: a_long_reasoning_stream_passes_the_boundary (8,000 one-token reasoning deltas in one call pass, 262,145 are denied), a_stream_that_keeps_delivering_outlives_the_request_timeout, a_stalled_stream_fails_at_the_request_timeout, a_streamed_call_ends_at_its_ceiling. Zero-cost E2E (tmp/hermes-roko-v6/roko-recovery/e2e: roko plan run against a stand-in OpenAI-compatible glm-4.7 that streams 8,000 one-token reasoning deltas, then a write_file call): the v5 main binary 47b3cdd20 hung up at 120.0 s and the boundary denied the call as provider_stream_limit_exceeded, attempt at $0; this branch completed the 180 s stream and the plan succeeded (hello.txt committed, 8,036 output tokens, $0.0197 provider usage); a stream that went silent was cut after 120 s of silence (\"timeout: stream stalled: no data within 120000ms\"). Checks: cargo test -p roko-agent (2,369 lib tests and every other target) and clippy -D warnings pass; the [[verify]] passes with main 37088dc12 merged in."
 +++
 
 ## Problem

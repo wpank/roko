@@ -58,7 +58,11 @@ sys.path.insert(0, str(FAMILY_DIR.parent))
 from common import astcheck, canary, hmac_seed, knobs, repo  # noqa: E402
 
 FAMILY = "F6"
-GENERATOR_VERSION = "f6-1.1.0"  # 1.1.0: recoverability (gap-871b89); the task repo and the spec are unchanged
+# 1.2.0: README.md is headed by a product name, "# shelfwise", and package.json names the package "shelfwise",
+# where both named the family by its S08 name ("# ts-result", "ts-result-task") (bug-b5eab4); nothing else in the
+# task repo changes.
+# 1.1.0: recoverability (gap-871b89); the task repo and the spec are unchanged.
+GENERATOR_VERSION = "f6-1.2.0"
 TRUTH_SUITE = {"id": "f6-truth", "version": "1.0.0"}
 LATENTS = ("v1", "v2")
 LADDER_PATH = FAMILY_DIR / "ladder.toml"
@@ -196,7 +200,7 @@ test("an over-reservation is rejected without throwing", () => {
 '''
 
 PACKAGE_JSON = '''{
-  "name": "ts-result-task",
+  "name": "shelfwise",
   "private": true,
   "type": "module",
   "scripts": {
@@ -219,7 +223,7 @@ TSCONFIG_JSON = '''{
 }
 '''
 
-README_TEMPLATE = """# ts-result
+README_TEMPLATE = """# shelfwise
 
 Domain code under `src/domain/` follows one contract: every fallible function returns `Result<T, DomainError>`
 (from `{result_import}`) and never throws. `reserveUnits` in `src/domain/inventory.ts` still throws on an

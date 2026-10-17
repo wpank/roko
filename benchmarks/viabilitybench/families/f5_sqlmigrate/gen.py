@@ -61,10 +61,12 @@ sys.path.insert(0, str(FAMILY_DIR.parent))
 from common import astcheck, canary, hmac_seed, knobs, repo  # noqa: E402
 
 FAMILY = "F5"
+# 1.3.0: README.md is headed by a product name, "# stockroom", not the family's S08 name "# sql-migrate"
+# (bug-b5eab4); nothing else in the task repo changes.
 # 1.2.0: the task repo names no family id; tools/migrate.py's and tools/snapshot.py's docstrings lost
 # "(F5 sql-migrate)" (bug-d7ff47).
 # 1.1.0: the precise spec and recoverability (bug-f90bd0); the task repo is unchanged.
-GENERATOR_VERSION = "f5-1.2.0"
+GENERATOR_VERSION = "f5-1.3.0"
 TRUTH_SUITE = {"id": "f5-truth", "version": "1.0.0"}
 LATENTS = ("v1",)
 LADDER_PATH = FAMILY_DIR / "ladder.toml"
@@ -188,7 +190,7 @@ if __name__ == "__main__":
     sys.exit(main())
 '''
 
-README_TEMPLATE = '''# sql-migrate
+README_TEMPLATE = '''# stockroom
 
 Earlier migrations: `migrations/0001_create_items.py`, `migrations/0002_create_orders.py`. Load a migration by
 path with `tools/migrate.py`'s `discover`/`load` (see `tests/visible/` for examples); a migration's leading digits

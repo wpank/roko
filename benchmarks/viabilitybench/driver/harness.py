@@ -21,6 +21,11 @@ A runner:
 A runner may also define `preflight(arm, model, endpoint, caps, snapshot)`, which `vb run` calls once before the
 first task; anything it raises stops the run. The Roko arm checks there that its binary accepts the plans it emits.
 
+A runner names the prompt its agents get, which `vb run` records in the run's config (`prompt`), so that a changed
+prompt changes the run's `config_hash`: module constants `PROMPT_VERSION` and `PROMPT_SHA256`, or, for a runner
+whose arms emit from different templates, `arm_prompt(arm) -> {"version", "sha256"}`, one arm's (the Roko runner's,
+bug-85e982; `vb.runner_prompt`).
+
 API:
     TaskContext(...)                  # frozen; see the fields
     Attempt(...); Attempt.as_record() -> dict          # one vb.run_record/1 execution.attempts[] entry

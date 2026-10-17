@@ -1920,14 +1920,7 @@ pub async fn generate_plan(request: PlanRequest<'_>) -> Result<(PathBuf, Generat
             let prompt = source_checks::regeneration_prompt(&task_prompt, candidate, &coverage);
             let retry = run_agent_capture_silent_with_usage(AgentExecOpts {
                 prompt: &prompt,
-                workdir: workdir_ref,
-                model: effective_model,
-                effort: Some(planner_effort),
-                system_prompt: Some(&system),
-                resume_session: None,
-                env_vars: &resolved.config.agent.env,
-                role: Some("strategist"),
-                allowed_tools: Some("Read,Grep,Glob"),
+                ..planner_call
             })
             .await;
             if let Ok(retry) = &retry {

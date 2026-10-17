@@ -424,7 +424,7 @@ Before finalizing, verify your tasks against:
 - [ ] A test runner's own exit status is its check: no pipe, redirection or test count around it
 - [ ] Architect/researcher/strategist tasks have ONLY structural verify steps (no cargo check, no cargo test)
 - [ ] Every task with a non-empty `files` list uses a role that can write (see Role-Tool Constraints)
-- [ ] Every task is within the generated-plan limits: its `read_files` entries, verify step, `lines` ranges, declared context and symbol anchors
+- [ ] Every task is within the generated-plan limits: its `read_files` entries, verify steps, `lines` ranges, declared context and symbol anchors
 - [ ] Anti-patterns are specific (not generic "be careful")
 - [ ] Dependencies form a DAG (no cycles)
 - [ ] `model_hint` is NEVER set, and `rung` is set only where a task needs more than its tier's start rung
@@ -595,21 +595,13 @@ pub fn render_tier_size_limits() -> String {
 #[must_use]
 pub fn render_generated_plan_limits() -> String {
     let policy = PlanExecutionPolicy::generated(DEFAULT_GENERATED_TASK_LIMIT);
-    let verify_steps = if policy.require_one_verify {
-        "exactly 1 step per task (PLAN_VERIFY_OWNER)".to_string()
-    } else {
-        format!(
-            "at most {} steps per task (PLAN_BUDGET_VERIFY)",
-            policy.max_verify_steps_per_task
-        )
-    };
     format!(
         "Each draft is checked against these limits before the plan is written. A draft that \
          breaks one comes back to you, and every retry costs a full planner call, so meet them in \
          the first draft.\n\
          - `[task.context] read_files`: at most {read_files} entries per task \
          (PLAN_BUDGET_READ_FILES); keep the files the task needs most.\n\
-         - `[[task.verify]]`: {verify_steps}; join further checks into its command with `&&`.\n\
+         - `[[task.verify]]`: {verify_steps}.\n\
          - `lines`: one range `START-END` inside the file, at most {range_lines} lines long \
          (PLAN_CONTEXT_RANGE, PLAN_CONTEXT_RANGE_BUDGET). Never a list such as `1-25,320-332`: \
          give each part of a file its own `read_files` entry, which counts toward the limit \
@@ -622,9 +614,29 @@ pub fn render_generated_plan_limits() -> String {
          `read_files` declares (PLAN_CONTEXT_SYMBOL); declare that file, or describe the symbol \
          in words without an anchor.",
         read_files = policy.max_read_files_per_task,
+        verify_steps = verify_step_limits(policy),
         range_lines = policy.max_range_lines,
         context_bytes = policy.max_declared_context_bytes,
     )
+}
+
+/// How many verify steps a task of `policy`'s plans has, as the generator
+/// prompt states it: exactly one in the FAST lane, else at least
+/// `min_verify_steps_per_task` and at most the task's tier limit, one per
+/// acceptance criterion (gap-dde99e).
+fn verify_step_limits(policy: PlanExecutionPolicy) -> String {
+    if policy.require_one_verify {
+        "exactly 1 step per task (PLAN_VERIFY_OWNER); join further checks into its command with \
+         `&&`"
+            .to_string()
+    } else {
+        format!(
+            "at least {} step per task (PLAN_VERIFY_OWNER) and at most its tier's limit in the \
+             size line above (PLAN_TIER_SIZE): one per acceptance criterion, naming it in \
+             `covers`, never chained into one command",
+            policy.min_verify_steps_per_task
+        )
+    }
 }
 
 /// Build the shared system prompt for plan generation and regeneration.
@@ -1297,14 +1309,11 @@ mod tests {
     #[test]
     fn generator_prompt_states_the_generated_plan_limits() {
         let policy = PlanExecutionPolicy::generated(DEFAULT_GENERATED_TASK_LIMIT);
-        let verify_steps = if policy.require_one_verify {
-            "exactly 1 step per task (PLAN_VERIFY_OWNER)".to_string()
-        } else {
-            format!(
-                "at most {} steps per task (PLAN_BUDGET_VERIFY)",
-                policy.max_verify_steps_per_task
-            )
-        };
+        let verify_steps = verify_step_limits(policy);
+        // gap-dde99e: a generated task has a step per acceptance criterion.
+        assert!(verify_steps.contains("one per acceptance criterion"), "{verify_steps}");
+        let fast = verify_step_limits(PlanExecutionPolicy::fast());
+        assert!(fast.starts_with("exactly 1 step per task"), "{fast}");
         let limits = render_generated_plan_limits();
         for expected in [
             format!(

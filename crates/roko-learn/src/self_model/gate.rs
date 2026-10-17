@@ -340,8 +340,17 @@ impl CalibrationGate {
             &|value| value.abs() <= CAL_IN_LARGE_MAX,
             "|calibration-in-the-large| above 0.05",
         );
-        bound(bss, &|value| value >= BSS_MIN, "Brier skill below 0.05");
-        bound(auroc, &|value| value >= AUROC_MIN, "AUROC below 0.65");
+        // A window of one class, every outcome a pass or every one a failure, leaves Brier
+        // skill and AUROC undefined: there is nothing to tell apart. While ECE and
+        // calibration-in-the-large hold they fail nothing, so a self-model right every time
+        // keeps its eligibility (bug-4b3fdd).
+        let calibrated = ece.is_some_and(|value| value <= ECE_MAX)
+            && cal_in_large.is_some_and(|value| value.abs() <= CAL_IN_LARGE_MAX);
+        let one_class = base_rate(&scored).is_some_and(|rate| rate <= 0.0 || rate >= 1.0);
+        if !(one_class && calibrated) {
+            bound(bss, &|value| value >= BSS_MIN, "Brier skill below 0.05");
+            bound(auroc, &|value| value >= AUROC_MIN, "AUROC below 0.65");
+        }
         // The routed pass rate binds once the self-model has routed an attempt in the window;
         // unknown, it fails nothing. The model routes only while the gate is eligible, so a
         // bound on no routed attempt would keep every window ineligible, shadow and active
@@ -607,6 +616,43 @@ mod tests {
         let report = gate.evaluate(&routed);
         assert!(!report.eligible, "{report:?}");
         assert_eq!(report.reasons, ["routed pass rate below π* − 0.05: 0.500"]);
+    }
+
+    /// bug-4b3fdd: a self-model right every time fills its window with passes alone, which
+    /// leaves Brier skill and AUROC undefined. While ECE and calibration-in-the-large hold, they
+    /// fail nothing; a one-class window that is not calibrated stays ineligible.
+    #[test]
+    fn a_one_class_window_is_judged_by_its_calibration() {
+        let gate = CalibrationGate {
+            window: 12,
+            ..CalibrationGate::default()
+        };
+        let window = |p: f64| {
+            let mut window = CalibrationWindow::new(version("m3-l1-a"));
+            for _ in 0..12 {
+                let outcome = WindowOutcome {
+                    p,
+                    y: true,
+                    w: 1.0,
+                    routed: true,
+                };
+                window.push(&version("m3-l1-a"), outcome);
+            }
+            window
+        };
+        let right = gate.evaluate(&window(0.97));
+        assert!(right.eligible, "{right:?}");
+        assert_eq!((right.bss, right.auroc), (None, None));
+
+        let unsure = gate.evaluate(&window(0.6));
+        assert!(!unsure.eligible, "{unsure:?}");
+        assert!(
+            unsure
+                .reasons
+                .iter()
+                .any(|reason| reason.starts_with("Brier skill below 0.05")),
+            "{unsure:?}"
+        );
     }
 
     #[test]

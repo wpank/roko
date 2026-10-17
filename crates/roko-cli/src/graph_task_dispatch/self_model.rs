@@ -1607,6 +1607,7 @@ mod tests {
                 reflex_rule: None,
                 live_tool_calls: LiveToolCalls::default(),
                 harness: None,
+                bound: None,
             }
         };
 
@@ -1748,6 +1749,7 @@ mod tests {
                 reflex_rule: None,
                 live_tool_calls: LiveToolCalls::default(),
                 harness: None,
+                bound: None,
             };
             dispatcher.note_ladder_outcome(&spec, &task, &settled);
             assert_eq!(dispatcher.ladder_step(&spec, &task), u32::from(active));

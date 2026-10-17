@@ -533,8 +533,9 @@ def test_no_agent_sees_the_benchmark_name(places, tmp_path, arm):
     assert [node for node in ast.walk(ast.parse(copy)) if isinstance(node, (ast.Module, ast.FunctionDef))
             and ast.get_docstring(node)] == []
     assert [line for line in copy.splitlines() if line.lstrip().startswith("#")] == []
-    if arm != "cheap_direct":  # the proxy's refusal, as the agent's shell got it
-        assert '"type": "path_not_allowed"' in seen, seen
+    if arm != "cheap_direct":  # the proxy's refusal, as the agent's shell got it: a provider's words (bug-fd8200)
+        assert json.dumps(faultproxy._refusal("path_not_allowed", None)) in seen, seen
+        assert "path_not_allowed" not in seen, seen
     if arm == "roko_fixed":
         assert planemit.plan_slug(alias) in seen and f"CEREBRAS_API_KEY={run_roko.OFFLINE_KEY}\n" in seen, seen
     # Every name, link and text file the agents' processes could reach under the work directory.

@@ -39,7 +39,9 @@ use roko_learn::self_model::cascade::{
     after_failure, after_pass, start_rung,
 };
 use roko_learn::self_model::features::TaskFeatures;
-use roko_learn::self_model::gate::{CalibrationGate, CalibrationWindow, GateReport, WindowOutcome};
+use roko_learn::self_model::gate::{
+    CalibrationGate, CalibrationWindow, GateReport, WINDOW, WINDOW_FILE_NAME, WindowOutcome,
+};
 use roko_learn::self_model::logit::FALSE_GREEN_PRIOR;
 use roko_learn::self_model::model::{MODEL_CLASS, SelfModel, StateLoad};
 use roko_learn::self_model::policy::{LcbAci, LcbAciConfig, P_ABANDON, RouteAction, expected_cost};
@@ -124,8 +126,11 @@ pub struct SelfModelRuntime {
     last_rung: parking_lot::Mutex<HashMap<String, usize>>,
     /// Policy (a)'s adaptive margin, when it is the policy.
     lcb: parking_lot::Mutex<LcbAci>,
-    /// The calibration gate's window of settled forecasts (6122).
-    window: parking_lot::Mutex<CalibrationWindow>,
+    /// The calibration gate's window of settled forecasts (6122), kept across runs in
+    /// `window_path` (gap-b38ed2).
+    window: parking_lot::Mutex<Calibration>,
+    /// The window's file, [`WINDOW_FILE_NAME`] beside the state file.
+    window_path: PathBuf,
     /// The attempts the run settled, for late VS labels (6129).
     settled: parking_lot::Mutex<SettledUnits>,
     /// The start rung an active self-model chose for each chain, by chain key,
@@ -146,6 +151,26 @@ pub struct SelfModelRuntime {
     /// The attempts whose pass an active self-model rejected as suspicious at the deepest
     /// depth, by attempt key, so that their failure climbs a rung (6132).
     suspicious: parking_lot::Mutex<HashSet<String>>,
+}
+
+/// The calibration gate's window, and the outcomes this run added to it that are not saved yet,
+/// each with the version that forecast it.
+#[derive(Debug)]
+struct Calibration {
+    window: CalibrationWindow,
+    unsaved: VecDeque<(PredictorVersion, WindowOutcome)>,
+}
+
+impl Calibration {
+    /// Add `outcome` of a forecast by `version`. Only the last [`WINDOW`] unsaved outcomes are
+    /// kept, since a save keeps no more.
+    fn push(&mut self, version: &PredictorVersion, outcome: WindowOutcome) {
+        self.window.push(version, outcome);
+        self.unsaved.push_back((version.clone(), outcome));
+        if self.unsaved.len() > WINDOW {
+            self.unsaved.pop_front();
+        }
+    }
 }
 
 /// The units a run settled, by attempt key, oldest first; past [`SETTLED_KEPT`] the oldest go.
@@ -201,7 +226,8 @@ impl AttemptForecast {
 impl SelfModelRuntime {
     /// The run's self-model when `[self_model] mode` is not off: its state from `state_path`
     /// (fresh when there is none; a saved state of another version is set aside), priced at the
-    /// workspace's snapshot. `None` when the mode is off or no price snapshot loads.
+    /// workspace's snapshot, and the calibration window earlier runs kept beside it for that
+    /// version (gap-b38ed2). `None` when the mode is off or no price snapshot loads.
     #[must_use]
     pub fn load(workdir: &Path, config: &RokoConfig) -> Option<Arc<Self>> {
         let settings = config.self_model.clone();
@@ -229,23 +255,41 @@ impl SelfModelRuntime {
                 SelfModel::new(&snapshot)
             }
         };
+        let window_path = state_path.with_file_name(WINDOW_FILE_NAME);
+        let window =
+            CalibrationWindow::load(&window_path, &model.version).unwrap_or_else(|error| {
+                tracing::warn!(
+                    path = %window_path.display(),
+                    %error,
+                    "self-model: the calibration window did not load; starting a new one"
+                );
+                CalibrationWindow::new(model.version.clone())
+            });
         tracing::info!(
             mode = mode_name(settings.mode),
             version = %model.version,
             outcomes = model.outcomes,
+            window = window.len(),
             "self-model loaded"
         );
-        Some(Arc::new(Self::new(settings, state_path, model)))
+        Some(Arc::new(
+            Self::new(settings, state_path, model).with_window(window),
+        ))
     }
 
-    /// A runtime around `model`, saved to `state_path`.
+    /// A runtime around `model`, saved to `state_path`, with an empty calibration window that
+    /// is saved beside it.
     #[must_use]
     pub fn new(settings: SelfModelConfig, state_path: PathBuf, model: SelfModel) -> Self {
         let lcb = LcbAci::new(LcbAciConfig {
             target: settings.target,
             ..LcbAciConfig::default()
         });
-        let window = CalibrationWindow::new(model.version.clone());
+        let window = Calibration {
+            window: CalibrationWindow::new(model.version.clone()),
+            unsaved: VecDeque::new(),
+        };
+        let window_path = state_path.with_file_name(WINDOW_FILE_NAME);
         Self {
             settings,
             state_path,
@@ -254,6 +298,7 @@ impl SelfModelRuntime {
             last_rung: parking_lot::Mutex::new(HashMap::new()),
             lcb: parking_lot::Mutex::new(lcb),
             window: parking_lot::Mutex::new(window),
+            window_path,
             settled: parking_lot::Mutex::new(SettledUnits::default()),
             chain_starts: parking_lot::Mutex::new(HashMap::new()),
             chain_plans: parking_lot::Mutex::new(HashMap::new()),
@@ -262,6 +307,16 @@ impl SelfModelRuntime {
             risks: parking_lot::Mutex::new(HashMap::new()),
             suspicious: parking_lot::Mutex::new(HashSet::new()),
         }
+    }
+
+    /// The runtime with `window`, the calibration window earlier runs kept, when it holds
+    /// forecasts of the model's version: forecasts are never compared across versions.
+    #[must_use]
+    pub fn with_window(self, window: CalibrationWindow) -> Self {
+        if window.version == self.version() {
+            self.window.lock().window = window;
+        }
+        self
     }
 
     /// `[self_model]` as the run loaded it.
@@ -319,12 +374,17 @@ impl SelfModelRuntime {
     }
 
     /// Teach the model a settled attempt it forecast (6129): `unit` under the forecast's
-    /// features, and the calibration window with the forecast for the model that ran. The unit
-    /// stays for a late VS label.
-    pub fn settle(&self, unit: Unit, forecast: AttemptForecast) {
+    /// features, and the calibration window with the forecast for the model that ran. Forecasts
+    /// name a candidate by its `[models.*]` key, which the verdict records as `requested`, and
+    /// the unit names the model by the slug its provider launched, so either finds it
+    /// (gap-b38ed2). The unit stays for a late VS label.
+    pub fn settle(&self, unit: Unit, forecast: AttemptForecast, requested: Option<&str>) {
         let w = unit.label.weight;
         self.observe(&unit, &forecast.features, w);
-        if let Some(candidate) = forecast.for_model(&unit.arm.model) {
+        let ran = requested
+            .and_then(|model| forecast.for_model(model))
+            .or_else(|| forecast.for_model(&unit.arm.model));
+        if let Some(candidate) = ran {
             let outcome = WindowOutcome {
                 p: candidate.p_gate,
                 y: unit.label.y_gate == Some(true),
@@ -368,7 +428,14 @@ impl SelfModelRuntime {
         let gate = CalibrationGate {
             target: self.settings.target,
         };
-        gate.evaluate(&self.window.lock())
+        gate.evaluate(&self.window.lock().window)
+    }
+
+    /// Export the calibration gate's report on the window as the `ev.m3.*` values S06 and the
+    /// dashboard read, `learn/self-model/calibration.json` under the `.roko` directory
+    /// `roko_dir` (S04 §4.7; gap-b38ed2), and return the file's path.
+    pub fn write_calibration(&self, roko_dir: &Path) -> std::io::Result<PathBuf> {
+        roko_learn::self_model::gate::write_calibration(&self.gate(), roko_dir)
     }
 
     /// Whether the self-model routes now: active, with its calibration gate eligible and its
@@ -378,9 +445,27 @@ impl SelfModelRuntime {
         self.settings.mode == SelfModelMode::Active && gate.eligible && !gate.breaker_tripped
     }
 
-    /// Save the model's state, atomically.
+    /// Save the model's state, atomically, and add this run's settled forecasts to the
+    /// calibration window kept beside it, under the window file's lock so that a concurrent
+    /// run's outcomes survive (gap-b38ed2). The window then holds what the file holds, when that
+    /// is of the model's version. Each part is saved even when the other fails.
     pub fn save(&self) -> std::io::Result<()> {
-        self.model.read().save(&self.state_path)
+        let state = self.model.read().save(&self.state_path);
+        state.and(self.save_window())
+    }
+
+    /// Add the unsaved outcomes to the window's file and take the window it then holds.
+    fn save_window(&self) -> std::io::Result<()> {
+        let mut calibration = self.window.lock();
+        let outcomes: Vec<(PredictorVersion, WindowOutcome)> =
+            calibration.unsaved.iter().cloned().collect();
+        let saved = CalibrationWindow::save_outcomes(&self.window_path, &outcomes)?;
+        calibration.unsaved.clear();
+        let version = calibration.window.version.clone();
+        if let Some(saved) = saved.filter(|saved| saved.version == version) {
+            calibration.window = saved;
+        }
+        Ok(())
     }
 
     /// Forecast `candidates` for the attempt `identity`, decide as the configured policy would,

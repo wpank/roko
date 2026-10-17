@@ -1,7 +1,7 @@
 {
  "schema": "roko.work_manifest/1",
  "date": "2026-10-17",
- "head": "e61b1f30f",
+ "head": "d20426419",
  "files": [
   {
    "path": "work/telemetry/events/9f227c4b-a4d2-4e84-a0a4-9da0d8904d57.jsonl",
@@ -65,8 +65,8 @@
   },
   {
    "path": "work/telemetry/events/roko-delivery.jsonl",
-   "sha256": "b4c405300579ee4e0805038bcc23ebfdca3e3e7722532340e65043de7c8c0f81",
-   "rows": 1
+   "sha256": "06cf5d40300d3bac522d492c6bcc9f6dd2c0bf62ab5ad062fb323ab9233e7bed",
+   "rows": 2
   },
   {
    "path": "work/telemetry/events/roko-demos.jsonl",
@@ -80,8 +80,8 @@
   },
   {
    "path": "work/telemetry/events/roko-gates.jsonl",
-   "sha256": "89a3aa0d9926aeaa04cf82d48b740bcc1c5f30e8f536e35857ebe0a7f2bb264f",
-   "rows": 1
+   "sha256": "a56617d57d74c11dc5f41b6fc9f05503833f5b96e98f5b07009068d2303af4b4",
+   "rows": 2
   },
   {
    "path": "work/telemetry/events/roko-init.jsonl",
@@ -100,8 +100,8 @@
   },
   {
    "path": "work/telemetry/events/roko-recovery.jsonl",
-   "sha256": "74cb91141b881ce0f3886dc62658c77047eefb6a975f1282a24da8cc4218ba7c",
-   "rows": 1
+   "sha256": "a5d069eaaa295f58b00df4cb3c435566e3b87c9f095e7373565494b965784615",
+   "rows": 3
   },
   {
    "path": "work/telemetry/events/roko-stream.jsonl",
@@ -269,6 +269,16 @@
    "rows": 9
   },
   {
+   "path": "work/telemetry/events/work-batch-2026-10-17-1304.jsonl",
+   "sha256": "9783e223abdd6e181a41916c33ffe01aa8b6a09ebe99aec769ba35bf249fd03e",
+   "rows": 21
+  },
+  {
+   "path": "work/telemetry/events/work-batch-2026-10-17-1926.jsonl",
+   "sha256": "abd403398c1783509ae947d72bdddfdaaaa3a0b0ae2f94567ba6c3283dce03e1",
+   "rows": 9
+  },
+  {
    "path": "work/telemetry/DEFINITIONS.md",
    "sha256": "ee0525db5ff09afe9f0b1509cb0d22162b795f2beae153cf859a98b999f86720",
    "rows": 175
@@ -280,8 +290,8 @@
   },
   {
    "path": "work/{done,closed}/*.md [closed]",
-   "sha256": "78826f3e429f844c12e78dc8ab50fb0c1e8fbd2df68aa0cd65ee6f6ac047a0fc",
-   "rows": 1200
+   "sha256": "ae58a30f33bf3a06feeab72b4dcf9e5f55142fbd589e1412188a8008e610d67b",
+   "rows": 1238
   }
  ]
 }

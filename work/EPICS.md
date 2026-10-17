@@ -48,15 +48,13 @@ Progress per epic: its children (items whose `parent` is the epic, plus its `dep
 
 ## [spec-6ac537](items/spec-6ac537-epic-cybernetic-core.md) cybernetic core
 
-- **28/30 closed** · goal `cybernetic` · severity p2
-- open by lane: rust-cold 1, rust-hot 1
-- next: [bug-0a7ec1](items/bug-0a7ec1-on-graph-runs-every-knowledge-outcome-stays.md) On Graph runs every knowledge outcome stays 'partial': dispatch feedback records run_id None in a per-call FeedbackService, so no verdict credits or debits the lessons a prompt carried
+- **30/30 closed** · goal `cybernetic` · severity p2
 
 ## [spec-7a71d6](items/spec-7a71d6-epic-turn-the-cybernetic-layer-on-in.md) turn the cybernetic layer on in safe stages
 
-- **16/25 closed** · goal `cybernetic` · severity p2
-- open by lane: rust-hot 6, rust-cold 3
-- next: [gap-d76b1b](items/gap-d76b1b-decision-7103-s-audit-on-by-default.md) Decision 7103's audit-on-by-default outcome was never implemented: enabled stays false, no --no-audit flag
+- **18/28 closed** · goal `cybernetic` · severity p2
+- open by lane: rust-hot 6, rust-cold 4
+- next: [bug-92cc56](items/bug-92cc56-the-calibration-gate-s-routed-pass-rate.md) The calibration gate's routed-pass-rate bound has no routed outcome until the self-model routes, and it routes only once the gate is eligible, so M3 can never become eligible
 
 ## [spec-1e1b45](items/spec-1e1b45-epic-tracker-tooling-for-parallel-work.md) tracker tooling for parallel work
 
@@ -106,12 +104,12 @@ Progress per epic: its children (items whose `parent` is the epic, plus its `dep
 
 | Lane | Closed | Total | Open (verified) |
 |---|---|---|---|
-| bench | 103 | 143 | 40 (31) |
+| bench | 111 | 150 | 39 (28) |
 | docs | 27 | 31 | 4 (3) |
 | frontend | 7 | 9 | 2 (2) |
-| none | 455 | 551 | 96 (91) |
+| none | 468 | 567 | 99 (93) |
 | paper | 77 | 86 | 9 (7) |
-| rust-cold | 256 | 312 | 56 (47) |
-| rust-hot | 248 | 281 | 33 (31) |
+| rust-cold | 258 | 314 | 56 (47) |
+| rust-hot | 263 | 296 | 33 (31) |
 | tests | 1 | 1 | 0 (0) |
 | tracker | 26 | 29 | 3 (2) |

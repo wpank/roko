@@ -1840,9 +1840,10 @@ mod tests {
 
     /// gap-4c531f: `[self_model] n_min` is the calibration gate's window W. With n_min = 10, ten
     /// well-calibrated outcomes make the gate eligible and let an active self-model route, and
-    /// nine do not, for want of the tenth alone. The run saves them, and the next run with
-    /// n_min = 10 starts eligible, while one with the default n_min of 100 finds the ten short.
-    /// The window keeps 100 outcomes whatever W is, so the breaker keeps its fifty.
+    /// nine do not, for want of the tenth alone. None of them is routed: the routed pass rate
+    /// binds only once the self-model routes (bug-92cc56). The run saves them, and the next run
+    /// with n_min = 10 starts eligible, while one with the default n_min of 100 finds the ten
+    /// short. The window keeps 100 outcomes whatever W is, so the breaker keeps its fifty.
     #[test]
     fn self_model_gate_window_follows_n_min() {
         let temp = tempfile::tempdir().expect("tempdir");
@@ -1863,7 +1864,7 @@ mod tests {
                 p: if passed { 0.96 } else { 0.04 },
                 y: passed,
                 w: 1.0,
-                routed: true,
+                routed: false,
             };
             small.record_outcome(&version, outcome, FALSE_GREEN_PRIOR);
             if index == 8 {

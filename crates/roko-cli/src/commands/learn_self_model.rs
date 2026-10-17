@@ -296,6 +296,8 @@ pub(crate) fn fit_offline(
         };
         let w = unit.label.weight;
         scored.push(Scored::weighted(p, passed, w));
+        // The fit routes nothing, so it scores as a shadow window does: the routed pass rate
+        // is unknown and fails no bound (bug-92cc56).
         let outcome = WindowOutcome {
             p,
             y: passed,

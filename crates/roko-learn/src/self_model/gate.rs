@@ -3,7 +3,8 @@
 //! The self-model is "promoted only when calibrated" (P18). [`CalibrationGate::evaluate`] scores
 //! the last W labelled outcomes of the current predictor version against S04 §4.7's bounds on
 //! its essential variables: ECE ≤ 0.08, |calibration-in-the-large| ≤ 0.05, BSS ≥ 0.05 and
-//! AUROC ≥ 0.65, and the pass rate of the attempts it routed ≥ π* − 0.05. W is
+//! AUROC ≥ 0.65, and, once it has routed one, the pass rate of the attempts it routed
+//! ≥ π* − 0.05: it routes only while the gate is eligible (bug-92cc56). W is
 //! `[self_model] n_min`, 100 by default (S04 §4.10), so a small workspace can opt into a shorter
 //! window ([`CalibrationGate::of`]; gap-4c531f). The bounds stay as they are, and over a small W
 //! they are noisy: with ten equal-mass bins, ECE over fewer than about 100 outcomes compares
@@ -264,7 +265,8 @@ pub struct GateReport {
     pub bss: Option<f64>,
     /// AUROC.
     pub auroc: Option<f64>,
-    /// The routed pass rate.
+    /// The routed pass rate; `None` while the window holds no routed outcome, which fails no
+    /// bound (bug-92cc56).
     pub route_pass: Option<f64>,
     /// The window has W outcomes and meets every bound.
     pub eligible: bool,
@@ -340,11 +342,15 @@ impl CalibrationGate {
         );
         bound(bss, &|value| value >= BSS_MIN, "Brier skill below 0.05");
         bound(auroc, &|value| value >= AUROC_MIN, "AUROC below 0.65");
-        bound(
-            route_pass,
-            &|value| value >= route_floor,
-            "routed pass rate below π* − 0.05",
-        );
+        // The routed pass rate binds once the self-model has routed an attempt in the window;
+        // unknown, it fails nothing. The model routes only while the gate is eligible, so a
+        // bound on no routed attempt would keep every window ineligible, shadow and active
+        // alike (bug-92cc56).
+        if let Some(value) = route_pass
+            && value < route_floor
+        {
+            reasons.push(format!("routed pass rate below π* − 0.05: {value:.3}"));
+        }
         GateReport {
             predictor_version: window.version.clone(),
             window: w,
@@ -567,6 +573,40 @@ mod tests {
         let mut young = CalibrationWindow::new(version("m3-l1-a"));
         young.push(&version("m3-l1-a"), window.outcomes[0]);
         assert!(!gate.breaker_tripped(&young));
+    }
+
+    /// bug-92cc56: the self-model routes only while the gate is eligible, so its first window
+    /// holds no routed outcome. A calibrated window settled in shadow, none of it routed, makes
+    /// the gate eligible; once the model routes, the routed pass rate binds as before.
+    #[test]
+    fn calibration_gate_can_become_eligible_in_shadow() {
+        let gate = CalibrationGate::default();
+        let mut shadow = CalibrationWindow::new(version("m3-l1-a"));
+        for outcome in &calibrated().outcomes {
+            let unrouted = WindowOutcome {
+                routed: false,
+                ..*outcome
+            };
+            shadow.push(&version("m3-l1-a"), unrouted);
+        }
+        let report = gate.evaluate(&shadow);
+        assert!(report.eligible, "{report:?}");
+        assert_eq!(report.route_pass, None);
+
+        // Routed attempts that pass below π* − 0.05 fail the bound.
+        let mut routed = shadow.clone();
+        for index in 0..10 {
+            let outcome = WindowOutcome {
+                p: 0.5,
+                y: index < 5,
+                w: 1.0,
+                routed: true,
+            };
+            routed.push(&version("m3-l1-a"), outcome);
+        }
+        let report = gate.evaluate(&routed);
+        assert!(!report.eligible, "{report:?}");
+        assert_eq!(report.reasons, ["routed pass rate below π* − 0.05: 0.500"]);
     }
 
     #[test]

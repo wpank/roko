@@ -625,6 +625,14 @@ impl AttemptContext {
         self.harness.as_ref().map(|decision| &decision.applied)
     }
 
+    /// Whether the attempt's prompt carries the knowledge section (M1's B4,
+    /// gap-6bb6d8): the `knowledge_section` of the θ it runs, and on without
+    /// an M1 sink, as θ₀ has it.
+    pub(super) fn knowledge_section(&self) -> bool {
+        self.harness_params()
+            .is_none_or(|theta| theta.knowledge_section)
+    }
+
     /// M1's decision for the attempt, with θ₀ beside the θ it runs; `None`
     /// without an M1 sink.
     pub(super) fn harness_decision(

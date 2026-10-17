@@ -204,6 +204,12 @@ make it pass while the bug is still there:
 Prefer a named test that the fix adds, guarded as above, plus a static check where one is distinctive.
 `python3 tools/work.py check --lint` flags the first three.
 
+A verify's static part is everything before its first heavy step: `cargo`, `npm`/`npx`/`pnpm`/`node`, `roko` or
+`target/…`, `curl`/`gh`, `docker`/`podman`/`make`, a `deploy/*.sh` script, or a command run with the built binary
+named in its environment (`VB_REQUIRE_REAL_ROKO=1`, `ROKO_BIN=…`). The step counts wherever the shell runs it: in a
+loop, a subshell or `$(…)`, or behind `VAR=value`, `env -i`, `timeout -k 5 60`, `nice -n 10` or `xargs -n 1`.
+`close`, `sync` and every `--static-only` run execute only the static part, so put the cheap checks first.
+
 ### Retired verify commands
 
 A done item's `[[verify]]` records what proved the fix when it closed. A later change can delete or replace what it
@@ -254,8 +260,11 @@ their files. Three layers prevent that.
 
 1. **Close at the source.** When work finishes, the item is closed in the same flow:
    - workers close their item as step 8 above;
-   - any commit whose message says `Closes: <id>` (or `Fixes:` / `Resolves:`) is picked up by
-     `python3 tools/work.py sync`, which closes the item with that commit as evidence;
+   - any commit with a trailer line `Closes: <id>` (or `Fixes:` / `Resolves:`), or whose subject starts with a
+     closing keyword (`close <id>, …`, also behind a type prefix: `work: close <id>`), is picked up by
+     `python3 tools/work.py sync`, which closes the item with that commit as evidence. A mention anywhere else
+     in the message, such as "fixed <id>'s Tools line" or "this does not close <id>" in the body, closes nothing
+     (bug-586260); `touched` and `drift` still report it;
    - a plan task with `closes = ["<id>"]` that passes its gates is picked up by `sync` from the Graph checkpoint
      (`.roko/state/graph/<plan>/checkpoint.json`), with the `run_id` as evidence.
    `sync` will not close an item whose verify command fails; it reports a conflict instead. The orchestrator

@@ -1037,6 +1037,7 @@ fn mutating_plan_commands_rebuild_indexes_but_dry_runs_do_not() {
         Cli::try_parse_from(["roko", "plan", "create", "my-plan", "--title", "My Plan"]).unwrap(),
         Cli::try_parse_from(["roko", "plan", "generate", "fix", "the", "bug"]).unwrap(),
         Cli::try_parse_from(["roko", "plan", "regenerate", "plans/my-plan"]).unwrap(),
+        Cli::try_parse_from(["roko", "plan", "import", "--mori", ".mori/plans"]).unwrap(),
     ];
     for cli in mutating {
         let Some(Command::Plan { cmd }) = cli.command else {

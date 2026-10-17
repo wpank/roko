@@ -820,6 +820,7 @@ impl AgentServeRuntimeConfig {
                 model: model.to_string(),
                 command,
                 timeout_ms: config.agent.timeout_ms,
+                max_turns: None,
                 system_prompt: None,
                 cached_content: None,
                 tools: None,

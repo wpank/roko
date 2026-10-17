@@ -136,6 +136,14 @@ const RETRY_OUTPUT_CHARS: usize = 2000;
 /// Characters of a validation error that a progress report quotes.
 const PROGRESS_REASON_CHARS: usize = 200;
 
+/// The turns every planner call may take, generating or revising a plan
+/// (bug-09cc5f). Planning is Delta work (`OperatingFrequency::select` puts
+/// plan regeneration there): a planner reading a large repository used up
+/// the Claude CLI's default of `OperatingFrequency::Theta` turns, 10, before
+/// it wrote the plan.
+pub(crate) const PLANNER_MAX_TURNS: u32 =
+    roko_core::operating_frequency::OperatingFrequency::Delta.turn_limit();
+
 /// What a failed planner call printed, as a line to add to its error: the
 /// provider's own message is what says a key is wrong or a server is
 /// unreachable (bug-59ed90). Empty when it printed nothing.
@@ -1121,8 +1129,10 @@ pub async fn generate_plan(request: PlanRequest<'_>) -> Result<(PathBuf, Generat
             command_from_config(workdir_ref).unwrap_or_else(|| "claude".to_string());
         let plan_started = Instant::now();
         eprintln!("  Generating plan: {slug}");
-        report("planning", (1, 1), None, planner_model.as_str());
-        let call = run_agent_capture_silent_with_usage(AgentExecOpts {
+        // Every planner call is the strategist with read-only tools under the
+        // planner's own turn cap (bug-09cc5f); the calls after this one change
+        // its prompt, and a validation retry its model.
+        let planner_call = AgentExecOpts {
             prompt: &task_prompt,
             workdir: workdir_ref,
             model: effective_model,
@@ -1132,8 +1142,10 @@ pub async fn generate_plan(request: PlanRequest<'_>) -> Result<(PathBuf, Generat
             env_vars: &resolved.config.agent.env,
             role: Some("strategist"),
             allowed_tools: Some("Read,Grep,Glob"),
-        })
-        .await?;
+            max_turns: Some(PLANNER_MAX_TURNS),
+        };
+        report("planning", (1, 1), None, planner_model.as_str());
+        let call = run_agent_capture_silent_with_usage(planner_call).await?;
         spend.record(&call).await;
         report_spend();
         let (exit_code, output) = (call.exit_code, call.output);
@@ -1174,6 +1186,18 @@ pub async fn generate_plan(request: PlanRequest<'_>) -> Result<(PathBuf, Generat
                     "plan generation agent auth failure (exit code {exit_code}): {}{}\n\
                      Hint: check the API key of the planner model `{planner_model}`'s provider \
                      in roko.toml or ~/.roko/.env",
+                    crash_class.recovery_hint(),
+                    agent_said(&output)
+                ));
+            }
+
+            // bug-09cc5f: a planner that used every turn it had is not asked
+            // again; the same prompt under the same cap would most likely
+            // stop there too.
+            if matches!(crash_class, AgentCrashClass::TurnCapReached) {
+                return Err(anyhow!(
+                    "plan generation stopped: the planner ran out of turns before it wrote the \
+                     plan. Hint: {}{}",
                     crash_class.recovery_hint(),
                     agent_said(&output)
                 ));
@@ -1221,18 +1245,7 @@ pub async fn generate_plan(request: PlanRequest<'_>) -> Result<(PathBuf, Generat
                     max_crash_retries + 1,
                 );
                 tokio::time::sleep(std::time::Duration::from_secs(backoff_secs)).await;
-                let retry = run_agent_capture_silent_with_usage(AgentExecOpts {
-                    prompt: &task_prompt,
-                    workdir: workdir_ref,
-                    model: effective_model,
-                    effort: Some(planner_effort),
-                    system_prompt: Some(&system),
-                    resume_session: None,
-                    env_vars: &resolved.config.agent.env,
-                    role: Some("strategist"),
-                    allowed_tools: Some("Read,Grep,Glob"),
-                })
-                .await?;
+                let retry = run_agent_capture_silent_with_usage(planner_call).await?;
                 spend.record(&retry).await;
                 report_spend();
                 last_exit_code = retry.exit_code;
@@ -1602,14 +1615,8 @@ pub async fn generate_plan(request: PlanRequest<'_>) -> Result<(PathBuf, Generat
                 );
                 let retry_result = run_agent_capture_silent_with_usage(AgentExecOpts {
                     prompt: &retry_prompt,
-                    workdir: workdir_ref,
                     model: retry_model,
-                    effort: Some(planner_effort),
-                    system_prompt: Some(&system),
-                    resume_session: None,
-                    env_vars: &resolved.config.agent.env,
-                    role: Some("strategist"),
-                    allowed_tools: Some("Read,Grep,Glob"),
+                    ..planner_call
                 })
                 .await;
                 if let Ok(retry) = &retry_result {
@@ -1680,14 +1687,7 @@ pub async fn generate_plan(request: PlanRequest<'_>) -> Result<(PathBuf, Generat
                 let prompt = hidden_output_regeneration_prompt(&task_prompt, candidate, &hidden);
                 let retry = run_agent_capture_silent_with_usage(AgentExecOpts {
                     prompt: &prompt,
-                    workdir: workdir_ref,
-                    model: effective_model,
-                    effort: Some(planner_effort),
-                    system_prompt: Some(&system),
-                    resume_session: None,
-                    env_vars: &resolved.config.agent.env,
-                    role: Some("strategist"),
-                    allowed_tools: Some("Read,Grep,Glob"),
+                    ..planner_call
                 })
                 .await;
                 if let Ok(retry) = &retry {
@@ -1733,14 +1733,7 @@ pub async fn generate_plan(request: PlanRequest<'_>) -> Result<(PathBuf, Generat
                 let prompt = spec_regeneration_prompt(&task_prompt, &kept.0, &kept.1);
                 let retry = run_agent_capture_silent_with_usage(AgentExecOpts {
                     prompt: &prompt,
-                    workdir: workdir_ref,
-                    model: effective_model,
-                    effort: Some(planner_effort),
-                    system_prompt: Some(&system),
-                    resume_session: None,
-                    env_vars: &resolved.config.agent.env,
-                    role: Some("strategist"),
-                    allowed_tools: Some("Read,Grep,Glob"),
+                    ..planner_call
                 })
                 .await;
                 if let Ok(retry) = &retry {
@@ -3395,6 +3388,109 @@ mod tests {
                 .is_some_and(|reason| reason.contains("roko's 300 s limit for one call")),
             "{retry:?}"
         );
+    }
+
+    /// bug-09cc5f: every planner call runs under the planner's own turn cap,
+    /// above the Claude CLI's default of `OperatingFrequency::Theta` turns,
+    /// which a planner reading a large repository used up before it wrote
+    /// the plan. The first call and the retry after a reply that holds no
+    /// plan both start the CLI with it.
+    #[cfg(unix)]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn planner_call_gets_a_turn_cap_above_the_default() {
+        let default = roko_core::operating_frequency::OperatingFrequency::Theta.turn_limit();
+        assert!(
+            PLANNER_MAX_TURNS > default,
+            "{PLANNER_MAX_TURNS} <= {default}"
+        );
+
+        let temp = tempfile::tempdir().expect("tempdir");
+        let workdir = temp.path();
+        let bin = tempfile::tempdir().expect("tempdir");
+        let calls = write_scripted_planner(
+            workdir,
+            bin.path(),
+            &["```text\nThe plan needs more reading.\n```\n", WIDGET_PLAN],
+            "allow_threshold = 0.0\nblock_threshold = 0.0\n",
+        );
+        let request = PlanRequest {
+            model: Some("planner"),
+            ..PlanRequest::new(WIDGET_REQUEST, "widget", workdir)
+        };
+        generate_plan(request)
+            .await
+            .expect("generate the widget plan");
+        let log = std::fs::read_to_string(&calls).expect("planner call log");
+        assert_eq!(
+            log.lines().count(),
+            2,
+            "the reply without a plan, then a retry"
+        );
+        for call in 0..2 {
+            let args = std::fs::read_to_string(bin.path().join(format!("prompt-{call}.txt")))
+                .expect("the call's arguments");
+            let cap = args
+                .lines()
+                .skip_while(|line| *line != "--max-turns")
+                .nth(1);
+            assert_eq!(
+                cap,
+                Some(PLANNER_MAX_TURNS.to_string().as_str()),
+                "call {call}: {args}"
+            );
+        }
+    }
+
+    /// bug-09cc5f: a planner call that ran out of turns says so, where it
+    /// read "Agent crashed for an unknown reason", and is not asked again:
+    /// the same prompt under the same cap would most likely stop there too.
+    #[cfg(unix)]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_planner_out_of_turns_is_not_asked_again() {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let temp = tempfile::tempdir().expect("tempdir");
+        let workdir = temp.path();
+        let bin = tempfile::tempdir().expect("tempdir");
+        let calls = write_fake_planner(workdir, bin.path(), WIDGET_PLAN);
+        // What the Claude CLI prints when it stops at `--max-turns`.
+        let planner = bin.path().join("planner.sh");
+        std::fs::write(
+            &planner,
+            format!(
+                "#!/bin/sh\ncat >/dev/null\necho call >> '{}'\n\
+                 echo '{{\"type\":\"result\",\"subtype\":\"error_max_turns\",\
+                 \"is_error\":true,\"num_turns\":{}}}'\nexit 1\n",
+                calls.display(),
+                PLANNER_MAX_TURNS + 1
+            ),
+        )
+        .expect("planner out of turns");
+        std::fs::set_permissions(&planner, std::fs::Permissions::from_mode(0o755))
+            .expect("make the script executable");
+        let request = PlanRequest {
+            model: Some("planner"),
+            ..PlanRequest::new(WIDGET_REQUEST, "widget", workdir)
+        };
+        let error = generate_plan(request)
+            .await
+            .expect_err("the planner runs out of turns");
+        let message = format!("{error:#}");
+        assert!(
+            message.contains("the planner ran out of turns before it wrote the plan"),
+            "{message}"
+        );
+        assert!(
+            message.contains(&format!(
+                "agent turn cap reached (turns={}, cap={PLANNER_MAX_TURNS})",
+                PLANNER_MAX_TURNS + 1
+            )),
+            "{message}"
+        );
+        assert!(!message.contains("unknown reason"), "{message}");
+        let log = std::fs::read_to_string(&calls).expect("planner call log");
+        assert_eq!(log.lines().count(), 1, "the call, and no retry");
+        assert!(!workdir.join("plans/widget").exists());
     }
 
     /// gap-11d870: a plan whose reply holds no plan.md block gets an

@@ -781,9 +781,106 @@ impl Markers {
     }
 }
 
+/// Whether a fenced block's info string is a Rust doc example rustdoc would
+/// compile: no language tag, `rust`, one of rustdoc's own attributes, or a
+/// target-specific `ignore-<target>`. A `bash`, `text` or other
+/// non-Rust-tagged fence is neither a doc example nor a skip.
+fn is_rust_doc_fence(info: &str) -> bool {
+    info.split(',').map(str::trim).all(|token| {
+        token.is_empty()
+            || token.starts_with("ignore-")
+            || matches!(
+                token,
+                "rust"
+                    | "ignore"
+                    | "no_run"
+                    | "should_panic"
+                    | "compile_fail"
+                    | "allow_fail"
+                    | "test_harness"
+                    | "edition2015"
+                    | "edition2018"
+                    | "edition2021"
+                    | "edition2024"
+            )
+    })
+}
+
+/// Whether a Rust doc fence's info string switches it off: `ignore` or an
+/// `ignore-<target>`. `no_run` still compiles the example without running
+/// it, which is weaker but not a skip (gap-f9fa2c's notes).
+fn is_ignored_doc_fence(info: &str) -> bool {
+    info.split(',')
+        .map(str::trim)
+        .any(|token| token == "ignore" || token.starts_with("ignore-"))
+}
+
+/// The content of a `///` or `//!` line, unless it is a plain comment of
+/// four or more slashes rather than a doc comment.
+fn doc_comment_body(line: &str) -> Option<&str> {
+    let trimmed = line.trim_start();
+    if let Some(rest) = trimmed.strip_prefix("//!") {
+        return Some(rest);
+    }
+    let rest = trimmed.strip_prefix("///")?;
+    (!rest.starts_with('/')).then_some(rest)
+}
+
+/// The `(asserts, skips)` found across every fenced Rust example in `text`'s
+/// `///` and `//!` comments.
+///
+/// A doc example sits above the item it documents, not after
+/// `#[cfg(test)]`, so [`Tally::of`]'s region scan otherwise misses it
+/// entirely: a fence turned `ignore` (or `rust,ignore`), or an assert
+/// commented out inside one, got away as neither a skip nor a removed
+/// assert (gap-f9fa2c, found live when an executor did exactly that to get
+/// `cargo test` green). A line commented out inside the fence does not
+/// count as an assert, and a fence rustdoc would not compile as Rust counts
+/// as neither an assert nor a skip.
+fn doc_example_tally(text: &str, asserts: &Regex) -> (u32, u32) {
+    let (mut assert_count, mut skip_count) = (0u32, 0u32);
+    let mut in_fence = false;
+    let mut fence_info = String::new();
+    let mut fence_lines: Vec<String> = Vec::new();
+    for line in text.lines() {
+        let Some(body) = doc_comment_body(line) else {
+            in_fence = false; // a non-doc-comment line abandons an unclosed fence
+            continue;
+        };
+        let code = body.trim_start();
+        if !in_fence {
+            if let Some(info) = code.strip_prefix("```") {
+                in_fence = true;
+                fence_info = info.trim().to_string();
+                fence_lines.clear();
+            }
+            continue;
+        }
+        if !code.starts_with("```") {
+            fence_lines.push(body.to_string());
+            continue;
+        }
+        in_fence = false;
+        if is_rust_doc_fence(&fence_info) {
+            if is_ignored_doc_fence(&fence_info) {
+                skip_count += 1;
+            }
+            for fenced_line in &fence_lines {
+                if !fenced_line.trim_start().starts_with("//") {
+                    assert_count +=
+                        u32::try_from(asserts.find_iter(fenced_line).count()).unwrap_or(u32::MAX);
+                }
+            }
+        }
+    }
+    (assert_count, skip_count)
+}
+
 impl Tally {
     /// Count the test code in `text`, the content of `path`: all of a test
-    /// file, and what follows `#[cfg(test)]` in other Rust files.
+    /// file, what follows `#[cfg(test)]` in other Rust files, and (for any
+    /// `.rs` file) the fenced Rust examples in its `///`/`//!` comments
+    /// (gap-f9fa2c).
     fn of(path: &str, text: &str) -> Self {
         let Some(markers) = Markers::for_path(path) else {
             return Self::default();
@@ -796,6 +893,11 @@ impl Tally {
             ""
         };
         let count = |n: usize| u32::try_from(n).unwrap_or(u32::MAX);
+        let (doc_asserts, doc_skips) = if has_extension(path, "rs") {
+            doc_example_tally(text, markers.asserts)
+        } else {
+            (0, 0)
+        };
         Self {
             tests: count(
                 region
@@ -806,14 +908,14 @@ impl Tally {
                     })
                     .count(),
             ),
-            asserts: count(markers.asserts.find_iter(region).count()),
+            asserts: count(markers.asserts.find_iter(region).count()) + doc_asserts,
             skips: count(
                 markers
                     .skips
                     .iter()
                     .map(|skip| region.matches(skip).count())
                     .sum(),
-            ),
+            ) + doc_skips,
         }
     }
 }
@@ -1148,6 +1250,89 @@ mod tests {
         }
         let writes_it = tampering(&["reports/q3.json", "reports/report.schema"]);
         assert!(writes_it.is_empty(), "{writes_it:?}");
+    }
+
+    /// gap-f9fa2c: a live run got `cargo test` green by fencing a doc
+    /// example `rust,ignore` and commenting out its only assert. That must
+    /// read as a skip (and the lost assert), the same way `#[ignore]` on an
+    /// ordinary test does. An example already `ignore` before the attempt,
+    /// left untouched, is not a false positive.
+    #[test]
+    fn doc_example_switched_off_is_a_skip() {
+        let running = "/// # Examples\n\
+                        ///\n\
+                        /// ```\n\
+                        /// assert_eq!(answer(), 42);\n\
+                        /// ```\n\
+                        pub fn answer() -> u32 {\n    42\n}\n";
+        let switched_off = "/// # Examples\n\
+                             ///\n\
+                             /// ```rust,ignore\n\
+                             /// // assert_eq!(answer(), 42);\n\
+                             /// ```\n\
+                             pub fn answer() -> u32 {\n    42\n}\n";
+        let findings = check_attempt_diff(
+            &[change(
+                ChangeKind::Modified,
+                "src/lib.rs",
+                Some(running),
+                Some(switched_off),
+            )],
+            &AttemptDiffPolicy::default(),
+        );
+        assert!(
+            findings
+                .iter()
+                .any(|finding| finding.kind == DiffFindingKind::SkipAdded
+                    && finding.path == "src/lib.rs"),
+            "{findings:?}"
+        );
+        assert!(
+            findings
+                .iter()
+                .any(|finding| finding.kind == DiffFindingKind::AssertsRemoved),
+            "the commented-out assert should read as a removed assert too: {findings:?}"
+        );
+
+        // Already `ignore` before the attempt and untouched by it: the
+        // unrelated change elsewhere in the file must not read as a skip.
+        let already_ignored =
+            "/// ```ignore\n/// // pseudo-code, never ran\n/// ```\npub fn stub() {}\n";
+        let unrelated_change =
+            already_ignored.replace("pub fn stub() {}\n", "pub fn stub() { /* noop */ }\n");
+        let findings = check_attempt_diff(
+            &[change(
+                ChangeKind::Modified,
+                "src/other.rs",
+                Some(already_ignored),
+                Some(&unrelated_change),
+            )],
+            &AttemptDiffPolicy::default(),
+        );
+        assert!(
+            findings
+                .iter()
+                .all(|finding| finding.kind != DiffFindingKind::SkipAdded),
+            "a pre-existing, untouched ignore must not be a false positive: {findings:?}"
+        );
+
+        // `no_run` still compiles the example: weaker, but not a skip.
+        let no_run = running.replace("/// ```\n/// assert", "/// ```no_run\n/// assert");
+        let findings = check_attempt_diff(
+            &[change(
+                ChangeKind::Modified,
+                "src/lib.rs",
+                Some(running),
+                Some(&no_run),
+            )],
+            &AttemptDiffPolicy::default(),
+        );
+        assert!(
+            findings
+                .iter()
+                .all(|finding| finding.kind != DiffFindingKind::SkipAdded),
+            "no_run alone is not a skip: {findings:?}"
+        );
     }
 
     #[test]

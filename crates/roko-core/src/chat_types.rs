@@ -177,12 +177,15 @@ impl Usage {
         self.wall_ms += other.wall_ms;
     }
 
-    /// Whether the cost is known (non-zero or provider-confirmed zero).
+    /// Whether the usage alone shows the cost: non-zero, or no tokens used.
     ///
-    /// Returns `false` when `cost_usd` is the uninitialised default (`0.0`)
-    /// **and** there were tokens consumed — meaning cost was never computed.
-    /// Cache-read tokens count as consumption here: a cache-read-only turn
-    /// with `0.0` cost is *unknown*, not free.
+    /// Returns `false` when `cost_usd` is `0.0` **and** there were tokens
+    /// consumed. Cache-read tokens count as consumption here: a
+    /// cache-read-only turn with `0.0` cost is *unknown*, not free. The usage
+    /// cannot tell a call never priced from one priced at a rate of 0: both
+    /// used tokens at $0. A caller that knows the model also asks whether
+    /// roko has a rate for it, as
+    /// [`crate::config::model_registry::model_has_price`] does (bug-1bc222).
     #[must_use]
     pub fn has_known_cost(&self) -> bool {
         self.cost_usd.abs() > f32::EPSILON

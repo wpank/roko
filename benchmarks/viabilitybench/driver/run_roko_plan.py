@@ -18,6 +18,11 @@ without its full cross-record consistency checks: this arm is exploratory, S09 Â
 whole-plan gate Roko itself runs as part of `plan run` (gap-60233f) â€” a Python check with no model call, so its
 cost is always $0, recorded so every successful run shows that it ran.
 
+**Network** (gap-0bd49a). Both halves run in the agents' sandbox. The planner's session is confined as the Claude
+Code arm's is: its whole process tree, its Bash tool included, reaches only its own egress proxy's port. The
+ladder's roko processes reach only the metering proxy's port, as the Roko arm's do. The record's `network_policy`
+names the ladder's rule, and under `planner` the planner's rule with what its egress proxy admitted and refused.
+
 Reuses, never reimplements: `run_cli.CliConfig`/`build_invocation`/`run_session`/`Meter`/`parse_result` for the
 planner's own session (the same machinery the direct fd_claude arm uses); `run_roko.binary_path`/`_build`/`_head`/
 `_roko`/`_start_egress`/`network_rule`/`_meter_from_verdict` for the ladder execution's subprocess, sandbox and
@@ -91,11 +96,13 @@ def run_task(ctx: harness.TaskContext) -> harness.TaskOutcome:
     transcript: list[dict] = []
     attempts: list[run_roko.RokoAttempt] = []
     status, reason = "infra_error", ""
+    network = run_roko.network_rule(ctx.endpoint)
+    policy = {"network": network, "sandbox": sandbox.kind(ctx.deny, network), "unix_sockets": "workspace"}
     try:
         binary = run_roko.binary_path(ctx.arm)
         plan_dir = ctx.workdir / "plans" / slug
         plan_dir.mkdir(parents=True)  # the planner writes tasks.toml here, as planemit.emit's own _write does for it
-        plan_attempt, plan_cost_usd = _run_planner(ctx, settings, planner_settings, slug, transcript)
+        plan_attempt, plan_cost_usd = _run_planner(ctx, settings, planner_settings, slug, transcript, policy)
         attempts.append(plan_attempt)
         if not (plan_dir / "tasks.toml").is_file():
             raise RunnerError(f"the planner session ended without writing plans/{slug}/tasks.toml")
@@ -105,7 +112,6 @@ def run_task(ctx: harness.TaskContext) -> harness.TaskOutcome:
                         if table.get("api_key_env")}
         env = {**ctx.agent_env, "ROKO_CONFIG": str(config_path),
               **{name: run_roko.OFFLINE_KEY for name in api_key_envs}}
-        network = run_roko.network_rule(ctx.endpoint)
         jail = sandbox.command([], deny=ctx.deny, network=network, sockets=[ctx.workdir])
         build = run_roko._build(binary, env, settings.get("build") or None, transcript, jail)
         head = [str(binary), "--repo", str(ctx.workdir), "--no-serve", "--color", "never"]
@@ -142,10 +148,7 @@ def run_task(ctx: harness.TaskContext) -> harness.TaskOutcome:
                           cost=attempt.cost or ledger.Cost(None, None, "unknown"), billed=billed,
                           reserved_usd=attempt.reserved_usd)
     return harness.TaskOutcome(status=status, reason=reason, attempts=attempts, transcript=transcript,
-                               started_at=started, finished_at=harness.utc_now(),
-                               network_policy={"network": run_roko.network_rule(ctx.endpoint),
-                                               "sandbox": sandbox.kind(ctx.deny, run_roko.network_rule(ctx.endpoint)),
-                                               "unix_sockets": "workspace"})
+                               started_at=started, finished_at=harness.utc_now(), network_policy=policy)
 
 
 def _left(ctx: harness.TaskContext, clock: float) -> float:
@@ -153,9 +156,11 @@ def _left(ctx: harness.TaskContext, clock: float) -> float:
 
 
 def _run_planner(ctx: harness.TaskContext, settings: dict, planner_settings: dict, slug: str,
-                 transcript: list[dict]) -> tuple[run_roko.RokoAttempt, float | None]:
+                 transcript: list[dict], policy: dict) -> tuple[run_roko.RokoAttempt, float | None]:
     """Claude-opus-5-5, through this task's own egress proxy, writes `plans/<slug>/tasks.toml`; priced as `run_cli`
-    prices the direct arm's sessions (U' from `modelUsage`, source `cli_usage`)."""
+    prices the direct arm's sessions (U' from `modelUsage`, source `cli_usage`). The session's own network rule and
+    what its egress proxy admitted and refused go into `policy["planner"]`, the record's `network_policy`, even when
+    the session fails (gap-0bd49a)."""
     planner_model = planner_settings.get("model", "claude-opus-5-5")
     table = ctx.arm.get("providers", {}).get("anthropic", {})
     if not table:
@@ -167,6 +172,7 @@ def _run_planner(ctx: harness.TaskContext, settings: dict, planner_settings: dic
     planner_ctx = dataclasses.replace(ctx, model=planner_model, endpoint=planner_endpoint, caps=planner_caps)
     cli = run_cli.CliConfig.from_table(ctx.arm.get("cli", {}))
     egress = run_roko._start_egress(ctx, settings)
+    invocation = None
     try:
         invocation = run_cli.build_invocation(planner_ctx, cli, egress)
         prompt = PLANNER_PROMPT.format(slug=slug, description=ctx.spec_text.strip(),
@@ -178,6 +184,10 @@ def _run_planner(ctx: harness.TaskContext, settings: dict, planner_settings: dic
                                       usd_cap=planner_caps.usd_per_task, meter=meter)
     finally:
         egress.close()
+        if invocation is not None:  # the session's whole process tree ran under this rule, its Bash tool included
+            policy["planner"] = {"network": invocation.network,
+                                 "sandbox": sandbox.kind(ctx.deny, invocation.network),
+                                 "egress": egress.summary(ctx.key)}
     transcript += [{"event": "planner", **event} for event in session.events]
     attempt = run_roko.RokoAttempt(number=0, attempt_key=f"{ctx.chain_key}:plan", model_requested=planner_model,
                                    provider="anthropic", reserved_usd=planner_caps.usd_per_task, cost_class="plan",

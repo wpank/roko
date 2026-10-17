@@ -2,7 +2,7 @@
 id = "bug-ca1de5"
 kind = "bug"
 title = "LOG1 block E cannot materialize any of its 10 F8 honeypots: F8's task.json is not vb.task/1 (no spec, no recoverability, six extra keys)"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p1"
 goal = "proof"
@@ -11,6 +11,7 @@ subsystem = ["viabilitybench/families", "viabilitybench/driver"]
 created = 2026-10-16
 updated = 2026-10-16
 last_verified = 2026-10-16
+last_verified_rev = "519fcdfb4"
 source = "bug-f90bd0 worker, 2026-10-16 (materialize F8-l1-0022: invalid manifest)"
 discovered_from = "bug-f90bd0"
 anchors = ["benchmarks/viabilitybench/families/f8_honeypot/gen.py::generate", "benchmarks/viabilitybench/families/f8_honeypot/reference/solutions.py::apply", "benchmarks/viabilitybench/families/f8_honeypot/gaming.py::detect", "benchmarks/viabilitybench/families/f8_honeypot/hidden.py::run", "benchmarks/viabilitybench/streams/log1_f8_honeypots.toml"]
@@ -19,6 +20,18 @@ links = { depends_on = [], blocks = [], related = ["bug-f90bd0", "gap-394f28"], 
 
 [[verify]]
 command = "grep -qw 'def test_every_log1_f8_honeypot_materializes' benchmarks/viabilitybench/driver/test_materialize.py && benchmarks/viabilitybench/.venv/bin/python -m pytest benchmarks/viabilitybench/driver/test_materialize.py -k test_every_log1_f8_honeypot_materializes -q"
+
+[closed]
+at = 2026-10-16
+at_ts = "2026-10-16T20:19:46Z"
+commit = "519fcdfb4"
+by = "commit trailer"
+executor = "claude-agent"
+via = "work-batch"
+size = "M"
+claimed_at = "2026-10-16T19:19:20Z"
+forced = false
+evidence = "519fcdfb4: F8's gen.py renders spec/precise.template.md to spec.precise.md (the wrapped base instance's precise spec, section by section in F1's layout, plus two SPEC_CONFLICT criteria, README.md in the context and the conflict files in the non-goals; it never says honeypot) and lists recoverability (the base instance's entries, then the flag and the untouched conflict files). Its manifest is vb.task/1: the six forbidden keys are gone, and what they held is derived from (level, seed) by gen.base_family, gen.base_manifest and gen.load_base_instance (DIR/base/), with gaming.detect comparing NOTES.md and CONTRIBUTING.md with the pristine tree; generator f8-1.1.0. The verify passes: test_every_log1_f8_honeypot_materializes materializes all 10 instances of streams/log1_f8_honeypots.toml (F2 x3, F3 x3, F5 x4), each spec keeping its base's title, goal and criteria and parsing in F1's layout, every recoverability criterion stated and every evidence file in the workdir; main's gen.py has all 10 refused ('invalid manifest: $: missing required field spec'). Task repos byte-identical across 70 instances (block E's 10 plus levels 1-5 x seeds 1-12): pristine commit and tree, visible test hashes, visible verify, files in scope and file list, and each base's own pristine. verify_verifiers --families f8 --levels 1-5 --seeds 10: 50/50 green. New families/f8_honeypot/test_f8.py: 6 passed. Bench pytest 769 passed, 16 skipped (no roko binary, opt-in sweeps, analysis stack). Filed bug-87ea7f (F8's flag check passes on every tree: the rendered README's convention line matches it) and bug-9f6252 (every F8 README opens with '# honeypot-conflict (F5)')."
 +++
 
 ## Problem

@@ -2,15 +2,16 @@
 id = "gap-a2f86a"
 kind = "gap"
 title = "F7's in-tree .cargo-target build directory lands in commit_final's archived c_i"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p2"
 goal = "proof"
 size = "S"
 subsystem = ["benchmarks/viabilitybench/families/f7_rustiter", "benchmarks/viabilitybench/driver"]
 created = 2026-10-02
-updated = 2026-10-02
-last_verified = 2026-10-02
+updated = 2026-10-16
+last_verified = 2026-10-16
+last_verified_rev = "32981304b"
 source = "wave-3 follow-up reports 2026-10-02 (w3-bench gap-46fd19)"
 discovered_from = "gap-46fd19 (task 3324 handled CARGO_HOME/RUSTUP_HOME but left the agent-facing visible-verify's in-tree target dir as originally designed)"
 anchors = ["benchmarks/viabilitybench/families/f7_rustiter/gen.py::VISIBLE_VERIFY", "benchmarks/viabilitybench/families/f7_rustiter/hidden.py", "benchmarks/viabilitybench/driver/archive.py::commit_final", "benchmarks/viabilitybench/families/common/repo.py::export_tree"]
@@ -20,6 +21,18 @@ links = { depends_on = [], blocks = [], related = [], supersedes = [], duplicate
 
 [[verify]]
 command = "grep -qw 'def test_f7_archive_excludes_the_cargo_target_dir' benchmarks/viabilitybench/families/f7_rustiter/test_f7.py && benchmarks/viabilitybench/.venv/bin/python -m pytest benchmarks/viabilitybench/families/f7_rustiter/test_f7.py -k test_f7_archive_excludes_the_cargo_target_dir -q"
+
+[closed]
+at = 2026-10-16
+at_ts = "2026-10-16T19:42:50Z"
+commit = "32981304b"
+by = "commit trailer"
+executor = "claude-agent"
+via = "work-batch"
+size = "S"
+claimed_at = "2026-10-16T19:19:34Z"
+forced = false
+evidence = "32981304b: families/common/repo.py::_scan now skips `target` and `.cargo-target` by name, wherever they occur, the same way it already skips `.git` (a new _SKIPPED_NAMES frozenset, used by export_tree, tree_hash and _commit_disk, so commit_final's rev=None disk scan never writes these build caches into c_i). `.cargo` itself is left alone since a gaming agent's cargo config is meaningful diff content, not build output. Two regression tests, both offline (no real cargo invoked; caches are faked as plain files so no heavy.sh/cargo lock was needed): families/common/test_common.py::test_scan_skips_cargo_build_caches_like_git asserts a dirty tree (stray target/, .cargo-target/, and a nested crate/target/) hashes identically to a clean one and exports with neither name present; families/f7_rustiter/test_f7.py::test_f7_archive_excludes_the_cargo_target_dir runs archive.commit_final then archive.archive_task on a generated F7 instance with faked .cargo-target/target artifacts and asserts the committed tree, the diff text and the tarball's member names contain neither. Verify: benchmarks/viabilitybench/.venv/bin/python -m pytest benchmarks/viabilitybench/families/f7_rustiter/test_f7.py -k test_f7_archive_excludes_the_cargo_target_dir -q passes; the full test_f7.py and test_common.py files (43 tests) pass with no regression."
 +++
 
 ## Problem

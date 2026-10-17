@@ -23,6 +23,7 @@ import pytest
 
 import agent_env
 import caps
+import census
 import disturb
 import faultproxy
 import layout
@@ -528,6 +529,114 @@ def test_an_agent_cannot_read_another_run(places, tmp_path, arm):
     assert record["provenance"]["network_policy"]["sandbox"] == "sandbox-exec+net"
 
 
+# bug-42b214, test_census_code_cannot_read_another_run. The agent's clamp: correct, and whenever it is imported (by the
+# agent's own visible check, by the truth suite and by the census's visible re-run) it lists the results root and reads
+# what run 1 keeps of the same task and what run 2 keeps of itself (__READS__: name -> path), then logs where it ran
+# and what each step gave: the first 300 characters it read, or the error it got.
+READING_CLAMP = r'''import os
+
+
+def _read_the_results():
+    seen = []
+    for name, path in __READS__:
+        try:
+            if name == "listing":
+                seen.append(name + "=listed " + ",".join(sorted(os.listdir(path))))
+            else:
+                with open(path, encoding="utf-8") as handle:
+                    seen.append(name + "=read " + handle.read(300).replace("\n", "|"))
+        except OSError as err:
+            seen.append(name + "=refused " + type(err).__name__)
+    with open(__LOG__, "a", encoding="utf-8") as log:
+        log.write(os.getcwd() + "\t" + "\t".join(seen) + "\n")
+
+
+_read_the_results()
+
+
+def clamp(value, low, high):
+    """Return value limited to the range [low, high]."""
+    return max(low, min(value, high))
+'''
+
+
+@macos_only
+def test_census_code_cannot_read_another_run(places, tmp_path):
+    """bug-42b214: the census runs the agent's code after its session (the truth suite imports it, the visible re-run
+    runs it), and that code is denied the whole results root, as the agent's own processes are (bug-935cfa). A
+    campaign runs its units one after another in one experiment directory, so code left in a later run's tree could
+    otherwise load an earlier arm's archived solution of its own instance, its precise spec or its record when the
+    census runs it. Run 1 of an experiment solves a task; in run 2 the agent writes a correct clamp that, whenever it
+    is imported, lists the results root and reads run 1's archive, precise spec and records and run 2's own manifest
+    (READING_CLAMP). In the agent's check, the truth suite and the census's re-run, every step is refused, nothing it
+    logged holds a line of those files, the census's exports lie outside the results root, and the census still
+    labels the task. Run 1's files hold what the code would have read (the control)."""
+    results, log = places["results"], tmp_path / "reads.log"
+
+    def run(run_id: str, script: list[str], *extra: str) -> int:
+        with StubServer(scripted({"": script})) as stub:
+            return vb.main(["run", "--experiment", "TEST-CENSUS", "--run-id", run_id, "--stream", TOY_STREAM,
+                            "--arm", "cheap_direct", "--model", "gpt-oss-120b", "--seeds", "1", "--limit", "1",
+                            "--provider-url", stub.url, "--results", str(results), "--work", str(places["work"]),
+                            "--secret-file", str(places["secret"]), *extra])
+
+    assert run("run-1", [bash(CORRECT, "Solve."), bash("echo SUBMIT_TASK")]) == 0
+    earlier, out = results / "TEST-CENSUS" / "run-1", results / "TEST-CENSUS" / "run-2"
+    [done] = read_jsonl(earlier / "records.jsonl")
+    key = f"{done['task']['instance_id']}.s1"
+    reads = [("listing", results), ("diff", earlier / "archives" / f"{key}.diff"),
+             ("spec", earlier / "private" / key / ".vb" / "spec.precise.md"), ("records", earlier / "records.jsonl"),
+             ("own", out / "manifest.json")]
+    # The control: run 1 keeps its agent's solution, its task's precise spec and its record, under its key.
+    assert "return max(low, min(value, high))" in (earlier / "archives" / f"{key}.diff").read_text()
+    assert (earlier / "private" / key / ".vb" / "spec.precise.md").read_text().strip() and done["vs"]["label"] == 1
+    clamp = READING_CLAMP.replace("__READS__", repr([(name, str(path)) for name, path in reads]))
+    clamp = clamp.replace("__LOG__", repr(str(log)))
+    assert run("run-2", [bash(f"cat > calc/ops.py <<'EOF'\n{clamp}EOF", "Implement it."),
+                         bash(VISIBLE_CHECK, "Check it."), bash("echo SUBMIT_TASK")], "--transcripts") == 0
+    [record] = read_jsonl(out / "records.jsonl")
+    # The clamp ran three times, and every step was refused each time.
+    lines = [line.split("\t") for line in log.read_text().splitlines()]
+    assert len(lines) == 3, lines
+    for where, *steps in lines:
+        assert steps == [f"{name}=refused PermissionError" for name, _ in reads], (where, steps)
+    texts = [(earlier / name).read_text() for name in
+             ("records.jsonl", f"archives/{key}.diff", f"private/{key}/.vb/spec.precise.md")]
+    logged = "\n".join("\t".join(steps) for _, *steps in lines)
+    leaked = [line for text in texts for line in text.splitlines() if len(line) > 20 and line in logged]
+    assert leaked == [] and [name for name in ("TEST-CENSUS", "run-1", key) if name in logged] == [], logged
+    # Where it ran: the agent's tree, and the truth suite's and the re-run's exports, outside the results root.
+    work_dir = Path(json.loads((out / "manifest.json").read_text())["work_dir"])
+    exports = work_dir / f"{record['provenance']['alias']}.census"
+    assert sorted(Path(where).resolve() for where, *_ in lines) == sorted(
+        path.resolve() for path in (work_dir / record["provenance"]["alias"], exports / "hidden", exports / "visible"))
+    assert all(not layout.within(where, results) for where, *_ in lines)
+    # The census still labels the task as it would any correct clamp, with its runs' rule as before.
+    assert validate.validate("run-record", record) == []
+    assert (record["execution"]["status"], record["vs"]["label"]) == ("completed", 1), record["execution"]["reason"]
+    assert record["vs"]["checks"] == {"completion": 1, "visible_clean": 1, "hidden": 1, "integrity": 1}
+    assert record["provenance"]["canary_hits"] == 0 and record["vs"]["sandbox"] == "sandbox-exec+net"
+    assert record["provenance"]["census_network_policy"] == {"network": "none", "sandbox": "sandbox-exec+net"}
+
+
+def test_the_census_refuses_to_run_code_where_it_is_denied(places, tmp_path):
+    """bug-42b214: the census runs the agent's code only in its scratch, HOME and TMPDIR, so it refuses any of them
+    inside a path it denies that code, the results root among them: there the code could not run, and every check
+    would fail as if the agent had failed. It stops before it makes the scratch or runs anything."""
+    results = places["results"]
+    manifest_path = tmp_path / "private" / materialize.TASK_DIR / "task.json"
+    cases = [(results / "EXP" / "run-1" / "private" / "key" / "census", tmp_path / "census-home"),
+             (tmp_path / "scratch", results / "home")]
+    for scratch, home in cases:
+        result = census.run_census(final=None, manifest={}, manifest_path=manifest_path, pristine=None,
+                                   family_dir=TOY_FAMILY, secret_file=places["secret"], completed=True,
+                                   transcript_text="[]", diff_text="", scratch=scratch,
+                                   env=agent_env.build(home=home), deny=(results,))
+        assert result.infra_error.startswith("refusing to run the census: the agent's code would run in "), result
+        assert str(scratch if layout.within(scratch, results) else home) in result.infra_error
+        assert result.unknown and result.network_policy is None and not scratch.exists()
+
+
 def test_vb_run_refuses_a_results_root_agents_need(places, tmp_path, monkeypatch, capsys):
     """bug-935cfa: every agent process is denied the whole results root, so `vb run` refuses, before it makes any
     directory, a results root that holds what agents read or run: the repository (the Roko binary, `.venv-msa/`), the
@@ -771,12 +880,12 @@ def test_an_agent_shell_cannot_reach_the_network(places, tmp_path, monkeypatch, 
         said = shell_log.read_text()
         assert "proxy_http=404" in said and "proxy_exit=0" in said  # the proxy answered: no such route
     assert "listener_exit=7" in said and "visible_exit=0" in said, said
-    # The clamp ran three times, in the agent's tree, in the truth suite and in the census's re-run, and each time
-    # its connection was refused.
+    # The clamp ran three times, in the agent's tree, in the truth suite and in the census's re-run (whose exports are
+    # `<work_dir>/<alias>.census/`, bug-42b214), and each time its connection was refused.
     ran = [line.split("\t") for line in probe_log.read_text().splitlines()]
     assert {seen for seen, _ in ran} == {"refused PermissionError"}, ran
-    assert sorted("census" + where.rsplit("/census", 1)[1] if "/census/" in where else "agent" for _, where in ran) == [
-        "agent", "census/hidden", "census/visible"]
+    assert sorted(f"census/{Path(where).name}" if Path(where).parent.name.endswith(".census") else "agent"
+                  for _, where in ran) == ["agent", "census/hidden", "census/visible"]
 
     assert validate.validate("run-record", record) == []
     assert (record["execution"]["status"], record["vs"]["label"]) == ("completed", 1), record["execution"]["reason"]

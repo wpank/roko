@@ -4,7 +4,7 @@
 
 What to work on next: the top checked, open items of each goal, highest-priority goal first. Reorder or change goals in `goals.toml`; pin an item higher with `rank = 1` (lower first).
 
-**Drift:** 2 likely done · 8 anchor gone · 126 changed since checked · 4 mentioned in commits. Re-check them before relying on this list: `DRIFT.md`.
+**Drift:** 2 likely done · 8 anchor gone · 128 changed since checked · 4 mentioned in commits. Re-check them before relying on this list: `DRIFT.md`.
 
 ## 1. Public release: security, licence, CI, first run
 
@@ -36,15 +36,15 @@ _12 more open · `goal = "truth"`_
 - **P2** [spec-fef7c5](items/spec-fef7c5-backlog-phase-3-golden-path-proof.md) Backlog Phase 3 — golden-path proof [spec] · verified 2026-10-02
 - **P2** [gap-55f878](items/gap-55f878-the-specs-epic-s-two-exit-tests.md) The specs epic's two exit tests were never written: spec_gate_passes_an_exact_plan_and_refuses_its_vacuous_twin (backlog 3200) and spec_lints_reject_a_weak_plan_and_pass_its_fixed_twin (spec-e57870) · size S · verified 2026-10-15
 
-_2 more open · on hold: gap-634954 · 4 unchecked (`TRIAGE.md`) · `goal = "golden-path"`_
+_3 more open · on hold: gap-634954 · 4 unchecked (`TRIAGE.md`) · `goal = "golden-path"`_
 
 ## 5. Proof: the pilot benchmark and a record of the work
 
 - **P1** [dec-3d5714](items/dec-3d5714-s09-4-1-s-two-stage-bootstrap.md) S09 §4.1's two-stage bootstrap over-covers (0.975): change to task-only n_h-1 resampling, or accept, before the lock [decision] · size S · verified 2026-10-03
+- **P1** [bug-562ee6](items/bug-562ee6-planemit-s-pinned-mode-cannot-emit-a.md) planemit's pinned mode cannot emit a model whose slug holds a dot: [models.glm-4.7] parses as nested tables, so roko_fixed_glm, roko_fixed_kimi and roko_fixed_mini (LOG1 block A) fail emit and vb run refuses them at preflight [bug] · size S · verified 2026-10-17
 - **P2** [gap-b94a2c](items/gap-b94a2c-a-sandboxed-agent-still-reads-any-same.md) A sandboxed agent still reads any same-user process's start-up environment with sysctl(KERN_PROCARGS2), and no sandbox-exec rule stops it · size L · verified 2026-10-16
-- **P2** [bug-d308f7](items/bug-d308f7-an-agent-s-shell-can-read-its.md) An agent's shell can read its run's results directory outside private/: proxy.jsonl and egress.jsonl name the running task's key, order-<seed>.json and records.jsonl give its position [bug] · size S · verified 2026-10-17
 
-_11 more open · on hold: gap-057cc7, gap-05c4c0, gap-11cec6, gap-31e1b0, gap-394f28, gap-4a5109, gap-50346f, gap-681741, gap-7c9a9c, gap-aa60f2, gap-b7f99e, gap-ba9965, gap-e9218e · 9 unchecked (`TRIAGE.md`) · `goal = "proof"`_
+_14 more open · on hold: gap-057cc7, gap-05c4c0, gap-11cec6, gap-31e1b0, gap-394f28, gap-4a5109, gap-50346f, gap-681741, gap-7c9a9c, gap-aa60f2, gap-b7f99e, gap-ba9965, gap-e9218e · 9 unchecked (`TRIAGE.md`) · `goal = "proof"`_
 
 ## 6. Learning from verified outcomes, M1-M4 (P2)
 
@@ -52,7 +52,7 @@ _11 more open · on hold: gap-057cc7, gap-05c4c0, gap-11cec6, gap-31e1b0, gap-39
 - **P2** [gap-fd96c8](items/gap-fd96c8-pk56-m4-deep-audits-first-slice-audit.md) PK56 M4 deep audits: First slice: audit at least 60 recorded cheap-arm passes and publish the replay report… · size S · verified 2026-10-02
 - **P2** [spec-446a41](items/spec-446a41-backlog-phase-4-loops-re-closed-s02.md) Backlog Phase 4 — loops re-closed (S02) [spec] · verified 2026-10-02
 
-_23 more open · on hold: gap-799698, gap-8a26fc, gap-93c748 · 1 unchecked (`TRIAGE.md`) · `goal = "cybernetic"`_
+_24 more open · on hold: gap-799698, gap-8a26fc, gap-93c748 · 1 unchecked (`TRIAGE.md`) · `goal = "cybernetic"`_
 
 ## 7. Plan runs work reliably
 
@@ -65,10 +65,10 @@ _16 more open · on hold: find-70edcb · 4 unchecked (`TRIAGE.md`) · `goal = "c
 ## 8. Live visibility: serve, dashboard, portal
 
 - **P1** [gap-aabeff](items/gap-aabeff-tool-t003-tui-paths-still-consume-string.md) TUI paths still consume string/tail projections that lose semantics (TUI adoption unproven) · size L · verified 2026-10-01
+- **P2** [bug-e529e3](items/bug-e529e3-a-run-whose-event-index-outgrows-the.md) A run whose event index outgrows the summary's scan window (10,000 events or 8 MB) reads 'running' forever in GET /api/runs/{id}/summary and the MCP run_status, and its diff route answers 409 [bug] · size M · verified 2026-10-17
 - **P2** [bug-a0f01e](items/bug-a0f01e-long-running-operation-handles-never-record-completion.md) Long-running operation handles never record completion [bug] · verified 2026-10-01
-- **P3** [gap-0d6ae5](items/gap-0d6ae5-closing-the-tui-mid-run-stops-the.md) Closing the TUI mid-run stops the plan run; there is no detach mode · verified 2026-10-01
 
-_3 more open · `goal = "visibility"`_
+_5 more open · `goal = "visibility"`_
 
 ## 9. Learning loops on the Graph path
 
@@ -76,7 +76,7 @@ _3 more open · `goal = "visibility"`_
 - **P2** [gap-b1f7b9](items/gap-b1f7b9-a-plan-s-own-verify-steps-feed.md) A plan's own verify steps feed gate history under the rung they check, so gate-thresholds.json learns from authored test steps · size S · verified 2026-10-15
 - **P2** [gap-a4fbf8](items/gap-a4fbf8-the-model-ladder-retry-budget-floor-overrides.md) The model-ladder retry-budget floor overrides the adaptive gate-history suggestion instead of composing with it (QA7) · size M · verified 2026-10-02
 
-_8 more open · on hold: bug-429315, bug-8c5d32, bug-b9be1d, bug-dd5dca, bug-dee062, find-3d8bd4, find-3f99f2, gap-47356e, gap-4d1bff, reg-d76ab0 · 1 unchecked (`TRIAGE.md`) · `goal = "learning"`_
+_10 more open · on hold: bug-429315, bug-8c5d32, bug-b9be1d, bug-dd5dca, bug-dee062, find-3d8bd4, find-3f99f2, gap-47356e, gap-4d1bff, reg-d76ab0 · 1 unchecked (`TRIAGE.md`) · `goal = "learning"`_
 
 ## 10. Tooling, CLI polish and code hygiene
 
@@ -100,6 +100,6 @@ _5 more open · on hold: gap-63055e, gap-8d80d3, gap-ebd656, spec-743a7e, spec-b
 - **P2** [gap-ccbf26](items/gap-ccbf26-a-capped-run-cannot-bound-a-codex.md) A capped run cannot bound a Codex, Gemini or Cursor CLI attempt: none streams its usage or takes a spend limit, and Codex's and Gemini's turn caps are advisory, so only the attempt timeout ends one · size M · verified 2026-10-16
 - **P2** [gap-ac78fb](items/gap-ac78fb-acp-elicitation-notices-and-interactive-ux-primitives.md) ACP Elicitation, Notices, and Interactive UX Primitives · size L · verified 2026-09-29
 
-_6 more open · `goal = "hermes"`_
+_7 more open · 1 unchecked (`TRIAGE.md`) · `goal = "hermes"`_
 
 10 open items have no goal (later); they are listed in `STATUS.md`.

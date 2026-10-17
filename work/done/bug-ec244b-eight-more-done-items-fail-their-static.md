@@ -2,7 +2,7 @@
 id = "bug-ec244b"
 kind = "bug"
 title = "Eight more done items fail their static verify: three name tests that no longer exist, the rest check moved code, a dropped figure or a wrong path"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p3"
 goal = "tooling"
@@ -11,6 +11,7 @@ subsystem = ["tools/work"]
 created = 2026-10-16
 updated = 2026-10-16
 last_verified = 2026-10-16
+last_verified_rev = "62eee2176"
 source = "gap-6ee3c5 worker, 2026-10-16"
 discovered_from = "gap-6ee3c5: the static regression sweep verify --closed-since 2026-09-26 --static-only"
 anchors = ["work/done/bug-1f098f-whitepaper-pdf-drops-the-space-before-the.md", "work/done/dec-648cce-should-roko-deploy-railway-forward-roko-serve.md", "work/done/dec-af63cc-should-t0-reflexes-serve-tasks-that-something.md", "work/done/gap-198c9c-pk04-operator-control-and-guards-roko-s.md", "work/done/gap-7ec3ef-pk49-m3-self-model-compute-the-m3.md", "work/done/gap-cced54-two-m3-self-model-assumptions-cheap-arm.md", "work/done/q-61b3f8-should-plan-set-parallelism-stay-opt-in.md", "work/done/q-bc6cc5-confirm-licence-coverage-for-another-contributor-s.md"]
@@ -18,6 +19,17 @@ links = { depends_on = [], blocks = [], related = ["gap-6ee3c5", "bug-f5f4d2", "
 
 [[verify]]
 command = "python3 tools/work.py verify --static-only bug-1f098f dec-648cce dec-af63cc gap-198c9c gap-7ec3ef gap-cced54 q-61b3f8 q-bc6cc5"
+
+[closed]
+at = 2026-10-16
+at_ts = "2026-10-16T19:50:51Z"
+commit = "62eee2176"
+executor = "claude-agent"
+via = "work-batch"
+size = "M"
+claimed_at = "2026-10-16T19:19:36Z"
+forced = true
+evidence = "62eee2176: each of the eight failing verifies is retired with retire-verify, and six items get a replacement [[verify]] that passes. bug-1f098f: retired by 7898493f2 (figure gone; b91be1473 deleted status_matrix.py); verify 2 checks the figures README's librsvg rule and that no figure starts a <tspan> with a space. dec-648cce: its grep targeted deployment.rs, which never held the Railway env code, and decision (a) is unimplemented; filed gap-ea9ed8 (verify fails now) and retired the check by it. dec-af63cc: option (b)'s test was never written; retired by b883db4e6; verify 2 runs bug-b4c565's narrow-reflex test. gap-198c9c: 6dd936e4b pushed inherit_gate_env_from past verify 5's 25-line window; verify 11 reads the whole function (fails before 256c9ab86). gap-7ec3ef: verify 4 retired by 5350b2c14 (gap-9aca5d made the default shadow). gap-cced54: retired by b883db4e6 (code confirmed as is); verify 2 checks arm_key and cheap_arms. q-61b3f8: verify 2 checks default_max_parallel_plans() returns 1. q-bc6cc5: added the ## Outcome section from the recorded evidence, retired by 15243f788, verify 2 finds it. FORCED because the item's verify, run in this worktree, fails only on gap-7ec3ef verify 1, which needs the untracked benchmarks/viabilitybench/.venv. Run read-only in the main checkout, that command passes (5 passed), and every other entry passes or is RETIRED. dec-648cce is listed as having every verify retired: gap-ea9ed8 carries its check. check: 0 problems."
 +++
 
 ## Problem

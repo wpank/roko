@@ -10,7 +10,7 @@ rank = 4
 size = "L"
 subsystem = ["roko-cli/graph-execution"]
 created = 2026-10-02
-updated = 2026-10-02
+updated = 2026-10-16
 last_verified = 2026-10-02
 last_verified_rev = "e53136640"
 source = "tmp/backlog/2026-10-02-complete-and-wire PK04"
@@ -33,6 +33,8 @@ command = "grep -q 'inherit_gate_env' crates/roko-cli/src/graph_execution/plan_v
 
 [[verify]]
 command = "grep -A25 'async fn regression_output' crates/roko-cli/src/graph_execution/delivery.rs | grep -q 'gate_env' && grep -rqw 'fn regression_command_sees_no_provider_key' crates/roko-cli/ && cargo test -p roko-cli regression_command_sees_no_provider_key"
+superseded = "2026-10-16: 6dd936e4b (a cancel stops the regression checks) put a stop-aware lock ahead of the command set-up, so regression_output's inherit_gate_env_from call is now 29 lines in, past this grep's 25-line window. The fix holds; verify 11 reads the whole function."
+superseded_by = "6dd936e4b"
 
 [[verify]]
 command = "grep -rqw 'fn pause_holds_next_task_until_resume' crates/roko-cli/tests/ && cargo test -p roko-cli --test pause_canary pause_holds_next_task_until_resume"
@@ -48,6 +50,9 @@ command = "grep -rqw 'fn conductor_supervise_false_keeps_stall_watchdog' crates/
 
 [[verify]]
 command = "grep -rqw 'fn default_config_builds_no_daimon_state' crates/roko-cli/ && cargo test -p roko-cli default_config_builds_no_daimon_state"
+
+[[verify]]
+command = "awk '/async fn regression_output/,/^    }$/' crates/roko-cli/src/graph_execution/delivery.rs | grep -q 'inherit_gate_env_from' && grep -rqw 'fn regression_command_sees_no_provider_key' crates/roko-cli/src/ && cargo test -p roko-cli --lib regression_command_sees_no_provider_key"
 
 [closed]
 at = 2026-10-02

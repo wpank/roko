@@ -408,6 +408,7 @@ pub(crate) async fn cmd_research(
                     env_vars: &gw.vars,
                     role: Some(resolved_role),
                     allowed_tools: Some("Read,Write,Edit"),
+                    max_turns: None,
                 },
                 &spend,
             )
@@ -474,6 +475,7 @@ pub(crate) async fn cmd_research(
                     env_vars: &gw.vars,
                     role: Some(resolved_role),
                     allowed_tools: Some("Read,Write,Edit"),
+                    max_turns: None,
                 },
                 &spend,
             )
@@ -551,6 +553,7 @@ pub(crate) async fn cmd_research(
                     env_vars: &gw.vars,
                     role: Some(resolved_role),
                     allowed_tools: Some("Read,Write,Edit"),
+                    max_turns: None,
                 },
                 &spend,
             )
@@ -799,6 +802,7 @@ async fn run_perplexity_deep(
             model: model_slug.clone(),
             command: None,
             timeout_ms: Some(timeout_ms),
+            max_turns: None,
             system_prompt: None,
             cached_content: None,
             tools: None,
@@ -1013,6 +1017,7 @@ async fn run_gemini_grounded(
             model: model_slug.clone(),
             command: None,
             timeout_ms: Some(timeout_ms),
+            max_turns: None,
             system_prompt: None,
             cached_content: None,
             tools: None,
@@ -1143,6 +1148,7 @@ async fn run_perplexity_standard(
             model: model_slug.clone(),
             command: None,
             timeout_ms: Some(timeout_ms),
+            max_turns: None,
             system_prompt: None,
             cached_content: None,
             tools: None,
@@ -1275,6 +1281,7 @@ async fn run_agent_fallback(
             env_vars,
             role: Some(role),
             allowed_tools: Some("Read,Write,Edit"),
+            max_turns: None,
         },
         &spend,
     )

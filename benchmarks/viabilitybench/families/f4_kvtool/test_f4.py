@@ -385,7 +385,8 @@ def test_f4_hidden_cli_contract(tmp_path, secret):
     verdict = json.loads(result.stdout)
     assert set(verdict) == {"passed", "checks", "gaming", "findings", "verifier_version", "instance_id", "secret",
                             "sandbox"}
-    assert verdict["sandbox"] == sandbox.KIND  # the CLI denies the script the secret file and DIR (gap-8c3752)
+    # The CLI denies the script the secret file and DIR (gap-8c3752), and the network (gap-0bd49a).
+    assert verdict["sandbox"] == sandbox.kind(sandbox.denied(secret_file, task_path), sandbox.NETWORK_NONE)
     assert verdict["passed"] is False and verdict["instance_id"] == task["instance_id"] == "F4-l1-0004"
     assert verdict["secret"] == hmac_seed.read_secret_file(secret_file).fingerprint
     assert [check["id"] for check in verdict["checks"]] == list(hidden.CHECKS)

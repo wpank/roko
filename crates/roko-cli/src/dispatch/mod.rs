@@ -181,6 +181,12 @@ pub struct DispatchContext {
     /// reads to withhold a loop's content (S02 L7). `None` outside Graph
     /// dispatch, and then nothing is withheld.
     pub arm_set: Option<std::sync::Arc<roko_learn::loop_audit::arm_set::ArmSet>>,
+    /// Whether the prompt carries the knowledge section: the
+    /// `knowledge_section` of the θ the attempt runs (M1's B4, gap-6bb6d8),
+    /// and on without M1, as θ₀ has it. Off, the knowledge source still
+    /// retrieves, but its section stays out of the prompt and its ids out of
+    /// what learners credit, and the knowledge decision is the controller's.
+    pub knowledge_section: bool,
     /// The start rung an active self-model chose for the attempt, an index
     /// on its role's ladder (S04, 6130). `None` unless `[self_model] mode`
     /// is active and its calibration gate holds; the router still draws it
@@ -654,6 +660,7 @@ mod tests {
             concurrent_plans: Vec::new(),
             attempt_key: None,
             arm_set: None,
+            knowledge_section: true,
             self_model_rung: None,
             skip_enrichment: false,
         }

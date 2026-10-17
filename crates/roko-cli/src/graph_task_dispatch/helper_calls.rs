@@ -372,7 +372,7 @@ impl GraphTaskDispatcher {
                 totals.unpriced_calls = totals.unpriced_calls.saturating_add(1);
             }
 
-            self.record_task_spend(&spec.plan_id, &task.id, &call.usage);
+            self.record_side_call_spend(&spec.plan_id, &task.id, call);
             if let Err(error) = self.budget_ledger.settle(&spec.plan_id, None, cost_usd) {
                 tracing::warn!(
                     plan_id = %spec.plan_id,
@@ -392,6 +392,12 @@ impl GraphTaskDispatcher {
             .await;
         }
         totals
+    }
+
+    /// [`Self::record_task_spend`] for `call`, a side call of
+    /// `plan_id/task_id`, priced as its cost row says (its `priced`).
+    pub(super) fn record_side_call_spend(&self, plan_id: &str, task_id: &str, call: &SideCall) {
+        self.record_task_spend(plan_id, task_id, &call.usage, call.priced);
     }
 
     /// The cost row and efficiency row of one side call of task `task_id`'s

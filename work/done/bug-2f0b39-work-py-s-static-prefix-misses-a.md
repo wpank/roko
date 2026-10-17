@@ -2,7 +2,7 @@
 id = "bug-2f0b39"
 kind = "bug"
 title = "work.py's static_prefix misses a cargo step behind env -i and treats docker build as static, so verify --static-only ran a cargo test and a Docker image build"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p2"
 goal = "tooling"
@@ -11,6 +11,7 @@ subsystem = ["tools/work"]
 created = 2026-10-16
 updated = 2026-10-16
 last_verified = 2026-10-16
+last_verified_rev = "0332ba894"
 source = "gap-6ee3c5 worker, 2026-10-16"
 discovered_from = "gap-6ee3c5: verify --closed-since 2026-09-26 --static-only started a roko-cli build and a Docker image build"
 anchors = ["tools/work.py::is_heavy", "tools/work.py::static_prefix", "tools/test_work.py"]
@@ -19,6 +20,18 @@ links = { depends_on = [], blocks = [], related = ["dec-01be49", "gap-fcb44c", "
 
 [[verify]]
 command = "python3 -c \"import sys; sys.path.insert(0, 'tools'); import work; sys.exit(work.static_prefix('env -i HOME=x cargo test -p c t') != '' or work.static_prefix('grep -q x f && docker build -t t .') != 'grep -q x f')\""
+
+[closed]
+at = 2026-10-16
+at_ts = "2026-10-16T19:36:50Z"
+commit = "0332ba894"
+by = "commit trailer"
+executor = "claude-agent"
+via = "work-batch"
+size = "S"
+claimed_at = "2026-10-16T19:19:35Z"
+forced = false
+evidence = "0332ba894: tools/work.py HEAVY_ANYWHERE lets env/nice/xargs/time/exec take options with an optional argument (and timeout options before its duration), HEAVY_CMD (shared by HEAVY and HEAVY_ANYWHERE) adds docker, podman, make and deploy/*.sh, and the new HEAVY_ENV makes a command run with *REAL_ROKO*= or *ROKO_BIN*= in its environment heavy. Over the tracker's 1,830 verify commands exactly 7 static prefixes change, all real heavy steps: dec-01be49 (env -i ... cargo test), gap-fcb44c#8 (docker build), gap-31c0e8 and gap-127263#2 (VB_REQUIRE_REAL_ROKO=1 pytest), gap-3516d6 (preflight.sh --local) and the open gap-00e882 and gap-31e1b0 (preflight.sh against fly.dev). verify --static-only dec-01be49 gap-fcb44c gap-31c0e8 now runs only greps, test -f and a tomllib parse, finishes at once and creates no target/. The verify passes; test_static_prefix_stops_at_a_heavy_command_anywhere_in_a_part covers every form and fails on the old regexes; test_work.py 45 OK; check 0 problems. Left static on purpose: git-only python checks, and viabilitybench verify_verifiers.py --families f7, which runs a seconds-long offline cargo test of a one-file crate inside the script."
 +++
 
 ## Problem

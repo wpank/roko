@@ -9,7 +9,7 @@ goal = "golden-path"
 size = "M"
 subsystem = ["roko-cli/model_selection", "roko-cli/prd", "roko-core/config"]
 created = 2026-09-29
-updated = 2026-09-29
+updated = 2026-10-16
 last_verified = 2026-09-29
 last_verified_rev = "c651ddc57"
 source = "tmp/cybernetic-harness/workstreams/PLAN.md#e8"
@@ -24,6 +24,11 @@ command = "grep -rqw 'fn planner_model_precedence_cli_then_authoring_then_role' 
 
 [[verify]]
 command = "grep -q 'resolve_planner_model' crates/roko-cli/src/prd.rs && grep -q 'resolve_planner_model' crates/roko-cli/src/plan_authoring.rs && grep -rq 'resolve_planner_model' crates/roko-cli/src/commands/"
+superseded = "2026-10-16: 7f2776fc1 deleted crates/roko-cli/src/prd.rs with the PRD pipeline. plan_generate/pipeline.rs is now the one plan generator; verify 3 checks it and the other two places."
+superseded_by = "7f2776fc1"
+
+[[verify]]
+command = "grep -q 'resolve_planner_model' crates/roko-cli/src/plan_generate/pipeline.rs && grep -q 'resolve_planner_model' crates/roko-cli/src/plan_authoring.rs && grep -rq 'resolve_planner_model' crates/roko-cli/src/commands/"
 
 [closed]
 at = 2026-09-29

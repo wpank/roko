@@ -180,6 +180,7 @@ fn dispatch_context(workdir: &Path, key: &AttemptKey, arms: Arc<ArmSet>) -> Disp
         concurrent_plans: Vec::new(),
         attempt_key: Some(key.clone()),
         arm_set: Some(arms),
+        knowledge_section: true,
         self_model_rung: None,
         skip_enrichment: true,
     }

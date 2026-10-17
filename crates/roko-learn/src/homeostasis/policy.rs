@@ -5,7 +5,10 @@
 //! inner bands, the drive's weights, the tiers, the minimum verify rungs
 //! and the ceiling of M1's verify-depth floor, the audit floor and ceiling,
 //! and the holdout rate. A human writes it and edits it; this module opens
-//! it to read and has no way to write it.
+//! it to read and has no way to write it. A workspace without one runs M1 in
+//! shadow on the policy roko ships, [`DEFAULT_VIABILITY_POLICY`], which
+//! `roko init` writes there for a person to edit (gap-cad57a); only a
+//! person's policy lets M1 act ([`ViabilityPolicy::load_or_shipped`]).
 //!
 //! [`SafetyBox::validate`] admits a change θ_old → θ_new only when:
 //!
@@ -42,7 +45,7 @@ use roko_core::config::RokoConfig;
 use roko_core::config::harness_params::{
     Block, EXTRA_RUNGS_NOTCHES, HarnessLadders, HarnessParams, Knob, VerifyDepth,
 };
-use roko_core::config::homeostasis::HomeostasisConfig;
+use roko_core::config::homeostasis::{HomeostasisConfig, HomeostasisMode};
 use serde::{Deserialize, Serialize};
 
 use super::ev::{DrivePolicy, Ev, EvBounds};
@@ -53,6 +56,56 @@ pub const VIABILITY_POLICY_FILE: &str = "policy/viability.toml";
 
 /// The holdout share when the policy names none (S06 §4.8).
 pub const DEFAULT_HOLDOUT: f64 = 0.10;
+
+/// The S5 policy roko ships (gap-cad57a): S06 §5's bounds, D9's drive
+/// weights (decision 8102), the task's authored verify steps as the only
+/// minimum rung, M4's audit bounds and S06 §4.8's holdout. It names no tier
+/// models: B1 moves along the workspace's own `[routing.ladder]` (8101).
+///
+/// M1 runs in shadow on it in a workspace without a policy of its own, and
+/// `roko init` writes it to `.roko/policy/viability.toml`, where a person
+/// edits it. Unedited, it is still the shipped policy, which never lets M1
+/// act ([`ViabilityPolicy::load_or_shipped`]).
+pub const DEFAULT_VIABILITY_POLICY: &str = r#"# M1's S5 viability policy: the bounds roko's homeostatic controller keeps a
+# plan run's essential variables inside (S06 §5).
+#
+# These are roko's shipped defaults. M1 only reads this file; a person edits
+# it. While it is unedited, M1 never acts on it: at most M1 runs in shadow,
+# logging what it would change. Raise policy_version with each edit, since
+# every controller record carries it.
+policy_version = 1
+ev.pass_rate = { lo = 0.70, inner = 0.75 }
+ev.usd_per_verified_success = { hi = 0.12, inner = 0.108, abs_cap = 0.50 }
+ev.false_green = { hi = 0.10 }
+ev.latency_p90_s = { hi = 900, inner = 810 }
+drive = { n = 3, m = 2, weights = { pass_rate = 1.0, usd_per_verified_success = 1.0, false_green = 2.0, latency_p90_s = 0.5 } }
+verify = { min_rungs = ["authored"] }
+audit = { p_floor = 0.10, p_max = 0.40 }
+holdout = 0.10
+"#;
+
+/// Whose bounds M1 reads (gap-cad57a).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PolicyOrigin {
+    /// A person's: the workspace's policy file, edited.
+    Person,
+    /// roko's shipped [`DEFAULT_VIABILITY_POLICY`]: the workspace has no
+    /// policy file, or has the one `roko init` wrote, unedited.
+    Shipped,
+}
+
+/// The mode M1 runs in when `mode` is asked for, by the config or a person,
+/// on a policy from `origin`: `mode`, but shadow for `on` on roko's shipped
+/// policy, since only bounds a person wrote let M1 act (S06 §4.2,
+/// gap-cad57a).
+#[must_use]
+pub const fn mode_on_policy(mode: HomeostasisMode, origin: PolicyOrigin) -> HomeostasisMode {
+    match (mode, origin) {
+        (HomeostasisMode::On, PolicyOrigin::Shipped) => HomeostasisMode::Shadow,
+        (mode, _) => mode,
+    }
+}
 
 /// The S5 viability policy (S06 §5). M1 reads it and never writes it.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -178,12 +231,17 @@ impl ViabilityPolicy {
     /// [`PolicyError`] when the file cannot be read or parsed, or fails
     /// [`Self::problems`].
     pub fn load(path: &Path) -> Result<Self, PolicyError> {
+        Self::read(path).map(|(policy, _)| policy)
+    }
+
+    /// The policy at `path`, checked, with the text it was read from.
+    fn read(path: &Path) -> Result<(Self, String), PolicyError> {
         let shown = path.display().to_string();
         let text = std::fs::read_to_string(path).map_err(|source| PolicyError::Read {
             path: shown.clone(),
             source,
         })?;
-        Self::parse(&text).map_err(|error| match error {
+        let policy = Self::parse(&text).map_err(|error| match error {
             PolicyError::Parse { source, .. } => PolicyError::Parse {
                 path: shown.clone(),
                 source,
@@ -193,11 +251,12 @@ impl ViabilityPolicy {
                 problem,
             },
             other => other,
-        })
+        })?;
+        Ok((policy, text))
     }
 
-    /// The policy of `<roko_dir>`, or `None` when it has none: without
-    /// bounds a human has written, M1 has nothing to regulate.
+    /// The policy of `<roko_dir>`, or `None` when it has no policy file.
+    /// M1 then runs on the shipped one ([`Self::load_or_shipped`]).
     ///
     /// # Errors
     ///
@@ -208,6 +267,36 @@ impl ViabilityPolicy {
             return Ok(None);
         }
         Self::load(&path).map(Some)
+    }
+
+    /// The policy roko ships, [`DEFAULT_VIABILITY_POLICY`] (gap-cad57a).
+    #[must_use]
+    pub fn shipped_default() -> Self {
+        Self::parse(DEFAULT_VIABILITY_POLICY).expect("the shipped viability policy is sound")
+    }
+
+    /// The policy M1 runs on in `<roko_dir>`, and whose it is
+    /// (gap-cad57a): the workspace's policy file, which is a person's unless
+    /// it is still the text `roko init` wrote, or else the shipped policy.
+    /// Without bounds a person wrote M1 never acts: its callers keep it in
+    /// shadow on a [`PolicyOrigin::Shipped`] policy.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::load`], for a file that exists: a broken policy a person
+    /// wrote is never replaced by the shipped one.
+    pub fn load_or_shipped(roko_dir: &Path) -> Result<(Self, PolicyOrigin), PolicyError> {
+        let path = Self::path_in(roko_dir);
+        if !path.exists() {
+            return Ok((Self::shipped_default(), PolicyOrigin::Shipped));
+        }
+        let (policy, text) = Self::read(&path)?;
+        let origin = if text == DEFAULT_VIABILITY_POLICY {
+            PolicyOrigin::Shipped
+        } else {
+            PolicyOrigin::Person
+        };
+        Ok((policy, origin))
     }
 
     /// Parse and check policy text.
@@ -782,6 +871,47 @@ audit = { p_floor = 0.10, p_max = 0.25 }
             ViabilityPolicy::parse(&bad),
             Err(PolicyError::Parse { .. })
         ));
+    }
+
+    /// gap-cad57a: the shipped policy is S06 §5's bounds with D9's weights,
+    /// the authored verify steps, M4's audit bounds, a 10% holdout and no
+    /// tier models. A workspace with no policy file, or with the text
+    /// `roko init` wrote, runs on it as roko's; an edit makes the file a
+    /// person's, and a broken file is an error, never the shipped policy.
+    #[test]
+    fn shipped_policy_is_s06_section_5_until_a_person_edits_it() {
+        let shipped = ViabilityPolicy::shipped_default();
+        assert_eq!(shipped.policy_version, 1);
+        assert_eq!(shipped.ev, EvBounds::s06_example());
+        assert_eq!(shipped.drive, DrivePolicy::default());
+        assert!(shipped.tiers.is_empty(), "{:?}", shipped.tiers);
+        assert_eq!(shipped.verify, VerifyPolicy::default());
+        assert_eq!(shipped.audit, AuditPolicy::default());
+        assert!((shipped.holdout - DEFAULT_HOLDOUT).abs() < 1e-12);
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let none = ViabilityPolicy::load_or_shipped(dir.path()).expect("no file");
+        assert_eq!(none, (shipped.clone(), PolicyOrigin::Shipped));
+
+        let path = ViabilityPolicy::path_in(dir.path());
+        std::fs::create_dir_all(path.parent().expect("policy dir")).expect("mkdir");
+        std::fs::write(&path, DEFAULT_VIABILITY_POLICY).expect("write the shipped text");
+        let unedited = ViabilityPolicy::load_or_shipped(dir.path()).expect("the shipped text");
+        assert_eq!(unedited, (shipped, PolicyOrigin::Shipped));
+
+        let edited = DEFAULT_VIABILITY_POLICY.replace("policy_version = 1", "policy_version = 2");
+        std::fs::write(&path, edited).expect("edit it");
+        let (policy, origin) = ViabilityPolicy::load_or_shipped(dir.path()).expect("edited");
+        assert_eq!((policy.policy_version, origin), (2, PolicyOrigin::Person));
+
+        std::fs::write(&path, "policy_version = 0\n").expect("break it");
+        assert!(ViabilityPolicy::load_or_shipped(dir.path()).is_err());
+
+        // Only a person's policy lets M1 act.
+        let (on, shadow) = (HomeostasisMode::On, HomeostasisMode::Shadow);
+        assert_eq!(mode_on_policy(on, PolicyOrigin::Shipped), shadow);
+        assert_eq!(mode_on_policy(shadow, PolicyOrigin::Shipped), shadow);
+        assert_eq!(mode_on_policy(on, PolicyOrigin::Person), on);
     }
 
     #[test]

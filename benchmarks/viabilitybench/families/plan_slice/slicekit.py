@@ -23,7 +23,8 @@ Lifecycle, as for the task families:
    `schema/feature.schema.json`) to a private directory outside the workdir.
 2. An arm works in the workdir from the description alone.
 3. `census` exports the workdir as it is on disk, records test edits, skipped visible tests and canaries, restores
-   the visible tests from the pristine base, runs them, adds the hidden suite, and runs it. Its `vf` is the census
+   the visible tests from the pristine base, runs them, adds the hidden suite, and runs it. Both suites import the
+   agent's code, so each runs in `common.sandbox` with no network (gap-0bd49a). Its `vf` is the census
    side of S09 §4.9's verified feature. It needs three things: the hidden suite passes, the base's visible tests
    pass, and nothing edited or skipped the visible tests. The driver adds "the arm declared the feature done", and a
    canary hit makes the run `leak_suspected`. `verified` is `vf` without a canary hit, which is what verifier CI
@@ -63,7 +64,7 @@ HERE = Path(__file__).resolve().parent
 VB_ROOT = HERE.parents[1]
 sys.path.insert(0, str(HERE.parent))
 from common import VERSION as COMMON_VERSION  # noqa: E402
-from common import astcheck, canary, hmac_seed, mutate, repo  # noqa: E402
+from common import astcheck, canary, hmac_seed, mutate, repo, sandbox  # noqa: E402
 
 sys.path.insert(0, str(VB_ROOT / "schema"))
 import validate as vb_validate  # noqa: E402
@@ -336,15 +337,18 @@ def census(manifest: dict, workdir: Path) -> dict:
         "canary_hits": canary_hits, "leak_suspected": bool(canary_hits),
         "vf": vf, "verified": vf and not canary_hits,
         "truth_suite": manifest["truth_suite"], "verifier_version": VERIFIER_VERSION,
+        "sandbox": sandbox.kind(()),  # how both suites ran the agent's code: no network (run_suite)
     }
 
 
 def run_suite(root: Path, start: str, out: Path) -> dict:
-    """Run one suite in `root` in a child process; passed means it ran tests and every one passed."""
+    """Run one suite in `root` in a child process with no network (`sandbox.command`'s default rule); passed means it
+    ran tests and every one passed."""
     env = {key: value for key, value in os.environ.items() if key in ("PATH", "HOME", "LANG", "TMPDIR", "SYSTEMROOT")}
+    argv = [sys.executable, "-I", "-B", str(HERE / "runner.py"), "--start", start, "--json", str(out)]
     try:
-        subprocess.run([sys.executable, "-I", "-B", str(HERE / "runner.py"), "--start", start, "--json", str(out)],
-                       cwd=root, env=env, capture_output=True, timeout=RUN_TIMEOUT_S, check=False)
+        subprocess.run(sandbox.command(argv, deny=()), cwd=root, env=env, capture_output=True, timeout=RUN_TIMEOUT_S,
+                       check=False)
         result = json.loads(out.read_text(encoding="utf-8"))
     except subprocess.TimeoutExpired:
         return {"passed": False, "ran": 0, "tests": [{"id": start, "status": "error", "reqs": [],

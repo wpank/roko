@@ -2,15 +2,16 @@
 id = "gap-6bb6d8"
 kind = "gap"
 title = "M1's B4 knob knowledge_section has no reader: a move on it changes nothing"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p2"
 goal = "cybernetic"
 size = "S"
 subsystem = ["roko-cli/dispatch", "roko-core/config"]
 created = 2026-10-15
-updated = 2026-10-15
-last_verified = 2026-10-15
+updated = 2026-10-16
+last_verified = 2026-10-16
+last_verified_rev = "5783f69d0"
 source = "status-quo-2026-10-15#finding-13"
 anchors = ["crates/roko-core/src/config/harness_params.rs::HarnessParams", "crates/roko-cli/src/dispatch/prompt_builder.rs::withholds", "crates/roko-cli/src/graph_task_dispatch/verification.rs::error_pattern_limit", "crates/roko-learn/src/homeostasis/policy.rs::SafetyBox"]
 lane = "rust-hot"
@@ -19,6 +20,18 @@ links = { depends_on = [], blocks = [], related = [], supersedes = [], duplicate
 
 [[verify]]
 command = "grep -rqw 'fn knowledge_section_knob_off_omits_the_knowledge_section' crates/roko-cli/ && cargo test -p roko-cli knowledge_section_knob_off_omits_the_knowledge_section"
+
+[closed]
+at = 2026-10-16
+at_ts = "2026-10-16T20:18:29Z"
+commit = "5783f69d0"
+by = "commit trailer"
+executor = "claude-agent"
+via = "work-batch"
+size = "S"
+claimed_at = "2026-10-16T19:19:20Z"
+forced = false
+evidence = "5783f69d0: each Graph attempt's DispatchContext and PromptContext carry knowledge_section, the knob of the θ the attempt runs (AttemptContext::knowledge_section; on without an M1 sink, as θ₀). With it off, PromptAssembler::assemble leaves the `knowledge` source section out (PromptContext::harness_withholds, beside the L-know arm's withholds): its entries are logged with the new excluded_reason harness_policy (ExcludedReason::HarnessPolicy), PromptDiagnostics::knowledge_section_off is set, and decision_log marks the knowledge row source = control and no L-know opportunity (reason knowledge_section_off), so the census credits neither L-know arm. Verify `cargo test -p roko-cli knowledge_section_knob_off_omits_the_knowledge_section` passed on the committed tree (1 passed; all 76 roko-cli test binaries built and ran clean); the dispatch::prompt_builder, graph_task_dispatch::decision_log and graph_task_dispatch::attempt lib tests pass (97); cargo clippy -p roko-learn -p roko-cli --no-deps -- -D warnings is clean."
 +++
 
 ## Problem

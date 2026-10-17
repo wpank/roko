@@ -2,21 +2,32 @@
 id = "gap-dc5d7c"
 kind = "gap"
 title = "Plan generation never checks that a plan keeps its source's acceptance checks: spec quality rated plans that kept 0 of 8 and 4 of 14 of them at 90.6 and 100"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p1"
 goal = "golden-path"
 size = "M"
 subsystem = ["roko-cli/plan_generate"]
 created = 2026-10-16
-updated = 2026-10-16
-last_verified = 2026-10-16
+updated = 2026-10-17
+last_verified = 2026-10-17
+last_verified_rev = "0b5d222c7"
 source = "plans-research, round v6 (tmp/hermes-roko-v6/findings/plans-research.md §3.2 and §5 item 5)"
 anchors = ["crates/roko-cli/src/plan_generate/pipeline.rs::spec_scores", "crates/roko-cli/src/plan_generate/pipeline.rs::generate_plan", "crates/roko-gate/src/spec_quality.rs::lint_files"]
 links = { depends_on = [], blocks = [], related = ["bug-f0d60c", "gap-dde99e", "spec-e57870"], supersedes = [], duplicate_of = "" }
 
 [[verify]]
 command = "grep -rqw 'fn from_file_generation_reports_dropped_source_checks' crates/roko-cli/src && cargo test -p roko-cli --lib -- from_file_generation_reports_dropped_source_checks"
+
+[closed]
+at = 2026-10-17
+at_ts = "2026-10-17T13:27:30Z"
+commit = "5463e77a4"
+by = "roko-planner"
+executor = "claude-agent"
+via = "manual"
+forced = false
+evidence = "Source checks extracted (plan_generate/source_checks.rs), listed for the planner, kept/shallow/dropped/missing coverage with one regeneration, covers by SC id normalized to criteria, restated drop reasons rejected, [meta] dropped_checks; reported in CLI output, writing-stage progress, GenerationOutcome.source_checks and serve op result source_checks (5463e77a4, 8d8a0a0a6, 468e0ba52). Verify from_file_generation_reports_dropped_source_checks passes. Live re-run of plans-research docs at 468e0ba52: 08g/gpt-oss-120b 0/8 -> 8/8; pocket-synth/gpt-oss-120b 4/14 -> 14/14; 08g/gpt-5.4-mini 0/8 -> 0/8 (twice: the planner will not pin files without 08e, open questions). Kept steps that cannot pass yet filed as gap-ecafde. Live spend $0.1555."
 +++
 
 ## Problem

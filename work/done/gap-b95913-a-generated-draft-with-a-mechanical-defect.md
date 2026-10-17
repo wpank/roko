@@ -2,21 +2,32 @@
 id = "gap-b95913"
 kind = "gap"
 title = "A generated draft with a mechanical defect (meta.total 0, a line range past the end of its file, too many read_files) is sent back to the planner instead of repaired"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p2"
 goal = "golden-path"
 size = "S"
 subsystem = ["roko-cli/plan_generate"]
 created = 2026-10-16
-updated = 2026-10-16
-last_verified = 2026-10-16
+updated = 2026-10-17
+last_verified = 2026-10-17
+last_verified_rev = "0b5d222c7"
 source = "plans-research, round v6 (tmp/hermes-roko-v6/findings/plans-research.md §3.2 and §5 item 3)"
 anchors = ["crates/roko-cli/src/plan_generate/pipeline.rs::validate_and_fix_generated_plan", "crates/roko-cli/src/plan_generate/pipeline.rs::clamp_context_ranges_past_eof", "crates/roko-cli/src/plan_policy.rs::validate_plan_budgets"]
 links = { depends_on = [], blocks = [], related = ["bug-f0d60c", "gap-f8a6ea"], supersedes = [], duplicate_of = "" }
 
 [[verify]]
 command = "grep -rqw 'fn generated_draft_repairs_total_ranges_and_read_files' crates/roko-cli/src && cargo test -p roko-cli --lib -- generated_draft_repairs_total_ranges_and_read_files"
+
+[closed]
+at = 2026-10-17
+at_ts = "2026-10-17T13:27:31Z"
+commit = "91a8be11a"
+by = "roko-planner"
+executor = "claude-agent"
+via = "manual"
+forced = false
+evidence = "repair_generated_draft recounts meta.total, keeps the first max_read_files_per_task read_files, and fit_ranges_to_files fits ranges in files no earlier task changes (cut at the last line, or unranged past it), sharing fit_range with fit_ranges_to_earlier_changes; each repair printed (91a8be11a). Verify generated_draft_repairs_total_ranges_and_read_files passes. Live: pocket-synth first draft (4 read_files, ranges 1-50 of a 13-line file) was repaired and written after 1 call (before: rejected, 2 calls); 08g ranges 200-400 of a 71-line doc fitted, not rejected."
 +++
 
 ## Problem

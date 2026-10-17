@@ -2,21 +2,32 @@
 id = "bug-f0d60c"
 kind = "bug"
 title = "A generated plan whose first draft fails extraction or validation is rewritten without its source document, from 2,000 characters of the draft and a one-task template, so the source's acceptance checks are lost"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p1"
 goal = "golden-path"
 size = "M"
 subsystem = ["roko-cli/plan_generate"]
 created = 2026-10-16
-updated = 2026-10-16
-last_verified = 2026-10-16
+updated = 2026-10-17
+last_verified = 2026-10-17
+last_verified_rev = "0b5d222c7"
 source = "plans-research, round v6 (tmp/hermes-roko-v6/findings/plans-research.md §3.2 and §5 item 2)"
 anchors = ["crates/roko-cli/src/plan_generate/pipeline.rs::generate_plan", "crates/roko-cli/src/plan_generate/pipeline.rs::RETRY_OUTPUT_CHARS"]
 links = { depends_on = [], blocks = [], related = ["gap-f8a6ea", "bug-09cc5f", "spec-e57870"], supersedes = [], duplicate_of = "" }
 
 [[verify]]
 command = "grep -rqw 'fn extraction_retry_keeps_the_source_document' crates/roko-cli/src && cargo test -p roko-cli --lib -- extraction_retry_keeps_the_source_document"
+
+[closed]
+at = 2026-10-17
+at_ts = "2026-10-17T13:27:28Z"
+commit = "340f10bbf"
+by = "roko-planner"
+executor = "claude-agent"
+via = "manual"
+forced = false
+evidence = "Retry prompt is the original request (source included) + the whole rejected reply (up to the planner source budget) + its errors; the one-task template naming crates/roko-core/src/lib.rs is gone; rejected replies kept as .roko/plan-drafts/<slug>/rejected-<n>.md (340f10bbf, 1641a28a7, 3623656d4; rustfmt 987030209). Verify extraction_retry_keeps_the_source_document passes in the stack run (roko-cli lib 3772+ passed, 0 failed). Live (round v6, binary 468e0ba52): 08g with gpt-oss-120b - the first reply held no plan, was kept as rejected-1.md, and the retry with the source wrote 7 tasks that keep 8 of 8 checks (before: 0 of 8 from the template retry)."
 +++
 
 ## Problem

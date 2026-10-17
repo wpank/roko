@@ -2,21 +2,32 @@
 id = "gap-18bfa2"
 kind = "gap"
 title = "Plan generation has no spend cap: its planner calls, retries, regenerations and model escalation are uncapped"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p2"
 goal = "golden-path"
 size = "M"
 subsystem = ["roko-cli/plan_generate"]
 created = 2026-10-16
-updated = 2026-10-16
-last_verified = 2026-10-16
+updated = 2026-10-17
+last_verified = 2026-10-17
+last_verified_rev = "0b5d222c7"
 source = "plans-research, round v6 (tmp/hermes-roko-v6/findings/plans-research.md §3.4 and §5 item 9)"
 anchors = ["crates/roko-cli/src/plan_generate/pipeline.rs::generate_plan", "crates/roko-cli/src/plan_authoring.rs::AuthoringSpend", "crates/roko-cli/src/commands/plan.rs::PlanCmd"]
 links = { depends_on = [], blocks = [], related = ["bug-f0d60c", "gap-dc5d7c"], supersedes = [], duplicate_of = "" }
 
 [[verify]]
 command = "grep -rqw 'fn plan_generation_stops_at_its_spend_cap' crates/roko-cli/src && cargo test -p roko-cli --lib -- plan_generation_stops_at_its_spend_cap"
+
+[closed]
+at = 2026-10-17
+at_ts = "2026-10-17T13:27:32Z"
+commit = "4847b9fad"
+by = "roko-planner"
+executor = "claude-agent"
+via = "manual"
+forced = false
+evidence = "Spend cap: [authoring] max_generation_usd (default 2.0, 0 = none), plan generate --max-usd; no planner call after the cap is reached: a needed retry stops with an error naming cap and spend, optional regenerations are skipped; PlanProgress.max_usd in every stage (4847b9fad). Verify plan_generation_stops_at_its_spend_cap passes; roko-core authoring tests pass. Live: all five round-v6 generations ran under --max-usd 0.06/0.10 and stayed under (largest $0.0504)."
 +++
 
 ## Problem

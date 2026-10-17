@@ -2,14 +2,16 @@
 id = "bug-8fe462"
 kind = "bug"
 title = "Plan writing turns a spec's wildcard test check (tests.test_osc.NoiseTest.*, SVFTest.test_lowpass_*) into invented test names, even after its cannot-run retry, so G1's plan kept 12 of 14 checks and two tasks carry checks that cannot pass"
-status = "open"
-triage = "unverified"
+status = "done"
+triage = "verified"
 severity = "p2"
 goal = "golden-path"
 size = "M"
 subsystem = ["roko-cli/plan-generate"]
 created = 2026-10-18
 updated = 2026-10-18
+last_verified = 2026-10-18
+last_verified_rev = "23288052b"
 source = "round-v6-dogfood-desktop#L4-g1"
 discovered_from = "agent:dogfood-desktop (round v6 showcase take L4, 2026-10-18)"
 anchors = ["crates/roko-cli/src/plan_generate/runnable.rs::repair", "crates/roko-cli/src/plan_generate/runnable.rs::named_tests", "crates/roko-cli/src/plan_generate/source_checks.rs"]
@@ -17,6 +19,18 @@ links = { depends_on = [], blocks = [], related = ["gap-ecafde"], supersedes = [
 
 [[verify]]
 command = "grep -rqw 'fn wildcard_spec_checks_become_runnable_steps' crates/roko-cli/src && cargo test -p roko-cli --lib -- wildcard_spec_checks_become_runnable_steps wildcard_checks_expand_to_their_tests"
+
+[closed]
+at = 2026-10-18
+at_ts = "2026-10-17T23:14:45Z"
+commit = "4e5211923"
+by = "roko-planner"
+executor = "claude-agent"
+via = "manual"
+size = "M"
+claimed_at = "2026-10-17T22:50:41Z"
+forced = false
+evidence = "runnable::check_command expands a source check stated as unittest ids: Module.Class.* runs the class (python3 -m unittest tests.test_osc.NoiseTest), Module.Class.prefix* the matching methods its file defines (or -k prefix over the module while the file is missing), a bare method name after an id joins its class; the planner source-check list shows each as (run: ...), and source_checks::apply_runs gives a step that cannot run over such checks their commands with no planner call (4e5211923). Verify wildcard_spec_checks_become_runnable_steps and wildcard_checks_expand_to_their_tests pass; roko-cli lib 3820 passed, 0 failed; clippy roko-cli clean. Live pocket-synth re-run (gpt-oss-120b, binary 4e5211923, 1 call, $0.0242): 14 of 14 kept on the first draft; INV-4 runs python3 -m unittest tests.test_osc.NoiseTest, INV-5 both real lowpass ids; every step exits 1 on the base and 0 on the plans-research reference."
 +++
 
 ## Problem

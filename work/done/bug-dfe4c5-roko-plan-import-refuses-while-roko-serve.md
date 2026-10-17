@@ -2,20 +2,29 @@
 id = "bug-dfe4c5"
 kind = "bug"
 title = "roko plan import refuses while roko serve runs in the workspace: it takes the exclusive workspace lock, though a fresh import writes only new plan directories"
-status = "open"
-triage = "unverified"
+status = "done"
+triage = "verified"
 severity = "p2"
 goal = "hermes"
 size = "S"
 subsystem = ["roko-cli/plan"]
 created = 2026-10-17
 updated = 2026-10-17
+last_verified = 2026-10-17
+last_verified_rev = "081cbaf37"
 source = "tmp/hermes-roko-v6 (dogfood-desktop's mori-import scene, via team-lead)"
 anchors = ["crates/roko-cli/src/commands/plan.rs", "crates/roko-cli/src/plan_import.rs::write_mori_import"]
 links = { depends_on = [], blocks = [], related = ["bug-1f5406", "bug-808700", "gap-624658"], supersedes = [], duplicate_of = "" }
 
 [[verify]]
 command = "grep -rqw 'fn plan_import_runs_beside_the_serve_that_holds_the_workspace' crates/roko-cli/ && cargo test -p roko-cli --lib plan_import_runs_beside_the_serve_that_holds_the_workspace"
+
+[closed]
+at = 2026-10-17
+at_ts = "2026-10-17T19:24:55Z"
+commit = "c062ebf85"
+forced = false
+evidence = "A fresh roko plan import takes no workspace lock, as roko plan generate takes none (#226): it writes each new plan into a hidden .<name>.import-<pid> directory beside its place, which plan discovery skips, and renames it in whole, so a reader such as roko serve sees all of the plan or none. --force, which replaces plans, keeps the exclusive lock, and when serve holds it the error names serve and points to a new --out or --set. Beside serve the report ends with roko serve (PID n) runs in this workspace and lists the new plans. Live at zero cost, a serve on a copy of the pocket-sequencer workspace: before (roko-main-b2970cb12) both imports exit 2 with the workspace lock error and /api/plans is empty; after, the import writes plans/pocket-sequencer (5 tasks, 0 diagnostics) and exits 0, --force exits 2 naming serve, /api/plans lists pocket-sequencer with its 5 tasks, and no staging directory is left. On 081cbaf37 (main 56ed8657b merged in): the verify, the 4 importer tests, the corpus test (156 of 156 validate), the bug-ce2967 and gap-6605f7 verifies, clippy -D warnings (roko-serve, roko-cli) and nightly fmt pass."
 +++
 
 ## Problem

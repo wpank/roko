@@ -1023,6 +1023,7 @@ mod tests {
             jwks_providers: Vec::new(),
             privy_workspace_id: None,
             privy_allowed_roles: Vec::new(),
+            privy_allowed_users: Vec::new(),
             enforcement_mode: Default::default(),
             invite_expiry_days: 7,
         };
@@ -2175,6 +2176,7 @@ mod tests {
             jwks_providers: Vec::new(),
             privy_workspace_id: None,
             privy_allowed_roles: Vec::new(),
+            privy_allowed_users: Vec::new(),
             enforcement_mode: Default::default(),
             invite_expiry_days: 7,
         };
@@ -2415,6 +2417,7 @@ mod tests {
             jwks_providers: Vec::new(),
             privy_workspace_id: None,
             privy_allowed_roles: Vec::new(),
+            privy_allowed_users: Vec::new(),
             enforcement_mode: Default::default(),
             invite_expiry_days: 7,
         };
@@ -2459,6 +2462,7 @@ mod tests {
             jwks_providers: Vec::new(),
             privy_workspace_id: None,
             privy_allowed_roles: Vec::new(),
+            privy_allowed_users: Vec::new(),
             enforcement_mode: Default::default(),
             invite_expiry_days: 7,
         };

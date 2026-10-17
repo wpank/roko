@@ -1922,6 +1922,7 @@ fn build_schema_tree() -> toml::Value {
     auth.privy_app_id = Some(String::new());
     auth.privy_workspace_id = Some(String::new());
     auth.privy_allowed_roles = vec![String::new()];
+    auth.privy_allowed_users = vec![String::new()];
     config.server.auth_token = Some(String::new());
     let deploy = &mut config.deploy;
     deploy.railway_api_token = Some(String::new());

@@ -630,7 +630,8 @@ fn posture_checks(config: &roko_core::config::schema::RokoConfig) -> Vec<Posture
     let showcase = config.showcase.enabled;
     let privy_limited = auth.privy_app_id.is_none()
         || !auth.privy_allowed_roles.is_empty()
-        || auth.privy_workspace_id.is_some();
+        || auth.privy_workspace_id.is_some()
+        || !auth.privy_allowed_users.is_empty();
     let extras: Vec<&str> = config
         .serve
         .public_routes
@@ -1579,6 +1580,17 @@ mod tests {
         assert!(!check(&posture_checks(&config), "G0").ok);
         let sentinel = "roko-showcase-privy-disabled-2e0c24bbd6947906d0c5ae1ec054763a";
         config.serve.auth.privy_workspace_id = Some(sentinel.to_string());
+        assert!(check(&posture_checks(&config), "G0").ok);
+    }
+
+    #[test]
+    fn posture_g0_accepts_a_user_id_allow_list_too() {
+        // gap-47e0de: privy_allowed_users is a third, independent way to
+        // limit Privy, alongside roles and workspace.
+        let mut config = RokoConfig::default();
+        config.serve.auth.privy_app_id = Some("privy-app".to_string());
+        assert!(!check(&posture_checks(&config), "G0").ok);
+        config.serve.auth.privy_allowed_users = vec!["did:privy:operator".to_string()];
         assert!(check(&posture_checks(&config), "G0").ok);
     }
 

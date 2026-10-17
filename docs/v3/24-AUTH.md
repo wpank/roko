@@ -47,7 +47,7 @@ if none matches, the request is rejected with 401.
 | 3 | Agent bearer token (`roko_agent_` prefix) | `Authorization: Bearer roko_agent_...` | Capability-based (see Section 3) |
 | 4 | Relay bearer token (`roko_relay_` prefix) | `Authorization: Bearer roko_relay_...` | Narrowed from parent capabilities |
 | 5 | Bearer matched against API key entries | `Authorization: Bearer <token>` | Same as API key scope |
-| 6 | Privy JWT | `Authorization: Bearer <jwt>` | From `privy_allowed_roles` / `privy_workspace_id`; rejected when neither is set (Section 7.2) |
+| 6 | Privy JWT | `Authorization: Bearer <jwt>` | From `privy_allowed_users` / `privy_allowed_roles` / `privy_workspace_id`; rejected when none is set (Section 7.2) |
 
 On success, the middleware injects an `AuthContext` into request extensions:
 
@@ -356,18 +356,30 @@ a request-driven refresh storm.
 
 ### 7.2 JWT Validation Chain
 
-1. **Allow-list** -- `privy_allowed_roles` or `privy_workspace_id` must be
-   configured. Without either, every Privy JWT is rejected (fail closed) and
-   the server logs a warning naming both settings.
+1. **Allow-list** -- `privy_allowed_users`, `privy_allowed_roles` or
+   `privy_workspace_id` must be configured. Without any of the three, every
+   Privy JWT is rejected (fail closed) and the server logs a warning naming
+   all three settings.
 2. **Signature + app-id** -- verified against the JWKS keyset for the configured
    `privy_app_id`.
-3. **Workspace membership** -- if `privy_workspace_id` is configured, the JWT
+3. **User allow-list** -- if the JWT `sub` claim (e.g. `did:privy:...`,
+   printed by `roko whoami`) is listed in `privy_allowed_users`, the token is
+   admitted immediately with `"admin"` scope, independently of `org_id` or
+   `role` (D18 user-id half, 2026-10-15/gap-47e0de). This is what gives a
+   `roko login` user write access: Privy's browser-flow access token carries
+   no `org_id` or `role` claim, so it can never satisfy checks 4 or 5 below.
+4. **Workspace membership** -- if `privy_workspace_id` is configured, the JWT
    `org_id` claim must match. Tokens without an `org_id` claim are rejected
    (fail closed). With no `privy_allowed_roles`, members receive `"admin"`.
-4. **Role authorization** -- if `privy_allowed_roles` is non-empty, the JWT
+   Not reached for a `sub` admitted in step 3.
+5. **Role authorization** -- if `privy_allowed_roles` is non-empty, the JWT
    `role` claim must be present and contained in the allowed list. Tokens with
    an unrecognized or missing role are rejected (fail closed, D18 2026-10-15),
-   not downgraded to a lesser scope.
+   not downgraded to a lesser scope. Not reached for a `sub` admitted in step 3.
+
+When neither `privy_workspace_id` nor `privy_allowed_roles` is configured,
+`privy_allowed_users` is the only active allow-list, and a `sub` it does not
+list is rejected rather than falling through to an open grant.
 
 ### 7.3 Additional JWKS Providers
 
@@ -531,9 +543,14 @@ privy_app_id = "cmhw01vut003tjx0d5lmqc8zs"
 # Workspace/org membership requirement.
 privy_workspace_id = "org_abc123"
 
-# Allowed JWT roles. With this and privy_workspace_id both unset, Privy JWTs
-# are rejected.
+# Allowed JWT roles. With this, privy_workspace_id and privy_allowed_users
+# all unset, Privy JWTs are rejected.
 privy_allowed_roles = ["admin", "operator"]
+
+# Individually allow-listed Privy user ids (JWT `sub` claim; `roko whoami`
+# prints a signed-in user's `sub`). A listed user gets admin scope with no
+# org_id or role claim required -- how a `roko login` user gets write access.
+privy_allowed_users = ["did:privy:cli_operator_example"]
 
 # Enforcement mode: "enforce" | "audit" | "disabled"
 enforcement_mode = "enforce"

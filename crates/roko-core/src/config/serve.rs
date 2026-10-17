@@ -853,8 +853,8 @@ pub struct ServeAuthConfig {
     ///
     /// Unset by default, which turns Privy JWT auth off. Setting it is not
     /// enough on its own: anyone can sign in to a Privy app, so without
-    /// `privy_workspace_id` or `privy_allowed_roles` every Privy JWT is
-    /// rejected.
+    /// `privy_allowed_users`, `privy_workspace_id` or `privy_allowed_roles`
+    /// every Privy JWT is rejected.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub privy_app_id: Option<String>,
     /// Issuer-bound JWKS endpoints. An empty list uses Privy's per-app
@@ -865,17 +865,33 @@ pub struct ServeAuthConfig {
     ///
     /// When set, tokens whose `org_id` claim is missing or different are
     /// rejected, and members get admin scope unless `privy_allowed_roles`
-    /// narrows it. When `None`, membership is not checked.
+    /// narrows it. When `None`, membership is not checked. A `sub` listed in
+    /// `privy_allowed_users` is admitted independently of this check (no
+    /// `org_id` required).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub privy_workspace_id: Option<String>,
     /// Allowed Privy roles (matched against the JWT `role` claim).
     ///
     /// When non-empty, only tokens whose `role` claim is in this list receive
     /// admin scope; others are rejected (fail closed). When empty, roles are
-    /// not checked, and Privy JWTs are rejected unless `privy_workspace_id`
-    /// is set.
+    /// not checked, and Privy JWTs are rejected unless `privy_workspace_id` or
+    /// `privy_allowed_users` is set. A `sub` listed in `privy_allowed_users`
+    /// is admitted independently of this check (no `role` required).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub privy_allowed_roles: Vec<String>,
+    /// Privy user ids individually allowed to authenticate (matched against
+    /// the JWT `sub` claim, e.g. `did:privy:...`; `roko whoami` prints a
+    /// signed-in user's `sub`).
+    ///
+    /// A listed user gets admin scope immediately, independent of
+    /// `privy_workspace_id` and `privy_allowed_roles`: no `org_id` or `role`
+    /// claim is required. This is how a `roko login` user (whose Privy
+    /// access token carries no `org_id`/`role` claim) gets write access.
+    /// When empty, this allow-list grants nothing, and Privy JWTs still
+    /// depend on `privy_workspace_id` / `privy_allowed_roles` (fail closed if
+    /// neither is set either).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub privy_allowed_users: Vec<String>,
     /// Enforcement mode for scope-based permission checks.
     ///
     /// - `enforce` (default): block requests that fail scope checks (403).
@@ -903,6 +919,7 @@ impl Default for ServeAuthConfig {
             jwks_providers: Vec::new(),
             privy_workspace_id: None,
             privy_allowed_roles: Vec::new(),
+            privy_allowed_users: Vec::new(),
             enforcement_mode: EnforcementMode::default(),
             invite_expiry_days: default_invite_expiry_days(),
         }

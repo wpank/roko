@@ -19,7 +19,7 @@ parent = "spec-ae5f94"
 links = { depends_on = [], blocks = [], related = ["dec-648cce", "gap-ed511d", "bug-ec244b"], supersedes = [], duplicate_of = "" }
 
 [[verify]]
-command = "grep -rqw 'fn railway_env_forwards_the_serve_key_to_the_control_plane_only' crates/roko-cli/src/ && cargo test -p roko-cli --lib railway_env_forwards_the_serve_key_to_the_control_plane_only"
+command = "grep -rqw 'fn railway_env_forwards_the_serve_key_to_the_control_plane_only' crates/roko-cli/src/ && cargo test -p roko-cli --bin roko railway_env_forwards_the_serve_key_to_the_control_plane_only"
 +++
 
 ## Problem
@@ -78,3 +78,8 @@ The `[[verify]]` command passes: the named test exists and passes.
 
 - Never print the key: not in dry-run output, logs or errors.
 - Found on 2026-10-16 by the bug-ec244b worker while repointing dec-648cce's verify.
+- 2026-10-17: the `[[verify]]` command originally said `cargo test -p roko-cli --lib …`. `roko-cli`
+  has no `[lib]` target for `commands::server` (`lib.rs`'s inline `commands` module re-exports only
+  `diagnose` and `learn_loops`; `server` exists only in the `main.rs`-rooted tree compiled into the
+  `roko` binary). `--lib` builds clean and matches 0 tests, so it would have passed before this fix
+  too (confirmed empirically). Repointed to `--bin roko`, which actually runs the test.

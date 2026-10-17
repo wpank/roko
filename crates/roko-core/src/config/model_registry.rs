@@ -560,6 +560,82 @@ pub fn model_has_price(
         || builtin_pricing(model_slug).is_some()
 }
 
+/// Which rates price a model's calls (backlog 2114), as
+/// [`effective_rates`] picks them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RateSource {
+    /// The model's row in the dated price snapshot.
+    Snapshot,
+    /// The model's `[models.*]` per-million prices.
+    Profile,
+    /// roko's built-in pricing ([`builtin_pricing`]).
+    Builtin,
+}
+
+impl RateSource {
+    /// The source's word: `snapshot`, `profile` or `builtin`.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Snapshot => "snapshot",
+            Self::Profile => "profile",
+            Self::Builtin => "builtin",
+        }
+    }
+}
+
+/// A model's rates as a run prices its calls, in USD per 1M tokens.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct EffectiveRates {
+    /// Uncached input.
+    pub input_per_m: f64,
+    /// Output.
+    pub output_per_m: f64,
+    /// Input read from the prompt cache; `None` when the rates name none, so
+    /// a cache read costs as input.
+    pub cache_read_per_m: Option<f64>,
+    /// Where the rates come from.
+    pub source: RateSource,
+}
+
+/// The rates a run prices `model_slug`'s calls at, in the order dispatch
+/// tries them (backlog 2114): the price `snapshot`'s row, else the
+/// `profile`'s input and output prices, with its cache-read price (the
+/// caller applies its provider's, `ModelProfile::with_provider_cache_rate`),
+/// else the model's built-in pricing. `None` when none prices it.
+#[must_use]
+pub fn effective_rates(
+    snapshot: Option<&crate::pricing_snapshot::PriceSnapshot>,
+    profile: Option<&crate::config::provider::ModelProfile>,
+    model_slug: &str,
+) -> Option<EffectiveRates> {
+    if let Some(row) = snapshot.and_then(|snapshot| snapshot.row(model_slug)) {
+        return Some(EffectiveRates {
+            input_per_m: row.input,
+            output_per_m: row.output,
+            cache_read_per_m: Some(row.cache_read),
+            source: RateSource::Snapshot,
+        });
+    }
+    if let Some(profile) = profile
+        && let (Some(input_per_m), Some(output_per_m)) =
+            (profile.cost_input_per_m, profile.cost_output_per_m)
+    {
+        return Some(EffectiveRates {
+            input_per_m,
+            output_per_m,
+            cache_read_per_m: profile.cost_cache_read_per_m,
+            source: RateSource::Profile,
+        });
+    }
+    builtin_pricing(model_slug).map(|pricing| EffectiveRates {
+        input_per_m: pricing.input_per_m,
+        output_per_m: pricing.output_per_m,
+        cache_read_per_m: Some(pricing.cache_read_per_m),
+        source: RateSource::Builtin,
+    })
+}
+
 /// Look up pricing for a model slug.
 ///
 /// Tries an exact match first, then a table key the slug is a snapshot of

@@ -2,14 +2,15 @@
 id = "gap-9ea13c"
 kind = "gap"
 title = "claims_evidence.py has no --check mode, so the design paper's claims aggregate has no automated staleness check"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p3"
 goal = "whitepaper"
 subsystem = ["tmp/cybernetic-harness/paper"]
 created = 2026-10-16
-updated = 2026-10-16
-last_verified = 2026-10-16
+updated = 2026-10-17
+last_verified = 2026-10-17
+last_verified_rev = "200ced75c"
 source = "reg-3621b1 investigation (worker, 2026-10-16)"
 discovered_from = "reg-3621b1"
 anchors = ["tmp/cybernetic-harness/paper/tools/claims_evidence.py", "tmp/cybernetic-harness/paper/tools/claims.py"]
@@ -19,6 +20,17 @@ links = { depends_on = [], blocks = [], related = ["reg-3621b1", "gap-aed6f1", "
 
 [[verify]]
 command = "python3 tmp/cybernetic-harness/paper/tools/claims_evidence.py --check"
+
+[closed]
+at = 2026-10-17
+at_ts = "2026-10-17T02:23:16Z"
+commit = "200ced75c"
+executor = "claude-agent"
+via = "work-batch"
+size = "S"
+claimed_at = "2026-10-17T02:10:42Z"
+forced = false
+evidence = "Added --check to tmp/cybernetic-harness/paper/tools/claims_evidence.py (untracked; edited in this worktree's copy, coordinator copies it into the main checkout): it builds the aggregate in memory, redacts the one non-deterministic '> Generated <time>' line from both the fresh text and the on-disk file via a GENERATED_RE substitution, and compares the rest. python3 tmp/cybernetic-harness/paper/tools/claims_evidence.py --check -> 'CLAIMS-EVIDENCE.md is up to date (608 claims, supported 608, other 0)', exit 0, matching reg-3621b1's finding that the live file is already current. Verified the failure path too: appended a line to the worktree's copy of CLAIMS-EVIDENCE.md, --check printed a unified diff on stderr and exited 1, then the file was restored from a backup and --check passed clean again. Default (no --check) write mode still produces the same content modulo the timestamp line (checked by writing to a scratch --out and diffing against the live file with both Generated lines redacted). Kept claims.py/test_claims.py parked rather than deleted (both untracked; a repo-wide grep found nothing outside tools/paperlint.py:41 pointing at claims.py): added a one-line 'Parked (gap-9ea13c, 2026-10-17)' note to each docstring saying claims_evidence.py is the live aggregator; test_claims.py's own 21 tests still pass unchanged. Updated the one tracked reference, tools/paperlint.py's comment (claims.py -> claims_evidence.py, the live claims-ledger consumer), reflowing the paragraph; tools/test_paperlint.py's 30 tests and py_compile on all four touched files pass."
 +++
 
 ## Problem

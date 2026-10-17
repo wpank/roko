@@ -38,9 +38,10 @@ Python 3 and git, and never writes. Code identifiers, paths and commits are look
 
 Word counts cover headings and prose after line 1, tables and captions included (docs/whitepaper/README.md). They
 leave out code blocks, footnote definitions, HTML comments, a blockquote note right under the title, every section
-whose heading is just "Claims ledger" or "Claims ledger (§…)" (its table is metadata for paper/tools/claims.py; a
-numbered "4.1 Claims ledger" is prose), and the "Placeholder map" and "Alternative …" sections. A slot marker
-(RESULT, FIG, TAB, CITE?, CITE-COMPANION, E1, FIELD) counts as one word; other markers count their words.
+whose heading is just "Claims ledger" or "Claims ledger (§…)" (its table is metadata for
+paper/tools/claims_evidence.py; a numbered "4.1 Claims ledger" is prose), and the "Placeholder map" and "Alternative
+…" sections. A slot marker (RESULT, FIG, TAB, CITE?, CITE-COMPANION, E1, FIELD) counts as one word; other markers
+count their words.
 
 The budget comes from an outline table in OUTLINE.md or README.md, in the file's directory or up to two above it:
 the column whose header says "budget" (words) or "pages" (times the outline's "N words per page", else 550). A row

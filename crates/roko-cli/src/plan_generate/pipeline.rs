@@ -12,7 +12,7 @@
 //! This code lived in `prd.rs` until the PRD pipeline was removed on
 //! 2026-10-02 (tmp/workflow-audit).
 
-use super::{accept_blocks, dry_run_fs, overview, source_checks};
+use super::{accept_blocks, dry_run_fs, overview, runnable, source_checks};
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -1274,6 +1274,13 @@ pub async fn generate_plan(request: PlanRequest<'_>) -> Result<(PathBuf, Generat
             extra.push_str("\n\n---\n\n");
             extra.push_str(&source_checks::planner_block(&checks, &source.kind));
         }
+        // gap-ecafde: the test runners this machine has, which a check must
+        // use to be able to pass.
+        let probe = runnable::Probe::default();
+        if let Some(runners) = runnable::runners_block(workdir_ref, &probe) {
+            extra.push_str("\n\n---\n\n");
+            extra.push_str(&runners);
+        }
         if unattended {
             extra.push_str("\n\n---\n\n");
             extra.push_str(UNATTENDED_PLANNER_NOTE);
@@ -1520,6 +1527,9 @@ pub async fn generate_plan(request: PlanRequest<'_>) -> Result<(PathBuf, Generat
             // a criterion of its task that states the check.
             let mut repairs = repair_generated_draft(&mut parsed, policy, workdir_ref);
             repairs.extend(source_checks::normalize_covers(&mut parsed, &checks));
+            // gap-ecafde: a pytest step without pytest runs as unittest, and a
+            // test file a task's check needs joins its files.
+            repairs.extend(runnable::repair(&mut parsed, workdir_ref, &probe));
             let validated = if repairs.is_empty() {
                 validated
             } else {
@@ -1698,15 +1708,21 @@ pub async fn generate_plan(request: PlanRequest<'_>) -> Result<(PathBuf, Generat
         };
 
         // gap-dc5d7c: what became of the source's checks in a candidate
-        // plan, and how many it does not keep (all of them when it does not
-        // parse).
-        let coverage_of = |candidate: &str| {
-            TasksFile::parse_str(candidate)
-                .ok()
-                .map(|plan| source_checks::SourceCoverage::of(&checks, &plan))
+        // plan; gap-ecafde: which of its verify steps cannot pass as written.
+        let assess = |candidate: &str| {
+            TasksFile::parse_str(candidate).ok().map(|plan| {
+                let unrunnable = runnable::problems(&plan, workdir_ref, &probe);
+                let coverage = source_checks::SourceCoverage::of(&checks, &plan, &unrunnable);
+                (coverage, unrunnable)
+            })
         };
+        // How far a candidate falls short: the source checks it does not
+        // keep, then its steps that cannot pass (everything when it does not
+        // parse). Fewer is better, checks first.
         let missing_of = |candidate: &str| {
-            coverage_of(candidate).map_or(checks.len(), |coverage| coverage.unkept())
+            assess(candidate).map_or((checks.len(), usize::MAX), |(coverage, unrunnable)| {
+                (coverage.unkept(), unrunnable.len())
+            })
         };
 
         // First attempt uses the output we already have.
@@ -1896,21 +1912,31 @@ pub async fn generate_plan(request: PlanRequest<'_>) -> Result<(PathBuf, Generat
         // gap-dc5d7c: a plan that does not keep some of the source's
         // checks (no step checks them, or only a grep or a build does, and no
         // reason says why no command can) is sent back once, naming them,
-        // and the plan that keeps more is kept.
+        // and the plan that keeps more is kept. gap-ecafde: so is a plan with
+        // a verify step that cannot pass as written.
         let mut checks_regenerated = false;
         if let Ok(candidate) = &validated_toml
-            && let Some(coverage) = coverage_of(candidate)
-            && coverage.unkept() > 0
+            && let Some((coverage, unrunnable)) = assess(candidate)
+            && (coverage.unkept() > 0 || !unrunnable.is_empty())
             && !skip_for_cap("keep the source checks it left out")
         {
-            let missing = coverage.unkept();
-            let why = format!(
-                "{missing} of the source's {} checks are not kept as verify steps",
-                checks.len()
-            );
+            let missing = (coverage.unkept(), unrunnable.len());
+            let why = match missing {
+                (0, stuck) => format!("{stuck} verify step(s) cannot pass as written"),
+                (unkept, 0) => format!(
+                    "{unkept} of the source's {} checks are not kept as verify steps",
+                    checks.len()
+                ),
+                (unkept, stuck) => format!(
+                    "{unkept} of the source's {} checks are not kept as verify steps, and \
+                     {stuck} step(s) cannot pass as written",
+                    checks.len()
+                ),
+            };
             eprintln!("  {why}; asking the planner once more");
             report("regenerating", (1, 1), Some(why), planner_model.as_str());
-            let prompt = source_checks::regeneration_prompt(&task_prompt, candidate, &coverage);
+            let prompt =
+                source_checks::regeneration_prompt(&task_prompt, candidate, &coverage, &unrunnable);
             let retry = run_agent_capture_silent_with_usage(AgentExecOpts {
                 prompt: &prompt,
                 ..planner_call
@@ -1983,12 +2009,20 @@ pub async fn generate_plan(request: PlanRequest<'_>) -> Result<(PathBuf, Generat
             validated_toml = Ok(kept.0);
         }
 
-        // gap-dc5d7c: what became of each of the source's checks.
-        let source_coverage = validated_toml
-            .as_ref()
-            .ok()
-            .filter(|_| !checks.is_empty())
-            .and_then(|plan| coverage_of(plan));
+        // gap-dc5d7c: what became of each of the source's checks; and
+        // gap-ecafde: each step that still cannot pass as written.
+        let assessed = validated_toml.as_ref().ok().and_then(|plan| assess(plan));
+        if let Some((_, unrunnable)) = &assessed {
+            for step in unrunnable {
+                eprintln!(
+                    "warning: {} step {} cannot pass as written: {}",
+                    step.task, step.step, step.why
+                );
+            }
+        }
+        let source_coverage = assessed
+            .map(|(coverage, _)| coverage)
+            .filter(|_| !checks.is_empty());
         if let Some(coverage) = &source_coverage {
             println!("📋 {}", coverage.summary_line());
             for line in coverage.detail_lines() {
@@ -3487,6 +3521,76 @@ mod tests {
         let paths: Vec<&str> = read_files.iter().map(|file| file.path.as_str()).collect();
         assert_eq!(paths, ["docs/a.md", "docs/b.md", "docs/c.md"]);
         assert_eq!(read_files[0].lines, None, "the range past the end is gone");
+    }
+
+    /// gap-ecafde: a check that cannot pass as written is repaired, or sent
+    /// back. A test file a task's own check needs joins the task's files; a
+    /// check that names a test its file does not define goes back to the
+    /// planner once, named, and the plan whose checks can all pass is
+    /// written.
+    #[cfg(unix)]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn generation_flags_verify_steps_that_cannot_pass() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let workdir = temp.path();
+        std::fs::create_dir_all(workdir.join("tests")).expect("tests");
+        std::fs::write(
+            workdir.join("tests/test_widget.py"),
+            "import unittest\n\nclass WidgetTest(unittest.TestCase):\n    \
+             def test_spins(self):\n        pass\n",
+        )
+        .expect("a test module");
+        let plan = |test: &str| {
+            WIDGET_PLAN.replace(
+                "\"test -f src/widget.rs\"",
+                &format!(
+                    "\"grep -q 'def test_stops' tests/test_stops.py && python3 -m unittest \
+                     tests.test_stops\"\n\n[[task.verify]]\nphase = \"test\"\n\
+                     command = \"python3 -m unittest tests.test_widget.WidgetTest.{test}\""
+                ),
+            )
+        };
+        let (wobbles, spins) = (plan("test_wobbles"), plan("test_spins"));
+        let bin = tempfile::tempdir().expect("tempdir");
+        let calls = write_scripted_planner(
+            workdir,
+            bin.path(),
+            &[&wobbles, &spins],
+            "allow_threshold = 0.0\nblock_threshold = 0.0\n",
+        );
+        let request = PlanRequest {
+            model: Some("planner"),
+            ..PlanRequest::new(WIDGET_REQUEST, "widget", workdir)
+        };
+        generate_plan(request)
+            .await
+            .expect("generate the widget plan");
+        let log = std::fs::read_to_string(&calls).expect("planner call log");
+        assert_eq!(
+            log.lines().count(),
+            2,
+            "the plan, then the plan whose checks can pass"
+        );
+        let again = std::fs::read_to_string(bin.path().join("prompt-1.txt")).expect("the retry");
+        assert!(
+            again.contains(
+                "- T1 step 2: it names `test_wobbles`, which `tests/test_widget.py` does not \
+                 define and no task writes"
+            ),
+            "{again}"
+        );
+        let written =
+            TasksFile::parse(&workdir.join("plans/widget/tasks.toml")).expect("the widget plan");
+        let task = &written.tasks[0];
+        assert!(
+            task.files.iter().any(|file| file == "tests/test_stops.py"),
+            "{:?}",
+            task.files
+        );
+        assert_eq!(
+            task.verify[1].command,
+            "python3 -m unittest tests.test_widget.WidgetTest.test_spins"
+        );
     }
 
     /// gap-dc5d7c: generation from a file with a Verification section lists

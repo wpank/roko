@@ -16,6 +16,7 @@ mod accept_blocks;
 mod dry_run_fs;
 mod overview;
 mod pipeline;
+mod runnable;
 mod source_checks;
 
 pub use pipeline::{

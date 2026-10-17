@@ -520,6 +520,9 @@ pub(super) enum AttemptInterrupted {
     /// Its agent runs its own loop, and what it streamed reached what its
     /// plan budget can pay for, for this reason (gap-ca1c92).
     BudgetExhausted(String),
+    /// Its agent runs its own loop, and what it streamed spent its rung's
+    /// allowance for one try, for this reason (gap-3e770b).
+    AllowanceSpent(String),
 }
 
 impl AttemptInterrupted {
@@ -549,6 +552,11 @@ impl AttemptInterrupted {
             )),
             // No retry can pay for it (bug-4fabd0).
             Self::BudgetExhausted(reason) => RokoError::gateway("budget", false, reason.clone()),
+            // A failed try on its rung, which the task retries (gap-3e770b).
+            Self::AllowanceSpent(reason) => RokoError::Agent {
+                backend: "graph-task-executor".to_string(),
+                message: format!("{}: {reason}", super::try_allowance::RUNG_ALLOWANCE),
+            },
         }
     }
 
@@ -559,7 +567,7 @@ impl AttemptInterrupted {
             Self::Restarted(_) | Self::Stopped | Self::StoppedByOperator => {
                 TaskDispatchOutcomeKind::Cancelled
             }
-            Self::BudgetExhausted(_) => TaskDispatchOutcomeKind::Failed,
+            Self::BudgetExhausted(_) | Self::AllowanceSpent(_) => TaskDispatchOutcomeKind::Failed,
         }
     }
 }
@@ -575,6 +583,7 @@ impl AttemptInterrupted {
 /// - A cancellation, a stopping plan run's or the operator's included,
 ///   teaches nothing (bug-2b1ddc).
 /// - A stop for the plan budget is the harness's (gap-ca1c92).
+/// - A try that spent its rung's allowance failed on its rung (gap-3e770b).
 /// - Anything else, a conductor restart included, is a provider failure.
 pub(super) fn failed_call_settlement(
     interrupted: Option<&AttemptInterrupted>,
@@ -587,6 +596,7 @@ pub(super) fn failed_call_settlement(
             progress.is_some_and(AttemptProgress::reported_progress),
         ),
         Some(AttemptInterrupted::BudgetExhausted(reason)) => Settlement::budget_exhausted(reason),
+        Some(AttemptInterrupted::AllowanceSpent(reason)) => Settlement::allowance_spent(reason),
         Some(
             AttemptInterrupted::Restarted(_)
             | AttemptInterrupted::Stopped
@@ -743,7 +753,8 @@ impl GraphTaskDispatcher {
     /// ([`WatchedAttempt::stop`]), or whose task the operator stops
     /// ([`OperatorStops`]) returns [`AttemptInterrupted`], as does one whose
     /// agent runs its own loop once what it streamed reaches what `allowance`
-    /// can pay for (gap-ca1c92); `dispatch` is dropped with it, which cancels
+    /// can pay for (gap-ca1c92), the plan's or the rung's (gap-3e770b);
+    /// `dispatch` is dropped with it, which cancels
     /// the provider call, and `progress` then gives the call and what it
     /// streamed ([`AttemptProgress::interrupted_call`]), with or without a
     /// `watch` (bug-3a3b0f).
@@ -754,7 +765,7 @@ impl GraphTaskDispatcher {
         mut watch: Option<StallWatch>,
         supervised: Option<&SupervisedAttempt>,
         attempt: &WatchedAttempt<'_>,
-        allowance: Option<&AttemptAllowance>,
+        allowance: Option<&TryAllowance>,
     ) -> std::result::Result<T, AttemptInterrupted> {
         let started_at = Instant::now();
         let mut heartbeat = tokio::time::interval(AGENT_HEARTBEAT_INTERVAL);
@@ -830,18 +841,32 @@ impl GraphTaskDispatcher {
                     }
                 }
                 _ = budget_check.tick(), if allowance.is_some() => {
-                    if let Some(reason) = allowance.and_then(|allowance| {
+                    if let Some(stop) = allowance.and_then(|allowance| {
                         self.streamed_spend_refusal(allowance, progress, &mut streamed_spend)
                     }) {
-                        tracing::warn!(
-                            plan_id = attempt.plan_id,
-                            task_id = attempt.task_id,
-                            attempt = attempt.attempt_key,
-                            %reason,
-                            "the plan budget stopped an agent that runs its own loop"
-                        );
                         progress.interrupted();
-                        return Err(AttemptInterrupted::BudgetExhausted(reason));
+                        return Err(match stop {
+                            TryStop::Plan(reason) => {
+                                tracing::warn!(
+                                    plan_id = attempt.plan_id,
+                                    task_id = attempt.task_id,
+                                    attempt = attempt.attempt_key,
+                                    %reason,
+                                    "the plan budget stopped an agent that runs its own loop"
+                                );
+                                AttemptInterrupted::BudgetExhausted(reason)
+                            }
+                            TryStop::Rung(reason) => {
+                                tracing::info!(
+                                    plan_id = attempt.plan_id,
+                                    task_id = attempt.task_id,
+                                    attempt = attempt.attempt_key,
+                                    %reason,
+                                    "an agent that runs its own loop spent its rung's allowance"
+                                );
+                                AttemptInterrupted::AllowanceSpent(reason)
+                            }
+                        });
                     }
                 }
             }
@@ -913,15 +938,16 @@ impl GraphTaskDispatcher {
     /// roko's own tool loop is (bug-4fabd0), so what its call streamed since
     /// the last look, `counted`, is priced as `InterruptedCall::into_dispatch`
     /// prices it and told to `allowance` as one model call, and the agent
-    /// stops once the plan cannot pay for one more like it. `None` for an
-    /// agent roko's tool loop runs, and while what it streamed has no price:
-    /// the cost it reports is counted when it ends.
+    /// stops once the plan cannot pay for one more like it, or the try has
+    /// spent its rung's allowance (gap-3e770b). `None` for an agent roko's
+    /// tool loop runs, and while what it streamed has no price: the cost it
+    /// reports is counted when it ends.
     fn streamed_spend_refusal(
         &self,
-        allowance: &AttemptAllowance,
+        allowance: &TryAllowance,
         progress: &AttemptProgress,
         counted: &mut StreamedSpend,
-    ) -> Option<String> {
+    ) -> Option<TryStop> {
         let StreamedCall {
             number,
             target,
@@ -949,7 +975,8 @@ impl GraphTaskDispatcher {
         }
         counted.usd = streamed;
         allowance.record_call(spent, true);
-        allowance.refuse_call()
+        allowance.refuse_call()?;
+        allowance.stop(None)
     }
 
     /// Check `watch` now and publish what it found: a warning for a silent

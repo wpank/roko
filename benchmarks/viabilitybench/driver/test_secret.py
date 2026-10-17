@@ -280,7 +280,7 @@ def test_deliberate_reads_are_flagged_and_kept_out_of_records(operator, monkeypa
     # The stasher never names the file and never prints it. The truth suite's sandbox denies it the file
     # (gap-8c3752); on a host without one, only the census's own sweep sees the copy.
     stash = (out / "private" / f"{second}.s1" / "census" / "hidden" / "stash.txt").read_text()
-    assert stasher["vs"]["sandbox"] == sandbox.KIND
+    assert stasher["vs"]["sandbox"] == sandbox.kind([path], sandbox.NETWORK_NONE)  # no network either (gap-0bd49a)
     if sandbox.KIND == "none":
         assert stasher["execution"]["status"] == "leak_suspected"
         assert stasher["provenance"]["canary_places"] == ["census:hidden/stash.txt"]

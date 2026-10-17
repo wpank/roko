@@ -28,7 +28,9 @@ census's HOME `<work_dir>/_home/<alias>.census`, where the alias is another rand
 (`provenance.alias`) and its error lines, and handed to the runner (`TaskContext.alias`): Roko's plan directory and the
 visible-verify wrapper's draws are keyed by it as well. A hash of the task key would not do, since the keys are few and
 their scheme is public: an agent could hash every one. The task key stays on the driver's side: `private/<key>/`,
-`archives/<key>.*`, `transcripts/<key>.json`, the ledger's attempt keys and the proxies' task.
+`archives/<key>.*`, `transcripts/<key>.json`, the ledger's attempt keys and the proxies' task. Every agent process is
+denied the whole run directory (`_agent_deny`, bug-d308f7), since its proxy logs name the running task's key and its
+order and records give the task's position; off macOS nothing applies that deny list (`sandbox.KIND` "none").
 
 **The pre-registration lock** (S09 SC1, 3341). `vb run` of an experiment that runs only under the lock (LOG1, a live
 `E-` experiment, or one whose manifest says `requires_lock`: `campaign.requires_lock`) stops before anything else,
@@ -585,8 +587,11 @@ def _run_one(run: Run, instance_id: str, seed: int, stream_position: dict) -> bo
 
 def _agent_deny(run: Run) -> tuple[Path, ...]:
     """What every agent process is denied (`TaskContext.deny`, `common.sandbox`): the secret file, every file the
-    tripwire holds (the key file too), and the run's private task directories, every earlier task's included."""
-    return tuple(dict.fromkeys([run.secret_file, *(wire.path for wire in secret.tripwires()), run.run_dir / "private"]))
+    tripwire holds (the key file too), and the whole run directory (bug-d308f7), not only its private task
+    directories: while a task runs, `proxy.jsonl` and `egress.jsonl` name its key on every call, and `order-<seed>.json`
+    with `records.jsonl` give its position in the stream. No agent process needs the directory: the proxies, the
+    ledger, the records, the transcripts and Roko's evidence copy are written by the driver's own process."""
+    return tuple(dict.fromkeys([run.secret_file, *(wire.path for wire in secret.tripwires()), run.run_dir]))
 
 
 def _verify_wrapper(run: Run, alias: str, manifest: dict, env: dict[str, str], position: int) -> Path | None:

@@ -76,11 +76,37 @@ under the agent's HOME (`.vb-bin/vb-verify.jsonl`).
 
 ## Done when
 
-- [ ] No agent process of any arm can read a file of its run directory.
-- [ ] The `[[verify]]` command passes.
+- [x] No agent process of any arm can read a file of its run directory.
+- [x] The `[[verify]]` command passes.
 
 ## Notes
 
 - Found by the bug-3c921e worker, 2026-10-17, while choosing where to keep the mapping from aliases to task keys.
 - The census and the audit battery run the agent's code after its session with the key in their own paths
-  (`private/<key>/census/`, `vb-battery-*/<key>/`); bug-3c921e left those, as its item said.
+  (`private/<key>/census/`, `vb-battery-*/<key>/`); bug-3c921e left those, as its item said. The census cannot deny
+  the run directory to that code anyway: its scratch, the code's working directory, is `private/<key>/census/`.
+- What the deny list leaves (checked 2026-10-17 on macOS 26.4, filed separately): an agent can still list
+  `<results>/<experiment>/`, so the run ids, and read every other run there, their agents' final diffs, records and
+  `private/` among them (bug-935cfa); under a denied directory a missing name fails with ENOENT where an existing one
+  fails with EPERM, so probing `<run_dir>/private/<key>` for the stream's public keys finds the running task's
+  (bug-3bab88); and Claude Code's inline `--settings` put the run directory's path on its argv, which the agent's
+  shell can read (bug-4c3a83).
+- One test fixture relied on writing the run directory from inside the agents' sandbox: test_run_roko.py's fake roko
+  played the metering proxy by appending `proxy.jsonl` itself. The proxy writes that log from the driver's process,
+  so the test now writes it there (`test_plan_slice_records_carry_queue_waits_and_class_costs`).
+
+## Decision (2026-10-17)
+
+Whether an agent process may read its run's results directory outside `private/` had no recorded default. Under
+Will's decision 9 of 2026-10-15 (technical questions with no recorded default take the coordinator's
+recommendation, the conservative option, recorded on the item with the reasoning; Will can veto it later), the
+coordinator decided that no benchmark-internal identifier reaches an agent: every agent process is denied its whole
+run directory, as the Codex arm's already was. The change lands before the pre-registration lock (gap-394f28).
+
+Why: benchmark validity, and contamination through the public repository. While a task runs, the proxies' logs name
+its key, `<instance_id>.s<seed>`, and the order and the records give its position, so an agent that reads its run
+directory learns its family (an F8 instance is a honeypot) and its ladder level, which bug-3c921e took out of every
+path it can see. The key is also a search key into the public repository, where the family's generator and truth
+suite are. Denying the directory is the conservative option: no agent process reads or writes there (the proxies,
+the ledger, the records, the transcripts and Roko's evidence copy are the driver's own), so the change takes away
+nothing an agent needs or is graded on, only what it can read.

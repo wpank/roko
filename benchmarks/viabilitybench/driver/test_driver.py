@@ -391,6 +391,67 @@ def test_an_agent_never_sees_its_instance_id(places, tmp_path, arm):
     assert json.loads((again / "manifest.json").read_text())["work_dir"] != str(work_dir)
 
 
+# bug-d308f7, test_an_agent_cannot_read_its_run_directory. While its task runs, the agent's shell reads the files of
+# its run's results directory (__RUN__) that name the task or its place in the stream, then lists the directory; each
+# step prints its exit status.
+READ_THE_RUN = ('for name in proxy.jsonl order-1.json records.jsonl manifest.json; do cat "__RUN__/$name"; '
+                'echo "read $name exit=$?"; done; ls -a "__RUN__"; echo "listing exit=$?"')
+
+
+@macos_only
+@pytest.mark.parametrize("arm", ["cheap_direct", "roko_fixed", "cheap_direct_msa"])
+def test_an_agent_cannot_read_its_run_directory(places, tmp_path, arm):
+    """bug-d308f7, through `vb run --proxy`: every agent process is denied its whole run directory, not only the
+    private task directories in it. While a task runs, the metering proxy logs the task's key with each of its calls
+    (`proxy.jsonl`; the CLI arms' egress proxy does the same in `egress.jsonl`, test_run_cli.py), `order-1.json` holds
+    the stream's order and `records.jsonl` one row per finished task, so together the running task's position. In the
+    direct loop, the Roko arm and the mini-swe-agent arm, each task's agent reads those files and the manifest and
+    lists the directory (READ_THE_RUN). Every read and the listing are refused, and nothing the agents printed names an
+    instance or holds a line of those files. The files hold what the agents would have read (the control)."""
+    shell_log = tmp_path / "shell.log"
+    out = places["results"] / "TEST-RUN-DIR" / "run-1"
+    reads = READ_THE_RUN.replace("__RUN__", str(out))
+    if arm == "cheap_direct":  # the stub plays the agent, and the driver runs its commands
+        arm_file, respond = arm, scripted({"": [bash(reads, "Where are my results?"), bash("echo VB_SUBMIT")]})
+    else:  # a fake harness plays the agent: its own process calls the model through the proxy, then its shell reads
+        arm_file = fake_harness_arm(tmp_path, arm, solution=CLAMP, shell=reads, shell_log=shell_log)
+
+        def respond(body: dict) -> str:
+            return "Done."
+    with StubServer(respond) as stub:
+        assert vb.main(["run", "--experiment", "TEST-RUN-DIR", "--run-id", "run-1", "--stream", TOY_STREAM, "--arm",
+                        arm_file, "--model", "gpt-oss-120b", "--seeds", "1", "--provider-url", stub.url, "--proxy",
+                        "--results", str(places["results"]), "--work", str(places["work"]),
+                        "--secret-file", str(places["secret"]), "--transcripts"]) == 0
+    records = sorted(read_jsonl(out / "records.jsonl"), key=lambda record: record["task"]["instance_id"])
+    instances = [record["task"]["instance_id"] for record in records]
+    assert instances == ["F1-l1-0001", "F1-l1-0002"]
+    # The control: the run directory names each task, where an agent that could read it would have found it.
+    assert {row["task"] for row in read_jsonl(out / "proxy.jsonl")} == {f"{name}.s1" for name in instances}
+    assert sorted(json.loads((out / "order-1.json").read_text())["order"]) == instances
+    assert json.loads((out / "manifest.json").read_text())["config"]["stream"]["instances"] == instances
+
+    def observed(record: dict) -> str:  # what the direct loop's agent was shown of its commands
+        transcript = json.loads((out / record["provenance"]["transcript_ref"]).read_text())
+        return "\n".join(event["content"] for event in transcript if event.get("role") == "user" and "command" in event)
+
+    said = [observed(record) for record in records] if arm == "cheap_direct" else [shell_log.read_text()]
+    printed = "\n".join(said)
+    for name in ("proxy.jsonl", "order-1.json", "records.jsonl", "manifest.json"):
+        assert printed.count(f"read {name} exit=1") == 2, printed  # one read per task, and each failed
+    assert printed.count("listing exit=1") == 2 and "exit=0" not in printed, printed
+    # Each file that existed was refused by the sandbox: all four but records.jsonl, which the first task to run
+    # finds missing; the second finds it there and is refused too.
+    for name in ("proxy.jsonl", "order-1.json", "manifest.json"):
+        assert printed.count(f"{out / name}: Operation not permitted") == 2, printed
+    assert printed.count(f"{out / 'records.jsonl'}: Operation not permitted") == 1, printed
+    assert printed.count(f"{out}: Operation not permitted") == 2, printed  # ls
+    assert [name for name in (*instances, '"task"', '"order"', '"experiment_id"') if name in printed] == [], printed
+    for record in records:
+        assert record["provenance"]["network_policy"]["sandbox"] == "sandbox-exec+net"
+        assert record["execution"]["status"] == "completed", record["execution"]["reason"]
+
+
 def test_materialize_renders_real_family_instances(tmp_path, capsys):
     # bug-2930a8: F1 and F4 write the task repo to --workdir and everything private to --out, not to <workdir>/.vb/.
     for instance_id in ("F1-l1-0001", "F4-l1-0001"):

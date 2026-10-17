@@ -22,7 +22,7 @@ usage never came back has an unknown cost.
 **No network** (gap-0bd49a, 3303). The driver makes every model call, so the agent's shell needs no network at all.
 Each command runs through `common.sandbox` with the rule "none" (`NETWORK`): on macOS no process it starts can open
 an outgoing connection, to the loopback, the metering proxy and DNS included, and none can touch the paths
-`ctx.deny` names (the secret file, the key file and the run's private task directories). The run record names the
+`ctx.deny` names (the secret file, the key file and the run's results directory). The run record names the
 rule and the confinement that applied (`provenance.network_policy`); off macOS that is "none", and the network stays
 open (gap-29ac83).
 

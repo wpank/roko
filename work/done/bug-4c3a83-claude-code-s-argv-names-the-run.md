@@ -2,7 +2,7 @@
 id = "bug-4c3a83"
 kind = "bug"
 title = "Claude Code's argv names the run and the benchmark: its inline --settings deny rules hold <results>/<experiment>/<run_id> and ~/.config/viabilitybench, and the agent's Bash tool reads its parent's argv with sysctl(KERN_PROCARGS2) inside the sandbox"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p3"
 goal = "proof"
@@ -11,6 +11,7 @@ subsystem = ["benchmarks/viabilitybench/driver"]
 created = 2026-10-17
 updated = 2026-10-17
 last_verified = 2026-10-17
+last_verified_rev = "f0395912d"
 source = "bug-d308f7 worker (claude-agent), 2026-10-17 (run_cli.settings and build_invocation; on macOS 26.4 a child under common.sandbox.command reads its parent's argv, a --settings JSON naming .config/viabilitybench included, with ctypes sysctl KERN_PROCARGS2, rc 0)"
 discovered_from = "bug-d308f7"
 anchors = ["benchmarks/viabilitybench/driver/run_cli.py::settings", "benchmarks/viabilitybench/driver/run_cli.py::build_invocation"]
@@ -19,6 +20,18 @@ links = { depends_on = [], blocks = [], related = ["bug-d308f7", "bug-3bab88", "
 
 [[verify]]
 command = "grep -qw 'def test_no_cli_argv_names_the_run_or_the_benchmark' benchmarks/viabilitybench/driver/test_run_cli.py && benchmarks/viabilitybench/.venv/bin/python -m pytest benchmarks/viabilitybench/driver/test_run_cli.py -k test_no_cli_argv_names_the_run_or_the_benchmark -q"
+
+[closed]
+at = 2026-10-17
+at_ts = "2026-10-17T14:06:24Z"
+commit = "f0395912d"
+by = "commit trailer"
+executor = "claude-agent"
+via = "work-batch"
+size = "S"
+claimed_at = "2026-10-17T11:04:41Z"
+forced = false
+evidence = "f0395912d: Claude Code's command line, as the driver builds it for the fd_claude and fd_claude_lite arms and the roko_plan arm's planner, names neither the experiment, the run, the results root nor the benchmark. run_cli.build_invocation builds the sandbox first and passes run_cli.settings the paths of ctx.deny (the results root since bug-935cfa, the key files) only when no sandbox applies: on macOS the sandbox denies the whole session those paths, Claude's file tools included (claude itself runs under it), so the rules added only their paths to the argv that the session's Bash tool reads with sysctl(KERN_PROCARGS2). The default secret directory's rule is the operator's whole ~/.config, which names no benchmark, in place of ~/.config/viabilitybench. Under the sandbox, --settings deny the web tools, the repository, ~/.roko and ~/.config; without one they also name the results root, the only thing then keeping it from Claude's file tools. A --settings file would not have helped: the session can read any file claude reads. Decided under Will's decision 9 (## Decision below): no benchmark-internal identifier reaches an agent, for benchmark validity and against contamination through the public repository. The verify passes: test_no_cli_argv_names_the_run_or_the_benchmark (driver/test_run_cli.py, macOS), 1 passed: through vb run, the fake claude logs its argv and its Bash tool reads its parent's argv and environment with test_secret.py's PROCARGS from inside the sandbox; neither names TEST-CLI, run-1, the results root or the benchmark (BENCHMARK_MARK), the probe did read claude's --settings (the control), and the task completed under sandbox-exec+net. Before this change it fails on the argv's Edit(//<home>/.config/viabilitybench/**) and Read(/<tmp>/results/**). test_claude_arm_command_is_isolated_and_pinned still finds the results root in --settings when no sandbox applies. Every other arm's parent was checked (the item's step 2): Codex's command line holds its fixed flags, the workdir alias and the model; Roko's its binary under the repository, the workdir alias and the plan's neutral slug; fr_claude's claude is Roko's own, built from the emitted roko.toml. Bench pytest: 815 passed, 16 skipped (13 with no roko binary in the worktree, the analysis stack, two opt-in sweeps), against 814 passed and the same 16 skipped before. Filed bug-0fd744 (p3: the direct loop's shell is a child of the driver, whose command line and environment name the experiment, the run id, the benchmark's path and VB_DRIVER_ENV; a vb run started as test_secret.py starts it showed all of them to the direct loop's agent through PS_PROBE from inside the sandbox) and bug-e16450 (p3: mini-swe-agent runs from .venv-msa inside the benchmark tree, so its agent's parent's command line names benchmarks/viabilitybench)."
 +++
 
 ## Problem

@@ -9,10 +9,10 @@ goal = "tooling"
 size = "S"
 subsystem = ["roko-core/config", "roko-cli/inert_settings"]
 created = 2026-10-15
-updated = 2026-10-15
+updated = 2026-10-16
 last_verified = 2026-10-15
 source = "status-quo-2026-10-15#finding-42"
-anchors = ["crates/roko-cli/src/graph_task_dispatch/inert_settings.rs::graph_engine_inert_settings", "crates/roko-core/src/config/presets.rs", "roko.toml"]
+anchors = ["crates/roko-cli/src/graph_task_dispatch/inert_settings.rs::graph_engine_inert_settings", "crates/roko-core/src/config/presets.rs", "roko.toml", "crates/roko-core/src/config/learning.rs::LearningConfig", "crates/roko-learn/src/routing_extras.rs::LookaheadRouter"]
 lane = "rust-cold"
 links = { depends_on = [], blocks = [], related = ["spec-9a3131", "spec-1ced1d"], supersedes = [], duplicate_of = "" }
 
@@ -65,3 +65,16 @@ The `[[verify]]` command passes.
 
 Don't delete the fields from the schema in this item: old roko.toml files must still load. Parent: the hygiene epic
 spec-9a3131.
+
+2026-10-16 (learning-research, round v6, checked at 47b3cdd20): two more `[learning]` knobs are inert and should join
+this item's list and its test. That makes nine, which the test should cover:
+- `auto_playbook_refresh` (default true, "Auto-refresh playbook rules after successful tasks"). Only the config overlay
+  (`crates/roko-cli/src/config.rs`) and the TUI's config view (`tui/config_meta.rs:477`) read it. Playbooks on plan runs
+  are written by `VerifiedPlaybookSink` (gap-89f985) whatever it says.
+- `use_lookahead_router` ("Enable the lookahead router for cost-saving tier downgrades"). `LookaheadRouter` and
+  `route_with_lookahead` (`crates/roko-learn/src/routing_extras.rs`) have no caller outside that file. The `thorough`
+  preset turns the key on (`crates/roko-core/src/config/presets.rs:183`), so that preset promises a cost saving that
+  never happens.
+
+The dream keys `dream_on_completion` and `[learning.dreams] trigger_on_plan_complete` are inert too, but they are
+gap-01fb50's.

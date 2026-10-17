@@ -67,10 +67,18 @@ Since run_roko_plan was written (3319). bug-85e982 made run_roko's arms record t
 
 ## Done when
 
-- [ ] roko_plan's `config.prompt` names a version and a sha256, and changes when its planner prompt or a template of
+- [x] roko_plan's `config.prompt` names a version and a sha256, and changes when its planner prompt or a template of
   its roko.toml changes.
-- [ ] The `[[verify]]` command passes.
+- [x] The `[[verify]]` command passes.
 
 ## Notes
 
 - Found by the bug-85e982 worker, 2026-10-17, checking the prompt every Roko arm file records.
+- Fixed 2026-10-17 (the Plan as written). `run_roko_plan.arm_prompt(arm)`, which `vb.runner_prompt` prefers, reports
+  `PROMPT_VERSION` (`run-roko-plan-1`) and the sha256 (`planemit._sha256`) of `PLANNER_PROMPT`, roko.toml's templates
+  and the planner session's fixed invocation, read on each call: planemit's `LADDER_HEAD` (the head `_roko_toml` wrote
+  inline was its text, byte for byte), `PROVIDER_TABLE` and `MODEL_TABLE`, this module's new `ROKO_TOML_TAIL` (the
+  gates, the tier's turn cap, the conductor, the runner, the budget and the learning tables) and `RUNG_LINE`, and
+  `run_cli.PROMPT_SHA256`, since the planner runs under run_cli's flags, settings and environment. `_roko_toml` now
+  formats `LADDER_HEAD + ROKO_TOML_TAIL` and writes the same roko.toml as before. roko_plan records
+  `run-roko-plan-1` / `243199c803afccec...` where it recorded nulls; every other arm records what it did.

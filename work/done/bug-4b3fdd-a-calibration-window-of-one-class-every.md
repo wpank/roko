@@ -2,7 +2,7 @@
 id = "bug-4b3fdd"
 kind = "bug"
 title = "A calibration window of one class (every outcome a pass) leaves Brier skill and AUROC undefined, so the gate drops an active self-model that is right every time back to the ladder"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p2"
 goal = "cybernetic"
@@ -11,6 +11,7 @@ subsystem = ["roko-learn/self_model"]
 created = 2026-10-17
 updated = 2026-10-17
 last_verified = 2026-10-17
+last_verified_rev = "d8943f7e2"
 source = "round-v6 learning-research start-rung re-run (2026-10-17)"
 discovered_from = "bug-92cc56"
 anchors = ["crates/roko-learn/src/self_model/gate.rs::CalibrationGate::evaluate"]
@@ -20,6 +21,13 @@ links = { depends_on = [], blocks = [], related = ["gap-3f36a6"], supersedes = [
 
 [[verify]]
 command = "grep -rqw 'fn a_one_class_window_is_judged_by_its_calibration' crates/roko-learn/ && cargo test -p roko-learn a_one_class_window_is_judged_by_its_calibration"
+
+[closed]
+at = 2026-10-17
+at_ts = "2026-10-17T20:35:58Z"
+commit = "4e930f712"
+forced = false
+evidence = "4e930f712: with one class in the window, Brier skill and AUROC fail nothing while ECE and calibration-in-the-large hold. a_one_class_window_is_judged_by_its_calibration failed first (12 passes forecast at 0.97 ineligible on Brier skill and AUROC unknown) and passes; 12 passes forecast at 0.6 stay ineligible. $0 start-rung re-run (tmp/hermes-roko-v6/learning-research/evidence/start-rung/AB): no fallback to the ladder from a one-class window (before: tasks 18 and 30 fell back to cheap). The [[verify]] passes on the merged tree d8943f7e2."
 +++
 
 ## Problem

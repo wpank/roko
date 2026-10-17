@@ -2,7 +2,7 @@
 id = "gap-3f36a6"
 kind = "gap"
 title = "Once warm, the self-model's first-try forecast is confounded by attempt order: on ladder data it forecasts mid at 0.01 although mid passed 20/20, and would start on an untried rung"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p2"
 goal = "cybernetic"
@@ -11,6 +11,7 @@ subsystem = ["roko-cli/graph_task_dispatch"]
 created = 2026-10-17
 updated = 2026-10-17
 last_verified = 2026-10-17
+last_verified_rev = "d8943f7e2"
 source = "round-v6-learning-research#5"
 discovered_from = "agent:learning-research (round v6, 2026-10-17, start-rung demo at b2970cb12)"
 anchors = ["crates/roko-learn/src/self_model/model.rs::SelfModel::forecast", "crates/roko-learn/src/self_model/features.rs::TaskFeatures", "crates/roko-learn/src/self_model/logit.rs::LogitForecast", "crates/roko-cli/src/graph_task_dispatch/self_model.rs::task_features"]
@@ -20,6 +21,15 @@ links = { depends_on = [], blocks = [], related = ["bug-92cc56", "gap-e464e6", "
 
 [[verify]]
 command = "grep -rqw 'fn ladder_ordered_outcomes_do_not_confound_the_start_forecast' crates/roko-learn/ && cargo test -p roko-learn ladder_ordered_outcomes_do_not_confound_the_start_forecast"
+
+[closed]
+at = 2026-10-17
+at_ts = "2026-10-17T20:35:58Z"
+commit = "74946738a"
+size = "M"
+claimed_at = "2026-10-17T17:08:32Z"
+forced = false
+evidence = "74946738a, decision A (the per-arm k rule of a7a519393 fixed shadow but not active mode): every first try is forecast by the L0 per-arm rate (basis prior in predictions.jsonl) and L1 forecasts retries and climbs; the L0 lower bound is clamped to its mean. ladder_ordered_outcomes_do_not_confound_the_start_forecast failed first and passes: warm on 40 ladder-ordered outcomes and then 11 starts on mid, P(mid, first try) >= 0.7, P(cheap, first try) <= 0.2, and the start is mid. $0 start-rung re-run (evidence/start-rung/AB): no warm pick of an untried rung (before: task 19 started on strong), the highest forecast of the first try of cheap after its failures is 0.123 (before: 0.92-0.95), every warm first try is on basis prior, and shadow keeps would_choose glm-4.7 through task 20. L1 for first tries waits on an arm-by-order fix (gap-e464e6); the start pick does not use the lessons feature yet. Checks as for bug-92cc56; the [[verify]] passes on d8943f7e2."
 +++
 
 ## Problem

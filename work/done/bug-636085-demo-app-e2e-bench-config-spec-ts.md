@@ -2,15 +2,16 @@
 id = "bug-636085"
 kind = "bug"
 title = "demo-app e2e bench-config.spec.ts uses the pre-redirect /bench route and expects ConfigWidget's pill there"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p2"
 goal = "proof"
 size = "S"
 subsystem = ["demo-app/e2e"]
 created = 2026-10-16
-updated = 2026-10-16
-last_verified = 2026-10-16
+updated = 2026-10-17
+last_verified = 2026-10-17
+last_verified_rev = "663342ec7"
 source = "found while fixing bug-92808a, 2026-10-16"
 discovered_from = "bug-92808a"
 anchors = ["demo/demo-app/e2e/bench-config.spec.ts", "demo/demo-app/src/components/AppShell.tsx", "demo/demo-app/src/main.tsx"]
@@ -19,6 +20,18 @@ links = { depends_on = [], blocks = [], related = [], supersedes = [], duplicate
 
 [[verify]]
 command = "grep -q \"'/lab/bench'\" demo/demo-app/e2e/bench-config.spec.ts"
+
+[closed]
+at = 2026-10-17
+at_ts = "2026-10-17T02:18:00Z"
+commit = "663342ec7"
+by = "commit trailer"
+executor = "claude-agent"
+via = "work-batch"
+size = "S"
+claimed_at = "2026-10-17T02:10:41Z"
+forced = false
+evidence = "Confirmed against current main.tsx/AppShell.tsx: '/bench' redirects to /lab/bench via <ToLab> (LAB_PATHS), and <ConfigWidget/> (.cw-pill) mounts only in pages/Demo/index.tsx:393, visible only at /lab/demo (AppShell.tsx's isDemo keeps it display:none elsewhere) -- the same facts bug-92808a established, re-checked here since this file was outside its anchors. bench-config.spec.ts (663342ec7): all three goto('/bench') -> goto('/lab/bench'); 'config pill is visible on bench page' renamed to 'config pill is not visible on bench page' and its assertion flipped to not.toBeVisible(), matching bug-92808a's resolution of the identical question in config-widget.spec.ts/config-sync.spec.ts; the first and third tests' .bench-model-display/.bench-model-hint/.model-picker assertions kept as-is beyond the path fix (confirmed those classes still exist in src/pages/Bench.tsx). Verify passes: grep -q \"'/lab/bench'\" demo/demo-app/e2e/bench-config.spec.ts. Static fix only, no node_modules in this worktree: Playwright itself was not run. Filed bug-425274 for the same stale-route pattern in demo/demo-app/e2e/bench-suites.spec.ts (five goto('/bench') calls, no .cw-pill assertion so likely still green via the redirect), which this item's anchors did not cover."
 +++
 
 ## Problem

@@ -474,36 +474,11 @@ impl LoopAuditor {
     }
 
     /// The state machine's parameters (S03 §4.10) from the section, with α
-    /// split over the randomized loops.
+    /// split over the randomized loops ([`AuditParams::configured`], which
+    /// `roko learn loops` judges with too).
     #[must_use]
     pub fn params(&self) -> AuditParams {
-        let config = &self.config;
-        let randomized = self
-            .registry
-            .loops()
-            .iter()
-            .filter(|spec| spec.lifecycle.is_randomized())
-            .count();
-        AuditParams {
-            alpha: config.alpha,
-            enforced_loops: randomized.max(1),
-            n_eps: config.n_eps,
-            eps_min: config.eps_min,
-            n_iota: config.n_iota,
-            iota_min: config.iota_min,
-            n_beta: config.n_beta,
-            n_null: config.n_null,
-            delta_min: config.delta_min,
-            delta_ni: config.delta_ni,
-            dwell_secs: i64::from(config.dwell.hours) * 3_600,
-            dwell_opportunities: config.dwell.opps,
-            reprobation_secs: i64::from(config.reprobation_days) * 86_400,
-            spibb_n: config.spibb_n,
-            h_probation: config.h.probation,
-            h_live: config.h.live,
-            h_suspect: config.h.suspect,
-            ..AuditParams::default()
-        }
+        AuditParams::configured(&self.config, &self.registry)
     }
 
     /// The audit tick after run `run_id` of the workspace `workdir` closed
@@ -532,7 +507,7 @@ impl LoopAuditor {
         let origin = RowOrigin::of_run(&runs_dir, run_id);
         let learn_dir = layout.learn_dir();
         let kept = learn_dir.join(census::CENSUS_STATE_FILE);
-        let mut census = CensusState::load(&kept, self.params().loop_alpha());
+        let mut census = CensusState::load(&kept, &self.params());
         census.fold_pending(&runs_dir, run_id, now);
         census.save(&kept)?;
         let (observations, trip) = self.evaluate_census(&census, &origin, now);
@@ -553,7 +528,7 @@ impl LoopAuditor {
         origin: &RowOrigin,
         now: DateTime<Utc>,
     ) -> Vec<LoopObservation> {
-        let mut census = CensusState::new(self.params().loop_alpha());
+        let mut census = CensusState::new(&self.params());
         for run in runs {
             census.fold(run, u64::MAX);
         }

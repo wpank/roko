@@ -26,13 +26,15 @@
 //! Each evaluation returns the state, reason, qualifiers and executed policy,
 //! and the transition record with its rule and evidence when the state moved.
 //! S03 §4.10's defaults are [`AuditParams::default`]; backlog 5122 maps
-//! `[learning.audit]` onto them.
+//! `[learning.audit]` onto them ([`AuditParams::configured`]), for the audit
+//! tick and the census alike (gap-ca63ee).
 
+use roko_core::config::learning::LearningAuditConfig;
 use serde::{Deserialize, Serialize};
 
-use super::estimators::Estimate;
+use super::estimators::{Estimate, KAPPA_MAX};
 use super::exposure::{ExposureEstimate, InfluenceEstimate};
-use super::spec::{AuditState, Qualifier, ReasonCode};
+use super::spec::{AuditState, Qualifier, ReasonCode, Registry};
 
 /// Seconds in an hour.
 const HOUR: i64 = 3_600;
@@ -60,6 +62,8 @@ pub struct AuditParams {
     pub delta_min: f64,
     /// δ_ni: the non-inferiority margin on β_pass.
     pub delta_ni: f64,
+    /// κ_max: the clip on CUPED's coefficient in the benefit estimators.
+    pub kappa_max: f64,
     /// The dwell's time between transitions, in seconds.
     pub dwell_secs: i64,
     /// The dwell's opportunities between transitions.
@@ -91,6 +95,7 @@ impl Default for AuditParams {
             n_null: 800,
             delta_min: 0.03,
             delta_ni: 0.03,
+            kappa_max: KAPPA_MAX,
             dwell_secs: 24 * HOUR,
             dwell_opportunities: 100,
             reprobation_secs: 14 * 24 * HOUR,
@@ -104,6 +109,40 @@ impl Default for AuditParams {
 }
 
 impl AuditParams {
+    /// The parameters `config`, a workspace's `[learning.audit]`, sets (S03
+    /// §4.10; backlog 5122), with α split over `registry`'s randomized loops:
+    /// the audit tick's, which `roko learn loops` judges with too
+    /// (gap-ca63ee). The rest keep their defaults.
+    #[must_use]
+    pub fn configured(config: &LearningAuditConfig, registry: &Registry) -> Self {
+        let randomized = registry
+            .loops()
+            .iter()
+            .filter(|spec| spec.lifecycle.is_randomized())
+            .count();
+        Self {
+            alpha: config.alpha,
+            enforced_loops: randomized.max(1),
+            n_eps: config.n_eps,
+            eps_min: config.eps_min,
+            n_iota: config.n_iota,
+            iota_min: config.iota_min,
+            n_beta: config.n_beta,
+            n_null: config.n_null,
+            delta_min: config.delta_min,
+            delta_ni: config.delta_ni,
+            kappa_max: config.kappa_max,
+            dwell_secs: i64::from(config.dwell.hours) * HOUR,
+            dwell_opportunities: config.dwell.opps,
+            reprobation_secs: i64::from(config.reprobation_days) * 24 * HOUR,
+            spibb_n: config.spibb_n,
+            h_probation: config.h.probation,
+            h_live: config.h.live,
+            h_suspect: config.h.suspect,
+            ..Self::default()
+        }
+    }
+
     /// α_ℓ = α/K, the level of each loop's confidence sequences.
     #[must_use]
     pub fn loop_alpha(&self) -> f64 {

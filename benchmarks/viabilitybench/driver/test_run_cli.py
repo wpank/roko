@@ -36,6 +36,7 @@ from common import canary
 from stub_provider import StubServer
 from test_driver import BENCHMARK_MARK
 from test_sandbox_net import Listener, macos_only
+from test_secret import PROCARGS
 
 TOY_STREAM = str(layout.DRIVER_DIR / "testdata" / "toy_stream.toml")
 RECORDED_PROBE = layout.DRIVER_DIR / "testdata" / "fd_claude_probe.json"  # the live probe's output, scrubbed
@@ -757,6 +758,42 @@ def test_no_cli_agent_sees_the_benchmark_name(places):
     assert "maintainer <maintainer@example.invalid> | maintainer <maintainer@example.invalid> | Initial commit" in \
         tried["shell"]["git"]
     assert "#!/bin/sh" in tried["shell"]["home"] and "/usr/bin/security" in tried["shell"]["home"]  # the wrapper
+
+
+@macos_only
+def test_no_cli_argv_names_the_run_or_the_benchmark(places):
+    """bug-4c3a83: Claude Code's Bash tool can read claude's own command line, `sysctl(KERN_PROCARGS2)` of its parent
+    from inside the sandbox, so that command line names neither the experiment, the run, the results root nor the
+    benchmark. Under the sandbox, which denies the whole session the results root and the key files (`ctx.deny`),
+    `--settings` deny only the web tools, the repository, `~/.roko` and the operator's whole `~/.config`, the default
+    secret directory's parent. Through `vb run` the fake claude logs its argv, and its Bash tool reads its parent's
+    argv and environment (`PROCARGS`): neither names TEST-CLI, run-1, the results root or the benchmark, while the
+    probe did read claude's `--settings` (the control). Without a sandbox nothing else keeps the results root from
+    claude's file tools, so `--settings` name it there (test_claude_arm_command_is_isolated_and_pinned)."""
+    with StubServer(lambda body: "Hi.") as api:
+        api_port = int(api.url.split(":")[2].split("/")[0])
+        shell = {"parent": f"python3 -c {shlex.quote(PROCARGS)} $PPID"}
+        program, log = fake_claude(places, "egress", api=["127.0.0.1", api_port], shell=shell)
+        assert run_vb(places, arm_file(places, program, cli=f'egress_allow = ["127.0.0.1:{api_port}"]')) == 0
+    [given] = [line["argv"] for line in read_jsonl(log) if "argv" in line]
+    [tried] = [line["egress"] for line in read_jsonl(log) if "egress" in line]
+    seen = {"argv": " ".join(given), "parent": tried["shell"]["parent"]}
+    assert "--settings" in seen["parent"] and "disableAllHooks" in seen["parent"], seen  # it read claude's argv
+    roots = sorted({str(places["tmp"]), os.path.realpath(places["tmp"]), tempfile.gettempdir(),
+                    os.path.realpath(tempfile.gettempdir())}, key=len, reverse=True)  # the host's own paths
+    results = sorted({str(places["results"]), os.path.realpath(places["results"])})
+    for name, text in seen.items():
+        named = [mark for mark in ("TEST-CLI", "run-1", *results) if mark in text]
+        for root in roots:
+            text = text.replace(root, "<tmp>")
+        marks = sorted({match.group(0) for match in BENCHMARK_MARK.finditer(text)})
+        assert named == [] and marks == [], (name, named, marks, text)
+    deny = json.loads(given[given.index("--settings") + 1])["permissions"]["deny"]
+    for path in (layout.REPO_ROOT, Path.home() / ".roko", Path.home() / ".config"):
+        assert f"Read(/{path.resolve()}/**)" in deny, deny
+    [record] = read_jsonl(run_dir(places) / "records.jsonl")
+    assert record["execution"]["status"] == "completed" and record["provenance"]["network_policy"]["sandbox"] == \
+        "sandbox-exec+net"
 
 
 def test_egress_proxy_answers_every_request_and_ends_its_tunnels(tmp_path):

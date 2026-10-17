@@ -69,8 +69,10 @@ sandbox; the path is still on argv.
 
 ## Done when
 
-- [ ] No agent's parent process carries the run id, the experiment id or the benchmark's name on its command line.
-- [ ] The `[[verify]]` command passes.
+- [x] Claude Code's command line, as the driver builds it (the fd_claude and fd_claude_lite arms, the roko_plan arm's
+  planner), carries neither the run id, the experiment id nor the benchmark's name; neither do the Codex and Roko
+  arms' (2026-10-17: the two parents that still do are filed apart, see Notes).
+- [x] The `[[verify]]` command passes.
 
 ## Notes
 
@@ -78,3 +80,35 @@ sandbox; the path is still on argv.
 - Every other process of the operator's user stays readable the same way (`agent_env`, gap-0bd49a): gap-b94a2c owns
   that mechanism, which no sandbox-exec rule tried stops, and only a separate user or a container per task hides
   (S08 decision 4). This item is narrower: what the driver itself puts on its agents' parents' command lines.
+- Fixed 2026-10-17 (option "make them neutral"). `run_cli.build_invocation` builds the sandbox first and passes
+  `run_cli.settings` the paths of `ctx.deny` (the results root since bug-935cfa, the key files) only when no sandbox
+  applies: on macOS the sandbox denies the whole session those paths, Claude's file tools included, so the rules
+  would add nothing but the results root's path on argv. The default secret directory's rule is now the operator's
+  whole `~/.config`, which names no benchmark. Claude Code's `--settings` under the sandbox: the web tools, the
+  repository, `~/.roko` and `~/.config`. A file passed with `--settings <path>` would not have helped: the session
+  can read any file claude can, and whether Claude Code 2.1.282 re-reads it could not be checked without a paid turn.
+- Step 2, every arm's parent: Codex's command line holds its fixed flags, the workdir alias and the model; Roko's its
+  binary (under the repository, which names no run or benchmark), the workdir alias and the plan's neutral slug; the
+  fr_claude arm's claude is Roko's own, built from the emitted `roko.toml`. Two parents still name the benchmark:
+  the direct loop's shell is a child of the driver, whose command line and environment name the experiment, the run
+  id (a campaign's unit's) and the benchmark's path (bug-0fd744, checked from inside the sandbox), and
+  mini-swe-agent runs from `.venv-msa/` inside the benchmark tree (bug-e16450).
+- The original first box was "No agent's parent process carries the run id, the experiment id or the benchmark's
+  name on its command line"; it now covers what this item changed, and the two items above hold the rest.
+
+## Decision (2026-10-17)
+
+Whether Claude Code's command line may carry the run's paths and the benchmark's name had no recorded default.
+Under Will's decision 9 of 2026-10-15 (technical questions with no recorded default take the coordinator's
+recommendation, the conservative option, recorded on the item with the reasoning; Will can veto it later), the
+coordinator decided that no benchmark-internal identifier reaches an agent: the command line the driver gives an
+agent's parent names neither the experiment, the run, the results root nor the benchmark. The change lands before
+the pre-registration lock (gap-394f28).
+
+Why: benchmark validity, and contamination through the public repository. The session's Bash tool reads claude's
+argv from inside the sandbox, and the run directory's path named the experiment and the run id (a campaign's names
+its block, `e-oss-1` the honeypots), and `~/.config/viabilitybench` named the benchmark, a search key into the
+public repository with its driver, generators and truth suites. Neutral rules are the conservative option: under the
+sandbox the session is denied exactly what it was (the sandbox denies the results root and the key files to every
+process of the session, Claude's file tools included), Claude's file tools are denied more of `~/.config` than
+before and nothing else changes, so nothing an agent needs or is graded on changes, only what it can read.

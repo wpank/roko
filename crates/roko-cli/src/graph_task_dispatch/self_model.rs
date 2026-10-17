@@ -1267,6 +1267,8 @@ fn prediction_candidate(forecast: &CandidateForecast) -> PredictionCandidate {
         lat_q50_s: forecast.lat_q50_s,
         lat_q90_s: forecast.lat_q90_s,
         p_retry: None,
+        cost_prior: forecast.cost_prior,
+        latency_prior: forecast.latency_prior,
     }
 }
 
@@ -1408,6 +1410,16 @@ mod tests {
         assert_eq!(shadow, off, "shadow mode never changes the route");
 
         assert!(predictions.len() * 100 >= (TASKS + 1) * 95);
+        // bug-09173e: the first row is a fresh model's, so each candidate's cost and latency
+        // are the priors, flagged, with finite, plausible upper quantiles.
+        for candidate in predictions[0]["candidates"].as_array().expect("candidates") {
+            assert_eq!(candidate["cost_prior"], true, "{candidate}");
+            assert_eq!(candidate["latency_prior"], true, "{candidate}");
+            let cost_q90 = candidate["cost_q90"].as_f64().expect("a cost q90");
+            let lat_q90 = candidate["lat_q90_s"].as_f64().expect("a latency q90");
+            assert!(cost_q90 > 0.0 && cost_q90 < 1.0, "{candidate}");
+            assert!(lat_q90 > 0.0 && lat_q90 < 600.0, "{candidate}");
+        }
         for row in &predictions {
             assert_eq!(row["precedes"], "route");
             assert_eq!(row["predictor"]["mode"], "shadow");
@@ -1650,6 +1662,8 @@ mod tests {
                 lat_q50_s: 60.0,
                 lat_q90_s: 60.0,
                 cold_start: false,
+                cost_prior: false,
+                latency_prior: false,
             };
             let candidates = Candidates {
                 arms: arms.clone(),

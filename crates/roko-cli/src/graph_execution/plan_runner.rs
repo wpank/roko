@@ -6828,6 +6828,17 @@ max_retries = 0
             1,
             "one routed attempt, one prediction: {rows:?}"
         );
+        // bug-09173e: a fresh workspace's first row forecasts its candidates' cost and latency
+        // from the priors, flagged, with finite, plausible upper quantiles.
+        let row: serde_json::Value = serde_json::from_str(rows[0]).expect("the row is JSON");
+        for candidate in row["candidates"].as_array().expect("candidates") {
+            assert_eq!(candidate["cost_prior"], true, "{candidate}");
+            assert_eq!(candidate["latency_prior"], true, "{candidate}");
+            let cost_q90 = candidate["cost_q90"].as_f64().expect("a cost q90");
+            let lat_q90 = candidate["lat_q90_s"].as_f64().expect("a latency q90");
+            assert!(cost_q90 > 0.0 && cost_q90 < 1.0, "{candidate}");
+            assert!(lat_q90 > 0.0 && lat_q90 < 600.0, "{candidate}");
+        }
 
         let state_path = shadow_dir
             .path()

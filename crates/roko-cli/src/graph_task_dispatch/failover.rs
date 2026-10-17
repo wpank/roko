@@ -445,7 +445,7 @@ impl GraphTaskDispatcher {
             // The caller settles only the result it receives; account the
             // refused call here.
             let refused_cost_usd = f64::from(dispatch.result.usage.cost_usd);
-            self.record_task_spend(&spec.plan_id, task_id, &dispatch.result.usage);
+            self.record_dispatch_spend(&spec.plan_id, task_id, &dispatch);
             self.budget_ledger
                 .settle(&spec.plan_id, None, refused_cost_usd)?;
             let refused_calls = refusals.iter().filter(|refusal| refusal.called).count();

@@ -1223,6 +1223,10 @@ pub enum ExcludedReason {
     TokenBudget,
     /// The attempt's arm withholds it (S02, S03).
     WithheldArm,
+    /// The θ the attempt runs leaves its section out: M1's B4 knob
+    /// `knowledge_section` is off (S06 §4.3; gap-6bb6d8). The controller
+    /// decided, not the section's loop, so no arm of that loop is credited.
+    HarnessPolicy,
     /// A bandit left it out.
     BanditExcluded,
     /// A screen removed it.
@@ -1966,6 +1970,13 @@ pub struct PredictionCandidate {
     /// P(the attempt is retried), when the predictor gives one.
     #[serde(default)]
     pub p_retry: Option<f64>,
+    /// The cost quantiles are the predictor's prior, anchored on the price snapshot: it has
+    /// observed no cost of the arm yet (bug-09173e).
+    #[serde(default)]
+    pub cost_prior: bool,
+    /// The latency quantiles are its prior: it has observed no latency of the arm yet.
+    #[serde(default)]
+    pub latency_prior: bool,
 }
 
 /// What the predictor would do for the attempt, so that a shadow pick can be scored against the

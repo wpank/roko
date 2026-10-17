@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -26,12 +27,14 @@ import provider
 import run_roko_plan
 import secret
 import vb
-from common import canary, hmac_seed
-from test_run_cli import FAKE_CLAUDE
+from common import canary, hmac_seed, sandbox
+from test_run_cli import FAKE_CLAUDE, HIDDEN_URL
+from test_sandbox_net import Listener, macos_only
 
 PLAN_MODEL = "claude-opus-5-5"
 CHEAP, MID = "gpt-oss-120b", "glm-4.7"
-SLUG_KEY = "PL01-0001.s1"
+KEY = "PL01-0001.s1"
+ALIAS = "5d0c1f9e3a7b2468"  # the task's alias, which names its workdir and its plan (bug-3c921e)
 PLANNER_RESULT = {
     "type": "result", "subtype": "success", "is_error": False, "duration_ms": 9000, "duration_api_ms": 8000,
     "num_turns": 3, "result": "Wrote the plan.", "session_id": "fake-plan-session", "total_cost_usd": 0.42,
@@ -92,52 +95,41 @@ def places(tmp_path: Path, monkeypatch) -> dict[str, Path]:
            "secret": secret_file}
 
 
-def fake_claude(places: dict[str, Path], slug: str, plan_text: str) -> Path:
-    """The fake `claude` on PATH, scripted to write `plans/<slug>/tasks.toml` and settle with PLANNER_RESULT."""
+def fake_claude(places: dict[str, Path], slug: str, plan_text: str, scenario: str = "solve",
+                **extra: object) -> Path:
+    """The fake `claude` on PATH, scripted to write `plans/<slug>/tasks.toml` and settle with PLANNER_RESULT; `extra`
+    joins its config (test_run_cli.FAKE_CLAUDE's scenarios)."""
     log, config = places["tmp"] / "claude.jsonl", places["tmp"] / "claude.json"
     needles = [*secret.load(places["secret"]).needles, canary.RELEASE_CANARY]
-    config.write_text(json.dumps({"scenario": "solve", "log": str(log), "result": PLANNER_RESULT,
+    config.write_text(json.dumps({"scenario": scenario, "log": str(log), "result": PLANNER_RESULT,
                                   "needles": needles, "files": {f"plans/{slug}/tasks.toml": plan_text},
-                                  "hidden_url": "", "visible": ""}))
+                                  "hidden_url": "", "visible": "", **extra}))
     program = places["bin"] / "claude"
     program.write_text(FAKE_CLAUDE.replace("__CONFIG__", repr(str(config))))
     program.chmod(0o755)
     return program
 
 
-def fake_roko(places: dict[str, Path]) -> Path:
+def fake_roko(places: dict[str, Path], shell: str = "", shell_log: Path | None = None) -> Path:
+    """The fake `roko` on PATH. With `shell`, its `plan run` first runs that command as an agent's bash tool would,
+    inside its own process tree, and appends what it printed to `shell_log`."""
     binary = places["bin"] / "roko"
-    binary.write_text(FAKE_ROKO.replace("__PYTHON__", sys.executable).replace("__CHEAP__", CHEAP)
-                      .replace("__MID__", MID))
+    fake = FAKE_ROKO.replace("__PYTHON__", sys.executable).replace("__CHEAP__", CHEAP).replace("__MID__", MID)
+    if shell:
+        anchor = 'roko = repo / ".roko"\n'
+        assert anchor in fake
+        fake = fake.replace(anchor, anchor + (
+            "import subprocess\n"
+            f"_ran = subprocess.run(['bash', '-c', {shell!r}], cwd=repo, capture_output=True, text=True, timeout=60)\n"
+            f"open({str(shell_log)!r}, 'a').write(_ran.stdout + _ran.stderr)\n"), 1)
+    binary.write_text(fake)
     binary.chmod(0o755)
     return binary
 
 
-def task_context(places: dict[str, Path], arm: dict, binary: Path) -> harness.TaskContext:
-    arm = {**arm, "roko": {**arm["roko"], "binary": str(binary)}}
-    snapshot = ledger.load_snapshot()
-    run_dir = places["results"] / "TEST-PLAN" / "run-1"
-    run_dir.mkdir(parents=True)
-    work = places["work"] / SLUG_KEY
-    work.mkdir(parents=True)
-    subprocess.run(["git", "init", "-q"], cwd=work, check=True)
-    subprocess.run(["git", "-c", "user.email=a@b.c", "-c", "user.name=a", "commit", "--allow-empty", "-qm", "x"],
-                   cwd=work, check=True)
-    book = ledger.Ledger(run_dir / "ledger.jsonl", line=arm["arm"]["line"], experiment_id="TEST-PLAN",
-                         run_id="run-1", price_snapshot_id=snapshot.id)
-    return harness.TaskContext(
-        experiment_id="TEST-PLAN", run_id="run-1", arm=arm, model=CHEAP,
-        endpoint=provider.Endpoint("cerebras", "http://127.0.0.1:9/cerebras"), provider=None,
-        snapshot=snapshot, caps=caps.Caps.from_table(arm["caps"]), ledger=book, billed=True,
-        instance_id="PL01-0001", seed=1, key=SLUG_KEY, workdir=work,
-        spec_text="# Feature\n\nAdd a widget with three parts.\n", files_in_scope=("a.py",), visible_verify=("true",),
-        agent_env=agent_env.build(home=places["work"] / "_home"))
-
-
-def test_roko_plan_runner_records_planner_and_executor_costs(places):
-    arm = vb.load_arm("roko_plan")
-    slug = run_roko_plan.planemit.plan_slug(SLUG_KEY)
-    plan_text = (
+def three_task_plan(slug: str) -> str:
+    """The planner's tasks.toml: three tasks whose checks pass, and a whole-plan gate that passes."""
+    return (
         f'[meta]\nplan = "{slug}"\ntotal = 3\ndone = 0\nstatus = "ready"\nmax_parallel = 3\n\n'
         '[[meta.verify]]\nphase = "test"\ncommand = "true"\nfail_msg = "whole-feature check failed"\n\n'
         '[[task]]\nid = "T01"\ntitle = "A"\ndescription = "Do A."\nstatus = "ready"\nrole = "implementer"\n'
@@ -149,7 +141,37 @@ def test_roko_plan_runner_records_planner_and_executor_costs(places):
         '[[task]]\nid = "T03"\ntitle = "C"\ndescription = "Do C."\nstatus = "ready"\nrole = "implementer"\n'
         'files = ["c.py"]\ndepends_on = []\nmax_retries = 2\n'
         '[[task.verify]]\nphase = "test"\ncommand = "true"\nfail_msg = "x"\n')
-    fake_claude(places, slug, plan_text)
+
+
+def read_log(path: Path) -> list[dict]:
+    return [json.loads(line) for line in path.read_text().splitlines() if line.strip()]
+
+
+def task_context(places: dict[str, Path], arm: dict, binary: Path) -> harness.TaskContext:
+    arm = {**arm, "roko": {**arm["roko"], "binary": str(binary)}}
+    snapshot = ledger.load_snapshot()
+    run_dir = places["results"] / "TEST-PLAN" / "run-1"
+    run_dir.mkdir(parents=True)
+    work = places["work"] / ALIAS
+    work.mkdir(parents=True)
+    subprocess.run(["git", "init", "-q"], cwd=work, check=True)
+    subprocess.run(["git", "-c", "user.email=a@b.c", "-c", "user.name=a", "commit", "--allow-empty", "-qm", "x"],
+                   cwd=work, check=True)
+    book = ledger.Ledger(run_dir / "ledger.jsonl", line=arm["arm"]["line"], experiment_id="TEST-PLAN",
+                         run_id="run-1", price_snapshot_id=snapshot.id)
+    return harness.TaskContext(
+        experiment_id="TEST-PLAN", run_id="run-1", arm=arm, model=CHEAP,
+        endpoint=provider.Endpoint("cerebras", "http://127.0.0.1:9/cerebras"), provider=None,
+        snapshot=snapshot, caps=caps.Caps.from_table(arm["caps"]), ledger=book, billed=True,
+        instance_id="PL01-0001", seed=1, key=KEY, alias=ALIAS, workdir=work,
+        spec_text="# Feature\n\nAdd a widget with three parts.\n", files_in_scope=("a.py",), visible_verify=("true",),
+        agent_env=agent_env.build(home=places["work"] / "_home"))
+
+
+def test_roko_plan_runner_records_planner_and_executor_costs(places):
+    arm = vb.load_arm("roko_plan")
+    slug = run_roko_plan.planemit.plan_slug(ALIAS)
+    fake_claude(places, slug, three_task_plan(slug))
     ctx = task_context(places, arm, fake_roko(places))
     outcome = run_roko_plan.run_task(ctx)
     assert outcome.status == "completed", outcome.reason
@@ -175,3 +197,36 @@ def test_roko_plan_runner_records_planner_and_executor_costs(places):
            .read_text().splitlines() if line.strip()]
     assert len(rows) == len(outcome.attempts)
     assert all(not row["billed_usd"] for row in rows if row["attempt_key"] == plan_attempt.attempt_key)
+    # gap-0bd49a: the record names the ladder's network rule and, under `planner`, the planner session's own.
+    host = sandbox.kind((), sandbox.NETWORK_NONE)  # "sandbox-exec+net" on macOS, "none" where no rule applies
+    policy = outcome.network_policy
+    assert (policy["network"], policy["sandbox"], policy["unix_sockets"]) == ("loopback:9", host, "workspace")
+    planner = policy["planner"]
+    assert re.fullmatch(r"loopback:\d+", planner["network"]) and planner["sandbox"] == host
+    assert planner["egress"] == {"allow": ["api.anthropic.com:443"], "admitted": 0, "refused": []}
+
+
+@macos_only
+def test_roko_plan_planner_and_ladder_cannot_reach_the_network(places):
+    """gap-0bd49a: the roko_plan arm's two halves run in the agents' sandbox. The planner's Bash tool reaches the
+    network only through its egress proxy, which refuses a truth suite's host, and cannot open a socket to a local
+    listener; the ladder's roko processes, whose tools run the agent's commands, cannot reach the listener either."""
+    arm = vb.load_arm("roko_plan")
+    slug = run_roko_plan.planemit.plan_slug(ALIAS)
+    ladder_log = places["tmp"] / "ladder-shell.log"
+    with Listener() as other:
+        local = f"curl -sS --max-time 5 http://127.0.0.1:{other.port}/; echo exit=$?"
+        fake_claude(places, slug, three_task_plan(slug), "egress", api=["127.0.0.1", 9],
+                    shell={"local_port": local, "fetch_suite": f"curl -sS --max-time 5 {HIDDEN_URL}; echo exit=$?"})
+        outcome = run_roko_plan.run_task(task_context(places, arm, fake_roko(places, local, ladder_log)))
+        assert outcome.status == "completed", outcome.reason
+        assert other.connections == 0
+    [tried] = [line["egress"] for line in read_log(places["tmp"] / "claude.jsonl") if "egress" in line]
+    outcome_of = {name: re.search(r"exit=\d+", text)[0] for name, text in tried["shell"].items()}
+    assert outcome_of == {"local_port": "exit=7", "fetch_suite": "exit=56"}, tried["shell"]
+    assert tried["api"].startswith("failed")  # the CONNECT to a host off the allowlist was refused
+    assert re.search(r"exit=\d+", ladder_log.read_text())[0] == "exit=7"
+    planner = outcome.network_policy["planner"]
+    assert planner["sandbox"] == outcome.network_policy["sandbox"] == "sandbox-exec+net"
+    assert [(row["method"], row["target"]) for row in planner["egress"]["refused"]] == [
+        ("CONNECT", "127.0.0.1:9"), ("CONNECT", "raw.githubusercontent.com:443")]

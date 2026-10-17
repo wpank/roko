@@ -6,21 +6,21 @@ Progress per epic: its children (items whose `parent` is the epic, plus its `dep
 
 ## [spec-ae5f94](items/spec-ae5f94-epic-release-blockers.md) release blockers
 
-- **21/24 closed** · goal `release` · severity p0
+- **22/25 closed** · goal `release` · severity p0
 - open by lane: none 3
 - next: [find-8cc7ac](items/find-8cc7ac-some-github-workflows-fail-on-main-and.md) Some GitHub workflows fail on main and required checks are undefined
 
 ## [spec-ba7bea](items/spec-ba7bea-epic-secrets-and-git-guard.md) secrets and git guard
 
-- **31/33 closed** · goal `release` · severity p0
-- open by lane: rust-cold 2
-- next: none ready (2 unverified)
+- **31/34 closed** · goal `release` · severity p0
+- open by lane: rust-cold 2, none 1
+- next: [bug-ae5d22](items/bug-ae5d22-secrets-are-redacted-only-after-text-is.md) Secrets are redacted only after text is cut, collapsed or lowercased, so a live tool-step target or a playbook's topic terms can keep part of one
 
 ## [spec-f8d196](items/spec-f8d196-epic-research-paper-companion-report-and-tl.md) research paper, companion report and TL;DR upkeep
 
-- **39/41 closed** · goal `whitepaper` · severity p1
-- open by lane: paper 2
-- next: [gap-d2c478](items/gap-d2c478-the-research-paper-s-figures-print-their.md) The research paper's figures print their labels at 5.5 to 6.9 pt, below the 8 pt its review checklist asks for
+- **41/42 closed** · goal `whitepaper` · severity p1
+- open by lane: paper 1
+- next: none ready (1 unverified)
 
 ## [spec-ce1484](items/spec-ce1484-epic-whitepaper-v1.md) whitepaper v1
 
@@ -42,9 +42,9 @@ Progress per epic: its children (items whose `parent` is the epic, plus its `dep
 
 ## [spec-567e52](items/spec-567e52-epic-pilot-benchmark.md) pilot benchmark
 
-- **53/65 closed** · goal `proof` · severity p1
-- open by lane: bench 12
-- next: [gap-a2f86a](items/gap-a2f86a-f7-s-in-tree-cargo-target-build.md) F7's in-tree .cargo-target build directory lands in commit_final's archived c_i
+- **58/69 closed** · goal `proof` · severity p1
+- open by lane: bench 11
+- next: [gap-b94a2c](items/gap-b94a2c-a-sandboxed-agent-still-reads-any-same.md) A sandboxed agent still reads any same-user process's start-up environment with sysctl(KERN_PROCARGS2), and no sandbox-exec rule stops it
 
 ## [spec-6ac537](items/spec-6ac537-epic-cybernetic-core.md) cybernetic core
 
@@ -52,8 +52,8 @@ Progress per epic: its children (items whose `parent` is the epic, plus its `dep
 
 ## [spec-7a71d6](items/spec-7a71d6-epic-turn-the-cybernetic-layer-on-in.md) turn the cybernetic layer on in safe stages
 
-- **8/16 closed** · goal `cybernetic` · severity p2
-- open by lane: rust-hot 6, rust-cold 2
+- **16/24 closed** · goal `cybernetic` · severity p2
+- open by lane: rust-hot 5, rust-cold 3
 - next: [gap-d76b1b](items/gap-d76b1b-decision-7103-s-audit-on-by-default.md) Decision 7103's audit-on-by-default outcome was never implemented: enabled stays false, no --no-audit flag
 
 ## [spec-1e1b45](items/spec-1e1b45-epic-tracker-tooling-for-parallel-work.md) tracker tooling for parallel work
@@ -104,12 +104,12 @@ Progress per epic: its children (items whose `parent` is the epic, plus its `dep
 
 | Lane | Closed | Total | Open (verified) |
 |---|---|---|---|
-| bench | 87 | 125 | 38 (29) |
+| bench | 100 | 137 | 37 (28) |
 | docs | 27 | 31 | 4 (3) |
-| frontend | 4 | 7 | 3 (3) |
-| none | 440 | 534 | 94 (88) |
-| paper | 74 | 85 | 11 (9) |
-| rust-cold | 247 | 299 | 52 (44) |
-| rust-hot | 239 | 265 | 26 (24) |
+| frontend | 7 | 9 | 2 (2) |
+| none | 455 | 550 | 95 (91) |
+| paper | 77 | 86 | 9 (7) |
+| rust-cold | 256 | 310 | 54 (45) |
+| rust-hot | 248 | 276 | 28 (26) |
 | tests | 1 | 1 | 0 (0) |
-| tracker | 24 | 29 | 5 (4) |
+| tracker | 26 | 29 | 3 (2) |

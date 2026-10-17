@@ -9,15 +9,20 @@
 //! or a provider or harness outcome. An attempt a provider failover substituted is marked and
 //! kept out of training, as `RoutingObservationSink` does.
 //!
+//! [`read_forecast_join`] joins each run's shadow forecasts (`predictions.jsonl`, 6126) to its
+//! routed attempts and their verdicts by attempt key: the measure of S04 §7.4's shadow
+//! acceptance (gap-96547f).
+//!
 //! Read-only: nothing here writes under `.roko/`.
 
-use std::collections::{BTreeMap, HashMap};
-use std::path::Path;
+use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::path::{Path, PathBuf};
 
 use serde::Serialize;
 
 use super::{ArmKey, Label, Unit};
 use crate::telemetry::records::{ATTEMPT_OPEN_SCHEMA, VERDICT_SCHEMA};
+use crate::telemetry::report::RunRecords;
 use crate::telemetry::{AttemptKey, AttemptOpenRecord, AttemptOutcome, AttemptVerdictRecord};
 
 /// What a read of run records or legacy logs found: the labelled units, and an audit of
@@ -101,17 +106,7 @@ struct RunLines {
 /// directory holds no runs.
 pub fn read_runs(runs_dir: &Path) -> std::io::Result<IngestReport> {
     let mut report = IngestReport::default();
-    let mut run_dirs: Vec<_> = match std::fs::read_dir(runs_dir) {
-        Ok(entries) => entries
-            .filter_map(Result::ok)
-            .map(|entry| entry.path())
-            .filter(|path| path.is_dir())
-            .collect(),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(report),
-        Err(error) => return Err(error),
-    };
-    run_dirs.sort();
-    for run_dir in run_dirs {
+    for run_dir in run_dirs(runs_dir)? {
         let path = run_dir.join("attempts.jsonl");
         let text = match std::fs::read_to_string(&path) {
             Ok(text) => text,
@@ -121,6 +116,21 @@ pub fn read_runs(runs_dir: &Path) -> std::io::Result<IngestReport> {
         read_run(&text, &mut report);
     }
     Ok(report)
+}
+
+/// Every run directory under `runs_dir`, in name order; none when it is missing.
+fn run_dirs(runs_dir: &Path) -> std::io::Result<Vec<PathBuf>> {
+    let mut run_dirs: Vec<PathBuf> = match std::fs::read_dir(runs_dir) {
+        Ok(entries) => entries
+            .filter_map(Result::ok)
+            .map(|entry| entry.path())
+            .filter(|path| path.is_dir())
+            .collect(),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(error) => return Err(error),
+    };
+    run_dirs.sort();
+    Ok(run_dirs)
 }
 
 /// Add the attempts of one run's `attempts.jsonl` text to `report`.
@@ -277,6 +287,100 @@ fn latency_s(verdict: &AttemptVerdictRecord) -> Option<f64> {
         .or_else(|| timing.dispatch_started_at.zip(timing.dispatch_ended_at))?;
     let millis = span.1.checked_sub(span.0).filter(|millis| *millis >= 0)?;
     Some(millis as f64 / 1_000.0)
+}
+
+/// How the self-model's forecasts in each run's `predictions.jsonl` (6126) join the run's routed
+/// attempts and their verdicts, by attempt key. S04 §7.4's shadow acceptance asks that at least
+/// 95% of routed attempts be forecast and at least 99% of forecasts be joined to an outcome
+/// (gap-96547f). Coverage counts the runs that hold a forecast, the runs the self-model was on
+/// in; `runs_forecast` against `runs` shows how many hold none.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
+pub struct ForecastJoin {
+    /// Run directories read.
+    pub runs: usize,
+    /// Runs with at least one forecast.
+    pub runs_forecast: usize,
+    /// Attempts of those runs with a route decision: the routed attempts.
+    pub routed: usize,
+    /// Routed attempts with a forecast.
+    pub routed_forecast: usize,
+    /// Attempts with a forecast.
+    pub forecasts: usize,
+    /// Forecasts whose attempt settled with a label: joined to an outcome.
+    pub joined: usize,
+    /// Forecasts whose attempt has no verdict.
+    pub no_verdict: usize,
+    /// Forecasts whose attempt settled without a label: unverified, a forced accept, or a
+    /// provider, infra or harness outcome.
+    pub unlabelled: usize,
+}
+
+impl ForecastJoin {
+    /// The share of routed attempts with a forecast; `None` without a routed attempt.
+    #[must_use]
+    pub fn coverage(&self) -> Option<f64> {
+        share(self.routed_forecast, self.routed)
+    }
+
+    /// The share of forecasts joined to a labelled verdict; `None` without a forecast.
+    #[must_use]
+    pub fn join_share(&self) -> Option<f64> {
+        share(self.joined, self.forecasts)
+    }
+
+    /// Add `run`'s forecasts, routed attempts and verdicts.
+    fn add(&mut self, run: &RunRecords) {
+        self.runs += 1;
+        let forecast: BTreeSet<&str> = run
+            .predictions
+            .iter()
+            .map(|line| line.record.identity.attempt_key.as_str())
+            .collect();
+        if forecast.is_empty() {
+            return;
+        }
+        self.runs_forecast += 1;
+        let routed: BTreeSet<&str> = run
+            .decisions
+            .iter()
+            .filter_map(|line| line.record.attempt_key.as_deref())
+            .collect();
+        self.routed += routed.len();
+        self.routed_forecast += routed.intersection(&forecast).count();
+        let verdicts: HashMap<&str, &AttemptVerdictRecord> = run
+            .verdicts
+            .iter()
+            .map(|line| (line.record.identity.attempt_key.as_str(), &line.record))
+            .collect();
+        self.forecasts += forecast.len();
+        for key in forecast {
+            match verdicts.get(key) {
+                None => self.no_verdict += 1,
+                Some(verdict) if Label::of_verdict(verdict).is_some() => self.joined += 1,
+                Some(_) => self.unlabelled += 1,
+            }
+        }
+    }
+}
+
+/// `part` of `whole`; `None` when `whole` is 0.
+fn share(part: usize, whole: usize) -> Option<f64> {
+    (whole > 0).then(|| part as f64 / whole as f64)
+}
+
+/// Join the forecasts of every run directory under `runs_dir` (`.roko/runs`) to the runs'
+/// routed attempts and verdicts ([`ForecastJoin`]). A missing directory holds no runs.
+///
+/// # Errors
+///
+/// Returns an error when the directory or a run's files exist but cannot be read.
+pub fn read_forecast_join(runs_dir: &Path) -> std::io::Result<ForecastJoin> {
+    let mut join = ForecastJoin::default();
+    for run_dir in run_dirs(runs_dir)? {
+        let run = RunRecords::load(&run_dir).map_err(std::io::Error::other)?;
+        join.add(&run);
+    }
+    Ok(join)
 }
 
 #[cfg(test)]

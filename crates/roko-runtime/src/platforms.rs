@@ -118,7 +118,7 @@ impl std::fmt::Display for ChannelId {
 ///
 /// Callers should check the relevant flags before constructing rich payloads
 /// to avoid silently degraded output.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PlatformCapabilities {
     /// The platform renders Markdown text formatting.
     pub markdown: bool,
@@ -135,20 +135,6 @@ pub struct PlatformCapabilities {
     /// Maximum message body length in Unicode code points.
     /// `None` means no known limit (treat as very large).
     pub max_message_length: Option<usize>,
-}
-
-impl Default for PlatformCapabilities {
-    fn default() -> Self {
-        Self {
-            markdown: false,
-            attachments: false,
-            edit_messages: false,
-            threads: false,
-            interactive_components: false,
-            reactions: false,
-            max_message_length: None,
-        }
-    }
 }
 
 impl PlatformCapabilities {
@@ -756,9 +742,7 @@ mod tests {
         let registry = PlatformRegistry::new();
         assert!(registry.is_empty().await);
         assert_eq!(registry.len().await, 0);
-        registry
-            .register(discord_config(), None)
-            .await;
+        registry.register(discord_config(), None).await;
         assert!(!registry.is_empty().await);
         assert_eq!(registry.len().await, 1);
     }
@@ -767,10 +751,12 @@ mod tests {
     async fn stub_bridge_send_returns_error() {
         let bridge = StubChatBridge::new("test-stub");
         assert!(bridge.send_message("#general", "hello").await.is_err());
-        assert!(bridge
-            .send_rich("#general", RichMessage::plain("hi"))
-            .await
-            .is_err());
+        assert!(
+            bridge
+                .send_rich("#general", RichMessage::plain("hi"))
+                .await
+                .is_err()
+        );
     }
 
     #[tokio::test]

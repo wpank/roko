@@ -6,7 +6,8 @@
 //! and state rules live in one place for every consumer (S04 §5). Units carry one gate
 //! verdict, so L1 learns a single `gate` rung until units carry per-rung outcomes. The model
 //! counts gate labels toward its cold start and shadow period: S05's VS labels join later
-//! (decision 6102, 1b).
+//! (decision 6102, 1b). An arm the cost model has not observed is priced from the snapshot
+//! (bug-09173e).
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -14,7 +15,7 @@ use std::path::{Path, PathBuf};
 use roko_core::pricing_snapshot::PriceSnapshot;
 use serde::{Deserialize, Serialize};
 
-use super::cost::CostModel;
+use super::cost::{CostModel, TYPICAL_ATTEMPT};
 use super::features::{
     FEATURE_SCHEMA, FeatureVector, PassEma, TaskFeatures, feature_vector, price_tier,
 };
@@ -53,6 +54,10 @@ pub struct SelfModel {
     pub price_snapshot_id: String,
     /// Each priced model's tier at that snapshot.
     price_tiers: BTreeMap<String, String>,
+    /// What a typical attempt costs at that snapshot, which an arm the cost model has not
+    /// observed is forecast around (bug-09173e). Rebuilt from the snapshot, never saved.
+    #[serde(skip)]
+    attempt_prices: AttemptPrices,
     /// L0.
     prior: HierarchicalBeta,
     /// L1 and the false-green head.
@@ -65,6 +70,41 @@ pub struct SelfModel {
     history: PassEma,
     /// Labelled outcomes learned under this version.
     pub outcomes: usize,
+}
+
+/// What a [`TYPICAL_ATTEMPT`] costs at a price snapshot, in USD: on each model it prices, and
+/// the median over them, which stands in for a model it does not price (bug-09173e).
+#[derive(Debug, Clone, Default, PartialEq)]
+struct AttemptPrices {
+    by_model: BTreeMap<String, f64>,
+    median: f64,
+}
+
+impl AttemptPrices {
+    /// The prices at `snapshot`.
+    fn of(snapshot: &PriceSnapshot) -> Self {
+        let by_model: BTreeMap<String, f64> = snapshot
+            .rows()
+            .iter()
+            .map(|row| (row.slug.clone(), row.price(&TYPICAL_ATTEMPT).api_equiv_usd))
+            .collect();
+        let mut prices: Vec<f64> = by_model.values().copied().collect();
+        prices.sort_by(f64::total_cmp);
+        let middle = prices.len() / 2;
+        let median = if prices.is_empty() {
+            0.0
+        } else if prices.len().is_multiple_of(2) {
+            f64::midpoint(prices[middle - 1], prices[middle])
+        } else {
+            prices[middle]
+        };
+        Self { by_model, median }
+    }
+
+    /// A typical attempt's price on `model`: its own, else the median.
+    fn of_model(&self, model: &str) -> f64 {
+        self.by_model.get(model).copied().unwrap_or(self.median)
+    }
 }
 
 /// What [`SelfModel::load_or_new`] found.
@@ -101,6 +141,7 @@ impl SelfModel {
             version: predictor_version(MODEL_CLASS, FEATURE_SCHEMA, snapshot.id()),
             price_snapshot_id: snapshot.id().to_string(),
             price_tiers,
+            attempt_prices: AttemptPrices::of(snapshot),
             prior: HierarchicalBeta::new(),
             gates: GateForecaster::default(),
             costs: CostModel::default(),
@@ -142,7 +183,8 @@ impl SelfModel {
             let p_gate = self.recal.apply(gate.p_gate);
             (p_gate, gate.p_gate_lcb.min(p_gate), gate.p_fg)
         };
-        let costs = self.costs.forecast(&cost_features(task, arm));
+        let price = self.attempt_prices.of_model(&arm.model);
+        let costs = self.costs.forecast(arm, &cost_features(task, arm), price);
         CandidateForecast {
             arm: arm.clone(),
             p_gate,
@@ -154,6 +196,8 @@ impl SelfModel {
             lat_q50_s: costs.lat_q50_s,
             lat_q90_s: costs.lat_q90_s,
             cold_start,
+            cost_prior: costs.cost_prior,
+            latency_prior: costs.latency_prior,
         }
     }
 
@@ -230,10 +274,10 @@ impl SelfModel {
         std::fs::rename(&temporary, path)
     }
 
-    /// The model saved at `path`, when it is of the version a fresh model at `snapshot` has.
-    /// A missing file gives a fresh model. A file of another version, or one that does not
-    /// parse, is set aside (renamed with its version) rather than merged, and a fresh model
-    /// starts.
+    /// The model saved at `path`, when it is of the version a fresh model at `snapshot` has,
+    /// priced at `snapshot` again. A missing file gives a fresh model. A file of another
+    /// version, or one that does not parse, is set aside (renamed with its version) rather than
+    /// merged, and a fresh model starts.
     pub fn load_or_new(
         path: &Path,
         snapshot: &PriceSnapshot,
@@ -251,7 +295,11 @@ impl SelfModel {
             .filter(|state| state.schema_version == STATE_SCHEMA);
         match saved {
             Some(state) if state.model.version == fresh.version => {
-                Ok((state.model, StateLoad::Loaded))
+                let model = Self {
+                    attempt_prices: fresh.attempt_prices,
+                    ..state.model
+                };
+                Ok((model, StateLoad::Loaded))
             }
             other => {
                 let label =
@@ -469,5 +517,79 @@ mod tests {
         assert_eq!(fresh.outcomes, 0);
         let (_, missing) = SelfModel::load_or_new(&path, &newer).expect("no state");
         assert_eq!(missing, StateLoad::Fresh);
+    }
+
+    /// bug-09173e: an arm the model has not observed is forecast from its price, not from the
+    /// cost model's vague prior, whose q90 reached 6e26 USD and seconds. On a fresh model each
+    /// rung's cost q90 is finite and under ten times the snapshot's price of a typical attempt
+    /// on its model, its latency q90 under ten minutes, and the forecast says both are the
+    /// prior's. After the round-v6 evidence's six outcomes on two of the rungs, those two
+    /// forecast from what they cost, and the third, never run, still reads as its price, with
+    /// the observed attempts' latency.
+    #[test]
+    fn cost_forecast_q90_is_bounded_without_observations() {
+        let snapshot = snapshot();
+        let typical = |slug: &str| {
+            let price = snapshot.price(slug, &TYPICAL_ATTEMPT);
+            price.expect("a priced model").api_equiv_usd
+        };
+        let rungs = [
+            ArmKey::roko("cerebras", "gpt-oss-120b"),
+            ArmKey::roko("zai", "glm-4.7"),
+            ArmKey::roko("openai", "gpt-5.4-mini"),
+        ];
+        let mut model = SelfModel::new(&snapshot);
+        for forecast in model.forecast(&task(), &rungs) {
+            let price = typical(&forecast.arm.model);
+            assert!(
+                forecast.cost_prior && forecast.latency_prior,
+                "{forecast:?}"
+            );
+            assert!((forecast.cost_q50 - price).abs() < 1e-12, "{forecast:?}");
+            let cost_q90 = forecast.cost_q90;
+            assert!(
+                cost_q90.is_finite() && cost_q90 < 10.0 * price,
+                "{forecast:?}"
+            );
+            let lat_q90 = forecast.lat_q90_s;
+            assert!(lat_q90.is_finite() && lat_q90 < 600.0, "{forecast:?}");
+        }
+
+        // The evidence's six outcomes: five quick ones on gpt-oss-120b, a slow one on glm-4.7.
+        let ran = [
+            ("cerebras", "gpt-oss-120b", 0.020, 7.0, false),
+            ("cerebras", "gpt-oss-120b", 0.028, 10.0, false),
+            ("cerebras", "gpt-oss-120b", 0.023, 8.0, true),
+            ("cerebras", "gpt-oss-120b", 0.019, 9.0, false),
+            ("cerebras", "gpt-oss-120b", 0.025, 11.0, false),
+            ("zai", "glm-4.7", 0.0075, 55.0, true),
+        ];
+        for (index, (provider, slug, cost, latency, passed)) in ran.into_iter().enumerate() {
+            let mut unit = unit(slug, &format!("T{index}"), 1, passed);
+            unit.arm = ArmKey::roko(provider, slug);
+            unit.api_equiv_usd = Some(cost);
+            unit.latency_s = Some(latency);
+            model.observe_with(&unit, &task(), 1.0);
+        }
+        let forecasts = model.forecast(&task(), &rungs);
+        for forecast in &forecasts[..2] {
+            assert!(
+                !forecast.cost_prior && !forecast.latency_prior,
+                "{forecast:?}"
+            );
+        }
+        let never = &forecasts[2];
+        let price = typical("gpt-5.4-mini");
+        assert!(never.cost_prior && never.latency_prior, "{never:?}");
+        assert!((never.cost_q50 - price).abs() < 1e-12, "{never:?}");
+        assert!(never.cost_q90 < 10.0 * price, "{never:?}");
+        // Its latency prior sits at the six attempts' geometric mean, about 12 s.
+        let logs: f64 = ran
+            .iter()
+            .map(|&(_, _, _, latency, _)| f64::ln(latency))
+            .sum();
+        let geometric_mean = (logs / 6.0).exp();
+        assert!((never.lat_q50_s - geometric_mean).abs() < 1e-6, "{never:?}");
+        assert!(never.lat_q90_s < 10.0 * never.lat_q50_s, "{never:?}");
     }
 }

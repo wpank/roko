@@ -30,10 +30,13 @@ def run_record(instance: str, seed: int = 1, *, run_id: str = "run-a", arm: str 
                unknown: bool = False, visible: bool | None = None, status: str = "completed", cost: float | None = 0.02,
                billed: bool = True, vendor: float | None = None, verdict: str | None = None, honeypot: bool = False,
                started: str | None = None, finished: str | None = None, model: str | None = None,
-               harness: str | None = None) -> dict:
+               harness: str | None = None, checks: dict[str, int | None] | None = None) -> dict:
     """A valid run record for one (instance, seed). The visible checks pass iff VS = 1 unless `visible` says. Its one
     attempt ran the example's gpt-oss-120b unless `model` names another. `harness` sets
-    `provenance.network_policy.harness` (3317) -- "" (the default) is the arm's own, usual harness."""
+    `provenance.network_policy.harness` (3317) -- "" (the default) is the arm's own, usual harness. `checks` overrides
+    individual `vs.checks` fields on top of the label-derived defaults (e.g. `checks={"hidden": 1, "integrity": 0}`
+    for a VS- = 0 row whose hidden suite passed but whose A1 tamper check tripped), so a caller can pick which of the
+    independent VF = 0 causes (App. D.12) a synthetic row represents."""
     record = json.loads(json.dumps(EXAMPLE))
     family, ladder = ("PL", 5) if instance.startswith("PL") else (instance.split("-")[0], int(instance.split("-")[1][1:]))
     record.update(experiment_id=EXPERIMENT, run_id=run_id, arm=arm, seed=seed,
@@ -53,7 +56,7 @@ def run_record(instance: str, seed: int = 1, *, run_id: str = "run-a", arm: str 
     record["visible"]["passed"] = bool(label and not unknown) if visible is None else visible
     record["vs"] = {"label": 0 if unknown else label, "unknown": unknown,
                     "checks": {"completion": int(status == "completed"), "visible_clean": int(record["visible"]["passed"]),
-                               "hidden": None if unknown else label, "integrity": 1},
+                               "hidden": None if unknown else label, "integrity": 1, **(checks or {})},
                     "truth_suite_version": "1.0.0", "failed": [] if label and not unknown else ["hidden.cases"]}
     if cost is None:
         record["costs"] = {"api_equiv_usd": None, "billed_usd": None, "without_cache_usd": None, "vendor_usd": vendor,
@@ -561,6 +564,25 @@ def test_plan_slice_rows_stay_out_of_level_analysis():
     for row in written["records"]:
         assert validate.validate("metric-record", row) == []
         assert row["metric"].startswith("pl_") == ("task.family == \"PL\"" in row["record_filter"])
+
+
+def test_plan_level_false_green_matches_hidden_suite_failure():
+    """App. D.12: a plan-level false green is specifically a hidden-suite failure, not any VF = 0 while the
+    whole-plan gate passed. VF = 0 for three independent reasons; only the first is a false green (gap-cfe656)."""
+    rows = [
+        run_record("PL01-0001", run_id="run-p", arm="roko_plan", label=0, verdict="passed", visible=True),
+        # hidden suite failed (visible_clean and integrity otherwise clean): a plan-level false green.
+        run_record("PL02-0001", run_id="run-p", arm="roko_plan", label=0, verdict="passed", visible=False,
+                   checks={"hidden": 1}),
+        # the base repo's visible tests regressed; the hidden suite itself passed: not a false green.
+        run_record("PL03-0001", run_id="run-p", arm="roko_plan", label=0, verdict="passed", visible=True,
+                   checks={"hidden": 1, "integrity": 0}),
+        # S05's A1 tamper check tripped; the hidden suite itself passed: not a false green.
+    ]
+    section, _ = metrics.plan_slice(rows, EXPERIMENT)
+    assert section["plan_level_false_greens"] == ["roko_plan:PL01-0001"]
+    assert section["plan_level_vf0_gate_passed"] == ["roko_plan:PL01-0001", "roko_plan:PL02-0001",
+                                                      "roko_plan:PL03-0001"]
 
 
 def test_clopper_pearson_matches_published_values():

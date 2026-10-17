@@ -7,7 +7,7 @@ triage = "verified"
 severity = "p1"
 subsystem = ["roko-cli/knowledge-sync"]
 created = 2026-09-15
-updated = 2026-09-28
+updated = 2026-10-16
 last_verified = 2026-09-28
 source = "tmp/docs-audit/06-POTENTIAL-BACKLOG.md#A4. `knowledge sync` can corrupt version vectors"
 discovered_from = "audit:tmp/docs-audit/06-POTENTIAL-BACKLOG.md#A4. `knowledge sync` can corrupt version vectors"
@@ -16,6 +16,11 @@ links = { depends_on = [], blocks = [], related = ["gap-d6b2eb"], supersedes = [
 
 [[verify]]
 command = 'grep -q "direction: KnowledgeSyncDirection" crates/roko-cli/src/main.rs'
+superseded = "2026-10-16: e80843ea0 moved the subcommand enums out of main.rs. The sync direction is still a validated value_enum, now in commands/knowledge.rs, which verify 2 checks."
+superseded_by = "e80843ea0"
+
+[[verify]]
+command = "grep -B1 'direction: KnowledgeSyncDirection' crates/roko-cli/src/commands/knowledge.rs | grep -q 'value_enum'"
 
 [closed]
 at = 2026-09-28

@@ -52,6 +52,7 @@ use roko_gate::{DiffPayload, analyze_diff};
 use roko_learn::telemetry::ScopeFinding;
 
 use super::diff_snapshot::AttemptDiff;
+use super::retry_feedback::RetryNotice;
 use super::sibling_settle::declares;
 use super::*;
 
@@ -243,9 +244,15 @@ impl GraphTaskDispatcher {
             if let Some(diagnosis) = &rejection.diagnosis {
                 feedback = feedback.with_diagnosis(diagnosis);
             }
-            self.gate_retry_context.record(
+            let notice = RetryNotice {
+                attempt: attempt_number.saturating_add(1),
+                check: &gate,
+                failing_steps: std::slice::from_ref(&message),
+            };
+            self.leave_retry_feedback(
                 &spec.plan_id,
                 &task.id,
+                &notice,
                 feedback,
                 attempt_number.saturating_add(1),
             );

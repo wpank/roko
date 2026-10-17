@@ -9,10 +9,11 @@ goal = "learning"
 size = "M"
 subsystem = ["roko-cli/dispatch", "roko-cli/runtime_feedback", "roko-core/config"]
 created = 2026-10-15
-updated = 2026-10-15
-last_verified = 2026-10-15
+updated = 2026-10-16
+last_verified = 2026-10-16
+last_verified_rev = "47b3cdd20"
 source = "status-quo-2026-10-15#finding-17"
-anchors = ["crates/roko-cli/src/dispatch/model_routing.rs::compose_propensities", "crates/roko-cli/src/dispatch/model_routing.rs::decide", "crates/roko-cli/src/runtime_feedback/routing.rs::credits_router", "crates/roko-core/src/config/routing.rs::RoutingConfig", "crates/roko-learn/src/cascade_router.rs"]
+anchors = ["crates/roko-cli/src/dispatch/model_routing.rs::compose_propensities", "crates/roko-cli/src/dispatch/model_routing.rs::decide", "crates/roko-cli/src/runtime_feedback/routing.rs::credits_router", "crates/roko-core/src/config/routing.rs::RoutingConfig", "crates/roko-learn/src/cascade_router.rs", "crates/roko-cli/src/graph_execution/learning_commit.rs::commit_run_learning"]
 lane = "rust-hot"
 parent = "spec-7a71d6"
 links = { depends_on = ["gap-b38ed2"], blocks = [], related = [], supersedes = [], duplicate_of = "" }
@@ -76,3 +77,13 @@ or the item says why none can.
 
 - Depends on gap-b38ed2 (M3 calibration measured), per decision 4111.
 - LinUCB stays held (decision 12); this changes only the cascade router's credit.
+- 2026-10-16 (learning-research, round v6, at 47b3cdd20): reproduced on fresh workspaces. After three ladder-routed
+  plans (7 attempts, 2 climbs), `roko learn route` prints "Cascade router: 0 observations". Every `route_decided` has
+  `source: "ladder"`, and every verdict's `ladder.router_pick` is the shadow pick.
+  - **Side effect worth fixing with this item:** the run-end guarded commit still writes a new router version every run
+    with nothing learned. `roko learn commits` shows router v1→v3 in three runs, each "held-out log-loss 0.6931, the
+    last-known-good's 0.6931", with 0 router anchors.
+  - **Suggested addition:** skip the router proposal in `graph_execution/learning_commit.rs::commit_run_learning` when
+    the run gave the router no credited observation, so the commit log records only real changes.
+  - Evidence: `tmp/hermes-roko-v6/learning-research/evidence/zero-default/03-p3-heading-anchors-after/learn-route.txt`
+    and `learn-commits.txt`.

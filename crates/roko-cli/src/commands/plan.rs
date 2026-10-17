@@ -126,6 +126,42 @@ pub(crate) enum PlanCmd {
         #[arg(long)]
         workdir: Option<PathBuf>,
     },
+    /// Import mori plans (`.mori/plans/<plan>/`) as roko plans: tasks with
+    /// roles, checks from `verify-tasks.toml` and the acceptance criteria,
+    /// the whole-plan check from `verify.sh` and the rubric, and the review
+    /// and docs tasks. No model runs and the mori files are only read; the
+    /// plans written are validated.
+    Import {
+        /// A mori plan directory, or a directory of them (`.mori/plans`) to
+        /// import every plan it holds.
+        #[arg(long, required = true, num_args = 1.., value_name = "DIR")]
+        mori: Vec<PathBuf>,
+        /// Plans directory to write into (default: `plans/` in the
+        /// workspace).
+        #[arg(long, value_name = "DIR")]
+        out: Option<PathBuf>,
+        /// Write the plans into `<out>/<SET>/`, a plan set that runs as one.
+        #[arg(long, value_name = "SET")]
+        set: Option<String>,
+        /// Replace plan directories that hold a `tasks.toml` already.
+        #[arg(long)]
+        force: bool,
+        /// Do not make a reviewer task of `review-tasks.toml`.
+        #[arg(long)]
+        no_reviewer: bool,
+        /// Do not make docs tasks of `scribe-tasks.toml`.
+        #[arg(long)]
+        no_scribe: bool,
+        /// Fail on validation warnings, not only errors.
+        #[arg(long)]
+        strict: bool,
+        /// Output machine-readable JSON instead of text.
+        #[arg(long)]
+        json: bool,
+        /// Working directory.
+        #[arg(long)]
+        workdir: Option<PathBuf>,
+    },
     /// Rebuild or verify the deterministic plans index.
     Index {
         /// Verify exact generated content without writing any files.
@@ -1149,6 +1185,41 @@ pub(crate) async fn cmd_plan(cli: &Cli, cmd: PlanCmd) -> Result<i32> {
                 }
             }
             Ok(EXIT_SUCCESS)
+        }
+        PlanCmd::Import {
+            mori,
+            out,
+            set,
+            force,
+            no_reviewer,
+            no_scribe,
+            strict,
+            json,
+            workdir,
+        } => {
+            let workdir = workdir.unwrap_or_else(|| resolve_workdir(cli));
+            let out = match out {
+                Some(out) if out.is_absolute() => out,
+                Some(out) => workdir.join(out),
+                None => workdir.join("plans"),
+            };
+            let plans_root = match set {
+                Some(set) => out.join(set),
+                None => out,
+            };
+            let _lock = roko_cli::workspace_lock::acquire_workspace_lock(&workdir.join(".roko"))?;
+            let options = roko_cli::plan_import::MoriImportOptions {
+                reviewer: !no_reviewer,
+                scribe: !no_scribe,
+            };
+            let imported = roko_cli::plan_import::import_mori_plans(
+                &mori,
+                &workdir,
+                &plans_root,
+                options,
+                force,
+            )?;
+            cmd_plan_import_report(&imported, &workdir, strict, json || cli.json, cli.quiet)
         }
         PlanCmd::Run {
             plans_dir,
@@ -2752,6 +2823,75 @@ struct ValidateJson<'a> {
     workspace_rungs: Option<&'a plan_validate::WorkspaceRungs>,
 }
 
+/// The workspace's own `roko.toml`, when it has one.
+fn workspace_roko_toml(workdir: &Path) -> Result<Option<RokoConfig>> {
+    let config_path = workdir.join("roko.toml");
+    if !config_path.is_file() {
+        return Ok(None);
+    }
+    let config_text = std::fs::read_to_string(&config_path)
+        .with_context(|| format!("read {}", config_path.display()))?;
+    let config: RokoConfig = toml::from_str(&config_text)
+        .map_err(|error| anyhow!(error))
+        .with_context(|| format!("parse {}", config_path.display()))?;
+    Ok(Some(config))
+}
+
+/// `roko plan import --mori`'s output: what each import did, then the
+/// validation of the plans it wrote, each validated as `plan validate`
+/// would (gap-624658). Exits 1 on an error, or on a warning with `strict`.
+fn cmd_plan_import_report(
+    imported: &[roko_cli::plan_import::ImportedPlan],
+    workdir: &Path,
+    strict: bool,
+    json_output: bool,
+    quiet: bool,
+) -> Result<i32> {
+    let models = workspace_roko_toml(workdir)?
+        .as_ref()
+        .map(crate::commands::config_cmd::configured_models);
+    let mut validation = plan_validate::ValidationReport {
+        plans: Vec::new(),
+        totals: plan_validate::Totals::default(),
+    };
+    for plan in imported {
+        let report = plan_validate::validate_plans_dir_with_workdir(
+            &plan.dir,
+            models.as_ref(),
+            Some(workdir),
+        )?;
+        validation.totals.errors += report.totals.errors;
+        validation.totals.warnings += report.totals.warnings;
+        validation.totals.plans_checked += report.totals.plans_checked;
+        validation.plans.extend(report.plans);
+    }
+    if json_output {
+        #[derive(serde::Serialize)]
+        struct ImportJson<'a> {
+            imports: Vec<&'a roko_cli::plan_import::MoriImportReport>,
+            validation: &'a plan_validate::ValidationReport,
+        }
+        let output = ImportJson {
+            imports: imported.iter().map(|plan| &plan.report).collect(),
+            validation: &validation,
+        };
+        println!("{}", serde_json::to_string_pretty(&output)?);
+    } else {
+        if !quiet {
+            for plan in imported {
+                let dir = plan.dir.strip_prefix(workdir).unwrap_or(&plan.dir);
+                print!(
+                    "{}",
+                    roko_cli::plan_import::render_report(&plan.report, dir)
+                );
+            }
+            println!();
+        }
+        println!("{}", plan_validate::render_text(&validation));
+    }
+    Ok(validation.exit_code(strict))
+}
+
 pub(crate) fn cmd_plan_validate(
     dir: &Path,
     workdir: &Path,
@@ -2760,17 +2900,7 @@ pub(crate) fn cmd_plan_validate(
     spec_quality: bool,
     dynamic: Option<roko_cli::spec_red_on_base::RedOnBaseOptions>,
 ) -> Result<i32> {
-    let config_path = workdir.join("roko.toml");
-    let config = if config_path.is_file() {
-        let config_text = std::fs::read_to_string(&config_path)
-            .with_context(|| format!("read {}", config_path.display()))?;
-        let config: RokoConfig = toml::from_str(&config_text)
-            .map_err(|error| anyhow!(error))
-            .with_context(|| format!("parse {}", config_path.display()))?;
-        Some(config)
-    } else {
-        None
-    };
+    let config = workspace_roko_toml(workdir)?;
     let models = config
         .as_ref()
         .map(crate::commands::config_cmd::configured_models);

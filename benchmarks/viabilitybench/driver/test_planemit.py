@@ -36,9 +36,10 @@ def rungs(cascade=CASCADE) -> tuple[planemit.Rung, ...]:
 
 
 def pinned_spec() -> planemit.PlanSpec:
-    """The spec of the golden files in testdata/planemit/, emitted before ladder mode existed."""
+    """The spec of the golden files in testdata/planemit/, emitted before ladder mode existed. Its alias is the task
+    key they were emitted with; since bug-3c921e `vb run` hands planemit a random alias, never a key."""
     return planemit.PlanSpec(
-        key="F1-l1-0001.s1", spec_text=("# Implement `clamp`\n\nToy instance: F1-l1-0001\n\nKeep \"quotes\" and \\ "
+        alias="F1-l1-0001.s1", spec_text=("# Implement `clamp`\n\nToy instance: F1-l1-0001\n\nKeep \"quotes\" and \\ "
                                         "backslashes.\n"),
         files=("calc/ops.py",), visible=("python3 -m unittest discover -s tests/visible",), model="gpt-oss-120b",
         provider="cerebras", base_url="http://127.0.0.1:9/v1", api_key_env="CEREBRAS_API_KEY",
@@ -188,7 +189,7 @@ def test_emitted_config_freezes_learning_for_pinned_arms_not_ladder_mode(tmp_pat
 def test_real_roko_validates_the_ladder_plan(tmp_path):
     task = materialize.materialize(family_dir=layout.DRIVER_DIR / "testdata" / "toy_family", instance_id="F1-l1-0001",
                                    workdir=tmp_path / "ws", private_dir=tmp_path / "private")
-    spec = ladder_spec(key="F1-l1-0001.s1", spec_text=task.spec_text, files=tuple(task.manifest["files_in_scope"]),
+    spec = ladder_spec(alias="5d0c1f9e3a7b2468", spec_text=task.spec_text, files=tuple(task.manifest["files_in_scope"]),
                        visible=tuple(task.manifest["visible_verify"]))
     emitted = planemit.emit(spec, task.workdir)
     env = {**agent_env.build(home=tmp_path / "home"), "ROKO_CONFIG": str(emitted.config_path),

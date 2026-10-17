@@ -719,6 +719,7 @@ pub async fn revise_plan_source(
                 env_vars: &env_vars,
                 role: Some("strategist"),
                 allowed_tools: Some("Read,Grep,Glob"),
+                max_turns: Some(crate::plan_generate::PLANNER_MAX_TURNS),
             })
             .await?;
             spend.record(&call).await;

@@ -1,9 +1,12 @@
 //! M1's routes (S06 §5; backlog 8131), which S10's Homeostat panel renders.
 //!
-//! - `GET /api/learn/homeostasis`: `{mode, state, theta, theta0,
+//! - `GET /api/learn/homeostasis`: `{mode, policy, state, theta, theta0,
 //!   lkg_versions, episode}`, from the controller's saved state, the mode a
-//!   person set and θ's guarded store. `state` is the controller's phase;
-//!   without saved state it, θ and the episode are `null`.
+//!   person set or the config's, forced to `shadow` on roko's shipped
+//!   viability policy whatever that mode says (gap-cad57a), `policy` naming
+//!   that policy's origin (`person` or `shipped`) so the panel can say why,
+//!   and θ's guarded store. `state` is the controller's phase; without
+//!   saved state it, θ and the episode are `null`.
 //! - `GET /api/showcase/m1/essential-variables`: the controller ledger's EV
 //!   rows (`ev.sample`, `ev.breach`, `ev.restore`), oldest first.
 //! - `GET /api/showcase/m1/episodes?since=`: its episode, change, evaluation
@@ -35,7 +38,7 @@ use roko_learn::homeostasis::ledger::{
     Actor, ControllerRecord, ControllerRow, Envelope, HoldEvent, append, ledger_path,
 };
 use roko_learn::homeostasis::lkg::STORE;
-use roko_learn::homeostasis::policy::ViabilityPolicy;
+use roko_learn::homeostasis::policy::{PolicyOrigin, ViabilityPolicy, mode_on_policy};
 use roko_learn::telemetry::Arm;
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -68,9 +71,18 @@ pub(super) async fn homeostasis(
 fn view(roko: &Path, config_mode: HomeostasisMode) -> Value {
     let saved = saved_state(roko).unwrap_or(Value::Null);
     let field = |name: &str| saved.get(name).cloned().unwrap_or(Value::Null);
-    let mode = operator_mode(roko).unwrap_or(config_mode);
+    let requested = operator_mode(roko).unwrap_or(config_mode);
+    // A person's mode wins over the config's, but `on` only runs for real
+    // on bounds a person wrote: on roko's shipped policy it is shadow
+    // however it was set (gap-cad57a). A policy that fails to load is
+    // treated the same as the shipped one: conservative, never `on`.
+    let (mode, policy) = match ViabilityPolicy::load_or_shipped(roko) {
+        Ok((_, origin)) => (mode_on_policy(requested, origin), origin),
+        Err(_) => (requested, PolicyOrigin::Shipped),
+    };
     json!({
         "mode": mode,
+        "policy": policy,
         "state": field("phase"),
         "theta": field("theta"),
         "theta0": field("theta0"),
@@ -199,10 +211,13 @@ fn release_hold(roko: &Path) -> std::io::Result<bool> {
 
 /// Append `row`, a person's act, to the workspace's controller ledger.
 fn record(roko: &Path, row: ControllerRow) -> std::io::Result<()> {
-    let policy_version = ViabilityPolicy::load_optional(roko)
-        .ok()
-        .flatten()
-        .map_or(0, |policy| policy.policy_version);
+    // The policy M1 actually runs on (gap-ac2f31): the workspace's, else
+    // roko's shipped one, whose version every controller row otherwise
+    // carries. `load_optional` named only a person's file, so a fresh
+    // workspace's rows wrongly carried `policy_version` 0.
+    let policy_version = ViabilityPolicy::load_or_shipped(roko)
+        .map(|(policy, _)| policy.policy_version)
+        .unwrap_or(0);
     let resolutions = saved_state(roko).and_then(|state| state["resolutions"].as_u64());
     let envelope = Envelope {
         ts: chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
@@ -397,6 +412,7 @@ mod tests {
         assert_eq!(set["mode"], "on", "{set}");
         let (_, view) = get(&state, "/api/learn/homeostasis").await;
         assert_eq!(view["mode"], "on");
+        assert_eq!(view["policy"], "person", "{view}");
         let rows = ledger_rows(&roko);
         let mode_row = rows.last().expect("a mode row");
         assert_eq!(mode_row["kind"], "controller.mode");
@@ -411,6 +427,54 @@ mod tests {
         assert_eq!(episodes, json!([]));
         let (status, evs) = get(&state, "/api/showcase/m1/essential-variables").await;
         assert_eq!((status, evs), (StatusCode::OK, json!([])));
+    }
+
+    /// gap-ac2f31: since gap-cad57a, `on` runs for real only on bounds a
+    /// person wrote; on a fresh workspace, which runs M1 on roko's shipped
+    /// policy, the route must say so instead of reporting `on`, and a
+    /// person's row must carry the policy M1 actually ran on, not
+    /// `policy_version` 0. Once a person's policy file is there, the real
+    /// mode shows through.
+    #[tokio::test]
+    async fn homeostasis_route_reports_shadow_on_the_shipped_policy() {
+        let (dir, state) = state();
+        let roko = dir.path().join(".roko");
+
+        // No policy file yet: an admin's `on` only runs in shadow, on
+        // roko's shipped policy.
+        let admin = caller("admin", AuthMethod::Session);
+        let body = Json(ModeBody {
+            mode: HomeostasisMode::On,
+        });
+        let Json(set) = set_mode(State(Arc::clone(&state)), admin, body)
+            .await
+            .expect("an admin sets the mode");
+        assert_eq!(set["mode"], "on", "{set}");
+
+        let (status, view) = get(&state, "/api/learn/homeostasis").await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(view["mode"], "shadow", "{view}");
+        assert_eq!(view["policy"], "shipped", "{view}");
+
+        let rows = ledger_rows(&roko);
+        let mode_row = rows.last().expect("a mode row");
+        assert_eq!(mode_row["kind"], "controller.mode");
+        assert_eq!(mode_row["to"].as_str(), Some("on"));
+        assert_eq!(
+            mode_row["policy_version"], 1,
+            "a fresh workspace's row must carry the shipped policy's version: {mode_row}"
+        );
+
+        // A person's policy file appears: the same stored `on` now runs for
+        // real, and the view says whose policy it is.
+        let policy_path = ViabilityPolicy::path_in(&roko);
+        std::fs::create_dir_all(policy_path.parent().expect("policy dir")).expect("mkdir");
+        std::fs::write(&policy_path, POLICY).expect("write the policy");
+
+        let (status, view) = get(&state, "/api/learn/homeostasis").await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(view["mode"], "on", "{view}");
+        assert_eq!(view["policy"], "person", "{view}");
     }
 
     /// An agent's token, a worker's token and a read-only caller cannot

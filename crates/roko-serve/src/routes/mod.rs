@@ -637,13 +637,24 @@ async fn api_not_found(req: Request) -> Response {
 ///   (gap-6b6ec1);
 /// - `delivery_events`: a plan's delivery into its run's batch branch
 ///   publishes `delivery_started` and `delivery_finished` with the state it
-///   ended in, and a run's summary milestones say how it ended (gap-4f6cbe).
+///   ended in, and a run's summary milestones say how it ended (gap-4f6cbe);
+/// - `prompt_events`: each Graph attempt publishes `prompt_assembled`, the
+///   stored lessons, playbooks and episodes its prompt carried and what it
+///   left out (gap-5f6d0b);
+/// - `retry_feedback_events`: a failed check publishes `retry_feedback`, the
+///   diagnosis and errors the task's next attempt gets (gap-655ea5);
+/// - `run_cost_trend`: a Graph run's end publishes `efficiency_trend_updated`,
+///   one bucket per recent plan run with its cost per verified task
+///   (gap-de0e96).
 pub(crate) const FEATURES: &[&str] = &[
     "chat_refusals",
     "loop_events",
     "live_tool_steps",
     "plan_check_events",
     "delivery_events",
+    "prompt_events",
+    "retry_feedback_events",
+    "run_cost_trend",
 ];
 
 /// The summary of run `run_id`, as `GET /api/runs/{run_id}/summary` gives it.
@@ -1012,6 +1023,7 @@ mod tests {
             jwks_providers: Vec::new(),
             privy_workspace_id: None,
             privy_allowed_roles: Vec::new(),
+            privy_allowed_users: Vec::new(),
             enforcement_mode: Default::default(),
             invite_expiry_days: 7,
         };
@@ -2164,6 +2176,7 @@ mod tests {
             jwks_providers: Vec::new(),
             privy_workspace_id: None,
             privy_allowed_roles: Vec::new(),
+            privy_allowed_users: Vec::new(),
             enforcement_mode: Default::default(),
             invite_expiry_days: 7,
         };
@@ -2404,6 +2417,7 @@ mod tests {
             jwks_providers: Vec::new(),
             privy_workspace_id: None,
             privy_allowed_roles: Vec::new(),
+            privy_allowed_users: Vec::new(),
             enforcement_mode: Default::default(),
             invite_expiry_days: 7,
         };
@@ -2448,6 +2462,7 @@ mod tests {
             jwks_providers: Vec::new(),
             privy_workspace_id: None,
             privy_allowed_roles: Vec::new(),
+            privy_allowed_users: Vec::new(),
             enforcement_mode: Default::default(),
             invite_expiry_days: 7,
         };

@@ -4,15 +4,15 @@
 
 What to work on next: the top checked, open items of each goal, highest-priority goal first. Reorder or change goals in `goals.toml`; pin an item higher with `rank = 1` (lower first).
 
-**Drift:** 2 likely done · 8 anchor gone · 119 changed since checked · 5 mentioned in commits. Re-check them before relying on this list: `DRIFT.md`.
+**Drift:** 2 likely done · 8 anchor gone · 126 changed since checked · 4 mentioned in commits. Re-check them before relying on this list: `DRIFT.md`.
 
 ## 1. Public release: security, licence, CI, first run
 
 - **P1** [find-8cc7ac](items/find-8cc7ac-some-github-workflows-fail-on-main-and.md) Some GitHub workflows fail on main and required checks are undefined [finding] · size M · verified 2026-09-29
-- **P1** [reg-48b7ba](items/reg-48b7ba-the-route-inventory-snapshot-lists-every-registered.md) The route-inventory snapshot lists every registered route again, including GET /runs/{run_id}/diff, so CI's route check passes [regression] · size S · verified 2026-10-15
 - **P2** [bug-911361](items/bug-911361-cargo-toml-s-repository-and-homepage-point.md) Cargo.toml's repository and homepage point at an unrelated GitHub account [bug] · size S · verified 2026-09-29
+- **P2** [gap-e44df9](items/gap-e44df9-cursor-cli-attempts-answer-each-acp-permission.md) Cursor CLI attempts answer each ACP permission request with roko's command guard instead of running with --force · size M · verified 2026-10-15
 
-_8 more open · on hold: gap-00e882, gap-7e375c, gap-8f8544, gap-fbd580 · 3 unchecked (`TRIAGE.md`) · `goal = "release"`_
+_7 more open · on hold: gap-00e882, gap-7e375c, gap-8f8544, gap-fbd580 · 3 unchecked (`TRIAGE.md`) · `goal = "release"`_
 
 ## 2. Whitepaper v1 and the research papers
 
@@ -20,31 +20,31 @@ _8 more open · on hold: gap-00e882, gap-7e375c, gap-8f8544, gap-fbd580 · 3 unc
 - **P1** [gap-8117a8](items/gap-8117a8-publish-the-whitepaper-pdf-build-release-tag.md) Publish the whitepaper: PDF build, release tag and venue · size S · verified 2026-09-29
 - **P1** [gap-d7b6a4](items/gap-d7b6a4-the-research-paper-exists-only-in-untracked.md) The research paper exists only in untracked tmp/cybernetic-harness/paper/, with no history and no backup · size S · verified 2026-10-15
 
-_4 more open · on hold: gap-85f86a · 1 unchecked (`TRIAGE.md`) · `goal = "whitepaper"`_
+_2 more open · on hold: gap-85f86a · 1 unchecked (`TRIAGE.md`) · `goal = "whitepaper"`_
 
 ## 3. Roko tells the truth and is safe (P0)
 
 - **P1** [find-2ba86d](items/find-2ba86d-an-impossible-test-was-passed-twice-by.md) An impossible test was passed twice by hidden call-count state and input special cases, against explicit instructions, and roko reported succeeded [finding] · size L · verified 2026-10-13
 - **P2** [bug-c67afc](items/bug-c67afc-a-claude-cli-attempt-on-a-model.md) A Claude CLI attempt on a model the price snapshot lacks is labelled cost_source unknown while its cost row says priced = true, and a call that reported no usage counts as a known $0 [bug] · size S · verified 2026-10-15
-- **P2** [spec-65c828](items/spec-65c828-backlog-phase-1-safe-runs.md) Backlog Phase 1 — safe runs [spec] · verified 2026-10-02
+- **P2** [bug-a56ba1](items/bug-a56ba1-a-substituted-call-s-cost-row-says.md) A substituted call's cost row says priced when the model that served it has no rate, so later runs count its unknown cost as $0 [bug] · size S · verified 2026-10-16
 
-_13 more open · `goal = "truth"`_
+_12 more open · `goal = "truth"`_
 
 ## 4. Frontier plans, cheap models execute, the result integrates (P1)
 
 - **P1** [find-4003b9](items/find-4003b9-golden-path-live-runs-every-independent-review.md) Golden-path live runs: every independent review found a low-severity escape no check sees, so W8's GP bar (review finds no escape) is unmet while 3118's is met [finding] · size M · verified 2026-10-16
 - **P2** [spec-fef7c5](items/spec-fef7c5-backlog-phase-3-golden-path-proof.md) Backlog Phase 3 — golden-path proof [spec] · verified 2026-10-02
-- **P2** [bug-700d7c](items/bug-700d7c-delivery-moves-the-run-branch-before-the.md) Delivery moves the run branch before the whole-plan check and resets it on failure; the papers say it moves only once the check passes, and parallel plans can start from the unchecked merge [bug] · size M · verified 2026-10-16
+- **P2** [gap-55f878](items/gap-55f878-the-specs-epic-s-two-exit-tests.md) The specs epic's two exit tests were never written: spec_gate_passes_an_exact_plan_and_refuses_its_vacuous_twin (backlog 3200) and spec_lints_reject_a_weak_plan_and_pass_its_fixed_twin (spec-e57870) · size S · verified 2026-10-15
 
-_5 more open · on hold: gap-634954 · 3 unchecked (`TRIAGE.md`) · `goal = "golden-path"`_
+_2 more open · on hold: gap-634954 · 4 unchecked (`TRIAGE.md`) · `goal = "golden-path"`_
 
 ## 5. Proof: the pilot benchmark and a record of the work
 
-- **P1** [bug-ca1de5](items/bug-ca1de5-log1-block-e-cannot-materialize-any-of.md) LOG1 block E cannot materialize any of its 10 F8 honeypots: F8's task.json is not vb.task/1 (no spec, no recoverability, six extra keys) [bug] · size M · verified 2026-10-16
 - **P1** [dec-3d5714](items/dec-3d5714-s09-4-1-s-two-stage-bootstrap.md) S09 §4.1's two-stage bootstrap over-covers (0.975): change to task-only n_h-1 resampling, or accept, before the lock [decision] · size S · verified 2026-10-03
-- **P2** [gap-8f07ae](items/gap-8f07ae-claude-cli-re-pricing-backlog-6105-has.md) Claude CLI re-pricing (backlog 6105) has never had its live acceptance: 20 Claude CLI attempts with api_equiv_usd and price_snapshot_id and a median vendor gap of at most 5% · size S · verified 2026-10-15
+- **P2** [gap-b94a2c](items/gap-b94a2c-a-sandboxed-agent-still-reads-any-same.md) A sandboxed agent still reads any same-user process's start-up environment with sysctl(KERN_PROCARGS2), and no sandbox-exec rule stops it · size L · verified 2026-10-16
+- **P2** [bug-d308f7](items/bug-d308f7-an-agent-s-shell-can-read-its.md) An agent's shell can read its run's results directory outside private/: proxy.jsonl and egress.jsonl name the running task's key, order-<seed>.json and records.jsonl give its position [bug] · size S · verified 2026-10-17
 
-_13 more open · on hold: gap-057cc7, gap-05c4c0, gap-11cec6, gap-31e1b0, gap-394f28, gap-4a5109, gap-50346f, gap-681741, gap-7c9a9c, gap-aa60f2, gap-b7f99e, gap-ba9965, gap-e9218e · 9 unchecked (`TRIAGE.md`) · `goal = "proof"`_
+_11 more open · on hold: gap-057cc7, gap-05c4c0, gap-11cec6, gap-31e1b0, gap-394f28, gap-4a5109, gap-50346f, gap-681741, gap-7c9a9c, gap-aa60f2, gap-b7f99e, gap-ba9965, gap-e9218e · 9 unchecked (`TRIAGE.md`) · `goal = "proof"`_
 
 ## 6. Learning from verified outcomes, M1-M4 (P2)
 
@@ -52,7 +52,7 @@ _13 more open · on hold: gap-057cc7, gap-05c4c0, gap-11cec6, gap-31e1b0, gap-39
 - **P2** [gap-fd96c8](items/gap-fd96c8-pk56-m4-deep-audits-first-slice-audit.md) PK56 M4 deep audits: First slice: audit at least 60 recorded cheap-arm passes and publish the replay report… · size S · verified 2026-10-02
 - **P2** [spec-446a41](items/spec-446a41-backlog-phase-4-loops-re-closed-s02.md) Backlog Phase 4 — loops re-closed (S02) [spec] · verified 2026-10-02
 
-_25 more open · on hold: gap-799698, gap-8a26fc, gap-93c748 · 1 unchecked (`TRIAGE.md`) · `goal = "cybernetic"`_
+_23 more open · on hold: gap-799698, gap-8a26fc, gap-93c748 · 1 unchecked (`TRIAGE.md`) · `goal = "cybernetic"`_
 
 ## 7. Plan runs work reliably
 
@@ -60,7 +60,7 @@ _25 more open · on hold: gap-799698, gap-8a26fc, gap-93c748 · 1 unchecked (`TR
 - **P1** [gap-d58ae8](items/gap-d58ae8-tp2-36-p0-0-37-mori-shaped.md) Mori-shaped workflow contract unproven end-to-end · size L · verified 2026-10-01
 - **P2** [gap-5420f3](items/gap-5420f3-a-check-that-hides-its-test-runner.md) A check that hides its test runner's output fails silently; re-run the runner on its own to recover the failure text for the retry and the person · size M · verified 2026-10-15
 
-_15 more open · on hold: find-70edcb · 4 unchecked (`TRIAGE.md`) · `goal = "core"`_
+_16 more open · on hold: find-70edcb · 4 unchecked (`TRIAGE.md`) · `goal = "core"`_
 
 ## 8. Live visibility: serve, dashboard, portal
 
@@ -68,31 +68,31 @@ _15 more open · on hold: find-70edcb · 4 unchecked (`TRIAGE.md`) · `goal = "c
 - **P2** [bug-a0f01e](items/bug-a0f01e-long-running-operation-handles-never-record-completion.md) Long-running operation handles never record completion [bug] · verified 2026-10-01
 - **P3** [gap-0d6ae5](items/gap-0d6ae5-closing-the-tui-mid-run-stops-the.md) Closing the TUI mid-run stops the plan run; there is no detach mode · verified 2026-10-01
 
-_1 more open · `goal = "visibility"`_
+_3 more open · `goal = "visibility"`_
 
 ## 9. Learning loops on the Graph path
 
+- **P1** [bug-7e0556](items/bug-7e0556-a-dream-writes-templated-entries-as-consolidated.md) A dream writes templated entries as consolidated knowledge at confidence up to 1.0, and prompts inject them ahead of real lessons, so the next task costs more [bug] · size M · verified 2026-10-16
 - **P2** [gap-b1f7b9](items/gap-b1f7b9-a-plan-s-own-verify-steps-feed.md) A plan's own verify steps feed gate history under the rung they check, so gate-thresholds.json learns from authored test steps · size S · verified 2026-10-15
 - **P2** [gap-a4fbf8](items/gap-a4fbf8-the-model-ladder-retry-budget-floor-overrides.md) The model-ladder retry-budget floor overrides the adaptive gate-history suggestion instead of composing with it (QA7) · size M · verified 2026-10-02
-- **P2** [gap-8752ce](items/gap-8752ce-roko-serve-always-starts-the-knowledge-demurrage.md) roko serve always starts the knowledge-demurrage timer, so two held decay bugs run on every server: park it behind a feature (backlog 9231) · size S · verified 2026-10-15
 
-_5 more open · on hold: bug-429315, bug-8c5d32, bug-b9be1d, bug-dd5dca, bug-dee062, find-3d8bd4, find-3f99f2, gap-47356e, gap-4d1bff, reg-d76ab0 · 1 unchecked (`TRIAGE.md`) · `goal = "learning"`_
+_8 more open · on hold: bug-429315, bug-8c5d32, bug-b9be1d, bug-dd5dca, bug-dee062, find-3d8bd4, find-3f99f2, gap-47356e, gap-4d1bff, reg-d76ab0 · 1 unchecked (`TRIAGE.md`) · `goal = "learning"`_
 
 ## 10. Tooling, CLI polish and code hygiene
 
+- **P2** [bug-4b17d9](items/bug-4b17d9-a-cargo-config-build-target-dir-outside.md) A cargo config build.target-dir outside the checkout still makes every checkout's checks share one target dir, so a gate can pass another checkout's build [bug] · size M · verified 2026-10-17
 - **P2** [bug-c63cca](items/bug-c63cca-about-a-dozen-roko-cli-integration-tests.md) About a dozen roko-cli integration tests pass only with a real claude CLI on PATH, so they fail on CI [bug] · size M · verified 2026-10-11
-- **P2** [spec-0b3a32](items/spec-0b3a32-backlog-phase-9-domains-assistant-held-and.md) Backlog Phase 9 — domains, assistant, held and parked work, cleanup, showcase and deploy [spec] · verified 2026-10-02
-- **P2** [bug-13bbe9](items/bug-13bbe9-ci-coverage-canaries-that-run-a-nested.md) CI coverage: canaries that run a nested cargo fail under cargo-llvm-cov (the gate inherits its RUSTC_WRAPPER but not its marker variables) [bug] · size S · verified 2026-10-11
+- **P2** [bug-df2b12](items/bug-df2b12-agents-own-cargo-runs-still-build-in.md) Agents' own cargo runs still build in an exported CARGO_TARGET_DIR that every attempt worktree shares, so an agent can see a sibling attempt's build of a crate [bug] · size M · verified 2026-10-17
 
-_22 more open · on hold: gap-f36019 · 4 unchecked (`TRIAGE.md`) · `goal = "tooling"`_
+_25 more open · on hold: gap-f36019 · 3 unchecked (`TRIAGE.md`) · `goal = "tooling"`_
 
 ## 11. Feature ideas
 
 - **P1** [gap-ff95f5](items/gap-ff95f5-persist-taint-witness-and-custody-provenance-across.md) Persist Taint, Witness, and Custody Provenance Across Restart · size L · verified 2026-10-01
+- **P2** [gap-4aaa3b](items/gap-4aaa3b-a-plan-cannot-carry-its-own-rubric.md) A plan cannot carry its own rubric: judge rungs are workspace-wide, and workspace_rungs = false drops them · size M · verified 2026-10-16
 - **P2** [gap-cd51b7](items/gap-cd51b7-github-pr-and-failure-issue-automation-is.md) GitHub PR and failure-issue automation is never constructed at runtime · verified 2026-10-01
-- **P2** [spec-043064](items/spec-043064-interactive-setup-wizard-ratatui.md) Interactive Setup Wizard (ratatui) [spec] · verified 2026-09-29
 
-_4 more open · on hold: gap-63055e, gap-8d80d3, gap-ebd656, spec-743a7e, spec-b3ab28, spec-b4ba72 · `goal = "features"`_
+_5 more open · on hold: gap-63055e, gap-8d80d3, gap-ebd656, spec-743a7e, spec-b3ab28, spec-b4ba72 · `goal = "features"`_
 
 ## 12. Hermes and ACP integration
 
@@ -100,6 +100,6 @@ _4 more open · on hold: gap-63055e, gap-8d80d3, gap-ebd656, spec-743a7e, spec-b
 - **P2** [gap-ccbf26](items/gap-ccbf26-a-capped-run-cannot-bound-a-codex.md) A capped run cannot bound a Codex, Gemini or Cursor CLI attempt: none streams its usage or takes a spend limit, and Codex's and Gemini's turn caps are advisory, so only the attempt timeout ends one · size M · verified 2026-10-16
 - **P2** [gap-ac78fb](items/gap-ac78fb-acp-elicitation-notices-and-interactive-ux-primitives.md) ACP Elicitation, Notices, and Interactive UX Primitives · size L · verified 2026-09-29
 
-_5 more open · `goal = "hermes"`_
+_6 more open · `goal = "hermes"`_
 
-11 open items have no goal (later); they are listed in `STATUS.md`.
+10 open items have no goal (later); they are listed in `STATUS.md`.

@@ -257,14 +257,15 @@ def task_context(places: dict[str, Path], arm: dict, *, key: str = "F1-l1-0001.s
     results = places["results"] / "TEST" / "run-1"
     results.mkdir(parents=True, exist_ok=True)
     work = places["work"] / "run-1"
-    (work / key).mkdir(parents=True)
+    alias = vb._alias(work)  # the workdir and HOME are named as `vb run` names them (bug-3c921e)
+    (work / alias).mkdir(parents=True)
     return harness.TaskContext(
         experiment_id="TEST", run_id="run-1", arm=arm, model=MODEL, provider=None, snapshot=snapshot,
         endpoint=endpoint or provider.Endpoint("anthropic", "https://api.anthropic.com"),
-        caps=caps.Caps.from_table(arm["caps"]), billed=False, instance_id="F1-l1-0001", seed=1, key=key,
+        caps=caps.Caps.from_table(arm["caps"]), billed=False, instance_id="F1-l1-0001", seed=1, key=key, alias=alias,
         ledger=ledger.Ledger(results / "ledger.jsonl", line=line, experiment_id="TEST", run_id="run-1",
                              price_snapshot_id=snapshot.id),
-        workdir=work / key, spec_text="Implement clamp.", agent_env=agent_env.build(home=work / "_home" / key))
+        workdir=work / alias, spec_text="Implement clamp.", agent_env=agent_env.build(home=work / "_home" / alias))
 
 
 def test_claude_arm_command_is_isolated_and_pinned(places, monkeypatch):
@@ -452,7 +453,7 @@ def test_vb_run_with_a_fake_claude_labels_and_prices_the_run(places):
     assert manifest["config"]["arm"]["cli"]["effort"] == "high" and record["config_hash"] == manifest["config_hash"]
     transcript = json.loads((out / record["provenance"]["transcript_ref"]).read_text())
     assert transcript[1]["stream"]["subtype"] == "init" and transcript[-1]["stream"]["type"] == "result"
-    assert not (places["work"] / "run-1").exists()  # the workdir and its config directory are gone
+    assert not Path(manifest["work_dir"]).exists()  # the workdir and its config directory are gone
 
 
 def test_vb_run_admits_the_claude_arm_only_with_both_network_flags(places, monkeypatch):

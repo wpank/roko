@@ -10,6 +10,12 @@
 //! plus the variables the gate sets explicitly. A check whose environment
 //! cannot be set up does not run.
 //!
+//! A check builds in its own checkout's target dir (bug-be2a53): it does not
+//! inherit a `CARGO_TARGET_DIR` that names a directory outside the one it
+//! runs in, which other checkouts of the repository would build in too and
+//! cargo would take their builds from. So set a command's directory before
+//! its environment.
+//!
 //! It also runs throttled ([`throttle`], bug-b3849c): its cargo builds and
 //! test binaries get a job cap, and it starts at a lower priority, so a run's
 //! checks leave the person's machine usable.
@@ -23,7 +29,9 @@ use tokio::process::Command;
 /// Give `cmd` the check environment, built from roko's own environment.
 ///
 /// `passthrough` holds extra names or `PREFIX*` patterns
-/// (`[gates] env_passthrough`). Variables already set on `cmd` stay.
+/// (`[gates] env_passthrough`). Variables already set on `cmd` stay. Set
+/// `cmd`'s directory first: an inherited cargo target dir is kept only
+/// inside it (bug-be2a53).
 ///
 /// # Errors
 ///

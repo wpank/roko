@@ -1883,6 +1883,7 @@ mod tests {
             concurrent_plans: Vec::new(),
             attempt_key: None,
             arm_set: None,
+            knowledge_section: true,
             self_model_rung: None,
             skip_enrichment: false,
         }
@@ -3157,6 +3158,7 @@ mod tests {
 
         let gate = |eligible, breaker_tripped| GateReport {
             predictor_version: PredictorVersion("m3-l1-test".to_string()),
+            window: 100,
             n: 100,
             ece: Some(0.03),
             cal_in_large: Some(0.01),
@@ -3220,7 +3222,10 @@ mod tests {
         let opportunity = row.audit.opportunity.as_ref().expect("L-M3's opportunity");
         assert!(opportunity.eligible, "{opportunity:?}");
 
-        // With ε the propensities compose over the four runnable rungs and sum to 1.
+        // With ε the propensities compose over the four runnable rungs and sum to 1, whatever
+        // the attempt's ε draw. The UTC day keys that draw (bug-3e2d76): on some days it
+        // explores, and an exploring draw may land on the self-model's own pick, so the chosen
+        // model shows only that a draw landing elsewhere explored.
         let p = |row: &RoutingDecisionLog, model: &str| {
             let candidate = row.candidates.iter().find(|c| c.model == model);
             candidate.and_then(|c| c.p)
@@ -3232,12 +3237,30 @@ mod tests {
         let total: f64 = row.candidates.iter().filter_map(|c| c.p).sum();
         assert!((total - 1.0).abs() < 1e-9, "p sums to {total}");
         assert_eq!(row.propensity, p(&row, &choice.model.slug));
-        let source = if choice.model.slug == "claude-sonnet-4-6" {
-            DecisionSource::SelfModel
-        } else {
-            DecisionSource::Explore
-        };
-        assert_eq!(row.source, Some(source));
+        let explored = row.source == Some(DecisionSource::Explore);
+        assert!(
+            explored || row.source == Some(DecisionSource::SelfModel),
+            "{:?}",
+            row.source
+        );
+        assert!(
+            explored || choice.model.slug == "claude-sonnet-4-6",
+            "only an exploring draw leaves the pick: {}",
+            choice.model.slug
+        );
+
+        // An exploring draw's row is ε's wherever the draw lands, the self-model's pick
+        // included: at ε = 1 every attempt's draw explores, each rung at P = 1/4.
+        let always = router.clone().with_explore_epsilon(1.0);
+        for attempt in 1..=32 {
+            let mut inputs = inputs.clone();
+            inputs.attempt_key = Some(AttemptKey::new("gr-m3", "p", "t", attempt));
+            let (choice, row) = always.decide(&inputs).unwrap();
+            let landed = choice.model.slug.as_str();
+            let explore = Some(DecisionSource::Explore);
+            assert_eq!(row.source, explore, "attempt {attempt} on {landed}");
+            assert_eq!(row.propensity, Some(0.25), "attempt {attempt} on {landed}");
+        }
 
         // A chain the route layer holds out runs the ladder's own rung, a⁰, at P = h.
         let held_out = Assignment {

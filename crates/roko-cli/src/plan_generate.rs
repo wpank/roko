@@ -24,7 +24,7 @@ pub use pipeline::{
     slugify,
 };
 pub(crate) use pipeline::{
-    extract_fenced_block, extract_toml_content_fallback, planner_context_window,
+    PLANNER_MAX_TURNS, extract_fenced_block, extract_toml_content_fallback, planner_context_window,
 };
 
 use std::fmt::Write as _;
@@ -145,8 +145,9 @@ pub(crate) fn render_plan_template_guidance(template: PlanTemplateKind) -> Strin
 /// and model-adaptive tier hints. It's designed to produce tasks that even
 /// the smallest models can execute successfully.
 ///
-/// `{ROLE_TOOL_TABLE}` is replaced by [`render_role_tool_table`], and
-/// `{TIER_SIZE_LIMITS}` by [`render_tier_size_limits`].
+/// `{ROLE_TOOL_TABLE}` is replaced by [`render_role_tool_table`],
+/// `{TIER_SIZE_LIMITS}` by [`render_tier_size_limits`], and
+/// `{GENERATED_PLAN_LIMITS}` by [`render_generated_plan_limits`].
 const PLAN_GENERATOR_SYSTEM_PROMPT: &str = r#"## CRITICAL: Output format
 
 Your response MUST be a single ```toml fenced code block containing ONLY valid TOML, followed
@@ -220,6 +221,10 @@ You are a task decomposition engine for software projects. Your job is to take a
 | 3 | Architectural | 300 | Design new API, decompose complex feature |
 
 {TIER_SIZE_LIMITS}
+
+## Generated-plan limits
+
+{GENERATED_PLAN_LIMITS}
 
 ## Output format
 
@@ -419,7 +424,7 @@ Before finalizing, verify your tasks against:
 - [ ] A test runner's own exit status is its check: no pipe, redirection or test count around it
 - [ ] Architect/researcher/strategist tasks have ONLY structural verify steps (no cargo check, no cargo test)
 - [ ] Every task with a non-empty `files` list uses a role that can write (see Role-Tool Constraints)
-- [ ] No task requires reading more than 3 files
+- [ ] Every task is within the generated-plan limits: its `read_files` entries, verify step, `lines` ranges, declared context and symbol anchors
 - [ ] Anti-patterns are specific (not generic "be careful")
 - [ ] Dependencies form a DAG (no cycles)
 - [ ] `model_hint` is NEVER set, and `rung` is set only where a task needs more than its tier's start rung
@@ -580,6 +585,48 @@ pub fn render_tier_size_limits() -> String {
     )
 }
 
+/// The generated-plan limits each draft is checked against, as a prompt list.
+///
+/// gap-f8a6ea: the per-task budgets of [`PlanExecutionPolicy::generated`]
+/// that generation validates (`PLAN_BUDGET_READ_FILES`, `PLAN_VERIFY_OWNER`,
+/// `PLAN_BUDGET_CONTEXT`), its line-range length, and the context rules every
+/// plan meets (`PLAN_CONTEXT_RANGE`, `PLAN_CONTEXT_SYMBOL`). Every number is
+/// the policy's own, so the prompt cannot drift from the validator.
+#[must_use]
+pub fn render_generated_plan_limits() -> String {
+    let policy = PlanExecutionPolicy::generated(DEFAULT_GENERATED_TASK_LIMIT);
+    let verify_steps = if policy.require_one_verify {
+        "exactly 1 step per task (PLAN_VERIFY_OWNER)".to_string()
+    } else {
+        format!(
+            "at most {} steps per task (PLAN_BUDGET_VERIFY)",
+            policy.max_verify_steps_per_task
+        )
+    };
+    format!(
+        "Each draft is checked against these limits before the plan is written. A draft that \
+         breaks one comes back to you, and every retry costs a full planner call, so meet them in \
+         the first draft.\n\
+         - `[task.context] read_files`: at most {read_files} entries per task \
+         (PLAN_BUDGET_READ_FILES); keep the files the task needs most.\n\
+         - `[[task.verify]]`: {verify_steps}; join further checks into its command with `&&`.\n\
+         - `lines`: one range `START-END` inside the file, at most {range_lines} lines long \
+         (PLAN_CONTEXT_RANGE, PLAN_CONTEXT_RANGE_BUDGET). Never a list such as `1-25,320-332`: \
+         give each part of a file its own `read_files` entry, which counts toward the limit \
+         above.\n\
+         - Declared context: at most {context_bytes} bytes per task (PLAN_BUDGET_CONTEXT), \
+         counting the `path`, `lines` and `why` of each `read_files` entry and each `symbols`, \
+         `anti_patterns` and `prior_failures` entry.\n\
+         - `symbols`: a symbol written as an anchor (a name in backticks, `exact:name`, \
+         `name — note`, or one word with no spaces) must appear in a file the task's \
+         `read_files` declares (PLAN_CONTEXT_SYMBOL); declare that file, or describe the symbol \
+         in words without an anchor.",
+        read_files = policy.max_read_files_per_task,
+        range_lines = policy.max_range_lines,
+        context_bytes = policy.max_declared_context_bytes,
+    )
+}
+
 /// Build the shared system prompt for plan generation and regeneration.
 #[must_use]
 pub fn build_generator_system_prompt(workdir: &Path) -> String {
@@ -590,6 +637,7 @@ pub fn build_generator_system_prompt(workdir: &Path) -> String {
         PLAN_GENERATOR_SYSTEM_PROMPT
             .replace("{ROLE_TOOL_TABLE}", &render_role_tool_table())
             .replace("{TIER_SIZE_LIMITS}", &render_tier_size_limits())
+            .replace("{GENERATED_PLAN_LIMITS}", &render_generated_plan_limits())
     );
     append_naming_glossary_prompt(&mut prompt, workdir);
     append_claude_md_prompt(&mut prompt, workdir);
@@ -1238,6 +1286,53 @@ mod tests {
         // gap-dde99e: each acceptance criterion gets its own verify step.
         assert!(!prompt.contains("exactly one focused"), "{prompt}");
         assert!(prompt.contains("**One check per acceptance criterion**"));
+    }
+
+    /// gap-f8a6ea: the generator is told the limits each draft is checked
+    /// against, in the generated policy's own numbers: its read_files,
+    /// verify-step, line-range and declared-context limits, one range per
+    /// `lines`, and symbol anchors in a file the task declares. First drafts
+    /// broke each of them in the 2026-10-16 live check. The prompt's
+    /// hand-written read limit is gone.
+    #[test]
+    fn generator_prompt_states_the_generated_plan_limits() {
+        let policy = PlanExecutionPolicy::generated(DEFAULT_GENERATED_TASK_LIMIT);
+        let verify_steps = if policy.require_one_verify {
+            "exactly 1 step per task (PLAN_VERIFY_OWNER)".to_string()
+        } else {
+            format!(
+                "at most {} steps per task (PLAN_BUDGET_VERIFY)",
+                policy.max_verify_steps_per_task
+            )
+        };
+        let limits = render_generated_plan_limits();
+        for expected in [
+            format!(
+                "`[task.context] read_files`: at most {} entries per task (PLAN_BUDGET_READ_FILES)",
+                policy.max_read_files_per_task
+            ),
+            format!("`[[task.verify]]`: {verify_steps}"),
+            format!(
+                "`lines`: one range `START-END` inside the file, at most {} lines long",
+                policy.max_range_lines
+            ),
+            "Never a list such as `1-25,320-332`".to_string(),
+            format!(
+                "at most {} bytes per task (PLAN_BUDGET_CONTEXT)",
+                policy.max_declared_context_bytes
+            ),
+            "must appear in a file the task's `read_files` declares (PLAN_CONTEXT_SYMBOL)"
+                .to_string(),
+        ] {
+            assert!(limits.contains(&expected), "{expected:?} not in:\n{limits}");
+        }
+        let prompt = build_generator_system_prompt(std::path::Path::new("/test"));
+        assert!(prompt.contains(&limits));
+        assert!(!prompt.contains("{GENERATED_PLAN_LIMITS}"));
+        assert!(
+            !prompt.contains("No task requires reading more than"),
+            "a hand-written limit is left"
+        );
     }
 
     /// 3224: the generator prompt sizes tasks for their executor tier: none

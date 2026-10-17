@@ -78,7 +78,7 @@ impl MattermostBridge {
 
 #[async_trait]
 impl ChatBridge for MattermostBridge {
-    fn platform_id(&self) -> &str {
+    fn platform_id(&self) -> &'static str {
         "mattermost"
     }
 
@@ -89,7 +89,10 @@ impl ChatBridge for MattermostBridge {
             "stub send_message: {}",
             &text[..text.len().min(120)]
         );
-        Ok(MessageId::new(format!("mattermost-stub-{}", ChannelId::new(channel))))
+        Ok(MessageId::new(format!(
+            "mattermost-stub-{}",
+            ChannelId::new(channel)
+        )))
     }
 
     async fn send_rich(&self, channel: &str, msg: RichMessage) -> Result<MessageId> {
@@ -100,7 +103,10 @@ impl ChatBridge for MattermostBridge {
             "stub send_rich: {}",
             &body[..body.len().min(120)]
         );
-        Ok(MessageId::new(format!("mattermost-stub-rich-{}", ChannelId::new(channel))))
+        Ok(MessageId::new(format!(
+            "mattermost-stub-rich-{}",
+            ChannelId::new(channel)
+        )))
     }
 
     fn incoming(&self) -> Pin<Box<dyn Stream<Item = IncomingMessage> + Send>> {
@@ -163,19 +169,17 @@ mod tests {
 
     #[test]
     fn platform_id_is_mattermost() {
-        let bridge = MattermostBridge::connect(&config(Some(PlatformSecretRef::Literal(
-            "tok".to_string(),
-        ))))
-        .unwrap();
+        let bridge =
+            MattermostBridge::connect(&config(Some(PlatformSecretRef::Literal("tok".to_string()))))
+                .unwrap();
         assert_eq!(bridge.platform_id(), "mattermost");
     }
 
     #[test]
     fn capabilities_match_mattermost() {
-        let bridge = MattermostBridge::connect(&config(Some(PlatformSecretRef::Literal(
-            "tok".to_string(),
-        ))))
-        .unwrap();
+        let bridge =
+            MattermostBridge::connect(&config(Some(PlatformSecretRef::Literal("tok".to_string()))))
+                .unwrap();
         let caps = bridge.capabilities();
         assert!(caps.markdown);
         assert!(caps.reactions);
@@ -187,10 +191,9 @@ mod tests {
 
     #[tokio::test]
     async fn send_message_returns_ok() {
-        let bridge = MattermostBridge::connect(&config(Some(PlatformSecretRef::Literal(
-            "tok".to_string(),
-        ))))
-        .unwrap();
+        let bridge =
+            MattermostBridge::connect(&config(Some(PlatformSecretRef::Literal("tok".to_string()))))
+                .unwrap();
         let id = bridge
             .send_message("town-square", "hello mattermost")
             .await
@@ -200,10 +203,9 @@ mod tests {
 
     #[tokio::test]
     async fn send_rich_returns_ok() {
-        let bridge = MattermostBridge::connect(&config(Some(PlatformSecretRef::Literal(
-            "tok".to_string(),
-        ))))
-        .unwrap();
+        let bridge =
+            MattermostBridge::connect(&config(Some(PlatformSecretRef::Literal("tok".to_string()))))
+                .unwrap();
         let msg = RichMessage::markdown("hello", "**hello**");
         let id = bridge.send_rich("town-square", msg).await.unwrap();
         assert!(id.as_str().contains("mattermost-stub-rich"));

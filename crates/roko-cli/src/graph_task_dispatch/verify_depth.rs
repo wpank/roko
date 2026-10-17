@@ -581,7 +581,8 @@ impl GraphTaskDispatcher {
         let snapshot = self.pricing_snapshot();
         for (index, call) in calls.iter().enumerate() {
             let cost_usd = call.cost_usd();
-            self.record_task_spend(&spec.plan_id, &task.id, &call.usage);
+            let side = SideCall::of_check(&self.config.models, call, snapshot.as_deref());
+            self.record_side_call_spend(&spec.plan_id, &task.id, &side);
             if let Err(error) = self.budget_ledger.settle(&spec.plan_id, None, cost_usd) {
                 tracing::warn!(
                     plan_id = %spec.plan_id,
@@ -590,7 +591,6 @@ impl GraphTaskDispatcher {
                     "audit check spend not recorded on the plan's cost ledger"
                 );
             }
-            let side = SideCall::of_check(&self.config.models, call, snapshot.as_deref());
             let attempt_id = format!("{attempt_key}/audit-{check}-{}", index + 1);
             self.write_side_call_rows(spec, &task.id, attempt_key, &attempt_id, AUDIT_ROLE, &side)
                 .await;

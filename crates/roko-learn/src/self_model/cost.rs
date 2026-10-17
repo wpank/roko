@@ -7,13 +7,44 @@
 //! [1, arm one-hot, log(spec_tokens), family one-hot, n_declared_paths]. The quantiles come
 //! from the Student-t predictive, whose quantile uses L0's incomplete beta. A row whose cost is
 //! unknown, or whose cost source is `unknown`, is skipped and counted.
+//!
+//! An arm a regression has not observed has no forecast of its own: its coefficient is still
+//! the vague prior, and the exp of the predictive's q90 reached 6e26 USD and seconds. Such an
+//! arm gets a log-normal prior instead, flagged as one ([`CostModel::forecast`]; bug-09173e):
+//! its cost around the price snapshot's price of a [`TYPICAL_ATTEMPT`] on its model, its
+//! latency around what the observed attempts took.
 
+use roko_core::pricing_snapshot::TokenCounts;
 use serde::{Deserialize, Serialize};
 
 use super::ArmKey;
 use super::features::FeatureVector;
-use super::prior::beta_quantile;
+use super::prior::{beta_quantile, normal_quantile};
 use crate::telemetry::CostSource;
+
+/// A typical agent attempt's tokens, the basis of an unobserved arm's cost prior (bug-09173e):
+/// about 30k input tokens, four fifths of them read from the prompt cache, and 3k output
+/// tokens, the median attempt of the round-v6 live runs (36k input, 3.3k output), rounded. One
+/// basis for every role, since only implementer attempts were measured.
+pub const TYPICAL_ATTEMPT: TokenCounts = TokenCounts {
+    input: 6_000,
+    cache_read: 24_000,
+    cache_write_5m: 0,
+    cache_write_1h: 0,
+    output: 3_000,
+    reasoning: 0,
+};
+
+/// The log-scale spread σ of an unobserved arm's cost and latency prior: a log-normal whose
+/// central 90% spans exp(2 · 1.645 · σ) ≈ 37×, the "up to 30×" by which token use varies
+/// between runs of one task (`bai2026spend`). Its q90 is exp(1.2816 · σ) ≈ 4.1 times its
+/// median.
+pub const PRIOR_LOG_SD: f64 = 1.1;
+
+/// An unobserved arm's median latency while no attempt's latency has been observed, in
+/// seconds: a minute, above the 7 to 56 s the round-v6 live API attempts took, for slower
+/// agents.
+pub const PRIOR_LATENCY_S: f64 = 60.0;
 
 /// The prior precision of every coefficient, κ (Λ0 = κI): a weak prior around 0.
 pub const PRIOR_PRECISION: f64 = 0.01;
@@ -122,6 +153,22 @@ impl NigRegression {
         self.n += w;
     }
 
+    /// Whether rows of positive weight have set feature `name` to a value other than 0, so its
+    /// coefficient is more than its prior.
+    fn observed(&self, name: &str) -> bool {
+        self.names
+            .iter()
+            .position(|known| known == name)
+            .is_some_and(|index| self.xtx[index][index] > 0.0)
+    }
+
+    /// The weighted mean of the targets learned, read from the constant feature `constant`
+    /// that every row sets to 1 (Σ w·1·y / Σ w); `None` before any row.
+    fn target_mean(&self, constant: &str) -> Option<f64> {
+        let index = self.names.iter().position(|known| known == constant)?;
+        (self.n > 0.0).then(|| self.xty[index] / self.n)
+    }
+
     /// Λn = κI + Σ w·x·xᵀ.
     fn precision(&self) -> Vec<Vec<f64>> {
         let mut precision = self.xtx.clone();
@@ -204,6 +251,22 @@ pub struct CostForecast {
     pub lat_q50_s: f64,
     /// The 90th-percentile latency, in seconds.
     pub lat_q90_s: f64,
+    /// The cost quantiles are the prior's: no cost of the arm has been observed (bug-09173e).
+    #[serde(default)]
+    pub cost_prior: bool,
+    /// The latency quantiles are the prior's: no latency of the arm has been observed.
+    #[serde(default)]
+    pub latency_prior: bool,
+}
+
+/// The constant feature every row of the cost model sets.
+const BIAS: &str = "bias";
+
+/// The median and 90th percentile of an unobserved arm's log-normal prior around `median`,
+/// spread [`PRIOR_LOG_SD`].
+fn prior_quantiles(median: f64) -> (f64, f64) {
+    let q90 = median * (normal_quantile(0.9) * PRIOR_LOG_SD).exp();
+    (median, q90)
 }
 
 /// The cost and latency regressions.
@@ -218,6 +281,11 @@ pub struct CostModel {
 }
 
 impl CostModel {
+    /// The feature that names `arm`.
+    fn arm_feature(arm: &ArmKey) -> String {
+        format!("arm:{arm}")
+    }
+
     /// The features of an attempt of `arm` on a task of `family`: [1, arm one-hot,
     /// log(spec_tokens), family one-hot, n_declared_paths]. An unknown count is 0.
     #[must_use]
@@ -229,8 +297,8 @@ impl CostModel {
     ) -> FeatureVector {
         let log_tokens = spec_tokens.unwrap_or(0.0).max(0.0).ln_1p();
         FeatureVector::from_pairs([
-            ("bias".to_string(), 1.0),
-            (format!("arm:{arm}"), 1.0),
+            (BIAS.to_string(), 1.0),
+            (Self::arm_feature(arm), 1.0),
             ("log_spec_tokens".to_string(), log_tokens),
             (format!("family:{family}"), 1.0),
             (
@@ -261,16 +329,43 @@ impl CostModel {
         }
     }
 
-    /// The forecast for features `x`.
+    /// The forecast for an attempt of `arm` with features `x`. A regression that has observed
+    /// the arm forecasts from its Student-t predictive. One that has not cannot: the arm's
+    /// coefficient is still its prior, N(0, σ²/κ), and with κ = 0.01 the exp of the
+    /// predictive's q90 reached 6e26 USD and seconds. The arm's quantiles then come from a
+    /// log-normal prior of spread [`PRIOR_LOG_SD`], flagged as the prior's (bug-09173e): cost
+    /// around `prior_cost_usd`, the price snapshot's price of a [`TYPICAL_ATTEMPT`] on its model,
+    /// and latency around the geometric mean of the latencies observed, else
+    /// [`PRIOR_LATENCY_S`].
     #[must_use]
-    pub fn forecast(&self, x: &FeatureVector) -> CostForecast {
-        let cost = self.cost.predictive(x);
-        let latency = self.latency.predictive(x);
+    pub fn forecast(&self, arm: &ArmKey, x: &FeatureVector, prior_cost_usd: f64) -> CostForecast {
+        let name = Self::arm_feature(arm);
+        let (cost_q50, cost_q90, cost_prior) = if self.cost.observed(&name) {
+            let cost = self.cost.predictive(x);
+            (cost.quantile(0.5).exp(), cost.quantile(0.9).exp(), false)
+        } else {
+            let (q50, q90) = prior_quantiles(prior_cost_usd);
+            (q50, q90, true)
+        };
+        let (lat_q50_s, lat_q90_s, latency_prior) = if self.latency.observed(&name) {
+            let latency = self.latency.predictive(x);
+            (
+                latency.quantile(0.5).exp(),
+                latency.quantile(0.9).exp(),
+                false,
+            )
+        } else {
+            let observed = self.latency.target_mean(BIAS).map(f64::exp);
+            let (q50, q90) = prior_quantiles(observed.unwrap_or(PRIOR_LATENCY_S));
+            (q50, q90, true)
+        };
         CostForecast {
-            cost_q50: cost.quantile(0.5).exp(),
-            cost_q90: cost.quantile(0.9).exp(),
-            lat_q50_s: latency.quantile(0.5).exp(),
-            lat_q90_s: latency.quantile(0.9).exp(),
+            cost_q50,
+            cost_q90,
+            lat_q50_s,
+            lat_q90_s,
+            cost_prior,
+            latency_prior,
         }
     }
 
@@ -316,25 +411,53 @@ mod tests {
         assert!((student_t_quantile(0.1, 10.0) + 1.372_183_6).abs() < 1e-6);
     }
 
+    /// With no data the regression's predictive is as wide as its prior is vague, so an arm no
+    /// row has shown forecasts its bounded prior instead, flagged (bug-09173e). Once observed,
+    /// the arm forecasts from the regression, which narrows with the data, while an arm still
+    /// unobserved keeps its prior cost and takes the observed attempts' latency.
     #[test]
-    fn with_no_data_the_prior_gives_wide_intervals() {
+    fn an_unobserved_arm_forecasts_its_prior() {
         let arm = ArmKey::roko("cerebras", "gpt-oss-120b");
         let x = CostModel::features(&arm, "focused", None, None);
-        let empty = CostModel::default().forecast(&x);
-        assert!(empty.cost_q90 / empty.cost_q50 > 100.0, "{empty:?}");
+        let empty = CostModel::default();
+        let vague = empty.cost.predictive(&x);
+        let spread = (vague.quantile(0.9) - vague.quantile(0.5)).exp();
+        assert!(spread > 100.0, "{vague:?}");
+        let prior = empty.forecast(&arm, &x, 0.02);
+        assert!(prior.cost_prior && prior.latency_prior, "{prior:?}");
+        assert!((prior.cost_q50 - 0.02).abs() < 1e-12, "{prior:?}");
+        let ratio = (normal_quantile(0.9) * PRIOR_LOG_SD).exp();
+        assert!((ratio - 4.1).abs() < 0.05, "{ratio}");
+        assert!(
+            (prior.cost_q90 / prior.cost_q50 - ratio).abs() < 1e-9,
+            "{prior:?}"
+        );
+        assert!(
+            (prior.lat_q50_s - PRIOR_LATENCY_S).abs() < 1e-9,
+            "{prior:?}"
+        );
+
         let mut trained = CostModel::default();
         let mut rng = TestRng::new(3);
         for _ in 0..200 {
             let cost = (-4.0 + 0.5 * rng.normal()).exp();
             trained.observe(&x, Some(cost), CostSource::ProviderUsage, Some(90.0), 1.0);
         }
-        let narrow = trained.forecast(&x);
+        let narrow = trained.forecast(&arm, &x, 0.02);
+        assert!(!narrow.cost_prior && !narrow.latency_prior, "{narrow:?}");
         assert!(narrow.cost_q90 / narrow.cost_q50 < 3.0, "{narrow:?}");
         assert!(
             (narrow.cost_q50 - (-4.0_f64).exp()).abs() < 0.005,
             "{narrow:?}"
         );
         assert!((narrow.lat_q50_s - 90.0).abs() < 1.0, "{narrow:?}");
+
+        let other = ArmKey::roko("zai", "glm-4.7");
+        let y = CostModel::features(&other, "focused", None, None);
+        let unseen = trained.forecast(&other, &y, 0.0128);
+        assert!(unseen.cost_prior && unseen.latency_prior, "{unseen:?}");
+        assert!((unseen.cost_q50 - 0.0128).abs() < 1e-12, "{unseen:?}");
+        assert!((unseen.lat_q50_s - 90.0).abs() < 1e-6, "{unseen:?}");
     }
 
     #[test]

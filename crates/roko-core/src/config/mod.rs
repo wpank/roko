@@ -15,6 +15,8 @@ pub mod authoring;
 pub mod budget;
 pub mod cache;
 pub mod chain;
+#[cfg(feature = "channels")]
+pub mod channels;
 pub mod env_registry;
 pub mod execution;
 pub mod experiments;
@@ -27,6 +29,8 @@ pub mod hot_reload;
 pub mod learning;
 pub mod loader;
 pub mod model_registry;
+#[cfg(feature = "channels")]
+pub mod platforms;
 pub mod presets;
 pub mod project;
 pub mod provenance;

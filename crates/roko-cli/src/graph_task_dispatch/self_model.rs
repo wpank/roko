@@ -39,7 +39,9 @@ use roko_learn::self_model::cascade::{
     after_failure, after_pass, start_rung,
 };
 use roko_learn::self_model::features::TaskFeatures;
-use roko_learn::self_model::gate::{CalibrationGate, CalibrationWindow, GateReport, WindowOutcome};
+use roko_learn::self_model::gate::{
+    CalibrationGate, CalibrationWindow, GateReport, WINDOW_FILE_NAME, WindowOutcome,
+};
 use roko_learn::self_model::logit::FALSE_GREEN_PRIOR;
 use roko_learn::self_model::model::{MODEL_CLASS, SelfModel, StateLoad};
 use roko_learn::self_model::policy::{LcbAci, LcbAciConfig, P_ABANDON, RouteAction, expected_cost};
@@ -124,8 +126,11 @@ pub struct SelfModelRuntime {
     last_rung: parking_lot::Mutex<HashMap<String, usize>>,
     /// Policy (a)'s adaptive margin, when it is the policy.
     lcb: parking_lot::Mutex<LcbAci>,
-    /// The calibration gate's window of settled forecasts (6122).
-    window: parking_lot::Mutex<CalibrationWindow>,
+    /// The calibration gate's window of settled forecasts (6122), kept across runs in
+    /// `window_path` (gap-b38ed2).
+    window: parking_lot::Mutex<Calibration>,
+    /// The window's file, [`WINDOW_FILE_NAME`] beside the state file.
+    window_path: PathBuf,
     /// The attempts the run settled, for late VS labels (6129).
     settled: parking_lot::Mutex<SettledUnits>,
     /// The start rung an active self-model chose for each chain, by chain key,
@@ -146,6 +151,26 @@ pub struct SelfModelRuntime {
     /// The attempts whose pass an active self-model rejected as suspicious at the deepest
     /// depth, by attempt key, so that their failure climbs a rung (6132).
     suspicious: parking_lot::Mutex<HashSet<String>>,
+}
+
+/// The calibration gate's window, and the outcomes this run added to it that are not saved yet,
+/// each with the version that forecast it.
+#[derive(Debug)]
+struct Calibration {
+    window: CalibrationWindow,
+    unsaved: VecDeque<(PredictorVersion, WindowOutcome)>,
+}
+
+impl Calibration {
+    /// Add `outcome` of a forecast by `version`. Only as many unsaved outcomes are kept as the
+    /// window keeps, since a save keeps no more.
+    fn push(&mut self, version: &PredictorVersion, outcome: WindowOutcome) {
+        self.window.push(version, outcome);
+        self.unsaved.push_back((version.clone(), outcome));
+        if self.unsaved.len() > self.window.capacity() {
+            self.unsaved.pop_front();
+        }
+    }
 }
 
 /// The units a run settled, by attempt key, oldest first; past [`SETTLED_KEPT`] the oldest go.
@@ -189,7 +214,7 @@ pub struct AttemptForecast {
 }
 
 impl AttemptForecast {
-    /// The forecast for `model`, the model the attempt ran.
+    /// The forecast for `model`, the slug of the model the attempt ran.
     #[must_use]
     pub fn for_model(&self, model: &str) -> Option<&CandidateForecast> {
         self.candidates
@@ -201,7 +226,8 @@ impl AttemptForecast {
 impl SelfModelRuntime {
     /// The run's self-model when `[self_model] mode` is not off: its state from `state_path`
     /// (fresh when there is none; a saved state of another version is set aside), priced at the
-    /// workspace's snapshot. `None` when the mode is off or no price snapshot loads.
+    /// workspace's snapshot, and the calibration window earlier runs kept beside it for that
+    /// version (gap-b38ed2). `None` when the mode is off or no price snapshot loads.
     #[must_use]
     pub fn load(workdir: &Path, config: &RokoConfig) -> Option<Arc<Self>> {
         let settings = config.self_model.clone();
@@ -229,23 +255,43 @@ impl SelfModelRuntime {
                 SelfModel::new(&snapshot)
             }
         };
+        let window_path = state_path.with_file_name(WINDOW_FILE_NAME);
+        let keeps = CalibrationGate::of(&settings).keeps();
+        let window =
+            CalibrationWindow::load(&window_path, &model.version, keeps).unwrap_or_else(|error| {
+                tracing::warn!(
+                    path = %window_path.display(),
+                    %error,
+                    "self-model: the calibration window did not load; starting a new one"
+                );
+                CalibrationWindow::new(model.version.clone())
+            });
         tracing::info!(
             mode = mode_name(settings.mode),
             version = %model.version,
             outcomes = model.outcomes,
+            window = window.len(),
             "self-model loaded"
         );
-        Some(Arc::new(Self::new(settings, state_path, model)))
+        Some(Arc::new(
+            Self::new(settings, state_path, model).with_window(window),
+        ))
     }
 
-    /// A runtime around `model`, saved to `state_path`.
+    /// A runtime around `model`, saved to `state_path`, with an empty calibration window that
+    /// is saved beside it.
     #[must_use]
     pub fn new(settings: SelfModelConfig, state_path: PathBuf, model: SelfModel) -> Self {
         let lcb = LcbAci::new(LcbAciConfig {
             target: settings.target,
             ..LcbAciConfig::default()
         });
-        let window = CalibrationWindow::new(model.version.clone());
+        let keeps = CalibrationGate::of(&settings).keeps();
+        let window = Calibration {
+            window: CalibrationWindow::new(model.version.clone()).keeping(keeps),
+            unsaved: VecDeque::new(),
+        };
+        let window_path = state_path.with_file_name(WINDOW_FILE_NAME);
         Self {
             settings,
             state_path,
@@ -254,6 +300,7 @@ impl SelfModelRuntime {
             last_rung: parking_lot::Mutex::new(HashMap::new()),
             lcb: parking_lot::Mutex::new(lcb),
             window: parking_lot::Mutex::new(window),
+            window_path,
             settled: parking_lot::Mutex::new(SettledUnits::default()),
             chain_starts: parking_lot::Mutex::new(HashMap::new()),
             chain_plans: parking_lot::Mutex::new(HashMap::new()),
@@ -262,6 +309,17 @@ impl SelfModelRuntime {
             risks: parking_lot::Mutex::new(HashMap::new()),
             suspicious: parking_lot::Mutex::new(HashSet::new()),
         }
+    }
+
+    /// The runtime with `window`, the calibration window earlier runs kept, when it holds
+    /// forecasts of the model's version: forecasts are never compared across versions. It
+    /// keeps as many outcomes as the run's gate needs.
+    #[must_use]
+    pub fn with_window(self, window: CalibrationWindow) -> Self {
+        if window.version == self.version() {
+            self.window.lock().window = window.keeping(self.calibration_gate().keeps());
+        }
+        self
     }
 
     /// `[self_model]` as the run loaded it.
@@ -319,8 +377,9 @@ impl SelfModelRuntime {
     }
 
     /// Teach the model a settled attempt it forecast (6129): `unit` under the forecast's
-    /// features, and the calibration window with the forecast for the model that ran. The unit
-    /// stays for a late VS label.
+    /// features, and the calibration window with the forecast for the model that ran. Both name
+    /// the model by the slug its provider launched ([`arm_of`]; bug-a400d0), so the unit's arm
+    /// finds its candidate. The unit stays for a late VS label.
     pub fn settle(&self, unit: Unit, forecast: AttemptForecast) {
         let w = unit.label.weight;
         self.observe(&unit, &forecast.features, w);
@@ -362,13 +421,23 @@ impl SelfModelRuntime {
         self.lcb.lock().update(None, outcome.y, p_fg);
     }
 
+    /// The calibration gate `[self_model]` configures: π* = `target` and W = `n_min`
+    /// (gap-4c531f).
+    fn calibration_gate(&self) -> CalibrationGate {
+        CalibrationGate::of(&self.settings)
+    }
+
     /// The calibration gate's report on the window (6122).
     #[must_use]
     pub fn gate(&self) -> GateReport {
-        let gate = CalibrationGate {
-            target: self.settings.target,
-        };
-        gate.evaluate(&self.window.lock())
+        self.calibration_gate().evaluate(&self.window.lock().window)
+    }
+
+    /// Export the calibration gate's report on the window as the `ev.m3.*` values S06 and the
+    /// dashboard read, `learn/self-model/calibration.json` under the `.roko` directory
+    /// `roko_dir` (S04 §4.7; gap-b38ed2), and return the file's path.
+    pub fn write_calibration(&self, roko_dir: &Path) -> std::io::Result<PathBuf> {
+        roko_learn::self_model::gate::write_calibration(&self.gate(), roko_dir)
     }
 
     /// Whether the self-model routes now: active, with its calibration gate eligible and its
@@ -378,9 +447,28 @@ impl SelfModelRuntime {
         self.settings.mode == SelfModelMode::Active && gate.eligible && !gate.breaker_tripped
     }
 
-    /// Save the model's state, atomically.
+    /// Save the model's state, atomically, and add this run's settled forecasts to the
+    /// calibration window kept beside it, under the window file's lock so that a concurrent
+    /// run's outcomes survive (gap-b38ed2). The window then holds what the file holds, when that
+    /// is of the model's version. Each part is saved even when the other fails.
     pub fn save(&self) -> std::io::Result<()> {
-        self.model.read().save(&self.state_path)
+        let state = self.model.read().save(&self.state_path);
+        state.and(self.save_window())
+    }
+
+    /// Add the unsaved outcomes to the window's file and take the window it then holds.
+    fn save_window(&self) -> std::io::Result<()> {
+        let mut calibration = self.window.lock();
+        let outcomes: Vec<(PredictorVersion, WindowOutcome)> =
+            calibration.unsaved.iter().cloned().collect();
+        let keeps = calibration.window.capacity();
+        let saved = CalibrationWindow::save_outcomes(&self.window_path, keeps, &outcomes)?;
+        calibration.unsaved.clear();
+        let version = calibration.window.version.clone();
+        if let Some(saved) = saved.filter(|saved| saved.version == version) {
+            calibration.window = saved;
+        }
+        Ok(())
     }
 
     /// Forecast `candidates` for the attempt `identity`, decide as the configured policy would,
@@ -1039,8 +1127,9 @@ impl GraphTaskDispatcher {
         })
     }
 
-    /// Whether `model`, an arm's model, is the one `executor` names: the same name, or the
-    /// `[models.*]` key of its slug.
+    /// Whether `model`, an arm's model, is the one `executor`, the slug dispatch sent, names:
+    /// the same name, as [`arm_of`] names arms (bug-a400d0), or the `[models.*]` key of that
+    /// slug.
     fn ran_model(&self, model: &str, executor: &str) -> bool {
         let profile = self.config.models.get(model);
         model == executor || profile.is_some_and(|profile| profile.slug == executor)
@@ -1142,14 +1231,26 @@ fn task_features(task: &TaskDef, inputs: &RoutingInputs) -> TaskFeatures {
     }
 }
 
-/// The arm that runs `model`: roko's harness on the model's `[models.*]` provider.
+/// The arm that runs `model`, a `[models.*]` key, a slug or another name dispatch resolves:
+/// roko's harness on the provider dispatch launches, naming the model by the slug it sends.
+/// A settled attempt's verdict records the same two names (`executed.provider` and
+/// `model_dispatched`), and the outcome sink teaches the self-model that arm, so what it learns
+/// of a model reaches that model's forecasts even when its key is not its slug (bug-a400d0).
+/// Dispatch reads a name as a key before a slug ([`roko_core::agent::resolve_model`]), as this
+/// does.
 pub(crate) fn arm_of(config: &RokoConfig, model: &str) -> ArmKey {
     let models = &config.models;
     let profile = models
         .get(model)
         .or_else(|| models.values().find(|profile| profile.slug == model));
-    let provider = profile.map_or("unknown", |profile| profile.provider.as_str());
-    ArmKey::roko(provider, model)
+    if let Some(profile) = profile {
+        return ArmKey::roko(profile.provider.as_str(), profile.slug.as_str());
+    }
+    // A name no `[models.*]` entry holds: a slug's prefix or a built-in model.
+    match roko_core::agent::resolve_model(config, model).profile {
+        Some(profile) => ArmKey::roko(profile.provider, profile.slug),
+        None => ArmKey::roko("unknown", model.trim()),
+    }
 }
 
 /// A forecast as a prediction row's candidate.
@@ -1166,6 +1267,8 @@ fn prediction_candidate(forecast: &CandidateForecast) -> PredictionCandidate {
         lat_q50_s: forecast.lat_q50_s,
         lat_q90_s: forecast.lat_q90_s,
         p_retry: None,
+        cost_prior: forecast.cost_prior,
+        latency_prior: forecast.latency_prior,
     }
 }
 
@@ -1271,9 +1374,9 @@ mod tests {
             .iter()
             .map(|row| {
                 let task = row["task_id"].as_str().unwrap_or_default().to_string();
-                // The route's model key, as arms name it (`model_dispatched`
-                // is the provider slug it resolves to).
-                let model = &row["executed"]["model_requested"];
+                // The slug the provider launched, as arms name the model (bug-a400d0), the
+                // pinned task's `stream-model` included.
+                let model = &row["executed"]["model_dispatched"];
                 (task, model.as_str().unwrap_or_default().to_string())
             })
             .collect();
@@ -1307,6 +1410,16 @@ mod tests {
         assert_eq!(shadow, off, "shadow mode never changes the route");
 
         assert!(predictions.len() * 100 >= (TASKS + 1) * 95);
+        // bug-09173e: the first row is a fresh model's, so each candidate's cost and latency
+        // are the priors, flagged, with finite, plausible upper quantiles.
+        for candidate in predictions[0]["candidates"].as_array().expect("candidates") {
+            assert_eq!(candidate["cost_prior"], true, "{candidate}");
+            assert_eq!(candidate["latency_prior"], true, "{candidate}");
+            let cost_q90 = candidate["cost_q90"].as_f64().expect("a cost q90");
+            let lat_q90 = candidate["lat_q90_s"].as_f64().expect("a latency q90");
+            assert!(cost_q90 > 0.0 && cost_q90 < 1.0, "{candidate}");
+            assert!(lat_q90 > 0.0 && lat_q90 < 600.0, "{candidate}");
+        }
         for row in &predictions {
             assert_eq!(row["precedes"], "route");
             assert_eq!(row["predictor"]["mode"], "shadow");
@@ -1533,7 +1646,8 @@ mod tests {
             // pass there is a false green at 60%, at $0.10 an attempt.
             let key = AttemptKey::new(RUN, "stream-plan", "T-PASS", 1);
             let (attempt_key, chain) = (key.attempt_key(), key.chain_key());
-            let arms: Vec<ArmKey> = ["cheap-model", "stream-model"]
+            // Arms name the slugs the rungs dispatch (bug-a400d0).
+            let arms: Vec<ArmKey> = ["claude-haiku-4-5", "claude-sonnet-4-6"]
                 .into_iter()
                 .map(|model| ArmKey::roko("stream-cli", model))
                 .collect();
@@ -1548,6 +1662,8 @@ mod tests {
                 lat_q50_s: 60.0,
                 lat_q90_s: 60.0,
                 cold_start: false,
+                cost_prior: false,
+                latency_prior: false,
             };
             let candidates = Candidates {
                 arms: arms.clone(),
@@ -1684,7 +1800,7 @@ mod tests {
             row["schema_version"] == "roko.verdict/1"
         })
         .await;
-        let model = verdicts[0]["executed"]["model_requested"]
+        let model = verdicts[0]["executed"]["model_dispatched"]
             .as_str()
             .unwrap_or_default();
         assert!(
@@ -1720,5 +1836,190 @@ mod tests {
         assert_eq!(read.len(), 1, "{ledger}");
         assert_eq!(read[0].task_id, "T-REFINE");
         assert!(!read[0].acting, "{read:?}");
+    }
+
+    /// gap-4c531f: `[self_model] n_min` is the calibration gate's window W. With n_min = 10, ten
+    /// well-calibrated outcomes make the gate eligible and let an active self-model route, and
+    /// nine do not, for want of the tenth alone. The run saves them, and the next run with
+    /// n_min = 10 starts eligible, while one with the default n_min of 100 finds the ten short.
+    /// The window keeps 100 outcomes whatever W is, so the breaker keeps its fifty.
+    #[test]
+    fn self_model_gate_window_follows_n_min() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let config = |n_min: u32| {
+            let mut config = RokoConfig::default();
+            config.self_model.mode = SelfModelMode::Active;
+            config.self_model.n_min = n_min;
+            config
+        };
+        let small = SelfModelRuntime::load(temp.path(), &config(10)).expect("active loads M3");
+        assert_eq!(small.window.lock().window.capacity(), 100);
+        // Sharp and right: eight passes forecast at 0.96 and two failures at 0.04, the
+        // failures second and sixth, each on a rung the self-model chose.
+        let version = small.version();
+        for index in 0..10 {
+            let passed = index != 1 && index != 5;
+            let outcome = WindowOutcome {
+                p: if passed { 0.96 } else { 0.04 },
+                y: passed,
+                w: 1.0,
+                routed: true,
+            };
+            small.record_outcome(&version, outcome, FALSE_GREEN_PRIOR);
+            if index == 8 {
+                let nine = small.gate();
+                assert!(!nine.eligible && !small.routes(), "{nine:?}");
+                assert_eq!(nine.reasons, ["n = 9, below the window of 10"], "{nine:?}");
+            }
+        }
+        let ten = small.gate();
+        assert!(ten.eligible, "{ten:?}");
+        assert_eq!((ten.window, ten.n), (10, 10));
+        assert!(!ten.breaker_tripped);
+        assert!(
+            small.routes(),
+            "an active self-model acts at n_min outcomes"
+        );
+        small.save().expect("save the state and the window");
+
+        let next = SelfModelRuntime::load(temp.path(), &config(10)).expect("active loads M3");
+        assert!(next.gate().eligible && next.routes());
+        let default = SelfModelRuntime::load(temp.path(), &config(100)).expect("active loads M3");
+        let report = default.gate();
+        assert!(!report.eligible && !default.routes(), "{report:?}");
+        let short = "n = 10, below the window of 100";
+        assert!(
+            report.reasons.iter().any(|reason| reason == short),
+            "{report:?}"
+        );
+    }
+
+    /// bug-a400d0: M3 learns each settled attempt under the arm it forecast it on. Two ladder
+    /// rungs whose `[models.*]` keys are not their slugs, each slug shared with a second entry,
+    /// so that the ladder dispatches the key: the forecast's arms name the slugs dispatch
+    /// sends, as the verdicts do, and so does a pin or M1's predictor, which name a rung by its
+    /// key. The cheap rung always fails and the strong one always passes; after N_MIN settled
+    /// attempts of each through the outcome sink, the strong rung's forecast is clearly above
+    /// the cheap one's, and every outcome reached the calibration window.
+    #[tokio::test]
+    async fn self_model_learns_the_arm_it_forecasts() {
+        use roko_core::task::TaskTier;
+        use roko_learn::self_model::model::N_MIN;
+        use roko_learn::telemetry::{AttemptKey, AttemptOutcome, CostSource};
+
+        use crate::runtime_feedback::self_model::SelfModelOutcomeSink;
+        use crate::runtime_feedback::{FeedbackEvent, FeedbackSink as _};
+
+        let rungs = [
+            (
+                "cheap",
+                "cheap-model",
+                "claude-haiku-4-5",
+                AttemptOutcome::GateFailed,
+            ),
+            (
+                "strong",
+                "strong-model",
+                "claude-sonnet-4-6",
+                AttemptOutcome::Passed,
+            ),
+        ];
+        // Each rung's model also runs on `api`, under a second key with the same slug.
+        let mut config = RokoConfig::default();
+        config.models.clear();
+        for (_, key, slug, _) in rungs {
+            let models = &mut config.models;
+            models.insert(key.to_string(), model("stream-cli", slug, None));
+            models.insert(format!("{key}-api"), model("api", slug, None));
+        }
+        config.routing.ladder.rungs = rungs
+            .iter()
+            .map(|&(name, key, _, _)| LadderRung {
+                name: name.to_string(),
+                model: key.to_string(),
+            })
+            .collect();
+        let ladder = RoutingLadder::from_config_with(&config, |_| true).expect("both rungs run");
+        let start = ladder.start("implementer", TaskTier::Focused, None);
+        let start = start.expect("a start rung");
+        assert_eq!(
+            start.model, "cheap-model",
+            "a shared slug is dispatched by its key"
+        );
+        let inputs = RoutingInputs {
+            task_domain: None,
+            task_tier: TaskTier::Focused,
+            task_model_hint: None,
+            task_rung: None,
+            force_backend: None,
+            budget_remaining_usd: 1.0,
+            attempt: 0,
+            ladder_step: 0,
+            role: "implementer".to_string(),
+            routing_context: None,
+            attempt_key: None,
+            arm_set: None,
+            self_model_rung: None,
+        };
+        let candidates = Candidates::of(&inputs, Some(&ladder), &config).expect("two rungs");
+        let arms: Vec<String> = candidates.arms.iter().map(ToString::to_string).collect();
+        assert_eq!(
+            arms,
+            [
+                "roko/stream-cli/claude-haiku-4-5@default#V0",
+                "roko/stream-cli/claude-sonnet-4-6@default#V0",
+            ]
+        );
+        assert_eq!(arm_of(&config, "strong-model"), candidates.arms[1]);
+
+        let temp = tempfile::tempdir().expect("tempdir");
+        let snapshot = PriceSnapshot::builtin().expect("the built-in snapshot");
+        let settings = SelfModelConfig {
+            mode: SelfModelMode::Shadow,
+            ..SelfModelConfig::default()
+        };
+        let state = temp.path().join(".roko/learn/self-model/state-v1.json");
+        let fresh = SelfModel::new(&snapshot);
+        let runtime = Arc::new(SelfModelRuntime::new(settings, state, fresh));
+        let sink = SelfModelOutcomeSink::new(Arc::clone(&runtime));
+        let features = TaskFeatures {
+            title: "Fix the parser".to_string(),
+            family: "focused".to_string(),
+            tier: "focused".to_string(),
+            role: "implementer".to_string(),
+            attempt: 1,
+            ..TaskFeatures::default()
+        };
+        for index in 0..N_MIN {
+            for (name, key, slug, outcome) in rungs {
+                // Dispatch forecasts the attempt; its verdict names the key routing asked for
+                // and the slug the provider launched.
+                let attempt = AttemptKey::new(RUN, "plan", format!("T{index:02}-{name}"), 1);
+                let identity = AttemptIdentity::new(&attempt);
+                let _ = runtime.predict(&identity, features.clone(), &candidates, 0);
+                let mut verdict = AttemptVerdictRecord::settle(identity, outcome, true);
+                verdict.executed.provider = Some("stream-cli".to_string());
+                verdict.executed.model_requested = Some(key.to_string());
+                verdict.executed.model_dispatched = Some(slug.to_string());
+                verdict.cost.api_equiv_usd = Some(0.01);
+                verdict.cost.source = CostSource::ProviderUsage;
+                let event = FeedbackEvent::AttemptSettled(Arc::new(verdict));
+                sink.on_event(&event)
+                    .await
+                    .expect("the sink takes the verdict");
+            }
+        }
+        assert_eq!(runtime.outcomes(), 2 * N_MIN);
+        let forecasts = runtime.forecast(&features, &candidates.arms);
+        let (cheap, strong) = (&forecasts[0], &forecasts[1]);
+        assert!(
+            strong.p_vs > cheap.p_vs + 0.5,
+            "{cheap:?} against {strong:?}"
+        );
+        assert_eq!(
+            runtime.gate().n,
+            2 * N_MIN,
+            "every outcome reached the window"
+        );
     }
 }

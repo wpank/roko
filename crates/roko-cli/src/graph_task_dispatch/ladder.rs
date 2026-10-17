@@ -457,7 +457,18 @@ impl GraphTaskDispatcher {
             verdict: wire_word(&verdict.outcome),
             blame: wire_word(&verdict.blame),
             failed_check,
-            detail: settled.failure_reason.as_deref().map(first_line),
+            // A try that passed after reaching its rung's bound says so
+            // (gap-2c9412).
+            detail: settled
+                .failure_reason
+                .as_deref()
+                .map(first_line)
+                .or_else(|| {
+                    settled
+                        .bound
+                        .as_ref()
+                        .map(|bound| format!("passed its checks after reaching {bound}"))
+                }),
             model: executed
                 .model_dispatched
                 .clone()
@@ -1107,6 +1118,7 @@ printf '%s\n' '{"type":"result","session_id":"sess-l","model":"claude-sonnet-4-6
             reflex_rule: None,
             live_tool_calls: LiveToolCalls::default(),
             harness: None,
+            bound: None,
         }
     }
 
@@ -1593,36 +1605,61 @@ fi
 exit 1
 "#;
 
-    /// Three tries of a focused task (60 turns) on [`BOUNDED_PROVIDER`],
-    /// under `configure`: what each call was given, each prompt, and the
-    /// outcome, blame, rung and ladder reason of each verdict.
-    async fn three_bounded_tries(
+    /// What tries of a task left: what each call was given, each prompt,
+    /// the outcome, blame, rung and ladder reason of each verdict, each
+    /// `attempt_settled` event, and the output of the try that passed.
+    struct Tries {
+        calls: Vec<String>,
+        prompts: Vec<String>,
+        verdicts: Vec<[String; 4]>,
+        settled: Vec<serde_json::Value>,
+        passed: Option<String>,
+    }
+
+    /// Up to `tries` tries of a focused task (60 turns) on `provider`, until
+    /// one passes: `check` is the task's check, `prepare` readies the
+    /// workspace and `configure` the config.
+    async fn bounded_tries(
+        provider: &str,
+        check: &str,
+        tries: usize,
+        prepare: impl FnOnce(&std::path::Path),
         configure: impl FnOnce(&mut RokoConfig),
-    ) -> (Vec<String>, Vec<String>, Vec<[String; 4]>) {
+    ) -> Tries {
         let temp = tempdir().expect("tempdir");
+        prepare(temp.path());
         let runs_dir = temp.path().join(".roko/runs");
-        let (dispatcher, mut task) =
-            ladder_fixture_scripted(&temp, BOUNDED_PROVIDER, configure).await;
+        let hub = StateHub::new(4096);
+        let mut events = hub.subscribe_events();
+        let (dispatcher, mut task) = ladder_fixture_scripted(&temp, provider, configure).await;
         task.tier = "focused".to_string();
-        let dispatcher = dispatcher.with_feedback(GraphFeedbackContext {
-            runs_dir: Some(runs_dir.clone()),
-            ..GraphFeedbackContext::default()
-        });
+        task.verify = vec![verify_step("test", check)];
+        let dispatcher = dispatcher
+            .with_feedback(GraphFeedbackContext {
+                runs_dir: Some(runs_dir.clone()),
+                ..GraphFeedbackContext::default()
+            })
+            .with_tui_bridge(TuiBridge::new(hub.sender()));
         let mut spec = make_spec(&task);
         spec.max_retries = 4;
         let ctx = CellContext::new().with_run_id(RUN.to_string());
-        for _ in 0..3 {
-            dispatcher
-                .dispatch(&spec, Vec::new(), &ctx)
-                .await
-                .expect_err("no try finishes");
+        let mut passed = None;
+        for _ in 0..tries {
+            if let Ok(outputs) = dispatcher.dispatch(&spec, Vec::new(), &ctx).await {
+                let texts: Vec<&str> = outputs
+                    .iter()
+                    .filter_map(|output| output.body.as_text().ok())
+                    .collect();
+                passed = Some(texts.join("\n"));
+                break;
+            }
         }
         let calls: Vec<String> = std::fs::read_to_string(temp.path().join("provider-calls"))
             .expect("the provider recorded its calls")
             .lines()
             .map(str::to_string)
             .collect();
-        let prompts = (1..=3)
+        let prompts = (1..=calls.len())
             .map(|n| {
                 std::fs::read_to_string(temp.path().join(format!("prompt-{n}"))).expect("prompt")
             })
@@ -1643,16 +1680,36 @@ exit 1
                 ]
             })
             .collect();
-        (calls, prompts, verdicts)
+        Tries {
+            calls,
+            prompts,
+            verdicts,
+            settled: published(&mut events, &["attempt_settled"]),
+            passed,
+        }
+    }
+
+    /// Three tries of a focused task (60 turns) on [`BOUNDED_PROVIDER`],
+    /// under `configure`, whose check always fails.
+    async fn three_bounded_tries(configure: impl FnOnce(&mut RokoConfig)) -> Tries {
+        let tries = bounded_tries(BOUNDED_PROVIDER, "false", 3, |_| {}, configure).await;
+        assert_eq!(tries.passed, None, "no try passes");
+        tries
     }
 
     /// gap-3e770b: a try on a rung the task can still climb from gets half
-    /// the tier's turns. A try that uses them up fails on the rung, its
-    /// retry keeps the same bound and resumes the work, and the second such
-    /// failure climbs; the top rung gets the tier's cap.
+    /// the tier's turns. A try that uses them up is judged by its check
+    /// (gap-2c9412), which fails here, its retry keeps the same bound and
+    /// resumes the work, and the second such failure climbs; the top rung
+    /// gets the tier's cap, and a stop there stays a turn-cap stop.
     #[tokio::test]
     async fn a_turn_bounded_try_climbs_the_ladder() {
-        let (calls, prompts, verdicts) = three_bounded_tries(|_| {}).await;
+        let Tries {
+            calls,
+            prompts,
+            verdicts,
+            ..
+        } = three_bounded_tries(|_| {}).await;
         assert_eq!(
             calls,
             [
@@ -1661,14 +1718,15 @@ exit 1
                 format!("{TOP} 60 -"),
             ]
         );
-        let turn_cap =
-            |rung: &str, reason: &str| ["turn_cap", "agent", rung, reason].map(str::to_string);
+        let place = |outcome: &str, rung: &str, reason: &str| {
+            [outcome, "agent", rung, reason].map(str::to_string)
+        };
         assert_eq!(
             verdicts,
             [
-                turn_cap("cheap", "start"),
-                turn_cap("cheap", "start"),
-                turn_cap("top", "escalated"),
+                place("gate_failed", "cheap", "start"),
+                place("gate_failed", "cheap", "start"),
+                place("turn_cap", "top", "escalated"),
             ]
         );
         assert!(!prompts[0].contains("Resuming"));
@@ -1687,12 +1745,17 @@ exit 1
 
     /// gap-3e770b: `[routing.ladder] max_turns` and `max_usd` set a rung's
     /// try allowance. The Claude CLI is handed the rung's spend as its own
-    /// limit; a try that stops there fails on the rung like a turn-cap stop,
-    /// the next try is told to resume, and the second such failure climbs to
-    /// a rung with no allowance of its own.
+    /// limit; a try that stops there is judged by its check like a turn-cap
+    /// stop (gap-2c9412), the next try is told to resume, and the second
+    /// failure climbs to a rung with no allowance of its own.
     #[tokio::test]
     async fn a_spend_bounded_try_climbs_the_ladder() {
-        let (calls, prompts, verdicts) = three_bounded_tries(|config| {
+        let Tries {
+            calls,
+            prompts,
+            verdicts,
+            ..
+        } = three_bounded_tries(|config| {
             let ladder = &mut config.routing.ladder;
             ladder.max_turns.insert("cheap".to_string(), 9);
             ladder.max_usd.insert("cheap".to_string(), 0.015);
@@ -1706,14 +1769,15 @@ exit 1
                 format!("{TOP} 60 -"),
             ]
         );
-        let place =
-            |rung: &str, reason: &str| ["turn_cap", "agent", rung, reason].map(str::to_string);
+        let place = |outcome: &str, rung: &str, reason: &str| {
+            [outcome, "agent", rung, reason].map(str::to_string)
+        };
         assert_eq!(
             verdicts,
             [
-                place("cheap", "start"),
-                place("cheap", "start"),
-                place("top", "escalated"),
+                place("gate_failed", "cheap", "start"),
+                place("gate_failed", "cheap", "start"),
+                place("turn_cap", "top", "escalated"),
             ]
         );
         for prompt in &prompts[1..] {
@@ -1723,6 +1787,182 @@ exit 1
             );
         }
         assert!(!prompts[0].contains("Resuming"));
+    }
+
+    /// Fake Claude CLI that records each call as [`BOUNDED_PROVIDER`] does,
+    /// its prompt with its arguments, which carry the system prompt, and
+    /// keeps going until it is stopped: on a try with fewer than the tier's
+    /// 60 turns it writes what `cheap-work` beside it holds to `answer.txt`
+    /// and runs into its turn cap; given 60 turns it writes the right answer,
+    /// 42, and finishes.
+    const JUDGED_PROVIDER: &str = r#"#!/bin/sh
+dir=$(dirname -- "$0")
+n=$(( $(cat "$dir/calls" 2>/dev/null || echo 0) + 1 ))
+echo "$n" > "$dir/calls"
+printf '%s\n---\n' "$*" > "$dir/prompt-$n"
+cat >> "$dir/prompt-$n"
+previous=
+model=-
+turns=-
+for arg in "$@"; do
+  case "$previous" in
+    --model) model=$arg ;;
+    --max-turns) turns=$arg ;;
+  esac
+  previous=$arg
+done
+printf '%s %s -\n' "$model" "$turns" >> "$dir/provider-calls"
+if [ "$turns" != 60 ]; then
+  cat "$dir/cheap-work" > answer.txt
+  printf '{"type":"result","subtype":"error_max_turns","is_error":true,"num_turns":%s,"total_cost_usd":0.01}\n' "$turns"
+  exit 1
+fi
+echo 42 > answer.txt
+printf '%s\n' '{"type":"content_block_delta","delta":{"text":"wrote answer.txt"}}'
+printf '%s\n' '{"type":"result","session_id":"sess-j","model":"claude-sonnet-4-6","total_cost_usd":0.01,"usage":{"input_tokens":5,"output_tokens":10}}'
+"#;
+
+    /// The check [`JUDGED_PROVIDER`]'s work answers: `answer.txt` holds 42.
+    const ANSWER_CHECK: &str = "test \"$(cat answer.txt)\" = 42 || \
+        { echo \"AssertionError: answer.txt holds $(cat answer.txt), not 42\"; exit 1; }";
+
+    /// gap-2c9412: a try that ends at its rung's bound is judged by the
+    /// task's checks on the work it left. Work that passes them is accepted
+    /// on the cheap rung. Work that fails them fails the try on its check,
+    /// whose line reaches the next try's prompt beside the resume note, and
+    /// two such tries climb to the top rung, which passes.
+    #[tokio::test]
+    async fn a_bounded_try_is_judged_by_its_checks() {
+        let work = |answer: &'static str| {
+            move |dir: &std::path::Path| {
+                std::fs::write(dir.join("cheap-work"), answer).expect("write the cheap work");
+            }
+        };
+
+        let right = bounded_tries(JUDGED_PROVIDER, ANSWER_CHECK, 3, work("42\n"), |_| {}).await;
+        assert_eq!(right.calls, [format!("{CHEAP} 30 -")]);
+        assert_eq!(
+            right.verdicts,
+            [["passed", "none", "cheap", "start"].map(str::to_string)]
+        );
+        let output = right.passed.expect("the bounded try passes its check");
+        assert!(
+            output.contains("at its 30-turn bound; the task's checks passed on the work it left"),
+            "{output}"
+        );
+        let [settled] = right.settled.as_slice() else {
+            panic!("one attempt_settled: {:?}", right.settled);
+        };
+        assert_eq!(settled["verdict"], "passed", "{settled}");
+        assert_eq!(settled["rung"], "cheap", "{settled}");
+        assert_eq!(
+            settled["detail"], "passed its checks after reaching its 30-turn bound",
+            "{settled}"
+        );
+
+        let wrong = bounded_tries(JUDGED_PROVIDER, ANSWER_CHECK, 3, work("41\n"), |_| {}).await;
+        assert_eq!(
+            wrong.calls,
+            [
+                format!("{CHEAP} 30 -"),
+                format!("{CHEAP} 30 -"),
+                format!("{TOP} 60 -"),
+            ]
+        );
+        let place = |outcome: &str, blame: &str, rung: &str, reason: &str| {
+            [outcome, blame, rung, reason].map(str::to_string)
+        };
+        assert_eq!(
+            wrong.verdicts,
+            [
+                place("gate_failed", "agent", "cheap", "start"),
+                place("gate_failed", "agent", "cheap", "start"),
+                place("passed", "none", "top", "escalated"),
+            ]
+        );
+        assert!(wrong.passed.is_some(), "the top rung passes");
+        let check_line = "AssertionError: answer.txt holds 41, not 42";
+        assert!(!wrong.prompts[0].contains(check_line));
+        for prompt in &wrong.prompts[1..] {
+            assert!(prompt.contains(check_line), "{prompt}");
+        }
+        assert!(
+            wrong.prompts[1].contains("stopped at its 30-turn cap"),
+            "{}",
+            wrong.prompts[1]
+        );
+        let climbs: Vec<serde_json::Value> = wrong
+            .settled
+            .iter()
+            .map(|event| {
+                serde_json::json!([
+                    event["rung"],
+                    event["verdict"],
+                    event["climbed"],
+                    event["failed_check"]
+                        .as_str()
+                        .is_some_and(|check| check.contains("test")),
+                ])
+            })
+            .collect();
+        assert_eq!(
+            climbs,
+            [
+                serde_json::json!(["cheap", "gate_failed", false, true]),
+                serde_json::json!(["cheap", "gate_failed", true, true]),
+                serde_json::json!(["top", "passed", false, false]),
+            ]
+        );
+    }
+
+    /// gap-2c9412: the streaming path judges a bounded try by its checks
+    /// too: right work passes on the cheap rung, wrong work climbs.
+    #[tokio::test]
+    async fn a_bounded_try_is_judged_by_its_checks_when_streaming() {
+        for (answer, passes_on) in [("42\n", [CHEAP].as_slice()), ("41\n", &[CHEAP, CHEAP, TOP])] {
+            let temp = tempdir().expect("tempdir");
+            std::fs::write(temp.path().join("cheap-work"), answer).expect("write the cheap work");
+            let (dispatcher, mut task) =
+                ladder_fixture_scripted(&temp, JUDGED_PROVIDER, |_| {}).await;
+            task.tier = "focused".to_string();
+            task.verify = vec![verify_step("test", ANSWER_CHECK)];
+            let mut spec = make_spec(&task);
+            spec.max_retries = 4;
+            let lease = TaskLease {
+                path: temp.path().to_path_buf(),
+                fingerprint: "judged".to_string(),
+            };
+            let mut passed = false;
+            for _ in 0..3 {
+                let (events, _received) =
+                    tokio::sync::mpsc::channel(streaming_event_channel_capacity());
+                passed = dispatcher
+                    .dispatch_streaming(
+                        &spec,
+                        Vec::new(),
+                        &CellContext::new(),
+                        &lease,
+                        events,
+                        &NoopAttemptRecorder,
+                    )
+                    .await
+                    .is_ok();
+                if passed {
+                    break;
+                }
+            }
+            let calls = std::fs::read_to_string(temp.path().join("provider-calls"))
+                .expect("the provider recorded its calls");
+            assert!(
+                passed,
+                "no try passed with {answer:?} as the cheap work: {calls}"
+            );
+            let models: Vec<String> = calls
+                .lines()
+                .filter_map(|call| call.split(' ').next().map(str::to_string))
+                .collect();
+            assert_eq!(models, passes_on, "{answer:?}");
+        }
     }
 
     /// The events of the types `kinds` that `events` received so far, as
@@ -2059,6 +2299,7 @@ exit 1
             reflex_rule: None,
             live_tool_calls: LiveToolCalls::default(),
             harness: None,
+            bound: None,
         }
     }
 

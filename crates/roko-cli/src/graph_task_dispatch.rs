@@ -122,7 +122,7 @@ use routing_context::{
     select_cheap_model_key, upstream_outputs,
 };
 use supervision::SupervisedAttempt;
-use try_allowance::{RUNG_ALLOWANCE, TryAllowance, TryStop};
+use try_allowance::{BoundedStop, RUNG_ALLOWANCE, TryAllowance, TryStop};
 use tui_forward::forward_live_event_to_tui;
 use turn_policy::{
     TurnCapRetry, base_attempt_timeout_ms_with, is_express_task, provider_failure_outcome,
@@ -1579,9 +1579,29 @@ impl TaskDispatcher for GraphTaskDispatcher {
             supervised
                 .end(matches!(&dispatch_result, Ok((dispatch, _)) if dispatch.result.success));
         }
-        let (mut dispatch, failover) = match dispatch_result {
-            Ok(dispatched) => dispatched,
-            Err(error) => {
+        // A try that ended at its rung's bound, its turns or its spend used
+        // up, is judged by the task's checks on the work it left, as a
+        // finished try is (gap-2c9412). The plan's budget and a stopping run
+        // still end a try unchecked.
+        let mut bounded: Option<BoundedStop> = None;
+        let interrupted_at_bound = match &dispatch_result {
+            Err(error) => self.interrupted_at_bound(
+                &spec.plan_id,
+                &task.id,
+                error,
+                ended_by.as_ref(),
+                &progress,
+                u64::try_from(started_at.elapsed().as_millis()).unwrap_or(u64::MAX),
+            ),
+            Ok(_) => None,
+        };
+        let (mut dispatch, failover) = match (dispatch_result, interrupted_at_bound) {
+            (_, Some((dispatched, stop))) => {
+                bounded = Some(stop);
+                dispatched
+            }
+            (Ok(dispatched), None) => dispatched,
+            (Err(error), None) => {
                 // An agent that runs its own loop and spent its rung's
                 // allowance resumes its work on its next try (gap-3e770b).
                 if let Some(watchdog::AttemptInterrupted::AllowanceSpent(reason)) = &ended_by {
@@ -1742,7 +1762,26 @@ impl TaskDispatcher for GraphTaskDispatcher {
             return Err(error);
         }
 
-        if !dispatch.result.success {
+        if bounded.is_none() && !dispatch.result.success {
+            bounded = self.bounded_stop(
+                &spec.plan_id,
+                &task.id,
+                &dispatch,
+                allowance.as_deref(),
+                rung_allowance.as_ref(),
+                max_turns,
+            );
+        }
+        if let Some(stop) = &bounded {
+            tracing::info!(
+                plan_id = %spec.plan_id,
+                task_id = %task.id,
+                bound = %stop.describe(),
+                "the try ended at its rung's bound; the task's checks judge the work it left"
+            );
+        }
+
+        if !dispatch.result.success && bounded.is_none() {
             let message = dispatch
                 .result
                 .output
@@ -1915,7 +1954,8 @@ impl TaskDispatcher for GraphTaskDispatcher {
         // experiments learn from the verified outcome rather than from the
         // provider dispatch result.
         let settlement = Settlement::verified(&verification);
-        let settled = attempt.settle(settlement, &dispatch_plan.model.slug, Some(&dispatch));
+        let mut settled = attempt.settle(settlement, &dispatch_plan.model.slug, Some(&dispatch));
+        settled.bound = bounded.as_ref().map(BoundedStop::describe);
         self.emit_feedback(
             spec,
             &task,
@@ -1930,6 +1970,11 @@ impl TaskDispatcher for GraphTaskDispatcher {
         let verdict = match verification {
             Ok(verdict) => verdict,
             Err(error) => {
+                // A try that ended at its rung's bound and failed its checks
+                // resumes its work on its next try (gap-2c9412).
+                if let Some(stop) = &bounded {
+                    self.keep_bounded_stop(&spec.plan_id, &task.id, stop);
+                }
                 // Release worktree with RetainForFailure for post-mortem.
                 if let Some((provider, lease)) =
                     self.workspace_provider.as_ref().zip(lease.as_ref())
@@ -1984,7 +2029,18 @@ impl TaskDispatcher for GraphTaskDispatcher {
         }
 
         let mut output = dispatch.result.output;
-        if output.body.as_text().is_err() {
+        if let Some(stop) = &bounded {
+            // The agent's own last words are its stop at the bound.
+            output = Signal::builder(Kind::AgentOutput)
+                .body(Body::text(format!(
+                    "provider `{}` stopped task `{}` at {}; the task's checks passed on the \
+                     work it left",
+                    dispatch.target.provider_id,
+                    spec.title,
+                    stop.describe()
+                )))
+                .build();
+        } else if output.body.as_text().is_err() {
             output = Signal::builder(Kind::AgentOutput)
                 .body(Body::text(format!(
                     "provider `{}` completed task `{}`",

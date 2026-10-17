@@ -2,22 +2,35 @@
 id = "gap-b1f7b9"
 kind = "gap"
 title = "A plan's own verify steps feed gate history under the rung they check, so gate-thresholds.json learns from authored test steps"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p2"
 goal = "learning"
 size = "S"
 subsystem = ["roko-cli/graph-task-dispatch", "roko-gate/registry"]
 created = 2026-10-15
-updated = 2026-10-15
-last_verified = 2026-10-15
+updated = 2026-10-17
+last_verified = 2026-10-17
+last_verified_rev = "efc9f0443"
 source = "status-quo-2026-10-15#finding-47"
 anchors = ["crates/roko-gate/src/registry.rs::rung_for_gate_name", "crates/roko-cli/src/graph_task_dispatch/gate_learning.rs::record_gate_verdict_metrics", "crates/roko-cli/src/graph_task_dispatch/gate_learning.rs::skip_advice"]
 lane = "rust-hot"
 links = { depends_on = [], blocks = [], related = [], supersedes = [], duplicate_of = "" }
 
 [[verify]]
-command = "grep -rqw 'fn authored_test_steps_feed_the_test_rungs_history' crates/roko-cli/ && cargo test -p roko-cli authored_test_steps_feed_the_test_rungs_history"
+command = "grep -rqw 'fn authored_test_steps_feed_the_test_rungs_history' crates/roko-cli/ && cargo test -p roko-cli --lib authored_test_steps_feed_the_test_rungs_history"
+
+[closed]
+at = 2026-10-17
+at_ts = "2026-10-17T14:17:14Z"
+commit = "1d2bc828c"
+by = "roko-delivery"
+executor = "claude-agent"
+via = "manual"
+size = "S"
+claimed_at = "2026-10-17T12:51:18Z"
+forced = false
+evidence = "1d2bc828c, with gap-e2d2e5 (47d78889f: roko_gate::rung_for_verify_phase maps the phase names plans give a test suite, unit-tests among them, to the test rung): authored_test_steps_feed_the_test_rungs_history passes on the merged stack efc9f0443, main 7a5dd6046 (roko-cli lib 3777 passed; the verify now names --lib, where the test lives): a dispatched attempt whose passing step is named unit-tests adds one observation to rung 2 and none for its structural step, and its verdict names the steps verify:0/unit-tests and custom:structural. A scripted plan run with authored acceptance steps leaves rung 2 at 3 of 5 in gate-thresholds.json (tmp/hermes-roko-v6/roko-delivery/evidence/trio, no cost)."
 +++
 
 ## Problem

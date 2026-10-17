@@ -627,9 +627,11 @@ pub(super) fn content_audit(
 
 /// L-know's or L-play's proposals at its reader's point, and whether the
 /// point was the loop's opportunity: the learned proposal is the ids the
-/// reader would include, on the withheld arm too, and under a θ that turns
-/// the knowledge section off (gap-6bb6d8); π⁰ includes none. The point is
-/// an opportunity when it offered an item or its reader `read` had one,
+/// reader would include, on the withheld arm too, under a θ that turns
+/// the knowledge section off (gap-6bb6d8), and when the section bandit
+/// leaves out the section they render into (bug-550909), so that what L-sec
+/// removed counts as proposed and not reached; π⁰ includes none. The point
+/// is an opportunity when it offered an item or its reader `read` had one,
 /// though it loaded nothing to show (gap-a13544).
 fn reader_proposals(
     items: &[&PromptItemDiagnostic],
@@ -641,7 +643,11 @@ fn reader_proposals(
             item.included
                 || matches!(
                     item.excluded_reason,
-                    Some(ExcludedReason::WithheldArm | ExcludedReason::HarnessPolicy)
+                    Some(
+                        ExcludedReason::WithheldArm
+                            | ExcludedReason::HarnessPolicy
+                            | ExcludedReason::BanditExcluded
+                    )
                 )
         })
         .map(|item| item.id.clone())
@@ -1122,6 +1128,58 @@ mod tests {
         let seen = (taught.read, taught.n_obs, taught.version.as_str());
         assert_eq!(seen, (true, 2, "sb:n=2"), "{taught:?}");
         assert_ne!(taught.digest, cold.digest);
+    }
+
+    /// bug-550909: when the section bandit leaves out `domain_context`, the
+    /// knowledge and playbook readers' items never reach the prompt, and
+    /// their rows still propose them. What L-sec removed is L-know's or
+    /// L-play's learned proposal and not its choice, so the census counts
+    /// the opportunity as not reached. An item the token budget cut stays
+    /// out of the proposal, and the receipt names only what the prompt
+    /// included.
+    #[test]
+    fn reader_rows_propose_what_the_section_bandit_left_out() {
+        use roko_learn::loop_audit::Registry;
+        use roko_learn::loop_audit::arm_set::{ArmDraws, ArmMode};
+        use roko_learn::telemetry::AttemptKey;
+
+        let loops = Registry::embedded().expect("the embedded loop registry");
+        let key = AttemptKey::new("gr-readers", "plan", "t1", 1);
+        let draws = ArmDraws::new(0, "2026-10-17");
+        let arms = ArmSet::assign(&key, &loops, &ArmMode::Normal, &draws);
+        let identity = AttemptIdentity::new(&key);
+        let audit = |point: ContentDecisionPoint, items: &[&PromptItemDiagnostic]| {
+            let bandit = BanditDraws {
+                applied: &[],
+                proposed: &[],
+            };
+            let draw = (Some(&arms), (1, 2));
+            content_audit(point, items, None, &identity, draw, "b3:request", bandit)
+                .expect("the reader's fields")
+        };
+        let left_out = |item: PromptItemDiagnostic| PromptItemDiagnostic {
+            included: false,
+            excluded_reason: Some(ExcludedReason::BanditExcluded),
+            ..item
+        };
+
+        let lesson = left_out(knowledge_item("kn-1", 1, true));
+        let cut = knowledge_item("kn-2", 2, false);
+        let (proposals, fields) = audit(ContentDecisionPoint::Knowledge, &[&lesson, &cut]);
+        assert_eq!(fields.loop_id.as_deref(), Some("L-know"));
+        assert_eq!(proposals.learned, Some(vec!["kn-1".to_string()]));
+        assert_eq!(proposals.default, Some(Vec::new()));
+        let receipt = fields.receipt.expect("the receipt");
+        assert!(receipt.exposure_hashes.is_empty(), "{receipt:?}");
+
+        let removed = left_out(playbook_item("pb-1"));
+        let shown = playbook_item("pb-2");
+        let (proposals, fields) = audit(ContentDecisionPoint::Playbooks, &[&removed, &shown]);
+        assert_eq!(fields.loop_id.as_deref(), Some("L-play"));
+        let both = vec!["pb-1".to_string(), "pb-2".to_string()];
+        assert_eq!(proposals.learned, Some(both));
+        let receipt = fields.receipt.expect("the receipt");
+        assert_eq!(receipt.exposure_hashes, ["pb-2-digest"]);
     }
 
     /// A dispatch plan whose prompt retrieved `items`, with no route

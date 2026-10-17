@@ -6,8 +6,9 @@
 //! and state rules live in one place for every consumer (S04 §5). Units carry one gate
 //! verdict, so L1 learns a single `gate` rung until units carry per-rung outcomes. The model
 //! counts gate labels toward its cold start and shadow period: S05's VS labels join later
-//! (decision 6102, 1b). An arm the cost model has not observed is priced from the snapshot
-//! (bug-09173e).
+//! (decision 6102, 1b). An attempt the cost model's rows do not support is forecast from a
+//! bounded prior around the arm's observed level (bug-f6682e), and an arm the cost model has not
+//! observed is priced from the snapshot (bug-09173e).
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -336,7 +337,7 @@ impl From<&Unit> for TaskFeatures {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::self_model::{Label, LabelSource};
+    use crate::self_model::{Label, LabelSource, TestRng};
     use crate::telemetry::{AttemptKey, CostSource};
 
     fn snapshot() -> PriceSnapshot {
@@ -591,5 +592,50 @@ mod tests {
         let geometric_mean = (logs / 6.0).exp();
         assert!((never.lat_q50_s - geometric_mean).abs() < 1e-6, "{never:?}");
         assert!(never.lat_q90_s < 10.0 * never.lat_q50_s, "{never:?}");
+    }
+
+    /// bug-f6682e: an arm the model has observed on one family is forecast on another from what
+    /// it costs and takes, not from the regressions' vague prior along the new family, whose q90
+    /// ran to $472 for an arm that costs $0.02 and to 2.4 h for one that takes 30 s. After 20
+    /// attempts of gpt-oss-120b on focused tasks, at about $0.02 (log sd 0.5) and 30 s (log sd
+    /// 0.3), its forecast on an integrative task has a finite q90 within ten times its q50, at
+    /// the geometric mean of its attempts' cost and latency, within a factor of two of $0.02 and
+    /// 30 s, and says both are a prior. Its forecast on a focused task is still the regression's.
+    #[test]
+    fn cost_forecast_q90_is_bounded_on_an_unseen_family() {
+        let arms = [ArmKey::roko("cerebras", "gpt-oss-120b")];
+        let mut model = SelfModel::new(&snapshot());
+        let mut rng = TestRng::new(29);
+        let (mut cost_logs, mut latency_logs) = (0.0, 0.0);
+        for index in 0..20 {
+            let mut unit = unit("gpt-oss-120b", &format!("T{index}"), 1, index % 3 != 0);
+            let cost = (0.02_f64.ln() + 0.5 * rng.normal()).exp();
+            let latency = (30.0_f64.ln() + 0.3 * rng.normal()).exp();
+            (cost_logs, latency_logs) = (cost_logs + cost.ln(), latency_logs + latency.ln());
+            unit.api_equiv_usd = Some(cost);
+            unit.latency_s = Some(latency);
+            model.observe_with(&unit, &task(), 1.0);
+        }
+        let (cost, latency) = ((cost_logs / 20.0).exp(), (latency_logs / 20.0).exp());
+
+        let focused = model.forecast(&task(), &arms).remove(0);
+        assert!(!focused.cost_prior && !focused.latency_prior, "{focused:?}");
+        assert!(focused.cost_q90 < 10.0 * focused.cost_q50, "{focused:?}");
+
+        let integrative = TaskFeatures {
+            family: "integrative".to_string(),
+            tier: "integrative".to_string(),
+            ..task()
+        };
+        let unseen = model.forecast(&integrative, &arms).remove(0);
+        assert!(unseen.cost_prior && unseen.latency_prior, "{unseen:?}");
+        let (q50, q90) = (unseen.cost_q50, unseen.cost_q90);
+        assert!(q90.is_finite() && q90 <= 10.0 * q50, "{unseen:?}");
+        assert!((q50 - cost).abs() < 1e-12, "{unseen:?}");
+        assert!((0.01..=0.04).contains(&q50), "{unseen:?}");
+        let (q50, q90) = (unseen.lat_q50_s, unseen.lat_q90_s);
+        assert!(q90.is_finite() && q90 <= 10.0 * q50, "{unseen:?}");
+        assert!((q50 - latency).abs() < 1e-9, "{unseen:?}");
+        assert!((15.0..=60.0).contains(&q50), "{unseen:?}");
     }
 }

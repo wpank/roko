@@ -1,8 +1,9 @@
 //! Typed streaming events for provider adapters and tool loops.
 
-use crate::tool_loop::{StreamEvent, StreamEventKind};
+use crate::tool_loop::{LlmError, StreamEvent, StreamEventKind};
 use crate::translate::{normalize_finish_reason, openai::parse_usage};
 use serde_json::Value;
+use std::time::{Duration, Instant};
 
 /// Provider-neutral stream event covering both OpenAI SSE and Claude CLI protocols.
 #[derive(Debug, Clone)]
@@ -191,6 +192,47 @@ impl StreamJsonParser for ClaudeCliParser {
     fn parser_name(&self) -> &str {
         "claude-cli"
     }
+}
+
+/// The longest one streamed model call may run while its stream keeps
+/// delivering (bug-91796d).
+///
+/// A streamed request has no total timeout: `TurnConfig::request_timeout`
+/// bounds the wait for the response and each silence between its chunks, so
+/// a reasoning model that thinks for minutes is not cut while it streams.
+/// A total of 120 s cut glm-4.7 on a hard task mid-stream ("read chunk
+/// failed"). This ceiling stops a stream that never ends.
+pub const MAX_STREAM_DURATION: Duration = Duration::from_secs(30 * 60);
+
+/// How long a streamed call started at `started` may wait for its next
+/// chunk: `wait`, cut short so the call ends at [`MAX_STREAM_DURATION`].
+#[must_use]
+pub fn chunk_wait(wait: Duration, started: Instant) -> Duration {
+    wait.min(MAX_STREAM_DURATION.saturating_sub(started.elapsed()))
+}
+
+/// The error of a streamed call started at `started` whose next chunk did
+/// not come within its [`chunk_wait`] of `wait`: the call ran into
+/// [`MAX_STREAM_DURATION`], or its stream stalled for `wait`.
+#[must_use]
+pub fn chunk_timeout(wait: Duration, started: Instant) -> LlmError {
+    if started.elapsed() >= MAX_STREAM_DURATION {
+        LlmError::Timeout(format!(
+            "stream ran past its {}-minute ceiling",
+            MAX_STREAM_DURATION.as_secs() / 60
+        ))
+    } else {
+        LlmError::Timeout(format!(
+            "stream stalled: no data within {}ms",
+            wait.as_millis()
+        ))
+    }
+}
+
+/// The error of a streamed request that got no response within `wait`.
+#[must_use]
+pub fn response_timeout(wait: Duration) -> LlmError {
+    LlmError::Timeout(format!("no response within {}ms", wait.as_millis()))
 }
 
 /// The finish reason of a stream that ended without naming one. It
@@ -430,8 +472,37 @@ fn tool_call_event(tc: &Value) -> StreamEvent {
 
 #[cfg(test)]
 mod tests {
-    use super::{UnifiedStreamEvent, parse_sse_line};
+    use super::{
+        MAX_STREAM_DURATION, UnifiedStreamEvent, chunk_timeout, chunk_wait, parse_sse_line,
+    };
     use crate::tool_loop::{StreamEvent, StreamEventKind};
+    use std::time::{Duration, Instant};
+
+    /// bug-91796d: a streamed call waits its full `wait` for each chunk until
+    /// it nears its ceiling, and past the ceiling it waits no more.
+    #[test]
+    fn a_streamed_call_ends_at_its_ceiling() {
+        let wait = Duration::from_secs(120);
+        let now = Instant::now();
+        assert_eq!(chunk_wait(wait, now), wait);
+        let stalled = chunk_timeout(wait, now).to_string();
+        assert!(
+            stalled.contains("stalled: no data within 120000ms"),
+            "{stalled}"
+        );
+
+        // An `Instant` cannot reach back before the clock's origin.
+        let Some(near) = now.checked_sub(MAX_STREAM_DURATION - Duration::from_secs(10)) else {
+            return;
+        };
+        assert!(chunk_wait(wait, near) <= Duration::from_secs(10));
+        let Some(past) = now.checked_sub(MAX_STREAM_DURATION) else {
+            return;
+        };
+        assert_eq!(chunk_wait(wait, past), Duration::ZERO);
+        let ceiling = chunk_timeout(wait, past).to_string();
+        assert!(ceiling.contains("30-minute ceiling"), "{ceiling}");
+    }
 
     /// The first event `line` yields, if any.
     fn first_event(line: &str) -> Option<StreamEvent> {

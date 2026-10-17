@@ -137,6 +137,12 @@ time, and `records.py` sums them into the record:
   null otherwise. Roko records neither when a task became ready nor when it was dispatched, so a multi-task plan's
   slot waits need the Graph engine to record them.
 
+**The prompt** (bug-85e982). `vb run` records each arm's prompt in the run's config (`prompt`, which enters
+`config_hash`) from `arm_prompt(arm)`: the version and sha256 of the planemit templates the arm's plans are emitted
+from (`planemit.template_identity`). They differ by arm: pinned mode's openai_compat templates for roko_fixed on each
+of its models, its claude_cli ones for fr_claude, ladder mode's for roko_ladder, and ladder mode's with the overlay's
+tables for roko_full. Roko's own prompt is in its binary, recorded per attempt as `roko_build`.
+
 API:
     run_task(ctx: harness.TaskContext) -> harness.TaskOutcome
     preflight(arm, model, endpoint, limits, snapshot) -> None       # raises RunnerError
@@ -144,7 +150,8 @@ API:
     read_evidence(workspace: Path, slug: str, *, proxy_rows: list[dict] | None = None) -> Evidence
     settle(evidence, *, chain_key, model, provider, snapshot, reserved_usd, max_attempts, roko_build=None,
            swap=None, rungs=()) -> (list[RokoAttempt], list[str])
-    RokoAttempt(harness.Attempt); Evidence; binary_path(arm) -> Path; PROMPT_VERSION, PROMPT_SHA256
+    arm_prompt(arm) -> {"version", "sha256"}                      # what `vb run` records as the arm's prompt
+    RokoAttempt(harness.Attempt); Evidence; binary_path(arm) -> Path
 """
 
 from __future__ import annotations
@@ -177,8 +184,6 @@ import run_cli
 from common import repo, sandbox
 
 PROXY_CAPS = ("input_tokens_per_attempt",)  # arm caps that `vb run` has the metering proxy hold for this runner
-PROMPT_VERSION = planemit.TEMPLATE_VERSION  # Roko's own prompt is in its binary, recorded per attempt as roko_build
-PROMPT_SHA256 = planemit.TEMPLATE_SHA256
 DEFAULT_BINARY = "target/debug/roko"  # relative to the repository root, like the arm file's [roko] binary
 OFFLINE_KEY = "placeholder"  # in Roko's environment, which its agent's shell inherits: neutral (bug-d68575)
 VALIDATE_TIMEOUT_S = 120.0
@@ -407,6 +412,19 @@ def preflight(arm: dict, model: str, endpoint: provider.Endpoint, limits: caps.C
                           f"{'timed out' if checked.timed_out else f'exited {checked.returncode}'}: {said}")
 
 
+def arm_prompt(arm: dict) -> dict[str, str]:
+    """The prompt `vb run` records for this arm (module docstring, "The prompt"; `vb.runner_prompt`): the version and
+    sha256 of the planemit templates its plans are emitted from, in the mode `_plan_spec` gives it."""
+    return planemit.template_identity(ladder=_routed(arm),
+                                      provider_kind=arm.get("roko", {}).get("provider_kind", "openai_compat"),
+                                      overlay=bool(arm.get("overlay")))
+
+
+def _routed(arm: dict) -> bool:
+    """Whether the arm is routed (3312): more than one models_allow entry, so its plans are planemit's ladder mode."""
+    return len(arm["arm"]["models_allow"]) > 1
+
+
 def _start_egress(ctx: harness.TaskContext, settings: dict) -> egress.EgressProxy:
     """This task's own egress proxy (3318, `egress.py`): the `[roko] egress_allow` targets (`run_cli.CliConfig`'s
     own rule), else `egress.DEFAULT_ALLOW` (Anthropic's API). Raises RunnerError on a bad allowlist."""
@@ -447,7 +465,7 @@ def _plan_spec(arm: dict, model: str, endpoint: provider.Endpoint, limits: caps.
         raise RunnerError(f"the arm names no api_key_env for {endpoint.provider}")
     allowed = arm["arm"]["models_allow"]
     rungs, start = (), None
-    if len(allowed) > 1:
+    if _routed(arm):
         if snapshot is None:
             raise RunnerError("a routed arm needs the price snapshot to build its ladder")
         rungs = tuple(_rung(arm, rung_model, snapshot, limits) for rung_model in allowed)

@@ -19,10 +19,13 @@ measure that setup rather than Claude Code (W10). Every session gets:
 - `--strict-mcp-config` with an empty `--mcp-config`: no MCP server;
 - `CLAUDE_CODE_DISABLE_AUTO_MEMORY=1`, since auto-memory ignores setting sources, and `DISABLE_AUTOUPDATER=1`, so the
   version cannot change mid-run (each record keeps the version its `init` event reports);
-- `--settings` with no hooks, and deny rules for the repository, `~/.roko`, the run's results and the default secret
-  directory (S08 §4.9, "where the CLI supports them": they bind Claude's file tools, not its shell, and canaries
-  catch the rest). On macOS the sandbox below also denies the whole session, its shell included, the run's results
-  (`ctx.deny`, bug-d308f7);
+- `--settings` with no hooks, and deny rules for the repository, `~/.roko` and the operator's whole `~/.config`, where
+  the default secret directory is (S08 §4.9, "where the CLI supports them": they bind Claude's file tools, not its
+  shell, and canaries catch the rest). On macOS the sandbox below denies the whole session, its shell and its file
+  tools included, the results root, this run's directory and every other run's, and the key files (`ctx.deny`,
+  bug-d308f7, bug-935cfa), so the rules name them only where no sandbox applies. The session's Bash tool can read
+  claude's own command line (`sysctl(KERN_PROCARGS2)` from inside the sandbox), which so names neither the run, the
+  results root nor the benchmark (bug-4c3a83);
 - no web tools (gap-f253cf): `--disallowed-tools WebFetch,WebSearch` takes them out of the model's context, and
   deny rules for both in `--settings` also bind subagents. The repository is public, so a web fetch could return a
   truth suite, and WebFetch hands back a model-written digest in which the canary may never appear. The tasks need
@@ -108,7 +111,7 @@ API:
     network_rule(endpoint, egress_port) -> str                  # the claude process tree's network rule
     run_session(invocation, prompt, *, cwd, wallclock_s, usd_cap, meter) -> Session
     parse_result(event, snapshot, *, cache_write_ttl) -> ResultCost
-    Meter(snapshot, *, cache_write_ttl); CliAttempt; settings(run_dir) -> dict; web_tools(event) -> list[str]
+    Meter(snapshot, *, cache_write_ttl); CliAttempt; settings(denied=()) -> dict; web_tools(event) -> list[str]
     ancestor_instructions(workdir) -> list[Path]; config_dir_digest(path) -> str
     keychain_fingerprint(user, *, service, security, home) -> str | None   # token-free; for --credential-fingerprint
     main(argv) -> int                                           # `probe`
@@ -132,7 +135,7 @@ import sys
 import threading
 import time
 import urllib.parse
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass, field, fields
 from pathlib import Path
 from typing import IO
@@ -397,10 +400,16 @@ def build_invocation(ctx: harness.TaskContext, cli: CliConfig, proxy: egress.Egr
         raise CliError(f"{cli.program} is not an executable on the driver's PATH")
     config_dir = Path(ctx.agent_env["HOME"]) / ".claude"
     _seed_config_dir(config_dir, cli.credentials)
+    jail, network = (), None
+    if proxy is not None:
+        network = network_rule(ctx.endpoint, proxy.port)
+        jail = tuple(sandbox.command([], deny=ctx.deny, network=network))
+    # The session's Bash tool can read this argv (bug-4c3a83): a sandbox denies the session `ctx.deny` itself, so then
+    # --settings leave out the results root and the key files, whose paths would name the run.
     argv = [str(Path(program).absolute()), *FIXED_FLAGS, WORKDIR_FLAG, str(ctx.workdir), "--model", ctx.model,
             "--effort", cli.effort, "--max-turns", str(ctx.caps.turns_per_task),
             "--max-budget-usd", f"{ctx.caps.usd_per_task:g}",
-            "--settings", json.dumps(settings(ctx.ledger.path.parent), sort_keys=True, separators=(",", ":"))]
+            "--settings", json.dumps(settings(() if jail else ctx.deny), sort_keys=True, separators=(",", ":"))]
     env = {**ctx.agent_env, **FIXED_ENV, "CLAUDE_CONFIG_DIR": str(config_dir)}
     if cli.credentials == "keychain":
         env["CLAUDE_SECURESTORAGE_CONFIG_DIR"] = ""
@@ -409,11 +418,8 @@ def build_invocation(ctx: harness.TaskContext, cli: CliConfig, proxy: egress.Egr
         env["ANTHROPIC_BASE_URL"] = ctx.endpoint.base_url
     if ctx.verify_wrapper is not None:
         env[SHELL_PREFIX_ENV] = str(ctx.verify_wrapper)
-    jail, network = (), None
     if proxy is not None:
         env.update(agent_env.proxy_env(proxy.url))
-        network = network_rule(ctx.endpoint, proxy.port)
-        jail = tuple(sandbox.command([], deny=ctx.deny, network=network))
     agent_env.check({name: value for name, value in env.items() if name not in CLI_ENV})
     return Invocation(argv=argv, env=env, config_dir=config_dir, config_dir_sha256=config_dir_digest(config_dir),
                       jail=jail, network=network)
@@ -429,13 +435,17 @@ def network_rule(endpoint: provider.Endpoint, egress_port: int) -> str:
     return sandbox.loopback(*dict.fromkeys(ports))
 
 
-def settings(run_dir: Path) -> dict:
+def settings(denied: Iterable[Path] = ()) -> dict:
     """`--settings`: no hooks, deny rules for the web tools, and deny rules (absolute `//path` patterns) for what the
-    agent must not read or edit."""
+    agent must not read or edit: the repository, `~/.roko`, the operator's whole `~/.config` (the default secret
+    directory's parent, which names no benchmark: bug-4c3a83), and each directory of `denied`. `build_invocation`
+    passes `ctx.deny` (the whole results root, bug-935cfa) only to a session no sandbox confines: one denies the session
+    those paths itself, and the session's Bash tool can read claude's argv, where they would name the run."""
     home = Path.home()
-    denied = (layout.REPO_ROOT, home / ".roko", Path(run_dir), home / ".config" / "viabilitybench")
-    return {**SETTINGS, "permissions": {"deny": [*WEB_TOOLS, *(f"{tool}(/{Path(path).resolve()}/**)"
-                                                               for path in denied for tool in DENY_TOOLS)]}}
+    paths = (layout.REPO_ROOT, home / ".roko", home / ".config",
+             *(Path(path) for path in denied if Path(path).is_dir()))
+    return {**SETTINGS, "permissions": {"deny": [*WEB_TOOLS, *(f"{tool}(/{path.resolve()}/**)"
+                                                               for path in paths for tool in DENY_TOOLS)]}}
 
 
 def web_tools(event: Mapping) -> list[str]:

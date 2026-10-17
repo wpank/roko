@@ -2,7 +2,7 @@
 id = "bug-f6682e"
 kind = "bug"
 title = "The self-model's cost and latency q90 still explode for an observed arm on a task family the cost model has not seen: q90 $472 for an arm that costs $0.02"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p3"
 goal = "cybernetic"
@@ -11,6 +11,7 @@ subsystem = ["roko-learn/self_model"]
 created = 2026-10-17
 updated = 2026-10-17
 last_verified = 2026-10-17
+last_verified_rev = "323524a6a"
 source = "bug-09173e worker, 2026-10-17: a CostModel probe after its fix, 20 focused attempts then one integrative forecast"
 discovered_from = "bug-09173e"
 anchors = ["crates/roko-learn/src/self_model/cost.rs::CostModel::forecast", "crates/roko-learn/src/self_model/cost.rs::NigRegression::predictive", "crates/roko-learn/src/self_model/model.rs::cost_features"]
@@ -20,6 +21,18 @@ links = { depends_on = [], blocks = [], related = ["bug-09173e", "gap-e464e6"], 
 
 [[verify]]
 command = "grep -rqw 'fn cost_forecast_q90_is_bounded_on_an_unseen_family' crates/roko-learn/ && cargo test -p roko-learn cost_forecast_q90_is_bounded_on_an_unseen_family"
+
+[closed]
+at = 2026-10-17
+at_ts = "2026-10-17T14:45:08Z"
+commit = "323524a6a"
+by = "commit trailer"
+executor = "claude-agent"
+via = "work-batch"
+size = "S"
+claimed_at = "2026-10-17T11:04:28Z"
+forced = false
+evidence = "323524a6a takes the item's plan 1, generalized from 'features not observed' to the rows' support. roko-learn self_model/cost.rs: NigRegression::support(x) = 1/(x'Lambda^-1 x), the attempts' worth of data the posterior location at x rests on (a feature with no dimension adds x^2/kappa), and CostModel::forecast uses a regression's Student-t predictive only at support >= MIN_SUPPORT = 0.25. Below it the cost and latency quantiles are bug-09173e's log-normal prior (PRIOR_LOG_SD = 1.1, q90 = 4.1 x q50), flagged cost_prior/latency_prior, centred on the arm's geometric-mean target over its rows (xty[arm]/xtx[arm][arm], already in the sufficient statistics, so no saved state, feature or prior changes and the predictor version stays); an arm with no rows keeps the snapshot price and the observed attempts' latency. Measured supports: an arm's own stratum about its row count (20 for the item's case), a family tied to the arm through another arm's rows about 1 (that forecast stays the regression's), the item's unseen family 0.006, a family only another arm ran 0.01 (q90 376 x q50 before, though every feature was observed, which the literal plan-1 check would have missed). The literal verify, `grep -rqw 'fn cost_forecast_q90_is_bounded_on_an_unseen_family' crates/roko-learn/ && cargo test -p roko-learn cost_forecast_q90_is_bounded_on_an_unseen_family`, passes at 323524a6a (11 test binaries, the named test ok): after 20 focused attempts of gpt-oss-120b at about $0.02 (log sd 0.5) and 30 s (log sd 0.3), its integrative forecast is flagged, at the geometric mean of its costs and latencies, q90 finite and at most 10 x q50, q50 within a factor of two of $0.02 and 30 s, and its focused forecast is still the regression's. The same test fails with main's cost.rs (cost q50 $0.072 / q90 $1,969, latency 9.5 s / 6,397 s, unflagged). Also passing: all 61 roko-learn `self_model::` lib tests, among them the new an_unsupported_forecast_is_anchored_on_the_arm (the cross case, the tie through one row, a spec-size extrapolation, and an observed stratum equal to the regression's predictive) and bug-09173e's cost_forecast_q90_is_bounded_without_observations and an_unobserved_arm_forecasts_its_prior, unchanged. `cargo clippy -p roko-learn --no-deps -- -D warnings` is clean and `cargo +nightly fmt -p roko-learn` was applied, both through the limiter."
 +++
 
 ## Problem

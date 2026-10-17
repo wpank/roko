@@ -17,8 +17,8 @@ TLS setup to it.
 **The policy** (gap-bccf58). The Roko and mini-swe-agent arms' sandboxes admit the proxy's port, since those harnesses
 call the model themselves, so the agent's shell can send the proxy requests of its own. The proxy therefore forwards
 only what an arm's harness sends, plain chat completions with the run's models and function tools, and answers
-anything else with a 403 before it is forwarded, whose error type is the refusal's name (none names the benchmark,
-bug-d68575), checked in this order:
+anything else with a 403 before it is forwarded (in a provider's words: "What a client is told", below). The checks,
+in order, with the name the log gives each refusal:
 - `path_not_allowed`: any path but `/chat/completions` (`CHAT_PATH`), or one with a query string. A provider's other
   endpoints include its own search and fetch: z.ai's `/web_search` and `/reader`, Moonshot's `/tools/search`,
   `/tools/search_pro` and `/tools/fetch`, and OpenAI's Responses API (`/responses`).
@@ -49,8 +49,8 @@ end, even when a fault cuts or rewrites what the client gets, so the meter holds
   error status.
 
 Each task's input tokens (every input class) are counted against the `input_token_cap`. A call that could take them
-past it is refused with a 403 (`cap_exceeded`) and never forwarded: the proxy adds an upper bound on the call's
-input to what the task has counted and what its calls in flight may still count (bug-c30764). The bound is the
+past it is refused with a 403 (`input_token_cap` in the log) and never forwarded: the proxy adds an upper bound on the
+call's input to what the task has counted and what its calls in flight may still count (bug-c30764). The bound is the
 request's bytes plus `PREAMBLE_TOKENS`, since a token is never shorter than a byte and a provider may put a header of
 its own before the first message (as `mini_loop` bounds its calls). When the request extends one the task sent
 before, with the same settings and that request's messages first, the bound is that request's reported input plus
@@ -99,7 +99,20 @@ active task id), `profile` (a name, or a table with `name` and parameters), `inp
 and `model_swap` (null for none).
 `GET` returns the state with each task's meter totals. In the driver's own process, `configure` and `state` do the
 same. The token is random per proxy, so an agent that finds the port can neither switch faults off nor move its calls
-to another task.
+to another task. A request without it gets the answer of a route that does not exist (404), so the agent cannot tell
+that the endpoint is there (bug-fd8200).
+
+**What a client is told** (bug-fd8200). The client of a call the proxy answers itself may be the agent: Roko's and
+mini-swe-agent's shells reach the port, and a harness may show its model a provider's error. So every such answer is
+worded as a provider's own, in the OpenAI error shape (`message`, `type`, `param`, `code`), and names neither the task,
+the run, the refusal, a cap nor a fault: no benchmark-internal identifier reaches an agent (Will's decision 9, as
+bug-3c921e records it), and a `provider_fault` must look like the provider's (S08 §4.6). A refusal is a 403
+`permission_error` with the words of `REFUSALS`, an `http_5xx` fault the provider's `server_error` (`SERVER_ERROR`),
+and a `rate_limit` fault a 429 `rate_limit_exceeded` (`RATE_LIMITED`) with its `Retry-After`. The statuses and the
+headers are as they were, and so is how each harness takes the answer: the direct loop and Roko by its status,
+mini-swe-agent's litellm by its status and the words it looks for (none of which these answers hold). Why the proxy
+answered, with the task, the counts and the caps, is in the log, which only the driver reads (`refused`, `detail`,
+`fault_injected`, `fault`).
 
 **The log.** Every request to an upstream is metered and logged before the client can see the end of its response, so
 a caller whose call has returned finds it in the log and in `state`. Each appends one JSON line to `log_path`, flushed
@@ -110,10 +123,12 @@ fired, else null), `fault` (the fault's detail), `upstream`, `path` (with its qu
 the client got; null when it got none), `forwarded`, `usage_source`, `usage` (the classes; null when none came back),
 `api_equiv_usd`, `without_cache_usd`, `cost_source` (`provider_usage`, `unknown` or `not_billed`),
 `price_snapshot_id`, `refused` (`path_not_allowed`, `model_not_allowed`, `server_tool`, `unbounded_input`,
-`input_token_cap` or `attempt_input_cap` when the proxy refused the call, else null), `server_tools` (the server-side
-tools and search options the request names, forwarded or not), `input_bound` (the most input the call could have
-been billed for; null for one that is not text only), `conversation` (its conversation in the task, from 1) and
-`elapsed_ms`.
+`input_token_cap` or `attempt_input_cap` when the proxy refused the call, else null), `detail` (why it refused the
+call, which its answer does not say: the task, the counts and the cap it compared, the part it could not bound, or
+what the policy forwards and what the request asked for; null for a call it did not refuse), `server_tools` (the
+server-side tools and search options the request names, forwarded or not), `input_bound` (the most input the call
+could have been billed for; null for one that is not text only), `conversation` (its conversation in the task, from
+1) and `elapsed_ms`.
 
 API:
     Upstream(name, base_url, api_key_env=None, stream_usage=True, allow=frozenset())
@@ -127,7 +142,7 @@ API:
     FaultProxy.configure(*, task=..., profile=..., input_token_cap=..., attempt_input_cap=..., model_swap=...) -> dict
     FaultProxy.state() -> dict; FaultProxy.policy() -> dict
     usage_classes(raw) -> dict | None; arm_hosts() -> frozenset[str]
-    ProxyError; CHAT_PATH; POLICY_REFUSALS
+    ProxyError; CHAT_PATH; POLICY_REFUSALS; REFUSALS; SERVER_ERROR; RATE_LIMITED
 """
 
 from __future__ import annotations
@@ -187,6 +202,22 @@ SERVER_OPTIONS = ("web_search_options", "plugins")  # request fields that turn o
 TOOL_NAME = re.compile(r"\S{1,64}")  # a tool type or name as `_server_tools` reports it; anything else is "?"
 # What `_server_tools` reports, and so what an upstream's `allow` may name.
 SERVER_TOOL = re.compile(r"tools:\S{1,64}|" + "|".join(SERVER_OPTIONS))
+# What a client is told when the proxy answers a call itself (module docstring, "What a client is told"): a provider's
+# words that name neither the task, the run, the refusal, a cap nor a fault (bug-fd8200). Each harness takes them as it
+# took the old ones: none holds a word litellm's mapping or Roko's classifiers look for (a rate limit, a quota, billing,
+# a timeout, a context window, `invalid_request_error`, `forbidden`), so a 403 stays a refusal and a 429 a rate limit.
+REFUSAL_TYPE = "permission_error"  # the error type of every refusal, a 403
+REFUSALS = {
+    "path_not_allowed": "The requested endpoint is not available.",
+    "model_not_allowed": "The model `{model}` is not available.",  # not "does not exist": Roko reads that as no model
+    "server_tool": "Only function tools are supported: server-side tools, web search and plugins are not available.",
+    "unbounded_input": "Image, audio and file inputs are not supported for this request.",
+    "input_token_cap": "This request exceeds the input limit.",
+    "attempt_input_cap": "This request exceeds the input limit.",
+}
+NO_MODEL = "you must provide a model parameter"  # model_not_allowed, for a request that names no model
+SERVER_ERROR = "The server had an error while processing your request. Sorry about that!"  # an http_5xx fault
+RATE_LIMITED = "Rate limit exceeded. Please try again later."  # a rate_limit fault
 _UNSET: Any = object()
 
 
@@ -526,33 +557,27 @@ class FaultProxy:
             "model_requested": _text(request.get("model")), "model_swap": swap if "model" in request else None,
             "model_reported": None,
             "stream": request.get("stream") is True, "status": None, "forwarded": False, "usage_source": "none",
-            "usage": None, "refused": refusal, "server_tools": tools, "input_bound": None if media else bound,
-            "conversation": conversation})
+            "usage": None, "refused": refusal, "detail": None, "server_tools": tools,
+            "input_bound": None if media else bound, "conversation": conversation})
         try:
-            if policy:  # gap-bccf58: a request only an agent sends never reaches the provider
-                call.answer(403, _error(refusal, policy[1], refusal))
-                return
-            if refusal == "unbounded_input":
-                call.answer(403, _error("unbounded_input", f"task {task!r} has an input-token cap, and the proxy "
-                                        f"cannot bound this request's input: it holds a {media!r} part",
-                                        "unbounded_input"))
-                return
-            if refusal == "input_token_cap":
-                call.answer(403, _error("cap_exceeded", f"task {task!r} could pass its input-token cap of {cap}: "
-                                        f"{counted} counted, and this call may add up to {bound}", "input_token_cap"))
-                return
-            if refusal:
-                call.answer(403, _error("cap_exceeded", f"conversation {conversation} of task {task!r} could pass "
-                                        f"its attempt's input-token cap of {attempt_cap}: {talked} counted, and this "
-                                        f"call may add up to {bound}", "attempt_input_cap"))
+            if refusal:  # never forwarded (gap-bccf58 and the caps); the client gets a provider's words, the log why
+                call.entry["detail"] = policy[1] if policy else {
+                    "unbounded_input": f"task {task!r} has an input-token cap, and the proxy cannot bound this "
+                                       f"request's input: it holds a {media!r} part",
+                    "input_token_cap": f"task {task!r} could pass its input-token cap of {cap}: {counted} counted, "
+                                       f"and this call may add up to {bound}",
+                    "attempt_input_cap": f"conversation {conversation} of task {task!r} could pass its attempt's "
+                                         f"input-token cap of {attempt_cap}: {talked} counted, and this call may add "
+                                         f"up to {bound}"}[refusal]
+                call.answer(403, _refusal(refusal, request.get("model")))
                 return
             detail = profile.draw(task, ordinal)
             fault = None if detail is None else profile.name
             call.entry["fault_injected"], call.entry["fault"] = fault, detail
             if fault == "http_5xx":
-                call.answer(profile.status, _error("server_error", "injected upstream error"))
+                call.answer(profile.status, _error("server_error", SERVER_ERROR))
             elif fault == "rate_limit":
-                call.answer(429, _error("rate_limit_exceeded", "injected rate limit"),
+                call.answer(429, _error("requests", RATE_LIMITED, "rate_limit_exceeded"),
                             {"Retry-After": str(profile.retry_after)})
             elif fault == "hang":
                 handler.hold(profile.s)
@@ -569,8 +594,8 @@ class FaultProxy:
 
     def _policy(self, upstream: Upstream, path: str, query: str, request: dict,
                 tools: list[str]) -> tuple[str, str] | None:
-        """The policy's refusal of a request, and what the client is told (module docstring, "The policy"); None for a
-        request it lets through to the caps."""
+        """The policy's refusal of a request, and why, for the log's `detail` (module docstring, "The policy"); None
+        for a request it lets through to the caps. The client is told only `REFUSALS`' words."""
         if path != CHAT_PATH or query:
             asked = (path + (f"?{query}" if query else ""))[:200]
             return "path_not_allowed", f"the proxy forwards only POST /{upstream.name}{CHAT_PATH}, not {asked!r}"
@@ -777,12 +802,13 @@ class FaultProxy:
                 self._log.write(line)
                 self._log.flush()
 
-    def _control(self, handler: _Handler, body: bytes | None) -> None:
+    def _authorized(self, handler: _Handler) -> bool:
+        """Whether a request holds the proxy's token (module docstring, "Control")."""
         supplied = handler.headers.get("Authorization", "").encode("utf-8", "replace")
-        if not hmac.compare_digest(supplied, f"Bearer {self.token}".encode()):
-            handler.send_json(401, _error("unauthorized", "the control endpoint needs the proxy's token"),
-                              {"WWW-Authenticate": "Bearer"})
-            return
+        return hmac.compare_digest(supplied, f"Bearer {self.token}".encode())
+
+    def _control(self, handler: _Handler, body: bytes | None) -> None:
+        """A control request from the token's holder: the state for a GET, a change for a POST."""
         if body is None:
             handler.send_json(200, self.state())
             return
@@ -950,7 +976,7 @@ class _Handler(BaseHTTPRequestHandler):
         if body is None:
             return
         proxy = self.server.proxy
-        if path == CONTROL_PATH:
+        if path == CONTROL_PATH and proxy._authorized(self):  # anyone else meets a route that does not exist
             proxy._control(self, body if has_body else None)
             return
         name, _, rest = path.lstrip("/").partition("/")
@@ -1010,7 +1036,14 @@ def _cap(value: object) -> int | None:
 
 def _error(kind: str, message: str, code: str | None = None) -> dict:
     """An error body in the OpenAI shape."""
-    return {"error": {"message": message, "type": kind, "code": code}}
+    return {"error": {"message": message, "type": kind, "param": None, "code": code}}
+
+
+def _refusal(refusal: str, model: object) -> dict:
+    """What the client is told of a refusal (module docstring, "What a client is told"); the log says why."""
+    if refusal != "model_not_allowed":
+        return _error(REFUSAL_TYPE, REFUSALS[refusal])
+    return _error(REFUSAL_TYPE, REFUSALS[refusal].format(model=model[:100]) if isinstance(model, str) else NO_MODEL)
 
 
 def _prompt_digests(request: dict) -> tuple[list[str], list[int]]:

@@ -1970,11 +1970,13 @@ pub struct PredictionCandidate {
     /// P(the attempt is retried), when the predictor gives one.
     #[serde(default)]
     pub p_retry: Option<f64>,
-    /// The cost quantiles are the predictor's prior, anchored on the price snapshot: it has
-    /// observed no cost of the arm yet (bug-09173e).
+    /// The cost quantiles are the predictor's bounded prior, as its observations do not support
+    /// the attempt: at the arm's observed costs, as for an arm on a task family it has not run
+    /// (bug-f6682e), else at the price snapshot's price (bug-09173e).
     #[serde(default)]
     pub cost_prior: bool,
-    /// The latency quantiles are its prior: it has observed no latency of the arm yet.
+    /// The latency quantiles are its bounded prior: at the arm's observed latencies, else the
+    /// observed attempts'.
     #[serde(default)]
     pub latency_prior: bool,
 }

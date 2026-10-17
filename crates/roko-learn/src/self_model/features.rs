@@ -4,8 +4,10 @@
 //! description and verify commands, the family, tier and role, the attempt ordinal, whether an
 //! earlier attempt failed and its error class. The arm: harness, model, effort and verify depth
 //! one-hots, and the price tier when the snapshot lists the model. The history: the
-//! (family, model) pass EMA. S07's spec features get a slot each that `spec_features.rs`
-//! (S07.12) fills: a missing one is 0 with a missingness indicator.
+//! (family, model) pass EMA. The content (gap-dd89ff): the chain's L-know and L-play arms and
+//! the stored knowledge entries and playbooks the attempt's prompt carries. S07's spec features
+//! get a slot each that `spec_features.rs` (S07.12) fills: a missing one is 0 with a
+//! missingness indicator.
 
 use std::collections::BTreeMap;
 
@@ -13,13 +15,40 @@ use roko_core::pricing_snapshot::PriceSnapshot;
 use serde::{Deserialize, Serialize};
 
 use super::ArmKey;
+use crate::telemetry::Arm;
 
 /// The hashed bag of words' bucket count, 2^12.
 pub const BOW_BUCKETS: u64 = 1 << 12;
 
-/// The feature schema's version: `predictor_version` hashes it (6116), so a change to the
-/// features starts a new predictor.
-pub const FEATURE_SCHEMA: &str = "m3-features/1";
+/// The feature schema's version, which prediction rows name as `features_schema`. Version 2
+/// adds the content group (gap-dd89ff).
+pub const FEATURE_SCHEMA_VERSION: u32 = 2;
+
+/// The feature schema, `m3-features/` and [`FEATURE_SCHEMA_VERSION`]: `predictor_version`
+/// hashes it (6116), so a change to the features starts a new predictor, and the old one's state
+/// and calibration window are set aside.
+pub const FEATURE_SCHEMA: &str = "m3-features/2";
+
+/// The most stored knowledge entries, and the most playbooks, the content group counts: what
+/// each of the prompt's readers shows at most.
+pub const CONTENT_CAP: u32 = 3;
+
+/// The content group's L-know arm one-hot, by prefix.
+const KNOWLEDGE_ARM: &str = "knowledge_arm:";
+/// The content group's L-play arm one-hot, by prefix.
+const PLAYBOOK_ARM: &str = "playbook_arm:";
+/// The content group's count of the stored knowledge entries the prompt carries.
+const KNOWLEDGE_CARRIED: &str = "knowledge_carried";
+/// The content group's count of the playbooks the prompt carries.
+const PLAYBOOKS_CARRIED: &str = "playbooks_carried";
+
+/// The content group's features (gap-dd89ff): each by name, or by prefix for an arm's one-hot.
+pub const CONTENT_GROUP: [&str; 4] = [
+    KNOWLEDGE_ARM,
+    PLAYBOOK_ARM,
+    KNOWLEDGE_CARRIED,
+    PLAYBOOKS_CARRIED,
+];
 
 /// The S07 spec features (`spec_features@1`) the vector keeps a slot for.
 pub const SPEC_FEATURES: [&str; 8] = [
@@ -116,6 +145,27 @@ pub struct TaskFeatures {
     pub error_class: Option<String>,
     /// S07's spec features by name, when `spec_features.rs` supplies them.
     pub spec: BTreeMap<String, f64>,
+    /// What the attempt's prompt carries from L-know and L-play (gap-dd89ff).
+    #[serde(default)]
+    pub content: ContentFeatures,
+}
+
+/// What an attempt's prompt carries from the learning loops, known at dispatch before the
+/// attempt runs (gap-dd89ff): the chain's arms on L-know's and L-play's layers, and how many
+/// stored knowledge entries and playbooks the prompt carries. Those clear its topic floor (two
+/// shared topic terms, and for an entry a confidence of 0.3), are among each reader's three,
+/// and no arm or θ withholds them. A stored lesson can turn a rung that failed into one that
+/// passes, and this is what tells the two attempts apart.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ContentFeatures {
+    /// The chain's arm on L-know's layer; `None` for dispatch without an arm set.
+    pub knowledge_arm: Option<Arm>,
+    /// The chain's arm on L-play's layer; `None` for dispatch without an arm set.
+    pub playbook_arm: Option<Arm>,
+    /// The stored knowledge entries the prompt carries.
+    pub knowledge: u32,
+    /// The playbooks the prompt carries.
+    pub playbooks: u32,
 }
 
 /// The per-(family, model) EMA of passes: the history group of the vector.
@@ -156,6 +206,18 @@ pub fn price_tier(snapshot: &PriceSnapshot, model: &str) -> Option<&'static str>
     } else {
         "frontier"
     })
+}
+
+/// The name of a loop's arm in the content group: its name in the decision rows, `none` for
+/// dispatch without an arm set.
+const fn arm_name(arm: Option<Arm>) -> &'static str {
+    match arm {
+        None => "none",
+        Some(Arm::Learned) => "learned",
+        Some(Arm::Default) => "default",
+        Some(Arm::GlobalOff) => "global_off",
+        Some(Arm::Explore) => "explore",
+    }
 }
 
 /// The bucket of a bag-of-words token.
@@ -210,6 +272,18 @@ pub fn feature_vector(
         Some(ema) => vector.set("pass_ema", ema),
         None => vector.set("pass_ema_missing", 1.0),
     }
+    let content = &task.content;
+    vector.set(
+        format!("{KNOWLEDGE_ARM}{}", arm_name(content.knowledge_arm)),
+        1.0,
+    );
+    vector.set(
+        format!("{PLAYBOOK_ARM}{}", arm_name(content.playbook_arm)),
+        1.0,
+    );
+    let carried = |count: u32| f64::from(count.min(CONTENT_CAP));
+    vector.set(KNOWLEDGE_CARRIED, carried(content.knowledge));
+    vector.set(PLAYBOOKS_CARRIED, carried(content.playbooks));
     for name in SPEC_FEATURES {
         match task.spec.get(name) {
             Some(value) => vector.set(format!("spec:{name}"), *value),
@@ -245,6 +319,12 @@ mod tests {
             has_prior_failure: true,
             error_class: Some("verify:0/test".to_string()),
             spec: BTreeMap::from([("spec_score".to_string(), 0.7)]),
+            content: ContentFeatures {
+                knowledge_arm: Some(Arm::Learned),
+                playbook_arm: Some(Arm::Default),
+                knowledge: 2,
+                playbooks: 5,
+            },
         };
         let arm = ArmKey::roko("cerebras", "gpt-oss-120b");
         let mut history = PassEma::default();
@@ -260,6 +340,18 @@ mod tests {
         assert_eq!(vector.get("pass_ema"), Some(0.9));
         assert_eq!(vector.get("spec:spec_score"), Some(0.7));
         assert_eq!(vector.get("spec_missing:spec_tokens"), Some(1.0));
+        // gap-dd89ff: the content group, each count at most the readers' cap.
+        assert_eq!(vector.get("knowledge_arm:learned"), Some(1.0));
+        assert_eq!(vector.get("playbook_arm:default"), Some(1.0));
+        assert_eq!(vector.get("knowledge_carried"), Some(2.0));
+        assert_eq!(vector.get("playbooks_carried"), Some(3.0));
+        let bare = feature_vector(&TaskFeatures::default(), &arm, None, &history);
+        assert_eq!(bare.get("knowledge_arm:none"), Some(1.0));
+        assert_eq!(bare.get("knowledge_carried"), Some(0.0));
+        assert_eq!(
+            FEATURE_SCHEMA,
+            format!("m3-features/{FEATURE_SCHEMA_VERSION}")
+        );
         let words = vector
             .pairs()
             .filter(|(name, _)| name.starts_with("bow:"))

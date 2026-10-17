@@ -2,7 +2,7 @@
 id = "bug-935cfa"
 kind = "bug"
 title = "An agent can list its run's experiment directory and read every other run in the results root: the run ids, other runs' final diffs (archives/), their records with hidden-check verdicts, and their private/ with the precise spec"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p2"
 goal = "proof"
@@ -11,6 +11,7 @@ subsystem = ["benchmarks/viabilitybench/driver"]
 created = 2026-10-17
 updated = 2026-10-17
 last_verified = 2026-10-17
+last_verified_rev = "1f781d315"
 source = "bug-d308f7 worker (claude-agent), 2026-10-17 (two vb runs of the toy stream in one experiment: under the agents' sandbox on macOS 26.4 the second's agent lists <results>/EXP and reads run-1's archives/F1-l1-0001.s1.diff, records.jsonl and private/F1-l1-0001.s1/.vb/task.json)"
 discovered_from = "bug-d308f7"
 anchors = ["benchmarks/viabilitybench/driver/vb.py::_agent_deny", "benchmarks/viabilitybench/driver/run_cli.py::settings", "benchmarks/viabilitybench/driver/run_codex.py::denied"]
@@ -19,6 +20,18 @@ links = { depends_on = [], blocks = [], related = ["bug-d308f7", "bug-3bab88", "
 
 [[verify]]
 command = "grep -qw 'def test_an_agent_cannot_read_another_run' benchmarks/viabilitybench/driver/test_driver.py && benchmarks/viabilitybench/.venv/bin/python -m pytest benchmarks/viabilitybench/driver/test_driver.py -k test_an_agent_cannot_read_another_run -q"
+
+[closed]
+at = 2026-10-17
+at_ts = "2026-10-17T13:32:32Z"
+commit = "1f781d315"
+by = "commit trailer"
+executor = "claude-agent"
+via = "work-batch"
+size = "M"
+claimed_at = "2026-10-17T11:04:37Z"
+forced = false
+evidence = "1f781d315: every agent process is denied the whole results root, not only its own run directory. vb._agent_deny returns the secret file, the tripwires' files and Run.results_root (new), which ctx.deny carries to every arm's sandbox, so the direct loop's shell and the Roko, mini-swe-agent, Claude Code and Codex sessions are all denied the other runs beside their own: the run ids, other agents' final trees (archives/), their records with the hidden checks each task failed, and their private/ with the manifests, canaries and precise specs. run_cli.settings denies Claude Code's file tools each directory of ctx.deny in place of the run directory, and run_codex.denied takes the root from ctx.deny instead of the ledger's directory. vb run refuses, before it makes any directory, a results root that holds what agents read or run (vb._results_hold: the repository with the Roko binary and .venv-msa/, the Rust toolchain the sandbox keeps readable, the Python agents run, or the operator's home); the work root was refused already. No agent process reads or writes the root: the driver writes the proxies' logs, the ledger, the records, the archives and the transcripts. Decided under Will's decision 9 (## Decision below): no benchmark-internal identifier reaches an agent, for benchmark validity and against contamination through the public repository. The verify passes: test_an_agent_cannot_read_another_run (driver/test_driver.py, macOS), 3 passed (the direct loop, Roko and mini-swe-agent arms, through --proxy): run 1 of an experiment solves a task, and in run 2 the agent lists the results root, its experiments and runs and globs run 1's archive, records, task manifest and spec.precise.md; every listing and read is refused (Operation not permitted, exit 1), and nothing it printed names TEST-RUNS, a run, an instance or a line of run 1's files, which hold them (the control). On main's deny list (vb._agent_deny restored by a pytest plugin) all three fail: the agents list TEST-RUNS/run-1 and its files and print run 1's diff, its record, its manifest (\"instance_id\": \"F1-l1-0001\") and its spec, and only their own run-2 is refused. test_vb_run_refuses_a_results_root_agents_need, 1 passed: _results_hold names the repository in its parent, the home directory and the agents' Python in theirs, and a vb run whose --results holds a (stubbed) toolchain exits 2 before it makes a directory or a request. test_claude_arm_command_is_isolated_and_pinned (driver/test_run_cli.py) checks the results root in --settings and that no rule names the run directory, and test_setup_refuses_an_api_key_login_flaky_verify_and_a_missing_codex (driver/test_run_codex.py) the root in Codex's deny list. With main's roko binary (VB_TEST_ROKO_BIN, built today), the 13 real-Roko tests that skip without one pass under the new deny list (planemit, the Roko sandbox, three run_roko tests, the eight shakedown cases: 28 passed with their files' other tests). Bench pytest: 814 passed, 16 skipped (13 with no roko binary in the worktree, the analysis stack, two opt-in sweeps), against 810 passed and the same 16 skipped before. Filed bug-42b214 (p2: the census runs the agent's code with only the secret file and the task's own .vb/ denied, so code the truth suite imports can read this run's and every other run's archives, records and private/; checked under the census's own deny list on macOS 26.4)."
 +++
 
 ## Problem

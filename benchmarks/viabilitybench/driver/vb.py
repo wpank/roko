@@ -429,8 +429,7 @@ def cmd_run(args: argparse.Namespace) -> int:
               "model": plan.model, "endpoint": asdict(plan.endpoint), "caps": asdict(plan.caps),
               "stream": {"id": plan.stream.id, "instances": plan.instances, "spec_variant": plan.stream.spec_variant},
               "price_snapshot_id": plan.snapshot.id, "line": line,
-              "prompt": {"version": getattr(runner, "PROMPT_VERSION", None),
-                         "sha256": getattr(runner, "PROMPT_SHA256", None)},
+              "prompt": runner_prompt(runner, plan.arm),
               **({"disturbances": [one.as_json() for one in disturbances]} if disturbances else {})}
     config_hash = records.canonical_hash(config)
     head = records.harness_state()
@@ -619,6 +618,16 @@ def _preflight(runner: ModuleType, plan: Plan) -> None:
         check(plan.arm, plan.model, plan.endpoint, plan.caps, plan.snapshot)
     except Exception as err:  # the runner owns its errors; any of them refuses the run
         raise DriverError(f"arm {plan.arm['arm']['id']}: {err}") from None
+
+
+def runner_prompt(runner: ModuleType, arm: dict) -> dict:
+    """The prompt the run's config records, and so its `config_hash` (harness.py): the runner's `arm_prompt(arm)`
+    when it has one, for a runner whose arms emit from different templates (the Roko runner's, bug-85e982), else its
+    module's `PROMPT_VERSION` and `PROMPT_SHA256`."""
+    per_arm = getattr(runner, "arm_prompt", None)
+    if callable(per_arm):
+        return per_arm(arm)
+    return {"version": getattr(runner, "PROMPT_VERSION", None), "sha256": getattr(runner, "PROMPT_SHA256", None)}
 
 
 def load_runner(arm: dict) -> ModuleType:

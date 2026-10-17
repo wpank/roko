@@ -18,7 +18,7 @@ lane = "rust-hot"
 links = { depends_on = [], blocks = [], related = ["gap-e2d2e5"], supersedes = [], duplicate_of = "" }
 
 [[verify]]
-command = "grep -rqw 'fn prompt_run_on_a_red_base_stops_before_spending' crates/roko-cli/ && cargo test -p roko-cli prompt_run_on_a_red_base_stops_before_spending"
+command = "grep -rqw 'fn prompt_run_on_a_red_base_judges_only_new_failures' crates/roko-cli/ && cargo test -p roko-cli --lib prompt_run_on_a_red_base_judges_only_new_failures"
 +++
 
 ## Problem
@@ -89,5 +89,17 @@ check failed"). The red-on-base check that guards plan tasks skips these steps o
 
 ## Notes
 
+- 2026-10-17, the fix (roko-gates, per the round v6 lead): no refusal, since the change may be what turns the base
+  green. A prompt run runs its Python test checks (unittest, pytest) on the base commit first, in a scratch checkout,
+  and keeps the run per base commit (`.roko/state/baselines/<commit>.json`), where the gap-161be1 judgement of a
+  failed step finds it. A green base keeps today's rule. On a red base the step passes when the change adds no
+  failure: tests that passed on the base still pass, tests the change lets run (a module that now imports) or edits
+  pass, a test module that failed to load and that the change touches loads, and some test passes; the settlement
+  names the rest ("3 tests already failed before the change: test_osc, test_render, test_svf") and the attempt
+  settles as `passed_with_preexisting_failures`. A base whose suite names no failure (pytest stopped at collection)
+  is judged by the test files the change adds or touches, run alone; with none, the step fails. The agent is told
+  which tests already fail (a `[task.context]` note), and the run publishes a `run.base_check` event. Cargo suites
+  are left to the lazy judgement (a cold base build costs more than it saves). Plan step 2 (a check the request
+  names becomes the task's own step) is not done.
 - Keep the workspace rungs as regression checks where the base is green: that is what they are for.
 - Related: bug-0a7ec1 (lessons), gap-e2d2e5 (phases).

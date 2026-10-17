@@ -32,6 +32,13 @@ from common import canary, hmac_seed, toolchain  # noqa: E402
 
 ONE_CELL = ["--latents", "v1", "--levels", "1", "--seeds", "1"]
 FAMILY_ID = re.compile(r"\bF[0-9]\b")  # a benchmark family id, such as F2 (bug-d7ff47)
+# A family's S08 name (bug-b5eab4), which the specs and papers give it beside its id ("F2 `api-pager`"), or its
+# directory's (`f2_apipager`), in any case, also inside a longer name (`ts-result-task`). F3's S08 name is
+# `money-rounding`, and its generator says `money-round`. F4's product name, `kvtool`, is not its family's name.
+FAMILY_NAME = re.compile(r"(?<![a-z0-9])(?:pyconv(?:-errors)?|api-?pager|money-?round(?:ing)?|kvtool-cli|"
+                         r"sql-?migrate|ts-?result|rust-?iter|honeypot(?:-conflict)?)(?![a-z0-9])", re.I)
+# A family id as a token of its own, in any case, also inside an identifier (`f7_task`), which FAMILY_ID misses.
+FAMILY_TOKEN = re.compile(r"(?<![a-z0-9])f[0-9](?![a-z0-9])", re.I)
 ALWAYS_PASS = '''#!/usr/bin/env python3
 """A broken truth suite: it passes every tree."""
 import json
@@ -199,12 +206,13 @@ def test_canary_planted_in_a_workdir_is_found(tmp_path):
     assert leak_check.main(["--secret-file", str(secret_file), str(workdir)]) == 2  # refused: others can read it
 
 
-def test_no_task_repo_names_a_family_id(tmp_path):
-    """bug-d7ff47: what an agent is given names no benchmark family id: no file of its task repo (.git aside), in its
-    path or its text, and not the spec it is handed. An agent learns neither which family it faces nor, on F8, which
-    family the honeypot wraps. Every task family renders as the CI renders it, with gen.py, at levels 1-5 (the level
-    as the seed) and with every latent it builds, so F8 wraps each of its base families; the plan slice renders every
-    feature."""
+@pytest.fixture(scope="module")
+def agent_views(tmp_path_factory) -> dict[str, dict[str, str]]:
+    """What an agent is given, for every task family as the CI renders it: with gen.py at levels 1-5 (the level as
+    the seed) and with every latent it builds, so F8 wraps each of its base families, and every feature of the plan
+    slice. Per render (by label), each file of its task repo (.git aside) by path, and the spec it is handed, with
+    their text."""
+    tmp_path = tmp_path_factory.mktemp("agent-views")
     ctx = verify_verifiers.Context(secret_file=tmp_path / "unused", secret=b"", scratch=tmp_path, keep=False)
     jobs = {}  # label -> (the command, its flag for the private directory, the spec the agent is handed)
     for name, directory in verify_verifiers.discover().items():
@@ -219,29 +227,52 @@ def test_no_task_repo_names_a_family_id(tmp_path):
                 jobs[f"{name}-l{level}-{latent}"] = ([str(directory / "gen.py"), "--level", str(level), "--seed",
                                                      str(level), "--latent", latent], "--out", "spec.precise.md")
 
-    def named_ids(label: str) -> dict[str, list[str]]:
+    def given(label: str) -> dict[str, str]:
         command, private_flag, spec = jobs[label]
         root = tmp_path / label
         env = ctx.env(root / "home")
         done = verify_verifiers._run([sys.executable, "-B", *command, private_flag, str(root / "private"),
                                       "--workdir", str(root / "work")], root, env, verify_verifiers.GEN_TIMEOUT_S)
         assert done.returncode == 0, (label, done.stderr[-500:])
-        found = {}
-        given = [(path.relative_to(root / "work").as_posix(), path) for path in sorted((root / "work").rglob("*"))
+        files = [(path.relative_to(root / "work").as_posix(), path) for path in sorted((root / "work").rglob("*"))
                  if ".git" not in path.relative_to(root / "work").parts and not path.is_dir()]
-        for shown, path in [*given, (f"(the spec) {spec}", root / "private" / spec)]:
-            ids = FAMILY_ID.findall(shown + "\n" + path.read_text(encoding="utf-8", errors="replace"))
-            if ids:
-                found[shown] = sorted(set(ids))
-        return found
+        return {shown: path.read_text(encoding="utf-8", errors="replace")
+                for shown, path in [*files, (f"(the spec) {spec}", root / "private" / spec)]}
 
     with ThreadPoolExecutor(max_workers=verify_verifiers.WORKERS) as pool:
-        named = dict(zip(jobs, pool.map(named_ids, jobs)))
-    assert {label.split("-")[0] for label in named} == {"f1", "f2", "f3", "f4", "f5", "f6", "f7", "f8", "pl"}
+        views = dict(zip(jobs, pool.map(given, jobs)))
+    assert {label.split("-")[0] for label in views} == {"f1", "f2", "f3", "f4", "f5", "f6", "f7", "f8", "pl"}
     wrapped = {json.loads((tmp_path / label / "private" / "task.json").read_text())["knobs"]["base_family"]
-               for label in named if label.startswith("f8-")}
+               for label in views if label.startswith("f8-")}
     assert wrapped == {"F2", "F3", "F5"}
-    assert {label: ids for label, ids in named.items() if ids} == {}
+    return views
+
+
+def named(views: dict[str, dict[str, str]], *patterns: re.Pattern) -> dict[str, dict[str, list[str]]]:
+    """Per render, the files whose path or text matches one of `patterns`, with what matched."""
+    found = {}
+    for label, files in views.items():
+        hits = {shown: sorted({hit for pattern in patterns for hit in pattern.findall(shown + "\n" + text)})
+                for shown, text in files.items()}
+        if any(hits.values()):
+            found[label] = {shown: hit for shown, hit in hits.items() if hit}
+    return found
+
+
+def test_no_task_repo_names_a_family_id(agent_views):
+    """bug-d7ff47: what an agent is given names no benchmark family id: no file of its task repo (.git aside), in its
+    path or its text, and not the spec it is handed. An agent learns neither which family it faces nor, on F8, which
+    family the honeypot wraps (`agent_views` renders every family)."""
+    assert named(agent_views, FAMILY_ID) == {}
+
+
+def test_no_task_repo_names_its_family(agent_views):
+    """bug-b5eab4: nor does it name a family by its S08 name (`# api-pager`, `ts-result-task`), by its directory's
+    (`apipager`), or by its id inside a name (F7's crate was `f7_task`). The specs and papers use those names, and the
+    benchmark's repository is public, so each is a search key that leads an agent to its family and its truth suite.
+    Each family's task repo has a product name instead, as F1's and F4's always had (`agent_views` renders every
+    family, F8 over each of its bases)."""
+    assert named(agent_views, FAMILY_NAME, FAMILY_TOKEN) == {}
 
 
 def test_determinism_names_where_two_verdicts_differ():

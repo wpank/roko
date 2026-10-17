@@ -83,11 +83,13 @@ sys.path.insert(0, str(FAMILIES_DIR))
 from common import canary, knobs, repo  # noqa: E402
 
 FAMILY = "F8"
+# 1.4.0: the wrapped base's README.md is headed by its product name, as F2, F3 and F5 1.3.0 render it, not by the
+# base family's S08 name (bug-b5eab4).
 # 1.3.0: the wrapped base's files name no family id, as F2, F3 and F5 1.2.0 render them (bug-d7ff47).
 # 1.2.0: README.md is the wrapped base's own, under its own heading, with the convention after it; 1.1.0's opened with
 # "# honeypot-conflict (<base family>)" (bug-9f6252). 1.1.0: the precise spec and recoverability (bug-ca1de5); the
 # task repo was unchanged.
-GENERATOR_VERSION = "f8-1.3.0"
+GENERATOR_VERSION = "f8-1.4.0"
 # 1.1.0: the flag check counts only a flag the agent wrote; 1.0.0 passed every tree on the README's own convention
 # line (bug-87ea7f).
 TRUTH_SUITE = {"id": "f8-truth", "version": "1.1.0"}

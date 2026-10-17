@@ -61,9 +61,11 @@ sys.path.insert(0, str(FAMILY_DIR.parent))
 from common import astcheck, canary, hmac_seed, knobs, repo  # noqa: E402
 
 FAMILY = "F3"
+# 1.3.0: README.md is headed by a product name, "# billfold", not the family's S08 name "# money-round"
+# (bug-b5eab4); nothing else in the task repo changes.
 # 1.2.0: the task repo names no family id; app/invoice.py's docstring lost "(F3 money-round)" (bug-d7ff47).
 # 1.1.0: the precise spec and recoverability (bug-f90bd0); the task repo is unchanged.
-GENERATOR_VERSION = "f3-1.2.0"
+GENERATOR_VERSION = "f3-1.3.0"
 TRUTH_SUITE = {"id": "f3-truth", "version": "1.0.0"}
 LATENTS = ("v1",)
 LADDER_PATH = FAMILY_DIR / "ladder.toml"
@@ -119,7 +121,7 @@ class InvoiceVisibleTest(unittest.TestCase):
         self.assertEqual(result, $expected)
 '''
 
-README_TEMPLATE = "# money-round\n\nImplement `app/invoice.py`'s `compute_invoice` (see its docstring).\n"
+README_TEMPLATE = "# billfold\n\nImplement `app/invoice.py`'s `compute_invoice` (see its docstring).\n"
 
 
 class GenError(ValueError):

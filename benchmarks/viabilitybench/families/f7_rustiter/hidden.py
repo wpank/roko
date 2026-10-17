@@ -31,7 +31,8 @@ How it works:
 3. `tests/hidden.rs` is generated for the instance's level and seed (gen.LEVEL_TASKS; random cases from
    `surface_stream`, since this family's hidden cases do not need the benchmark secret -- nothing about them is
    meant to stay unknown to someone reading this file, only to an agent who never sees tests/hidden.rs at all) and
-   written into the export.
+   written into the export. It uses the crate that the restored Cargo.toml names (`crate_name`), so an instance of
+   any generator version gets tests of its own crate (bug-b5eab4 renamed `f7_task` to `cinder`).
 4. `cargo test --offline --test hidden` runs there, with the secret file and task directory denied to it and the
    toolchain read-only (`common.sandbox`, gap-8c3752), and with a CARGO_HOME and a CARGO_TARGET_DIR of its own in
    its private directory: never the roko workspace's target directory, and nothing shared with another run.
@@ -52,6 +53,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import tomllib
 from pathlib import Path
 
 FAMILY_DIR = Path(__file__).resolve().parent
@@ -88,16 +90,17 @@ def _rust_option(value: int | None) -> str:
     return "None" if value is None else f"Some({value})"
 
 
-def hidden_rust_source(level: int, stream: hmac_seed.Stream, n_cases: int) -> str:
-    """The text of `tests/hidden.rs` for `level`, with `n_cases` random cases drawn from `stream`."""
+def hidden_rust_source(level: int, stream: hmac_seed.Stream, n_cases: int, crate: str = gen.CRATE_NAME) -> str:
+    """The text of `tests/hidden.rs` for `level`, with `n_cases` random cases drawn from `stream`, testing the library
+    `crate` (`crate_name`)."""
     if level == 1:
-        lines = ["use f7_task::add;", ""]
+        lines = [f"use {crate}::add;", ""]
         for index in range(n_cases):
             a, b = stream.randint(-1000, 1000), stream.randint(-1000, 1000)
             lines.append(f"#[test]\nfn hidden_case_{index}() {{\n    assert_eq!(add({a}, {b}), {a + b});\n}}\n")
         return "\n".join(lines)
     if level == 2:
-        lines = ["use f7_task::dedup_sorted;", ""]
+        lines = [f"use {crate}::dedup_sorted;", ""]
         for index in range(n_cases):
             values = sorted(stream.randint(-5, 5) for _ in range(stream.randint(0, 10)))
             expected: list[int] = [value for position, value in enumerate(values) if position == 0 or value != values[position - 1]]
@@ -107,7 +110,7 @@ def hidden_rust_source(level: int, stream: hmac_seed.Stream, n_cases: int) -> st
                         f"    assert_eq!(dedup_sorted(input), expected);\n}}\n")
         return "\n".join(lines)
     if level == 3:
-        lines = ["use f7_task::checked_divide;", ""]
+        lines = [f"use {crate}::checked_divide;", ""]
         for index in range(n_cases):
             a = stream.randint(-500, 500)
             b = 0 if index % 3 == 0 else stream.choice([value for value in range(-20, 21) if value != 0])
@@ -115,7 +118,7 @@ def hidden_rust_source(level: int, stream: hmac_seed.Stream, n_cases: int) -> st
                         f"    assert_eq!(checked_divide({a}, {b}), {_rust_option(_truncating_div(a, b))});\n}}\n")
         return "\n".join(lines)
     if level == 4:
-        lines = ["use f7_task::wrap_result;", ""]
+        lines = [f"use {crate}::wrap_result;", ""]
         for index in range(n_cases):
             value, valid = stream.randint(-1000, 1000), stream.random() < 0.5
             body = (f"assert_eq!(wrap_result({value}, true), Ok({value}));" if valid else
@@ -123,7 +126,7 @@ def hidden_rust_source(level: int, stream: hmac_seed.Stream, n_cases: int) -> st
             lines.append(f"#[test]\nfn hidden_case_{index}() {{\n    {body}\n}}\n")
         return "\n".join(lines)
     if level == 5:
-        lines = ["use f7_task::CountUp;", ""]
+        lines = [f"use {crate}::CountUp;", ""]
         for index in range(n_cases):
             start = stream.randint(0, 15)
             end = start + stream.randint(0, 10)
@@ -138,6 +141,17 @@ def hidden_rust_source(level: int, stream: hmac_seed.Stream, n_cases: int) -> st
                      "    assert_eq!(CountUp::new(0, 9).count(), 9);\n}\n")
         return "\n".join(lines)
     raise ValueError(f"F7 has no hidden-test generator for level {level!r}")
+
+
+def crate_name(cargo_toml: Path) -> str:
+    """The library name that `use` takes for the crate `cargo_toml` makes: its `[lib] name`, else its package's name
+    with "-" read as "_" (Cargo's rule). The hidden tests use it, so they test the crate the instance was made with
+    (`cinder` since generator 1.3.0, `f7_task` before it; bug-b5eab4)."""
+    manifest = tomllib.loads(cargo_toml.read_text(encoding="utf-8"))
+    name = (manifest.get("lib") or {}).get("name") or manifest["package"]["name"].replace("-", "_")
+    if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", name):
+        raise ValueError(f"{cargo_toml} names no usable crate: {name!r}")
+    return name
 
 
 def prepare(export: Path, pristine: repo.Pristine) -> None:
@@ -226,7 +240,8 @@ def run(instance: gen.Instance, workdir: Path, secret: hmac_seed.Secret, *, deny
         repo.export_tree(workdir, export)
         prepare(export, instance.pristine)
         stream = hmac_seed.surface_stream(gen.FAMILY, task["instance_id"]).child("hidden")
-        source = hidden_rust_source(task["ladder"], stream, DENSITY[task["knobs"]["k_hid"]])
+        source = hidden_rust_source(task["ladder"], stream, DENSITY[task["knobs"]["k_hid"]],
+                                    crate=crate_name(export / "Cargo.toml"))  # restored from the pristine base
         (export / "tests" / "hidden.rs").write_text(source, encoding="utf-8")
         outcome = run_cargo_test(export, scratch, deny)
         checks = judge(outcome, source.count("#[test]"))

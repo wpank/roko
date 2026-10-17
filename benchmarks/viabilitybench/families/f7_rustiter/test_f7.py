@@ -17,7 +17,7 @@ from pathlib import Path
 FAMILY_DIR = Path(__file__).resolve().parent
 sys.path.insert(0, str(FAMILY_DIR.parent))
 sys.path.insert(0, str(FAMILY_DIR.parent.parent / "driver"))
-from common import astcheck, repo  # noqa: E402
+from common import astcheck, hmac_seed, repo  # noqa: E402
 from f7_rustiter import gaming, gen, hidden  # noqa: E402
 from f7_rustiter.reference import solutions  # noqa: E402
 
@@ -44,16 +44,16 @@ failures:
 test result: FAILED. 1 passed; 2 failed; 0 ignored; 0 measured; 0 filtered out; finished in {seconds}s
 
 """
-STDERR = """   Compiling f7_task v0.1.0 ({tmp}/export)
+STDERR = """   Compiling cinder v0.1.0 ({tmp}/export)
     Finished `test` profile [unoptimized + debuginfo] target(s) in {seconds}s
      Running tests/hidden.rs ({tmp}/target/debug/deps/hidden-{hash})
 error: test failed, to rerun pass `--test hidden`
 """
-COMPILE_ERROR = """   Compiling f7_task v0.1.0 ({tmp}/export)
+COMPILE_ERROR = """   Compiling cinder v0.1.0 ({tmp}/export)
 error[E0308]: mismatched types
  --> src/lib.rs:5:5
-error: failed to run custom build command for `f7_task v0.1.0 ({tmp}/export)`
-error: could not compile `f7_task` (lib) due to 1 previous error
+error: failed to run custom build command for `cinder v0.1.0 ({tmp}/export)`
+error: could not compile `cinder` (lib) due to 1 previous error
 """
 RUNS = ({"first": 0, "second": 1, "seconds": "0.42", "tmp": "/private/var/folders/x1/T/vb-f7-hidden-a1b2",
          "hash": "0123456789abcdef"},
@@ -67,7 +67,7 @@ def test_the_stored_verdict_is_the_same_on_every_run():
     assert failed[0] == failed[1] == "1 passed, 2 failed, 0 ignored; failed: hidden_case_0, hidden_case_1"
     broken = [hidden.summary("", COMPILE_ERROR.format(**run)) for run in RUNS]
     assert broken[0] == broken[1] == ("error[E0308]: mismatched types; error: failed to run custom build command for "
-                                      "`f7_task v0.1.0 (<path>)`; error: could not compile `f7_task` (lib) due to "
+                                      "`cinder v0.1.0 (<path>)`; error: could not compile `cinder` (lib) due to "
                                       "1 previous error")
     assert hidden.summary("", "") == "no test result and no error line"
 
@@ -131,6 +131,24 @@ def test_the_truth_suite_builds_the_crate_gen_made(tmp_path):
     assert (export / "Cargo.toml").read_text() == gen.CARGO_TOML
 
 
+def test_the_hidden_tests_use_the_crate_the_instance_names(tmp_path):
+    """bug-b5eab4: since generator 1.3.0 the crate is `cinder`, where it was `f7_task`, which named the family id. The
+    hidden tests use the crate that the restored Cargo.toml names, so an instance an earlier generator made still gets
+    tests of its own crate."""
+    gen.generate(1, 3, tmp_path / "instance")
+    workdir = tmp_path / "instance" / gen.REPO_DIR
+    assert hidden.crate_name(workdir / "Cargo.toml") == gen.CRATE_NAME == "cinder"
+    assert (workdir / "tests" / "visible.rs").read_text().startswith("use cinder::add;\n")
+    for text, crate in ((gen.CARGO_TOML.replace('"cinder"', '"f7_task"'), "f7_task"),  # generator 1.2.0's crate
+                        ('[package]\nname = "my-crate"\n', "my_crate"),  # Cargo reads "-" as "_"
+                        ('[package]\nname = "my-crate"\n\n[lib]\nname = "mine"\n', "mine")):
+        (tmp_path / "Cargo.toml").write_text(text)
+        assert hidden.crate_name(tmp_path / "Cargo.toml") == crate
+    for crate in ("cinder", "f7_task"):
+        stream = hmac_seed.surface_stream(gen.FAMILY, "F7-l1-0003").child("hidden")
+        assert hidden.hidden_rust_source(1, stream, 3, crate=crate).startswith(f"use {crate}::add;\n")
+
+
 def test_f7_archive_excludes_the_cargo_target_dir(tmp_path):
     """gap-a2f86a: VISIBLE_VERIFY's in-tree `CARGO_TARGET_DIR=.cargo-target` build directory, and a plain `target`
     the same way, must not survive into c_i -- `commit_final`'s committed tree, and `archive_task`'s tarball and
@@ -138,7 +156,7 @@ def test_f7_archive_excludes_the_cargo_target_dir(tmp_path):
     task_path = gen.generate(1, 11, tmp_path / "instance")
     instance = gen.load_instance(task_path)
     workdir = tmp_path / "instance" / gen.REPO_DIR
-    for cache in ("target/debug/x", ".cargo-target/debug/deps/f7_task-0123456789abcdef"):
+    for cache in ("target/debug/x", ".cargo-target/debug/deps/cinder-0123456789abcdef"):
         (workdir / cache).parent.mkdir(parents=True, exist_ok=True)
         (workdir / cache).write_text("artifact\n")
 

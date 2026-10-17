@@ -268,6 +268,18 @@ impl GraphTaskDispatcher {
     }
 
     /// The paths the attempt of `attempt_key` changed since its task's base,
+    /// as the screen's diff found them, leaving them for
+    /// [`Self::take_changed_files`]: empty when the screen computed no diff.
+    pub(super) fn changed_files(&self, attempt_key: &str) -> Vec<String> {
+        self.diff_bases
+            .changed
+            .lock()
+            .get(attempt_key)
+            .cloned()
+            .unwrap_or_default()
+    }
+
+    /// The paths the attempt of `attempt_key` changed since its task's base,
     /// once: empty when the screen computed no diff for it, as for an
     /// attempt whose provider call failed.
     pub(super) fn take_changed_files(&self, attempt_key: &str) -> Vec<String> {

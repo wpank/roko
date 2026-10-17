@@ -985,6 +985,13 @@ pub(crate) fn warn_if_auth_misconfigured(auth: &roko_core::config::ServeAuthConf
     let has_named_keys = !auth.api_keys.is_empty();
     let has_privy =
         auth.privy_app_id.is_some() && crate::routes::middleware::privy_allow_list_configured(auth);
+    if has_privy && !auth.privy_allowed_users.is_empty() {
+        tracing::info!(
+            count = auth.privy_allowed_users.len(),
+            "Privy JWT auth: {} user id(s) individually allow-listed via serve.auth.privy_allowed_users",
+            auth.privy_allowed_users.len()
+        );
+    }
     if auth.privy_app_id.is_some() && !has_privy {
         tracing::warn!("{}", crate::routes::middleware::PRIVY_ALLOW_LIST_HINT);
     }

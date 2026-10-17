@@ -671,8 +671,8 @@ mod tests {
     #[test]
     fn prediction_record_round_trips_and_lands_in_predictions_jsonl() {
         use crate::telemetry::records::{
-            AttemptPredictionRecord, PREDICTION_SCHEMA, PredictionCandidate, PredictionDecision,
-            PredictionPredictor,
+            AttemptPredictionRecord, ForecastBasis, PREDICTION_SCHEMA, PredictionCandidate,
+            PredictionDecision, PredictionPredictor,
         };
 
         let predictor = PredictionPredictor {
@@ -697,6 +697,7 @@ mod tests {
             p_retry: None,
             cost_prior: false,
             latency_prior: false,
+            basis: Some(ForecastBasis::Logit),
         };
         let decision = PredictionDecision {
             would_choose: Some(candidate.arm.clone()),

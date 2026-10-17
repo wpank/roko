@@ -1501,6 +1501,74 @@ fn step_failure(
     entry
 }
 
+/// The line of a failed check's output that says why it failed (bug-1e272c,
+/// bug-2f30e1), whatever form the output takes:
+/// - its first error line (`error[E0425]: …`, `Error: …`), past cargo's closing
+///   `error: test failed`;
+/// - else its last assertion line: Rust's ``assertion `left == right` failed``,
+///   Python's `AssertionError: …`, pytest's `FAILED … - AssertionError: …`;
+/// - else its last exception line (`ModuleNotFoundError: …`);
+/// - else its first panic or failure line (`test t ... FAILED`);
+/// - else the last line it printed.
+///
+/// `None` when it printed nothing.
+pub(super) fn key_line(output: &str) -> Option<&str> {
+    let lines: Vec<&str> = output
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .collect();
+    let lower = |line: &&str| line.to_ascii_lowercase();
+    lines
+        .iter()
+        .find(|line| {
+            let lower = lower(line);
+            (lower.starts_with("error:") || lower.starts_with("error["))
+                && !lower.starts_with("error: test failed")
+        })
+        .or_else(|| {
+            lines
+                .iter()
+                .rev()
+                .find(|line| lower(line).contains("assert"))
+        })
+        .or_else(|| {
+            lines
+                .iter()
+                .rev()
+                .find(|line| line.contains("Error:") || line.contains("Exception:"))
+        })
+        .or_else(|| {
+            lines.iter().find(|line| {
+                line.contains("panicked at")
+                    || line.contains("FAIL")
+                    || lower(line).contains("failed")
+            })
+        })
+        .or_else(|| lines.last())
+        .copied()
+}
+
+/// The key line ([`key_line`]) of a failing step's entry ([`step_failure`]:
+/// its label, command and how it ended on the first line, then what it
+/// printed); `None` when it printed nothing.
+pub(super) fn step_key_line(step: &str) -> Option<&str> {
+    step.split_once('\n')
+        .and_then(|(_, output)| key_line(output))
+}
+
+/// The key line of the first failing step a verify failure's `reason` lists
+/// ([`verify_failure_summary`]), else how that step ended (`exit code: 1`, or
+/// its `fail_msg`). `None` for a reason in another form.
+pub(super) fn failing_step_key_line(reason: &str) -> Option<&str> {
+    let (_, steps) = reason.split_once(":\n\n")?;
+    let step = steps.split("\n\n---\n\n").next()?;
+    step_key_line(step).or_else(|| {
+        let (_, ended) = step.lines().next()?.split_once("`): ")?;
+        Some(ended.trim()).filter(|ended| !ended.is_empty())
+    })
+}
+
 /// Keep the last [`GATE_OUTPUT_TAIL_LINES`] lines of `detail`; prepend a
 /// "… N earlier lines not shown" message when lines are dropped.  If the
 /// resulting tail still exceeds [`GATE_OUTPUT_TAIL_BYTES`], truncate to the
@@ -2077,6 +2145,115 @@ printf '%s\n' '{"type":"result","session_id":"s","model":"claude-sonnet-4-6","to
             .position(|kind| *kind == "result")
             .expect("the step's result");
         assert_eq!(&order[..result], ["line", "line"], "{order:?}");
+    }
+
+    /// bug-1e272c, bug-2f30e1: the key line of a failed check's output, for
+    /// the forms checks fail in, and of a failing step's entry.
+    #[test]
+    fn key_line_picks_the_line_that_says_why() {
+        let cargo_test = "running 2 tests\ntest tests::adds ... ok\ntest tests::subtracts ... \
+            FAILED\n\nfailures:\n\n---- tests::subtracts stdout ----\nthread 'tests::subtracts' \
+            panicked at src/lib.rs:12:9:\nassertion `left == right` failed\n  left: 1\n right: 2\n\n\
+            test result: FAILED. 1 passed; 1 failed\n\nerror: test failed, to rerun pass `--lib`";
+        let compile = "   Compiling demo v0.1.0\nerror[E0425]: cannot find value `x` in this scope\n \
+            --> src/lib.rs:3:5\n3 |     assert_eq!(x, 1);\nerror: could not compile `demo` due to 1 \
+            previous error";
+        let unittest = "F\n======\nFAIL: test_engine_0 (tests.test_osc.OscillatorTest.test_engine_0)\n\
+            Traceback (most recent call last):\n  File \"tests/test_osc.py\", line 9, in test_engine_0\n\
+            \x20   self.assertGreater(peak, 0.1)\nAssertionError: 0.0 not greater than 0.1\n\n\
+            Ran 1 test in 0.001s\n\nFAILED (failures=1)";
+        let import = "Traceback (most recent call last):\n  File \"main.py\", line 1, in <module>\n\
+            \x20   import synth\nModuleNotFoundError: No module named 'synth'";
+        let pytest = ">       assert counts == {\"a.txt\": 3}\nE       AssertionError: assert 1 == 3\n\
+            FAILED tests/test_cli.py::test_json_files - AssertionError: assert 1 == 3\n1 failed in 0.05s";
+        for (output, key) in [
+            (cargo_test, Some("assertion `left == right` failed")),
+            (
+                compile,
+                Some("error[E0425]: cannot find value `x` in this scope"),
+            ),
+            (unittest, Some("AssertionError: 0.0 not greater than 0.1")),
+            (import, Some("ModuleNotFoundError: No module named 'synth'")),
+            (
+                pytest,
+                Some("FAILED tests/test_cli.py::test_json_files - AssertionError: assert 1 == 3"),
+            ),
+            ("checking\nexpected 42", Some("expected 42")),
+            ("", None),
+        ] {
+            assert_eq!(key_line(output), key, "{output}");
+        }
+
+        let step = "verify[0:test] (`./check.sh`): exit code: 1\nAssertionError: holds 41, not 42";
+        assert_eq!(
+            step_key_line(step),
+            Some("AssertionError: holds 41, not 42")
+        );
+        let reason =
+            |steps: &str| format!("verify: 2/2 verify step(s) failed for task `T`:\n\n{steps}");
+        let silent = "verify[0:test] (`test -f fixed`): exit code: 1\n";
+        assert_eq!(step_key_line(silent), None);
+        assert_eq!(
+            failing_step_key_line(&reason(&format!("{step}\n\n---\n\n{silent}"))),
+            Some("AssertionError: holds 41, not 42")
+        );
+        assert_eq!(
+            failing_step_key_line(&reason(&format!("{silent}\n\n---\n\n{step}"))),
+            Some("exit code: 1")
+        );
+        assert_eq!(failing_step_key_line("provider: boom"), None);
+    }
+
+    /// bug-1e272c: a check that fails with a plain assertion line, which is
+    /// no compile, test or clippy line, publishes that line in the errors of
+    /// its `retry_feedback`.
+    #[tokio::test]
+    async fn retry_feedback_carries_each_failing_checks_key_line() {
+        let temp = tempdir().expect("tempdir");
+        let hub = crate::state_hub::StateHub::new(4096);
+        let mut events = hub.subscribe_events();
+        let bridge = TuiBridge::new(hub.sender());
+        let (dispatcher, mut task) = crate::graph_task_dispatch::tests::make_test_dispatcher_with(
+            &temp,
+            VERIFY_PROVIDER,
+            no_auto_fix,
+            GraphFeedbackContext::default(),
+            |dispatcher| dispatcher.with_tui_bridge(bridge),
+        )
+        .await;
+        task.verify = vec![verify_step(
+            "test",
+            "echo 'checking answer.txt'; echo 'AssertionError: answer.txt holds 41, not 42'; exit 1",
+        )];
+
+        dispatcher
+            .dispatch(&make_spec(&task), Vec::new(), &CellContext::new())
+            .await
+            .expect_err("the check fails");
+
+        let mut published = Vec::new();
+        loop {
+            match events.try_recv() {
+                Ok(envelope) => {
+                    if matches!(
+                        envelope.payload,
+                        roko_core::DashboardEvent::RetryFeedback { .. }
+                    ) {
+                        published.push(serde_json::to_value(&envelope.payload).expect("json"));
+                    }
+                }
+                Err(tokio::sync::broadcast::error::TryRecvError::Lagged(_)) => {}
+                Err(_) => break,
+            }
+        }
+        let [event] = published.as_slice() else {
+            panic!("one retry_feedback: {published:?}");
+        };
+        assert_eq!(
+            event["errors"],
+            serde_json::json!(["AssertionError: answer.txt holds 41, not 42"]),
+            "{event}"
+        );
     }
 
     /// gap-655ea5: a failed verify publishes `retry_feedback` as it leaves the

@@ -23,16 +23,18 @@ in `$VB_RESULTS/<experiment>/<run_id>/` (default `~/.roko-bench/viability`): `ma
 level-3 instance of the honeypot family), and a campaign's run id names its block (`e-oss-1`: LOG1's block E, the
 honeypots), so neither may show in a path an agent can see: Claude Code even writes its working directory into its own
 system prompt. The run's work directory is `$VB_WORK/<16 random hex digits>`, which the manifest's `work_dir` names.
-Each task's workdir is `<work_dir>/<alias>`, its agent's HOME (and so TMPDIR) `<work_dir>/_home/<alias>` and the
-census's HOME `<work_dir>/_home/<alias>.census`, where the alias is another random id, kept in the task's record
-(`provenance.alias`) and its error lines, and handed to the runner (`TaskContext.alias`): Roko's plan directory and the
-visible-verify wrapper's draws are keyed by it as well. A hash of the task key would not do, since the keys are few and
-their scheme is public: an agent could hash every one. The task key stays on the driver's side: `private/<key>/`,
-`archives/<key>.*`, `transcripts/<key>.json`, the ledger's attempt keys and the proxies' task. Every agent process is
-denied the whole results root (`_agent_deny`, bug-935cfa): its own run directory, whose proxy logs name the running
-task's key and whose order and records give the task's position (bug-d308f7), and every other run beside it, whose ids
-name their blocks and whose archives, records and `private/` hold other agents' final trees, hidden-check verdicts and
-precise specs. So `vb run` refuses a results root that holds what agents read or run (`_results_hold`: the
+Each task's workdir is `<work_dir>/<alias>`, its agent's HOME (and so TMPDIR) `<work_dir>/_home/<alias>`, the
+census's HOME `<work_dir>/_home/<alias>.census` and its exports `<work_dir>/<alias>.census`, where the alias is
+another random id, kept in the task's record (`provenance.alias`) and its error lines, and handed to the runner
+(`TaskContext.alias`): Roko's plan directory and the visible-verify wrapper's draws are keyed by it as well. A hash of
+the task key would not do, since the keys are few and their scheme is public: an agent could hash every one. The task
+key stays on the driver's side: `private/<key>/`, `archives/<key>.*`, `transcripts/<key>.json`, the ledger's attempt
+keys and the proxies' task. Every agent process is denied the whole results root (`_agent_deny`, bug-935cfa): its own
+run directory, whose proxy logs name the running task's key and whose order and records give the task's position
+(bug-d308f7), and every other run beside it, whose ids name their blocks and whose archives, records and `private/`
+hold other agents' final trees, hidden-check verdicts and precise specs. The census denies the same to the agent's code
+it runs after the session, in the truth suite and the visible re-run (bug-42b214), so its exports are in the work
+directory. So `vb run` refuses a results root that holds what agents read or run (`_results_hold`: the
 repository, the Rust toolchain, their Python or your home). Off macOS nothing applies that deny list (`sandbox.KIND`
 "none"). Nor
 does anything an agent sees name the benchmark, whose repository is public (bug-d68575): the default work root, the
@@ -504,6 +506,7 @@ def _run_one(run: Run, instance_id: str, seed: int, stream_position: dict) -> bo
     alias = _alias(work_dir)  # names all of the task that its agent can see (module docstring)
     workdir, private = work_dir / alias, run_dir / "private" / key
     homes = [work_dir / "_home" / alias, work_dir / "_home" / f"{alias}.census"]
+    exports = work_dir / f"{alias}.census"  # the census's scratch: outside the results root its runs are denied
     position = stream_position["position"]
     limits = disturb.scaled(plan.caps, run.disturbances, position)  # the arm's caps, cut by a budget_cut
     try:
@@ -553,8 +556,8 @@ def _run_one(run: Run, instance_id: str, seed: int, stream_position: dict) -> bo
         result = census.run_census(final=final, manifest=task.manifest, manifest_path=task.manifest_path,
                                    pristine=task.pristine, family_dir=task.family_dir, secret_file=run.secret_file,
                                    completed=outcome.status == "completed", transcript_text=transcript_text,
-                                   diff_text=archived.diff_text, scratch=private / "census",
-                                   env=agent_env.build(home=homes[1]),
+                                   diff_text=archived.diff_text, scratch=exports,
+                                   env=agent_env.build(home=homes[1]), deny=_agent_deny(run),
                                    credential_fingerprints=run.credential_fingerprints,
                                    proxy_refusals=tuple(sorted(refused)))
     except (archive.ArchiveError, repo.RepoError, OSError) as err:
@@ -586,7 +589,7 @@ def _run_one(run: Run, instance_id: str, seed: int, stream_position: dict) -> bo
         _log_error(run_dir, key, "record", err, alias=alias)
         return False
     finally:
-        _cleanup(args, [workdir, *homes, private / "final", private / "census"])
+        _cleanup(args, [workdir, *homes, private / "final", exports])
     cost, flakes = record["costs"]["api_equiv_usd"], record["visible"]["flakes"]
     turns = sum(a.turns or 0 for a in outcome.attempts)  # an attempt's turns is None when its agent never reported it
     print(f"vb: {key} {record['execution']['status']} ({outcome.reason}) VS={record['vs']['label']} "
@@ -604,7 +607,8 @@ def _agent_deny(run: Run) -> tuple[Path, ...]:
     block), their agents' final trees (`archives/`), their records with the hidden checks each task failed, and their
     `private/`, with the task manifests, the canaries and the precise specs. No agent process needs any of it: the
     proxies, the ledger, the records, the transcripts and Roko's evidence copy are written by the driver's own
-    process, and `_results_hold` keeps out of the root what agents read or run."""
+    process, and `_results_hold` keeps out of the root what agents read or run. The census denies the agent's code it
+    runs the same list (`census.run_census`'s `deny`, bug-42b214)."""
     return tuple(dict.fromkeys([run.secret_file, *(wire.path for wire in secret.tripwires()), run.results_root]))
 
 

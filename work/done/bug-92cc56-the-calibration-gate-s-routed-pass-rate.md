@@ -2,7 +2,7 @@
 id = "bug-92cc56"
 kind = "bug"
 title = "The calibration gate's routed-pass-rate bound has no routed outcome until the self-model routes, and it routes only once the gate is eligible, so M3 can never become eligible"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p1"
 goal = "cybernetic"
@@ -11,7 +11,7 @@ subsystem = ["roko-learn/self_model"]
 created = 2026-10-17
 updated = 2026-10-17
 last_verified = 2026-10-17
-last_verified_rev = "b2970cb12"
+last_verified_rev = "d8943f7e2"
 source = "gap-4c531f worker, 2026-10-17: self_model_gate_window_follows_n_min reaches eligibility only with outcomes marked routed by hand"
 discovered_from = "gap-4c531f"
 anchors = ["crates/roko-learn/src/self_model/gate.rs::CalibrationGate::evaluate", "crates/roko-learn/src/self_model/gate.rs::CalibrationWindow", "crates/roko-cli/src/runtime_feedback/self_model.rs::SelfModelOutcomeSink", "crates/roko-cli/src/graph_task_dispatch/self_model.rs::active_start"]
@@ -21,6 +21,15 @@ links = { depends_on = [], blocks = [], related = ["gap-4c531f", "gap-b38ed2", "
 
 [[verify]]
 command = "grep -rqw 'fn calibration_gate_can_become_eligible_in_shadow' crates/ && cargo test -p roko-learn calibration_gate_can_become_eligible_in_shadow"
+
+[closed]
+at = 2026-10-17
+at_ts = "2026-10-17T20:35:57Z"
+commit = "fca15b0ac"
+size = "S"
+claimed_at = "2026-10-17T17:08:31Z"
+forced = false
+evidence = "fca15b0ac: the routed pass rate binds only once the self-model has routed; an unknown one fails nothing, and fit_offline scores the same way. calibration_gate_can_become_eligible_in_shadow failed first (ineligible on \"routed pass rate below π* − 0.05: unknown\") and passes; the gap-4c531f n_min test reaches eligibility with unrouted outcomes. $0 start-rung re-run by learning-research (tmp/hermes-roko-v6/learning-research/evidence/start-rung/AB, binary roko-92cc56-AB, n_min 12, lessons off): the gate is eligible after task 6 and tasks 7-30 start on mid with ladder_reason self_model (24 of 24); cost per verified task over tasks 6-20 is 0.59 cents against 1.51 in shadow (-61%; the emulation gave -65%). Checks: the roko-learn and roko-cli self-model tests (139 + 22) and clippy -D warnings pass; the [[verify]] passes on the merged tree d8943f7e2."
 +++
 
 ## Problem

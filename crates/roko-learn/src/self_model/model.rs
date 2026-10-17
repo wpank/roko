@@ -24,6 +24,7 @@ use super::logit::{FALSE_GREEN_PRIOR, GateForecaster};
 use super::prior::HierarchicalBeta;
 use super::recal::Recalibrator;
 use super::{ArmKey, CandidateForecast, PredictorVersion, Unit};
+use crate::telemetry::ForecastBasis;
 
 /// The predictor's class, which its version hashes.
 pub const MODEL_CLASS: &str = "m3-l1";
@@ -172,17 +173,33 @@ impl SelfModel {
             .collect()
     }
 
-    /// The forecast for `arm` on `task`.
+    /// The forecast for `arm` on `task`. A first try takes L0's per-arm rate, also once the
+    /// model is warm (gap-3f36a6): the ladder runs a higher rung only after failures, so in its
+    /// data, and in an active self-model's, the arm and the attempt order move together, and
+    /// L1 credits the order. Warm on ladder data it forecast mid's first try at 0.01 though mid
+    /// passed 20/20; once mid started tasks it gave cheap's first try 0.95 after seven failures.
+    /// L1 forecasts retries and climbs. Its task features, the lessons a prompt carries
+    /// included, wait on an arm-by-order fix to inform a first try (gap-e464e6).
     fn forecast_arm(&self, task: &TaskFeatures, arm: &ArmKey) -> CandidateForecast {
         let l0 = self.prior.forecast(&arm.model, &task.family, &task.role);
+        let l0_lcb = l0.lcb.min(l0.p);
         let cold_start = self.cold_start();
-        let (p_gate, p_gate_lcb, p_fg) = if cold_start {
-            (l0.p, l0.lcb, FALSE_GREEN_PRIOR)
+        let (p_gate, p_gate_lcb, p_fg, basis) = if cold_start {
+            (l0.p, l0_lcb, FALSE_GREEN_PRIOR, ForecastBasis::Prior)
         } else {
             let x = self.features(task, arm);
             let gate = self.gates.forecast(&x, l0.p, &[GATE_RUNG]);
-            let p_gate = self.recal.apply(gate.p_gate);
-            (p_gate, gate.p_gate_lcb.min(p_gate), gate.p_fg)
+            if task.attempt <= 1 {
+                (l0.p, l0_lcb, gate.p_fg, ForecastBasis::Prior)
+            } else {
+                let p_gate = self.recal.apply(gate.p_gate);
+                (
+                    p_gate,
+                    gate.p_gate_lcb.min(p_gate),
+                    gate.p_fg,
+                    ForecastBasis::Logit,
+                )
+            }
         };
         let price = self.attempt_prices.of_model(&arm.model);
         let costs = self.costs.forecast(arm, &cost_features(task, arm), price);
@@ -197,6 +214,7 @@ impl SelfModel {
             lat_q50_s: costs.lat_q50_s,
             lat_q90_s: costs.lat_q90_s,
             cold_start,
+            basis,
             cost_prior: costs.cost_prior,
             latency_prior: costs.latency_prior,
         }
@@ -445,6 +463,72 @@ mod tests {
         // The cost model learned the attempts' cost.
         let cost = after_passes.cost_q50;
         assert!((cost - 0.015).abs() < 0.002, "{cost}");
+    }
+
+    /// gap-3f36a6: the ladder runs a higher rung only after failures, so in its data the arm
+    /// and the attempt order move together: cheap fails tries 1 and 2, mid passes try 3. Warm
+    /// on 40 such outcomes, the forecast for a first try must still credit the arm, not the
+    /// order, and start the task on mid, never on the rung that never ran.
+    #[test]
+    fn ladder_ordered_outcomes_do_not_confound_the_start_forecast() {
+        use crate::self_model::cascade::{BREAK_EVEN_MARGIN, start_rung};
+
+        let ladder = [
+            ArmKey::roko("cerebras", "gpt-oss-120b"),
+            ArmKey::roko("zai", "glm-4.7"),
+            ArmKey::roko("openai", "gpt-5.4-mini"),
+        ];
+        let mut model = SelfModel::new(&snapshot());
+        for index in 0..40 {
+            let (arm, attempt, passed) = match index % 3 {
+                0 => (&ladder[0], 1, false),
+                1 => (&ladder[0], 2, false),
+                _ => (&ladder[1], 3, true),
+            };
+            let mut tried = unit(&arm.model, &format!("T{}", index / 3), attempt, passed);
+            tried.arm = arm.clone();
+            tried.prior_failure = attempt > 1;
+            model.observe(&tried, 1.0);
+        }
+        assert!(!model.cold_start());
+
+        let first = model.forecast(&task(), &ladder);
+        let (cheap, mid) = (first[0].p_vs, first[1].p_vs);
+        assert!(mid >= 0.7, "P(mid, first try) {mid}: {first:?}");
+        assert!(cheap <= 0.2, "P(cheap, first try) {cheap}: {first:?}");
+        assert_eq!(start_rung(&first, BREAK_EVEN_MARGIN), Some(1), "{first:?}");
+        let (prior, logit) = (ForecastBasis::Prior, ForecastBasis::Logit);
+        assert!(
+            first.iter().all(|forecast| forecast.basis == prior),
+            "{first:?}"
+        );
+        // Mid's own third try keeps L1's forecast, which the order features belong to.
+        let third = TaskFeatures {
+            attempt: 3,
+            has_prior_failure: true,
+            ..task()
+        };
+        let retry = model.forecast(&third, &ladder[1..2]);
+        assert_eq!(retry[0].basis, logit, "{retry:?}");
+
+        // Then the self-model starts eleven tasks on mid, as an active one does, and they pass:
+        // L1 learns "a first try passes" from mid and credited it to cheap's first try (0.95
+        // after seven failures in learning-research's active run) and, freshly warm, dipped
+        // mid's to 0.11. Every first try still takes L0's per-arm rate.
+        for index in 0..11 {
+            let mut started = unit("glm-4.7", &format!("M{index}"), 1, true);
+            started.arm = ladder[1].clone();
+            model.observe(&started, 1.0);
+        }
+        let first = model.forecast(&task(), &ladder);
+        let (cheap, mid) = (first[0].p_vs, first[1].p_vs);
+        assert!(mid >= 0.7, "P(mid, first try) {mid}: {first:?}");
+        assert!(cheap <= 0.2, "P(cheap, first try) {cheap}: {first:?}");
+        assert!(
+            first.iter().all(|forecast| forecast.basis == prior),
+            "{first:?}"
+        );
+        assert_eq!(start_rung(&first, BREAK_EVEN_MARGIN), Some(1), "{first:?}");
     }
 
     #[test]

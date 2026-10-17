@@ -2,7 +2,7 @@
 id = "gap-3f36a6"
 kind = "gap"
 title = "Once warm, the self-model's first-try forecast is confounded by attempt order: on ladder data it forecasts mid at 0.01 although mid passed 20/20, and would start on an untried rung"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p2"
 goal = "cybernetic"
@@ -11,15 +11,25 @@ subsystem = ["roko-cli/graph_task_dispatch"]
 created = 2026-10-17
 updated = 2026-10-17
 last_verified = 2026-10-17
+last_verified_rev = "d8943f7e2"
 source = "round-v6-learning-research#5"
 discovered_from = "agent:learning-research (round v6, 2026-10-17, start-rung demo at b2970cb12)"
 anchors = ["crates/roko-learn/src/self_model/model.rs::SelfModel::forecast", "crates/roko-learn/src/self_model/features.rs::TaskFeatures", "crates/roko-learn/src/self_model/logit.rs::LogitForecast", "crates/roko-cli/src/graph_task_dispatch/self_model.rs::task_features"]
 lane = "rust-hot"
 parent = "spec-7a71d6"
-links = { depends_on = [], blocks = [], related = ["bug-92cc56", "gap-e464e6", "gap-dd89ff", "gap-51d2ca"], supersedes = [], duplicate_of = "" }
+links = { depends_on = [], blocks = [], related = ["bug-92cc56", "gap-e464e6", "gap-dd89ff", "gap-51d2ca", "gap-7c041c"], supersedes = [], duplicate_of = "" }
 
 [[verify]]
 command = "grep -rqw 'fn ladder_ordered_outcomes_do_not_confound_the_start_forecast' crates/roko-learn/ && cargo test -p roko-learn ladder_ordered_outcomes_do_not_confound_the_start_forecast"
+
+[closed]
+at = 2026-10-17
+at_ts = "2026-10-17T20:35:58Z"
+commit = "74946738a"
+size = "M"
+claimed_at = "2026-10-17T17:08:32Z"
+forced = false
+evidence = "74946738a, decision A (the per-arm k rule of a7a519393 fixed shadow but not active mode): every first try is forecast by the L0 per-arm rate (basis prior in predictions.jsonl) and L1 forecasts retries and climbs; the L0 lower bound is clamped to its mean. ladder_ordered_outcomes_do_not_confound_the_start_forecast failed first and passes: warm on 40 ladder-ordered outcomes and then 11 starts on mid, P(mid, first try) >= 0.7, P(cheap, first try) <= 0.2, and the start is mid. $0 start-rung re-run (evidence/start-rung/AB): no warm pick of an untried rung (before: task 19 started on strong), the highest forecast of the first try of cheap after its failures is 0.123 (before: 0.92-0.95), every warm first try is on basis prior, and shadow keeps would_choose glm-4.7 through task 20. L1 for first tries waits on an arm-by-order fix (gap-e464e6); the start pick does not use the lessons feature yet. Checks as for bug-92cc56; the [[verify]] passes on d8943f7e2."
 +++
 
 ## Problem
@@ -103,3 +113,23 @@ Then test `ladder_ordered_outcomes_do_not_confound_the_start_forecast`:
 The `[[verify]]` command passes, and re-running the round-v6 `shadow` series
 (`tmp/hermes-roko-v6/learning-research/scripts/rung_demo.sh`, 20 tasks) keeps "would start on" at glm-4.7 through
 task 20.
+
+## Notes
+
+2026-10-17 (roko-recovery, the lead's decisions):
+- **The first fix was not enough.** It forecast an arm's first try from L0 only while the arm had fewer than 5
+  learned first tries. That fixed shadow mode (would_choose stayed glm-4.7 through task 20), but not active mode,
+  in learning-research's re-run (`tmp/hermes-roko-v6/learning-research/evidence/start-rung/merged/`):
+  - at task 19, the first warm task, mid had 11 learned first tries, so L1 forecast it; L1 dipped mid's first try
+    to 0.11–0.32 and the pick went to the untried strong rung;
+  - from task 20, L1 forecast cheap's first try at 0.92–0.95 after 7 straight first-try failures.
+
+  L1 at about 30 online outcomes cannot forecast a first try. The order features are shared across arms, and its
+  warm forecast swings (gap-e464e6).
+- **Decision A, now the fix.** Every first try is forecast by L0's per-arm rate (`basis: "prior"` in
+  `predictions.jsonl`); L1 forecasts retries and climbs.
+- **Left for later:**
+  - L1 for first tries waits on an arm-by-order fix (gap-e464e6);
+  - until then, a first try's start pick does not use L1's task features, gap-dd89ff's lessons feature included,
+    so first-try starts are lesson-blind. Warm L1 forecasts are saturated and follow the last outcome, not the
+    lesson (gap-7c041c), and learning-research's lessons-on series on the A+B binary kept every start on cheap.

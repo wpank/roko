@@ -4,7 +4,7 @@
 
 What to work on next: the top checked, open items of each goal, highest-priority goal first. Reorder or change goals in `goals.toml`; pin an item higher with `rank = 1` (lower first).
 
-**Drift:** 2 likely done · 8 anchor gone · 124 changed since checked · 4 mentioned in commits. Re-check them before relying on this list: `DRIFT.md`.
+**Drift:** 2 likely done · 8 anchor gone · 126 changed since checked · 4 mentioned in commits. Re-check them before relying on this list: `DRIFT.md`.
 
 ## 1. Public release: security, licence, CI, first run
 
@@ -12,7 +12,7 @@ What to work on next: the top checked, open items of each goal, highest-priority
 - **P2** [bug-911361](items/bug-911361-cargo-toml-s-repository-and-homepage-point.md) Cargo.toml's repository and homepage point at an unrelated GitHub account [bug] · size S · verified 2026-09-29
 - **P2** [gap-e44df9](items/gap-e44df9-cursor-cli-attempts-answer-each-acp-permission.md) Cursor CLI attempts answer each ACP permission request with roko's command guard instead of running with --force · size M · verified 2026-10-15
 
-_6 more open · on hold: gap-00e882, gap-7e375c, gap-8f8544, gap-fbd580 · 3 unchecked (`TRIAGE.md`) · `goal = "release"`_
+_7 more open · on hold: gap-00e882, gap-7e375c, gap-8f8544, gap-fbd580 · 3 unchecked (`TRIAGE.md`) · `goal = "release"`_
 
 ## 2. Whitepaper v1 and the research papers
 
@@ -42,9 +42,9 @@ _2 more open · on hold: gap-634954 · 4 unchecked (`TRIAGE.md`) · `goal = "gol
 
 - **P1** [dec-3d5714](items/dec-3d5714-s09-4-1-s-two-stage-bootstrap.md) S09 §4.1's two-stage bootstrap over-covers (0.975): change to task-only n_h-1 resampling, or accept, before the lock [decision] · size S · verified 2026-10-03
 - **P2** [gap-b94a2c](items/gap-b94a2c-a-sandboxed-agent-still-reads-any-same.md) A sandboxed agent still reads any same-user process's start-up environment with sysctl(KERN_PROCARGS2), and no sandbox-exec rule stops it · size L · verified 2026-10-16
-- **P2** [bug-3c921e](items/bug-3c921e-an-agent-s-workdir-and-home-are.md) An agent's workdir and HOME are named by its instance id (<work>/<run_id>/F8-l3-0038.s1), so pwd tells it its family and ladder level [bug] · size M · verified 2026-10-17
+- **P2** [bug-d308f7](items/bug-d308f7-an-agent-s-shell-can-read-its.md) An agent's shell can read its run's results directory outside private/: proxy.jsonl and egress.jsonl name the running task's key, order-<seed>.json and records.jsonl give its position [bug] · size S · verified 2026-10-17
 
-_10 more open · on hold: gap-057cc7, gap-05c4c0, gap-11cec6, gap-31e1b0, gap-394f28, gap-4a5109, gap-50346f, gap-681741, gap-7c9a9c, gap-aa60f2, gap-b7f99e, gap-ba9965, gap-e9218e · 9 unchecked (`TRIAGE.md`) · `goal = "proof"`_
+_11 more open · on hold: gap-057cc7, gap-05c4c0, gap-11cec6, gap-31e1b0, gap-394f28, gap-4a5109, gap-50346f, gap-681741, gap-7c9a9c, gap-aa60f2, gap-b7f99e, gap-ba9965, gap-e9218e · 9 unchecked (`TRIAGE.md`) · `goal = "proof"`_
 
 ## 6. Learning from verified outcomes, M1-M4 (P2)
 

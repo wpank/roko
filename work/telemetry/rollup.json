@@ -1,7 +1,7 @@
 {
  "schema": "roko.work_rollup/1",
  "date": "2026-10-17",
- "head": "486f2c521",
+ "head": "f9318c6a0",
  "definitions_sha256": "ee0525db5ff09afe9f0b1509cb0d22162b795f2beae153cf859a98b999f86720",
  "price_snapshot": "prices-2026-09-28",
  "labels": [
@@ -9,99 +9,99 @@
   "API-equivalent (subscription)"
  ],
  "inputs": {
-  "live_events": 1409,
+  "live_events": 1418,
   "backfill_events": 705,
   "invalid_events": 0,
   "harvest_calls_rows": 0
  },
  "all": {
-  "merged_items": 122,
+  "merged_items": 125,
   "attempts": {
    "distribution": {
-    "1": 88,
+    "1": 91,
     "2": 0,
     "3+": 0
    },
    "mean": 1,
    "coverage": {
-    "k": 88,
-    "n": 122,
-    "share": 0.7213
+    "k": 91,
+    "n": 125,
+    "share": 0.728
    }
   },
   "first_try_merge": {
-   "num": 74,
-   "den": 79,
-   "share": 0.9367,
+   "num": 77,
+   "den": 82,
+   "share": 0.939,
    "coverage": {
-    "k": 79,
-    "n": 122,
-    "share": 0.6475
+    "k": 82,
+    "n": 125,
+    "share": 0.656
    }
   },
   "claim_to_merge_hours": {
-   "n": 88,
-   "median": 4.970416666666667,
-   "p90": 7.828333333333333,
+   "n": 91,
+   "median": 4.969444444444444,
+   "p90": 7.825277777777778,
    "coverage": {
-    "k": 88,
-    "n": 122,
-    "share": 0.7213
+    "k": 91,
+    "n": 125,
+    "share": 0.728
    }
   },
   "conflict_rate": {
    "num": 0,
-   "den": 89,
+   "den": 92,
    "share": 0.0,
    "abandoned_over_conflict": 2,
    "coverage": {
-    "k": 89,
-    "n": 122,
-    "share": 0.7295
+    "k": 92,
+    "n": 125,
+    "share": 0.736
    }
   },
   "post_merge_verify_failure": {
    "num": 2,
-   "den": 80,
-   "share": 0.025,
+   "den": 83,
+   "share": 0.0241,
    "coverage": {
-    "k": 80,
-    "n": 122,
-    "share": 0.6557
+    "k": 83,
+    "n": 125,
+    "share": 0.664
    }
   },
   "escape": {
    "num": 0,
    "den": 49,
    "share": 0.0,
-   "pending": 73,
+   "pending": 76,
    "coverage": {
     "k": 49,
-    "n": 122,
-    "share": 0.4016
+    "n": 125,
+    "share": 0.392
    }
   },
   "interventions": {
-   "per_item": 0.041,
+   "per_item": 0.039,
    "items_with_one": {
     "num": 3,
-    "den": 73,
-    "share": 0.0411
+    "den": 76,
+    "share": 0.0395
    },
    "coverage": {
-    "k": 73,
-    "n": 122,
-    "share": 0.5984
+    "k": 76,
+    "n": 125,
+    "share": 0.608
    }
   },
   "unassisted_merge_share": {
-   "num": 70,
-   "den": 73,
-   "share": 0.9589,
+   "num": 73,
+   "den": 76,
+   "share": 0.9605,
    "coverage": {
-    "k": 73,
-    "n": 122,
-    "share": 0.5984
+    "k": 76,
+    "n": 125,
+    "share": 0.608
    }
   },
   "cost_per_merged_item_usd": {
@@ -113,7 +113,7 @@
    "label": "API-equivalent (subscription)",
    "coverage": {
     "k": 0,
-    "n": 122,
+    "n": 125,
     "share": 0.0
    }
   }
@@ -849,58 +849,58 @@
     }
    },
    "2026-10-17": {
-    "merged_items": 42,
+    "merged_items": 45,
     "attempts": {
      "distribution": {
-      "1": 42,
+      "1": 45,
       "2": 0,
       "3+": 0
      },
      "mean": 1,
      "coverage": {
-      "k": 42,
-      "n": 42,
+      "k": 45,
+      "n": 45,
       "share": 1.0
      }
     },
     "first_try_merge": {
-     "num": 41,
-     "den": 42,
-     "share": 0.9762,
+     "num": 44,
+     "den": 45,
+     "share": 0.9778,
      "coverage": {
-      "k": 42,
-      "n": 42,
+      "k": 45,
+      "n": 45,
       "share": 1.0
      }
     },
     "claim_to_merge_hours": {
-     "n": 42,
-     "median": 4.965972222222222,
+     "n": 45,
+     "median": 4.963611111111111,
      "p90": 4.9825,
      "coverage": {
-      "k": 42,
-      "n": 42,
+      "k": 45,
+      "n": 45,
       "share": 1.0
      }
     },
     "conflict_rate": {
      "num": 0,
-     "den": 42,
+     "den": 45,
      "share": 0.0,
      "abandoned_over_conflict": 0,
      "coverage": {
-      "k": 42,
-      "n": 42,
+      "k": 45,
+      "n": 45,
       "share": 1.0
      }
     },
     "post_merge_verify_failure": {
      "num": 0,
-     "den": 42,
+     "den": 45,
      "share": 0.0,
      "coverage": {
-      "k": 42,
-      "n": 42,
+      "k": 45,
+      "n": 45,
       "share": 1.0
      }
     },
@@ -908,34 +908,34 @@
      "num": 0,
      "den": 0,
      "share": null,
-     "pending": 42,
+     "pending": 45,
      "coverage": {
       "k": 0,
-      "n": 42,
+      "n": 45,
       "share": 0.0
      }
     },
     "interventions": {
-     "per_item": 0.026,
+     "per_item": 0.024,
      "items_with_one": {
       "num": 1,
-      "den": 38,
-      "share": 0.0263
+      "den": 41,
+      "share": 0.0244
      },
      "coverage": {
-      "k": 38,
-      "n": 42,
-      "share": 0.9048
+      "k": 41,
+      "n": 45,
+      "share": 0.9111
      }
     },
     "unassisted_merge_share": {
-     "num": 37,
-     "den": 38,
-     "share": 0.9737,
+     "num": 40,
+     "den": 41,
+     "share": 0.9756,
      "coverage": {
-      "k": 38,
-      "n": 42,
-      "share": 0.9048
+      "k": 41,
+      "n": 45,
+      "share": 0.9111
      }
     },
     "cost_per_merged_item_usd": {
@@ -947,7 +947,7 @@
      "label": "API-equivalent (subscription)",
      "coverage": {
       "k": 0,
-      "n": 42,
+      "n": 45,
       "share": 0.0
      }
     }
@@ -955,93 +955,93 @@
   },
   "executor": {
    "claude-agent": {
-    "merged_items": 87,
+    "merged_items": 90,
     "attempts": {
      "distribution": {
-      "1": 85,
+      "1": 88,
       "2": 0,
       "3+": 0
      },
      "mean": 1,
      "coverage": {
-      "k": 85,
-      "n": 87,
-      "share": 0.977
+      "k": 88,
+      "n": 90,
+      "share": 0.9778
      }
     },
     "first_try_merge": {
-     "num": 74,
-     "den": 79,
-     "share": 0.9367,
+     "num": 77,
+     "den": 82,
+     "share": 0.939,
      "coverage": {
-      "k": 79,
-      "n": 87,
-      "share": 0.908
+      "k": 82,
+      "n": 90,
+      "share": 0.9111
      }
     },
     "claim_to_merge_hours": {
-     "n": 85,
-     "median": 4.970833333333333,
+     "n": 88,
+     "median": 4.970416666666667,
      "p90": 7.828333333333333,
      "coverage": {
-      "k": 85,
-      "n": 87,
-      "share": 0.977
+      "k": 88,
+      "n": 90,
+      "share": 0.9778
      }
     },
     "conflict_rate": {
      "num": 0,
-     "den": 81,
+     "den": 84,
      "share": 0.0,
      "abandoned_over_conflict": 0,
      "coverage": {
-      "k": 81,
-      "n": 87,
-      "share": 0.931
+      "k": 84,
+      "n": 90,
+      "share": 0.9333
      }
     },
     "post_merge_verify_failure": {
      "num": 2,
-     "den": 79,
-     "share": 0.0253,
+     "den": 82,
+     "share": 0.0244,
      "coverage": {
-      "k": 79,
-      "n": 87,
-      "share": 0.908
+      "k": 82,
+      "n": 90,
+      "share": 0.9111
      }
     },
     "escape": {
      "num": 0,
      "den": 14,
      "share": 0.0,
-     "pending": 73,
+     "pending": 76,
      "coverage": {
       "k": 14,
-      "n": 87,
-      "share": 0.1609
+      "n": 90,
+      "share": 0.1556
      }
     },
     "interventions": {
-     "per_item": 0.043,
+     "per_item": 0.041,
      "items_with_one": {
       "num": 3,
-      "den": 70,
-      "share": 0.0429
+      "den": 73,
+      "share": 0.0411
      },
      "coverage": {
-      "k": 70,
-      "n": 87,
-      "share": 0.8046
+      "k": 73,
+      "n": 90,
+      "share": 0.8111
      }
     },
     "unassisted_merge_share": {
-     "num": 67,
-     "den": 70,
-     "share": 0.9571,
+     "num": 70,
+     "den": 73,
+     "share": 0.9589,
      "coverage": {
-      "k": 70,
-      "n": 87,
-      "share": 0.8046
+      "k": 73,
+      "n": 90,
+      "share": 0.8111
      }
     },
     "cost_per_merged_item_usd": {
@@ -1053,7 +1053,7 @@
      "label": "API-equivalent (subscription)",
      "coverage": {
       "k": 0,
-      "n": 87,
+      "n": 90,
       "share": 0.0
      }
     }
@@ -1373,93 +1373,93 @@
     }
    },
    "bug \u00d7 M": {
-    "merged_items": 12,
+    "merged_items": 13,
     "attempts": {
      "distribution": {
-      "1": 9,
+      "1": 10,
       "2": 0,
       "3+": 0
      },
      "mean": 1,
      "coverage": {
-      "k": 9,
-      "n": 12,
-      "share": 0.75
+      "k": 10,
+      "n": 13,
+      "share": 0.7692
      }
     },
     "first_try_merge": {
-     "num": 7,
-     "den": 8,
-     "share": 0.875,
+     "num": 8,
+     "den": 9,
+     "share": 0.8889,
      "coverage": {
-      "k": 8,
-      "n": 12,
-      "share": 0.6667
+      "k": 9,
+      "n": 13,
+      "share": 0.6923
      }
     },
     "claim_to_merge_hours": {
-     "n": 9,
-     "median": 4.965,
-     "p90": 7.825277777777778,
+     "n": 10,
+     "median": 4.964166666666666,
+     "p90": 4.971666666666667,
      "coverage": {
-      "k": 9,
-      "n": 12,
-      "share": 0.75
+      "k": 10,
+      "n": 13,
+      "share": 0.7692
      }
     },
     "conflict_rate": {
      "num": 0,
-     "den": 8,
+     "den": 9,
      "share": 0.0,
      "abandoned_over_conflict": 0,
      "coverage": {
-      "k": 8,
-      "n": 12,
-      "share": 0.6667
+      "k": 9,
+      "n": 13,
+      "share": 0.6923
      }
     },
     "post_merge_verify_failure": {
      "num": 0,
-     "den": 8,
+     "den": 9,
      "share": 0.0,
      "coverage": {
-      "k": 8,
-      "n": 12,
-      "share": 0.6667
+      "k": 9,
+      "n": 13,
+      "share": 0.6923
      }
     },
     "escape": {
      "num": 0,
      "den": 4,
      "share": 0.0,
-     "pending": 8,
+     "pending": 9,
      "coverage": {
       "k": 4,
-      "n": 12,
-      "share": 0.3333
+      "n": 13,
+      "share": 0.3077
      }
     },
     "interventions": {
-     "per_item": 0.111,
+     "per_item": 0.1,
      "items_with_one": {
       "num": 1,
-      "den": 9,
-      "share": 0.1111
+      "den": 10,
+      "share": 0.1
      },
      "coverage": {
-      "k": 9,
-      "n": 12,
-      "share": 0.75
+      "k": 10,
+      "n": 13,
+      "share": 0.7692
      }
     },
     "unassisted_merge_share": {
-     "num": 8,
-     "den": 9,
-     "share": 0.8889,
+     "num": 9,
+     "den": 10,
+     "share": 0.9,
      "coverage": {
-      "k": 9,
-      "n": 12,
-      "share": 0.75
+      "k": 10,
+      "n": 13,
+      "share": 0.7692
      }
     },
     "cost_per_merged_item_usd": {
@@ -1471,99 +1471,99 @@
      "label": "API-equivalent (subscription)",
      "coverage": {
       "k": 0,
-      "n": 12,
+      "n": 13,
       "share": 0.0
      }
     }
    },
    "bug \u00d7 S": {
-    "merged_items": 36,
+    "merged_items": 37,
     "attempts": {
      "distribution": {
-      "1": 23,
+      "1": 24,
       "2": 0,
       "3+": 0
      },
      "mean": 1,
      "coverage": {
-      "k": 23,
-      "n": 36,
-      "share": 0.6389
+      "k": 24,
+      "n": 37,
+      "share": 0.6486
      }
     },
     "first_try_merge": {
-     "num": 21,
-     "den": 22,
-     "share": 0.9545,
+     "num": 22,
+     "den": 23,
+     "share": 0.9565,
      "coverage": {
-      "k": 22,
-      "n": 36,
-      "share": 0.6111
+      "k": 23,
+      "n": 37,
+      "share": 0.6216
      }
     },
     "claim_to_merge_hours": {
-     "n": 23,
-     "median": 4.966944444444445,
+     "n": 24,
+     "median": 4.965277777777778,
      "p90": 8.673055555555555,
      "coverage": {
-      "k": 23,
-      "n": 36,
-      "share": 0.6389
+      "k": 24,
+      "n": 37,
+      "share": 0.6486
      }
     },
     "conflict_rate": {
      "num": 0,
-     "den": 23,
+     "den": 24,
      "share": 0.0,
      "abandoned_over_conflict": 0,
      "coverage": {
-      "k": 23,
-      "n": 36,
-      "share": 0.6389
+      "k": 24,
+      "n": 37,
+      "share": 0.6486
      }
     },
     "post_merge_verify_failure": {
      "num": 0,
-     "den": 22,
+     "den": 23,
      "share": 0.0,
      "coverage": {
-      "k": 22,
-      "n": 36,
-      "share": 0.6111
+      "k": 23,
+      "n": 37,
+      "share": 0.6216
      }
     },
     "escape": {
      "num": 0,
      "den": 14,
      "share": 0.0,
-     "pending": 22,
+     "pending": 23,
      "coverage": {
       "k": 14,
-      "n": 36,
-      "share": 0.3889
+      "n": 37,
+      "share": 0.3784
      }
     },
     "interventions": {
-     "per_item": 0.1,
+     "per_item": 0.095,
      "items_with_one": {
       "num": 2,
-      "den": 20,
-      "share": 0.1
+      "den": 21,
+      "share": 0.0952
      },
      "coverage": {
-      "k": 20,
-      "n": 36,
-      "share": 0.5556
+      "k": 21,
+      "n": 37,
+      "share": 0.5676
      }
     },
     "unassisted_merge_share": {
-     "num": 18,
-     "den": 20,
-     "share": 0.9,
+     "num": 19,
+     "den": 21,
+     "share": 0.9048,
      "coverage": {
-      "k": 20,
-      "n": 36,
-      "share": 0.5556
+      "k": 21,
+      "n": 37,
+      "share": 0.5676
      }
     },
     "cost_per_merged_item_usd": {
@@ -1575,7 +1575,7 @@
      "label": "API-equivalent (subscription)",
      "coverage": {
       "k": 0,
-      "n": 36,
+      "n": 37,
       "share": 0.0
      }
     }
@@ -2412,6 +2412,110 @@
      }
     }
    },
+   "regression \u00d7 ?": {
+    "merged_items": 1,
+    "attempts": {
+     "distribution": {
+      "1": 1,
+      "2": 0,
+      "3+": 0
+     },
+     "mean": 1,
+     "coverage": {
+      "k": 1,
+      "n": 1,
+      "share": 1.0
+     }
+    },
+    "first_try_merge": {
+     "num": 1,
+     "den": 1,
+     "share": 1.0,
+     "coverage": {
+      "k": 1,
+      "n": 1,
+      "share": 1.0
+     }
+    },
+    "claim_to_merge_hours": {
+     "n": 1,
+     "median": 1.0283333333333333,
+     "p90": 1.0283333333333333,
+     "coverage": {
+      "k": 1,
+      "n": 1,
+      "share": 1.0
+     }
+    },
+    "conflict_rate": {
+     "num": 0,
+     "den": 1,
+     "share": 0.0,
+     "abandoned_over_conflict": 0,
+     "coverage": {
+      "k": 1,
+      "n": 1,
+      "share": 1.0
+     }
+    },
+    "post_merge_verify_failure": {
+     "num": 0,
+     "den": 1,
+     "share": 0.0,
+     "coverage": {
+      "k": 1,
+      "n": 1,
+      "share": 1.0
+     }
+    },
+    "escape": {
+     "num": 0,
+     "den": 0,
+     "share": null,
+     "pending": 1,
+     "coverage": {
+      "k": 0,
+      "n": 1,
+      "share": 0.0
+     }
+    },
+    "interventions": {
+     "per_item": 0,
+     "items_with_one": {
+      "num": 0,
+      "den": 1,
+      "share": 0.0
+     },
+     "coverage": {
+      "k": 1,
+      "n": 1,
+      "share": 1.0
+     }
+    },
+    "unassisted_merge_share": {
+     "num": 1,
+     "den": 1,
+     "share": 1.0,
+     "coverage": {
+      "k": 1,
+      "n": 1,
+      "share": 1.0
+     }
+    },
+    "cost_per_merged_item_usd": {
+     "n": 0,
+     "median": null,
+     "p90": null,
+     "total": 0,
+     "unpriced_token_share": null,
+     "label": "API-equivalent (subscription)",
+     "coverage": {
+      "k": 0,
+      "n": 1,
+      "share": 0.0
+     }
+    }
+   },
    "regression \u00d7 S": {
     "merged_items": 1,
     "attempts": {
@@ -2623,93 +2727,93 @@
   },
   "lane": {
    "bench": {
-    "merged_items": 19,
+    "merged_items": 21,
     "attempts": {
      "distribution": {
-      "1": 17,
+      "1": 19,
       "2": 0,
       "3+": 0
      },
      "mean": 1,
      "coverage": {
-      "k": 17,
-      "n": 19,
-      "share": 0.8947
+      "k": 19,
+      "n": 21,
+      "share": 0.9048
      }
     },
     "first_try_merge": {
-     "num": 14,
-     "den": 16,
-     "share": 0.875,
+     "num": 16,
+     "den": 18,
+     "share": 0.8889,
      "coverage": {
-      "k": 16,
-      "n": 19,
-      "share": 0.8421
+      "k": 18,
+      "n": 21,
+      "share": 0.8571
      }
     },
     "claim_to_merge_hours": {
-     "n": 17,
-     "median": 3.7325,
+     "n": 19,
+     "median": 3.7288888888888887,
      "p90": 7.8225,
      "coverage": {
-      "k": 17,
-      "n": 19,
-      "share": 0.8947
+      "k": 19,
+      "n": 21,
+      "share": 0.9048
      }
     },
     "conflict_rate": {
      "num": 0,
-     "den": 17,
+     "den": 19,
      "share": 0.0,
      "abandoned_over_conflict": 0,
      "coverage": {
-      "k": 17,
-      "n": 19,
-      "share": 0.8947
+      "k": 19,
+      "n": 21,
+      "share": 0.9048
      }
     },
     "post_merge_verify_failure": {
      "num": 1,
-     "den": 17,
-     "share": 0.0588,
+     "den": 19,
+     "share": 0.0526,
      "coverage": {
-      "k": 17,
-      "n": 19,
-      "share": 0.8947
+      "k": 19,
+      "n": 21,
+      "share": 0.9048
      }
     },
     "escape": {
      "num": 0,
      "den": 5,
      "share": 0.0,
-     "pending": 14,
+     "pending": 16,
      "coverage": {
       "k": 5,
-      "n": 19,
-      "share": 0.2632
+      "n": 21,
+      "share": 0.2381
      }
     },
     "interventions": {
      "per_item": 0,
      "items_with_one": {
       "num": 0,
-      "den": 13,
+      "den": 15,
       "share": 0.0
      },
      "coverage": {
-      "k": 13,
-      "n": 19,
-      "share": 0.6842
+      "k": 15,
+      "n": 21,
+      "share": 0.7143
      }
     },
     "unassisted_merge_share": {
-     "num": 13,
-     "den": 13,
+     "num": 15,
+     "den": 15,
      "share": 1.0,
      "coverage": {
-      "k": 13,
-      "n": 19,
-      "share": 0.6842
+      "k": 15,
+      "n": 21,
+      "share": 0.7143
      }
     },
     "cost_per_merged_item_usd": {
@@ -2721,7 +2825,7 @@
      "label": "API-equivalent (subscription)",
      "coverage": {
       "k": 0,
-      "n": 19,
+      "n": 21,
       "share": 0.0
      }
     }
@@ -2935,93 +3039,93 @@
     }
    },
    "none": {
-    "merged_items": 22,
+    "merged_items": 23,
     "attempts": {
      "distribution": {
-      "1": 13,
+      "1": 14,
       "2": 0,
       "3+": 0
      },
      "mean": 1,
      "coverage": {
-      "k": 13,
-      "n": 22,
-      "share": 0.5909
+      "k": 14,
+      "n": 23,
+      "share": 0.6087
      }
     },
     "first_try_merge": {
-     "num": 8,
-     "den": 9,
-     "share": 0.8889,
+     "num": 9,
+     "den": 10,
+     "share": 0.9,
      "coverage": {
-      "k": 9,
-      "n": 22,
-      "share": 0.4091
+      "k": 10,
+      "n": 23,
+      "share": 0.4348
      }
     },
     "claim_to_merge_hours": {
-     "n": 13,
-     "median": 4.328055555555555,
+     "n": 14,
+     "median": 4.007083333333333,
      "p90": 7.822777777777778,
      "coverage": {
-      "k": 13,
-      "n": 22,
-      "share": 0.5909
+      "k": 14,
+      "n": 23,
+      "share": 0.6087
      }
     },
     "conflict_rate": {
      "num": 0,
-     "den": 15,
+     "den": 16,
      "share": 0.0,
      "abandoned_over_conflict": 0,
      "coverage": {
-      "k": 15,
-      "n": 22,
-      "share": 0.6818
+      "k": 16,
+      "n": 23,
+      "share": 0.6957
      }
     },
     "post_merge_verify_failure": {
      "num": 0,
-     "den": 9,
+     "den": 10,
      "share": 0.0,
      "coverage": {
-      "k": 9,
-      "n": 22,
-      "share": 0.4091
+      "k": 10,
+      "n": 23,
+      "share": 0.4348
      }
     },
     "escape": {
      "num": 0,
      "den": 13,
      "share": 0.0,
-     "pending": 9,
+     "pending": 10,
      "coverage": {
       "k": 13,
-      "n": 22,
-      "share": 0.5909
+      "n": 23,
+      "share": 0.5652
      }
     },
     "interventions": {
-     "per_item": 0.083,
+     "per_item": 0.077,
      "items_with_one": {
       "num": 1,
-      "den": 12,
-      "share": 0.0833
+      "den": 13,
+      "share": 0.0769
      },
      "coverage": {
-      "k": 12,
-      "n": 22,
-      "share": 0.5455
+      "k": 13,
+      "n": 23,
+      "share": 0.5652
      }
     },
     "unassisted_merge_share": {
-     "num": 11,
-     "den": 12,
-     "share": 0.9167,
+     "num": 12,
+     "den": 13,
+     "share": 0.9231,
      "coverage": {
-      "k": 12,
-      "n": 22,
-      "share": 0.5455
+      "k": 13,
+      "n": 23,
+      "share": 0.5652
      }
     },
     "cost_per_merged_item_usd": {
@@ -3033,7 +3137,7 @@
      "label": "API-equivalent (subscription)",
      "coverage": {
       "k": 0,
-      "n": 22,
+      "n": 23,
       "share": 0.0
      }
     }
@@ -5015,6 +5119,36 @@
   {
    "item": "bug-d7ff47",
    "merged_at": "2026-10-17T05:20:45Z",
+   "executor": "claude-agent",
+   "attempts": 1,
+   "cost_usd": null,
+   "tokens_by_join": {},
+   "interventions": [],
+   "unlabelled_commits": []
+  },
+  {
+   "item": "bug-3c921e",
+   "merged_at": "2026-10-17T07:11:32Z",
+   "executor": "claude-agent",
+   "attempts": 1,
+   "cost_usd": null,
+   "tokens_by_join": {},
+   "interventions": [],
+   "unlabelled_commits": []
+  },
+  {
+   "item": "bug-b5eab4",
+   "merged_at": "2026-10-17T07:11:49Z",
+   "executor": "claude-agent",
+   "attempts": 1,
+   "cost_usd": null,
+   "tokens_by_join": {},
+   "interventions": [],
+   "unlabelled_commits": []
+  },
+  {
+   "item": "reg-d49ed1",
+   "merged_at": "2026-10-17T08:16:18Z",
    "executor": "claude-agent",
    "attempts": 1,
    "cost_usd": null,

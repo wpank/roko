@@ -12,9 +12,9 @@ Progress per epic: its children (items whose `parent` is the epic, plus its `dep
 
 ## [spec-ba7bea](items/spec-ba7bea-epic-secrets-and-git-guard.md) secrets and git guard
 
-- **31/33 closed** · goal `release` · severity p0
-- open by lane: rust-cold 2
-- next: none ready (2 unverified)
+- **31/34 closed** · goal `release` · severity p0
+- open by lane: rust-cold 2, none 1
+- next: [bug-ae5d22](items/bug-ae5d22-secrets-are-redacted-only-after-text-is.md) Secrets are redacted only after text is cut, collapsed or lowercased, so a live tool-step target or a playbook's topic terms can keep part of one
 
 ## [spec-f8d196](items/spec-f8d196-epic-research-paper-companion-report-and-tl.md) research paper, companion report and TL;DR upkeep
 
@@ -104,10 +104,10 @@ Progress per epic: its children (items whose `parent` is the epic, plus its `dep
 
 | Lane | Closed | Total | Open (verified) |
 |---|---|---|---|
-| bench | 98 | 134 | 36 (27) |
+| bench | 100 | 137 | 37 (28) |
 | docs | 27 | 31 | 4 (3) |
 | frontend | 7 | 9 | 2 (2) |
-| none | 454 | 548 | 94 (90) |
+| none | 455 | 550 | 95 (91) |
 | paper | 77 | 86 | 9 (7) |
 | rust-cold | 256 | 310 | 54 (45) |
 | rust-hot | 248 | 276 | 28 (26) |

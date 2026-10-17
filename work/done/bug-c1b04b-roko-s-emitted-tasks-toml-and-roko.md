@@ -2,7 +2,7 @@
 id = "bug-c1b04b"
 kind = "bug"
 title = "Roko's emitted tasks.toml and roko.toml open with 'Emitted by the ViabilityBench driver ... for one benchmark task ... the benchmark's hidden checks never enter it', so only the Roko arms' agents can read that they face a benchmark with hidden checks"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p2"
 goal = "proof"
@@ -11,6 +11,7 @@ subsystem = ["benchmarks/viabilitybench/driver"]
 created = 2026-10-17
 updated = 2026-10-17
 last_verified = 2026-10-17
+last_verified_rev = "c1a83c3d5"
 source = "bug-3c921e worker (claude-agent), 2026-10-17 (planemit.py's TASKS_TEMPLATE, CONFIG_HEAD, CLAUDE_CLI_CONFIG_HEAD and LADDER_HEAD; driver/testdata/planemit/pinned.tasks.toml line 1)"
 discovered_from = "bug-3c921e"
 anchors = ["benchmarks/viabilitybench/driver/planemit.py::TASKS_TEMPLATE", "benchmarks/viabilitybench/driver/planemit.py::CONFIG_HEAD", "benchmarks/viabilitybench/driver/planemit.py::CLAUDE_CLI_CONFIG_HEAD", "benchmarks/viabilitybench/driver/planemit.py::LADDER_HEAD"]
@@ -19,6 +20,18 @@ links = { depends_on = [], blocks = [], related = ["bug-3c921e", "bug-b5eab4", "
 
 [[verify]]
 command = "grep -qw 'def test_no_emitted_plan_names_the_benchmark' benchmarks/viabilitybench/driver/test_planemit.py && benchmarks/viabilitybench/.venv/bin/python -m pytest benchmarks/viabilitybench/driver/test_planemit.py -k test_no_emitted_plan_names_the_benchmark -q"
+
+[closed]
+at = 2026-10-17
+at_ts = "2026-10-17T09:49:40Z"
+commit = "c1a83c3d5"
+by = "commit trailer"
+executor = "claude-agent"
+via = "work-batch"
+size = "S"
+claimed_at = "2026-10-17T08:24:29Z"
+forced = false
+evidence = "c1a83c3d5: the files planemit writes into a Roko arm's workspace hold no comment. TASKS_TEMPLATE, CONFIG_HEAD, CLAUDE_CLI_CONFIG_HEAD and LADDER_HEAD lost their headers ('Emitted by the ViabilityBench driver (planemit-4) for one benchmark task ... the benchmark's hidden checks never enter it', and the roko.toml ones), which only the roko_fixed, roko_full and ladder arms' agents could read; the templates no longer take a version. TEMPLATE_VERSION is planemit-5, LADDER_VERSION planemit-ladder-2, TEMPLATE_SHA256 392ef78bd0db0e9e65256a77aaee191a339e0c12a326021249322d855892c5f8 (pinned in test_planemit.py and test_run_roko.py); the golden files lost their header lines and nothing else, and planemit's docstring says where the versions are recorded (the run manifest's prompt for the Roko runner; the transcript's emit event keeps both files). Decided under Will's decision 9 (## Decision below): no benchmark-internal identifier reaches an agent, for benchmark validity and against contamination through the public repository. The verify passes: test_no_emitted_plan_names_the_benchmark (driver/test_planemit.py), 1 passed: in the pinned, Claude CLI, ladder and roko_full overlay modes, each with and without the flaky_verify wrapper, the emitted tasks.toml and roko.toml match none of viabilitybench, benchmark, hidden and planemit (case-insensitive) and hold no comment line. Against main's planemit (swapped in by a pytest plugin) it fails on the first file ('ViabilityBench'), as does the golden-file test. Every Roko arm file's spec (run_roko._plan_spec on roko_fixed, fr_claude, roko_ladder and roko_full, each with and without the wrapper) emits, from main's planemit and from this one, files that are byte for byte the old ones without their leading comment lines and parse to the same TOML: 16 files, so Roko reads the same configuration and plan. test_planemit.py 15 passed, 1 skipped (no roko binary). Bench pytest: 805 passed, 16 skipped (13 with no roko binary in the worktree, the analysis stack, two opt-in sweeps). Filed bug-562ee6 (p1: planemit's pinned mode writes [models.glm-4.7] unquoted, so roko_fixed_glm, roko_fixed_kimi and roko_fixed_mini, three of LOG1 block A's four Roko models, cannot emit their plan, on main as here, and vb run would refuse them at preflight) and bug-85e982 (p3: the Roko runner's recorded prompt hash covers only the pinned templates, so the ladder, Claude CLI and overlay templates reach no config_hash; the ladder's version was only ever in the header)."
 +++
 
 ## Problem

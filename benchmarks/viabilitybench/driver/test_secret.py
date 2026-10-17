@@ -192,7 +192,10 @@ def test_secret_never_reaches_an_agent_env(operator, tmp_path):
     seen = observations(json.loads((out / "transcripts" / f"{first}.s1.json").read_text()))
     names = {line.split("=", 1)[0] for line in seen["env | sort"].splitlines() if "=" in line}
     assert "PATH" in names and not [name for name in names if agent_env.FORBIDDEN_NAME.search(name)]
-    assert f"HOME={operator['work'] / 'run-1' / '_home' / f'{first}.s1'}" in seen["env | sort"]
+    # bug-3c921e: the agent's HOME, and the census's beside it, are named by the task's alias, not its key.
+    work_dir = Path(json.loads((out / "manifest.json").read_text())["work_dir"])
+    alias = rows[first]["provenance"]["alias"]
+    assert f"HOME={work_dir / '_home' / alias}\n" in seen["env | sort"] and first not in seen["env | sort"]
     assert "VB_SECRET=unset" in seen[ENV_PROBE] and "No such file" in seen[ENV_PROBE]
     # Control: the probe did read the driver's environment and argv, which name the secret file but never hold it.
     # The driver runs scrubbed (bug-32eb77), so the operator's other variables, such as the marker, are gone.
@@ -200,7 +203,7 @@ def test_secret_never_reaches_an_agent_env(operator, tmp_path):
     # Control: in the census, the agent's code ran in an agent environment. Without a sandbox it also saw hidden.py's
     # argv, which names the secret file; the sandbox cannot run the setuid `ps` at all (gap-8c3752).
     probe = (out / "private" / f"{first}.s1" / "census" / "hidden" / "probe.txt").read_text()
-    assert f"{first}.s1.census" in probe and MARKER not in probe
+    assert f"{alias}.census" in probe and MARKER not in probe
     assert (f"--secret-file {loaded.path}" in probe) is (sandbox.KIND == "none")
     listing = observations(json.loads((out / "transcripts" / f"{second}.s1.json").read_text()))[SEARCH]
     assert str(loaded.path) not in listing

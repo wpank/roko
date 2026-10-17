@@ -5,8 +5,8 @@ Before the first task, `preflight` emits the plan of a stand-in task into a scra
 `plan validate --strict --dag` of step 2 on it, so `vb run` refuses a binary that rejects the plans this arm emits
 (bug-a05c53) instead of ending every task `infra_error`. For each (task, seed), `run_task`:
 
-1. emits a one-task plan and the workspace roko.toml into the task's workdir, which is Roko's workspace
-   (`planemit`);
+1. emits a one-task plan, named by the task's alias and never by its key (`planemit.plan_slug`, bug-3c921e), and the
+   workspace roko.toml into the task's workdir, which is Roko's workspace (`planemit`);
 2. runs `roko --repo <ws> --model <m> plan validate --strict --dag <ws>/plans`; a plan that fails is `infra_error`.
    A routed arm's command lines name no `--model`, which would pin its start rung past the ladder (planemit's ladder
    mode; bug-0b7695);
@@ -286,7 +286,7 @@ def run_task(ctx: harness.TaskContext) -> harness.TaskOutcome:
     reserved: list[str] = []
     try:
         binary = binary_path(ctx.arm)
-        spec = _plan_spec(ctx.arm, ctx.model, ctx.endpoint, ctx.caps, ctx.price_row, task_bound, key=ctx.key,
+        spec = _plan_spec(ctx.arm, ctx.model, ctx.endpoint, ctx.caps, ctx.price_row, task_bound, alias=ctx.alias,
                           spec_text=ctx.spec_text, files=ctx.files_in_scope, visible=ctx.visible_verify,
                           verify_wrapper=_wrapper_command(ctx), snapshot=ctx.snapshot)
         emitted = planemit.emit(spec, ctx.workdir)
@@ -389,7 +389,7 @@ def preflight(arm: dict, model: str, endpoint: provider.Endpoint, limits: caps.C
             (workspace / relpath).parent.mkdir(parents=True, exist_ok=True)
             (workspace / relpath).write_text(text, encoding="utf-8")
         spec = _plan_spec(arm, model, endpoint, limits, price_row, limits.usd_per_task if bound is None else bound,
-                          key="preflight", spec_text=PREFLIGHT_SPEC, files=(next(iter(PREFLIGHT_TREE)),),
+                          alias="preflight", spec_text=PREFLIGHT_SPEC, files=(next(iter(PREFLIGHT_TREE)),),
                           visible=(PREFLIGHT_VISIBLE,), snapshot=snapshot)
         try:
             emitted = planemit.emit(spec, workspace)
@@ -432,9 +432,10 @@ def _worst_task_usd(arm: dict, snapshot: ledger.Snapshot, limits: caps.Caps, pri
 
 
 def _plan_spec(arm: dict, model: str, endpoint: provider.Endpoint, limits: caps.Caps, price_row: dict | None,
-               usd_cap: float, *, key: str, spec_text: str, files: tuple[str, ...], visible: tuple[str, ...],
+               usd_cap: float, *, alias: str, spec_text: str, files: tuple[str, ...], visible: tuple[str, ...],
                verify_wrapper: str | None = None, snapshot: ledger.Snapshot | None = None) -> planemit.PlanSpec:
-    """The plan spec of one task on this arm: `run_task`'s, and `preflight`'s for its stand-in task. A routed arm
+    """The plan spec of one task on this arm: `run_task`'s, and `preflight`'s for its stand-in task. The plan is named
+    by the task's `alias`, which is all of the task its agents see (bug-3c921e). A routed arm
     (3312: more than one `models_allow` entry) emits planemit's ladder mode instead of one pinned model, with one
     rung per allowed model, cheapest first, and `model` as the start rung. The arm's `[overlay]` table (3360:
     roko_full's spec gate, routing, audit, holdout and homeostasis mechanisms), if it has one, becomes planemit's
@@ -452,7 +453,7 @@ def _plan_spec(arm: dict, model: str, endpoint: provider.Endpoint, limits: caps.
         rungs = tuple(_rung(arm, rung_model, snapshot, limits) for rung_model in allowed)
         start = model
     return planemit.PlanSpec(
-        key=key, spec_text=spec_text, files=files, visible=visible, model=model, provider=endpoint.provider,
+        alias=alias, spec_text=spec_text, files=files, visible=visible, model=model, provider=endpoint.provider,
         base_url=endpoint.base_url, api_key_env=api_key_env, price_row=price_row, usd_cap=usd_cap,
         provider_kind=settings.get("provider_kind", "openai_compat"),
         context_window=int(settings.get("context_window", 128_000)), max_output=limits.max_output_tokens,

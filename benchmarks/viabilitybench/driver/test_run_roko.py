@@ -44,7 +44,8 @@ TOY_FAMILY = layout.DRIVER_DIR / "testdata" / "toy_family"
 TOY_STREAM = str(layout.DRIVER_DIR / "testdata" / "toy_stream.toml")
 ARM = layout.ARMS_DIR / "roko_fixed.toml"
 PIN = "gpt-oss-120b"
-SOLUTION = "def clamp(value, low, high):\n    return max(low, min(value, high))\n"
+ALIAS = "0c7a5e3f9b1d8462"  # a task's alias, as `vb run` draws one (bug-3c921e): it names the task's plan
+SOLUTION ="def clamp(value, low, high):\n    return max(low, min(value, high))\n"
 REAL_ROKO = Path(os.environ.get("VB_TEST_ROKO_BIN") or layout.REPO_ROOT / "target" / "debug" / "roko")
 real_roko = pytest.mark.skipif(not os.access(REAL_ROKO, os.X_OK), reason=(
     f"no roko binary at {REAL_ROKO}, so the Roko arm was not run against real Roko: build it or set VB_TEST_ROKO_BIN"))
@@ -190,7 +191,7 @@ def toy_task(tmp_path: Path, instance_id: str = "F1-l1-0001") -> materialize.Mat
 
 
 def plan_spec(task: materialize.Materialized, **changes: object) -> planemit.PlanSpec:
-    fields = {"key": f"{task.instance_id}.s1", "spec_text": task.spec_text,
+    fields = {"alias": ALIAS, "spec_text": task.spec_text,
               "files": tuple(task.manifest["files_in_scope"]), "visible": tuple(task.manifest["visible_verify"]),
               "model": PIN, "provider": "cerebras", "base_url": "http://127.0.0.1:9/v1",
               "api_key_env": "CEREBRAS_API_KEY", "price_row": ledger.load_snapshot().row(PIN), "usd_cap": 0.43}
@@ -207,7 +208,7 @@ def real_arm_spec(arm_name: str, model: str = PIN) -> planemit.PlanSpec:
     snapshot = ledger.load_snapshot()
     limits = caps.Caps.from_table(arm["caps"])
     return run_roko._plan_spec(arm, model, endpoint, limits, snapshot.row(model), limits.usd_per_task,
-                               key="overlay-test.s1", spec_text="# T\n\nTest.\n", files=("f.py",),
+                               alias=ALIAS, spec_text="# T\n\nTest.\n", files=("f.py",),
                                visible=("true",), snapshot=snapshot)
 
 
@@ -288,7 +289,9 @@ def test_emitted_plan_has_explicit_rungs_and_no_hidden_checks(tmp_path):
     assert canary.find(text) == [] and manifest["canary"] not in text
     for private in (manifest["truth_suite"]["id"], *manifest["planted_gaming"], "hidden.py", str(task.private_dir)):
         assert private not in text
-    assert emitted.slug == planemit.plan_slug("F1-l1-0001.s1") and "F1" not in emitted.slug
+    # bug-3c921e: the plan is named by the task's alias, never by its key, which an agent could recover from a hash
+    assert emitted.slug == planemit.plan_slug(ALIAS) != planemit.plan_slug(f"{task.instance_id}.s1")
+    assert "F1" not in emitted.slug
     assert "Implement `clamp`" in task_table["title"]
 
     with pytest.raises(planemit.PlanEmitError, match="already has"):  # Roko's files must be Roko's alone

@@ -599,8 +599,8 @@ def _probe(args: argparse.Namespace, vb) -> int:
         endpoint=vb._endpoint(arm, snapshot.row(model), None), caps=caps.Caps.from_table(arm.get("caps", {})),
         ledger=ledger.Ledger(root / "ledger.jsonl", line="probe", experiment_id="PROBE", run_id=root.name,
                              price_snapshot_id=snapshot.id),
-        billed=False, instance_id="probe", seed=0, key="probe", workdir=workdir, spec_text=PROBE_PROMPT,
-        agent_env=agent_env.build(home=root / "_home"))
+        billed=False, instance_id="probe", seed=0, key="probe", alias="probe", workdir=workdir,
+        spec_text=PROBE_PROMPT, agent_env=agent_env.build(home=root / "_home"))
     proxy = egress.EgressProxy(cli.egress_allow, log_path=root / EGRESS_LOG).start()  # as a task's session has
     try:
         proxy.configure(task=ctx.key)

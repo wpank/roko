@@ -10,6 +10,7 @@ import hashlib
 import itertools
 import json
 import os
+import re
 import socket
 import subprocess
 import sys
@@ -25,6 +26,7 @@ import layout
 import ledger
 import materialize
 import mini_loop
+import planemit
 import provider
 import validate
 import vb
@@ -286,13 +288,107 @@ def test_offline_run_writes_valid_records(places, tmp_path, monkeypatch):
     listing = json.loads(transcript)[3]["content"]  # the observation of `env | sort && ls -a`
     names = {line.split("=", 1)[0] for line in listing.splitlines() if "=" in line}
     assert "PATH" in names and not [name for name in names if name.startswith("VB_") or "API_KEY" in name]
-    assert f"HOME={places['work'] / 'run-1' / '_home' / 'F1-l1-0001.s1'}" in listing
+    # bug-3c921e: the agent's HOME is named by the task's alias, under a work directory with a random name, so its
+    # environment names neither its instance (family and level), its task key nor the run
+    # (test_an_agent_never_sees_its_instance_id has the rest).
+    manifest = json.loads((out / "manifest.json").read_text())
+    work_dir = Path(manifest["work_dir"])
+    assert f"HOME={work_dir / '_home' / honest['provenance']['alias']}\n" in listing
+    assert [name for name in ("F1-l1-0001", "run-1", "TEST-OFFLINE") if name in listing] == []
     assert "\n.vb\n" not in listing and "calc" in listing
     private_manifest = out / "private" / "F1-l1-0001.s1" / ".vb" / "task.json"
     assert json.loads(private_manifest.read_text())["canary"] == canary.RELEASE_CANARY
     assert private_manifest.stat().st_mode & 0o777 == 0o600
-    assert json.loads((out / "manifest.json").read_text())["offline"] is True
-    assert not (places["work"] / "run-1").exists()  # workdirs are removed after archiving
+    assert manifest["offline"] is True
+    assert work_dir.parent == places["work"] and list(places["work"].iterdir()) == []  # workdirs go after archiving
+
+
+# bug-3c921e, test_an_agent_never_sees_its_instance_id. The agent's shell prints where it is and what lies around it:
+# its directory, HOME and TMPDIR, its environment, the run's work directory (every task's workdir and HOME), its HOME's
+# files and the visible-verify wrapper's config, Roko's plan directory and config where there are, and its repo's log.
+LOOK_AROUND = ('pwd; echo "HOME=$HOME TMPDIR=$TMPDIR"; env | sort; ls -a .. ../_home "$HOME" "$HOME/.vb-bin" plans; '
+               'cat "$HOME/.vb-bin/vb-verify.json" roko.toml; git log --format=%s')
+CLAMP = 'def clamp(value, low, high):\n    """Return value limited to the range [low, high]."""\n' \
+        '    return max(low, min(value, high))\n'
+
+
+@pytest.mark.parametrize("arm", ["cheap_direct", "roko_fixed", "cheap_direct_msa"])
+def test_an_agent_never_sees_its_instance_id(places, tmp_path, arm):
+    """bug-3c921e: nothing an agent can see of the paths around it names its task or its run. Its workdir, HOME and
+    TMPDIR, and the census's HOME, are named by the task's alias, a random id, under a work directory whose name is
+    random too, since a campaign's run id names its block ("e-oss-1": LOG1's block E, which holds the honeypots). The
+    run has flaky_verify, so every task's HOME holds the visible-verify wrapper, whose config names the alias, and the
+    Roko arm's plan is named by it. Each arm's agent (the stub in the direct loop, a fake harness in the others) looks
+    around (LOOK_AROUND), and with --keep-workdirs the test reads every name, link and file that the agents' processes
+    could reach. None holds an instance id, a task key, an unkeyed hash of one, the run id or the experiment id. Each
+    record keeps its alias (`provenance.alias`), and the manifest the work directory."""
+    shell_log = tmp_path / "shell.log"
+    spec = tmp_path / "flaky.toml"
+    spec.write_text('schema_version = "vb.disturbance/1"\n\n[[disturbance]]\nkind = "flaky_verify"\n'
+                    'params = { p = 0.5 }\n')
+    if arm == "cheap_direct":  # the stub plays the agent, and the driver runs its commands
+        arm_file, respond = arm, scripted({"": [bash(LOOK_AROUND, "Where am I?"), bash("echo VB_SUBMIT")]})
+    else:  # a fake harness plays the agent and logs what its shell printed
+        arm_file = fake_harness_arm(tmp_path, arm, solution=CLAMP, shell=LOOK_AROUND, shell_log=shell_log)
+
+        def respond(body: dict) -> str:
+            return "Done."
+    run_id = "e-oss-1"
+    with StubServer(respond) as stub:
+        assert vb.main(["run", "--experiment", "TEST-OFFLINE", "--run-id", run_id, "--stream", TOY_STREAM,
+                        "--arm", arm_file, "--model", "gpt-oss-120b", "--provider-url", stub.url,
+                        "--results", str(places["results"]), "--work", str(places["work"]),
+                        "--secret-file", str(places["secret"]), "--disturbance", str(spec), "--transcripts",
+                        "--keep-workdirs"]) == 0
+    out = places["results"] / "TEST-OFFLINE" / run_id
+    records = sorted(read_jsonl(out / "records.jsonl"), key=lambda record: record["task"]["instance_id"])
+    keys = [f"{record['task']['instance_id']}.s{record['seed']}" for record in records]
+    assert keys == ["F1-l1-0001.s1", "F1-l1-0002.s1"]
+    # A task key starts with its instance id. Keys are few and public, so an unkeyed hash of one (Roko's plan slug
+    # before bug-3c921e) is no disguise: it is listed too.
+    hidden = [run_id, "TEST-OFFLINE", *(record["task"]["instance_id"] for record in records),
+              *(planemit.plan_slug(key) for key in keys)]
+    work_dir = Path(json.loads((out / "manifest.json").read_text())["work_dir"])
+    assert work_dir.parent == places["work"] and re.fullmatch("[0-9a-f]{16}", work_dir.name), work_dir
+    assert sorted(path.name for path in places["work"].iterdir()) == [work_dir.name]
+    aliases = [record["provenance"]["alias"] for record in records]
+    assert len(set(aliases)) == 2 and all(re.fullmatch("[0-9a-f]{16}", alias) for alias in aliases), aliases
+
+    def observed(record: dict) -> str:  # what the direct loop's agent was shown of its commands
+        transcript = json.loads((out / record["provenance"]["transcript_ref"]).read_text())
+        return "\n".join(event["content"] for event in transcript if event.get("role") == "user" and "command" in event)
+
+    printed = "\n".join(map(observed, records)) if arm == "cheap_direct" else shell_log.read_text()
+    for record, alias in zip(records, aliases):
+        workdir, home = work_dir / alias, work_dir / "_home" / alias
+        assert workdir.is_dir() and home.is_dir() and (work_dir / "_home" / f"{alias}.census").is_dir()
+        seen = "\n" + (observed(record) if arm == "cheap_direct" else printed)  # a harness's log holds both tasks
+        assert f"\n{workdir}\n" in seen or f"\n{workdir.resolve()}\n" in seen, seen  # pwd
+        assert f"HOME={home} TMPDIR={home / 'tmp'}\n" in seen, seen
+        assert f'"key": "{alias}"' in seen, seen  # the visible-verify wrapper's draws are keyed by the alias
+        if arm == "roko_fixed":  # Roko's plan, in the agent's workdir, is named by the alias; its records say so
+            assert planemit.plan_slug(alias) in seen
+            assert (out / record["provenance"]["s01_run_dir"] / "state" / "graph" / planemit.plan_slug(alias)).is_dir()
+    assert [name for name in hidden if name in printed] == [], printed
+    # Everything the agents' processes could reach under the work directory: no name, link or text names a task.
+    named = []
+    for path in [work_dir, *work_dir.rglob("*")]:
+        texts = [path.name, os.readlink(path) if path.is_symlink() else ""]
+        if path.is_file() and not path.is_symlink():
+            texts.append(path.read_bytes().decode("utf-8", "replace"))
+        named += [f"{path.relative_to(work_dir.parent)}: {name}" for name in hidden for text in texts if name in text]
+    assert named == []
+    # The names are random, not a function of the run id and the key, which an agent could compute and invert: a run
+    # with the same run id (in another experiment) gives the same task another alias and another work directory.
+    with StubServer(respond) as stub:
+        assert vb.main(["run", "--experiment", "TEST-OFFLINE-2", "--run-id", run_id, "--stream", TOY_STREAM,
+                        "--arm", arm_file, "--model", "gpt-oss-120b", "--provider-url", stub.url, "--limit", "1",
+                        "--results", str(places["results"]), "--work", str(places["work"]),
+                        "--secret-file", str(places["secret"])]) == 0
+    again = places["results"] / "TEST-OFFLINE-2" / run_id
+    [record] = read_jsonl(again / "records.jsonl")
+    assert record["task"]["instance_id"] == "F1-l1-0001" and record["provenance"]["alias"] not in aliases
+    assert json.loads((again / "manifest.json").read_text())["work_dir"] != str(work_dir)
 
 
 def test_materialize_renders_real_family_instances(tmp_path, capsys):

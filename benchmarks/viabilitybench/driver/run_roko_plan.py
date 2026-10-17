@@ -92,7 +92,7 @@ def run_task(ctx: harness.TaskContext) -> harness.TaskOutcome:
     started, clock = harness.utc_now(), time.monotonic()
     settings = ctx.arm.get("roko", {})
     planner_settings = ctx.arm.get("planner", {})
-    slug = planemit.plan_slug(ctx.key)
+    slug = planemit.plan_slug(ctx.alias)  # the planner and the executors see it: never the task key (bug-3c921e)
     transcript: list[dict] = []
     attempts: list[run_roko.RokoAttempt] = []
     status, reason = "infra_error", ""

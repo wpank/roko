@@ -216,7 +216,7 @@ def test_codex_runner_prices_turn_completed_usage(places, login):
     assert (reserved["event"], reserved["attempt_key"], reserved["reserved_usd"]) == ("reserve", row["attempt_key"], 0)
     manifest = json.loads((out / "manifest.json").read_text())
     assert manifest["config"]["prompt"] == {"version": run_codex.PROMPT_VERSION, "sha256": run_codex.PROMPT_SHA256}
-    assert not (places["work"] / "run-1").exists()  # the workdir and its Codex home are gone
+    assert not Path(manifest["work_dir"]).exists()  # the workdir and its Codex home are gone
 
     # The pricing rules on their own: per-turn models, one model for several turns, the pin, and unknowns.
     snapshot = ledger.load_snapshot()
@@ -309,15 +309,16 @@ def test_setup_refuses_an_api_key_login_flaky_verify_and_a_missing_codex(places,
         results = places["results"] / "TEST" / "run-1"
         results.mkdir(parents=True, exist_ok=True)
         work = places["work"] / "run-1"
-        (work / key).mkdir(parents=True)
+        alias = vb._alias(work)  # the workdir and HOME are named as `vb run` names them (bug-3c921e)
+        (work / alias).mkdir(parents=True)
         return harness.TaskContext(
             experiment_id="TEST", run_id="run-1", arm=arm, model=MODEL, provider=None, snapshot=snapshot,
             endpoint=provider.Endpoint("openai", LOOPBACK), caps=caps.Caps.from_table(arm["caps"]),
-            billed=False, instance_id="F1-l1-0001", seed=1, key=key,
+            billed=False, instance_id="F1-l1-0001", seed=1, key=key, alias=alias,
             ledger=ledger.Ledger(results / "ledger.jsonl", line="BL1", experiment_id="TEST", run_id="run-1",
                                  price_snapshot_id=snapshot.id),
-            workdir=work / key, spec_text="Implement clamp.", agent_env=agent_env.build(home=work / "_home" / key),
-            **fields)
+            workdir=work / alias, spec_text="Implement clamp.",
+            agent_env=agent_env.build(home=work / "_home" / alias), **fields)
 
     invocation = run_codex.build_invocation(context("plain"), cli)
     assert invocation.jail == () and invocation.network is None  # no proxy given: unconfined, as run_cli's

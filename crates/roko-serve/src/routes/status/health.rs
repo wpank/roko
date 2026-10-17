@@ -340,6 +340,7 @@ fn dashboard_event_plan_id(event: &roko_core::dashboard_snapshot::DashboardEvent
         | DashboardEvent::TaskCompleted { plan_id, .. }
         | DashboardEvent::TaskPhaseChanged { plan_id, .. }
         | DashboardEvent::GateResult { plan_id, .. }
+        | DashboardEvent::GateOutputLine { plan_id, .. }
         | DashboardEvent::PhaseTransition { plan_id, .. }
         | DashboardEvent::EfficiencyEvent { plan_id, .. }
         | DashboardEvent::RouteDecided { plan_id, .. }
@@ -368,6 +369,7 @@ fn dashboard_event_task_id(event: &roko_core::dashboard_snapshot::DashboardEvent
         | DashboardEvent::TaskCompleted { task_id, .. }
         | DashboardEvent::TaskPhaseChanged { task_id, .. }
         | DashboardEvent::GateResult { task_id, .. }
+        | DashboardEvent::GateOutputLine { task_id, .. }
         | DashboardEvent::EfficiencyEvent { task_id, .. }
         | DashboardEvent::TaskOutputAppended { task_id, .. }
         | DashboardEvent::RouteDecided { task_id, .. }

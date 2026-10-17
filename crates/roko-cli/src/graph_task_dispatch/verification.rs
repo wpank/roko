@@ -231,6 +231,10 @@ impl GraphTaskDispatcher {
                 )
                 .build();
             let gate_ctx = Context::now();
+            // The attempt as `route_decided` numbers it, for the steps' live
+            // output lines (gap-f45a6d).
+            let attempt_ordinal = roko_learn::telemetry::AttemptKey::parse(attempt_key)
+                .map_or(attempt_number.saturating_add(1), |key| key.attempt);
             // While this attempt runs its verify steps it edits nothing, so
             // its siblings' verify steps do not wait for it (gap-1920ba).
             let verify_key = format!("{}/{}", spec.plan_id, task.id);
@@ -306,10 +310,16 @@ impl GraphTaskDispatcher {
                     tui.gate_rung_started(&spec.plan_id, &task.id, step_label);
                 }
 
-                let gate = ShellGate::verify_step(&self.verify_command(&step.command))
+                // Each line the step writes reaches the hub as it runs
+                // (gap-f45a6d).
+                let live = self.live_check_output(spec, task, attempt_ordinal, step_label);
+                let mut gate = ShellGate::verify_step(&self.verify_command(&step.command))
                     .with_timeout_ms(step.timeout_ms)
                     .with_name(step_label)
                     .with_phase(&step.phase);
+                if let Some(live) = &live {
+                    gate = gate.with_output_sink(live.sink());
+                }
 
                 // Wait until no sibling is mid-edit on what this step reads,
                 // and keep siblings from starting to edit it while the step
@@ -398,6 +408,10 @@ impl GraphTaskDispatcher {
                     {
                         return Err(cancelled);
                     }
+                }
+                drop(gate);
+                if let Some(live) = live {
+                    live.finish().await;
                 }
                 // What the command exited with, before a baseline or bench
                 // judgement below changes the verdict.
@@ -649,10 +663,15 @@ impl GraphTaskDispatcher {
                             if let Some(tui) = &self.tui_bridge {
                                 tui.gate_rung_started(&spec.plan_id, &task.id, step_label);
                             }
-                            let retry_gate = ShellGate::verify_step(&step.command)
+                            let live =
+                                self.live_check_output(spec, task, attempt_ordinal, step_label);
+                            let mut retry_gate = ShellGate::verify_step(&step.command)
                                 .with_timeout_ms(step.timeout_ms)
                                 .with_name(step_label)
                                 .with_phase(&step.phase);
+                            if let Some(live) = &live {
+                                retry_gate = retry_gate.with_output_sink(live.sink());
+                            }
                             let step_scope =
                                 sibling_settle::StepScope::of(step, &effective_workdir);
                             let reading = self
@@ -692,6 +711,10 @@ impl GraphTaskDispatcher {
                             else {
                                 return Err(verify_cancelled(spec, task, step_label));
                             };
+                            drop(retry_gate);
+                            if let Some(live) = live {
+                                live.finish().await;
+                            }
                             let exit_code = step_exit_code(&retry_verdict);
                             if !retry_verdict.passed {
                                 if let Some(cancelled) = self.stopped_verify(spec, task, step_label)
@@ -1980,6 +2003,77 @@ printf '%s\n' '{"type":"result","session_id":"s","model":"claude-sonnet-4-6","to
             !feedback_file.exists(),
             "a pass clears the persisted feedback"
         );
+    }
+
+    /// gap-f45a6d: a verify step publishes each line its command writes as
+    /// `gate_output_line` while it runs, with its stream and the attempt, and
+    /// all of them before the step's `gate_result`.
+    #[tokio::test]
+    async fn a_check_streams_its_output_as_it_runs() {
+        let temp = tempdir().expect("tempdir");
+        let hub = crate::state_hub::shared_state_hub();
+        let mut events = hub.subscribe_events();
+        let bridge = TuiBridge::new(hub.sender());
+        let (dispatcher, mut task) = crate::graph_task_dispatch::tests::make_test_dispatcher_with(
+            &temp,
+            VERIFY_PROVIDER,
+            no_auto_fix,
+            GraphFeedbackContext::default(),
+            |dispatcher| dispatcher.with_tui_bridge(bridge),
+        )
+        .await;
+        task.verify = vec![verify_step(
+            "test",
+            "echo 'running 1 test'; echo 'assertion failed: left == right' >&2; exit 1",
+        )];
+
+        let error = dispatcher
+            .dispatch(&make_spec(&task), Vec::new(), &CellContext::new())
+            .await
+            .expect_err("the check fails");
+
+        assert!(matches!(error, RokoError::Verify { .. }), "{error}");
+        let mut order = Vec::new();
+        let mut lines = Vec::new();
+        loop {
+            match events.try_recv() {
+                Ok(envelope) => match envelope.payload {
+                    roko_core::DashboardEvent::GateOutputLine {
+                        attempt,
+                        gate,
+                        line,
+                        stream,
+                        ..
+                    } => {
+                        order.push("line");
+                        lines.push((stream, line, gate, attempt));
+                    }
+                    roko_core::DashboardEvent::GateResult { .. } => order.push("result"),
+                    _ => {}
+                },
+                Err(tokio::sync::broadcast::error::TryRecvError::Lagged(_)) => {}
+                Err(_) => break,
+            }
+        }
+        lines.sort();
+        let step = "verify[0:test]".to_string();
+        assert_eq!(
+            lines,
+            [
+                (
+                    "stderr".to_string(),
+                    "assertion failed: left == right".to_string(),
+                    step.clone(),
+                    1
+                ),
+                ("stdout".to_string(), "running 1 test".to_string(), step, 1),
+            ]
+        );
+        let result = order
+            .iter()
+            .position(|kind| *kind == "result")
+            .expect("the step's result");
+        assert_eq!(&order[..result], ["line", "line"], "{order:?}");
     }
 
     /// gap-655ea5: a failed verify publishes `retry_feedback` as it leaves the

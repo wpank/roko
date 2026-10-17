@@ -219,7 +219,7 @@ pub use rung_dispatch::{
     run_diff_gate, run_rung,
 };
 pub use rung_selector::{PlanComplexity, Rung, RungCaps, is_selected, select_rungs};
-pub use shell::ShellGate;
+pub use shell::{OutputLine, OutputStream, ShellGate};
 #[cfg(feature = "spc")]
 pub use spc::{
     BocpdDetector, ChangePoint, ControlStatus, CusumDetector, CusumShift, EwmaControlChart,

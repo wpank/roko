@@ -645,7 +645,10 @@ async fn api_not_found(req: Request) -> Response {
 ///   diagnosis and errors the task's next attempt gets (gap-655ea5);
 /// - `run_cost_trend`: a Graph run's end publishes `efficiency_trend_updated`,
 ///   one bucket per recent plan run with its cost per verified task
-///   (gap-de0e96).
+///   (gap-de0e96);
+/// - `check_output_lines`: a Graph task's verify steps publish each line
+///   their command writes as `gate_output_line`, bounded per step
+///   (gap-f45a6d).
 pub(crate) const FEATURES: &[&str] = &[
     "chat_refusals",
     "loop_events",
@@ -655,6 +658,7 @@ pub(crate) const FEATURES: &[&str] = &[
     "prompt_events",
     "retry_feedback_events",
     "run_cost_trend",
+    "check_output_lines",
 ];
 
 /// The summary of run `run_id`, as `GET /api/runs/{run_id}/summary` gives it.

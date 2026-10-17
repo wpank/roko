@@ -407,12 +407,22 @@ pub enum DashboardEvent {
         #[serde(default)]
         output_text: Option<String>,
     },
-    /// A single line of gate output for live streaming.
+    /// A single line of gate output for live streaming. A Graph task's verify
+    /// steps publish each line as their command writes it (gap-f45a6d),
+    /// bounded per step; a line from roko itself (`stream: "roko"`) says how
+    /// many it did not stream.
     GateOutputLine {
         plan_id: String,
         task_id: String,
+        /// The attempt, from 1; 0 when the publisher does not say.
+        #[serde(default)]
+        attempt: u32,
         gate: String,
         line: String,
+        /// `stdout` or `stderr`, `roko` for roko's own note; empty when the
+        /// publisher does not say.
+        #[serde(default)]
+        stream: String,
     },
     /// The plan transitioned between phases.
     PhaseTransition {
@@ -6008,8 +6018,10 @@ mod tests {
         snap.apply(&DashboardEvent::GateOutputLine {
             plan_id: "plan-a".into(),
             task_id: "task-1".into(),
+            attempt: 1,
             gate: "compile".into(),
             line: "Checking roko-core".into(),
+            stream: "stderr".into(),
         });
         assert_eq!(
             snap.gate_output_lines.back().map(String::as_str),

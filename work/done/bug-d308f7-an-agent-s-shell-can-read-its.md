@@ -2,7 +2,7 @@
 id = "bug-d308f7"
 kind = "bug"
 title = "An agent's shell can read its run's results directory outside private/: proxy.jsonl and egress.jsonl name the running task's key, order-<seed>.json and records.jsonl give its position"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p2"
 goal = "proof"
@@ -11,14 +11,27 @@ subsystem = ["benchmarks/viabilitybench/driver"]
 created = 2026-10-17
 updated = 2026-10-17
 last_verified = 2026-10-17
+last_verified_rev = "414ffbfcf"
 source = "bug-3c921e worker (claude-agent), 2026-10-17 (vb.py::_agent_deny denies <run_dir>/private alone; on macOS 26.4 common.sandbox.command under that deny list cats <run_dir>/proxy.jsonl and order-1.json)"
 discovered_from = "bug-3c921e"
 anchors = ["benchmarks/viabilitybench/driver/vb.py::_agent_deny"]
 lane = "bench"
-links = { depends_on = [], blocks = [], related = ["bug-3c921e", "gap-394f28", "gap-0bd49a"], supersedes = [], duplicate_of = "" }
+links = { depends_on = [], blocks = [], related = ["bug-3c921e", "gap-394f28", "gap-0bd49a", "bug-935cfa", "bug-3bab88", "bug-4c3a83"], supersedes = [], duplicate_of = "" }
 
 [[verify]]
 command = "grep -qw 'def test_an_agent_cannot_read_its_run_directory' benchmarks/viabilitybench/driver/test_driver.py && benchmarks/viabilitybench/.venv/bin/python -m pytest benchmarks/viabilitybench/driver/test_driver.py -k test_an_agent_cannot_read_its_run_directory -q"
+
+[closed]
+at = 2026-10-17
+at_ts = "2026-10-17T09:24:22Z"
+commit = "414ffbfcf"
+by = "commit trailer"
+executor = "claude-agent"
+via = "work-batch"
+size = "S"
+claimed_at = "2026-10-17T08:24:27Z"
+forced = false
+evidence = "414ffbfcf: every agent process is denied its whole run directory, <results>/<experiment>/<run_id>/, not only private/ (vb._agent_deny returns run.run_dir), as the Codex arm's already was. While a task runs, proxy.jsonl and egress.jsonl log its key with every call, and order-<seed>.json with records.jsonl give its position. No agent process reads or writes the directory: the proxies, the ledger, the records, the transcripts and Roko's evidence copy are written by the driver's own process, the visible-verify wrapper logs under the agent's HOME, and mini-swe-agent's config and trajectory lie in a driver temp directory. The README says that off macOS nothing applies the deny list (sandbox.KIND none, gap-29ac83). Decided under Will's decision 9 (## Decision below): no benchmark-internal identifier reaches an agent, for benchmark validity and against contamination through the public repository. The verify passes: test_an_agent_cannot_read_its_run_directory (driver/test_driver.py, macOS), 3 passed (the direct loop, Roko and mini-swe-agent arms, an offline run through --proxy): each task's agent cats proxy.jsonl, order-1.json, records.jsonl and manifest.json and lists the run directory; every read and the listing are refused (Operation not permitted; the first task's records.jsonl, not yet written, No such file), nothing printed names an instance or holds a line of those files, and the files hold both task keys (the control). test_cli_arm_shell_cannot_read_its_run_directory (driver/test_run_cli.py, macOS), 1 passed: Claude Code's Bash tool is refused egress.jsonl, which holds the session's own call under the key F1-l1-0001.s1, order-1.json, manifest.json and the listing. On the previous deny list (vb._agent_deny restored by a pytest plugin) all four fail: the agents print the proxy rows' \"task\": \"F1-l1-0001.s1\" and the stream's order. One fixture wrote the run directory from an agent process: test_run_roko.py's fake roko appended the run's proxy.jsonl from inside Roko's sandbox, playing the metering proxy; test_plan_slice_records_carry_queue_waits_and_class_costs now writes the proxy's log from the driver's side and passes on the old deny list and the new. Bench pytest: 804 passed, 16 skipped (13 with no roko binary in the worktree, the analysis stack, two opt-in sweeps), against 800 passed and the same 16 skipped on main. Filed bug-935cfa (p2: an agent still lists the experiment directory and reads every other run there, their agents' final diffs, records and private/ included; checked under the sandbox), bug-3bab88 (p3: a lookup under a denied directory fails with EPERM for an existing name and ENOENT for a missing one, so probing private/<key> for the stream's public keys finds the running task's) and bug-4c3a83 (p3: Claude Code's inline --settings put the run directory and ~/.config/viabilitybench on its argv, which its Bash tool reads with sysctl KERN_PROCARGS2)."
 +++
 
 ## Problem

@@ -15,7 +15,7 @@ source = "bug-d308f7 worker (claude-agent), 2026-10-17 (run_cli.settings and bui
 discovered_from = "bug-d308f7"
 anchors = ["benchmarks/viabilitybench/driver/run_cli.py::settings", "benchmarks/viabilitybench/driver/run_cli.py::build_invocation"]
 lane = "bench"
-links = { depends_on = [], blocks = [], related = ["bug-d308f7", "bug-3bab88", "bug-d68575", "bug-3c921e", "gap-394f28"], supersedes = [], duplicate_of = "" }
+links = { depends_on = [], blocks = [], related = ["bug-d308f7", "bug-3bab88", "bug-d68575", "bug-3c921e", "gap-b94a2c", "gap-394f28"], supersedes = [], duplicate_of = "" }
 
 [[verify]]
 command = "grep -qw 'def test_no_cli_argv_names_the_run_or_the_benchmark' benchmarks/viabilitybench/driver/test_run_cli.py && benchmarks/viabilitybench/.venv/bin/python -m pytest benchmarks/viabilitybench/driver/test_run_cli.py -k test_no_cli_argv_names_the_run_or_the_benchmark -q"
@@ -75,5 +75,6 @@ sandbox; the path is still on argv.
 ## Notes
 
 - Found by the bug-d308f7 worker, 2026-10-17, while checking what an agent can learn of its run directory's path.
-- Every other process of the operator's user stays readable the same way (`agent_env`, gap-0bd49a); only a separate
-  user or a container per task hides those (S08 decision 4).
+- Every other process of the operator's user stays readable the same way (`agent_env`, gap-0bd49a): gap-b94a2c owns
+  that mechanism, which no sandbox-exec rule tried stops, and only a separate user or a container per task hides
+  (S08 decision 4). This item is narrower: what the driver itself puts on its agents' parents' command lines.

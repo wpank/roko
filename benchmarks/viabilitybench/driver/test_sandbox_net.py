@@ -214,7 +214,7 @@ def test_direct_loop_shell_cannot_reach_the_network(places):
                      bash(f"curl -sS --max-time 5 -d '{{}}' {stub.url}/chat/completions; echo provider_exit=$?",
                           "Call the model myself."),
                      bash(f"ls {run_dir / 'private'}; echo private_exit=$?", "Look for the task files."),
-                     bash(CORRECT, "Implement it."), bash("echo VB_SUBMIT")]
+                     bash(CORRECT, "Implement it."), bash("echo SUBMIT_TASK")]
             return scripted({"": steps})(body)
 
         with StubServer(respond) as stub:
@@ -260,7 +260,7 @@ def test_agent_commands_cannot_touch_the_secret_or_the_key_file(places, tmp_path
     attempt = (f"for f in '{places['secret'].parent}/sec''ret' '{key_file.parent}/ke''ys'; do "
                'chmod 600 "$f"; cat "$f"; done 2>&1; echo tried')
     with StubServer(scripted({"": [bash(attempt, "Take the secret and the key."), bash(CORRECT, "Implement it."),
-                                   bash("echo VB_SUBMIT")]})) as stub:
+                                   bash("echo SUBMIT_TASK")]})) as stub:
         arm_text, count = re.subn(r"(?m)^base_url = .*$", f'base_url = "{stub.url}"',
                                   (layout.ARMS_DIR / "cheap_direct.toml").read_text())
         assert count == 1

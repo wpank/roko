@@ -740,6 +740,14 @@ fn logged_event(event: &DashboardEvent, scrubber: &LogScrubber) -> serde_json::V
             DashboardEvent::GateOutputLine { line, .. } => {
                 replace_with_digest(fields, "line", line);
             }
+            DashboardEvent::AttemptSettled { settled, .. } => {
+                if let Some(detail) = &settled.detail {
+                    fields.insert(
+                        "detail".to_string(),
+                        serde_json::json!(gate_output_excerpt(detail, scrubber)),
+                    );
+                }
+            }
             DashboardEvent::TaskOutputAppended { lines, .. } => {
                 replace_with_digest(fields, "lines", &lines.join("\n"));
             }
@@ -1252,6 +1260,10 @@ mod tests {
             reason: "task hint".to_string(),
             source: "task_hint".to_string(),
             candidates: Vec::new(),
+            ladder: Box::new(roko_core::dashboard_snapshot::RouteLadder {
+                ladder_reason: "pinned".to_string(),
+                ..Default::default()
+            }),
         });
         assert_eq!(
             rows(&index, 3).await,
@@ -1420,8 +1432,10 @@ mod tests {
         sender.publish(DashboardEvent::GateOutputLine {
             plan_id: "p1".to_string(),
             task_id: "T1".to_string(),
+            attempt: 2,
             gate: "verify[0]".to_string(),
             line: CANARY.to_string(),
+            stream: "stdout".to_string(),
         });
         log.finish(&Ok(0)).await.expect("finish log");
 

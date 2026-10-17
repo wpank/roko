@@ -32,7 +32,7 @@ measure that setup rather than Codex (W10). Every session gets:
   explicitly as the Claude Code arm sets its effort. The runner refuses a workdir with an AGENTS.md above it;
 - no `OPENAI_API_KEY` or `CODEX_API_KEY`: `agent_env` passes no key, so Codex never bills the API.
 An npm-installed `codex` is a node script (`#!/usr/bin/env node`), and the session's PATH has only the system's
-tools, so the runner links that one interpreter into the session's `.vb-bin` (`interpreter_link`). A run with
+tools, so the runner links that one interpreter into the session's `.local/bin` (`interpreter_link`). A run with
 `flaky_verify` is refused: Codex has no shell prefix, like Claude Code's `CLAUDE_CODE_SHELL_PREFIX`, through which
 the visible-verify wrapper could reach its shell commands.
 
@@ -407,7 +407,8 @@ def _warn_if_login_rotated(seeded: str | None, settled: str | None) -> None:
 
 def interpreter_link(program: Path, env: Mapping[str, str]) -> Path | None:
     """For a script run through `#!/usr/bin/env <name>` whose interpreter the session's PATH lacks (npm's `codex`
-    names node), a link to the driver's `<name>` in the session's `.vb-bin`; None when none is needed or found."""
+    names node), a link to the driver's `<name>` in the session's bin directory (`agent_env.BIN_DIR`); None when none
+    is needed or found."""
     try:
         with open(program, "rb") as handle:
             first = handle.read(256).split(b"\n", 1)[0].decode("utf-8", "replace").strip()
@@ -419,7 +420,7 @@ def interpreter_link(program: Path, env: Mapping[str, str]) -> Path | None:
     found = shutil.which(match[1], path=os.pathsep.join([str(program.parent), os.environ.get("PATH", "")]))
     if found is None:
         return None  # the session then fails to start, and says why
-    link = Path(env["HOME"]) / ".vb-bin" / match[1]
+    link = Path(env["HOME"]) / agent_env.BIN_DIR / match[1]
     if not link.is_symlink():
         link.symlink_to(Path(found).absolute())
     return link

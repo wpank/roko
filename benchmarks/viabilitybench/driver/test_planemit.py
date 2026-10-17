@@ -9,6 +9,7 @@ Run from the repository root with the benchmark venv:
 from __future__ import annotations
 
 import dataclasses
+import re
 import subprocess
 import tomllib
 from pathlib import Path
@@ -81,8 +82,7 @@ def test_ladder_mode_emits_rungs_without_fallbacks(tmp_path):
         "python3 -m unittest discover -s tests/visible"]
     assert config["runner"] == {"worktree_per_task": False} and config["budget"]["max_plan_usd"] == 0.6
     assert config["conductor"] == {"max_agents": 1}
-    assert planemit.LADDER_VERSION in emitted.config_text and planemit.LADDER_TEMPLATE_SHA256 != \
-        planemit.TEMPLATE_SHA256
+    assert planemit.LADDER_TEMPLATE_SHA256 != planemit.TEMPLATE_SHA256  # its version is in no file (bug-c1b04b)
     # A start further up the ladder is the arm's choice too.
     mid = planemit.emit(ladder_spec(start="mid", model="glm-4.7"), workspace(tmp_path, "mid"))
     assert tomllib.loads(mid.config_text)["routing"]["ladder"]["start"] == dict.fromkeys(planemit.TIERS, "mid")
@@ -92,8 +92,8 @@ def test_pinned_mode_is_byte_identical_to_before_ladder_mode(tmp_path):
     emitted = planemit.emit(pinned_spec(), workspace(tmp_path))
     assert emitted.tasks_text == (GOLDEN / "pinned.tasks.toml").read_text()
     assert emitted.config_text == (GOLDEN / "pinned.roko.toml").read_text()
-    assert planemit.TEMPLATE_VERSION == "planemit-4"
-    assert planemit.TEMPLATE_SHA256 == "1b7b9906dd846ef598602bee770d0b6d3270e885f6262f76c3fbdd9e97b87f2b"
+    assert planemit.TEMPLATE_VERSION == "planemit-6"  # bug-c1b04b: 4's files had a header; bug-d68575: 5's `vb-` slug
+    assert planemit.TEMPLATE_SHA256 == "392ef78bd0db0e9e65256a77aaee191a339e0c12a326021249322d855892c5f8"
 
 
 @pytest.mark.parametrize(("changes", "error"), [
@@ -155,6 +155,34 @@ def test_roko_fixed_and_roko_ladder_emit_no_overlay_table(tmp_path):
         assert not {"spec_quality", "audit", "self_model", "homeostasis"} & set(config)
 
 
+BENCHMARK_WORDS = re.compile(r"viabilitybench|benchmark|hidden|planemit", re.IGNORECASE)
+
+
+def test_no_emitted_plan_names_the_benchmark(tmp_path, monkeypatch):
+    """bug-c1b04b: the two files planemit writes into a Roko arm's workspace, which its agents can read while Roko
+    runs, name neither the benchmark, nor its hidden checks, nor the driver's templates (`planemit-*` versions): they
+    hold no comment at all. In every mode the arms use (pinned, Claude CLI, ladder and roko_full's overlay), with and
+    without the flaky_verify wrapper, the emitted tasks.toml and roko.toml match none of those words, whatever their
+    case. The direct, mini-swe-agent, Claude Code and Codex arms' agents are given no such text either."""
+    monkeypatch.setattr(campaign, "census_report", fake_census(live=True))
+    claude_cli = dataclasses.replace(pinned_spec(), provider_kind="claude_cli", model="claude-opus-5-5",
+                                     tier="architectural")
+    modes = {"pinned": pinned_spec(), "claude-cli": claude_cli, "ladder": ladder_spec(), "overlay": full_spec()}
+    for name, spec in list(modes.items()):
+        modes[f"{name}-wrapped"] = dataclasses.replace(spec, verify_wrapper="/home/agent/bin/wrapper")
+    for name, spec in modes.items():
+        emitted = planemit.emit(spec, workspace(tmp_path, name))
+        for path in (emitted.tasks_path, emitted.config_path):
+            text = path.read_text(encoding="utf-8")
+            assert BENCHMARK_WORDS.search(text) is None, (name, path.name, BENCHMARK_WORDS.search(text))
+            assert [line for line in text.splitlines() if line.lstrip().startswith("#")] == [], (name, path.name)
+            assert tomllib.loads(text)  # the files hold only TOML that Roko reads
+    # The modes cover both provider kinds, both of planemit's modes, the overlay and the wrapper.
+    assert {spec.provider_kind for spec in modes.values()} == {"openai_compat", "claude_cli"}
+    assert {bool(spec.rungs) for spec in modes.values()} == {True, False} and modes["overlay"].overlay
+    assert sum(spec.verify_wrapper is not None for spec in modes.values()) == 4
+
+
 def test_resolve_overlay_refuses_an_unknown_mechanism():
     with pytest.raises(planemit.PlanEmitError, match="no mechanism for overlay key"):
         planemit.resolve_overlay({"nonexistent_mechanism": True})
@@ -193,7 +221,7 @@ def test_real_roko_validates_the_ladder_plan(tmp_path):
                        visible=tuple(task.manifest["visible_verify"]))
     emitted = planemit.emit(spec, task.workdir)
     env = {**agent_env.build(home=tmp_path / "home"), "ROKO_CONFIG": str(emitted.config_path),
-           **{key: "vb-offline-placeholder" for _, _, _, key in CASCADE}}
+           **{key: "placeholder" for _, _, _, key in CASCADE}}  # run_roko.OFFLINE_KEY
     checked = subprocess.run([str(REAL_ROKO), "--repo", str(task.workdir), "--no-serve", "plan", "validate", "--strict",
                               "--dag", str(task.workdir / "plans")], cwd=task.workdir, env=env, capture_output=True,
                              text=True, timeout=120, check=False)

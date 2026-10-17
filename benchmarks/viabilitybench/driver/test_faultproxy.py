@@ -434,7 +434,7 @@ def test_input_token_cap_refuses_further_calls(proxy, upstream, log):
     proxy.configure(task="capped", input_token_cap=first_bound + raw_usage(1)["prompt_tokens"])
     assert [post(completions(proxy), REQUEST).status for _ in range(2)] == [200, 200]
     refused = post(completions(proxy), REQUEST)
-    assert refused.status == 403 and refused.json()["error"]["type"] == "vb_cap_exceeded"
+    assert refused.status == 403 and refused.json()["error"]["type"] == "cap_exceeded"  # no benchmark name (bug-d68575)
     assert len(upstream.requests) == 2  # a refused call never reaches the provider
     assert post(completions(proxy), REQUEST).status == 403
     proxy.configure(task="next")
@@ -573,7 +573,7 @@ def test_the_proxy_refuses_server_side_web_tools(upstream, log):
             for named, body in bodies.items():
                 reply = replies[named] = post(at(named), body)
                 assert (reply.status, reply.json()["error"]["type"], reply.json()["error"]["code"]) == (
-                    403, f"vb_{refusal}", refusal), named
+                    403, refusal, refusal), named
         assert "gpt-5.4-mini" in replies["gpt-5-search-api"].json()["error"]["message"]  # the client learns why
         # An upstream forwards the server-side tools its `allow` names, and still no other.
         assert post(completions(proxy, "kb"), tools["tools:retrieval"]).status == 200
@@ -665,7 +665,7 @@ def test_a_driver_run_through_the_proxy_matches_its_ledger(tmp_path, log):
     secret = hmac_seed.write_secret_file(tmp_path / "private-config" / "secret")
 
     def respond(body: dict) -> str:  # look once, then submit
-        return bash("echo VB_SUBMIT") if any(m["role"] == "assistant" for m in body["messages"]) else bash("ls")
+        return bash("echo SUBMIT_TASK") if any(m["role"] == "assistant" for m in body["messages"]) else bash("ls")
 
     with StubServer(respond) as stub, faultproxy.FaultProxy([faultproxy.Upstream("cerebras", stub.url)],
                                                             log_path=log) as proxy:

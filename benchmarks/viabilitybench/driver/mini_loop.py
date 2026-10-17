@@ -5,7 +5,8 @@ loop runs the command in the task's workdir, in a new shell with the agent envir
 back its exit code and output; long output keeps its head and tail. In a run with `flaky_verify`, the shell is the
 visible-verify wrapper (`ctx.verify_wrapper`, `vb_verify`), which runs the command as bash would, so a command that
 runs the task's visible check can meet an injected flake. The agent ends its session by printing
-`VB_SUBMIT` as the first line of a command's output (the prompt tells it to run `echo VB_SUBMIT`). A reply without
+`SUBMIT_TASK` (`SUBMIT`) as the first line of a command's output (the prompt tells it to run `echo SUBMIT_TASK`); the
+word names no benchmark (bug-d68575; `mini-loop-1` prompted `VB_SUBMIT`), and `PROMPT_SHA256` covers it. A reply without
 exactly one bash block gets a format reminder, which costs a turn. The shape follows mini-swe-agent (S08 decision 3)
 with the standard library only; running pinned mini-swe-agent itself is out of this module's scope.
 
@@ -22,7 +23,7 @@ usage never came back has an unknown cost.
 **No network** (gap-0bd49a, 3303). The driver makes every model call, so the agent's shell needs no network at all.
 Each command runs through `common.sandbox` with the rule "none" (`NETWORK`): on macOS no process it starts can open
 an outgoing connection, to the loopback, the metering proxy and DNS included, and none can touch the paths
-`ctx.deny` names (the secret file, the key file and the run's private task directories). The run record names the
+`ctx.deny` names (the secret file, the key file and the run's results directory). The run record names the
 rule and the confinement that applied (`provenance.network_policy`); off macOS that is "none", and the network stays
 open (gap-29ac83).
 
@@ -53,9 +54,9 @@ import ledger
 import provider
 from common import repo, sandbox
 
-PROMPT_VERSION = "mini-loop-1"
+PROMPT_VERSION = "mini-loop-2"
 NETWORK = sandbox.NETWORK_NONE  # the network rule of every agent command (module docstring)
-SUBMIT = "VB_SUBMIT"
+SUBMIT = "SUBMIT_TASK"
 RETRIES = 2
 MESSAGE_OVERHEAD_TOKENS = 16  # chat-template tokens a message may add beyond its bytes
 PREAMBLE_TOKENS = 256  # what a provider may inject before the first message (e.g. a harmony system header)
@@ -102,7 +103,8 @@ Format error: your reply must contain exactly one ```bash code block (it had {co
 and one bash block. To finish, run `echo {submit}` alone.
 """
 
-PROMPT_SHA256 = hashlib.sha256("\0".join([SYSTEM_PROMPT, TASK_MESSAGE, RETRY_NOTE, FORMAT_ERROR]).encode()).hexdigest()
+PROMPT_SHA256 = hashlib.sha256("\0".join([SYSTEM_PROMPT, TASK_MESSAGE, RETRY_NOTE, FORMAT_ERROR, SUBMIT]).encode()
+                               ).hexdigest()
 
 
 @dataclass(frozen=True)

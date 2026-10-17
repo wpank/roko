@@ -7,8 +7,8 @@
   `max_retries` (2: Roko's ≤ 3 attempts), `model_hint` = the pinned model, and exactly one `[[task.verify]]`: the
   manifest's visible check (several are joined with `&&`). In a run with `flaky_verify` the check runs through the
   visible-verify wrapper, as `'<vb-verify>' '<check>'` (`PlanSpec.verify_wrapper`, `vb_verify`), in the verify step
-  and the gate rung alike. The slug is opaque (`vb-<sha256(key)[:10]>`) and the title is the spec's first heading,
-  so Roko's prompt holds nothing the direct arm's task message does not.
+  and the gate rung alike. The slug is opaque (`plan-<sha256(alias)[:10]>`, `plan_slug`) and the title is the spec's
+  first heading, so Roko's prompt holds nothing the direct arm's task message does not.
 - `roko.toml`: one provider and one model, the pinned one (its key equals its slug), with no fallback models, so
   nothing can fail over (bug-35379d); the routing ladder off (`[routing.ladder] enabled = false`), so the pin is
   the only routing input and `plan validate` has no ladder for the task's `model_hint` to bypass (PLAN_041,
@@ -60,6 +60,12 @@ authoring rules (memory `roko_plan_authoring_constraints.md`) are checked here t
 `read_files`, a non-empty `files` without glob characters, and scalars before sub-tables. Strings are written as
 escaped TOML basic strings and each file is parsed back before it is written.
 
+**No header** (bug-c1b04b). Neither file holds a comment. Both used to open with one that named the driver, the
+template's version, a "benchmark task" and its "hidden checks", which only the Roko arms' agents could read in their
+workspace. The versions stay in this module: `TEMPLATE_VERSION` and `TEMPLATE_SHA256` reach the run manifest as the
+Roko runner's prompt version and hash (`run_roko.PROMPT_VERSION`, the config's `prompt`), and the transcript's `emit`
+event keeps both files as written.
+
 `emit` refuses a workspace that already has `roko.toml`, `plans/` or `.roko/`: the runner removes those after the
 run, before the driver exports c_i, so they must be Roko's alone.
 
@@ -92,8 +98,9 @@ import campaign  # the overlay's homeostasis=if_live census check (3360): census
 import layout  # noqa: F401 (puts families/ on sys.path for common)
 from common import canary
 
-TEMPLATE_VERSION = "planemit-4"
-LADDER_VERSION = "planemit-ladder-1"
+TEMPLATE_VERSION = "planemit-6"
+LADDER_VERSION = "planemit-ladder-3"
+SLUG_PREFIX = "plan-"  # the plan's id and directory, which Roko's agents see: it names no benchmark (bug-d68575)
 TIERS = ("mechanical", "focused", "integrative", "architectural")  # Roko's task tiers, each with a start rung
 # The frontier models of S09 §4.2's arms (fd_claude, fd_claude_lite, fd_codex, fd_api, the optional Fable arm) and of
 # roko.toml's `top` rung: a ladder of the cheap pool never holds one (decision 3302).
@@ -112,8 +119,6 @@ SUPPORTED_OVERLAY_KEYS = frozenset({"gate_mode", "audit_floor", "routing_mode", 
 HOMEOSTASIS_LOOP = "L-M1"  # S06's own loop id (S09 §9.5: roko_full includes S06 only when the census says LIVE)
 
 TASKS_TEMPLATE = """\
-# Emitted by the ViabilityBench driver ({version}) for one benchmark task. Roko's agent sees this file and its
-# verify command; the benchmark's hidden checks never enter it.
 [meta]
 plan = {slug}
 total = 1
@@ -141,9 +146,6 @@ fail_msg = "the task's visible check failed"
 """
 
 CONFIG_HEAD = """\
-# Emitted by the ViabilityBench driver ({version}) for one benchmark run: one provider, one pinned model, no
-# fallbacks and no routing ladder, explicit gate rungs that run only the visible check, the task in the shared
-# working tree, and Roko's learning loops held off.
 config_version = 2
 schema_version = 2
 
@@ -211,9 +213,6 @@ CONFIG_TEMPLATE = CONFIG_HEAD + CONFIG_TAIL
 # A claude_cli provider (3318, fr_claude): no base_url or api_key_env, since the CLI signs in by itself on the
 # subscription; `command` and the Anthropic tool format in place of openai_compat's.
 CLAUDE_CLI_CONFIG_HEAD = """\
-# Emitted by the ViabilityBench driver ({version}) for one benchmark run on the Claude CLI's subscription: one
-# pinned model, no fallbacks and no routing ladder, explicit gate rungs that run only the visible check, the task in
-# the shared working tree, and Roko's learning loops held off.
 config_version = 2
 schema_version = 2
 
@@ -243,10 +242,6 @@ CLAUDE_CLI_CONFIG_TEMPLATE = CLAUDE_CLI_CONFIG_HEAD + CONFIG_TAIL
 LADDER_TASKS_TEMPLATE = TASKS_TEMPLATE.replace("model_hint = {model}\n", "")  # the ladder picks the model
 
 LADDER_HEAD = """\
-# Emitted by the ViabilityBench driver ({version}) for one benchmark run on the cheap-model ladder: a
-# provider table per provider and a model table per rung, the routing ladder on with these rungs alone (no frontier
-# rung) and no fallbacks, explicit gate rungs that run only the visible check, the task in the shared working tree,
-# and Roko's learning loops held off.
 config_version = 2
 schema_version = 2
 
@@ -353,8 +348,9 @@ class Emitted:
 def plan_slug(alias: str) -> str:
     """The plan id, which the agents in the workspace see: a hash of the task's alias (`TaskContext.alias`), never of
     its task key (bug-3c921e). The instance id names the family and the ladder level, and the keys are few and their
-    scheme public, so a hash of a key could be inverted by hashing every one."""
-    return "vb-" + hashlib.sha256(alias.encode("utf-8")).hexdigest()[:10]
+    scheme public, so a hash of a key could be inverted by hashing every one. Its prefix names no benchmark
+    (bug-d68575; planemit-5 and before used `vb-`)."""
+    return SLUG_PREFIX + hashlib.sha256(alias.encode("utf-8")).hexdigest()[:10]
 
 
 def emit(spec: PlanSpec, workspace: Path) -> Emitted:
@@ -382,7 +378,7 @@ def emit(spec: PlanSpec, workspace: Path) -> Emitted:
         _check_ladder(tasks_text, config_text, spec, slug, files, visible, overlay)
         return _write(workspace, slug, tasks_text, config_text, visible)
     tasks_text = TASKS_TEMPLATE.format(
-        version=TEMPLATE_VERSION, slug=_s(slug), skip_enrichment=_b(spec.skip_enrichment), task_id=_s(TASK_ID),
+        slug=_s(slug), skip_enrichment=_b(spec.skip_enrichment), task_id=_s(TASK_ID),
         title=_s(_title(spec.spec_text)), description=_s(spec.spec_text.strip() + "\n"), role=_s(ROLE),
         tier=_s(spec.tier), files="[" + ", ".join(_s(path) for path in files) + "]", max_retries=spec.max_retries,
         model=_s(spec.model), visible=_s(visible))
@@ -392,11 +388,10 @@ def emit(spec: PlanSpec, workspace: Path) -> Emitted:
                  provider_key=spec.provider, provider=_s(spec.provider), context_window=spec.context_window,
                  max_output=spec.max_output, frozen=_b(frozen))
     if spec.provider_kind == "claude_cli":  # 3318: the CLI signs in by itself, no base_url or api_key_env
-        config_text = CLAUDE_CLI_CONFIG_TEMPLATE.format(version=TEMPLATE_VERSION, **common)
+        config_text = CLAUDE_CLI_CONFIG_TEMPLATE.format(**common)
     else:
-        config_text = CONFIG_TEMPLATE.format(version=TEMPLATE_VERSION, provider_kind=_s(spec.provider_kind),
-                                             base_url=_s(spec.base_url), api_key_env=_s(spec.api_key_env),
-                                             rates=_rates(spec.price_row), **common)
+        config_text = CONFIG_TEMPLATE.format(provider_kind=_s(spec.provider_kind), base_url=_s(spec.base_url),
+                                             api_key_env=_s(spec.api_key_env), rates=_rates(spec.price_row), **common)
     config_text += _overlay_text(overlay)
     _check(tasks_text, config_text, spec, slug, files, visible, overlay)
     return _write(workspace, slug, tasks_text, config_text, visible)
@@ -419,7 +414,7 @@ def _ladder_texts(spec: PlanSpec, slug: str, files: list[str], visible: str, fro
             if not MODEL_KEY.fullmatch(value):
                 raise PlanEmitError(f"{name} {value!r} cannot be a roko.toml key")
     tasks_text = LADDER_TASKS_TEMPLATE.format(
-        version=LADDER_VERSION, slug=_s(slug), skip_enrichment=_b(spec.skip_enrichment), task_id=_s(TASK_ID),
+        slug=_s(slug), skip_enrichment=_b(spec.skip_enrichment), task_id=_s(TASK_ID),
         title=_s(_title(spec.spec_text)), description=_s(spec.spec_text.strip() + "\n"), role=_s(ROLE),
         tier=_s(spec.tier), files="[" + ", ".join(_s(path) for path in files) + "]", max_retries=spec.max_retries,
         visible=_s(visible))
@@ -433,7 +428,7 @@ def _ladder_texts(spec: PlanSpec, slug: str, files: list[str], visible: str, fro
         max_output=rung.max_output, rates=_rates(rung.price_row)) for rung in spec.rungs)
     start = "{ " + ", ".join(f"{tier} = {_s(spec.start or '')}" for tier in TIERS) + " }"
     config_text = LADDER_CONFIG_TEMPLATE.format(
-        version=LADDER_VERSION, start_model=_s(spec.model), providers="".join(providers.values()), models=models,
+        start_model=_s(spec.model), providers="".join(providers.values()), models=models,
         rungs="".join(f"  {{ name = {_s(rung.name)}, model = {_s(rung.model)} }},\n" for rung in spec.rungs),
         start=start, max_retries=spec.max_retries, visible=_s(visible), verify_timeout_s=spec.verify_timeout_s,
         tier_key=spec.tier, max_turns=spec.max_turns, usd_cap=round(spec.usd_cap, 6),

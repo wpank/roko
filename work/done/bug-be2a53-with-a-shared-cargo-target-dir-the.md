@@ -2,7 +2,7 @@
 id = "bug-be2a53"
 kind = "bug"
 title = "With a shared CARGO_TARGET_DIR, the compile gate can pass code that does not compile (cargo reuses a same-named crate's build from another checkout)"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p1"
 goal = "tooling"
@@ -11,7 +11,7 @@ subsystem = ["roko-gate"]
 created = 2026-10-11
 updated = 2026-10-17
 last_verified = 2026-10-17
-last_verified_rev = "200ced75c"
+last_verified_rev = "82365e310"
 source = "CI-like local sweep 2026-10-11 (roko-90): compile_real_project with a shared CARGO_TARGET_DIR"
 anchors = ["crates/roko-core/src/child_env.rs::gate_env", "crates/roko-core/src/child_env.rs::build_dir_is_own", "crates/roko-cli/src/graph_execution/delivery.rs::regression_target_dir", "crates/roko-gate/tests/compile_real_project.rs"]
 links = { depends_on = [], blocks = [], related = ["bug-07ce0f", "bug-779ae7", "bug-df2b12", "bug-0d0d37", "bug-4b17d9", "gap-7c3e13", "gap-834de5"], supersedes = [], duplicate_of = "" }
@@ -21,6 +21,18 @@ command = "grep -qw 'fn build_dir_is_own' crates/roko-core/src/child_env.rs && g
 
 [[verify]]
 command = "grep -qw 'fn regression_target_dir' crates/roko-cli/src/graph_execution/delivery.rs && grep -qw 'fn c5_a_task_check_never_passes_on_another_worktrees_build' crates/roko-cli/tests/plan_branch_integration.rs && cargo test -p roko-cli --lib regression_builds_in_its_own_target_dir && cargo test -p roko-cli --test plan_branch_integration c5_a_task_check_never_passes_on_another_worktrees_build"
+
+[closed]
+at = 2026-10-17
+at_ts = "2026-10-17T03:48:38Z"
+commit = "82365e310"
+by = "commit trailer"
+executor = "claude-agent"
+via = "work-batch"
+size = "M"
+claimed_at = "2026-10-17T02:10:41Z"
+forced = false
+evidence = "Checks no longer build in a cargo target dir that other checkouts share. roko_core::child_env::apply_check_env leaves out an inherited CARGO_TARGET_DIR, CARGO_BUILD_TARGET_DIR or CARGO_BUILD_BUILD_DIR that names a directory outside the command's own (build_dir_is_own, CheckEnvRemoval::SharedBuildDir), unless [gates] env_passthrough names it exactly; ShellGate sets a step's directory before its environment. The delivery's regression check builds in .roko/state/regression-target (delivery.rs::regression_target_dir), not in CARGO_TARGET_DIR or workdir/target, and the run branch still moves only after it passes (bug-700d7c). Hazard confirmed first: CompileGate in two git worktrees with CARGO_TARGET_DIR=<repo>/target passed a broken crate (cargo reported fresh:true on the sibling's rmeta); the original repro failed 2 of 3 runs; a real worktree-per-task plan run (canary C5) with sharing brought back delivered a non-compiling crate as succeeded. Both [[verify]] tables pass at 82365e310: roko-core child_env build_dir tests (2); roko-gate compile_real_project::a_shared_target_dir_does_not_pass_another_checkouts_build, which failed before the fix; roko-cli delivery::tests::regression_builds_in_its_own_target_dir; plan_branch_integration::c5_a_task_check_never_passes_on_another_worktrees_build. Also: roko-core lib 2037 passed; roko-gate lib 704 passed, its check-env probes now asserting that no check path builds in a shared dir; roko-cli lib 3759 passed (share_run skipped), including the same probes on every roko-cli check path; plan_branch_integration 5 of 5; nightly fmt clean; clippy -p roko-core -p roko-gate -p roko-cli --no-deps -D warnings clean. Filed: bug-df2b12, bug-0d0d37, bug-4b17d9, gap-7c3e13, gap-834de5."
 +++
 
 ## Problem

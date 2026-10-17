@@ -331,6 +331,7 @@ impl CliRuntime for RecordingRuntime {
             plan_targets: vec![plan_dir],
             artifacts: vec![],
             cost_usd: 0.0125,
+            source_checks: None,
         })
     }
 
@@ -973,6 +974,7 @@ impl CliRuntime for NoPlanRuntime {
             plan_targets: Vec::new(),
             artifacts: Vec::new(),
             cost_usd: 0.0,
+            source_checks: None,
         })
     }
 }
@@ -3086,6 +3088,7 @@ impl CliRuntime for StagedRuntime {
             plans_root,
             artifacts: Vec::new(),
             cost_usd: 0.0125,
+            source_checks: None,
         })
     }
 

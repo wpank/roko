@@ -313,7 +313,11 @@ pub(crate) async fn start_plan_generation(
                 Ok(gen_result) => {
                     name_generated_plan(&workdir, &slug_for_task, title.as_deref());
                     match runtime.load_plan_summary(&workdir, &slug_for_task).await {
-                        Ok(Some(summary)) => Ok((summary.task_count, gen_result.cost_usd)),
+                        Ok(Some(summary)) => Ok((
+                            summary.task_count,
+                            gen_result.cost_usd,
+                            gen_result.source_checks,
+                        )),
                         Ok(None) => Err(no_plan()),
                         Err(err) => Err(format!(
                             "plan '{slug_for_task}' does not load after generation: {err}"
@@ -324,14 +328,18 @@ pub(crate) async fn start_plan_generation(
             };
 
             match generated {
-                Ok((task_count, cost_usd)) => {
-                    // bug-a0432b: the result says what writing the plan cost.
-                    let result_json = serde_json::to_string(&json!({
+                Ok((task_count, cost_usd, source_checks)) => {
+                    // bug-a0432b: the result says what writing the plan cost,
+                    // and gap-dc5d7c what became of the request's checks.
+                    let mut result = json!({
                         "slug": slug_for_task,
                         "task_count": task_count,
                         "cost_usd": cost_usd,
-                    }))
-                    .unwrap_or_default();
+                    });
+                    if let Some(source_checks) = source_checks {
+                        result["source_checks"] = source_checks;
+                    }
+                    let result_json = serde_json::to_string(&result).unwrap_or_default();
 
                     // Completed, in the handle and the kept record (bug-a0f01e).
                     crate::operations::finish_operation(

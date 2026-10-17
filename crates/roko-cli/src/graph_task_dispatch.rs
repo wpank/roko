@@ -56,6 +56,7 @@ mod audit_select;
 pub(crate) mod baseline_verify;
 mod bench_verify;
 mod budget;
+mod check_output;
 mod decision_log;
 mod diff_snapshot;
 mod failover;

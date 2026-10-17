@@ -1420,8 +1420,10 @@ mod tests {
         sender.publish(DashboardEvent::GateOutputLine {
             plan_id: "p1".to_string(),
             task_id: "T1".to_string(),
+            attempt: 2,
             gate: "verify[0]".to_string(),
             line: CANARY.to_string(),
+            stream: "stdout".to_string(),
         });
         log.finish(&Ok(0)).await.expect("finish log");
 

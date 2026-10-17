@@ -2,14 +2,16 @@
 id = "bug-9b65dc"
 kind = "bug"
 title = "A rung whose model fails the same infra way on every try (the boundary denying its stream, a stream that stalls or breaks) never climbs: such a failure is blamed on infra, so glm-4.7 burned four tries and strong and top were never tried"
-status = "open"
-triage = "unverified"
+status = "done"
+triage = "verified"
 severity = "p1"
 goal = "golden-path"
 size = "S"
 subsystem = ["roko-cli/graph-task-dispatch"]
 created = 2026-10-17
 updated = 2026-10-17
+last_verified = 2026-10-17
+last_verified_rev = "04e46172b"
 source = "tmp/hermes-roko-v6/findings/dogfood-will.md R3-2 (Run 3, 2026-10-17); seen again in roko-caps' live pocket-synth run"
 anchors = ["crates/roko-cli/src/graph_task_dispatch/ladder.rs::note_ladder_outcome"]
 lane = "rust-hot"
@@ -17,6 +19,13 @@ links = { depends_on = [], blocks = [], related = ["gap-3e770b", "gap-618a75"], 
 
 [[verify]]
 command = "grep -rqw 'fn a_repeated_infra_failure_on_a_rung_climbs' crates/roko-cli/src && cargo test -p roko-cli --lib a_repeated_infra_failure_on_a_rung_climbs"
+
+[closed]
+at = 2026-10-17
+at_ts = "2026-10-17T13:31:14Z"
+commit = "9442978eb"
+forced = false
+evidence = "9442978eb: note_ladder_outcome keeps, per task, a run of infra failures of one class on one rung: an immune denial by its reason code, any other failure by its outcome and the shared classifier's kind (provider_error:timeout for a stalled stream, provider_error:server_error for a broken one). The second of a class in a row climbs the task within MAX_ESCALATIONS and M1's cap; it is still not a failed try and never exhausts the ladder. Another class, a pass or an agent failure breaks the run; rate limits, exhausted quotas, credits and credentials never count (failover and the breaker answer them), nor do pinned or failover-substitute tries. classify_failure_text names a stream broken mid-response (read chunk failed, error decoding response body, a reset, a broken pipe) as a transient server_error, so provider health stops filing it as unknown. a_repeated_infra_failure_on_a_rung_climbs and a_broken_stream_is_a_transient_server_failure pass. Zero-cost run (roko-caps/e2e-climb.sh: plans/long-think, rungs mid on a stand-in that streams reasoning then an overload error object, as z.ai did, and strong on one that writes the file): with 04e46172b, tries 1 and 2 failed on mid (provider_error, infra), attempt_settled climbed true, try 3 ran on strong (route_decided ladder_reason climb) and passed; with main 47b3cdd20 and with the denial-only build, three tries failed on mid and the fourth reached strong only by failover once the breaker opened. Checks at 04e46172b (on main 7a5dd6046): fmt --check, clippy -D warnings (roko-agent, roko-core, roko-cli, roko-serve), lib tests roko-agent 2371 passed, roko-cli 3774 passed with the known load flake plan_check_publishes_start_heartbeat_and_finish (bug-8d8f98: an extra heartbeat while the slot's tests ran; plan_verify.rs is untouched); the [[verify]] passes."
 +++
 
 ## Problem

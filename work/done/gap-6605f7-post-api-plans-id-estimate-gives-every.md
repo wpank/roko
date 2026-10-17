@@ -2,20 +2,29 @@
 id = "gap-6605f7"
 kind = "gap"
 title = "POST /api/plans/{id}/estimate gives every task one global average with low confidence: no start rung, no rung prices, no retries or climbs"
-status = "open"
-triage = "unverified"
+status = "done"
+triage = "verified"
 severity = "p2"
 goal = "visibility"
 size = "M"
 subsystem = ["roko-serve/plans"]
 created = 2026-10-17
 updated = 2026-10-17
+last_verified = 2026-10-17
+last_verified_rev = "4f256a1fb"
 source = "tmp/hermes-roko-v6/findings/dogfood-will.md (dogfood-will Run 3, U9) and tmp/hermes-roko-v6/design/spec-v3.md (R7), via plugin-runs' triage"
 anchors = ["crates/roko-serve/src/routes/plans/reads.rs::plan_estimate", "crates/roko-serve/src/runtime.rs::CliRuntime"]
 links = { depends_on = [], blocks = [], related = [], supersedes = [], duplicate_of = "" }
 
 [[verify]]
 command = "grep -rqw 'fn plan_estimate_prices_each_task_on_its_start_rung_and_its_climbs' crates/roko-cli/ && cargo test -p roko-cli --lib plan_estimate_prices_each_task_on_its_start_rung_and_its_climbs"
+
+[closed]
+at = 2026-10-17
+at_ts = "2026-10-17T14:37:38Z"
+commit = "57742e17a"
+forced = false
+evidence = "POST /api/plans/{id}/estimate now prices each remaining task on its own route: the rung dispatch would start it on (the ladder start for its role, tier and hint; a pinned model stays on it; an authored max_retries is kept), then its climbs (2 attempts a rung, at most 2 climbs), at roko-core effective_rates, with the median tokens and seconds of the 200 most recent attempts of similar tasks (same role and tier, else tier, else any) from .roko/runs. Per task: start_rung, model, start_cost_usd, likely (weighted by the first-try rate) and worst (every attempt climbing) cost and time, worst_rungs, basis, samples; totals with cap_usd, by_rung and confidence. Live at zero cost on a copy of the pocket-synth run: before, every task 0.0826 USD and 30 s (total 0.3302); after, each task starts on cheap (gpt-oss-120b) at 0.0487 USD an attempt, the same as roko billed for that run ENV attempt, worst 0.3225 over cheap, cheap, mid, mid, strong, strong; plan likely 0.1948, worst 1.29, cap 0.25. On 4f256a1fb (main b2970cb12 merged in): the verify, the 3 roko-learn task_estimate tests, 68 roko-serve routes::plans tests, clippy -D warnings (roko-learn, roko-serve, roko-cli) and nightly fmt pass."
 +++
 
 ## Problem

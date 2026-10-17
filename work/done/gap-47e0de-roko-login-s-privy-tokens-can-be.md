@@ -2,16 +2,16 @@
 id = "gap-47e0de"
 kind = "gap"
 title = "roko login's Privy tokens can be allow-listed only by role or org_id claims; there is no user-id allow-list"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p2"
 goal = "release"
 size = "S"
 subsystem = ["roko-serve/auth", "roko-core/config"]
 created = 2026-09-29
-updated = 2026-10-15
-last_verified = 2026-09-29
-last_verified_rev = "d5c1dc6be"
+updated = 2026-10-17
+last_verified = 2026-10-17
+last_verified_rev = "b636e165d"
 source = "session:roko-b6 2026-09-29 portal close-out"
 discovered_from = "follow-up to bug-7eef96 (3fd7bfc76); its fix direction named a user-id allow-list that was not built"
 anchors = ["crates/roko-serve/src/routes/middleware.rs::try_privy_jwt", "crates/roko-serve/src/routes/middleware.rs::privy_allow_list_configured", "crates/roko-serve/src/jwks.rs::PrivyClaims", "crates/roko-core/src/config/serve.rs::privy_allowed_roles", "crates/roko-cli/src/commands/auth.rs::cmd_login_browser"]
@@ -19,6 +19,18 @@ links = { depends_on = [], blocks = [], related = ["bug-7eef96", "find-a1284b"],
 
 [[verify]]
 command = "grep -q 'privy_allowed_users' crates/roko-core/src/config/serve.rs && grep -rqw 'fn privy_jwt_user_allow_list_admits_only_listed_users' crates/roko-serve/src && cargo test -p roko-serve --lib privy_jwt_user_allow_list_admits_only_listed_users"
+
+[closed]
+at = 2026-10-17
+at_ts = "2026-10-17T02:04:21Z"
+commit = "b636e165d"
+by = "commit trailer"
+executor = "claude-agent"
+via = "work-batch"
+size = "S"
+claimed_at = "2026-10-16T19:19:20Z"
+forced = false
+evidence = "bed9613f2 adds serve.auth.privy_allowed_users (Vec<String> of Privy sub ids) to ServeAuthConfig. try_privy_jwt checks it first and grants admin independently of privy_workspace_id/privy_allowed_roles (no org_id or role claim needed); when neither of those is configured, an unlisted sub is rejected rather than falling through to an open grant. privy_allow_list_configured and PRIVY_ALLOW_LIST_HINT count the new field; a startup log line in warn_if_auth_misconfigured names how many users are listed. Also updated: the G0 posture check in roko-cli/commands/server.rs, build_schema_tree's config-schema sentinel, ServeAuthLayer::resolve, and docs/v3/24-AUTH.md (JWT validation chain + config reference). Verify passes: cargo test -p roko-serve --lib privy_jwt_user_allow_list_admits_only_listed_users, 1 passed. Fuller battery on bed9613f2 before merging main: roko-serve --lib privy_jwt filter 12 passed (incl. the 4 new tests: _admits_only_listed_users, _is_independent_of_workspace_mismatch, _is_independent_of_role_mismatch, _combines_with_workspace_for_other_users), the 3 touched routes::mod.rs tests pass, roko-core --lib every_accepted_config_field_is_in_the_schema_tree and documented_optional_keys_survive_a_load pass, roko-cli --bin roko posture_ filter 6 passed (incl. new posture_g0_accepts_a_user_id_allow_list_too). Merged main at 6064e5a9f (157 files, none of the 8 files this item touches) with no conflicts; re-ran the verify command, cargo +nightly fmt --all (no diff) and cargo clippy -p roko-serve -p roko-core --no-deps -- -D warnings (clean) on the merged tree at b636e165d."
 +++
 
 ## Problem

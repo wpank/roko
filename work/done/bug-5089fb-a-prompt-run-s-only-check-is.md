@@ -2,7 +2,7 @@
 id = "bug-5089fb"
 kind = "bug"
 title = "A prompt run's only check is the workspace's whole test suite, marked pass_on_base and never run on the base, so on a project whose suite is red before the change the run cannot pass and spends its cap"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p2"
 goal = "golden-path"
@@ -11,6 +11,7 @@ subsystem = ["roko-cli/run"]
 created = 2026-10-17
 updated = 2026-10-17
 last_verified = 2026-10-17
+last_verified_rev = "272c45b83"
 source = "round-v6-dogfood-will#R4-1"
 discovered_from = "agent:dogfood-will (round v6 run 4, 2026-10-17)"
 anchors = ["crates/roko-cli/src/run.rs::prompt_verify_steps", "crates/roko-cli/src/spec_red_on_base.rs::check_plans"]
@@ -19,6 +20,18 @@ links = { depends_on = [], blocks = [], related = ["gap-e2d2e5"], supersedes = [
 
 [[verify]]
 command = "grep -rqw 'fn prompt_run_on_a_red_base_judges_only_new_failures' crates/roko-cli/ && cargo test -p roko-cli --lib prompt_run_on_a_red_base_judges_only_new_failures"
+
+[closed]
+at = 2026-10-17
+at_ts = "2026-10-17T18:31:21Z"
+commit = "272c45b83"
+by = "roko-gates"
+executor = "claude-agent"
+via = "manual"
+size = "M"
+claimed_at = "2026-10-17T14:46:05Z"
+forced = false
+evidence = "run_prompt runs each Python test check (unittest, pytest) on the base commit first, in a scratch checkout, kept per commit in .roko/state/baselines/<commit>.json, where the gap-161be1 judgement reads it; a green base keeps today's rule. On a red base the step passes when the change adds no failure (tests that passed on the base pass, tests the change lets run or edits pass, a test module that failed to load and that the change touches loads, some test passes); the settlement names the rest ('3 tests already failed before the change, on the plan run's start commit: test_osc, test_render, test_svf') and the attempt settles passed_with_preexisting_failures. A base whose output names no failure (pytest stopped at collection) is judged by the test files the change adds or touches, run alone (>=1 test, all pass; none: the step fails). The agent gets a [task.context] note naming the old failures; the run publishes run.base_check (272c45b83). Proof at $0: prompt_run_on_a_red_base_judges_only_new_failures runs roko run with a scripted Claude CLI on a pocket-synth-shaped git repo with real python3 unittest: correct env.py -> success, passed_with_preexisting_failures, test_osc/test_render/test_svf named; a failing test -> fails naming test_env.ADSRTest.test_release_falls; a syntax error -> fails, test_env the task's to fix; base check ran once, kept on disk, event published, prompt carried the note. roko-cli lib 3799 passed, 0 failed (share test skipped); clippy roko-cli clean; nightly fmt applied. Cargo suites get no upfront base check (lazy judgement only); plan step 2 (a check the request names becomes the task's step) not done."
 +++
 
 ## Problem

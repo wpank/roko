@@ -2,20 +2,29 @@
 id = "bug-ce2967"
 kind = "bug"
 title = "A plan has three titles: the plan list reads plan.md's first heading and ignores [meta].title, run events read [meta].title and ignore plan.md, and /api/workflows title-cases the slug"
-status = "open"
-triage = "unverified"
+status = "done"
+triage = "verified"
 severity = "p2"
 goal = "visibility"
 size = "S"
 subsystem = ["roko-cli/plan"]
 created = 2026-10-17
 updated = 2026-10-17
+last_verified = 2026-10-17
+last_verified_rev = "feca5b4d5"
 source = "tmp/hermes-roko-v6/findings/dogfood-will.md (dogfood-will Run 3, U8), via plugin-runs' triage"
 anchors = ["crates/roko-cli/src/plan.rs::plan_title", "crates/roko-cli/src/graph_execution/plan_runner.rs::plan_title", "crates/roko-serve/src/routes/workflows.rs::parse_plan_dir"]
 links = { depends_on = [], blocks = [], related = ["bug-1602d4"], supersedes = [], duplicate_of = "" }
 
 [[verify]]
 command = "grep -rqw 'fn plan_title_reads_meta_title_then_plan_md_then_slug' crates/roko-cli/ && cargo test -p roko-cli --lib plan_title_reads_meta_title_then_plan_md_then_slug"
+
+[closed]
+at = 2026-10-17
+at_ts = "2026-10-17T17:30:47Z"
+commit = "f23c4689e"
+forced = false
+evidence = "One rule for a plan title, roko_core::task::plan_title: [meta].title, else the first H1 of plan.md after its front matter (else the front matter title:), else the slug. roko plan list and show, GET /api/plans and /api/plans/{id}/tasks, the Graph runner plan_set_loaded event and GET /api/workflows all use it. Live at zero cost (three plans): before, the list and /api/plans said pocket-synth while /api/workflows said pocket-synth: oscillator, filter, envelope, render, and workflows title-cased the slugs (Bare, From Doc); after, every route says pocket-synth: oscillator, filter, envelope, render, Written for people and bare. On feca5b4d5 (main 08d4fe558 and gap-6605f7 merged in): the verify, the 2 roko-core plan_title and markdown_title tests, the 2 plan_set_entries tests, gap-6605f7 verify, 3 roko-learn task_estimate tests, 68 roko-serve routes::plans tests, clippy -D warnings (roko-core, roko-learn, roko-serve, roko-cli) and nightly fmt pass."
 +++
 
 ## Problem

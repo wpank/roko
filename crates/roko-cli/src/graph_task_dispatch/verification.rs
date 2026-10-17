@@ -3198,7 +3198,7 @@ printf '%s\n' '{"type":"result","session_id":"s","model":"claude-sonnet-4-6","to
                 cost_usd: 4.0,
                 ..roko_core::Usage::zero()
             };
-            dispatcher.record_task_spend(&spec.plan_id, &task.id, &spent);
+            dispatcher.record_task_spend(&spec.plan_id, &task.id, &spent, true);
             let task_spend_key = format!("{}/{}", spec.plan_id, task.id);
             // What the next attempt reads, in dispatch's order: its budget
             // admission, then, once it opens, its prompt and its verify run.

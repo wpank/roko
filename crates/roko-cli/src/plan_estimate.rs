@@ -8,15 +8,16 @@
 //! its authored `max_retries`, else at least [`LADDER_MIN_RETRIES`]. A model
 //! that `model_hint` or `preferred_model` pins stays put, as does the
 //! router's pick for a tier when the ladder routes nothing. Each model is
-//! priced from the workspace's price snapshot, else its `[models.*]` rates,
-//! else built-in pricing. [`roko_learn::task_estimate`] prices the chains from
-//! what similar tasks' recent attempts used.
+//! priced as a run prices its calls ([`effective_rates`]): the workspace's
+//! price snapshot, else its `[models.*]` rates, else built-in pricing.
+//! [`roko_learn::task_estimate`] prices the chains from what similar tasks'
+//! recent attempts used.
 
 use std::collections::BTreeSet;
 use std::path::Path;
 
 use anyhow::{Context as _, Result};
-use roko_core::config::model_registry::builtin_pricing;
+use roko_core::config::model_registry::effective_rates;
 use roko_core::config::schema::RokoConfig;
 use roko_core::pricing_snapshot::PriceSnapshot;
 use roko_core::task::{TaskComplexityBand, TaskTier};
@@ -165,9 +166,12 @@ fn router_model(config: &RokoConfig, tier: TaskTier) -> String {
     }
 }
 
-/// The rates of `model` (a `[models.*]` key or a slug): the price snapshot's
-/// row for its slug, else its `[models.*]` rates, else its built-in pricing;
-/// `None` when nothing prices it.
+/// The rates of `model` (a `[models.*]` key or a slug) as a run prices its
+/// calls, by roko-core's rule ([`effective_rates`], the one `GET /api/models`
+/// shows): the price snapshot's row for its slug, else its `[models.*]` rates
+/// with its provider's cache-read rate, else its built-in pricing. `None`
+/// when nothing prices it. A cache read with no rate of its own costs as
+/// input.
 fn rates_for(config: &RokoConfig, snapshot: Option<&PriceSnapshot>, model: &str) -> Option<Rates> {
     let resolved = roko_core::agent::resolve_model(config, model);
     let slug = if resolved.slug.trim().is_empty() {
@@ -175,29 +179,18 @@ fn rates_for(config: &RokoConfig, snapshot: Option<&PriceSnapshot>, model: &str)
     } else {
         resolved.slug.as_str()
     };
-    if let Some(row) = snapshot.and_then(|snapshot| snapshot.row(slug)) {
-        return Some(Rates {
-            input_per_m: row.input,
-            cache_read_per_m: row.cache_read,
-            output_per_m: row.output,
-        });
-    }
-    if let Some(profile) = resolved
-        .profile
-        .as_ref()
-        .filter(|profile| profile.cost_input_per_m.is_some() || profile.cost_output_per_m.is_some())
-    {
-        let input = profile.cost_input_per_m.unwrap_or(0.0);
-        return Some(Rates {
-            input_per_m: input,
-            cache_read_per_m: profile.cost_cache_read_per_m.unwrap_or(input),
-            output_per_m: profile.cost_output_per_m.unwrap_or(0.0),
-        });
-    }
-    builtin_pricing(slug).map(|pricing| Rates {
-        input_per_m: pricing.input_per_m,
-        cache_read_per_m: pricing.cache_read_per_m,
-        output_per_m: pricing.output_per_m,
+    let profile =
+        resolved.profile.map(
+            |profile| match config.effective_providers().get(&profile.provider) {
+                Some(provider) => profile.with_provider_cache_rate(provider),
+                None => profile,
+            },
+        );
+    let rates = effective_rates(snapshot, profile.as_ref(), slug)?;
+    Some(Rates {
+        input_per_m: rates.input_per_m,
+        cache_read_per_m: rates.cache_read_per_m.unwrap_or(rates.input_per_m),
+        output_per_m: rates.output_per_m,
     })
 }
 

@@ -17,6 +17,9 @@ anchors = ["crates/roko-gate/src/audit/feedback.rs::step", "crates/roko-core/src
 lane = "rust-cold"
 parent = "spec-7a71d6"
 links = { depends_on = [], blocks = [], related = ["bug-1e97dc", "q-394b7f", "gap-d76b1b", "q-c02c36"], supersedes = [], duplicate_of = "" }
+
+[[verify]]
+command = "grep -rqw 'fn ladder_steps_down_once_the_pooled_run_is_quiet' crates/roko-gate/ && cargo test -p roko-gate --lib ladder_steps_down_once_the_pooled_run_is_quiet"
 +++
 
 ## Problem
@@ -75,3 +78,13 @@ Each option trades verify spend on healthy task types against how fast a level r
 ## Decision (2026-10-18, Will)
 
 Option 2: pool the quiet run. Add up n_eff and events over the consecutive windows since the last step, and step down once the pooled UCB95(θ) < θ_max/2 (about 150 audited units, 8 to 15 default windows). gap-d76b1b (audits on at 10%, decision 7103) may follow once this lands.
+
+## Done when
+
+- `Rung.run` pools each rate's n_eff and events (θ̂_H·n_eff) over the windows since the task type's last step, and the
+  ladder steps down one once the pooled UCB95(θ) < θ_max/2 and, by the same rule (the coordinator's 2026-10-18 brief:
+  "apply the same rule to γ"), the pooled UCB95(γ) < γ_max/2. A clean run is quiet at n_eff 150 for θ and 381 for γ,
+  so γ sets the pace at the defaults: about 20 to 40 default windows rather than 8 to 15.
+- bug-1e97dc's floor and step-up rules hold, and a window that steps up (at V4 too) starts a fresh run.
+- The `[[verify]]` test passes: clean windows of 20 step down at the 20th, four false greens in the run push it to the
+  21st and one gaming finding to the 29th, and the run lasts from one `close_due_windows` to the next.

@@ -2233,32 +2233,6 @@ fn validate_no_greenfield_duplicates(
 mod tests {
     use super::*;
 
-    /// bug-df9aff: `plan validate` warns about G1's plan: each task creates
-    /// a module it may not write (PLAN_052), and the render task's tests
-    /// import modules other tasks write without waiting for them (PLAN_053).
-    #[test]
-    fn plan_validate_warns_about_g1_tasks_that_cannot_create_or_wait() {
-        let (temp, plan) = crate::plan_generate::g1_plan();
-        let plan_dir = temp.path().join("plans/g1");
-        std::fs::create_dir_all(&plan_dir).expect("the plan directory");
-        std::fs::write(
-            plan_dir.join("tasks.toml"),
-            toml::to_string_pretty(&plan).expect("the plan as TOML"),
-        )
-        .expect("tasks.toml");
-        let report =
-            validate_plans_dir_with_workdir(&temp.path().join("plans"), None, Some(temp.path()))
-                .expect("validate");
-        let found = |rule: &str| {
-            report.plans[0]
-                .diagnostics
-                .iter()
-                .filter(|diagnostic| diagnostic.rule_id == rule)
-                .count()
-        };
-        assert_eq!(found("PLAN_052"), 4, "{:?}", report.plans[0].diagnostics);
-        assert_eq!(found("PLAN_053"), 3, "{:?}", report.plans[0].diagnostics);
-    }
     use std::fs;
     use tempfile::TempDir;
 

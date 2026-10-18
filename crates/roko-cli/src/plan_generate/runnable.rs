@@ -330,7 +330,7 @@ fn created_by(plan: &TasksFile, index: usize, workdir: &Path) -> Vec<String> {
 /// written by a task before them) while their `allowed_tools` lack
 /// `write_file`, or their `denied_tools` hold it (bug-df9aff): no try can
 /// create the file. Each with the first such file.
-pub(crate) fn creates_without_write(plan: &TasksFile, workdir: &Path) -> Vec<(String, String)> {
+pub fn creates_without_write(plan: &TasksFile, workdir: &Path) -> Vec<(String, String)> {
     (0..plan.tasks.len())
         .filter_map(|index| {
             let task = &plan.tasks[index];
@@ -381,10 +381,7 @@ pub(super) fn repair_write_tools(plan: &mut TasksFile, workdir: &Path) -> Vec<St
 /// own checks (one that exists in `workdir`) imports, when the task does not
 /// already wait for it and waiting would not make a cycle. Each as the task,
 /// the task to wait for, and the module's file.
-pub(crate) fn missing_dependencies(
-    plan: &TasksFile,
-    workdir: &Path,
-) -> Vec<(String, String, String)> {
+pub fn missing_dependencies(plan: &TasksFile, workdir: &Path) -> Vec<(String, String, String)> {
     let mut missing = Vec::new();
     for task in &plan.tasks {
         let mut imported: Vec<String> = Vec::new();
@@ -1180,6 +1177,36 @@ pub(super) mod tests {
         }));
         assert!(creates_without_write(&plan, temp.path()).is_empty());
         assert!(missing_dependencies(&plan, temp.path()).is_empty());
+    }
+
+    /// bug-df9aff: `plan validate` warns about G1's plan: each task creates
+    /// a module it may not write (PLAN_052), and the render task's tests
+    /// import modules other tasks write without waiting for them (PLAN_053).
+    #[test]
+    fn plan_validate_warns_about_g1_tasks_that_cannot_create_or_wait() {
+        let (temp, plan) = g1_plan();
+        let plan_dir = temp.path().join("plans/g1");
+        std::fs::create_dir_all(&plan_dir).expect("the plan directory");
+        std::fs::write(
+            plan_dir.join("tasks.toml"),
+            toml::to_string_pretty(&plan).expect("the plan as TOML"),
+        )
+        .expect("tasks.toml");
+        let report = crate::plan_validate::validate_plans_dir_with_workdir(
+            &temp.path().join("plans"),
+            None,
+            Some(temp.path()),
+        )
+        .expect("validate");
+        let found = |rule: &str| {
+            report.plans[0]
+                .diagnostics
+                .iter()
+                .filter(|diagnostic| diagnostic.rule_id == rule)
+                .count()
+        };
+        assert_eq!(found("PLAN_052"), 4, "{:?}", report.plans[0].diagnostics);
+        assert_eq!(found("PLAN_053"), 3, "{:?}", report.plans[0].diagnostics);
     }
 
     /// The prompt says which runners this machine has.

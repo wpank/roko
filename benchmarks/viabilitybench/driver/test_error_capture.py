@@ -87,6 +87,23 @@ def test_mask_draws_every_id_anew_in_its_form_and_follows_it_into_the_body():
     assert not any(secret_ in text or secret_ in json.dumps(headers) for secret_ in SECRETS)
 
 
+def test_mask_covers_account_ids_and_every_word_of_a_cookie_token():
+    """Moonshot's error answer carries its user id as Msh-Uid and a canary number, which PER_ANSWER does not name; a
+    cookie token loses even its short words, which faultproxy's own redraw keeps."""
+    headers = [("Msh-Uid", "q4wnzt8hjyc2rbm6xk0p"), ("Msh-Org-Id", "org-0123456789abcdef0123456789abcdef"),
+               ("x-internal-adhoc-canary", "4815162342"), ("Msh-Gid", "enterprise-tier-2"),
+               ("set-cookie", "__cf_bm=abcDEFgh.ijKLmnOP-1700000000.123456-1.0.1.1-QRstUV; HttpOnly; Path=/")]
+    out, _, masked = error_capture.mask(headers, b"")
+    values = dict(out)
+    assert masked == ["msh-uid", "msh-org-id", "x-internal-adhoc-canary", "set-cookie"]
+    assert values["Msh-Gid"] == "enterprise-tier-2"  # a tier, not an id
+    for name, old in headers[:3]:
+        assert values[name] != old and len(values[name]) == len(old), name
+    token = values["set-cookie"].split(";", 1)[0]
+    assert not any(word in token for word in ("abcDEFgh", "ijKLmnOP", "QRstUV")) and "1700000000.123456" in token
+    assert values["set-cookie"].endswith("; HttpOnly; Path=/") and token.startswith("__cf_bm=")
+
+
 def test_body_format_names_the_layout():
     value = {"error": {"message": "x", "code": None}}
     assert error_capture.body_format(json.dumps(value, separators=(",", ":")))["layout"] == "compact"

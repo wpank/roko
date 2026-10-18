@@ -30,10 +30,11 @@ comes back with an error), or what a provider that served it reports. Requests c
 **What it stores.** For each provider, `<out>/<provider>.json` (default `driver/testdata/provider_errors/`), a
 `vb.provider_error/1` fixture: the probe, the status, the content type, the body as text with its JSON format
 (`compact`, `spaced` or `indent:<n>`, and whether it ends in a newline), and the headers of the answer that a fault
-would carry (`faultproxy.NOT_MIRRORED` left out), in order. Request and trace ids, Cloudflare's ray, cookies
-(`faultproxy.PER_ANSWER`) and account and project ids (`ACCOUNT`) are drawn anew in the same form
-(`faultproxy._redrawn`), in the headers and wherever the body repeats them, as are ids the body holds of its own; no
-real id is stored, and a fixture that would still hold one, or a key, is refused. The run directory
+would carry (`faultproxy.NOT_MIRRORED` left out), in order. Request and trace ids and Cloudflare's ray
+(`faultproxy.PER_ANSWER`), and account, project and user ids (`ACCOUNT`) are drawn anew in the same form
+(`faultproxy._redrawn`), in the headers and wherever the body repeats them, as are ids the body holds of its own; a
+cookie's token is drawn anew in every word but its numbers (`_cookie`). No real id is stored, and a fixture that would
+still hold one, or a key, is refused. The run directory
 (`$VB_RESULTS/<experiment>/<run_id>/`) keeps the manifest, the ledger and the proxy's log, which records statuses and
 usage, never a header or a body.
 
@@ -82,7 +83,9 @@ DOCS = {
     "moonshot": "https://platform.kimi.ai/docs/api/errors",
     "openai": "https://developers.openai.com/api/docs/guides/error-codes",
 }
-ACCOUNT = re.compile(r"organi[sz]ation|project|account|user-?id", re.IGNORECASE)  # header names holding account ids
+# Header names whose values identify the account or may name the request, beside faultproxy.PER_ANSWER: OpenAI's
+# organization and project, Moonshot's Msh-Uid (its user id), and a deployment canary number.
+ACCOUNT = re.compile(r"organi[sz]ation|project|account|user|(?:^|-)uid$|canary", re.IGNORECASE)
 BODY_IDS = re.compile(r"(?:^|_)id$|request_?id|trace", re.IGNORECASE)  # body keys whose string values are ids
 DEFAULT_EXPERIMENT = "ERROR-CAPTURE"
 DEFAULT_LINE = "BL0"
@@ -104,10 +107,13 @@ def mask(headers: list[tuple[str, str]], body: bytes) -> tuple[list[tuple[str, s
     swaps: dict[str, str] = {}
     out = []
     for name, value in headers:
-        if faultproxy.PER_ANSWER.search(name) or ACCOUNT.search(name):
-            new = faultproxy._redrawn(value, cookie=name.lower() == "set-cookie")
-            if new == value and value:  # a value with no identifier in it: redraw it whole, in its own form
-                new = faultproxy._drawn_like(value, numbers=True) if value.isalnum() else value
+        if name.lower() == "set-cookie":
+            new = _cookie(value)
+            swaps[value] = new
+            masked.append(name.lower())
+            out.append((name, new))
+        elif faultproxy.PER_ANSWER.search(name) or ACCOUNT.search(name):
+            new = faultproxy._redrawn(value, cookie=False)
             swaps[value] = new
             masked.append(name.lower())
             out.append((name, new))
@@ -125,6 +131,23 @@ def mask(headers: list[tuple[str, str]], body: bytes) -> tuple[list[tuple[str, s
         if old:
             text = text.replace(old, new)
     return out, text.encode("utf-8"), masked
+
+
+def _cookie(value: str) -> str:
+    """A cookie with every run of its token that is not digits alone drawn anew in its own alphabet: stricter than
+    `faultproxy._redrawn`, which keeps a short word so that a fault's cookie reads like a real one. The name, the
+    attributes and the token's numbers (its timestamps) stay."""
+    name, equals, rest = value.partition("=")
+    token, semicolon, attributes = rest.partition(";")
+
+    def draw(run: re.Match) -> str:
+        text = run.group(0)
+        if text.isdigit():
+            return text
+        return "".join(secrets.choice("0123456789" if char.isdigit() else "abcdefghijklmnopqrstuvwxyz" if char.islower()
+                                      else "ABCDEFGHIJKLMNOPQRSTUVWXYZ") for char in text)
+
+    return name + equals + re.sub(r"[A-Za-z0-9]+", draw, token) + semicolon + attributes
 
 
 def _walk(value: object, key: str = "") -> list[tuple[str, object]]:

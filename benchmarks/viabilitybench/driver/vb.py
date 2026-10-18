@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
-"""`vb`, the ViabilityBench driver (S08 §5.7): `run`, `estimate`, `materialize`, `campaign`, `ledger`, `report`
-and `replay`.
+"""`vb`, the ViabilityBench driver (S08 §5.7): `run`, `estimate`, `materialize`, `campaign`, `ledger`, `report`,
+`replay` and `refine`.
 
     vb run --experiment PILOT-A --stream pilot --arm cheap_direct --model gpt-oss-120b --seeds 1-3 \
            --allow-network --max-cost-usd 10 [--line BL0] [--limit N] [--proxy] [--disturbance SPEC.toml] \
@@ -8,6 +8,7 @@ and `replay`.
     vb estimate --stream pilot --arm cheap_direct --model gpt-oss-120b --seeds 1-3
     vb materialize --stream pilot --instance F1-l1-0001 --out DIR
     vb campaign --manifest experiments/pilot_a.toml --dry-run        # an experiment's blocks (campaign.py)
+    vb refine --allow-network --max-cost-usd 0.40                    # the refiner's live cost sample (refine_live.py)
 
 `vb run` runs every (task, seed) of a stream on one arm and one model, in a fresh workdir under `$VB_WORK` (default
 `~/workspaces/`), outside the repository, whose path names neither the task nor the run (below). For each one it:
@@ -140,6 +141,7 @@ import ledger
 import materialize
 import provider
 import records
+import refine_live
 import secret
 import vb_verify
 from common import hmac_seed, knobs, repo, toolchain
@@ -360,6 +362,11 @@ def cmd_estimate(args: argparse.Namespace) -> int:
 def cmd_campaign(args: argparse.Namespace) -> int:
     """`vb campaign` (campaign.py), which gets this module rather than importing a second copy of it."""
     return campaign.cmd_campaign(sys.modules[__name__], args)
+
+
+def cmd_refine(args: argparse.Namespace) -> int:
+    """`vb refine` (refine_live.py, task 3236), which gets this module as `vb campaign` does."""
+    return refine_live.cmd_refine(sys.modules[__name__], args)
 
 
 def cmd_materialize(args: argparse.Namespace) -> int:
@@ -927,6 +934,10 @@ def _parser() -> argparse.ArgumentParser:
                                        allow_abbrev=False)
     campaign.add_arguments(run_campaign)
     run_campaign.set_defaults(handler=cmd_campaign)
+    run_refine = commands.add_parser("refine", help="the spec refiner on a live model over a band C/D sample, "
+                                     "ledgered (task 3236)", allow_abbrev=False)
+    refine_live.add_arguments(run_refine)
+    run_refine.set_defaults(handler=cmd_refine)
     return parser
 
 

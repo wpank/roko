@@ -20,6 +20,7 @@ from pathlib import Path
 
 import pytest
 
+import error_capture
 import faultproxy
 import layout
 import ledger
@@ -752,22 +753,29 @@ PROVIDER_HEADERS = {
                ("cf-ray", "8f3e2b1c9d0a4e5f-SJC"),
                ("strict-transport-security", "max-age=31536000; includeSubDomains; preload")],
 }
-# Each provider's own error bodies (docs.z.ai, platform.kimi.ai, OpenAI's error codes, a captured Cerebras 401): its
-# 429, its 500, its 503, and whether it sends compact JSON.
+# Each provider's own error bodies (docs.z.ai, platform.kimi.ai, OpenAI's error codes, public reports of Cerebras's
+# 429s): its 429, its 500, its 503, written out as the provider lays them out, and the Content-Type it sends them under.
+# The layout, the key order and the Content-Type are those of each provider's captured error (gap-db8dab,
+# driver/testdata/provider_errors/): OpenAI indents by four spaces and ends with a newline, the others are compact,
+# Moonshot's message comes before its type, and z.ai sends no Content-Type with an error.
+COMPACT = (",", ":")
 PROVIDER_ERRORS = {
     "cerebras": ({"message": "Requests per minute limit exceeded - too many requests sent.",
                   "type": "too_many_requests_error", "param": None, "code": None},
-                 {"message": "Internal error", "type": "server_error", "param": None, "code": None}, None, True),
+                 {"message": "Internal error", "type": "server_error", "param": None, "code": None}, None,
+                 lambda body: json.dumps(body, separators=COMPACT).encode(), "application/json"),
     "zai": ({"error": {"code": "1302", "message": "Rate limit reached for requests"}},
-            {"error": {"message": "Internal Error"}}, None, True),
-    "moonshot": ({"error": {"type": "rate_limit_reached_error", "message": "Organization-level RPM limit reached"}},
-                 {"error": {"type": "server_error", "message": "Internal error"}},
-                 {"error": {"type": "server_unavailable",
-                            "message": "The service is unavailable, please try again later"}}, False),
+            {"error": {"message": "Internal Error"}}, None,
+            lambda body: json.dumps(body, separators=COMPACT).encode(), None),
+    "moonshot": ({"error": {"message": "Organization-level RPM limit reached", "type": "rate_limit_reached_error"}},
+                 {"error": {"message": "Internal error", "type": "server_error"}},
+                 {"error": {"message": "The service is unavailable, please try again later",
+                            "type": "server_unavailable"}},
+                 lambda body: json.dumps(body, separators=COMPACT).encode(), "application/json; charset=utf-8"),
     "openai": ({"error": {"message": faultproxy.RATE_LIMITED, "type": "requests", "param": None,
                           "code": "rate_limit_exceeded"}},
                {"error": {"message": faultproxy.SERVER_ERROR, "type": "server_error", "param": None, "code": None}},
-               None, False),
+               None, lambda body: (json.dumps(body, indent=4) + "\n").encode(), "application/json; charset=utf-8"),
 }
 # The words no 429 of the proxy's may hold: Roko reads them as billing, a quota, a usage window, an auth failure or a
 # context overflow, and litellm as a context window or a bad request, so a rate limit would not read as one.
@@ -805,16 +813,17 @@ def test_an_injected_fault_looks_like_the_upstreams_own(name, log):
     headers (PROVIDER_HEADERS), a rate_limit fault and an http_5xx fault at 500 and at 503 carry the header names of a
     forwarded answer of that provider, each as often (z.ai's three vary lines), and a rate limit's Retry-After; the
     values that are new on every answer (a request id, cf-ray, a cookie's token) are drawn anew in the same form for
-    each fault, and the others are the provider's; the body has the provider's own shape and words, compact where
-    the provider's is (PROVIDER_ERRORS); and the statuses, Retry-After and the log are as before. A 429 holds no word
-    a harness reads as anything but a rate limit, a 5xx none a harness classifies by, and no answer names the task or
-    a fault. A fault before the upstream has answered anything carries none of its headers."""
-    rate_limited, server_error, unavailable, compact = PROVIDER_ERRORS[name]
+    each fault, and the others are the provider's; the body has the provider's own shape and words, laid out and
+    labelled as the provider's own errors are (PROVIDER_ERRORS); and the statuses, Retry-After and the log are as
+    before. A 429 holds no word a harness reads as anything but a rate limit, a 5xx none a harness classifies by, and
+    no answer names the task or a fault. A fault before the upstream has answered anything carries the headers of its
+    provider's captured error instead (gap-db8dab; test_the_fault_templates_match_captured_errors checks them)."""
+    rate_limited, server_error, unavailable, render, content_type = PROVIDER_ERRORS[name]
     with StubUpstream(headers=PROVIDER_HEADERS[name]) as stub, faultproxy.FaultProxy(
             [faultproxy.Upstream(name, stub.url)], log_path=log) as proxy:
         url = completions(proxy, name)
         proxy.configure(task="F8-l3-0038.s1", profile={"name": "rate_limit", "p": 1.0, "retry_after": 7})
-        early = post(url, REQUEST)  # nothing forwarded yet: no header of the provider's to carry
+        early = post(url, REQUEST)  # nothing forwarded yet: the headers of the provider's captured error
         proxy.configure(profile="clean")
         forwarded = post(url, REQUEST)
         proxy.configure(profile={"name": "rate_limit", "p": 1.0, "retry_after": 7})
@@ -835,14 +844,18 @@ def test_an_injected_fault_looks_like_the_upstreams_own(name, log):
 
     own = {header.lower() for header, _ in PROVIDER_HEADERS[name]}
     assert forwarded.status == 200 and own <= set(names(forwarded)), forwarded.pairs
-    assert early.status == 429 and not own & set(names(early)) and early.headers["Retry-After"] == "7"
+    template = Counter(header.lower() for header, _ in faultproxy.UPSTREAM_ERRORS[name].headers)
+    written = Counter({"server": 1, "date": 1, "content-length": 1, "retry-after": 1,  # what the proxy writes itself
+                       **({"content-type": 1} if content_type else {})})
+    assert early.status == 429 and early.headers["Retry-After"] == "7" and names(early) == template + written
     assert {reply.status for key, reply in faults.items() if key.startswith("rate_limit")} == {429}
     assert (faults["http_5xx:500"].status, faults["http_5xx:503"].status) == (500, 503)
+    untyped = Counter() if content_type else Counter({"content-type": 1})  # z.ai sends its errors with none
     for key, reply in faults.items():
         retry = Counter({"retry-after": 1}) if key.startswith("rate_limit") else Counter()
-        assert names(reply) == names(forwarded) + retry, (key, reply.pairs, forwarded.pairs)
+        assert names(reply) == names(forwarded) + retry - untyped, (key, reply.pairs, forwarded.pairs)
         assert reply.headers.get("Retry-After") == ("7" if retry else None), key
-        assert reply.headers["Content-Type"] == "application/json", key
+        assert reply.headers.get("Content-Type") == content_type, key
         for header, forwarded_values in values(forwarded).items():
             if header not in own:
                 continue
@@ -853,10 +866,9 @@ def test_an_injected_fault_looks_like_the_upstreams_own(name, log):
                     assert now == was, (key, header, was, now)
     for header in own & PER_ANSWER_NAMES:  # a new value for every fault, not one per run
         assert values(faults["rate_limit"])[header] != values(faults["rate_limit:again"])[header], header
-    separators = (",", ":") if compact else None
     for key, body in (("rate_limit", rate_limited), ("rate_limit:again", rate_limited),
                       ("http_5xx:500", server_error), ("http_5xx:503", unavailable or server_error)):
-        assert faults[key].body == json.dumps(body, separators=separators).encode(), (key, faults[key].body)
+        assert faults[key].body == render(body), (key, faults[key].body)
     for key, reply in faults.items():  # what the proxy writes itself names nothing (the provider's own headers aside)
         seen = reply.body.decode() + "".join(f"{header}: {value}\n" for header, value in reply.pairs
                                              if header.lower() not in own)
@@ -870,6 +882,68 @@ def test_an_injected_fault_looks_like_the_upstreams_own(name, log):
     assert [(row["fault_injected"], row["status"], row["forwarded"]) for row in rows] == [
         ("rate_limit", 429, False), (None, 200, True), ("rate_limit", 429, False), ("rate_limit", 429, False),
         ("http_5xx", 500, False), ("http_5xx", 503, False)]
+
+
+CAPTURES = layout.DRIVER_DIR / "testdata" / "provider_errors"  # `vb capture-errors`, 2026-10-18 (gap-db8dab)
+WRITTEN_BY_PROXY = {"server", "date", "content-length", "content-type", "retry-after"}
+
+
+def envelope(document: dict) -> tuple[str | None, list[str]]:
+    """An error body's wrapper key ("error", or None for a flat body) and the keys of its error object, in order."""
+    return ("error", list(document["error"])) if list(document) == ["error"] else (None, list(document))
+
+
+def same_form(was: str, now: str) -> bool:
+    """A per-answer value drawn anew in its form (`drawn_anew`), or one with no identifier in it, which stays."""
+    return drawn_anew(was, now) or (now == was and not re.search(r"\d|[A-Za-z]{9,}", was))
+
+
+@pytest.mark.parametrize("name", ["cerebras", "moonshot", "openai", "zai"])
+def test_the_fault_templates_match_captured_errors(name, log):
+    """gap-db8dab: each provider's faults answer as its captured error does (driver/testdata/provider_errors/, `vb
+    capture-errors` on 2026-10-18: none of the four documents a way to get a 429 or a 5xx on request, so each capture
+    is its error for a model that does not exist). Its 429, 500 and 503 bodies use the capture's envelope, flat or
+    under "error", with their keys in the capture's order (z.ai's 5xx leaves out the code its documentation shows as
+    "-"), and the capture's layout and Content-Type. A fault on a fresh proxy, before the upstream has answered
+    anything, carries the capture's headers, in order and each as often: the values that are new on every answer drawn
+    anew in their form for each fault, the others the capture's. The words of a 429 and a 5xx are not checked here: the
+    captures hold none (test_an_injected_fault_looks_like_the_upstreams_own checks them against the documents)."""
+    capture = json.loads((CAPTURES / f"{name}.json").read_text(encoding="utf-8"))
+    errors = faultproxy.UPSTREAM_ERRORS[name]
+    assert capture["provider"] == name and capture["kind"] == "unknown_model" and "429" in capture["why"]
+    wrapper, keys = envelope(json.loads(capture["body"]))
+    for status in (429, 500, 503):
+        body = errors.body(status)
+        fault_wrapper, fault_keys = envelope(json.loads(body))
+        assert fault_wrapper == wrapper and [key for key in keys if key in fault_keys] == fault_keys, (status, body)
+        assert set(fault_keys) <= set(keys) and error_capture.body_format(body.decode()) == capture["format"], status
+    assert errors.content_type == capture["content_type"]
+    assert [list(pair) for pair in errors.headers] == capture["headers"]  # the template is the capture, masked
+
+    with StubUpstream() as stub, faultproxy.FaultProxy([faultproxy.Upstream(name, stub.url)], log_path=log) as proxy:
+        url = completions(proxy, name)
+        proxy.configure(task="t1.s1", profile={"name": "rate_limit", "p": 1.0, "retry_after": 3})
+        replies = {429: post(url, REQUEST), "again": post(url, REQUEST)}
+        proxy.configure(profile={"name": "http_5xx", "p": 1.0, "status": 503})
+        replies[503] = post(url, REQUEST)
+    assert stub.requests == []  # nothing was forwarded: every answer is a fault on a fresh proxy
+    captured = [(header, value) for header, value in capture["headers"]]
+    for key, reply in replies.items():
+        assert reply.status == (503 if key == 503 else 429) and reply.headers.get("Content-Type") == capture[
+            "content_type"], key
+        carried = [(header, value) for header, value in reply.pairs if header.lower() not in WRITTEN_BY_PROXY]
+        assert [header for header, _ in carried] == [header for header, _ in captured], (key, carried)
+        for (header, now), (_, was) in zip(carried, captured):
+            if faultproxy.PER_ANSWER.search(header):
+                assert same_form(was, now), (key, header, was, now)
+            else:
+                assert now == was, (key, header, was, now)
+        assert reply.body == errors.body(reply.status), key
+    def ids(reply: Reply) -> list[str]:  # the per-answer values that hold an identifier
+        return [value for header, value in reply.pairs
+                if faultproxy.PER_ANSWER.search(header) and re.search(r"\d|[A-Za-z]{9,}", value)]
+
+    assert ids(replies[429]) and all(a != b for a, b in zip(ids(replies[429]), ids(replies["again"]))), name
 
 
 def test_control_endpoint_needs_the_token(proxy, upstream):

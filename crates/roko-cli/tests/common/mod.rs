@@ -642,11 +642,18 @@ fn inherited_vars_to_drop() -> Vec<std::ffi::OsString> {
 /// merges `~/.roko/config.toml`'s providers and models. Every test that
 /// spawns `roko` goes through it.
 pub trait Isolated {
-    /// Run with the scratch `HOME` and a test `USER`, and without the
-    /// invoking environment's provider keys and `ROKO_*`, log and config
-    /// variables. Call it before the test sets variables of its own.
+    /// Run with the scratch `HOME` and a test `USER`, without the invoking
+    /// environment's provider keys and `ROKO_*`, log and config variables,
+    /// and with audits off ([`AUDITS_OFF`]). Call it before the test sets
+    /// variables of its own.
     fn isolated(&mut self) -> &mut Self;
 }
+
+/// Audits are on by default (decision 7103), and a run that draws one
+/// re-runs the audited task's checks and waits for the audit to drain at
+/// close, so a fixture's run would audit at random. A spawned `roko` runs
+/// none unless its test sets this variable to `true`, or removes it.
+pub const AUDITS_OFF: (&str, &str) = ("ROKO__AUDIT__ENABLED", "false");
 
 impl Isolated for ProcessCommand {
     fn isolated(&mut self) -> &mut Self {
@@ -656,7 +663,7 @@ impl Isolated for ProcessCommand {
         for name in inherited_vars_to_drop() {
             self.env_remove(name);
         }
-        self
+        self.env(AUDITS_OFF.0, AUDITS_OFF.1)
     }
 }
 
@@ -668,7 +675,7 @@ impl Isolated for Command {
         for name in inherited_vars_to_drop() {
             self.env_remove(name);
         }
-        self
+        self.env(AUDITS_OFF.0, AUDITS_OFF.1)
     }
 }
 

@@ -510,6 +510,7 @@ pub(crate) async fn cmd_run(
     engine: Option<String>,
     domain: Option<roko_core::TaskDomain>,
     no_holdout: bool,
+    no_audit: bool,
 ) -> Result<i32> {
     // Build CLI overrides from clap-parsed args instead of re-parsing
     // process args or laundering through env vars.
@@ -589,6 +590,7 @@ pub(crate) async fn cmd_run(
         max_usd: None,
         origin: roko_serve::runtime::RunOrigin::Cli,
         no_holdout,
+        no_audit,
         // The server this command started, if any, decides as for its own
         // runs (gap-5fda00).
         live_agent_output: server_guard.as_ref().map_or_else(

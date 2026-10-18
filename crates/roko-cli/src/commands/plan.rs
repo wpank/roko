@@ -265,6 +265,11 @@ The legacy Runner-v2 engine has been removed. --engine legacy is accepted but ex
         /// roko.toml does the same for every run.
         #[arg(long)]
         no_holdout: bool,
+        /// Run no audits (decision 7103): no green attempt is drawn for a
+        /// deep audit, for this run alone, so audits spend nothing. `[audit]
+        /// enabled = false` in roko.toml does the same for every run.
+        #[arg(long)]
+        no_audit: bool,
         /// Skip the disk-space pre-check and start the plan even when free disk
         /// is below `resources.min_free_disk_mb`. Use with caution: the plan
         /// may fail mid-run if disk space is exhausted.
@@ -1254,6 +1259,7 @@ pub(crate) async fn cmd_plan(cli: &Cli, cmd: PlanCmd) -> Result<i32> {
             no_budget,
             frozen_learning,
             no_holdout,
+            no_audit,
             force,
             dangerously_skip_permissions,
             log_file,
@@ -1399,6 +1405,13 @@ pub(crate) async fn cmd_plan(cli: &Cli, cmd: PlanCmd) -> Result<i32> {
                          = true there, or stop the server first"
                     );
                 }
+                if no_audit {
+                    anyhow::bail!(
+                        "--no-audit cannot be used when a server owns this workspace: the \
+                         server runs the plan under its own config; set [audit] enabled = false \
+                         there, or stop the server first"
+                    );
+                }
                 return roko_cli::serve_client::run_plan_via_server(
                     &wd,
                     &resolved_plans_dir,
@@ -1443,6 +1456,7 @@ pub(crate) async fn cmd_plan(cli: &Cli, cmd: PlanCmd) -> Result<i32> {
                     no_budget,
                     frozen_learning,
                     no_holdout,
+                    no_audit,
                     effective_model_override.clone(),
                     dangerously_skip_permissions,
                     log_file.as_deref(),
@@ -2388,6 +2402,7 @@ pub(crate) async fn cmd_resume(
         no_budget: false,
         frozen_learning: false,
         no_holdout: false,
+        no_audit: false,
         force: false,
         dangerously_skip_permissions: false,
         log_file: None,
@@ -2789,7 +2804,12 @@ fn spec_gate_before_run(plans_dir: &Path, workdir: &Path, no_holdout: bool) -> O
         .ok()
         .and_then(|text| toml::from_str::<roko_core::config::schema::RokoConfig>(&text).ok())
         .unwrap_or_default();
-    roko_cli::graph_execution::plan_runner::apply_run_switches(&mut config, false, no_holdout);
+    roko_cli::graph_execution::plan_runner::apply_run_switches(
+        &mut config,
+        false,
+        no_holdout,
+        false,
+    );
     let config = config.spec_quality;
     let files = match plan_validate::collect_tasks_files(plans_dir) {
         Ok(files) => files,
@@ -3348,6 +3368,7 @@ async fn cmd_plan_run_engine(
     no_budget: bool,
     frozen_learning: bool,
     no_holdout: bool,
+    no_audit: bool,
     cli_model_override: Option<String>,
     dangerously_skip_permissions: bool,
     log_file: Option<&std::path::Path>,
@@ -3435,6 +3456,7 @@ async fn cmd_plan_run_engine(
         frozen_learning,
         // `--no-holdout` runs it in maximize mode (decision 4115).
         no_holdout,
+        no_audit,
         metrics: None,
         outbound_floor: None,
     };

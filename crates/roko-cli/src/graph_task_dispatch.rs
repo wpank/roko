@@ -806,6 +806,7 @@ impl GraphTaskDispatcher {
                 .llm_call_secs
                 .max(1)
                 .saturating_mul(1_000),
+            allowance: None,
         };
         HelperAgent::new(agent, target, self.pricing_snapshot())
     }
@@ -2101,7 +2102,7 @@ printf '%s\n' '{"type":"result","session_id":"sess-1","model":"claude-sonnet-4-6
         permissions.set_mode(0o755);
         std::fs::set_permissions(&script, permissions).expect("make script executable");
 
-        let mut config = RokoConfig::default();
+        let mut config = fixture_config();
         config.providers.clear();
         config.models.clear();
         config.agent.default_model = "graph-model".to_string();
@@ -2374,7 +2375,7 @@ printf '%s\n' '{{"type":"result","subtype":"success","is_error":false,"total_cos
         permissions.set_mode(0o755);
         std::fs::set_permissions(&script, permissions).expect("make script executable");
 
-        let mut config = RokoConfig::default();
+        let mut config = fixture_config();
         config.providers.clear();
         config.models.clear();
         config.agent.default_model = "graph-model".to_string();
@@ -2534,6 +2535,23 @@ printf '%s\n' '{"type":"result","session_id":"sess-v1","model":"claude-sonnet-4-
         config.gates.cargo_fix_enabled = false;
     }
 
+    /// Audits are on by default (decision 7103), and their vault defaults to
+    /// `~/.roko/audit`: a dispatcher fixture runs them only with a vault of
+    /// its own (`[audit] home`), so no test writes to the operator's vault.
+    pub(crate) fn fence_audits(config: &mut RokoConfig) {
+        if config.audit.home.is_none() {
+            config.audit.enabled = false;
+        }
+    }
+
+    /// `RokoConfig::default()` for a dispatcher fixture, its audits fenced
+    /// ([`fence_audits`]).
+    pub(crate) fn fixture_config() -> RokoConfig {
+        let mut config = RokoConfig::default();
+        fence_audits(&mut config);
+        config
+    }
+
     /// [`no_auto_fix`] in maximize mode (`[experiments] maximize`): no loop
     /// withholds its content and no section is left out, so each prompt
     /// carries the learned content it retrieved, whatever arms the day's
@@ -2605,6 +2623,7 @@ printf '%s\n' '{"type":"result","session_id":"sess-v1","model":"claude-sonnet-4-
             },
         );
         configure(&mut config);
+        fence_audits(&mut config);
         let config = Arc::new(config);
         let factory =
             Arc::new(SharedAgentFactory::new(Arc::clone(&config), None, None, None).await);
@@ -2705,11 +2724,13 @@ printf '%s\n' '{"type":"result","session_id":"sess-v1","model":"claude-sonnet-4-
 
     // ─── Dispatch overhead and config wiring ─────────────────────────────────
 
-    /// A dispatcher over `config` whose factory owns no live provider.
+    /// A dispatcher over `config`, its audits fenced ([`fence_audits`]),
+    /// whose factory owns no live provider.
     pub(super) async fn make_bare_dispatcher(
-        config: RokoConfig,
+        mut config: RokoConfig,
         workdir: &Path,
     ) -> GraphTaskDispatcher {
+        fence_audits(&mut config);
         let config = Arc::new(config);
         let factory =
             Arc::new(SharedAgentFactory::new(Arc::clone(&config), None, None, None).await);
@@ -3326,7 +3347,7 @@ sleep 30
         base_url: String,
         feedback: GraphFeedbackContext,
     ) {
-        let mut config = RokoConfig::default();
+        let mut config = fixture_config();
         config.providers.clear();
         config.models.clear();
         config.agent.default_model = "api-model".to_string();
@@ -3590,7 +3611,7 @@ sleep 30
     async fn agent_spawned_names_planned_provider() {
         let temp = tempdir().expect("tempdir");
         let (base_url, _requests) = spawn_openai_mock(vec![final_turn("ok"), final_turn("ok")]);
-        let mut config = RokoConfig::default();
+        let mut config = fixture_config();
         config.providers.clear();
         config.models.clear();
         config.agent.default_model = "glm-model".to_string();
@@ -3653,7 +3674,7 @@ sleep 30
     async fn route_decisions_are_published() {
         let temp = tempdir().expect("tempdir");
         let (base_url, _requests) = spawn_openai_mock(vec![final_turn("ok")]);
-        let mut config = RokoConfig::default();
+        let mut config = fixture_config();
         config.providers.clear();
         config.models.clear();
         config.agent.default_model = "glm-model".to_string();
@@ -3755,7 +3776,7 @@ sleep 30
     async fn retried_attempts_publish_their_attempt_number() {
         let temp = tempdir().expect("tempdir");
         let (base_url, _requests) = spawn_openai_mock(vec![final_turn("ok"), final_turn("ok")]);
-        let mut config = RokoConfig::default();
+        let mut config = fixture_config();
         config.providers.clear();
         config.models.clear();
         config.agent.default_model = "glm-model".to_string();
@@ -3870,7 +3891,7 @@ sleep 30
             }
         });
         let temp = tempdir().expect("tempdir");
-        let mut config = RokoConfig::default();
+        let mut config = fixture_config();
         config.providers.clear();
         config.models.clear();
         config.agent.default_model = "claude-model".to_string();

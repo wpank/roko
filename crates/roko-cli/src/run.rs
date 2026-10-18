@@ -492,6 +492,9 @@ pub struct PromptRun<'a> {
     /// 4115): no learning loop is withheld, no route explores and the spec
     /// gate holds no task out, though every decision is logged.
     pub no_holdout: bool,
+    /// No audits for this run alone (`roko run --no-audit`, decision 7103):
+    /// no green attempt is drawn for a deep audit, so audits spend nothing.
+    pub no_audit: bool,
     /// The live agent output the run publishes while its attempts run, as
     /// `roko plan run` and a server's plan runs choose it (gap-5fda00).
     pub live_agent_output: crate::graph_task_dispatch::LiveAgentOutput,
@@ -700,6 +703,7 @@ pub async fn run_prompt(run: PromptRun<'_>) -> Result<WorkflowRunReport> {
             // `[learning] frozen` freezes a `roko run`.
             frozen_learning: false,
             no_holdout: run.no_holdout,
+            no_audit: run.no_audit,
             metrics: None,
             // A chat host's run holds outbound effects whatever its plan says
             // (gap-1a4563).
@@ -1303,11 +1307,19 @@ mod tests {
     use tempfile::TempDir;
 
     /// A workspace whose agent is a fake Claude CLI that says `done` at once,
-    /// with `rungs` (TOML) after its `[gates]` table.
+    /// with `rungs` (TOML) after its `[gates]` table. Audits are on by
+    /// default (decision 7103), so the workspace runs none unless `rungs`
+    /// has an `[audit]` table of its own: a test's run never writes to the
+    /// operator's `~/.roko/audit`.
     #[cfg(unix)]
     fn fake_agent_workspace(rungs: &str) -> TempDir {
         use std::os::unix::fs::PermissionsExt as _;
 
+        let audit = if rungs.contains("[audit]") {
+            ""
+        } else {
+            "\n[audit]\nenabled = false\n"
+        };
         let tmp = TempDir::new().expect("tempdir");
         let provider = tmp.path().join("fake-provider.sh");
         std::fs::write(
@@ -1342,7 +1354,7 @@ context_window = 200000
 
 [gates]
 sibling_settle_secs = 0
-{rungs}"#,
+{rungs}{audit}"#,
                 provider = provider.display().to_string()
             ),
         )
@@ -1380,6 +1392,7 @@ command = "test -f README.md"
             max_usd: None,
             origin: RunOrigin::Cli,
             no_holdout: false,
+            no_audit: false,
             live_agent_output: crate::graph_task_dispatch::LiveAgentOutput::ToolSteps,
             title: None,
         })
@@ -1554,6 +1567,7 @@ worktree_per_task = false
                 max_usd: None,
                 origin: RunOrigin::Cli,
                 no_holdout: false,
+                no_audit: false,
                 live_agent_output: crate::graph_task_dispatch::LiveAgentOutput::ToolSteps,
                 title: None,
             })
@@ -1670,6 +1684,7 @@ frozen = {frozen}
                 max_usd: None,
                 origin: RunOrigin::Cli,
                 no_holdout: false,
+                no_audit: false,
                 live_agent_output: crate::graph_task_dispatch::LiveAgentOutput::ToolSteps,
                 title: None,
             })
@@ -1730,6 +1745,7 @@ printf '%s\n' '{"type":"result","session_id":"run","model":"claude-sonnet-4-6","
                 max_usd: None,
                 origin: RunOrigin::Cli,
                 no_holdout: false,
+                no_audit: false,
                 live_agent_output: crate::graph_task_dispatch::LiveAgentOutput::ToolSteps,
                 title: None,
             })
@@ -1775,6 +1791,7 @@ command = "test -f README.md"
                 max_usd: None,
                 origin: RunOrigin::Cli,
                 no_holdout,
+                no_audit: false,
                 live_agent_output: crate::graph_task_dispatch::LiveAgentOutput::ToolSteps,
                 title: None,
             })
@@ -1796,6 +1813,85 @@ command = "test -f README.md"
         }
     }
 
+    /// gap-d76b1b (decision 7103): audits run by default. A `roko run` whose
+    /// roko.toml names only its audit vault commits to a run key, draws its
+    /// green attempt in the lottery at ρ = 0.10 and reveals the key; with
+    /// `--no-audit` it draws nothing and never opens the vault.
+    #[cfg(unix)]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn audits_run_by_default_and_no_audit_turns_them_off() {
+        use roko_gate::audit::ledger::{AuditEvent, records};
+
+        for no_audit in [false, true] {
+            let vault_home = TempDir::new().expect("the vault's home");
+            let root = vault_home.path().join("audit");
+            let tmp = fake_agent_workspace(&format!(
+                r#"
+[[gates.rungs]]
+name = "check"
+command = "test -f README.md"
+
+[audit]
+home = {root:?}
+"#,
+                root = root.display().to_string()
+            ));
+            let report = run_prompt(PromptRun {
+                prompt: "Say done",
+                workdir: tmp.path(),
+                tier: "focused",
+                overrides: &CliOverrides::default(),
+                max_retries: Some(0),
+                quiet: true,
+                state_hub: None,
+                run_id: None,
+                cancel: None,
+                domain: None,
+                max_usd: None,
+                origin: RunOrigin::Cli,
+                no_holdout: false,
+                no_audit,
+                live_agent_output: crate::graph_task_dispatch::LiveAgentOutput::ToolSteps,
+                title: None,
+            })
+            .await
+            .expect("roko run completes");
+            assert!(report.success, "{no_audit}: {report:?}");
+            if no_audit {
+                assert!(!root.exists(), "--no-audit opens no vault");
+                assert!(!tmp.path().join(".roko/audit/audits.jsonl").exists());
+                continue;
+            }
+            let audit = roko_core::config::audit::AuditConfig {
+                home: Some(root.clone()),
+                ..roko_core::config::audit::AuditConfig::default()
+            };
+            let vault = audit.vault(tmp.path()).expect("the run's vault");
+            let all = records(&vault.ledger_dir()).expect("the vault ledger");
+            let run_id = report.run_id.as_str();
+            let committed = all.iter().any(|record| {
+                matches!(&record.event, AuditEvent::KeyCommit { run_id: id, .. } if id == run_id)
+            });
+            let revealed = all.iter().any(|record| {
+                matches!(&record.event, AuditEvent::KeyReveal { run_id: id, .. } if id == run_id)
+            });
+            assert!(committed && revealed, "{all:?}");
+            let draws: Vec<(String, f64)> = all
+                .iter()
+                .filter_map(|record| match &record.event {
+                    AuditEvent::Selection {
+                        run_id: id,
+                        stratum,
+                        pi,
+                        ..
+                    } if id == run_id => Some((stratum.verdict.clone(), *pi)),
+                    _ => None,
+                })
+                .collect();
+            assert_eq!(draws, [("passed".to_string(), 0.10)], "{all:?}");
+        }
+    }
+
     /// Run `Say done` in `workdir`, in work domain `domain`, and return the
     /// task of the one-task plan it wrote.
     #[cfg(unix)]
@@ -1814,6 +1910,7 @@ command = "test -f README.md"
             max_usd: None,
             origin: RunOrigin::Cli,
             no_holdout: false,
+            no_audit: false,
             live_agent_output: crate::graph_task_dispatch::LiveAgentOutput::ToolSteps,
             title: None,
         })
@@ -1902,6 +1999,11 @@ context_window = 200000
 
 [gates]
 sibling_settle_secs = 0
+
+# Audits are on by default (decision 7103), and an unverified pass is drawn
+# at π = 1: the fixture runs none, so the test writes no audit vault.
+[audit]
+enabled = false
 "#,
                 provider = provider.display().to_string()
             ),
@@ -1924,6 +2026,7 @@ sibling_settle_secs = 0
             max_usd: None,
             origin: RunOrigin::Cli,
             no_holdout: false,
+            no_audit: false,
             live_agent_output: crate::graph_task_dispatch::LiveAgentOutput::ToolSteps,
             title: None,
         })

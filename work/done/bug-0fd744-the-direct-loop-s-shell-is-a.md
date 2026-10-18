@@ -2,14 +2,16 @@
 id = "bug-0fd744"
 kind = "bug"
 title = "The direct loop's shell is a child of the driver, whose command line names the experiment, the run id and the benchmark's own path, and whose environment keeps VB_DRIVER_ENV; a campaign puts every unit's run id there, and the agent reads it from inside the sandbox"
-status = "open"
-triage = "unverified"
+status = "done"
+triage = "verified"
 severity = "p3"
 goal = "proof"
 size = "M"
 subsystem = ["benchmarks/viabilitybench/driver"]
 created = 2026-10-17
 updated = 2026-10-18
+last_verified = 2026-10-18
+last_verified_rev = "bc81d6123"
 source = "bug-4c3a83 worker (claude-agent), 2026-10-17 (vb run started as a subprocess, as test_secret.py's test_the_driver_runs_with_a_scrubbed_environment starts it, on macOS 26.4: the direct loop's agent runs PS_PROBE, and its parent's argv and environment hold '--experiment TEST-SECRET', '--run-id run-1', 'benchmarks/viabilitybench', '--results' and 'VB_DRIVER_ENV=scrubbed')"
 discovered_from = "bug-4c3a83"
 anchors = ["benchmarks/viabilitybench/driver/agent_env.py::exec_scrubbed", "benchmarks/viabilitybench/driver/campaign.py::_run_unit", "benchmarks/viabilitybench/driver/mini_loop.py::run_command"]
@@ -18,6 +20,18 @@ links = { depends_on = [], blocks = [], related = ["bug-4c3a83", "gap-b94a2c", "
 
 [[verify]]
 command = "grep -qw 'def test_no_agent_parent_names_the_run' benchmarks/viabilitybench/driver/test_secret.py && benchmarks/viabilitybench/.venv/bin/python -m pytest benchmarks/viabilitybench/driver/test_secret.py -k test_no_agent_parent_names_the_run -q"
+
+[closed]
+at = 2026-10-18
+at_ts = "2026-10-18T18:12:11Z"
+commit = "bc81d6123"
+by = "commit trailer"
+executor = "claude-agent"
+via = "work-batch"
+size = "M"
+claimed_at = "2026-10-18T17:10:12Z"
+forced = false
+evidence = "bc81d6123: the direct loop's agent shell is no longer the driver's child. mini_loop.run_command starts a trampoline, the base interpreter (agent_env._base_python, outside the repository, the one the agent's own python3 links to) as -I -S -, with the agent's environment, and sends it its program (mini_loop.TRAMPOLINE) on stdin: the command line the driver used to start (sandbox-exec, then bash or the visible-verify wrapper) and the agent environment, as bytes. It posix_spawns them with /dev/null on stdin and the signals Popen restores, waits, and reports on a status pipe the shell never inherits (+ once started, =<code> once ended, -<error> when it could not start, worded as Popen's error), and never re-raises the shell's signal on itself. So the shell's parent shows that interpreter, -I -S - and the agent's own environment, and the sandbox profile with its deny paths is on no command line an agent can read once the shell runs. The driver, whose argv named the experiment, the run id (a campaign's names its block, e-oss-1 the honeypots), the results root and <repo>/benchmarks/viabilitybench, and whose environment held VB_DRIVER_ENV and __PYVENV_LAUNCHER__=<repo>/benchmarks/viabilitybench/.venv/bin/python, is one step further up. Decided under Will's decision 9 (## Decision below): no benchmark-internal identifier reaches an agent, for benchmark validity and against contamination through the public repository. The verify passes: test_no_agent_parent_names_the_run (driver/test_secret.py), 1 passed: a vb run started as a subprocess with run id e-oss-1, whose direct-loop agent reads its parent's argv and environment with PS_PROBE (sysctl KERN_PROCARGS2 from inside the sandbox, macOS 26.4); neither names TEST-PARENT, e-oss-1, vb run's flags, the results root, the secret file, a VB_ name or the benchmark (BENCHMARK_MARK), and the probe did read the trampoline (the agent's own HOME, -I -S -, the control). On the old mini_loop.py it fails: the parent named TEST-PARENT, e-oss-1, --experiment, --run-id, --results and the results root, and matched VB_, vb and viabilitybench. Nothing else changed for the command: test_the_shell_meets_the_same_under_its_trampoline (driver/test_driver.py: exit codes and signal deaths, both streams in one output, /dev/null on stdin, no other descriptor, the exact environment, the working directory, SIGPIPE at its default, a 100 KB command, the submit word, the time limit killing the whole session, a background job killed when the command ends, and the messages of a shell that cannot start) passes on the old and the new mini_loop.py; the shell is no longer its session's leader, the trampoline is, and each command takes about 30 ms more to start. The three tests that read the driver's environment through the agent (bug-979a06, bug-32eb77, gap-a8a160) now read it with DRIVER_PROBE, which walks up with proc_pidinfo and prints only the ancestor running vb.py, and still pass. Bench pytest: 828 passed, 17 skipped (14 with no roko binary in the worktree, the analysis stack, two opt-in sweeps), against 826 passed and the same 17 skipped before. Filed bug-4f9e49 (p3: the driver's own command line and environment still name the experiment, the run id and the benchmark's path, and every arm's agent reaches the driver as an ancestor, with proc_pidinfo and KERN_PROCARGS2 from inside the sandbox)."
 +++
 
 ## Problem

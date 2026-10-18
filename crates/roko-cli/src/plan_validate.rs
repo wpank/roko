@@ -198,6 +198,38 @@ fn validate_plans_dir_impl(
                     let diagnostics = ladder_diagnostics(&tasks_file, &plan.plan_id, ladder);
                     plan.diagnostics.extend(diagnostics);
                 }
+                // bug-df9aff: a task that creates a file it may not write, and
+                // one whose tests import what another task writes without
+                // waiting for it.
+                for (task, file) in
+                    roko_cli::plan_generate::creates_without_write(&tasks_file, workdir)
+                {
+                    plan.diagnostics.push(Diagnostic {
+                        severity: Severity::Warning,
+                        rule_id: "PLAN_052".to_string(),
+                        plan_id: Some(plan.plan_id.clone()),
+                        task_id: Some(task.clone()),
+                        message: format!(
+                            "task '{task}' creates `{file}`, but its allowed_tools do not include \
+                             write_file, so no try can create it"
+                        ),
+                    });
+                }
+                for (task, dependency, module) in
+                    roko_cli::plan_generate::missing_dependencies(&tasks_file, workdir)
+                {
+                    plan.diagnostics.push(Diagnostic {
+                        severity: Severity::Warning,
+                        rule_id: "PLAN_053".to_string(),
+                        plan_id: Some(plan.plan_id.clone()),
+                        task_id: Some(task.clone()),
+                        message: format!(
+                            "task '{task}' uses `{module}` (its tests import it, or it names what \
+                             the plan's tests import from it), which task '{dependency}' writes, \
+                             but it does not depend on '{dependency}', so it can run first"
+                        ),
+                    });
+                }
                 let diagnostics = speed_priority_diagnostics(&tasks_file, &plan.plan_id);
                 plan.diagnostics.extend(diagnostics);
                 let diagnostics =
@@ -2200,6 +2232,7 @@ fn validate_no_greenfield_duplicates(
 #[cfg(test)]
 mod tests {
     use super::*;
+
     use std::fs;
     use tempfile::TempDir;
 

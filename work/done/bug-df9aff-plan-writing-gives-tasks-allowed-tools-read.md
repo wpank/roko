@@ -2,18 +2,35 @@
 id = "bug-df9aff"
 kind = "bug"
 title = "Plan writing gives tasks allowed_tools = read_file, edit_file, grep for files that don't exist yet, so no try can create them (G1's 14-of-14 plan spent $0.47 of $0.60 with no changes on any rung); and it left T4 without its dependency on T1-T3"
-status = "open"
-triage = "unverified"
+status = "done"
+triage = "verified"
 severity = "p2"
 goal = "golden-path"
 size = "M"
 subsystem = ["roko-cli/plan-generate"]
 created = 2026-10-18
 updated = 2026-10-18
+last_verified = 2026-10-18
+last_verified_rev = "81f19628f"
 source = "round-v6-dogfood-desktop#L4-g1-final"
 discovered_from = "agent:dogfood-desktop (round v6 showcase take L4, 2026-10-18)"
 anchors = ["crates/roko-cli/src/plan_generate/runnable.rs::repair", "crates/roko-cli/src/plan_generate/runnable.rs::problems"]
 links = { depends_on = [], blocks = [], related = ["bug-8fe462"], supersedes = [], duplicate_of = "" }
+
+[[verify]]
+command = "grep -rqw 'fn generated_g1_tasks_may_write_and_wait_for_their_imports' crates/roko-cli/src && cargo test -p roko-cli --lib -- generated_g1_tasks_may_write_and_wait_for_their_imports g1_tasks_may_write_their_modules_and_render_waits_for_them plan_validate_warns_about_g1_tasks_that_cannot_create_or_wait"
+
+[closed]
+at = 2026-10-18
+at_ts = "2026-10-18T00:18:47Z"
+commit = "f769b52de"
+by = "roko-planner"
+executor = "claude-agent"
+via = "manual"
+size = "M"
+claimed_at = "2026-10-17T23:39:38Z"
+forced = false
+evidence = "Generation repairs both, deterministically, printing each: a task whose files include one that neither exists nor is written by a task before it gets write_file (added to allowed_tools, taken out of denied_tools); a task depends on each task that writes a Python module it uses: one its own tests import, or one whose names (as the plan test files import them: from synth.osc import Oscillator) its title, description or criteria mention, unless that makes a cycle. plan validate warns about both (PLAN_052, PLAN_053) (f769b52de, 420c599d3, 81f19628f). Verify tests pass: generated_g1_tasks_may_write_and_wait_for_their_imports, g1_tasks_may_write_their_modules_and_render_waits_for_them, a_task_naming_another_modules_classes_waits_for_it, plan_validate_warns_about_g1_tasks_that_cannot_create_or_wait; roko-cli lib 3823 passed before the follow-ups, plan_generate/plan_validate/plan_policy 156 passed after; clippy clean; integration only bug-2a31bc. $0 check, binary 81f19628f: the kept G1 plan (round v6 take L4 evidence) gets PLAN_052 x4 from plan validate; replayed through plan generate by a fake planner (T4 waiting for nothing, as in the final take) it comes out with write_file in T1-T4, T4 depending on T1, T2 and T3, the invented NoiseTest/lowpass ids replaced, 14 of 14 kept, 0 diagnostics and 4 of 4 tasks red on the base."
 +++
 
 ## Problem

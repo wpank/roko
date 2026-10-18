@@ -19,6 +19,8 @@ mod pipeline;
 mod runnable;
 mod source_checks;
 
+pub use runnable::{creates_without_write, missing_dependencies};
+
 pub use pipeline::{
     ArtifactValidationReport, GenerationOutcome, PlanFailsValidation, PlanProgress,
     PlanProgressSink, PlanRequest, PlanSource, generate_plan, plan_dir_slug, plan_source_document,

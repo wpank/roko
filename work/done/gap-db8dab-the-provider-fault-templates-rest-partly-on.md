@@ -2,7 +2,7 @@
 id = "gap-db8dab"
 kind = "gap"
 title = "The provider-fault templates rest partly on documentation and public reports: no captured 429 or 5xx of Cerebras, z.ai, Moonshot or OpenAI checks their bodies, and a fault before an upstream's first answer carries none of its headers"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p3"
 goal = "proof"
@@ -10,7 +10,8 @@ size = "S"
 subsystem = ["benchmarks/viabilitybench/driver"]
 created = 2026-10-17
 updated = 2026-10-18
-last_verified = 2026-10-17
+last_verified = 2026-10-18
+last_verified_rev = "6c9f33889"
 source = "bug-2224eb worker (claude-agent), 2026-10-17 (inference-docs.cerebras.ai shows no error body; a captured Cerebras 401 is flat, public reports of its 429s show a message or no body; docs.z.ai lists 1302 for a 429 and no code for an internal error; platform.kimi.ai lists rate_limit_reached_error, server_error and server_unavailable)"
 discovered_from = "bug-2224eb"
 anchors = ["benchmarks/viabilitybench/driver/faultproxy.py::UPSTREAM_ERRORS", "benchmarks/viabilitybench/driver/faultproxy.py::_mirrored"]
@@ -19,6 +20,19 @@ links = { depends_on = [], blocks = [], related = ["bug-2224eb", "bug-fd8200", "
 
 [[verify]]
 command = "grep -qw 'def test_the_fault_templates_match_captured_errors' benchmarks/viabilitybench/driver/test_faultproxy.py && benchmarks/viabilitybench/.venv/bin/python -m pytest benchmarks/viabilitybench/driver/test_faultproxy.py -k test_the_fault_templates_match_captured_errors -q"
+
+[closed]
+at = 2026-10-18
+at_ts = "2026-10-18T19:11:31Z"
+commit = "6c9f33889"
+by = "commit trailer"
+executor = "claude-agent"
+via = "work-batch"
+size = "S"
+claimed_at = "2026-10-18T17:10:19Z"
+forced = false
+model = "claude-opus-5-5"
+evidence = "Captured live on 2026-10-18 with the new `vb capture-errors` (driver/error_capture.py, e8ae2f423; masking fixed in 2e99d9055 and 8809a84ec): none of Cerebras, z.ai, Moonshot and OpenAI documents a way to get a 429 or a 5xx on request (their error pages, read 2026-10-18) and provoking one would abuse the API, so each capture is the provider's error for a model that does not exist, one minimal call each (two-word prompt, 1 output token) through the metering proxy, keys read only by the driver's key-file loader and sent only by the proxy, worst case reserved on BL0. Runs capture-db8dab-20261018b (all four, 18:40Z) and -20261018c (z.ai again, 18:43Z): Cerebras 404 application/json, flat compact {message,type,param,code}; z.ai 400 code 1211, compact {error:{code,message}}, no Content-Type; Moonshot 404 application/json; charset=utf-8, compact {error:{message,type}} (message first); OpenAI 404 application/json; charset=utf-8, indented by 4 spaces with a final newline; no rate-limit headers on any error. 6c9f33889 commits the masked fixtures (driver/testdata/provider_errors/, ids, cookies and account ids drawn anew) and corrects faultproxy.UPSTREAM_ERRORS to them: Moonshot's key order and compact layout, OpenAI's indented layout, each provider's Content-Type (z.ai none), and the captured headers on a fault before the upstream's first answer (_mirrored). test_the_fault_templates_match_captured_errors (the [[verify]]) passes, as does the full bench suite (840 passed, 17 skipped). Not settled: the words of a real 429 and 5xx, which only a real one can show; filed gap-e7135b to keep a masked copy of any a pilot meets. Spend: $0.00 (9 calls in three runs, all refused before any model ran and metered not_billed; the first run's fixtures were discarded uncommitted after its masking missed Moonshot's Msh-Uid, and two committed test values copied from it were replaced by rebuilding the branch's own unpushed commits). ~/.config/viabilitybench: listing and sha256 of keys and secret unchanged before and after. Report: tmp/status-quo/2026-10-16-live/small-live-2026-10-18.md."
 +++
 
 ## Problem

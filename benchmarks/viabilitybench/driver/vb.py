@@ -7,6 +7,7 @@ and `replay`.
            [--transcripts] [--keep-workdirs]
     vb estimate --stream pilot --arm cheap_direct --model gpt-oss-120b --seeds 1-3
     vb materialize --stream pilot --instance F1-l1-0001 --out DIR
+    vb capture-errors --allow-network --max-cost-usd 0.05            # each provider's own error (error_capture.py)
     vb campaign --manifest experiments/pilot_a.toml --dry-run        # an experiment's blocks (campaign.py)
 
 `vb run` runs every (task, seed) of a stream on one arm and one model, in a fresh workdir under `$VB_WORK` (default
@@ -133,6 +134,7 @@ import campaign
 import caps
 import census
 import disturb
+import error_capture
 import faultproxy
 import harness
 import layout
@@ -355,6 +357,11 @@ def parse_seeds(text: str) -> list[int]:
 def cmd_estimate(args: argparse.Namespace) -> int:
     print(json.dumps(make_plan(args).summary(), indent=2))
     return 0
+
+
+def cmd_capture_errors(args: argparse.Namespace) -> int:
+    """`vb capture-errors` (error_capture.py, gap-db8dab), which gets this module as `vb campaign` does."""
+    return error_capture.cmd_capture(sys.modules[__name__], args)
 
 
 def cmd_campaign(args: argparse.Namespace) -> int:
@@ -923,6 +930,10 @@ def _parser() -> argparse.ArgumentParser:
     mat.add_argument("--private", help="where the manifest and pristine bundle go (default: OUT.private)")
     mat.set_defaults(handler=cmd_materialize)
     commands.add_parser("report", help="metrics.json and bundle checks (analysis/report.py; see vb report --help)")
+    capture = commands.add_parser("capture-errors", help="capture each provider's own error through the metering "
+                                  "proxy, masked, as a fixture (gap-db8dab)", allow_abbrev=False)
+    error_capture.add_arguments(capture)
+    capture.set_defaults(handler=cmd_capture_errors)
     run_campaign = commands.add_parser("campaign", help="validate, estimate and run an experiment manifest",
                                        allow_abbrev=False)
     campaign.add_arguments(run_campaign)

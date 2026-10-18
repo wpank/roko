@@ -166,7 +166,7 @@ API:
     FaultProxy: a context manager (.start(), .close()); .url, .token, .base_url(name) -> str
     FaultProxy.endpoint(endpoint: provider.Endpoint) -> provider.Endpoint      # the same provider, through the proxy
     FaultProxy.configure(*, task=..., profile=..., input_token_cap=..., attempt_input_cap=..., model_swap=...) -> dict
-    FaultProxy.state() -> dict; FaultProxy.policy() -> dict
+    FaultProxy.state() -> dict; FaultProxy.policy() -> dict; FaultProxy.answered_headers(name) -> list[tuple]
     usage_classes(raw) -> dict | None; arm_hosts() -> frozenset[str]
     UpstreamErrors(rate_limit, server_error, by_status={}, compact=False); .body(status) -> bytes
     upstream_errors(name) -> UpstreamErrors          # UPSTREAM_ERRORS[name], else OpenAI's
@@ -751,6 +751,12 @@ class FaultProxy:
         kept = [(name, value) for name, value in headers if name.lower() not in NOT_MIRRORED]
         with self._lock:
             self._answered[upstream.name] = kept
+
+    def answered_headers(self, name: str) -> list[tuple[str, str]]:
+        """The headers of upstream `name`'s last forwarded answer that a fault would carry (`NOT_MIRRORED` left out),
+        with the values it sent, in order; [] before it has answered. `vb capture-errors` masks them for a fixture."""
+        with self._lock:
+            return list(self._answered.get(name, ()))
 
     def _mirrored(self, upstream: Upstream) -> list[tuple[str, str]]:
         """A fault's headers: those of `upstream`'s latest answer, each value that is new on every answer drawn anew in

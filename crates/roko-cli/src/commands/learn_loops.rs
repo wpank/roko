@@ -352,6 +352,7 @@ mod tests {
                 proposals: Some(ContentProposals {
                     learned: Some(entry()),
                     default: Some(Vec::new()),
+                    exclusion: None,
                 }),
                 audit: AuditFields {
                     layer: Some("knowledge".to_string()),

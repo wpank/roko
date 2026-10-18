@@ -16,6 +16,12 @@ discovered_from = "gap-6f31c3 (worker, 2026-10-16): measuring L-sec from its sec
 anchors = ["crates/roko-learn/src/loop_audit/census.rs::content_opportunity", "crates/roko-learn/src/telemetry/records.rs::ContentProposals", "crates/roko-cli/src/dispatch/prompt_builder.rs::draw_sections", "crates/roko-learn/src/loop_audit/state.rs::Auditor::rule"]
 lane = "rust-cold"
 links = { depends_on = [], blocks = [], related = ["gap-6f31c3", "spec-7a71d6", "gap-03fcd0"], supersedes = [], duplicate_of = "" }
+
+[[verify]]
+command = "grep -rqw 'fn l_sec_influence_reads_flat_and_learned_bandits_differently' crates/roko-learn/ && cargo test -p roko-learn --lib l_sec_influence_reads_flat_and_learned_bandits_differently"
+
+[[verify]]
+command = "grep -rqw 'fn sections_rows_log_the_bandits_exclusion_odds_on_both_arms' crates/roko-cli/ && cargo test -p roko-cli --lib sections_rows_log_the_bandits_exclusion_odds_on_both_arms"
 +++
 
 ## Problem
@@ -62,7 +68,15 @@ draw is logged, so L-sec's floor is 0.
 
 ## Done when
 
-The decision is recorded here, and the verify passes.
+The decision is recorded here, and both `[[verify]]` commands pass:
+
+- the census (`census.rs`) reads L-sec's ι from the odds the bandit left each droppable section out at, against the
+  floor policy (every section at `SECTION_EXCLUSION_FLOOR`), so that over the same rows a bandit with flat posteriors
+  (odds at the cap) and one that learned every section helps (odds at the floor) read differently: ι_net at the
+  cap's excess and 0, the audit tick reading only the second `inert`
+  (`l_sec_influence_reads_flat_and_learned_bandits_differently`);
+- the writer (`decision_log.rs::section_proposals`) logs those odds and the floor on every sections row, on both
+  arms (`sections_rows_log_the_bandits_exclusion_odds_on_both_arms`).
 
 ## Notes
 

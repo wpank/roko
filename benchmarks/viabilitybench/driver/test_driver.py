@@ -34,6 +34,7 @@ import materialize
 import mini_loop
 import planemit
 import provider
+import run_msa
 import run_roko
 import validate
 import vb
@@ -224,13 +225,15 @@ def fake_harness_arm(tmp_path: Path, arm: str, *, solution: str, shell: str, she
     fake, name = (NET_AGENT_ROKO, "roko") if arm == "roko_fixed" else (NET_AGENT_MINI, "mini")
     binary = tmp_path / "bin" / name
     binary.parent.mkdir()
-    filled = {"__AGENT_TURN__": AGENT_TURN, "__PYTHON__": sys.executable, "__SOLUTION__": repr(solution),
+    # mini's interpreter is the one agents run: run_msa refuses one inside the repository, as this venv's (bug-e16450)
+    python = sys.executable if name == "roko" else str(agent_env._base_python())
+    filled = {"__AGENT_TURN__": AGENT_TURN, "__PYTHON__": python, "__SOLUTION__": repr(solution),
               "__SHELL__": repr(shell), "__SHELL_LOG__": repr(str(shell_log))}
     for placeholder, value in filled.items():  # in this order: AGENT_TURN holds the later placeholders
         fake = fake.replace(placeholder, value)
     binary.write_text(fake)
     binary.chmod(0o755)
-    old = 'binary = "target/debug/roko"' if name == "roko" else 'binary = ".venv-msa/bin/mini"'
+    old = 'binary = "target/debug/roko"' if name == "roko" else f'binary = "{run_msa.DEFAULT_BINARY}"'
     text = (layout.ARMS_DIR / f"{arm}.toml").read_text()
     assert old in text
     arm_file = tmp_path / f"{arm}.test.toml"
@@ -641,10 +644,12 @@ def test_the_census_refuses_to_run_code_where_it_is_denied(places, tmp_path):
 
 def test_vb_run_refuses_a_results_root_agents_need(places, tmp_path, monkeypatch, capsys):
     """bug-935cfa: every agent process is denied the whole results root, so `vb run` refuses, before it makes any
-    directory, a results root that holds what agents read or run: the repository (the Roko binary, `.venv-msa/`), the
-    Rust toolchain the sandbox keeps readable, the Python agents run, or the operator's home."""
+    directory, a results root that holds what agents read or run: the repository (the Roko binary), mini-swe-agent's
+    venv (outside the repository since bug-e16450), the Rust toolchain the sandbox keeps readable, the Python agents
+    run, or the operator's home."""
     assert vb._results_hold(places["results"]) == []
     for root, held in ((layout.REPO_ROOT.parent, "the repository"), (Path.home(), "your home directory"),
+                       (Path(run_msa.DEFAULT_VENV).expanduser().parent, "mini-swe-agent's venv"),
                        (agent_env._base_python().parent, "the Python agents run")):
         assert any(text.startswith(f"{held} (") for text in vb._results_hold(root)), (root, vb._results_hold(root))
     rustup = places["results"] / "rustup"  # a toolchain under --results

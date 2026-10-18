@@ -143,6 +143,7 @@ import ledger
 import materialize
 import provider
 import records
+import run_msa
 import secret
 import vb_verify
 from common import hmac_seed, knobs, repo, toolchain
@@ -617,12 +618,13 @@ def _agent_deny(run: Run) -> tuple[Path, ...]:
 
 def _results_hold(results_root: Path) -> list[str]:
     """What agent processes read or run that `results_root` holds, each named with its path (bug-935cfa), since every
-    agent process is denied the whole results root: the repository (the Roko binary, `.venv-msa/`), the Rust
-    toolchain the sandbox keeps readable (`toolchain.read_only`), the Python that agents run (`agent_env._base_python`),
-    or your home directory, which holds the CLIs and their logins. The work root is refused apart (`cmd_run`: it and
-    the results root must not contain each other)."""
-    needs = [("the repository", layout.REPO_ROOT), ("your home directory", Path.home()),
-             *(("the Rust toolchain", path) for path in toolchain.read_only())]
+    agent process is denied the whole results root: the repository (the Roko binary), mini-swe-agent's default venv
+    (`run_msa.DEFAULT_VENV`, outside the repository since bug-e16450), the Rust toolchain the sandbox keeps readable
+    (`toolchain.read_only`), the Python that agents run (`agent_env._base_python`), or your home directory, which
+    holds the CLIs and their logins. The work root is refused apart (`cmd_run`: it and the results root must not
+    contain each other)."""
+    needs = [("the repository", layout.REPO_ROOT), ("mini-swe-agent's venv", Path(run_msa.DEFAULT_VENV).expanduser()),
+             ("your home directory", Path.home()), *(("the Rust toolchain", path) for path in toolchain.read_only())]
     try:
         needs.append(("the Python agents run", agent_env._base_python()))
     except agent_env.AgentEnvError:

@@ -60,9 +60,9 @@ link.
 
 ## Done when
 
-- [ ] The mini-swe-agent arm's agent's parent process carries neither the benchmark's name nor its path on its
+- [x] The mini-swe-agent arm's agent's parent process carries neither the benchmark's name nor its path on its
   command line.
-- [ ] The `[[verify]]` command passes.
+- [x] The `[[verify]]` command passes.
 
 ## Notes
 
@@ -70,7 +70,45 @@ link.
   step 2).
 - The Roko arm's binary, `<repo>/target/debug/roko`, names the repository but not the benchmark; Codex's and Claude
   Code's are installed outside it.
+- Fixed 2026-10-18 (the plan's three steps). The default venv is `~/.local/share/mini-swe-agent/venv`
+  (`run_msa.DEFAULT_VENV`; `DEFAULT_BINARY` is its `bin/mini`), and the arm file's `[msa] binary` names it.
+  `run_msa.binary_path` refuses a binary whose path, as written or with its links followed, lies inside the
+  repository or names the benchmark (`run_msa.BENCHMARK_NAME`, the tests' `BENCHMARK_MARK`), one that is not an
+  executable file, and one whose first line names an interpreter that does: the kernel puts that interpreter on the
+  command line, and a framework build of Python also puts it in `__PYVENV_LAUNCHER__`, so a neutral symlink or copy of
+  a `mini` that still runs the old venv's python is refused too. `run_msa.preflight` asks it before the first task,
+  so `vb run` stops with exit 2 and makes nothing; a missing venv is refused the same way, where every task used to end
+  `infra_error`.
+- The README ("mini-swe-agent's venv") and `requirements-msa.in`'s header have the set-up: `python3 -m venv` at that
+  path, then `pip install --require-hashes -r requirements-msa.lock`; the lock is unchanged. Checked 2026-10-18 on
+  macOS 26.4 with a venv made that way under a neutral path in the worker's scratch directory: it installs
+  mini-swe-agent 2.4.6 from the lock, and an offline `vb run` of the arm with that real `mini` against the stub
+  completed (VS 1, `sandbox-exec+net`, three calls to the stub). Its agent's first command read `mini`'s argv and
+  environment from inside the sandbox: `Python.app <venv>/bin/mini -m openai/gpt-oss-120b -t <spec> -y
+  --exit-immediately -c <tmp>/mini-*/mini.yaml -l 0 -o <tmp>/mini-*/trajectory.json`, the agent's environment, the
+  `MSWEA_*` settings and `__PYVENV_LAUNCHER__=<venv>/bin/python`, none naming the benchmark, the run or the
+  repository.
+- `vb._results_hold` names the default venv, so a results root that holds it is still refused, as it was while the
+  venv lay in the repository (every agent process is denied the whole results root, bug-935cfa).
+- The tests' fake `mini`s now run under the base interpreter, the one agents run: the test venv's python lies inside
+  the repository, which `binary_path` refuses.
+- mini-swe-agent run by hand without `MSWEA_GLOBAL_CONFIG_DIR` (`mini --help`, say) loads, and creates if missing,
+  `~/Library/Application Support/mini-swe-agent/` on macOS; `run_msa` sets that variable for every agent run.
 
 ## Decision (2026-10-18, Will)
 
 Approved: run mini-swe-agent from a venv outside the benchmark tree, so its path names nothing benchmark-internal. Land it before the pre-registration lock.
+
+Where to put the venv and what to refuse had no recorded default, so under Will's decision 9 of 2026-10-15 (technical
+questions with no recorded default take the coordinator's recommendation, the conservative option, recorded on the
+item with the reasoning; Will can veto it later) the change follows the coordinator's rule of 2026-10-17 (bug-3c921e's
+Decision): no benchmark-internal identifier reaches an agent.
+
+Why: benchmark validity, and contamination through the public repository. From inside the sandbox this arm's agent
+read a parent whose command line and `__PYVENV_LAUNCHER__` named `<repo>/benchmarks/viabilitybench/.venv-msa/`: the
+benchmark's name and where its driver, generators and truth suites sit, a search key into the public repository. A
+venv under the operator's home with the tool's own name is the conservative option: the same pinned packages, from
+the same hash-checked lock, run the same way, so nothing an agent does or is graded on changes, only the path it can
+read; and refusing a path inside the repository or with the benchmark's name, as written, resolved or as the
+interpreter, keeps a neutral-looking symlink or an old `.venv-msa/` from bringing the name back. The tool's own name
+tells an agent nothing it cannot already read from `mini`'s flags.

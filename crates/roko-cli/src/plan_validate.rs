@@ -224,9 +224,9 @@ fn validate_plans_dir_impl(
                         plan_id: Some(plan.plan_id.clone()),
                         task_id: Some(task.clone()),
                         message: format!(
-                            "task '{task}' runs tests that import `{module}`, which task \
-                             '{dependency}' writes, but it does not depend on '{dependency}', so \
-                             it can run first"
+                            "task '{task}' uses `{module}` (its tests import it, or it names what \
+                             the plan's tests import from it), which task '{dependency}' writes, \
+                             but it does not depend on '{dependency}', so it can run first"
                         ),
                     });
                 }

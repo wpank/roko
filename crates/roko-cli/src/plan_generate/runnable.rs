@@ -377,33 +377,59 @@ pub(super) fn repair_write_tools(plan: &mut TasksFile, workdir: &Path) -> Vec<St
 }
 
 /// The dependencies `plan` misses (bug-df9aff): for each task, each other
-/// task whose `files` write a Python module that a test file of the task's
-/// own checks (one that exists in `workdir`) imports, when the task does not
-/// already wait for it and waiting would not make a cycle. Each as the task,
-/// the task to wait for, and the module's file.
+/// task that writes a Python module the task uses, when the task does not
+/// already wait for it and waiting would not make a cycle. A task uses a
+/// module when a test file of its own checks (one that exists in `workdir`)
+/// imports it, or when its title, description or acceptance criteria name
+/// something the plan's test files import from it (`from synth.osc import
+/// Oscillator` makes `Oscillator` a name of `synth/osc.py`). Each as the
+/// task, the task to wait for, and the module's file.
 pub fn missing_dependencies(plan: &TasksFile, workdir: &Path) -> Vec<(String, String, String)> {
-    let mut missing = Vec::new();
-    for task in &plan.tasks {
-        let mut imported: Vec<String> = Vec::new();
-        for step in &task.verify {
-            for test_file in step_files(&step.command, workdir) {
-                let is_python = Path::new(&test_file)
-                    .extension()
-                    .is_some_and(|extension| extension == "py");
-                if !is_python {
-                    continue;
-                }
-                let Ok(text) = std::fs::read_to_string(workdir.join(&test_file)) else {
-                    continue;
-                };
-                imported.extend(imported_files(&text));
+    // The test files each task's checks run, read once.
+    let tests: Vec<Vec<String>> = plan
+        .tasks
+        .iter()
+        .map(|task| {
+            task.verify
+                .iter()
+                .flat_map(|step| step_files(&step.command, workdir))
+                .filter(|file| {
+                    Path::new(file)
+                        .extension()
+                        .is_some_and(|extension| extension == "py")
+                })
+                .filter_map(|file| std::fs::read_to_string(workdir.join(file)).ok())
+                .collect()
+        })
+        .collect();
+    // What the test files import, by name: `Oscillator` -> `synth/osc.py`.
+    let mut names: Vec<(String, String)> = Vec::new();
+    for text in tests.iter().flatten() {
+        for (name, module) in imported_names(text) {
+            if !names.contains(&(name.clone(), module.clone())) {
+                names.push((name, module));
             }
         }
+    }
+    let mut missing = Vec::new();
+    for (task, texts) in plan.tasks.iter().zip(&tests) {
+        let mut used: Vec<String> = texts.iter().flat_map(|text| imported_files(text)).collect();
+        let prose = std::iter::once(task.title.as_str())
+            .chain(task.description.as_deref())
+            .chain(task.acceptance.iter().map(String::as_str))
+            .collect::<Vec<_>>()
+            .join("\n");
+        used.extend(
+            names
+                .iter()
+                .filter(|(name, _)| mentions(&prose, name))
+                .map(|(_, module)| module.clone()),
+        );
         for other in &plan.tasks {
             if other.id == task.id || task.depends_on.contains(&other.id) {
                 continue;
             }
-            let Some(module) = other.files.iter().find(|file| imported.contains(file)) else {
+            let Some(module) = other.files.iter().find(|file| used.contains(file)) else {
                 continue;
             };
             if waits_for(plan, &task.id, &other.id) || waits_for(plan, &other.id, &task.id) {
@@ -413,6 +439,41 @@ pub fn missing_dependencies(plan: &TasksFile, workdir: &Path) -> Vec<(String, St
         }
     }
     missing
+}
+
+/// The names a Python source imports from workspace modules, each with its
+/// module's file: `from synth.osc import Oscillator, Noise` gives
+/// (`Oscillator`, `synth/osc.py`) and (`Noise`, `synth/osc.py`). Names of
+/// fewer than three characters are left out.
+fn imported_names(text: &str) -> Vec<(String, String)> {
+    static FROM: LazyLock<Regex> = LazyLock::new(|| {
+        Regex::new(r"^\s*from\s+([A-Za-z_][\w.]*)\s+import\s+\(?([\w\s,]+)")
+            .expect("valid from-import regex")
+    });
+    let mut names = Vec::new();
+    for captures in text.lines().filter_map(|line| FROM.captures(line)) {
+        let (Some(module), Some(imported)) = (captures.get(1), captures.get(2)) else {
+            continue;
+        };
+        let file = format!("{}.py", module.as_str().replace('.', "/"));
+        for name in imported.as_str().split(',') {
+            let name = name.split_whitespace().next().unwrap_or_default();
+            if name.len() >= 3 {
+                names.push((name.to_string(), file.clone()));
+            }
+        }
+    }
+    names
+}
+
+/// Whether `prose` names `name` as a whole word, in its own case.
+fn mentions(prose: &str, name: &str) -> bool {
+    prose.match_indices(name).any(|(start, _)| {
+        let before = prose[..start].chars().next_back();
+        let after = prose[start + name.len()..].chars().next();
+        let joined = |c: Option<char>| c.is_some_and(|c| c.is_alphanumeric() || c == '_');
+        !joined(before) && !joined(after)
+    })
 }
 
 /// Make each task wait for the tasks that write the modules its checks'
@@ -430,7 +491,7 @@ pub(super) fn repair_dependencies(plan: &mut TasksFile, workdir: &Path) -> Vec<S
         {
             waiting.depends_on.push(dependency.clone());
             repairs.push(format!(
-                "{task}: depends on {dependency}, which writes `{module}` its checks import"
+                "{task}: depends on {dependency}, which writes `{module}` it uses"
             ));
         }
     }
@@ -1167,7 +1228,7 @@ pub(super) mod tests {
         let waits = repair_dependencies(&mut plan, temp.path());
         assert_eq!(
             waits[0],
-            "T4: depends on T1, which writes `synth/osc.py` its checks import"
+            "T4: depends on T1, which writes `synth/osc.py` it uses"
         );
         assert_eq!(plan.tasks[3].depends_on, ["T1", "T2", "T3"]);
         assert!(plan.tasks.iter().all(|task| {
@@ -1177,6 +1238,28 @@ pub(super) mod tests {
         }));
         assert!(creates_without_write(&plan, temp.path()).is_empty());
         assert!(missing_dependencies(&plan, temp.path()).is_empty());
+    }
+
+    /// bug-df9aff: pocket-synth's render tests import only `synth.render`.
+    /// The render task still waits for the modules whose classes its
+    /// description names, as the other tasks' tests import them from there.
+    #[test]
+    fn a_task_naming_another_modules_classes_waits_for_it() {
+        let (temp, mut plan) = g1_plan();
+        std::fs::write(
+            temp.path().join("tests/test_render.py"),
+            "import unittest\nfrom synth.render import render\n",
+        )
+        .expect("the render tests");
+        plan.tasks[3].description =
+            Some("Add render() that builds the patch from Oscillator, SVF and ADSR.".to_string());
+        let waits = repair_dependencies(&mut plan, temp.path());
+        assert_eq!(plan.tasks[3].depends_on, ["T1", "T2", "T3"], "{waits:?}");
+        assert!(
+            plan.tasks[..3]
+                .iter()
+                .all(|task| task.depends_on.is_empty())
+        );
     }
 
     /// bug-df9aff: `plan validate` warns about G1's plan: each task creates

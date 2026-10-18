@@ -126,8 +126,11 @@ $PY benchmarks/viabilitybench/driver/vb.py run --experiment PILOT-A --stream pil
   directory deny the results root it lies in. Elsewhere there is no confinement yet, and the run record says so
   (`vs.sandbox`, gap-8c3752). Agents can read the driver's
   own start-up environment (`ps -E`, `/proc`), so once its checks pass, `vb run` starts itself again with an
-  allowlisted environment (`agent_env.exec_scrubbed`). Every other process of your user stays readable (`ps -E -ax`,
-  or `sysctl` from inside the sandbox), so run the benchmark from a session that exports no credential.
+  allowlisted environment (`agent_env.exec_scrubbed`). The direct loop's shell is not the driver's child, since the
+  driver's command line names the experiment, the run and the benchmark's path: it runs under a neutral trampoline,
+  whose command line is the agents' Python and whose environment is the agent's own (`mini_loop`, bug-0fd744). Every
+  other process of your user stays readable (`ps -E -ax`, or `sysctl` from inside the sandbox), the driver one step
+  above the trampoline included, so run the benchmark from a session that exports no credential.
 - **Rust toolchain** (F7, gap-46fd19; Will's decision of 2026-10-02). A per-task HOME hides `~/.rustup`, so
   `families/common/toolchain.py` resolves the host's toolchain in the operator's environment (`rustup show home`,
   `rustup which cargo`). Agent processes, the census and `ci/verify_verifiers.py` get the toolchain's own bin

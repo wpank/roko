@@ -12,10 +12,12 @@ import itertools
 import json
 import os
 import re
+import signal
 import socket
 import subprocess
 import sys
 import tempfile
+import time
 from collections.abc import Callable
 from pathlib import Path
 
@@ -1468,3 +1470,49 @@ def test_replies_need_exactly_one_bash_block(tmp_path):
     assert result.submitted and result.returncode == 0
     slow = mini_loop.run_command("sleep 5", cwd=tmp_path, env=dict(os.environ), timeout_s=0.5, observation_chars=100)
     assert slow.timed_out and "timeout" in slow.observation
+
+
+def test_the_shell_meets_the_same_under_its_trampoline(tmp_path, monkeypatch):
+    """bug-0fd744: the direct loop's shell runs under a neutral trampoline (`mini_loop.TRAMPOLINE`), so that its parent
+    names nothing of the run, and nothing else changes for the command it runs: its exit code or the signal that killed
+    it, both of its streams in one output, /dev/null on stdin, no other file descriptor, exactly the environment the
+    driver gave it, its working directory, SIGPIPE at its default, a command longer than a pipe's buffer, the submit
+    word, the time limit that kills its whole session, a background job it left behind killed when it ends, and a shell
+    that cannot start. The same assertions hold for the driver that started the shell itself."""
+    env = {"PATH": os.pathsep.join(agent_env.SYSTEM_PATH), "HOME": str(tmp_path), "LANG": "C", "NOTE": "kept as is"}
+
+    def run(command: str, timeout_s: float = 30, **kwargs) -> mini_loop.CommandResult:
+        return mini_loop.run_command(command, cwd=tmp_path, env=env, timeout_s=timeout_s, observation_chars=10_000,
+                                     **kwargs)
+
+    done = run("echo out; echo err >&2; echo again; exit 3")
+    assert (done.returncode, done.output, done.timed_out, done.submitted) == (3, "out\nerr\nagain\n", False, False)
+    assert done.observation == "<returncode>3</returncode>\n<output>\nout\nerr\nagain\n</output>"
+    assert run("kill -TERM $$").returncode == -signal.SIGTERM and run("kill -KILL $$").returncode == -signal.SIGKILL
+    assert run("[ -c /dev/stdin ] && [ ! -t 0 ] && cat && echo nothing-on-stdin").output == "nothing-on-stdin\n"
+    assert run("for fd in 3 4 5 6 7 8 9; do [ -e /dev/fd/$fd ] && echo $fd; done; true").output == ""
+    shown = dict(line.split("=", 1) for line in run("env").output.splitlines())
+    assert {name: value for name, value in shown.items() if name not in ("PWD", "SHLVL", "_")} == env
+    assert run("pwd -P").output == f"{os.path.realpath(tmp_path)}\n"
+    assert run("yes | head -1; echo ${PIPESTATUS[0]}").output == "y\n141\n"  # yes ended by SIGPIPE, at its default
+    assert run(f"printf %s {'x' * 100_000} | wc -c").output.strip() == "100000"
+    assert run(f"echo {mini_loop.SUBMIT}").submitted
+    late, left = tmp_path / "late", tmp_path / "left"
+    slow = run(f"(sleep 2; touch {late}) & sleep 30", timeout_s=0.5)
+    assert (slow.returncode, slow.timed_out, slow.submitted) == (None, True, False)
+    assert slow.observation.startswith("<returncode>timeout</returncode>")
+    quick = run(f"(sleep 2; touch {left}) >/dev/null 2>&1 & echo started")
+    assert (quick.returncode, quick.output) == (0, "started\n")
+    time.sleep(3)
+    assert not late.exists() and not left.exists()  # both sessions were killed, background jobs and all
+    missing = tmp_path / "no-such-shell"
+    if sandbox.KIND == "none":  # nothing comes before the shell: the shell itself cannot start
+        stopped = run("true", wrapper=missing)
+    else:  # a shell the sandbox's tool cannot start is that tool's own message; then the tool itself cannot start
+        absent = run("true", wrapper=missing)
+        assert (absent.returncode, absent.output) == (
+            71, f"sandbox-exec: execvp() of '{missing}' failed: No such file or directory\n")
+        monkeypatch.setattr(sandbox, "SANDBOX_EXEC", str(missing))
+        stopped = run("true")
+    assert (stopped.returncode, stopped.output) == (None, f"could not start bash: [Errno 2] No such file or "
+                                                          f"directory: '{missing}'")

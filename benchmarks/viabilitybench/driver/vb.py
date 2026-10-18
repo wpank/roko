@@ -40,6 +40,9 @@ repository, the Rust toolchain, their Python or your home). Off macOS nothing ap
 does anything an agent sees name the benchmark, whose repository is public (bug-d68575): the default work root, the
 bin directory on its PATH (`agent_env.BIN_DIR`), its git identity, its repo's pristine commit, the direct loop's
 submit word, Roko's plan and key placeholder, the visible-verify wrapper's files and the proxies' answers are neutral.
+The direct loop's shell, which can read its parent's command line and start-up environment, runs under a neutral
+trampoline rather than as this process's child, whose command line names the experiment, the run and the benchmark's
+path (`mini_loop`, bug-0fd744); this process stays readable one step further up (gap-b94a2c).
 
 **The pre-registration lock** (S09 SC1, 3341). `vb run` of an experiment that runs only under the lock (LOG1, a live
 `E-` experiment, or one whose manifest says `requires_lock`: `campaign.requires_lock`) stops before anything else,

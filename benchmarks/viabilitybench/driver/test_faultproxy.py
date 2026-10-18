@@ -873,17 +873,6 @@ def test_an_injected_fault_looks_like_the_upstreams_own(name, log):
         ("http_5xx", 500, False), ("http_5xx", 503, False)]
 
 
-def test_the_driver_client_sends_its_own_user_agent(proxy, upstream):
-    """bug-7b1b7f: api.cerebras.ai's Cloudflare refuses urllib's default User-Agent (`Python-urllib/<version>`) with a
-    403, error 1010, before the API sees the call. The driver's client names itself instead, and the proxy forwards
-    that to the provider, so no call of the direct loop or the refiner goes out under urllib's default."""
-    client = provider.OpenAICompatible(provider.Endpoint(provider="stub", base_url=proxy.base_url("stub")))
-    reply = client.complete(REQUEST["messages"], model=MODEL, max_tokens=8, timeout_s=10.0)
-    assert reply.content == "Hello 1." and len(upstream.requests) == 1
-    agent = upstream.requests[0][0].get("user-agent", "")
-    assert agent == provider.USER_AGENT and "urllib" not in agent.lower()
-
-
 def test_control_endpoint_needs_the_token(proxy, upstream):
     control = proxy.url + faultproxy.CONTROL_PATH
     # Without the token it answers as a route that does not exist, so an agent cannot tell it is there (bug-fd8200).
@@ -930,6 +919,17 @@ def test_upstreams_are_allowlisted_and_get_the_proxys_key(tmp_path, monkeypatch,
     assert upstream.requests[0][0]["authorization"] == "Bearer sk-upstream-test-7c1d"
     assert moved.status == 307 and moved.headers["Location"] == "http://127.0.0.1:9/elsewhere"  # not followed
     assert "authorization" not in redirecting.requests[0][0]
+
+
+def test_the_driver_client_sends_its_own_user_agent(proxy, upstream):
+    """bug-7b1b7f: api.cerebras.ai's Cloudflare refuses urllib's default User-Agent (`Python-urllib/<version>`) with a
+    403, error 1010, before the API sees the call. The driver's client names itself instead, and the proxy forwards
+    that to the provider, so no call of the direct loop or the refiner goes out under urllib's default."""
+    client = provider.OpenAICompatible(provider.Endpoint(provider="stub", base_url=proxy.base_url("stub")))
+    reply = client.complete(REQUEST["messages"], model=MODEL, max_tokens=8, timeout_s=10.0)
+    assert reply.content == "Hello 1." and len(upstream.requests) == 1
+    agent = upstream.requests[0][0].get("user-agent", "")
+    assert agent == provider.USER_AGENT and "urllib" not in agent.lower()
 
 
 def test_a_hang_outlasts_a_short_client_timeout(proxy, upstream, log):

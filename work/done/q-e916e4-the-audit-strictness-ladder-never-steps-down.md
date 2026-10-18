@@ -2,7 +2,7 @@
 id = "q-e916e4"
 kind = "question"
 title = "The audit strictness ladder never steps down at the default window size: a quiet window needs n_eff near 150, a default window audits about 20"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p2"
 goal = "cybernetic"
@@ -10,7 +10,8 @@ size = "S"
 subsystem = ["roko-gate/audit"]
 created = 2026-10-16
 updated = 2026-10-18
-last_verified = 2026-10-16
+last_verified = 2026-10-18
+last_verified_rev = "8f52029eb"
 source = "bug-1e97dc worker 2026-10-16"
 discovered_from = "bug-1e97dc"
 anchors = ["crates/roko-gate/src/audit/feedback.rs::step", "crates/roko-core/src/config/audit.rs::AuditConfig"]
@@ -20,6 +21,18 @@ links = { depends_on = [], blocks = [], related = ["bug-1e97dc", "q-394b7f", "ga
 
 [[verify]]
 command = "grep -rqw 'fn ladder_steps_down_once_the_pooled_run_is_quiet' crates/roko-gate/ && cargo test -p roko-gate --lib ladder_steps_down_once_the_pooled_run_is_quiet"
+
+[closed]
+at = 2026-10-18
+at_ts = "2026-10-18T17:57:26Z"
+commit = "8f52029eb"
+by = "commit trailer"
+executor = "claude-agent"
+via = "work-batch"
+size = "S"
+claimed_at = "2026-10-18T17:10:09Z"
+forced = false
+evidence = "crates/roko-gate/src/audit/feedback.rs (8f52029eb), per Will's 2026-10-18 decision (option 2): Rung.run (Run: windows plus a Pool of summed Kish n_eff and events = theta_hat_H*n_eff per rate) pools the windows since a task type's last step; step() steps it down one once the pooled UCB95(theta) < theta_max/2 and, by the same rule (the coordinator's brief: apply it to gamma too), the pooled UCB95(gamma) < gamma_max/2. A clean run is quiet from quiet_n_eff = 150 for theta and 381 for gamma, so at the defaults a level steps down after about 20 to 40 windows (gamma sets the pace) instead of never; events raise it (4 false greens: 407; 1 gaming finding: 563); a window that steps up, at V4 too, starts a fresh run; bug-1e97dc's step-up rules and the M1 floor are unchanged; QUIET_WINDOWS and Rung.quiet are gone (old ladder.json loads with an empty run). Verify: cargo test -p roko-gate --lib ladder_steps_down_once_the_pooled_run_is_quiet, 1 passed (clean windows of 20 step at the 20th, four false greens at the 21st, one gaming finding at the 29th; through close_due_windows 19 windows hold and the 20th steps). Also: cargo test -p roko-gate --lib audit:: 19 passed (gap-940e44's and bug-1e97dc's verify tests included); cargo test -p roko-cli --lib verify_depth:: 6 passed and --lib audit 44 passed; cargo +nightly fmt and cargo clippy -p roko-gate -p roko-cli --no-deps -- -D warnings clean."
 +++
 
 ## Problem

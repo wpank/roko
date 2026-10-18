@@ -9,7 +9,7 @@ goal = "proof"
 size = "M"
 subsystem = ["benchmarks/viabilitybench/driver"]
 created = 2026-10-17
-updated = 2026-10-17
+updated = 2026-10-18
 last_verified = 2026-10-17
 source = "bug-d308f7 worker (claude-agent), 2026-10-17 (a toy run's agent under the agents' sandbox on macOS 26.4: cat <run_dir>/private/F1-l1-0001.s1, its own key, says Operation not permitted; cat <run_dir>/private/F1-l1-0002.s1, a task not yet run, says No such file or directory)"
 discovered_from = "bug-d308f7"
@@ -79,3 +79,7 @@ nothing that differs between keys.
 ## Notes
 
 - Found by the bug-d308f7 worker, 2026-10-17, checking what its deny list leaves.
+
+## Decision (2026-10-18, Will)
+
+Stays held (Will, 2026-10-18).

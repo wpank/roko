@@ -9,7 +9,7 @@ goal = "cybernetic"
 size = "M"
 subsystem = ["roko-core/config", "roko-cli/audit"]
 created = 2026-10-03
-updated = 2026-10-15
+updated = 2026-10-18
 last_verified = 2026-10-03
 source = "wave-7 follow-up reports 2026-10-03 (PK59 gap-147c4d)"
 discovered_from = "gap-147c4d, decision 7103"
@@ -84,3 +84,7 @@ implements either.
 - Related: 7121, 7123 (both done, both depend on `[audit] enabled` actually being true to run for real).
 
 2026-10-15 (status-quo decision 2, tmp/status-quo/2026-10-15/DECISIONS-2026-10-15.md): Will confirmed audits go on at 10% by default, but only after a minimum-sample floor stops the strictness ladder from escalating on noise (q-394b7f). Add links.depends_on = [bug-1e97dc] ('The audit strictness ladder steps up on sampling noise: it must ignore windows below a minimum effective sample') and parent = the epic 'turn the cybernetic layer on in safe stages' (stage 4). Do not claim this item before bug-1e97dc is done. Re-checked at b42578bab: [audit] enabled still defaults to false (crates/roko-core/src/config/audit.rs:71), no --no-audit flag, and gap-618548 (M4 verdicts into M1's E3) should land first so the first real audits also feed M1.
+
+## Decision (2026-10-18, Will)
+
+Unblocked: q-e916e4 was answered on 2026-10-18 (pool quiet windows), so the ladder can step down again. Turn audits on at the decided rate once q-e916e4's change lands.

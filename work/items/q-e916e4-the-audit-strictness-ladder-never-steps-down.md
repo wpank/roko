@@ -9,7 +9,7 @@ goal = "cybernetic"
 size = "S"
 subsystem = ["roko-gate/audit"]
 created = 2026-10-16
-updated = 2026-10-16
+updated = 2026-10-18
 last_verified = 2026-10-16
 source = "bug-1e97dc worker 2026-10-16"
 discovered_from = "bug-1e97dc"
@@ -71,3 +71,7 @@ Each option trades verify spend on healthy task types against how fast a level r
   It saw the n_eff requirement. This item records that a default window never meets it.
 - Do not change `eps_floor` (locked at 0.05, 7113) or ρ.
 - Found while doing bug-1e97dc (2026-10-16).
+
+## Decision (2026-10-18, Will)
+
+Option 2: pool the quiet run. Add up n_eff and events over the consecutive windows since the last step, and step down once the pooled UCB95(θ) < θ_max/2 (about 150 audited units, 8 to 15 default windows). gap-d76b1b (audits on at 10%, decision 7103) may follow once this lands.

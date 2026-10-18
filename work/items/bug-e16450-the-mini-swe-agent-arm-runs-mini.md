@@ -9,7 +9,7 @@ goal = "proof"
 size = "S"
 subsystem = ["benchmarks/viabilitybench/driver"]
 created = 2026-10-17
-updated = 2026-10-17
+updated = 2026-10-18
 source = "bug-4c3a83 worker (claude-agent), 2026-10-17 (run_msa.DEFAULT_BINARY is .venv-msa/bin/mini under layout.VB_ROOT, a console script whose shebang names the venv's python; mini-swe-agent 2.4.6 runs each command in a child shell, and from inside the agents' sandbox sysctl(KERN_PROCARGS2, getppid()) returns the parent's argv, as checked for Claude Code on the same day)"
 discovered_from = "bug-4c3a83"
 anchors = ["benchmarks/viabilitybench/driver/run_msa.py::binary_path", "benchmarks/viabilitybench/driver/run_msa.py::run_task"]
@@ -70,3 +70,7 @@ link.
   step 2).
 - The Roko arm's binary, `<repo>/target/debug/roko`, names the repository but not the benchmark; Codex's and Claude
   Code's are installed outside it.
+
+## Decision (2026-10-18, Will)
+
+Approved: run mini-swe-agent from a venv outside the benchmark tree, so its path names nothing benchmark-internal. Land it before the pre-registration lock.

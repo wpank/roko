@@ -9,7 +9,7 @@ goal = "proof"
 size = "S"
 subsystem = ["benchmarks/viabilitybench/driver"]
 created = 2026-10-17
-updated = 2026-10-17
+updated = 2026-10-18
 last_verified = 2026-10-17
 source = "bug-2224eb worker (claude-agent), 2026-10-17 (inference-docs.cerebras.ai shows no error body; a captured Cerebras 401 is flat, public reports of its 429s show a message or no body; docs.z.ai lists 1302 for a 429 and no code for an internal error; platform.kimi.ai lists rate_limit_reached_error, server_error and server_unavailable)"
 discovered_from = "bug-2224eb"
@@ -84,3 +84,7 @@ capture of any provider's own 429 or 5xx exists in the repository.
   shows no error body, and the public reports of its 429s show either a message or no body at all.
 - A capture costs a provider call; get the operator's approval first, and never commit a real key, request id or
   cookie value.
+
+## Decision (2026-10-18, Will)
+
+Approved: one real 429/5xx capture per provider (Cerebras, z.ai, Moonshot, OpenAI), under $0.05 in total, to check the fault templates. The key file ~/.config/viabilitybench/keys exists since 2026-10-18.

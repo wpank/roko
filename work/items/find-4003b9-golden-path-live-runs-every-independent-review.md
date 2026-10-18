@@ -9,7 +9,7 @@ goal = "golden-path"
 size = "M"
 subsystem = ["self-hosting"]
 created = 2026-10-16
-updated = 2026-10-16
+updated = 2026-10-18
 last_verified = 2026-10-16
 source = "gap-c013c5 (backlog 3118) golden-path live runs, 2026-10-16"
 discovered_from = "gap-c013c5"
@@ -62,3 +62,7 @@ The golden-path goal's acceptance bar and the whitepaper's V3 claim rest on this
 - In the main checkout (gitignored): the reviews, diffs and check outputs in
   `tmp/status-quo/2026-10-16-live/evidence/golden-path/run{1,2,3}/`, and the write-up
   `tmp/status-quo/2026-10-16-live/golden-path.md`.
+
+## Decision (2026-10-18, Will)
+
+Option 2: tighten the fixture, then rerun. Add a non-ASCII case to the alpha/beta accept tests (initials, badge) and a check that the 'keep as is' functions (title_words, reverse) stay unchanged; the doc-example skip check is already built (gap-f9fa2c). Rerun the three live golden-path runs (pass^3, about $1.20 at 2026-10-16 cost), and say in the frozen plan's plan.md that the fixture changed.

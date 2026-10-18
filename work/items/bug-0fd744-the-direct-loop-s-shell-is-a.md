@@ -9,7 +9,7 @@ goal = "proof"
 size = "M"
 subsystem = ["benchmarks/viabilitybench/driver"]
 created = 2026-10-17
-updated = 2026-10-17
+updated = 2026-10-18
 source = "bug-4c3a83 worker (claude-agent), 2026-10-17 (vb run started as a subprocess, as test_secret.py's test_the_driver_runs_with_a_scrubbed_environment starts it, on macOS 26.4: the direct loop's agent runs PS_PROBE, and its parent's argv and environment hold '--experiment TEST-SECRET', '--run-id run-1', 'benchmarks/viabilitybench', '--results' and 'VB_DRIVER_ENV=scrubbed')"
 discovered_from = "bug-4c3a83"
 anchors = ["benchmarks/viabilitybench/driver/agent_env.py::exec_scrubbed", "benchmarks/viabilitybench/driver/campaign.py::_run_unit", "benchmarks/viabilitybench/driver/mini_loop.py::run_command"]
@@ -79,3 +79,7 @@ its agents' parent and ancestor.
   step 2).
 - The interpreter's own path, `<repo>/benchmarks/viabilitybench/.venv/bin/python`, names the benchmark too: the
   restart must not exec it.
+
+## Decision (2026-10-18, Will)
+
+Approved: give the direct loop's agent shell a neutral launcher, so it is no longer a child whose argv and environment name the experiment and run. Land it before the pre-registration lock.

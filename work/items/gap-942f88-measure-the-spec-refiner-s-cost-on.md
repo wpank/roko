@@ -9,7 +9,7 @@ goal = "proof"
 size = "S"
 subsystem = ["benchmarks/viabilitybench/specops"]
 created = 2026-10-03
-updated = 2026-10-15
+updated = 2026-10-18
 last_verified = 2026-10-03
 source = "tmp/backlog/2026-10-02-complete-and-wire 3236 (blocked in wave 6, PK24)"
 anchors = ["benchmarks/viabilitybench/specops"]
@@ -53,3 +53,7 @@ The refiner, critic and ambiguity probe exist and are tested against a stub mode
 - Full spec: `tmp/backlog/2026-10-02-complete-and-wire/3236-*.md`.
 
 2026-10-15 (Will, 2026-10-15; tmp/status-quo/2026-10-15/DECISIONS-2026-10-15.md), decision 5: one live gpt-oss-120b spec-refiner run approved, at most $0.40. Hold lifted.
+
+## Decision (2026-10-18, Will)
+
+Unblocked: the key file ~/.config/viabilitybench/keys was created on 2026-10-18 at Will's request (the four key lines copied from ~/.roko/.env, mode 0600, values never displayed).

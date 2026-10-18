@@ -9,7 +9,7 @@ goal = "whitepaper"
 size = "S"
 subsystem = ["docs/whitepaper"]
 created = 2026-09-29
-updated = 2026-09-29
+updated = 2026-10-18
 last_verified = 2026-09-29
 last_verified_rev = "35e06c980"
 source = "tmp/cybernetic-harness/workstreams/PLAN.md#e1"
@@ -86,3 +86,7 @@ Checked at `41c7ffbd6`: no build script exists.
 - **Decided 2026-09-29 (Will):** publish in the repo with a generated PDF, with no arXiv for now. Install librsvg (`brew install librsvg`, with Will's OK) so pandoc can embed SVG figures. Tagging still needs Will's approval.
 - **From gap-d1d92c (2026-09-29):** `build.sh` must call pandoc with `-f markdown-implicit_figures`, or the PDF prints each figure caption twice (see `docs/whitepaper/figures/README.md`).
 - **Before tagging (coordinator, 2026-09-29):** the matrix re-pin (gap-fcea53, merged 366a7ccbe) changed tags and text in §1, §3, §4, §5, §6 and §9 after the review (REVIEW.md is at a17d4dadd). Do a short independent read of those sections first. The PDF rebuilt cleanly after the re-pin (sha256 6c7fd3f6acce…).
+
+## Decision (2026-10-18, Will)
+
+Publish the whitepaper once main is pushed and the release PR's CI is green: tag whitepaper-v1 (annotated, the PDF's sha256 in the message) and attach the PDF to a GitHub release. The research paper waits for the pilots (decision 9539 asked again then).

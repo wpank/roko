@@ -9,7 +9,7 @@ goal = "whitepaper"
 size = "S"
 subsystem = ["papers/research-paper"]
 created = 2026-10-15
-updated = 2026-10-15
+updated = 2026-10-18
 last_verified = 2026-10-15
 source = "status-quo-2026-10-15#finding-31"
 anchors = ["tmp/cybernetic-harness/paper/00-README.md", "tmp/cybernetic-harness/paper/sections/", "tmp/cybernetic-harness/paper/tools/build.sh"]
@@ -72,3 +72,7 @@ The `[[verify]]` command passes: the paper folder is its own git repository (opt
 draft anywhere public is an outward-facing action that needs his approval. Don't move the folder while gap-ac1aed's
 review is editing it. The paper lane's paths (`work/lanes.toml`) list `tmp/cybernetic-harness/paper/**`; update them
 if option 2 moves the paper.
+
+## Decision (2026-10-18, Will)
+
+Option 1: a private git repository for the paper folder. The coordinator runs git init and commits locally in tmp/cybernetic-harness/paper/; Will creates the private GitHub repository and gives its URL, and nothing is pushed until he says so.

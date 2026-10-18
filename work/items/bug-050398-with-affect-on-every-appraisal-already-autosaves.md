@@ -9,7 +9,7 @@ goal = "learning"
 size = "S"
 subsystem = ["roko-cli/runtime_feedback", "roko-daimon"]
 created = 2026-10-16
-updated = 2026-10-16
+updated = 2026-10-18
 last_verified = 2026-10-16
 source = "gap-a960a1 (2026-10-16)"
 discovered_from = "agent:gap-a960a1 worker (work/gap-a960a1)"
@@ -82,3 +82,7 @@ after the run equals the state that the last appraisal produced.
 ## Notes
 
 - Affect stays held; this item does not turn it on.
+
+## Decision (2026-10-18, Will)
+
+Option 1: keep the plan-end daimon save, but persist while holding the state's lock, as autosave does, so writes are serialized and can never go backwards.

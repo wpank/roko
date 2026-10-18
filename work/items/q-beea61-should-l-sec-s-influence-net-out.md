@@ -9,7 +9,7 @@ goal = "cybernetic"
 size = "S"
 subsystem = ["roko-learn/loop_audit"]
 created = 2026-10-16
-updated = 2026-10-16
+updated = 2026-10-18
 last_verified = 2026-10-16
 source = "gap-6f31c3"
 discovered_from = "gap-6f31c3 (worker, 2026-10-16): measuring L-sec from its sections rows"
@@ -67,3 +67,7 @@ The decision is recorded here, and the verify passes.
 ## Notes
 
 Measurement only; enforce stays off (D10). Found while closing gap-6f31c3.
+
+## Decision (2026-10-18, Will)
+
+Option (b): measure L-sec's influence on its exclusion probabilities against the floor policy (p_ex at the floor everywhere), instead of on single draws. Test that a bandit with flat posteriors and one with a learned preference read differently.

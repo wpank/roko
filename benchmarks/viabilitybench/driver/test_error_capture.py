@@ -102,6 +102,11 @@ def test_mask_covers_account_ids_and_every_word_of_a_cookie_token():
     token = values["set-cookie"].split(";", 1)[0]
     assert not any(word in token for word in ("abcDEFgh", "ijKLmnOP", "QRstUV")) and "1700000000.123456" in token
     assert values["set-cookie"].endswith("; HttpOnly; Path=/") and token.startswith("__cf_bm=")
+    hexed = "acw_tc=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcd;path=/;HttpOnly;Max-Age=1800"
+    [(_, cookie)], _, _ = error_capture.mask([("Set-Cookie", hexed)], b"")
+    new_token = cookie.split(";", 1)[0].split("=", 1)[1]
+    assert set(new_token) <= set("0123456789abcdef") and len(new_token) == 62 and new_token not in hexed  # stays hex
+    assert cookie.endswith(";path=/;HttpOnly;Max-Age=1800")
 
 
 def test_body_format_names_the_layout():

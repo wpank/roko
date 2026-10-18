@@ -144,6 +144,9 @@ def _cookie(value: str) -> str:
         text = run.group(0)
         if text.isdigit():
             return text
+        for alphabet in ("0123456789abcdef", "0123456789ABCDEF"):  # a hex token stays hex, as faultproxy draws it
+            if set(text) <= set(alphabet):
+                return "".join(secrets.choice(alphabet) for _ in text)
         return "".join(secrets.choice("0123456789" if char.isdigit() else "abcdefghijklmnopqrstuvwxyz" if char.islower()
                                       else "ABCDEFGHIJKLMNOPQRSTUVWXYZ") for char in text)
 

@@ -34,7 +34,9 @@ proxy forwards only plain chat completions with `--model` (its policy), and hold
 could buy at the input rate. Every task reserves its budget on `--line` before its first call (`Ledger.reserve`), so
 a task that could take the line, its experiment's cap or the programme stop past their caps never starts, and a
 task that would pass `--max-cost-usd` never starts either. Each task that made a call appends one ledger row, priced
-from the provider's reported usage by the reported model's row (`ledger.price`), as the direct loop's attempts do. No
+from the provider's reported usage by the reported model's row (`ledger.price`), as the direct loop's attempts do, or
+by the requested model's when none reported one: calls that all ended in an HTTP error billed zero tokens, which cost
+$0, not an unknown amount charged at the task's reservation (the direct loop's bug-2a5566). No
 agent runs here, and nothing runs the spec's commands: there is no workdir, no agent environment, and no benchmark
 secret, so neither the secret file nor the tripwire is involved, and nothing is written next to the key file.
 
@@ -46,8 +48,9 @@ refinement stopped, the calls, the usage and the ledgered cost, and the proxy's 
 `summary.md`.
 
 **The summary** (`summarize`, `--summary RUN_DIR`): tasks, rounds, mean, median and max cost a task, the score change,
-a row per task, and the line `within the $<budget> cap: yes|no`: yes when every task's ledgered cost is known and at
-most the per-task budget, so the mean is too. `--bundle DIR` writes it with the run's `manifest.json`, `refine.jsonl`
+a row per task, and the line `within the $<budget> cap: yes|no`: yes when every task of the sample ran, the model
+answered each of them at least once (a task whose every call failed measured nothing), and every task's ledgered cost
+is known and at most the per-task budget, so the mean is too. `--bundle DIR` writes it with the run's `manifest.json`, `refine.jsonl`
 and `ledger.jsonl` (no transcripts or proxy log), the bundle committed under `reports/refiner-cost/`.
 
 Exit status: 0 when every task of the sample got a record, 1 when the run stopped early (see `errors.jsonl`), 2 for a
@@ -188,6 +191,7 @@ class LiveModel:
         self.max_rounds = max_rounds
         self.sleep = sleep
         self.calls = 0
+        self.replies = 0  # calls the model answered (the rest raised a provider error)
         self.usage = ledger.vb_usage(0, 0)
         self.usage_unknown = False  # some call may have been billed without reporting usage
         self.model_reported: str | None = None
@@ -235,6 +239,7 @@ class LiveModel:
                 if not err.retryable or failures > RETRIES:
                     return self._nothing(round_number, "provider_error", str(err)[:300])
                 self.sleep(min(err.retry_after or 2.0 ** failures, MAX_RETRY_WAIT_S))
+        self.replies += 1
         cost = None
         if completion.usage is None:
             self.usage_unknown = True
@@ -516,8 +521,11 @@ def _refine_one(run_dir: Path, book: ledger.Ledger, snapshot: ledger.Snapshot, c
         result = refine.refine(candidate.task, model, candidate.ctx)
     except Exception as err:  # a refiner bug; the task's calls are still booked below
         error = f"{type(err).__name__}: {err}"
-    cost = ledger.price(model.reported_usage(), snapshot.row(model.model_reported)) if model.calls else \
-        ledger.Cost(0.0, 0.0, "not_billed")
+    # Priced by the reported model, else the requested one: calls that all ended in an HTTP error report no model, but
+    # their usage is known (zero tokens), so they cost $0, not an unknown amount charged at the reservation
+    # (bug-2a5566 is the direct loop's same mistake). Usage that may have been billed unseen stays unknown.
+    cost = ledger.price(model.reported_usage(), snapshot.row(model.model_reported or args.model)) if model.calls \
+        else ledger.Cost(0.0, 0.0, "not_billed")
     ledger_row = None
     if model.calls:
         ledger_row = book.append(attempt_key=attempt_key, provider=endpoint.provider,
@@ -539,6 +547,7 @@ def _refine_one(run_dir: Path, book: ledger.Ledger, snapshot: ledger.Snapshot, c
         "rounds": [one.record() for one in result.rounds] if result else [],
         "proposals": [{**proposal, "kept": index < kept} for index, proposal in enumerate(model.proposals)],
         "stopped": model.stop or (result.stopped if result else "error"), "error": error, "calls": model.calls,
+        "replies": model.replies,
         "model_requested": args.model, "model_reported": model.model_reported, "usage": model.reported_usage(),
         "api_equiv_usd": cost.api_equiv_usd, "billed_usd": ledger_row["billed_usd"] if ledger_row else 0.0,
         "cost_source": cost.source, "budget_usd": budget,
@@ -575,7 +584,9 @@ def summarize(run_dir: Path) -> str:
     costs = [row["api_equiv_usd"] for row in rows]
     known = [cost for cost in costs if cost is not None]
     unknown = len(costs) - len(known)
-    verdict = "yes" if rows and not unknown and max(known) <= budget and len(rows) == config["tasks"] else "no"
+    unanswered = sum(1 for row in rows if not row.get("replies"))  # a task the model never answered measured nothing
+    verdict = "yes" if (rows and len(rows) == config["tasks"] and not unknown and not unanswered
+                        and max(known) <= budget) else "no"
     before = [row["before"]["score"] for row in rows]
     after = [row["after"]["score"] if row["after"] else row["before"]["score"] for row in rows]
     deltas = [b - a for a, b in zip(before, after)]
@@ -610,7 +621,9 @@ def summarize(run_dir: Path) -> str:
         + ", ".join(f"{count} from {group}" for group, count in sorted(groups.items()))
         + f", drawn with seed {config['seed']} (the active plans under `plans/` and speclint's fixtures).",
         f"- **Rounds:** {sum(kept)} kept over {sum(1 for n in kept if n)} task(s); {sum(row['calls'] for row in rows)} "
-        "model call(s). Why refinement stopped: " + ", ".join(f"{name} {n}" for name, n in stops.most_common()) + ".",
+        f"model call(s), {sum(row.get('replies', 0) for row in rows)} answered by the model; {unanswered} task(s) "
+        "never answered. Why refinement stopped: "
+        + ", ".join(f"{name} {n}" for name, n in stops.most_common()) + ".",
         "- **Cost a task** (the ledger's, at the reported usage): "
         f"mean {money(statistics.fmean(known) if known else None)}, "
         f"median {money(statistics.median(known) if known else None)}, max {money(max(known) if known else None)}; "

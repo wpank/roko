@@ -15,7 +15,7 @@ import secret
 import vb
 from refine_live import LiveModel, parse_additions
 from specops import refine
-from stub_provider import StubServer
+from stub_provider import ErrorStatus, StubServer
 
 import speclint
 
@@ -183,6 +183,27 @@ def test_vb_refine_runs_the_sample_through_the_proxy_and_the_ledger(tmp_path, ca
     assert sorted(path.name for path in bundle.iterdir()) == ["ledger.jsonl", "manifest.json", "refine.jsonl",
                                                               "summary.md"]
     assert (bundle / "summary.md").read_text() == summary
+
+
+def test_refused_calls_book_zero_and_never_a_yes(tmp_path, capsys):
+    """The first live run's shape (bug-7b1b7f): every call refused with a 403 billed nothing, so each task's ledger row
+    is a known $0, never an unknown cost charged at its $0.02 reservation (the direct loop's bug-2a5566), and a sample
+    the model never answered gets no `yes`."""
+    with StubServer(lambda body: ErrorStatus(status=403)) as stub:
+        assert vb.main(refine_args(tmp_path, stub.url, run_id="r403")) == 0
+    run_dir = tmp_path / "results" / "REFINE-COST" / "r403"
+    rows = [json.loads(line) for line in (run_dir / "refine.jsonl").read_text().splitlines()]
+    booked = [json.loads(line) for line in (run_dir / "ledger.jsonl").read_text().splitlines()]
+    assert len(rows) == len(booked) == len(stub.requests) == 4
+    assert all(row["calls"] == 1 and row["replies"] == 0 and row["stopped"].startswith("provider_error: HTTP 403")
+               for row in rows)
+    assert {(entry["api_equiv_usd"], entry["billed_usd"], entry["source"]) for entry in booked} == {
+        (0.0, 0.0, "provider_usage")}
+    assert "within the $0.02 cap: no" in (run_dir / "summary.md").read_text()
+    capsys.readouterr()
+    assert vb.main(["ledger", "report", "--results", str(tmp_path / "results"), "--json"]) == 0
+    line = next(entry for entry in json.loads(capsys.readouterr().out)["lines"] if entry["id"] == "BL15")
+    assert (line["spent_usd"], line["reserved_usd"], line["rows"]) == (0, 0, 4)
 
 
 def test_only_the_proxy_sends_the_key(tmp_path):

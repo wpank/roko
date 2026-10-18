@@ -23,6 +23,7 @@ import pytest
 import faultproxy
 import layout
 import ledger
+import provider
 import secret
 import vb
 from common import hmac_seed
@@ -870,6 +871,17 @@ def test_an_injected_fault_looks_like_the_upstreams_own(name, log):
     assert [(row["fault_injected"], row["status"], row["forwarded"]) for row in rows] == [
         ("rate_limit", 429, False), (None, 200, True), ("rate_limit", 429, False), ("rate_limit", 429, False),
         ("http_5xx", 500, False), ("http_5xx", 503, False)]
+
+
+def test_the_driver_client_sends_its_own_user_agent(proxy, upstream):
+    """bug-7b1b7f: api.cerebras.ai's Cloudflare refuses urllib's default User-Agent (`Python-urllib/<version>`) with a
+    403, error 1010, before the API sees the call. The driver's client names itself instead, and the proxy forwards
+    that to the provider, so no call of the direct loop or the refiner goes out under urllib's default."""
+    client = provider.OpenAICompatible(provider.Endpoint(provider="stub", base_url=proxy.base_url("stub")))
+    reply = client.complete(REQUEST["messages"], model=MODEL, max_tokens=8, timeout_s=10.0)
+    assert reply.content == "Hello 1." and len(upstream.requests) == 1
+    agent = upstream.requests[0][0].get("user-agent", "")
+    assert agent == provider.USER_AGENT and "urllib" not in agent.lower()
 
 
 def test_control_endpoint_needs_the_token(proxy, upstream):

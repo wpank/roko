@@ -172,6 +172,7 @@ def test_vb_refine_runs_the_sample_through_the_proxy_and_the_ledger(tmp_path, ca
     assert all("authorization" not in headers for headers in stub.headers)  # an override URL never gets a key
     summary = (run_dir / "summary.md").read_text()
     assert "within the $0.02 cap: yes" in summary and "2 from fixtures, 2 from plans" in summary
+    assert "**Hard fails**" in summary and "| Hard fails |" in summary
     capsys.readouterr()
     assert vb.main(["ledger", "report", "--results", str(tmp_path / "results"), "--json"]) == 0
     report = json.loads(capsys.readouterr().out)

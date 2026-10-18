@@ -48,7 +48,8 @@ refinement stopped, the calls, the usage and the ledgered cost, and the proxy's 
 `summary.md`.
 
 **The summary** (`summarize`, `--summary RUN_DIR`): tasks, rounds, mean, median and max cost a task, the score change,
-a row per task, and the line `within the $<budget> cap: yes|no`: yes when every task of the sample ran, the model
+the hard fails before and after (a round that raises the score is kept even when it adds one), a row per task, and the
+line `within the $<budget> cap: yes|no`: yes when every task of the sample ran, the model
 answered each of them at least once (a task whose every call failed measured nothing), and every task's ledgered cost
 is known and at most the per-task budget, so the mean is too. `--bundle DIR` writes it with the run's `manifest.json`, `refine.jsonl`
 and `ledger.jsonl` (no transcripts or proxy log), the bundle committed under `reports/refiner-cost/`.
@@ -637,19 +638,29 @@ def summarize(run_dir: Path) -> str:
         out.append(f"- **Score change** (`{config['linter']}`, static): mean {statistics.fmean(before):.1f} -> "
                    f"{statistics.fmean(after):.1f}, mean change {statistics.fmean(deltas):+.1f}, largest "
                    f"{max(deltas):+.1f}; bands before {_bands(bands_before)}, after {_bands(bands_after)}.")
+        gained = Counter(fail for row in rows for fail in set((row["after"] or row["before"])["hard_fail"])
+                         - set(row["before"]["hard_fail"]))
+        out.append(f"- **Hard fails** (S07 §4.2; they block whatever the score): "
+                   f"{sum(1 for row in rows if row['before']['hard_fail'])} task(s) had one before, "
+                   f"{sum(1 for row in rows if (row['after'] or row['before'])['hard_fail'])} after; added: "
+                   + (", ".join(f"{fail} on {n} task(s)" for fail, n in sorted(gained.items())) or "none")
+                   + ". A round is kept when the score does not drop (`refine`'s guard), even one that adds a hard "
+                   "fail.")
     out.append(f"- **Per-task budget:** ${budget:.2f} (S07 §4.3), held before every call and reserved on the ledger "
                f"for each task; at most {config['max_tokens']} output tokens a call.")
     if errors:
         out.append(f"- **Run errors:** {len(errors)} (`errors.jsonl`): " + "; ".join(
             f"{one['task']}: {one['stage']}: {one['error'][:120]}" for one in errors[:3]))
     out += ["", CAP_LINE.format(cap=f"{budget:.2f}", verdict=verdict), "",
-            "| # | From | Task | Score before | Score after | Rounds | Stopped | Calls | Cost |",
-            "|---|---|---|---|---|---|---|---|---|"]
+            "| # | From | Task | Score before | Score after | Hard fails | Rounds | Stopped | Calls | Cost |",
+            "|---|---|---|---|---|---|---|---|---|---|"]
     for row in rows:
         final = row["after"] or row["before"]
+        fails = f"{','.join(row['before']['hard_fail']) or '-'} -> {','.join(final['hard_fail']) or '-'}"
         out.append(f"| {row['position']} | {row['group']} | `{row['plan_path']}` {row['task_id']} | "
                    f"{row['before']['score']:.1f} {row['before']['band']} | {final['score']:.1f} {final['band']} | "
-                   f"{len(row['rounds'])} | {_cell(row['stopped'])} | {row['calls']} | {money(row['api_equiv_usd'])} |")
+                   f"{fails} | {len(row['rounds'])} | {_cell(row['stopped'])} | {row['calls']} | "
+                   f"{money(row['api_equiv_usd'])} |")
     out += ["", "Files: `manifest.json` (the config and the sample, with each task's spec hash), `refine.jsonl` (a "
             "`vb.refine_record/1` per task: scores before and after, each kept round's `spec.refined` record, what the "
             "model proposed, the calls, usage and cost) and `ledger.jsonl` (one row per task that called the model)."]

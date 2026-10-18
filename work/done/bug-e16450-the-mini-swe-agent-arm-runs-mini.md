@@ -2,14 +2,16 @@
 id = "bug-e16450"
 kind = "bug"
 title = "The mini-swe-agent arm runs mini from .venv-msa inside the benchmark tree, so the process its agent's commands run under has <repo>/benchmarks/viabilitybench/.venv-msa/bin/python and bin/mini on its command line, which the agent reads from inside the sandbox"
-status = "open"
-triage = "unverified"
+status = "done"
+triage = "verified"
 severity = "p3"
 goal = "proof"
 size = "S"
 subsystem = ["benchmarks/viabilitybench/driver"]
 created = 2026-10-17
 updated = 2026-10-18
+last_verified = 2026-10-18
+last_verified_rev = "94c1f8157"
 source = "bug-4c3a83 worker (claude-agent), 2026-10-17 (run_msa.DEFAULT_BINARY is .venv-msa/bin/mini under layout.VB_ROOT, a console script whose shebang names the venv's python; mini-swe-agent 2.4.6 runs each command in a child shell, and from inside the agents' sandbox sysctl(KERN_PROCARGS2, getppid()) returns the parent's argv, as checked for Claude Code on the same day)"
 discovered_from = "bug-4c3a83"
 anchors = ["benchmarks/viabilitybench/driver/run_msa.py::binary_path", "benchmarks/viabilitybench/driver/run_msa.py::run_task"]
@@ -18,6 +20,18 @@ links = { depends_on = [], blocks = [], related = ["bug-4c3a83", "bug-d68575", "
 
 [[verify]]
 command = "grep -qw 'def test_no_msa_parent_names_the_benchmark' benchmarks/viabilitybench/driver/test_run_msa.py && benchmarks/viabilitybench/.venv/bin/python -m pytest benchmarks/viabilitybench/driver/test_run_msa.py -k test_no_msa_parent_names_the_benchmark -q"
+
+[closed]
+at = 2026-10-18
+at_ts = "2026-10-18T18:45:14Z"
+commit = "94c1f8157"
+by = "commit trailer"
+executor = "claude-agent"
+via = "work-batch"
+size = "S"
+claimed_at = "2026-10-18T17:10:16Z"
+forced = false
+evidence = "94c1f8157: the mini-swe-agent arm runs mini from a venv outside the repository whose path names no benchmark. The default venv is ~/.local/share/mini-swe-agent/venv (run_msa.DEFAULT_VENV; DEFAULT_BINARY is its bin/mini) and the arm file's [msa] binary names it, where it was .venv-msa/bin/mini under the benchmark tree. run_msa.binary_path refuses a binary whose path, as written or with its links followed, lies inside the repository or names the benchmark (run_msa.BENCHMARK_NAME, the tests' BENCHMARK_MARK), one that is not an executable file, and one whose first line names an interpreter that does (the kernel puts it on the command line, a framework Python in __PYVENV_LAUNCHER__ too), so a neutral symlink or a copy still running the old venv's python is refused as well; the new run_msa.preflight asks it before the first task, so vb run exits 2 and makes nothing. vb._results_hold names the default venv, so a results root that holds it is still refused, as while it lay in the repository. The README (mini-swe-agent's venv) and requirements-msa.in's header give the set-up: python3 -m venv at that path, then pip install --require-hashes -r requirements-msa.lock; the lock is unchanged. Decided under Will's decision 9 (## Decision below): no benchmark-internal identifier reaches an agent, for benchmark validity and against contamination through the public repository. The verify passes: test_no_msa_parent_names_the_benchmark (driver/test_run_msa.py), 1 passed: with a temporary HOME, the venv the arm file names and a fake mini in it as pip installs the real one (its first line names the venv's python); through vb run with the arm file as it is, run id e-oss-1, the fake logs its argv and executable and has a child shell, as mini-swe-agent 2.4.6's LocalEnvironment runs each command, read its parent with PROCARGS from inside the sandbox (macOS 26.4): none of it names the benchmark, the repository, TEST-MSA, e-oss-1 or the results root, and the probe read the mini process (its binary and -m openai/gpt-oss-120b, the control). The old default, a path naming vb, a neutral symlink into the repository and a copy whose first line names the test venv's python are each refused with exit 2 before any request or run directory. On main's run_msa.py and arm file it fails: the arm file names .venv-msa/bin/mini, a relative path, so inside the benchmark tree. Checked live without a model call: a venv made as the README says under a neutral scratch path installs mini-swe-agent 2.4.6 from the lock, and an offline vb run of the arm with that real mini against the stub completed (VS 1, sandbox-exec+net, three stub calls); its agent's first command read mini from inside the sandbox as Python.app <venv>/bin/mini -m openai/gpt-oss-120b -t <spec> -y --exit-immediately -c <tmp>/mini-*/mini.yaml -l 0 -o <tmp>/mini-*/trajectory.json with __PYVENV_LAUNCHER__=<venv>/bin/python, naming neither the benchmark, the run nor the repository. The tests' fake minis (test_run_msa.py, test_driver.py's fake_harness_arm) now run under the base interpreter, since the test venv's python lies inside the repository. Bench pytest: 829 passed, 17 skipped (14 with no roko binary in the worktree, the analysis stack, two opt-in sweeps), against 828 passed and the same 17 skipped before. Nothing new filed; the driver as every arm's ancestor is bug-4f9e49."
 +++
 
 ## Problem

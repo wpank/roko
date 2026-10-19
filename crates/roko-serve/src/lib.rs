@@ -2608,6 +2608,7 @@ fn dashboard_event_to_server(event: &roko_core::DashboardEvent) -> Option<Server
         | DashboardEvent::CallCost { .. }
         | DashboardEvent::SpecGateStarted { .. }
         | DashboardEvent::SpecGateFinished { .. }
+        | DashboardEvent::SpecGateStep { .. }
         | DashboardEvent::KnowledgeWritten { .. }
         | DashboardEvent::PlaybookWritten { .. }
         | DashboardEvent::EffectStaged { .. }

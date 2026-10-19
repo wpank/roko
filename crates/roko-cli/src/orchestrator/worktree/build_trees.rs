@@ -579,6 +579,20 @@ fn git_stdout(dir: &Path, args: &[&str]) -> std::io::Result<Vec<u8>> {
     Ok(output.stdout)
 }
 
+/// Whether the filesystem at `dir` can make the copy-on-write clones
+/// [`give_build_trees`] needs. APFS, Btrfs and XFS can; ext4, which CI's
+/// runners use, cannot, and there no tree is given and checkouts build cold.
+#[cfg(test)]
+pub(crate) fn clones_on(dir: &Path) -> bool {
+    let probe = dir.join(".clone-probe");
+    let copy = dir.join(".clone-probe-copy");
+    let cloned =
+        std::fs::create_dir_all(&probe).is_ok() && clone_tree(&probe, &copy).unwrap_or(false);
+    let _ = std::fs::remove_dir_all(&probe);
+    let _ = std::fs::remove_dir_all(&copy);
+    cloned
+}
+
 /// Whether the relative path `dir` stays inside the directory it is relative
 /// to.
 fn is_inside(dir: &Path) -> bool {
@@ -673,6 +687,10 @@ mod tests {
     #[test]
     fn warm_build_tree_is_relocated_with_its_times() {
         let temp = tempfile::tempdir().expect("tempdir");
+        if !clones_on(temp.path()) {
+            eprintln!("this filesystem makes no copy-on-write clones; skipping");
+            return;
+        }
         let (repo, checkout) = repo_and_checkout(temp.path());
         let root = repo.display().to_string();
         std::fs::create_dir_all(repo.join("build/plugins/CMakeFiles/core.dir")).expect("tree");
@@ -751,6 +769,10 @@ mod tests {
     #[test]
     fn warm_build_tree_drops_only_populate_rule_hashes() {
         let temp = tempfile::tempdir().expect("tempdir");
+        if !clones_on(temp.path()) {
+            eprintln!("this filesystem makes no copy-on-write clones; skipping");
+            return;
+        }
         let (repo, checkout) = repo_and_checkout(temp.path());
         let hashes_dir = repo.join("build/_deps/juce-subbuild/CMakeFiles");
         std::fs::create_dir_all(&hashes_dir).expect("subbuild");
@@ -785,6 +807,10 @@ mod tests {
     #[test]
     fn warm_build_tree_gives_unchanged_files_their_times() {
         let temp = tempfile::tempdir().expect("tempdir");
+        if !clones_on(temp.path()) {
+            eprintln!("this filesystem makes no copy-on-write clones; skipping");
+            return;
+        }
         let (repo, checkout) = repo_and_checkout(temp.path());
         std::fs::create_dir_all(repo.join("build")).expect("build");
         std::fs::write(repo.join("build/CMakeCache.txt"), home_entry(&repo)).expect("cache");
@@ -843,7 +869,9 @@ mod tests {
         std::fs::remove_file(repo.join("build/cmake_pch.hxx.pch")).expect("drop the pch");
         assert!(give_build_trees(&repo, &checkout, Some(&[])).is_empty());
         let named = give_build_trees(&repo, &checkout, Some(&["build/".to_string()]));
-        assert_eq!(named.len(), 1, "{named:?}");
+        if clones_on(temp.path()) {
+            assert_eq!(named.len(), 1, "{named:?}");
+        }
         assert_eq!(
             warm_build_dirs(&repo, Some(&["../repo".to_string()])),
             Vec::<PathBuf>::new()
@@ -871,6 +899,10 @@ mod tests {
             return;
         };
         let temp = tempfile::tempdir().expect("tempdir");
+        if !clones_on(temp.path()) {
+            eprintln!("this filesystem makes no copy-on-write clones; skipping");
+            return;
+        }
         let (repo, _) = repo_and_checkout(temp.path());
         std::fs::write(
             repo.join("CMakeLists.txt"),

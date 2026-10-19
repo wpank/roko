@@ -2,7 +2,7 @@
 id = "gap-e02ec4"
 kind = "gap"
 title = "The plan-load red-on-base check builds every C++ check cold, twice per task, and repeats identical checks: 171 s of a 283 s run on a 4-task JUCE plan, before any agent starts"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p2"
 goal = "core"
@@ -11,6 +11,7 @@ subsystem = ["roko-cli/spec-gate"]
 created = 2026-10-19
 updated = 2026-10-19
 last_verified = 2026-10-19
+last_verified_rev = "7aa57d688"
 source = "round-v7-roko-speed#baseline"
 discovered_from = "agent:roko-speed (round v7 baseline, 2026-10-19)"
 anchors = ["crates/roko-cli/src/spec_red_on_base.rs::BaseTrees", "crates/roko-cli/src/spec_red_on_base.rs::check_task"]
@@ -18,6 +19,17 @@ links = { depends_on = [], blocks = [], related = ["gap-0ee70b", "gap-d21da9", "
 
 [[verify]]
 command = "grep -rqw 'fn warm_keeps_build_trees_between_runs' crates/roko-cli/src && cargo test -p roko-cli --lib spec_red_on_base::tests::warm_"
+
+[closed]
+at = 2026-10-19
+at_ts = "2026-10-19T19:00:40Z"
+commit = "7aa57d688"
+executor = "claude-agent"
+via = "manual"
+size = "M"
+claimed_at = "2026-10-19T16:28:35Z"
+forced = false
+evidence = "Base checkouts keep their CMake build trees between runs (git clean -e). When the workspace is at the base with no tracked file changed, they start from relocated copies of the workspace's own build trees (give_build_trees). Decided runs (fail or pass) are cached for 12 h in .roko/cache/red-on-base/, keyed by the base, the steps, the cargo mode, the plan's other files, the environment the steps get and roko's build. Each step publishes spec_gate_step, spec_gate_finished gets its counts, and plan validate --dynamic takes --fresh. Verify spec_red_on_base::tests::warm_ passes: warm_keeps_build_trees_between_runs, warm_seeds_the_base_from_the_workspace_build and warm_reuses_decided_runs_from_the_cache. In the $0 fixture run e-after (the 4-task JUCE plan, the workspace built once), validate --dynamic took 20.3 s with 4 tasks red, 0.2 s again from the cache, and 18.1 s with --fresh. The plan run's pre-check then took 137 ms (4 cached, 0 steps run), and the whole run took 19.4 s with all 4 tasks passing first try. Before (3b34aed92, run base2), the pre-check took 170.7 s of a 282.5 s run."
 +++
 
 ## Problem

@@ -42,9 +42,9 @@ Progress per epic: its children (items whose `parent` is the epic, plus its `dep
 
 ## [spec-567e52](items/spec-567e52-epic-pilot-benchmark.md) pilot benchmark
 
-- **58/69 closed** · goal `proof` · severity p1
-- open by lane: bench 11
-- next: [gap-b94a2c](items/gap-b94a2c-a-sandboxed-agent-still-reads-any-same.md) A sandboxed agent still reads any same-user process's start-up environment with sysctl(KERN_PROCARGS2), and no sandbox-exec rule stops it
+- **59/72 closed** · goal `proof` · severity p1
+- open by lane: bench 13
+- next: [gap-dd670b](items/gap-dd670b-pilot-a-s-cheap-ladder-misses-s08.md) Pilot A's cheap ladder misses S08's bands: gpt-oss-120b solves 1 of 12 level-1 runs where G0 wants 0.6, so F1 and F4 need re-knobbing before Pilot B
 
 ## [spec-6ac537](items/spec-6ac537-epic-cybernetic-core.md) cybernetic core
 
@@ -52,9 +52,9 @@ Progress per epic: its children (items whose `parent` is the epic, plus its `dep
 
 ## [spec-7a71d6](items/spec-7a71d6-epic-turn-the-cybernetic-layer-on-in.md) turn the cybernetic layer on in safe stages
 
-- **18/28 closed** · goal `cybernetic` · severity p2
-- open by lane: rust-hot 6, rust-cold 4
-- next: [bug-92cc56](items/bug-92cc56-the-calibration-gate-s-routed-pass-rate.md) The calibration gate's routed-pass-rate bound has no routed outcome until the self-model routes, and it routes only once the gate is eligible, so M3 can never become eligible
+- **23/30 closed** · goal `cybernetic` · severity p2
+- open by lane: rust-hot 4, rust-cold 3
+- next: [gap-398dee](items/gap-398dee-a-phase-b-audit-call-can-cost.md) A phase-B audit call can cost more than its audit has left: nothing bounds one call before it starts, and B3's brief carries the whole test-file diff
 
 ## [spec-1e1b45](items/spec-1e1b45-epic-tracker-tooling-for-parallel-work.md) tracker tooling for parallel work
 
@@ -104,12 +104,12 @@ Progress per epic: its children (items whose `parent` is the epic, plus its `dep
 
 | Lane | Closed | Total | Open (verified) |
 |---|---|---|---|
-| bench | 111 | 150 | 39 (28) |
+| bench | 117 | 158 | 41 (33) |
 | docs | 27 | 31 | 4 (3) |
 | frontend | 7 | 9 | 2 (2) |
-| none | 468 | 567 | 99 (93) |
-| paper | 77 | 86 | 9 (7) |
-| rust-cold | 258 | 314 | 56 (47) |
-| rust-hot | 263 | 296 | 33 (31) |
+| none | 475 | 585 | 110 (100) |
+| paper | 77 | 87 | 10 (8) |
+| rust-cold | 260 | 314 | 54 (45) |
+| rust-hot | 270 | 300 | 30 (28) |
 | tests | 1 | 1 | 0 (0) |
 | tracker | 26 | 29 | 3 (2) |

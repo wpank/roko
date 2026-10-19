@@ -35,6 +35,18 @@ const BUILTINS: &[&str] = &[
 /// File extensions of the test files a check can name.
 const TEST_EXTENSIONS: &[&str] = &["go", "js", "jsx", "mjs", "py", "rs", "ts", "tsx"];
 
+/// Files that make a workspace a Python project (bug-574c45).
+const PYTHON_PROJECT_FILES: &[&str] = &[
+    "pyproject.toml",
+    "requirements.txt",
+    "setup.cfg",
+    "setup.py",
+];
+
+/// Directories a search for a project's `CMakeLists.txt` leaves out: build
+/// output and vendored code (bug-574c45).
+const NOT_THE_PROJECT: &[&str] = &["build", "node_modules", "target", "third_party", "vendor"];
+
 /// The longest a step the base settles may run when generation or `plan
 /// validate` runs it to see how it comes out (bug-27f00b).
 const SETTLED_TIMEOUT: Duration = Duration::from_secs(10);
@@ -163,12 +175,16 @@ impl Probe {
 }
 
 /// The planner prompt's note on the test runners this machine has, for the
-/// kinds of project `workdir` holds; `None` when it holds none of them.
+/// kinds of project `workdir` holds; `None` when it holds none of them. A
+/// project is Python by its own files or a Python file in `tests/`, not by a
+/// `tests/` directory, which a C++ project has too; a CMake project gets the
+/// cmake and ctest it builds and tests with (bug-574c45).
 pub(super) fn runners_block(workdir: &Path, probe: &Probe) -> Option<String> {
     let mut lines = Vec::new();
-    let python = workdir.join("tests").is_dir()
-        || workdir.join("pyproject.toml").is_file()
-        || workdir.join("setup.py").is_file();
+    let python = PYTHON_PROJECT_FILES
+        .iter()
+        .any(|file| workdir.join(file).is_file())
+        || holds_extension(&workdir.join("tests"), "py", 2);
     if python {
         lines.push(if probe.pytest() {
             "- Python: `pytest` and `python3 -m unittest` both run here.".to_string()
@@ -181,6 +197,21 @@ pub(super) fn runners_block(workdir: &Path, probe: &Probe) -> Option<String> {
     }
     if workdir.join("Cargo.toml").is_file() {
         lines.push("- Rust: `cargo test -p <crate> <test name>`.".to_string());
+    }
+    if holds_cmake_lists(workdir, 2) {
+        let line = match (probe.command("cmake"), probe.command("ctest")) {
+            (true, true) if workdir.join("CMakePresets.json").is_file() => {
+                "- CMake: `cmake` and `ctest` run here. Build and test with the presets: `cmake \
+                 --preset <name>`, `cmake --build --preset <name>`, `ctest --preset <name> -R \
+                 <test>`."
+            }
+            (true, true) => {
+                "- CMake: `cmake` and `ctest` run here: `cmake -S . -B build`, `cmake --build \
+                 build`, `ctest --test-dir build -R <test>`."
+            }
+            _ => "- CMake: `cmake` or `ctest` is NOT installed here.",
+        };
+        lines.push(line.to_string());
     }
     if workdir.join("package.json").is_file() && !probe.command("npm") {
         lines.push("- JavaScript: `npm` is NOT installed here.".to_string());
@@ -197,6 +228,44 @@ pub(super) fn runners_block(workdir: &Path, probe: &Probe) -> Option<String> {
             lines.join("\n")
         )
     })
+}
+
+/// Whether `dir`, or a directory under it at most `depth` levels down,
+/// holds a file with `extension`.
+fn holds_extension(dir: &Path, extension: &str, depth: usize) -> bool {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return false;
+    };
+    entries.filter_map(Result::ok).any(|entry| {
+        let path = entry.path();
+        if entry.file_type().is_ok_and(|kind| kind.is_dir()) {
+            depth > 0 && holds_extension(&path, extension, depth - 1)
+        } else {
+            path.extension()
+                .is_some_and(|found| found == std::ffi::OsStr::new(extension))
+        }
+    })
+}
+
+/// Whether `dir`, or a directory under it at most `depth` levels down that is
+/// not build output or vendored code, holds a `CMakeLists.txt`: a seed's
+/// `tests/spec/CMakeLists.txt` makes a CMake project before the top one is
+/// written.
+fn holds_cmake_lists(dir: &Path, depth: usize) -> bool {
+    if dir.join("CMakeLists.txt").is_file() {
+        return true;
+    }
+    depth > 0
+        && std::fs::read_dir(dir).is_ok_and(|entries| {
+            entries.filter_map(Result::ok).any(|entry| {
+                let name = entry.file_name();
+                let name = name.to_string_lossy();
+                entry.file_type().is_ok_and(|kind| kind.is_dir())
+                    && !name.starts_with('.')
+                    && !NOT_THE_PROJECT.contains(&name.as_ref())
+                    && holds_cmake_lists(&entry.path(), depth - 1)
+            })
+        })
 }
 
 /// The command that runs a source check stated as unittest ids (bug-8fe462),
@@ -2409,6 +2478,8 @@ pub(super) mod tests {
     fn the_runner_note_says_pytest_is_missing() {
         let temp = tempfile::tempdir().expect("tempdir");
         std::fs::create_dir_all(temp.path().join("tests")).expect("tests");
+        std::fs::write(temp.path().join("tests/test_osc.py"), "import unittest\n")
+            .expect("a Python test");
         let probe = Probe::with(
             &[("pytest", false), ("python3", true)],
             &[("pytest", false)],
@@ -2416,5 +2487,60 @@ pub(super) mod tests {
         let block = runners_block(temp.path(), &probe).expect("a Python project");
         assert!(block.contains("`pytest` is NOT installed here"), "{block}");
         assert!(runners_block(&temp.path().join("tests"), &probe).is_none());
+    }
+
+    /// bug-574c45: Undertow, a C++/CMake repo, has a `tests/` directory of
+    /// C++ spec tests and was told "pytest is NOT installed here" and nothing
+    /// of cmake. A `tests/` directory alone makes no Python project; a
+    /// `CMakeLists.txt` two levels down makes a CMake one, and a Python test
+    /// file still makes a Python one.
+    #[test]
+    fn the_runner_note_names_cmake_not_python() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        std::fs::create_dir_all(temp.path().join("tests/spec/p0")).expect("tests");
+        std::fs::write(
+            temp.path().join("tests/spec/CMakeLists.txt"),
+            "add_executable(spec)\n",
+        )
+        .expect("the spec tests' CMakeLists.txt");
+        std::fs::write(
+            temp.path().join("tests/spec/p0/engine_test.cpp"),
+            "int main() {}\n",
+        )
+        .expect("a spec test");
+        let probe = Probe::with(
+            &[
+                ("cmake", true),
+                ("ctest", true),
+                ("pytest", false),
+                ("python3", true),
+            ],
+            &[("pytest", false)],
+        );
+        let block = runners_block(temp.path(), &probe).expect("a CMake project");
+        assert!(
+            block.contains("- CMake: `cmake` and `ctest` run here"),
+            "{block}"
+        );
+        assert!(
+            !block.contains("Python") && !block.contains("pytest"),
+            "{block}"
+        );
+
+        std::fs::write(temp.path().join("CMakePresets.json"), "{}\n").expect("presets");
+        let block = runners_block(temp.path(), &probe).expect("a CMake project");
+        assert!(
+            block.contains("`ctest --preset <name> -R <test>`"),
+            "{block}"
+        );
+
+        std::fs::write(
+            temp.path().join("tests/test_render.py"),
+            "import unittest\n",
+        )
+        .expect("a Python test");
+        let block = runners_block(temp.path(), &probe).expect("both");
+        assert!(block.contains("`pytest` is NOT installed here"), "{block}");
+        assert!(block.contains("- CMake:"), "{block}");
     }
 }

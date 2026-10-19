@@ -2,7 +2,7 @@
 id = "gap-5c3347"
 kind = "gap"
 title = "A try's spend shows only when it settles: the page and chat read $0.000 through a 10-20 minute try (costs.jsonl and the run summary get nothing until settle), so nobody sees a try approach its cap"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p2"
 goal = "golden-path"
@@ -11,6 +11,7 @@ subsystem = ["roko-serve/runs"]
 created = 2026-10-19
 updated = 2026-10-19
 last_verified = 2026-10-19
+last_verified_rev = "d41c377e2"
 source = "round-v7-hermes-pilot#C-p0-run1"
 discovered_from = "agent:hermes-pilot (round v7 phase 0, run 6988f0b8)"
 anchors = ["crates/roko-cli/src/graph_task_dispatch/attempt.rs"]
@@ -18,6 +19,17 @@ links = { depends_on = [], blocks = [], related = ["gap-6a319c", "bug-f0007b"], 
 
 [[verify]]
 command = "grep -rqw 'fn a_running_try_reports_its_spend_per_model_call' crates/ && cargo test -p roko-cli --lib -- a_running_try_reports_its_spend_per_model_call"
+
+[closed]
+at = 2026-10-19
+at_ts = "2026-10-19T17:15:23Z"
+commit = "d41c377e2"
+executor = "claude-agent"
+via = "manual"
+size = "M"
+claimed_at = "2026-10-19T16:22:26Z"
+forced = false
+evidence = "Each model call that roko's tool loop makes now reaches the hub as a call_cost event when it returns: model, tokens, cost_usd (null when unpriced) and attempt_cost_usd, the try's spend so far. It goes through a metered CallAllowance that wraps the attempt's own allowance on both dispatch paths; PricedCalls passes the model and usage through record_model_call. Serve's run summary adds the spend of tries that have not settled (metrics.live_cost_usd) to cost_usd until each settles. Verify a_running_try_reports_its_spend_per_model_call passes: 3 scripted calls give 3 call_cost events at $1/$2 per million, the total grows with each, and all arrive before attempt_settled. a_running_try_s_spend_reaches_the_run_summary also passes, as do 139 roko-cli, 39 roko-core and 22 roko-serve targeted tests; clippy is clean. In the $0 fixture run t-5c3347 (stand-in coder, 2 s turns), T1's calls landed at +19.98 s, +22.07 s and +24.22 s with $0.00146, $0.00293 and $0.00439 so far, and attempt_settled followed at +26.49 s with $0.00439. Not covered: an agent that runs its own loop (the Claude CLI) reports its spend at the end, as before."
 +++
 
 ## Problem

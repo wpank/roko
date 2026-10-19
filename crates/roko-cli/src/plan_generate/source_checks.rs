@@ -20,7 +20,7 @@ use regex::Regex;
 use roko_gate::spec_quality::ac_id;
 use roko_learn::runtime_feedback::{GenerationSourceCheck, GenerationSourceChecks};
 
-use super::runnable::{Probe, Unchecked, Unrunnable, check_command, only_reads};
+use super::runnable::{Probe, Unchecked, Unrunnable, check_command, command_words, only_reads};
 use crate::task_parser::TasksFile;
 
 /// The most of one check that a prompt or a report quotes, in characters.
@@ -43,6 +43,9 @@ const CHECK_HEADING_WORDS: &[&str] = &[
 /// Shell block tags whose lines are commands.
 const SHELL_TAGS: &[&str] = &["", "bash", "console", "sh", "shell", "zsh"];
 
+/// Extensions of the scripts a check may quote by path (`tools/spec.sh`).
+const SCRIPT_EXTENSIONS: &[&str] = &["bash", "pl", "py", "rb", "sh", "zsh"];
+
 /// One check the source states.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct SourceCheck {
@@ -50,8 +53,9 @@ pub(super) struct SourceCheck {
     pub id: String,
     /// The check, on one line.
     pub text: String,
-    /// The command that runs it, when it names unittest ids, expanded by
-    /// roko rather than left to the planner (bug-8fe462).
+    /// The command that runs it, when roko can tell: the unittest ids it
+    /// names, expanded by roko rather than left to the planner (bug-8fe462),
+    /// or the one command it quotes (bug-3cdc58).
     pub run: Option<String>,
 }
 
@@ -540,8 +544,9 @@ pub(super) struct SourceCoverage {
 impl SourceCoverage {
     /// What became of `checks` in `plan`, whose `unrunnable` steps cannot
     /// pass as written. A check is kept when a verify step that can run
-    /// covers it (or an acceptance criterion that names it) and runs more than
-    /// a grep, a file test or a build; it cannot run when only steps that
+    /// covers it (or an acceptance criterion that names it), or runs its own
+    /// command (bug-3cdc58), and runs more than a grep, a file test or a
+    /// build; it cannot run when only steps that
     /// cannot pass cover it otherwise; shallow when only grep, file test or
     /// build steps do; dropped when `[meta] dropped_checks` gives a reason for
     /// it that does more than restate it; and missing otherwise.
@@ -570,6 +575,20 @@ impl SourceCoverage {
                     for id in named {
                         covering.push((id, cover.to_string(), step.command.as_str(), number));
                     }
+                }
+                // bug-3cdc58: a step that runs a check's own command keeps it,
+                // whether or not anything names the check.
+                for check in checks.iter().filter(|check| {
+                    check
+                        .run
+                        .as_deref()
+                        .is_some_and(|run| runs_command(&step.command, run))
+                }) {
+                    let criterion = step.covers.first().map_or_else(
+                        || format!("step {number}"),
+                        |cover| cover.trim().to_string(),
+                    );
+                    covering.push((check.id.clone(), criterion, step.command.as_str(), number));
                 }
             }
             for (id, criterion, command, number) in covering {
@@ -769,7 +788,7 @@ pub(super) fn planner_block(checks: &[SourceCheck], kind: &str) -> String {
     );
     if checks.iter().any(|check| check.run.is_some()) {
         block.push_str(
-            "A check given with `run:` names its tests already: use that command as its step's \
+            "A check given with `run:` has its command already: use that command as its step's \
              command, unchanged.\n\n",
         );
     }
@@ -783,12 +802,65 @@ pub(super) fn planner_block(checks: &[SourceCheck], kind: &str) -> String {
     block
 }
 
-/// Give each of `checks` that names unittest ids the command that runs them
-/// (bug-8fe462): wildcards expanded from the workspace's test files.
+/// Give each of `checks` the command that runs it, when roko can tell: the
+/// unittest ids it names, wildcards expanded from the workspace's test files
+/// (bug-8fe462), or else the one command it quotes (bug-3cdc58), as a spec's
+/// table of checks gives each check's command (`| P0.01 | `tools/spec.sh 0
+/// params 'P0.01*'` | … |`).
 pub(super) fn attach_runs(checks: &mut [SourceCheck], workdir: &Path, probe: &Probe) {
     for check in checks {
-        check.run = check_command(&check.text, workdir, probe);
+        check.run = check_command(&check.text, workdir, probe)
+            .or_else(|| quoted_command(&check.text, workdir, probe));
     }
+}
+
+/// The one command `text` quotes in a code span (bug-3cdc58); `None` when no
+/// span is a command ([`is_command`]), or more than one is.
+fn quoted_command(text: &str, workdir: &Path, probe: &Probe) -> Option<String> {
+    static SPAN: LazyLock<Regex> =
+        LazyLock::new(|| Regex::new(r"`([^`]+)`").expect("valid code span regex"));
+    let mut commands = SPAN
+        .captures_iter(text)
+        .filter_map(|captures| captures.get(1))
+        .map(|span| span.as_str().trim())
+        .filter(|span| is_command(span, workdir, probe));
+    let command = commands.next()?;
+    commands.next().is_none().then(|| command.to_string())
+}
+
+/// Whether a code span is a command: a script given by its path (with a
+/// script's extension, or a file of the workspace), or a program this
+/// machine has, with the words it is given. A file name, a symbol or a
+/// signature is not one.
+fn is_command(span: &str, workdir: &Path, probe: &Probe) -> bool {
+    let words = command_words(span);
+    let Some(program) = words.first() else {
+        return false;
+    };
+    if program.contains('/') {
+        let path = program.trim_start_matches("./");
+        let script = Path::new(path)
+            .extension()
+            .and_then(|extension| extension.to_str())
+            .is_some_and(|extension| SCRIPT_EXTENSIONS.contains(&extension));
+        return script || workdir.join(path).is_file();
+    }
+    words.len() > 1 && probe.command(program)
+}
+
+/// Whether `command`, a verify step's, runs `run`, a check's command: each
+/// of `run`'s commands is one of `command`'s, word for word, quotes aside
+/// (bug-3cdc58).
+fn runs_command(command: &str, run: &str) -> bool {
+    let commands = |text: &str| -> Vec<Vec<String>> {
+        shell_segments(text)
+            .iter()
+            .map(|segment| command_words(segment))
+            .filter(|words| !words.is_empty())
+            .collect()
+    };
+    let (have, wanted) = (commands(command), commands(run));
+    !wanted.is_empty() && wanted.iter().all(|words| have.contains(words))
 }
 
 /// Run each source check that has a command with that command (bug-8fe462),
@@ -1129,5 +1201,83 @@ mod tests {
         ] {
             assert!(!is_check_heading(title), "{title}");
         }
+    }
+
+    /// bug-3cdc58: round v7's phase-0 spec states its 15 checks as a table
+    /// whose Command column holds one command per check, and the plan written
+    /// from it runs 12 of them verbatim, with its own AC ids in `covers` and
+    /// no SC id anywhere. Each check gets its quoted command as its `run`, and
+    /// a step that runs it keeps it, named or not: 12 of 15 kept, and the
+    /// three no step runs (P0.07, P0.14, P0.15) missing.
+    #[test]
+    fn a_step_running_a_checks_command_keeps_it() {
+        let fixture = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/p0_source_checks");
+        let request = std::fs::read_to_string(fixture.join("request.md")).expect("the request");
+        let plan = TasksFile::parse(&fixture.join("tasks.toml")).expect("the plan");
+        let temp = tempfile::tempdir().expect("tempdir");
+        std::fs::create_dir_all(temp.path().join("tools")).expect("tools");
+        for script in ["spec.sh", "pluginval.sh"] {
+            std::fs::write(temp.path().join("tools").join(script), "#!/bin/sh\n")
+                .expect("a script");
+        }
+        let mut checks = source_checks(&request);
+        assert_eq!(checks.len(), 15);
+        attach_runs(&mut checks, temp.path(), &Probe::with(&[], &[]));
+        assert_eq!(
+            checks[0].run.as_deref(),
+            Some("tools/spec.sh 0 params 'P0.01*'")
+        );
+        assert_eq!(checks[13].run.as_deref(), Some("tools/pluginval.sh 5"));
+        assert_eq!(checks[14].run.as_deref(), Some("tools/check.sh --plugin"));
+
+        let coverage = SourceCoverage::of(&checks, &plan, &[]);
+        let missing: Vec<&str> = coverage
+            .missing()
+            .iter()
+            .map(|check| check.id.as_str())
+            .collect();
+        assert_eq!(missing, ["SC7", "SC14", "SC15"]);
+        assert_eq!(coverage.kept.len(), 12, "{:?}", coverage.detail_lines());
+        assert_eq!(coverage.unkept(), 3);
+        assert_eq!(
+            coverage.kept.get("SC1"),
+            Some(&("T2".to_string(), "AC1".to_string()))
+        );
+    }
+
+    /// bug-3cdc58: a code span is a check's command when it runs a workspace
+    /// script or a program this machine has, with what it is given; a file
+    /// name, a symbol or a signature is not one, and neither is either of two
+    /// commands a check quotes. A step runs a check's command when one of its
+    /// commands is that command word for word, quotes aside.
+    #[test]
+    fn a_check_quoting_one_command_runs_it() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let probe = Probe::with(&[("make", true), ("cmake", true), ("ctest", true)], &[]);
+        let run = |text: &str| quoted_command(text, temp.path(), &probe);
+        assert_eq!(
+            run("P0.14 | `tools/pluginval.sh 5` | passes").as_deref(),
+            Some("tools/pluginval.sh 5")
+        );
+        assert_eq!(run("- `make test` passes").as_deref(), Some("make test"));
+        assert_eq!(run("`./run.sh` prints ok").as_deref(), Some("./run.sh"));
+        for text in [
+            "`docs/PRD.md` section 4 lists them",
+            "`kNumParams` is 57",
+            "`process(float* left, float* right, int n)` writes every sample",
+            "`make` alone",
+            "`cmake --preset core` builds, then `ctest --preset core` passes",
+            "`make test` and `make lint` pass",
+        ] {
+            assert_eq!(run(text), None, "{text}");
+        }
+        assert!(runs_command(
+            "grep -q 'kNumParams' core/params.h && tools/spec.sh 0 params \"P0.01*\"",
+            "tools/spec.sh 0 params 'P0.01*'"
+        ));
+        assert!(!runs_command(
+            "tools/spec.sh 0 params 'P0.02*'",
+            "tools/spec.sh 0 params 'P0.01*'"
+        ));
     }
 }

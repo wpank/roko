@@ -322,6 +322,36 @@ pub enum DashboardEvent {
         #[serde(default)]
         outcome: String,
     },
+    /// A model call of a Graph task's attempt returned (gap-5c3347): what it
+    /// used and cost, and what the attempt's calls have cost so far. Published
+    /// as each call returns, so a run's spend moves during a try; the
+    /// attempt's `attempt_settled` stays the record of what it spent.
+    CallCost {
+        plan_id: String,
+        task_id: String,
+        /// The attempt, from 1.
+        #[serde(default)]
+        attempt: u32,
+        /// The call's number among the attempt's model calls, from 1.
+        #[serde(default)]
+        call: u32,
+        /// The model that served it.
+        #[serde(default)]
+        model: String,
+        #[serde(default)]
+        input_tokens: u64,
+        #[serde(default)]
+        output_tokens: u64,
+        #[serde(default)]
+        cache_read_tokens: u64,
+        /// What it cost, in USD; `None` when no rate prices its model.
+        #[serde(default)]
+        cost_usd: Option<f64>,
+        /// What the attempt's priced calls have cost so far, this one
+        /// included.
+        #[serde(default)]
+        attempt_cost_usd: f64,
+    },
     /// The plan-load spec gate started (gap-6a319c): before any task runs,
     /// it scores the plans' tasks and, with `[spec_quality] red_on_base`,
     /// runs each implementer task's checks on the unchanged base.
@@ -3367,8 +3397,9 @@ impl DashboardSnapshot {
             // S10's calibration view reads the export from the event stream
             // (6134); the snapshot keeps none of it.
             DashboardEvent::SelfModelCalibration { .. } => {}
-            // The timeline reads merges from the event stream (gap-6a319c).
-            DashboardEvent::AttemptMerged { .. } => {}
+            // The timeline reads merges from the event stream (gap-6a319c), and
+            // a host its live spend (gap-5c3347).
+            DashboardEvent::AttemptMerged { .. } | DashboardEvent::CallCost { .. } => {}
             DashboardEvent::SpecGateStarted {
                 plan_ids,
                 tasks_total,

@@ -1686,6 +1686,7 @@ pub fn format_dashboard_event(
         | DashboardEvent::ConfirmWaiting { .. }
         | DashboardEvent::ConfirmResolved { .. }
         | DashboardEvent::AttemptMerged { .. }
+        | DashboardEvent::CallCost { .. }
         | DashboardEvent::SnapshotRebased { .. } => return None,
     };
 

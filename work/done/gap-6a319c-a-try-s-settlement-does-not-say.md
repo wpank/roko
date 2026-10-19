@@ -2,7 +2,7 @@
 id = "gap-6a319c"
 kind = "gap"
 title = "A try's settlement does not say where its time went: model, tool, check, queue, checkout and merge time are not split, gate_result has no duration, and the plan-load spec gate publishes no timings"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p2"
 goal = "visibility"
@@ -11,6 +11,7 @@ subsystem = ["roko-cli/graph-dispatch"]
 created = 2026-10-19
 updated = 2026-10-19
 last_verified = 2026-10-19
+last_verified_rev = "fd0f5cac8"
 source = "round-v7-roko-speed#telemetry"
 discovered_from = "agent:roko-speed (round v7, with plugin-wow, 2026-10-19)"
 anchors = ["crates/roko-learn/src/telemetry/records.rs::AttemptTiming", "crates/roko-core/src/dashboard_snapshot.rs::AttemptSettlement", "crates/roko-cli/src/graph_task_dispatch/live_tool_calls.rs::LiveToolCalls", "crates/roko-cli/src/graph_task_dispatch/attempt.rs::AttemptContext"]
@@ -18,6 +19,15 @@ links = { depends_on = [], blocks = [], related = ["gap-6754ab", "gap-e02ec4", "
 
 [[verify]]
 command = "grep -rqw 'fn attempt_phases_add_up_to_its_duration' crates/roko-cli/src && cargo test -p roko-cli --lib attempt_phases"
+
+[closed]
+at = 2026-10-19
+at_ts = "2026-10-19T16:21:19Z"
+commit = "fd0f5cac8"
+size = "M"
+claimed_at = "2026-10-19T11:50:05Z"
+forced = false
+evidence = "Per-try phases on attempt_settled and in the verdict's timing.phases: queue, workspace, prompt, ttft, model, tools, checks and other ms; model_calls; tool_calls; tools_by_name (top 5); checks[] named as each gate_result names them. Also workspace {reused, warm_build_trees}, attempt_merged {merge_ms, outcome}, and spec_gate_started/finished on the hub. Verify cargo test -p roko-cli --lib attempt_phases passes (attempt_phases_add_up_to_its_duration, attempt_phases_reach_the_verdict_row), with 19 attempt tests, 583 targeted roko-core/learn/serve/cli tests and clippy clean. The $0 fixture run t-6a319c (4 tasks, stand-in coder, 0.3 s TTFT) gives every verdict phases that add up to its duration (T2 3,211 ms: checks 2,021, model about 1,000), check names equal to gate_result's (verify[0:build]), and an 8-step spec gate in 16.9 s. Left out: gate_result.duration_ms (plugin-wow reads phases.checks[].ms and the gate_rung_started to gate_result times instead), spec_gate_finished counts (null until gap-e02ec4) and plan-writing phases (gap-61c95c)."
 +++
 
 ## Problem

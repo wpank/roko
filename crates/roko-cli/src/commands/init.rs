@@ -221,6 +221,15 @@ const CLAUDE_FIELDS: &[&str] = &[
 /// provider, else the same or a close model from another. Rates are the
 /// 2026-09-28 price snapshot's (`config/prices/2026-09-28.toml`), or
 /// OpenRouter's model list on 2026-10-15; Claude's are built in.
+///
+/// gpt-oss-120b, GLM-4.7 and gpt-5.4-mini reason before they answer, and the
+/// reasoning counts against `max_output`. At 16,384, glm-4.7 spent one call's
+/// whole limit reasoning on a large task and never acted (bug-872885), so
+/// they get 32,768. That is within each provider's output limit; a call that
+/// reasons all the way to it, at glm-4.7's ~37 tokens a second, still ends
+/// inside roko's 30-minute stream cap, so the tool loop can ask it again; and
+/// context window plus output fits the provider's window for one request
+/// (gpt-oss-120b's 131,072 is split 98,304 + 32,768).
 const MODELS: &[ModelSpec] = &[
     ModelSpec {
         key: "gpt-oss-120b",
@@ -228,8 +237,8 @@ const MODELS: &[ModelSpec] = &[
         slug: "gpt-oss-120b",
         rung: "cheap",
         fields: &[
-            "context_window = 128000",
-            "max_output = 8192",
+            "context_window = 98304",
+            "max_output = 32768",
             "tool_format = \"openai_json\"",
             "cost_input_per_m = 0.35",
             "cost_output_per_m = 0.75",
@@ -242,8 +251,8 @@ const MODELS: &[ModelSpec] = &[
         slug: "openai/gpt-oss-120b",
         rung: "cheap",
         fields: &[
-            "context_window = 128000",
-            "max_output = 8192",
+            "context_window = 98304",
+            "max_output = 32768",
             "tool_format = \"openai_json\"",
             "cost_input_per_m = 0.15",
             "cost_output_per_m = 0.6",
@@ -256,7 +265,7 @@ const MODELS: &[ModelSpec] = &[
         rung: "mid",
         fields: &[
             "context_window = 128000",
-            "max_output = 16384",
+            "max_output = 32768",
             "tool_format = \"openai_json\"",
             "cost_input_per_m = 0.6",
             "cost_output_per_m = 2.2",
@@ -285,7 +294,7 @@ const MODELS: &[ModelSpec] = &[
         rung: "mid",
         fields: &[
             "context_window = 128000",
-            "max_output = 16384",
+            "max_output = 32768",
             "tool_format = \"openai_json\"",
             "cost_input_per_m = 0.6",
             "cost_output_per_m = 2.2",
@@ -298,7 +307,7 @@ const MODELS: &[ModelSpec] = &[
         rung: "strong",
         fields: &[
             "context_window = 200000",
-            "max_output = 16384",
+            "max_output = 32768",
             "tool_format = \"openai_json\"",
             "cost_input_per_m = 0.75",
             "cost_output_per_m = 4.5",
@@ -312,7 +321,7 @@ const MODELS: &[ModelSpec] = &[
         rung: "strong",
         fields: &[
             "context_window = 200000",
-            "max_output = 16384",
+            "max_output = 32768",
             "tool_format = \"openai_json\"",
             "cost_input_per_m = 0.75",
             "cost_output_per_m = 4.5",
@@ -1719,6 +1728,48 @@ mod tests {
                 "{} ({}) has no price",
                 model.key,
                 model.slug
+            );
+        }
+    }
+
+    /// bug-872885: a reasoning model's reasoning counts against its output
+    /// limit. At 16,384, glm-4.7 spent a whole call reasoning on a large
+    /// task and never acted. Each reasoning model `roko init` writes leaves
+    /// room to reason and then act, within its provider's limits for one
+    /// request.
+    #[test]
+    fn reasoning_models_leave_room_to_reason_and_act() {
+        // The provider's context window and most output for one request:
+        // Cerebras's paid tier, Z.ai's and OpenAI's docs, and OpenRouter's
+        // model list, on 2026-10-19.
+        let limits = [
+            ("gpt-oss-120b", 131_072, 40_000),
+            ("gpt-oss-120b-openrouter", 131_072, 65_536),
+            ("glm-4-7", 204_800, 131_072),
+            ("glm-4-7-openrouter", 204_800, 131_072),
+            ("gpt-5-4-mini", 400_000, 128_000),
+            ("gpt-5-4-mini-openrouter", 400_000, 128_000),
+        ];
+        let field = |model: &ModelSpec, name: &str| -> u64 {
+            model
+                .fields
+                .iter()
+                .find_map(|field| field.strip_prefix(&format!("{name} = ")))
+                .and_then(|value| value.parse().ok())
+                .unwrap_or_else(|| panic!("{} has no {name}", model.key))
+        };
+        for (key, window, most_output) in limits {
+            let model = MODELS
+                .iter()
+                .find(|model| model.key == key)
+                .unwrap_or_else(|| panic!("init writes no {key}"));
+            let max_output = field(model, "max_output");
+            let context_window = field(model, "context_window");
+            assert!(max_output >= 32_768, "{key}: max_output {max_output}");
+            assert!(max_output <= most_output, "{key}: max_output {max_output}");
+            assert!(
+                context_window + max_output <= window,
+                "{key}: {context_window} + {max_output} > {window}"
             );
         }
     }

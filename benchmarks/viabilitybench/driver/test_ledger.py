@@ -101,8 +101,8 @@ def test_budget_is_s09_v1_6():
     assert [line.id for line in budget.lines.values() if line.proposed_cap_usd is not None] == []
     assert budget.lines["BL0"].cap_usd == 14 and budget.caps_usd <= budget.stop_usd
     pilot, pilot_c, refiner = budget.experiments
-    assert (pilot.id, pilot.experiment_ids, pilot.lines, pilot.cap_usd) == ("pilot", ("PILOT-A", "PILOT-B"),
-                                                                            ("BL0", "BL8"), 15)
+    assert (pilot.id, pilot.experiment_ids, pilot.lines, pilot.cap_usd) == (
+        "pilot", ("PILOT-A", "PILOT-B", "PILOT-A-RECAL"), ("BL0", "BL8"), 15)  # gap-dd670b's re-run joins the pilot
     assert (pilot_c.id, pilot_c.experiment_ids, pilot_c.lines, pilot_c.cap_usd) == ("pilot_c", ("PILOT-C",),
                                                                                     ("BL14",), 6)
     assert (refiner.id, refiner.experiment_ids, refiner.lines, refiner.cap_usd) == ("refiner_cost", ("REFINE-COST",),

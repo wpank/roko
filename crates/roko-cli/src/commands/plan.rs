@@ -1059,12 +1059,15 @@ pub(crate) async fn cmd_plan(cli: &Cli, cmd: PlanCmd) -> Result<i32> {
             } else {
                 workdir.join(&dir)
             };
-            // 3214: `--dynamic` proves each task's checks red on the base.
+            // 3214: `--dynamic` proves each task's checks red on the base;
+            // gap-d21da9: and runs what can tell whether the tasks the score
+            // leaves out can pass.
             let dynamic = dynamic.then(|| roko_cli::spec_red_on_base::RedOnBaseOptions {
                 base,
                 timeout: timeout.map(std::time::Duration::from_secs),
                 scratch,
                 fixture,
+                unscored: true,
                 ..Default::default()
             });
             let exit = cmd_plan_validate(

@@ -196,6 +196,8 @@ impl DreamAgentConfig {
             provider_semaphores: None,
             env: self.env.clone(),
             env_passthrough: Vec::new(),
+            tool_timeout: None,
+            tool_timeout_max: None,
             extra_args,
             effort: Some(self.effort.clone()),
             bare_mode: self.bare_mode,

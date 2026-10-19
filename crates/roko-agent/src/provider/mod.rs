@@ -415,6 +415,14 @@ pub fn create_agent_for_model(
     if options.env_passthrough.is_empty() {
         options.env_passthrough = config.agent.env_passthrough.clone();
     }
+    // A tool call gets `[timeouts] tool_execution_ms`, or what it asks for
+    // up to `tool_execution_max_ms` (bug-c22bd9).
+    if options.tool_timeout.is_none() {
+        options.tool_timeout = Some(config.timeouts.tool_execution());
+    }
+    if options.tool_timeout_max.is_none() {
+        options.tool_timeout_max = Some(config.timeouts.tool_execution_max());
+    }
     // The CaMeL data-LLM boundary covers the tool loops roko runs itself:
     // the adapters that execute tools in process (gap-b0d514).
     if options.data_llm.is_none()
@@ -612,12 +620,20 @@ pub fn build_provider_tool_dispatcher(
 /// Attach `options`' per-call trace and metrics sinks and its tool
 /// correlation to a tool-loop agent, so each of its tool calls leaves a
 /// trace, a metrics record and audit lines that join back to the run
-/// (find-f489db).
+/// (find-f489db), and its tool calls' budgets (bug-c22bd9).
 #[must_use]
 pub(crate) fn with_tool_observability(
     mut agent: crate::tool_loop::ToolLoopAgent,
     options: &AgentOptions,
 ) -> crate::tool_loop::ToolLoopAgent {
+    // The tool calls' budgets ride along with their observability: every
+    // adapter that runs roko's own tool loop applies both (bug-c22bd9).
+    if let Some(timeout) = options.tool_timeout {
+        agent = agent.with_timeout(timeout);
+    }
+    if let Some(max_timeout) = options.tool_timeout_max {
+        agent = agent.with_max_timeout(max_timeout);
+    }
     if let Some(sink) = &options.trace_sink {
         agent = agent.with_trace_sink(Arc::clone(sink));
     }
@@ -1061,6 +1077,14 @@ pub struct AgentOptions {
     /// would strip them: exact names or `PREFIX*` patterns. Filled from
     /// `[agent] env_passthrough` by [`create_agent_for_model`] when empty.
     pub env_passthrough: Vec<String>,
+    /// The wall-clock budget of a tool call in roko's own tool loop that
+    /// asks for none (bug-c22bd9). Filled from `[timeouts] tool_execution_ms`
+    /// by [`create_agent_for_model`] when `None`.
+    pub tool_timeout: Option<std::time::Duration>,
+    /// The most such a call may ask for with its own `timeout_ms`. Filled
+    /// from `[timeouts] tool_execution_max_ms` by [`create_agent_for_model`]
+    /// when `None`.
+    pub tool_timeout_max: Option<std::time::Duration>,
     pub extra_args: Vec<String>,
     pub effort: Option<String>,
     /// The request's extended-thinking setting, which overrides the model

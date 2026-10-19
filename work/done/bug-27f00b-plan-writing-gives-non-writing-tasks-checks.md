@@ -2,7 +2,7 @@
 id = "bug-27f00b"
 kind = "bug"
 title = "Plan writing gives non-writing tasks checks that no task can change: a one-line synth request from Hermes got 5 strategist tasks whose 11 checks grep the hello-world demo's plan.md (pass_on_base, all red on the base)"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p2"
 goal = "golden-path"
@@ -11,6 +11,7 @@ subsystem = ["roko-cli/plan-generate"]
 created = 2026-10-19
 updated = 2026-10-19
 last_verified = 2026-10-19
+last_verified_rev = "f33fd217c"
 source = "round-v7-hermes-pilot#B-baseline"
 discovered_from = "agent:hermes-pilot (round v7 baseline, 2026-10-19, op 5366ffa9)"
 anchors = ["crates/roko-cli/src/plan_generate/runnable.rs::problems", "crates/roko-cli/src/plan_generate/runnable.rs::step_problem", "crates/roko-cli/src/plan_generate.rs::build_generator_system_prompt"]
@@ -18,6 +19,16 @@ links = { depends_on = [], blocks = [], related = ["gap-d21da9", "gap-ff78e1", "
 
 [[verify]]
 command = "grep -rqw 'fn a_check_no_task_can_change_is_settled_on_the_base' crates/roko-cli/src && cargo test -p roko-cli --lib -- a_check_no_task_can_change_is_settled_on_the_base"
+
+[closed]
+at = 2026-10-19
+at_ts = "2026-10-19T14:48:05Z"
+commit = "b63de5643"
+by = "roko-planner (round v7)"
+executor = "claude-agent"
+via = "manual"
+forced = false
+evidence = "Merged f55e30d4f (work/bug-27f00b: b63de5643, b03956554). plan_generate/runnable.rs: a verify step that only reads files (a strict read_only_files tokenizer) none of which a task of the plan writes (settled_reads: the file exists, git does not ignore it, no task files or pinned-test dest may change it; a writing task with no files may change anything) is settled by the base and runs once, read-only, 10 s cap, in the check environment. Generation sends a plan back when a settled step fails (cannot pass), when every step of a task is settled and passes (no check can see its work), when a check reads .roko/ state, or when a task writes into the plan own directory; the prompt drops the rule that pinned read-only roles to files that already exist and adds core principle 8, a request-without-a-spec section (one scribe task writes docs/spec.md with numbered AC criteria first, with an example) and a workspace note; a task that writes only documents keeps its tier max_loc. plan validate: PLAN_054 error (a settled step fails), PLAN_055 warning (a settled step checks nothing), PLAN_056 warning (.roko state); plan run and serve pre-run validation refuse PLAN_054. Verify at f55e30d4f: a_check_no_task_can_change_is_settled_on_the_base passes (the round v7 baseline plan, replayed through a fake planner, is sent back once naming its 11 steps; the spec-first reply is written). Pre-merge at 4ab787362: roko-cli lib 3859 passed, 0 failed; integration plan_validate/plan_validation/plan_revise/plan_spec_gate/cli_fallback pass except the known bug-2a31bc pair; speclint parity unchanged against 3b34aed92. On the real baseline plan, plan validate went from 0 diagnostics to 11 PLAN_054 errors. Live, gpt-5.4-mini, one call, 0.0084 USD: the same one-sentence synth request now gives one scribe task writing docs/spec.md with checks of that file, stopping on three open questions for the person."
 +++
 
 ## Problem

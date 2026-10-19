@@ -9,10 +9,16 @@
 //! task's own check needs joins that task's `files`. The rest is listed for
 //! the planner, and a source check whose only covering steps cannot run is
 //! not kept.
+//!
+//! A step that only reads files no task of its plan writes is settled before
+//! the plan runs (bug-27f00b): it fails on the base and no task can make it
+//! pass, or it passes there and checks nothing its task does. Such a step
+//! runs once, read-only, to tell which ([`settled_steps`]).
 
 use std::collections::HashMap;
 use std::path::Path;
 use std::sync::{LazyLock, Mutex, PoisonError};
+use std::time::Duration;
 
 use regex::Regex;
 
@@ -28,6 +34,38 @@ const BUILTINS: &[&str] = &[
 
 /// File extensions of the test files a check can name.
 const TEST_EXTENSIONS: &[&str] = &["go", "js", "jsx", "mjs", "py", "rs", "ts", "tsx"];
+
+/// The longest a step the base settles may run when generation or `plan
+/// validate` runs it to see how it comes out (bug-27f00b).
+const SETTLED_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// The single-letter `test` operators that test a file (`-f path`).
+const FILE_TESTS: &str = "bcdefghkprsuwxGLNOS";
+
+/// `grep`'s short options that take a value: the rest of their word, or the
+/// next word.
+const GREP_SHORT_VALUES: &str = "efmABCdD";
+
+/// `grep`'s long options that take a value: after `=`, or the next word.
+const GREP_LONG_VALUES: &[&str] = &[
+    "after-context",
+    "before-context",
+    "binary-files",
+    "color",
+    "colour",
+    "context",
+    "devices",
+    "directories",
+    "exclude",
+    "exclude-dir",
+    "exclude-from",
+    "file",
+    "group-separator",
+    "include",
+    "label",
+    "max-count",
+    "regexp",
+];
 
 /// A verify step that cannot pass as written.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -45,6 +83,9 @@ pub(super) struct Unrunnable {
 pub(super) struct Probe {
     commands: Mutex<HashMap<String, bool>>,
     modules: Mutex<HashMap<String, bool>>,
+    /// Whether each step the base settles passes, by command (bug-27f00b);
+    /// `None` when it did not finish.
+    settled: Mutex<HashMap<String, Option<bool>>>,
     /// Answer only from the names given, never asking the machine (tests).
     given_only: bool,
 }
@@ -63,8 +104,21 @@ impl Probe {
         Self {
             commands: Mutex::new(own(commands)),
             modules: Mutex::new(own(modules)),
+            settled: Mutex::default(),
             given_only: true,
         }
+    }
+
+    /// Whether `command`, a step the base settles, passes when it runs once
+    /// in `workdir` (bug-27f00b). It runs even for a probe of given names:
+    /// it only reads files of the workspace.
+    fn settled_passes(&self, command: &str, workdir: &Path) -> Option<bool> {
+        *self
+            .settled
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .entry(command.to_string())
+            .or_insert_with(|| run_settled(command, workdir))
     }
 
     /// Whether `name` is an executable on `PATH`.
@@ -560,13 +614,28 @@ fn imported_files(text: &str) -> Vec<String> {
     files
 }
 
-/// The verify steps of `plan` that cannot pass as written, in plan order.
+/// The verify steps of `plan` that cannot pass as written, in plan order:
+/// one of [`step_problem`]'s, or a step the base settles that fails there
+/// (bug-27f00b).
 pub(super) fn problems(plan: &TasksFile, workdir: &Path, probe: &Probe) -> Vec<Unrunnable> {
+    let settled = settled_steps_with(plan, workdir, |command| {
+        probe.settled_passes(command, workdir)
+    });
     let mut found = Vec::new();
     for (index, task) in plan.tasks.iter().enumerate() {
         let written = written_before_and_by(plan, index);
         for (number, step) in (1..).zip(&task.verify) {
-            if let Some(why) = step_problem(&step.command, workdir, &written, probe) {
+            let why = step_problem(&step.command, workdir, &written, probe).or_else(|| {
+                settled
+                    .iter()
+                    .find(|settled| {
+                        settled.task == task.id
+                            && settled.step == number
+                            && settled.passes == Some(false)
+                    })
+                    .map(SettledStep::why)
+            });
+            if let Some(why) = why {
                 found.push(Unrunnable {
                     task: task.id.clone(),
                     step: number,
@@ -576,6 +645,626 @@ pub(super) fn problems(plan: &TasksFile, workdir: &Path, probe: &Probe) -> Vec<U
         }
     }
     found
+}
+
+/// A task none of whose checks can see its work (bug-27f00b): the base
+/// settles each of its verify steps, and each passes there, so they pass
+/// whatever the task does.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct Unchecked {
+    /// The task's id.
+    pub task: String,
+    /// The files its steps read.
+    pub reads: Vec<String>,
+}
+
+/// The tasks of `plan` none of whose checks can see their work, in plan
+/// order.
+pub(super) fn unchecked(plan: &TasksFile, workdir: &Path, probe: &Probe) -> Vec<Unchecked> {
+    let settled = settled_steps_with(plan, workdir, |command| {
+        probe.settled_passes(command, workdir)
+    });
+    plan.tasks
+        .iter()
+        .filter(|task| !task.verify.is_empty())
+        .filter_map(|task| {
+            let steps: Vec<&SettledStep> = settled
+                .iter()
+                .filter(|settled| settled.task == task.id)
+                .collect();
+            let blind = steps.len() == task.verify.len()
+                && steps.iter().all(|settled| settled.passes == Some(true));
+            blind.then(|| {
+                let mut reads: Vec<String> = steps
+                    .iter()
+                    .flat_map(|settled| settled.reads.iter().cloned())
+                    .collect();
+                reads.sort();
+                reads.dedup();
+                Unchecked {
+                    task: task.id.clone(),
+                    reads,
+                }
+            })
+        })
+        .collect()
+}
+
+/// A verify step the base settles (bug-27f00b): it only reads files, none
+/// of which a task of its plan writes, so whatever the tasks do, it comes out
+/// as it does on the base.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SettledStep {
+    /// Its task's id.
+    pub task: String,
+    /// Its number among its task's verify steps, from 1.
+    pub step: usize,
+    /// The workspace files it reads.
+    pub reads: Vec<String>,
+    /// Whether it passes on the base; `None` when it did not finish there.
+    pub passes: Option<bool>,
+}
+
+impl SettledStep {
+    /// How the step comes out, and why, said after the step: "fails on the
+    /// base, and no task can make it pass: it reads only `notes.md`, which no
+    /// task of this plan writes".
+    #[must_use]
+    pub fn outcome(&self) -> String {
+        let only = only_reads(&self.reads);
+        match self.passes {
+            Some(false) => format!("fails on the base, and no task can make it pass: {only}"),
+            Some(true) => {
+                format!("passes on the base, so it checks nothing its task does: {only}")
+            }
+            None => format!("is decided by the base before any task runs: {only}"),
+        }
+    }
+
+    /// [`Self::outcome`] as a reason: "it fails on the base, …".
+    #[must_use]
+    pub fn why(&self) -> String {
+        format!("it {}", self.outcome())
+    }
+}
+
+/// Why the base settles a step that reads `reads`: "it reads only
+/// `notes.md`, which no task of this plan writes".
+#[must_use]
+pub fn only_reads(reads: &[String]) -> String {
+    let named: Vec<String> = reads.iter().map(|path| format!("`{path}`")).collect();
+    format!(
+        "it reads only {}, which no task of this plan writes",
+        named.join(", ")
+    )
+}
+
+/// The verify steps of `plan` the base settles (bug-27f00b), in plan order.
+/// A step is settled when it only reads files ([`read_only_files`]) that
+/// exist in `workdir`, that git does not ignore (a build output is no file
+/// of the base) and that no task of the plan writes ([`settled_reads`]), and
+/// every step before it in its task only reads files too; a task that pins
+/// an acceptance test, whose run comes first, has none. Each runs once in
+/// `workdir`, read-only, as `plan run` runs a check, to tell how it comes
+/// out.
+#[must_use]
+pub fn settled_steps(plan: &TasksFile, workdir: &Path) -> Vec<SettledStep> {
+    settled_steps_with(plan, workdir, |command| run_settled(command, workdir))
+}
+
+/// [`settled_steps`], with `run` telling whether a step passes.
+fn settled_steps_with(
+    plan: &TasksFile,
+    workdir: &Path,
+    run: impl Fn(&str) -> Option<bool>,
+) -> Vec<SettledStep> {
+    let writes = plan_writes(plan);
+    let mut found = Vec::new();
+    for task in &plan.tasks {
+        if task
+            .accept
+            .as_ref()
+            .is_some_and(|accept| !accept.files.is_empty())
+        {
+            continue;
+        }
+        for (number, step) in (1..).zip(&task.verify) {
+            // A step after one that does more than read may read what that
+            // one wrote.
+            if read_only_files(&step.command).is_none() {
+                break;
+            }
+            if let Some(reads) = settled_reads(&step.command, workdir, &writes) {
+                found.push(SettledStep {
+                    task: task.id.clone(),
+                    step: number,
+                    reads,
+                    passes: run(&step.command),
+                });
+            }
+        }
+    }
+    found
+}
+
+/// Whether a step that only reads files passes when it runs once in
+/// `workdir`, as `plan run` runs a check; `None` when it did not finish
+/// within [`SETTLED_TIMEOUT`], could not start, or a program it names is
+/// missing.
+fn run_settled(command: &str, workdir: &Path) -> Option<bool> {
+    let result = crate::spec_red_on_base::run_step(
+        command,
+        workdir,
+        SETTLED_TIMEOUT,
+        &workdir.join("target"),
+    )
+    .ok()?;
+    match result.exit? {
+        0 => Some(true),
+        127 => None,
+        code => (code > 0).then_some(false),
+    }
+}
+
+/// The files a verify step reads when the base settles it (bug-27f00b): it
+/// only reads files ([`read_only_files`]), at least one, and each of them
+/// exists in `root`, is not ignored by git there, and is not one that
+/// `writes` (what the plan's tasks write) may change. `None` otherwise.
+#[must_use]
+pub fn settled_reads(command: &str, root: &Path, writes: &[String]) -> Option<Vec<String>> {
+    let reads = read_only_files(command)?;
+    let settled = !reads.is_empty()
+        && reads.iter().all(|path| {
+            !is_roko_state(path)
+                && !may_write(writes, path)
+                && root.join(path).exists()
+                && !git_ignores(root, path)
+        });
+    settled.then_some(reads)
+}
+
+/// Whether `path` is roko's own state, which [`roko_state_read`] reports
+/// apart.
+fn is_roko_state(path: &str) -> bool {
+    path == ".roko" || path.starts_with(".roko/")
+}
+
+/// The first path under `.roko/`, roko's own state, that `command` reads
+/// (bug-27f00b). No task writes it and roko changes it as it runs, so a
+/// check of it checks no task's work.
+#[must_use]
+pub fn roko_state_read(command: &str, workdir: &Path) -> Option<String> {
+    step_files(command, workdir)
+        .into_iter()
+        .chain(read_only_files(command).unwrap_or_default())
+        .find(|path| is_roko_state(path))
+}
+
+/// What the tasks of `plan` may write: their `files`, and the pinned tests
+/// the run copies into place. A task whose role may write files and that
+/// names none may write anything, which `.` stands for.
+fn plan_writes(plan: &TasksFile) -> Vec<String> {
+    let mut writes = Vec::new();
+    for task in &plan.tasks {
+        writes.extend(task.files.iter().cloned());
+        if let Some(accept) = &task.accept {
+            writes.extend(accept.files.iter().map(|entry| entry.dest.clone()));
+        }
+        let role = task.role.as_deref().unwrap_or("implementer");
+        if task.files.is_empty() && crate::task_parser::role_capabilities(role).write {
+            writes.push(".".to_string());
+        }
+    }
+    writes
+}
+
+/// Whether writing `writes` can change what reading `path` shows: one of
+/// them is `path`, a file under it, or a directory it is in. A glob stands
+/// for its directory, and a path outside the workspace for all of it.
+fn may_write(writes: &[String], path: &str) -> bool {
+    writes.iter().any(|written| {
+        let literal = written
+            .find(['*', '?', '['])
+            .map_or(written.as_str(), |glob| {
+                written[..glob].rsplit_once('/').map_or(".", |(dir, _)| dir)
+            });
+        let Some(written) = inside_workspace(literal) else {
+            return true;
+        };
+        written == "."
+            || path == "."
+            || written == path
+            || path
+                .strip_prefix(written.as_str())
+                .is_some_and(|rest| rest.starts_with('/'))
+            || written
+                .strip_prefix(path)
+                .is_some_and(|rest| rest.starts_with('/'))
+    })
+}
+
+/// Whether git ignores `path` in the checkout at `root`; false outside git.
+fn git_ignores(root: &Path, path: &str) -> bool {
+    let mut git = std::process::Command::new("git");
+    git.args(["check-ignore", "--quiet", "--", path])
+        .current_dir(root)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null());
+    for name in crate::spec_red_on_base::GIT_REDIRECTS {
+        git.env_remove(name);
+    }
+    git.status().is_ok_and(|status| status.success())
+}
+
+/// The workspace files `command` reads, when all it does is read files
+/// (bug-27f00b): each of its commands runs `grep` (or `egrep`, `fgrep`),
+/// `test` or `[` on one file (`-f path`), `cat`, `head`, `tail` or `wc`,
+/// maybe negated with `!`, and they are joined by `&&`, `||`, `|` or `;`.
+/// Paths come back relative to the workspace, without `./`. `None` when it
+/// runs anything else, or when the shell could make it read other files or
+/// write one: a variable or a substitution, a glob, a group or subshell, a
+/// redirection to a file other than `/dev/null`, a path outside the
+/// workspace, a `tail -f`, or a recursive `grep` of no named path.
+#[must_use]
+pub fn read_only_files(command: &str) -> Option<Vec<String>> {
+    let mut reads = Vec::new();
+    for (words, inputs) in plain_commands(command)? {
+        let words: Vec<&str> = words
+            .iter()
+            .map(String::as_str)
+            .skip_while(|word| *word == "!")
+            .collect();
+        let (program, args) = words.split_first()?;
+        let files = match *program {
+            "grep" | "egrep" | "fgrep" => grep_files(args)?,
+            "test" => file_test(args)?,
+            "[" => file_test(args.strip_suffix(&["]"])?)?,
+            "cat" | "wc" => operand_files(args, &[])?,
+            "head" => operand_files(args, &["-n", "-c", "--lines", "--bytes"])?,
+            "tail" => {
+                let follows = args.iter().any(|arg| {
+                    arg.starts_with("--follow")
+                        || (arg.starts_with('-')
+                            && !arg.starts_with("--")
+                            && arg.contains(['f', 'F']))
+                });
+                if follows {
+                    return None;
+                }
+                operand_files(args, &["-n", "-c", "--lines", "--bytes"])?
+            }
+            _ => return None,
+        };
+        reads.extend(files);
+        reads.extend(inputs);
+    }
+    let mut reads = reads
+        .iter()
+        .map(|path| inside_workspace(path))
+        .collect::<Option<Vec<String>>>()?;
+    reads.sort();
+    reads.dedup();
+    Some(reads)
+}
+
+/// The simple commands of `command` as their words, each with the files a
+/// `<` redirection reads into it, when the shell would run them as written:
+/// joined by `&&`, `||`, `|`, `|&`, `;` or a newline, with quoted or plain
+/// words. `None` when the shell would expand a word (`$`, a backtick, a
+/// glob, a leading `~`), group commands (`(`, `{`, `[[`), run one in the
+/// background, read a here-document, or send output to a file other than
+/// `/dev/null`; and on a `#` comment or an unclosed quote.
+fn plain_commands(command: &str) -> Option<Vec<(Vec<String>, Vec<String>)>> {
+    let mut line = PlainLine::default();
+    let mut chars = command.chars().peekable();
+    while let Some(c) = chars.next() {
+        match c {
+            '\'' => {
+                line.started = true;
+                loop {
+                    match chars.next()? {
+                        '\'' => break,
+                        inner => line.word.push(inner),
+                    }
+                }
+            }
+            '"' => {
+                line.started = true;
+                loop {
+                    match chars.next()? {
+                        '"' => break,
+                        '$' | '`' => return None,
+                        '\\' => match chars.next()? {
+                            '\n' => {}
+                            escaped @ ('"' | '\\') => line.word.push(escaped),
+                            escaped => {
+                                line.word.push('\\');
+                                line.word.push(escaped);
+                            }
+                        },
+                        inner => line.word.push(inner),
+                    }
+                }
+            }
+            '\\' => match chars.next()? {
+                '\n' => {}
+                escaped => line.push(escaped),
+            },
+            ' ' | '\t' => line.end_word()?,
+            '&' if chars.peek() == Some(&'>') => {
+                // `&>file` sends both streams to a file.
+                chars.next();
+                if chars.peek() == Some(&'>') {
+                    chars.next();
+                }
+                line.end_word()?;
+                line.target = Some(Redirect::Output);
+            }
+            // `cmd &` runs in the background.
+            '&' if chars.peek() != Some(&'&') => return None,
+            '\n' | ';' | '|' | '&' => {
+                if c != '\n' && c != ';' && matches!(chars.peek(), Some('&' | '|')) {
+                    chars.next();
+                }
+                line.end_command()?;
+            }
+            '>' | '<' => {
+                // Digits right before it name the descriptor it redirects.
+                if line.started
+                    && !line.word.is_empty()
+                    && line.word.chars().all(|c| c.is_ascii_digit())
+                {
+                    line.word.clear();
+                    line.started = false;
+                } else {
+                    line.end_word()?;
+                }
+                if line.target.is_some() {
+                    return None;
+                }
+                if c == '<' {
+                    // `<(…)`, a here-document, `<&` and `<>` read no named
+                    // file.
+                    if matches!(chars.peek(), Some('(' | '<' | '&' | '>')) {
+                        return None;
+                    }
+                    line.target = Some(Redirect::Input);
+                    continue;
+                }
+                if matches!(chars.peek(), Some('>' | '|')) {
+                    chars.next();
+                }
+                if chars.peek() == Some(&'(') {
+                    return None;
+                }
+                if chars.peek() == Some(&'&') {
+                    chars.next();
+                    if chars
+                        .peek()
+                        .is_some_and(|next| next.is_ascii_digit() || *next == '-')
+                    {
+                        // A copy of another descriptor (`2>&1`): no file.
+                        while chars
+                            .peek()
+                            .is_some_and(|next| next.is_ascii_digit() || *next == '-')
+                        {
+                            chars.next();
+                        }
+                        continue;
+                    }
+                }
+                line.target = Some(Redirect::Output);
+            }
+            '[' | ']' if !line.started && chars.peek().is_none_or(|next| next.is_whitespace()) => {
+                line.push(c);
+            }
+            '$' | '`' | '(' | ')' | '{' | '}' | '*' | '?' | '[' | ']' => return None,
+            '~' | '#' if !line.started => return None,
+            _ => line.push(c),
+        }
+    }
+    line.end_command()?;
+    Some(line.commands)
+}
+
+/// What a redirection wants as its next word.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Redirect {
+    /// The file a command reads (`< file`).
+    Input,
+    /// The file a command writes (`> file`, `2>> file`, `&> file`).
+    Output,
+}
+
+/// What [`plain_commands`] has read: the commands so far, and the command,
+/// word and redirection it is reading.
+#[derive(Debug, Default)]
+struct PlainLine {
+    commands: Vec<(Vec<String>, Vec<String>)>,
+    words: Vec<String>,
+    inputs: Vec<String>,
+    word: String,
+    /// Whether a word is being read; a quoted empty word is one.
+    started: bool,
+    target: Option<Redirect>,
+}
+
+impl PlainLine {
+    /// Add `c` to the word being read.
+    fn push(&mut self, c: char) {
+        self.word.push(c);
+        self.started = true;
+    }
+
+    /// End the word being read: a word of the command, or the target of the
+    /// redirection before it. `None` for output to a file other than
+    /// `/dev/null`.
+    fn end_word(&mut self) -> Option<()> {
+        if !std::mem::take(&mut self.started) {
+            return Some(());
+        }
+        let word = std::mem::take(&mut self.word);
+        match self.target.take() {
+            Some(Redirect::Input) => self.inputs.push(word),
+            Some(Redirect::Output) => (word == "/dev/null").then_some(())?,
+            None => self.words.push(word),
+        }
+        Some(())
+    }
+
+    /// End the command being read. `None` for a redirection without its
+    /// file, or one with no command.
+    fn end_command(&mut self) -> Option<()> {
+        self.end_word()?;
+        if self.target.is_some() {
+            return None;
+        }
+        if !self.words.is_empty() {
+            let command = (
+                std::mem::take(&mut self.words),
+                std::mem::take(&mut self.inputs),
+            );
+            self.commands.push(command);
+        } else if !self.inputs.is_empty() {
+            return None;
+        }
+        Some(())
+    }
+}
+
+/// The files a `grep` reads: its operands after the pattern, and a pattern
+/// file (`-f`). `None` for a recursive `grep` of no named path, which
+/// searches the directory or its input depending on the `grep`.
+fn grep_files(args: &[&str]) -> Option<Vec<String>> {
+    let mut files = Vec::new();
+    let mut operands = Vec::new();
+    let mut pattern = false;
+    let mut recursive = false;
+    let mut only_operands = false;
+    let mut args = args.iter();
+    while let Some(arg) = args.next() {
+        if only_operands || !arg.starts_with('-') || *arg == "-" {
+            operands.push(*arg);
+            continue;
+        }
+        if *arg == "--" {
+            only_operands = true;
+            continue;
+        }
+        if let Some(long) = arg.strip_prefix("--") {
+            let (name, value) = match long.split_once('=') {
+                Some((name, value)) => (name, Some(value)),
+                None => (long, None),
+            };
+            recursive |= matches!(name, "recursive" | "dereference-recursive");
+            if GREP_LONG_VALUES.contains(&name) {
+                let value = match value {
+                    Some(value) => value,
+                    None => args.next()?,
+                };
+                pattern |= matches!(name, "regexp" | "file");
+                if matches!(name, "file" | "exclude-from") {
+                    files.push(value.to_string());
+                }
+            }
+            continue;
+        }
+        // A cluster of short options: `-qE`, `-e pattern`, `-epattern`.
+        let letters = &arg[1..];
+        for (index, letter) in letters.char_indices() {
+            recursive |= matches!(letter, 'r' | 'R');
+            if GREP_SHORT_VALUES.contains(letter) {
+                let rest = &letters[index + letter.len_utf8()..];
+                let value = if rest.is_empty() { *args.next()? } else { rest };
+                pattern |= matches!(letter, 'e' | 'f');
+                if letter == 'f' {
+                    files.push(value.to_string());
+                }
+                break;
+            }
+        }
+    }
+    let mut operands = operands.into_iter();
+    if !pattern {
+        operands.next()?;
+    }
+    let named: Vec<String> = operands
+        .filter(|operand| *operand != "-")
+        .map(str::to_string)
+        .collect();
+    if recursive && named.is_empty() {
+        return None;
+    }
+    files.extend(named);
+    Some(files)
+}
+
+/// The file a `test` expression tests: `[!] -f path`, or another of the
+/// [`FILE_TESTS`]. `None` for any other expression.
+fn file_test(args: &[&str]) -> Option<Vec<String>> {
+    let args = match args {
+        ["!", rest @ ..] => rest,
+        _ => args,
+    };
+    match args {
+        [operator, path]
+            if operator.len() == 2
+                && operator
+                    .strip_prefix('-')
+                    .is_some_and(|letter| FILE_TESTS.contains(letter)) =>
+        {
+            Some(vec![(*path).to_string()])
+        }
+        _ => None,
+    }
+}
+
+/// The files `cat`, `wc`, `head` or `tail` read: their operands, besides
+/// `-` (their input). Each option in `value_options` takes the next word as
+/// its value unless the value is attached.
+fn operand_files(args: &[&str], value_options: &[&str]) -> Option<Vec<String>> {
+    let mut files = Vec::new();
+    let mut only_operands = false;
+    let mut args = args.iter();
+    while let Some(arg) = args.next() {
+        if only_operands || !arg.starts_with('-') || *arg == "-" {
+            if *arg != "-" {
+                files.push((*arg).to_string());
+            }
+            continue;
+        }
+        if *arg == "--" {
+            only_operands = true;
+        } else if value_options.contains(arg) {
+            args.next()?;
+        }
+    }
+    Some(files)
+}
+
+/// `path` relative to the workspace, without `.` parts and with `..` folded;
+/// `.` for the workspace itself. `None` when it is empty, absolute, or
+/// leaves the workspace.
+fn inside_workspace(path: &str) -> Option<String> {
+    if path.is_empty() || path.starts_with('/') {
+        return None;
+    }
+    let mut parts: Vec<&str> = Vec::new();
+    for part in path.split('/') {
+        match part {
+            "" | "." => {}
+            ".." => {
+                parts.pop()?;
+            }
+            part => parts.push(part),
+        }
+    }
+    Some(if parts.is_empty() {
+        ".".to_string()
+    } else {
+        parts.join("/")
+    })
 }
 
 /// Why `command` cannot pass, if it cannot: the first problem found.
@@ -606,6 +1295,11 @@ fn step_problem(
         {
             return Some(format!("Python module `{module}` is not installed"));
         }
+    }
+    if let Some(path) = roko_state_read(command, workdir) {
+        return Some(format!(
+            "it reads `{path}`, roko's own state, which no task writes and roko changes as it runs"
+        ));
     }
     for path in step_files(command, workdir) {
         if !workdir.join(&path).exists() && !is_written(written, &path) {
@@ -1290,6 +1984,234 @@ pub(super) mod tests {
         };
         assert_eq!(found("PLAN_052"), 4, "{:?}", report.plans[0].diagnostics);
         assert_eq!(found("PLAN_053"), 3, "{:?}", report.plans[0].diagnostics);
+    }
+
+    /// The workspace of round v7's no-spec baseline (bug-27f00b): a README
+    /// and the hello-world demo plan `hermes roko init` adds. Returns it and
+    /// the plan the planner wrote there, which is not in it yet.
+    pub(crate) fn no_spec_baseline() -> (tempfile::TempDir, String) {
+        let fixture = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/no_spec_baseline");
+        let temp = tempfile::tempdir().expect("tempdir");
+        let demo = Path::new("plans/demos/demo-hello-world");
+        std::fs::create_dir_all(temp.path().join(demo)).expect("the demo plan's directory");
+        for file in [
+            Path::new("README.md"),
+            &demo.join("plan.md"),
+            &demo.join("tasks.toml"),
+        ] {
+            std::fs::copy(fixture.join(file), temp.path().join(file)).expect("a fixture file");
+        }
+        let plan = std::fs::read_to_string(
+            fixture.join("plans/create-a-roko-plan-for-a-macos-vst3-synthesizer/tasks.toml"),
+        )
+        .expect("the baseline plan");
+        (temp, plan)
+    }
+
+    /// bug-27f00b: as generation sees the baseline, each of its 11 checks
+    /// is a step that cannot pass. Grepping phrases the demo has instead,
+    /// T1's checks pass on the base whatever T1 does: no check of it can see
+    /// its work.
+    #[test]
+    fn the_baselines_settled_checks_cannot_pass_or_see_nothing() {
+        let (temp, baseline) = no_spec_baseline();
+        let probe = Probe::with(&[("grep", true)], &[]);
+        let plan = TasksFile::parse_str(&baseline).expect("the baseline plan");
+        let found = problems(&plan, temp.path(), &probe);
+        assert_eq!(found.len(), 11, "{found:?}");
+        assert_eq!(
+            found[0].why,
+            "it fails on the base, and no task can make it pass: it reads only \
+             `plans/demos/demo-hello-world/plan.md`, which no task of this plan writes"
+        );
+        assert_eq!(unchecked(&plan, temp.path(), &probe), []);
+
+        let passing = baseline
+            .replace("'product definition'", "'hello world'")
+            .replace(
+                "grep -q 'open_questions = \\[\\]' plans/demos/demo-hello-world/tasks.toml",
+                "grep -q 'HELLO-1' plans/demos/demo-hello-world/tasks.toml",
+            );
+        let plan = TasksFile::parse_str(&passing).expect("the plan");
+        assert_eq!(
+            unchecked(&plan, temp.path(), &probe),
+            [Unchecked {
+                task: "T1".to_string(),
+                reads: vec![
+                    "plans/demos/demo-hello-world/plan.md".to_string(),
+                    "plans/demos/demo-hello-world/tasks.toml".to_string(),
+                ],
+            }]
+        );
+        assert_eq!(problems(&plan, temp.path(), &probe).len(), 9);
+    }
+
+    /// bug-27f00b: `plan validate` runs each check the base settles. The
+    /// baseline's 11 fail, so each is a PLAN_054 error and the plan does not
+    /// run; a check that passes there checks nothing its task does, a
+    /// PLAN_055 warning. A check of a file a task writes is neither.
+    #[test]
+    fn plan_validate_reports_checks_the_base_settles() {
+        let (temp, baseline) = no_spec_baseline();
+        let plan_dir = temp
+            .path()
+            .join("plans/create-a-roko-plan-for-a-macos-vst3-synthesizer");
+        std::fs::create_dir_all(&plan_dir).expect("the plan directory");
+        std::fs::write(plan_dir.join("tasks.toml"), &baseline).expect("tasks.toml");
+        let report = crate::plan_validate::validate_plans_dir_with_workdir(
+            &plan_dir,
+            None,
+            Some(temp.path()),
+        )
+        .expect("validate");
+        let found = |rule: &str| {
+            report.plans[0]
+                .diagnostics
+                .iter()
+                .filter(|diagnostic| diagnostic.rule_id == rule)
+                .map(|diagnostic| diagnostic.message.clone())
+                .collect::<Vec<_>>()
+        };
+        let never = found("PLAN_054");
+        assert_eq!(never.len(), 11, "{:?}", report.plans[0].diagnostics);
+        assert!(
+            never.contains(
+                &"task 'T1' verify step 1 fails on the base, and no task can make it pass: it \
+                  reads only `plans/demos/demo-hello-world/plan.md`, which no task of this plan \
+                  writes"
+                    .to_string()
+            ),
+            "{never:?}"
+        );
+        assert_eq!(report.exit_code(false), 1, "the plan cannot run");
+
+        // The same checks of phrases the demo has pass there, and check
+        // nothing; a scribe that writes the file it checks is fine.
+        let passing = baseline
+            .replace("'product definition'", "'hello world'")
+            .replace(
+                "files = []\ngoal = \"The plan reads as one coherent roadmap",
+                "files = [\"docs/roadmap.md\"]\ngoal = \"The plan reads as one coherent roadmap",
+            )
+            .replace(
+                "grep -q 'milestone roadmap' plans/demos/demo-hello-world/plan.md",
+                "grep -q 'milestone roadmap' docs/roadmap.md",
+            );
+        std::fs::write(plan_dir.join("tasks.toml"), &passing).expect("tasks.toml");
+        let report = crate::plan_validate::validate_plans_dir_with_workdir(
+            &plan_dir,
+            None,
+            Some(temp.path()),
+        )
+        .expect("validate");
+        let rules: Vec<(&str, Option<&str>)> = report.plans[0]
+            .diagnostics
+            .iter()
+            .filter(|diagnostic| diagnostic.rule_id.starts_with("PLAN_05"))
+            .map(|diagnostic| (diagnostic.rule_id.as_str(), diagnostic.task_id.as_deref()))
+            .collect();
+        assert!(rules.contains(&("PLAN_055", Some("T1"))), "{rules:?}");
+        assert_eq!(
+            rules.iter().filter(|(rule, _)| *rule == "PLAN_054").count(),
+            9,
+            "T1's first step passes now, and T5's other step reads its own file: {rules:?}"
+        );
+    }
+
+    /// bug-27f00b: a check of roko's own state checks no task's work, even
+    /// where git ignores `.roko/` and the base cannot settle it: generation
+    /// sends it back, and `plan validate` warns (PLAN_056).
+    #[test]
+    fn a_check_of_roko_state_is_no_tasks_check() {
+        let (temp, plan) = fixture(
+            "test -f .roko/state/graph/p/checkpoint.json",
+            &["tests/test_osc.py"],
+        );
+        std::fs::create_dir_all(temp.path().join(".roko/state/graph/p")).expect("roko state");
+        std::fs::write(
+            temp.path().join(".roko/state/graph/p/checkpoint.json"),
+            "{}",
+        )
+        .expect("a checkpoint");
+        let probe = Probe::with(&[("grep", true)], &[]);
+        assert_eq!(
+            problems(&plan, temp.path(), &probe)[0].why,
+            "it reads `.roko/state/graph/p/checkpoint.json`, roko's own state, which no task \
+             writes and roko changes as it runs"
+        );
+        let plan_dir = temp.path().join("plans/p");
+        std::fs::create_dir_all(&plan_dir).expect("the plan directory");
+        std::fs::write(
+            plan_dir.join("tasks.toml"),
+            toml::to_string_pretty(&plan).expect("the plan as TOML"),
+        )
+        .expect("tasks.toml");
+        let report = crate::plan_validate::validate_plans_dir_with_workdir(
+            &plan_dir,
+            None,
+            Some(temp.path()),
+        )
+        .expect("validate");
+        let rules: Vec<&str> = report.plans[0]
+            .diagnostics
+            .iter()
+            .map(|diagnostic| diagnostic.rule_id.as_str())
+            .collect();
+        assert!(rules.contains(&"PLAN_056"), "{rules:?}");
+    }
+
+    /// bug-27f00b: a step the base settles only reads files: `grep`, a file
+    /// `test`, `cat`, `head`, `tail` and `wc`, on quoted or plain words. Any
+    /// other program, an expansion, a glob, a redirection to a file or a path
+    /// outside the workspace makes it more than that.
+    #[test]
+    fn a_step_that_only_reads_files_names_them() {
+        let reads = |command: &str| read_only_files(command);
+        assert_eq!(
+            reads("grep -q 'open_questions = \\[\\]' plans/demos/demo-hello-world/tasks.toml"),
+            Some(vec!["plans/demos/demo-hello-world/tasks.toml".to_string()])
+        );
+        assert_eq!(
+            reads("test -f docs/spec.md && grep -qE '^- AC[0-9]+:' ./docs/spec.md"),
+            Some(vec!["docs/spec.md".to_string()])
+        );
+        assert_eq!(
+            reads("[ -d src ] && ! grep -rq TODO src 2>/dev/null"),
+            Some(vec!["src".to_string()])
+        );
+        assert_eq!(
+            reads("cat a.txt | grep -c x | wc -l; head -n 5 b.txt < c.txt"),
+            Some(vec![
+                "a.txt".to_string(),
+                "b.txt".to_string(),
+                "c.txt".to_string()
+            ])
+        );
+        assert_eq!(
+            reads("grep -e one -f patterns.txt notes.md"),
+            Some(vec!["notes.md".to_string(), "patterns.txt".to_string()])
+        );
+        for command in [
+            "cargo test -p x",
+            "grep -q x $FILE",
+            "grep -q x src/*.rs",
+            "grep -q x \"$(cat list)\"",
+            "test -f a.txt > out.txt",
+            "cd docs && grep -q x spec.md",
+            "grep -q x /etc/hosts",
+            "grep -q x ../other/notes.md",
+            "tail -f log.txt",
+            "test \"$x\" = y",
+            "test -n word",
+            "grep -rq TODO",
+            "LC_ALL=C grep -q x a.txt",
+            "grep -q x a.txt &",
+            "[[ -f a.txt ]]",
+            "{ grep -q x a.txt; }",
+            "grep -q 'unclosed a.txt",
+        ] {
+            assert_eq!(reads(command), None, "{command}");
+        }
     }
 
     /// The prompt says which runners this machine has.

@@ -12,9 +12,22 @@
 //!   step's command is not installed (exit 127), a `pass_on_base` step fails,
 //!   the plan has no known base, or the steps that could tell run cargo and
 //!   [`CargoSteps::Skip`] left them to the batch gate.
+//! - `never_passes` (bug-27f00b): a step fails in both runs, and it only
+//!   reads files no task of the plan writes, so no task can make it pass
+//!   ([`crate::plan_generate::settled_reads`]). It is not red on the base in
+//!   the score's sense: unknown, not SQ06.
 //!
-//! Tasks that are not implementers, or have neither a pinned acceptance test
-//! nor a verify step, are not run. A run stops at its first failing step, as
+//! Tasks that are not implementers, tasks whose every step is a regression
+//! check (`expect = "pass_on_base"`), and tasks that have neither a pinned
+//! acceptance test nor a verify step are not scored. With
+//! [`RedOnBaseOptions::unscored`] (gap-d21da9, `plan validate --dynamic`)
+//! the first two still run what can tell whether they can pass: a regression
+//! task's steps, and the steps of a task that is not an implementer that the
+//! base settles. A failing regression step is `base_broken`, a settled step
+//! that fails is `never_passes`, and a task whose steps pass is `not_scored`;
+//! a task whose steps run cargo is not run when cargo steps run. The
+//! plan-load gate leaves them out, so a run never starts by running a
+//! workspace's regression gates. A run stops at its first failing step, as
 //! `plan run` does. Each step runs as `plan run` runs it (`bash -o pipefail -c
 //! <command>`, early readers drained: `roko_gate::verify_shell`; the check
 //! environment, without the provider keys roko loaded or the person's GitHub
@@ -71,7 +84,7 @@ pub const STEP_TIMEOUT: Duration = Duration::from_secs(120);
 /// Variables that point git at another repository. Neither the steps nor the
 /// check's own git commands see them, so nothing reaches the checkout through
 /// them.
-const GIT_REDIRECTS: [&str; 8] = [
+pub(crate) const GIT_REDIRECTS: [&str; 8] = [
     "GIT_DIR",
     "GIT_WORK_TREE",
     "GIT_INDEX_FILE",
@@ -122,6 +135,11 @@ pub struct RedOnBaseOptions {
     pub fixture: bool,
     /// What to do with steps that run cargo.
     pub cargo: CargoSteps,
+    /// Also run what can tell whether the tasks the score leaves out can
+    /// pass (gap-d21da9): a regression task's steps, and the settled steps of
+    /// a task that is not an implementer. `plan validate --dynamic` sets it;
+    /// the plan-load gate does not.
+    pub unscored: bool,
 }
 
 impl RedOnBaseOptions {
@@ -187,18 +205,25 @@ pub enum Outcome {
     CannotRun,
     /// A step that declares `expect = "pass_on_base"` fails on the base.
     BaseBroken,
+    /// A step fails in both runs, and it only reads files no task of the
+    /// plan writes, so no task can make it pass (bug-27f00b).
+    NeverPasses,
     /// The plan has no known base.
     NoBase,
-    /// Not run: not an implementer, or no verify step.
+    /// Not run: not an implementer, a regression task, or no verify step.
     NotRun,
+    /// The score leaves the task out, and what of it ran passes on the base
+    /// (gap-d21da9).
+    NotScored,
     /// The steps that could tell run cargo, which the batch gate proves.
     SkippedCargo,
 }
 
 impl Outcome {
     /// Every outcome, in the order the summary lists them.
-    pub const ALL: [Self; 10] = [
+    pub const ALL: [Self; 12] = [
         Self::Fail,
+        Self::NeverPasses,
         Self::Pass,
         Self::Flaky,
         Self::Timeout,
@@ -207,6 +232,7 @@ impl Outcome {
         Self::BaseBroken,
         Self::NoBase,
         Self::NotRun,
+        Self::NotScored,
         Self::SkippedCargo,
     ];
 
@@ -214,6 +240,7 @@ impl Outcome {
     pub const fn label(self) -> &'static str {
         match self {
             Self::Fail => "fail: red on the base (SQ06 = 1)",
+            Self::NeverPasses => "fail: no task can make a step pass",
             Self::Pass => "pass: every step passes (HF3)",
             Self::Flaky => "unknown: the runs disagree",
             Self::Timeout => "unknown: a step timed out",
@@ -222,8 +249,23 @@ impl Outcome {
             Self::BaseBroken => "unknown: a pass_on_base step fails",
             Self::NoBase => "unknown: no known base",
             Self::NotRun => "not run: no implementer verify",
+            Self::NotScored => "not scored: its checks pass on the base",
             Self::SkippedCargo => "unknown: skipped: cargo (batch gate)",
         }
+    }
+
+    /// Whether the summary lists each task with this outcome, with why: a
+    /// step that cannot pass, or that the check could not tell about.
+    const fn is_finding(self) -> bool {
+        matches!(
+            self,
+            Self::NeverPasses
+                | Self::Flaky
+                | Self::Timeout
+                | Self::Error
+                | Self::CannotRun
+                | Self::BaseBroken
+        )
     }
 }
 
@@ -312,16 +354,25 @@ impl RedOnBaseReport {
             .collect()
     }
 
-    /// The summary `plan validate --dynamic` prints: tasks by outcome, then
-    /// the bases the plans were checked against.
+    /// The summary `plan validate --dynamic` prints: tasks by outcome, the
+    /// ones not run by why (gap-d21da9), the bases the plans were checked
+    /// against, then each task whose step cannot pass or could not be told
+    /// about, with why.
     pub fn render_text(&self) -> String {
         let mut text = String::from("red on base (tasks)\n");
         for outcome in Outcome::ALL {
-            let count = self
-                .checks
-                .iter()
-                .filter(|check| check.outcome == outcome)
-                .count();
+            let checks = self.checks.iter().filter(|check| check.outcome == outcome);
+            if outcome == Outcome::NotRun {
+                let mut reasons: BTreeMap<&str, usize> = BTreeMap::new();
+                for check in checks {
+                    *reasons.entry(check.reason.as_str()).or_default() += 1;
+                }
+                for (reason, count) in reasons {
+                    text.push_str(&format!("  {reason:<40}{count:>6}\n"));
+                }
+                continue;
+            }
+            let count = checks.count();
             if count > 0 {
                 text.push_str(&format!("  {:<40}{count:>6}\n", outcome.label()));
             }
@@ -344,6 +395,16 @@ impl RedOnBaseReport {
             },
             bases.values().filter(|sha| sha.is_none()).count(),
         ));
+        for check in self
+            .checks
+            .iter()
+            .filter(|check| check.outcome.is_finding())
+        {
+            text.push_str(&format!(
+                "\n  {} {}: {}",
+                check.plan_path, check.task_id, check.reason
+            ));
+        }
         text
     }
 }
@@ -413,6 +474,9 @@ fn check_plan(
     let rel = relative_path(path, &trees.root);
     let plan_dir = path.parent().unwrap_or(&trees.root).to_path_buf();
     let tasks: Vec<&Table> = tables(data.get("task")).collect();
+    // bug-27f00b: what the plan's tasks may write; a step that only reads
+    // files none of them writes is settled by the base.
+    let writes: Vec<String> = tasks.iter().flat_map(|task| task_writes(task)).collect();
     let mut plan_base: Option<(Option<String>, String)> = None;
     let mut checks = Vec::new();
     for task in &tasks {
@@ -422,7 +486,7 @@ fn check_plan(
             "" => "implementer",
             role => role,
         };
-        if role != "implementer" {
+        if role != "implementer" && !options.unscored {
             let reason = format!("not run: a {role} task");
             checks.push(TaskCheck::new(&rel, &id, Outcome::NotRun, reason));
             continue;
@@ -433,12 +497,28 @@ fn check_plan(
             continue;
         }
         // Only regression checks (`expect = "pass_on_base"`), such as the
-        // workspace gates `roko run` writes: the task cannot be HF3, so its
-        // steps are not run on the base.
+        // workspace gates `roko run` writes: the task cannot be HF3, so the
+        // plan-load gate does not run its steps on the base.
         let regression_only = accept_files(task).is_empty()
             && tables(task.get("verify")).all(|step| text(step.get("expect")) == "pass_on_base");
-        if regression_only {
+        if regression_only && !options.unscored {
             let reason = "not run: every step is a regression check (pass_on_base)".to_string();
+            checks.push(TaskCheck::new(&rel, &id, Outcome::NotRun, reason));
+            continue;
+        }
+        let scored = role == "implementer" && !regression_only;
+        // gap-d21da9: a task the score leaves out runs only when that is
+        // cheap, which a cargo step is not when cargo steps run.
+        let runs_cargo = || {
+            tables(task.get("verify")).any(|step| runs_program(&text(step.get("command")), "cargo"))
+        };
+        if !scored && options.cargo == CargoSteps::Run && runs_cargo() {
+            let reason = if role == "implementer" {
+                "not run: every step is a regression check (pass_on_base), and one runs cargo"
+                    .to_string()
+            } else {
+                format!("not run: a {role} task, whose checks run cargo")
+            };
             checks.push(TaskCheck::new(&rel, &id, Outcome::NotRun, reason));
             continue;
         }
@@ -453,14 +533,50 @@ fn check_plan(
                 known
             }
         };
+        let kind = if scored {
+            TaskKind::Scored
+        } else {
+            TaskKind::Unscored { role }
+        };
         let mut check = match sha {
-            Some(sha) => check_task(&rel, &id, task, trees, &sha, &plan_dir, options)?,
+            Some(sha) => {
+                let plan = PlanFiles {
+                    path: &rel,
+                    dir: &plan_dir,
+                    writes: &writes,
+                };
+                check_task(&plan, &id, task, kind, trees, &sha, options)?
+            }
             None => TaskCheck::new(&rel, &id, Outcome::NoBase, why.clone()),
         };
         check.base_reason = why;
         checks.push(check);
     }
     Ok(checks)
+}
+
+/// How a task's result counts.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum TaskKind<'a> {
+    /// An implementer task with a step it expects to turn green: red on the
+    /// base scores SQ06, green is HF3.
+    Scored,
+    /// A task the score leaves out (gap-d21da9): one whose role is not an
+    /// implementer, or whose steps are all regression checks.
+    Unscored {
+        /// Its role.
+        role: &'a str,
+    },
+}
+
+/// The plan a task belongs to.
+struct PlanFiles<'a> {
+    /// Its `tasks.toml`, as the results key it.
+    path: &'a str,
+    /// Its directory.
+    dir: &'a Path,
+    /// What its tasks may write.
+    writes: &'a [String],
 }
 
 /// One step to run on the base.
@@ -478,20 +594,20 @@ struct Step {
 /// Run a task's pinned acceptance tests, then its verify steps, on the base,
 /// twice, and classify the result.
 fn check_task(
-    rel: &str,
+    plan: &PlanFiles<'_>,
     id: &str,
     task: &Table,
+    kind: TaskKind<'_>,
     trees: &mut BaseTrees,
     sha: &str,
-    plan_dir: &Path,
     options: &RedOnBaseOptions,
 ) -> Result<TaskCheck> {
-    let mut check = TaskCheck::new(rel, id, Outcome::Error, String::new());
+    let mut check = TaskCheck::new(plan.path, id, Outcome::Error, String::new());
     check.base = Some(sha.to_string());
     let accept = accept_files(task);
     let missing: Vec<&str> = accept
         .iter()
-        .filter(|entry| !plan_dir.join(&entry.src).is_file())
+        .filter(|entry| !plan.dir.join(&entry.src).is_file())
         .map(|entry| entry.src.as_str())
         .collect();
     if !missing.is_empty() {
@@ -506,10 +622,30 @@ fn check_task(
         id,
         task,
         &accept,
-        &trees.plan_copy(sha, plan_dir),
-        plan_dir,
+        &trees.plan_copy(sha, plan.dir),
+        plan.dir,
         cap,
     )?;
+    let settled = steps_the_base_settles(&steps, &trees.root, plan.writes);
+    // gap-d21da9: what the base says of a task that writes nothing tells
+    // something only of the steps it settles; the others wait on what
+    // other tasks write.
+    let steps = match kind {
+        TaskKind::Unscored { role } if role != "implementer" => {
+            let steps: Vec<Step> = steps
+                .into_iter()
+                .filter(|step| settled.contains_key(&step.number))
+                .collect();
+            if steps.is_empty() {
+                check.outcome = Outcome::NotRun;
+                check.reason =
+                    format!("not run: a {role} task, whose checks read what other tasks write");
+                return Ok(check);
+            }
+            steps
+        }
+        _ => steps,
+    };
     let (steps, skipped): (Vec<Step>, Vec<Step>) = steps.into_iter().partition(|step| {
         options.cargo == CargoSteps::Run || !runs_program(&step.command, "cargo")
     });
@@ -519,22 +655,104 @@ fn check_task(
             "skipped: cargo: every step runs cargo, which the batch gate proves red".to_string();
         return Ok(check);
     }
-    check.runs = run_steps(&steps, trees, sha, plan_dir)?;
+    check.runs = run_steps(&steps, trees, sha, plan.dir)?;
     let (red_on_base, outcome, reason) = classify(&steps, &check.runs);
-    if outcome == Outcome::Pass && !skipped.is_empty() {
-        let numbers: Vec<String> = skipped.iter().map(|step| step.number.to_string()).collect();
-        check.outcome = Outcome::SkippedCargo;
+    // bug-27f00b: a step that fails in every run, and that the base
+    // settles, can never pass, which no red on the base scores.
+    let never = matches!(outcome, Outcome::Fail | Outcome::BaseBroken)
+        .then(|| failed_in_every_run(&check.runs))
+        .flatten()
+        .and_then(|(step, exits)| settled.get(&step).map(|reads| (step, exits, reads)));
+    if let Some((step, exits, reads)) = never {
+        check.outcome = Outcome::NeverPasses;
         check.reason = format!(
-            "skipped: cargo: the other steps pass on the base, and steps {} run cargo, which \
-             the batch gate proves red",
-            numbers.join(", ")
+            "step {step} fails on the base in both runs (exit {}), and no task can make it \
+             pass: {}",
+            exits.join(", "),
+            crate::plan_generate::only_reads(reads)
         );
-    } else {
-        check.red_on_base = red_on_base;
-        check.outcome = outcome;
-        check.reason = reason;
+        return Ok(check);
+    }
+    let skipped: Vec<String> = skipped.iter().map(|step| step.number.to_string()).collect();
+    match kind {
+        TaskKind::Scored if outcome == Outcome::Pass && !skipped.is_empty() => {
+            check.outcome = Outcome::SkippedCargo;
+            check.reason = format!(
+                "skipped: cargo: the other steps pass on the base, and steps {} run cargo, \
+                 which the batch gate proves red",
+                skipped.join(", ")
+            );
+        }
+        TaskKind::Scored => {
+            check.red_on_base = red_on_base;
+            check.outcome = outcome;
+            check.reason = reason;
+        }
+        // The score leaves it out: never SQ06 or HF3.
+        TaskKind::Unscored { role } if outcome == Outcome::Pass => {
+            check.outcome = Outcome::NotScored;
+            let ran = if role == "implementer" {
+                "its regression checks pass on the base".to_string()
+            } else {
+                format!(
+                    "a {role} task, whose checks pass on the base and read only what no task \
+                     writes, so they check nothing it does"
+                )
+            };
+            check.reason = if skipped.is_empty() {
+                format!("not scored: {ran}")
+            } else {
+                format!(
+                    "not scored: {ran}; steps {} run cargo, which the batch gate proves",
+                    skipped.join(", ")
+                )
+            };
+        }
+        TaskKind::Unscored { .. } => {
+            check.outcome = outcome;
+            check.reason = reason;
+        }
     }
     Ok(check)
+}
+
+/// The steps of a task the base settles (bug-27f00b), by number, with the
+/// files each reads: verify steps that only read files of `root` that git
+/// does not ignore and that `writes` (what the plan's tasks write) leave
+/// alone, up to the first step that does more than read. None when the task
+/// pins an acceptance test, which runs first.
+fn steps_the_base_settles(
+    steps: &[Step],
+    root: &Path,
+    writes: &[String],
+) -> BTreeMap<usize, Vec<String>> {
+    let mut settled = BTreeMap::new();
+    for step in steps {
+        if step.accept.is_some() {
+            return BTreeMap::new();
+        }
+        if crate::plan_generate::read_only_files(&step.command).is_none() {
+            break;
+        }
+        if let Some(reads) = crate::plan_generate::settled_reads(&step.command, root, writes) {
+            settled.insert(step.number, reads);
+        }
+    }
+    settled
+}
+
+/// The step every run stopped at with a failing exit, and each run's exit,
+/// when they all stopped at the same one.
+fn failed_in_every_run(runs: &[Vec<StepResult>]) -> Option<(usize, Vec<String>)> {
+    let lasts: Vec<&StepResult> = runs.iter().map(|run| run.last()).collect::<Option<_>>()?;
+    let step = lasts.first()?.step;
+    lasts
+        .iter()
+        .all(|last| last.step == step && last.exit.is_some_and(|code| code > 0))
+        .then(|| {
+            let exits = lasts.iter().map(|last| exit_text(last.exit)).collect();
+            (step, exits)
+        })
 }
 
 /// The task's steps in the order `plan run` runs them: its pinned acceptance
@@ -667,7 +885,7 @@ enum Ended {
 /// Run one step as `plan run` does ([`roko_gate::verify_shell::bash_args`]) in `cwd`,
 /// in a process group of its own that is killed when the step ends, times out
 /// or is interrupted.
-fn run_step(
+pub(crate) fn run_step(
     command: &str,
     cwd: &Path,
     timeout: Duration,
@@ -1342,6 +1560,23 @@ fn tables(value: Option<&Value>) -> impl Iterator<Item = &Table> {
         .filter_map(Value::as_table)
 }
 
+/// What a task may write (bug-27f00b): its outputs ([`task_outputs`]) and
+/// the pinned tests the run copies into place. A task whose role may write
+/// files and that names none may write anything, which `.` stands for.
+fn task_writes(task: &Table) -> Vec<String> {
+    let mut writes = task_outputs(task);
+    let role = text(task.get("role"));
+    let role = match role.trim() {
+        "" => "implementer",
+        role => role,
+    };
+    if writes.is_empty() && crate::task_parser::role_capabilities(role).write {
+        writes.push(".".to_string());
+    }
+    writes.extend(accept_files(task).into_iter().map(|entry| entry.dest));
+    writes
+}
+
 /// The files a task writes: `files` and `write_files`, trimmed.
 fn task_outputs(task: &Table) -> Vec<String> {
     ["files", "write_files"]
@@ -1748,6 +1983,133 @@ command = 'n=$(cat COUNTER 2>/dev/null || echo 0); echo $((n + 1)) > COUNTER; te
         assert_eq!(
             missing_command("bash: pytest: command not found"),
             Some("pytest")
+        );
+    }
+
+    /// gap-d21da9: `plan validate --dynamic` also runs the checks of the
+    /// tasks the score leaves out, so a check that fails on the base is
+    /// reported however its task is written. T1's one step is a regression
+    /// check (`pass_on_base`) that fails on the base: base_broken. T2's
+    /// regression check and T3's strategist check read only `notes.md`,
+    /// which no task writes, and fail there: no task can make them pass.
+    /// T4's strategist check reads `config.ini`, which T1 writes, so the base
+    /// does not decide it: it does not run, and the summary says why. None of
+    /// them scores SQ06, and the plan-load gate still runs none of them.
+    #[test]
+    fn pass_on_base_steps_that_fail_on_the_base_are_reported() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let repo = temp.path().join("repo");
+        std::fs::create_dir_all(repo.join("plans/p")).expect("plan dir");
+        let task = |id: &str, role: &str, files: &str, command: &str, expect: &str| {
+            format!(
+                "\n[[task]]\nid = {id:?}\ntitle = {id:?}\ndescription = \"Task {id}.\"\n\
+                 role = {role:?}\nfiles = [{files}]\n\n[[task.verify]]\nphase = \"structural\"\n\
+                 command = {command:?}\n{expect}"
+            )
+        };
+        let plan_text = [
+            "[meta]\nplan = \"p\"\n".to_string(),
+            task(
+                "T1",
+                "implementer",
+                "\"config.ini\"",
+                "grep -q '^timeout' config.ini",
+                "expect = \"pass_on_base\"\n",
+            ),
+            task(
+                "T2",
+                "implementer",
+                "\"greet.sh\"",
+                "grep -q 'product definition' notes.md",
+                "expect = \"pass_on_base\"\n",
+            ),
+            task(
+                "T3",
+                "strategist",
+                "",
+                "grep -q 'sound engine' notes.md",
+                "expect = \"pass_on_base\"\n",
+            ),
+            task("T4", "strategist", "", "grep -q '^timeout' config.ini", ""),
+        ]
+        .concat();
+        std::fs::write(repo.join("plans/p/tasks.toml"), plan_text).expect("write the plan");
+        std::fs::write(repo.join("config.ini"), "retries = 3\n").expect("write config.ini");
+        std::fs::write(repo.join("notes.md"), "# Notes\n").expect("write notes.md");
+        run_git(&repo, &["init", "--quiet"]);
+        run_git(&repo, &["add", "--all"]);
+        run_git(&repo, &["commit", "--quiet", "-m", "base"]);
+        let scratch = temp.path().join("scratch");
+        std::fs::create_dir_all(&scratch).expect("scratch dir");
+        let plan = repo.join("plans/p/tasks.toml");
+
+        let options = RedOnBaseOptions {
+            timeout: Some(Duration::from_secs(30)),
+            scratch: Some(scratch.clone()),
+            cargo: CargoSteps::Skip,
+            unscored: true,
+            ..RedOnBaseOptions::default()
+        };
+        let report = check_plans(&[plan.clone()], &repo, &options).expect("check the plan");
+        let outcome = |id: &str| {
+            let check = report.checks.iter().find(|check| check.task_id == id);
+            let check = check.expect("checked");
+            (check.red_on_base, check.outcome, check.reason.clone())
+        };
+        let (red, base_broken, reason) = outcome("T1");
+        assert_eq!(
+            (red, base_broken),
+            (RedOnBase::Unknown, Outcome::BaseBroken)
+        );
+        assert!(
+            reason.contains("step 1 expects to pass on the base but exits 1"),
+            "{reason}"
+        );
+        for id in ["T2", "T3"] {
+            let (red, never, reason) = outcome(id);
+            assert_eq!(
+                (red, never),
+                (RedOnBase::Unknown, Outcome::NeverPasses),
+                "{id}"
+            );
+            assert!(
+                reason.ends_with(
+                    "no task can make it pass: it reads only `notes.md`, which no task of this \
+                     plan writes"
+                ),
+                "{id}: {reason}"
+            );
+        }
+        let (red, not_run, reason) = outcome("T4");
+        assert_eq!((red, not_run), (RedOnBase::Unknown, Outcome::NotRun));
+        assert_eq!(
+            reason,
+            "not run: a strategist task, whose checks read what other tasks write"
+        );
+        let text = report.render_text();
+        for line in [
+            "  fail: no task can make a step pass",
+            "  unknown: a pass_on_base step fails",
+            "  not run: a strategist task, whose checks read what other tasks write",
+            "  plans/p/tasks.toml T1: step 1 expects to pass on the base but exits 1",
+            "  plans/p/tasks.toml T3: step 1 fails on the base in both runs (exit 1, 1), and no \
+             task can make it pass",
+        ] {
+            assert!(text.contains(line), "{line:?} not in:\n{text}");
+        }
+
+        // The plan-load gate leaves these tasks out, as it did.
+        let gate = RedOnBaseOptions {
+            scratch: Some(scratch),
+            ..RedOnBaseOptions::from_config(&SpecQualityConfig::default())
+        };
+        let report = check_plans(&[plan], &repo, &gate).expect("check the plan");
+        assert!(
+            report
+                .checks
+                .iter()
+                .all(|check| check.outcome == Outcome::NotRun && check.runs.is_empty()),
+            "{report:?}"
         );
     }
 

@@ -964,10 +964,16 @@ async fn start_agent(
         bind,
     ];
 
-    // Pass the serve URL so the sidecar can self-register.
-    let config = state.load_roko_config();
-    let port = config.server.port;
-    let serve_url = format!("http://127.0.0.1:{port}");
+    // Pass the serve URL so the sidecar can self-register: the address the
+    // listener is bound to, which is not the configured port after `--port 0`
+    // (gap-fb1594).
+    let serve_url = state.endpoint().map_or_else(
+        || {
+            let port = state.load_roko_config().server.port;
+            format!("http://127.0.0.1:{port}")
+        },
+        |endpoint| endpoint.url.clone(),
+    );
     args.extend(["--serve-url".to_string(), serve_url]);
 
     if let Some(ref model) = opts.model_override {

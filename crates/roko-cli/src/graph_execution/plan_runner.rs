@@ -321,9 +321,6 @@ const INTERRUPT_SETTLE_TIMEOUT: Duration = Duration::from_secs(2);
 /// the disk before it returns, and the process exits.
 const ROW_WRITES_TIMEOUT: Duration = Duration::from_secs(1);
 
-/// Set while a CLI plan run handles SIGINT/SIGTERM itself.
-static CLI_OWNS_TERMINATION_SIGNALS: AtomicBool = AtomicBool::new(false);
-
 /// Set while a CLI plan run handles SIGHUP itself, which it does unless
 /// SIGHUP was ignored when the run started, as under `nohup`.
 static CLI_OWNS_HANGUP_SIGNAL: AtomicBool = AtomicBool::new(false);
@@ -336,13 +333,6 @@ static RUNNING_PLAN_CHECKPOINTS: std::sync::Mutex<BTreeSet<PathBuf>> =
 /// Original stderr while it is redirected to the runner log for the TUI.
 static REDIRECTED_STDERR_ORIGINAL: AtomicI32 = AtomicI32::new(-1);
 
-/// Whether a CLI plan run currently owns SIGINT/SIGTERM. The binary's
-/// process-wide SIGTERM handler defers to the run while this is `true`.
-#[must_use]
-pub fn plan_run_owns_termination_signals() -> bool {
-    CLI_OWNS_TERMINATION_SIGNALS.load(Ordering::SeqCst)
-}
-
 /// Whether a CLI plan run currently owns SIGHUP, so its TUI must leave the
 /// signal to the run.
 fn plan_run_owns_hangup_signal() -> bool {
@@ -354,12 +344,14 @@ fn plan_run_owns_hangup_signal() -> bool {
 #[derive(Debug)]
 pub struct PlanRunSignalGuard {
     listener: tokio::task::JoinHandle<()>,
+    /// The run's claim on SIGINT/SIGTERM, which the binary's process-wide
+    /// SIGTERM handler defers to.
+    _claim: crate::cli_signals::TerminationSignalClaim,
 }
 
 impl Drop for PlanRunSignalGuard {
     fn drop(&mut self) {
         self.listener.abort();
-        CLI_OWNS_TERMINATION_SIGNALS.store(false, Ordering::SeqCst);
         CLI_OWNS_HANGUP_SIGNAL.store(false, Ordering::SeqCst);
     }
 }
@@ -386,12 +378,12 @@ pub fn install_plan_run_signal_handlers(
     let mut sigterm = signal(SignalKind::terminate()).context("install SIGTERM handler")?;
     // A hung-up terminal stops the run like SIGTERM (bug-4641e3), unless the
     // run was started to survive one.
-    let mut sighup = if hangup_ignored() {
+    let mut sighup = if crate::cli_signals::hangup_ignored() {
         None
     } else {
         Some(signal(SignalKind::hangup()).context("install SIGHUP handler")?)
     };
-    CLI_OWNS_TERMINATION_SIGNALS.store(true, Ordering::SeqCst);
+    let claim = crate::cli_signals::claim_termination_signals();
     CLI_OWNS_HANGUP_SIGNAL.store(sighup.is_some(), Ordering::SeqCst);
     let listener = tokio::spawn(async move {
         loop {
@@ -416,20 +408,10 @@ pub fn install_plan_run_signal_handlers(
             }
         }
     });
-    Ok(PlanRunSignalGuard { listener })
-}
-
-/// Whether SIGHUP is ignored, as `nohup` leaves it for the command it starts.
-#[cfg(unix)]
-#[allow(unsafe_code)]
-fn hangup_ignored() -> bool {
-    // SAFETY: with a null new action, sigaction(2) only reads the current
-    // disposition into `current`, a zero-initialized plain C struct.
-    unsafe {
-        let mut current: libc::sigaction = std::mem::zeroed();
-        libc::sigaction(libc::SIGHUP, std::ptr::null(), &raw mut current) == 0
-            && current.sa_sigaction == libc::SIG_IGN
-    }
+    Ok(PlanRunSignalGuard {
+        listener,
+        _claim: claim,
+    })
 }
 
 /// The next delivery of a signal the run may not have claimed; `None` at once
@@ -446,6 +428,7 @@ pub fn install_plan_run_signal_handlers(
 ) -> anyhow::Result<PlanRunSignalGuard> {
     Ok(PlanRunSignalGuard {
         listener: tokio::spawn(async {}),
+        _claim: crate::cli_signals::claim_termination_signals(),
     })
 }
 
@@ -1839,7 +1822,7 @@ async fn run_graph_plan_body(
         // When the CLI routes SIGINT/SIGTERM (and SIGHUP) to this run, keep
         // the TUI's terminal-reset handler off them so they stop the run
         // gracefully instead of killing the process.
-        let host_owns_signals = plan_run_owns_termination_signals();
+        let host_owns_signals = crate::cli_signals::cli_owns_termination_signals();
         let host_owns_hangup = plan_run_owns_hangup_signal();
         let state_hub_for_tui = state_hub.clone();
         let workdir_for_tui = workdir.to_path_buf();
@@ -8226,13 +8209,13 @@ exec sleep 60
         unsafe {
             let _ = libc::signal(libc::SIGHUP, libc::SIG_IGN);
         }
-        assert!(hangup_ignored(), "as under nohup");
+        assert!(crate::cli_signals::hangup_ignored(), "as under nohup");
         // SAFETY: as above.
         #[allow(unsafe_code)]
         unsafe {
             let _ = libc::signal(libc::SIGHUP, libc::SIG_DFL);
         }
-        assert!(!hangup_ignored());
+        assert!(!crate::cli_signals::hangup_ignored());
 
         let interrupt = PlanRunInterruptHandle::default();
         let _signals = install_plan_run_signal_handlers(interrupt.clone()).expect("handlers");

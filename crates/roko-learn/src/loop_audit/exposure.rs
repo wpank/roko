@@ -19,11 +19,19 @@
 //!   without the floor: identical reruns flip 5.37% of decisions
 //!   (`lee2026most`). `ι_cite`, the share of exposures whose patch cites an
 //!   injected id, is a cheap proxy.
+//! - **A policy that explores on purpose**, the section bandit (L-sec), is
+//!   measured on its exclusion probabilities ([`ExclusionOdds`]) against the
+//!   floor policy, which leaves every section out at the bandit's floor
+//!   (q-beea61, Will's option b): one draw of it differs from a second as
+//!   much as from π⁰, so the floor on draws would read it inert by
+//!   construction. Its p_ex never fall below the floor, so their distance
+//!   from the floor policy is their mean excess over it, the exclusions its
+//!   posteriors add, and with no draw left to measure it has no A/A floor.
 //!
 //! Both carry a confidence sequence ([`super::cs::BettingCs`]): ε on
 //! `[0, 1]`, ι_net on `[−1, 1]`.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Serialize};
 
@@ -53,6 +61,42 @@ impl Action for BTreeSet<String> {
         }
         let shared = self.intersection(other).count();
         1.0 - shared as f64 / union as f64
+    }
+}
+
+/// A randomized set policy as the probability it leaves each item out, by
+/// item id: the section bandit's p_ex by section (q-beea61). An item a
+/// policy does not name is one it never leaves out.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct ExclusionOdds(pub BTreeMap<String, f64>);
+
+impl ExclusionOdds {
+    /// The odds of leaving `item` out: 0 when the policy does not name it.
+    fn of(&self, item: &str) -> f64 {
+        self.0.get(item).copied().unwrap_or(0.0)
+    }
+}
+
+impl Action for ExclusionOdds {
+    /// The mean, over the items either policy names, of the gap between
+    /// their probabilities of leaving the item out: the mean total-variation
+    /// distance between the two policies' draws of one item. 0 for two
+    /// policies that name no item.
+    fn distance(&self, other: &Self) -> f64 {
+        let items: BTreeSet<&str> = self
+            .0
+            .keys()
+            .chain(other.0.keys())
+            .map(String::as_str)
+            .collect();
+        if items.is_empty() {
+            return 0.0;
+        }
+        let gaps: f64 = items
+            .iter()
+            .map(|item| (self.of(item) - other.of(item)).abs())
+            .sum();
+        gaps / items.len() as f64
     }
 }
 
@@ -286,15 +330,34 @@ impl InfluenceEstimator {
 
     /// Take one opportunity, on either arm.
     pub fn push<A: Action>(&mut self, opportunity: &Opportunity<A>) {
-        let influence = opportunity.learned.distance(&opportunity.default);
-        let floor = opportunity
-            .learned_again
-            .as_ref()
-            .map_or(0.0, |again| opportunity.learned.distance(again));
+        self.push_policies(
+            &opportunity.learned,
+            &opportunity.default,
+            opportunity.learned_again.as_ref(),
+            opportunity.cites,
+        );
+    }
+
+    /// Take one opportunity, on either arm, whose influence is measured on
+    /// other actions than its exposure: the learned proposal `learned`
+    /// against `reference`, with `again`, a second independent draw of the
+    /// learned policy, as its A/A floor (`None` for a deterministic reader),
+    /// and whether its exposure cites an injected id. L-sec's is measured on
+    /// the section bandit's exclusion probabilities against the floor
+    /// policy's (q-beea61).
+    pub fn push_policies<A: Action>(
+        &mut self,
+        learned: &A,
+        reference: &A,
+        again: Option<&A>,
+        cites: Option<bool>,
+    ) {
+        let influence = learned.distance(reference);
+        let floor = again.map_or(0.0, |again| learned.distance(again));
         self.opportunities += 1;
         self.influence += influence;
         self.floor += floor;
-        if let Some(cites) = opportunity.cites {
+        if let Some(cites) = cites {
             self.checked += 1;
             self.cited += u64::from(cites);
         }
@@ -492,5 +555,28 @@ mod tests {
         };
         assert!((set(&["a", "b"]).distance(&set(&["b", "c"])) - 2.0 / 3.0).abs() < 1e-12);
         assert_eq!(set(&[]).distance(&set(&[])), 0.0);
+    }
+
+    /// q-beea61: two randomized set policies lie as far apart as the mean
+    /// gap between their odds of leaving each item out, an item one does not
+    /// name being one it keeps. A policy at the floor on every item is 0
+    /// from the floor policy, and one at the early cap the cap's excess.
+    #[test]
+    fn exclusion_odds_distance_is_the_mean_gap_in_odds() {
+        let odds = |pairs: &[(&str, f64)]| {
+            let odds = pairs.iter().map(|(id, p)| ((*id).to_string(), *p));
+            ExclusionOdds(odds.collect())
+        };
+        let floor = odds(&[("a", 0.05), ("b", 0.05)]);
+        assert_eq!(floor.distance(&floor), 0.0);
+        let capped = odds(&[("a", 0.2), ("b", 0.2)]);
+        assert!((capped.distance(&floor) - 0.15).abs() < 1e-12);
+        let mixed = odds(&[("a", 0.05), ("b", 0.5)]);
+        assert!((mixed.distance(&floor) - 0.225).abs() < 1e-12);
+        assert_eq!(mixed.distance(&floor), floor.distance(&mixed));
+        let apart = odds(&[("a", 0.2)]).distance(&odds(&[("b", 0.2)]));
+        assert!((apart - 0.2).abs() < 1e-12, "{apart}");
+        let none = ExclusionOdds::default();
+        assert_eq!(none.distance(&ExclusionOdds::default()), 0.0);
     }
 }

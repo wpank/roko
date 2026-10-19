@@ -1420,7 +1420,7 @@ pub struct ContentDecisionRecord {
 
 /// What each policy proposed for a set decision (S01 §5.3 `proposals`, as
 /// arrays of ids).
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct ContentProposals {
     /// The ids the learned reader would include, computed on both arms.
@@ -1428,6 +1428,47 @@ pub struct ContentProposals {
     /// The ids the default policy π⁰ includes: none for knowledge, the
     /// seeded ones for playbooks.
     pub default: Option<Vec<String>>,
+    /// At the `sections` point, the odds the section bandit leaves each
+    /// section out at, beside the floor policy's, which L-sec's influence is
+    /// measured on (q-beea61); `None` elsewhere, and on rows written before
+    /// them.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub exclusion: Option<ExclusionProposals>,
+}
+
+/// L-sec's policy and the floor policy as the probability each leaves a
+/// droppable section out at (q-beea61, Will's option b). The bandit's p_ex
+/// comes from the draw the prompt made on either arm, applied on the learned
+/// arm and only logged on the arm that runs π⁰; the floor policy leaves every
+/// section out at the bandit's floor. The census measures L-sec's influence
+/// on these and not on the draws: a policy that explores differs from a
+/// second draw of itself as much as from π⁰, so S03's A/A floor on draws
+/// would read the bandit inert whatever its posteriors say.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ExclusionProposals {
+    /// p_ex of each section the bandit drew, by section id.
+    pub learned: BTreeMap<String, f64>,
+    /// The floor policy's p_ex, the same for every section.
+    pub floor: f64,
+}
+
+impl ExclusionProposals {
+    /// What the section bandit's `draws` for one prompt propose, whether the
+    /// prompt applied them or only logged them: each drawn section's p_ex,
+    /// against a floor policy at [`SECTION_EXCLUSION_FLOOR`]. `None` when it
+    /// drew no section.
+    ///
+    /// [`SECTION_EXCLUSION_FLOOR`]: crate::section_effect::SECTION_EXCLUSION_FLOOR
+    #[must_use]
+    pub fn of_draws(draws: &[crate::section_effect::SectionDecision]) -> Option<Self> {
+        (!draws.is_empty()).then(|| Self {
+            learned: draws
+                .iter()
+                .map(|draw| (draw.section.clone(), draw.p_exclude))
+                .collect(),
+            floor: crate::section_effect::SECTION_EXCLUSION_FLOOR,
+        })
+    }
 }
 
 /// Whether a decision was an opportunity of its loop (S01 §5.3

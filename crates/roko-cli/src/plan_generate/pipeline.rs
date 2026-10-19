@@ -1624,6 +1624,9 @@ pub async fn generate_plan(request: PlanRequest<'_>) -> Result<(PathBuf, Generat
             // gap-ecafde: a pytest step without pytest runs as unittest, and a
             // test file a task's check needs joins its files.
             repairs.extend(runnable::repair(&mut parsed, workdir_ref, &probe));
+            // bug-d758f6: an implementer keeps its role's own tools, a shell
+            // and edit_file among them, whatever list the planner copied.
+            repairs.extend(runnable::repair_shell_tools(&mut parsed));
             // bug-df9aff: a task that creates a file may write it, and a task
             // waits for the tasks that write the modules its tests import.
             repairs.extend(runnable::repair_write_tools(&mut parsed, workdir_ref));
@@ -3834,6 +3837,70 @@ mod tests {
         assert_eq!(written.tasks[0].files, ["docs/spec.md"]);
     }
 
+    /// bug-d758f6: round v7's phase-0 planner copied the prompt's example
+    /// tool list into every task of a C++ plan, so no implementer could run
+    /// cmake, its own check or see a compiler error. Generation gives an
+    /// implementer whose list leaves out a shell its role's own tools, and
+    /// leaves a scribe's list alone, without asking the planner again.
+    #[cfg(unix)]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn generated_implementers_whose_checks_build_keep_a_shell() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let workdir = temp.path();
+        std::fs::create_dir_all(workdir.join("tools")).expect("tools");
+        std::fs::write(workdir.join("CMakeLists.txt"), "project(undertow)\n").expect("cmake");
+        std::fs::write(workdir.join("tools/spec.sh"), "#!/bin/sh\nexit 0\n").expect("spec.sh");
+        let plan = "\
+            [meta]\nplan = \"p0\"\ntotal = 2\ndone = 0\nstatus = \"ready\"\n\n\
+            [[task]]\nid = \"T1\"\ntitle = \"Parameter table\"\n\
+            description = \"Write core/params.h with the 57 parameters.\"\nstatus = \"ready\"\n\
+            role = \"implementer\"\ntier = \"focused\"\nfiles = [\"core/params.h\"]\n\
+            allowed_tools = [\"read_file\", \"write_file\", \"grep\"]\ndenied_tools = []\n\
+            depends_on = []\n\n[task.context]\nread_files = []\n\n\
+            [[task.verify]]\nphase = \"test\"\n\
+            command = \"grep -q 'kNumParams' core/params.h && tools/spec.sh 0 params 'P0.01*'\"\n\n\
+            [[task]]\nid = \"T2\"\ntitle = \"Notes\"\ndescription = \"Write docs/notes.md.\"\n\
+            status = \"ready\"\nrole = \"scribe\"\ntier = \"focused\"\nfiles = [\"docs/notes.md\"]\n\
+            allowed_tools = [\"read_file\", \"write_file\"]\ndepends_on = [\"T1\"]\n\n\
+            [task.context]\nread_files = []\n\n\
+            [[task.verify]]\nphase = \"structural\"\ncommand = \"test -f docs/notes.md\"\n";
+        let bin = tempfile::tempdir().expect("tempdir");
+        let calls = write_scripted_planner(
+            workdir,
+            bin.path(),
+            &[plan],
+            "allow_threshold = 0.0\nblock_threshold = 0.0\n",
+        );
+        let request = PlanRequest {
+            model: Some("planner"),
+            ..PlanRequest::new(WIDGET_REQUEST, "p0", workdir)
+        };
+        generate_plan(request).await.expect("generate the plan");
+        let log = std::fs::read_to_string(&calls).expect("planner call log");
+        assert_eq!(log.lines().count(), 1, "roko repairs the plan itself");
+        let written = TasksFile::parse(&workdir.join("plans/p0/tasks.toml")).expect("the plan");
+        let implementer = &written.tasks[0];
+        let shell = implementer.allowed_tools.as_ref().is_none_or(|tools| {
+            ["bash", "edit_file"]
+                .iter()
+                .all(|tool| tools.iter().any(|kept| kept == tool))
+        });
+        assert!(shell, "{:?}", implementer.allowed_tools);
+        assert!(
+            implementer
+                .denied_tools
+                .iter()
+                .flatten()
+                .all(|tool| tool != "bash" && tool != "edit_file"),
+            "{:?}",
+            implementer.denied_tools
+        );
+        assert_eq!(
+            written.tasks[1].allowed_tools.as_deref(),
+            Some(&["read_file".to_string(), "write_file".to_string()][..])
+        );
+    }
+
     /// bug-27f00b: a live planner gave the one task that writes the spec
     /// `max_loc = 300` on the integrative tier (limit 150), and split the spec
     /// across tasks when told to shrink it, which fragments its ownership. A
@@ -3949,12 +4016,16 @@ mod tests {
         let log = std::fs::read_to_string(&calls).expect("planner call log");
         assert_eq!(log.lines().count(), 1, "roko repairs the plan itself");
         let written = TasksFile::parse(&workdir.join("plans/g1/tasks.toml")).expect("the plan");
+        // bug-d758f6: each implementer keeps its role's own tools, write_file
+        // among them, rather than the list it was written with.
         for task in &written.tasks {
-            let tools = task.allowed_tools.clone().unwrap_or_default();
             assert!(
-                tools.iter().any(|tool| tool == "write_file"),
-                "{}: {tools:?}",
-                task.id
+                task.allowed_tools
+                    .as_ref()
+                    .is_none_or(|tools| tools.iter().any(|tool| tool == "write_file")),
+                "{}: {:?}",
+                task.id,
+                task.allowed_tools
             );
         }
         let render = written

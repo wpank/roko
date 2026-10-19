@@ -20,8 +20,8 @@ mod runnable;
 mod source_checks;
 
 pub use runnable::{
-    SettledStep, creates_without_write, missing_dependencies, only_reads, read_only_files,
-    roko_state_read, settled_reads, settled_steps,
+    SettledStep, creates_without_write, implementers_without_a_shell, missing_dependencies,
+    only_reads, read_only_files, roko_state_read, settled_reads, settled_steps,
 };
 
 pub use pipeline::{
@@ -177,8 +177,6 @@ status = "ready"
 tier = "focused"
 max_loc = 50
 files = ["crates/roko-core/src/lib.rs"]
-allowed_tools = ["read_file", "grep", "edit_file"]
-denied_tools = []
 depends_on = []
 role = "implementer"
 
@@ -261,8 +259,7 @@ tier = "mechanical"       # mechanical | focused | integrative | architectural
 # model_hint omitted — runtime picks the best model automatically
 max_loc = 20              # maximum lines of change
 files = ["crates/roko-core/src/types.rs"]   # REAL file paths only, never <path> or <crate>
-allowed_tools = ["read_file", "grep", "edit_file"]
-denied_tools = []
+# allowed_tools and denied_tools omitted — the role's own tools fit the task
 # mcp_servers omitted — only include when a task genuinely requires an MCP server
 depends_on = []
 role = "implementer"      # REQUIRED: implementer | architect | researcher | strategist | quick-reviewer | scribe
@@ -300,8 +297,7 @@ tier = "focused"
 # model_hint omitted — runtime selects automatically
 max_loc = 40
 files = ["crates/roko-cli/src/commands/status.rs"]
-allowed_tools = ["read_file", "grep", "write_file"]
-denied_tools = []
+# allowed_tools and denied_tools omitted — the role's own tools fit the task
 # mcp_servers omitted — only include when a task genuinely requires an MCP server
 depends_on = ["T1"]
 role = "implementer"
@@ -342,7 +338,7 @@ Missing or misspelled roles will be rejected by `roko plan validate`. The `role`
 
 ## Role-Tool Constraints
 
-Each role has a default tool permission set. Tasks can further restrict via `allowed_tools`/`denied_tools`, never widen it.
+Each role has a default tool permission set, and it is what a task needs: an implementer edits files, builds, runs its own checks with `bash` and sees each compiler error before its try ends. Leave `allowed_tools` and `denied_tools` out. Set one only to keep a task from a tool it must not use, never to list the tools you expect it to use: a task kept to read_file, write_file and grep cannot build, run its checks or patch a file, so every compile error costs it a whole try. A task can narrow its role's set, never widen it.
 
 {ROLE_TOOL_TABLE}
 
@@ -470,6 +466,7 @@ Before finalizing, verify your tasks against:
 - [ ] Every task writes files (implementer or scribe), and every verify step reads a file its own task writes or runs code built from them; none reads only files no task of the plan writes, another plan's files or `.roko/`
 - [ ] A request without a spec gets a `scribe` task that writes `docs/spec.md`, with numbered acceptance criteria, first
 - [ ] Every task with a non-empty `files` list uses a role that can write (see Role-Tool Constraints)
+- [ ] No task sets `allowed_tools` or `denied_tools` unless it must be kept from a tool; an implementer keeps `bash` and `edit_file`
 - [ ] Every task is within the generated-plan limits: its `read_files` entries, verify steps, `lines` ranges, declared context and symbol anchors
 - [ ] Anti-patterns are specific (not generic "be careful")
 - [ ] Dependencies form a DAG (no cycles)
@@ -528,8 +525,6 @@ files = [
     "crates/roko-serve/src/routes/mod.rs",
     "crates/roko-serve/tests/api_integration.rs",
 ]
-allowed_tools = ["read_file", "write_file", "grep"]
-denied_tools = []
 depends_on = []
 role = "implementer"
 
@@ -936,7 +931,8 @@ pub fn build_regeneration_prompt(workdir: &Path, existing_tasks_toml: &str) -> S
          every field for each task. Keep the existing id, title, description, and depends_on. Add:\n\
          - `tier` (mechanical/focused/integrative/architectural)\n\
          - `max_loc` (estimated lines of change)\n\
-         - `allowed_tools`, `denied_tools`, and `mcp_servers` (per-task tool/MCP constraints)\n\
+         - `mcp_servers` only for a task that needs an MCP server; leave `allowed_tools` and \
+           `denied_tools` out unless a task must be kept from a tool\n\
          - `[task.context]` with read_files, symbols, anti_patterns\n\
          - `[[task.verify]]` steps: one per acceptance criterion, at least one per task\n\
          Do NOT set `model_hint`: the task's tier and role pick its model. Set `rung` only when a \
@@ -1452,6 +1448,33 @@ mod tests {
             );
         }
         assert_eq!(settled_steps(&parsed, dir.path()), []);
+    }
+
+    /// bug-d758f6: planners copied the examples' three-tool lists into every
+    /// task, so implementers could not build or run their checks. No example
+    /// sets `allowed_tools` or `denied_tools` now, and the prompt says to
+    /// leave them out unless a task must be kept from a tool.
+    #[test]
+    fn generator_prompt_leaves_tool_lists_out() {
+        let prompt = build_generator_system_prompt(std::path::Path::new("/test"));
+        for line in prompt.lines() {
+            assert!(
+                !line.starts_with("allowed_tools =") && !line.starts_with("denied_tools ="),
+                "an example sets a tool list: {line}"
+            );
+        }
+        for needle in [
+            "Leave `allowed_tools` and `denied_tools` out.",
+            "never to list the tools you expect it to use",
+            "an implementer keeps `bash` and `edit_file`",
+        ] {
+            assert!(prompt.contains(needle), "the prompt says {needle}");
+        }
+        let regenerate = build_regeneration_prompt(std::path::Path::new("/test"), "");
+        assert!(
+            !regenerate.contains("`allowed_tools`, `denied_tools`, and `mcp_servers`"),
+            "{regenerate}"
+        );
     }
 
     /// 3224: the generator prompt sizes tasks for their executor tier: none

@@ -380,6 +380,109 @@ fn created_by(plan: &TasksFile, index: usize, workdir: &Path) -> Vec<String> {
         .collect()
 }
 
+/// What an implementer needs to build, run its own checks and patch a file
+/// (bug-d758f6).
+const SHELL_TOOLS: &[&str] = &["bash", "edit_file"];
+
+/// Whether `task` is an implementer: its role, or the default when it names
+/// none.
+fn is_implementer(task: &TaskDef) -> bool {
+    task.role
+        .as_deref()
+        .map(str::trim)
+        .is_none_or(|role| role.is_empty() || role == "implementer")
+}
+
+/// Whether `task`'s `allowed_tools` leave out a shell or `edit_file`; an
+/// empty list leaves the role's tools as they are.
+fn lists_out_shell(task: &TaskDef) -> bool {
+    task.allowed_tools
+        .as_ref()
+        .filter(|tools| !tools.is_empty())
+        .is_some_and(|tools| {
+            SHELL_TOOLS
+                .iter()
+                .any(|tool| !tools.iter().any(|kept| kept == tool))
+        })
+}
+
+/// Give each implementer task its role's own tools when its `allowed_tools`
+/// leave out a shell or `edit_file`, or its `denied_tools` hold a tool it
+/// needs to build, run its checks or write (bug-d758f6). Planners copied the
+/// generator prompt's three-tool examples into every task, and an
+/// implementer kept to read_file, write_file and grep cannot build, run its
+/// own checks or see a compiler error, so each compile error costs a whole
+/// try. Such a list goes, and `denied_tools` lose bash, edit_file and
+/// write_file. Returns one line per task repaired.
+pub(super) fn repair_shell_tools(plan: &mut TasksFile) -> Vec<String> {
+    let mut repairs = Vec::new();
+    for task in &mut plan.tasks {
+        if !is_implementer(task) {
+            continue;
+        }
+        let mut why = Vec::new();
+        if lists_out_shell(task)
+            && let Some(tools) = task.allowed_tools.take()
+        {
+            why.push(format!(
+                "its allowed_tools [{}] left out bash or edit_file",
+                tools.join(", ")
+            ));
+        }
+        if let Some(denied) = task.denied_tools.as_mut() {
+            let held: Vec<String> = denied
+                .iter()
+                .filter(|tool| matches!(tool.as_str(), "bash" | "edit_file" | "write_file"))
+                .cloned()
+                .collect();
+            if !held.is_empty() {
+                denied.retain(|tool| !held.contains(tool));
+                why.push(format!("its denied_tools held {}", held.join(", ")));
+            }
+        }
+        if !why.is_empty() {
+            repairs.push(format!(
+                "{}: keeps an implementer's own tools, bash and edit_file among them: {}",
+                task.id,
+                why.join(", and ")
+            ));
+        }
+    }
+    repairs
+}
+
+/// The implementer tasks of `plan` that cannot run their own checks
+/// (bug-d758f6): one of their verify steps runs more than file reads
+/// ([`read_only_files`]), but their `allowed_tools` leave out bash or their
+/// `denied_tools` hold it. Each with that step's command.
+#[must_use]
+pub fn implementers_without_a_shell(plan: &TasksFile) -> Vec<(String, String)> {
+    plan.tasks
+        .iter()
+        .filter(|task| is_implementer(task))
+        .filter(|task| {
+            let listed_out = task
+                .allowed_tools
+                .as_ref()
+                .filter(|tools| !tools.is_empty())
+                .is_some_and(|tools| !tools.iter().any(|tool| tool == "bash"));
+            let denied = task
+                .denied_tools
+                .iter()
+                .flatten()
+                .any(|tool| tool == "bash");
+            listed_out || denied
+        })
+        .filter_map(|task| {
+            let step = task
+                .verify
+                .iter()
+                .find(|step| read_only_files(&step.command).is_none())?;
+            Some((task.id.clone(), step.command.clone()))
+        })
+        .collect()
+}
+
 /// The tasks of `plan` that create a file (one that neither exists nor is
 /// written by a task before them) while their `allowed_tools` lack
 /// `write_file`, or their `denied_tools` hold it (bug-df9aff): no try can
@@ -2115,6 +2218,93 @@ pub(super) mod tests {
             rules.iter().filter(|(rule, _)| *rule == "PLAN_054").count(),
             9,
             "T1's first step passes now, and T5's other step reads its own file: {rules:?}"
+        );
+    }
+
+    /// bug-d758f6: round v7's phase-0 plan for a C++/JUCE synth gave each of
+    /// its four implementers `allowed_tools = ["read_file", "write_file",
+    /// "grep"]` while their checks run cmake, ctest and `tools/spec.sh`.
+    /// `plan validate` warns about each (PLAN_057), and generation's repair
+    /// gives each its role's own tools back, which the warning then accepts.
+    /// A scribe's list stays, and an implementer whose list has a shell and
+    /// edit_file keeps it.
+    #[test]
+    fn implementers_whose_checks_run_code_get_a_shell() {
+        let fixture =
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/p0_tool_lists/tasks.toml");
+        let text = std::fs::read_to_string(&fixture).expect("the phase-0 plan");
+        let mut plan = TasksFile::parse_str(&text).expect("the phase-0 plan parses");
+        let stuck = implementers_without_a_shell(&plan);
+        let ids: Vec<&str> = stuck.iter().map(|(task, _)| task.as_str()).collect();
+        assert_eq!(ids, ["T1", "T2", "T3", "T4"]);
+        assert_eq!(
+            stuck[0].1,
+            "grep -q 'option(UNDERTOW_BUILD_PLUGIN' CMakeLists.txt && cmake --preset core"
+        );
+
+        let temp = tempfile::tempdir().expect("tempdir");
+        let plan_dir = temp.path().join("plans/p0");
+        std::fs::create_dir_all(&plan_dir).expect("the plan directory");
+        std::fs::write(plan_dir.join("tasks.toml"), &text).expect("tasks.toml");
+        let report = crate::plan_validate::validate_plans_dir_with_workdir(
+            &plan_dir,
+            None,
+            Some(temp.path()),
+        )
+        .expect("validate");
+        let warned: Vec<&str> = report.plans[0]
+            .diagnostics
+            .iter()
+            .filter(|diagnostic| diagnostic.rule_id == "PLAN_057")
+            .filter_map(|diagnostic| diagnostic.task_id.as_deref())
+            .collect();
+        assert_eq!(warned, ["T1", "T2", "T3", "T4"]);
+
+        let repairs = repair_shell_tools(&mut plan);
+        assert_eq!(repairs.len(), 4, "{repairs:?}");
+        assert_eq!(
+            repairs[0],
+            "T1: keeps an implementer's own tools, bash and edit_file among them: its \
+             allowed_tools [read_file, write_file, grep] left out bash or edit_file"
+        );
+        assert!(plan.tasks.iter().all(|task| task.allowed_tools.is_none()));
+        assert_eq!(implementers_without_a_shell(&plan), []);
+
+        let mut plan = TasksFile::parse_str(
+            "[meta]\nplan = \"p\"\n\n\
+             [[task]]\nid = \"T1\"\ntitle = \"t\"\nrole = \"implementer\"\n\
+             allowed_tools = [\"read_file\", \"bash\", \"edit_file\"]\ndenied_tools = [\"write_file\"]\n\n\
+             [[task]]\nid = \"T2\"\ntitle = \"notes\"\nrole = \"scribe\"\n\
+             allowed_tools = [\"read_file\", \"write_file\"]\n",
+        )
+        .expect("a plan");
+        let repairs = repair_shell_tools(&mut plan);
+        assert_eq!(
+            repairs,
+            [
+                "T1: keeps an implementer's own tools, bash and edit_file among them: its \
+              denied_tools held write_file"
+            ]
+        );
+        assert_eq!(
+            plan.tasks[0].allowed_tools.as_deref(),
+            Some(
+                &[
+                    "read_file".to_string(),
+                    "bash".to_string(),
+                    "edit_file".to_string()
+                ][..]
+            )
+        );
+        assert!(
+            plan.tasks[0]
+                .denied_tools
+                .as_ref()
+                .is_some_and(Vec::is_empty)
+        );
+        assert_eq!(
+            plan.tasks[1].allowed_tools.as_deref(),
+            Some(&["read_file".to_string(), "write_file".to_string()][..])
         );
     }
 

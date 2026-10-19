@@ -2,7 +2,7 @@
 id = "gap-d21da9"
 kind = "gap"
 title = "plan validate --dynamic runs nothing for strategist tasks or tasks whose steps are all pass_on_base, so a plan whose 11 checks all fail on the base gets 0 diagnostics and B grades"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p2"
 goal = "golden-path"
@@ -11,6 +11,7 @@ subsystem = ["roko-cli/plan-validate"]
 created = 2026-10-19
 updated = 2026-10-19
 last_verified = 2026-10-19
+last_verified_rev = "f33fd217c"
 source = "round-v7-hermes-pilot#B-baseline"
 discovered_from = "agent:hermes-pilot (round v7 baseline, 2026-10-19)"
 anchors = ["crates/roko-cli/src/spec_red_on_base.rs::check_plan"]
@@ -18,6 +19,16 @@ links = { depends_on = [], blocks = [], related = ["bug-27f00b", "gap-ff78e1"], 
 
 [[verify]]
 command = "grep -rqw 'fn pass_on_base_steps_that_fail_on_the_base_are_reported' crates/roko-cli/src && cargo test -p roko-cli --lib -- pass_on_base_steps_that_fail_on_the_base_are_reported"
+
+[closed]
+at = 2026-10-19
+at_ts = "2026-10-19T14:48:07Z"
+commit = "b63de5643"
+by = "roko-planner (round v7)"
+executor = "claude-agent"
+via = "manual"
+forced = false
+evidence = "Merged f55e30d4f (b63de5643). spec_red_on_base.rs: RedOnBaseOptions::unscored, set only by plan validate --dynamic (the plan-load gate keeps its old skips, so roko run never starts by running a workspace's regression gates): a regression-only task runs its non-cargo steps, and a failing pass_on_base step is base_broken; a non-implementer task runs the steps the base settles, else it is not run with the reason. New outcomes: never_passes (a step that fails in both runs and reads only files no task writes, for any task, scored implementers included, with no SQ06 credit) and not_scored. render_text counts not run by each reason and lists every task whose step cannot pass or could not be told about. Verify at f55e30d4f: pass_on_base_steps_that_fail_on_the_base_are_reported passes. On the round v7 baseline plan, plan validate --spec-quality --dynamic now reports fail: no task can make a step pass 5, with one line per task, where it said not run: no implementer verify 5; the static part adds 11 PLAN_054 errors (exit 1, was 0). The speclint parity fixture keeps its expected outcomes (the quick-reviewer task stays not_run)."
 +++
 
 ## Problem

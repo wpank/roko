@@ -8,7 +8,7 @@ set -euo pipefail
 cd "$(dirname "$0")"
 
 # ── Constants ─────────────────────────────────────────────────
-SERVE_PORT=6677
+SERVE_PORT="${SERVE_PORT:-6677}"
 VITE_PORT=5173
 ROKO_DIR=".roko"
 TARGET_DIR="target"
@@ -72,6 +72,28 @@ dir_size_bytes() {
 
 pids_on_port() {
   lsof -ti:"$1" 2>/dev/null || true
+}
+
+# Whether roko serve answers on :$SERVE_PORT. /health is its public liveness
+# route; /api/health answers 401 under roko's default auth (bug-712203).
+serve_alive() {
+  curl -sf "http://localhost:$SERVE_PORT/health" >/dev/null 2>&1
+}
+
+# GET an /api route of roko serve with the credential roko's own clients send:
+# ROKO_API_KEY, else the launch token roko serve wrote to
+# $ROKO_DIR/runtime/serve.token. The header goes in on stdin, never on a
+# command line.
+serve_api_get() {
+  local url="http://localhost:$SERVE_PORT$1"
+  if [ -n "${ROKO_API_KEY:-}" ]; then
+    printf 'X-Api-Key: %s\n' "$ROKO_API_KEY" | curl -sf -H @- "$url"
+  elif [ -r "$ROKO_DIR/runtime/serve.token" ]; then
+    printf 'Authorization: Bearer %s\n' "$(cat "$ROKO_DIR/runtime/serve.token")" \
+      | curl -sf -H @- "$url"
+  else
+    curl -sf "$url"
+  fi
 }
 
 jq_or_raw() {
@@ -510,7 +532,7 @@ cmd_up() {
   # Wait for serve readiness
   echo -n "[dev] Waiting for serve..."
   for i in $(seq 1 30); do
-    if curl -sf http://localhost:$SERVE_PORT/api/health >/dev/null 2>&1; then
+    if serve_alive; then
       echo " ready!"
       break
     fi
@@ -615,8 +637,10 @@ cmd_status() {
   echo ""
   echo "${BOLD}Health${RESET}"
   local health
-  if health=$(curl -sf http://localhost:$SERVE_PORT/api/health 2>/dev/null); then
+  if health=$(serve_api_get /api/health 2>/dev/null); then
     echo "$health" | jq_or_raw .
+  elif serve_alive; then
+    echo "  serve answers /health; /api/health refused this workspace's credential (set ROKO_API_KEY)"
   else
     echo "  ${DIM}serve not reachable${RESET}"
   fi
@@ -1078,16 +1102,20 @@ cmd_dump() {
   echo ""
 
   echo "--- health ---"
-  if curl -sf http://localhost:$SERVE_PORT/api/health 2>/dev/null | jq_or_raw .; then
-    true
+  local health
+  if health=$(serve_api_get /api/health 2>/dev/null); then
+    echo "$health" | jq_or_raw .
+  elif serve_alive; then
+    echo "serve answers /health; /api/health refused this workspace's credential"
   else
     echo "serve not reachable"
   fi
   echo ""
 
   echo "--- provider health ---"
-  if curl -sf http://localhost:$SERVE_PORT/api/providers/health 2>/dev/null | jq_or_raw .; then
-    true
+  local providers
+  if providers=$(serve_api_get /api/providers/health 2>/dev/null); then
+    echo "$providers" | jq_or_raw .
   else
     echo "not available"
   fi
@@ -2166,7 +2194,7 @@ COMMANDS
                                          Start dev environment
                                          --chain/-c: start mirage-rs for live ISFR data
   down                                     Kill all roko dev processes
-  status (st)                              Processes, ports, health, state
+  status (st)                              Processes, ports, health, state (SERVE_PORT=<port> to look elsewhere)
   logs <target> (l)                        Tail logs (serve|episodes|efficiency|events|runtime|errors|all)
   check [--fix] (ci)                       Pre-commit checks (fmt+clippy+test)
   fmt                                      Format (cargo +nightly fmt --all)

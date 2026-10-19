@@ -3,17 +3,21 @@ id = "bug-712203"
 kind = "bug"
 title = "dev.sh up and status poll /api/health, which answers 401 under roko's default auth, so up reports a timeout and status a stopped server"
 status = "open"
-triage = "unverified"
+triage = "verified"
 severity = "p3"
 goal = "tooling"
 size = "S"
 subsystem = ["tooling/dev-sh"]
 created = 2026-10-19
 updated = 2026-10-19
+last_verified = 2026-10-19
 source = "roko-autostart round research, 2026-10-19 (roko 3b34aed92)"
 anchors = ["dev.sh"]
 parent = "spec-13c7ba"
 links = { depends_on = [], blocks = [], related = [], supersedes = [], duplicate_of = "" }
+
+[[verify]]
+command = "grep -qE '^serve_alive\\(\\)' dev.sh && grep -A2 '^serve_alive()' dev.sh | grep -q 'SERVE_PORT/health\"' && grep -q 'runtime/serve.token' dev.sh && ! grep -nE 'curl [^|]*SERVE_PORT/api/' dev.sh"
 +++
 
 ## Problem
@@ -36,6 +40,9 @@ These are tooling defects found while planning the roko-autostart round (2026-10
 ## Current state
 
 This is a claim from the round's research and has not been run yet. Confirm it first: with `[serve.auth] enabled = true` and no key, `/api/health` should answer 401.
+
+Confirmed on 2026-10-19 (roko-autostart round): against a real `roko serve` in a scratch project with the
+default auth (a launch token, no API key), `curl /health` answered 200 and `curl /api/health` answered 401.
 
 ## Plan
 

@@ -113,6 +113,14 @@ def test_an_addition_to_a_non_additive_field_is_rejected():
     assert result.rounds == [] and result.stopped == "changed files"
 
 
+def test_an_addition_under_a_list_is_rejected_not_raised():
+    """A live model can name a field under a list (`acceptance.extra`); the round is rejected, and nothing raises."""
+    spec = load("f1_pyconv_errors")
+    for name in ("acceptance.extra", "verify.extra"):
+        result = refine.refine(spec, stub([refine.Addition(name, "AC9: x", source="s")]), context(spec))
+        assert result.rounds == [] and "no list there" in result.stopped and result.spec == spec, name
+
+
 def test_refinement_stops_at_at_most_two_rounds():
     spec = load("f2_api_pager")  # has an uncovered AC4, so a legitimate covering step keeps raising the score
     forever = [refine.Addition("verify", {"phase": "test", "command": f"python3 -m unittest tests.visible.test_x{i}",

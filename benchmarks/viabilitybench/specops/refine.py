@@ -15,7 +15,8 @@ A round is rejected, and refinement stops, when it:
 - names a path under a hidden-suite convention (``.vb/...``, anything with a ``hidden`` path component, or
   ``task.json``) in a new ``context.read_files``/``context.symbols`` entry -- the refiner never hands the agent a
   path meant for the truth suite alone;
-- carries an addition with no ``source``, or to a field :data:`ADDITIVE_FIELDS` does not list;
+- carries an addition with no ``source``, or to a field :data:`ADDITIVE_FIELDS` does not list, or to one where the
+  spec holds no list to add to (a live model's ``acceptance.x``, or a ``context`` that is not a table);
 - would not raise the spec's own `speclint.score_task` score (monotonicity): a refiner that could lower the
   score could be gamed into laundering a worse spec through "refinement".
 
@@ -130,9 +131,9 @@ def refine(spec: dict, model: Model, ctx: speclint.PlanContext, *, max_rounds: i
             stopped = "no_proposal"
             break
         candidate = copy.deepcopy(current)
-        for addition in proposal.additions:
-            _append(candidate, addition.field, copy.deepcopy(addition.item))
-        problem = _rejection(current, candidate, proposal.additions)
+        problem = next((f"{addition.field}: the spec has no list there to add to" for addition in proposal.additions
+                        if not _append(candidate, addition.field, copy.deepcopy(addition.item))), None)
+        problem = problem or _rejection(current, candidate, proposal.additions)
         if problem is not None:
             stopped = problem
             break
@@ -152,12 +153,18 @@ def refine(spec: dict, model: Model, ctx: speclint.PlanContext, *, max_rounds: i
     return RefineResult(spec=current, rounds=rounds, stopped=stopped)
 
 
-def _append(spec: dict, field_name: str, item: object) -> None:
-    if "." in field_name:
-        parent, key = field_name.split(".", 1)
-        spec.setdefault(parent, {}).setdefault(key, []).append(item)
-    else:
-        spec.setdefault(field_name, []).append(item)
+def _append(spec: dict, field_name: str, item: object) -> bool:
+    """Append `item` to the list at `field_name` ("context.read_files" names a key of the `context` table); False,
+    changing nothing, when no list can hold it there (a live model may name `acceptance.x`, under a list)."""
+    parent, dot, key = str(field_name).partition(".")
+    table = spec.setdefault(parent, {}) if dot else spec
+    if not isinstance(table, dict):
+        return False
+    target = table.setdefault(key if dot else parent, [])
+    if not isinstance(target, list):
+        return False
+    target.append(item)
+    return True
 
 
 def _rejection(before: dict, after: dict, additions: list[Addition]) -> str | None:

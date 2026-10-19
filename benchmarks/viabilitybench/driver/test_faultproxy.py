@@ -24,6 +24,7 @@ import error_capture
 import faultproxy
 import layout
 import ledger
+import provider
 import secret
 import vb
 from common import hmac_seed
@@ -992,6 +993,17 @@ def test_upstreams_are_allowlisted_and_get_the_proxys_key(tmp_path, monkeypatch,
     assert upstream.requests[0][0]["authorization"] == "Bearer sk-upstream-test-7c1d"
     assert moved.status == 307 and moved.headers["Location"] == "http://127.0.0.1:9/elsewhere"  # not followed
     assert "authorization" not in redirecting.requests[0][0]
+
+
+def test_the_driver_client_sends_its_own_user_agent(proxy, upstream):
+    """bug-7b1b7f: api.cerebras.ai's Cloudflare refuses urllib's default User-Agent (`Python-urllib/<version>`) with a
+    403, error 1010, before the API sees the call. The driver's client names itself instead, and the proxy forwards
+    that to the provider, so no call of the direct loop or the refiner goes out under urllib's default."""
+    client = provider.OpenAICompatible(provider.Endpoint(provider="stub", base_url=proxy.base_url("stub")))
+    reply = client.complete(REQUEST["messages"], model=MODEL, max_tokens=8, timeout_s=10.0)
+    assert reply.content == "Hello 1." and len(upstream.requests) == 1
+    agent = upstream.requests[0][0].get("user-agent", "")
+    assert agent == provider.USER_AGENT and "urllib" not in agent.lower()
 
 
 def test_a_hang_outlasts_a_short_client_timeout(proxy, upstream, log):

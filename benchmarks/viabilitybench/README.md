@@ -49,6 +49,7 @@ benchmarks/viabilitybench/
   driver/campaign.py                                        # vb campaign: an experiment's blocks, validated and run
   driver/{mini_loop, run_roko, planemit, run_cli}.py        # the runners: direct loop, Roko arm, Claude Code arm
   driver/run_codex.py                                       # the Codex CLI arm's runner (fd_codex)
+  driver/refine_live.py                                     # vb refine: the spec refiner on a live model, ledgered (3236)
   driver/{ledger, faultproxy, secret}.py                    # the run ledger, the metering and fault proxy, the secret
   driver/error_capture.py  testdata/provider_errors/        # vb capture-errors: each provider's own error (gap-db8dab)
   driver/egress.py                                          # the Claude Code arm's egress allowlist proxy
@@ -223,6 +224,13 @@ $PY benchmarks/viabilitybench/driver/vb.py run --experiment PILOT-A --stream pil
   without `--dry-run` it runs one `vb run` per unit in the manifest's order (`as_listed`, or S09's
   `daily_interleave`), logs them in `<experiment>/campaign.jsonl`, and on a rerun goes on after the last finished
   unit. Its module docstring has the rules.
+- **The refiner's cost sample** (`vb refine`, `driver/refine_live.py`, task 3236). `specops/refine.py` on a live
+  model: 20 band C/D tasks under the linter (half from the active plans, half from speclint's fixtures, drawn by a
+  keyed hash), at most two additive rounds each, one chat call a round through the metering proxy, each task held to
+  S07's $0.02 and reserved on budget line BL15 before its first call, under the same admission and key-file rules as
+  `vb run`. It runs no agent, so it needs no workdir, no secret file and no tripwire. `vb refine --dry-run` shows the
+  sample, and `vb refine --summary RUN_DIR --bundle reports/refiner-cost` writes the summary with its verdict
+  `within the $0.02 cap: yes|no`; the module docstring has the rest.
 - **The pre-registration lock** (`analysis/lock.py`, S09 SC1, §5). `lock.py build` writes
   `experiments/prereg.lock.json` from S09, the analysis code, the streams and the price snapshot, and `lock.py
   --check` recomputes every hash. LOG1, every live `E-` experiment and every manifest with `requires_lock` start,

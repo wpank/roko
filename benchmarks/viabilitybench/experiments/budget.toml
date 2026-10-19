@@ -18,7 +18,10 @@ stop_usd = 400                  # the programme stop (S08 §4.10): no dispatch p
 # `confirm = "lock"` marks a v1.2 default that the author confirms at the pre-registration lock (S09 §9 decision 11;
 # dec-39c781). v1.2 funds BL13 ($5 planned, $6 cap) for the plan-level slice by lowering BL1, BL6 and BL7, so the
 # caps still sum to $390. `was_cap_usd` is the v1.1 cap it lowered. v1.5 raises BL0's cap from $10 to $14
-# (dec-1089ec), so the caps sum to $394: within the $400 stop, leaving $106 never allocated.
+# (dec-1089ec), so the caps sum to $394: within the $400 stop, leaving $106 never allocated. v1.6 adds BL14 ($6) out of
+# that reserve, so the caps reach the $400 stop and $100 stays never allocated. Decision 5 (Will, 2026-10-15) funds
+# the refiner's cost sample, BL15 ($0.40), and since the caps cannot pass the stop its $0.40 comes out of BL11's cap
+# (18 -> 17.60, still $1.40 above BL11's plan); S09 §4.6 is to carry both numbers.
 [[line]]
 id = "BL0"
 gate = "G0"
@@ -109,7 +112,7 @@ id = "BL11"
 gate = "G5"
 content = "T5 leave-one-mechanism-out ablation: roko_full minus S04 routing, the S07 gate or S05 feedback; 60 tasks"
 planned_usd = 16.2
-cap_usd = 18
+cap_usd = 17.60                 # 18 before decision 5 moved $0.40 of it to BL15 (header); confirm with S09 §4.6
 
 [[line]]
 id = "BL13"
@@ -125,6 +128,13 @@ gate = "after G0"
 content = "Pilot C, exploratory (decision 3302): roko_ladder's cheap-model ladder on the pilot slice × 3 seeds"
 planned_usd = 5.40              # 60 runs x $0.09
 cap_usd = 6
+
+[[line]]
+id = "BL15"
+gate = "none"
+content = "Refiner cost sample (S07.4, task 3236): specops/refine.py live on gpt-oss-120b over 20 band C/D tasks"
+planned_usd = 0.40              # 20 tasks x the refiner's $0.02 per-task budget (S07 §4.3)
+cap_usd = 0.40                  # decision 5 (Will, 2026-10-15): one run, at most $0.40; out of BL11's cap (header)
 
 # Line ids held back: they fund nothing, so a dispatch on one is refused.
 [reserved]
@@ -143,3 +153,9 @@ id = "pilot_c"
 experiment_ids = ["PILOT-C"]              # decision 3302; 3313
 lines = ["BL14"]
 cap_usd = 6                               # BL14's own cap: the ladder pilot stays within it
+
+[[experiment]]
+id = "refiner_cost"
+experiment_ids = ["REFINE-COST"]          # task 3236 (gap-942f88): `vb refine`
+lines = ["BL15"]
+cap_usd = 0.40                            # BL15's own cap: decision 5's $0.40 for the whole sample

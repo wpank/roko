@@ -107,6 +107,12 @@ pub(crate) enum PlanCmd {
         /// against a one-commit snapshot of itself.
         #[arg(long, requires = "dynamic")]
         fixture: bool,
+        /// With `--dynamic`: run every task's steps on the base again. Without
+        /// it, a task whose base, steps and plan files have not changed since a
+        /// check in the last 12 hours that decided it reuses that check's runs
+        /// (`.roko/cache/red-on-base/`).
+        #[arg(long, requires = "dynamic")]
+        fresh: bool,
     },
     /// Write a plan's companion documents beside its `tasks.toml`: `brief.md`
     /// (its artifacts, task map and risks), which dispatch adds to each of its
@@ -1049,6 +1055,7 @@ pub(crate) async fn cmd_plan(cli: &Cli, cmd: PlanCmd) -> Result<i32> {
             timeout,
             scratch,
             fixture,
+            fresh,
         } => {
             let workdir = resolve_workdir(cli);
             // Read-only lint: skip the lock when a server owns the workspace;
@@ -1062,12 +1069,16 @@ pub(crate) async fn cmd_plan(cli: &Cli, cmd: PlanCmd) -> Result<i32> {
             // 3214: `--dynamic` proves each task's checks red on the base;
             // gap-d21da9: and runs what can tell whether the tasks the score
             // leaves out can pass.
+            // gap-e02ec4: an unchanged task's decided runs are reused unless
+            // `--fresh`; a fixture's snapshot base is new each time.
             let dynamic = dynamic.then(|| roko_cli::spec_red_on_base::RedOnBaseOptions {
                 base,
                 timeout: timeout.map(std::time::Duration::from_secs),
                 scratch,
                 fixture,
                 unscored: true,
+                cache: !fixture,
+                fresh,
                 ..Default::default()
             });
             let exit = cmd_plan_validate(
@@ -2976,6 +2987,11 @@ pub(crate) fn cmd_plan_validate(
             if !spec_config.red_on_base_cargo {
                 options.cargo = roko_cli::spec_red_on_base::CargoSteps::Skip;
             }
+            // gap-e02ec4: the base checkouts keep, and start from, the build
+            // trees `[gates] warm_build_dirs` names.
+            options.warm_build_dirs = config
+                .as_ref()
+                .and_then(|config| config.gates.warm_build_dirs.clone());
             match roko_cli::spec_red_on_base::check_plans(files, workdir, &options) {
                 Ok(report) => Some(report),
                 Err(error) => {

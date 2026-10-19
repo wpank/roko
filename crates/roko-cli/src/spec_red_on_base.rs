@@ -48,7 +48,12 @@
 //! `git worktree add --detach` checkout in a new scratch directory outside
 //! every worktree of the repo. Before each run the checkout is reset to the
 //! base (`git reset --hard`, `git clean -ffdx`) and the plan's directory is
-//! copied in, so an uncommitted plan brings its own files. When the check
+//! copied in, so an uncommitted plan brings its own files. The reset keeps
+//! the checkout's CMake build trees (gap-e02ec4: [`RedOnBaseOptions::warm_build_dirs`]),
+//! so the second run, and the next task on the same base, build
+//! incrementally; a base checkout of the commit the workspace is at, with
+//! no tracked file changed, starts from copies of the workspace's own build
+//! trees. When the check
 //! ends, also on an error, SIGINT or SIGTERM, it removes the worktrees and
 //! the scratch directory it created and nothing else: it creates no branch,
 //! never prunes, and never touches another worktree.
@@ -56,6 +61,15 @@
 //! [`RedOnBaseOptions::fixture`] checks a plain directory instead: it is
 //! snapshotted into a throwaway one-commit repo inside the scratch directory,
 //! and that commit is the base.
+//!
+//! The cache (gap-e02ec4). With [`RedOnBaseOptions::cache`], a task whose
+//! runs decided it (`fail` or `pass`) keeps them in the workspace's
+//! `.roko/cache/red-on-base/` for 12 hours, keyed by the base, the task's
+//! steps, what the check does with cargo steps, the plan directory's other
+//! files and this roko's build. A later check of an unchanged task reuses
+//! them and runs nothing ([`TaskCheck::cached`]); its outcome is worked out
+//! again from them, so what other tasks write still counts.
+//! [`RedOnBaseOptions::fresh`] runs every task again.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
@@ -69,7 +83,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use anyhow::{Context as _, Result, anyhow, bail};
 use roko_core::config::SpecQualityConfig;
 use roko_gate::spec_quality::{RedOnBase, normpath, runs_program};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use toml::{Table, Value};
 
@@ -103,6 +117,23 @@ const TAIL_CHARS: usize = 400;
 /// How often a running step is polled for its exit, its timeout and an
 /// interrupt.
 const POLL: Duration = Duration::from_millis(20);
+
+/// How long a decided result stays in the cache (gap-e02ec4).
+const CACHE_TTL: Duration = Duration::from_secs(12 * 60 * 60);
+
+/// What every cache key starts with: the entry format and this roko's build,
+/// so that a new roko runs every task again.
+const CACHE_VERSION: &str = concat!(
+    "red-on-base/1 ",
+    env!("CARGO_PKG_VERSION"),
+    "+",
+    env!("ROKO_GIT_HASH")
+);
+
+/// The most files, and bytes, of a plan directory a cache key reads; a
+/// larger plan's results are not cached.
+const CACHE_PLAN_FILES: usize = 512;
+const CACHE_PLAN_BYTES: u64 = 16 << 20;
 
 /// The signal that interrupted a running check, or 0.
 static INTERRUPTED: AtomicI32 = AtomicI32::new(0);
@@ -140,6 +171,16 @@ pub struct RedOnBaseOptions {
     /// a task that is not an implementer. `plan validate --dynamic` sets it;
     /// the plan-load gate does not.
     pub unscored: bool,
+    /// The build trees a base checkout keeps between runs and starts from,
+    /// as `[gates] warm_build_dirs` names them; every CMake build tree when
+    /// `None` (gap-e02ec4).
+    pub warm_build_dirs: Option<Vec<String>>,
+    /// Reuse a task's decided runs from an earlier check, and keep new ones,
+    /// in the workspace's `.roko/cache/red-on-base/` (gap-e02ec4). Never
+    /// with `fixture`.
+    pub cache: bool,
+    /// With `cache`: run every task again, and keep what its runs show.
+    pub fresh: bool,
 }
 
 impl RedOnBaseOptions {
@@ -154,6 +195,7 @@ impl RedOnBaseOptions {
             } else {
                 CargoSteps::Skip
             },
+            cache: true,
             ..Self::default()
         }
     }
@@ -170,20 +212,68 @@ pub fn gate_results(
     workdir: &Path,
     config: &SpecQualityConfig,
 ) -> std::result::Result<BTreeMap<(String, String), RedOnBase>, Interrupted> {
+    gate_results_with(files, workdir, config, None, &|_| {}).map(|(results, _)| results)
+}
+
+/// [`gate_results`] with the build trees `[gates] warm_build_dirs` names,
+/// `on_step` told of each step as it ends, and what the check did
+/// (gap-e02ec4).
+pub fn gate_results_with(
+    files: &[PathBuf],
+    workdir: &Path,
+    config: &SpecQualityConfig,
+    warm_build_dirs: Option<&[String]>,
+    on_step: &dyn Fn(&StepDone),
+) -> std::result::Result<(BTreeMap<(String, String), RedOnBase>, CheckCounts), Interrupted> {
     if !config.is_on() || !config.red_on_base {
-        return Ok(BTreeMap::new());
+        return Ok((BTreeMap::new(), CheckCounts::default()));
     }
-    match check_plans(files, workdir, &RedOnBaseOptions::from_config(config)) {
-        Ok(report) => Ok(report.results()),
+    let options = RedOnBaseOptions {
+        warm_build_dirs: warm_build_dirs.map(<[String]>::to_vec),
+        ..RedOnBaseOptions::from_config(config)
+    };
+    match check_plans_watched(files, workdir, &options, on_step) {
+        Ok(report) => Ok((report.results(), report.counts())),
         Err(error) => match error.downcast_ref::<Interrupted>() {
             Some(interrupted) => Err(*interrupted),
             None => {
                 let error = format!("{error:#}");
                 tracing::warn!(%error, "spec gate: the red-on-base check could not run");
-                Ok(BTreeMap::new())
+                Ok((BTreeMap::new(), CheckCounts::default()))
             }
         },
     }
+}
+
+/// What a red-on-base check did (gap-e02ec4), as the plan-load gate's
+/// `spec_gate_finished` reports it.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct CheckCounts {
+    /// The tasks whose steps ran on the base, or whose runs the cache gave.
+    pub tasks_checked: u32,
+    /// The steps that ran.
+    pub steps_run: u32,
+    /// The tasks whose runs the cache gave.
+    pub cached: u32,
+}
+
+/// A step of a red-on-base check that ended (gap-e02ec4), as the plan-load
+/// gate's `spec_gate_step` reports it; a cached task's steps end at once.
+#[derive(Clone, Debug, PartialEq)]
+pub struct StepDone {
+    /// The plan's id: its directory's name.
+    pub plan_id: String,
+    pub task_id: String,
+    /// The run, from 1.
+    pub run: usize,
+    /// The step's number, from 1.
+    pub step: usize,
+    /// Whether it exited 0.
+    pub passed: bool,
+    /// How long it ran, in ms.
+    pub ms: u64,
+    /// Whether the cache gave it.
+    pub cached: bool,
 }
 
 /// Why a task's red-on-base result is what it is: speclint's `OUTCOMES`.
@@ -270,7 +360,8 @@ impl Outcome {
 }
 
 /// One step of one run.
-#[derive(Clone, Debug, Default, PartialEq, Serialize)]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
 pub struct StepResult {
     /// The step's number, from 1: pinned acceptance tests first, then the
     /// task's verify steps.
@@ -314,6 +405,10 @@ pub struct TaskCheck {
     pub base_reason: String,
     /// Per run, the steps that ran.
     pub runs: Vec<Vec<StepResult>>,
+    /// Whether the runs came from the cache, from an earlier check of the
+    /// unchanged task (gap-e02ec4).
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub cached: bool,
 }
 
 impl TaskCheck {
@@ -327,6 +422,7 @@ impl TaskCheck {
             base: None,
             base_reason: String::new(),
             runs: Vec::new(),
+            cached: false,
         }
     }
 }
@@ -341,6 +437,24 @@ pub struct RedOnBaseReport {
 }
 
 impl RedOnBaseReport {
+    /// What the check did: the tasks it checked, the steps it ran and the
+    /// tasks the cache answered (gap-e02ec4).
+    pub fn counts(&self) -> CheckCounts {
+        let count = |n: usize| u32::try_from(n).unwrap_or(u32::MAX);
+        let checked = self.checks.iter().filter(|check| !check.runs.is_empty());
+        let ran: usize = checked
+            .clone()
+            .filter(|check| !check.cached)
+            .flat_map(|check| &check.runs)
+            .map(Vec::len)
+            .sum();
+        CheckCounts {
+            tasks_checked: count(checked.clone().count()),
+            steps_run: count(ran),
+            cached: count(checked.filter(|check| check.cached).count()),
+        }
+    }
+
     /// The results by (plan path, task id), as
     /// [`roko_gate::spec_quality::lint_files_with`] and the spec gate take
     /// them.
@@ -395,6 +509,13 @@ impl RedOnBaseReport {
             },
             bases.values().filter(|sha| sha.is_none()).count(),
         ));
+        let cached = self.counts().cached;
+        if cached > 0 {
+            text.push_str(&format!(
+                "\n  from the cache: {cached} tasks unchanged since an earlier check \
+                 (--fresh runs them again)"
+            ));
+        }
         for check in self
             .checks
             .iter()
@@ -440,10 +561,21 @@ pub fn check_plans(
     root: &Path,
     options: &RedOnBaseOptions,
 ) -> Result<RedOnBaseReport> {
+    check_plans_watched(files, root, options, &|_| {})
+}
+
+/// [`check_plans`], telling `on_step` of each step as it ends (gap-e02ec4).
+pub fn check_plans_watched(
+    files: &[PathBuf],
+    root: &Path,
+    options: &RedOnBaseOptions,
+    on_step: &dyn Fn(&StepDone),
+) -> Result<RedOnBaseReport> {
     let root = std::fs::canonicalize(root)
         .with_context(|| format!("the workspace root {} does not exist", root.display()))?;
     let _signals = InterruptGuard::install();
     let mut trees = BaseTrees::open(&root, options.scratch.as_deref(), options.fixture)?;
+    trees.warm_build_dirs.clone_from(&options.warm_build_dirs);
     let head = trees.resolve(options.base.as_deref().unwrap_or("HEAD"))?;
     let mut checks = Vec::new();
     for file in files {
@@ -455,7 +587,7 @@ pub fn check_plans(
         else {
             continue;
         };
-        checks.extend(check_plan(&path, &data, &mut trees, &head, options)?);
+        checks.extend(check_plan(&path, &data, &mut trees, &head, options, on_step)?);
     }
     Ok(RedOnBaseReport {
         cargo: options.cargo,
@@ -470,6 +602,7 @@ fn check_plan(
     trees: &mut BaseTrees,
     head: &str,
     options: &RedOnBaseOptions,
+    on_step: &dyn Fn(&StepDone),
 ) -> Result<Vec<TaskCheck>> {
     let rel = relative_path(path, &trees.root);
     let plan_dir = path.parent().unwrap_or(&trees.root).to_path_buf();
@@ -545,7 +678,7 @@ fn check_plan(
                     dir: &plan_dir,
                     writes: &writes,
                 };
-                check_task(&plan, &id, task, kind, trees, &sha, options)?
+                check_task(&plan, &id, task, kind, trees, &sha, options, on_step)?
             }
             None => TaskCheck::new(&rel, &id, Outcome::NoBase, why.clone()),
         };
@@ -592,7 +725,9 @@ struct Step {
 }
 
 /// Run a task's pinned acceptance tests, then its verify steps, on the base,
-/// twice, and classify the result.
+/// twice, and classify the result. With [`RedOnBaseOptions::cache`], the
+/// runs of an earlier check of the unchanged task stand in for running them
+/// (gap-e02ec4).
 fn check_task(
     plan: &PlanFiles<'_>,
     id: &str,
@@ -601,6 +736,7 @@ fn check_task(
     trees: &mut BaseTrees,
     sha: &str,
     options: &RedOnBaseOptions,
+    on_step: &dyn Fn(&StepDone),
 ) -> Result<TaskCheck> {
     let mut check = TaskCheck::new(plan.path, id, Outcome::Error, String::new());
     check.base = Some(sha.to_string());
@@ -655,8 +791,56 @@ fn check_task(
             "skipped: cargo: every step runs cargo, which the batch gate proves red".to_string();
         return Ok(check);
     }
-    check.runs = run_steps(&steps, trees, sha, plan.dir)?;
+    let plan_id = plan
+        .dir
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let tell = |run: usize, result: &StepResult, cached: bool| {
+        on_step(&StepDone {
+            plan_id: plan_id.clone(),
+            task_id: id.to_string(),
+            run,
+            step: result.step,
+            passed: result.exit == Some(0),
+            ms: secs_to_ms(result.secs),
+            cached,
+        });
+    };
+    let cache = (options.cache && !options.fixture)
+        .then(|| {
+            let key = cache_key(sha, &steps, options.cargo, plan.dir, &trees.root)?;
+            let dir = roko_fs::RokoLayout::for_project(&trees.root).cache_dir();
+            Some((dir.join("red-on-base"), key))
+        })
+        .flatten();
+    let cached = cache
+        .as_ref()
+        .filter(|_| !options.fresh)
+        .and_then(|(dir, key)| cached_runs(dir, key));
+    check.runs = match cached {
+        Some(runs) => {
+            check.cached = true;
+            for (number, results) in (1..).zip(&runs) {
+                for result in results {
+                    tell(number, result, true);
+                }
+            }
+            runs
+        }
+        None => run_steps(&steps, trees, sha, plan.dir, &|run, result| {
+            tell(run, result, false);
+        })?,
+    };
     let (red_on_base, outcome, reason) = classify(&steps, &check.runs);
+    // Only runs that decided the task are kept: a flaky, timed-out or
+    // broken result is worth running again.
+    if !check.cached
+        && matches!(outcome, Outcome::Pass | Outcome::Fail)
+        && let Some((dir, key)) = &cache
+    {
+        keep_runs(dir, key, &check.runs);
+    }
     // bug-27f00b: a step that fails in every run, and that the base
     // settles, can never pass, which no red on the base scores.
     let never = matches!(outcome, Outcome::Fail | Outcome::BaseBroken)
@@ -846,9 +1030,10 @@ fn run_steps(
     trees: &mut BaseTrees,
     sha: &str,
     plan_dir: &Path,
+    on_step: &dyn Fn(usize, &StepResult),
 ) -> Result<Vec<Vec<StepResult>>> {
     let mut runs = Vec::new();
-    for _ in 0..RUNS {
+    for run in 1..=RUNS {
         if let Some(signal) = interrupted() {
             return Err(Interrupted { signal }.into());
         }
@@ -861,6 +1046,7 @@ fn run_steps(
             result.accept = step.accept.clone();
             result.tail = result.tail.map(|tail| tail.replace(&scratch, "$SCRATCH"));
             let passed = result.exit == Some(0);
+            on_step(run, &result);
             results.push(result);
             if !passed {
                 break;
@@ -1106,6 +1292,159 @@ fn missing_command(output: &str) -> Option<&str> {
 }
 
 // --------------------------------------------------------------------------
+// The cache (gap-e02ec4).
+
+/// A task's runs on its base, kept for a later check of the unchanged task.
+#[derive(Serialize, Deserialize)]
+struct CachedRuns {
+    /// When they ran, in seconds since the epoch.
+    at: u64,
+    runs: Vec<Vec<StepResult>>,
+}
+
+/// The cache key of `steps` run on base `sha`: a digest of what their runs
+/// depend on that the check knows. That is the base; each step's command (a
+/// pinned test's by its source, since its command names the scratch
+/// directory), timeout and `expect`; what the check does with cargo steps;
+/// the files of `plan_dir` other than `tasks.toml`, which the base checkout
+/// gets a copy of; and this roko's build. `None` when the plan directory
+/// cannot be read or is too large to digest.
+fn cache_key(
+    sha: &str,
+    steps: &[Step],
+    cargo: CargoSteps,
+    plan_dir: &Path,
+    root: &Path,
+) -> Option<String> {
+    let mut digest = Sha256::new();
+    let mut add = |part: &[u8]| {
+        digest.update(u64::try_from(part.len()).unwrap_or(u64::MAX).to_le_bytes());
+        digest.update(part);
+    };
+    add(CACHE_VERSION.as_bytes());
+    add(sha.as_bytes());
+    add(format!("{cargo:?}").as_bytes());
+    for step in steps {
+        match &step.accept {
+            Some(src) => add(format!("accept {src}").as_bytes()),
+            None => add(step.command.as_bytes()),
+        }
+        let timeout = u64::try_from(step.timeout.as_millis()).unwrap_or(u64::MAX);
+        add(&timeout.to_le_bytes());
+        add(step.expect.as_bytes());
+    }
+    // A plan at the workspace root brings no copy: the base has its files.
+    if canonical(plan_dir) != root {
+        for (path, bytes) in plan_files(plan_dir)? {
+            add(path.as_bytes());
+            add(&Sha256::digest(&bytes));
+        }
+    }
+    Some(format!("{:x}", digest.finalize()))
+}
+
+/// The files under `plan_dir` but its `tasks.toml`, by relative path, with
+/// their bytes; `None` past [`CACHE_PLAN_FILES`] or [`CACHE_PLAN_BYTES`], or
+/// when one cannot be read.
+fn plan_files(plan_dir: &Path) -> Option<BTreeMap<String, Vec<u8>>> {
+    let mut files = BTreeMap::new();
+    let mut bytes = 0_u64;
+    let mut dirs = vec![plan_dir.to_path_buf()];
+    while let Some(dir) = dirs.pop() {
+        for entry in std::fs::read_dir(&dir).ok()? {
+            let entry = entry.ok()?;
+            let path = entry.path();
+            let kind = entry.file_type().ok()?;
+            if entry.file_name() == ".git" {
+                continue;
+            }
+            if kind.is_dir() {
+                dirs.push(path);
+                continue;
+            }
+            let rel = relative_path(&path, plan_dir);
+            if rel == "tasks.toml" {
+                continue;
+            }
+            let content = if kind.is_symlink() {
+                std::fs::read_link(&path)
+                    .ok()?
+                    .to_string_lossy()
+                    .into_owned()
+                    .into_bytes()
+            } else {
+                std::fs::read(&path).ok()?
+            };
+            bytes = bytes.saturating_add(u64::try_from(content.len()).unwrap_or(u64::MAX));
+            files.insert(rel, content);
+            if files.len() > CACHE_PLAN_FILES || bytes > CACHE_PLAN_BYTES {
+                return None;
+            }
+        }
+    }
+    Some(files)
+}
+
+/// The runs the cache in `dir` keeps under `key`, while they are younger
+/// than [`CACHE_TTL`].
+fn cached_runs(dir: &Path, key: &str) -> Option<Vec<Vec<StepResult>>> {
+    let text = std::fs::read_to_string(dir.join(format!("{key}.json"))).ok()?;
+    let entry: CachedRuns = serde_json::from_str(&text).ok()?;
+    let now = SystemTime::now().duration_since(UNIX_EPOCH).ok()?.as_secs();
+    (now.saturating_sub(entry.at) < CACHE_TTL.as_secs() && !entry.runs.is_empty())
+        .then_some(entry.runs)
+}
+
+/// Keep `runs` in the cache in `dir` under `key`. A cache that cannot be
+/// written leaves the next check to run the task again.
+fn keep_runs(dir: &Path, key: &str, runs: &[Vec<StepResult>]) {
+    let at = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |elapsed| elapsed.as_secs());
+    let entry = CachedRuns {
+        at,
+        runs: runs.to_vec(),
+    };
+    let written = serde_json::to_vec(&entry)
+        .map_err(std::io::Error::other)
+        .and_then(|bytes| {
+            std::fs::create_dir_all(dir)?;
+            let partial = dir.join(format!("{key}.json.{}", std::process::id()));
+            std::fs::write(&partial, bytes)?;
+            std::fs::rename(&partial, dir.join(format!("{key}.json")))
+        });
+    if let Err(error) = written {
+        tracing::debug!(%error, "red-on-base: the result was not cached");
+    }
+    // Entries past their time are dropped as new ones are kept.
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let expired = entry
+            .metadata()
+            .and_then(|metadata| metadata.modified())
+            .ok()
+            .and_then(|modified| modified.elapsed().ok())
+            .is_some_and(|age| age > CACHE_TTL);
+        if expired {
+            let _ = std::fs::remove_file(entry.path());
+        }
+    }
+}
+
+/// `secs` as whole milliseconds.
+fn secs_to_ms(secs: f64) -> u64 {
+    if secs.is_finite() && secs > 0.0 {
+        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+        let ms = (secs * 1000.0).round() as u64;
+        ms
+    } else {
+        0
+    }
+}
+
+// --------------------------------------------------------------------------
 // Base checkouts.
 
 /// Detached checkouts of base commits, in a scratch directory only this
@@ -1126,6 +1465,9 @@ struct BaseTrees {
     admin: PathBuf,
     /// Base sha -> (its checkout, the checkout's admin directory).
     trees: BTreeMap<String, (PathBuf, PathBuf)>,
+    /// The build trees a checkout keeps between runs and starts from
+    /// ([`RedOnBaseOptions::warm_build_dirs`]).
+    warm_build_dirs: Option<Vec<String>>,
 }
 
 impl BaseTrees {
@@ -1143,6 +1485,7 @@ impl BaseTrees {
             prefix: PathBuf::new(),
             admin: PathBuf::new(),
             trees: BTreeMap::new(),
+            warm_build_dirs: None,
         };
         let checkouts = trees.checkouts()?;
         if let Some(checkout) = checkouts
@@ -1382,7 +1725,60 @@ impl BaseTrees {
         let admin = canonical(&tree.join(gitdir));
         self.trees
             .insert(sha.to_string(), (tree.clone(), admin.clone()));
+        // gap-e02ec4: a checkout of the commit the workspace is at, whose
+        // tracked files the workspace has not changed, starts from copies of
+        // the workspace's build trees, so its first build is incremental. A
+        // workspace with changes may have built what the base does not have.
+        if !self.fixture && self.workspace_is_at(sha) {
+            let given = crate::orchestrator::worktree::give_build_trees(
+                &self.root,
+                &tree.join(&self.prefix),
+                self.warm_build_dirs.as_deref(),
+            );
+            tracing::debug!(
+                given = given.len(),
+                "red-on-base: the base checkout starts from the workspace's build trees"
+            );
+        }
         Ok((tree, admin))
+    }
+
+    /// Whether the workspace's checkout is at `sha` with no tracked file
+    /// changed.
+    fn workspace_is_at(&self, sha: &str) -> bool {
+        let head = git_ok(&["rev-parse", "HEAD"], &self.repo);
+        // No optional locks: the person's index is never refreshed here.
+        let changes = git_ok(
+            &[
+                "--no-optional-locks",
+                "status",
+                "--porcelain",
+                "--untracked-files=no",
+            ],
+            &self.repo,
+        );
+        head.is_ok_and(|head| head.trim() == sha) && changes.is_ok_and(|text| text.trim().is_empty())
+    }
+
+    /// The `git clean` exclusions that keep the build trees of the checkout
+    /// at `tree` (gap-e02ec4): one `/<dir>/` per tree, relative to the
+    /// checkout's top. A directory whose name a pattern cannot say plainly is
+    /// left to be cleaned.
+    fn kept_build_trees(&self, tree: &Path) -> Vec<String> {
+        crate::orchestrator::worktree::warm_build_dirs(
+            &tree.join(&self.prefix),
+            self.warm_build_dirs.as_deref(),
+        )
+        .into_iter()
+        .filter_map(|dir| {
+            let dir = self.prefix.join(dir);
+            let dir = dir.to_str()?;
+            let plain = dir.chars().all(|c| {
+                c.is_ascii_alphanumeric() || matches!(c, '/' | '.' | '_' | '-' | '+' | '@')
+            });
+            plain.then(|| format!("/{dir}/"))
+        })
+        .collect()
     }
 
     /// The workspace root in the checkout of `sha`, reset to the base, with
@@ -1399,7 +1795,12 @@ impl BaseTrees {
             &[git_dir, work_tree, "reset", "--hard", "--quiet", sha],
             &tree,
         )?;
-        git_ok(&[git_dir, work_tree, "clean", "-ffdxq"], &tree)?;
+        let kept = self.kept_build_trees(&tree);
+        let mut clean = vec![git_dir, work_tree, "clean", "-ffdxq"];
+        for pattern in &kept {
+            clean.extend(["-e", pattern.as_str()]);
+        }
+        git_ok(&clean, &tree)?;
         let workspace = tree.join(&self.prefix);
         // A fixture snapshot already holds its plans, and a plan at the
         // workspace root has no directory of its own to copy.
@@ -2142,5 +2543,207 @@ command = 'n=$(cat COUNTER 2>/dev/null || echo 0); echo $((n + 1)) > COUNTER; te
 
         assert_eq!(result.exit, Some(0), "{result:?}");
         assert_check_env(&out, "a red-on-base step");
+    }
+
+    /// A one-commit repo at `repo` holding `plan` as `plans/p/tasks.toml`,
+    /// `files` beside it, and a scratch directory for the check's checkouts.
+    fn warm_repo(temp: &Path, plan: &str, files: &[(&str, &str)]) -> (PathBuf, PathBuf, PathBuf) {
+        let repo = temp.join("repo");
+        std::fs::create_dir_all(repo.join("plans/p")).expect("plan dir");
+        std::fs::write(repo.join("plans/p/tasks.toml"), plan).expect("write the plan");
+        for (path, text) in files {
+            std::fs::write(repo.join(path), text).expect("write a file");
+        }
+        run_git(&repo, &["init", "--quiet"]);
+        run_git(&repo, &["add", "--all"]);
+        run_git(&repo, &["commit", "--quiet", "-m", "base"]);
+        let scratch = temp.join("checkouts");
+        std::fs::create_dir_all(&scratch).expect("scratch dir");
+        (repo.join("plans/p/tasks.toml"), repo, scratch)
+    }
+
+    /// One implementer task `id` per `(id, command)`, each with one verify step.
+    fn warm_plan(tasks: &[(&str, &str)]) -> String {
+        let mut plan = String::from("[meta]\nplan = \"p\"\n");
+        for (id, command) in tasks {
+            plan.push_str(&format!(
+                "\n[[task]]\nid = \"{id}\"\ntitle = \"{id}\"\ndescription = \"Task {id}.\"\n\
+                 role = \"implementer\"\nfiles = [\"src/{id}.txt\"]\n\n[[task.verify]]\n\
+                 phase = \"test\"\ncommand = '{command}'\n"
+            ));
+        }
+        plan
+    }
+
+    /// What each run of task `id` printed last: its failing step's tail.
+    fn warm_tails(report: &RedOnBaseReport, id: &str) -> Vec<String> {
+        let check = report.checks.iter().find(|check| check.task_id == id);
+        let check = check.expect("checked");
+        check
+            .runs
+            .iter()
+            .map(|run| run.last().and_then(|step| step.tail.clone()).unwrap_or_default())
+            .collect()
+    }
+
+    /// gap-e02ec4: the reset between runs keeps the checkout's CMake build
+    /// trees, so a task's second run, and the next task on the same base,
+    /// see what the first one built there; whatever else a step wrote is
+    /// cleaned, as before.
+    #[test]
+    fn warm_keeps_build_trees_between_runs() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        // The step configures `build/` as CMake would, with a cache naming the
+        // checkout, counts its runs there and in another ignored directory,
+        // prints both counts and fails.
+        let step = "mkdir -p build out && \
+                    printf \"CMAKE_HOME_DIRECTORY:INTERNAL=%s\\n\" \"$PWD\" > build/CMakeCache.txt && \
+                    echo run >> build/runs && echo run >> out/runs && \
+                    echo \"build $(grep -c . build/runs) out $(grep -c . out/runs)\" && exit 1";
+        let plan = warm_plan(&[("T1", step), ("T2", step)]);
+        let (plan, repo, scratch) =
+            warm_repo(temp.path(), &plan, &[(".gitignore", "build/\nout/\n")]);
+        let options = RedOnBaseOptions {
+            timeout: Some(Duration::from_secs(30)),
+            scratch: Some(scratch),
+            ..RedOnBaseOptions::default()
+        };
+
+        let report = check_plans(&[plan], &repo, &options).expect("check the plan");
+
+        assert_eq!(warm_tails(&report, "T1"), ["build 1 out 1", "build 2 out 1"]);
+        assert_eq!(warm_tails(&report, "T2"), ["build 3 out 1", "build 4 out 1"]);
+        let t1 = report.checks.iter().find(|check| check.task_id == "T1");
+        assert_eq!(t1.map(|check| check.outcome), Some(Outcome::Fail));
+    }
+
+    /// gap-e02ec4: a base checkout of the commit the workspace is at starts
+    /// from copies of the workspace's own build trees, made to work at the
+    /// checkout's path, unless the workspace changed a tracked file.
+    #[test]
+    fn warm_seeds_the_base_from_the_workspace_build() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        if !crate::orchestrator::worktree::clones_on(temp.path()) {
+            eprintln!("this filesystem makes no copy-on-write clones; skipping");
+            return;
+        }
+        let step = "if test -f build/made-here; then echo seeded; else echo cold; fi; \
+                    grep -c \"$PWD\" build/CMakeCache.txt; exit 1";
+        let plan = warm_plan(&[("T1", step)]);
+        let (plan, repo, scratch) = warm_repo(
+            temp.path(),
+            &plan,
+            &[(".gitignore", "build/\n"), ("README.md", "base\n")],
+        );
+        // The person's build: a CMake cache naming the workspace, and a file.
+        let root = std::fs::canonicalize(&repo).expect("canonical repo");
+        std::fs::create_dir_all(repo.join("build")).expect("build dir");
+        let cache = format!("CMAKE_HOME_DIRECTORY:INTERNAL={}\n", root.display());
+        std::fs::write(repo.join("build/CMakeCache.txt"), cache).expect("cache");
+        std::fs::write(repo.join("build/made-here"), "x\n").expect("made-here");
+        let options = RedOnBaseOptions {
+            timeout: Some(Duration::from_secs(30)),
+            scratch: Some(scratch),
+            ..RedOnBaseOptions::default()
+        };
+
+        let report = check_plans(&[plan.clone()], &repo, &options).expect("check the plan");
+        // Seeded, and the cache names the checkout, not the workspace.
+        assert_eq!(warm_tails(&report, "T1"), ["seeded\n1", "seeded\n1"]);
+
+        std::fs::write(repo.join("README.md"), "changed\n").expect("change a file");
+        let report = check_plans(&[plan], &repo, &options).expect("check the plan");
+        assert_eq!(warm_tails(&report, "T1")[0], "cold\n0");
+        assert!(repo.join("build/made-here").is_file(), "the workspace's build is untouched");
+    }
+
+    /// gap-e02ec4: with the cache on, a task whose runs decided it (`fail` or
+    /// `pass`) is not run again while its base, steps and plan files are
+    /// unchanged: the next check takes its runs from the cache, says so, and
+    /// tells each of its steps as cached. A task whose runs disagreed runs
+    /// again, a changed step runs again, and `fresh` runs every task.
+    #[test]
+    fn warm_reuses_decided_runs_from_the_cache() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let ran = temp.path().join("ran.log");
+        let counter = temp.path().join("counter");
+        let (ran_at, counter_at) = (ran.display(), counter.display());
+        let red = format!("echo T1 >> {ran_at}; test -f greet.sh");
+        let green = format!("echo T2 >> {ran_at}; grep -q retries config.ini");
+        let flaky = format!(
+            "echo T3 >> {ran_at}; n=$(cat {counter_at} 2>/dev/null || echo 0); \
+             echo $((n + 1)) > {counter_at}; test \"$n\" -eq 0"
+        );
+        let plan = warm_plan(&[("T1", &red), ("T2", &green), ("T3", &flaky)]);
+        let (plan, repo, scratch) =
+            warm_repo(temp.path(), &plan, &[("config.ini", "retries = 3\n")]);
+        let mut options = RedOnBaseOptions {
+            timeout: Some(Duration::from_secs(30)),
+            scratch: Some(scratch),
+            cache: true,
+            ..RedOnBaseOptions::default()
+        };
+        let runs = || std::fs::read_to_string(&ran).unwrap_or_default().lines().count();
+        let outcome = |report: &RedOnBaseReport, id: &str| {
+            let check = report.checks.iter().find(|check| check.task_id == id);
+            let check = check.expect("checked");
+            (check.outcome, check.cached)
+        };
+
+        let first = check_plans(&[plan.clone()], &repo, &options).expect("check the plan");
+        assert_eq!(outcome(&first, "T1"), (Outcome::Fail, false));
+        assert_eq!(outcome(&first, "T2"), (Outcome::Pass, false));
+        assert_eq!(outcome(&first, "T3"), (Outcome::Flaky, false));
+        assert_eq!(runs(), 6);
+
+        let told = std::cell::RefCell::new(Vec::new());
+        let second = check_plans_watched(&[plan.clone()], &repo, &options, &|step| {
+            told.borrow_mut().push((step.task_id.clone(), step.run, step.cached));
+        })
+        .expect("check the plan");
+        assert_eq!(outcome(&second, "T1"), (Outcome::Fail, true));
+        assert_eq!(outcome(&second, "T2"), (Outcome::Pass, true));
+        // Its counter has moved on: both runs fail now, and it ran again.
+        assert_eq!(outcome(&second, "T3"), (Outcome::Fail, false));
+        assert_eq!(runs(), 8, "only T3 ran");
+        let first_runs = first.checks.iter().find(|check| check.task_id == "T1");
+        let second_runs = second.checks.iter().find(|check| check.task_id == "T1");
+        assert_eq!(
+            first_runs.map(|check| &check.runs),
+            second_runs.map(|check| &check.runs)
+        );
+        let told = told.into_inner();
+        let cached: Vec<&(String, usize, bool)> = told.iter().filter(|step| step.2).collect();
+        assert_eq!(cached.len(), 4, "{told:?}");
+        assert!(told.contains(&("T3".to_string(), 2, false)), "{told:?}");
+        assert_eq!(
+            second.counts(),
+            CheckCounts {
+                tasks_checked: 3,
+                steps_run: 2,
+                cached: 2,
+            }
+        );
+        assert!(
+            second.render_text().contains("from the cache: 2 tasks"),
+            "{}",
+            second.render_text()
+        );
+
+        // A changed step runs again; the unchanged ones stay cached.
+        let edited = std::fs::read_to_string(&plan)
+            .expect("read the plan")
+            .replace("grep -q retries", "grep -q ^retries");
+        std::fs::write(&plan, edited).expect("edit T2");
+        let third = check_plans(&[plan.clone()], &repo, &options).expect("check the plan");
+        assert_eq!(outcome(&third, "T1"), (Outcome::Fail, true));
+        assert_eq!(outcome(&third, "T2"), (Outcome::Pass, false));
+        assert_eq!(outcome(&third, "T3"), (Outcome::Fail, true));
+        assert_eq!(runs(), 10);
+
+        options.fresh = true;
+        let fresh = check_plans(&[plan], &repo, &options).expect("check the plan");
+        assert!(fresh.checks.iter().all(|check| !check.cached), "{fresh:?}");
+        assert_eq!(runs(), 16);
     }
 }

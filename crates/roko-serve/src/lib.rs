@@ -2607,6 +2607,7 @@ fn dashboard_event_to_server(event: &roko_core::DashboardEvent) -> Option<Server
         | DashboardEvent::AttemptMerged { .. }
         | DashboardEvent::SpecGateStarted { .. }
         | DashboardEvent::SpecGateFinished { .. }
+        | DashboardEvent::SpecGateStep { .. }
         | DashboardEvent::KnowledgeWritten { .. }
         | DashboardEvent::PlaybookWritten { .. }
         | DashboardEvent::EffectStaged { .. }

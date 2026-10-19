@@ -312,6 +312,8 @@ printf '%s\n' '{{"type":"result","subtype":"success","is_error":false,"total_cos
         provider_semaphores: None,
         env: Vec::new(),
         env_passthrough: Vec::new(),
+        tool_timeout: None,
+        tool_timeout_max: None,
         extra_args: vec!["--extra-flag".to_string()],
         effort: Some("high".to_string()),
         bare_mode: false,

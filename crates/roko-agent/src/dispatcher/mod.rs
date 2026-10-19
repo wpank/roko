@@ -80,6 +80,11 @@ use self::validate::validate;
 use roko_core::defaults::DEFAULT_MAX_CONCURRENT_TOOLS;
 pub use roko_core::defaults::DEFAULT_MAX_RESULT_BYTES;
 
+/// How much longer than a call's own budget the dispatcher waits before it
+/// cuts the call, for a tool that enforces its `timeout_ms` itself
+/// (bug-c22bd9).
+const CALL_TIMEOUT_GRACE: Duration = Duration::from_secs(5);
+
 /// Maximum provider-emitted calls that one dispatcher batch will execute.
 pub const MAX_TOOL_CALLS_PER_BATCH: usize = 16;
 /// Maximum serialized bytes accepted for one provider-emitted tool call.
@@ -700,9 +705,23 @@ impl ToolDispatcher {
         };
         // 2a. T029: Enforce ToolDef::timeout_ms — effective deadline is the
         //     minimum of the context-level timeout and the per-tool definition
-        //     timeout. Record which source was the limiting factor.
+        //     timeout. Record which source was the limiting factor. A tool
+        //     that takes a `timeout_ms` argument (bash, run_tests) gets what
+        //     the call asks for, up to the context's cap (bug-c22bd9), and
+        //     enforces it itself: the deadline here is a backstop a little
+        //     later, so the handler can stop its process group and say why.
         let def_timeout = Duration::from_millis(def.timeout_ms);
-        let (timeout, timeout_source) = if def_timeout < timeout {
+        let (timeout, timeout_source) = if def.parameters.declares("timeout_ms") {
+            let asked = ctx.call_timeout(call);
+            let source = if asked.clamped_from.is_some() {
+                "call_capped"
+            } else if call.arguments.get("timeout_ms").is_some() {
+                "call"
+            } else {
+                "context"
+            };
+            (asked.budget + CALL_TIMEOUT_GRACE, source)
+        } else if def_timeout < timeout {
             (def_timeout, "tool_definition")
         } else {
             (timeout, "context")

@@ -2036,6 +2036,8 @@ fn build_agent(
             provider_semaphores: None,
             env: Vec::new(),
             env_passthrough: Vec::new(),
+            tool_timeout: None,
+            tool_timeout_max: None,
             extra_args: Vec::new(),
             effort: None,
             bare_mode: roko_config.agent.bare_mode,

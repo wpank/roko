@@ -1,10 +1,15 @@
 //! Provider failover: a planned model whose provider cannot take the task hands
-//! it to the next usable candidate within the same attempt.
+//! it to the next usable candidate within the same attempt. A provider that
+//! rate-limits the attempt fails it over the same way, or, with nowhere to go,
+//! the attempt waits for the limit and calls again, so a 429 never spends one
+//! of the task's tries (bug-4b6844).
 
 use std::collections::{HashMap, HashSet};
 use std::sync::OnceLock;
+use std::time::Duration;
 
 use parking_lot::Mutex;
+use roko_agent::live_output::LiveAgentEvent;
 use roko_core::agent::ProviderKind;
 use roko_core::config::harness_params::{HarnessLadders, HarnessParams};
 use roko_learn::provider_failover::{
@@ -70,6 +75,32 @@ const UNPRICED_UNDER_CAP: &str = "unpriced_under_cap";
 
 /// Why a model of [`UNPRICED_UNDER_CAP`] is passed over.
 const UNPRICED_REASON: &str = "has no price, and a budget cap can count only priced calls";
+
+/// Failover refusal class of a provider that answered a call with a rate
+/// limit (HTTP 429) the tool loop's own retries did not get past
+/// (bug-4b6844). Waiting ends it, so it is not definitive.
+const RATE_LIMITED: &str = "rate_limited";
+
+/// The first wait of an attempt whose provider rate-limited it and that
+/// failover had nowhere to send, when the provider named no `Retry-After`.
+/// Each further wait doubles, up to [`RATE_LIMIT_WAIT_CAP`] (bug-4b6844).
+const RATE_LIMIT_WAIT_BASE: Duration = Duration::from_secs(5);
+
+/// The longest wait between two calls of a rate-limited attempt when the
+/// provider named no `Retry-After` (bug-4b6844).
+const RATE_LIMIT_WAIT_CAP: Duration = Duration::from_secs(60);
+
+/// How long a rate-limited attempt with nowhere to fail over waits before it
+/// calls its provider again, after `waits` such waits: the `Retry-After` the
+/// provider named, else a backoff from [`RATE_LIMIT_WAIT_BASE`] that doubles
+/// up to [`RATE_LIMIT_WAIT_CAP`] (bug-4b6844).
+fn rate_limit_wait(waits: u32, retry_after: Option<Duration>) -> Duration {
+    retry_after.unwrap_or_else(|| {
+        RATE_LIMIT_WAIT_BASE
+            .saturating_mul(1_u32 << waits.min(4))
+            .min(RATE_LIMIT_WAIT_CAP)
+    })
+}
 
 /// `RokoError::Gateway` category of an attempt denied in a way no retry can
 /// change (backlog 1116). The error is non-retryable like
@@ -297,6 +328,15 @@ impl GraphTaskDispatcher {
     /// never fails over. When nothing usable remains the attempt fails with a
     /// non-retryable error that says how to recover.
     ///
+    /// A call its provider refused with a rate limit (HTTP 429), past the
+    /// tool loop's own retries, fails over the same way, as a refusal that is
+    /// not definitive. With nowhere to fail over, a pinned model included,
+    /// the attempt waits for the limit ([`rate_limit_wait`]) and calls again,
+    /// marked queued so the stall watchdog does not take the wait for
+    /// silence. It waits while the limit lasts, until the call is served or
+    /// fails otherwise, failover finds a model, or the plan run stops it, so a
+    /// 429 never settles a try (bug-4b6844).
+    ///
     /// In the operator's shared checkout, a Codex, Cursor or Gemini CLI agent
     /// is passed over the same way, pinned or not, unless `[runner]
     /// allow_unguarded_agents_in_checkout` is set (decision 1214).
@@ -329,6 +369,10 @@ impl GraphTaskDispatcher {
             config: None,
         };
         let mut refusals: Vec<ProviderRefusal> = Vec::new();
+        // Calls a provider refused, each with cost and efficiency rows of its
+        // own, and the waits of a rate-limited attempt with nowhere to go.
+        let mut refused_calls = 0_usize;
+        let mut rate_limit_waits = 0_u32;
         // A pinned model never fails over, and never runs unguarded in the
         // shared checkout either.
         if pinned {
@@ -437,16 +481,113 @@ impl GraphTaskDispatcher {
                 let chain = self.failover_chain(&refusals, &candidate, ladder);
                 return Ok((dispatch, chain));
             }
-            let Some(exhaustion) = dispatch
-                .result
-                .output
-                .body
-                .as_text()
-                .ok()
-                .and_then(roko_agent::provider::error_classify::detect_provider_exhaustion)
-            else {
+            let text = dispatch.result.output.body.as_text().unwrap_or_default();
+            let exhaustion = roko_agent::provider::error_classify::detect_provider_exhaustion(text);
+            let rate_limited = exhaustion.is_none()
+                && roko_agent::provider::error_classify::classify_failure_text(
+                    &text.to_ascii_lowercase(),
+                ) == "rate_limit";
+            if exhaustion.is_none() && !rate_limited {
                 let chain = self.failover_chain(&refusals, &candidate, ladder);
                 return Ok((dispatch, chain));
+            }
+
+            // The caller settles only the result it receives; account the
+            // refused call here.
+            let refused_cost_usd = f64::from(dispatch.result.usage.cost_usd);
+            self.record_dispatch_spend(&spec.plan_id, task_id, &dispatch);
+            self.budget_ledger
+                .settle(&spec.plan_id, None, refused_cost_usd)?;
+            refused_calls += 1;
+            self.write_side_call_rows(
+                spec,
+                task_id,
+                &attempt_key,
+                &format!("{attempt_key}/refused-{refused_calls}"),
+                FAILOVER_REFUSED_ROLE,
+                &SideCall::of(
+                    &dispatch,
+                    u64::try_from(call_started.elapsed().as_millis()).unwrap_or(u64::MAX),
+                    self.pricing_snapshot().as_deref(),
+                ),
+            )
+            .await;
+            let provider_id = dispatch.target.provider_id.clone();
+            let Some(exhaustion) = exhaustion else {
+                // A rate limit (bug-4b6844): fail over, as for an open
+                // circuit, or wait for the limit and call the same model
+                // again.
+                let now_ms = chrono::Utc::now().timestamp_millis();
+                let retry_after = RokoError::rate_limited(text).retry_after();
+                let reason = text.lines().next().unwrap_or("rate limited").to_string();
+                refusals.push(ProviderRefusal {
+                    model_key: candidate.model_key.clone(),
+                    model_slug: dispatch.target.model_slug.clone(),
+                    provider_id: provider_id.clone(),
+                    provider_kind: dispatch.target.provider_kind,
+                    reason: reason.clone(),
+                    until_ms: retry_after.map(|wait| {
+                        now_ms.saturating_add(i64::try_from(wait.as_millis()).unwrap_or(i64::MAX))
+                    }),
+                    definitive: false,
+                    class: RATE_LIMITED,
+                    called: true,
+                    at_ms: now_ms,
+                });
+                if !pinned
+                    && let Ok(next) =
+                        self.failover_model(spec, task_id, &refusals, ladder, theta, &request)
+                {
+                    tracing::warn!(
+                        plan_id = %spec.plan_id,
+                        task_id,
+                        provider = %provider_id,
+                        model = %candidate.model_key,
+                        next = %next.model_key,
+                        %reason,
+                        "provider rate-limited the attempt; failing over within it"
+                    );
+                    candidate = next;
+                    continue;
+                }
+                refusals.pop();
+                let wait = rate_limit_wait(rate_limit_waits, retry_after);
+                rate_limit_waits = rate_limit_waits.saturating_add(1);
+                tracing::warn!(
+                    plan_id = %spec.plan_id,
+                    task_id,
+                    provider = %provider_id,
+                    model = %candidate.model_key,
+                    wait_ms = u64::try_from(wait.as_millis()).unwrap_or(u64::MAX),
+                    waits = rate_limit_waits,
+                    %reason,
+                    "provider rate-limited the attempt and failover has nowhere to send it; \
+                     waiting inside the attempt, then calling again"
+                );
+                // The dashboard says why the attempt is quiet.
+                if let Some(tui) = &self.tui_bridge {
+                    tui.diagnosis(roko_core::DiagnosisSummary {
+                        id: format!("rate-limit:{attempt_key}:{rate_limit_waits}"),
+                        ts: chrono::Utc::now(),
+                        severity: roko_core::DiagnosisSeverity::Warn,
+                        subject: format!("{}/{task_id}", spec.plan_id),
+                        detail: format!(
+                            "{provider_id} rate-limited the attempt ({reason}) and failover has \
+                             nowhere to send it: it waits {}s, then calls again",
+                            wait.as_secs()
+                        ),
+                        suggested_action: None,
+                        intervention_taken: Some("waiting out a rate limit".to_string()),
+                    });
+                }
+                if let Some(progress) = progress {
+                    progress.observe(&LiveAgentEvent::Queued { waiting: true });
+                }
+                tokio::time::sleep(wait).await;
+                if let Some(progress) = progress {
+                    progress.observe(&LiveAgentEvent::Queued { waiting: false });
+                }
+                continue;
             };
 
             let cooldown_ms = i64::try_from(
@@ -461,30 +602,9 @@ impl GraphTaskDispatcher {
                     .timestamp_millis()
                     .saturating_add(cooldown_ms)
             });
-            let provider_id = dispatch.target.provider_id.clone();
             self.factory
                 .health_registry
                 .record_exhaustion(&provider_id, until_ms);
-            // The caller settles only the result it receives; account the
-            // refused call here.
-            let refused_cost_usd = f64::from(dispatch.result.usage.cost_usd);
-            self.record_dispatch_spend(&spec.plan_id, task_id, &dispatch);
-            self.budget_ledger
-                .settle(&spec.plan_id, None, refused_cost_usd)?;
-            let refused_calls = refusals.iter().filter(|refusal| refusal.called).count();
-            self.write_side_call_rows(
-                spec,
-                task_id,
-                &attempt_key,
-                &format!("{attempt_key}/refused-{}", refused_calls + 1),
-                FAILOVER_REFUSED_ROLE,
-                &SideCall::of(
-                    &dispatch,
-                    u64::try_from(call_started.elapsed().as_millis()).unwrap_or(u64::MAX),
-                    self.pricing_snapshot().as_deref(),
-                ),
-            )
-            .await;
             tracing::warn!(
                 plan_id = %spec.plan_id,
                 task_id,
@@ -1193,7 +1313,7 @@ mod tests {
     use crate::graph_task_dispatch::tests::{
         FIXTURE_HANG_GUARD_SECS, FIXTURE_PROVIDER_TIMEOUT_MS, cli_provider, final_turn,
         fixture_config, jsonl_rows_where, make_bare_dispatcher, make_spec, make_task_def, model,
-        recording_feedback, spawn_openai_mock, tool_call_turn,
+        rate_limited_turn, recording_feedback, spawn_openai_mock, tool_call_turn,
     };
 
     // ─── Provider failover on usage exhaustion ──────────────────────────────
@@ -2171,6 +2291,190 @@ printf '%s\n' '{{"type":"result","subtype":"success","is_error":false,"total_cos
         assert!(message.contains("rung `mid`"), "{message}");
         assert!(message.contains("cheaper model"), "{message}");
         assert_eq!(logged_models(&models), ["claude-sonnet-4-6"]);
+    }
+
+    // ─── A rate limit (HTTP 429) never spends a try (bug-4b6844) ───────────
+
+    /// [`failover_config`] whose task model is the mock's `api-model`, with
+    /// nothing to fail over to: no fallback models, and the default model is
+    /// `api-model` itself.
+    fn rate_limited_config(claude: &Path, api_base_url: &str) -> RokoConfig {
+        let mut config = failover_config(claude, api_base_url, &[]);
+        config.agent.default_model = "api-model".to_string();
+        config.agent.fallback_model = None;
+        config
+    }
+
+    /// A dispatcher over `config` working in `workdir`, its provider health
+    /// kept in `temp`.
+    async fn rate_limited_dispatcher(
+        config: RokoConfig,
+        temp: &tempfile::TempDir,
+        workdir: &Path,
+    ) -> Arc<GraphTaskDispatcher> {
+        let config = Arc::new(config);
+        let health = Arc::new(
+            roko_learn::provider_health::ProviderHealthRegistry::load_or_new(
+                &temp.path().join("provider-health.json"),
+            ),
+        );
+        let factory = Arc::new(
+            SharedAgentFactory::new(Arc::clone(&config), None, None, None)
+                .await
+                .with_health_registry(health),
+        );
+        Arc::new(GraphTaskDispatcher::new(
+            factory,
+            config,
+            workdir.to_path_buf(),
+        ))
+    }
+
+    /// bug-4b6844: in round v6, z.ai answered 429 to a task's calls on mid,
+    /// and each half-second refusal settled as one of the task's tries, so the
+    /// task ended with no real try. A provider that answers 429 twice and then
+    /// serves the call costs the task no try: with no retries at all, it still
+    /// passes, in the one try.
+    #[tokio::test]
+    async fn a_429_from_the_rungs_provider_does_not_spend_a_try() {
+        let temp = tempdir().expect("tempdir");
+        let workdir = temp.path().join("work");
+        std::fs::create_dir_all(&workdir).expect("workdir");
+        let calls = temp.path().join("claude-calls.log");
+        let claude = temp.path().join("fake-claude.sh");
+        session_limit_claude(&claude, &calls);
+        let (base_url, requests) = spawn_openai_mock(vec![
+            rate_limited_turn(1),
+            rate_limited_turn(1),
+            tool_call_turn(
+                "call-write",
+                "write_file",
+                serde_json::json!({ "path": "hello.txt", "content": "hi after the limit" }),
+            ),
+            final_turn("wrote hello.txt"),
+        ]);
+        let config = rate_limited_config(&claude, &base_url);
+        let dispatcher = rate_limited_dispatcher(config, &temp, &workdir).await;
+        let cell = failover_cell_with_retries(dispatcher, "api-model", 0);
+
+        let output = cell
+            .execute(
+                Vec::new(),
+                &CellContext::new().with_cell_id("T08".to_string()),
+            )
+            .await
+            .expect("the rate limit passes and the one try completes the task");
+        assert_eq!(output[0].body.as_text().expect("text"), "wrote hello.txt");
+        assert_eq!(
+            std::fs::read_to_string(workdir.join("hello.txt")).expect("hello.txt"),
+            "hi after the limit"
+        );
+        assert_eq!(requests.lock().len(), 4, "429, 429, write, done");
+        assert_eq!(invocations(&calls), 0, "nothing failed over");
+    }
+
+    /// bug-4b6844: a rung whose provider keeps answering 429 fails over
+    /// within the try, to the rung above, as an open circuit does: one try,
+    /// run by the strong rung's model, with the mid model in its failover
+    /// chain.
+    #[tokio::test]
+    async fn a_rung_whose_provider_keeps_answering_429_fails_over_within_the_try() {
+        const RUN: &str = "rate-limited-rung";
+        let temp = tempdir().expect("tempdir");
+        let models = temp.path().join("claude-models.log");
+        let claude = temp.path().join("fake-claude.sh");
+        model_logging_claude(&claude, &models);
+        let tries = roko_agent::retry::RetryPolicy::default().max_attempts as usize;
+        let (base_url, requests) = spawn_openai_mock(
+            std::iter::repeat_with(|| rate_limited_turn(1))
+                .take(tries)
+                .collect(),
+        );
+        let mut task = make_task_def("mechanical");
+        task.timeout_secs = FIXTURE_HANG_GUARD_SECS;
+        task.hints.rung = Some("mid".to_string());
+        let spec = make_spec(&task);
+        let ctx = CellContext::new().with_run_id(RUN.to_string());
+        let rungs = [
+            ("cheap", "cheap-model"),
+            ("mid", "mid-model"),
+            ("strong", "strong-model"),
+        ];
+        let mut config = ladder_failover_config(&claude, &rungs);
+        let mid_api = config.providers.get_mut("mid_api").expect("mid_api");
+        mid_api.base_url = Some(base_url);
+        let runs_dir = temp.path().join(".roko/runs");
+        let dispatcher = make_bare_dispatcher(config, temp.path())
+            .await
+            .with_feedback(GraphFeedbackContext {
+                runs_dir: Some(runs_dir.clone()),
+                ..GraphFeedbackContext::default()
+            });
+
+        dispatcher
+            .dispatch(&spec, Vec::new(), &ctx)
+            .await
+            .expect("the strong rung's model runs the task in the same try");
+        assert_eq!(requests.lock().len(), tries, "the mid model's calls");
+        assert_eq!(logged_models(&models), ["claude-sonnet-4-6"]);
+        let attempts = runs_dir.join(RUN).join("attempts.jsonl");
+        let is_verdict = |row: &serde_json::Value| row["schema_version"] == "roko.verdict/1";
+        let verdicts = jsonl_rows_where(&attempts, 1, is_verdict).await;
+        assert_eq!(verdicts.len(), 1, "{verdicts:?}");
+        let verdict = &verdicts[0];
+        // The task has no checks, so its one try settles unverified: served,
+        // not a provider error.
+        assert_eq!(verdict["outcome"], "unverified", "{verdict}");
+        assert_eq!(verdict["ladder"]["rung"], "strong", "{verdict}");
+        assert_eq!(verdict["ladder"]["reason"], "failover", "{verdict}");
+        assert_eq!(
+            verdict["executed"]["failover_chain"],
+            serde_json::json!(["mid-1"]),
+            "{verdict}"
+        );
+    }
+
+    /// bug-4b6844: with nowhere to fail over, a try whose provider is still
+    /// rate-limited after the tool loop's own retries waits for the limit
+    /// inside the try and calls again, instead of settling: with no retries
+    /// at all, the task still passes.
+    #[tokio::test]
+    async fn a_429_with_nowhere_to_fail_over_waits_inside_the_try() {
+        let temp = tempdir().expect("tempdir");
+        let workdir = temp.path().join("work");
+        std::fs::create_dir_all(&workdir).expect("workdir");
+        let calls = temp.path().join("claude-calls.log");
+        let claude = temp.path().join("fake-claude.sh");
+        session_limit_claude(&claude, &calls);
+        let tries = roko_agent::retry::RetryPolicy::default().max_attempts as usize;
+        let mut turns: Vec<serde_json::Value> = std::iter::repeat_with(|| rate_limited_turn(1))
+            .take(tries)
+            .collect();
+        turns.push(tool_call_turn(
+            "call-write",
+            "write_file",
+            serde_json::json!({ "path": "hello.txt", "content": "hi after the wait" }),
+        ));
+        turns.push(final_turn("wrote hello.txt"));
+        let (base_url, requests) = spawn_openai_mock(turns);
+        let config = rate_limited_config(&claude, &base_url);
+        let dispatcher = rate_limited_dispatcher(config, &temp, &workdir).await;
+        let cell = failover_cell_with_retries(dispatcher, "api-model", 0);
+
+        let output = cell
+            .execute(
+                Vec::new(),
+                &CellContext::new().with_cell_id("T08".to_string()),
+            )
+            .await
+            .expect("the try waits the limit out and completes the task");
+        assert_eq!(output[0].body.as_text().expect("text"), "wrote hello.txt");
+        assert_eq!(
+            std::fs::read_to_string(workdir.join("hello.txt")).expect("hello.txt"),
+            "hi after the wait"
+        );
+        assert_eq!(requests.lock().len(), tries + 2);
+        assert_eq!(invocations(&calls), 0, "nothing failed over");
     }
 
     /// gap-cf427e: a chat host's run holds its outbound tool calls for

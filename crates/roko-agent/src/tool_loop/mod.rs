@@ -706,6 +706,12 @@ fn trace_turn(iterations: usize) -> u32 {
     capped as u32
 }
 
+/// The longest wait for a rate limit the tool loop makes before it sends a
+/// streamed call again. A provider that asks for a longer one is not waited
+/// for here: the run fails with the rate limit, and dispatch fails over or
+/// waits inside its attempt (bug-4b6844).
+const RATE_LIMIT_WAIT_CAP: Duration = Duration::from_secs(60);
+
 /// How many replies in a row that reached the output limit with no tool call
 /// and no text the loop asks again for, within the run, before the run ends
 /// on one (bug-872885).
@@ -1924,6 +1930,58 @@ impl ToolLoop {
         }
     }
 
+    /// Open one streamed turn. A call the provider refused with a rate limit
+    /// (HTTP 429) before it streamed anything is sent again after the
+    /// `Retry-After` the provider gave, else the retry policy's backoff, up to
+    /// the policy's `max_attempts` calls, as [`Self::send_turn_with_retry`]
+    /// sends an answered call again. A plan attempt's calls stream, and the
+    /// first 429 used to end the run (bug-4b6844). A wait longer than
+    /// [`RATE_LIMIT_WAIT_CAP`] is not made here: the run fails with the rate
+    /// limit.
+    async fn open_stream(
+        &self,
+        messages: &[serde_json::Value],
+        tools: &RenderedTools,
+        session: &SessionState,
+        config: &TurnConfig,
+    ) -> Result<futures::stream::BoxStream<'static, Result<StreamEvent, LlmError>>, LlmError> {
+        let mut calls = 1_u32;
+        loop {
+            let retry_after_ms = match self
+                .backend
+                .stream_turn(messages, tools, session, config)
+                .await
+            {
+                Ok(stream) => return Ok(stream),
+                Err(LlmError::Provider(ProviderError::RateLimit { retry_after_ms })) => {
+                    retry_after_ms
+                }
+                Err(error) => return Err(error),
+            };
+            let rate_limited = LlmError::Provider(ProviderError::RateLimit { retry_after_ms });
+            if calls >= self.retry_policy.max_attempts {
+                return Err(rate_limited);
+            }
+            let delay = Duration::from_millis(
+                self.retry_policy
+                    .delay_with_retry_after(calls - 1, retry_after_ms),
+            );
+            if delay > RATE_LIMIT_WAIT_CAP {
+                return Err(rate_limited);
+            }
+            tracing::warn!(
+                call = calls,
+                max_attempts = self.retry_policy.max_attempts,
+                delay_ms = u64::try_from(delay.as_millis()).unwrap_or(u64::MAX),
+                retry_after_ms = ?retry_after_ms,
+                "tool_loop: the provider rate-limited the call (HTTP 429); sending it again \
+                 after the wait"
+            );
+            tokio::time::sleep(delay).await;
+            calls += 1;
+        }
+    }
+
     /// Send a turn through `stream_turn`, forwarding each event to `tx`
     /// and collecting the final response via [`collect_stream_to_response`],
     /// with the ids of the tool calls the stream ended (`ToolCallEnd`) and a
@@ -1940,8 +1998,7 @@ impl ToolLoop {
 
         let config = self.turn_config();
         let stream = self
-            .backend
-            .stream_turn(messages, tools, session, &config)
+            .open_stream(messages, tools, session, &config)
             .await
             .map_err(|error| (error, StreamTally::default()))?;
 
@@ -3918,6 +3975,77 @@ mod tests {
         assert_eq!(out.stop_reason, StopReason::Stop);
         assert_eq!(out.final_text, "final after retry");
         assert_eq!(backend.attempts(), 3);
+    }
+
+    /// A streamed run of `tool_loop`, the path a plan attempt takes, to its
+    /// end.
+    async fn run_streaming_to_end(tool_loop: ToolLoop) -> ToolLoopOutput {
+        let (tx, mut rx) = mpsc::channel(64);
+        let drain = tokio::spawn(async move { while rx.recv().await.is_some() {} });
+        let out = tool_loop
+            .run_streaming(
+                "system",
+                "user",
+                &test_tools(),
+                &ToolContext::testing("/tmp"),
+                tx,
+            )
+            .await;
+        drain.await.expect("the events drain");
+        out
+    }
+
+    /// bug-4b6844: a plan attempt's calls stream, and a call its provider
+    /// refused with a rate limit (HTTP 429) ended the run at once, so a try
+    /// was spent on a half-second refusal. The call is sent again after the
+    /// `Retry-After` the provider gave, as an answered call's retry is.
+    #[tokio::test(start_paused = true)]
+    async fn a_rate_limited_streamed_call_is_retried_within_the_run() {
+        let rate_limited = |retry_after_ms| ProviderError::RateLimit { retry_after_ms };
+
+        let started = tokio::time::Instant::now();
+        let backend = Arc::new(RetryingBackend::new(2, rate_limited(Some(1_500))));
+        let out = run_streaming_to_end(make_tool_loop(backend.clone(), 25)).await;
+        assert_eq!(out.stop_reason, StopReason::Stop);
+        assert_eq!(out.final_text, "final after retry");
+        assert_eq!(backend.attempts(), 3);
+        // It waited what the provider asked, each time.
+        assert!(
+            started.elapsed() >= Duration::from_millis(3_000),
+            "{:?}",
+            started.elapsed()
+        );
+
+        // A rate limit that lasts: the retry policy's tries, then the run
+        // fails with the rate limit, which dispatch reads.
+        let backend = Arc::new(RetryingBackend::new(usize::MAX, rate_limited(None)));
+        let out = run_streaming_to_end(make_tool_loop(backend.clone(), 25)).await;
+        let policy = RetryPolicy::default();
+        assert_eq!(backend.attempts(), policy.max_attempts as usize);
+        match &out.stop_reason {
+            StopReason::BackendError(message) => {
+                assert!(message.contains("rate limited"), "{message}");
+            }
+            other => panic!("expected the rate limit, got {other:?}"),
+        }
+
+        // A provider that asks for a longer wait than the loop makes is not
+        // waited for here: the run fails at once, and dispatch fails over or
+        // waits inside its attempt.
+        let started = tokio::time::Instant::now();
+        let backend = Arc::new(RetryingBackend::new(
+            usize::MAX,
+            rate_limited(Some(10 * 60 * 1_000)),
+        ));
+        let out = run_streaming_to_end(make_tool_loop(backend.clone(), 25)).await;
+        assert_eq!(backend.attempts(), 1);
+        match &out.stop_reason {
+            StopReason::BackendError(message) => {
+                assert!(message.contains("retry after 600000 ms"), "{message}");
+            }
+            other => panic!("expected the rate limit, got {other:?}"),
+        }
+        assert!(started.elapsed() < Duration::from_secs(1));
     }
 
     #[tokio::test]

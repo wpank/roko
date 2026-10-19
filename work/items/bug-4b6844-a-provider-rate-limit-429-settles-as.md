@@ -3,17 +3,21 @@ id = "bug-4b6844"
 kind = "bug"
 title = "A provider rate limit (429) settles as a provider_error attempt and counts against the task: on mid, z.ai rate limits used up T1's last two attempts with no real try, and the task ended"
 status = "open"
-triage = "unverified"
+triage = "verified"
 severity = "p2"
 goal = "golden-path"
 size = "M"
 subsystem = ["roko-cli/graph-dispatch"]
 created = 2026-10-18
-updated = 2026-10-18
+updated = 2026-10-19
+last_verified = 2026-10-19
 source = "round-v6-dogfood-desktop#L4-g1-ratelimit"
 discovered_from = "agent:dogfood-desktop (round v6 showcase take L4, 2026-10-18)"
-anchors = ["crates/roko-cli/src/graph_task_dispatch/failover.rs::FailoverChain"]
+anchors = ["crates/roko-cli/src/graph_task_dispatch/failover.rs::FailoverChain", "crates/roko-agent/src/tool_loop/mod.rs::ToolLoop::send_turn_streaming"]
 links = { depends_on = [], blocks = [], related = ["bug-df9aff"], supersedes = [], duplicate_of = "" }
+
+[[verify]]
+command = "grep -rqw 'fn a_429_from_the_rungs_provider_does_not_spend_a_try' crates/ && cargo test -p roko-cli -- a_429_from_the_rungs_provider_does_not_spend_a_try a_rung_whose_provider_keeps_answering_429_fails_over_within_the_try a_429_with_nowhere_to_fail_over_waits_inside_the_try"
 +++
 
 ## Problem
@@ -70,3 +74,15 @@ task by itself. A test drives a stand-in provider that answers 429 twice, then s
 - Related:
   - bug-df9aff: the same run, whose tasks could not create their files;
   - bug-f0007b: no time bound on a try.
+
+## Root cause (2026-10-19, roko-ladder, round v7)
+
+- A plan attempt's calls stream (`ToolLoop::run_streaming` → `send_turn_streaming`), and that path never retried:
+  the first 429 (`LlmError::Provider(RateLimit)`, returned before any byte streams) ended the run as
+  `BackendError("provider error: rate limited")`. Only the non-streaming `send_turn_with_retry` retried rate
+  limits, and its test used `run`.
+- `run_bridge_with_failover` failed over after a call only on usage exhaustion. A plain rate limit returned the
+  failed dispatch, which settled `provider_error` and spent one of `TaskExecutorCell`'s retries. Failover reached a
+  rate-limited rung only once its circuit was open (three straight failures), before the call: that is how v6's T2
+  reached strong on its second 429 while T1's last two tries were spent.
+- Rate limits already never climb a task (`ladder.rs::ACCOUNT_FAILURES`).

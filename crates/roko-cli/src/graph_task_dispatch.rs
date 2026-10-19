@@ -3140,7 +3140,16 @@ printf '%s\n' '{"type":"result","session_id":"sess-b","model":"claude-sonnet-4-6
                 // (bug-3a3b0f), with or without the stall watchdog.
                 let streamed = request["stream"] == serde_json::Value::Bool(true);
                 requests.lock().push(request);
-                let wire = if streamed {
+                let wire = if let Some(retry_after) = response
+                    .get(RATE_LIMITED_TURN)
+                    .and_then(serde_json::Value::as_u64)
+                {
+                    let body = serde_json::json!({ "error": response["error"] }).to_string();
+                    format!(
+                        "HTTP/1.1 429 Too Many Requests\r\nContent-Type: application/json\r\nRetry-After: {retry_after}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                        body.len()
+                    )
+                } else if streamed {
                     let mut body = String::new();
                     for chunk in openai_stream_chunks(&response) {
                         body.push_str(&format!("data: {chunk}\n\n"));
@@ -3312,6 +3321,23 @@ printf '%s\n' '{"type":"result","session_id":"sess-b","model":"claude-sonnet-4-6
             }],
             "usage": { "prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15 }
         })
+    }
+
+    /// The key of a [`rate_limited_turn`]'s `Retry-After`.
+    const RATE_LIMITED_TURN: &str = "__rate_limited_retry_after_secs";
+
+    /// A call the provider refuses with HTTP 429 and a `Retry-After` of
+    /// `retry_after_secs`, with z.ai's error body (bug-4b6844).
+    /// [`spawn_openai_mock`] answers it so whether the request streams or not.
+    pub(super) fn rate_limited_turn(retry_after_secs: u64) -> serde_json::Value {
+        let mut turn = serde_json::json!({
+            "error": {
+                "code": "1302",
+                "message": "Rate limit reached for requests"
+            }
+        });
+        turn[RATE_LIMITED_TURN] = serde_json::json!(retry_after_secs);
+        turn
     }
 
     pub(super) fn final_turn(text: &str) -> serde_json::Value {

@@ -759,12 +759,20 @@ fn keep_rejected_draft(
     }
 }
 
+/// The extensions of the documents a task may write at any length
+/// ([`repair_generated_draft`]).
+const DOCUMENT_EXTENSIONS: &[&str] = &["adoc", "markdown", "md", "rst", "txt"];
+
 /// Repair a generated draft's mechanical defects before it is checked
 /// (gap-b95913), rather than send it back to the planner for them: its
 /// `meta.total` becomes its number of tasks, each task keeps its first
 /// `policy.max_read_files_per_task` `read_files`, and its line ranges in files
 /// no earlier task changes fit those files
-/// ([`crate::plan_policy::fit_ranges_to_files`]). Returns one line per repair.
+/// ([`crate::plan_policy::fit_ranges_to_files`]). A task that writes only
+/// documents keeps its tier: a `max_loc` over the tier's limit becomes the
+/// limit (bug-27f00b), since a document's length is not what a tier sizes,
+/// and splitting one document across tasks fragments its ownership. Returns
+/// one line per repair.
 fn repair_generated_draft(
     plan: &mut TasksFile,
     policy: crate::plan_policy::PlanExecutionPolicy,
@@ -778,6 +786,26 @@ fn repair_generated_draft(
             plan.meta.total
         ));
         plan.meta.total = total;
+    }
+    for task in &mut plan.tasks {
+        let limit = policy.tier_size_limits(task.tier_class()).max_loc;
+        let documents = !task.files.is_empty()
+            && task.files.iter().all(|file| {
+                Path::new(file).extension().is_some_and(|extension| {
+                    DOCUMENT_EXTENSIONS
+                        .iter()
+                        .any(|known| extension.eq_ignore_ascii_case(known))
+                })
+            });
+        if documents && let Some(max_loc) = task.max_loc.filter(|max_loc| *max_loc > limit) {
+            repairs.push(format!(
+                "{}: max_loc {max_loc} became {limit}, its {} tier's limit, as it writes only \
+                 documents",
+                task.id,
+                task.tier_class()
+            ));
+            task.max_loc = Some(limit);
+        }
     }
     let keep = policy.max_read_files_per_task;
     for task in &mut plan.tasks {
@@ -3804,6 +3832,55 @@ mod tests {
         assert_eq!(written.tasks.len(), 1);
         assert_eq!(written.tasks[0].role.as_deref(), Some("scribe"));
         assert_eq!(written.tasks[0].files, ["docs/spec.md"]);
+    }
+
+    /// bug-27f00b: a live planner gave the one task that writes the spec
+    /// `max_loc = 300` on the integrative tier (limit 150), and split the spec
+    /// across tasks when told to shrink it, which fragments its ownership. A
+    /// task that writes only documents keeps its tier: its `max_loc` becomes
+    /// the tier's limit, and the plan is written after one call. A code task
+    /// over the limit is still sent back.
+    #[cfg(unix)]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_long_document_keeps_its_one_task() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let workdir = temp.path();
+        let spec = WIDGET_PLAN
+            .replace("files = [\"src/widget.rs\"]", "files = [\"docs/spec.md\"]")
+            .replace("test -f src/widget.rs", "test -f docs/spec.md")
+            .replace("role = \"implementer\"", "role = \"scribe\"")
+            .replace(
+                "tier = \"focused\"",
+                "tier = \"integrative\"\nmax_loc = 300",
+            );
+        assert!(spec.contains("max_loc = 300"), "{spec}");
+        let bin = tempfile::tempdir().expect("tempdir");
+        let calls = write_scripted_planner(
+            workdir,
+            bin.path(),
+            &[&spec],
+            "allow_threshold = 0.0\nblock_threshold = 0.0\n",
+        );
+        let request = PlanRequest {
+            model: Some("planner"),
+            ..PlanRequest::new(WIDGET_REQUEST, "widget", workdir)
+        };
+        generate_plan(request)
+            .await
+            .expect("generate the widget plan");
+        let log = std::fs::read_to_string(&calls).expect("planner call log");
+        assert_eq!(log.lines().count(), 1, "repaired, not sent back");
+        let written =
+            TasksFile::parse(&workdir.join("plans/widget/tasks.toml")).expect("the widget plan");
+        assert_eq!(written.tasks[0].max_loc, Some(150));
+        assert_eq!(written.tasks[0].tier, "integrative");
+
+        let code = WIDGET_PLAN.replace("tier = \"focused\"", "tier = \"focused\"\nmax_loc = 300");
+        let mut plan = TasksFile::parse_str(&code).expect("a plan");
+        let policy = crate::plan_policy::PlanExecutionPolicy::generated(8);
+        let repairs = repair_generated_draft(&mut plan, policy, workdir);
+        assert!(repairs.is_empty(), "{repairs:?}");
+        assert_eq!(plan.tasks[0].max_loc, Some(300));
     }
 
     /// bug-27f00b: asked to "only write the plan", a live planner made its

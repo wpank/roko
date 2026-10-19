@@ -2,7 +2,7 @@
 id = "bug-86c3c9"
 kind = "bug"
 title = "seeded_worktree_builds_nothing is flaky: the whole test can run inside one second, and macOS's make 3.81 compares whole seconds, so the changed source can look no newer than its object"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p3"
 goal = "core"
@@ -11,6 +11,7 @@ subsystem = ["roko-cli/worktree"]
 created = 2026-10-19
 updated = 2026-10-19
 last_verified = 2026-10-19
+last_verified_rev = "e5ba3bb4a"
 source = "round-v7-roko-speed#gap-e02ec4-post-verify"
 discovered_from = "agent:roko-speed (round v7, post-merge verify of gap-e02ec4, 2026-10-19)"
 anchors = ["crates/roko-cli/src/orchestrator/worktree/build_trees.rs"]
@@ -19,6 +20,13 @@ links = { depends_on = [], blocks = [], related = ["gap-6754ab", "bug-40bf59"], 
 
 [[verify]]
 command = "grep -q 'compares whole seconds' crates/roko-cli/src/orchestrator/worktree/build_trees.rs && cargo test -p roko-cli --lib seeded_worktree_builds_nothing"
+
+[closed]
+at = 2026-10-19
+at_ts = "2026-10-19T19:56:07Z"
+commit = "1d02d3d65"
+forced = false
+evidence = "The test dates its edited source 2 s after the object file, so make's whole-second times see the change. Before the fix, the test failed 2 of 5 runs on the merged tree at 97d9b1819. After it, 5 of 5 passed in the gap-cb9044 chain."
 +++
 
 ## Problem

@@ -43,10 +43,14 @@ struct LiveToolCallsState {
     /// arrived.
     targets: Vec<String>,
     /// When each of `calls` was announced and when its result came, in unix
-    /// ms (gap-6a319c); `None` for an event that never arrived.
-    spans: Vec<(Option<i64>, Option<i64>)>,
-    /// When each model turn ended, in unix ms: the provider's `Done`.
-    turn_ends: Vec<i64>,
+    /// ms (gap-6a319c), the result with its place among the events the tap
+    /// saw; `None` for an event that never arrived.
+    spans: Vec<(Option<i64>, Option<(u64, i64)>)>,
+    /// When each model turn ended (the provider's `Done`), in unix ms, with
+    /// its place among the events the tap saw.
+    turn_ends: Vec<(u64, i64)>,
+    /// How many events the tap has seen: the place of the next one.
+    seen: u64,
     tap: Option<tokio::task::JoinHandle<()>>,
 }
 
@@ -76,6 +80,8 @@ impl LiveToolCalls {
     /// [`Self::observe`] the event as seen at `at` (unix ms).
     fn observe_at(&self, event: &LiveAgentEvent, at: i64) {
         let mut state = self.state.lock();
+        let place = state.seen;
+        state.seen += 1;
         match event {
             LiveAgentEvent::ToolStep { id, name, target } => {
                 state.calls.push(ToolCallRecord {
@@ -95,7 +101,7 @@ impl LiveToolCalls {
                 match open {
                     Some(index) => {
                         state.calls[index].succeeded = succeeded;
-                        state.spans[index].1 = Some(at);
+                        state.spans[index].1 = Some((place, at));
                     }
                     None => {
                         state.calls.push(ToolCallRecord {
@@ -104,12 +110,12 @@ impl LiveToolCalls {
                             succeeded,
                         });
                         state.targets.push(String::new());
-                        state.spans.push((None, Some(at)));
+                        state.spans.push((None, Some((place, at))));
                     }
                 }
             }
             LiveAgentEvent::Unscreened(StreamEventKind::Done { .. }) => {
-                state.turn_ends.push(at);
+                state.turn_ends.push((place, at));
             }
             _ => {}
         }
@@ -119,22 +125,24 @@ impl LiveToolCalls {
     /// provider call's window. A call runs from its announcement, or from
     /// the end of the model turn that asked for it when that came later
     /// (roko's own tool loop announces a call before the turn ends), until
-    /// its result.
+    /// its result. That turn ended before the result in the order the tap saw
+    /// them: a model that answers at once can end the next turn in the same
+    /// millisecond as the result (bug-15ba19).
     pub(super) fn timing(&self, start: i64, end: i64) -> ToolTiming {
         let state = self.state.lock();
         let mut runs = Vec::new();
         let mut by_name: BTreeMap<String, (u32, u64)> = BTreeMap::new();
         let mut unknown = false;
         for (call, &(announced, result)) in state.calls.iter().zip(&state.spans) {
-            let Some(result) = result else {
+            let Some((placed, result)) = result else {
                 unknown = true;
                 continue;
             };
             let turn_end = state
                 .turn_ends
                 .iter()
-                .copied()
-                .filter(|at| *at <= result)
+                .filter(|(place, _)| *place < placed)
+                .map(|&(_, at)| at)
                 .max();
             let Some(from) = announced.into_iter().chain(turn_end).max() else {
                 unknown = true;
@@ -347,6 +355,34 @@ mod tests {
 
         calls.observe_at(&step("tu_4", "bash"), 9_050);
         assert_eq!(calls.timing(900, 9_100).tools_ms, None);
+    }
+
+    /// bug-15ba19: a model that answers at once ends its next turn in the
+    /// same millisecond as the tool result before it. That turn's end does
+    /// not start the call, so the call's time stays with the tools.
+    #[test]
+    fn a_late_done_leaves_tool_time_with_the_tools() {
+        let calls = LiveToolCalls::default();
+        let done = || {
+            LiveAgentEvent::Unscreened(StreamEventKind::Done {
+                finish_reason: "tool_calls".to_string(),
+            })
+        };
+        for (at, event) in [
+            (1_000, done()),
+            (1_001, step("tu_1", "run_tests")),
+            (6_000, result("tu_1", false)),
+            (6_000, done()),
+        ] {
+            calls.observe_at(&event, at);
+        }
+
+        let timing = calls.timing(900, 6_100);
+
+        assert_eq!(timing.tools_ms, Some(4_999));
+        assert_eq!(timing.by_name[0].tool, "run_tests");
+        assert_eq!(timing.by_name[0].ms, 4_999);
+        assert_eq!(timing.model_calls, Some(2));
     }
 
     /// gap-89f985: each call keeps the target its tool step showed; a call

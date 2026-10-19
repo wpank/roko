@@ -4,7 +4,7 @@ kind = "bug"
 title = "A chat-host run's B1 audit dispatches its suite author to the person's Claude CLI (roko-audit-b1 on claude_cli / claude-sonnet-4-6), though a chat host's work must use only tool-loop API models"
 status = "open"
 triage = "verified"
-severity = "p2"
+severity = "p1"
 goal = "golden-path"
 size = "S"
 subsystem = ["roko-cli/audit"]
@@ -13,7 +13,7 @@ updated = 2026-10-19
 last_verified = 2026-10-19
 source = "round-v7-hermes-pilot#C-p0-run2"
 discovered_from = "agent:hermes-pilot (round v7 phase 0, run e578cf71, after T1 passed)"
-anchors = ["crates/roko-cli/src/audit/b1.rs::FactoryAuthor"]
+anchors = ["crates/roko-cli/src/audit/b1.rs::FactoryAuthor", "crates/roko-cli/src/graph_task_dispatch/audit_select.rs::GraphTaskDispatcher::audit_phase_b", "crates/roko-cli/src/graph_task_dispatch/routing_context.rs::select_cheap_model_key", "crates/roko-cli/src/graph_task_dispatch/helper_calls.rs::AuditCallRows"]
 links = { depends_on = [], blocks = [], related = ["gap-3d37e8"], supersedes = [], duplicate_of = "" }
 
 [[verify]]
@@ -71,3 +71,15 @@ A chat-host run's audit never dispatches to a CLI provider. Checked by the test 
 - Related:
   - gap-cf427e, bug-a0432b: chat hosts use only tool-loop models;
   - gap-3d37e8: the B1 hidden suites.
+
+## Scope (2026-10-19, lead, round v7)
+
+Raised to p1 and treated as a safety bug. The fix covers every side call of a chat host's run, not only B1:
+
+- the audit's B1 authors and B3 reviewers, and the helper calls (error enrichment, reflections, the judge step, the
+  pack-rung judge), use only API models the run may use: the ladder's rule (`RokoConfig::tool_loop_models`);
+- they never pick a CLI agent there, and they degrade (B1 null, no helper) rather than step out of bounds;
+- they stay within the run's cap and record their spend: the audit worker's calls, which charge no budget elsewhere
+  (decision 7103's audit line), are settled on a chat host's run's plan budget, and an audit gets no more than the
+  plan has left.
+

@@ -91,30 +91,40 @@ impl roko_agent::Agent for CheapFactoryAgent {
 /// the built-in pricing table as fallback; unpriced models rank last.
 /// Embedding models, tool-less (search-only) models, and models of
 /// `routing.disabled_providers` are never chosen. Returns the `[models.*]`
-/// key so dispatch resolves exactly that profile.
-pub(super) fn select_cheap_model_key(config: &RokoConfig) -> Option<String> {
-    select_cheap_model_key_with(config, |key| config.provider_available_for_model_key(key))
+/// key so dispatch resolves exactly that profile. Only the models `allowed`
+/// names are candidates: a chat host's run allows only those roko's own
+/// tool loop runs (bug-082810).
+pub(super) fn select_cheap_model_key(
+    config: &RokoConfig,
+    allowed: impl Fn(&str) -> bool,
+) -> Option<String> {
+    select_cheap_model_key_with(config, |key| {
+        allowed(key) && config.provider_available_for_model_key(key)
+    })
 }
 
 /// The helper model that judges an attempt `executor` (a model slug) ran
 /// (9123): the cheap helper model among those of another model family, with
 /// `true`, when one is available; else the cheap helper model, with `false`.
+/// Only the models `allowed` names are candidates.
 pub(super) fn select_judge_model_key(
     config: &RokoConfig,
     executor: &str,
+    allowed: impl Fn(&str) -> bool,
 ) -> Option<(String, bool)> {
     let family = |slug: &str| roko_core::config::model_registry::model_meta(slug).family;
     let executor_family = family(executor);
     let models = config.effective_models();
     let cross_family = select_cheap_model_key_with(config, |key| {
-        config.provider_available_for_model_key(key)
+        allowed(key)
+            && config.provider_available_for_model_key(key)
             && models
                 .get(key)
                 .is_some_and(|profile| family(&profile.slug) != executor_family)
     });
     match cross_family {
         Some(key) => Some((key, true)),
-        None => select_cheap_model_key(config).map(|key| (key, false)),
+        None => select_cheap_model_key(config, allowed).map(|key| (key, false)),
     }
 }
 

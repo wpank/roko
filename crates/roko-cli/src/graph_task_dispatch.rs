@@ -368,6 +368,17 @@ pub struct GraphTaskDispatcher {
     outbound_floor: Option<roko_core::tool::OutboundPolicy>,
 }
 
+/// The `[models.*]` keys a run's side calls may use
+/// ([`GraphTaskDispatcher::side_call_models`]): any, or only those listed.
+struct SideCallModels(Option<HashSet<String>>);
+
+impl SideCallModels {
+    /// Whether a side call may use `model_key`.
+    fn allow(&self, model_key: &str) -> bool {
+        self.0.as_ref().is_none_or(|keys| keys.contains(model_key))
+    }
+}
+
 impl GraphTaskDispatcher {
     /// Construct a dispatcher sharing the plan run's provider runtime.
     #[must_use]
@@ -801,12 +812,44 @@ impl GraphTaskDispatcher {
     }
 
     /// Return a helper agent wired to the model chosen by
-    /// [`select_cheap_model_key`], or `None` when no model is dispatchable.
-    /// Used for best-effort error enrichment, quality judgment and gate
-    /// reflection calls, which count toward the attempt being verified
-    /// ([`HelperAgent`]).
+    /// [`select_cheap_model_key`] among those the run's side calls may use
+    /// ([`Self::side_call_models`]), or `None` when no such model is
+    /// dispatchable. Used for best-effort error enrichment, quality judgment
+    /// and gate reflection calls, which count toward the attempt being
+    /// verified ([`HelperAgent`]).
     fn cheap_agent(&self) -> Option<HelperAgent> {
-        select_cheap_model_key(&self.config).map(|model_key| self.helper_agent(model_key))
+        let models = self.side_call_models();
+        select_cheap_model_key(&self.config, |key| models.allow(key))
+            .map(|model_key| self.helper_agent(model_key))
+    }
+
+    /// The helper model that judges an attempt `executor` (a model slug) ran
+    /// ([`routing_context::select_judge_model_key`], 9123), among the models
+    /// the run's side calls may use.
+    fn judge_model_key(&self, executor: &str) -> Option<(String, bool)> {
+        let models = self.side_call_models();
+        routing_context::select_judge_model_key(&self.config, executor, |key| models.allow(key))
+    }
+
+    /// Whether this run's tasks hold their outbound tool calls for approval,
+    /// as a chat host's run does ([`Self::with_outbound_floor`], gap-cf427e).
+    fn stages_outbound(&self) -> bool {
+        self.outbound_floor
+            .is_some_and(|floor| floor != roko_core::tool::OutboundPolicy::Allow)
+    }
+
+    /// The models this run's side calls may use: an audit's suite authors
+    /// and reviewers, and the helper calls. Any configured model, except in a
+    /// run that holds its outbound tool calls for approval, as a chat host's
+    /// does: only the models roko's own tool loop runs with their credentials
+    /// set ([`RokoConfig::tool_loop_models`]), the rule its ladder keeps
+    /// (gap-cf427e). Such a run never calls a person's CLI agent or login
+    /// (bug-082810).
+    fn side_call_models(&self) -> SideCallModels {
+        SideCallModels(
+            self.stages_outbound()
+                .then(|| self.config.tool_loop_models().into_iter().collect()),
+        )
     }
 
     /// A helper agent wired to `model_key`, as [`Self::cheap_agent`] builds

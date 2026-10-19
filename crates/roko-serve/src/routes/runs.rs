@@ -222,6 +222,8 @@ struct IndexedPage {
     has_more: bool,
     scanned_bytes: u64,
     quarantined_records: usize,
+    /// The records the scan's `skip` passed over unparsed (gap-4de4b9).
+    skipped_records: usize,
     partial_tail: bool,
     events: Vec<IndexedEvent>,
 }
@@ -541,9 +543,13 @@ async fn get_run_events(
     .await?
     .ok_or_else(|| ApiError::not_found(format!("run '{run_id}' has no event index")))?;
 
+    let skipped_rows = page.skipped_records;
     let mut page = page_json(&run_id, page);
     if skip != Skip::default() {
         page["skipped"] = json!(skip.names());
+        // gap-4de4b9: how many rows the page passed over, so a reader's
+        // count stays the index's true size.
+        page["skipped_rows"] = json!(skipped_rows);
     }
     Ok(Json(page).into_response())
 }
@@ -1634,6 +1640,7 @@ fn read_for_summary_within(
     page.quarantined_records = page
         .quarantined_records
         .saturating_add(tail.quarantined_records);
+    page.skipped_records = page.skipped_records.saturating_add(tail.skipped_records);
     page.partial_tail = tail.partial_tail;
     Ok(Some(page))
 }
@@ -1758,6 +1765,7 @@ fn read_index_page_scan(
     let mut offset = cursor;
     let mut scanned_bytes = 0u64;
     let mut quarantined = 0usize;
+    let mut skipped = 0usize;
     let mut partial_tail = false;
     let mut events = Vec::new();
     let mut line = String::new();
@@ -1789,6 +1797,7 @@ fn read_index_page_scan(
             break;
         }
         if skip(&line) {
+            skipped += 1;
             continue;
         }
         let parsed = serde_json::from_str::<Value>(line.trim_end());
@@ -1830,6 +1839,7 @@ fn read_index_page_scan(
         has_more: offset < file_len,
         scanned_bytes,
         quarantined_records: quarantined,
+        skipped_records: skipped,
         partial_tail,
         events,
     })
@@ -3422,6 +3432,7 @@ mod tests {
         let mut kept = Vec::new();
         let mut cursor = 0;
         let mut requests = 0;
+        let mut skipped_rows = 0;
         loop {
             let page = page(cursor).await;
             requests += 1;
@@ -3430,6 +3441,7 @@ mod tests {
                 json!(["live_text", "heartbeats"]),
                 "{page}"
             );
+            skipped_rows += page["skipped_rows"].as_u64().expect("skipped_rows");
             for event in page["events"].as_array().expect("events") {
                 let event = &event["event"];
                 let kind = event["type"].as_str().expect("type").to_string();
@@ -3458,6 +3470,12 @@ mod tests {
             ]
         );
         assert_eq!(requests, 3, "7 kept rows at 3 a page");
+        // gap-4de4b9: what the pages sent and passed over is the whole index.
+        assert_eq!(
+            skipped_rows, 80,
+            "40 reasoning, 10 heartbeats, 30 live text"
+        );
+        assert_eq!(kept.len() + 80, rows.len());
 
         // Without `skip`, the same index pages every record, and says nothing
         // was skipped.

@@ -9,7 +9,7 @@ goal = "golden-path"
 size = "M"
 subsystem = ["self-hosting"]
 created = 2026-10-18
-updated = 2026-10-18
+updated = 2026-10-19
 last_verified = 2026-10-18
 source = "gp2 golden-path rerun, live run 1 (find-4003b9, gap-f30b8e; 2026-10-18)"
 discovered_from = "gap-f30b8e"
@@ -74,3 +74,7 @@ on. It is the one failure of this rerun's pass^3 (2 of 3).
 - Run 3's doc example: `golden-path/run3/review.md` (T4 line) and `merged.log`. The blob is
   `27a3265:crates/beta/src/lib.rs` in the run's scratch repo (gone once the scratchpad is cleaned).
 - The record: `work/history/golden-path-live-2026-10-18.md`.
+
+## Decision (2026-10-19, Will)
+
+Hand it back to the task: a whole-plan check failure goes back as a retry to the task(s) whose files it names, then the plan is checked again. Then rerun the golden path's pass^3 (about $0.70).

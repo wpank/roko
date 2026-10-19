@@ -109,3 +109,7 @@ level-1 result measures the tasks and the model, not a broken label.
 - **The suite hash changes** with the generators, so Pilot A's ℓ1–ℓ2 cells are not comparable with the re-run's.
   Say so in the bundle.
 - **One runner at a time,** never through roko.
+
+## Decision (2026-10-19, Will)
+
+Re-tune the easy levels: make F1/F4's ℓ1–ℓ2 easier as S09's calibration intends (G0 needs cheap-arm VS ≥ 0.6 at ℓ1), then rerun Pilot A's cheap_direct arm (about $1.20) before Pilot B.

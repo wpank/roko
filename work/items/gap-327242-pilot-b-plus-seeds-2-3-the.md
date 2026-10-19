@@ -9,7 +9,7 @@ goal = "proof"
 size = "S"
 subsystem = ["benchmarks/viabilitybench/experiments"]
 created = 2026-09-29
-updated = 2026-10-18
+updated = 2026-10-19
 source = "tmp/cybernetic-harness/workstreams/PLAN.md#e12"
 discovered_from = "tmp/cybernetic-harness/specs/S09-experiments.md (§6 E1b; checklist S09.E1b); workstreams/assessment/W10-benchmarks-proof.md (rec 7)"
 anchors = ["benchmarks/viabilitybench/experiments/pilot_b.toml", "benchmarks/viabilitybench/reports/pilot_b/"]
@@ -109,3 +109,7 @@ Unblocked: the key file ~/.config/viabilitybench/keys was created on 2026-10-18 
     - the fd_claude arm on Will's subscription, run off-hours, when he decides.
   - **SC2 needs 2 of this pilot's VS = 1 outputs.** Pilot A's worksheet holds only 8 VS = 1 outputs, so gap-129862
     takes the last 2 from here.
+
+## Decision (2026-10-19, Will)
+
+Run fd_claude overnight (about 23:00–07:00 local) once gap-dd670b's re-tune lands; the cheap roko_fixed arm runs alongside, interleaved as S09 §4.1 says.

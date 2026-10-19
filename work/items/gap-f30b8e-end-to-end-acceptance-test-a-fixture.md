@@ -9,7 +9,7 @@ goal = "golden-path"
 size = "M"
 subsystem = ["roko-cli/tests"]
 created = 2026-09-29
-updated = 2026-10-18
+updated = 2026-10-19
 source = "tmp/cybernetic-harness/workstreams/PLAN.md#e11"
 discovered_from = "tmp/cybernetic-harness/workstreams/assessment/W8-roko-as-executor.md (GP)"
 anchors = ["crates/roko-cli/tests/golden_path_acceptance.rs", "crates/roko-cli/tests/fixtures/golden_path/"]
@@ -98,3 +98,7 @@ Two other findings came out of the rerun:
 - A ~$1 plan budget with the workspace's $0.50 turn cap stops attempts at $0 spent (bug-2110e8). The runs set
   `max_turn_usd = max_plan_usd / 8`.
 - `RequireToolBeforeEdit` admits an edit to an unread file (gap-78cf31).
+
+## Decision (2026-10-19, Will)
+
+Closes on the pass^3 rerun after find-5bcba7 (whole-plan failures handed back to their tasks) lands, on the tightened fixture.

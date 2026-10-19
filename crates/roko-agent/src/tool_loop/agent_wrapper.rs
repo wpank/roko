@@ -408,6 +408,9 @@ impl ToolLoopAgent {
                 "model": trace.model.clone(),
                 "tool_calls": tool_calls,
                 "reasoning": trace.reasoning.clone(),
+                // Why the turn ended, so a closing reply cut at the output
+                // limit can be named in its attempt's feedback (bug-872885).
+                "finish_reason": trace.finish_reason.clone(),
                 "usage": {
                     "input_tokens": trace.usage.input_tokens,
                     "output_tokens": trace.usage.output_tokens,

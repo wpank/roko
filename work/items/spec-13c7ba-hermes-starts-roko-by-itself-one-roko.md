@@ -80,3 +80,7 @@ The interface contract between the three parts is in `tmp/roko-autostart/BRIEF.m
   1. a roko with `serve --detach` where the plugin finds it (`./dev.sh install`);
   2. `hermes plugins update roko`;
   3. ⌘Q and reopen.
+- 2026-10-19, later: plugin 0.7.1 on plugin main `398da81`. A serve that failed for lack of a model provider now says
+  so (it is no longer shown as "set up roko here"). setup-project names what is left. A restart never shows the old
+  serve. Checks: pytest 1074, contract 8/8, desktop e2e 9/9. New follow-up: bug-d63b33 (a crashed serve leaves
+  hub files).

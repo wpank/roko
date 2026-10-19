@@ -20,7 +20,7 @@ use regex::Regex;
 use roko_gate::spec_quality::ac_id;
 use roko_learn::runtime_feedback::{GenerationSourceCheck, GenerationSourceChecks};
 
-use super::runnable::{Probe, Unrunnable, check_command};
+use super::runnable::{Probe, Unchecked, Unrunnable, check_command, only_reads};
 use crate::task_parser::TasksFile;
 
 /// The most of one check that a prompt or a report quotes, in characters.
@@ -860,6 +860,7 @@ pub(super) fn regeneration_prompt(
     plan: &str,
     coverage: &SourceCoverage,
     unrunnable: &[Unrunnable],
+    unchecked: &[Unchecked],
 ) -> String {
     let mut problems = String::new();
     let missing = coverage.missing();
@@ -893,10 +894,23 @@ pub(super) fn regeneration_prompt(
         problems.push_str(
             "These verify steps cannot pass as written, whatever the work does; use a runner \
              this machine has (see Test runners), name only tests that exist or that the task \
-             writes, and put each test file a task writes in its `files`:\n",
+             writes, put each test file a task writes in its `files`, and check files the task \
+             writes: a check of files no task of the plan writes is decided before it runs:\n",
         );
         for step in unrunnable {
             let _ = writeln!(problems, "- {} step {}: {}", step.task, step.step, step.why);
+        }
+    }
+    if !unchecked.is_empty() {
+        problems.push_str(
+            "No check of these tasks can see their work: every verify step of theirs reads \
+             only files no task of the plan writes and already passes, so it passes whatever \
+             the task does. Give each task a role that writes and checks that read what it \
+             writes; a spec, a design or notes is a `scribe` task that writes them to a file in \
+             its `files`:\n",
+        );
+        for task in unchecked {
+            let _ = writeln!(problems, "- {}: {}", task.task, only_reads(&task.reads));
         }
     }
     let kept = if coverage.checks.is_empty() {
@@ -914,9 +928,10 @@ pub(super) fn regeneration_prompt(
          a test of what it states: a test the repository has, or one the task writes, named in \
          its description and guarded by a `grep -q` for it. When no command can check one, list \
          it in `[meta] dropped_checks` as `\"SCk: <why no command can check it>\"`. Fix each \
-         step that cannot pass. Keep the rest of the plan as it is. Output the complete plan as \
-         a single ```toml fenced block, followed only by the ```accept:accept/<file> blocks of \
-         the tests it pins."
+         step that cannot pass and each task no check can see, changing a task's role and \
+         `files` where that takes it. Keep the rest of the plan as it is. Output the complete \
+         plan as a single ```toml fenced block, followed only by the ```accept:accept/<file> \
+         blocks of the tests it pins."
     )
 }
 

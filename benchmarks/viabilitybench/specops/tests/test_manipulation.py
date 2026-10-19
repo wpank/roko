@@ -81,7 +81,7 @@ def test_task_from_instance_round_trips_a_fresh_f1_generator_output(tmp_path):
     assert task["acceptance"] and all(entry.startswith("AC") for entry in task["acceptance"])
     assert task["context"]["read_files"] and {"path", "why"} <= task["context"]["read_files"][0].keys()
     assert task["verify"] == [{"phase": "test", "command": "python3 -m unittest discover -s tests/visible",
-                               "covers": ["AC1", "AC2"], "expect": "fail_on_base"}]
+                               "covers": ["AC1", "AC2", "AC5"], "expect": "fail_on_base"}]  # ℓ2's thorough check
 
     report = manipulation_check.check_pair(task["id"], task, seed=7, workspace_root=VB_ROOT)
     assert report.ok and report.gap >= manipulation_check.MIN_GAP, report.as_json()

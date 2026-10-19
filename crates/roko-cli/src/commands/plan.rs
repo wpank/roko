@@ -3525,7 +3525,7 @@ mod tests {
     /// Set in [`validate_dynamic_steps_get_the_gates_env_passthrough`]'s
     /// child process, whose environment holds it, to the value its step
     /// expects.
-    const PASSTHROUGH_PROBE: &str = "ROKO_VALIDATE_PASSTHROUGH_PROBE";
+    const PASSTHROUGH_PROBE: &str = "UNDERTOW_VALIDATE_PROBE";
 
     /// bug-718016: `plan validate --dynamic` runs each step with the
     /// environment `plan run` gives checks, so a variable `[gates]
@@ -3546,7 +3546,10 @@ mod tests {
         let stdout = String::from_utf8_lossy(&output.stdout);
         let stderr = String::from_utf8_lossy(&output.stderr);
         assert!(output.status.success(), "{stdout}\n{stderr}");
-        assert!(stdout.contains("1 passed"), "the child test did not run: {stdout}");
+        assert!(
+            stdout.contains("1 passed"),
+            "the child test did not run: {stdout}"
+        );
     }
 
     /// Run by [`validate_dynamic_steps_get_the_gates_env_passthrough`] only:
@@ -3572,8 +3575,18 @@ mod tests {
         .expect("write the plan");
         let git = |args: &[&str]| {
             let output = std::process::Command::new("git")
-                .args(["-c", "user.name=roko-test", "-c", "user.email=roko-test@localhost"])
-                .args(["-c", "commit.gpgsign=false", "-c", "core.hooksPath=/dev/null"])
+                .args([
+                    "-c",
+                    "user.name=roko-test",
+                    "-c",
+                    "user.email=roko-test@localhost",
+                ])
+                .args([
+                    "-c",
+                    "commit.gpgsign=false",
+                    "-c",
+                    "core.hooksPath=/dev/null",
+                ])
                 .args(args)
                 .current_dir(&repo)
                 .output()

@@ -2,7 +2,7 @@
 id = "bug-9dd205"
 kind = "bug"
 title = "Supply-chain audit fails on new rustls advisories and unmaintained unsafe-libyaml"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p1"
 goal = "release"
@@ -11,12 +11,20 @@ subsystem = ["ci"]
 created = 2026-10-19
 updated = 2026-10-19
 last_verified = 2026-10-19
+last_verified_rev = "ef9b2970a"
 source = "pr-87-ci-2026-10-19"
 anchors = ["Cargo.lock", "deny.toml"]
 links = { depends_on = [], blocks = [], related = ["find-8cc7ac"], supersedes = [], duplicate_of = "" }
 
 [[verify]]
 command = "cargo deny --locked check advisories"
+
+[closed]
+at = 2026-10-19
+at_ts = "2026-10-19T09:39:45Z"
+commit = "ef9b2970a"
+forced = false
+evidence = "cargo deny check, the workflow command with cargo-deny 0.20.2 as CI runs it, passes: advisories, bans, licenses and sources ok. Before the fix it failed with RUSTSEC-2026-0346, -0347, -0348, -0349 (rustls 0.23.45) and RUSTSEC-2024-0449. The lockfile change is rustls version and checksum only. cargo build -p roko-cli and cargo clippy -p roko-cli -- -D warnings pass at ef9b2970a."
 +++
 
 ## Problem

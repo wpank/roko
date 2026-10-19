@@ -2,14 +2,16 @@
 id = "gap-c33709"
 kind = "gap"
 title = "Pilot A: the direct arms on 20 tasks (S09.E1a)"
-status = "open"
-triage = "unverified"
+status = "done"
+triage = "verified"
 severity = "p1"
 goal = "proof"
 size = "S"
 subsystem = ["benchmarks/viabilitybench/experiments"]
 created = 2026-09-29
-updated = 2026-10-18
+updated = 2026-10-19
+last_verified = 2026-10-19
+last_verified_rev = "d7c70c0d2"
 source = "tmp/cybernetic-harness/workstreams/PLAN.md#e12"
 discovered_from = "tmp/cybernetic-harness/specs/S09-experiments.md (§6 E1a, §4.7 G0; checklist S09.E1a)"
 anchors = ["benchmarks/viabilitybench/experiments/pilot_a.toml", "benchmarks/viabilitybench/reports/pilot_a/"]
@@ -19,6 +21,18 @@ links = { depends_on = ["gap-4723ff", "gap-9e7079", "gap-7ee7c2", "gap-b24517", 
 
 [[verify]]
 command = "test -f benchmarks/viabilitybench/reports/pilot_a/metrics.json && benchmarks/viabilitybench/.venv/bin/python benchmarks/viabilitybench/analysis/report.py --check benchmarks/viabilitybench/reports/pilot_a"
+
+[closed]
+at = 2026-10-19
+at_ts = "2026-10-19T10:18:59Z"
+commit = "d7c70c0d2"
+by = "commit trailer"
+executor = "claude-agent"
+via = "work-batch"
+size = "S"
+claimed_at = "2026-10-19T09:28:18Z"
+forced = false
+evidence = "d7c70c0d2 commits benchmarks/viabilitybench/reports/pilot_a/, from Pilot A's one paid run: `vb campaign --manifest pilot_a --allow-network --max-cost-usd 6 --transcripts` at 3220afb56 (clean tree), under env -i, 2026-10-19 09:51-10:06 UTC. Its units ran cheap-direct-s1, fd-api-s1, cheap-direct-s2, cheap-direct-s3 in daily-interleave order, one at a time, and each exited 0. vb estimate came first: cheap_direct $0.2893 a task at worst, fd_api $1.00; the campaign dry run gave 65 runs and $5.10 planned. Records 65 of 65: 64 completed, 1 aborted_cap (model_calls), 0 infra_error, 0 leak_suspected, 0 canary hits. Every agent and census ran under network none with sandbox-exec+net, and errors.jsonl is empty. VS: cheap_direct gpt-oss-120b 3/60 (l1 1/12, l2 2/12, l3-l5 0/12; 37 false greens among its 40 visible passes); fd_api gpt-5.4 5/5. Spend $1.2996 billed: cheap_direct $1.157858 on BL0 ($0.0193 a task, 0.32 x plan) and fd_api $0.141741 on BL8 ($0.0283 a task, 0.09 x plan). The ledger equals the metering proxy's meter to the micro-dollar. All 575 calls answered HTTP 200 and no row has an unknown cost, so bug-2a5566 had no effect. vb ledger report afterwards: BL0 $1.1579 of $14, BL8 $0.1417 of $8, pilot $1.2996 of $15, programme $1.3542 of $400, nothing reserved, OK. G0 (go-no-go.md, g0.json) is NO-GO. 6 checks pass: verifier CI 200/200 under secret sha256:1675cc951cf12ce3, the synthetic runaway (aborted_cap at 30 calls), canaries 0, l5 0.0 <= 0.3, and $/task for both arms. 1 fails: cheap l1 0.083 < 0.6, filed as gap-dd670b. 8 are not evaluated: the ledger against the provider exports (filed gap-1011ff), SC2 (filed gap-129862, with an 18-item blind worksheet) and Pilot B's checks. Verify: report.py --check reports/pilot_a gives 1 bundle, 0 problems. ~/.config/viabilitybench: the listing and the sha256 of keys and secret were unchanged before and after; the tripwire added empty keys.lock and secret.lock. Pilot B was prepared only: its pilot_b.toml dry run gives 145 runs, $6.08 planned billed and $12.15 at worst, inside BL0 and the pilot cap."
 +++
 
 ## Problem

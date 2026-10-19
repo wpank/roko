@@ -15,7 +15,7 @@ discovered_from = "tmp/cybernetic-harness/specs/S09-experiments.md (§6 E1b; che
 anchors = ["benchmarks/viabilitybench/experiments/pilot_b.toml", "benchmarks/viabilitybench/reports/pilot_b/"]
 lane = "bench"
 parent = "spec-567e52"
-links = { depends_on = ["gap-c4f364", "gap-b7ab99", "gap-c33709"], blocks = [], related = ["gap-e003ec", "dec-b78874"], supersedes = [], duplicate_of = "" }
+links = { depends_on = ["gap-c4f364", "gap-b7ab99", "gap-c33709", "gap-dd670b"], blocks = [], related = ["gap-e003ec", "dec-b78874", "gap-129862"], supersedes = [], duplicate_of = "" }
 
 [[verify]]
 command = "test -f benchmarks/viabilitybench/reports/pilot_b/metrics.json && benchmarks/viabilitybench/.venv/bin/python benchmarks/viabilitybench/analysis/report.py --check benchmarks/viabilitybench/reports/pilot_b"
@@ -85,3 +85,27 @@ Checked at `41c7ffbd6`: nothing can run yet. Two answers are still missing:
 ## Decision (2026-10-18, Will)
 
 Unblocked: the key file ~/.config/viabilitybench/keys was created on 2026-10-18 at Will's request; subscription use was accepted on 2026-10-15 (decision 6).
+
+## Progress
+
+- 2026-10-19, claude-agent (gap-c33709's worker): **prepared only, $0 spent on Pilot B.**
+  - **Pilot A has run.** It billed $1.2996: $1.1579 on BL0 and $0.1417 on BL8. Its G0 page is NO-GO on the
+    cheap ladder at level 1, where gpt-oss-120b solved 1 of 12 runs. gap-c33709's plan re-tunes the ladder before
+    Pilot B, so this item now depends on gap-dd670b, which re-knobs F1 and F4. Pilot B can still run first if Will
+    decides so; its roko_fixed arm runs the same 20 instances, whose level 1-2 tasks are about to change.
+  - **The manifest is unchanged apart from its comments.** The header records the numbers below, and the
+    mini-swe block's comment no longer says that its arm is missing.
+  - **The estimate,** from `vb campaign --manifest pilot_b --dry-run --include provider-fault --include mini-swe`
+    against the real results root:
+    - **Size:** 145 runs, $6.075 planned billed, $12.15 at worst. That fits BL0 ($1.1579 held of $14) and the
+      pilot cap ($1.2996 held of $15), with no problems found.
+    - **roko_fixed:** per `vb estimate`, $0.434 a task at worst over 60 runs. The block's max_cost_usd holds it
+      to $9.
+    - **fd_claude:** $5 a task API-equivalent at worst, held to $120 API-equivalent; it bills $0.
+  - **Prerequisites** before a paid run:
+    - a built `target/debug/roko` in the checkout that runs the campaign (the main checkout has one; the
+      gap-c33709 worktree does not);
+    - mini-swe-agent's venv at `~/.local/share/mini-swe-agent/venv` for the optional `mini-swe` block (absent);
+    - the fd_claude arm on Will's subscription, run off-hours, when he decides.
+  - **SC2 needs 2 of this pilot's VS = 1 outputs.** Pilot A's worksheet holds only 8 VS = 1 outputs, so gap-129862
+    takes the last 2 from here.

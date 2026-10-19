@@ -871,8 +871,8 @@ mod tests {
     fn a_depth_holds_within_its_window_and_takes_the_floor() {
         let rung = |level, window: &str| Rung {
             level,
-            quiet: 0,
             window: Some(window.to_string()),
+            ..Rung::default()
         };
         let depths = Depths::default();
         let first = rung(V2, "window:1-10");
@@ -981,8 +981,8 @@ mod tests {
         let set_ladder = |level, window: &str| {
             let rung = Rung {
                 level,
-                quiet: 0,
                 window: Some(window.to_string()),
+                ..Rung::default()
             };
             let task_types = BTreeMap::from([("implementer".to_string(), rung)]);
             Ladder { task_types }
@@ -1081,8 +1081,8 @@ mod tests {
             let depth = |level, window: &str| {
                 let rung = Rung {
                     level,
-                    quiet: 0,
                     window: Some(window.to_string()),
+                    ..Rung::default()
                 };
                 let task_types = BTreeMap::from([(task_type(&task).to_string(), rung)]);
                 Ladder { task_types }

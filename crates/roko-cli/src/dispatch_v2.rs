@@ -1922,8 +1922,25 @@ impl AgentDispatcherV2 {
             // Thread the live output channel so the immune boundary can
             // forward tool steps and unscreened events before screening.
             live_output: request.live_output.clone(),
+            essential_tools: essential_tools(request),
             ..Default::default()
         }
+    }
+}
+
+/// The tools a model's tool-count cap must keep for `request`: `run_tests`
+/// when dispatch left the attempt's checks for it, so even a model offered
+/// eight tools can run them mid-try (gap-770cb5).
+fn essential_tools(request: &AgentDispatchRequest) -> Vec<String> {
+    let checks = request
+        .attempt_key
+        .as_deref()
+        .zip(request.immune_root.as_deref())
+        .map(|(key, root)| roko_std::tool::builtin::task_checks::task_checks_path(root, key));
+    if checks.is_some_and(|path| path.is_file()) {
+        vec![roko_std::tool::builtin::run_tests::NAME.to_string()]
+    } else {
+        Vec::new()
     }
 }
 

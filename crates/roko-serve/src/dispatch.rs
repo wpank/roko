@@ -2038,6 +2038,7 @@ fn build_agent(
             env_passthrough: Vec::new(),
             tool_timeout: None,
             tool_timeout_max: None,
+            essential_tools: Vec::new(),
             extra_args: Vec::new(),
             effort: None,
             bare_mode: roko_config.agent.bare_mode,

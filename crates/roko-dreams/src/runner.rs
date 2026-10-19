@@ -198,6 +198,7 @@ impl DreamAgentConfig {
             env_passthrough: Vec::new(),
             tool_timeout: None,
             tool_timeout_max: None,
+            essential_tools: Vec::new(),
             extra_args,
             effort: Some(self.effort.clone()),
             bare_mode: self.bare_mode,

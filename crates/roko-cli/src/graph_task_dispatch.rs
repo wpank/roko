@@ -86,6 +86,7 @@ mod sibling_settle;
 mod step_ratchet;
 mod streaming;
 mod supervision;
+mod task_checks;
 mod test_runners;
 mod try_allowance;
 mod tui_forward;
@@ -1625,6 +1626,8 @@ impl TaskDispatcher for GraphTaskDispatcher {
             Some(attempt.live_tool_calls()),
         );
 
+        // gap-770cb5: the agent can run its task's checks mid-try.
+        let left_checks = self.leave_task_checks(&task, &attempt.key.attempt_key());
         attempt.dispatch_started();
         let started_at = Instant::now();
         // The planned model is a preference: an unusable or out-of-usage
@@ -1660,6 +1663,7 @@ impl TaskDispatcher for GraphTaskDispatcher {
         let dispatch_result =
             watched_result.unwrap_or_else(|interrupted| Err(interrupted.error(&watched)));
         attempt.dispatch_ended();
+        drop(left_checks);
         if let Some(supervised) = supervised {
             supervised
                 .end(matches!(&dispatch_result, Ok((dispatch, _)) if dispatch.result.success));

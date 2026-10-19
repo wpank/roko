@@ -1210,6 +1210,9 @@ pub struct AgentOptions {
     /// prices usage itself (the Claude CLI's `priced_observation`) honours the pin instead of
     /// always re-resolving the newest snapshot file.
     pub pricing: PricingConfig,
+    /// Tools a model's tool-count cap must keep, put first in its menu: an
+    /// attempt with checks keeps `run_tests`, which runs them (gap-770cb5).
+    pub essential_tools: Vec<String>,
 }
 
 impl std::fmt::Debug for AgentOptions {
@@ -1243,6 +1246,7 @@ impl std::fmt::Debug for AgentOptions {
             .field("provenance_sink", &self.provenance_sink.is_some())
             .field("data_llm", &self.data_llm.is_some())
             .field("turn_budget", &self.turn_budget.is_some())
+            .field("essential_tools", &self.essential_tools)
             .finish_non_exhaustive()
     }
 }

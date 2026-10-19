@@ -76,3 +76,19 @@ within the try. Checked by the test in `[[verify]]`.
 - Related:
   - bug-f6b99f: length cuts blamed on the agent;
   - bug-c22bd9 (the 60 s tool cut).
+
+## Note (2026-10-19, hermes-pilot): how this cut was classed, against bug-f6b99f
+
+bug-f6b99f (round v6) says a reply cut at the output limit "is the model's own limit, like a turn cap: blamed on the
+agent, so two climb; its reason is classed output_limit, provider health counts it as the provider's success, and the
+next try is told its reply ran past the output limit".
+
+Here the cut came after 5 iterations of tool work, so the tool loop ended the run as Stop and the verify steps judged
+what it left: nothing. The verdict records `failure_class = {kind: "gate_failed", rung: "pre_verify:no_changes"}`,
+blame agent. It does not record `output_limit`. The next try's retry feedback said only "Red flag, no changes: the
+task names files to change …", not that the reply ran past the output limit.
+
+So the climb counting matched bug-f6b99f, but the reason and the feedback were lost: try 2 never learned that its
+predecessor ran out of output while thinking. The retry within the try proposed in the Plan avoids the question.
+Failing that, a no-changes try whose last call ended `finish_reason=length` should be classed `output_limit` and say
+so to the next try.

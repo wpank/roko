@@ -2,15 +2,16 @@
 id = "bug-2110e8"
 kind = "bug"
 title = "Under a plan budget only a few turn caps wide, roko stops attempts as budget_exhausted at $0 spent: attempts that start beside one take the budget its settled calls freed, and its next call is refused instead of waiting"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p1"
 goal = "core"
 size = "M"
 subsystem = ["roko-cli/budget"]
 created = 2026-10-18
-updated = 2026-10-18
-last_verified = 2026-10-18
+updated = 2026-10-19
+last_verified = 2026-10-19
+last_verified_rev = "7d73f35e6"
 source = "gp2 golden-path rerun, rehearsal 2 (find-4003b9, gap-f30b8e; 2026-10-18)"
 discovered_from = "gap-f30b8e"
 anchors = ["crates/roko-cli/src/graph_task_dispatch/budget.rs::GraphPlanBudgetLedger", "crates/roko-cli/src/graph_task_dispatch/budget.rs::GraphPlanBudgetPolicy"]
@@ -18,6 +19,18 @@ links = { depends_on = [], blocks = [], related = ["bug-4fabd0", "gap-f30b8e", "
 
 [[verify]]
 command = "grep -rqw 'fn an_attempt_in_flight_can_grow_after_waiters_take_the_freed_budget' crates/roko-cli/src && cargo test -p roko-cli --lib an_attempt_in_flight_can_grow_after_waiters_take_the_freed_budget"
+
+[closed]
+at = 2026-10-19
+at_ts = "2026-10-19T11:33:39Z"
+commit = "7d73f35e6"
+by = "commit trailer"
+executor = "claude-agent"
+via = "work-batch"
+size = "M"
+claimed_at = "2026-10-19T10:30:36Z"
+forced = false
+evidence = "7d73f35e6 changes crates/roko-cli/src/graph_task_dispatch/budget.rs. When the unreserved budget cannot cover an in-flight attempt's next call, admit_call first takes the shortfall back from the holds admitted after it that have made no call (reclaimable_after and reclaim_after: newest first, each kept at attempt_floor), and only then refuses. Older holds keep what they hold. The [[verify]] test an_attempt_in_flight_can_grow_after_waiters_take_the_freed_budget uses rehearsal 2's settings: $1.00 plan, max_turn_usd $0.50, 8 agents, $0.00004 calls. It failed on 050f30ea8 (budget.rs as at 15837120f) at T2's call 3 with the rehearsal's own message, and the verify command passes verbatim at 7d73f35e6. a_call_takes_back_only_what_later_attempts_hold_beyond_their_floor covers the bounds. 475 graph_task_dispatch and budget lib tests pass (41 in the budget module at 7d73f35e6), and clippy -D warnings on roko-cli is clean. A $0 rerun of rehearsal 2 (fake solver, max_plan_usd 1.0, max_turn_usd 0.5, max_agents 8; bud-rehearsal in the session scratchpad): on gp2's 15837120f binary T3 settled budget_exhausted and 6 of 9 tasks ran. On 7d73f35e6 all nine passed first try; the plan was delivered and fast-forwarded, the 5 whole-plan steps passed, there were 0 budget refusals, and it cost $0.001194. T1's and T4's third calls came while T2 and T3, which took the budget they freed, had made no call. Plan step 2 (cap the reservation at the ceiling's share) was not done: it would shrink the Claude CLI's own --max-budget-usd below the turn cap. Filed gap-8bd8e2."
 +++
 
 ## Problem
@@ -80,10 +93,31 @@ and its `result.json` in the session scratchpad's `gp2-run/gp/gp2-rehearsal-r2/e
 
 ## Done when
 
-- [ ] The `[[verify]]` test passes, and fails on `15837120f`.
-- [ ] A $0 rerun of rehearsal 2 (fake solver, `max_plan_usd = 1.0`, `max_turn_usd = 0.5`) passes all nine tasks.
+- [x] The `[[verify]]` test passes, and fails on `15837120f`. It fails on `050f30ea8`, whose `budget.rs` is the
+  same as at `15837120f`, at T2's call 3 with the rehearsal's own message. It passes on `7d73f35e6`.
+- [x] A $0 rerun of rehearsal 2 (fake solver, `max_plan_usd = 1.0`, `max_turn_usd = 0.5`) passes all nine tasks
+  (2026-10-19, below).
 
 ## Notes
 
 - Found by the gp2 golden-path rerun (find-4003b9, gap-f30b8e). bug-4fabd0 added the per-attempt holds;
   bug-0bc2b4 and backlog 3102 set the reservation rules.
+- 2026-10-19 (claude-agent, `7d73f35e6`): fixed by plan step 1, as a take-back.
+  - When the unreserved budget can't cover an in-flight attempt's next call, `admit_call` takes the shortfall back
+    from the attempts that started after it and have made no call yet (`reclaim_after`). It takes from the newest
+    first and leaves each `attempt_floor`. Attempts that started before it keep all they hold. Only past that is
+    the call refused.
+  - It is synchronous, so roko's tool loop and the CLI watch (gap-ca1c92) both get it through `refuse_call`.
+- Plan step 2 (cap the reservation at the ceiling's share per agent) was not done. The Claude CLI's own
+  `--max-budget-usd` (gap-e14344) is the hold plus the unreserved budget as its agent starts. In a busy $1 plan
+  with 8 agents, a $0.125 share would stop a CLI attempt there, within its $0.50 turn cap. With the take-back, a
+  turn cap that fills the ceiling costs only a wait for the first calls to settle (793 and 1030 ms in the rerun).
+- The $0 rerun used `bud-rehearsal/rehearsal.py` in the session scratchpad, which is gp2's `gp --rehearsal`
+  without the `max_plan_usd / 8` workaround. It had its own ports and fences, and its proxy forwards only to the
+  local fake solver.
+  - On gp2's `15837120f` binary: T3 settled `budget_exhausted` and 6 of 9 tasks ran.
+  - On `7d73f35e6`: all nine passed first try, the plan was delivered and fast-forwarded, the five whole-plan
+    steps passed, there were no refusals, and it cost $0.001194.
+  - T1's and T4's third calls came while T2 and T3, which took the budget they freed, had not yet made a call.
+- Found on the way: gap-8bd8e2. The reservation's routing budget reaches `RoutingInputs::budget_remaining_usd`, and
+  nothing reads it.

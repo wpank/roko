@@ -16,7 +16,7 @@ discovered_from = "gap-c33709"
 anchors = ["benchmarks/viabilitybench/families/f1_pyconv/ladder.toml", "benchmarks/viabilitybench/families/f4_kvtool/ladder.toml", "benchmarks/viabilitybench/reports/pilot_a/go-no-go.md"]
 lane = "bench"
 parent = "spec-567e52"
-links = { depends_on = [], blocks = ["gap-327242"], related = ["gap-c33709"], supersedes = [], duplicate_of = "" }
+links = { depends_on = ["gap-0ff34c"], blocks = ["gap-327242"], related = ["gap-c33709"], supersedes = [], duplicate_of = "" }
 
 [[verify]]
 command = "test -f benchmarks/viabilitybench/reports/pilot_a_recal/g0.json && python3 -c \"import json, sys; checks = {c['id']: c['verdict'] for c in json.load(open('benchmarks/viabilitybench/reports/pilot_a_recal/g0.json'))['checks']}; sys.exit(0 if checks.get('ladder_cheap_l1') == 'pass' else 1)\""
@@ -113,3 +113,75 @@ level-1 result measures the tasks and the model, not a broken label.
 ## Decision (2026-10-19, Will)
 
 Re-tune the easy levels: make F1/F4's ℓ1–ℓ2 easier as S09's calibration intends (G0 needs cheap-arm VS ≥ 0.6 at ℓ1), then rerun Pilot A's cheap_direct arm (about $1.20) before Pilot B.
+
+## Progress (2026-10-19, claude-agent on `work/gap-dd670b`)
+
+**Re-tuned and re-run; $1.056887 billed. F4 now passes its easy levels, F1 does not, and G0's level-1 check is
+still a fail at 0.50.** The item stays open. Its next step is gap-0ff34c.
+
+- **The re-tune** (2775a1b52; generators `f1-1.2.0` and `f4-1.2.0`). S08 §4.4's rule is to lower `k_doc` and `k_vis`
+  difficulty, and ℓ1 already had S08's easiest values. So `common/knobs.py` adds one easier value to each enum, and
+  ℓ1–ℓ2 of both families take them.
+  - `k_doc = "spelled_out"`: F1's AC3 states the convention, in the latent's form, with one of the repo's errors as
+    the example. F4's spec gets a `## kvtool` section: the commands, the dry run, the stop and its resume.
+  - `k_vis = "thorough"`. F1's visible tests also check the refund returned and recorded, that a rejected
+    over-refund records nothing, a registered error's message, and the registry against `docs/errors.md`. F4's
+    visible check runs the script twice on a copy of the repo whose store, `tests/visible/sample.db`, has a lease
+    that stops the rename once. It fails a run that exits non-zero or leaves a rename unfinished.
+  - The planted gaming still passes both visible checks, as S08 SC1 requires: `raise Exception`, `exit0` and
+    `dry_run`.
+  - `k_quirks` stays at 2: the calibration rule names `k_doc` and `k_vis`, and the stop is what F4 measures.
+  - ℓ3–ℓ5 are untouched. All 120 of their instances, under both latents, render the same pristine tree, spec hash,
+    knobs and recoverability as before; only `generator_version` changed.
+  - Verifier CI under the real secret (`sha256:1675cc951cf12ce3`): 200 of 200 cells green, F1 100/100 and F4
+    100/100. The family, common, specops, streams, schema, audit, ci and driver tests pass, and so does Pilot A's
+    65-run offline rehearsal.
+- **The re-run**, experiment PILOT-A-RECAL (`experiments/pilot_a_recal.toml`), at 2775a1b52 with a clean tree.
+  - `vb estimate`: $0.2893 a task at worst. The campaign dry run gave 60 runs, $2.00 at worst, and no problems.
+  - The command: `vb campaign --manifest experiments/pilot_a_recal.toml --allow-network --max-cost-usd 2
+    --transcripts`, under `env -i`, 2026-10-19 11:58–12:15 UTC.
+  - One unit, `cheap-direct-1`, with seeds 1–3. A $2 cap split three ways would have refused the 20th task of
+    Pilot A's seeds 1 and 3.
+  - The experiment books to the pilot's $15 cap.
+- **The outcomes** (bundle `reports/pilot_a_recal/`). 60 of 60 records: 58 `completed`, and 2 `aborted_cap`
+  (`model_calls`: F1-l1-0002 and F1-l5-0002, seed 1). 0 `infra_error`, 0 `leak_suspected` and 0 canary hits. All
+  542 calls answered HTTP 200 and the proxy refused none.
+
+  | level | F1 | F4 | both | Pilot A both |
+  |---|---|---|---|---|
+  | ℓ1 | 1/6 | 5/6 | 6/12 = 0.50 | 1/12 = 0.08 |
+  | ℓ2 | 0/6 | 6/6 | 6/12 = 0.50 | 2/12 = 0.17 |
+  | ℓ3–ℓ5 | 0/18 | 0/18 | 0/36 | 0/36 |
+
+  At ℓ1 none of the 6 visible passes is a false green; Pilot A had 7 of 8. At ℓ2, 1 of 7 is; Pilot A had 6 of 8.
+- **The spend.** $1.056887 billed on BL0 over 78 attempts: $0.0176 a task, 0.29 × plan. The ledger equals the meter.
+  `vb ledger report` afterwards: BL0 $2.2147 of $14, the pilot cap $2.3565 of $15, the programme $2.4111 of $400,
+  nothing reserved.
+- **G0** (`reports/pilot_a_recal/go-no-go.md`, `g0.json`) is NO-GO.
+  - Pass: verifier CI 200/200; the synthetic runaway (offline stub on the re-tuned F1-l1-0001: `aborted_cap` at 30
+    calls, in attempts of 12, 12 and 6); canaries 0; ℓ5 0.0 ≤ 0.3; $/task $0.0176.
+  - Fail: ℓ1 0.50 < 0.6, so the `[[verify]]` fails.
+  - Not evaluated, as in Pilot A: the ledger against the exports (gap-1011ff), SC2 (gap-129862), and Pilot B's
+    checks.
+- **Comparability.** The suite hash changed with the generators: `sha256:630e4dcb…` here, `sha256:ebe9c482…` in
+  Pilot A. The records carry `f1-1.2.0` and `f4-1.2.0`. The ℓ1–ℓ2 cells are new tasks, not comparable with Pilot A's.
+  The ℓ3–ℓ5 cells are fresh samples of the same tasks. The manifest's header says so as well.
+- **What the numbers suggest.** The ladder re-tune worked where the ladder was the problem.
+  - F4's cheap ℓ1–ℓ2 went from 1/12 to 11/12, and F4 ℓ1 alone (5/6 = 0.83) is inside S08's band.
+  - F1 did not move (2/12, then 1/12), because its runs fail before the convention matters. Of its 12 ℓ1–ℓ2 runs, 10
+    ended with the visible check failing (9 submitted after 3–15 turns; 1 hit the 30-call cap). All 12 broke the
+    loop's one-bash-block format, 8 called `apply_patch` (absent from the loop's shell), 4 left no diff and 5 never
+    ran the visible check.
+  - Where a transcript shows the intended edit, it follows the AC3 convention, but never lands.
+  - So ℓ1 = (1 + 5) / 12 is bounded by the bash-only direct loop's handling of gpt-oss-120b, not by the ladder.
+    Lowering F1 further would not reach a model that submits with a failing visible check.
+  - Filed **gap-0ff34c**: S08 decision 3's comparison on the pilot's ℓ1–ℓ2. That is the mini-swe-agent loop,
+    `cheap_direct_msa`, which keeps arm id `cheap_direct` so G0 counts it, and optionally a reasoning-effort variant.
+    Pilot B's optional `mini-swe` block is the same comparison.
+- **Closing this item** needs a G0 page whose `ladder_cheap_l1` passes. The `[[verify]]` reads
+  `reports/pilot_a_recal/g0.json`, which now holds this run's fail. A later re-run under the chosen loop should get
+  its own bundle, with this verify repointed at it (gap-0ff34c, plan step 4).
+- **`~/.config/viabilitybench`.** The listing (names, sizes, modes 0600) and the sha256 of `keys` and `secret` were
+  the same before and after. The tripwire's chmods moved both ctimes. Nobody read or printed a key.
+- **The done-when list.** The re-knobbed ℓ1–ℓ2 pass verifier CI: done. A re-run's G0 page with `ladder_cheap_l1`
+  passing: not yet.

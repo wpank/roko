@@ -9,12 +9,15 @@ goal = "golden-path"
 size = "S"
 subsystem = ["self-hosting"]
 created = 2026-10-18
-updated = 2026-10-18
+updated = 2026-10-19
 last_verified = 2026-10-18
 source = "gp2 golden-path rerun reviews (find-4003b9, gap-f30b8e; 2026-10-18)"
 discovered_from = "find-4003b9"
 anchors = ["crates/roko-cli/tests/fixtures/golden_path/plan/accept/alpha_initials.rs", "crates/roko-cli/tests/fixtures/golden_path/plan/accept/beta_badge.rs"]
 links = { depends_on = [], blocks = [], related = ["find-4003b9", "gap-f30b8e", "find-5bcba7", "find-2ba86d", "spec-f09094"], supersedes = [], duplicate_of = "" }
+
+[[verify]]
+command = "grep -qF 'initials(\"ßeta omega\"), \"SSO\"' crates/roko-cli/tests/fixtures/golden_path/plan/accept/alpha_initials.rs && grep -qF 'badge(\"ßeta\"), \"[SS] ßeta\"' crates/roko-cli/tests/fixtures/golden_path/plan/accept/beta_badge.rs && cargo test -p roko-cli --test golden_path_acceptance golden_path_fixture"
 +++
 
 ## Finding
@@ -63,3 +66,18 @@ review finds a narrower one. The golden-path goal needs a bar that a finite fixt
 - In the main checkout (gitignored): `tmp/status-quo/2026-10-16-live/evidence/gp2/golden-path/run{1,2,3}/review.md`,
   with the merged diffs (run 1: the plan-branch diff) and the run records. T5's first attempts' failures ("éZ") are
   in runs 2 and 3's `stderr.txt`.
+
+## Done (2026-10-19): option 2
+
+The fixture was tightened once more, as find-4003b9's option 2 did on 2026-10-18:
+
+- T5's `accept/alpha_initials.rs` adds `initials("ßeta omega") == "SSO"`, and T6's `accept/beta_badge.rs` adds
+  `badge("ßeta") == "[SS] ßeta"`; their counts in `tasks.toml` go from 3 to 4.
+- The frozen plan's `plan.md` says what changed after the freeze and why ("Changed after the freeze
+  (2026-10-19)"), and `tasks.toml`'s header comment names it. No task's description, files, order or tier
+  changed.
+
+Checked before any live run: the new cases pass on the fixture's replay solution and fail on the escape the
+reviews found (`to_uppercase().next()`, runs 1 and 3), while the older cases pass on both; both fixture
+tests pass (`golden_path_fixture_is_red_on_the_seed`, `golden_path_fixture_plan_merges_green`); and
+`roko plan validate` reports 0 diagnostics. The live pass^3 on this fixture is gap-f30b8e's.

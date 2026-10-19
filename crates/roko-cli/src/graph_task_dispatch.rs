@@ -3163,8 +3163,8 @@ printf '%s\n' '{"type":"result","session_id":"sess-b","model":"claude-sonnet-4-6
     }
 
     /// A chat-completion `response` as the SSE chunks a streaming provider
-    /// sends for it: the message's content and tool calls as one delta, then
-    /// its finish reason, then its usage.
+    /// sends for it: the message's reasoning, content and tool calls as one
+    /// delta, then its finish reason, then its usage.
     fn openai_stream_chunks(response: &serde_json::Value) -> Vec<serde_json::Value> {
         let choice = &response["choices"][0];
         let message = &choice["message"];
@@ -3172,6 +3172,12 @@ printf '%s\n' '{"type":"result","session_id":"sess-b","model":"claude-sonnet-4-6
         let calls = message["tool_calls"]
             .as_array()
             .filter(|calls| !calls.is_empty());
+        if let Some(reasoning) = message["reasoning_content"]
+            .as_str()
+            .filter(|reasoning| !reasoning.is_empty())
+        {
+            delta["reasoning_content"] = serde_json::json!(reasoning);
+        }
         if let Some(content) = message["content"]
             .as_str()
             .filter(|content| !content.is_empty())

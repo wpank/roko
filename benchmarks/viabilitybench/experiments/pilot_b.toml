@@ -13,6 +13,12 @@
 # subscription and bills $0. Its max_cost_usd, $40 per seed, bounds the API-equivalent spend `vb run` meters for it,
 # a guard against a runaway session.
 #
+# After Pilot A (gap-c33709, 2026-10-19). Pilot A billed $1.16 on BL0 and $0.14 on BL8 ($1.30 of the pilot's $15),
+# so this manifest's dry run with both optional blocks plans $6.08 billed (worst case $12.15) and fits BL0 ($14) and
+# the pilot cap. Pilot A's G0 page (reports/pilot_a/go-no-go.md) is NO-GO on the cheap ladder at level 1, so run
+# this after the ladder is re-tuned (S08 §4.4). The Roko arm needs a built `target/debug/roko` in the checkout that
+# runs the campaign, and the mini-swe block needs mini-swe-agent's venv (README, "mini-swe-agent's venv").
+#
 # No block names a secret fingerprint: the campaign log pins each instance to the secret file of its first run, and
 # refuses another secret on it later, Pilot A's runs included (S09 §4.1).
 schema_version = "vb.experiment/1"
@@ -58,7 +64,7 @@ optional = true                # S09's optional row: run it with --include provi
 [[block]]
 id = "mini-swe"
 stream = "pilot"
-arm = "cheap_direct_msa"       # mini-swe-agent as the direct loop (S08 decision 3): unavailable until 3317 lands
+arm = "cheap_direct_msa"       # mini-swe-agent as the direct loop (S08 decision 3; 3317); needs its venv (header)
 model = "gpt-oss-120b"
 seeds = "1"
 line = "BL0"

@@ -125,3 +125,45 @@ Checked at `41c7ffbd6`: nothing can run yet, and no money has been spent.
 ## Decision (2026-10-18, Will)
 
 Unblocked: the key file ~/.config/viabilitybench/keys was created on 2026-10-18 at Will's request; Pilots A-C run on the $21 approved on 2026-10-02 (3301).
+
+## Result (2026-10-19, claude-agent on `work/gap-c33709`)
+
+**All 65 runs recorded; $1.2996 billed; G0 is NO-GO on the cheap ladder at level 1.** The bundle is
+`benchmarks/viabilitybench/reports/pilot_a/`.
+
+- **The run.**
+  - At 3220afb56, with a clean tree, `secret.py keys` reported the four names at mode 0600, and `secret.py check`
+    reported `sha256:1675cc951cf12ce3`.
+  - `vb estimate`: cheap_direct $0.2893 a task at worst, fd_api $1.00. The campaign dry run gave 65 runs, $5.10
+    planned and $8.00 in block caps.
+  - The paid run: `vb campaign --manifest pilot_a --allow-network --max-cost-usd 6 --transcripts`, under
+    `env -i` (USER, LOGNAME, PATH, TMPDIR, LANG; no HOME, so the bench resolved it from the password database),
+    2026-10-19 09:51–10:06 UTC. Its units ran in daily-interleave order (cheap-direct-s1, fd-api-s1,
+    cheap-direct-s2, cheap-direct-s3), one at a time, and each exited 0.
+- **The outcomes.**
+  - 65 of 65 records: 64 `completed` and 1 `aborted_cap` (`model_calls`, F1-l3-0001 seed 3). There were 0
+    `infra_error`, 0 `leak_suspected` and 0 canary hits. Every agent and every census ran under network `none`
+    with `sandbox-exec+net`. The proxy refused nothing, and `errors.jsonl` is empty.
+  - VS: cheap_direct 3/60 (ℓ1 1/12, ℓ2 2/12, ℓ3–ℓ5 0/12), with 37 false greens among its 40 visible passes;
+    fd_api 5/5.
+- **The spend.**
+  - cheap_direct $1.157858 on BL0, which is $0.0193 a task (0.32 × plan). fd_api $0.141741 on BL8, which is
+    $0.0283 a task (0.09 × plan).
+  - The ledger equals the metering proxy's meter to the micro-dollar. All 575 calls answered HTTP 200, and no
+    row has an unknown cost.
+  - `vb ledger report` afterwards: BL0 $1.1579 of $14, BL8 $0.1417 of $8, pilot $1.2996 of $15, programme
+    $1.3542 of $400, nothing reserved.
+- **bug-2a5566 had no effect here.** It prices an attempt at its reservation only when every call of that
+  attempt failed, and none did.
+- **G0** (`reports/pilot_a/go-no-go.md`, `g0.json`):
+  - Pass: verifier CI 200/200 under the real secret (`verifier-ci.json`, trimmed from the 2.8 MB original);
+    the synthetic runaway (`.runaway/`: offline stub through the proxy, `aborted_cap` at 30 calls in attempts of
+    12/12/6); canaries 0; ℓ5 0.0 ≤ 0.3; $/task for both arms.
+  - Fail: ℓ1 0.083 < 0.6. Filed **gap-dd670b**, which blocks gap-327242.
+  - Not evaluated: the ledger against the provider exports (filed **gap-1011ff**: Will downloads the Cerebras
+    and OpenAI usage CSVs for 2026-10-19 UTC), and SC2 (filed **gap-129862**: `sc2.toml` holds 18 blind items for
+    a person; 2 more VS = 1 outputs come from Pilot B). Pilot B's own checks are not evaluated either.
+- **`~/.config/viabilitybench`.** The listing and the sha256 of `keys` and `secret` were unchanged before and
+  after. The tripwire left empty `keys.lock` and `secret.lock` files, and its chmods moved both ctimes.
+- **Pilot B, prepared only.** The `pilot_b.toml` dry run with both optional blocks gives 145 runs, $6.075 planned
+  billed and $12.15 at worst, and fits BL0 and the pilot cap. The header now records this.

@@ -1,0 +1,151 @@
+# Pilot A's SC2 spot check (S08 SC2; S09 §4.7 G0), for a person to fill in. Read by gates.py G0 --sc2.
+#
+# For each item, read the task's spec and the agent's final diff, and judge whether the output meets the spec's
+# acceptance criteria: human_label = 1 when it does, 0 when it does not. Judge blind: the census label is not on
+# this sheet (gates.py reads it from the records). The files are in the results root:
+#   spec:       ~/.roko-bench/viability/PILOT-A/<run_id>/private/<instance_id>.s<seed>/.vb/spec.precise.md
+#   diff:       ~/.roko-bench/viability/PILOT-A/<run_id>/archives/<instance_id>.s<seed>.diff
+#   final tree: ~/.roko-bench/viability/PILOT-A/<run_id>/archives/<instance_id>.s<seed>.tar.gz
+#   transcript: ~/.roko-bench/viability/PILOT-A/<run_id>/transcripts/<instance_id>.s<seed>.json
+# Then uncomment checked_by and date, and set human_label on every item.
+#
+# The sample (18 items, keyed by 'pilot-a-sc2-1'): every Pilot A output with VS = 1 (8: 3 cheap_direct, 5 fd_api),
+# and 10 completed cheap_direct outputs with VS = 0 (5 F1, 5 F4). SC2 wants 10 of each label, so the check stays
+# 'not evaluated' until 2 more VS = 1 outputs from Pilot B are added.
+#
+# [direct_loop] (S08 decision 3) picks the direct loop with the higher VS on gpt-oss-120b, between mini_loop.py
+# and the pinned mini-swe-agent. Pilot A ran only mini_loop.py; the mini-swe-agent block is Pilot B's optional
+# 'mini-swe'. Fill it in once both have run.
+schema_version = "vb.sc2/1"
+# checked_by = ""
+# date = 2026-10-
+
+# [direct_loop]
+# choice = ""          # "mini-loop" or "mini-swe-agent"
+# reason = ""
+
+# 1. F1 level 1, arm fd_api
+[[item]]
+run_id = "fd-api-s1-1"
+instance_id = "F1-l1-0002"
+seed = 1
+# human_label = 
+
+# 2. F4 level 3, arm cheap_direct
+[[item]]
+run_id = "cheap-direct-s3-1"
+instance_id = "F4-l3-0001"
+seed = 3
+# human_label = 
+
+# 3. F1 level 5, arm fd_api
+[[item]]
+run_id = "fd-api-s1-1"
+instance_id = "F1-l5-0001"
+seed = 1
+# human_label = 
+
+# 4. F4 level 1, arm cheap_direct
+[[item]]
+run_id = "cheap-direct-s2-1"
+instance_id = "F4-l1-0002"
+seed = 2
+# human_label = 
+
+# 5. F4 level 4, arm cheap_direct
+[[item]]
+run_id = "cheap-direct-s3-1"
+instance_id = "F4-l4-0002"
+seed = 3
+# human_label = 
+
+# 6. F4 level 5, arm cheap_direct
+[[item]]
+run_id = "cheap-direct-s2-1"
+instance_id = "F4-l5-0001"
+seed = 2
+# human_label = 
+
+# 7. F4 level 2, arm cheap_direct
+[[item]]
+run_id = "cheap-direct-s3-1"
+instance_id = "F4-l2-0002"
+seed = 3
+# human_label = 
+
+# 8. F4 level 5, arm cheap_direct
+[[item]]
+run_id = "cheap-direct-s1-1"
+instance_id = "F4-l5-0002"
+seed = 1
+# human_label = 
+
+# 9. F1 level 1, arm cheap_direct
+[[item]]
+run_id = "cheap-direct-s2-1"
+instance_id = "F1-l1-0001"
+seed = 2
+# human_label = 
+
+# 10. F1 level 5, arm cheap_direct
+[[item]]
+run_id = "cheap-direct-s1-1"
+instance_id = "F1-l5-0002"
+seed = 1
+# human_label = 
+
+# 11. F1 level 1, arm cheap_direct
+[[item]]
+run_id = "cheap-direct-s3-1"
+instance_id = "F1-l1-0002"
+seed = 3
+# human_label = 
+
+# 12. F1 level 5, arm cheap_direct
+[[item]]
+run_id = "cheap-direct-s3-1"
+instance_id = "F1-l5-0001"
+seed = 3
+# human_label = 
+
+# 13. F1 level 4, arm cheap_direct
+[[item]]
+run_id = "cheap-direct-s1-1"
+instance_id = "F1-l4-0002"
+seed = 1
+# human_label = 
+
+# 14. F4 level 4, arm fd_api
+[[item]]
+run_id = "fd-api-s1-1"
+instance_id = "F4-l4-0001"
+seed = 1
+# human_label = 
+
+# 15. F4 level 2, arm fd_api
+[[item]]
+run_id = "fd-api-s1-1"
+instance_id = "F4-l2-0002"
+seed = 1
+# human_label = 
+
+# 16. F1 level 3, arm fd_api
+[[item]]
+run_id = "fd-api-s1-1"
+instance_id = "F1-l3-0001"
+seed = 1
+# human_label = 
+
+# 17. F1 level 2, arm cheap_direct
+[[item]]
+run_id = "cheap-direct-s2-1"
+instance_id = "F1-l2-0002"
+seed = 2
+# human_label = 
+
+# 18. F1 level 2, arm cheap_direct
+[[item]]
+run_id = "cheap-direct-s3-1"
+instance_id = "F1-l2-0002"
+seed = 3
+# human_label = 

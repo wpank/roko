@@ -1589,6 +1589,16 @@ fn apply_production_result_filter(
                     other => other,
                 })
                 .collect();
+            // bug-0f30c7: the filter's `[external:<tool>]` note, or a cut,
+            // makes a JSON payload text. It is then text, so the immune screen
+            // does not withhold it as malformed JSON.
+            let is_structured = is_structured
+                && filtered.iter().all(|block| match block {
+                    roko_core::tool::ToolResultContent::Text { text } => {
+                        serde_json::from_str::<serde_json::Value>(text).is_ok()
+                    }
+                    _ => true,
+                });
             ToolResult::Ok {
                 content: filtered,
                 is_structured,
@@ -3317,6 +3327,45 @@ mod tests {
             ToolResult::Ok { .. } => assert!(res.text_content().contains("\"x\"")),
             other => panic!("expected Ok, got {other:?}"),
         }
+    }
+
+    /// bug-0f30c7: the production filter notes an external tool's output with
+    /// `[external:<tool>]`, which made a structured success of `run_tests`
+    /// malformed JSON, and the immune boundary withheld it as an anomaly. The
+    /// noted payload is text now, and reaches the model.
+    #[tokio::test]
+    async fn an_external_tool_s_structured_success_reaches_the_model() {
+        let registry: Arc<dyn ToolRegistry> = Arc::new(VecToolRegistry::from_tools(vec![tool(
+            "run_tests",
+            ToolPermission::executes(),
+            ToolConcurrency::Serial,
+        )]));
+        let resolver = resolver_from([(
+            "run_tests",
+            Arc::new(FixedResultHandler {
+                name: "run_tests",
+                calls: Arc::new(AtomicUsize::new(0)),
+                result: ToolResult::structured(r#"{"status":"ok"}"#),
+            }) as Arc<dyn ToolHandler>,
+        )]);
+        let workspace = tempfile::tempdir().unwrap();
+
+        let result = ToolDispatcher::new_unguarded(registry, resolver)
+            .with_safety(SafetyLayer::permissive())
+            .dispatch(
+                ToolCall::new("run-call", "run_tests", serde_json::json!({})),
+                &ToolContext::testing(workspace.path()),
+            )
+            .await;
+
+        let ToolResult::Ok { is_structured, .. } = &result else {
+            panic!("the success must reach the model, got {result:?}");
+        };
+        assert!(!is_structured, "{result:?}");
+        assert_eq!(
+            result.text_content(),
+            r#"[external:run_tests] {"status":"ok"}"#
+        );
     }
 
     #[tokio::test]

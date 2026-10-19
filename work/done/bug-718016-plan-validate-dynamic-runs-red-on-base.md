@@ -2,7 +2,7 @@
 id = "bug-718016"
 kind = "bug"
 title = "plan validate --dynamic runs red-on-base steps without [gates] env_passthrough and strip_env (only plan run begins a check run with the config's settings), so a project whose checks need a passed-through variable gets different answers from validate than from the plan-load gate"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p2"
 goal = "core"
@@ -11,6 +11,7 @@ subsystem = ["roko-cli/plan_validate"]
 created = 2026-10-19
 updated = 2026-10-19
 last_verified = 2026-10-19
+last_verified_rev = "7aa57d688"
 source = "round-v7-roko-speed#gap-e02ec4"
 discovered_from = "agent:roko-speed (round v7, measuring gap-e02ec4, 2026-10-19)"
 anchors = ["crates/roko-cli/src/commands/plan.rs::cmd_plan_validate"]
@@ -18,6 +19,13 @@ links = { depends_on = [], blocks = [], related = ["gap-e02ec4"], supersedes = [
 
 [[verify]]
 command = "grep -rqw 'fn validate_dynamic_steps_get_the_gates_env_passthrough' crates/roko-cli/src && cargo test -p roko-cli --bin roko -- validate_dynamic_steps_get_the_gates_env_passthrough"
+
+[closed]
+at = 2026-10-19
+at_ts = "2026-10-19T19:00:41Z"
+commit = "7aa57d688"
+forced = false
+evidence = "plan validate --dynamic now begins a check run with the workspace config's check_env_settings, as plan run does. Verify validate_dynamic_steps_get_the_gates_env_passthrough passes: in a child process, a check that needs a passed-through variable passes on the base with the config and does not without it. On the JUCE fixture, validate's plugin steps now get UNDERTOW_JUCE_SOURCE_DIR, and validate took 20.3 s; before the fix, each plugin step hung on a blocked JUCE download."
 +++
 
 ## Problem

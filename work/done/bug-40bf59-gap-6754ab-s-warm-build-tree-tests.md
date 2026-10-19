@@ -2,7 +2,7 @@
 id = "bug-40bf59"
 kind = "bug"
 title = "gap-6754ab's warm build tree tests assume a copy-on-write filesystem: on CI's ubuntu ext4, cp --reflink=always fails, no tree is given, and six tests fail"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p1"
 goal = "core"
@@ -11,6 +11,7 @@ subsystem = ["roko-cli/worktree"]
 created = 2026-10-19
 updated = 2026-10-19
 last_verified = 2026-10-19
+last_verified_rev = "7aa57d688"
 source = "round-v7-roko-speed#gap-e02ec4"
 discovered_from = "agent:roko-speed (round v7, while writing gap-e02ec4, 2026-10-19)"
 anchors = ["crates/roko-cli/src/orchestrator/worktree/git_ops.rs::clone_tree", "crates/roko-cli/src/orchestrator/worktree/build_trees.rs", "crates/roko-cli/src/graph_execution/workspaces.rs"]
@@ -19,6 +20,13 @@ links = { depends_on = [], blocks = [], related = ["gap-6754ab", "gap-e02ec4"], 
 
 [[verify]]
 command = "grep -rqw 'fn clones_on' crates/roko-cli/src && cargo test -p roko-cli --lib -- warm_build_tree seeded_worktree_builds_nothing acquire_gives_the_checkout_warm_build_trees"
+
+[closed]
+at = 2026-10-19
+at_ts = "2026-10-19T19:00:41Z"
+commit = "6e32254d1"
+forced = false
+evidence = "Each test that needs a copy-on-write clone now probes the filesystem (clones_on) and skips where it cannot clone. The refusal test keeps its other assertions. The verify tests (warm_build_tree*, seeded_worktree_builds_nothing, acquire_gives_the_checkout_warm_build_trees) pass on APFS, where they all run. Not run on ext4 here."
 +++
 
 ## Problem

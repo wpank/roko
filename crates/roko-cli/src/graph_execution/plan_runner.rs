@@ -1314,31 +1314,35 @@ async fn run_graph_plan_body(
             });
     }
     // Each step the red-on-base check runs on the base, or takes from the
-    // cache, shows as it ends (gap-e02ec4).
-    let on_step = |step: &crate::spec_red_on_base::StepDone| {
-        if let Some(hub) = &state_hub {
-            hub.sender()
-                .publish(roko_core::DashboardEvent::SpecGateStep {
-                    plan_id: step.plan_id.clone(),
-                    task_id: step.task_id.clone(),
-                    run: u32::try_from(step.run).unwrap_or(u32::MAX),
-                    step: u32::try_from(step.step).unwrap_or(u32::MAX),
-                    passed: step.passed,
-                    ms: step.ms,
-                    cached: step.cached,
-                });
-        }
+    // cache, shows as it ends (gap-e02ec4). The check is synchronous: what
+    // it borrows is gone before the next await.
+    let gated = {
+        let on_step = |step: &crate::spec_red_on_base::StepDone| {
+            if let Some(hub) = &state_hub {
+                hub.sender()
+                    .publish(roko_core::DashboardEvent::SpecGateStep {
+                        plan_id: step.plan_id.clone(),
+                        task_id: step.task_id.clone(),
+                        run: u32::try_from(step.run).unwrap_or(u32::MAX),
+                        step: u32::try_from(step.step).unwrap_or(u32::MAX),
+                        passed: step.passed,
+                        ms: step.ms,
+                        cached: step.cached,
+                    });
+            }
+        };
+        let gate_run = crate::spec_gate::GateRun {
+            warm_build_dirs: roko_config.gates.warm_build_dirs.as_deref(),
+            on_step: Some(&on_step),
+        };
+        crate::spec_gate::gate_plans_with(
+            &spec_files,
+            workdir,
+            &roko_config.spec_quality,
+            &gate_run,
+        )
     };
-    let gate_run = crate::spec_gate::GateRun {
-        warm_build_dirs: roko_config.gates.warm_build_dirs.as_deref(),
-        on_step: Some(&on_step),
-    };
-    let (spec_gate, checked) = match crate::spec_gate::gate_plans_with(
-        &spec_files,
-        workdir,
-        &roko_config.spec_quality,
-        &gate_run,
-    ) {
+    let (spec_gate, checked) = match gated {
         Ok(gated) => gated,
         Err(interrupted) => {
             tracing::error!("{interrupted}");

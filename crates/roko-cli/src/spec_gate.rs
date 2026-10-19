@@ -200,8 +200,10 @@ pub fn gate_plans_with(
     workdir: &Path,
     config: &SpecQualityConfig,
     run: &GateRun<'_>,
-) -> Result<(SpecGateReport, crate::spec_red_on_base::CheckCounts), crate::spec_red_on_base::Interrupted>
-{
+) -> Result<
+    (SpecGateReport, crate::spec_red_on_base::CheckCounts),
+    crate::spec_red_on_base::Interrupted,
+> {
     let (red_on_base, counts) = crate::spec_red_on_base::gate_results_with(
         files,
         workdir,

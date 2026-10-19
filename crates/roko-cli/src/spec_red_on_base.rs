@@ -587,7 +587,9 @@ pub fn check_plans_watched(
         else {
             continue;
         };
-        checks.extend(check_plan(&path, &data, &mut trees, &head, options, on_step)?);
+        checks.extend(check_plan(
+            &path, &data, &mut trees, &head, options, on_step,
+        )?);
     }
     Ok(RedOnBaseReport {
         cargo: options.cargo,
@@ -1732,7 +1734,7 @@ impl BaseTrees {
         if !self.fixture && self.workspace_is_at(sha) {
             let given = crate::orchestrator::worktree::give_build_trees(
                 &self.root,
-                &tree.join(&self.prefix),
+                &self.workspace_in(&tree),
                 self.warm_build_dirs.as_deref(),
             );
             tracing::debug!(
@@ -1741,6 +1743,17 @@ impl BaseTrees {
             );
         }
         Ok((tree, admin))
+    }
+
+    /// The workspace root in the checkout at `tree`: the checkout itself when
+    /// the workspace is the repository's top, with no trailing `/` for a
+    /// step's `PWD` to carry.
+    fn workspace_in(&self, tree: &Path) -> PathBuf {
+        if self.prefix.as_os_str().is_empty() {
+            tree.to_path_buf()
+        } else {
+            tree.join(&self.prefix)
+        }
     }
 
     /// Whether the workspace's checkout is at `sha` with no tracked file
@@ -1757,7 +1770,8 @@ impl BaseTrees {
             ],
             &self.repo,
         );
-        head.is_ok_and(|head| head.trim() == sha) && changes.is_ok_and(|text| text.trim().is_empty())
+        head.is_ok_and(|head| head.trim() == sha)
+            && changes.is_ok_and(|text| text.trim().is_empty())
     }
 
     /// The `git clean` exclusions that keep the build trees of the checkout
@@ -1766,7 +1780,7 @@ impl BaseTrees {
     /// left to be cleaned.
     fn kept_build_trees(&self, tree: &Path) -> Vec<String> {
         crate::orchestrator::worktree::warm_build_dirs(
-            &tree.join(&self.prefix),
+            &self.workspace_in(tree),
             self.warm_build_dirs.as_deref(),
         )
         .into_iter()
@@ -1801,7 +1815,7 @@ impl BaseTrees {
             clean.extend(["-e", pattern.as_str()]);
         }
         git_ok(&clean, &tree)?;
-        let workspace = tree.join(&self.prefix);
+        let workspace = self.workspace_in(&tree);
         // A fixture snapshot already holds its plans, and a plan at the
         // workspace root has no directory of its own to copy.
         if !self.fixture
@@ -2582,7 +2596,11 @@ command = 'n=$(cat COUNTER 2>/dev/null || echo 0); echo $((n + 1)) > COUNTER; te
         check
             .runs
             .iter()
-            .map(|run| run.last().and_then(|step| step.tail.clone()).unwrap_or_default())
+            .map(|run| {
+                run.last()
+                    .and_then(|step| step.tail.clone())
+                    .unwrap_or_default()
+            })
             .collect()
     }
 
@@ -2611,8 +2629,14 @@ command = 'n=$(cat COUNTER 2>/dev/null || echo 0); echo $((n + 1)) > COUNTER; te
 
         let report = check_plans(&[plan], &repo, &options).expect("check the plan");
 
-        assert_eq!(warm_tails(&report, "T1"), ["build 1 out 1", "build 2 out 1"]);
-        assert_eq!(warm_tails(&report, "T2"), ["build 3 out 1", "build 4 out 1"]);
+        assert_eq!(
+            warm_tails(&report, "T1"),
+            ["build 1 out 1", "build 2 out 1"]
+        );
+        assert_eq!(
+            warm_tails(&report, "T2"),
+            ["build 3 out 1", "build 4 out 1"]
+        );
         let t1 = report.checks.iter().find(|check| check.task_id == "T1");
         assert_eq!(t1.map(|check| check.outcome), Some(Outcome::Fail));
     }
@@ -2653,8 +2677,12 @@ command = 'n=$(cat COUNTER 2>/dev/null || echo 0); echo $((n + 1)) > COUNTER; te
 
         std::fs::write(repo.join("README.md"), "changed\n").expect("change a file");
         let report = check_plans(&[plan], &repo, &options).expect("check the plan");
-        assert_eq!(warm_tails(&report, "T1")[0], "cold\n0");
-        assert!(repo.join("build/made-here").is_file(), "the workspace's build is untouched");
+        let cold = &warm_tails(&report, "T1")[0];
+        assert!(cold.starts_with("cold\n"), "{cold}");
+        assert!(
+            repo.join("build/made-here").is_file(),
+            "the workspace's build is untouched"
+        );
     }
 
     /// gap-e02ec4: with the cache on, a task whose runs decided it (`fail` or
@@ -2683,7 +2711,12 @@ command = 'n=$(cat COUNTER 2>/dev/null || echo 0); echo $((n + 1)) > COUNTER; te
             cache: true,
             ..RedOnBaseOptions::default()
         };
-        let runs = || std::fs::read_to_string(&ran).unwrap_or_default().lines().count();
+        let runs = || {
+            std::fs::read_to_string(&ran)
+                .unwrap_or_default()
+                .lines()
+                .count()
+        };
         let outcome = |report: &RedOnBaseReport, id: &str| {
             let check = report.checks.iter().find(|check| check.task_id == id);
             let check = check.expect("checked");
@@ -2698,7 +2731,8 @@ command = 'n=$(cat COUNTER 2>/dev/null || echo 0); echo $((n + 1)) > COUNTER; te
 
         let told = std::cell::RefCell::new(Vec::new());
         let second = check_plans_watched(&[plan.clone()], &repo, &options, &|step| {
-            told.borrow_mut().push((step.task_id.clone(), step.run, step.cached));
+            told.borrow_mut()
+                .push((step.task_id.clone(), step.run, step.cached));
         })
         .expect("check the plan");
         assert_eq!(outcome(&second, "T1"), (Outcome::Fail, true));

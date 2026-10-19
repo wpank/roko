@@ -586,7 +586,8 @@ fn git_stdout(dir: &Path, args: &[&str]) -> std::io::Result<Vec<u8>> {
 pub(crate) fn clones_on(dir: &Path) -> bool {
     let probe = dir.join(".clone-probe");
     let copy = dir.join(".clone-probe-copy");
-    let cloned = std::fs::create_dir_all(&probe).is_ok() && clone_tree(&probe, &copy).unwrap_or(false);
+    let cloned =
+        std::fs::create_dir_all(&probe).is_ok() && clone_tree(&probe, &copy).unwrap_or(false);
     let _ = std::fs::remove_dir_all(&probe);
     let _ = std::fs::remove_dir_all(&copy);
     cloned

@@ -1959,6 +1959,11 @@ fn summarize_events(events: &[IndexedEvent]) -> Value {
     let mut efficiency = Efficiency::default();
     // The first time any row carries: a Graph run has no start event of its own.
     let mut first_time = None;
+    // A running try's model calls as they return (gap-5c3347): what each
+    // attempt's priced calls have cost so far, until it settles and its own
+    // records count it.
+    let mut live_calls = BTreeMap::<(String, String, u64), f64>::new();
+    let mut settled = BTreeSet::<(String, String, u64)>::new();
 
     for item in events {
         let value = &item.value;
@@ -1992,6 +1997,23 @@ fn summarize_events(events: &[IndexedEvent]) -> Value {
         }
         if kind == "efficiency_event" {
             efficiency.add(value);
+        }
+        if matches!(kind, "call_cost" | "attempt_settled")
+            && let (Some(plan_id), Some(task_id), Some(attempt)) = (
+                event_plan_id(value),
+                event_task_id(value),
+                event_attempt(value),
+            )
+        {
+            let key = (plan_id.to_string(), task_id.to_string(), attempt);
+            if kind == "attempt_settled" {
+                settled.insert(key);
+            } else if let Some(cost) = decimal(value, "attempt_cost_usd") {
+                live_calls
+                    .entry(key)
+                    .and_modify(|current| *current = current.max(cost))
+                    .or_insert(cost);
+            }
         }
         // Graph runs report a rung's verdict as `gate_result` (bug-28aae1).
         if kind == "gate_result"
@@ -2062,6 +2084,15 @@ fn summarize_events(events: &[IndexedEvent]) -> Value {
     {
         cost_usd = efficiency.cost_usd;
     }
+    // What the tries that have not settled spent so far (gap-5c3347).
+    let live_cost_usd: f64 = live_calls
+        .iter()
+        .filter(|(key, _)| !settled.contains(*key))
+        .map(|(_, cost)| cost)
+        .sum();
+    if final_cost.is_none() {
+        cost_usd += live_cost_usd;
+    }
     if efficiency.seen && input_tokens == 0 && output_tokens == 0 {
         input_tokens = efficiency.input_tokens;
         output_tokens = efficiency.output_tokens;
@@ -2098,6 +2129,7 @@ fn summarize_events(events: &[IndexedEvent]) -> Value {
             "cache_write_tokens": cache_write_tokens,
             "total_tokens": total_tokens,
             "cost_usd": cost_usd,
+            "live_cost_usd": live_cost_usd,
             "duration_ms": duration_ms,
         }
     })
@@ -3114,6 +3146,59 @@ mod tests {
                 )
             })
             .collect()
+    }
+
+    /// gap-5c3347: a running try's spend counts in the run's summary as its
+    /// model calls return (`call_cost`), beside the settled tries' own
+    /// records, and stops counting once the try settles.
+    #[test]
+    fn a_running_try_s_spend_reaches_the_run_summary() {
+        let dir = tempfile::tempdir().unwrap();
+        let index = dir.path().join("run.jsonl");
+        let efficiency = |metric: &str, value: f64| json!({"type":"efficiency_event","run_id":"g1","plan_id":"p1","task_id":"T1","metric":metric,"value":value});
+        let call = |task: &str, attempt: u32, call: u32, so_far: f64| json!({"type":"call_cost","run_id":"g1","plan_id":"p1","task_id":task,"attempt":attempt,"call":call,"model":"glm-4.7","input_tokens":1000,"output_tokens":100,"cost_usd":0.01,"attempt_cost_usd":so_far});
+        let settled = |task: &str, attempt: u32| json!({"type":"attempt_settled","run_id":"g1","plan_id":"p1","task_id":task,"attempt":attempt,"verdict":"passed","cost_usd":0.02});
+        let summary = |rows: &[Value]| {
+            write_rows(&index, rows);
+            let page = read_index_page(
+                &index,
+                "g1",
+                EventSource::Runner,
+                0,
+                100,
+                MAX_PAGE_SCAN_BYTES,
+                &BTreeSet::new(),
+                &LogScrubber::new(),
+            )
+            .unwrap();
+            summarize_events(&page.events)["metrics"].clone()
+        };
+        let cost = |metrics: &Value, name: &str| metrics[name].as_f64().expect(name);
+
+        // T1 settled at $0.02; T2's try has made two calls, $0.03 so far.
+        let mut rows = vec![
+            call("T1", 1, 1, 0.01),
+            call("T1", 1, 2, 0.02),
+            settled("T1", 1),
+            efficiency("cost_usd", 0.02),
+            call("T2", 1, 1, 0.01),
+            call("T2", 1, 2, 0.03),
+        ];
+        let running = summary(&rows);
+        assert!(
+            (cost(&running, "cost_usd") - 0.05).abs() < 1e-9,
+            "{running}"
+        );
+        assert!(
+            (cost(&running, "live_cost_usd") - 0.03).abs() < 1e-9,
+            "{running}"
+        );
+
+        // T2's try settles: its own records count it, and nothing is live.
+        rows.extend([settled("T2", 1), efficiency("cost_usd", 0.03)]);
+        let ended = summary(&rows);
+        assert!((cost(&ended, "cost_usd") - 0.05).abs() < 1e-9, "{ended}");
+        assert!(cost(&ended, "live_cost_usd").abs() < 1e-9, "{ended}");
     }
 
     fn write_rows(path: &FsPath, rows: &[Value]) {

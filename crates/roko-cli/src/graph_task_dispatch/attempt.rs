@@ -1581,7 +1581,7 @@ mod tests {
     use crate::graph_task_dispatch::tests::{
         FIXTURE_HANG_GUARD_SECS, FIXTURE_PROVIDER_TIMEOUT_MS, VERIFY_PROVIDER, final_turn,
         make_bare_dispatcher, make_spec, make_task_def, make_test_dispatcher, no_auto_fix,
-        spawn_openai_mock, verify_step,
+        spawn_openai_mock, tool_call_turn, verify_step,
     };
     use crate::runtime_feedback::EpisodeSink;
 
@@ -2277,6 +2277,106 @@ printf '%s\n' '{"type":"result","session_id":"sess-v1","model":"claude-sonnet-4-
             "{phases}"
         );
         assert_eq!(phases["checks"][0]["passed"], true);
+    }
+
+    /// gap-5c3347: a try's spend reaches the hub as each model call returns,
+    /// not only when the try settles: one `call_cost` per call, priced at its
+    /// model's rates, with the attempt's spend so far growing with each.
+    #[tokio::test]
+    async fn a_running_try_reports_its_spend_per_model_call() {
+        use roko_core::DashboardEvent;
+
+        let temp = tempdir().expect("tempdir");
+        std::fs::write(temp.path().join("notes.txt"), "notes\n").expect("seed notes");
+        // Two calls read the notes and the third answers; call n reads
+        // 1,000 x n tokens and writes 100, at $1 and $2 per million.
+        let read = serde_json::json!({ "path": "notes.txt" });
+        let mut turns = vec![
+            tool_call_turn("call-1", "read_file", read.clone()),
+            tool_call_turn("call-2", "read_file", read),
+            final_turn("done"),
+        ];
+        for (call, turn) in (1_u32..).zip(&mut turns) {
+            turn["usage"] = serde_json::json!({
+                "prompt_tokens": 1_000 * call,
+                "completion_tokens": 100,
+                "total_tokens": 1_000 * call + 100
+            });
+        }
+        let (base_url, _requests) = spawn_openai_mock(turns);
+        let hub = crate::state_hub::StateHub::default_capacity();
+        let mut events = hub.subscribe_events();
+        let dispatcher = make_bare_dispatcher(priced_api_config(base_url), temp.path())
+            .await
+            .with_tui_bridge(TuiBridge::new(hub.sender()));
+        let task = TaskDef {
+            model_hint: Some("api-model".to_string()),
+            timeout_secs: FIXTURE_HANG_GUARD_SECS,
+            verify: vec![verify_step("structural", "true")],
+            ..make_task_def("focused")
+        };
+        let ctx = CellContext::new().with_run_id(RUN.to_string());
+        dispatcher
+            .dispatch(&make_spec(&task), Vec::new(), &ctx)
+            .await
+            .expect("the verified attempt passes");
+
+        // The calls' costs, in the order the hub published them, and where
+        // the attempt's settlement came.
+        let mut calls = Vec::new();
+        let mut settled_after = None;
+        while let Ok(envelope) = events.try_recv() {
+            match envelope.payload {
+                DashboardEvent::CallCost {
+                    task_id,
+                    attempt,
+                    call,
+                    model,
+                    input_tokens,
+                    output_tokens,
+                    cost_usd,
+                    attempt_cost_usd,
+                    ..
+                } => {
+                    assert_eq!((task_id.as_str(), attempt), (task.id.as_str(), 1));
+                    assert_eq!(model, "api-model-1");
+                    calls.push((
+                        call,
+                        input_tokens,
+                        output_tokens,
+                        cost_usd,
+                        attempt_cost_usd,
+                    ));
+                }
+                DashboardEvent::AttemptSettled { .. } => settled_after = Some(calls.len()),
+                _ => {}
+            }
+        }
+        assert_eq!(calls.len(), 3, "{calls:?}");
+        assert_eq!(
+            settled_after,
+            Some(3),
+            "every call's cost came before the try settled"
+        );
+        let mut total = 0.0;
+        for (n, (call, input, output, cost, so_far)) in (1_u32..).zip(&calls) {
+            let expected = 0.001 * f64::from(n) + 0.000_2;
+            total += expected;
+            assert_eq!(
+                (*call, *input, *output),
+                (n, 1_000 * u64::from(n), 100),
+                "{calls:?}"
+            );
+            let cost = cost.expect("the model's rates price the call");
+            assert!(
+                (cost - expected).abs() < 1e-6,
+                "call {n} cost ${cost}, not ${expected}"
+            );
+            assert!(
+                (so_far - total).abs() < 1e-6,
+                "after call {n}: ${so_far}, not ${total}"
+            );
+        }
     }
 
     /// `api-model` on an OpenAI-compatible provider the mock at `base_url`

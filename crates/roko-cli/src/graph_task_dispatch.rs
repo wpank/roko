@@ -56,6 +56,7 @@ mod audit_select;
 pub(crate) mod baseline_verify;
 mod bench_verify;
 mod budget;
+mod call_cost;
 mod check_output;
 mod decision_log;
 mod diff_snapshot;
@@ -1492,9 +1493,14 @@ impl TaskDispatcher for GraphTaskDispatcher {
             live_output: None,
             attempt_key: Some(attempt.key.attempt_key()),
             knowledge_ids: decision_log::included_knowledge_ids(&dispatch_plan),
-            allowance: allowance
-                .clone()
-                .map(|allowance| -> Arc<dyn crate::dispatch_v2::CallAllowance> { allowance }),
+            allowance: self.metered_calls(
+                allowance
+                    .clone()
+                    .map(|allowance| -> Arc<dyn crate::dispatch_v2::CallAllowance> { allowance }),
+                &spec.plan_id,
+                &task.id,
+                attempt.key.attempt,
+            ),
         };
         // FAST lane: fewer turns, a shorter attempt, a patch-only prompt.
         self.fast_bound(&mut request);

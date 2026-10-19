@@ -713,6 +713,7 @@ pub(crate) async fn cmd_serve_detach(
     let options = DetachOptions {
         workdir: flags.workdir.unwrap_or_else(|| resolve_workdir(cli)),
         port: flags.port,
+        port_fallback: false,
         bind: flags.bind,
         idle_exit_secs: flags.idle_exit,
         enable_terminal: flags.enable_terminal,
@@ -935,12 +936,25 @@ fn describe_restart(workdir: &Path, outcome: &roko_cli::serve_lifecycle::Restart
     use roko_cli::serve_lifecycle::RestartOutcome;
 
     match outcome {
-        RestartOutcome::Restarted(detached) => format!(
-            "restarted roko serve for {} at {} (pid {})",
-            workdir.display(),
-            detached.endpoint.url,
-            detached.endpoint.pid
-        ),
+        RestartOutcome::Restarted {
+            detached,
+            moved_from,
+        } => {
+            let mut line = format!(
+                "restarted roko serve for {} at {} (pid {})",
+                workdir.display(),
+                detached.endpoint.url,
+                detached.endpoint.pid
+            );
+            // bug-10d745: a client that pinned the old URL has to follow it.
+            if let Some(old) = moved_from {
+                line.push_str(&format!(
+                    "\n  moved from port {old} to {}: port {old} did not come free",
+                    detached.endpoint.port
+                ));
+            }
+            line
+        }
         RestartOutcome::Failed(error) => format!(
             "stopped roko serve for {}, but it did not start again: {}",
             workdir.display(),

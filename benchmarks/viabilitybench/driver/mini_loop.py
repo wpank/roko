@@ -27,12 +27,27 @@ an outgoing connection, to the loopback, the metering proxy and DNS included, an
 rule and the confinement that applied (`provenance.network_policy`); off macOS that is "none", and the network stays
 open (gap-29ac83).
 
+**A neutral parent** (bug-0fd744). The agent's shell can read its parent's command line and start-up environment, with
+`ps -E` or, from inside the sandbox, `sysctl(KERN_PROCARGS2)`. The driver's name the experiment, the run id (a
+campaign's names its block: `e-oss-1` is LOG1's block E, the honeypots), the results root and the benchmark's own path,
+and its environment holds `VB_DRIVER_ENV` and the driver's other `VB_*` settings. So the driver never starts the shell
+itself: each command runs under a trampoline, the base interpreter the driver's venv was made from
+(`agent_env._base_python`, outside the repository, the one the agent's own `python3` is), run as `-I -S -`, which reads
+its program (`TRAMPOLINE`) from a pipe on its stdin. Its command line is that interpreter and those flags, and its
+environment is the agent's own. It starts the command line the driver used to start (the sandbox, then bash or the
+wrapper) with the agent's environment and `/dev/null` on stdin, waits for it, and reports on a pipe of its own, which
+the shell never inherits, that the shell started, then its exit code or the signal that killed it, or why it could not
+start. So the command's output, its exit status and the observation are what they were, and the trampoline and the
+shell share one session, which the driver kills as before. The shell is no longer its session's leader: the trampoline
+is. The driver stays readable one step further up, as any process of the operator's user does (gap-b94a2c, and
+bug-4f9e49 for its command line).
+
 API:
     run_task(ctx: harness.TaskContext) -> harness.TaskOutcome
     parse_command(reply: str) -> str | None
     run_command(command, *, cwd, env, timeout_s, observation_chars, wrapper=None, deny=()) -> CommandResult
     network_policy(deny) -> dict                       # what the run record says of the agent's network
-    NETWORK, PROMPT_VERSION, PROMPT_SHA256, SUBMIT
+    NETWORK, PROMPT_VERSION, PROMPT_SHA256, SUBMIT, TRAMPOLINE, TRAMPOLINE_FLAGS
 """
 
 from __future__ import annotations
@@ -40,6 +55,7 @@ from __future__ import annotations
 import hashlib
 import os
 import re
+import select
 import shutil
 import signal
 import subprocess
@@ -47,6 +63,7 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
+import agent_env
 import caps
 import harness
 import layout  # noqa: F401 (puts families/ on sys.path for common)
@@ -106,6 +123,31 @@ and one bash block. To finish, run `echo {submit}` alone.
 PROMPT_SHA256 = hashlib.sha256("\0".join([SYSTEM_PROMPT, TASK_MESSAGE, RETRY_NOTE, FORMAT_ERROR, SUBMIT]).encode()
                                ).hexdigest()
 
+# The trampoline every agent command runs under (module docstring, bug-0fd744): the base interpreter, isolated (so
+# nothing in the workdir or the environment shapes it) and without site packages, reading its program from stdin.
+TRAMPOLINE_FLAGS = ("-I", "-S", "-")
+# Its program. `run_command` puts ARGV and ENV first, the command line and environment the driver used to start the
+# shell with, as bytes, and STATUS, the write end of a pipe back to the driver, which the shell never inherits. It
+# writes "+" once the shell has started and "=<code>" once it has ended (its exit code, or minus the signal that killed
+# it, as `Popen.returncode` reads), or "-<error>" when it could not start, worded as `Popen`'s error. It restores the
+# signals `Popen` restores (`restore_signals`), and it never raises the shell's signal on itself, which would leave a
+# crash report for a shell that aborted.
+TRAMPOLINE = """\
+import os, signal
+os.set_inheritable(STATUS, False)
+try:
+    pid = os.posix_spawn(ARGV[0], ARGV, ENV, file_actions=[(os.POSIX_SPAWN_OPEN, 0, os.devnull, os.O_RDONLY, 0)],
+                         setsigdef=[getattr(signal, name) for name in ("SIGPIPE", "SIGXFZ", "SIGXFSZ")
+                                    if hasattr(signal, name)])
+except OSError as err:
+    os.write(STATUS, b"-" + f"[Errno {err.errno}] {err.strerror}: {os.fsdecode(ARGV[0])!r}".encode())
+    os._exit(127)
+os.write(STATUS, b"+")
+code = os.waitstatus_to_exitcode(os.waitpid(pid, 0)[1])
+os.write(STATUS, b"=%d" % code)
+os._exit(code if code >= 0 else 128 - code)
+"""
+
 
 @dataclass(frozen=True)
 class CommandResult:
@@ -147,32 +189,48 @@ def parse_command(reply: str) -> str | None:
 def run_command(command: str, *, cwd: Path, env: dict[str, str], timeout_s: float,
                 observation_chars: int, wrapper: Path | None = None, deny: tuple[Path, ...] = ()) -> CommandResult:
     """Run `command` with bash, or with the visible-verify `wrapper`, in its own session, with no network and none of
-    the `deny` paths (module docstring); kill the whole session when it ends or times out."""
+    the `deny` paths, under the trampoline, so that its parent names nothing of the run (module docstring); kill the
+    whole session when it ends or times out."""
     bash = shutil.which("bash", path=env.get("PATH")) or "/bin/bash"
     argv = sandbox.command([str(wrapper), command] if wrapper else [bash, "-c", command], deny=deny, network=NETWORK)
+    trampoline = [str(agent_env._base_python()), *TRAMPOLINE_FLAGS]
+    shell = [os.fsencode(part) for part in argv]  # the checks `Popen` made when it started the shell itself
+    if any(b"\0" in part for part in shell):
+        raise ValueError("embedded null byte")
+    environ = {os.fsencode(name): os.fsencode(value) for name, value in env.items()}
+    status_read, status_write = os.pipe()
+    program = f"ARGV, ENV, STATUS = {shell!r}, {environ!r}, {status_write}\n{TRAMPOLINE}".encode("ascii")
     try:
-        process = subprocess.Popen(argv, cwd=cwd, env=env, stdin=subprocess.DEVNULL,
-                                   stdout=subprocess.PIPE, stderr=subprocess.STDOUT, start_new_session=True)
-    except OSError as err:
-        text = f"could not start bash: {err}"
-        return CommandResult(None, text, False, False, _observation(None, text, False, timeout_s, observation_chars))
-    timed_out = False
-    try:
-        raw, _ = process.communicate(timeout=max(timeout_s, 0.1))
-    except subprocess.TimeoutExpired:
-        timed_out = True
-        _kill_session(process.pid)
         try:
-            raw, _ = process.communicate(timeout=5)
-        except subprocess.TimeoutExpired:  # a process outside the session still holds the pipe
-            process.kill()
-            raw = b""
+            process = subprocess.Popen(trampoline, cwd=cwd, env=env, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                                       stderr=subprocess.STDOUT, start_new_session=True, pass_fds=(status_write,))
+        except OSError as err:
+            return _not_started(str(err), timeout_s, observation_chars)
+        finally:
+            os.close(status_write)
+        timed_out = False
+        try:
+            raw, _ = process.communicate(program, timeout=max(timeout_s, 0.1))
+        except subprocess.TimeoutExpired:
+            timed_out = True
+            _kill_session(process.pid)
+            try:
+                raw, _ = process.communicate(timeout=5)
+            except subprocess.TimeoutExpired:  # a process outside the session still holds the pipe
+                process.kill()
+                raw = b""
+        finally:
+            _kill_session(process.pid)  # background jobs the command left behind
+        status = b"" if timed_out else _read_status(status_read)
     finally:
-        _kill_session(process.pid)  # background jobs the command left behind
+        os.close(status_read)
     text = raw.decode("utf-8", "replace")
+    if not timed_out and not status.startswith(b"+"):  # the trampoline never started the shell
+        why = status[1:].decode("utf-8", "replace") if status.startswith(b"-") else text.strip()
+        return _not_started(why or f"its trampoline exited {process.returncode}", timeout_s, observation_chars)
     lines = text.lstrip().splitlines()
     submitted = not timed_out and bool(lines) and lines[0].strip() == SUBMIT
-    code = None if timed_out else process.returncode
+    code = None if timed_out else _shell_code(status, process.returncode)
     return CommandResult(code, text, timed_out, submitted,
                          _observation(code, text, timed_out, timeout_s, observation_chars))
 
@@ -313,6 +371,32 @@ def _observation(code: int | None, text: str, timed_out: bool, timeout_s: float,
     head = (f"<returncode>timeout</returncode>\n<note>The command ran past its {timeout_s:g} s limit and was "
             f"killed.</note>") if timed_out else f"<returncode>{code}</returncode>"
     return f"{head}\n<output>\n{text}</output>"
+
+
+def _not_started(why: str, timeout_s: float, observation_chars: int) -> CommandResult:
+    text = f"could not start bash: {why}"
+    return CommandResult(None, text, False, False, _observation(None, text, False, timeout_s, observation_chars))
+
+
+def _read_status(fd: int) -> bytes:
+    """What the trampoline wrote on its status pipe (`TRAMPOLINE`). It has exited by now and the shell never held the
+    pipe, so its end comes at once; the bound only guards against a writer that should not exist."""
+    data = b""
+    while select.select([fd], [], [], 5)[0]:
+        chunk = os.read(fd, 4096)
+        if not chunk:
+            break
+        data += chunk
+    return data
+
+
+def _shell_code(status: bytes, trampoline_code: int | None) -> int | None:
+    """The shell's exit code as the trampoline reported it ("+=<code>"), or the trampoline's own when it was killed
+    before the shell ended."""
+    try:
+        return int(status.partition(b"=")[2])
+    except ValueError:
+        return trampoline_code
 
 
 def _kill_session(pid: int) -> None:

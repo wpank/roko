@@ -41,6 +41,8 @@ pub struct ToolLoopAgent {
     turn_cap: Option<u32>,
     // Production dispatch policy fields (T026/T027/T032)
     timeout: Duration,
+    /// The most a tool call that asks for its own budget may get.
+    max_timeout: Duration,
     capabilities: ToolPermission,
     audit_sink: Arc<dyn AuditSink>,
     trace_sink: Arc<dyn TraceSink>,
@@ -78,7 +80,13 @@ impl ToolLoopAgent {
             input_messages: Vec::new(),
             input_format: MultimodalInputFormat::default(),
             turn_cap: None,
-            timeout: Duration::from_secs(60),
+            // `[timeouts] tool_execution_ms` and `tool_execution_max_ms`'s
+            // defaults, which the provider adapters replace with the
+            // configured values (bug-c22bd9).
+            timeout: Duration::from_millis(roko_core::defaults::DEFAULT_REQUEST_TIMEOUT_MS),
+            max_timeout: Duration::from_millis(
+                roko_core::config::timeouts::DEFAULT_TOOL_EXECUTION_MAX_MS,
+            ),
             capabilities: ToolPermission {
                 read: true,
                 write: true,
@@ -167,6 +175,14 @@ impl ToolLoopAgent {
         self
     }
 
+    /// Let a tool call that asks for its own budget (`timeout_ms`) get up to
+    /// `max_timeout` (`[timeouts] tool_execution_max_ms`, bug-c22bd9).
+    #[must_use]
+    pub const fn with_max_timeout(mut self, max_timeout: Duration) -> Self {
+        self.max_timeout = max_timeout;
+        self
+    }
+
     /// Override the capability flags granted to tool handlers.
     #[must_use]
     pub const fn with_capabilities(mut self, capabilities: ToolPermission) -> Self {
@@ -223,6 +239,7 @@ impl ToolLoopAgent {
     fn context_factory(&self) -> ToolExecutionContextFactory {
         let mut factory = ToolExecutionContextFactory::new(&self.worktree_path)
             .with_timeout(self.timeout)
+            .with_max_timeout(self.max_timeout)
             .with_capabilities(self.capabilities)
             .with_audit_sink(Arc::clone(&self.audit_sink))
             .with_trace_sink(Arc::clone(&self.trace_sink))

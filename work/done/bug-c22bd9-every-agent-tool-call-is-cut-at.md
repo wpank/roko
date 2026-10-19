@@ -2,7 +2,7 @@
 id = "bug-c22bd9"
 kind = "bug"
 title = "Every agent tool call is cut at 60 s: ToolLoopAgent's tool timeout defaults to 60 s and is never set from [timeouts] tool_execution_ms, and bash ignores its advertised timeout_ms, so an agent can't finish a build longer than a minute"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p1"
 goal = "golden-path"
@@ -11,6 +11,7 @@ subsystem = ["roko-agent/tool-loop"]
 created = 2026-10-19
 updated = 2026-10-19
 last_verified = 2026-10-19
+last_verified_rev = "b77db15c4"
 source = "round-v7-hermes-pilot#C-p0-run1"
 discovered_from = "agent:hermes-pilot (round v7 phase 0, run 6988f0b8, T3 try 2)"
 anchors = ["crates/roko-agent/src/tool_loop/agent_wrapper.rs::ToolLoopAgent", "crates/roko-agent/src/tool_loop/context_factory.rs::ToolExecutionContextFactory", "crates/roko-std/src/tool/builtin/bash.rs::run", "crates/roko-core/src/config/timeouts.rs::tool_execution"]
@@ -18,6 +19,15 @@ links = { depends_on = [], blocks = [], related = ["bug-872885", "gap-5c3347", "
 
 [[verify]]
 command = "grep -rqw 'fn a_bash_call_runs_past_sixty_seconds_when_asked' crates/ && cargo test -p roko-agent -- a_bash_call_runs_past_sixty_seconds_when_asked"
+
+[closed]
+at = 2026-10-19
+at_ts = "2026-10-19T14:46:21Z"
+commit = "b77db15c4"
+size = "S"
+claimed_at = "2026-10-19T14:02:35Z"
+forced = false
+evidence = "ToolContext::call_timeout gives a call to a tool that takes timeout_ms (bash, run_tests) what it asks for, up to the new [timeouts] tool_execution_max_ms (default 600000 ms), else [timeouts] tool_execution_ms (now wired: create_agent_for_model fills AgentOptions tool_timeout/tool_timeout_max from config and every roko tool-loop adapter applies them; the hard-coded 60 s defaults in ToolLoopAgent and the context factory are now 120 s / 600 s). bash and run_tests enforce it themselves; the dispatcher gives such tools the call budget plus 5 s grace instead of min(context, definition); a longer ask is cut to the cap and a call that then runs out says so. Verify: cargo test -p roko-agent -- a_bash_call_runs_past_sixty_seconds_when_asked passes (a real dispatcher plus the real bash tool run sleep 70 with timeout_ms 90000 to completion in 70.04 s); a_bash_call_asking_past_the_cap_is_cut_at_it_and_told, roko-core call_timeout_honours_the_ask_up_to_the_cap and the roko-std bash/run_tests tests pass (123 roko-agent, 9 roko-core, 19 roko-std lib tests); clippy --no-deps -D warnings clean on roko-core, roko-std, roko-agent, roko-dreams, roko-serve, roko-cli; nightly fmt clean."
 +++
 
 ## Problem

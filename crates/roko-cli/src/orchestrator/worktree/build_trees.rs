@@ -964,6 +964,15 @@ mod tests {
             "int b(void) { return 2; } /* changed */\n",
         )
         .expect("change b.c");
+        // The whole test can run inside one second, and make (3.81 on macOS)
+        // compares whole seconds: the change is dated after the build.
+        let built = mtime(&checkout.join("build/CMakeFiles/warm.dir/src/b.c.o"));
+        let later = built
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("after the epoch")
+            .as_secs()
+            + 2;
+        set_mtime(&checkout.join("src/b.c"), later);
         let second = cmake_run(&checkout, &["--build", "build"]);
         assert!(
             second.contains("b.c.o"),

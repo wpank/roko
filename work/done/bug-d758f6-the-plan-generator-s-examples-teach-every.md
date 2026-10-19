@@ -2,7 +2,7 @@
 id = "bug-d758f6"
 kind = "bug"
 title = "The plan generator's examples teach every task a restricted tool set (read_file, grep, write_file; no bash, no edit_file), so planners copy it and implementers in compiled projects can't build or run their own checks"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p1"
 goal = "golden-path"
@@ -11,6 +11,7 @@ subsystem = ["roko-cli/plan-generate"]
 created = 2026-10-19
 updated = 2026-10-19
 last_verified = 2026-10-19
+last_verified_rev = "a80add56c"
 source = "round-v7-hermes-pilot#C-p0-tools"
 discovered_from = "agent:hermes-pilot (round v7 phase 0, 2026-10-19, plan writes 50608b6f and 437486f8)"
 anchors = ["crates/roko-cli/src/plan_generate.rs::PLAN_GENERATOR_SYSTEM_PROMPT", "crates/roko-cli/src/plan_generate/runnable.rs::repair_write_tools", "crates/roko-cli/src/graph_task_dispatch/routing_context.rs::effective_agent_contract"]
@@ -18,6 +19,16 @@ links = { depends_on = [], blocks = [], related = ["gap-770cb5", "bug-df9aff", "
 
 [[verify]]
 command = "grep -rqw 'fn generated_implementers_whose_checks_build_keep_a_shell' crates/roko-cli/src && cargo test -p roko-cli --lib -- generated_implementers_whose_checks_build_keep_a_shell"
+
+[closed]
+at = 2026-10-19
+at_ts = "2026-10-19T16:08:19Z"
+commit = "0a32d1521"
+by = "roko-planner (round v7)"
+executor = "claude-agent"
+via = "manual"
+forced = false
+evidence = "Merged 123985df2 (work/bug-d758f6: 0a32d1521). plan_generate.rs: no example in PLAN_GENERATOR_SYSTEM_PROMPT sets allowed_tools or denied_tools (the field reference says they are omitted because the role's own tools fit the task), the role text says to leave them out and set one only to keep a task from a tool it must not use, and why (a task kept to read_file, write_file and grep cannot build, run its checks or patch a file, so each compile error costs a try), a checklist line, and the regeneration prompt no longer asks for tool lists. runnable.rs repair_shell_tools runs in generation before the write-tool repair: an implementer whose allowed_tools leave out bash or edit_file loses the list and keeps its role's own tools (bash, edit_file, run_tests and the rest of the coding set), and its denied_tools lose bash, edit_file and write_file; it is logged as a repair, with no planner call, and a scribe's list stays. plan validate: PLAN_057 warns about an implementer whose check runs more than file reads while its tools leave out bash; the pilot's phase-0 plan (fixture tests/fixtures/p0_tool_lists) gets it on all 4 tasks, and no plan in the repo's plans/ does. Verify: generated_implementers_whose_checks_build_keep_a_shell failed before the fix (the plan kept [\"read_file\", \"write_file\", \"grep\"]) and passes at 123985df2, with the 160 plan_generate/plan_validate/spec_red_on_base tests; implementers_whose_checks_run_code_get_a_shell and generator_prompt_leaves_tool_lists_out pass. On the branch: roko-cli lib 3863 passed (one timing flake in build_trees::seeded_worktree_builds_nothing that passes alone, told to roko-speed), clippy -D warnings and nightly fmt clean."
 +++
 
 ## Problem

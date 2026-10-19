@@ -1621,6 +1621,9 @@ pub async fn generate_plan(request: PlanRequest<'_>) -> Result<(PathBuf, Generat
             // a criterion of its task that states the check.
             let mut repairs = repair_generated_draft(&mut parsed, policy, workdir_ref);
             repairs.extend(source_checks::normalize_covers(&mut parsed, &checks));
+            // bug-96115c: a check the source names as the plan's final check
+            // runs in `[[meta.verify]]`, its command unchanged.
+            repairs.extend(source_checks::add_plan_checks(&mut parsed, &checks));
             // gap-ecafde: a pytest step without pytest runs as unittest, and a
             // test file a task's check needs joins its files.
             repairs.extend(runnable::repair(&mut parsed, workdir_ref, &probe));
@@ -3835,6 +3838,51 @@ mod tests {
         assert_eq!(written.tasks.len(), 1);
         assert_eq!(written.tasks[0].role.as_deref(), Some("scribe"));
         assert_eq!(written.tasks[0].files, ["docs/spec.md"]);
+    }
+
+    /// bug-96115c: a request that names its final check gets a plan whose
+    /// `[[meta.verify]]` runs it, though the planner wrote none, after one
+    /// call: the check counts as kept, so nothing is asked again.
+    #[cfg(unix)]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn generation_runs_the_requests_final_check_in_meta_verify() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let workdir = temp.path();
+        let bin = tempfile::tempdir().expect("tempdir");
+        let calls = write_scripted_planner(
+            workdir,
+            bin.path(),
+            &[WIDGET_PLAN],
+            "allow_threshold = 0.0\nblock_threshold = 0.0\n",
+        );
+        let request = PlanRequest {
+            model: Some("planner"),
+            ..PlanRequest::new(
+                PlanSource::Text {
+                    text: "# Widget\n\nAdd a widget module.\n\n## Notes for the planner\n\n\
+                           - `tools/check.sh` is the plan's final check, not any one task's.\n",
+                    kind: "file",
+                },
+                "widget",
+                workdir,
+            )
+        };
+        let (_, outcome) = generate_plan(request)
+            .await
+            .expect("generate the widget plan");
+        let log = std::fs::read_to_string(&calls).expect("planner call log");
+        assert_eq!(log.lines().count(), 1, "repaired, not asked again");
+        let written =
+            TasksFile::parse(&workdir.join("plans/widget/tasks.toml")).expect("the widget plan");
+        let commands: Vec<&str> = written
+            .meta
+            .verify
+            .iter()
+            .map(|step| step.command.as_str())
+            .collect();
+        assert_eq!(commands, ["tools/check.sh"]);
+        let checks = outcome.source_checks.expect("the request states a check");
+        assert_eq!((checks.kept, checks.total), (1, 1), "{checks:?}");
     }
 
     /// bug-d758f6: round v7's phase-0 planner copied the prompt's example

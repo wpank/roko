@@ -1065,9 +1065,23 @@ fn give_worktree_dependency_dirs(repo_root: &Path, worktree_path: &Path) {
 }
 
 /// The checkout's git-ignored [`DEPENDENCY_DIRS`] directories, relative to
-/// `repo_root`. `git ls-files` lists each ignored directory once, without
-/// descending into it. Empty when `repo_root` is no git checkout.
+/// `repo_root`. Empty when `repo_root` is no git checkout.
 fn ignored_dependency_dirs(repo_root: &Path) -> Vec<PathBuf> {
+    ignored_dirs(repo_root)
+        .into_iter()
+        .filter(|entry| {
+            entry
+                .file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| DEPENDENCY_DIRS.contains(&name))
+        })
+        .collect()
+}
+
+/// The checkout's git-ignored directories, relative to `repo_root`. `git
+/// ls-files` lists each ignored directory once, without descending into it.
+/// Empty when `repo_root` is no git checkout.
+pub(super) fn ignored_dirs(repo_root: &Path) -> Vec<PathBuf> {
     let output = std::process::Command::new("git")
         .args([
             "ls-files",
@@ -1084,18 +1098,13 @@ fn ignored_dependency_dirs(repo_root: &Path) -> Vec<PathBuf> {
     let Some(output) = output.ok().filter(|output| output.status.success()) else {
         return Vec::new();
     };
+    // A directory is listed with a trailing `/`, an ignored file without.
     output
         .stdout
         .split(|byte| *byte == 0)
         .filter_map(|entry| std::str::from_utf8(entry).ok())
-        .map(|entry| entry.trim_end_matches('/'))
-        .filter(|entry| {
-            Path::new(entry)
-                .file_name()
-                .and_then(|name| name.to_str())
-                .is_some_and(|name| DEPENDENCY_DIRS.contains(&name))
-        })
-        .map(PathBuf::from)
+        .filter_map(|entry| entry.strip_suffix('/'))
+        .map(|entry| PathBuf::from(entry.trim_end_matches('/')))
         .collect()
 }
 
@@ -1150,7 +1159,7 @@ fn clone_dependency_dir(
 /// A copy-on-write clone of the directory `source` at `target`, made by the
 /// platform's `cp`: `clonefile` on macOS, `--reflink=always` on Linux. False,
 /// and nothing left at `target`, where the filesystem cannot clone.
-fn clone_tree(source: &Path, target: &Path) -> std::io::Result<bool> {
+pub(super) fn clone_tree(source: &Path, target: &Path) -> std::io::Result<bool> {
     let mut cp = std::process::Command::new("cp");
     if cfg!(target_os = "macos") {
         cp.arg("-cRp");

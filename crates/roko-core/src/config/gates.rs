@@ -426,6 +426,14 @@ pub struct GatesConfig {
     /// sets for a check itself, such as its `CARGO_TARGET_DIR`, stay.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub strip_env: Vec<String>,
+    /// Build trees a new attempt checkout gets from the person's checkout, as
+    /// a copy-on-write clone moved to the checkout's path, so its first check
+    /// builds incrementally instead of from nothing (gap-6754ab). Directories
+    /// relative to the repository root, each git-ignored. Unset: every
+    /// git-ignored directory holding a CMake build tree (`CMakeCache.txt` at
+    /// most two levels down). `[]`: none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub warm_build_dirs: Option<Vec<String>>,
     /// Custom gate rungs. When non-empty, these replace the built-in defaults.
     /// `roko run` and every `roko plan run` task run the required ones as
     /// verify steps ([`Self::required_rungs`]).
@@ -517,6 +525,7 @@ impl Default for GatesConfig {
             diff_scope: DiffScope::Record,
             env_passthrough: Vec::new(),
             strip_env: Vec::new(),
+            warm_build_dirs: None,
             custom_rungs: Vec::new(),
             packs: BTreeMap::new(),
             max_rung: None,

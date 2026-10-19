@@ -84,7 +84,10 @@ families F2, F3 and F5–F8, `external/swebench/`, and the other streams and arm
 - the Claude Code arm (`run_cli.py`, harness `claude-code`) serves `fd_claude`: `claude -p` with an isolated config,
   on the subscription;
 - the Codex CLI arm (`run_codex.py`, harness `codex-cli`) serves `fd_codex`: `codex exec --json` with a fresh Codex
-  home, on the ChatGPT subscription, reusing `run_cli.py`'s session, kill and egress machinery.
+  home, on the ChatGPT subscription, reusing `run_cli.py`'s session, kill and egress machinery;
+- the mini-swe-agent arm (`run_msa.py`, harness `mini-swe-agent`) serves `cheap_direct_msa`: the pinned
+  mini-swe-agent's `mini` CLI as a second direct loop (S08 decision 3), from a venv of its own outside the repository
+  ("mini-swe-agent's venv" below).
 
 Each runner's module docstring has its isolation, caps and costs. The bullets below describe the direct loop, and
 most hold for every arm.
@@ -323,3 +326,22 @@ uv pip compile requirements-analysis.in --generate-hashes --universal --python-v
 ```
 
 The second line regenerates that lock from this directory after `requirements-analysis.in` changes.
+
+### mini-swe-agent's venv
+
+The `cheap_direct_msa` arm runs mini-swe-agent (`requirements-msa.lock`, pinned with hashes) from a venv of its own,
+never the test venv and never anywhere in this tree: mini-swe-agent runs each of its agent's commands in a shell that
+is its child, and from inside the sandbox that shell reads `mini`'s command line and start-up environment, which name
+the venv and its python. So their path names neither the repository nor the benchmark (bug-e16450), and `vb run`
+refuses an arm whose `mini`, or the interpreter its first line names, lies inside the repository or names the
+benchmark. The arm file's default is `~/.local/share/mini-swe-agent/venv/bin/mini`; from the repository root:
+
+```bash
+python3 -m venv ~/.local/share/mini-swe-agent/venv                       # Python 3.11 or newer
+~/.local/share/mini-swe-agent/venv/bin/python -m pip install --require-hashes \
+    -r benchmarks/viabilitybench/requirements-msa.lock
+```
+
+Elsewhere, point the arm's `[msa] binary` at that venv's `bin/mini`, under a path that names no benchmark. An older
+`benchmarks/viabilitybench/.venv-msa/` is no longer used, and `vb run` refuses it. To change the pin, edit
+`requirements-msa.in` and regenerate its lock as its header says.

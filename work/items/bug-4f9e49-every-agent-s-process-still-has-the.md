@@ -60,8 +60,8 @@ the pre-registration lock (gap-394f28), since it changes what the agents can lea
 
 The direct loop's shell's parent is the trampoline (bug-0fd744, `mini_loop.TRAMPOLINE`): the base interpreter as
 `-I -S -`, with the agent's own environment. Claude Code's and Codex's command lines name no run (bug-4c3a83); Roko's
-names its binary under the repository, which names no run or benchmark; mini-swe-agent's names its venv
-(bug-e16450). None of that hides the driver above them.
+names its binary under the repository, which names no run or benchmark; mini-swe-agent's names its venv, outside the
+repository under a neutral path since bug-e16450. None of that hides the driver above them.
 
 ## Plan
 

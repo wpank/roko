@@ -1,5 +1,12 @@
 # The pinned candidate direct loop (3317, S08 decision 3): MIT, github.com/SWE-agent/mini-swe-agent. Installed into
-# its own venv, .venv-msa/, never into the driver's own .venv/: driver/run_msa.py runs its `mini` CLI as a
-# subprocess and never imports it. Regenerate the lock after changing this file:
+# a venv of its own outside the repository, never into the driver's own .venv/ nor anywhere in this tree: mini's
+# command line, which its agent's shell reads from inside the sandbox, names that venv and its python, so their path
+# may name neither the repository nor the benchmark (bug-e16450). driver/run_msa.py runs its `mini` CLI as a
+# subprocess, never imports it, and refuses a binary inside the repository. From the repository root, with Python
+# 3.11 or newer:
+#     python3 -m venv ~/.local/share/mini-swe-agent/venv
+#     ~/.local/share/mini-swe-agent/venv/bin/python -m pip install --require-hashes \
+#         -r benchmarks/viabilitybench/requirements-msa.lock
+# Regenerate the lock after changing this file:
 #     uv pip compile requirements-msa.in --generate-hashes --universal --python-version 3.11 -o requirements-msa.lock
 mini-swe-agent==2.4.6

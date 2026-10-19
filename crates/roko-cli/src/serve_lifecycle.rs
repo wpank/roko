@@ -62,6 +62,10 @@ const LOCK_GRACE: Duration = Duration::from_secs(3);
 /// How long a stop waits for a process to go after SIGKILL.
 const KILL_WAIT: Duration = Duration::from_secs(2);
 
+/// How long a restart waits for the old port to come free after the stop,
+/// before it moves the serve (bug-10d745).
+const PORT_FREE_WAIT: Duration = Duration::from_secs(2);
+
 /// How often waits look again.
 const POLL: Duration = Duration::from_millis(100);
 
@@ -373,6 +377,10 @@ pub struct DetachOptions {
     pub workdir: PathBuf,
     /// `--port`; the configured port when free, else one the OS picks.
     pub port: Option<u16>,
+    /// When `port` cannot be bound, start on the configured port or one the
+    /// OS picks instead of failing: a restart that moves a serve whose old
+    /// port is taken (bug-10d745). An explicit `--port` never falls back.
+    pub port_fallback: bool,
     /// `--bind`.
     pub bind: Option<String>,
     /// `--idle-exit` seconds; `None` or `0` never.
@@ -392,6 +400,7 @@ impl DetachOptions {
         Self {
             workdir: workdir.into(),
             port: None,
+            port_fallback: false,
             bind: None,
             idle_exit_secs: None,
             enable_terminal: false,
@@ -497,11 +506,23 @@ pub fn detach(options: &DetachOptions) -> Result<Detached, LifecycleError> {
             }
             ChildWait::Exited(status) => {
                 let output = read_from(&log, log_start);
-                // The configured port was taken between the check and the
-                // bind, by another serve starting now: let the OS pick one.
-                if options.port.is_none() && !retried_port && port != 0 && bind_failed(&output) {
+                // The port was taken between the check and the bind, by
+                // another serve starting now: the configured port or one the
+                // OS picks, unless `--port` asked for this one.
+                let may_move = options.port.is_none() || options.port_fallback;
+                if may_move && !retried_port && port != 0 && bind_failed(&output) {
                     retried_port = true;
-                    port = 0;
+                    let failed = port;
+                    port = choose_port(
+                        &workdir,
+                        &DetachOptions {
+                            port: None,
+                            ..options.clone()
+                        },
+                    );
+                    if port == failed {
+                        port = 0;
+                    }
                     continue;
                 }
                 return early_exit(&workdir, &log, &output, status, deadline).map(|running| {
@@ -687,25 +708,59 @@ fn bind_failed(output: &str) -> bool {
             || output.contains("os error 48"))
 }
 
-/// `--port`; else the configured port (`[server] port`, or `[serve] port`
-/// while that is the default) when it is free on the bind address; else `0`,
-/// so the OS picks one and `serve.json` records it.
+/// `--port`; else the configured port when it is free on the bind address;
+/// else `0`, so the OS picks one and `serve.json` records it.
 fn choose_port(workdir: &Path, options: &DetachOptions) -> u16 {
     if let Some(port) = options.port {
         return port;
     }
+    let (configured_bind, configured_port) = configured_listener(workdir);
+    let bind = options.bind.as_deref().unwrap_or(&configured_bind);
+    if port_is_free(bind, configured_port) {
+        configured_port
+    } else {
+        0
+    }
+}
+
+/// Where `workdir`'s serve listens without flags: its `[server] bind`, and its
+/// `[server] port` (or `[serve] port` while that is the default).
+fn configured_listener(workdir: &Path) -> (String, u16) {
     let config = roko_core::config::loader::load_config_unified(workdir).unwrap_or_default();
-    let configured = if config.server.port == crate::DEFAULT_SERVE_PORT {
+    let port = if config.server.port == crate::DEFAULT_SERVE_PORT {
         config.serve.port.unwrap_or(config.server.port)
     } else {
         config.server.port
     };
-    let bind = options.bind.as_deref().unwrap_or(&config.server.bind);
-    if port_is_free(bind, configured) {
-        configured
-    } else {
-        0
+    (config.server.bind, port)
+}
+
+/// Whether `port` can be bound on `bind` within `within`, looking every
+/// [`POLL`].
+fn port_frees_up(bind: &str, port: u16, within: Duration) -> bool {
+    let deadline = Instant::now() + within;
+    loop {
+        if port_is_free(bind, port) {
+            return true;
+        }
+        if Instant::now() >= deadline {
+            return false;
+        }
+        std::thread::sleep(POLL);
     }
+}
+
+/// The port `served` listens on: its `port`, or, in a `serve.json` an older
+/// roko wrote without one, the port of its `url` (bug-10d745).
+#[must_use]
+pub fn served_port(served: &ServeEndpoint) -> Option<u16> {
+    if served.port != 0 {
+        return Some(served.port);
+    }
+    reqwest::Url::parse(&served.url)
+        .ok()?
+        .port_or_known_default()
+        .filter(|port| *port != 0)
 }
 
 /// Whether `port` can be bound on `bind` now.
@@ -1032,7 +1087,13 @@ pub fn stop(workdir: &Path, force: bool, timeout: Duration) -> StopOutcome {
 #[derive(Debug, Clone)]
 pub enum RestartOutcome {
     /// It was stopped and started again.
-    Restarted(Box<Detached>),
+    Restarted {
+        /// The serve it started.
+        detached: Box<Detached>,
+        /// The port it listened on before, when it now listens on another:
+        /// the old one did not come free (bug-10d745).
+        moved_from: Option<u16>,
+    },
     /// It was stopped, but did not start again.
     Failed(LifecycleError),
     /// It was not stopped: no serve ran, it is busy, or it does not answer.
@@ -1041,8 +1102,10 @@ pub enum RestartOutcome {
 
 /// Restart `workdir`'s serve on this executable: [`stop`] it (same busy
 /// rule), then [`detach`] it again with what it was started with — its bind,
-/// `--idle-exit`, `--enable-terminal` and `--config`, and its port when that
-/// is free again. A workspace whose serve does not run is not started.
+/// `--idle-exit`, `--enable-terminal` and `--config`, and its port, waiting up
+/// to [`PORT_FREE_WAIT`] for that to come free; a serve that has to move says
+/// from where (`moved_from`). A workspace whose serve does not run is not
+/// started.
 #[must_use]
 pub fn restart(workdir: &Path, force: bool, wait: Duration) -> RestartOutcome {
     let Some(served) = running_workspace_serve(workdir) else {
@@ -1052,8 +1115,15 @@ pub fn restart(workdir: &Path, force: bool, wait: Duration) -> RestartOutcome {
         StopOutcome::Stopped { .. } => {}
         other => return RestartOutcome::NotStopped(other),
     }
-    match detach(&restart_options(workdir, &served, wait)) {
-        Ok(detached) => RestartOutcome::Restarted(Box::new(detached)),
+    match detach(&restart_options(workdir, &served, wait, PORT_FREE_WAIT)) {
+        Ok(detached) => {
+            let old_port = served_port(&served);
+            let moved_from = old_port.filter(|old| *old != detached.endpoint.port);
+            RestartOutcome::Restarted {
+                detached: Box::new(detached),
+                moved_from,
+            }
+        }
         Err(error) => RestartOutcome::Failed(error),
     }
 }
@@ -1091,9 +1161,11 @@ pub fn stop_report(outcomes: &[(PathBuf, StopOutcome)], all: bool) -> (Value, i3
 }
 
 /// The JSON of `roko serve restart` over `outcomes` and its exit status:
-/// `{"ok", "restarted": [<--detach objects>], "busy", "not_running",
-/// "unresponsive", "failed": [{workdir, error}]}`, by [`stop_report`]'s rules;
-/// a serve that did not start again fails the command, also with `--all`.
+/// `{"ok", "restarted": [<--detach objects with "moved_from">], "busy",
+/// "not_running", "unresponsive", "failed": [{workdir, error}]}`, by
+/// [`stop_report`]'s rules; a serve that did not start again fails the
+/// command, also with `--all`. `moved_from` is the port a serve listened on
+/// before when it had to move, else null.
 #[must_use]
 pub fn restart_report(outcomes: &[(PathBuf, RestartOutcome)], all: bool) -> (Value, i32) {
     let mut report = json!({"ok": true, "restarted": [], "not_running": [], "busy": [],
@@ -1102,7 +1174,14 @@ pub fn restart_report(outcomes: &[(PathBuf, RestartOutcome)], all: bool) -> (Val
     let mut failed: Option<LifecycleError> = None;
     for (workdir, outcome) in outcomes {
         let (list, entry) = match outcome {
-            RestartOutcome::Restarted(detached) => ("restarted", detached.to_json()),
+            RestartOutcome::Restarted {
+                detached,
+                moved_from,
+            } => {
+                let mut entry = detached.to_json();
+                entry["moved_from"] = json!(moved_from);
+                ("restarted", entry)
+            }
             RestartOutcome::Failed(error) => {
                 failed.get_or_insert_with(|| error.clone());
                 (
@@ -1179,8 +1258,16 @@ fn unresponsive_error(workdir: &Path, pid: u32) -> LifecycleError {
     )
 }
 
-/// How to start `served` again in `workdir`.
-fn restart_options(workdir: &Path, served: &ServeEndpoint, wait: Duration) -> DetachOptions {
+/// How to start `served` again in `workdir`: on its old port
+/// ([`served_port`]) when that comes free within `free_wait`, else where a
+/// start without `--port` goes; and should the old port be taken again by
+/// the time the serve binds, there too rather than failing.
+fn restart_options(
+    workdir: &Path,
+    served: &ServeEndpoint,
+    wait: Duration,
+    free_wait: Duration,
+) -> DetachOptions {
     let ServeArgs {
         bind,
         enable_terminal,
@@ -1188,11 +1275,14 @@ fn restart_options(workdir: &Path, served: &ServeEndpoint, wait: Duration) -> De
         ..
     } = &served.args;
     let bind = (!bind.is_empty()).then(|| bind.clone());
-    let free =
-        served.port != 0 && port_is_free(bind.as_deref().unwrap_or("127.0.0.1"), served.port);
+    let probe_bind = bind
+        .clone()
+        .unwrap_or_else(|| configured_listener(workdir).0);
+    let port = served_port(served).filter(|port| port_frees_up(&probe_bind, *port, free_wait));
     DetachOptions {
         workdir: workdir.to_path_buf(),
-        port: free.then_some(served.port),
+        port,
+        port_fallback: true,
         bind,
         idle_exit_secs: served.idle_exit_secs,
         enable_terminal: *enable_terminal,
@@ -1646,16 +1736,119 @@ mod tests {
             enable_terminal: true,
             config: Some(PathBuf::from("/w/roko.toml")),
         };
-        let options = restart_options(Path::new("/w"), &served, Duration::from_secs(9));
+        let short = Duration::from_millis(200);
+        let options = restart_options(Path::new("/w"), &served, Duration::from_secs(9), short);
         assert_eq!(options.port, None, "the old port is taken");
+        assert!(options.port_fallback);
         assert_eq!(options.bind.as_deref(), Some("127.0.0.1"));
         assert_eq!(options.idle_exit_secs, Some(3600));
         assert!(options.enable_terminal);
         assert_eq!(options.config, Some(PathBuf::from("/w/roko.toml")));
         assert_eq!(options.wait, Duration::from_secs(9));
         drop(listener);
-        let options = restart_options(Path::new("/w"), &served, Duration::from_secs(9));
+        let options = restart_options(Path::new("/w"), &served, Duration::from_secs(9), short);
         assert_eq!(options.port, Some(taken), "the old port is free again");
+    }
+
+    /// The first port of the 6800-6849 test range that is free now.
+    fn free_test_port() -> u16 {
+        (6800..6850)
+            .find(|port| port_is_free("127.0.0.1", *port))
+            .expect("a free port in 6800-6849")
+    }
+
+    /// bug-10d745: a serve.json an older roko wrote has no `port` (it reads as
+    /// 0), but its `url` names the port; a restart keeps the serve there while
+    /// the port is free, waits a moment for it, and moves it only when it stays
+    /// taken.
+    #[test]
+    fn restart_keeps_a_legacy_serves_port_from_its_url() {
+        let dir = tempfile::tempdir().unwrap();
+        // The bind the restart probes, whatever the machine's global config says.
+        std::fs::write(
+            dir.path().join("roko.toml"),
+            "[server]\nbind = \"127.0.0.1\"\n",
+        )
+        .unwrap();
+        let port = free_test_port();
+        let legacy: ServeEndpoint = serde_json::from_value(json!({
+            "pid": 4242,
+            "url": format!("http://127.0.0.1:{port}"),
+            "workdir": dir.path(),
+            "started_at": "2026-10-19T09:00:00+00:00",
+        }))
+        .unwrap();
+        assert_eq!(legacy.port, 0, "no port field in a legacy serve.json");
+        assert_eq!(served_port(&legacy), Some(port));
+
+        let options = restart_options(dir.path(), &legacy, Duration::from_secs(9), Duration::ZERO);
+        assert_eq!(options.port, Some(port), "the legacy serve keeps its port");
+        assert!(options.port_fallback);
+        assert_eq!(options.bind, None, "a legacy serve recorded no bind");
+
+        let listener = std::net::TcpListener::bind(("127.0.0.1", port)).unwrap();
+        let began = Instant::now();
+        let options = restart_options(
+            dir.path(),
+            &legacy,
+            Duration::from_secs(9),
+            Duration::from_millis(300),
+        );
+        assert!(
+            began.elapsed() >= Duration::from_millis(300),
+            "it waited for the port"
+        );
+        assert_eq!(
+            options.port, None,
+            "a port that stays taken moves the serve"
+        );
+        drop(listener);
+
+        let mut ipv6 = legacy.clone();
+        ipv6.url = format!("http://[::1]:{port}");
+        assert_eq!(served_port(&ipv6), Some(port));
+        let mut current = legacy;
+        current.port = 6812;
+        assert_eq!(served_port(&current), Some(6812), "a recorded port wins");
+    }
+
+    /// bug-10d745: a restart that had to move a serve says from which port in
+    /// its JSON; `moved_from` is null for one that kept its port.
+    #[test]
+    fn restart_report_says_where_a_serve_moved_from() {
+        let detached = |port: u16| Detached {
+            started: true,
+            endpoint: ServeEndpoint {
+                port,
+                ..endpoint_for(Path::new("/w"), 7, &format!("http://127.0.0.1:{port}"), "i")
+            },
+            log: PathBuf::from("/w/.roko/logs/serve.log"),
+        };
+        let outcomes = vec![
+            (
+                PathBuf::from("/w"),
+                RestartOutcome::Restarted {
+                    detached: Box::new(detached(65254)),
+                    moved_from: Some(6681),
+                },
+            ),
+            (
+                PathBuf::from("/v"),
+                RestartOutcome::Restarted {
+                    detached: Box::new(detached(6802)),
+                    moved_from: None,
+                },
+            ),
+        ];
+        let (report, code) = restart_report(&outcomes, false);
+        assert_eq!(code, 0, "{report}");
+        assert_eq!(report["restarted"][0]["port"], 65254, "{report}");
+        assert_eq!(report["restarted"][0]["moved_from"], 6681, "{report}");
+        assert_eq!(
+            report["restarted"][1]["moved_from"],
+            Value::Null,
+            "{report}"
+        );
     }
 
     #[test]

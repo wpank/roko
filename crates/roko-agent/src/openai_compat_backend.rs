@@ -419,6 +419,34 @@ impl OpenAiCompatLlmBackend {
         format!("{}/chat/completions", self.base_url.trim_end_matches('/'))
     }
 
+    /// Admit a call to the endpoint, or hold it back as a rate limit, without
+    /// calling, while the provider is at the calls at once it showed it takes:
+    /// the tool loop and dispatch then wait it out or fail it over as they do a
+    /// 429, and parallel tasks do not all call a provider that refuses them
+    /// (bug-4b6844).
+    fn admit(&self) -> Result<crate::rate_limit::AdmittedCall, LlmError> {
+        self.rate_limiter.admit(&self.endpoint()).map_err(|held| {
+            tracing::info!(
+                provider = %self.provider_id,
+                in_flight = held.in_flight,
+                limit = held.limit,
+                "holding a call back: its provider rate-limited one with this many calls in \
+                 flight, so it is held as rate-limited without calling the provider"
+            );
+            LlmError::Provider(ProviderError::RateLimit {
+                retry_after_ms: None,
+            })
+        })
+    }
+
+    /// Note a refusal `error` that is a rate limit with the run's limiter,
+    /// which learns from it how many calls at once the provider takes.
+    fn note_refusal(&self, error: &LlmError) {
+        if matches!(error, LlmError::Provider(ProviderError::RateLimit { .. })) {
+            self.rate_limiter.note_rate_limited(&self.endpoint());
+        }
+    }
+
     /// Return a clone of the cached request headers.
     fn headers(&self) -> Vec<(String, String)> {
         self.computed_headers.clone()
@@ -655,6 +683,7 @@ impl LlmBackend for OpenAiCompatLlmBackend {
     ) -> Result<BackendResponse, LlmError> {
         let body_bytes = self.build_body(messages, tools, session, false)?;
         self.rate_limiter.acquire(&self.provider_id).await;
+        let _admitted = self.admit()?;
 
         let raw = match self
             .poster
@@ -669,6 +698,7 @@ impl LlmBackend for OpenAiCompatLlmBackend {
             Ok(raw) => raw,
             Err(err) => {
                 let mapped = classify_http_error(err);
+                self.note_refusal(&mapped);
                 self.record_failure(&mapped);
                 return Err(mapped);
             }
@@ -701,6 +731,7 @@ impl LlmBackend for OpenAiCompatLlmBackend {
     > {
         let body_bytes = self.build_body(messages, tools, session, true)?;
         self.rate_limiter.acquire(&self.provider_id).await;
+        let admitted = self.admit()?;
 
         let mut req = crate::provider::shared_http_client().post(self.endpoint());
         for (key, value) in &self.computed_headers {
@@ -747,7 +778,9 @@ impl LlmBackend for OpenAiCompatLlmBackend {
                 text,
                 retry_after,
             );
-            return Err(classify_http_error(raw_err));
+            let error = classify_http_error(raw_err);
+            self.note_refusal(&error);
+            return Err(error);
         }
 
         // Build the stream: spawn a task that reads HTTP chunks, parses SSE
@@ -762,6 +795,8 @@ impl LlmBackend for OpenAiCompatLlmBackend {
         let metrics_model = self.model.clone();
 
         tokio::spawn(async move {
+            // The call is in flight until its stream ends.
+            let _admitted = admitted;
             let mut response = response;
             let mut pending = Vec::new();
             let mut first_chunk = true;
@@ -2360,6 +2395,109 @@ mod tests {
             ),
             "expected Provider(RateLimit {{ 30_000ms }}), got {err:?}"
         );
+    }
+
+    /// A poster that answers `answer` once `gate` opens, so its call stays in
+    /// flight until then.
+    struct GatedPoster {
+        gate: Arc<tokio::sync::Notify>,
+        answer: String,
+    }
+
+    #[async_trait]
+    impl HttpPoster for GatedPoster {
+        async fn post_json(
+            &self,
+            _url: &str,
+            _headers: &[(String, String)],
+            _body: &[u8],
+            _timeout_ms: u64,
+        ) -> Result<String, HttpPostError> {
+            self.gate.notified().await;
+            Ok(self.answer.clone())
+        }
+    }
+
+    /// bug-4b6844: parallel calls to one provider share what its rate limits
+    /// taught. With one call in flight the provider refused a second (HTTP
+    /// 429), so it takes one at a time: the second caller's next call is held
+    /// back as rate-limited without reaching the provider, and goes out once
+    /// the first call has ended.
+    #[tokio::test]
+    async fn parallel_calls_share_a_providers_rate_limit() {
+        let answer = serde_json::json!({
+            "choices": [{"message": {"role": "assistant", "content": "done"}, "finish_reason": "stop"}]
+        })
+        .to_string();
+        let limiter = Arc::new(ProviderRateLimiter::new(6_000));
+        let gate = Arc::new(tokio::sync::Notify::new());
+        let first = OpenAiCompatLlmBackend::new("test-key", "model")
+            .with_rate_limiter(Arc::clone(&limiter))
+            .with_poster(Box::new(GatedPoster {
+                gate: Arc::clone(&gate),
+                answer: answer.clone(),
+            }));
+        let (poster, requests) = MockPoster::new(vec![
+            Err(HttpPostError::http_with_retry_after(
+                429,
+                "rate limited",
+                Some(1),
+            )),
+            Ok(answer),
+        ]);
+        let second = OpenAiCompatLlmBackend::new("test-key", "model")
+            .with_rate_limiter(Arc::clone(&limiter))
+            .with_poster(Box::new(poster));
+        let messages = [serde_json::json!({"role": "user", "content": "hi"})];
+        let tools = RenderedTools::JsonArray(serde_json::json!([]));
+        let session = SessionState::default();
+
+        let in_flight = tokio::spawn(async move {
+            let messages = [serde_json::json!({"role": "user", "content": "hi"})];
+            first
+                .send_turn(
+                    &messages,
+                    &RenderedTools::JsonArray(serde_json::json!([])),
+                    &SessionState::default(),
+                )
+                .await
+        });
+        tokio::time::sleep(Duration::from_millis(50)).await;
+
+        let refused = second.send_turn(&messages, &tools, &session).await;
+        assert!(
+            matches!(
+                refused,
+                Err(LlmError::Provider(ProviderError::RateLimit { .. }))
+            ),
+            "{refused:?}"
+        );
+        let held = second.send_turn(&messages, &tools, &session).await;
+        assert!(
+            matches!(
+                held,
+                Err(LlmError::Provider(ProviderError::RateLimit {
+                    retry_after_ms: None
+                }))
+            ),
+            "{held:?}"
+        );
+        assert_eq!(
+            requests.lock().expect("requests lock").len(),
+            1,
+            "the held call never reached the provider"
+        );
+
+        gate.notify_one();
+        in_flight
+            .await
+            .expect("the first call's task")
+            .expect("the first call is served");
+        second
+            .send_turn(&messages, &tools, &session)
+            .await
+            .expect("with the first call ended, the second goes out");
+        assert_eq!(requests.lock().expect("requests lock").len(), 2);
     }
 
     #[tokio::test]

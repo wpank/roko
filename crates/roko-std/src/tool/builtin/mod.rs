@@ -44,6 +44,7 @@ pub mod notebook_edit;
 pub mod read_file;
 pub mod run_tests;
 pub mod sandbox;
+pub mod task_checks;
 pub mod task_agent;
 pub mod todo_write;
 pub mod web_fetch;

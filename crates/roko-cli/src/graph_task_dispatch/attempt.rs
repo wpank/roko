@@ -2379,6 +2379,77 @@ printf '%s\n' '{"type":"result","session_id":"sess-v1","model":"claude-sonnet-4-
         }
     }
 
+
+    /// gap-770cb5: an agent in a C++ task runs its task's own checks mid-try
+    /// with `run_tests` and `build: "checks"`. It sees the compiler's error,
+    /// fixes the file, sees the checks pass, and the try passes first time.
+    #[tokio::test]
+    async fn a_cmake_task_can_run_its_checks_mid_try() {
+        let temp = tempdir().expect("tempdir");
+        // A build check that prints what CMake would, and fails until
+        // src/voice.cpp returns 1.
+        std::fs::write(
+            temp.path().join("check.sh"),
+            "echo '[ 50%] Building CXX object CMakeFiles/undertow.dir/src/voice.cpp.o'\n\
+             if ! grep -q 'return 1' src/voice.cpp 2>/dev/null; then\n\
+             echo 'src/voice.cpp:1:1: error: voice() needs a body' >&2\n\
+             exit 2\n\
+             fi\n\
+             echo '[100%] Built target undertow'\n",
+        )
+        .expect("check.sh");
+        let checks = serde_json::json!({ "build": "checks" });
+        let fix = serde_json::json!({
+            "path": "src/voice.cpp",
+            "content": "int voice() { return 1; }\n"
+        });
+        let (base_url, requests) = spawn_openai_mock(vec![
+            tool_call_turn("c1", "run_tests", checks.clone()),
+            tool_call_turn("c2", "write_file", fix),
+            tool_call_turn("c3", "run_tests", checks),
+            final_turn("done"),
+            final_turn("done"),
+        ]);
+        let dispatcher = make_bare_dispatcher(priced_api_config(base_url), temp.path()).await;
+        let task = TaskDef {
+            model_hint: Some("api-model".to_string()),
+            timeout_secs: FIXTURE_HANG_GUARD_SECS,
+            files: vec!["src/voice.cpp".to_string()],
+            verify: vec![verify_step("build", "bash check.sh")],
+            ..make_task_def("focused")
+        };
+        let ctx = CellContext::new().with_run_id(RUN.to_string());
+
+        dispatcher
+            .dispatch(&make_spec(&task), Vec::new(), &ctx)
+            .await
+            .expect("the try passes first time");
+
+        // What each run_tests call told the agent: the tool message answering it.
+        let answer = |call: &str| -> String {
+            let requests = requests.lock();
+            requests
+                .iter()
+                .flat_map(|request| request["messages"].as_array().cloned().unwrap_or_default())
+                .find(|message| message["role"] == "tool" && message["tool_call_id"] == call)
+                .and_then(|message| message["content"].as_str().map(str::to_string))
+                .unwrap_or_else(|| panic!("no answer to {call}"))
+        };
+        let first = answer("c1");
+        assert!(
+            first.contains("check 1 of 1 (verify[0:build]) failed (exit 2)"),
+            "{first}"
+        );
+        assert!(first.contains("error: voice() needs a body"), "{first}");
+        let second = answer("c3");
+        assert!(second.contains("\"status\":\"ok\""), "{second}");
+        assert!(second.contains("verify[0:build]"), "{second}");
+        // The checks were left for the try only.
+        let left = temp.path().join(".roko/state/task-checks");
+        let files = std::fs::read_dir(&left).map_or(0, Iterator::count);
+        assert_eq!(files, 0, "the try's checks file outlived it");
+    }
+
     /// `api-model` on an OpenAI-compatible provider the mock at `base_url`
     /// serves, priced at $1 in and $2 out per million tokens.
     fn priced_api_config(base_url: String) -> RokoConfig {

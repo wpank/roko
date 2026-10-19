@@ -2344,6 +2344,14 @@ pub(crate) async fn cmd_resume(
     max_tasks: usize,
 ) -> Result<i32> {
     let workdir = workdir.unwrap_or_else(|| resolve_workdir(cli));
+    // A Graph run's id names its plan's checkpoint, current or set aside by a
+    // run that started the plan over (bug-cbdb6b).
+    if let Some(id) = run_id.as_deref()
+        && !workdir.join(format!(".roko/state/{id}.json")).exists()
+        && let Some(plan_id) = roko_cli::graph_checkpoint::plan_of_run(&workdir, id)
+    {
+        return resume_graph_run(cli, &workdir, &plan_id, id, max_tasks).await;
+    }
     let snapshot = if let Some(ref id) = run_id {
         // Try a named checkpoint, then the authoritative unified snapshot,
         // then the legacy executor only when the unified file is absent.
@@ -2426,6 +2434,73 @@ pub(crate) async fn cmd_resume(
         screenshot_dir: None,
         batch_size: None,
         // Neither flag: the resumed run follows `[runner] worktree_per_task`.
+        worktree_per_task: false,
+        no_worktree_per_task: false,
+        rich_topology: false,
+        promote: None,
+        max_parallel_plans: None,
+        fail_fast: false,
+    };
+    cmd_plan(cli, plan_cmd).await
+}
+
+/// `roko resume <run>` for Graph run `run_id` of plan `plan_id`: put back
+/// the run's checkpoint if a run that started the plan over set it aside,
+/// then resume the plan (bug-cbdb6b).
+async fn resume_graph_run(
+    cli: &Cli,
+    workdir: &Path,
+    plan_id: &str,
+    run_id: &str,
+    max_tasks: usize,
+) -> Result<i32> {
+    let plans_dir = super::super::resolve_plans_dir(workdir, None);
+    let plans = roko_cli::runner::plan_loader::load_plans(&plans_dir)?;
+    let Some(plan) = plans.iter().find(|plan| plan.id == plan_id) else {
+        eprintln!(
+            "error: run {run_id} is a run of plan '{plan_id}', which is not under {}",
+            plans_dir.display()
+        );
+        return Ok(1);
+    };
+    let restored = {
+        // No run may hold the workspace while its checkpoint files move.
+        let _runner = roko_cli::workspace_lock::acquire_runner_lock(&workdir.join(".roko"))?;
+        roko_cli::graph_checkpoint::restore_set_aside_checkpoint(workdir, plan, run_id)?
+    };
+    if !cli.quiet {
+        if let Some(set_aside) = &restored.set_aside {
+            println!("{}", set_aside.describe(workdir));
+        }
+        for line in restored.restored.describe(workdir) {
+            println!("{line}");
+        }
+    }
+    let plan_cmd = PlanCmd::Run {
+        plans_dir: plan.dir.clone(),
+        engine: PlanEngine::default(),
+        resume_plan: Some(workdir.join(".roko/state/graph")),
+        workdir: Some(workdir.to_path_buf()),
+        approval: false,
+        no_tui: false,
+        max_retries: None,
+        max_tasks,
+        dry_run: false,
+        fresh: false,
+        force_resume: false,
+        budget_override: None,
+        no_budget: false,
+        frozen_learning: false,
+        no_holdout: false,
+        no_audit: false,
+        force: false,
+        dangerously_skip_permissions: false,
+        log_file: None,
+        skip_preflight: false,
+        screenshots: false,
+        screenshot_interval: 60,
+        screenshot_dir: None,
+        batch_size: None,
         worktree_per_task: false,
         no_worktree_per_task: false,
         rich_topology: false,

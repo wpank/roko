@@ -3860,6 +3860,19 @@ async fn run_one_plan(
         ctx.force_resume,
         ctx.caller_run_id.filter(|_| ctx.plan_count == 1),
     )?;
+    // A run that starts the plan over says whose progress it set aside, and
+    // how to bring it back (bug-cbdb6b).
+    if let Some(set_aside) = checkpoint.set_aside() {
+        ctx.graph_tui_bridge
+            .publish_event(roko_core::DashboardEvent::EventLogEntry {
+                timestamp_ms: u64::try_from(chrono::Utc::now().timestamp_millis())
+                    .unwrap_or_default(),
+                event_type: "checkpoint.set_aside".to_string(),
+                plan_id: plan.id.clone(),
+                task_id: String::new(),
+                message: format!("started over: {}", set_aside.describe(ctx.workdir)),
+            });
+    }
     // Until the plan writes its terminal status, a forced exit marks its
     // checkpoint `interrupted` (bug-4641e3).
     let _running = RunningPlanCheckpoint::register(&checkpoint.paths().manifest);

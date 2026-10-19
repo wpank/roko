@@ -2,7 +2,7 @@
 id = "bug-0f30c7"
 kind = "bug"
 title = "A successful run_tests call never reaches the model: the production filter prefixes [external:run_tests] to its structured JSON, and the immune screen withholds the malformed JSON as an anomaly (0.9)"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p1"
 goal = "core"
@@ -11,6 +11,7 @@ subsystem = ["roko-agent/safety"]
 created = 2026-10-19
 updated = 2026-10-19
 last_verified = 2026-10-19
+last_verified_rev = "322bee499"
 source = "round-v7-roko-speed#gap-770cb5"
 discovered_from = "agent:roko-speed (round v7, testing gap-770cb5, 2026-10-19)"
 anchors = ["crates/roko-agent/src/dispatcher/mod.rs::apply_production_result_filter", "crates/roko-agent/src/safety/result_filter.rs::sanitize"]
@@ -19,6 +20,13 @@ links = { depends_on = [], blocks = [], related = ["gap-770cb5"], supersedes = [
 
 [[verify]]
 command = "grep -rqw 'fn an_external_tool_s_structured_success_reaches_the_model' crates/roko-agent/src && cargo test -p roko-agent --lib an_external_tool_s_structured_success_reaches_the_model"
+
+[closed]
+at = 2026-10-19
+at_ts = "2026-10-19T21:49:27Z"
+commit = "3b59e2d23"
+forced = false
+evidence = "After the production filter, a result stays structured only if every text block still parses as JSON. An external tool's noted JSON is text, the immune screen reads it as text, and it reaches the model as [external:run_tests] {...}. Verify an_external_tool_s_structured_success_reaches_the_model passes; before the fix the same dispatch returned 'tool result denied by immune boundary' (invalid_structured_result 0.9). In the fixture run c-770cb5, both passing checks results reached the model."
 +++
 
 ## Problem

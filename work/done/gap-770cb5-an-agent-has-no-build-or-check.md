@@ -2,7 +2,7 @@
 id = "gap-770cb5"
 kind = "gap"
 title = "An agent has no build or check tool for CMake projects (run_tests' build enum has no cmake or ctest), so a try can't iterate on compile errors and every one costs a whole try"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p2"
 goal = "golden-path"
@@ -11,6 +11,7 @@ subsystem = ["roko-std/tools"]
 created = 2026-10-19
 updated = 2026-10-19
 last_verified = 2026-10-19
+last_verified_rev = "322bee499"
 source = "round-v7-hermes-pilot#C-p0-tools"
 discovered_from = "agent:hermes-pilot (round v7 phase 0, 2026-10-19)"
 anchors = ["crates/roko-std/src/tool/builtin/run_tests.rs::tool_def", "crates/roko-cli/src/graph_task_dispatch/verification.rs"]
@@ -18,6 +19,17 @@ links = { depends_on = [], blocks = [], related = ["bug-d758f6", "gap-e02ec4", "
 
 [[verify]]
 command = "grep -rqw 'fn a_cmake_task_can_run_its_checks_mid_try' crates/ && cargo test -p roko-cli --lib -- a_cmake_task_can_run_its_checks_mid_try"
+
+[closed]
+at = 2026-10-19
+at_ts = "2026-10-19T21:49:27Z"
+commit = "322bee499"
+executor = "claude-agent"
+via = "manual"
+size = "M"
+claimed_at = "2026-10-19T18:20:51Z"
+forced = false
+evidence = "run_tests takes build \"checks\": it runs the attempt's own verify steps in the checkout, in order, with the gate's check environment and each step's own timeout within the call's. It stops at the first failure and returns the end of its output; a pass returns the checks with their times. Dispatch leaves the steps, named as their gate results name them, under the workspace's .roko/state/task-checks/, outside the checkout, for the attempt's dispatch only. An attempt with checks keeps run_tests in a capped model's menu: GLM is offered 8 tools, and run_tests is the 16th builtin. Verify a_cmake_task_can_run_its_checks_mid_try passes, as do run_tests_runs_the_task_checks (roko-std), a_capped_model_keeps_the_essential_tools (roko-agent), 157 roko-agent, 32 roko-std and 35 roko-cli tests, and clippy. In the $0 JUCE fixture run c-770cb5 (glm-4.7 slug, stand-in agent running its checks before and after its edit), every task saw its check fail with the output's end (T1: ctest exit 8 after 0.4 s; T2: plugin build then grep, exit 1 after 5.9 s), then pass after its edit (T1 2.1 s, T2 5.6 s). All 4 tasks passed first try."
 +++
 
 ## Problem

@@ -50,6 +50,7 @@ benchmarks/viabilitybench/
   driver/{mini_loop, run_roko, planemit, run_cli}.py        # the runners: direct loop, Roko arm, Claude Code arm
   driver/run_codex.py                                       # the Codex CLI arm's runner (fd_codex)
   driver/{ledger, faultproxy, secret}.py                    # the run ledger, the metering and fault proxy, the secret
+  driver/error_capture.py  testdata/provider_errors/        # vb capture-errors: each provider's own error (gap-db8dab)
   driver/egress.py                                          # the Claude Code arm's egress allowlist proxy
   driver/{disturb, vb_verify}.py                            # H6's disturbances, and the visible-verify wrapper
   driver/{materialize, harness, provider, stub_provider, agent_env, caps, archive, census, records, layout}.py
@@ -203,8 +204,15 @@ $PY benchmarks/viabilitybench/driver/vb.py run --experiment PILOT-A --stream pil
   status and `Retry-After` it always had; why it answered is in its log (`refused`, `detail`, `fault_injected`). An
   injected fault answers as its upstream does (bug-2224eb): in that provider's error shape and words
   (`faultproxy.UPSTREAM_ERRORS`: Cerebras's flat object, z.ai's business code, Moonshot's types, OpenAI's), with the
-  headers of the upstream's last forwarded answer and fresh ids in their form; gap-db8dab holds the captures that
-  would settle what the providers' documents leave open.
+  headers of the upstream's last forwarded answer and fresh ids in their form. The shapes, their key order, the JSON
+  layout, the Content-Type and the headers a fault carries before the upstream's first answer come from each
+  provider's captured error (gap-db8dab, `driver/testdata/provider_errors/`); the words of a 429 and a 5xx still come
+  from the providers' documents.
+- **Provider error captures** (`vb capture-errors`, `driver/error_capture.py`, gap-db8dab). One chat completion per arm
+  provider naming a model that does not exist, through the metering proxy under `vb run`'s admission and key rules,
+  each booked at $0 on BL0: none of the four documents a way to get a 429 or a 5xx on request, and provoking one
+  would abuse the API. Each answer is masked (ids, cookies and account ids drawn anew in their form) and written as a
+  fixture that `test_the_fault_templates_match_captured_errors` holds the fault templates to.
 - **Disturbances** (`vb run --disturbance SPEC.toml`, `disturb.py`, S08 §4.6) apply H6's hooks to stream positions.
   `flaky_verify` routes every arm's visible checks through the visible-verify wrapper (`vb_verify.py`), which fails
   some of them at random; the census's own rerun never meets a flake. `model_swap` has the metering proxy serve

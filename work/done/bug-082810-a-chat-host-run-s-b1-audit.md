@@ -2,7 +2,7 @@
 id = "bug-082810"
 kind = "bug"
 title = "A chat-host run's B1 audit dispatches its suite author to the person's Claude CLI (roko-audit-b1 on claude_cli / claude-sonnet-4-6), though a chat host's work must use only tool-loop API models"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p1"
 goal = "golden-path"
@@ -11,6 +11,7 @@ subsystem = ["roko-cli/audit"]
 created = 2026-10-19
 updated = 2026-10-19
 last_verified = 2026-10-19
+last_verified_rev = "597da7d1d"
 source = "round-v7-hermes-pilot#C-p0-run2"
 discovered_from = "agent:hermes-pilot (round v7 phase 0, run e578cf71, after T1 passed)"
 anchors = ["crates/roko-cli/src/audit/b1.rs::FactoryAuthor", "crates/roko-cli/src/graph_task_dispatch/audit_select.rs::GraphTaskDispatcher::audit_phase_b", "crates/roko-cli/src/graph_task_dispatch/routing_context.rs::select_cheap_model_key", "crates/roko-cli/src/graph_task_dispatch/helper_calls.rs::AuditCallRows"]
@@ -18,6 +19,15 @@ links = { depends_on = [], blocks = [], related = ["gap-3d37e8"], supersedes = [
 
 [[verify]]
 command = "grep -rqw 'fn a_chat_host_runs_audit_uses_only_tool_loop_models' crates/roko-cli/src && cargo test -p roko-cli --lib -- a_chat_host_runs_audit_uses_only_tool_loop_models"
+
+[closed]
+at = 2026-10-19
+at_ts = "2026-10-19T18:26:39Z"
+commit = "597da7d1d"
+size = "S"
+claimed_at = "2026-10-19T17:40:04Z"
+forced = false
+evidence = "597da7d1d: in a run whose tasks hold their outbound tool calls for approval, as a chat host run does (GraphTaskDispatcher::outbound_floor), every side call now uses only the models roko own tool loop runs with credentials set (RokoConfig::tool_loop_models), the rule the ladder keeps (gap-cf427e): the audit B1 suite authors and B3 reviewers (audit_select.rs audit_authors, audit_reviewers), the cheap helper (error enrichment, reflections, judge step) and the pack-rung judge (routing_context select_cheap_model_key and select_judge_model_key take an allowed filter). B1 is null with no allowed family and there is no helper with no allowed model; command-line runs are unchanged. In such a run the audit worker calls, which elsewhere charge no budget (decision 7103 audit line), are settled on the plan budget (AuditCallRows) and an audit is given no more than the plan has left (CallLog::headroom_usd in the worker take()), so the run stays within the cap its chat set. Tests: a_chat_host_runs_audit_uses_only_tool_loop_models (red at 7a67b6781: the chat run authors were claude-sonnet-4-6, glm-4.7, gpt-5.4-mini), a_chat_host_runs_audit_spend_counts_against_its_cap (red: headroom None, plan spend unchanged), an_audit_is_given_no_more_than_its_plan_has_left (red: given 0.30 with 0.05 left). Checks at 597da7d1d: roko-cli lib 3880 passed, 3 failed in the first run: my test fixture (its CLI command did not exist, fixed) plus delivery a_cancel_stops_the_post_merge_regression_check (lock WouldBlock under load; passes alone) and build_trees seeded_worktree_builds_nothing (roko-speed, flaky alone: 1 of 3; reported); after the fix audit_select, helper_calls, pack_rungs, routing_context and audit::worker suites 42 of 43 (the same build_trees flake); clippy -D warnings (roko-cli) clean; nightly rustfmt clean."
 +++
 
 ## Problem

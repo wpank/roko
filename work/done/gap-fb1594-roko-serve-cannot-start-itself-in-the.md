@@ -2,7 +2,7 @@
 id = "gap-fb1594"
 kind = "gap"
 title = "roko serve cannot start itself in the background, report, stop or restart per project, and a running serve cannot prove which project and build it is"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p1"
 goal = "hermes"
@@ -11,6 +11,7 @@ subsystem = ["roko-serve/lifecycle", "roko-cli/serve"]
 created = 2026-10-19
 updated = 2026-10-19
 last_verified = 2026-10-19
+last_verified_rev = "bb8ac3c9d"
 source = "roko-autostart round research, 2026-10-19 (roko 3b34aed92)"
 anchors = ["crates/roko-cli/src/commands/server.rs::cmd_serve", "crates/roko-serve/src/endpoint.rs::ServeEndpoint", "crates/roko-serve/src/routes/mod.rs::top_level_health", "crates/roko-cli/src/serve_client.rs::discover_workspace_server", "crates/roko-serve/src/showcase/idle.rs", "crates/roko-cli/src/daemon.rs::spawn_detached_child"]
 parent = "spec-13c7ba"
@@ -24,6 +25,18 @@ command = "grep -rqw 'fn health_reports_identity_on_loopback' crates/roko-serve/
 
 [[verify]]
 command = "grep -qE '^cmd_install\\(\\)' dev.sh"
+
+[closed]
+at = 2026-10-19
+at_ts = "2026-10-19T11:55:50Z"
+commit = "bb8ac3c9d"
+by = "commit trailer"
+executor = "claude-agent"
+via = "manual"
+size = "L"
+claimed_at = "2026-10-19T10:13:25Z"
+forced = false
+evidence = "bb8ac3c9d: roko serve --detach [--json] and status|stop|restart [--workdir W | --all] (crates/roko-cli/src/serve_lifecycle.rs, commands/server.rs); serve.json identity fields, /health identity on a loopback bind and the ~/.roko/runtime/serves registry (crates/roko-serve/src/endpoint.rs, routes/mod.rs, lib.rs); graceful SIGINT/SIGTERM/SIGHUP via cli_signals; --idle-exit via showcase/idle.rs; PORT no longer beats --port; sidecars get the bound URL; ./dev.sh install. Proof: cargo test -p roko-cli --test serve_lifecycle serve_detach_lifecycle_end_to_end (detach twice, status, fallback port, --all, restart, stop, SIGTERM, crash = stale, idle exit) and cargo test -p roko-serve health_reports_identity_on_loopback pass; cargo clippy -p roko-cli -p roko-serve --no-deps -- -D warnings is clean."
 +++
 
 ## Problem

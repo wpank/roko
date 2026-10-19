@@ -196,7 +196,6 @@ impl HarnessService for OpenClawGatewayService {
     /// 3. Detach from parent process group (Unix).
     /// 4. Write PID to `~/.openclaw/gateway.pid`.
     /// 5. Poll WS port until healthy or 15s timeout.
-    #[allow(unsafe_code)]
     async fn start(&self) -> Result<(), HarnessError> {
         // Idempotent: if already running, return success.
         if matches!(self.status().await, ServiceStatus::Running) {
@@ -217,19 +216,7 @@ impl HarnessService for OpenClawGatewayService {
 
         // Detach from the parent process group so the gateway survives
         // roko's exit.
-        #[cfg(unix)]
-        {
-            #[allow(unused_imports)]
-            use std::os::unix::process::CommandExt;
-            // SAFETY: setsid() is a standard POSIX call to create a new
-            // session and detach from the parent process group.
-            unsafe {
-                cmd.pre_exec(|| {
-                    libc::setsid();
-                    Ok(())
-                });
-            }
-        }
+        crate::process::detach_into_new_session(cmd.as_std_mut());
 
         let child = cmd.spawn().map_err(|e| {
             HarnessError::Protocol(format!("failed to start openclaw gateway: {e}"))

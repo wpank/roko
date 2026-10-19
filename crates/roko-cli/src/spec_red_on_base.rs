@@ -1309,8 +1309,9 @@ struct CachedRuns {
 /// pinned test's by its source, since its command names the scratch
 /// directory), timeout and `expect`; what the check does with cargo steps;
 /// the files of `plan_dir` other than `tasks.toml`, which the base checkout
-/// gets a copy of; and this roko's build. `None` when the plan directory
-/// cannot be read or is too large to digest.
+/// gets a copy of; the environment the steps get ([`check_environment`]);
+/// and this roko's build. `None` when the plan directory cannot be read or
+/// is too large to digest.
 fn cache_key(
     sha: &str,
     steps: &[Step],
@@ -1326,6 +1327,10 @@ fn cache_key(
     add(CACHE_VERSION.as_bytes());
     add(sha.as_bytes());
     add(format!("{cargo:?}").as_bytes());
+    for (name, value) in check_environment() {
+        add(name.as_bytes());
+        add(value.as_encoded_bytes());
+    }
     for step in steps {
         match &step.accept {
             Some(src) => add(format!("accept {src}").as_bytes()),
@@ -1343,6 +1348,26 @@ fn cache_key(
         }
     }
     Some(format!("{:x}", digest.finalize()))
+}
+
+/// The variables a step gets, as [`run_step`] gives them, sorted by name;
+/// but `GH_CONFIG_DIR`, a new empty directory each run. A result is reused
+/// only where the steps would see the same environment: the same
+/// `[gates] env_passthrough` and the same values.
+fn check_environment() -> Vec<(String, std::ffi::OsString)> {
+    let mut probe = Command::new("bash");
+    if roko_gate::inherit_gate_env_std(&mut probe, roko_core::child_env::process_env(), &[])
+        .is_err()
+    {
+        return Vec::new();
+    }
+    let mut env: Vec<(String, std::ffi::OsString)> = probe
+        .get_envs()
+        .filter_map(|(name, value)| Some((name.to_str()?.to_string(), value?.to_os_string())))
+        .filter(|(name, _)| name != "GH_CONFIG_DIR")
+        .collect();
+    env.sort();
+    env
 }
 
 /// The files under `plan_dir` but its `tasks.toml`, by relative path, with

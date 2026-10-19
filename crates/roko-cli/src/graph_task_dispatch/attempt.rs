@@ -1252,8 +1252,9 @@ fn attempt_phases(
         checks_ms: checks,
         checks: steps
             .iter()
-            .map(|step| roko_core::dashboard_snapshot::CheckTime {
-                name: gate_label(&step.rung),
+            .zip(check_names(steps))
+            .map(|(step, name)| roko_core::dashboard_snapshot::CheckTime {
+                name,
                 ms: step.duration_ms,
                 passed: step.passed,
             })
@@ -1262,15 +1263,30 @@ fn attempt_phases(
     }
 }
 
-/// A verify step's rung as its gate result names it: `verify:0/test` is
-/// `verify[0:test]`; any other rung keeps its name.
-fn gate_label(rung: &str) -> String {
-    rung.strip_prefix("verify:")
-        .and_then(|rest| rest.split_once('/'))
-        .map_or_else(
-            || rung.to_string(),
-            |(index, phase)| format!("verify[{index}:{phase}]"),
-        )
+/// The names `steps` have on their gate results. The verdict names a task's
+/// verify step `verify:0/test`, or `custom:build` for a phase the gate
+/// pipeline does not know, and lists those steps in order; their gate results
+/// name them by their place, `verify[0:test]` and `verify[1:build]`. Any
+/// other step keeps its rung.
+fn check_names(steps: &[VerifyStepVerdict]) -> Vec<String> {
+    let mut verify_steps = 0_usize;
+    steps
+        .iter()
+        .map(|step| {
+            let phase = step
+                .rung
+                .strip_prefix("verify:")
+                .and_then(|rest| rest.split_once('/'))
+                .map(|(_, phase)| phase)
+                .or_else(|| step.rung.strip_prefix("custom:"));
+            let Some(phase) = phase else {
+                return step.rung.clone();
+            };
+            let index = verify_steps;
+            verify_steps += 1;
+            super::verification::verify_step_label(index, phase)
+        })
+        .collect()
 }
 
 /// Whether the agent produced any output before the call ended.
@@ -2143,7 +2159,7 @@ printf '%s\n' '{"type":"result","session_id":"sess-v1","model":"claude-sonnet-4-
             model_calls: Some(5),
         };
         let steps = [VerifyStepVerdict {
-            rung: "verify:0/build".to_string(),
+            rung: "verify:0/test".to_string(),
             command_sha256: None,
             passed: Some(true),
             exit_code: Some(0),
@@ -2170,7 +2186,7 @@ printf '%s\n' '{"type":"result","session_id":"sess-v1","model":"claude-sonnet-4-
         assert_eq!((phases.model_calls, phases.tool_calls), (Some(5), Some(4)));
         assert_eq!(phases.checks_ms, Some(38_000));
         assert_eq!(phases.checks.len(), 1);
-        assert_eq!(phases.checks[0].name, "verify[0:build]");
+        assert_eq!(phases.checks[0].name, "verify[0:test]");
         assert_eq!(phases.checks[0].ms, Some(37_900));
         let parts = [
             phases.prompt_ms,
@@ -2189,7 +2205,31 @@ printf '%s\n' '{"type":"result","session_id":"sess-v1","model":"claude-sonnet-4-
         let phases = attempt_phases(&timing, Some(&unknown), &steps, &setup);
         assert_eq!((phases.model_ms, phases.tools_ms), (None, None));
         assert_eq!(phases.other_ms, Some(150));
-        assert_eq!(gate_label("pre_verify:no_changes"), "pre_verify:no_changes");
+
+        // A phase the gate pipeline does not know is `custom:<phase>` in the
+        // verdict; its gate result numbers it among the task's verify steps.
+        let rungs = [
+            "verify:0/test",
+            "custom:build",
+            "pre_verify:no_changes",
+            "custom:",
+        ];
+        let steps: Vec<VerifyStepVerdict> = rungs
+            .iter()
+            .map(|rung| VerifyStepVerdict {
+                rung: (*rung).to_string(),
+                ..VerifyStepVerdict::default()
+            })
+            .collect();
+        assert_eq!(
+            check_names(&steps),
+            [
+                "verify[0:test]",
+                "verify[1:build]",
+                "pre_verify:no_changes",
+                "verify[2]"
+            ]
+        );
     }
 
     /// gap-6a319c: a dispatched attempt's verdict row carries its phases, and
@@ -2231,10 +2271,11 @@ printf '%s\n' '{"type":"result","session_id":"sess-v1","model":"claude-sonnet-4-
         );
         assert!(ms("ttft_ms") >= 150, "{phases}");
         assert!(phases["queue_ms"].is_u64(), "{phases}");
-        let rung = attempts[1]["steps"][0]["rung"]
-            .as_str()
-            .expect("a verify step");
-        assert_eq!(phases["checks"][0]["name"], gate_label(rung), "{phases}");
+        // The name the step's gate result has.
+        assert_eq!(
+            phases["checks"][0]["name"], "verify[0:structural]",
+            "{phases}"
+        );
         assert_eq!(phases["checks"][0]["passed"], true);
     }
 

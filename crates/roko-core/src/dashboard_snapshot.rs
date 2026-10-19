@@ -385,6 +385,29 @@ pub enum DashboardEvent {
         #[serde(default)]
         blocked: u32,
     },
+    /// A step of the plan-load spec gate's red-on-base check ended
+    /// (gap-e02ec4): one per step it ran on the base, and one per step of a
+    /// task whose earlier runs the cache gave, so a host can show the check's
+    /// progress against `spec_gate_started.steps_total`.
+    SpecGateStep {
+        plan_id: String,
+        task_id: String,
+        /// The run, from 1: each task's steps run twice.
+        #[serde(default)]
+        run: u32,
+        /// The step's number among the task's steps, from 1.
+        #[serde(default)]
+        step: u32,
+        /// Whether it exited 0.
+        #[serde(default)]
+        passed: bool,
+        /// How long it ran, in ms.
+        #[serde(default)]
+        ms: u64,
+        /// Whether its result came from an earlier check of the unchanged task.
+        #[serde(default)]
+        cached: bool,
+    },
     /// A Graph task's `confirm` rung asked its person whether the outcome is
     /// what they asked for; the task waits until they answer or the rung
     /// times out (gap-7c6663). MCP `confirm_answer` names the attempt key.
@@ -3410,6 +3433,9 @@ impl DashboardSnapshot {
                     format!("done in {secs:.1} s; {blocked} tasks blocked"),
                 );
             }
+            // A host reads the check's progress from the event stream
+            // (gap-e02ec4); the log keeps its start and end.
+            DashboardEvent::SpecGateStep { .. } => {}
             DashboardEvent::ConfirmWaiting {
                 plan_id,
                 task_id,

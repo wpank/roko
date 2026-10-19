@@ -2,7 +2,7 @@
 id = "gap-cb9044"
 kind = "gap"
 title = "GET /api/runs/{id}/events can't skip a run's live words: 96% of a real run's index is agent_output reasoning and text deltas, so a cold read of a phase's tool steps and events takes about 700 requests and 27 s"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p2"
 goal = "visibility"
@@ -11,6 +11,7 @@ subsystem = ["roko-serve/routes"]
 created = 2026-10-19
 updated = 2026-10-19
 last_verified = 2026-10-19
+last_verified_rev = "e5ba3bb4a"
 source = "round-v7-plugin-wow#item-8"
 discovered_from = "agent:plugin-wow (round v7, 2026-10-19)"
 anchors = ["crates/roko-serve/src/routes/runs.rs::EventQuery", "crates/roko-serve/src/routes/runs.rs::get_run_events", "crates/roko-serve/src/routes/runs.rs::STREAM_EVENT_TYPES"]
@@ -19,6 +20,17 @@ links = { depends_on = [], blocks = [], related = ["bug-e529e3"], supersedes = [
 
 [[verify]]
 command = "grep -rqw 'fn a_run_events_page_can_skip_live_words' crates/roko-serve/ && cargo test -p roko-serve --lib -- a_run_events_page_can_skip_live_words"
+
+[closed]
+at = 2026-10-19
+at_ts = "2026-10-19T19:56:06Z"
+commit = "e5ba3bb4a"
+executor = "claude-agent"
+via = "manual"
+size = "S"
+claimed_at = "2026-10-19T18:19:04Z"
+forced = false
+evidence = "GET /api/runs/{id}/events, and a Graph run's SSE stream, take ?skip=live_text,heartbeats. The scan passes over an agent's streamed reasoning, its live text and heartbeats before parsing them, by the escaped stream-envelope fields. Tool steps, tool results (one that quotes the envelope's words included), final text, gate lines and structural events stay. Cursors stay byte offsets, and the page says what it skipped. Verify a_run_events_page_can_skip_live_words passes, with 23 roko-serve route tests and clippy clean. On a copy of the pilot's real P0 index (34,919 rows, 15.3 MB) served by this build: the whole run read in 175 requests and 8.3 s as is, and in 6 requests and 0.25 s with skip (891 rows kept: 628 tool steps and final texts, 124 gate lines, the structural events)."
 +++
 
 ## Problem

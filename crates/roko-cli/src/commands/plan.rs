@@ -107,6 +107,12 @@ pub(crate) enum PlanCmd {
         /// against a one-commit snapshot of itself.
         #[arg(long, requires = "dynamic")]
         fixture: bool,
+        /// With `--dynamic`: run every task's steps on the base again. Without
+        /// it, a task whose base, steps and plan files have not changed since a
+        /// check in the last 12 hours that decided it reuses that check's runs
+        /// (`.roko/cache/red-on-base/`).
+        #[arg(long, requires = "dynamic")]
+        fresh: bool,
     },
     /// Write a plan's companion documents beside its `tasks.toml`: `brief.md`
     /// (its artifacts, task map and risks), which dispatch adds to each of its
@@ -1049,6 +1055,7 @@ pub(crate) async fn cmd_plan(cli: &Cli, cmd: PlanCmd) -> Result<i32> {
             timeout,
             scratch,
             fixture,
+            fresh,
         } => {
             let workdir = resolve_workdir(cli);
             // Read-only lint: skip the lock when a server owns the workspace;
@@ -1062,12 +1069,16 @@ pub(crate) async fn cmd_plan(cli: &Cli, cmd: PlanCmd) -> Result<i32> {
             // 3214: `--dynamic` proves each task's checks red on the base;
             // gap-d21da9: and runs what can tell whether the tasks the score
             // leaves out can pass.
+            // gap-e02ec4: an unchanged task's decided runs are reused unless
+            // `--fresh`; a fixture's snapshot base is new each time.
             let dynamic = dynamic.then(|| roko_cli::spec_red_on_base::RedOnBaseOptions {
                 base,
                 timeout: timeout.map(std::time::Duration::from_secs),
                 scratch,
                 fixture,
                 unscored: true,
+                cache: !fixture,
+                fresh,
                 ..Default::default()
             });
             let exit = cmd_plan_validate(
@@ -2937,6 +2948,24 @@ struct ValidateJson<'a> {
 }
 
 /// The workspace's own `roko.toml`, when it has one.
+/// `plan validate --dynamic`'s red-on-base check of `files`, run as the
+/// plan-load gate runs it: its steps get the environment `plan run` gives
+/// checks, `config`'s `[gates] env_passthrough` and `strip_env` included
+/// (bug-718016).
+fn validate_red_on_base(
+    files: &[PathBuf],
+    workdir: &Path,
+    options: &roko_cli::spec_red_on_base::RedOnBaseOptions,
+    config: Option<&RokoConfig>,
+) -> Result<roko_cli::spec_red_on_base::RedOnBaseReport> {
+    let _check_run = roko_core::child_env::begin_check_run(
+        config
+            .map(|config| config.gates.check_env_settings())
+            .unwrap_or_default(),
+    );
+    roko_cli::spec_red_on_base::check_plans(files, workdir, options)
+}
+
 fn workspace_roko_toml(workdir: &Path) -> Result<Option<RokoConfig>> {
     let config_path = workdir.join("roko.toml");
     if !config_path.is_file() {
@@ -3051,7 +3080,12 @@ pub(crate) fn cmd_plan_validate(
             if !spec_config.red_on_base_cargo {
                 options.cargo = roko_cli::spec_red_on_base::CargoSteps::Skip;
             }
-            match roko_cli::spec_red_on_base::check_plans(files, workdir, &options) {
+            // gap-e02ec4: the base checkouts keep, and start from, the build
+            // trees `[gates] warm_build_dirs` names.
+            options.warm_build_dirs = config
+                .as_ref()
+                .and_then(|config| config.gates.warm_build_dirs.clone());
+            match validate_red_on_base(files, workdir, &options, config.as_ref()) {
                 Ok(report) => Some(report),
                 Err(error) => {
                     use roko_cli::spec_red_on_base::Interrupted;
@@ -3562,6 +3596,102 @@ fn resolve_worktree_per_task(flag: Option<bool>, workdir: &std::path::Path) -> b
 mod tests {
     use super::*;
     use tempfile::tempdir;
+
+    /// Set in [`validate_dynamic_steps_get_the_gates_env_passthrough`]'s
+    /// child process, whose environment holds it, to the value its step
+    /// expects.
+    const PASSTHROUGH_PROBE: &str = "UNDERTOW_VALIDATE_PROBE";
+
+    /// bug-718016: `plan validate --dynamic` runs each step with the
+    /// environment `plan run` gives checks, so a variable `[gates]
+    /// env_passthrough` names reaches it. The check runs in a child test
+    /// process that holds the variable, since a test may not set its own
+    /// environment.
+    #[test]
+    fn validate_dynamic_steps_get_the_gates_env_passthrough() {
+        let output = std::process::Command::new(std::env::current_exe().expect("test binary"))
+            .args([
+                "--exact",
+                "commands::plan::tests::validate_dynamic_passthrough_child",
+                "--nocapture",
+            ])
+            .env(PASSTHROUGH_PROBE, "seen")
+            .output()
+            .expect("run the child test");
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(output.status.success(), "{stdout}\n{stderr}");
+        assert!(
+            stdout.contains("1 passed"),
+            "the child test did not run: {stdout}"
+        );
+    }
+
+    /// Run by [`validate_dynamic_steps_get_the_gates_env_passthrough`] only:
+    /// a task whose check passes only when it sees the probe passes on the
+    /// base when `[gates] env_passthrough` names the probe, and does not
+    /// when the config leaves it out.
+    #[test]
+    fn validate_dynamic_passthrough_child() {
+        if std::env::var_os(PASSTHROUGH_PROBE).is_none() {
+            return;
+        }
+        let temp = tempdir().expect("tempdir");
+        let repo = temp.path().join("repo");
+        std::fs::create_dir_all(repo.join("plans/p")).expect("plan dir");
+        std::fs::write(
+            repo.join("plans/p/tasks.toml"),
+            format!(
+                "[meta]\nplan = \"p\"\n\n[[task]]\nid = \"T1\"\ntitle = \"Probe\"\n\
+                 description = \"Probe.\"\nrole = \"implementer\"\nfiles = [\"probe.txt\"]\n\n\
+                 [[task.verify]]\nphase = \"test\"\ncommand = 'test \"${PASSTHROUGH_PROBE}\" = seen'\n"
+            ),
+        )
+        .expect("write the plan");
+        let git = |args: &[&str]| {
+            let output = std::process::Command::new("git")
+                .args([
+                    "-c",
+                    "user.name=roko-test",
+                    "-c",
+                    "user.email=roko-test@localhost",
+                ])
+                .args([
+                    "-c",
+                    "commit.gpgsign=false",
+                    "-c",
+                    "core.hooksPath=/dev/null",
+                ])
+                .args(args)
+                .current_dir(&repo)
+                .output()
+                .expect("run git");
+            assert!(output.status.success(), "git {args:?}");
+        };
+        git(&["init", "--quiet"]);
+        git(&["add", "--all"]);
+        git(&["commit", "--quiet", "-m", "base"]);
+        let scratch = temp.path().join("checkouts");
+        std::fs::create_dir_all(&scratch).expect("scratch");
+        let options = roko_cli::spec_red_on_base::RedOnBaseOptions {
+            timeout: Some(std::time::Duration::from_secs(30)),
+            scratch: Some(scratch),
+            ..Default::default()
+        };
+        let files = [repo.join("plans/p/tasks.toml")];
+        let outcome = |config: Option<&RokoConfig>| {
+            let report = validate_red_on_base(&files, &repo, &options, config).expect("check");
+            report.checks[0].outcome
+        };
+
+        let mut config = RokoConfig::default();
+        config.gates.env_passthrough = vec![PASSTHROUGH_PROBE.to_string()];
+        assert_eq!(
+            outcome(Some(&config)),
+            roko_cli::spec_red_on_base::Outcome::Pass
+        );
+        assert_ne!(outcome(None), roko_cli::spec_red_on_base::Outcome::Pass);
+    }
 
     #[test]
     fn read_executor_state_returns_none_without_snapshot() {

@@ -2605,6 +2605,7 @@ fn dashboard_event_to_server(event: &roko_core::DashboardEvent) -> Option<Server
         | DashboardEvent::AttemptSettled { .. }
         | DashboardEvent::LadderExhausted { .. }
         | DashboardEvent::AttemptMerged { .. }
+        | DashboardEvent::CallCost { .. }
         | DashboardEvent::SpecGateStarted { .. }
         | DashboardEvent::SpecGateFinished { .. }
         | DashboardEvent::KnowledgeWritten { .. }

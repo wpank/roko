@@ -2258,6 +2258,14 @@ pub trait CallAllowance: Send + Sync + fmt::Debug {
     /// rate priced it, so what it cost is unknown.
     fn record_call(&self, cost_usd: f64, priced: bool);
 
+    /// A model call to `model` finished using `usage`, which it cost
+    /// `usage.cost_usd` for; `priced` as for [`Self::record_call`], which this
+    /// calls unless the allowance also reports each call as it returns
+    /// (gap-5c3347).
+    fn record_model_call(&self, _model: &str, usage: &roko_core::Usage, priced: bool) {
+        self.record_call(f64::from(usage.cost_usd), priced);
+    }
+
     /// The most the attempt can still spend, in USD, for an agent that runs
     /// its own loop and keeps a spend limit of its own, as the Claude CLI
     /// does (gap-e14344); `None` without one.
@@ -2294,7 +2302,7 @@ impl roko_agent::tool_loop::TurnBudget for PricedCalls {
         // A call that used no tokens cost nothing, priced or not.
         let priced = pricing != CallPricing::Unpriced || usage.has_known_cost();
         self.allowance
-            .record_call(f64::from(usage.cost_usd), priced);
+            .record_model_call(&self.target.model_slug, &usage, priced);
     }
 }
 

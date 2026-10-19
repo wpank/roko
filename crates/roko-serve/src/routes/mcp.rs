@@ -254,7 +254,10 @@ fn tools() -> Vec<(Value, &'static str)> {
                 "plan_run",
                 "Run one of Roko's plans, or queue it behind the run in progress. Paid: it \
                  spends model budget, at most max_usd. Answers at once with the run's id \
-                 and whether it is running or queued; follow it with run_status.",
+                 and whether it is running or queued; follow it with run_status. When the \
+                 plan's last run stopped part way, say resume=true to continue it or \
+                 fresh=true to start over: with neither, the call is refused and names that \
+                 run.",
                 json!({
                     "type": "object",
                     "properties": {
@@ -262,7 +265,20 @@ fn tools() -> Vec<(Value, &'static str)> {
                         "resume": {
                             "type": "boolean",
                             "default": false,
-                            "description": "Resume from the plan's checkpoint, not start over"
+                            "description": "Continue the plan's last run from its checkpoint: \
+                                            its passed tasks are kept and only the rest run"
+                        },
+                        "fresh": {
+                            "type": "boolean",
+                            "default": false,
+                            "description": "Start the plan over, setting the last run's \
+                                            progress aside (the answer's set_aside names it)"
+                        },
+                        "from_run": {
+                            "type": "string",
+                            "description": "Continue this earlier run instead (its id, or its \
+                                            first 8 characters), whose progress a run that \
+                                            started over set aside; implies resume"
                         },
                         "max_usd": max_usd_schema()
                     },
@@ -541,10 +557,10 @@ async fn call_tool(
         }
         "plan_run" => {
             let plan_id = required_str(&arguments, name, "plan_id")?.to_string();
-            let resume = optional_bool(&arguments, "resume")?;
+            let start = plan_start(&arguments)?;
             let max_usd = run_cap(state, &arguments)?;
             let origin = mcp_origin(auth);
-            start_plan(state, plan_id, resume, origin, max_usd).await
+            start_plan(state, plan_id, start, origin, max_usd).await
         }
         "plan_generate" => {
             let prompt = required_str(&arguments, name, "prompt")?.to_string();
@@ -765,6 +781,32 @@ fn optional_bool(arguments: &Value, name: &str) -> Result<bool, JsonRpcError> {
     }
 }
 
+/// How the `plan_run` tool treats the plan's checkpoint: its `resume`,
+/// `fresh` and `from_run` (bug-cbdb6b). `fresh` with either of the others
+/// contradicts itself.
+fn plan_start(arguments: &Value) -> Result<super::plans::PlanStart, JsonRpcError> {
+    let from_run = match arguments.get("from_run") {
+        None | Some(Value::Null) => None,
+        Some(Value::String(run)) if run.trim().len() >= 8 => Some(run.trim().to_string()),
+        Some(_) => {
+            return Err(JsonRpcError::invalid_params(
+                "from_run must be a run id, or at least its first 8 characters",
+            ));
+        }
+    };
+    let start = super::plans::PlanStart {
+        resume: optional_bool(arguments, "resume")?,
+        fresh: optional_bool(arguments, "fresh")?,
+        from_run,
+    };
+    if start.fresh && (start.resume || start.from_run.is_some()) {
+        return Err(JsonRpcError::invalid_params(
+            "fresh starts the plan over, so it cannot be combined with resume or from_run",
+        ));
+    }
+    Ok(start)
+}
+
 /// The optional `max_usd` argument: a spending cap in USD, above zero.
 fn optional_usd(arguments: &Value) -> Result<Option<f64>, JsonRpcError> {
     match arguments.get("max_usd") {
@@ -964,24 +1006,27 @@ async fn start_prompt_run(
 /// The `plan_run` tool: run plan `plan_id` from `origin`, capped at
 /// `max_usd`, or queue it behind the live run, as `POST
 /// /api/plans/{id}/execute` does, and answer at once. Refused without the
-/// data-model boundary ([`refuse_unscreened_run`]).
+/// data-model boundary ([`refuse_unscreened_run`]), and while the plan's last
+/// run stopped part way unless `start` says to resume or start over
+/// (bug-cbdb6b). The answer names the run a resume continues (`resumes`) and
+/// the one whose progress the run set aside (`set_aside`).
 async fn start_plan(
     state: &Arc<AppState>,
     plan_id: String,
-    resume: bool,
+    start: super::plans::PlanStart,
     origin: RunOrigin,
     max_usd: f64,
 ) -> Result<Value, ApiError> {
     refuse_unscreened_run(state)?;
     let started =
-        super::plans::start_plan_run_with(state, plan_id, resume, origin, Some(max_usd)).await?;
+        super::plans::start_plan_run_with(state, plan_id, start, origin, Some(max_usd)).await?;
     let run_id = started.run_id;
     let run_state = if started.queued.is_some() {
         RunState::Queued
     } else {
         RunState::Running
     };
-    Ok(json!({
+    let mut answer = json!({
         "run_id": run_id,
         "state": run_state.as_str(),
         "position": started.queued,
@@ -989,7 +1034,14 @@ async fn start_plan(
             "summary": format!("/api/runs/{run_id}/summary"),
             "status": format!("/api/plans/{run_id}/status"),
         },
-    }))
+    });
+    if let Some(run) = started.resumes {
+        answer["resumes"] = json!(run);
+    }
+    if let Some(run) = started.set_aside {
+        answer["set_aside"] = json!(run);
+    }
+    Ok(answer)
 }
 
 /// The `plan_generate` tool: have the planner write a plan for `prompt`, as
@@ -1347,11 +1399,15 @@ mod tests {
 
     /// A runtime whose plan runs record their options, then wait for a
     /// permit from `gate` before they end, and whose prompt runs record their
-    /// options and succeed at once.
+    /// options and succeed at once. Every plan's checkpoint records
+    /// `checkpoint`, and `set_aside` holds the checkpoints runs that started
+    /// over set aside, which `restore_checkpoint_run` puts back (bug-cbdb6b).
     struct HeldPlans {
         plans: std::sync::Mutex<Vec<crate::runtime::PlanRunOptions>>,
         prompts: std::sync::Mutex<Vec<PromptPlanOptions>>,
         gate: tokio::sync::Semaphore,
+        checkpoint: std::sync::Mutex<Option<crate::runtime::CheckpointRun>>,
+        set_aside: std::sync::Mutex<Vec<crate::runtime::CheckpointRun>>,
     }
 
     impl HeldPlans {
@@ -1360,13 +1416,32 @@ mod tests {
                 plans: std::sync::Mutex::default(),
                 prompts: std::sync::Mutex::default(),
                 gate: tokio::sync::Semaphore::new(0),
+                checkpoint: std::sync::Mutex::default(),
+                set_aside: std::sync::Mutex::default(),
             }
+        }
+
+        /// A runtime whose plans' checkpoint records `checkpoint`, and which
+        /// has `set_aside` set aside.
+        fn with_checkpoints(
+            checkpoint: crate::runtime::CheckpointRun,
+            set_aside: Vec<crate::runtime::CheckpointRun>,
+        ) -> Self {
+            let runtime = Self::new();
+            *runtime.checkpoint.lock().expect("lock the checkpoint") = Some(checkpoint);
+            *runtime.set_aside.lock().expect("lock set-aside runs") = set_aside;
+            runtime
         }
 
         /// The run ids the plan runs ran under, in the order they started.
         fn run_ids(&self) -> Vec<Option<String>> {
             let plans = self.plans.lock().expect("lock plan runs");
             plans.iter().map(|options| options.run_id.clone()).collect()
+        }
+
+        /// The options the plan runs ran with, in the order they started.
+        fn plan_options(&self) -> Vec<crate::runtime::PlanRunOptions> {
+            self.plans.lock().expect("lock plan runs").clone()
         }
     }
 
@@ -1435,6 +1510,37 @@ mod tests {
                 success: true,
                 output_text: None,
                 gate_results: Vec::new(),
+            })
+        }
+
+        async fn checkpoint_run(
+            &self,
+            _workdir: &std::path::Path,
+            _plan_dir: &std::path::Path,
+        ) -> anyhow::Result<Option<crate::runtime::CheckpointRun>> {
+            Ok(self.checkpoint.lock().expect("lock the checkpoint").clone())
+        }
+
+        async fn restore_checkpoint_run(
+            &self,
+            _workdir: &std::path::Path,
+            _plan_dir: &std::path::Path,
+            run_id: &str,
+        ) -> anyhow::Result<crate::runtime::RestoredCheckpoint> {
+            let mut set_aside = self.set_aside.lock().expect("lock set-aside runs");
+            let Some(found) = set_aside
+                .iter()
+                .position(|run| run.run_id.starts_with(run_id))
+            else {
+                anyhow::bail!("no set-aside checkpoint records run {run_id}");
+            };
+            let restored = set_aside.remove(found);
+            let mut checkpoint = self.checkpoint.lock().expect("lock the checkpoint");
+            let replaced = checkpoint.replace(restored.clone());
+            set_aside.extend(replaced.clone());
+            Ok(crate::runtime::RestoredCheckpoint {
+                restored,
+                set_aside: replaced,
             })
         }
 
@@ -1571,6 +1677,186 @@ mod tests {
         let cancelled = &body["result"]["structuredContent"];
         assert_eq!(cancelled["state"], "cancelled", "{body}");
         assert!(state.plan_queue.lock().expect("lock the queue").is_empty());
+        runtime.gate.add_permits(1);
+    }
+
+    /// A run of 6988f0b8's that failed with T1 and T2 passed, and one of
+    /// e578cf71's that later passed every task (round v7, bug-cbdb6b).
+    const FAILED_RUN: &str = "6988f0b8-4199-4abf-9cfc-67713bc60e34";
+    const LATER_RUN: &str = "e578cf71-8ef9-44b9-b345-713982e8c547";
+
+    /// The checkpoint of run `run_id`, which stands at `status` with
+    /// `passed` tasks and `left` ones: resumable when it stopped part way.
+    fn checkpoint_of(
+        run_id: &str,
+        status: &str,
+        passed: &[&str],
+        left: &[&str],
+    ) -> crate::runtime::CheckpointRun {
+        crate::runtime::CheckpointRun {
+            run_id: run_id.to_string(),
+            status: status.to_string(),
+            passed_tasks: passed.iter().map(ToString::to_string).collect(),
+            tasks_left: left.iter().map(ToString::to_string).collect(),
+            resumable: status != "succeeded" && !passed.is_empty() && !left.is_empty(),
+        }
+    }
+
+    /// Wait until `runtime` has started `count` plan runs.
+    async fn plan_runs_started(runtime: &HeldPlans, count: usize) {
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while runtime.run_ids().len() < count {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("the run starts");
+    }
+
+    /// bug-cbdb6b: a chat host's `plan_run` that says neither `resume` nor
+    /// `fresh`, over a plan whose last run stopped part way, is refused
+    /// before anything runs. The refusal names the run, what it passed and
+    /// what is left, and both ways on; with `resume` the run continues it.
+    #[tokio::test]
+    async fn a_chat_plan_run_over_a_resumable_failed_run_is_refused_with_the_resume_hint() {
+        let failed = checkpoint_of(FAILED_RUN, "failed", &["T1", "T2"], &["T3"]);
+        let runtime = Arc::new(HeldPlans::with_checkpoints(failed.clone(), Vec::new()));
+        let (_dir, _state, open) = state_and_router(runtime.clone(), open_config());
+
+        let plain = call(1, "plan_run", json!({ "plan_id": "alpha", "max_usd": 1.0 }));
+        let (_, body) = post_mcp(&open, &plain, &[]).await;
+        assert_eq!(body["result"]["isError"], true, "{body}");
+        let error = &body["result"]["structuredContent"]["error"];
+        assert_eq!(error["code"], "conflict", "{body}");
+        let data = &error["data"];
+        assert_eq!(data["refusal"], "resumable_run", "{body}");
+        assert_eq!(data["refusals"], json!(["resumable_run"]), "{body}");
+        assert_eq!(data["run_id"], FAILED_RUN, "{body}");
+        assert_eq!(data["status"], "failed", "{body}");
+        assert_eq!(data["passed_tasks"], json!(["T1", "T2"]), "{body}");
+        assert_eq!(data["tasks_left"], json!(["T3"]), "{body}");
+        assert_eq!(
+            error["message"],
+            "Plan 'alpha' has a run that can be resumed: 6988f0b8 (failed) passed T1 and T2, \
+             and T3 is left. Pass resume=true to continue it, so only T3 runs, or fresh=true \
+             to start over and set its progress aside.",
+            "{body}"
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert!(runtime.run_ids().is_empty(), "nothing ran");
+
+        let resume = call(
+            2,
+            "plan_run",
+            json!({ "plan_id": "alpha", "max_usd": 1.0, "resume": true }),
+        );
+        let (_, body) = post_mcp(&open, &resume, &[]).await;
+        let started = &body["result"]["structuredContent"];
+        assert_eq!(started["state"], "running", "{body}");
+        assert_eq!(started["resumes"], json!(failed), "{body}");
+        assert!(started.get("set_aside").is_none(), "{body}");
+        plan_runs_started(&runtime, 1).await;
+        let options = &runtime.plan_options()[0];
+        assert!(options.force_resume && !options.fresh, "{options:?}");
+        runtime.gate.add_permits(1);
+    }
+
+    /// bug-cbdb6b: a chat host's `plan_run` with `fresh` starts the plan
+    /// over, and its answer says whose progress it set aside. A run the HTTP
+    /// API starts without `resume` starts over as before, and says so too.
+    #[tokio::test]
+    async fn a_plan_run_that_starts_over_says_whose_progress_it_set_aside() {
+        let failed = checkpoint_of(FAILED_RUN, "failed", &["T1", "T2"], &["T3"]);
+        let runtime = Arc::new(HeldPlans::with_checkpoints(failed.clone(), Vec::new()));
+        let (_dir, _state, open) = state_and_router(runtime.clone(), open_config());
+        let fresh = call(
+            1,
+            "plan_run",
+            json!({ "plan_id": "alpha", "max_usd": 1.0, "fresh": true }),
+        );
+        let (_, body) = post_mcp(&open, &fresh, &[]).await;
+        let started = &body["result"]["structuredContent"];
+        assert_eq!(started["state"], "running", "{body}");
+        assert_eq!(started["set_aside"], json!(failed), "{body}");
+        plan_runs_started(&runtime, 1).await;
+        let options = &runtime.plan_options()[0];
+        assert!(options.fresh && !options.force_resume, "{options:?}");
+        runtime.gate.add_permits(1);
+
+        let runtime = Arc::new(HeldPlans::with_checkpoints(failed.clone(), Vec::new()));
+        let (_dir, _state, router) = state_and_router(runtime.clone(), open_config());
+        let execute = Request::builder()
+            .method("POST")
+            .uri("/api/plans/alpha/execute")
+            .body(Body::empty())
+            .expect("a request");
+        let response = router.oneshot(execute).await.expect("a response");
+        assert_eq!(response.status(), StatusCode::ACCEPTED);
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("a body");
+        let body: Value = serde_json::from_slice(&bytes).expect("JSON");
+        assert_eq!(body["set_aside"], json!(failed), "{body}");
+        plan_runs_started(&runtime, 1).await;
+        runtime.gate.add_permits(1);
+    }
+
+    /// bug-cbdb6b: `from_run` puts back the checkpoint of a run that a run
+    /// starting over set aside, sets the current one aside in its place, and
+    /// resumes it; `fresh` with `resume` or `from_run` contradicts itself,
+    /// and a run with no set-aside checkpoint is named in the refusal.
+    #[tokio::test]
+    async fn a_chat_plan_run_from_a_set_aside_run_puts_its_checkpoint_back() {
+        let later = checkpoint_of(LATER_RUN, "succeeded", &["T1", "T2", "T3"], &[]);
+        let failed = checkpoint_of(FAILED_RUN, "failed", &["T1", "T2"], &["T3"]);
+        let runtime = Arc::new(HeldPlans::with_checkpoints(
+            later.clone(),
+            vec![failed.clone()],
+        ));
+        let (_dir, _state, open) = state_and_router(runtime.clone(), open_config());
+
+        for (id, arguments) in [
+            (1, json!({ "fresh": true, "resume": true })),
+            (2, json!({ "fresh": true, "from_run": "6988f0b8" })),
+            (3, json!({ "from_run": "" })),
+            (4, json!({ "from_run": 6988 })),
+        ] {
+            let mut arguments = arguments;
+            arguments["plan_id"] = json!("alpha");
+            arguments["max_usd"] = json!(1.0);
+            let (_, body) = post_mcp(&open, &call(id, "plan_run", arguments), &[]).await;
+            assert!(body["error"]["message"].is_string(), "{body}");
+        }
+
+        let unknown = call(
+            5,
+            "plan_run",
+            json!({ "plan_id": "alpha", "max_usd": 1.0, "from_run": "0000aaaa" }),
+        );
+        let (_, body) = post_mcp(&open, &unknown, &[]).await;
+        assert_eq!(body["result"]["isError"], true, "{body}");
+        let error = &body["result"]["structuredContent"]["error"];
+        assert_eq!(error["code"], "conflict", "{body}");
+        assert!(
+            error["message"]
+                .as_str()
+                .is_some_and(|message| message.contains("0000aaaa")),
+            "{body}"
+        );
+
+        let back = call(
+            6,
+            "plan_run",
+            json!({ "plan_id": "alpha", "max_usd": 1.0, "resume": true, "from_run": "6988f0b8" }),
+        );
+        let (_, body) = post_mcp(&open, &back, &[]).await;
+        let started = &body["result"]["structuredContent"];
+        assert_eq!(started["state"], "running", "{body}");
+        assert_eq!(started["resumes"], json!(failed), "{body}");
+        assert_eq!(started["set_aside"], json!(later), "{body}");
+        plan_runs_started(&runtime, 1).await;
+        let options = &runtime.plan_options()[0];
+        assert!(options.force_resume && !options.fresh, "{options:?}");
         runtime.gate.add_permits(1);
     }
 

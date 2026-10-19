@@ -32,7 +32,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result, bail};
 use roko_fs::RokoLayout;
-use roko_graph::cells::task_executor::{TaskExecutionSpec, TaskGateVerdict};
+use roko_graph::cells::task_executor::{TaskAttempt, TaskExecutionSpec, TaskGateVerdict};
 use roko_graph::convert::{PlanTaskInfo, plan_to_graph};
 use roko_graph::replay::{
     LoggedRecord, RecordEntry, activity_records, complete_records_len, set_aside_activities_after,
@@ -43,6 +43,7 @@ use roko_graph::{
 };
 use roko_learn::telemetry::report::RunRecords;
 use roko_learn::telemetry::{AttemptOpenRecord, AttemptOutcome};
+use roko_serve::runtime::{names_run, short_run_id};
 use serde::{Deserialize, Serialize};
 
 use crate::graph_execution::delivery::{DELIVERY_CHECKS_EXTENSION, DeliveryCheck};
@@ -137,6 +138,16 @@ impl GraphCheckpointStatus {
             Self::Cancelled => "cancelled",
             Self::Interrupted => "interrupted",
         }
+    }
+
+    /// Whether a run that stands here stopped part way: it failed, was
+    /// cancelled or interrupted, or stopped while running without saying.
+    #[must_use]
+    pub const fn stopped_part_way(self) -> bool {
+        matches!(
+            self,
+            Self::Running | Self::Failed | Self::Cancelled | Self::Interrupted
+        )
     }
 }
 
@@ -1087,6 +1098,8 @@ pub struct PreparedGraphCheckpoint {
     /// The run's safety provenance sink, whose summary every manifest write
     /// stores (gap-ff95f5).
     safety_provenance: Option<Arc<GraphProvenanceSink>>,
+    /// The checkpoint this run set aside to start the plan over (bug-cbdb6b).
+    set_aside: Option<SetAsideCheckpoint>,
 }
 
 impl std::fmt::Debug for PreparedGraphCheckpoint {
@@ -1115,6 +1128,19 @@ impl PreparedGraphCheckpoint {
     #[must_use]
     pub const fn paths(&self) -> &GraphCheckpointPaths {
         &self.paths
+    }
+
+    /// The checkpoint of an earlier run that this run set aside to start the
+    /// plan over, which the run's events name (bug-cbdb6b).
+    #[must_use]
+    pub const fn set_aside(&self) -> Option<&SetAsideCheckpoint> {
+        self.set_aside.as_ref()
+    }
+
+    /// This checkpoint, saying it set `set_aside` aside.
+    fn setting_aside(mut self, set_aside: Option<SetAsideCheckpoint>) -> Self {
+        self.set_aside = set_aside;
+        self
     }
 
     /// Move the prepared recorder into a Graph Engine.
@@ -1678,8 +1704,20 @@ pub fn prepare_graph_checkpoint_for_run(
     let paths = resolve_checkpoint_paths(workdir, requested_path, plan_id, plan_count)?;
     let identity = GraphIdentity::of(workdir, graph)?;
 
+    // What the run sets aside to start over, read before its files move, so
+    // the run can say whose progress it was (bug-cbdb6b).
+    let mut set_aside = None;
     if fresh {
-        archive_checkpoint_files(&paths)?;
+        let preview = preview_graph_checkpoint(
+            workdir,
+            requested_path,
+            plan_id,
+            plan_count,
+            graph,
+            false,
+            true,
+        );
+        set_aside = set_aside_checkpoint(&paths, preview.ok().as_ref())?;
     }
 
     if !fresh && paths.manifest.exists() {
@@ -1692,7 +1730,7 @@ pub fn prepare_graph_checkpoint_for_run(
                         paths.manifest.display()
                     );
                 }
-                archive_checkpoint_files(&paths)?;
+                set_aside = set_aside_checkpoint(&paths, None)?;
             }
             Ok(matched) => {
                 if (!paths.activities.is_file() || !paths.costs.is_file()) && !force_resume {
@@ -1704,8 +1742,9 @@ pub fn prepare_graph_checkpoint_for_run(
                     );
                 }
                 if !paths.activities.is_file() || !paths.costs.is_file() {
-                    archive_checkpoint_files(&paths)?;
-                    return create_fresh_checkpoint(paths, plan_id, identity.current, run_id);
+                    let set_aside = set_aside_checkpoint(&paths, None)?;
+                    return create_fresh_checkpoint(paths, plan_id, identity.current, run_id)
+                        .map(|prepared| prepared.setting_aside(set_aside));
                 }
                 let mut cost_ledger = match GraphCostLedgerCheckpoint::load(
                     paths.costs.clone(),
@@ -1714,8 +1753,9 @@ pub fn prepare_graph_checkpoint_for_run(
                 ) {
                     Ok(cost_ledger) => cost_ledger,
                     Err(_) if force_resume => {
-                        archive_checkpoint_files(&paths)?;
-                        return create_fresh_checkpoint(paths, plan_id, identity.current, run_id);
+                        let set_aside = set_aside_checkpoint(&paths, None)?;
+                        return create_fresh_checkpoint(paths, plan_id, identity.current, run_id)
+                            .map(|prepared| prepared.setting_aside(set_aside));
                     }
                     Err(error) => return Err(error),
                 };
@@ -1751,10 +1791,11 @@ pub fn prepare_graph_checkpoint_for_run(
                 paths.costs.display(),
             );
         }
-        archive_checkpoint_files(&paths)?;
+        set_aside = set_aside_checkpoint(&paths, None)?;
     }
 
     create_fresh_checkpoint(paths, plan_id, identity.current, run_id)
+        .map(|prepared| prepared.setting_aside(set_aside))
 }
 
 /// The generation a resume of a checkpoint selects, read without changing a
@@ -1921,6 +1962,7 @@ fn resume_checkpoint(
         cost_ledger: Some(cost_ledger),
         invalidated_on_resume: invalidated,
         safety_provenance: None,
+        set_aside: None,
     };
     prepared.manifest.status = GraphCheckpointStatus::Running;
     prepared.refresh_gate_verdicts()?;
@@ -2008,6 +2050,7 @@ fn create_fresh_checkpoint(
         cost_ledger: Some(cost_ledger),
         invalidated_on_resume: Vec::new(),
         safety_provenance: None,
+        set_aside: None,
     };
     prepared.commit_manifest()?;
     Ok(prepared)
@@ -2183,15 +2226,23 @@ fn validate_cost_ledger_state(
     Ok(())
 }
 
-fn archive_checkpoint_files(paths: &GraphCheckpointPaths) -> Result<()> {
-    let timestamp = unix_ms();
-    for path in [&paths.manifest, &paths.activities, &paths.costs] {
+/// Set `paths`' files aside under a `.bak.<unix ms>` suffix. Returns the
+/// name the manifest went to, or the first file's when there was no
+/// manifest, and `None` when there was nothing to set aside.
+fn archive_checkpoint_files(paths: &GraphCheckpointPaths) -> Result<Option<PathBuf>> {
+    let files = [&paths.manifest, &paths.activities, &paths.costs];
+    // Never over an earlier set-aside checkpoint, even within the same ms.
+    let mut timestamp = unix_ms();
+    while files
+        .iter()
+        .any(|path| set_aside_name(path, timestamp).exists())
+    {
+        timestamp += 1;
+    }
+    let mut first = None;
+    for path in files {
         if path.exists() {
-            let extension = path
-                .extension()
-                .and_then(|extension| extension.to_str())
-                .unwrap_or("state");
-            let backup = path.with_extension(format!("{extension}.bak.{timestamp}"));
+            let backup = set_aside_name(path, timestamp);
             std::fs::rename(path, &backup).with_context(|| {
                 format!(
                     "archive Graph checkpoint {} to {}",
@@ -2199,9 +2250,375 @@ fn archive_checkpoint_files(paths: &GraphCheckpointPaths) -> Result<()> {
                     backup.display()
                 )
             })?;
+            first.get_or_insert(backup);
         }
     }
+    Ok(first)
+}
+
+/// The name checkpoint file `path` is set aside under at `timestamp`:
+/// `checkpoint.json` goes to `checkpoint.json.bak.<timestamp>`.
+fn set_aside_name(path: &Path, timestamp: u128) -> PathBuf {
+    let extension = path
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .unwrap_or("state");
+    path.with_extension(format!("{extension}.bak.{timestamp}"))
+}
+
+/// A plan's checkpoint that a run set aside to start the plan over
+/// (bug-cbdb6b): the run it recorded and how that run stood, the tasks it
+/// passed and the ones it left when it could have resumed, and the name its
+/// manifest went to. `roko resume <run>`, or a chat host's `plan_run` with
+/// `from_run`, puts it back.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct SetAsideCheckpoint {
+    /// The run the manifest recorded, when it could be read.
+    pub run_id: Option<String>,
+    /// How that run stood.
+    pub status: Option<GraphCheckpointStatus>,
+    /// The tasks a resume would have replayed.
+    pub passed_tasks: Vec<String>,
+    /// The tasks a resume would have run.
+    pub tasks_left: Vec<String>,
+    /// Where the manifest went (`checkpoint.json.bak.<unix ms>`).
+    pub manifest: PathBuf,
+}
+
+impl SetAsideCheckpoint {
+    /// Whose progress went aside, where, and how to bring it back, with
+    /// paths relative to `workdir`.
+    #[must_use]
+    pub fn describe(&self, workdir: &Path) -> String {
+        let manifest = self
+            .manifest
+            .strip_prefix(workdir)
+            .unwrap_or(&self.manifest)
+            .display();
+        let Some(run_id) = &self.run_id else {
+            return format!("set aside an unreadable checkpoint as {manifest}");
+        };
+        let short = short_run_id(run_id);
+        let mut facts: Vec<String> = self
+            .status
+            .map(|status| status.as_str().to_string())
+            .into_iter()
+            .collect();
+        if !self.passed_tasks.is_empty() {
+            facts.push(format!("passed {}", self.passed_tasks.join(", ")));
+        }
+        if !self.tasks_left.is_empty() {
+            facts.push(format!("left {}", self.tasks_left.join(", ")));
+        }
+        let facts = if facts.is_empty() {
+            String::new()
+        } else {
+            format!(" ({})", facts.join("; "))
+        };
+        format!("set aside run {short}{facts} as {manifest}; `roko resume {short}` puts it back")
+    }
+}
+
+/// The run a checkpoint manifest records and how it stands, read from any
+/// schema version without migrating it.
+#[derive(Deserialize)]
+struct ManifestRun {
+    plan_id: String,
+    run_id: String,
+    status: GraphCheckpointStatus,
+}
+
+/// The run the manifest at `path` records, or `None` when it cannot be read.
+fn manifest_run(path: &Path) -> Option<ManifestRun> {
+    serde_json::from_slice(&std::fs::read(path).ok()?).ok()
+}
+
+/// Set the checkpoint at `paths` aside ([`archive_checkpoint_files`]) and
+/// say what it was: the run its manifest recorded and, from `preview` when it
+/// could have resumed, the tasks it passed and left (bug-cbdb6b).
+fn set_aside_checkpoint(
+    paths: &GraphCheckpointPaths,
+    preview: Option<&ResumePreview>,
+) -> Result<Option<SetAsideCheckpoint>> {
+    let recorded = manifest_run(&paths.manifest);
+    let Some(manifest) = archive_checkpoint_files(paths)? else {
+        return Ok(None);
+    };
+    let resumable = preview.filter(|preview| preview.action == ResumeAction::Resume);
+    let set_aside = SetAsideCheckpoint {
+        run_id: recorded.as_ref().map(|recorded| recorded.run_id.clone()),
+        status: recorded.map(|recorded| recorded.status),
+        passed_tasks: resumable.map_or_else(Vec::new, |preview| preview.restored_tasks.clone()),
+        tasks_left: resumable.map_or_else(Vec::new, |preview| preview.tasks_to_run.clone()),
+        manifest,
+    };
+    tracing::info!(
+        run_id = set_aside.run_id.as_deref().unwrap_or("unknown"),
+        manifest = %set_aside.manifest.display(),
+        "set aside a Graph checkpoint to start the plan over"
+    );
+    Ok(Some(set_aside))
+}
+
+/// What [`restore_set_aside_checkpoint`] did (bug-cbdb6b).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RestoredRun {
+    /// What a resume does with the plan's checkpoint, the run's again.
+    pub restored: ResumePreview,
+    /// The checkpoint set aside in its place, if the plan had another one.
+    pub set_aside: Option<SetAsideCheckpoint>,
+}
+
+/// Put back the checkpoint of run `run_id` (its id, or at least its first 8
+/// characters) that a run starting `plan` over set aside, so that the next
+/// resume continues it (bug-cbdb6b). The plan's current checkpoint, another
+/// run's, is set aside in its place. Nothing moves when the current
+/// checkpoint is the run's already. The caller holds the runner lock.
+///
+/// # Errors
+///
+/// When no set-aside checkpoint of the plan records the run, or more than
+/// one run matches; when the run accepted work onto its plan branch and the
+/// branch has moved on to another run's, so a resume could not build on it;
+/// when the checkpoint no longer fits the plan (it stays set aside); or when
+/// its files cannot be moved.
+pub fn restore_set_aside_checkpoint(
+    workdir: &Path,
+    plan: &Plan,
+    run_id: &str,
+) -> Result<RestoredRun> {
+    let run_id = run_id.trim();
+    if run_id.len() < 8 {
+        bail!("name the run by its id or at least its first 8 characters, not '{run_id}'");
+    }
+    let paths = resolve_checkpoint_paths(workdir, None, &plan.id, 1)?;
+    let options = ResumeOptions {
+        force_resume: true,
+        ..ResumeOptions::default()
+    };
+    let current = preview_plan_resume(workdir, plan, 1, &options)?;
+    if current
+        .run_id
+        .as_deref()
+        .is_some_and(|current| names_run(current, run_id))
+    {
+        return Ok(RestoredRun {
+            restored: current,
+            set_aside: None,
+        });
+    }
+    // Oldest first, so the last match is the newest.
+    let set_aside = set_aside_checkpoints(&paths, &plan.id);
+    let matching: Vec<&(u128, ManifestRun)> = set_aside
+        .iter()
+        .filter(|(_, recorded)| names_run(&recorded.run_id, run_id))
+        .collect();
+    let runs: BTreeSet<&str> = matching
+        .iter()
+        .map(|(_, recorded)| recorded.run_id.as_str())
+        .collect();
+    if runs.len() > 1 {
+        bail!(
+            "'{run_id}' names more than one run of plan '{}': {}",
+            plan.id,
+            runs.into_iter().collect::<Vec<_>>().join(", ")
+        );
+    }
+    let Some((stamp, recorded)) = matching.last() else {
+        let known: Vec<String> = set_aside
+            .iter()
+            .map(|(_, recorded)| {
+                format!(
+                    "{} ({})",
+                    short_run_id(&recorded.run_id),
+                    recorded.status.as_str()
+                )
+            })
+            .collect();
+        let known = if known.is_empty() {
+            "it has none".to_string()
+        } else {
+            format!("it has {}", known.join(", "))
+        };
+        bail!(
+            "plan '{}' has no set-aside checkpoint of run {run_id}; {known}",
+            plan.id
+        );
+    };
+    refuse_lost_plan_branch(
+        workdir,
+        &set_aside_name(&paths.activities, *stamp),
+        recorded,
+    )?;
+
+    let replaced = set_aside_checkpoint(&paths, Some(&current))?;
+    put_back_checkpoint(&paths, *stamp)?;
+    let restored = preview_plan_resume(workdir, plan, 1, &options)?;
+    if restored.action != ResumeAction::Resume {
+        // Undo the swap: the run's checkpoint goes aside again, and the one
+        // it replaced comes back.
+        archive_checkpoint_files(&paths)?;
+        if let Some(stamp) = replaced
+            .as_ref()
+            .and_then(|replaced| set_aside_stamp(&replaced.manifest))
+        {
+            put_back_checkpoint(&paths, stamp)?;
+        }
+        bail!(
+            "run {}'s checkpoint no longer fits plan '{}'{}, so it stays set aside",
+            short_run_id(&recorded.run_id),
+            plan.id,
+            restored
+                .reason
+                .as_deref()
+                .map(|reason| {
+                    let reason = reason
+                        .strip_prefix("--force-resume archives it, ")
+                        .unwrap_or(reason);
+                    format!(" ({reason})")
+                })
+                .unwrap_or_default()
+        );
+    }
+    Ok(RestoredRun {
+        restored,
+        set_aside: replaced,
+    })
+}
+
+/// The plan whose Graph checkpoint in `workdir`, current or set aside,
+/// records run `run_id` (its id, or at least its first 8 characters), for
+/// `roko resume <run>` (bug-cbdb6b). `None` when no plan's does, or when
+/// the prefix names runs of more than one plan.
+#[must_use]
+pub fn plan_of_run(workdir: &Path, run_id: &str) -> Option<String> {
+    let run_id = run_id.trim();
+    if run_id.len() < 8 {
+        return None;
+    }
+    let root = workdir.join(".roko/state/graph");
+    let plans: BTreeSet<String> = std::fs::read_dir(root)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter_map(|plan| std::fs::read_dir(plan.path()).ok())
+        .flatten()
+        .flatten()
+        .filter_map(|file| {
+            let path = file.path();
+            let name = path.file_name()?.to_str()?;
+            (name == "checkpoint.json" || name.starts_with("checkpoint.json.bak.")).then_some(())?;
+            manifest_run(&path)
+        })
+        .filter(|recorded| names_run(&recorded.run_id, run_id))
+        .map(|recorded| recorded.plan_id)
+        .collect();
+    let mut plans = plans.into_iter();
+    match (plans.next(), plans.next()) {
+        (Some(plan), None) => Some(plan),
+        _ => None,
+    }
+}
+
+/// The checkpoints of plan `plan_id` set aside beside `paths`' manifest, with
+/// the time each was set aside, oldest first.
+fn set_aside_checkpoints(paths: &GraphCheckpointPaths, plan_id: &str) -> Vec<(u128, ManifestRun)> {
+    let Some(directory) = paths.manifest.parent() else {
+        return Vec::new();
+    };
+    let mut found: Vec<(u128, ManifestRun)> = std::fs::read_dir(directory)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter_map(|entry| {
+            let path = entry.path();
+            let stamp = set_aside_stamp(&path)?;
+            (set_aside_name(&paths.manifest, stamp) == path).then_some(())?;
+            let recorded = manifest_run(&path)?;
+            (recorded.plan_id == plan_id).then_some((stamp, recorded))
+        })
+        .collect();
+    found.sort_by_key(|(stamp, _)| *stamp);
+    found
+}
+
+/// When a set-aside checkpoint file `path` was set aside: the `<unix ms>`
+/// of its `.bak.<unix ms>` suffix.
+fn set_aside_stamp(path: &Path) -> Option<u128> {
+    let name = path.file_name()?.to_str()?;
+    let (_, stamp) = name.rsplit_once(".bak.")?;
+    stamp.parse().ok()
+}
+
+/// Move the checkpoint files `paths` set aside at `stamp` back to their names.
+fn put_back_checkpoint(paths: &GraphCheckpointPaths, stamp: u128) -> Result<()> {
+    for path in [&paths.manifest, &paths.activities, &paths.costs] {
+        let backup = set_aside_name(path, stamp);
+        if !backup.exists() {
+            continue;
+        }
+        if path.exists() {
+            bail!(
+                "cannot put back {}: {} is in the way",
+                backup.display(),
+                path.display()
+            );
+        }
+        std::fs::rename(&backup, path).with_context(|| {
+            format!(
+                "put back Graph checkpoint {} as {}",
+                backup.display(),
+                path.display()
+            )
+        })?;
+    }
     Ok(())
+}
+
+/// Refuse to put back the checkpoint of `recorded`'s run when the run
+/// accepted work onto its plan branch (its set-aside Activity log at
+/// `activities` names the commits) and the branch's tip is now another
+/// run's: a resume continues a plan branch only from its own run's tip, so
+/// it would replay the passed tasks without the changes they made.
+fn refuse_lost_plan_branch(
+    workdir: &Path,
+    activities: &Path,
+    recorded: &ManifestRun,
+) -> Result<()> {
+    let log = std::fs::read(activities).unwrap_or_default();
+    let branch = activity_records(&log, &recorded.plan_id, &recorded.run_id)
+        .filter_map(std::result::Result::ok)
+        .filter_map(|record| TaskAttempt::from_signals(&record.entry.signals).ok())
+        .find_map(|attempt| attempt.accepted.map(|accepted| accepted.plan_branch));
+    let Some(branch) = branch else {
+        return Ok(());
+    };
+    let tip = std::process::Command::new("git")
+        .arg("-C")
+        .arg(workdir)
+        .args(["cat-file", "commit", &format!("refs/heads/{branch}")])
+        .output()
+        .ok()
+        .filter(|output| output.status.success())
+        .map(|output| String::from_utf8_lossy(&output.stdout).into_owned());
+    let tip_run = tip.as_deref().and_then(|body| {
+        body.lines()
+            .rev()
+            .find_map(|line| line.strip_prefix("Roko-Run: "))
+            .map(str::trim)
+    });
+    if tip_run == Some(recorded.run_id.as_str()) {
+        return Ok(());
+    }
+    let now = tip_run.map_or_else(
+        || "is gone".to_string(),
+        |run| format!("now holds run {}'s work", short_run_id(run)),
+    );
+    bail!(
+        "run {} accepted its passed tasks' work onto {branch}, which {now}, so a resume could \
+         not build on it; start the plan over instead",
+        short_run_id(&recorded.run_id)
+    )
 }
 
 fn write_cost_ledger_atomic(path: &Path, state: &GraphCostLedgerState) -> Result<()> {
@@ -2688,6 +3105,8 @@ pub enum ResumeAction {
 pub struct ResumePreview {
     /// Checkpoint manifest the run would use.
     pub manifest: PathBuf,
+    /// Run recorded in the manifest.
+    pub run_id: Option<String>,
     /// Status recorded in the manifest.
     pub status: Option<GraphCheckpointStatus>,
     /// How the recorded fingerprint relates to the plan.
@@ -2896,6 +3315,7 @@ fn preview_graph_checkpoint(
     task_nodes.sort();
     let mut preview = ResumePreview {
         manifest: paths.manifest.clone(),
+        run_id: None,
         status: None,
         fingerprint_match: None,
         action: ResumeAction::Start,
@@ -2907,6 +3327,7 @@ fn preview_graph_checkpoint(
     let manifest = if paths.manifest.exists() {
         match read_manifest(&paths.manifest) {
             Ok(manifest) => {
+                preview.run_id = Some(manifest.run_id.clone());
                 preview.status = Some(manifest.status);
                 preview.fingerprint_match = Some(identity.matching(&manifest.graph_fingerprint));
                 Some(manifest)
@@ -3464,6 +3885,228 @@ depends_on = ["T1"]
         let preview = preview_plan_resume(dir.path(), &plan, 1, &fresh).expect("preview");
         assert_eq!(preview.action, ResumeAction::Archive);
         assert_eq!(preview.tasks_to_run, ["T1", "T2"]);
+    }
+
+    /// Run `run_id` of plan `p`: T1 passes, its attempt accepted onto plan
+    /// branch `roko/plan/p` when `accepted`, and the run stops failed with
+    /// T2 left. Starts over (`fresh`) when the plan has a checkpoint.
+    fn failed_run(
+        workdir: &Path,
+        graph: &Graph,
+        run_id: &str,
+        accepted: bool,
+    ) -> PreparedGraphCheckpoint {
+        let fresh = workdir.join(".roko/state/graph/p/checkpoint.json").exists();
+        let mut checkpoint = prepare_graph_checkpoint_for_run(
+            workdir,
+            None,
+            "p",
+            1,
+            graph,
+            fresh,
+            false,
+            Some(run_id),
+        )
+        .expect("checkpoint");
+        let mut signals = vec![
+            roko_core::Signal::builder(roko_core::Kind::AgentOutput)
+                .body(roko_core::Body::text("T1 done"))
+                .build(),
+        ];
+        TaskAttempt {
+            plan_id: "p".to_string(),
+            task_id: "T1".to_string(),
+            run_id: Some(run_id.to_string()),
+            attempt: 1,
+            accepted: accepted.then(|| roko_graph::workspace::WorkspaceAcceptance {
+                attempt_commit: "a".repeat(40),
+                plan_branch: "roko/plan/p".to_string(),
+                accepted_commit: "a".repeat(40),
+            }),
+            ..TaskAttempt::default()
+        }
+        .stamp(&mut signals);
+        checkpoint
+            .take_recorder()
+            .record("p", "T1", 0, signals)
+            .expect("record");
+        checkpoint.finish(false).expect("finish");
+        checkpoint
+    }
+
+    const RUN_A: &str = "aaaaaaaa-1111-4111-8111-111111111111";
+    const RUN_B: &str = "bbbbbbbb-2222-4222-8222-222222222222";
+
+    /// bug-cbdb6b: a run that starts the plan over says whose progress it set
+    /// aside and where, `roko resume <run>` finds the plan by the run's id,
+    /// and putting the run's checkpoint back sets the newer one aside in its
+    /// place and resumes where the run stopped.
+    #[test]
+    fn a_run_that_starts_over_says_what_it_set_aside_and_the_run_comes_back_by_id() {
+        let dir = tempdir().expect("tempdir");
+        let plan = write_plan(dir.path(), PLAN_TOML);
+        let graph = plan_graph(&plan, &ResumeOptions::default());
+        let first = failed_run(dir.path(), &graph, RUN_A, false);
+        assert_eq!(first.set_aside(), None, "nothing to set aside");
+        drop(first);
+
+        let set_aside = failed_run(dir.path(), &graph, RUN_B, false)
+            .set_aside()
+            .cloned()
+            .expect("run A set aside");
+        assert_eq!(set_aside.run_id.as_deref(), Some(RUN_A));
+        assert_eq!(set_aside.status, Some(GraphCheckpointStatus::Failed));
+        assert_eq!(set_aside.passed_tasks, ["T1"]);
+        assert_eq!(set_aside.tasks_left, ["T2"]);
+        let stamp = set_aside_stamp(&set_aside.manifest).expect("a .bak stamp");
+        assert_eq!(
+            set_aside.manifest,
+            dir.path()
+                .join(format!(".roko/state/graph/p/checkpoint.json.bak.{stamp}"))
+        );
+        assert_eq!(
+            set_aside.describe(dir.path()),
+            format!(
+                "set aside run aaaaaaaa (failed; passed T1; left T2) as \
+                 .roko/state/graph/p/checkpoint.json.bak.{stamp}; `roko resume aaaaaaaa` puts \
+                 it back"
+            )
+        );
+
+        assert_eq!(plan_of_run(dir.path(), "aaaaaaaa").as_deref(), Some("p"));
+        assert_eq!(plan_of_run(dir.path(), RUN_B).as_deref(), Some("p"));
+        assert_eq!(plan_of_run(dir.path(), "aaaa"), None, "too short");
+        assert_eq!(plan_of_run(dir.path(), "cccccccc"), None);
+
+        let error =
+            restore_set_aside_checkpoint(dir.path(), &plan, "cccccccc").expect_err("no such run");
+        assert_eq!(
+            error.to_string(),
+            "plan 'p' has no set-aside checkpoint of run cccccccc; it has aaaaaaaa (failed)"
+        );
+
+        let restored =
+            restore_set_aside_checkpoint(dir.path(), &plan, "aaaaaaaa").expect("restore");
+        assert_eq!(restored.restored.run_id.as_deref(), Some(RUN_A));
+        assert_eq!(restored.restored.action, ResumeAction::Resume);
+        assert_eq!(restored.restored.restored_tasks, ["T1"]);
+        assert_eq!(restored.restored.tasks_to_run, ["T2"]);
+        let replaced = restored.set_aside.expect("run B set aside");
+        assert_eq!(replaced.run_id.as_deref(), Some(RUN_B));
+        assert_eq!(replaced.passed_tasks, ["T1"]);
+
+        // The plan's checkpoint is run A's again, and a resume continues it.
+        let resumed = prepare_graph_checkpoint(dir.path(), None, "p", 1, &graph, false, false)
+            .expect("resume");
+        assert_eq!(resumed.run_id(), RUN_A);
+        assert_eq!(resumed.replayed_entries(), 1);
+        assert_eq!(resumed.set_aside(), None);
+        drop(resumed);
+
+        // Run B comes back the same way; asking for the current run moves nothing.
+        let again = restore_set_aside_checkpoint(dir.path(), &plan, RUN_B).expect("restore B");
+        assert_eq!(again.restored.run_id.as_deref(), Some(RUN_B));
+        assert_eq!(
+            again
+                .set_aside
+                .and_then(|set_aside| set_aside.run_id)
+                .as_deref(),
+            Some(RUN_A)
+        );
+        let current = restore_set_aside_checkpoint(dir.path(), &plan, RUN_B).expect("current");
+        assert_eq!(current.set_aside, None);
+    }
+
+    /// bug-cbdb6b: a run whose passed tasks were accepted onto the plan
+    /// branch comes back only while the branch's tip is still its own: once
+    /// another run's work replaced it, a resume would replay T1 without its
+    /// changes, so the checkpoint stays set aside and nothing moves.
+    #[test]
+    fn a_run_whose_plan_branch_moved_on_stays_set_aside() {
+        let dir = tempdir().expect("tempdir");
+        let git = |args: &[&str]| {
+            let status = std::process::Command::new("git")
+                .arg("-C")
+                .arg(dir.path())
+                .args(["-c", "user.name=t", "-c", "user.email=t@example.invalid"])
+                .args([
+                    "-c",
+                    "commit.gpgsign=false",
+                    "-c",
+                    "core.hooksPath=/dev/null",
+                ])
+                .args(args)
+                .status()
+                .expect("git");
+            assert!(status.success(), "git {args:?}");
+        };
+        git(&["init", "-q"]);
+        let commit_for = |run: &str| {
+            git(&[
+                "commit",
+                "-q",
+                "--allow-empty",
+                "-m",
+                &format!("roko: p/T1\n\nRoko-Run: {run}"),
+            ]);
+            git(&["branch", "-f", "roko/plan/p"]);
+        };
+        let plan = write_plan(dir.path(), PLAN_TOML);
+        let graph = plan_graph(&plan, &ResumeOptions::default());
+        failed_run(dir.path(), &graph, RUN_A, true);
+        failed_run(dir.path(), &graph, RUN_B, true);
+        let current = || {
+            manifest_run(&dir.path().join(".roko/state/graph/p/checkpoint.json"))
+                .expect("a checkpoint")
+                .run_id
+        };
+
+        commit_for(RUN_B);
+        let error = restore_set_aside_checkpoint(dir.path(), &plan, "aaaaaaaa")
+            .expect_err("the plan branch holds run B's work");
+        assert_eq!(
+            error.to_string(),
+            "run aaaaaaaa accepted its passed tasks' work onto roko/plan/p, which now holds run \
+             bbbbbbbb's work, so a resume could not build on it; start the plan over instead"
+        );
+        assert_eq!(current(), RUN_B, "nothing moved");
+
+        commit_for(RUN_A);
+        let restored =
+            restore_set_aside_checkpoint(dir.path(), &plan, "aaaaaaaa").expect("restore");
+        assert_eq!(restored.restored.run_id.as_deref(), Some(RUN_A));
+        assert_eq!(current(), RUN_A);
+    }
+
+    /// bug-cbdb6b: a set-aside checkpoint of an edited plan no longer fits
+    /// it: putting it back is refused, it stays set aside, and the plan's
+    /// current checkpoint stays where it was.
+    #[test]
+    fn a_set_aside_run_that_no_longer_fits_the_plan_stays_set_aside() {
+        let dir = tempdir().expect("tempdir");
+        let plan = write_plan(dir.path(), PLAN_TOML);
+        let graph = plan_graph(&plan, &ResumeOptions::default());
+        failed_run(dir.path(), &graph, RUN_A, false);
+        let edited = write_plan(dir.path(), &PLAN_TOML.replace("Second", "Edited"));
+        let edited_graph = plan_graph(&edited, &ResumeOptions::default());
+        failed_run(dir.path(), &edited_graph, RUN_B, false);
+
+        let error = restore_set_aside_checkpoint(dir.path(), &edited, RUN_A)
+            .expect_err("run A's checkpoint is of the plan before the edit");
+        assert_eq!(
+            error.to_string(),
+            "run aaaaaaaa's checkpoint no longer fits plan 'p' (the converted plan graph has \
+             changed), so it stays set aside"
+        );
+        let current = manifest_run(&dir.path().join(".roko/state/graph/p/checkpoint.json"))
+            .expect("a checkpoint");
+        assert_eq!(current.run_id, RUN_B);
+        let paths = resolve_checkpoint_paths(dir.path(), None, "p", 1).expect("paths");
+        let set_aside: Vec<String> = set_aside_checkpoints(&paths, "p")
+            .into_iter()
+            .map(|(_, recorded)| recorded.run_id)
+            .collect();
+        assert_eq!(set_aside, [RUN_A]);
     }
 
     #[test]

@@ -39,7 +39,8 @@ use self::run_control::*;
 pub(super) use self::authoring::start_plan_generation;
 pub(super) use self::merge::record_review;
 pub(super) use self::run_control::{
-    cancel_plan_run, start_next_queued_run, start_plan_run_with, start_queued_run, workspace_busy,
+    PlanStart, cancel_plan_run, start_next_queued_run, start_plan_run_with, start_queued_run,
+    workspace_busy,
 };
 
 pub fn routes() -> Router<Arc<AppState>> {

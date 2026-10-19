@@ -1508,6 +1508,42 @@ pub fn format_dashboard_event(
                 format!("Ladder exhausted on {rung} ({model}): {suggestion}"),
             )
         }
+        // The spec gate's checks on the base can take minutes before any
+        // agent starts (gap-6a319c): say so, and say when they end.
+        DashboardEvent::SpecGateStarted {
+            tasks_total,
+            steps_total,
+            ..
+        } => {
+            if *tasks_total == 0 {
+                return None;
+            }
+            (
+                String::new(),
+                ">",
+                format!(
+                    "Checking {tasks_total} tasks' checks on the unchanged base (at most \
+                     {steps_total} runs)"
+                ),
+            )
+        }
+        DashboardEvent::SpecGateFinished {
+            elapsed_ms,
+            blocked,
+            ..
+        } => {
+            if *elapsed_ms < 1_000 {
+                return None;
+            }
+            #[allow(clippy::cast_precision_loss)]
+            let secs = *elapsed_ms as f64 / 1000.0;
+            let icon = if *blocked == 0 { "+" } else { "x" };
+            (
+                String::new(),
+                icon,
+                format!("Spec gate done in {secs:.1} s, {blocked} tasks blocked"),
+            )
+        }
         DashboardEvent::Error { message } => {
             let trunc = truncate_chars(message, 120);
             (String::new(), "x", format!("Error: {trunc}"))
@@ -1621,6 +1657,7 @@ pub fn format_dashboard_event(
         | DashboardEvent::EffectDecided { .. }
         | DashboardEvent::ConfirmWaiting { .. }
         | DashboardEvent::ConfirmResolved { .. }
+        | DashboardEvent::AttemptMerged { .. }
         | DashboardEvent::SnapshotRebased { .. } => return None,
     };
 

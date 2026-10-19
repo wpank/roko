@@ -2503,6 +2503,9 @@ fn dashboard_event_to_server(event: &roko_core::DashboardEvent) -> Option<Server
         | DashboardEvent::RetryFeedback { .. }
         | DashboardEvent::AttemptSettled { .. }
         | DashboardEvent::LadderExhausted { .. }
+        | DashboardEvent::AttemptMerged { .. }
+        | DashboardEvent::SpecGateStarted { .. }
+        | DashboardEvent::SpecGateFinished { .. }
         | DashboardEvent::KnowledgeWritten { .. }
         | DashboardEvent::PlaybookWritten { .. }
         | DashboardEvent::EffectStaged { .. }

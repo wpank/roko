@@ -15,7 +15,7 @@
 //! remains the production plan route until #256 atomically activates the
 //! streaming path after lease acquisition.
 
-use std::collections::{HashMap, hash_map::Entry};
+use std::collections::{HashMap, HashSet, hash_map::Entry};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -187,6 +187,19 @@ impl From<roko_core::config::serve::LiveAgentOutput> for LiveAgentOutput {
     }
 }
 
+tokio::task_local! {
+    /// How long a dispatch waited for its agent slot, in ms (gap-6a319c):
+    /// [`crate::graph_execution::agent_slots::AgentSlotDispatcher`] sets it
+    /// around the dispatch it lets through, which counts it in the attempt's
+    /// queue time.
+    pub(crate) static SLOT_WAIT_MS: u64;
+}
+
+/// Milliseconds since `since`.
+fn elapsed_ms(since: Instant) -> u64 {
+    u64::try_from(since.elapsed().as_millis()).unwrap_or(u64::MAX)
+}
+
 /// Real runner/provider adapter injected into `TaskExecutorCell` factories.
 pub struct GraphTaskDispatcher {
     factory: Arc<SharedAgentFactory>,
@@ -217,6 +230,9 @@ pub struct GraphTaskDispatcher {
     /// Checkout generation per task (`"{plan_id}/{task_id}"`): see
     /// [`Self::worktree_generation`].
     worktree_generations: parking_lot::Mutex<HashMap<String, u32>>,
+    /// The checkouts this run's attempts have run in, so that an attempt
+    /// knows when it runs in an earlier try's (gap-6a319c).
+    checkouts_used: parking_lot::Mutex<HashSet<PathBuf>>,
     /// Optional TUI bridge for forwarding live agent output events to the
     /// dashboard. When set, completed dispatch events (text deltas, tool
     /// calls, tool outputs) are published through the StateHub so the TUI
@@ -374,6 +390,7 @@ impl GraphTaskDispatcher {
             workspace_provider: None,
             disk_admission: None,
             worktree_generations: parking_lot::Mutex::new(HashMap::new()),
+            checkouts_used: parking_lot::Mutex::new(HashSet::new()),
             tui_bridge: None,
             live_agent_output: None,
             gate_retry_context: retry_feedback::RetryFeedbackBook::default(),
@@ -982,6 +999,10 @@ impl TaskDispatcher for GraphTaskDispatcher {
         input: Vec<Signal>,
         ctx: &CellContext,
     ) -> Result<Vec<Signal>> {
+        // What the attempt waits for before it opens counts as its queue
+        // (gap-6a319c), the agent slot it waited for included.
+        let entered = Instant::now();
+        let slot_wait_ms = SLOT_WAIT_MS.try_with(|ms| *ms).unwrap_or(0);
         // A paused run starts no attempt, a retry included (G10).
         operator_pause::hold_while_paused(ctx, &spec.plan_id, &spec.title).await?;
         self.admit_daily_budget(spec).await?;
@@ -1121,6 +1142,9 @@ impl TaskDispatcher for GraphTaskDispatcher {
             None => None,
         };
 
+        let queue_ms = slot_wait_ms.saturating_add(elapsed_ms(entered));
+        let acquiring = Instant::now();
+
         // ── Worktree isolation: acquire ─────────────────────────────────
         //
         // When a workspace provider is configured, acquire an isolated
@@ -1172,6 +1196,12 @@ impl TaskDispatcher for GraphTaskDispatcher {
             (Some(scratch), _) => scratch.dir().to_path_buf(),
             (None, Some(lease)) => lease.path.clone(),
             (None, None) => self.workdir.clone(),
+        };
+        // gap-6a319c: the checkout's preparation and what made it warm.
+        let setup = attempt::AttemptSetup {
+            queue_ms: Some(queue_ms),
+            workspace_ms: Some(elapsed_ms(acquiring)),
+            workspace: lease.as_ref().map(|lease| self.attempt_workspace(&lease.path)),
         };
         // A git process killed mid-command (an earlier attempt's agent, a
         // crashed run) leaves `index.lock` behind, and every index-writing git
@@ -1267,6 +1297,7 @@ impl TaskDispatcher for GraphTaskDispatcher {
         // dies from here on, the attempt keeps its key and counts as
         // abandoned.
         let mut attempt = self.open_attempt(spec, &task, ctx);
+        attempt.record_setup(setup);
         // The tree the task starts from, before its agent runs, for the
         // pre-verify screen's diff (`red_flags`).
         self.record_diff_base(
@@ -2012,7 +2043,8 @@ impl TaskDispatcher for GraphTaskDispatcher {
                 );
                 handed_on = Some(lease.clone());
             } else {
-                accepted = self
+                let merging = Instant::now();
+                let merged = self
                     .accept_attempt(
                         spec,
                         &task,
@@ -2022,7 +2054,9 @@ impl TaskDispatcher for GraphTaskDispatcher {
                         lease,
                         ctx,
                     )
-                    .await?;
+                    .await;
+                self.publish_attempt_merged(spec, &task, &settled, &merged, elapsed_ms(merging));
+                accepted = merged?;
             }
         }
         // A scratch_dir attempt's result is copied back into the workspace,

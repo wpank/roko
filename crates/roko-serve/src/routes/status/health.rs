@@ -323,6 +323,9 @@ fn dashboard_event_type(event: &roko_core::dashboard_snapshot::DashboardEvent) -
         DashboardEvent::RetryFeedback { .. } => "retry_feedback",
         DashboardEvent::AttemptSettled { .. } => "attempt_settled",
         DashboardEvent::LadderExhausted { .. } => "ladder_exhausted",
+        DashboardEvent::AttemptMerged { .. } => "attempt_merged",
+        DashboardEvent::SpecGateStarted { .. } => "spec_gate_started",
+        DashboardEvent::SpecGateFinished { .. } => "spec_gate_finished",
         DashboardEvent::KnowledgeWritten { .. } => "knowledge_written",
         DashboardEvent::PlaybookWritten { .. } => "playbook_written",
         DashboardEvent::EffectStaged { .. } => "effect_staged",
@@ -350,6 +353,7 @@ fn dashboard_event_plan_id(event: &roko_core::dashboard_snapshot::DashboardEvent
         | DashboardEvent::RetryFeedback { plan_id, .. }
         | DashboardEvent::AttemptSettled { plan_id, .. }
         | DashboardEvent::LadderExhausted { plan_id, .. }
+        | DashboardEvent::AttemptMerged { plan_id, .. }
         | DashboardEvent::KnowledgeWritten { plan_id, .. }
         | DashboardEvent::PlaybookWritten { plan_id, .. }
         | DashboardEvent::EffectStaged { plan_id, .. }
@@ -381,6 +385,7 @@ fn dashboard_event_task_id(event: &roko_core::dashboard_snapshot::DashboardEvent
         | DashboardEvent::RetryFeedback { task_id, .. }
         | DashboardEvent::AttemptSettled { task_id, .. }
         | DashboardEvent::LadderExhausted { task_id, .. }
+        | DashboardEvent::AttemptMerged { task_id, .. }
         | DashboardEvent::KnowledgeWritten { task_id, .. }
         | DashboardEvent::PlaybookWritten { task_id, .. }
         | DashboardEvent::EffectStaged { task_id, .. }

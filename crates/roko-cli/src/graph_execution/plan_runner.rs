@@ -1318,6 +1318,17 @@ async fn run_graph_plan_body(
         .iter()
         .map(|plan| plan.dir.join("tasks.toml"))
         .collect();
+    // The hub hears the gate start and end, so the minutes its checks can
+    // take on the base before any agent starts show (gap-6a319c).
+    let gating = std::time::Instant::now();
+    if let Some(hub) = &state_hub {
+        let (tasks_total, steps_total) = red_on_base_work(plans, &roko_config.spec_quality);
+        hub.sender().publish(roko_core::DashboardEvent::SpecGateStarted {
+            plan_ids: plans.iter().map(|plan| plan.id.clone()).collect(),
+            tasks_total,
+            steps_total,
+        });
+    }
     let spec_gate =
         match crate::spec_gate::gate_plans(&spec_files, workdir, &roko_config.spec_quality) {
             Ok(report) => report,
@@ -1326,6 +1337,15 @@ async fn run_graph_plan_body(
                 return Ok(RunExit::from(128 + interrupted.signal));
             }
         };
+    if let Some(hub) = &state_hub {
+        hub.sender().publish(roko_core::DashboardEvent::SpecGateFinished {
+            elapsed_ms: u64::try_from(gating.elapsed().as_millis()).unwrap_or(u64::MAX),
+            tasks_checked: None,
+            steps_run: None,
+            cached: None,
+            blocked: u32::try_from(spec_gate.blocked().count()).unwrap_or(u32::MAX),
+        });
+    }
     if spec_gate.blocks() {
         crate::spec_gate::log_blocked(&spec_gate);
         // The run's event log and SSE show the refusal too.
@@ -4465,6 +4485,42 @@ async fn run_one_plan(
         tasks: task_verdicts,
         unverified_work,
     })
+}
+
+/// What the plan-load gate's red-on-base check runs for `plans` (gap-6a319c):
+/// the implementer tasks with checks it runs on the base, and at most how
+/// many check runs that takes (each task's steps, [`RUNS`] times). Both are
+/// 0 when the check is off.
+///
+/// [`RUNS`]: crate::spec_red_on_base::RUNS
+fn red_on_base_work(
+    plans: &[crate::runner::plan_loader::Plan],
+    config: &roko_core::config::SpecQualityConfig,
+) -> (u32, u32) {
+    if !config.is_on() || !config.red_on_base {
+        return (0, 0);
+    }
+    let (mut tasks, mut steps) = (0_usize, 0_usize);
+    for task in plans.iter().flat_map(|plan| &plan.tasks.tasks) {
+        let role = task.role.as_deref().map_or("", str::trim);
+        let accept = task.accept.as_ref().map_or(0, |accept| accept.files.len());
+        let regression_only = accept == 0
+            && task.verify.iter().all(|step| {
+                matches!(
+                    step.expect,
+                    Some(crate::task_parser::VerifyExpect::PassOnBase)
+                )
+            });
+        if !matches!(role, "" | "implementer") || regression_only {
+            continue;
+        }
+        tasks += 1;
+        steps += (task.verify.len() + accept) * crate::spec_red_on_base::RUNS;
+    }
+    (
+        u32::try_from(tasks).unwrap_or(u32::MAX),
+        u32::try_from(steps).unwrap_or(u32::MAX),
+    )
 }
 
 /// Deliver `plan`, whose tasks all passed, into the run's batch branch

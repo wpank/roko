@@ -194,6 +194,22 @@ impl GraphTaskDispatcher {
     /// screen rejects it for tampering or for scope, the task moves on to a
     /// fresh checkout of the plan's accepted tip
     /// ([`Self::restart_from_plan_tip`]).
+    /// The checkout at `checkout` as an attempt starts in it (gap-6a319c):
+    /// whether an earlier try of this run ran there, and how many build
+    /// trees it holds, warm from the person's checkout (gap-6754ab) or from
+    /// that try.
+    pub(super) fn attempt_workspace(
+        &self,
+        checkout: &Path,
+    ) -> roko_core::dashboard_snapshot::AttemptWorkspace {
+        let reused = !self.checkouts_used.lock().insert(checkout.to_path_buf());
+        let trees = crate::orchestrator::worktree::warm_build_dirs(checkout, None).len();
+        roko_core::dashboard_snapshot::AttemptWorkspace {
+            reused,
+            warm_build_trees: u32::try_from(trees).unwrap_or(u32::MAX),
+        }
+    }
+
     pub(super) fn worktree_generation(&self, task_key: &str) -> u32 {
         self.worktree_generations
             .lock()
@@ -225,6 +241,36 @@ impl GraphTaskDispatcher {
             why,
             "the task's next attempt starts from the plan branch in a fresh checkout"
         );
+    }
+
+    /// Tell the hub how the merge of the attempt `settled` onto its plan
+    /// branch ended and how long it took (gap-6a319c): `accepted`, `kept`
+    /// (its verdict does not let its work land), `conflict` (it conflicts
+    /// with the plan's accepted work) or `failed`.
+    pub(super) fn publish_attempt_merged(
+        &self,
+        spec: &TaskExecutionSpec,
+        task: &TaskDef,
+        settled: &SettledAttempt,
+        merged: &Result<Option<WorkspaceAcceptance>>,
+        merge_ms: u64,
+    ) {
+        let Some(tui) = &self.tui_bridge else {
+            return;
+        };
+        let outcome = match merged {
+            Ok(Some(_)) => "accepted",
+            Ok(None) => "kept",
+            Err(RokoError::Verify { gate, .. }) if gate == "plan-branch" => "conflict",
+            Err(_) => "failed",
+        };
+        tui.publish_event(roko_core::DashboardEvent::AttemptMerged {
+            plan_id: spec.plan_id.clone(),
+            task_id: task.id.clone(),
+            attempt: settled.key().attempt,
+            merge_ms,
+            outcome: outcome.to_string(),
+        });
     }
 
     /// Accept the successful attempt `settled` of `task`, which ran in `lease`

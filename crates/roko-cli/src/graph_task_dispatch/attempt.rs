@@ -43,6 +43,7 @@ use sha2::Digest;
 
 use super::audit_select::AuditSelector;
 use super::failover::FailoverChain;
+use super::live_tool_calls::ToolTiming;
 use super::served_model::{ServedModel, is_cli_backend};
 use super::*;
 use crate::audit::labels::{VsLearner, VsLearners};
@@ -451,6 +452,7 @@ impl AttemptBook {
             trust_exclusions: None,
             verify_depth: None,
             forecast: std::sync::OnceLock::new(),
+            setup: AttemptSetup::default(),
             run,
         }
     }
@@ -501,10 +503,31 @@ pub(super) struct AttemptContext {
     /// The self-model's forecast of the attempt, as its route event carries
     /// it (gap-aaaaae); unset until the self-model forecasts it.
     forecast: std::sync::OnceLock<roko_core::dashboard_snapshot::RouteForecast>,
+    /// What came before the attempt opened (gap-6a319c): its waits and its
+    /// checkout's preparation, in ms, and the checkout.
+    setup: AttemptSetup,
     run: Arc<RunAttempts>,
 }
 
+/// What came before an attempt opened (gap-6a319c).
+#[derive(Debug, Clone, Copy, Default)]
+pub(super) struct AttemptSetup {
+    /// Waiting for an agent slot, the plan's pause, its budget and disk
+    /// admission, in ms.
+    pub queue_ms: Option<u64>,
+    /// Getting its checkout ready, in ms.
+    pub workspace_ms: Option<u64>,
+    /// Its checkout, when it has one of its own.
+    pub workspace: Option<roko_core::dashboard_snapshot::AttemptWorkspace>,
+}
+
 impl AttemptContext {
+    /// What came before the attempt opened: its waits, its checkout's
+    /// preparation and the checkout (gap-6a319c).
+    pub(super) fn record_setup(&mut self, setup: AttemptSetup) {
+        self.setup = setup;
+    }
+
     /// Prompt assembly finished.
     pub(super) fn prompt_assembled(&mut self) {
         self.timing.prompt_assembled_at = Some(now_ms());
@@ -765,6 +788,20 @@ impl AttemptContext {
         verdict.timing.first_token_at = first_token_at;
         verdict.timing.ttft_source = Some(ttft_source.to_string());
         verdict.timing.settled_at = Some(now_ms());
+        // Where its time went (gap-6a319c), from its timestamps, its tool
+        // calls and its verify steps.
+        let tools = verdict
+            .timing
+            .dispatch_started_at
+            .zip(verdict.timing.dispatch_ended_at)
+            .map(|(start, end)| self.live_tool_calls.timing(start, end));
+        verdict.timing.phases = Some(attempt_phases(
+            &verdict.timing,
+            tools.as_ref(),
+            &verdict.steps,
+            &self.setup,
+        ));
+        verdict.workspace = self.setup.workspace;
         verdict.executed = executed_model(model_requested, dispatch, self.failover);
         verdict.usage = dispatch.map(attempt_usage).unwrap_or_default();
         verdict.cost = attempt_cost(dispatch);
@@ -1166,6 +1203,76 @@ impl GraphTaskDispatcher {
         self.publish_settlement(spec, task, &settled).await;
         error
     }
+}
+
+/// Where an attempt's time went (gap-6a319c): the spans between its
+/// `timing` stamps, the provider call split by its `tools`, and each of its
+/// verify `steps`. A span whose ends are not both stamped is `None`.
+fn attempt_phases(
+    timing: &AttemptTiming,
+    tools: Option<&ToolTiming>,
+    steps: &[VerifyStepVerdict],
+    setup: &AttemptSetup,
+) -> roko_core::dashboard_snapshot::AttemptPhases {
+    let span = |from: Option<i64>, to: Option<i64>| {
+        from.zip(to)
+            .and_then(|(from, to)| u64::try_from(to - from).ok())
+    };
+    let duration = span(timing.attempt_started_at, timing.settled_at);
+    let prompt = span(timing.attempt_started_at, timing.prompt_assembled_at);
+    let dispatch = span(timing.dispatch_started_at, timing.dispatch_ended_at);
+    let checks = span(timing.verify_started_at, timing.verify_ended_at);
+    // The provider call is model time but for its tool calls: all of it
+    // when it made none, and unknown when one's result never showed.
+    let tools_ms = tools.and_then(|tools| {
+        if tools.tool_calls == 0 {
+            Some(0)
+        } else {
+            tools.tools_ms
+        }
+    });
+    let model_ms = dispatch
+        .zip(tools_ms)
+        .map(|(dispatch, tools)| dispatch.saturating_sub(tools));
+    // What the other phases leave of the attempt: a phase it never reached
+    // took no time.
+    let other_ms = duration.map(|duration| {
+        duration.saturating_sub(
+            prompt.unwrap_or(0) + dispatch.unwrap_or(0) + checks.unwrap_or(0),
+        )
+    });
+    roko_core::dashboard_snapshot::AttemptPhases {
+        queue_ms: setup.queue_ms,
+        workspace_ms: setup.workspace_ms,
+        prompt_ms: prompt,
+        ttft_ms: span(timing.dispatch_started_at, timing.first_token_at),
+        model_ms,
+        model_calls: tools.and_then(|tools| tools.model_calls),
+        tools_ms,
+        tool_calls: tools.map(|tools| tools.tool_calls),
+        tools_by_name: tools.map(|tools| tools.by_name.clone()).unwrap_or_default(),
+        checks_ms: checks,
+        checks: steps
+            .iter()
+            .map(|step| roko_core::dashboard_snapshot::CheckTime {
+                name: gate_label(&step.rung),
+                ms: step.duration_ms,
+                passed: step.passed,
+            })
+            .collect(),
+        other_ms,
+    }
+}
+
+/// A verify step's rung as its gate result names it: `verify:0/test` is
+/// `verify[0:test]`; any other rung keeps its name.
+fn gate_label(rung: &str) -> String {
+    rung.strip_prefix("verify:")
+        .and_then(|rest| rest.split_once('/'))
+        .map_or_else(
+            || rung.to_string(),
+            |(index, phase)| format!("verify[{index}:{phase}]"),
+        )
 }
 
 /// Whether the agent produced any output before the call ended.
@@ -2008,6 +2115,126 @@ printf '%s\n' '{"type":"result","session_id":"sess-v1","model":"claude-sonnet-4-
         assert_eq!(timing.first_token_at, None);
         assert_eq!(timing.ttft_source.as_deref(), Some("unavailable"));
         assert_eq!(timing.verify_started_at, None);
+    }
+
+    /// gap-6a319c: an attempt's phases come from its stamps, its tool calls
+    /// and its verify steps, and those of the try itself add up to its
+    /// duration; a provider call whose tool results never showed leaves the
+    /// split of model and tool time unknown.
+    #[test]
+    fn attempt_phases_add_up_to_its_duration() {
+        let timing = AttemptTiming {
+            attempt_started_at: Some(10_000),
+            prompt_assembled_at: Some(10_050),
+            dispatch_started_at: Some(10_060),
+            first_token_at: Some(10_460),
+            dispatch_ended_at: Some(20_060),
+            verify_started_at: Some(20_100),
+            verify_ended_at: Some(58_100),
+            settled_at: Some(58_200),
+            ..AttemptTiming::default()
+        };
+        let tools = ToolTiming {
+            tools_ms: Some(3_000),
+            tool_calls: 4,
+            by_name: vec![roko_core::dashboard_snapshot::ToolTime {
+                tool: "bash".to_string(),
+                calls: 4,
+                ms: 3_000,
+            }],
+            model_calls: Some(5),
+        };
+        let steps = [VerifyStepVerdict {
+            rung: "verify:0/build".to_string(),
+            command_sha256: None,
+            passed: Some(true),
+            exit_code: Some(0),
+            duration_ms: Some(37_900),
+            timed_out: false,
+            skipped: false,
+            skip_reason: None,
+            confirmed_by_user: false,
+        }];
+        let setup = AttemptSetup {
+            queue_ms: Some(1_200),
+            workspace_ms: Some(400),
+            workspace: None,
+        };
+
+        let phases = attempt_phases(&timing, Some(&tools), &steps, &setup);
+
+        assert_eq!(phases.queue_ms, Some(1_200));
+        assert_eq!(phases.workspace_ms, Some(400));
+        assert_eq!(phases.prompt_ms, Some(50));
+        assert_eq!(phases.ttft_ms, Some(400));
+        assert_eq!(phases.model_ms, Some(7_000));
+        assert_eq!(phases.tools_ms, Some(3_000));
+        assert_eq!((phases.model_calls, phases.tool_calls), (Some(5), Some(4)));
+        assert_eq!(phases.checks_ms, Some(38_000));
+        assert_eq!(phases.checks.len(), 1);
+        assert_eq!(phases.checks[0].name, "verify[0:build]");
+        assert_eq!(phases.checks[0].ms, Some(37_900));
+        let parts = [
+            phases.prompt_ms,
+            phases.model_ms,
+            phases.tools_ms,
+            phases.checks_ms,
+            phases.other_ms,
+        ];
+        let sum: u64 = parts.iter().map(|part| part.expect("measured")).sum();
+        assert_eq!(sum, 48_200, "{phases:?}");
+
+        let unknown = ToolTiming {
+            tools_ms: None,
+            ..tools
+        };
+        let phases = attempt_phases(&timing, Some(&unknown), &steps, &setup);
+        assert_eq!((phases.model_ms, phases.tools_ms), (None, None));
+        assert_eq!(phases.other_ms, Some(150));
+        assert_eq!(gate_label("pre_verify:no_changes"), "pre_verify:no_changes");
+    }
+
+    /// gap-6a319c: a dispatched attempt's verdict row carries its phases, and
+    /// they add up to its duration.
+    #[tokio::test]
+    async fn attempt_phases_reach_the_verdict_row() {
+        let temp = tempdir().expect("tempdir");
+        let runs_dir = temp.path().join(".roko/runs");
+        let feedback = GraphFeedbackContext {
+            runs_dir: Some(runs_dir.clone()),
+            ..GraphFeedbackContext::default()
+        };
+        let (dispatcher, mut task) =
+            make_test_dispatcher(&temp, SLOW_FIRST_TOKEN_PROVIDER, no_auto_fix, feedback).await;
+        task.verify = vec![verify_step("structural", "true")];
+        let spec = make_spec(&task);
+        let ctx = CellContext::new().with_run_id(RUN.to_string());
+        dispatcher
+            .dispatch(&spec, Vec::new(), &ctx)
+            .await
+            .expect("the verified attempt passes");
+        drop(dispatcher);
+
+        let attempts = jsonl_rows(&runs_dir.join(RUN).join("attempts.jsonl"), 2).await;
+        let timing = &attempts[1]["timing"];
+        let phases = &timing["phases"];
+        let ms = |name: &str| {
+            phases[name]
+                .as_u64()
+                .unwrap_or_else(|| panic!("no {name}: {phases}"))
+        };
+        let duration = timing["settled_at"].as_i64().expect("settled")
+            - timing["attempt_started_at"].as_i64().expect("started");
+        let parts = ms("prompt_ms") + ms("model_ms") + ms("tools_ms") + ms("checks_ms");
+        assert_eq!(
+            parts + ms("other_ms"),
+            u64::try_from(duration).expect("a positive duration"),
+            "{phases}"
+        );
+        assert!(ms("ttft_ms") >= 150, "{phases}");
+        assert!(phases["queue_ms"].is_u64(), "{phases}");
+        assert_eq!(phases["checks"][0]["name"], "verify[0:structural]");
+        assert_eq!(phases["checks"][0]["passed"], true);
     }
 
     /// `api-model` on an OpenAI-compatible provider the mock at `base_url`

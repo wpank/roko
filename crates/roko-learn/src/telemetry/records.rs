@@ -568,6 +568,11 @@ pub struct AttemptTiming {
     pub verify_ended_at: Option<i64>,
     /// The verdict was settled.
     pub settled_at: Option<i64>,
+    /// Where the attempt's time went, in ms, the hub's `attempt_settled`
+    /// carrying the same (gap-6a319c); `None` from an emitter that does not
+    /// say.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub phases: Option<roko_core::dashboard_snapshot::AttemptPhases>,
 }
 
 /// The model that actually ran (`executed`, S01 §5.5). After failover it
@@ -1027,6 +1032,11 @@ pub struct AttemptVerdictRecord {
     /// its checks having failed first.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub verify_depth: Option<VerifyDepthRecord>,
+    /// The checkout the attempt ran in: whether an earlier try's, and the
+    /// warm build trees it held (gap-6a319c); `None` without a checkout of
+    /// its own.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workspace: Option<roko_core::dashboard_snapshot::AttemptWorkspace>,
 }
 
 impl AttemptVerdictRecord {
@@ -1066,6 +1076,7 @@ impl AttemptVerdictRecord {
             harness: None,
             trust_exclusions: None,
             verify_depth: None,
+            workspace: None,
         }
     }
 

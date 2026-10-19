@@ -96,6 +96,11 @@ pub const BATCH_EXTENSION: &str = "roko.batch@1";
 /// verify`, gap-60233f) when it ran in the shared working tree.
 pub const PLAN_VERIFY_EXTENSION: &str = "roko.plan.verify@1";
 
+/// Known extension namespace for the hand-backs of the plan's failed
+/// whole-plan check to its tasks in the last run (find-5bcba7): a list of
+/// [`crate::graph_execution::plan_handback::Handback`]s.
+pub const PLAN_HANDBACKS_EXTENSION: &str = "roko.plan.handbacks@1";
+
 /// Namespace of [`EXT_SAFETY_PROVENANCE`] (gap-ff95f5). This build reads
 /// version 1 only, and fails closed on any other.
 const SAFETY_PROVENANCE_NAMESPACE: &str = "roko.safety-provenance";
@@ -1265,6 +1270,22 @@ impl PreparedGraphCheckpoint {
         self.manifest.extensions.insert(
             PLAN_VERIFY_EXTENSION.to_string(),
             host_extension(PLAN_VERIFY_EXTENSION, value)?,
+        );
+        Ok(())
+    }
+
+    /// Record the hand-backs of the plan's failed whole-plan check to its
+    /// tasks in this run (find-5bcba7) under [`PLAN_HANDBACKS_EXTENSION`],
+    /// replacing an earlier run's; an empty list removes them. The next
+    /// terminal write persists it.
+    pub fn record_plan_handbacks(&mut self, value: serde_json::Value) -> Result<()> {
+        if value.as_array().is_some_and(Vec::is_empty) {
+            self.manifest.extensions.remove(PLAN_HANDBACKS_EXTENSION);
+            return Ok(());
+        }
+        self.manifest.extensions.insert(
+            PLAN_HANDBACKS_EXTENSION.to_string(),
+            host_extension(PLAN_HANDBACKS_EXTENSION, value)?,
         );
         Ok(())
     }

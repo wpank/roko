@@ -2,6 +2,8 @@
 # over ../seed/, each with a planner-written [task.accept] test that fails on
 # the seed. Written by hand from plan.md, and frozen before any solution or
 # replay patch existed. No task pins a model: role and tier pick the rung.
+# On 2026-10-18 four acceptance tests gained cases and their counts grew with
+# them (T1, T2, T5, T6; find-4003b9); plan.md says what changed and why.
 
 [meta]
 plan = "golden-path"
@@ -60,7 +62,7 @@ read_files = [
 src = "accept/test_accept_slugify.py"
 dest = "py/test_accept_slugify.py"
 runner = "cd py && python3 -m unittest -v test_accept_slugify"
-count = 3
+count = 4
 
 [[task]]
 id = "T2"
@@ -90,7 +92,7 @@ read_files = [
 src = "accept/camel_case.test.ts"
 dest = "ts/camel_case.accept.test.ts"
 runner = "node --experimental-strip-types --test {dest}"
-count = 3
+count = 4
 
 [[task]]
 id = "T3"
@@ -173,7 +175,7 @@ read_files = [
 src = "accept/alpha_initials.rs"
 dest = "crates/alpha/tests/accept_initials.rs"
 runner = "cargo test -p alpha --test accept_initials"
-count = 2
+count = 3
 timeout_ms = 600000
 
 [[task]]
@@ -203,7 +205,7 @@ read_files = [
 src = "accept/beta_badge.rs"
 dest = "crates/beta/tests/accept_badge.rs"
 runner = "cargo test -p beta --test accept_badge"
-count = 2
+count = 3
 timeout_ms = 600000
 
 [[task]]

@@ -433,6 +433,9 @@ impl GraphTaskDispatcher {
             efficiency_path: self.feedback.efficiency_path.clone(),
             models: self.config.models.clone(),
             snapshot: self.pricing_snapshot(),
+            plan_budget: self
+                .stages_outbound()
+                .then(|| (Arc::clone(&self.budget_ledger), self.budget_policy)),
         })
     }
 }
@@ -563,9 +566,11 @@ impl SideCallRows<'_> {
 /// The audit workers' [`CallLog`] (gap-dd9c2e): each model call of a
 /// sampled audit writes a cost row and an efficiency row, role `audit`,
 /// keyed by the audited attempt, as an inline check's do
-/// ([`GraphTaskDispatcher::settle_check_calls`]). Neither counts toward a
-/// task's budget or the plan's: the worker spends on the run's audit line,
-/// `[audit] budget_frac` of the run's model spend.
+/// ([`GraphTaskDispatcher::settle_check_calls`]). The worker spends on the
+/// run's audit line, `[audit] budget_frac` of the run's model spend, and
+/// charges no budget, except in a run held to its cap, as a chat host's is:
+/// there each call is settled on its plan's budget, and an audit gets no more
+/// than the plan has left (bug-082810).
 struct AuditCallRows {
     /// `learn/costs.jsonl`, when the run writes it.
     costs_path: Option<PathBuf>,
@@ -575,6 +580,9 @@ struct AuditCallRows {
     models: indexmap::IndexMap<String, roko_core::config::schema::ModelProfile>,
     /// The run's price snapshot, which prices each call at API rates.
     snapshot: Option<Arc<PriceSnapshot>>,
+    /// The plans' cost ledger and budget policy of a run whose audits count
+    /// against its cap; `None` for one whose audits keep to their own line.
+    plan_budget: Option<(Arc<GraphPlanBudgetLedger>, GraphPlanBudgetPolicy)>,
 }
 
 #[async_trait::async_trait]
@@ -596,7 +604,24 @@ impl CallLog for AuditCallRows {
                 role: AUDIT_ROLE,
             };
             rows.write(&side).await;
+            if let Some((ledger, _)) = &self.plan_budget
+                && let Err(error) = ledger.settle(&unit.plan_id, None, call.cost_usd())
+            {
+                tracing::warn!(
+                    plan_id = %unit.plan_id,
+                    task_id = %unit.task_id,
+                    %error,
+                    "audit spend not recorded on the plan's cost ledger"
+                );
+            }
         }
+    }
+
+    fn headroom_usd(&self, unit: &AuditUnit) -> Option<f64> {
+        let (ledger, policy) = self.plan_budget.as_ref()?;
+        let snapshot = ledger.snapshot(&unit.plan_id, *policy);
+        let ceiling = snapshot.ceiling_usd?;
+        Some((ceiling - snapshot.spent_usd - snapshot.reserved_usd).max(0.0))
     }
 }
 

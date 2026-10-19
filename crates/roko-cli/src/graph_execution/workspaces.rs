@@ -540,6 +540,10 @@ mod tests {
     #[tokio::test]
     async fn acquire_gives_the_checkout_warm_build_trees() {
         let repo = tempfile::tempdir().expect("repo");
+        if !crate::orchestrator::worktree::clones_on(repo.path()) {
+            eprintln!("this filesystem makes no copy-on-write clones; skipping");
+            return;
+        }
         let git = |args: &[&str]| {
             let output = std::process::Command::new("git")
                 .args([

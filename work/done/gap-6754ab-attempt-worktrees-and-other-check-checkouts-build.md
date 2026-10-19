@@ -2,7 +2,7 @@
 id = "gap-6754ab"
 kind = "gap"
 title = "Attempt worktrees and other check checkouts build C++ projects cold: a JUCE plugin task's first check takes 38-62 s where the same check on a warm build tree takes 4-8 s"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p2"
 goal = "core"
@@ -11,6 +11,7 @@ subsystem = ["roko-cli/worktree"]
 created = 2026-10-19
 updated = 2026-10-19
 last_verified = 2026-10-19
+last_verified_rev = "2571e358f"
 source = "round-v7-roko-speed#baseline"
 discovered_from = "agent:roko-speed (round v7 baseline, 2026-10-19)"
 anchors = ["crates/roko-cli/src/orchestrator/worktree/git_ops.rs::give_worktree_dependency_dirs", "crates/roko-cli/src/orchestrator/worktree/mod.rs::WorktreeConfig", "crates/roko-core/src/config/gates.rs::GatesConfig"]
@@ -18,6 +19,15 @@ links = { depends_on = [], blocks = [], related = ["gap-7c3e13", "gap-2da1ff", "
 
 [[verify]]
 command = "grep -rqw 'fn seeded_worktree_builds_nothing' crates/roko-cli/src && cargo test -p roko-cli --lib orchestrator::worktree::build_trees"
+
+[closed]
+at = 2026-10-19
+at_ts = "2026-10-19T12:52:59Z"
+commit = "2571e358f"
+size = "M"
+claimed_at = "2026-10-19T11:20:33Z"
+forced = false
+evidence = "orchestrator/worktree/build_trees.rs gives each new attempt worktree a clonefile copy of the checkout CMake build trees: relocated (every path form the tree names, incl. the /tmp form CMake records for /private/tmp), FetchContent populate rule hashes dropped, unchanged tracked files given the source mtimes; trees naming untracked paths or holding binary path files are refused (cold build as before). Verify: cargo test -p roko-cli --lib orchestrator::worktree::build_trees passes (5 tests; seeded_worktree_builds_nothing runs real cmake: the seeded first build compiles nothing, a changed file rebuilds, an unchanged one does not), plus graph_execution::workspaces::tests::acquire_gives_the_checkout_warm_build_trees and the roko-core config::loader schema-tree tests; clippy --no-deps -D warnings and nightly fmt clean. Fixture plan run (tmp/hermes-roko-v7/roko-speed, 4 JUCE tasks, stand-in model, prebuilt checkout, red-on-base off): before (3b34aed92) plugin checks T2 61.0 s and T4 55.4 s cold, 32-60 compile units plus a juceaide build each; after (2571e358f) T2 1 and T4 4 compile units (only the task files, juceaide a no-op), checks 27.5 s and 9.9 s net of 552 s of shared cpp-slot waits at load 130-190; seeding took 0.3 s (build/core) plus 0.9 s (build/plugins) per worktree."
 +++
 
 ## Problem

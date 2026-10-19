@@ -418,6 +418,16 @@ covers = ["AC2"]
 expect = "fail_on_base"
 ```
 
+## The plan's own check
+
+A check the source names as the plan's final or whole-plan check ("`tools/check.sh` is the plan's final check") goes in `[[meta.verify]]`, its command unchanged: it runs once on the merged result, after every task has passed. Never put it in a task's verify steps, where it would run before the other tasks' work is there.
+
+```toml
+[[meta.verify]]
+phase = "test"
+command = 'tools/check.sh'
+```
+
 ## Planner-written acceptance tests ([task.accept])
 
 When a task's outcome can be checked by a test you can write now, write the test yourself and pin it in `[task.accept]`: the run copies your test into place before each check, so the implementer can neither edit nor weaken it.
@@ -1416,6 +1426,8 @@ mod tests {
             "The topics a request lists for the plan to cover are sections of the spec, not tasks.",
             "files = [\"docs/spec.md\"]",
             "- [ ] Every task writes files (implementer or scribe)",
+            "## The plan's own check",
+            "goes in `[[meta.verify]]`, its command unchanged",
         ] {
             assert!(prompt.contains(needle), "the prompt says {needle}");
         }

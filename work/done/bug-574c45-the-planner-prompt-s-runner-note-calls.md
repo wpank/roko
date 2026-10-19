@@ -2,7 +2,7 @@
 id = "bug-574c45"
 kind = "bug"
 title = "The planner prompt's runner note calls any workspace with a tests/ directory a Python project: a C++/CMake repo is told 'pytest is NOT installed here' and nothing about cmake or ctest"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p3"
 goal = "golden-path"
@@ -11,6 +11,7 @@ subsystem = ["roko-cli/plan-generate"]
 created = 2026-10-19
 updated = 2026-10-19
 last_verified = 2026-10-19
+last_verified_rev = "f2ee9a0d3"
 source = "round-v7-undertow-spec"
 discovered_from = "agent:undertow-spec (round v7, 2026-10-19)"
 anchors = ["crates/roko-cli/src/plan_generate/runnable.rs::runners_block"]
@@ -18,6 +19,16 @@ links = { depends_on = [], blocks = [], related = ["bug-d758f6", "gap-770cb5"], 
 
 [[verify]]
 command = "grep -rqw 'fn the_runner_note_names_cmake_not_python' crates/roko-cli/src && cargo test -p roko-cli --lib -- the_runner_note_names_cmake_not_python"
+
+[closed]
+at = 2026-10-19
+at_ts = "2026-10-19T17:18:06Z"
+commit = "35e8996f8"
+by = "roko-planner (round v7)"
+executor = "claude-agent"
+via = "manual"
+forced = false
+evidence = "Merged 19a072459 (work/bug-3cdc58: 35e8996f8). plan_generate/runnable.rs runners_block: a project is Python by pyproject.toml, requirements.txt, setup.cfg or setup.py, or a .py file within two levels of tests/, no longer by a tests/ directory alone; a CMakeLists.txt at the top or up to two levels down (not under build, target, third_party, vendor or node_modules) adds a CMake line saying whether cmake and ctest run here, with the preset forms (cmake --build --preset, ctest --preset -R) when CMakePresets.json exists. Verify at 19a072459: the_runner_note_names_cmake_not_python passes (a tests/spec/CMakeLists.txt with C++ spec tests gets the CMake line and no Python or pytest; a tests/*.py still gets the Python line); the_runner_note_says_pytest_is_missing passes with a Python test file. Branch: roko-cli lib 3875 passed, 0 failed; clippy and nightly fmt clean."
 +++
 
 ## Problem

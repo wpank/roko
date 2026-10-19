@@ -1322,12 +1322,13 @@ async fn run_graph_plan_body(
     // take on the base before any agent starts show (gap-6a319c).
     let gating = std::time::Instant::now();
     if let Some(hub) = &state_hub {
-        let (tasks_total, steps_total) = red_on_base_work(plans, &roko_config.spec_quality);
-        hub.sender().publish(roko_core::DashboardEvent::SpecGateStarted {
-            plan_ids: plans.iter().map(|plan| plan.id.clone()).collect(),
-            tasks_total,
-            steps_total,
-        });
+        let (tasks_total, steps_total) = red_on_base_work(&plans, &roko_config.spec_quality);
+        hub.sender()
+            .publish(roko_core::DashboardEvent::SpecGateStarted {
+                plan_ids: plans.iter().map(|plan| plan.id.clone()).collect(),
+                tasks_total,
+                steps_total,
+            });
     }
     let spec_gate =
         match crate::spec_gate::gate_plans(&spec_files, workdir, &roko_config.spec_quality) {
@@ -1338,13 +1339,14 @@ async fn run_graph_plan_body(
             }
         };
     if let Some(hub) = &state_hub {
-        hub.sender().publish(roko_core::DashboardEvent::SpecGateFinished {
-            elapsed_ms: u64::try_from(gating.elapsed().as_millis()).unwrap_or(u64::MAX),
-            tasks_checked: None,
-            steps_run: None,
-            cached: None,
-            blocked: u32::try_from(spec_gate.blocked().count()).unwrap_or(u32::MAX),
-        });
+        hub.sender()
+            .publish(roko_core::DashboardEvent::SpecGateFinished {
+                elapsed_ms: u64::try_from(gating.elapsed().as_millis()).unwrap_or(u64::MAX),
+                tasks_checked: None,
+                steps_run: None,
+                cached: None,
+                blocked: u32::try_from(spec_gate.blocked().count()).unwrap_or(u32::MAX),
+            });
     }
     if spec_gate.blocks() {
         crate::spec_gate::log_blocked(&spec_gate);

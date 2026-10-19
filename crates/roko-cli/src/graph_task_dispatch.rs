@@ -1201,7 +1201,9 @@ impl TaskDispatcher for GraphTaskDispatcher {
         let setup = attempt::AttemptSetup {
             queue_ms: Some(queue_ms),
             workspace_ms: Some(elapsed_ms(acquiring)),
-            workspace: lease.as_ref().map(|lease| self.attempt_workspace(&lease.path)),
+            workspace: lease
+                .as_ref()
+                .map(|lease| self.attempt_workspace(&lease.path)),
         };
         // A git process killed mid-command (an earlier attempt's agent, a
         // crashed run) leaves `index.lock` behind, and every index-writing git

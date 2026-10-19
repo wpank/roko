@@ -130,7 +130,12 @@ impl LiveToolCalls {
                 unknown = true;
                 continue;
             };
-            let turn_end = state.turn_ends.iter().copied().filter(|at| *at <= result).max();
+            let turn_end = state
+                .turn_ends
+                .iter()
+                .copied()
+                .filter(|at| *at <= result)
+                .max();
             let Some(from) = announced.into_iter().chain(turn_end).max() else {
                 unknown = true;
                 continue;
@@ -297,9 +302,11 @@ mod tests {
     #[test]
     fn attempt_phases_tool_timing_counts_overlaps_once() {
         let calls = LiveToolCalls::default();
-        let done = || LiveAgentEvent::Unscreened(StreamEventKind::Done {
-            finish_reason: "tool_calls".to_string(),
-        });
+        let done = || {
+            LiveAgentEvent::Unscreened(StreamEventKind::Done {
+                finish_reason: "tool_calls".to_string(),
+            })
+        };
         for (at, event) in [
             (1_000, step("tu_1", "read_file")),
             (1_200, step("tu_2", "bash")),

@@ -1237,9 +1237,7 @@ fn attempt_phases(
     // What the other phases leave of the attempt: a phase it never reached
     // took no time.
     let other_ms = duration.map(|duration| {
-        duration.saturating_sub(
-            prompt.unwrap_or(0) + dispatch.unwrap_or(0) + checks.unwrap_or(0),
-        )
+        duration.saturating_sub(prompt.unwrap_or(0) + dispatch.unwrap_or(0) + checks.unwrap_or(0))
     });
     roko_core::dashboard_snapshot::AttemptPhases {
         queue_ms: setup.queue_ms,
@@ -2233,7 +2231,10 @@ printf '%s\n' '{"type":"result","session_id":"sess-v1","model":"claude-sonnet-4-
         );
         assert!(ms("ttft_ms") >= 150, "{phases}");
         assert!(phases["queue_ms"].is_u64(), "{phases}");
-        assert_eq!(phases["checks"][0]["name"], "verify[0:structural]");
+        let rung = attempts[1]["steps"][0]["rung"]
+            .as_str()
+            .expect("a verify step");
+        assert_eq!(phases["checks"][0]["name"], gate_label(rung), "{phases}");
         assert_eq!(phases["checks"][0]["passed"], true);
     }
 

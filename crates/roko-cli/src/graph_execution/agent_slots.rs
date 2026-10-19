@@ -199,7 +199,10 @@ impl TaskDispatcher for AgentSlotDispatcher {
             .slot(&request.spec.plan_id, &request.spec.title)
             .await?;
         SLOT_WAIT_MS
-            .scope(waited_ms(waiting), self.inner.dispatch_request(request, ctx))
+            .scope(
+                waited_ms(waiting),
+                self.inner.dispatch_request(request, ctx),
+            )
             .await
     }
 

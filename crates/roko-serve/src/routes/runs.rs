@@ -3471,7 +3471,10 @@ mod tests {
         );
         assert_eq!(requests, 3, "7 kept rows at 3 a page");
         // gap-4de4b9: what the pages sent and passed over is the whole index.
-        assert_eq!(skipped_rows, 80, "40 reasoning, 10 heartbeats, 30 live text");
+        assert_eq!(
+            skipped_rows, 80,
+            "40 reasoning, 10 heartbeats, 30 live text"
+        );
         assert_eq!(kept.len() + 80, rows.len());
 
         // Without `skip`, the same index pages every record, and says nothing

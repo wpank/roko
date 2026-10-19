@@ -2,21 +2,29 @@
 id = "gap-6bdfc2"
 kind = "gap"
 title = "This repo's roko.toml sets no data-model boundary ([agent.data_llm] or [serve.mcp] allow_without_data_llm), so roko refuses every run Hermes starts in the roko repo"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p2"
 goal = "hermes"
 size = "S"
 subsystem = ["roko-core/config", "roko-serve/mcp"]
 created = 2026-10-15
-updated = 2026-10-15
-last_verified = 2026-10-15
+updated = 2026-10-19
+last_verified = 2026-10-19
+last_verified_rev = "c318edad7"
 source = "status-quo-2026-10-15#finding-39"
 anchors = ["roko.toml", "crates/roko-core/src/config/serve.rs::chat_run_refusal", "crates/roko-core/src/config/agent.rs::DataLlmConfig"]
 links = { depends_on = [], blocks = [], related = ["gap-cf427e", "dec-648cce"], supersedes = [], duplicate_of = "" }
 
 [[verify]]
 command = "python3 -c \"import tomllib,sys; c=tomllib.load(open('roko.toml','rb')); sys.exit(0 if (c.get('agent',{}).get('data_llm') or {}).get('model') else 1)\""
+
+[closed]
+at = 2026-10-19
+at_ts = "2026-10-19T10:12:49Z"
+commit = "c318edad7"
+forced = false
+evidence = "roko.toml gains [agent.data_llm] model = gpt-4o-mini (hermes roko fix workspace-chat-ready --variant boundary, Will chose the boundary on 2026-10-19). The verify passes, and hermes roko doctor against roko serve at 3b34aed92 says: roko accepts runs started from Hermes."
 +++
 
 ## Problem

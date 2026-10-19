@@ -1019,6 +1019,7 @@ mod tests {
     use tempfile::tempdir;
 
     use super::*;
+    use crate::graph_task_dispatch::tests::fixture_config;
 
     fn thresholds(warn_secs: u64, cancel_secs: u64) -> StallThresholds {
         StallThresholds::from_config(&ConductorConfig {
@@ -1208,7 +1209,7 @@ exec sleep 60
     }
 
     fn watched_config(script: &Path) -> RokoConfig {
-        let mut config = RokoConfig::default();
+        let mut config = fixture_config();
         config.providers.clear();
         config.models.clear();
         config.agent.default_model = "graph-model".to_string();
@@ -1678,7 +1679,7 @@ exec sleep 60
     #[tokio::test]
     async fn staged_effects_are_published() {
         let temp = tempdir().expect("tempdir");
-        let config = Arc::new(RokoConfig::default());
+        let config = Arc::new(fixture_config());
         let hub = crate::state_hub::shared_state_hub();
         let mut hub_events = hub.subscribe_events();
         let factory =

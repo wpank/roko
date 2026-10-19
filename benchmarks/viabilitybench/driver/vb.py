@@ -1,12 +1,13 @@
 #!/usr/bin/env python3
 """`vb`, the ViabilityBench driver (S08 §5.7): `run`, `estimate`, `materialize`, `campaign`, `ledger`, `report`,
-`replay` and `refine`.
+`replay`, `capture-errors` and `refine`.
 
     vb run --experiment PILOT-A --stream pilot --arm cheap_direct --model gpt-oss-120b --seeds 1-3 \
            --allow-network --max-cost-usd 10 [--line BL0] [--limit N] [--proxy] [--disturbance SPEC.toml] \
            [--transcripts] [--keep-workdirs]
     vb estimate --stream pilot --arm cheap_direct --model gpt-oss-120b --seeds 1-3
     vb materialize --stream pilot --instance F1-l1-0001 --out DIR
+    vb capture-errors --allow-network --max-cost-usd 0.05            # each provider's own error (error_capture.py)
     vb campaign --manifest experiments/pilot_a.toml --dry-run        # an experiment's blocks (campaign.py)
     vb refine --allow-network --max-cost-usd 0.40                    # the refiner's live cost sample (refine_live.py)
 
@@ -41,6 +42,9 @@ repository, the Rust toolchain, their Python or your home). Off macOS nothing ap
 does anything an agent sees name the benchmark, whose repository is public (bug-d68575): the default work root, the
 bin directory on its PATH (`agent_env.BIN_DIR`), its git identity, its repo's pristine commit, the direct loop's
 submit word, Roko's plan and key placeholder, the visible-verify wrapper's files and the proxies' answers are neutral.
+The direct loop's shell, which can read its parent's command line and start-up environment, runs under a neutral
+trampoline rather than as this process's child, whose command line names the experiment, the run and the benchmark's
+path (`mini_loop`, bug-0fd744); this process stays readable one step further up (gap-b94a2c).
 
 **The pre-registration lock** (S09 SC1, 3341). `vb run` of an experiment that runs only under the lock (LOG1, a live
 `E-` experiment, or one whose manifest says `requires_lock`: `campaign.requires_lock`) stops before anything else,
@@ -134,6 +138,7 @@ import campaign
 import caps
 import census
 import disturb
+import error_capture
 import faultproxy
 import harness
 import layout
@@ -142,6 +147,7 @@ import materialize
 import provider
 import records
 import refine_live
+import run_msa
 import secret
 import vb_verify
 from common import hmac_seed, knobs, repo, toolchain
@@ -357,6 +363,11 @@ def parse_seeds(text: str) -> list[int]:
 def cmd_estimate(args: argparse.Namespace) -> int:
     print(json.dumps(make_plan(args).summary(), indent=2))
     return 0
+
+
+def cmd_capture_errors(args: argparse.Namespace) -> int:
+    """`vb capture-errors` (error_capture.py, gap-db8dab), which gets this module as `vb campaign` does."""
+    return error_capture.cmd_capture(sys.modules[__name__], args)
 
 
 def cmd_campaign(args: argparse.Namespace) -> int:
@@ -621,12 +632,13 @@ def _agent_deny(run: Run) -> tuple[Path, ...]:
 
 def _results_hold(results_root: Path) -> list[str]:
     """What agent processes read or run that `results_root` holds, each named with its path (bug-935cfa), since every
-    agent process is denied the whole results root: the repository (the Roko binary, `.venv-msa/`), the Rust
-    toolchain the sandbox keeps readable (`toolchain.read_only`), the Python that agents run (`agent_env._base_python`),
-    or your home directory, which holds the CLIs and their logins. The work root is refused apart (`cmd_run`: it and
-    the results root must not contain each other)."""
-    needs = [("the repository", layout.REPO_ROOT), ("your home directory", Path.home()),
-             *(("the Rust toolchain", path) for path in toolchain.read_only())]
+    agent process is denied the whole results root: the repository (the Roko binary), mini-swe-agent's default venv
+    (`run_msa.DEFAULT_VENV`, outside the repository since bug-e16450), the Rust toolchain the sandbox keeps readable
+    (`toolchain.read_only`), the Python that agents run (`agent_env._base_python`), or your home directory, which
+    holds the CLIs and their logins. The work root is refused apart (`cmd_run`: it and the results root must not
+    contain each other)."""
+    needs = [("the repository", layout.REPO_ROOT), ("mini-swe-agent's venv", Path(run_msa.DEFAULT_VENV).expanduser()),
+             ("your home directory", Path.home()), *(("the Rust toolchain", path) for path in toolchain.read_only())]
     try:
         needs.append(("the Python agents run", agent_env._base_python()))
     except agent_env.AgentEnvError:
@@ -930,6 +942,10 @@ def _parser() -> argparse.ArgumentParser:
     mat.add_argument("--private", help="where the manifest and pristine bundle go (default: OUT.private)")
     mat.set_defaults(handler=cmd_materialize)
     commands.add_parser("report", help="metrics.json and bundle checks (analysis/report.py; see vb report --help)")
+    capture = commands.add_parser("capture-errors", help="capture each provider's own error through the metering "
+                                  "proxy, masked, as a fixture (gap-db8dab)", allow_abbrev=False)
+    error_capture.add_arguments(capture)
+    capture.set_defaults(handler=cmd_capture_errors)
     run_campaign = commands.add_parser("campaign", help="validate, estimate and run an experiment manifest",
                                        allow_abbrev=False)
     campaign.add_arguments(run_campaign)

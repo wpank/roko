@@ -615,6 +615,11 @@ Examples:
         /// logged (decision 4115).
         #[arg(long)]
         no_holdout: bool,
+        /// Run no audits, as `roko plan run --no-audit` does: no green
+        /// attempt is drawn for a deep audit, for this run alone, so audits
+        /// spend nothing (decision 7103).
+        #[arg(long)]
+        no_audit: bool,
     },
     /// (Removed) Use `roko run "<prompt>"`, or `roko run --plan "<prompt>"`.
     ///
@@ -1905,6 +1910,7 @@ async fn dispatch_subcommand(command: Command, cli: &Cli) -> Result<i32> {
             fresh,
             resume_plan,
             no_holdout,
+            no_audit,
         } => {
             // Resolve typed overrides before any side effects (#262).
             let _resolved = ResolvedExecutionOverrides::for_run(
@@ -1940,6 +1946,7 @@ async fn dispatch_subcommand(command: Command, cli: &Cli) -> Result<i32> {
                     fresh,
                     resume_plan,
                     no_holdout,
+                    no_audit,
                 },
             )
             .await

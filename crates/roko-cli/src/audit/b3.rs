@@ -5,9 +5,10 @@
 //! through the LLM-judge gate over an [`AgentJudgeOracle`] (whose strict
 //! rule reads its one score), and answers three questions at once: does the
 //! change implement the spec, were tests weakened, are inputs special-cased?
-//! One call within the audit's caps; its calibration row carries the
-//! attempt key (7126). B3 only corroborates: the worker counts its Y and G
-//! on docs, plan and research tasks alone, where it is the only check.
+//! One call, held to what the audit may still spend ([`ReviewAgent`]); its
+//! calibration row carries the attempt key (7126). B3 only corroborates:
+//! the worker counts its Y and G on docs, plan and research tasks alone,
+//! where it is the only check.
 
 use std::fmt::Write as _;
 use std::path::Path;
@@ -44,14 +45,19 @@ const ASK: &str = "You review a change for an audit, as a model of another famil
                    when it implements it only by weakening a test or special-casing inputs, and \
                    0.0 when it does not implement the spec.";
 
+/// Makes the agent that calls a reviewer for one review, whose model calls
+/// may spend at most the given USD (the audit's allowance, decision 7103).
+pub type ReviewAgent = Arc<dyn Fn(f64) -> Arc<dyn Agent> + Send + Sync>;
+
 /// A model B3 may ask: its name, which names its family, and the agent that
 /// calls it.
 #[derive(Clone)]
 pub struct Reviewer {
     /// The model's name.
     pub model: String,
-    /// The agent that calls it.
-    pub agent: Arc<dyn Agent>,
+    /// The agent that calls it, made for each review with what the review
+    /// may spend.
+    pub agent: ReviewAgent,
 }
 
 /// B3: one review by a model of another family, which only corroborates.
@@ -100,7 +106,7 @@ impl PhaseBCheck for B3 {
             .body(Body::from_json(&payload).unwrap_or_else(|_| Body::empty()))
             .build();
         let costing = Arc::new(Costing {
-            inner: Arc::clone(&reviewer.agent),
+            inner: (reviewer.agent)(audit.usd_left),
             model: reviewer.model.clone(),
             calls: parking_lot::Mutex::new(Vec::new()),
         });
@@ -252,10 +258,12 @@ mod tests {
     use crate::audit::worker::{AuditUnit, combine};
     use crate::audit::worktree::tests::{repo_with, tree_of, write};
 
-    /// A reviewer that answers every prompt `answer`, and counts calls.
+    /// A reviewer that answers every prompt `answer`, and counts calls and
+    /// the allowance each review was made with.
     struct Answering {
         answer: &'static str,
         calls: AtomicUsize,
+        limits: parking_lot::Mutex<Vec<f64>>,
     }
 
     #[async_trait::async_trait]
@@ -283,6 +291,7 @@ mod tests {
             Arc::new(Self {
                 answer,
                 calls: AtomicUsize::new(0),
+                limits: parking_lot::Mutex::new(Vec::new()),
             })
         }
 
@@ -292,9 +301,13 @@ mod tests {
     }
 
     fn reviewer(model: &str, agent: &Arc<Answering>) -> Reviewer {
+        let agent = Arc::clone(agent);
         Reviewer {
             model: model.to_string(),
-            agent: agent.clone(),
+            agent: Arc::new(move |usd_limit| {
+                agent.limits.lock().push(usd_limit);
+                Arc::clone(&agent) as Arc<dyn Agent>
+            }),
         }
     }
 
@@ -354,6 +367,16 @@ mod tests {
         assert_eq!(same.calls(), 0, "never the same family");
         assert_eq!(other.calls(), 1);
         assert_eq!(review.labels.y, Some(true), "{}", review.detail);
+        // The review is held to what the audit may spend (7103), and an
+        // audit with nothing left asks no reviewer.
+        assert_eq!(*other.limits.lock(), [0.30]);
+        let broke = UnitAudit {
+            usd_left: 0.0,
+            ..audit
+        };
+        let null = b3.check(&broke).await;
+        assert_eq!(null.labels, AuditLabels::default(), "{}", null.detail);
+        assert_eq!(other.calls(), 1, "{}", null.detail);
 
         // Alone, that verdict sets no Y on an implementer task, whether the
         // mechanical checks passed it or could not tell; on a docs task,

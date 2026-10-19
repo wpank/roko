@@ -2,7 +2,7 @@
 id = "bug-050398"
 kind = "bug"
 title = "With affect on, every appraisal already autosaves affect.json, so the plan-end daimon save repeats it, and its unlocked write can put back an older state"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p3"
 goal = "learning"
@@ -10,7 +10,8 @@ size = "S"
 subsystem = ["roko-cli/runtime_feedback", "roko-daimon"]
 created = 2026-10-16
 updated = 2026-10-18
-last_verified = 2026-10-16
+last_verified = 2026-10-18
+last_verified_rev = "7da6f2fb4"
 source = "gap-a960a1 (2026-10-16)"
 discovered_from = "agent:gap-a960a1 worker (work/gap-a960a1)"
 anchors = ["crates/roko-cli/src/runtime_feedback/plan_completion.rs::DaimonPersistenceSink", "crates/roko-cli/src/graph_execution/plan_runner.rs::graph_daimon_state", "crates/roko-daimon/src/lib.rs::autosave", "crates/roko-cli/src/graph_task_dispatch/feedback.rs::emit_feedback"]
@@ -19,6 +20,18 @@ links = { depends_on = [], blocks = [], related = ["gap-a960a1", "q-6b7cca", "de
 
 [[verify]]
 command = "grep -rqw 'fn daimon_plan_end_save_never_puts_back_an_older_state' crates/roko-cli/ && cargo test -p roko-cli daimon_plan_end_save_never_puts_back_an_older_state"
+
+[closed]
+at = 2026-10-18
+at_ts = "2026-10-18T18:05:26Z"
+commit = "7da6f2fb4"
+by = "commit trailer"
+executor = "claude-agent"
+via = "work-batch"
+size = "S"
+claimed_at = "2026-10-18T17:10:10Z"
+forced = false
+evidence = "DaimonPersistenceSink::on_event (crates/roko-cli/src/runtime_feedback/plan_completion.rs) now moves the Arc<Mutex<DaimonState>> into its spawn_blocking closure and persists the guard's current state while still holding the lock, instead of cloning a snapshot before releasing the lock and persisting that snapshot afterward; this serializes the plan-end save with DaimonState::autosave's own lock-then-persist discipline, so a write can never go backwards. New test daimon_plan_end_save_never_puts_back_an_older_state (runtime_feedback::plan_completion::tests) races 20 rounds of a plan-end save against a concurrent autosaving appraisal on two real OS threads (tokio::test flavor = multi_thread, worker_threads = 2) and asserts affect.json on disk exactly equals the live state afterward. grep -rqw 'fn daimon_plan_end_save_never_puts_back_an_older_state' crates/roko-cli/ && cargo test -p roko-cli daimon_plan_end_save_never_puts_back_an_older_state passes (1 passed, 0 failed, rev 7da6f2fb4); the other plan_completion sink tests (daimon_sink_persists_on_plan_completed, daimon_sink_skips_non_plan_events) pass unchanged. cargo +nightly fmt -p roko-cli -- --check is clean; cargo clippy -p roko-cli --no-deps -- -D warnings is clean."
 +++
 
 ## Problem

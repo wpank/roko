@@ -18,7 +18,10 @@
 //! - Caps: `[audit] per_audit_usd` and `per_audit_cpu_secs` per audit, and
 //!   audit spend within `budget_frac` of the run's model spend. When that
 //!   budget binds, `audit.budget_exhausted` is logged once and the units
-//!   stay queued. Each phase-B model call writes a cost row and an
+//!   stay queued. A phase-B check's model calls carry an [`AuditAllowance`]
+//!   of what the audit may still spend, so none starts once it is spent and
+//!   the Claude CLI stops itself there (gap-d76b1b), and a check given
+//!   nothing makes no call. Each phase-B model call writes a cost row and an
 //!   efficiency row keyed by the audited attempt ([`CallLog`], gap-dd9c2e);
 //!   its spend stays on that audit line, off every task's budget.
 //! - [`AuditWorker::drain`], at run close, gives the worker at most
@@ -227,6 +230,91 @@ pub struct UnitAudit<'a> {
     pub usd_left: f64,
     /// How long it may run.
     pub time_left: Duration,
+}
+
+/// What one phase-B check's model calls may spend (decision 7103): the
+/// check's `usd_left`, at most `[audit] per_audit_usd` and what is left of
+/// the run's `budget_frac` of its model spend.
+///
+/// A check's dispatch carries it, so the agent's tool loop asks it before
+/// each model call and an agent that keeps a spend limit of its own, as the
+/// Claude CLI does, gets what is left as that limit (`--max-budget-usd`).
+/// Once the calls have spent it, or after a call whose cost is unknown, it
+/// refuses the next call.
+#[derive(Debug)]
+pub struct AuditAllowance {
+    limit_usd: f64,
+    spent: parking_lot::Mutex<AllowanceSpend>,
+}
+
+/// What an [`AuditAllowance`]'s calls spent.
+#[derive(Debug, Default)]
+struct AllowanceSpend {
+    usd: f64,
+    /// Whether a call's cost was unknown.
+    unpriced: bool,
+}
+
+impl AuditAllowance {
+    /// An allowance of `limit_usd`; a negative or unknown limit allows
+    /// nothing.
+    #[must_use]
+    pub fn new(limit_usd: f64) -> Self {
+        let limit_usd = if limit_usd.is_finite() {
+            limit_usd.max(0.0)
+        } else {
+            0.0
+        };
+        Self {
+            limit_usd,
+            spent: parking_lot::Mutex::new(AllowanceSpend::default()),
+        }
+    }
+
+    /// The allowance, in USD.
+    #[must_use]
+    pub const fn limit_usd(&self) -> f64 {
+        self.limit_usd
+    }
+
+    /// What its calls spent, in USD.
+    #[must_use]
+    pub fn spent_usd(&self) -> f64 {
+        self.spent.lock().usd
+    }
+}
+
+impl crate::dispatch_v2::CallAllowance for AuditAllowance {
+    fn refuse_call(&self) -> Option<String> {
+        let spent = self.spent.lock();
+        if spent.unpriced {
+            return Some(
+                "an earlier call of the audit check has no known cost, so its allowance \
+                 cannot be checked"
+                    .to_string(),
+            );
+        }
+        (spent.usd >= self.limit_usd).then(|| {
+            format!(
+                "the audit check spent its allowance: ${:.4} of ${:.4} ([audit] per_audit_usd \
+                 and budget_frac)",
+                spent.usd, self.limit_usd
+            )
+        })
+    }
+
+    fn record_call(&self, cost_usd: f64, priced: bool) {
+        let mut spent = self.spent.lock();
+        if !priced {
+            spent.unpriced = true;
+        } else if cost_usd.is_finite() && cost_usd > 0.0 {
+            spent.usd += cost_usd;
+        }
+    }
+
+    fn spend_limit_usd(&self) -> Option<f64> {
+        Some((self.limit_usd - self.spent.lock().usd).max(0.0))
+    }
 }
 
 /// A phase-B check: B1 (7124), B2 (7125) or B3 (7127).
@@ -1356,5 +1444,173 @@ mod tests {
         // The same finding again opens nothing.
         let again = report_incidents(&vault, &mut ledger, &unit, labels, &evidence);
         assert!(again.is_empty());
+    }
+
+    /// gap-d76b1b: an audit check's allowance lets calls start until they
+    /// have spent it, and none after a call whose cost is unknown; the
+    /// Claude CLI gets what is left as its own limit.
+    #[test]
+    fn audit_allowance_refuses_calls_past_its_limit() {
+        use crate::dispatch_v2::CallAllowance;
+
+        let allowance = AuditAllowance::new(0.25);
+        assert_eq!(allowance.refuse_call(), None);
+        assert_eq!(allowance.spend_limit_usd(), Some(0.25));
+        allowance.record_call(0.125, true);
+        assert_eq!(allowance.refuse_call(), None);
+        assert_eq!(allowance.spend_limit_usd(), Some(0.125));
+        allowance.record_call(0.1875, true);
+        let refused = allowance.refuse_call().expect("the allowance is spent");
+        assert!(refused.contains("$0.3125 of $0.2500"), "{refused}");
+        assert_eq!(allowance.spend_limit_usd(), Some(0.0));
+        assert_eq!(allowance.spent_usd(), 0.3125);
+
+        // Nothing to spend refuses the first call; a negative or unknown
+        // limit is nothing.
+        for limit in [0.0, -1.0, f64::NAN] {
+            let none = AuditAllowance::new(limit);
+            assert_eq!(none.limit_usd(), 0.0, "{limit}");
+            assert!(none.refuse_call().is_some(), "{limit}");
+        }
+        // A call of unknown cost refuses the next.
+        let unknown = AuditAllowance::new(0.25);
+        unknown.record_call(0.0, false);
+        assert!(unknown.refuse_call().is_some());
+    }
+
+    /// A phase-B check that wants to spend `want` and spends what its audit
+    /// allows of it, as calls held to the audit's allowance do; it keeps what
+    /// each audit gave it.
+    struct Spending {
+        want: f64,
+        given: parking_lot::Mutex<Vec<f64>>,
+    }
+
+    #[async_trait::async_trait]
+    impl PhaseBCheck for Spending {
+        async fn check(&self, audit: &UnitAudit<'_>) -> CheckOutcome {
+            self.given.lock().push(audit.usd_left);
+            CheckOutcome {
+                cost_usd: self.want.min(audit.usd_left),
+                ..CheckOutcome::default()
+            }
+        }
+    }
+
+    /// `units` selected units of one run whose model spend is `run_spend`,
+    /// audited under `config` with [`Spending`] of `want` as phase B: what
+    /// each audit was given, and the vault ledger's records.
+    fn spend_on_audits(
+        config: AuditConfig,
+        run_spend: f64,
+        want: f64,
+        units: u32,
+    ) -> (Vec<f64>, Vec<LedgerRecord>) {
+        use crate::audit::worktree::tests::{repo_with, tree_of, write};
+
+        let temp = tempfile::tempdir().expect("tempdir");
+        let repo = temp.path().join("repo");
+        let base = repo_with(&repo, &[("src/lib.rs", "pub fn n() -> u8 {\n    1\n}\n")]);
+        write(&repo, "src/lib.rs", "pub fn n() -> u8 {\n    2\n}\n");
+        let result = tree_of(&repo);
+        // Every audit runs phase B.
+        let config = AuditConfig {
+            home: Some(temp.path().join("vault")),
+            phase_b_rate: 1.0,
+            ..config
+        };
+        let vault = config.vault(&repo).expect("the vault");
+        let check = Arc::new(Spending {
+            want,
+            given: parking_lot::Mutex::new(Vec::new()),
+        });
+        let context = WorkerContext {
+            workdir: repo.clone(),
+            vault: vault.clone(),
+            config,
+            gates: GatesConfig::default(),
+            secret: roko_gate::audit::policy::workspace_secret(&vault).expect("the secret"),
+            run_id: "run-1".to_string(),
+            run_spend: Arc::new(parking_lot::Mutex::new(run_spend)),
+            phase_b: PhaseB {
+                b1: Some(check.clone()),
+                ..PhaseB::default()
+            },
+            gaming: GamingWatch::new(&vault),
+            learner: None,
+            call_log: None,
+        };
+        let worker = AuditWorker::start(context).expect("the worker starts");
+        for n in 1..=units {
+            let unit = AuditUnit {
+                sel_id: format!("sel-{n:012}"),
+                attempt_key: format!("run-1:plan:T{n}:1"),
+                run_id: "run-1".to_string(),
+                plan_id: "plan".to_string(),
+                task_id: format!("T{n}"),
+                pi: 1.0,
+                base_tree: Some(base.clone()),
+                result_tree: Some(result.clone()),
+                model: "glm-4.7".to_string(),
+                prediction_id: None,
+                task: AuditTask {
+                    files: vec!["src/lib.rs".to_string()],
+                    verify: vec![("check".to_string(), "true".to_string())],
+                    kind: "code".to_string(),
+                    tier: "focused".to_string(),
+                    ..AuditTask::default()
+                },
+            };
+            assert!(worker.submit(unit), "the worker takes unit {n}");
+        }
+        assert!(worker.drain(Duration::from_secs(300)), "the worker drains");
+        let given = check.given.lock().clone();
+        (given, records(&vault.ledger_dir()).expect("the ledger"))
+    }
+
+    /// gap-d76b1b (decision 7103): each audit may spend at most `[audit]
+    /// per_audit_usd`, and all of a run's audits at most `budget_frac` of
+    /// its model spend; once that is spent the rest wait in the ledger, and
+    /// `audit.budget_exhausted` says so once.
+    #[test]
+    fn audits_spend_within_the_per_audit_cap_and_the_runs_budget() {
+        let results = |all: &[LedgerRecord]| -> Vec<f64> {
+            all.iter()
+                .filter_map(|record| match &record.event {
+                    AuditEvent::Result { cost_usd, .. } => *cost_usd,
+                    _ => None,
+                })
+                .collect()
+        };
+
+        // At the defaults, an audit of a run that spent $10 may spend $0.30
+        // of the run's $1.20.
+        let (given, all) = spend_on_audits(AuditConfig::default(), 10.0, 0.5, 2);
+        assert_eq!(given, [0.30, 0.30]);
+        assert_eq!(results(&all), [0.30, 0.30]);
+
+        // The run's budget binds: $0.25 of a $1 run, audits of $0.125 at
+        // most, each wanting $0.1875. Two audits spend it, and the other two
+        // units wait.
+        let config = AuditConfig {
+            budget_frac: 0.25,
+            per_audit_usd: 0.125,
+            ..AuditConfig::default()
+        };
+        let (given, all) = spend_on_audits(config, 1.0, 0.1875, 4);
+        assert_eq!(given, [0.125, 0.125]);
+        assert_eq!(results(&all), [0.125, 0.125]);
+        let exhausted: Vec<(f64, f64)> = all
+            .iter()
+            .filter_map(|record| match &record.event {
+                AuditEvent::BudgetExhausted {
+                    spent_usd,
+                    limit_usd,
+                    ..
+                } => Some((*spent_usd, *limit_usd)),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(exhausted, [(0.25, 0.25)]);
     }
 }

@@ -211,6 +211,7 @@ mod tests {
             proposals: Some(ContentProposals {
                 learned: Some(vec![item.to_string()]),
                 default: Some(Vec::new()),
+                exclusion: None,
             }),
             audit: AuditFields {
                 layer: Some(layer.to_string()),

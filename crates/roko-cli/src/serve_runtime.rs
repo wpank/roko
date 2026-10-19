@@ -1146,6 +1146,7 @@ fn run_plan_on_local_runtime(
                 no_cascade: false,
                 frozen_learning: false,
                 no_holdout: false,
+                no_audit: false,
                 metrics,
                 // A chat host's run stages outbound effects whatever its
                 // plans say (decision 9107, gap-1a4563).
@@ -1231,6 +1232,7 @@ fn run_prompt_plan_on_local_runtime(
             max_usd: options.max_usd,
             origin: options.origin,
             no_holdout: false,
+            no_audit: false,
             live_agent_output: config_live_output_to_dispatcher(options.live_agent_output),
             title: options.title.clone(),
         })
@@ -2644,6 +2646,11 @@ context_window = 200000
 # spec-quality gate would ask again for this minimal plan (3218).
 [spec_quality]
 mode = "off"
+
+# Audits are on by default (decision 7103): a fixture runs none, so no test
+# writes to the operator's ~/.roko/audit.
+[audit]
+enabled = false
 "#,
                 script = script.display().to_string()
             ),

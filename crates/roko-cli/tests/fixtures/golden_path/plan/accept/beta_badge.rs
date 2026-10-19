@@ -9,3 +9,8 @@ fn badge_leads_with_the_initials() {
 fn badge_trims_the_name() {
     assert_eq!(badge("  alan turing "), "[AT] alan turing");
 }
+
+#[test]
+fn badge_upper_cases_non_ascii_initials() {
+    assert_eq!(badge("émile zola"), "[ÉZ] émile zola");
+}

@@ -2,7 +2,7 @@
 id = "find-4003b9"
 kind = "finding"
 title = "Golden-path live runs: every independent review found a low-severity escape no check sees, so W8's GP bar (review finds no escape) is unmet while 3118's is met"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p1"
 goal = "golden-path"
@@ -10,11 +10,23 @@ size = "M"
 subsystem = ["self-hosting"]
 created = 2026-10-16
 updated = 2026-10-18
-last_verified = 2026-10-16
+last_verified = 2026-10-18
+last_verified_rev = "39e99d782"
 source = "gap-c013c5 (backlog 3118) golden-path live runs, 2026-10-16"
 discovered_from = "gap-c013c5"
 anchors = ["crates/roko-cli/tests/fixtures/golden_path/plan/tasks.toml", "crates/roko-cli/tests/fixtures/golden_path/plan/accept/alpha_initials.rs"]
-links = { depends_on = [], blocks = [], related = ["gap-f30b8e", "spec-f09094", "find-2ba86d", "gap-f9fa2c", "gap-c013c5"], supersedes = [], duplicate_of = "" }
+links = { depends_on = [], blocks = [], related = ["gap-f30b8e", "spec-f09094", "find-2ba86d", "gap-f9fa2c", "gap-c013c5", "find-5bcba7", "find-8b6828"], supersedes = [], duplicate_of = "" }
+
+[closed]
+at = 2026-10-18
+at_ts = "2026-10-18T18:45:40Z"
+commit = "39e99d782"
+executor = "claude-agent"
+via = "work-batch"
+size = "M"
+claimed_at = "2026-10-18T17:10:13Z"
+forced = false
+evidence = "15837120f tightened the golden-path fixture as option 2 asked: the T5 and T6 accept tests take \"émile zola\" (ÉZ; [ÉZ] émile zola), the T1 and T2 accept tests check that title_words and reverse are the seed text with docstring and doc comment, the counts are 4/4/3/3, and plan.md says what changed after the freeze and why; golden_path_fixture_is_red_on_the_seed and golden_path_fixture_plan_merges_green pass, and the new tests fail the merged trees of the 2026-10-16 runs 1 and 2. 39e99d782 records the rerun in work/history/golden-path-live-2026-10-18.md: three live runs at 15837120f, 0.70 USD by the wire count, 0 interventions, 2 of 3 passed (run 1 failed the whole-plan clippy check, find-5bcba7); the new non-ASCII case rejected the ASCII-only first T5 attempt live in runs 2 and 3; reviews: run 2 clean, runs 1 and 3 a narrower T5 escape (find-8b6828). gap-f30b8e stays open."
 +++
 
 ## Finding
@@ -66,3 +78,20 @@ The golden-path goal's acceptance bar and the whitepaper's V3 claim rest on this
 ## Decision (2026-10-18, Will)
 
 Option 2: tighten the fixture, then rerun. Add a non-ASCII case to the alpha/beta accept tests (initials, badge) and a check that the 'keep as is' functions (title_words, reverse) stay unchanged; the doc-example skip check is already built (gap-f9fa2c). Rerun the three live golden-path runs (pass^3, about $1.20 at 2026-10-16 cost), and say in the frozen plan's plan.md that the fixture changed.
+
+## Done (2026-10-18)
+
+- **The fixture change** is commit `15837120f`:
+  - `initials("émile zola") == "ÉZ"` and `badge("émile zola") == "[ÉZ] émile zola"`;
+  - `title_words` and `reverse` checked to be the seed's text, docstring and doc comment included;
+  - counts 4, 4, 3 and 3;
+  - plan.md says what changed after the freeze and why.
+
+  Laid over the merged trees of 2026-10-16, the new tests fail runs 1 and 2 and pass run 3.
+- **The rerun** is recorded in `work/history/golden-path-live-2026-10-18.md`: 2 of 3 live runs passed, for $0.70.
+  - The new non-ASCII case rejected T5's ASCII-only first attempt live in runs 2 and 3, and the retry passed.
+  - Run 1 failed roko's whole-plan check: T7's clippy lint (find-5bcba7).
+  - Reviews: run 2 CLEAN; runs 1 and 3 count a narrower T5 escape, a multi-character upper case cut to one
+    character (find-8b6828).
+
+  gap-f30b8e stays open.

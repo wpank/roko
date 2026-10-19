@@ -69,11 +69,13 @@ use roko_learn::telemetry::records::{AttemptOutcome, AttemptVerdictRecord, GateV
 
 use crate::audit::b1::{B1, FactoryAuthor, SuiteAuthor};
 use crate::audit::b2::B2;
-use crate::audit::b3::{B3, Reviewer};
+use crate::audit::b3::{B3, ReviewAgent, Reviewer};
 use crate::audit::labels::{VsLearner, known_vs};
 use crate::audit::worker::{
-    AuditTask, AuditUnit, AuditWorker, CallLog, GamingWatch, PhaseB, WorkerContext, queue_unit,
+    AuditAllowance, AuditTask, AuditUnit, AuditWorker, CallLog, GamingWatch, PhaseB, WorkerContext,
+    queue_unit,
 };
+use crate::dispatch_v2::CallAllowance;
 use crate::runtime_feedback::HomeostasisSink;
 use crate::task_parser::TaskDef;
 
@@ -577,14 +579,27 @@ impl super::GraphTaskDispatcher {
             .config
             .models
             .iter()
-            .map(|(key, profile)| Reviewer {
-                model: profile.slug.clone(),
-                agent: Arc::new(super::routing_context::CheapFactoryAgent {
-                    factory: Arc::clone(&self.factory),
-                    model_key: key.clone(),
-                    workdir: self.workdir.clone(),
-                    timeout_ms,
-                }),
+            .map(|(key, profile)| {
+                let factory = Arc::clone(&self.factory);
+                let model_key = key.clone();
+                let workdir = self.workdir.clone();
+                // Each review's calls carry what its audit may still spend
+                // (decision 7103).
+                let agent: ReviewAgent = Arc::new(move |usd_limit: f64| {
+                    let allowance: Arc<dyn CallAllowance> =
+                        Arc::new(AuditAllowance::new(usd_limit));
+                    Arc::new(super::routing_context::CheapFactoryAgent {
+                        factory: Arc::clone(&factory),
+                        model_key: model_key.clone(),
+                        workdir: workdir.clone(),
+                        timeout_ms,
+                        allowance: Some(allowance),
+                    }) as Arc<dyn roko_agent::Agent>
+                });
+                Reviewer {
+                    model: profile.slug.clone(),
+                    agent,
+                }
             })
             .collect();
         PhaseB {

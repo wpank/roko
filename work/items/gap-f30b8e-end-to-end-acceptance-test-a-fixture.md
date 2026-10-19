@@ -15,7 +15,7 @@ discovered_from = "tmp/cybernetic-harness/workstreams/assessment/W8-roko-as-exec
 anchors = ["crates/roko-cli/tests/golden_path_acceptance.rs", "crates/roko-cli/tests/fixtures/golden_path/"]
 lane = "rust-cold"
 parent = "spec-f09094"
-links = { depends_on = ["gap-3aa9cb"], blocks = [], related = ["gap-e21595", "gap-af00b1", "gap-d14a43"], supersedes = [], duplicate_of = "" }
+links = { depends_on = ["gap-3aa9cb"], blocks = [], related = ["gap-e21595", "gap-af00b1", "gap-d14a43", "find-4003b9", "find-5bcba7", "find-8b6828", "bug-2110e8"], supersedes = [], duplicate_of = "" }
 
 [[verify]]
 command = "grep -rqw 'fn golden_path_fixture_plan_merges_green' crates/roko-cli/tests/ && cargo test -p roko-cli --test golden_path_acceptance golden_path_fixture_plan_merges_green"
@@ -74,3 +74,27 @@ Checked at `41c7ffbd6`: no such fixture or test exists. It needs epics E2–E10 
 ## Decision (2026-10-18, Will)
 
 Closes on the rerun that find-4003b9's option 2 asks for (tightened fixture, pass^3), not on the 2026-10-16 record.
+
+## Rerun (2026-10-18): 2 of 3, so this stays open
+
+The rerun on the tightened fixture (`15837120f`, work/find-4003b9) is recorded in
+`work/history/golden-path-live-2026-10-18.md`. It ran three live runs for $0.70 by the wire count ($0.69 by roko),
+with 0 interventions:
+
+- **Run 1** (`graph-09f0bd03-b7ec-463f-b311-5d6409516cac`) **failed.** All nine tasks passed their own checks, but
+  T7 put `VERSION` after alpha's test module. roko's whole-plan check failed clippy, the delivery settled
+  `regression_failed`, and nothing was delivered (find-5bcba7).
+- **Run 2** (`graph-a9cdb3e8-b765-497e-9d3c-54e7decc9383`) **passed**, $0.214916, $0.0239 per verified task.
+  Review: CLEAN.
+- **Run 3** (`graph-338e9cf3-3be5-41c2-9162-c9fe5171b355`) **passed**, $0.254900, $0.0283 per verified task.
+  Review: one low-severity T5 escape (find-8b6828).
+
+There were no escalations in any run. The new non-ASCII case rejected T5's ASCII-only first attempt in runs 2 and 3,
+and the retry on the cheap rung passed. pass^3 therefore needs find-5bcba7 settled, and find-8b6828 if reviews must
+find no escape, then a new pass^3.
+
+Two other findings came out of the rerun:
+
+- A ~$1 plan budget with the workspace's $0.50 turn cap stops attempts at $0 spent (bug-2110e8). The runs set
+  `max_turn_usd = max_plan_usd / 8`.
+- `RequireToolBeforeEdit` admits an edit to an unread file (gap-78cf31).

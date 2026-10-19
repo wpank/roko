@@ -972,6 +972,10 @@ pub struct GraphPlanRunParams {
     /// decision 4115): the run's config reads `[experiments] maximize =
     /// true`, so no loop is withheld and no route explores.
     pub no_holdout: bool,
+    /// No audits for this run alone (`roko plan run --no-audit`, decision
+    /// 7103): the run's config reads `[audit] enabled = false`, so no green
+    /// attempt is drawn and no audit spends.
+    pub no_audit: bool,
     /// Registry that counts this run's verify verdicts and durations
     /// (`roko_gate_verdicts_total`, `roko_gate_duration_seconds`) beside the
     /// tracing fields: serve passes the one `/metrics` renders (gap-d8c39a).
@@ -1210,6 +1214,7 @@ async fn run_graph_plan_body(
         no_cascade,
         frozen_learning,
         no_holdout,
+        no_audit,
         metrics,
         outbound_floor,
     } = params;
@@ -1270,10 +1275,10 @@ async fn run_graph_plan_body(
     if let Some(effort) = effort {
         roko_config.agent.default_effort = effort;
     }
-    // `--frozen-learning` and `--no-holdout` apply to this run alone, before
-    // the manifest, the feedback facade and the dispatcher are built, so
-    // every reader sees one value.
-    apply_run_switches(&mut roko_config, frozen_learning, no_holdout);
+    // `--frozen-learning`, `--no-holdout` and `--no-audit` apply to this run
+    // alone, before the manifest, the feedback facade and the dispatcher are
+    // built, so every reader sees one value.
+    apply_run_switches(&mut roko_config, frozen_learning, no_holdout, no_audit);
     // Every check the run starts builds with a job cap at a lower priority
     // (bug-b3849c): `[gates] cargo_jobs` and `[gates] nice`.
     let gate_limits = roko_config.gates.gate_limits();
@@ -2655,22 +2660,27 @@ async fn run_graph_plan_body(
 }
 
 /// Apply a run's switches to its config: `frozen_learning`
-/// (`--frozen-learning`, decision 2218) freezes its learning and
-/// `no_holdout` (`--no-holdout`, decision 4115) turns on maximize mode, for
-/// this run alone. Without them the config's own `[learning] frozen` and
-/// `[experiments] maximize` stand. Maximize mode, from either, holds nothing
-/// out: it zeroes the plan-load spec gate's gate-off holdout
+/// (`--frozen-learning`, decision 2218) freezes its learning, `no_holdout`
+/// (`--no-holdout`, decision 4115) turns on maximize mode and `no_audit`
+/// (`--no-audit`, decision 7103) turns audits off, for this run alone.
+/// Without them the config's own `[learning] frozen`, `[experiments]
+/// maximize` and `[audit] enabled` stand. Maximize mode, from either, holds
+/// nothing out: it zeroes the plan-load spec gate's gate-off holdout
 /// (`[spec_quality] holdout_frac`) too (gap-29fe0a).
 pub fn apply_run_switches(
     config: &mut roko_core::config::schema::RokoConfig,
     frozen_learning: bool,
     no_holdout: bool,
+    no_audit: bool,
 ) {
     if frozen_learning {
         config.learning.frozen = true;
     }
     if no_holdout {
         config.experiments.maximize = true;
+    }
+    if no_audit {
+        config.audit.enabled = false;
     }
     if config.experiments.maximize {
         config.spec_quality.holdout_frac = 0.0;
@@ -5515,6 +5525,11 @@ command = "claude"
 provider = "claude_cli"
 slug = "claude-sonnet-4-6"
 
+# Audits are on by default (decision 7103): a fixture runs none, so no test
+# writes to the operator's ~/.roko/audit.
+[audit]
+enabled = false
+
 [agent.roles.researcher]
 enabled = false
 "#;
@@ -5577,6 +5592,7 @@ files = ["README.md"]
             no_cascade: false,
             frozen_learning: false,
             no_holdout: false,
+            no_audit: false,
             metrics: None,
             outbound_floor: None,
         })
@@ -5793,6 +5809,7 @@ max_retries = 0
             no_cascade: false,
             frozen_learning,
             no_holdout: false,
+            no_audit: false,
             metrics: None,
             outbound_floor: None,
         })
@@ -6280,11 +6297,18 @@ verify = [{{ phase = "structural", command = {verify:?} }}]
     /// `true`, can never fail), followed by `extra_config`. The provider ignores its
     /// prompt, appends a line to `provider-calls`, and reports a finished turn
     /// costing `cost_usd`, so each task's verify step alone decides its
-    /// outcome.
+    /// outcome. Audits are on by default (decision 7103), so the workspace
+    /// runs none unless `extra_config` has an `[audit]` table of its own: a
+    /// test's run never writes to the operator's `~/.roko/audit`.
     #[cfg(unix)]
     fn fake_provider_workspace(dir: &Path, cost_usd: f64, extra_config: &str) {
         use std::os::unix::fs::PermissionsExt as _;
 
+        let audit = if extra_config.contains("[audit]") {
+            ""
+        } else {
+            "\n[audit]\nenabled = false\n"
+        };
         let provider = dir.join("fake-provider.sh");
         std::fs::write(
             &provider,
@@ -6326,7 +6350,7 @@ mode = "off"
 
 [gates]
 sibling_settle_secs = 0
-{extra_config}"#,
+{extra_config}{audit}"#,
                 provider = provider.display().to_string()
             ),
         )
@@ -9307,6 +9331,7 @@ exec sleep 60
             no_cascade: false,
             frozen_learning: false,
             no_holdout: false,
+            no_audit: false,
             metrics: None,
             outbound_floor: None,
         })
@@ -9411,9 +9436,11 @@ printf '%s\n' '{"type":"result","session_id":"sess-batch","model":"claude-sonnet
         std::fs::set_permissions(&agent, std::fs::Permissions::from_mode(0o755)).expect("chmod");
         std::fs::write(
             repo.join("roko.toml"),
+            // Audits off: decision 7103 turned them on by default.
             format!(
                 "[agent]\ndefault_model = \"fake\"\n\n[providers.fake]\nkind = \"claude_cli\"\n\
-                 command = \"{}\"\n\n[models.fake]\nprovider = \"fake\"\nslug = \"claude-sonnet-4-6\"\n",
+                 command = \"{}\"\n\n[models.fake]\nprovider = \"fake\"\nslug = \"claude-sonnet-4-6\"\n\
+                 \n[audit]\nenabled = false\n",
                 agent.display()
             ),
         )
@@ -9493,6 +9520,7 @@ printf '%s\n' '{"type":"result","session_id":"sess-batch","model":"claude-sonnet
             no_cascade: false,
             frozen_learning: false,
             no_holdout: false,
+            no_audit: false,
             metrics: None,
             outbound_floor: None,
         }

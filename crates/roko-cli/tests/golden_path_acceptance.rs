@@ -449,11 +449,14 @@ fn golden_path_fixture_plan_merges_green() {
     let home = temp.path().join("home");
     fs::create_dir_all(&home).expect("create the home directory");
 
-    // The scripted run has no use for the invoking environment's keys.
+    // The scripted run has no use for the invoking environment's keys, and
+    // an audit's calls would leave the replay's script (`golden_path_live`
+    // runs the default, audits on).
     let mut command = plan_command(&repo, &home);
     for name in roko_core::child_env::PROVIDER_KEY_VARS {
         command.env_remove(name);
     }
+    command.env(common::AUDITS_OFF.0, common::AUDITS_OFF.1);
     let run = command.output().expect("run roko plan run");
 
     let attempts = assert_merges_green(&repo, &plan, &run, &temp.path().join("target"));

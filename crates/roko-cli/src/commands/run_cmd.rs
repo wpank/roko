@@ -159,6 +159,8 @@ pub(crate) struct RunArgs {
     pub(crate) resume_plan: Option<PathBuf>,
     /// `--no-holdout`: maximize mode for this run alone (decision 4115).
     pub(crate) no_holdout: bool,
+    /// `--no-audit`: no audits for this run alone (decision 7103).
+    pub(crate) no_audit: bool,
 }
 
 /// Main entry point for `roko run`.
@@ -235,6 +237,7 @@ pub(crate) async fn cmd_run(cli: &Cli, args: RunArgs) -> Result<i32> {
             None,
             args.domain.as_deref().and_then(TaskDomain::from_label),
             args.no_holdout,
+            args.no_audit,
         )
         .await;
     }
@@ -439,6 +442,7 @@ async fn run_plan_dir(
         // `plan run` flag).
         frozen_learning: false,
         no_holdout: args.no_holdout,
+        no_audit: args.no_audit,
         promote: None,
         max_parallel_plans: None,
         fail_fast: false,
@@ -505,6 +509,7 @@ async fn run_one_task(
         max_usd: None,
         origin: roko_serve::runtime::RunOrigin::Cli,
         no_holdout: args.no_holdout,
+        no_audit: args.no_audit,
         live_agent_output: roko_cli::graph_task_dispatch::LiveAgentOutput::for_local_run(workdir),
         title: None,
     })
@@ -655,6 +660,7 @@ async fn run_prompt_plan(
         args.no_cascade,
         args.max_retries,
         args.no_holdout,
+        args.no_audit,
     )
     .await?;
     // Leaves the operator checkout as it found it: the run's results go to
@@ -723,6 +729,7 @@ pub(crate) async fn run_plan_execution(
     no_cascade: bool,
     max_retries: Option<u32>,
     no_holdout: bool,
+    no_audit: bool,
 ) -> Result<i32> {
     use roko_cli::graph_execution::plan_runner::{
         PlanRunInterruptHandle, install_plan_run_signal_handlers, run_graph_plan,
@@ -793,6 +800,7 @@ pub(crate) async fn run_plan_execution(
         no_cascade,
         frozen_learning: false,
         no_holdout,
+        no_audit,
         metrics: None,
         outbound_floor: None,
     })

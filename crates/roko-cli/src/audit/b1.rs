@@ -27,10 +27,10 @@ use sha2::{Digest, Sha256};
 
 use super::git;
 use super::rerun::{Check, rerun, target_dir};
-use super::worker::{AuditTask, CheckCall, CheckOutcome, PhaseBCheck, UnitAudit};
+use super::worker::{AuditAllowance, AuditTask, CheckCall, CheckOutcome, PhaseBCheck, UnitAudit};
 use super::worktree::AuditWorktree;
 use crate::dispatch::SharedAgentFactory;
-use crate::dispatch_v2::AgentDispatchRequest;
+use crate::dispatch_v2::{AgentDispatchRequest, CallAllowance};
 
 /// The most signature lines the prompt quotes from one file.
 const MAX_SIGNATURES: usize = 40;
@@ -41,12 +41,17 @@ pub trait SuiteAuthor: Send + Sync {
     /// The model's name, which names its family.
     fn model(&self) -> &str;
 
-    /// Answer `prompt`: the reply's text and what the call used and cost.
+    /// Answer `prompt`, spending at most `usd_limit` on model calls (the
+    /// audit's allowance): the reply's text and what the call used and cost.
     ///
     /// # Errors
     ///
     /// The call failed.
-    async fn write(&self, prompt: &str) -> anyhow::Result<(String, roko_core::Usage)>;
+    async fn write(
+        &self,
+        prompt: &str,
+        usd_limit: f64,
+    ) -> anyhow::Result<(String, roko_core::Usage)>;
 }
 
 /// A suite author that calls a configured model through the agent factory,
@@ -83,8 +88,13 @@ impl SuiteAuthor for FactoryAuthor {
         &self.slug
     }
 
-    async fn write(&self, prompt: &str) -> anyhow::Result<(String, roko_core::Usage)> {
+    async fn write(
+        &self,
+        prompt: &str,
+        usd_limit: f64,
+    ) -> anyhow::Result<(String, roko_core::Usage)> {
         let scratch = tempfile::tempdir()?;
+        let allowance: Arc<dyn CallAllowance> = Arc::new(AuditAllowance::new(usd_limit));
         let request = AgentDispatchRequest {
             model_key: self.model_key.clone(),
             prompt: prompt.to_string(),
@@ -106,7 +116,7 @@ impl SuiteAuthor for FactoryAuthor {
             live_output: None,
             attempt_key: None,
             knowledge_ids: Vec::new(),
-            allowance: None,
+            allowance: Some(allowance),
         };
         let dispatch = self.factory.run_shared_agent_bridge(request).await?;
         let usage = dispatch.result.usage;
@@ -217,7 +227,7 @@ impl B1 {
         }
         let interface = signatures(audit.repo, base, &unit.task.files);
         let spec = prompt(&unit.task, &interface, layout);
-        let (reply, usage) = author.write(&spec).await?;
+        let (reply, usage) = author.write(&spec, audit.usd_left).await?;
         let call = CheckCall {
             model: author.model().to_string(),
             usage,
@@ -573,11 +583,13 @@ mod tests {
     use crate::audit::worker::AuditUnit;
     use crate::audit::worktree::tests::{repo_with, tree_of, write};
 
-    /// A scripted author: it answers with its next suite, and counts calls.
+    /// A scripted author: it answers with its next suite, and counts calls
+    /// and the allowance each was given.
     struct Scripted {
         model: &'static str,
         suites: parking_lot::Mutex<VecDeque<&'static str>>,
         calls: AtomicUsize,
+        limits: parking_lot::Mutex<Vec<f64>>,
     }
 
     impl Scripted {
@@ -586,6 +598,7 @@ mod tests {
                 model,
                 suites: parking_lot::Mutex::new(suites.iter().copied().collect()),
                 calls: AtomicUsize::new(0),
+                limits: parking_lot::Mutex::new(Vec::new()),
             })
         }
 
@@ -600,12 +613,17 @@ mod tests {
             self.model
         }
 
-        async fn write(&self, prompt: &str) -> anyhow::Result<(String, roko_core::Usage)> {
+        async fn write(
+            &self,
+            prompt: &str,
+            usd_limit: f64,
+        ) -> anyhow::Result<(String, roko_core::Usage)> {
             assert!(
                 !prompt.contains("echo 43"),
                 "the author never sees the attempt"
             );
             self.calls.fetch_add(1, Ordering::Relaxed);
+            self.limits.lock().push(usd_limit);
             let suite = self.suites.lock().pop_front();
             let suite = suite.ok_or_else(|| anyhow::anyhow!("no suite left"))?;
             let usage = roko_core::Usage {
@@ -675,6 +693,8 @@ mod tests {
         assert_eq!(rejected.detail["state"], "rejected", "{}", rejected.detail);
         assert_eq!(same.calls(), 0, "never a same-family author");
         assert_eq!(other.calls(), 1);
+        // The author's call is held to what the audit may spend (7103).
+        assert_eq!(*other.limits.lock(), [0.30]);
         let states: Vec<SuiteState> = store
             .all()
             .expect("the suites")
@@ -705,6 +725,25 @@ mod tests {
         assert_eq!(again.detail["reused"], true);
         assert_eq!(other.calls(), 2);
         assert_eq!(store.meta(&active.suite_id).expect("its meta").uses, 2);
+
+        // An audit with nothing left to spend calls no author.
+        let task = AuditTask {
+            title: "another task".to_string(),
+            ..unit.task.clone()
+        };
+        let unspent = AuditUnit {
+            task_id: "T2".to_string(),
+            task,
+            ..unit.clone()
+        };
+        let broke = UnitAudit {
+            unit: &unspent,
+            usd_left: 0.0,
+            ..audit
+        };
+        let null = b1.check(&broke).await;
+        assert_eq!(null.labels.y, None, "{}", null.detail);
+        assert_eq!(other.calls(), 2, "{}", null.detail);
         worktree.remove().expect("remove");
     }
 

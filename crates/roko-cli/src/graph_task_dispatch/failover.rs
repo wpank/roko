@@ -2477,6 +2477,146 @@ printf '%s\n' '{{"type":"result","subtype":"success","is_error":false,"total_cos
         assert_eq!(invocations(&calls), 0, "nothing failed over");
     }
 
+    /// A stand-in provider that serves `capacity` calls at once, each after
+    /// `hold`, with `answer`, and refuses any call beyond them with HTTP 429
+    /// and a `Retry-After` of one second, as z.ai refuses calls past an
+    /// account's concurrency. It takes `calls` calls and records each one's
+    /// arrival and status.
+    fn spawn_concurrency_limited_mock(
+        capacity: usize,
+        hold: std::time::Duration,
+        answer: serde_json::Value,
+        calls: usize,
+    ) -> (String, Arc<parking_lot::Mutex<Vec<(Instant, u16)>>>) {
+        use std::io::Write;
+
+        use crate::graph_task_dispatch::tests::{openai_mock_wire, read_mock_request};
+
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind mock server");
+        let base_url = format!("http://{}/v1", listener.local_addr().expect("mock addr"));
+        let served = Arc::new(parking_lot::Mutex::new(Vec::new()));
+        let log = Arc::clone(&served);
+        let in_flight = Arc::new(parking_lot::Mutex::new(0_usize));
+        std::thread::spawn(move || {
+            for _ in 0..calls {
+                let Ok((mut stream, _)) = listener.accept() else {
+                    return;
+                };
+                let (log, in_flight, answer) =
+                    (Arc::clone(&log), Arc::clone(&in_flight), answer.clone());
+                std::thread::spawn(move || {
+                    let Some(request) = read_mock_request(&mut stream) else {
+                        return;
+                    };
+                    let arrived = Instant::now();
+                    let admitted = {
+                        let mut in_flight = in_flight.lock();
+                        let admitted = *in_flight < capacity;
+                        if admitted {
+                            *in_flight += 1;
+                        }
+                        admitted
+                    };
+                    let streamed = request["stream"] == serde_json::Value::Bool(true);
+                    if !admitted {
+                        log.lock().push((arrived, 429));
+                        let wire = openai_mock_wire(&rate_limited_turn(1), streamed);
+                        let _ = stream.write_all(wire.as_bytes());
+                        return;
+                    }
+                    log.lock().push((arrived, 200));
+                    std::thread::sleep(hold);
+                    let _ = stream.write_all(openai_mock_wire(&answer, streamed).as_bytes());
+                    *in_flight.lock() -= 1;
+                });
+            }
+        });
+        (base_url, served)
+    }
+
+    /// bug-4b6844, in the shape of round v7's run 0bed5c58: three tasks started
+    /// at once on mid, glm-4.7 on z.ai, which took two of their calls and
+    /// answered the third task with 429s. That task spent three of its four
+    /// tries in two seconds, 168 ms and 202 ms apart, and only its last try
+    /// failed over. Here a stand-in provider takes two calls at once and
+    /// refuses a third with a 429. The refused task waits for the
+    /// `Retry-After`; while the other two still hold the provider, the
+    /// run's shared limit holds its calls back without calling, so the
+    /// provider sees one 429 in all; and every task passes in its one try,
+    /// on the rung's model, with nowhere to fail over.
+    #[tokio::test]
+    async fn three_tasks_at_once_on_one_provider_share_its_rate_limit_and_spend_no_try() {
+        const RUN: &str = "three-at-once";
+        let temp = tempdir().expect("tempdir");
+        let calls = temp.path().join("claude-calls.log");
+        let claude = temp.path().join("fake-claude.sh");
+        session_limit_claude(&claude, &calls);
+        let (base_url, served) = spawn_concurrency_limited_mock(
+            2,
+            std::time::Duration::from_secs(3),
+            final_turn("done"),
+            4,
+        );
+        let runs_dir = temp.path().join(".roko/runs");
+        let dispatcher = make_bare_dispatcher(rate_limited_config(&claude, &base_url), temp.path())
+            .await
+            .with_feedback(GraphFeedbackContext {
+                runs_dir: Some(runs_dir.clone()),
+                ..GraphFeedbackContext::default()
+            });
+        let ctx = CellContext::new().with_run_id(RUN.to_string());
+        let specs: Vec<TaskExecutionSpec> = (1..=3)
+            .map(|n| {
+                let task = TaskDef {
+                    id: format!("T{n}"),
+                    title: format!("Task {n}"),
+                    model_hint: Some("api-model".to_string()),
+                    timeout_secs: FIXTURE_HANG_GUARD_SECS,
+                    ..make_task_def("focused")
+                };
+                make_spec(&task)
+            })
+            .collect();
+
+        let (t1, t2, t3) = tokio::join!(
+            dispatcher.dispatch(&specs[0], Vec::new(), &ctx),
+            dispatcher.dispatch(&specs[1], Vec::new(), &ctx),
+            dispatcher.dispatch(&specs[2], Vec::new(), &ctx),
+        );
+        for (task, result) in ["T1", "T2", "T3"].into_iter().zip([t1, t2, t3]) {
+            result.unwrap_or_else(|error| panic!("{task} passes in its one try: {error}"));
+        }
+
+        let served = served.lock().clone();
+        let refused: Vec<Instant> = served
+            .iter()
+            .filter(|(_, status)| *status == 429)
+            .map(|(at, _)| *at)
+            .collect();
+        assert_eq!(refused.len(), 1, "one 429 in all: {served:?}");
+        assert_eq!(
+            served.len(),
+            4,
+            "two at once, one refused, then its call: {served:?}"
+        );
+        // The refused task called again only after the `Retry-After`, never
+        // in a few hundred milliseconds.
+        let last = served.iter().map(|(at, _)| *at).max().expect("calls");
+        assert!(
+            last.duration_since(refused[0]) >= std::time::Duration::from_secs(1),
+            "{served:?}"
+        );
+        assert_eq!(invocations(&calls), 0, "nothing failed over");
+        let attempts = runs_dir.join(RUN).join("attempts.jsonl");
+        let is_verdict = |row: &serde_json::Value| row["schema_version"] == "roko.verdict/1";
+        let verdicts = jsonl_rows_where(&attempts, 3, is_verdict).await;
+        assert_eq!(verdicts.len(), 3, "{verdicts:?}");
+        for verdict in &verdicts {
+            assert_eq!(verdict["attempt"], 1, "{verdict}");
+            assert_eq!(verdict["outcome"], "unverified", "{verdict}");
+        }
+    }
+
     /// gap-cf427e: a chat host's run holds its outbound tool calls for
     /// approval, which only roko's own tool loop can do, so its ladder keeps
     /// only the rungs that run there (`run_graph_plan` keeps them for a run

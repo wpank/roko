@@ -3135,40 +3135,46 @@ printf '%s\n' '{"type":"result","session_id":"sess-b","model":"claude-sonnet-4-6
                 let Some(request) = read_mock_request(&mut stream) else {
                     return;
                 };
-                // A request that asks to stream gets the same answer as SSE
-                // chunks: an attempt streams whenever its progress is tracked
-                // (bug-3a3b0f), with or without the stall watchdog.
                 let streamed = request["stream"] == serde_json::Value::Bool(true);
                 requests.lock().push(request);
-                let wire = if let Some(retry_after) = response
-                    .get(RATE_LIMITED_TURN)
-                    .and_then(serde_json::Value::as_u64)
-                {
-                    let body = serde_json::json!({ "error": response["error"] }).to_string();
-                    format!(
-                        "HTTP/1.1 429 Too Many Requests\r\nContent-Type: application/json\r\nRetry-After: {retry_after}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
-                        body.len()
-                    )
-                } else if streamed {
-                    let mut body = String::new();
-                    for chunk in openai_stream_chunks(&response) {
-                        body.push_str(&format!("data: {chunk}\n\n"));
-                    }
-                    body.push_str("data: [DONE]\n\n");
-                    format!(
-                        "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nConnection: close\r\n\r\n{body}"
-                    )
-                } else {
-                    let body = response.to_string();
-                    format!(
-                        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
-                        body.len()
-                    )
-                };
+                let wire = openai_mock_wire(&response, streamed);
                 let _ = stream.write_all(wire.as_bytes());
             }
         });
         (base_url, captured)
+    }
+
+    /// The HTTP response a stand-in OpenAI-compatible server sends for the
+    /// chat completion `response`: a [`rate_limited_turn`] as HTTP 429 with
+    /// its `Retry-After`; any other as SSE chunks when the request asked to
+    /// stream, as an attempt does whenever its progress is tracked
+    /// (bug-3a3b0f), else as JSON.
+    pub(super) fn openai_mock_wire(response: &serde_json::Value, streamed: bool) -> String {
+        if let Some(retry_after) = response
+            .get(RATE_LIMITED_TURN)
+            .and_then(serde_json::Value::as_u64)
+        {
+            let body = serde_json::json!({ "error": response["error"] }).to_string();
+            format!(
+                "HTTP/1.1 429 Too Many Requests\r\nContent-Type: application/json\r\nRetry-After: {retry_after}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            )
+        } else if streamed {
+            let mut body = String::new();
+            for chunk in openai_stream_chunks(response) {
+                body.push_str(&format!("data: {chunk}\n\n"));
+            }
+            body.push_str("data: [DONE]\n\n");
+            format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nConnection: close\r\n\r\n{body}"
+            )
+        } else {
+            let body = response.to_string();
+            format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            )
+        }
     }
 
     /// A chat-completion `response` as the SSE chunks a streaming provider
@@ -3266,7 +3272,7 @@ printf '%s\n' '{"type":"result","session_id":"sess-b","model":"claude-sonnet-4-6
 
     /// The JSON body of the HTTP request on `stream`; `None` when the
     /// client hung up before its headers.
-    fn read_mock_request(stream: &mut std::net::TcpStream) -> Option<serde_json::Value> {
+    pub(super) fn read_mock_request(stream: &mut std::net::TcpStream) -> Option<serde_json::Value> {
         use std::io::Read;
 
         let _ = stream.set_read_timeout(Some(std::time::Duration::from_secs(10)));

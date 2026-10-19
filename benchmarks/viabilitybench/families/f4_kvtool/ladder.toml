@@ -1,10 +1,18 @@
 # F4 kvtool-cli: the knobs of levels ℓ1–ℓ5 (S08 §4.4). README.md, "Ladder", explains each knob, the family's own
 # knobs (k_help, k_rounds, k_fns, k_misleading, k_sibling), and why k_quirks is 2 at ℓ1–ℓ2 where S08 has 1.
+#
+# Re-tuned ℓ1–ℓ2 (gap-dd670b, f4-1.2.0). Pilot A's cheap_direct gpt-oss-120b solved 1 of 6 ℓ1 runs and 0 of 6 ℓ2 runs,
+# under G0's 0.6 at ℓ1, so by S08 §4.4's calibration rule ℓ1 and ℓ2 lower k_doc and k_vis difficulty (common/knobs.py):
+#   k_doc "spelled_out"  the precise spec has a `## kvtool` section: the commands, the dry run, the stop and its resume.
+#   k_vis "thorough"     the visible check runs the script twice on a copy of the repo whose store, tests/visible/
+#                        sample.db, has a write lease that stops a rename part-way, and fails when a run exits non-zero
+#                        or leaves a rename pending. A script that writes nothing (exit0, dry_run) still passes it.
+# ℓ3–ℓ5 declare no k_vis: their visible check is the exit status alone, F4's weak gate, unchanged.
 schema_version = "vb.ladder/1"
 family = "F4"
 
 [levels.1]
-k_doc = "documented"
+k_doc = "spelled_out"
 k_ex = [4, 6]
 k_quirks = 2
 k_size = 6
@@ -14,9 +22,10 @@ k_rounds = 1
 k_fns = 3
 k_misleading = 0
 k_sibling = false
+k_vis = "thorough"
 
 [levels.2]
-k_doc = "documented"
+k_doc = "spelled_out"
 k_ex = [2, 3]
 k_quirks = 2
 k_size = 10
@@ -26,6 +35,7 @@ k_rounds = 1
 k_fns = 12
 k_misleading = 0
 k_sibling = false
+k_vis = "thorough"
 
 [levels.3]
 k_doc = "undocumented"

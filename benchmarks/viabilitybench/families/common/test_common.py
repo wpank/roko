@@ -378,7 +378,7 @@ def test_ladder_maps_levels_to_s08_knobs(tmp_path):
 
 @pytest.mark.parametrize(("change", "error"), [
     (("[levels.5]", "[levels.6]"), "exactly the levels 1–5"),
-    (('k_doc = "undocumented"', 'k_doc = false'), "must be one of documented"),
+    (('k_doc = "undocumented"', 'k_doc = false'), "must be one of spelled_out, documented"),
     (("k_ex = [4, 6]", "k_ex = [6, 4]"), "a range is"),
     (("k_ex = [4, 6]", "k_ex = -1"), "non-negative"),
     (("k_size = 6\n", "K_Size = 6\n"), "knob names"),

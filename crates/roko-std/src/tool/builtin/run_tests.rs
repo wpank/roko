@@ -315,7 +315,10 @@ mod tests {
         let ToolResult::Err(ToolError::Other(why)) = &result else {
             panic!("the unfixed work fails its first check: {result:?}");
         };
-        assert!(why.contains("check 1 of 2 (verify[0:build]) failed (exit 2)"), "{why}");
+        assert!(
+            why.contains("check 1 of 2 (verify[0:build]) failed (exit 2)"),
+            "{why}"
+        );
         assert!(why.contains("building\nerror: not fixed"), "{why}");
 
         std::fs::write(dir.path().join("fixed.txt"), "ok\n").expect("fix");

@@ -2379,7 +2379,6 @@ printf '%s\n' '{"type":"result","session_id":"sess-v1","model":"claude-sonnet-4-
         }
     }
 
-
     /// gap-770cb5: an agent in a C++ task runs its task's own checks mid-try
     /// with `run_tests` and `build: "checks"`. It sees the compiler's error,
     /// fixes the file, sees the checks pass, and the try passes first time.

@@ -13,7 +13,7 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use roko_core::child_env;
-use roko_core::tool::{ToolCall, ToolContext, ToolError, ToolResult};
+use roko_core::tool::{ToolContext, ToolError, ToolResult};
 use serde::{Deserialize, Serialize};
 
 use super::child_group;

@@ -2,7 +2,7 @@
 id = "bug-4b6844"
 kind = "bug"
 title = "A provider rate limit (429) settles as a provider_error attempt and counts against the task: on mid, z.ai rate limits used up T1's last two attempts with no real try, and the task ended"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p2"
 goal = "golden-path"
@@ -11,6 +11,7 @@ subsystem = ["roko-cli/graph-dispatch"]
 created = 2026-10-18
 updated = 2026-10-19
 last_verified = 2026-10-19
+last_verified_rev = "ce3200bcc"
 source = "round-v6-dogfood-desktop#L4-g1-ratelimit"
 discovered_from = "agent:dogfood-desktop (round v6 showcase take L4, 2026-10-18)"
 anchors = ["crates/roko-cli/src/graph_task_dispatch/failover.rs::FailoverChain", "crates/roko-agent/src/tool_loop/mod.rs::ToolLoop::send_turn_streaming"]
@@ -18,6 +19,15 @@ links = { depends_on = [], blocks = [], related = ["bug-df9aff"], supersedes = [
 
 [[verify]]
 command = "grep -rqw 'fn a_429_from_the_rungs_provider_does_not_spend_a_try' crates/ && cargo test -p roko-cli -- a_429_from_the_rungs_provider_does_not_spend_a_try a_rung_whose_provider_keeps_answering_429_fails_over_within_the_try a_429_with_nowhere_to_fail_over_waits_inside_the_try"
+
+[closed]
+at = 2026-10-19
+at_ts = "2026-10-19T16:12:37Z"
+commit = "ce3200bcc"
+size = "M"
+claimed_at = "2026-10-19T14:46:47Z"
+forced = false
+evidence = "ce3200bcc: (1) Tool loop (roko-agent tool_loop/mod.rs, ToolLoop::open_stream): a plan attempt's calls stream, and that path never retried; a streamed call the provider refused with a 429 before it streamed anything is now sent again after the Retry-After it named, else the retry policy's backoff, up to max_attempts (3) calls, as the answered path did; a Retry-After over 60 s is not waited there. Test a_rate_limited_streamed_call_is_retried_within_the_run (paused time): 429 twice with Retry-After 1.5 s then served = 3 calls and at least 3 s waited; a lasting 429 = 3 calls then the rate-limit error; a 10-minute Retry-After = 1 call, no wait. It failed before the fix: the run ended at the first 429. (2) Dispatch (roko-cli failover.rs, run_bridge_with_failover): a call still rate-limited fails over within the attempt (refusal class rate_limited, not definitive); with nowhere to go, a pinned model too, the attempt waits (Retry-After, else 5 s doubling to 60 s), marked Queued for the stall watchdog and announced as a dashboard diagnosis, then calls the same model again, until it is served, fails otherwise, fails over, or the run stops, so a 429 never settles a try. Refused calls keep their cost and efficiency rows. Tests against a stand-in OpenAI-compatible server answering HTTP 429 with z.ai's error body and a Retry-After: a_429_from_the_rungs_provider_does_not_spend_a_try (429 twice then served; max_retries 0 and the task passes in its one try), a_rung_whose_provider_keeps_answering_429_fails_over_within_the_try (mid always 429; one try, run by strong, failover_chain [mid-1], ladder reason failover), a_429_with_nowhere_to_fail_over_waits_inside_the_try (3 x 429 then served, no fallback, max_retries 0; passes). All three failed before the fix with Agent { provider error: rate limited; retry after 1000 ms }. Checks at ce3200bcc: roko-agent lib 2374 passed; roko-cli lib 3865 passed, 2 failed: the known load flake plan_check_publishes_start_heartbeat_and_finish (passes alone) and my ladder test's wrong outcome assertion (an unchecked task settles unverified; fixed, failover:: 20 of 20 pass); clippy -D warnings (roko-agent, roko-cli) clean; nightly rustfmt clean."
 +++
 
 ## Problem

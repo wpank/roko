@@ -825,6 +825,7 @@ printf '%s\n' '{{"type":"result","subtype":"success","is_error":false,"total_cos
             env_passthrough: Vec::new(),
             tool_timeout: None,
             tool_timeout_max: None,
+            essential_tools: Vec::new(),
             extra_args: vec!["--option-flag".to_string(), "option-value".to_string()],
             effort: Some("high".to_string()),
             bare_mode: false,

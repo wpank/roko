@@ -84,3 +84,4 @@ The interface contract between the three parts is in `tmp/roko-autostart/BRIEF.m
   so (it is no longer shown as "set up roko here"). setup-project names what is left. A restart never shows the old
   serve. Checks: pytest 1074, contract 8/8, desktop e2e 9/9. New follow-up: bug-d63b33 (a crashed serve leaves
   hub files).
+- 2026-10-19, later: bug-10d745 (restart moved a legacy serve to a new port; round-v7 report) is fixed on main `a80add56c`. Its verify passes on the merged tree.

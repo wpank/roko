@@ -1421,7 +1421,12 @@ impl RokoConfig {
             out,
             "# They never see your gh login, GitHub tokens or .env provider keys; remove more:"
         );
-        let _ = writeln!(out, "# strip_env = [\"SCCACHE_*\"]\n");
+        let _ = writeln!(out, "# strip_env = [\"SCCACHE_*\"]");
+        let _ = writeln!(
+            out,
+            "# New attempt checkouts get a warm copy of these build trees (unset: every CMake one):"
+        );
+        let _ = writeln!(out, "# warm_build_dirs = [\"build\"]\n");
     }
     fn write_example_routing(out: &mut String, c: &Self) {
         let _ = writeln!(out, "# -- Model routing --");

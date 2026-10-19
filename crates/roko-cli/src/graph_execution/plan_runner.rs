@@ -1697,7 +1697,8 @@ async fn run_graph_plan_body(
             disk_admission = disk_admission.with_ring(ring);
         }
         let provider = Arc::new(
-            crate::graph_execution::WorktreeExecutionWorkspaceProvider::new(worktree_manager),
+            crate::graph_execution::WorktreeExecutionWorkspaceProvider::new(worktree_manager)
+                .with_warm_build_dirs(roko_config.gates.warm_build_dirs.clone()),
         );
         if !quiet && !json {
             let asked_by = if worktree_per_task_explicit {

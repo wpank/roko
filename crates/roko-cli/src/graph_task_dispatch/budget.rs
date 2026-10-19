@@ -8,8 +8,12 @@
 //! attempt's calls spent plus one more call like its last, growing into the
 //! plan's unreserved budget as far as that reaches, and a call it cannot cover
 //! is not made. After each call the hold gives back what it no longer needs,
-//! so the plan's other attempts can grow into it. An attempt starts only with
-//! room for a few calls left; below that the plan stops as budget-exhausted.
+//! so the plan's other attempts can grow into it and attempts waiting to start
+//! can take it. An attempt in flight still comes first (bug-2110e8): when the
+//! unreserved budget cannot cover its next call, it takes back what it needs
+//! from the attempts that started after it and have made no call yet, down to
+//! what an attempt starts with. An attempt starts only with room for a few
+//! calls left; below that the plan stops as budget-exhausted.
 //! An agent that runs its own loop (a CLI agent) cannot be asked before a
 //! call: what its call streams is told to the hold as it streams instead, and
 //! the attempt is stopped once the hold cannot cover one more message like
@@ -244,6 +248,44 @@ impl PlanBudgetState {
         ))
     }
 
+    /// What the attempts that started after hold `hold` can give back to it
+    /// (bug-2110e8): what each holds beyond `floor`, the least an attempt
+    /// starts with, while it has made no call. Their reservations may hold
+    /// what `hold`'s calls gave back. An attempt that has made a call keeps
+    /// only its spend and room for its next call, and gave the rest back.
+    fn reclaimable_after(&self, hold: u64, floor: u64) -> u64 {
+        self.holds
+            .iter()
+            .filter(|(id, held)| **id > hold && !held.called)
+            .fold(0, |total, (_, held)| {
+                total.saturating_add(held.reserved_micro_usd.saturating_sub(floor))
+            })
+    }
+
+    /// Take `amount` back for hold `hold` from the attempts that started
+    /// after it, newest first, as far as [`Self::reclaimable_after`] allows.
+    /// The plan's reservations shrink by what is taken.
+    fn reclaim_after(&mut self, hold: u64, mut amount: u64, floor: u64) {
+        let mut later = self
+            .holds
+            .iter()
+            .filter(|(id, held)| **id > hold && !held.called && held.reserved_micro_usd > floor)
+            .map(|(id, _)| *id)
+            .collect::<Vec<_>>();
+        later.sort_unstable_by(|left, right| right.cmp(left));
+        for id in later {
+            if amount == 0 {
+                break;
+            }
+            if let Some(held) = self.holds.get_mut(&id) {
+                let taken = held.reserved_micro_usd.saturating_sub(floor).min(amount);
+                held.reserved_micro_usd -= taken;
+                self.reserved_micro_usd = self.reserved_micro_usd.saturating_sub(taken);
+                amount -= taken;
+            }
+        }
+    }
+
     /// Give back what hold `hold` holds of the plan's reservations.
     fn release_hold(&mut self, hold: Option<u64>) {
         if let Some(held) = hold.and_then(|hold| self.holds.remove(&hold)) {
@@ -265,6 +307,9 @@ struct AttemptHold {
     last_call_micro_usd: u64,
     /// One of its calls had no price, so what it spent is unknown.
     unpriced: bool,
+    /// It has made a model call. Until it does, it holds what it started
+    /// with for a first call whose cost nobody knows yet (bug-2110e8).
+    called: bool,
 }
 
 /// A raise of a plan's budget ceiling that the plan ledger applied (backlog
@@ -762,7 +807,9 @@ impl GraphPlanBudgetLedger {
     /// Whether hold `hold` of `plan_id` may make its next model call, which
     /// is expected to cost as much as its last (bug-4fabd0). The hold must
     /// cover what its calls spent plus that call; it grows into the plan's
-    /// unreserved budget as far as that reaches. `Err` says why not: the
+    /// unreserved budget as far as that reaches, then takes back what the
+    /// attempts that started after it hold before their first call, beyond
+    /// what an attempt starts with (bug-2110e8). `Err` says why not: the
     /// plan cannot pay for the call, or a call of the hold had no price.
     fn admit_call(
         &self,
@@ -805,17 +852,27 @@ impl GraphPlanBudgetLedger {
             .saturating_add(state.reserved_micro_usd);
         let available = ceiling.saturating_sub(committed);
         if grow > available {
-            let left = held
-                .reserved_micro_usd
-                .saturating_add(available)
-                .saturating_sub(held.spent_micro_usd);
-            return Err(format!(
-                "plan budget exhausted: the attempt's next model call would cost about ${:.4}, \
-                 as much as its last, and only ${:.4} of the plan's ${:.4} cap is left",
-                micro_usd_to_usd(expected),
-                micro_usd_to_usd(left),
-                micro_usd_to_usd(ceiling)
-            ));
+            // The attempts that started after this one may hold what its
+            // calls gave back: its call comes first, and takes back what it
+            // needs while they have made no call (bug-2110e8).
+            let floor = state.attempt_floor(ceiling);
+            let reclaimable = state.reclaimable_after(hold, floor);
+            let shortfall = grow - available;
+            if shortfall > reclaimable {
+                let left = held
+                    .reserved_micro_usd
+                    .saturating_add(available)
+                    .saturating_add(reclaimable)
+                    .saturating_sub(held.spent_micro_usd);
+                return Err(format!(
+                    "plan budget exhausted: the attempt's next model call would cost about \
+                     ${:.4}, as much as its last, and only ${:.4} of the plan's ${:.4} cap is left",
+                    micro_usd_to_usd(expected),
+                    micro_usd_to_usd(left),
+                    micro_usd_to_usd(ceiling)
+                ));
+            }
+            state.reclaim_after(hold, shortfall, floor);
         }
         if let Some(held) = state.holds.get_mut(&hold) {
             held.reserved_micro_usd = held.reserved_micro_usd.saturating_add(grow);
@@ -841,6 +898,7 @@ impl GraphPlanBudgetLedger {
         held.spent_micro_usd = held.spent_micro_usd.saturating_add(cost_micro_usd);
         held.last_call_micro_usd = cost_micro_usd;
         held.unpriced |= !priced;
+        held.called = true;
         let kept = held.reserved_micro_usd.clamp(
             held.spent_micro_usd,
             held.spent_micro_usd.saturating_add(cost_micro_usd),
@@ -859,7 +917,10 @@ impl GraphPlanBudgetLedger {
 
     /// The most hold `hold` of `plan_id` can still spend under `policy`: what
     /// it holds beyond its spend, and the plan's unreserved budget it could
-    /// grow into (gap-e14344). `None` without a ceiling to hold against.
+    /// grow into (gap-e14344). `None` without a ceiling to hold against. It
+    /// leaves out what the hold could take back from attempts that start
+    /// after it (bug-2110e8): read as its agent starts, the hold is nearly
+    /// always the newest.
     fn headroom(&self, plan_id: &str, hold: u64, policy: GraphPlanBudgetPolicy) -> Option<u64> {
         let plans = self.plans.lock();
         let state = plans.get(plan_id)?;
@@ -3025,6 +3086,148 @@ exit 1
         drop(second);
         drop(first);
         assert_eq!(ledger.snapshot("plan-a", policy).reserved_usd, 0.0);
+    }
+
+    /// bug-2110e8, with rehearsal 2's settings: a $1.00 plan budget, the
+    /// workspace's $0.50 `max_turn_usd`, eight agents, and calls of
+    /// $0.00004. T2 and T4 start first, and their turn caps fill the
+    /// ceiling, so T1 and T3 wait. T2's and T4's first calls settle, each
+    /// hold keeps room for one more call like its last, and the waiters
+    /// take the rest. T2 and T4 go on calling while T1's and T3's first
+    /// calls are in flight, and every call is admitted: each takes back
+    /// what it needs from the attempts that started after it. The plan is
+    /// never committed past its ceiling, and T1 and T3 then make their
+    /// calls too.
+    #[test]
+    fn an_attempt_in_flight_can_grow_after_waiters_take_the_freed_budget() {
+        const CALL_USD: f64 = 0.000_04;
+        let ledger = Arc::new(GraphPlanBudgetLedger::default());
+        let policy = GraphPlanBudgetPolicy::from_limits(1.0, 0.5, false).with_concurrent_calls(8);
+        let committed = |ledger: &GraphPlanBudgetLedger| {
+            let snapshot = ledger.snapshot("plan-a", policy);
+            snapshot.spent_usd + snapshot.reserved_usd
+        };
+
+        let t2 = ledger.reserve("plan-a", policy).expect("T2 starts");
+        let t4 = ledger.reserve("plan-a", policy).expect("T4 starts");
+        assert!(
+            (committed(&ledger) - 1.0).abs() < 1e-9,
+            "two turn caps fill $1"
+        );
+        let Err(waiting) = ledger.reserve("plan-a", policy) else {
+            panic!("T1 waits for the calls in flight");
+        };
+        assert!(
+            matches!(waiting, RokoError::BudgetExceeded { .. }),
+            "{waiting:?}"
+        );
+        let t2_calls = t2.allowance(&ledger).expect("a capped plan holds");
+        let t4_calls = t4.allowance(&ledger).expect("a capped plan holds");
+        for calls in [&t2_calls, &t4_calls] {
+            assert_eq!(calls.refuse_call(), None);
+            calls.record_call(CALL_USD, true);
+        }
+        let t1 = ledger
+            .reserve("plan-a", policy)
+            .expect("T1 takes what they gave back");
+        let t3 = ledger.reserve("plan-a", policy).expect("T3 takes the rest");
+        assert!(
+            (committed(&ledger) - 1.0).abs() < 1e-9,
+            "the ceiling is full again"
+        );
+        let t1_calls = t1.allowance(&ledger).expect("a capped plan holds");
+        let t3_calls = t3.allowance(&ledger).expect("a capped plan holds");
+
+        for call in 2..=10 {
+            for (task, calls) in [("T2", &t2_calls), ("T4", &t4_calls)] {
+                assert_eq!(calls.refuse_call(), None, "{task}'s call {call}");
+                calls.record_call(CALL_USD, true);
+                assert!(committed(&ledger) <= 1.0 + 1e-9, "{task}'s call {call}");
+            }
+        }
+        for call in 1..=10 {
+            for (task, calls) in [("T1", &t1_calls), ("T3", &t3_calls)] {
+                assert_eq!(calls.refuse_call(), None, "{task}'s call {call}");
+                calls.record_call(CALL_USD, true);
+                assert!(committed(&ledger) <= 1.0 + 1e-9, "{task}'s call {call}");
+            }
+        }
+
+        for reservation in [t2, t4, t1, t3] {
+            reservation.settle(10.0 * CALL_USD).expect("settle");
+        }
+        let snapshot = ledger.snapshot("plan-a", policy);
+        assert!(
+            (snapshot.spent_usd - 40.0 * CALL_USD).abs() < 1e-9,
+            "{snapshot:?}"
+        );
+        assert_eq!(snapshot.reserved_usd, 0.0, "{snapshot:?}");
+        assert_eq!(ledger.dispatch_stop("plan-a", policy), None);
+    }
+
+    /// bug-2110e8: what a call takes back is bounded. It comes from the
+    /// attempts that started after the caller and have made no call, and
+    /// each keeps what an attempt starts with: room for three calls like the
+    /// costliest so far. An attempt that started before the caller keeps all
+    /// it holds. Past that the call is refused, and once a later attempt's
+    /// first call gives back what it does not need, the caller may go on.
+    #[test]
+    fn a_call_takes_back_only_what_later_attempts_hold_beyond_their_floor() {
+        let ledger = Arc::new(GraphPlanBudgetLedger::default());
+        let policy = GraphPlanBudgetPolicy::from_limits(1.0, 0.5, false);
+        let held = |reservation: &GraphPlanBudgetReservation<'_>| {
+            let hold = reservation.hold.expect("a capped plan holds");
+            ledger.plans.lock()["plan-a"].holds[&hold].reserved_micro_usd
+        };
+
+        let older = ledger
+            .reserve("plan-a", policy)
+            .expect("an attempt that starts first");
+        let caller = ledger.reserve("plan-a", policy).expect("the caller");
+        let calls = caller.allowance(&ledger).expect("a capped plan holds");
+        // Its first call costs $0.05, and it gives back $0.40 of its $0.50,
+        // which a later attempt takes.
+        assert_eq!(calls.refuse_call(), None);
+        calls.record_call(0.05, true);
+        let later = ledger.reserve("plan-a", policy).expect("a later attempt");
+        assert_eq!(held(&later), 400_000);
+        // Calls 3 to 7 each take $0.05 back, down to $0.15.
+        for call in 2..=7 {
+            assert_eq!(calls.refuse_call(), None, "call {call}");
+            calls.record_call(0.05, true);
+        }
+        assert_eq!(
+            held(&later),
+            150_000,
+            "3 x $0.05 is what an attempt starts with"
+        );
+        assert_eq!(
+            held(&older),
+            500_000,
+            "an attempt that started first gives nothing"
+        );
+        assert_eq!(
+            calls.refuse_call().expect("nothing is left to take back"),
+            "plan budget exhausted: the attempt's next model call would cost about $0.0500, as \
+             much as its last, and only $0.0000 of the plan's $1.0000 cap is left"
+        );
+
+        let later_calls = later.allowance(&ledger).expect("a capped plan holds");
+        later_calls.record_call(0.05, true);
+        let hold = caller.hold.expect("a capped plan holds");
+        assert_eq!(ledger.admit_call("plan-a", hold, policy), Ok(()));
+        let snapshot = ledger.snapshot("plan-a", policy);
+        assert!(
+            (snapshot.spent_usd + snapshot.reserved_usd - 1.0).abs() < 1e-9,
+            "{snapshot:?}"
+        );
+
+        caller.settle(0.35).expect("settle");
+        later.settle(0.05).expect("settle");
+        older.settle(0.0).expect("settle");
+        let snapshot = ledger.snapshot("plan-a", policy);
+        assert!((snapshot.spent_usd - 0.40).abs() < 1e-9, "{snapshot:?}");
+        assert_eq!(snapshot.reserved_usd, 0.0, "{snapshot:?}");
     }
 
     /// gap-e14344: what an attempt's own spend limit can be is what its hold

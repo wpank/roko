@@ -120,3 +120,14 @@ Done as Will decided (option 4, bounded), in `11bbb817f`:
 
 Run 3's broken doc example (T4) would go the same way: `cargo test --workspace` names
 `crates/beta/src/lib.rs`, whose last changer is then handed the failure.
+
+## Live (2026-10-19)
+
+gap-f30b8e's rerun at `4535b3914` (`work/history/golden-path-live-2026-10-19.md`) did not exercise the
+hand-back live: no whole-plan check failed in its three runs, since T7 put `VERSION` above the tests each time.
+Its $0 rehearsal r2 ran the real binary through it:
+
+- the fake solver puts T7's `VERSION` after the test module, and clippy fails the delivery's check;
+- roko hands the failure to T7, the last changer of `crates/alpha/src/lib.rs`;
+- T7's second attempt starts from the plan tip, with the diagnosis and clippy's output in its prompt, and passes;
+- the `…:recheck-1` delivery delivers the plan, 11 s after the failure, and all twelve live checks hold.

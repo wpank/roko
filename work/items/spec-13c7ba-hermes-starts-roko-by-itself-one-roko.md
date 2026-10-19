@@ -85,3 +85,4 @@ The interface contract between the three parts is in `tmp/roko-autostart/BRIEF.m
   serve. Checks: pytest 1074, contract 8/8, desktop e2e 9/9. New follow-up: bug-d63b33 (a crashed serve leaves
   hub files).
 - 2026-10-19, later: bug-10d745 (restart moved a legacy serve to a new port; round-v7 report) is fixed on main `a80add56c`. Its verify passes on the merged tree.
+- 2026-10-19, later: plugin 0.7.2 on plugin main `b4c68b9`. The desktop prompt section's limit is 2,800; at 2,500 every desktop chat lost the per-project guidance (round-v7 trial-merge report).

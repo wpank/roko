@@ -122,7 +122,7 @@ impl Probe {
     }
 
     /// Whether `name` is an executable on `PATH`.
-    fn command(&self, name: &str) -> bool {
+    pub(super) fn command(&self, name: &str) -> bool {
         *self
             .commands
             .lock()
@@ -1429,7 +1429,7 @@ fn step_problem(
 
 /// A command segment's words, unquoted, without leading `VAR=value`
 /// assignments and without redirections (`> out`, `2>/dev/null`, `<in`).
-fn command_words(segment: &str) -> Vec<String> {
+pub(super) fn command_words(segment: &str) -> Vec<String> {
     let mut words = Vec::new();
     let mut word = String::new();
     let mut started = false;

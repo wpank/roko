@@ -8,7 +8,7 @@
 use std::fs::{self, File as StdFile};
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::Command;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -901,15 +901,21 @@ fn spawn_detached_child(workdir: &Path, port: u16) -> Result<()> {
         .with_context(|| format!("open {}", log_path(workdir, "daemon.log").display()))?;
     let stderr = StdFile::create(log_path(workdir, "daemon.err"))
         .with_context(|| format!("open {}", log_path(workdir, "daemon.err").display()))?;
+    let args: Vec<std::ffi::OsString> = ["daemon", "start", "--foreground", "--port", &port]
+        .into_iter()
+        .map(std::ffi::OsString::from)
+        .collect();
 
-    let child = Command::new(exe)
-        .current_dir(workdir)
-        .args(["daemon", "start", "--foreground", "--port", &port])
-        .stdin(Stdio::null())
-        .stdout(stdout)
-        .stderr(stderr)
-        .spawn()
-        .context("spawn detached daemon")?;
+    // The one detached spawn of the CLI, shared with `roko serve --detach`.
+    let child = crate::serve_lifecycle::spawn_detached(&crate::serve_lifecycle::DetachedCommand {
+        program: &exe,
+        args: &args,
+        cwd: workdir,
+        stdout,
+        stderr,
+        env_remove: &[],
+    })
+    .context("spawn detached daemon")?;
 
     println!("daemon started (pid {})", child.id());
     Ok(())

@@ -147,10 +147,7 @@ fn holder_hint(pid: &str) -> String {
 /// the lock through another handle, so it counts as a holder too.
 pub fn runner_lock_holder(roko_dir: &Path) -> Option<String> {
     let lock_path = roko_dir.join("runtime").join("roko.runner.lock");
-    // No lock file: no runner has ever taken the lock here.
-    let file = OpenOptions::new().read(true).open(&lock_path).ok()?;
-    if file.try_lock_shared().is_ok() {
-        let _ = file.unlock();
+    if !held_exclusively(&lock_path) {
         return None;
     }
     let pid = fs::read_to_string(&lock_path).unwrap_or_default();
@@ -158,6 +155,29 @@ pub fn runner_lock_holder(roko_dir: &Path) -> Option<String> {
         "" => "a roko plan runner".to_string(),
         pid => format!("a roko plan runner (PID {pid})"),
     })
+}
+
+/// Whether some process holds the workspace lock exclusively, as a roko
+/// serve does for its whole life (gap-fb1594). Probes like
+/// [`runner_lock_holder`]: takes no lock and changes nothing.
+#[must_use]
+pub fn workspace_lock_is_held(roko_dir: &Path) -> bool {
+    held_exclusively(&roko_dir.join("runtime").join("roko.lock"))
+}
+
+/// Whether some process holds the lock file at `lock_path` exclusively. It
+/// probes the file with a shared lock, which only an exclusive holder
+/// refuses; a lock this process holds through another handle counts too.
+/// No lock file: nobody has ever taken the lock there.
+fn held_exclusively(lock_path: &Path) -> bool {
+    let Ok(file) = OpenOptions::new().read(true).open(lock_path) else {
+        return false;
+    };
+    if file.try_lock_shared().is_ok() {
+        let _ = file.unlock();
+        return false;
+    }
+    true
 }
 
 /// The PID the exclusive holder of the workspace lock wrote, read without
@@ -418,6 +438,30 @@ mod tests {
             thread::sleep(Duration::from_millis(10));
         }
         drop(guard);
+    }
+
+    /// gap-fb1594: the probe sees an exclusive holder, also one of this
+    /// process, and leaves the lock and its PID alone.
+    #[test]
+    fn workspace_lock_probe_sees_the_holder_and_changes_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        assert!(!workspace_lock_is_held(dir.path()), "no lock file yet");
+        let guard = acquire_workspace_lock(dir.path()).unwrap();
+        let lock_path = dir.path().join("runtime/roko.lock");
+        let owner = fs::read_to_string(&lock_path).unwrap();
+        assert!(workspace_lock_is_held(dir.path()));
+        assert_eq!(fs::read_to_string(&lock_path).unwrap(), owner);
+        assert_eq!(
+            workspace_lock_owner_pid(dir.path()),
+            Some(std::process::id())
+        );
+        drop(guard);
+        assert!(!workspace_lock_is_held(dir.path()));
+        let _shared = acquire_workspace_lock_shared(dir.path()).unwrap();
+        assert!(
+            !workspace_lock_is_held(dir.path()),
+            "a shared holder is not one"
+        );
     }
 
     #[test]

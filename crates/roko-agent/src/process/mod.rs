@@ -38,8 +38,8 @@ pub use env::{
     AgentEnv, apply_agent_env, apply_credential_scrub, config_file_env_names, referenced_env_names,
 };
 pub use group::{
-    collect_descendants, configure_no_descendant_process, kill_process_group, set_process_group,
-    validate_no_descendant_context,
+    collect_descendants, configure_no_descendant_process, detach_into_new_session,
+    kill_process_group, set_process_group, validate_no_descendant_context,
 };
 pub use identity::{ProcessIdentity, process_identity};
 pub use kill::{GRACE_SIGTERM_MS, GRACE_STDIN_CLOSE_MS, KillTreeOnDrop, kill_tree};

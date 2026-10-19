@@ -20,6 +20,7 @@ use tokio::process::Command as TokioCommand;
 use tokio::signal::unix::{SignalKind, signal};
 
 use crate::{Cli, EXIT_SUCCESS, resolve_workdir};
+use roko_cli::serve_lifecycle::{process_is_alive, terminate_pid};
 
 /// Main entry point for `roko dev`.
 pub(crate) async fn cmd_dev(cli: &Cli, no_frontend: bool) -> Result<i32> {
@@ -143,64 +144,12 @@ pub fn remove_pid_file(workdir: &Path) -> Result<()> {
     }
 }
 
-/// Check if a process with the given PID is alive.
-///
-/// Uses `kill(pid, 0)` on Unix which checks existence without sending a signal.
-pub fn process_is_alive(pid: u32) -> bool {
-    #[cfg(unix)]
-    {
-        // SAFETY: kill with signal 0 checks process existence without side effects.
-        unsafe { libc::kill(pid as libc::pid_t, 0) == 0 }
-    }
-    #[cfg(not(unix))]
-    {
-        let _ = pid;
-        false
-    }
-}
-
-/// Send SIGTERM to a process, wait up to `timeout` for it to exit, then
-/// send SIGKILL if still alive.
-pub fn terminate_pid(pid: u32, timeout: Duration) -> Result<()> {
-    #[cfg(unix)]
-    {
-        // Send SIGTERM.
-        unsafe {
-            libc::kill(pid as libc::pid_t, libc::SIGTERM);
-        }
-
-        // Poll for process exit.
-        let deadline = std::time::Instant::now() + timeout;
-        while std::time::Instant::now() < deadline {
-            if !process_is_alive(pid) {
-                return Ok(());
-            }
-            std::thread::sleep(Duration::from_millis(100));
-        }
-
-        // Still alive after timeout — send SIGKILL.
-        if process_is_alive(pid) {
-            unsafe {
-                libc::kill(pid as libc::pid_t, libc::SIGKILL);
-            }
-            std::thread::sleep(Duration::from_millis(200));
-        }
-
-        Ok(())
-    }
-    #[cfg(not(unix))]
-    {
-        let _ = (pid, timeout);
-        Ok(())
-    }
-}
-
 /// Check the PID file and handle any stale or live prior process.
 fn handle_existing_pid_file(workdir: &Path) -> Result<()> {
     match read_pid_file(workdir)? {
         Some(pid) if process_is_alive(pid) => {
             tracing::warn!(pid, "port in use by prior roko dev process; stopping it");
-            terminate_pid(pid, Duration::from_secs(5))?;
+            terminate_pid(pid, Duration::from_secs(5));
             remove_pid_file(workdir)?;
             std::thread::sleep(Duration::from_millis(500));
         }

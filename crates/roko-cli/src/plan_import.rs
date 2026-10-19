@@ -4045,11 +4045,14 @@ blocking = true
         let plans = workspace.join("plans");
         let serve_lock = crate::workspace_lock::acquire_workspace_lock(&workspace.join(".roko"))
             .expect("serve's lock");
+        let health = crate::serve_lifecycle::test_support::FakeHealth::answering("import-serve");
         let endpoint = roko_serve::endpoint::ServeEndpoint {
             pid: std::process::id(),
-            url: "http://127.0.0.1:6792".to_string(),
+            url: health.url(),
             workdir: workspace.clone(),
             started_at: "2026-10-17T10:00:00Z".to_string(),
+            instance_id: "import-serve".to_string(),
+            ..Default::default()
         };
         roko_serve::endpoint::write_endpoint(&workspace, &endpoint).expect("serve.json");
         let tasks = "[meta]\nplan = \"08g-voices\"\n\n[[task]]\nid = \"T1\"\n\

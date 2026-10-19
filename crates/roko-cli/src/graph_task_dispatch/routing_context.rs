@@ -26,6 +26,9 @@ pub(super) struct CheapFactoryAgent {
     pub(super) model_key: String,
     pub(super) workdir: PathBuf,
     pub(super) timeout_ms: u64,
+    /// What its calls may spend, as an audit's allowance bounds a B3 review
+    /// (gap-d76b1b); `None` leaves a one-shot helper call unbounded.
+    pub(super) allowance: Option<Arc<dyn crate::dispatch_v2::CallAllowance>>,
 }
 
 #[async_trait::async_trait]
@@ -62,7 +65,7 @@ impl roko_agent::Agent for CheapFactoryAgent {
             live_output: None,
             attempt_key: None,
             knowledge_ids: Vec::new(),
-            allowance: None,
+            allowance: self.allowance.clone(),
         };
         match self.factory.run_shared_agent_bridge(request).await {
             Ok(dispatch) => dispatch.result,

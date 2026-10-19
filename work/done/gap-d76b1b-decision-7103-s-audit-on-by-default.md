@@ -2,7 +2,7 @@
 id = "gap-d76b1b"
 kind = "gap"
 title = "Decision 7103's audit-on-by-default outcome was never implemented: enabled stays false, no --no-audit flag"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p2"
 goal = "cybernetic"
@@ -10,7 +10,8 @@ size = "M"
 subsystem = ["roko-core/config", "roko-cli/audit"]
 created = 2026-10-03
 updated = 2026-10-18
-last_verified = 2026-10-03
+last_verified = 2026-10-18
+last_verified_rev = "22ac6f06b"
 source = "wave-7 follow-up reports 2026-10-03 (PK59 gap-147c4d)"
 discovered_from = "gap-147c4d, decision 7103"
 anchors = ["crates/roko-core/src/config/audit.rs::AuditConfig", "crates/roko-cli/src/audit/worker.rs", "crates/roko-cli/src/graph_task_dispatch/audit_select.rs"]
@@ -19,6 +20,18 @@ links = { depends_on = [], blocks = [], related = [], supersedes = [], duplicate
 
 [[verify]]
 command = "grep -rqw 'fn default_audit_config_is_enabled_at_the_decided_rate' crates/roko-core/ && cargo test -p roko-core default_audit_config_is_enabled_at_the_decided_rate"
+
+[closed]
+at = 2026-10-18
+at_ts = "2026-10-18T19:03:30Z"
+commit = "22ac6f06b"
+by = "commit trailer"
+executor = "claude-agent"
+via = "work-batch"
+size = "M"
+claimed_at = "2026-10-18T17:10:15Z"
+forced = false
+evidence = "22ac6f06b, decision 7103 (b), after q-e916e4 (8f52029eb): crates/roko-core/src/config/audit.rs AuditConfig::default() now has enabled = true; rho 0.10, eps_floor 0.05, per_audit_usd 0.30, per_audit_cpu_secs 900, budget_frac 0.12 and phase_b_rate 0.5 already matched, so a workspace without [audit] audits. --no-audit on roko run and roko plan run reaches apply_run_switches (plan_runner.rs) through RunArgs/PromptRun/GraphPlanRunParams.no_audit, as --no-holdout does, and sets [audit] enabled = false for the run; plan run --no-audit refuses when a server owns the workspace. The per-audit cap now reaches the call: B1's FactoryAuthor and B3's review (CheapFactoryAgent through the new ReviewAgent) carry an AuditAllowance (audit/worker.rs) of the check's usd_left, min(per_audit_usd, budget_frac*run spend - spent), which stops roko's tool loop once spent, refuses after an unpriced call, and gives the Claude CLI --max-budget-usd; Codex/Gemini/Cursor CLI reviewers take no limit (gap-ccbf26), and one call can still overshoot (filed as a new item). Test-safety sweep: dispatcher fixtures go through fence_audits/fixture_config, plan-run fixtures write [audit] enabled = false, spawned roko gets ROKO__AUDIT__ENABLED=false (Isolated, 8 spawners); a temporary probe at the 3 vault-resolving sites, over all roko-cli lib and bin unit tests with ROKO_AUDIT_HOME on scratch, found 55 unfenced runs before and 0 after, and ~/.roko/audit does not exist after the runs. Verify: cargo test -p roko-core default_audit_config_is_enabled_at_the_decided_rate, 1 passed. Also: cargo test -p roko-core --lib 2042 passed; cargo test -p roko-cli --lib 3827 passed and --bin roko 472 passed (new: audits_run_by_default_and_no_audit_turns_them_off, a real in-process roko run drawing its pass at pi 0.10; no_audit_flag_turns_the_runs_audits_off; audits_spend_within_the_per_audit_cap_and_the_runs_budget; audit_allowance_refuses_calls_past_its_limit); 8 integration test binaries (17 tests) incl. audit_canary_drill pass; roko run/plan run --help list --no-audit; cargo +nightly fmt and cargo clippy -p roko-core -p roko-cli --no-deps -- -D warnings clean."
 +++
 
 ## Problem

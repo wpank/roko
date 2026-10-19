@@ -1192,7 +1192,7 @@ mod tests {
     use super::*;
     use crate::graph_task_dispatch::tests::{
         FIXTURE_HANG_GUARD_SECS, FIXTURE_PROVIDER_TIMEOUT_MS, cli_provider, final_turn,
-        jsonl_rows_where, make_bare_dispatcher, make_spec, make_task_def, model,
+        fixture_config, jsonl_rows_where, make_bare_dispatcher, make_spec, make_task_def, model,
         recording_feedback, spawn_openai_mock, tool_call_turn,
     };
 
@@ -1261,7 +1261,7 @@ exit 1
             tool_format: "openai_json".to_string(),
             ..ModelProfile::default()
         };
-        let mut config = RokoConfig::default();
+        let mut config = fixture_config();
         config.providers.clear();
         config.models.clear();
         config.agent.default_model = "claude-sonnet".to_string();
@@ -2042,7 +2042,7 @@ printf '%s\n' '{{"type":"result","subtype":"success","is_error":false,"total_cos
         mid_api.base_url = Some("http://127.0.0.1:9/v1".to_string());
         // `PATH` is always set, standing in for a key.
         mid_api.api_key_env = Some("PATH".to_string());
-        let mut config = RokoConfig::default();
+        let mut config = fixture_config();
         config.providers.clear();
         config.models.clear();
         config.agent.bare_mode = false;
@@ -2299,7 +2299,7 @@ printf '%s\n' '{{"type":"result","subtype":"success","is_error":false,"total_cos
             ),
             final_turn("Done."),
         ]);
-        let mut config = RokoConfig::default();
+        let mut config = fixture_config();
         config.providers.clear();
         config.models.clear();
         config.agent.default_model = "api-model".to_string();
@@ -2484,7 +2484,7 @@ printf '%s\n' '{"type":"result","session_id":"s","total_cost_usd":0,"usage":{"in
             stream_usage: None,
             billing: None,
         };
-        let mut config = RokoConfig::default();
+        let mut config = fixture_config();
         config.providers.clear();
         config.models.clear();
         config.agent.default_model = "claude-sonnet-4-6".to_string();
@@ -2596,7 +2596,7 @@ exec sleep 5
             stream_usage: None,
             billing: None,
         };
-        let mut config = RokoConfig::default();
+        let mut config = fixture_config();
         config.providers.clear();
         config.models.clear();
         config.agent.default_model = "codex-model".to_string();
@@ -2691,7 +2691,7 @@ exec sleep 5
             stream_usage: None,
             billing: None,
         };
-        let mut config = RokoConfig::default();
+        let mut config = fixture_config();
         config.providers.clear();
         config.models.clear();
         config.agent.default_model = default_model.to_string();
@@ -2857,7 +2857,7 @@ printf '%s\n' '{{"type":"result","session_id":"s","total_cost_usd":0,"usage":{{"
         );
         // What `roko init` + `synthesize_claude_cli_config` produce: one CLI
         // provider and a `[models.*]` entry for the default model only.
-        let mut config = RokoConfig::default();
+        let mut config = fixture_config();
         config.providers.clear();
         config.models.clear();
         config.agent.default_model = "claude-sonnet-4-6".to_string();

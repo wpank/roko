@@ -147,16 +147,22 @@ impl Skip {
                 && (line.contains(ENVELOPE_REASONING)
                     || (line.contains(ENVELOPE_TEXT) && line.contains(ENVELOPE_LIVE)))
         };
-        (self.heartbeats && HEARTBEAT_TYPE_FIELDS.iter().any(|field| line.contains(field)))
+        (self.heartbeats
+            && HEARTBEAT_TYPE_FIELDS
+                .iter()
+                .any(|field| line.contains(field)))
             || (self.live_text && live_text())
     }
 
     /// What it leaves out, as `?skip=` names it.
     fn names(self) -> Vec<&'static str> {
-        [(self.live_text, "live_text"), (self.heartbeats, "heartbeats")]
-            .into_iter()
-            .filter_map(|(on, name)| on.then_some(name))
-            .collect()
+        [
+            (self.live_text, "live_text"),
+            (self.heartbeats, "heartbeats"),
+        ]
+        .into_iter()
+        .filter_map(|(on, name)| on.then_some(name))
+        .collect()
     }
 }
 
@@ -3363,9 +3369,14 @@ mod tests {
             json!({"type":"agent_output","run_id":"g1","agent_id":"p1/T1","plan_id":"p1","task_id":"T1","attempt":1,"content":format!("\u{1e}roko.stream.v1 {envelope}")})
         };
         let heartbeat = json!({"type":"agent_heartbeat","run_id":"g1","agent_id":"p1/T1","plan_id":"p1","task_id":"T1","elapsed_ms":1000});
-        let mut rows = vec![json!({"type":"plan_started","run_id":"g1","plan_id":"p1","tasks_total":1})];
+        let mut rows =
+            vec![json!({"type":"plan_started","run_id":"g1","plan_id":"p1","tasks_total":1})];
         rows.extend((0..40).map(|_| output("reasoning", true, json!({"text":"Let"}))));
-        rows.push(output("tool_start", true, json!({"tool":"bash","tool_id":"c1","target":"cmake --build"})));
+        rows.push(output(
+            "tool_start",
+            true,
+            json!({"tool":"bash","tool_id":"c1","target":"cmake --build"}),
+        ));
         rows.extend((0..10).map(|_| heartbeat.clone()));
         rows.push(output(
             "tool_result",
@@ -3373,10 +3384,16 @@ mod tests {
             json!({"tool_id":"c1","output":"grep found \"kind\":\"reasoning\",\"live\":true"}),
         ));
         rows.extend((0..30).map(|_| output("text", true, json!({"text":"Done"}))));
-        rows.push(output("text", false, json!({"text":"Done: wrote 3 files."})));
+        rows.push(output(
+            "text",
+            false,
+            json!({"text":"Done: wrote 3 files."}),
+        ));
         rows.push(json!({"type":"gate_output_line","run_id":"g1","plan_id":"p1","task_id":"T1","gate":"verify[0:test]","line":"[ 50%] Building CXX object"}));
         rows.push(json!({"type":"gate_result","run_id":"g1","plan_id":"p1","task_id":"T1","gate":"verify[0:test]","passed":true}));
-        rows.push(json!({"type":"run_completed","run_id":"g1","outcome":"succeeded","duration_ms":10}));
+        rows.push(
+            json!({"type":"run_completed","run_id":"g1","outcome":"succeeded","duration_ms":10}),
+        );
         write_rows(&index, &rows);
 
         let page = |cursor: u64| {
@@ -3388,10 +3405,14 @@ mod tests {
                     skip: Some("live_text,heartbeats".to_string()),
                     ..EventQuery::default()
                 };
-                let response =
-                    get_run_events(State(state), Path("g1".into()), HeaderMap::new(), Query(query))
-                        .await
-                        .expect("a page");
+                let response = get_run_events(
+                    State(state),
+                    Path("g1".into()),
+                    HeaderMap::new(),
+                    Query(query),
+                )
+                .await
+                .expect("a page");
                 let body = axum::body::to_bytes(response.into_body(), usize::MAX)
                     .await
                     .expect("body");
@@ -3404,7 +3425,11 @@ mod tests {
         loop {
             let page = page(cursor).await;
             requests += 1;
-            assert_eq!(page["skipped"], json!(["live_text", "heartbeats"]), "{page}");
+            assert_eq!(
+                page["skipped"],
+                json!(["live_text", "heartbeats"]),
+                "{page}"
+            );
             for event in page["events"].as_array().expect("events") {
                 let event = &event["event"];
                 let kind = event["type"].as_str().expect("type").to_string();

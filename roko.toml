@@ -614,3 +614,8 @@ dense_embedding_enabled = false
 rerank_enabled = false
 
 [retrieval.role_token_budgets]
+
+# Added by hermes roko fix workspace-chat-ready on 2026-10-19: roko's data-model boundary.
+# Before a run's agent reads what it fetched from the web or an MCP tool, this model screens it.
+[agent.data_llm]
+model = "gpt-4o-mini"

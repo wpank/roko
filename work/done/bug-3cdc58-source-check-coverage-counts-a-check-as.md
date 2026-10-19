@@ -2,7 +2,7 @@
 id = "bug-3cdc58"
 kind = "bug"
 title = "Source-check coverage counts a check as kept only when a step names its SC id: a plan that runs 12 of a spec's 15 check commands verbatim reports 'kept 0, missing 15' and regenerates for nothing"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p2"
 goal = "golden-path"
@@ -11,6 +11,7 @@ subsystem = ["roko-cli/plan-generate"]
 created = 2026-10-19
 updated = 2026-10-19
 last_verified = 2026-10-19
+last_verified_rev = "f2ee9a0d3"
 source = "round-v7-hermes-pilot#C-p0-plan2"
 discovered_from = "agent:hermes-pilot (round v7 phase 0, 2026-10-19, op 437486f8)"
 anchors = ["crates/roko-cli/src/plan_generate/source_checks.rs::SourceCoverage::of", "crates/roko-cli/src/plan_generate/source_checks.rs::attach_runs", "crates/roko-cli/src/plan_generate/source_checks.rs::normalize_covers"]
@@ -18,6 +19,16 @@ links = { depends_on = [], blocks = [], related = ["bug-27f00b", "gap-d21da9", "
 
 [[verify]]
 command = "grep -rqw 'fn a_step_running_a_checks_command_keeps_it' crates/roko-cli/src && cargo test -p roko-cli --lib -- a_step_running_a_checks_command_keeps_it"
+
+[closed]
+at = 2026-10-19
+at_ts = "2026-10-19T17:18:05Z"
+commit = "04dd0da13"
+by = "roko-planner (round v7)"
+executor = "claude-agent"
+via = "manual"
+forced = false
+evidence = "Merged 19a072459 (work/bug-3cdc58: 04dd0da13). plan_generate/source_checks.rs: attach_runs gives a check whose text quotes exactly one command (a code span running a script by path, such as a spec table's tools/spec.sh 0 params 'P0.01*', or a program this machine has, with arguments) that command as its run, after the bug-8fe462 unittest expansion; a file name, symbol, signature, lone program name or two quoted commands give none. SourceCoverage::of counts a step that runs a check's run (each of its commands word for word, quotes aside) as covering it, named or not, recording the step's first covers as the criterion. The planner block says a check given with run: has its command already. Verify at 19a072459: a_step_running_a_checks_command_keeps_it passes: on the pilot's real phase-0 request (16,235 chars) and plan (fixture tests/fixtures/p0_source_checks) 15 checks are lifted, 12 kept by command, and SC7, SC14, SC15 (P0.07, P0.14, P0.15) are missing, the item's done-when; it failed before the fix (run was None). a_check_quoting_one_command_runs_it passes. Branch: roko-cli lib 3875 passed, 0 failed; clippy -D warnings and nightly fmt clean. Live context: at 123985df2 the phase-0 spec's plan ran all 10 check commands and reported 0 of 10 kept, spending a second planner call; with this fix that is 10 of 10 and no regeneration."
 +++
 
 ## Problem

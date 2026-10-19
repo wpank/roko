@@ -2,7 +2,7 @@
 id = "gap-4de4b9"
 kind = "gap"
 title = "A filtered events page (?skip=) says what it skipped but not how many rows, so a reader cannot show the index's true size"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p3"
 goal = "visibility"
@@ -11,6 +11,7 @@ subsystem = ["roko-serve/routes"]
 created = 2026-10-20
 updated = 2026-10-20
 last_verified = 2026-10-20
+last_verified_rev = "a8e466dca"
 source = "round-v7-plugin-wow#skipped_rows"
 discovered_from = "agent:plugin-wow (round v7, 2026-10-20)"
 anchors = ["crates/roko-serve/src/routes/runs.rs::IndexedPage", "crates/roko-serve/src/routes/runs.rs::get_run_events"]
@@ -19,6 +20,17 @@ links = { depends_on = [], blocks = [], related = ["gap-cb9044"], supersedes = [
 
 [[verify]]
 command = "grep -rqw 'fn a_run_events_page_can_skip_live_words' crates/roko-serve/ && grep -q 'skipped_rows' crates/roko-serve/src/routes/runs.rs && cargo test -p roko-serve --lib -- a_run_events_page_can_skip_live_words"
+
+[closed]
+at = 2026-10-20
+at_ts = "2026-10-19T22:42:25Z"
+commit = "a8e466dca"
+executor = "claude-agent"
+via = "manual"
+size = "S"
+claimed_at = "2026-10-19T22:10:58Z"
+forced = false
+evidence = "A page of GET /api/runs/{id}/events with ?skip= now carries skipped_rows: the records its scan passed over unparsed. A reader's events plus skipped_rows, summed over its pages, is the index's true size. Verify a_run_events_page_can_skip_live_words passes: 7 rows kept plus 80 skipped make the 87 written. The 23 roko-serve route tests pass and clippy is clean. On a copy of the pilot's real P0 index, served by this build: 6 requests sent 891 rows and reported 34,028 skipped_rows, which together are the index's 34,919 records."
 +++
 
 ## Problem

@@ -38,7 +38,7 @@ import run_roko
 import validate
 import vb
 from common import canary, hmac_seed
-from stub_provider import StubServer
+from stub_provider import ErrorStatus, StubServer
 
 TOY_FAMILY = layout.DRIVER_DIR / "testdata" / "toy_family"
 TOY_STREAM = str(layout.DRIVER_DIR / "testdata" / "toy_stream.toml")
@@ -376,12 +376,17 @@ def test_a_validation_that_failed_only_on_the_tier_size_advice_does_not_fail_the
     assert summary == "PLAN_037: PLAN_037 says so"
 
 
-def test_only_an_arm_that_turns_audits_off_runs_plan_run_with_no_audit():
-    # gap-d76b1b turned Roko's audits on by default; roko_fixed turns them off, so its runs call only the pin.
-    def arm(name: str) -> dict:
-        return tomllib.loads((layout.ARMS_DIR / f"{name}.toml").read_text())
-
-    assert run_roko.run_switches(arm("roko_fixed")) == ["--no-audit"]
+def test_every_roko_arm_but_roko_full_turns_audits_off():
+    # gap-d76b1b turned Roko's audits on by default, and an audit dispatches models outside the arm (bug-082810): the
+    # shakedown's ladder run met an audit's gpt-5.4-mini review as a model mismatch (gap-c7c462). Every Roko arm runs
+    # `plan run --no-audit` but roko_full, whose overlay turns audits on (S05).
+    arms = {path.stem: tomllib.loads(path.read_text()) for path in layout.ARMS_DIR.glob("*.toml")}
+    roko = {name: arm for name, arm in arms.items() if arm["arm"]["harness"] == "roko"}
+    assert {"roko_fixed", "roko_fixed_glm", "roko_fixed_kimi", "roko_fixed_mini", "fr_claude", "roko_ladder",
+            "roko_plan", "roko_full"} <= set(roko)
+    for name, arm in roko.items():
+        assert run_roko.run_switches(arm) == ([] if name == "roko_full" else ["--no-audit"]), name
+    assert roko["roko_full"]["overlay"]["audit_floor"] >= 0.05
     assert run_roko.run_switches({"roko": {"audit": True}}) == run_roko.run_switches({"roko": {}}) == []
 
 
@@ -949,6 +954,29 @@ def test_the_roko_arm_enforces_the_per_attempt_input_cap(places, tmp_path):
     attempts = record["execution"]["attempts"]
     assert [(attempt["calls"], attempt["ended_by"]) for attempt in attempts] == [(3, "attempt_input_tokens")] * 3
     assert record["execution"]["status"] == "failed" and validate.validate("run-record", record) == []
+
+def test_a_task_the_provider_refused_for_the_account_is_an_infra_error(places, tmp_path):
+    # Pilot B, 2026-10-20: Cerebras answered 402 (payment required) to every call of a unit's last 9 tasks, which Roko
+    # reported as failed attempts. Through the metering proxy the 402s are forwarded answers, so the task measured
+    # the account, not the arm: infra_error, which the report excludes and counts.
+    binary = tmp_path / "bin" / "roko"
+    binary.parent.mkdir()
+    binary.write_text(RETRYING_ROKO.replace("__PYTHON__", sys.executable))
+    binary.chmod(0o755)
+    with StubServer(lambda body: ErrorStatus(status=402)) as stub:
+        assert run_vb(places, arm_with(tmp_path, binary), stub.url, "--proxy") == 0
+    out = places["results"] / "TEST-ROKO" / "run-1"
+    assert [(row["status"], row["forwarded"]) for row in read_jsonl(out / "proxy.jsonl")] == [(402, True)] * 3
+    [record] = read_jsonl(out / "records.jsonl")
+    assert validate.validate("run-record", record) == []
+    assert record["execution"]["status"] == "infra_error"
+    assert record["execution"]["reason"].startswith("provider_account: the provider refused 3 call(s) with HTTP 402")
+    rows = [{"forwarded": True, "status": 200}, {"forwarded": True, "status": 401},
+            {"forwarded": False, "status": 403, "refused": "attempt_input_cap"},  # the proxy's own refusal
+            {"forwarded": False, "status": 503, "fault_injected": "http_5xx"}, {"forwarded": True, "status": 429}]
+    assert run_roko.account_refusals(rows) == ["provider_account: the provider refused 1 call(s) with HTTP 401"]
+    assert run_roko.account_refusals(rows[2:]) == run_roko.account_refusals(None) == []
+
 
 def test_plan_slice_records_carry_queue_waits_and_class_costs(places, tmp_path, monkeypatch):
     # gap-04e8e2: the fake roko records two attempts with their dispatch times, and the metering proxy's log holds

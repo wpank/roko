@@ -127,7 +127,9 @@ match, so the attempts fail as `no_proxy_traffic`.
   S05 §0.1 counts only a `passed` verdict as Roko's completion, so the census gives the run 0, and the report counts
   it apart, never as a reported pass.
 - `timeout`: the wall-clock cap.
-- `infra_error`: a failed validation, a failed check above, or a run Roko did not finish.
+- `infra_error`: a failed validation, a failed check above, or a run Roko did not finish. Also a task that failed or
+  timed out after the provider refused some of its forwarded calls for the account, 401 or 402 in the proxy's log
+  (`account_refusals`): Roko calls that a failed attempt, but the run measured the provider account, not the arm.
 
 **Process measures** (S09 §4.9, gap-04e8e2). Each attempt records its plan task (`T01`), its cost class and its busy
 time, and `records.py` sums them into the record:
@@ -157,6 +159,7 @@ API:
     arm_prompt(arm) -> {"version", "sha256"}                      # what `vb run` records as the arm's prompt
     run_switches(arm) -> list[str]                                # `plan run`'s switches: --no-audit for audit = false
     advisory_only(checked: Ran) -> list[dict] | None              # a validation failed only on ADVISORY_RULES
+    account_refusals(proxy_rows) -> list[str]                     # the provider refused the account (a failure: infra)
     RokoAttempt(harness.Attempt); Evidence; binary_path(arm) -> Path
 """
 
@@ -198,6 +201,7 @@ VALIDATE_TIMEOUT_S = 120.0
 # limit (focused: 350), and a benchmark task's description is the spec text every arm gets, which the arm may neither
 # shorten nor split: 10 of the 20 pilot instances run 371-458 words.
 ADVISORY_RULES = frozenset({"PLAN_TIER_SIZE"})
+ACCOUNT_STATUSES = frozenset({401, 402})  # a provider refusing the account (key, billing), not the request
 EGRESS_LOG = "egress.jsonl"  # in the run directory, for a claude_cli arm (3318), as run_cli.py's own
 CLI_CACHE_WRITE_TTL = "1h"  # 3318: fr_claude's subscription turns write the 1-hour cache, as fd_claude.toml's do
 # The stand-in task `preflight` emits a plan for: a family task's shape (one source file, visible tests run by
@@ -335,8 +339,11 @@ def run_task(ctx: harness.TaskContext) -> harness.TaskOutcome:
                                     reserved_usd=task_bound / (max_retries + 1), max_attempts=max_retries + 1,
                                     roko_build=build, swap=ctx.model_swap, rungs=spec.rungs)
         transcript += [_attempt_event(attempt, episode) for attempt, episode in zip(attempts, evidence.episodes)]
-        transcript.append({"event": "check", "problems": problems})
+        refusals = account_refusals(evidence.proxy_rows)
+        transcript.append({"event": "check", "problems": problems, "account_refusals": refusals})
         status, reason = _status(ran, evidence, problems)
+        if refusals and status in ("failed", "timeout"):  # the account failed it, not the arm (`account_refusals`)
+            status, reason = "infra_error", "; ".join(refusals)
     except ledger.BudgetError as err:  # no room on the budget line: `plan run` never started
         status, reason = "aborted_cap", "budget"
         transcript.append({"event": "stop", "kind": status, "reason": str(err)})
@@ -432,6 +439,23 @@ def arm_prompt(arm: dict) -> dict[str, str]:
     return planemit.template_identity(ladder=_routed(arm),
                                       provider_kind=arm.get("roko", {}).get("provider_kind", "openai_compat"),
                                       overlay=bool(arm.get("overlay")))
+
+
+def account_refusals(rows: list[dict] | None) -> list[str]:
+    """The task's forwarded calls the provider refused for the account rather than the request (`ACCOUNT_STATUSES`: 401
+    for the key, 402 for billing), as one `provider_account` line, or none. A task that then failed or timed out is
+    `infra_error`: Roko reports such a refusal as a failed attempt, but the run measured the account, not the arm
+    (Pilot B, 2026-10-20: Cerebras answered 402 to the last 9 tasks of a unit). A task that completed keeps its
+    outcome, as a routed arm's does when its ladder drops the refused rung (the shakedown's D7). An injected fault and
+    the proxy's own refusals are never forwarded."""
+    refused: dict[int, int] = {}
+    for row in rows or ():
+        if row.get("forwarded") and row.get("status") in ACCOUNT_STATUSES:
+            refused[row["status"]] = refused.get(row["status"], 0) + 1
+    if not refused:
+        return []
+    return ["provider_account: the provider refused " + ", ".join(
+        f"{count} call(s) with HTTP {status}" for status, count in sorted(refused.items()))]
 
 
 def advisory_only(checked: Ran) -> list[dict] | None:

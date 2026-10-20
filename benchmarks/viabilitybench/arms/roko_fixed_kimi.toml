@@ -33,6 +33,8 @@ context_window = 128000
 tier = "focused"
 max_retries = 2
 skip_enrichment = true                # explicit per arm (B §2.3)
+audit = false                         # `plan run --no-audit`: Roko audits by default since 22ac6f06b, and an
+                                      # audit dispatches models outside the arm (gap-c7c462, bug-082810)
 
 [providers.moonshot]
 base_url = "https://api.moonshot.ai/v1"   # check against platform.kimi.ai before the first billed run

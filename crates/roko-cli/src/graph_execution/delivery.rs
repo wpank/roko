@@ -383,7 +383,7 @@ impl GitDeliveryBackend {
         } else {
             let tree = match git_merge_tree(workdir, &old, &theirs).await {
                 Ok(MergeTree::Clean { tree }) => tree,
-                Ok(MergeTree::Conflicted { paths }) => {
+                Ok(MergeTree::Conflicted { paths, .. }) => {
                     return Err(format!(
                         "merge conflict: branch '{branch}' into '{target}'; conflicted paths: {}",
                         paths.join(", ")

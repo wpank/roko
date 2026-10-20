@@ -357,6 +357,16 @@ impl GraphTaskDispatcher {
                 Ok(Some(acceptance))
             }
             Some(Err(WorkspaceError::Conflict(reason))) => {
+                // A clash only in registration files, where both sides only
+                // added lines, lands with every added line once the task's
+                // checks pass on the merge (gap-32ddce).
+                let reason = match self
+                    .land_union_merge(spec, task, settled, verdict, provider, lease, reason)
+                    .await
+                {
+                    Ok(acceptance) => return Ok(Some(acceptance)),
+                    Err(reason) => reason,
+                };
                 self.restart_from_plan_tip(&spec.plan_id, &task.id, "plan-branch conflict");
                 // The next attempt learns what this one conflicted with,
                 // instead of starting blind (backlog 1123).
@@ -392,6 +402,155 @@ impl GraphTaskDispatcher {
                 settled.attempt_key(),
                 lease.path.display()
             ))),
+        }
+    }
+
+    /// Land the attempt `settled` of `task`, which ran in `lease`, after its
+    /// acceptance conflicted (`reason`) only in registration files
+    /// ([`roko_graph::exclusion::is_registration_file`]) where its work and
+    /// the plan branch's both only added lines (gap-32ddce): merge the plan
+    /// branch into its checkout with every added line, run the task's verify
+    /// steps on the merge there ([`Self::recheck_merge`]), and accept it once
+    /// they pass. A sibling that lands in between makes it merge again, up
+    /// to [`UNION_MERGE_ROUNDS`] times. `Err` is the conflict to report when
+    /// the attempt cannot land this way.
+    #[allow(clippy::too_many_arguments)]
+    async fn land_union_merge(
+        &self,
+        spec: &TaskExecutionSpec,
+        task: &TaskDef,
+        settled: &SettledAttempt,
+        verdict: TaskGateVerdict,
+        provider: &dyn ExecutionWorkspaceProvider,
+        lease: &WorkspaceLease,
+        mut reason: String,
+    ) -> std::result::Result<WorkspaceAcceptance, String> {
+        for _ in 0..UNION_MERGE_ROUNDS {
+            let Some(listed) = conflicted_paths(&reason) else {
+                return Err(reason);
+            };
+            let paths: Vec<String> = listed.split(", ").map(str::to_string).collect();
+            if !paths
+                .iter()
+                .all(|path| roko_graph::exclusion::is_registration_file(path))
+            {
+                return Err(reason);
+            }
+            let merged = match provider.union_merge(lease, &paths).await {
+                Ok(Some(merged)) => merged.join(", "),
+                Ok(None) => return Err(reason),
+                Err(error) => {
+                    tracing::warn!(
+                        plan_id = %spec.plan_id,
+                        task_id = %task.id,
+                        %error,
+                        "could not merge the plan branch's added lines into the attempt"
+                    );
+                    return Err(reason);
+                }
+            };
+            if let Err(failed) = self.recheck_merge(spec, task, &lease.path).await {
+                self.note_union_merge(
+                    spec,
+                    task,
+                    &format!(
+                        "{merged}: both sides only added lines, but with all of them {failed} \
+                         failed, so the attempt was not accepted"
+                    ),
+                );
+                return Err(reason);
+            }
+            let request = WorkspaceAcceptRequest {
+                run_id: settled.key().run_id,
+                attempt_key: settled.attempt_key().to_string(),
+                verdict: verdict.as_str().to_string(),
+                title: self.commit_title(&spec.plan_id, task),
+            };
+            match provider.accept(lease, &request).await {
+                Ok(acceptance) => {
+                    self.note_union_merge(
+                        spec,
+                        task,
+                        &format!(
+                            "{merged}: this attempt and the plan branch both only added lines; \
+                             accepted with all of them, after its checks passed on the merge"
+                        ),
+                    );
+                    return Ok(acceptance);
+                }
+                Err(WorkspaceError::Conflict(next)) => reason = next,
+                Err(error) => {
+                    tracing::warn!(
+                        plan_id = %spec.plan_id,
+                        task_id = %task.id,
+                        %error,
+                        "could not accept the attempt's merge with the plan branch"
+                    );
+                    return Err(reason);
+                }
+            }
+        }
+        Err(reason)
+    }
+
+    /// Run `task`'s verify steps in `workdir`, which holds its attempt's
+    /// work merged with its plan branch (gap-32ddce), stopping at the first
+    /// that fails. Nothing is recorded or learned: the attempt's verdict
+    /// stands, and this only decides whether the merge lands. `Err` names
+    /// the step that failed.
+    async fn recheck_merge(
+        &self,
+        spec: &TaskExecutionSpec,
+        task: &TaskDef,
+        workdir: &Path,
+    ) -> std::result::Result<(), String> {
+        let payload = GatePayload::in_dir(workdir)
+            .with_label(format!("{}/{}", spec.plan_id, task.id))
+            .with_env_passthrough(self.config.gates.env_passthrough.iter().cloned());
+        let signal = Signal::builder(Kind::Task)
+            .body(Body::from_json(&payload).unwrap_or_else(|_| Body::text("gate-payload-fallback")))
+            .build();
+        let ctx = Context::now();
+        for (label, step) in self.verify_steps(spec, task) {
+            let gate = ShellGate::verify_step(&self.verify_command(&step.command))
+                .with_timeout_ms(step.timeout_ms)
+                .with_name(&label)
+                .with_phase(&step.phase);
+            let shown = crate::task_accept::prompt_command(&step.command);
+            let verdict = super::verification::verify_step_locked(
+                &gate,
+                &signal,
+                &ctx,
+                workdir,
+                self.config.gates.compile_concurrency,
+                &step,
+                &spec.plan_id,
+                &task.id,
+                &self.stopping,
+            )
+            .await;
+            match verdict {
+                Some(verdict) if verdict.passed => {}
+                Some(_) => return Err(format!("{label} (`{shown}`)")),
+                None => return Err(format!("{label} (`{shown}`), stopped by the run,")),
+            }
+        }
+        Ok(())
+    }
+
+    /// Say in the run's events how a union merge of `task`'s attempt went
+    /// (gap-32ddce).
+    fn note_union_merge(&self, spec: &TaskExecutionSpec, task: &TaskDef, message: &str) {
+        tracing::info!(plan_id = %spec.plan_id, task_id = %task.id, "{message}");
+        if let Some(tui) = &self.tui_bridge {
+            tui.publish_event(roko_core::DashboardEvent::EventLogEntry {
+                timestamp_ms: u64::try_from(chrono::Utc::now().timestamp_millis())
+                    .unwrap_or_default(),
+                event_type: "plan_branch.union_merge".to_string(),
+                plan_id: spec.plan_id.clone(),
+                task_id: task.id.clone(),
+                message: message.to_string(),
+            });
         }
     }
 
@@ -776,6 +935,11 @@ fn conflicted_paths(reason: &str) -> Option<&str> {
     let paths = paths.trim();
     (!paths.is_empty()).then_some(paths)
 }
+
+/// How many times an attempt whose acceptance conflicted only in
+/// registration files merges its plan branch before it gives up: a sibling
+/// may land between its merge and its acceptance (gap-32ddce).
+const UNION_MERGE_ROUNDS: usize = 3;
 
 /// How often a held attempt looks for its review decision.
 const REVIEW_POLL_INTERVAL: std::time::Duration = std::time::Duration::from_millis(250);
@@ -1648,6 +1812,124 @@ printf '%s\n' '{"type":"result","session_id":"sess-c","model":"claude-sonnet-4-6
             .find_map(|line| line.trim().strip_prefix("Conflicting paths: "))
             .unwrap_or_else(|| panic!("no conflicting paths in {retry}"));
         assert!(paths.contains("same.txt"), "{retry}");
+    }
+
+    /// A provider that registers a source in `core/CMakeLists.txt`, after
+    /// `src/engine.cpp`, as round v7's phase-1 tasks did: `oscillator` on its
+    /// first call, `envelope` after. Each of the first two calls says it
+    /// started (`started-<call>`) and waits for the test to release it
+    /// (`release-<call>`).
+    const REGISTERS_SOURCE_PROVIDER: &str = r#"#!/bin/sh
+set -eu
+cat >/dev/null
+dir=$(dirname -- "$0")
+n=$(( $(cat "$dir/calls" 2>/dev/null || echo 0) + 1 ))
+echo "$n" > "$dir/calls"
+: > "$dir/started-$n"
+if [ "$n" -le 2 ]; then
+  while [ ! -e "$dir/release-$n" ]; do sleep 0.05; done
+fi
+if [ "$n" -eq 1 ]; then source=oscillator; else source=envelope; fi
+awk -v add="    src/$source.cpp" '{ print } /src\/engine.cpp/ { print add }' core/CMakeLists.txt > core/CMakeLists.new
+mv core/CMakeLists.new core/CMakeLists.txt
+printf '%s\n' '{"type":"content_block_delta","delta":{"text":"registered the source"}}'
+printf '%s\n' '{"type":"result","session_id":"sess-r","model":"claude-sonnet-4-6","total_cost_usd":0.01,"usage":{"input_tokens":5,"output_tokens":10}}'
+"#;
+
+    /// Phase 1's `core/CMakeLists.txt` before its three parallel tasks.
+    const CORE_CMAKE: &str = "add_library(undertow_core STATIC\n    src/params.cpp\n    \
+                              src/engine.cpp\n)\nadd_library(Undertow::core ALIAS undertow_core)\n";
+
+    /// Two sibling tasks that each register a source in `core/CMakeLists.txt`
+    /// from the plan's base, with `second_check` as the second's verify step.
+    /// The first lands; returns the plan branch's file and the second's
+    /// dispatch result, and how many times the provider ran.
+    async fn siblings_register_sources(
+        second_check: &str,
+    ) -> (String, Result<Vec<Signal>>, String) {
+        let (repo, worktrees) = repo_with_worktrees();
+        std::fs::create_dir_all(repo.path().join("core")).expect("core dir");
+        std::fs::write(repo.path().join("core/CMakeLists.txt"), CORE_CMAKE).expect("CMakeLists");
+        git(repo.path(), &["add", "core/CMakeLists.txt"]);
+        git(repo.path(), &["commit", "-m", "core library"]);
+        let provider = worktree_provider(repo.path(), worktrees.path());
+        let (dispatcher, mut first) = make_test_dispatcher_with(
+            &repo,
+            REGISTERS_SOURCE_PROVIDER,
+            no_auto_fix,
+            GraphFeedbackContext::default(),
+            |dispatcher| dispatcher.with_workspace_provider(provider),
+        )
+        .await;
+        first.files = vec![
+            "core/src/oscillator.cpp".into(),
+            "core/CMakeLists.txt".into(),
+        ];
+        first.verify = vec![verify_step(
+            "structural",
+            "grep -q oscillator core/CMakeLists.txt",
+        )];
+        let mut second = first.clone();
+        second.id = "T-SECOND".to_string();
+        second.files = vec!["core/src/envelope.cpp".into(), "core/CMakeLists.txt".into()];
+        second.verify = vec![verify_step("structural", second_check)];
+        let (first_spec, second_spec) = (make_spec(&first), make_spec(&second));
+
+        // Both siblings have their checkouts before either lands.
+        let first_run = dispatch_in_background(&dispatcher, &first_spec);
+        appears(&repo.path().join("started-1")).await;
+        let second_run = dispatch_in_background(&dispatcher, &second_spec);
+        appears(&repo.path().join("started-2")).await;
+        std::fs::write(repo.path().join("release-1"), "").expect("release the first");
+        first_run
+            .await
+            .expect("dispatch task")
+            .expect("the first sibling lands");
+        std::fs::write(repo.path().join("release-2"), "").expect("release the second");
+        let second = second_run.await.expect("dispatch task");
+        let plan_branch = format!("roko/plan/{}", second_spec.plan_id);
+        let landed = git(
+            repo.path(),
+            &["show", &format!("{plan_branch}:core/CMakeLists.txt")],
+        );
+        let calls = std::fs::read_to_string(repo.path().join("calls")).expect("calls");
+        (landed, second, calls.trim().to_string())
+    }
+
+    /// gap-32ddce: round v7's phase 1. Two parallel tasks each register their
+    /// source in `core/CMakeLists.txt` at the same place. The second's try
+    /// passed its checks, but its work conflicts with the first's on the plan
+    /// branch, only by added lines in a registration file. It lands with both
+    /// sources, after its checks pass on the merge, instead of being thrown
+    /// away and redone.
+    #[tokio::test]
+    async fn a_passing_try_that_only_adds_to_a_registration_file_is_accepted_with_the_union() {
+        let (landed, second, calls) =
+            siblings_register_sources("grep -q envelope core/CMakeLists.txt").await;
+        second.expect("the second sibling lands with both sources");
+        assert_eq!(
+            landed,
+            "add_library(undertow_core STATIC\n    src/params.cpp\n    src/engine.cpp\n    \
+             src/oscillator.cpp\n    src/envelope.cpp\n)\nadd_library(Undertow::core ALIAS \
+             undertow_core)"
+        );
+        assert_eq!(calls, "2", "no try was redone");
+    }
+
+    /// gap-32ddce: a union merge whose task's checks fail on it does not land:
+    /// the attempt fails as a plan-branch conflict, as before, and the plan
+    /// branch keeps only the first sibling's source.
+    #[tokio::test]
+    async fn a_union_merge_that_fails_the_tasks_checks_is_not_accepted() {
+        // Three sources in its own checkout, four on the merge.
+        let (landed, second, _) =
+            siblings_register_sources("test \"$(grep -c 'src/' core/CMakeLists.txt)\" -le 3").await;
+        let error = second.expect_err("the merge fails the second sibling's check");
+        assert!(
+            matches!(&error, RokoError::Verify { gate, .. } if gate == "plan-branch"),
+            "{error:?}"
+        );
+        assert!(landed.contains("src/oscillator.cpp") && !landed.contains("src/envelope.cpp"));
     }
 
     /// A provider that writes `feature.txt` and, on its first call only, also

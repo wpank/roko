@@ -991,6 +991,37 @@ fn own_plan_writers(plan: &TasksFile, plan_dir: &Path, workdir: &Path) -> Vec<St
         .collect()
 }
 
+/// The plan report's note on the build-registration files several tasks
+/// list (bug-daa54e): which, and that their tasks still run in parallel, so a
+/// clash in one at merge costs a retry. `None` when no task shares one.
+fn shared_registration_note(plan: &TasksFile) -> Option<String> {
+    let mut shared: Vec<(String, Vec<String>)> = Vec::new();
+    for task in &plan.tasks {
+        for file in task
+            .files
+            .iter()
+            .filter(|file| roko_graph::exclusion::is_registration_file(file))
+        {
+            match shared.iter_mut().find(|(listed, _)| listed == file) {
+                Some((_, tasks)) => tasks.push(task.id.clone()),
+                None => shared.push((file.clone(), vec![task.id.clone()])),
+            }
+        }
+    }
+    let shared: Vec<String> = shared
+        .into_iter()
+        .filter(|(_, tasks)| tasks.len() > 1)
+        .map(|(file, tasks)| format!("`{file}` ({})", tasks.join(", ")))
+        .collect();
+    (!shared.is_empty()).then(|| {
+        format!(
+            "Shared build-registration files: {}. Tasks that share only these still run in \
+             parallel; a clash in one at merge costs a retry.",
+            shared.join(", ")
+        )
+    })
+}
+
 /// The most top-level entries [`workspace_note`] names.
 const WORKSPACE_NOTE_ENTRIES: usize = 20;
 
@@ -1634,6 +1665,9 @@ pub async fn generate_plan(request: PlanRequest<'_>) -> Result<(PathBuf, Generat
             // waits for the tasks that write the modules its tests import.
             repairs.extend(runnable::repair_write_tools(&mut parsed, workdir_ref));
             repairs.extend(runnable::repair_dependencies(&mut parsed, workdir_ref));
+            // bug-daa54e: a task that creates a C or C++ source lists the
+            // CMake file that must name it.
+            repairs.extend(runnable::repair_build_lists(&mut parsed, workdir_ref));
             // bug-8fe462: a step that cannot run, over checks roko has the
             // commands for, runs those commands.
             let stuck = runnable::problems(&parsed, workdir_ref, &probe);
@@ -2213,6 +2247,12 @@ pub async fn generate_plan(request: PlanRequest<'_>) -> Result<(PathBuf, Generat
                     validated_toml.len(),
                     plan_dir.display()
                 );
+                if let Some(note) = TasksFile::parse_str(&validated_toml)
+                    .ok()
+                    .and_then(|tasks| shared_registration_note(&tasks))
+                {
+                    println!("📋 {note}");
+                }
                 let plan_md_content = extract_fenced_block(&output, "plan.md")
                     .or_else(|| extract_fenced_block(&output, "markdown"))
                     .or_else(|| extract_fenced_block(&output, "md"));
@@ -3838,6 +3878,134 @@ mod tests {
         assert_eq!(written.tasks.len(), 1);
         assert_eq!(written.tasks[0].role.as_deref(), Some("scribe"));
         assert_eq!(written.tasks[0].files, ["docs/spec.md"]);
+    }
+
+    /// bug-daa54e: two parallel tasks each create a C++ source that
+    /// `core/CMakeLists.txt` must list. Generation adds the file to both and
+    /// writes the plan after one call: tasks that share only a
+    /// build-registration file are no longer an overlap it sends back.
+    #[cfg(unix)]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn parallel_tasks_share_the_cmake_list_they_add_to() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let workdir = temp.path();
+        std::fs::create_dir_all(workdir.join("core/src")).expect("core");
+        std::fs::write(
+            workdir.join("core/CMakeLists.txt"),
+            "add_library(core STATIC src/params.cpp)\n",
+        )
+        .expect("the core list");
+        std::fs::write(workdir.join("core/src/params.cpp"), "// params\n").expect("params");
+        let task = |id: &str, module: &str| {
+            format!(
+                "[[task]]\nid = \"{id}\"\ntitle = \"{module}\"\n\
+                 description = \"Add core/src/{module}.cpp.\"\nstatus = \"ready\"\n\
+                 role = \"implementer\"\ntier = \"focused\"\nfiles = [\"core/src/{module}.cpp\"]\n\
+                 depends_on = []\n\n[task.context]\nread_files = []\n\n\
+                 [[task.verify]]\nphase = \"test\"\ncommand = \"tools/spec.sh 1 {module}\"\n\n"
+            )
+        };
+        let plan = format!(
+            "[meta]\nplan = \"p1\"\ntotal = 2\ndone = 0\nstatus = \"ready\"\n\n{}{}",
+            task("T1", "oscillator"),
+            task("T2", "filter")
+        );
+        let bin = tempfile::tempdir().expect("tempdir");
+        let calls = write_scripted_planner(
+            workdir,
+            bin.path(),
+            &[&plan],
+            "allow_threshold = 0.0\nblock_threshold = 0.0\n",
+        );
+        let request = PlanRequest {
+            model: Some("planner"),
+            ..PlanRequest::new(WIDGET_REQUEST, "p1", workdir)
+        };
+        generate_plan(request).await.expect("generate the plan");
+        let log = std::fs::read_to_string(&calls).expect("planner call log");
+        assert_eq!(log.lines().count(), 1, "repaired, not sent back");
+        let written = TasksFile::parse(&workdir.join("plans/p1/tasks.toml")).expect("the plan");
+        for task in &written.tasks {
+            assert!(
+                task.files.iter().any(|file| file == "core/CMakeLists.txt"),
+                "{}: {:?}",
+                task.id,
+                task.files
+            );
+            assert!(task.depends_on.is_empty(), "{}: still parallel", task.id);
+        }
+        let note = shared_registration_note(&written).expect("a shared list");
+        assert!(note.contains("`core/CMakeLists.txt` (T1, T2)"), "{note}");
+    }
+
+    /// bug-b59d8e: Undertow phase 2's shape. Three module tasks, two of them
+    /// parallel, and a wiring task each list `core/CMakeLists.txt`. Before,
+    /// every draft failed the generated-plan budget (4 serial owners of one
+    /// file, and T2 and T3 overlapping on it), and no plan was written. A
+    /// shared registration file is now neither, so one call writes the plan.
+    #[cfg(unix)]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_shared_source_list_in_every_module_task_still_writes_a_plan() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let workdir = temp.path();
+        std::fs::create_dir_all(workdir.join("core/src")).expect("core");
+        std::fs::write(
+            workdir.join("core/CMakeLists.txt"),
+            "add_library(undertow_core STATIC src/params.cpp src/engine.cpp)\n",
+        )
+        .expect("the core list");
+        for source in ["params", "engine"] {
+            std::fs::write(workdir.join(format!("core/src/{source}.cpp")), "// core\n")
+                .expect("a source");
+        }
+        let task = |id: &str, module: &str, depends_on: &str| {
+            format!(
+                "[[task]]\nid = \"{id}\"\ntitle = \"{module}\"\n\
+                 description = \"Write core/src/{module}.cpp and list it.\"\n\
+                 status = \"ready\"\nrole = \"implementer\"\ntier = \"focused\"\n\
+                 files = [\"core/src/{module}.cpp\", \"core/CMakeLists.txt\"]\n\
+                 depends_on = [{depends_on}]\n\n[task.context]\nread_files = []\n\n\
+                 [[task.verify]]\nphase = \"test\"\ncommand = \"tools/spec.sh 2 {module}\"\n\n"
+            )
+        };
+        let plan = format!(
+            "[meta]\nplan = \"p2\"\ntotal = 4\ndone = 0\nstatus = \"ready\"\n\n{}{}{}{}",
+            task("T1", "lfo", ""),
+            task("T2", "rumble", "\"T1\""),
+            task("T3", "output", "\"T1\""),
+            task("T4", "engine", "\"T1\", \"T2\", \"T3\""),
+        );
+        let bin = tempfile::tempdir().expect("tempdir");
+        let calls = write_scripted_planner(
+            workdir,
+            bin.path(),
+            &[&plan],
+            "allow_threshold = 0.0\nblock_threshold = 0.0\n",
+        );
+        let request = PlanRequest {
+            model: Some("planner"),
+            ..PlanRequest::new(WIDGET_REQUEST, "p2", workdir)
+        };
+        generate_plan(request).await.expect("the plan is written");
+        let log = std::fs::read_to_string(&calls).expect("planner call log");
+        assert_eq!(log.lines().count(), 1, "written, not sent back");
+        let written = TasksFile::parse(&workdir.join("plans/p2/tasks.toml")).expect("the plan");
+        assert!(
+            written
+                .tasks
+                .iter()
+                .all(|task| task.files.iter().any(|file| file == "core/CMakeLists.txt"))
+        );
+        let rumble = written
+            .tasks
+            .iter()
+            .find(|task| task.id == "T2")
+            .expect("T2");
+        assert_eq!(
+            rumble.depends_on,
+            ["T1"],
+            "T2 and T3 still run side by side"
+        );
     }
 
     /// bug-96115c: a request that names its final check gets a plan whose

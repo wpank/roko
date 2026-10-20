@@ -534,6 +534,11 @@ pub fn validate_plan_budgets(
             .map(|task| (task.id.as_str(), task.depends_on.as_slice()))
             .collect::<HashMap<_, _>>();
         for (file, owners) in file_owners {
+            // bug-daa54e: a build-registration file is a list that several
+            // tasks each add an entry to, not work to merge into one owner.
+            if roko_graph::exclusion::is_registration_file(&file) {
+                continue;
+            }
             let serial_owners = owners
                 .iter()
                 .filter(|owner| {
@@ -577,9 +582,11 @@ pub fn validate_plan_budgets(
 /// neither depends on the other, declare overlapping `files`.
 ///
 /// Overlap is the Graph engine's own rule (`roko_graph::exclusion`): the same
-/// path, or a directory and a path inside it. The engine runs such tasks one
-/// after the other, so the plan gives up parallelism its author meant to have.
-/// A task without `files` declares nothing and is never flagged.
+/// path, or a directory and a path inside it; two tasks that name the same
+/// build-registration file do not overlap on it (bug-daa54e). The engine runs
+/// such tasks one after the other, so the plan gives up parallelism its author
+/// meant to have. A task without `files` declares nothing and is never
+/// flagged.
 fn concurrent_overlaps(tasks: &TasksFile) -> Vec<PlanPolicyViolation> {
     let dependency_map = tasks
         .tasks

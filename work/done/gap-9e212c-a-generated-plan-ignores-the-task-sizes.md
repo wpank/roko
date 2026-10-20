@@ -2,7 +2,7 @@
 id = "gap-9e212c"
 kind = "gap"
 title = "A generated plan ignores the task sizes a spec's notes state (phase 2: about 80 lines for T4), so every task comes out architectural and starts on the top rung"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p2"
 goal = "golden-path"
@@ -11,6 +11,7 @@ subsystem = ["roko-cli/plan-generate"]
 created = 2026-10-20
 updated = 2026-10-20
 last_verified = 2026-10-20
+last_verified_rev = "d7d1fbb8b"
 source = "round-v7-hermes-pilot#E-p2-rumble-3"
 discovered_from = "agent:hermes-pilot (round v7 phase 2, plan p2-undertow-rumble-3)"
 anchors = ["crates/roko-cli/src/plan_generate/pipeline.rs::generate_plan", "crates/roko-cli/src/plan_generate/source_checks.rs::assign_runs"]
@@ -18,6 +19,16 @@ links = { depends_on = [], blocks = [], related = ["bug-72dc0d"], supersedes = [
 
 [[verify]]
 command = "grep -rqw 'fn a_specs_stated_sizes_set_its_tasks_tiers' crates/roko-cli/src && cargo test -p roko-cli --lib -- a_specs_stated_sizes_set_its_tasks_tiers"
+
+[closed]
+at = 2026-10-20
+at_ts = "2026-10-20T18:16:49Z"
+commit = "3143d16db"
+by = "roko-planner (round v7)"
+executor = "claude-agent"
+via = "manual"
+forced = false
+evidence = "Merged d7d1fbb8b (work/plan-058-tests: 3143d16db), on top of roko-exact's bug-56a806. plan_generate/sizes.rs: a list item of the source (or of a document it names) that says \"about N lines\" and names files in code spans (and the short form `PluginProcessor.h/.cpp`) sizes the task that writes most of those files as a share of its files (a tie sizes none); a planner tier larger than the smallest tier whose line budget covers N is repaired down, max_loc clamped into that budget, and logged (\"T4: tier architectural became integrative, the smallest whose 150 lines cover the about 80 lines its source states\"); a smaller tier is left for the tier-size check, and a task the notes do not size keeps its tier. Verify at d7d1fbb8b: a_specs_stated_sizes_set_its_tasks_tiers passes (phase 2's spec at 3c84c86 and rumble-3's plan: sizes 200/160/80; T4 integrative with max_loc 150; T2, T3 architectural; T1, unsized, architectural; a smaller tier not raised), with a_short_form_names_two_files and the 83 other plan_generate::pipeline tests, roko-exact's included. Branch: roko-cli lib 3931 passed, 0 failed; clippy -D warnings clean. $0 replay of rumble-3 before (a pre-tiers binary): all four tasks architectural/300; the \"after\" replay runs on the lead's next binary."
 +++
 
 ## Problem

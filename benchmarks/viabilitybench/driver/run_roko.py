@@ -14,7 +14,9 @@ Before the first task, `preflight` emits the plan of a stand-in task into a scra
    an equal share of the task's worst case, $0 when unbilled), because Roko retries without the driver. A refusal
    ends the task `aborted_cap` (reason `budget`) before any model call. Then it runs
    `roko --repo <ws> --model <m> plan run <plan> --no-tui` (never `roko run`), in its own session, killed at the
-   task's wall-clock cap (status `timeout`);
+   task's wall-clock cap (status `timeout`). An arm whose `[roko]` table says `audit = false` adds `--no-audit`
+   (`run_switches`): Roko audits a share of its passes by default since 22ac6f06b (gap-d76b1b), and an audit
+   dispatches models besides the arm's own (bug-082810), so a pinned arm turns them off;
 4. reads Roko's records (`read_evidence`), makes one attempt per dispatch and checks each (`settle`);
 5. appends one ledger row per attempt, which releases its reservation, and releases the reservations of the attempts
    Roko did not make. It copies Roko's records to `<run_dir>/s01/<key>/`, and removes `roko.toml`,
@@ -151,6 +153,7 @@ API:
     settle(evidence, *, chain_key, model, provider, snapshot, reserved_usd, max_attempts, roko_build=None,
            swap=None, rungs=()) -> (list[RokoAttempt], list[str])
     arm_prompt(arm) -> {"version", "sha256"}                      # what `vb run` records as the arm's prompt
+    run_switches(arm) -> list[str]                                # `plan run`'s switches: --no-audit for audit = false
     RokoAttempt(harness.Attempt); Evidence; binary_path(arm) -> Path
 """
 
@@ -312,8 +315,8 @@ def run_task(ctx: harness.TaskContext) -> harness.TaskOutcome:
         _reserve(ctx.ledger, keys, task_bound / (max_retries + 1) if ctx.billed else 0.0)
         reserved = keys
         dispatched = True
-        ran = _roko([*head, "plan", "run", str(emitted.plan_dir), "--no-tui"], ctx.workdir, env, _left(ctx, clock),
-                    jail)
+        ran = _roko([*head, "plan", "run", str(emitted.plan_dir), "--no-tui", *run_switches(ctx.arm)], ctx.workdir,
+                    env, _left(ctx, clock), jail)
         transcript.append(ran.event("run"))
         evidence = read_evidence(ctx.workdir, emitted.slug, proxy_rows=_proxy_rows(ctx))
         attempts, problems = settle(evidence, chain_key=ctx.chain_key, model=ctx.model,
@@ -418,6 +421,12 @@ def arm_prompt(arm: dict) -> dict[str, str]:
     return planemit.template_identity(ladder=_routed(arm),
                                       provider_kind=arm.get("roko", {}).get("provider_kind", "openai_compat"),
                                       overlay=bool(arm.get("overlay")))
+
+
+def run_switches(arm: dict) -> list[str]:
+    """`plan run`'s switches from the arm's `[roko]` table (step 3): `audit = false` gives `--no-audit`, which sets
+    `[audit] enabled = false` for the run (gap-d76b1b). Without the key the run keeps Roko's default."""
+    return ["--no-audit"] if arm.get("roko", {}).get("audit") is False else []
 
 
 def _routed(arm: dict) -> bool:

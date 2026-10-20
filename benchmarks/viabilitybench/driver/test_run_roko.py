@@ -349,6 +349,15 @@ def one_more_newline(template: str | object) -> str | object:
     return lambda resolved: (template(resolved) + "\n") if resolved else ""
 
 
+def test_only_an_arm_that_turns_audits_off_runs_plan_run_with_no_audit():
+    # gap-d76b1b turned Roko's audits on by default; roko_fixed turns them off, so its runs call only the pin.
+    def arm(name: str) -> dict:
+        return tomllib.loads((layout.ARMS_DIR / f"{name}.toml").read_text())
+
+    assert run_roko.run_switches(arm("roko_fixed")) == ["--no-audit"]
+    assert run_roko.run_switches({"roko": {"audit": True}}) == run_roko.run_switches({"roko": {}}) == []
+
+
 def test_the_roko_arms_prompt_hash_covers_every_template(places, tmp_path, monkeypatch):
     """bug-85e982: the prompt `vb run` records for a Roko arm (`vb.runner_prompt`: the run config's `prompt`, and so its
     `config_hash`) names the planemit templates that arm's plans are emitted from (`run_roko.arm_prompt`), not only
@@ -477,6 +486,8 @@ def test_pinned_run_records_attempts_and_leaves_only_the_agents_tree(places, tmp
     validate_argv, run_argv = calls[1]["argv"], calls[2]["argv"]
     assert validate_argv[validate_argv.index("plan"):][:4] == ["plan", "validate", "--strict", "--dag"]
     assert run_argv[run_argv.index("plan"):][:2] == ["plan", "run"] and "--no-tui" in run_argv
+    # The arm file's `audit = false`: audits are on by default since gap-d76b1b and dispatch other models (bug-082810).
+    assert "--no-audit" in run_argv and "--no-audit" not in validate_argv
     for argv in (validate_argv, run_argv):
         assert argv[argv.index("--model") + 1] == PIN and "--no-serve" in argv
     env = calls[2]["env"]

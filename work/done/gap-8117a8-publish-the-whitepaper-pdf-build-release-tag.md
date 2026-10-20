@@ -2,16 +2,16 @@
 id = "gap-8117a8"
 kind = "gap"
 title = "Publish the whitepaper: PDF build, release tag and venue"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p1"
 goal = "whitepaper"
 size = "S"
 subsystem = ["docs/whitepaper"]
 created = 2026-09-29
-updated = 2026-10-18
-last_verified = 2026-09-29
-last_verified_rev = "35e06c980"
+updated = 2026-10-20
+last_verified = 2026-10-20
+last_verified_rev = "815f512e2"
 source = "tmp/cybernetic-harness/workstreams/PLAN.md#e1"
 discovered_from = "tmp/cybernetic-harness/workstreams/PLAN.md (§3 E1, item 17)"
 anchors = ["docs/whitepaper/build.sh", "docs/whitepaper/README.md"]
@@ -21,6 +21,16 @@ links = { depends_on = ["gap-8d2c79", "dec-2cd76a"], blocks = [], related = ["sp
 
 [[verify]]
 command = "test -x docs/whitepaper/build.sh && git rev-parse -q --verify refs/tags/whitepaper-v1 && grep -q '^Published: whitepaper-v1' docs/whitepaper/README.md"
+
+[closed]
+at = 2026-10-20
+at_ts = "2026-10-20T10:33:13Z"
+commit = "815f512e2"
+by = "coordinator 2026-10-20"
+executor = "claude-session"
+via = "manual"
+forced = false
+evidence = "Published 2026-10-20 on Will's go (decision 2026-10-18 #5, re-confirmed 2026-10-20 after PR #87 merged as dd11b6700): annotated tag whitepaper-v1 on dd11b6700, GitHub release https://github.com/wpank/roko/releases/tag/whitepaper-v1 with roko-whitepaper-v1.pdf (231,622 bytes, sha256 9652c1543299b2ebe22f835b345f5eecff2b2035d3606c49af17a2b43c9ffd4d), built by docs/whitepaper/build.sh from 5f7ff82ab (whitepaper tree identical to dd11b6700). docs/whitepaper/README.md carries the Published line (815f512e2); paperlint --strict --require-status reviewed: 11 files clean."
 +++
 
 ## Problem

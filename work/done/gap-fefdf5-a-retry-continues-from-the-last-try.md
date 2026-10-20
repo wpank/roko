@@ -2,7 +2,7 @@
 id = "gap-fefdf5"
 kind = "gap"
 title = "A retry continues from the last try's tree even after it broke a step an earlier try passed, so retries compound a regression and lose the passing code (Undertow phase 2 run 82b7e069: T3 try 2 broke P2.10, tries 3-4 started from the broken tree, exhausted)"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p1"
 goal = "golden-path"
@@ -11,6 +11,7 @@ subsystem = ["roko-cli/graph_task_dispatch"]
 created = 2026-10-20
 updated = 2026-10-20
 last_verified = 2026-10-20
+last_verified_rev = "4005a1fb9"
 source = "round-v7-roko-ladder#best-try-ratchet"
 discovered_from = "agent:roko-ladder (round v7, run 82b7e069 analysis)"
 anchors = ["crates/roko-cli/src/graph_task_dispatch/step_ratchet.rs", "crates/roko-cli/src/graph_task_dispatch/diff_snapshot.rs", "crates/roko-cli/src/graph_task_dispatch/retry_feedback.rs"]
@@ -18,6 +19,16 @@ links = { depends_on = [], blocks = [], related = ["gap-6dba88", "bug-ba0c40", "
 
 [[verify]]
 command = "grep -rqw 'fn a_retry_after_a_regression_starts_from_the_best_try' crates/roko-cli/ && cargo test -p roko-cli --lib -- a_retry_after_a_regression_starts_from_the_best_try"
+
+[closed]
+at = 2026-10-20
+at_ts = "2026-10-20T21:26:21Z"
+commit = "4005a1fb9"
+via = "manual"
+size = "M"
+claimed_at = "2026-10-20T20:23:58Z"
+forced = false
+evidence = "Tests in graph_task_dispatch/best_try.rs, through the real dispatcher with per-task worktrees and a fake Claude CLI ($0): a_retry_after_a_regression_starts_from_the_best_try reproduces T3's shape. Try 1 passes verify[0] and verify[1] of 3; try 2 breaks verify[0], and its later steps still run (verdict steps [false, true, false], not fail-fast skips); before try 3 roko puts try 1's files back (try 3 sees a.txt = A, and try 2's c.txt is gone), try 3's prompt carries 'Kept by roko: try 1', and try 3 passes. Red before the ratchet: try 3 failed from try 2's broken tree. a_try_that_passed_nothing_continues_in_place: try 1 passes nothing, try 2 sees its work and no restore. roko-cli lib 3938 passed, 2 failed (a_cancel_stops_the_post_merge_regression_check and bug-e362a1's heartbeat test, both load-flaky, both pass alone); dispatch_feedback_projection_e2e 3 passed; clippy -D warnings and nightly fmt clean. attempt_workspace.rs is untouched (bug-ba0c40)."
 +++
 
 ## Problem

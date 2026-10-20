@@ -2,7 +2,7 @@
 id = "gap-b78706"
 kind = "gap"
 title = "GET /api/plans/{id} doesn't say whether the plan has a run a resume would continue, so a chat host learns it only from plan_run's refusal, after its person approved paid work"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p2"
 goal = "golden-path"
@@ -11,6 +11,7 @@ subsystem = ["roko-serve/plans"]
 created = 2026-10-20
 updated = 2026-10-20
 last_verified = 2026-10-20
+last_verified_rev = "6d1c896bd"
 source = "round-v7-roko-ladder#cbdb6b-precheck"
 discovered_from = "agent:plugin-wow (P-14: ask before Hermes' approval prompt)"
 anchors = ["crates/roko-serve/src/routes/plans/reads.rs::get_plan"]
@@ -18,6 +19,14 @@ links = { depends_on = [], blocks = [], related = ["bug-cbdb6b"], supersedes = [
 
 [[verify]]
 command = "grep -rqw 'fn a_plan_says_whether_it_has_a_run_a_resume_would_continue' crates/ && cargo test -p roko-serve -- a_plan_says_whether_it_has_a_run_a_resume_would_continue"
+
+[closed]
+at = 2026-10-20
+at_ts = "2026-10-20T10:10:46Z"
+commit = "6d1c896bd"
+by = "roko-ladder"
+forced = false
+evidence = "6d1c896bd: GET /api/plans/{id} carries resumable_run, the run the plan checkpoint records with its status, passed tasks and tasks left while a resume would continue it (CheckpointRun, resumable), else null, from the same CliRuntime::checkpoint_run lookup plan_run's refusal uses (bug-cbdb6b); reading it changes nothing and an unreadable checkpoint leaves null (reads.rs get_plan). The run's plan directory and the one it reads come from one helper (plans.rs plan_dir_of, used by start_plan_run_with too). Test a_plan_says_whether_it_has_a_run_a_resume_would_continue: red at 5de243ec8 (resumable_run absent: left Null, right the failed run), green now; it also shows null for a finished run and for no checkpoint, and that nothing runs. Checks: roko-serve lib 1069 passed plus its 15 integration targets; clippy -D warnings (roko-serve) and nightly rustfmt clean."
 +++
 
 ## Problem

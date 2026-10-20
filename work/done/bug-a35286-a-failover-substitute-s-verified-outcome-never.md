@@ -2,7 +2,7 @@
 id = "bug-a35286"
 kind = "bug"
 title = "A failover substitute's verified outcome never reaches the self-model's estimate for the model that ran it (runtime_feedback/self_model.rs unit_of: \"nobody chose it\"), so gpt-5.4-mini stays at 0 of 2 after Undertow phase 1's 44 s, $0.02 pass and is forecast at P(VS) 0.15"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p2"
 goal = "cybernetic"
@@ -11,6 +11,7 @@ subsystem = ["roko-cli/runtime_feedback", "roko-learn/self_model"]
 created = 2026-10-20
 updated = 2026-10-20
 last_verified = 2026-10-20
+last_verified_rev = "6bc4ba76c"
 source = "round-v7-hermes-pilot#H-self-model"
 discovered_from = "agent:hermes-pilot (round v7, self-model shadow review of Undertow phases 0-1)"
 anchors = ["crates/roko-cli/src/runtime_feedback/self_model.rs::unit_of", "crates/roko-cli/src/graph_task_dispatch/self_model.rs::settle"]
@@ -18,6 +19,18 @@ links = { depends_on = [], blocks = [], related = ["find-816b4b", "gap-74893d"],
 
 [[verify]]
 command = "grep -rqw 'fn a_failover_substitutes_verified_pass_counts_in_its_models_estimate' crates/roko-cli/src && cargo test -p roko-cli --lib -- a_failover_substitutes_verified_pass_counts_in_its_models_estimate"
+
+[closed]
+at = 2026-10-20
+at_ts = "2026-10-20T17:29:47Z"
+commit = "6bc4ba76c"
+by = "roko-speed"
+executor = "claude-agent"
+via = "manual"
+size = "M"
+claimed_at = "2026-10-20T16:38:06Z"
+forced = false
+evidence = "6bc4ba76c. runtime_feedback/self_model.rs unit_of keeps a verdict with a failover chain as a unit marked failover (the model that ran, as dispatched); SelfModel::observe_with and observe_vs learn it like any other unit (L0 strata, L1, cost model, history); SelfModelRuntime::settle keeps it out of the calibration window and policy (a)'s margin; roko learn self-model fit (fit_offline) learns it without scoring it; IngestReport::training_units keeps it. The literal verify passes on the branch: a_failover_substitutes_verified_pass_counts_in_its_models_estimate settles two routed GateFailed tries on openai/gpt-5.4-mini and a Passed one with failover_chain [glm-4.7] (Undertow phase 1's T1 order): outcomes 3, the gpt-5.4-mini forecast rises, the calibration window holds 2 (only the routed tries), and the saved state's stratum is n 2.94 (3 outcomes under L0's forgetting 0.98), k 1, where it was 0 of 2. Full lib suites on the branch: roko-cli 3928 passed (7 ignored, share_run_scrubs_output_text_and_prompt skipped), roko-core 2044, roko-learn 1385, roko-serve 1073; the learn_self_model and fit_reports bin tests 5 passed; cargo +nightly fmt and clippy -D warnings on roko-core, roko-learn, roko-serve and roko-cli clean."
 +++
 
 ## Problem

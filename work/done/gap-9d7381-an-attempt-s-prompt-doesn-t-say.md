@@ -2,7 +2,7 @@
 id = "gap-9d7381"
 kind = "gap"
 title = "An attempt's prompt doesn't say its build trees are prebuilt, so an agent may delete or reconfigure them and throw the warm build away (phase 0 run 2: rm -rf build/plugin, 101.7 s; warm first build 12.5 s against 217 s cold)"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p2"
 goal = "golden-path"
@@ -11,6 +11,7 @@ subsystem = ["roko-cli/dispatch"]
 created = 2026-10-20
 updated = 2026-10-20
 last_verified = 2026-10-20
+last_verified_rev = "5495afea9"
 source = "round-v7-roko-ladder#warm-hint"
 discovered_from = "agent:roko-ladder (round v7 warm-build check, roko c25301eef)"
 anchors = ["crates/roko-cli/src/dispatch/prompt_builder.rs", "crates/roko-cli/src/dispatch/mod.rs::DispatchContext"]
@@ -18,6 +19,13 @@ links = { depends_on = [], blocks = [], related = [], supersedes = [], duplicate
 
 [[verify]]
 command = "grep -rqw 'fn a_checkout_with_warm_build_trees_is_told_to_keep_them' crates/ && cargo test -p roko-cli --lib -- a_checkout_with_warm_build_trees_is_told_to_keep_them"
+
+[closed]
+at = 2026-10-20
+at_ts = "2026-10-20T17:31:41Z"
+commit = "5495afea9"
+forced = false
+evidence = "Test a_checkout_with_warm_build_trees_is_told_to_keep_them (two trees, one, none, and the minimal-context roles): red before the section existed, green after. roko-cli lib 3924 passed, 0 failed, 7 ignored (share test skipped); dispatch_feedback_projection_e2e 3 passed; loop_audit_faults checked with --features fault-injection; clippy -D warnings and nightly fmt clean. $0 stand-in run on a clone of Undertow a8031ad with build/plugin built (Undertow's roko.toml, stand-in CLI models, [runner] log_prompts on, two worktree tasks): each checkout got build/plugin warm, and both attempts' prompts carried, right after # Verify: '# Prebuilt build trees / `build/plugin` is already built in this checkout: build in it incrementally, and don't delete it or reconfigure it from scratch (`rm -rf`, `cmake --fresh`), which rebuilds everything.' With [gates] warm_build_dirs = [] no tree was given and neither prompt had the line. Diffed per task, the logged prompts differ only by those two lines."
 +++
 
 ## Problem

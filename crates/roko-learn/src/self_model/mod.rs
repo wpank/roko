@@ -6,13 +6,14 @@
 //!
 //! This module holds the types every part shares. Each part has its own file, which the backlog
 //! task named in its module comment fills: [`ingest`] and [`legacy`] read the data, [`metrics`]
-//! scores forecasts, [`prior`], [`features`], [`logit`], [`cost`] and [`recal`] forecast, and
-//! [`model`] combines them. The policies, replay, off-policy evaluation and the promotion gate
+//! scores forecasts, [`prior`], [`features`], [`logit`], [`false_green`], [`cost`] and [`recal`]
+//! forecast, and [`model`] combines them. The policies, replay, off-policy evaluation and the promotion gate
 //! follow.
 
 pub mod baselines;
 pub mod cascade;
 pub mod cost;
+pub mod false_green;
 pub mod features;
 pub mod gate;
 pub mod ingest;

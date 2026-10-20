@@ -418,13 +418,13 @@ impl SelfModelRuntime {
         weight: f64,
         source: LabelSource,
     ) -> bool {
-        let Some((mut unit, features)) = self.settled.lock().units.get(attempt_key).cloned() else {
+        let Some((mut unit, _)) = self.settled.lock().units.get(attempt_key).cloned() else {
             return false;
         };
         unit.label.y_vs = Some(y_vs);
         unit.label.weight = weight;
         unit.label.source = source;
-        self.model.write().observe_vs(&unit, &features, weight);
+        self.model.write().observe_vs(&unit, weight);
         true
     }
 

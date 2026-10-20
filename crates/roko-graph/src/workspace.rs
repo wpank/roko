@@ -258,6 +258,11 @@ pub struct WorkspaceAcceptRequest {
     pub verdict: String,
     /// Task title, for the commit subject.
     pub title: String,
+    /// The task's `files`. Build output the attempt left that they do not
+    /// name, such as a `target/` that cargo run from a crate's directory
+    /// wrote, stays out of the commit (bug-ba0c40).
+    #[serde(default)]
+    pub files: Vec<String>,
 }
 
 /// An accepted attempt: the commit holding its work, and where its plan now

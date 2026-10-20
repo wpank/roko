@@ -301,9 +301,12 @@ fn seed_repo(repo: &Path, config: &str) {
 /// `roko --json plan run plans/golden-path` in `repo` through the built
 /// binary, as a user whose home is `home`, without the invoking
 /// environment's `ROKO_*` variables, log and config variables. Cargo builds
-/// into each checkout's own `target/` (a relative `CARGO_TARGET_DIR`), so no
-/// task's worktree reuses crates another one built from older sources, and
-/// finds its toolchains where the real home keeps them.
+/// into each checkout's own `target/` at its workspace root, since no
+/// `CARGO_TARGET_DIR` is set, so no task's worktree reuses crates another one
+/// built from older sources, and finds its toolchains where the real home
+/// keeps them. A relative `CARGO_TARGET_DIR` would put the output of cargo
+/// run from a crate's directory in that crate, where the seed's `.gitignore`
+/// does not reach (bug-ba0c40).
 fn plan_command(repo: &Path, home: &Path) -> Command {
     let mut command = Command::new(cargo_bin("roko"));
     command
@@ -311,7 +314,7 @@ fn plan_command(repo: &Path, home: &Path) -> Command {
         .args(["--json", "plan", "run", "plans/golden-path", "--workdir"])
         .arg(repo)
         .env("HOME", home)
-        .env("CARGO_TARGET_DIR", "target");
+        .env_remove("CARGO_TARGET_DIR");
     // Without these, rustup and cargo look for their homes under HOME.
     if let Some(real_home) = std::env::var_os("HOME").map(PathBuf::from) {
         for (name, dir) in [("CARGO_HOME", ".cargo"), ("RUSTUP_HOME", ".rustup")] {
@@ -376,9 +379,10 @@ fn place(verdict: &Value) -> String {
 /// What a run of the fixture plan in `repo` must show, scripted or live: it
 /// exited 0 with one delivered batch, every task's last attempt passed and
 /// none ran pinned, and the seed's `main` takes the batch branch by
-/// fast-forward, after which the seed, built into `target`, passes the
-/// plan's whole-plan check. Returns each task's attempts, in order, as
-/// [`place`]s.
+/// fast-forward. The merge changes only paths some task's `files` name, so
+/// no build output or other stray file was delivered (bug-ba0c40), and the
+/// seed, built into `target`, then passes the plan's whole-plan check.
+/// Returns each task's attempts, in order, as [`place`]s.
 fn assert_merges_green(
     repo: &Path,
     plan: &TasksFile,
@@ -416,7 +420,26 @@ fn assert_merges_green(
         assert!(!pinned, "{id} ran pinned: {tried:?}");
     }
 
+    let seed = git(repo, &["rev-parse", "HEAD"]);
     git(repo, &["merge", "--ff-only", branch]);
+    // The fixture's `files` name exact paths.
+    let changed = git(
+        repo,
+        &["diff", "--name-only", "--no-renames", &seed, "HEAD"],
+    );
+    let undeclared: Vec<&str> = changed
+        .lines()
+        .filter(|path| {
+            !plan
+                .tasks
+                .iter()
+                .any(|task| task.files.iter().any(|file| file == path))
+        })
+        .collect();
+    assert!(
+        undeclared.is_empty(),
+        "the delivered branch changes paths no task's files name: {undeclared:?}"
+    );
     for step in &plan.meta.verify {
         let (passed, printed) = sh(repo, target, &step.command);
         assert!(

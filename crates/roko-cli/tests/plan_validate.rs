@@ -12,6 +12,12 @@ fn write_plan(root: &Path, plan_id: &str, tasks_toml: &str) -> PathBuf {
     let plan_dir = root.join("plans").join(plan_id);
     fs::create_dir_all(&plan_dir).unwrap();
     fs::write(plan_dir.join("tasks.toml"), tasks_toml).unwrap();
+    // The fixtures' checks run cargo, which needs a manifest: without one,
+    // `plan validate` warns that they cannot pass (PLAN_059).
+    let manifest = root.join("Cargo.toml");
+    if !manifest.exists() {
+        fs::write(manifest, "[workspace]\n").unwrap();
+    }
     plan_dir
 }
 
@@ -448,6 +454,13 @@ verify = [{ phase = "structural", command = "test -f docs/slug.md" }]
 verfy = [{ phase = "structural", command = "grep -q slugify docs/slug.md" }]
 "#,
     );
+    // The test module T1 reads and its check runs.
+    fs::create_dir_all(temp.path().join("tests")).unwrap();
+    fs::write(
+        temp.path().join("tests/test_slug.py"),
+        "import unittest\n\n\nclass SlugTest(unittest.TestCase):\n    def test_slug(self):\n        pass\n",
+    )
+    .unwrap();
 
     let assert = run_validate(&temp, &["plans"]).success();
     let stdout = String::from_utf8_lossy(&assert.get_output().stdout);

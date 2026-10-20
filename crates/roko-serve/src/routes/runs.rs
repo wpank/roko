@@ -317,6 +317,22 @@ async fn get_run_summary(
 /// which the MCP `run_status` tool returns too.
 pub(super) async fn summarize_run(state: &Arc<AppState>, run_id: &str) -> Result<Value, ApiError> {
     let (mut summary, plan_ids) = summary_and_plans(state, run_id).await?;
+    // gap-3217a0: how each rung did, from the run's own records, and whether
+    // a higher rung beat a lower one.
+    let workdir = state.workdir.clone();
+    let io_run_id = run_id.to_string();
+    let rungs = blocking_io(move || {
+        let dir = roko_fs::RokoLayout::for_project(&workdir)
+            .runs_dir()
+            .join(&io_run_id);
+        let records = roko_learn::telemetry::report::RunRecords::load(&dir).unwrap_or_default();
+        Ok(roko_learn::telemetry::rung_stats::RungReport::of(
+            std::slice::from_ref(&records),
+        ))
+    })
+    .await?;
+    summary["rungs"] = json!(rungs.rows);
+    summary["misordered"] = json!(rungs.misordered.map(|misorder| misorder.line));
     // gap-8409d0: an ended run's summary says where its verified work is, so a
     // chat host can tell its person what changed and how to take it.
     if summary["active"] == Value::Bool(false) {
@@ -2384,9 +2400,26 @@ fn run_summary(
     let mut milestones = BTreeMap::<&str, (usize, Value)>::new();
     // What the spec gate refused before any dispatch, `<task>: <rule>: <detail>`.
     let mut gate_refusals = Vec::<String>::new();
+    // The rungs the run said ran slow, as it went (gap-3217a0).
+    let mut rung_slow = Vec::<Value>::new();
     for (place, item) in events.iter().enumerate() {
         let value = &item.value;
         let kind = event_type(value).unwrap_or_default();
+        if kind == "rung_slow" {
+            let data = event_data(value);
+            rung_slow.push(json!({
+                "plan_id": event_plan_id(value),
+                "task_id": event_task_id(value),
+                "rung": data.get("rung"),
+                "model": data.get("model"),
+                "reason": data.get("reason"),
+                "bound_secs": data.get("bound_secs"),
+                "secs_per_call": data.get("secs_per_call"),
+                "model_calls": data.get("model_calls"),
+                "detail": data.get("detail"),
+                "at": event_time(value),
+            }));
+        }
         if kind == "event_log_entry"
             && string_field(value, "event_type") == Some("spec.gate.refused")
         {
@@ -2577,6 +2610,7 @@ fn run_summary(
         },
         "untrusted_input_boundary": boundaries,
         "milestones": milestones,
+        "rung_slow": rung_slow,
         "started_at": summary["started_at"],
         "finished_at": summary["finished_at"],
         "links": run_links(run_id),
@@ -3984,6 +4018,112 @@ mod tests {
         assert_eq!(summary["verdict"], "unverified", "{summary}");
         assert_eq!(summary["tasks"]["unverified"], 1, "{summary}");
         assert_eq!(summary["tasks"]["failed"], 0, "{summary}");
+    }
+
+    /// gap-3217a0: a run's summary lists each rung's tries from the run's own
+    /// records, with their passes, time and cost, says when a higher rung
+    /// beat a lower one, and names the rungs the run said ran slow.
+    #[tokio::test]
+    async fn run_summary_lists_its_rungs() {
+        use roko_learn::telemetry::records::{
+            ATTEMPT_OPEN_SCHEMA, AttemptKey, AttemptLadder, AttemptOpenRecord, AttemptOutcome,
+            LadderReason, VERDICT_SCHEMA,
+        };
+        use roko_learn::telemetry::{AttemptIdentity, AttemptVerdictRecord};
+
+        let dir = tempfile::tempdir().unwrap();
+        let deploy_backend = Arc::from(
+            crate::deploy::create_backend("manual", None, None, None).expect("manual backend"),
+        );
+        let state = Arc::new(
+            AppState::new(
+                dir.path().to_path_buf(),
+                Arc::new(crate::runtime::NoOpRuntime),
+                roko_core::config::schema::RokoConfig::default(),
+                deploy_backend,
+            )
+            .expect("AppState::new"),
+        );
+        let index =
+            roko_fs::run_index::run_index_path(&state.layout.events_jsonl_path(), "r3").unwrap();
+        write_rows(
+            &index,
+            &[
+                json!({"type":"run.started","run_id":"r3","timestamp_ms":1,"plan_id":"p1"}),
+                json!({"type":"rung_slow","run_id":"r3","timestamp_ms":2,"plan_id":"p1","task_id":"T1","attempt":1,"rung":"mid","model":"glm-4.7","reason":"time_bound","bound_secs":900,"detail":"rung mid (glm-4.7) runs slow"}),
+                json!({"type":"run.completed","run_id":"r3","timestamp_ms":3,"outcome":"succeeded","total_cost_usd":0.6}),
+            ],
+        );
+        // Three tasks pass on mid in 10 minutes each, and on strong in under
+        // a minute each, for less.
+        let mut lines = Vec::new();
+        let mut seq = 0;
+        let mut stamp = |schema: &str, record: Value| {
+            seq += 1;
+            let mut line = json!({
+                "schema_version": schema,
+                "record_id": format!("r{seq}"),
+                "seq": seq,
+                "ts": "2026-10-20T00:00:00Z",
+            });
+            if let (Some(line), Value::Object(fields)) = (line.as_object_mut(), record) {
+                line.extend(fields);
+            }
+            lines.push(line);
+        };
+        for (task, rung, index, model, secs, usd) in [
+            ("T1", "mid", 1, "glm-4.7", 600, 0.10),
+            ("T2", "mid", 1, "glm-4.7", 600, 0.12),
+            ("T3", "mid", 1, "glm-4.7", 600, 0.11),
+            ("T4", "strong", 2, "gpt-5.4-mini", 40, 0.04),
+            ("T5", "strong", 2, "gpt-5.4-mini", 50, 0.05),
+            ("T6", "strong", 2, "gpt-5.4-mini", 45, 0.03),
+        ] {
+            let identity = AttemptIdentity::new(&AttemptKey::new("r3", "p1", task, 1));
+            let mut open = AttemptOpenRecord::new(identity.clone(), 1_000);
+            open.role = Some("implementer".to_string());
+            stamp(ATTEMPT_OPEN_SCHEMA, serde_json::to_value(&open).unwrap());
+            let mut verdict = AttemptVerdictRecord::settle(identity, AttemptOutcome::Passed, true);
+            verdict.ladder = Some(AttemptLadder {
+                rung: Some(rung.to_string()),
+                index: Some(index),
+                step: 0,
+                reason: LadderReason::Start,
+                exhausted: false,
+                router_pick: None,
+            });
+            verdict.executed.model_dispatched = Some(model.to_string());
+            verdict.timing.attempt_started_at = Some(1_000);
+            verdict.timing.settled_at = Some(1_000 + secs * 1_000);
+            verdict.cost.billed_usd = Some(usd);
+            stamp(VERDICT_SCHEMA, serde_json::to_value(&verdict).unwrap());
+        }
+        write_rows(
+            &state.layout.runs_dir().join("r3").join("attempts.jsonl"),
+            &lines,
+        );
+
+        let Json(summary) = get_run_summary(State(Arc::clone(&state)), Path("r3".into()))
+            .await
+            .unwrap();
+        let rungs = summary["rungs"].as_array().expect("rungs");
+        assert_eq!(rungs.len(), 2, "{summary}");
+        assert_eq!(rungs[0]["rung"], "mid", "{summary}");
+        assert_eq!(rungs[0]["model"], "glm-4.7", "{summary}");
+        assert_eq!(rungs[0]["verified_passes"], 3, "{summary}");
+        assert_eq!(rungs[0]["try_s"]["median"], 600.0, "{summary}");
+        assert_eq!(rungs[1]["rung"], "strong", "{summary}");
+        assert_eq!(rungs[1]["pass_s"]["median"], 45.0, "{summary}");
+        let misordered = summary["misordered"].as_str().expect("misordered");
+        assert!(
+            misordered.starts_with("strong (gpt-5.4-mini) is cheaper and faster per verified pass"),
+            "{misordered}"
+        );
+        let slow = summary["rung_slow"].as_array().expect("rung_slow");
+        assert_eq!(slow.len(), 1, "{summary}");
+        assert_eq!(slow[0]["rung"], "mid", "{summary}");
+        assert_eq!(slow[0]["reason"], "time_bound", "{summary}");
+        assert_eq!(slow[0]["bound_secs"], 900, "{summary}");
     }
 
     /// bug-74164c: a plan that did not finish delivered only its verified tasks, so

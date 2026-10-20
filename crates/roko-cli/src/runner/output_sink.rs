@@ -1527,6 +1527,13 @@ pub fn format_dashboard_event(
                 ),
             )
         }
+        // A rung that runs slow says so once (gap-3217a0).
+        DashboardEvent::RungSlow {
+            plan_id,
+            task_id,
+            detail,
+            ..
+        } => (format!("[{plan_id}/{task_id}]"), "!", detail.clone()),
         // A step that took a while on the base says so as it ends
         // (gap-e02ec4); a quick or cached one does not.
         DashboardEvent::SpecGateStep {

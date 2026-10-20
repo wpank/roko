@@ -421,6 +421,9 @@ impl GraphTaskDispatcher {
     ) {
         let verdict = &settled.verdict;
         let reason = self.take_try_reason(verdict);
+        // A rung whose tries spend minutes on each model call says so once
+        // (gap-3217a0).
+        self.note_rung_speed(&spec.plan_id, &task.id, verdict);
         let Some(tui) = &self.tui_bridge else {
             return;
         };

@@ -81,6 +81,15 @@ pub(super) enum BoundedStop {
 }
 
 impl BoundedStop {
+    /// The bound's kind, as a verdict records it (gap-3217a0).
+    pub(super) const fn kind(&self) -> &'static str {
+        match self {
+            Self::Turns(_) => roko_learn::telemetry::records::BOUND_TURNS,
+            Self::Spend(_) => roko_learn::telemetry::records::BOUND_SPEND,
+            Self::Time { .. } => roko_learn::telemetry::records::BOUND_TIME,
+        }
+    }
+
     /// The bound it reached, in words.
     pub(super) fn describe(&self) -> String {
         match self {
@@ -160,6 +169,11 @@ impl TryAllowance {
     /// How long the try may run on its rung, if its rung bounds its time.
     pub(super) fn time_limit(&self) -> Option<Duration> {
         self.time.as_ref().map(|time| time.limit)
+    }
+
+    /// The rung whose time bounds the try.
+    pub(super) fn time_rung(&self) -> Option<&str> {
+        self.time.as_ref().map(|time| time.rung.as_str())
     }
 
     /// The try has run its rung's time (bug-f0007b): it makes no further

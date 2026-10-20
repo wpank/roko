@@ -451,6 +451,7 @@ impl AttemptBook {
             harness: None,
             trust_exclusions: None,
             verify_depth: None,
+            bound: None,
             forecast: std::sync::OnceLock::new(),
             setup: AttemptSetup::default(),
             run,
@@ -500,6 +501,8 @@ pub(super) struct AttemptContext {
     /// DP3's verify depth for the attempt, for its verdict (gap-595e28);
     /// `None` until verification reaches DP3.
     verify_depth: Option<VerifyDepthRecord>,
+    /// The rung's bound the try ended at, for its verdict (gap-3217a0).
+    bound: Option<&'static str>,
     /// The self-model's forecast of the attempt, as its route event carries
     /// it (gap-aaaaae); unset until the self-model forecasts it.
     forecast: std::sync::OnceLock<roko_core::dashboard_snapshot::RouteForecast>,
@@ -570,6 +573,12 @@ impl AttemptContext {
     /// records; `None` when verification did not reach DP3.
     pub(super) fn record_verify_depth(&mut self, depth: Option<VerifyDepthRecord>) {
         self.verify_depth = depth;
+    }
+
+    /// The try ended at its rung's bound, `kind` (`turns`, `spend` or `time`),
+    /// which the verdict records (gap-3217a0).
+    pub(super) fn ended_at_bound(&mut self, kind: &'static str) {
+        self.bound = Some(kind);
     }
 
     /// The pre-verify screen found `findings`: paths the attempt changed
@@ -822,6 +831,7 @@ impl AttemptContext {
         verdict.harness = self.harness.as_ref().map(|decision| decision.stamp());
         verdict.trust_exclusions = self.trust_exclusions;
         verdict.verify_depth = self.verify_depth;
+        verdict.bound = self.bound.map(str::to_string);
         self.run.submit(verdict.clone());
         // DP1: a green attempt draws its audit ticket; the draw is only logged.
         // M1's audit boost of the θ it ran raises its rate (B7, 8127).

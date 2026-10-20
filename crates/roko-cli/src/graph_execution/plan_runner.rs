@@ -2529,6 +2529,24 @@ async fn run_graph_plan_body(
         tui.stop();
     }
 
+    // gap-3217a0: how each rung did, from the runs' own records.
+    let rungs = {
+        let runs_dir = graph_layout.runs_dir();
+        let mut run_ids: Vec<String> = plans
+            .iter()
+            .filter_map(|plan| graph_task_dispatcher.plan_run_id(&plan.id))
+            .collect();
+        run_ids.sort();
+        run_ids.dedup();
+        let records: Vec<roko_learn::telemetry::report::RunRecords> = run_ids
+            .iter()
+            .filter_map(|run_id| {
+                roko_learn::telemetry::report::RunRecords::load(&runs_dir.join(run_id)).ok()
+            })
+            .collect();
+        roko_learn::telemetry::rung_stats::RungReport::of(&records)
+    };
+
     if json {
         println!(
             "{}",
@@ -2545,6 +2563,8 @@ async fn run_graph_plan_body(
                 "max_parallel_plans": max_parallel_plans,
                 "plan_outcomes": plan_outcome_labels,
                 "interrupted_by": stopped_by.map(PlanRunInterrupt::label),
+                "rungs": rungs.rows,
+                "misordered": rungs.misordered.as_ref().map(|misorder| &misorder.line),
                 "batch": batch.as_ref().map(|batch| serde_json::json!({
                     "branch": batch.branch(),
                     "discarded": batch_discarded,
@@ -2608,6 +2628,11 @@ async fn run_graph_plan_body(
             .collect::<Vec<_>>();
         if !failed_plans.is_empty() {
             println!("Plans that did not succeed: {}", failed_plans.join(", "));
+        }
+        // How each rung did, and whether a higher one beat a lower one
+        // (gap-3217a0).
+        for line in rungs.lines() {
+            println!("{line}");
         }
         // Work no check ran on is never delivered: say where it is
         // (bug-db89d4).

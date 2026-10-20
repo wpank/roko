@@ -80,6 +80,7 @@ mod reflex_credit;
 mod retry_budget;
 mod retry_feedback;
 mod routing_context;
+mod rung_speed;
 pub mod self_model;
 mod served_model;
 mod sibling_settle;
@@ -306,6 +307,9 @@ pub struct GraphTaskDispatcher {
     /// allowance, with why; the next attempt resumes the partial work
     /// (gap-3e770b).
     allowance_stops: parking_lot::Mutex<HashMap<String, String>>,
+    /// What the run has seen of its rungs' speed, and the rungs it said run
+    /// slow (gap-3217a0).
+    rung_speed: parking_lot::Mutex<rung_speed::RungSpeed>,
     /// Each task's last routed step and why each unsettled try runs where it
     /// does, which its events say (gap-aaaaae).
     tries: parking_lot::Mutex<ladder::TryBook>,
@@ -428,6 +432,7 @@ impl GraphTaskDispatcher {
             turn_cap_retries: parking_lot::Mutex::new(HashMap::new()),
             timeout_retries: parking_lot::Mutex::new(HashMap::new()),
             allowance_stops: parking_lot::Mutex::new(HashMap::new()),
+            rung_speed: parking_lot::Mutex::default(),
             tries: parking_lot::Mutex::default(),
             task_attempts: parking_lot::Mutex::new(HashMap::new()),
             handed_back: parking_lot::Mutex::default(),
@@ -2066,6 +2071,9 @@ impl TaskDispatcher for GraphTaskDispatcher {
         // experiments learn from the verified outcome rather than from the
         // provider dispatch result.
         let settlement = Settlement::verified(&verification);
+        if let Some(stop) = &bounded {
+            attempt.ended_at_bound(stop.kind());
+        }
         let mut settled = attempt.settle(settlement, &dispatch_plan.model.slug, Some(&dispatch));
         settled.bound = bounded.as_ref().map(BoundedStop::describe);
         self.emit_feedback(

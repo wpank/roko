@@ -1,5 +1,4 @@
-//! L1: the per-rung online Bayesian logistic forecaster and its false-green head: backlog
-//! task 6113.
+//! L1: the per-rung online Bayesian logistic forecaster: backlog task 6113.
 //!
 //! Each gate rung r has an online logistic regression with a diagonal Laplace approximation,
 //! offset by L0's logit (S04 §4.2):
@@ -15,9 +14,9 @@
 //! λ2 is also the prior precision, so a feature never seen has variance 1/λ2. `p_gate` is the
 //! product of the rungs' forecasts, which handles fail-fast censoring: a rung after the first
 //! failure did not run and learns nothing. Each rung's offset is the logit of L0's forecast to
-//! the power 1/R, so the rungs multiply back to L0 before they learn. The false-green head
-//! learns P(VS = 0 | gates pass) from VS-labelled passes only, weighted 1/π, and stays at its
-//! prior until such labels exist. The routing target is p_vs = p_gate·(1 − p_fg).
+//! the power 1/R, so the rungs multiply back to L0 before they learn. The false-green head,
+//! which turns `p_gate` into the routing target p_vs = p_gate·(1 − p_fg), was a logistic head
+//! here until bug-7683aa; it is [`super::false_green`]'s pseudo-count rate now.
 
 use std::collections::BTreeMap;
 
@@ -29,7 +28,8 @@ use super::prior::{LCB_DELTA, normal_quantile};
 /// The diagonal ridge, λ2 (S04 §4.10).
 pub const LAMBDA2: f64 = 1.0;
 
-/// The false-green head's prior, P(VS = 0 | gates pass), until VS labels exist.
+/// The false-green head's prior, P(VS = 0 | gates pass), until VS labels exist
+/// ([`super::false_green`]).
 pub const FALSE_GREEN_PRIOR: f64 = 0.05;
 
 /// The logistic function, computed without overflow.
@@ -131,23 +131,13 @@ pub struct GateForecast {
     pub p_gate: f64,
     /// The product of the rungs' lower bounds.
     pub p_gate_lcb: f64,
-    /// P(a pass is a false green).
-    pub p_fg: f64,
-    /// P(verified success) = `p_gate`·(1 − `p_fg`).
-    pub p_vs: f64,
-    /// `p_gate_lcb`·(1 − `p_fg`).
-    pub p_vs_lcb: f64,
 }
 
-/// The per-rung forecasters and the false-green head.
+/// The per-rung forecasters.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct GateForecaster {
     /// One model per gate rung, keyed by rung name.
     rungs: BTreeMap<String, OnlineLogit>,
-    /// The false-green head.
-    false_green: OnlineLogit,
-    /// The false-green prior.
-    pub fg_prior: f64,
     /// The lower bounds' level, δ.
     pub delta: f64,
 }
@@ -156,8 +146,6 @@ impl Default for GateForecaster {
     fn default() -> Self {
         Self {
             rungs: BTreeMap::new(),
-            false_green: OnlineLogit::default(),
-            fg_prior: FALSE_GREEN_PRIOR,
             delta: LCB_DELTA,
         }
     }
@@ -187,33 +175,22 @@ impl GateForecaster {
             p_gate *= forecast.p;
             p_gate_lcb *= forecast.lcb;
         }
-        let p_fg = sigmoid(self.false_green.score(x, logit(self.fg_prior)));
-        GateForecast {
-            p_gate,
-            p_gate_lcb,
-            p_fg,
-            p_vs: p_gate * (1.0 - p_fg),
-            p_vs_lcb: p_gate_lcb * (1.0 - p_fg),
-        }
+        GateForecast { p_gate, p_gate_lcb }
     }
 
     /// Learn one attempt: each gate rung's outcome in the order the rungs run (`None` for a
-    /// rung that did not run), its VS label when audited (`y_vs`) and its weight `w`. Rungs
-    /// after the first failure are censored and learn nothing; the false-green head learns
-    /// only from a VS-labelled pass.
+    /// rung that did not run), with its weight `w`. Rungs after the first failure are censored
+    /// and learn nothing.
     pub fn observe(
         &mut self,
         x: &FeatureVector,
         p_l0: f64,
         rungs: &[(&str, Option<bool>)],
-        y_vs: Option<bool>,
         w: f64,
     ) {
         let offset = Self::rung_offset(p_l0, rungs.len());
-        let mut passed = !rungs.is_empty();
         for (rung, outcome) in rungs {
             let Some(outcome) = *outcome else {
-                passed = false;
                 break;
             };
             self.rungs
@@ -221,21 +198,9 @@ impl GateForecaster {
                 .or_default()
                 .update(x, offset, outcome, w);
             if !outcome {
-                passed = false;
                 break;
             }
         }
-        if passed && let Some(verified) = y_vs {
-            let offset = logit(self.fg_prior);
-            self.false_green.update(x, offset, !verified, w);
-        }
-    }
-
-    /// Learn the VS label of a pass whose rungs were learned before: the false-green head
-    /// alone.
-    pub fn observe_vs(&mut self, x: &FeatureVector, verified: bool, w: f64) {
-        let offset = logit(self.fg_prior);
-        self.false_green.update(x, offset, !verified, w);
     }
 
     /// The model of `rung`, when it has learned.
@@ -291,36 +256,14 @@ mod tests {
         let failed_build = [("build", Some(false)), ("test", Some(true))];
         let unfinished = [("build", Some(true)), ("test", None)];
         let passed = [("build", Some(true)), ("test", Some(true))];
-        gate.observe(&x, 0.5, &failed_build, None, 1.0);
-        gate.observe(&x, 0.5, &unfinished, None, 1.0);
+        gate.observe(&x, 0.5, &failed_build, 1.0);
+        gate.observe(&x, 0.5, &unfinished, 1.0);
         assert_eq!(gate.rung("build").map(|model| model.updates), Some(2.0));
         assert!(gate.rung("test").is_none(), "censored, then not run");
-        gate.observe(&x, 0.5, &passed, None, 1.0);
+        gate.observe(&x, 0.5, &passed, 1.0);
         assert_eq!(gate.rung("test").map(|model| model.updates), Some(1.0));
         // Before any rung learns, the rungs multiply back to L0's forecast.
         let fresh = GateForecaster::default().forecast(&x, 0.3, &["build", "test"]);
         assert!((fresh.p_gate - 0.3).abs() < 1e-9, "{fresh:?}");
-    }
-
-    #[test]
-    fn p_fg_stays_inert_without_vs_labels() {
-        let mut gate = GateForecaster::default();
-        let x = FeatureVector::from_pairs([("bias", 1.0), ("model:m", 1.0)]);
-        for passed in [true, true, false, true] {
-            gate.observe(&x, 0.6, &[("test", Some(passed))], None, 1.0);
-        }
-        let forecast = gate.forecast(&x, 0.6, &["test"]);
-        let inert = (forecast.p_fg - FALSE_GREEN_PRIOR).abs() < 1e-12;
-        assert!(inert, "{forecast:?}");
-        let expected = forecast.p_gate * (1.0 - FALSE_GREEN_PRIOR);
-        assert!((forecast.p_vs - expected).abs() < 1e-12);
-        // A VS-labelled false green on a pass moves it; a failed gate's VS label does not.
-        gate.observe(&x, 0.6, &[("test", Some(false))], Some(false), 1.0);
-        let after_fail = gate.forecast(&x, 0.6, &["test"]);
-        assert!((after_fail.p_fg - FALSE_GREEN_PRIOR).abs() < 1e-12);
-        gate.observe(&x, 0.6, &[("test", Some(true))], Some(false), 4.0);
-        let after_audit = gate.forecast(&x, 0.6, &["test"]);
-        assert!(after_audit.p_fg > FALSE_GREEN_PRIOR, "{after_audit:?}");
-        assert!(after_audit.p_vs_lcb <= after_audit.p_vs);
     }
 }

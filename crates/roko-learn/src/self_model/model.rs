@@ -1,9 +1,10 @@
 //! The `SelfModel` handle: forecast, observe, a versioned state file and a cold start:
 //! backlog task 6116.
 //!
-//! One object wires L0 ([`HierarchicalBeta`]), L1 ([`GateForecaster`]), the cost model
-//! ([`CostModel`]) and recalibration ([`Recalibrator`]) together, so the version, cold-start
-//! and state rules live in one place for every consumer (S04 §5). Units carry one gate
+//! One object wires L0 ([`HierarchicalBeta`]), L1 ([`GateForecaster`]), the false-green head
+//! ([`FalseGreenHead`]), the cost model ([`CostModel`]) and recalibration ([`Recalibrator`])
+//! together, so the version, cold-start and state rules live in one place for every consumer
+//! (S04 §5). Units carry one gate
 //! verdict, so L1 learns a single `gate` rung until units carry per-rung outcomes. The model
 //! counts gate labels toward its cold start and shadow period: S05's VS labels join later
 //! (decision 6102, 1b). An attempt the cost model's rows do not support is forecast from a
@@ -17,6 +18,7 @@ use roko_core::pricing_snapshot::PriceSnapshot;
 use serde::{Deserialize, Serialize};
 
 use super::cost::{CostModel, TYPICAL_ATTEMPT};
+use super::false_green::FalseGreenHead;
 use super::features::{
     FEATURE_SCHEMA, FeatureVector, PassEma, TaskFeatures, feature_vector, price_tier,
 };
@@ -62,8 +64,12 @@ pub struct SelfModel {
     attempt_prices: AttemptPrices,
     /// L0.
     prior: HierarchicalBeta,
-    /// L1 and the false-green head.
+    /// L1.
     gates: GateForecaster,
+    /// The false-green head, read once the model is warm (bug-7683aa). A state saved before it
+    /// existed loads with a fresh one, and ignores the logistic head it held in `gates`.
+    #[serde(default)]
+    false_greens: FalseGreenHead,
     /// The cost and latency regressions.
     costs: CostModel,
     /// The recalibration of `p_gate`.
@@ -146,6 +152,7 @@ impl SelfModel {
             attempt_prices: AttemptPrices::of(snapshot),
             prior: HierarchicalBeta::new(),
             gates: GateForecaster::default(),
+            false_greens: FalseGreenHead::default(),
             costs: CostModel::default(),
             recal: Recalibrator::default(),
             history: PassEma::default(),
@@ -187,16 +194,17 @@ impl SelfModel {
         let (p_gate, p_gate_lcb, p_fg, basis) = if cold_start {
             (l0.p, l0_lcb, FALSE_GREEN_PRIOR, ForecastBasis::Prior)
         } else {
-            let x = self.features(task, arm);
-            let gate = self.gates.forecast(&x, l0.p, &[GATE_RUNG]);
+            let p_fg = self.false_greens.forecast(&arm.model);
             if task.attempt <= 1 {
-                (l0.p, l0_lcb, gate.p_fg, ForecastBasis::Prior)
+                (l0.p, l0_lcb, p_fg, ForecastBasis::Prior)
             } else {
+                let x = self.features(task, arm);
+                let gate = self.gates.forecast(&x, l0.p, &[GATE_RUNG]);
                 let p_gate = self.recal.apply(gate.p_gate);
                 (
                     p_gate,
                     gate.p_gate_lcb.min(p_gate),
-                    gate.p_fg,
+                    p_fg,
                     ForecastBasis::Logit,
                 )
             }
@@ -246,7 +254,11 @@ impl SelfModel {
         let raw = self.gates.forecast(&x, l0.p, &[GATE_RUNG]).p_gate;
         self.recal.observe(raw, passed, w);
         let rungs = [(GATE_RUNG, Some(passed))];
-        self.gates.observe(&x, l0.p, &rungs, unit.label.y_vs, w);
+        self.gates.observe(&x, l0.p, &rungs, w);
+        // The false-green head learns only from a pass with a VS label (bug-7683aa).
+        if passed && let Some(verified) = unit.label.y_vs {
+            self.false_greens.observe(&arm.model, !verified, w);
+        }
         self.prior
             .observe(&arm.model, &task.family, &task.role, passed, w);
         let cost_x = cost_features(task, arm);
@@ -262,14 +274,13 @@ impl SelfModel {
     }
 
     /// Learn a late VS label of `unit` (S05's audits, weight 1/π) whose gate label the model has
-    /// already learned: only the false-green head moves, and only for a pass, a failover
-    /// substitute's included (bug-a35286).
-    pub fn observe_vs(&mut self, unit: &Unit, task: &TaskFeatures, w: f64) {
+    /// already learned: only the false-green head moves, for the model that ran, and only for a
+    /// pass, a failover substitute's included (bug-a35286).
+    pub fn observe_vs(&mut self, unit: &Unit, w: f64) {
         let (Some(true), Some(verified)) = (unit.label.y_gate, unit.label.y_vs) else {
             return;
         };
-        let x = self.features(task, &unit.arm);
-        self.gates.observe_vs(&x, verified, w);
+        self.false_greens.observe(&unit.arm.model, !verified, w);
     }
 
     /// The state file under the `.roko` directory `roko_dir`.
@@ -566,19 +577,58 @@ mod tests {
         let before = model.forecast(&task(), &arms)[0].clone();
         let mut failed = unit("gpt-oss-120b", "T2", 1, false);
         failed.label.y_vs = Some(false);
-        model.observe_vs(&failed, &task(), 5.0);
+        model.observe_vs(&failed, 5.0);
         assert_eq!(model.forecast(&task(), &arms)[0], before);
 
         let mut audited = unit("gpt-oss-120b", "T1", 1, true);
         audited.label.y_vs = Some(false);
         audited.label.source = LabelSource::Vs;
         for _ in 0..10 {
-            model.observe_vs(&audited, &task(), 5.0);
+            model.observe_vs(&audited, 5.0);
         }
         let after = model.forecast(&task(), &arms)[0].clone();
         assert!(after.p_fg > before.p_fg, "{before:?} then {after:?}");
         assert_eq!(after.p_gate, before.p_gate);
         assert_eq!(model.outcomes, N_MIN);
+    }
+
+    /// bug-7683aa: on a warm model, one audited false green at weight 20, S05's heaviest label
+    /// (π at its 0.05 floor), leaves the arm's p_fg well under 1, at about 0.14, and its P(VS)
+    /// near its pass rate. L1's logistic head put it at 1.0 for every arm. An arm with no label
+    /// moves only with the global rate, and a run of false greens still converges towards 1.
+    #[test]
+    fn one_audit_false_green_does_not_saturate_the_false_green_head() {
+        let arms = [
+            ArmKey::roko("cerebras", "glm-4.7"),
+            ArmKey::roko("cerebras", "gpt-5.4-mini"),
+        ];
+        let mut model = SelfModel::new(&snapshot());
+        for index in 0..N_MIN {
+            let passed = unit("glm-4.7", &format!("T{index}"), 1, true);
+            model.observe_with(&passed, &task(), 1.0);
+        }
+        assert!(!model.cold_start());
+        let before = model.forecast(&task(), &arms);
+        let mut audited = unit("glm-4.7", "T0", 1, true);
+        audited.label.y_vs = Some(false);
+        audited.label.source = LabelSource::Vs;
+        model.observe_vs(&audited, 20.0);
+        let after = model.forecast(&task(), &arms);
+        let (labelled, other) = (&after[0], &after[1]);
+        assert!(
+            labelled.p_fg > before[0].p_fg && labelled.p_fg < 0.15,
+            "{labelled:?}"
+        );
+        assert!(
+            other.p_fg > before[1].p_fg && other.p_fg < labelled.p_fg,
+            "{other:?}"
+        );
+        assert!(labelled.p_vs > 0.8 * labelled.p_gate, "{labelled:?}");
+        for _ in 0..200 {
+            model.observe_vs(&audited, 20.0);
+        }
+        let converged = &model.forecast(&task(), &arms)[0];
+        assert!(converged.p_fg > 0.95, "{converged:?}");
     }
 
     #[test]

@@ -1004,6 +1004,13 @@ fn longest_backtick_run(text: &str) -> usize {
     text.split(|c| c != '`').map(str::len).max().unwrap_or(0)
 }
 
+/// What a source check's own command must be, since roko runs it alone
+/// (bug-56a806): the planner hears it with the checks, and again when asked
+/// for a better plan (gap-115c2a).
+const SELF_CONTAINED: &str = "A source check's command must be self-contained and runs exactly as \
+                              written, so a check that needs a build includes the build in its own \
+                              command: a build put before it in a step is dropped.";
+
 /// The planner prompt's list of the source's `checks`, with how to keep
 /// each one; empty when the source states none. `states` says who states
 /// them ([`checks_stated_by`]).
@@ -1029,8 +1036,10 @@ pub(super) fn planner_block(checks: &[SourceCheck], states: &str) -> String {
         block.push_str(
             "A check given with `run:` has its command already: that command, unchanged, is its \
              step's whole command. Put no `grep -q`, file test or other command before or after \
-             it; roko runs the source's commands alone.\n\n",
+             it; roko runs the source's commands alone. ",
         );
+        block.push_str(SELF_CONTAINED);
+        block.push_str("\n\n");
     }
     if checks.iter().any(|check| check.plan_level) {
         block.push_str(
@@ -1660,12 +1669,17 @@ pub(super) fn regeneration_prompt(
             coverage.checks.len()
         )
     };
+    let own = if coverage.checks.iter().any(|check| check.run.is_some()) {
+        format!(" {SELF_CONTAINED}")
+    } else {
+        String::new()
+    };
     format!(
         "{task_prompt}\n\n---\n\n{kept}{problems}\n```toml\n{plan}\n```\n\n\
          Keep each source check as a verify step whose `covers` names it and whose command runs \
          a test of what it states: the check's own command alone, unchanged, when it comes with \
          one; else a test the repository has, or one the task writes, named in its description \
-         and guarded by a `grep -q` for it. When no command can check one, list \
+         and guarded by a `grep -q` for it.{own} When no command can check one, list \
          it in `[meta] dropped_checks` as `\"SCk: <why no command can check it>\"`. Fix each \
          step that cannot pass and each task no check can see, changing a task's role and \
          `files` where that takes it. Keep the rest of the plan as it is. Output the complete \
@@ -2389,5 +2403,34 @@ mod tests {
                 "cmake --build --preset core"
             ]
         );
+    }
+
+    /// gap-115c2a: roko runs a source check's own command alone (bug-56a806),
+    /// so a check that needs a build must build in its own command. The
+    /// planner hears it with the checks and when asked again; checks stated
+    /// in prose, which have no command, do not bring it.
+    #[test]
+    fn the_planner_is_told_a_check_command_runs_as_written() {
+        let source = "# Widget\n\n## Acceptance checks\n\n| Id | Command | Check |\n|---|---|---|\n\
+                      | W.01 | `tools/spec.sh widget spin` | the widget spins |\n";
+        let temp = tempfile::tempdir().expect("tempdir");
+        let mut checks = source_checks(source);
+        attach_runs(&mut checks, temp.path(), &Probe::with(&[], &[]));
+        assert_eq!(checks[0].run.as_deref(), Some("tools/spec.sh widget spin"));
+        assert!(SELF_CONTAINED.contains("must be self-contained"));
+        let block = planner_block(&checks, "The prompt states");
+        assert!(block.contains(SELF_CONTAINED), "{block}");
+        let plan = TasksFile::parse_str(
+            "[meta]\nplan = \"w\"\ntotal = 1\nstatus = \"ready\"\n\n\
+             [[task]]\nid = \"T1\"\ntitle = \"Spin\"\nstatus = \"ready\"\nrole = \"implementer\"\n\
+             tier = \"focused\"\n",
+        )
+        .expect("a plan");
+        let coverage = SourceCoverage::of(&checks, &plan, &[]);
+        let again = regeneration_prompt("Spin the widget.", "[meta]", &coverage, &[], &[]);
+        assert!(again.contains(SELF_CONTAINED), "{again}");
+
+        let prose = source_checks("## Verification\n\n- the widget spins\n");
+        assert!(!planner_block(&prose, "The prompt states").contains(SELF_CONTAINED));
     }
 }

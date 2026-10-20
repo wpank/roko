@@ -947,20 +947,29 @@ pub(super) fn problems(plan: &TasksFile, workdir: &Path, probe: &Probe) -> Vec<U
     let settled = settled_steps_with(plan, workdir, |command| {
         probe.settled_passes(command, workdir)
     });
+    // Round v7, phase-0 finding #2: a step that needs a later task's file
+    // says which task writes it.
+    let later = later_files(plan, workdir);
     let mut found = Vec::new();
     for (index, task) in plan.tasks.iter().enumerate() {
         let written = written_before_and_by(plan, index);
         for (number, step) in (1..).zip(&task.verify) {
-            let why = step_problem(&step.command, workdir, &written, probe).or_else(|| {
-                settled
-                    .iter()
-                    .find(|settled| {
-                        settled.task == task.id
-                            && settled.step == number
-                            && settled.passes == Some(false)
-                    })
-                    .map(SettledStep::why)
-            });
+            let needs_later = later
+                .iter()
+                .find(|later| later.task == task.id && later.step == number)
+                .map(LaterFile::why);
+            let why = needs_later
+                .or_else(|| step_problem(&step.command, workdir, &written, probe))
+                .or_else(|| {
+                    settled
+                        .iter()
+                        .find(|settled| {
+                            settled.task == task.id
+                                && settled.step == number
+                                && settled.passes == Some(false)
+                        })
+                        .map(SettledStep::why)
+                });
             if let Some(why) = why {
                 found.push(Unrunnable {
                     task: task.id.clone(),
@@ -1241,27 +1250,7 @@ pub fn read_only_files(command: &str) -> Option<Vec<String>> {
             .map(String::as_str)
             .skip_while(|word| *word == "!")
             .collect();
-        let (program, args) = words.split_first()?;
-        let files = match *program {
-            "grep" | "egrep" | "fgrep" => grep_files(args)?,
-            "test" => file_test(args)?,
-            "[" => file_test(args.strip_suffix(&["]"])?)?,
-            "cat" | "wc" => operand_files(args, &[])?,
-            "head" => operand_files(args, &["-n", "-c", "--lines", "--bytes"])?,
-            "tail" => {
-                let follows = args.iter().any(|arg| {
-                    arg.starts_with("--follow")
-                        || (arg.starts_with('-')
-                            && !arg.starts_with("--")
-                            && arg.contains(['f', 'F']))
-                });
-                if follows {
-                    return None;
-                }
-                operand_files(args, &["-n", "-c", "--lines", "--bytes"])?
-            }
-            _ => return None,
-        };
+        let files = command_reads(&words)?;
         reads.extend(files);
         reads.extend(inputs);
     }
@@ -1274,6 +1263,140 @@ pub fn read_only_files(command: &str) -> Option<Vec<String>> {
     Some(reads)
 }
 
+/// The files one plain command reads, when it is a `grep`, a file `test`,
+/// `cat`, `head`, `tail` or `wc` that only reads; `None` for any other.
+fn command_reads(words: &[&str]) -> Option<Vec<String>> {
+    let (program, args) = words.split_first()?;
+    Some(match *program {
+        "grep" | "egrep" | "fgrep" => grep_files(args)?,
+        "test" => file_test(args)?,
+        "[" => file_test(args.strip_suffix(&["]"])?)?,
+        "cat" | "wc" => operand_files(args, &[])?,
+        "head" => operand_files(args, &["-n", "-c", "--lines", "--bytes"])?,
+        "tail" => {
+            let follows = args.iter().any(|arg| {
+                arg.starts_with("--follow")
+                    || (arg.starts_with('-') && !arg.starts_with("--") && arg.contains(['f', 'F']))
+            });
+            if follows {
+                return None;
+            }
+            operand_files(args, &["-n", "-c", "--lines", "--bytes"])?
+        }
+        _ => return None,
+    })
+}
+
+/// The workspace files `command` cannot pass without, when `&&` alone joins
+/// its commands, so that a missing file fails it (round v7, phase-0 finding
+/// #2): what a `grep`, a file `test`, `cat`, `head`, `tail` or `wc` among them
+/// reads, the files `<` gives them, and each program it runs by its path. A
+/// negated command (`! grep …`, `test ! -f …`) needs nothing. `None` for a
+/// command that is not such a chain.
+pub(super) fn needed_files(command: &str) -> Option<Vec<String>> {
+    let line = plain_line(command)?;
+    if line.other_join {
+        return None;
+    }
+    let mut needed = Vec::new();
+    for (words, inputs) in &line.commands {
+        let words: Vec<&str> = words.iter().map(String::as_str).collect();
+        if words.contains(&"!") {
+            continue;
+        }
+        if let Some(program) = words.first().filter(|program| program.contains('/')) {
+            needed.push((*program).to_string());
+        }
+        needed.extend(command_reads(&words).unwrap_or_default());
+        needed.extend(inputs.iter().cloned());
+    }
+    let mut needed: Vec<String> = needed
+        .iter()
+        .filter_map(|path| inside_workspace(path))
+        .collect();
+    needed.sort();
+    needed.dedup();
+    Some(needed)
+}
+
+/// A verify step that needs a file the workspace lacks and that only tasks
+/// its own task does not wait for write (round v7, phase-0 finding #2): it
+/// cannot pass when its task ends.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LaterFile {
+    /// The step's task.
+    pub task: String,
+    /// The step's number among its task's verify steps, from 1.
+    pub step: usize,
+    /// The file it needs.
+    pub path: String,
+    /// The tasks that write the file.
+    pub writers: Vec<String>,
+    /// Whether every writer waits for the step's task, so runs after it;
+    /// otherwise a writer may run alongside it.
+    pub after: bool,
+}
+
+impl LaterFile {
+    /// Why the step cannot pass, for a person or the planner.
+    #[must_use]
+    pub fn why(&self) -> String {
+        let writers = self.writers.join(", ");
+        if self.after {
+            format!(
+                "it needs `{}`, which does not exist until {writers} writes it, and {writers} \
+                 runs after {}: check it in {writers}, or have {} write it",
+                self.path, self.task, self.task
+            )
+        } else {
+            format!(
+                "it needs `{}`, which does not exist until {writers} writes it, and {writers} \
+                 may run alongside {}: have {} wait for {writers}, or check it there",
+                self.path, self.task, self.task
+            )
+        }
+    }
+}
+
+/// The verify steps of `plan` that need a file `root` lacks and that only
+/// tasks their own task does not wait for write ([`needed_files`]): such a
+/// step cannot pass when its task ends. A plan imported from mori checked
+/// that each widget file existed in the task that wrote their module list,
+/// before the tasks that wrote the widgets.
+#[must_use]
+pub fn later_files(plan: &TasksFile, root: &Path) -> Vec<LaterFile> {
+    let mut found = Vec::new();
+    for (index, task) in plan.tasks.iter().enumerate() {
+        let written = written_before_and_by(plan, index);
+        for (number, step) in (1..).zip(&task.verify) {
+            for path in needed_files(&step.command).unwrap_or_default() {
+                if root.join(&path).exists() || is_written(&written, &path) {
+                    continue;
+                }
+                let writers: Vec<&TaskDef> = plan
+                    .tasks
+                    .iter()
+                    .filter(|other| other.id != task.id && is_written(&other.files, &path))
+                    .collect();
+                if writers.is_empty() {
+                    continue;
+                }
+                let after = writers
+                    .iter()
+                    .all(|writer| waits_for(plan, &writer.id, &task.id));
+                found.push(LaterFile {
+                    task: task.id.clone(),
+                    step: number,
+                    path,
+                    writers: writers.iter().map(|writer| writer.id.clone()).collect(),
+                    after,
+                });
+            }
+        }
+    }
+    found
+}
+
 /// The simple commands of `command` as their words, each with the files a
 /// `<` redirection reads into it, when the shell would run them as written:
 /// joined by `&&`, `||`, `|`, `|&`, `;` or a newline, with quoted or plain
@@ -1282,6 +1405,12 @@ pub fn read_only_files(command: &str) -> Option<Vec<String>> {
 /// background, read a here-document, or send output to a file other than
 /// `/dev/null`; and on a `#` comment or an unclosed quote.
 fn plain_commands(command: &str) -> Option<Vec<(Vec<String>, Vec<String>)>> {
+    plain_line(command).map(|line| line.commands)
+}
+
+/// What [`plain_commands`] reads of `command`, with whether anything but
+/// `&&` joins two of its commands.
+fn plain_line(command: &str) -> Option<PlainLine> {
     let mut line = PlainLine::default();
     let mut chars = command.chars().peekable();
     while let Some(c) = chars.next() {
@@ -1330,9 +1459,12 @@ fn plain_commands(command: &str) -> Option<Vec<(Vec<String>, Vec<String>)>> {
             // `cmd &` runs in the background.
             '&' if chars.peek() != Some(&'&') => return None,
             '\n' | ';' | '|' | '&' => {
+                // A lone `&` ended the parse above, so `&` here starts `&&`.
+                let and = c == '&';
                 if c != '\n' && c != ';' && matches!(chars.peek(), Some('&' | '|')) {
                     chars.next();
                 }
+                line.other_join |= !and;
                 line.end_command()?;
             }
             '>' | '<' => {
@@ -1391,7 +1523,7 @@ fn plain_commands(command: &str) -> Option<Vec<(Vec<String>, Vec<String>)>> {
         }
     }
     line.end_command()?;
-    Some(line.commands)
+    Some(line)
 }
 
 /// What a redirection wants as its next word.
@@ -1414,6 +1546,8 @@ struct PlainLine {
     /// Whether a word is being read; a quoted empty word is one.
     started: bool,
     target: Option<Redirect>,
+    /// Whether anything but `&&` joins two of its commands.
+    other_join: bool,
 }
 
 impl PlainLine {
@@ -2735,6 +2869,110 @@ pub(super) mod tests {
         ] {
             assert_eq!(reads(command), None, "{command}");
         }
+    }
+
+    /// Round v7, phase-0 finding #2: a plan imported from mori (05
+    /// terminal-widgets) checks, in the task that writes the widgets' module
+    /// list, that a widget's file exists, though only a widget task that
+    /// waits for it writes that file: the step can never pass, a PLAN_058
+    /// error. A writer that may run alongside is a warning. A negated test, a
+    /// chain with `||`, and a file that exists, that the task writes or that
+    /// a task it waits for writes are fine.
+    #[test]
+    fn a_check_needing_a_later_tasks_file_is_plan_058() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        std::fs::create_dir_all(temp.path().join("src")).expect("src");
+        std::fs::write(temp.path().join("src/main.rs"), "fn main() {}\n").expect("main");
+        let task = |id: &str, files: &str, depends_on: &str, steps: &[&str]| {
+            let steps: String = steps
+                .iter()
+                .map(|command| {
+                    format!("[[task.verify]]\nphase = \"check\"\ncommand = {command:?}\n\n")
+                })
+                .collect();
+            format!(
+                "[[task]]\nid = \"{id}\"\ntitle = \"Task {id}\"\nstatus = \"ready\"\n\
+                 role = \"implementer\"\ntier = \"focused\"\nfiles = [{files}]\n\
+                 depends_on = [{depends_on}]\n\n{steps}"
+            )
+        };
+        let toml = format!(
+            "[meta]\nplan = \"widgets\"\ntotal = 4\nstatus = \"ready\"\n\n{}{}{}{}",
+            task("T1", "\"src/palette.rs\"", "", &["test -f src/palette.rs"]),
+            task(
+                "T2",
+                "\"src/widgets/mod.rs\"",
+                "\"T1\"",
+                &[
+                    "test -f src/widgets/mod.rs && test -f src/palette.rs && test -f src/main.rs",
+                    "test -f src/widgets/sparkline.rs",
+                    "test ! -f src/widgets/gauge.rs && test -f src/widgets/mod.rs",
+                    "test -f src/widgets/gauge.rs || true",
+                    "grep -q Feed src/widgets/feed.rs",
+                ],
+            ),
+            task(
+                "T3",
+                "\"src/widgets/sparkline.rs\", \"src/widgets/gauge.rs\"",
+                "\"T2\"",
+                &[],
+            ),
+            task("T4", "\"src/widgets/feed.rs\"", "\"T1\"", &[]),
+        );
+        let plan = TasksFile::parse_str(&toml).expect("a plan");
+        let later = later_files(&plan, temp.path());
+        let found: Vec<(&str, usize, &str, bool)> = later
+            .iter()
+            .map(|later| {
+                (
+                    later.task.as_str(),
+                    later.step,
+                    later.path.as_str(),
+                    later.after,
+                )
+            })
+            .collect();
+        assert_eq!(
+            found,
+            [
+                ("T2", 2, "src/widgets/sparkline.rs", true),
+                ("T2", 5, "src/widgets/feed.rs", false),
+            ]
+        );
+        assert!(
+            later[0].why().contains("T3 runs after T2"),
+            "{}",
+            later[0].why()
+        );
+
+        let plan_dir = temp.path().join("plans/widgets");
+        std::fs::create_dir_all(&plan_dir).expect("the plan directory");
+        std::fs::write(plan_dir.join("tasks.toml"), &toml).expect("tasks.toml");
+        let report = crate::plan_validate::validate_plans_dir_with_workdir(
+            &plan_dir,
+            None,
+            Some(temp.path()),
+        )
+        .expect("validate");
+        let flagged: Vec<(String, Option<&str>)> = report.plans[0]
+            .diagnostics
+            .iter()
+            .filter(|diagnostic| diagnostic.rule_id == "PLAN_058")
+            .map(|diagnostic| {
+                (
+                    format!("{:?}", diagnostic.severity),
+                    diagnostic.task_id.as_deref(),
+                )
+            })
+            .collect();
+        assert_eq!(
+            flagged,
+            [
+                ("Error".to_string(), Some("T2")),
+                ("Warning".to_string(), Some("T2")),
+            ]
+        );
+        assert_eq!(report.exit_code(false), 1, "the plan cannot run");
     }
 
     /// bug-72dc0d: phase 2's planner checked a CMake project's tasks with

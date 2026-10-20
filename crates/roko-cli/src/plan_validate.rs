@@ -253,6 +253,28 @@ fn validate_plans_dir_impl(
                         ),
                     });
                 }
+                // Round v7, phase-0 finding #2: a check that needs a file only
+                // a task after its own writes cannot pass when its task ends
+                // (PLAN_058): an error when every writer waits for the task, a
+                // warning when one may run alongside it.
+                for later in roko_cli::plan_generate::later_files(&tasks_file, workdir) {
+                    plan.diagnostics.push(Diagnostic {
+                        severity: if later.after {
+                            Severity::Error
+                        } else {
+                            Severity::Warning
+                        },
+                        rule_id: "PLAN_058".to_string(),
+                        plan_id: Some(plan.plan_id.clone()),
+                        task_id: Some(later.task.clone()),
+                        message: format!(
+                            "task '{}' verify step {} cannot pass when its task ends: {}",
+                            later.task,
+                            later.step,
+                            later.why()
+                        ),
+                    });
+                }
                 // bug-d758f6: an implementer whose checks run code but whose
                 // tools leave out a shell cannot build or run them (PLAN_057).
                 for (task, command) in

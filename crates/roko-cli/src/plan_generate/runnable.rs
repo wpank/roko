@@ -1335,6 +1335,10 @@ pub struct LaterFile {
     /// Whether every writer waits for the step's task, so runs after it;
     /// otherwise a writer may run alongside it.
     pub after: bool,
+    /// How the step needs a file it does not name: its test includes it
+    /// (`its test includes \`ui/UiFrame.h\``), or uses the type it declares
+    /// (`its test uses \`UiFrame\``). `None` when the step names the file.
+    pub how: Option<String>,
 }
 
 impl LaterFile {
@@ -1342,16 +1346,20 @@ impl LaterFile {
     #[must_use]
     pub fn why(&self) -> String {
         let writers = self.writers.join(", ");
+        let how = self
+            .how
+            .as_ref()
+            .map_or_else(String::new, |how| format!(" ({how})"));
         if self.after {
             format!(
-                "it needs `{}`, which does not exist until {writers} writes it, and {writers} \
-                 runs after {}: check it in {writers}, or have {} write it",
+                "it needs `{}`{how}, which does not exist until {writers} writes it, and \
+                 {writers} runs after {}: check it in {writers}, or have {} write it",
                 self.path, self.task, self.task
             )
         } else {
             format!(
-                "it needs `{}`, which does not exist until {writers} writes it, and {writers} \
-                 may run alongside {}: have {} wait for {writers}, or check it there",
+                "it needs `{}`{how}, which does not exist until {writers} writes it, and \
+                 {writers} may run alongside {}: have {} wait for {writers}, or check it there",
                 self.path, self.task, self.task
             )
         }
@@ -1359,17 +1367,45 @@ impl LaterFile {
 }
 
 /// The verify steps of `plan` that need a file `root` lacks and that only
-/// tasks their own task does not wait for write ([`needed_files`]): such a
-/// step cannot pass when its task ends. A plan imported from mori checked
-/// that each widget file existed in the task that wrote their module list,
-/// before the tasks that wrote the widgets.
+/// tasks their own task does not wait for write: such a step cannot pass when
+/// its task ends. A step needs a file it names ([`needed_files`]); in a CMake
+/// workspace, also one its C or C++ test includes, or whose type the test uses
+/// ([`TestCode`]). A plan imported from mori checked that each widget file
+/// existed in the task that wrote their module list, before the tasks that
+/// wrote the widgets; Undertow's first phase-4 spec gave its plumbing task a
+/// test whose helpers used `UiFrame`, which only the next task's
+/// `plugin/ui/UiFrame.h` declares.
 #[must_use]
 pub fn later_files(plan: &TasksFile, root: &Path) -> Vec<LaterFile> {
+    let mut code = TestCode::of(root);
     let mut found = Vec::new();
     for (index, task) in plan.tasks.iter().enumerate() {
         let written = written_before_and_by(plan, index);
         for (number, step) in (1..).zip(&task.verify) {
-            for path in needed_files(&step.command).unwrap_or_default() {
+            let mut needs: Vec<(String, Option<String>)> = needed_files(&step.command)
+                .unwrap_or_default()
+                .into_iter()
+                .map(|path| (path, None))
+                .collect();
+            if let Some(code) = code.as_mut()
+                && let Some(compiled) = code.compiled_by(&step.command)
+            {
+                let later = plan
+                    .tasks
+                    .iter()
+                    .filter(|other| other.id != task.id)
+                    .flat_map(|other| &other.files)
+                    .filter(|file| !root.join(file).exists() && !is_written(&written, file));
+                for file in later {
+                    if needs.iter().any(|(path, _)| path == file) {
+                        continue;
+                    }
+                    if let Some(how) = code.needs(&compiled, file) {
+                        needs.push((file.clone(), Some(how)));
+                    }
+                }
+            }
+            for (path, how) in needs {
                 if root.join(&path).exists() || is_written(&written, &path) {
                     continue;
                 }
@@ -1390,11 +1426,304 @@ pub fn later_files(plan: &TasksFile, root: &Path) -> Vec<LaterFile> {
                     path,
                     writers: writers.iter().map(|writer| writer.id.clone()).collect(),
                     after,
+                    how,
                 });
             }
         }
     }
     found
+}
+
+/// What a step's tests compile ([`TestCode::compiled_by`]).
+#[derive(Debug, Default)]
+struct Compiled {
+    /// The `#include "…"` paths no workspace file answers.
+    includes: Vec<String>,
+    /// The identifiers the code uses.
+    words: std::collections::HashSet<String>,
+}
+
+/// The most C and C++ files [`TestCode`] reads of a workspace.
+const TEST_CODE_FILES: usize = 4000;
+
+/// How deep [`TestCode`] follows a test's `#include "…"` into the workspace.
+const INCLUDE_DEPTH: usize = 3;
+
+/// The C and C++ code of a CMake workspace that a step's tests compile
+/// (round v7, phase-0 finding #2): for each test, the files it includes and
+/// the identifiers its code uses, comments and strings aside, through the
+/// workspace headers it includes; and the identifiers its non-test code
+/// already uses. Read once per plan, as steps ask.
+#[derive(Debug, Default)]
+struct TestCode {
+    /// The workspace's C and C++ files, relative, outside build output and
+    /// vendored code.
+    files: Vec<String>,
+    /// The identifiers of the files that are not tests, when read.
+    production: Option<std::collections::HashSet<String>>,
+    /// By file: the includes it names and the identifiers it uses.
+    read: HashMap<String, (Vec<String>, std::collections::HashSet<String>)>,
+    root: std::path::PathBuf,
+}
+
+impl TestCode {
+    /// The workspace's C and C++ code, when it is a CMake project.
+    fn of(root: &Path) -> Option<Self> {
+        if !holds_cmake_lists(root, 2) {
+            return None;
+        }
+        let mut files = Vec::new();
+        let mut pending = vec![std::path::PathBuf::new()];
+        while let Some(dir) = pending.pop() {
+            let Ok(entries) = std::fs::read_dir(root.join(&dir)) else {
+                continue;
+            };
+            for entry in entries.filter_map(Result::ok) {
+                let name = entry.file_name().to_string_lossy().into_owned();
+                let path = dir.join(&name);
+                if entry.file_type().is_ok_and(|kind| kind.is_dir()) {
+                    if !name.starts_with('.') && !NOT_THE_PROJECT.contains(&name.as_str()) {
+                        pending.push(path);
+                    }
+                } else if is_c_family(&name) && files.len() < TEST_CODE_FILES {
+                    files.push(path.to_string_lossy().replace('\\', "/"));
+                }
+            }
+        }
+        Some(Self {
+            files,
+            root: root.to_path_buf(),
+            ..Self::default()
+        })
+    }
+
+    /// The code the C or C++ tests `command` runs compile: the includes no
+    /// workspace file answers, and the identifiers it uses, through the
+    /// workspace headers it includes. `None` when it runs no such test.
+    fn compiled_by(&mut self, command: &str) -> Option<Compiled> {
+        let tests = self.tests_of(command);
+        if tests.is_empty() {
+            return None;
+        }
+        let mut includes = Vec::new();
+        let mut words = std::collections::HashSet::new();
+        let mut pending: Vec<(String, usize)> = tests.into_iter().map(|test| (test, 0)).collect();
+        let mut seen = Vec::new();
+        while let Some((path, depth)) = pending.pop() {
+            if seen.contains(&path) {
+                continue;
+            }
+            seen.push(path.clone());
+            let (named, used) = self.read(&path);
+            words.extend(used);
+            for include in named {
+                let found = self.resolve(&path, &include);
+                if found.is_empty() {
+                    includes.push(include);
+                } else if depth < INCLUDE_DEPTH {
+                    pending.extend(found.into_iter().map(|found| (found, depth + 1)));
+                }
+            }
+        }
+        Some(Compiled { includes, words })
+    }
+
+    /// How `compiled`, a step's test code, needs `file`, which a later task
+    /// writes: it includes it, or uses the type its name declares (`UiFrame`
+    /// for `plugin/ui/UiFrame.h`) that no non-test code uses yet.
+    fn needs(&mut self, compiled: &Compiled, file: &str) -> Option<String> {
+        if let Some(include) = compiled
+            .includes
+            .iter()
+            .find(|include| file == include.as_str() || file.ends_with(&format!("/{include}")))
+        {
+            return Some(format!("its test includes `{include}`"));
+        }
+        let stem = Path::new(file).file_stem()?.to_str()?;
+        let type_like = stem.len() >= 4
+            && stem.starts_with(|c: char| c.is_ascii_uppercase())
+            && stem.contains(|c: char| c.is_ascii_lowercase());
+        (type_like && compiled.words.contains(stem) && !self.production().contains(stem))
+            .then(|| format!("its test uses `{stem}`"))
+    }
+
+    /// The C and C++ test files `command` runs: one it names by path, or one
+    /// named for a word of it (`state` gives `tests/spec/p4/state_test.cpp`).
+    fn tests_of(&self, command: &str) -> Vec<String> {
+        let words: Vec<String> = shell_segments(command)
+            .iter()
+            .flat_map(|segment| command_words(segment).into_iter().skip(1))
+            .collect();
+        let mut tests = Vec::new();
+        for word in &words {
+            let path = word.trim_start_matches("./");
+            if is_c_family(path) && self.files.iter().any(|file| file == path) {
+                tests.push(path.to_string());
+            }
+            if word.len() < 3 || !word.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
+                continue;
+            }
+            for file in &self.files {
+                let stem = Path::new(file)
+                    .file_stem()
+                    .and_then(|stem| stem.to_str())
+                    .unwrap_or_default();
+                let named = [
+                    format!("{word}_test"),
+                    format!("test_{word}"),
+                    format!("{word}_tests"),
+                ];
+                if named.iter().any(|name| name == stem) && !tests.contains(file) {
+                    tests.push(file.clone());
+                }
+            }
+        }
+        tests
+    }
+
+    /// The workspace files an `#include "include"` in `from` can name: the
+    /// one beside it, else each whose path ends with it.
+    fn resolve(&self, from: &str, include: &str) -> Vec<String> {
+        let beside = Path::new(from)
+            .parent()
+            .map(|dir| dir.join(include).to_string_lossy().replace('\\', "/"));
+        if let Some(beside) = beside.filter(|beside| self.files.contains(beside)) {
+            return vec![beside];
+        }
+        self.files
+            .iter()
+            .filter(|file| file.as_str() == include || file.ends_with(&format!("/{include}")))
+            .cloned()
+            .collect()
+    }
+
+    /// The `#include "…"` paths and the identifiers of `path`, read once.
+    fn read(&mut self, path: &str) -> (Vec<String>, std::collections::HashSet<String>) {
+        if let Some(read) = self.read.get(path) {
+            return read.clone();
+        }
+        let text = std::fs::read_to_string(self.root.join(path)).unwrap_or_default();
+        let read = (quoted_includes(&text), code_identifiers(&text));
+        self.read.insert(path.to_string(), read.clone());
+        read
+    }
+
+    /// The identifiers the workspace's non-test C and C++ code uses.
+    fn production(&mut self) -> &std::collections::HashSet<String> {
+        if self.production.is_none() {
+            let mut words = std::collections::HashSet::new();
+            for file in self.files.iter().filter(|file| !in_test_tree(file)) {
+                let text = std::fs::read_to_string(self.root.join(file)).unwrap_or_default();
+                words.extend(code_identifiers(&text));
+            }
+            self.production = Some(words);
+        }
+        self.production.get_or_insert_with(Default::default)
+    }
+}
+
+/// Whether `name` is a C or C++ source or header.
+fn is_c_family(name: &str) -> bool {
+    Path::new(name)
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .is_some_and(|extension| {
+            CMAKE_SOURCES.contains(&extension) || C_HEADERS.contains(&extension)
+        })
+}
+
+/// Whether the C or C++ file `path` is test code: under a `test` or `tests`
+/// directory, or named as a test. ([`is_test_path`] knows only the
+/// languages whose tests a check names by file.)
+fn in_test_tree(path: &str) -> bool {
+    let stem = Path::new(path)
+        .file_stem()
+        .and_then(|stem| stem.to_str())
+        .unwrap_or_default();
+    path.split('/')
+        .any(|part| part == "test" || part == "tests")
+        || stem.ends_with("_test")
+        || stem.starts_with("test_")
+}
+
+/// The paths of the `#include "…"` lines of C or C++ `text`.
+fn quoted_includes(text: &str) -> Vec<String> {
+    static INCLUDE: LazyLock<Regex> = LazyLock::new(|| {
+        Regex::new(r#"(?m)^\s*#\s*include\s*"([^"]+)""#).expect("valid include regex")
+    });
+    INCLUDE
+        .captures_iter(text)
+        .filter_map(|captures| captures.get(1))
+        .map(|path| path.as_str().to_string())
+        .collect()
+}
+
+/// The identifiers of C or C++ `text`, outside comments, string literals,
+/// character literals and preprocessor lines.
+fn code_identifiers(text: &str) -> std::collections::HashSet<String> {
+    let mut words = std::collections::HashSet::new();
+    let mut word = String::new();
+    let mut chars = text.chars().peekable();
+    let mut line_start = true;
+    while let Some(c) = chars.next() {
+        let end_word = |word: &mut String, words: &mut std::collections::HashSet<String>| {
+            if !word.is_empty() {
+                words.insert(std::mem::take(word));
+            }
+        };
+        match c {
+            '/' if chars.peek() == Some(&'/') => {
+                end_word(&mut word, &mut words);
+                for next in chars.by_ref() {
+                    if next == '\n' {
+                        break;
+                    }
+                }
+                line_start = true;
+                continue;
+            }
+            '/' if chars.peek() == Some(&'*') => {
+                end_word(&mut word, &mut words);
+                chars.next();
+                let mut star = false;
+                for next in chars.by_ref() {
+                    if star && next == '/' {
+                        break;
+                    }
+                    star = next == '*';
+                }
+                continue;
+            }
+            '#' if line_start => {
+                end_word(&mut word, &mut words);
+                for next in chars.by_ref() {
+                    if next == '\n' {
+                        break;
+                    }
+                }
+                line_start = true;
+                continue;
+            }
+            '"' | '\'' => {
+                end_word(&mut word, &mut words);
+                let quote = c;
+                while let Some(next) = chars.next() {
+                    if next == '\\' {
+                        chars.next();
+                    } else if next == quote {
+                        break;
+                    }
+                }
+            }
+            c if c.is_ascii_alphanumeric() || c == '_' => word.push(c),
+            _ => end_word(&mut word, &mut words),
+        }
+        line_start = c == '\n' || (line_start && c.is_whitespace());
+    }
+    if !word.is_empty() {
+        words.insert(word);
+    }
+    words
 }
 
 /// The simple commands of `command` as their words, each with the files a
@@ -2973,6 +3302,134 @@ pub(super) mod tests {
             ]
         );
         assert_eq!(report.exit_code(false), 1, "the plan cannot run");
+    }
+
+    /// Round v7, phase 4's first spec (Undertow a4108ae): the plumbing task
+    /// checked P4.02 with `tools/spec.sh 4 state`, whose test includes the
+    /// editor helpers, which use `UiFrame`; only the next task writes
+    /// `plugin/ui/UiFrame.h`, so the check could not compile when its task
+    /// ended. A test that includes a later task's header directly is caught
+    /// the same way. A type used only in a comment or a string, one the
+    /// existing non-test code already uses, and a test whose task waits for
+    /// the writer are fine.
+    #[test]
+    fn a_test_that_uses_a_later_tasks_type_is_plan_058() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let root = temp.path();
+        for (path, text) in [
+            ("CMakeLists.txt", "add_subdirectory(plugin)\n"),
+            (
+                "plugin/PluginEditor.h",
+                "#pragma once\nclass UndertowEditor {};\n",
+            ),
+            (
+                "plugin/PluginProcessor.h",
+                "#pragma once\nclass UndertowProcessor {};\n",
+            ),
+            (
+                "tests/spec/support/spec_ui.h",
+                "#pragma once\n#include \"PluginEditor.h\"\n#include <memory>\n\
+                 // A Theme is drawn here.\ninline UiFrame idleFrame() { UiFrame f; return f; }\n\
+                 inline const char* label() { return \"Look\"; }\n",
+            ),
+            (
+                "tests/spec/p4/state_test.cpp",
+                "#include \"doctest.h\"\n#include \"spec_ui.h\"\n\
+                 TEST_CASE(\"P4.02 the pattern is saved\") { auto frame = idleFrame(); }\n",
+            ),
+            (
+                "tests/spec/p4/frame_test.cpp",
+                "#include \"doctest.h\"\n#include \"ui/Displays.h\"\nTEST_CASE(\"P4.06\") {}\n",
+            ),
+            (
+                "tests/spec/p4/editor_test.cpp",
+                "#include \"spec_ui.h\"\nTEST_CASE(\"P4.03\") { UndertowEditor editor; }\n",
+            ),
+        ] {
+            let path = root.join(path);
+            std::fs::create_dir_all(path.parent().expect("a parent")).expect("mkdir");
+            std::fs::write(path, text).expect("a file");
+        }
+        let task = |id: &str, files: &str, depends_on: &str, steps: &[&str]| {
+            let steps: String = steps
+                .iter()
+                .map(|command| {
+                    format!("[[task.verify]]\nphase = \"test\"\ncommand = {command:?}\n\n")
+                })
+                .collect();
+            format!(
+                "[[task]]\nid = \"{id}\"\ntitle = \"Task {id}\"\nstatus = \"ready\"\n\
+                 role = \"implementer\"\ntier = \"focused\"\nfiles = [{files}]\n\
+                 depends_on = [{depends_on}]\n\n{steps}"
+            )
+        };
+        let toml = format!(
+            "[meta]\nplan = \"p4\"\ntotal = 3\nstatus = \"ready\"\n\n{}{}{}",
+            task(
+                "T1",
+                "\"plugin/PluginProcessor.cpp\"",
+                "",
+                &[
+                    "tools/spec.sh 4 state 'P4.02*'",
+                    "tools/spec.sh 4 frame",
+                    "tools/spec.sh 4 editor",
+                ],
+            ),
+            task(
+                "T2",
+                "\"plugin/ui/UiFrame.h\", \"plugin/ui/Theme.h\", \"plugin/ui/Look.h\"",
+                "\"T1\"",
+                &["tools/spec.sh 4 state"],
+            ),
+            task("T3", "\"plugin/ui/Displays.h\"", "\"T2\"", &[]),
+        );
+        let plan = TasksFile::parse_str(&toml).expect("a plan");
+        let later = later_files(&plan, root);
+        let found: Vec<(&str, usize, &str, Option<&str>)> = later
+            .iter()
+            .map(|later| {
+                (
+                    later.task.as_str(),
+                    later.step,
+                    later.path.as_str(),
+                    later.how.as_deref(),
+                )
+            })
+            .collect();
+        assert_eq!(
+            found,
+            [
+                (
+                    "T1",
+                    1,
+                    "plugin/ui/UiFrame.h",
+                    Some("its test uses `UiFrame`")
+                ),
+                (
+                    "T1",
+                    2,
+                    "plugin/ui/Displays.h",
+                    Some("its test includes `ui/Displays.h`")
+                ),
+                (
+                    "T1",
+                    3,
+                    "plugin/ui/UiFrame.h",
+                    Some("its test uses `UiFrame`")
+                ),
+            ]
+        );
+        assert!(
+            later[0]
+                .why()
+                .starts_with("it needs `plugin/ui/UiFrame.h` (its test uses `UiFrame`)"),
+            "{}",
+            later[0].why()
+        );
+
+        // A Rust workspace's tests are not read.
+        std::fs::remove_file(root.join("CMakeLists.txt")).expect("no CMake");
+        assert!(later_files(&plan, root).is_empty());
     }
 
     /// bug-72dc0d: phase 2's planner checked a CMake project's tasks with

@@ -107,7 +107,7 @@ const GREP_LONG_VALUES: &[&str] = &[
 
 /// A verify step that cannot pass as written.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(super) struct Unrunnable {
+pub struct Unrunnable {
     /// Its task's id.
     pub task: String,
     /// Its number among its task's verify steps, from 1.
@@ -118,7 +118,7 @@ pub(super) struct Unrunnable {
 
 /// What this machine can run, asked once per name.
 #[derive(Debug, Default)]
-pub(super) struct Probe {
+pub struct Probe {
     commands: Mutex<HashMap<String, bool>>,
     modules: Mutex<HashMap<String, bool>>,
     /// Whether each step the base settles passes, by command (bug-27f00b);
@@ -126,9 +126,23 @@ pub(super) struct Probe {
     settled: Mutex<HashMap<String, Option<bool>>>,
     /// Answer only from the names given, never asking the machine (tests).
     given_only: bool,
+    /// Take every command and Python module as present, never asking the
+    /// machine ([`Probe::portable`]).
+    everywhere: bool,
 }
 
 impl Probe {
+    /// A probe that takes every command and Python module as present, so
+    /// the problems it lets a check find hold on any machine (gap-ff78e1):
+    /// static `plan validate` reports the same plan the same way everywhere.
+    #[must_use]
+    pub fn portable() -> Self {
+        Self {
+            everywhere: true,
+            ..Self::default()
+        }
+    }
+
     /// A probe that answers from `commands` and `modules` (`name`, whether
     /// present) alone, for tests: any other name is absent.
     #[cfg(test)]
@@ -142,8 +156,8 @@ impl Probe {
         Self {
             commands: Mutex::new(own(commands)),
             modules: Mutex::new(own(modules)),
-            settled: Mutex::default(),
             given_only: true,
+            ..Self::default()
         }
     }
 
@@ -161,16 +175,20 @@ impl Probe {
 
     /// Whether `name` is an executable on `PATH`.
     pub(super) fn command(&self, name: &str) -> bool {
-        *self
-            .commands
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .entry(name.to_string())
-            .or_insert_with(|| !self.given_only && crate::config::command_on_path(name))
+        self.everywhere
+            || *self
+                .commands
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .entry(name.to_string())
+                .or_insert_with(|| !self.given_only && crate::config::command_on_path(name))
     }
 
     /// Whether `python3` can import the top-level package of `module`.
     fn python_module(&self, module: &str) -> bool {
+        if self.everywhere {
+            return true;
+        }
         let top = module.split('.').next().unwrap_or(module).to_string();
         *self
             .modules
@@ -971,6 +989,30 @@ pub(super) fn problems(plan: &TasksFile, workdir: &Path, probe: &Probe) -> Vec<U
                         .map(SettledStep::why)
                 });
             if let Some(why) = why {
+                found.push(Unrunnable {
+                    task: task.id.clone(),
+                    step: number,
+                    why,
+                });
+            }
+        }
+    }
+    found
+}
+
+/// The verify steps of `plan` that cannot pass as written, in plan order,
+/// for `plan validate` (gap-ff78e1): [`step_problem`]'s reasons. With a
+/// [`Probe::portable`], those that hold on any machine: a build tool without
+/// its manifest, a file that does not exist and no task writes before the
+/// step runs, or a test its file does not define. A probe of this machine
+/// adds a runner, or a Python module, it does not have.
+#[must_use]
+pub fn unrunnable_steps(plan: &TasksFile, workdir: &Path, probe: &Probe) -> Vec<Unrunnable> {
+    let mut found = Vec::new();
+    for (index, task) in plan.tasks.iter().enumerate() {
+        let written = written_before_and_by(plan, index);
+        for (number, step) in (1..).zip(&task.verify) {
+            if let Some(why) = step_problem(&step.command, workdir, &written, probe) {
                 found.push(Unrunnable {
                     task: task.id.clone(),
                     step: number,
@@ -2151,6 +2193,12 @@ fn step_problem(
             "it reads `{path}`, roko's own state, which no task writes and roko changes as it runs"
         ));
     }
+    // A missing file, or a test its file lacks, fails the step only when
+    // nothing but `&&` joins its commands as the shell reads them: after
+    // `||`, a pipe or a `;` it may pass all the same (gap-ff78e1).
+    if !plain_line(command).is_some_and(|line| !line.other_join) {
+        return None;
+    }
     for path in step_files(command, workdir) {
         if !workdir.join(&path).exists() && !is_written(written, &path) {
             return Some(format!(
@@ -2285,7 +2333,7 @@ fn is_test_path(path: &str) -> bool {
 /// The workspace files a command reads that must exist for it to pass: the
 /// files `grep`, `test -f`, `cat` and pytest are given, the modules
 /// `python3 -m unittest` runs, and the integration tests `cargo test --test`
-/// runs.
+/// runs; up to its first `cd`, and none of a negated command.
 fn step_files(command: &str, workdir: &Path) -> Vec<String> {
     let mut files = Vec::new();
     for segment in shell_segments(command) {
@@ -2293,6 +2341,14 @@ fn step_files(command: &str, workdir: &Path) -> Vec<String> {
         let Some((program, args)) = words.split_first() else {
             continue;
         };
+        // After a `cd` a path is another directory's (gap-ff78e1), and a
+        // negated command (`test ! -e x`, `! grep …`) needs no file.
+        if matches!(program.as_str(), "cd" | "pushd") {
+            break;
+        }
+        if program == "!" || args.iter().any(|arg| arg == "!") {
+            continue;
+        }
         match program.as_str() {
             "grep" | "egrep" | "fgrep" | "rg" => {
                 // The first operand is the pattern, unless `-e` gave one.
@@ -2339,6 +2395,10 @@ fn named_tests(command: &str, workdir: &Path) -> Vec<(String, Vec<String>)> {
         let Some((program, args)) = words.split_first() else {
             continue;
         };
+        // After a `cd`, a test's path is another directory's.
+        if matches!(program.as_str(), "cd" | "pushd") {
+            break;
+        }
         match program.as_str() {
             "pytest" | "py.test" => named.extend(pytest_targets(args)),
             "python" | "python3" if args.first().is_some_and(|arg| arg == "-m") => {
@@ -2360,7 +2420,7 @@ fn named_tests(command: &str, workdir: &Path) -> Vec<(String, Vec<String>)> {
 fn file_arg(arg: &str) -> Option<String> {
     let plain = !arg.starts_with('-')
         && !arg.starts_with('/')
-        && !arg.contains(['*', '?', '$', '{', '<', '>'])
+        && !arg.contains(['*', '?', '$', '{', '<', '>', '(', ')'])
         && Path::new(arg).extension().is_some();
     plain.then(|| arg.trim_start_matches("./").to_string())
 }
@@ -2970,16 +3030,21 @@ pub(super) mod tests {
     }
 
     /// gap-ff78e1: `plan validate` warns about a step that cannot pass as
-    /// written, as generation finds it (PLAN_059): a runner this machine does
-    /// not have, a test its file does not define, a file that does not exist
-    /// and no task writes. A step another rule names is left to it: a later
-    /// task's file is PLAN_058's, roko's own state PLAN_056's.
+    /// written, as generation finds it, for a reason that holds on any
+    /// machine (PLAN_059): a build tool without its manifest, a test its file
+    /// does not define, a file that does not exist and no task writes. It asks
+    /// no machine, so a runner this one lacks is no finding there; asked, as
+    /// `--dynamic` asks, it is a PLAN_060 warning. A step another rule names
+    /// is left to it: a later task's file is PLAN_058's, roko's own state
+    /// PLAN_056's. A path after a `cd`, a negated test and a step that `||`
+    /// joins need no file (the portal plans' steps).
     #[test]
     fn plan_validate_warns_about_steps_that_cannot_pass() {
         let (temp, _) = fixture("true", &[]);
         let plan_dir = temp.path().join("plans/p");
         std::fs::create_dir_all(&plan_dir).expect("the plan directory");
-        let step = |command: &str| format!("[[task.verify]]\nphase = \"test\"\ncommand = {command:?}\n");
+        let step =
+            |command: &str| format!("[[task.verify]]\nphase = \"test\"\ncommand = {command:?}\n");
         let toml = [
             "[meta]\nplan = \"p\"\ntotal = 2\nstatus = \"ready\"\n\n\
              [[task]]\nid = \"T1\"\ntitle = \"t\"\nstatus = \"ready\"\nrole = \"implementer\"\n\
@@ -2990,7 +3055,10 @@ pub(super) mod tests {
             step("grep -q seq docs/notes.md"),
             step("grep -q Filter synth/filter.py"),
             step("grep -q done .roko/state/graph/p/checkpoint.json"),
-            step("python3 -m unittest tests.test_osc.OscillatorTest.test_engine_0_produces_output"),
+            step("cargo test -p synth"),
+            step("cd apps/portal && test -f out/index.html"),
+            step("test ! -e api/safe-api.ts"),
+            step("grep -q seq docs/notes.md || true"),
             "[[task]]\nid = \"T2\"\ntitle = \"t\"\nstatus = \"ready\"\nrole = \"implementer\"\n\
              tier = \"focused\"\nfiles = [\"synth/filter.py\"]\ndepends_on = [\"T1\"]\n"
                 .to_string(),
@@ -2998,47 +3066,53 @@ pub(super) mod tests {
         ]
         .join("\n");
         std::fs::write(plan_dir.join("tasks.toml"), toml).expect("tasks.toml");
+        let warning = crate::plan_validate::Severity::Warning;
+        let found = |report: &crate::plan_validate::ValidationReport, rule: &str| {
+            report.plans[0]
+                .diagnostics
+                .iter()
+                .filter(|diagnostic| diagnostic.rule_id == rule)
+                .map(|diagnostic| (diagnostic.severity, diagnostic.message.clone()))
+                .collect::<Vec<_>>()
+        };
+        let portable = [
+            "task 'T1' verify step 2 cannot pass as written: it names `test_lowpass_low_gain`, \
+             which `tests/test_osc.py` does not define and no task writes",
+            "task 'T1' verify step 3 cannot pass as written: it needs `docs/notes.md`, which does \
+             not exist and no task writes before it runs",
+            "task 'T1' verify step 6 cannot pass as written: it runs `cargo test`, which needs a \
+             `Cargo.toml`: this workspace has none, and no task writes one before it runs",
+        ]
+        .map(|message| (warning, message.to_string()));
+
         let report = crate::plan_validate::validate_plans_dir_with_workdir(
             &plan_dir,
             None,
             Some(temp.path()),
         )
         .expect("validate");
-        let found = |rule: &str| {
-            report.plans[0]
-                .diagnostics
-                .iter()
-                .filter(|diagnostic| diagnostic.rule_id == rule)
-                .map(|diagnostic| (diagnostic.severity, diagnostic.message.as_str()))
-                .collect::<Vec<_>>()
-        };
-        let warning = crate::plan_validate::Severity::Warning;
-        assert_eq!(
-            found("PLAN_059"),
-            [
-                (
-                    warning,
-                    "task 'T1' verify step 1 cannot pass as written: `roko-no-such-runner` is not \
-                     installed"
-                ),
-                (
-                    warning,
-                    "task 'T1' verify step 2 cannot pass as written: it names \
-                     `test_lowpass_low_gain`, which `tests/test_osc.py` does not define and no \
-                     task writes"
-                ),
-                (
-                    warning,
-                    "task 'T1' verify step 3 cannot pass as written: it needs `docs/notes.md`, \
-                     which does not exist and no task writes before it runs"
-                ),
-            ],
-            "{:?}",
-            report.plans[0].diagnostics
-        );
+        let diagnostics = &report.plans[0].diagnostics;
+        assert_eq!(found(&report, "PLAN_059"), portable, "{diagnostics:?}");
+        assert_eq!(found(&report, "PLAN_060"), [], "{diagnostics:?}");
         // Steps 4 and 5 are another rule's.
-        assert_eq!(found("PLAN_058").len(), 1, "{:?}", report.plans[0].diagnostics);
-        assert_eq!(found("PLAN_056").len(), 1, "{:?}", report.plans[0].diagnostics);
+        assert_eq!(found(&report, "PLAN_058").len(), 1, "{diagnostics:?}");
+        assert_eq!(found(&report, "PLAN_056").len(), 1, "{diagnostics:?}");
+
+        let here =
+            crate::plan_validate::validate_plans_dir_on_this_machine(&plan_dir, None, temp.path())
+                .expect("validate on this machine");
+        let diagnostics = &here.plans[0].diagnostics;
+        assert_eq!(found(&here, "PLAN_059"), portable, "{diagnostics:?}");
+        assert_eq!(
+            found(&here, "PLAN_060"),
+            [(
+                warning,
+                "task 'T1' verify step 1 cannot run on this machine: `roko-no-such-runner` is not \
+                 installed"
+                    .to_string()
+            )],
+            "{diagnostics:?}"
+        );
     }
 
     /// bug-daa54e: round v7's phase-1 spec says its oscillator, filter and

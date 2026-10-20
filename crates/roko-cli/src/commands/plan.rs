@@ -83,7 +83,9 @@ pub(crate) enum PlanCmd {
         /// With `--spec-quality`: first run each implementer task's verify
         /// steps twice on a clean checkout of its base commit, so the scores
         /// count SQ06 (red on base) and find HF3 (a check that already
-        /// passes). No step runs in this checkout.
+        /// passes). No step runs in this checkout. It also warns about a
+        /// check whose runner or Python module this machine lacks
+        /// (PLAN_060).
         #[arg(long, requires = "spec_quality")]
         dynamic: bool,
         /// With `--dynamic`: the commit to check every plan against (default:
@@ -3047,8 +3049,13 @@ pub(crate) fn cmd_plan_validate(
         .as_ref()
         .map(crate::commands::config_cmd::configured_models);
 
-    let report =
-        plan_validate::validate_plans_dir_with_workdir(dir, models.as_ref(), Some(workdir))?;
+    // gap-ff78e1: `--dynamic` asks whether the checks can run on this
+    // machine; the rest reports a plan the same way on every machine.
+    let report = if dynamic.is_some() {
+        plan_validate::validate_plans_dir_on_this_machine(dir, models.as_ref(), workdir)?
+    } else {
+        plan_validate::validate_plans_dir_with_workdir(dir, models.as_ref(), Some(workdir))?
+    };
 
     // Cross-plan crate overlap analysis (#195).
     let overlaps = match roko_cli::runner::plan_loader::load_plans(dir) {

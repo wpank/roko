@@ -3619,6 +3619,9 @@ depends_on = ["01:T2", "07z:T1"]
         let workspace = temp.path().join("ws");
         fs::create_dir_all(workspace.join("plans")).expect("plans dir");
         let plans = workspace.join("plans");
+        // The plans' checks run cargo, so the workspace is a Cargo one, or
+        // they could not pass (PLAN_059).
+        fs::write(workspace.join("Cargo.toml"), "[workspace]\n").expect("a cargo workspace");
 
         let imported = import_mori_plans(
             &[mori_root.clone()],

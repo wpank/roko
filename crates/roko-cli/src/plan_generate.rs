@@ -22,9 +22,9 @@ mod sizes;
 mod source_checks;
 
 pub use runnable::{
-    LaterFile, SettledStep, creates_without_write, implementers_without_a_shell, later_files,
-    missing_dependencies, only_reads, read_only_files, roko_state_read, settled_reads,
-    settled_steps,
+    LaterFile, Probe, SettledStep, Unrunnable, creates_without_write, implementers_without_a_shell,
+    later_files, missing_dependencies, only_reads, read_only_files, roko_state_read, settled_reads,
+    settled_steps, unrunnable_steps,
 };
 
 pub use pipeline::{

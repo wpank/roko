@@ -168,17 +168,22 @@ pub(super) async fn plan_chat(
 
 /// Request body for `POST /api/plans/generate`: the request to plan from.
 ///
-/// `prompt` is required and must not be blank; the portal's "Generate…"
-/// field sends it. A `slug` naming a PRD to plan from is refused with 422:
-/// the PRD pipeline was removed on 2026-10-02, and plans come from a prompt.
+/// `prompt`, or a `spec_path` in the workspace whose text serve reads
+/// (gap-fe4225), is required and must not be blank; the portal's
+/// "Generate…" field sends a prompt. A `slug` naming a PRD to plan from is
+/// refused with 422: the PRD pipeline was removed on 2026-10-02, and plans
+/// come from a request.
 #[derive(Deserialize, Validate)]
 pub(super) struct GenerateRequest {
     /// The removed PRD slug, read only to refuse it with a clear message.
     #[serde(default)]
     pub(super) slug: Option<String>,
-    /// The request to plan from. Non-blank.
+    /// The request to plan from, or instructions that follow the spec.
     #[serde(default)]
     pub(super) prompt: Option<String>,
+    /// A spec file in the workspace to plan from, read exactly as written.
+    #[serde(default)]
+    pub(super) spec_path: Option<String>,
 }
 
 impl RequestPayload for GenerateRequest {
@@ -189,14 +194,72 @@ impl RequestPayload for GenerateRequest {
                  from as 'prompt'",
             ));
         }
+        if self
+            .spec_path
+            .as_deref()
+            .is_some_and(|path| !path.trim().is_empty())
+        {
+            return Ok(());
+        }
         match &self.prompt {
-            None => Err(ApiError::unprocessable_entity("'prompt' is required")),
+            None => Err(ApiError::unprocessable_entity(
+                "'prompt' or 'spec_path' is required",
+            )),
             Some(prompt) if prompt.trim().is_empty() => {
                 Err(ApiError::unprocessable_entity("'prompt' must not be blank"))
             }
             Some(_) => Ok(()),
         }
     }
+}
+
+/// The largest spec a `spec_path` may name, in bytes.
+const MAX_SPEC_BYTES: u64 = 1024 * 1024;
+
+/// The text a plan is generated from (gap-fe4225): `prompt`, or the exact
+/// text of the workspace file at `spec_path`, with `prompt`'s instructions
+/// after it. A chat that copied a spec into `prompt` by hand reworded or
+/// mangled it (round v7: every row of phase 2's checks table arrived as
+/// `|| …`); serve reads the file instead, as `roko plan generate
+/// --from-file` does. The path must name a file of at most 1 MiB inside the
+/// workspace `workdir`.
+pub(crate) fn plan_request_text(
+    workdir: &std::path::Path,
+    prompt: Option<&str>,
+    spec_path: Option<&str>,
+) -> Result<String, ApiError> {
+    let prompt = prompt.map(str::trim).filter(|prompt| !prompt.is_empty());
+    let Some(spec_path) = spec_path.map(str::trim).filter(|path| !path.is_empty()) else {
+        return prompt
+            .map(str::to_string)
+            .ok_or_else(|| ApiError::unprocessable_entity("'prompt' or 'spec_path' is required"));
+    };
+    let outside = || {
+        ApiError::unprocessable_entity(format!(
+            "'spec_path' {spec_path} is not a file inside the workspace"
+        ))
+    };
+    let root = workdir.canonicalize().map_err(|_| outside())?;
+    let file = workdir
+        .join(spec_path)
+        .canonicalize()
+        .map_err(|_| outside())?;
+    let metadata = std::fs::metadata(&file).map_err(|_| outside())?;
+    if !file.starts_with(&root) || !metadata.is_file() {
+        return Err(outside());
+    }
+    if metadata.len() > MAX_SPEC_BYTES {
+        return Err(ApiError::unprocessable_entity(format!(
+            "'spec_path' {spec_path} is larger than {MAX_SPEC_BYTES} bytes"
+        )));
+    }
+    let spec = std::fs::read_to_string(&file).map_err(|error| {
+        ApiError::unprocessable_entity(format!("'spec_path' {spec_path} cannot be read: {error}"))
+    })?;
+    Ok(match prompt {
+        Some(prompt) => format!("{spec}\n\n---\n\n{prompt}\n"),
+        None => spec,
+    })
 }
 
 /// `POST /api/plans/generate` — spawn background plan generation from a prompt.
@@ -220,8 +283,12 @@ pub(super) async fn generate_plan(
     State(state): State<Arc<AppState>>,
     ValidJson(body): ValidJson<GenerateRequest>,
 ) -> Result<impl IntoResponse, ApiError> {
-    // `validate_payload` guarantees a non-blank prompt.
-    let prompt_text = body.prompt.clone().unwrap_or_default();
+    // `validate_payload` guarantees a prompt or a spec path.
+    let prompt_text = plan_request_text(
+        &state.workdir,
+        body.prompt.as_deref(),
+        body.spec_path.as_deref(),
+    )?;
     let (op_id, slug) = start_plan_generation(&state, prompt_text, &RunOrigin::Http, None).await;
 
     Ok((

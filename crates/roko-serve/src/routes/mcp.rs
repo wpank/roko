@@ -13,7 +13,8 @@
 //! - `recall { query, limit }` returns what the knowledge store holds on
 //!   `query`;
 //! - `run_prompt { prompt, domain, max_usd }`, `plan_run { plan_id, resume,
-//!   max_usd }`, `plan_generate { prompt }` and `run_cancel { run_id }` start,
+//!   max_usd }`, `plan_generate { prompt, spec_path, title, max_usd }` and
+//!   `run_cancel { run_id }` start,
 //!   plan and stop work (9115). They answer at once with `{ run_id, state,
 //!   links }` for `run_status` to follow, need the `write` scope, and are
 //!   annotated so the host asks its user first; the paid ones say so in their
@@ -294,7 +295,9 @@ fn tools() -> Vec<(Value, &'static str)> {
             tool(
                 "plan_generate",
                 "Have Roko's planner write a plan for a request, without running it. Paid: \
-                 the planner model spends budget. To plan from a spec file in the workspace, \
+                 the planner model spends budget, at most max_usd; without it, the \
+                 workspace's plan-writing cap applies, and the answer gives the cap that \
+                 applies. To plan from a spec file in the workspace, \
                  pass its path as spec_path: Roko reads the file exactly, so never copy a spec \
                  into prompt. Answers at once with a run id, which run_status follows, and the \
                  plan's id, which plan_run takes once the plan is written.",
@@ -312,7 +315,14 @@ fn tools() -> Vec<(Value, &'static str)> {
                                             path relative to the workspace \
                                             (docs/specs/phase-2.md)"
                         },
-                        "title": title_schema()
+                        "title": title_schema(),
+                        "max_usd": {
+                            "type": "number",
+                            "exclusiveMinimum": 0,
+                            "description": "The most writing the plan may spend, in USD. \
+                                            Default: the workspace's [authoring] \
+                                            max_generation_usd"
+                        }
                     },
                     "additionalProperties": false
                 }),
@@ -579,7 +589,9 @@ async fn call_tool(
             let request = super::plans::plan_request_text(&state.workdir, prompt, spec_path)
                 .map_err(|error| JsonRpcError::invalid_params(error.message))?;
             let title = optional_title(&arguments)?;
-            Ok(generate_plan(state, request, &mcp_origin(auth), title).await)
+            // gap-33d458: a cap the call names, under the run tools' ceiling.
+            let cap = super::plans::GenerationCap::resolve(state, mcp_cap(state, &arguments)?);
+            Ok(generate_plan(state, request, &mcp_origin(auth), title, cap).await)
         }
         "run_cancel" => {
             let run_id = required_str(&arguments, name, "run_id")?;
@@ -837,16 +849,24 @@ fn optional_usd(arguments: &Value) -> Result<Option<f64>, JsonRpcError> {
 /// name one, above 0 and at most `[serve.mcp] max_run_usd`, and it becomes
 /// the run's budget ceiling.
 fn run_cap(state: &AppState, arguments: &Value) -> Result<f64, JsonRpcError> {
+    mcp_cap(state, arguments)?.ok_or_else(|| {
+        let most = state.load_roko_config().serve.mcp.max_run_usd;
+        JsonRpcError::invalid_params(format!(
+            "max_usd is required: name the most this run may spend, at most {most:.2} USD"
+        ))
+    })
+}
+
+/// The spending cap a call that starts paid work names, if any: above 0 and
+/// at most `[serve.mcp] max_run_usd` (9116; gap-33d458 for `plan_generate`).
+fn mcp_cap(state: &AppState, arguments: &Value) -> Result<Option<f64>, JsonRpcError> {
     let most = state.load_roko_config().serve.mcp.max_run_usd;
     match optional_usd(arguments)? {
-        None => Err(JsonRpcError::invalid_params(format!(
-            "max_usd is required: name the most this run may spend, at most {most:.2} USD"
-        ))),
         Some(cap) if cap > most => Err(JsonRpcError::invalid_params(format!(
             "max_usd {cap:.2} is above the {most:.2} USD a run started over /mcp may spend \
              ([serve.mcp] max_run_usd)"
         ))),
-        Some(cap) => Ok(cap),
+        cap => Ok(cap),
     }
 }
 
@@ -1060,18 +1080,20 @@ async fn start_plan(
 
 /// The `plan_generate` tool: have the planner write a plan for `prompt`, as
 /// `POST /api/plans/generate` does, and answer at once with the operation's
-/// id, which `run_status` follows, and the plan's id, which `plan_run` takes
-/// once the plan is written. The planner gets `prompt` fenced as a request
-/// from `origin`, a chat host (9117).
+/// id, which `run_status` follows, the plan's id, which `plan_run` takes once
+/// the plan is written, and the cap its planner calls run under (gap-33d458).
+/// The planner gets `prompt` fenced as a request from `origin`, a chat host
+/// (9117).
 async fn generate_plan(
     state: &Arc<AppState>,
     prompt: String,
     origin: &RunOrigin,
     title: Option<String>,
+    cap: super::plans::GenerationCap,
 ) -> Value {
     let (operation_id, plan_id) =
-        super::plans::start_plan_generation(state, prompt, origin, title).await;
-    json!({
+        super::plans::start_plan_generation(state, prompt, origin, title, cap).await;
+    let mut answer = json!({
         "run_id": operation_id,
         "plan_id": plan_id,
         "state": RunState::Running.as_str(),
@@ -1079,7 +1101,9 @@ async fn generate_plan(
             "operation": format!("/api/operations/{operation_id}"),
             "plan": format!("/api/plans/{plan_id}"),
         },
-    })
+    });
+    cap.answer(&mut answer);
+    answer
 }
 
 /// The `run_cancel` tool: stop run `run_id`, a gated prompt run or a live or
@@ -1419,6 +1443,8 @@ mod tests {
     struct HeldPlans {
         plans: std::sync::Mutex<Vec<crate::runtime::PlanRunOptions>>,
         prompts: std::sync::Mutex<Vec<PromptPlanOptions>>,
+        /// The cap each plan generation ran under (gap-33d458).
+        generations: std::sync::Mutex<Vec<Option<f64>>>,
         gate: tokio::sync::Semaphore,
         checkpoint: std::sync::Mutex<Option<crate::runtime::CheckpointRun>>,
         set_aside: std::sync::Mutex<Vec<crate::runtime::CheckpointRun>>,
@@ -1429,6 +1455,7 @@ mod tests {
             Self {
                 plans: std::sync::Mutex::default(),
                 prompts: std::sync::Mutex::default(),
+                generations: std::sync::Mutex::default(),
                 gate: tokio::sync::Semaphore::new(0),
                 checkpoint: std::sync::Mutex::default(),
                 set_aside: std::sync::Mutex::default(),
@@ -1461,6 +1488,29 @@ mod tests {
 
     #[async_trait::async_trait]
     impl crate::runtime::CliRuntime for HeldPlans {
+        async fn generate_plan_reporting(
+            &self,
+            workdir: &std::path::Path,
+            slug: &str,
+            _prompt: &str,
+            _for_chat_host: bool,
+            max_usd: Option<f64>,
+            _progress: crate::runtime::ProgressReporter,
+        ) -> anyhow::Result<crate::runtime::PlanGenerationResult> {
+            self.generations
+                .lock()
+                .expect("lock plan generations")
+                .push(max_usd);
+            let plans_root = workdir.join("plans");
+            Ok(crate::runtime::PlanGenerationResult {
+                plan_targets: vec![plans_root.join(slug)],
+                plans_root,
+                artifacts: Vec::new(),
+                cost_usd: 0.0,
+                source_checks: None,
+            })
+        }
+
         async fn run_once(
             &self,
             _workdir: &std::path::Path,
@@ -1665,6 +1715,84 @@ mod tests {
                 "{body}"
             );
         }
+    }
+
+    /// gap-33d458: `plan_generate` takes an optional `max_usd`, at most
+    /// `[serve.mcp] max_run_usd` as for the run tools. The runtime plans under
+    /// it, and the answer gives the cap that applies and its source; without
+    /// one, `[authoring] max_generation_usd` applies.
+    #[tokio::test]
+    async fn mcp_plan_generate_takes_a_spend_cap() {
+        let runtime = Arc::new(HeldPlans::new());
+        let (_dir, _state, open) = state_and_router(runtime.clone(), open_config());
+        let list = json!({ "jsonrpc": "2.0", "id": 1, "method": "tools/list" });
+        let (_, body) = post_mcp(&open, &list, &[]).await;
+        let tools = body["result"]["tools"].as_array().expect("a tool list");
+        let tool = tools
+            .iter()
+            .find(|tool| tool["name"] == "plan_generate")
+            .expect("the tool is listed");
+        assert_eq!(
+            tool["inputSchema"]["properties"]["max_usd"]["type"], "number",
+            "{tool}"
+        );
+
+        let capped = json!({ "prompt": "Add a flag.", "max_usd": 0.6 });
+        let (_, body) = post_mcp(&open, &call(2, "plan_generate", capped), &[]).await;
+        let answer = &body["result"]["structuredContent"];
+        assert_eq!(answer["max_usd"], 0.6, "{body}");
+        assert_eq!(answer["max_usd_source"], "request", "{body}");
+        eventually("the capped plan is written", || {
+            runtime
+                .generations
+                .lock()
+                .expect("lock plan generations")
+                .len()
+                == 1
+        })
+        .await;
+        let plain = json!({ "prompt": "Add a flag." });
+        let (_, body) = post_mcp(&open, &call(3, "plan_generate", plain), &[]).await;
+        let answer = &body["result"]["structuredContent"];
+        assert_eq!(answer["max_usd"], 2.0, "{body}");
+        assert_eq!(answer["max_usd_source"], "config", "{body}");
+        eventually("the other plan is written", || {
+            runtime
+                .generations
+                .lock()
+                .expect("lock plan generations")
+                .len()
+                == 2
+        })
+        .await;
+        assert_eq!(
+            *runtime.generations.lock().expect("lock plan generations"),
+            [Some(0.6), Some(2.0)]
+        );
+
+        for (id, max_usd) in [
+            (4, json!(0)),
+            (5, json!(-1)),
+            (6, json!(9.0)),
+            (7, json!("1")),
+        ] {
+            let refused = json!({ "prompt": "Add a flag.", "max_usd": max_usd });
+            let (_, body) = post_mcp(&open, &call(id, "plan_generate", refused), &[]).await;
+            assert!(
+                body["error"]["message"]
+                    .as_str()
+                    .is_some_and(|message| message.contains("max_usd")),
+                "{body}"
+            );
+        }
+        assert_eq!(
+            runtime
+                .generations
+                .lock()
+                .expect("lock plan generations")
+                .len(),
+            2
+        );
     }
 
     /// 9115: `plan_run` answers at once with the id the engine runs the plan

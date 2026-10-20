@@ -36,7 +36,7 @@ use self::run_control::*;
 
 // The MCP run tools (9115) start, generate and cancel what these routes do,
 // and `confirm_answer` (9137) records a decision as the review route does.
-pub(super) use self::authoring::{plan_request_text, start_plan_generation};
+pub(super) use self::authoring::{GenerationCap, plan_request_text, start_plan_generation};
 pub(super) use self::merge::record_review;
 pub(super) use self::run_control::{
     PlanStart, cancel_plan_run, start_next_queued_run, start_plan_run_with, start_queued_run,

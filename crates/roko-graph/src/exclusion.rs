@@ -7,6 +7,34 @@
 
 use std::path::{Component, Path, PathBuf};
 
+/// The file names of build-registration files: lists of sources or modules
+/// that parallel tasks each add an entry to (bug-daa54e).
+pub const REGISTRATION_FILES: &[&str] = &[
+    "BUILD",
+    "BUILD.bazel",
+    "CMakeLists.txt",
+    "Cargo.toml",
+    "__init__.py",
+    "index.js",
+    "index.ts",
+    "meson.build",
+    "mod.rs",
+];
+
+/// Whether `path` names a build-registration file, by its file name
+/// ([`REGISTRATION_FILES`]).
+///
+/// The scheduler lets nodes that both name one run together, plan
+/// generation lets several tasks list one, and a merge may combine both
+/// sides' added lines in one.
+#[must_use]
+pub fn is_registration_file(path: &str) -> bool {
+    lexical(path)
+        .file_name()
+        .and_then(|name| name.to_str())
+        .is_some_and(|name| REGISTRATION_FILES.contains(&name))
+}
+
 /// The first path in `wanted` that overlaps a path in `held`, together with
 /// the path it overlaps.
 ///

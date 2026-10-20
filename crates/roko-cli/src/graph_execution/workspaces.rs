@@ -306,6 +306,28 @@ impl ExecutionWorkspaceProvider for WorktreeExecutionWorkspaceProvider {
             accepted_commit: accepted.commit_oid,
         })
     }
+
+    async fn union_merge(
+        &self,
+        lease: &WorkspaceLease,
+        paths: &[String],
+    ) -> Result<Option<Vec<String>>, WorkspaceError> {
+        let attempt_id = &lease.attempt_id;
+        let merged = self
+            .manager
+            .union_merge_attempt(
+                &attempt_id.plan_id,
+                &attempt_id.task_id,
+                attempt_id.attempt,
+                paths,
+            )
+            .await
+            .map_err(|error| match error {
+                WorktreeError::NotFound(_) => WorkspaceError::LeaseNotFound(lease.lease_id.clone()),
+                other => WorkspaceError::Io(other.to_string()),
+            })?;
+        Ok(merged.map(|merged| merged.paths))
+    }
 }
 
 #[cfg(test)]

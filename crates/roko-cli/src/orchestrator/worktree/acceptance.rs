@@ -15,7 +15,7 @@ use std::path::Path;
 
 use super::git_ops::{ISOLATION_DIRS, ensure_git_success, read_gitdir};
 use super::{
-    AcceptedWorktree, AttemptAcceptance, OperationLifecycle, PlanRun, WorktreeError,
+    AcceptedWorktree, AttemptAcceptance, OperationLifecycle, PlanRun, UnionMerge, WorktreeError,
     WorktreeHandle, WorktreeManager, format_branch_name,
 };
 use crate::runner::merge::{MergeTree, git_command, merge_tree_result};
@@ -487,7 +487,7 @@ impl WorktreeManager {
                 .await?;
             let tree = match merge_tree_result(&merge) {
                 Ok(MergeTree::Clean { tree }) => tree,
-                Ok(MergeTree::Conflicted { paths }) => {
+                Ok(MergeTree::Conflicted { paths, .. }) => {
                     return Err(WorktreeError::Conflict {
                         branch,
                         paths: paths.join(", "),
@@ -518,6 +518,235 @@ impl WorktreeManager {
         self.move_plan_branch(&plan_ref, &new_tip, Some(&tip), lifecycle)
             .await?;
         Ok(new_tip)
+    }
+
+    /// Body of [`WorktreeManager::union_merge_attempt`], run while holding
+    /// the manager's operation and the repository's mutation lock: merge
+    /// plan `plan_id`'s branch into the checkout `handle`, taking both sides'
+    /// added lines in its conflicted files, when every one is in `allowed`.
+    pub(super) async fn union_merge_locked(
+        &self,
+        plan_id: &str,
+        handle: &WorktreeHandle,
+        allowed: &[String],
+        lifecycle: &OperationLifecycle,
+    ) -> Result<Option<UnionMerge>, WorktreeError> {
+        let repo = self.config.repo_root.as_path();
+        let checkout = handle.path.as_path();
+        let attempt_ref = format!("refs/heads/{}", handle.branch);
+        let head = self
+            .git_probe_stdout_at(checkout, &["symbolic-ref", "--quiet", "HEAD"])
+            .await
+            .unwrap_or_default();
+        // Only what the attempt committed when it was accepted is merged.
+        let uncommitted = !self
+            .git_probe_output_at(checkout, &["diff", "--quiet", "HEAD", "--"])
+            .await?
+            .status
+            .success();
+        if head != attempt_ref || uncommitted {
+            return Ok(None);
+        }
+        let attempt = self
+            .git_probe_stdout_at(checkout, &["rev-parse", "--verify", "HEAD^{commit}"])
+            .await?;
+        let plan_branch = format_branch_name(plan_id);
+        let Some(tip) = self
+            .git_ref_oid(&format!("refs/heads/{plan_branch}"), false)
+            .await?
+        else {
+            return Ok(None);
+        };
+        if self.is_ancestor(&tip, &attempt).await? {
+            return Ok(None);
+        }
+        let bases = self
+            .git_probe_output_at(repo, &["merge-base", "--all", &tip, &attempt])
+            .await?;
+        let bases: Vec<String> = String::from_utf8_lossy(&bases.stdout)
+            .split_whitespace()
+            .map(ToOwned::to_owned)
+            .collect();
+        let [base] = bases.as_slice() else {
+            return Ok(None);
+        };
+        let merge = self
+            .mutation_at(
+                repo,
+                &[
+                    "merge-tree",
+                    "--write-tree",
+                    "--name-only",
+                    "--no-messages",
+                    "-z",
+                    "--end-of-options",
+                    &tip,
+                    &attempt,
+                ],
+                lifecycle,
+            )
+            .await?;
+        let (tree, mut paths) = match merge_tree_result(&merge) {
+            Ok(MergeTree::Conflicted { tree, paths }) => (tree, paths),
+            Ok(MergeTree::Clean { .. }) => return Ok(None),
+            Err(stderr) => {
+                return Err(WorktreeError::GitFailed {
+                    stderr: format!("git merge-tree failed (needs git 2.38+): {stderr}"),
+                });
+            }
+        };
+        paths.sort();
+        paths.dedup();
+        if paths.is_empty() || !paths.iter().all(|path| allowed.contains(path)) {
+            return Ok(None);
+        }
+        let scratch = tempfile::tempdir()?;
+        let mut unions = Vec::new();
+        for path in &paths {
+            let sides = [base.as_str(), tip.as_str(), attempt.as_str()];
+            let Some(union) = self.union_of_additions(sides, path, scratch.path()).await? else {
+                return Ok(None);
+            };
+            unions.push((path.as_str(), union));
+        }
+
+        // The checkout takes the merge, then each conflicted file the union
+        // of both sides' additions. A step that fails puts it back at the
+        // attempt's commit.
+        let merged = async {
+            ensure_git_success(
+                self.mutation_at(
+                    checkout,
+                    &["read-tree", "-m", "-u", &attempt, &tree],
+                    lifecycle,
+                )
+                .await?,
+            )?;
+            for (path, union) in &unions {
+                std::fs::write(checkout.join(path), union)?;
+                ensure_git_success(
+                    self.mutation_at(checkout, &["add", "--", path], lifecycle)
+                        .await?,
+                )?;
+            }
+            self.mutation_stdout(checkout, &["write-tree"], lifecycle)
+                .await
+        }
+        .await;
+        let merged = match merged {
+            Ok(merged) => merged,
+            Err(error) => {
+                let _ = self
+                    .mutation_at(
+                        checkout,
+                        &["read-tree", "-u", "--reset", &attempt],
+                        lifecycle,
+                    )
+                    .await;
+                return Err(error);
+            }
+        };
+        let message = format!(
+            "roko: merge {plan_branch} into {}\n\nBoth sides only added lines to {}; the merge \
+             keeps every added line (gap-32ddce).",
+            handle.branch,
+            paths.join(", ")
+        );
+        let mut commit_tree = ACCEPT_IDENTITY.to_vec();
+        commit_tree.extend([
+            "commit-tree",
+            "--no-gpg-sign",
+            merged.as_str(),
+            "-p",
+            attempt.as_str(),
+            "-p",
+            tip.as_str(),
+            "-m",
+            message.as_str(),
+        ]);
+        let commit = self
+            .mutation_stdout(checkout, &commit_tree, lifecycle)
+            .await?;
+        ensure_git_success(
+            self.mutation_at(
+                checkout,
+                &[
+                    "update-ref",
+                    "-m",
+                    "roko: merge the plan branch's added lines",
+                    &attempt_ref,
+                    &commit,
+                    &attempt,
+                ],
+                lifecycle,
+            )
+            .await?,
+        )?;
+        Ok(Some(UnionMerge { commit, paths }))
+    }
+
+    /// The union of what `ours` and `theirs` each added to `path` since
+    /// `base`, the three of `sides` in that order (`git merge-file --union`),
+    /// when each side only added lines to it and it is a regular file on
+    /// both; `None` otherwise. `scratch` holds the three versions meanwhile.
+    async fn union_of_additions(
+        &self,
+        sides: [&str; 3],
+        path: &str,
+        scratch: &Path,
+    ) -> Result<Option<Vec<u8>>, WorktreeError> {
+        let repo = self.config.repo_root.as_path();
+        let [base, ours, theirs] = sides;
+        for side in [ours, theirs] {
+            let stat = self
+                .git_probe_output_at(
+                    repo,
+                    &["diff", "--numstat", "--no-renames", base, side, "--", path],
+                )
+                .await?;
+            let stat = String::from_utf8_lossy(&stat.stdout);
+            let mut counts = stat.split_whitespace();
+            let added = counts.next().and_then(|added| added.parse::<u64>().ok());
+            if added.is_none_or(|added| added == 0) || counts.next() != Some("0") {
+                return Ok(None);
+            }
+            let entry = self
+                .git_probe_output_at(repo, &["ls-tree", side, "--", path])
+                .await?;
+            let entry = String::from_utf8_lossy(&entry.stdout);
+            if !matches!(entry.split_whitespace().next(), Some("100644" | "100755")) {
+                return Ok(None);
+            }
+        }
+        let mut files = Vec::new();
+        for (name, side) in [("ours", ours), ("base", base), ("theirs", theirs)] {
+            let blob = self
+                .git_probe_output_at(repo, &["cat-file", "blob", &format!("{side}:{path}")])
+                .await?;
+            // A file both sides added has no base: it starts empty.
+            let content = if blob.status.success() {
+                blob.stdout
+            } else {
+                Vec::new()
+            };
+            let file = scratch.join(name);
+            std::fs::write(&file, content)?;
+            files.push(file.display().to_string());
+        }
+        let union = self
+            .git_probe_output_at(
+                repo,
+                &[
+                    "merge-file",
+                    "-p",
+                    "--union",
+                    &files[0],
+                    &files[1],
+                    &files[2],
+                ],
+            )
+            .await?;
+        Ok(union.status.success().then_some(union.stdout))
     }
 
     /// Move `plan_ref` from `old` (`None`: it must not exist) to `new`.

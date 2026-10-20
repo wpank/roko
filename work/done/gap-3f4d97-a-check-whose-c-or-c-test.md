@@ -2,7 +2,7 @@
 id = "gap-3f4d97"
 kind = "gap"
 title = "A check whose C or C++ test uses a type or includes a header that only a later task writes cannot compile when its task ends, and PLAN_058 does not see it (Undertow phase 4's first spec, P4.02)"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p2"
 goal = "golden-path"
@@ -11,6 +11,7 @@ subsystem = ["roko-cli/plan-validate"]
 created = 2026-10-20
 updated = 2026-10-20
 last_verified = 2026-10-20
+last_verified_rev = "c02d7ac8d"
 source = "round-v7-team-lead#phase-0-finding-2"
 discovered_from = "agent:undertow-spec (round v7, phase 4 spec proof)"
 anchors = ["crates/roko-cli/src/plan_generate/runnable.rs::later_files"]
@@ -18,6 +19,16 @@ links = { depends_on = [], blocks = [], related = ["gap-970f67"], supersedes = [
 
 [[verify]]
 command = "grep -rqw 'fn a_test_that_uses_a_later_tasks_type_is_plan_058' crates/roko-cli/src && cargo test -p roko-cli --lib -- a_test_that_uses_a_later_tasks_type_is_plan_058"
+
+[closed]
+at = 2026-10-20
+at_ts = "2026-10-20T19:42:26Z"
+commit = "1bc0bd6cb"
+by = "roko-planner (round v7)"
+executor = "claude-agent"
+via = "manual"
+forced = false
+evidence = "b1583eb04 (merged 0fe899c95) and 1bc0bd6cb (merged c02d7ac8d). In a CMake workspace runnable::TestCode reads a step's C/C++ tests (the file its command names, or <word>_test.<ext>), follows quoted includes 3 levels and strips comments, strings and preprocessor lines; a later task's file is needed when an unresolved include ends with its path (PLAN_058 error when every writer runs after the task) or, a guess, when the test uses its CamelCase name (4+ chars) that no non-test code uses (PLAN_058 warning that never sends a plan back, the lead's condition). Post-merge verify at c02d7ac8d: grep OK; cargo test -p roko-cli --lib a_test_that_uses_a_later_tasks_type_is_plan_058 a_check_needing_a_later_tasks_file_is_plan_058: 2 passed. Branch: roko-cli lib 3935 passed (the one failure, a severity-order assertion, fixed and rerun green), clippy -D warnings and nightly fmt clean. Scan with the branch binary: repo plans 0/133, Undertow phases p0/p1/rumble-2/rumble-3 at their bases 0/4, v6 mori imports 8 hits (7 real in 05-terminal-widgets, 1 likely an artifact in 71-mvp-gate), a4108ae's P4.02 shape: the UiFrame guess as a warning (the true case)."
 +++
 
 ## Problem

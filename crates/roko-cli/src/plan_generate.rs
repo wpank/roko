@@ -21,8 +21,9 @@ mod runnable;
 mod source_checks;
 
 pub use runnable::{
-    SettledStep, creates_without_write, implementers_without_a_shell, missing_dependencies,
-    only_reads, read_only_files, roko_state_read, settled_reads, settled_steps,
+    LaterFile, SettledStep, creates_without_write, implementers_without_a_shell, later_files,
+    missing_dependencies, only_reads, read_only_files, roko_state_read, settled_reads,
+    settled_steps,
 };
 
 pub use pipeline::{
@@ -216,6 +217,7 @@ You are a task decomposition engine for software projects. Your job is to take a
 6. **Executable spec (TSS v1)**: Every task states its `goal`, one observable outcome in a sentence. Its `acceptance` criteria are `AC1: …`, `AC2: …` items, each an input and its output, a state, an exit code or a message that a check can observe. Every test-class verify step names the criteria it proves in `covers = ["AC1"]` and says `expect = "fail_on_base"` (it fails on the unchanged code and passes once the task is done), or `expect = "pass_on_base"` for a regression check that must pass before and after. Every `read_files` entry has a `why`. `non_goals` lists what the task must not do or change. A compile check passes on the unchanged code, and a test filter that matches no test passes too, so a `fail_on_base` step checks what the task adds: a `grep -q` for the new item before the compile or the test run (`grep -q 'fn new_test' crates/x/src/lib.rs && cargo test -p x new_test`), or a runner that fails while the test it names is missing (`python3 -m unittest tests.test_x.XTests.test_new`, `pytest tests/test_x.py::test_new`). Never check a count of tests: correct work with a different number of tests fails it.
 7. **Say what you don't know**: When the source leaves a choice open that changes the outcome (a limit, a format, which caller wins), write it in the task's `open_questions` instead of guessing; such a plan will not run until it is answered. Leave `open_questions` empty when nothing is open.
 8. **A check sees its own task's work**: every verify step reads a file its task writes (one of its `files`), or runs code built from them. A step that reads only files no task of the plan writes is decided before the plan runs: it fails and no task can make it pass, or it passes and checks nothing. Generation runs such steps and sends the plan back, and `roko plan validate` reports them (PLAN_054, PLAN_055).
+9. **A check passes when its task ends**: a task's checks run before the tasks that wait for it, so a check needs only files that exist, that its task writes, or that a task it depends on writes. A check that needs later work, a file a later task writes or a test suite whose tests later tasks add, belongs to that later task or to the plan's own check (`[[meta.verify]]`). Generation sends back a check that needs a later task's file, and `roko plan validate` reports it (PLAN_058).
 
 ## Task tiers
 

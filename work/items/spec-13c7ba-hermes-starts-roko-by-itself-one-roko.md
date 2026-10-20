@@ -57,3 +57,32 @@ The interface contract between the three parts is in `tmp/roko-autostart/BRIEF.m
 
 - Never touch `~/.hermes` or port 6677 in tests.
 - Related: bug-06ac5f (stale serve PIDs trusted).
+
+## Progress (2026-10-19, round roko-autostart)
+
+- **Phase 1 is done.** gap-fb1594 and bug-712203 were merged into local main as `9b5312684`, and their verify commands
+  pass on main.
+  - `roko serve --detach [--json] [--idle-exit]` and `roko serve status|stop|restart [--all]`
+  - identity on `/health` and in serve.json, plus a registry of running serves
+  - clean shutdown on SIGTERM and SIGHUP
+  - `./dev.sh install`
+- **Phase 2 is done.** hermes-plugin-roko 0.7.0, local main `a64194e`, never pushed. Local items gap-02e835 and gap-a7eaef
+  are closed. Checks:
+  - pytest: 1071 passed, plus the contract lane 8/8 against roko `513890e42`
+  - backend e2e: 18/18
+  - real desktop app e2e: 9/9. Opening the app starts roko serve, a second project gets its own port, and the serves
+    outlive the app.
+- **Still open:**
+  - gap-8636f8 (release binaries) and local gap-bd95e7 (plugin download): Phase 3, waiting for Will's go on publishing;
+  - bug-6d651d: `roko daemon install` is not per project;
+  - local gap-ef0922: the live relay follows only the default project's hub.
+- **Turning it on for Will.** He needs:
+  1. a roko with `serve --detach` where the plugin finds it (`./dev.sh install`);
+  2. `hermes plugins update roko`;
+  3. ⌘Q and reopen.
+- 2026-10-19, later: plugin 0.7.1 on plugin main `398da81`. A serve that failed for lack of a model provider now says
+  so (it is no longer shown as "set up roko here"). setup-project names what is left. A restart never shows the old
+  serve. Checks: pytest 1074, contract 8/8, desktop e2e 9/9. New follow-up: bug-d63b33 (a crashed serve leaves
+  hub files).
+- 2026-10-19, later: bug-10d745 (restart moved a legacy serve to a new port; round-v7 report) is fixed on main `a80add56c`. Its verify passes on the merged tree.
+- 2026-10-19, later: plugin 0.7.2 on plugin main `b4c68b9`. The desktop prompt section's limit is 2,800; at 2,500 every desktop chat lost the per-project guidance (round-v7 trial-merge report).

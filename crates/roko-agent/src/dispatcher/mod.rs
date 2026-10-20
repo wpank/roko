@@ -80,6 +80,11 @@ use self::validate::validate;
 use roko_core::defaults::DEFAULT_MAX_CONCURRENT_TOOLS;
 pub use roko_core::defaults::DEFAULT_MAX_RESULT_BYTES;
 
+/// How much longer than a call's own budget the dispatcher waits before it
+/// cuts the call, for a tool that enforces its `timeout_ms` itself
+/// (bug-c22bd9).
+const CALL_TIMEOUT_GRACE: Duration = Duration::from_secs(5);
+
 /// Maximum provider-emitted calls that one dispatcher batch will execute.
 pub const MAX_TOOL_CALLS_PER_BATCH: usize = 16;
 /// Maximum serialized bytes accepted for one provider-emitted tool call.
@@ -700,9 +705,23 @@ impl ToolDispatcher {
         };
         // 2a. T029: Enforce ToolDef::timeout_ms — effective deadline is the
         //     minimum of the context-level timeout and the per-tool definition
-        //     timeout. Record which source was the limiting factor.
+        //     timeout. Record which source was the limiting factor. A tool
+        //     that takes a `timeout_ms` argument (bash, run_tests) gets what
+        //     the call asks for, up to the context's cap (bug-c22bd9), and
+        //     enforces it itself: the deadline here is a backstop a little
+        //     later, so the handler can stop its process group and say why.
         let def_timeout = Duration::from_millis(def.timeout_ms);
-        let (timeout, timeout_source) = if def_timeout < timeout {
+        let (timeout, timeout_source) = if def.parameters.declares("timeout_ms") {
+            let asked = ctx.call_timeout(call);
+            let source = if asked.clamped_from.is_some() {
+                "call_capped"
+            } else if call.arguments.get("timeout_ms").is_some() {
+                "call"
+            } else {
+                "context"
+            };
+            (asked.budget + CALL_TIMEOUT_GRACE, source)
+        } else if def_timeout < timeout {
             (def_timeout, "tool_definition")
         } else {
             (timeout, "context")
@@ -1570,6 +1589,16 @@ fn apply_production_result_filter(
                     other => other,
                 })
                 .collect();
+            // bug-0f30c7: the filter's `[external:<tool>]` note, or a cut,
+            // makes a JSON payload text. It is then text, so the immune screen
+            // does not withhold it as malformed JSON.
+            let is_structured = is_structured
+                && filtered.iter().all(|block| match block {
+                    roko_core::tool::ToolResultContent::Text { text } => {
+                        serde_json::from_str::<serde_json::Value>(text).is_ok()
+                    }
+                    _ => true,
+                });
             ToolResult::Ok {
                 content: filtered,
                 is_structured,
@@ -3298,6 +3327,45 @@ mod tests {
             ToolResult::Ok { .. } => assert!(res.text_content().contains("\"x\"")),
             other => panic!("expected Ok, got {other:?}"),
         }
+    }
+
+    /// bug-0f30c7: the production filter notes an external tool's output with
+    /// `[external:<tool>]`, which made a structured success of `run_tests`
+    /// malformed JSON, and the immune boundary withheld it as an anomaly. The
+    /// noted payload is text now, and reaches the model.
+    #[tokio::test]
+    async fn an_external_tool_s_structured_success_reaches_the_model() {
+        let registry: Arc<dyn ToolRegistry> = Arc::new(VecToolRegistry::from_tools(vec![tool(
+            "run_tests",
+            ToolPermission::executes(),
+            ToolConcurrency::Serial,
+        )]));
+        let resolver = resolver_from([(
+            "run_tests",
+            Arc::new(FixedResultHandler {
+                name: "run_tests",
+                calls: Arc::new(AtomicUsize::new(0)),
+                result: ToolResult::structured(r#"{"status":"ok"}"#),
+            }) as Arc<dyn ToolHandler>,
+        )]);
+        let workspace = tempfile::tempdir().unwrap();
+
+        let result = ToolDispatcher::new_unguarded(registry, resolver)
+            .with_safety(SafetyLayer::permissive())
+            .dispatch(
+                ToolCall::new("run-call", "run_tests", serde_json::json!({})),
+                &ToolContext::testing(workspace.path()),
+            )
+            .await;
+
+        let ToolResult::Ok { is_structured, .. } = &result else {
+            panic!("the success must reach the model, got {result:?}");
+        };
+        assert!(!is_structured, "{result:?}");
+        assert_eq!(
+            result.text_content(),
+            r#"[external:run_tests] {"status":"ok"}"#
+        );
     }
 
     #[tokio::test]

@@ -265,9 +265,14 @@ impl StreamingTaskDispatcher for GraphTaskDispatcher {
             live_output: None,
             attempt_key: Some(attempt_key.clone()),
             knowledge_ids: super::decision_log::included_knowledge_ids(&dispatch_plan),
-            allowance: allowance
-                .clone()
-                .map(|allowance| -> Arc<dyn crate::dispatch_v2::CallAllowance> { allowance }),
+            allowance: self.metered_calls(
+                allowance
+                    .clone()
+                    .map(|allowance| -> Arc<dyn crate::dispatch_v2::CallAllowance> { allowance }),
+                &spec.plan_id,
+                &task.id,
+                attempt.key.attempt,
+            ),
         };
         // FAST lane: fewer turns, a shorter attempt, a patch-only prompt.
         let request = self.fast_bounded(request);
@@ -308,6 +313,8 @@ impl StreamingTaskDispatcher for GraphTaskDispatcher {
         );
 
         // ── Provider invocation ──────────────────────────────────────────
+        // gap-770cb5: the agent can run its task's checks mid-try.
+        let left_checks = self.leave_task_checks(&task, &attempt_key);
         attempt.dispatch_started();
         progress.call_started(
             crate::dispatch_v2::ProviderDispatchResolver::new(Arc::clone(&self.config))
@@ -325,6 +332,7 @@ impl StreamingTaskDispatcher for GraphTaskDispatcher {
             )
             .await;
         attempt.dispatch_ended();
+        drop(left_checks);
         let mut dispatch_result = match watched_result {
             Ok(dispatch_result) => dispatch_result,
             // The stall watchdog, the conductor or a stopping plan run

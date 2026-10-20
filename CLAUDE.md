@@ -274,7 +274,7 @@ safety, auth, persistence, migration, payment, or other high-risk changes. FAST 
 ### Server & deployment
 | Command | What it does |
 |---|---|
-| `roko serve` | Start HTTP control plane on :6677 (count routes with `python3 tools/http_route_inventory.py`) |
+| `roko serve` | Start HTTP control plane on :6677 (count routes with `python3 tools/http_route_inventory.py`); `--detach [--json] [--idle-exit SECS] [--wait SECS]` starts it in the background and returns once it answers (idempotent; configured port if free, else one the OS picks); `roko serve status\|stop\|restart [--workdir W \| --all] [--json] [--force]` report, stop or restart project serves (`~/.roko/runtime/serves` registry; busy ones need `--force`) |
 | `roko acp` | Start ACP (Agent Client Protocol) server for editor integration |
 | `roko daemon start/stop/status/logs/install` | Daemon lifecycle |
 | `roko deploy railway/fly/docker` | Cloud deployment |

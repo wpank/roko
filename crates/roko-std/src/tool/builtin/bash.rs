@@ -12,7 +12,6 @@ use roko_core::tool::{
     ToolPermission, ToolResult, ToolSchema,
 };
 use std::ffi::OsString;
-use std::time::Duration;
 
 use super::child_group;
 use super::sandbox::{refuse_key_file_in_command, require_string};
@@ -41,7 +40,9 @@ pub fn tool_def() -> ToolDef {
             },
             "timeout_ms": {
                 "type": "integer",
-                "description": "Optional wall-clock timeout in milliseconds (default: 120000)."
+                "description": "Optional wall-clock timeout in milliseconds. Default 120000 \
+                    (`[timeouts] tool_execution_ms`); a longer one, such as for a build, is \
+                    honoured up to 600000 (`[timeouts] tool_execution_max_ms`)."
             }
         },
         "required": ["command"],
@@ -61,9 +62,11 @@ pub fn tool_def() -> ToolDef {
 
 /// Handler for `bash` (§36.20).
 ///
-/// Spawns `bash -c <command>` in the worktree with
-/// [`ToolContext::timeout`] as the wall-clock budget. The command's
-/// combined stdout+stderr is returned as the tool result's content.
+/// Spawns `bash -c <command>` in the worktree with the call's own
+/// `timeout_ms`, up to [`ToolContext::max_timeout`], else
+/// [`ToolContext::timeout`], as the wall-clock budget
+/// ([`ToolContext::call_timeout`], bug-c22bd9). The command's combined
+/// stdout+stderr is returned as the tool result's content.
 ///
 /// The command leads a process group of its own, which a call dropped or
 /// timed out before the command ends kills ([`child_group`], bug-c83c84).
@@ -109,11 +112,7 @@ async fn run(
     if let Err(e) = refuse_key_file_in_command(&command, ctx.worktree()) {
         return ToolResult::Err(e);
     }
-    let effective_timeout = if ctx.timeout.is_zero() {
-        Duration::from_mins(2)
-    } else {
-        ctx.timeout
-    };
+    let timeout = ctx.call_timeout(&call);
     let mut cmd = tokio::process::Command::new("bash");
     cmd.arg("-c").arg(&command);
     cmd.current_dir(ctx.worktree());
@@ -123,15 +122,15 @@ async fn run(
         &ctx.env_passthrough,
     );
 
-    let output = match child_group::output_within(cmd, effective_timeout).await {
+    let output = match child_group::output_within(cmd, timeout.budget).await {
         Ok(Ok(o)) => o,
         Ok(Err(e)) => {
             return ToolResult::Err(ToolError::Other(format!("bash: spawn failed: {e}")));
         }
         Err(_) => {
-            return ToolResult::Err(ToolError::Timeout {
-                after_ms: u64::try_from(effective_timeout.as_millis()).unwrap_or(u64::MAX),
-            });
+            return ToolResult::Err(
+                timeout.timed_out(u64::try_from(timeout.budget.as_millis()).unwrap_or(u64::MAX)),
+            );
         }
     };
     let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
@@ -155,6 +154,7 @@ async fn run(
 mod tests {
     use super::*;
     use roko_core::tool::ToolContext;
+    use std::time::Duration;
 
     /// Whether process `pid` still exists.
     #[cfg(unix)]

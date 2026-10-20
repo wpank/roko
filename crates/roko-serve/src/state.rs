@@ -1217,9 +1217,15 @@ pub struct AppState {
     /// (S10 §4.5).
     pub(crate) showcase_bundles: crate::routes::showcase::bundles::BundleCache,
 
-    /// When the last request arrived, and what keeps a showcase serve from its idle exit
-    /// (S11 §4.6, G10).
+    /// When the last request arrived, and what keeps a showcase serve, or one
+    /// started with `--idle-exit`, from its idle exit (S11 §4.6, G10,
+    /// gap-fb1594).
     pub showcase_idle: crate::showcase::idle::IdleTracker,
+
+    /// Who this server is and where it listens, set once the listener is
+    /// bound: what `serve.json` records and `/health` reports on a loopback
+    /// bind (gap-fb1594).
+    endpoint: std::sync::OnceLock<crate::endpoint::ServeEndpoint>,
 
     /// Job execution service shared by `POST /api/jobs/{id}/cancel` and the
     /// job runner, so a cancel reaches the run it targets (gap-2a9ed7).
@@ -1832,6 +1838,7 @@ impl AppState {
             local_access: LocalAccess::new(None),
             showcase_bundles: crate::routes::showcase::bundles::BundleCache::default(),
             showcase_idle: crate::showcase::idle::IdleTracker::new(chrono::Utc::now()),
+            endpoint: std::sync::OnceLock::new(),
             job_execution,
         })
     }
@@ -1926,6 +1933,18 @@ impl AppState {
     /// Whether the listener is bound to a loopback address, as recorded at startup.
     pub fn listener_is_loopback(&self) -> bool {
         self.listener_security.bound_to_loopback()
+    }
+
+    /// Record who this server is once its listener is bound (gap-fb1594).
+    /// The first record wins.
+    pub fn set_endpoint(&self, endpoint: crate::endpoint::ServeEndpoint) {
+        let _ = self.endpoint.set(endpoint);
+    }
+
+    /// Who this server is and where it listens; `None` before its listener
+    /// is bound, and for a server started without the builder.
+    pub fn endpoint(&self) -> Option<&crate::endpoint::ServeEndpoint> {
+        self.endpoint.get()
     }
 
     /// Record the effective live-agent-output level chosen at startup.

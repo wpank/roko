@@ -309,6 +309,61 @@ pub struct PromptPlanResult {
     pub cost_usd: Option<f64>,
 }
 
+/// The run a plan's Graph checkpoint records (bug-cbdb6b): what a run that
+/// starts the plan over sets aside, and what a resume continues.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CheckpointRun {
+    /// The run's id.
+    pub run_id: String,
+    /// How the run stands: `failed`, `interrupted`, `cancelled`, `running`
+    /// (it stopped without saying), `succeeded` or `unverified`.
+    pub status: String,
+    /// Tasks whose recorded outputs a resume replays.
+    pub passed_tasks: Vec<String>,
+    /// Tasks a resume runs.
+    pub tasks_left: Vec<String>,
+    /// Whether a resume would continue the run: it stopped part way, with
+    /// tasks passed and tasks left, and its checkpoint still fits the plan.
+    pub resumable: bool,
+}
+
+/// Run `run_id` as people see it (bug-cbdb6b).
+///
+/// That is the first 8 characters of the UUID the id ends with, as a serve
+/// run's id (a bare UUID) and a command-line run's (`graph-<plan>-<uuid>`)
+/// do, or of the id itself otherwise.
+#[must_use]
+pub fn short_run_id(run_id: &str) -> &str {
+    let id = trailing_uuid(run_id).unwrap_or(run_id);
+    id.get(..8).unwrap_or(id)
+}
+
+/// Whether `wanted` names run `run_id` (bug-cbdb6b).
+///
+/// It does when it has 8 characters or more and starts the id, or the UUID
+/// the id ends with, so the short form [`short_run_id`] shows names its run.
+#[must_use]
+pub fn names_run(run_id: &str, wanted: &str) -> bool {
+    wanted.len() >= 8
+        && (run_id.starts_with(wanted)
+            || trailing_uuid(run_id).is_some_and(|uuid| uuid.starts_with(wanted)))
+}
+
+/// The hyphenated UUID `run_id` ends with, if any.
+fn trailing_uuid(run_id: &str) -> Option<&str> {
+    let tail = run_id.get(run_id.len().checked_sub(36)?..)?;
+    uuid::Uuid::try_parse(tail).is_ok().then_some(tail)
+}
+
+/// What [`CliRuntime::restore_checkpoint_run`] did (bug-cbdb6b).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RestoredCheckpoint {
+    /// The run whose checkpoint is the plan's current one again.
+    pub restored: CheckpointRun,
+    /// The run whose checkpoint was set aside in its place, if any.
+    pub set_aside: Option<CheckpointRun>,
+}
+
 /// Summary info for a configured repository, used to give agents
 /// cross-repo context during dispatch.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -681,6 +736,41 @@ pub trait CliRuntime: Send + Sync + 'static {
         Ok(None)
     }
 
+    /// The run the checkpoint of the plan at `plan_dir` records, read
+    /// without changing it: what a run that starts the plan over sets aside,
+    /// and whether a resume would continue it instead (bug-cbdb6b). A chat
+    /// host's `plan_run` that says neither `resume` nor `fresh` is refused
+    /// while it is resumable.
+    ///
+    /// The default returns `Ok(None)`: the runtime cannot tell.
+    async fn checkpoint_run(
+        &self,
+        _workdir: &std::path::Path,
+        _plan_dir: &std::path::Path,
+    ) -> anyhow::Result<Option<CheckpointRun>> {
+        Ok(None)
+    }
+
+    /// Put back the checkpoint of run `run_id` (its id, or the id's first 8
+    /// or more characters) that a run starting the plan at `plan_dir` over
+    /// set aside, so that a resume continues it (bug-cbdb6b). The plan's
+    /// current checkpoint, another run's, is set aside in its place. Returns
+    /// the run put back and the run set aside, if any.
+    ///
+    /// # Errors
+    ///
+    /// When no set-aside checkpoint of the plan records the run, when a run
+    /// holds the workspace, or when a resume could not build on the run's
+    /// work. The default cannot put a checkpoint back.
+    async fn restore_checkpoint_run(
+        &self,
+        _workdir: &std::path::Path,
+        _plan_dir: &std::path::Path,
+        run_id: &str,
+    ) -> anyhow::Result<RestoredCheckpoint> {
+        anyhow::bail!("this runtime cannot put back the checkpoint of run {run_id}")
+    }
+
     /// Return the ordered list of plan ids that would be executed for
     /// `plan_target`, respecting `only_plans` when provided.
     ///
@@ -948,5 +1038,31 @@ pub trait CliRuntime: Send + Sync + 'static {
     ) -> Result<serde_json::Value, EffectDecisionError> {
         let _ = (workdir, effect_id, decision);
         Err(EffectDecisionError::Unsupported)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// bug-cbdb6b: a run's short id is the start of the UUID its id ends
+    /// with, a command-line run's `graph-<plan>-<uuid>` included, and that
+    /// short id, or any 8 or more characters starting the id, names it.
+    #[test]
+    fn a_runs_short_id_is_the_start_of_its_uuid_and_names_it() {
+        let serve = "6988f0b8-4199-4abf-9cfc-67713bc60e34";
+        let cli = "graph-two-step-aa2b4b54-f97b-427a-9824-8663613ad759";
+        assert_eq!(short_run_id(serve), "6988f0b8");
+        assert_eq!(short_run_id(cli), "aa2b4b54");
+        assert_eq!(short_run_id("run_4823_and_more"), "run_4823");
+        assert_eq!(short_run_id("run"), "run");
+
+        assert!(names_run(serve, "6988f0b8"));
+        assert!(names_run(serve, serve));
+        assert!(names_run(cli, "aa2b4b54"));
+        assert!(names_run(cli, "graph-two-step"));
+        assert!(!names_run(cli, "aa2b"), "too short to name a run");
+        assert!(!names_run(cli, "f97b427a"));
+        assert!(!names_run(serve, "6988f0b9"));
     }
 }

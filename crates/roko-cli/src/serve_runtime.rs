@@ -21,9 +21,9 @@ use roko_serve::plan_types::{
     PlanTaskDto, PlanTaskVerifyDto, PlanTasksDto, PlanValidationDto, RevisionDto, TaskChangeDto,
 };
 use roko_serve::runtime::{
-    CliRuntime, DashboardInfo, PlanExecutionResult, PlanGenerationResult, PlanRunOptions,
-    ProgressReporter, RepoInfo, RunResult, RunResultUsage, RuntimeGateResult, SessionStatusInfo,
-    TriggerExecutionScope,
+    CheckpointRun, CliRuntime, DashboardInfo, PlanExecutionResult, PlanGenerationResult,
+    PlanRunOptions, ProgressReporter, RepoInfo, RestoredCheckpoint, RunResult, RunResultUsage,
+    RuntimeGateResult, SessionStatusInfo, TriggerExecutionScope,
 };
 
 use crate::config::{Config, RepoRegistry};
@@ -410,6 +410,48 @@ impl CliRuntime for RokoCliRuntime {
             skippable.extend(preview.restored_tasks);
         }
         Ok(Some(skippable))
+    }
+
+    async fn checkpoint_run(
+        &self,
+        workdir: &Path,
+        plan_dir: &Path,
+    ) -> anyhow::Result<Option<CheckpointRun>> {
+        let plans = crate::runner::plan_loader::load_plans(plan_dir)?;
+        let [plan] = plans.as_slice() else {
+            return Ok(None);
+        };
+        let options = crate::graph_checkpoint::ResumeOptions {
+            force_resume: true,
+            ..crate::graph_checkpoint::ResumeOptions::default()
+        };
+        let preview = crate::graph_checkpoint::preview_plan_resume(workdir, plan, 1, &options)?;
+        // A checkpoint still `running` while a run holds the workspace is
+        // that run's, not one that stopped.
+        let live = crate::workspace_lock::runner_lock_holder(&workdir.join(".roko")).is_some();
+        Ok(checkpoint_run_of(&preview, live))
+    }
+
+    async fn restore_checkpoint_run(
+        &self,
+        workdir: &Path,
+        plan_dir: &Path,
+        run_id: &str,
+    ) -> anyhow::Result<RestoredCheckpoint> {
+        let plans = crate::runner::plan_loader::load_plans(plan_dir)?;
+        let [plan] = plans.as_slice() else {
+            anyhow::bail!("a set-aside checkpoint is put back for one plan, not a plan set");
+        };
+        // No run may hold the workspace while its checkpoint files move.
+        let _runner = crate::workspace_lock::acquire_runner_lock(&workdir.join(".roko"))?;
+        let restored =
+            crate::graph_checkpoint::restore_set_aside_checkpoint(workdir, plan, run_id)?;
+        let run = checkpoint_run_of(&restored.restored, false)
+            .with_context(|| format!("run {run_id}'s checkpoint names no run"))?;
+        Ok(RestoredCheckpoint {
+            restored: run,
+            set_aside: restored.set_aside.as_ref().and_then(set_aside_run),
+        })
     }
 
     async fn run_trigger_graph(
@@ -1036,6 +1078,47 @@ fn config_live_output_to_dispatcher(
 }
 
 #[allow(clippy::too_many_arguments)]
+/// The run checkpoint `preview` records, as `roko serve` reports it
+/// (bug-cbdb6b): resumable when the run stopped part way, with tasks passed
+/// and tasks left, and its checkpoint resumes. A `running` checkpoint counts
+/// as stopped only while no run is `live` in the workspace.
+fn checkpoint_run_of(
+    preview: &crate::graph_checkpoint::ResumePreview,
+    live: bool,
+) -> Option<CheckpointRun> {
+    let run_id = preview.run_id.clone()?;
+    let status = preview.status?;
+    let resumes = preview.action == crate::graph_checkpoint::ResumeAction::Resume;
+    let (passed_tasks, tasks_left) = if resumes {
+        (preview.restored_tasks.clone(), preview.tasks_to_run.clone())
+    } else {
+        (Vec::new(), Vec::new())
+    };
+    let stopped = status.stopped_part_way()
+        && !(live && status == crate::graph_checkpoint::GraphCheckpointStatus::Running);
+    Some(CheckpointRun {
+        run_id,
+        status: status.as_str().to_string(),
+        resumable: resumes && stopped && !passed_tasks.is_empty() && !tasks_left.is_empty(),
+        passed_tasks,
+        tasks_left,
+    })
+}
+
+/// The run a checkpoint `set_aside` records, as `roko serve` reports it.
+fn set_aside_run(set_aside: &crate::graph_checkpoint::SetAsideCheckpoint) -> Option<CheckpointRun> {
+    let status = set_aside.status?;
+    Some(CheckpointRun {
+        run_id: set_aside.run_id.clone()?,
+        status: status.as_str().to_string(),
+        resumable: status.stopped_part_way()
+            && !set_aside.passed_tasks.is_empty()
+            && !set_aside.tasks_left.is_empty(),
+        passed_tasks: set_aside.passed_tasks.clone(),
+        tasks_left: set_aside.tasks_left.clone(),
+    })
+}
+
 fn run_plan_on_local_runtime(
     workdir: PathBuf,
     plan_target: PathBuf,

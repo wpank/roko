@@ -22,7 +22,7 @@ use roko_graph::workspace::{
 
 use crate::orchestrator::worktree::{
     AttemptAcceptance, WorktreeError, WorktreeHealth, WorktreeManager, format_attempt_worktree_id,
-    format_branch_name,
+    format_branch_name, give_build_trees,
 };
 
 /// CLI adapter that implements [`ExecutionWorkspaceProvider`] by delegating to
@@ -36,6 +36,10 @@ pub struct WorktreeExecutionWorkspaceProvider {
     manager: WorktreeManager,
     /// Cached repo root for shared-checkout rejection.
     repo_root: PathBuf,
+    /// The build trees a new attempt checkout gets from the repository's
+    /// checkout (`[gates] warm_build_dirs`, gap-6754ab): `None` for every
+    /// CMake build tree of its project.
+    warm_build_dirs: Option<Vec<String>>,
 }
 
 impl WorktreeExecutionWorkspaceProvider {
@@ -43,7 +47,20 @@ impl WorktreeExecutionWorkspaceProvider {
     #[must_use]
     pub fn new(manager: WorktreeManager) -> Self {
         let repo_root = manager.repo_root().to_path_buf();
-        Self { manager, repo_root }
+        Self {
+            manager,
+            repo_root,
+            warm_build_dirs: None,
+        }
+    }
+
+    /// Give new attempt checkouts these build trees of the repository's
+    /// checkout (`[gates] warm_build_dirs`); `None`, the default, gives every
+    /// CMake build tree of its project.
+    #[must_use]
+    pub fn with_warm_build_dirs(mut self, dirs: Option<Vec<String>>) -> Self {
+        self.warm_build_dirs = dirs;
+        self
     }
 
     /// Return a reference to the underlying `WorktreeManager`.
@@ -120,6 +137,20 @@ impl ExecutionWorkspaceProvider for WorktreeExecutionWorkspaceProvider {
                 }
                 other => WorkspaceError::Io(other.to_string()),
             })?;
+
+        // gap-6754ab: its first check builds incrementally from a warm copy
+        // of the repository checkout's build trees, not from nothing. Done
+        // outside the manager's lock, so sibling checkouts are not held up.
+        let source = self.repo_root.clone();
+        let checkout = handle.path.clone();
+        let dirs = self.warm_build_dirs.clone();
+        if let Err(error) = tokio::task::spawn_blocking(move || {
+            give_build_trees(&source, &checkout, dirs.as_deref())
+        })
+        .await
+        {
+            tracing::warn!(%error, "could not give the attempt checkout its build trees");
+        }
 
         self.lease_from_handle(attempt_id, &handle)
     }
@@ -501,5 +532,83 @@ mod tests {
         // Only one active lease should remain.
         let active = provider.active_leases();
         assert_eq!(active.len(), 1);
+    }
+
+    /// gap-6754ab: a new attempt checkout gets a warm copy of the repository
+    /// checkout's CMake build tree, moved to its own path; `[gates]
+    /// warm_build_dirs = []` gives it none.
+    #[tokio::test]
+    async fn acquire_gives_the_checkout_warm_build_trees() {
+        let repo = tempfile::tempdir().expect("repo");
+        if !crate::orchestrator::worktree::clones_on(repo.path()) {
+            eprintln!("this filesystem makes no copy-on-write clones; skipping");
+            return;
+        }
+        let git = |args: &[&str]| {
+            let output = std::process::Command::new("git")
+                .args([
+                    "-c",
+                    "user.name=roko-test",
+                    "-c",
+                    "user.email=roko-test@localhost",
+                ])
+                .args([
+                    "-c",
+                    "commit.gpgsign=false",
+                    "-c",
+                    "core.hooksPath=/dev/null",
+                ])
+                .args(args)
+                .current_dir(repo.path())
+                .output()
+                .expect("run git");
+            assert!(output.status.success(), "git {args:?}");
+        };
+        std::fs::write(repo.path().join(".gitignore"), "build/\n").expect("gitignore");
+        git(&["init", "--quiet", "--initial-branch=main"]);
+        git(&["add", "--all"]);
+        git(&["commit", "--quiet", "-m", "base"]);
+        let root = repo.path().canonicalize().expect("canonical repo");
+        std::fs::create_dir_all(root.join("build")).expect("build");
+        std::fs::write(
+            root.join("build/CMakeCache.txt"),
+            format!("CMAKE_HOME_DIRECTORY:INTERNAL={}\n", root.display()),
+        )
+        .expect("cache");
+        let worktrees = tempfile::tempdir().expect("worktrees");
+        let provider = |dirs: Option<Vec<String>>| {
+            WorktreeExecutionWorkspaceProvider::new(WorktreeManager::new(
+                crate::orchestrator::worktree::WorktreeConfig {
+                    repo_root: root.clone(),
+                    base_branch: "HEAD".to_string(),
+                    worktrees_root: worktrees.path().to_path_buf(),
+                    max_live: None,
+                    idle_ttl: std::time::Duration::from_secs(3600),
+                },
+            ))
+            .with_warm_build_dirs(dirs)
+        };
+
+        let lease = provider(None)
+            .acquire(&attempt("plan-a", "task-1", 0))
+            .await
+            .expect("acquire");
+
+        let checkout = lease.path.canonicalize().expect("canonical checkout");
+        let cache = std::fs::read_to_string(checkout.join("build/CMakeCache.txt"))
+            .expect("the checkout got the build tree");
+        assert_eq!(
+            cache,
+            format!("CMAKE_HOME_DIRECTORY:INTERNAL={}\n", checkout.display())
+        );
+
+        let lease = provider(Some(Vec::new()))
+            .acquire(&attempt("plan-a", "task-2", 0))
+            .await
+            .expect("acquire");
+        assert!(
+            !lease.path.join("build").exists(),
+            "warm_build_dirs = [] gave a tree"
+        );
     }
 }

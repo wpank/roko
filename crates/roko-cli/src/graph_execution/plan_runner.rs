@@ -321,9 +321,6 @@ const INTERRUPT_SETTLE_TIMEOUT: Duration = Duration::from_secs(2);
 /// the disk before it returns, and the process exits.
 const ROW_WRITES_TIMEOUT: Duration = Duration::from_secs(1);
 
-/// Set while a CLI plan run handles SIGINT/SIGTERM itself.
-static CLI_OWNS_TERMINATION_SIGNALS: AtomicBool = AtomicBool::new(false);
-
 /// Set while a CLI plan run handles SIGHUP itself, which it does unless
 /// SIGHUP was ignored when the run started, as under `nohup`.
 static CLI_OWNS_HANGUP_SIGNAL: AtomicBool = AtomicBool::new(false);
@@ -336,13 +333,6 @@ static RUNNING_PLAN_CHECKPOINTS: std::sync::Mutex<BTreeSet<PathBuf>> =
 /// Original stderr while it is redirected to the runner log for the TUI.
 static REDIRECTED_STDERR_ORIGINAL: AtomicI32 = AtomicI32::new(-1);
 
-/// Whether a CLI plan run currently owns SIGINT/SIGTERM. The binary's
-/// process-wide SIGTERM handler defers to the run while this is `true`.
-#[must_use]
-pub fn plan_run_owns_termination_signals() -> bool {
-    CLI_OWNS_TERMINATION_SIGNALS.load(Ordering::SeqCst)
-}
-
 /// Whether a CLI plan run currently owns SIGHUP, so its TUI must leave the
 /// signal to the run.
 fn plan_run_owns_hangup_signal() -> bool {
@@ -354,12 +344,14 @@ fn plan_run_owns_hangup_signal() -> bool {
 #[derive(Debug)]
 pub struct PlanRunSignalGuard {
     listener: tokio::task::JoinHandle<()>,
+    /// The run's claim on SIGINT/SIGTERM, which the binary's process-wide
+    /// SIGTERM handler defers to.
+    _claim: crate::cli_signals::TerminationSignalClaim,
 }
 
 impl Drop for PlanRunSignalGuard {
     fn drop(&mut self) {
         self.listener.abort();
-        CLI_OWNS_TERMINATION_SIGNALS.store(false, Ordering::SeqCst);
         CLI_OWNS_HANGUP_SIGNAL.store(false, Ordering::SeqCst);
     }
 }
@@ -386,12 +378,12 @@ pub fn install_plan_run_signal_handlers(
     let mut sigterm = signal(SignalKind::terminate()).context("install SIGTERM handler")?;
     // A hung-up terminal stops the run like SIGTERM (bug-4641e3), unless the
     // run was started to survive one.
-    let mut sighup = if hangup_ignored() {
+    let mut sighup = if crate::cli_signals::hangup_ignored() {
         None
     } else {
         Some(signal(SignalKind::hangup()).context("install SIGHUP handler")?)
     };
-    CLI_OWNS_TERMINATION_SIGNALS.store(true, Ordering::SeqCst);
+    let claim = crate::cli_signals::claim_termination_signals();
     CLI_OWNS_HANGUP_SIGNAL.store(sighup.is_some(), Ordering::SeqCst);
     let listener = tokio::spawn(async move {
         loop {
@@ -416,20 +408,10 @@ pub fn install_plan_run_signal_handlers(
             }
         }
     });
-    Ok(PlanRunSignalGuard { listener })
-}
-
-/// Whether SIGHUP is ignored, as `nohup` leaves it for the command it starts.
-#[cfg(unix)]
-#[allow(unsafe_code)]
-fn hangup_ignored() -> bool {
-    // SAFETY: with a null new action, sigaction(2) only reads the current
-    // disposition into `current`, a zero-initialized plain C struct.
-    unsafe {
-        let mut current: libc::sigaction = std::mem::zeroed();
-        libc::sigaction(libc::SIGHUP, std::ptr::null(), &raw mut current) == 0
-            && current.sa_sigaction == libc::SIG_IGN
-    }
+    Ok(PlanRunSignalGuard {
+        listener,
+        _claim: claim,
+    })
 }
 
 /// The next delivery of a signal the run may not have claimed; `None` at once
@@ -446,6 +428,7 @@ pub fn install_plan_run_signal_handlers(
 ) -> anyhow::Result<PlanRunSignalGuard> {
     Ok(PlanRunSignalGuard {
         listener: tokio::spawn(async {}),
+        _claim: crate::cli_signals::claim_termination_signals(),
     })
 }
 
@@ -1318,14 +1301,64 @@ async fn run_graph_plan_body(
         .iter()
         .map(|plan| plan.dir.join("tasks.toml"))
         .collect();
-    let spec_gate =
-        match crate::spec_gate::gate_plans(&spec_files, workdir, &roko_config.spec_quality) {
-            Ok(report) => report,
-            Err(interrupted) => {
-                tracing::error!("{interrupted}");
-                return Ok(RunExit::from(128 + interrupted.signal));
+    // The hub hears the gate start and end, so the minutes its checks can
+    // take on the base before any agent starts show (gap-6a319c).
+    let gating = std::time::Instant::now();
+    if let Some(hub) = &state_hub {
+        let (tasks_total, steps_total) = red_on_base_work(&plans, &roko_config.spec_quality);
+        hub.sender()
+            .publish(roko_core::DashboardEvent::SpecGateStarted {
+                plan_ids: plans.iter().map(|plan| plan.id.clone()).collect(),
+                tasks_total,
+                steps_total,
+            });
+    }
+    // Each step the red-on-base check runs on the base, or takes from the
+    // cache, shows as it ends (gap-e02ec4). The check is synchronous: what
+    // it borrows is gone before the next await.
+    let gated = {
+        let on_step = |step: &crate::spec_red_on_base::StepDone| {
+            if let Some(hub) = &state_hub {
+                hub.sender()
+                    .publish(roko_core::DashboardEvent::SpecGateStep {
+                        plan_id: step.plan_id.clone(),
+                        task_id: step.task_id.clone(),
+                        run: u32::try_from(step.run).unwrap_or(u32::MAX),
+                        step: u32::try_from(step.step).unwrap_or(u32::MAX),
+                        passed: step.passed,
+                        ms: step.ms,
+                        cached: step.cached,
+                    });
             }
         };
+        let gate_run = crate::spec_gate::GateRun {
+            warm_build_dirs: roko_config.gates.warm_build_dirs.as_deref(),
+            on_step: Some(&on_step),
+        };
+        crate::spec_gate::gate_plans_with(
+            &spec_files,
+            workdir,
+            &roko_config.spec_quality,
+            &gate_run,
+        )
+    };
+    let (spec_gate, checked) = match gated {
+        Ok(gated) => gated,
+        Err(interrupted) => {
+            tracing::error!("{interrupted}");
+            return Ok(RunExit::from(128 + interrupted.signal));
+        }
+    };
+    if let Some(hub) = &state_hub {
+        hub.sender()
+            .publish(roko_core::DashboardEvent::SpecGateFinished {
+                elapsed_ms: u64::try_from(gating.elapsed().as_millis()).unwrap_or(u64::MAX),
+                tasks_checked: Some(checked.tasks_checked),
+                steps_run: Some(checked.steps_run),
+                cached: Some(checked.cached),
+                blocked: u32::try_from(spec_gate.blocked().count()).unwrap_or(u32::MAX),
+            });
+    }
     if spec_gate.blocks() {
         crate::spec_gate::log_blocked(&spec_gate);
         // The run's event log and SSE show the refusal too.
@@ -1677,7 +1710,8 @@ async fn run_graph_plan_body(
             disk_admission = disk_admission.with_ring(ring);
         }
         let provider = Arc::new(
-            crate::graph_execution::WorktreeExecutionWorkspaceProvider::new(worktree_manager),
+            crate::graph_execution::WorktreeExecutionWorkspaceProvider::new(worktree_manager)
+                .with_warm_build_dirs(roko_config.gates.warm_build_dirs.clone()),
         );
         if !quiet && !json {
             let asked_by = if worktree_per_task_explicit {
@@ -1816,7 +1850,7 @@ async fn run_graph_plan_body(
         // When the CLI routes SIGINT/SIGTERM (and SIGHUP) to this run, keep
         // the TUI's terminal-reset handler off them so they stop the run
         // gracefully instead of killing the process.
-        let host_owns_signals = plan_run_owns_termination_signals();
+        let host_owns_signals = crate::cli_signals::cli_owns_termination_signals();
         let host_owns_hangup = plan_run_owns_hangup_signal();
         let state_hub_for_tui = state_hub.clone();
         let workdir_for_tui = workdir.to_path_buf();
@@ -3979,6 +4013,19 @@ async fn run_one_plan(
         ctx.force_resume,
         ctx.caller_run_id.filter(|_| ctx.plan_count == 1),
     )?;
+    // A run that starts the plan over says whose progress it set aside, and
+    // how to bring it back (bug-cbdb6b).
+    if let Some(set_aside) = checkpoint.set_aside() {
+        ctx.graph_tui_bridge
+            .publish_event(roko_core::DashboardEvent::EventLogEntry {
+                timestamp_ms: u64::try_from(chrono::Utc::now().timestamp_millis())
+                    .unwrap_or_default(),
+                event_type: "checkpoint.set_aside".to_string(),
+                plan_id: plan.id.clone(),
+                task_id: String::new(),
+                message: format!("started over: {}", set_aside.describe(ctx.workdir)),
+            });
+    }
     // Until the plan writes its terminal status, a forced exit marks its
     // checkpoint `interrupted` (bug-4641e3).
     let _running = RunningPlanCheckpoint::register(&checkpoint.paths().manifest);
@@ -4621,6 +4668,42 @@ impl PlanCheckResult {
             delivery_id: None,
         }
     }
+}
+
+/// What the plan-load gate's red-on-base check runs for `plans` (gap-6a319c):
+/// the implementer tasks with checks it runs on the base, and at most how
+/// many check runs that takes (each task's steps, [`RUNS`] times). Both are
+/// 0 when the check is off.
+///
+/// [`RUNS`]: crate::spec_red_on_base::RUNS
+fn red_on_base_work(
+    plans: &[crate::runner::plan_loader::Plan],
+    config: &roko_core::config::SpecQualityConfig,
+) -> (u32, u32) {
+    if !config.is_on() || !config.red_on_base {
+        return (0, 0);
+    }
+    let (mut tasks, mut steps) = (0_usize, 0_usize);
+    for task in plans.iter().flat_map(|plan| &plan.tasks.tasks) {
+        let role = task.role.as_deref().map_or("", str::trim);
+        let accept = task.accept.as_ref().map_or(0, |accept| accept.files.len());
+        let regression_only = accept == 0
+            && task.verify.iter().all(|step| {
+                matches!(
+                    step.expect,
+                    Some(crate::task_parser::VerifyExpect::PassOnBase)
+                )
+            });
+        if !matches!(role, "" | "implementer") || regression_only {
+            continue;
+        }
+        tasks += 1;
+        steps += (task.verify.len() + accept) * crate::spec_red_on_base::RUNS;
+    }
+    (
+        u32::try_from(tasks).unwrap_or(u32::MAX),
+        u32::try_from(steps).unwrap_or(u32::MAX),
+    )
 }
 
 /// Deliver `plan`, whose tasks all passed, into the run's batch branch
@@ -8745,13 +8828,13 @@ exec sleep 60
         unsafe {
             let _ = libc::signal(libc::SIGHUP, libc::SIG_IGN);
         }
-        assert!(hangup_ignored(), "as under nohup");
+        assert!(crate::cli_signals::hangup_ignored(), "as under nohup");
         // SAFETY: as above.
         #[allow(unsafe_code)]
         unsafe {
             let _ = libc::signal(libc::SIGHUP, libc::SIG_DFL);
         }
-        assert!(!hangup_ignored());
+        assert!(!crate::cli_signals::hangup_ignored());
 
         let interrupt = PlanRunInterruptHandle::default();
         let _signals = install_plan_run_signal_handlers(interrupt.clone()).expect("handlers");

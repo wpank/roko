@@ -9,9 +9,11 @@
 //! anywhere. Prose is not a check, and neither is what a heading of another
 //! kind holds, even under a Verification heading (Regression Anchors,
 //! Academic References). Checks are numbered `SC1`, `SC2`, … in the order the
-//! source states them.
+//! source states them. A line that names a check as the plan's own ("`tools/check.sh` is
+//! the plan's final check") is one too, wherever it stands: `[[meta.verify]]` runs it, not
+//! a task (bug-96115c).
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
 use std::path::Path;
 use std::sync::LazyLock;
@@ -20,8 +22,8 @@ use regex::Regex;
 use roko_gate::spec_quality::ac_id;
 use roko_learn::runtime_feedback::{GenerationSourceCheck, GenerationSourceChecks};
 
-use super::runnable::{Probe, Unrunnable, check_command};
-use crate::task_parser::TasksFile;
+use super::runnable::{Probe, Unchecked, Unrunnable, check_command, command_words, only_reads};
+use crate::task_parser::{TasksFile, VerifyStep};
 
 /// The most of one check that a prompt or a report quotes, in characters.
 const CHECK_CHARS: usize = 300;
@@ -43,6 +45,9 @@ const CHECK_HEADING_WORDS: &[&str] = &[
 /// Shell block tags whose lines are commands.
 const SHELL_TAGS: &[&str] = &["", "bash", "console", "sh", "shell", "zsh"];
 
+/// Extensions of the scripts a check may quote by path (`tools/spec.sh`).
+const SCRIPT_EXTENSIONS: &[&str] = &["bash", "pl", "py", "rb", "sh", "zsh"];
+
 /// One check the source states.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct SourceCheck {
@@ -50,9 +55,13 @@ pub(super) struct SourceCheck {
     pub id: String,
     /// The check, on one line.
     pub text: String,
-    /// The command that runs it, when it names unittest ids, expanded by
-    /// roko rather than left to the planner (bug-8fe462).
+    /// The command that runs it, when roko can tell: the unittest ids it
+    /// names, expanded by roko rather than left to the planner (bug-8fe462),
+    /// or the one command it quotes (bug-3cdc58).
     pub run: Option<String>,
+    /// Whether the source names it as the plan's own final check, which
+    /// `[[meta.verify]]` runs once every task has passed (bug-96115c).
+    pub plan_level: bool,
 }
 
 /// The checks `source` states, numbered in order.
@@ -71,6 +80,7 @@ pub(super) fn source_checks(source: &str) -> Vec<SourceCheck> {
             id: format!("SC{}", index + 1),
             text,
             run: None,
+            plan_level: reader.plan_checks.contains(&index),
         })
         .collect()
 }
@@ -94,6 +104,8 @@ struct Reader {
     /// The list item or invariant block being read, and the indent of the
     /// item (`None` for an invariant block, whose items are its details).
     open: Option<(String, Option<usize>)>,
+    /// The indices of the checks the source names as the plan's own.
+    plan_checks: BTreeSet<usize>,
 }
 
 impl Reader {
@@ -130,6 +142,12 @@ impl Reader {
         if let Some(text) = checkpoint_line(trimmed) {
             self.close();
             self.checks.push(one_line(&text));
+            return;
+        }
+        if let Some(text) = plan_check_line(line) {
+            self.close();
+            self.plan_checks.insert(self.checks.len());
+            self.checks.push(text);
             return;
         }
         if !self.collecting {
@@ -233,6 +251,21 @@ fn checkpoint_line(trimmed: &str) -> Option<String> {
     CHECKPOINT
         .is_match(trimmed)
         .then(|| trimmed.replace("**", ""))
+}
+
+/// A line that names a check as the plan's own (bug-96115c), as its text: it
+/// quotes code and says "the plan's final check", "the whole-plan check", "a
+/// plan-level check" or "the final check of the plan". A task's last step ("as
+/// a final check") is not one.
+fn plan_check_line(line: &str) -> Option<String> {
+    static PLAN_CHECK: LazyLock<Regex> = LazyLock::new(|| {
+        Regex::new(
+            r"(?i)\bplan['’]?s\s+(?:own\s+|final\s+|last\s+|whole\s+)*check\b|\b(?:whole[- ]plan|plan[- ]level)\s+check\b|\bfinal\s+check\s+of\s+the\s+plan\b",
+        )
+        .expect("valid plan check regex")
+    });
+    let text = list_item(line).map_or(line.trim(), |(_, text)| text);
+    (text.contains('`') && PLAN_CHECK.is_match(text)).then(|| one_line(text))
 }
 
 /// The text of a one-line HTML comment that names something
@@ -540,8 +573,9 @@ pub(super) struct SourceCoverage {
 impl SourceCoverage {
     /// What became of `checks` in `plan`, whose `unrunnable` steps cannot
     /// pass as written. A check is kept when a verify step that can run
-    /// covers it (or an acceptance criterion that names it) and runs more than
-    /// a grep, a file test or a build; it cannot run when only steps that
+    /// covers it (or an acceptance criterion that names it), or runs its own
+    /// command (bug-3cdc58), and runs more than a grep, a file test or a
+    /// build; it cannot run when only steps that
     /// cannot pass cover it otherwise; shallow when only grep, file test or
     /// build steps do; dropped when `[meta] dropped_checks` gives a reason for
     /// it that does more than restate it; and missing otherwise.
@@ -551,6 +585,13 @@ impl SourceCoverage {
                 .iter()
                 .find(|check| check.id == id)
                 .map(|check| check.text.as_str())
+        };
+        // bug-96115c: a check of the plan's own is kept by `[[meta.verify]]`,
+        // never by a task's step, which runs before the other tasks' work.
+        let plan_level = |id: &str| {
+            checks
+                .iter()
+                .any(|check| check.id == id && check.plan_level)
         };
         let mut kept = BTreeMap::new();
         let mut shallow = BTreeMap::new();
@@ -571,9 +612,24 @@ impl SourceCoverage {
                         covering.push((id, cover.to_string(), step.command.as_str(), number));
                     }
                 }
+                // bug-3cdc58: a step that runs a check's own command keeps it,
+                // whether or not anything names the check.
+                for check in checks.iter().filter(|check| {
+                    !check.plan_level
+                        && check
+                            .run
+                            .as_deref()
+                            .is_some_and(|run| runs_command(&step.command, run))
+                }) {
+                    let criterion = step.covers.first().map_or_else(
+                        || format!("step {number}"),
+                        |cover| cover.trim().to_string(),
+                    );
+                    covering.push((check.id.clone(), criterion, step.command.as_str(), number));
+                }
             }
             for (id, criterion, command, number) in covering {
-                if text_of(&id).is_none() || kept.contains_key(&id) {
+                if text_of(&id).is_none() || kept.contains_key(&id) || plan_level(&id) {
                     continue;
                 }
                 let stuck = unrunnable
@@ -592,6 +648,20 @@ impl SourceCoverage {
                     cannot_run.remove(&id);
                     kept.insert(id, (task.id.clone(), criterion));
                 }
+            }
+        }
+        for check in checks.iter().filter(|check| check.plan_level) {
+            let ran = check.run.as_deref().is_some_and(|run| {
+                plan.meta
+                    .verify
+                    .iter()
+                    .any(|step| runs_command(&step.command, run))
+            });
+            if ran {
+                kept.insert(
+                    check.id.clone(),
+                    ("plan".to_string(), "[[meta.verify]]".to_string()),
+                );
             }
         }
         shallow.retain(|id, _| !cannot_run.contains_key(id));
@@ -769,12 +839,21 @@ pub(super) fn planner_block(checks: &[SourceCheck], kind: &str) -> String {
     );
     if checks.iter().any(|check| check.run.is_some()) {
         block.push_str(
-            "A check given with `run:` names its tests already: use that command as its step's \
+            "A check given with `run:` has its command already: use that command as its step's \
              command, unchanged.\n\n",
+        );
+    }
+    if checks.iter().any(|check| check.plan_level) {
+        block.push_str(
+            "A check marked as the plan's own runs once, after every task has passed: put it in \
+             `[[meta.verify]]` with its command unchanged, never in a task's verify steps.\n\n",
         );
     }
     for check in checks {
         let _ = write!(block, "- {}: {}", check.id, check.text);
+        if check.plan_level {
+            block.push_str(" (the plan's own check: `[[meta.verify]]`)");
+        }
         if let Some(run) = &check.run {
             let _ = write!(block, " (run: `{run}`)");
         }
@@ -783,12 +862,101 @@ pub(super) fn planner_block(checks: &[SourceCheck], kind: &str) -> String {
     block
 }
 
-/// Give each of `checks` that names unittest ids the command that runs them
-/// (bug-8fe462): wildcards expanded from the workspace's test files.
+/// Give each of `checks` the command that runs it, when roko can tell: the
+/// unittest ids it names, wildcards expanded from the workspace's test files
+/// (bug-8fe462), or else the one command it quotes (bug-3cdc58), as a spec's
+/// table of checks gives each check's command (`| P0.01 | `tools/spec.sh 0
+/// params 'P0.01*'` | … |`).
 pub(super) fn attach_runs(checks: &mut [SourceCheck], workdir: &Path, probe: &Probe) {
     for check in checks {
-        check.run = check_command(&check.text, workdir, probe);
+        check.run = check_command(&check.text, workdir, probe)
+            .or_else(|| quoted_command(&check.text, workdir, probe));
     }
+}
+
+/// The one command `text` quotes in a code span (bug-3cdc58); `None` when no
+/// span is a command ([`is_command`]), or more than one is.
+fn quoted_command(text: &str, workdir: &Path, probe: &Probe) -> Option<String> {
+    static SPAN: LazyLock<Regex> =
+        LazyLock::new(|| Regex::new(r"`([^`]+)`").expect("valid code span regex"));
+    let mut commands = SPAN
+        .captures_iter(text)
+        .filter_map(|captures| captures.get(1))
+        .map(|span| span.as_str().trim())
+        .filter(|span| is_command(span, workdir, probe));
+    let command = commands.next()?;
+    commands.next().is_none().then(|| command.to_string())
+}
+
+/// Whether a code span is a command: a script given by its path (with a
+/// script's extension, or a file of the workspace), or a program this
+/// machine has, with the words it is given. A file name, a symbol or a
+/// signature is not one.
+fn is_command(span: &str, workdir: &Path, probe: &Probe) -> bool {
+    let words = command_words(span);
+    let Some(program) = words.first() else {
+        return false;
+    };
+    if program.contains('/') {
+        let path = program.trim_start_matches("./");
+        let script = Path::new(path)
+            .extension()
+            .and_then(|extension| extension.to_str())
+            .is_some_and(|extension| SCRIPT_EXTENSIONS.contains(&extension));
+        return script || workdir.join(path).is_file();
+    }
+    words.len() > 1 && probe.command(program)
+}
+
+/// Whether `command`, a verify step's, runs `run`, a check's command: each
+/// of `run`'s commands is one of `command`'s, word for word, quotes aside
+/// (bug-3cdc58).
+fn runs_command(command: &str, run: &str) -> bool {
+    let commands = |text: &str| -> Vec<Vec<String>> {
+        shell_segments(text)
+            .iter()
+            .map(|segment| command_words(segment))
+            .filter(|words| !words.is_empty())
+            .collect()
+    };
+    let (have, wanted) = (commands(command), commands(run));
+    !wanted.is_empty() && wanted.iter().all(|words| have.contains(words))
+}
+
+/// Give the plan a `[[meta.verify]]` step for each check the source names as
+/// the plan's own final check (bug-96115c) that no such step runs yet: its
+/// command, unchanged, which runs once every task has passed. Returns one
+/// line per step added.
+pub(super) fn add_plan_checks(plan: &mut TasksFile, checks: &[SourceCheck]) -> Vec<String> {
+    let mut added = Vec::new();
+    for check in checks.iter().filter(|check| check.plan_level) {
+        let Some(run) = &check.run else {
+            continue;
+        };
+        if plan
+            .meta
+            .verify
+            .iter()
+            .any(|step| runs_command(&step.command, run))
+        {
+            continue;
+        }
+        plan.meta.verify.push(VerifyStep {
+            phase: "test".to_string(),
+            command: run.clone(),
+            fail_msg: Some(format!("{}: {}", check.id, check.text)),
+            timeout_ms: crate::task_parser::default_verify_timeout(),
+            scope: Vec::new(),
+            covers: Vec::new(),
+            expect: None,
+        });
+        added.push(format!(
+            "added `[[meta.verify]]` running `{run}`: the source names it the plan's final check \
+             ({})",
+            check.id
+        ));
+    }
+    added
 }
 
 /// Run each source check that has a command with that command (bug-8fe462),
@@ -860,6 +1028,7 @@ pub(super) fn regeneration_prompt(
     plan: &str,
     coverage: &SourceCoverage,
     unrunnable: &[Unrunnable],
+    unchecked: &[Unchecked],
 ) -> String {
     let mut problems = String::new();
     let missing = coverage.missing();
@@ -893,10 +1062,23 @@ pub(super) fn regeneration_prompt(
         problems.push_str(
             "These verify steps cannot pass as written, whatever the work does; use a runner \
              this machine has (see Test runners), name only tests that exist or that the task \
-             writes, and put each test file a task writes in its `files`:\n",
+             writes, put each test file a task writes in its `files`, and check files the task \
+             writes: a check of files no task of the plan writes is decided before it runs:\n",
         );
         for step in unrunnable {
             let _ = writeln!(problems, "- {} step {}: {}", step.task, step.step, step.why);
+        }
+    }
+    if !unchecked.is_empty() {
+        problems.push_str(
+            "No check of these tasks can see their work: every verify step of theirs reads \
+             only files no task of the plan writes and already passes, so it passes whatever \
+             the task does. Give each task a role that writes and checks that read what it \
+             writes; a spec, a design or notes is a `scribe` task that writes them to a file in \
+             its `files`:\n",
+        );
+        for task in unchecked {
+            let _ = writeln!(problems, "- {}: {}", task.task, only_reads(&task.reads));
         }
     }
     let kept = if coverage.checks.is_empty() {
@@ -914,9 +1096,10 @@ pub(super) fn regeneration_prompt(
          a test of what it states: a test the repository has, or one the task writes, named in \
          its description and guarded by a `grep -q` for it. When no command can check one, list \
          it in `[meta] dropped_checks` as `\"SCk: <why no command can check it>\"`. Fix each \
-         step that cannot pass. Keep the rest of the plan as it is. Output the complete plan as \
-         a single ```toml fenced block, followed only by the ```accept:accept/<file> blocks of \
-         the tests it pins."
+         step that cannot pass and each task no check can see, changing a task's role and \
+         `files` where that takes it. Keep the rest of the plan as it is. Output the complete \
+         plan as a single ```toml fenced block, followed only by the ```accept:accept/<file> \
+         blocks of the tests it pins."
     )
 }
 
@@ -1114,5 +1297,147 @@ mod tests {
         ] {
             assert!(!is_check_heading(title), "{title}");
         }
+    }
+
+    /// bug-3cdc58: round v7's phase-0 spec states its 15 checks as a table
+    /// whose Command column holds one command per check, and the plan written
+    /// from it runs 12 of them verbatim, with its own AC ids in `covers` and
+    /// no SC id anywhere. Each check gets its quoted command as its `run`, and
+    /// a step that runs it keeps it, named or not: 12 of 15 kept, and the
+    /// three no step runs (P0.07, P0.14, P0.15) missing.
+    #[test]
+    fn a_step_running_a_checks_command_keeps_it() {
+        let fixture = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/p0_source_checks");
+        let request = std::fs::read_to_string(fixture.join("request.md")).expect("the request");
+        let plan = TasksFile::parse(&fixture.join("tasks.toml")).expect("the plan");
+        let temp = tempfile::tempdir().expect("tempdir");
+        std::fs::create_dir_all(temp.path().join("tools")).expect("tools");
+        for script in ["spec.sh", "pluginval.sh"] {
+            std::fs::write(temp.path().join("tools").join(script), "#!/bin/sh\n")
+                .expect("a script");
+        }
+        let mut checks = source_checks(&request);
+        assert_eq!(checks.len(), 15);
+        attach_runs(&mut checks, temp.path(), &Probe::with(&[], &[]));
+        assert_eq!(
+            checks[0].run.as_deref(),
+            Some("tools/spec.sh 0 params 'P0.01*'")
+        );
+        assert_eq!(checks[13].run.as_deref(), Some("tools/pluginval.sh 5"));
+        assert_eq!(checks[14].run.as_deref(), Some("tools/check.sh --plugin"));
+
+        let coverage = SourceCoverage::of(&checks, &plan, &[]);
+        let missing: Vec<&str> = coverage
+            .missing()
+            .iter()
+            .map(|check| check.id.as_str())
+            .collect();
+        assert_eq!(missing, ["SC7", "SC14", "SC15"]);
+        assert_eq!(coverage.kept.len(), 12, "{:?}", coverage.detail_lines());
+        assert_eq!(coverage.unkept(), 3);
+        assert_eq!(
+            coverage.kept.get("SC1"),
+            Some(&("T2".to_string(), "AC1".to_string()))
+        );
+    }
+
+    /// bug-3cdc58: a code span is a check's command when it runs a workspace
+    /// script or a program this machine has, with what it is given; a file
+    /// name, a symbol or a signature is not one, and neither is either of two
+    /// commands a check quotes. A step runs a check's command when one of its
+    /// commands is that command word for word, quotes aside.
+    #[test]
+    fn a_check_quoting_one_command_runs_it() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let probe = Probe::with(&[("make", true), ("cmake", true), ("ctest", true)], &[]);
+        let run = |text: &str| quoted_command(text, temp.path(), &probe);
+        assert_eq!(
+            run("P0.14 | `tools/pluginval.sh 5` | passes").as_deref(),
+            Some("tools/pluginval.sh 5")
+        );
+        assert_eq!(run("- `make test` passes").as_deref(), Some("make test"));
+        assert_eq!(run("`./run.sh` prints ok").as_deref(), Some("./run.sh"));
+        for text in [
+            "`docs/PRD.md` section 4 lists them",
+            "`kNumParams` is 57",
+            "`process(float* left, float* right, int n)` writes every sample",
+            "`make` alone",
+            "`cmake --preset core` builds, then `ctest --preset core` passes",
+            "`make test` and `make lint` pass",
+        ] {
+            assert_eq!(run(text), None, "{text}");
+        }
+        assert!(runs_command(
+            "grep -q 'kNumParams' core/params.h && tools/spec.sh 0 params \"P0.01*\"",
+            "tools/spec.sh 0 params 'P0.01*'"
+        ));
+        assert!(!runs_command(
+            "tools/spec.sh 0 params 'P0.02*'",
+            "tools/spec.sh 0 params 'P0.01*'"
+        ));
+    }
+
+    /// bug-96115c: round v7's phase-1 spec says, in its notes for the
+    /// planner, "`tools/check.sh` (every present spec test, phases 0 and 1)
+    /// is the plan's final check, not any one task's", and the plan written
+    /// from it had no `[[meta.verify]]`, so nothing in the run checked the two
+    /// phases together. The sentence is lifted as a check of the plan's own,
+    /// missing from that plan; generation adds `[[meta.verify]]` running its
+    /// command, which keeps it, and a task step that runs it would not.
+    #[test]
+    fn a_specs_named_final_check_becomes_meta_verify() {
+        let fixture = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/p1_final_check");
+        let request = std::fs::read_to_string(fixture.join("request.md")).expect("the request");
+        let mut plan = TasksFile::parse(&fixture.join("tasks.toml")).expect("the plan");
+        let temp = tempfile::tempdir().expect("tempdir");
+        let mut checks = source_checks(&request);
+        attach_runs(&mut checks, temp.path(), &Probe::with(&[], &[]));
+        let final_checks: Vec<&SourceCheck> =
+            checks.iter().filter(|check| check.plan_level).collect();
+        assert_eq!(final_checks.len(), 1, "{checks:?}");
+        let final_check = final_checks[0];
+        assert_eq!(final_check.run.as_deref(), Some("tools/check.sh"));
+        assert_eq!(checks.len(), 21, "the 20 table checks and the final one");
+
+        let coverage = SourceCoverage::of(&checks, &plan, &[]);
+        let missing: Vec<&str> = coverage
+            .missing()
+            .iter()
+            .map(|check| check.id.as_str())
+            .collect();
+        assert_eq!(missing, [final_check.id.as_str()]);
+
+        let added = add_plan_checks(&mut plan, &checks);
+        assert_eq!(
+            added,
+            [format!(
+                "added `[[meta.verify]]` running `tools/check.sh`: the source names it the \
+                 plan's final check ({})",
+                final_check.id
+            )]
+        );
+        assert_eq!(plan.meta.verify.len(), 1);
+        assert_eq!(plan.meta.verify[0].command, "tools/check.sh");
+        let coverage = SourceCoverage::of(&checks, &plan, &[]);
+        assert_eq!(coverage.unkept(), 0, "{:?}", coverage.detail_lines());
+        assert!(add_plan_checks(&mut plan, &checks).is_empty(), "added once");
+    }
+
+    /// bug-96115c: the phrases that make a line the plan's own check, and
+    /// one that does not: a task's last step is a task's.
+    #[test]
+    fn a_line_naming_the_plans_own_check_is_lifted() {
+        for text in [
+            "Run `make check` as the plan's final check.",
+            "`tools/check.sh --plugin` is the whole-plan check.",
+            "The plan-level check: `npm test`.",
+            "Use `cargo test --workspace` as the final check of the plan.",
+        ] {
+            let checks = source_checks(&format!("# Spec\n\n## Notes\n\n{text}\n"));
+            assert_eq!(checks.len(), 1, "{text}: {checks:?}");
+            assert!(checks[0].plan_level, "{text}");
+        }
+        let checks = source_checks("# Spec\n\n## Notes\n\nAs a final check, run `make lint`.\n");
+        assert!(checks.is_empty(), "{checks:?}");
     }
 }

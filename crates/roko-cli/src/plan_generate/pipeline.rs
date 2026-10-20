@@ -759,12 +759,20 @@ fn keep_rejected_draft(
     }
 }
 
+/// The extensions of the documents a task may write at any length
+/// ([`repair_generated_draft`]).
+const DOCUMENT_EXTENSIONS: &[&str] = &["adoc", "markdown", "md", "rst", "txt"];
+
 /// Repair a generated draft's mechanical defects before it is checked
 /// (gap-b95913), rather than send it back to the planner for them: its
 /// `meta.total` becomes its number of tasks, each task keeps its first
 /// `policy.max_read_files_per_task` `read_files`, and its line ranges in files
 /// no earlier task changes fit those files
-/// ([`crate::plan_policy::fit_ranges_to_files`]). Returns one line per repair.
+/// ([`crate::plan_policy::fit_ranges_to_files`]). A task that writes only
+/// documents keeps its tier: a `max_loc` over the tier's limit becomes the
+/// limit (bug-27f00b), since a document's length is not what a tier sizes,
+/// and splitting one document across tasks fragments its ownership. Returns
+/// one line per repair.
 fn repair_generated_draft(
     plan: &mut TasksFile,
     policy: crate::plan_policy::PlanExecutionPolicy,
@@ -778,6 +786,26 @@ fn repair_generated_draft(
             plan.meta.total
         ));
         plan.meta.total = total;
+    }
+    for task in &mut plan.tasks {
+        let limit = policy.tier_size_limits(task.tier_class()).max_loc;
+        let documents = !task.files.is_empty()
+            && task.files.iter().all(|file| {
+                Path::new(file).extension().is_some_and(|extension| {
+                    DOCUMENT_EXTENSIONS
+                        .iter()
+                        .any(|known| extension.eq_ignore_ascii_case(known))
+                })
+            });
+        if documents && let Some(max_loc) = task.max_loc.filter(|max_loc| *max_loc > limit) {
+            repairs.push(format!(
+                "{}: max_loc {max_loc} became {limit}, its {} tier's limit, as it writes only \
+                 documents",
+                task.id,
+                task.tier_class()
+            ));
+            task.max_loc = Some(limit);
+        }
     }
     let keep = policy.max_read_files_per_task;
     for task in &mut plan.tasks {
@@ -924,7 +952,8 @@ fn plan_task_prompt(
          TOML quality checklist (every task MUST pass all of these):\n\
          - `meta.plan` matches the slug exactly: {slug} (use `plan =`, NOT `name =`)\n\
          - Every task has `id`, `title`, `description`, `status = \"ready\"`, `role`, and `tier`\n\
-         - `files` lists only real paths that exist in the codebase (no placeholders)\n\
+         - `files` lists the concrete paths the task changes or creates: files that exist, and \
+           new files at the paths they will have (no placeholders, globs or bare directories)\n\
          - `depends_on` only references task ids defined in this same plan\n\
          - No `model_hint` field: `tier` and `role` pick each task's model; add `rung` \
            (for example `rung = \"strong\"`) only when a task needs more than its tier's \
@@ -936,6 +965,62 @@ fn plan_task_prompt(
          {template_guidance}\n\
          {kind} content:\n{content}{extra}",
         read_files = budget.read_files,
+    )
+}
+
+/// The tasks of `plan` that write into `plan_dir`, the directory the plan is
+/// written to (bug-27f00b), each as "T1 writes `plans/x/plan.md`".
+fn own_plan_writers(plan: &TasksFile, plan_dir: &Path, workdir: &Path) -> Vec<String> {
+    let Ok(own) = plan_dir.strip_prefix(workdir) else {
+        return Vec::new();
+    };
+    let own = own.to_string_lossy();
+    let own = own.trim_end_matches('/');
+    plan.tasks
+        .iter()
+        .filter_map(|task| {
+            let file = task.files.iter().find(|file| {
+                let file = file.trim_start_matches("./");
+                file == own
+                    || file
+                        .strip_prefix(own)
+                        .is_some_and(|rest| rest.starts_with('/'))
+            })?;
+            Some(format!("{} writes `{file}`", task.id))
+        })
+        .collect()
+}
+
+/// The most top-level entries [`workspace_note`] names.
+const WORKSPACE_NOTE_ENTRIES: usize = 20;
+
+/// The planner prompt's note on a workspace it gets no repository map of
+/// (bug-27f00b): what its top level holds, hidden entries left out, and
+/// that a file a task creates belongs in its `files`.
+fn workspace_note(workdir: &Path) -> String {
+    let mut entries: Vec<String> = std::fs::read_dir(workdir)
+        .map(|entries| {
+            entries
+                .filter_map(Result::ok)
+                .filter_map(|entry| {
+                    let name = entry.file_name().to_string_lossy().into_owned();
+                    let dir = entry.file_type().is_ok_and(|kind| kind.is_dir());
+                    (!name.starts_with('.')).then(|| if dir { format!("{name}/") } else { name })
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    entries.sort();
+    let more = entries.len().saturating_sub(WORKSPACE_NOTE_ENTRIES);
+    entries.truncate(WORKSPACE_NOTE_ENTRIES);
+    let held = match (entries.is_empty(), more) {
+        (true, _) => "nothing".to_string(),
+        (false, 0) => entries.join(", "),
+        (false, more) => format!("{} and {more} more", entries.join(", ")),
+    };
+    format!(
+        "## Workspace\n\nIts top level holds: {held}. A file a task creates goes in that task's \
+         `files`, at the path it will have.\n"
     )
 }
 
@@ -1249,6 +1334,12 @@ pub async fn generate_plan(request: PlanRequest<'_>) -> Result<(PathBuf, Generat
         if let Some(repo_context) = &repo_context_section {
             extra.push_str("\n\n---\n\n");
             extra.push_str(repo_context);
+        } else {
+            // bug-27f00b: without a repository map, the planner still sees
+            // what the workspace holds, and that a new file is a task's to
+            // create.
+            extra.push_str("\n\n---\n\n");
+            extra.push_str(&workspace_note(workdir_ref));
         }
         // What has kept failing in the crates the source touches, and what
         // fixed it (backlog 4126). Nothing withholds the block yet, so its
@@ -1530,9 +1621,15 @@ pub async fn generate_plan(request: PlanRequest<'_>) -> Result<(PathBuf, Generat
             // a criterion of its task that states the check.
             let mut repairs = repair_generated_draft(&mut parsed, policy, workdir_ref);
             repairs.extend(source_checks::normalize_covers(&mut parsed, &checks));
+            // bug-96115c: a check the source names as the plan's final check
+            // runs in `[[meta.verify]]`, its command unchanged.
+            repairs.extend(source_checks::add_plan_checks(&mut parsed, &checks));
             // gap-ecafde: a pytest step without pytest runs as unittest, and a
             // test file a task's check needs joins its files.
             repairs.extend(runnable::repair(&mut parsed, workdir_ref, &probe));
+            // bug-d758f6: an implementer keeps its role's own tools, a shell
+            // and edit_file among them, whatever list the planner copied.
+            repairs.extend(runnable::repair_shell_tools(&mut parsed));
             // bug-df9aff: a task that creates a file may write it, and a task
             // waits for the tasks that write the modules its tests import.
             repairs.extend(runnable::repair_write_tools(&mut parsed, workdir_ref));
@@ -1575,6 +1672,21 @@ pub async fn generate_plan(request: PlanRequest<'_>) -> Result<(PathBuf, Generat
                     size_issues
                         .iter()
                         .map(|issue| format!("  - {issue}"))
+                        .collect::<Vec<_>>()
+                        .join("\n")
+                ));
+            }
+            // bug-27f00b: the plan roko writes is the plan. A task that writes
+            // into its directory writes a plan, not what the request asks for.
+            let own_writers = own_plan_writers(&parsed, &plan_dir, workdir_ref);
+            if !own_writers.is_empty() {
+                return Err(format!(
+                    "generated plan has tasks that write the plan's own files, but the plan roko \
+                     writes is the plan: its tasks build what the request asks for and write the \
+                     project's files (a spec goes in `docs/spec.md`, in one task):\n{}",
+                    own_writers
+                        .iter()
+                        .map(|line| format!("  - {line}"))
                         .collect::<Vec<_>>()
                         .join("\n")
                 ));
@@ -1719,21 +1831,27 @@ pub async fn generate_plan(request: PlanRequest<'_>) -> Result<(PathBuf, Generat
         };
 
         // gap-dc5d7c: what became of the source's checks in a candidate
-        // plan; gap-ecafde: which of its verify steps cannot pass as written.
+        // plan; gap-ecafde: which of its verify steps cannot pass as written;
+        // bug-27f00b: which of its tasks no check can see.
         let assess = |candidate: &str| {
             TasksFile::parse_str(candidate).ok().map(|plan| {
                 let unrunnable = runnable::problems(&plan, workdir_ref, &probe);
+                let unchecked = runnable::unchecked(&plan, workdir_ref, &probe);
                 let coverage = source_checks::SourceCoverage::of(&checks, &plan, &unrunnable);
-                (coverage, unrunnable)
+                (coverage, unrunnable, unchecked)
             })
         };
         // How far a candidate falls short: the source checks it does not
-        // keep, then its steps that cannot pass (everything when it does not
-        // parse). Fewer is better, checks first.
+        // keep, then its steps that cannot pass and its tasks no check can
+        // see (everything when it does not parse). Fewer is better, checks
+        // first.
         let missing_of = |candidate: &str| {
-            assess(candidate).map_or((checks.len(), usize::MAX), |(coverage, unrunnable)| {
-                (coverage.unkept(), unrunnable.len())
-            })
+            assess(candidate).map_or(
+                (checks.len(), usize::MAX),
+                |(coverage, unrunnable, unchecked)| {
+                    (coverage.unkept(), unrunnable.len() + unchecked.len())
+                },
+            )
         };
 
         // First attempt uses the output we already have.
@@ -1924,30 +2042,45 @@ pub async fn generate_plan(request: PlanRequest<'_>) -> Result<(PathBuf, Generat
         // checks (no step checks them, or only a grep or a build does, and no
         // reason says why no command can) is sent back once, naming them,
         // and the plan that keeps more is kept. gap-ecafde: so is a plan with
-        // a verify step that cannot pass as written.
+        // a verify step that cannot pass as written; bug-27f00b: and one with
+        // a task no check can see.
         let mut checks_regenerated = false;
         if let Ok(candidate) = &validated_toml
-            && let Some((coverage, unrunnable)) = assess(candidate)
-            && (coverage.unkept() > 0 || !unrunnable.is_empty())
+            && let Some((coverage, unrunnable, unchecked)) = assess(candidate)
+            && (coverage.unkept() > 0 || !unrunnable.is_empty() || !unchecked.is_empty())
             && !skip_for_cap("keep the source checks it left out")
         {
-            let missing = (coverage.unkept(), unrunnable.len());
-            let why = match missing {
-                (0, stuck) => format!("{stuck} verify step(s) cannot pass as written"),
-                (unkept, 0) => format!(
-                    "{unkept} of the source's {} checks are not kept as verify steps",
+            let missing = (coverage.unkept(), unrunnable.len() + unchecked.len());
+            let mut parts = Vec::new();
+            if coverage.unkept() > 0 {
+                parts.push(format!(
+                    "{} of the source's {} checks are not kept as verify steps",
+                    coverage.unkept(),
                     checks.len()
-                ),
-                (unkept, stuck) => format!(
-                    "{unkept} of the source's {} checks are not kept as verify steps, and \
-                     {stuck} step(s) cannot pass as written",
-                    checks.len()
-                ),
-            };
+                ));
+            }
+            if !unrunnable.is_empty() {
+                parts.push(format!(
+                    "{} verify step(s) cannot pass as written",
+                    unrunnable.len()
+                ));
+            }
+            if !unchecked.is_empty() {
+                parts.push(format!(
+                    "{} task(s) have no check that can see their work",
+                    unchecked.len()
+                ));
+            }
+            let why = parts.join(", and ");
             eprintln!("  {why}; asking the planner once more");
             report("regenerating", (1, 1), Some(why), planner_model.as_str());
-            let prompt =
-                source_checks::regeneration_prompt(&task_prompt, candidate, &coverage, &unrunnable);
+            let prompt = source_checks::regeneration_prompt(
+                &task_prompt,
+                candidate,
+                &coverage,
+                &unrunnable,
+                &unchecked,
+            );
             let retry = run_agent_capture_silent_with_usage(AgentExecOpts {
                 prompt: &prompt,
                 ..planner_call
@@ -2021,18 +2154,26 @@ pub async fn generate_plan(request: PlanRequest<'_>) -> Result<(PathBuf, Generat
         }
 
         // gap-dc5d7c: what became of each of the source's checks; and
-        // gap-ecafde: each step that still cannot pass as written.
+        // gap-ecafde: each step that still cannot pass as written;
+        // bug-27f00b: each task no check can see.
         let assessed = validated_toml.as_ref().ok().and_then(|plan| assess(plan));
-        if let Some((_, unrunnable)) = &assessed {
+        if let Some((_, unrunnable, unchecked)) = &assessed {
             for step in unrunnable {
                 eprintln!(
                     "warning: {} step {} cannot pass as written: {}",
                     step.task, step.step, step.why
                 );
             }
+            for task in unchecked {
+                eprintln!(
+                    "warning: no check of {} can see its work: {}",
+                    task.task,
+                    runnable::only_reads(&task.reads)
+                );
+            }
         }
         let source_coverage = assessed
-            .map(|(coverage, _)| coverage)
+            .map(|(coverage, _, _)| coverage)
             .filter(|_| !checks.is_empty());
         if let Some(coverage) = &source_coverage {
             println!("📋 {}", coverage.summary_line());
@@ -3604,6 +3745,301 @@ mod tests {
         );
     }
 
+    /// bug-27f00b: asked for a synth in one sentence, the planner wrote five
+    /// strategist tasks whose 11 checks grep the hello-world demo's plan.md
+    /// for phrases it does not have. No task of the plan writes that file, so
+    /// the base settles each check: all 11 fail there, and no task can make
+    /// one pass. Replayed through a fake planner, generation finds the 11,
+    /// asks the planner once more naming each, and writes the plan that
+    /// specifies first, whose checks read the file its own task writes.
+    #[cfg(unix)]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_check_no_task_can_change_is_settled_on_the_base() {
+        const SLUG: &str = "create-a-roko-plan-for-a-macos-vst3-synthesizer";
+        let (temp, baseline) = super::super::runnable::tests::no_spec_baseline();
+        let workdir = temp.path();
+        let spec_first = format!(
+            "[meta]\nplan = \"{SLUG}\"\ntotal = 1\ndone = 0\nstatus = \"ready\"\n\n\
+             [[task]]\nid = \"T1\"\ntitle = \"Write the synth's spec\"\n\
+             goal = \"docs/spec.md specifies the synth, with numbered acceptance criteria.\"\n\
+             description = \"Write docs/spec.md: what the synth is, the choices the request \
+             leaves open (decided), its non-goals, and numbered acceptance criteria.\"\n\
+             acceptance = [\"AC1: docs/spec.md has an `## Acceptance criteria` section.\", \
+             \"AC2: docs/spec.md numbers its criteria `AC1`, `AC2` and so on.\"]\n\
+             non_goals = [\"Do not write code.\"]\nopen_questions = []\nstatus = \"ready\"\n\
+             tier = \"focused\"\nmax_loc = 50\nfiles = [\"docs/spec.md\"]\n\
+             allowed_tools = [\"read_file\", \"write_file\"]\ndenied_tools = []\n\
+             depends_on = []\nrole = \"scribe\"\n\n[task.context]\nread_files = []\n\n\
+             [[task.verify]]\nphase = \"structural\"\n\
+             command = \"grep -q '^## Acceptance criteria' docs/spec.md\"\ncovers = [\"AC1\"]\n\
+             expect = \"fail_on_base\"\n\n[[task.verify]]\nphase = \"structural\"\n\
+             command = \"grep -qE '^- AC[0-9]+:' docs/spec.md\"\ncovers = [\"AC2\"]\n\
+             expect = \"fail_on_base\"\n"
+        );
+        let bin = tempfile::tempdir().expect("tempdir");
+        let calls = write_scripted_planner(
+            workdir,
+            bin.path(),
+            &[&baseline, &spec_first],
+            "allow_threshold = 0.0\nblock_threshold = 0.0\n",
+        );
+        let request = PlanRequest {
+            model: Some("planner"),
+            ..PlanRequest::new(
+                PlanSource::Text {
+                    text: "Create a roko plan for a macOS VST3 synthesizer plugin aimed at \
+                           hypnotic techno basslines, sub, and rumbles.",
+                    kind: "prompt",
+                },
+                SLUG,
+                workdir,
+            )
+        };
+        generate_plan(request).await.expect("generate the plan");
+
+        let log = std::fs::read_to_string(&calls).expect("planner call log");
+        assert_eq!(
+            log.lines().count(),
+            2,
+            "the baseline plan, then the one whose checks can pass"
+        );
+        let first = std::fs::read_to_string(bin.path().join("prompt-0.txt")).expect("the ask");
+        assert!(
+            first.contains(
+                "## Workspace\n\nIts top level holds: README.md, plans/, roko.toml. A file a task \
+                 creates goes in that task's `files`"
+            ),
+            "{first}"
+        );
+        let again = std::fs::read_to_string(bin.path().join("prompt-1.txt")).expect("the retry");
+        let settled: Vec<&str> = again
+            .lines()
+            .filter(|line| {
+                line.ends_with(
+                    "it fails on the base, and no task can make it pass: it reads only \
+                     `plans/demos/demo-hello-world/plan.md`, which no task of this plan writes",
+                ) || line.ends_with(
+                    "it fails on the base, and no task can make it pass: it reads only \
+                     `plans/demos/demo-hello-world/tasks.toml`, which no task of this plan writes",
+                )
+            })
+            .collect();
+        assert_eq!(settled.len(), 11, "{again}");
+        for task in ["T1", "T2", "T3", "T4", "T5"] {
+            assert!(
+                settled
+                    .iter()
+                    .any(|line| line.starts_with(&format!("- {task} step 1: "))),
+                "{task}: {settled:?}"
+            );
+        }
+        let written = TasksFile::parse(&workdir.join(format!("plans/{SLUG}/tasks.toml")))
+            .expect("the written plan");
+        assert_eq!(written.tasks.len(), 1);
+        assert_eq!(written.tasks[0].role.as_deref(), Some("scribe"));
+        assert_eq!(written.tasks[0].files, ["docs/spec.md"]);
+    }
+
+    /// bug-96115c: a request that names its final check gets a plan whose
+    /// `[[meta.verify]]` runs it, though the planner wrote none, after one
+    /// call: the check counts as kept, so nothing is asked again.
+    #[cfg(unix)]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn generation_runs_the_requests_final_check_in_meta_verify() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let workdir = temp.path();
+        let bin = tempfile::tempdir().expect("tempdir");
+        let calls = write_scripted_planner(
+            workdir,
+            bin.path(),
+            &[WIDGET_PLAN],
+            "allow_threshold = 0.0\nblock_threshold = 0.0\n",
+        );
+        let request = PlanRequest {
+            model: Some("planner"),
+            ..PlanRequest::new(
+                PlanSource::Text {
+                    text: "# Widget\n\nAdd a widget module.\n\n## Notes for the planner\n\n\
+                           - `tools/check.sh` is the plan's final check, not any one task's.\n",
+                    kind: "file",
+                },
+                "widget",
+                workdir,
+            )
+        };
+        let (_, outcome) = generate_plan(request)
+            .await
+            .expect("generate the widget plan");
+        let log = std::fs::read_to_string(&calls).expect("planner call log");
+        assert_eq!(log.lines().count(), 1, "repaired, not asked again");
+        let written =
+            TasksFile::parse(&workdir.join("plans/widget/tasks.toml")).expect("the widget plan");
+        let commands: Vec<&str> = written
+            .meta
+            .verify
+            .iter()
+            .map(|step| step.command.as_str())
+            .collect();
+        assert_eq!(commands, ["tools/check.sh"]);
+        let checks = outcome.source_checks.expect("the request states a check");
+        assert_eq!((checks.kept, checks.total), (1, 1), "{checks:?}");
+    }
+
+    /// bug-d758f6: round v7's phase-0 planner copied the prompt's example
+    /// tool list into every task of a C++ plan, so no implementer could run
+    /// cmake, its own check or see a compiler error. Generation gives an
+    /// implementer whose list leaves out a shell its role's own tools, and
+    /// leaves a scribe's list alone, without asking the planner again.
+    #[cfg(unix)]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn generated_implementers_whose_checks_build_keep_a_shell() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let workdir = temp.path();
+        std::fs::create_dir_all(workdir.join("tools")).expect("tools");
+        std::fs::write(workdir.join("CMakeLists.txt"), "project(undertow)\n").expect("cmake");
+        std::fs::write(workdir.join("tools/spec.sh"), "#!/bin/sh\nexit 0\n").expect("spec.sh");
+        let plan = "\
+            [meta]\nplan = \"p0\"\ntotal = 2\ndone = 0\nstatus = \"ready\"\n\n\
+            [[task]]\nid = \"T1\"\ntitle = \"Parameter table\"\n\
+            description = \"Write core/params.h with the 57 parameters.\"\nstatus = \"ready\"\n\
+            role = \"implementer\"\ntier = \"focused\"\nfiles = [\"core/params.h\"]\n\
+            allowed_tools = [\"read_file\", \"write_file\", \"grep\"]\ndenied_tools = []\n\
+            depends_on = []\n\n[task.context]\nread_files = []\n\n\
+            [[task.verify]]\nphase = \"test\"\n\
+            command = \"grep -q 'kNumParams' core/params.h && tools/spec.sh 0 params 'P0.01*'\"\n\n\
+            [[task]]\nid = \"T2\"\ntitle = \"Notes\"\ndescription = \"Write docs/notes.md.\"\n\
+            status = \"ready\"\nrole = \"scribe\"\ntier = \"focused\"\nfiles = [\"docs/notes.md\"]\n\
+            allowed_tools = [\"read_file\", \"write_file\"]\ndepends_on = [\"T1\"]\n\n\
+            [task.context]\nread_files = []\n\n\
+            [[task.verify]]\nphase = \"structural\"\ncommand = \"test -f docs/notes.md\"\n";
+        let bin = tempfile::tempdir().expect("tempdir");
+        let calls = write_scripted_planner(
+            workdir,
+            bin.path(),
+            &[plan],
+            "allow_threshold = 0.0\nblock_threshold = 0.0\n",
+        );
+        let request = PlanRequest {
+            model: Some("planner"),
+            ..PlanRequest::new(WIDGET_REQUEST, "p0", workdir)
+        };
+        generate_plan(request).await.expect("generate the plan");
+        let log = std::fs::read_to_string(&calls).expect("planner call log");
+        assert_eq!(log.lines().count(), 1, "roko repairs the plan itself");
+        let written = TasksFile::parse(&workdir.join("plans/p0/tasks.toml")).expect("the plan");
+        let implementer = &written.tasks[0];
+        let shell = implementer.allowed_tools.as_ref().is_none_or(|tools| {
+            ["bash", "edit_file"]
+                .iter()
+                .all(|tool| tools.iter().any(|kept| kept == tool))
+        });
+        assert!(shell, "{:?}", implementer.allowed_tools);
+        assert!(
+            implementer
+                .denied_tools
+                .iter()
+                .flatten()
+                .all(|tool| tool != "bash" && tool != "edit_file"),
+            "{:?}",
+            implementer.denied_tools
+        );
+        assert_eq!(
+            written.tasks[1].allowed_tools.as_deref(),
+            Some(&["read_file".to_string(), "write_file".to_string()][..])
+        );
+    }
+
+    /// bug-27f00b: a live planner gave the one task that writes the spec
+    /// `max_loc = 300` on the integrative tier (limit 150), and split the spec
+    /// across tasks when told to shrink it, which fragments its ownership. A
+    /// task that writes only documents keeps its tier: its `max_loc` becomes
+    /// the tier's limit, and the plan is written after one call. A code task
+    /// over the limit is still sent back.
+    #[cfg(unix)]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_long_document_keeps_its_one_task() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let workdir = temp.path();
+        let spec = WIDGET_PLAN
+            .replace("files = [\"src/widget.rs\"]", "files = [\"docs/spec.md\"]")
+            .replace("test -f src/widget.rs", "test -f docs/spec.md")
+            .replace("role = \"implementer\"", "role = \"scribe\"")
+            .replace(
+                "tier = \"focused\"",
+                "tier = \"integrative\"\nmax_loc = 300",
+            );
+        assert!(spec.contains("max_loc = 300"), "{spec}");
+        let bin = tempfile::tempdir().expect("tempdir");
+        let calls = write_scripted_planner(
+            workdir,
+            bin.path(),
+            &[&spec],
+            "allow_threshold = 0.0\nblock_threshold = 0.0\n",
+        );
+        let request = PlanRequest {
+            model: Some("planner"),
+            ..PlanRequest::new(WIDGET_REQUEST, "widget", workdir)
+        };
+        generate_plan(request)
+            .await
+            .expect("generate the widget plan");
+        let log = std::fs::read_to_string(&calls).expect("planner call log");
+        assert_eq!(log.lines().count(), 1, "repaired, not sent back");
+        let written =
+            TasksFile::parse(&workdir.join("plans/widget/tasks.toml")).expect("the widget plan");
+        assert_eq!(written.tasks[0].max_loc, Some(150));
+        assert_eq!(written.tasks[0].tier, "integrative");
+
+        let code = WIDGET_PLAN.replace("tier = \"focused\"", "tier = \"focused\"\nmax_loc = 300");
+        let mut plan = TasksFile::parse_str(&code).expect("a plan");
+        let policy = crate::plan_policy::PlanExecutionPolicy::generated(8);
+        let repairs = repair_generated_draft(&mut plan, policy, workdir);
+        assert!(repairs.is_empty(), "{repairs:?}");
+        assert_eq!(plan.tasks[0].max_loc, Some(300));
+    }
+
+    /// bug-27f00b: asked to "only write the plan", a live planner made its
+    /// tasks write the plan's own `plan.md`. Such a draft is sent back, with
+    /// the task named, and the plan whose tasks write the project's files is
+    /// the one written.
+    #[cfg(unix)]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_task_that_writes_its_own_plan_is_sent_back() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let workdir = temp.path();
+        let own = WIDGET_PLAN
+            .replace(
+                "files = [\"src/widget.rs\"]",
+                "files = [\"plans/widget/plan.md\"]",
+            )
+            .replace("test -f src/widget.rs", "test -f plans/widget/plan.md");
+        assert_ne!(own, WIDGET_PLAN);
+        let bin = tempfile::tempdir().expect("tempdir");
+        let calls = write_scripted_planner(
+            workdir,
+            bin.path(),
+            &[&own, WIDGET_PLAN],
+            "allow_threshold = 0.0\nblock_threshold = 0.0\n",
+        );
+        let request = PlanRequest {
+            model: Some("planner"),
+            ..PlanRequest::new(WIDGET_REQUEST, "widget", workdir)
+        };
+        generate_plan(request)
+            .await
+            .expect("generate the widget plan");
+        let log = std::fs::read_to_string(&calls).expect("planner call log");
+        assert_eq!(log.lines().count(), 2, "the plan-writing draft, then one");
+        let again = std::fs::read_to_string(bin.path().join("prompt-1.txt")).expect("the retry");
+        assert!(
+            again.contains("- T1 writes `plans/widget/plan.md`"),
+            "{again}"
+        );
+        let written =
+            TasksFile::parse(&workdir.join("plans/widget/tasks.toml")).expect("the widget plan");
+        assert_eq!(written.tasks[0].files, ["src/widget.rs"]);
+    }
+
     /// bug-df9aff: G1's plan, written by a planner, comes out with every
     /// task able to create its module and the render task after the three
     /// whose modules its tests import, with no second call.
@@ -3628,12 +4064,16 @@ mod tests {
         let log = std::fs::read_to_string(&calls).expect("planner call log");
         assert_eq!(log.lines().count(), 1, "roko repairs the plan itself");
         let written = TasksFile::parse(&workdir.join("plans/g1/tasks.toml")).expect("the plan");
+        // bug-d758f6: each implementer keeps its role's own tools, write_file
+        // among them, rather than the list it was written with.
         for task in &written.tasks {
-            let tools = task.allowed_tools.clone().unwrap_or_default();
             assert!(
-                tools.iter().any(|tool| tool == "write_file"),
-                "{}: {tools:?}",
-                task.id
+                task.allowed_tools
+                    .as_ref()
+                    .is_none_or(|tools| tools.iter().any(|tool| tool == "write_file")),
+                "{}: {:?}",
+                task.id,
+                task.allowed_tools
             );
         }
         let render = written

@@ -273,7 +273,10 @@ async fn workflow_ws_upgrade(
     State(state): State<Arc<AppState>>,
     ws: WebSocketUpgrade,
 ) -> impl IntoResponse {
-    super::ws::apply_ws_size_limits(ws).on_upgrade(move |socket| handle_workflow_ws(state, socket))
+    // An open WebSocket keeps an `--idle-exit` serve up (gap-fb1594).
+    let open = crate::showcase::idle::OpenStream::new(Arc::clone(&state));
+    super::ws::apply_ws_size_limits(ws)
+        .on_upgrade(move |socket| open.hold(handle_workflow_ws(state, socket)))
 }
 
 fn workflow_sse(

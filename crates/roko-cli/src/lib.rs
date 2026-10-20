@@ -141,6 +141,7 @@ mod check_env_probe;
 #[cfg(all(test, unix))]
 mod check_process_probe;
 pub mod clean;
+pub mod cli_signals;
 /// Subcommand implementations that live in the library; the `roko` binary's
 /// own `commands` module re-exports them.
 pub mod commands {
@@ -242,6 +243,7 @@ pub mod workspace_lock;
 pub mod workspace_paths;
 
 pub mod serve_client;
+pub mod serve_lifecycle;
 pub mod serve_runtime;
 pub mod state_hub_ipc;
 

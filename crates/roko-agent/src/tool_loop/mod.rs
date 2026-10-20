@@ -78,6 +78,9 @@ pub struct ToolLoopTurnTrace {
     /// Whether the provider reported this turn's usage
     /// ([`BackendResponse::usage_source`]).
     pub usage_source: crate::usage::UsageSource,
+    /// Why the provider said the turn ended, when it said (`length` for a
+    /// reply cut at the output limit); `None` for a call that broke off.
+    pub finish_reason: Option<String>,
 }
 
 pub mod agent_wrapper;
@@ -703,6 +706,33 @@ fn trace_turn(iterations: usize) -> u32 {
     capped as u32
 }
 
+/// The longest wait for a rate limit the tool loop makes before it sends a
+/// streamed call again. A provider that asks for a longer one is not waited
+/// for here: the run fails with the rate limit, and dispatch fails over or
+/// waits inside its attempt (bug-4b6844).
+const RATE_LIMIT_WAIT_CAP: Duration = Duration::from_secs(60);
+
+/// How many replies in a row that reached the output limit with no tool call
+/// and no text the loop asks again for, within the run, before the run ends
+/// on one (bug-872885).
+const LENGTH_CUT_RETRIES: usize = 1;
+
+/// What the model is told after a reply that reached its output limit with
+/// no tool call and no text: most often a reasoning model that spent the
+/// whole limit reasoning. `output_tokens` is the reply's output, when known.
+fn length_cut_note(output_tokens: u32) -> String {
+    let limit = if output_tokens > 0 {
+        format!("the output limit ({output_tokens} tokens)")
+    } else {
+        "the output limit".to_string()
+    };
+    format!(
+        "Your last reply reached {limit} while still reasoning: it made no tool call and \
+         wrote no text, so it did nothing. Keep your reasoning short and make your next tool \
+         call now. Work in small steps, and write a large file in several smaller edits."
+    )
+}
+
 /// What one model call streamed, so a call cut off mid-stream, or one whose
 /// stream reported no usage, still counts the usage the provider bills for
 /// it (bug-72d775).
@@ -1326,6 +1356,9 @@ impl ToolLoop {
         let mut session = initial_session;
         let mut turn_history: Vec<Turn> = Vec::new();
         let mut turn_traces: Vec<ToolLoopTurnTrace> = Vec::new();
+        // Replies in a row that reached the output limit with nothing in
+        // them ([`LENGTH_CUT_RETRIES`]).
+        let mut length_cuts_in_a_row = 0_usize;
 
         loop {
             self.prune_context_if_needed(&mut messages);
@@ -1418,6 +1451,7 @@ impl ToolLoop {
                                 usage,
                                 model: tally.model,
                                 usage_source,
+                                finish_reason: None,
                             });
                         }
                         let cp = Checkpoint::new(iterations, all_calls.clone(), messages)
@@ -1545,9 +1579,14 @@ impl ToolLoop {
 
             // No tool calls -> final answer.
             if calls.is_empty() {
-                self.clear_checkpoint_file();
                 let final_text = response.extract_text();
-                turn_traces.push(ToolLoopTurnTrace {
+                let finish_reason_raw = response.extract_finish_reason_raw();
+                // Read through the canonical mapping, so every spelling of a
+                // length finish counts (bug-e3940b), as every collector reads
+                // it (gap-fd0c0b).
+                let hit_length_limit = response.hit_length_limit();
+                let blank = final_text.trim().is_empty();
+                let turn_trace = ToolLoopTurnTrace {
                     turn: trace_turn(iterations),
                     tool_calls: Vec::new(),
                     tool_results: Vec::new(),
@@ -1555,12 +1594,33 @@ impl ToolLoop {
                     usage: turn_usage,
                     model: turn_model,
                     usage_source: turn_usage_source,
-                });
-                let finish_reason_raw = response.extract_finish_reason_raw();
-                // Read through the canonical mapping, so every spelling of a
-                // length finish counts (bug-e3940b), as every collector reads
-                // it (gap-fd0c0b).
-                let hit_length_limit = response.hit_length_limit();
+                    finish_reason: finish_reason_raw.clone(),
+                };
+                // A reply that reached the output limit with no tool call
+                // and no text did nothing: most often a reasoning model spent
+                // the whole limit reasoning. It is a turn of its own, and the
+                // model is asked again within the run, told what happened,
+                // instead of the run ending on it (bug-872885). One more such
+                // reply in a row ends the run below.
+                if blank && hit_length_limit && length_cuts_in_a_row < LENGTH_CUT_RETRIES {
+                    length_cuts_in_a_row += 1;
+                    tracing::warn!(
+                        iterations,
+                        output_tokens = turn_usage.output_tokens,
+                        reasoning_chars = turn_trace.reasoning.as_ref().map_or(0, String::len),
+                        "tool_loop: the reply reached the output limit (finish_reason=length) \
+                         with no tool call and no text; asking again within the run"
+                    );
+                    turn_traces.push(turn_trace);
+                    messages.push(serde_json::json!({
+                        "role": "user",
+                        "content": length_cut_note(turn_usage.output_tokens),
+                    }));
+                    iterations += 1;
+                    continue;
+                }
+                self.clear_checkpoint_file();
+                turn_traces.push(turn_trace);
                 tracing::info!(
                     iterations,
                     final_text_len = final_text.len(),
@@ -1570,13 +1630,13 @@ impl ToolLoop {
                     output_tokens = turn_usage.output_tokens,
                     "tool_loop: stop — no tool calls, returning final text"
                 );
-                let blank = final_text.trim().is_empty();
                 if blank && hit_length_limit {
                     tracing::error!(
                         iterations,
                         output_tokens = turn_usage.output_tokens,
                         "tool_loop: model hit output token limit (finish_reason=length) \
-                         and produced no final text — increase max_output for this model"
+                         and produced no final text, again after being asked to act — \
+                         check max_output for this model"
                     );
                 } else if blank && all_calls.is_empty() {
                     tracing::warn!(
@@ -1636,6 +1696,9 @@ impl ToolLoop {
                     mcp_errors: Vec::new(),
                 };
             }
+
+            // A turn that acted ends a run of output-limit cuts.
+            length_cuts_in_a_row = 0;
 
             // Inject the assistant's tool-call message into conversation history.
             if let Some(assistant_msg) = self.translator.render_assistant_message(&response) {
@@ -1697,6 +1760,7 @@ impl ToolLoop {
                 usage: turn_usage,
                 model: turn_model,
                 usage_source: turn_usage_source,
+                finish_reason: response.extract_finish_reason_raw(),
             });
 
             // Fire on_turn callback with a snapshot of this iteration.
@@ -1866,6 +1930,58 @@ impl ToolLoop {
         }
     }
 
+    /// Open one streamed turn. A call the provider refused with a rate limit
+    /// (HTTP 429) before it streamed anything is sent again after the
+    /// `Retry-After` the provider gave, else the retry policy's backoff, up to
+    /// the policy's `max_attempts` calls, as [`Self::send_turn_with_retry`]
+    /// sends an answered call again. A plan attempt's calls stream, and the
+    /// first 429 used to end the run (bug-4b6844). A wait longer than
+    /// [`RATE_LIMIT_WAIT_CAP`] is not made here: the run fails with the rate
+    /// limit.
+    async fn open_stream(
+        &self,
+        messages: &[serde_json::Value],
+        tools: &RenderedTools,
+        session: &SessionState,
+        config: &TurnConfig,
+    ) -> Result<futures::stream::BoxStream<'static, Result<StreamEvent, LlmError>>, LlmError> {
+        let mut calls = 1_u32;
+        loop {
+            let retry_after_ms = match self
+                .backend
+                .stream_turn(messages, tools, session, config)
+                .await
+            {
+                Ok(stream) => return Ok(stream),
+                Err(LlmError::Provider(ProviderError::RateLimit { retry_after_ms })) => {
+                    retry_after_ms
+                }
+                Err(error) => return Err(error),
+            };
+            let rate_limited = LlmError::Provider(ProviderError::RateLimit { retry_after_ms });
+            if calls >= self.retry_policy.max_attempts {
+                return Err(rate_limited);
+            }
+            let delay = Duration::from_millis(
+                self.retry_policy
+                    .delay_with_retry_after(calls - 1, retry_after_ms),
+            );
+            if delay > RATE_LIMIT_WAIT_CAP {
+                return Err(rate_limited);
+            }
+            tracing::warn!(
+                call = calls,
+                max_attempts = self.retry_policy.max_attempts,
+                delay_ms = u64::try_from(delay.as_millis()).unwrap_or(u64::MAX),
+                retry_after_ms = ?retry_after_ms,
+                "tool_loop: the provider rate-limited the call (HTTP 429); sending it again \
+                 after the wait"
+            );
+            tokio::time::sleep(delay).await;
+            calls += 1;
+        }
+    }
+
     /// Send a turn through `stream_turn`, forwarding each event to `tx`
     /// and collecting the final response via [`collect_stream_to_response`],
     /// with the ids of the tool calls the stream ended (`ToolCallEnd`) and a
@@ -1882,8 +1998,7 @@ impl ToolLoop {
 
         let config = self.turn_config();
         let stream = self
-            .backend
-            .stream_turn(messages, tools, session, &config)
+            .open_stream(messages, tools, session, &config)
             .await
             .map_err(|error| (error, StreamTally::default()))?;
 
@@ -3031,6 +3146,226 @@ mod tests {
         assert!(out.final_text.is_empty());
     }
 
+    /// Streams one scripted OpenAI-compatible SSE body per call, in order,
+    /// through the shared parser, as the OpenAI-compatible backend streams
+    /// Z.ai's GLM, and keeps the messages each call was sent. Calls past the
+    /// script get its last body.
+    struct ScriptedSseBackend {
+        bodies: Vec<Vec<String>>,
+        sent: parking_lot::Mutex<Vec<Vec<Value>>>,
+    }
+
+    impl ScriptedSseBackend {
+        fn new(bodies: Vec<Vec<String>>) -> Arc<Self> {
+            Arc::new(Self {
+                bodies,
+                sent: parking_lot::Mutex::new(Vec::new()),
+            })
+        }
+
+        /// A turn that calls `echo` with `args`.
+        fn tool_call(id: &str, args: &str) -> Vec<String> {
+            let call = serde_json::json!({"choices": [{"delta": {"tool_calls": [{
+                "index": 0,
+                "id": id,
+                "type": "function",
+                "function": {"name": "echo", "arguments": args},
+            }]}}]});
+            vec![
+                format!("data: {call}"),
+                r#"data: {"choices":[{"delta":{},"finish_reason":"tool_calls"}]}"#.to_string(),
+                "data: [DONE]".to_string(),
+            ]
+        }
+
+        /// A turn that streams only reasoning and ends at the output limit
+        /// after `output_tokens`, as glm-4.7's did in T3's first try.
+        fn reasoning_cut(output_tokens: u32) -> Vec<String> {
+            let end = serde_json::json!({
+                "choices": [{"delta": {}, "finish_reason": "length"}],
+                "usage": {"prompt_tokens": 1166, "completion_tokens": output_tokens},
+            });
+            vec![
+                r#"data: {"choices":[{"delta":{"reasoning_content":"The plugin needs its CMakeLists first, then "}}]}"#.to_string(),
+                r#"data: {"choices":[{"delta":{"reasoning_content":"the processor and the editor. Let me plan each file"}}]}"#.to_string(),
+                format!("data: {end}"),
+                "data: [DONE]".to_string(),
+            ]
+        }
+
+        /// A closing turn that answers `text`.
+        fn answer(text: &str) -> Vec<String> {
+            let chunk = serde_json::json!({
+                "choices": [{"delta": {"content": text}, "finish_reason": "stop"}],
+            });
+            vec![format!("data: {chunk}"), "data: [DONE]".to_string()]
+        }
+
+        fn calls(&self) -> usize {
+            self.sent.lock().len()
+        }
+    }
+
+    #[async_trait]
+    impl LlmBackend for ScriptedSseBackend {
+        async fn send_turn(
+            &self,
+            _messages: &[serde_json::Value],
+            _tools: &RenderedTools,
+            _session: &SessionState,
+        ) -> Result<BackendResponse, LlmError> {
+            Err(LlmError::Backend("this backend only streams".to_string()))
+        }
+
+        async fn stream_turn(
+            &self,
+            messages: &[serde_json::Value],
+            _tools: &RenderedTools,
+            _session: &SessionState,
+            _config: &TurnConfig,
+        ) -> Result<futures::stream::BoxStream<'static, Result<StreamEvent, LlmError>>, LlmError>
+        {
+            let body = {
+                let mut sent = self.sent.lock();
+                sent.push(messages.to_vec());
+                let call = sent.len() - 1;
+                self.bodies
+                    .get(call)
+                    .or_else(|| self.bodies.last())
+                    .cloned()
+                    .unwrap_or_default()
+            };
+            let events: Vec<_> = body
+                .iter()
+                .flat_map(|line| crate::streaming::parse_sse_line(line))
+                .map(Ok)
+                .collect();
+            Ok(Box::pin(futures::stream::iter(events)))
+        }
+    }
+
+    /// A streamed run of `backend`'s script, the path a plan attempt takes,
+    /// read by the `OpenAI` translator as the OpenAI-compatible backend's
+    /// turns are.
+    async fn run_scripted_sse(backend: &Arc<ScriptedSseBackend>) -> ToolLoopOutput {
+        let mut tool_loop = make_tool_loop(Arc::clone(backend) as Arc<dyn LlmBackend>, 25);
+        tool_loop.translator = Arc::new(crate::translate::openai::OpenAiTranslator);
+        let (tx, mut rx) = mpsc::channel(64);
+        let drain = tokio::spawn(async move { while rx.recv().await.is_some() {} });
+        let out = tool_loop
+            .run_streaming(
+                "system",
+                "user",
+                &test_tools(),
+                &ToolContext::testing("/tmp"),
+                tx,
+            )
+            .await;
+        drain.await.expect("the events drain");
+        out
+    }
+
+    /// bug-872885: in round v7's phase 0 run, glm-4.7 read the task's files,
+    /// then spent one call's whole output limit on reasoning
+    /// (`finish_reason=length`, 16,384 tokens, no tool call and no text),
+    /// and the try ended there having changed nothing. Such a call is asked
+    /// again within the try, told what happened and to act, and the try goes
+    /// on.
+    #[tokio::test]
+    async fn a_reasoning_only_length_cut_is_retried_within_the_try() {
+        let backend = ScriptedSseBackend::new(vec![
+            ScriptedSseBackend::tool_call("call-1", r#"{"path":"CMakeLists.txt"}"#),
+            ScriptedSseBackend::reasoning_cut(16_384),
+            ScriptedSseBackend::tool_call("call-2", r#"{"path":"plugin/CMakeLists.txt"}"#),
+            ScriptedSseBackend::answer("Wrote the plugin skeleton."),
+        ]);
+        let out = run_scripted_sse(&backend).await;
+
+        assert_eq!(out.stop_reason, StopReason::Stop);
+        assert_eq!(out.final_text, "Wrote the plugin skeleton.");
+        // Both tool calls ran in the one try: the cut call did not end it.
+        let ids: Vec<&str> = out.tool_calls.iter().map(|call| call.id.as_str()).collect();
+        assert_eq!(ids, ["call-1", "call-2"]);
+        // The cut call is a turn of its own, and its output is billed.
+        assert_eq!(out.turn_traces.len(), 4);
+        let turns: Vec<u32> = out.turn_traces.iter().map(|trace| trace.turn).collect();
+        assert_eq!(turns, [1, 2, 3, 4]);
+        let cut = &out.turn_traces[1];
+        assert!(cut.tool_calls.is_empty());
+        assert!(
+            cut.reasoning
+                .as_deref()
+                .is_some_and(|text| !text.is_empty())
+        );
+        assert_eq!(cut.usage.output_tokens, 16_384);
+        assert_eq!(cut.finish_reason.as_deref(), Some("length"));
+        assert!(
+            out.total_usage.output_tokens >= 16_384,
+            "{:?}",
+            out.total_usage
+        );
+
+        // The call after the cut is sent what the cut call was sent, and a
+        // note that says what happened and asks for a tool call now. The cut
+        // reply itself is not in the conversation.
+        let sent = backend.sent.lock();
+        assert_eq!(sent.len(), 4);
+        let (cut_call, retry) = (&sent[1], &sent[2]);
+        assert_eq!(&retry[..cut_call.len()], &cut_call[..]);
+        let added = &retry[cut_call.len()..];
+        assert_eq!(added.len(), 1, "{added:?}");
+        assert_eq!(added[0]["role"], "user");
+        let note = added[0]["content"].as_str().expect("the note is text");
+        assert!(note.contains("output limit"), "{note}");
+        assert!(note.contains("16384 tokens"), "{note}");
+        assert!(note.contains("tool call"), "{note}");
+    }
+
+    /// The retry is once per cut: two reasoning-only cuts in a row end the
+    /// try as one did before (bug-f6b99f), so a model that cannot stop
+    /// reasoning still counts against its rung. A cut after a turn that
+    /// acted is asked again.
+    #[tokio::test]
+    async fn two_reasoning_only_length_cuts_in_a_row_end_the_try() {
+        // No tool work behind them: the try fails as an empty response.
+        let backend = ScriptedSseBackend::new(vec![ScriptedSseBackend::reasoning_cut(16_384)]);
+        let out = run_scripted_sse(&backend).await;
+        assert_eq!(backend.calls(), 2);
+        match &out.stop_reason {
+            StopReason::BackendError(message) => {
+                assert!(message.starts_with("empty_response"), "{message}");
+                assert!(message.contains("finish_reason=length"), "{message}");
+            }
+            other => panic!("expected empty_response, got {other:?}"),
+        }
+        assert_eq!(out.turn_traces.len(), 2);
+        assert_eq!(out.total_usage.output_tokens, 2 * 16_384);
+
+        // After tool work: `Stop`, so the verify steps judge the tree.
+        let backend = ScriptedSseBackend::new(vec![
+            ScriptedSseBackend::tool_call("call-1", "{}"),
+            ScriptedSseBackend::reasoning_cut(16_384),
+        ]);
+        let out = run_scripted_sse(&backend).await;
+        assert_eq!(backend.calls(), 3);
+        assert_eq!(out.stop_reason, StopReason::Stop);
+        assert_eq!(out.tool_calls.len(), 1);
+
+        // Cuts with a turn that acted between them are each asked again.
+        let backend = ScriptedSseBackend::new(vec![
+            ScriptedSseBackend::reasoning_cut(16_384),
+            ScriptedSseBackend::tool_call("call-1", "{}"),
+            ScriptedSseBackend::reasoning_cut(16_384),
+            ScriptedSseBackend::tool_call("call-2", "{}"),
+            ScriptedSseBackend::answer("done"),
+        ]);
+        let out = run_scripted_sse(&backend).await;
+        assert_eq!(backend.calls(), 5);
+        assert_eq!(out.stop_reason, StopReason::Stop);
+        assert_eq!(out.final_text, "done");
+        assert_eq!(out.tool_calls.len(), 2);
+    }
+
     #[tokio::test]
     async fn hostile_tool_frames_stop_before_render_handler_callback_or_checkpoint() {
         let secret = "PASSWORD=tool-frame-secret";
@@ -3640,6 +3975,77 @@ mod tests {
         assert_eq!(out.stop_reason, StopReason::Stop);
         assert_eq!(out.final_text, "final after retry");
         assert_eq!(backend.attempts(), 3);
+    }
+
+    /// A streamed run of `tool_loop`, the path a plan attempt takes, to its
+    /// end.
+    async fn run_streaming_to_end(tool_loop: ToolLoop) -> ToolLoopOutput {
+        let (tx, mut rx) = mpsc::channel(64);
+        let drain = tokio::spawn(async move { while rx.recv().await.is_some() {} });
+        let out = tool_loop
+            .run_streaming(
+                "system",
+                "user",
+                &test_tools(),
+                &ToolContext::testing("/tmp"),
+                tx,
+            )
+            .await;
+        drain.await.expect("the events drain");
+        out
+    }
+
+    /// bug-4b6844: a plan attempt's calls stream, and a call its provider
+    /// refused with a rate limit (HTTP 429) ended the run at once, so a try
+    /// was spent on a half-second refusal. The call is sent again after the
+    /// `Retry-After` the provider gave, as an answered call's retry is.
+    #[tokio::test(start_paused = true)]
+    async fn a_rate_limited_streamed_call_is_retried_within_the_run() {
+        let rate_limited = |retry_after_ms| ProviderError::RateLimit { retry_after_ms };
+
+        let started = tokio::time::Instant::now();
+        let backend = Arc::new(RetryingBackend::new(2, rate_limited(Some(1_500))));
+        let out = run_streaming_to_end(make_tool_loop(backend.clone(), 25)).await;
+        assert_eq!(out.stop_reason, StopReason::Stop);
+        assert_eq!(out.final_text, "final after retry");
+        assert_eq!(backend.attempts(), 3);
+        // It waited what the provider asked, each time.
+        assert!(
+            started.elapsed() >= Duration::from_millis(3_000),
+            "{:?}",
+            started.elapsed()
+        );
+
+        // A rate limit that lasts: the retry policy's tries, then the run
+        // fails with the rate limit, which dispatch reads.
+        let backend = Arc::new(RetryingBackend::new(usize::MAX, rate_limited(None)));
+        let out = run_streaming_to_end(make_tool_loop(backend.clone(), 25)).await;
+        let policy = RetryPolicy::default();
+        assert_eq!(backend.attempts(), policy.max_attempts as usize);
+        match &out.stop_reason {
+            StopReason::BackendError(message) => {
+                assert!(message.contains("rate limited"), "{message}");
+            }
+            other => panic!("expected the rate limit, got {other:?}"),
+        }
+
+        // A provider that asks for a longer wait than the loop makes is not
+        // waited for here: the run fails at once, and dispatch fails over or
+        // waits inside its attempt.
+        let started = tokio::time::Instant::now();
+        let backend = Arc::new(RetryingBackend::new(
+            usize::MAX,
+            rate_limited(Some(10 * 60 * 1_000)),
+        ));
+        let out = run_streaming_to_end(make_tool_loop(backend.clone(), 25)).await;
+        assert_eq!(backend.attempts(), 1);
+        match &out.stop_reason {
+            StopReason::BackendError(message) => {
+                assert!(message.contains("retry after 600000 ms"), "{message}");
+            }
+            other => panic!("expected the rate limit, got {other:?}"),
+        }
+        assert!(started.elapsed() < Duration::from_secs(1));
     }
 
     #[tokio::test]

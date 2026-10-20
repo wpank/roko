@@ -230,6 +230,69 @@ fn validate_plans_dir_impl(
                         ),
                     });
                 }
+                // bug-27f00b: a check that only reads files no task of the
+                // plan writes is settled before the plan runs. One that fails
+                // can never pass (PLAN_054); one that passes checks nothing
+                // its task does (PLAN_055).
+                for settled in roko_cli::plan_generate::settled_steps(&tasks_file, workdir) {
+                    let (severity, rule_id) = match settled.passes {
+                        Some(false) => (Severity::Error, "PLAN_054"),
+                        Some(true) => (Severity::Warning, "PLAN_055"),
+                        None => continue,
+                    };
+                    plan.diagnostics.push(Diagnostic {
+                        severity,
+                        rule_id: rule_id.to_string(),
+                        plan_id: Some(plan.plan_id.clone()),
+                        task_id: Some(settled.task.clone()),
+                        message: format!(
+                            "task '{}' verify step {} {}",
+                            settled.task,
+                            settled.step,
+                            settled.outcome()
+                        ),
+                    });
+                }
+                // bug-d758f6: an implementer whose checks run code but whose
+                // tools leave out a shell cannot build or run them (PLAN_057).
+                for (task, command) in
+                    roko_cli::plan_generate::implementers_without_a_shell(&tasks_file)
+                {
+                    let command = command.lines().next().unwrap_or_default();
+                    plan.diagnostics.push(Diagnostic {
+                        severity: Severity::Warning,
+                        rule_id: "PLAN_057".to_string(),
+                        plan_id: Some(plan.plan_id.clone()),
+                        task_id: Some(task.clone()),
+                        message: format!(
+                            "task '{task}' cannot run its own checks: its check `{command}` runs \
+                             code, but its tools leave out bash, so its agent cannot build, run \
+                             the check or see a compiler error; leave allowed_tools out"
+                        ),
+                    });
+                }
+                // bug-27f00b: a check of roko's own state checks no task's
+                // work (PLAN_056).
+                for task in &tasks_file.tasks {
+                    for (number, step) in (1..).zip(&task.verify) {
+                        let Some(path) =
+                            roko_cli::plan_generate::roko_state_read(&step.command, workdir)
+                        else {
+                            continue;
+                        };
+                        plan.diagnostics.push(Diagnostic {
+                            severity: Severity::Warning,
+                            rule_id: "PLAN_056".to_string(),
+                            plan_id: Some(plan.plan_id.clone()),
+                            task_id: Some(task.id.clone()),
+                            message: format!(
+                                "task '{}' verify step {number} reads `{path}`, roko's own state: \
+                                 no task writes it, and roko changes it as it runs",
+                                task.id
+                            ),
+                        });
+                    }
+                }
                 let diagnostics = speed_priority_diagnostics(&tasks_file, &plan.plan_id);
                 plan.diagnostics.extend(diagnostics);
                 let diagnostics =

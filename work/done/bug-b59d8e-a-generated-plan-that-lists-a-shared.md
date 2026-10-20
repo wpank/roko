@@ -2,7 +2,7 @@
 id = "bug-b59d8e"
 kind = "bug"
 title = "A generated plan that lists a shared registration file in every task that edits it (core/CMakeLists.txt in Undertow phase 2's four tasks) fails the generated-plan budget (at most 2 serial owners per file, and the advisory concurrent overlap treated as fatal), the fix-up repeats the same draft, and roko writes no plan"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p1"
 goal = "golden-path"
@@ -11,6 +11,7 @@ subsystem = ["roko-cli/plan-generate", "roko-cli/plan_policy"]
 created = 2026-10-20
 updated = 2026-10-20
 last_verified = 2026-10-20
+last_verified_rev = "313e4fbea"
 source = "round-v7-hermes-pilot#E-p2-plan"
 discovered_from = "agent:hermes-pilot (round v7 phase 2, op c31152b2)"
 anchors = ["crates/roko-cli/src/plan_policy.rs::validate_plan_budgets", "crates/roko-cli/src/plan_policy.rs::is_advisory_code", "crates/roko-cli/src/plan_generate/pipeline.rs::generate_plan"]
@@ -18,6 +19,16 @@ links = { depends_on = [], blocks = [], related = ["bug-daa54e", "bug-96115c"], 
 
 [[verify]]
 command = "grep -rqw 'fn a_shared_source_list_in_every_module_task_still_writes_a_plan' crates/roko-cli/src && cargo test -p roko-cli --lib -- a_shared_source_list_in_every_module_task_still_writes_a_plan"
+
+[closed]
+at = 2026-10-20
+at_ts = "2026-10-20T11:38:57Z"
+commit = "c60ec9ec2"
+by = "roko-planner (round v7)"
+executor = "claude-agent"
+via = "manual"
+forced = false
+evidence = "Fixed by bug-daa54e's change (c60ec9ec2, merged 313e4fbea): a build-registration file (roko_graph::exclusion::is_registration_file) no longer counts toward PLAN_FRAGMENTED_OWNERSHIP's serial owners, and two tasks that share only one do not overlap (first_overlap, which PLAN_CONCURRENT_OVERLAP and the engine's scheduler use), so a plan of phase 2's shape is written and T2 and T3 still run side by side. Verify at 313e4fbea: a_shared_source_list_in_every_module_task_still_writes_a_plan passes (T1 lfo; T2 rumble and T3 output after T1; T4 engine after all three; each lists core/CMakeLists.txt; one planner call; T2 stays parallel to T3). $0 replay of the real failed write (op c31152b2: the chat's 14,572-char prompt, a fake planner serving the pilot's drafts, a copy of Undertow at e2b57b2; harness tmp scratch p2/replay.py): with draft 1, 5de243ec8 makes 3 calls, rejects each for PLAN_FRAGMENTED_OWNERSHIP (4 serial owners) and PLAN_CONCURRENT_OVERLAP (T2/T3), and writes no plan; 313e4fbea writes it after 1 call, 20 of 20 source checks kept, spec quality A x4, plan validate 0 diagnostics, and the report line names core/CMakeLists.txt (T1, T2, T3, T4). That run used draft 1 with T2's and T3's max_loc at their tier's 150: the drafts as sent also ask 250 and 220 lines of integrative tasks, which the budget error hid (generation stops at the first failing gate) and which the planner's fix-up now sees as PLAN_TIER_SIZE. The accept-time union merge of such files is roko-ladder's item."
 +++
 
 ## Problem

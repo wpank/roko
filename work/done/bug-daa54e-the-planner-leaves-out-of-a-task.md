@@ -2,15 +2,16 @@
 id = "bug-daa54e"
 kind = "bug"
 title = "The planner leaves out of a task's files a shared file the spec says that task edits (core/CMakeLists.txt for phase 1's three parallel tasks), so the edit is out of scope and parallel tasks clash on it"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p2"
 goal = "golden-path"
 size = "M"
 subsystem = ["roko-cli/plan-generate"]
 created = 2026-10-19
-updated = 2026-10-19
-last_verified = 2026-10-19
+updated = 2026-10-20
+last_verified = 2026-10-20
+last_verified_rev = "313e4fbea"
 source = "round-v7-hermes-pilot#D-p1-plan"
 discovered_from = "agent:hermes-pilot (round v7 phase 1, op f8dc4c50)"
 anchors = ["crates/roko-cli/src/plan_generate.rs::build_generator_system_prompt", "crates/roko-cli/src/plan_generate/runnable.rs::repair_write_tools"]
@@ -18,6 +19,18 @@ links = { depends_on = [], blocks = [], related = ["bug-96115c", "gap-af4082", "
 
 [[verify]]
 command = "grep -rqw 'fn a_shared_file_the_spec_says_a_task_edits_joins_its_files' crates/roko-cli/src && cargo test -p roko-cli --lib -- a_shared_file_the_spec_says_a_task_edits_joins_its_files"
+
+[closed]
+at = 2026-10-20
+at_ts = "2026-10-20T11:38:56Z"
+commit = "c60ec9ec2"
+by = "roko-planner (round v7)"
+executor = "claude-agent"
+via = "manual"
+size = "M"
+claimed_at = "2026-10-20T09:34:40Z"
+forced = false
+evidence = "Merged 313e4fbea (work/bug-daa54e: c60ec9ec2), the lead's middle path: honest files, parallelism kept. roko-graph exclusion::is_registration_file / REGISTRATION_FILES (by file name: CMakeLists.txt, Cargo.toml, mod.rs, __init__.py, index.ts, index.js, meson.build, BUILD, BUILD.bazel); first_overlap no longer counts two nodes that name the same registration file as overlapping, so the engine runs them together, while a directory holding one or any other shared path still serializes them. Generation repair repair_build_lists: a task that creates a C/C++ source gets the nearest CMakeLists.txt that lists sources (on disk or written by the plan; not a GLOB list) in its files. PLAN_FRAGMENTED_OWNERSHIP skips registration files and PLAN_CONCURRENT_OVERLAP goes through first_overlap; the plan report names the shared registration files and their tasks; prompt File Path Rules rule 8. Verify at 313e4fbea: a_shared_file_the_spec_says_a_task_edits_joins_its_files passes (the real phase-1 plan with a core/CMakeLists.txt that lists sources: T1-T3 get it in files, no budget issue names it, a GLOB list gets no repair), with parallel_tasks_share_the_cmake_list_they_add_to, a_shared_source_list_in_every_module_task_still_writes_a_plan and the plan_policy tests (16 passed); roko-graph 7 passed, including same_wave_tasks_sharing_only_a_build_list_run_in_parallel (two nodes sharing only core/CMakeLists.txt run together, through execute and start). Branch: roko-cli lib 3895 passed, 1 failed (run::tests::prompt_run_on_a_red_base_judges_only_new_failures, a prompt run's baseline judgement this change does not touch; it passed alone in 9.1 s); clippy -D warnings (roko-cli, roko-graph) and nightly fmt clean. The accept-time union merge is roko-ladder's item; its seam is is_registration_file (sent with the sha)."
 +++
 
 ## Problem

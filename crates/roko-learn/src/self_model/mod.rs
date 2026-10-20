@@ -290,7 +290,9 @@ pub struct Unit {
     pub cost_source: CostSource,
     /// Its wall time in seconds, when known.
     pub latency_s: Option<f64>,
-    /// A provider failover substituted the model, so the unit is kept out of training.
+    /// A provider failover substituted the model. The model learns what it did, and the
+    /// routing statistics (the calibration window, policy (a)'s margin) leave it out, since
+    /// nobody chose it (bug-a35286).
     pub failover: bool,
 }
 

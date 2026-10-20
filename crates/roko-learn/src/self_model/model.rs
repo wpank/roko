@@ -233,9 +233,11 @@ impl SelfModel {
 
     /// Learn `unit` with weight `w` (1/π for an audit-only label), whose task's features are
     /// `task`: L0, L1, the cost model and the history, and the recalibration on its schedule.
-    /// A unit with no gate label, or one a failover substituted, teaches nothing.
+    /// A unit with no gate label teaches nothing. A failover substitute's teaches as any other:
+    /// it is what the model that ran did (bug-a35286). Only the routing statistics, the
+    /// calibration window and policy (a)'s margin, leave it out, since nobody chose it.
     pub fn observe_with(&mut self, unit: &Unit, task: &TaskFeatures, w: f64) {
-        let Some(passed) = unit.label.y_gate.filter(|_| !unit.failover) else {
+        let Some(passed) = unit.label.y_gate else {
             return;
         };
         let arm = &unit.arm;
@@ -260,14 +262,12 @@ impl SelfModel {
     }
 
     /// Learn a late VS label of `unit` (S05's audits, weight 1/π) whose gate label the model has
-    /// already learned: only the false-green head moves, and only for a pass.
+    /// already learned: only the false-green head moves, and only for a pass, a failover
+    /// substitute's included (bug-a35286).
     pub fn observe_vs(&mut self, unit: &Unit, task: &TaskFeatures, w: f64) {
         let (Some(true), Some(verified)) = (unit.label.y_gate, unit.label.y_vs) else {
             return;
         };
-        if unit.failover {
-            return;
-        }
         let x = self.features(task, &unit.arm);
         self.gates.observe_vs(&x, verified, w);
     }
@@ -542,18 +542,20 @@ mod tests {
         assert!(model.in_shadow_period());
         model.observe(&unit("gpt-oss-120b", "T1", 1, true), 1.0);
         assert!(!model.forecast(&task(), &arms)[0].cold_start);
-        // A failover substitute or an unlabelled unit teaches nothing.
-        let mut substitute = unit("gpt-oss-120b", "T2", 1, true);
-        substitute.failover = true;
-        model.observe(&substitute, 1.0);
+        // An unlabelled unit teaches nothing; a failover substitute's outcome teaches as any
+        // other (bug-a35286).
         let mut unlabelled = unit("gpt-oss-120b", "T3", 1, true);
         unlabelled.label.y_gate = None;
         model.observe(&unlabelled, 1.0);
         assert_eq!(model.outcomes, N_MIN);
+        let mut substitute = unit("gpt-oss-120b", "T2", 1, true);
+        substitute.failover = true;
+        model.observe(&substitute, 1.0);
+        assert_eq!(model.outcomes, N_MIN + 1);
     }
 
     /// 6129: a late VS label of a pass moves the false-green forecast and nothing else; one of
-    /// a failure, or of a failover substitute, teaches nothing.
+    /// a failure teaches nothing.
     #[test]
     fn a_late_vs_label_moves_only_the_false_green_head() {
         let arms = [ArmKey::roko("cerebras", "gpt-oss-120b")];
@@ -564,11 +566,7 @@ mod tests {
         let before = model.forecast(&task(), &arms)[0].clone();
         let mut failed = unit("gpt-oss-120b", "T2", 1, false);
         failed.label.y_vs = Some(false);
-        let mut substitute = unit("gpt-oss-120b", "T3", 1, true);
-        substitute.label.y_vs = Some(false);
-        substitute.failover = true;
         model.observe_vs(&failed, &task(), 5.0);
-        model.observe_vs(&substitute, &task(), 5.0);
         assert_eq!(model.forecast(&task(), &arms)[0], before);
 
         let mut audited = unit("gpt-oss-120b", "T1", 1, true);

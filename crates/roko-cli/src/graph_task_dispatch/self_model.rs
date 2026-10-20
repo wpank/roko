@@ -381,11 +381,16 @@ impl SelfModelRuntime {
     /// Teach the model a settled attempt it forecast (6129): `unit` under the forecast's
     /// features, and the calibration window with the forecast for the model that ran. Both name
     /// the model by the slug its provider launched ([`arm_of`]; bug-a400d0), so the unit's arm
-    /// finds its candidate. The unit stays for a late VS label.
+    /// finds its candidate. A failover substitute teaches the model only: nobody chose it, so
+    /// neither the window nor policy (a)'s margin counts it (bug-a35286). The unit stays for a
+    /// late VS label.
     pub fn settle(&self, unit: Unit, forecast: AttemptForecast) {
         let w = unit.label.weight;
         self.observe(&unit, &forecast.features, w);
-        if let Some(candidate) = forecast.for_model(&unit.arm.model) {
+        if let Some(candidate) = forecast
+            .for_model(&unit.arm.model)
+            .filter(|_| !unit.failover)
+        {
             let outcome = WindowOutcome {
                 p: candidate.p_gate,
                 y: unit.label.y_gate == Some(true),

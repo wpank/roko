@@ -2,7 +2,7 @@
 id = "gap-115c2a"
 kind = "gap"
 title = "roko runs a spec check's command exactly as written (bug-56a806), but neither the planner prompts nor any guidance say the command must be self-contained: a check that needs a build must include it, since a build the planner puts before it is dropped"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p2"
 goal = "golden-path"
@@ -11,6 +11,7 @@ subsystem = ["roko-cli/plan-generate"]
 created = 2026-10-20
 updated = 2026-10-20
 last_verified = 2026-10-20
+last_verified_rev = "d41788629"
 source = "review:roko-planner-2 of bug-56a806 (e87ec04e3)"
 discovered_from = "agent:roko-planner-2 (round v7 review)"
 anchors = ["crates/roko-cli/src/plan_generate/source_checks.rs::planner_block", "crates/roko-cli/src/plan_generate/source_checks.rs::regeneration_prompt"]
@@ -18,6 +19,17 @@ links = { depends_on = [], blocks = [], related = ["bug-56a806"], supersedes = [
 
 [[verify]]
 command = "grep -q 'must be self-contained' crates/roko-cli/src/plan_generate/source_checks.rs && grep -qw 'fn the_planner_is_told_a_check_command_runs_as_written' crates/roko-cli/src/plan_generate/source_checks.rs && cargo test -p roko-cli --lib -- the_planner_is_told_a_check_command_runs_as_written"
+
+[closed]
+at = 2026-10-20
+at_ts = "2026-10-20T19:05:24Z"
+commit = "d41788629"
+by = "roko-exact (round v7)"
+executor = "claude-agent"
+via = "manual"
+model = "claude-opus-5-5"
+forced = false
+evidence = "d41788629: source_checks::planner_block (when a check has its own command) and regeneration_prompt now say that a source check's command must be self-contained and runs exactly as written, so a check that needs a build includes the build in its own command (a build put before it in a step is dropped): one const, SELF_CONTAINED, used by both. No guidance for people on writing a spec's checks exists in roko (docs/v3/28-CLI.md plan generate, roko explain plans, the plan-authoring help), so nothing else changed. Option (b), keeping build steps before a spec command, not done (the lead's call). Verify: the_planner_is_told_a_check_command_runs_as_written passes (the planner block and the regeneration prompt carry the sentence for a check with a command; prose checks do not bring it). cargo test -p roko-cli --lib plan_generate: 161 passed, 0 failed; clippy -p roko-cli -D warnings clean; nightly fmt clean. Also filed gap-d99366 (p3), not built."
 +++
 
 ## Problem

@@ -123,6 +123,22 @@ def test_tree_hash_matches_git_write_tree(tmp_path):
     assert repo.tree_hash(root) == agent_git(root, "write-tree")
 
 
+def test_scan_skips_cargo_build_caches_like_git(tmp_path):
+    """gap-a2f86a: `target` and `.cargo-target`, wherever they sit in the tree, count no more than `.git` does
+    (the module docstring's "what counts as the tree"). A Cargo crate's own in-tree `CARGO_TARGET_DIR` must not
+    survive an export or change a tree hash."""
+    dirty = make_instance(tmp_path / "dirty")
+    for cache in ("target/debug/x", ".cargo-target/debug/deps/y", "crate/target/z"):
+        (dirty / cache).parent.mkdir(parents=True, exist_ok=True)
+        (dirty / cache).write_text("artifact\n")
+    clean = make_instance(tmp_path / "clean")
+    assert repo.tree_hash(dirty) == repo.tree_hash(clean)
+    export = tmp_path / "export"
+    repo.export_tree(dirty, export)
+    names = {path.name for path in export.rglob("*")}
+    assert not names & {"target", ".cargo-target"}
+
+
 def test_init_is_deterministic_and_bundle_stays_outside(tmp_path):
     first = repo.init_task_repo(make_instance(tmp_path / "one"), tmp_path / "one.bundle")
     second = repo.init_task_repo(make_instance(tmp_path / "two"), tmp_path / "two.bundle")
@@ -623,13 +639,40 @@ def test_sandbox_denies_the_agents_code_the_private_paths(tmp_path):
     profile = sandbox.profile([*deny, quoted])
     assert f'(subpath "{os.path.realpath(secret_file)}")' in profile and 'odd \\"dir\\"' in profile
     assert profile.startswith("(version 1) (allow default)")
-    assert sandbox.command(["cat", "x"], deny=()) == ["cat", "x"] and sandbox.kind(()) == "none"
+    assert sandbox.command(["cat", "x"], deny=(), network=None) == ["cat", "x"] and sandbox.kind((), None) == "none"
     argv = ["sh", "-c", f"cat {secret_file} {task_file}; ls {task_file.parent}; echo done"]
     run = subprocess.run(sandbox.command(argv, deny=deny), capture_output=True, text=True, check=False)
-    assert sandbox.kind(deny) == sandbox.KIND and "done" in run.stdout
+    assert sandbox.kind(deny, None) == sandbox.KIND and "done" in run.stdout
+    # By default the code also gets no network (gap-0bd49a), which the kind says where a sandbox applies it.
+    assert sandbox.kind(deny) == ("none" if sandbox.KIND == "none" else sandbox.KIND + sandbox.NETWORK_SUFFIX)
     value = next(line for line in secret_file.read_text().splitlines() if not line.startswith("#"))
     if sandbox.KIND == "none":  # no confinement on this host: the command runs as given
         assert sandbox.command(argv, deny=deny) == argv and value in run.stdout
     else:
         assert value not in run.stdout and "F4-l1-0001" not in run.stdout
         assert run.stderr.count("Operation not permitted") == 3
+
+
+def test_every_truth_suite_denies_the_agents_code_what_the_census_names(tmp_path):
+    """bug-42b214: the census names the whole results root with `--deny` (`sandbox.add_deny_argument`), and every
+    family's truth suite, the driver's toy one too, takes the option and adds it to the deny list it starts the
+    agent's code under (driver/test_driver.py::test_census_code_cannot_read_another_run runs the toy one). Without
+    the option a suite denies what it did before: the secret file and DIR."""
+    secret_file, task_file, results = tmp_path / "secret", tmp_path / "private" / ".vb" / "task.json", tmp_path / "r"
+    assert sandbox.denied(secret_file, task_file) == (secret_file, task_file.parent)
+    assert sandbox.denied(secret_file, task_file, [results, str(results), secret_file]) == (
+        secret_file, task_file.parent, results)
+    parser = argparse.ArgumentParser()
+    sandbox.add_deny_argument(parser)
+    assert parser.parse_args([]).deny == []
+    assert parser.parse_args(["--deny", str(results), "--deny", "x"]).deny == [results, Path("x")]
+    families = Path(__file__).resolve().parents[1]
+    suites = [*sorted(families.glob("*/hidden.py")), families.parent / "driver" / "testdata" / "toy_family" / "hidden.py"]
+    assert len(suites) >= 9, suites
+    for suite in suites:
+        text = suite.read_text(encoding="utf-8")
+        assert text.count("sandbox.add_deny_argument(parser)") == 1, suite
+        assert text.count("sandbox.denied(args.secret_file, args.task, args.deny)") == 1, suite
+        shown = subprocess.run([sys.executable, str(suite), "--help"], capture_output=True, text=True, timeout=60,
+                               check=False)
+        assert shown.returncode == 0 and "--deny PATH" in shown.stdout, (suite, shown.stdout, shown.stderr)

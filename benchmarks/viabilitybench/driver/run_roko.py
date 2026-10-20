@@ -5,8 +5,8 @@ Before the first task, `preflight` emits the plan of a stand-in task into a scra
 `plan validate --strict --dag` of step 2 on it, so `vb run` refuses a binary that rejects the plans this arm emits
 (bug-a05c53) instead of ending every task `infra_error`. For each (task, seed), `run_task`:
 
-1. emits a one-task plan and the workspace roko.toml into the task's workdir, which is Roko's workspace
-   (`planemit`);
+1. emits a one-task plan, named by the task's alias and never by its key (`planemit.plan_slug`, bug-3c921e), and the
+   workspace roko.toml into the task's workdir, which is Roko's workspace (`planemit`);
 2. runs `roko --repo <ws> --model <m> plan validate --strict --dag <ws>/plans`; a plan that fails is `infra_error`.
    A routed arm's command lines name no `--model`, which would pin its start rung past the ladder (planemit's ladder
    mode; bug-0b7695);
@@ -137,6 +137,12 @@ time, and `records.py` sums them into the record:
   null otherwise. Roko records neither when a task became ready nor when it was dispatched, so a multi-task plan's
   slot waits need the Graph engine to record them.
 
+**The prompt** (bug-85e982). `vb run` records each arm's prompt in the run's config (`prompt`, which enters
+`config_hash`) from `arm_prompt(arm)`: the version and sha256 of the planemit templates the arm's plans are emitted
+from (`planemit.template_identity`). They differ by arm: pinned mode's openai_compat templates for roko_fixed on each
+of its models, its claude_cli ones for fr_claude, ladder mode's for roko_ladder, and ladder mode's with the overlay's
+tables for roko_full. Roko's own prompt is in its binary, recorded per attempt as `roko_build`.
+
 API:
     run_task(ctx: harness.TaskContext) -> harness.TaskOutcome
     preflight(arm, model, endpoint, limits, snapshot) -> None       # raises RunnerError
@@ -144,7 +150,8 @@ API:
     read_evidence(workspace: Path, slug: str, *, proxy_rows: list[dict] | None = None) -> Evidence
     settle(evidence, *, chain_key, model, provider, snapshot, reserved_usd, max_attempts, roko_build=None,
            swap=None, rungs=()) -> (list[RokoAttempt], list[str])
-    RokoAttempt(harness.Attempt); Evidence; binary_path(arm) -> Path; PROMPT_VERSION, PROMPT_SHA256
+    arm_prompt(arm) -> {"version", "sha256"}                      # what `vb run` records as the arm's prompt
+    RokoAttempt(harness.Attempt); Evidence; binary_path(arm) -> Path
 """
 
 from __future__ import annotations
@@ -177,10 +184,8 @@ import run_cli
 from common import repo, sandbox
 
 PROXY_CAPS = ("input_tokens_per_attempt",)  # arm caps that `vb run` has the metering proxy hold for this runner
-PROMPT_VERSION = planemit.TEMPLATE_VERSION  # Roko's own prompt is in its binary, recorded per attempt as roko_build
-PROMPT_SHA256 = planemit.TEMPLATE_SHA256
 DEFAULT_BINARY = "target/debug/roko"  # relative to the repository root, like the arm file's [roko] binary
-OFFLINE_KEY = "vb-offline-placeholder"
+OFFLINE_KEY = "placeholder"  # in Roko's environment, which its agent's shell inherits: neutral (bug-d68575)
 VALIDATE_TIMEOUT_S = 120.0
 EGRESS_LOG = "egress.jsonl"  # in the run directory, for a claude_cli arm (3318), as run_cli.py's own
 CLI_CACHE_WRITE_TTL = "1h"  # 3318: fr_claude's subscription turns write the 1-hour cache, as fd_claude.toml's do
@@ -286,7 +291,7 @@ def run_task(ctx: harness.TaskContext) -> harness.TaskOutcome:
     reserved: list[str] = []
     try:
         binary = binary_path(ctx.arm)
-        spec = _plan_spec(ctx.arm, ctx.model, ctx.endpoint, ctx.caps, ctx.price_row, task_bound, key=ctx.key,
+        spec = _plan_spec(ctx.arm, ctx.model, ctx.endpoint, ctx.caps, ctx.price_row, task_bound, alias=ctx.alias,
                           spec_text=ctx.spec_text, files=ctx.files_in_scope, visible=ctx.visible_verify,
                           verify_wrapper=_wrapper_command(ctx), snapshot=ctx.snapshot)
         emitted = planemit.emit(spec, ctx.workdir)
@@ -389,7 +394,7 @@ def preflight(arm: dict, model: str, endpoint: provider.Endpoint, limits: caps.C
             (workspace / relpath).parent.mkdir(parents=True, exist_ok=True)
             (workspace / relpath).write_text(text, encoding="utf-8")
         spec = _plan_spec(arm, model, endpoint, limits, price_row, limits.usd_per_task if bound is None else bound,
-                          key="preflight", spec_text=PREFLIGHT_SPEC, files=(next(iter(PREFLIGHT_TREE)),),
+                          alias="preflight", spec_text=PREFLIGHT_SPEC, files=(next(iter(PREFLIGHT_TREE)),),
                           visible=(PREFLIGHT_VISIBLE,), snapshot=snapshot)
         try:
             emitted = planemit.emit(spec, workspace)
@@ -405,6 +410,19 @@ def preflight(arm: dict, model: str, endpoint: provider.Endpoint, limits: caps.C
         said = (checked.stdout + checked.stderr).strip()[-500:]
         raise RunnerError(f"{binary} rejects the plan this arm emits: `plan validate --strict --dag` "
                           f"{'timed out' if checked.timed_out else f'exited {checked.returncode}'}: {said}")
+
+
+def arm_prompt(arm: dict) -> dict[str, str]:
+    """The prompt `vb run` records for this arm (module docstring, "The prompt"; `vb.runner_prompt`): the version and
+    sha256 of the planemit templates its plans are emitted from, in the mode `_plan_spec` gives it."""
+    return planemit.template_identity(ladder=_routed(arm),
+                                      provider_kind=arm.get("roko", {}).get("provider_kind", "openai_compat"),
+                                      overlay=bool(arm.get("overlay")))
+
+
+def _routed(arm: dict) -> bool:
+    """Whether the arm is routed (3312): more than one models_allow entry, so its plans are planemit's ladder mode."""
+    return len(arm["arm"]["models_allow"]) > 1
 
 
 def _start_egress(ctx: harness.TaskContext, settings: dict) -> egress.EgressProxy:
@@ -432,9 +450,10 @@ def _worst_task_usd(arm: dict, snapshot: ledger.Snapshot, limits: caps.Caps, pri
 
 
 def _plan_spec(arm: dict, model: str, endpoint: provider.Endpoint, limits: caps.Caps, price_row: dict | None,
-               usd_cap: float, *, key: str, spec_text: str, files: tuple[str, ...], visible: tuple[str, ...],
+               usd_cap: float, *, alias: str, spec_text: str, files: tuple[str, ...], visible: tuple[str, ...],
                verify_wrapper: str | None = None, snapshot: ledger.Snapshot | None = None) -> planemit.PlanSpec:
-    """The plan spec of one task on this arm: `run_task`'s, and `preflight`'s for its stand-in task. A routed arm
+    """The plan spec of one task on this arm: `run_task`'s, and `preflight`'s for its stand-in task. The plan is named
+    by the task's `alias`, which is all of the task its agents see (bug-3c921e). A routed arm
     (3312: more than one `models_allow` entry) emits planemit's ladder mode instead of one pinned model, with one
     rung per allowed model, cheapest first, and `model` as the start rung. The arm's `[overlay]` table (3360:
     roko_full's spec gate, routing, audit, holdout and homeostasis mechanisms), if it has one, becomes planemit's
@@ -446,13 +465,13 @@ def _plan_spec(arm: dict, model: str, endpoint: provider.Endpoint, limits: caps.
         raise RunnerError(f"the arm names no api_key_env for {endpoint.provider}")
     allowed = arm["arm"]["models_allow"]
     rungs, start = (), None
-    if len(allowed) > 1:
+    if _routed(arm):
         if snapshot is None:
             raise RunnerError("a routed arm needs the price snapshot to build its ladder")
         rungs = tuple(_rung(arm, rung_model, snapshot, limits) for rung_model in allowed)
         start = model
     return planemit.PlanSpec(
-        key=key, spec_text=spec_text, files=files, visible=visible, model=model, provider=endpoint.provider,
+        alias=alias, spec_text=spec_text, files=files, visible=visible, model=model, provider=endpoint.provider,
         base_url=endpoint.base_url, api_key_env=api_key_env, price_row=price_row, usd_cap=usd_cap,
         provider_kind=settings.get("provider_kind", "openai_compat"),
         context_window=int(settings.get("context_window", 128_000)), max_output=limits.max_output_tokens,

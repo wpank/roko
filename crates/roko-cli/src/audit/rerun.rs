@@ -218,6 +218,11 @@ async fn shell_run(
         if let Some(target) = target {
             command.env("CARGO_TARGET_DIR", target);
         }
+        // The check environment, as the task's own run had (bug-3c4600): a
+        // check without it does not run, and fails like one that cannot start.
+        if roko_gate::inherit_gate_env(&mut command, &[]).is_err() {
+            return Some(false);
+        }
         let limit = left.min(check.timeout);
         match tokio::time::timeout(limit, command.status()).await {
             Ok(Ok(status)) if status.success() => {}
@@ -347,5 +352,35 @@ mod tests {
             Some("cargo test -p roko-x")
         );
         worktree.remove().expect("remove");
+    }
+
+    /// bug-3c4600: the audit's re-runs of a task's checks (A2, B2) get the
+    /// check environment the task's own run had.
+    #[cfg(unix)]
+    #[test]
+    fn audit_reruns_get_the_check_environment() {
+        crate::check_env_probe::run_child("audit::rerun::tests::audit_rerun_check_env_child");
+    }
+
+    /// Run by [`audit_reruns_get_the_check_environment`] only.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn audit_rerun_check_env_child() {
+        use crate::check_env_probe::{assert_check_env, begin_child, dump_env_command};
+        let Some(_run) = begin_child() else {
+            return;
+        };
+        let dir = tempfile::tempdir().expect("tempdir");
+        let out = dir.path().join("rerun.env");
+        let checks = [Check {
+            label: "test".to_string(),
+            command: dump_env_command(&out),
+            timeout: Duration::from_secs(30),
+        }];
+
+        let passed = run_checks(dir.path(), &checks, Duration::from_secs(60), None, None).await;
+
+        assert_eq!(passed, Some(true));
+        assert_check_env(&out, "an audit re-run");
     }
 }

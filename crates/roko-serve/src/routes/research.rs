@@ -602,6 +602,20 @@ mod tests {
         assert_eq!(body["intent"], "position");
 
         wait_for_runs(&runtime, 1).await;
+        // The operation's task ends once its record is kept (bug-a0f01e).
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            while !state
+                .operations
+                .read()
+                .await
+                .values()
+                .all(|op| op.handle.is_finished())
+            {
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("the research operation ends");
         let runs = runtime.runs.lock().expect("lock runs");
         let (workdir, prompt) = &runs[0];
         assert_eq!(workdir, &state.workdir);

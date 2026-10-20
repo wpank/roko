@@ -530,11 +530,130 @@ pub const DEFAULT_CACHE_READ_MULTIPLIER: f64 = 0.1;
 /// names no cache-write price of its own: Anthropic's 5-minute write.
 pub const DEFAULT_CACHE_WRITE_MULTIPLIER: f64 = 1.25;
 
+/// Anthropic's price for a cache write with a 1-hour TTL, as a multiple of
+/// the input price (<https://docs.claude.com/en/docs/build-with-claude/prompt-caching>).
+/// A Claude Code session in print mode writes its prompt cache with that TTL
+/// (bug-acfced).
+pub const ONE_HOUR_CACHE_WRITE_MULTIPLIER: f64 = 2.0;
+
 /// Price of one Perplexity Search API request (`POST /search`), which runs
 /// no model and reports no usage: a flat $5 per 1,000 requests, the rate
 /// `roko_agent::perplexity::search` documents. Not yet checked against
 /// <https://docs.perplexity.ai/getting-started/pricing>.
 pub const PERPLEXITY_SEARCH_REQUEST_USD: f64 = 0.005;
+
+/// Whether roko has a rate for `model_slug`, as a run prices its calls
+/// (backlog 2114): the price `snapshot`'s row, the `profile`'s per-million
+/// prices, or the model's built-in pricing ([`builtin_pricing`]). A rate of 0
+/// is free, and still a rate (backlog 2109). A budget cap can count only the
+/// calls of a model that has one (gap-8548e3).
+#[must_use]
+pub fn model_has_price(
+    snapshot: Option<&crate::pricing_snapshot::PriceSnapshot>,
+    profile: Option<&crate::config::provider::ModelProfile>,
+    model_slug: &str,
+) -> bool {
+    snapshot.is_some_and(|snapshot| snapshot.row(model_slug).is_some())
+        || profile.is_some_and(|profile| {
+            profile.cost_input_per_m.is_some() || profile.cost_output_per_m.is_some()
+        })
+        || builtin_pricing(model_slug).is_some()
+}
+
+/// Which rates price a model's calls (backlog 2114), as
+/// [`effective_rates`] picks them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RateSource {
+    /// The model's row in the dated price snapshot.
+    Snapshot,
+    /// The model's `[models.*]` per-million prices.
+    Profile,
+    /// roko's built-in pricing ([`builtin_pricing`]).
+    Builtin,
+}
+
+impl RateSource {
+    /// The source's word: `snapshot`, `profile` or `builtin`.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Snapshot => "snapshot",
+            Self::Profile => "profile",
+            Self::Builtin => "builtin",
+        }
+    }
+}
+
+/// A model's rates as a run prices its calls, in USD per 1M tokens.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct EffectiveRates {
+    /// Uncached input.
+    pub input_per_m: f64,
+    /// Output.
+    pub output_per_m: f64,
+    /// Input read from the prompt cache: [`DEFAULT_CACHE_READ_MULTIPLIER`]
+    /// times the input rate when the rates name none, as dispatch charges it
+    /// (bug-1c0a66).
+    pub cache_read_per_m: f64,
+    /// Where the rates come from.
+    pub source: RateSource,
+}
+
+/// The rates a run prices `model_slug`'s calls at, in the order dispatch
+/// tries them (backlog 2114): the price `snapshot`'s row, else the
+/// `profile`'s input and output prices, with its cache-read price (the
+/// caller applies its provider's, `ModelProfile::with_provider_cache_rate`),
+/// else the model's built-in pricing. A profile that charges nothing gives
+/// way to the built-in pricing, as a call it prices at $0 does in dispatch;
+/// a model with none is free (backlog 2109, bug-1c0a66). `None` when none
+/// prices it.
+#[must_use]
+pub fn effective_rates(
+    snapshot: Option<&crate::pricing_snapshot::PriceSnapshot>,
+    profile: Option<&crate::config::provider::ModelProfile>,
+    model_slug: &str,
+) -> Option<EffectiveRates> {
+    if let Some(row) = snapshot.and_then(|snapshot| snapshot.row(model_slug)) {
+        return Some(EffectiveRates {
+            input_per_m: row.input,
+            output_per_m: row.output,
+            cache_read_per_m: row.cache_read,
+            source: RateSource::Snapshot,
+        });
+    }
+    let builtin = builtin_pricing(model_slug).map(|pricing| EffectiveRates {
+        input_per_m: pricing.input_per_m,
+        output_per_m: pricing.output_per_m,
+        cache_read_per_m: pricing.cache_read_per_m,
+        source: RateSource::Builtin,
+    });
+    if let Some(profile) = profile
+        && let (Some(input_per_m), Some(output_per_m)) =
+            (profile.cost_input_per_m, profile.cost_output_per_m)
+    {
+        let cache_read_per_m = profile
+            .cost_cache_read_per_m
+            .unwrap_or(input_per_m * DEFAULT_CACHE_READ_MULTIPLIER);
+        let cache_write_per_m = profile
+            .cost_cache_write_per_m
+            .unwrap_or(input_per_m * DEFAULT_CACHE_WRITE_MULTIPLIER);
+        let prices = [
+            input_per_m,
+            output_per_m,
+            cache_read_per_m,
+            cache_write_per_m,
+        ];
+        if prices.iter().any(|price| *price > 0.0) || builtin.is_none() {
+            return Some(EffectiveRates {
+                input_per_m,
+                output_per_m,
+                cache_read_per_m,
+                source: RateSource::Profile,
+            });
+        }
+    }
+    builtin
+}
 
 /// Look up pricing for a model slug.
 ///

@@ -1,11 +1,11 @@
 //! `[self_model]` in `roko.toml` (S04 §5): M3, the self-model that forecasts each routed
 //! attempt and, in active mode, picks its start rung.
 //!
-//! It is off by default (decision 6102, question 5). `shadow` forecasts every routed attempt and
-//! logs the rung the self-model would choose, while routing stays as it is; `active` lets it
-//! choose the start rung while its calibration gate holds (6122). A person switches the mode:
-//! nothing in roko writes this section. Holdout and ε are not here: they come from S03's route
-//! table and `[routing] explore_epsilon`.
+//! It is shadow by default (decision 2 of 2026-10-15, superseding decision 6102 question 5):
+//! it forecasts every routed attempt and logs the rung it would choose, while routing stays as
+//! it is; `active` lets it choose the start rung while its calibration gate holds (6122). A
+//! person switches the mode: nothing in roko writes this section but its own default. Holdout
+//! and ε are not here: they come from S03's route table and `[routing] explore_epsilon`.
 
 use serde::{Deserialize, Serialize};
 
@@ -17,10 +17,10 @@ pub const DEFAULT_STATE_PATH: &str = ".roko/learn/self-model/state-v1.json";
 #[serde(rename_all = "snake_case")]
 pub enum SelfModelMode {
     /// It does not run.
-    #[default]
     Off,
     /// It forecasts every routed attempt and logs the rung it would choose; routing is
-    /// unchanged.
+    /// unchanged. The default (decision 2 of 2026-10-15).
+    #[default]
     Shadow,
     /// It chooses the start rung while its calibration gate holds.
     Active,
@@ -51,7 +51,11 @@ pub struct SelfModelConfig {
     pub target: f64,
     /// δ, the error rate of the lower confidence bound on P(VS), in (0, 1).
     pub delta: f64,
-    /// Outcomes the calibration window needs before active mode may act.
+    /// W, the calibration gate's window: the last outcomes it scores, which it needs before
+    /// active mode may act (S04 §4.10's 100 by default; gap-4c531f). A small workspace may
+    /// lower it, at a cost: the gate's bounds stay as they are, and over a few outcomes they
+    /// are noisy (ECE's ten equal-mass bins hold one forecast each at W = 10, so only sharp
+    /// forecasts pass). The circuit breaker still reads its last 50 outcomes.
     pub n_min: u32,
     /// The state file, relative to the workspace.
     pub state_path: String,
@@ -64,7 +68,7 @@ pub struct SelfModelConfig {
 impl Default for SelfModelConfig {
     fn default() -> Self {
         Self {
-            mode: SelfModelMode::Off,
+            mode: SelfModelMode::Shadow,
             policy: SelfModelPolicy::Cascade,
             target: 0.80,
             delta: 0.20,
@@ -112,12 +116,13 @@ mod tests {
     use super::*;
     use crate::config::schema::RokoConfig;
 
-    /// 6127: the section is off by default, round-trips through TOML, rejects unknown keys, and
-    /// its checks reject out-of-range values, through `validate_invariants` too.
+    /// 6127, decision 2 of 2026-10-15: the section defaults to shadow (superseding decision
+    /// 6102 question 5's "off"), round-trips through TOML, rejects unknown keys, and its checks
+    /// reject out-of-range values, through `validate_invariants` too.
     #[test]
-    fn self_model_config_defaults_off() {
+    fn self_model_config_defaults_shadow() {
         let expected = SelfModelConfig {
-            mode: SelfModelMode::Off,
+            mode: SelfModelMode::Shadow,
             policy: SelfModelPolicy::Cascade,
             target: 0.80,
             delta: 0.20,
@@ -128,7 +133,7 @@ mod tests {
         };
         let config = SelfModelConfig::default();
         assert_eq!(config, expected);
-        assert!(!config.enabled());
+        assert!(config.enabled(), "shadow forecasts every routed attempt");
         assert!(config.problems().is_empty());
         assert_eq!(RokoConfig::default().self_model, expected);
 

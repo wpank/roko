@@ -161,7 +161,7 @@ Workers receive their configuration as a base64-encoded `ROKO_TEMPLATE_JSON` env
 |---|---|
 | `ANTHROPIC_API_KEY` | LLM provider key (passed through to agents) |
 | `GITHUB_TOKEN` | For GitHub integrations |
-| `ROKO__SERVE__AUTH__API_KEY` | serve's API key (`serve.auth.api_key`); set it here, never in `roko.toml` |
+| `ROKO__SERVE__AUTH__API_KEY` | serve's API key (`serve.auth.api_key`); set it locally with `roko config set serve.auth.api_key <secret>` (stored in `.roko/.env`, never in `roko.toml`) — `roko deploy railway` reads it from there and forwards it to this service alone, never to mirage or a worker (dec-648cce) |
 
 ### Workers
 

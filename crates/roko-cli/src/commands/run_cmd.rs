@@ -443,13 +443,10 @@ async fn run_plan_dir(
         max_parallel_plans: None,
         fail_fast: false,
     };
-    let result = super::plan::cmd_plan(cli, plan_cmd).await;
-    // `roko plan run` rebuilds the plan indexes after a run that succeeds
-    // (main.rs wraps it); this is the same run, so it does too.
-    if !args.dry_run && matches!(result, Ok(EXIT_SUCCESS)) {
-        roko_cli::index::rebuild_all(workdir)?;
-    }
-    result
+    // Leaves the operator checkout as it found it: `roko plan run` does not
+    // rebuild the plan indexes after a run that succeeds (1222, bug-26935e),
+    // and this is the same run, so it does not either.
+    super::plan::cmd_plan(cli, plan_cmd).await
 }
 
 // ─── One task: a one-task plan through the Graph engine ─────────────────
@@ -508,10 +505,12 @@ async fn run_one_task(
         max_usd: None,
         origin: roko_serve::runtime::RunOrigin::Cli,
         no_holdout: args.no_holdout,
+        live_agent_output: roko_cli::graph_task_dispatch::LiveAgentOutput::for_local_run(workdir),
+        title: None,
     })
     .await;
 
-    handle_workflow_result(cli, prompt, tier, result)
+    handle_workflow_result(cli, workdir, prompt, tier, result)
 }
 
 // ─── Plan: write a plan from the prompt, then run it ────────────────────
@@ -586,8 +585,18 @@ async fn run_prompt_plan(
             format!("<context>\n{loaded}</context>")
         }
     };
-    let Some(generated) =
-        generate_prompt_plan(cli, workdir, prompt, &model_key, &context_block, &out).await
+    // Only `--dry-run` leaves the plan for a person to review before it runs.
+    let unattended = !args.dry_run;
+    let Some(generated) = generate_prompt_plan(
+        cli,
+        workdir,
+        prompt,
+        &model_key,
+        &context_block,
+        unattended,
+        &out,
+    )
+    .await
     else {
         return Ok(EXIT_AGENT_FAILURE);
     };
@@ -648,10 +657,8 @@ async fn run_prompt_plan(
         args.no_holdout,
     )
     .await?;
-    // As after `roko plan run`, the indexes show the run's result.
-    if code == EXIT_SUCCESS {
-        roko_cli::index::rebuild_all(workdir)?;
-    }
+    // Leaves the operator checkout as it found it: the run's results go to
+    // the plan branch and `.roko/`, not to a rebuilt `plans/INDEX.md` (bug-26935e).
     Ok(code)
 }
 
@@ -780,7 +787,7 @@ pub(crate) async fn run_plan_execution(
         max_parallel_plans: None,
         fail_fast: false,
         only_plans: None,
-        live_agent_output: roko_cli::graph_task_dispatch::LiveAgentOutput::ToolSteps,
+        live_agent_output: roko_cli::graph_task_dispatch::LiveAgentOutput::for_local_run(workdir),
         force_disk_check: false,
         effort: cli.effort.map(|effort| effort.to_string()),
         no_cascade,
@@ -796,12 +803,15 @@ pub(crate) async fn run_plan_execution(
 /// the plan and writes it to the workspace plans directory; `context` follows
 /// the prompt. Returns the new plan's directory, so `roko run` runs that plan
 /// and no other plan beside it, or `None` after reporting a failure on `out`.
+/// An `unattended` plan runs with nobody to answer its open questions
+/// (bug-7a08a8).
 async fn generate_prompt_plan(
     cli: &Cli,
     workdir: &Path,
     prompt: &str,
     model_key: &str,
     context: &str,
+    unattended: bool,
     out: &roko_cli::cli_output::CliOutput,
 ) -> Option<PathBuf> {
     let effort = cli.effort.map(|e| e.to_string());
@@ -810,6 +820,7 @@ async fn generate_prompt_plan(
         context: Some(context),
         model: Some(model_key),
         effort: Some(effort.as_deref().unwrap_or("high")),
+        unattended,
         ..roko_cli::plan_generate::PlanRequest::new(
             roko_cli::plan_generate::PlanSource::Text {
                 text: prompt,
@@ -868,6 +879,7 @@ fn print_run_preview(
 
 fn handle_workflow_result(
     cli: &Cli,
+    workdir: &Path,
     prompt: &str,
     tier: &str,
     result: anyhow::Result<roko_runtime::workflow_contract::WorkflowRunReport>,
@@ -877,7 +889,7 @@ fn handle_workflow_result(
             if cli.json {
                 println!("{}", serde_json::to_string_pretty(&report)?);
             } else if !cli.quiet {
-                roko_cli::run::print_workflow_run_report(prompt, tier, &report);
+                roko_cli::run::print_workflow_run_report(workdir, prompt, tier, &report);
             }
 
             if report.success {

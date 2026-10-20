@@ -586,7 +586,8 @@ fn synthesize_standard_providers_with_env(
             "openai",
             "OPENAI_API_KEY",
             ProviderKind::OpenAiCompat,
-            Some("https://api.openai.com"),
+            // OpenAI-compatible adapters append `/chat/completions`.
+            Some("https://api.openai.com/v1"),
         ),
         (
             "gemini",
@@ -725,7 +726,7 @@ impl RokoConfig {
         self.effective_providers_with_env(|key| std::env::var(key).ok())
     }
 
-    fn effective_providers_with_env(
+    pub(crate) fn effective_providers_with_env(
         &self,
         env_fn: impl Fn(&str) -> Option<String>,
     ) -> IndexMap<String, ProviderConfig> {
@@ -780,6 +781,34 @@ impl RokoConfig {
     #[must_use]
     pub fn effective_models(&self) -> IndexMap<String, ModelProfile> {
         self.models.clone()
+    }
+
+    /// [`Self::effective_models`], each priced as its provider bills it
+    /// ([`ModelProfile::with_provider_cache_rate`]). A price table built from
+    /// these counts a Cerebras model's cache reads at its input rate, where
+    /// the profiles alone would count them at a tenth of it (bug-dc1273).
+    #[must_use]
+    pub fn billed_models(&self) -> IndexMap<String, ModelProfile> {
+        self.billed_models_with_env(|key| std::env::var(key).ok())
+    }
+
+    /// [`Self::billed_models`] with the providers the environment `env_fn`
+    /// holds.
+    pub(crate) fn billed_models_with_env(
+        &self,
+        env_fn: impl Fn(&str) -> Option<String>,
+    ) -> IndexMap<String, ModelProfile> {
+        let providers = self.effective_providers_with_env(env_fn);
+        self.effective_models()
+            .into_iter()
+            .map(|(key, profile)| {
+                let billed = match providers.get(&profile.provider) {
+                    Some(provider) => profile.with_provider_cache_rate(provider),
+                    None => profile,
+                };
+                (key, billed)
+            })
+            .collect()
     }
 
     fn synthesized_model_profile(&self, slug: &str) -> ModelProfile {
@@ -976,7 +1005,7 @@ impl RokoConfig {
         self.is_provider_available_with_env(provider, |name| std::env::var(name).ok())
     }
 
-    fn is_provider_available_with_env(
+    pub(crate) fn is_provider_available_with_env(
         &self,
         provider: &ProviderConfig,
         env_fn: impl Fn(&str) -> Option<String>,
@@ -1379,9 +1408,20 @@ impl RokoConfig {
         let _ = writeln!(out, "compile_concurrency = {}", c.gates.compile_concurrency);
         let _ = writeln!(
             out,
+            "# Checks build with a job cap (unset: half the CPUs; 0: no cap) at a lower priority:"
+        );
+        let _ = writeln!(out, "# cargo_jobs = 4");
+        let _ = writeln!(out, "nice = {}", c.gates.nice);
+        let _ = writeln!(
+            out,
             "# Gate commands inherit only allowlisted variables; add more (names or PREFIX*):"
         );
-        let _ = writeln!(out, "# env_passthrough = [\"DATABASE_URL\"]\n");
+        let _ = writeln!(out, "# env_passthrough = [\"DATABASE_URL\"]");
+        let _ = writeln!(
+            out,
+            "# They never see your gh login, GitHub tokens or .env provider keys; remove more:"
+        );
+        let _ = writeln!(out, "# strip_env = [\"SCCACHE_*\"]\n");
     }
     fn write_example_routing(out: &mut String, c: &Self) {
         let _ = writeln!(out, "# -- Model routing --");
@@ -3248,6 +3288,76 @@ pheromone_decay_rate = 0.5
 
         let providers = cfg.effective_providers_with_env(|_| None);
         assert!(providers.is_empty());
+    }
+
+    /// bug-4e336b: an OpenAI key alone gives an `openai` provider whose
+    /// chat endpoint, `{base_url}/chat/completions`, is OpenAI's.
+    #[test]
+    fn synthesized_openai_provider_has_the_v1_base_url() {
+        let cfg = RokoConfig::default();
+        let providers = cfg.effective_providers_with_env(|name| {
+            (name == "OPENAI_API_KEY").then(|| "sk-test".to_string())
+        });
+        let openai = providers.get("openai").expect("synthesized from the key");
+        assert_eq!(
+            openai.base_url.as_deref(),
+            Some("https://api.openai.com/v1")
+        );
+    }
+
+    /// bug-dc1273: each model is priced as its provider bills it. Cerebras,
+    /// by kind or by its URL behind openai_compat, bills cached input at the
+    /// input rate; another provider keeps the default multiple, and a rate
+    /// the profile names stands.
+    #[test]
+    fn billed_models_price_cerebras_cache_reads_at_the_input_rate() {
+        let cfg = RokoConfig::from_toml(
+            r#"
+[providers.cerebras]
+kind = "cerebras_api"
+api_key_env = "CEREBRAS_API_KEY"
+
+[providers.cerebras_compat]
+kind = "openai_compat"
+base_url = "https://api.cerebras.ai/v1"
+
+[providers.openai]
+kind = "openai_compat"
+base_url = "https://api.openai.com/v1"
+
+[models.glm]
+provider = "cerebras"
+slug = "zai-glm-4.7"
+cost_input_per_m = 2.25
+cost_output_per_m = 2.75
+
+[models.qwen]
+provider = "cerebras_compat"
+slug = "qwen-3-235b-a22b-instruct-2507"
+cost_input_per_m = 0.6
+cost_output_per_m = 1.2
+
+[models.mini]
+provider = "openai"
+slug = "gpt-5.4-mini"
+cost_input_per_m = 0.75
+cost_output_per_m = 4.5
+
+[models.named]
+provider = "cerebras"
+slug = "gpt-oss-120b"
+cost_input_per_m = 0.35
+cost_output_per_m = 0.75
+cost_cache_read_per_m = 0.1
+"#,
+        )
+        .expect("config");
+        let billed = cfg.billed_models_with_env(|_| None);
+        let cache_read = |key: &str| billed[key].cost_cache_read_per_m;
+        assert_eq!(cache_read("glm"), Some(2.25));
+        assert_eq!(cache_read("qwen"), Some(0.6));
+        assert_eq!(cache_read("mini"), None);
+        assert_eq!(cache_read("named"), Some(0.1));
     }
 
     #[test]

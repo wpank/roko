@@ -414,8 +414,11 @@ pub(crate) async fn cmd_serve(
     };
     #[cfg(unix)]
     let ipc_hub = state_hub.clone();
+    // `--bind`, `--port` and `--enable-terminal` hold for the server's life,
+    // also when it reloads roko.toml (bug-3eec27).
     let server_config =
         roko_serve::ServerBuildConfig::new(wd.clone(), runtime, roko_config, bind, port)
+            .with_terminal_enabled(enable_terminal)
             .with_state_hub(state_hub)
             .with_metrics(metrics)
             .with_advertised_endpoint();
@@ -627,7 +630,8 @@ fn posture_checks(config: &roko_core::config::schema::RokoConfig) -> Vec<Posture
     let showcase = config.showcase.enabled;
     let privy_limited = auth.privy_app_id.is_none()
         || !auth.privy_allowed_roles.is_empty()
-        || auth.privy_workspace_id.is_some();
+        || auth.privy_workspace_id.is_some()
+        || !auth.privy_allowed_users.is_empty();
     let extras: Vec<&str> = config
         .serve
         .public_routes
@@ -769,6 +773,11 @@ pub(crate) async fn cmd_deploy_railway(
     );
     env_vars.insert("ROKO_WORKER_CALLBACK_TOKEN".to_string(), callback_token);
 
+    // dec-648cce option (a): the serve API key goes to the control plane
+    // alone. `env_vars` stays the shared base that mirage and every worker
+    // below are built from, so it must never hold the key.
+    let control_plane_env = railway_control_plane_env(&env_vars, &config.serve.auth.api_key);
+
     // Load persisted project context as fallback for config-level IDs.
     let saved_ctx = load_railway_context(&workdir);
     let project_id = deploy_config
@@ -800,7 +809,7 @@ pub(crate) async fn cmd_deploy_railway(
             healthcheck_path: "/api/health".to_string(),
             volume_mount_path: "/workspace/.roko".to_string(),
             region: deploy_config.default_region.clone(),
-            env_vars: env_vars.clone(),
+            env_vars: control_plane_env,
         })
         .await?;
 
@@ -1443,6 +1452,26 @@ fn railway_worker_env(
     worker_env
 }
 
+/// The control plane's Railway environment: `shared` (the variables mirage
+/// and every worker are also built from) plus serve's own API key, which
+/// goes to the control plane alone (dec-648cce option (a); gap-ea9ed8).
+/// `shared` itself is never mutated, so a caller that keeps using it for
+/// mirage or a worker's environment never forwards the key to them.
+/// `serve_api_key` is skipped when blank: an unset key forwards nothing.
+fn railway_control_plane_env(
+    shared: &std::collections::HashMap<String, String>,
+    serve_api_key: &str,
+) -> std::collections::HashMap<String, String> {
+    let mut env = shared.clone();
+    if !serve_api_key.trim().is_empty() {
+        env.insert(
+            "ROKO__SERVE__AUTH__API_KEY".to_string(),
+            serve_api_key.to_string(),
+        );
+    }
+    env
+}
+
 /// Returns `true` when `bind` is a loopback address or hostname.
 ///
 /// Accepts numeric IP addresses (`127.x.x.x`, `::1`) and the `localhost`
@@ -1460,7 +1489,7 @@ fn is_loopback_bind(bind: &str) -> bool {
 mod tests {
     use super::{
         FlyTomlConfig, PostureCheck, cmd_deploy_fly, fly_deploy_args, fly_plan_from_config,
-        posture_checks, railway_worker_env, write_fly_toml,
+        posture_checks, railway_control_plane_env, railway_worker_env, write_fly_toml,
     };
     use roko_core::config::schema::RokoConfig;
     use std::collections::HashMap;
@@ -1580,6 +1609,17 @@ mod tests {
     }
 
     #[test]
+    fn posture_g0_accepts_a_user_id_allow_list_too() {
+        // gap-47e0de: privy_allowed_users is a third, independent way to
+        // limit Privy, alongside roles and workspace.
+        let mut config = RokoConfig::default();
+        config.serve.auth.privy_app_id = Some("privy-app".to_string());
+        assert!(!check(&posture_checks(&config), "G0").ok);
+        config.serve.auth.privy_allowed_users = vec!["did:privy:operator".to_string()];
+        assert!(check(&posture_checks(&config), "G0").ok);
+    }
+
+    #[test]
     fn posture_g1_public_routes_on_a_public_bind() {
         let mut config = RokoConfig::default();
         config.server.bind = "127.0.0.1".to_string();
@@ -1672,6 +1712,69 @@ mod tests {
             Some("provider-key"),
             "existing provider environment must remain intact"
         );
+    }
+
+    /// gap-ea9ed8 / dec-648cce option (a): the serve API key that admits a
+    /// caller to `/api/*` goes to the control plane alone. Mirage and every
+    /// worker are built from the same shared map `collect_railway_env_vars`
+    /// returns, so that map, and anything derived from it, must never carry
+    /// the key. The fake values below are never real credentials.
+    #[test]
+    fn railway_env_forwards_the_serve_key_to_the_control_plane_only() {
+        let shared = HashMap::from([
+            (
+                "ROKO_WORKER_CALLBACK_TOKEN".to_string(),
+                "fake-callback-token".to_string(),
+            ),
+            (
+                "ROKO_SERVER_AUTH_TOKEN".to_string(),
+                "fake-ingest-token".to_string(),
+            ),
+        ]);
+
+        let control_plane = railway_control_plane_env(&shared, "fake-serve-admin-key");
+        assert_eq!(
+            control_plane
+                .get("ROKO__SERVE__AUTH__API_KEY")
+                .map(String::as_str),
+            Some("fake-serve-admin-key"),
+            "the control plane must get the serve key"
+        );
+        assert_eq!(
+            control_plane
+                .get("ROKO_WORKER_CALLBACK_TOKEN")
+                .map(String::as_str),
+            Some("fake-callback-token"),
+            "the control plane keeps the shared variables too"
+        );
+
+        // `shared` is what `cmd_deploy_railway` builds mirage's and every
+        // worker's environment from (directly for mirage, via
+        // `railway_worker_env` for a worker); it must never gain the key.
+        assert!(!shared.contains_key("ROKO__SERVE__AUTH__API_KEY"));
+        let mirage_env = shared.clone();
+        assert!(!mirage_env.contains_key("ROKO__SERVE__AUTH__API_KEY"));
+        let worker_env = railway_worker_env(
+            &shared,
+            "encoded-template".to_string(),
+            "https://control.example",
+            "callback-worker-1".to_string(),
+        );
+        assert!(
+            !worker_env.contains_key("ROKO__SERVE__AUTH__API_KEY"),
+            "a worker must never receive the control plane's admin key"
+        );
+        assert_eq!(
+            worker_env
+                .get("ROKO_WORKER_CALLBACK_TOKEN")
+                .map(String::as_str),
+            Some("fake-callback-token"),
+            "workers keep their own narrower credentials"
+        );
+
+        // An unset (blank) key forwards nothing: no empty variable either.
+        let no_key = railway_control_plane_env(&shared, "");
+        assert!(!no_key.contains_key("ROKO__SERVE__AUTH__API_KEY"));
     }
 }
 

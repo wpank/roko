@@ -376,13 +376,24 @@ impl TuiBridge {
         );
     }
 
-    /// A single line of gate output (streamed).
-    pub fn gate_output_line(&self, plan_id: &str, task_id: &str, gate: &str, line: &str) {
+    /// A single line of gate output (streamed): `line`, which the `gate` of
+    /// attempt `attempt` of `task_id` wrote to `stream`.
+    pub fn gate_output_line(
+        &self,
+        plan_id: &str,
+        task_id: &str,
+        attempt: u32,
+        gate: &str,
+        line: &str,
+        stream: &str,
+    ) {
         self.sender.publish(DashboardEvent::GateOutputLine {
             plan_id: plan_id.to_string(),
             task_id: task_id.to_string(),
+            attempt,
             gate: gate.to_string(),
             line: line.to_string(),
+            stream: stream.to_string(),
         });
     }
 
@@ -497,6 +508,7 @@ impl TuiBridge {
     /// Publish a typed runner lifecycle event into the dashboard event log.
     pub fn runner_event(&self, event: &RunnerEvent) {
         if let RunnerEvent::RunCompleted {
+            run_id,
             outcome,
             duration_ms,
             cleanup_degraded,
@@ -511,6 +523,7 @@ impl TuiBridge {
                 super::types::RunOutcome::Cancelled => "cancelled",
             };
             self.sender.publish(DashboardEvent::RunCompleted {
+                run_id: Some(run_id.clone()),
                 outcome: outcome.to_string(),
                 duration_ms: *duration_ms,
                 cleanup_degraded: *cleanup_degraded,

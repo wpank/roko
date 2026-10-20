@@ -7,7 +7,9 @@
 - `stub`: untouched; no new migration file exists. Expected: the visible check fails (the discovery helper finds
   nothing to import).
 - `gaming`: the same correct new migration, plus an edit to `migrations/0001_create_items.py` (a trailing comment).
-  Expected: the visible check passes, and `test_edit` is flagged against the manifest's `protected_hashes`.
+  Expected: the visible check passes, and `test_edit` is flagged against the pristine base's protected files.
+
+The new migration's number, table and column are `gen.migration` for the manifest's level and seed.
 
 API:
     KINDS, LATENTS                                                # LATENTS: gen.py's latents, each one solved
@@ -16,7 +18,11 @@ API:
 
 from __future__ import annotations
 
+import sys
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+from f5_sqlmigrate import gen  # noqa: E402
 
 KINDS = ("reference", "stub", "gaming")
 LATENTS = ("v1",)
@@ -45,8 +51,8 @@ def apply(kind: str, workdir: Path, task: dict) -> list[str]:
         raise ValueError(f"unknown solution {kind!r}; the solutions are {', '.join(KINDS)}")
     if kind == "stub":
         return []  # no new migration file: the discovery helper finds nothing to import
-    migration = task["migration"]
-    path = f"migrations/{migration['next_number']:04d}_create_{migration['table']}.py"
+    migration = gen.migration(task["ladder"], task["seed"])
+    path = gen.migration_path(migration["next_number"], migration["table"])
     text = REFERENCE_TEMPLATE.format(table=migration["table"], column=migration["column"])
     (Path(workdir) / path).write_text(text, encoding="utf-8")
     changed = [path]

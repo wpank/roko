@@ -5,7 +5,8 @@ use super::*;
 
 use crate::runtime::RunOrigin;
 use crate::state::{
-    PLAN_RUN_QUEUE_CAPACITY, PlanRunSpec, PlanRunStatus, PlanSetSpec, QueuedPlanRun, RunState,
+    OperationStatus, PLAN_RUN_QUEUE_CAPACITY, PlanRunSpec, PlanRunStatus, PlanSetSpec,
+    QueuedPlanRun, QueuedRun, RunHandle, RunState,
 };
 use roko_core::dashboard_snapshot::classify_task_outcome;
 
@@ -38,16 +39,23 @@ fn queued_run_named(queued: &QueuedPlanRun, id: &str) -> bool {
 }
 
 /// The queued run `id` names, with its place in the queue, 1 being next
-/// (decision 9105).
+/// (decision 9105): queued prompt runs count, as they wait in the same order
+/// (gap-9a8d66).
 fn queued_run_for(state: &AppState, id: &str) -> Option<(usize, QueuedPlanRun)> {
-    let queue = state
-        .plan_queue
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-    queue
-        .iter()
-        .position(|queued| queued_run_named(queued, id))
-        .map(|index| (index + 1, queue[index].clone()))
+    let queued = {
+        let queue = state
+            .plan_queue
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let index = queue
+            .iter()
+            .position(|queued| queued_run_named(queued, id))?;
+        (index + 1, queue[index].clone())
+    };
+    let position = state
+        .queue_position(&queued.1.spec.run_id)
+        .unwrap_or(queued.0);
+    Some((position, queued.1))
 }
 
 /// Returns the map key of the live entry whose key or run id equals `id`, or
@@ -110,6 +118,23 @@ fn plan_run_end(
     let error = (state == RunState::Failed)
         .then(|| failure.unwrap_or_else(|| "a task of the run failed".to_string()));
     PlanRunStatus::ended(state, error)
+}
+
+/// Tell `/ws` clients that the plan run `run_id` ended, and how (gap-6f0eca): the
+/// `run_completed` a prompt run's handler sends (`routes/run.rs`), so a client can
+/// follow any run it started by its id. Each run gets one, from the path that
+/// settled it: the run's task, or the cancel handler when it had to abort the
+/// task, or never started it.
+fn publish_plan_run_completed(
+    bus: &crate::event_bus::EventBus<ServerEvent>,
+    run_id: &str,
+    state: RunState,
+) {
+    bus.publish(ServerEvent::RunCompleted {
+        run_id: run_id.to_owned(),
+        success: state == RunState::Succeeded,
+        verdict: Some(state),
+    });
 }
 
 /// Record `status`, how the plan run `run_id` ended, on its handle under
@@ -433,6 +458,49 @@ pub(crate) struct StartedPlanRun {
 
 // ── Starting and queueing runs ───────────────────────────────────────
 
+/// The run that holds the workspace's one plan executor (9113).
+pub(crate) struct LiveRun {
+    /// A plan run's map key, or a prompt run's id.
+    pub(crate) key: String,
+    /// Whether it is a gated prompt run.
+    pub(crate) prompt: bool,
+}
+
+impl LiveRun {
+    /// Why a run that cannot start now waits, or is refused when the queue is
+    /// full.
+    pub(crate) fn conflict(&self, queued: usize) -> ApiError {
+        let (kind, name) = if self.prompt {
+            ("prompt run", "run id")
+        } else {
+            ("plan run", "run key")
+        };
+        ApiError::conflict(format!(
+            "a {kind} is already active (run {name}: {}) and {queued} more are queued, \
+             as many as the queue holds",
+            self.key
+        ))
+    }
+}
+
+/// The run holding the workspace's plan executor (9113), if any: a live plan
+/// run in `plans`, or a gated prompt run still going in `runs` (gap-9a8d66).
+/// An agent's chat reply, which takes no runner lock, does not count.
+pub(crate) fn workspace_busy(
+    runs: &std::collections::HashMap<String, RunHandle>,
+    plans: &std::collections::HashMap<String, PlanHandle>,
+) -> Option<LiveRun> {
+    if let Some(key) = active_run_conflict(plans) {
+        return Some(LiveRun { key, prompt: false });
+    }
+    runs.values()
+        .find(|run| run.cancel.is_some() && matches!(run.status, OperationStatus::Running))
+        .map(|run| LiveRun {
+            key: run.id.clone(),
+            prompt: true,
+        })
+}
+
 /// Start the run `spec` describes, or queue it behind the live run
 /// (decision 9105). Returns the run's place in the queue, 1 being next, or
 /// `None` when it started. A full queue refuses the run with 409.
@@ -440,55 +508,57 @@ async fn start_or_queue_plan_run(
     state: &Arc<AppState>,
     spec: PlanRunSpec,
 ) -> Result<Option<usize>, ApiError> {
-    // Acquire the write lock once to check-and-insert atomically (no TOCTOU
-    // race). A queue left waiting with no live run starts first, and this
-    // run goes behind it.
+    // Lock both run maps once, in the lock order, to check and start or queue
+    // in one step (no TOCTOU race). A queue left waiting with no live run
+    // starts first, and this run goes behind it.
+    let mut runs = state.active_runs.write().await;
     let mut active = state.active_plans.write().await;
-    start_queued_run(state, &mut active);
-    let Some(live_key) = active_run_conflict(&active) else {
+    start_queued_run(state, &mut runs, &mut active);
+    let Some(live) = workspace_busy(&runs, &active) else {
         launch_plan_run(state, &mut active, spec, false);
         return Ok(None);
     };
-    let mut queue = state
-        .plan_queue
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-    if queue.len() >= PLAN_RUN_QUEUE_CAPACITY {
-        return Err(ApiError::conflict(format!(
-            "a plan run is already active (run key: {live_key}) and {} more are queued, \
-             as many as the queue holds",
-            queue.len()
-        )));
+    let queued = state.queued_runs();
+    if queued >= PLAN_RUN_QUEUE_CAPACITY {
+        return Err(live.conflict(queued));
     }
-    queue.push_back(QueuedPlanRun {
-        spec,
-        queued_at: chrono::Utc::now(),
-    });
-    Ok(Some(queue.len()))
-}
-
-/// Start the oldest queued run when no run is live (decision 9105).
-fn start_queued_run(
-    state: &Arc<AppState>,
-    active: &mut std::collections::HashMap<String, PlanHandle>,
-) {
-    if active_run_conflict(active).is_some() {
-        return;
-    }
-    let next = state
+    let run_id = spec.run_id.clone();
+    state
         .plan_queue
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .pop_front();
-    if let Some(queued) = next {
-        launch_plan_run(state, active, queued.spec, true);
+        .push_back(QueuedPlanRun {
+            spec,
+            queued_at: chrono::Utc::now(),
+        });
+    Ok(state.queue_position(&run_id).or(Some(queued + 1)))
+}
+
+/// Start the oldest queued run, a plan run or a gated prompt run, when no run
+/// holds the workspace (decision 9105, gap-9a8d66). `runs` and `plans` are the
+/// locked `active_runs` and `active_plans` maps.
+pub(crate) fn start_queued_run(
+    state: &Arc<AppState>,
+    runs: &mut std::collections::HashMap<String, RunHandle>,
+    plans: &mut std::collections::HashMap<String, PlanHandle>,
+) {
+    if workspace_busy(runs, plans).is_some() || state.cancel.is_cancelled() {
+        return;
+    }
+    match state.pop_queued_run() {
+        Some(QueuedRun::Plan(queued)) => launch_plan_run(state, plans, queued.spec, true),
+        Some(QueuedRun::Prompt(queued)) => {
+            crate::routes::run::launch_queued_prompt_run(state, runs, queued);
+        }
+        None => {}
     }
 }
 
 /// Start the next queued run, now that a run has ended.
-async fn start_next_queued_run(state: &Arc<AppState>) {
+pub(crate) async fn start_next_queued_run(state: &Arc<AppState>) {
+    let mut runs = state.active_runs.write().await;
     let mut active = state.active_plans.write().await;
-    start_queued_run(state, &mut active);
+    start_queued_run(state, &mut runs, &mut active);
 }
 
 /// Spawn the run `spec` describes and insert its handle into `active`, which
@@ -535,6 +605,64 @@ async fn run_plans(
         .await
 }
 
+/// What the spec gate refused in plan run `run_id` before any agent ran,
+/// as the words that follow what was refused (bug-9a5970), or `None` when it
+/// refused nothing. A run's status and the portal's alert band say so,
+/// instead of task-level failures.
+async fn spec_gate_refusal(state: &AppState, run_id: &str) -> Option<String> {
+    let global_log = state.layout.events_jsonl_path();
+    let run_id = run_id.to_string();
+    let refusals = tokio::task::spawn_blocking(move || {
+        crate::run_end::spec_gate_refusals(&global_log, &run_id)
+    })
+    .await
+    .unwrap_or_default();
+    (!refusals.is_empty()).then(|| {
+        format!(
+            "was refused by the spec gate before any agent ran: {}",
+            refusals.join("; ")
+        )
+    })
+}
+
+/// Record in run `run_id`'s own index why roko did not run it (bug-9a5970):
+/// `message`, the run's error, and, unless the run began and recorded its own
+/// end, a `run_completed` with outcome `refused` whose reason is `error`'s
+/// first line, `started` being when the run's task began. Without it a run
+/// that failed before its plan started, such as one that found the runner
+/// lock taken, had no events: its id answered 404, and once serve restarted
+/// nothing said why. The rows go to the run's index only
+/// ([`crate::run_end`]); the unscoped `error` on the bus stays for the
+/// portal's alert band.
+async fn record_refused_start(
+    state: &AppState,
+    run_id: &str,
+    message: &str,
+    error: &anyhow::Error,
+    started: std::time::Instant,
+) {
+    let global_log = state.layout.events_jsonl_path();
+    let run_id = run_id.to_string();
+    let message = message.to_string();
+    let reason = crate::run_end::first_line(&error.to_string()).to_string();
+    let duration_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
+    let recorded = tokio::task::spawn_blocking(move || {
+        let end = crate::run_end::index_end(&global_log, &run_id)?;
+        let mut rows = crate::run_end::refused_rows(&run_id, &message, &reason, duration_ms);
+        if end.ended {
+            // The run began, and its own end says how it ended: only the error is new.
+            rows.truncate(1);
+        }
+        crate::run_end::append(&global_log, &run_id, &rows, end.partial)
+    })
+    .await;
+    match recorded {
+        Ok(Ok(())) => {}
+        Ok(Err(error)) => tracing::warn!(%error, "a refused run's index does not say why"),
+        Err(error) => tracing::warn!(%error, "a refused run's index was not written"),
+    }
+}
+
 /// Spawn the single-plan run `spec` describes and insert its handle into
 /// `active` under the plan's id.
 fn launch_single_plan_run(
@@ -565,6 +693,7 @@ fn launch_single_plan_run(
         let max_usd = spec.max_usd;
         let state_for_task = Arc::clone(state);
         async move {
+            let started = std::time::Instant::now();
             // Do NOT publish PlanStarted here. The runtime publishes its own
             // PlanStarted event (with the correct tasks_total) into the server
             // hub. A duplicate from the handler would be forwarded by the
@@ -594,8 +723,14 @@ fn launch_single_plan_run(
                     // embedded in the message string because
                     // DashboardEvent::Error carries no structured plan_id
                     // field; the portal cannot recover it separately.
-                    let failure = (!success)
-                        .then(|| format!("plan {plan_id} completed with task-level failures"));
+                    let failure = if success {
+                        None
+                    } else {
+                        Some(match spec_gate_refusal(&state_for_task, &run_id).await {
+                            Some(refusal) => format!("plan {plan_id} {refusal}"),
+                            None => format!("plan {plan_id} completed with task-level failures"),
+                        })
+                    };
                     if let Some(message) = &failure {
                         bus.publish(ServerEvent::Error {
                             message: message.clone(),
@@ -608,6 +743,7 @@ fn launch_single_plan_run(
                     bus.publish(ServerEvent::Error {
                         message: message.clone(),
                     });
+                    record_refused_start(&state_for_task, &run_id, &message, &err, started).await;
                     (false, Some(message))
                 }
             };
@@ -629,6 +765,7 @@ fn launch_single_plan_run(
                     success,
                 });
             }
+            publish_plan_run_completed(&bus, &run_id, status.state);
             // Record how the run ended on its handle, so its status route
             // still answers once it is over (G43), then start the next
             // queued run (decision 9105).
@@ -674,6 +811,7 @@ fn launch_plan_set_run(
     let first_run_seq = hub.total_published();
 
     let handle = tokio::spawn(async move {
+        let started = std::time::Instant::now();
         let options = PlanRunOptions {
             cancel: Some(task_cancel.clone()),
             fresh: !resume,
@@ -691,8 +829,14 @@ fn launch_plan_set_run(
         let outcome = run_plans(&state_for_task, &plan_target, options, revalidate).await;
         let (success, failure) = match outcome {
             Ok(result) => {
-                let failure = (!result.success)
-                    .then(|| format!("plan set run {run_id} completed with failures"));
+                let failure = if result.success {
+                    None
+                } else {
+                    Some(match spec_gate_refusal(&state_for_task, &run_id).await {
+                        Some(refusal) => format!("plan set run {run_id} {refusal}"),
+                        None => format!("plan set run {run_id} completed with failures"),
+                    })
+                };
                 (result.success, failure)
             }
             Err(err) => {
@@ -700,6 +844,7 @@ fn launch_plan_set_run(
                 bus.publish(ServerEvent::Error {
                     message: message.clone(),
                 });
+                record_refused_start(&state_for_task, &run_id, &message, &err, started).await;
                 (false, Some(message))
             }
         };
@@ -714,6 +859,7 @@ fn launch_plan_set_run(
             success,
             failure,
         );
+        publish_plan_run_completed(&bus, &run_id, status.state);
         record_plan_run_end(&state_for_task, &run_id, &run_id, status).await;
         start_next_queued_run(&state_for_task).await;
     });
@@ -729,13 +875,19 @@ fn launch_plan_set_run(
     active.insert(spec.key, plan_handle);
 }
 
-/// 422 for a run `roko plan run` would refuse: `details` is the validation
-/// report, shaped as `POST /api/plans/{id}/validate` returns it.
+/// 422 for a run `roko plan run` would refuse: the message names each error
+/// (bug-7a08a8), and `details` is the validation report, shaped as `POST
+/// /api/plans/{id}/validate` returns it.
 pub(super) fn plan_run_rejected(what: &str, validation: &PlanValidationDto) -> ApiError {
-    let mut error = ApiError::unprocessable_entity(format!(
+    let mut message = format!(
         "{what} failed validation with {} error(s); fix them before running it",
         validation.errors.len()
-    ));
+    );
+    for error in &validation.errors {
+        message.push_str("\n- ");
+        message.push_str(&error.replace('\n', "\n  "));
+    }
+    let mut error = ApiError::unprocessable_entity(message);
     error.details = serde_json::to_value(validation).ok().map(Box::new);
     error
 }
@@ -971,6 +1123,11 @@ pub(super) async fn resume_plan(
 /// Returns 200 `{ "cancelled": true }` on success, or 404 when the plan is not
 /// actively executing or queued.
 ///
+/// A run whose roko process stopped while it ran (a machine restart or a
+/// crash) is already over: its cancel answers 200 with `"state":
+/// "interrupted"`, `"already_ended": true` and the `reason`, every time
+/// (bug-dceafd).
+///
 /// `{id}` may be the run key, the run id **or** any member plan id of an
 /// active or queued run.
 pub(super) async fn cancel_plan(
@@ -985,9 +1142,17 @@ pub(super) async fn cancel_plan(
 /// (9115) share it.
 pub(crate) async fn cancel_plan_run(state: &Arc<AppState>, id: &str) -> Result<Value, ApiError> {
     let mut active = state.active_plans.write().await;
-    // Resolve by key, run id or member plan id; else look in the queue.
+    // Resolve by key, run id or member plan id; else look in the queue, then
+    // for a run whose process is gone.
     let Some(key) = active_run_for(&active, id) else {
-        return cancel_queued_run(state, &mut active, id);
+        let queued = cancel_queued_run(state, &mut active, id);
+        drop(active);
+        if queued.is_err()
+            && let Some(ended) = interrupted_run(state, id).await
+        {
+            return Ok(ended);
+        }
+        return queued;
     };
     let handle = active
         .get(&key)
@@ -1043,9 +1208,31 @@ pub(crate) async fn cancel_plan_run(state: &Arc<AppState>, id: &str) -> Result<V
             plan_id: id.to_string(),
             success: false,
         });
+        // The aborted task never reached its own run_completed.
+        publish_plan_run_completed(&state.event_bus, &run_id, RunState::Cancelled);
     }
 
     Ok(json!({ "cancelled": true }))
+}
+
+/// The answer to a cancel of run `id` when it is a run whose roko process
+/// stopped while it ran (bug-dceafd): it is over already, ended `interrupted`
+/// (now, if this is the first anyone asks). `None` for any other id.
+async fn interrupted_run(state: &AppState, id: &str) -> Option<Value> {
+    let workdir = state.workdir.clone();
+    let run_id = id.to_string();
+    let ended =
+        tokio::task::spawn_blocking(move || crate::interrupted_runs::settle(&workdir, &run_id))
+            .await
+            .ok()??;
+    Some(json!({
+        "cancelled": true,
+        "run_id": id,
+        "state": RunState::Interrupted.as_str(),
+        "already_ended": true,
+        "reason": ended.reason,
+        "ended_at": ended.at,
+    }))
 }
 
 /// Take the queued run `id` names out of the queue (decision 9105). Its
@@ -1077,5 +1264,7 @@ fn cancel_queued_run(
         cancel: CancelToken::new(),
     };
     active.insert(spec.run_id.clone(), plan_handle);
+    // The run never started, so nothing else will say it ended.
+    publish_plan_run_completed(&state.event_bus, &spec.run_id, RunState::Cancelled);
     Ok(json!({ "cancelled": true, "run_id": spec.run_id }))
 }

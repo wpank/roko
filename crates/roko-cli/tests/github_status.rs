@@ -1,5 +1,8 @@
 //! Integration tests for the standalone `roko github status` command.
 
+mod common;
+use common::Isolated;
+
 use assert_cmd::Command;
 use predicates::str::contains;
 use tempfile::tempdir;
@@ -22,6 +25,7 @@ label_prefix = "automation/"
 
     Command::cargo_bin("roko")
         .expect("roko binary")
+        .isolated()
         .current_dir(temp.path())
         .args(["github", "status", "--workdir"])
         .arg(temp.path())
@@ -46,6 +50,7 @@ fn github_status_json_without_token_is_structured_and_successful() {
 
     Command::cargo_bin("roko")
         .expect("roko binary")
+        .isolated()
         .current_dir(temp.path())
         .args(["--json", "github", "status", "--workdir"])
         .arg(temp.path())

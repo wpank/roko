@@ -1401,6 +1401,113 @@ pub fn format_dashboard_event(
             ">",
             format!("Phase: {from} -> {to}"),
         ),
+        DashboardEvent::PlanCheckStarted {
+            plan_id,
+            step,
+            steps,
+            command,
+            ..
+        } => (
+            format!("[{plan_id}]"),
+            ">",
+            format!("Plan check {step}/{steps}: {command}"),
+        ),
+        DashboardEvent::PlanCheckFinished {
+            plan_id,
+            step,
+            steps,
+            name,
+            passed,
+            stopped_by,
+            elapsed_ms,
+            ..
+        } => {
+            let (icon, word) = match (passed, stopped_by) {
+                (true, _) => ("+", "passed"),
+                (false, Some(_)) => ("-", "stopped"),
+                (false, None) => ("x", "failed"),
+            };
+            (
+                format!("[{plan_id}]"),
+                icon,
+                format!(
+                    "Plan check {step}/{steps} {word}: {name} ({} s)",
+                    elapsed_ms / 1_000
+                ),
+            )
+        }
+        DashboardEvent::DeliveryStarted {
+            plan_id, target, ..
+        } => (
+            format!("[{plan_id}]"),
+            ">",
+            format!("Delivering into {target}"),
+        ),
+        DashboardEvent::DeliveryFinished {
+            plan_id,
+            target,
+            state,
+            ..
+        } => {
+            // A delivery a stop cut short stopped; it did not fail.
+            let icon = match state.as_str() {
+                "delivered" => "+",
+                "cancelled" => "-",
+                _ => "x",
+            };
+            (
+                format!("[{plan_id}]"),
+                icon,
+                format!("Delivery into {target}: {state}"),
+            )
+        }
+        DashboardEvent::AttemptSettled {
+            plan_id,
+            task_id,
+            attempt,
+            settled,
+        } => {
+            let icon = if settled.verdict == "passed" {
+                "+"
+            } else {
+                "x"
+            };
+            let on = settled
+                .rung
+                .as_deref()
+                .map_or_else(String::new, |rung| format!(" on {rung}"));
+            let cost = settled
+                .cost_usd
+                .map_or_else(String::new, |usd| format!(", ${usd:.4}"));
+            let climb = if settled.climbed {
+                "; climbs a rung"
+            } else {
+                ""
+            };
+            (
+                format!("[{plan_id}/{task_id}]"),
+                icon,
+                format!(
+                    "Try {attempt}{on} ({}): {}{cost}{climb}",
+                    settled.model, settled.verdict
+                ),
+            )
+        }
+        DashboardEvent::LadderExhausted {
+            plan_id,
+            task_id,
+            rung,
+            model,
+            suggestion,
+            ..
+        } => {
+            let rung = rung.as_deref().unwrap_or("-");
+            (
+                format!("[{plan_id}/{task_id}]"),
+                "x",
+                format!("Ladder exhausted on {rung} ({model}): {suggestion}"),
+            )
+        }
         DashboardEvent::Error { message } => {
             let trunc = truncate_chars(message, 120);
             (String::new(), "x", format!("Error: {trunc}"))
@@ -1492,6 +1599,7 @@ pub fn format_dashboard_event(
         | DashboardEvent::ChainTx { .. }
         | DashboardEvent::ChainContractEvent { .. }
         | DashboardEvent::AgentHeartbeat { .. }
+        | DashboardEvent::PlanCheckHeartbeat { .. }
         | DashboardEvent::GateRungStarted { .. }
         | DashboardEvent::GateOutputLine { .. }
         | DashboardEvent::AffectUpdated { .. }
@@ -1504,6 +1612,15 @@ pub fn format_dashboard_event(
         | DashboardEvent::EvUpdate { .. }
         | DashboardEvent::M1Episode { .. }
         | DashboardEvent::SelfModelCalibration { .. }
+        | DashboardEvent::RouteDecided { .. }
+        | DashboardEvent::PromptAssembled { .. }
+        | DashboardEvent::RetryFeedback { .. }
+        | DashboardEvent::KnowledgeWritten { .. }
+        | DashboardEvent::PlaybookWritten { .. }
+        | DashboardEvent::EffectStaged { .. }
+        | DashboardEvent::EffectDecided { .. }
+        | DashboardEvent::ConfirmWaiting { .. }
+        | DashboardEvent::ConfirmResolved { .. }
         | DashboardEvent::SnapshotRebased { .. } => return None,
     };
 

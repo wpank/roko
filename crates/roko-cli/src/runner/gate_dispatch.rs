@@ -62,14 +62,17 @@ use super::gate_report::{
 /// Sentinel rung value for plan-level verification (not a per-task rung).
 pub const RUNG_PLAN_VERIFY: u32 = 1000;
 
-/// Compute the `CARGO_BUILD_JOBS` limit: half the available logical CPUs,
-/// floored to at least 1. This prevents CPU exhaustion when multiple agents
+/// The `CARGO_BUILD_JOBS` limit: the gate job cap of this process
+/// (`[gates] cargo_jobs`, by default half the logical CPUs, bug-b3849c),
+/// else one job per CPU. This prevents CPU exhaustion when multiple agents
 /// run gate checks in parallel.
 fn cargo_build_jobs() -> String {
-    let cpus = std::thread::available_parallelism()
-        .map(|n| n.get())
-        .unwrap_or(2);
-    (cpus / 2).max(1).to_string()
+    roko_core::child_env::gate_limits()
+        .cargo_jobs
+        .unwrap_or_else(|| {
+            std::thread::available_parallelism().map_or(1, std::num::NonZeroUsize::get)
+        })
+        .to_string()
 }
 
 /// Detect whether `sccache` is available on `PATH`. The result is cached
@@ -586,18 +589,20 @@ fn task_fix_targets(workdir: &Path, task_files: &[String], extensions: &[&str]) 
 
 /// Run one auto-fix command, killing it when `limit` elapses.
 ///
-/// The command gets the gate environment (roko's allowlisted variables plus
-/// `env_passthrough`), not roko's own: `cargo fix` builds task code.
+/// The command gets the check environment (roko's allowlisted variables plus
+/// `env_passthrough`, no GitHub login), not roko's own: `cargo fix` builds
+/// task code.
 ///
-/// Returns `Ok(None)` on timeout and `Err` only when the program cannot be
-/// spawned.
+/// Returns `Ok(None)` on timeout and `Err` when the program cannot be spawned
+/// or its environment cannot be set up.
 async fn run_fix_command(
     mut command: Command,
     limit: Duration,
     env_passthrough: &[String],
     program: &str,
 ) -> Result<Option<std::process::Output>, String> {
-    roko_gate::inherit_gate_env(&mut command, env_passthrough);
+    roko_gate::inherit_gate_env(&mut command, env_passthrough)
+        .map_err(|error| format!("{program}: {}", roko_gate::check_env_error(&error)))?;
     command.kill_on_drop(true);
     match timeout(limit, command.output()).await {
         Ok(Ok(output)) => Ok(Some(output)),
@@ -2059,18 +2064,10 @@ fn verify_step_gate(
     step: &VerifyStep,
     line_sink: Option<mpsc::UnboundedSender<String>>,
 ) -> ShellGate {
-    let mut gate = ShellGate::new(
-        "bash",
-        vec![
-            "-o".into(),
-            "pipefail".into(),
-            "-c".into(),
-            step.command.clone(),
-        ],
-    )
-    .with_name(format!("task-verify:{}:{}", task_id, step.phase))
-    .with_phase(&step.phase)
-    .with_timeout_ms(step.timeout_ms);
+    let mut gate = ShellGate::verify_step(&step.command)
+        .with_name(format!("task-verify:{}:{}", task_id, step.phase))
+        .with_phase(&step.phase)
+        .with_timeout_ms(step.timeout_ms);
     if let Some(sink) = line_sink {
         gate = gate.with_line_sink(sink);
     }
@@ -3686,5 +3683,47 @@ cargo_fix_enabled = false
             config.verify_chain_fallback.is_some(),
             "builder rung: verify_chain_fallback must be wired to TestGate"
         );
+    }
+
+    /// bug-3c4600: a rung's verify step, as `run_gate_once` builds it
+    /// ([`verify_step_gate`] on a [`gate_signal`] payload), and an auto-fix
+    /// command run without GitHub tokens, the person's `gh` login or a key
+    /// roko loaded.
+    #[cfg(unix)]
+    #[test]
+    fn rung_and_fix_commands_get_the_check_environment() {
+        crate::check_env_probe::run_child(
+            "runner::gate_dispatch::tests::rung_and_fix_check_env_child",
+        );
+    }
+
+    /// Run by [`rung_and_fix_commands_get_the_check_environment`] only.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn rung_and_fix_check_env_child() {
+        use crate::check_env_probe::{PASSED, assert_check_env, begin_child, dump_env_command};
+        let Some(_run) = begin_child() else {
+            return;
+        };
+        let dir = tempfile::tempdir().expect("tempdir");
+        let passthrough = [PASSED.to_string()];
+        let rung_out = dir.path().join("rung.env");
+        let gate = verify_step_gate("T1", &verify_step(&dump_env_command(&rung_out)), None);
+        let signal = gate_signal("plan", "T1", 0, dir.path(), &[], None, &passthrough);
+
+        let verdict = gate.verify(&signal, &roko_core::Context::at(0)).await;
+
+        assert!(verdict.passed, "{}", verdict.reason);
+        assert_check_env(&rung_out, "a rung's verify step");
+
+        let fix_out = dir.path().join("fix.env");
+        let mut fix = Command::new("sh");
+        fix.arg("-c").arg(dump_env_command(&fix_out));
+        let output = run_fix_command(fix, Duration::from_secs(30), &passthrough, "sh")
+            .await
+            .expect("the fix command runs")
+            .expect("in time");
+        assert!(output.status.success());
+        assert_check_env(&fix_out, "an auto-fix command");
     }
 }

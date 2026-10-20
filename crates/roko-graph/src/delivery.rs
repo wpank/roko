@@ -71,6 +71,7 @@ impl CompletionDeliveryRequest {
 ///   `... -> RegressionPassed -> Delivered`
 ///
 /// Terminal failure states are `Conflict`, `RegressionFailed`, and `TerminalFailed`.
+/// `Cancelled` ends a delivery whose regression check a stop request cut short.
 /// Once in a terminal state, no further transitions are allowed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -79,9 +80,12 @@ pub enum CompletionDeliveryState {
     Prepared,
     /// Enqueued in the merge queue, waiting for the merge slot.
     Queued,
-    /// Branch successfully merged into the target branch.
+    /// The merge of the branch into the target branch exists. The target
+    /// moves to it only once its regression gate passed, so nothing builds
+    /// on a merge whose check failed.
     Merged,
-    /// Post-merge regression gate passed.
+    /// Post-merge regression gate passed; the target branch moves to the
+    /// merge next.
     RegressionPassed,
     /// Branch published to remote (GitHub push + PR/comment).
     Published,
@@ -91,6 +95,9 @@ pub enum CompletionDeliveryState {
     Conflict,
     /// Terminal failure: post-merge regression gate failed.
     RegressionFailed,
+    /// Terminal: a stop request cut the post-merge regression gate short
+    /// (bug-7b62ff), so the merge was not delivered. It did not fail.
+    Cancelled,
     /// Terminal failure: publication or other irrecoverable error.
     TerminalFailed,
 }
@@ -101,7 +108,11 @@ impl CompletionDeliveryState {
     pub fn is_terminal(self) -> bool {
         matches!(
             self,
-            Self::Delivered | Self::Conflict | Self::RegressionFailed | Self::TerminalFailed
+            Self::Delivered
+                | Self::Conflict
+                | Self::RegressionFailed
+                | Self::Cancelled
+                | Self::TerminalFailed
         )
     }
 
@@ -111,12 +122,13 @@ impl CompletionDeliveryState {
         self == Self::Delivered
     }
 
-    /// Returns `true` for any terminal failure.
+    /// Returns `true` for any terminal state but success: a cancelled
+    /// delivery did not deliver either, and is started over, not resumed.
     #[must_use]
     pub fn is_failed(self) -> bool {
         matches!(
             self,
-            Self::Conflict | Self::RegressionFailed | Self::TerminalFailed
+            Self::Conflict | Self::RegressionFailed | Self::Cancelled | Self::TerminalFailed
         )
     }
 
@@ -220,9 +232,9 @@ impl CompletionDeliveryReceiptV1 {
         self.state = new_state;
         self.release_policy = match new_state {
             CompletionDeliveryState::Delivered => ReleasePolicy::Delete,
-            CompletionDeliveryState::RegressionFailed | CompletionDeliveryState::TerminalFailed => {
-                ReleasePolicy::RetainForFailure
-            }
+            CompletionDeliveryState::RegressionFailed
+            | CompletionDeliveryState::Cancelled
+            | CompletionDeliveryState::TerminalFailed => ReleasePolicy::RetainForFailure,
             CompletionDeliveryState::Conflict => ReleasePolicy::RetainForReview,
             _ => ReleasePolicy::RetainForReview,
         };
@@ -284,6 +296,15 @@ pub enum DeliveryError {
         /// The delivery ID.
         delivery_id: String,
         /// Regression failure details.
+        details: String,
+    },
+
+    /// A stop request cut the post-merge regression gate short (bug-7b62ff).
+    #[error("delivery '{delivery_id}' was cancelled: {details}")]
+    Cancelled {
+        /// The delivery ID.
+        delivery_id: String,
+        /// What stopped it.
         details: String,
     },
 
@@ -571,7 +592,24 @@ mod tests {
         assert!(CompletionDeliveryState::Delivered.is_terminal());
         assert!(CompletionDeliveryState::Conflict.is_terminal());
         assert!(CompletionDeliveryState::RegressionFailed.is_terminal());
+        assert!(CompletionDeliveryState::Cancelled.is_terminal());
         assert!(CompletionDeliveryState::TerminalFailed.is_terminal());
+    }
+
+    /// bug-7b62ff: a cancelled delivery ends, did not deliver, keeps its
+    /// workspace for a resume, and is written `cancelled`.
+    #[test]
+    fn a_cancelled_delivery_is_terminal_and_not_delivered() {
+        let state = CompletionDeliveryState::Cancelled;
+        assert!(state.is_terminal());
+        assert!(!state.is_success());
+        assert!(state.is_failed(), "a resume starts it over");
+        assert_eq!(serde_json::to_string(&state).unwrap(), "\"cancelled\"");
+        let mut receipt = CompletionDeliveryReceiptV1::prepared(test_request("d-cancel"));
+        receipt.advance(CompletionDeliveryState::Merged).unwrap();
+        receipt.advance(state).unwrap();
+        assert_eq!(receipt.release_policy, ReleasePolicy::RetainForFailure);
+        assert!(receipt.advance(CompletionDeliveryState::Delivered).is_err());
     }
 
     #[test]
@@ -738,6 +776,7 @@ mod tests {
             CompletionDeliveryState::Delivered,
             CompletionDeliveryState::Conflict,
             CompletionDeliveryState::RegressionFailed,
+            CompletionDeliveryState::Cancelled,
             CompletionDeliveryState::TerminalFailed,
         ] {
             let json = serde_json::to_string(&state).unwrap();

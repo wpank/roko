@@ -93,8 +93,14 @@ pub(crate) fn record_persisted_provider_outcome(
 /// target are compiled as separate crates — `pub(crate)` would make the
 /// function invisible to the binary.
 pub fn distillation_model_caller(workdir: &Path) -> Arc<dyn ModelCaller> {
+    distillation_model_caller_on(workdir, None)
+}
+
+/// [`distillation_model_caller`] on `model` when given, else on the
+/// workspace's default model (bug-a0432b).
+pub fn distillation_model_caller_on(workdir: &Path, model: Option<&str>) -> Arc<dyn ModelCaller> {
     let config = roko_core::config::loader::load_config_unified(workdir).unwrap_or_default();
-    let model = config.agent.default_model.clone();
+    let model = model.map_or_else(|| config.agent.default_model.clone(), str::to_string);
     Arc::new(
         ModelCallService::new(model)
             .with_config(config)

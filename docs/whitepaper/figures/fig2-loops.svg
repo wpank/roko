@@ -30,7 +30,7 @@
   <text x="776" y="51" class="e m">clock: weeks</text>
   <text x="294" y="76"><tspan class="b">Goal:</tspan> the checks and the learning stay honest and useful</text>
   <text x="294" y="97" class="s m">random deep audits and the false-green estimate, the loop audit,</text>
-  <text x="294" y="114" class="s m">the bounded controller, guarded commit for every self-modification</text>
+  <text x="294" y="114" class="s m">the bounded controller, guarded commit for the learned stores</text>
 
   <!-- L3 -->
   <rect x="280" y="170" width="510" height="104" rx="8" fill="#fdf3e1" stroke="#d09a45" stroke-width="1.2"/>
@@ -112,8 +112,8 @@
   <line x1="812" y1="297" x2="826" y2="297" stroke="#334155" stroke-width="2"/>
   <rect x="826" y="232" width="240" height="130" rx="8" fill="#ffffff" stroke="#334155" stroke-width="1.5"/>
   <text x="840" y="257" class="b" style="font-size:15px">the executable verdict:</text>
-  <text x="840" y="278">the one fact every loop reads</text>
+  <text x="840" y="278">the one fact L1 to L4 read</text>
   <text x="840" y="310" class="s m">one settled verdict record</text>
   <text x="840" y="328" class="s m">per attempt, from checks</text>
-  <text x="840" y="346" class="s m">the worker cannot change</text>
+  <text x="840" y="346" class="s m">the worker did not write</text>
 </svg>

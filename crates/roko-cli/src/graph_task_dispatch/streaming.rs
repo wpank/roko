@@ -58,6 +58,9 @@ impl StreamingTaskDispatcher for GraphTaskDispatcher {
             .budget_ledger
             .reserve_waiting(&spec.plan_id, self.budget_policy, || ctx.is_cancelled())
             .await?;
+        // The plan ceiling holds inside the attempt, as on the batch path
+        // (bug-4fabd0).
+        let allowance = budget_reservation.allowance(&self.budget_ledger);
 
         // ── Attempt identity ─────────────────────────────────────────────
         let attempt_id = format!(
@@ -103,7 +106,7 @@ impl StreamingTaskDispatcher for GraphTaskDispatcher {
 
         // ── P3-AGT-2: Express mode check (streaming) ─────────────────────
         let express_active = is_express_task(&self.config, &task);
-        let max_turns = task_turn_limit_with(
+        let mut max_turns = task_turn_limit_with(
             &self.config,
             Some(self.learned_tier_limits()),
             &task,
@@ -195,6 +198,7 @@ impl StreamingTaskDispatcher for GraphTaskDispatcher {
             concurrent_plans: self.concurrent_plans(&spec.plan_id),
             attempt_key: Some(attempt.key.clone()),
             arm_set: attempt.arm_set(),
+            knowledge_section: attempt.knowledge_section(),
             self_model_rung: None,
             skip_enrichment: self.plan_skips_enrichment(spec),
         };
@@ -212,6 +216,17 @@ impl StreamingTaskDispatcher for GraphTaskDispatcher {
         };
         attempt.prompt_assembled();
         self.record_attempt_ladder(&mut attempt, spec, &task, &dispatch_plan, ladder_step);
+        // A try on a rung the task can still climb from is bounded, as on the
+        // batch path (gap-3e770b).
+        let rung_allowance =
+            self.rung_allowance(&task, &attempt, &dispatch_plan, ladder_step, max_turns);
+        if let Some(turns) = rung_allowance
+            .as_ref()
+            .and_then(|allowance| allowance.turns)
+        {
+            max_turns = max_turns.min(turns);
+        }
+        let allowance = TryAllowance::new(allowance, rung_allowance.as_ref());
         self.record_planned_attempt(&mut attempt, &task, &dispatch_plan);
         let contract = self.task_contract(role, spec, &task);
         let timeout_ms =
@@ -250,6 +265,9 @@ impl StreamingTaskDispatcher for GraphTaskDispatcher {
             live_output: None,
             attempt_key: Some(attempt_key.clone()),
             knowledge_ids: super::decision_log::included_knowledge_ids(&dispatch_plan),
+            allowance: allowance
+                .clone()
+                .map(|allowance| -> Arc<dyn crate::dispatch_v2::CallAllowance> { allowance }),
         };
         // FAST lane: fewer turns, a shorter attempt, a patch-only prompt.
         let request = self.fast_bounded(request);
@@ -273,6 +291,7 @@ impl StreamingTaskDispatcher for GraphTaskDispatcher {
             plan_id: &spec.plan_id,
             task_id: &task.id,
             attempt_key: &attempt_key,
+            attempt: attempt.key.attempt,
             stop: ctx.cancel_flag.as_deref(),
         };
         let stall_watch = self.stall_watch();
@@ -302,6 +321,7 @@ impl StreamingTaskDispatcher for GraphTaskDispatcher {
                 stall_watch,
                 supervised.as_ref(),
                 &watched,
+                allowance.as_deref(),
             )
             .await;
         attempt.dispatch_ended();
@@ -310,7 +330,8 @@ impl StreamingTaskDispatcher for GraphTaskDispatcher {
             // The stall watchdog, the conductor or a stopping plan run
             // cancelled the provider call: the attempt ends timed out or
             // cancelled, and the engine retries it unless its run is
-            // stopping.
+            // stopping. One the plan budget stopped fails, not retried
+            // (gap-ca1c92).
             Err(interrupted) => {
                 let error = interrupted.error(&watched);
                 let settlement =
@@ -326,7 +347,7 @@ impl StreamingTaskDispatcher for GraphTaskDispatcher {
                             self.pricing_snapshot().as_deref(),
                         );
                         let cost_usd = f64::from(dispatch.result.usage.cost_usd);
-                        self.record_task_spend(&spec.plan_id, &task.id, &dispatch.result.usage);
+                        self.record_dispatch_spend(&spec.plan_id, &task.id, &dispatch);
                         if let Err(budget_error) = budget_reservation.settle(cost_usd) {
                             tracing::warn!(
                                 attempt = %attempt_id,
@@ -399,7 +420,7 @@ impl StreamingTaskDispatcher for GraphTaskDispatcher {
         // ── TUI streaming output (streaming path) ──────────────────────
         // Forward provider events to the TUI bridge in the streaming path too.
         if let Ok(dispatch) = &dispatch_result {
-            self.forward_dispatch_events_to_tui(spec, &task, dispatch, ctx);
+            self.forward_dispatch_events_to_tui(spec, &task, dispatch, ctx, attempt.key.attempt);
         }
 
         // ── Map provider events to graph events ──────────────────────────
@@ -444,6 +465,29 @@ impl StreamingTaskDispatcher for GraphTaskDispatcher {
         }
 
         // ── Settle cost and build outcome ────────────────────────────────
+        // An agent its plan budget stopped before a model call (bug-4fabd0),
+        // or that stopped itself at the spend limit the attempt gave it
+        // (gap-e14344); or a try that spent its rung's allowance the same
+        // ways (gap-3e770b).
+        let own_stop = dispatch_result.as_ref().ok().and_then(own_budget_stop);
+        let budget_stop = match allowance.as_deref() {
+            Some(allowance) => allowance.stop(own_stop),
+            None => own_stop.map(TryStop::Plan),
+        };
+        // A try that ended at its rung's bound is judged by the task's checks
+        // on the work it left, as on the batch path (gap-2c9412).
+        let bounded = match &dispatch_result {
+            Ok(dispatch) if !dispatch.result.success && pinned_model_substituted.is_none() => self
+                .bounded_stop(
+                    &spec.plan_id,
+                    &task.id,
+                    dispatch,
+                    allowance.as_deref(),
+                    rung_allowance.as_ref(),
+                    max_turns,
+                ),
+            _ => None,
+        };
         let (outcome, output_signals, verification, denial) = match dispatch_result {
             Ok(dispatch) => {
                 let cost_usd = f64::from(dispatch.result.usage.cost_usd);
@@ -456,7 +500,7 @@ impl StreamingTaskDispatcher for GraphTaskDispatcher {
                     );
                     None
                 };
-                self.record_task_spend(&spec.plan_id, &task.id, &dispatch.result.usage);
+                self.record_dispatch_spend(&spec.plan_id, &task.id, &dispatch);
                 if let Err(error) = budget_reservation.settle(cost_usd.max(0.0)) {
                     let routed = Some((dispatch_plan.model.slug.as_str(), &dispatch));
                     return Err(self.fail_attempt(spec, &task, attempt, routed, error).await);
@@ -476,7 +520,8 @@ impl StreamingTaskDispatcher for GraphTaskDispatcher {
                 // Same verdict logic as the batch path; gates run in the lease
                 // path and progress streams through the event channel.
                 let helper_calls = HelperCalls::default();
-                let verification = if dispatch.result.success && pinned_model_substituted.is_none()
+                let verification = if (dispatch.result.success || bounded.is_some())
+                    && pinned_model_substituted.is_none()
                 {
                     let attempt_number = self.next_retry_attempt(&spec.plan_id, &task.id).attempt;
                     attempt.verify_started();
@@ -515,13 +560,18 @@ impl StreamingTaskDispatcher for GraphTaskDispatcher {
                         &error.to_string(),
                         first_token_seen(&dispatch),
                     ),
-                    (None, None) => Settlement::provider_failure(
-                        dispatch.result.output.body.as_text().unwrap_or_default(),
-                        first_token_seen(&dispatch),
-                    ),
+                    (None, None) => match &budget_stop {
+                        Some(TryStop::Plan(reason)) => Settlement::budget_exhausted(reason),
+                        Some(TryStop::Rung(reason)) => Settlement::allowance_spent(reason),
+                        None => Settlement::provider_failure(
+                            dispatch.result.output.body.as_text().unwrap_or_default(),
+                            first_token_seen(&dispatch),
+                        ),
+                    },
                 };
-                let settled =
+                let mut settled =
                     attempt.settle(settlement, &dispatch_plan.model.slug, Some(&dispatch));
+                settled.bound = bounded.as_ref().map(BoundedStop::describe);
                 self.emit_feedback(
                     spec,
                     &task,
@@ -542,7 +592,10 @@ impl StreamingTaskDispatcher for GraphTaskDispatcher {
 
                 // A denial no retry can change fails the task at once
                 // (backlog 1116).
-                let denial = if dispatch.result.success || pinned_model_substituted.is_some() {
+                let denial = if dispatch.result.success
+                    || bounded.is_some()
+                    || pinned_model_substituted.is_some()
+                {
                     None
                 } else {
                     super::failover::permanent_provider_denial(&dispatch)
@@ -551,7 +604,17 @@ impl StreamingTaskDispatcher for GraphTaskDispatcher {
                 let output_signals = match &verification {
                     Some(Ok(verdict)) => {
                         let mut output = dispatch.result.output;
-                        if output.body.as_text().is_err() {
+                        if let Some(stop) = &bounded {
+                            output = Signal::builder(Kind::AgentOutput)
+                                .body(Body::text(format!(
+                                    "provider `{}` stopped task `{}` at {}; the task's checks \
+                                     passed on the work it left",
+                                    dispatch.target.provider_id,
+                                    spec.title,
+                                    stop.describe()
+                                )))
+                                .build();
+                        } else if output.body.as_text().is_err() {
                             output = Signal::builder(Kind::AgentOutput)
                                 .body(Body::text(format!(
                                     "provider `{}` completed task `{}`",
@@ -639,11 +702,23 @@ impl StreamingTaskDispatcher for GraphTaskDispatcher {
         if let Some(error) = pinned_model_substituted {
             return Err(error);
         }
+        // A try its checks judged ends as they say, a bounded one included.
+        let verified = verification.is_some();
         if let Some(Err(error)) = verification {
             return Err(error);
         }
         if let Some(denial) = denial {
             return Err(denial);
+        }
+        match budget_stop.filter(|_| !verified) {
+            Some(TryStop::Plan(reason)) => return Err(RokoError::gateway("budget", false, reason)),
+            Some(TryStop::Rung(reason)) => {
+                return Err(RokoError::Agent {
+                    backend: outcome.provider_id.clone(),
+                    message: format!("{RUNG_ALLOWANCE}: {reason}"),
+                });
+            }
+            None => {}
         }
         if outcome.outcome == TaskDispatchOutcomeKind::Failed {
             return Err(RokoError::Agent {
@@ -1321,8 +1396,15 @@ printf '%s\n' '{"type":"result","session_id":"sess-x","model":"claude-sonnet-4-6
             .expect_err("budget-exhausted dispatch must fail");
 
         assert!(
-            matches!(error, RokoError::BudgetExceeded { .. }),
-            "error must be BudgetExceeded, got: {error:?}"
+            matches!(
+                error,
+                RokoError::Gateway {
+                    category: "budget",
+                    retryable: false,
+                    ..
+                }
+            ),
+            "error must be a budget stop, got: {error:?}"
         );
     }
 

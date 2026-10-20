@@ -8,7 +8,7 @@ severity = "p2"
 goal = "core"
 subsystem = ["roko-graph/checkpoint"]
 created = 2026-09-25
-updated = 2026-10-01
+updated = 2026-10-15
 last_verified = 2026-10-01
 last_verified_rev = "ebdc0f5d5"
 source = "tmp/dogfood/2026-09-25-portal-programme-run.md#P3-3. In-flight work is orphaned"
@@ -44,3 +44,5 @@ Checked statically on 2026-09-29 at d9e79e9d8: still true. Activity records are 
   `graph_task_dispatch/attempt.rs`, outside the checkpoint code. (2) Reconcile on resume: reset the checkout to the
   attempt's base, or keep its partial work for the re-run. That choice needs Will. The `[[verify]]` (the grep in
   `graph_execution/` and `interrupted_attempt_is_recorded_and_reconciled_on_resume`) belongs to that full fix.
+
+2026-10-15 decision (Will delegated it to the coordinator's recommendation, tmp/status-quo/2026-10-15/DECISIONS-2026-10-15.md, decision 9; he can veto it): Reset to base, but save the partial work first. Before resetting, write the checkout's tracked diff and untracked files as a patch under the run (.roko/runs/<run>/interrupted/<task>.patch), record the patch path in the interrupted-attempt checkpoint extension, warn with that path, then reset the checkout to the attempt's recorded base so the re-run starts clean. Never discard without the patch. The item's verify stays; its test also checks that the patch exists and the checkout is at base. Why: On restore the engine maps a persisted Running node to Pending (crates/roko-graph/src/engine.rs:48), and activity records are written only when a node completes, so the checkpoint knows nothing about an interrupted attempt's edits. Keeping them would put half-written, unverified changes from a killed attempt into the re-run's diff. They would then be accepted, and credited to the re-run's model in attempts, routing and audits, under a verdict that never checked them. Resetting restores agreement between workspace and checkpoint, and the patch means nothing is lost. The work so far (resume_records_the_attempts_a_stop_cut_off, INTERRUPTED_ATTEMPT_EXTENSION) already finds these attempts; this decides what reconciliation does. If vetoed: With 'keep the partial work', the re-run starts on the killed attempt's edits, and the resume warning tells the agent and operator that the checkout holds unrecorded changes. No patch or reset happens.

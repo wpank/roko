@@ -436,7 +436,7 @@ async fn run_cargo_bench(
     cmd.arg("json");
 
     cmd.current_dir(working_dir);
-    inherit_gate_env(&mut cmd, &[]);
+    inherit_gate_env(&mut cmd, &[]).map_err(|error| crate::gate_env::check_env_error(&error))?;
     cmd.stdout(std::process::Stdio::piped());
     cmd.stderr(std::process::Stdio::piped());
     cmd.kill_on_drop(true);

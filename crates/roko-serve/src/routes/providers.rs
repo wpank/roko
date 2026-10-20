@@ -86,21 +86,50 @@ async fn list_providers(State(state): State<Arc<AppState>>) -> Json<ProvidersRes
 }
 
 /// `GET /api/models` — list configured models with capabilities and pricing.
+///
+/// A model's prices are the rates roko prices its calls at, in dispatch's
+/// order: the workspace's price snapshot, then its `[models.*]` prices (with
+/// its provider's cache-read rate, else a tenth of its input rate), then
+/// roko's built-in pricing. `priced_by` says which; a model none of them
+/// prices has no prices.
 async fn list_models(State(state): State<Arc<AppState>>) -> Json<ModelsResponse> {
     let config = state.load_roko_config();
+    let snapshot =
+        roko_core::pricing_snapshot::PriceSnapshot::shared(&config.pricing, &state.workdir);
+    let providers = config.effective_providers();
     let mut models: Vec<ModelInfo> = config
         .effective_models()
         .into_iter()
-        .map(|(key, profile)| ModelInfo {
-            key,
-            slug: profile.slug,
-            provider: profile.provider,
-            context_window: profile.context_window,
-            supports_tools: profile.supports_tools,
-            supports_thinking: profile.supports_thinking,
-            supports_vision: profile.supports_vision,
-            cost_input_per_m: profile.cost_input_per_m,
-            cost_output_per_m: profile.cost_output_per_m,
+        .map(|(key, profile)| {
+            let profile = match providers.get(&profile.provider) {
+                Some(provider) => profile.with_provider_cache_rate(provider),
+                None => profile,
+            };
+            let rates = roko_core::config::model_registry::effective_rates(
+                snapshot.as_deref(),
+                Some(&profile),
+                &profile.slug,
+            );
+            let source = rates.map(|rates| rates.source);
+            ModelInfo {
+                key,
+                slug: profile.slug,
+                provider: profile.provider,
+                context_window: profile.context_window,
+                supports_tools: profile.supports_tools,
+                supports_thinking: profile.supports_thinking,
+                supports_vision: profile.supports_vision,
+                cost_input_per_m: rates.map(|rates| rates.input_per_m),
+                cost_output_per_m: rates.map(|rates| rates.output_per_m),
+                cost_cache_read_per_m: rates.map(|rates| rates.cache_read_per_m),
+                priced_by: source.map(|source| source.as_str().to_string()),
+                price_snapshot: snapshot
+                    .as_deref()
+                    .filter(|_| {
+                        source == Some(roko_core::config::model_registry::RateSource::Snapshot)
+                    })
+                    .map(|snapshot| snapshot.id().to_string()),
+            }
         })
         .collect();
 
@@ -472,10 +501,24 @@ struct ModelInfo {
     supports_tools: bool,
     supports_thinking: bool,
     supports_vision: bool,
+    /// USD per 1M uncached input tokens, as roko prices the model's calls.
     #[serde(skip_serializing_if = "Option::is_none")]
     cost_input_per_m: Option<f64>,
+    /// USD per 1M output tokens.
     #[serde(skip_serializing_if = "Option::is_none")]
     cost_output_per_m: Option<f64>,
+    /// USD per 1M input tokens read from the prompt cache; absent when the
+    /// rates name none, so a cache read costs as input.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    cost_cache_read_per_m: Option<f64>,
+    /// Which rates those are: `snapshot` (the workspace's price snapshot),
+    /// `profile` (its `[models.*]` prices) or `builtin` (roko's own table);
+    /// absent when nothing prices the model.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    priced_by: Option<String>,
+    /// The price snapshot's id (`prices-2026-09-28`), when it priced the model.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    price_snapshot: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1124,6 +1167,102 @@ mod tests {
         assert!(model.supports_vision);
         assert_eq!(model.cost_input_per_m, Some(1.40));
         assert_eq!(model.cost_output_per_m, Some(4.40));
+    }
+
+    /// `/api/models` serves the rates roko prices each model's calls at, in
+    /// dispatch's order: the price snapshot's row (over `[models.*]`
+    /// prices), then the profile's prices, then roko's built-in table, with
+    /// the cache-read rate and which source priced it; a model nothing prices
+    /// has no prices.
+    #[tokio::test]
+    async fn list_models_serves_the_rates_calls_are_priced_at() {
+        use roko_core::config::schema::ModelProfile;
+        use roko_core::pricing_snapshot::PriceSnapshot;
+
+        let dir = tempdir().expect("tempdir");
+        let deploy_backend =
+            Arc::from(create_backend("manual", None, None, None).expect("manual backend"));
+        let mut config = roko_core::config::schema::RokoConfig::default();
+        let profile = |slug: &str, prices: Option<(f64, f64)>| ModelProfile {
+            provider: "openai".into(),
+            slug: slug.into(),
+            cost_input_per_m: prices.map(|(input, _)| input),
+            cost_output_per_m: prices.map(|(_, output)| output),
+            ..ModelProfile::default()
+        };
+        for (key, slug, prices) in [
+            ("cheap", "gpt-oss-120b", Some((9.0, 9.0))),
+            ("own", "my-own-model", Some((1.0, 2.0))),
+            ("top", "claude-sonnet-4-6", None),
+            ("mystery", "no-such-model", None),
+        ] {
+            config.models.insert(key.into(), profile(slug, prices));
+        }
+        let state = Arc::new(
+            AppState::new(
+                dir.path().to_path_buf(),
+                Arc::new(NoOpRuntime),
+                config,
+                deploy_backend,
+            )
+            .expect("AppState::new"),
+        );
+        let response = routes()
+            .with_state(state)
+            .oneshot(
+                Request::builder()
+                    .uri("/models")
+                    .body(Body::empty())
+                    .expect("request"),
+            )
+            .await
+            .expect("response");
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("body bytes");
+        let models: serde_json::Value = serde_json::from_slice(&body).expect("parse response");
+        let model = |key: &str| {
+            models["models"]
+                .as_array()
+                .and_then(|models| models.iter().find(|model| model["key"] == key))
+                .cloned()
+                .unwrap_or_else(|| panic!("{key} is listed"))
+        };
+
+        let snapshot = PriceSnapshot::builtin().expect("the built-in snapshot");
+        let row = snapshot.row("gpt-oss-120b").expect("a snapshot row");
+        let cheap = model("cheap");
+        assert_eq!(cheap["priced_by"], "snapshot", "{cheap}");
+        assert_eq!(cheap["price_snapshot"], snapshot.id(), "{cheap}");
+        assert_eq!(cheap["cost_input_per_m"], row.input, "{cheap}");
+        assert_eq!(cheap["cost_output_per_m"], row.output, "{cheap}");
+        assert_eq!(cheap["cost_cache_read_per_m"], row.cache_read, "{cheap}");
+
+        let own = model("own");
+        assert_eq!(own["priced_by"], "profile", "{own}");
+        assert_eq!(own["cost_input_per_m"], 1.0, "{own}");
+        assert_eq!(own["cost_output_per_m"], 2.0, "{own}");
+        // A tenth of its input rate, as dispatch charges a cache read the
+        // model names no rate for (bug-1c0a66).
+        assert_eq!(own["cost_cache_read_per_m"], 0.1, "{own}");
+        assert!(own.get("price_snapshot").is_none(), "{own}");
+
+        let top = model("top");
+        assert_eq!(top["priced_by"], "builtin", "{top}");
+        assert_eq!(top["cost_input_per_m"], 3.0, "{top}");
+        assert_eq!(top["cost_output_per_m"], 15.0, "{top}");
+        assert_eq!(top["cost_cache_read_per_m"], 0.3, "{top}");
+
+        let mystery = model("mystery");
+        for field in [
+            "priced_by",
+            "cost_input_per_m",
+            "cost_output_per_m",
+            "cost_cache_read_per_m",
+        ] {
+            assert!(mystery.get(field).is_none(), "{field}: {mystery}");
+        }
     }
 
     #[tokio::test]

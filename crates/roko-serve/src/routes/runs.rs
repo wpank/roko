@@ -23,7 +23,8 @@ use roko_core::agent::resolve_model;
 use roko_core::config::schema::RokoConfig;
 use roko_core::dashboard_snapshot::{
     TASK_OUTCOME_ACCEPTED_WITH_FAILURES, TASK_OUTCOME_ALREADY_SATISFIED, TASK_OUTCOME_BLOCKED,
-    TASK_OUTCOME_PASSED, TASK_OUTCOME_UNVERIFIED, TaskOutcomeClass, classify_task_outcome,
+    TASK_OUTCOME_CANCELLED, TASK_OUTCOME_PASSED, TASK_OUTCOME_UNVERIFIED, TaskOutcomeClass,
+    classify_task_outcome,
 };
 use roko_core::obs::LogScrubber;
 use serde::Deserialize;
@@ -56,6 +57,7 @@ pub fn routes() -> Router<Arc<AppState>> {
         .route("/dashboard/runs", get(get_dashboard_runs))
         .route("/runs/{run_id}", get(get_run_detail))
         .route("/runs/{run_id}/summary", get(get_run_summary))
+        .route("/runs/{run_id}/diff", get(get_run_diff))
         .route("/runs/{run_id}/events", get(get_run_events))
         .route("/runs/{run_id}/events/stream", get(get_run_events_stream))
         .route("/runs/{run_id}/tasks", get(get_run_tasks))
@@ -79,6 +81,29 @@ struct EventQuery {
     types: Option<String>,
     source: Option<String>,
 }
+
+/// `GET /api/runs/{run_id}/diff`'s limits (gap-0d6d21), and which work it
+/// shows: the run's verified work (`work=verified`, the default), or the work
+/// a plan left that no check ran on (`work=unverified`, bug-db89d4), of plan
+/// `plan_id` when given.
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(default)]
+struct DiffQuery {
+    max_files: Option<usize>,
+    max_patch_bytes: Option<usize>,
+    work: Option<String>,
+    plan_id: Option<String>,
+}
+
+/// How many files a run's diff lists unless asked, and at most.
+const DEFAULT_DIFF_FILES: usize = 200;
+const MAX_DIFF_FILES: usize = 500;
+
+/// How many bytes of one file's patch a run's diff returns unless asked, at
+/// least, and at most.
+const DEFAULT_DIFF_PATCH_BYTES: usize = 65_536;
+const MIN_DIFF_PATCH_BYTES: usize = 1_024;
+const MAX_DIFF_PATCH_BYTES: usize = 262_144;
 
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(default)]
@@ -149,18 +174,13 @@ async fn get_run_detail(
     ensure_observability_allowed(&state)?;
     validate_id(&run_id, "run id")?;
     let active = state.active_runs.read().await.contains_key(&run_id);
+    if run_state_in_memory(&state, &run_id).await.is_none() {
+        settle_if_process_gone(&state, &run_id).await?;
+    }
     let io_state = Arc::clone(&state);
     let io_run_id = run_id.clone();
     let (page, bundle) = blocking_io(move || {
-        let page = read_for_run(
-            &io_state,
-            &io_run_id,
-            None,
-            0,
-            MAX_DETAIL_EVENTS,
-            MAX_DETAIL_SCAN_BYTES,
-            &BTreeSet::new(),
-        )?;
+        let page = read_for_summary(&io_state, &io_run_id)?;
         Ok((page, find_bundle_dir(&io_state, &io_run_id)))
     })
     .await?;
@@ -210,50 +230,196 @@ async fn get_run_summary(
 /// The summary `GET /api/runs/{run_id}/summary` returns for run `run_id`,
 /// which the MCP `run_status` tool returns too.
 pub(super) async fn summarize_run(state: &Arc<AppState>, run_id: &str) -> Result<Value, ApiError> {
+    let (mut summary, plan_ids) = summary_and_plans(state, run_id).await?;
+    // gap-8409d0: an ended run's summary says where its verified work is, so a
+    // chat host can tell its person what changed and how to take it.
+    if summary["active"] == Value::Bool(false) {
+        let workdir = state.workdir.clone();
+        let io_run_id = run_id.to_string();
+        let io_plan_ids = plan_ids.clone();
+        let result = blocking_io(move || {
+            Ok(super::run_result::run_result(
+                &workdir,
+                &io_run_id,
+                &io_plan_ids,
+            ))
+        })
+        .await?;
+        if let Some(mut result) = result {
+            // gap-8f84d1: a run of demo plans says so, so a host can leave its
+            // output on its branch instead of offering to merge it.
+            result["fixture"] = json!(plans_are_fixtures(state, &plan_ids).await);
+            summary["result"] = result;
+        }
+    }
+    Ok(summary)
+}
+
+/// Whether every plan in `plan_ids` is a fixture, a demo or test plan whose
+/// output is not meant for the operator's branch (gap-8f84d1). A plan the
+/// runtime does not find counts as not one.
+async fn plans_are_fixtures(state: &AppState, plan_ids: &[String]) -> bool {
+    if plan_ids.is_empty() {
+        return false;
+    }
+    for plan_id in plan_ids {
+        match state
+            .runtime
+            .load_plan_summary(&state.workdir, plan_id)
+            .await
+        {
+            Ok(Some(plan)) if plan.fixture => {}
+            _ => return false,
+        }
+    }
+    true
+}
+
+/// `GET /api/runs/{run_id}/diff` — every change an ended run's verified work
+/// makes from the base its batch started at (gap-0d6d21): each file's status,
+/// line counts, whether it is binary and its unified patch, within
+/// `max_files` and `max_patch_bytes` per file, and totals over every file.
+/// With `work=unverified`, the same for the work a plan of the run left that
+/// no check ran on, which was never delivered (bug-db89d4). 409 while the run
+/// is active; 404 when it has no such work to diff.
+async fn get_run_diff(
+    State(state): State<Arc<AppState>>,
+    Path(run_id): Path<String>,
+    Query(query): Query<DiffQuery>,
+) -> Result<Json<Value>, ApiError> {
+    let limits = super::run_result::DiffLimits {
+        max_files: bounded_param(
+            "max_files",
+            query.max_files,
+            DEFAULT_DIFF_FILES,
+            1,
+            MAX_DIFF_FILES,
+        )?,
+        max_patch_bytes: bounded_param(
+            "max_patch_bytes",
+            query.max_patch_bytes,
+            DEFAULT_DIFF_PATCH_BYTES,
+            MIN_DIFF_PATCH_BYTES,
+            MAX_DIFF_PATCH_BYTES,
+        )?,
+    };
+    let unverified = match query.work.as_deref() {
+        None | Some("verified") => false,
+        Some("unverified") => true,
+        Some(_) => {
+            return Err(ApiError::bad_request("work must be verified or unverified"));
+        }
+    };
+    if let Some(plan_id) = &query.plan_id {
+        validate_id(plan_id, "plan id")?;
+    }
+    let (summary, plan_ids) = summary_and_plans(&state, &run_id).await?;
+    if summary["active"] != Value::Bool(false) {
+        return Err(ApiError::conflict(format!(
+            "run '{run_id}' is still active"
+        )));
+    }
+    let workdir = state.workdir.clone();
+    let io_run_id = run_id.clone();
+    let diff = blocking_io(move || {
+        Ok(if unverified {
+            super::run_result::unverified_diff(
+                &workdir,
+                &io_run_id,
+                &plan_ids,
+                query.plan_id.as_deref(),
+                limits,
+            )
+        } else {
+            super::run_result::run_diff(&workdir, &io_run_id, &plan_ids, limits)
+        })
+    })
+    .await?;
+    diff.map(Json).ok_or_else(|| {
+        ApiError::not_found(if unverified {
+            format!("run '{run_id}' left no unverified work to diff")
+        } else {
+            format!("run '{run_id}' has no result to diff")
+        })
+    })
+}
+
+/// `value`, or `default` when it is not given, refused when it falls outside
+/// `least..=most`.
+fn bounded_param(
+    name: &str,
+    value: Option<usize>,
+    default: usize,
+    least: usize,
+    most: usize,
+) -> Result<usize, ApiError> {
+    let value = value.unwrap_or(default);
+    if !(least..=most).contains(&value) {
+        return Err(ApiError::bad_request(format!(
+            "{name} must be between {least} and {most}"
+        )));
+    }
+    Ok(value)
+}
+
+/// Run `run_id`'s summary without its `result`, and the plans its events
+/// name, whose checkpoints may record where its batch started.
+async fn summary_and_plans(
+    state: &Arc<AppState>,
+    run_id: &str,
+) -> Result<(Value, Vec<String>), ApiError> {
     ensure_observability_allowed(state)?;
     validate_id(run_id, "run id")?;
     let in_memory = run_state_in_memory(state, run_id).await;
+    if in_memory.is_none() {
+        settle_if_process_gone(state, run_id).await?;
+    }
     let io_state = Arc::clone(state);
     let io_run_id = run_id.to_string();
-    let page = blocking_io(move || {
-        read_for_run(
-            &io_state,
-            &io_run_id,
-            None,
-            0,
-            MAX_DETAIL_EVENTS,
-            MAX_DETAIL_SCAN_BYTES,
-            &BTreeSet::new(),
-        )
-    })
-    .await?;
+    let page = blocking_io(move || read_for_summary(&io_state, &io_run_id)).await?;
     if page.is_none() && in_memory.is_none() {
         return Err(ApiError::not_found(format!("run '{run_id}' not found")));
     }
     let events = page.map(|page| page.events).unwrap_or_default();
     let config = state.load_roko_config();
-    Ok(run_summary(run_id, &events, in_memory, &config))
+    let summary = run_summary(run_id, &events, in_memory, &config);
+    let mut plan_ids = Vec::<String>::new();
+    for item in &events {
+        if let Some(plan_id) = event_plan_id(&item.value).filter(|id| !id.is_empty())
+            && !plan_ids.iter().any(|known| known == plan_id)
+        {
+            plan_ids.push(plan_id.to_string());
+        }
+    }
+    Ok((summary, plan_ids))
 }
 
 /// What this server holds of run `run_id` in memory: the state of its
-/// one-shot or plan-run handle, or `queued` with its place in the plan-run
-/// queue.
+/// one-shot or plan-run handle, or `queued` with its place in the run queue,
+/// which plan and prompt runs share (gap-9a8d66).
 async fn run_state_in_memory(state: &AppState, run_id: &str) -> Option<(RunState, Option<usize>)> {
     if let Some(run) = state.active_runs.read().await.get(run_id) {
         return Some((super::run::run_handle_state(run).0, None));
     }
-    let plans = state.active_plans.read().await;
-    if let Some(plan) = plans.values().find(|plan| plan.id == run_id) {
-        return Some((plan.state(), None));
+    {
+        let plans = state.active_plans.read().await;
+        if let Some(plan) = plans.values().find(|plan| plan.id == run_id) {
+            return Some((plan.state(), None));
+        }
     }
-    let queue = state
-        .plan_queue
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-    queue
-        .iter()
-        .position(|queued| queued.spec.run_id == run_id)
-        .map(|index| (RunState::Queued, Some(index + 1)))
+    state
+        .queue_position(run_id)
+        .map(|position| (RunState::Queued, Some(position)))
+}
+
+/// End run `run_id` as `interrupted` when the roko process its manifest names
+/// is gone (bug-dceafd), so that its index records the end before it is read.
+/// For a run this server holds no handle of: a handle is the run's own word.
+async fn settle_if_process_gone(state: &AppState, run_id: &str) -> Result<(), ApiError> {
+    let workdir = state.workdir.clone();
+    let run_id = run_id.to_string();
+    blocking_io(move || Ok(crate::interrupted_runs::settle(&workdir, &run_id))).await?;
+    Ok(())
 }
 
 /// `GET /api/runs/{run_id}/events` — cursor-paginated JSON, or SSE when the
@@ -320,6 +486,29 @@ async fn run_events_sse(
     };
     if !known {
         return Err(ApiError::not_found(format!("run '{run_id}' not found")));
+    }
+
+    // A Graph run (every plan run, and a prompt run, which is a one-task plan)
+    // writes the runner index and publishes to the StateHub, never to the runtime
+    // bus this stream used to follow alone, so its stream sent only keepalives
+    // (bug-1f41f0). Follow the runner index unless the run has a runtime index.
+    let has_runtime_index = {
+        let io_state = Arc::clone(&state);
+        let io_run_id = run_id.clone();
+        blocking_io(move || {
+            Ok(source_path(&io_state, &io_run_id, EventSource::Runtime)
+                .is_some_and(|path| roko_fs::run_index::open_existing_run_index(&path).is_ok()))
+        })
+        .await?
+    };
+    if !has_runtime_index {
+        let types = parse_types(query.types.as_deref())?;
+        let header_cursor = headers
+            .get("Last-Event-ID")
+            .and_then(|value| value.to_str().ok())
+            .and_then(|value| value.parse::<u64>().ok());
+        let cursor = header_cursor.or(query.cursor).unwrap_or(0);
+        return Ok(runner_index_sse(state, run_id, cursor, types));
     }
 
     query.source = Some("runtime".to_string());
@@ -422,6 +611,104 @@ async fn run_events_sse(
             .text("keepalive"),
     );
     Ok((super::sse::sse_response_headers(), sse).into_response())
+}
+
+/// How often [`runner_index_sse`] looks for rows appended to a run's index.
+const RUNNER_INDEX_POLL: std::time::Duration = std::time::Duration::from_millis(500);
+
+/// The per-run stream of a Graph run (bug-1f41f0): the rows of its runner index
+/// from `cursor` on, then each row appended later, as SSE events whose `id` is
+/// the byte cursor after the row (so `Last-Event-ID` resumes), filtered by
+/// `types`. It ends after the run's `run_completed`, or when the server shuts
+/// down; a cursor the index refuses ends it with an `error` event.
+///
+/// The runner flushes lifecycle rows as they happen and the rest at most a
+/// second apart (bug-0b997a), so the stream can be a second behind.
+fn runner_index_sse(
+    state: Arc<AppState>,
+    run_id: String,
+    cursor: u64,
+    types: BTreeSet<String>,
+) -> Response {
+    struct Follow {
+        state: Arc<AppState>,
+        run_id: String,
+        cursor: u64,
+        types: BTreeSet<String>,
+        pending: std::collections::VecDeque<Event>,
+        ended: bool,
+    }
+    let follow = Follow {
+        state: Arc::clone(&state),
+        run_id,
+        cursor,
+        types,
+        pending: std::collections::VecDeque::new(),
+        ended: false,
+    };
+    let rows = stream::unfold(follow, |mut follow| async move {
+        loop {
+            if let Some(frame) = follow.pending.pop_front() {
+                return Some((Ok::<_, Infallible>(frame), follow));
+            }
+            if follow.ended {
+                return None;
+            }
+            let io_state = Arc::clone(&follow.state);
+            let io_run_id = follow.run_id.clone();
+            let cursor = follow.cursor;
+            // Read every row, whatever `types` asks for, so the run's end is seen.
+            let page = blocking_io(move || {
+                read_for_run(
+                    &io_state,
+                    &io_run_id,
+                    Some(EventSource::Runner),
+                    cursor,
+                    MAX_SSE_REPLAY,
+                    MAX_PAGE_SCAN_BYTES,
+                    &BTreeSet::new(),
+                )
+            })
+            .await;
+            match page {
+                Ok(Some(page)) => {
+                    let has_more = page.has_more;
+                    follow.cursor = page.next_cursor;
+                    for item in page.events {
+                        let kind = event_type(&item.value).unwrap_or_default().to_string();
+                        if kind == "run_completed" {
+                            follow.ended = true;
+                        }
+                        if follow.types.is_empty() || follow.types.contains(&kind) {
+                            follow
+                                .pending
+                                .push_back(indexed_sse_event(item, &follow.state.scrubber));
+                        }
+                    }
+                    if follow.ended || has_more || !follow.pending.is_empty() {
+                        continue;
+                    }
+                }
+                // No index yet: the run is queued or has only just started.
+                Ok(None) => {}
+                Err(error) => {
+                    follow.ended = true;
+                    let data = json!({ "run_id": follow.run_id, "message": error.to_string() });
+                    follow
+                        .pending
+                        .push_back(Event::default().event("error").data(data.to_string()));
+                    continue;
+                }
+            }
+            tokio::time::sleep(RUNNER_INDEX_POLL).await;
+        }
+    });
+    let sse = Sse::new(super::sse::until_shutdown(rows, state.cancel.clone())).keep_alive(
+        KeepAlive::new()
+            .interval(std::time::Duration::from_secs(8))
+            .text("keepalive"),
+    );
+    (super::sse::sse_response_headers(), sse).into_response()
 }
 
 async fn get_run_tasks(
@@ -935,7 +1222,19 @@ fn discover_indexed_runs(state: &AppState) -> (Vec<Value>, bool, u64) {
                 .then(|| event_data(&item.value).get("prompt").cloned())
                 .flatten()
             });
-            let status = aggregate["status"].clone();
+            let mut status = aggregate["status"].clone();
+            let complete = |status: &Value| {
+                matches!(
+                    status.as_str(),
+                    Some("completed" | "failed" | "cancelled" | "interrupted")
+                )
+            };
+            // A run whose roko process is gone ends interrupted (bug-dceafd).
+            if !complete(&status)
+                && crate::interrupted_runs::settle(&state.workdir, &run_id).is_some()
+            {
+                status = json!(crate::interrupted_runs::INTERRUPTED);
+            }
             summaries.insert(
                 run_id.clone(),
                 json!({
@@ -947,7 +1246,7 @@ fn discover_indexed_runs(state: &AppState) -> (Vec<Value>, bool, u64) {
                     "gates_passed": aggregate["metrics"]["gates_passed"],
                     "gates_failed": aggregate["metrics"]["gates_failed"],
                     "agents_spawned": count_event_types(&page.events, &["agent.dispatch.started", "agent_spawned"]),
-                    "is_complete": matches!(status.as_str(), Some("completed" | "failed" | "cancelled")),
+                    "is_complete": complete(&status),
                     "outcome": status,
                     "source": source.label(),
                     "truncated": page.has_more,
@@ -1099,6 +1398,138 @@ fn read_for_run_filtered(
     Ok(None)
 }
 
+/// Event types that stream a run's words and progress, which no summary
+/// reads (bug-e529e3). A summary's read skips them, so they do not use up its
+/// event budget: with trusted live output every reasoning token is one.
+const STREAM_EVENT_TYPES: [&str; 5] = [
+    "agent_output",
+    "agent_heartbeat",
+    "gate_output_line",
+    "task_output_appended",
+    "plan_check_heartbeat",
+];
+
+/// The `type` fields of [`STREAM_EVENT_TYPES`] as the index writes them
+/// (compact JSON), so that a summary skips those records without parsing them.
+const STREAM_TYPE_FIELDS: [&str; 5] = [
+    "\"type\":\"agent_output\"",
+    "\"type\":\"agent_heartbeat\"",
+    "\"type\":\"gate_output_line\"",
+    "\"type\":\"task_output_appended\"",
+    "\"type\":\"plan_check_heartbeat\"",
+];
+
+/// How much of a run's index a summary reads from the start (bug-e529e3). It
+/// skips streamed records unparsed, so this is a scan, at most tens of
+/// milliseconds; a trusted-output run streams about 4 MB of reasoning in 2
+/// minutes, so this covers a run of most of an hour.
+const SUMMARY_SCAN_BYTES: u64 = 64 * 1024 * 1024;
+
+/// How much of the end of a run's index a summary reads when its read from the
+/// start stopped short of the end (bug-e529e3): a run that ended keeps its end
+/// events last.
+const SUMMARY_TAIL_BYTES: u64 = 1024 * 1024;
+
+/// The events a summary of run `run_id` reads (bug-e529e3): its index from the
+/// start, up to [`SUMMARY_SCAN_BYTES`] and the detail event cap, without
+/// [`STREAM_EVENT_TYPES`], and, when that read stopped short of the end, the
+/// last [`SUMMARY_TAIL_BYTES`] of it. A run longer than that still reads as it
+/// ended; only events in the middle that neither read reaches are left out.
+fn read_for_summary(state: &AppState, run_id: &str) -> Result<Option<IndexedPage>, ApiError> {
+    read_for_summary_within(state, run_id, SUMMARY_SCAN_BYTES, SUMMARY_TAIL_BYTES)
+}
+
+/// [`read_for_summary`] with a read of `scan_bytes` from the start and of
+/// `tail_bytes` at the end.
+fn read_for_summary_within(
+    state: &AppState,
+    run_id: &str,
+    scan_bytes: u64,
+    tail_bytes: u64,
+) -> Result<Option<IndexedPage>, ApiError> {
+    let summarized =
+        |value: &Value| !event_type(value).is_some_and(|kind| STREAM_EVENT_TYPES.contains(&kind));
+    let streamed = |line: &str| STREAM_TYPE_FIELDS.iter().any(|field| line.contains(field));
+    let found = [EventSource::Runner, EventSource::Runtime]
+        .into_iter()
+        .find_map(|source| {
+            source_path(state, run_id, source)
+                .filter(|path| roko_fs::run_index::open_existing_run_index(path).is_ok())
+                .map(|path| (source, path))
+        });
+    let Some((source, path)) = found else {
+        return Ok(None);
+    };
+    let scrubber = state.scrubber.as_ref();
+    let none = BTreeSet::new();
+    let mut page = read_index_page_scan(
+        &path,
+        run_id,
+        source,
+        0,
+        MAX_DETAIL_EVENTS,
+        scan_bytes,
+        &none,
+        scrubber,
+        &summarized,
+        &streamed,
+    )?;
+    if !page.has_more {
+        return Ok(Some(page));
+    }
+    let start = tail_start(&path, page.next_cursor, tail_bytes)?;
+    let tail = read_index_page_scan(
+        &path,
+        run_id,
+        source,
+        start,
+        MAX_DETAIL_EVENTS,
+        tail_bytes,
+        &none,
+        scrubber,
+        &summarized,
+        &streamed,
+    )?;
+    page.events.extend(tail.events);
+    page.next_cursor = tail.next_cursor;
+    page.has_more = tail.has_more;
+    page.scanned_bytes = page.scanned_bytes.saturating_add(tail.scanned_bytes);
+    page.quarantined_records = page
+        .quarantined_records
+        .saturating_add(tail.quarantined_records);
+    page.partial_tail = tail.partial_tail;
+    Ok(Some(page))
+}
+
+/// Where a read of the last `tail_bytes` of the index at `path` starts: the
+/// first record that begins `tail_bytes` or fewer before its end, and never
+/// before `after`, where what was read already ends. A record too long to
+/// find the end of starts the read at `after`.
+fn tail_start(path: &FsPath, after: u64, tail_bytes: u64) -> Result<u64, ApiError> {
+    let mut file = roko_fs::run_index::open_existing_run_index(path)
+        .map_err(|error| ApiError::internal(error.to_string()))?;
+    let len = file
+        .metadata()
+        .map_err(|error| ApiError::internal(error.to_string()))?
+        .len();
+    let from = len.saturating_sub(tail_bytes);
+    if from <= after {
+        return Ok(after);
+    }
+    // The record holding byte `from - 1` ends at the first newline from there.
+    file.seek(SeekFrom::Start(from - 1))
+        .map_err(|error| ApiError::internal(error.to_string()))?;
+    let mut skipped = Vec::new();
+    let read = BufReader::new(file)
+        .take((MAX_LINE_BYTES + 1) as u64)
+        .read_until(b'\n', &mut skipped)
+        .map_err(|error| ApiError::internal(format!("read run event index: {error}")))?;
+    if skipped.last() != Some(&b'\n') {
+        return Ok(after);
+    }
+    Ok(from - 1 + read as u64)
+}
+
 fn read_index_page(
     path: &FsPath,
     run_id: &str,
@@ -1133,6 +1564,35 @@ fn read_index_page_filtered(
     types: &BTreeSet<String>,
     scrubber: &LogScrubber,
     include: &dyn Fn(&Value) -> bool,
+) -> Result<IndexedPage, ApiError> {
+    read_index_page_scan(
+        path,
+        run_id,
+        source,
+        cursor,
+        limit,
+        scan_bytes,
+        types,
+        scrubber,
+        include,
+        &|_| false,
+    )
+}
+
+/// [`read_index_page_filtered`], which also passes over each whole record
+/// whose raw text `skip` matches before it is parsed or checked.
+#[allow(clippy::too_many_arguments)]
+fn read_index_page_scan(
+    path: &FsPath,
+    run_id: &str,
+    source: EventSource,
+    cursor: u64,
+    limit: usize,
+    scan_bytes: u64,
+    types: &BTreeSet<String>,
+    scrubber: &LogScrubber,
+    include: &dyn Fn(&Value) -> bool,
+    skip: &dyn Fn(&str) -> bool,
 ) -> Result<IndexedPage, ApiError> {
     let mut file = roko_fs::run_index::open_existing_run_index(path)
         .map_err(|error| ApiError::internal(error.to_string()))?;
@@ -1190,6 +1650,9 @@ fn read_index_page_filtered(
             offset = record_start;
             partial_tail = true;
             break;
+        }
+        if skip(&line) {
+            continue;
         }
         let parsed = serde_json::from_str::<Value>(line.trim_end());
         let Ok(mut value) = parsed else {
@@ -1382,6 +1845,23 @@ fn event_timestamp_ms(value: &Value) -> Option<u64> {
         .get("timestamp_ms")
         .and_then(Value::as_u64)
         .or_else(|| value.get("event")?.get("timestamp_ms")?.as_u64())
+        // Graph runs' index rows carry the hub's publish time (bug-28aae1).
+        .or_else(|| value.get("ts_millis").and_then(Value::as_u64))
+}
+
+/// When an indexed event happened, as text: its timestamp, else its time in
+/// milliseconds as RFC 3339 (UTC, milliseconds).
+fn event_time_text(value: &Value) -> Option<String> {
+    value
+        .get("timestamp")
+        .and_then(Value::as_str)
+        .or_else(|| value.get("ts").and_then(Value::as_str))
+        .map(str::to_string)
+        .or_else(|| {
+            let millis = i64::try_from(event_timestamp_ms(value)?).ok()?;
+            let at = chrono::DateTime::<chrono::Utc>::from_timestamp_millis(millis)?;
+            Some(at.to_rfc3339_opts(chrono::SecondsFormat::Millis, true))
+        })
 }
 
 fn event_level(value: &Value) -> &'static str {
@@ -1451,6 +1931,7 @@ fn outcome_status(outcome: &str) -> &'static str {
         TaskOutcomeClass::Unverified => TASK_OUTCOME_UNVERIFIED,
         TaskOutcomeClass::Skipped => "skipped",
         TaskOutcomeClass::Blocked => TASK_OUTCOME_BLOCKED,
+        TaskOutcomeClass::Cancelled => TASK_OUTCOME_CANCELLED,
     }
 }
 
@@ -1474,42 +1955,50 @@ fn summarize_events(events: &[IndexedEvent]) -> Value {
     let mut status = "observed";
     let mut saw_inference_usage = false;
     let mut final_cost = None;
+    // What Graph runs record: `efficiency_event` rows, one metric each (bug-28aae1).
+    let mut efficiency = Efficiency::default();
+    // The first time any row carries: a Graph run has no start event of its own.
+    let mut first_time = None;
 
     for item in events {
         let value = &item.value;
         let kind = event_type(value).unwrap_or_default();
-        if let Some(plan_id) = event_plan_id(value) {
+        // Log entries carry empty ids; they name no plan or task.
+        if let Some(plan_id) = event_plan_id(value).filter(|id| !id.is_empty()) {
             plans.insert(plan_id.to_string());
         }
-        if let Some(task_id) = event_task_id(value) {
+        if let Some(task_id) = event_task_id(value).filter(|id| !id.is_empty()) {
             tasks.insert(task_id.to_string());
             if let Some(attempt) = event_attempt(value) {
                 attempts.insert((task_id.to_string(), attempt));
             }
         }
-        let timestamp = value
-            .get("timestamp")
-            .and_then(Value::as_str)
-            .or_else(|| value.get("ts").and_then(Value::as_str));
+        let time = event_time_text(value);
+        if first_time.is_none() {
+            first_time.clone_from(&time);
+        }
         if kind == "run.started" || kind == "workflow_started" || kind == "run_started" {
             status = "running";
-            started_at = timestamp
-                .map(str::to_string)
-                .or_else(|| event_timestamp_ms(value).map(|value| value.to_string()));
+            started_at.clone_from(&time);
         }
         if matches!(
             kind,
             "run.completed" | "workflow_completed" | "run_completed"
         ) {
             status = completion_status(value);
-            finished_at = timestamp
-                .map(str::to_string)
-                .or_else(|| event_timestamp_ms(value).map(|value| value.to_string()));
+            finished_at.clone_from(&time);
             duration_ms = numeric(value, "duration_ms");
             final_cost = decimal(value, "total_cost_usd").or_else(|| decimal(value, "cost_usd"));
         }
-        if is_gate_event(kind)
-            && (kind.contains("completed") || kind.contains("passed") || kind.contains("failed"))
+        if kind == "efficiency_event" {
+            efficiency.add(value);
+        }
+        // Graph runs report a rung's verdict as `gate_result` (bug-28aae1).
+        if kind == "gate_result"
+            || (is_gate_event(kind)
+                && (kind.contains("completed")
+                    || kind.contains("passed")
+                    || kind.contains("failed")))
         {
             gates_total = gates_total.saturating_add(1);
             let passed = bool_field(value, "passed").unwrap_or_else(|| kind.contains("passed"));
@@ -1563,6 +2052,26 @@ fn summarize_events(events: &[IndexedEvent]) -> Value {
             cost_usd = runner_attempt_costs.values().sum();
         }
     }
+    // A Graph run records its spend only as efficiency events: use them when no
+    // other source reported any.
+    if efficiency.seen
+        && !saw_inference_usage
+        && final_cost.is_none()
+        && runner_attempt_costs.is_empty()
+        && cost_usd.abs() < f64::EPSILON
+    {
+        cost_usd = efficiency.cost_usd;
+    }
+    if efficiency.seen && input_tokens == 0 && output_tokens == 0 {
+        input_tokens = efficiency.input_tokens;
+        output_tokens = efficiency.output_tokens;
+        cache_read_tokens = cache_read_tokens.max(efficiency.cache_read_tokens);
+        cache_write_tokens = cache_write_tokens.max(efficiency.cache_write_tokens);
+        total_tokens = input_tokens.saturating_add(output_tokens);
+    }
+    if started_at.is_none() {
+        started_at = first_time;
+    }
     json!({
         "status": status,
         "started_at": started_at,
@@ -1594,9 +2103,63 @@ fn summarize_events(events: &[IndexedEvent]) -> Value {
     })
 }
 
+/// A Graph run's `efficiency_event` rows, summed: each carries one `metric` and
+/// its `value`.
+#[derive(Debug, Default)]
+struct Efficiency {
+    seen: bool,
+    cost_usd: f64,
+    input_tokens: u64,
+    output_tokens: u64,
+    cache_read_tokens: u64,
+    cache_write_tokens: u64,
+}
+
+impl Efficiency {
+    fn add(&mut self, value: &Value) {
+        let data = event_data(value);
+        let metric = data
+            .get("metric")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        let Some(amount) = data
+            .get("value")
+            .and_then(Value::as_f64)
+            .filter(|amount| amount.is_finite() && *amount >= 0.0)
+        else {
+            return;
+        };
+        self.seen = true;
+        // Token counts are whole numbers recorded as floats.
+        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+        let tokens = amount.round() as u64;
+        match metric {
+            "cost_usd" => self.cost_usd += amount,
+            "input_tokens" => self.input_tokens = self.input_tokens.saturating_add(tokens),
+            "output_tokens" => self.output_tokens = self.output_tokens.saturating_add(tokens),
+            "cache_read_tokens" => {
+                self.cache_read_tokens = self.cache_read_tokens.saturating_add(tokens);
+            }
+            "cache_write_tokens" => {
+                self.cache_write_tokens = self.cache_write_tokens.saturating_add(tokens);
+            }
+            _ => {}
+        }
+    }
+}
+
 fn completion_status(value: &Value) -> &'static str {
     if bool_field(value, "success") == Some(true) {
         return "completed";
+    }
+    match string_field(value, "outcome") {
+        // The end serve records for a run whose roko process was gone
+        // (bug-dceafd).
+        Some(crate::interrupted_runs::INTERRUPTED) => return crate::interrupted_runs::INTERRUPTED,
+        // A run roko refused to start ended, and not as a success (bug-9a5970),
+        // whatever words its reason uses.
+        Some(crate::run_end::REFUSED) => return "failed",
+        _ => {}
     }
     let serialized = serde_json::to_string(event_data(value))
         .unwrap_or_default()
@@ -1617,7 +2180,12 @@ fn completion_status(value: &Value) -> &'static str {
 /// records the run's end, its state is [`RunState::of_ended_run`] over the
 /// end and the last outcome of each task, the words `GET
 /// /api/plans/{id}/status` uses too. A run with neither is still running, as
-/// a run another process writes the index of is.
+/// a run another process writes the index of is, until serve finds that
+/// process gone and records the run's end as `interrupted`
+/// ([`crate::interrupted_runs`]); the summary then says why under
+/// `interrupted`. A run roko refused to run, before its plan started or at
+/// the spec gate before any dispatch, ends `failed` and says why under
+/// `refused` (bug-9a5970).
 ///
 /// Each task the run dispatched an agent for also gets its untrusted-input
 /// boundary under `config` ([`untrusted_input_boundary`]).
@@ -1628,14 +2196,32 @@ fn run_summary(
     config: &RokoConfig,
 ) -> Value {
     let mut completion = None;
+    // What the run's plans are called (gap-c2efe7), from the plan set it loaded.
+    let mut titles = Vec::<String>::new();
     let mut tasks = BTreeMap::<(String, String), TaskOutcomeClass>::new();
     // The models each task's agents were dispatched to.
     let mut task_models = BTreeMap::<(String, String), BTreeSet<String>>::new();
     // The first milestone of each kind, with its event's place in the run.
     let mut milestones = BTreeMap::<&str, (usize, Value)>::new();
+    // What the spec gate refused before any dispatch, `<task>: <rule>: <detail>`.
+    let mut gate_refusals = Vec::<String>::new();
     for (place, item) in events.iter().enumerate() {
         let value = &item.value;
         let kind = event_type(value).unwrap_or_default();
+        if kind == "event_log_entry"
+            && string_field(value, "event_type") == Some("spec.gate.refused")
+        {
+            let message = string_field(value, "message").unwrap_or_default();
+            let line = event_task_id(value)
+                .filter(|task_id| !task_id.is_empty())
+                .map_or_else(
+                    || message.to_string(),
+                    |task_id| format!("{task_id}: {message}"),
+                );
+            if !line.is_empty() && !gate_refusals.contains(&line) {
+                gate_refusals.push(line);
+            }
+        }
         if matches!(kind, "agent_spawned" | "agent.dispatch.started")
             && let Some(task_id) = event_task_id(value)
             && let Some(model) = string_field(value, "model")
@@ -1647,6 +2233,17 @@ fn run_summary(
                 .entry((plan_id, task_id.to_string()))
                 .or_default()
                 .insert(model.to_string());
+        }
+        if kind == "plan_set_loaded" && titles.is_empty() {
+            titles = value["plans"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(|plan| plan["title"].as_str())
+                .map(str::trim)
+                .filter(|title| !title.is_empty())
+                .map(str::to_string)
+                .collect();
         }
         if matches!(
             kind,
@@ -1693,21 +2290,25 @@ fn run_summary(
         ) {
             completion = Some((place, value));
         }
-        if let Some(delivery) = delivery_end(value) {
+        // The first delivery that did not complete says how the run's
+        // delivery ended, else the first that did (gap-4f6cbe).
+        if let Some(delivery) = delivery_end(value)
+            && milestones.get("delivery").is_none_or(|(_, held)| {
+                delivery != "completed" && held["text"] == "delivery completed"
+            })
+        {
             let text = format!("delivery {delivery}");
-            milestones
-                .entry("delivery")
-                .or_insert_with(|| (place, milestone("delivery", text, value)));
+            milestones.insert("delivery", (place, milestone("delivery", text, value)));
         }
     }
 
-    let ended = completion.map(|(_, value)| {
-        let end = completion_status(value);
-        RunState::of_ended_run(
+    let ended = completion.map(|(_, value)| match completion_status(value) {
+        crate::interrupted_runs::INTERRUPTED => RunState::Interrupted,
+        end => RunState::of_ended_run(
             end == "cancelled",
             end == "completed",
             tasks.values().copied(),
-        )
+        ),
     });
     let (state, position) = match in_memory {
         Some((live, position)) if !live.is_terminal() => (live, position),
@@ -1722,6 +2323,35 @@ fn run_summary(
         let text = format!("run {}", state.as_str());
         milestones.insert("completed", (place, milestone("completed", text, value)));
     }
+    // Why a run whose roko process stopped ended, and its last sign of life
+    // (bug-dceafd).
+    let interrupted = completion
+        .filter(|_| state == RunState::Interrupted)
+        .map(|(_, value)| {
+            json!({
+                "reason": string_field(value, "reason")
+                    .unwrap_or(crate::interrupted_runs::INTERRUPTED_REASON),
+                "at": event_time_text(value),
+            })
+        });
+    // Why roko did not run it (bug-9a5970): refused before its plan started,
+    // or by the spec gate before any dispatch.
+    let refused = completion
+        .filter(|_| state == RunState::Failed)
+        .and_then(|(_, value)| {
+            if string_field(value, "outcome") == Some(crate::run_end::REFUSED) {
+                return Some(json!({
+                    "stage": string_field(value, "stage").unwrap_or(crate::run_end::START_STAGE),
+                    "reason": string_field(value, "reason").unwrap_or_default(),
+                }));
+            }
+            (!gate_refusals.is_empty() && tasks.is_empty()).then(|| {
+                json!({
+                    "stage": crate::run_end::SPEC_GATE_STAGE,
+                    "reason": gate_refusals.join("; "),
+                })
+            })
+        });
     let mut milestones = milestones.into_values().collect::<Vec<_>>();
     milestones.sort_by_key(|(place, _)| *place);
     let milestones = milestones
@@ -1730,10 +2360,11 @@ fn run_summary(
         .collect::<Vec<_>>();
 
     let count = |class: TaskOutcomeClass| tasks.values().filter(|&&each| each == class).count();
-    let (passed, failed, unverified) = (
+    let (passed, failed, unverified, cancelled) = (
         count(TaskOutcomeClass::Passed),
         count(TaskOutcomeClass::Failed),
         count(TaskOutcomeClass::Unverified),
+        count(TaskOutcomeClass::Cancelled),
     );
     let boundaries = task_models
         .iter()
@@ -1748,17 +2379,22 @@ fn run_summary(
     let summary = summarize_events(events);
     json!({
         "run_id": run_id,
+        "title": (!titles.is_empty()).then(|| titles.join("; ")),
         "state": state.as_str(),
         "verdict": state.is_terminal().then_some(state),
         "position": position,
         "active": !state.is_terminal(),
+        "interrupted": interrupted,
+        "refused": refused,
         "cost_usd": summary["metrics"]["cost_usd"],
         "tasks": {
             "total": tasks.len(),
             "passed": passed,
             "failed": failed,
             "unverified": unverified,
-            "other": tasks.len() - passed - failed - unverified,
+            // A task a cancel cut off is not a failure (bug-1d09e8).
+            "cancelled": cancelled,
+            "other": tasks.len() - passed - failed - unverified - cancelled,
         },
         "untrusted_input_boundary": boundaries,
         "milestones": milestones,
@@ -1805,17 +2441,33 @@ fn event_time(value: &Value) -> Value {
         .unwrap_or(Value::Null)
 }
 
-/// How a run's delivery ended, `completed` or `failed`, when `value` is the
-/// Graph run's delivery event that says so.
-fn delivery_end(value: &Value) -> Option<&str> {
+/// How a plan's delivery ended, as the run's `delivery` milestone says it,
+/// when `value` is the event that says so: a Graph run's `delivery_finished`
+/// (gap-4f6cbe), or a `graph.delivery` `completed` or `failed` runtime event.
+/// A delivery a stop cut short was `cancelled`: it stopped, it did not fail.
+fn delivery_end(value: &Value) -> Option<&'static str> {
+    if event_type(value) == Some("delivery_finished") {
+        return Some(match string_field(value, "state")? {
+            "delivered" => "completed",
+            "cancelled" => "cancelled",
+            "conflict" => "failed: its merge conflicted",
+            "regression_failed" => "failed: the check on its merge failed",
+            _ => "failed",
+        });
+    }
     let data = event_data(value);
     if data.get("namespace").and_then(Value::as_str) != Some("graph.delivery") {
         return None;
     }
-    data.get("value")?
-        .get("kind")?
-        .as_str()
-        .filter(|kind| matches!(*kind, "completed" | "failed"))
+    let end = data.get("value")?;
+    match end.get("kind")?.as_str()? {
+        "completed" => Some("completed"),
+        "failed" if end.get("failure_state").and_then(Value::as_str) == Some("cancelled") => {
+            Some("cancelled")
+        }
+        "failed" => Some("failed"),
+        _ => None,
+    }
 }
 
 fn string_field<'a>(value: &'a Value, field: &str) -> Option<&'a str> {
@@ -2263,6 +2915,189 @@ mod tests {
         assert_eq!(summary["metrics"]["duration_ms"], 10);
     }
 
+    /// bug-28aae1: a Graph run records its spend as `efficiency_event` rows,
+    /// its gate verdicts as `gate_result`, and its times only as each row's
+    /// `ts_millis`; log entries carry empty plan and task ids. The summary
+    /// reads all of it.
+    #[tokio::test]
+    async fn summary_counts_cost_tokens_gates_and_times_of_graph_runs() {
+        let dir = tempfile::tempdir().unwrap();
+        let deploy_backend = Arc::from(
+            crate::deploy::create_backend("manual", None, None, None).expect("manual backend"),
+        );
+        let state = Arc::new(
+            AppState::new(
+                dir.path().to_path_buf(),
+                Arc::new(crate::runtime::NoOpRuntime),
+                roko_core::config::schema::RokoConfig::default(),
+                deploy_backend,
+            )
+            .expect("AppState::new"),
+        );
+        let index =
+            roko_fs::run_index::run_index_path(&state.layout.events_jsonl_path(), "g1").unwrap();
+        let efficiency = |metric: &str, value: f64| json!({"type":"efficiency_event","run_id":"g1","plan_id":"p1","task_id":"T1","metric":metric,"value":value,"ts_millis":1_791_550_840_000_u64});
+        write_rows(
+            &index,
+            &[
+                json!({"type":"plan_set_loaded","run_id":"g1","plans":[{"plan_id":"p1","tasks_total":1}],"ts_millis":1_791_550_809_314_u64}),
+                json!({"type":"event_log_entry","run_id":"g1","plan_id":"","task_id":"","event_type":"spec.gate","message":"allow","timestamp_ms":1_791_550_809_333_u64}),
+                json!({"type":"plan_started","run_id":"g1","plan_id":"p1","tasks_total":1,"ts_millis":1_791_550_809_360_u64}),
+                json!({"type":"task_started","run_id":"g1","plan_id":"p1","task_id":"T1","title":"t","phase":"x","ts_millis":1_791_550_809_400_u64}),
+                json!({"type":"gate_result","run_id":"g1","plan_id":"p1","task_id":"T1","gate":"verify[0:test]","passed":true,"output_text":"$ cargo test","ts_millis":1_791_550_850_000_u64}),
+                efficiency("input_tokens", 3352.0),
+                efficiency("output_tokens", 655.0),
+                efficiency("cache_read_tokens", 10368.0),
+                efficiency("cache_write_tokens", 0.0),
+                efficiency("cost_usd", 0.010_270_480_066_537_857),
+                json!({"type":"task_completed","run_id":"g1","plan_id":"p1","task_id":"T1","outcome":"passed","ts_millis":1_791_550_850_100_u64}),
+                json!({"type":"plan_completed","run_id":"g1","plan_id":"p1","success":true,"ts_millis":1_791_550_850_200_u64}),
+                json!({"type":"run_completed","run_id":"g1","outcome":"succeeded","duration_ms":42210,"ts_millis":1_791_550_850_893_u64}),
+            ],
+        );
+
+        let summary = summarize_events(
+            &read_index_page(
+                &index,
+                "g1",
+                EventSource::Runner,
+                0,
+                100,
+                MAX_PAGE_SCAN_BYTES,
+                &BTreeSet::new(),
+                &LogScrubber::new(),
+            )
+            .unwrap()
+            .events,
+        );
+        assert_eq!(summary["plans"], json!(["p1"]), "{summary}");
+        assert_eq!(summary["tasks"], json!(["T1"]), "{summary}");
+        assert_eq!(
+            summary["gates"],
+            json!({"total": 1, "passed": 1, "failed": 0})
+        );
+        let metrics = &summary["metrics"];
+        assert_eq!(metrics["input_tokens"], 3352, "{summary}");
+        assert_eq!(metrics["output_tokens"], 655, "{summary}");
+        assert_eq!(metrics["cache_read_tokens"], 10368, "{summary}");
+        assert_eq!(metrics["total_tokens"], 4007, "{summary}");
+        assert!((metrics["cost_usd"].as_f64().unwrap() - 0.010_270_48).abs() < 1e-9);
+        assert_eq!(
+            summary["started_at"], "2026-10-09T13:00:09.314Z",
+            "{summary}"
+        );
+        assert_eq!(
+            summary["finished_at"], "2026-10-09T13:00:50.893Z",
+            "{summary}"
+        );
+
+        let Json(run) = get_run_summary(State(Arc::clone(&state)), Path("g1".into()))
+            .await
+            .unwrap();
+        assert_eq!(run["state"], "succeeded", "{run}");
+        assert!(
+            (run["cost_usd"].as_f64().unwrap() - 0.010_270_48).abs() < 1e-9,
+            "{run}"
+        );
+        assert_eq!(run["started_at"], "2026-10-09T13:00:09.314Z", "{run}");
+        assert_eq!(run["finished_at"], "2026-10-09T13:00:50.893Z", "{run}");
+    }
+
+    /// The next named event on an SSE `body` other than a keepalive, as its
+    /// kind and id; `None` once the stream has ended.
+    async fn next_sse_event(body: &mut axum::body::Body) -> Option<(String, Option<String>)> {
+        use http_body_util::BodyExt as _;
+        loop {
+            let frame = tokio::time::timeout(std::time::Duration::from_secs(5), body.frame())
+                .await
+                .expect("a frame in time")?;
+            let data = frame.expect("a frame").into_data().expect("a data frame");
+            let text = String::from_utf8(data.to_vec()).expect("UTF-8");
+            if let Some(kind) = text.lines().find_map(|line| line.strip_prefix("event: "))
+                && kind != "keepalive"
+            {
+                let id = text
+                    .lines()
+                    .find_map(|line| line.strip_prefix("id: "))
+                    .map(str::to_string);
+                return Some((kind.to_string(), id));
+            }
+        }
+    }
+
+    /// bug-1f41f0: a Graph run's per-run stream replays its runner index,
+    /// delivers rows appended later, keeps `types` out of what it sends, and
+    /// ends after the run's `run_completed`.
+    #[tokio::test]
+    async fn per_run_stream_carries_a_graph_runs_events() {
+        let dir = tempfile::tempdir().unwrap();
+        let deploy_backend = Arc::from(
+            crate::deploy::create_backend("manual", None, None, None).expect("manual backend"),
+        );
+        let state = Arc::new(
+            AppState::new(
+                dir.path().to_path_buf(),
+                Arc::new(crate::runtime::NoOpRuntime),
+                roko_core::config::schema::RokoConfig::default(),
+                deploy_backend,
+            )
+            .expect("AppState::new"),
+        );
+        let index =
+            roko_fs::run_index::run_index_path(&state.layout.events_jsonl_path(), "g1").unwrap();
+        write_rows(
+            &index,
+            &[
+                json!({"type":"plan_started","run_id":"g1","plan_id":"p1","tasks_total":1}),
+                json!({"type":"agent_heartbeat","run_id":"g1","plan_id":"p1","task_id":"T1","elapsed_ms":5000}),
+            ],
+        );
+
+        let query = EventQuery {
+            types: Some("plan_started,gate_result,run_completed".to_string()),
+            ..EventQuery::default()
+        };
+        let mut body = get_run_events_stream(
+            State(Arc::clone(&state)),
+            Path("g1".into()),
+            HeaderMap::new(),
+            Query(query),
+        )
+        .await
+        .expect("open the stream")
+        .into_response()
+        .into_body();
+
+        let (kind, id) = next_sse_event(&mut body).await.expect("the replayed row");
+        assert_eq!(kind, "plan_started");
+        assert!(id.is_some(), "a resumable id");
+
+        // Rows the run appends later arrive live; the heartbeat is filtered out.
+        let mut file = std::fs::OpenOptions::new()
+            .append(true)
+            .open(&index)
+            .unwrap();
+        for row in [
+            json!({"type":"gate_result","run_id":"g1","plan_id":"p1","task_id":"T1","gate":"verify[0:test]","passed":true}),
+            json!({"type":"run_completed","run_id":"g1","outcome":"succeeded","duration_ms":10}),
+        ] {
+            std::io::Write::write_all(&mut file, format!("{row}\n").as_bytes()).unwrap();
+        }
+        assert_eq!(
+            next_sse_event(&mut body).await.expect("gate_result").0,
+            "gate_result"
+        );
+        assert_eq!(
+            next_sse_event(&mut body).await.expect("run_completed").0,
+            "run_completed"
+        );
+        assert_eq!(
+            next_sse_event(&mut body).await,
+            None,
+            "the stream ends after the run's end"
+        );
+    }
+
     /// The statuses `GET /runs/{run_id}/tasks` reports for a run's tasks.
     async fn task_statuses(state: &Arc<AppState>, run_id: &str) -> BTreeMap<String, String> {
         let Json(body) = get_run_tasks(State(Arc::clone(state)), Path(run_id.to_string()))
@@ -2285,6 +3120,413 @@ mod tests {
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         let body: String = rows.iter().map(|row| format!("{row}\n")).collect();
         std::fs::write(path, body).unwrap();
+    }
+
+    /// bug-9a5970: a run whose plans the spec gate refused before any
+    /// dispatch has, in its index, a refusal entry per finding, the run's
+    /// error and its end. Its summary says `failed`, not active, with
+    /// `refused: {stage: spec_gate, reason}` naming each task and rule, and
+    /// does not call it interrupted. A run that failed at its work has no
+    /// `refused`.
+    #[tokio::test]
+    async fn a_run_refused_before_dispatch_records_why_in_its_events_at_the_spec_gate() {
+        let dir = tempfile::tempdir().unwrap();
+        let deploy_backend = Arc::from(
+            crate::deploy::create_backend("manual", None, None, None).expect("manual backend"),
+        );
+        let state = Arc::new(
+            AppState::new(
+                dir.path().to_path_buf(),
+                Arc::new(crate::runtime::NoOpRuntime),
+                roko_core::config::schema::RokoConfig::default(),
+                deploy_backend,
+            )
+            .expect("AppState::new"),
+        );
+        let index = |run_id: &str| {
+            roko_fs::run_index::run_index_path(&state.layout.events_jsonl_path(), run_id).unwrap()
+        };
+        let path = "plans/demos/demo-hello/tasks.toml";
+        write_rows(
+            &index("r-gated"),
+            &[
+                json!({"type":"plan_set_loaded","run_id":"r-gated","ts_millis":1,"plans":[{"plan_id":"demo-hello","title":"Hello"}]}),
+                json!({"type":"event_log_entry","run_id":"r-gated","ts_millis":2,"event_type":"spec.gate.refused","plan_id":path,"task_id":"DEMO-T01","message":"HF3: verify passes on the unchanged base"}),
+                json!({"type":"event_log_entry","run_id":"r-gated","ts_millis":2,"event_type":"spec.gate.refused","plan_id":path,"task_id":"DEMO-T02","message":"HF2: step 1: ends in `|| true`"}),
+                json!({"type":"error","run_id":"r-gated","ts_millis":2,"message":"the spec gate refused the plan before any agent ran: …"}),
+                json!({"type":"run_completed","run_id":"r-gated","ts_millis":3,"outcome":"failed","duration_ms":2}),
+            ],
+        );
+        write_rows(
+            &index("r-failed"),
+            &[
+                json!({"type":"plan_started","run_id":"r-failed","ts_millis":1,"plan_id":"p1"}),
+                json!({"type":"task_completed","run_id":"r-failed","ts_millis":2,"plan_id":"p1","task_id":"t1","outcome":"failed"}),
+                json!({"type":"run_completed","run_id":"r-failed","ts_millis":3,"outcome":"failed","duration_ms":2}),
+            ],
+        );
+
+        let Json(summary) = get_run_summary(State(Arc::clone(&state)), Path("r-gated".into()))
+            .await
+            .unwrap();
+        assert_eq!(summary["state"], "failed", "{summary}");
+        assert_eq!(summary["active"], false, "{summary}");
+        assert_eq!(summary["refused"]["stage"], "spec_gate", "{summary}");
+        assert_eq!(
+            summary["refused"]["reason"],
+            "DEMO-T01: HF3: verify passes on the unchanged base; DEMO-T02: HF2: step 1: ends in \
+             `|| true`",
+            "{summary}"
+        );
+        assert_eq!(summary["interrupted"], Value::Null, "{summary}");
+
+        let Json(summary) = get_run_summary(State(Arc::clone(&state)), Path("r-failed".into()))
+            .await
+            .unwrap();
+        assert_eq!(summary["state"], "failed", "{summary}");
+        assert_eq!(summary["refused"], Value::Null, "{summary}");
+    }
+
+    /// bug-dceafd: a run whose roko process died (a machine restart, a crash,
+    /// `kill -9`) left an open manifest and an index with no end. Its summary
+    /// reads `interrupted`, not active, with why and its last sign of life,
+    /// and its detail and the dashboard's run list agree, the list even for a
+    /// run nobody asked about; its cancel answers 200, every time, and leaves
+    /// it interrupted. A run whose process still runs keeps reading
+    /// `running`, and an id no run has is still 404.
+    #[tokio::test]
+    async fn a_run_whose_process_died_reads_interrupted() {
+        use roko_learn::telemetry::RunProvenanceManifest;
+        use roko_learn::telemetry::records::RunInvocation;
+
+        let dir = tempfile::tempdir().unwrap();
+        let deploy_backend = Arc::from(
+            crate::deploy::create_backend("manual", None, None, None).expect("manual backend"),
+        );
+        let state = Arc::new(
+            AppState::new(
+                dir.path().to_path_buf(),
+                Arc::new(crate::runtime::NoOpRuntime),
+                roko_core::config::schema::RokoConfig::default(),
+                deploy_backend,
+            )
+            .expect("AppState::new"),
+        );
+        let open_run = |run_id: &str, pid: u32, started_at: &str| {
+            write_rows(
+                &roko_fs::run_index::run_index_path(&state.layout.events_jsonl_path(), run_id)
+                    .unwrap(),
+                &[
+                    json!({"type":"plan_started","run_id":run_id,"ts_millis":1_792_076_316_479_u64,"plan_id":"p1","tasks_total":2}),
+                    json!({"type":"task_completed","run_id":run_id,"ts_millis":1_792_076_328_281_u64,"plan_id":"p1","task_id":"t1","outcome":"passed"}),
+                    json!({"type":"task_started","run_id":run_id,"ts_millis":1_792_076_329_000_u64,"plan_id":"p1","task_id":"t2","phase":"graph-executing"}),
+                ],
+            );
+            let mut manifest = RunProvenanceManifest::new(run_id, "plan_run");
+            manifest.begin_invocation(RunInvocation {
+                started_at: started_at.to_string(),
+                pid,
+                host: "local".to_string(),
+                ..RunInvocation::default()
+            });
+            manifest.store(&state.layout.run_dir(run_id)).unwrap();
+        };
+        // A pid no process has any more.
+        let mut child = std::process::Command::new("true").spawn().unwrap();
+        let gone = child.id();
+        child.wait().unwrap();
+        open_run("r-crashed", gone, "2026-10-15T14:58:36.254Z");
+        // Only ever listed, never asked for by id.
+        open_run("r-listed", gone, "2026-10-15T14:58:36.254Z");
+        let now = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
+        open_run("r-going", std::process::id(), &now);
+
+        let Json(summary) = get_run_summary(State(Arc::clone(&state)), Path("r-crashed".into()))
+            .await
+            .unwrap();
+        assert_eq!(summary["state"], "interrupted", "{summary}");
+        assert_eq!(summary["verdict"], "interrupted", "{summary}");
+        assert_eq!(summary["active"], false, "{summary}");
+        assert_eq!(
+            summary["interrupted"]["reason"],
+            crate::interrupted_runs::INTERRUPTED_REASON,
+            "{summary}"
+        );
+        assert!(summary["interrupted"]["at"].is_string(), "{summary}");
+        assert_eq!(
+            summary["finished_at"], summary["interrupted"]["at"],
+            "{summary}"
+        );
+        assert_eq!(summary["tasks"]["passed"], 1, "{summary}");
+        let Json(detail) = get_run_detail(State(Arc::clone(&state)), Path("r-crashed".into()))
+            .await
+            .unwrap();
+        assert_eq!(detail["status"], "interrupted", "{detail}");
+        let Json(listed) = get_dashboard_runs(State(Arc::clone(&state))).await.unwrap();
+        let row = |run_id: &str| {
+            listed["runs"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|row| row["run_id"] == run_id)
+                .cloned()
+                .unwrap_or_else(|| panic!("{run_id} is listed: {listed}"))
+        };
+        assert_eq!(row("r-crashed")["outcome"], "interrupted", "{listed}");
+        assert_eq!(row("r-crashed")["is_complete"], true, "{listed}");
+        assert_eq!(row("r-going")["is_complete"], false, "{listed}");
+        assert_eq!(row("r-listed")["outcome"], "interrupted", "{listed}");
+        assert_eq!(row("r-listed")["is_complete"], true, "{listed}");
+
+        for _ in 0..2 {
+            let answer = crate::routes::plans::cancel_plan_run(&state, "r-crashed")
+                .await
+                .unwrap();
+            assert_eq!(answer["cancelled"], true, "{answer}");
+            assert_eq!(answer["state"], "interrupted", "{answer}");
+            assert_eq!(answer["already_ended"], true, "{answer}");
+            assert_eq!(
+                answer["reason"],
+                crate::interrupted_runs::INTERRUPTED_REASON,
+                "{answer}"
+            );
+        }
+        let Json(summary) = get_run_summary(State(Arc::clone(&state)), Path("r-crashed".into()))
+            .await
+            .unwrap();
+        assert_eq!(summary["state"], "interrupted", "{summary}");
+        let index = std::fs::read_to_string(
+            roko_fs::run_index::run_index_path(&state.layout.events_jsonl_path(), "r-crashed")
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(index.matches("run_completed").count(), 1, "{index}");
+
+        let Json(going) = get_run_summary(State(Arc::clone(&state)), Path("r-going".into()))
+            .await
+            .unwrap();
+        assert_eq!(going["state"], "running", "{going}");
+        assert_eq!(going["active"], true, "{going}");
+        assert_eq!(going["interrupted"], Value::Null, "{going}");
+        let refused = crate::routes::plans::cancel_plan_run(&state, "r-going").await;
+        assert!(
+            refused.is_err(),
+            "its process runs, and serve has no handle"
+        );
+        let unknown = crate::routes::plans::cancel_plan_run(&state, "r-unknown").await;
+        assert!(unknown.is_err());
+    }
+
+    /// The state of a test of the summary routes, over `dir`.
+    fn summary_state(dir: &tempfile::TempDir) -> Arc<AppState> {
+        let deploy_backend = Arc::from(
+            crate::deploy::create_backend("manual", None, None, None).expect("manual backend"),
+        );
+        Arc::new(
+            AppState::new(
+                dir.path().to_path_buf(),
+                Arc::new(crate::runtime::NoOpRuntime),
+                roko_core::config::schema::RokoConfig::default(),
+                deploy_backend,
+            )
+            .expect("AppState::new"),
+        )
+    }
+
+    /// Index rows of a long run, as a trusted-output run writes them: its start
+    /// and two passed tasks, `first` streamed output rows of 700 characters,
+    /// task t3's failure and an `efficiency_event` of $0.25, `then` more
+    /// streamed rows, and a failed end that names no cost.
+    fn long_run_rows(run_id: &str, first: u64, then: u64) -> Vec<Value> {
+        let task = |at: u64, task_id: &str, outcome: &str| {
+            json!({"type":"task_completed","run_id":run_id,"timestamp_ms":at,"plan_id":"p1",
+                "task_id":task_id,"outcome":outcome})
+        };
+        let token = "x".repeat(700);
+        let streamed = |at: u64| {
+            json!({"type":"agent_output","run_id":run_id,"timestamp_ms":at,"plan_id":"p1",
+                "task_id":"t3","attempt":1,"content":token})
+        };
+        let mut rows = vec![
+            json!({"type":"run.started","run_id":run_id,"timestamp_ms":1,"plan_id":"p1"}),
+            task(2, "t1", "passed"),
+            task(3, "t2", "passed"),
+        ];
+        rows.extend((0..first).map(|at| streamed(10 + at)));
+        rows.push(task(30_000, "t3", "failed"));
+        rows.push(
+            json!({"type":"efficiency_event","run_id":run_id,"timestamp_ms":30_001,
+            "plan_id":"p1","task_id":"t3","metric":"cost_usd","value":0.25}),
+        );
+        rows.extend((0..then).map(|at| streamed(30_010 + at)));
+        rows.push(
+            json!({"type":"run.completed","run_id":run_id,"timestamp_ms":60_000,
+            "outcome":"failed"}),
+        );
+        rows
+    }
+
+    /// bug-e529e3: a run whose index outgrows the old scan window (10,000
+    /// events or 8 MB; here 12,000 streamed output rows, then a failed task and
+    /// the run's spend, then 2,000 more past 1 MB, then a failed end) reads as
+    /// it ended, in the summary and the detail route: streamed rows do not use
+    /// up the summary's event budget, and its read from the start goes past 8
+    /// MB, so the task and the spend in the middle count too.
+    #[tokio::test]
+    async fn summary_sees_the_end_of_a_run_longer_than_its_scan_window() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = summary_state(&dir);
+        let run_id = "long-run";
+        let index =
+            roko_fs::run_index::run_index_path(&state.layout.events_jsonl_path(), run_id).unwrap();
+        write_rows(&index, &long_run_rows(run_id, 12_000, 2_000));
+        assert!(std::fs::metadata(&index).unwrap().len() > MAX_DETAIL_SCAN_BYTES + 1024 * 1024);
+
+        let Json(summary) = get_run_summary(State(Arc::clone(&state)), Path(run_id.into()))
+            .await
+            .unwrap();
+
+        assert_eq!(summary["state"], "failed", "{summary}");
+        assert_eq!(summary["active"], false, "{summary}");
+        assert_eq!(summary["tasks"]["passed"], 2, "{summary}");
+        assert_eq!(summary["tasks"]["failed"], 1, "{summary}");
+        assert_eq!(summary["cost_usd"], 0.25, "{summary}");
+        assert!(summary["finished_at"].is_string(), "{summary}");
+        let Json(detail) = get_run_detail(State(Arc::clone(&state)), Path(run_id.into()))
+            .await
+            .unwrap();
+        assert!(detail["finished_at"].is_string(), "{detail}");
+        assert_eq!(detail["status"], "failed", "{detail}");
+    }
+
+    /// bug-e529e3: an index longer than the summary's read from the start
+    /// still reads as the run ended, from the read of its last bytes; only the
+    /// events between the two reads are left out (here t3's failure and the
+    /// spend). Streamed rows are passed over unparsed.
+    #[test]
+    fn a_summary_past_its_scan_reads_the_index_end() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = summary_state(&dir);
+        let run_id = "longer-run";
+        let index =
+            roko_fs::run_index::run_index_path(&state.layout.events_jsonl_path(), run_id).unwrap();
+        write_rows(&index, &long_run_rows(run_id, 200, 100));
+        // A streamed row the summary never parses: had it been read, it would
+        // count as a quarantined record.
+        let mut file = std::fs::OpenOptions::new()
+            .append(true)
+            .open(&index)
+            .unwrap();
+        let end = json!({"type":"run.completed","run_id":run_id,"timestamp_ms":60_001,
+            "outcome":"failed"});
+        let tail = format!("{{\"type\":\"agent_output\",\"content\":\n{end}\n");
+        std::io::Write::write_all(&mut file, tail.as_bytes()).unwrap();
+
+        let page = read_for_summary_within(&state, run_id, 16 * 1024, 16 * 1024)
+            .unwrap()
+            .expect("the run's index");
+
+        assert!(!page.has_more, "the read reaches the end");
+        assert_eq!(page.quarantined_records, 0);
+        let kinds: Vec<_> = page
+            .events
+            .iter()
+            .filter_map(|item| event_type(&item.value))
+            .collect();
+        assert_eq!(
+            kinds,
+            [
+                "run.started",
+                "task_completed",
+                "task_completed",
+                "run.completed",
+                "run.completed"
+            ],
+            "{kinds:?}"
+        );
+    }
+
+    /// gap-4f6cbe: a run's `delivery` milestone says how its plans'
+    /// deliveries ended, from a Graph run's `delivery_finished` or a
+    /// `graph.delivery` runtime event. A delivery a stop cut short reads
+    /// `cancelled`, not failed, and one that did not complete wins over an
+    /// earlier one that did.
+    #[tokio::test]
+    async fn run_summary_says_how_its_delivery_ended() {
+        let dir = tempfile::tempdir().unwrap();
+        let deploy_backend = Arc::from(
+            crate::deploy::create_backend("manual", None, None, None).expect("manual backend"),
+        );
+        let state = Arc::new(
+            AppState::new(
+                dir.path().to_path_buf(),
+                Arc::new(crate::runtime::NoOpRuntime),
+                roko_core::config::schema::RokoConfig::default(),
+                deploy_backend,
+            )
+            .expect("AppState::new"),
+        );
+        let finished = |run_id: &str, plan_id: &str, at: u64, state: &str| {
+            json!({"type":"delivery_finished","run_id":run_id,"ts_millis":at,"plan_id":plan_id,
+                "delivery_id":format!("{run_id}:{plan_id}"),"target":format!("roko/batch/{run_id}"),
+                "state":state})
+        };
+        for (run_id, ends, said) in [
+            ("d1", vec![("p1", "delivered")], "delivery completed"),
+            ("d2", vec![("p1", "cancelled")], "delivery cancelled"),
+            (
+                "d3",
+                vec![("p1", "delivered"), ("p2", "regression_failed")],
+                "delivery failed: the check on its merge failed",
+            ),
+            (
+                "d4",
+                vec![("p1", "conflict"), ("p2", "delivered")],
+                "delivery failed: its merge conflicted",
+            ),
+        ] {
+            let mut rows = vec![json!({"type":"run.started","run_id":run_id,"timestamp_ms":1})];
+            for (at, &(plan_id, end)) in (2..).zip(&ends) {
+                rows.push(finished(run_id, plan_id, at, end));
+            }
+            rows.push(
+                json!({"type":"run.completed","run_id":run_id,"timestamp_ms":9,
+                "outcome":"failed"}),
+            );
+            write_rows(
+                &roko_fs::run_index::run_index_path(&state.layout.events_jsonl_path(), run_id)
+                    .unwrap(),
+                &rows,
+            );
+            let Json(summary) = get_run_summary(State(Arc::clone(&state)), Path(run_id.into()))
+                .await
+                .unwrap();
+            let delivery = summary["milestones"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|milestone| milestone["kind"] == "delivery")
+                .unwrap_or_else(|| panic!("{run_id}: no delivery milestone: {summary}"));
+            assert_eq!(delivery["text"], said, "{run_id}: {summary}");
+        }
+
+        let extension = |kind: &str, failure_state: Option<&str>| {
+            json!({"event":{"payload":{"kind":"extension","data":{"namespace":"graph.delivery",
+                "version":"1","value":{"kind":kind,"failure_state":failure_state}}}}})
+        };
+        assert_eq!(
+            delivery_end(&extension("completed", None)),
+            Some("completed")
+        );
+        assert_eq!(
+            delivery_end(&extension("failed", Some("cancelled"))),
+            Some("cancelled")
+        );
+        assert_eq!(
+            delivery_end(&extension("failed", Some("regression_failed"))),
+            Some("failed")
+        );
+        assert_eq!(delivery_end(&extension("started", None)), None);
     }
 
     /// B9 B4: a run's summary gives one state with its verdict and cost, how
@@ -2363,6 +3605,834 @@ mod tests {
         assert_eq!(summary["verdict"], "unverified", "{summary}");
         assert_eq!(summary["tasks"]["unverified"], 1, "{summary}");
         assert_eq!(summary["tasks"]["failed"], 0, "{summary}");
+    }
+
+    /// bug-74164c: a plan that did not finish delivered only its verified tasks, so
+    /// its run's summary says the batch is partial and, per plan, which
+    /// tasks' work it holds and why the others' is missing. A run whose
+    /// plans all delivered whole is not partial.
+    #[tokio::test]
+    async fn run_summary_says_which_work_is_partial() {
+        let dir = tempfile::tempdir().unwrap();
+        let repo = dir.path().to_path_buf();
+        let git = |args: &[&str]| -> String {
+            let output = std::process::Command::new("git")
+                .current_dir(&repo)
+                .args([
+                    "-c",
+                    "user.name=roko-test",
+                    "-c",
+                    "user.email=roko@test.invalid",
+                    "-c",
+                    "commit.gpgsign=false",
+                ])
+                .args(args)
+                .env_remove("GIT_DIR")
+                .env_remove("GIT_WORK_TREE")
+                .env_remove("GIT_INDEX_FILE")
+                .output()
+                .expect("run git");
+            assert!(
+                output.status.success(),
+                "git {args:?}: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            String::from_utf8_lossy(&output.stdout).trim().to_string()
+        };
+        git(&["init", "--quiet", "-b", "main"]);
+        std::fs::write(repo.join("lib.py"), "def one():\n    return 1\n").unwrap();
+        git(&["add", "lib.py"]);
+        git(&["commit", "--quiet", "-m", "base"]);
+        let base = git(&["rev-parse", "HEAD"]);
+        git(&["switch", "--quiet", "-c", "roko/batch/p1"]);
+        std::fs::write(repo.join("one.py"), "ONE = 1\n").unwrap();
+        git(&["add", "one.py"]);
+        git(&["commit", "--quiet", "-m", "roko: pp/T1: one"]);
+        git(&["switch", "--quiet", "main"]);
+        git(&["branch", "roko/batch/w1", "roko/batch/p1"]);
+
+        let deploy_backend = Arc::from(
+            crate::deploy::create_backend("manual", None, None, None).expect("manual backend"),
+        );
+        let state = Arc::new(
+            AppState::new(
+                repo.clone(),
+                Arc::new(crate::runtime::NoOpRuntime),
+                roko_core::config::schema::RokoConfig::default(),
+                deploy_backend,
+            )
+            .expect("AppState::new"),
+        );
+        let ended = |run_id: &str, plan_id: &str, outcome: &str| {
+            let index =
+                roko_fs::run_index::run_index_path(&state.layout.events_jsonl_path(), run_id)
+                    .unwrap();
+            write_rows(
+                &index,
+                &[
+                    json!({"type":"run.started","run_id":run_id,"timestamp_ms":1,"plan_id":plan_id}),
+                    json!({"type":"task_completed","run_id":run_id,"timestamp_ms":2,"plan_id":plan_id,"task_id":"T1","outcome":"passed"}),
+                    json!({"type":"task_completed","run_id":run_id,"timestamp_ms":3,"plan_id":plan_id,"task_id":"T2","outcome":outcome}),
+                    json!({"type":"run.completed","run_id":run_id,"timestamp_ms":4,"outcome":"failed","duration_ms":10}),
+                ],
+            );
+        };
+        ended("p1", "pp", "failed");
+        ended("w1", "pw", "passed");
+        let record = |plan_id: &str, value: Value| {
+            let checkpoint = super::super::run_result::graph_plan_state_dir(&repo, plan_id)
+                .join("checkpoint.json");
+            std::fs::create_dir_all(checkpoint.parent().unwrap()).unwrap();
+            std::fs::write(
+                &checkpoint,
+                json!({"extensions":{"roko.batch@1":{"value": value}}}).to_string(),
+            )
+            .unwrap();
+        };
+        record(
+            "pp",
+            json!({
+                "run_id":"p1","branch":"roko/batch/p1","base_oid":base,"plan_id":"pp",
+                "plan_branch":"roko/plan/pp","state":"delivered","partial":true,
+                "work":{"partial":true,"delivered_tasks":["T1"],
+                    "missing_tasks":[{"task_id":"T2","why":"failed"}]}
+            }),
+        );
+        record(
+            "pw",
+            json!({"run_id":"w1","branch":"roko/batch/w1","base_oid":base,"state":"delivered"}),
+        );
+        let summary = |run_id: &'static str| {
+            let state = Arc::clone(&state);
+            async move {
+                let Json(summary) = get_run_summary(State(state), Path(run_id.into()))
+                    .await
+                    .unwrap();
+                summary
+            }
+        };
+
+        let partial = summary("p1").await["result"].clone();
+        assert_eq!(partial["partial"], true, "{partial}");
+        assert_eq!(partial["files_changed"], json!(["one.py"]), "{partial}");
+        assert_eq!(
+            partial["merge_command"], "git merge --ff-only roko/batch/p1",
+            "the verified part can be taken: {partial}"
+        );
+        assert_eq!(
+            partial["plans"],
+            json!([{
+                "plan_id": "pp",
+                "partial": true,
+                "delivered_tasks": ["T1"],
+                "missing_tasks": [{"task_id": "T2", "why": "failed"}],
+            }]),
+            "{partial}"
+        );
+        let whole = summary("w1").await["result"].clone();
+        assert_eq!(whole["partial"], false, "{whole}");
+        assert!(whole.get("plans").is_none(), "{whole}");
+    }
+
+    /// gap-8f84d1: an ended run's `result` says whether every plan it ran is
+    /// a fixture (a demo), whose output a host should leave on its branch
+    /// rather than offer to merge.
+    #[tokio::test]
+    async fn run_summary_result_marks_a_fixture_run() {
+        /// A runtime whose plans named `demo-…` are fixtures.
+        struct Demos;
+
+        #[async_trait::async_trait]
+        impl crate::runtime::CliRuntime for Demos {
+            async fn run_once(
+                &self,
+                _workdir: &FsPath,
+                _prompt: &str,
+            ) -> anyhow::Result<crate::runtime::RunResult> {
+                anyhow::bail!("no runs in this test")
+            }
+
+            async fn load_plan_summary(
+                &self,
+                _workdir: &FsPath,
+                plan_id: &str,
+            ) -> anyhow::Result<Option<crate::plan_types::PlanSummaryDto>> {
+                Ok(Some(serde_json::from_value(json!({
+                    "id": plan_id, "title": plan_id, "task_count": 1, "tasks_done": 1,
+                    "tasks_failed": 0, "completed": true, "status": "done (1m ago)",
+                    "old_format": false, "fixture": plan_id.starts_with("demo-"),
+                }))?))
+            }
+
+            fn session_status(&self, workdir: PathBuf) -> crate::runtime::SessionStatusInfo {
+                crate::runtime::SessionStatusInfo {
+                    session_id: None,
+                    workdir,
+                    daemon_running: false,
+                    signal_count: None,
+                    episode_count: None,
+                    last_episode_passed: None,
+                }
+            }
+
+            fn dashboard_scaffold(&self, _workdir: &FsPath) -> crate::runtime::DashboardInfo {
+                crate::runtime::DashboardInfo {
+                    rendered: String::new(),
+                }
+            }
+        }
+
+        let dir = tempfile::tempdir().unwrap();
+        let repo = dir.path().to_path_buf();
+        let git = |args: &[&str]| -> String {
+            let output = std::process::Command::new("git")
+                .current_dir(&repo)
+                .args([
+                    "-c",
+                    "user.name=roko-test",
+                    "-c",
+                    "user.email=roko@test.invalid",
+                    "-c",
+                    "commit.gpgsign=false",
+                ])
+                .args(args)
+                .env_remove("GIT_DIR")
+                .env_remove("GIT_WORK_TREE")
+                .env_remove("GIT_INDEX_FILE")
+                .output()
+                .expect("run git");
+            assert!(
+                output.status.success(),
+                "git {args:?}: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            String::from_utf8_lossy(&output.stdout).trim().to_string()
+        };
+        git(&["init", "--quiet", "-b", "main"]);
+        std::fs::write(repo.join("README.md"), "base\n").unwrap();
+        git(&["add", "README.md"]);
+        git(&["commit", "--quiet", "-m", "base"]);
+        git(&["switch", "--quiet", "-c", "roko/batch/d1"]);
+        std::fs::write(repo.join("hello.txt"), "demo output\n").unwrap();
+        git(&["add", "hello.txt"]);
+        git(&["commit", "--quiet", "-m", "roko: demo-hello/T1: hello"]);
+        git(&["switch", "--quiet", "main"]);
+        git(&["branch", "roko/batch/w1", "roko/batch/d1"]);
+
+        let deploy_backend = Arc::from(
+            crate::deploy::create_backend("manual", None, None, None).expect("manual backend"),
+        );
+        let state = Arc::new(
+            AppState::new(
+                repo.clone(),
+                Arc::new(Demos),
+                roko_core::config::schema::RokoConfig::default(),
+                deploy_backend,
+            )
+            .expect("AppState::new"),
+        );
+        let ended = |run_id: &str, plan_id: &str| {
+            let index =
+                roko_fs::run_index::run_index_path(&state.layout.events_jsonl_path(), run_id)
+                    .unwrap();
+            write_rows(
+                &index,
+                &[
+                    json!({"type":"run.started","run_id":run_id,"timestamp_ms":1,"plan_id":plan_id}),
+                    json!({"type":"task_completed","run_id":run_id,"timestamp_ms":2,"plan_id":plan_id,"task_id":"T1","outcome":"passed"}),
+                    json!({"type":"run.completed","run_id":run_id,"timestamp_ms":3,"outcome":"succeeded","duration_ms":10}),
+                ],
+            );
+        };
+        ended("d1", "demo-hello");
+        ended("w1", "real-work");
+        let result = |run_id: &'static str| {
+            let state = Arc::clone(&state);
+            async move {
+                let Json(summary) = get_run_summary(State(state), Path(run_id.into()))
+                    .await
+                    .unwrap();
+                summary["result"].clone()
+            }
+        };
+
+        let demo = result("d1").await;
+        assert_eq!(demo["fixture"], true, "{demo}");
+        assert_eq!(
+            demo["merge_command"], "git merge --ff-only roko/batch/d1",
+            "the summary still says how to take it: {demo}"
+        );
+        let work = result("w1").await;
+        assert_eq!(work["fixture"], false, "{work}");
+    }
+
+    /// bug-db89d4: a plan that ended unverified was not delivered, so its
+    /// run's batch is still at its base and has nothing to merge. Its batch
+    /// record names the work no check ran on, which the summary's
+    /// `result.unverified` reports with its plan branch, files and the command
+    /// that shows it, and which `diff?work=unverified` returns. Once the plan
+    /// branch moves on, the work is still named by its commit.
+    #[tokio::test]
+    async fn run_summary_names_unverified_work() {
+        use axum::http::StatusCode;
+
+        let dir = tempfile::tempdir().unwrap();
+        let repo = dir.path().to_path_buf();
+        let git = |args: &[&str]| -> String {
+            let output = std::process::Command::new("git")
+                .current_dir(&repo)
+                .args([
+                    "-c",
+                    "user.name=roko-test",
+                    "-c",
+                    "user.email=roko@test.invalid",
+                    "-c",
+                    "commit.gpgsign=false",
+                ])
+                .args(args)
+                .env_remove("GIT_DIR")
+                .env_remove("GIT_WORK_TREE")
+                .env_remove("GIT_INDEX_FILE")
+                .output()
+                .expect("run git");
+            assert!(
+                output.status.success(),
+                "git {args:?}: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            String::from_utf8_lossy(&output.stdout).trim().to_string()
+        };
+        git(&["init", "--quiet", "-b", "main"]);
+        std::fs::write(repo.join("lib.py"), "def one():\n    return 1\n").unwrap();
+        git(&["add", "lib.py"]);
+        git(&["commit", "--quiet", "-m", "base"]);
+        let base = git(&["rev-parse", "HEAD"]);
+        git(&["branch", "roko/batch/u1"]);
+        git(&["switch", "--quiet", "-c", "roko/plan/pu"]);
+        std::fs::write(repo.join("new.py"), "def two():\n    return 2\n").unwrap();
+        git(&["add", "new.py"]);
+        git(&["commit", "--quiet", "-m", "roko: pu/T1: add two"]);
+        let tip = git(&["rev-parse", "HEAD"]);
+        git(&["switch", "--quiet", "main"]);
+
+        let deploy_backend = Arc::from(
+            crate::deploy::create_backend("manual", None, None, None).expect("manual backend"),
+        );
+        let state = Arc::new(
+            AppState::new(
+                repo.clone(),
+                Arc::new(crate::runtime::NoOpRuntime),
+                roko_core::config::schema::RokoConfig::default(),
+                deploy_backend,
+            )
+            .expect("AppState::new"),
+        );
+        let index =
+            roko_fs::run_index::run_index_path(&state.layout.events_jsonl_path(), "u1").unwrap();
+        write_rows(
+            &index,
+            &[
+                json!({"type":"run.started","run_id":"u1","timestamp_ms":1,"plan_id":"pu"}),
+                json!({"type":"task_completed","run_id":"u1","timestamp_ms":2,"plan_id":"pu","task_id":"T1","outcome":"unverified"}),
+                json!({"type":"run.completed","run_id":"u1","timestamp_ms":3,"outcome":"failed","duration_ms":10}),
+            ],
+        );
+        let checkpoint =
+            super::super::run_result::graph_plan_state_dir(&repo, "pu").join("checkpoint.json");
+        std::fs::create_dir_all(checkpoint.parent().unwrap()).unwrap();
+        std::fs::write(
+            &checkpoint,
+            json!({"extensions":{"roko.batch@1":{"value":{
+                "run_id":"u1","branch":"roko/batch/u1","base_oid":base,"plan_id":"pu",
+                "plan_branch":"roko/plan/pu",
+                "work":{"unverified":{"commit":tip,"base":base,
+                    "tasks":[{"task_id":"T1","verdict":"unverified"}]}}
+            }}}})
+            .to_string(),
+        )
+        .unwrap();
+        let summary = || {
+            let state = Arc::clone(&state);
+            async move {
+                let Json(summary) = get_run_summary(State(state), Path("u1".into()))
+                    .await
+                    .unwrap();
+                summary
+            }
+        };
+        let diff = |query: DiffQuery| {
+            let state = Arc::clone(&state);
+            async move { get_run_diff(State(state), Path("u1".into()), Query(query)).await }
+        };
+
+        let ended = summary().await;
+        assert_eq!(ended["verdict"], "unverified", "{ended}");
+        let result = &ended["result"];
+        assert_eq!(result["branch"], "roko/batch/u1", "{result}");
+        assert_eq!(
+            result["commit"],
+            base.as_str(),
+            "nothing was delivered: {result}"
+        );
+        assert_eq!(result["merged"], false, "{result}");
+        assert!(result.get("merge_command").is_none(), "{result}");
+        assert_eq!(
+            result["unverified"],
+            json!([{
+                "plan_id": "pu",
+                "branch": "roko/plan/pu",
+                "commit": tip,
+                "base": base,
+                "tasks": [{"task_id": "T1", "verdict": "unverified"}],
+                "files_changed": ["new.py"],
+                "diffstat": {"files": 1, "insertions": 2, "deletions": 0},
+                "review_command": format!("git diff {}..roko/plan/pu", &base[..12]),
+            }]),
+            "{result}"
+        );
+
+        let Json(unverified) = diff(DiffQuery {
+            work: Some("unverified".into()),
+            ..DiffQuery::default()
+        })
+        .await
+        .unwrap();
+        assert_eq!(unverified["work"], "unverified", "{unverified}");
+        assert_eq!(unverified["plan_id"], "pu", "{unverified}");
+        assert_eq!(unverified["branch"], "roko/plan/pu", "{unverified}");
+        assert_eq!(unverified["commit"], tip.as_str(), "{unverified}");
+        assert_eq!(unverified["files"][0]["path"], "new.py", "{unverified}");
+        assert!(
+            unverified["files"][0]["patch"]
+                .as_str()
+                .unwrap()
+                .contains("+def two():"),
+            "{unverified}"
+        );
+        let Json(verified) = diff(DiffQuery::default()).await.unwrap();
+        assert_eq!(verified["totals"]["files"], 0, "{verified}");
+        let other_plan = diff(DiffQuery {
+            work: Some("unverified".into()),
+            plan_id: Some("other".into()),
+            ..DiffQuery::default()
+        })
+        .await
+        .unwrap_err();
+        assert_eq!(
+            other_plan.status,
+            StatusCode::NOT_FOUND,
+            "{}",
+            other_plan.message
+        );
+        let refused = diff(DiffQuery {
+            work: Some("everything".into()),
+            ..DiffQuery::default()
+        })
+        .await
+        .unwrap_err();
+        assert_eq!(
+            refused.status,
+            StatusCode::BAD_REQUEST,
+            "{}",
+            refused.message
+        );
+
+        // Another run moved the plan branch on: the work is named by its commit.
+        git(&["branch", "--force", "roko/plan/pu", "main"]);
+        let moved = summary().await["result"]["unverified"][0].clone();
+        assert!(moved.get("branch").is_none(), "{moved}");
+        assert_eq!(
+            moved["review_command"],
+            format!("git diff {}..{tip}", &base[..12]),
+            "{moved}"
+        );
+    }
+
+    /// gap-8409d0: an ended run's summary names its batch branch, the branch's
+    /// tip and base, and what it changes, with how to take it: a merge command
+    /// while the checkout lacks the work, `merged` once it has it, the
+    /// promotion once the run was promoted. The base comes from the run's
+    /// manifest or a plan's batch record, so it survives the merge. A run
+    /// still active, or one with no batch branch, has no result.
+    /// gap-0d6d21: an ended run's diff lists every file its batch changes
+    /// from its base, with status, line counts, a binary flag and the patch,
+    /// within `max_files` and `max_patch_bytes`; 409 while the run is active,
+    /// 404 when it has no result, 400 for limits out of range.
+    #[tokio::test]
+    async fn run_diff_returns_the_runs_patches() {
+        use axum::http::StatusCode;
+
+        let dir = tempfile::tempdir().unwrap();
+        let repo = dir.path().to_path_buf();
+        let git = |args: &[&str]| -> String {
+            let output = std::process::Command::new("git")
+                .current_dir(&repo)
+                .args([
+                    "-c",
+                    "user.name=roko-test",
+                    "-c",
+                    "user.email=roko@test.invalid",
+                    "-c",
+                    "commit.gpgsign=false",
+                ])
+                .args(args)
+                .env_remove("GIT_DIR")
+                .env_remove("GIT_WORK_TREE")
+                .env_remove("GIT_INDEX_FILE")
+                .output()
+                .expect("run git");
+            assert!(
+                output.status.success(),
+                "git {args:?}: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            String::from_utf8_lossy(&output.stdout).trim().to_string()
+        };
+        git(&["init", "--quiet", "-b", "main"]);
+        std::fs::create_dir_all(repo.join("src")).unwrap();
+        std::fs::write(repo.join("src/lib.rs"), "pub fn one() {}\n").unwrap();
+        std::fs::write(repo.join("src/old.rs"), "pub fn gone() {}\n").unwrap();
+        git(&["add", "src"]);
+        git(&["commit", "--quiet", "-m", "base"]);
+        let base = git(&["rev-parse", "HEAD"]);
+        git(&["switch", "--quiet", "-c", "roko/batch/r9"]);
+        std::fs::write(
+            repo.join("src/lib.rs"),
+            "pub fn one() {}\npub fn two() {}\n",
+        )
+        .unwrap();
+        std::fs::write(repo.join("src/new.rs"), "pub fn three() {}\n").unwrap();
+        std::fs::remove_file(repo.join("src/old.rs")).unwrap();
+        std::fs::create_dir_all(repo.join("assets")).unwrap();
+        std::fs::write(
+            repo.join("assets/logo.bin"),
+            [0_u8, 159, 146, 150, 0, 255, 10],
+        )
+        .unwrap();
+        let big: String = (1..=3000).map(|n| format!("line {n}\n")).collect();
+        std::fs::write(repo.join("big.txt"), big).unwrap();
+        git(&["add", "-A", "src", "assets", "big.txt"]);
+        git(&["commit", "--quiet", "-m", "the run's work"]);
+        let tip = git(&["rev-parse", "HEAD"]);
+        git(&["switch", "--quiet", "main"]);
+        git(&["update-ref", "refs/heads/roko/batch/r6", &tip]);
+
+        let deploy_backend = Arc::from(
+            crate::deploy::create_backend("manual", None, None, None).expect("manual backend"),
+        );
+        let state = Arc::new(
+            AppState::new(
+                repo.clone(),
+                Arc::new(crate::runtime::NoOpRuntime),
+                roko_core::config::schema::RokoConfig::default(),
+                deploy_backend,
+            )
+            .expect("AppState::new"),
+        );
+        let index = |run_id: &str| {
+            roko_fs::run_index::run_index_path(&state.layout.events_jsonl_path(), run_id).unwrap()
+        };
+        let ended = |run_id: &str| {
+            vec![
+                json!({"type":"run.started","run_id":run_id,"timestamp_ms":1,"plan_id":run_id}),
+                json!({"type":"task_completed","run_id":run_id,"timestamp_ms":2,"plan_id":run_id,"task_id":"t1","outcome":"passed"}),
+                json!({"type":"run.completed","run_id":run_id,"timestamp_ms":3,"outcome":"succeeded","duration_ms":10}),
+            ]
+        };
+        write_rows(&index("r9"), &ended("r9"));
+        let manifest = roko_fs::RokoLayout::for_project(&repo)
+            .run_dir("r9")
+            .join("manifest.json");
+        std::fs::create_dir_all(manifest.parent().unwrap()).unwrap();
+        std::fs::write(
+            &manifest,
+            json!({"run_id":"r9","plan_ids":["r9"],"workspace":{"base_commit":base}}).to_string(),
+        )
+        .unwrap();
+        // r6 is still running; r5 ended with no batch branch.
+        write_rows(
+            &index("r6"),
+            &[json!({"type":"run.started","run_id":"r6","timestamp_ms":1,"plan_id":"r6"})],
+        );
+        write_rows(&index("r5"), &ended("r5"));
+
+        let diff = |run_id: &'static str, query: DiffQuery| {
+            let state = Arc::clone(&state);
+            async move { get_run_diff(State(state), Path(run_id.into()), Query(query)).await }
+        };
+
+        let Json(all) = diff("r9", DiffQuery::default()).await.unwrap();
+        assert_eq!(all["branch"], "roko/batch/r9", "{all}");
+        assert_eq!(all["base"], base.as_str(), "{all}");
+        assert_eq!(all["commit"], tip.as_str(), "{all}");
+        assert_eq!(all["truncated"], false, "{all}");
+        assert_eq!(
+            all["totals"],
+            json!({"files": 5, "additions": 3002, "deletions": 1}),
+        );
+        let files = all["files"].as_array().unwrap();
+        let summary = files
+            .iter()
+            .map(|file| {
+                (
+                    file["path"].as_str().unwrap(),
+                    file["status"].as_str().unwrap(),
+                    file["binary"].as_bool().unwrap(),
+                )
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            summary,
+            [
+                ("assets/logo.bin", "added", true),
+                ("big.txt", "added", false),
+                ("src/lib.rs", "modified", false),
+                ("src/new.rs", "added", false),
+                ("src/old.rs", "deleted", false),
+            ]
+        );
+        assert_eq!(files[0]["patch"], Value::Null, "a binary file has no patch");
+        assert_eq!(files[2]["additions"], 1);
+        assert!(
+            files[2]["patch"]
+                .as_str()
+                .unwrap()
+                .contains("+pub fn two() {}")
+        );
+        assert!(
+            files[3]["patch"]
+                .as_str()
+                .unwrap()
+                .contains("+pub fn three() {}")
+        );
+        assert!(
+            files[4]["patch"]
+                .as_str()
+                .unwrap()
+                .contains("-pub fn gone() {}")
+        );
+        assert_eq!(files[1]["truncated"], false);
+
+        // A patch is cut on a line boundary at max_patch_bytes.
+        let Json(cut) = diff(
+            "r9",
+            DiffQuery {
+                max_patch_bytes: Some(1_024),
+                ..DiffQuery::default()
+            },
+        )
+        .await
+        .unwrap();
+        let big_patch = cut["files"][1]["patch"].as_str().unwrap();
+        assert_eq!(cut["files"][1]["truncated"], true, "{}", cut["files"][1]);
+        assert!(big_patch.len() <= 1_024 && big_patch.ends_with('\n'));
+        assert_eq!(cut["files"][2]["truncated"], false);
+
+        // Files past max_files are left out; the totals still count them.
+        let Json(first_two) = diff(
+            "r9",
+            DiffQuery {
+                max_files: Some(2),
+                ..DiffQuery::default()
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(first_two["files"].as_array().unwrap().len(), 2);
+        assert_eq!(first_two["truncated"], true);
+        assert_eq!(first_two["totals"]["files"], 5);
+
+        let active = diff("r6", DiffQuery::default()).await.unwrap_err();
+        assert_eq!(active.status, StatusCode::CONFLICT, "{}", active.message);
+        let none = diff("r5", DiffQuery::default()).await.unwrap_err();
+        assert_eq!(none.status, StatusCode::NOT_FOUND, "{}", none.message);
+        let refused = diff(
+            "r9",
+            DiffQuery {
+                max_files: Some(0),
+                ..DiffQuery::default()
+            },
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(refused.status, StatusCode::BAD_REQUEST);
+        let too_much = diff(
+            "r9",
+            DiffQuery {
+                max_patch_bytes: Some(MAX_DIFF_PATCH_BYTES + 1),
+                ..DiffQuery::default()
+            },
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(too_much.status, StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn run_summary_reports_where_the_verified_work_is() {
+        let dir = tempfile::tempdir().unwrap();
+        let repo = dir.path().to_path_buf();
+        let git = |args: &[&str]| -> String {
+            let output = std::process::Command::new("git")
+                .current_dir(&repo)
+                .args([
+                    "-c",
+                    "user.name=roko-test",
+                    "-c",
+                    "user.email=roko@test.invalid",
+                    "-c",
+                    "commit.gpgsign=false",
+                    "-c",
+                    "tag.gpgsign=false",
+                ])
+                .args(args)
+                .env_remove("GIT_DIR")
+                .env_remove("GIT_WORK_TREE")
+                .env_remove("GIT_INDEX_FILE")
+                .output()
+                .expect("run git");
+            assert!(
+                output.status.success(),
+                "git {args:?}: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            String::from_utf8_lossy(&output.stdout).trim().to_string()
+        };
+        git(&["init", "--quiet", "-b", "main"]);
+        std::fs::create_dir_all(repo.join("src")).unwrap();
+        std::fs::write(repo.join("src/lib.rs"), "pub fn one() {}\n").unwrap();
+        git(&["add", "src/lib.rs"]);
+        git(&["commit", "--quiet", "-m", "base"]);
+        let base = git(&["rev-parse", "HEAD"]);
+        // The run's verified work is on its batch branch; the checkout stays
+        // on main.
+        git(&["switch", "--quiet", "-c", "roko/batch/r9"]);
+        std::fs::write(
+            repo.join("src/lib.rs"),
+            "pub fn one() {}\npub fn two() {}\n",
+        )
+        .unwrap();
+        std::fs::write(repo.join("src/new.rs"), "pub fn three() {}\n").unwrap();
+        git(&["add", "src/lib.rs", "src/new.rs"]);
+        git(&["commit", "--quiet", "-m", "the run's work"]);
+        let tip = git(&["rev-parse", "HEAD"]);
+        git(&["switch", "--quiet", "main"]);
+        for run_id in ["r7", "r6"] {
+            git(&[
+                "update-ref",
+                &format!("refs/heads/roko/batch/{run_id}"),
+                &tip,
+            ]);
+        }
+
+        let deploy_backend = Arc::from(
+            crate::deploy::create_backend("manual", None, None, None).expect("manual backend"),
+        );
+        let state = Arc::new(
+            AppState::new(
+                repo.clone(),
+                Arc::new(crate::runtime::NoOpRuntime),
+                roko_core::config::schema::RokoConfig::default(),
+                deploy_backend,
+            )
+            .expect("AppState::new"),
+        );
+        let index = |run_id: &str| {
+            roko_fs::run_index::run_index_path(&state.layout.events_jsonl_path(), run_id).unwrap()
+        };
+        let ended = |run_id: &str, plan_id: &str| {
+            vec![
+                json!({"type":"run.started","run_id":run_id,"timestamp_ms":1,"plan_id":plan_id}),
+                json!({"type":"task_completed","run_id":run_id,"timestamp_ms":2,"plan_id":plan_id,"task_id":"t1","outcome":"passed"}),
+                json!({"type":"run.completed","run_id":run_id,"timestamp_ms":3,"outcome":"succeeded","duration_ms":10}),
+            ]
+        };
+        // r9's manifest records its base; r7's plan checkpoint does.
+        write_rows(&index("r9"), &ended("r9", "p9"));
+        let manifest = roko_fs::RokoLayout::for_project(&repo)
+            .run_dir("r9")
+            .join("manifest.json");
+        std::fs::create_dir_all(manifest.parent().unwrap()).unwrap();
+        std::fs::write(
+            &manifest,
+            json!({"run_id":"r9","plan_ids":["p9"],"workspace":{"base_commit":base}}).to_string(),
+        )
+        .unwrap();
+        write_rows(&index("r7"), &ended("r7", "p7"));
+        let checkpoint =
+            super::super::run_result::graph_plan_state_dir(&repo, "p7").join("checkpoint.json");
+        std::fs::create_dir_all(checkpoint.parent().unwrap()).unwrap();
+        std::fs::write(
+            &checkpoint,
+            json!({"extensions":{"roko.batch@1":{"value":{
+                "run_id":"r7","branch":"roko/batch/r7","base_oid":base,"state":"delivered"
+            }}}})
+            .to_string(),
+        )
+        .unwrap();
+        // r6 is still running; r5 ended with no batch branch.
+        write_rows(
+            &index("r6"),
+            &[json!({"type":"run.started","run_id":"r6","timestamp_ms":1,"plan_id":"p6"})],
+        );
+        write_rows(&index("r5"), &ended("r5", "p5"));
+
+        let summary = |run_id: &'static str| {
+            let state = Arc::clone(&state);
+            async move {
+                let Json(summary) = get_run_summary(State(state), Path(run_id.into()))
+                    .await
+                    .unwrap();
+                summary
+            }
+        };
+
+        let result = summary("r9").await["result"].clone();
+        assert_eq!(result["branch"], "roko/batch/r9", "{result}");
+        assert_eq!(result["commit"], tip.as_str(), "{result}");
+        assert_eq!(result["base"], base.as_str(), "{result}");
+        assert_eq!(result["files_changed"], json!(["src/lib.rs", "src/new.rs"]));
+        assert_eq!(
+            result["diffstat"],
+            json!({"files": 2, "insertions": 2, "deletions": 0}),
+        );
+        assert_eq!(result["merged"], false, "{result}");
+        assert_eq!(
+            result["merge_command"], "git merge --ff-only roko/batch/r9",
+            "{result}"
+        );
+        assert!(result.get("tag").is_none(), "{result}");
+
+        assert!(summary("r6").await.get("result").is_none(), "an active run");
+        assert!(
+            summary("r5").await.get("result").is_none(),
+            "no batch branch"
+        );
+
+        // Once the checkout has the work, it is merged, and the recorded base
+        // still names what the run changed.
+        git(&["merge", "--quiet", "--ff-only", "roko/batch/r9"]);
+        let result = summary("r9").await["result"].clone();
+        assert_eq!(result["merged"], true, "{result}");
+        assert!(result.get("merge_command").is_none(), "{result}");
+        assert_eq!(result["diffstat"]["files"], 2, "{result}");
+        let result = summary("r7").await["result"].clone();
+        assert_eq!(result["base"], base.as_str(), "{result}");
+        assert_eq!(result["files_changed"], json!(["src/lib.rs", "src/new.rs"]));
+        assert_eq!(result["merged"], true, "{result}");
+
+        // A promoted run names its tag and target.
+        git(&[
+            "tag",
+            "--annotate",
+            "--message",
+            "roko run r9: roko/batch/r9 promoted into release",
+            "roko/run/r9",
+            &tip,
+        ]);
+        let result = summary("r9").await["result"].clone();
+        assert_eq!(result["tag"], "roko/run/r9", "{result}");
+        assert_eq!(result["promoted_into"], "release", "{result}");
     }
 
     /// 9117: each task the run dispatched an agent for reports what screens

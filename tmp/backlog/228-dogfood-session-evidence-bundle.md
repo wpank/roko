@@ -1,5 +1,7 @@
 # 228 — Dogfood Session Evidence Bundle
 
+> **Status 2026-10-15: DONE.** Verified at `7b6a5af44` by the status-quo assessment (`tmp/status-quo/2026-10-15/backlog/B-top-level-and-regressions.md`): gap-09e478 done (da360594e); static verify passes at HEAD: scripts/run_evidence.py reads state/graph, scripts/test_run_evidence_graph.py exists
+
 > **Status: SOURCE-IMPLEMENTED; STRICT LOOPBACK/CLI BUNDLE SMOKE VERIFIED** (2026-08-31,
 > `bba2f8858` + `25aaca597`).
 > `run-evidence`, `evidence-validate`, `feedback`, and `score` provide a private schema-v2 bundle

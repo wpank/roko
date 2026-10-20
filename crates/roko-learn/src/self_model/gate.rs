@@ -1,20 +1,32 @@
 //! The promotion gate that moves the self-model out of shadow mode: backlog task 6122.
 //!
 //! The self-model is "promoted only when calibrated" (P18). [`CalibrationGate::evaluate`] scores
-//! the last W = 100 labelled outcomes of the current predictor version against S04 §4.7's bounds
-//! on its essential variables: ECE ≤ 0.08, |calibration-in-the-large| ≤ 0.05, BSS ≥ 0.05 and
-//! AUROC ≥ 0.65, and the pass rate of the attempts it routed ≥ π* − 0.05. Per decision 6102 it
-//! calibrates on gate labels now and VS labels later, and the report only makes the model
-//! eligible: a person promotes it. The circuit breaker (S04 §4.11.5) trips when the Brier score
-//! over the last 50 outcomes is worse than the base rate's, or ECE exceeds 0.2, and an active
-//! model then drops back to shadow ([`next_mode`]). A new predictor version restarts the window
-//! (§4.11.6). [`write_calibration`] exports the `ev.m3.*` values S06 reads, atomically.
+//! the last W labelled outcomes of the current predictor version against S04 §4.7's bounds on
+//! its essential variables: ECE ≤ 0.08, |calibration-in-the-large| ≤ 0.05, BSS ≥ 0.05 and
+//! AUROC ≥ 0.65, and, once it has routed one, the pass rate of the attempts it routed
+//! ≥ π* − 0.05: it routes only while the gate is eligible (bug-92cc56). W is
+//! `[self_model] n_min`, 100 by default (S04 §4.10), so a small workspace can opt into a shorter
+//! window ([`CalibrationGate::of`]; gap-4c531f). The bounds stay as they are, and over a small W
+//! they are noisy: with ten equal-mass bins, ECE over fewer than about 100 outcomes compares
+//! single forecasts with their own 0/1 outcome, so it passes only sharp forecasts, and one
+//! outcome moves every score. Per decision 6102 it calibrates on gate labels now and VS labels
+//! later, and the report only makes the model eligible: a person promotes it. The circuit
+//! breaker (S04 §4.11.5) trips when the Brier score over the last 50 outcomes is worse than the
+//! base rate's, or ECE exceeds 0.2, and an active model then drops back to shadow
+//! ([`next_mode`]). The breaker keeps its 50 outcomes whatever W is: the window keeps at least
+//! [`WINDOW`] outcomes, so below a W of 50 the gate may hold before the breaker can trip. A new
+//! predictor version restarts the window (§4.11.6). No single run settles W outcomes, so the
+//! window is kept across runs in [`WINDOW_FILE_NAME`] beside the state file
+//! ([`CalibrationWindow::load`], [`CalibrationWindow::save_outcomes`]; gap-b38ed2).
+//! [`write_calibration`] exports the `ev.m3.*` values S06 reads, atomically.
 //!
 //! Demotion for "no benefit after 150 exposed decisions" is S03's L-M3 loop audit, not this gate.
 
 use std::collections::VecDeque;
+use std::io;
 use std::path::{Path, PathBuf};
 
+use roko_core::config::self_model::SelfModelConfig;
 use serde::{Deserialize, Serialize};
 
 use super::PredictorVersion;
@@ -23,7 +35,8 @@ use super::metrics::{
 };
 use super::policy::TARGET;
 
-/// The outcomes the gate scores, W (S04 §4.10).
+/// The outcomes the gate scores by default, W (S04 §4.10); `[self_model] n_min` sets W
+/// (gap-4c531f). A window keeps at least this many outcomes, whatever W is.
 pub const WINDOW: usize = 100;
 /// The ECE bound.
 pub const ECE_MAX: f64 = 0.08;
@@ -43,6 +56,10 @@ pub const BREAKER_ECE: f64 = 0.2;
 pub const CALIBRATION_FILE: &str = "learn/self-model/calibration.json";
 /// `schema_version` of the export.
 pub const CALIBRATION_SCHEMA: &str = "roko.self_model_calibration/1";
+/// The window's file, in the directory of the self-model's state file (gap-b38ed2).
+pub const WINDOW_FILE_NAME: &str = "window-v1.json";
+/// `schema_version` of the window's file.
+pub const WINDOW_SCHEMA: &str = "roko.self_model_window/1";
 
 /// One labelled outcome in the gate's window.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
@@ -57,22 +74,55 @@ pub struct WindowOutcome {
     pub routed: bool,
 }
 
-/// The last [`WINDOW`] outcomes of one predictor version.
+/// The last outcomes of one predictor version: at most its [capacity](Self::capacity), which is
+/// at least [`WINDOW`].
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct CalibrationWindow {
     /// The version whose forecasts the window holds.
     pub version: PredictorVersion,
     outcomes: VecDeque<WindowOutcome>,
+    /// The most outcomes it keeps: the gate's W, never fewer than [`WINDOW`], so that the
+    /// breaker always has its [`BREAKER_WINDOW`] (gap-4c531f). The run sets it
+    /// ([`Self::keeping`]); the window's file does not hold it.
+    #[serde(skip, default = "default_window")]
+    capacity: usize,
+}
+
+/// The default W, [`WINDOW`]: a window's capacity and a gate's window when nothing sets them.
+const fn default_window() -> usize {
+    WINDOW
 }
 
 impl CalibrationWindow {
-    /// An empty window for `version`.
+    /// An empty window for `version`, keeping the last [`WINDOW`] outcomes.
     #[must_use]
     pub fn new(version: PredictorVersion) -> Self {
         Self {
             version,
             outcomes: VecDeque::with_capacity(WINDOW + 1),
+            capacity: WINDOW,
         }
+    }
+
+    /// The window keeping its last `capacity` outcomes, and never fewer than [`WINDOW`]: what
+    /// a gate of that W needs ([`CalibrationGate::keeps`]). Older outcomes go.
+    #[must_use]
+    pub fn keeping(mut self, capacity: usize) -> Self {
+        self.capacity = capacity.max(WINDOW);
+        self.trim();
+        self
+    }
+
+    /// The most outcomes the window keeps.
+    #[must_use]
+    pub const fn capacity(&self) -> usize {
+        self.capacity
+    }
+
+    /// Let the oldest outcomes go past the capacity.
+    fn trim(&mut self) {
+        let excess = self.outcomes.len().saturating_sub(self.capacity);
+        self.outcomes.drain(..excess);
     }
 
     /// Add an outcome of a forecast by `version`. A new version restarts the window, since
@@ -83,9 +133,7 @@ impl CalibrationWindow {
             self.outcomes.clear();
         }
         self.outcomes.push_back(outcome);
-        if self.outcomes.len() > WINDOW {
-            self.outcomes.pop_front();
-        }
+        self.trim();
     }
 
     /// The outcomes held.
@@ -110,16 +158,93 @@ impl CalibrationWindow {
             .collect()
     }
 
-    /// The weighted pass rate of the attempts the self-model routed.
-    fn route_pass(&self) -> Option<f64> {
+    /// The weighted pass rate of the attempts the self-model routed among the last `n`.
+    fn route_pass(&self, n: usize) -> Option<f64> {
+        let skip = self.outcomes.len().saturating_sub(n);
         let routed: Vec<Scored> = self
             .outcomes
             .iter()
+            .skip(skip)
             .filter(|outcome| outcome.routed)
             .map(|outcome| Scored::weighted(outcome.p, outcome.y, outcome.w))
             .collect();
         base_rate(&routed)
     }
+
+    /// The window kept in the file at `path` when it holds forecasts of `version`, else an empty
+    /// window of `version`, either way keeping the last `capacity` outcomes ([`Self::keeping`]):
+    /// a missing file, a window of another version (forecasts are never compared across
+    /// versions) and a file of another schema start afresh. A file that does not parse is set
+    /// aside, renamed `<name>.unreadable`, as an unreadable state file is, so the next save
+    /// starts a new one.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the file exists but cannot be read or set aside.
+    pub fn load(path: &Path, version: &PredictorVersion, capacity: usize) -> io::Result<Self> {
+        let window = match roko_fs::read_json_or_default_strict::<WindowFile>(path) {
+            Ok(file) => {
+                let current = file.schema_version == WINDOW_SCHEMA;
+                let kept = file
+                    .window
+                    .filter(|window| current && window.version == *version);
+                kept.unwrap_or_else(|| Self::new(version.clone()))
+            }
+            Err(error) if error.kind() == io::ErrorKind::InvalidData => {
+                std::fs::rename(path, path.with_extension("json.unreadable"))?;
+                Self::new(version.clone())
+            }
+            Err(error) => return Err(error),
+        };
+        Ok(window.keeping(capacity))
+    }
+
+    /// Add `outcomes`, each with the version that forecast it, to the window kept in the file at
+    /// `path`, in one transaction under the file's sibling lock, so that a concurrent run's
+    /// outcomes survive, and return the window as saved, keeping its last `capacity` outcomes
+    /// ([`Self::keeping`]): `None` when the file holds none. Each outcome is
+    /// [pushed](Self::push), so one of a new version restarts the window. With no outcomes the
+    /// file is only read.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the file cannot be read, parsed or written.
+    pub fn save_outcomes(
+        path: &Path,
+        capacity: usize,
+        outcomes: &[(PredictorVersion, WindowOutcome)],
+    ) -> io::Result<Option<Self>> {
+        roko_fs::with_locked_json_transaction::<WindowFile, _, io::Error, _>(path, |file| {
+            if outcomes.is_empty() {
+                let current = file.schema_version == WINDOW_SCHEMA;
+                let saved = file.window.clone().filter(|_| current);
+                return Ok(saved.map(|window| window.keeping(capacity)));
+            }
+            if file.schema_version != WINDOW_SCHEMA {
+                *file = WindowFile {
+                    schema_version: WINDOW_SCHEMA.to_string(),
+                    window: None,
+                };
+            }
+            let mut window = file.window.take().map(|window| window.keeping(capacity));
+            for (version, outcome) in outcomes {
+                window
+                    .get_or_insert_with(|| Self::new(version.clone()).keeping(capacity))
+                    .push(version, *outcome);
+            }
+            file.window.clone_from(&window);
+            Ok(window)
+        })
+    }
+}
+
+/// The window's file ([`WINDOW_FILE_NAME`]). A missing file holds no window.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+struct WindowFile {
+    /// [`WINDOW_SCHEMA`].
+    schema_version: String,
+    /// The window of the version last saved.
+    window: Option<CalibrationWindow>,
 }
 
 /// The gate's report on a window: the `ev.m3.*` values, whether the model may be promoted, and
@@ -128,7 +253,9 @@ impl CalibrationWindow {
 pub struct GateReport {
     /// The predictor version scored.
     pub predictor_version: PredictorVersion,
-    /// Outcomes in the window.
+    /// W, the outcomes the gate scores, which an eligible window holds (gap-4c531f).
+    pub window: usize,
+    /// Outcomes scored: the window's last W, or all it holds when it holds fewer.
     pub n: usize,
     /// ECE over equal-mass bins.
     pub ece: Option<f64>,
@@ -138,7 +265,8 @@ pub struct GateReport {
     pub bss: Option<f64>,
     /// AUROC.
     pub auroc: Option<f64>,
-    /// The routed pass rate.
+    /// The routed pass rate; `None` while the window holds no routed outcome, which fails no
+    /// bound (bug-92cc56).
     pub route_pass: Option<f64>,
     /// The window has W outcomes and meets every bound.
     pub eligible: bool,
@@ -148,34 +276,58 @@ pub struct GateReport {
     pub breaker_tripped: bool,
 }
 
-/// The calibration gate, at a target π*.
+/// The calibration gate, at a target π*, over a window of W outcomes.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct CalibrationGate {
     /// π*, the target the routed pass rate is held to.
     pub target: f64,
+    /// W, the outcomes the gate scores and an eligible window must hold: `[self_model] n_min`
+    /// (gap-4c531f). Read as at least 1.
+    #[serde(default = "default_window")]
+    pub window: usize,
 }
 
 impl Default for CalibrationGate {
     fn default() -> Self {
-        Self { target: TARGET }
+        Self {
+            target: TARGET,
+            window: WINDOW,
+        }
     }
 }
 
 impl CalibrationGate {
-    /// Score `window` against every bound.
+    /// The gate `[self_model]` configures: π* = `target`, and W = `n_min` (gap-4c531f).
+    #[must_use]
+    pub fn of(settings: &SelfModelConfig) -> Self {
+        Self {
+            target: settings.target,
+            window: (settings.n_min as usize).max(1),
+        }
+    }
+
+    /// The outcomes a window must keep for this gate ([`CalibrationWindow::keeping`]): W, and
+    /// never fewer than [`WINDOW`], which leaves the breaker its [`BREAKER_WINDOW`].
+    #[must_use]
+    pub fn keeps(&self) -> usize {
+        self.window.max(WINDOW)
+    }
+
+    /// Score the last W outcomes of `window` against every bound.
     #[must_use]
     pub fn evaluate(&self, window: &CalibrationWindow) -> GateReport {
-        let scored = window.scored(WINDOW);
+        let w = self.window.max(1);
+        let scored = window.scored(w);
         let n = scored.len();
         let ece = ece(&scored, ECE_BINS);
         let cal_in_large = calibration_in_the_large(&scored);
         let bss = brier_skill(&scored);
         let auroc = auroc(&scored);
-        let route_pass = window.route_pass();
+        let route_pass = window.route_pass(w);
         let route_floor = self.target - ROUTE_PASS_MARGIN;
         let mut reasons = Vec::new();
-        if n < WINDOW {
-            reasons.push(format!("n = {n}, below the window of {WINDOW}"));
+        if n < w {
+            reasons.push(format!("n = {n}, below the window of {w}"));
         }
         let mut bound = |value: Option<f64>, holds: &dyn Fn(f64) -> bool, rule: &str| match value {
             Some(value) if holds(value) => {}
@@ -188,15 +340,29 @@ impl CalibrationGate {
             &|value| value.abs() <= CAL_IN_LARGE_MAX,
             "|calibration-in-the-large| above 0.05",
         );
-        bound(bss, &|value| value >= BSS_MIN, "Brier skill below 0.05");
-        bound(auroc, &|value| value >= AUROC_MIN, "AUROC below 0.65");
-        bound(
-            route_pass,
-            &|value| value >= route_floor,
-            "routed pass rate below π* − 0.05",
-        );
+        // A window of one class, every outcome a pass or every one a failure, leaves Brier
+        // skill and AUROC undefined: there is nothing to tell apart. While ECE and
+        // calibration-in-the-large hold they fail nothing, so a self-model right every time
+        // keeps its eligibility (bug-4b3fdd).
+        let calibrated = ece.is_some_and(|value| value <= ECE_MAX)
+            && cal_in_large.is_some_and(|value| value.abs() <= CAL_IN_LARGE_MAX);
+        let one_class = base_rate(&scored).is_some_and(|rate| rate <= 0.0 || rate >= 1.0);
+        if !(one_class && calibrated) {
+            bound(bss, &|value| value >= BSS_MIN, "Brier skill below 0.05");
+            bound(auroc, &|value| value >= AUROC_MIN, "AUROC below 0.65");
+        }
+        // The routed pass rate binds once the self-model has routed an attempt in the window;
+        // unknown, it fails nothing. The model routes only while the gate is eligible, so a
+        // bound on no routed attempt would keep every window ineligible, shadow and active
+        // alike (bug-92cc56).
+        if let Some(value) = route_pass
+            && value < route_floor
+        {
+            reasons.push(format!("routed pass rate below π* − 0.05: {value:.3}"));
+        }
         GateReport {
             predictor_version: window.version.clone(),
+            window: w,
             n,
             ece,
             cal_in_large,
@@ -262,6 +428,8 @@ struct Resolution {
 struct CalibrationExport {
     schema_version: String,
     predictor_version: PredictorVersion,
+    /// W, the window the values are over (gap-4c531f).
+    window: usize,
     n: usize,
     #[serde(rename = "ev.m3.ece")]
     ece: Option<f64>,
@@ -277,15 +445,14 @@ struct CalibrationExport {
 }
 
 /// Write `report` to the `ev.m3.*` export under the `.roko` directory `roko_dir`, atomically
-/// (a temporary file, then a rename), and return its path.
-pub fn write_calibration(report: &GateReport, roko_dir: &Path) -> std::io::Result<PathBuf> {
+/// (a temporary file of its own, since runs export as they end, then a rename), and return its
+/// path.
+pub fn write_calibration(report: &GateReport, roko_dir: &Path) -> io::Result<PathBuf> {
     let path = roko_dir.join(CALIBRATION_FILE);
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
     let export = CalibrationExport {
         schema_version: CALIBRATION_SCHEMA.to_string(),
         predictor_version: report.predictor_version.clone(),
+        window: report.window,
         n: report.n,
         ece: report.ece,
         cal_in_large: report.cal_in_large,
@@ -298,10 +465,8 @@ pub fn write_calibration(report: &GateReport, roko_dir: &Path) -> std::io::Resul
         reasons: report.reasons.clone(),
         breaker_tripped: report.breaker_tripped,
     };
-    let json = serde_json::to_vec_pretty(&export).map_err(std::io::Error::other)?;
-    let temporary = path.with_extension("json.tmp");
-    std::fs::write(&temporary, json)?;
-    std::fs::rename(&temporary, &path)?;
+    let json = serde_json::to_vec_pretty(&export).map_err(io::Error::other)?;
+    roko_fs::atomic_write_bytes(&path, &json)?;
     Ok(path)
 }
 
@@ -419,6 +584,77 @@ mod tests {
         assert!(!gate.breaker_tripped(&young));
     }
 
+    /// bug-92cc56: the self-model routes only while the gate is eligible, so its first window
+    /// holds no routed outcome. A calibrated window settled in shadow, none of it routed, makes
+    /// the gate eligible; once the model routes, the routed pass rate binds as before.
+    #[test]
+    fn calibration_gate_can_become_eligible_in_shadow() {
+        let gate = CalibrationGate::default();
+        let mut shadow = CalibrationWindow::new(version("m3-l1-a"));
+        for outcome in &calibrated().outcomes {
+            let unrouted = WindowOutcome {
+                routed: false,
+                ..*outcome
+            };
+            shadow.push(&version("m3-l1-a"), unrouted);
+        }
+        let report = gate.evaluate(&shadow);
+        assert!(report.eligible, "{report:?}");
+        assert_eq!(report.route_pass, None);
+
+        // Routed attempts that pass below π* − 0.05 fail the bound.
+        let mut routed = shadow.clone();
+        for index in 0..10 {
+            let outcome = WindowOutcome {
+                p: 0.5,
+                y: index < 5,
+                w: 1.0,
+                routed: true,
+            };
+            routed.push(&version("m3-l1-a"), outcome);
+        }
+        let report = gate.evaluate(&routed);
+        assert!(!report.eligible, "{report:?}");
+        assert_eq!(report.reasons, ["routed pass rate below π* − 0.05: 0.500"]);
+    }
+
+    /// bug-4b3fdd: a self-model right every time fills its window with passes alone, which
+    /// leaves Brier skill and AUROC undefined. While ECE and calibration-in-the-large hold, they
+    /// fail nothing; a one-class window that is not calibrated stays ineligible.
+    #[test]
+    fn a_one_class_window_is_judged_by_its_calibration() {
+        let gate = CalibrationGate {
+            window: 12,
+            ..CalibrationGate::default()
+        };
+        let window = |p: f64| {
+            let mut window = CalibrationWindow::new(version("m3-l1-a"));
+            for _ in 0..12 {
+                let outcome = WindowOutcome {
+                    p,
+                    y: true,
+                    w: 1.0,
+                    routed: true,
+                };
+                window.push(&version("m3-l1-a"), outcome);
+            }
+            window
+        };
+        let right = gate.evaluate(&window(0.97));
+        assert!(right.eligible, "{right:?}");
+        assert_eq!((right.bss, right.auroc), (None, None));
+
+        let unsure = gate.evaluate(&window(0.6));
+        assert!(!unsure.eligible, "{unsure:?}");
+        assert!(
+            unsure
+                .reasons
+                .iter()
+                .any(|reason| reason.starts_with("Brier skill below 0.05")),
+            "{unsure:?}"
+        );
+    }
+
     #[test]
     fn the_window_resets_on_a_version_change() {
         let mut window = calibrated();
@@ -432,6 +668,136 @@ mod tests {
         window.push(&version("m3-l1-b"), outcome);
         assert_eq!(window.len(), 1);
         assert_eq!(window.version, version("m3-l1-b"));
+    }
+
+    /// gap-b38ed2: saves of two runs add up in the window's file, capped at W; a load keeps a
+    /// window of its own version only, and sets an unreadable file aside.
+    #[test]
+    fn the_window_file_keeps_each_runs_outcomes() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join(WINDOW_FILE_NAME);
+        let a = version("m3-l1-a");
+        let outcomes: Vec<(PredictorVersion, WindowOutcome)> = calibrated()
+            .outcomes
+            .iter()
+            .map(|outcome| (a.clone(), *outcome))
+            .collect();
+        assert_eq!(
+            CalibrationWindow::save_outcomes(&path, WINDOW, &[]).expect("read"),
+            None
+        );
+        assert!(!path.exists(), "nothing to save writes nothing");
+
+        // Two runs save 60 outcomes each: 120, capped at W.
+        let first = CalibrationWindow::save_outcomes(&path, WINDOW, &outcomes[..60]).expect("save");
+        assert_eq!(first.map(|window| window.len()), Some(60));
+        let second =
+            CalibrationWindow::save_outcomes(&path, WINDOW, &outcomes[40..]).expect("save");
+        let second = second.expect("the window as saved");
+        assert_eq!(second.len(), WINDOW);
+        let loaded = CalibrationWindow::load(&path, &a, WINDOW).expect("load");
+        assert_eq!(loaded, second);
+        assert_eq!(
+            CalibrationWindow::save_outcomes(&path, WINDOW, &[]).expect("read"),
+            Some(second)
+        );
+
+        // Another version's load starts afresh, and its first save restarts the window.
+        let b = version("m3-l1-b");
+        assert!(
+            CalibrationWindow::load(&path, &b, WINDOW)
+                .expect("load")
+                .is_empty()
+        );
+        let outcome = outcomes[0].1;
+        let restarted = CalibrationWindow::save_outcomes(&path, WINDOW, &[(b.clone(), outcome)])
+            .expect("save")
+            .expect("the window as saved");
+        assert_eq!(restarted.version, b);
+        assert_eq!(restarted.len(), 1);
+
+        // An unreadable file is set aside.
+        std::fs::write(&path, "{not json").expect("corrupt the file");
+        assert!(
+            CalibrationWindow::load(&path, &b, WINDOW)
+                .expect("load")
+                .is_empty()
+        );
+        assert!(!path.exists() && path.with_extension("json.unreadable").exists());
+    }
+
+    /// Ten forecasts that are sharp and right: eight passes forecast at 0.96 and two failures
+    /// at 0.04, each routed, the failures second and sixth. Over ten equal-mass bins of one
+    /// forecast each, ECE is 0.04.
+    fn sharp() -> Vec<WindowOutcome> {
+        (0..10)
+            .map(|index| {
+                let passed = index != 1 && index != 5;
+                WindowOutcome {
+                    p: if passed { 0.96 } else { 0.04 },
+                    y: passed,
+                    w: 1.0,
+                    routed: true,
+                }
+            })
+            .collect()
+    }
+
+    /// gap-4c531f: the gate scores its own W. With W = 10, ten sharp forecasts are eligible,
+    /// while the window keeps W = 100 outcomes, so the breaker keeps its fifty; the default W
+    /// of 100 finds them short. With W = 150 the window and its file keep 150 outcomes, and the
+    /// gate scores them all.
+    #[test]
+    fn the_gate_scores_a_window_of_its_own_w() {
+        let a = version("m3-l1-a");
+        let small = CalibrationGate {
+            target: TARGET,
+            window: 10,
+        };
+        assert_eq!(small.keeps(), WINDOW);
+        let mut window = CalibrationWindow::new(a.clone()).keeping(small.keeps());
+        for outcome in sharp() {
+            window.push(&a, outcome);
+        }
+        let report = small.evaluate(&window);
+        assert!(report.eligible, "{report:?}");
+        assert_eq!((report.window, report.n), (10, 10));
+        let report = CalibrationGate::default().evaluate(&window);
+        assert!(!report.eligible);
+        let short = "n = 10, below the window of 100";
+        assert!(
+            report.reasons.iter().any(|reason| reason == short),
+            "{report:?}"
+        );
+
+        let large = CalibrationGate {
+            target: TARGET,
+            window: 150,
+        };
+        let outcomes: Vec<(PredictorVersion, WindowOutcome)> = (0..16)
+            .flat_map(|_| sharp())
+            .map(|outcome| (a.clone(), outcome))
+            .collect();
+        let mut window = CalibrationWindow::new(a.clone()).keeping(large.keeps());
+        for (version, outcome) in &outcomes {
+            window.push(version, *outcome);
+        }
+        assert_eq!(window.len(), 150, "160 pushed, the last 150 kept");
+        let report = large.evaluate(&window);
+        assert!(report.eligible, "{report:?}");
+        assert_eq!((report.window, report.n), (150, 150));
+
+        // The window's file keeps what the gate needs, and a smaller W's load keeps W = 100.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join(WINDOW_FILE_NAME);
+        let saved = CalibrationWindow::save_outcomes(&path, large.keeps(), &outcomes)
+            .expect("save")
+            .expect("the window as saved");
+        assert_eq!(saved, window);
+        let loaded = CalibrationWindow::load(&path, &a, large.keeps()).expect("load");
+        assert_eq!(loaded.len(), 150);
+        let loaded = CalibrationWindow::load(&path, &a, small.keeps()).expect("load");
+        assert_eq!(loaded.len(), WINDOW);
     }
 
     #[test]

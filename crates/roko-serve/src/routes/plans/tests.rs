@@ -122,6 +122,7 @@ impl CliRuntime for RecordingRuntime {
             completed: false,
             status: "ready".to_string(),
             superseded_by: None,
+            fixture: false,
             old_format: false,
             last_error: None,
             group: self.group.clone(),
@@ -329,7 +330,25 @@ impl CliRuntime for RecordingRuntime {
             plans_root: workdir.join("plans"),
             plan_targets: vec![plan_dir],
             artifacts: vec![],
+            cost_usd: 0.0125,
+            source_checks: None,
         })
+    }
+
+    /// Plan for a chat host: records the call as `plan_generate_chat_host`,
+    /// then plans as any request.
+    async fn generate_plan_for_chat_host(
+        &self,
+        workdir: &std::path::Path,
+        slug: &str,
+        prompt: &str,
+    ) -> anyhow::Result<crate::runtime::PlanGenerationResult> {
+        self.calls.lock().expect("lock calls").push(RecordedCall {
+            kind: "plan_generate_chat_host",
+            workdir: workdir.to_path_buf(),
+            arg: prompt.to_string(),
+        });
+        self.generate_plan_from_prompt(workdir, slug, prompt).await
     }
 }
 
@@ -764,6 +783,7 @@ impl CliRuntime for ResumableRuntime {
             completed: false,
             status: "ready".to_string(),
             superseded_by: None,
+            fixture: false,
             old_format: false,
             last_error: None,
             group: None,
@@ -953,6 +973,8 @@ impl CliRuntime for NoPlanRuntime {
             plans_root: workdir.join("plans"),
             plan_targets: Vec::new(),
             artifacts: Vec::new(),
+            cost_usd: 0.0,
+            source_checks: None,
         })
     }
 }
@@ -1334,6 +1356,7 @@ impl CliRuntime for HubLifecycleRuntime {
             completed: false,
             status: "ready".to_string(),
             superseded_by: None,
+            fixture: false,
             old_format: false,
             last_error: None,
             group: None,
@@ -1365,6 +1388,7 @@ impl CliRuntime for HubLifecycleRuntime {
             success: true,
         });
         hub.publish(roko_core::DashboardEvent::RunCompleted {
+            run_id: None,
             outcome: "succeeded".to_string(),
             duration_ms: 5,
             cleanup_degraded: false,
@@ -1478,6 +1502,93 @@ async fn run_failing_before_the_plan_starts_completes_it_once() {
     assert_eq!(plan_completions_of_single_plan_run(true).await, vec![false]);
 }
 
+/// gap-6f0eca: a plan run's end reaches `/ws` as one `run_completed` that names
+/// the run id the route answered with, and the verdict its status route reports;
+/// before, only prompt runs got one.
+#[tokio::test]
+async fn plan_run_completion_reaches_ws_with_its_run_id() {
+    use crate::state::RunState;
+
+    for fail_before_start in [false, true] {
+        let hub = roko_runtime::SharedStateHub::new_in_process();
+        let runtime = Arc::new(HubLifecycleRuntime {
+            hub: hub.clone(),
+            fail_before_start,
+        });
+        let dir = tempdir().expect("tempdir");
+        let deploy_backend =
+            Arc::from(create_backend("manual", None, None, None).expect("manual backend"));
+        let state = Arc::new(
+            AppState::new_with_state_hub(
+                dir.path().to_path_buf(),
+                runtime,
+                roko_core::config::schema::RokoConfig::default(),
+                deploy_backend,
+                hub.clone(),
+            )
+            .expect("AppState::new_with_state_hub"),
+        );
+        let mut bus = state.event_bus.subscribe();
+
+        let response = execute_plan(
+            State(Arc::clone(&state)),
+            Path("hello".into()),
+            axum::body::Bytes::new(),
+        )
+        .await
+        .expect("execute plan")
+        .into_response();
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("response body");
+        let started: Value = serde_json::from_slice(&body).expect("response json");
+        let run_id = started["run_id"].as_str().expect("run_id").to_string();
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            loop {
+                let finished = state
+                    .active_plans
+                    .read()
+                    .await
+                    .get("hello")
+                    .is_none_or(|run| run.handle.is_finished());
+                if finished {
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("the run task should finish");
+
+        let recorded = state
+            .active_plans
+            .read()
+            .await
+            .get("hello")
+            .map(|run| run.status.state)
+            .expect("the run's handle");
+        let mut ends = Vec::new();
+        while let Ok(envelope) = bus.try_recv() {
+            if let ServerEvent::RunCompleted {
+                run_id,
+                success,
+                verdict,
+            } = envelope.payload
+            {
+                ends.push((run_id, success, verdict));
+            }
+        }
+        assert_eq!(
+            ends,
+            vec![(run_id, recorded == RunState::Succeeded, Some(recorded))],
+            "fail_before_start = {fail_before_start}"
+        );
+        if fail_before_start {
+            assert_eq!(recorded, RunState::Failed);
+        }
+    }
+}
+
 /// A plan runtime whose runs end as a test scripts them: a run records the
 /// id it runs under, waits for a permit from `gate` when there is one,
 /// publishes `task_outcome`, when set, as the outcome of task `T1` of its
@@ -1488,6 +1599,9 @@ struct ScriptedPlanRuntime {
     task_outcome: Option<&'static str>,
     gate: Option<Arc<tokio::sync::Semaphore>>,
     run_ids: Arc<Mutex<Vec<String>>>,
+    /// When set, a run fails with this error before its plan starts, as one
+    /// that finds the workspace's runner lock taken does.
+    refuse: Option<&'static str>,
 }
 
 #[async_trait::async_trait]
@@ -1514,6 +1628,7 @@ impl CliRuntime for ScriptedPlanRuntime {
             completed: false,
             status: "ready".to_string(),
             superseded_by: None,
+            fixture: false,
             old_format: false,
             last_error: None,
             group: None,
@@ -1531,6 +1646,9 @@ impl CliRuntime for ScriptedPlanRuntime {
             .lock()
             .expect("lock run ids")
             .push(options.run_id.unwrap_or_default());
+        if let Some(refusal) = self.refuse {
+            anyhow::bail!("{refusal}");
+        }
         if let Some(gate) = &self.gate {
             gate.acquire().await.expect("the gate stays open").forget();
         }
@@ -1585,6 +1703,7 @@ fn scripted_runtime(
         task_outcome,
         gate,
         run_ids: Arc::default(),
+        refuse: None,
     })
 }
 
@@ -1673,6 +1792,76 @@ async fn plan_status_reports_terminal_state() {
             expected == "failed",
             "{status}"
         );
+    }
+}
+
+/// bug-9a5970: a plan run that fails before its plan starts, here because a
+/// run outside the server holds the workspace's runner lock, records why
+/// under its own id. Its index holds the error and a `run_completed` with
+/// outcome `refused`, its stage and the reason without the hint after it.
+/// Its summary, read again by a server that holds no handle of it (as after
+/// a restart), says `failed`, not active, with `refused: {stage, reason}`,
+/// and does not call it interrupted.
+#[tokio::test]
+async fn a_run_refused_before_dispatch_records_why_in_its_events() {
+    let runtime = Arc::new(ScriptedPlanRuntime {
+        hub: roko_runtime::SharedStateHub::new_in_process(),
+        success: false,
+        task_outcome: None,
+        gate: None,
+        run_ids: Arc::default(),
+        refuse: Some(
+            "A roko plan runner is already active in this workspace (PID 4242).\n  hint: wait \
+             for it to finish, or kill it with `kill 4242`",
+        ),
+    });
+    let (dir, state) = scripted_state(&runtime);
+    let started = start_plan_run(&state, "hello".into(), false)
+        .await
+        .expect("start the run");
+    let status = ended_plan_status(&state, "hello").await;
+    assert_eq!(status["status"], "failed", "{status}");
+    let run_id = started.run_id;
+    let reason = "A roko plan runner is already active in this workspace (PID 4242).";
+
+    let index =
+        roko_fs::run_index::run_index_path(&state.layout.events_jsonl_path(), &run_id).unwrap();
+    let rows: Vec<Value> = std::fs::read_to_string(&index)
+        .expect("the run has an index")
+        .lines()
+        .map(|line| serde_json::from_str(line).expect("a row"))
+        .collect();
+    assert_eq!(rows.len(), 2, "{rows:?}");
+    assert_eq!(rows[0]["type"], "error", "{rows:?}");
+    assert_eq!(rows[0]["run_id"], run_id.as_str(), "{rows:?}");
+    let message = rows[0]["message"].as_str().unwrap_or_default();
+    assert!(
+        message.starts_with(&format!("plan execution failed for hello: {reason}")),
+        "{rows:?}"
+    );
+    assert_eq!(rows[1]["type"], "run_completed", "{rows:?}");
+    assert_eq!(rows[1]["outcome"], crate::run_end::REFUSED, "{rows:?}");
+    assert_eq!(rows[1]["stage"], crate::run_end::START_STAGE, "{rows:?}");
+    assert_eq!(rows[1]["reason"], reason, "{rows:?}");
+
+    let restarted = Arc::new(
+        AppState::new(
+            dir.path().to_path_buf(),
+            Arc::new(NoOpRuntime),
+            roko_core::config::schema::RokoConfig::default(),
+            Arc::from(create_backend("manual", None, None, None).expect("manual backend")),
+        )
+        .expect("AppState::new"),
+    );
+    for server in [&state, &restarted] {
+        let summary = crate::routes::runs::summarize_run(server, &run_id)
+            .await
+            .expect("the run's summary");
+        assert_eq!(summary["state"], "failed", "{summary}");
+        assert_eq!(summary["active"], false, "{summary}");
+        assert_eq!(summary["refused"]["stage"], "start", "{summary}");
+        assert_eq!(summary["refused"]["reason"], reason, "{summary}");
+        assert_eq!(summary["interrupted"], Value::Null, "{summary}");
     }
 }
 
@@ -2268,6 +2457,7 @@ async fn plan_list_and_detail_carry_the_summary_fields() {
             completed: false,
             status: "in-progress".to_string(),
             superseded_by: Some("p2".to_string()),
+            fixture: false,
             old_format: true,
             last_error: Some("some error".to_string()),
             group: Some("test-group".to_string()),
@@ -2739,4 +2929,349 @@ async fn validate_plan_returns_404_for_missing_plan() {
     .expect_err("missing plan should return 404");
 
     assert_eq!(err.status, axum::http::StatusCode::NOT_FOUND);
+}
+
+/// bug-7a08a8: a run that `roko plan run` would refuse says which errors keep
+/// it from running, not only how many, and keeps the report in `details`.
+#[test]
+fn plan_run_rejected_names_the_errors() {
+    let validation = crate::plan_types::PlanValidationDto::from_diagnostics(vec![
+        crate::plan_types::PlanDiagnosticDto {
+            severity: "error".to_string(),
+            rule_id: "PLAN_045".to_string(),
+            task_id: Some("T2".to_string()),
+            message: "task 'T2' has open questions, so its plan cannot run; answer each in the \
+                      spec, then delete it from open_questions:\n- Should n cap the list?"
+                .to_string(),
+        },
+    ]);
+    let error = plan_run_rejected("plan 'wordy-top'", &validation);
+    assert_eq!(error.status, axum::http::StatusCode::UNPROCESSABLE_ENTITY);
+    assert_eq!(
+        error.message,
+        "plan 'wordy-top' failed validation with 1 error(s); fix them before running it\n- \
+         PLAN_045: task 'T2' has open questions, so its plan cannot run; answer each in the \
+         spec, then delete it from open_questions:\n  - Should n cap the list?"
+    );
+    assert!(error.details.is_some(), "{error:?}");
+}
+
+/// bug-7a08a8: a plan a chat host asks for over `/mcp` is generated as one
+/// nobody reviews before it runs; one asked for over HTTP is not.
+#[tokio::test]
+async fn a_chat_host_plan_is_generated_for_a_chat_host() {
+    for (origin, kinds) in [
+        (
+            crate::runtime::RunOrigin::Mcp {
+                client: "hermes".into(),
+            },
+            vec!["plan_generate_chat_host", "plan_generate"],
+        ),
+        (crate::runtime::RunOrigin::Http, vec!["plan_generate"]),
+    ] {
+        let runtime = Arc::new(RecordingRuntime {
+            calls: Arc::new(Mutex::new(Vec::new())),
+            notify: Arc::new(Notify::new()),
+            success: true,
+            call_count: Arc::new(AtomicUsize::new(0)),
+            group: None,
+            last_options: Arc::new(Mutex::new(None)),
+            known_plan_id: None,
+            plan_tasks: vec![],
+            summary_estimated_minutes: None,
+        });
+        let notify = Arc::clone(&runtime.as_ref().notify);
+        let calls = Arc::clone(&runtime.as_ref().calls);
+        let (_dir, state) = test_state_with_runtime(runtime);
+
+        let notified = notify.notified();
+        start_plan_generation(&state, "Build a widget library".into(), &origin, None).await;
+        tokio::time::timeout(std::time::Duration::from_secs(1), notified)
+            .await
+            .expect("runtime should be called");
+
+        let recorded: Vec<&str> = calls
+            .lock()
+            .expect("lock calls")
+            .iter()
+            .map(|call| call.kind)
+            .collect();
+        assert_eq!(recorded, kinds, "{origin:?}");
+    }
+}
+
+/// bug-a0432b (gap-1f08f4): a finished plan generation's status reports what
+/// writing the plan cost, so a chat host can show it and count it.
+#[tokio::test]
+async fn plan_generation_status_reports_its_cost() {
+    let runtime = Arc::new(RecordingRuntime {
+        calls: Arc::new(Mutex::new(Vec::new())),
+        notify: Arc::new(Notify::new()),
+        success: true,
+        call_count: Arc::new(AtomicUsize::new(0)),
+        group: None,
+        last_options: Arc::new(Mutex::new(None)),
+        known_plan_id: None,
+        plan_tasks: vec![],
+        summary_estimated_minutes: None,
+    });
+    let (_dir, state) = test_state_with_runtime(runtime);
+    let origin = crate::runtime::RunOrigin::Mcp {
+        client: "hermes".into(),
+    };
+    let (op_id, slug) =
+        start_plan_generation(&state, "Build a widget library".into(), &origin, None).await;
+
+    let status = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        loop {
+            if let Some(op) = state.operations.read().await.get(&op_id)
+                && !matches!(op.status, OperationStatus::Running)
+            {
+                return op.status.clone();
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("the operation finishes");
+    let OperationStatus::Completed {
+        result: Some(result),
+    } = status
+    else {
+        panic!("the generation completes with a result, got {status:?}");
+    };
+    let result: Value = serde_json::from_str(&result).expect("result json");
+    assert_eq!(result["slug"], slug.as_str(), "{result}");
+    assert_eq!(result["cost_usd"], 0.0125, "{result}");
+}
+
+/// A runtime whose plan generation reports its first stage, waits at `gate`,
+/// then reports its last stage and writes the plan (gap-11d870).
+struct StagedRuntime {
+    gate: Arc<Notify>,
+}
+
+#[async_trait::async_trait]
+impl CliRuntime for StagedRuntime {
+    async fn run_once(
+        &self,
+        _workdir: &std::path::Path,
+        _prompt: &str,
+    ) -> anyhow::Result<RunResult> {
+        anyhow::bail!("a staged plan generation runs nothing")
+    }
+
+    async fn generate_plan_reporting(
+        &self,
+        workdir: &std::path::Path,
+        slug: &str,
+        _prompt: &str,
+        _for_chat_host: bool,
+        progress: crate::runtime::ProgressReporter,
+    ) -> anyhow::Result<crate::runtime::PlanGenerationResult> {
+        let stage = |stage: &str, cost_usd: f64| {
+            json!({
+                "stage": stage,
+                "attempt": 1,
+                "attempts": 1,
+                "model": "planner",
+                "calls": 1,
+                "cost_usd": cost_usd,
+            })
+        };
+        progress(stage("planning", 0.0));
+        self.gate.notified().await;
+        progress(stage("recording", 0.0125));
+        let plans_root = workdir.join("plans");
+        Ok(crate::runtime::PlanGenerationResult {
+            plan_targets: vec![plans_root.join(slug)],
+            plans_root,
+            artifacts: Vec::new(),
+            cost_usd: 0.0125,
+            source_checks: None,
+        })
+    }
+
+    async fn load_plan_summary(
+        &self,
+        _workdir: &std::path::Path,
+        plan_id: &str,
+    ) -> anyhow::Result<Option<crate::plan_types::PlanSummaryDto>> {
+        Ok(Some(serde_json::from_value(json!({
+            "id": plan_id,
+            "title": "Widgets",
+            "task_count": 1,
+            "tasks_done": 0,
+            "tasks_failed": 0,
+            "completed": false,
+            "status": "ready",
+            "old_format": false,
+        }))?))
+    }
+
+    fn session_status(&self, workdir: PathBuf) -> SessionStatusInfo {
+        SessionStatusInfo {
+            session_id: None,
+            workdir,
+            daemon_running: false,
+            signal_count: None,
+            episode_count: None,
+            last_episode_passed: None,
+        }
+    }
+
+    fn dashboard_scaffold(&self, _workdir: &std::path::Path) -> DashboardInfo {
+        DashboardInfo {
+            rendered: String::new(),
+        }
+    }
+}
+
+/// gap-11d870: while a plan is written, its operation's status says what the
+/// generation is doing and for how long; once it ends, the status keeps the
+/// last stage beside the result.
+#[tokio::test]
+async fn plan_generation_status_reports_its_stage() {
+    let gate = Arc::new(Notify::new());
+    let runtime = Arc::new(StagedRuntime {
+        gate: Arc::clone(&gate),
+    });
+    let (_dir, state) = test_state_with_runtime(runtime);
+    let app = build_router(
+        Arc::clone(&state),
+        &[],
+        ServeAuthConfig {
+            enabled: false,
+            ..ServeAuthConfig::default()
+        },
+    );
+    let (op_id, _slug) = start_plan_generation(
+        &state,
+        "Build a widget library".into(),
+        &crate::runtime::RunOrigin::Http,
+        None,
+    )
+    .await;
+    let status = |app: axum::Router| {
+        let uri = format!("/api/operations/{op_id}");
+        async move {
+            let response = app
+                .oneshot(
+                    Request::builder()
+                        .uri(uri)
+                        .body(Body::empty())
+                        .expect("request"),
+                )
+                .await
+                .expect("response");
+            let bytes = to_bytes(response.into_body(), usize::MAX)
+                .await
+                .expect("body");
+            serde_json::from_slice::<Value>(&bytes).expect("status json")
+        }
+    };
+    let wait_for = |done: fn(&Value) -> bool| {
+        let app = app.clone();
+        let status = &status;
+        async move {
+            tokio::time::timeout(std::time::Duration::from_secs(5), async {
+                loop {
+                    let current = status(app.clone()).await;
+                    if done(&current) {
+                        return current;
+                    }
+                    tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+                }
+            })
+            .await
+            .expect("the operation reaches the state")
+        }
+    };
+
+    let running = wait_for(|status| status.get("progress").is_some()).await;
+    assert_eq!(running["status"], "running", "{running}");
+    assert_eq!(running["progress"]["stage"], "planning", "{running}");
+    assert_eq!(running["progress"]["attempt"], 1, "{running}");
+    assert_eq!(running["progress"]["cost_usd"], 0.0, "{running}");
+    assert!(running["elapsed_secs"].is_u64(), "{running}");
+
+    gate.notify_one();
+    let done = wait_for(|status| status["status"] != "running").await;
+    assert_eq!(done["status"], "completed", "{done}");
+    assert_eq!(done["result"]["cost_usd"], 0.0125, "{done}");
+    assert_eq!(done["progress"]["stage"], "recording", "{done}");
+    assert!(done.get("elapsed_secs").is_none(), "{done}");
+}
+
+/// bug-a0f01e: a finished plan generation's status, with its result and its
+/// last progress, outlives its handle's collection and a restart.
+#[tokio::test]
+async fn plan_generation_status_outlives_its_handle() {
+    let gate = Arc::new(Notify::new());
+    // The staged generation runs straight through.
+    gate.notify_one();
+    let (dir, state) = test_state_with_runtime(Arc::new(StagedRuntime { gate }));
+    let (op_id, slug) = start_plan_generation(
+        &state,
+        "Build a widget library".into(),
+        &crate::runtime::RunOrigin::Http,
+        None,
+    )
+    .await;
+    tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        while state.operations.read().await.contains_key(&op_id) {
+            state.gc_completed_handles().await;
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("handle GC drops the finished generation");
+
+    let reported = |state: Arc<AppState>| {
+        let uri = format!("/api/operations/{op_id}");
+        async move {
+            let app = build_router(
+                state,
+                &[],
+                ServeAuthConfig {
+                    enabled: false,
+                    ..ServeAuthConfig::default()
+                },
+            );
+            let response = app
+                .oneshot(
+                    Request::builder()
+                        .uri(uri)
+                        .body(Body::empty())
+                        .expect("request"),
+                )
+                .await
+                .expect("response");
+            let bytes = to_bytes(response.into_body(), usize::MAX)
+                .await
+                .expect("body");
+            serde_json::from_slice::<Value>(&bytes).expect("status json")
+        }
+    };
+    let collected = reported(Arc::clone(&state)).await;
+    drop(state);
+    let deploy_backend =
+        Arc::from(create_backend("manual", None, None, None).expect("manual backend"));
+    let restarted = Arc::new(
+        AppState::new(
+            dir.path().to_path_buf(),
+            Arc::new(NoOpRuntime),
+            roko_core::config::schema::RokoConfig::default(),
+            deploy_backend,
+        )
+        .expect("AppState::new"),
+    );
+    let restarted = reported(restarted).await;
+    for status in [collected, restarted] {
+        assert_eq!(status["status"], "completed", "{status}");
+        assert_eq!(status["result"]["slug"], slug.as_str(), "{status}");
+        assert_eq!(status["result"]["cost_usd"], 0.0125, "{status}");
+        assert_eq!(status["progress"]["stage"], "recording", "{status}");
+        assert!(status.get("elapsed_secs").is_none(), "{status}");
+    }
 }

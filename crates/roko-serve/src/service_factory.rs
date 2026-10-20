@@ -290,7 +290,8 @@ impl ServiceFactory {
         // in roko-neuro (KnowledgeStore -> KnowledgeQuery).
         let gateway_knowledge_query: Arc<dyn roko_core::KnowledgeQuery> =
             knowledge_store.clone() as Arc<dyn roko_core::KnowledgeQuery>;
-        let cost_table = roko_agent::CostTable::from_config_with_defaults(&workspace_config.models);
+        let cost_table =
+            roko_agent::CostTable::from_config_with_defaults(&workspace_config.billed_models());
         let provider_health_registry = Arc::new(ProviderHealthRegistry::load_or_new(
             &config.roko_dir.join("learn").join("provider-health.json"),
         ));
@@ -480,7 +481,8 @@ impl ServiceFactory {
 
         let gateway_knowledge_query: Arc<dyn roko_core::KnowledgeQuery> =
             knowledge_store.clone() as Arc<dyn roko_core::KnowledgeQuery>;
-        let cost_table = roko_agent::CostTable::from_config_with_defaults(&workspace_config.models);
+        let cost_table =
+            roko_agent::CostTable::from_config_with_defaults(&workspace_config.billed_models());
         let health_checker: Arc<dyn roko_agent::ProviderHealthChecker> =
             provider_health_registry.clone();
         let rate_limiter = Arc::new(

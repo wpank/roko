@@ -54,6 +54,7 @@ pub(crate) mod registries;
 mod research;
 mod route_permissions;
 mod run;
+mod run_result;
 mod runs;
 mod safety;
 mod secrets;
@@ -619,6 +620,64 @@ async fn api_not_found(req: Request) -> Response {
         .into_response()
 }
 
+/// What this server does that older ones do not, for clients that adapt to
+/// it (`features` in `GET /health` and `GET /api/health`), since `version`
+/// stays the crate's:
+/// - `chat_refusals`: `/mcp` refuses a run a chat host starts before the plan
+///   lookup, with its reason under `structuredContent.error.data.refusal`,
+///   and every tool failure carries `structuredContent.error.code`
+///   (gap-cf427e);
+/// - `loop_events`: runs publish `route_decided`, `confirm_*`, `effect_*` and
+///   `knowledge_written` events;
+/// - `live_tool_steps`: API-model tool calls publish live tool steps;
+/// - `plan_check_events`: each step of a plan's whole-plan check (its
+///   `[meta] verify` or the Cargo default, in place or as the delivery's
+///   post-merge regression check) publishes `plan_check_started`,
+///   `plan_check_heartbeat` every 15 s and `plan_check_finished`
+///   (gap-6b6ec1);
+/// - `delivery_events`: a plan's delivery into its run's batch branch
+///   publishes `delivery_started` and `delivery_finished` with the state it
+///   ended in, and a run's summary milestones say how it ended (gap-4f6cbe);
+/// - `prompt_events`: each Graph attempt publishes `prompt_assembled`, the
+///   stored lessons, playbooks and episodes its prompt carried and what it
+///   left out (gap-5f6d0b);
+/// - `retry_feedback_events`: a failed check publishes `retry_feedback`, the
+///   diagnosis and errors the task's next attempt gets (gap-655ea5);
+/// - `run_cost_trend`: a Graph run's end publishes `efficiency_trend_updated`,
+///   one bucket per recent plan run with its cost per verified task
+///   (gap-de0e96);
+/// - `check_output_lines`: a Graph task's verify steps publish each line
+///   their command writes as `gate_output_line`, bounded per step
+///   (gap-f45a6d).
+pub(crate) const FEATURES: &[&str] = &[
+    "chat_refusals",
+    "loop_events",
+    "live_tool_steps",
+    "plan_check_events",
+    "delivery_events",
+    "prompt_events",
+    "retry_feedback_events",
+    "run_cost_trend",
+    "check_output_lines",
+];
+
+/// The summary of run `run_id`, as `GET /api/runs/{run_id}/summary` gives it.
+///
+/// The `/mcp` `run_status` tool gives the same. This is for a caller in the
+/// same process, such as a test that checks what a run's events tell a host
+/// (gap-4f6cbe).
+///
+/// # Errors
+///
+/// As the route: the id is not valid, or `state`'s workspace has no such
+/// run.
+pub async fn run_summary(
+    state: &Arc<AppState>,
+    run_id: &str,
+) -> Result<Value, crate::error::ApiError> {
+    runs::summarize_run(state, run_id).await
+}
+
 /// `GET /health` — bare liveness probe for load balancers and external tools.
 ///
 /// Returns 200 while the process is alive. For richer telemetry use
@@ -628,6 +687,7 @@ async fn top_level_health(State(state): State<Arc<AppState>>) -> Json<Value> {
         "status": "ok",
         "version": env!("CARGO_PKG_VERSION"),
         "uptime_secs": state.started_at.elapsed().as_secs(),
+        "features": FEATURES,
     }))
 }
 
@@ -967,6 +1027,7 @@ mod tests {
             jwks_providers: Vec::new(),
             privy_workspace_id: None,
             privy_allowed_roles: Vec::new(),
+            privy_allowed_users: Vec::new(),
             enforcement_mode: Default::default(),
             invite_expiry_days: 7,
         };
@@ -978,6 +1039,8 @@ mod tests {
         assert_eq!(body["status"], "ok");
         assert_eq!(body["version"], env!("CARGO_PKG_VERSION"));
         assert!(body["uptime_secs"].as_u64().is_some());
+        assert_eq!(body["features"], json!(FEATURES), "{body}");
+        assert!(FEATURES.contains(&"chat_refusals"));
 
         let (status, body) = get_json(&app, "/ready").await;
         assert_eq!(status, StatusCode::OK);
@@ -2117,6 +2180,7 @@ mod tests {
             jwks_providers: Vec::new(),
             privy_workspace_id: None,
             privy_allowed_roles: Vec::new(),
+            privy_allowed_users: Vec::new(),
             enforcement_mode: Default::default(),
             invite_expiry_days: 7,
         };
@@ -2357,6 +2421,7 @@ mod tests {
             jwks_providers: Vec::new(),
             privy_workspace_id: None,
             privy_allowed_roles: Vec::new(),
+            privy_allowed_users: Vec::new(),
             enforcement_mode: Default::default(),
             invite_expiry_days: 7,
         };
@@ -2401,6 +2466,7 @@ mod tests {
             jwks_providers: Vec::new(),
             privy_workspace_id: None,
             privy_allowed_roles: Vec::new(),
+            privy_allowed_users: Vec::new(),
             enforcement_mode: Default::default(),
             invite_expiry_days: 7,
         };

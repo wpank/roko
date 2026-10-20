@@ -9,7 +9,7 @@ goal = "golden-path"
 size = "M"
 subsystem = ["roko-cli/tests"]
 created = 2026-09-29
-updated = 2026-09-29
+updated = 2026-10-18
 source = "tmp/cybernetic-harness/workstreams/PLAN.md#e11"
 discovered_from = "tmp/cybernetic-harness/workstreams/assessment/W8-roko-as-executor.md (GP)"
 anchors = ["crates/roko-cli/tests/golden_path_acceptance.rs", "crates/roko-cli/tests/fixtures/golden_path/"]
@@ -70,3 +70,7 @@ Checked at `41c7ffbd6`: no such fixture or test exists. It needs epics E2–E10 
 
 - Live runs cost money and share the Claude workers' limits; budget them (W8 risk 7).
 - Spec-first: freeze the plan before writing any solution or replay patch (W8, "Honesty").
+
+## Decision (2026-10-18, Will)
+
+Closes on the rerun that find-4003b9's option 2 asks for (tightened fixture, pass^3), not on the 2026-10-16 record.

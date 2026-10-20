@@ -173,9 +173,9 @@ def test_secret_never_reaches_an_agent_env(operator, tmp_path):
     first, second = vb.load_stream(TOY_STREAM).order(1)
     scripts = {first: [bash("env | sort", "What is in my environment?"), bash(ENV_PROBE, "Try the obvious names."),
                        bash(PS_PROBE, "Read my parent's argv and environment."),
-                       bash(CENSUS_PROBE, "Implement it, and watch whoever imports it."), bash("echo VB_SUBMIT")],
+                       bash(CENSUS_PROBE, "Implement it, and watch whoever imports it."), bash("echo SUBMIT_TASK")],
                second: [bash(SEARCH, "Search every file around my workdir."), bash(CORRECT, "Implement it."),
-                        bash("echo VB_SUBMIT")]}
+                        bash("echo SUBMIT_TASK")]}
     driver_env = {"PATH": os.environ["PATH"], "HOME": str(operator["home"]), "VB_SECRET_FILE": str(loaded.path),
                   "VB_PROBE": MARKER}  # no provider key: `vb run` refuses one in its environment (bug-979a06)
     with StubServer(scripted(scripts)) as stub:
@@ -192,15 +192,19 @@ def test_secret_never_reaches_an_agent_env(operator, tmp_path):
     seen = observations(json.loads((out / "transcripts" / f"{first}.s1.json").read_text()))
     names = {line.split("=", 1)[0] for line in seen["env | sort"].splitlines() if "=" in line}
     assert "PATH" in names and not [name for name in names if agent_env.FORBIDDEN_NAME.search(name)]
-    assert f"HOME={operator['work'] / 'run-1' / '_home' / f'{first}.s1'}" in seen["env | sort"]
+    # bug-3c921e: the agent's HOME, and the census's beside it, are named by the task's alias, not its key.
+    work_dir = Path(json.loads((out / "manifest.json").read_text())["work_dir"])
+    alias = rows[first]["provenance"]["alias"]
+    assert f"HOME={work_dir / '_home' / alias}\n" in seen["env | sort"] and first not in seen["env | sort"]
     assert "VB_SECRET=unset" in seen[ENV_PROBE] and "No such file" in seen[ENV_PROBE]
     # Control: the probe did read the driver's environment and argv, which name the secret file but never hold it.
     # The driver runs scrubbed (bug-32eb77), so the operator's other variables, such as the marker, are gone.
     assert f"VB_SECRET_FILE={loaded.path}" in seen[PS_PROBE] and MARKER not in seen[PS_PROBE]
     # Control: in the census, the agent's code ran in an agent environment. Without a sandbox it also saw hidden.py's
-    # argv, which names the secret file; the sandbox cannot run the setuid `ps` at all (gap-8c3752).
-    probe = (out / "private" / f"{first}.s1" / "census" / "hidden" / "probe.txt").read_text()
-    assert f"{first}.s1.census" in probe and MARKER not in probe
+    # argv, which names the secret file; the sandbox cannot run the setuid `ps` at all (gap-8c3752). The census's
+    # exports are in the work directory, outside the results root its runs are denied (bug-42b214).
+    probe = (work_dir / f"{alias}.census" / "hidden" / "probe.txt").read_text()
+    assert f"{alias}.census" in probe and MARKER not in probe
     assert (f"--secret-file {loaded.path}" in probe) is (sandbox.KIND == "none")
     listing = observations(json.loads((out / "transcripts" / f"{second}.s1.json").read_text()))[SEARCH]
     assert str(loaded.path) not in listing
@@ -222,7 +226,7 @@ def test_run_refused_when_secret_is_in_roko_dotenv(operator, capsys, monkeypatch
         (user_dotenv, clean + f"# {loaded.canary}\n", "holds the secret"),
         (workspace_dotenv, f"VB_SECRET={value}\n", "defines VB_SECRET"),
     ]
-    with StubServer(lambda body: bash("echo VB_SUBMIT")) as stub:
+    with StubServer(lambda body: bash("echo SUBMIT_TASK")) as stub:
         for dotenv, text, reason in cases:
             dotenv.parent.mkdir(exist_ok=True)
             dotenv.write_text(text, encoding="utf-8")
@@ -252,8 +256,8 @@ def test_run_refused_when_secret_is_in_roko_dotenv(operator, capsys, monkeypatch
 def readable_secret(monkeypatch) -> None:
     """Leave the files the tripwire holds out of the agent's sandbox, as on a host without one: on macOS the direct
     loop denies its agent those files (gap-0bd49a; test_sandbox_net.py), and the detection below needs a read to
-    detect."""
-    monkeypatch.setattr(vb, "_agent_deny", lambda run: (run.run_dir / "private",))
+    detect. The rest of the agent's deny list, the run directory (bug-d308f7), stays."""
+    monkeypatch.setattr(vb, "_agent_deny", lambda run: (run.run_dir,))
 
 
 def test_deliberate_reads_are_flagged_and_kept_out_of_records(operator, monkeypatch):
@@ -266,9 +270,9 @@ def test_deliberate_reads_are_flagged_and_kept_out_of_records(operator, monkeypa
     scripts = {first: [bash(f"chmod 600 '{path}' && cat '{path}'", "Print it."),
                        bash(f"touch \"$(grep -v '^#' '{path}')\" && {CORRECT}",
                             "Keep a copy as a file name, silently."),
-                       bash("echo VB_SUBMIT")],
+                       bash("echo SUBMIT_TASK")],
                second: [bash(CENSUS_STASH.replace("__SECRET_DIR__", repr(str(path.parent))),
-                             "Copy the secret when the truth suite runs me."), bash("echo VB_SUBMIT")]}
+                             "Copy the secret when the truth suite runs me."), bash("echo SUBMIT_TASK")]}
     with StubServer(scripted(scripts)) as stub:
         assert vb.main(run_args(operator, stub.url, "--transcripts", "--keep-workdirs")) == 0
     out = operator["results"] / "TEST-SECRET" / "run-1"
@@ -278,9 +282,11 @@ def test_deliberate_reads_are_flagged_and_kept_out_of_records(operator, monkeypa
     assert {"transcript", "argv", "tree:<vb-secret>", "secret-file:mode", "secret-file:ctime"} <= set(
         reader["provenance"]["canary_places"])
     # The stasher never names the file and never prints it. The truth suite's sandbox denies it the file
-    # (gap-8c3752); on a host without one, only the census's own sweep sees the copy.
-    stash = (out / "private" / f"{second}.s1" / "census" / "hidden" / "stash.txt").read_text()
-    assert stasher["vs"]["sandbox"] == sandbox.KIND
+    # (gap-8c3752); on a host without one, only the census's own sweep sees the copy. The census's exports are in the
+    # work directory (bug-42b214).
+    work_dir = Path(json.loads((out / "manifest.json").read_text())["work_dir"])
+    stash = (work_dir / f"{stasher['provenance']['alias']}.census" / "hidden" / "stash.txt").read_text()
+    assert stasher["vs"]["sandbox"] == sandbox.kind([path], sandbox.NETWORK_NONE)  # no network either (gap-0bd49a)
     if sandbox.KIND == "none":
         assert stasher["execution"]["status"] == "leak_suspected"
         assert stasher["provenance"]["canary_places"] == ["census:hidden/stash.txt"]
@@ -302,8 +308,9 @@ def test_a_silent_read_of_the_secret_file_is_detected(operator, tmp_path, capsys
     silent = f"{split}; chmod 600 \"$f\" && s=$(grep -v '^#' \"$f\") && chmod 000 \"$f\" && {CORRECT}"
     plain = f"{split}; cat \"$f\"; true"
     first, second = vb.load_stream(TOY_STREAM).order(1)
-    scripts = {first: [bash(silent, "Read the secret quietly, put the mode back, and solve."), bash("echo VB_SUBMIT")],
-               second: [bash(plain, "Just read it."), bash(CORRECT, "Solve."), bash("echo VB_SUBMIT")]}
+    scripts = {first: [bash(silent, "Read the secret quietly, put the mode back, and solve."),
+                       bash("echo SUBMIT_TASK")],
+               second: [bash(plain, "Just read it."), bash(CORRECT, "Solve."), bash("echo SUBMIT_TASK")]}
     with StubServer(scripted(scripts)) as stub:
         assert vb.main(run_args(operator, stub.url, "--transcripts")) == 0
     out = operator["results"] / "TEST-SECRET" / "run-1"
@@ -369,10 +376,10 @@ def test_no_provider_key_in_the_driver_environment(operator, tmp_path, capsys, m
     key_file = secret.create_keys(operator["home"] / ".config" / "viabilitybench" / "keys", {"CEREBRAS_API_KEY": key})
     key_probe = f"cat '{key_file}'; true"
     silent = (f"{{ chmod 600 '{key_file}' && k=$(cat '{key_file}') && chmod 000 '{key_file}'; }} 2>/dev/null; "
-              "echo VB_SUBMIT")
+              "echo SUBMIT_TASK")
     first, second = vb.load_stream(TOY_STREAM).order(1)
     scripts = {first: [bash(PS_PROBE, "Read my parent's environment."), bash(key_probe, "Read the key file."),
-                       bash(CORRECT, "Solve."), bash("echo VB_SUBMIT")],
+                       bash(CORRECT, "Solve."), bash("echo SUBMIT_TASK")],
                second: [bash(silent, "Take the key quietly, and stop.")]}
     with StubServer(scripted(scripts)) as stub:
         # cheap_direct with its provider on the stub: an endpoint that names its key, with no network. The proxy, the
@@ -439,8 +446,8 @@ def test_the_driver_runs_with_a_scrubbed_environment(operator):
                    "DATABASE_URL": "postgres://bench:hunter2-operator-only@db.invalid/runs"}
     first, second = vb.load_stream(TOY_STREAM).order(1)
     scripts = {first: [bash(PS_PROBE, "Read my parent's environment."), bash("env | sort", "And my own."),
-                       bash(CORRECT, "Solve."), bash("echo VB_SUBMIT")],
-               second: [bash(CORRECT, "Solve."), bash("echo VB_SUBMIT")]}
+                       bash(CORRECT, "Solve."), bash("echo SUBMIT_TASK")],
+               second: [bash(CORRECT, "Solve."), bash("echo SUBMIT_TASK")]}
     driver_env = {"PATH": os.environ["PATH"], "HOME": str(operator["home"]), "LANG": "en_US.UTF-8", **credentials}
     command = [sys.executable, str(layout.DRIVER_DIR / "vb.py")]
     with StubServer(scripted(scripts)) as stub:

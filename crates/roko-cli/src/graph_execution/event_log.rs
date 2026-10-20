@@ -34,6 +34,7 @@ use std::future::Future;
 use std::io::{BufWriter, Write as _};
 use std::path::Path;
 use std::pin::Pin;
+use std::time::{Duration, Instant};
 
 use anyhow::{Context as _, anyhow};
 use chrono::{DateTime, Utc};
@@ -280,8 +281,12 @@ pub(crate) fn graph_run_id(run_id: Option<&str>) -> String {
 /// the TUI replays, with the run's `run_id` added, by which the index is
 /// derived and repaired. A hub that writes the workspace log itself (serve's,
 /// see [`StateHub::persists_events`]) gets the index only. Plan, task, gate
-/// and run lifecycle events are synced and flush the index; the rest, agent
-/// output above all, are appended without a sync per line.
+/// and run lifecycle events are synced and flush the index; the rest are
+/// appended without a sync per line. Of those, what a host shows as it
+/// happens, agent output above all, flushes the index too (bug-966cf7);
+/// heartbeats, efficiency rows and gate or task output lines reach it at the
+/// latest with the first row `INDEX_FLUSH_INTERVAL` after its last flush
+/// (bug-0b997a).
 pub(crate) struct WorkspaceEventLog {
     tap: EventTap<WorkspaceLogWriter>,
 }
@@ -297,9 +302,12 @@ impl WorkspaceEventLog {
             .ok()?;
         let writer = WorkspaceLogWriter {
             paths,
+            serve_plan: serve_plan_id(&run_id),
             run_id,
+            plans: None,
             index_only: hub.persists_events(),
             failed: false,
+            last_flush: Instant::now(),
         };
         Some(Self {
             tap: EventTap::spawn(hub, writer, WorkspaceLogWriter::record),
@@ -320,20 +328,34 @@ impl WorkspaceEventLog {
     }
 }
 
+/// How long a run's index may hold rows that are not lifecycle events before
+/// the next row flushes them (bug-0b997a). An agent turn writes no lifecycle
+/// row, so without it a reader following a live run (the per-run stream, the
+/// run's events, a chat host's run card) saw nothing until the turn ended.
+const INDEX_FLUSH_INTERVAL: Duration = Duration::from_secs(1);
+
 /// Writer state folded by a [`WorkspaceEventLog`]'s tap.
 struct WorkspaceLogWriter {
     paths: crate::runner::persist::PersistPaths,
     run_id: String,
+    /// The plans the run executes, from its `PlanSetLoaded`, which a Graph run
+    /// publishes before any plan starts; `None` until then.
+    plans: Option<BTreeSet<String>>,
+    /// The plan `roko serve` names a one-shot run's own events after
+    /// (`run-<first 8 of the run id>`).
+    serve_plan: String,
     /// The hub writes `.roko/events.jsonl` itself.
     index_only: bool,
     /// A write failed, and was reported.
     failed: bool,
+    /// When the run's index was last flushed.
+    last_flush: Instant,
 }
 
 impl WorkspaceLogWriter {
     fn record(&mut self, tapped: Tapped<'_>) {
-        let event = match tapped {
-            Tapped::Event(envelope) => &envelope.payload,
+        let (event, ts_millis) = match tapped {
+            Tapped::Event(envelope) => (&envelope.payload, envelope.ts_millis),
             Tapped::Lagged(skipped) => {
                 tracing::warn!(
                     run_id = %self.run_id,
@@ -347,18 +369,33 @@ impl WorkspaceLogWriter {
             return;
         }
         let mut line = serde_json::to_value(event).unwrap_or_default();
+        if !self.owns(event, &line) {
+            return;
+        }
         if let Some(fields) = line.as_object_mut() {
             fields
                 .entry("run_id")
                 .or_insert_with(|| serde_json::json!(self.run_id));
+            // When the hub published it, as `/api/events` reports it, so the run's
+            // summary and a replayed timeline can say when things happened
+            // (bug-28aae1).
+            fields
+                .entry("ts_millis")
+                .or_insert_with(|| serde_json::json!(ts_millis));
         }
         let lifecycle = is_lifecycle_event(event);
+        let flush_index = lifecycle
+            || shown_as_it_happens(event)
+            || self.last_flush.elapsed() >= INDEX_FLUSH_INTERVAL;
+        if flush_index {
+            self.last_flush = Instant::now();
+        }
         let result = if self.index_only {
             crate::runner::persist::append_run_index_event(
                 &self.paths,
                 &self.run_id,
                 &line,
-                lifecycle,
+                flush_index,
             )
         } else {
             let durability = if lifecycle {
@@ -371,7 +408,7 @@ impl WorkspaceLogWriter {
                 &self.run_id,
                 &line,
                 durability,
-                lifecycle,
+                flush_index,
             )
         };
         if let Err(error) = result
@@ -386,10 +423,50 @@ impl WorkspaceLogWriter {
     }
 }
 
+impl WorkspaceLogWriter {
+    /// Whether `event`, serialized as `line`, is this run's (bug-09e21e).
+    /// Every run on the hub publishes into it, and serve's own runs and errors
+    /// too: an event that names another run, or a plan outside this run's plan
+    /// set once that is known, is not this run's, and is neither recorded nor
+    /// stamped with its id. An event that names neither a run nor a plan is
+    /// taken as the run's own.
+    fn owns(&mut self, event: &DashboardEvent, line: &serde_json::Value) -> bool {
+        let named = |field: &str| {
+            line.get(field)
+                .and_then(serde_json::Value::as_str)
+                .filter(|id| !id.is_empty())
+        };
+        if let Some(run_id) = named("run_id") {
+            return run_id == self.run_id;
+        }
+        if let DashboardEvent::PlanSetLoaded { plans } = event
+            && self.plans.is_none()
+        {
+            self.plans = Some(plans.iter().map(|plan| plan.plan_id.clone()).collect());
+        }
+        let Some(plan_id) = named("plan_id") else {
+            return true;
+        };
+        plan_id == self.run_id
+            || plan_id == self.serve_plan
+            || self
+                .plans
+                .as_ref()
+                .is_none_or(|plans| plans.contains(plan_id))
+    }
+}
+
+/// The plan `roko serve` names a one-shot run's own events after: `run-` and
+/// the run id's first 8 characters (`roko_serve`'s `run_plan_id`).
+fn serve_plan_id(run_id: &str) -> String {
+    format!("run-{}", run_id.get(..8).unwrap_or(run_id))
+}
+
 /// Whether a [`WorkspaceEventLog`] syncs `event` and flushes the run's index
 /// as it is written: the plan, task, gate and run events that explain a run's
-/// end state, a blocked task's included (gap-dd4826), so a crash right after
-/// one cannot lose it.
+/// end state, a blocked task's included (gap-dd4826), the steps of a
+/// plan's whole-plan check (gap-6b6ec1) and its delivery's start and end
+/// (gap-4f6cbe), so a crash right after one cannot lose it.
 fn is_lifecycle_event(event: &DashboardEvent) -> bool {
     matches!(
         event,
@@ -400,7 +477,28 @@ fn is_lifecycle_event(event: &DashboardEvent) -> bool {
             | DashboardEvent::TaskCompleted { .. }
             | DashboardEvent::TaskBlocked { .. }
             | DashboardEvent::GateResult { .. }
+            | DashboardEvent::PlanCheckStarted { .. }
+            | DashboardEvent::PlanCheckFinished { .. }
+            | DashboardEvent::DeliveryStarted { .. }
+            | DashboardEvent::DeliveryFinished { .. }
             | DashboardEvent::RunCompleted { .. }
+    )
+}
+
+/// Whether a [`WorkspaceEventLog`] flushes the run's index as soon as it
+/// writes `event`, though without a sync (bug-966cf7): what a host following
+/// the run shows as it happens, such as an agent's live tool steps and text,
+/// a route decision, a confirm wait, a held effect or a knowledge write. Only
+/// the steady traffic waits for [`INDEX_FLUSH_INTERVAL`] (bug-0b997a):
+/// heartbeats, efficiency rows, and gate or task output lines.
+fn shown_as_it_happens(event: &DashboardEvent) -> bool {
+    !matches!(
+        event,
+        DashboardEvent::AgentHeartbeat { .. }
+            | DashboardEvent::PlanCheckHeartbeat { .. }
+            | DashboardEvent::EfficiencyEvent { .. }
+            | DashboardEvent::GateOutputLine { .. }
+            | DashboardEvent::TaskOutputAppended { .. }
     )
 }
 
@@ -641,6 +739,14 @@ fn logged_event(event: &DashboardEvent, scrubber: &LogScrubber) -> serde_json::V
             }
             DashboardEvent::GateOutputLine { line, .. } => {
                 replace_with_digest(fields, "line", line);
+            }
+            DashboardEvent::AttemptSettled { settled, .. } => {
+                if let Some(detail) = &settled.detail {
+                    fields.insert(
+                        "detail".to_string(),
+                        serde_json::json!(gate_output_excerpt(detail, scrubber)),
+                    );
+                }
             }
             DashboardEvent::TaskOutputAppended { lines, .. } => {
                 replace_with_digest(fields, "lines", &lines.join("\n"));
@@ -919,6 +1025,268 @@ mod tests {
         assert_eq!(indexed[0]["run_id"], "graph-test-2");
     }
 
+    /// bug-09e21e: the hub carries every run's events. A run's index takes
+    /// its own plans' events and the run-wide ones, never another run's: not
+    /// serve's one-shot plan of a run it refused, nor an event naming another
+    /// run, so its summary counts only its own tasks.
+    #[tokio::test]
+    async fn foreign_plan_events_stay_out_of_the_runs_index() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let events = dir.path().join(".roko/events.jsonl");
+        let hub = crate::state_hub::SharedStateHub::new(
+            crate::state_hub::StateHub::with_event_log(64, &events),
+        );
+        let run_id = "c237c5b3-d2ad-4e63-a47e-bb02fa6ce274";
+        let log =
+            WorkspaceEventLog::spawn(&hub, dir.path(), run_id.to_string()).expect("record the run");
+        let sender = hub.sender();
+        let task = |plan: &str, task: &str| DashboardEvent::TaskStarted {
+            plan_id: plan.to_string(),
+            task_id: task.to_string(),
+            title: String::new(),
+            phase: "implementing".to_string(),
+        };
+        let completed = |plan: &str, task: &str, outcome: &str| DashboardEvent::TaskCompleted {
+            plan_id: plan.to_string(),
+            task_id: task.to_string(),
+            outcome: outcome.to_string(),
+        };
+        sender.publish(DashboardEvent::PlanSetLoaded {
+            plans: vec![PlanSetEntry {
+                plan_id: run_id.to_string(),
+                title: run_id.to_string(),
+                ..PlanSetEntry::default()
+            }],
+        });
+        sender.publish(task(run_id, "T1"));
+        // Serve's events for a prompt run it started while this one held the
+        // workspace: its one-shot plan, its failure, its end.
+        let refused = "run-da891352";
+        sender.publish(task(refused, "In the tally project, add a --json flag"));
+        sender.publish(completed(
+            refused,
+            "In the tally project, add a --json flag",
+            "failed",
+        ));
+        sender.publish(DashboardEvent::PlanCompleted {
+            plan_id: refused.to_string(),
+            success: false,
+        });
+        sender.publish(DashboardEvent::RunCompleted {
+            run_id: Some("da891352-1709-45bf-bc8c-ac8417494046".to_string()),
+            outcome: "failed".to_string(),
+            duration_ms: 3,
+            cleanup_degraded: false,
+            surviving_agent_ids: Vec::new(),
+            surviving_agent_pids: Vec::new(),
+        });
+        // Serve's heartbeat for this run's own one-shot plan, and a run-wide line.
+        sender.publish(DashboardEvent::AgentHeartbeat {
+            agent_id: "claude".to_string(),
+            plan_id: "run-c237c5b3".to_string(),
+            task_id: "T1".to_string(),
+            elapsed_ms: 5_000,
+        });
+        sender.publish(completed(run_id, "T1", "passed"));
+        log.finish().await;
+
+        let index = roko_fs::run_index::run_index_path(&events, run_id).expect("index path");
+        let rows = read_lines(&index);
+        let plans: BTreeSet<&str> = rows
+            .iter()
+            .filter_map(|row| row["plan_id"].as_str())
+            .collect();
+        assert_eq!(plans, BTreeSet::from([run_id, "run-c237c5b3"]), "{rows:#?}");
+        assert!(rows.iter().all(|row| row["run_id"] == run_id), "{rows:#?}");
+        let outcomes: Vec<&str> = rows
+            .iter()
+            .filter(|row| row["type"] == "task_completed")
+            .filter_map(|row| row["outcome"].as_str())
+            .collect();
+        assert_eq!(outcomes, ["passed"]);
+        // The hub still logs every event once; only the index is the run's own.
+        assert_eq!(read_lines(&events).len(), 8);
+    }
+
+    /// bug-28aae1: every row of the run's index carries the time the hub
+    /// published its event, so the run's summary has a start and an end.
+    #[tokio::test]
+    async fn index_rows_carry_the_time_they_were_published() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let hub = crate::state_hub::shared_state_hub();
+        let before = unix_millis(Utc::now());
+        let log = WorkspaceEventLog::spawn(&hub, dir.path(), "graph-test-ts".to_string())
+            .expect("record the run");
+        hub.sender().publish(DashboardEvent::PlanStarted {
+            plan_id: "p1".to_string(),
+            tasks_total: 1,
+        });
+        log.finish().await;
+        let after = unix_millis(Utc::now());
+
+        let events_path = dir.path().join(".roko/events.jsonl");
+        let index =
+            roko_fs::run_index::run_index_path(&events_path, "graph-test-ts").expect("index path");
+        let rows = read_lines(&index);
+        let started = rows
+            .iter()
+            .find(|row| row["type"] == "plan_started")
+            .expect("plan_started row");
+        let at = started["ts_millis"].as_u64().expect("ts_millis");
+        assert!(
+            (before..=after).contains(&at),
+            "{at} not in {before}..={after}"
+        );
+    }
+
+    /// bug-0b997a: rows that are not lifecycle events reach the run's index
+    /// while the run is still recording, at the latest with the first row
+    /// INDEX_FLUSH_INTERVAL after the last flush, so a reader following a live
+    /// run sees an agent's turn as it happens.
+    #[tokio::test]
+    async fn agent_rows_reach_the_index_while_the_run_is_live() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let hub = crate::state_hub::shared_state_hub();
+        let log = WorkspaceEventLog::spawn(&hub, dir.path(), "graph-test-live".to_string())
+            .expect("record the run");
+        let index = roko_fs::run_index::run_index_path(
+            &dir.path().join(".roko/events.jsonl"),
+            "graph-test-live",
+        )
+        .expect("index path");
+        let kinds = || {
+            std::fs::read_to_string(&index)
+                .unwrap_or_default()
+                .lines()
+                .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+                .filter_map(|row| row["type"].as_str().map(str::to_string))
+                .collect::<Vec<_>>()
+        };
+        let heartbeat = |elapsed_ms| DashboardEvent::AgentHeartbeat {
+            agent_id: "a1".to_string(),
+            plan_id: "p1".to_string(),
+            task_id: "T1".to_string(),
+            elapsed_ms,
+        };
+
+        hub.sender().publish(DashboardEvent::AgentSpawned {
+            agent_id: "a1".to_string(),
+            plan_id: "p1".to_string(),
+            task_id: "T1".to_string(),
+            attempt: 1,
+            role: "implementer".to_string(),
+            model: String::new(),
+            provider: String::new(),
+        });
+        tokio::time::sleep(INDEX_FLUSH_INTERVAL + Duration::from_millis(200)).await;
+        hub.sender().publish(heartbeat(1_200));
+
+        // No lifecycle row came, and the run has not finished recording.
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while kinds().len() < 2 && Instant::now() < deadline {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        assert_eq!(kinds(), ["agent_spawned", "agent_heartbeat"]);
+        log.finish().await;
+    }
+
+    /// bug-966cf7: a live agent record, and a loop event such as a route
+    /// decision, is in the run's index once it has been recorded, without a
+    /// later row to flush it; heartbeats and efficiency rows still wait for
+    /// the flush interval.
+    #[tokio::test]
+    async fn live_records_flush_at_once() {
+        /// The types of the rows in the run's index once it has `count`, or
+        /// after 5 s.
+        async fn rows(index: &Path, count: usize) -> Vec<String> {
+            let deadline = Instant::now() + Duration::from_secs(5);
+            loop {
+                let kinds = std::fs::read_to_string(index)
+                    .unwrap_or_default()
+                    .lines()
+                    .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+                    .filter_map(|row| row["type"].as_str().map(str::to_string))
+                    .collect::<Vec<_>>();
+                if kinds.len() >= count || Instant::now() >= deadline {
+                    return kinds;
+                }
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        }
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let hub = crate::state_hub::shared_state_hub();
+        let log = WorkspaceEventLog::spawn(&hub, dir.path(), "graph-test-prompt".to_string())
+            .expect("record the run");
+        let index = roko_fs::run_index::run_index_path(
+            &dir.path().join(".roko/events.jsonl"),
+            "graph-test-prompt",
+        )
+        .expect("index path");
+
+        hub.sender().publish(DashboardEvent::TaskStarted {
+            plan_id: "p1".to_string(),
+            task_id: "T1".to_string(),
+            title: "do it".to_string(),
+            phase: "graph-executing".to_string(),
+        });
+        assert_eq!(rows(&index, 1).await, ["task_started"]);
+        // Nothing is published after each of these, so only its own flush
+        // can put it in the index.
+        let record = serde_json::json!({
+            "kind": "tool_start",
+            "agent_id": "p1/T1",
+            "plan_id": "p1",
+            "task_id": "T1",
+            "attempt": 1,
+            "live": true,
+            "payload": {"tool": "read_file"},
+        });
+        hub.sender().publish(DashboardEvent::AgentOutput {
+            agent_id: "p1/T1".to_string(),
+            plan_id: "p1".to_string(),
+            task_id: "T1".to_string(),
+            attempt: 1,
+            content: format!("{STREAM_RECORD_PREFIX}{record}"),
+        });
+        assert_eq!(rows(&index, 2).await, ["task_started", "agent_output"]);
+        hub.sender().publish(DashboardEvent::RouteDecided {
+            plan_id: "p1".to_string(),
+            task_id: "T1".to_string(),
+            attempt: 2,
+            model: "glm-model".to_string(),
+            provider: "openai-mock".to_string(),
+            stage: "retry".to_string(),
+            reason: "task hint".to_string(),
+            source: "task_hint".to_string(),
+            candidates: Vec::new(),
+            ladder: Box::new(roko_core::dashboard_snapshot::RouteLadder {
+                ladder_reason: "pinned".to_string(),
+                ..Default::default()
+            }),
+        });
+        assert_eq!(
+            rows(&index, 3).await,
+            ["task_started", "agent_output", "route_decided"]
+        );
+        log.finish().await;
+
+        let heartbeat = DashboardEvent::AgentHeartbeat {
+            agent_id: "p1/T1".to_string(),
+            plan_id: "p1".to_string(),
+            task_id: "T1".to_string(),
+            elapsed_ms: 5_000,
+        };
+        let efficiency = DashboardEvent::EfficiencyEvent {
+            plan_id: "p1".to_string(),
+            task_id: "T1".to_string(),
+            metric: "cost_usd".to_string(),
+            value: 0.01,
+        };
+        assert!(!shown_as_it_happens(&heartbeat));
+        assert!(!shown_as_it_happens(&efficiency));
+    }
+
     /// gap-dd4826: a blocked task is synced as it is written, like the
     /// other task lifecycle events; agent traffic is appended relaxed.
     #[test]
@@ -1064,8 +1432,10 @@ mod tests {
         sender.publish(DashboardEvent::GateOutputLine {
             plan_id: "p1".to_string(),
             task_id: "T1".to_string(),
+            attempt: 2,
             gate: "verify[0]".to_string(),
             line: CANARY.to_string(),
+            stream: "stdout".to_string(),
         });
         log.finish(&Ok(0)).await.expect("finish log");
 

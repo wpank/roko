@@ -10,6 +10,7 @@ use roko_graph::workspace::{
     WorkspaceLease, WorkspaceReleasePolicy,
 };
 
+use super::retry_feedback::RetryNotice;
 use super::*;
 use crate::orchestrator::scratch::{CopyBackError, ScratchLease};
 
@@ -151,9 +152,15 @@ impl GraphTaskDispatcher {
                 let key = format!("{}/{}", spec.plan_id, task.id);
                 *self.worktree_generations.lock().entry(key).or_default() += 1;
                 if let Some(feedback) = scratch_conflict_feedback(&paths) {
-                    self.gate_retry_context.record(
+                    let notice = RetryNotice {
+                        attempt: settled.key().attempt,
+                        check: "scratch-copy-back",
+                        failing_steps: &[],
+                    };
+                    self.leave_retry_feedback(
                         &spec.plan_id,
                         &task.id,
+                        &notice,
                         feedback,
                         settled.key().attempt.saturating_add(1),
                     );
@@ -263,7 +270,7 @@ impl GraphTaskDispatcher {
                 run_id: settled.key().run_id,
                 attempt_key: settled.attempt_key().to_string(),
                 verdict: verdict.as_str().to_string(),
-                title: task.title.clone(),
+                title: self.commit_title(&spec.plan_id, task),
             };
             Some(provider.accept(lease, &request).await)
         } else {
@@ -309,9 +316,15 @@ impl GraphTaskDispatcher {
                 // instead of starting blind (backlog 1123).
                 let changed = self.take_changed_files(settled.attempt_key());
                 if let Some(feedback) = conflict_feedback(&reason, &changed) {
-                    self.gate_retry_context.record(
+                    let notice = RetryNotice {
+                        attempt: settled.key().attempt,
+                        check: "plan-branch",
+                        failing_steps: &[],
+                    };
+                    self.leave_retry_feedback(
                         &spec.plan_id,
                         &task.id,
+                        &notice,
                         feedback,
                         settled.key().attempt.saturating_add(1),
                     );
@@ -360,6 +373,9 @@ impl GraphTaskDispatcher {
         let layout = roko_fs::RokoLayout::for_project(&self.workdir);
         let hold_path = layout.review_hold(&spec.plan_id, &task.id);
         let key = roko_learn::telemetry::AttemptKey::parse(attempt_key);
+        let attempt = key.as_ref().map_or(0, |key| key.attempt);
+        let question = confirm_question(&self.workdir, rung);
+        let held_at = chrono::Utc::now();
         let hold = serde_json::json!({
             "schema_version": 1,
             "kind": "confirm",
@@ -370,14 +386,30 @@ impl GraphTaskDispatcher {
             "attempt_key": attempt_key,
             "attempt": key.as_ref().map(|key| key.attempt),
             "rung": rung.name,
-            "question": confirm_question(&self.workdir, rung),
+            "question": question,
             "summary": confirm_summary(artefacts),
             "timeout_secs": rung.timeout_secs,
-            "held_at": chrono::Utc::now().to_rfc3339(),
+            "held_at": held_at.to_rfc3339(),
         });
         if let Err(error) = write_review_hold(&hold_path, &hold) {
             let reason = format!("the confirmation could not be asked: {error}");
             return Verdict::skip(&label, reason);
+        }
+        // The run's stream says that it waits on a person, and until when
+        // (gap-7c6663).
+        if let Some(tui) = &self.tui_bridge {
+            let deadline = held_at
+                + chrono::Duration::seconds(i64::try_from(rung.timeout_secs).unwrap_or(i64::MAX));
+            tui.publish_event(roko_core::DashboardEvent::ConfirmWaiting {
+                plan_id: spec.plan_id.clone(),
+                task_id: task.id.clone(),
+                attempt,
+                attempt_key: attempt_key.to_string(),
+                rung: label.clone(),
+                question: question.clone(),
+                timeout_secs: rung.timeout_secs,
+                deadline_at: deadline.to_rfc3339(),
+            });
         }
         tracing::info!(
             plan_id = %spec.plan_id,
@@ -388,13 +420,14 @@ impl GraphTaskDispatcher {
         );
         let reviews = layout.reviews_log();
         let deadline = std::time::Instant::now() + rung.timeout();
+        let mut stopped = false;
         let decision = loop {
             if let Some(decision) = review_decision(&reviews, &spec.plan_id, &task.id, attempt_key)
             {
                 break Some(decision);
             }
-            let stopping = self.stopped_verify(spec, task, "confirm").is_some();
-            if stopping || std::time::Instant::now() >= deadline {
+            stopped = self.stopped_verify(spec, task, "confirm").is_some();
+            if stopped || std::time::Instant::now() >= deadline {
                 break None;
             }
             tokio::time::sleep(REVIEW_POLL_INTERVAL).await;
@@ -402,9 +435,34 @@ impl GraphTaskDispatcher {
         if let Err(error) = std::fs::remove_file(&hold_path) {
             tracing::warn!(hold = %hold_path.display(), %error, "the confirm hold stays");
         }
+        if let Some(tui) = &self.tui_bridge {
+            let (outcome, note) = match &decision {
+                Some((decision, note)) => (
+                    decision.clone(),
+                    Some(note.clone()).filter(|note| !note.trim().is_empty()),
+                ),
+                None if stopped => ("stopped".to_string(), None),
+                None => ("timed_out".to_string(), None),
+            };
+            tui.publish_event(roko_core::DashboardEvent::ConfirmResolved {
+                plan_id: spec.plan_id.clone(),
+                task_id: task.id.clone(),
+                attempt,
+                attempt_key: attempt_key.to_string(),
+                rung: label.clone(),
+                outcome,
+                note,
+            });
+        }
         match decision {
             Some((decision, note)) if decision == "approved" => {
-                let mut verdict = Verdict::pass(&label).with_detail(note);
+                // The gate result says who passed it (gap-7c6663).
+                let detail = if note.trim().is_empty() {
+                    "approved by the person".to_string()
+                } else {
+                    format!("approved by the person: {note}")
+                };
+                let mut verdict = Verdict::pass(&label).with_detail(detail);
                 verdict.reason = CONFIRMED_BY_USER.to_string();
                 verdict
             }
@@ -542,9 +600,15 @@ impl GraphTaskDispatcher {
             tui.gate_result_with_output(&spec.plan_id, &task.id, "review", false, Some(&message));
         }
         if let Some(feedback) = GateFeedback::from_raw(&message) {
-            self.gate_retry_context.record(
+            let notice = RetryNotice {
+                attempt: settled.key().attempt,
+                check: "review",
+                failing_steps: std::slice::from_ref(&message),
+            };
+            self.leave_retry_feedback(
                 &spec.plan_id,
                 &task.id,
+                &notice,
                 feedback,
                 settled.key().attempt.saturating_add(1),
             );

@@ -14,6 +14,7 @@ from pathlib import Path
 import pytest
 
 import caps
+import disturb
 import layout
 import ledger
 import secret
@@ -87,6 +88,9 @@ def test_multi_provider_arm_gets_one_upstream_per_provider(tmp_path, ladder_arm)
         assert set(proxy.upstreams) == {"cerebras", "zai", "openai"}
         for name in ("cerebras", "zai", "openai"):
             assert proxy.base_url(name).startswith(proxy.url + "/")
+        # gap-bccf58: the proxy forwards the ladder's rungs and no other model, and no server-side tool anywhere.
+        assert proxy.policy() == {"paths": ["/chat/completions"], "models": [CHEAP, MID, TOP],
+                                  "server_tools": "refused", "allow": {}}
     finally:
         proxy.close()
 
@@ -101,3 +105,31 @@ def test_multi_provider_arm_gets_one_upstream_per_provider(tmp_path, ladder_arm)
     assert list(single.endpoints) == [single.endpoint.provider] and single.endpoints[single.endpoint.provider] == \
         single.endpoint
     assert single.worst_task_usd == caps.worst_task_usd(single.caps, single.snapshot.row(CHEAP))
+
+
+def test_the_proxy_forwards_the_arms_models_and_allowances(tmp_path):
+    """gap-bccf58: `vb run`'s proxy also forwards the model a `model_swap` disturbance declares, and on an upstream the
+    server-side tools its `[providers.<name>] proxy_allow` names. An allowance that names no server-side tool stops
+    the run before the proxy starts, as does one that is not a list of strings."""
+    keys = secret.create_keys(tmp_path / "keys", {"CEREBRAS_API_KEY": "sk-cerebras-0000000000",
+                                                  "ZAI_API_KEY": "sk-zai-000000000000000",
+                                                  "OPENAI_API_KEY": "sk-openai-00000000000000"})
+
+    def plan_with(allowance: str) -> vb.Plan:
+        arm, zai = tmp_path / "allowing.toml", 'api_key_env = "ZAI_API_KEY"\n'
+        arm.write_text(LADDER_ARM.replace(zai, f"{zai}{allowance}\n"))  # in [providers.zai]
+        return vb.make_plan(make_args(arm))
+
+    plan, run_dir = plan_with('proxy_allow = ["tools:retrieval"]'), tmp_path / "run"
+    run_dir.mkdir()
+    swap = disturb.Disturbance(kind="model_swap", params={"to": "gpt-5.4"})
+    proxy = vb._start_proxy(plan, run_dir, keys=vb._provider_keys(keys, plan.endpoints.values()), disturbances=[swap])
+    try:
+        assert proxy.policy() == {"paths": ["/chat/completions"], "models": [CHEAP, MID, TOP, "gpt-5.4"],
+                                  "server_tools": "refused", "allow": {"zai": ["tools:retrieval"]}}
+    finally:
+        proxy.close()
+    with pytest.raises(vb.DriverError, match="metering proxy cannot start: .*allow may name only"):
+        vb._start_proxy(plan_with('proxy_allow = ["retrieval"]'), run_dir, keys=None)
+    with pytest.raises(vb.DriverError, match="proxy_allow must be a list of strings"):
+        plan_with('proxy_allow = "tools:retrieval"')

@@ -342,7 +342,7 @@ pub(crate) async fn run_anthropic_tool_loop(
             )
             .await;
         }
-        ToolLoopStopReason::BudgetExhausted => {
+        ToolLoopStopReason::BudgetExhausted(_) => {
             emit_dispatch_failure(
                 &event_sender,
                 "Error: Anthropic builtin tool loop stopped because the model-call budget was exhausted."
@@ -1005,7 +1005,7 @@ pub(crate) async fn run_openai_compat_mcp_tool_loop(
             )
             .await;
         }
-        ToolLoopStopReason::BudgetExhausted => {
+        ToolLoopStopReason::BudgetExhausted(_) => {
             emit_dispatch_failure(
                 &event_sender,
                 "Error: MCP tool loop stopped because the model-call budget was exhausted."
@@ -1178,7 +1178,7 @@ pub(crate) async fn run_openai_compat_builtin_tool_loop(
             )
             .await;
         }
-        ToolLoopStopReason::BudgetExhausted => {
+        ToolLoopStopReason::BudgetExhausted(_) => {
             emit_dispatch_failure(
                 &event_sender,
                 "Error: builtin tool loop stopped because the model-call budget was exhausted."

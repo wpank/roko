@@ -22,7 +22,7 @@ What each subsystem is and where it lives. The table makes no maturity or status
 | Graph plan execution (host side) | Plan runner, control, delivery, feedback, workspaces and per-task dispatch for Graph runs | `crates/roko-cli/src/graph_execution/`, `crates/roko-cli/src/graph_task_dispatch.rs` |
 | Runner support modules | Gate dispatch, persistence, output sinks, preflight, merge, resume, plan loading/DAG, queue manifests. The Runner-v2 event loop was deleted on 2026-09-06, and the `runner::run()` stub was removed in `725f21e05` | `crates/roko-cli/src/runner/` |
 | Agent dispatch | Provider-neutral dispatch, prompt building, model routing; provider adapters | `crates/roko-cli/src/dispatch/`, `crates/roko-agent/` (`src/dispatcher/mod.rs`) |
-| Gates | Gate implementations and the rung pipeline; the per-task entry point is `run_gate_once` | `crates/roko-gate/`, `crates/roko-cli/src/runner/gate_dispatch.rs` |
+| Gates | Gate implementations and the rung pipeline; a Graph run checks a task through its authored verify steps and then `[[gates.rungs]]` in `graph_task_dispatch/verification.rs`; `run_gate_once` is kept only for its own tests until gap-c42c8e removes it; `ProductionGateService` runs the rich-topology plan-gate cells and the audit re-run | `crates/roko-gate/`, `crates/roko-cli/src/graph_task_dispatch/verification.rs`, `crates/roko-cli/src/runner/gate_dispatch.rs` |
 | Prompt assembly | Layered system prompt builder and role templates | `crates/roko-compose/` (`src/system_prompt_builder.rs`, `src/templates/`), `crates/roko-cli/src/dispatch/prompt_builder.rs` |
 | Safety | Role authorization, pre/post checks, tool policy | `crates/roko-agent/src/safety/` |
 | Runtime services | Shared `RuntimeServices` builder (the service facade for CLI, serve and ACP) | `crates/roko-execution/` |
@@ -62,6 +62,7 @@ back. Line counts are in `benchmarks/park/`.
 | `cross-cut-functors` | roko-compose | The cross-cut functors and `CrossCutArbitrator` |
 | `spc` | roko-gate | CUSUM, EWMA and BOCPD detectors, PELT, Hotelling's T-squared |
 | `active-inference` | roko-learn | The expected-free-energy tier selector |
+| `channels` | roko-core, roko-runtime | The `ChatBridge` contract and `PlatformRegistry`, the six stub platform adapters (Discord, Slack, Matrix, Mattermost, Telegram, WhatsApp), `ChannelBindingRouter`, and the `[[platforms]]` and `[[channels]]` config types (decision 12) |
 
 ## Critical rules
 
@@ -187,6 +188,7 @@ safety, auth, persistence, migration, payment, or other high-risk changes. FAST 
 | `roko plan list/show/create` | Manage plans |
 | `roko plan run <dir>` | Execute plans through the Graph engine (the only engine; `--engine legacy`/`runner-v2` exits with an error); `--no-holdout` runs it in maximize mode (decision 4115) |
 | `roko plan generate/regenerate` | Generate a plan from a prompt, file, notes or backlog spec (runs nothing), or regenerate one in place |
+| `roko plan import --mori <dir>` | Import mori plan directories (`.mori/plans/<plan>/`) as roko plans, their checks included; no model runs |
 | `roko plan index` | Rebuild or verify the deterministic plans index |
 | `roko plan pause/resume/cancel` | Pause, resume, or cancel a running plan |
 | `roko plan retry <dir>` | Retry failed tasks in a plan |
@@ -296,6 +298,7 @@ safety, auth, persistence, migration, payment, or other high-risk changes. FAST 
 | `roko run-index repair` | Inspect or rebuild derived per-run event indexes |
 | `roko bench demo/swe` | Run benchmark evaluations and write learning telemetry |
 | `roko new <type> <name>` | Scaffold boilerplate |
+| `roko safety controls/release` | List immune isolation controls that deny agents before dispatch, and release one with an audit record |
 | `roko effects list/show/approve/reject` | List, inspect and approve or reject a staged (held) tool call |
 | `roko explain <topic>` | Concept explainer (3 depth levels) |
 | `roko completions <shell>` | Shell completion scripts |
@@ -411,9 +414,9 @@ Long-term priorities that still hold:
    end. The blockers from the first dogfood run have regression fixes, but no live rerun has been
    recorded.
 2. **Learning loops on the Graph path**: several feedback paths were attached to the deleted
-   Runner-v2 event loop and have not been re-attached to Graph runs. For example, Graph runs never
-   emit `FeedbackEvent::PlanCompleted`, so the dream, daimon, theta and delta plan-completion sinks
-   never fire (q-6b7cca).
+   Runner-v2 event loop and have not been re-attached to Graph runs. Graph runs emit
+   `FeedbackEvent::PlanCompleted` once per plan again, now for the daimon sink alone (q-6b7cca
+   option 2); the loops still to turn on are staged in spec-7a71d6.
 3. **roko tracks its own work**: the `roko work` CLI (it extends `roko backlog`, per
    `work/README.md`) plus plan-task `closes = [...]` links, so that roko itself maintains the work
    graph.

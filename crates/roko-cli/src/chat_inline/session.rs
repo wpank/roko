@@ -369,7 +369,7 @@ pub(crate) fn build_unified_inline_agent_session(
 
     let model_config = roko_core::config::loader::load_config_unified(&workdir).unwrap_or_default();
 
-    let cost_table = CostTable::from_config(&model_config.models).with_defaults();
+    let cost_table = CostTable::from_config(&model_config.billed_models()).with_defaults();
     let role = {
         let role = config.prompt.role.trim();
         (!role.is_empty()).then(|| role.to_string())

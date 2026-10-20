@@ -5,6 +5,7 @@ use roko_core::config::harness_params::HarnessParams;
 use roko_learn::telemetry::records::VerifyDepthRecord;
 use roko_learn::telemetry::{ScopeFinding, VerifyStepVerdict};
 
+use super::retry_feedback::RetryNotice;
 use super::tui_forward::append_jsonl_line_async;
 use super::turn_policy::head_and_tail;
 use super::*;
@@ -230,6 +231,10 @@ impl GraphTaskDispatcher {
                 )
                 .build();
             let gate_ctx = Context::now();
+            // The attempt as `route_decided` numbers it, for the steps' live
+            // output lines (gap-f45a6d).
+            let attempt_ordinal = roko_learn::telemetry::AttemptKey::parse(attempt_key)
+                .map_or(attempt_number.saturating_add(1), |key| key.attempt);
             // While this attempt runs its verify steps it edits nothing, so
             // its siblings' verify steps do not wait for it (gap-1920ba).
             let verify_key = format!("{}/{}", spec.plan_id, task.id);
@@ -305,18 +310,16 @@ impl GraphTaskDispatcher {
                     tui.gate_rung_started(&spec.plan_id, &task.id, step_label);
                 }
 
-                let gate = ShellGate::new(
-                    "bash",
-                    vec![
-                        "-o".into(),
-                        "pipefail".into(),
-                        "-c".into(),
-                        self.verify_command(&step.command),
-                    ],
-                )
-                .with_timeout_ms(step.timeout_ms)
-                .with_name(step_label)
-                .with_phase(&step.phase);
+                // Each line the step writes reaches the hub as it runs
+                // (gap-f45a6d).
+                let live = self.live_check_output(spec, task, attempt_ordinal, step_label);
+                let mut gate = ShellGate::verify_step(&self.verify_command(&step.command))
+                    .with_timeout_ms(step.timeout_ms)
+                    .with_name(step_label)
+                    .with_phase(&step.phase);
+                if let Some(live) = &live {
+                    gate = gate.with_output_sink(live.sink());
+                }
 
                 // Wait until no sibling is mid-edit on what this step reads,
                 // and keep siblings from starting to edit it while the step
@@ -405,6 +408,10 @@ impl GraphTaskDispatcher {
                     {
                         return Err(cancelled);
                     }
+                }
+                drop(gate);
+                if let Some(live) = live {
+                    live.finish().await;
                 }
                 // What the command exited with, before a baseline or bench
                 // judgement below changes the verdict.
@@ -548,22 +555,8 @@ impl GraphTaskDispatcher {
                 }
 
                 if !verdict.passed {
-                    let fail_msg = step.fail_msg.as_deref().unwrap_or(&verdict.reason);
-                    let detail_snippet = verdict
-                        .detail
-                        .as_deref()
-                        .map(|d| {
-                            // Include a bounded tail of the output for diagnostics.
-                            let lines: Vec<&str> = d.lines().collect();
-                            let start = lines.len().saturating_sub(30);
-                            lines[start..].join("\n")
-                        })
-                        .unwrap_or_default();
-
                     timed_out |= roko_gate::verdict_timed_out(&verdict);
-                    failures.push(format!(
-                        "{step_label} (`{shown}`): {fail_msg}\n{detail_snippet}"
-                    ));
+                    failures.push(step_failure(step_label, shown, step, &verdict));
                 }
                 step_verdicts.push(ran_step_verdict(i, step, &verdict, exit_code));
                 ran_steps.push((step.phase.clone(), verdict));
@@ -670,18 +663,15 @@ impl GraphTaskDispatcher {
                             if let Some(tui) = &self.tui_bridge {
                                 tui.gate_rung_started(&spec.plan_id, &task.id, step_label);
                             }
-                            let retry_gate = ShellGate::new(
-                                "bash",
-                                vec![
-                                    "-o".into(),
-                                    "pipefail".into(),
-                                    "-c".into(),
-                                    step.command.clone(),
-                                ],
-                            )
-                            .with_timeout_ms(step.timeout_ms)
-                            .with_name(step_label)
-                            .with_phase(&step.phase);
+                            let live =
+                                self.live_check_output(spec, task, attempt_ordinal, step_label);
+                            let mut retry_gate = ShellGate::verify_step(&step.command)
+                                .with_timeout_ms(step.timeout_ms)
+                                .with_name(step_label)
+                                .with_phase(&step.phase);
+                            if let Some(live) = &live {
+                                retry_gate = retry_gate.with_output_sink(live.sink());
+                            }
                             let step_scope =
                                 sibling_settle::StepScope::of(step, &effective_workdir);
                             let reading = self
@@ -721,6 +711,10 @@ impl GraphTaskDispatcher {
                             else {
                                 return Err(verify_cancelled(spec, task, step_label));
                             };
+                            drop(retry_gate);
+                            if let Some(live) = live {
+                                live.finish().await;
+                            }
                             let exit_code = step_exit_code(&retry_verdict);
                             if !retry_verdict.passed {
                                 if let Some(cancelled) = self.stopped_verify(spec, task, step_label)
@@ -784,20 +778,12 @@ impl GraphTaskDispatcher {
                                 );
                             }
                             if !retry_verdict.passed {
-                                let fail_msg =
-                                    step.fail_msg.as_deref().unwrap_or(&retry_verdict.reason);
-                                let detail_snippet = retry_verdict
-                                    .detail
-                                    .as_deref()
-                                    .map(|d| {
-                                        let lines: Vec<&str> = d.lines().collect();
-                                        let start = lines.len().saturating_sub(30);
-                                        lines[start..].join("\n")
-                                    })
-                                    .unwrap_or_default();
                                 retry_timed_out |= roko_gate::verdict_timed_out(&retry_verdict);
-                                retry_failures.push(format!(
-                                    "{step_label} (`{shown}`): {fail_msg}\n{detail_snippet}"
+                                retry_failures.push(step_failure(
+                                    step_label,
+                                    shown,
+                                    step,
+                                    &retry_verdict,
                                 ));
                             }
                             retry_step_verdicts.push(ran_step_verdict(
@@ -984,9 +970,16 @@ impl GraphTaskDispatcher {
                         retries_left,
                         "storing gate feedback for retry injection"
                     );
-                    let kept_in = self.gate_retry_context.record(
+                    // A host sees what the next attempt gets (gap-655ea5).
+                    let notice = RetryNotice {
+                        attempt: attempt_number.saturating_add(1),
+                        check: "verify",
+                        failing_steps: &failures,
+                    };
+                    let kept_in = self.leave_retry_feedback(
                         &spec.plan_id,
                         &task.id,
+                        &notice,
                         feedback,
                         next_attempt,
                     );
@@ -1137,9 +1130,9 @@ pub(super) fn verify_cancelled(spec: &TaskExecutionSpec, task: &TaskDef, at: &st
 
 /// The verdict record's rung of verify step `index` with `phase` (S01
 /// §5.5): `verify:<index>/<phase>` for a phase the gate pipeline knows
-/// ([`rung_for_gate_name`]), `custom:<phase>` for any other.
+/// ([`rung_for_verify_phase`]), `custom:<phase>` for any other.
 fn verdict_step_rung(index: usize, phase: &str) -> String {
-    if rung_for_gate_name(phase).is_some() {
+    if rung_for_verify_phase(phase).is_some() {
         format!("verify:{index}/{phase}")
     } else {
         format!("custom:{phase}")
@@ -1383,7 +1376,10 @@ fn task_runs_rung(task: &TaskDef, rung: &roko_core::config::GateRungConfig) -> b
         return false;
     }
     let invariants = task.hints.test_invariants.as_deref().unwrap_or_default();
-    let test_rung = matches!(rung_for_gate_name(&rung.name), Some(roko_gate::Rung::Test));
+    let test_rung = matches!(
+        rung_for_verify_phase(&rung.name),
+        Some(roko_gate::Rung::Test)
+    );
     rung.required
         || task.hints.quality_profile == Some(roko_core::TaskQualityProfile::Hardened)
         || (test_rung && !invariants.is_empty())
@@ -1455,9 +1451,122 @@ pub(super) fn published_gate_output(command: &str, verdict: &roko_core::Verdict)
     if !verdict.passed {
         result.push_str("\n✗ ");
         result.push_str(&gate_how_ended(&verdict.reason));
+        if let Some(note) = hidden_output_note(command) {
+            result.push('\n');
+            result.push_str(&note);
+        }
     }
 
     result
+}
+
+/// bug-59ed90: for a step that pipes, redirects or captures its test
+/// runner's output, a line that says so and names the command that shows
+/// why it failed; the step's own output cannot.
+fn hidden_output_note(command: &str) -> Option<String> {
+    roko_gate::spec_quality::hidden_runner_output(command).map(|hidden| {
+        format!(
+            "This check {}, so the runner's own failure text is not shown here; run `{}` on its \
+             own to see it.",
+            hidden.describe(),
+            hidden.runner
+        )
+    })
+}
+
+/// A failed step's entry in the retry's feedback: its label and command, its
+/// authored `fail_msg` (else how it ended), the last 30 lines it printed, and
+/// [`hidden_output_note`] when its runner's output was hidden.
+fn step_failure(
+    step_label: &str,
+    shown: &str,
+    step: &crate::task_parser::VerifyStep,
+    verdict: &roko_core::Verdict,
+) -> String {
+    let fail_msg = step.fail_msg.as_deref().unwrap_or(&verdict.reason);
+    let detail_snippet = verdict
+        .detail
+        .as_deref()
+        .map(|detail| {
+            let lines: Vec<&str> = detail.lines().collect();
+            let start = lines.len().saturating_sub(30);
+            lines[start..].join("\n")
+        })
+        .unwrap_or_default();
+    let mut entry = format!("{step_label} (`{shown}`): {fail_msg}\n{detail_snippet}");
+    if let Some(note) = hidden_output_note(&step.command) {
+        entry.push('\n');
+        entry.push_str(&note);
+    }
+    entry
+}
+
+/// The line of a failed check's output that says why it failed (bug-1e272c,
+/// bug-2f30e1), whatever form the output takes:
+/// - its first error line (`error[E0425]: …`, `Error: …`), past cargo's closing
+///   `error: test failed`;
+/// - else its last assertion line: Rust's ``assertion `left == right` failed``,
+///   Python's `AssertionError: …`, pytest's `FAILED … - AssertionError: …`;
+/// - else its last exception line (`ModuleNotFoundError: …`);
+/// - else its first panic or failure line (`test t ... FAILED`);
+/// - else the last line it printed.
+///
+/// `None` when it printed nothing.
+pub(super) fn key_line(output: &str) -> Option<&str> {
+    let lines: Vec<&str> = output
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .collect();
+    let lower = |line: &&str| line.to_ascii_lowercase();
+    lines
+        .iter()
+        .find(|line| {
+            let lower = lower(line);
+            (lower.starts_with("error:") || lower.starts_with("error["))
+                && !lower.starts_with("error: test failed")
+        })
+        .or_else(|| {
+            lines
+                .iter()
+                .rev()
+                .find(|line| lower(line).contains("assert"))
+        })
+        .or_else(|| {
+            lines
+                .iter()
+                .rev()
+                .find(|line| line.contains("Error:") || line.contains("Exception:"))
+        })
+        .or_else(|| {
+            lines.iter().find(|line| {
+                line.contains("panicked at")
+                    || line.contains("FAIL")
+                    || lower(line).contains("failed")
+            })
+        })
+        .or_else(|| lines.last())
+        .copied()
+}
+
+/// The key line ([`key_line`]) of a failing step's entry ([`step_failure`]:
+/// its label, command and how it ended on the first line, then what it
+/// printed); `None` when it printed nothing.
+pub(super) fn step_key_line(step: &str) -> Option<&str> {
+    step.split_once('\n')
+        .and_then(|(_, output)| key_line(output))
+}
+
+/// The key line of the first failing step a verify failure's `reason` lists
+/// ([`verify_failure_summary`]), else how that step ended (`exit code: 1`, or
+/// its `fail_msg`). `None` for a reason in another form.
+pub(super) fn failing_step_key_line(reason: &str) -> Option<&str> {
+    let (_, steps) = reason.split_once(":\n\n")?;
+    let step = steps.split("\n\n---\n\n").next()?;
+    step_key_line(step).or_else(|| {
+        let (_, ended) = step.lines().next()?.split_once("`): ")?;
+        Some(ended.trim()).filter(|ended| !ended.is_empty())
+    })
 }
 
 /// Keep the last [`GATE_OUTPUT_TAIL_LINES`] lines of `detail`; prepend a
@@ -1529,7 +1638,7 @@ fn failed_step_rung(step_outcomes: &[(String, bool)]) -> u32 {
 /// 1 clippy, 2 test), else the custom shell gate's rung, since every Graph
 /// verify step is a shell command.
 pub(super) fn verify_step_rung(phase: &str) -> u32 {
-    rung_for_gate_name(phase).map_or_else(
+    rung_for_verify_phase(phase).map_or_else(
         || {
             roko_gate::GateRegistry::new()
                 .rung_for_name("custom")
@@ -1682,6 +1791,95 @@ mod tests {
             "{message}"
         );
         assert!(!marker.exists(), "fail-fast must not run later steps");
+    }
+
+    /// bug-11901c: a step that pipes into a reader that stops early, here
+    /// `grep -q` at its first match with a megabyte still to come, passes.
+    /// Under `pipefail` the writer used to die of the broken pipe, so passing
+    /// work was failed and retried. A writer that fails still fails the step.
+    #[tokio::test]
+    async fn graph_verify_passes_when_a_reader_stops_early() {
+        let temp = tempdir().expect("tempdir");
+        let (dispatcher, mut task) = make_test_dispatcher(
+            &temp,
+            VERIFY_PROVIDER,
+            no_auto_fix,
+            GraphFeedbackContext::default(),
+        )
+        .await;
+        task.verify = vec![verify_step(
+            "structural",
+            "{ echo OK; seq 1 200000; } | grep -q OK",
+        )];
+        let passed = dispatcher
+            .dispatch(&make_spec(&task), Vec::new(), &CellContext::new())
+            .await
+            .expect("the check held");
+        assert_eq!(
+            TaskGateVerdict::from_signals(&passed),
+            Some(TaskGateVerdict::Passed)
+        );
+
+        task.verify = vec![verify_step(
+            "structural",
+            "{ echo OK; seq 1 200000; exit 3; } | grep -q OK",
+        )];
+        let error = dispatcher
+            .dispatch(&make_spec(&task), Vec::new(), &CellContext::new())
+            .await
+            .expect_err("the writer failed");
+        assert!(matches!(error, RokoError::Verify { .. }), "{error}");
+    }
+
+    /// bug-59ed90: a failed check that pipes its test runner's output away
+    /// says so and names the runner to run on its own, both in what the
+    /// person sees and in the retry's feedback. A plain check is unchanged.
+    #[tokio::test]
+    async fn a_check_that_hides_its_runner_names_the_runner() {
+        let failed = roko_core::Verdict::fail("verify[0:test]", "exit code: 1");
+        assert_eq!(
+            published_gate_output("sh run_tests.sh 2>&1 | grep -q OK", &failed),
+            "$ sh run_tests.sh 2>&1 | grep -q OK\n✗ exit status 1\nThis check pipes the output \
+             of `sh run_tests.sh` into `grep`, so the runner's own failure text is not shown \
+             here; run `sh run_tests.sh` on its own to see it."
+        );
+        assert_eq!(
+            published_gate_output("sh run_tests.sh", &failed),
+            "$ sh run_tests.sh\n✗ exit status 1"
+        );
+
+        let temp = tempdir().expect("tempdir");
+        let feedback_file = temp.path().join("state/retry-feedback.json");
+        let (dispatcher, mut task) = make_test_dispatcher(
+            &temp,
+            FEEDBACK_PROVIDER,
+            no_auto_fix,
+            GraphFeedbackContext::default(),
+        )
+        .await;
+        std::fs::write(
+            temp.path().join("run_tests.sh"),
+            "echo 'FAIL: test_count (1 != 3)'\nexit 1\n",
+        )
+        .expect("test script");
+        task.verify = vec![verify_step("test", "sh run_tests.sh 2>&1 | grep -q OK")];
+        let spec = make_spec(&task);
+        dispatcher.attach_retry_feedback(&spec.plan_id, feedback_file.clone(), "run-1");
+        let error = dispatcher
+            .dispatch(&spec, Vec::new(), &CellContext::new())
+            .await
+            .expect_err("the tests fail");
+        assert!(matches!(error, RokoError::Verify { .. }), "{error}");
+        let persisted: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&feedback_file).expect("feedback persisted"))
+                .expect("feedback json");
+        let raw = persisted["tasks"][task.id.as_str()]["feedback"]["raw_output"]
+            .as_str()
+            .unwrap_or_default();
+        assert!(
+            raw.contains("run `sh run_tests.sh` on its own to see it"),
+            "{persisted}"
+        );
     }
 
     /// backlog 4210: a verify failure's pattern reaches a later attempt of
@@ -1875,6 +2073,255 @@ printf '%s\n' '{"type":"result","session_id":"s","model":"claude-sonnet-4-6","to
         assert!(
             !feedback_file.exists(),
             "a pass clears the persisted feedback"
+        );
+    }
+
+    /// gap-f45a6d: a verify step publishes each line its command writes as
+    /// `gate_output_line` while it runs, with its stream and the attempt, and
+    /// all of them before the step's `gate_result`.
+    #[tokio::test]
+    async fn a_check_streams_its_output_as_it_runs() {
+        let temp = tempdir().expect("tempdir");
+        let hub = crate::state_hub::shared_state_hub();
+        let mut events = hub.subscribe_events();
+        let bridge = TuiBridge::new(hub.sender());
+        let (dispatcher, mut task) = crate::graph_task_dispatch::tests::make_test_dispatcher_with(
+            &temp,
+            VERIFY_PROVIDER,
+            no_auto_fix,
+            GraphFeedbackContext::default(),
+            |dispatcher| dispatcher.with_tui_bridge(bridge),
+        )
+        .await;
+        task.verify = vec![verify_step(
+            "test",
+            "echo 'running 1 test'; echo 'assertion failed: left == right' >&2; exit 1",
+        )];
+
+        let error = dispatcher
+            .dispatch(&make_spec(&task), Vec::new(), &CellContext::new())
+            .await
+            .expect_err("the check fails");
+
+        assert!(matches!(error, RokoError::Verify { .. }), "{error}");
+        let mut order = Vec::new();
+        let mut lines = Vec::new();
+        loop {
+            match events.try_recv() {
+                Ok(envelope) => match envelope.payload {
+                    roko_core::DashboardEvent::GateOutputLine {
+                        attempt,
+                        gate,
+                        line,
+                        stream,
+                        ..
+                    } => {
+                        order.push("line");
+                        lines.push((stream, line, gate, attempt));
+                    }
+                    roko_core::DashboardEvent::GateResult { .. } => order.push("result"),
+                    _ => {}
+                },
+                Err(tokio::sync::broadcast::error::TryRecvError::Lagged(_)) => {}
+                Err(_) => break,
+            }
+        }
+        lines.sort();
+        let step = "verify[0:test]".to_string();
+        assert_eq!(
+            lines,
+            [
+                (
+                    "stderr".to_string(),
+                    "assertion failed: left == right".to_string(),
+                    step.clone(),
+                    1
+                ),
+                ("stdout".to_string(), "running 1 test".to_string(), step, 1),
+            ]
+        );
+        let result = order
+            .iter()
+            .position(|kind| *kind == "result")
+            .expect("the step's result");
+        assert_eq!(&order[..result], ["line", "line"], "{order:?}");
+    }
+
+    /// bug-1e272c, bug-2f30e1: the key line of a failed check's output, for
+    /// the forms checks fail in, and of a failing step's entry.
+    #[test]
+    fn key_line_picks_the_line_that_says_why() {
+        let cargo_test = "running 2 tests\ntest tests::adds ... ok\ntest tests::subtracts ... \
+            FAILED\n\nfailures:\n\n---- tests::subtracts stdout ----\nthread 'tests::subtracts' \
+            panicked at src/lib.rs:12:9:\nassertion `left == right` failed\n  left: 1\n right: 2\n\n\
+            test result: FAILED. 1 passed; 1 failed\n\nerror: test failed, to rerun pass `--lib`";
+        let compile = "   Compiling demo v0.1.0\nerror[E0425]: cannot find value `x` in this scope\n \
+            --> src/lib.rs:3:5\n3 |     assert_eq!(x, 1);\nerror: could not compile `demo` due to 1 \
+            previous error";
+        let unittest = "F\n======\nFAIL: test_engine_0 (tests.test_osc.OscillatorTest.test_engine_0)\n\
+            Traceback (most recent call last):\n  File \"tests/test_osc.py\", line 9, in test_engine_0\n\
+            \x20   self.assertGreater(peak, 0.1)\nAssertionError: 0.0 not greater than 0.1\n\n\
+            Ran 1 test in 0.001s\n\nFAILED (failures=1)";
+        let import = "Traceback (most recent call last):\n  File \"main.py\", line 1, in <module>\n\
+            \x20   import synth\nModuleNotFoundError: No module named 'synth'";
+        let pytest = ">       assert counts == {\"a.txt\": 3}\nE       AssertionError: assert 1 == 3\n\
+            FAILED tests/test_cli.py::test_json_files - AssertionError: assert 1 == 3\n1 failed in 0.05s";
+        for (output, key) in [
+            (cargo_test, Some("assertion `left == right` failed")),
+            (
+                compile,
+                Some("error[E0425]: cannot find value `x` in this scope"),
+            ),
+            (unittest, Some("AssertionError: 0.0 not greater than 0.1")),
+            (import, Some("ModuleNotFoundError: No module named 'synth'")),
+            (
+                pytest,
+                Some("FAILED tests/test_cli.py::test_json_files - AssertionError: assert 1 == 3"),
+            ),
+            ("checking\nexpected 42", Some("expected 42")),
+            ("", None),
+        ] {
+            assert_eq!(key_line(output), key, "{output}");
+        }
+
+        let step = "verify[0:test] (`./check.sh`): exit code: 1\nAssertionError: holds 41, not 42";
+        assert_eq!(
+            step_key_line(step),
+            Some("AssertionError: holds 41, not 42")
+        );
+        let reason =
+            |steps: &str| format!("verify: 2/2 verify step(s) failed for task `T`:\n\n{steps}");
+        let silent = "verify[0:test] (`test -f fixed`): exit code: 1\n";
+        assert_eq!(step_key_line(silent), None);
+        assert_eq!(
+            failing_step_key_line(&reason(&format!("{step}\n\n---\n\n{silent}"))),
+            Some("AssertionError: holds 41, not 42")
+        );
+        assert_eq!(
+            failing_step_key_line(&reason(&format!("{silent}\n\n---\n\n{step}"))),
+            Some("exit code: 1")
+        );
+        assert_eq!(failing_step_key_line("provider: boom"), None);
+    }
+
+    /// bug-1e272c: a check that fails with a plain assertion line, which is
+    /// no compile, test or clippy line, publishes that line in the errors of
+    /// its `retry_feedback`.
+    #[tokio::test]
+    async fn retry_feedback_carries_each_failing_checks_key_line() {
+        let temp = tempdir().expect("tempdir");
+        let hub = crate::state_hub::StateHub::new(4096);
+        let mut events = hub.subscribe_events();
+        let bridge = TuiBridge::new(hub.sender());
+        let (dispatcher, mut task) = crate::graph_task_dispatch::tests::make_test_dispatcher_with(
+            &temp,
+            VERIFY_PROVIDER,
+            no_auto_fix,
+            GraphFeedbackContext::default(),
+            |dispatcher| dispatcher.with_tui_bridge(bridge),
+        )
+        .await;
+        task.verify = vec![verify_step(
+            "test",
+            "echo 'checking answer.txt'; echo 'AssertionError: answer.txt holds 41, not 42'; exit 1",
+        )];
+
+        dispatcher
+            .dispatch(&make_spec(&task), Vec::new(), &CellContext::new())
+            .await
+            .expect_err("the check fails");
+
+        let mut published = Vec::new();
+        loop {
+            match events.try_recv() {
+                Ok(envelope) => {
+                    if matches!(
+                        envelope.payload,
+                        roko_core::DashboardEvent::RetryFeedback { .. }
+                    ) {
+                        published.push(serde_json::to_value(&envelope.payload).expect("json"));
+                    }
+                }
+                Err(tokio::sync::broadcast::error::TryRecvError::Lagged(_)) => {}
+                Err(_) => break,
+            }
+        }
+        let [event] = published.as_slice() else {
+            panic!("one retry_feedback: {published:?}");
+        };
+        assert_eq!(
+            event["errors"],
+            serde_json::json!(["AssertionError: answer.txt holds 41, not 42"]),
+            "{event}"
+        );
+    }
+
+    /// gap-655ea5: a failed verify publishes `retry_feedback` as it leaves the
+    /// feedback: the attempt that failed and the next one, the failing step,
+    /// the diagnosis the next prompt leads with and the failed test's line it
+    /// lists.
+    #[tokio::test]
+    async fn a_failed_check_publishes_its_retry_feedback() {
+        let temp = tempdir().expect("tempdir");
+        let hub = crate::state_hub::shared_state_hub();
+        let mut events = hub.subscribe_events();
+        let bridge = TuiBridge::new(hub.sender());
+        let (dispatcher, mut task) = crate::graph_task_dispatch::tests::make_test_dispatcher_with(
+            &temp,
+            FEEDBACK_PROVIDER,
+            diagnosing,
+            GraphFeedbackContext::default(),
+            |dispatcher| dispatcher.with_tui_bridge(bridge),
+        )
+        .await;
+        task.verify = vec![verify_step(
+            "test",
+            "echo 'test fixed_exists ... FAILED'; test -f fixed",
+        )];
+
+        let error = dispatcher
+            .dispatch(&make_spec(&task), Vec::new(), &CellContext::new())
+            .await
+            .expect_err("`fixed` does not exist yet");
+
+        assert!(matches!(error, RokoError::Verify { .. }), "{error}");
+        let mut published = Vec::new();
+        loop {
+            match events.try_recv() {
+                Ok(envelope) => {
+                    if matches!(
+                        envelope.payload,
+                        roko_core::DashboardEvent::RetryFeedback { .. }
+                    ) {
+                        published.push(serde_json::to_value(&envelope.payload).expect("json"));
+                    }
+                }
+                Err(tokio::sync::broadcast::error::TryRecvError::Lagged(_)) => {}
+                Err(_) => break,
+            }
+        }
+        let [event] = published.as_slice() else {
+            panic!("one retry_feedback: {published:?}");
+        };
+        assert_eq!(event["task_id"], task.id.as_str(), "{event}");
+        assert_eq!(event["attempt"], 1, "{event}");
+        assert_eq!(event["next_attempt"], 2, "{event}");
+        assert_eq!(event["check"], "verify", "{event}");
+        assert!(
+            event["failing_steps"][0]
+                .as_str()
+                .is_some_and(|step| step.contains("test -f fixed")),
+            "{event}"
+        );
+        assert_eq!(
+            event["diagnosis"], "The fixture file named fixed was never created. Create it first.",
+            "{event}"
+        );
+        assert!(
+            event["errors"].as_array().is_some_and(|errors| errors
+                .iter()
+                .any(|line| line == "test fixed_exists ... FAILED")),
+            "{event}"
         );
     }
 
@@ -3025,7 +3472,7 @@ printf '%s\n' '{"type":"result","session_id":"s","model":"claude-sonnet-4-6","to
                 cost_usd: 4.0,
                 ..roko_core::Usage::zero()
             };
-            dispatcher.record_task_spend(&spec.plan_id, &task.id, &spent);
+            dispatcher.record_task_spend(&spec.plan_id, &task.id, &spent, true);
             let task_spend_key = format!("{}/{}", spec.plan_id, task.id);
             // What the next attempt reads, in dispatch's order: its budget
             // admission, then, once it opens, its prompt and its verify run.

@@ -178,13 +178,15 @@ pub(crate) enum LearnCmd {
         min_sample: usize,
     },
     /// The M2 loop census: one row per registered learning loop with its
-    /// state, reason, qualifiers and evidence (S03; read-only, $0).
+    /// state, reason, qualifiers and evidence, and what the runs' decision
+    /// rows measure of it: exposure ε, influence ι and benefit β (S03;
+    /// read-only, $0).
     Loops {
         /// Working directory (default: cwd).
         #[arg(long)]
         workdir: Option<PathBuf>,
-        /// The report-only census over the logs, the only mode until the
-        /// measured audit (backlog 5123) lands.
+        /// The census, which is what this command always prints: the flag
+        /// is kept so that scripts which pass it still parse.
         #[arg(long)]
         census: bool,
         /// Trace a loop's canary, break a loop (S03 §5; backlog 5134), or
@@ -550,7 +552,7 @@ pub(crate) async fn dispatch_learn(cli: &Cli, cmd: LearnCmd) -> Result<i32> {
         }
         LearnCmd::Loops {
             workdir,
-            census,
+            census: _,
             cmd,
         } => {
             let wd = workdir.unwrap_or_else(|| resolve_workdir(cli));
@@ -559,11 +561,6 @@ pub(crate) async fn dispatch_learn(cli: &Cli, cmd: LearnCmd) -> Result<i32> {
                     roko_cli::commands::learn_loops::loops_cmd_output(&wd, &cmd, json)?;
                 print!("{printed}");
                 return Ok(code);
-            }
-            if !census {
-                tracing::info!(
-                    "the measured loop audit is not built yet (backlog 5123); printing the census"
-                );
             }
             print!(
                 "{}",
@@ -1441,28 +1438,31 @@ pub(crate) async fn cmd_learn(workdir: &std::path::Path, what: &str) -> Result<i
         print_learn_gate_thresholds(workdir);
     }
 
-    if show_all {
+    // `roko learn knowledge-stats` (bug-ea8c66).
+    if show_all || what == "knowledge" {
         print_learn_knowledge(workdir).await;
     }
 
-    if !show_all
-        && ![
-            "router",
-            "experiments",
-            "efficiency",
-            "episodes",
-            "reflexes",
-            "gates",
-        ]
-        .contains(&what)
-    {
+    if !show_all && !LEARN_AREAS.contains(&what) {
         anyhow::bail!(
-            "unknown learning area '{what}'. Available: router, experiments, efficiency, episodes, reflexes, gates, all"
+            "unknown learning area '{what}'. Available: {}, all",
+            LEARN_AREAS.join(", ")
         );
     }
 
     Ok(EXIT_SUCCESS)
 }
+
+/// The areas `roko learn [area]` shows one of, besides `all`.
+const LEARN_AREAS: [&str; 7] = [
+    "router",
+    "experiments",
+    "efficiency",
+    "episodes",
+    "reflexes",
+    "gates",
+    "knowledge",
+];
 
 // ── JSON output ────────────────────────────────────────────────────
 
@@ -1580,6 +1580,14 @@ struct LearnJsonReflexes {
 #[derive(serde::Serialize)]
 struct LearnJsonKnowledge {
     total_entries: usize,
+    /// Entries by validation tier.
+    #[serde(skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    by_tier: std::collections::BTreeMap<String, usize>,
+    /// Entries by where they came from.
+    #[serde(skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    by_source: std::collections::BTreeMap<String, usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    average_confidence: Option<f64>,
 }
 
 /// Maximum number of recent entries to include in JSON output.
@@ -1719,25 +1727,16 @@ async fn cmd_learn_json(workdir: &std::path::Path, what: &str) -> Result<i32> {
         None
     };
 
-    let knowledge = if show_all {
+    let knowledge = if show_all || what == "knowledge" {
         Some(collect_knowledge_json(workdir).await)
     } else {
         None
     };
 
-    if !show_all
-        && ![
-            "router",
-            "experiments",
-            "efficiency",
-            "episodes",
-            "reflexes",
-            "gates",
-        ]
-        .contains(&what)
-    {
+    if !show_all && !LEARN_AREAS.contains(&what) {
         anyhow::bail!(
-            "unknown learning area '{what}'. Available: router, experiments, efficiency, episodes, reflexes, gates, all"
+            "unknown learning area '{what}'. Available: {}, all",
+            LEARN_AREAS.join(", ")
         );
     }
 
@@ -1943,20 +1942,19 @@ fn collect_gate_thresholds_json(workdir: &std::path::Path) -> Option<serde_json:
 }
 
 async fn collect_knowledge_json(workdir: &std::path::Path) -> LearnJsonKnowledge {
-    let path = learn_knowledge_path(workdir);
-    let count = tokio::fs::read_to_string(&path)
-        .await
-        .map(|content| {
-            content
-                .lines()
-                .filter(|line| !line.trim().is_empty())
-                .filter(|line| serde_json::from_str::<serde_json::Value>(line).is_ok())
-                .count()
-        })
-        .unwrap_or(0);
-
-    LearnJsonKnowledge {
-        total_entries: count,
+    match roko_neuro::KnowledgeStore::for_workdir(workdir).stats() {
+        Ok(stats) => LearnJsonKnowledge {
+            total_entries: stats.total_entries,
+            by_tier: stats.tier_counts,
+            by_source: stats.source_counts,
+            average_confidence: stats.average_confidence,
+        },
+        Err(_) => LearnJsonKnowledge {
+            total_entries: 0,
+            by_tier: std::collections::BTreeMap::new(),
+            by_source: std::collections::BTreeMap::new(),
+            average_confidence: None,
+        },
     }
 }
 
@@ -2585,19 +2583,35 @@ pub(crate) async fn print_learn_knowledge(workdir: &std::path::Path) {
         print_no_data(&path);
         return;
     }
-    let Ok(content) = tokio::fs::read_to_string(&path).await else {
-        println!("Knowledge: 0 entries at {}", path.display());
-        return;
+    let stats = match roko_neuro::KnowledgeStore::for_workdir(workdir).stats() {
+        Ok(stats) if stats.total_entries > 0 => stats,
+        Ok(_) => {
+            println!("Knowledge: 0 entries at {}", path.display());
+            return;
+        }
+        Err(error) => {
+            println!("Knowledge: unreadable at {}: {error:#}", path.display());
+            return;
+        }
     };
-    let count = content
-        .lines()
-        .filter(|line| !line.trim().is_empty())
-        .filter(|line| serde_json::from_str::<serde_json::Value>(line).is_ok())
-        .count();
-    if count == 0 {
-        println!("Knowledge: 0 entries at {}", path.display());
-    } else {
-        println!("Knowledge: {} durable entries at {}", count, path.display());
+    let counts = |counts: &std::collections::BTreeMap<String, usize>| {
+        counts
+            .iter()
+            .map(|(name, count)| format!("{name} {count}"))
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
+    println!(
+        "Knowledge: {} durable entries at {}",
+        stats.total_entries,
+        path.display()
+    );
+    println!("  by tier: {}", counts(&stats.tier_counts));
+    if !stats.source_counts.is_empty() {
+        println!("  by source: {}", counts(&stats.source_counts));
+    }
+    if let Some(confidence) = stats.average_confidence {
+        println!("  average confidence: {confidence:.3}");
     }
 }
 
@@ -3531,6 +3545,49 @@ async fn cmd_learn_role_costs(workdir: &std::path::Path, json: bool) -> Result<i
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// bug-ea8c66: `roko learn knowledge-stats` (alias `knowledge`) shows the
+    /// knowledge store's entries, by tier, as text and as JSON, where it
+    /// failed as an unknown learning area. An unknown area still fails, and
+    /// names `knowledge` among the areas.
+    #[tokio::test]
+    async fn learn_knowledge_stats_counts_the_store() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let neuro = temp.path().join(".roko/neuro");
+        std::fs::create_dir_all(&neuro).expect("the knowledge store's directory");
+        let lines: String = [
+            ("kn-1", "textkit URL slugs use hyphens"),
+            ("kn-2", "textkit heading anchors drop the # marks"),
+        ]
+        .iter()
+        .map(|(id, content)| {
+            let entry = serde_json::json!({
+                "id": id,
+                "content": content,
+                "confidence": 0.8,
+                "created_at": chrono::Utc::now(),
+            });
+            format!("{entry}\n")
+        })
+        .collect();
+        std::fs::write(neuro.join("knowledge.jsonl"), lines).expect("the knowledge store");
+
+        let text = cmd_learn(temp.path(), "knowledge")
+            .await
+            .expect("the text view");
+        let json = cmd_learn_json(temp.path(), "knowledge")
+            .await
+            .expect("the JSON view");
+
+        assert_eq!((text, json), (EXIT_SUCCESS, EXIT_SUCCESS));
+        let knowledge = collect_knowledge_json(temp.path()).await;
+        assert_eq!(knowledge.total_entries, 2);
+        assert_eq!(knowledge.by_tier.values().sum::<usize>(), 2);
+        let unknown = cmd_learn(temp.path(), "lessons")
+            .await
+            .expect_err("an unknown area");
+        assert!(unknown.to_string().contains("knowledge"), "{unknown}");
+    }
 
     /// S03 T15: `roko learn loops --census --json` parses.
     #[test]

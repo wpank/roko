@@ -9,7 +9,7 @@ goal = "proof"
 size = "S"
 subsystem = ["benchmarks/viabilitybench/experiments"]
 created = 2026-09-29
-updated = 2026-09-29
+updated = 2026-10-18
 source = "tmp/cybernetic-harness/workstreams/PLAN.md#e12"
 discovered_from = "tmp/cybernetic-harness/specs/S09-experiments.md (§6 E1a, §4.7 G0; checklist S09.E1a)"
 anchors = ["benchmarks/viabilitybench/experiments/pilot_a.toml", "benchmarks/viabilitybench/reports/pilot_a/"]
@@ -119,3 +119,9 @@ Checked at `41c7ffbd6`: nothing can run yet, and no money has been spent.
     benchmarks/viabilitybench/.venv/bin/python benchmarks/viabilitybench/driver/vb.py campaign \
     --manifest benchmarks/viabilitybench/experiments/pilot_a.toml --allow-network --max-cost-usd 8 --transcripts
   ```
+
+2026-10-15 (Will, 2026-10-15; tmp/status-quo/2026-10-15/DECISIONS-2026-10-15.md), decision 1: run the pilots. The key file ~/.config/viabilitybench/keys is Will's to create (CEREBRAS, OPENAI, MOONSHOT and ZAI lines copied from ~/.roko/.env; the command is in the coordinator session). Start when `python3 benchmarks/viabilitybench/driver/secret.py keys` reports the four names at mode 0600.
+
+## Decision (2026-10-18, Will)
+
+Unblocked: the key file ~/.config/viabilitybench/keys was created on 2026-10-18 at Will's request; Pilots A-C run on the $21 approved on 2026-10-02 (3301).

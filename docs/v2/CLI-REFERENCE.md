@@ -239,17 +239,20 @@ Precedence (highest first):
 ### `roko init`
 
 **When to use this:** The very first thing you do in a new project. Creates the `.roko/`
-workspace directory and a `roko.toml` config file.
+workspace directory and a `roko.toml` config file. The model ladder it writes climbs only the
+models this machine runs (an API key in the shell or `~/.roko/.env`, or the `claude` CLI on
+`PATH`), and its gate rungs check the project it finds in the directory.
 
 ```
-roko init [path] [--cloud] [--profile <name>] [--demo]
+roko init [path] [--cloud] [--profile <name>] [--model <model>] [--demo]
 ```
 
 | Flag | Description |
 |---|---|
 | `path` | Directory to initialize (default: current dir). |
 | `--cloud` | Generate cloud-ready defaults for deployment. |
-| `--profile <name>` | Project profile: `rust`, `typescript`, `go`, `python`, `general`. |
+| `--profile <name>` | Project profile whose gate rungs to write: `rust`, `typescript`, `go`, `python`, `solidity`, `general`. Detected from the project's files when not given. |
+| `--model <model>` | Run every task on this model: it becomes the default model and the ladder's one rung. |
 | `--demo` | Seed realistic demo data after initialization. |
 
 <details>
@@ -259,7 +262,8 @@ roko init [path] [--cloud] [--profile <name>] [--demo]
 roko init                          # Initialize in the current directory
 roko init /path/to/project         # Initialize in a specific directory
 roko init --cloud                  # Initialize with cloud-ready defaults
-roko init --profile rust           # Initialize with Rust project profile
+roko init --profile rust           # Write the Rust profile's gate rungs
+roko init --model glm-4-7          # Run every task on one model
 roko init --demo                   # Initialize and seed demo data
 ```
 
@@ -361,7 +365,9 @@ roko status --cfactor              # Compute and show C-Factor metrics
 
 **When to use this:** When something is not working and you want a diagnostic report. Checks
 for `.roko/`, `roko.toml`, agent command availability, secrets, and optionally the HTTP
-control plane.
+control plane. Its `routing_ladder` line names the `[routing.ladder]` rungs that cannot run on
+this machine and why (a run only logs them), since a task whose start rung cannot run starts on
+the next rung up that can.
 
 ```
 roko doctor [--workdir <path>] [--serve-url <url>]
@@ -1616,7 +1622,11 @@ roko config providers test [<provider>] [--all] [--workdir <path>]
 
 #### `roko config models list`
 
-List configured models and their capabilities.
+List configured models and their capabilities, then the built-in models (such as
+`gpt-5.4-mini`) that need no `[models.*]` entry. The Key column says whether the provider
+dispatch would run the model on has its key set. A ladder rung may name a built-in model; it runs
+once its provider's key is set, if the ladder is the workspace's own or the workspace configures no
+model of its own. A workspace's own models always win over roko's default ladder.
 
 ```
 roko config models list [--workdir <path>]

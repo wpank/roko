@@ -28,11 +28,11 @@ import agent_env
 import campaign
 import caps
 import census
+import harness
 import layout
 import ledger
 import materialize
 import planemit
-import provider
 import records
 import run_roko
 import validate
@@ -44,7 +44,8 @@ TOY_FAMILY = layout.DRIVER_DIR / "testdata" / "toy_family"
 TOY_STREAM = str(layout.DRIVER_DIR / "testdata" / "toy_stream.toml")
 ARM = layout.ARMS_DIR / "roko_fixed.toml"
 PIN = "gpt-oss-120b"
-SOLUTION = "def clamp(value, low, high):\n    return max(low, min(value, high))\n"
+ALIAS = "0c7a5e3f9b1d8462"  # a task's alias, as `vb run` draws one (bug-3c921e): it names the task's plan
+SOLUTION ="def clamp(value, low, high):\n    return max(low, min(value, high))\n"
 REAL_ROKO = Path(os.environ.get("VB_TEST_ROKO_BIN") or layout.REPO_ROOT / "target" / "debug" / "roko")
 real_roko = pytest.mark.skipif(not os.access(REAL_ROKO, os.X_OK), reason=(
     f"no roko binary at {REAL_ROKO}, so the Roko arm was not run against real Roko: build it or set VB_TEST_ROKO_BIN"))
@@ -89,9 +90,6 @@ for number, model in enumerate(models):
         handle.write(json.dumps(episode) + "\n")
     with open(roko / "learn" / "costs.jsonl", "a") as handle:
         handle.write(json.dumps({"model": model, "provider": "cerebras", "plan_id": slug, "task_id": "T01"}) + "\n")
-if behaviour.get("proxy_log"):  # what the metering proxy would have logged for these calls
-    with open(behaviour["proxy_log"], "a") as handle:
-        handle.writelines(json.dumps(row) + "\n" for row in behaviour["proxy"])
 if behaviour["solve"]:
     (repo / "calc" / "ops.py").write_text(behaviour["solution"])
 extensions = {"roko.gate.verdict@1": {"value": {"verdicts": {"T01": verdict or "passed"}}}} if succeeded else {}
@@ -190,30 +188,38 @@ def toy_task(tmp_path: Path, instance_id: str = "F1-l1-0001") -> materialize.Mat
 
 
 def plan_spec(task: materialize.Materialized, **changes: object) -> planemit.PlanSpec:
-    fields = {"key": f"{task.instance_id}.s1", "spec_text": task.spec_text,
+    fields = {"alias": ALIAS, "spec_text": task.spec_text,
               "files": tuple(task.manifest["files_in_scope"]), "visible": tuple(task.manifest["visible_verify"]),
               "model": PIN, "provider": "cerebras", "base_url": "http://127.0.0.1:9/v1",
               "api_key_env": "CEREBRAS_API_KEY", "price_row": ledger.load_snapshot().row(PIN), "usd_cap": 0.43}
     return planemit.PlanSpec(**{**fields, **changes})
 
 
-def real_arm_spec(arm_name: str, model: str = PIN) -> planemit.PlanSpec:
-    """`run_roko._plan_spec` over the real arm file `arm_name` names (`vb.load_arm`), the construction a real
-    dispatch does (3360): confirms the arm's `[overlay]` table, if it has one, reaches `PlanSpec.overlay`."""
+def real_arm_spec(arm_name: str, model: str | None = None) -> planemit.PlanSpec:
+    """`run_roko._plan_spec` over the real arm file `arm_name` names (`vb.load_arm`) on `model` (default: the arm's
+    first models_allow entry), from the endpoint `vb.make_plan` builds for it: the construction a real dispatch does
+    (3360), which confirms the arm's `[overlay]` table, if it has one, reaches `PlanSpec.overlay`."""
     arm = vb.load_arm(arm_name)
-    first = next(iter(arm["providers"]))
-    endpoint = provider.Endpoint(provider=first, base_url=arm["providers"][first]["base_url"],
-                                 api_key_env=arm["providers"][first]["api_key_env"])
+    model = model or arm["arm"]["models_allow"][0]
     snapshot = ledger.load_snapshot()
     limits = caps.Caps.from_table(arm["caps"])
-    return run_roko._plan_spec(arm, model, endpoint, limits, snapshot.row(model), limits.usd_per_task,
-                               key="overlay-test.s1", spec_text="# T\n\nTest.\n", files=("f.py",),
+    return run_roko._plan_spec(arm, model, vb._endpoint(arm, snapshot.row(model), None), limits, snapshot.row(model),
+                               limits.usd_per_task, alias=ALIAS, spec_text="# T\n\nTest.\n", files=("f.py",),
                                visible=("true",), snapshot=snapshot)
 
 
+def roko_arms(*, pinned_only: bool = False) -> dict[str, dict]:
+    """The arm files `run_roko` runs, by file name (`vb.load_arm`); with `pinned_only`, those with one models_allow
+    entry, which emit pinned mode (a routed arm's several models emit ladder mode, `run_roko._plan_spec`)."""
+    arms = {path.stem: vb.load_arm(str(path)) for path in sorted(layout.ARMS_DIR.glob("*.toml"))}
+    return {name: arm for name, arm in arms.items() if arm["arm"].get("runner") == "run_roko" and (
+        not pinned_only or len(arm["arm"]["models_allow"]) == 1)}
+
+
 def fake_roko(tmp_path: Path, models: list[str], *, status: str = "succeeded", **extra: object) -> tuple[Path, Path]:
-    """Write the fake roko and its behaviour (`extra` adds episode `completed` times and `durations`, and `proxy` rows
-    to append to `proxy_log`); return the binary and the log of its calls."""
+    """Write the fake roko and its behaviour (`extra` adds episode `completed` times and `durations`); return the binary
+    and the log of its calls. It never writes the run's proxy log: no roko process may write the run directory
+    (bug-d308f7), and the metering proxy writes it from the driver's process."""
     log, behaviour = tmp_path / "fake-roko.jsonl", tmp_path / "fake-roko.json"
     behaviour.write_text(json.dumps({"models": models, "status": status, "solve": True, "solution": SOLUTION,
                                      "log": str(log), **extra}))
@@ -288,7 +294,9 @@ def test_emitted_plan_has_explicit_rungs_and_no_hidden_checks(tmp_path):
     assert canary.find(text) == [] and manifest["canary"] not in text
     for private in (manifest["truth_suite"]["id"], *manifest["planted_gaming"], "hidden.py", str(task.private_dir)):
         assert private not in text
-    assert emitted.slug == planemit.plan_slug("F1-l1-0001.s1") and "F1" not in emitted.slug
+    # bug-3c921e: the plan is named by the task's alias, never by its key, which an agent could recover from a hash
+    assert emitted.slug == planemit.plan_slug(ALIAS) != planemit.plan_slug(f"{task.instance_id}.s1")
+    assert "F1" not in emitted.slug
     assert "Implement `clamp`" in task_table["title"]
 
     with pytest.raises(planemit.PlanEmitError, match="already has"):  # Roko's files must be Roko's alone
@@ -325,7 +333,66 @@ def test_roko_full_arm_overlay_reaches_the_emitted_config(tmp_path, monkeypatch)
         assert not {"spec_quality", "audit", "self_model", "homeostasis"} & set(config)
         # Byte-identical to before the overlay existed: nothing is appended after CONFIG_TAIL's own last line.
         assert emitted.config_text.endswith("[learning.dreams]\ntrigger_on_plan_complete = false\n")
-    assert planemit.TEMPLATE_SHA256 == "1b7b9906dd846ef598602bee770d0b6d3270e885f6262f76c3fbdd9e97b87f2b"
+    assert planemit.TEMPLATE_SHA256 == "392ef78bd0db0e9e65256a77aaee191a339e0c12a326021249322d855892c5f8"
+
+
+# What planemit writes a Roko arm's two files from (bug-85e982): its templates, and `_overlay_text`, which writes
+# roko_full's overlay tables.
+PLANEMIT_TEMPLATES = ("TASKS_TEMPLATE", "CONFIG_TEMPLATE", "CLAUDE_CLI_CONFIG_TEMPLATE", "LADDER_TASKS_TEMPLATE",
+                      "LADDER_CONFIG_TEMPLATE", "PROVIDER_TABLE", "MODEL_TABLE", "_overlay_text")
+
+
+def one_more_newline(template: str | object) -> str | object:
+    """A planemit template, or `_overlay_text`, changed to write one more newline at its end (and still TOML)."""
+    if isinstance(template, str):
+        return template + "\n"
+    return lambda resolved: (template(resolved) + "\n") if resolved else ""
+
+
+def test_the_roko_arms_prompt_hash_covers_every_template(places, tmp_path, monkeypatch):
+    """bug-85e982: the prompt `vb run` records for a Roko arm (`vb.runner_prompt`: the run config's `prompt`, and so its
+    `config_hash`) names the planemit templates that arm's plans are emitted from (`run_roko.arm_prompt`), not only
+    pinned mode's openai_compat ones. Changing any one template (monkeypatched: one more newline) changes the
+    recorded prompt of exactly the arms whose emitted files it changes: ladder mode's of roko_ladder and roko_full,
+    the Claude CLI config of fr_claude, the overlay's tables of roko_full, the pinned ones of roko_fixed on each of
+    its four models (and the pinned tasks.toml of fr_claude). roko_fixed's prompt is what it was before, and `vb run`
+    records exactly what `vb.runner_prompt` says."""
+    monkeypatch.setattr(campaign, "census_report", lambda repo=None, roko_bin=None: {
+        "schema": campaign.LOOPS_SCHEMA, "harness_sha": "f1x3d", "rows": [{"loop": "L-M1", "state": "live"}]})
+    arms = roko_arms()
+
+    def recorded() -> dict[str, dict]:
+        return {name: vb.runner_prompt(run_roko, arm) for name, arm in arms.items()}
+
+    def emitted(where: Path) -> dict[str, str]:
+        files = {name: planemit.emit(real_arm_spec(name), where / name) for name in arms}
+        return {name: one.tasks_text + "\0" + one.config_text for name, one in files.items()}
+
+    prompts, texts = recorded(), emitted(tmp_path / "as-is")
+    assert prompts["roko_fixed"] == {"version": planemit.TEMPLATE_VERSION, "sha256": planemit.TEMPLATE_SHA256}
+    assert prompts["fr_claude"] == {"version": planemit.TEMPLATE_VERSION,
+                                    "sha256": planemit.CLAUDE_CLI_TEMPLATE_SHA256}
+    assert prompts["roko_ladder"] == {"version": planemit.LADDER_VERSION, "sha256": planemit.LADDER_TEMPLATE_SHA256}
+    assert prompts["roko_full"]["version"] == f"{planemit.LADDER_VERSION}+{planemit.OVERLAY_VERSION}"
+    assert len({prompt["sha256"] for prompt in prompts.values()}) == 4  # pinned, Claude CLI, ladder, ladder + overlay
+    assert set(planemit.OVERLAY_PROBE) == planemit.SUPPORTED_OVERLAY_KEYS  # every overlay key's table is covered
+    users = {}
+    for template in PLANEMIT_TEMPLATES:
+        with monkeypatch.context() as patch:
+            patch.setattr(planemit, template, one_more_newline(getattr(planemit, template)))
+            now, changed = recorded(), emitted(tmp_path / template)
+        users[template] = {name for name in arms if changed[name] != texts[name]}
+        assert {name for name in arms if now[name] != prompts[name]} == users[template], template
+    pinned = {"roko_fixed", "roko_fixed_glm", "roko_fixed_kimi", "roko_fixed_mini"}
+    assert users["TASKS_TEMPLATE"] >= pinned | {"fr_claude"} and users["CONFIG_TEMPLATE"] >= pinned
+    assert users["CLAUDE_CLI_CONFIG_TEMPLATE"] == {"fr_claude"} and users["_overlay_text"] == {"roko_full"}
+    for template in ("LADDER_TASKS_TEMPLATE", "LADDER_CONFIG_TEMPLATE", "PROVIDER_TABLE", "MODEL_TABLE"):
+        assert users[template] >= {"roko_ladder", "roko_full"}, template
+    # `vb run` records that prompt in its run's config, so in its config_hash: roko_fixed's, through the fake roko.
+    binary, _ = fake_roko(tmp_path, [PIN])
+    assert run_vb(places, arm_with(tmp_path, binary)) == 0
+    manifest = json.loads((places["results"] / "TEST-ROKO" / "run-1" / "manifest.json").read_text())
+    assert manifest["config"]["prompt"] == prompts["roko_fixed"]
 
 
 def test_vb_run_refuses_a_binary_that_rejects_the_emitted_plan(places, tmp_path, capsys):
@@ -845,10 +912,11 @@ def test_the_roko_arm_enforces_the_per_attempt_input_cap(places, tmp_path):
     assert [(attempt["calls"], attempt["ended_by"]) for attempt in attempts] == [(3, "attempt_input_tokens")] * 3
     assert record["execution"]["status"] == "failed" and validate.validate("run-record", record) == []
 
-def test_plan_slice_records_carry_queue_waits_and_class_costs(places, tmp_path):
+def test_plan_slice_records_carry_queue_waits_and_class_costs(places, tmp_path, monkeypatch):
     # gap-04e8e2: the fake roko records two attempts with their dispatch times, and the metering proxy's log holds
     # their calls, one of them rate limited. The record carries the queue wait, each attempt's class and busy time,
-    # and the cost per class; the schema accepts them; and the plan-level report prints them.
+    # and the cost per class; the schema accepts them; and the plan-level report prints them. The log is written from
+    # the driver's process, as the proxy writes it, since no roko process may write the run directory (bug-d308f7).
     out = places["results"] / "TEST-ROKO" / "run-1"
     usage = {"tokens_in": 900, "tokens_cache_read": 0, "tokens_out": 120, "tokens_reasoning": 0}
     call = {"task": "F1-l1-0001.s1", "model_requested": PIN, "model_reported": PIN, "usage": usage,
@@ -858,7 +926,15 @@ def test_plan_slice_records_carry_queue_waits_and_class_costs(places, tmp_path):
     calls = [{**row, "ordinal": ordinal, "ts": f"2026-09-29T15:00:{second:02d}Z"}
              for ordinal, (row, second) in enumerate(((call, 1), (limited, 2), (call, 4), (call, 11), (call, 13)), 1)]
     binary, _ = fake_roko(tmp_path, [PIN, PIN], completed=["2026-09-29T15:00:06Z", "2026-09-29T15:00:14Z"],
-                          durations=[5.5, 4.5], proxy=calls, proxy_log=str(out / "proxy.jsonl"))
+                          durations=[5.5, 4.5])
+    read_rows = run_roko._proxy_rows
+
+    def logged_then_read(ctx: harness.TaskContext) -> list[dict] | None:
+        with (ctx.ledger.path.parent / "proxy.jsonl").open("a", encoding="utf-8") as log:  # what the proxy logged
+            log.writelines(json.dumps(row) + "\n" for row in calls)
+        return read_rows(ctx)
+
+    monkeypatch.setattr(run_roko, "_proxy_rows", logged_then_read)
     assert run_vb(places, arm_with(tmp_path, binary)) == 0
     [record] = read_jsonl(out / "records.jsonl")
     assert validate.validate("run-record", record) == []
@@ -1022,9 +1098,10 @@ def test_real_roko_gate_meets_the_flaky_verify_wrapper(places, tmp_path):
     assert validate.validate("run-record", record) == []
     [emitted] = [event for event in json.loads((out / record["provenance"]["transcript_ref"]).read_text())
                  if event.get("event") == "emit"]
-    # Named by PATH, so no host path enters Roko's prompt, which shows its verify command (A4).
+    # Named by PATH, so no host path enters Roko's prompt, which shows its verify command (A4); a neutral name
+    # (bug-d68575).
     assert tomllib.loads(emitted["tasks_toml"])["task"][0]["verify"][0]["command"] == (
-        "vb-verify 'python3 -m unittest discover -s tests/visible'")
+        "run-shell 'python3 -m unittest discover -s tests/visible'")
     assert (record["execution"]["status"], record["execution"]["reason"]) == ("failed", "gate_failed")
     assert len(record["execution"]["attempts"]) == 3  # max_retries = 2: every attempt met a flake
     visible = record["visible"]

@@ -4,6 +4,9 @@
 //! `.roko/learn/`, and `.roko/neuro/` locations that the `learn` command
 //! reads, then assert the CLI summary output reflects the stored data.
 
+mod common;
+use common::Isolated;
+
 use std::fs;
 use std::path::Path;
 
@@ -27,6 +30,7 @@ fn write_jsonl(path: &Path, lines: &[String]) {
 fn run_roko(workdir: &Path, args: &[&str]) -> String {
     let assert = Command::cargo_bin("roko")
         .expect("roko binary")
+        .isolated()
         .current_dir(workdir)
         .args(args)
         .arg("--workdir")

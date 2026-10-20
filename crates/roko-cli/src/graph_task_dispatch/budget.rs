@@ -1,6 +1,19 @@
 //! Spend accounting at the Graph dispatch boundary: the per-plan budget ledger
 //! and its reservations and alerts, the per-task spend ledger, the daily
 //! ceiling, and S5's in-run budget cut (8135).
+//!
+//! The plan ceiling holds inside an attempt too (bug-4fabd0). An attempt's
+//! reservation is a hold on the plan budget that its agent's tool loop asks
+//! before each model call ([`AttemptAllowance`]): the hold must cover what the
+//! attempt's calls spent plus one more call like its last, growing into the
+//! plan's unreserved budget as far as that reaches, and a call it cannot cover
+//! is not made. After each call the hold gives back what it no longer needs,
+//! so the plan's other attempts can grow into it. An attempt starts only with
+//! room for a few calls left; below that the plan stops as budget-exhausted.
+//! An agent that runs its own loop (a CLI agent) cannot be asked before a
+//! call: what its call streams is told to the hold as it streams instead, and
+//! the attempt is stopped once the hold cannot cover one more message like
+//! its last (gap-ca1c92).
 
 use roko_core::dashboard_snapshot::{InboxCategory, inbox_routing};
 use roko_core::disturbance::{
@@ -8,8 +21,17 @@ use roko_core::disturbance::{
 };
 
 use super::*;
+use crate::dispatch_v2::CallAllowance;
 
 const MICRO_USD_PER_USD: f64 = 1_000_000.0;
+
+/// An attempt starts only with room left for this many model calls at the
+/// costliest one its plan has made so far (bug-4fabd0).
+const MIN_ATTEMPT_CALLS: u64 = 3;
+
+/// The least an attempt starts with, in micro-USD ($0.01), unless the plan's
+/// whole ceiling is less.
+const MIN_ATTEMPT_MICRO_USD: u64 = 10_000;
 
 /// Per-plan cost policy applied at the Graph task-dispatch boundary.
 ///
@@ -153,6 +175,12 @@ struct PlanBudgetState {
     /// The ceiling the operator raised the plan's to during its run (`roko
     /// plan budget raise`, backlog 2118), kept in its `costs.json`.
     raised_ceiling_micro_usd: Option<u64>,
+    /// The attempts in flight under a ceiling, by hold id: what each holds of
+    /// `reserved_micro_usd`, and what its model calls cost so far
+    /// (bug-4fabd0).
+    holds: HashMap<u64, AttemptHold>,
+    /// The most one priced model call of the plan has cost so far.
+    costliest_call_micro_usd: u64,
     checkpoint: Option<GraphCostLedgerCheckpoint>,
     persistence_error: Option<String>,
 }
@@ -167,6 +195,76 @@ impl PlanBudgetState {
             _ => policy,
         }
     }
+
+    /// The least an attempt must find left under `ceiling` to start: room
+    /// for [`MIN_ATTEMPT_CALLS`] calls at the costliest call so far, at least
+    /// [`MIN_ATTEMPT_MICRO_USD`], never more than the ceiling (bug-4fabd0).
+    fn attempt_floor(&self, ceiling: u64) -> u64 {
+        self.costliest_call_micro_usd
+            .saturating_mul(MIN_ATTEMPT_CALLS)
+            .max(MIN_ATTEMPT_MICRO_USD)
+            .min(ceiling)
+    }
+
+    /// Why the plan starts no further attempt under `ceiling`: its settled
+    /// spend reached the ceiling, or what is left is less than an attempt
+    /// needs ([`Self::attempt_floor`]). `None` while it has room for one.
+    /// What attempts in flight hold does not count: they may still settle
+    /// below it.
+    fn exhaustion(&self, ceiling: u64) -> Option<String> {
+        let spent = self.spent_micro_usd;
+        let spent_of = format!(
+            "plan budget exhausted: ${:.4} spent of ${:.4}",
+            micro_usd_to_usd(spent),
+            micro_usd_to_usd(ceiling)
+        );
+        if spent >= ceiling {
+            return Some(spent_of);
+        }
+        let left = ceiling - spent;
+        let floor = self.attempt_floor(ceiling);
+        if left >= floor {
+            return None;
+        }
+        let calls = self
+            .costliest_call_micro_usd
+            .saturating_mul(MIN_ATTEMPT_CALLS);
+        let why = if calls >= floor {
+            format!(
+                "room for {MIN_ATTEMPT_CALLS} model calls like its costliest so far (${:.4})",
+                micro_usd_to_usd(self.costliest_call_micro_usd)
+            )
+        } else {
+            "the least an attempt starts with".to_string()
+        };
+        Some(format!(
+            "{spent_of}, and the ${:.4} left is less than an attempt needs: ${:.4}, {why}",
+            micro_usd_to_usd(left),
+            micro_usd_to_usd(floor)
+        ))
+    }
+
+    /// Give back what hold `hold` holds of the plan's reservations.
+    fn release_hold(&mut self, hold: Option<u64>) {
+        if let Some(held) = hold.and_then(|hold| self.holds.remove(&hold)) {
+            self.reserved_micro_usd = self
+                .reserved_micro_usd
+                .saturating_sub(held.reserved_micro_usd);
+        }
+    }
+}
+
+/// What an attempt in flight holds of its plan's budget (bug-4fabd0).
+#[derive(Debug, Clone, Copy, Default)]
+struct AttemptHold {
+    /// Its part of the plan's `reserved_micro_usd`.
+    reserved_micro_usd: u64,
+    /// What its model calls cost so far.
+    spent_micro_usd: u64,
+    /// What its last model call cost: its next is expected to cost as much.
+    last_call_micro_usd: u64,
+    /// One of its calls had no price, so what it spent is unknown.
+    unpriced: bool,
 }
 
 /// A raise of a plan's budget ceiling that the plan ledger applied (backlog
@@ -264,6 +362,8 @@ pub(super) struct GraphPlanBudgetLedger {
     /// Woken whenever a reservation settles or is released, so a reservation
     /// waiting for capacity tries again (bug-0bc2b4).
     capacity: tokio::sync::Notify,
+    /// The id of the next attempt's hold (bug-4fabd0).
+    next_hold: std::sync::atomic::AtomicU64,
 }
 
 /// How often a reservation waiting for capacity checks again without a
@@ -338,9 +438,10 @@ impl GraphPlanBudgetLedger {
     }
 
     /// Why no further dispatch of `plan_id` can run: settled spend reached
-    /// the ceiling with no override to continue, a call of the plan settled
-    /// unpriced so its spend is unknown (decision 2110), or the cost ledger
-    /// cannot be persisted. In-flight reservations alone never stop a plan.
+    /// the ceiling, or left less than an attempt needs (bug-4fabd0), with no
+    /// override to continue; a call of the plan settled unpriced so its spend
+    /// is unknown (decision 2110); or the cost ledger cannot be persisted.
+    /// In-flight reservations alone never stop a plan.
     pub(super) fn dispatch_stop(
         &self,
         plan_id: &str,
@@ -358,13 +459,7 @@ impl GraphPlanBudgetLedger {
         if state.unpriced_calls > 0 {
             return Some(unpriced_plan_stop(state.unpriced_calls, ceiling));
         }
-        (state.spent_micro_usd >= ceiling).then(|| {
-            format!(
-                "plan budget exhausted: ${:.4} spent of ${:.4}",
-                micro_usd_to_usd(state.spent_micro_usd),
-                micro_usd_to_usd(ceiling)
-            )
-        })
+        state.exhaustion(ceiling)
     }
 
     /// Reserve capacity for one provider call of `plan_id`, failing at once
@@ -443,7 +538,7 @@ impl GraphPlanBudgetLedger {
         }
         let policy = state.policy(policy);
 
-        let mut reserved_micro_usd = 0;
+        let mut hold = None;
         let routing_budget_micro_usd = match policy.ceiling_micro_usd {
             None => None,
             Some(ceiling) if policy.continue_on_exhaustion => {
@@ -460,33 +555,51 @@ impl GraphPlanBudgetLedger {
                     .spent_micro_usd
                     .saturating_add(state.reserved_micro_usd);
                 let available = ceiling.saturating_sub(committed);
-                if available == 0 {
-                    let exceeded = RokoError::BudgetExceeded {
-                        dimension: "plan_cost_micro_usd",
-                        used: micro_usd_to_usize(committed),
-                        limit: micro_usd_to_usize(ceiling),
-                    };
-                    return Err(ReserveRefusal {
-                        error: exceeded,
-                        blocked: state.spent_micro_usd < ceiling,
+                // An attempt starts only with room for a few model calls
+                // (bug-4fabd0). While attempts in flight hold what is left,
+                // the plan may have room again once they settle, unless what
+                // it has not spent is too little anyway.
+                if available < state.attempt_floor(ceiling) {
+                    return Err(match state.exhaustion(ceiling) {
+                        None => ReserveRefusal {
+                            error: RokoError::BudgetExceeded {
+                                dimension: "plan_cost_micro_usd",
+                                used: micro_usd_to_usize(committed),
+                                limit: micro_usd_to_usize(ceiling),
+                            },
+                            blocked: true,
+                        },
+                        Some(exhausted) => {
+                            ReserveRefusal::failed(RokoError::gateway("budget", false, exhausted))
+                        }
                     });
                 }
-                reserved_micro_usd = policy
+                let reserved_micro_usd = policy
                     .reservation_micro_usd()
                     .unwrap_or(available)
                     .min(available);
+                let id = self
+                    .next_hold
+                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                state.holds.insert(
+                    id,
+                    AttemptHold {
+                        reserved_micro_usd,
+                        ..AttemptHold::default()
+                    },
+                );
                 state.reserved_micro_usd =
                     state.reserved_micro_usd.saturating_add(reserved_micro_usd);
                 if let Some(checkpoint) = &state.checkpoint
                     && let Err(error) =
                         checkpoint.persist(state.spent_micro_usd, state.reserved_micro_usd)
                 {
-                    state.reserved_micro_usd =
-                        state.reserved_micro_usd.saturating_sub(reserved_micro_usd);
+                    state.release_hold(Some(id));
                     let message = format!("persist provider-cost reservation: {error:#}");
                     state.persistence_error = Some(message.clone());
                     return Err(ReserveRefusal::failed(RokoError::Store(message)));
                 }
+                hold = Some(id);
                 Some(reserved_micro_usd)
             }
         };
@@ -495,20 +608,20 @@ impl GraphPlanBudgetLedger {
         Ok(GraphPlanBudgetReservation {
             ledger: self,
             plan_id: plan_id.to_string(),
-            reserved_micro_usd,
+            hold,
+            policy,
             routing_budget_micro_usd,
             settled: false,
         })
     }
 
-    pub(super) fn settle(
-        &self,
-        plan_id: &str,
-        reserved_micro_usd: u64,
-        cost_usd: f64,
-    ) -> Result<()> {
+    /// Settle a provider call of `plan_id` that cost `cost_usd`: add it to
+    /// the plan's spend, and give back what the attempt's `hold` held. A call
+    /// outside any attempt's hold (a failover refusal, a helper call) has no
+    /// hold.
+    pub(super) fn settle(&self, plan_id: &str, hold: Option<u64>, cost_usd: f64) -> Result<()> {
         if !cost_usd.is_finite() || cost_usd < 0.0 {
-            self.release(plan_id, reserved_micro_usd);
+            self.release(plan_id, hold);
             let mut plans = self.plans.lock();
             let state = plans.entry(plan_id.to_string()).or_default();
             let message = format!("provider reported invalid cost {cost_usd:?}");
@@ -518,7 +631,7 @@ impl GraphPlanBudgetLedger {
         let cost_micro_usd = usd_to_micro_usd(cost_usd);
         let mut plans = self.plans.lock();
         let state = plans.entry(plan_id.to_string()).or_default();
-        state.reserved_micro_usd = state.reserved_micro_usd.saturating_sub(reserved_micro_usd);
+        state.release_hold(hold);
         state.spent_micro_usd = state.spent_micro_usd.saturating_add(cost_micro_usd);
         if let Some(checkpoint) = &state.checkpoint
             && let Err(error) = checkpoint.persist(state.spent_micro_usd, state.reserved_micro_usd)
@@ -646,13 +759,134 @@ impl GraphPlanBudgetLedger {
         state.unpriced_calls = state.unpriced_calls.saturating_add(1);
     }
 
-    fn release(&self, plan_id: &str, reserved_micro_usd: u64) {
-        if reserved_micro_usd == 0 {
+    /// Whether hold `hold` of `plan_id` may make its next model call, which
+    /// is expected to cost as much as its last (bug-4fabd0). The hold must
+    /// cover what its calls spent plus that call; it grows into the plan's
+    /// unreserved budget as far as that reaches. `Err` says why not: the
+    /// plan cannot pay for the call, or a call of the hold had no price.
+    fn admit_call(
+        &self,
+        plan_id: &str,
+        hold: u64,
+        policy: GraphPlanBudgetPolicy,
+    ) -> std::result::Result<(), String> {
+        let mut plans = self.plans.lock();
+        let Some(state) = plans.get_mut(plan_id) else {
+            return Ok(());
+        };
+        let policy = state.policy(policy);
+        let Some(ceiling) = policy
+            .ceiling_micro_usd
+            .filter(|_| !policy.continue_on_exhaustion)
+        else {
+            return Ok(());
+        };
+        let Some(held) = state.holds.get(&hold).copied() else {
+            return Ok(());
+        };
+        if held.unpriced {
+            return Err(format!(
+                "plan budget cannot be enforced: a model call of this attempt has no price \
+                 against max_plan_usd = ${:.4}; give its model a price in [models], or run with \
+                 --no-budget",
+                micro_usd_to_usd(ceiling)
+            ));
+        }
+        let expected = held.last_call_micro_usd;
+        let grow = held
+            .spent_micro_usd
+            .saturating_add(expected)
+            .saturating_sub(held.reserved_micro_usd);
+        if grow == 0 {
+            return Ok(());
+        }
+        let committed = state
+            .spent_micro_usd
+            .saturating_add(state.reserved_micro_usd);
+        let available = ceiling.saturating_sub(committed);
+        if grow > available {
+            let left = held
+                .reserved_micro_usd
+                .saturating_add(available)
+                .saturating_sub(held.spent_micro_usd);
+            return Err(format!(
+                "plan budget exhausted: the attempt's next model call would cost about ${:.4}, \
+                 as much as its last, and only ${:.4} of the plan's ${:.4} cap is left",
+                micro_usd_to_usd(expected),
+                micro_usd_to_usd(left),
+                micro_usd_to_usd(ceiling)
+            ));
+        }
+        if let Some(held) = state.holds.get_mut(&hold) {
+            held.reserved_micro_usd = held.reserved_micro_usd.saturating_add(grow);
+        }
+        state.reserved_micro_usd = state.reserved_micro_usd.saturating_add(grow);
+        Ok(())
+    }
+
+    /// Record a model call of hold `hold` of `plan_id` that cost `cost_usd`,
+    /// unknown when it was not `priced` (bug-4fabd0). The hold then keeps
+    /// what its calls spent, a call that cost more than it held included,
+    /// and room for one more call like this one; the rest goes back to the
+    /// plan, for its other attempts.
+    fn record_call(&self, plan_id: &str, hold: u64, cost_usd: f64, priced: bool) {
+        let cost_micro_usd = usd_to_micro_usd(cost_usd);
+        let mut plans = self.plans.lock();
+        let Some(state) = plans.get_mut(plan_id) else {
+            return;
+        };
+        let Some(held) = state.holds.get_mut(&hold) else {
+            return;
+        };
+        held.spent_micro_usd = held.spent_micro_usd.saturating_add(cost_micro_usd);
+        held.last_call_micro_usd = cost_micro_usd;
+        held.unpriced |= !priced;
+        let kept = held.reserved_micro_usd.clamp(
+            held.spent_micro_usd,
+            held.spent_micro_usd.saturating_add(cost_micro_usd),
+        );
+        let before = std::mem::replace(&mut held.reserved_micro_usd, kept);
+        state.reserved_micro_usd = state
+            .reserved_micro_usd
+            .saturating_sub(before)
+            .saturating_add(kept);
+        state.costliest_call_micro_usd = state.costliest_call_micro_usd.max(cost_micro_usd);
+        drop(plans);
+        if kept < before {
+            self.capacity.notify_waiters();
+        }
+    }
+
+    /// The most hold `hold` of `plan_id` can still spend under `policy`: what
+    /// it holds beyond its spend, and the plan's unreserved budget it could
+    /// grow into (gap-e14344). `None` without a ceiling to hold against.
+    fn headroom(&self, plan_id: &str, hold: u64, policy: GraphPlanBudgetPolicy) -> Option<u64> {
+        let plans = self.plans.lock();
+        let state = plans.get(plan_id)?;
+        let policy = state.policy(policy);
+        let ceiling = policy
+            .ceiling_micro_usd
+            .filter(|_| !policy.continue_on_exhaustion)?;
+        let held = state.holds.get(&hold)?;
+        let unreserved = ceiling.saturating_sub(
+            state
+                .spent_micro_usd
+                .saturating_add(state.reserved_micro_usd),
+        );
+        Some(
+            held.reserved_micro_usd
+                .saturating_sub(held.spent_micro_usd)
+                .saturating_add(unreserved),
+        )
+    }
+
+    fn release(&self, plan_id: &str, hold: Option<u64>) {
+        if hold.is_none() {
             return;
         }
         let mut plans = self.plans.lock();
         if let Some(state) = plans.get_mut(plan_id) {
-            state.reserved_micro_usd = state.reserved_micro_usd.saturating_sub(reserved_micro_usd);
+            state.release_hold(hold);
             if let Some(checkpoint) = &state.checkpoint
                 && let Err(error) =
                     checkpoint.persist(state.spent_micro_usd, state.reserved_micro_usd)
@@ -668,14 +902,18 @@ impl GraphPlanBudgetLedger {
 
     #[cfg(test)]
     fn record_cost(&self, plan_id: &str, cost_usd: f64) {
-        self.settle(plan_id, 0, cost_usd).expect("record test cost");
+        self.settle(plan_id, None, cost_usd)
+            .expect("record test cost");
     }
 }
 
 pub(super) struct GraphPlanBudgetReservation<'a> {
     ledger: &'a GraphPlanBudgetLedger,
     plan_id: String,
-    reserved_micro_usd: u64,
+    /// The attempt's hold on the plan budget; `None` without a ceiling to
+    /// hold against.
+    hold: Option<u64>,
+    policy: GraphPlanBudgetPolicy,
     routing_budget_micro_usd: Option<u64>,
     settled: bool,
 }
@@ -686,10 +924,26 @@ impl GraphPlanBudgetReservation<'_> {
             .map_or(f64::INFINITY, micro_usd_to_usd)
     }
 
+    /// What the attempt may spend on its model calls, which its agent's tool
+    /// loop asks before each one (bug-4fabd0); `None` without a ceiling.
+    /// `ledger` is the ledger this reservation was made in.
+    pub(super) fn allowance(
+        &self,
+        ledger: &Arc<GraphPlanBudgetLedger>,
+    ) -> Option<Arc<AttemptAllowance>> {
+        debug_assert!(std::ptr::eq(Arc::as_ptr(ledger), self.ledger));
+        let hold = self.hold?;
+        Some(Arc::new(AttemptAllowance {
+            ledger: Arc::clone(ledger),
+            plan_id: self.plan_id.clone(),
+            hold,
+            policy: self.policy,
+            refusal: parking_lot::Mutex::new(None),
+        }))
+    }
+
     pub(super) fn settle(mut self, cost_usd: f64) -> Result<()> {
-        let result = self
-            .ledger
-            .settle(&self.plan_id, self.reserved_micro_usd, cost_usd);
+        let result = self.ledger.settle(&self.plan_id, self.hold, cost_usd);
         self.settled = true;
         result
     }
@@ -698,9 +952,71 @@ impl GraphPlanBudgetReservation<'_> {
 impl Drop for GraphPlanBudgetReservation<'_> {
     fn drop(&mut self) {
         if !self.settled {
-            self.ledger.release(&self.plan_id, self.reserved_micro_usd);
+            self.ledger.release(&self.plan_id, self.hold);
         }
     }
+}
+
+/// What one attempt may spend on its model calls: its hold on the plan
+/// budget (bug-4fabd0). Its agent's tool loop asks it before each model
+/// call, and a call the plan cannot pay for is not made. For an agent that
+/// runs its own loop, the attempt's watch tells it what the call streamed
+/// and stops the call it refuses (gap-ca1c92).
+#[derive(Debug)]
+pub(super) struct AttemptAllowance {
+    ledger: Arc<GraphPlanBudgetLedger>,
+    plan_id: String,
+    hold: u64,
+    policy: GraphPlanBudgetPolicy,
+    /// Why it refused a call, once it did.
+    refusal: parking_lot::Mutex<Option<String>>,
+}
+
+impl AttemptAllowance {
+    /// Why the allowance refused a model call of the attempt, once it did:
+    /// the attempt then stopped for its plan's budget.
+    pub(super) fn refusal(&self) -> Option<String> {
+        self.refusal.lock().clone()
+    }
+}
+
+impl CallAllowance for AttemptAllowance {
+    fn refuse_call(&self) -> Option<String> {
+        let refusal = self
+            .ledger
+            .admit_call(&self.plan_id, self.hold, self.policy)
+            .err()?;
+        *self.refusal.lock() = Some(refusal.clone());
+        Some(refusal)
+    }
+
+    fn record_call(&self, cost_usd: f64, priced: bool) {
+        self.ledger
+            .record_call(&self.plan_id, self.hold, cost_usd, priced);
+    }
+
+    fn spend_limit_usd(&self) -> Option<f64> {
+        self.ledger
+            .headroom(&self.plan_id, self.hold, self.policy)
+            .map(micro_usd_to_usd)
+    }
+}
+
+/// Why an agent that keeps a spend limit of its own stopped there, as the
+/// Claude CLI does at the `--max-budget-usd` its attempt gave it
+/// (gap-e14344): its run ended `budget_exhausted`, in its own words. `None`
+/// for any other end.
+pub(super) fn own_budget_stop(
+    dispatch: &crate::dispatch_v2::AgentResultDispatch,
+) -> Option<String> {
+    let output = &dispatch.result.output;
+    (output.tag("stop_reason") == Some("budget_exhausted")).then(|| {
+        output
+            .body
+            .as_text()
+            .unwrap_or("budget exhausted")
+            .to_string()
+    })
 }
 
 /// Effective per-task spend ceiling in USD (`0.0` = unlimited): the tighter
@@ -795,7 +1111,8 @@ impl CutGroundTruth {
 pub(super) struct GraphTaskSpendLedger {
     /// This process's spend per task.
     tasks: parking_lot::Mutex<HashMap<String, u64>>,
-    /// Calls whose cost was never priced: they used tokens at $0.
+    /// Calls roko could not price: they used tokens at $0, and no rate
+    /// applies to their model.
     unpriced_calls: std::sync::atomic::AtomicUsize,
     /// Spend per task that earlier processes of a resumed run recorded. It
     /// counts toward the task's ceiling, not toward this process's spend.
@@ -812,10 +1129,11 @@ pub(super) struct ProcessSpend {
 
 impl GraphTaskSpendLedger {
     /// Record one provider call of `task_key`, at the cost its usage
-    /// reports. A call that used tokens at $0 was never priced: its cost
-    /// is unknown, not zero ([`roko_core::Usage::has_known_cost`]).
-    pub(super) fn record(&self, task_key: &str, usage: &roko_core::Usage) {
-        if !usage.has_known_cost() {
+    /// reports. Unless `priced`, roko could not price the call, and its $0
+    /// is an unknown cost; a call at a rate of 0 is priced, and free
+    /// ([`GraphTaskDispatcher::dispatch_priced`], bug-1bc222).
+    pub(super) fn record(&self, task_key: &str, usage: &roko_core::Usage, priced: bool) {
+        if !priced {
             self.unpriced_calls
                 .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         }
@@ -1125,19 +1443,68 @@ impl GraphTaskDispatcher {
         }
     }
 
+    /// Whether `target`'s model must not be called because this run is held
+    /// to a budget cap, which can count only priced calls, and roko has no
+    /// price for it: no row in the price snapshot, no `[models.*]` rates and
+    /// no built-in rate (gap-8548e3). Failover then passes it over before
+    /// any call. Never without a cap (`--no-budget`), and never for the
+    /// Claude CLI, which reports what each of its runs cost.
+    pub(super) fn unpriced_under_cap(
+        &self,
+        target: &crate::dispatch_v2::ProviderDispatchSpec,
+    ) -> bool {
+        target.provider_kind != roko_core::agent::ProviderKind::ClaudeCli
+            && self.holds_a_cap()
+            && !crate::dispatch_v2::model_has_price(
+                self.pricing_snapshot().as_deref(),
+                target.model_profile.as_ref(),
+                &target.model_slug,
+            )
+    }
+
+    /// Whether a budget cap bounds this run's spend: a plan ceiling, or
+    /// `budget.max_daily_usd`, unless `--no-budget` lifted them.
+    fn holds_a_cap(&self) -> bool {
+        let policy = self.budget_policy;
+        !policy.continue_on_exhaustion
+            && (policy.ceiling_micro_usd.is_some()
+                || DailyCeiling::from_config(self.config.budget.max_daily_usd)
+                    != DailyCeiling::Unlimited)
+    }
+
     /// Record a provider call of `plan_id/task_id` toward the task's ceiling,
     /// and keep the task's spend with the run's retry state, so a resumed run
-    /// counts it as well (gap-34b2ed).
-    pub(super) fn record_task_spend(&self, plan_id: &str, task_id: &str, usage: &roko_core::Usage) {
+    /// counts it as well (gap-34b2ed). `priced` says whether roko could price
+    /// the call, as its cost row does: one it could not leaves the day's and
+    /// the plan's spend unknown (backlog 2111), and one at a rate of 0 is
+    /// free (bug-1bc222).
+    pub(super) fn record_task_spend(
+        &self,
+        plan_id: &str,
+        task_id: &str,
+        usage: &roko_core::Usage,
+        priced: bool,
+    ) {
         let key = format!("{plan_id}/{task_id}");
-        self.task_spend.record(&key, usage);
-        // An unpriced call leaves the plan's spend unknown (backlog 2111).
-        if !usage.has_known_cost() {
+        self.task_spend.record(&key, usage, priced);
+        if !priced {
             self.budget_ledger.record_unpriced(plan_id);
         }
         let spent = self.task_spend.task_total(&key);
         self.gate_retry_context
             .set_task_spend(plan_id, task_id, spent);
+    }
+
+    /// [`Self::record_task_spend`] for the provider call behind `dispatch`,
+    /// priced as [`Self::dispatch_priced`] judges it.
+    pub(super) fn record_dispatch_spend(
+        &self,
+        plan_id: &str,
+        task_id: &str,
+        dispatch: &crate::dispatch_v2::AgentResultDispatch,
+    ) {
+        let priced = self.dispatch_priced(dispatch);
+        self.record_task_spend(plan_id, task_id, &dispatch.result.usage, priced);
     }
 
     /// Read today's spend so far from the costs log, so that a run whose day
@@ -1264,14 +1631,17 @@ pub(super) fn effective_routing_budget(context_remaining: Option<f64>, plan_rema
 
 #[cfg(test)]
 mod tests {
+    use roko_core::agent::ProviderKind;
+    use roko_core::config::schema::{ModelProfile, ProviderConfig};
     use roko_core::dashboard_snapshot::UrgencyLevel;
     use tempfile::tempdir;
 
     use super::*;
     use crate::graph_task_dispatch::tests::{
-        STREAMS_THEN_TIMES_OUT_PROVIDER, TIMEOUT_SECS_UNDER_LOAD, VERIFY_PROVIDER, batch_ctx,
+        FIXTURE_HANG_GUARD_SECS, STREAMS_THEN_TIMES_OUT_PROVIDER, TIMEOUT_SECS_UNDER_LOAD,
+        VERIFY_PROVIDER, batch_ctx, cli_provider, final_turn, jsonl_rows_where,
         make_bare_dispatcher, make_batch_dispatcher, make_scripted_batch_dispatcher, make_spec,
-        make_task_def,
+        make_task_def, model, recording_feedback, spawn_openai_mock, tool_call_turn,
     };
     use crate::state_hub::StateHub;
 
@@ -1630,13 +2000,15 @@ exit 1
             .dispatch(&make_spec(&last), Vec::new(), &ctx)
             .await
             .expect_err("the spent plan admits no further call");
+        // Not retried (bug-4fabd0): no retry can pay for it.
         assert!(
             matches!(
-                error,
-                RokoError::BudgetExceeded {
-                    dimension: "plan_cost_micro_usd",
-                    ..
-                }
+                &error,
+                RokoError::Gateway {
+                    category: "budget",
+                    retryable: false,
+                    message,
+                } if *message == stop
             ),
             "got {error:?}"
         );
@@ -1770,7 +2142,14 @@ exit 1
             .err()
             .expect("the plan is spent");
         assert!(
-            matches!(spent, RokoError::BudgetExceeded { .. }),
+            matches!(
+                spent,
+                RokoError::Gateway {
+                    category: "budget",
+                    retryable: false,
+                    ..
+                }
+            ),
             "{spent:?}"
         );
     }
@@ -2024,7 +2403,7 @@ exit 1
 
         let first = make_bare_dispatcher(RokoConfig::default(), temp.path()).await;
         first.attach_retry_feedback("plan", kept.clone(), "run-1");
-        first.record_task_spend("plan", "T1", &usage);
+        first.record_task_spend("plan", "T1", &usage, true);
         first.keep_turn_cap_retry("plan", "T1", retry);
         drop(first);
 
@@ -2080,7 +2459,7 @@ exit 1
             ..roko_core::Usage::zero()
         };
         for task in &tasks {
-            dispatcher.record_task_spend("stream-plan", &task.id, &spent);
+            dispatcher.record_task_spend("stream-plan", &task.id, &spent, true);
         }
         let admitted = |task: &TaskDef| {
             let spec = make_spec(task);
@@ -2388,6 +2767,85 @@ exit 1
         }
     }
 
+    /// bug-1bc222: a model roko prices at a rate of 0 is free, not unpriced.
+    /// Its call uses tokens at $0, as a call of a model with no rate does,
+    /// but neither the day's nor the plan's ceiling counts it as unpriced,
+    /// its cost row says it is priced, and both ceilings admit the next
+    /// call. The same call of a model with no rate still stops both.
+    #[tokio::test]
+    async fn unpriced_ceiling_ignores_a_genuinely_free_rate() {
+        for rate in [Some(0.0), None] {
+            let temp = tempdir().expect("tempdir");
+            let costs_path = temp.path().join(".roko/learn/costs.jsonl");
+            std::fs::create_dir_all(costs_path.parent().expect("learn dir")).expect("learn dir");
+            std::fs::write(&costs_path, "").expect("an empty costs log");
+            let (dispatcher, task) = make_batch_dispatcher(&temp, 0.0, |config| {
+                config.budget.max_daily_usd = 5.0;
+                let profile = config.models.get_mut("batch-model").expect("batch model");
+                profile.slug = "local-test-model".to_string();
+                profile.cost_input_per_m = rate;
+                profile.cost_output_per_m = rate;
+            })
+            .await;
+            let dispatcher =
+                dispatcher
+                    .with_plan_budget(1.0, 0.0, false)
+                    .with_feedback(GraphFeedbackContext {
+                        costs_path: Some(costs_path.clone()),
+                        ..GraphFeedbackContext::default()
+                    });
+            let spec = make_spec(&task);
+            dispatcher
+                .dispatch(&spec, Vec::new(), &batch_ctx())
+                .await
+                .unwrap_or_else(|error| panic!("{rate:?}: nothing is unknown yet: {error}"));
+
+            let unpriced = usize::from(rate.is_none());
+            assert_eq!(
+                dispatcher.task_spend.process_spend().unpriced_calls,
+                unpriced,
+                "{rate:?}: the day's unpriced calls"
+            );
+            assert_eq!(
+                dispatcher.budget_ledger.plans.lock()[&spec.plan_id].unpriced_calls,
+                unpriced,
+                "{rate:?}: the plan's unpriced calls"
+            );
+            let plan_stop = dispatcher
+                .budget_ledger
+                .dispatch_stop(&spec.plan_id, dispatcher.budget_policy);
+            let daily_stop = dispatcher.daily_dispatch_stop();
+            let mut other = task.clone();
+            other.id = "T-OTHER".to_string();
+            let next = dispatcher
+                .dispatch(&make_spec(&other), Vec::new(), &batch_ctx())
+                .await;
+            drop(dispatcher);
+            let costs =
+                jsonl_rows_where(&costs_path, 1, |row| row["task_id"] == task.id.as_str()).await;
+            assert_eq!(costs[0]["priced"], rate.is_some(), "{rate:?}: {}", costs[0]);
+
+            if rate.is_some() {
+                assert_eq!(plan_stop, None, "a call at a rate of 0 is free");
+                assert_eq!(daily_stop, None, "a call at a rate of 0 is free");
+                next.expect("both ceilings admit the next call");
+                continue;
+            }
+            let plan_stop = plan_stop.expect("the plan's spend is unknown");
+            assert!(
+                plan_stop.starts_with("plan budget cannot be enforced: 1 unpriced call(s)"),
+                "{plan_stop}"
+            );
+            let daily_stop = daily_stop.expect("the day's spend is unknown");
+            assert!(
+                daily_stop.contains("1 provider call(s) whose cost was never priced"),
+                "{daily_stop}"
+            );
+            let error = next.expect_err("an unknown spend admits no further call");
+            assert!(matches!(error, RokoError::Config(_)), "got {error:?}");
+        }
+    }
+
     /// A negative, NaN or infinite ceiling refuses every dispatch.
     #[tokio::test]
     async fn a_malformed_daily_ceiling_fails_closed() {
@@ -2482,5 +2940,454 @@ exit 1
         assert_eq!(row.last(), Some(&format!("completed {id}")), "{row:?}");
         let said = format!("output {id}: the plan budget could not settle this call");
         assert!(row.iter().any(|event| event.starts_with(&said)), "{row:?}");
+    }
+
+    /// bug-4fabd0: an attempt's hold covers what its calls spent plus one
+    /// more call like its last, growing into the plan's unreserved budget,
+    /// and refuses a call the plan cannot pay for. The plan then starts no
+    /// further attempt, since what is left cannot pay for a few such calls.
+    #[test]
+    fn an_attempt_hold_grows_with_its_calls_until_the_plan_cannot_pay() {
+        let ledger = Arc::new(GraphPlanBudgetLedger::default());
+        let policy = GraphPlanBudgetPolicy::from_ceiling(0.10, false).with_concurrent_calls(8);
+        let reservation = ledger.reserve("plan-a", policy).expect("reservation");
+        let allowance = reservation.allowance(&ledger).expect("a capped plan holds");
+        let reserved =
+            |ledger: &GraphPlanBudgetLedger| ledger.snapshot("plan-a", policy).reserved_usd;
+        assert!(
+            (reserved(&ledger) - 0.0125).abs() < 1e-9,
+            "its share of the ceiling"
+        );
+
+        // The first call is not known in advance; a call that cost more than
+        // the hold is held as spent.
+        assert_eq!(allowance.refuse_call(), None);
+        allowance.record_call(0.02, true);
+        assert!((reserved(&ledger) - 0.02).abs() < 1e-9);
+        for cost in [0.03, 0.03] {
+            assert_eq!(allowance.refuse_call(), None);
+            allowance.record_call(cost, true);
+        }
+        assert!((reserved(&ledger) - 0.08).abs() < 1e-9);
+
+        let refusal = allowance
+            .refuse_call()
+            .expect("$0.08 + $0.03 passes the $0.10 cap");
+        assert_eq!(
+            refusal,
+            "plan budget exhausted: the attempt's next model call would cost about $0.0300, as \
+             much as its last, and only $0.0200 of the plan's $0.1000 cap is left"
+        );
+        assert_eq!(allowance.refusal(), Some(refusal));
+
+        reservation.settle(0.08).expect("settle");
+        assert_eq!(ledger.snapshot("plan-a", policy).reserved_usd, 0.0);
+        let stop = ledger
+            .dispatch_stop("plan-a", policy)
+            .expect("too little is left");
+        assert_eq!(
+            stop,
+            "plan budget exhausted: $0.0800 spent of $0.1000, and the $0.0200 left is less than \
+             an attempt needs: $0.0900, room for 3 model calls like its costliest so far \
+             ($0.0300)"
+        );
+        let Err(refused) = ledger.reserve("plan-a", policy) else {
+            panic!("no attempt starts with $0.02 left");
+        };
+        assert!(
+            matches!(&refused, RokoError::Gateway { category: "budget", retryable: false, message } if *message == stop),
+            "{refused:?}"
+        );
+    }
+
+    /// bug-4fabd0: a hold gives back what it no longer needs after each
+    /// call, so an attempt waiting for the plan's budget gets it.
+    #[test]
+    fn a_hold_gives_back_what_its_calls_do_not_need() {
+        let ledger = Arc::new(GraphPlanBudgetLedger::default());
+        let policy = GraphPlanBudgetPolicy::from_ceiling(0.10, false);
+        let first = ledger.reserve("plan-a", policy).expect("reservation");
+        let allowance = first.allowance(&ledger).expect("a capped plan holds");
+        let Err(waiting) = ledger.reserve("plan-a", policy) else {
+            panic!("the first attempt holds the whole budget");
+        };
+        assert!(
+            matches!(waiting, RokoError::BudgetExceeded { .. }),
+            "{waiting:?}"
+        );
+
+        allowance.record_call(0.01, true);
+        let snapshot = ledger.snapshot("plan-a", policy);
+        assert!((snapshot.reserved_usd - 0.02).abs() < 1e-9, "{snapshot:?}");
+        let second = ledger
+            .reserve("plan-a", policy)
+            .expect("the rest is free again");
+        drop(second);
+        drop(first);
+        assert_eq!(ledger.snapshot("plan-a", policy).reserved_usd, 0.0);
+    }
+
+    /// gap-e14344: what an attempt's own spend limit can be is what its hold
+    /// keeps beyond its spend plus the plan's unreserved budget, which it
+    /// could grow into; what other attempts hold is not its to spend.
+    #[test]
+    fn an_attempts_spend_limit_is_its_hold_and_the_unreserved_budget() {
+        let ledger = Arc::new(GraphPlanBudgetLedger::default());
+        let policy = GraphPlanBudgetPolicy::from_ceiling(1.0, false).with_concurrent_calls(4);
+        let first = ledger.reserve("plan-a", policy).expect("reservation");
+        let second = ledger.reserve("plan-a", policy).expect("reservation");
+        let first_allowance = first.allowance(&ledger).expect("a capped plan holds");
+        let second_allowance = second.allowance(&ledger).expect("a capped plan holds");
+        // Each holds $0.25 of $1.00; the first spends $0.05 and keeps $0.10.
+        first_allowance.record_call(0.05, true);
+        let limit = |allowance: &AttemptAllowance| allowance.spend_limit_usd().expect("a limit");
+        assert!((limit(&first_allowance) - 0.70).abs() < 1e-9);
+        assert!((limit(&second_allowance) - 0.90).abs() < 1e-9);
+
+        let unlimited = ledger
+            .reserve("plan-b", GraphPlanBudgetPolicy::unlimited())
+            .expect("reservation");
+        assert!(unlimited.allowance(&ledger).is_none(), "nothing to limit");
+        drop((first, second));
+    }
+
+    /// bug-4fabd0: a call with no price leaves the attempt's spend unknown,
+    /// so its next call is refused, as a plan's is (decision 2110); a plan
+    /// without a ceiling holds nothing to ask.
+    #[test]
+    fn an_unpriced_call_stops_its_attempt() {
+        let ledger = Arc::new(GraphPlanBudgetLedger::default());
+        let policy = GraphPlanBudgetPolicy::from_ceiling(1.0, false);
+        let reservation = ledger.reserve("plan-a", policy).expect("reservation");
+        let allowance = reservation.allowance(&ledger).expect("a capped plan holds");
+        allowance.record_call(0.0, false);
+        let refusal = allowance.refuse_call().expect("its spend is unknown");
+        assert!(
+            refusal.starts_with("plan budget cannot be enforced"),
+            "{refusal}"
+        );
+
+        let unlimited = ledger
+            .reserve("plan-b", GraphPlanBudgetPolicy::unlimited())
+            .expect("reservation");
+        assert!(unlimited.allowance(&ledger).is_none());
+    }
+
+    /// A config whose one model, `api-model`, the OpenAI-compatible mock at
+    /// `base_url` serves at $1 per million input tokens and $2 per million
+    /// output tokens: roko's tool loop runs its attempts.
+    fn priced_api_config(base_url: String) -> RokoConfig {
+        let mut config = RokoConfig::default();
+        config.providers.clear();
+        config.models.clear();
+        config.agent.default_model = "api-model".to_string();
+        config.agent.bare_mode = false;
+        // `PATH` is always set, standing in for an API key.
+        let provider = ProviderConfig {
+            kind: ProviderKind::OpenAiCompat,
+            base_url: Some(base_url),
+            api_key_env: Some("PATH".to_string()),
+            command: None,
+            ..cli_provider("")
+        };
+        config.providers.insert("mock_api".to_string(), provider);
+        let profile = ModelProfile {
+            context_window: 1_000_000,
+            max_output: Some(1_024),
+            max_tools: Some(32),
+            tool_format: "openai_json".to_string(),
+            ..model("mock_api", "api-model-1", Some((1.0, 2.0)))
+        };
+        config.models.insert("api-model".to_string(), profile);
+        // Keep the stall watchdog off; the mock answers a streamed request
+        // over SSE.
+        config.conductor.silence_timeout_secs = 0;
+        config.conductor.task_stall_secs = 0;
+        config
+    }
+
+    /// bug-4fabd0: a scripted model that keeps calling tools, each call
+    /// costing more than the last, cannot push a run past its cap by more
+    /// than one call. Its tool loop asks the plan budget before each call;
+    /// the attempt stops budget-exhausted, with the reason, and is not a
+    /// provider failure; and the plan starts no further attempt.
+    #[tokio::test]
+    async fn a_looping_agent_cannot_push_a_run_past_its_cap() {
+        let temp = tempdir().expect("tempdir");
+        std::fs::write(temp.path().join("notes.txt"), "notes\n").expect("seed notes");
+        // Call i reads 10,000 x i tokens and writes 500: $0.011, $0.021, …
+        let calls = 40;
+        let cost = |call: u32| 0.01 * f64::from(call) + 0.001;
+        let turns = (1..=calls)
+            .map(|call| {
+                let read = serde_json::json!({ "path": "notes.txt" });
+                let mut turn = tool_call_turn(&format!("call-{call}"), "read_file", read);
+                turn["usage"] = serde_json::json!({
+                    "prompt_tokens": 10_000 * call,
+                    "completion_tokens": 500
+                });
+                turn
+            })
+            .collect();
+        let (base_url, requests) = spawn_openai_mock(turns);
+        let ceiling = 0.05;
+        let dispatcher = make_bare_dispatcher(priced_api_config(base_url), temp.path())
+            .await
+            .with_plan_budget(ceiling, 0.0, false)
+            .with_feedback(recording_feedback(temp.path()));
+        let task = TaskDef {
+            id: "T01".to_string(),
+            title: "Read the notes".to_string(),
+            model_hint: Some("api-model".to_string()),
+            timeout_secs: FIXTURE_HANG_GUARD_SECS,
+            ..make_task_def("focused")
+        };
+        let spec = make_spec(&task);
+        let ctx = || {
+            CellContext::new()
+                .with_cell_id("T01".to_string())
+                .with_run_id("capped".to_string())
+        };
+
+        let error = dispatcher
+            .dispatch(&spec, Vec::new(), &ctx())
+            .await
+            .expect_err("the cap stops the attempt");
+
+        let made = u32::try_from(requests.lock().len()).expect("calls");
+        assert_eq!(
+            made, 2,
+            "$0.011 + $0.021, and a third like the second passes $0.05"
+        );
+        let RokoError::Gateway {
+            category: "budget",
+            retryable: false,
+            message,
+        } = &error
+        else {
+            panic!("a budget stop the task executor does not retry: {error:?}");
+        };
+        assert!(
+            message.starts_with("plan budget exhausted: the attempt's next model call"),
+            "{message}"
+        );
+        let spent = dispatcher.plan_budget_snapshot(&spec.plan_id).spent_usd;
+        let charged: f64 = (1..=made).map(cost).sum();
+        assert!(
+            (spent - charged).abs() < 1e-6,
+            "spent ${spent}, charged ${charged}"
+        );
+        assert!(
+            spent <= ceiling + cost(made),
+            "spent ${spent} of ${ceiling}"
+        );
+
+        let verdicts = jsonl_rows_where(
+            &temp.path().join(".roko/runs/capped/attempts.jsonl"),
+            1,
+            |row| row["schema_version"] == "roko.verdict/1",
+        )
+        .await;
+        assert_eq!(
+            verdicts[0]["outcome"], "budget_exhausted",
+            "{}",
+            verdicts[0]
+        );
+
+        let stop = dispatcher
+            .plan_dispatch_stop(&spec.plan_id)
+            .expect("the plan starts no further task");
+        assert!(
+            stop.starts_with("plan budget exhausted: $0.0320 spent of $0.0500"),
+            "{stop}"
+        );
+        let again = dispatcher
+            .dispatch(&spec, Vec::new(), &ctx())
+            .await
+            .expect_err("no attempt starts");
+        assert!(
+            matches!(
+                again,
+                RokoError::Gateway {
+                    category: "budget",
+                    ..
+                }
+            ),
+            "{again:?}"
+        );
+        assert_eq!(requests.lock().len(), 2, "and no model call is made");
+    }
+
+    /// gap-8548e3: a run held to a budget cap never calls a model roko has no
+    /// price for, since the cap could not count the call. With no priced
+    /// model to fall back on, the task fails before any call, naming the
+    /// model and the fix, and is not retried; a priced model on the same
+    /// provider takes the task instead; and without a cap the unpriced model
+    /// runs as before.
+    #[tokio::test]
+    async fn capped_run_with_an_unpriced_model_is_refused_up_front() {
+        let unpriced = |base_url: String| {
+            let mut config = priced_api_config(base_url);
+            let profile = config.models.get_mut("api-model").expect("api-model");
+            profile.cost_input_per_m = None;
+            profile.cost_output_per_m = None;
+            config
+        };
+        let task = TaskDef {
+            id: "T01".to_string(),
+            title: "Read the notes".to_string(),
+            model_hint: Some("api-model".to_string()),
+            timeout_secs: FIXTURE_HANG_GUARD_SECS,
+            ..make_task_def("focused")
+        };
+        let spec = make_spec(&task);
+
+        let temp = tempdir().expect("tempdir");
+        let (base_url, requests) = spawn_openai_mock(vec![final_turn("done")]);
+        // Its fallback has no price either.
+        let mut config = unpriced(base_url);
+        let other = ModelProfile {
+            slug: "api-other-1".to_string(),
+            ..config.models["api-model"].clone()
+        };
+        config.models.insert("api-other".to_string(), other);
+        config.routing.fallback_models = vec!["api-other".to_string()];
+        let dispatcher = make_bare_dispatcher(config, temp.path())
+            .await
+            .with_plan_budget(0.50, 0.0, false);
+        let error = dispatcher
+            .dispatch(&spec, Vec::new(), &batch_ctx())
+            .await
+            .expect_err("refused before any call");
+        let RokoError::Gateway {
+            retryable: false,
+            message,
+            ..
+        } = &error
+        else {
+            panic!("a refusal the task executor does not retry: {error:?}");
+        };
+        assert!(
+            message.contains("`api-model` on `mock_api`: has no price"),
+            "{message}"
+        );
+        assert!(message.contains("Give api-model a price"), "{message}");
+        assert!(
+            message.contains("(api-other: has no price") && !message.contains("API key"),
+            "{message}"
+        );
+        assert!(requests.lock().is_empty(), "no call was made");
+
+        let temp = tempdir().expect("tempdir");
+        let (base_url, requests) = spawn_openai_mock(vec![final_turn("done")]);
+        let mut config = unpriced(base_url);
+        let priced = ModelProfile {
+            slug: "api-priced-1".to_string(),
+            cost_input_per_m: Some(1.0),
+            cost_output_per_m: Some(2.0),
+            ..config.models["api-model"].clone()
+        };
+        config.models.insert("api-priced".to_string(), priced);
+        config.routing.fallback_models = vec!["api-priced".to_string()];
+        let dispatcher = make_bare_dispatcher(config, temp.path())
+            .await
+            .with_plan_budget(0.50, 0.0, false);
+        dispatcher
+            .dispatch(&spec, Vec::new(), &batch_ctx())
+            .await
+            .expect("the priced model takes the task");
+        {
+            let requests = requests.lock();
+            assert_eq!(requests.len(), 1, "{requests:?}");
+            assert_eq!(requests[0]["model"], "api-priced-1");
+        }
+
+        let temp = tempdir().expect("tempdir");
+        let (base_url, requests) = spawn_openai_mock(vec![final_turn("done")]);
+        let dispatcher = make_bare_dispatcher(unpriced(base_url), temp.path()).await;
+        dispatcher
+            .dispatch(&spec, Vec::new(), &batch_ctx())
+            .await
+            .expect("without a cap the model runs");
+        assert_eq!(requests.lock().len(), 1);
+    }
+
+    /// gap-e14344: a capped attempt on the Claude CLI also gets the CLI's
+    /// own spend limit, `--max-budget-usd`, at what the attempt can still
+    /// spend, as a second fence behind roko's check of what it streams. A
+    /// run the CLI stopped there is a budget stop: settled budget_exhausted
+    /// at the cost the CLI reported, not retried, not a provider failure.
+    /// Without a cap the flag is not passed.
+    #[tokio::test]
+    async fn a_capped_claude_cli_attempt_gets_a_native_spend_limit() {
+        // Like Claude Code 2.1.282: given --max-budget-usd, this run passes
+        // it and ends with the CLI's own budget stop.
+        let script = r#"#!/bin/sh
+set -eu
+cat >/dev/null
+echo run >> "$(dirname -- "$0")/runs"
+printf '%s\n' "$*" >> "$(dirname -- "$0")/provider-args"
+case " $* " in
+  *" --max-budget-usd "*)
+    printf '%s\n' '{"type":"result","subtype":"error_max_budget_usd","is_error":true,"num_turns":3,"total_cost_usd":0.06,"usage":{"input_tokens":5,"output_tokens":10},"errors":["Reached maximum budget"]}'
+    exit 1
+    ;;
+esac
+printf '%s\n' '{"type":"content_block_delta","delta":{"text":"batch-output"}}'
+printf '%s\n' '{"type":"result","session_id":"sess-b","model":"claude-sonnet-4-6","total_cost_usd":0.01,"usage":{"input_tokens":5,"output_tokens":10}}'
+"#;
+        let temp = tempdir().expect("tempdir");
+        let (dispatcher, task) = make_scripted_batch_dispatcher(&temp, script, |_| {}).await;
+        let dispatcher = dispatcher
+            .with_plan_budget(0.10, 0.0, false)
+            .with_feedback(recording_feedback(temp.path()));
+        let spec = make_spec(&task);
+        let ctx = CellContext::new()
+            .with_cell_id("T01".to_string())
+            .with_run_id("native-limit".to_string());
+
+        let error = dispatcher
+            .dispatch(&spec, Vec::new(), &ctx)
+            .await
+            .expect_err("the CLI stops at its limit");
+
+        let RokoError::Gateway {
+            category: "budget",
+            retryable: false,
+            message,
+        } = &error
+        else {
+            panic!("a budget stop the task executor does not retry: {error:?}");
+        };
+        assert!(
+            message.contains("stopped at its spend limit (--max-budget-usd $0.1000) after $0.0600"),
+            "{message}"
+        );
+        let runs = std::fs::read_to_string(temp.path().join("runs")).expect("runs");
+        assert_eq!(runs.lines().count(), 1, "one run, no retry or failover");
+        let args = std::fs::read_to_string(temp.path().join("provider-args")).expect("args");
+        assert!(args.contains("--max-budget-usd 0.100000"), "{args}");
+        let spent = dispatcher.plan_budget_snapshot(&spec.plan_id).spent_usd;
+        assert!((spent - 0.06).abs() < 1e-9, "the CLI's own cost: {spent}");
+        let verdicts = jsonl_rows_where(
+            &temp.path().join(".roko/runs/native-limit/attempts.jsonl"),
+            1,
+            |row| row["schema_version"] == "roko.verdict/1",
+        )
+        .await;
+        assert_eq!(
+            verdicts[0]["outcome"], "budget_exhausted",
+            "{}",
+            verdicts[0]
+        );
+
+        let temp = tempdir().expect("tempdir");
+        let (dispatcher, task) = make_scripted_batch_dispatcher(&temp, script, |_| {}).await;
+        dispatcher
+            .dispatch(&make_spec(&task), Vec::new(), &batch_ctx())
+            .await
+            .expect("without a cap the run has no limit of its own");
+        let args = std::fs::read_to_string(temp.path().join("provider-args")).expect("args");
+        assert!(!args.contains("--max-budget-usd"), "{args}");
     }
 }

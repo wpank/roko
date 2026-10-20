@@ -62,6 +62,7 @@ impl roko_agent::Agent for CheapFactoryAgent {
             live_output: None,
             attempt_key: None,
             knowledge_ids: Vec::new(),
+            allowance: None,
         };
         match self.factory.run_shared_agent_bridge(request).await {
             Ok(dispatch) => dispatch.result,

@@ -28,6 +28,12 @@ pub struct PlanSummaryDto {
     /// Replacement plan declared by `[meta].superseded_by`, if any.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub superseded_by: Option<String>,
+    /// Whether the plan is a fixture, a demo or test plan: its
+    /// `[meta].status` is `"fixture"`. `status` stops saying so once the plan
+    /// has run, because the run's state replaces it; this does not change
+    /// (gap-8f84d1).
+    #[serde(default)]
+    pub fixture: bool,
     /// Whether the plan's `tasks.toml` is missing modern fields.
     pub old_format: bool,
     /// Last error message from executor state, if any.
@@ -110,7 +116,8 @@ pub struct PlanTasksDto {
     pub task_count: usize,
     /// Ordered list of task details.
     pub tasks: Vec<PlanTaskDto>,
-    /// Human-readable plan title from `[meta].plan`, if present.
+    /// Human-readable plan title, the one the plan listing gives: the first
+    /// heading of `plan.md`, else the plan id.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub title: Option<String>,
     /// Maximum number of tasks that can run in parallel for this plan.

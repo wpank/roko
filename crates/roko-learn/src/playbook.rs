@@ -4,6 +4,9 @@
 //! that have historically led to success. [`PlaybookStore`] persists
 //! playbooks as JSON files under a directory, one file per playbook id, and
 //! tracks success/failure counters that feed back into the learning loop.
+//! A step can quote what its tool call acted on, such as a command line, so
+//! the store redacts the process's secrets from every playbook it writes
+//! (reg-d49ed1).
 //!
 //! # Example
 //!
@@ -455,6 +458,17 @@ fn sanitize_playbook_id_component(text: &str) -> String {
     }
 }
 
+/// `playbook` with the process's secrets redacted from its strings
+/// ([`roko_core::obs::scrub_secrets_in_json`]), as [`PlaybookStore::save`]
+/// redacts them from what it writes; `None` when it holds none.
+fn redacted_playbook(playbook: &Playbook) -> Option<Playbook> {
+    let text = serde_json::to_string(playbook).ok()?;
+    let std::borrow::Cow::Owned(redacted) = roko_core::obs::scrub_secrets_in_json(&text) else {
+        return None;
+    };
+    serde_json::from_str(&redacted).ok()
+}
+
 /// P3-31: Compute the fraction of steps shared between two playbooks.
 fn step_overlap(a: &Playbook, b: &Playbook) -> f64 {
     if a.steps.is_empty() && b.steps.is_empty() {
@@ -733,7 +747,10 @@ impl PlaybookStore {
     }
 
     /// Persist `playbook` under `<root>/<playbook.id>.json`, replacing any
-    /// existing file with the same id.
+    /// existing file with the same id. Every producer (plan runs, `roko
+    /// bench`, dream cycles) writes through here, and a step can quote a
+    /// command line, so the process's secrets are redacted from what is
+    /// written ([`roko_core::obs::scrub_secrets_in_json`]).
     ///
     /// # Errors
     ///
@@ -742,8 +759,9 @@ impl PlaybookStore {
     /// written.
     pub async fn save(&self, playbook: &Playbook) -> io::Result<()> {
         validate_playbook_id(&playbook.id)?;
-        let bytes = serde_json::to_vec_pretty(playbook)
+        let text = serde_json::to_string_pretty(playbook)
             .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+        let text = roko_core::obs::scrub_secrets_in_json(&text);
         tokio::fs::create_dir_all(&self.root).await?;
         let path = self.path_for(&playbook.id);
         // Use a unique tmp suffix per call so that concurrent saves of the
@@ -751,7 +769,7 @@ impl PlaybookStore {
         // rename then publishes the final file.
         let suffix = self.next_tmp_suffix();
         let tmp = self.root.join(format!("{}.{suffix}.tmp", playbook.id));
-        tokio::fs::write(&tmp, &bytes).await?;
+        tokio::fs::write(&tmp, text.as_bytes()).await?;
         tokio::fs::rename(&tmp, &path).await?;
         Ok(())
     }
@@ -1112,6 +1130,11 @@ impl PlaybookStore {
                         return Ok(false);
                     };
                     update(playbook);
+                    // A file written before `save` redacted secrets is
+                    // rewritten without them.
+                    if let Some(redacted) = redacted_playbook(playbook) {
+                        *playbook = redacted;
+                    }
                     Ok(true)
                 },
             )
@@ -2093,5 +2116,77 @@ mod tests {
             .expect("match");
         assert_eq!(matched.len(), 1);
         assert_eq!(matched[0].id, "broad");
+    }
+
+    /// A key planted among the process's secrets, as a `.env` file plants one.
+    const PLANTED_KEY: &str = "planted-key-d49ed1-7c2f";
+
+    /// The redaction the planted key leaves.
+    const PLANTED_KEY_REDACTED: &str = "[REDACTED:PLAYBOOK_TOKEN]";
+
+    /// Puts a process secret scrubber that knows [`PLANTED_KEY`] in place,
+    /// and the previous one back when dropped.
+    struct PlantedKeyScrubber(Option<Arc<roko_core::obs::LogScrubber>>);
+
+    impl PlantedKeyScrubber {
+        fn install() -> Self {
+            let scrubber = roko_core::obs::LogScrubber::new();
+            scrubber
+                .add_literal_value(PLANTED_KEY, "PLAYBOOK_TOKEN")
+                .expect("register the planted key");
+            Self(roko_core::obs::install_secret_scrubber(Some(Arc::new(
+                scrubber,
+            ))))
+        }
+    }
+
+    impl Drop for PlantedKeyScrubber {
+        fn drop(&mut self) {
+            roko_core::obs::install_secret_scrubber(self.0.take());
+        }
+    }
+
+    /// reg-d49ed1: a step quotes what its tool call acted on, such as a
+    /// command line that holds a key. A playbook whose step holds one of the
+    /// process's secrets is saved without it, and a file that holds one,
+    /// written before, loses it once an outcome rewrites it. The rest of the
+    /// record is kept.
+    #[tokio::test]
+    async fn saved_playbook_carries_no_registered_secret() {
+        let _scrubber = PlantedKeyScrubber::install();
+        let tmp = TempDir::new().expect("tempdir");
+        let store = PlaybookStore::new(tmp.path());
+        let command = format!("curl -H 'X-Key: {PLANTED_KEY}' https://deploy.test");
+        let leaky = learned_playbook(
+            "deploy",
+            "Deploy the service",
+            vec![("Bash", command.as_str())],
+        );
+        let file = tmp.path().join("deploy.json");
+        let redacted_command =
+            format!("curl -H 'X-Key: {PLANTED_KEY_REDACTED}' https://deploy.test");
+
+        store.save(&leaky).await.expect("save");
+        let raw = std::fs::read_to_string(&file).expect("read the playbook file");
+        assert!(!raw.contains(PLANTED_KEY), "the saved file holds the key");
+        let saved = store.load("deploy").await.expect("load").expect("saved");
+        assert_eq!(saved.steps[0].description, redacted_command);
+        assert_eq!(
+            (saved.id.as_str(), saved.goal.as_str(), saved.success_count),
+            ("deploy", "Deploy the service", 1)
+        );
+
+        // A file an older roko wrote, before `save` redacted secrets.
+        std::fs::write(&file, serde_json::to_vec_pretty(&leaky).expect("serialize"))
+            .expect("write the old file");
+        assert!(store.record_outcome("deploy", true).await.expect("record"));
+        let raw = std::fs::read_to_string(&file).expect("read the playbook file");
+        assert!(
+            !raw.contains(PLANTED_KEY),
+            "the rewritten file holds the key"
+        );
+        let credited = store.load("deploy").await.expect("load").expect("credited");
+        assert_eq!(credited.steps[0].description, redacted_command);
+        assert_eq!(credited.success_count, 2);
     }
 }

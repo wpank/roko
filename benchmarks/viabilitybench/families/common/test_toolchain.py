@@ -94,13 +94,14 @@ def test_the_sandbox_keeps_the_toolchain_read_only_by_default(rustup_install, tm
     profile = sandbox.profile([tmp_path / "denied"], None, (), kept)
     for path in (found.rustup_home, found.cargo_home):
         assert f'(deny file-write* (subpath "{os.path.realpath(path)}"))' in profile
-    assert sandbox.profile([tmp_path / "denied"]) == '(version 1) (allow default) (deny file* (subpath "{}"))'.format(
-        os.path.realpath(tmp_path / "denied"))
+    assert sandbox.profile([tmp_path / "denied"], None) == (
+        '(version 1) (allow default) (deny file* (subpath "{}"))'.format(os.path.realpath(tmp_path / "denied")))
     argv = ["true"]
     if sandbox.KIND == "sandbox-exec":  # by default `command` keeps this host's toolchain read-only
         assert sandbox.command(argv, deny=[tmp_path / "denied"]) == [
-            sandbox.SANDBOX_EXEC, "-p", sandbox.profile([tmp_path / "denied"], None, (), toolchain.read_only()), "true"]
-    assert sandbox.command(argv, deny=()) == argv  # read-only paths alone apply no sandbox
+            sandbox.SANDBOX_EXEC, "-p", sandbox.profile([tmp_path / "denied"], "none", (), toolchain.read_only()),
+            "true"]
+    assert sandbox.command(argv, deny=(), network=None) == argv  # read-only paths alone apply no sandbox
 
 
 @pytest.mark.skipif(sandbox.KIND != "sandbox-exec", reason="no file sandbox on this host (common/sandbox)")

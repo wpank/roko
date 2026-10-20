@@ -8,6 +8,9 @@
 //! for inspection. An edit that fails its verify step is kept in its
 //! worktree and merged nowhere.
 
+mod common;
+use common::Isolated;
+
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
@@ -106,6 +109,7 @@ fn operator_state(repo: &Path) -> [String; 3] {
 /// in `repo`.
 fn run_plan(repo: &Path, target: &Path) -> Output {
     Command::new(cargo_bin("roko"))
+        .isolated()
         .current_dir(repo)
         .args([
             "--json",
@@ -274,8 +278,9 @@ fn worktree_task_diff_is_gated_merged_and_cleaned() {
 }
 
 /// gap-415c54: an edit that fails its verify step stays in its worktree, on
-/// its attempt branch, for post-mortem, and lands nowhere: no plan branch,
-/// an unmoved batch branch and an unmoved `release`.
+/// its attempt branch, for post-mortem, and lands nowhere: no plan branch, no
+/// batch branch (the run left nothing on one, so it removed it, bug-58329f)
+/// and an unmoved `release`.
 #[test]
 fn worktree_task_that_fails_verify_keeps_its_worktree_and_merges_nothing() {
     let temp = tempfile::tempdir().expect("tempdir");
@@ -303,14 +308,16 @@ fn worktree_task_that_fails_verify_keeps_its_worktree_and_merges_nothing() {
         "{report:#}"
     );
 
-    // Nothing landed anywhere.
+    // Nothing landed anywhere, so the run's batch branch is gone too.
     assert_eq!(
         branches(&repo, "refs/heads/roko/plan/"),
         Vec::<String>::new()
     );
-    let batches = branches(&repo, "refs/heads/roko/batch/");
-    assert_eq!(batches.len(), 1, "{batches:?}");
-    assert_eq!(git(&repo, &["rev-parse", &batches[0]]), base);
+    assert_eq!(
+        branches(&repo, "refs/heads/roko/batch/"),
+        Vec::<String>::new()
+    );
+    assert_eq!(report["batch"]["discarded"], true, "{report:#}");
     assert_eq!(git(&repo, &["rev-parse", "release"]), base);
 
     // The attempt's worktree is kept, with the edit, on its attempt branch.

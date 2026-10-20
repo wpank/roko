@@ -1,17 +1,25 @@
 //! CLI adapter implementing [`CompletionDeliveryService`] for graph-executed plans.
 //!
-//! This module bridges the graph-layer delivery port to git: a plumbing merge
-//! into the target branch, a post-merge regression check in the repository's
-//! regression checkout, and a `git push` for publication. None of them
+//! This module bridges the graph-layer delivery port to git: a merge computed
+//! with plumbing, a regression check of that merge in the repository's
+//! regression checkout, a compare-and-swap that moves the target branch to the
+//! merge once the check passed, and a `git push` for publication. None of them
 //! touches the user's checkout (see [`GitDeliveryBackend`]).
 //!
 //! The service advances through the fixed state sequence:
 //!   `Prepared -> Queued -> Merged -> RegressionPassed -> Published -> Delivered`
 //!
+//! A `Merged` delivery holds its merge commit while the target stays where it
+//! was. The target moves to the merge in `RegressionPassed`, so it never points
+//! at a merge whose check has not passed, and nothing can start from one
+//! (bug-700d7c).
+//!
 //! When `publish=false`, the `Published` state is skipped. Conflict, regression
 //! failure, and publication failure are terminal. The service writes the
 //! `roko.delivery@1` checkpoint extension before queue submission and after
 //! every state transition so resume can continue at the first unproved step.
+//! A delivery's start and the state it ended in are published on the run's
+//! hub ([`DeliveryEvents`]).
 //!
 //! The adapter never writes the execution terminal state or releases a workspace
 //! lease -- those are outer-controller concerns.
@@ -20,6 +28,7 @@ use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+use roko_core::DashboardEvent;
 use roko_graph::delivery::{
     CompletionDeliveryReceiptV1, CompletionDeliveryRequest, CompletionDeliveryService,
     CompletionDeliveryState, DELIVERY_EXTENSION_KEY, DeliveryError, DeliveryReceiptStore,
@@ -30,7 +39,10 @@ use roko_graph::delivery::{
 use roko_graph::delivery::ReleasePolicy;
 use tracing::{debug, info, warn};
 
+use super::plan_check_events::PlanCheckEvents;
+use super::plan_runner::PlanRunInterruptHandle;
 use crate::runner::merge::{MergeTree, git_command, git_merge_tree, git_output};
+use crate::runner::tui_bridge::TuiBridge;
 
 // ---------------------------------------------------------------------------
 // Merge backend port (subset of runner::merge for this service)
@@ -39,13 +51,34 @@ use crate::runner::merge::{MergeTree, git_command, git_merge_tree, git_output};
 /// Outcome of a merge-phase operation.
 #[derive(Debug, Clone)]
 pub struct DeliveryMergeOutcome {
-    /// Whether the merge succeeded.
+    /// Whether the merge was made. The target has not moved to it yet: it
+    /// moves only once the merge's regression check passed
+    /// ([`DeliveryBackend::move_target`]).
     pub merged: bool,
     /// Git OID of the merge commit (if successful).
     pub merge_commit: Option<String>,
+    /// The target's tip the merge was made on, which the target moves from
+    /// (bug-700d7c).
+    pub target_tip: Option<String>,
     /// Human-readable summary.
     pub summary: String,
 }
+
+/// Outcome of moving the target branch to a checked merge.
+#[derive(Debug, Clone)]
+pub struct DeliveryMoveOutcome {
+    /// Whether the target has the merge now: it moved there, or already had
+    /// it.
+    pub moved: bool,
+    /// Human-readable summary.
+    pub summary: String,
+}
+
+/// Receipt extension holding the target's tip a delivery's merge was made on
+/// ([`DeliveryMergeOutcome::target_tip`]): once the merge's check passed, the
+/// target moves from it to the merge by compare-and-swap, which a resumed run
+/// still can (bug-700d7c).
+pub const DELIVERY_TARGET_TIP_EXTENSION: &str = "roko.delivery.target_tip@1";
 
 /// Outcome of a regression-phase operation.
 #[derive(Debug, Clone)]
@@ -59,6 +92,9 @@ pub struct DeliveryRegressionOutcome {
     /// The checks that ran, in order, up to the first that failed; the
     /// receipt keeps them under [`DELIVERY_CHECKS_EXTENSION`].
     pub checks: Vec<DeliveryCheck>,
+    /// What stopped the check before it ended, such as `cancel` (bug-7b62ff):
+    /// the delivery is then cancelled, not failed.
+    pub stopped_by: Option<String>,
 }
 
 /// Receipt extension holding the [`DeliveryCheck`]s of a delivery's
@@ -86,6 +122,11 @@ pub struct DeliveryCheck {
     pub duration_ms: u64,
     /// The last [`CHECK_TAIL_LINES`] lines it wrote, stdout then stderr.
     pub output_tail: String,
+    /// What stopped it before it ended, such as `cancel` or `SIGINT`, when
+    /// the run was asked to stop (bug-7b62ff); its `exit_code` is then
+    /// `None`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stopped_by: Option<String>,
 }
 
 /// Outcome of a publication-phase operation.
@@ -104,8 +145,9 @@ pub struct DeliveryPublicationOutcome {
 /// This lets tests inject fakes without depending on git or GitHub.
 #[async_trait::async_trait]
 pub trait DeliveryBackend: Send + Sync + std::fmt::Debug {
-    /// Apply the merge: merge the request's verified commit (`commit_oid`)
-    /// into the target branch.
+    /// Make the merge of the request's verified commit (`commit_oid`) into
+    /// the target branch's tip, without moving the target: it moves only once
+    /// the merge's regression check passed (bug-700d7c).
     async fn merge(&self, request: &CompletionDeliveryRequest) -> DeliveryMergeOutcome;
 
     /// Run the post-merge regression gate against `merge_commit`.
@@ -114,6 +156,17 @@ pub trait DeliveryBackend: Send + Sync + std::fmt::Debug {
         request: &CompletionDeliveryRequest,
         merge_commit: &str,
     ) -> DeliveryRegressionOutcome;
+
+    /// Move the target branch to `merge_commit`, whose regression check
+    /// passed, from `target_tip`, the tip the merge was made on
+    /// (bug-700d7c). A target that already has `merge_commit` stays where it
+    /// is.
+    async fn move_target(
+        &self,
+        request: &CompletionDeliveryRequest,
+        merge_commit: &str,
+        target_tip: Option<&str>,
+    ) -> DeliveryMoveOutcome;
 
     /// Publish to GitHub (push branch, create/update PR, etc.).
     async fn publish(
@@ -135,9 +188,13 @@ pub trait DeliveryBackend: Send + Sync + std::fmt::Debug {
 /// never changes the files, index or HEAD of any existing worktree:
 ///
 /// - The merge is computed in the object database (`merge-tree`,
-///   `commit-tree`), and the target branch moves only by compare-and-swap
-///   (`update-ref <ref> <new> <old>`). A target that moved in the meantime
-///   is left alone.
+///   `commit-tree`) and checked in the regression checkout while the target
+///   branch stays where it was. Only once the check passed does the target
+///   move, by compare-and-swap (`update-ref <ref> <new> <old>`) from the tip
+///   the merge was made on (bug-700d7c). So the target never points at a
+///   merge whose check failed, and nothing that starts from the target while
+///   the check runs, such as another plan's attempt, gets the unchecked
+///   merge. A target that moved in the meantime is left alone.
 /// - A target that is checked out anywhere never moves, because its checkout
 ///   would no longer match its HEAD. The merge fails closed, and the result
 ///   is parked at `refs/roko/delivered/<plan_id>`.
@@ -151,8 +208,8 @@ pub struct GitDeliveryBackend {
     /// Empty when no check is configured.
     regression: Vec<Vec<String>>,
     /// Where the regression's cargo builds (`CARGO_TARGET_DIR`): outside its
-    /// checkout, and shared with the gates, so the next delivery starts
-    /// warm.
+    /// checkout, which it outlives, so the next delivery starts warm, and
+    /// used by no other checkout ([`regression_target_dir`], bug-be2a53).
     regression_target_dir: PathBuf,
     /// Where the regression commands came from, for their
     /// [`DeliveryCheck::source`].
@@ -163,17 +220,23 @@ pub struct GitDeliveryBackend {
     /// The environment the regression commands inherit from in place of
     /// roko's own, in tests.
     parent_env: Option<Vec<(String, OsString)>>,
+    /// Publishes each regression command's start, heartbeats and end
+    /// (gap-6b6ec1).
+    check_events: PlanCheckEvents,
+    /// The run's stop request: a regression command still running when it
+    /// comes is killed with its process group (bug-7b62ff).
+    stop: PlanRunInterruptHandle,
 }
 
 impl GitDeliveryBackend {
     /// Create a git-backed delivery backend for the repository at `workdir`.
     ///
-    /// The regression builds into the target dir gates use: the process's
-    /// `CARGO_TARGET_DIR` when set, else `workdir`'s own `target/`.
+    /// The regression builds in a target dir of its own,
+    /// [`regression_target_dir`], whatever `CARGO_TARGET_DIR` says
+    /// (bug-be2a53).
     #[must_use]
     pub fn new(workdir: PathBuf) -> Self {
-        let regression_target_dir =
-            shared_target_dir(&workdir, std::env::var_os("CARGO_TARGET_DIR"));
+        let regression_target_dir = regression_target_dir(&workdir);
         Self {
             workdir,
             regression: vec![
@@ -185,7 +248,26 @@ impl GitDeliveryBackend {
             regression_source: "default".to_string(),
             env_passthrough: Vec::new(),
             parent_env: None,
+            check_events: PlanCheckEvents::none(),
+            stop: PlanRunInterruptHandle::default(),
         }
+    }
+
+    /// Stop the regression check when `stop` asks the run to stop: the
+    /// running command and everything it started are killed, and the check
+    /// ends with what stopped it (bug-7b62ff).
+    #[must_use]
+    pub fn with_stop(mut self, stop: PlanRunInterruptHandle) -> Self {
+        self.stop = stop;
+        self
+    }
+
+    /// Publish each regression command's start, heartbeats and end through
+    /// `events` (gap-6b6ec1).
+    #[must_use]
+    pub fn with_check_events(mut self, events: PlanCheckEvents) -> Self {
+        self.check_events = events;
+        self
     }
 
     /// Say where the regression commands came from, `authored` or
@@ -218,11 +300,18 @@ impl GitDeliveryBackend {
         self
     }
 
-    /// Replace the regression's target dir. A relative dir is taken from
-    /// `workdir`, never from the regression checkout.
+    /// Replace the regression's target dir: one no other checkout builds in
+    /// (bug-be2a53). A relative dir is taken from `workdir`, never from the
+    /// regression checkout; an empty one keeps the default.
     #[must_use]
     pub fn with_regression_target_dir(mut self, target_dir: PathBuf) -> Self {
-        self.regression_target_dir = shared_target_dir(&self.workdir, Some(target_dir.into()));
+        self.regression_target_dir = if target_dir.as_os_str().is_empty() {
+            regression_target_dir(&self.workdir)
+        } else if target_dir.is_relative() {
+            self.workdir.join(target_dir)
+        } else {
+            target_dir
+        };
         self
     }
 
@@ -243,8 +332,10 @@ impl GitDeliveryBackend {
         self
     }
 
-    /// Merge the request's verified commit into its target with git plumbing
-    /// only.
+    /// Make the merge of the request's verified commit into its target's tip
+    /// with git plumbing only, and leave the target where it is: it moves to
+    /// the merge only once the merge's check passed ([`Self::git_move_target`],
+    /// bug-700d7c). The outcome names the tip the merge was made on.
     ///
     /// The merged commit is `request.commit_oid`, the one the plan's gates
     /// verified, never whatever the branch holds now: commits added to the
@@ -252,8 +343,8 @@ impl GitDeliveryBackend {
     /// verified commit must be on the branch; a branch rewritten since
     /// verification fails closed.
     ///
-    /// `Err` carries the summary of a merge that did not happen. Apart from
-    /// the parked result for a checked-out target, no ref has changed.
+    /// No ref changes, apart from the parked result for a checked-out target.
+    /// `Err` carries the summary of a merge that did not happen.
     async fn git_merge(
         &self,
         request: &CompletionDeliveryRequest,
@@ -280,7 +371,8 @@ impl GitDeliveryBackend {
         if is_ancestor(workdir, &theirs, &old).await? {
             return Ok(DeliveryMergeOutcome {
                 merged: true,
-                merge_commit: Some(old),
+                merge_commit: Some(old.clone()),
+                target_tip: Some(old),
                 summary: format!(
                     "'{target}' already contains {theirs} of branch '{branch}'{later}"
                 ),
@@ -323,18 +415,87 @@ impl GitDeliveryBackend {
             return Err(park_merge(workdir, request, &checkout, &merge).await);
         }
 
-        let reflog = format!("roko delivery: merge {branch}");
-        git_output(
-            workdir,
-            &["update-ref", "-m", &reflog, &target_ref, &merge, &old],
-        )
-        .await
-        .map_err(|e| format!("'{target}' moved during the merge, so it was left alone: {e}"))?;
         Ok(DeliveryMergeOutcome {
             merged: true,
             merge_commit: Some(merge),
+            target_tip: Some(old),
             summary: format!("merged {theirs} of branch '{branch}' into '{target}'{later}"),
         })
+    }
+
+    /// Move the request's target to `merge`, whose check passed, by
+    /// compare-and-swap from `from`, the tip [`Self::git_merge`] made it on
+    /// (bug-700d7c). A target that already has `merge` stays where it is: a
+    /// merge that changed nothing, or a delivery a resumed run finishes. A
+    /// target that moved since, or whose tip `from` is not known, is left
+    /// alone, and one checked out anywhere is too, with the merge parked as
+    /// [`Self::git_merge`] parks it.
+    ///
+    /// `Err` carries the summary of a move that did not happen. Apart from
+    /// the parked merge, no ref has changed.
+    async fn git_move_target(
+        &self,
+        request: &CompletionDeliveryRequest,
+        merge: &str,
+        from: Option<&str>,
+    ) -> Result<String, String> {
+        let workdir = self.workdir.as_path();
+        let target = &request.target_branch;
+        let target_ref = format!("refs/heads/{target}");
+        let tip = resolve_commit(workdir, &target_ref)
+            .await
+            .map_err(|e| format!("target branch '{target}' does not resolve to a commit: {e}"))?;
+        if is_ancestor(workdir, merge, &tip).await? {
+            return Ok(format!("'{target}' already has {merge}"));
+        }
+        let Some(from) = from else {
+            return Err(format!(
+                "the tip of '{target}' that {merge} was made on is not recorded, so '{target}' \
+                 was left alone"
+            ));
+        };
+        if tip != from {
+            return Err(format!(
+                "'{target}' moved from {from} to {tip} during the delivery, so it was left alone"
+            ));
+        }
+        if let Some(checkout) = checked_out_at(workdir, &target_ref).await? {
+            return Err(park_merge(workdir, request, &checkout, merge).await);
+        }
+        let reflog = format!("roko delivery: merge {}", request.branch);
+        git_output(
+            workdir,
+            &["update-ref", "-m", &reflog, &target_ref, merge, from],
+        )
+        .await
+        .map_err(|e| format!("'{target}' moved during the delivery, so it was left alone: {e}"))?;
+        Ok(format!("moved '{target}' to {merge}"))
+    }
+
+    /// Merge the request's verified commit into its target and move the
+    /// target there at once, with no check in between. Promoting a run's
+    /// batch, whose plans each passed their check, merges this way
+    /// ([`super::batch::BatchIntegration::promote`]).
+    pub(super) async fn merge_into_target(
+        &self,
+        request: &CompletionDeliveryRequest,
+    ) -> DeliveryMergeOutcome {
+        let merged = self.merge(request).await;
+        let (true, Some(merge)) = (merged.merged, merged.merge_commit.clone()) else {
+            return merged;
+        };
+        let moved = self
+            .move_target(request, &merge, merged.target_tip.as_deref())
+            .await;
+        if moved.moved {
+            return merged;
+        }
+        DeliveryMergeOutcome {
+            merged: false,
+            merge_commit: None,
+            target_tip: merged.target_tip,
+            summary: moved.summary,
+        }
     }
 
     /// Run the regression commands, in order, in the repository's
@@ -343,19 +504,36 @@ impl GitDeliveryBackend {
     /// ran, stopping after the first that fails, and the full text of their
     /// output for the evidence log. The commands run the merged code the
     /// agents wrote, so they start from the environment verify steps get,
-    /// without provider keys.
+    /// without provider keys or the person's GitHub login. One whose
+    /// environment cannot be set up does not run, and the delivery fails.
     ///
     /// The checkout stays for the next delivery (bug-8cf581): Cargo keys
     /// workspace crates by path, so at a stable path the next build reuses
     /// this one's output for every crate the commits share, and the target
     /// dir holds one set of artifacts instead of one per delivery. One
-    /// delivery at a time uses it, across processes.
+    /// delivery at a time uses it, across processes. The target dir is the
+    /// checkout's alone ([`regression_target_dir`], bug-be2a53): in one that
+    /// gates or the person's checkout build in too, cargo would take their
+    /// build of a crate for the merge's whenever the checkout's copy is older.
+    ///
+    /// Each command leads a process group of its own. A stop request
+    /// (`with_stop`) kills the running command's group and ends the check
+    /// with a [`DeliveryCheck`] that says what stopped it; one that comes
+    /// while another delivery holds the checkout ends the wait (bug-7b62ff).
     async fn regression_output(
         &self,
         commit: &str,
     ) -> Result<(Vec<DeliveryCheck>, String), String> {
         let checkout = regression_checkout_path(&self.workdir);
-        let _held = lock_regression_checkout(&checkout).await?;
+        let _held = tokio::select! {
+            held = lock_regression_checkout(&checkout) => held?,
+            interrupt = self.stop.stopped() => {
+                return Err(format!(
+                    "{} stopped the post-merge regression check before it started",
+                    interrupt.cause()
+                ));
+            }
+        };
         self.reset_regression_checkout(&checkout, commit).await?;
 
         let parent_env = self
@@ -364,29 +542,64 @@ impl GitDeliveryBackend {
             .unwrap_or_else(roko_core::child_env::process_env);
         let mut checks = Vec::new();
         let mut log = String::new();
-        for command in &self.regression {
+        for (index, command) in self.regression.iter().enumerate() {
             let Some((program, args)) = command.split_first() else {
                 return Err("the regression command is empty".to_string());
             };
             let mut regression = tokio::process::Command::new(program);
             let env = parent_env.iter().cloned();
-            roko_gate::inherit_gate_env_from(&mut regression, env, &self.env_passthrough);
-            // Only the build output is shared: the sources are the checkout's.
+            let prepared =
+                roko_gate::inherit_gate_env_from(&mut regression, env, &self.env_passthrough);
+            // The build output of earlier deliveries carries over, never that
+            // of another checkout (bug-be2a53).
             let started = std::time::Instant::now();
-            let output = regression
+            let watched =
+                self.check_events
+                    .start(index, self.regression.len(), &check_command(command));
+            if let Err(error) = prepared {
+                let reason = roko_gate::check_env_error(&error);
+                watched.finish(false, None, Some(reason.clone()));
+                return Err(reason);
+            }
+            regression
                 .args(args)
                 .current_dir(&checkout)
-                .env("CARGO_TARGET_DIR", &self.regression_target_dir)
-                .kill_on_drop(true)
-                .output()
-                .await
-                .map_err(|e| format!("failed to spawn regression gate: {e}"))?;
+                .env("CARGO_TARGET_DIR", &self.regression_target_dir);
+            let run = watched.watch(roko_gate::output_in_own_group(regression));
+            // A stop drops the command, which kills its process group.
+            let ran = tokio::select! {
+                ran = run => ran,
+                interrupt = self.stop.stopped() => {
+                    let reason = watched.stopped(interrupt);
+                    let check = DeliveryCheck {
+                        command: check_command(command),
+                        source: self.regression_source.clone(),
+                        exit_code: None,
+                        duration_ms: started.elapsed().as_millis() as u64,
+                        output_tail: reason.clone(),
+                        stopped_by: Some(interrupt.label().to_string()),
+                    };
+                    log.push_str(&format!("$ {}\n[{reason}]\n\n", check.command));
+                    checks.push(check);
+                    break;
+                }
+            };
+            let output = match ran {
+                Ok(output) => output,
+                Err(e) => {
+                    let reason = format!("failed to spawn regression gate: {e}");
+                    watched.finish(false, None, Some(reason.clone()));
+                    return Err(reason);
+                }
+            };
+            watched.finish(output.status.success(), output.status.code(), None);
             let check = DeliveryCheck {
                 command: check_command(command),
                 source: self.regression_source.clone(),
                 exit_code: output.status.code(),
                 duration_ms: started.elapsed().as_millis() as u64,
                 output_tail: check_tail(&output),
+                stopped_by: None,
             };
             log.push_str(&check_log(&check, &output));
             checks.push(check);
@@ -451,6 +664,20 @@ pub fn regression_checkout_path(workdir: &Path) -> PathBuf {
         .join(".roko")
         .join("state")
         .join("regression-checkout")
+}
+
+/// The target dir the regression checks of `workdir`'s deliveries build in:
+/// beside their checkout ([`regression_checkout_path`]), and used by no other
+/// checkout (bug-be2a53). Cargo names a workspace crate's build alike in every
+/// checkout of a repository and takes it as fresh whenever the checkout's
+/// sources are older, so in a target dir shared with the gates' or the
+/// person's checkout, their build of a crate would stand in for the merge's.
+#[must_use]
+pub fn regression_target_dir(workdir: &Path) -> PathBuf {
+    workdir
+        .join(".roko")
+        .join("state")
+        .join("regression-target")
 }
 
 /// Hold `checkout` for one delivery: an exclusive lock on its `.lock` file,
@@ -534,17 +761,6 @@ fn write_check_log(path: &Path, log: &str) -> std::io::Result<()> {
         std::fs::create_dir_all(parent)?;
     }
     std::fs::write(path, log)
-}
-
-/// The target dir a build of `workdir` shares with gates and earlier
-/// deliveries: `configured` (a `CARGO_TARGET_DIR` value) when set, relative
-/// to `workdir` if it is relative, else `workdir`'s own `target/`.
-fn shared_target_dir(workdir: &Path, configured: Option<std::ffi::OsString>) -> PathBuf {
-    match configured.filter(|dir| !dir.is_empty()).map(PathBuf::from) {
-        Some(dir) if dir.is_absolute() => dir,
-        Some(dir) => workdir.join(dir),
-        None => workdir.join("target"),
-    }
 }
 
 /// The commit `request` verified, resolved in `workdir`: `request.commit_oid`
@@ -660,8 +876,30 @@ impl DeliveryBackend for GitDeliveryBackend {
             .unwrap_or_else(|summary| DeliveryMergeOutcome {
                 merged: false,
                 merge_commit: None,
+                target_tip: None,
                 summary,
             })
+    }
+
+    async fn move_target(
+        &self,
+        request: &CompletionDeliveryRequest,
+        merge_commit: &str,
+        target_tip: Option<&str>,
+    ) -> DeliveryMoveOutcome {
+        match self
+            .git_move_target(request, merge_commit, target_tip)
+            .await
+        {
+            Ok(summary) => DeliveryMoveOutcome {
+                moved: true,
+                summary,
+            },
+            Err(summary) => DeliveryMoveOutcome {
+                moved: false,
+                summary,
+            },
+        }
     }
 
     async fn run_regression(
@@ -676,6 +914,7 @@ impl DeliveryBackend for GitDeliveryBackend {
                 summary: format!("no post-merge regression check is configured for {plan_id}"),
                 evidence_ref: None,
                 checks: Vec::new(),
+                stopped_by: None,
             };
         }
         let (checks, log) = match self.regression_output(merge_commit).await {
@@ -686,6 +925,9 @@ impl DeliveryBackend for GitDeliveryBackend {
                     summary,
                     evidence_ref: None,
                     checks: Vec::new(),
+                    // A check that ends while the run stops, before a step
+                    // or between them, was stopped (bug-7b62ff).
+                    stopped_by: self.stop.requested().map(|stop| stop.label().to_string()),
                 };
             }
         };
@@ -701,6 +943,10 @@ impl DeliveryBackend for GitDeliveryBackend {
         };
         let summary = match checks.iter().find(|check| check.exit_code != Some(0)) {
             None => format!("post-merge regression passed for {plan_id}"),
+            Some(stopped) if stopped.stopped_by.is_some() => format!(
+                "post-merge regression stopped for {plan_id}: `{}`: {}",
+                stopped.command, stopped.output_tail
+            ),
             Some(failed) => {
                 let lines: Vec<&str> = failed
                     .output_tail
@@ -718,6 +964,7 @@ impl DeliveryBackend for GitDeliveryBackend {
             passed: checks.iter().all(|check| check.exit_code == Some(0)),
             summary,
             evidence_ref,
+            stopped_by: checks.iter().find_map(|check| check.stopped_by.clone()),
             checks,
         }
     }
@@ -764,6 +1011,83 @@ impl DeliveryBackend for GitDeliveryBackend {
 }
 
 // ---------------------------------------------------------------------------
+// Delivery events
+// ---------------------------------------------------------------------------
+
+/// Publishes a delivery's start and its end on the run's hub (gap-4f6cbe).
+///
+/// `delivery_started` comes when [`CliCompletionDeliveryService`] starts
+/// driving a delivery, and `delivery_finished` with the state it ended in,
+/// so that `roko serve`'s run summary and a chat host can tell a delivered
+/// plan from one whose merge conflicted, whose check failed or that a stop
+/// cut short. Without a hub ([`Self::none`]) it publishes nothing.
+#[derive(Clone, Default)]
+pub struct DeliveryEvents {
+    tui: Option<TuiBridge>,
+}
+
+impl std::fmt::Debug for DeliveryEvents {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("DeliveryEvents")
+            .field("publishes", &self.tui.is_some())
+            .finish_non_exhaustive()
+    }
+}
+
+impl DeliveryEvents {
+    /// Events published through `tui`.
+    #[must_use]
+    pub fn new(tui: TuiBridge) -> Self {
+        Self { tui: Some(tui) }
+    }
+
+    /// Events published nowhere.
+    #[must_use]
+    pub fn none() -> Self {
+        Self::default()
+    }
+
+    fn started(&self, request: &CompletionDeliveryRequest) {
+        self.publish(|| DashboardEvent::DeliveryStarted {
+            plan_id: request.plan_id.clone(),
+            delivery_id: request.delivery_id.clone(),
+            target: request.target_branch.clone(),
+            branch: request.branch.clone(),
+            commit: request.commit_oid.clone(),
+        });
+    }
+
+    /// `receipt`'s delivery ended in `state`, for `reason`; `stopped_by` says
+    /// what stopped a cancelled one.
+    fn finished(
+        &self,
+        receipt: &CompletionDeliveryReceiptV1,
+        state: CompletionDeliveryState,
+        reason: Option<String>,
+        stopped_by: Option<String>,
+    ) {
+        self.publish(|| DashboardEvent::DeliveryFinished {
+            plan_id: receipt.request.plan_id.clone(),
+            delivery_id: receipt.request.delivery_id.clone(),
+            target: receipt.request.target_branch.clone(),
+            state: serde_json::to_value(state)
+                .ok()
+                .and_then(|state| state.as_str().map(str::to_string))
+                .unwrap_or_else(|| format!("{state:?}")),
+            merge_commit: receipt.merge_commit.clone(),
+            reason,
+            stopped_by,
+        });
+    }
+
+    fn publish(&self, event: impl FnOnce() -> DashboardEvent) {
+        if let Some(tui) = &self.tui {
+            tui.publish_event(event());
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // CliCompletionDeliveryService
 // ---------------------------------------------------------------------------
 
@@ -776,6 +1100,7 @@ impl DeliveryBackend for GitDeliveryBackend {
 ///   serialization.
 /// - Writes the `roko.delivery@1` checkpoint extension on every transition
 ///   (via a callback the outer controller supplies).
+/// - Publishes the delivery's start and end ([`Self::with_events`]).
 /// - Never writes the plan terminal state or releases workspace leases.
 ///
 /// # Resume semantics
@@ -788,22 +1113,31 @@ impl DeliveryBackend for GitDeliveryBackend {
 pub struct CliCompletionDeliveryService {
     store: DeliveryReceiptStore,
     backend: Arc<dyn DeliveryBackend>,
+    events: DeliveryEvents,
 }
 
 impl CliCompletionDeliveryService {
     /// Create a new delivery service.
     #[must_use]
     pub fn new(backend: Arc<dyn DeliveryBackend>) -> Self {
-        Self {
-            store: DeliveryReceiptStore::new(),
-            backend,
-        }
+        Self::with_store(DeliveryReceiptStore::new(), backend)
     }
 
     /// Create a delivery service with a pre-populated store (for resume).
     #[must_use]
     pub fn with_store(store: DeliveryReceiptStore, backend: Arc<dyn DeliveryBackend>) -> Self {
-        Self { store, backend }
+        Self {
+            store,
+            backend,
+            events: DeliveryEvents::none(),
+        }
+    }
+
+    /// Publish each delivery's start and end through `events` (gap-4f6cbe).
+    #[must_use]
+    pub fn with_events(mut self, events: DeliveryEvents) -> Self {
+        self.events = events;
+        self
     }
 
     /// Return a reference to the underlying receipt store.
@@ -812,10 +1146,39 @@ impl CliCompletionDeliveryService {
         &self.store
     }
 
-    /// Drive the delivery state machine from its current state to terminal.
+    /// Drive the delivery state machine from its current state to terminal,
+    /// publishing its start and how it ended (gap-4f6cbe).
     async fn drive_delivery(
         &self,
         receipt: &mut CompletionDeliveryReceiptV1,
+    ) -> Result<(), DeliveryError> {
+        if receipt.state.is_terminal() {
+            return Ok(());
+        }
+        self.events.started(&receipt.request);
+        let mut stopped_by = None;
+        let driven = self.advance_delivery(receipt, &mut stopped_by).await;
+        if receipt.state.is_terminal() {
+            self.events
+                .finished(receipt, receipt.state, receipt.error.clone(), stopped_by);
+        } else if let Err(error) = &driven {
+            // It could not reach a terminal state.
+            self.events.finished(
+                receipt,
+                CompletionDeliveryState::TerminalFailed,
+                Some(error.to_string()),
+                None,
+            );
+        }
+        driven
+    }
+
+    /// Advance the delivery state machine from its current state to
+    /// terminal. `stopped_by` gets what stopped a cancelled one.
+    async fn advance_delivery(
+        &self,
+        receipt: &mut CompletionDeliveryReceiptV1,
+        stopped_by: &mut Option<String>,
     ) -> Result<(), DeliveryError> {
         loop {
             if receipt.state.is_terminal() {
@@ -867,6 +1230,14 @@ impl CliCompletionDeliveryService {
                     }
 
                     receipt.merge_commit = outcome.merge_commit;
+                    // The target moves from this tip to the merge once the
+                    // merge's check passed (bug-700d7c).
+                    if let Some(tip) = outcome.target_tip {
+                        receipt.extensions.insert(
+                            DELIVERY_TARGET_TIP_EXTENSION.to_string(),
+                            serde_json::Value::String(tip),
+                        );
+                    }
                     receipt
                         .advance(CompletionDeliveryState::Merged)
                         .map_err(DeliveryError::Transition)?;
@@ -874,7 +1245,7 @@ impl CliCompletionDeliveryService {
                     info!(
                         delivery_id = %receipt.request.delivery_id,
                         merge_commit = ?receipt.merge_commit,
-                        "delivery merged"
+                        "delivery merged; the target moves once the merge's check passes"
                     );
                 }
 
@@ -888,10 +1259,14 @@ impl CliCompletionDeliveryService {
                         .run_regression(&receipt.request, merge_commit)
                         .await;
 
-                    // Release merge slot after regression (success or failure)
-                    self.store
-                        .merge_slot()
-                        .release(&receipt.request.delivery_id);
+                    // A delivery whose check passed keeps the merge slot
+                    // until its target moved; one whose check did not pass
+                    // ends here, its target where it was (bug-700d7c).
+                    if !outcome.passed {
+                        self.store
+                            .merge_slot()
+                            .release(&receipt.request.delivery_id);
+                    }
                     // Which checks ran, from where, and how each ended
                     // (backlog 3111).
                     if !outcome.checks.is_empty()
@@ -900,6 +1275,27 @@ impl CliCompletionDeliveryService {
                         receipt
                             .extensions
                             .insert(DELIVERY_CHECKS_EXTENSION.to_string(), checks);
+                    }
+
+                    // A stop request that cut the check short cancels the
+                    // delivery: the check did not fail (bug-7b62ff).
+                    if !outcome.passed && outcome.stopped_by.is_some() {
+                        *stopped_by = outcome.stopped_by;
+                        receipt.error = Some(outcome.summary.clone());
+                        receipt.regression_evidence_ref = outcome.evidence_ref;
+                        receipt
+                            .advance(CompletionDeliveryState::Cancelled)
+                            .map_err(DeliveryError::Transition)?;
+                        self.store.update(receipt);
+                        warn!(
+                            delivery_id = %receipt.request.delivery_id,
+                            reason = %outcome.summary,
+                            "delivery cancelled during its regression check (terminal)"
+                        );
+                        return Err(DeliveryError::Cancelled {
+                            delivery_id: receipt.request.delivery_id.clone(),
+                            details: outcome.summary,
+                        });
                     }
 
                     if !outcome.passed {
@@ -932,12 +1328,49 @@ impl CliCompletionDeliveryService {
                 }
 
                 CompletionDeliveryState::RegressionPassed => {
+                    // Only now that its check passed does the target move to
+                    // the merge (bug-700d7c). A resumed delivery whose target
+                    // already moved finds it there.
+                    let merge_commit = receipt
+                        .merge_commit
+                        .clone()
+                        .unwrap_or_else(|| receipt.request.commit_oid.clone());
+                    let target_tip = receipt
+                        .extensions
+                        .get(DELIVERY_TARGET_TIP_EXTENSION)
+                        .and_then(serde_json::Value::as_str)
+                        .map(str::to_string);
+                    let moved = self
+                        .backend
+                        .move_target(&receipt.request, &merge_commit, target_tip.as_deref())
+                        .await;
+                    self.store
+                        .merge_slot()
+                        .release(&receipt.request.delivery_id);
+                    if !moved.moved {
+                        receipt.error = Some(moved.summary.clone());
+                        receipt
+                            .advance(CompletionDeliveryState::Conflict)
+                            .map_err(DeliveryError::Transition)?;
+                        self.store.update(receipt);
+                        warn!(
+                            delivery_id = %receipt.request.delivery_id,
+                            error = %moved.summary,
+                            "delivery could not move its target to the checked merge (terminal)"
+                        );
+                        return Err(DeliveryError::MergeConflict {
+                            delivery_id: receipt.request.delivery_id.clone(),
+                            details: moved.summary,
+                        });
+                    }
+                    debug!(
+                        delivery_id = %receipt.request.delivery_id,
+                        summary = %moved.summary,
+                        "delivery moved its target to the checked merge"
+                    );
+
                     if receipt.request.publish {
-                        let merge_commit = receipt
-                            .merge_commit
-                            .as_deref()
-                            .unwrap_or(&receipt.request.commit_oid);
-                        let outcome = self.backend.publish(&receipt.request, merge_commit).await;
+                        let outcome = self.backend.publish(&receipt.request, &merge_commit).await;
 
                         if !outcome.published {
                             receipt.error = Some(outcome.summary.clone());
@@ -996,6 +1429,7 @@ impl CliCompletionDeliveryService {
                 CompletionDeliveryState::Delivered
                 | CompletionDeliveryState::Conflict
                 | CompletionDeliveryState::RegressionFailed
+                | CompletionDeliveryState::Cancelled
                 | CompletionDeliveryState::TerminalFailed => {
                     return Ok(());
                 }
@@ -1045,6 +1479,7 @@ impl CompletionDeliveryService for CliCompletionDeliveryService {
             Ok(()) => Ok(receipt),
             Err(DeliveryError::MergeConflict { .. })
             | Err(DeliveryError::RegressionFailed { .. })
+            | Err(DeliveryError::Cancelled { .. })
             | Err(DeliveryError::PublicationFailed { .. }) => {
                 // The receipt is already in a terminal failure state.
                 Ok(self.store.get(&request.delivery_id).unwrap_or(receipt))
@@ -1077,6 +1512,7 @@ impl CompletionDeliveryService for CliCompletionDeliveryService {
             Ok(()) => Ok(receipt),
             Err(DeliveryError::MergeConflict { .. })
             | Err(DeliveryError::RegressionFailed { .. })
+            | Err(DeliveryError::Cancelled { .. })
             | Err(DeliveryError::PublicationFailed { .. }) => {
                 Ok(self.store.get(delivery_id).unwrap_or(receipt))
             }
@@ -1116,7 +1552,12 @@ mod tests {
     struct FakeDeliveryBackend {
         merge_succeeds: AtomicBool,
         regression_succeeds: AtomicBool,
+        /// Whether a stop request cuts the regression check short.
+        regression_stopped: AtomicBool,
+        move_succeeds: AtomicBool,
         publish_succeeds: AtomicBool,
+        /// The steps it was asked for, in order.
+        calls: std::sync::Mutex<Vec<&'static str>>,
     }
 
     impl FakeDeliveryBackend {
@@ -1124,49 +1565,100 @@ mod tests {
             Self {
                 merge_succeeds: AtomicBool::new(true),
                 regression_succeeds: AtomicBool::new(true),
+                regression_stopped: AtomicBool::new(false),
+                move_succeeds: AtomicBool::new(true),
                 publish_succeeds: AtomicBool::new(true),
+                calls: std::sync::Mutex::default(),
             }
         }
 
         fn merge_fails() -> Self {
             Self {
                 merge_succeeds: AtomicBool::new(false),
-                regression_succeeds: AtomicBool::new(true),
-                publish_succeeds: AtomicBool::new(true),
+                ..Self::all_pass()
             }
         }
 
         fn regression_fails() -> Self {
             Self {
-                merge_succeeds: AtomicBool::new(true),
                 regression_succeeds: AtomicBool::new(false),
-                publish_succeeds: AtomicBool::new(true),
+                ..Self::all_pass()
+            }
+        }
+
+        fn move_fails() -> Self {
+            Self {
+                move_succeeds: AtomicBool::new(false),
+                ..Self::all_pass()
             }
         }
 
         fn publish_fails() -> Self {
             Self {
-                merge_succeeds: AtomicBool::new(true),
-                regression_succeeds: AtomicBool::new(true),
                 publish_succeeds: AtomicBool::new(false),
+                ..Self::all_pass()
             }
+        }
+
+        fn regression_stopped() -> Self {
+            Self {
+                regression_succeeds: AtomicBool::new(false),
+                regression_stopped: AtomicBool::new(true),
+                ..Self::all_pass()
+            }
+        }
+
+        fn called(&self, step: &'static str) {
+            self.calls.lock().expect("calls").push(step);
+        }
+
+        fn calls(&self) -> Vec<&'static str> {
+            self.calls.lock().expect("calls").clone()
         }
     }
 
     #[async_trait::async_trait]
     impl DeliveryBackend for FakeDeliveryBackend {
         async fn merge(&self, _request: &CompletionDeliveryRequest) -> DeliveryMergeOutcome {
+            self.called("merge");
             if self.merge_succeeds.load(Ordering::Relaxed) {
                 DeliveryMergeOutcome {
                     merged: true,
                     merge_commit: Some("abc123def456".to_string()),
+                    target_tip: Some("old-tip".to_string()),
                     summary: "merge succeeded".to_string(),
                 }
             } else {
                 DeliveryMergeOutcome {
                     merged: false,
                     merge_commit: None,
+                    target_tip: None,
                     summary: "merge conflict in src/lib.rs".to_string(),
+                }
+            }
+        }
+
+        async fn move_target(
+            &self,
+            _request: &CompletionDeliveryRequest,
+            merge_commit: &str,
+            target_tip: Option<&str>,
+        ) -> DeliveryMoveOutcome {
+            self.called("move");
+            assert_eq!(
+                (merge_commit, target_tip),
+                ("abc123def456", Some("old-tip")),
+                "the target moves from the tip the merge was made on"
+            );
+            if self.move_succeeds.load(Ordering::Relaxed) {
+                DeliveryMoveOutcome {
+                    moved: true,
+                    summary: "moved main to abc123def456".to_string(),
+                }
+            } else {
+                DeliveryMoveOutcome {
+                    moved: false,
+                    summary: "'main' moved during the delivery, so it was left alone".to_string(),
                 }
             }
         }
@@ -1176,12 +1668,25 @@ mod tests {
             _request: &CompletionDeliveryRequest,
             _merge_commit: &str,
         ) -> DeliveryRegressionOutcome {
+            self.called("regression");
+            if self.regression_stopped.load(Ordering::Relaxed) {
+                return DeliveryRegressionOutcome {
+                    passed: false,
+                    summary: "post-merge regression stopped for p: `cargo test`: a cancel request \
+                              stopped it"
+                        .to_string(),
+                    evidence_ref: None,
+                    checks: Vec::new(),
+                    stopped_by: Some("cancel".to_string()),
+                };
+            }
             if self.regression_succeeds.load(Ordering::Relaxed) {
                 DeliveryRegressionOutcome {
                     passed: true,
                     summary: "regression passed".to_string(),
                     evidence_ref: Some("/tmp/regression.log".to_string()),
                     checks: Vec::new(),
+                    stopped_by: None,
                 }
             } else {
                 DeliveryRegressionOutcome {
@@ -1189,6 +1694,7 @@ mod tests {
                     summary: "cargo check failed: error[E0308]".to_string(),
                     evidence_ref: Some("/tmp/regression-fail.log".to_string()),
                     checks: Vec::new(),
+                    stopped_by: None,
                 }
             }
         }
@@ -1198,6 +1704,7 @@ mod tests {
             _request: &CompletionDeliveryRequest,
             _merge_commit: &str,
         ) -> DeliveryPublicationOutcome {
+            self.called("publish");
             if self.publish_succeeds.load(Ordering::Relaxed) {
                 DeliveryPublicationOutcome {
                     published: true,
@@ -1298,6 +1805,165 @@ mod tests {
         assert_eq!(receipt.release_policy, ReleasePolicy::RetainForFailure);
         assert!(receipt.error.is_some());
         assert!(receipt.regression_evidence_ref.is_some());
+    }
+
+    // ── Regression stopped: cancelled ───────────────────────────────────
+
+    /// bug-7b62ff: a regression check a stop request cut short cancels the
+    /// delivery. It ends, keeps its workspace, and is not a failed
+    /// regression.
+    #[tokio::test]
+    async fn a_stopped_regression_cancels_the_delivery() {
+        let backend = Arc::new(FakeDeliveryBackend::regression_stopped());
+        let service = CliCompletionDeliveryService::new(backend);
+        let request = test_request("d-reg-stopped");
+
+        let receipt = service.deliver(request).await.unwrap();
+
+        assert_eq!(receipt.state, CompletionDeliveryState::Cancelled);
+        assert_eq!(receipt.release_policy, ReleasePolicy::RetainForFailure);
+        let error = receipt.error.as_deref().unwrap_or_default();
+        assert!(error.contains("a cancel request stopped it"), "{error}");
+    }
+
+    /// gap-4f6cbe: a delivery publishes its start and the state it ended in,
+    /// with the merge, why it was not delivered and what stopped a cancelled
+    /// one. A delivery already recorded publishes nothing again.
+    #[tokio::test]
+    async fn a_delivery_publishes_its_start_and_how_it_ended() {
+        for (backend, state, merged, stopped_by) in [
+            (FakeDeliveryBackend::all_pass(), "delivered", true, None),
+            (FakeDeliveryBackend::merge_fails(), "conflict", false, None),
+            (
+                FakeDeliveryBackend::regression_fails(),
+                "regression_failed",
+                true,
+                None,
+            ),
+            (
+                FakeDeliveryBackend::regression_stopped(),
+                "cancelled",
+                true,
+                Some("cancel"),
+            ),
+            (FakeDeliveryBackend::move_fails(), "conflict", true, None),
+            (
+                FakeDeliveryBackend::publish_fails(),
+                "terminal_failed",
+                true,
+                None,
+            ),
+        ] {
+            let hub = crate::state_hub::StateHub::new(64);
+            let mut published = hub.subscribe_events();
+            let service = CliCompletionDeliveryService::new(Arc::new(backend)).with_events(
+                DeliveryEvents::new(crate::runner::tui_bridge::TuiBridge::new(hub.sender())),
+            );
+            let request = test_request("d-events");
+
+            let receipt = service.deliver(request.clone()).await.unwrap();
+            service.deliver(request).await.unwrap();
+
+            let mut events = Vec::new();
+            while let Ok(envelope) = published.try_recv() {
+                events.push(envelope.payload);
+            }
+            let [
+                DashboardEvent::DeliveryStarted {
+                    plan_id,
+                    delivery_id,
+                    target,
+                    branch,
+                    commit,
+                },
+                DashboardEvent::DeliveryFinished {
+                    state: ended,
+                    merge_commit,
+                    reason,
+                    stopped_by: stopped,
+                    ..
+                },
+            ] = events.as_slice()
+            else {
+                panic!("{state}: {events:?}");
+            };
+            assert_eq!(
+                (
+                    plan_id.as_str(),
+                    delivery_id.as_str(),
+                    target.as_str(),
+                    branch.as_str(),
+                    commit.as_str()
+                ),
+                ("plan-a", "d-events", "main", "roko/plan-a", "abc123"),
+                "{state}"
+            );
+            assert_eq!(ended, state);
+            assert_eq!(merge_commit.is_some(), merged, "{state}");
+            assert_eq!(*reason, receipt.error, "{state}");
+            assert_eq!(reason.is_some(), state != "delivered", "{state}");
+            assert_eq!(stopped.as_deref(), stopped_by, "{state}");
+        }
+    }
+
+    // ── The target moves only after the check ───────────────────────────
+
+    /// bug-700d7c: the target moves to the merge only once the merge's check
+    /// passed, from the tip the merge was made on, and before publication. A
+    /// check that fails or is stopped never moves it. A target that cannot
+    /// move ends the delivery in conflict, with the merge and why on the
+    /// receipt. Each frees the merge slot.
+    #[tokio::test]
+    async fn the_target_moves_only_after_its_check_passes() {
+        use CompletionDeliveryState::{Cancelled, Conflict, Delivered, RegressionFailed};
+        for (backend, state, steps) in [
+            (
+                FakeDeliveryBackend::all_pass(),
+                Delivered,
+                &["merge", "regression", "move", "publish"][..],
+            ),
+            (
+                FakeDeliveryBackend::regression_fails(),
+                RegressionFailed,
+                &["merge", "regression"][..],
+            ),
+            (
+                FakeDeliveryBackend::regression_stopped(),
+                Cancelled,
+                &["merge", "regression"][..],
+            ),
+            (
+                FakeDeliveryBackend::move_fails(),
+                Conflict,
+                &["merge", "regression", "move"][..],
+            ),
+        ] {
+            let backend = Arc::new(backend);
+            let service = CliCompletionDeliveryService::new(backend.clone());
+
+            let receipt = service.deliver(test_request("d-order")).await.unwrap();
+
+            assert_eq!(receipt.state, state, "{:?}", receipt.error);
+            assert_eq!(backend.calls(), steps, "{state:?}");
+            assert_eq!(
+                receipt.merge_commit.as_deref(),
+                Some("abc123def456"),
+                "{state:?}"
+            );
+            assert_eq!(
+                receipt.extensions[DELIVERY_TARGET_TIP_EXTENSION], "old-tip",
+                "{state:?}"
+            );
+            assert!(
+                service.store().merge_slot().current_holder().is_none(),
+                "{state:?}"
+            );
+            if state == Conflict {
+                assert_eq!(receipt.release_policy, ReleasePolicy::RetainForReview);
+                let error = receipt.error.as_deref().unwrap_or_default();
+                assert!(error.contains("left alone"), "{error}");
+            }
+        }
     }
 
     // ── Publication failure: terminal ───────────────────────────────────
@@ -1585,9 +2251,19 @@ mod tests {
         let plan_head = git(path, &["rev-parse", "roko/plan-a"]);
 
         let backend = GitDeliveryBackend::new(path.to_path_buf());
-        let outcome = backend.merge(&git_request("d-git-merge", path)).await;
+        let request = git_request("d-git-merge", path);
+        let outcome = backend.merge(&request).await;
 
         assert!(outcome.merged, "{}", outcome.summary);
+        // Making the merge moves no branch; the target moves once the
+        // merge's check passed (bug-700d7c).
+        assert_eq!(git(path, &["rev-parse", "main"]), main_before);
+        assert_eq!(outcome.target_tip.as_deref(), Some(main_before.as_str()));
+        let merge = outcome.merge_commit.clone().expect("the merge");
+        let moved = backend
+            .move_target(&request, &merge, outcome.target_tip.as_deref())
+            .await;
+        assert!(moved.moved, "{}", moved.summary);
         assert_eq!(git(path, &["symbolic-ref", "HEAD"]), "refs/heads/work");
         assert_eq!(git(path, &["rev-parse", "HEAD"]), head);
         assert_eq!(git(path, &["status", "--porcelain"]), status);
@@ -1673,18 +2349,76 @@ mod tests {
         let plan_head = git(path, &["rev-parse", "roko/plan-a"]);
         let backend = GitDeliveryBackend::new(path.to_path_buf());
 
-        let outcome = backend.merge(&git_request("d-git-ff", path)).await;
+        let outcome = backend
+            .merge_into_target(&git_request("d-git-ff", path))
+            .await;
 
         assert!(outcome.merged, "{}", outcome.summary);
         assert_eq!(outcome.merge_commit.as_deref(), Some(plan_head.as_str()));
         assert_eq!(git(path, &["rev-parse", "main"]), plan_head);
 
         // Delivering the branch again finds nothing left to merge.
-        let again = backend.merge(&git_request("d-git-ff-again", path)).await;
+        let again = backend
+            .merge_into_target(&git_request("d-git-ff-again", path))
+            .await;
 
         assert!(again.merged, "{}", again.summary);
         assert_eq!(again.merge_commit.as_deref(), Some(plan_head.as_str()));
         assert_eq!(git(path, &["rev-parse", "main"]), plan_head);
+    }
+
+    /// bug-700d7c: a target moves to its checked merge only from the tip the
+    /// merge was made on. One that moved since is left alone, as is one whose
+    /// tip was not recorded, and one checked out anywhere, whose merge is
+    /// parked. One that already has the merge stays where it is.
+    #[tokio::test]
+    async fn the_target_moves_only_from_the_tip_its_merge_was_made_on() {
+        let repo = diverged_repo();
+        let path = repo.path();
+        git(path, &["checkout", "--quiet", "-b", "work"]);
+        let backend = GitDeliveryBackend::new(path.to_path_buf());
+        let request = git_request("d-git-move", path);
+        let outcome = backend.merge(&request).await;
+        assert!(outcome.merged, "{}", outcome.summary);
+        let merge = outcome.merge_commit.clone().expect("the merge");
+        let tip = outcome.target_tip.clone().expect("the tip it was made on");
+        assert_eq!(git(path, &["rev-parse", "main"]), tip);
+
+        let moved = backend.move_target(&request, &merge, None).await;
+        assert!(!moved.moved, "{}", moved.summary);
+        assert!(moved.summary.contains("not recorded"), "{}", moved.summary);
+        assert_eq!(git(path, &["rev-parse", "main"]), tip);
+
+        git(path, &["branch", "--force", "main", "main~1"]);
+        let moved_since = git(path, &["rev-parse", "main"]);
+        let moved = backend
+            .move_target(&request, &merge, Some(tip.as_str()))
+            .await;
+        assert!(!moved.moved, "{}", moved.summary);
+        assert!(moved.summary.contains("left alone"), "{}", moved.summary);
+        assert_eq!(git(path, &["rev-parse", "main"]), moved_since);
+        git(path, &["branch", "--force", "main", &tip]);
+
+        git(path, &["checkout", "--quiet", "main"]);
+        let moved = backend
+            .move_target(&request, &merge, Some(tip.as_str()))
+            .await;
+        assert!(!moved.moved, "{}", moved.summary);
+        assert!(moved.summary.contains("checked out"), "{}", moved.summary);
+        assert_eq!(git(path, &["rev-parse", "main"]), tip);
+        assert_eq!(
+            git(path, &["rev-parse", "refs/roko/delivered/plan-a"]),
+            merge
+        );
+        git(path, &["checkout", "--quiet", "work"]);
+
+        for _ in 0..2 {
+            let moved = backend
+                .move_target(&request, &merge, Some(tip.as_str()))
+                .await;
+            assert!(moved.moved, "{}", moved.summary);
+            assert_eq!(git(path, &["rev-parse", "main"]), merge);
+        }
     }
 
     #[tokio::test]
@@ -1778,6 +2512,164 @@ mod tests {
             !env.contains("sk-regression-canary"),
             "a provider key reached the regression:\n{env}"
         );
+    }
+
+    /// gap-6b6ec1: the regression check publishes each command's start and
+    /// end, with what it builds, so a host can say what the run waits for.
+    #[tokio::test]
+    async fn regression_check_publishes_its_steps() {
+        use super::super::plan_check_events::CheckStage;
+        use roko_core::DashboardEvent;
+
+        let repo = diverged_repo();
+        let path = repo.path();
+        git(path, &["checkout", "--quiet", "-b", "work"]);
+        let hub = crate::state_hub::StateHub::new(256);
+        let mut published = hub.subscribe_events();
+        let events = PlanCheckEvents::new(
+            crate::runner::tui_bridge::TuiBridge::new(hub.sender()),
+            "plan-a",
+            CheckStage::Regression,
+            "cargo-default",
+        );
+        let backend = GitDeliveryBackend::new(path.to_path_buf())
+            .with_regression_steps(vec![
+                "true cargo test -p plan-a".to_string(),
+                "exit 4".to_string(),
+            ])
+            .with_check_events(events);
+        let commit = git(path, &["rev-parse", "roko/plan-a"]);
+
+        let outcome = backend
+            .run_regression(&git_request("d-git-check-events", path), &commit)
+            .await;
+
+        assert!(!outcome.passed, "{}", outcome.summary);
+        let mut seen = Vec::new();
+        while let Ok(envelope) = published.try_recv() {
+            match envelope.payload {
+                DashboardEvent::PlanCheckStarted {
+                    plan_id,
+                    stage,
+                    step,
+                    steps,
+                    name,
+                    ..
+                } => seen.push(format!("started {plan_id} {stage} {step}/{steps} {name}")),
+                DashboardEvent::PlanCheckFinished {
+                    step,
+                    passed,
+                    exit_code,
+                    ..
+                } => seen.push(format!("finished {step} {passed} {exit_code:?}")),
+                _ => {}
+            }
+        }
+        assert_eq!(
+            seen,
+            [
+                "started plan-a regression 1/2 true",
+                "finished 1 true Some(0)",
+                "started plan-a regression 2/2 exit",
+                "finished 2 false Some(4)",
+            ]
+        );
+    }
+
+    /// bug-7b62ff: a cancel stops the post-merge regression check at once.
+    /// The running step dies with everything it started (its process group),
+    /// the delivery says the check was stopped and by what, and the
+    /// regression checkout is free for the next delivery.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_cancel_stops_the_post_merge_regression_check() {
+        use super::super::plan_runner::PlanRunInterrupt;
+        use crate::check_process_probe::{sleeping_step, wait_for_exit, wait_for_pids};
+        use fs2::FileExt as _;
+
+        let repo = diverged_repo();
+        let path = repo.path().to_path_buf();
+        git(&path, &["checkout", "--quiet", "-b", "work"]);
+        let scratch = tempfile::tempdir().expect("tempdir");
+        let pids = scratch.path().join("pids");
+        let stop = PlanRunInterruptHandle::default();
+        let backend = GitDeliveryBackend::new(path.clone())
+            .with_regression_steps(vec![sleeping_step(&pids), "touch never".to_string()])
+            .with_stop(stop.clone());
+        let commit = git(&path, &["rev-parse", "roko/plan-a"]);
+        let request = git_request("d-git-cancel", &path);
+        let regression =
+            tokio::spawn(async move { backend.run_regression(&request, &commit).await });
+        let running = wait_for_pids(&pids).await;
+
+        stop.request(PlanRunInterrupt::Cancel);
+        let outcome = tokio::time::timeout(std::time::Duration::from_secs(10), regression)
+            .await
+            .expect("the stopped check ends at once")
+            .expect("the regression task");
+
+        assert!(!outcome.passed, "{}", outcome.summary);
+        assert!(
+            outcome
+                .summary
+                .contains("post-merge regression stopped for plan-a"),
+            "{}",
+            outcome.summary
+        );
+        assert!(
+            outcome.summary.contains("a cancel request stopped it"),
+            "{}",
+            outcome.summary
+        );
+        assert_eq!(outcome.stopped_by.as_deref(), Some("cancel"));
+        let stopped = outcome.checks.last().expect("the stopped check");
+        assert_eq!(stopped.stopped_by.as_deref(), Some("cancel"));
+        assert_eq!(stopped.exit_code, None);
+        assert_eq!(outcome.checks.len(), 1, "the step after it ran");
+        for pid in running {
+            wait_for_exit(pid).await;
+        }
+        let lock = regression_checkout_path(&path).with_extension("lock");
+        let lock = std::fs::File::open(&lock).expect("the checkout's lock file");
+        lock.try_lock_exclusive()
+            .expect("the regression checkout is free");
+    }
+
+    /// bug-3c4600: the post-merge regression check, which every serve and
+    /// Hermes run delivers through, runs without GitHub tokens, the person's
+    /// `gh` login or a key roko loaded.
+    #[cfg(unix)]
+    #[test]
+    fn regression_checks_get_the_check_environment() {
+        crate::check_env_probe::run_child(
+            "graph_execution::delivery::tests::regression_check_env_child",
+        );
+    }
+
+    /// Run by [`regression_checks_get_the_check_environment`] only.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn regression_check_env_child() {
+        use crate::check_env_probe::{PASSED, assert_check_env, begin_child, dump_env_command};
+        let Some(_run) = begin_child() else {
+            return;
+        };
+        let repo = diverged_repo();
+        let path = repo.path();
+        git(path, &["checkout", "--quiet", "-b", "work"]);
+        let dumps = tempfile::tempdir().expect("tempdir");
+        let out = dumps.path().join("regression.env");
+        let backend = GitDeliveryBackend::new(path.to_path_buf())
+            .with_regression_steps(vec![dump_env_command(&out)])
+            .with_env_passthrough(vec![PASSED.to_string()]);
+        let commit = git(path, &["rev-parse", "roko/plan-a"]);
+
+        let outcome = backend
+            .run_regression(&git_request("d-git-check-env", path), &commit)
+            .await;
+
+        assert!(outcome.passed, "{}", outcome.summary);
+        assert_check_env(&out, "the post-merge regression check");
     }
 
     /// backlog 3111: a delivery records each whole-plan check it ran on its
@@ -1916,7 +2808,7 @@ mod tests {
         let main_before = git(path, &["rev-parse", "main"]);
 
         let backend = GitDeliveryBackend::new(path.to_path_buf());
-        let outcome = backend.merge(&request).await;
+        let outcome = backend.merge_into_target(&request).await;
 
         let summary = &outcome.summary;
         assert!(outcome.merged, "{summary}");
@@ -2011,20 +2903,75 @@ mod tests {
             "the target dir is inside the checkout"
         );
 
-        // By default: the configured CARGO_TARGET_DIR, else the checkout's own.
+        // By default its own, beside the checkout (bug-be2a53); a relative
+        // override is taken from the workdir, an empty one keeps the default.
         let workdir = Path::new("/repo");
-        assert_eq!(shared_target_dir(workdir, None), workdir.join("target"));
+        let own = regression_target_dir(workdir);
         assert_eq!(
-            shared_target_dir(workdir, Some("".into())),
-            workdir.join("target")
+            GitDeliveryBackend::new(workdir.into()).regression_target_dir,
+            own
         );
-        assert_eq!(
-            shared_target_dir(workdir, Some("/t".into())),
-            PathBuf::from("/t")
+        assert_eq!(own.parent(), regression_checkout_path(workdir).parent());
+        for (configured, expected) in [
+            ("", own.clone()),
+            ("/t", PathBuf::from("/t")),
+            ("out", workdir.join("out")),
+        ] {
+            let backend = GitDeliveryBackend::new(workdir.into())
+                .with_regression_target_dir(configured.into());
+            assert_eq!(backend.regression_target_dir, expected, "{configured:?}");
+        }
+    }
+
+    /// bug-be2a53: the regression builds in its own target dir although
+    /// roko's environment exports a `CARGO_TARGET_DIR` that the gates and the
+    /// person's checkout build in, and inherits no shared build dir: cargo
+    /// would take their builds of a crate for the merge's.
+    #[tokio::test]
+    async fn regression_builds_in_its_own_target_dir() {
+        let repo = diverged_repo();
+        let path = repo.path();
+        git(path, &["checkout", "--quiet", "-b", "work"]);
+        let record = tempfile::tempdir().unwrap();
+        let env_file = record.path().join("env.txt");
+        let shared = path.join("target");
+        let search_path = std::env::var_os("PATH")
+            .filter(|value| !value.is_empty())
+            .unwrap_or_else(|| "/usr/bin:/bin".into());
+        let parent_env = vec![
+            ("PATH".to_string(), search_path),
+            ("CARGO_TARGET_DIR".to_string(), shared.clone().into()),
+            (
+                "CARGO_BUILD_BUILD_DIR".to_string(),
+                shared.join("build").into(),
+            ),
+        ];
+        let backend = GitDeliveryBackend::new(path.to_path_buf())
+            .with_regression_steps(vec![format!("env > '{}'", env_file.display())])
+            .with_parent_env(parent_env);
+        let merge = git(path, &["rev-parse", "roko/plan-a"]);
+
+        let outcome = backend
+            .run_regression(&git_request("d-git-own-target", path), &merge)
+            .await;
+
+        assert!(outcome.passed, "{}", outcome.summary);
+        let env = std::fs::read_to_string(&env_file).unwrap();
+        let own = regression_target_dir(path);
+        assert!(
+            env.lines()
+                .any(|line| line == format!("CARGO_TARGET_DIR={}", own.display())),
+            "{env}"
         );
-        assert_eq!(
-            shared_target_dir(workdir, Some("out".into())),
-            workdir.join("out")
+        assert!(
+            !own.starts_with(regression_checkout_path(path)),
+            "{}",
+            own.display()
+        );
+        assert!(
+            !env.lines()
+                .any(|line| line.starts_with("CARGO_BUILD_BUILD_DIR=")),
+            "a shared build dir reached the regression:\n{env}"
         );
     }
 }

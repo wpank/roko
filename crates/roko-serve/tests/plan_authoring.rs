@@ -200,6 +200,7 @@ fn stub_summary(plan_id: &str) -> PlanSummaryDto {
         completed: false,
         status: "ready".to_string(),
         superseded_by: None,
+        fixture: false,
         old_format: false,
         last_error: None,
         group: None,
@@ -373,6 +374,8 @@ impl CliRuntime for StubAuthoringRuntime {
             plans_root,
             plan_targets: vec![plan_target],
             artifacts: Vec::new(),
+            cost_usd: 0.0,
+            source_checks: None,
         })
     }
 }

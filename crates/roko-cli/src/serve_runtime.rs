@@ -21,8 +21,9 @@ use roko_serve::plan_types::{
     PlanTaskDto, PlanTaskVerifyDto, PlanTasksDto, PlanValidationDto, RevisionDto, TaskChangeDto,
 };
 use roko_serve::runtime::{
-    CliRuntime, DashboardInfo, PlanExecutionResult, PlanGenerationResult, PlanRunOptions, RepoInfo,
-    RunResult, RunResultUsage, RuntimeGateResult, SessionStatusInfo, TriggerExecutionScope,
+    CliRuntime, DashboardInfo, PlanExecutionResult, PlanGenerationResult, PlanRunOptions,
+    ProgressReporter, RepoInfo, RunResult, RunResultUsage, RuntimeGateResult, SessionStatusInfo,
+    TriggerExecutionScope,
 };
 
 use crate::config::{Config, RepoRegistry};
@@ -123,10 +124,16 @@ impl CliRuntime for RokoCliRuntime {
         })
     }
 
+    /// The holder of the workspace runner lock a prompt run takes (gap-9a8d66).
+    fn runner_lock_holder(&self, workdir: &Path) -> Option<String> {
+        crate::workspace_lock::runner_lock_holder(&workdir.join(".roko"))
+    }
+
     /// Run `prompt` as a gated one-task plan, as `roko run` does, under the
     /// id serve returned for it (9113). The run publishes into the server's
     /// hub and takes the workspace runner lock, so it fails at once while a
-    /// plan run holds the lock.
+    /// run outside the server holds the lock; serve queues it behind its own
+    /// runs (gap-9a8d66).
     async fn run_prompt_plan(
         &self,
         workdir: &Path,
@@ -256,34 +263,36 @@ impl CliRuntime for RokoCliRuntime {
         slug: &str,
         prompt: &str,
     ) -> anyhow::Result<PlanGenerationResult> {
-        let plans_root = workspace_paths::plans_dir(workdir);
-        let before = snapshot_plan_artifacts(&plans_root);
-        // The planner model writes the plan; each call's spend reaches the
-        // server's hub as it returns.
-        let request = plan_generate::PlanRequest {
-            live: Some(self.spend_bridge()),
-            ..plan_generate::PlanRequest::new(
-                plan_generate::PlanSource::Text {
-                    text: prompt,
-                    kind: "prompt",
-                },
-                slug,
-                workdir,
-            )
-        };
-        let (generated_root, _) = plan_generate::generate_plan(request).await?;
-        let after = snapshot_plan_artifacts(&generated_root);
+        self.generate_plan(workdir, slug, prompt, false, None).await
+    }
 
-        let mut plan_targets = changed_plan_targets(&generated_root, &before, &after);
-        if plan_targets.is_empty() {
-            plan_targets.push(generated_root.clone());
-        }
+    async fn generate_plan_for_chat_host(
+        &self,
+        workdir: &Path,
+        slug: &str,
+        prompt: &str,
+    ) -> anyhow::Result<PlanGenerationResult> {
+        self.generate_plan(workdir, slug, prompt, true, None).await
+    }
 
-        Ok(PlanGenerationResult {
-            plans_root: generated_root,
-            artifacts: plan_artifact_paths(&plan_targets),
-            plan_targets,
-        })
+    async fn generate_plan_reporting(
+        &self,
+        workdir: &Path,
+        slug: &str,
+        prompt: &str,
+        for_chat_host: bool,
+        progress: ProgressReporter,
+    ) -> anyhow::Result<PlanGenerationResult> {
+        // gap-11d870: each stage the generator reports, as the JSON object
+        // the operation's status shows.
+        let progress: plan_generate::PlanProgressSink =
+            Arc::new(move |stage: &plan_generate::PlanProgress| {
+                if let Ok(stage) = serde_json::to_value(stage) {
+                    progress(stage);
+                }
+            });
+        self.generate_plan(workdir, slug, prompt, for_chat_host, Some(progress))
+            .await
     }
 
     async fn run_plan(
@@ -580,19 +589,45 @@ impl CliRuntime for RokoCliRuntime {
         let task_count = tasks_file.tasks.len();
         let tasks: Vec<PlanTaskDto> = tasks_file.tasks.iter().map(task_to_dto).collect();
 
-        // Plan title from [meta].plan; absent for old plans that leave it blank.
-        let title = {
-            let t = tasks_file.meta.plan.trim().to_string();
-            if t.is_empty() { None } else { Some(t) }
-        };
-
         Ok(Some(PlanTasksDto {
             plan_id: plan_id.to_string(),
             task_count,
             tasks,
-            title,
+            // The listing's title, not `[meta].plan`, which is the plan id (bug-e0624e).
+            title: Some(crate::plan::plan_title(&plan_info)),
             max_parallel: crate::plan_policy::plan_max_parallel(&tasks_file),
         }))
+    }
+
+    /// The plan's remaining tasks priced where dispatch would run them, from
+    /// the workspace's config, price snapshot and run records (gap-6605f7).
+    async fn estimate_plan(
+        &self,
+        workdir: &std::path::Path,
+        plan_id: &str,
+    ) -> anyhow::Result<Option<roko_learn::task_estimate::PlanEstimate>> {
+        let Some(plan_info) =
+            crate::plan::discover_plan_by_id(workdir, plan_id).with_context(|| {
+                format!(
+                    "failed to discover plan '{}' in {}",
+                    plan_id,
+                    workdir.display()
+                )
+            })?
+        else {
+            return Ok(None);
+        };
+        let Some(tasks_path) = crate::plan::tasks_path(&plan_info) else {
+            return Ok(None);
+        };
+        if !tasks_path.is_file() {
+            return Ok(None);
+        }
+        let tasks_toml = std::fs::read_to_string(&tasks_path)
+            .with_context(|| format!("read {}", tasks_path.display()))?;
+        let config = load_effective_roko_config(workdir, &self.repo_registry)?;
+        let plan_id = crate::plan::stable_plan_id(&plan_info);
+        crate::plan_estimate::estimate_plan_tasks(workdir, &config, plan_id, &tasks_toml).map(Some)
     }
 
     async fn plan_source(
@@ -839,6 +874,69 @@ impl CliRuntime for RokoCliRuntime {
 }
 
 impl RokoCliRuntime {
+    /// Generate the plan `slug` from `prompt` with the plan generator. The
+    /// planner model writes the plan; each call's spend reaches the server's
+    /// hub as it returns, and the result says what they cost together
+    /// (bug-a0432b). A chat host's plan runs with nobody to answer its open
+    /// questions, so the planner decides them (bug-7a08a8), and only a model
+    /// roko's own tool loop runs writes it (bug-a0432b). A plan that cannot
+    /// run is an error that names why and what it cost, so the operation
+    /// fails. Each stage goes to `progress` as it starts (gap-11d870).
+    async fn generate_plan(
+        &self,
+        workdir: &Path,
+        slug: &str,
+        prompt: &str,
+        for_chat_host: bool,
+        progress: Option<plan_generate::PlanProgressSink>,
+    ) -> anyhow::Result<PlanGenerationResult> {
+        let plans_root = workspace_paths::plans_dir(workdir);
+        let before = snapshot_plan_artifacts(&plans_root);
+        let request = plan_generate::PlanRequest {
+            live: Some(self.spend_bridge()),
+            unattended: for_chat_host,
+            for_chat_host,
+            progress,
+            ..plan_generate::PlanRequest::new(
+                plan_generate::PlanSource::Text {
+                    text: prompt,
+                    kind: "prompt",
+                },
+                slug,
+                workdir,
+            )
+        };
+        let (generated_root, outcome) =
+            plan_generate::generate_plan(request)
+                .await
+                .map_err(|error| {
+                    match error.downcast_ref::<plan_generate::PlanFailsValidation>() {
+                        Some(failure) => anyhow::anyhow!(
+                            "{failure}\nWriting the plan cost ${:.4}.",
+                            failure.cost_usd
+                        ),
+                        None => error,
+                    }
+                })?;
+        let after = snapshot_plan_artifacts(&generated_root);
+
+        let mut plan_targets = changed_plan_targets(&generated_root, &before, &after);
+        if plan_targets.is_empty() {
+            plan_targets.push(generated_root.clone());
+        }
+
+        Ok(PlanGenerationResult {
+            plans_root: generated_root,
+            artifacts: plan_artifact_paths(&plan_targets),
+            plan_targets,
+            cost_usd: outcome.cost_usd,
+            source_checks: outcome
+                .source_checks
+                .as_ref()
+                .and_then(|checks| serde_json::to_value(checks).ok()),
+        })
+    }
+
     /// Where plan generation and revision publish their agent calls' spend:
     /// the hub the server streams, so `stats.cost_usd_total` and the event
     /// stream count it as they count task spend.
@@ -934,14 +1032,7 @@ fn load_serve_extension_chain(
 fn config_live_output_to_dispatcher(
     setting: Option<roko_core::config::serve::LiveAgentOutput>,
 ) -> crate::graph_task_dispatch::LiveAgentOutput {
-    match setting.unwrap_or_default() {
-        roko_core::config::serve::LiveAgentOutput::Trusted => {
-            crate::graph_task_dispatch::LiveAgentOutput::Trusted
-        }
-        roko_core::config::serve::LiveAgentOutput::ToolSteps => {
-            crate::graph_task_dispatch::LiveAgentOutput::ToolSteps
-        }
-    }
+    setting.unwrap_or_default().into()
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -995,15 +1086,16 @@ fn run_plan_on_local_runtime(
         let events_offset = runner_events_offset(&workdir);
 
         // Create the interrupt handle shared between the cancel bridge and the
-        // graph run. The first `cancel.cancelled()` fires `PlanRunInterrupt::Interrupt`,
+        // graph run. The first `cancel.cancelled()` fires `PlanRunInterrupt::Cancel`,
         // which cancels the in-flight graph, SIGTERMs/SIGKILLs agent processes,
         // finalizes the checkpoint as `interrupted`, and returns exit code 130.
+        // The run names the cancel as such, not as a SIGINT (bug-1d09e8).
         let interrupt_handle = PlanRunInterruptHandle::default();
         if let Some(cancel_token) = cancel {
             let handle_for_cancel = interrupt_handle.clone();
             tokio::spawn(async move {
                 cancel_token.cancelled().await;
-                handle_for_cancel.request(PlanRunInterrupt::Interrupt);
+                handle_for_cancel.request(PlanRunInterrupt::Cancel);
             });
         }
 
@@ -1097,10 +1189,22 @@ fn run_prompt_plan_on_local_runtime(
     state_hub: SharedStateHub,
     options: roko_serve::runtime::PromptPlanOptions,
 ) -> anyhow::Result<roko_serve::runtime::PromptPlanResult> {
-    // One plan executor at a time: a prompt run fails at once while a plan
-    // run, or another prompt run, holds the lock.
-    let _runner_lock = crate::workspace_lock::acquire_runner_lock(&workdir.join(".roko"))
-        .context("a run is active in this workspace")?;
+    // One plan executor at a time: serve queues its runs behind each other
+    // (gap-9a8d66), so a prompt run finds the lock taken only while a run
+    // outside the server holds it, and then fails at once. Its own index says
+    // why, so its id resolves to that failure (bug-09e21e).
+    let _runner_lock = match crate::workspace_lock::acquire_runner_lock(&workdir.join(".roko")) {
+        Ok(lock) => lock,
+        Err(error) => {
+            let error = error.context("a run is active in this workspace");
+            if let Some(run_id) = &options.run_id {
+                let why = format!("{error:#}");
+                let reason = roko_serve::run_end::first_line(&why);
+                record_refused_run(&workdir, run_id, &format!("run failed: {why}"), reason);
+            }
+            return Err(error);
+        }
+    };
     let _spawn_scope =
         roko_agent::process::enter_spawn_scope(roko_agent::process::new_spawn_scope());
 
@@ -1127,6 +1231,8 @@ fn run_prompt_plan_on_local_runtime(
             max_usd: options.max_usd,
             origin: options.origin,
             no_holdout: false,
+            live_agent_output: config_live_output_to_dispatcher(options.live_agent_output),
+            title: options.title.clone(),
         })
         .await?;
         let snapshot = state_hub.current_snapshot();
@@ -1138,8 +1244,29 @@ fn run_prompt_plan_on_local_runtime(
     })
 }
 
+/// Write into run `run_id`'s own index the rows of a run that ended before it
+/// started: the `error` that says why (`message`) and its `run_completed`,
+/// outcome `refused` with `reason` (bug-09e21e, bug-9a5970; the rows serve
+/// writes for a plan run refused at its start). They go to the index only,
+/// never to the shared state hub, whose events the run holding the workspace
+/// would record as its own.
+fn record_refused_run(workdir: &Path, run_id: &str, message: &str, reason: &str) {
+    let rows = roko_serve::run_end::refused_rows(run_id, message, reason, 0);
+    let recorded = crate::runner::persist::PersistPaths::from_workdir(workdir).and_then(|paths| {
+        for row in &rows {
+            crate::runner::persist::append_run_index_event(&paths, run_id, row, true)?;
+        }
+        crate::runner::persist::flush_run_index(&paths, run_id)
+    });
+    if let Err(error) = recorded {
+        tracing::warn!(%run_id, error = %format!("{error:#}"), "the refused run's index was not written");
+    }
+}
+
 /// Refuse a chat host's run when the workspace has no data-model boundary
-/// (`[agent.data_llm]`) and does not allow running without one (9117).
+/// (`[agent.data_llm]`) and does not allow running without one (9117), or
+/// when no model its tasks can be routed to runs in roko's own tool loop
+/// (gap-cf427e), as serve's `/mcp` refuses it before queueing it.
 fn refuse_unscreened_chat_run(
     workdir: &Path,
     repo_registry: &RepoRegistry,
@@ -1148,8 +1275,10 @@ fn refuse_unscreened_chat_run(
     if !origin.is_chat() {
         return Ok(());
     }
-    match load_effective_roko_config(workdir, repo_registry)?.chat_run_refusal() {
-        Some(reason) => anyhow::bail!("{reason}"),
+    let config = load_effective_roko_config(workdir, repo_registry)?;
+    let prices = roko_core::pricing_snapshot::PriceSnapshot::shared(&config.pricing, workdir);
+    match config.chat_run_refusal(prices.as_deref()) {
+        Some(refusal) => anyhow::bail!("{}", refusal.message),
         None => Ok(()),
     }
 }
@@ -1580,7 +1709,8 @@ async fn call_bench_model(
     };
 
     // Build and call ModelCallService.
-    let cost_table = roko_agent::CostTable::from_config_with_defaults(&model_config.models);
+    let cost_table =
+        roko_agent::CostTable::from_config_with_defaults(&model_config.billed_models());
     let mut service = ModelCallService::new(model.to_string())
         .with_config(model_config.clone())
         .with_working_dir(workdir)
@@ -1771,6 +1901,7 @@ fn plan_summary_to_dto(summary: crate::plan::PlanSummary) -> PlanSummaryDto {
         completed: summary.completed,
         status: summary.status,
         superseded_by: summary.superseded_by,
+        fixture: summary.fixture,
         old_format: summary.old_format,
         last_error: summary.last_error,
         group: summary.group,
@@ -2024,6 +2155,101 @@ mod tests {
             (summary.task_count, summary.tasks_done, summary.tasks_failed),
             (9, 4, 1)
         );
+    }
+
+    /// bug-e0624e: `GET /api/plans/{id}/tasks` titles a plan as the listing
+    /// does, with the first heading of its `plan.md`, not with `[meta].plan`,
+    /// which is the plan id. A plan with no `plan.md` keeps its id.
+    #[tokio::test]
+    async fn plan_tasks_title_is_the_listing_title() {
+        let workdir = tempfile::tempdir().unwrap();
+        let plans = workdir.path().join("plans");
+        let tasks =
+            |id: &str| format!("[meta]\nplan = {id:?}\n\n[[task]]\nid = \"T1\"\ntitle = \"One\"\n");
+        std::fs::create_dir_all(plans.join("demo-titled")).unwrap();
+        std::fs::write(
+            plans.join("demo-titled").join("plan.md"),
+            "---\nplan: demo-titled\n---\n\n# Start here: a titled demo\n\nThe body.\n",
+        )
+        .unwrap();
+        std::fs::write(
+            plans.join("demo-titled").join("tasks.toml"),
+            tasks("demo-titled"),
+        )
+        .unwrap();
+        std::fs::create_dir_all(plans.join("tasks-only")).unwrap();
+        std::fs::write(
+            plans.join("tasks-only").join("tasks.toml"),
+            tasks("tasks-only"),
+        )
+        .unwrap();
+
+        let runtime = RokoCliRuntime::new(Config::default(), RepoRegistry::default());
+        let listed = runtime.list_plans(workdir.path()).await.unwrap();
+        for (id, title) in [
+            ("demo-titled", "Start here: a titled demo"),
+            ("tasks-only", "tasks-only"),
+        ] {
+            let listing = listed.iter().find(|plan| plan.id == id).expect("listed");
+            assert_eq!(listing.title, title);
+            let detail = runtime
+                .load_plan_tasks(workdir.path(), id)
+                .await
+                .unwrap()
+                .expect("the plan is found");
+            assert_eq!(detail.title.as_deref(), Some(title), "{id}");
+        }
+    }
+
+    /// gap-8f84d1: a fixture plan (`[meta].status = "fixture"`, such as a
+    /// demo) stays marked `fixture` in the listing once it has run, when its
+    /// Graph checkpoint's state replaces `status`. No other plan is marked.
+    #[tokio::test]
+    async fn plan_listing_marks_fixture_plans_after_a_run() {
+        let workdir = tempfile::tempdir().unwrap();
+        for (id, status, ran) in [
+            ("demo-ran", "fixture", true),
+            ("demo-new", "fixture", false),
+            ("work-ran", "ready", true),
+        ] {
+            let plan = workdir.path().join("plans").join(id);
+            std::fs::create_dir_all(&plan).unwrap();
+            std::fs::write(
+                plan.join("tasks.toml"),
+                format!(
+                    "[meta]\nplan = {id:?}\nstatus = {status:?}\n\n\
+                     [[task]]\nid = \"T1\"\ntitle = \"One\"\n"
+                ),
+            )
+            .unwrap();
+            if ran {
+                let state = workdir.path().join(".roko/state/graph").join(id);
+                std::fs::create_dir_all(&state).unwrap();
+                std::fs::write(state.join("checkpoint.json"), r#"{"status":"succeeded"}"#).unwrap();
+            }
+        }
+
+        let runtime = RokoCliRuntime::new(Config::default(), RepoRegistry::default());
+        let listed = runtime.list_plans(workdir.path()).await.unwrap();
+        let row = |id: &str| listed.iter().find(|plan| plan.id == id).expect("listed");
+        assert_eq!(
+            row("demo-ran").status,
+            "done",
+            "the run's state replaces the status"
+        );
+        assert!(
+            row("demo-ran").fixture,
+            "a demo that has run is still a fixture"
+        );
+        assert_eq!(row("demo-new").status, "fixture");
+        assert!(row("demo-new").fixture);
+        assert!(!row("work-ran").fixture);
+        let one = runtime
+            .load_plan_summary(workdir.path(), "demo-ran")
+            .await
+            .unwrap()
+            .expect("the plan is found");
+        assert!(one.fixture);
     }
 
     /// gap-655d19: a server run is validated as `roko plan run` validates it.

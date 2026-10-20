@@ -11,7 +11,7 @@ use crate::agent_config::{command_from_config, model_from_config};
 use crate::agent_episode::build_capture_episode;
 use crate::agent_spawn::{SpawnAgentSpec, spawn_agent_scoped};
 use crate::learning_helpers::{
-    capture_runtime_model_slugs, distillation_model_caller, install_capture_distillation,
+    capture_runtime_model_slugs, distillation_model_caller_on, install_capture_distillation,
     provider_id_for_model, record_persisted_provider_outcome, resolve_capture_model_slug,
 };
 use anyhow::{Context as _, Result};
@@ -21,6 +21,7 @@ use roko_core::{Body, Context, Kind, Signal, Usage};
 use roko_learn::runtime_feedback::{CompletedRunInput, LearningRuntime};
 
 /// Options for agent execution.
+#[derive(Clone, Copy)]
 pub struct AgentExecOpts<'a> {
     /// The prompt to send to the agent.
     pub prompt: &'a str,
@@ -43,6 +44,9 @@ pub struct AgentExecOpts<'a> {
     pub role: Option<&'a str>,
     /// Tool restriction. `Some("none")` disables all tools. `None` uses provider defaults.
     pub allowed_tools: Option<&'a str>,
+    /// Turn cap for the run. `None` keeps the provider's own default: for
+    /// the Claude CLI that is `OperatingFrequency::Theta`, 10 turns.
+    pub max_turns: Option<u32>,
 }
 
 /// Episode metadata for agent execution paths that should persist learning data.
@@ -201,6 +205,7 @@ async fn run_agent_capture_impl(
             model: model.clone(),
             command: routing_config.agent.command.clone(),
             timeout_ms: Some(300_000), // 5 min for CLI flows (plan generation / research tasks)
+            max_turns: opts.max_turns,
             system_prompt: opts.system_prompt.map(str::to_string),
             cached_content: None,
             tools: opts.allowed_tools.map(str::to_string),
@@ -227,6 +232,7 @@ async fn run_agent_capture_impl(
         role = ?opts.role,
         provider = %resolved.provider_kind.label(),
         prompt_len = opts.prompt.len(),
+        max_turns = ?opts.max_turns,
         "agent_exec: dispatching prompt"
     );
 
@@ -351,6 +357,39 @@ pub async fn persist_capture_episode(
     wall_time_ms: u64,
     resume_session: Option<&str>,
 ) -> Result<()> {
+    persist_capture_episode_distilled_by(
+        workdir,
+        agent_command,
+        model,
+        task_kind,
+        task_id,
+        prompt,
+        output,
+        success,
+        wall_time_ms,
+        resume_session,
+        None,
+    )
+    .await
+}
+
+/// [`persist_capture_episode`] whose episode is distilled by `distiller`, a
+/// model, instead of `[agent] default_model` (bug-a0432b). A chat host's plan
+/// writing keeps its distillation on the model that wrote the plan, which
+/// roko's own tool loop runs.
+pub async fn persist_capture_episode_distilled_by(
+    workdir: &Path,
+    agent_command: &str,
+    model: Option<&str>,
+    task_kind: &str,
+    task_id: &str,
+    prompt: &str,
+    output: &str,
+    success: bool,
+    wall_time_ms: u64,
+    resume_session: Option<&str>,
+    distiller: Option<&str>,
+) -> Result<()> {
     let config = roko_core::config::loader::load_config_unified(workdir).unwrap_or_default();
     let capture_model = resolve_capture_model_slug(&config, model);
     let provider_from_config = capture_model
@@ -384,7 +423,11 @@ pub async fn persist_capture_episode(
         LearningRuntime::open_for_project_with_models(workdir, model_slugs).await
     }
     .map_err(|e| anyhow::anyhow!("open learning runtime: {e}"))?;
-    install_capture_distillation(&mut runtime, workdir, distillation_model_caller(workdir));
+    install_capture_distillation(
+        &mut runtime,
+        workdir,
+        distillation_model_caller_on(workdir, distiller),
+    );
 
     let mut completed = CompletedRunInput::from_episode(episode);
     completed.provider = (!provider.trim().is_empty()).then_some(provider.clone());
@@ -405,6 +448,14 @@ pub enum AgentCrashClass {
     ContextOverflow,
     ModelNotFound,
     NetworkError,
+    /// The agent ran into roko's time limit for one call and was stopped
+    /// (gap-11d870): the adapters' `"timed out after <N> ms"`.
+    Timeout,
+    /// The agent used every turn its turn cap allows before it finished
+    /// (bug-09cc5f): the Claude CLI's `error_max_turns`, or a tool loop
+    /// stopped at its cap. Not retriable: the same prompt under the same cap
+    /// would most likely stop there again.
+    TurnCapReached,
     Unknown,
 }
 
@@ -416,7 +467,10 @@ impl AgentCrashClass {
     /// invocation will not reproduce. Callers should cap Unknown retries lower
     /// than the cap used for `RateLimited`/`NetworkError`.
     pub fn is_retriable(&self) -> bool {
-        matches!(self, Self::RateLimited | Self::NetworkError | Self::Unknown)
+        matches!(
+            self,
+            Self::RateLimited | Self::NetworkError | Self::Timeout | Self::Unknown
+        )
     }
 
     /// Human-readable hint for recovering from this crash class.
@@ -437,6 +491,14 @@ impl AgentCrashClass {
             Self::NetworkError => {
                 "Network error reaching the provider; check your connection and try again"
             }
+            Self::Timeout => {
+                "The agent ran into roko's time limit for one call and was stopped; a faster \
+                 model, or a smaller request, finishes in time"
+            }
+            Self::TurnCapReached => {
+                "The agent used every turn its turn cap allows before it finished; a narrower \
+                 request, or one that names the files involved, needs fewer turns"
+            }
             Self::Unknown => "Agent crashed for an unknown reason; inspect the full stderr output",
         }
     }
@@ -446,6 +508,16 @@ impl AgentCrashClass {
 ///
 /// Uses simple `contains()` checks — no regex needed.
 pub fn classify_agent_crash(stderr: &str) -> AgentCrashClass {
+    // An adapter that stopped the agent at its time limit says so in its own
+    // words, which name no provider error (gap-11d870).
+    if timed_out_after_secs(stderr).is_some() {
+        return AgentCrashClass::Timeout;
+    }
+    // So does a run stopped at its turn cap, whose turn count could read as a
+    // status code ("turns=429") below (bug-09cc5f).
+    if roko_agent::provider::error_classify::detect_turn_cap(stderr).is_some() {
+        return AgentCrashClass::TurnCapReached;
+    }
     // Check most-specific patterns first.
     if stderr.contains("401")
         || stderr.contains("invalid_api_key")
@@ -469,6 +541,26 @@ pub fn classify_agent_crash(stderr: &str) -> AgentCrashClass {
         return AgentCrashClass::NetworkError;
     }
     AgentCrashClass::Unknown
+}
+
+/// The time limit, in whole seconds, that an agent call whose output is
+/// `output` ran into, when an adapter stopped it there: its
+/// `"timed out after <N> ms"`, the form `detect_attempt_timeout` reads
+/// (gap-11d870).
+pub fn timed_out_after_secs(output: &str) -> Option<u64> {
+    use roko_agent::provider::error_classify::ATTEMPT_TIMEOUT_MARKER;
+
+    output
+        .match_indices(ATTEMPT_TIMEOUT_MARKER)
+        .find_map(|(at, marker)| {
+            let rest = output[at + marker.len()..].trim_start();
+            let digits = rest.chars().take_while(char::is_ascii_digit).count();
+            let millis: u64 = rest[..digits].parse().ok()?;
+            rest[digits..]
+                .trim_start()
+                .starts_with("ms")
+                .then_some(millis / 1000)
+        })
 }
 
 #[cfg(test)]
@@ -750,6 +842,52 @@ tool_format = "openai_json"
         );
     }
 
+    /// gap-11d870: an agent an adapter stopped at its time limit is a
+    /// timeout, with the limit in seconds; a provider's own request timeout
+    /// is not.
+    #[test]
+    fn classify_agent_crash_timeout() {
+        for output in [
+            "timed out after 300000 ms",
+            "exit 1: timed out after 300000ms",
+        ] {
+            assert_eq!(classify_agent_crash(output), AgentCrashClass::Timeout);
+            assert_eq!(timed_out_after_secs(output), Some(300), "{output}");
+        }
+        assert_eq!(timed_out_after_secs("request timed out after 90s"), None);
+        assert_ne!(
+            classify_agent_crash("request timed out after 90s"),
+            AgentCrashClass::Timeout
+        );
+        assert!(AgentCrashClass::Timeout.is_retriable());
+    }
+
+    /// bug-09cc5f: an agent stopped at its turn cap is its own class, never
+    /// `Unknown`, whichever adapter stopped it, and a turn count that reads
+    /// like a status code does not make it an auth or rate-limit failure.
+    #[test]
+    fn classify_agent_crash_turn_cap() {
+        use roko_agent::provider::error_classify::{GEMINI_TURN_LIMIT, TurnCapHit};
+
+        let claude_cli = TurnCapHit {
+            num_turns: Some(31),
+            cap: Some(30),
+        }
+        .to_string();
+        for output in [
+            claude_cli.as_str(),
+            "agent turn cap reached (turns=429, cap=401)",
+            GEMINI_TURN_LIMIT,
+        ] {
+            assert_eq!(
+                classify_agent_crash(output),
+                AgentCrashClass::TurnCapReached,
+                "{output}"
+            );
+        }
+        assert!(!AgentCrashClass::TurnCapReached.is_retriable());
+    }
+
     #[test]
     fn retriable_variants() {
         assert!(!AgentCrashClass::AuthenticationError.is_retriable());
@@ -770,6 +908,7 @@ tool_format = "openai_json"
             AgentCrashClass::ContextOverflow,
             AgentCrashClass::ModelNotFound,
             AgentCrashClass::NetworkError,
+            AgentCrashClass::TurnCapReached,
             AgentCrashClass::Unknown,
         ];
         for v in variants {
@@ -897,9 +1036,14 @@ mode = "off"
             "demo",
             workspace.path(),
         );
-        crate::plan_generate::generate_plan(request)
+        let (_, outcome) = crate::plan_generate::generate_plan(request)
             .await
             .expect("generate plan");
+        // bug-a0432b: the outcome says what the generation cost.
+        assert!(
+            (outcome.cost_usd - CALL_COST_USD).abs() < 1e-6,
+            "{outcome:?}"
+        );
 
         let rows = agent_cost_rows(workspace.path());
         assert_eq!(rows.len(), 1, "{rows:?}");
@@ -931,6 +1075,7 @@ mode = "off"
                 env_vars: &[],
                 role: Some("strategist"),
                 allowed_tools: None,
+                max_turns: None,
             },
             AgentExecEpisode {
                 task_kind: "plan-generate",
@@ -972,6 +1117,7 @@ mode = "off"
                 env_vars: &[],
                 role: Some("strategist"),
                 allowed_tools: None,
+                max_turns: None,
             },
             AgentExecEpisode {
                 task_kind: "plan-generate",
@@ -1028,6 +1174,7 @@ mode = "off"
                 env_vars: &[],
                 role: Some("researcher"),
                 allowed_tools: Some("Read,Write,Edit"),
+                max_turns: None,
             },
             &spend,
         )

@@ -16,7 +16,7 @@ use roko_index::workspace::{CodeIndex, WorkspaceIndex};
 use tokio::io::{AsyncRead, AsyncReadExt};
 use tokio::process::Command;
 use tokio::time::timeout;
-use tracing::{debug, info, warn};
+use tracing::{debug, info};
 
 const MAX_GIT_OUTPUT: usize = 4 * 1024 * 1024;
 const MAX_METADATA_OUTPUT: usize = 16 * 1024 * 1024;
@@ -848,16 +848,37 @@ async fn changed_files(workdir: &Path, limit: Duration) -> Result<BTreeSet<Strin
     Ok(files)
 }
 
+/// The Cargo workspace at `workdir`, read offline without touching
+/// `Cargo.lock`.
+///
+/// The resolved package graph comes first. Resolving it offline fails when
+/// the local registry cache lacks a crate the lockfile pins for another
+/// platform (bug-a7e018: `android_system_properties` on a Mac that has built
+/// the workspace), so a failure falls back to `--no-deps`. That resolves
+/// nothing: it lists the workspace members with their targets and declared
+/// dependencies, and [`reverse_dependents`] follows the members' path
+/// dependencies instead of the resolve graph.
 pub(crate) async fn cargo_metadata(workdir: &Path, limit: Duration) -> Result<Metadata, String> {
-    let stdout = bounded_output(
-        workdir,
-        "cargo",
-        &["metadata", "--format-version=1", "--locked", "--offline"],
-        limit,
-        MAX_METADATA_OUTPUT,
-    )
-    .await?;
-    serde_json::from_slice(&stdout).map_err(|error| format!("parse cargo metadata: {error}"))
+    const RESOLVED: [&str; 4] = ["metadata", "--format-version=1", "--locked", "--offline"];
+    let resolve_error =
+        match bounded_output(workdir, "cargo", &RESOLVED, limit, MAX_METADATA_OUTPUT).await {
+            Ok(stdout) => return parse_metadata(&stdout),
+            Err(error) => error,
+        };
+    let members_only = [&RESOLVED[..], &["--no-deps"]].concat();
+    let stdout = bounded_output(workdir, "cargo", &members_only, limit, MAX_METADATA_OUTPUT)
+        .await
+        .map_err(|error| format!("{resolve_error}; {error}"))?;
+    debug!(
+        error = %resolve_error,
+        "cargo metadata could not resolve the package graph offline; read the workspace \
+         members with --no-deps"
+    );
+    parse_metadata(&stdout)
+}
+
+fn parse_metadata(stdout: &[u8]) -> Result<Metadata, String> {
+    serde_json::from_slice(stdout).map_err(|error| format!("parse cargo metadata: {error}"))
 }
 
 fn package_for_path<'a>(
@@ -1219,8 +1240,29 @@ pub(crate) fn reverse_dependents(
             }
         }
     } else {
-        warn!("cargo metadata did not provide a resolve graph");
-        return (Vec::new(), true);
+        // `--no-deps` metadata (bug-a7e018) has no resolve graph: a member
+        // depends on the members it names as path dependencies, optional
+        // ones included, so the dependents found are never fewer.
+        let roots = metadata
+            .packages
+            .iter()
+            .filter(|package| workspace.contains(&package.id))
+            .filter_map(|package| Some((package.manifest_path.parent()?, &package.id)))
+            .collect::<HashMap<_, _>>();
+        for package in metadata
+            .packages
+            .iter()
+            .filter(|package| workspace.contains(&package.id))
+        {
+            for dependency in &package.dependencies {
+                if let Some(id) = dependency.path.as_deref().and_then(|path| roots.get(path)) {
+                    reverse
+                        .entry((*id).clone())
+                        .or_default()
+                        .insert(package.id.clone());
+                }
+            }
+        }
     }
 
     let mut queue = producer_ids.iter().cloned().collect::<VecDeque<_>>();
@@ -1987,5 +2029,102 @@ diff --git a/crates/roko-cli/src/internal.rs b/crates/roko-cli/src/internal.rs
         assert!(affected.contains("gate"));
         assert!(affected.contains("cli"));
         assert!(affected.contains("serve"));
+    }
+
+    /// bug-a7e018: on a machine whose registry cache lacks crates the
+    /// lockfile pins for other platforms, `cargo metadata --offline` cannot
+    /// resolve this workspace. Its members, and which of them build on which,
+    /// still come back without the network.
+    #[tokio::test]
+    async fn cargo_metadata_reads_this_workspace_offline() {
+        let workdir = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .and_then(Path::parent)
+            .expect("the workspace root");
+
+        let metadata = cargo_metadata(workdir, Duration::from_secs(120))
+            .await
+            .expect("cargo metadata reads the workspace offline");
+
+        let members = metadata
+            .workspace_packages()
+            .iter()
+            .map(|package| package.name.to_string())
+            .collect::<BTreeSet<_>>();
+        assert!(members.contains("roko-cli"), "{members:?}");
+        let (dependents, overflow) =
+            reverse_dependents(&metadata, &["roko-core".to_string()], usize::MAX);
+        assert!(!overflow);
+        assert!(
+            dependents.contains(&"roko-cli".to_string()),
+            "{dependents:?}"
+        );
+        assert!(
+            !dependents.contains(&"roko-core".to_string()),
+            "{dependents:?}"
+        );
+    }
+
+    /// bug-a7e018: `--no-deps` metadata has no resolve graph, so reverse
+    /// dependents follow the members' path dependencies. A registry
+    /// dependency that shares a member's name is not an edge.
+    #[test]
+    fn reverse_dependents_follow_path_dependencies_without_a_resolve_graph() {
+        use serde_json::json;
+
+        let crates: [(&str, &[&str]); 4] = [
+            ("base", &[]),
+            ("mid", &["base"]),
+            ("top", &["mid"]),
+            ("other", &[]),
+        ];
+        let dependency = |name: &str, path: Option<String>| {
+            json!({
+                "name": name, "source": null, "req": "*", "kind": null, "rename": null,
+                "optional": false, "uses_default_features": true, "features": [],
+                "target": null, "registry": null, "path": path,
+            })
+        };
+        let packages = crates
+            .iter()
+            .map(|(name, deps)| {
+                let mut dependencies = deps
+                    .iter()
+                    .map(|dep| dependency(dep, Some(format!("/mock/crates/{dep}"))))
+                    .collect::<Vec<_>>();
+                // `other` uses a crates.io `base`, not the member.
+                if *name == "other" {
+                    dependencies.push(dependency("base", None));
+                }
+                json!({
+                    "name": name,
+                    "version": "0.1.0",
+                    "id": format!("{name} 0.1.0 (path+file:///mock/crates/{name})"),
+                    "manifest_path": format!("/mock/crates/{name}/Cargo.toml"),
+                    "targets": [],
+                    "features": {},
+                    "dependencies": dependencies,
+                })
+            })
+            .collect::<Vec<_>>();
+        let members = crates
+            .iter()
+            .map(|(name, _)| format!("{name} 0.1.0 (path+file:///mock/crates/{name})"))
+            .collect::<Vec<_>>();
+        let metadata: Metadata = serde_json::from_value(json!({
+            "version": 1,
+            "workspace_root": "/mock",
+            "target_directory": "/mock/target",
+            "workspace_members": members,
+            "packages": packages,
+            "resolve": null,
+        }))
+        .expect("--no-deps metadata deserializes");
+
+        let (dependents, overflow) = reverse_dependents(&metadata, &["base".to_string()], 10);
+        assert_eq!(dependents, ["mid", "top"]);
+        assert!(!overflow);
+        let (dependents, overflow) = reverse_dependents(&metadata, &["top".to_string()], 10);
+        assert!(dependents.is_empty() && !overflow, "{dependents:?}");
     }
 }

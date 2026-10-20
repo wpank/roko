@@ -542,6 +542,53 @@ impl ProviderConfig {
         }
     }
 
+    /// Whether this provider bills a cached input token at its input rate,
+    /// with no discount: Cerebras ("Input tokens, whether served from the
+    /// cache or processed fresh, are billed at the standard input token rate",
+    /// <https://inference-docs.cerebras.ai/capabilities/prompt-caching>,
+    /// checked 2026-10-16), whether roko reaches it through its own adapter
+    /// or as `openai_compat`, as `roko init` writes it (find-c3da60).
+    #[must_use]
+    pub fn bills_cached_input_at_input_rate(&self) -> bool {
+        self.kind == ProviderKind::CerebrasApi
+            || self
+                .base_url
+                .as_deref()
+                .is_some_and(|url| url.to_ascii_lowercase().contains("api.cerebras.ai"))
+    }
+
+    /// Whether roko's own tool loop drives this provider's models: an API
+    /// provider roko calls over HTTP (gap-cf427e). A CLI, ACP or agent-runtime
+    /// provider (Claude Code, Codex, Gemini CLI, Cursor, Hermes, OpenClaw) runs
+    /// its own tools, out of reach of roko's tool dispatcher, so it can neither
+    /// stage nor refuse a tool call that acts on the outside world (9131), as
+    /// a chat host's run requires. An `openai_compat` provider whose `command`
+    /// is a Codex binary runs as Codex. Dispatch classifies a resolved target
+    /// the same way (`roko-cli`'s `dispatch_v2::runs_own_tools`).
+    #[must_use]
+    pub fn runs_in_own_tool_loop(&self) -> bool {
+        match self.kind {
+            ProviderKind::AnthropicApi
+            | ProviderKind::PerplexityApi
+            | ProviderKind::GeminiApi
+            | ProviderKind::CerebrasApi => true,
+            ProviderKind::OpenAiCompat => !self
+                .command
+                .as_deref()
+                .map(str::trim)
+                .and_then(|command| std::path::Path::new(command).file_name())
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| name.to_ascii_lowercase().contains("codex")),
+            ProviderKind::ClaudeCli
+            | ProviderKind::CodexCli
+            | ProviderKind::CursorAcp
+            | ProviderKind::CursorCli
+            | ProviderKind::GeminiCli
+            | ProviderKind::Hermes
+            | ProviderKind::OpenClaw => false,
+        }
+    }
+
     /// Derive a typed [`ProviderAuth`] from the flat config fields.
     ///
     /// When `api_key_env` is set, the auth policy is [`ProviderAuth::EnvVar`].
@@ -710,6 +757,19 @@ pub struct ModelProfile {
 }
 
 impl ModelProfile {
+    /// This profile as `provider` bills it: one that names no cache-read rate
+    /// takes its input rate when the provider bills cached input at that rate
+    /// ([`ProviderConfig::bills_cached_input_at_input_rate`]), where the
+    /// default multiple of the input rate would count cache reads at a tenth
+    /// of what they cost (find-c3da60). A rate the profile names stands.
+    #[must_use]
+    pub fn with_provider_cache_rate(mut self, provider: &ProviderConfig) -> Self {
+        if self.cost_cache_read_per_m.is_none() && provider.bills_cached_input_at_input_rate() {
+            self.cost_cache_read_per_m = self.cost_input_per_m;
+        }
+        self
+    }
+
     /// Resolved output-token ceiling for this model.
     ///
     /// `None` in config means "use the runtime default", which currently
@@ -836,6 +896,47 @@ impl Default for PerplexityConfig {
 #[cfg(test)]
 mod model_profile_tests {
     use super::*;
+
+    /// find-c3da60: a profile that names no cache-read rate takes its input
+    /// rate on Cerebras, reached through its own adapter or as
+    /// `openai_compat` at its API's address, and keeps none elsewhere; a rate
+    /// it names stands.
+    #[test]
+    fn a_cerebras_model_without_a_cache_rate_pays_its_input_rate() {
+        let profile = ModelProfile {
+            cost_input_per_m: Some(0.35),
+            cost_output_per_m: Some(0.75),
+            ..ModelProfile::default()
+        };
+        let provider = |kind, base_url: Option<&str>| ProviderConfig {
+            kind,
+            base_url: base_url.map(str::to_string),
+            ..ProviderConfig::default()
+        };
+        for cerebras in [
+            provider(ProviderKind::CerebrasApi, None),
+            provider(
+                ProviderKind::OpenAiCompat,
+                Some("https://api.cerebras.ai/v1"),
+            ),
+        ] {
+            let priced = profile.clone().with_provider_cache_rate(&cerebras);
+            assert_eq!(priced.cost_cache_read_per_m, Some(0.35), "{cerebras:?}");
+        }
+        let openai = provider(
+            ProviderKind::OpenAiCompat,
+            Some("https://api.openai.com/v1"),
+        );
+        let priced = profile.clone().with_provider_cache_rate(&openai);
+        assert_eq!(priced.cost_cache_read_per_m, None);
+
+        let named = ModelProfile {
+            cost_cache_read_per_m: Some(0.1),
+            ..profile
+        };
+        let priced = named.with_provider_cache_rate(&provider(ProviderKind::CerebrasApi, None));
+        assert_eq!(priced.cost_cache_read_per_m, Some(0.1));
+    }
 
     #[test]
     fn provider_process_limits_roundtrip_through_toml() {

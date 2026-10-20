@@ -4,6 +4,9 @@
 //! workspace's `roko.toml`, and a `--config` file that does not exist fails
 //! the run before any agent starts.
 
+mod common;
+use common::Isolated;
+
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
@@ -59,6 +62,7 @@ fn config_running(dir: &Path, name: &str) -> String {
 /// `roko --config <config> plan run plans/config` in `workdir`.
 fn plan_run_with_config(workdir: &Path, config: &Path) -> Output {
     Command::new(cargo_bin("roko"))
+        .isolated()
         .current_dir(workdir)
         .arg("--config")
         .arg(config)

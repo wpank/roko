@@ -33,6 +33,7 @@ static PRIVY_ALLOW_LIST_WARNING: OnceLock<()> = OnceLock::new();
 /// Operator hint logged when `privy_app_id` is set without an allow-list.
 pub(crate) const PRIVY_ALLOW_LIST_HINT: &str = "serve.auth.privy_app_id is set without a Privy \
      allow-list, so every Privy JWT is rejected. To let Privy users in, set \
+     serve.auth.privy_allowed_users (matched against the JWT `sub` claim), \
      serve.auth.privy_allowed_roles (matched against the JWT `role` claim) or \
      serve.auth.privy_workspace_id (matched against the JWT `org_id` claim).";
 
@@ -41,7 +42,9 @@ pub(crate) const PRIVY_ALLOW_LIST_HINT: &str = "serve.auth.privy_app_id is set w
 /// Anyone can sign in to a Privy app, so a valid signature for
 /// `privy_app_id` alone proves nothing about who the caller is.
 pub(crate) fn privy_allow_list_configured(auth: &ServeAuthConfig) -> bool {
-    !auth.privy_allowed_roles.is_empty() || auth.privy_workspace_id.is_some()
+    !auth.privy_allowed_users.is_empty()
+        || !auth.privy_allowed_roles.is_empty()
+        || auth.privy_workspace_id.is_some()
 }
 
 /// Header containing an ERC-3009 payment authorization as JSON.
@@ -454,18 +457,29 @@ fn authenticate_api_key(
 
 /// Attempt to validate a Bearer token as a Privy JWT using the JWKS cache.
 ///
-/// Privy auth is off unless the operator set `privy_app_id`. Performs four
+/// Privy auth is off unless the operator set `privy_app_id`. Performs these
 /// checks in order:
-/// 1. Allow-list: `privy_allowed_roles` or `privy_workspace_id` must be
-///    configured. Without either, no Privy JWT authenticates (fail closed).
+/// 1. Allow-list: `privy_allowed_users`, `privy_allowed_roles` or
+///    `privy_workspace_id` must be configured. Without any of the three, no
+///    Privy JWT authenticates (fail closed).
 /// 2. Signature + app-id verification via JWKS.
-/// 3. Workspace membership: if `privy_workspace_id` is configured the JWT
+/// 3. User allow-list: if the JWT `sub` claim is listed in
+///    `privy_allowed_users`, the token is admitted immediately with admin
+///    scope, independently of `org_id` or `role` (D18 user-id half,
+///    gap-47e0de). This is what lets a `roko login` user in: Privy access
+///    tokens carry no `org_id`/`role` claim.
+/// 4. Workspace membership: if `privy_workspace_id` is configured the JWT
 ///    `org_id` claim **must** match. Tokens without an `org_id` claim are
-///    rejected (fail closed).
-/// 4. Role authorization: if `privy_allowed_roles` is non-empty the JWT
+///    rejected (fail closed). Not reached for a `sub` admitted in step 3.
+/// 5. Role authorization: if `privy_allowed_roles` is non-empty the JWT
 ///    `role` claim must be present and contained in the allowed list.
-///    Tokens with an unrecognised or missing role are downgraded to
-///    `"read"` scope instead of receiving `"admin"`.
+///    Tokens with an unrecognised or missing role are rejected (fail
+///    closed), not downgraded to a lesser scope. Not reached for a `sub`
+///    admitted in step 3.
+///
+/// When neither `privy_workspace_id` nor `privy_allowed_roles` is
+/// configured, `privy_allowed_users` is the only active allow-list, and a
+/// `sub` it does not list is rejected rather than falling through.
 async fn try_privy_jwt(
     token: &str,
     auth: &ServeAuthConfig,
@@ -483,6 +497,30 @@ async fn try_privy_jwt(
     }
     let claims = state.jwks_cache.validate(token, privy_app_id).await?;
 
+    // --- User allow-list (fail closed; independent of workspace/role) ---
+    //
+    // A listed `sub` is admitted immediately: no `org_id` or `role` claim is
+    // required (D18, gap-47e0de). This must run before the workspace/role
+    // checks below, which `return None` on their own mismatch and would
+    // otherwise block a listed user whose token lacks those claims.
+    if auth
+        .privy_allowed_users
+        .iter()
+        .any(|allowed| allowed == claims.sub.as_str())
+    {
+        return Some((AuthMethod::Jwt, "admin".to_string(), Some(claims.sub)));
+    }
+    if auth.privy_workspace_id.is_none() && auth.privy_allowed_roles.is_empty() {
+        // privy_allow_list_configured() above is true only because
+        // privy_allowed_users is non-empty, and this sub is not on it, so
+        // there is no other configured allow-list to fall through to.
+        tracing::warn!(
+            sub = %claims.sub,
+            "Privy JWT rejected: sub not in privy_allowed_users and no role or workspace allow-list is configured"
+        );
+        return None;
+    }
+
     // --- Workspace / org membership check (fail closed) ---
     if let Some(ref required_workspace) = auth.privy_workspace_id {
         match claims.org_id.as_deref() {
@@ -499,26 +537,27 @@ async fn try_privy_jwt(
         }
     }
 
-    // --- Role authorization ---
-    let scope = if auth.privy_allowed_roles.is_empty() {
-        // The allow-list is the workspace alone, and the caller is a member.
-        "admin".to_string()
-    } else {
+    // --- Role authorization (fail closed) ---
+    if !auth.privy_allowed_roles.is_empty() {
         match claims.role.as_deref() {
-            Some(role) if auth.privy_allowed_roles.iter().any(|r| r == role) => "admin".to_string(),
+            Some(role) if auth.privy_allowed_roles.iter().any(|r| r == role) => {
+                /* role confirmed */
+            }
             _ => {
-                tracing::info!(
+                tracing::warn!(
                     sub = %claims.sub,
                     role = ?claims.role,
                     allowed = ?auth.privy_allowed_roles,
-                    "Privy JWT role not in allowed list — downgrading to read scope"
+                    "Privy JWT rejected: role not in allowed list"
                 );
-                "read".to_string()
+                return None;
             }
         }
-    };
+    }
+    // Either the role was confirmed above, or `privy_allowed_roles` is empty
+    // and the workspace check above already confirmed membership.
 
-    Some((AuthMethod::Jwt, scope, Some(claims.sub)))
+    Some((AuthMethod::Jwt, "admin".to_string(), Some(claims.sub)))
 }
 
 /// Attempt to validate a Bearer token as an agent token.
@@ -2687,6 +2726,14 @@ mod tests {
         }
     }
 
+    /// `privy_auth` plus a `privy_allowed_users` list, no roles or workspace.
+    fn privy_auth_with_users(users: &[&str]) -> ServeAuthConfig {
+        ServeAuthConfig {
+            privy_allowed_users: users.iter().map(|user| user.to_string()).collect(),
+            ..privy_auth(&[], None)
+        }
+    }
+
     /// A test state whose JWKS cache already trusts the test signing key.
     async fn privy_test_state(auth: ServeAuthConfig) -> Arc<AppState> {
         let mut state = make_test_state(auth);
@@ -2697,10 +2744,21 @@ mod tests {
     }
 
     fn privy_test_jwt(aud: &str, role: Option<&str>, org_id: Option<&str>) -> String {
+        privy_test_jwt_with_sub(PRIVY_TEST_SUB, aud, role, org_id)
+    }
+
+    /// `privy_test_jwt` with an explicit `sub`, for exercising
+    /// `privy_allowed_users` against a second, unlisted user id.
+    fn privy_test_jwt_with_sub(
+        sub: &str,
+        aud: &str,
+        role: Option<&str>,
+        org_id: Option<&str>,
+    ) -> String {
         crate::jwks::test_support::sign(
             PRIVY_TEST_KID,
             &serde_json::json!({
-                "sub": PRIVY_TEST_SUB,
+                "sub": sub,
                 "iss": "privy.io",
                 "aud": aud,
                 "exp": Utc::now().timestamp() + 3600,
@@ -2758,15 +2816,37 @@ mod tests {
         );
         for role in [Some("viewer"), None] {
             let jwt = privy_test_jwt(PRIVY_TEST_APP_ID, role, None);
-            let scope = try_privy_jwt(&jwt, &auth, &state)
-                .await
-                .map(|(_, scope, _)| scope);
-            assert_eq!(scope.as_deref(), Some("read"), "role {role:?}");
+            assert_eq!(
+                try_privy_jwt(&jwt, &auth, &state).await,
+                None,
+                "role {role:?}"
+            );
         }
         assert_eq!(
             privy_middleware_status(state, &admin).await,
             StatusCode::NO_CONTENT
         );
+    }
+
+    #[tokio::test]
+    async fn privy_jwt_role_mismatch_is_rejected() {
+        // D18 (2026-10-15, status-quo decision 3): a role outside the
+        // allow-list must be refused outright, not downgraded to `read`.
+        let auth = privy_auth(&["admin"], None);
+        for role in [Some("viewer"), None] {
+            let state = privy_test_state(auth.clone()).await;
+            let jwt = privy_test_jwt(PRIVY_TEST_APP_ID, role, None);
+            assert_eq!(
+                try_privy_jwt(&jwt, &auth, &state).await,
+                None,
+                "role {role:?}"
+            );
+            assert_eq!(
+                privy_middleware_status(state, &jwt).await,
+                StatusCode::UNAUTHORIZED,
+                "role {role:?}"
+            );
+        }
     }
 
     #[tokio::test]
@@ -2804,6 +2884,103 @@ mod tests {
         assert_eq!(
             privy_middleware_status(state, &jwt).await,
             StatusCode::UNAUTHORIZED
+        );
+    }
+
+    #[tokio::test]
+    async fn privy_jwt_user_allow_list_admits_only_listed_users() {
+        // D18 user-id half (gap-47e0de): a listed `sub` gets admin even when
+        // no role or workspace allow-list is configured; an unlisted `sub`
+        // stays fail-closed rather than falling through to an open grant.
+        let auth = privy_auth_with_users(&[PRIVY_TEST_SUB]);
+
+        let state = privy_test_state(auth.clone()).await;
+        let listed = privy_test_jwt(PRIVY_TEST_APP_ID, None, None);
+        assert_eq!(
+            try_privy_jwt(&listed, &auth, &state).await,
+            Some((
+                AuthMethod::Jwt,
+                "admin".to_string(),
+                Some(PRIVY_TEST_SUB.to_string())
+            ))
+        );
+        assert_eq!(
+            privy_middleware_status(state, &listed).await,
+            StatusCode::NO_CONTENT
+        );
+
+        let state = privy_test_state(auth.clone()).await;
+        let unlisted =
+            privy_test_jwt_with_sub("did:privy:someone-else", PRIVY_TEST_APP_ID, None, None);
+        assert_eq!(try_privy_jwt(&unlisted, &auth, &state).await, None);
+        assert_eq!(
+            privy_middleware_status(state, &unlisted).await,
+            StatusCode::UNAUTHORIZED
+        );
+    }
+
+    #[tokio::test]
+    async fn privy_jwt_user_allow_list_is_independent_of_workspace_mismatch() {
+        // A listed user needs no `org_id`: configuring privy_workspace_id
+        // alongside the user allow-list must not gate the listed user's sub.
+        let auth = ServeAuthConfig {
+            privy_allowed_users: vec![PRIVY_TEST_SUB.to_string()],
+            ..privy_auth(&[], Some("org-a"))
+        };
+        let state = privy_test_state(auth.clone()).await;
+
+        // No org_id claim at all; the workspace check alone would reject this.
+        let jwt = privy_test_jwt(PRIVY_TEST_APP_ID, None, None);
+        assert_eq!(
+            try_privy_jwt(&jwt, &auth, &state).await,
+            Some((
+                AuthMethod::Jwt,
+                "admin".to_string(),
+                Some(PRIVY_TEST_SUB.to_string())
+            ))
+        );
+    }
+
+    #[tokio::test]
+    async fn privy_jwt_user_allow_list_is_independent_of_role_mismatch() {
+        // A listed user needs no matching `role` either.
+        let auth = ServeAuthConfig {
+            privy_allowed_users: vec![PRIVY_TEST_SUB.to_string()],
+            ..privy_auth(&["admin"], None)
+        };
+        let state = privy_test_state(auth.clone()).await;
+
+        // "viewer" is not in privy_allowed_roles; only the user allow-list
+        // should matter for this sub.
+        let jwt = privy_test_jwt(PRIVY_TEST_APP_ID, Some("viewer"), None);
+        assert_eq!(
+            try_privy_jwt(&jwt, &auth, &state).await,
+            Some((
+                AuthMethod::Jwt,
+                "admin".to_string(),
+                Some(PRIVY_TEST_SUB.to_string())
+            ))
+        );
+    }
+
+    #[tokio::test]
+    async fn privy_jwt_user_allow_list_combines_with_workspace_for_other_users() {
+        // The user allow-list adds a path; it does not replace the existing
+        // workspace path for subs it does not list.
+        let auth = ServeAuthConfig {
+            privy_allowed_users: vec!["did:privy:someone-else".to_string()],
+            ..privy_auth(&[], Some("org-a"))
+        };
+        let state = privy_test_state(auth.clone()).await;
+
+        let member = privy_test_jwt(PRIVY_TEST_APP_ID, None, Some("org-a"));
+        assert_eq!(
+            try_privy_jwt(&member, &auth, &state).await,
+            Some((
+                AuthMethod::Jwt,
+                "admin".to_string(),
+                Some(PRIVY_TEST_SUB.to_string())
+            ))
         );
     }
 

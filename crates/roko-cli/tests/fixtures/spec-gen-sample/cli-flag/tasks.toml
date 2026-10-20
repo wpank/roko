@@ -1,0 +1,93 @@
+[meta]
+done = 0
+plan = "add-a-limit-n-option-to-roko-learn-reflexes-today-its-human-readable-output-shows-at-most-five-rules-by-hits-and-at-most-five-recent-demotions-fixed-by-reflex-display-limit-in-crates-roko-cli-src"
+status = "ready"
+total = 1
+
+[[task]]
+acceptance = [
+    "AC1: `roko learn reflexes --limit 3` parses to `LearnCmd::Reflexes { limit: Some(3), .. }`, and `roko learn reflexes` with no flag parses to `limit: None`.",
+    "AC2: `roko learn reflexes --limit 0` is a parse error whose message contains `--limit`.",
+    "AC3: with 8 reflex_demoted events in efficiency.jsonl, `recent_reflex_demotions(dir, 2)` returns 2 events and `recent_reflex_demotions(dir, REFLEX_DISPLAY_LIMIT)` returns 5.",
+    "AC4: `cargo test -p roko-cli learn_reflexes_limit` passes.",
+]
+allowed_tools = [
+    "read_file",
+    "grep",
+    "edit_file",
+]
+denied_tools = []
+depends_on = []
+description = """
+All edits are in crates/roko-cli/src/commands/learn.rs.
+
+1. In `LearnCmd::Reflexes` (lines 86-91), add a field `limit: Option<u32>`. Give it a doc comment and the attribute `#[arg(long, value_parser = clap::value_parser!(u32).range(1..))]`, following the `Episodes --limit` field at lines 64-66. Clap then rejects `--limit 0`. Change the variant's doc comment on line 86 so it no longer says "top five". Say instead that the default is five and that `--limit` changes it.
+
+2. In `dispatch_learn`, the lock-path match near line 363 becomes `LearnCmd::Reflexes { workdir, .. }`. In the arm at line 473, bind `limit` and compute `let limit = limit.map(|n| n as usize).unwrap_or(REFLEX_DISPLAY_LIMIT);`. The non-JSON branch calls `cmd_learn_reflexes(&wd, limit)`. The JSON branch still calls `cmd_learn_json(&wd, "reflexes")` unchanged.
+
+3. Add a `limit: usize` parameter to `cmd_learn_reflexes`, `print_learn_reflexes`, `recent_reflex_demotions` and `format_reflexes_human` (lines 2604-2689). Use `.take(limit)` where these functions now use `.take(REFLEX_DISPLAY_LIMIT)`. `format_reflexes_human` also applies `.take(limit)` to the demotions it prints.
+
+4. Keep the existing callers on the default: `cmd_learn` "all" (line 1437) calls `print_learn_reflexes(workdir, REFLEX_DISPLAY_LIMIT)`, and `collect_reflexes_json` (line 1934) calls `recent_reflex_demotions(workdir, REFLEX_DISPLAY_LIMIT)`. Keep `REFLEX_DISPLAY_LIMIT = 5`.
+
+5. Add unit tests to the existing `mod tests` (line 3532). Each test name starts with `learn_reflexes_limit`:
+   - `learn_reflexes_limit_parses`: `roko learn reflexes --limit 3` parses to `limit: Some(3)`, and with no flag it parses to `limit: None`.
+   - `learn_reflexes_limit_zero_rejected`: `Cli::try_parse_from` with `--limit 0` returns Err, and the error text contains `--limit`.
+   - `learn_reflexes_limit_truncates_demotions`: in a tempdir, write 8 `reflex_demoted` events to `.roko/learn/efficiency.jsonl`. Check that `recent_reflex_demotions(dir, 2)` returns 2 events and that `recent_reflex_demotions(dir, REFLEX_DISPLAY_LIMIT)` returns 5.
+"""
+files = ["crates/roko-cli/src/commands/learn.rs"]
+goal = "`roko learn reflexes --limit N` shows at most N top rules and at most N recent demotions. Without the flag it still shows five, `--limit 0` is rejected and `--json` output does not change."
+id = "T1"
+max_loc = 120
+non_goals = [
+    "Do not change the `--json` output of `roko learn reflexes` or `collect_reflexes_json`: it stays capped at REFLEX_DISPLAY_LIMIT.",
+    "Do not change the reflex section of `roko learn all`; it keeps the default of five.",
+    "Do not edit roko-learn or any other crate.",
+    "Do not edit CLAUDE.md or other docs.",
+]
+open_questions = []
+role = "implementer"
+status = "ready"
+tier = "integrative"
+title = "Add --limit <N> to `roko learn reflexes` human output, with unit tests"
+
+[task.context]
+anti_patterns = [
+    "Do NOT remove REFLEX_DISPLAY_LIMIT or change its value; it is still the default and the JSON cap.",
+    "Do NOT add `limit` to the JSON path or change LearnJsonReflexes.",
+    "Do NOT make up a hard upper bound for --limit; only 0 is rejected.",
+    "Do NOT create new files; put the tests in the existing `mod tests` in learn.rs.",
+]
+symbols = [
+    "REFLEX_DISPLAY_LIMIT — existing const (5), kept as the default",
+    "print_learn_reflexes — also called from cmd_learn 'all' at line 1437",
+    "recent_reflex_demotions — also called from collect_reflexes_json at line 1934",
+    "learn_efficiency_path — gives the path to .roko/learn/efficiency.jsonl for the test fixture",
+    'roko_learn::efficiency::AgentEfficiencyEvent — the event type to serialize with outcome = "reflex_demoted" in the test',
+]
+
+[[task.context.read_files]]
+lines = "60-95"
+path = "crates/roko-cli/src/commands/learn.rs"
+why = "The Episodes --limit clap pattern to copy, and the Reflexes variant to extend."
+
+[[task.context.read_files]]
+lines = "360-480"
+path = "crates/roko-cli/src/commands/learn.rs"
+why = "The dispatch_learn lock match (line 363) and the Reflexes dispatch arm (line 473) that must pass the limit."
+
+[[task.context.read_files]]
+lines = "2600-2690"
+path = "crates/roko-cli/src/commands/learn.rs"
+why = "cmd_learn_reflexes, print_learn_reflexes, recent_reflex_demotions and format_reflexes_human, which take the new limit parameter."
+
+[[task.verify]]
+command = "grep -q 'fn learn_reflexes_limit_truncates_demotions' crates/roko-cli/src/commands/learn.rs && cargo test -p roko-cli learn_reflexes_limit"
+covers = [
+    "AC1",
+    "AC2",
+    "AC3",
+    "AC4",
+]
+expect = "fail_on_base"
+fail_msg = "The learn_reflexes_limit unit tests are missing or failing"
+phase = "test"

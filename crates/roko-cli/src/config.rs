@@ -1463,7 +1463,8 @@ fn parse_value_for_key(key: &str, value: &str) -> Result<toml::Value> {
         // Floats
         ["dreams", "quality_gain"]
         | ["dreams", "quality_penalty"]
-        | ["learning", "lookahead_threshold"] => {
+        | ["learning", "lookahead_threshold"]
+        | ["authoring", "max_generation_usd"] => {
             let f = value
                 .parse::<f64>()
                 .with_context(|| format!("parse {key} as float"))?;
@@ -1984,6 +1985,7 @@ impl ServeAuthLayer {
             jwks_providers: defaults.jwks_providers,
             privy_workspace_id: defaults.privy_workspace_id,
             privy_allowed_roles: defaults.privy_allowed_roles,
+            privy_allowed_users: defaults.privy_allowed_users,
             enforcement_mode: defaults.enforcement_mode,
             invite_expiry_days: defaults.invite_expiry_days,
         }

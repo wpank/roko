@@ -133,8 +133,13 @@ pub mod chain_handler;
 pub mod chain_registry;
 pub mod chat;
 pub mod chat_history;
+pub mod chat_host;
 pub mod chat_inline;
 pub mod chat_session;
+#[cfg(all(test, unix))]
+mod check_env_probe;
+#[cfg(all(test, unix))]
+mod check_process_probe;
 pub mod clean;
 /// Subcommand implementations that live in the library; the `roko` binary's
 /// own `commands` module re-exports them.
@@ -195,8 +200,10 @@ pub mod pipe;
 pub mod plan;
 pub mod plan_authoring;
 pub mod plan_brief;
+pub mod plan_estimate;
 pub mod plan_generate;
 pub mod plan_generator;
+pub mod plan_import;
 pub mod plan_policy;
 pub mod plan_validate;
 pub mod projection;

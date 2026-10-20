@@ -56,6 +56,10 @@ const fn default_compile_concurrency() -> usize {
     1
 }
 
+const fn default_gate_nice() -> i32 {
+    crate::child_env::GateLimits::DEFAULT_NICE
+}
+
 const fn default_sibling_settle_secs() -> u64 {
     600
 }
@@ -324,6 +328,19 @@ pub struct GatesConfig {
     /// Per-repository Cargo command ownership limit.
     #[serde(default = "default_compile_concurrency")]
     pub compile_concurrency: usize,
+    /// How many jobs a gate command's cargo builds run at once, and how many
+    /// tests its test binaries run at once (`CARGO_BUILD_JOBS` and
+    /// `RUST_TEST_THREADS`), for every check roko runs: task verify steps and
+    /// rungs, whole-plan checks and post-merge regression checks
+    /// (bug-b3849c). Unset: half the CPUs, at least 2. `0`: no cap. A value
+    /// in roko's own environment wins.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cargo_jobs: Option<usize>,
+    /// The niceness those commands run at, so that the person's own work
+    /// keeps the machine (bug-b3849c). Default: 10. `0` leaves their
+    /// priority alone.
+    #[serde(default = "default_gate_nice")]
+    pub nice: i32,
     /// Seconds a Graph verify step that failed while sibling tasks were
     /// editing the same working tree waits for them to finish their current
     /// attempt before re-running once; only the re-run counts. `0` disables
@@ -371,11 +388,12 @@ pub struct GatesConfig {
     /// pinned acceptance tests or gate config fail it either way.
     #[serde(default)]
     pub diff_scope: DiffScope,
-    /// Extra roko environment variables that gate commands (task `verify`
-    /// steps, build and test gates) may inherit: exact names or `PREFIX*`
-    /// patterns, e.g. `["DATABASE_URL", "AWS_*"]`.
+    /// Extra roko environment variables that check commands (task `verify`
+    /// steps, rungs, build and test gates, whole-plan and post-merge
+    /// regression checks, red-on-base and audit re-runs) may inherit: exact
+    /// names or `PREFIX*` patterns, e.g. `["DATABASE_URL", "AWS_*"]`.
     ///
-    /// Gate commands start from an empty environment and inherit only an
+    /// Check commands start from an empty environment and inherit only an
     /// allowlist: system basics (`PATH`, `HOME`, `USER`, `SHELL`, `TERM`,
     /// `TMPDIR`, `TZ`, `CI`), locale (`LANG`, `LC_*`), `XDG_*`, toolchain and
     /// build settings (`CARGO_*`, `RUSTUP_*`, `RUSTC*`, `RUST_*`, `NODE_*`,
@@ -383,10 +401,31 @@ pub struct GatesConfig {
     /// proxies, and `ROKO_*`. Names that look like credentials (`*_KEY`,
     /// `*_TOKEN`, `*_SECRET`, `*_PASSWORD`, ...) and names roko loaded from
     /// `~/.roko/.env` or `.roko/.env` are dropped even then. A name listed
-    /// here is always inherited, secret-looking or not. See
-    /// `roko_core::child_env`.
+    /// here is inherited, secret-looking or not, except as `strip_env` says.
+    ///
+    /// GitHub credentials and the provider keys roko loaded from a `.env`
+    /// file need an exact name here: a `PREFIX*` pattern does not admit them
+    /// (bug-3c4600). Checks get `GH_CONFIG_DIR` pointing at an empty
+    /// directory, so `gh` finds no login, and lose `GH_TOKEN`,
+    /// `GITHUB_TOKEN`, `GH_ENTERPRISE_TOKEN` and `GITHUB_ENTERPRISE_TOKEN`.
+    /// Listing `GH_CONFIG_DIR` gives them the person's `gh` login back.
+    ///
+    /// A check builds in its own checkout (bug-be2a53): an inherited
+    /// `CARGO_TARGET_DIR`, `CARGO_BUILD_TARGET_DIR` or `CARGO_BUILD_BUILD_DIR`
+    /// that names a directory outside the check's is dropped, so cargo builds
+    /// in the checkout's `target/`. Naming one exactly here keeps it, and
+    /// lets checks in different checkouts, such as a plan's task worktrees,
+    /// share builds again: cargo then takes one checkout's build of a crate
+    /// for another's, and a check can pass code that does not compile.
+    /// See `roko_core::child_env`.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub env_passthrough: Vec<String>,
+    /// Variables check commands never inherit, even when the allowlist or
+    /// `env_passthrough` admits them: exact names or `PREFIX*` patterns, e.g.
+    /// `["CARGO_REGISTRIES_*", "SCCACHE_*"]` (bug-3c4600). Variables roko
+    /// sets for a check itself, such as its `CARGO_TARGET_DIR`, stay.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub strip_env: Vec<String>,
     /// Custom gate rungs. When non-empty, these replace the built-in defaults.
     /// `roko run` and every `roko plan run` task run the required ones as
     /// verify steps ([`Self::required_rungs`]).
@@ -467,6 +506,8 @@ impl Default for GatesConfig {
             impact_max_reverse_dependents: default_impact_max_reverse_dependents(),
             impact_max_targets: default_impact_max_targets(),
             compile_concurrency: default_compile_concurrency(),
+            cargo_jobs: None,
+            nice: default_gate_nice(),
             sibling_settle_secs: default_sibling_settle_secs(),
             baseline_filter: default_true(),
             llm_judge: false,
@@ -475,6 +516,7 @@ impl Default for GatesConfig {
             max_output_tokens: HashMap::new(),
             diff_scope: DiffScope::Record,
             env_passthrough: Vec::new(),
+            strip_env: Vec::new(),
             custom_rungs: Vec::new(),
             packs: BTreeMap::new(),
             max_rung: None,
@@ -489,6 +531,31 @@ impl Default for GatesConfig {
 }
 
 impl GatesConfig {
+    /// The limits gate commands run with: `cargo_jobs` (unset: half the
+    /// CPUs, at least 2; `0`: no cap) and `nice` (below 0 counts as 0).
+    #[must_use]
+    pub fn gate_limits(&self) -> crate::child_env::GateLimits {
+        let cargo_jobs = match self.cargo_jobs {
+            None => Some(crate::child_env::GateLimits::default_cargo_jobs()),
+            Some(0) => None,
+            Some(jobs) => Some(jobs),
+        };
+        crate::child_env::GateLimits {
+            cargo_jobs,
+            nice: self.nice.max(0),
+        }
+    }
+
+    /// What every check command of a run inherits beyond its caller's list
+    /// (`env_passthrough`) and never inherits (`strip_env`).
+    #[must_use]
+    pub fn check_env_settings(&self) -> crate::child_env::CheckEnvSettings {
+        crate::child_env::CheckEnvSettings {
+            passthrough: self.env_passthrough.clone(),
+            strip: self.strip_env.clone(),
+        }
+    }
+
     /// The smoothing factor of the gate pass-rate EMAs: `ema_alpha` when it
     /// lies in (0, 1), the default otherwise.
     #[must_use]
@@ -964,6 +1031,42 @@ required = true
         assert_eq!(cfg.gates.effective_rungs().len(), 2);
         assert_eq!(cfg.gates.effective_rungs()[0].name, "compile");
         assert_eq!(cfg.gates.effective_rungs()[1].timeout_secs, 300);
+    }
+
+    /// bug-b3849c: checks run with a job cap at niceness 10 unless
+    /// `[gates]` says otherwise; `cargo_jobs = 0` lifts the cap, and a
+    /// negative niceness counts as 0.
+    #[test]
+    fn gate_limits_default_to_half_the_cpus_at_niceness_10() {
+        use crate::child_env::GateLimits;
+
+        let default = RokoConfig::default().gates.gate_limits();
+        assert_eq!(default, GateLimits::default());
+        assert_eq!(default.nice, 10);
+        assert!(default.cargo_jobs.is_some_and(|jobs| jobs >= 2));
+
+        let limits = |toml: &str| {
+            RokoConfig::from_toml(toml)
+                .expect("config parses")
+                .gates
+                .gate_limits()
+        };
+        let set = limits("[gates]\ncargo_jobs = 3\nnice = 15\n");
+        assert_eq!(
+            set,
+            GateLimits {
+                cargo_jobs: Some(3),
+                nice: 15
+            }
+        );
+        let off = limits("[gates]\ncargo_jobs = 0\nnice = -5\n");
+        assert_eq!(
+            off,
+            GateLimits {
+                cargo_jobs: None,
+                nice: 0
+            }
+        );
     }
 
     #[test]

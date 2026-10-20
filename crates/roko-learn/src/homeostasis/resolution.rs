@@ -98,7 +98,10 @@ pub struct TaskResolution {
     /// The chain's `harness_policy` arm; `None` when no holdout was drawn,
     /// which counts as adaptive.
     pub arm: Option<Arm>,
-    /// Whether M4 audited the chain's pass.
+    /// Whether M4 audited the chain's pass, in a stream that knows it when
+    /// the chain resolves. A live run's audit labels land after the chain
+    /// resolved, so its folds leave this unset and the labels reach E3
+    /// through `Controller::on_audit` (gap-618548).
     pub audited: bool,
     /// What the audit found: `Some(true)` when the pass failed hidden or
     /// stronger checks.

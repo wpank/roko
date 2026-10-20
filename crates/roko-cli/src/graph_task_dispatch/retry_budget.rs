@@ -36,7 +36,7 @@ use std::sync::Arc;
 use roko_core::config::GatesConfig;
 use roko_core::defaults::DEFAULT_GATE_RETRY_MIN_OBSERVATIONS;
 use roko_gate::AdaptiveThresholds;
-use roko_gate::rung_for_gate_name;
+use roko_gate::rung_for_verify_phase;
 use roko_graph::cell::CellContext;
 use roko_graph::cells::TaskExecutionSpec;
 use roko_neuro::KnowledgeStore;
@@ -202,7 +202,7 @@ impl TaskRetryBudgets {
         let rungs: BTreeSet<u32> = task
             .verify
             .iter()
-            .filter_map(|step| rung_for_gate_name(&step.phase))
+            .filter_map(|step| rung_for_verify_phase(&step.phase))
             .map(|rung| rung.as_index())
             .collect();
         // Ties go to the lowest rung, so the choice is deterministic.

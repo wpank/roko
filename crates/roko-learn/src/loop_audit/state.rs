@@ -14,8 +14,11 @@
 //!    dormant loop is never `null` or `harm`;
 //! 3. at most one transition per loop per dwell (24 h and 100 opportunities);
 //! 4. `null` needs a narrow sequence after N_null opportunities;
-//! 5. a placebo transition, an SRM alarm or an ordering violation on a clean
-//!    loop sets `audit_broken`, which freezes every transition;
+//! 5. a placebo transition, a placebo whose ι_net or β interval excludes 0
+//!    ([`placebo_shows_effect`]), an SRM alarm or an ordering violation on a
+//!    clean loop sets `audit_broken`, which freezes every transition. The
+//!    placebo's arms are identical, so no influence (`inert`) and a null
+//!    benefit (`null`) are what it is built to show: neither moves it;
 //! 6. `enforce = false` keeps the learned policy, and exempt loops are never
 //!    demoted. `outcome_sensor_degraded` also freezes β-based transitions for
 //!    loops whose outcome uses the false-green label.
@@ -23,13 +26,15 @@
 //! Each evaluation returns the state, reason, qualifiers and executed policy,
 //! and the transition record with its rule and evidence when the state moved.
 //! S03 §4.10's defaults are [`AuditParams::default`]; backlog 5122 maps
-//! `[learning.audit]` onto them.
+//! `[learning.audit]` onto them ([`AuditParams::configured`]), for the audit
+//! tick and the census alike (gap-ca63ee).
 
+use roko_core::config::learning::LearningAuditConfig;
 use serde::{Deserialize, Serialize};
 
-use super::estimators::Estimate;
+use super::estimators::{Estimate, KAPPA_MAX};
 use super::exposure::{ExposureEstimate, InfluenceEstimate};
-use super::spec::{AuditState, Qualifier, ReasonCode};
+use super::spec::{AuditState, Qualifier, ReasonCode, Registry};
 
 /// Seconds in an hour.
 const HOUR: i64 = 3_600;
@@ -57,6 +62,8 @@ pub struct AuditParams {
     pub delta_min: f64,
     /// δ_ni: the non-inferiority margin on β_pass.
     pub delta_ni: f64,
+    /// κ_max: the clip on CUPED's coefficient in the benefit estimators.
+    pub kappa_max: f64,
     /// The dwell's time between transitions, in seconds.
     pub dwell_secs: i64,
     /// The dwell's opportunities between transitions.
@@ -88,6 +95,7 @@ impl Default for AuditParams {
             n_null: 800,
             delta_min: 0.03,
             delta_ni: 0.03,
+            kappa_max: KAPPA_MAX,
             dwell_secs: 24 * HOUR,
             dwell_opportunities: 100,
             reprobation_secs: 14 * 24 * HOUR,
@@ -101,6 +109,40 @@ impl Default for AuditParams {
 }
 
 impl AuditParams {
+    /// The parameters `config`, a workspace's `[learning.audit]`, sets (S03
+    /// §4.10; backlog 5122), with α split over `registry`'s randomized loops:
+    /// the audit tick's, which `roko learn loops` judges with too
+    /// (gap-ca63ee). The rest keep their defaults.
+    #[must_use]
+    pub fn configured(config: &LearningAuditConfig, registry: &Registry) -> Self {
+        let randomized = registry
+            .loops()
+            .iter()
+            .filter(|spec| spec.lifecycle.is_randomized())
+            .count();
+        Self {
+            alpha: config.alpha,
+            enforced_loops: randomized.max(1),
+            n_eps: config.n_eps,
+            eps_min: config.eps_min,
+            n_iota: config.n_iota,
+            iota_min: config.iota_min,
+            n_beta: config.n_beta,
+            n_null: config.n_null,
+            delta_min: config.delta_min,
+            delta_ni: config.delta_ni,
+            kappa_max: config.kappa_max,
+            dwell_secs: i64::from(config.dwell.hours) * HOUR,
+            dwell_opportunities: config.dwell.opps,
+            reprobation_secs: i64::from(config.reprobation_days) * 24 * HOUR,
+            spibb_n: config.spibb_n,
+            h_probation: config.h.probation,
+            h_live: config.h.live,
+            h_suspect: config.h.suspect,
+            ..Self::default()
+        }
+    }
+
     /// α_ℓ = α/K, the level of each loop's confidence sequences.
     #[must_use]
     pub fn loop_alpha(&self) -> f64 {
@@ -164,7 +206,8 @@ pub struct LoopStatus {
     pub enforce: bool,
     /// Audited but never demoted.
     pub exempt: bool,
-    /// The placebo loop: any transition of it breaks the auditor.
+    /// The placebo loop: no influence and a null benefit, its design, do
+    /// not move it, and any other transition of it breaks the auditor.
     pub placebo: bool,
 }
 
@@ -245,8 +288,25 @@ pub struct AuditorSignals {
     pub srm_alarm: bool,
     /// An ordering violation on a clean loop.
     pub ordering_on_clean_loop: bool,
+    /// The placebo shows an effect its identical arms cannot have
+    /// ([`placebo_shows_effect`]; S03 §4.3).
+    pub placebo_effect: bool,
     /// The M4 sensor's catch rate fell below its floor.
     pub outcome_sensor_degraded: bool,
+}
+
+/// Whether `evidence`, the placebo loop's, shows an effect its identical
+/// arms cannot have (S03 §4.3): the interval of its ι_net, or of its β once
+/// β is estimated, excludes 0. Its proposals are the same no-op on both
+/// arms, so either says the audit's own measurement is broken. `false`
+/// while every interval holds 0 or none is estimated yet.
+#[must_use]
+pub fn placebo_shows_effect(evidence: &LoopEvidence) -> bool {
+    let excludes_zero =
+        |interval: Option<(f64, f64)>| interval.is_some_and(|(low, high)| low > 0.0 || high < 0.0);
+    let influence = evidence.influence.as_ref().and_then(|iota| iota.interval);
+    let benefit = evidence.beta.as_ref().and_then(|beta| beta.interval);
+    excludes_zero(influence) || excludes_zero(benefit)
 }
 
 /// A loop's move, with its rule and evidence.
@@ -336,6 +396,9 @@ impl Auditor {
         if self.broken.is_none() {
             if signals.srm_alarm {
                 self.broken = Some("SRM e-value above 1/α_srm".to_string());
+            } else if signals.placebo_effect {
+                let why = "the placebo shows an effect: its ι_net or β interval excludes 0";
+                self.broken = Some(why.to_string());
             } else if signals.ordering_on_clean_loop {
                 self.broken = Some("ordering violation on a clean loop".to_string());
             }
@@ -424,7 +487,10 @@ impl Auditor {
                 ),
             );
         }
+        // The placebo's arms are identical, so its ι is 0 by design (S03
+        // §4.2): that is no move. The placebo signal reads its intervals.
         if audited
+            && !status.placebo
             && let Some(influence) = &evidence.influence
             && n >= p.n_iota
             && influence
@@ -471,8 +537,10 @@ impl Auditor {
                 format!("UCB(β) {:.3}", upper(&evidence.beta).unwrap_or_default()),
             );
         }
+        // A narrow null is the placebo's design too.
         if judge_beta
             && in_probation
+            && !status.placebo
             && n >= p.n_null
             && lower(&evidence.beta).is_some_and(|low| low > -p.delta_min)
             && upper(&evidence.beta).is_some_and(|high| high < p.delta_min)
@@ -674,6 +742,73 @@ mod tests {
         };
         let alarmed = srm.evaluate(&real, &harmful, &signals);
         assert!(alarmed.audit_broken && alarmed.transition.is_none());
+    }
+
+    /// S03 §4.2-§4.3 (gap-6f31c3): the placebo's identical arms give it no
+    /// influence and a null benefit by design, so neither moves it, where the
+    /// same evidence flags a real loop `inert` or `null`. An interval of its
+    /// ι_net or β that leaves 0 is the placebo signal, which breaks the
+    /// auditor before any loop moves.
+    #[test]
+    fn placebo_null_is_no_move_and_its_effect_breaks_the_auditor() {
+        let flat = InfluenceEstimate {
+            opportunities: 2_000,
+            iota: 0.0,
+            aa_floor: 0.0,
+            iota_net: 0.0,
+            interval: Some((-0.01, 0.01)),
+            iota_cite: None,
+        };
+        let null = exposed(2_000, estimate(0.0, 0.01, 2_000));
+        let inert = LoopEvidence {
+            influence: Some(flat.clone()),
+            ..null.clone()
+        };
+        let signals = AuditorSignals::default();
+        let mut auditor = Auditor::new(AuditParams::default());
+        let real = LoopStatus::registered(false, false, false);
+        let placebo = LoopStatus::registered(false, false, true);
+        let moved = auditor.evaluate(&real, &inert, &signals);
+        assert_eq!(moved.reason, Some(ReasonCode::Inert), "{moved:?}");
+        let moved = auditor.evaluate(&real, &null, &signals);
+        assert_eq!(moved.reason, Some(ReasonCode::Null), "{moved:?}");
+        for evidence in [&inert, &null] {
+            let held = auditor.evaluate(&placebo, evidence, &signals);
+            assert!(held.transition.is_none(), "{held:?}");
+            assert!(!held.audit_broken, "{held:?}");
+            assert!(!placebo_shows_effect(evidence));
+        }
+
+        // Influence or a benefit away from 0 is an effect no placebo has.
+        let influenced = LoopEvidence {
+            influence: Some(InfluenceEstimate {
+                iota_net: 0.3,
+                interval: Some((0.2, 0.4)),
+                ..flat
+            }),
+            ..LoopEvidence::default()
+        };
+        assert!(placebo_shows_effect(&influenced));
+        let harmful = LoopEvidence {
+            beta: Some(estimate(-0.3, 0.05, 500)),
+            ..LoopEvidence::default()
+        };
+        assert!(placebo_shows_effect(&harmful));
+        assert!(!placebo_shows_effect(&LoopEvidence::default()));
+
+        // The signal freezes every loop, even one whose harm is conclusive.
+        let tripped = AuditorSignals {
+            placebo_effect: true,
+            ..AuditorSignals::default()
+        };
+        let mut auditor = Auditor::new(AuditParams::default());
+        let harm = exposed(2_000, estimate(-0.4, 0.05, 2_000));
+        let frozen = auditor.evaluate(&real, &harm, &tripped);
+        assert!(
+            frozen.audit_broken && frozen.transition.is_none(),
+            "{frozen:?}"
+        );
+        assert!(auditor.broken().is_some_and(|why| why.contains("placebo")));
     }
 
     /// Guard 6: an exempt loop is audited but never demoted.

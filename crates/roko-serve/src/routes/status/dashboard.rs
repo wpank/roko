@@ -146,45 +146,48 @@ mod tests {
 /// `GET /api/operations/:id` — look up a background operation by ID.
 ///
 /// Returns `{ "id", "kind", "status": "running"|"completed"|"failed",
-/// "result"?, "error"? }` (section 6, P-2 of the portal contract).
-/// `result` is parsed from the stored JSON string back into an object so
-/// the portal can read its fields without a second parse step.
+/// "result"?, "error"?, "elapsed_secs"?, "progress"? }` (section 6, P-2 of
+/// the portal contract). `result` is parsed from the stored JSON string back
+/// into an object so the portal can read its fields without a second parse
+/// step. A running operation says how long it has run (`elapsed_secs`), and
+/// one whose producer reports progress carries its latest report
+/// (`progress`), and keeps it once it ends (gap-11d870). A finished one is
+/// read from the kept record of finished operations once its handle is
+/// gone (bug-a0f01e).
 pub async fn operation_status(
     State(state): State<Arc<AppState>>,
     AxumPath(id): AxumPath<String>,
 ) -> Result<Json<Value>, ApiError> {
+    use crate::operations::{finished_operation, latest_progress, status_json};
     use crate::state::OperationStatus;
 
-    let ops = state.operations.read().await;
-    let handle = ops
-        .get(&id)
-        .ok_or_else(|| ApiError::not_found("operation not found"))?;
-
-    let (status_str, result_val, error_val) = match &handle.status {
-        OperationStatus::Running => ("running", Value::Null, Value::Null),
-        OperationStatus::Completed { result } => {
-            // Parse the stored JSON string back into an object when possible.
-            let parsed = result
-                .as_deref()
-                .and_then(|s| serde_json::from_str::<Value>(s).ok())
-                .unwrap_or(Value::Null);
-            ("completed", parsed, Value::Null)
-        }
-        OperationStatus::Failed { error } => ("failed", Value::Null, Value::String(error.clone())),
-    };
-
-    let mut response = json!({
-        "id": id,
-        "kind": handle.kind,
-        "status": status_str,
+    let held = state.operations.read().await.get(&id).map(|handle| {
+        let elapsed_secs = matches!(handle.status, OperationStatus::Running)
+            .then(|| handle.started.elapsed().as_secs());
+        status_json(
+            &id,
+            &handle.kind,
+            &handle.status,
+            elapsed_secs,
+            latest_progress(handle),
+        )
     });
-    if !result_val.is_null() {
-        response["result"] = result_val;
-    }
-    if !error_val.is_null() {
-        response["error"] = error_val;
-    }
-    drop(ops);
+    let response = match held {
+        Some(response) => response,
+        // Its handle was collected a minute after it ended, or a restart lost
+        // it: the kept record says how it ended (bug-a0f01e).
+        None => finished_operation(&state, &id)
+            .map(|finished| {
+                status_json(
+                    &id,
+                    &finished.kind,
+                    &finished.status,
+                    None,
+                    finished.progress,
+                )
+            })
+            .ok_or_else(|| ApiError::not_found("operation not found"))?,
+    };
     Ok(Json(response))
 }
 

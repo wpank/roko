@@ -18,13 +18,30 @@ without its full cross-record consistency checks: this arm is exploratory, S09 Â
 whole-plan gate Roko itself runs as part of `plan run` (gap-60233f) â€” a Python check with no model call, so its
 cost is always $0, recorded so every successful run shows that it ran.
 
+**Network** (gap-0bd49a). Both halves run in the agents' sandbox. The planner's session is confined as the Claude
+Code arm's is: its whole process tree, its Bash tool included, reaches only its own egress proxy's port. The
+ladder's roko processes reach only the metering proxy's port, as the Roko arm's do. The record's `network_policy`
+names the ladder's rule, and under `planner` the planner's rule with what its egress proxy admitted and refused.
+
 Reuses, never reimplements: `run_cli.CliConfig`/`build_invocation`/`run_session`/`Meter`/`parse_result` for the
 planner's own session (the same machinery the direct fd_claude arm uses); `run_roko.binary_path`/`_build`/`_head`/
 `_roko`/`_start_egress`/`network_rule`/`_meter_from_verdict` for the ladder execution's subprocess, sandbox and
-per-attempt pricing; `planemit.PROVIDER_TABLE`/`MODEL_TABLE` for roko.toml's provider and model tables.
+per-attempt pricing; `planemit.LADDER_HEAD`/`PROVIDER_TABLE`/`MODEL_TABLE` for roko.toml's head, provider and model
+tables.
+
+**The prompt** (bug-b19ce8). `vb run` records the arm's prompt in the run's config (`prompt`, which enters
+`config_hash`) from `arm_prompt(arm)`: `PROMPT_VERSION` and the sha256 of every text this module writes or formats
+for the arm's agents: the planner's authoring prompt (`PLANNER_PROMPT`), roko.toml's templates (planemit's
+`LADDER_HEAD`, `PROVIDER_TABLE` and `MODEL_TABLE`, and this module's `ROKO_TOML_TAIL` and `RUNG_LINE`), and the
+planner session's fixed invocation as `run_cli.PROMPT_SHA256` names it (its flags, settings and environment). They are
+read on every call, so a changed template changes the recorded prompt; the arm's own values (its rungs, caps and
+`[roko]` settings) are in the config already. The executors' prompts are Roko's own, recorded per attempt as
+`roko_build`.
 
 API:
     run_task(ctx: harness.TaskContext) -> harness.TaskOutcome
+    arm_prompt(arm) -> {"version", "sha256"}                      # what `vb run` records as the arm's prompt
+    PLANNER_PROMPT, PROMPT_VERSION, ROKO_TOML_TAIL, RUNG_LINE
 """
 
 from __future__ import annotations
@@ -74,6 +91,44 @@ Rules for tasks.toml (TOML):
 
 Write the file now, then stop.
 """
+PROMPT_VERSION = "run-roko-plan-1"  # with the sha256 of the texts below, the arm's recorded prompt (arm_prompt)
+# roko.toml past planemit's LADDER_HEAD (`_roko_toml`): no task or gate rungs of its own beyond a visible stand-in,
+# since the planner's tasks.toml carries every task's verify step and the whole-plan `[meta.verify]` gate.
+ROKO_TOML_TAIL = """\
+[gates]
+cargo_fix_enabled = false
+max_review_cycles = 0
+adaptive_min_retries = {max_retries}
+adaptive_max_retries = {max_retries}
+
+[[gates.rungs]]
+name = "visible"
+command = "true"
+timeout_secs = 5
+required = true
+
+[pipeline.{tier_key}]
+max_turns = {max_turns}
+
+[conductor]
+max_agents = {max_agents}
+
+[runner]
+worktree_per_task = false
+
+[budget]
+max_plan_usd = {usd_cap}
+max_task_retry_usd = {usd_cap}
+max_turn_usd = {turn_usd}
+
+[learning]
+auto_playbook_refresh = false
+dream_on_completion = false
+
+[learning.dreams]
+trigger_on_plan_complete = false
+"""
+RUNG_LINE = "  {{ name = {name}, model = {model} }},\n"  # one rung of `[routing.ladder] rungs`
 EGRESS_LOG = run_roko.EGRESS_LOG
 CLI_CACHE_WRITE_TTL = run_roko.CLI_CACHE_WRITE_TTL
 MAX_PARALLEL_DEFAULT = 3
@@ -87,15 +142,17 @@ def run_task(ctx: harness.TaskContext) -> harness.TaskOutcome:
     started, clock = harness.utc_now(), time.monotonic()
     settings = ctx.arm.get("roko", {})
     planner_settings = ctx.arm.get("planner", {})
-    slug = planemit.plan_slug(ctx.key)
+    slug = planemit.plan_slug(ctx.alias)  # the planner and the executors see it: never the task key (bug-3c921e)
     transcript: list[dict] = []
     attempts: list[run_roko.RokoAttempt] = []
     status, reason = "infra_error", ""
+    network = run_roko.network_rule(ctx.endpoint)
+    policy = {"network": network, "sandbox": sandbox.kind(ctx.deny, network), "unix_sockets": "workspace"}
     try:
         binary = run_roko.binary_path(ctx.arm)
         plan_dir = ctx.workdir / "plans" / slug
         plan_dir.mkdir(parents=True)  # the planner writes tasks.toml here, as planemit.emit's own _write does for it
-        plan_attempt, plan_cost_usd = _run_planner(ctx, settings, planner_settings, slug, transcript)
+        plan_attempt, plan_cost_usd = _run_planner(ctx, settings, planner_settings, slug, transcript, policy)
         attempts.append(plan_attempt)
         if not (plan_dir / "tasks.toml").is_file():
             raise RunnerError(f"the planner session ended without writing plans/{slug}/tasks.toml")
@@ -105,7 +162,6 @@ def run_task(ctx: harness.TaskContext) -> harness.TaskOutcome:
                         if table.get("api_key_env")}
         env = {**ctx.agent_env, "ROKO_CONFIG": str(config_path),
               **{name: run_roko.OFFLINE_KEY for name in api_key_envs}}
-        network = run_roko.network_rule(ctx.endpoint)
         jail = sandbox.command([], deny=ctx.deny, network=network, sockets=[ctx.workdir])
         build = run_roko._build(binary, env, settings.get("build") or None, transcript, jail)
         head = [str(binary), "--repo", str(ctx.workdir), "--no-serve", "--color", "never"]
@@ -142,10 +198,7 @@ def run_task(ctx: harness.TaskContext) -> harness.TaskOutcome:
                           cost=attempt.cost or ledger.Cost(None, None, "unknown"), billed=billed,
                           reserved_usd=attempt.reserved_usd)
     return harness.TaskOutcome(status=status, reason=reason, attempts=attempts, transcript=transcript,
-                               started_at=started, finished_at=harness.utc_now(),
-                               network_policy={"network": run_roko.network_rule(ctx.endpoint),
-                                               "sandbox": sandbox.kind(ctx.deny, run_roko.network_rule(ctx.endpoint)),
-                                               "unix_sockets": "workspace"})
+                               started_at=started, finished_at=harness.utc_now(), network_policy=policy)
 
 
 def _left(ctx: harness.TaskContext, clock: float) -> float:
@@ -153,9 +206,11 @@ def _left(ctx: harness.TaskContext, clock: float) -> float:
 
 
 def _run_planner(ctx: harness.TaskContext, settings: dict, planner_settings: dict, slug: str,
-                 transcript: list[dict]) -> tuple[run_roko.RokoAttempt, float | None]:
+                 transcript: list[dict], policy: dict) -> tuple[run_roko.RokoAttempt, float | None]:
     """Claude-opus-5-5, through this task's own egress proxy, writes `plans/<slug>/tasks.toml`; priced as `run_cli`
-    prices the direct arm's sessions (U' from `modelUsage`, source `cli_usage`)."""
+    prices the direct arm's sessions (U' from `modelUsage`, source `cli_usage`). The session's own network rule and
+    what its egress proxy admitted and refused go into `policy["planner"]`, the record's `network_policy`, even when
+    the session fails (gap-0bd49a)."""
     planner_model = planner_settings.get("model", "claude-opus-5-5")
     table = ctx.arm.get("providers", {}).get("anthropic", {})
     if not table:
@@ -167,6 +222,7 @@ def _run_planner(ctx: harness.TaskContext, settings: dict, planner_settings: dic
     planner_ctx = dataclasses.replace(ctx, model=planner_model, endpoint=planner_endpoint, caps=planner_caps)
     cli = run_cli.CliConfig.from_table(ctx.arm.get("cli", {}))
     egress = run_roko._start_egress(ctx, settings)
+    invocation = None
     try:
         invocation = run_cli.build_invocation(planner_ctx, cli, egress)
         prompt = PLANNER_PROMPT.format(slug=slug, description=ctx.spec_text.strip(),
@@ -178,6 +234,10 @@ def _run_planner(ctx: harness.TaskContext, settings: dict, planner_settings: dic
                                       usd_cap=planner_caps.usd_per_task, meter=meter)
     finally:
         egress.close()
+        if invocation is not None:  # the session's whole process tree ran under this rule, its Bash tool included
+            policy["planner"] = {"network": invocation.network,
+                                 "sandbox": sandbox.kind(ctx.deny, invocation.network),
+                                 "egress": egress.summary(ctx.key)}
     transcript += [{"event": "planner", **event} for event in session.events]
     attempt = run_roko.RokoAttempt(number=0, attempt_key=f"{ctx.chain_key}:plan", model_requested=planner_model,
                                    provider="anthropic", reserved_usd=planner_caps.usd_per_task, cost_class="plan",
@@ -190,9 +250,8 @@ def _run_planner(ctx: harness.TaskContext, settings: dict, planner_settings: dic
 
 
 def _roko_toml(ctx: harness.TaskContext, settings: dict) -> str:
-    """The ladder's providers and models (planemit's own tables, module docstring); no task or gate rungs of its
-    own, since the planner's tasks.toml already carries every task's verify step and the whole-plan `[meta.verify]`
-    gate."""
+    """The ladder's providers and models (planemit's own tables, module docstring) under planemit's LADDER_HEAD, then
+    ROKO_TOML_TAIL. The templates are read on each call, as `arm_prompt` reads them."""
     allowed = ctx.arm["arm"]["models_allow"]
     rows = [ctx.snapshot.row(model) for model in allowed]
     rungs = [run_roko._rung(ctx.arm, model, ctx.snapshot, ctx.caps) for model in allowed]
@@ -205,25 +264,25 @@ def _roko_toml(ctx: harness.TaskContext, settings: dict) -> str:
         key=planemit._key(rung.model), provider=planemit._s(rung.provider), model=planemit._s(rung.model),
         context_window=rung.context_window, max_output=rung.max_output, rates=planemit._rates(row))
         for rung, row in zip(rungs, rows))
-    rung_lines = "".join(f"  {{ name = {planemit._s(rung.name)}, model = {planemit._s(rung.model)} }},\n"
-                         for rung in rungs)
     start = "{ " + ", ".join(f"{tier} = {planemit._s(ctx.model)}" for tier in planemit.TIERS) + " }"
     usd_cap = run_roko._worst_task_usd(ctx.arm, ctx.snapshot, ctx.caps, ctx.price_row) or ctx.caps.usd_per_task
-    return (
-        "config_version = 2\nschema_version = 2\n\n[agent]\ndefault_model = "
-        f"{planemit._s(ctx.model)}\n{''.join(providers.values())}{models}\n"
-        f"[routing]\nfallback_models = []\n\n[routing.ladder]\nenabled = true\nrungs = [\n{rung_lines}]\n"
-        f"start = {start}\n\n[gates]\ncargo_fix_enabled = false\nmax_review_cycles = 0\n"
-        f"adaptive_min_retries = {int(settings.get('max_retries', 2))}\n"
-        f"adaptive_max_retries = {int(settings.get('max_retries', 2))}\n\n"
-        "[[gates.rungs]]\nname = \"visible\"\ncommand = \"true\"\ntimeout_secs = 5\nrequired = true\n\n"
-        f"[pipeline.{planemit._key(settings.get('tier', 'focused'))}]\nmax_turns = {ctx.caps.turns_per_attempt}\n\n"
-        f"[conductor]\nmax_agents = {int(settings.get('max_parallel', MAX_PARALLEL_DEFAULT))}\n\n"
-        "[runner]\nworktree_per_task = false\n\n"
-        f"[budget]\nmax_plan_usd = {round(usd_cap, 6)}\nmax_task_retry_usd = {round(usd_cap, 6)}\n"
-        f"max_turn_usd = {max(round(usd_cap / 10, 6), 1e-06)}\n\n"
-        "[learning]\nauto_playbook_refresh = false\ndream_on_completion = false\n\n"
-        "[learning.dreams]\ntrigger_on_plan_complete = false\n")
+    return (planemit.LADDER_HEAD + ROKO_TOML_TAIL).format(
+        start_model=planemit._s(ctx.model), providers="".join(providers.values()), models=models,
+        rungs="".join(RUNG_LINE.format(name=planemit._s(rung.name), model=planemit._s(rung.model)) for rung in rungs),
+        start=start, max_retries=int(settings.get("max_retries", 2)),
+        tier_key=planemit._key(settings.get("tier", "focused")), max_turns=ctx.caps.turns_per_attempt,
+        max_agents=int(settings.get("max_parallel", MAX_PARALLEL_DEFAULT)), usd_cap=round(usd_cap, 6),
+        turn_usd=max(round(usd_cap / 10, 6), 1e-06))
+
+
+def arm_prompt(arm: dict) -> dict[str, str]:
+    """The prompt `vb run` records for the arm (module docstring, "The prompt"; `vb.runner_prompt`): PROMPT_VERSION
+    and the sha256 of the planner's prompt, roko.toml's templates and the planner session's fixed invocation, read on
+    each call. Every roko_plan arm emits from the same texts, so `arm`'s own values are not hashed: the run's config
+    holds the arm file itself."""
+    return {"version": PROMPT_VERSION, "sha256": planemit._sha256(
+        PLANNER_PROMPT, planemit.LADDER_HEAD, ROKO_TOML_TAIL, RUNG_LINE, planemit.PROVIDER_TABLE, planemit.MODEL_TABLE,
+        run_cli.PROMPT_SHA256)}
 
 
 def _settle_plan(ctx: harness.TaskContext, slug: str, build: str | None

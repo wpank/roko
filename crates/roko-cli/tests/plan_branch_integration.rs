@@ -10,11 +10,16 @@
 //! - C4: two tasks that each pass their own verify but break the build
 //!   together fail the plan on its `[meta] verify`, and `roko plan status`
 //!   names the failed step.
+//! - C5 (bug-be2a53): with one `CARGO_TARGET_DIR` exported for every
+//!   checkout, a task's check never passes on a sibling worktree's build of
+//!   the crate it broke.
 //!
 //! A plain `roko plan run`, with no flag and no `[runner]` setting, runs the
 //! same way, since per-task worktrees are the default (gap-4ec59f).
 
 mod common;
+
+use common::Isolated;
 
 use std::fs;
 use std::path::Path;
@@ -94,6 +99,7 @@ fn operator_state(repo: &Path) -> [String; 3] {
 /// into `target`.
 fn plan_run(repo: &Path, plan: &str, target: &Path) -> StdCommand {
     let mut command = StdCommand::new(cargo_bin("roko"));
+    command.isolated();
     command.arg("--json");
     command
         .current_dir(repo)
@@ -320,6 +326,7 @@ command = "grep -q 'pub fn quad' b/src/lib.rs"
 
     // A plain-text run, whose summary names the plans that failed.
     let run = StdCommand::new(cargo_bin("roko"))
+        .isolated()
         .current_dir(&repo)
         .args(["plan", "run", "plans/c4", "--worktree-per-task", "--no-tui"])
         .arg("--workdir")
@@ -362,6 +369,7 @@ command = "grep -q 'pub fn quad' b/src/lib.rs"
     // The delivery ended `RegressionFailed`, and `roko plan status` names the
     // plan and the failed step.
     let status = Command::new(cargo_bin("roko"))
+        .isolated()
         .current_dir(&repo)
         .args(["--json", "plan", "status", "plans/c4", "--workdir"])
         .arg(&repo)
@@ -378,6 +386,98 @@ command = "grep -q 'pub fn quad' b/src/lib.rs"
     }
     assert_ne!(status["status"], "complete", "plan status: {status}");
     assert_eq!(operator_state(&repo), before);
+}
+
+/// C5 (bug-be2a53): two tasks of one plan edit one crate, each in its own
+/// worktree, while roko's environment exports one `CARGO_TARGET_DIR` for
+/// every checkout. Task B breaks the crate and waits until task A's check has
+/// built A's edit, so B's sources are older than that build. Had B's check
+/// built in the exported dir, cargo would have taken A's build of the crate
+/// as fresh for B and passed code that does not compile. Each task's checks
+/// build in their own worktree: B fails, its edit stays off the plan branch,
+/// and nothing builds in the exported dir.
+#[test]
+fn c5_a_task_check_never_passes_on_another_worktrees_build() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let (repo, state) = (temp.path().join("repo"), temp.path().join("state"));
+    fs::create_dir_all(&repo).expect("repo dir");
+    fs::create_dir_all(&state).expect("state dir");
+    let (hold, b_edited) = (state.join("hold"), state.join("b-edited"));
+    fs::write(&hold, "").expect("hold");
+    let script = Script::new()
+        .task(
+            "A",
+            [Turn::reply().write("src/a.rs", "pub fn a() -> u32 {\n    2\n}\n")],
+        )
+        .task(
+            "B",
+            [Turn::reply()
+                .write("src/b.rs", "pub fn b() -> u32 {\n    missing\n}\n")
+                .hold_while(&hold, &b_edited, 120)],
+        );
+    let provider = ScriptedProvider::install(&temp.path().join("provider"), &script).command();
+    // A's check builds only once B has edited, then lets B finish.
+    let a_check = format!(
+        "n=0; while [ ! -e '{edited}' ] && [ $n -lt 1200 ]; do sleep 0.1; n=$((n + 1)); done; \
+         cargo check --quiet; status=$?; rm -f '{hold}'; exit $status",
+        edited = b_edited.display(),
+        hold = hold.display()
+    );
+    let task = |id: &str, file: &str, check: &str| {
+        format!(
+            "\n[[task]]\nid = \"{id}\"\ntitle = \"Edit {file}\"\ndescription = \"Edit {file}.\"\n\
+             role = \"implementer\"\nstatus = \"ready\"\ntier = \"focused\"\n\
+             files = [\"{file}\"]\n\n[[task.verify]]\nphase = \"build\"\ncommand = {check:?}\n"
+        )
+    };
+    let tasks = format!(
+        "[meta]\nplan = \"c5\"\nmax_parallel = 2\nskip_enrichment = true\n{}{}",
+        task("A", "src/a.rs", &a_check),
+        task("B", "src/b.rs", "cargo check --quiet"),
+    );
+    seed_repo(
+        &repo,
+        &provider,
+        &[
+            (".gitignore", ".roko/\ntarget/\nCargo.lock\n"),
+            (
+                "Cargo.toml",
+                "[package]\nname = \"c\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[workspace]\n",
+            ),
+            ("src/lib.rs", "pub mod a;\npub mod b;\n"),
+            ("src/a.rs", "pub fn a() -> u32 {\n    1\n}\n"),
+            ("src/b.rs", "pub fn b() -> u32 {\n    1\n}\n"),
+            ("plans/c5/tasks.toml", &tasks),
+        ],
+    );
+    let exported = temp.path().join("target");
+
+    let run = plan_run(&repo, "plans/c5", &exported)
+        .args(["--max-retries", "0", "--no-tui"])
+        .output()
+        .expect("run roko");
+    let log = format!(
+        "{}\n{}",
+        String::from_utf8_lossy(&run.stdout),
+        String::from_utf8_lossy(&run.stderr)
+    );
+
+    // A's check built after B's edit and let B finish.
+    assert!(b_edited.exists(), "B never edited: {log}");
+    assert!(!hold.exists(), "A's check never ran: {log}");
+    assert!(
+        git(&repo, &["show", "roko/plan/c5:src/a.rs"]).contains('2'),
+        "{log}"
+    );
+    assert!(
+        !git(&repo, &["show", "roko/plan/c5:src/b.rs"]).contains("missing"),
+        "B's check passed code that does not compile, on A's build: {log}"
+    );
+    assert_ne!(run.status.code(), Some(0), "{log}");
+    assert!(
+        !exported.join("debug").exists(),
+        "a check built in the exported CARGO_TARGET_DIR: {log}"
+    );
 }
 
 /// gap-4ec59f: per-task worktrees are the default. A plain `roko plan run` in
@@ -424,6 +524,7 @@ fn a_plain_plan_run_isolates_its_tasks_by_default() {
     let before = operator_state(&repo);
 
     let run = StdCommand::new(cargo_bin("roko"))
+        .isolated()
         .current_dir(&repo)
         .args(["plan", "run", "plans/isolated", "--no-tui", "--workdir"])
         .arg(&repo)
@@ -457,6 +558,7 @@ fn a_plain_plan_run_isolates_its_tasks_by_default() {
     let command = format!("git merge --ff-only {batch}");
     assert!(stdout.contains(&command), "{log}");
     let status = Command::new(cargo_bin("roko"))
+        .isolated()
         .current_dir(&repo)
         .args(["--json", "plan", "status", "plans/isolated", "--workdir"])
         .arg(&repo)
@@ -502,6 +604,7 @@ fn roko_run_follows_worktree_per_task() {
         let before = operator_state(&repo);
 
         let run = StdCommand::new(cargo_bin("roko"))
+            .isolated()
             .current_dir(&repo)
             .args(["run", "--complexity", "simple", "Write edit.txt"])
             .arg("--workdir")

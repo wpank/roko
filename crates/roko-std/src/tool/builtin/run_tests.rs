@@ -13,6 +13,8 @@ use roko_core::tool::{
 use std::ffi::OsString;
 use std::time::Duration;
 
+use super::child_group;
+
 /// Canonical `snake_case` name.
 pub const NAME: &str = "run_tests";
 
@@ -127,7 +129,6 @@ async fn run(
         cmd.arg(f);
     }
     cmd.current_dir(ctx.worktree());
-    cmd.kill_on_drop(true);
     child_env::apply_gate_env(
         cmd.as_std_mut(),
         parent_env.unwrap_or_else(child_env::process_env),
@@ -138,7 +139,9 @@ async fn run(
     } else {
         ctx.timeout
     };
-    let output = match tokio::time::timeout(effective_timeout, cmd.output()).await {
+    // The run leads a process group of its own, which a cancel or the timeout
+    // kills whole (bug-c83c84).
+    let output = match child_group::output_within(cmd, effective_timeout).await {
         Ok(Ok(o)) => o,
         Ok(Err(e)) => {
             return ToolResult::Err(ToolError::Other(format!("run_tests: spawn failed: {e}")));

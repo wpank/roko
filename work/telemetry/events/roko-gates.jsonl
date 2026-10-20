@@ -1,0 +1,1 @@
+{"schema": "roko.work_event/1", "ts": "2026-10-15T15:51:48Z", "event": "claim", "item": "bug-a7e018", "executor": null, "via": null, "session": "roko-gates", "branch": "work/bug-a7e018", "concurrency": 7, "source": "live", "by": "roko-gates", "size": "S", "claimed_at": "2026-10-15T15:51:48Z"}

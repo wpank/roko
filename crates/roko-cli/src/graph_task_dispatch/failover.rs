@@ -49,6 +49,28 @@ const FAILOVER_REFUSED_ROLE: &str = "failover_refused";
 /// the error says how to log in (backlog 1115).
 const AUTH_FAILURE: &str = "auth_failure";
 
+/// Failover refusal classes that waiting does not end: a login or a change
+/// to the workspace's configuration does, such as a key for a model, or an
+/// API model for a task a CLI agent cannot run (backlog 1115, gap-cf427e).
+const WAITING_DOES_NOT_HELP: [&str; 8] = [
+    AUTH_FAILURE,
+    "not_configured",
+    "not_dispatchable",
+    "contract_unsupported",
+    "disabled",
+    "no_credentials",
+    UNGUARDED_IN_CHECKOUT,
+    UNPRICED_UNDER_CAP,
+];
+
+/// Failover refusal class of a model roko has no price for, which a run held
+/// to a budget cap passes over before any call: the cap could not count the
+/// call (gap-8548e3).
+const UNPRICED_UNDER_CAP: &str = "unpriced_under_cap";
+
+/// Why a model of [`UNPRICED_UNDER_CAP`] is passed over.
+const UNPRICED_REASON: &str = "has no price, and a budget cap can count only priced calls";
+
 /// `RokoError::Gateway` category of an attempt denied in a way no retry can
 /// change (backlog 1116). The error is non-retryable like
 /// [`PROVIDER_EXHAUSTED_CATEGORY`], so the task fails at once with how to
@@ -90,6 +112,70 @@ struct ProviderRefusal {
     at_ms: i64,
 }
 
+/// The [`DashboardEvent::RouteDecided`](roko_core::DashboardEvent::RouteDecided)
+/// of an attempt failover moved to `target` after `refusals` (gap-2a3298):
+/// the models passed over are its ineligible candidates, the last refusal
+/// its reason. `rung` is the ladder rung the target runs on, and `step` the
+/// rungs the task climbed, when the ladder routed the attempt (gap-aaaaae).
+fn failover_route_event(
+    plan_id: &str,
+    task_id: &str,
+    attempt: u32,
+    target: &crate::dispatch_v2::ProviderDispatchSpec,
+    refusals: &[ProviderRefusal],
+    rung: Option<String>,
+    step: u32,
+) -> roko_core::DashboardEvent {
+    let reason = refusals.last().map_or_else(String::new, |refusal| {
+        let words: String = refusal.reason.chars().take(200).collect();
+        format!(
+            "{} on {} passed over ({}): {words}",
+            refusal.model_key, refusal.provider_id, refusal.class
+        )
+    });
+    let mut candidates: Vec<roko_core::RouteCandidate> = refusals
+        .iter()
+        .rev()
+        .take(roko_core::dashboard_snapshot::ROUTE_EVENT_CANDIDATES - 1)
+        .map(|refusal| roko_core::RouteCandidate {
+            model: refusal.model_slug.clone(),
+            provider: refusal.provider_id.clone(),
+            score: 0.0,
+            p: None,
+            eligible: false,
+            ineligible_reason: Some(refusal.class.to_string()),
+        })
+        .collect();
+    candidates.insert(
+        0,
+        roko_core::RouteCandidate {
+            model: target.model_slug.clone(),
+            provider: target.provider_id.clone(),
+            score: 1.0,
+            p: Some(1.0),
+            eligible: true,
+            ineligible_reason: None,
+        },
+    );
+    roko_core::DashboardEvent::RouteDecided {
+        plan_id: plan_id.to_string(),
+        task_id: task_id.to_string(),
+        attempt,
+        model: target.model_slug.clone(),
+        provider: target.provider_id.clone(),
+        stage: "failover".to_string(),
+        reason,
+        source: "failover".to_string(),
+        candidates,
+        ladder: Box::new(roko_core::dashboard_snapshot::RouteLadder {
+            rung,
+            ladder_step: step,
+            ladder_reason: super::ladder::TryReason::Failover.as_str().to_string(),
+            forecast: None,
+        }),
+    }
+}
+
 /// The models failover passed over before the one that ran (bug-35379d).
 /// Empty when the planned model ran.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -126,12 +212,19 @@ pub(super) struct LadderRoute {
     pub(super) role: String,
     /// Index of the routed rung among the role's rungs, cheapest first.
     pub(super) rung: usize,
+    /// Rungs the task climbed above its start rung.
+    pub(super) step: u32,
 }
 
 impl LadderRoute {
-    /// Where `plan` put `task` on the ladder; `None` for an attempt the
-    /// ladder did not route (a pin, a task hint, the router or a default).
-    pub(super) fn of(task: &TaskDef, plan: &crate::dispatch::RunnerDispatchPlan) -> Option<Self> {
+    /// Where `plan` put `task` on the ladder, `step` rungs above its start
+    /// rung; `None` for an attempt the ladder did not route (a pin, a task
+    /// hint, the router or a default).
+    pub(super) fn of(
+        task: &TaskDef,
+        plan: &crate::dispatch::RunnerDispatchPlan,
+        step: u32,
+    ) -> Option<Self> {
         let rung = match plan.source {
             ModelChoiceSource::Ladder { rung } | ModelChoiceSource::SelfModel { rung } => rung,
             _ => return None,
@@ -139,6 +232,7 @@ impl LadderRoute {
         Some(Self {
             role: task.role.as_deref().unwrap_or("implementer").to_string(),
             rung,
+            step,
         })
     }
 }
@@ -153,6 +247,8 @@ pub(super) struct DashboardRow<'a> {
     pub(super) agent_id: &'a str,
     /// The task's role.
     pub(super) role: &'a str,
+    /// The attempt's ordinal, as its attempt key numbers it (bug-369c21).
+    pub(super) attempt: u32,
 }
 
 impl FailoverChain {
@@ -247,6 +343,22 @@ impl GraphTaskDispatcher {
                 );
                 return Err(no_guarded_provider(&[pinned_model]));
             }
+            // A pinned model is never called unpriced under a cap either.
+            if self.unpriced_under_cap(&target) {
+                let refusal = ProviderRefusal {
+                    model_key: candidate.model_key.clone(),
+                    model_slug: target.model_slug.clone(),
+                    provider_id: target.provider_id.clone(),
+                    provider_kind: target.provider_kind,
+                    reason: UNPRICED_REASON.to_string(),
+                    until_ms: None,
+                    definitive: true,
+                    class: UNPRICED_UNDER_CAP,
+                    called: false,
+                    at_ms: chrono::Utc::now().timestamp_millis(),
+                };
+                return Err(self.no_usable_provider(&[refusal], &[], true, None));
+            }
         }
         loop {
             if !pinned && let Some(refusal) = self.blocked_provider(&candidate, &request) {
@@ -255,7 +367,7 @@ impl GraphTaskDispatcher {
                 }
                 let definitive = refusal.definitive;
                 refusals.push(refusal);
-                match self.failover_model(spec, task_id, &refusals, ladder, theta) {
+                match self.failover_model(spec, task_id, &refusals, ladder, theta, &request) {
                     Ok(next) => {
                         candidate = next;
                         continue;
@@ -277,11 +389,26 @@ impl GraphTaskDispatcher {
                 && let (Some(tui), Some(row)) = (&self.tui_bridge, dashboard)
             {
                 let target = self.resolve_candidate(&candidate);
+                // Failover re-routed the attempt: say to what, and why
+                // (gap-2a3298), and on which rung (gap-aaaaae).
+                let rung = self
+                    .failover_chain(&refusals, &candidate, ladder)
+                    .rung
+                    .map(|rung| rung.name);
+                tui.publish_event(failover_route_event(
+                    &spec.plan_id,
+                    task_id,
+                    row.attempt,
+                    &target,
+                    &refusals,
+                    rung,
+                    ladder.map_or(0, |ladder| ladder.step),
+                ));
                 tui.agent_spawned(
                     row.agent_id,
                     &spec.plan_id,
                     task_id,
-                    0,
+                    row.attempt,
                     row.role,
                     &target.model_slug,
                     &target.provider_id,
@@ -341,9 +468,9 @@ impl GraphTaskDispatcher {
             // The caller settles only the result it receives; account the
             // refused call here.
             let refused_cost_usd = f64::from(dispatch.result.usage.cost_usd);
-            self.record_task_spend(&spec.plan_id, task_id, &dispatch.result.usage);
+            self.record_dispatch_spend(&spec.plan_id, task_id, &dispatch);
             self.budget_ledger
-                .settle(&spec.plan_id, 0, refused_cost_usd)?;
+                .settle(&spec.plan_id, None, refused_cost_usd)?;
             let refused_calls = refusals.iter().filter(|refusal| refusal.called).count();
             self.write_side_call_rows(
                 spec,
@@ -382,7 +509,7 @@ impl GraphTaskDispatcher {
             if pinned {
                 return Err(self.no_usable_provider(&refusals, &[], true, None));
             }
-            candidate = self.failover_model(spec, task_id, &refusals, ladder, theta)?;
+            candidate = self.failover_model(spec, task_id, &refusals, ladder, theta, &request)?;
         }
     }
 
@@ -433,8 +560,9 @@ impl GraphTaskDispatcher {
     /// The refusal for `candidate` when its provider must not be called now:
     /// missing, not dispatchable, unable to enforce `request`'s agent
     /// contract, an agent that would run unguarded in the operator's shared
-    /// checkout, without credentials, statically disabled, or its circuit is
-    /// open in the health registry.
+    /// checkout, without credentials, statically disabled, a model with no
+    /// price under a budget cap (gap-8548e3), or its circuit is open in the
+    /// health registry.
     fn blocked_provider(
         &self,
         candidate: &DispatchCandidate,
@@ -518,6 +646,14 @@ impl GraphTaskDispatcher {
                 true,
             ));
         }
+        if self.unpriced_under_cap(&target) {
+            return Some(refusal(
+                UNPRICED_UNDER_CAP,
+                UNPRICED_REASON.to_string(),
+                None,
+                true,
+            ));
+        }
         let registry = &self.factory.health_registry;
         if registry.is_available(&provider_id) {
             return None;
@@ -550,13 +686,18 @@ impl GraphTaskDispatcher {
     ///
     /// An attempt the model ladder routed (`ladder`) takes the first group,
     /// then the runnable rungs above its own, and nothing cheaper (decision
-    /// 1119, backlog 1120). M1's `provider_order` in `theta` then reorders
-    /// the candidates ([`Self::order_by_provider`], 8124).
+    /// 1119, backlog 1120). An attempt the ladder did not route that holds
+    /// its outbound tool calls for approval (`stages`, as a chat host's run
+    /// does) can run only in roko's own tool loop, so it takes the models
+    /// that run there last ([`RokoConfig::tool_loop_models`], gap-cf427e).
+    /// M1's `provider_order` in `theta` then reorders the candidates
+    /// ([`Self::order_by_provider`], 8124).
     fn failover_candidates(
         &self,
         refusals: &[ProviderRefusal],
         ladder: Option<&LadderRoute>,
         theta: Option<&HarnessParams>,
+        stages: bool,
     ) -> Vec<DispatchCandidate> {
         let first = refusals
             .first()
@@ -577,6 +718,19 @@ impl GraphTaskDispatcher {
             let first = first.as_ref();
             let mut candidates =
                 roko_learn::provider_failover::failover_candidates(&self.config, first);
+            if stages {
+                for model_key in self.config.tool_loop_models() {
+                    if !candidates
+                        .iter()
+                        .any(|candidate| candidate.model_key == model_key)
+                    {
+                        candidates.push(DispatchCandidate {
+                            model_key,
+                            config: None,
+                        });
+                    }
+                }
+            }
             self.order_by_provider(&mut candidates, theta);
             return candidates;
         };
@@ -639,7 +793,9 @@ impl GraphTaskDispatcher {
     /// The first usable model in [`Self::failover_candidates`], with the
     /// substitution and its reason logged at WARN. A candidate that would run
     /// unguarded in the shared checkout is passed over, and when that is all
-    /// that stopped every candidate the error says so.
+    /// that stopped every candidate the error says so. So is one that cannot
+    /// enforce `request`'s agent contract, such as a CLI agent for a task
+    /// that holds its outbound tool calls for approval (gap-cf427e).
     fn failover_model(
         &self,
         spec: &TaskExecutionSpec,
@@ -647,19 +803,28 @@ impl GraphTaskDispatcher {
         refusals: &[ProviderRefusal],
         ladder: Option<&LadderRoute>,
         theta: Option<&HarnessParams>,
+        request: &AgentDispatchRequest,
     ) -> Result<DispatchCandidate> {
         let mut skipped = Vec::new();
         let mut only_unguarded = refusals
             .iter()
             .all(|refusal| refusal.class == UNGUARDED_IN_CHECKOUT);
-        for candidate in self.failover_candidates(refusals, ladder, theta) {
-            if let Some(kind) = self.unguarded_in_checkout(&self.resolve_candidate(&candidate)) {
+        let stages = request.agent_contract.as_ref().is_some_and(|contract| {
+            contract.outbound_policy() != roko_core::tool::OutboundPolicy::Allow
+        });
+        for candidate in self.failover_candidates(refusals, ladder, theta, stages) {
+            let target = self.resolve_candidate(&candidate);
+            if let Some(kind) = self.unguarded_in_checkout(&target) {
                 log_unguarded_skip(&spec.plan_id, kind);
                 let why = unguarded_reason(kind);
                 skipped.push(format!("{}: {why}", candidate.model_key));
                 continue;
             }
             only_unguarded = false;
+            if let Err(error) = crate::dispatch_v2::validate_contract_support(request, &target) {
+                skipped.push(format!("{}: {error}", candidate.model_key));
+                continue;
+            }
             match self.failover_candidate(&candidate, refusals) {
                 Ok(provider_id) => {
                     if let Some(refused) = refusals.last() {
@@ -733,10 +898,10 @@ impl GraphTaskDispatcher {
         else {
             return Err(format!("provider `{provider_id}` is not configured"));
         };
-        if refusals
-            .iter()
-            .any(|refusal| &refusal.provider_id == provider_id)
-        {
+        // A model passed over for want of a price leaves its provider usable.
+        if refusals.iter().any(|refusal| {
+            &refusal.provider_id == provider_id && refusal.class != UNPRICED_UNDER_CAP
+        }) {
             return Err(format!("provider `{provider_id}` is unavailable too"));
         }
         if let crate::dispatch_v2::ProviderRuntime::Unsupported(unsupported) = &target.runtime {
@@ -756,6 +921,9 @@ impl GraphTaskDispatcher {
         let config = candidate.config.as_ref().unwrap_or(&self.config);
         if !config.provider_available_for_model_key(&candidate.model_key) {
             return Err(missing_credentials_reason(provider, provider_id));
+        }
+        if self.unpriced_under_cap(&target) {
+            return Err(UNPRICED_REASON.to_string());
         }
         let registry = &self.factory.health_registry;
         if !registry.is_available(provider_id) {
@@ -819,6 +987,13 @@ impl GraphTaskDispatcher {
                  and put that provider's API key in ~/.roko/.env (loaded automatically at startup).",
                 self.api_key_model_examples()
             )
+        } else if skipped.iter().all(|skip| skip.contains(UNPRICED_REASON)) {
+            // A price, not a key, would make them usable (gap-8548e3).
+            format!(
+                "No fallback model is usable ({}): extend [routing] fallback_models with a model \
+                 that has a price.",
+                skipped.join("; ")
+            )
         } else {
             format!(
                 "No fallback model is usable ({}): put the missing API key in ~/.roko/.env \
@@ -826,21 +1001,40 @@ impl GraphTaskDispatcher {
                 skipped.join("; ")
             )
         };
-        // A provider that rejected roko's credentials needs a login, which
-        // waiting does not bring (backlog 1115).
+        // A provider that rejected roko's credentials needs a login, and one
+        // this task cannot use needs a configuration change: waiting brings
+        // neither (backlog 1115, gap-cf427e).
         let mut fixes: Vec<String> = refusals
             .iter()
             .filter(|refusal| refusal.class == AUTH_FAILURE)
             .map(|refusal| self.credentials_hint(refusal))
             .collect();
-        let auth_only = !fixes.is_empty() && fixes.len() == refusals.len();
+        // A model with no price under a cap needs a price (gap-8548e3).
+        let unpriced: Vec<&str> = refusals
+            .iter()
+            .filter(|refusal| refusal.class == UNPRICED_UNDER_CAP)
+            .map(|refusal| refusal.model_key.as_str())
+            .collect();
+        if !unpriced.is_empty() || skipped.iter().any(|skip| skip.contains(UNPRICED_REASON)) {
+            let named = if unpriced.is_empty() {
+                "each model".to_string()
+            } else {
+                unpriced.join(", ")
+            };
+            fixes.push(format!(
+                "Give {named} a price: cost_input_per_m and cost_output_per_m on its [models.*] \
+                 entry in roko.toml (0 for a free local model), or run with --no-budget."
+            ));
+        }
+        let waiting_helps =
+            |refusal: &ProviderRefusal| !WAITING_DOES_NOT_HELP.contains(&refusal.class);
         fixes.push(fallback);
-        if auth_only {
+        if !refusals.iter().any(waiting_helps) {
             fixes.push("Then re-run.".to_string());
         } else {
             let wait = refusals
                 .iter()
-                .filter(|refusal| refusal.class != AUTH_FAILURE)
+                .filter(|refusal| waiting_helps(refusal))
                 .filter_map(|refusal| refusal.until_ms)
                 .min()
                 .map_or_else(
@@ -1977,6 +2171,102 @@ printf '%s\n' '{{"type":"result","subtype":"success","is_error":false,"total_cos
         assert!(message.contains("rung `mid`"), "{message}");
         assert!(message.contains("cheaper model"), "{message}");
         assert_eq!(logged_models(&models), ["claude-sonnet-4-6"]);
+    }
+
+    /// gap-cf427e: a chat host's run holds its outbound tool calls for
+    /// approval, which only roko's own tool loop can do, so its ladder keeps
+    /// only the rungs that run there (`run_graph_plan` keeps them for a run
+    /// with a `stage` floor). A task whose start rung is a CLI rung runs on
+    /// the nearest API rung below it, and no CLI is called; a run from the
+    /// CLI routes the same task to the CLI rung, as before.
+    #[tokio::test]
+    async fn chat_run_ladder_skips_rungs_whose_agent_runs_its_own_tools() {
+        const RUN: &str = "chat-ladder";
+        let temp = tempdir().expect("tempdir");
+        let models = temp.path().join("claude-models.log");
+        let claude = temp.path().join("fake-claude.sh");
+        model_logging_claude(&claude, &models);
+        let (base_url, requests) = spawn_openai_mock(vec![final_turn("done"); 2]);
+        let rungs = [
+            ("cheap", "cheap-model"),
+            ("mid", "mid-model"),
+            ("strong", "strong-model"),
+        ];
+        let mut config = ladder_failover_config(&claude, &rungs);
+        config
+            .providers
+            .get_mut("mid_api")
+            .expect("the mid rung's API provider")
+            .base_url = Some(base_url);
+        let config = Arc::new(config);
+        let mut task = make_task_def("mechanical");
+        task.timeout_secs = FIXTURE_HANG_GUARD_SECS;
+        task.hints.rung = Some("strong".to_string());
+        let spec = make_spec(&task);
+        let ctx = CellContext::new().with_run_id(RUN.to_string());
+        let runs_dir = temp.path().join(".roko/runs");
+
+        let factory = SharedAgentFactory::new(Arc::clone(&config), None, None, None)
+            .await
+            .keep_tool_loop_rungs();
+        let chat = GraphTaskDispatcher::new(
+            Arc::new(factory),
+            Arc::clone(&config),
+            temp.path().to_path_buf(),
+        )
+        .with_outbound_floor(Some(roko_core::tool::OutboundPolicy::Stage))
+        .with_feedback(GraphFeedbackContext {
+            runs_dir: Some(runs_dir.clone()),
+            ..GraphFeedbackContext::default()
+        });
+        chat.dispatch(&spec, Vec::new(), &ctx)
+            .await
+            .expect("the mid rung's API model runs the task");
+        assert!(logged_models(&models).is_empty(), "no CLI runs");
+        assert_eq!(requests.lock().len(), 1, "one call to the API rung");
+        let attempts = runs_dir.join(RUN).join("attempts.jsonl");
+        let is_verdict = |row: &serde_json::Value| row["schema_version"] == "roko.verdict/1";
+        let verdicts = jsonl_rows_where(&attempts, 1, is_verdict).await;
+        let verdict = &verdicts[0];
+        assert_eq!(verdict["ladder"]["rung"], "mid", "{verdict}");
+        assert_eq!(verdict["executed"]["provider"], "mid_api", "{verdict}");
+
+        let cli = make_bare_dispatcher(config.as_ref().clone(), temp.path()).await;
+        cli.dispatch(&spec, Vec::new(), &ctx)
+            .await
+            .expect("the strong rung's CLI runs the task");
+        assert_eq!(logged_models(&models), ["claude-sonnet-4-6"]);
+
+        // Without the API model's key, nothing can run the chat run's task:
+        // the error names the CLI that cannot keep its policy, and asks for
+        // a configuration change, not for waiting.
+        let mut keyless = config.as_ref().clone();
+        keyless
+            .providers
+            .get_mut("mid_api")
+            .expect("the mid rung's API provider")
+            .api_key_env = Some("ROKO_TEST_FAILOVER_KEY_NEVER_SET".to_string());
+        let keyless = Arc::new(keyless);
+        let factory = SharedAgentFactory::new(Arc::clone(&keyless), None, None, None)
+            .await
+            .keep_tool_loop_rungs();
+        let chat = GraphTaskDispatcher::new(
+            Arc::new(factory),
+            Arc::clone(&keyless),
+            temp.path().to_path_buf(),
+        )
+        .with_outbound_floor(Some(roko_core::tool::OutboundPolicy::Stage));
+        let error = chat
+            .dispatch(&spec, Vec::new(), &ctx)
+            .await
+            .expect_err("no model of roko's tool loop has its key");
+        let RokoError::Gateway { message, .. } = &error else {
+            panic!("expected a gateway error, got {error:?}");
+        };
+        assert!(message.contains("runs its own tools"), "{message}");
+        assert!(message.contains("Then re-run."), "{message}");
+        assert!(!message.contains("wait for the provider"), "{message}");
+        assert_eq!(logged_models(&models), ["claude-sonnet-4-6"], "no CLI runs");
     }
 
     /// bug-ef82eb (shakedown D1): an API model that answers blank fails its

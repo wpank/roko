@@ -9,7 +9,7 @@ goal = "release"
 size = "M"
 subsystem = ["roko-cli/graph-execution"]
 created = 2026-10-04
-updated = 2026-10-04
+updated = 2026-10-15
 last_verified = 2026-10-04
 source = "wave-18 follow-up reports 2026-10-04 (gap-1a4563, work/gap-1a4563)"
 discovered_from = "gap-1a4563 (open; its fix covers chat-hosted and direct plan submission, not triggers)"
@@ -18,7 +18,7 @@ lane = "rust-hot"
 links = { depends_on = [], blocks = [], related = [], supersedes = [], duplicate_of = "" }
 
 [[verify]]
-command = "grep -rqw 'fn chat_sourced_trigger_run_gets_the_stage_floor' crates/ && cargo test -p roko-cli chat_sourced_trigger_run_gets_the_stage_floor"
+command = "grep -rqw 'fn trigger_started_run_gets_the_stage_floor' crates/ && cargo test -p roko-cli trigger_started_run_gets_the_stage_floor"
 +++
 
 ## Problem
@@ -93,3 +93,5 @@ settles on.
   that branch's diff, so verifiable on `main` directly; `plan_runner.rs::outbound_floor` is the
   one branch-only piece, confirmed via `git show`). Filed as `kind = "gap"` with the decision
   embedded in the body, per the instruction.
+
+2026-10-15 decision (Will delegated it to the coordinator's recommendation, tmp/status-quo/2026-10-15/DECISIONS-2026-10-15.md, decision 9; he can veto it): Option C, with one exception: every run started by a Cron, Webhook, FileWatch, Bus, ChainEvent or SignalPattern trigger gets outbound floor 'stage'. A Manual trigger (a person runs roko trigger fire) keeps the domain default, like a CLI run. Implement it as a RunOrigin for trigger-started runs that outbound_floor maps to Some(Stage). Replace the item's verify with `grep -rqw 'fn trigger_started_run_gets_the_stage_floor' crates/ && cargo test -p roko-cli trigger_started_run_gets_the_stage_floor`; the test also checks that a Manual trigger gets no floor. The item stays open for the work. Why: outbound_floor returns Some(Stage) only for chat origins (crates/roko-cli/src/graph_execution/plan_runner.rs:944-952). RunOrigin has only Cli, Http and Mcp (crates/roko-serve/src/runtime.rs:174-179), and the trigger runtimes never set an origin, so trigger runs fall back to decision 9107's domain default, where 'stage' applies only in ops. TriggerSource has no way to tell a chat platform's webhook from any other (crates/roko-core/src/trigger.rs:492), so option A would need a source classification that a sender could fake. Option C fails closed without one: unattended runs carrying outside text are held before acting outward. Option B relies on the trigger's registration being trusted, but the request text is not. Manual is excluded because a person starts it. The cost is approving staged effects (roko effects approve) for unattended triggers; the change is reversible in one function. If vetoed: With option B, triggers stay on the domain default and the item closes once that is documented in the trigger docs. With option A, a chat marker is added to TriggerSource first. Unattended cron and webhook runs would then act outward without approval.

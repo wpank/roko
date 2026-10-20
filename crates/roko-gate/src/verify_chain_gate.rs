@@ -160,13 +160,15 @@ impl VerifyChainGate {
         cmd.kill_on_drop(true);
         cmd.stdout(std::process::Stdio::piped());
         cmd.stderr(std::process::Stdio::piped());
-        if let Some(p) = payload {
+        let prepared = if let Some(p) = payload {
             cmd.current_dir(&p.working_dir);
-            p.apply_env(&mut cmd);
             cmd.env("REPO_ROOT", &p.working_dir);
+            p.apply_env(&mut cmd)
         } else {
-            inherit_gate_env(&mut cmd, &[]);
-        }
+            inherit_gate_env(&mut cmd, &[])
+        };
+        prepared
+            .map_err(|error| std::io::Error::other(crate::gate_env::check_env_error(&error)))?;
         cmd.output().await
     }
 }

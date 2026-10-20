@@ -1150,6 +1150,13 @@ pub struct GenerationOutcome {
     /// The generated plan's spec-quality scores, when it was scored (3218).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub spec_quality: Option<GenerationSpecQuality>,
+    /// What became of the checks the plan's source states, when it states
+    /// any (gap-dc5d7c).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_checks: Option<GenerationSourceChecks>,
+    /// What the generation's agent calls cost together, in USD (bug-a0432b).
+    #[serde(default)]
+    pub cost_usd: f64,
 }
 
 /// The spec-quality scores of a generated plan (S07.10, backlog 3218), by
@@ -1164,6 +1171,51 @@ pub struct GenerationSpecQuality {
     pub bands: std::collections::BTreeMap<String, usize>,
     /// Whether the planner was asked once more because the plan was weak.
     pub regenerated: bool,
+}
+
+/// What became of the checks a generated plan's source states (gap-dc5d7c):
+/// each is kept as a verify step, dropped with a reason, or missing.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct GenerationSourceChecks {
+    /// The checks the source states.
+    pub total: usize,
+    /// Checks a verify step covers and runs more than a grep, a file test
+    /// or a build for.
+    pub kept: usize,
+    /// Checks only a grep, a file test or a build covers.
+    #[serde(default)]
+    pub shallow: usize,
+    /// Checks whose only real test step cannot pass as written (gap-ecafde).
+    #[serde(default)]
+    pub cannot_run: usize,
+    /// Checks the plan drops with a reason (`[meta] dropped_checks`).
+    pub dropped: usize,
+    /// Checks the plan neither keeps nor drops.
+    pub missing: usize,
+    /// Whether the planner was asked once more for missing checks.
+    pub regenerated: bool,
+    /// Each check, in source order.
+    pub checks: Vec<GenerationSourceCheck>,
+}
+
+/// One check a generated plan's source states (gap-dc5d7c).
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct GenerationSourceCheck {
+    /// `SC1`, `SC2`, … in source order.
+    pub id: String,
+    /// The check as the source states it, on one line.
+    pub check: String,
+    /// `kept`, `cannot_run`, `shallow`, `dropped` or `missing`.
+    pub status: String,
+    /// The task that keeps it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub task: Option<String>,
+    /// The acceptance criterion that keeps it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub criterion: Option<String>,
+    /// Why the plan drops it, or the only command that covers a shallow one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
 }
 
 impl GenerationOutcome {

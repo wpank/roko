@@ -8,7 +8,7 @@ severity = "p2"
 goal = "learning"
 subsystem = ["roko-cli/graph-dispatch", "roko-learn/playbooks"]
 created = 2026-09-28
-updated = 2026-09-29
+updated = 2026-10-16
 last_verified = 2026-09-29
 last_verified_rev = "33e107da1"
 source = "gaps-md#playbook-selection-wired-at-dispatch----resolved"
@@ -18,6 +18,11 @@ links = { depends_on = [], blocks = [], related = [], supersedes = [], duplicate
 
 [[verify]]
 command = "! grep -n 'playbook_ids: vec!\\[\\]' crates/roko-cli/src/graph_task_dispatch.rs && ! grep -nF 'format!(\"task-{}\", task.id)' crates/roko-cli/src/graph_task_dispatch.rs && ! grep -nF 'format!(\"task-{}\", receipt.task_id)' crates/roko-cli/src/graph_execution/feedback.rs && grep -q 'fn dispatch_outcomes_feed_knowledge_experiments_playbooks_and_episodes' crates/roko-cli/src/graph_task_dispatch.rs && cargo test -p roko-cli --lib dispatch_outcomes_feed_knowledge_experiments_playbooks_and_episodes"
+superseded = "2026-10-16: a729fb911 split graph_task_dispatch.rs into modules and moved the test to graph_task_dispatch/feedback.rs, and 6b2118da1 deleted graph_execution/feedback.rs (the unwired receipt settler), so the negative greps here no longer cover the code. Verify 2 runs them over the whole module tree, checks feedback.rs passes the playbook ids on, and runs the same test."
+superseded_by = "a729fb911"
+
+[[verify]]
+command = "! grep -rq 'playbook_ids: vec!\\[\\]' crates/roko-cli/src/graph_task_dispatch.rs crates/roko-cli/src/graph_task_dispatch/ && grep -q 'playbook_ids: diagnostics.playbook_ids' crates/roko-cli/src/graph_task_dispatch/feedback.rs && ! grep -rqF -e 'format!(\"task-{}\", task.id)' -e 'format!(\"task-{}\", receipt.task_id)' crates/roko-cli/src/graph_task_dispatch.rs crates/roko-cli/src/graph_task_dispatch/ crates/roko-cli/src/graph_execution/ && grep -rqw 'fn dispatch_outcomes_feed_knowledge_experiments_playbooks_and_episodes' crates/roko-cli/src/ && cargo test -p roko-cli --lib dispatch_outcomes_feed_knowledge_experiments_playbooks_and_episodes"
 
 [closed]
 at = 2026-09-29

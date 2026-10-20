@@ -285,6 +285,7 @@ fn connected_app_exits_when_run_reaches_terminal_outcome() {
     assert!(app.running);
 
     hub.publish(roko_core::DashboardEvent::RunCompleted {
+        run_id: None,
         outcome: "cancelled".to_string(),
         duration_ms: 10,
         cleanup_degraded: false,

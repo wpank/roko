@@ -9,7 +9,7 @@ goal = "whitepaper"
 size = "M"
 subsystem = ["docs/whitepaper"]
 created = 2026-09-29
-updated = 2026-09-29
+updated = 2026-10-16
 last_verified = 2026-09-29
 last_verified_rev = "dc371b1ae"
 source = "tmp/cybernetic-harness/workstreams/PLAN.md#e1"
@@ -21,6 +21,8 @@ links = { depends_on = ["gap-0191eb", "gap-35a614", "gap-af0b57"], blocks = [], 
 
 [[verify]]
 command = "test -f docs/whitepaper/04-golden-path.md && grep -q 'Figure 2' docs/whitepaper/04-golden-path.md && test $(grep -cE '(WIRED|PARTIAL|ORPHANED|BUILT-UNWIRED|DOCS-ONLY|MISSING|REMOVED|BROKEN|UNPROVEN)@[0-9a-f]{7}' docs/whitepaper/04-golden-path.md) -ge 11 && test -f tools/paperlint.py && python3 tools/paperlint.py --strict docs/whitepaper/04-golden-path.md"
+superseded = "2026-10-16: The whitepaper rewrite as a design paper (7898493f2, 2026-10-08) dropped the golden-path chapter (04-golden-path.md), Figure 2 and the status tags by design (Will, 2026-10-02); the old text is at 7898493f2^."
+superseded_by = "7898493f2"
 
 [closed]
 at = 2026-09-29

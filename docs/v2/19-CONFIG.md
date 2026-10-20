@@ -514,7 +514,37 @@ processes do not inherit roko's environment wholesale (`roko_core::child_env`):
   `PKG_CONFIG*`, `OPENSSL_*`, `SSL_CERT_*`, ...), proxies, and `ROKO_*`. Names that look like
   credentials (a `KEY`, `TOKEN`, `SECRET`, `PASSWORD` or `CREDENTIAL` segment) and names
   loaded from a `.env` file are dropped even when the allowlist matches. `[gates]
-  env_passthrough` adds names or `PREFIX*` patterns and wins over every exclusion.
+  env_passthrough` adds names or `PREFIX*` patterns and wins over these exclusions.
+- **Check commands** (every command roko runs as a check: task `verify` steps and rungs,
+  build/test/lint gates, auto-fix commands, `[[meta.verify]]` and the default whole-plan
+  check, the delivery's post-merge regression check, red-on-base runs, audit re-runs and
+  `roko bench swe` grading) get the gate allowlist and also lose the person's GitHub login
+  (bug-3c4600). They keep `HOME` and `USER`, so `gh` would otherwise find `~/.config/gh` and
+  the keychain token and act as the person: a check gets `GH_CONFIG_DIR` pointing at an empty,
+  read-only directory (one per run, removed when the run ends), and loses `GH_TOKEN`,
+  `GITHUB_TOKEN`, `GH_ENTERPRISE_TOKEN` and `GITHUB_ENTERPRISE_TOKEN`. Those tokens and the
+  provider keys roko loaded from a `.env` file reach a check only when `[gates]
+  env_passthrough` names them exactly (a `PREFIX*` pattern does not admit them); naming
+  `GH_CONFIG_DIR` there gives checks the person's `gh` login back. A check also builds in its
+  own checkout (bug-be2a53): an inherited `CARGO_TARGET_DIR`, `CARGO_BUILD_TARGET_DIR` or
+  `CARGO_BUILD_BUILD_DIR` that names a directory outside the check's is dropped, so cargo
+  builds in the checkout's own `target/`, and the delivery's regression check builds in
+  `.roko/state/regression-target/`. In a target dir that several checkouts of one repository
+  share, such as a plan's task worktrees, cargo takes one checkout's build of a crate as fresh
+  for another whose copy is older, and a check passes code that does not compile. Naming one of
+  these exactly in `env_passthrough` keeps it, sharing included. `[gates] strip_env` removes
+  more names or `PREFIX*` patterns, and wins over the allowlist and `env_passthrough`. A
+  check whose environment cannot be set up (no empty directory can be made in the temp
+  directory) does not run, and fails saying why. The first check of a run logs, at info, how
+  many variables of each class it left out, and the names at debug, never values.
+
+  A project whose own tests need a key or token gets it by naming it exactly:
+
+  ```toml
+  [gates]
+  # Exact names. A PREFIX* pattern never admits a GitHub token or a key roko loaded from .env.
+  env_passthrough = ["STRIPE_TEST_KEY", "OPENAI_API_KEY"]
+  ```
 
 #### `[agent.roles.<name>]` -- per-role overrides
 
@@ -688,7 +718,10 @@ Per-complexity overrides: `[routing.weights.mechanical]`, `[routing.weights.focu
 | `cargo_fix_enabled` | bool | `true` | Attempt `cargo fix --allow-dirty` before agent retry |
 | `impact_timeout_ms` | u64 | `5000` | Timeout for changed-target analysis |
 | `compile_concurrency` | usize | `1` | Per-repository Cargo command ownership limit |
-| `env_passthrough` | Vec\<String\> | `[]` | Extra variables gate commands inherit beyond the allowlist, secret-looking or not: exact names or `PREFIX*` patterns, e.g. `["DATABASE_URL", "AWS_*"]` (see *Child process environments* under `[agent]`) |
+| `cargo_jobs` | usize | half the CPUs, at least 2 | Jobs a check's cargo builds run at once, and tests a test binary runs at once (`CARGO_BUILD_JOBS`, `RUST_TEST_THREADS`), for task verify steps and rungs, whole-plan checks and post-merge regression checks; `0`: no cap. A value in roko's own environment wins |
+| `nice` | i32 | `10` | Niceness those checks run at, so the person's own work keeps the machine; `0` leaves their priority alone |
+| `env_passthrough` | Vec\<String\> | `[]` | Extra variables check commands inherit beyond the allowlist, secret-looking or not: exact names or `PREFIX*` patterns, e.g. `["DATABASE_URL", "AWS_*"]`. GitHub tokens, `GH_CONFIG_DIR` and provider keys roko loaded from a `.env` file need an exact name (see *Child process environments* under `[agent]`) |
+| `strip_env` | Vec\<String\> | `[]` | Variables check commands never inherit, even when the allowlist or `env_passthrough` admits them: exact names or `PREFIX*` patterns, e.g. `["SCCACHE_*"]`. Variables roko sets for a check itself stay |
 | `rungs` | Vec\<GateRungConfig\> | `[]` | Custom gate rungs (alias: `custom_rungs`) |
 
 Custom rungs replace the built-in compile/lint/test defaults. Each rung is a `{ name, command, timeout_secs, required, parallel_with }` table. Legacy `[[gate]]` syntax is migrated to `[[gates.rungs]]` by `roko config migrate`.

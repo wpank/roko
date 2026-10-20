@@ -469,18 +469,10 @@ impl GraphTaskDispatcher {
         };
         let reading = self.in_flight.begin_step(&read);
         let _reading = self.unless_stopped(spec, task, &label, reading).await?;
-        let gate = ShellGate::new(
-            "bash",
-            vec![
-                "-o".into(),
-                "pipefail".into(),
-                "-c".into(),
-                self.verify_command(&step.command),
-            ],
-        )
-        .with_timeout_ms(step.timeout_ms)
-        .with_name(&label)
-        .with_phase(&step.phase);
+        let gate = ShellGate::verify_step(&self.verify_command(&step.command))
+            .with_timeout_ms(step.timeout_ms)
+            .with_name(&label)
+            .with_phase(&step.phase);
         let payload = GatePayload::in_dir(workdir)
             .with_label(format!("{}/{}", spec.plan_id, task.id))
             .with_env_passthrough(self.config.gates.env_passthrough.iter().cloned());
@@ -589,8 +581,9 @@ impl GraphTaskDispatcher {
         let snapshot = self.pricing_snapshot();
         for (index, call) in calls.iter().enumerate() {
             let cost_usd = call.cost_usd();
-            self.record_task_spend(&spec.plan_id, &task.id, &call.usage);
-            if let Err(error) = self.budget_ledger.settle(&spec.plan_id, 0, cost_usd) {
+            let side = SideCall::of_check(&self.config.models, call, snapshot.as_deref());
+            self.record_side_call_spend(&spec.plan_id, &task.id, &side);
+            if let Err(error) = self.budget_ledger.settle(&spec.plan_id, None, cost_usd) {
                 tracing::warn!(
                     plan_id = %spec.plan_id,
                     task_id = %task.id,
@@ -598,7 +591,6 @@ impl GraphTaskDispatcher {
                     "audit check spend not recorded on the plan's cost ledger"
                 );
             }
-            let side = SideCall::of_check(&self.config.models, call, snapshot.as_deref());
             let attempt_id = format!("{attempt_key}/audit-{check}-{}", index + 1);
             self.write_side_call_rows(spec, &task.id, attempt_key, &attempt_id, AUDIT_ROLE, &side)
                 .await;

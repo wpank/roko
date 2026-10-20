@@ -356,10 +356,14 @@ impl App {
                 // Create roko.toml if absent: the `roko init` template, which
                 // is checked like `roko config validate` before it is written.
                 if !roko_toml.exists() {
-                    let provider = crate::init::InitProvider::detect();
-                    let written = crate::init::write_init_config(&self.workdir, false, provider);
+                    let written =
+                        crate::init::InitOptions::detect(&self.workdir, false, None, None)
+                            .and_then(|options| crate::init::write_init(&self.workdir, &options));
                     if let Err(err) = written {
                         tracing::warn!("failed to write roko.toml: {err:#}");
+                    }
+                    if let Err(err) = crate::init::ensure_roko_gitignored(&self.workdir) {
+                        tracing::warn!("failed to add .roko/ to .gitignore: {err:#}");
                     }
                 }
                 // Update workspace state

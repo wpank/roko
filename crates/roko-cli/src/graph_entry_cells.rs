@@ -337,6 +337,8 @@ fn run(
             max_usd: Some(config.max_usd),
             origin: RunOrigin::Cli,
             no_holdout: false,
+            live_agent_output: crate::graph_task_dispatch::LiveAgentOutput::ToolSteps,
+            title: None,
         })
         .await?;
         let snapshot = hub.current_snapshot();
@@ -554,7 +556,7 @@ fn run_plan(
         let stop = interrupt.clone();
         tokio::spawn(async move {
             cancel.cancelled().await;
-            stop.request(PlanRunInterrupt::Interrupt);
+            stop.request(PlanRunInterrupt::Cancel);
         });
         crate::graph_execution::plan_runner::run_graph_plan_in_run(
             crate::graph_execution::GraphPlanRunParams {

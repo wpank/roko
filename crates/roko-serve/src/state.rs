@@ -325,6 +325,12 @@ pub struct OperationHandle {
     pub status: OperationStatus,
     /// Background task driving the operation.
     pub handle: JoinHandle<()>,
+    /// When the operation started: a running one reports how long it has
+    /// run (gap-11d870).
+    pub started: Instant,
+    /// What the operation is doing, for a producer that reports it as it
+    /// moves on (plan generation, gap-11d870): its latest JSON object.
+    pub progress: Option<tokio::sync::watch::Receiver<serde_json::Value>>,
 }
 
 /// Status of an async operation.
@@ -349,7 +355,8 @@ pub enum OperationStatus {
 ///
 /// Those routes are `GET /api/run/{id}/status`, `GET /api/plans/{id}/status`
 /// and `GET /api/runs/{run_id}/summary`. A run that has ended is `succeeded`,
-/// `failed`, `unverified` or `cancelled`, and only `succeeded` is a success.
+/// `failed`, `unverified`, `cancelled` or `interrupted`, and only `succeeded`
+/// is a success.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum RunState {
@@ -365,6 +372,9 @@ pub enum RunState {
     Unverified,
     /// Cancelled before it ended.
     Cancelled,
+    /// The roko process running it stopped before it ended, a machine restart
+    /// or a crash; it is no longer running (bug-dceafd).
+    Interrupted,
 }
 
 impl RunState {
@@ -378,6 +388,7 @@ impl RunState {
             Self::Failed => "failed",
             Self::Unverified => "unverified",
             Self::Cancelled => "cancelled",
+            Self::Interrupted => "interrupted",
         }
     }
 
@@ -473,6 +484,34 @@ pub struct QueuedPlanRun {
     pub spec: PlanRunSpec,
     /// When it was queued.
     pub queued_at: chrono::DateTime<chrono::Utc>,
+}
+
+/// A gated prompt run waiting for the live run to end (gap-9a8d66).
+///
+/// Prompt runs and plan runs share the workspace's one plan executor (9113)
+/// and one queue order: the oldest waiting run of either kind starts next
+/// (decision 9105).
+#[derive(Debug, Clone)]
+pub struct QueuedPromptRun {
+    /// The id the run was given when it was queued; it runs under it.
+    pub run_id: String,
+    /// What the run is asked to do.
+    pub prompt: String,
+    /// The directory it runs in, when not the server's workspace.
+    pub workdir: Option<PathBuf>,
+    /// How it runs.
+    pub options: crate::runtime::PromptPlanOptions,
+    /// When it was queued.
+    pub queued_at: chrono::DateTime<chrono::Utc>,
+}
+
+/// The oldest waiting run, taken off its queue by [`AppState::pop_queued_run`].
+#[derive(Debug)]
+pub enum QueuedRun {
+    /// A plan run.
+    Plan(QueuedPlanRun),
+    /// A gated prompt run.
+    Prompt(QueuedPromptRun),
 }
 
 /// A recorded template run outcome used by the metrics summary endpoint.
@@ -603,11 +642,19 @@ pub struct SessionGrant {
 }
 
 impl SessionGrant {
-    /// A launch-token or API-key exchange: `admin`, for as long as the server runs.
+    /// An `admin` session for as long as the server runs: the launch token's exchange.
     #[must_use]
     pub fn admin() -> Self {
+        Self::exchange("admin")
+    }
+
+    /// A credential exchange (`POST /api/auth/session`): the credential's own `scope`, for as
+    /// long as the server runs. A scoped key yields a session of that scope, never `admin`
+    /// (bug-856656).
+    #[must_use]
+    pub fn exchange(scope: &str) -> Self {
         Self {
-            scope: "admin".to_string(),
+            scope: scope.to_string(),
             ttl_secs: None,
             idle_ttl_secs: None,
             generation: None,
@@ -758,7 +805,8 @@ impl LocalAccess {
     }
 
     /// Create an `admin` session that lives as long as the server, and return its raw
-    /// 64-hex-character ID: a launch-token or API-key exchange.
+    /// 64-hex-character ID: the launch token's exchange. A key's exchange uses the key's own
+    /// scope ([`SessionGrant::exchange`]).
     ///
     /// The raw ID is returned to the caller exactly once and is not stored;
     /// only its SHA-256 hash is retained so a dump of server state cannot
@@ -869,6 +917,39 @@ impl LocalAccess {
 // AppState
 // ---------------------------------------------------------------------------
 
+/// Settings `roko serve` takes from its command line instead of from
+/// `roko.toml`: `--bind`, `--port` and `--enable-terminal`.
+///
+/// They hold for the server's life: a reload of the file keeps them, so it
+/// neither reports them as changed, which would ask for a restart that
+/// changes nothing, nor stores the file's values over the ones the server
+/// runs with (bug-3eec27).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ConfigOverrides {
+    /// `--bind`: the address the listener is bound to.
+    pub bind: Option<String>,
+    /// `--port`: the port the listener is bound to.
+    pub port: Option<u16>,
+    /// `--enable-terminal`: the terminal routes are on whatever `[serve]`
+    /// says.
+    pub terminal_enabled: bool,
+}
+
+impl ConfigOverrides {
+    /// Put these settings in `config` in place of the file's.
+    pub fn apply(&self, config: &mut RokoConfig) {
+        if let Some(bind) = &self.bind {
+            config.server.bind.clone_from(bind);
+        }
+        if let Some(port) = self.port {
+            config.server.port = port;
+        }
+        if self.terminal_enabled {
+            config.serve.terminal_enabled = true;
+        }
+    }
+}
+
 const LISTENER_PROTECTED_BY_LOOPBACK: u8 = 1;
 const LISTENER_PROTECTED_BY_AUTH: u8 = 2;
 
@@ -960,6 +1041,9 @@ pub struct AppState {
     pub gateway_http: roko_gateway::GatewayHttpState,
     /// Full `roko.toml` schema configuration with lock-free reads.
     pub roko_config: ArcSwap<RokoConfig>,
+    /// The settings serve took from its command line, which every config it
+    /// loads again from disk keeps ([`ConfigOverrides`]).
+    config_overrides: ArcSwap<ConfigOverrides>,
     /// Startup-owned listener/auth facts used by routes that expose private run
     /// evidence. Config reloads must not reclassify an already-bound listener
     /// or claim authentication middleware was installed after router creation.
@@ -993,9 +1077,14 @@ pub struct AppState {
     /// Active plan executions.
     pub active_plans: RwLock<HashMap<String, PlanHandle>>,
     /// Plan runs waiting for the live one to end, oldest first (decision
-    /// 9105). Changed only under the `active_plans` write lock, so starting
-    /// or queueing a run is one step; locked after `active_plans`.
+    /// 9105). Changed only under the `active_runs` and `active_plans` write
+    /// locks, so starting or queueing a run is one step; locked after
+    /// `active_plans`.
     pub plan_queue: std::sync::Mutex<VecDeque<QueuedPlanRun>>,
+    /// Gated prompt runs waiting for the live run to end, oldest first
+    /// (gap-9a8d66). Changed under the same locks as `plan_queue`, and locked
+    /// after it.
+    pub prompt_queue: std::sync::Mutex<VecDeque<QueuedPromptRun>>,
     /// Active generic operations.
     pub operations: RwLock<HashMap<String, OperationHandle>>,
     /// Agent template registry.
@@ -1513,7 +1602,8 @@ impl AppState {
         let gateway_config = roko_gateway::GatewayConfig::from_model_caller(
             Arc::clone(&cascade_router),
             gateway_caller,
-            roko_learn::cost_table::CostTable::from_config(&effective_models).with_defaults(),
+            roko_learn::cost_table::CostTable::from_config(&roko_config.billed_models())
+                .with_defaults(),
         )
         .with_event_writer(Arc::new(roko_agent::GatewayEventWriter::for_workdir(
             &workdir,
@@ -1662,6 +1752,7 @@ impl AppState {
             model_call_service,
             gateway_http,
             roko_config: ArcSwap::from_pointee(roko_config.clone()),
+            config_overrides: ArcSwap::from_pointee(ConfigOverrides::default()),
             listener_security: ListenerSecurity::new(
                 &roko_config.server.bind,
                 roko_config.serve.auth.enabled,
@@ -1674,6 +1765,7 @@ impl AppState {
             active_runs: RwLock::new(HashMap::new()),
             active_plans: RwLock::new(HashMap::new()),
             plan_queue: std::sync::Mutex::new(VecDeque::new()),
+            prompt_queue: std::sync::Mutex::new(VecDeque::new()),
             operations: RwLock::new(HashMap::new()),
             templates: RwLock::new(template_registry),
             deploy_backend,
@@ -1809,6 +1901,18 @@ impl AppState {
     /// Atomically swap in a new config snapshot.
     pub fn store_roko_config(&self, roko_config: RokoConfig) {
         self.roko_config.store(Arc::new(roko_config));
+    }
+
+    /// Record the settings serve took from its command line, which every
+    /// config it loads again from disk keeps (bug-3eec27).
+    pub fn set_config_overrides(&self, overrides: ConfigOverrides) {
+        self.config_overrides.store(Arc::new(overrides));
+    }
+
+    /// The settings serve took from its command line ([`ConfigOverrides`]).
+    #[must_use]
+    pub fn config_overrides(&self) -> Arc<ConfigOverrides> {
+        self.config_overrides.load_full()
     }
 
     /// Record the listener and authentication boundary selected during server
@@ -2277,7 +2381,9 @@ impl AppState {
     /// Remove completed/failed handles from active collections (§15.6).
     ///
     /// Should be called periodically (e.g. from a background interval task)
-    /// to prevent unbounded memory growth from accumulated handles.
+    /// to prevent unbounded memory growth from accumulated handles. A
+    /// finished operation's status stays readable after its handle goes:
+    /// the kept record of finished operations holds it (bug-a0f01e).
     pub async fn gc_completed_handles(&self) {
         self.active_runs
             .write()
@@ -2297,6 +2403,75 @@ impl AppState {
             .write()
             .await
             .retain(|_, handle| !handle.handle.is_finished());
+    }
+
+    /// How many runs wait in the queues, plan and prompt runs together.
+    pub fn queued_runs(&self) -> usize {
+        let plans = self
+            .plan_queue
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .len();
+        let prompts = self
+            .prompt_queue
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .len();
+        plans + prompts
+    }
+
+    /// Run `run_id`'s place in the queue, 1 being next: plan and prompt runs
+    /// wait in one order, oldest first (decision 9105, gap-9a8d66). `None`
+    /// when no queued run has that id.
+    pub fn queue_position(&self, run_id: &str) -> Option<usize> {
+        let plans = self
+            .plan_queue
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let prompts = self
+            .prompt_queue
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let (mut plan, mut prompt) = (plans.iter().peekable(), prompts.iter().peekable());
+        let mut position = 0;
+        loop {
+            // Each queue keeps its own order; between them the older run goes first.
+            let next = match (plan.peek(), prompt.peek()) {
+                (Some(p), Some(q)) if p.queued_at <= q.queued_at => {
+                    plan.next().map(|p| p.spec.run_id.as_str())
+                }
+                (Some(_), Some(_)) | (None, Some(_)) => prompt.next().map(|q| q.run_id.as_str()),
+                (Some(_), None) => plan.next().map(|p| p.spec.run_id.as_str()),
+                (None, None) => return None,
+            };
+            position += 1;
+            if next == Some(run_id) {
+                return Some(position);
+            }
+        }
+    }
+
+    /// Take the oldest waiting run, of either kind, off its queue.
+    pub fn pop_queued_run(&self) -> Option<QueuedRun> {
+        let mut plans = self
+            .plan_queue
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut prompts = self
+            .prompt_queue
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let plan_first = match (plans.front(), prompts.front()) {
+            (Some(plan), Some(prompt)) => plan.queued_at <= prompt.queued_at,
+            (Some(_), None) => true,
+            (None, Some(_)) => false,
+            (None, None) => return None,
+        };
+        if plan_first {
+            plans.pop_front().map(QueuedRun::Plan)
+        } else {
+            prompts.pop_front().map(QueuedRun::Prompt)
+        }
     }
 
     /// The number of plan runs still going. The handle of a run that ended

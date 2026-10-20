@@ -140,7 +140,7 @@
   <rect x="42" y="736" width="392" height="72" rx="6" class="box" style="stroke-dasharray:5 4"/>
   <text x="238" y="758" class="t c">Agent loops</text>
   <text x="238" y="778" class="c">Claude Code, Codex, Gemini CLI, …</text>
-  <text x="238" y="796" class="c">each runs its own tool loop, isolated</text>
+  <text x="238" y="796" class="c">each runs its own tool loop in a worktree</text>
   <rect x="446" y="736" width="392" height="72" rx="6" class="box" style="stroke-dasharray:5 4"/>
   <text x="642" y="758" class="t c">API models</text>
   <text x="642" y="778" class="c">models called over HTTP;</text>

@@ -13,10 +13,11 @@
 //! marks the read cut or stale (gap-a13544). A T0 reflex attempt and a
 //! harness failure before planning write none.
 //!
-//! The knowledge and playbook rows also carry S03's fields (A-DEC, backlog
-//! 5125): L-know's or L-play's layer and the chain's draw on it, both
-//! proposals on both arms, and a receipt that binds the included items'
-//! rendered digests to the assembled request ([`content_audit`]).
+//! The knowledge, playbook and sections rows also carry S03's fields
+//! (A-DEC, backlog 5125; gap-6f31c3 for the sections): L-know's, L-play's or
+//! L-sec's layer and the chain's draw on it, both proposals on both arms,
+//! and a receipt that binds the included items' rendered digests to the
+//! assembled request ([`content_audit`]).
 //!
 //! [`ModelRouter::decide`]: crate::dispatch::ModelRouter::decide
 
@@ -24,10 +25,10 @@ use std::collections::BTreeMap;
 use std::sync::LazyLock;
 use std::time::SystemTime;
 
-use roko_learn::loop_audit::arm_set::ArmSet;
+use roko_learn::loop_audit::arm_set::{ArmSet, MAXIMIZE_CONDITION};
 use roko_learn::loop_audit::faults::{self, FaultKind};
 use roko_learn::routing_log::DecisionState;
-use roko_learn::section_effect::SectionDecision;
+use roko_learn::section_effect::{SECTION_BANDIT_PATH, SectionBandit, SectionDecision};
 use roko_learn::telemetry::records::{
     AuditFields, ContentProposals, DecisionAssignment, DecisionOpportunity, DecisionReceipt,
     b3_digest,
@@ -43,6 +44,166 @@ use super::verification::error_pattern_limit;
 use super::*;
 use crate::dispatch::RunnerDispatchPlan;
 use crate::dispatch::prompt_builder::{PromptItemDiagnostic, ReaderRead};
+
+/// `decision`, the route row of `attempt`, as the
+/// [`DashboardEvent::RouteDecided`](roko_core::DashboardEvent::RouteDecided)
+/// a host follows: the pick, the stage, source and reason, and its
+/// candidates, the pick first and the rest by score. A pick by rung or by
+/// hint can score below the models it passed over, and must not fall out of
+/// the list. It says where the attempt runs on the ladder and why (`reason`),
+/// and carries the self-model's forecast of it, when there is one
+/// (gap-aaaaae).
+pub(super) fn route_event(
+    decision: &roko_learn::routing_log::RoutingDecisionLog,
+    attempt: &AttemptContext,
+    reason: Option<super::ladder::TryReason>,
+) -> roko_core::DashboardEvent {
+    let (rung, ladder_step) = attempt.ladder_place();
+    let mut candidates: Vec<&roko_learn::routing_log::CandidateEntry> =
+        decision.candidates.iter().collect();
+    let picked = |candidate: &roko_learn::routing_log::CandidateEntry| {
+        candidate.model == decision.selected_model
+    };
+    candidates.sort_by(|a, b| {
+        picked(b)
+            .cmp(&picked(a))
+            .then_with(|| b.score.total_cmp(&a.score))
+    });
+    let source = decision
+        .source
+        .and_then(|source| serde_json::to_value(source).ok())
+        .and_then(|value| value.as_str().map(str::to_string))
+        .unwrap_or_default();
+    roko_core::DashboardEvent::RouteDecided {
+        plan_id: attempt.key.plan_id.clone(),
+        task_id: decision.task_id.clone(),
+        attempt: attempt.key.attempt,
+        model: decision.selected_model.clone(),
+        provider: decision.selected_provider.clone(),
+        stage: decision.routing_stage.clone(),
+        reason: decision.routing_reason.clone(),
+        source,
+        candidates: candidates
+            .into_iter()
+            .take(roko_core::dashboard_snapshot::ROUTE_EVENT_CANDIDATES)
+            .map(|candidate| roko_core::RouteCandidate {
+                model: candidate.model.clone(),
+                provider: candidate.provider.clone(),
+                score: candidate.score,
+                p: candidate.p,
+                eligible: candidate.eligible,
+                ineligible_reason: candidate.ineligible_reason.clone(),
+            })
+            .collect(),
+        ladder: Box::new(roko_core::dashboard_snapshot::RouteLadder {
+            rung,
+            ladder_step,
+            ladder_reason: reason.map_or_else(String::new, |reason| reason.as_str().to_string()),
+            forecast: attempt.forecast().cloned(),
+        }),
+    }
+}
+
+/// The self-model's `prediction` of an attempt, as its route event carries
+/// it (gap-aaaaae): its mode and action, the model it would choose, and per
+/// candidate the model, provider, P(verified success) and median cost, the
+/// likeliest first. The 90th-percentile cost stays in `predictions.jsonl`:
+/// for an arm with no history it is far from anything a run spends.
+pub(super) fn route_forecast(
+    prediction: &roko_learn::telemetry::records::AttemptPredictionRecord,
+) -> roko_core::dashboard_snapshot::RouteForecast {
+    let arm = |key: &str| key.parse::<roko_learn::self_model::ArmKey>().ok();
+    let mut candidates: Vec<roko_core::dashboard_snapshot::ForecastCandidate> = prediction
+        .candidates
+        .iter()
+        .map(|candidate| {
+            let (model, provider) = arm(&candidate.arm).map_or_else(
+                || (candidate.arm.clone(), String::new()),
+                |arm| (arm.model, arm.provider),
+            );
+            roko_core::dashboard_snapshot::ForecastCandidate {
+                model,
+                provider,
+                p_vs: candidate.p_vs,
+                cost_q50: candidate.cost_q50,
+            }
+        })
+        .collect();
+    candidates.sort_by(|a, b| b.p_vs.total_cmp(&a.p_vs));
+    candidates.truncate(roko_core::dashboard_snapshot::ROUTE_EVENT_CANDIDATES);
+    roko_core::dashboard_snapshot::RouteForecast {
+        mode: prediction.predictor.mode.clone(),
+        action: prediction.decision.action.clone(),
+        would_choose: prediction
+            .decision
+            .would_choose
+            .as_deref()
+            .map(|key| arm(key).map_or_else(|| key.to_string(), |arm| arm.model)),
+        candidates,
+    }
+}
+
+/// What the prompt of attempt `attempt` of `task_id` carried, from its
+/// `diagnostics`, as the [`DashboardEvent::PromptAssembled`] a host follows
+/// (gap-5f6d0b): the knowledge entries, playbooks and episodes that reached
+/// it, each retrieved one that did not with why, and its sections.
+///
+/// [`DashboardEvent::PromptAssembled`]: roko_core::DashboardEvent::PromptAssembled
+pub(super) fn prompt_event(
+    diagnostics: &crate::dispatch::PromptDiagnostics,
+    plan_id: &str,
+    task_id: &str,
+    attempt: u32,
+) -> roko_core::DashboardEvent {
+    let carried = |kind: ExposureItemKind| {
+        diagnostics
+            .items
+            .iter()
+            .filter(|item| item.kind == kind && item.included)
+            .map(|item| item.id.clone())
+            .collect::<Vec<_>>()
+    };
+    let left_out = diagnostics
+        .items
+        .iter()
+        .filter(|item| {
+            !item.included
+                && matches!(
+                    item.kind,
+                    ExposureItemKind::Knowledge
+                        | ExposureItemKind::Playbook
+                        | ExposureItemKind::Episode
+                        | ExposureItemKind::Section
+                )
+        })
+        .map(|item| roko_core::PromptLeftOut {
+            kind: item.kind.as_str().to_string(),
+            id: item.id.clone(),
+            reason: item
+                .excluded_reason
+                .and_then(|reason| serde_json::to_value(reason).ok())
+                .and_then(|reason| reason.as_str().map(str::to_string))
+                .unwrap_or_default(),
+        })
+        .collect::<Vec<_>>();
+    let dropped_sections = left_out
+        .iter()
+        .filter(|item| item.kind == ExposureItemKind::Section.as_str())
+        .map(|item| item.id.clone())
+        .collect();
+    roko_core::DashboardEvent::PromptAssembled {
+        plan_id: plan_id.to_string(),
+        task_id: task_id.to_string(),
+        attempt,
+        knowledge_ids: carried(ExposureItemKind::Knowledge),
+        playbook_ids: carried(ExposureItemKind::Playbook),
+        episode_ids: carried(ExposureItemKind::Episode),
+        left_out,
+        included_sections: diagnostics.included_sections.clone(),
+        dropped_sections,
+        estimated_tokens: diagnostics.estimated_tokens,
+    }
+}
 
 /// Most exposure rows one attempt writes (S01 §5.9
 /// `max_exposures_per_attempt`; a constant until a `[telemetry]` key
@@ -70,7 +231,23 @@ impl GraphTaskDispatcher {
             decision.attempt_key = Some(attempt_key);
             decision.task_id.clone_from(&task.id);
             decision.timestamp = chrono::Utc::now().to_rfc3339();
+            // The decision as it happens, for whoever follows the run
+            // (gap-2a3298); the attempt's `agent_spawned` follows it.
+            if let Some(tui) = &self.tui_bridge {
+                let reason = self.routed_try_reason(&attempt.key.attempt_key());
+                tui.publish_event(route_event(&decision, attempt, reason));
+            }
             attempt.record_decision(decision);
+        }
+        // What its prompt carried and left out, for the same host
+        // (gap-5f6d0b).
+        if let Some(tui) = &self.tui_bridge {
+            tui.publish_event(prompt_event(
+                &plan.prompt.diagnostics,
+                &attempt.key.plan_id,
+                &task.id,
+                attempt.key.attempt,
+            ));
         }
         record_exposures(attempt, plan);
         self.record_content_decisions(attempt, plan);
@@ -133,26 +310,30 @@ impl GraphTaskDispatcher {
     }
 
     /// The learned state the prompt's content decisions read (S01 P0-10):
-    /// the knowledge store and the playbooks the prompt cache loads from this
-    /// dispatcher's workdir, and the gate thresholds in force. A plan run's
-    /// prompts are built from one prompt-cache snapshot, so its decisions name
-    /// that snapshot, not the stores as they are now (backlog 4214).
+    /// the knowledge store, the playbooks and the section bandit the prompt
+    /// cache loads from this dispatcher's workdir, and the gate thresholds
+    /// in force. A plan run's prompts are built from one prompt-cache
+    /// snapshot, so its decisions name that snapshot, not the stores as they
+    /// are now (backlog 4214).
     fn learned_state(&self) -> LearnedState {
         let roko = self.workdir.join(".roko");
         let thresholds = self.feedback.gate_thresholds_path.as_deref();
-        let (knowledge, playbooks) = match self.factory.prompt_snapshot() {
+        let (knowledge, playbooks, sections) = match self.factory.prompt_snapshot() {
             Some(snapshot) => (
                 snapshot_state(&snapshot.knowledge, "kn"),
                 snapshot_state(&snapshot.playbooks, "pb"),
+                snapshot_state(&snapshot.sections, "sb"),
             ),
             None => (
                 store_state(&roko.join("neuro"), ".jsonl", "kn", Some(KNOWLEDGE_FILE)),
                 store_state(&roko.join("learn").join("playbooks"), ".json", "pb", None),
+                bandit_state(&self.workdir.join(SECTION_BANDIT_PATH)),
             ),
         };
         LearnedState {
             knowledge,
             playbooks,
+            sections,
             thresholds: thresholds.and_then(digest_file).map(|file| file.digest),
         }
     }
@@ -179,7 +360,21 @@ const KNOWLEDGE_FILE: &str = "knowledge.jsonl";
 struct LearnedState {
     knowledge: DecisionState,
     playbooks: DecisionState,
+    /// The section bandit's posteriors (L-sec).
+    sections: DecisionState,
     thresholds: Option<String>,
+}
+
+/// The section bandit's draws on one prompt (S02 L9): those the prompt
+/// applied, on the chain's learned arm, and those it only proposed, on the
+/// arm that runs π⁰ ([`PromptDiagnostics::section_proposals`]). At most one
+/// of the two holds draws.
+///
+/// [`PromptDiagnostics::section_proposals`]: crate::dispatch::PromptDiagnostics::section_proposals
+#[derive(Clone, Copy)]
+pub(super) struct BanditDraws<'a> {
+    applied: &'a [SectionDecision],
+    proposed: &'a [SectionDecision],
 }
 
 /// The ranking that chooses a content decision point's candidates, as the
@@ -247,6 +442,10 @@ fn content_decisions(
 ) -> Vec<ContentDecisionRecord> {
     let diagnostics = &plan.prompt.diagnostics;
     let draws = &diagnostics.section_decisions;
+    let bandit = BanditDraws {
+        applied: draws,
+        proposed: &diagnostics.section_proposals,
+    };
     let prompt = &plan.prompt;
     let request_hash = dispatch_prompt_hash(&prompt.system_prompt, &prompt.user_prompt);
     let mut decisions = Vec::new();
@@ -255,15 +454,37 @@ fn content_decisions(
         let mut decision = content_decision(identity, point, &items, read, state, draws, shown);
         let draw = (arm_set, times);
         let audited = faults::decision(&identity.attempt_key, || {
-            content_audit(point, &items, read, identity, draw, &request_hash)
+            content_audit(point, &items, read, identity, draw, &request_hash, bandit)
         });
         if let Some((proposals, audit)) = audited {
             decision.proposals = Some(proposals);
             decision.audit = audit;
         }
+        if point == ContentDecisionPoint::Knowledge && diagnostics.knowledge_section_off {
+            controller_decided(&mut decision);
+        }
         decisions.push(decision);
     }
     decisions
+}
+
+/// The opportunity reason of a knowledge row whose prompt ran a θ with the
+/// knowledge section off (M1's B4, gap-6bb6d8).
+const KNOWLEDGE_SECTION_OFF: &str = "knowledge_section_off";
+
+/// Mark `decision`, the knowledge row of a prompt whose θ had the knowledge
+/// section off (M1's B4, gap-6bb6d8), as the controller's: θ chose what
+/// reached the prompt, so the row names the controller as its source, and it
+/// is no opportunity of L-know, so the census credits neither of L-know's
+/// arms, its holdout included, with what θ did. Whatever arm L-know drew, a
+/// chain whose θ turns the section off drops out alike. The proposals stay
+/// the reader's: what it would have shown, and π⁰'s none.
+fn controller_decided(decision: &mut ContentDecisionRecord) {
+    decision.source = Some(DecisionSource::Control);
+    decision.audit.opportunity = Some(DecisionOpportunity {
+        eligible: false,
+        reason: KNOWLEDGE_SECTION_OFF.to_string(),
+    });
 }
 
 /// The content decision rows dispatch writes for `plan`, the plan of the
@@ -283,6 +504,7 @@ pub fn planned_content_decisions(
     let state = LearnedState {
         knowledge: store_state(&roko.join("neuro"), ".jsonl", "kn", Some(KNOWLEDGE_FILE)),
         playbooks: store_state(&roko.join("learn").join("playbooks"), ".json", "pb", None),
+        sections: bandit_state(&workdir.join(SECTION_BANDIT_PATH)),
         thresholds: None,
     };
     let shown = error_pattern_limit(None);
@@ -343,6 +565,7 @@ fn content_decision(
     let learned = match point {
         ContentDecisionPoint::Knowledge => Some(state.knowledge.clone()),
         ContentDecisionPoint::Playbooks => Some(state.playbooks.clone()),
+        ContentDecisionPoint::Sections => Some(state.sections.clone()),
         _ => None,
     };
     let (policy, chosen_propensity, source) = if draws.is_empty() {
@@ -386,15 +609,14 @@ fn decision_times(timing: &AttemptTiming) -> (i64, i64) {
 }
 
 /// S03's fields and proposals of the content decision at `point` (A-DEC, S01
-/// §5.3; backlog 5125), for L-know at `knowledge` and L-play at `playbooks`;
-/// the other points carry none yet. The learned proposal is the ids the
-/// reader would include, on the withheld arm too, and π⁰ includes none. The
-/// draw is the chain's arm set's on the point's layer, with `(assigned_at,
+/// §5.3; backlog 5125), for L-know at `knowledge`, L-play at `playbooks` and
+/// L-sec at `sections` (gap-6f31c3); the other points carry none yet. The
+/// proposals and the opportunity are the loop's ([`reader_proposals`],
+/// [`section_proposals`], whose draws `bandit` holds). The draw is the
+/// chain's arm set's on the point's layer, with `(assigned_at,
 /// decided_at)`. The receipt names the included items' rendered digests,
 /// which prompt assembly found in the system prompt dispatch launches as is,
-/// bound to the hash of the assembled request. The point is the loop's
-/// opportunity when it offered an item or its reader `read` had one, though
-/// it loaded nothing to show (gap-a13544). Pure, for E1 (5130).
+/// bound to the hash of the assembled request. Pure, for E1 (5130).
 pub(super) fn content_audit(
     point: ContentDecisionPoint,
     items: &[&PromptItemDiagnostic],
@@ -402,10 +624,12 @@ pub(super) fn content_audit(
     identity: &AttemptIdentity,
     draw: (Option<&ArmSet>, (i64, i64)),
     request_hash: &str,
+    bandit: BanditDraws<'_>,
 ) -> Option<(ContentProposals, AuditFields)> {
     let (loop_id, layer) = match point {
         ContentDecisionPoint::Knowledge => ("L-know", "knowledge"),
         ContentDecisionPoint::Playbooks => ("L-play", "playbooks"),
+        ContentDecisionPoint::Sections => ("L-sec", "sections"),
         _ => return None,
     };
     let (arm_set, (assigned_at, decided_at)) = draw;
@@ -414,20 +638,11 @@ pub(super) fn content_audit(
     let fault = faults::active(loop_id);
     let label_only = fault == Some(FaultKind::LabelOnly);
     let assigned_at = if label_only { decided_at } else { assigned_at };
-    let withheld = Some(ExcludedReason::WithheldArm);
-    let learned = items
-        .iter()
-        .filter(|item| item.included || item.excluded_reason == withheld)
-        .map(|item| item.id.clone())
-        .collect();
-    let retrieved = items
-        .iter()
-        .any(|item| item.excluded_reason != Some(ExcludedReason::RoleFilter));
-    let offered = retrieved || read.is_some_and(|read| read.opportunity);
-    let reason = if offered {
-        "items_retrieved"
+    let (proposals, opportunity) = if point == ContentDecisionPoint::Sections {
+        let maximize = arm_set.is_some_and(|arms| arms.condition_id == MAXIMIZE_CONDITION);
+        section_proposals(items, bandit, maximize)
     } else {
-        "no_item_for_the_role"
+        reader_proposals(items, read)
     };
     let key = identity.key();
     let assignment = arm_set
@@ -443,23 +658,143 @@ pub(super) fn content_audit(
             .map(|item| item.rendered_sha256.clone())
             .collect(),
     };
-    let proposals = ContentProposals {
-        learned: Some(learned),
-        default: Some(Vec::new()),
-    };
     let audit = AuditFields {
         loop_id: Some(loop_id.to_string()),
         loop_ids: vec![loop_id.to_string()],
         layer: Some(layer.to_string()),
-        opportunity: Some(DecisionOpportunity {
-            eligible: offered,
-            reason: reason.to_string(),
-        }),
+        opportunity: Some(opportunity),
         assignment,
         decided_at: Some(decided_at),
         receipt: (fault != Some(FaultKind::Unlogged)).then_some(receipt),
     };
     Some((proposals, audit))
+}
+
+/// L-know's or L-play's proposals at its reader's point, and whether the
+/// point was the loop's opportunity: the learned proposal is the ids the
+/// reader would include, on the withheld arm too, under a θ that turns
+/// the knowledge section off (gap-6bb6d8), and when the section bandit
+/// leaves out the section they render into (bug-550909), so that what L-sec
+/// removed counts as proposed and not reached; π⁰ includes none. The point
+/// is an opportunity when it offered an item or its reader `read` had one,
+/// though it loaded nothing to show (gap-a13544).
+fn reader_proposals(
+    items: &[&PromptItemDiagnostic],
+    read: Option<&ReaderRead>,
+) -> (ContentProposals, DecisionOpportunity) {
+    let learned = items
+        .iter()
+        .filter(|item| {
+            item.included
+                || matches!(
+                    item.excluded_reason,
+                    Some(
+                        ExcludedReason::WithheldArm
+                            | ExcludedReason::HarnessPolicy
+                            | ExcludedReason::BanditExcluded
+                    )
+                )
+        })
+        .map(|item| item.id.clone())
+        .collect();
+    let retrieved = items
+        .iter()
+        .any(|item| item.excluded_reason != Some(ExcludedReason::RoleFilter));
+    let offered = retrieved || read.is_some_and(|read| read.opportunity);
+    let reason = if offered {
+        "items_retrieved"
+    } else {
+        "no_item_for_the_role"
+    };
+    let proposals = ContentProposals {
+        learned: Some(learned),
+        default: Some(Vec::new()),
+    };
+    let opportunity = DecisionOpportunity {
+        eligible: offered,
+        reason: reason.to_string(),
+    };
+    (proposals, opportunity)
+}
+
+/// L-sec's proposals at the `sections` point, and whether the point was its
+/// opportunity (S03 §4.2; gap-6f31c3). Both are the sections a prompt
+/// includes: under the section bandit, and under π⁰, which leaves none out.
+/// Where the prompt applied the bandit's draws (`bandit.applied`, the
+/// chain's learned arm), its sections are the bandit's, and π⁰'s add the
+/// ones the bandit left out; where it only logged them (`bandit.proposed`,
+/// the arm that runs π⁰), its sections are π⁰'s, and the bandit's leave out
+/// the ones it drew out. The token budget's cut is taken to fall alike on
+/// both. The point is an opportunity when the bandit drew a droppable
+/// section, which it does on every arm outside `maximize` mode, where the
+/// bandit is off.
+fn section_proposals(
+    items: &[&PromptItemDiagnostic],
+    bandit: BanditDraws<'_>,
+    maximize: bool,
+) -> (ContentProposals, DecisionOpportunity) {
+    let included: Vec<String> = items
+        .iter()
+        .filter(|item| item.included)
+        .map(|item| item.id.clone())
+        .collect();
+    let left_out = |draws: &[SectionDecision]| -> Vec<String> {
+        draws
+            .iter()
+            .filter(|draw| draw.excluded)
+            .map(|draw| draw.section.clone())
+            .collect()
+    };
+    let (learned, default) = if bandit.applied.is_empty() {
+        let dropped = left_out(bandit.proposed);
+        let learned = included
+            .iter()
+            .filter(|id| !dropped.contains(id))
+            .cloned()
+            .collect();
+        (learned, included)
+    } else {
+        let mut default = included.clone();
+        default.extend(left_out(bandit.applied));
+        (included, default)
+    };
+    let drew = !bandit.applied.is_empty() || !bandit.proposed.is_empty();
+    let reason = match (drew, maximize) {
+        (true, _) => "droppable_sections",
+        (false, true) => "maximize",
+        (false, false) => "no_droppable_section",
+    };
+    let proposals = ContentProposals {
+        learned: Some(learned),
+        default: Some(default),
+    };
+    let opportunity = DecisionOpportunity {
+        eligible: drew,
+        reason: reason.to_string(),
+    };
+    (proposals, opportunity)
+}
+
+/// The section bandit's learned state in its file at `path` (S01 P0-10;
+/// gap-6f31c3): the file's digest, labelled `sb:n={n}`, `n` the labelled
+/// outcomes its posteriors hold. A bandit that has learned from none, a
+/// missing file among them, draws from its uniform prior, so its state
+/// reads as empty.
+fn bandit_state(path: &Path) -> DecisionState {
+    let file = digest_file(path);
+    let n_obs = SectionBandit::load(path).map_or(0, |bandit| bandit.labelled_outcomes());
+    DecisionState {
+        read: n_obs > 0,
+        version: format!("sb:n={n_obs}"),
+        digest: file
+            .as_ref()
+            .map_or_else(|| b3_digest(b""), |file| file.digest.clone()),
+        age_s: file
+            .and_then(|file| file.modified.elapsed().ok())
+            .map(|age| age.as_secs()),
+        n_obs,
+        stale: false,
+    }
 }
 
 /// The probability the logging policy included `item`: 1 − p_ex for a
@@ -679,6 +1014,217 @@ mod tests {
             kind: ExposureItemKind::Playbook,
             ..knowledge_item(id, 1, true)
         }
+    }
+
+    /// A section a prompt offered: in the prompt, or left out for `reason`.
+    fn section_item(id: &str, reason: Option<ExcludedReason>) -> PromptItemDiagnostic {
+        PromptItemDiagnostic {
+            kind: ExposureItemKind::Section,
+            id: id.to_string(),
+            section: id.to_string(),
+            rank: None,
+            score: Some(0.5),
+            tokens: 40,
+            rendered_sha256: format!("{id}-digest"),
+            included: reason.is_none(),
+            excluded_reason: reason,
+        }
+    }
+
+    /// The section bandit's draw on `section` at p_ex = 0.2, which left it
+    /// out when `excluded`.
+    fn bandit_draw(section: &str, excluded: bool) -> SectionDecision {
+        SectionDecision {
+            section: section.to_string(),
+            p_exclude: 0.2,
+            excluded,
+            propensity: if excluded { 0.2 } else { 0.8 },
+        }
+    }
+
+    /// gap-6f31c3 (S03 §4.2, §4.4): the sections row carries L-sec's fields,
+    /// both proposals on both arms. On the learned arm the prompt applied
+    /// the bandit's draws: its sections are the learned proposal, and π⁰'s
+    /// add the one the bandit left out. On the arm that runs π⁰ the bandit
+    /// only proposed its draws: the prompt's sections are π⁰'s, and the
+    /// learned proposal leaves out the one it drew out. Each is an
+    /// opportunity with the chain's draw on the `sections` layer and a
+    /// receipt of the included sections; maximize mode turns the bandit off,
+    /// so its rows are none. A bandit that has learned nothing reads as an
+    /// empty state, one taught two outcomes as read.
+    #[test]
+    fn sections_row_carries_l_sec_fields() {
+        use std::collections::BTreeSet;
+
+        use roko_learn::loop_audit::Registry;
+        use roko_learn::loop_audit::arm_set::{ArmDraws, ArmMode};
+        use roko_learn::telemetry::{Arm, AttemptKey};
+
+        let loops = Registry::embedded().expect("the embedded loop registry");
+        let draws = ArmDraws::new(0, "2026-10-16");
+        let arms_of = |mode: &ArmMode, index: usize| {
+            let key = AttemptKey::new("gr-sections", "plan", format!("t{index}"), 1);
+            (ArmSet::assign(&key, &loops, mode, &draws), key)
+        };
+        let on_arm = |learned: bool| {
+            (0..1_000)
+                .map(|index| arms_of(&ArmMode::Normal, index))
+                .find(|(arms, _)| arms.takes_default("sections") != learned)
+                .expect("a chain on the arm")
+        };
+        let audit = |(arms, key): &(ArmSet, AttemptKey),
+                     items: &[&PromptItemDiagnostic],
+                     bandit: BanditDraws<'_>| {
+            let identity = AttemptIdentity::new(key);
+            let draw = (Some(arms), (1, 2));
+            let point = ContentDecisionPoint::Sections;
+            content_audit(point, items, None, &identity, draw, "b3:request", bandit)
+                .expect("L-sec's fields")
+        };
+        let set = |ids: Option<Vec<String>>| -> BTreeSet<String> {
+            ids.unwrap_or_default().into_iter().collect()
+        };
+        let named =
+            |ids: &[&str]| -> BTreeSet<String> { ids.iter().map(|id| (*id).to_string()).collect() };
+        let role = section_item("role_identity", None);
+        let conventions = section_item("conventions", None);
+
+        // The learned arm: the bandit left `tool_hints` out of the prompt.
+        let chain = on_arm(true);
+        let hints = section_item("tool_hints", Some(ExcludedReason::BanditExcluded));
+        let applied = [
+            bandit_draw("conventions", false),
+            bandit_draw("tool_hints", true),
+        ];
+        let bandit = BanditDraws {
+            applied: &applied,
+            proposed: &[],
+        };
+        let (proposals, fields) = audit(&chain, &[&role, &conventions, &hints], bandit);
+        assert_eq!(fields.loop_id.as_deref(), Some("L-sec"));
+        assert_eq!(fields.loop_ids, ["L-sec"]);
+        assert_eq!(fields.layer.as_deref(), Some("sections"));
+        let opportunity = fields.opportunity.as_ref().expect("the opportunity");
+        let seen = (opportunity.eligible, opportunity.reason.as_str());
+        assert_eq!(seen, (true, "droppable_sections"));
+        let assignment = fields.assignment.as_ref().expect("the chain's draw");
+        assert_eq!(assignment.draw.layer, "sections");
+        assert_eq!(assignment.draw.arm, Arm::Learned);
+        assert_eq!(assignment.unit_key, chain.1.chain_key());
+        assert!(assignment.assigned_at < fields.decided_at.expect("decided_at"));
+        let both = named(&["role_identity", "conventions"]);
+        assert_eq!(set(proposals.learned), both);
+        let all = named(&["role_identity", "conventions", "tool_hints"]);
+        assert_eq!(set(proposals.default), all);
+        let receipt = fields.receipt.as_ref().expect("the receipt");
+        assert_eq!(receipt.request_hash.as_deref(), Some("b3:request"));
+        assert_eq!(
+            receipt.exposure_hashes,
+            ["role_identity-digest", "conventions-digest"]
+        );
+
+        // The arm that runs π⁰: every section in, and the bandit proposed
+        // leaving `conventions` out.
+        let chain = on_arm(false);
+        let hints = section_item("tool_hints", None);
+        let proposed = [
+            bandit_draw("conventions", true),
+            bandit_draw("tool_hints", false),
+        ];
+        let bandit = BanditDraws {
+            applied: &[],
+            proposed: &proposed,
+        };
+        let (proposals, fields) = audit(&chain, &[&role, &conventions, &hints], bandit);
+        let opportunity = fields.opportunity.as_ref().expect("the opportunity");
+        assert!(opportunity.eligible, "{opportunity:?}");
+        let assignment = fields.assignment.as_ref().expect("the chain's draw");
+        assert_ne!(assignment.draw.arm, Arm::Learned);
+        assert_eq!(
+            set(proposals.learned),
+            named(&["role_identity", "tool_hints"])
+        );
+        assert_eq!(set(proposals.default), all);
+
+        // Maximize mode: the bandit is off, and the point is no opportunity.
+        let chain = arms_of(&ArmMode::Maximize, 0);
+        let bandit = BanditDraws {
+            applied: &[],
+            proposed: &[],
+        };
+        let (proposals, fields) = audit(&chain, &[&role, &conventions, &hints], bandit);
+        let opportunity = fields.opportunity.as_ref().expect("the opportunity");
+        let seen = (opportunity.eligible, opportunity.reason.as_str());
+        assert_eq!(seen, (false, "maximize"));
+        assert_eq!(proposals.learned, proposals.default);
+
+        // The bandit's state: empty until it learns from a labelled outcome.
+        let temp = tempdir().expect("tempdir");
+        let path = temp.path().join(SECTION_BANDIT_PATH);
+        let cold = bandit_state(&path);
+        assert_eq!((cold.read, cold.n_obs), (false, 0), "{cold:?}");
+        SectionBandit::transaction(&path, |bandit| {
+            bandit.record("conventions", false, Some(1));
+            bandit.record("tool_hints", true, Some(0));
+            bandit.record("tool_hints", false, None);
+        })
+        .expect("teach the bandit");
+        let taught = bandit_state(&path);
+        let seen = (taught.read, taught.n_obs, taught.version.as_str());
+        assert_eq!(seen, (true, 2, "sb:n=2"), "{taught:?}");
+        assert_ne!(taught.digest, cold.digest);
+    }
+
+    /// bug-550909: when the section bandit leaves out `domain_context`, the
+    /// knowledge and playbook readers' items never reach the prompt, and
+    /// their rows still propose them. What L-sec removed is L-know's or
+    /// L-play's learned proposal and not its choice, so the census counts
+    /// the opportunity as not reached. An item the token budget cut stays
+    /// out of the proposal, and the receipt names only what the prompt
+    /// included.
+    #[test]
+    fn reader_rows_propose_what_the_section_bandit_left_out() {
+        use roko_learn::loop_audit::Registry;
+        use roko_learn::loop_audit::arm_set::{ArmDraws, ArmMode};
+        use roko_learn::telemetry::AttemptKey;
+
+        let loops = Registry::embedded().expect("the embedded loop registry");
+        let key = AttemptKey::new("gr-readers", "plan", "t1", 1);
+        let draws = ArmDraws::new(0, "2026-10-17");
+        let arms = ArmSet::assign(&key, &loops, &ArmMode::Normal, &draws);
+        let identity = AttemptIdentity::new(&key);
+        let audit = |point: ContentDecisionPoint, items: &[&PromptItemDiagnostic]| {
+            let bandit = BanditDraws {
+                applied: &[],
+                proposed: &[],
+            };
+            let draw = (Some(&arms), (1, 2));
+            content_audit(point, items, None, &identity, draw, "b3:request", bandit)
+                .expect("the reader's fields")
+        };
+        let left_out = |item: PromptItemDiagnostic| PromptItemDiagnostic {
+            included: false,
+            excluded_reason: Some(ExcludedReason::BanditExcluded),
+            ..item
+        };
+
+        let lesson = left_out(knowledge_item("kn-1", 1, true));
+        let cut = knowledge_item("kn-2", 2, false);
+        let (proposals, fields) = audit(ContentDecisionPoint::Knowledge, &[&lesson, &cut]);
+        assert_eq!(fields.loop_id.as_deref(), Some("L-know"));
+        assert_eq!(proposals.learned, Some(vec!["kn-1".to_string()]));
+        assert_eq!(proposals.default, Some(Vec::new()));
+        let receipt = fields.receipt.expect("the receipt");
+        assert!(receipt.exposure_hashes.is_empty(), "{receipt:?}");
+
+        let removed = left_out(playbook_item("pb-1"));
+        let shown = playbook_item("pb-2");
+        let (proposals, fields) = audit(ContentDecisionPoint::Playbooks, &[&removed, &shown]);
+        assert_eq!(fields.loop_id.as_deref(), Some("L-play"));
+        let both = vec!["pb-1".to_string(), "pb-2".to_string()];
+        assert_eq!(proposals.learned, Some(both));
+        let receipt = fields.receipt.expect("the receipt");
+        assert_eq!(receipt.exposure_hashes, ["pb-2-digest"]);
     }
 
     /// A dispatch plan whose prompt retrieved `items`, with no route
@@ -1002,6 +1548,143 @@ mod tests {
         attempt.settle(passed, "stream-model", None);
     }
 
+    /// gap-5f6d0b: `prompt_assembled` names what the prompt carried by kind,
+    /// and each retrieved knowledge entry, playbook, episode or section it
+    /// left out with why. The error-pattern block is none of them.
+    #[test]
+    fn prompt_event_names_what_it_carried_and_left_out() {
+        let left_out = |item: PromptItemDiagnostic, reason: ExcludedReason| PromptItemDiagnostic {
+            included: false,
+            excluded_reason: Some(reason),
+            ..item
+        };
+        let kind = |kind: ExposureItemKind, id: &str| PromptItemDiagnostic {
+            kind,
+            ..knowledge_item(id, 1, true)
+        };
+        let diagnostics = PromptDiagnostics {
+            items: vec![
+                knowledge_item("kn-1", 1, true),
+                left_out(
+                    knowledge_item("kn-2", 2, true),
+                    ExcludedReason::BanditExcluded,
+                ),
+                playbook_item("pb-1"),
+                left_out(playbook_item("pb-2"), ExcludedReason::WithheldArm),
+                kind(ExposureItemKind::Episode, "ep-1"),
+                left_out(
+                    kind(ExposureItemKind::ErrorPattern, "test::abc"),
+                    ExcludedReason::TokenBudget,
+                ),
+                section_item("role_identity", None),
+                section_item("domain_context", Some(ExcludedReason::BanditExcluded)),
+            ],
+            included_sections: vec!["role_identity".to_string()],
+            estimated_tokens: 900,
+            ..PromptDiagnostics::default()
+        };
+
+        let event = prompt_event(&diagnostics, "plan", "T1", 2);
+
+        assert_eq!(
+            serde_json::to_value(&event).expect("the event as JSON"),
+            serde_json::json!({
+                "type": "prompt_assembled",
+                "plan_id": "plan",
+                "task_id": "T1",
+                "attempt": 2,
+                "knowledge_ids": ["kn-1"],
+                "playbook_ids": ["pb-1"],
+                "episode_ids": ["ep-1"],
+                "left_out": [
+                    {"kind": "knowledge", "id": "kn-2", "reason": "bandit_excluded"},
+                    {"kind": "playbook", "id": "pb-2", "reason": "withheld_arm"},
+                    {"kind": "section", "id": "domain_context", "reason": "bandit_excluded"},
+                ],
+                "included_sections": ["role_identity"],
+                "dropped_sections": ["domain_context"],
+                "estimated_tokens": 900,
+            })
+        );
+    }
+
+    /// gap-5f6d0b: an attempt publishes `prompt_assembled` as it is planned,
+    /// after its `route_decided`, naming the stored lesson its prompt carried
+    /// because it shares the task's words. The run is in maximize mode, so no
+    /// arm withholds the entry.
+    #[tokio::test]
+    async fn an_attempt_publishes_what_its_prompt_carried() {
+        let temp = tempdir().expect("tempdir");
+        let roko = temp.path().join(".roko");
+        // The task is "Streaming graph task": the entry shares its words.
+        seed_knowledge(
+            temp.path(),
+            &[(
+                "kn-stream",
+                "Streaming graph task output flushes each chunk",
+            )],
+        );
+        let feedback = GraphFeedbackContext {
+            runs_dir: Some(roko.join("runs")),
+            ..GraphFeedbackContext::default()
+        };
+        let hub = crate::state_hub::shared_state_hub();
+        let mut events = hub.subscribe_events();
+        let bridge = TuiBridge::new(hub.sender());
+        let (dispatcher, mut task) = crate::graph_task_dispatch::tests::make_test_dispatcher_with(
+            &temp,
+            VERIFY_PROVIDER,
+            no_auto_fix_maximize,
+            feedback,
+            |dispatcher| dispatcher.with_tui_bridge(bridge),
+        )
+        .await;
+        task.verify = vec![verify_step("structural", "true")];
+        let ctx = CellContext::new().with_run_id(RUN.to_string());
+        dispatcher
+            .dispatch(&make_spec(&task), Vec::new(), &ctx)
+            .await
+            .expect("the verified attempt passes");
+
+        let mut order = Vec::new();
+        let mut carried = Vec::new();
+        loop {
+            match events.try_recv() {
+                Ok(envelope) => match envelope.payload {
+                    roko_core::DashboardEvent::RouteDecided { .. } => order.push("route_decided"),
+                    roko_core::DashboardEvent::PromptAssembled {
+                        task_id,
+                        attempt,
+                        knowledge_ids,
+                        included_sections,
+                        ..
+                    } => {
+                        order.push("prompt_assembled");
+                        carried.push((task_id, attempt, knowledge_ids, included_sections));
+                    }
+                    _ => {}
+                },
+                Err(tokio::sync::broadcast::error::TryRecvError::Lagged(_)) => {}
+                Err(_) => break,
+            }
+        }
+        let [(task_id, attempt, knowledge_ids, included_sections)] = carried.as_slice() else {
+            panic!("one prompt_assembled: {carried:?}");
+        };
+        assert_eq!((task_id.as_str(), *attempt), (task.id.as_str(), 1));
+        assert_eq!(knowledge_ids, &["kn-stream"]);
+        assert!(
+            included_sections
+                .iter()
+                .any(|section| section == "domain_context"),
+            "{included_sections:?}"
+        );
+        let prompt = order.iter().position(|kind| *kind == "prompt_assembled");
+        if let Some(route) = order.iter().position(|kind| *kind == "route_decided") {
+            assert!(Some(route) < prompt, "the route comes first: {order:?}");
+        }
+    }
+
     /// bug-eaa318: the provider bridge's `model_call` row of an attempt whose
     /// prompt included a knowledge entry names the entry, so the loop census
     /// finds knowledge ids on the efficiency log. A frozen run's row names it
@@ -1060,6 +1743,67 @@ mod tests {
         }
     }
 
+    /// bug-0a7ec1: a Graph attempt's verdict settles the knowledge outcome of
+    /// the stored entry its prompt carried. A passing verify leaves one
+    /// `success` row, with the run id and the attempt key, and a score of 1;
+    /// a failing one leaves `failure` and -1. The provider call leaves no
+    /// `partial` row of its own.
+    #[tokio::test]
+    async fn graph_attempt_verdict_settles_its_knowledge_outcome() {
+        for (check, outcome, score) in [("true", "success", 1), ("false", "failure", -1)] {
+            let temp = tempdir().expect("tempdir");
+            let roko = temp.path().join(".roko");
+            // The task is "Streaming graph task": the entry shares its words.
+            seed_knowledge(
+                temp.path(),
+                &[(
+                    "kn-stream",
+                    "Streaming graph task output flushes each chunk",
+                )],
+            );
+            let feedback = GraphFeedbackContext {
+                runs_dir: Some(roko.join("runs")),
+                ..GraphFeedbackContext::default()
+            };
+            let (dispatcher, mut task) =
+                make_test_dispatcher(&temp, VERIFY_PROVIDER, no_auto_fix_maximize, feedback).await;
+            task.verify = vec![verify_step("structural", check)];
+            let ctx = CellContext::new().with_run_id(RUN.to_string());
+            let dispatched = dispatcher
+                .dispatch(&make_spec(&task), Vec::new(), &ctx)
+                .await;
+            assert_eq!(dispatched.is_ok(), check == "true", "{check}");
+            drop(dispatcher);
+            crate::background_writes::settled(&roko).await;
+
+            let run = RunRecords::load(&roko.join("runs").join(RUN)).expect("load the run");
+            let [verdict] = run.verdicts.as_slice() else {
+                panic!("one verdict: {:?}", run.verdicts);
+            };
+            let log = std::fs::read_to_string(roko.join("learn/knowledge-feedback.jsonl"))
+                .expect("the knowledge feedback log");
+            let rows: Vec<serde_json::Value> = log
+                .lines()
+                .map(|line| serde_json::from_str(line).expect("a JSON row"))
+                .collect();
+            let [row] = rows.as_slice() else {
+                panic!("one row: {rows:?}");
+            };
+            assert_eq!(row["type"], "knowledge_outcome", "{row}");
+            assert_eq!(row["outcome"], outcome, "{row}");
+            assert_eq!(row["run_id"], RUN, "{row}");
+            assert_eq!(
+                row["request_id"], verdict.record.identity.attempt_key,
+                "{row}"
+            );
+            assert_eq!(row["knowledge_ids"], serde_json::json!(["kn-stream"]));
+            let scores = std::fs::read_to_string(roko.join("learn/knowledge-scores.json"))
+                .expect("the knowledge scores");
+            let scores: serde_json::Value = serde_json::from_str(&scores).expect("JSON scores");
+            assert_eq!(scores["scores"]["kn-stream"], score, "{scores}");
+        }
+    }
+
     /// G29: a dispatch whose prompt retrieved a matching knowledge entry logs
     /// the entry as included, and its verdict counts the inclusion. The run
     /// is in maximize mode, so no arm withholds the entry.
@@ -1114,6 +1858,160 @@ mod tests {
         assert!(sections > 0);
         let content = run.exposures.len() - sections;
         assert_eq!(counts.retrieved as usize, content);
+    }
+
+    /// gap-6bb6d8 (M1's B4): the θ an attempt runs decides whether its prompt
+    /// carries the knowledge section. Every chain runs the θ of an `on`-mode
+    /// controller. Under θ₀ the matching entry reaches the prompt. Under a θ
+    /// whose `knowledge_section` is off the entry is still retrieved, but the
+    /// prompt has no `# Neuro knowledge` section, the exposure row says θ
+    /// left the entry out, nothing credits it, and the knowledge decision row
+    /// names the controller as its source and is no opportunity of L-know,
+    /// whose proposal stands. The run is in maximize mode, so no L-know arm
+    /// withholds the entry.
+    #[tokio::test]
+    async fn knowledge_section_knob_off_omits_the_knowledge_section() {
+        use roko_core::config::harness_params::{HarnessLadders, HarnessParams, Knob, Step};
+        use roko_core::config::homeostasis::{HomeostasisConfig, HomeostasisMode};
+        use roko_learn::homeostasis::controller::Controller;
+        use roko_learn::homeostasis::detect::Baseline;
+        use roko_learn::homeostasis::policy::ViabilityPolicy;
+
+        use crate::graph_task_dispatch::tests::make_test_dispatcher_with;
+        use crate::runtime_feedback::HomeostasisSink;
+
+        const POLICY: &str = "policy_version = 1\nholdout = 0.0\n\
+            ev.pass_rate = { lo = 0.70 }\nev.usd_per_verified_success = { hi = 0.12 }\n\
+            ev.false_green = { hi = 0.10 }\nev.latency_p90_s = { hi = 900 }\n";
+
+        for knowledge_section in [true, false] {
+            let temp = tempdir().expect("tempdir");
+            let roko = temp.path().join(".roko");
+            // The task is "Streaming graph task": the entry shares its words.
+            seed_knowledge(
+                temp.path(),
+                &[(
+                    "kn-stream",
+                    "Streaming graph task output flushes each chunk",
+                )],
+            );
+            let configure = |config: &mut RokoConfig| {
+                no_auto_fix_maximize(config);
+                config.runner.log_prompts = true;
+            };
+            // The θ the attempt runs: θ₀, or θ₀ with the section off.
+            let mut applied = None;
+            let finish = |dispatcher: GraphTaskDispatcher| {
+                let theta0 = HarnessParams::baseline(&dispatcher.config);
+                let ladders = HarnessLadders::from_config(&dispatcher.config);
+                let settings = HomeostasisConfig {
+                    mode: HomeostasisMode::On,
+                    ..HomeostasisConfig::default()
+                };
+                let baseline = Baseline {
+                    pass_rate: 0.80,
+                    usd_per_resolution: 0.05,
+                    wall_ms: 300_000.0,
+                };
+                let policy = ViabilityPolicy::parse(POLICY).expect("the policy parses");
+                let controller = Controller::new(
+                    &settings,
+                    policy,
+                    theta0.clone(),
+                    ladders.clone(),
+                    baseline,
+                    0,
+                );
+                // Every chain runs the controller's θ, whatever the day's draws.
+                let sink = HomeostasisSink::new(temp.path(), Some(controller), None);
+                let sink = Arc::new(sink.with_holdout(0.0));
+                let theta = if knowledge_section {
+                    theta0
+                } else {
+                    let off = theta0
+                        .step(Knob::KnowledgeSection, Step::Down, &ladders)
+                        .expect("the section switches off");
+                    assert_eq!(sink.handle().swap(off.clone(), "section off"), 1);
+                    off
+                };
+                assert_eq!(theta.knowledge_section, knowledge_section);
+                applied = Some(theta);
+                dispatcher.with_feedback(GraphFeedbackContext {
+                    runs_dir: Some(roko.join("runs")),
+                    homeostasis: Some(sink),
+                    ..GraphFeedbackContext::default()
+                })
+            };
+            let feedback = GraphFeedbackContext::default();
+            let (dispatcher, mut task) =
+                make_test_dispatcher_with(&temp, VERIFY_PROVIDER, configure, feedback, finish)
+                    .await;
+            let applied = applied.expect("the sink's θ");
+            task.verify = vec![verify_step("structural", "true")];
+            let ctx = CellContext::new().with_run_id(RUN.to_string());
+            dispatcher
+                .dispatch(&make_spec(&task), Vec::new(), &ctx)
+                .await
+                .expect("the verified attempt passes");
+            drop(dispatcher);
+            crate::background_writes::settled(&roko).await;
+
+            // The system prompt the agent got.
+            let logs: Vec<PathBuf> = std::fs::read_dir(roko.join("prompt-logs"))
+                .expect("the prompt log directory")
+                .map(|entry| entry.expect("a prompt log").path())
+                .collect();
+            assert_eq!(logs.len(), 1, "{logs:?}");
+            let log = std::fs::read_to_string(&logs[0]).expect("read the prompt log");
+            let (system, _) = log
+                .split_once("=== USER PROMPT ===")
+                .expect("the log holds both prompts");
+            let on = knowledge_section;
+            assert_eq!(system.contains("# Neuro knowledge"), on, "{system}");
+            assert_eq!(system.contains("[kn-stream]"), on, "{system}");
+
+            let run = RunRecords::load(&roko.join("runs").join(RUN)).expect("load the run");
+            assert!(run.invalid.is_empty(), "{:?}", run.invalid);
+            // The attempt ran θ, on the controller's learned arm.
+            let harness = &run.harness_decisions[0].record;
+            assert_eq!(harness.params_digest, applied.params_digest(), "on {on}");
+            // The entry was retrieved either way; θ alone kept it out.
+            let entry = run
+                .exposures
+                .iter()
+                .map(|line| &line.record)
+                .find(|row| row.item_id == "kn-stream")
+                .expect("the entry's exposure row");
+            let reason = (!on).then_some(ExcludedReason::HarnessPolicy);
+            assert_eq!((entry.included, entry.excluded_reason), (on, reason));
+            let counts = run.verdicts[0]
+                .record
+                .exposures
+                .expect("the verdict counts");
+            assert!(counts.retrieved > 0, "{counts:?}");
+            // The knowledge row: the reader's proposal stands; θ's choice is
+            // the controller's, and no opportunity of L-know.
+            let row = run
+                .content_decisions
+                .iter()
+                .map(|line| &line.record)
+                .find(|row| row.decision_point == ContentDecisionPoint::Knowledge)
+                .expect("the knowledge row");
+            let learned = row.proposals.as_ref().and_then(|p| p.learned.clone());
+            assert_eq!(learned, Some(vec!["kn-stream".to_string()]), "on {on}");
+            assert_eq!(row.audit.loop_id.as_deref(), Some("L-know"));
+            let opportunity = row.audit.opportunity.as_ref().expect("the opportunity");
+            let seen = (opportunity.eligible, opportunity.reason.as_str());
+            if on {
+                assert_eq!(row.chosen, ["kn-stream"]);
+                assert_eq!(row.source, Some(DecisionSource::Default));
+                assert_eq!(seen, (true, "items_retrieved"));
+            } else {
+                assert!(row.chosen.is_empty(), "{row:?}");
+                assert_eq!(row.source, Some(DecisionSource::Control));
+                assert_eq!(seen, (false, KNOWLEDGE_SECTION_OFF));
+            }
+        }
     }
 
     /// gap-a40021: the error-pattern decision lists one candidate per pattern

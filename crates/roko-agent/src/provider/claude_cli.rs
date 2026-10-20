@@ -110,6 +110,9 @@ impl ProviderAdapter for ClaudeCliAdapter {
         if let Some(max_turns) = options.max_turns {
             agent = agent.with_max_turns(max_turns);
         }
+        if let Some(usd) = options.max_budget_usd {
+            agent = agent.with_max_budget_usd(usd);
+        }
         for (key, value) in &options.env {
             agent = agent.with_env_var(key.clone(), value.clone());
         }
@@ -841,6 +844,8 @@ printf '%s\n' '{{"type":"result","subtype":"success","is_error":false,"total_cos
             live_output: None,
             thinking: None,
             data_llm: None,
+            turn_budget: None,
+            max_budget_usd: None,
             pricing: roko_core::pricing_snapshot::PricingConfig::default(),
         };
         let model = claude_model();

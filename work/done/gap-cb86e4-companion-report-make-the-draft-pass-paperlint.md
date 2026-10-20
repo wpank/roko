@@ -9,7 +9,7 @@ goal = "whitepaper"
 size = "M"
 subsystem = ["companion"]
 created = 2026-09-29
-updated = 2026-09-29
+updated = 2026-10-16
 last_verified = 2026-09-29
 last_verified_rev = "fce93aced"
 source = "tmp/cybernetic-harness/workstreams/PROGRESS.md"
@@ -21,6 +21,8 @@ links = { depends_on = ["gap-a3031b"], blocks = [], related = ["gap-b409fa", "ga
 
 [[verify]]
 command = "test $(python3 tools/paperlint.py --strict tmp/cybernetic-harness/companion-audit/E10-DRAFT.md | grep -E ': \\[' | grep -vE 'leftover marker \\[\\[(E2|E3|E4|E6|E11|AUTHOR)' | wc -l) -eq 0"
+superseded = "2026-10-16: Will dropped the companion report on 2026-10-15 (decision 4; gap-b90650, its release, closed as wontfix): it will not be posted, so E10-DRAFT.md's strict lint no longer gates anything (edited after this closed, it has 4 strict findings)."
+superseded_by = "gap-b90650"
 
 [closed]
 at = 2026-09-29

@@ -12,7 +12,9 @@
 //!   left (tagged `crates/b/src/x.rs`), and a runtime success note;
 //! - four playbooks: one about calc, and three with net successes and no
 //!   word in common with any task;
-//! - one error pattern, of a verify command no task runs.
+//! - two error patterns, each of a verify command no task runs: one another
+//!   plan's `T09` hit, and one another plan's `T01` hit, whose task id run 1
+//!   repeats (bug-56e072).
 //!
 //! Run 1: `T01` edits `calc/power.py`, fails its verify step once and passes
 //! on its retry, stating a lesson; `T02` edits `docs/notes.md` with another
@@ -46,6 +48,10 @@ const RUN_TWO: &str = "calc-cube";
 /// `T01`'s verify command, which `T03` runs too: its failure's pattern is
 /// keyed to it.
 const POWER_CHECK: &str = "grep -qF 'base ** exponent' calc/power.py";
+
+/// The verify command of another plan's `T01`, which no task here runs: its
+/// failure's pattern shares only a task id with run 1's `T01`.
+const OTHER_T01_CHECK: &str = "grep -q '^Approved-by:' REPORT.md";
 
 /// The lesson `T01`'s passing attempt states.
 const LESSON: &str = "Exponentiation in calc/power.py uses Python's ** operator, not a loop.";
@@ -212,7 +218,7 @@ fn write_calc_package(repo: &Path) {
 }
 
 /// The learned state the runs start from: the knowledge entries, playbooks
-/// and error pattern of the module documentation.
+/// and error patterns of the module documentation.
 fn seed_learned_state(repo: &Path) {
     let roko = repo.join(".roko");
     let neuro = roko.join("neuro");
@@ -277,6 +283,15 @@ fn seed_learned_state(repo: &Path) {
         "markdown lint found trailing spaces",
         GateFailureSource::GateClassification,
     ));
+    let _ = patterns.observe_gate_failure(GateFailureObservation::new(
+        "verify::REPORT.md has no Approved-by line",
+        "other-plan",
+        Some("T01".to_string()),
+        OTHER_T01_CHECK,
+        "verify",
+        "REPORT.md has no Approved-by line",
+        GateFailureSource::GateClassification,
+    ));
     patterns
         .save(&learn.join("error-patterns.json"))
         .expect("seed the error patterns");
@@ -339,9 +354,10 @@ fn run_one(workspace: &ScriptedPlanWorkspace) {
 /// R2 #8: a task gets no learned section that is not about its topic. `T02`
 /// sees no knowledge, playbooks or error patterns, though the stores hold
 /// entries with net successes and another plan's `T01` note; `T01` sees no
-/// pattern on its first attempt and its own failure's on its retry. No
-/// prompt shows another plan's `T01` entry, a success note, the pattern of a
-/// command no task runs, or a collective calibration block.
+/// pattern on its first attempt, though another plan's `T01` left one
+/// (bug-56e072), and its own failure's on its retry. No prompt shows another
+/// plan's `T01` entry or pattern, a success note, the pattern of a command no
+/// task runs, or a collective calibration block.
 #[test]
 fn unrelated_tasks_get_no_learned_sections() {
     let (workspace, provider, _helper) = fixture();
@@ -372,6 +388,7 @@ fn unrelated_tasks_get_no_learned_sections() {
             "kn-other-t01",
             "kn-success-note",
             "make lint-docs",
+            OTHER_T01_CHECK,
             "# Collective calibration",
         ] {
             assert!(
@@ -420,6 +437,7 @@ fn a_later_task_sees_its_topics_lessons() {
         "kn-success-note",
         "kn-other-t01",
         "make lint-docs",
+        OTHER_T01_CHECK,
     ] {
         assert!(!cube.contains(noise), "T03 shows {noise}:\n{cube}");
     }

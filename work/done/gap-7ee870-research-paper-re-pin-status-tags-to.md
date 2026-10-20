@@ -9,7 +9,7 @@ goal = "whitepaper"
 size = "M"
 subsystem = ["paper"]
 created = 2026-09-29
-updated = 2026-09-29
+updated = 2026-10-16
 last_verified = 2026-09-29
 last_verified_rev = "8c03bad1f"
 source = "tmp/cybernetic-harness/workstreams/PROGRESS.md"
@@ -21,6 +21,8 @@ links = { depends_on = [], blocks = [], related = ["gap-fcea53"], supersedes = [
 
 [[verify]]
 command = "test $(grep -rhoE '(WIRED|PARTIAL|BROKEN|ORPHANED|BUILT-UNWIRED|MISSING|REMOVED)@a17d4dadd' tmp/cybernetic-harness/paper/sections/*.md | wc -l) -eq 0 && python3 tools/paperlint.py --budget 1.2 --check-identifiers tmp/cybernetic-harness/paper/sections/*.md"
+superseded = "2026-10-16: The 2026-10-02 design-paper rewrite of the research paper dropped the status tags, so the re-pin clause passes; what fails is --check-identifiers on the new sections (56 problems), which the new paper's review and final lint pass, gap-aed6f1, owns."
+superseded_by = "gap-aed6f1"
 
 [closed]
 at = 2026-09-29

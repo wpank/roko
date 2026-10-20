@@ -3,7 +3,7 @@
 """F5 truth suite: up, down, up again, numbering and snapshot equality (task 3323; S08 S4.2 (2)).
 
 Usage:
-    hidden.py --task DIR/task.json --workdir TREE --secret-file PATH
+    hidden.py --task DIR/task.json --workdir TREE --secret-file PATH [--deny PATH ...]
 
 TREE is the tree to judge, normally the census's clean export of the agent's final commit; it is never changed.
 The secret arrives only as a 0600 file (common/hmac_seed), never on the command line or in the environment.
@@ -23,8 +23,9 @@ How it works:
    discovers the migrations under the export's `migrations/` directory, applies the two earlier ones to a fresh
    in-memory database, takes a schema snapshot (`tools/snapshot.py`'s `snapshot`), then runs the new migration's
    `up` twice in a row, `down`, and `up` again, taking a snapshot after each step. This needs no hidden data drawn
-   from the secret: the sequence itself, and the table and column names already in the manifest, are the check.
-4. The checks compare the snapshots and the discovered migration numbers against what the manifest expects, so
+   from the secret: the sequence itself, and the instance's table and column names (`gen.migration`, from its
+   level and seed), are the check.
+4. The checks compare the snapshots and the discovered migration numbers against what the instance expects, so
    "behaves as the contract says" needs no access to the agent's code beyond calling it a few times.
 """
 
@@ -111,7 +112,7 @@ def run_probe(root: Path, job: dict, deny: tuple[Path, ...] = ()) -> dict:
 
 
 def judge(outcome: dict, migration: dict) -> list[dict]:
-    """The checks, in a fixed order, from the probe's outcome against the manifest's `migration` fields."""
+    """The checks, in a fixed order, from the probe's outcome against the instance's `gen.migration` fields."""
     checks: list[dict] = []
 
     def check(check_id: str, passed: bool, detail: str) -> None:
@@ -176,7 +177,7 @@ def run(instance: gen.Instance, workdir: Path, secret: hmac_seed.Secret, *, deny
             shutil.rmtree(cache) if cache.is_dir() and not cache.is_symlink() else cache.unlink()
         for stray in export.rglob("*.py[co]"):
             stray.unlink()
-        migration = task["migration"]
+        migration = gen.migration(task["ladder"], task["seed"])
         job = {"next_number": migration["next_number"], "earlier_numbers": migration["earlier_numbers"],
                "table": migration["table"]}
         outcome = run_probe(export, job, deny)
@@ -192,11 +193,12 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--task", type=Path, required=True, help="the instance's task.json")
     parser.add_argument("--workdir", type=Path, required=True, help="the tree to judge; it is not changed")
     hmac_seed.add_secret_file_argument(parser)
+    sandbox.add_deny_argument(parser)
     args = parser.parse_args(argv)
     try:
         secret = hmac_seed.read_secret_file(args.secret_file)
         report = run(gen.load_instance(args.task), args.workdir, secret,
-                     deny=sandbox.denied(args.secret_file, args.task))
+                     deny=sandbox.denied(args.secret_file, args.task, args.deny))
     except (hmac_seed.SecretFileError, repo.RepoError, OSError, ValueError, KeyError, RuntimeError) as err:
         print(f"hidden.py: {err}", file=sys.stderr)
         return 2

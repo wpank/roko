@@ -8,6 +8,9 @@ A runner:
 - works in `ctx.workdir` only, and starts every agent process with `ctx.agent_env` (`agent_env.build`). A runner that
   confines them with `common.sandbox` (a network rule, and `ctx.deny`; gap-0bd49a) says how in its outcome's
   `network_policy`;
+- names what it puts where the agent can see by `ctx.alias`, never by `ctx.key`, `ctx.instance_id` or `ctx.run_id`
+  (bug-3c921e): the instance id names the family and the ladder level, and a campaign's run id names its block. The
+  key stays on the driver's side: the ledger, the proxies' task and the run directory;
 - when `ctx.verify_wrapper` is set, runs its visible checks through it (`vb_verify`, S08 §4.6 `flaky_verify`);
 - appends one ledger row per attempt it dispatched (`ctx.ledger`), when the attempt ends, even on failure;
 - returns when the agent has ended its session (status `completed`) or a cap stopped it (`aborted_cap`, `timeout`),
@@ -17,6 +20,11 @@ A runner:
 
 A runner may also define `preflight(arm, model, endpoint, caps, snapshot)`, which `vb run` calls once before the
 first task; anything it raises stops the run. The Roko arm checks there that its binary accepts the plans it emits.
+
+A runner names the prompt its agents get, which `vb run` records in the run's config (`prompt`), so that a changed
+prompt changes the run's `config_hash`: module constants `PROMPT_VERSION` and `PROMPT_SHA256`, or, for a runner
+whose arms emit from different templates, `arm_prompt(arm) -> {"version", "sha256"}`, one arm's (the Roko runner's,
+bug-85e982; `vb.runner_prompt`).
 
 API:
     TaskContext(...)                  # frozen; see the fields
@@ -57,6 +65,9 @@ class TaskContext:
     instance_id: str
     seed: int
     key: str  # "<instance_id>.s<seed>", unique within a run
+    # The task's alias (bug-3c921e): a random id, unique within the run, that names its workdir and HOME and anything
+    # else of the task an agent can see (Roko's plan, the visible-verify wrapper's draws). The record keeps it.
+    alias: str
     workdir: Path
     spec_text: str
     agent_env: dict[str, str]
@@ -67,8 +78,8 @@ class TaskContext:
     verify_wrapper: Path | None = None
     # The model the proxy serves in place of the pin (`model_swap`), which the model checks accept; None if none.
     model_swap: str | None = None
-    # The paths every agent process is denied (`common.sandbox`): the secret file, the key file and the run's private
-    # task directories, which `vb run` fills in.
+    # The paths every agent process is denied (`common.sandbox`): the secret file, the key file and the whole results
+    # root, this run's directory and every other run's (bug-d308f7, bug-935cfa), which `vb run` fills in.
     deny: tuple[Path, ...] = ()
 
     @property

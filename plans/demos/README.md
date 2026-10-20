@@ -1,28 +1,35 @@
 # Demo plans
 
 Plans for showing roko to people and for exercising one feature at a time.
-Each one passes `roko plan validate --strict`, writes only under `demo/`, and
-has `status = "fixture"` in its `[meta]`.
+Each one passes `roko plan validate` (the larger ones draw `PLAN_TIER_SIZE`
+warnings under `--strict`), writes only under `demo/`, and has
+`status = "fixture"` in its `[meta]`.
+
+**Start with [`demo-hello-world`](parallel-plans/demo-hello-world/)**, from
+Hermes, the portal or the terminal: one task, about a minute, under a cent on
+the default model ladder (see "Run from Hermes" below).
 
 ## Catalogue
 
 | Plan | What it shows | Tasks | Expected result | Agent and cost |
 |---|---|---|---|---|
-| [`demo-hello`](demo-hello/) | The smallest real run: one task, one verify step, TUI approval | 1: implementer | `demo/roko-plan-smoke-output.md` with the three required lines | Real model; not recorded |
-| [`parallel-plans/demo-hello-world`](parallel-plans/demo-hello-world/) | A one-file Rust program; the free portal walkthrough | 1: implementer | `demo/hello-world/main.rs` compiles and prints `hello world` | Fake agent (free, seconds) or a real model |
-| [`parallel-plans/demo-print-hello`](parallel-plans/demo-print-hello/) | The second, independent plan of the `parallel-plans` set | 1: implementer | `demo/print-hello/main.rs` prints a line starting with `hello` | Fake agent or a real model |
-| [`demo-fibonacci`](demo-fibonacci/) | Implementer-to-scribe hand-off on a unit-tested program | 2: implementer, scribe | `demo/fibonacci/` prints `0 1 1 2 3 5 8 13 21 34`, its tests pass, and it has a README | Real model; not recorded |
-| [`demo-parallel-integration`](demo-parallel-integration/) | Two sibling tasks run at once, then a join task reads both | 3: implementer | `left.json`, `right.json` and `combined.json` (total 42) under `demo/parallel-integration/` | Real model; $0.43 on 2026-09-21 |
-| [`demo-resume-recovery`](demo-resume-recovery/) | A run stops after task 1 and a second process resumes it | 2: implementer | The first run stops at 1/2; the resumed run completes with both stage files | Real model; $0.46 on 2026-09-19 |
-| [`hello-color/demo-hello-color`](hello-color/demo-hello-color/) | Five tasks with two roles, and two pairs of tasks running in parallel | 5: scribe, implementer | The `demo/hello-color/` crate prints a coloured greeting, with research, review and README files | Real model; $5.78 on 2026-09-23 (earlier version whose research task could not write its file) |
-| [`hello-color/demo-greeting-module`](hello-color/demo-greeting-module/) | A plan that depends on another plan (`depends_on_plan`) | 1: implementer | `src/greeting.rs` with a passing unit test; the program's output is unchanged | Real model; not recorded |
-| [`demo-multistage`](demo-multistage/) | A five-stage non-code workflow ending in a read-only review | 5: scribe, implementer, quick-reviewer | `sh demo/multistage-plan/validate.sh` prints `multi-stage demo: PASS` | Real model; $0.50 on 2026-09-21 |
-| [`demo-incident-tabletop`](demo-incident-tabletop/) | Repository evidence turned into a timed incident exercise | 4: scribe, implementer, quick-reviewer | Risk register, scenario and facilitator guide under `demo/incident-tabletop/` | Real model; $2.03 on 2026-09-21 |
-| [`demo-release-readiness`](demo-release-readiness/) | A release go/no-go decision run as an evidence workflow | 4: scribe, implementer, quick-reviewer | `inventory.json`, `go-no-go.md` and `check.sh` under `demo/release-readiness/` | Real model; not recorded |
+| [`parallel-plans/demo-hello-world`](parallel-plans/demo-hello-world/) | **Start here.** A one-file Rust program; the free portal walkthrough | 1: implementer | `demo/hello-world/main.rs` compiles and prints `hello world` | Fake agent (free, seconds), or a real model: $0.005, 46 s from Hermes on 2026-10-15 |
+| [`demo-hello`](demo-hello/) | The smallest real run: one task, one verify step, TUI approval | 1: implementer | `demo/roko-plan-smoke-output.md` with the three required lines, the last dated | Real model; $0.012, 42 s from Hermes on 2026-10-15 |
+| [`parallel-plans/demo-print-hello`](parallel-plans/demo-print-hello/) | The second, independent plan of the `parallel-plans` set | 1: implementer | `demo/print-hello/main.rs` prints a line starting with `hello` | Fake agent, or a real model: $0.004, 49 s from Hermes on 2026-10-15 |
+| [`demo-fibonacci`](demo-fibonacci/) | Implementer-to-scribe hand-off on a unit-tested program | 2: implementer, scribe | `demo/fibonacci/` prints `0 1 1 2 3 5 8 13 21 34`, its tests pass, and it has a README | Real model; $0.019, 59 s from Hermes on 2026-10-15 |
+| [`demo-parallel-integration`](demo-parallel-integration/) | Two sibling tasks run at once, then a join task reads both | 3: implementer | `left.json`, `right.json` and `combined.json` (total 42) under `demo/parallel-integration/` | Real model; $0.016, 37 s from Hermes on 2026-10-15 (outputs checked in, so little to do) |
+| [`_cli/demo-resume-recovery`](_cli/demo-resume-recovery/) | A run stops after task 1 and a second process resumes it; terminal only | 2: implementer | The first run stops at 1/2; the resumed run completes with both stage files | Real model; $0.46 on 2026-09-19 |
+| [`hello-color/demo-hello-color`](hello-color/demo-hello-color/) | Five tasks with two roles, and two pairs of tasks running in parallel | 5: scribe, implementer | The `demo/hello-color/` crate prints a coloured greeting, with research, review and README files | Real model; $0.017, 2 min from Hermes on 2026-10-15 (crate checked in, so little to do) |
+| [`hello-color/demo-greeting-module`](hello-color/demo-greeting-module/) | A plan that depends on another plan (`depends_on_plan`) | 1: implementer | `src/greeting.rs` with a passing unit test; the program's output is unchanged | Real model; $0.042, 36 s from Hermes on 2026-10-15 |
+| [`demo-multistage`](demo-multistage/) | A five-stage non-code workflow ending in a read-only review | 5: scribe, implementer, quick-reviewer | `sh demo/multistage-plan/validate.sh` prints `multi-stage demo: PASS` | Real model; $0.19, 4 min from Hermes on 2026-10-15 ($0.12 of it the one task that kept retrying `apply_patch`, bug-f5470e) |
+| [`demo-incident-tabletop`](demo-incident-tabletop/) | Repository evidence turned into a timed incident exercise | 4: scribe, implementer, quick-reviewer | Risk register, scenario and facilitator guide under `demo/incident-tabletop/` | Real model; $0.054, 96 s from Hermes on 2026-10-15 |
+| [`demo-release-readiness`](demo-release-readiness/) | A release go/no-go decision run as an evidence workflow | 4: scribe, implementer, quick-reviewer | `inventory.json`, `go-no-go.md` and `check.sh` under `demo/release-readiness/` | Real model; $0.064, 4 min from Hermes on 2026-10-15 |
 | [`demo-full-stack`](demo-full-stack/) | Six tasks build, audit and document an axum web server | 6: scribe, implementer | `demo/hello-server/` builds and serves `/`, `/health` and `/info`; `COMPLETION.md` signs off | Real model; no recorded run; its builds fetch crates |
 
-Costs are what the plan's Graph checkpoint recorded for its last run, with
-whatever model that run used.
+Costs are what the run recorded, with whatever model it used. The 2026-10-15
+runs were started from Hermes' Plans tab in a clone of this repository, on
+the workspace ladder: `cerebras-gptoss` for mechanical and focused tasks,
+`glm-4-7` for integrative ones.
 
 Four demos read this repository's own files (`demo-multistage`,
 `demo-incident-tabletop`, `demo-release-readiness`, `demo-full-stack`), so they
@@ -30,10 +37,27 @@ only run here. The others also run in an empty scratch workspace. The
 `hello-color` set and `demo-full-stack` build with Cargo, which fetches their
 crates on first use.
 
-Several demos have run here before, and their outputs are checked in under
-`demo/`. A rerun starts from those files, so its agents may find little or
-nothing to change. To watch the work happen from nothing, use a scratch
-workspace (see below) or delete the output directory first.
+### Outputs and reruns
+
+A demo's output belongs on its run's branch, not on yours. When an output is
+checked in, the demo's checks pass before any agent has run, and roko's spec
+gate refuses such a plan (`HF3: verify passes on the unchanged base`); that is
+why `demo-hello`'s last line carries the run's UTC date, and why the outputs
+old runs committed for `demo-release-readiness` and `demo-resume-recovery` are
+gone. Some older outputs are still checked in (`parallel-integration`,
+`incident-tabletop`, `multistage-plan`, `hello-color`): those demos run, but
+their agents edit or rewrite those files instead of creating them. To watch
+the work happen from nothing, use a scratch workspace (see below) or delete
+the output directory first.
+
+### Whole-plan checks
+
+Every demo that writes a `.rs` file has its own `[meta] verify`, which checks
+the demo's output once its tasks have passed. Without one, a plan in a Cargo
+workspace gets roko's default whole-plan check (fmt, clippy and tests of the
+packages it may touch). In this repository that means a cold build of the
+whole workspace, because roko cannot read the package graph offline here
+(bug-a7e018).
 
 ## Run from the command line
 
@@ -65,12 +89,37 @@ stops before any agent starts: `depends on plan 'demo-hello-color', which is
 not in the selected plan set and is not complete`.
 
 The resume demo takes two commands. The first stops at 1/2; the second
-resumes at stage two:
+resumes at stage two. It lives under `_cli/`, which plan discovery skips,
+because only a terminal can set the variable its second run needs; name its
+directory to run it:
 
 ```sh
-./target/debug/roko plan run plans/demos/demo-resume-recovery --fresh --max-retries 0
-ROKO_RESUME_DEMO_READY=1 ./target/debug/roko plan run plans/demos/demo-resume-recovery
+./target/debug/roko plan run plans/demos/_cli/demo-resume-recovery --fresh --max-retries 0
+ROKO_RESUME_DEMO_READY=1 ./target/debug/roko plan run plans/demos/_cli/demo-resume-recovery
 ```
+
+## Run from Hermes
+
+With the roko plugin, Hermes' Plans tab lists every plan `roko serve` finds,
+the demos among them, and starts one with a spending cap ("Run plan…").
+
+- The workspace must let a chat host start runs: `[serve.mcp]
+  allow_without_data_llm = true` or an `[agent.data_llm]` table in
+  `roko.toml`. Without either, roko refuses every run Hermes starts ("a run
+  from a chat host needs the data-model boundary"). roko serve reads
+  `roko.toml` per run, so the change needs no restart.
+- A run Hermes starts may not use a CLI agent (Claude Code, Codex and the
+  like), so the ladder's API rungs do the work; the demos above ran on
+  `cerebras-gptoss` and `glm-4-7`.
+- Start with `demo-hello-world`. A $0.25 cap is plenty for the one-task demos
+  and `demo-fibonacci`, `demo-parallel-integration` and the `hello-color` set;
+  `demo-release-readiness` ran for $0.06 and `demo-incident-tabletop` for
+  $0.05. `demo-multistage` used $0.19 of a $0.25 cap, so give it more.
+- Each run leaves its output on its own branch, `roko/batch/<run>`, and the
+  run card offers to merge it into your current branch. For a demo, look at
+  the diff and leave it there: merged demo output is junk on your branch, and
+  it makes the next run of that demo pass before any agent starts, which roko
+  refuses.
 
 ### Demo configs
 
@@ -137,6 +186,9 @@ such a workspace.
 - `_fixtures/` starts with `_`. Plan discovery skips directories whose names
   do not start with a letter or digit, as it skips `archive/` and `_meta/`, so
   the fixtures never appear in `roko plan list`, the portal or a whole-tree run.
+- `_cli/` holds demos that only a terminal can run (`demo-resume-recovery`).
+  Discovery skips it the same way, so Hermes and the portal do not offer them;
+  `roko plan run plans/demos/_cli/<demo>` still runs one.
 
 ## Fixtures
 
@@ -172,7 +224,7 @@ whole codebase.
 
 | Before | Now |
 |---|---|
-| `plans/demo-hello`, `demo-parallel-integration`, `demo-resume-recovery`, `demo-multistage`, `demo-incident-tabletop`, `demo-full-stack` | `plans/demos/` under the same names |
+| `plans/demo-hello`, `demo-parallel-integration`, `demo-resume-recovery`, `demo-multistage`, `demo-incident-tabletop`, `demo-full-stack` | `plans/demos/` under the same names (`demo-resume-recovery` since 2026-10-15 under `plans/demos/_cli/`) |
 | `plans/archive/demo-release-readiness` | `plans/demos/demo-release-readiness`, minus two `read_files` line ranges that ran past the end of their files |
 | `plans/hello-world` (a prompt only) | `plans/demos/parallel-plans/demo-hello-world` |
 | `plans/scratch-test` | `plans/demos/parallel-plans/demo-print-hello` |
@@ -194,6 +246,12 @@ checkpoints under `.roko/state/graph/demo-hello/` still apply.
 - In `[meta]`, set `status = "fixture"` and `skip_enrichment = true`.
 - Write only under `demo/<name>/`. Give tasks that write files the
   `implementer` or `scribe` role; the other roles cannot write files.
+- Do not check the demo's output in, and make every implementer's checks fail
+  on the unchanged repository: roko refuses a plan whose checks already pass
+  (check with `roko plan validate --spec-quality --dynamic plans/demos/<name>`).
+- If a task writes Rust, give the plan a `[meta] verify` that checks the
+  demo's own output. Whole-plan checks run under `sh`, so use POSIX syntax
+  there (no `[[` or `<<<`).
 - Name a file that another plan creates in the task description, not in
   `read_files`: `read_files` must exist when the plan loads.
 - Check it with `roko plan validate --strict plans/demos/<name>`.

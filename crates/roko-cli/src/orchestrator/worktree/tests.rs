@@ -2161,7 +2161,7 @@ async fn a_resumed_run_starts_attempts_from_the_plan_branch() {
     );
 
     // Another run starts from the configured base and does not take over
-    // the checkouts run-1 kept.
+    // the checkouts run-1 kept: it makes its own (bug-06bd18).
     let other_run = manager_with_worktrees_root(&first_process, worktrees_root);
     assert_eq!(
         other_run.begin_plan_run("plan", "run-2").await.unwrap(),
@@ -2172,12 +2172,138 @@ async fn a_resumed_run_starts_attempts_from_the_plan_branch() {
         .await
         .unwrap();
     assert_eq!(git_in(&fresh.path, &["rev-parse", "HEAD"]), base);
-    assert!(
-        other_run
-            .create_for_attempt("plan", "second", 0)
-            .await
-            .is_err()
+    let own = other_run
+        .create_for_attempt("plan", "second", 0)
+        .await
+        .expect("run-2 makes its own checkout");
+    assert_eq!(git_in(&own.path, &["rev-parse", "HEAD"]), base);
+    assert!(!own.path.join("half-done.txt").exists());
+}
+
+/// bug-06bd18: a new run of a plan does not stop at the checkout an earlier,
+/// failed run kept for one of its attempts. The kept checkout is set aside
+/// under `<id>-<run>`, its branch renamed to match and its uncommitted work
+/// intact, and the new run gets a fresh checkout from its base.
+#[tokio::test]
+async fn a_new_run_sets_aside_the_checkouts_another_run_kept() {
+    let Some((_tmp, first_run)) = make_manager() else {
+        return;
+    };
+    let worktrees_root = first_run.config.worktrees_root.clone();
+    let repo = first_run.config.repo_root.clone();
+    let base = git_in(&repo, &["rev-parse", "main"]);
+    first_run.begin_plan_run("plan", "run-1").await.unwrap();
+    let kept = first_run
+        .create_for_attempt("plan", "task", 0)
+        .await
+        .unwrap();
+    std::fs::write(kept.path.join("half-done.txt"), b"failed attempt\n").unwrap();
+
+    let second_run = manager_with_worktrees_root(&first_run, worktrees_root.clone());
+    assert_eq!(
+        second_run.begin_plan_run("plan", "run-2").await.unwrap(),
+        None
     );
+    let fresh = second_run
+        .create_for_attempt("plan", "task", 0)
+        .await
+        .expect("the new run gets its own checkout");
+    assert_eq!(fresh.path, kept.path);
+    assert_eq!(git_in(&fresh.path, &["rev-parse", "HEAD"]), base);
+    assert!(!fresh.path.join("half-done.txt").exists());
+
+    let aside = worktrees_root.join(format!("{}-run1", kept.id));
+    assert_eq!(
+        std::fs::read_to_string(aside.join("half-done.txt")).unwrap(),
+        "failed attempt\n"
+    );
+    assert_eq!(
+        git_in(&aside, &["symbolic-ref", "--short", "HEAD"]),
+        format!("{}-run1", kept.branch)
+    );
+}
+
+/// bug-e998be: when the attempt's branch is still checked out somewhere roko
+/// cannot set aside (here a checkout someone moved by hand without renaming
+/// its branch), the refusal says where, that roko deleted nothing, and gives
+/// the command that moves the checkout aside with its branch. It never tells
+/// anyone to remove a checkout by force. Run as given, that command keeps the
+/// checkout's work and lets the attempt start.
+#[tokio::test]
+async fn a_refused_attempt_says_where_its_branch_is_and_how_to_move_it_aside() {
+    let Some((_tmp, first_run)) = make_manager() else {
+        return;
+    };
+    let worktrees_root = first_run.config.worktrees_root.clone();
+    let repo = first_run.config.repo_root.clone();
+    first_run.begin_plan_run("plan", "run-1").await.unwrap();
+    let kept = first_run
+        .create_for_attempt("plan", "task", 0)
+        .await
+        .unwrap();
+    std::fs::write(kept.path.join("half-done.txt"), b"crashed attempt\n").unwrap();
+    let moved = worktrees_root.join(format!("{}-moved", kept.id));
+    git_in(
+        &repo,
+        &[
+            "worktree",
+            "move",
+            &kept.path.to_string_lossy(),
+            &moved.to_string_lossy(),
+        ],
+    );
+
+    let second_run = manager_with_worktrees_root(&first_run, worktrees_root.clone());
+    second_run.begin_plan_run("plan", "run-2").await.unwrap();
+    let error = second_run
+        .create_for_attempt("plan", "task", 0)
+        .await
+        .expect_err("the branch is checked out elsewhere");
+    assert!(matches!(error, WorktreeError::ReattachRejected { .. }));
+    let message = error.to_string();
+    let holder = message
+        .split("repository, at `")
+        .nth(1)
+        .and_then(|rest| rest.split('`').next())
+        .expect("the refusal names the checkout that has the branch");
+    assert_eq!(
+        std::fs::canonicalize(holder).unwrap(),
+        std::fs::canonicalize(&moved).unwrap(),
+        "{message}"
+    );
+    assert!(message.contains("deleted nothing"), "{message}");
+    assert!(!message.contains("--force"), "{message}");
+    let command = message
+        .split("keeps its work: ")
+        .nth(1)
+        .expect("the refusal gives a command");
+    assert!(command.contains(" worktree move "), "{command}");
+    assert!(
+        command.contains(&format!("branch -m {} {}-kept", kept.branch, kept.branch)),
+        "{command}"
+    );
+
+    let output = StdCommand::new("sh")
+        .arg("-c")
+        .arg(command)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{command}: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let aside = PathBuf::from(format!("{holder}-kept"));
+    assert_eq!(
+        std::fs::read_to_string(aside.join("half-done.txt")).unwrap(),
+        "crashed attempt\n"
+    );
+    let fresh = second_run
+        .create_for_attempt("plan", "task", 0)
+        .await
+        .expect("the attempt starts once the checkout is aside");
+    assert_eq!(fresh.path, kept.path);
+    assert!(!fresh.path.join("half-done.txt").exists());
 }
 
 fn acceptance_in(run_id: &str) -> AttemptAcceptance {
@@ -3246,6 +3372,94 @@ async fn prune_runs_without_error() {
 }
 
 // ── G08 config isolation tests ─────────────────────────────────────
+
+/// gap-2da1ff: a new worktree gets each git-ignored `node_modules` of the
+/// checkout, nested ones too, as an independent copy-on-write clone, so the
+/// project's checks find their dependencies there. Editing the clone leaves
+/// the operator's checkout alone, an absolute link into the checkout now
+/// leads into the worktree, a `node_modules` git does not ignore stays out,
+/// and the worktree's status stays clean.
+#[tokio::test]
+async fn worktree_gets_the_checkouts_node_modules() {
+    let Some((tmp, mgr)) = make_manager() else {
+        return;
+    };
+    let repo = tmp.path().join("repo");
+    let write = |path: &str, text: &str| {
+        let path = repo.join(path);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, text).unwrap();
+    };
+    write(".gitignore", "node_modules/\n!tools/node_modules/\n");
+    write("package.json", "{\"name\": \"app\"}\n");
+    write("lib/x.js", "module.exports = 2;\n");
+    write("packages/a/package.json", "{\"name\": \"a\"}\n");
+    write("tools/README.md", "tools\n");
+    for args in [&["add", "-A"][..], &["commit", "-q", "-m", "project"]] {
+        let ok = StdCommand::new("git")
+            .current_dir(&repo)
+            .args(args)
+            .status()
+            .unwrap()
+            .success();
+        assert!(ok, "git {args:?}");
+    }
+    write("node_modules/dep/index.js", "module.exports = 1;\n");
+    std::fs::create_dir_all(repo.join("node_modules/.bin")).unwrap();
+    std::os::unix::fs::symlink("../dep/index.js", repo.join("node_modules/.bin/dep")).unwrap();
+    std::os::unix::fs::symlink(repo.join("lib"), repo.join("node_modules/linked")).unwrap();
+    write("packages/a/node_modules/inner/i.js", "inner\n");
+    write("tools/node_modules/kept/k.js", "not ignored\n");
+
+    let handle = mgr.create("01-deps", "feature/deps").await.unwrap();
+    let cloned = handle.path.join("node_modules");
+    assert!(
+        !handle.path.join("tools/node_modules").exists(),
+        "a node_modules git does not ignore stays out"
+    );
+    if !cloned.exists() {
+        // Without copy-on-write clones the worktree gets none, as before.
+        assert!(
+            !cfg!(target_os = "macos"),
+            "macOS (APFS) clones node_modules"
+        );
+        assert!(!handle.path.join("packages/a/node_modules").exists());
+        return;
+    }
+    assert_eq!(
+        std::fs::read_to_string(cloned.join("dep/index.js")).unwrap(),
+        "module.exports = 1;\n"
+    );
+    assert_eq!(
+        std::fs::read_to_string(handle.path.join("packages/a/node_modules/inner/i.js")).unwrap(),
+        "inner\n"
+    );
+    std::fs::write(cloned.join("dep/index.js"), "changed\n").unwrap();
+    assert_eq!(
+        std::fs::read_to_string(repo.join("node_modules/dep/index.js")).unwrap(),
+        "module.exports = 1;\n",
+        "editing the clone changed the operator's checkout"
+    );
+    assert_eq!(
+        std::fs::read_link(cloned.join(".bin/dep")).unwrap(),
+        Path::new("../dep/index.js")
+    );
+    assert_eq!(
+        std::fs::read_link(cloned.join("linked")).unwrap(),
+        handle.path.join("lib")
+    );
+    let status = StdCommand::new("git")
+        .current_dir(&handle.path)
+        .args(["status", "--porcelain", "--untracked-files=all"])
+        .output()
+        .unwrap();
+    assert!(status.status.success());
+    assert_eq!(
+        String::from_utf8_lossy(&status.stdout),
+        "",
+        "the worktree is clean"
+    );
+}
 
 #[test]
 fn isolate_worktree_config_copies_cursor_dir() {

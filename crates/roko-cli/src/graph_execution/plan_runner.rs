@@ -4,7 +4,7 @@
 //! from the binary-side `cmd_plan_run_engine` so that `serve_runtime` and
 //! other library callers can invoke it without depending on the binary crate.
 
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::io::IsTerminal as _;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -102,14 +102,10 @@ fn plan_set_entries(
         .iter()
         .filter_map(|plan_id| plans.iter().find(|plan| &plan.id == plan_id))
         .map(|plan| {
-            let title = plan.tasks.meta.plan.trim();
             roko_core::dashboard_snapshot::PlanSetEntry {
                 plan_id: plan.id.clone(),
-                title: if title.is_empty() {
-                    plan.id.clone()
-                } else {
-                    title.to_string()
-                },
+                // A plan named for people goes by its title (gap-c2efe7).
+                title: plan_title(plan),
                 group: plan_set_group(plans_root, &plan.dir),
                 tasks_total: plan.tasks.tasks.len(),
                 wave: dag
@@ -130,6 +126,18 @@ fn plan_set_entries(
             }
         })
         .collect()
+}
+
+/// What `plan` is called, as the plan list names it
+/// ([`roko_core::task::plan_title`], bug-ce2967): its `[meta] title`
+/// (gap-c2efe7), else the title of its `plan.md`, else its id.
+fn plan_title(plan: &crate::runner::plan_loader::Plan) -> String {
+    let plan_md = std::fs::read_to_string(plan.dir.join("plan.md")).ok();
+    roko_core::task::plan_title(
+        plan.tasks.meta.title.as_deref(),
+        plan_md.as_deref(),
+        &plan.id,
+    )
 }
 
 /// The plan set containing `plan_dir`: its parent directory relative to
@@ -160,7 +168,7 @@ fn plan_set_group(plans_root: &Path, plan_dir: &Path) -> Option<String> {
 /// Why a CLI plan run stopped before its plan set finished.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PlanRunInterrupt {
-    /// SIGINT, or the operator closed the TUI while plans were still running.
+    /// SIGINT.
     Interrupt,
     /// SIGTERM.
     Terminate,
@@ -172,30 +180,39 @@ pub enum PlanRunInterrupt {
     /// A conductor watcher failed the run (gap-fab2cc); the run ends with
     /// the watcher's error.
     Conductor,
+    /// A cancel request: a host cancelled the run through its cancel token,
+    /// as `roko serve` does for `run_cancel` over `/mcp` and for
+    /// `POST /plans/{id}/cancel` (bug-1d09e8). It exits as SIGINT does.
+    Cancel,
+    /// The operator closed the TUI while plans were still running. It exits
+    /// as SIGINT does.
+    TuiClosed,
 }
 
 impl PlanRunInterrupt {
     /// Every stop cause, e.g. to tell a stopped run's exit status apart.
-    pub const ALL: [Self; 5] = [
+    pub const ALL: [Self; 7] = [
         Self::Interrupt,
         Self::Terminate,
         Self::Hangup,
         Self::Deadline,
         Self::Conductor,
+        Self::Cancel,
+        Self::TuiClosed,
     ];
 
     /// Conventional shell status for the signal: 128 + signal number.
     #[must_use]
     pub const fn exit_code(self) -> i32 {
         match self {
-            Self::Interrupt => 130,
+            Self::Interrupt | Self::Cancel | Self::TuiClosed => 130,
             Self::Terminate | Self::Deadline | Self::Conductor => 143,
             Self::Hangup => 129,
         }
     }
 
-    /// Signal name, `deadline` or `conductor`, for logs, summaries and the
-    /// checkpoint's stop cause.
+    /// Signal name, `deadline`, `conductor`, `cancel` or `tui-closed`, for
+    /// logs, summaries and the checkpoint's stop cause.
     #[must_use]
     pub const fn label(self) -> &'static str {
         match self {
@@ -204,6 +221,23 @@ impl PlanRunInterrupt {
             Self::Hangup => "SIGHUP",
             Self::Deadline => "deadline",
             Self::Conductor => "conductor",
+            Self::Cancel => "cancel",
+            Self::TuiClosed => "tui-closed",
+        }
+    }
+
+    /// What stopped the run, for the person reading its events: "a cancel
+    /// request stopped the run" (bug-1d09e8).
+    #[must_use]
+    pub const fn cause(self) -> &'static str {
+        match self {
+            Self::Interrupt => "SIGINT",
+            Self::Terminate => "SIGTERM",
+            Self::Hangup => "SIGHUP",
+            Self::Deadline => "the FAST deadline",
+            Self::Conductor => "a conductor watcher",
+            Self::Cancel => "a cancel request",
+            Self::TuiClosed => "closing the TUI",
         }
     }
 
@@ -214,6 +248,8 @@ impl PlanRunInterrupt {
             Self::Hangup => 3,
             Self::Deadline => 4,
             Self::Conductor => 5,
+            Self::Cancel => 6,
+            Self::TuiClosed => 7,
         }
     }
 
@@ -224,6 +260,8 @@ impl PlanRunInterrupt {
             3 => Some(Self::Hangup),
             4 => Some(Self::Deadline),
             5 => Some(Self::Conductor),
+            6 => Some(Self::Cancel),
+            7 => Some(Self::TuiClosed),
             _ => None,
         }
     }
@@ -248,6 +286,18 @@ impl PlanRunInterruptHandle {
     #[must_use]
     pub fn requested(&self) -> Option<PlanRunInterrupt> {
         PlanRunInterrupt::from_code(self.requested.load(Ordering::SeqCst))
+    }
+
+    /// Wait for a stop request and return it, looking every
+    /// [`PLAN_WATCH_INTERVAL`] as the run's own loop does. A whole-plan check
+    /// races its steps against it (bug-7b62ff).
+    pub async fn stopped(&self) -> PlanRunInterrupt {
+        loop {
+            if let Some(interrupt) = self.requested() {
+                return interrupt;
+            }
+            tokio::time::sleep(PLAN_WATCH_INTERVAL).await;
+        }
     }
 }
 
@@ -665,7 +715,7 @@ impl Drop for TuiSession {
     }
 }
 
-/// The recorded stop request, or a new `Interrupt` when the operator just
+/// The recorded stop request, or a new `TuiClosed` when the operator just
 /// closed the TUI mid-run (no terminal output would remain otherwise).
 fn pending_interrupt(
     interrupt: &PlanRunInterruptHandle,
@@ -673,7 +723,7 @@ fn pending_interrupt(
 ) -> Option<PlanRunInterrupt> {
     if interrupt.requested().is_none() && tui.as_mut().is_some_and(TuiSession::closed_by_operator) {
         tracing::warn!("operator closed the TUI mid-run; stopping the plan run");
-        interrupt.request(PlanRunInterrupt::Interrupt);
+        interrupt.request(PlanRunInterrupt::TuiClosed);
     }
     interrupt.requested()
 }
@@ -1006,6 +1056,7 @@ pub(crate) async fn run_graph_plan_observed(
     );
     // `.roko/events.jsonl` and the run's index show it to a dashboard in
     // another terminal, serve and `roko doctor` (bug-230de6).
+    let completed_run_id = observed_run_id.clone();
     let events = super::event_log::WorkspaceEventLog::spawn(&hub, &params.workdir, observed_run_id);
 
     // Ensure a consistent interrupt handle: if the caller passed None, create
@@ -1024,8 +1075,14 @@ pub(crate) async fn run_graph_plan_observed(
 
     let result = run_graph_plan_body(params, run_id).await;
 
-    let outcome = graph_run_outcome(&result, &interrupt_handle);
+    let outcome = match &result {
+        // Its plans ran no check, and none failed (bug-db89d4).
+        Ok(exit) if exit.unverified => "unverified",
+        Ok(exit) => graph_run_outcome(Some(exit.code), &interrupt_handle),
+        Err(_) => graph_run_outcome(None, &interrupt_handle),
+    };
     hub_sender.publish(roko_core::DashboardEvent::RunCompleted {
+        run_id: Some(completed_run_id),
         outcome: outcome.to_string(),
         duration_ms: run_start.elapsed().as_millis() as u64,
         cleanup_degraded: false,
@@ -1037,32 +1094,50 @@ pub(crate) async fn run_graph_plan_observed(
         events.finish().await;
     }
 
-    result
+    result.map(|exit| exit.code)
 }
 
-/// Map the run result to an outcome label for `DashboardEvent::RunCompleted`.
+/// How the body of a plan run ended: its exit code, and whether it failed
+/// only because a plan ended unverified (bug-db89d4).
+struct RunExit {
+    code: i32,
+    /// Every plan succeeded or ended unverified, at least one unverified,
+    /// and nothing stopped the run.
+    unverified: bool,
+}
+
+impl From<i32> for RunExit {
+    fn from(code: i32) -> Self {
+        Self {
+            code,
+            unverified: false,
+        }
+    }
+}
+
+/// Map the run's exit code (`None`: it ended in an error) to an outcome
+/// label for `DashboardEvent::RunCompleted`.
 ///
 /// - `"succeeded"`: exit code `EXIT_SUCCESS`.
 /// - `"cancelled"`: a stop request whose exit code matches the returned code
 ///   (TUI cancel routes through the same handle via `PlanRunInterrupt`).
-/// - `"failed"`: any `Err` and every other non-zero exit code.
-fn graph_run_outcome(
-    result: &anyhow::Result<i32>,
-    interrupt: &PlanRunInterruptHandle,
-) -> &'static str {
-    match result {
-        Ok(code) if *code == EXIT_SUCCESS => "succeeded",
-        Ok(code) => {
+/// - `"failed"`: an error and every other non-zero exit code.
+///
+/// A run whose plans ended unverified is `"unverified"`, decided before this.
+fn graph_run_outcome(code: Option<i32>, interrupt: &PlanRunInterruptHandle) -> &'static str {
+    match code {
+        Some(EXIT_SUCCESS) => "succeeded",
+        Some(code) => {
             if interrupt
                 .requested()
-                .is_some_and(|req| req.exit_code() == *code)
+                .is_some_and(|req| req.exit_code() == code)
             {
                 "cancelled"
             } else {
                 "failed"
             }
         }
-        Err(_) => "failed",
+        None => "failed",
     }
 }
 
@@ -1099,7 +1174,7 @@ pub(crate) async fn attach_tool_observability(
 async fn run_graph_plan_body(
     params: GraphPlanRunParams,
     run_id: Option<String>,
-) -> anyhow::Result<i32> {
+) -> anyhow::Result<RunExit> {
     use roko_graph::cells::TaskDispatcher;
 
     let GraphPlanRunParams {
@@ -1199,6 +1274,20 @@ async fn run_graph_plan_body(
     // the manifest, the feedback facade and the dispatcher are built, so
     // every reader sees one value.
     apply_run_switches(&mut roko_config, frozen_learning, no_holdout);
+    // Every check the run starts builds with a job cap at a lower priority
+    // (bug-b3849c): `[gates] cargo_jobs` and `[gates] nice`.
+    let gate_limits = roko_config.gates.gate_limits();
+    roko_core::child_env::set_gate_limits(gate_limits);
+    tracing::info!(
+        cargo_jobs = ?gate_limits.cargo_jobs,
+        nice = gate_limits.nice,
+        cargo_build_jobs_from_env = ?std::env::var("CARGO_BUILD_JOBS").ok(),
+        "gate commands run with a job cap at a lower priority"
+    );
+    // ... and without the person's credentials (bug-3c4600): `[gates]
+    // env_passthrough` and `strip_env`, and an empty GH_CONFIG_DIR for this
+    // run, removed when it ends. The first check logs what it left out.
+    let _check_run = roko_core::child_env::begin_check_run(roko_config.gates.check_env_settings());
     if roko_config.learning.frozen {
         tracing::info!(
             "learning is frozen for this run: it reads learned state and writes none \
@@ -1229,7 +1318,7 @@ async fn run_graph_plan_body(
             Ok(report) => report,
             Err(interrupted) => {
                 tracing::error!("{interrupted}");
-                return Ok(128 + interrupted.signal);
+                return Ok(RunExit::from(128 + interrupted.signal));
             }
         };
     if spec_gate.blocks() {
@@ -1241,7 +1330,7 @@ async fn run_graph_plan_body(
                 sender.publish(event);
             }
         }
-        return Ok(1);
+        return Ok(RunExit::from(1));
     }
 
     // Merge CLI flag with config (same logic as runner-v2).
@@ -1332,6 +1421,13 @@ async fn run_graph_plan_body(
             crate::dispatch::rung_probe::probe_ladder(&roko_config, &ladder, workdir).await;
         shared_factory = shared_factory.skip_failed_rungs(&failed);
     }
+    // A chat host's run holds its tasks' outbound tool calls for approval
+    // (decision 9107), which only roko's own tool loop can do: its ladder
+    // keeps only the rungs that run there, so no task starts or climbs onto a
+    // CLI agent that would be refused at dispatch (gap-cf427e).
+    if outbound_floor.is_some_and(|floor| floor != roko_core::tool::OutboundPolicy::Allow) {
+        shared_factory = shared_factory.keep_tool_loop_rungs();
+    }
     let shared_factory = Arc::new(shared_factory);
     if dangerously_skip_permissions {
         tracing::warn!(
@@ -1363,6 +1459,12 @@ async fn run_graph_plan_body(
             .clone()
             .unwrap_or_else(super::batch::new_batch_run_id)
     });
+    // Keep the full SharedStateHub alive so the TUI can subscribe to the
+    // live event stream. Previously this path only extracted sender().
+    // Every publisher of this run (plan set, TUI bridges, telemetry, the
+    // TUI itself, the knowledge it writes) shares this one hub.
+    let state_hub = state_hub.unwrap_or_else(crate::state_hub::shared_state_hub);
+    let state_hub_sender = state_hub.sender();
     let mut graph_feedback = build_graph_feedback_context(
         workdir,
         &roko_config,
@@ -1370,6 +1472,7 @@ async fn run_graph_plan_body(
         cascade_journal.as_ref(),
         shared_factory.error_pattern_store(),
         knowledge_batch.as_deref(),
+        Some(state_hub_sender.clone()),
     );
     // CLI dispatch turns record with their run's provenance sink (gap-ca8022).
     graph_feedback.provenance_sinks = Some(provenance_sinks.clone());
@@ -1380,6 +1483,9 @@ async fn run_graph_plan_body(
     // M1's sink, whose open chains resolve and whose controller state is
     // saved at the run's end (8122).
     let homeostasis = graph_feedback.homeostasis.clone();
+    // The facade the dispatcher takes hears each plan's completion too
+    // (q-6b7cca option 2, gap-a960a1).
+    let plan_feedback = graph_feedback.feedback_facade.clone();
     // Its runs' manifests name the θ M1 dispatches with (8123).
     run_manifests.set_params_digest(homeostasis.as_ref().map(|sink| sink.params_digest()));
 
@@ -1391,12 +1497,6 @@ async fn run_graph_plan_body(
     // TUI logic (line ~470).
     let launch_tui = !no_tui && !quiet && !json && std::io::stdout().is_terminal();
 
-    // Keep the full SharedStateHub alive so the TUI can subscribe to the
-    // live event stream. Previously this path only extracted sender().
-    // Every publisher of this run (plan set, TUI bridges, telemetry, the
-    // TUI itself) shares this one hub.
-    let state_hub = state_hub.unwrap_or_else(crate::state_hub::shared_state_hub);
-    let state_hub_sender = state_hub.sender();
     // P21 (gap-6ff99a): a knowledge batch an earlier run left unproposed, as a
     // run that crashed leaves it, goes through the guard now instead of staying
     // hidden; this process holds the runner lock, so no other run owns one.
@@ -1528,6 +1628,10 @@ async fn run_graph_plan_body(
         let batch = super::batch::BatchIntegration::open(workdir, &batch_run)
             .await
             .map_err(|error| anyhow!("open the run's batch branch: {error}"))?;
+        // The branch says which run it is for, as `git branch -v` and hosts
+        // show it (gap-c2efe7).
+        let titles = plans.iter().map(plan_title).collect::<Vec<_>>();
+        batch.describe(&titles.join("; ")).await;
         if !quiet && !json {
             tracing::info!(
                 branch = batch.branch(),
@@ -1615,6 +1719,16 @@ async fn run_graph_plan_body(
     graph_task_dispatcher.prime_daily_budget().await;
     for plan_id in &held_plans {
         graph_task_dispatcher.hold_for_approval(plan_id);
+    }
+    // The accepted commit of a named one-task plan, such as a prompt run's,
+    // takes the plan's title (gap-c2efe7).
+    for plan in &plans {
+        if let ([_], Some(title)) = (
+            plan.tasks.tasks.as_slice(),
+            plan.tasks.meta.title.as_deref(),
+        ) {
+            graph_task_dispatcher.name_commits(&plan.id, title);
+        }
     }
     let conductor_stop = Arc::new(parking_lot::Mutex::new(
         None::<crate::graph_task_dispatch::ConductorStop>,
@@ -1786,6 +1900,9 @@ async fn run_graph_plan_body(
     let mut plan_outcomes = std::collections::BTreeMap::<String, bool>::new();
     // How the tasks of each plan that ran settled, for the run metrics.
     let mut plan_task_verdicts = std::collections::BTreeMap::<String, TaskVerdictCounts>::new();
+    // The work each plan that was not delivered left that no check ran on
+    // (bug-db89d4).
+    let mut plan_unverified_work = std::collections::BTreeMap::<String, UnverifiedWork>::new();
     // Set once a stop request (a signal, closing the TUI, the FAST deadline
     // or the conductor) stops the run; later plans are left unstarted.
     let mut stopped_by: Option<PlanRunInterrupt> = None;
@@ -1815,6 +1932,7 @@ async fn run_graph_plan_body(
         launch_tui,
         task_dispatcher: &task_dispatcher,
         graph_task_dispatcher: &graph_task_dispatcher,
+        feedback: plan_feedback.as_ref(),
         plan_failure_policy: roko_config.conductor.plan_failure_policy,
         graph_tui_bridge: &graph_tui_bridge,
         graph_telemetry: &graph_telemetry,
@@ -1980,6 +2098,10 @@ async fn run_graph_plan_body(
                     Ok(result) => {
                         total_output_count += result.output_count;
                         plan_task_verdicts.insert(plan_id.clone(), result.tasks);
+                        match result.unverified_work {
+                            Some(work) => plan_unverified_work.insert(plan_id.clone(), work),
+                            None => plan_unverified_work.remove(&plan_id),
+                        };
                         result.outcome
                     }
                     Err(error) => {
@@ -2048,13 +2170,36 @@ async fn run_graph_plan_body(
             unstarted,
             "plan run stopped early; resume with --resume-plan"
         );
+        let not_started = if unstarted > 0 {
+            format!("; {unstarted} plan(s) not started")
+        } else {
+            String::new()
+        };
         graph_tui_bridge.log_event(
             "graph.run_interrupted",
+            &format!("{} stopped the run{not_started}", reason.cause()),
+        );
+    }
+
+    // A run that delivered nothing and accepted nothing leaves no batch
+    // branch behind (bug-58329f).
+    let mut batch_discarded = false;
+    if let Some(batch) = batch.as_ref()
+        && run_accepted_nothing(batch, &plans, &graph_task_dispatcher).await
+        && batch.discard_if_unused().await
+    {
+        tracing::info!(
+            batch = batch.branch(),
+            "the run left no work; removed its batch branch"
+        );
+        graph_tui_bridge.log_event(
+            "graph.batch_discarded",
             &format!(
-                "{}: run stopped, {unstarted} plan(s) not started",
-                reason.label()
+                "the run left no work, so its batch branch {} was removed",
+                batch.branch()
             ),
         );
+        batch_discarded = true;
     }
 
     // spec-f830c4: with --promote, a run whose plans were all delivered
@@ -2152,17 +2297,25 @@ async fn run_graph_plan_body(
 
     // ── Run summary for the TUI ────────────────────────────────────
     // The TUI closes on its own once the whole plan set is terminal; it is
-    // stopped explicitly below once post-run persistence finishes.
+    // stopped explicitly below once post-run persistence finishes. The tally
+    // names how each plan ended, and is an error only when one failed: an
+    // unverified, cancelled or blocked plan did not fail (bug-db89d4).
     if !all_succeeded {
-        state_hub
-            .sender()
-            .publish(roko_core::DashboardEvent::Error {
-                message: format!(
-                    "Graph Engine: {plan_count} plan(s), {} succeeded, {} failed",
-                    plan_outcomes.values().filter(|v| **v).count(),
-                    plan_outcomes.values().filter(|v| !**v).count(),
-                ),
-            });
+        let outcomes = plan_execution_order
+            .iter()
+            .map(|plan_id| scheduler.outcome(plan_id))
+            .collect::<Vec<_>>();
+        let message = format!(
+            "Graph Engine: {plan_count} plan(s): {}",
+            outcome_tally(&outcomes)
+        );
+        if outcomes.contains(&Some(PlanOutcome::Failed)) {
+            state_hub
+                .sender()
+                .publish(roko_core::DashboardEvent::Error { message });
+        } else {
+            graph_tui_bridge.log_event("graph.run_outcome", &message);
+        }
     }
     // ── Save or propose the run's learning (UX34; P21, 8138) ─────────
     //
@@ -2212,13 +2365,24 @@ async fn run_graph_plan_body(
     // ── Persist the self-model (S04, 6129) ──────────────────────────
     //
     // Save what the run's settled verdicts taught the self-model, atomically,
-    // so the next run, a resumed one included, loads it. A frozen run
-    // registered no outcome sink, so it has nothing to save.
+    // and add the run's settled forecasts to the calibration window kept
+    // beside it, so the next run, a resumed one included, loads both: no
+    // single run settles the gate's W outcomes (gap-b38ed2). Then export the
+    // gate's report on the window, the `ev.m3.*` values S06 and the
+    // dashboard read (`learn/self-model/calibration.json`, S04 §4.7). A
+    // frozen run loaded no self-model, so it saves and exports nothing.
     if !roko_config.learning.frozen
         && let Some(runtime) = &self_model
-        && let Err(err) = runtime.save()
     {
-        tracing::warn!(error = %err, "failed to persist the self-model state (non-fatal)");
+        if let Err(err) = runtime.save() {
+            tracing::warn!(error = %err, "failed to persist the self-model state (non-fatal)");
+        }
+        if let Err(err) = runtime.write_calibration(graph_layout.root()) {
+            tracing::warn!(
+                error = %err,
+                "failed to export the self-model's calibration (non-fatal)"
+            );
+        }
     }
 
     // ── M1, the ultrastable controller (S06, 8122) ───────────────────
@@ -2296,6 +2460,15 @@ async fn run_graph_plan_body(
         if let Err(err) = roko_learn::run_metrics::append_run_metrics(&metrics_path, &record) {
             tracing::warn!(error = %err, "failed to persist run metrics (non-fatal)");
         }
+        // The recent runs' cost per verified task, this one last, for a host's
+        // trend (gap-de0e96).
+        match roko_learn::run_metrics::read_recent(&metrics_path, RUN_COST_TREND_RUNS) {
+            Ok(runs) if !runs.is_empty() => graph_tui_bridge
+                .tui()
+                .efficiency_trend_updated(run_cost_trend(&runs)),
+            Ok(_) => {}
+            Err(err) => tracing::warn!(error = %err, "the run cost trend was not published"),
+        }
     }
 
     // Restores the terminal (and stderr) before the summary is printed.
@@ -2321,6 +2494,20 @@ async fn run_graph_plan_body(
                 "interrupted_by": stopped_by.map(PlanRunInterrupt::label),
                 "batch": batch.as_ref().map(|batch| serde_json::json!({
                     "branch": batch.branch(),
+                    "discarded": batch_discarded,
+                    // Work no check ran on, which was not delivered
+                    // (bug-db89d4).
+                    "unverified": plan_unverified_work
+                        .iter()
+                        .map(|(plan_id, work)| serde_json::json!({
+                            "plan_id": plan_id,
+                            "branch": work.branch,
+                            "commit": work.commit,
+                            "base": work.base,
+                            "tasks": work.tasks,
+                            "review_command": work.review_command(),
+                        }))
+                        .collect::<Vec<_>>(),
                     "deliveries": batch
                         .receipts()
                         .iter()
@@ -2339,9 +2526,9 @@ async fn run_graph_plan_body(
         // line is still useful (and harmless) after the terminal is restored.
         if let Some(reason) = stopped_by {
             println!(
-                "Graph Engine interrupted by {}: {}/{} plan(s) attempted, {} task(s), ${:.2}; \
+                "Graph Engine stopped by {}: {}/{} plan(s) attempted, {} task(s), ${:.2}; \
                  resume with --resume-plan",
-                reason.label(),
+                reason.cause(),
                 plan_outcomes.len(),
                 plan_count,
                 total_tasks,
@@ -2354,14 +2541,32 @@ async fn run_graph_plan_body(
             );
         }
         // Name the plans that did not succeed, such as one whose delivery
-        // into the batch branch failed its regression check (spec-f830c4).
+        // into the batch branch failed its regression check (spec-f830c4),
+        // with how each ended (bug-db89d4).
         let failed_plans = plan_outcomes
             .iter()
             .filter(|(_, succeeded)| !**succeeded)
-            .map(|(plan_id, _)| plan_id.as_str())
+            .map(|(plan_id, _)| {
+                let label = scheduler
+                    .outcome(plan_id)
+                    .map_or("not started", PlanOutcome::label);
+                format!("{plan_id} ({label})")
+            })
             .collect::<Vec<_>>();
         if !failed_plans.is_empty() {
             println!("Plans that did not succeed: {}", failed_plans.join(", "));
+        }
+        // Work no check ran on is never delivered: say where it is
+        // (bug-db89d4).
+        for (plan_id, work) in &plan_unverified_work {
+            println!(
+                "Plan {plan_id}: no check ran on the work of {}, so it was not delivered. \
+                 It is on {} at {}; to see it:\n  {}",
+                work.tasks.join(", "),
+                work.branch,
+                short_oid(&work.commit),
+                work.review_command()
+            );
         }
         // Where each delivered plan's work landed (gap-415c54).
         if let Some(batch) = batch.as_ref() {
@@ -2369,8 +2574,25 @@ async fn run_graph_plan_body(
                 if receipt.state.is_success()
                     && let Some(merge) = &receipt.merge_commit
                 {
+                    // A plan that did not finish delivered its verified
+                    // tasks only (bug-74164c).
+                    let partial = receipt
+                        .extensions
+                        .get(super::batch::PARTIAL_EXTENSION)
+                        .and_then(|partial| partial["tasks"].as_array())
+                        .map(|tasks| {
+                            let tasks = tasks
+                                .iter()
+                                .filter_map(serde_json::Value::as_str)
+                                .collect::<Vec<_>>();
+                            format!(
+                                " (partial: the plan did not finish; only its verified task(s) {})",
+                                tasks.join(", ")
+                            )
+                        })
+                        .unwrap_or_default();
                     println!(
-                        "Plan {} delivered into {} at {merge}",
+                        "Plan {} delivered into {} at {merge}{partial}",
                         receipt.request.plan_id,
                         batch.branch()
                     );
@@ -2407,10 +2629,28 @@ async fn run_graph_plan_body(
         }
     }
 
-    Ok(match stopped_by {
-        Some(reason) => reason.exit_code(),
-        None if all_succeeded => EXIT_SUCCESS,
-        None => EXIT_FAILURE,
+    // An unverified plan is not a failure: the run ends unverified when every
+    // plan succeeded or ended unverified (bug-db89d4).
+    let outcomes = plan_execution_order
+        .iter()
+        .map(|plan_id| scheduler.outcome(plan_id))
+        .collect::<Vec<_>>();
+    let unverified = stopped_by.is_none()
+        && !all_succeeded
+        && outcomes.contains(&Some(PlanOutcome::Unverified))
+        && outcomes.iter().all(|outcome| {
+            matches!(
+                outcome,
+                Some(PlanOutcome::Succeeded | PlanOutcome::Unverified)
+            )
+        });
+    Ok(RunExit {
+        code: match stopped_by {
+            Some(reason) => reason.exit_code(),
+            None if all_succeeded => EXIT_SUCCESS,
+            None => EXIT_FAILURE,
+        },
+        unverified,
     })
 }
 
@@ -2447,7 +2687,8 @@ pub fn apply_run_switches(
 ///
 /// It builds the same feedback infrastructure that Runner-v2 used, so Graph
 /// engine runs produce episodes, efficiency events, playbook outcomes,
-/// routing observations, experiment settlements, and daimon feedback.
+/// routing observations, experiment settlements, and daimon feedback; their
+/// verified passes also write playbooks (gap-89f985).
 /// [`run_graph_plan`] wires its dispatcher with it, and the learning wiring
 /// census (`tests/learning_wiring_census.rs`, S01 §4.8) inspects the same
 /// object graph through `GraphTaskDispatcher::wiring_report`.
@@ -2458,6 +2699,7 @@ pub fn build_graph_feedback_context(
     cascade_journal: Option<&Arc<roko_learn::model_call_feedback::ModelCallJournal>>,
     error_patterns: &Arc<std::sync::RwLock<roko_learn::error_pattern_store::ErrorPatternStore>>,
     knowledge_batch: Option<&str>,
+    publisher: Option<crate::state_hub::StateHubSender>,
 ) -> crate::graph_task_dispatch::GraphFeedbackContext {
     let graph_layout = RokoLayout::for_project(workdir);
     let graph_learn_dir = graph_layout.learn_dir();
@@ -2477,10 +2719,15 @@ pub fn build_graph_feedback_context(
     // Persists across the plan run, accumulating build/test observations
     // for predictive gate feedback. Mirrors Runner-v2's CodingOracle.
     let coding_oracle = std::sync::Arc::new(roko_learn::oracles::coding::CodingOracle::new());
-    // M3 (S04): the self-model, loaded when `[self_model] mode` is on; its
-    // outcome sink teaches it each settled verdict (6129).
-    let self_model =
-        crate::graph_task_dispatch::self_model::SelfModelRuntime::load(workdir, config);
+    // M3 (S04): the self-model, loaded when `[self_model] mode` is not off,
+    // shadow by default (decision 2 of 2026-10-15, superseding decision
+    // 6102 question 5); its outcome sink teaches it each settled verdict
+    // (6129). Shadow forecasts and records every routed attempt; it never
+    // changes the route (`routes()` needs `active`). A frozen run loads and
+    // saves none of it, like M1's sink below.
+    let self_model = learning
+        .then(|| crate::graph_task_dispatch::self_model::SelfModelRuntime::load(workdir, config))
+        .flatten();
     // M1 (S06, 8122): the ultrastable controller's sink, in shadow by default;
     // a frozen run writes no controller state or ledger.
     let homeostasis = if learning {
@@ -2490,18 +2737,24 @@ pub fn build_graph_feedback_context(
         None
     };
 
+    let feedback_facade = build_graph_feedback_facade(
+        workdir,
+        config,
+        cascade_router,
+        cascade_journal,
+        shared_daimon_state.as_ref(),
+        error_patterns,
+        self_model.as_ref(),
+        homeostasis.as_ref(),
+        knowledge_batch,
+        publisher,
+    );
+    // A test can listen to what a real run's facade hears (gap-a960a1).
+    #[cfg(test)]
+    let feedback_facade = tests::with_attached_sinks(workdir, feedback_facade);
+
     crate::graph_task_dispatch::GraphFeedbackContext {
-        feedback_facade: Some(build_graph_feedback_facade(
-            workdir,
-            config,
-            cascade_router,
-            cascade_journal,
-            shared_daimon_state.as_ref(),
-            error_patterns,
-            self_model.as_ref(),
-            homeostasis.as_ref(),
-            knowledge_batch,
-        )),
+        feedback_facade: Some(feedback_facade),
         efficiency_path: Some(graph_learn_dir.join("efficiency.jsonl")),
         costs_path: Some(graph_learn_dir.join("costs.jsonl")),
         playbook_dir: learning.then(|| graph_learn_dir.join("playbooks")),
@@ -2569,10 +2822,10 @@ fn graph_daimon_state(
 
 /// The feedback facade of a Graph plan run: the sinks each settled task
 /// attempt fans out to, in order (episodes, hindsight, verified knowledge,
-/// error patterns, routing when there is a cascade router, and the
-/// plan-completion dream, daimon, theta and delta sinks). The routing sink
-/// journals its observations in `cascade_journal`, when there is one, and the
-/// hindsight sink its retractions of them;
+/// verified playbooks, error patterns, routing when there is a cascade
+/// router, and the daimon sink, the one that hears each plan's completion).
+/// The routing sink journals its observations in `cascade_journal`, when
+/// there is one, and the hindsight sink its retractions of them;
 /// `daimon_state` is the state dispatch modulates, persisted when a plan
 /// completes; `error_patterns` is the store dispatch formats into prompts;
 /// `self_model` is the run's self-model, which its outcome sink teaches;
@@ -2587,12 +2840,13 @@ pub fn build_graph_feedback_facade(
     self_model: Option<&Arc<crate::graph_task_dispatch::self_model::SelfModelRuntime>>,
     homeostasis: Option<&Arc<crate::runtime_feedback::HomeostasisSink>>,
     knowledge_batch: Option<&str>,
+    publisher: Option<crate::state_hub::StateHubSender>,
 ) -> Arc<crate::runtime_feedback::FeedbackFacade> {
     // A frozen run (decision 2218) registers no learning sink. Each one
-    // writes learned state: episodes, hindsight, knowledge, error patterns,
-    // the router, dreams and the daimon state. The theta and delta sinks
-    // keep only in-memory state and wait for plan completion, which Graph
-    // runs never emit (q-6b7cca). Its episodes go to each run's own
+    // writes learned state: episodes, hindsight, knowledge, playbooks, error
+    // patterns, the router and the daimon state, so a frozen run creates no
+    // playbook (gap-89f985) and saves no affect when a plan completes
+    // (gap-a960a1). Its episodes go to each run's own
     // `runs/<run_id>/episodes.jsonl`, telemetry that no later run reads and
     // the bench driver's attempt evidence (gap-127263).
     if config.learning.frozen {
@@ -2613,6 +2867,18 @@ pub fn build_graph_feedback_facade(
         Some(batch) => verified_knowledge.with_commit_batch(batch),
         None => verified_knowledge,
     };
+    // Gate-verified passes write L-play's playbooks, where prompts read
+    // them (gap-89f985).
+    let verified_playbooks =
+        crate::runtime_feedback::VerifiedPlaybookSink::new(graph_learn_dir.join("playbooks"));
+    // What each writes is published on the run's hub (gap-7576c7).
+    let (verified_knowledge, verified_playbooks) = match publisher {
+        Some(publisher) => (
+            verified_knowledge.with_publisher(publisher.clone()),
+            verified_playbooks.with_publisher(publisher),
+        ),
+        None => (verified_knowledge, verified_playbooks),
+    };
     let mut facade = crate::runtime_feedback::FeedbackFacade::new()
         .with_sink(std::sync::Arc::new(
             crate::runtime_feedback::EpisodeSink::at(&graph_episodes_path)
@@ -2629,8 +2895,10 @@ pub fn build_graph_feedback_facade(
             .with_journal(cascade_journal.cloned()),
         ))
         // Gate-verified attempts grow durable knowledge (tier
-        // progression included) under `.roko/neuro/`.
+        // progression included) under `.roko/neuro/`, and playbooks under
+        // `.roko/learn/playbooks/`.
         .with_sink(std::sync::Arc::new(verified_knowledge))
+        .with_sink(std::sync::Arc::new(verified_playbooks))
         // A failure of the agent's work goes into the error-pattern store
         // dispatch formats into prompts, and to `learn/error-patterns.json`.
         .with_sink(std::sync::Arc::new(
@@ -2659,16 +2927,12 @@ pub fn build_graph_feedback_facade(
             facade.with_sink(Arc::clone(sink) as Arc<dyn crate::runtime_feedback::FeedbackSink>);
     }
 
-    // ── #143: Dream consolidation trigger on plan completion ────────
-    facade = facade.with_sink(std::sync::Arc::new(
-        crate::runtime_feedback::DreamConsolidationSink::new(
-            workdir.to_path_buf(),
-            config.learning.dream_on_completion,
-            config.learning.dreams.trigger_on_plan_complete,
-        ),
-    ));
-
     // ── #144: Daimon affect persistence on plan completion ──────────
+    //
+    // The one sink that hears a plan's completion (q-6b7cca option 2,
+    // gap-a960a1). No dream starts when a plan completes: dreams run on
+    // demand, through `roko knowledge dream run`. The parked cognitive
+    // clock's theta and delta sinks are not registered either.
     if let Some(daimon) = daimon_state {
         facade = facade.with_sink(std::sync::Arc::new(
             crate::runtime_feedback::DaimonPersistenceSink::new(
@@ -2676,15 +2940,6 @@ pub fn build_graph_feedback_facade(
                 std::sync::Arc::clone(daimon),
             ),
         ));
-    }
-
-    // ── Theta reflection and delta consolidation on plan completion ─
-    //
-    // The cognitive clock is parked (9222): only a build with
-    // `cognitive-clock` registers these two sinks.
-    #[cfg(feature = "cognitive-clock")]
-    for sink in crate::runtime_feedback::plan_completion::cognitive_clock_sinks() {
-        facade = facade.with_sink(sink);
     }
 
     std::sync::Arc::new(facade)
@@ -2731,6 +2986,9 @@ struct PlanRunContext<'a> {
     launch_tui: bool,
     task_dispatcher: &'a Arc<dyn roko_graph::cells::TaskDispatcher>,
     graph_task_dispatcher: &'a Arc<crate::graph_task_dispatch::GraphTaskDispatcher>,
+    /// The run's feedback facade, which hears each plan close
+    /// ([`close_plan`]).
+    feedback: Option<&'a Arc<crate::runtime_feedback::FeedbackFacade>>,
     /// `[conductor] plan_failure_policy`; a plan's `[meta] failure_policy`
     /// overrides it.
     plan_failure_policy: roko_core::config::PlanFailurePolicy,
@@ -2816,6 +3074,42 @@ fn close_run_manifest(ctx: &PlanRunContext<'_>, run_id: &str, status: GraphCheck
     let writer = ctx.graph_task_dispatcher.close_run_attempts(run_id);
     ctx.run_manifests.close(run_id, status, writer);
     super::loop_audit::audit_tick(ctx.workdir, ctx.learning, run_id, ctx.graph_tui_bridge);
+}
+
+/// Close plan `plan_id`, which [`run_one_plan`] ran and which ended
+/// `succeeded` with its tasks settled as `tasks`. The run's feedback facade
+/// hears it first, as one [`FeedbackEvent::PlanCompleted`] (q-6b7cca option
+/// 2, gap-a960a1), then the live views do; so with affect on, the daimon
+/// sink has saved the affect state by the time a live view sees the plan
+/// close. The event counts the tasks as the plan's run-metrics row does
+/// ([`plan_metrics`]) and carries the plan's settled spend. A plan that never
+/// started (blocked, or cancelled before it started) is closed by the
+/// plan-set driver and sends no event; a plan the operator runs again closes
+/// once per run.
+///
+/// [`FeedbackEvent::PlanCompleted`]: crate::runtime_feedback::FeedbackEvent::PlanCompleted
+async fn close_plan(
+    ctx: &PlanRunContext<'_>,
+    plan_id: &str,
+    succeeded: bool,
+    tasks: TaskVerdictCounts,
+) {
+    if let Some(facade) = ctx.feedback {
+        let event = crate::runtime_feedback::FeedbackEvent::PlanCompleted {
+            plan_id: plan_id.to_string(),
+            succeeded,
+            tasks_completed: tasks.passed,
+            tasks_failed: tasks.failed,
+            total_cost_usd: ctx
+                .graph_task_dispatcher
+                .plan_budget_snapshot(plan_id)
+                .spent_usd,
+        };
+        if let Err(error) = facade.on_event(&event).await {
+            tracing::warn!(plan_id, %error, "plan completion feedback failed (non-fatal)");
+        }
+    }
+    ctx.graph_tui_bridge.plan_completed(plan_id, succeeded);
 }
 
 /// Operator controls the plan-set driver routes to one running plan.
@@ -2907,6 +3201,9 @@ struct PlanRunResult {
     output_count: usize,
     /// How the plan's tasks settled.
     tasks: TaskVerdictCounts,
+    /// The work it left on its plan branch that no check ran on, when it was
+    /// not delivered (bug-db89d4).
+    unverified_work: Option<UnverifiedWork>,
 }
 
 impl PlanRunResult {
@@ -2916,8 +3213,53 @@ impl PlanRunResult {
             outcome: PlanOutcome::Failed,
             output_count: 0,
             tasks: TaskVerdictCounts::not_run(task_count),
+            unverified_work: None,
         }
     }
+}
+
+/// Work a plan that was not delivered left on its plan branch, which no
+/// check ran on (bug-db89d4). It is never delivered; the run's summary says
+/// where it is.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct UnverifiedWork {
+    /// The plan branch, `roko/plan/<plan>`.
+    branch: String,
+    /// The commit the work ends at.
+    commit: String,
+    /// The commit it starts from.
+    base: String,
+    /// The tasks whose work it holds.
+    tasks: Vec<String>,
+}
+
+impl UnverifiedWork {
+    /// The unverified part of `work`, run `plan_id`'s accepted work, if any.
+    fn of(plan_id: &str, work: &super::batch::PlanWork) -> Option<Self> {
+        let unverified = work.unverified();
+        let mut tasks = Vec::new();
+        for accepted in unverified {
+            if !tasks.contains(&accepted.task_id) {
+                tasks.push(accepted.task_id.clone());
+            }
+        }
+        Some(Self {
+            branch: crate::orchestrator::worktree::format_branch_name(plan_id),
+            commit: unverified.last()?.commit.clone(),
+            base: work.verified_tip().unwrap_or(&work.base).to_string(),
+            tasks,
+        })
+    }
+
+    /// The command that shows the work: its diff from where it starts.
+    fn review_command(&self) -> String {
+        format!("git diff {}..{}", short_oid(&self.base), self.branch)
+    }
+}
+
+/// The first 12 characters of an object id, as a person types it.
+fn short_oid(oid: &str) -> &str {
+    oid.get(..12).unwrap_or(oid)
 }
 
 /// Outcome of a plan that ran. A graph that ran to completion settles by its
@@ -2938,6 +3280,53 @@ const fn plan_outcome(
     } else {
         PlanOutcome::Failed
     }
+}
+
+/// Whether no plan of the run accepted anything onto its plan branch in its
+/// run (bug-58329f), so that the run left no work for `batch` to hold.
+async fn run_accepted_nothing(
+    batch: &super::batch::BatchIntegration,
+    plans: &[crate::runner::plan_loader::Plan],
+    dispatcher: &crate::graph_task_dispatch::GraphTaskDispatcher,
+) -> bool {
+    for plan in plans {
+        let Some(run_id) = dispatcher.plan_run_id(&plan.id) else {
+            continue;
+        };
+        if super::batch::PlanWork::read(batch.repo(), &plan.id, &run_id)
+            .await
+            .is_some()
+        {
+            return false;
+        }
+    }
+    true
+}
+
+/// How many plans ended each way, in a fixed order and leaving out the ways
+/// none did, such as "1 succeeded, 1 unverified" (bug-db89d4). `None` is a
+/// plan that never started.
+fn outcome_tally(outcomes: &[Option<PlanOutcome>]) -> String {
+    const LABELS: [Option<PlanOutcome>; 7] = [
+        Some(PlanOutcome::Succeeded),
+        Some(PlanOutcome::Unverified),
+        Some(PlanOutcome::Failed),
+        Some(PlanOutcome::Blocked),
+        Some(PlanOutcome::Cancelled),
+        Some(PlanOutcome::Interrupted),
+        None,
+    ];
+    LABELS
+        .iter()
+        .filter_map(|label| {
+            let count = outcomes.iter().filter(|outcome| *outcome == label).count();
+            (count > 0).then(|| {
+                let word = label.map_or("not started", PlanOutcome::label);
+                format!("{count} {word}")
+            })
+        })
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 /// Publish that a plan will never start.
@@ -3273,8 +3662,9 @@ fn with_live_budgets(
 
 /// Run one admitted plan to a terminal checkpoint.
 ///
-/// A plan that cannot be converted or validated still gets a terminal
-/// PlanCompleted. `Err` is reserved for checkpoint and budget-ledger
+/// Every plan it runs closes once ([`close_plan`]): its PlanCompleted reaches
+/// the run's feedback facade and the live views, even when the plan cannot be
+/// converted or validated. `Err` is reserved for checkpoint and budget-ledger
 /// failures, which stop the whole run.
 async fn run_one_plan(
     ctx: &PlanRunContext<'_>,
@@ -3376,8 +3766,9 @@ async fn run_one_plan(
                     plan.id
                 ));
                 tracing::error!(plan_id = %plan.id, error = %e, "failed to build rich topology for plan");
-                graph_tui_bridge.plan_completed(&plan.id, false);
-                return Ok(PlanRunResult::failed(tasks.len()));
+                let result = PlanRunResult::failed(tasks.len());
+                close_plan(ctx, &plan.id, false, result.tasks).await;
+                return Ok(result);
             }
         }
     } else {
@@ -3393,14 +3784,17 @@ async fn run_one_plan(
                 (g, reg)
             }
             Err(e) => {
-                let e = e.root_cause();
+                // Text, not the `&dyn Error` itself, which is not `Send` and
+                // would be held across the close below.
+                let e = e.root_cause().to_string();
                 graph_tui_bridge.error(&format!(
                     "failed to convert plan '{}' to graph: {e}",
                     plan.id
                 ));
                 tracing::error!(plan_id = %plan.id, error = %e, "failed to convert plan to graph");
-                graph_tui_bridge.plan_completed(&plan.id, false);
-                return Ok(PlanRunResult::failed(tasks.len()));
+                let result = PlanRunResult::failed(tasks.len());
+                close_plan(ctx, &plan.id, false, result.tasks).await;
+                return Ok(result);
             }
         }
     };
@@ -3561,10 +3955,11 @@ async fn run_one_plan(
         for issue in &issues {
             tracing::error!(plan_id = %plan.id, issue, "validation error");
         }
-        graph_tui_bridge.plan_completed(&plan.id, false);
+        let result = PlanRunResult::failed(tasks.len());
+        close_plan(ctx, &plan.id, false, result.tasks).await;
         close_run_manifest(ctx, &run_id, GraphCheckpointStatus::Failed);
         checkpoint.finish(false)?;
-        return Ok(PlanRunResult::failed(tasks.len()));
+        return Ok(result);
     }
 
     if replayed_entries > 0 && !ctx.quiet && !ctx.json {
@@ -3649,11 +4044,13 @@ async fn run_one_plan(
                 signalled,
                 "plan run interrupted: cancelling graph"
             );
+            // Name what stops the run: an API cancel is not a SIGINT
+            // (bug-1d09e8).
             graph_tui_bridge.log_event(
                 "graph.run_interrupted",
                 &format!(
-                    "{}: cancelling plan '{}' and stopping the run",
-                    reason.label(),
+                    "{} is stopping the run: cancelling plan '{}'",
+                    reason.cause(),
                     plan.id
                 ),
             );
@@ -3671,12 +4068,18 @@ async fn run_one_plan(
         // rich topology adds helper nodes absent from `node_titles`). A
         // completed task is reported with the gate verdict of its recorded
         // output (bug-7e1b6b).
-        let current_statuses: HashMap<String, roko_graph::engine::NodeStatus> = flow_handle
+        let mut current_statuses: HashMap<String, roko_graph::engine::NodeStatus> = flow_handle
             .status()
             .node_statuses
             .into_iter()
             .filter(|(id, _)| node_titles.contains_key(id))
             .collect();
+        // While the run stops, a task whose node fails is reported once its
+        // error says how it ended (the final diff below), so a task the stop
+        // cut off reads as cancelled, not failed (bug-1d09e8).
+        if interrupted_by.is_some() {
+            hold_back_failures(&previous_statuses, &mut current_statuses);
+        }
         graph_tui_bridge.poll_status_changes(
             &plan.id,
             &previous_statuses,
@@ -3715,20 +4118,42 @@ async fn run_one_plan(
         // Flow was cancelled before producing a result (e.g. validation
         // failure inside start(), the task panicked, or an interrupted
         // graph did not settle in time).
-        let cancelled_msg = if let Some(reason) = interrupted_by {
-            format!("plan '{}' interrupted by {}", plan.id, reason.label())
-        } else if was_cancelled_by_tui {
-            format!("plan '{}' cancelled by user", plan.id)
+        if let Some(reason) = interrupted_by {
+            // The tasks the stop cut off never settled, or failed while the
+            // run stopped (held back above): each ends cancelled, and the stop
+            // is not reported as a failure (bug-1d09e8).
+            let mut running = previous_statuses
+                .iter()
+                .filter(|(_, status)| **status == roko_graph::engine::NodeStatus::Running)
+                .map(|(task_id, _)| task_id.as_str())
+                .collect::<Vec<_>>();
+            running.sort_unstable();
+            for task_id in running {
+                graph_tui_bridge.task_cancelled(&plan.id, task_id);
+            }
+            graph_tui_bridge.log_event(
+                "graph.plan_stopped",
+                &format!(
+                    "plan '{}' stopped by {} before its running tasks settled",
+                    plan.id,
+                    reason.cause()
+                ),
+            );
+            tracing::warn!(plan_id = %plan.id, "plan stopped before its graph settled");
         } else {
-            format!("plan '{}' execution failed (no output)", plan.id)
-        };
-        graph_tui_bridge.error(&cancelled_msg);
-        graph_tui_bridge.plan_completed(&plan.id, false);
+            let message = if was_cancelled_by_tui {
+                format!("plan '{}' cancelled by user", plan.id)
+            } else {
+                format!("plan '{}' execution failed (no output)", plan.id)
+            };
+            graph_tui_bridge.error(&message);
+            tracing::error!(plan_id = %plan.id, "plan execution failed: no output");
+        }
 
-        tracing::error!(plan_id = %plan.id, "plan execution failed: no output");
         // Without the graph's result no task's verdict is known, so none
         // counts as passed.
         let task_verdicts = TaskVerdictCounts::not_run(tasks.len());
+        close_plan(ctx, &plan.id, false, task_verdicts).await;
         let outcome = plan_outcome(
             false,
             task_verdicts,
@@ -3743,6 +4168,7 @@ async fn run_one_plan(
             outcome,
             output_count: 0,
             tasks: task_verdicts,
+            unverified_work: None,
         });
     };
 
@@ -3768,6 +4194,8 @@ async fn run_one_plan(
     // regression check runs its steps on the merge (spec-f830c4); otherwise
     // in the shared working tree. It succeeds only when that check passes.
     let plan_checks = ctx.plan_checks.get(&plan.id).map_or(&[][..], Vec::as_slice);
+    // Whether the tasks all passed, before the whole-plan check judged them.
+    let tasks_succeeded = outcome.succeeded();
     let outcome = match ctx.batch {
         Some(batch) if outcome.succeeded() => {
             deliver_plan_to_batch(
@@ -3777,6 +4205,7 @@ async fn run_one_plan(
                 ctx.gate_env_passthrough,
                 ctx.worktrees,
                 ctx.delete_attempt_branches,
+                &ctx.interrupt,
                 &mut checkpoint,
                 graph_tui_bridge,
             )
@@ -3788,6 +4217,7 @@ async fn run_one_plan(
                 plan,
                 plan_checks,
                 ctx.gate_env_passthrough,
+                &ctx.interrupt,
                 &mut checkpoint,
                 graph_tui_bridge,
             )
@@ -3795,15 +4225,43 @@ async fn run_one_plan(
         }
         _ => outcome,
     };
+    // A stop request that came during the whole-plan check stopped the plan
+    // there: it reads as stopped, with what stopped it (bug-7b62ff).
+    if outcome == PlanOutcome::Interrupted && interrupted_by.is_none() {
+        interrupted_by = ctx.interrupt.requested();
+    }
+    // How the plan's tasks that did not complete were left.
+    let task_outcomes = task_outcomes(&output, &node_titles);
+    // A plan that did not succeed still delivers the verified part of what
+    // this run accepted onto its plan branch, marked partial, unless its tasks
+    // all passed and its whole-plan check refused them. The rest stays on the
+    // plan branch: its batch record says what no check ran on, and the run's
+    // summary where it is (bug-db89d4, bug-74164c).
+    let unverified_work = match ctx.batch {
+        Some(batch) if !outcome.succeeded() => {
+            let settle = UndeliveredPlan {
+                plan,
+                run_id: &run_id,
+                outcome,
+                deliver_verified: !tasks_succeeded,
+                task_outcomes: &task_outcomes,
+            };
+            settle_undelivered_plan(ctx, batch, &settle, &mut checkpoint).await?
+        }
+        _ => None,
+    };
 
     // ── Graph TUI bridge: final status diff + PlanCompleted ──
     // Emit any transitions (Running→Complete/Failed/Skipped, or
     // Pending→Running for tasks that started and finished between ticks)
-    // that the polling loop did not yet publish, then close the plan.
+    // that the polling loop did not yet publish, then close the plan. A task
+    // a stop cut off is reported as cancelled, with why, not as failed
+    // (bug-1d09e8).
+    let cancelled = cancelled_tasks(&output, &node_titles);
     let final_statuses: HashMap<String, roko_graph::engine::NodeStatus> = output
         .node_results
         .iter()
-        .filter(|r| node_titles.contains_key(&r.node_id))
+        .filter(|r| node_titles.contains_key(&r.node_id) && !cancelled.contains_key(&r.node_id))
         .map(|r| (r.node_id.clone(), r.status))
         .collect();
     graph_tui_bridge.poll_status_changes(
@@ -3813,9 +4271,15 @@ async fn run_one_plan(
         &node_titles,
         || output.gate_verdicts.clone(),
     );
+    for (task_id, reason) in &cancelled {
+        graph_tui_bridge.log_event(
+            "graph.task_cancelled",
+            &format!("plan '{}': task '{task_id}' cancelled: {reason}", plan.id),
+        );
+        graph_tui_bridge.task_cancelled(&plan.id, task_id);
+    }
     // Say why each task that did not run was held back; a resume runs them
     // and the failed tasks again.
-    let task_outcomes = task_outcomes(&output, &node_titles);
     // The live views list each such task as blocked, with its blocker or
     // reason (gap-f59fe9).
     for (task_id, blocker) in &task_outcomes.blocked_by {
@@ -3864,16 +4328,49 @@ async fn run_one_plan(
             )
             .await;
     }
+    // Work no check ran on is never delivered: say where it is instead
+    // (bug-db89d4).
+    let unverified_at = unverified_work.as_ref().map_or_else(String::new, |work| {
+        format!(
+            ". Its work is on {} at {} and was not delivered; see it with `{}`",
+            work.branch,
+            short_oid(&work.commit),
+            work.review_command()
+        )
+    });
     if outcome == PlanOutcome::Unverified {
         graph_tui_bridge.log_event(
             "graph.plan_unverified",
             &format!(
-                "plan '{}': {} task(s) ran no verify step, so the plan did not succeed",
+                "plan '{}' is unverified: {} task(s) ran no verify step{unverified_at}",
                 plan.id, task_verdicts.unverified
             ),
         );
+    } else if let Some(work) = &unverified_work {
+        graph_tui_bridge.log_event(
+            "graph.plan_unverified",
+            &format!(
+                "plan '{}': task(s) {} ran no verify step{unverified_at}",
+                plan.id,
+                work.tasks.join(", ")
+            ),
+        );
     }
-    graph_tui_bridge.plan_completed(&plan.id, outcome.succeeded());
+    // Why each failed task failed, in the run's events, so a host can tell
+    // its person (bug-103bce): a dispatch error otherwise reached only the
+    // log below, which `roko serve` does not print by default.
+    for message in task_failure_errors(&plan.id, &output, &node_titles) {
+        graph_tui_bridge.error(&message);
+    }
+    // A stopped plan says what stopped it and where its tasks stand, as a
+    // notice rather than a failure (bug-1d09e8).
+    if let Some(reason) = interrupted_by {
+        graph_tui_bridge.log_event(
+            "graph.plan_stopped",
+            &plan_stopped_message(&plan.id, reason, task_verdicts, plan_task_count),
+        );
+    }
+    close_plan(ctx, &plan.id, outcome.succeeded(), task_verdicts).await;
 
     if !ctx.quiet && !ctx.json {
         if was_cancelled_by_tui {
@@ -3937,18 +4434,33 @@ async fn run_one_plan(
             }
         }
     }
+    // The plan's checkouts that hold nothing to inspect or resume go now
+    // (bug-58329f): those of its accepted attempts, whose work is on its plan
+    // branch, and those of attempts that changed nothing. A failed attempt's
+    // checkout with work stays.
+    if let Some(worktrees) = ctx.worktrees {
+        release_plan_checkouts(
+            worktrees,
+            &plan.id,
+            ctx.delete_attempt_branches,
+            graph_tui_bridge,
+        )
+        .await;
+    }
     close_run_manifest(ctx, &run_id, plan_checkpoint_status(outcome));
     checkpoint.finish_with_status(plan_checkpoint_status(outcome))?;
     Ok(PlanRunResult {
         outcome,
         output_count,
         tasks: task_verdicts,
+        unverified_work,
     })
 }
 
 /// Deliver `plan`, whose tasks all passed, into the run's batch branch
-/// (spec-f830c4): merge its verified plan-branch tip into the batch, run the
-/// regression check on the merge, and record the delivery in the plan's
+/// (spec-f830c4): merge its verified plan-branch tip with the batch's tip, run
+/// the regression check on the merge, move the batch to the merge only once
+/// the check passed (bug-700d7c), and record the delivery in the plan's
 /// checkpoint. The plan succeeds only when the delivery does. A delivered
 /// plan's accepted attempt checkouts are then removed from `worktrees`, and
 /// with `delete_attempt_branches` their branches too (gap-415c54). `Err`
@@ -3960,6 +4472,7 @@ async fn deliver_plan_to_batch(
     env_passthrough: &[String],
     worktrees: Option<&crate::orchestrator::worktree::WorktreeManager>,
     delete_attempt_branches: bool,
+    stop: &PlanRunInterruptHandle,
     checkpoint: &mut crate::graph_checkpoint::PreparedGraphCheckpoint,
     graph_tui_bridge: &crate::runner::graph_tui_bridge::GraphTuiBridge,
 ) -> anyhow::Result<PlanOutcome> {
@@ -3976,11 +4489,18 @@ async fn deliver_plan_to_batch(
     let backend = super::delivery::GitDeliveryBackend::new(batch.repo().to_path_buf())
         .with_regression_steps(checks.iter().map(|step| step.command.clone()).collect())
         .with_regression_source(plan_check_source(plan))
-        .with_env_passthrough(env_passthrough.to_vec());
+        .with_env_passthrough(env_passthrough.to_vec())
+        .with_check_events(plan_check_events(
+            graph_tui_bridge,
+            plan,
+            super::plan_check_events::CheckStage::Regression,
+        ))
+        .with_stop(stop.clone());
     let service = super::delivery::CliCompletionDeliveryService::with_store(
         batch.store().clone(),
         Arc::new(backend),
-    );
+    )
+    .with_events(delivery_events(graph_tui_bridge));
     let request = batch.request(&plan.id, verified);
     let receipt = match batch
         .deliver(&service, request, checkpoint.recorded_delivery())
@@ -4005,42 +4525,22 @@ async fn deliver_plan_to_batch(
             merge_commit = receipt.merge_commit.as_deref().unwrap_or_default(),
             "plan delivered into the run's batch branch"
         );
-        // Its work is on the plan and batch branches now, so the attempt
-        // checkouts kept for review have done their job. What went and what
-        // stayed is on the receipt, for the run summary.
-        if receipt.release_policy == roko_graph::delivery::ReleasePolicy::Delete
-            && let Some(worktrees) = worktrees
-        {
-            match worktrees
-                .release_accepted(&plan.id, delete_attempt_branches)
-                .await
-            {
-                Ok(released) => {
-                    tracing::info!(
-                        plan_id = %plan.id,
-                        removed = released.removed_checkouts.len(),
-                        kept_branches = released.kept_branches.len(),
-                        deleted_branches = released.deleted_branches.len(),
-                        "removed the delivered plan's attempt checkouts"
-                    );
-                    if let Ok(cleanup) = serde_json::to_value(&released) {
-                        let mut receipt = receipt;
-                        receipt
-                            .extensions
-                            .insert(super::batch::ATTEMPT_CLEANUP_EXTENSION.to_string(), cleanup);
-                        batch.store().update(&receipt);
-                    }
-                }
-                Err(error) => tracing::warn!(
-                    plan_id = %plan.id,
-                    %error,
-                    "kept the delivered plan's attempt checkouts"
-                ),
-            }
-        }
+        release_delivered_attempts(worktrees, &plan.id, delete_attempt_branches, batch, receipt)
+            .await;
         return Ok(PlanOutcome::Succeeded);
     }
     let reason = receipt.error.as_deref().unwrap_or("no reason recorded");
+    // A stop request cut the delivery's regression check short: the plan
+    // stopped, it did not fail (bug-7b62ff).
+    if stop.requested().is_some() {
+        tracing::warn!(
+            plan_id = %plan.id,
+            batch = batch.branch(),
+            reason,
+            "the run was asked to stop during the plan's delivery; it was not delivered"
+        );
+        return Ok(PlanOutcome::Interrupted);
+    }
     tracing::error!(
         plan_id = %plan.id,
         batch = batch.branch(),
@@ -4057,6 +4557,298 @@ async fn deliver_plan_to_batch(
     Ok(PlanOutcome::Failed)
 }
 
+/// A plan that ended without succeeding, as [`settle_undelivered_plan`]
+/// takes it (bug-74164c).
+struct UndeliveredPlan<'a> {
+    plan: &'a crate::runner::plan_loader::Plan,
+    /// The plan's checkpoint run, which the commits on its branch name.
+    run_id: &'a str,
+    outcome: PlanOutcome,
+    /// Whether the verified part of its work may be delivered: not when its
+    /// tasks all passed and its whole-plan check refused them.
+    deliver_verified: bool,
+    task_outcomes: &'a TaskOutcomeSummary,
+}
+
+/// Settle `undelivered`, a plan that did not succeed under `batch`
+/// (bug-db89d4, bug-74164c). The verified part of what its run accepted onto its
+/// plan branch, when it may be delivered, goes into the batch as a partial
+/// delivery. Its checkpoint records which tasks' work was delivered, which
+/// was not and why, and the work no check ran on, which is returned. `Err`
+/// only when the checkpoint cannot record it.
+async fn settle_undelivered_plan(
+    ctx: &PlanRunContext<'_>,
+    batch: &super::batch::BatchIntegration,
+    undelivered: &UndeliveredPlan<'_>,
+    checkpoint: &mut crate::graph_checkpoint::PreparedGraphCheckpoint,
+) -> anyhow::Result<Option<UnverifiedWork>> {
+    let plan = undelivered.plan;
+    let Some(work) = super::batch::PlanWork::read(batch.repo(), &plan.id, undelivered.run_id).await
+    else {
+        return Ok(None);
+    };
+    let mut delivered_tasks = Vec::new();
+    if undelivered.deliver_verified
+        && let Some(tip) = work.verified_tip()
+    {
+        let tasks = distinct_tasks(&work.commits[..work.verified_len()]);
+        if deliver_partial_to_batch(ctx, batch, plan, tip.to_string(), &tasks, checkpoint).await? {
+            delivered_tasks = tasks;
+        }
+    }
+    let mut record = serde_json::json!({
+        "partial": !delivered_tasks.is_empty(),
+        "delivered_tasks": delivered_tasks,
+        "missing_tasks": missing_tasks(undelivered, &work, &delivered_tasks),
+    });
+    if let Some(unverified) = work.unverified_record() {
+        record["unverified"] = unverified;
+    }
+    checkpoint.record_batch_work(batch.plan_record(&plan.id), record)?;
+    Ok(UnverifiedWork::of(&plan.id, &work))
+}
+
+/// The tasks `commits` hold, each once, in their order.
+fn distinct_tasks(commits: &[super::batch::AcceptedCommit]) -> Vec<String> {
+    let mut tasks: Vec<String> = Vec::new();
+    for accepted in commits {
+        if !tasks.contains(&accepted.task_id) {
+            tasks.push(accepted.task_id.clone());
+        }
+    }
+    tasks
+}
+
+/// Each task of `undelivered`'s plan whose work is not on the batch branch,
+/// with why (bug-74164c): its work ran no check, or builds on work that did not;
+/// the whole-plan check refused the plan, or the delivery failed; a stop cut
+/// it off (cancelled or interrupted), or it failed; it was blocked, or never
+/// started.
+fn missing_tasks(
+    undelivered: &UndeliveredPlan<'_>,
+    work: &super::batch::PlanWork,
+    delivered: &[String],
+) -> Vec<serde_json::Value> {
+    let outcomes = undelivered.task_outcomes;
+    undelivered
+        .plan
+        .tasks
+        .tasks
+        .iter()
+        .filter(|task| !delivered.contains(&task.id))
+        .map(|task| {
+            let accepted = work
+                .commits
+                .iter()
+                .rev()
+                .find(|accepted| accepted.task_id == task.id);
+            let why = match accepted {
+                Some(accepted) if !accepted.verified() => "ran no check".to_string(),
+                Some(_)
+                    if work
+                        .unverified()
+                        .iter()
+                        .any(|later| later.task_id == task.id) =>
+                {
+                    "builds on work no check ran on".to_string()
+                }
+                Some(_) if !undelivered.deliver_verified => match undelivered.outcome {
+                    // A stop cut the check short (bug-7b62ff).
+                    PlanOutcome::Interrupted => "the plan's whole-plan check was interrupted",
+                    _ => "the plan's whole-plan check failed",
+                }
+                .to_string(),
+                Some(_) => "its delivery failed".to_string(),
+                // A stop cut it off (bug-1d09e8).
+                None if outcomes.cancelled.contains(&task.id) => match undelivered.outcome {
+                    PlanOutcome::Interrupted => "interrupted".to_string(),
+                    _ => "cancelled".to_string(),
+                },
+                None if outcomes.failed.contains(&task.id) => match undelivered.outcome {
+                    PlanOutcome::Cancelled => "cancelled".to_string(),
+                    PlanOutcome::Interrupted => "interrupted".to_string(),
+                    _ => "failed".to_string(),
+                },
+                None => match outcomes.blocked_by.get(&task.id) {
+                    Some(blocker) => format!("blocked by {blocker}"),
+                    None if outcomes.not_started.contains_key(&task.id) => {
+                        "not started".to_string()
+                    }
+                    None => "not accepted".to_string(),
+                },
+            };
+            serde_json::json!({ "task_id": task.id, "why": why })
+        })
+        .collect()
+}
+
+/// Deliver `verified`, the tip of the verified part of `plan`'s work, into
+/// the run's batch branch as a partial delivery (bug-74164c): a merge only, since
+/// the plan did not finish and its whole-plan check does not apply. Its
+/// receipt says it is partial and which `tasks` it holds, the plan's
+/// checkpoint records it, and the delivered attempts' checkouts are removed
+/// as a full delivery's are. Returns whether it was delivered; `Err` only
+/// when the checkpoint cannot record it.
+async fn deliver_partial_to_batch(
+    ctx: &PlanRunContext<'_>,
+    batch: &super::batch::BatchIntegration,
+    plan: &crate::runner::plan_loader::Plan,
+    verified: String,
+    tasks: &[String],
+    checkpoint: &mut crate::graph_checkpoint::PreparedGraphCheckpoint,
+) -> anyhow::Result<bool> {
+    let backend = super::delivery::GitDeliveryBackend::new(batch.repo().to_path_buf())
+        .with_regression_steps(Vec::new());
+    let service = super::delivery::CliCompletionDeliveryService::with_store(
+        batch.store().clone(),
+        Arc::new(backend),
+    )
+    .with_events(delivery_events(ctx.graph_tui_bridge));
+    let request = batch.partial_request(&plan.id, verified);
+    let mut receipt = match batch
+        .deliver(&service, request, checkpoint.recorded_delivery())
+        .await
+    {
+        Ok(receipt) => receipt,
+        Err(error) => {
+            tracing::warn!(plan_id = %plan.id, %error, "the plan's verified tasks could not be delivered");
+            ctx.graph_tui_bridge.error(&format!(
+                "plan '{}': its verified tasks could not be delivered into {}: {error}",
+                plan.id,
+                batch.branch()
+            ));
+            return Ok(false);
+        }
+    };
+    receipt.extensions.insert(
+        super::batch::PARTIAL_EXTENSION.to_string(),
+        serde_json::json!({ "tasks": tasks }),
+    );
+    batch.store().update(&receipt);
+    checkpoint.record_batch_delivery(batch.record(&receipt), &receipt)?;
+    let Some(merge) = receipt
+        .merge_commit
+        .clone()
+        .filter(|_| receipt.state.is_success())
+    else {
+        let reason = receipt.error.as_deref().unwrap_or("no reason recorded");
+        tracing::warn!(plan_id = %plan.id, state = ?receipt.state, reason, "the plan's verified tasks were not delivered");
+        ctx.graph_tui_bridge.error(&format!(
+            "plan '{}': its verified tasks were not delivered into {} ({:?}): {reason}",
+            plan.id,
+            batch.branch(),
+            receipt.state
+        ));
+        return Ok(false);
+    };
+    tracing::info!(plan_id = %plan.id, batch = batch.branch(), merge_commit = %merge, "delivered the plan's verified tasks");
+    ctx.graph_tui_bridge.log_event(
+        "graph.plan_partially_delivered",
+        &format!(
+            "plan '{}' did not finish: the work of its verified task(s) {} was delivered into {} at {}",
+            plan.id,
+            tasks.join(", "),
+            batch.branch(),
+            short_oid(&merge)
+        ),
+    );
+    release_delivered_attempts(
+        ctx.worktrees,
+        &plan.id,
+        ctx.delete_attempt_branches,
+        batch,
+        receipt,
+    )
+    .await;
+    Ok(true)
+}
+
+/// Remove plan `plan_id`'s attempt checkouts that hold nothing to inspect or
+/// resume once the plan ended (bug-58329f): the accepted attempts' that a delivery
+/// did not already remove, whose work is on the plan branch, and the ones
+/// whose attempts changed nothing, with their branches. Says what went in the
+/// run's events.
+async fn release_plan_checkouts(
+    worktrees: &crate::orchestrator::worktree::WorktreeManager,
+    plan_id: &str,
+    delete_attempt_branches: bool,
+    graph_tui_bridge: &crate::runner::graph_tui_bridge::GraphTuiBridge,
+) {
+    let mut removed = match worktrees
+        .release_accepted(plan_id, delete_attempt_branches)
+        .await
+    {
+        Ok(released) => released.removed_checkouts,
+        Err(error) => {
+            tracing::warn!(plan_id, %error, "kept the plan's accepted attempt checkouts");
+            Vec::new()
+        }
+    };
+    match worktrees.remove_idle_attempts(plan_id).await {
+        Ok(idle) => removed.extend(idle),
+        Err(error) => tracing::warn!(plan_id, %error, "kept the plan's idle attempt checkouts"),
+    }
+    if !removed.is_empty() {
+        tracing::info!(
+            plan_id,
+            removed = removed.len(),
+            "removed the plan's finished attempt checkouts"
+        );
+        graph_tui_bridge.log_event(
+            "graph.attempt_checkouts_removed",
+            &format!(
+                "plan '{plan_id}': removed {} attempt checkout(s) that held nothing to inspect or resume",
+                removed.len()
+            ),
+        );
+    }
+}
+
+/// Remove the checkouts of the attempts plan `plan_id` accepted, once
+/// `receipt` delivered their work into `batch` (gap-415c54): it is on the
+/// plan and batch branches now, so the checkouts kept for review have done
+/// their job. With `delete_attempt_branches` their branches go too. What
+/// went and what stayed is on the receipt, for the run summary.
+async fn release_delivered_attempts(
+    worktrees: Option<&crate::orchestrator::worktree::WorktreeManager>,
+    plan_id: &str,
+    delete_attempt_branches: bool,
+    batch: &super::batch::BatchIntegration,
+    mut receipt: roko_graph::delivery::CompletionDeliveryReceiptV1,
+) {
+    let Some(worktrees) = worktrees else {
+        return;
+    };
+    if receipt.release_policy != roko_graph::delivery::ReleasePolicy::Delete {
+        return;
+    }
+    match worktrees
+        .release_accepted(plan_id, delete_attempt_branches)
+        .await
+    {
+        Ok(released) => {
+            tracing::info!(
+                plan_id,
+                removed = released.removed_checkouts.len(),
+                kept_branches = released.kept_branches.len(),
+                deleted_branches = released.deleted_branches.len(),
+                "removed the delivered plan's attempt checkouts"
+            );
+            if let Ok(cleanup) = serde_json::to_value(&released) {
+                receipt
+                    .extensions
+                    .insert(super::batch::ATTEMPT_CLEANUP_EXTENSION.to_string(), cleanup);
+                batch.store().update(&receipt);
+            }
+        }
+        Err(error) => tracing::warn!(
+            plan_id,
+            %error,
+            "kept the delivered plan's attempt checkouts"
+        ),
+    }
+}
+
 /// Run `plan`'s whole-plan check (gap-60233f) in the shared working tree at
 /// `workdir`, which its tasks edited, and record it in the plan's
 /// checkpoint. Its steps inherit what the gate policy and `env_passthrough`
@@ -4067,10 +4859,17 @@ async fn check_plan_in_place(
     plan: &crate::runner::plan_loader::Plan,
     checks: &[crate::task_parser::VerifyStep],
     env_passthrough: &[String],
+    stop: &PlanRunInterruptHandle,
     checkpoint: &mut crate::graph_checkpoint::PreparedGraphCheckpoint,
     graph_tui_bridge: &crate::runner::graph_tui_bridge::GraphTuiBridge,
 ) -> anyhow::Result<PlanOutcome> {
-    let result = super::plan_verify::run_plan_verify(workdir, checks, env_passthrough).await;
+    let events = plan_check_events(
+        graph_tui_bridge,
+        plan,
+        super::plan_check_events::CheckStage::InPlace,
+    );
+    let result =
+        super::plan_verify::run_plan_verify(workdir, checks, env_passthrough, &events, stop).await;
     let commands: Vec<&str> = checks.iter().map(|step| step.command.as_str()).collect();
     checkpoint.record_plan_verify(serde_json::json!({
         "passed": result.is_ok(),
@@ -4082,6 +4881,11 @@ async fn check_plan_in_place(
         Ok(()) => {
             tracing::info!(plan_id = %plan.id, steps = checks.len(), "plan check passed");
             Ok(PlanOutcome::Succeeded)
+        }
+        // A stop request ended the check: the plan stopped (bug-7b62ff).
+        Err(failure) if failure.stopped_by.is_some() => {
+            tracing::warn!(plan_id = %plan.id, step = %failure.command, "plan check stopped");
+            Ok(PlanOutcome::Interrupted)
         }
         Err(failure) => {
             tracing::error!(
@@ -4096,6 +4900,69 @@ async fn check_plan_in_place(
     }
 }
 
+/// How many plan runs the cost trend a run publishes as it ends covers
+/// (gap-de0e96).
+const RUN_COST_TREND_RUNS: usize = 20;
+
+/// The trend a Graph run publishes as it ends (gap-de0e96): one
+/// [`roko_core::EfficiencyBucket`] per plan run of `runs` (newest first, as
+/// `run-metrics.jsonl` gives them), oldest first, each with its cost, its
+/// tasks, the tasks that passed every verify step and its cost per verified
+/// task.
+fn run_cost_trend(
+    runs: &[roko_learn::run_metrics::RunMetricsRecord],
+) -> Vec<roko_core::EfficiencyBucket> {
+    runs.iter()
+        .rev()
+        .map(|run| {
+            let ended = chrono::DateTime::parse_from_rfc3339(&run.timestamp).map_or_else(
+                |_| chrono::Utc::now(),
+                |ended| ended.with_timezone(&chrono::Utc),
+            );
+            let took = i64::try_from(run.duration_ms)
+                .ok()
+                .and_then(chrono::TimeDelta::try_milliseconds)
+                .unwrap_or_default();
+            let verified = run.tasks_completed as u64;
+            roko_core::EfficiencyBucket {
+                start: ended - took,
+                turns: run.total_agent_calls as u64,
+                tokens_in: run.total_tokens_in,
+                tokens_out: run.total_tokens_out,
+                cost_usd_cents: (run.total_cost_usd * 100.0).round() as u64,
+                latency_ms_avg: run.duration_ms as f64 / run.total_agent_calls.max(1) as f64,
+                run_id: Some(run.run_id.clone()),
+                cost_usd: Some(run.total_cost_usd),
+                tasks: Some(run.total_tasks as u64),
+                verified_tasks: Some(verified),
+                cost_per_verified_usd: (verified > 0).then(|| run.total_cost_usd / verified as f64),
+            }
+        })
+        .collect()
+}
+
+/// The events of a plan's delivery, published through the run's bridge
+/// (gap-4f6cbe).
+fn delivery_events(
+    graph_tui_bridge: &crate::runner::graph_tui_bridge::GraphTuiBridge,
+) -> super::delivery::DeliveryEvents {
+    super::delivery::DeliveryEvents::new(graph_tui_bridge.tui().clone())
+}
+
+/// The hub events of `plan`'s whole-plan check at `stage` (gap-6b6ec1).
+fn plan_check_events(
+    graph_tui_bridge: &crate::runner::graph_tui_bridge::GraphTuiBridge,
+    plan: &crate::runner::plan_loader::Plan,
+    stage: super::plan_check_events::CheckStage,
+) -> super::plan_check_events::PlanCheckEvents {
+    super::plan_check_events::PlanCheckEvents::new(
+        graph_tui_bridge.tui().clone(),
+        &plan.id,
+        stage,
+        plan_check_source(plan),
+    )
+}
+
 /// Where `plan`'s whole-plan check came from: `authored` (its `[meta]
 /// verify`) or `cargo-default` (the default check of a Cargo workspace,
 /// [`super::plan_verify::default_plan_verify`]).
@@ -4105,6 +4972,102 @@ fn plan_check_source(plan: &crate::runner::plan_loader::Plan) -> &'static str {
     } else {
         "authored"
     }
+}
+
+/// The most of a failed task's error its `error` event carries (bug-103bce).
+const MAX_TASK_ERROR_CHARS: usize = 1_500;
+
+/// Why each of the plan's tasks that failed by its own error did, as the
+/// `error` events a run shows a host (bug-103bce), such as a dispatch that
+/// found no provider able to run the task. A task blocked by another, a task
+/// a stop cut off ([`cancelled_tasks`]), a failure without an error, and the
+/// helper nodes of the rich topology, which are absent from `node_titles`,
+/// are left out.
+fn task_failure_errors(
+    plan_id: &str,
+    output: &roko_graph::GraphOutput,
+    node_titles: &HashMap<String, String>,
+) -> Vec<String> {
+    use roko_graph::engine::NodeStatus;
+
+    output
+        .node_results
+        .iter()
+        .filter(|result| {
+            result.status == NodeStatus::Failed
+                && result.blocked_by.is_none()
+                && cancel_reason(result).is_none()
+                && node_titles.contains_key(&result.node_id)
+        })
+        .filter_map(|result| {
+            let error = result.error.as_deref()?.trim();
+            if error.is_empty() {
+                return None;
+            }
+            let clipped: String = error.chars().take(MAX_TASK_ERROR_CHARS).collect();
+            let more = if clipped.len() < error.len() {
+                "…"
+            } else {
+                ""
+            };
+            Some(format!(
+                "plan '{plan_id}': task '{}' failed: {clipped}{more}",
+                result.node_id
+            ))
+        })
+        .collect()
+}
+
+/// Keep the nodes that failed since `previous` at their `previous` status in
+/// `current`, or out of it when they had none, so the poll does not report
+/// them yet: while a run stops, a failed node's error, which the poll does not
+/// see, says whether the stop cut its task off ([`cancel_reason`]).
+fn hold_back_failures(
+    previous: &HashMap<String, roko_graph::engine::NodeStatus>,
+    current: &mut HashMap<String, roko_graph::engine::NodeStatus>,
+) {
+    use roko_graph::engine::NodeStatus;
+
+    current.retain(|node_id, status| {
+        if *status != NodeStatus::Failed {
+            return true;
+        }
+        match previous.get(node_id) {
+            Some(&before) => {
+                *status = before;
+                true
+            }
+            None => false,
+        }
+    });
+}
+
+/// Why a stop cut off the task of node `result`, when it did: the node failed
+/// with a cancellation (bug-1d09e8), because its plan run was stopping or the
+/// operator stopped the task. Such a task is cancelled, not failed.
+fn cancel_reason(result: &roko_graph::NodeResult) -> Option<&str> {
+    if result.status != roko_graph::engine::NodeStatus::Failed {
+        return None;
+    }
+    result
+        .error
+        .as_deref()
+        .and_then(roko_core::RokoError::cancelled_reason)
+}
+
+/// The plan's tasks in `output` that a stop cut off ([`cancel_reason`]), each
+/// with the reason. Helper nodes of the rich topology, which are absent from
+/// `node_titles`, are left out.
+fn cancelled_tasks<'a>(
+    output: &'a roko_graph::GraphOutput,
+    node_titles: &HashMap<String, String>,
+) -> BTreeMap<String, &'a str> {
+    output
+        .node_results
+        .iter()
+        .filter(|result| node_titles.contains_key(&result.node_id))
+        .filter_map(|result| Some((result.node_id.clone(), cancel_reason(result)?)))
+        .collect()
 }
 
 /// How `output` left the plan's tasks that did not complete. Helper nodes of
@@ -4122,6 +5085,9 @@ fn task_outcomes(
         .filter(|result| node_titles.contains_key(&result.node_id))
     {
         match (result.status, &result.blocked_by) {
+            (NodeStatus::Failed, _) if cancel_reason(result).is_some() => {
+                summary.cancelled.insert(result.node_id.clone());
+            }
             (NodeStatus::Failed, _) => {
                 summary.failed.insert(result.node_id.clone());
             }
@@ -4140,6 +5106,40 @@ fn task_outcomes(
         }
     }
     summary
+}
+
+/// What a plan that `reason` stopped tells its person (bug-1d09e8): what
+/// stopped it, how its `task_count` tasks stand, and that a resume keeps the
+/// ones that passed.
+fn plan_stopped_message(
+    plan_id: &str,
+    reason: PlanRunInterrupt,
+    tasks: TaskVerdictCounts,
+    task_count: usize,
+) -> String {
+    let passed = tasks.passed + tasks.already_satisfied;
+    let settled = passed + tasks.unverified + tasks.failed + tasks.cancelled;
+    let mut stand = vec![format!("{passed} task(s) passed")];
+    for (count, word) in [
+        (tasks.unverified, "unverified"),
+        (tasks.failed, "failed"),
+        (tasks.cancelled, "cancelled"),
+        (task_count.saturating_sub(settled), "did not run"),
+    ] {
+        if count > 0 {
+            stand.push(format!("{count} {word}"));
+        }
+    }
+    let resume = if passed > 0 {
+        "; a resume keeps the passed tasks and runs the rest"
+    } else {
+        ""
+    };
+    format!(
+        "plan '{plan_id}' stopped by {}: {}{resume}",
+        reason.cause(),
+        stand.join(", ")
+    )
 }
 
 /// Graph cell type that runs a plan task: one node per task in either
@@ -4166,6 +5166,8 @@ struct TaskVerdictCounts {
     skipped: usize,
     /// Failed, or completed over a failed verify step (`forced_accept`).
     failed: usize,
+    /// Cut off by a stop ([`cancel_reason`]): not a failure (bug-1d09e8).
+    cancelled: usize,
 }
 
 impl TaskVerdictCounts {
@@ -4189,6 +5191,9 @@ impl TaskVerdictCounts {
                 (NodeStatus::Complete, Some(TaskGateVerdict::AlreadySatisfied)) => {
                     counts.already_satisfied += 1;
                 }
+                (NodeStatus::Failed, _) if cancel_reason(result).is_some() => {
+                    counts.cancelled += 1;
+                }
                 (NodeStatus::Complete, Some(TaskGateVerdict::ForcedAccept))
                 | (NodeStatus::Failed, _) => counts.failed += 1,
                 (NodeStatus::Complete, _) => counts.unverified += 1,
@@ -4207,16 +5212,20 @@ impl TaskVerdictCounts {
             unverified: 0,
             skipped: task_count,
             failed: 0,
+            cancelled: 0,
         }
     }
 
     /// Outcome of a plan whose graph ran to completion (gap-29a84b): it
     /// succeeded only when every task passed its verify steps (an
     /// already-satisfied task did), and is unverified when the rest passed but
-    /// some ran no verify step. Anything else failed.
+    /// some ran no verify step. A task the operator stopped cancels the plan
+    /// unless another failed. Anything else failed.
     const fn outcome(self) -> PlanOutcome {
         if self.failed > 0 || self.skipped > 0 {
             PlanOutcome::Failed
+        } else if self.cancelled > 0 {
+            PlanOutcome::Cancelled
         } else if self.unverified > 0 {
             PlanOutcome::Unverified
         } else {
@@ -4226,7 +5235,9 @@ impl TaskVerdictCounts {
 }
 
 /// The run-metrics row of one plan: whether it succeeded, and its tasks
-/// counted by verdict. The caller adds the plan's checkpoint run.
+/// counted by verdict. A task a stop cut off counts in none of them: it says
+/// nothing about its model or prompt (bug-1d09e8). The caller adds the plan's
+/// checkpoint run.
 fn plan_metrics(
     plan_id: &str,
     succeeded: bool,
@@ -4254,8 +5265,14 @@ mod tests {
         let task_blocks = (0..task_count)
             .map(|index| format!("[[task]]\nid = \"T{index}\"\ntitle = \"Task {index}\"\n"))
             .collect::<String>();
+        // A plan named for people names itself in `[meta] title` (gap-c2efe7).
+        let title = if title.is_empty() {
+            String::new()
+        } else {
+            format!("title = \"{title}\"\n")
+        };
         let tasks = crate::task_parser::TasksFile::parse_str(&format!(
-            "[meta]\nplan = \"{title}\"\n\n{task_blocks}"
+            "[meta]\nplan = \"{id}\"\n{title}\n{task_blocks}"
         ))
         .expect("parse test plan");
         crate::runner::plan_loader::Plan {
@@ -4355,6 +5372,78 @@ mod tests {
 
         config.daimon.enabled = true;
         assert!(graph_daimon_state(workdir.path(), &config).is_some());
+    }
+
+    /// The sinks a plan's completion reaches on the feedback facade a plan
+    /// run under `workdir` builds for `config`, and whether the workspace's
+    /// affect file is on disk once they have heard it.
+    async fn plan_completion_listeners(
+        workdir: &Path,
+        config: &roko_core::config::schema::RokoConfig,
+    ) -> (Vec<&'static str>, bool) {
+        let error_patterns = Arc::new(std::sync::RwLock::new(
+            roko_learn::error_pattern_store::ErrorPatternStore::load(&workdir.join("none.json")),
+        ));
+        let feedback =
+            build_graph_feedback_context(workdir, config, None, None, &error_patterns, None, None);
+        let facade = feedback.feedback_facade.expect("a plan run's facade");
+        let completed = crate::runtime_feedback::FeedbackEvent::PlanCompleted {
+            plan_id: "p".to_string(),
+            succeeded: true,
+            tasks_completed: 1,
+            tasks_failed: 0,
+            total_cost_usd: 0.0,
+        };
+        facade.on_event(&completed).await.expect("deliver it");
+        let listeners = facade
+            .stats()
+            .per_sink
+            .into_iter()
+            .filter(|sink| sink.delivered > 0)
+            .map(|sink| sink.name)
+            .collect();
+        (listeners, daimon_affect_path(workdir).exists())
+    }
+
+    /// q-6b7cca option 2 (gap-a960a1): a plan's completion reaches the
+    /// daimon sink alone, which saves the affect state, and only when
+    /// `[daimon] enabled` gives the run one. Both dream switches are on: the
+    /// dream sink they gated started a `claude` dream after every plan, and
+    /// it is gone, with the theta and delta sinks.
+    #[tokio::test]
+    async fn plan_completion_reaches_only_the_daimon_sink() {
+        let mut config = roko_core::config::schema::RokoConfig::default();
+        config.learning.dream_on_completion = true;
+        config.learning.dreams.trigger_on_plan_complete = true;
+        let held = tempfile::tempdir().expect("tempdir");
+        assert_eq!(
+            plan_completion_listeners(held.path(), &config).await,
+            (vec![], false),
+            "affect is held by default"
+        );
+
+        config.daimon.enabled = true;
+        let on = tempfile::tempdir().expect("tempdir");
+        assert_eq!(
+            plan_completion_listeners(on.path(), &config).await,
+            (vec!["daimon_persistence"], true)
+        );
+    }
+
+    /// gap-a960a1: a frozen run (decision 2218) writes no learned state, and
+    /// the plan-completion save follows it: with affect on, no sink hears a
+    /// plan's completion, and no affect file is written.
+    #[tokio::test]
+    async fn a_frozen_run_saves_no_affect_when_a_plan_completes() {
+        let mut config = roko_core::config::schema::RokoConfig::default();
+        config.daimon.enabled = true;
+        config.learning.frozen = true;
+        let dir = tempfile::tempdir().expect("tempdir");
+
+        assert_eq!(
+            plan_completion_listeners(dir.path(), &config).await,
+            (vec![], false)
+        );
     }
 
     #[test]
@@ -4729,6 +5818,408 @@ max_retries = 0
                 _ => None,
             })
             .collect()
+    }
+
+    /// The sinks a test attached to the feedback facade of the plan runs
+    /// under a workdir ([`attach_sink`]).
+    static ATTACHED_SINKS: std::sync::Mutex<
+        Vec<(PathBuf, Arc<dyn crate::runtime_feedback::FeedbackSink>)>,
+    > = std::sync::Mutex::new(Vec::new());
+
+    /// `facade` with the sinks a test attached for `workdir` after its own,
+    /// so the test hears what a real plan run's facade delivers.
+    pub(super) fn with_attached_sinks(
+        workdir: &Path,
+        facade: Arc<crate::runtime_feedback::FeedbackFacade>,
+    ) -> Arc<crate::runtime_feedback::FeedbackFacade> {
+        let attached = ATTACHED_SINKS
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .iter()
+            .filter(|(dir, _)| dir == workdir)
+            .map(|(_, sink)| Arc::clone(sink))
+            .collect::<Vec<_>>();
+        if attached.is_empty() {
+            return facade;
+        }
+        let facade = attached
+            .into_iter()
+            .fold(Arc::unwrap_or_clone(facade), |facade, sink| {
+                facade.with_sink(sink)
+            });
+        Arc::new(facade)
+    }
+
+    /// Detaches the sinks attached for its workdir when dropped.
+    #[cfg(unix)]
+    struct AttachedSinks(PathBuf);
+
+    #[cfg(unix)]
+    impl Drop for AttachedSinks {
+        fn drop(&mut self) {
+            ATTACHED_SINKS
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .retain(|(dir, _)| *dir != self.0);
+        }
+    }
+
+    /// Attach `sink` to the feedback facade of each plan run under
+    /// `workdir`, after the run's own sinks, until the guard drops.
+    #[cfg(unix)]
+    fn attach_sink(
+        workdir: &Path,
+        sink: Arc<dyn crate::runtime_feedback::FeedbackSink>,
+    ) -> AttachedSinks {
+        ATTACHED_SINKS
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .push((workdir.to_path_buf(), sink));
+        AttachedSinks(workdir.to_path_buf())
+    }
+
+    /// One `PlanCompleted` a plan run's facade delivered, and whether the
+    /// workspace's affect file was on disk by then.
+    #[cfg(unix)]
+    #[derive(Debug, Clone, PartialEq)]
+    struct HeardCompletion {
+        plan_id: String,
+        succeeded: bool,
+        tasks_completed: usize,
+        tasks_failed: usize,
+        total_cost_usd: f64,
+        affect_saved: bool,
+    }
+
+    /// Hears each `PlanCompleted` a plan run's facade delivers, after the
+    /// run's own sinks (gap-a960a1), and whether the affect file is on disk
+    /// then. An attempt without a learning label is not appraised, so nothing
+    /// autosaves affect for it: when one settles, the log removes the affect
+    /// file and notes the attempt's plan, and at that plan's end the file is
+    /// back only if the plan-completion save wrote it.
+    #[cfg(unix)]
+    #[derive(Debug)]
+    struct PlanCompletionLog {
+        affect_path: PathBuf,
+        heard: parking_lot::Mutex<Vec<HeardCompletion>>,
+        /// The plans an attempt without a learning label settled in.
+        unlabelled: parking_lot::Mutex<BTreeSet<String>>,
+    }
+
+    #[cfg(unix)]
+    impl PlanCompletionLog {
+        fn new(workdir: &Path) -> Arc<Self> {
+            Arc::new(Self {
+                affect_path: daimon_affect_path(workdir),
+                heard: parking_lot::Mutex::default(),
+                unlabelled: parking_lot::Mutex::default(),
+            })
+        }
+
+        /// The plans an attempt without a learning label settled in.
+        fn unlabelled(&self) -> BTreeSet<String> {
+            self.unlabelled.lock().clone()
+        }
+
+        /// What it heard, by plan id.
+        fn heard(&self) -> Vec<HeardCompletion> {
+            let mut heard = self.heard.lock().clone();
+            heard.sort_by(|a, b| a.plan_id.cmp(&b.plan_id));
+            heard
+        }
+    }
+
+    #[cfg(unix)]
+    #[async_trait::async_trait]
+    impl crate::runtime_feedback::FeedbackSink for PlanCompletionLog {
+        fn name(&self) -> &'static str {
+            "plan_completion_log"
+        }
+
+        fn interested(&self, event: &crate::runtime_feedback::FeedbackEvent) -> bool {
+            matches!(
+                event,
+                crate::runtime_feedback::FeedbackEvent::PlanCompleted { .. }
+                    | crate::runtime_feedback::FeedbackEvent::AttemptSettled(_)
+            )
+        }
+
+        async fn on_event(
+            &self,
+            event: &crate::runtime_feedback::FeedbackEvent,
+        ) -> Result<(), anyhow::Error> {
+            use crate::runtime_feedback::FeedbackEvent;
+            match event {
+                FeedbackEvent::AttemptSettled(verdict) if verdict.learning_success().is_none() => {
+                    let _ = std::fs::remove_file(&self.affect_path);
+                    self.unlabelled
+                        .lock()
+                        .insert(verdict.identity.plan_id.clone());
+                }
+                FeedbackEvent::PlanCompleted {
+                    plan_id,
+                    succeeded,
+                    tasks_completed,
+                    tasks_failed,
+                    total_cost_usd,
+                } => self.heard.lock().push(HeardCompletion {
+                    plan_id: plan_id.clone(),
+                    succeeded: *succeeded,
+                    tasks_completed: *tasks_completed,
+                    tasks_failed: *tasks_failed,
+                    total_cost_usd: *total_cost_usd,
+                    affect_saved: self.affect_path.exists(),
+                }),
+                _ => {}
+            }
+            Ok(())
+        }
+    }
+
+    /// q-6b7cca option 2 (gap-a960a1): a plan run sends one `PlanCompleted`
+    /// for each plan it runs, with how the plan ended, its tasks counted as
+    /// its run-metrics row counts them, and its settled spend; `d`, which
+    /// never starts, sends none. With `[daimon] enabled` the affect state is
+    /// on disk as each plan closes: `c`'s unverified attempt has no learning
+    /// label, so nothing autosaves affect for it, and the file the log
+    /// removed when it settled is back by `c`'s end.
+    #[cfg(unix)]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn graph_plan_run_emits_plan_completed_once_per_plan() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        fake_provider_workspace(dir.path(), 0.004, "\n[daimon]\nenabled = true\n");
+        // `a` passes its check, `b` fails it, `c` has none, and `d` needs `b`.
+        write_single_task_plan(dir.path(), "a", "a.txt", &[], Some("true"));
+        write_single_task_plan(dir.path(), "b", "b.txt", &[], Some("false"));
+        write_single_task_plan(dir.path(), "c", "c.txt", &[], None);
+        write_single_task_plan(dir.path(), "d", "d.txt", &["b"], Some("true"));
+        let log = PlanCompletionLog::new(dir.path());
+        let _attached = attach_sink(dir.path(), log.clone());
+
+        let (exit_code, lifecycle, _) = run_plan_set(dir.path(), Some(1), None).await;
+
+        assert_eq!(exit_code, EXIT_FAILURE);
+        assert!(
+            lifecycle.contains(&"end d false".to_string())
+                && !lifecycle.contains(&"start d".to_string()),
+            "d never starts: {lifecycle:?}"
+        );
+        let heard = log.heard();
+        let summary = heard
+            .iter()
+            .map(|heard| {
+                (
+                    heard.plan_id.as_str(),
+                    heard.succeeded,
+                    heard.tasks_completed,
+                    heard.tasks_failed,
+                )
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            summary,
+            [("a", true, 1, 0), ("b", false, 0, 1), ("c", false, 0, 0)],
+            "one PlanCompleted for each plan that ran: {heard:?}"
+        );
+        assert!(
+            log.unlabelled().contains("c"),
+            "c's attempt has no learning label, so only the plan-end save puts affect back"
+        );
+        for completion in &heard {
+            let ledger_path = dir
+                .path()
+                .join(".roko/state/graph")
+                .join(&completion.plan_id)
+                .join("costs.json");
+            let ledger: serde_json::Value =
+                serde_json::from_slice(&std::fs::read(&ledger_path).expect("the plan's ledger"))
+                    .expect("ledger json");
+            let spent = ledger["spent_micro_usd"].as_u64().expect("spent") as f64 / 1e6;
+            assert!(spent > 0.0, "{ledger}");
+            assert!(
+                (completion.total_cost_usd - spent).abs() < 1e-9,
+                "{completion:?} carries the plan's settled spend: {ledger}"
+            );
+            assert!(
+                completion.affect_saved,
+                "affect is on disk when {} closes",
+                completion.plan_id
+            );
+        }
+    }
+
+    /// A stand-in `claude_cli` agent that writes `greeting.txt` and prints
+    /// it: two tool calls that succeed, then a finished turn at no cost.
+    #[cfg(unix)]
+    const GREETING_AGENT: &str = r#"#!/bin/sh
+set -eu
+cat >/dev/null
+printf '%s\n' '{"type":"assistant","message":{"id":"msg_1","model":"claude-sonnet-4-6","content":[{"type":"tool_use","id":"tu_1","name":"Write","input":{"file_path":"greeting.txt","content":"hello"}},{"type":"tool_use","id":"tu_2","name":"Bash","input":{"command":"cat greeting.txt"}}],"usage":{"input_tokens":10,"output_tokens":5}}}'
+printf '%s\n' '{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"tu_1","content":"written"},{"type":"tool_result","tool_use_id":"tu_2","content":"hello"}]}}'
+printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"session_id":"greet","model":"claude-sonnet-4-6","total_cost_usd":0.0,"num_turns":2,"usage":{"input_tokens":5,"output_tokens":10}}'
+"#;
+
+    /// A workspace of [`fake_provider_workspace`] whose provider is
+    /// [`GREETING_AGENT`], with `extra_config` after its `[gates]` table.
+    #[cfg(unix)]
+    fn greeting_agent_workspace(extra_config: &str) -> tempfile::TempDir {
+        let dir = tempfile::tempdir().expect("tempdir");
+        fake_provider_workspace(dir.path(), 0.0, extra_config);
+        std::fs::write(dir.path().join("fake-provider.sh"), GREETING_AGENT)
+            .expect("the greeting agent");
+        dir
+    }
+
+    /// Write plan `plan_id` with one implementer task about the greeting
+    /// banner for [`GREETING_AGENT`], whose verify command is `verify`.
+    #[cfg(unix)]
+    fn write_greeting_plan(dir: &Path, plan_id: &str, verify: &str) {
+        let plan_dir = dir.join("plans").join(plan_id);
+        std::fs::create_dir_all(&plan_dir).expect("plan dir");
+        std::fs::write(
+            plan_dir.join("tasks.toml"),
+            format!(
+                r#"[meta]
+plan = "{plan_id}"
+max_parallel = 1
+skip_enrichment = true
+
+[[task]]
+id = "T1"
+title = "Write the greeting banner"
+description = "Print a friendly greeting banner from greeting.txt."
+role = "implementer"
+status = "ready"
+tier = "focused"
+model_hint = "graph-model"
+files = ["greeting.txt"]
+timeout_secs = 60
+max_retries = 0
+verify = [{{ phase = "structural", command = {verify:?} }}]
+"#
+            ),
+        )
+        .expect("tasks.toml");
+    }
+
+    /// The `playbook_written` events `hub` saw, as `(plan, admission,
+    /// playbook id)`.
+    #[cfg(unix)]
+    fn playbooks_written(hub: &crate::state_hub::SharedStateHub) -> Vec<(String, String, String)> {
+        hub.subscribe_events_from(0)
+            .replay
+            .into_iter()
+            .filter_map(|envelope| match envelope.payload {
+                roko_core::DashboardEvent::PlaybookWritten {
+                    plan_id,
+                    admission,
+                    playbook_id,
+                    ..
+                } => Some((plan_id, admission, playbook_id)),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// gap-89f985: plan runs write L-play's playbooks. A task that passes its
+    /// verify step leaves one playbook in `.roko/learn/playbooks/`: its
+    /// agent's tool calls, keyed by the task's topic terms, which the run's
+    /// hub announces (`playbook_written`). A task that fails its check, or
+    /// has none, leaves none. The next run of a task on that topic retrieves
+    /// the playbook into its prompt (one exposure row, included, or withheld
+    /// on L-play's arm), and repeating its steps credits it once, by dispatch
+    /// when the prompt included it and by the sink otherwise, instead of
+    /// adding another. A frozen run writes none.
+    #[cfg(unix)]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn verified_plan_task_writes_a_playbook() {
+        use roko_learn::playbook::PlaybookStore;
+        use roko_learn::telemetry::ExposureItemKind;
+        use roko_learn::telemetry::report::RunRecords;
+
+        let dir = greeting_agent_workspace("");
+        // `greet` passes its check, `broken` fails it, and `unchecked` has none.
+        write_greeting_plan(dir.path(), "greet", "true");
+        write_greeting_plan(dir.path(), "broken", "false");
+        write_single_task_plan(dir.path(), "unchecked", "c.txt", &[], None);
+        let store = PlaybookStore::new(dir.path().join(".roko/learn/playbooks"));
+
+        let (exit_code, _, hub) = run_plan_set(dir.path(), Some(1), None).await;
+
+        assert_eq!(exit_code, EXIT_FAILURE, "broken and unchecked fail");
+        let playbooks = store.list().await.expect("read the playbooks");
+        let [playbook] = playbooks.as_slice() else {
+            panic!("greet's verified pass alone writes a playbook: {playbooks:#?}");
+        };
+        let id = playbook.id.clone();
+        assert!(id.starts_with("ep-greet-T1-"), "{playbook:#?}");
+        assert_eq!(
+            playbook.goal,
+            "Write the greeting banner: Print a friendly greeting banner from greeting.txt."
+        );
+        assert_eq!(
+            playbook.when_pattern.as_deref(),
+            Some("banner friendly greeting print"),
+            "keyed by the task's topic terms"
+        );
+        let steps: Vec<(&str, &str)> = playbook
+            .steps
+            .iter()
+            .map(|step| (step.action_kind.as_str(), step.description.as_str()))
+            .collect();
+        assert_eq!(
+            steps,
+            [("Write", "greeting.txt"), ("Bash", "cat greeting.txt")]
+        );
+        assert_eq!((playbook.success_count, playbook.failure_count), (1, 0));
+        assert_eq!(
+            playbooks_written(&hub),
+            [("greet".to_string(), "created".to_string(), id.clone())]
+        );
+
+        // The next run: the same task in another plan.
+        for plan in ["greet", "broken", "unchecked"] {
+            std::fs::remove_dir_all(dir.path().join("plans").join(plan)).expect("drop the plan");
+        }
+        write_greeting_plan(dir.path(), "greet-again", "true");
+        let (exit_code, _, _) = run_plan_set(dir.path(), Some(1), None).await;
+
+        assert_eq!(exit_code, EXIT_SUCCESS);
+        let exposures: Vec<bool> = std::fs::read_dir(dir.path().join(".roko/runs"))
+            .expect("read .roko/runs")
+            .map(|entry| RunRecords::load(&entry.expect("run directory").path()))
+            .flat_map(|run| run.expect("read the run's records").exposures)
+            .filter(|line| {
+                line.record.identity.plan_id == "greet-again"
+                    && line.record.item_kind == ExposureItemKind::Playbook
+                    && line.record.item_id == id
+            })
+            .map(|line| line.record.included)
+            .collect();
+        assert_eq!(
+            exposures.len(),
+            1,
+            "one playbook exposure row: {exposures:?}"
+        );
+        let playbooks = store.list().await.expect("read the playbooks");
+        let [playbook] = playbooks.as_slice() else {
+            panic!("the repeat credits the playbook: {playbooks:#?}");
+        };
+        assert_eq!(playbook.id, id);
+        assert_eq!((playbook.success_count, playbook.failure_count), (2, 0));
+
+        let frozen = greeting_agent_workspace("\n[learning]\nfrozen = true\n");
+        write_greeting_plan(frozen.path(), "greet", "true");
+        let (exit_code, _, hub) = run_plan_set(frozen.path(), Some(1), None).await;
+
+        assert_eq!(exit_code, EXIT_SUCCESS);
+        let frozen_store = PlaybookStore::new(frozen.path().join(".roko/learn/playbooks"));
+        let playbooks = frozen_store.list().await.expect("read the playbooks");
+        assert!(
+            playbooks.is_empty(),
+            "a frozen run writes none: {playbooks:#?}"
+        );
+        assert!(playbooks_written(&hub).is_empty());
     }
 
     #[cfg(unix)]
@@ -5301,6 +6792,205 @@ max_retries = 0
         assert_eq!(closed.attempts_opened, 1);
     }
 
+    /// gap-9aca5d, decision 2 of 2026-10-15: `[self_model] mode` defaults to
+    /// shadow, so a plan run with no `[self_model]` section forecasts its
+    /// one routed attempt, writing one `predictions.jsonl` row and the
+    /// self-model's state file. Shadow never changes the route (S04 §4.7):
+    /// the model it dispatches is the one an explicit `mode = "off"` run
+    /// dispatches too.
+    #[cfg(unix)]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn default_plan_run_forecasts_in_shadow() {
+        use roko_learn::telemetry::report::RunRecords;
+
+        let shadow_dir = verified_plan_set(&[("a", "a.txt", &[])], "");
+        let (shadow_exit, _, _) = run_plan_set(shadow_dir.path(), Some(1), None).await;
+        assert_eq!(shadow_exit, EXIT_SUCCESS);
+
+        let off_dir = verified_plan_set(&[("a", "a.txt", &[])], "[self_model]\nmode = \"off\"\n");
+        let (off_exit, _, _) = run_plan_set(off_dir.path(), Some(1), None).await;
+        assert_eq!(off_exit, EXIT_SUCCESS);
+
+        let shadow_manifest = only_run_manifest(shadow_dir.path());
+        let shadow_run_dir = shadow_dir
+            .path()
+            .join(".roko/runs")
+            .join(&shadow_manifest.run_id);
+        let off_manifest = only_run_manifest(off_dir.path());
+        let off_run_dir = off_dir.path().join(".roko/runs").join(&off_manifest.run_id);
+
+        let predictions = std::fs::read_to_string(shadow_run_dir.join("predictions.jsonl"))
+            .expect("a default run forecasts and writes predictions.jsonl");
+        let rows: Vec<&str> = predictions
+            .lines()
+            .filter(|line| !line.is_empty())
+            .collect();
+        assert_eq!(
+            rows.len(),
+            1,
+            "one routed attempt, one prediction: {rows:?}"
+        );
+        // bug-09173e: a fresh workspace's first row forecasts its candidates' cost and latency
+        // from the priors, flagged, with finite, plausible upper quantiles.
+        let row: serde_json::Value = serde_json::from_str(rows[0]).expect("the row is JSON");
+        for candidate in row["candidates"].as_array().expect("candidates") {
+            assert_eq!(candidate["cost_prior"], true, "{candidate}");
+            assert_eq!(candidate["latency_prior"], true, "{candidate}");
+            let cost_q90 = candidate["cost_q90"].as_f64().expect("a cost q90");
+            let lat_q90 = candidate["lat_q90_s"].as_f64().expect("a latency q90");
+            assert!(cost_q90 > 0.0 && cost_q90 < 1.0, "{candidate}");
+            assert!(lat_q90 > 0.0 && lat_q90 < 600.0, "{candidate}");
+        }
+
+        let state_path = shadow_dir
+            .path()
+            .join(roko_core::config::self_model::DEFAULT_STATE_PATH);
+        assert!(
+            state_path.exists(),
+            "a default run saves the self-model's state at {}",
+            state_path.display()
+        );
+        assert!(
+            !off_run_dir.join("predictions.jsonl").exists(),
+            "mode = off forecasts nothing"
+        );
+
+        let shadow_model = RunRecords::load(&shadow_run_dir)
+            .expect("read the shadow run's records")
+            .verdicts[0]
+            .record
+            .executed
+            .model_requested
+            .clone();
+        let off_model = RunRecords::load(&off_run_dir)
+            .expect("read the off run's records")
+            .verdicts[0]
+            .record
+            .executed
+            .model_requested
+            .clone();
+        assert_eq!(
+            shadow_model, off_model,
+            "shadow forecasts; it never changes the route"
+        );
+    }
+
+    /// gap-b38ed2: a default plan run, in shadow, ends by exporting the calibration gate's
+    /// report on the window it keeps beside the self-model's state: the `ev.m3.*` values in
+    /// `learn/self-model/calibration.json`. The next run adds its attempt to that window, and
+    /// a frozen run writes no state, window or export.
+    #[cfg(unix)]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn plan_run_writes_calibration_json() {
+        use roko_learn::self_model::gate::{
+            CALIBRATION_FILE, CALIBRATION_SCHEMA, WINDOW_FILE_NAME,
+        };
+
+        let export = |dir: &Path| -> serde_json::Value {
+            let path = dir.join(".roko").join(CALIBRATION_FILE);
+            let text = std::fs::read_to_string(&path).expect("the run exports its calibration");
+            serde_json::from_str(&text).expect("the export is JSON")
+        };
+        let dir = verified_plan_set(&[("a", "a.txt", &[])], "");
+        let (exit_code, _, _) = run_plan_set(dir.path(), Some(1), None).await;
+        assert_eq!(exit_code, EXIT_SUCCESS);
+        let first = export(dir.path());
+        assert_eq!(first["schema_version"], CALIBRATION_SCHEMA, "{first}");
+        let version = first["predictor_version"].as_str().unwrap_or_default();
+        assert!(version.starts_with("m3-l1-"), "{first}");
+        assert_eq!(first["n"], 1, "the run's one labelled attempt: {first}");
+        for field in ["ev.m3.ece", "ev.m3.cal_in_large", "ev.m3.route_pass"] {
+            assert!(first.get(field).is_some(), "{field}: {first}");
+        }
+        let resolution = &first["ev.m3.resolution"];
+        assert!(resolution.get("bss").is_some() && resolution.get("auroc").is_some());
+        assert_eq!(first["eligible"], false, "{first}");
+        let reasons = first["reasons"].as_array().expect("the failed bounds");
+        let below = "n = 1, below the window of 100";
+        assert!(reasons.iter().any(|reason| reason == below), "{first}");
+
+        // The next run starts from the window the first one kept.
+        write_single_task_plan(dir.path(), "b", "b.txt", &[], Some("true"));
+        let (exit_code, _, _) = run_plan_set(dir.path(), Some(1), None).await;
+        assert_eq!(exit_code, EXIT_SUCCESS);
+        let second = export(dir.path());
+        assert_eq!(second["n"], 2, "{second}");
+        assert_eq!(second["predictor_version"], version, "{second}");
+        let state = dir
+            .path()
+            .join(roko_core::config::self_model::DEFAULT_STATE_PATH);
+        assert!(state.with_file_name(WINDOW_FILE_NAME).exists());
+
+        // A frozen run writes no learned state.
+        let frozen = verified_plan_set(&[("a", "a.txt", &[])], "");
+        let (exit_code, _, _) = run_plan_set_with(frozen.path(), Some(1), None, true, true).await;
+        assert_eq!(exit_code, EXIT_SUCCESS);
+        let self_model_dir = frozen.path().join(".roko/learn/self-model");
+        assert!(
+            !self_model_dir.exists(),
+            "a frozen run saves no state, window or export"
+        );
+    }
+
+    /// gap-cad57a, decision 2 of 2026-10-15: a plan run in a workspace with no
+    /// `[homeostasis]` section and no `.roko/policy/viability.toml` registers
+    /// M1 in shadow on roko's shipped policy. It leaves the controller's
+    /// state and one `harness_policy` row per attempt, each in shadow and
+    /// running θ₀, as the attempt's verdict says; no change M1 proposes is
+    /// applied, and M1 writes no policy file.
+    #[cfg(unix)]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn default_plan_run_registers_m1_in_shadow() {
+        use roko_core::config::homeostasis::HomeostasisMode;
+        use roko_learn::homeostasis::controller::{Controller, ControllerState};
+        use roko_learn::homeostasis::ledger::ledger_path;
+        use roko_learn::homeostasis::policy::ViabilityPolicy;
+        use roko_learn::telemetry::report::RunRecords;
+
+        let dir = verified_plan_set(&[("a", "a.txt", &[])], "");
+        let roko = dir.path().join(".roko");
+        let (exit_code, _, _) = run_plan_set(dir.path(), Some(1), None).await;
+        assert_eq!(exit_code, EXIT_SUCCESS);
+
+        // M1 ran in shadow, resolved the run's one chain and saved its state.
+        let text = std::fs::read_to_string(Controller::state_path(&roko))
+            .expect("a default run saves M1's state");
+        let state: ControllerState = serde_json::from_str(&text).expect("the state parses");
+        assert_eq!(state.mode, HomeostasisMode::Shadow);
+        assert_eq!(state.resolutions + state.holdout_resolutions, 1, "{text}");
+        assert!(
+            !ViabilityPolicy::path_in(&roko).exists(),
+            "M1 only reads its policy"
+        );
+
+        // One harness_policy row per attempt, in shadow: the attempt ran θ₀.
+        let manifest = only_run_manifest(dir.path());
+        let run_dir = roko.join("runs").join(&manifest.run_id);
+        let run = RunRecords::load(&run_dir).expect("read the run's records");
+        assert!(run.invalid.is_empty(), "{:?}", run.invalid);
+        assert_eq!(run.verdicts.len(), 1);
+        assert_eq!(run.harness_decisions.len(), run.verdicts.len());
+        let row = &run.harness_decisions[0].record;
+        assert_eq!(row.mode, HomeostasisMode::Shadow);
+        let theta0 = row.default.params_digest();
+        assert_eq!(row.params_digest, theta0, "shadow runs θ₀");
+        let stamp = run.verdicts[0]
+            .record
+            .harness
+            .as_ref()
+            .expect("the θ stamp");
+        assert_eq!(stamp.params_digest, theta0);
+
+        // No change M1 proposed was applied.
+        let ledger = std::fs::read_to_string(ledger_path(&roko)).unwrap_or_default();
+        for line in ledger.lines() {
+            let row: serde_json::Value = serde_json::from_str(line).expect("a controller row");
+            if row["kind"] == "param.change" {
+                assert_eq!(row["applied"], false, "{row}");
+            }
+        }
+    }
+
     /// S01 §5.8: a plan run writes its run's `census.json` from the
     /// dispatcher it built: every learning component S01 names, in census
     /// order, with the attempt log wired, stamped with this harness build.
@@ -5338,6 +7028,7 @@ max_retries = 0
                 "sink.routing",
                 "sink.knowledge_ingestion",
                 "sink.playbook_outcome",
+                "sink.playbook_producer",
                 "sink.error_pattern",
                 "sink.section_effect",
                 "store.attempt_log",
@@ -5756,6 +7447,7 @@ max_retries = 0
             Some(&journal),
             factory.error_pattern_store(),
             None,
+            None,
         );
         let frozen = config.learning.frozen;
         assert_eq!(feedback.playbook_dir.is_none(), frozen);
@@ -5775,11 +7467,12 @@ max_retries = 0
     /// frozen facade's one sink is the run's own episode log (gap-127263).
     #[tokio::test]
     async fn frozen_run_registers_no_learning_sinks() {
-        const LEARNING: [&str; 8] = [
+        const LEARNING: [&str; 9] = [
             "sink.episode",
             "sink.routing",
             "sink.knowledge_ingestion",
             "sink.playbook_outcome",
+            "sink.playbook_producer",
             "sink.error_pattern",
             "sink.section_effect",
             "sink.router_source_credit",
@@ -5932,8 +7625,9 @@ exec sleep 60
             "the child test did not run: {stdout}"
         );
 
-        // Sonnet per million: $3 in, $15 out, $0.30 cache read, $3.75 cache write.
-        let expected = (1_000.0 * 3.0 + 200.0 * 15.0 + 4_000.0 * 0.30 + 3_000.0 * 3.75) / 1e6;
+        // Sonnet per million: $3 in, $15 out, $0.30 cache read, $6 for a cache
+        // write with no TTL split (1-hour, as print mode writes, bug-acfced).
+        let expected = (1_000.0 * 3.0 + 200.0 * 15.0 + 4_000.0 * 0.30 + 3_000.0 * 6.0) / 1e6;
         let ledger: serde_json::Value = serde_json::from_slice(
             &std::fs::read(dir.path().join(".roko/state/graph/interrupted/costs.json"))
                 .expect("the plan's cost ledger"),
@@ -5989,6 +7683,179 @@ exec sleep 60
         let (exit_code, _, _) = run.await.expect("the plan run");
 
         assert_eq!(exit_code, PlanRunInterrupt::Interrupt.exit_code());
+    }
+
+    /// Where [`a_cancelled_run_reports_interrupted_tasks_as_cancelled`] tells
+    /// [`cancelled_run_child`] to run its plan.
+    #[cfg(unix)]
+    const CANCELLED_RUN_DIR: &str = "ROKO_CANCELLED_RUN_CHILD_DIR";
+
+    /// bug-1d09e8: a run that a cancel request stops after T1 passed and
+    /// while T2 ran reads as a stop, not a failure. T2 ends `cancelled` with
+    /// no failure event; the run names the cancel, not a SIGINT, says where
+    /// its tasks stand, and publishes no error; the checkpoint keeps T2 apart
+    /// from the failed tasks. The cancel signals every agent its process
+    /// runs, so the run happens in a child test process.
+    #[cfg(unix)]
+    #[test]
+    fn a_cancelled_run_reports_interrupted_tasks_as_cancelled() {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        // T2 runs on a provider that marks the start of its agent call (one
+        // with `--print`; a probe gets a version) and then works until it is
+        // stopped.
+        let hanging = dir.path().join("hanging-provider.sh");
+        std::fs::write(
+            &hanging,
+            "#!/bin/sh\n\
+             case \" $* \" in *\" --print \"*) ;; *) echo '2.1.0 (Claude Code)'; exit 0 ;; esac\n\
+             cat >/dev/null\n\
+             touch \"$(dirname \"$0\")/hanging-started\"\n\
+             exec sleep 60\n",
+        )
+        .expect("hanging provider");
+        std::fs::set_permissions(&hanging, std::fs::Permissions::from_mode(0o755))
+            .expect("make the provider executable");
+        fake_provider_workspace(
+            dir.path(),
+            0.0,
+            &format!(
+                "\n[providers.hanging-cli]\nkind = \"claude_cli\"\ncommand = {:?}\n\n\
+                 [models.hanging-model]\nprovider = \"hanging-cli\"\nslug = \"claude-haiku-4-5\"\n\
+                 context_window = 200000\n",
+                hanging.display().to_string()
+            ),
+        );
+        write_verify_plan(
+            dir.path(),
+            "cancelled",
+            "",
+            &[("T1", &[], "touch T1.verified"), ("T2", &["T1"], "true")],
+        );
+        let tasks = dir.path().join("plans/cancelled/tasks.toml");
+        let plan = std::fs::read_to_string(&tasks).expect("tasks.toml");
+        let (first, second) = plan.split_once("id = \"T2\"").expect("T2");
+        std::fs::write(
+            &tasks,
+            format!(
+                "{first}id = \"T2\"{}",
+                second.replacen("\"graph-model\"", "\"hanging-model\"", 1)
+            ),
+        )
+        .expect("route T2 to the hanging provider");
+
+        let output = std::process::Command::new(std::env::current_exe().expect("test binary"))
+            .args([
+                "--exact",
+                "graph_execution::plan_runner::tests::cancelled_run_child",
+                "--nocapture",
+            ])
+            .env(CANCELLED_RUN_DIR, dir.path())
+            .output()
+            .expect("run the child test");
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(output.status.success(), "{stdout}\n{stderr}");
+        assert!(
+            stdout.contains("1 passed"),
+            "the child test did not run: {stdout}"
+        );
+
+        let outcomes = crate::graph_checkpoint::canonical_task_outcomes(dir.path(), "cancelled")
+            .expect("the checkpoint's task outcomes");
+        assert_eq!(outcomes.cancelled, BTreeSet::from(["T2".to_string()]));
+        assert!(outcomes.failed.is_empty(), "{outcomes:?}");
+        assert_eq!(
+            crate::graph_checkpoint::canonical_stop_cause(dir.path(), "cancelled").as_deref(),
+            Some("cancel")
+        );
+    }
+
+    /// The cancelled run of
+    /// [`a_cancelled_run_reports_interrupted_tasks_as_cancelled`]: it runs the
+    /// plan in that test's workspace, cancels it once T2's provider runs, and
+    /// checks what the run published. Without the workspace it does nothing.
+    #[cfg(unix)]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn cancelled_run_child() {
+        use roko_core::DashboardEvent;
+
+        let Some(workdir) = std::env::var_os(CANCELLED_RUN_DIR).map(PathBuf::from) else {
+            return;
+        };
+        let interrupt = PlanRunInterruptHandle::default();
+        let run = tokio::spawn({
+            let workdir = workdir.clone();
+            let interrupt = interrupt.clone();
+            async move { run_plan_set(&workdir, Some(1), Some(interrupt)).await }
+        });
+        let started = workdir.join("hanging-started");
+        for _ in 0..800 {
+            if started.exists() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+        assert!(started.exists(), "T2's provider started");
+
+        interrupt.request(PlanRunInterrupt::Cancel);
+        let (exit_code, _, hub) = run.await.expect("the plan run");
+        assert_eq!(exit_code, PlanRunInterrupt::Cancel.exit_code());
+
+        let events = hub
+            .subscribe_events_from(0)
+            .replay
+            .into_iter()
+            .map(|envelope| envelope.payload)
+            .collect::<Vec<_>>();
+        let outcomes = |task: &str| {
+            events
+                .iter()
+                .filter_map(|event| match event {
+                    DashboardEvent::TaskCompleted {
+                        task_id, outcome, ..
+                    } if task_id == task => Some(outcome.as_str()),
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(outcomes("T1"), ["passed"]);
+        assert_eq!(outcomes("T2"), ["cancelled"]);
+        // A cancel raises no error, so the run's last row is not a failure:
+        // its closing tally counts the stopped plan as a notice (bug-db89d4).
+        let errors = events
+            .iter()
+            .filter_map(|event| match event {
+                DashboardEvent::Error { message } => Some(message.as_str()),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert!(errors.is_empty(), "a cancel is not a failure: {errors:?}");
+        let notes = events
+            .iter()
+            .filter_map(|event| match event {
+                DashboardEvent::EventLogEntry { message, .. } => Some(message.as_str()),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        for note in [
+            "a cancel request is stopping the run: cancelling plan 'cancelled'",
+            "plan 'cancelled' stopped by a cancel request: 1 task(s) passed, 1 cancelled; a \
+             resume keeps the passed tasks and runs the rest",
+            "a cancel request stopped the run",
+        ] {
+            assert!(notes.contains(&note), "no {note:?} in {notes:#?}");
+        }
+        assert!(
+            notes.iter().any(|note| note
+                .starts_with("plan 'cancelled': task 'T2' cancelled: agent for cancelled/T2")),
+            "{notes:#?}"
+        );
+        assert!(
+            !notes.iter().any(|note| note.contains("SIGINT")),
+            "{notes:#?}"
+        );
     }
 
     /// Where [`interrupt_stops_running_gate_command`] tells
@@ -6154,6 +8021,16 @@ exec sleep 60
         assert_eq!(PlanRunInterrupt::Deadline.exit_code(), 143);
         assert_eq!(PlanRunInterrupt::Deadline.label(), "deadline");
         assert_eq!(PlanRunInterrupt::Conductor.label(), "conductor");
+        // bug-1d09e8: a cancel request and a closed TUI exit as SIGINT does,
+        // each named for what it was.
+        for (interrupt, label, cause) in [
+            (PlanRunInterrupt::Cancel, "cancel", "a cancel request"),
+            (PlanRunInterrupt::TuiClosed, "tui-closed", "closing the TUI"),
+        ] {
+            assert_eq!(interrupt.exit_code(), 130);
+            assert_eq!(interrupt.label(), label);
+            assert_eq!(interrupt.cause(), cause);
+        }
         for interrupt in PlanRunInterrupt::ALL {
             assert_eq!(
                 PlanRunInterrupt::from_code(interrupt.code()),
@@ -6349,6 +8226,7 @@ exec sleep 60
             unverified,
             skipped,
             failed,
+            cancelled: 0,
         };
 
         assert_eq!(counts(3, 0, 0, 0).outcome(), PlanOutcome::Succeeded);
@@ -6363,6 +8241,173 @@ exec sleep 60
             ..counts(1, 0, 0, 0)
         };
         assert_eq!(rerun.outcome(), PlanOutcome::Succeeded);
+
+        // bug-1d09e8: a task the operator stopped cancels the plan, unless
+        // another failed.
+        let stopped = TaskVerdictCounts {
+            cancelled: 1,
+            ..counts(2, 0, 0, 0)
+        };
+        assert_eq!(stopped.outcome(), PlanOutcome::Cancelled);
+        let stopped_and_failed = TaskVerdictCounts {
+            cancelled: 1,
+            ..counts(2, 0, 0, 1)
+        };
+        assert_eq!(stopped_and_failed.outcome(), PlanOutcome::Failed);
+    }
+
+    /// bug-103bce: each task that failed by its own error says why in the
+    /// run's events, clipped; blocked tasks, failures without an error and
+    /// helper nodes do not.
+    #[test]
+    fn failed_tasks_say_why_in_the_runs_events() {
+        use roko_graph::engine::NodeStatus;
+
+        let node = |id: &str, status: NodeStatus, error: Option<&str>| roko_graph::NodeResult {
+            node_id: id.to_string(),
+            cell_type: TASK_EXECUTOR_CELL_TYPE.to_string(),
+            status,
+            duration: Duration::ZERO,
+            error: error.map(str::to_string),
+            output_count: 0,
+            is_stub: false,
+            blocked_by: None,
+            timing: roko_graph::NodeTiming::default(),
+        };
+        let provider = "no usable provider for this task: `claude-sonnet-4-6` on `claude_cli`: \
+                        provider `claude_cli` (claude_cli) runs its own tools, so it cannot \
+                        honour the task's `stage` policy";
+        let long = "x".repeat(MAX_TASK_ERROR_CHARS + 500);
+        let output = roko_graph::GraphOutput {
+            graph_name: "reasons".to_string(),
+            success: false,
+            node_results: vec![
+                node("T1", NodeStatus::Failed, Some(provider)),
+                roko_graph::NodeResult {
+                    blocked_by: Some("T1".to_string()),
+                    ..node("T2", NodeStatus::Failed, Some("blocked by T1"))
+                },
+                node("T3", NodeStatus::Complete, None),
+                node("T4", NodeStatus::Failed, None),
+                node("T5", NodeStatus::Failed, Some(&long)),
+                // A helper node of the rich topology is not a task.
+                node("task.T1.gate", NodeStatus::Failed, Some("gate failed")),
+            ],
+            total_duration: Duration::ZERO,
+            gate_verdicts: BTreeMap::new(),
+        };
+        let node_titles = ["T1", "T2", "T3", "T4", "T5"]
+            .into_iter()
+            .map(|id| (id.to_string(), format!("task {id}")))
+            .collect::<HashMap<_, _>>();
+
+        let messages = task_failure_errors("p1", &output, &node_titles);
+
+        assert_eq!(messages.len(), 2, "{messages:?}");
+        assert_eq!(
+            messages[0],
+            format!("plan 'p1': task 'T1' failed: {provider}")
+        );
+        let clipped = format!(
+            "plan 'p1': task 'T5' failed: {}…",
+            "x".repeat(MAX_TASK_ERROR_CHARS)
+        );
+        assert_eq!(messages[1], clipped);
+    }
+
+    /// bug-1d09e8: while a run stops, the poll holds a newly failed node back
+    /// until its error says whether the stop cut it off, and reports every
+    /// other change.
+    #[test]
+    fn a_stopping_run_holds_back_failures_from_the_poll() {
+        use roko_graph::engine::NodeStatus;
+
+        let statuses = |entries: &[(&str, NodeStatus)]| {
+            entries
+                .iter()
+                .map(|(id, status)| ((*id).to_string(), *status))
+                .collect::<HashMap<_, _>>()
+        };
+        let previous = statuses(&[
+            ("T1", NodeStatus::Running),
+            ("T2", NodeStatus::Running),
+            ("T4", NodeStatus::Failed),
+        ]);
+        let mut current = statuses(&[
+            ("T1", NodeStatus::Failed),
+            ("T2", NodeStatus::Complete),
+            ("T3", NodeStatus::Failed),
+            ("T4", NodeStatus::Failed),
+        ]);
+        hold_back_failures(&previous, &mut current);
+        assert_eq!(
+            current,
+            statuses(&[
+                ("T1", NodeStatus::Running),
+                ("T2", NodeStatus::Complete),
+                ("T4", NodeStatus::Failed),
+            ])
+        );
+    }
+
+    /// bug-1d09e8: a task a stop cut off, whose node failed with a
+    /// cancellation, is cancelled: no failure event names it, the checkpoint
+    /// and the counts keep it apart from the failed tasks, and its reason is
+    /// kept.
+    #[test]
+    fn a_task_a_stop_cut_off_is_cancelled_not_failed() {
+        use roko_graph::cells::task_executor::TaskGateVerdict;
+        use roko_graph::engine::NodeStatus;
+
+        let node = |id: &str, status: NodeStatus, error: Option<&str>| roko_graph::NodeResult {
+            node_id: id.to_string(),
+            cell_type: TASK_EXECUTOR_CELL_TYPE.to_string(),
+            status,
+            duration: Duration::ZERO,
+            error: error.map(str::to_string),
+            output_count: 0,
+            is_stub: false,
+            blocked_by: None,
+            timing: roko_graph::NodeTiming::default(),
+        };
+        let stopped =
+            roko_core::RokoError::cancelled("agent for p1/T2 stopped: its plan run is stopping");
+        let output = roko_graph::GraphOutput {
+            graph_name: "stopped".to_string(),
+            success: false,
+            node_results: vec![
+                node("T1", NodeStatus::Complete, None),
+                node("T2", NodeStatus::Failed, Some(&stopped.to_string())),
+                node(
+                    "T3",
+                    NodeStatus::Failed,
+                    Some("gate rejected: tests failed"),
+                ),
+            ],
+            total_duration: Duration::ZERO,
+            gate_verdicts: BTreeMap::from([("T1".to_string(), TaskGateVerdict::Passed)]),
+        };
+        let node_titles = ["T1", "T2", "T3"]
+            .into_iter()
+            .map(|id| (id.to_string(), format!("task {id}")))
+            .collect::<HashMap<_, _>>();
+
+        assert_eq!(
+            task_failure_errors("p1", &output, &node_titles),
+            ["plan 'p1': task 'T3' failed: gate rejected: tests failed"]
+        );
+        assert_eq!(
+            cancelled_tasks(&output, &node_titles),
+            BTreeMap::from([(
+                "T2".to_string(),
+                "agent for p1/T2 stopped: its plan run is stopping"
+            )])
+        );
+        let outcomes = task_outcomes(&output, &node_titles);
+        assert_eq!(outcomes.cancelled, BTreeSet::from(["T2".to_string()]));
+        assert_eq!(outcomes.failed, BTreeSet::from(["T3".to_string()]));
+        let counts = TaskVerdictCounts::of(&output);
+        assert_eq!((counts.passed, counts.cancelled, counts.failed), (1, 1, 1));
     }
 
     /// bug-7eb27e: run metrics count each task under its own verdict, not
@@ -6448,9 +8493,9 @@ exec sleep 60
 
         assert_eq!(
             pending_interrupt(&interrupt, &mut tui),
-            Some(PlanRunInterrupt::Interrupt)
+            Some(PlanRunInterrupt::TuiClosed)
         );
-        assert_eq!(interrupt.requested(), Some(PlanRunInterrupt::Interrupt));
+        assert_eq!(interrupt.requested(), Some(PlanRunInterrupt::TuiClosed));
     }
 
     #[test]
@@ -7626,8 +9671,8 @@ printf '%s\n' '{"type":"result","session_id":"sess-batch","model":"claude-sonnet
     /// gap-60233f: a plan whose tasks all passed but whose `[meta] verify`
     /// fails does not succeed, whether the check runs in the shared working
     /// tree or as the regression of its delivery into the batch branch, which
-    /// then keeps its old tip. The checkpoint records why, for
-    /// `roko plan status`.
+    /// keeps its old tip: it never moved (bug-700d7c). The checkpoint records
+    /// why, for `roko plan status`.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn meta_verify_failure_fails_a_plan_whose_tasks_passed() {
         for worktree_per_task in [false, true] {
@@ -7664,9 +9709,885 @@ printf '%s\n' '{"type":"result","session_id":"sess-batch","model":"claude-sonnet
                 assert_eq!(
                     git_stdout(repo, &["rev-parse", "roko/batch/run-check"]),
                     head,
-                    "the failed plan was taken back out of the batch"
+                    "the failed plan stayed out of the batch"
+                );
+                // The batch never pointed at the failed plan's merge: its
+                // reflog holds its creation alone (bug-700d7c).
+                assert_eq!(
+                    git_stdout(
+                        repo,
+                        &[
+                            "log",
+                            "--walk-reflogs",
+                            "--format=%H",
+                            "roko/batch/run-check"
+                        ]
+                    ),
+                    head,
+                    "the batch moved to the failed plan's merge"
                 );
             }
         }
+    }
+
+    /// bug-700d7c: with plans running side by side, a plan that starts while
+    /// another plan's whole-plan check runs starts from the run's batch
+    /// branch as it was, not from the merge under check. Here 01-alpha's
+    /// check waits until 03-gamma's first attempt has started, which happens
+    /// once 02-beta failed, and then fails. gamma neither builds on alpha's
+    /// work nor brings it into the batch when it is delivered, and the batch
+    /// never pointed at alpha's merge.
+    #[cfg(unix)]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_plan_started_during_a_failing_check_does_not_build_on_its_merge() {
+        let dir = repo_with_file_plans(&["alpha", "beta", "gamma"], None);
+        let repo = dir.path();
+        let scratch = tempfile::tempdir().expect("scratch");
+        let checking = scratch.path().join("alpha-checking");
+        let saw_gamma = scratch.path().join("alpha-saw-gamma");
+        // gamma's first attempt branch exists once its checkout was made.
+        let gamma_attempts = (0..=3)
+            .map(|attempt| {
+                format!(
+                    "refs/heads/{}",
+                    crate::orchestrator::worktree::format_attempt_branch_name(
+                        "03-gamma", "T1", attempt
+                    )
+                )
+            })
+            .collect::<Vec<_>>()
+            .join(" ");
+        // alpha's whole-plan check waits (60 s at most) for gamma's attempt,
+        // and fails.
+        let alpha_check = format!(
+            "touch '{checking}'; i=0; while [ ! -e '{saw}' ] && [ $i -lt 1200 ]; do \
+             for ref in {gamma_attempts}; do \
+             git rev-parse --verify --quiet $ref >/dev/null && touch '{saw}'; done; \
+             sleep 0.05; i=$((i+1)); done; exit 1",
+            checking = checking.display(),
+            saw = saw_gamma.display(),
+        );
+        // beta's one task fails once alpha's check runs, which frees the slot
+        // gamma starts in.
+        let beta_verify = format!(
+            "i=0; while [ ! -e '{checking}' ] && [ $i -lt 1200 ]; do sleep 0.05; i=$((i+1)); \
+             done; exit 1",
+            checking = checking.display(),
+        );
+        let alpha_tasks = repo.join("plans/01-alpha/tasks.toml");
+        let text = std::fs::read_to_string(&alpha_tasks).expect("tasks.toml");
+        let text = text.replacen(
+            "skip_enrichment = true\n",
+            &format!("skip_enrichment = true\n\n[[meta.verify]]\ncommand = {alpha_check:?}\n"),
+            1,
+        );
+        std::fs::write(&alpha_tasks, text).expect("tasks.toml");
+        let beta_tasks = repo.join("plans/02-beta/tasks.toml");
+        let text = std::fs::read_to_string(&beta_tasks)
+            .expect("tasks.toml")
+            .replace(
+                "files = [\"beta.txt\"]\n",
+                "files = [\"beta.txt\"]\nmax_retries = 0\n",
+            )
+            .replace(
+                "command = \"test -f beta.txt\"",
+                &format!("command = {beta_verify:?}"),
+            );
+        std::fs::write(&beta_tasks, text).expect("tasks.toml");
+        git_in(repo, &["commit", "-am", "alpha's check waits for gamma"]);
+        let head = git_stdout(repo, &["rev-parse", "HEAD"]);
+        let params = GraphPlanRunParams {
+            max_parallel_plans: Some(2),
+            ..worktree_run_params(repo)
+        };
+
+        let exit_code = run_graph_plan_in_run(params, Some("run-overlap".into()))
+            .await
+            .expect("run the plans");
+
+        assert_ne!(exit_code, EXIT_SUCCESS);
+        assert!(
+            saw_gamma.exists(),
+            "gamma's first attempt did not start while alpha's check ran"
+        );
+        assert_eq!(
+            crate::graph_checkpoint::canonical_checkpoint_status(repo, "01-alpha"),
+            Some(GraphCheckpointStatus::Failed)
+        );
+        let batch = "roko/batch/run-overlap";
+        let delivered = crate::graph_checkpoint::recorded_batch_delivery(repo, "03-gamma")
+            .expect("gamma was delivered");
+        assert_eq!(
+            delivered.merge_commit,
+            git_stdout(repo, &["rev-parse", batch])
+        );
+        let files = git_stdout(repo, &["ls-tree", "--name-only", batch]);
+        assert!(
+            files.contains("gamma.txt") && !files.contains("alpha.txt"),
+            "alpha's work reached the batch: {files}"
+        );
+        let alpha = git_stdout(repo, &["rev-parse", "roko/plan/01-alpha"]);
+        for branch in ["roko/plan/03-gamma", batch] {
+            let holds_alpha = std::process::Command::new("git")
+                .current_dir(repo)
+                .args(["merge-base", "--is-ancestor", alpha.as_str(), branch])
+                .env_remove("GIT_DIR")
+                .env_remove("GIT_WORK_TREE")
+                .status()
+                .expect("git merge-base");
+            assert!(!holds_alpha.success(), "{branch} builds on alpha's work");
+        }
+        // The batch held its base, and then gamma's delivery: never alpha's
+        // merge.
+        let held = git_stdout(repo, &["log", "--walk-reflogs", "--format=%H", batch]);
+        assert_eq!(
+            held.lines().collect::<Vec<_>>(),
+            [delivered.merge_commit.as_str(), head.as_str()]
+        );
+    }
+
+    /// bug-7b62ff: a cancel that comes while a plan's whole-plan check runs,
+    /// in the shared working tree or as its delivery's post-merge regression
+    /// check, stops the check at once and kills what it started. The run
+    /// ends cancelled, its checkpoint names the cancel, and it releases the
+    /// workspace's runner lock, so the next run can start.
+    #[cfg(unix)]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_cancel_stops_the_whole_plan_check_and_frees_the_workspace() {
+        use crate::check_process_probe::{sleeping_step, wait_for_exit, wait_for_pids};
+
+        for worktree_per_task in [false, true] {
+            let mode = if worktree_per_task {
+                "regression check"
+            } else {
+                "shared tree"
+            };
+            let scratch = tempfile::tempdir().expect("tempdir");
+            let pids = scratch.path().join("pids");
+            let dir = repo_with_file_plans(&["alpha"], Some(sleeping_step(&pids).as_str()));
+            let repo = dir.path().to_path_buf();
+            let head = git_stdout(&repo, &["rev-parse", "HEAD"]);
+            let interrupt = PlanRunInterruptHandle::default();
+            let params = GraphPlanRunParams {
+                worktree_per_task,
+                interrupt: Some(interrupt.clone()),
+                ..worktree_run_params(&repo)
+            };
+            let run = tokio::spawn(run_graph_plan_in_run(params, Some("run-cancel".into())));
+            let running = wait_for_pids(&pids).await;
+
+            interrupt.request(PlanRunInterrupt::Cancel);
+            let exit_code = tokio::time::timeout(Duration::from_secs(30), run)
+                .await
+                .unwrap_or_else(|_| panic!("{mode}: the cancelled run did not end"))
+                .expect("the run task")
+                .expect("the run");
+
+            assert_eq!(exit_code, PlanRunInterrupt::Cancel.exit_code(), "{mode}");
+            for pid in running {
+                wait_for_exit(pid).await;
+            }
+            assert_eq!(
+                crate::graph_checkpoint::canonical_stop_cause(&repo, "01-alpha").as_deref(),
+                Some("cancel"),
+                "{mode}"
+            );
+            let _next = crate::workspace_lock::acquire_runner_lock(&repo.join(".roko"))
+                .unwrap_or_else(|error| panic!("{mode}: the run kept the workspace: {error}"));
+            if worktree_per_task {
+                // The delivery is cancelled, not failed, and its merge never
+                // reached the batch (or the batch branch went with the run).
+                let checkpoint = repo.join(".roko/state/graph/01-alpha/checkpoint.json");
+                let checkpoint: serde_json::Value =
+                    serde_json::from_slice(&std::fs::read(checkpoint).expect("checkpoint"))
+                        .expect("checkpoint json");
+                let delivery = crate::graph_checkpoint::DELIVERY_EXTENSION;
+                assert_eq!(
+                    checkpoint["extensions"][delivery]["value"]["receipt"]["state"],
+                    "cancelled"
+                );
+                let batch = std::process::Command::new("git")
+                    .current_dir(&repo)
+                    .args([
+                        "rev-parse",
+                        "--verify",
+                        "--quiet",
+                        "refs/heads/roko/batch/run-cancel",
+                    ])
+                    .output()
+                    .expect("git rev-parse");
+                let tip = String::from_utf8_lossy(&batch.stdout).trim().to_string();
+                assert!(
+                    tip.is_empty() || tip == head,
+                    "the stopped plan stayed in the batch at {tip}"
+                );
+            }
+        }
+    }
+
+    /// gap-4f6cbe: a Graph run publishes its plan's delivery into the batch
+    /// branch, `delivery_started` and then `delivery_finished` with the
+    /// state it ended in, and records both in the run's events. A delivered
+    /// plan's ends `delivered`, and `roko serve`'s summary of the run says
+    /// "delivery completed". One whose regression check a cancel cut short
+    /// ends `cancelled`, says the cancel stopped it, and the summary says
+    /// "delivery cancelled": it stopped, it did not fail.
+    #[cfg(unix)]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_graph_run_publishes_its_delivery_end() {
+        use crate::check_process_probe::{sleeping_step, wait_for_exit, wait_for_pids};
+
+        fn deliveries(hub: &crate::state_hub::SharedStateHub) -> Vec<String> {
+            hub.subscribe_events_from(0)
+                .replay
+                .iter()
+                .filter_map(|envelope| match &envelope.payload {
+                    roko_core::DashboardEvent::DeliveryStarted {
+                        plan_id,
+                        target,
+                        branch,
+                        ..
+                    } => Some(format!("started {plan_id}: {branch} into {target}")),
+                    roko_core::DashboardEvent::DeliveryFinished {
+                        plan_id,
+                        state,
+                        stopped_by,
+                        ..
+                    } => Some(format!(
+                        "finished {plan_id}: {state}, stopped by {}",
+                        stopped_by.as_deref().unwrap_or("nothing")
+                    )),
+                    _ => None,
+                })
+                .collect()
+        }
+        async fn delivery_milestone(repo: &Path, run_id: &str) -> String {
+            let deploy_backend = Arc::from(
+                roko_serve::deploy::create_backend("manual", None, None, None)
+                    .expect("manual backend"),
+            );
+            let runtime = crate::serve_runtime::RokoCliRuntime::new(
+                crate::config::Config::default(),
+                crate::config::RepoRegistry::default(),
+            );
+            let state = Arc::new(
+                roko_serve::state::AppState::new(
+                    repo.to_path_buf(),
+                    runtime.into_arc(),
+                    roko_core::config::schema::RokoConfig::default(),
+                    deploy_backend,
+                )
+                .expect("serve state"),
+            );
+            let summary = roko_serve::routes::run_summary(&state, run_id)
+                .await
+                .unwrap_or_else(|error| panic!("{run_id}: no summary: {error:?}"));
+            summary["milestones"]
+                .as_array()
+                .and_then(|milestones| {
+                    milestones
+                        .iter()
+                        .find(|milestone| milestone["kind"] == "delivery")
+                })
+                .and_then(|milestone| milestone["text"].as_str())
+                .unwrap_or_else(|| panic!("{run_id}: no delivery milestone: {summary}"))
+                .to_string()
+        }
+
+        let dir = repo_with_file_plans(&["alpha"], Some("test -f alpha.txt"));
+        let repo = dir.path();
+        let hub = crate::state_hub::shared_state_hub();
+        let params = GraphPlanRunParams {
+            state_hub: Some(hub.clone()),
+            ..worktree_run_params(repo)
+        };
+        let exit_code = run_graph_plan_in_run(params, Some("run-delivered".into()))
+            .await
+            .expect("run the plan");
+        assert_eq!(exit_code, EXIT_SUCCESS);
+        assert_eq!(
+            deliveries(&hub),
+            [
+                "started 01-alpha: roko/plan/01-alpha into roko/batch/run-delivered",
+                "finished 01-alpha: delivered, stopped by nothing",
+            ]
+        );
+        assert_eq!(
+            delivery_milestone(repo, "run-delivered").await,
+            "delivery completed"
+        );
+
+        let scratch = tempfile::tempdir().expect("tempdir");
+        let pids = scratch.path().join("pids");
+        let dir = repo_with_file_plans(&["alpha"], Some(sleeping_step(&pids).as_str()));
+        let repo = dir.path().to_path_buf();
+        let hub = crate::state_hub::shared_state_hub();
+        let interrupt = PlanRunInterruptHandle::default();
+        let params = GraphPlanRunParams {
+            state_hub: Some(hub.clone()),
+            interrupt: Some(interrupt.clone()),
+            ..worktree_run_params(&repo)
+        };
+        let run = tokio::spawn(run_graph_plan_in_run(params, Some("run-stopped".into())));
+        let running = wait_for_pids(&pids).await;
+        interrupt.request(PlanRunInterrupt::Cancel);
+        let exit_code = tokio::time::timeout(Duration::from_secs(30), run)
+            .await
+            .expect("the cancelled run ends")
+            .expect("the run task")
+            .expect("the run");
+        assert_eq!(exit_code, PlanRunInterrupt::Cancel.exit_code());
+        for pid in running {
+            wait_for_exit(pid).await;
+        }
+        assert_eq!(
+            deliveries(&hub),
+            [
+                "started 01-alpha: roko/plan/01-alpha into roko/batch/run-stopped",
+                "finished 01-alpha: cancelled, stopped by cancel",
+            ]
+        );
+        assert_eq!(
+            delivery_milestone(&repo, "run-stopped").await,
+            "delivery cancelled"
+        );
+    }
+
+    /// gap-de0e96: the run trend has one bucket per plan run, oldest first,
+    /// with its cost and its cost per verified task; a run with no verified
+    /// task has none.
+    #[test]
+    fn the_run_trend_gives_each_runs_cost_per_verified_task() {
+        let run = |run_id: &str, timestamp: &str, cost: f64, verified: usize| {
+            roko_learn::run_metrics::RunMetricsRecord {
+                run_id: run_id.to_string(),
+                timestamp: timestamp.to_string(),
+                duration_ms: 4_000,
+                total_tasks: 2,
+                tasks_completed: verified,
+                tasks_already_satisfied: 0,
+                tasks_failed: 2 - verified,
+                tasks_unverified: 0,
+                tasks_skipped: 0,
+                total_cost_usd: cost,
+                total_tokens_in: 100,
+                total_tokens_out: 10,
+                total_agent_calls: 4,
+                budget_exhausted: false,
+                plans: Vec::new(),
+            }
+        };
+        // Newest first, as `run-metrics.jsonl` gives them.
+        let runs = [
+            run("r3", "2026-10-16T10:02:00Z", 0.0, 0),
+            run("r2", "2026-10-16T10:01:00Z", 0.01, 2),
+            run("r1", "2026-10-16T10:00:00Z", 0.03, 1),
+        ];
+
+        let trend = run_cost_trend(&runs);
+
+        let rows: Vec<(Option<&str>, Option<u64>, Option<f64>)> = trend
+            .iter()
+            .map(|bucket| {
+                (
+                    bucket.run_id.as_deref(),
+                    bucket.verified_tasks,
+                    bucket.cost_per_verified_usd,
+                )
+            })
+            .collect();
+        assert_eq!(
+            rows,
+            [
+                (Some("r1"), Some(1), Some(0.03)),
+                (Some("r2"), Some(2), Some(0.005)),
+                (Some("r3"), Some(0), None),
+            ]
+        );
+        assert_eq!(trend[0].start.to_rfc3339(), "2026-10-16T09:59:56+00:00");
+        assert_eq!((trend[0].turns, trend[0].cost_usd), (4, Some(0.03)));
+    }
+
+    /// gap-de0e96: a Graph run publishes the recent runs' cost per verified
+    /// task as it ends, this run's bucket last, in its own events: a trend a
+    /// host can draw without reading `run-metrics.jsonl`.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn run_end_publishes_cost_per_verified_task() {
+        let dir = repo_with_file_plans(&["alpha"], None);
+        let repo = dir.path();
+        let hub = crate::state_hub::shared_state_hub();
+        let params = GraphPlanRunParams {
+            state_hub: Some(hub.clone()),
+            ..worktree_run_params(repo)
+        };
+
+        let exit_code = run_graph_plan_in_run(params, Some("run-trend".into()))
+            .await
+            .expect("run the plan");
+
+        assert_eq!(exit_code, EXIT_SUCCESS);
+        let trends: Vec<Vec<roko_core::EfficiencyBucket>> = hub
+            .subscribe_events_from(0)
+            .replay
+            .into_iter()
+            .filter_map(|envelope| match envelope.payload {
+                roko_core::DashboardEvent::EfficiencyTrendUpdated { buckets } => Some(buckets),
+                _ => None,
+            })
+            .collect();
+        let [trend] = trends.as_slice() else {
+            panic!("one trend at the run's end: {trends:?}");
+        };
+        let last = trend.last().expect("this run's bucket");
+        assert_eq!(last.tasks, Some(1), "{last:?}");
+        assert_eq!(last.verified_tasks, Some(1), "{last:?}");
+        let cost = last.cost_usd.expect("the run's cost");
+        assert!(cost > 0.0, "{last:?}");
+        assert_eq!(last.cost_per_verified_usd, Some(cost), "{last:?}");
+    }
+
+    /// bug-db89d4: the closing tally counts each way a plan ended, and leaves
+    /// out the ways none did.
+    #[test]
+    fn the_closing_tally_names_each_outcome() {
+        assert_eq!(
+            outcome_tally(&[Some(PlanOutcome::Unverified)]),
+            "1 unverified"
+        );
+        assert_eq!(
+            outcome_tally(&[
+                Some(PlanOutcome::Failed),
+                None,
+                Some(PlanOutcome::Succeeded),
+                Some(PlanOutcome::Blocked),
+                Some(PlanOutcome::Succeeded),
+            ]),
+            "2 succeeded, 1 failed, 1 blocked, 1 not started"
+        );
+    }
+
+    /// bug-db89d4: a plan whose one task ran no verify step ends unverified.
+    /// Its work is not delivered, so the batch stays at its base, but the
+    /// plan's checkpoint names the commit no check ran on, the tip of its
+    /// plan branch, and an event says where it is and how to see it. The
+    /// run's closing tally says "unverified" and is not an error.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn an_unverified_run_says_where_its_unchecked_work_is() {
+        let dir = repo_with_file_plans(&["alpha"], None);
+        let repo = dir.path();
+        let tasks = repo.join("plans/01-alpha/tasks.toml");
+        let text = std::fs::read_to_string(&tasks).expect("tasks.toml");
+        let (task, _verify) = text.split_once("\n[[task.verify]]").expect("a verify step");
+        let task = task.replace(
+            "skip_enrichment = true\n",
+            "skip_enrichment = true\nallow_unverified = true\n",
+        );
+        std::fs::write(&tasks, format!("{task}\n")).expect("tasks.toml");
+        git_in(repo, &["commit", "-am", "no verify step"]);
+        let base = git_stdout(repo, &["rev-parse", "HEAD"]);
+        let hub = crate::state_hub::shared_state_hub();
+        let params = GraphPlanRunParams {
+            state_hub: Some(hub.clone()),
+            ..worktree_run_params(repo)
+        };
+
+        let exit_code = run_graph_plan_in_run(params, Some("run-unverified".into()))
+            .await
+            .expect("run the plan");
+
+        assert_ne!(exit_code, EXIT_SUCCESS);
+        assert_eq!(
+            crate::graph_checkpoint::canonical_checkpoint_status(repo, "01-alpha"),
+            Some(GraphCheckpointStatus::Unverified)
+        );
+        assert_eq!(
+            git_stdout(repo, &["rev-parse", "roko/batch/run-unverified"]),
+            base,
+            "unverified work is not delivered"
+        );
+        let tip = git_stdout(repo, &["rev-parse", "roko/plan/01-alpha"]);
+        assert!(
+            git_stdout(repo, &["ls-tree", "--name-only", &tip]).contains("alpha.txt"),
+            "the plan branch holds the work"
+        );
+        let manifest: serde_json::Value = serde_json::from_slice(
+            &std::fs::read(repo.join(".roko/state/graph/01-alpha/checkpoint.json"))
+                .expect("checkpoint"),
+        )
+        .expect("checkpoint json");
+        let record = &manifest["extensions"]["roko.batch@1"]["value"];
+        assert_eq!(record["run_id"], "run-unverified", "{record}");
+        assert_eq!(record["branch"], "roko/batch/run-unverified", "{record}");
+        assert_eq!(record["plan_branch"], "roko/plan/01-alpha", "{record}");
+        assert!(
+            record.get("state").is_none(),
+            "nothing was delivered: {record}"
+        );
+        let unverified = &record["work"]["unverified"];
+        assert_eq!(unverified["commit"], tip.as_str(), "{record}");
+        assert_eq!(unverified["base"], base.as_str(), "{record}");
+        assert_eq!(
+            unverified["tasks"],
+            serde_json::json!([{ "task_id": "T1", "verdict": "unverified" }]),
+            "{record}"
+        );
+
+        let events = hub.subscribe_events_from(0).replay;
+        let errors = events
+            .iter()
+            .filter_map(|envelope| match &envelope.payload {
+                roko_core::DashboardEvent::Error { message } => Some(message.as_str()),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert!(
+            errors
+                .iter()
+                .all(|message| !message.starts_with("Graph Engine")),
+            "{errors:?}"
+        );
+        let logs = events
+            .iter()
+            .filter_map(|envelope| match &envelope.payload {
+                roko_core::DashboardEvent::EventLogEntry {
+                    event_type,
+                    message,
+                    ..
+                } => Some((event_type.as_str(), message.as_str())),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert!(
+            logs.contains(&("graph.run_outcome", "Graph Engine: 1 plan(s): 1 unverified")),
+            "{logs:?}"
+        );
+        let (_, said) = logs
+            .iter()
+            .find(|(kind, _)| *kind == "graph.plan_unverified")
+            .expect("the plan's unverified event");
+        assert!(
+            said.contains("roko/plan/01-alpha")
+                && said.contains(&format!("git diff {}..roko/plan/01-alpha", &base[..12])),
+            "{said}"
+        );
+        let ended = events
+            .iter()
+            .find_map(|envelope| match &envelope.payload {
+                roko_core::DashboardEvent::RunCompleted { outcome, .. } => Some(outcome.as_str()),
+                _ => None,
+            })
+            .expect("the run's end");
+        assert_eq!(ended, "unverified");
+    }
+
+    /// bug-74164c: a plan whose T1 passed and whose T2 failed delivers T1's work,
+    /// and only T1's, into the run's batch branch, marked partial. The plan's
+    /// batch record names the delivered task and why the other was not
+    /// delivered, an event says what was delivered, T1's accepted checkout is
+    /// removed and T2's failed one is kept. The run still failed.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_plan_that_did_not_finish_delivers_its_verified_tasks() {
+        let dir = repo_with_file_plans(&["alpha"], None);
+        let repo = dir.path();
+        let tasks = repo.join("plans/01-alpha/tasks.toml");
+        let mut text = std::fs::read_to_string(&tasks).expect("tasks.toml");
+        text.push_str(
+            "\n[[task]]\nid = \"T2\"\ntitle = \"Write beta.txt\"\n\
+             description = \"Write beta.txt.\"\nrole = \"implementer\"\nstatus = \"ready\"\n\
+             tier = \"focused\"\nfiles = [\"beta.txt\"]\ndepends_on = [\"T1\"]\nmax_retries = 0\n\n\
+             [[task.verify]]\nphase = \"structural\"\ncommand = \"test -f gamma.txt\"\n",
+        );
+        std::fs::write(&tasks, text).expect("tasks.toml");
+        git_in(repo, &["commit", "-am", "a second task whose check fails"]);
+        let hub = crate::state_hub::shared_state_hub();
+        let params = GraphPlanRunParams {
+            state_hub: Some(hub.clone()),
+            ..worktree_run_params(repo)
+        };
+
+        let exit_code = run_graph_plan_in_run(params, Some("run-partial".into()))
+            .await
+            .expect("run the plan");
+
+        assert_ne!(exit_code, EXIT_SUCCESS);
+        assert_eq!(
+            crate::graph_checkpoint::canonical_checkpoint_status(repo, "01-alpha"),
+            Some(GraphCheckpointStatus::Failed)
+        );
+        let batch = "roko/batch/run-partial";
+        let files = git_stdout(repo, &["ls-tree", "--name-only", batch]);
+        assert!(
+            files.contains("alpha.txt") && !files.contains("beta.txt"),
+            "only T1's work is delivered: {files}"
+        );
+        let manifest: serde_json::Value = serde_json::from_slice(
+            &std::fs::read(repo.join(".roko/state/graph/01-alpha/checkpoint.json"))
+                .expect("checkpoint"),
+        )
+        .expect("checkpoint json");
+        let record = &manifest["extensions"]["roko.batch@1"]["value"];
+        assert_eq!(record["state"], "delivered", "{record}");
+        assert_eq!(record["partial"], true, "{record}");
+        assert_eq!(
+            record["work"],
+            serde_json::json!({
+                "partial": true,
+                "delivered_tasks": ["T1"],
+                "missing_tasks": [{ "task_id": "T2", "why": "failed" }],
+            }),
+            "{record}"
+        );
+        let delivery = crate::graph_checkpoint::recorded_batch_delivery(repo, "01-alpha")
+            .expect("a recorded delivery");
+        assert!(delivery.partial);
+        assert_eq!(
+            delivery.merge_commit,
+            git_stdout(repo, &["rev-parse", batch])
+        );
+        // T1's checkout went with its delivery; T2's, holding beta.txt, stays.
+        let worktrees = git_stdout(repo, &["worktree", "list", "--porcelain"]);
+        let checkouts = worktrees
+            .lines()
+            .filter_map(|line| line.strip_prefix("worktree "))
+            .collect::<Vec<_>>();
+        assert_eq!(checkouts.len(), 2, "{worktrees}");
+        assert!(
+            Path::new(checkouts[1]).join("beta.txt").is_file(),
+            "{worktrees}"
+        );
+
+        let events = hub.subscribe_events_from(0).replay;
+        let logs = events
+            .iter()
+            .filter_map(|envelope| match &envelope.payload {
+                roko_core::DashboardEvent::EventLogEntry {
+                    event_type,
+                    message,
+                    ..
+                } => Some((event_type.as_str(), message.as_str())),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        let (_, said) = logs
+            .iter()
+            .find(|(kind, _)| *kind == "graph.plan_partially_delivered")
+            .expect("the partial delivery's event");
+        assert!(said.contains("T1") && said.contains(batch), "{said}");
+        let errors = events
+            .iter()
+            .filter_map(|envelope| match &envelope.payload {
+                roko_core::DashboardEvent::Error { message } => Some(message.as_str()),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert!(
+            errors.contains(&"Graph Engine: 1 plan(s): 1 failed"),
+            "{errors:?}"
+        );
+    }
+
+    /// A scripted provider that fails at once and changes nothing.
+    const FAILS_AT_ONCE_AGENT: &str =
+        "#!/bin/sh\ncat >/dev/null\necho 'provider down' >&2\nexit 1\n";
+
+    /// bug-58329f: a run whose one task fails at once, changing nothing, leaves no
+    /// attempt checkout, no attempt branch and no batch branch behind.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_run_that_did_nothing_leaves_no_checkout_or_branch() {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let dir = repo_with_file_plans(&["alpha"], None);
+        let repo = dir.path();
+        std::fs::write(repo.join("agent.sh"), FAILS_AT_ONCE_AGENT).expect("agent");
+        std::fs::set_permissions(
+            repo.join("agent.sh"),
+            std::fs::Permissions::from_mode(0o755),
+        )
+        .expect("chmod");
+        let tasks = repo.join("plans/01-alpha/tasks.toml");
+        let text = std::fs::read_to_string(&tasks).expect("tasks.toml");
+        let text = text.replace(
+            "files = [\"alpha.txt\"]\n",
+            "files = [\"alpha.txt\"]\nmax_retries = 0\n",
+        );
+        std::fs::write(&tasks, text).expect("tasks.toml");
+        git_in(repo, &["commit", "-am", "an agent that fails at once"]);
+
+        let exit_code =
+            run_graph_plan_in_run(worktree_run_params(repo), Some("run-nothing".into()))
+                .await
+                .expect("run the plan");
+
+        assert_ne!(exit_code, EXIT_SUCCESS);
+        let worktrees = git_stdout(repo, &["worktree", "list", "--porcelain"]);
+        assert_eq!(
+            worktrees
+                .lines()
+                .filter(|line| line.starts_with("worktree "))
+                .count(),
+            1,
+            "{worktrees}"
+        );
+        assert_eq!(
+            git_stdout(repo, &["for-each-ref", "refs/heads/roko/"]),
+            "",
+            "no attempt, plan or batch branch is left"
+        );
+    }
+
+    /// bug-58329f: an unverified plan's accepted checkout is removed when the plan
+    /// ends; its work stays on its plan branch, and its batch branch stays,
+    /// since the run's summary names that work.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn an_unverified_plan_releases_its_accepted_checkout() {
+        let dir = repo_with_file_plans(&["alpha"], None);
+        let repo = dir.path();
+        let tasks = repo.join("plans/01-alpha/tasks.toml");
+        let text = std::fs::read_to_string(&tasks).expect("tasks.toml");
+        let (task, _verify) = text.split_once("\n[[task.verify]]").expect("a verify step");
+        let task = task.replace(
+            "skip_enrichment = true\n",
+            "skip_enrichment = true\nallow_unverified = true\n",
+        );
+        std::fs::write(&tasks, format!("{task}\n")).expect("tasks.toml");
+        git_in(repo, &["commit", "-am", "no verify step"]);
+
+        let exit_code =
+            run_graph_plan_in_run(worktree_run_params(repo), Some("run-released".into()))
+                .await
+                .expect("run the plan");
+
+        assert_ne!(exit_code, EXIT_SUCCESS);
+        let worktrees = git_stdout(repo, &["worktree", "list", "--porcelain"]);
+        assert_eq!(
+            worktrees
+                .lines()
+                .filter(|line| line.starts_with("worktree "))
+                .count(),
+            1,
+            "{worktrees}"
+        );
+        let tip = git_stdout(repo, &["rev-parse", "roko/plan/01-alpha"]);
+        assert!(git_stdout(repo, &["ls-tree", "--name-only", &tip]).contains("alpha.txt"));
+        assert!(!git_stdout(repo, &["rev-parse", "roko/batch/run-released"]).is_empty());
+    }
+
+    /// bug-7b62ff: the tasks of a plan whose whole-plan check a stop cut
+    /// short are missing as interrupted, not as refused by a failed check.
+    #[test]
+    fn a_stopped_whole_plan_check_leaves_its_tasks_interrupted() {
+        let plan = test_plan("p", "P", 1);
+        let outcomes = TaskOutcomeSummary::default();
+        let work = crate::graph_execution::batch::PlanWork {
+            base: "b".repeat(40),
+            commits: vec![crate::graph_execution::batch::AcceptedCommit {
+                commit: "c".repeat(40),
+                task_id: "T0".to_string(),
+                verdict: "passed".to_string(),
+            }],
+        };
+        for (outcome, why) in [
+            (
+                PlanOutcome::Interrupted,
+                "the plan's whole-plan check was interrupted",
+            ),
+            (PlanOutcome::Failed, "the plan's whole-plan check failed"),
+        ] {
+            let undelivered = UndeliveredPlan {
+                plan: &plan,
+                run_id: "r",
+                outcome,
+                deliver_verified: false,
+                task_outcomes: &outcomes,
+            };
+            let missing = missing_tasks(&undelivered, &work, &[]);
+            assert_eq!(
+                missing,
+                vec![serde_json::json!({ "task_id": "T0", "why": why })]
+            );
+        }
+    }
+
+    /// bug-74164c, bug-1d09e8: a task a stop cut off is missing from a
+    /// partial delivery as cancelled, or as interrupted when a stop request
+    /// ended the plan, not as "not accepted".
+    #[test]
+    fn a_cut_off_task_is_missing_as_cancelled() {
+        let plan = test_plan("p", "P", 2);
+        let outcomes = TaskOutcomeSummary {
+            cancelled: ["T1".to_string()].into_iter().collect(),
+            ..TaskOutcomeSummary::default()
+        };
+        let work = crate::graph_execution::batch::PlanWork {
+            base: "b".repeat(40),
+            commits: Vec::new(),
+        };
+        for (outcome, why) in [
+            (PlanOutcome::Cancelled, "cancelled"),
+            (PlanOutcome::Interrupted, "interrupted"),
+        ] {
+            let undelivered = UndeliveredPlan {
+                plan: &plan,
+                run_id: "r",
+                outcome,
+                deliver_verified: true,
+                task_outcomes: &outcomes,
+            };
+            let missing = missing_tasks(&undelivered, &work, &["T0".to_string()]);
+            assert_eq!(
+                missing,
+                vec![serde_json::json!({ "task_id": "T1", "why": why })]
+            );
+        }
+    }
+
+    /// gap-c2efe7: a one-task plan named for people takes its title for its plan set
+    /// entry, its accepted commit's subject and its batch branch's
+    /// description; its task's own title stays for the agent.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_named_plan_titles_its_commit_branch_and_plan_set() {
+        let dir = repo_with_file_plans(&["alpha"], None);
+        let repo = dir.path();
+        let tasks = repo.join("plans/01-alpha/tasks.toml");
+        let text = std::fs::read_to_string(&tasks).expect("tasks.toml");
+        let text = text.replacen(
+            "plan = \"01-alpha\"\n",
+            "plan = \"01-alpha\"\ntitle = \"Alpha, written for people\"\n",
+            1,
+        );
+        std::fs::write(&tasks, text).expect("tasks.toml");
+        git_in(repo, &["commit", "-am", "a titled plan"]);
+        let hub = crate::state_hub::shared_state_hub();
+        let params = GraphPlanRunParams {
+            state_hub: Some(hub.clone()),
+            ..worktree_run_params(repo)
+        };
+
+        let exit_code = run_graph_plan_in_run(params, Some("run-named".into()))
+            .await
+            .expect("run the plan");
+
+        assert_eq!(exit_code, EXIT_SUCCESS);
+        let subject = git_stdout(repo, &["log", "-1", "--format=%s", "roko/plan/01-alpha"]);
+        assert_eq!(subject, "roko: 01-alpha/T1: Alpha, written for people");
+        assert_eq!(
+            git_stdout(
+                repo,
+                &["config", "--get", "branch.roko/batch/run-named.description"]
+            ),
+            "Alpha, written for people"
+        );
+        let titles = hub
+            .subscribe_events_from(0)
+            .replay
+            .into_iter()
+            .find_map(|envelope| match envelope.payload {
+                roko_core::DashboardEvent::PlanSetLoaded { plans, .. } => {
+                    Some(plans.into_iter().map(|plan| plan.title).collect::<Vec<_>>())
+                }
+                _ => None,
+            })
+            .expect("the plan set");
+        assert_eq!(titles, ["Alpha, written for people"]);
     }
 }

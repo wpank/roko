@@ -11,7 +11,9 @@ tags: [demo, hello-world, parallel-plans, fake-agent]
 
 One implementer task writes `demo/print-hello/main.rs`, a program that prints a
 one-line greeting starting with `hello`; the verify step compiles it with
-`rustc` and checks the output.
+`rustc` and checks the output. Like its sibling it has a `[meta] verify`, so
+its run ends with that check instead of the Cargo workspace's default, and its
+output is demo output to leave on the run's branch.
 
 It is the other half of the `parallel-plans` set. It shares nothing with
 `demo-hello-world`, so a set run with `max_parallel_plans = 2` starts both

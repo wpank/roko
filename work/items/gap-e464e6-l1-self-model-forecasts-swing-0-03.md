@@ -9,7 +9,7 @@ goal = "cybernetic"
 size = "M"
 subsystem = ["roko-learn/self-model"]
 created = 2026-10-03
-updated = 2026-10-03
+updated = 2026-10-15
 last_verified = 2026-10-03
 source = "wave-9 follow-up reports 2026-10-03 (PK52 gap-0c429f)"
 discovered_from = "gap-0c429f"
@@ -84,3 +84,5 @@ variance across the tail of updates stays bounded (doesn't keep swinging 0.03-0.
 - Severity p2, per the report's own framing (a design issue for S04/M3, not yet a committed fix — the two
   options above are suggestions, not a decided approach).
 - Discovered during PK52's work (gap-0c429f, done).
+
+2026-10-15 decision (Will delegated it to the coordinator's recommendation, tmp/status-quo/2026-10-15/DECISIONS-2026-10-15.md, decision 9; he can veto it): Option 2, applied to every feature rather than special-casing always-on ones: the curvature grows by the logistic bound, h_j += w * x_j^2 / 4, instead of w * p(1-p) * x_j^2 (Böhning's bound). The step rule is otherwise unchanged. Option 1 as written (divide the step by 1 + v*p(1-p)) is rejected. Acceptance for the item's test forecast_settles_at_a_fixed_mixed_pass_rate: with 24 always-on features at a true pass rate of 0.6, the forecast stays within [0.2, 0.9] from outcome 100 to 400 for 5 seeds. Update S04's description of the update rule in the same change. Why: LogitForecast::update grows h by w*p*(1-p)*x^2 (crates/roko-learn/src/self_model/logit.rs:108-115). When forecasts reach the extremes, p(1-p) is small, so h barely grows and the next step stays large; the oscillation feeds itself. A Python replica of the update and the shrunk forecast (logit.rs:99-100) gave these forecast ranges over outcomes 100-400 at p = 0.6, 5 seeds: 0.04-0.96 today; 0.06-0.94 with option 1 as written; 0.27-0.85 with the bound. The bound is one expression, keeps one update rule for every feature, and is the standard monotone-convergence bound for logistic regression. Self-model mode stays shadow by default (decision 2), so this is safe to change. If vetoed: With option 1 as written, the forecast keeps swinging (0.06-0.94 in simulation) and the item's test cannot pass. With option 2 as filed, always-on features get a separate pseudo-count curvature, and other features keep p(1-p).

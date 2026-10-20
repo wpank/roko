@@ -62,7 +62,8 @@ pub(super) fn create_tool_loop_agent(
         .with_max_iterations(tool_loop_max_iterations_for_options(model, options))
         .with_context_token_limit(usize::try_from(model.context_window).unwrap_or(usize::MAX))
         .with_model_profile(model.clone())
-        .with_optional_data_llm(options.data_llm.clone());
+        .with_optional_data_llm(options.data_llm.clone())
+        .with_optional_turn_budget(options.turn_budget.clone());
 
     let name = if options.name.is_empty() {
         format!("anthropic-tool-loop:{}", model.slug)
@@ -712,19 +713,30 @@ impl LlmBackend for AnthropicMessagesBackend {
             }));
         }
 
-        let request_timeout = config.request_timeout;
-        let mut req = crate::provider::shared_http_client()
-            .post(self.endpoint())
-            .timeout(request_timeout);
+        let mut req = crate::provider::shared_http_client().post(self.endpoint());
         for (key, value) in &self.headers() {
             req = req.header(key.as_str(), value.as_str());
         }
 
-        let response = req.body(body_bytes).send().await.map_err(|e| {
-            let mapped = LlmError::Network(format!("request failed: {e}"));
-            self.record_failure(&mapped);
-            mapped
-        })?;
+        // The request has no total timeout: `request_timeout` bounds the wait
+        // for the response, the TTFT and idle timeouts each silence in its
+        // stream, and the stream ends at `MAX_STREAM_DURATION` (bug-91796d).
+        let request_timeout = config.request_timeout;
+        let request_start = std::time::Instant::now();
+        let sent = tokio::time::timeout(request_timeout, req.body(body_bytes).send()).await;
+        let response = match sent {
+            Ok(Ok(response)) => response,
+            Ok(Err(e)) => {
+                let mapped = LlmError::Network(format!("request failed: {e}"));
+                self.record_failure(&mapped);
+                return Err(mapped);
+            }
+            Err(_) => {
+                let mapped = crate::streaming::response_timeout(request_timeout);
+                self.record_failure(&mapped);
+                return Err(mapped);
+            }
+        };
 
         let status = response.status();
         if !status.is_success() {
@@ -788,7 +800,8 @@ impl LlmBackend for AnthropicMessagesBackend {
                     idle_timeout
                 };
 
-                let chunk = match tokio::time::timeout(timeout, chunk_fut).await {
+                let next = crate::streaming::chunk_wait(timeout, request_start);
+                let chunk = match tokio::time::timeout(next, chunk_fut).await {
                     Ok(Ok(Some(bytes))) => bytes,
                     Ok(Ok(None)) => {
                         // Stream ended normally.
@@ -798,6 +811,11 @@ impl LlmBackend for AnthropicMessagesBackend {
                         let _ = tx
                             .send(Err(LlmError::Network(format!("read SSE chunk: {e}"))))
                             .await;
+                        return;
+                    }
+                    Err(_) if request_start.elapsed() >= crate::streaming::MAX_STREAM_DURATION => {
+                        let error = crate::streaming::chunk_timeout(timeout, request_start);
+                        let _ = tx.send(Err(error)).await;
                         return;
                     }
                     Err(_) => {

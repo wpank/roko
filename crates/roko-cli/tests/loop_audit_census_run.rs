@@ -14,7 +14,10 @@
 //! - every knowledge and playbook row that included an item carries a receipt
 //!   with the rendered sections' hashes, and every verdict names the model
 //!   the provider reported;
-//! - the measured census (5123) gives L-know and L-play exposure above 0.
+//! - the measured census (5123) gives L-know and L-play exposure above 0;
+//! - every sections row carries L-sec's fields, and the audit ticks at the
+//!   plans' closes leave `loop.health` rows for L-sec and the placebo, which
+//!   never moves, in a ledger whose audit never broke (gap-6f31c3).
 
 use std::fmt::Write as _;
 use std::fs;
@@ -22,7 +25,9 @@ use std::os::unix::fs::PermissionsExt as _;
 use std::path::{Path, PathBuf};
 
 use assert_cmd::cargo::cargo_bin;
+use roko_learn::loop_audit::AuditState;
 use roko_learn::loop_audit::census::measure;
+use roko_learn::loop_audit::ledger::{Ledger, LoopAuditRow, latest_health};
 use roko_learn::telemetry::records::AuditFields;
 use roko_learn::telemetry::report::{RunRecords, srm_check};
 use roko_learn::telemetry::{Arm, ContentDecisionPoint};
@@ -201,7 +206,7 @@ fn assigned_first(audit: &AuditFields) -> Option<bool> {
 
 #[test]
 fn fixture_run_logs_arms_before_plan_and_measures_exposure() {
-    let (_temp, runs) = run_fixture();
+    let (temp, runs) = run_fixture();
     for run in &runs {
         assert!(run.invalid.is_empty(), "{}: {:?}", run.run_id, run.invalid);
     }
@@ -266,5 +271,44 @@ fn fixture_run_logs_arms_before_plan_and_measures_exposure() {
     for loop_id in ["L-know", "L-play"] {
         let eps = measured.get(loop_id).map(|loop_| loop_.eps.est);
         assert!(eps.is_some_and(|eps| eps > 0.0), "{loop_id}: ε {eps:?}");
+    }
+
+    // gap-6f31c3: every sections row is L-sec's, on the `sections` layer,
+    // and each chain's placebo row folds into L-placebo.
+    let sections: Vec<_> = content
+        .iter()
+        .map(|line| &line.record)
+        .filter(|row| row.decision_point == ContentDecisionPoint::Sections)
+        .collect();
+    assert!(!sections.is_empty(), "the prompts' sections rows");
+    for row in &sections {
+        assert_eq!(row.audit.loop_id.as_deref(), Some("L-sec"), "{row:?}");
+        assert_eq!(row.audit.layer.as_deref(), Some("sections"), "{row:?}");
+    }
+    let opportunities = measured.get("L-sec").map_or(0, |sec| sec.n_opp);
+    assert!(opportunities > 0, "L-sec's opportunities");
+    let placebo = measured.get("L-placebo").expect("the placebo is measured");
+    assert_eq!((placebo.n_opp, placebo.iota_net), (CHAINS as u64, 0.0));
+
+    // The audit ticks at the plans' closes wrote both loops' health, and
+    // the placebo held: it never moved, and no row says the audit broke.
+    let ledger = Ledger::in_learn_dir(&temp.path().join(".roko/learn"))
+        .read()
+        .expect("the loop-audit ledger");
+    let latest = latest_health(&ledger);
+    assert!(latest.contains_key("L-sec"), "{:?}", latest.keys());
+    let placebo = latest.get("L-placebo").expect("the placebo's health row");
+    assert_eq!(
+        (placebo.state, placebo.reason),
+        (AuditState::Probation, None)
+    );
+    for record in &ledger {
+        match &record.row {
+            LoopAuditRow::Health(health) => assert!(health.placebo_ok, "{record:?}"),
+            LoopAuditRow::Transition(_) => {
+                assert_ne!(record.loop_id, "L-placebo", "the placebo moved");
+            }
+            other => assert!(!matches!(other, LoopAuditRow::AuditBroken(_)), "{other:?}"),
+        }
     }
 }

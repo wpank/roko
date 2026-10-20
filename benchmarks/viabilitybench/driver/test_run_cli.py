@@ -13,6 +13,7 @@ import re
 import shlex
 import socket
 import sys
+import tempfile
 import time
 from pathlib import Path
 
@@ -33,7 +34,9 @@ import validate
 import vb
 from common import canary
 from stub_provider import StubServer
+from test_driver import BENCHMARK_MARK
 from test_sandbox_net import Listener, macos_only
+from test_secret import PROCARGS
 
 TOY_STREAM = str(layout.DRIVER_DIR / "testdata" / "toy_stream.toml")
 RECORDED_PROBE = layout.DRIVER_DIR / "testdata" / "fd_claude_probe.json"  # the live probe's output, scrubbed
@@ -252,19 +255,21 @@ def run_dir(places: dict[str, Path]) -> Path:
 
 
 def task_context(places: dict[str, Path], arm: dict, *, key: str = "F1-l1-0001.s1", line: str = "BL0",
-                 endpoint: provider.Endpoint | None = None) -> harness.TaskContext:
+                 endpoint: provider.Endpoint | None = None, deny: tuple[Path, ...] = ()) -> harness.TaskContext:
     snapshot = ledger.load_snapshot()
     results = places["results"] / "TEST" / "run-1"
     results.mkdir(parents=True, exist_ok=True)
     work = places["work"] / "run-1"
-    (work / key).mkdir(parents=True)
+    alias = vb._alias(work)  # the workdir and HOME are named as `vb run` names them (bug-3c921e)
+    (work / alias).mkdir(parents=True)
     return harness.TaskContext(
         experiment_id="TEST", run_id="run-1", arm=arm, model=MODEL, provider=None, snapshot=snapshot,
         endpoint=endpoint or provider.Endpoint("anthropic", "https://api.anthropic.com"),
-        caps=caps.Caps.from_table(arm["caps"]), billed=False, instance_id="F1-l1-0001", seed=1, key=key,
+        caps=caps.Caps.from_table(arm["caps"]), billed=False, instance_id="F1-l1-0001", seed=1, key=key, alias=alias,
         ledger=ledger.Ledger(results / "ledger.jsonl", line=line, experiment_id="TEST", run_id="run-1",
                              price_snapshot_id=snapshot.id),
-        workdir=work / key, spec_text="Implement clamp.", agent_env=agent_env.build(home=work / "_home" / key))
+        workdir=work / alias, spec_text="Implement clamp.", agent_env=agent_env.build(home=work / "_home" / alias),
+        deny=deny)
 
 
 def test_claude_arm_command_is_isolated_and_pinned(places, monkeypatch):
@@ -273,7 +278,7 @@ def test_claude_arm_command_is_isolated_and_pinned(places, monkeypatch):
     assert arm["arm"]["models_allow"] == [MODEL] and arm["arm"]["runner"] == "run_cli"
     assert arm["arm"]["billed"] is False and vb.load_runner(arm) is run_cli
     cli = run_cli.CliConfig.from_table(arm["cli"])
-    ctx = task_context(places, arm)
+    ctx = task_context(places, arm, deny=(places["secret"], places["results"]))  # as `vb run` denies (vb._agent_deny)
     invocation = run_cli.build_invocation(ctx, cli)
 
     argv = invocation.argv
@@ -295,9 +300,10 @@ def test_claude_arm_command_is_isolated_and_pinned(places, monkeypatch):
         assert banned not in flags  # no Roko prompt, no fallback model, nothing the arm file did not pin
     task_settings = json.loads(value("--settings"))
     assert task_settings["disableAllHooks"] is True
-    for path in (layout.REPO_ROOT, Path.home() / ".roko", ctx.ledger.path.parent):
+    for path in (layout.REPO_ROOT, Path.home() / ".roko", places["results"]):  # the whole results root (bug-935cfa)
         for tool in ("Read", "Edit"):
             assert f"{tool}(/{path.resolve()}/**)" in task_settings["permissions"]["deny"]
+    assert not [rule for rule in task_settings["permissions"]["deny"] if "run-1" in rule]  # no run directory of its own
 
     env = invocation.env
     home = Path(env["HOME"])
@@ -310,7 +316,7 @@ def test_claude_arm_command_is_isolated_and_pinned(places, monkeypatch):
     assert env["CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD"] == "1"
     assert env["CLAUDE_SECURESTORAGE_CONFIG_DIR"] == ""  # keychain: the login's default entry name
     # ...read by the session's `security`, which alone sees the operator's HOME, where the login keychain is.
-    wrapper = home / ".vb-bin" / "security"
+    wrapper = home / agent_env.BIN_DIR / "security"
     assert wrapper.read_text() == run_cli.KEYCHAIN_WRAPPER.format(home=shlex.quote(str(Path.home())),
                                                                   security="/usr/bin/security")
     assert os.access(wrapper, os.X_OK)
@@ -320,7 +326,7 @@ def test_claude_arm_command_is_isolated_and_pinned(places, monkeypatch):
     assert not [name for name in env if agent_env.FORBIDDEN_NAME.search(name)]  # no VB_*, key or token
     for needle in (FAKE_KEY, str(places["secret"]), *secret.load(places["secret"]).needles):
         assert needle not in "".join(env.values())
-    assert env["PATH"].split(os.pathsep)[0] == str(home / ".vb-bin")  # the agent's PATH, not the driver's
+    assert env["PATH"].split(os.pathsep)[0] == str(home / agent_env.BIN_DIR)  # the agent's PATH, not the driver's
     assert run_cli.ancestor_instructions(ctx.workdir) == []
 
     # An offline run points claude at the loopback URL, so a real claude could not reach the API either.
@@ -337,7 +343,7 @@ def test_claude_arm_command_is_isolated_and_pinned(places, monkeypatch):
     assert [path.name for path in by_file.config_dir.iterdir()] == [".credentials.json"]
     assert (by_file.config_dir / ".credentials.json").stat().st_mode & 0o777 == 0o600
     assert "CLAUDE_SECURESTORAGE_CONFIG_DIR" not in by_file.env and by_file.env["CLAUDE_CONFIG_DIR"] != str(login)
-    assert not (Path(by_file.env["HOME"]) / ".vb-bin" / "security").exists()  # no keychain, so no wrapper
+    assert not (Path(by_file.env["HOME"]) / agent_env.BIN_DIR / "security").exists()  # no keychain, so no wrapper
     assert by_file.config_dir_sha256 == records.canonical_hash({".credentials.json": "login"})
 
     # Refused: a used config directory, a CLAUDE.md above the workdir, a fallback model, an unknown effort.
@@ -452,7 +458,7 @@ def test_vb_run_with_a_fake_claude_labels_and_prices_the_run(places):
     assert manifest["config"]["arm"]["cli"]["effort"] == "high" and record["config_hash"] == manifest["config_hash"]
     transcript = json.loads((out / record["provenance"]["transcript_ref"]).read_text())
     assert transcript[1]["stream"]["subtype"] == "init" and transcript[-1]["stream"]["type"] == "result"
-    assert not (places["work"] / "run-1").exists()  # the workdir and its config directory are gone
+    assert not Path(manifest["work_dir"]).exists()  # the workdir and its config directory are gone
 
 
 def test_vb_run_admits_the_claude_arm_only_with_both_network_flags(places, monkeypatch):
@@ -627,7 +633,7 @@ def test_flaky_verify_reaches_claude_code_through_its_shell_prefix(places, p, fl
     assert [flake["run"] for flake in record["visible"]["flakes"]] == ([1] if flaked else [])
     [session] = [line for line in read_jsonl(log) if "env" in line]
     [ran] = [line["bash"] for line in read_jsonl(log) if "bash" in line]
-    assert session["env"]["CLAUDE_CODE_SHELL_PREFIX"].endswith("/.vb-bin/vb-verify")
+    assert session["env"]["CLAUDE_CODE_SHELL_PREFIX"].endswith("/.local/bin/run-shell")  # neutral names (bug-d68575)
     assert ran["line"].startswith(shlex.quote(session["env"]["CLAUDE_CODE_SHELL_PREFIX"]) + " ")
     assert (ran["returncode"], "Killed" in ran["output"]) == ((137, True) if flaked else (0, False)), ran
 
@@ -683,6 +689,111 @@ def test_cli_arm_shell_cannot_reach_the_network(places):
         with pytest.raises(run_cli.CliError, match="egress_allow"):
             run_cli.CliConfig.from_table({"egress_allow": bad})
     assert run_cli.CliConfig.from_table({}).egress_allow == ("api.anthropic.com:443",)
+
+
+@macos_only
+def test_cli_arm_shell_cannot_read_its_run_directory(places):
+    """bug-d308f7: `--settings` keep the run's results from Claude's file tools only; the sandbox denies the whole
+    session, its Bash tool included, the run directory. The session's egress proxy logs each request with the task's
+    key to `<run_dir>/egress.jsonl` when it admits it, so the fake claude's own API call is there before its Bash tool
+    reads that log, the stream's order and the manifest and lists the directory: each is refused, and nothing it
+    printed names the task. The log holds what it would have read (the control)."""
+    out = run_dir(places)
+    with StubServer(lambda body: "Hi.") as api:
+        api_port = int(api.url.split(":")[2].split("/")[0])
+        shell = {name: f'cat "{out / name}"; echo exit=$?' for name in (run_cli.EGRESS_LOG, "order-1.json",
+                                                                         "manifest.json")}
+        shell["listing"] = f'ls -a "{out}"; echo exit=$?'
+        program, log = fake_claude(places, "egress", api=["127.0.0.1", api_port], shell=shell)
+        assert run_vb(places, arm_file(places, program, cli=f'egress_allow = ["127.0.0.1:{api_port}"]')) == 0
+    [tried] = [line["egress"] for line in read_jsonl(log) if "egress" in line]
+    assert tried["api"] == f"200 {MODEL}"  # the CLI's call, which the proxy logged before the shell ran
+    for name, said in tried["shell"].items():
+        target = out if name == "listing" else out / name
+        assert f"{target}: Operation not permitted" in said and "exit=1" in said and "exit=0" not in said, (name, said)
+        assert "F1-l1-0001" not in said and '"task"' not in said, (name, said)
+    rows = read_jsonl(out / run_cli.EGRESS_LOG)
+    assert [(row["task"], row["target"], row["admitted"]) for row in rows] == [
+        ("F1-l1-0001.s1", f"127.0.0.1:{api_port}", True)]
+    [record] = read_jsonl(out / "records.jsonl")
+    assert record["execution"]["status"] == "completed" and record["provenance"]["canary_places"] == []
+    assert record["provenance"]["network_policy"]["sandbox"] == "sandbox-exec+net"
+
+
+@macos_only
+def test_no_cli_agent_sees_the_benchmark_name(places):
+    """bug-d68575, on the Claude Code arm (test_driver.py's test_no_agent_sees_the_benchmark_name has the others): in
+    a run with flaky_verify, nothing the session's environment, its prompt, its Bash tool and its HOME show names the
+    benchmark: not the visible-verify wrapper that CLAUDE_CODE_SHELL_PREFIX names, the keychain wrapper on its PATH, its
+    git identity, its repo's log, reflog and refs, or what the egress proxy answers a plain-HTTP request it refuses.
+    Claude Code's own argv, whose --settings name the run directory and the default secret directory, is
+    bug-4c3a83's."""
+    spec = places["tmp"] / "flaky.toml"
+    spec.write_text('schema_version = "vb.disturbance/1"\n\n[[disturbance]]\nkind = "flaky_verify"\n'
+                    'params = { p = 0.5 }\n')
+    with StubServer(lambda body: "Hi.") as api:
+        api_port = int(api.url.split(":")[2].split("/")[0])
+        shell = {"env": "env | sort",
+                 "git": 'git log --format="%an <%ae> | %cn <%ce> | %s"; git reflog --format="%gn <%ge> | %gs"; '
+                        "ls -aR .git/refs",
+                 "home": 'ls -aR "$HOME"; find "$HOME" -type f -exec cat {} +',
+                 "egress": "curl -sS --max-time 5 http://example.com/; echo"}
+        program, log = fake_claude(places, "egress", api=["127.0.0.1", api_port], shell=shell)
+        arm = arm_file(places, program, cli=f'egress_allow = ["127.0.0.1:{api_port}"]')
+        assert run_vb(places, arm, "--disturbance", str(spec)) == 0
+    [seen] = [line for line in read_jsonl(log) if "env" in line]
+    [tried] = [line["egress"] for line in read_jsonl(log) if "egress" in line]
+    texts = {"env": json.dumps(seen["env"]), "prompt": seen["prompt"], "names": json.dumps(seen["names"]),
+             **{f"shell:{name}": said for name, said in tried["shell"].items()}}
+    roots = sorted({str(places["tmp"]), os.path.realpath(places["tmp"]), tempfile.gettempdir(),
+                    os.path.realpath(tempfile.gettempdir())}, key=len, reverse=True)  # the host's own paths
+    for name, text in texts.items():
+        for root in roots:
+            text = text.replace(root, "<tmp>")
+        marks = sorted({match.group(0) for match in BENCHMARK_MARK.finditer(text)})
+        assert marks == [], (name, marks, text)
+    # The controls: the agent did see each place it looked, under its neutral name.
+    assert seen["env"]["CLAUDE_CODE_SHELL_PREFIX"].endswith(f"/{agent_env.BIN_DIR}/run-shell")
+    assert "egress proxy: GET example.com:80 is not on the allowlist" in tried["shell"]["egress"]
+    assert "maintainer <maintainer@example.invalid> | maintainer <maintainer@example.invalid> | Initial commit" in \
+        tried["shell"]["git"]
+    assert "#!/bin/sh" in tried["shell"]["home"] and "/usr/bin/security" in tried["shell"]["home"]  # the wrapper
+
+
+@macos_only
+def test_no_cli_argv_names_the_run_or_the_benchmark(places):
+    """bug-4c3a83: Claude Code's Bash tool can read claude's own command line, `sysctl(KERN_PROCARGS2)` of its parent
+    from inside the sandbox, so that command line names neither the experiment, the run, the results root nor the
+    benchmark. Under the sandbox, which denies the whole session the results root and the key files (`ctx.deny`),
+    `--settings` deny only the web tools, the repository, `~/.roko` and the operator's whole `~/.config`, the default
+    secret directory's parent. Through `vb run` the fake claude logs its argv, and its Bash tool reads its parent's
+    argv and environment (`PROCARGS`): neither names TEST-CLI, run-1, the results root or the benchmark, while the
+    probe did read claude's `--settings` (the control). Without a sandbox nothing else keeps the results root from
+    claude's file tools, so `--settings` name it there (test_claude_arm_command_is_isolated_and_pinned)."""
+    with StubServer(lambda body: "Hi.") as api:
+        api_port = int(api.url.split(":")[2].split("/")[0])
+        shell = {"parent": f"python3 -c {shlex.quote(PROCARGS)} $PPID"}
+        program, log = fake_claude(places, "egress", api=["127.0.0.1", api_port], shell=shell)
+        assert run_vb(places, arm_file(places, program, cli=f'egress_allow = ["127.0.0.1:{api_port}"]')) == 0
+    [given] = [line["argv"] for line in read_jsonl(log) if "argv" in line]
+    [tried] = [line["egress"] for line in read_jsonl(log) if "egress" in line]
+    seen = {"argv": " ".join(given), "parent": tried["shell"]["parent"]}
+    assert "--settings" in seen["parent"] and "disableAllHooks" in seen["parent"], seen  # it read claude's argv
+    roots = sorted({str(places["tmp"]), os.path.realpath(places["tmp"]), tempfile.gettempdir(),
+                    os.path.realpath(tempfile.gettempdir())}, key=len, reverse=True)  # the host's own paths
+    results = sorted({str(places["results"]), os.path.realpath(places["results"])})
+    for name, text in seen.items():
+        named = [mark for mark in ("TEST-CLI", "run-1", *results) if mark in text]
+        for root in roots:
+            text = text.replace(root, "<tmp>")
+        marks = sorted({match.group(0) for match in BENCHMARK_MARK.finditer(text)})
+        assert named == [] and marks == [], (name, named, marks, text)
+    deny = json.loads(given[given.index("--settings") + 1])["permissions"]["deny"]
+    for path in (layout.REPO_ROOT, Path.home() / ".roko", Path.home() / ".config"):
+        assert f"Read(/{path.resolve()}/**)" in deny, deny
+    [record] = read_jsonl(run_dir(places) / "records.jsonl")
+    assert record["execution"]["status"] == "completed" and record["provenance"]["network_policy"]["sandbox"] == \
+        "sandbox-exec+net"
 
 
 def test_egress_proxy_answers_every_request_and_ends_its_tunnels(tmp_path):
@@ -791,14 +902,14 @@ def test_the_recorded_probe_parses():
 
 
 def test_agent_shell_cannot_read_the_real_keychain(places):
-    """gap-3cfe4f: the fd_claude arm's `.vb-bin/security` wrapper lets Claude Code find the subscription login under
+    """gap-3cfe4f: the fd_claude arm's `.local/bin/security` wrapper lets Claude Code find the subscription login under
     the session's own HOME, but a same-uid agent shell can read the operator's real Anthropic OAuth credential the same
     way -- the wrapper, a direct `security find-generic-password`, or the keychain file by its path. No host-only
     sandbox prevents it (the whole claude tree shares one sandbox for the egress rule, and macOS refuses a nested
     sandbox; S08 decision 4's container is the only prevention). So the census detects it: a run whose transcript shows
     the agent naming the keychain is `leak_suspected`, excluded and counted. The fake never runs the command and no
     real keychain is read."""
-    command = '"$HOME/.vb-bin/security" find-generic-password -a "$USER" -w -s "Claude Code-credentials"'
+    command = '"$HOME/.local/bin/security" find-generic-password -a "$USER" -w -s "Claude Code-credentials"'
     program, _ = fake_claude(places, "keychain", keychain_command=command,
                              keychain_result="(the fake does not run the command)")
     assert run_vb(places, arm_file(places, program), "--transcripts") == 0
@@ -816,7 +927,8 @@ def test_the_keychain_detector_flags_only_real_keychain_access():
     and leaves a bare mention of the word `security` alone, so an honest coding task is not falsely `leak_suspected`."""
     for flagged in ('security find-generic-password -s "Claude Code-credentials"',
                     "/usr/bin/security dump-keychain -d",
-                    "~/.vb-bin/security find-generic-password -w",
+                    "~/.local/bin/security find-generic-password -w",
+                    '"$HOME/.local/bin/security" list-keychains',  # the wrapper's path alone (agent_env.BIN_DIR)
                     "cat ~/Library/Keychains/login.keychain-db",
                     "open /Users/op/Library/Keychains/login.keychain-db"):
         assert census._keychain_access(flagged) == [census.KEYCHAIN_LABEL], flagged

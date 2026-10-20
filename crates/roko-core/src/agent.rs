@@ -140,6 +140,19 @@ impl ProviderKind {
             Self::CodexCli => AgentBackend::Codex,
         }
     }
+
+    /// Provider kinds that serve the same model family over another
+    /// transport: `claude_cli` runs any Claude slug the Anthropic API serves,
+    /// and the Gemini CLI any slug the Gemini API serves. Failover moves a
+    /// refused model's slug to these (`roko_learn::provider_failover`).
+    #[must_use]
+    pub const fn same_family(self) -> &'static [Self] {
+        match self {
+            Self::ClaudeCli | Self::AnthropicApi => &[Self::ClaudeCli, Self::AnthropicApi],
+            Self::GeminiCli | Self::GeminiApi => &[Self::GeminiCli, Self::GeminiApi],
+            _ => &[],
+        }
+    }
 }
 
 impl fmt::Display for ProviderKind {
@@ -401,9 +414,20 @@ pub fn resolve_model(config: &RokoConfig, model_key: &str) -> ResolvedModel {
     // 4. Builtin model registry — well-known models that work without TOML config.
     if let Some(builtin) = crate::config::model_registry::builtin_model(model_key) {
         let effective_providers = config.effective_providers();
+        // The provider that holds the builtin's own key comes first: several
+        // vendors share a protocol (Cerebras and Z.ai serve `openai_compat`
+        // too), so the first provider of the kind could be the wrong vendor.
+        let of_kind = |provider: &ProviderConfig| provider.kind == builtin.provider_kind;
         let provider = effective_providers
             .iter()
-            .find(|(_, provider)| provider.kind == builtin.provider_kind);
+            .find(|(_, provider)| {
+                of_kind(provider) && provider.api_key_env.as_deref() == Some(builtin.api_key_env)
+            })
+            .or_else(|| {
+                effective_providers
+                    .iter()
+                    .find(|(_, provider)| of_kind(provider))
+            });
         let provider_key = provider
             .map(|(key, _)| key.as_str())
             .unwrap_or_else(|| builtin.provider_kind.label());
@@ -1695,6 +1719,28 @@ mod tests {
     }
 
     // ── Zero-config builtin model resolution (T5) ──────────────────────
+
+    /// bug-4e336b: a builtin runs on the provider that holds its own key,
+    /// not on whichever provider of its protocol comes first.
+    #[test]
+    fn resolve_model_builtin_prefers_the_provider_with_its_key() {
+        let config = RokoConfig::from_toml(
+            "[providers.cerebras]\nkind = \"openai_compat\"\n\
+             base_url = \"https://api.cerebras.ai/v1\"\napi_key_env = \"CEREBRAS_API_KEY\"\n\n\
+             [providers.openai]\nkind = \"openai_compat\"\n\
+             base_url = \"https://api.openai.com/v1\"\napi_key_env = \"OPENAI_API_KEY\"\n",
+        )
+        .expect("parse");
+        let resolved = resolve_model(&config, "gpt-5.4-mini");
+        let profile = resolved.profile.expect("a builtin model");
+        assert_eq!(profile.provider, "openai");
+        assert_eq!(
+            resolved
+                .provider_config
+                .and_then(|provider| provider.api_key_env),
+            Some("OPENAI_API_KEY".to_owned())
+        );
+    }
 
     #[test]
     fn resolve_model_by_builtin_alias() {

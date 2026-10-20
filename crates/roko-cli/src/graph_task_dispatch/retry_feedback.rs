@@ -528,6 +528,98 @@ fn read_feedback_file(path: &Path, plan_id: &str, run_id: &str) -> KeptState {
     }
 }
 
+/// What failed, as the `retry_feedback` event of the feedback it leaves
+/// names it (gap-655ea5).
+pub(super) struct RetryNotice<'a> {
+    /// The attempt that failed, from 1.
+    pub(super) attempt: u32,
+    /// The check that failed: `verify`, `pre_verify:<check>`,
+    /// `plan-branch`, `scratch-copy-back` or `review`.
+    pub(super) check: &'a str,
+    /// The failing steps; the event keeps the first line of each.
+    pub(super) failing_steps: &'a [String],
+}
+
+/// Most lines of each list a `retry_feedback` event carries.
+const RETRY_EVENT_LINES: usize = 5;
+
+/// Most characters of each of those lines.
+const RETRY_EVENT_LINE_CHARS: usize = 300;
+
+/// `feedback`, left for the attempt after the one `notice` names, as the
+/// [`DashboardEvent::RetryFeedback`] a host follows (gap-655ea5): the
+/// diagnosis the next prompt leads with, the failing steps and the key
+/// error lines it lists, a line each. The errors lead with each failing
+/// step's key line, a plain assertion included (bug-1e272c), then the
+/// compile, test and clippy lines.
+///
+/// [`DashboardEvent::RetryFeedback`]: roko_core::DashboardEvent::RetryFeedback
+pub(super) fn retry_feedback_event(
+    plan_id: &str,
+    task_id: &str,
+    notice: &RetryNotice<'_>,
+    feedback: &GateFeedback,
+) -> roko_core::DashboardEvent {
+    let mut errors: Vec<String> = notice
+        .failing_steps
+        .iter()
+        .filter_map(|step| super::verification::step_key_line(step))
+        .map(str::to_string)
+        .collect();
+    for line in feedback
+        .compile_errors
+        .iter()
+        .chain(&feedback.test_failures)
+        .chain(&feedback.clippy_warnings)
+    {
+        if !errors.contains(line) {
+            errors.push(line.clone());
+        }
+    }
+    roko_core::DashboardEvent::RetryFeedback {
+        plan_id: plan_id.to_string(),
+        task_id: task_id.to_string(),
+        attempt: notice.attempt,
+        next_attempt: notice.attempt.saturating_add(1),
+        check: notice.check.to_string(),
+        failing_steps: first_lines(notice.failing_steps),
+        diagnosis: feedback.diagnosis.clone(),
+        errors: first_lines(&errors),
+    }
+}
+
+/// The first non-empty line of each of `texts`, cut to
+/// [`RETRY_EVENT_LINE_CHARS`] characters, at most [`RETRY_EVENT_LINES`] of them.
+fn first_lines<'a>(texts: impl IntoIterator<Item = &'a String>) -> Vec<String> {
+    texts
+        .into_iter()
+        .filter_map(|text| text.lines().map(str::trim).find(|line| !line.is_empty()))
+        .map(|line| line.chars().take(RETRY_EVENT_LINE_CHARS).collect())
+        .take(RETRY_EVENT_LINES)
+        .collect()
+}
+
+impl super::GraphTaskDispatcher {
+    /// Leave `feedback` for attempt `next_attempt` of `task_id`, as
+    /// [`RetryFeedbackBook::record`] does, and publish it as
+    /// `retry_feedback` (gap-655ea5): what failed in the attempt `notice`
+    /// names, and what the next attempt's prompt gets.
+    pub(super) fn leave_retry_feedback(
+        &self,
+        plan_id: &str,
+        task_id: &str,
+        notice: &RetryNotice<'_>,
+        feedback: GateFeedback,
+        next_attempt: u32,
+    ) -> Option<PathBuf> {
+        if let Some(tui) = &self.tui_bridge {
+            tui.publish_event(retry_feedback_event(plan_id, task_id, notice, &feedback));
+        }
+        self.gate_retry_context
+            .record(plan_id, task_id, feedback, next_attempt)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use tempfile::tempdir;

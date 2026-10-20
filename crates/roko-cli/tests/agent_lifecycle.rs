@@ -1,5 +1,8 @@
 //! Integration tests for `roko agent` lifecycle commands (list, start, stop, status).
 
+mod common;
+use common::Isolated;
+
 use assert_cmd::Command;
 use std::path::Path;
 use tempfile::TempDir;
@@ -8,6 +11,7 @@ use tempfile::TempDir;
 fn roko(workdir: &Path, args: &[&str]) -> assert_cmd::assert::Assert {
     Command::cargo_bin("roko")
         .unwrap()
+        .isolated()
         .current_dir(workdir)
         .args(args)
         .env("ROKO_LOG", "warn")

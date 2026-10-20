@@ -32,6 +32,7 @@ use roko_core::tool::ToolDef;
 
 pub mod apply_patch;
 pub mod bash;
+mod child_group;
 pub mod edit_file;
 pub mod exit_plan_mode;
 pub mod github;

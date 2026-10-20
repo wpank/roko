@@ -1,5 +1,8 @@
 //! End-to-end coverage for `roko safety controls` and `roko safety release`.
 
+mod common;
+use common::Isolated;
+
 use std::path::Path;
 
 use assert_cmd::Command;
@@ -8,6 +11,7 @@ use tempfile::TempDir;
 
 fn roko(workdir: &Path) -> Command {
     let mut command = Command::cargo_bin("roko").expect("roko binary");
+    command.isolated();
     command.current_dir(workdir);
     command
 }

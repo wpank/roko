@@ -413,7 +413,31 @@ sequenceDiagram
 | `gate_result` | `plan_id`, `task_id`, `gate`, `rung`, `passed` |
 | `phase_transition` | `plan_id`, `from`, `to` |
 | `efficiency_event` | `plan_id`, `task_id`, `agent_id`, `cost_usd`, `tokens`, `duration_ms` |
+| `efficiency_trend_updated` | `buckets`: at a Graph run's end, one per recent plan run (at most 20, oldest first, this run last), each with `start`, `run_id`, `cost_usd`, `tasks`, `verified_tasks` (tasks that passed every verify step), `cost_per_verified_usd` (absent when none passed), `turns` (agent calls), `tokens_in`, `tokens_out`, `cost_usd_cents`, `latency_ms_avg` (the run's wall time per agent call): the cost per verified task, run by run (gap-de0e96) |
 | `episode_recorded` | `agent_id`, `role`, `episode_id`, `passed` |
+
+**Loop events of a Graph run.** A run's event index (`GET /api/runs/{run_id}/events`, its SSE
+`GET /api/runs/{run_id}/events/stream`) and the hub stream (`GET /api/events`) carry these as they happen;
+a client that does not know a type ignores it. A run's index has each of them, and each live `agent_output` record,
+as soon as it is published; heartbeats, efficiency rows and gate output lines reach it in batches (bug-966cf7).
+
+| `type` | Key fields |
+|--------|-----------|
+| `route_decided` | `plan_id`, `task_id`, `attempt` (from 1), `model`, `provider`, `stage`, `reason`, `source` (`router`, `ladder`, `task_hint`, `override`, `fallback`, `default`, `explore`, `control`, `self_model`, or `failover`), `candidates` (the picked model first, then by score, at most 5: `model`, `provider`, `score`, `p`, `eligible`, `ineligible_reason`). Published before the attempt's `agent_spawned`, and again with `source: "failover"` when failover passes the planned model over (gap-2a3298) |
+| `confirm_waiting` | `plan_id`, `task_id`, `attempt`, `attempt_key` (what `confirm_answer` names), `rung` (`rung[<name>]`), `question`, `timeout_secs`, `deadline_at` (RFC 3339): a `confirm` rung waits for its person (gap-7c6663) |
+| `confirm_resolved` | `plan_id`, `task_id`, `attempt`, `attempt_key`, `rung`, `outcome` (`approved`, `rejected`, `timed_out`, or `stopped`), `note` when the person gave one. The rung's `gate_result` follows, saying who passed it |
+| `effect_staged` | `effect_id` (what `effect_decide` names), `plan_id`, `task_id`, `attempt`, `tool`, `server`, `proposed_at`: an outbound call the agent proposed waits for a person (gap-f439c1). Published while the attempt runs, within about 2 s of the hold |
+| `effect_decided` | `effect_id`, `plan_id`, `task_id`, `tool`, `server`, `outcome` (`applied`, `rejected`, `failed`, `ambiguous`), `decided_by`. Published on `roko serve`'s hub (`/api/events`), and in the run's index while the run is live |
+| `prompt_assembled` | `plan_id`, `task_id`, `attempt`, `knowledge_ids` (the stored lessons its prompt carried), `playbook_ids`, `episode_ids` (earlier episodes it cited), `left_out` (what it retrieved and left out: `[{kind: knowledge, playbook, episode or section, id, reason: withheld_arm, bandit_excluded, token_budget, role_filter or screened}]`, absent when empty), `included_sections`, `dropped_sections`, `estimated_tokens`: what an attempt's prompt carried, after its `route_decided` (gap-5f6d0b). The text of an entry is at `GET /api/knowledge/entries` |
+| `retry_feedback` | `plan_id`, `task_id`, `attempt` (the one that failed, from 1), `next_attempt`, `check` (`verify`, `pre_verify:<check>`, `plan-branch`, `scratch-copy-back` or `review`), `failing_steps` (one line each), `diagnosis` (what the next attempt's prompt leads with; absent when there is none), `errors` (the key compile, test and warning lines it lists, at most 5): what a failed check leaves for the task's next attempt, before that attempt's `route_decided` (gap-655ea5) |
+| `knowledge_written` | `plan_id`, `task_id`, `admission` (`light_admitted`, `full_admitted`, `full_deferred`, `full_rejected`, `full_suppressed`, `deferred`, `duplicate`, `no_candidate`), `entry_id` (the entry admitted or confirmed), `reinforced`, `promoted`, `lesson` (≤160 characters): what a verified attempt taught the knowledge store (gap-7576c7). Only when it changed something |
+| `playbook_written` | `plan_id`, `task_id`, `admission` (`created`: the attempt's tool calls became a new playbook; `credited`: a stored playbook whose topic and steps they match gained the success), `playbook_id`, `goal` (≤160 characters), `steps`: what a verified attempt wrote to L-play's playbook store (gap-89f985). Only when it changed something |
+| `plan_check_started` | `plan_id`, `stage` (`regression`: the delivery's post-merge check in the regression checkout; `in_place`: the working tree the tasks edited), `step` (from 1) of `steps`, `name` (`cargo clippy`, `cargo test`, … or the program the step runs), `command`, `scope` (`workspace`, `packages`, or `command`), `packages` (of a `packages` step), `source` (`authored` or `cargo-default`): a step of the plan's whole-plan check started (gap-6b6ec1) |
+| `plan_check_heartbeat` | `plan_id`, `stage`, `step`, `steps`, `name`, `scope`, `packages`, `elapsed_ms`: every 15 s while the step runs |
+| `plan_check_finished` | `plan_id`, `stage`, `step`, `steps`, `name`, `scope`, `packages`, `passed`, `exit_code` (absent when it did not exit), `reason` (why a step that did not exit ended), `stopped_by` (present when a stop request, such as `cancel`, ended the step: the check was stopped, not failed, bug-7b62ff), `elapsed_ms`. A failed or stopped step ends the check |
+| `gate_output_line` | `plan_id`, `task_id`, `attempt` (from 1), `gate` (the step, such as `verify[0:test]`), `line` (at most 500 characters), `stream` (`stdout`, `stderr`, or `roko` for roko's own note): each line a Graph task's verify step writes, while it runs (gap-f45a6d). Bounded per step: a burst of 80 lines, then 40 a second, 1,000 in all; when it skipped any, the step's last line (`stream: roko`) counts them. The step's `gate_result` follows with the end of its output |
+| `delivery_started` | `plan_id`, `delivery_id` (`<run>:<plan>`; `…:partial` for the verified part of a plan that did not finish), `target` (the run's batch branch the work is merged into), `branch` (`roko/plan/<plan>`), `commit` (the verified tip delivered): a plan's delivery started (gap-4f6cbe). Its regression check's `plan_check_*` events follow |
+| `delivery_finished` | `plan_id`, `delivery_id`, `target`, `state` (`delivered`; `conflict`: the merge failed; `regression_failed`: the check on the merge failed; `cancelled`: a stop cut the check short, so the delivery stopped and did not fail; `terminal_failed`: it could not finish), `merge_commit` (once the merge was made; a run's batch takes a `regression_failed` or `cancelled` merge back out of `target`), `reason` (why it was not delivered), `stopped_by` (what stopped a `cancelled` one, such as `cancel`). The run summary's `delivery` milestone says `delivery completed`, `delivery cancelled` or `delivery failed: …`, from the first delivery that did not complete |
 
 **Inference and deployment events:**
 
@@ -478,10 +502,10 @@ aliases (both are mounted).
 
 | Method | Path | Description |
 |--------|------|-------------|
-| GET | `/api/plans` | List all plans |
+| GET | `/api/plans` | List all plans: `id`, `title` (its `[meta] title`, else its `plan.md`'s first `# ` heading, else its id), task counts, `status` (its `[meta].status` until the plan has run, then its last run's state), `group` (its plan set) and `fixture`, true for a demo or test plan (`[meta].status = "fixture"`), also once it has run |
 | POST | `/api/plans` | Create a new plan |
 | GET | `/api/plans/{id}` | Full plan details |
-| GET | `/api/plans/{id}/tasks` | Tasks for a plan |
+| GET | `/api/plans/{id}/tasks` | Tasks for a plan, and its `title` as `GET /api/plans` and the run events give it: its `[meta] title`, else the first `# ` heading of its `plan.md`, else its id |
 | POST | `/api/plans/{id}/execute` | Execute plan (background, 202 Accepted with the run's `id`; 422 with the validation report in `details` when `roko plan run` would refuse the plan). While another plan run is live the run is queued instead: 202 with `queued: true` and its `position`, started under its `id` when the live run ends; 409 only when the queue's 8 places are taken |
 | POST | `/api/plans/execute` | Execute a plan set, named plans or every plan (body `plans`, `target`, `resume`, `max_parallel_plans`); queued like a single plan |
 | GET | `/api/plans/{id}/status` | Execution status of the run `{id}` names (plan id, member plan id or run id): `running`, then `succeeded`, `failed` (with `error`), `unverified` or `cancelled`, with `finished` and `finished_at`; a run that ended keeps answering for an hour |
@@ -494,14 +518,14 @@ aliases (both are mounted).
 | POST | `/api/plans/{id}/tasks/{task_id}/review` | Submit a human review |
 | GET | `/api/plans/{id}/tasks/{task_id}/diff` | Code diff from task agent |
 | POST | `/api/plans/{id}/chat` | Chat in plan context |
-| POST | `/api/plans/{id}/estimate` | Cost and duration estimate |
+| POST | `/api/plans/{id}/estimate` | Cost and duration of the plan's remaining tasks. Each task is priced on the rung dispatch would start it on (`per_task[]`: `start_rung`, `model`, `start_cost_usd` for one attempt there, `likely_cost_usd` and `likely_duration_secs` weighted by similar tasks' first-try rate, `worst_cost_usd` and `worst_rungs` when every attempt fails and climbs, `first_try_rate`, `basis`, `samples`), from the recent attempts of tasks with the same role and tier in `.roko/runs/` and the rates of the price snapshot. `estimate` holds the totals (`total_cost_usd`, `total_duration_secs`, `worst_cost_usd`, `cap_usd`, `unpriced_tasks`); `by_rung`, `confidence`, `note` and `price_snapshot` say what it rests on (gap-6605f7) |
 
 ### 8.3 One-Shot Runs
 
 | Method | Path | Description |
 |--------|------|-------------|
-| POST | `/api/run` | Run the prompt in the background as a gated one-task plan, as `roko run` does (202 Accepted with the run's `id`, which the Graph run takes; 409 while a plan run is live). Body: `prompt`, optional `workdir`, optional `domain` (a work-domain label such as `research`, which picks the task's tool policy and verifier pack; default: the project's `default_domain`) |
-| GET | `/api/run/{id}/status` | Poll run status |
+| POST | `/api/run` | Run the prompt in the background as a gated one-task plan, as `roko run` does (202 Accepted with the run's `id`, which the Graph run takes). While another run holds the workspace the run waits in the run queue it shares with plan runs, oldest first, and the 202 says `queued: true` and its `position`; a full queue, or a run outside the server holding the workspace, answers 409 before any id is handed out. Body: `prompt`, optional `workdir`, optional `domain` (a work-domain label such as `research`, which picks the task's tool policy and verifier pack; default: the project's `default_domain`) |
+| GET | `/api/run/{id}/status` | Poll run status: `queued` with its `position` while the run waits in the run queue, then `running` and its verdict |
 
 The status is `running`, then the run's verdict: `succeeded` when gates checked
 its work and passed it, `failed`, or `unverified` when no gate checked it. Only
@@ -517,7 +541,8 @@ Hashed per-run indexes under `.roko/events-by-run/` and
 |--------|------|-------------|
 | GET | `/api/dashboard/runs` | Bounded summary of hashed per-run indexes |
 | GET | `/api/runs/{run_id}` | Run detail, terminal state, counts, integrity |
-| GET | `/api/runs/{run_id}/summary` | What a host can post: `state` (`queued`, `running`, `succeeded`, `failed`, `unverified`, `cancelled`, the words `GET /api/plans/{id}/status` uses), `verdict` once it ended, `cost_usd`, task counts (`passed`, `failed`, `unverified`, `other`), at most five `milestones` from event kinds and ids, `untrusted_input_boundary` per task (`data_llm` or `none`, see 8.41), `finished_at`, `links` |
+| GET | `/api/runs/{run_id}/summary` | What a host can post: `state` (`queued`, `running`, `succeeded`, `failed`, `unverified`, `cancelled`, the words `GET /api/plans/{id}/status` uses), `verdict` once it ended, `cost_usd`, task counts (`passed`, `failed`, `unverified`, `other`), at most five `milestones` from event kinds and ids, `untrusted_input_boundary` per task (`data_llm` or `none`, see 8.41), `finished_at`, `links`, and once the run ended, `result`: where its verified work is (see below) |
+| GET | `/api/runs/{run_id}/diff` | Every change an ended run's verified work makes from the base its batch started at (gap-0d6d21): `branch`, `base`, `commit`, `files` (each with `path`, `status` `added`/`modified`/`deleted`, `additions`, `deletions`, `binary`, `patch`, the unified diff or `null` for a binary file, and `truncated`), `totals` over every file, and `truncated` when files were left out. `?max_files=` (default 200, 1 to 500) and `?max_patch_bytes=` per file (default 65536, 1024 to 262144; a patch is cut on a line boundary). 409 while the run is active, 404 when it has no result |
 | GET | `/api/runs/{run_id}/events` | Cursor-paginated events (`?cursor=&limit=&types=&source=`) |
 | GET | `/api/runs/{run_id}/events/stream` | Run-filtered SSE |
 | GET | `/api/runs/{run_id}/tasks` | Task summaries and attempt numbers |
@@ -528,6 +553,23 @@ Hashed per-run indexes under `.roko/events-by-run/` and
 | GET | `/api/runs/{run_id}/artifacts` | Evidence artifact metadata |
 | GET | `/api/runs/{run_id}/screenshots` | Screenshot manifest (metadata only) |
 | GET | `/api/runs/{run_id}/bundle` | Evidence-bundle manifest (no download) |
+
+A run never commits into the operator's checkout. When its tasks ran in their
+own git worktrees, its verified work is on the batch branch
+`roko/batch/<run_id>`, started at the checkout's `HEAD`, and an ended run's
+summary says so in `result` (gap-8409d0): the `branch`, its tip `commit`, the
+`base` it started from (the run manifest's `workspace.base_commit`, else a
+plan's `roko.batch@1` checkpoint record), `files_changed` (the first 50) and
+`diffstat` (`files`, `insertions`, `deletions`) from that base, and `merged`,
+whether the checkout's `HEAD` already has the work. A run promoted with
+`--promote` adds `tag` (`roko/run/<run_id>`) and `promoted_into`; otherwise,
+while the checkout lacks the work, `merge_command` is the command that takes it
+(`git merge --ff-only <branch>`, or `git merge <branch>` once `HEAD` moved on).
+`fixture` is true when every plan the run ran is a fixture, a demo or test plan
+(gap-8f84d1): its output belongs on its branch, so a host should not offer to
+merge it.
+`result` is absent while the run is active, and for a run with no batch branch
+in this workspace, such as one whose tasks ran in the shared working tree.
 | POST | `/api/runs/{run_id}/share` | Mint a share link for the run (`admin` scope, see 3.2). Body: `{"public": bool, "no_expire": bool, "prompt": "…"}`, the prompt run once when the run does not exist. A link expires after `serve.share_ttl_days` (7); `no_expire` asks for one that never does, and only a server bound to loopback grants it (400 on any other bind) |
 | GET | `/api/shared/{token}` | Public shared transcript (opaque token) |
 | GET | `/runs/{token}` (no `/api/` prefix) | Self-contained shareable run page |
@@ -1080,11 +1122,11 @@ routing stays with the ladder.
 |------|-----------|---------|
 | `run_status` | `run_id` (string, required); `wait_secs` (integer, 0 to 30, default 0) | The run's summary, as `GET /api/runs/{run_id}/summary` returns it, once its state changes, it has ended, or `wait_secs` pass; for a `plan_generate` run, the operation's state and result |
 | `recall` | `query` (string, required); `limit` (integer, 1 to 50, default 5) | The knowledge store's entries on `query`, most relevant first, as `GET /api/knowledge` returns them |
-| `run_prompt` | `prompt` (string, required); `domain` (string); `max_usd` (number above 0, required) | A gated one-task run of the prompt, as `POST /api/run` starts it (409 while a plan run is live) |
+| `run_prompt` | `prompt` (string, required); `domain` (string); `max_usd` (number above 0, required) | A gated one-task run of the prompt, as `POST /api/run` starts it, or its place in the run queue (`state: "queued"`, `position`) while another run holds the workspace; refused before it gets an id when the queue is full or a run outside the server holds the workspace |
 | `plan_run` | `plan_id` (string, required); `resume` (boolean, default false); `max_usd` (number above 0, required) | A run of the plan, or its place in the queue (`state: "queued"`, `position`), as `POST /api/plans/{id}/execute` starts it |
 | `plan_generate` | `prompt` (string, required) | The planner's operation as `run_id` and the new plan's `plan_id`, as `POST /api/plans/generate` starts it |
-| `run_cancel` | `run_id` (string, required) | A `run_prompt` run stopped, or a live or queued plan run cancelled, as `POST /api/plans/{id}/cancel` cancels it |
-| `confirm_pending` | `run_id` (string, required) | `{ pending: [...] }`: the outcomes the run's tasks wait for their person to confirm (a `confirm` rung, 9137), each with `plan_id`, `task_id`, `title`, `attempt_key`, `question`, `summary` and `held_at`. Read-only |
+| `run_cancel` | `run_id` (string, required) | A `run_prompt` run stopped or taken out of the run queue, or a live or queued plan run cancelled, as `POST /api/plans/{id}/cancel` cancels it |
+| `confirm_pending` | `run_id` (string, required) | `{ pending: [...] }`: the outcomes the run's tasks wait for their person to confirm (a `confirm` rung, 9137), each with `plan_id`, `task_id`, `title`, `attempt_key`, `question`, `summary`, `held_at`, the rung's `timeout_secs` and `deadline_at` (`held_at` plus the timeout, RFC 3339: when the rung stops waiting and the task ends unverified; null for a hold without a timeout). Read-only |
 | `confirm_answer` | `run_id`, `task_id`, `attempt_key` (strings, required); `approve` (boolean, required); `note` (string) | The person's answer recorded in the review log, as `POST /api/plans/{id}/tasks/{task_id}/review` records a decision: a yes passes the rung as `confirmed_by_user`, a no fails the attempt with the note as its feedback. `write` scope; a task that waits for no such confirmation is an error |
 | `effects_pending` | `run_id` (string) | The tool calls runs hold for approval under a `stage` outbound policy (9131), as `GET /api/effects` lists them: each with `effect_id`, `tool`, `server`, `arguments` summarised without their values (each field's type, a string's length) and `proposed_at`, plus the decisions made. Read-only |
 | `effect_decide` | `effect_id` (string, required); `approve` (boolean, required); `note` (string) | The decision, as `POST /api/effects/{id}/decision` makes it (9138): an approval applies the call once and runs its receipt rungs, a rejection drops it; answers the decision's record with the result and the receipt verdicts. `write` scope, annotated `destructiveHint: true`, `openWorldHint: true`; a decided or unknown effect is an error |

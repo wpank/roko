@@ -52,6 +52,7 @@ pub mod fswatcher;
 #[cfg(feature = "groups")]
 pub mod group_runtime;
 pub mod integrations;
+pub mod interrupted_runs;
 pub mod job_runner;
 pub mod jwks;
 pub mod openapi;
@@ -63,6 +64,7 @@ pub mod rbac;
 pub mod relay;
 pub mod retention;
 pub mod routes;
+pub mod run_end;
 pub mod runtime;
 pub mod runtime_event_bridge;
 pub mod sanitize;
@@ -168,6 +170,9 @@ pub struct ServerBuildConfig {
     /// local CLI commands can authenticate without a full API key.
     /// The token is **never** written to `serve.json` or any log.
     pub launch_token: Option<String>,
+    /// `--enable-terminal`: the terminal routes are on whatever `[serve]`
+    /// says, for the server's life ([`Self::with_terminal_enabled`]).
+    pub enable_terminal: bool,
 }
 
 impl ServerBuildConfig {
@@ -189,6 +194,29 @@ impl ServerBuildConfig {
             metrics: None,
             advertise_endpoint: false,
             launch_token: None,
+            enable_terminal: false,
+        }
+    }
+
+    /// Turn the terminal routes on whatever `[serve]` says (`--enable-terminal`),
+    /// and keep them on when `roko.toml` is reloaded.
+    #[must_use]
+    pub fn with_terminal_enabled(mut self, enabled: bool) -> Self {
+        self.enable_terminal = enabled;
+        if enabled {
+            self.roko_config.serve.terminal_enabled = true;
+        }
+        self
+    }
+
+    /// The settings this server takes from its command line instead of from
+    /// `roko.toml`, which a reload of the file keeps (bug-3eec27).
+    #[must_use]
+    pub fn config_overrides(&self) -> state::ConfigOverrides {
+        state::ConfigOverrides {
+            bind: self.bind.clone(),
+            port: self.port,
+            terminal_enabled: self.enable_terminal,
         }
     }
 
@@ -341,6 +369,10 @@ impl ServerBuilder {
     #[allow(clippy::missing_panics_doc)]
     pub async fn start_background(mut self) -> Result<(Arc<AppState>, JoinHandle<Result<()>>)> {
         normalize_serve_dispatch_config(&mut self.config.roko_config)?;
+        // The command line's settings stand in for the file's, now and in
+        // every config reloaded from disk (bug-3eec27).
+        let overrides = self.config.config_overrides();
+        overrides.apply(&mut self.config.roko_config);
 
         // AppState is the authorization source of truth after startup, so it
         // must carry the actual listener bind rather than the pre-override file
@@ -390,6 +422,7 @@ impl ServerBuilder {
                 .as_ref()
                 .ok_or_else(|| anyhow::anyhow!("server state not initialized"))?,
         );
+        state.set_config_overrides(overrides);
         let roko_config = state.load_roko_config();
         validate_bind_safety(&addr, &roko_config.serve)?;
         let passphrase_hash = std::env::var(PASSPHRASE_HASH_ENV).ok();
@@ -422,6 +455,7 @@ impl ServerBuilder {
         if let Err(err) = state.restore_snapshot().await {
             warn!(error = %err, "failed to restore server state snapshot; starting fresh");
         }
+        settle_interrupted_runs(&state).await;
         for feed_id in [
             "file-watch-roko-dir",
             "provider-health-feed",
@@ -951,6 +985,13 @@ pub(crate) fn warn_if_auth_misconfigured(auth: &roko_core::config::ServeAuthConf
     let has_named_keys = !auth.api_keys.is_empty();
     let has_privy =
         auth.privy_app_id.is_some() && crate::routes::middleware::privy_allow_list_configured(auth);
+    if has_privy && !auth.privy_allowed_users.is_empty() {
+        tracing::info!(
+            count = auth.privy_allowed_users.len(),
+            "Privy JWT auth: {} user id(s) individually allow-listed via serve.auth.privy_allowed_users",
+            auth.privy_allowed_users.len()
+        );
+    }
     if auth.privy_app_id.is_some() && !has_privy {
         tracing::warn!("{}", crate::routes::middleware::PRIVY_ALLOW_LIST_HINT);
     }
@@ -1043,6 +1084,11 @@ pub async fn run_server_with_state(state: Arc<AppState>, bind: &str, port: u16) 
     normalize_serve_dispatch_config(&mut roko_config)?;
     roko_config.server.bind = bind.to_string();
     state.store_roko_config(roko_config.clone());
+    // The listener's bind holds for the server's life (bug-3eec27).
+    state.set_config_overrides(state::ConfigOverrides {
+        bind: Some(bind.to_string()),
+        ..state.config_overrides().as_ref().clone()
+    });
 
     let addr = format!("{bind}:{port}");
     validate_bind_safety(&addr, &roko_config.serve)?;
@@ -1059,6 +1105,7 @@ pub async fn run_server_with_state(state: Arc<AppState>, bind: &str, port: u16) 
     if let Err(err) = state.restore_snapshot().await {
         warn!(error = %err, "failed to restore server state snapshot; starting fresh");
     }
+    settle_interrupted_runs(&state).await;
     let _github_event_subscriber = events::start_github_event_subscriber(Arc::clone(&state));
     let _telemetry_producer_bridge = start_telemetry_producer_bridge(Arc::clone(&state));
     start_builtin_event_sources(Arc::clone(&state), roko_config.clone());
@@ -1118,6 +1165,24 @@ pub async fn run_server_with_state(state: Arc<AppState>, bind: &str, port: u16) 
 
     info!("server stopped");
     Ok(())
+}
+
+/// End the runs whose roko process stopped while they ran, a machine restart
+/// or a crash (bug-dceafd), before the server answers: each reads
+/// `interrupted` from then on, so no host shows it running or holds its
+/// budget.
+async fn settle_interrupted_runs(state: &AppState) {
+    let workdir = state.workdir.clone();
+    match tokio::task::spawn_blocking(move || interrupted_runs::settle_open_runs(&workdir)).await {
+        Ok(settled) if !settled.is_empty() => warn!(
+            runs = ?settled,
+            "closed {} run(s) as interrupted: roko stopped while they were going (machine restart \
+             or crash)",
+            settled.len()
+        ),
+        Ok(_) => {}
+        Err(error) => warn!(%error, "could not look for runs whose roko process stopped"),
+    }
 }
 
 fn normalize_serve_dispatch_config(config: &mut RokoConfig) -> Result<()> {
@@ -2385,9 +2450,12 @@ fn dashboard_event_to_server(event: &roko_core::DashboardEvent) -> Option<Server
         DashboardEvent::FeedAgentOffline { agent_id } => Some(ServerEvent::FeedAgentOffline {
             agent_id: agent_id.clone(),
         }),
-        // Not bridged (bug-bfdb9a). `RunCompleted` names no run, which
-        // `ServerEvent::RunCompleted` needs, and `ChainContractEvent` does not
-        // say whether the raw log evidence was published.
+        // Not bridged. roko serve sends each run's `run_completed` itself, from
+        // the path that settled the run (`routes/run.rs` for prompt runs,
+        // `run_control.rs` for plan runs, gap-6f0eca), with the verdict this
+        // event lacks; bridging it too would deliver every end twice.
+        // `ChainContractEvent` does not say whether the raw log evidence was
+        // published (bug-bfdb9a).
         DashboardEvent::RunCompleted { .. } | DashboardEvent::ChainContractEvent { .. } => None,
         // Dashboard state the server stream has no event for: the dashboard's
         // own stream and snapshot carry it. The match lists every variant, so
@@ -2415,6 +2483,11 @@ fn dashboard_event_to_server(event: &roko_core::DashboardEvent) -> Option<Server
         | DashboardEvent::InboxDismiss { .. }
         | DashboardEvent::AgentHeartbeat { .. }
         | DashboardEvent::GateRungStarted { .. }
+        | DashboardEvent::PlanCheckStarted { .. }
+        | DashboardEvent::PlanCheckHeartbeat { .. }
+        | DashboardEvent::PlanCheckFinished { .. }
+        | DashboardEvent::DeliveryStarted { .. }
+        | DashboardEvent::DeliveryFinished { .. }
         | DashboardEvent::AffectUpdated { .. }
         | DashboardEvent::AgentTopologyUpdated { .. }
         | DashboardEvent::CriticalPathEtaUpdated { .. }
@@ -2425,6 +2498,17 @@ fn dashboard_event_to_server(event: &roko_core::DashboardEvent) -> Option<Server
         | DashboardEvent::EvUpdate { .. }
         | DashboardEvent::M1Episode { .. }
         | DashboardEvent::SelfModelCalibration { .. }
+        | DashboardEvent::RouteDecided { .. }
+        | DashboardEvent::PromptAssembled { .. }
+        | DashboardEvent::RetryFeedback { .. }
+        | DashboardEvent::AttemptSettled { .. }
+        | DashboardEvent::LadderExhausted { .. }
+        | DashboardEvent::KnowledgeWritten { .. }
+        | DashboardEvent::PlaybookWritten { .. }
+        | DashboardEvent::EffectStaged { .. }
+        | DashboardEvent::EffectDecided { .. }
+        | DashboardEvent::ConfirmWaiting { .. }
+        | DashboardEvent::ConfirmResolved { .. }
         | DashboardEvent::SnapshotRebased { .. } => None,
     }
 }
@@ -4845,6 +4929,38 @@ mod tests {
 
         assert_eq!(build.synchronize_effective_bind(), "127.0.0.1");
         assert_eq!(build.roko_config.server.bind, "127.0.0.1");
+    }
+
+    /// bug-3eec27: what serve takes from its command line is what a reload
+    /// of roko.toml keeps.
+    #[test]
+    fn command_line_settings_are_the_config_overrides() {
+        let dir = tempdir().expect("tempdir");
+        let build = ServerBuildConfig::new(
+            dir.path().to_path_buf(),
+            Arc::new(NoOpRuntime),
+            roko_core::config::schema::RokoConfig::default(),
+            Some("127.0.0.1".to_string()),
+            Some(6791),
+        )
+        .with_terminal_enabled(true);
+        assert!(build.roko_config.serve.terminal_enabled);
+        let overrides = build.config_overrides();
+        assert_eq!(
+            overrides,
+            crate::state::ConfigOverrides {
+                bind: Some("127.0.0.1".to_string()),
+                port: Some(6791),
+                terminal_enabled: true,
+            }
+        );
+        let mut config = roko_core::config::schema::RokoConfig::default();
+        overrides.apply(&mut config);
+        assert_eq!(
+            (config.server.bind.as_str(), config.server.port),
+            ("127.0.0.1", 6791)
+        );
+        assert!(config.serve.terminal_enabled);
     }
 
     #[test]

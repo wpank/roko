@@ -79,7 +79,19 @@ pub struct PlanGenerationResult {
     pub plan_targets: Vec<PathBuf>,
     /// Plan-related files to attach to the job submission.
     pub artifacts: Vec<PathBuf>,
+    /// What writing the plan cost, in USD (bug-a0432b).
+    #[serde(default)]
+    pub cost_usd: f64,
+    /// What became of the checks the request states, each kept as a verify
+    /// step, dropped with a reason or missing (gap-dc5d7c); `None` when it
+    /// states none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_checks: Option<serde_json::Value>,
 }
+
+/// Where a long operation reports what it is doing, as a JSON object, each
+/// time it moves on (gap-11d870): the operation's status shows the latest.
+pub type ProgressReporter = std::sync::Arc<dyn Fn(serde_json::Value) + Send + Sync>;
 
 /// Structured gate result collected while executing a plan.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -248,6 +260,14 @@ pub const CHAT_REQUEST_OPEN: &str = "<<<CHAT REQUEST>>>";
 /// The line that closes a chat host's request.
 pub const CHAT_REQUEST_CLOSE: &str = "<<<END CHAT REQUEST>>>";
 
+/// The paragraph that opens the overview `plan.md` of gap-11d870.
+///
+/// The plan generator writes that overview when the planner writes no
+/// `plan.md`; serve looks for this paragraph to keep the overview's title in
+/// step with the name a host gives the plan (bug-1602d4).
+pub const PLAN_OVERVIEW_INTRO: &str = "roko wrote this overview from the plan's `tasks.toml`, \
+     because the planner wrote no `plan.md`. Where the two differ, `tasks.toml` decides.";
+
 /// Options for a prompt run through [`CliRuntime::run_prompt_plan`].
 #[derive(Debug, Clone, Default)]
 pub struct PromptPlanOptions {
@@ -263,6 +283,13 @@ pub struct PromptPlanOptions {
     pub max_usd: Option<f64>,
     /// Where the run's request came from (9116).
     pub origin: RunOrigin,
+    /// The live agent output the run publishes while its attempts run: the
+    /// server's effective `[serve] live_agent_output`, as a plan run's
+    /// (gap-5fda00). `None` publishes tool steps only.
+    pub live_agent_output: Option<roko_core::config::serve::LiveAgentOutput>,
+    /// The run's name for people, such as a chat host gives it (gap-c2efe7).
+    /// `None` names it by its request's first sentence.
+    pub title: Option<String>,
 }
 
 /// How a prompt run through [`CliRuntime::run_prompt_plan`] ended.
@@ -537,6 +564,16 @@ pub trait CliRuntime: Send + Sync + 'static {
         anyhow::bail!("runtime does not support prompt plan runs")
     }
 
+    /// Who holds `workdir`'s plan executor outside this server, as a short
+    /// description, or `None` when it is free (gap-9a8d66): a `roko plan run`
+    /// in a terminal takes the runner lock a prompt run needs. Asked before a
+    /// prompt run is handed its id, never while a run of this server holds
+    /// the lock. The default knows of none.
+    fn runner_lock_holder(&self, workdir: &std::path::Path) -> Option<String> {
+        let _ = workdir;
+        None
+    }
+
     /// Generate the plan `slug` from a request's text (a prompt, or a
     /// written spec) with the plan generator.
     ///
@@ -551,6 +588,41 @@ pub trait CliRuntime: Send + Sync + 'static {
     ) -> anyhow::Result<PlanGenerationResult> {
         let _ = (workdir, slug, prompt);
         anyhow::bail!("runtime does not support plan generation")
+    }
+
+    /// [`Self::generate_plan_from_prompt`] for a request a chat host made
+    /// (bug-7a08a8). Nobody reviews such a plan before it runs, so the
+    /// planner decides its open questions itself. The default plans it as any
+    /// other request.
+    async fn generate_plan_for_chat_host(
+        &self,
+        workdir: &std::path::Path,
+        slug: &str,
+        prompt: &str,
+    ) -> anyhow::Result<PlanGenerationResult> {
+        self.generate_plan_from_prompt(workdir, slug, prompt).await
+    }
+
+    /// [`Self::generate_plan_for_chat_host`] when `for_chat_host`, else
+    /// [`Self::generate_plan_from_prompt`], reporting what the generation is
+    /// doing to `progress` each time it moves on (gap-11d870): a JSON object
+    /// with its `stage`, `attempt` of `attempts`, `reason`, `model`, `calls`
+    /// and `cost_usd` so far. The default reports nothing.
+    async fn generate_plan_reporting(
+        &self,
+        workdir: &std::path::Path,
+        slug: &str,
+        prompt: &str,
+        for_chat_host: bool,
+        progress: ProgressReporter,
+    ) -> anyhow::Result<PlanGenerationResult> {
+        let _ = progress;
+        if for_chat_host {
+            self.generate_plan_for_chat_host(workdir, slug, prompt)
+                .await
+        } else {
+            self.generate_plan_from_prompt(workdir, slug, prompt).await
+        }
     }
 
     /// Execute a plan target.
@@ -743,6 +815,21 @@ pub trait CliRuntime: Send + Sync + 'static {
     ) -> anyhow::Result<Option<PlanTasksDto>> {
         let _ = (workdir, plan_id);
         anyhow::bail!("runtime does not support plan discovery")
+    }
+
+    /// Estimate the cost and time of the remaining tasks of plan `plan_id`
+    /// (gap-6605f7): each priced on the rung dispatch would start it on, with
+    /// its likely and worst case.
+    ///
+    /// Returns `Ok(None)` when the plan does not exist. The default returns
+    /// an explicit error so callers can detect unsupported runtimes.
+    async fn estimate_plan(
+        &self,
+        workdir: &std::path::Path,
+        plan_id: &str,
+    ) -> anyhow::Result<Option<roko_learn::task_estimate::PlanEstimate>> {
+        let _ = (workdir, plan_id);
+        anyhow::bail!("runtime does not support plan estimates")
     }
 
     /// Return the raw TOML source of a plan's `tasks.toml`.

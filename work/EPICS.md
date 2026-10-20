@@ -6,26 +6,26 @@ Progress per epic: its children (items whose `parent` is the epic, plus its `dep
 
 ## [spec-ae5f94](items/spec-ae5f94-epic-release-blockers.md) release blockers
 
-- **20/24 closed** · goal `release` · severity p0
-- open by lane: none 3, rust-cold 1
+- **22/25 closed** · goal `release` · severity p0
+- open by lane: none 3
 - next: [find-8cc7ac](items/find-8cc7ac-some-github-workflows-fail-on-main-and.md) Some GitHub workflows fail on main and required checks are undefined
 
 ## [spec-ba7bea](items/spec-ba7bea-epic-secrets-and-git-guard.md) secrets and git guard
 
-- **31/33 closed** · goal `release` · severity p0
-- open by lane: rust-cold 2
-- next: none ready (2 unverified)
+- **31/34 closed** · goal `release` · severity p0
+- open by lane: rust-cold 2, none 1
+- next: [bug-ae5d22](items/bug-ae5d22-secrets-are-redacted-only-after-text-is.md) Secrets are redacted only after text is cut, collapsed or lowercased, so a live tool-step target or a playbook's topic terms can keep part of one
 
 ## [spec-f8d196](items/spec-f8d196-epic-research-paper-companion-report-and-tl.md) research paper, companion report and TL;DR upkeep
 
-- **37/39 closed** · goal `whitepaper` · severity p1
-- open by lane: paper 2
-- next: none ready (2 unverified)
+- **41/42 closed** · goal `whitepaper` · severity p1
+- open by lane: paper 1
+- next: none ready (1 unverified)
 
 ## [spec-ce1484](items/spec-ce1484-epic-whitepaper-v1.md) whitepaper v1
 
-- **25/27 closed** · goal `whitepaper` · severity p1
-- open by lane: paper 2
+- **27/28 closed** · goal `whitepaper` · severity p1
+- open by lane: paper 1
 - next: [gap-8117a8](items/gap-8117a8-publish-the-whitepaper-pdf-build-release-tag.md) Publish the whitepaper: PDF build, release tag and venue
 
 ## [spec-f09094](items/spec-f09094-epic-golden-path-acceptance-tests.md) golden-path acceptance tests
@@ -36,27 +36,31 @@ Progress per epic: its children (items whose `parent` is the epic, plus its `dep
 
 ## [spec-e57870](items/spec-e57870-epic-specs-a-cheap-model-can-execute.md) specs a cheap model can execute
 
-- **19/21 closed** · goal `golden-path` · severity p1
-- open by lane: docs 1, none 1
-- next: [find-70edcb](items/find-70edcb-df-0926-r-1-r-5-plan.md) Plan generation/validation does not flag weak verify gates
+- **20/21 closed** · goal `golden-path` · severity p1
+- open by lane: none 1
+- next: none ready (1 on hold)
 
 ## [spec-567e52](items/spec-567e52-epic-pilot-benchmark.md) pilot benchmark
 
-- **53/65 closed** · goal `proof` · severity p1
-- open by lane: bench 12
-- next: [gap-a2f86a](items/gap-a2f86a-f7-s-in-tree-cargo-target-build.md) F7's in-tree .cargo-target build directory lands in commit_final's archived c_i
+- **58/69 closed** · goal `proof` · severity p1
+- open by lane: bench 11
+- next: [gap-b94a2c](items/gap-b94a2c-a-sandboxed-agent-still-reads-any-same.md) A sandboxed agent still reads any same-user process's start-up environment with sysctl(KERN_PROCARGS2), and no sandbox-exec rule stops it
 
 ## [spec-6ac537](items/spec-6ac537-epic-cybernetic-core.md) cybernetic core
 
-- **27/28 closed** · goal `cybernetic` · severity p2
-- open by lane: rust-hot 1
-- next: none ready (1 unverified)
+- **30/30 closed** · goal `cybernetic` · severity p2
+
+## [spec-7a71d6](items/spec-7a71d6-epic-turn-the-cybernetic-layer-on-in.md) turn the cybernetic layer on in safe stages
+
+- **18/28 closed** · goal `cybernetic` · severity p2
+- open by lane: rust-hot 6, rust-cold 4
+- next: [bug-92cc56](items/bug-92cc56-the-calibration-gate-s-routed-pass-rate.md) The calibration gate's routed-pass-rate bound has no routed outcome until the self-model routes, and it routes only once the gate is eligible, so M3 can never become eligible
 
 ## [spec-1e1b45](items/spec-1e1b45-epic-tracker-tooling-for-parallel-work.md) tracker tooling for parallel work
 
-- **6/8 closed** · goal `tooling` · severity p1
-- open by lane: tracker 2
-- next: [gap-25065c](items/gap-25065c-import-the-rest-of-the-research-programme.md) Import the rest of the research programme's checklist as unverified work items
+- **7/8 closed** · goal `tooling` · severity p1
+- open by lane: tracker 1
+- next: [gap-d6fd3c](items/gap-d6fd3c-install-the-work-skills-at-user-level.md) Install the work skills at user level so sessions in worktrees get them
 
 ## [spec-9a3131](items/spec-9a3131-epic-hygiene-and-cheap-wins.md) hygiene and cheap wins
 
@@ -100,12 +104,12 @@ Progress per epic: its children (items whose `parent` is the epic, plus its `dep
 
 | Lane | Closed | Total | Open (verified) |
 |---|---|---|---|
-| bench | 82 | 120 | 38 (29) |
-| docs | 20 | 25 | 5 (4) |
-| frontend | 3 | 6 | 3 (3) |
-| none | 355 | 440 | 85 (84) |
-| paper | 61 | 78 | 17 (14) |
-| rust-cold | 235 | 265 | 30 (21) |
-| rust-hot | 223 | 243 | 20 (17) |
+| bench | 111 | 150 | 39 (28) |
+| docs | 27 | 31 | 4 (3) |
+| frontend | 7 | 9 | 2 (2) |
+| none | 468 | 567 | 99 (93) |
+| paper | 77 | 86 | 9 (7) |
+| rust-cold | 258 | 314 | 56 (47) |
+| rust-hot | 263 | 296 | 33 (31) |
 | tests | 1 | 1 | 0 (0) |
-| tracker | 21 | 24 | 3 (2) |
+| tracker | 26 | 29 | 3 (2) |

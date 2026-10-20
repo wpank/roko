@@ -90,11 +90,13 @@ execute, so the planner is chosen apart from the models that run tasks.
 ```toml
 [authoring]
 planner_model = "claude-opus-4-6"   # a key from [models], or a builtin slug
+max_generation_usd = 2.0            # what one plan writing may spend
 ```
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `planner_model` | String | `""` (unset) | Model for every plan generate and revise path: `roko plan generate` / `regenerate`, `roko run --plan` and the plan-writing sizes of `roko run`, and the serve runtime's generate and revise |
+| `max_generation_usd` | Float | `2.0` | What one plan generation's planner calls may cost together, in USD. Once they have, the generation makes no further call: a retry it needs stops it with an error that names the cap, and an improvement it would ask for (hidden runner output, missing source checks, spec quality) is skipped. `0` sets no cap; `roko plan generate --max-usd` overrides it. The cap shows in the generation's progress (`max_usd`) |
 
 Precedence (`model_selection::resolve_planner_model`): `--model`, then
 `[authoring] planner_model`, then `[agent.roles.strategist] model`, then
@@ -141,6 +143,7 @@ connect_timeout_ms = 5000
 | `max_concurrent` | Option\<usize\> | None | Concurrency limit |
 | `limits` | Option\<ProviderLimits\> | None | Rate limits and resource constraints |
 | `require_confirmation` | bool | false | Require user confirmation before dispatch |
+| `stream_usage` | Option\<bool\> | None | Whether a streaming request to an OpenAI-compatible server asks it to report usage (`stream_options.include_usage`). Unset means yes; set `false` for a server that rejects the field (backlog 2101) |
 | `billing` | Option\<String\> | None | CLI providers: `"subscription"` bills each attempt $0, `"metered"` bills the CLI's own cost figure; unset leaves the billed amount unknown (`cost.billed_usd`) |
 
 Provider kinds: `anthropic_api`, `claude_cli`, `codex_cli`, `openai_compat`,
@@ -241,6 +244,32 @@ and never fails the task, so no verify step runs it. A `judge` rung advises unle
 
 ---
 
+## `[pricing]` -- PricingConfig
+
+The dated price snapshot behind API-equivalent costs (decision 2113; S04 §4.8, S08 §5.6). A
+snapshot is a TOML file, `config/prices/<date>.toml`, with the schema `roko.price_snapshot/1` and
+the id `prices-<date>`: one row of rates per model, in USD per 1M tokens. Snapshots are
+immutable -- a rate change means a new dated file with a new id. Defaults come from
+`PricingConfig` (`crates/roko-core/src/pricing_snapshot.rs`).
+
+```toml
+[pricing]
+snapshot = "prices-2026-09-28"   # config/prices/2026-09-28.toml
+```
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `snapshot` | String | `""` (unset) | Snapshot id, `prices-<date>`. Empty means unset |
+
+Resolution order (`PriceSnapshot::for_workspace`): the id `[pricing] snapshot` names, else the
+newest file in the workspace's `config/prices/`, else the copy built into the binary
+(`BUILTIN_SNAPSHOT_ID`, the newest file in this repository's `config/prices/` when the binary was
+built). `PriceSnapshot::price` returns `None` for a model the snapshot has no row for -- its cost
+is unknown, never another model's rate. `snapshot` is a string rather than an `Option` so the key
+survives the loader, which drops keys the serialized default config lacks.
+
+---
+
 ## `[conductor]` -- ConductorConfig
 
 | Field | Type | Default | Description |
@@ -303,6 +332,27 @@ The `dreams` and `knowledge` fields are the two sub-tables below.
 | `working_contexts` | u32 | 3 | Distinct contexts for Working -> Consolidated promotion. No effect |
 | `consolidated_age_days` | u32 | 14 | Minimum age in days for Consolidated -> Persistent promotion. No effect |
 | `demotion_balance_threshold` | f64 | 0.1 | Minimum balance before an entry is considered for demotion. No effect |
+
+---
+
+## `[experiments]` -- ExperimentsConfig
+
+How a run randomises its learning loops on real work (S02 §4.1, decision 4115). Graph dispatch
+draws each task chain's arm set at attempt open: whether the chain's prompts get knowledge,
+playbooks, the sections a bandit may drop, a prompt variant, and the placebo's arm. This table
+turns that off for must-succeed runs, or pins arms. Defaults come from `ExperimentsConfig`
+(`crates/roko-core/src/config/experiments.rs`).
+
+```toml
+[experiments]
+maximize = true
+force_arms = { knowledge = "default" }
+```
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `maximize` | bool | `false` | Maximize mode, for runs that must succeed: every holdout rate and the routing exploration rate are 0, so no loop is withheld and no route explores. Decisions are still logged. `roko plan run --no-holdout` turns it on for one run |
+| `force_arms` | BTreeMap\<String, String\> | `{}` | Layers pinned to an arm, by layer name (`knowledge`) or loop id (`L-know`): `learned`, `default` or `global_off`. Estimates leave the chains of such a run out |
 
 ---
 

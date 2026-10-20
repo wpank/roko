@@ -101,6 +101,7 @@ async fn openapi_json() -> Json<utoipa::openapi::OpenApi> {
         run_status,
         run_observability_detail,
         run_observability_summary,
+        run_observability_diff,
         run_observability_events,
         run_observability_event_stream,
         run_observability_tasks,
@@ -711,6 +712,12 @@ doc_get_param!(
 doc_get_param!(
     run_observability_summary,
     "/runs/{run_id}/summary",
+    "run-observability",
+    "run_id"
+);
+doc_get_param!(
+    run_observability_diff,
+    "/runs/{run_id}/diff",
     "run-observability",
     "run_id"
 );

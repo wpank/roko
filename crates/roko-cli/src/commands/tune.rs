@@ -98,6 +98,32 @@ pub(crate) enum ConfigPresetCmd {
         #[arg(long, conflicts_with = "global")]
         project: bool,
     },
+    /// Make this workspace ready for runs a chat host (Hermes, OpenClaw)
+    /// starts over roko serve's /mcp: give roko.toml the data-model boundary
+    /// they need, [agent.data_llm] with a model roko calls over an API with its
+    /// key set (one on its maker's own API first, then the cheapest), keeping
+    /// the file's comments. It writes only the
+    /// project's roko.toml, never the global config.
+    ChatHost {
+        /// Working directory (default: cwd).
+        #[arg(long)]
+        workdir: Option<PathBuf>,
+        /// Show the change as a diff of roko.toml without writing it.
+        #[arg(long)]
+        dry_run: bool,
+        /// Skip interactive confirmation.
+        #[arg(short = 'y', long)]
+        yes: bool,
+        /// For local use: let runs chat hosts start go without the data-model
+        /// boundary ([serve.mcp] allow_without_data_llm = true), so what they
+        /// read is not screened.
+        #[arg(long)]
+        allow_without_data_llm: bool,
+        /// The data model to use, a [models.*] key or slug, instead of the
+        /// cheapest one roko calls over an API with its key set.
+        #[arg(long, value_name = "MODEL", conflicts_with = "allow_without_data_llm")]
+        data_llm_model: Option<String>,
+    },
     /// Set the default model from configured models.
     Model {
         /// Model key or alias (e.g. sonnet, haiku).
@@ -197,6 +223,21 @@ struct PresetDiffJson {
 pub(crate) async fn cmd_config_preset(cli: &Cli, cmd: ConfigPresetCmd) -> Result<i32> {
     let (label, workdir, dry_run, yes, global) = preset_common_args(cli, &cmd);
     let json = cli.json;
+    if let ConfigPresetCmd::ChatHost {
+        allow_without_data_llm,
+        data_llm_model,
+        ..
+    } = &cmd
+    {
+        return cmd_chat_host_preset(
+            &workdir,
+            dry_run,
+            yes,
+            json,
+            *allow_without_data_llm,
+            data_llm_model.as_deref(),
+        );
+    }
 
     let target_label = if global { "global" } else { "project" };
 
@@ -220,6 +261,7 @@ pub(crate) async fn cmd_config_preset(cli: &Cli, cmd: ConfigPresetCmd) -> Result
                 value: resolved,
             }]
         }
+        ConfigPresetCmd::ChatHost { .. } => unreachable!("handled by cmd_chat_host_preset"),
     };
 
     // Dry-run: show diff and exit.
@@ -357,7 +399,116 @@ fn preset_common_args<'a>(
             *yes,
             *global,
         ),
+        ConfigPresetCmd::ChatHost {
+            workdir,
+            dry_run,
+            yes,
+            ..
+        } => (
+            "chat-host",
+            workdir.clone().unwrap_or_else(|| resolve_workdir(cli)),
+            *dry_run,
+            *yes,
+            false,
+        ),
     }
+}
+
+/// `roko config preset chat-host`: show, then write, the setting that lets
+/// chat hosts start runs in the workspace at `workdir`
+/// ([`roko_cli::chat_host`]). Only its `roko.toml` changes; roko serve reads
+/// that file again on its own, so it needs no restart.
+fn cmd_chat_host_preset(
+    workdir: &Path,
+    dry_run: bool,
+    yes: bool,
+    json: bool,
+    allow_without_data_llm: bool,
+    data_llm_model: Option<&str>,
+) -> Result<i32> {
+    use roko_cli::chat_host;
+
+    let preset =
+        chat_host::prepare_chat_host_preset(workdir, allow_without_data_llm, data_llm_model)?;
+    let change = !preset.diff.is_empty();
+    let path = preset.path.display().to_string();
+    let setting = preset
+        .edit
+        .as_ref()
+        .map(|edit| format!("{} = {}", edit.key, edit.value));
+    if change && !dry_run && !yes {
+        if !std::io::stdin().is_terminal() {
+            bail!(
+                "non-interactive mode requires --yes to write {path}; --dry-run shows the change"
+            );
+        }
+        println!("{}", preset.diff.trim_end());
+        eprint!("Write this to {path}? [y/N] ");
+        let mut answer = String::new();
+        std::io::stdin().read_line(&mut answer)?;
+        if !answer.trim().eq_ignore_ascii_case("y") {
+            println!("aborted");
+            return Ok(EXIT_SUCCESS);
+        }
+    }
+    let written = change && !dry_run;
+    if written {
+        chat_host::write_chat_host_preset(&preset)?;
+    }
+    let commit = written && chat_host::roko_toml_uncommitted(workdir);
+    if json {
+        let mut output = serde_json::to_value(&preset)?;
+        output["preset"] = serde_json::json!("chat-host");
+        output["dry_run"] = serde_json::json!(dry_run);
+        output["written"] = serde_json::json!(written);
+        output["commit"] = serde_json::json!(commit);
+        println!("{}", serde_json::to_string_pretty(&output)?);
+        return Ok(EXIT_SUCCESS);
+    }
+    match &setting {
+        Some(setting) if written => println!("wrote {path}: {setting} ({})", preset.why),
+        Some(setting) => println!("chat-host preset for {path}: {setting} ({})", preset.why),
+        None => println!(
+            "chat-host preset: nothing to change in {path}: {}",
+            preset.why
+        ),
+    }
+    if change {
+        println!("{}", preset.diff.trim_end());
+    }
+    if let Some(note) = &preset.note {
+        println!("note: {note}");
+    }
+    match (&preset.refusal, written) {
+        (None, true) => println!(
+            "chat hosts (Hermes, OpenClaw) can start runs here now; roko serve reads roko.toml \
+             again within 2 s, so it needs no restart"
+        ),
+        (None, false) => println!(
+            "chat hosts (Hermes, OpenClaw) can start runs here{}",
+            if change { " once this is written" } else { "" }
+        ),
+        (Some(refusal), _) => println!(
+            "chat hosts (Hermes, OpenClaw) still cannot start runs here ({}): {refusal}",
+            preset.refusals.join(", ")
+        ),
+    }
+    if change && !written {
+        println!("dry run: nothing written; apply it with `roko config preset chat-host --yes`");
+    }
+    if matches!(&preset.edit, Some(edit) if edit.key == "agent.data_llm.model") {
+        println!(
+            "another data model: --data-llm-model <model>; for local use without one: \
+             --allow-without-data-llm"
+        );
+    }
+    if commit {
+        println!(
+            "roko.toml now differs from what git has: commit it, so merging a run into this \
+             checkout finds no uncommitted change"
+        );
+    }
+    Ok(EXIT_SUCCESS)
 }
 
 /// Build gates preset edits.

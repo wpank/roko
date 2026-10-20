@@ -32,18 +32,11 @@ use roko_core::config::schema::{ModelProfile, ProviderConfig, RokoConfig};
 
 use crate::provider_health::{ErrorClass, ProviderHealthRegistry};
 
-/// Provider kinds that serve the same model family over another transport.
+/// Provider kinds that serve the same model family over another transport
+/// ([`ProviderKind::same_family`]).
 #[must_use]
 pub fn same_family_kinds(kind: ProviderKind) -> &'static [ProviderKind] {
-    match kind {
-        ProviderKind::ClaudeCli | ProviderKind::AnthropicApi => {
-            &[ProviderKind::ClaudeCli, ProviderKind::AnthropicApi]
-        }
-        ProviderKind::GeminiCli | ProviderKind::GeminiApi => {
-            &[ProviderKind::GeminiCli, ProviderKind::GeminiApi]
-        }
-        _ => &[],
-    }
+    kind.same_family()
 }
 
 /// CLI and ACP harnesses bring their own tools, so a profile's

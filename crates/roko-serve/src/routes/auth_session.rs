@@ -121,24 +121,42 @@ fn locked_response(locked: Locked) -> Response {
     (StatusCode::TOO_MANY_REQUESTS, retry_after, Json(body)).into_response()
 }
 
+/// A credential the session exchange accepted.
+#[derive(Debug, PartialEq, Eq)]
+struct ExchangedCredential {
+    /// Who it is, for the auth audit: `launch_token`, `api-key:<name>` or `api-key:legacy`.
+    actor: String,
+    /// The scope the credential itself carries, which the session inherits (bug-856656).
+    scope: String,
+}
+
+impl ExchangedCredential {
+    fn new(actor: impl Into<String>, scope: impl Into<String>) -> Self {
+        Self {
+            actor: actor.into(),
+            scope: scope.into(),
+        }
+    }
+}
+
 /// Validate a token against the launch token and all configured API keys.
 ///
-/// Returns `Some(actor_label)` on success (suitable for the auth audit), or
-/// `None` when the token does not match any accepted credential.
+/// Returns the credential that matched, with the scope it carries, or `None`
+/// when the token does not match any accepted credential.
 ///
-/// Matching order mirrors `require_api_key`:
-/// 1. Server launch token.
-/// 2. Named API keys (current hash + grace-period previous hashes).
-/// 3. Legacy single `api_key` from config.
+/// Matching order and scopes mirror `require_api_key`:
+/// 1. Server launch token: `admin`.
+/// 2. Named API keys (current hash + grace-period previous hashes): the key's own scope.
+/// 3. Legacy single `api_key` from config: `admin`.
 fn validate_token(
     token: &str,
     auth_config: &ServeAuthConfig,
     named_keys: &[ApiKeyEntry],
     state: &AppState,
-) -> Option<String> {
+) -> Option<ExchangedCredential> {
     // 1. Launch token — highest priority.
     if state.local_access.launch_token_matches(token) {
-        return Some("launch_token".to_string());
+        return Some(ExchangedCredential::new("launch_token", "admin"));
     }
 
     // 2. Named API keys.
@@ -154,12 +172,18 @@ fn validate_token(
                     return None;
                 }
             }
-            return Some(format!("api-key:{}", entry.name));
+            return Some(ExchangedCredential::new(
+                format!("api-key:{}", entry.name),
+                entry.scope.clone(),
+            ));
         }
         // Previous (rotated) hashes within their grace period.
         for (prev_hash, grace_expires) in &entry.previous_key_hashes {
             if prev_hash == &token_hash && parse_rfc3339(grace_expires).is_some_and(|e| e > now) {
-                return Some(format!("api-key:{}", entry.name));
+                return Some(ExchangedCredential::new(
+                    format!("api-key:{}", entry.name),
+                    entry.scope.clone(),
+                ));
             }
         }
     }
@@ -168,7 +192,7 @@ fn validate_token(
     if !auth_config.api_key.is_empty()
         && constant_time_eq(token.as_bytes(), auth_config.api_key.as_bytes())
     {
-        return Some("api-key:legacy".to_string());
+        return Some(ExchangedCredential::new("api-key:legacy", "admin"));
     }
 
     None
@@ -185,7 +209,9 @@ fn validate_token(
 ///
 /// On success returns **204 No Content** with
 /// `Set-Cookie: roko_session=<id>; HttpOnly; SameSite=Strict; Path=/`
-/// (plus `Secure` for HTTPS connections).
+/// (plus `Secure` for HTTPS connections). The session carries the scope of the
+/// credential it was minted from, so a `write` or `read` key never yields an
+/// `admin` session (bug-856656).
 ///
 /// On failure returns **401 Unauthorized** without setting a cookie. In showcase
 /// mode the request is a passphrase login instead ([`passphrase_login`]).
@@ -228,7 +254,7 @@ async fn create_session(State(state): State<Arc<AppState>>, req: Request) -> Res
     let auth_config = state.load_roko_config().serve.auth.clone();
     let named_keys = state.auth_registry.api_keys_snapshot().await;
 
-    let Some(actor) = validate_token(&token, &auth_config, &named_keys, &state) else {
+    let Some(credential) = validate_token(&token, &auth_config, &named_keys, &state) else {
         audit(
             &state,
             AuthAuditEvent::new(
@@ -241,15 +267,17 @@ async fn create_session(State(state): State<Arc<AppState>>, req: Request) -> Res
         return ApiError::unauthorized("invalid or missing credential").into_response();
     };
 
-    // Mint the session and build the cookie.
-    let session_id = state.local_access.create_session();
+    // Mint the session with the credential's own scope and build the cookie.
+    let session_id = state
+        .local_access
+        .create_scoped_session(&SessionGrant::exchange(&credential.scope), Utc::now());
     let https = is_https(&headers);
     let cookie_value = session_cookie(&session_id, https);
 
     audit(
         &state,
         AuthAuditEvent::new(
-            actor,
+            credential.actor,
             AuthAuditAction::Login,
             route_label,
             AuthOutcome::Success,
@@ -518,6 +546,105 @@ mod tests {
     }
 
     // ─── POST /api/auth/session ───────────────────────────────────────────────
+
+    /// A router whose state has the launch token `launch` and a named key of each `(plaintext,
+    /// scope)` in `keys`.
+    fn router_with_keys(
+        launch: Option<&str>,
+        keys: &[(&str, &str)],
+    ) -> (tempfile::TempDir, Arc<AppState>, axum::Router) {
+        let mut config = RokoConfig::default();
+        config.serve.auth.enabled = true;
+        config.serve.auth.api_keys = keys
+            .iter()
+            .map(|(plaintext, scope)| ApiKeyEntry {
+                name: format!("{scope}-key"),
+                key_hash: hash_api_key(plaintext),
+                scope: (*scope).to_string(),
+                created_at: "2026-10-12T00:00:00Z".into(),
+                expires_at: None,
+                last_used_at: None,
+                previous_key_hashes: Vec::new(),
+            })
+            .collect();
+        let dir = tempdir().expect("tempdir");
+        let deploy = Arc::from(create_backend("manual", None, None, None).expect("manual backend"));
+        let mut state = AppState::new(
+            dir.path().to_path_buf(),
+            Arc::new(NoOpRuntime),
+            config,
+            deploy,
+        )
+        .expect("AppState::new");
+        state.local_access = crate::state::LocalAccess::new(launch.map(str::to_string));
+        let state = Arc::new(state);
+        let router = routes().with_state(Arc::clone(&state));
+        (dir, state, router)
+    }
+
+    /// Exchange `credential` for a session and return the scope `GET /api/auth/session` reports.
+    async fn exchanged_scope(app: &axum::Router, credential: &str) -> Vec<String> {
+        let mint = Request::builder()
+            .method(Method::POST)
+            .uri("/api/auth/session")
+            .header("X-Api-Key", credential)
+            .body(Body::empty())
+            .expect("build request");
+        let minted = app.clone().oneshot(mint).await.expect("response");
+        assert_eq!(minted.status(), StatusCode::NO_CONTENT);
+        let session = extract_set_cookie_session(minted.headers()).expect("session cookie");
+        let probe = Request::builder()
+            .uri("/api/auth/session")
+            .header("Cookie", format!("roko_session={session}"))
+            .body(Body::empty())
+            .expect("build probe");
+        let probed = app.clone().oneshot(probe).await.expect("probe response");
+        let body = axum::body::to_bytes(probed.into_body(), usize::MAX)
+            .await
+            .expect("probe body");
+        let json: serde_json::Value = serde_json::from_slice(&body).expect("probe json");
+        json["scopes"]
+            .as_array()
+            .expect("scopes")
+            .iter()
+            .map(|scope| scope.as_str().expect("scope").to_string())
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn session_from_a_write_key_is_scoped_to_write() {
+        let (_dir, state, app) = router_with_keys(
+            Some("launch-token"),
+            &[("write-key", "write"), ("read-key", "read")],
+        );
+
+        // bug-856656: every exchange used to mint an `admin` session, so a scoped key gained
+        // admin rights through its cookie.
+        assert_eq!(exchanged_scope(&app, "write-key").await, ["write"]);
+        assert_eq!(exchanged_scope(&app, "read-key").await, ["read"]);
+        // The launch token is admin, as the portal's `#token=` bootstrap expects.
+        assert_eq!(exchanged_scope(&app, "launch-token").await, ["admin"]);
+
+        let credential = validate_token(
+            "write-key",
+            &state.load_roko_config().serve.auth,
+            &state.auth_registry.api_keys_snapshot().await,
+            &state,
+        );
+        assert_eq!(
+            credential,
+            Some(ExchangedCredential::new("api-key:write-key", "write"))
+        );
+    }
+
+    #[tokio::test]
+    async fn session_from_the_legacy_key_stays_admin() {
+        let mut config = RokoConfig::default();
+        config.serve.auth.enabled = true;
+        config.serve.auth.api_key = "legacy-secret".to_string();
+        let (_dir, app) = build_test_router(config);
+        assert_eq!(exchanged_scope(&app, "legacy-secret").await, ["admin"]);
+    }
 
     #[tokio::test]
     async fn post_session_with_valid_api_key_returns_204_and_cookie() {

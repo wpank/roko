@@ -8,7 +8,7 @@ severity = "p2"
 goal = "core"
 subsystem = ["roko-cli/plan_policy"]
 created = 2026-09-21
-updated = 2026-10-01
+updated = 2026-10-16
 last_verified = 2026-10-01
 last_verified_rev = "db778db9b"
 source = "tmp/dogfood/2026-09-21-session.md#ISSUE-30: Plan validator rejects \"auditor\" as a valid role"
@@ -18,6 +18,8 @@ links = { depends_on = [], blocks = [], related = [], supersedes = [], duplicate
 
 [[verify]]
 command = 'sed -n "/pub const PLAN_TASK_ROLES/,/];/p" crates/roko-cli/src/task_parser.rs | grep -q "\"auditor\"" && sed -n "/pub const PLAN_TASK_ROLES/,/];/p" crates/roko-cli/src/task_parser.rs | grep -q "\"reviewer\"" && grep -q "VALID_ROLES: &\[&str\] = crate::task_parser::PLAN_TASK_ROLES" crates/roko-cli/src/prd.rs && grep -q "VALID_ROLES: &\[&str\] = crate::task_parser::PLAN_TASK_ROLES" crates/roko-cli/src/plan_generator.rs && cargo test -p roko-cli --lib an_auditor_task_passes_schema_validation'
+superseded = "2026-10-16: 7f2776fc1 deleted crates/roko-cli/src/prd.rs, so its VALID_ROLES clause fails; PLAN_TASK_ROLES still lists reviewer and auditor, and templates/reviewer.rs exists."
+superseded_by = "7f2776fc1"
 
 [closed]
 at = 2026-10-01

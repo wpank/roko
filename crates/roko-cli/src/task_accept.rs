@@ -707,11 +707,11 @@ command = "true"
             .remove(0)
     }
 
-    /// Run `step` the way Graph verification does: `bash -o pipefail -c`
-    /// in the task's working tree.
+    /// Run `step` the way Graph verification does
+    /// ([`roko_gate::verify_shell::bash_args`]) in the task's working tree.
     fn run_step(step: &VerifyStep, workdir: &Path) -> (bool, String) {
         let output = std::process::Command::new("bash")
-            .args(["-o", "pipefail", "-c", &step.command])
+            .args(roko_gate::verify_shell::bash_args(&step.command))
             .current_dir(workdir)
             .output()
             .expect("run bash");

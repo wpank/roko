@@ -214,9 +214,23 @@ pub(crate) async fn cmd_init(
     path: Option<PathBuf>,
     cloud: bool,
     profile: Option<String>,
+    model: Option<String>,
     demo: bool,
 ) -> Result<()> {
     let target = path.unwrap_or_else(|| PathBuf::from("."));
+    let config_path = target.join("roko.toml");
+    // What a new roko.toml holds is worked out before anything is written,
+    // so an unknown --profile or --model leaves the directory as it was.
+    let options = if config_path.exists() {
+        None
+    } else {
+        Some(roko_cli::init::InitOptions::detect(
+            &target,
+            cloud,
+            profile.as_deref(),
+            model.as_deref(),
+        )?)
+    };
     tokio::fs::create_dir_all(&target)
         .await
         .with_context(|| format!("create {}", target.display()))?;
@@ -305,36 +319,70 @@ pub(crate) async fn cmd_init(
         }
     }
 
-    // Domain detection: use --profile if given, otherwise auto-detect.
-    let domain = if let Some(ref p) = profile {
-        p.as_str()
+    let demo_config = if let Some(options) = &options {
+        // The template is checked like `roko config validate` before it is
+        // written, so a new workspace never starts with a config that fails.
+        let default = roko_cli::init::write_init(&target, options)?;
+        println!("wrote {}", config_path.display());
+        println!("initialized roko workspace at {}", target.display());
+        print_init_summary(&options.gates, &options.models()?);
+        RokoConfig::from_toml(&default).ok()
     } else {
-        detect_project_domain(&target)
-    };
-
-    let config_path = target.join("roko.toml");
-    let demo_config = if config_path.exists() {
         println!(
             "{} already exists; leaving untouched.",
             config_path.display()
         );
-        match tokio::fs::read_to_string(&config_path).await {
+        if model.is_some() {
+            println!(
+                "--model was not applied: set [agent] default_model and the [routing.ladder] \
+                 rungs in roko.toml"
+            );
+        }
+        let existing = match tokio::fs::read_to_string(&config_path).await {
             Ok(text) => RokoConfig::from_toml(&text).ok(),
             Err(_) => None,
+        };
+        println!("initialized roko workspace at {}", target.display());
+        let gates = roko_cli::init::ProjectGates::detect(&target, profile.as_deref());
+        print_project(&gates);
+        let no_rungs = existing
+            .as_ref()
+            .is_some_and(|config| config.gates.custom_rungs.is_empty());
+        if no_rungs && !gates.rungs.is_empty() {
+            println!(
+                "roko.toml has no gate rungs, so runs end unverified; for this project roko init \
+                 writes these [[gates.rungs]]:"
+            );
+            for line in gates.describe_rungs() {
+                println!("  {line}");
+            }
         }
-    } else {
-        // The template is checked like `roko config validate` before it is
-        // written, so a new workspace never starts with a config that fails.
-        let provider = roko_cli::init::InitProvider::detect();
-        let default = roko_cli::init::write_init_config(&target, cloud, provider)?;
-        println!("wrote {}", config_path.display());
-        println!("{}", provider.summary());
-        RokoConfig::from_toml(&default).ok()
+        print_ladder_skips(&target);
+        existing
     };
 
-    println!("initialized roko workspace at {}", target.display());
-    println!("detected project domain: {domain}");
-    println!("suggested gates: {}", domain_gate_hint(domain));
+    // roko's state stays out of git (bug-2e887e).
+    match roko_cli::init::ensure_roko_gitignored(&target) {
+        Ok(roko_cli::init::GitignoreChange::Created) => {
+            println!("created .gitignore with .roko/, so git does not track roko's state");
+        }
+        Ok(roko_cli::init::GitignoreChange::Appended) => {
+            println!("added .roko/ to .gitignore, so git does not track roko's state");
+        }
+        Ok(roko_cli::init::GitignoreChange::Covered) => {}
+        Err(err) => println!("note: could not add .roko/ to .gitignore: {err:#}"),
+    }
+
+    // M1's shipped viability bounds, for a person to edit; an existing
+    // policy stays (gap-cad57a).
+    match roko_cli::init::write_viability_policy(&target) {
+        Ok(true) => println!(
+            "wrote .roko/policy/viability.toml: M1's shipped viability bounds, which keep it in \
+             shadow until you edit them"
+        ),
+        Ok(false) => {}
+        Err(err) => println!("note: could not write .roko/policy/viability.toml: {err:#}"),
+    }
 
     if demo {
         let report = roko_cli::demo_seed::seed_demo_workspace(&target, demo_config.as_ref())?;
@@ -366,8 +414,14 @@ pub(crate) async fn cmd_init(
             println!("The workspace is initialized but roko cannot dispatch agents yet.");
             println!("Next step:");
             println!("  roko config providers available   # see what providers are supported");
-            println!("  export ANTHROPIC_API_KEY=sk-ant-...");
-            println!("Or add a [providers.*] block to roko.toml with an API key.");
+            println!(
+                "  put a provider's API key in ~/.roko/.env (`roko setup` creates the file), \
+                 or export it"
+            );
+            println!(
+                "Then move roko.toml aside and run `roko init` again: it gives that provider's \
+                 models rungs on the model ladder."
+            );
         }
         other => {
             println!("provider: {} \u{2014} ready", other.label());
@@ -382,38 +436,66 @@ pub(crate) async fn cmd_init(
     Ok(())
 }
 
-/// Auto-detect the project domain from file patterns in the target directory.
-fn detect_project_domain(target: &Path) -> &'static str {
-    if target.join("Cargo.toml").exists() {
-        "rust"
-    } else if target.join("package.json").exists() {
-        "typescript"
-    } else if target.join("go.mod").exists() {
-        "go"
-    } else if target.join("requirements.txt").exists()
-        || target.join("pyproject.toml").exists()
-        || target.join("setup.py").exists()
-    {
-        "python"
-    } else if target.join("Gemfile").exists() {
-        "ruby"
-    } else if target.join("pom.xml").exists() || target.join("build.gradle").exists() {
-        "java"
+/// Print the project `roko init` found, the gate rungs and model ladder it
+/// wrote, and what it left out.
+fn print_init_summary(gates: &roko_cli::init::ProjectGates, models: &roko_cli::init::InitModels) {
+    print_project(gates);
+    if gates.rungs.is_empty() {
+        println!("gate rungs: none, so runs end unverified until roko.toml has some");
     } else {
-        "general"
+        println!("gate rungs:");
+        for line in gates.describe_rungs() {
+            println!("  {line}");
+        }
+    }
+    if models.rungs.is_empty() {
+        println!("model ladder: none");
+    } else {
+        println!("model ladder (cheapest first):");
+        for line in models.describe_rungs() {
+            println!("  {line}");
+        }
+    }
+    for note in gates.notes.iter().chain(&models.notes) {
+        println!("note: {note}");
     }
 }
 
-/// Verify configuration hint based on domain profile.
-fn domain_gate_hint(domain: &str) -> &'static str {
-    match domain {
-        "rust" => "compile (cargo check), test (cargo test), clippy (cargo clippy)",
-        "typescript" => "compile (tsc --noEmit), test (npm test), lint (eslint)",
-        "go" => "compile (go build), test (go test), lint (golangci-lint)",
-        "python" => "test (pytest), lint (ruff), typecheck (mypy)",
-        "ruby" => "test (rspec), lint (rubocop)",
-        "java" => "compile (mvn compile), test (mvn test)",
-        _ => "compile, test, lint (configure in roko.toml)",
+/// Print the rungs of the workspace's model ladder that cannot run on this
+/// machine, and why, as a run would decide it: a run only logs them
+/// (bug-4e336b).
+fn print_ladder_skips(target: &Path) {
+    let Ok(loaded) = roko_core::config::loader::load_config_validated_with_options(
+        target,
+        &roko_core::config::loader::LoadOptions::default(),
+    ) else {
+        return;
+    };
+    let report = roko_cli::dispatch::model_routing::ladder_report(loaded.config());
+    let skipped: Vec<_> = report
+        .iter()
+        .filter_map(|rung| rung.dispatch.as_ref().err().map(|reason| (rung, reason)))
+        .collect();
+    if skipped.is_empty() {
+        return;
+    }
+    println!(
+        "model ladder: {} of {} rungs cannot run here, so a task that would start on one starts \
+         on the next rung up that can:",
+        skipped.len(),
+        report.len()
+    );
+    for (rung, reason) in skipped {
+        println!("  {} ({}): {reason}", rung.rung, rung.model);
+    }
+}
+
+/// Print the project's profile and where it came from.
+fn print_project(gates: &roko_cli::init::ProjectGates) {
+    if gates.chosen {
+        println!("project profile: {} (--profile)", gates.profile.name());
+    } else {
+        println!("detected project domain: {}", gates.profile.name());
     }
 }
 
@@ -507,6 +589,13 @@ pub(crate) async fn cmd_run(
         max_usd: None,
         origin: roko_serve::runtime::RunOrigin::Cli,
         no_holdout,
+        // The server this command started, if any, decides as for its own
+        // runs (gap-5fda00).
+        live_agent_output: server_guard.as_ref().map_or_else(
+            || roko_cli::graph_task_dispatch::LiveAgentOutput::for_local_run(&workdir),
+            |(state, _)| state.effective_live_agent_output().into(),
+        ),
+        title: None,
     })
     .await;
 
@@ -521,7 +610,7 @@ pub(crate) async fn cmd_run(
             if cli.json {
                 println!("{}", serde_json::to_string_pretty(&report)?);
             } else if !cli.quiet {
-                roko_cli::run::print_workflow_run_report(&prompt, tier, &report);
+                roko_cli::run::print_workflow_run_report(&workdir, &prompt, tier, &report);
             }
 
             if !report.success {
@@ -1388,11 +1477,33 @@ pub(crate) async fn cmd_doctor(
     // `doctor clean` removes orphaned files and `doctor disk --fix` leftover
     // attempt checkouts (exclusive); all other doctor variants are read-only
     // and use a shared lock so they can coexist with an active plan runner.
+    // A running roko serve holds the workspace exclusively for its life: the
+    // read-only variants then read beside it without the lock, and say so
+    // (bug-1f5406).
+    let roko_dir = workdir.join(".roko");
+    let mut beside_serve = None;
     let _lock = if matches!(subject, Some(DoctorSubject::Clean)) || fix {
-        roko_cli::workspace_lock::acquire_workspace_lock(&workdir.join(".roko"))?
+        Some(roko_cli::workspace_lock::acquire_workspace_lock(&roko_dir)?)
     } else {
-        roko_cli::workspace_lock::acquire_workspace_lock_shared(&workdir.join(".roko"))?
+        match roko_cli::workspace_lock::acquire_workspace_lock_shared(&roko_dir) {
+            Ok(lock) => Some(lock),
+            Err(error) => {
+                let serve = roko_cli::doctor::serve_holding_workspace(&workdir).ok_or(error)?;
+                beside_serve = Some(serve);
+                None
+            }
+        }
     };
+    if let Some(serve) = &beside_serve
+        && !cli.json
+        && matches!(subject, Some(DoctorSubject::Disk | DoctorSubject::Network))
+    {
+        println!(
+            "note: roko serve (PID {}, {}) holds this workspace, so doctor read it without the \
+             workspace lock",
+            serve.pid, serve.url
+        );
+    }
     if matches!(subject, Some(DoctorSubject::Clean)) {
         let removed = roko_cli::doctor::clean_orphaned_files(&workdir);
         if cli.json {
@@ -1459,6 +1570,7 @@ pub(crate) async fn cmd_doctor(
         config_override: cli.config.clone(),
         serve_url,
         credentials: roko_cli::doctor::CredentialProbe::Environment,
+        beside_serve,
     })
     .await?;
 

@@ -7,8 +7,10 @@
 //! ```
 //!
 //! Declared findings are judged against `ROKO_HARNESS_SHA`, else the
-//! workdir's `git rev-parse HEAD`. Nothing is written but `--out`, which gets
-//! the `roko.loop_census/1` JSON.
+//! workdir's `git rev-parse HEAD`. Loops are judged with S03 §4.10's default
+//! parameters; `roko learn loops` judges with the workspace's
+//! `[learning.audit]`, as the audit tick does (gap-ca63ee). Nothing is
+//! written but `--out`, which gets the `roko.loop_census/1` JSON.
 
 use std::path::PathBuf;
 use std::process::ExitCode;

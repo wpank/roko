@@ -111,6 +111,7 @@ pub async fn health(State(state): State<Arc<AppState>>) -> (axum::http::StatusCo
         Json(json!({
             "status": status,
             "version": env!("CARGO_PKG_VERSION"),
+            "features": crate::routes::FEATURES,
             "uptime_secs": uptime_secs,
             "active_plans": active_plans,
             "active_agents": active_agents,
@@ -302,6 +303,11 @@ fn dashboard_event_type(event: &roko_core::dashboard_snapshot::DashboardEvent) -
         DashboardEvent::InboxDismiss { .. } => "inbox_dismiss",
         DashboardEvent::AgentHeartbeat { .. } => "agent_heartbeat",
         DashboardEvent::GateRungStarted { .. } => "gate_rung_started",
+        DashboardEvent::PlanCheckStarted { .. } => "plan_check_started",
+        DashboardEvent::PlanCheckHeartbeat { .. } => "plan_check_heartbeat",
+        DashboardEvent::PlanCheckFinished { .. } => "plan_check_finished",
+        DashboardEvent::DeliveryStarted { .. } => "delivery_started",
+        DashboardEvent::DeliveryFinished { .. } => "delivery_finished",
         DashboardEvent::AffectUpdated { .. } => "affect_updated",
         DashboardEvent::AgentTopologyUpdated { .. } => "agent_topology_updated",
         DashboardEvent::CriticalPathEtaUpdated { .. } => "critical_path_eta_updated",
@@ -312,6 +318,17 @@ fn dashboard_event_type(event: &roko_core::dashboard_snapshot::DashboardEvent) -
         DashboardEvent::EvUpdate { .. } => "ev.update",
         DashboardEvent::M1Episode { .. } => "m1.episode",
         DashboardEvent::SelfModelCalibration { .. } => "self_model.calibration",
+        DashboardEvent::RouteDecided { .. } => "route_decided",
+        DashboardEvent::PromptAssembled { .. } => "prompt_assembled",
+        DashboardEvent::RetryFeedback { .. } => "retry_feedback",
+        DashboardEvent::AttemptSettled { .. } => "attempt_settled",
+        DashboardEvent::LadderExhausted { .. } => "ladder_exhausted",
+        DashboardEvent::KnowledgeWritten { .. } => "knowledge_written",
+        DashboardEvent::PlaybookWritten { .. } => "playbook_written",
+        DashboardEvent::EffectStaged { .. } => "effect_staged",
+        DashboardEvent::EffectDecided { .. } => "effect_decided",
+        DashboardEvent::ConfirmWaiting { .. } => "confirm_waiting",
+        DashboardEvent::ConfirmResolved { .. } => "confirm_resolved",
         DashboardEvent::SnapshotRebased { .. } => "snapshot_rebased",
     }
 }
@@ -325,8 +342,25 @@ fn dashboard_event_plan_id(event: &roko_core::dashboard_snapshot::DashboardEvent
         | DashboardEvent::TaskCompleted { plan_id, .. }
         | DashboardEvent::TaskPhaseChanged { plan_id, .. }
         | DashboardEvent::GateResult { plan_id, .. }
+        | DashboardEvent::GateOutputLine { plan_id, .. }
         | DashboardEvent::PhaseTransition { plan_id, .. }
         | DashboardEvent::EfficiencyEvent { plan_id, .. }
+        | DashboardEvent::RouteDecided { plan_id, .. }
+        | DashboardEvent::PromptAssembled { plan_id, .. }
+        | DashboardEvent::RetryFeedback { plan_id, .. }
+        | DashboardEvent::AttemptSettled { plan_id, .. }
+        | DashboardEvent::LadderExhausted { plan_id, .. }
+        | DashboardEvent::KnowledgeWritten { plan_id, .. }
+        | DashboardEvent::PlaybookWritten { plan_id, .. }
+        | DashboardEvent::EffectStaged { plan_id, .. }
+        | DashboardEvent::EffectDecided { plan_id, .. }
+        | DashboardEvent::ConfirmWaiting { plan_id, .. }
+        | DashboardEvent::ConfirmResolved { plan_id, .. }
+        | DashboardEvent::PlanCheckStarted { plan_id, .. }
+        | DashboardEvent::PlanCheckHeartbeat { plan_id, .. }
+        | DashboardEvent::PlanCheckFinished { plan_id, .. }
+        | DashboardEvent::DeliveryStarted { plan_id, .. }
+        | DashboardEvent::DeliveryFinished { plan_id, .. }
         | DashboardEvent::EventLogEntry { plan_id, .. } => Some(plan_id),
         _ => None,
     }
@@ -339,8 +373,20 @@ fn dashboard_event_task_id(event: &roko_core::dashboard_snapshot::DashboardEvent
         | DashboardEvent::TaskCompleted { task_id, .. }
         | DashboardEvent::TaskPhaseChanged { task_id, .. }
         | DashboardEvent::GateResult { task_id, .. }
+        | DashboardEvent::GateOutputLine { task_id, .. }
         | DashboardEvent::EfficiencyEvent { task_id, .. }
         | DashboardEvent::TaskOutputAppended { task_id, .. }
+        | DashboardEvent::RouteDecided { task_id, .. }
+        | DashboardEvent::PromptAssembled { task_id, .. }
+        | DashboardEvent::RetryFeedback { task_id, .. }
+        | DashboardEvent::AttemptSettled { task_id, .. }
+        | DashboardEvent::LadderExhausted { task_id, .. }
+        | DashboardEvent::KnowledgeWritten { task_id, .. }
+        | DashboardEvent::PlaybookWritten { task_id, .. }
+        | DashboardEvent::EffectStaged { task_id, .. }
+        | DashboardEvent::EffectDecided { task_id, .. }
+        | DashboardEvent::ConfirmWaiting { task_id, .. }
+        | DashboardEvent::ConfirmResolved { task_id, .. }
         | DashboardEvent::EventLogEntry { task_id, .. } => Some(task_id),
         _ => None,
     }

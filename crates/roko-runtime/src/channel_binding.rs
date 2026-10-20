@@ -117,13 +117,7 @@ impl ChannelBindingRouter {
     ///    pair, sends an external wake with the message text as payload.
     ///
     /// Does nothing (no error) if no binding is registered for the given key.
-    pub async fn route(
-        &self,
-        platform_id: &str,
-        channel_id: &str,
-        message_id: &str,
-        text: &str,
-    ) {
+    pub async fn route(&self, platform_id: &str, channel_id: &str, message_id: &str, text: &str) {
         let topic_str = format!("platform.message.{platform_id}.{channel_id}");
         let topic = Topic::new(topic_str.clone());
 
@@ -203,7 +197,9 @@ mod tests {
         let bus = Arc::new(PulseBus::new(64));
         // Subscribe before routing so we can receive the pulse.
         let mut rx = bus
-            .subscribe(roko_core::TopicFilter::Prefix("platform.message.".to_string()))
+            .subscribe(roko_core::TopicFilter::Prefix(
+                "platform.message.".to_string(),
+            ))
             .unwrap();
 
         let mut router = ChannelBindingRouter::new(bus);

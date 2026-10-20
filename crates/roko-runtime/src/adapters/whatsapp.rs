@@ -84,7 +84,7 @@ impl WhatsAppBridge {
 
 #[async_trait]
 impl ChatBridge for WhatsAppBridge {
-    fn platform_id(&self) -> &str {
+    fn platform_id(&self) -> &'static str {
         "whatsapp"
     }
 
@@ -96,7 +96,10 @@ impl ChatBridge for WhatsAppBridge {
             "stub send_message: {}",
             preview
         );
-        Ok(MessageId::new(format!("whatsapp-stub-{}", ChannelId::new(channel))))
+        Ok(MessageId::new(format!(
+            "whatsapp-stub-{}",
+            ChannelId::new(channel)
+        )))
     }
 
     async fn send_rich(&self, channel: &str, msg: RichMessage) -> Result<MessageId> {
@@ -109,7 +112,10 @@ impl ChatBridge for WhatsAppBridge {
             "stub send_rich (plain fallback): {}",
             preview
         );
-        Ok(MessageId::new(format!("whatsapp-stub-rich-{}", ChannelId::new(channel))))
+        Ok(MessageId::new(format!(
+            "whatsapp-stub-rich-{}",
+            ChannelId::new(channel)
+        )))
     }
 
     fn incoming(&self) -> Pin<Box<dyn Stream<Item = IncomingMessage> + Send>> {
@@ -172,19 +178,17 @@ mod tests {
 
     #[test]
     fn platform_id_is_whatsapp() {
-        let bridge = WhatsAppBridge::connect(&config(Some(PlatformSecretRef::Literal(
-            "tok".to_string(),
-        ))))
-        .unwrap();
+        let bridge =
+            WhatsAppBridge::connect(&config(Some(PlatformSecretRef::Literal("tok".to_string()))))
+                .unwrap();
         assert_eq!(bridge.platform_id(), "whatsapp");
     }
 
     #[test]
     fn capabilities_are_plain_text_only() {
-        let bridge = WhatsAppBridge::connect(&config(Some(PlatformSecretRef::Literal(
-            "tok".to_string(),
-        ))))
-        .unwrap();
+        let bridge =
+            WhatsAppBridge::connect(&config(Some(PlatformSecretRef::Literal("tok".to_string()))))
+                .unwrap();
         let caps = bridge.capabilities();
         assert!(!caps.markdown);
         assert!(!caps.attachments);
@@ -195,10 +199,9 @@ mod tests {
 
     #[tokio::test]
     async fn send_message_returns_ok() {
-        let bridge = WhatsAppBridge::connect(&config(Some(PlatformSecretRef::Literal(
-            "tok".to_string(),
-        ))))
-        .unwrap();
+        let bridge =
+            WhatsAppBridge::connect(&config(Some(PlatformSecretRef::Literal("tok".to_string()))))
+                .unwrap();
         let id = bridge
             .send_message("+15551234567", "hello whatsapp")
             .await
@@ -208,10 +211,9 @@ mod tests {
 
     #[tokio::test]
     async fn send_rich_uses_plain_text_fallback() {
-        let bridge = WhatsAppBridge::connect(&config(Some(PlatformSecretRef::Literal(
-            "tok".to_string(),
-        ))))
-        .unwrap();
+        let bridge =
+            WhatsAppBridge::connect(&config(Some(PlatformSecretRef::Literal("tok".to_string()))))
+                .unwrap();
         let msg = RichMessage::markdown("plain text", "**ignored markdown**");
         let id = bridge.send_rich("+15551234567", msg).await.unwrap();
         assert!(id.as_str().contains("whatsapp-stub-rich"));

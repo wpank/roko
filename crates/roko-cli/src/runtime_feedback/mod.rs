@@ -41,18 +41,20 @@ pub mod plan_completion;
 pub mod routing;
 pub mod self_model;
 pub mod verified_knowledge;
+pub mod verified_playbooks;
 
 pub use episodes::EpisodeSink;
 pub use error_patterns::ErrorPatternSink;
 pub use hindsight::HindsightSink;
 pub use homeostasis::HomeostasisSink;
 pub use knowledge::{KnowledgeIngestionSink, KnowledgeIngestor, NeuroKnowledgeIngestor};
-pub use plan_completion::{DaimonPersistenceSink, DreamConsolidationSink};
+pub use plan_completion::DaimonPersistenceSink;
 #[cfg(feature = "cognitive-clock")]
 pub use plan_completion::{DeltaConsolidationSink, ThetaReflectionSink};
 pub use routing::RoutingObservationSink;
 pub use self_model::SelfModelOutcomeSink;
-pub use verified_knowledge::{VerifiedAttempt, VerifiedKnowledgeSink};
+pub use verified_knowledge::{AttemptToolCall, VerifiedAttempt, VerifiedKnowledgeSink};
+pub use verified_playbooks::VerifiedPlaybookSink;
 
 use roko_learn::model_router::RoutingContext;
 use roko_learn::telemetry::AttemptVerdictRecord;
@@ -125,8 +127,8 @@ pub enum FeedbackEvent {
     ///
     /// Emitted after [`Self::TaskCompleted`] and only for gate-backed passes:
     /// a task without verify steps never produces it, so sinks that grow
-    /// durable knowledge learn from evidence rather than from a provider's
-    /// own claim of success.
+    /// durable knowledge and playbooks learn from evidence rather than from a
+    /// provider's own claim of success.
     TaskVerified(VerifiedAttempt),
     /// A gate verdict landed for a task.
     GateOutcome {
@@ -143,7 +145,8 @@ pub enum FeedbackEvent {
         attempt: u32,
         backoff_secs: u64,
     },
-    /// A plan completed (success or terminal failure).
+    /// A plan completed (success or terminal failure). A Graph plan run
+    /// sends one for each plan it runs, as the plan closes (gap-a960a1).
     PlanCompleted {
         plan_id: String,
         succeeded: bool,

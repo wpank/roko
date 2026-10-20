@@ -17,10 +17,10 @@ use serde::Serialize;
 use toml::Value;
 
 use roko_cli::task_parser::{
-    CONTEXT_KEYS, META_KEYS, TASK_KEYS, TaskDef, VERIFY_KEYS, normalize_model_alias,
+    CONTEXT_KEYS, META_KEYS, TASK_KEYS, TaskDef, TasksFile, VERIFY_KEYS, normalize_model_alias,
     suggest_field_correction,
 };
-use roko_gate::spec_quality::ac_id;
+use roko_gate::spec_quality::{HiddenRunnerOutput, ac_id, hidden_runner_output};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize)]
 #[serde(rename_all = "lowercase")]
@@ -197,6 +197,38 @@ fn validate_plans_dir_impl(
                 if let Some(ladder) = &ladder {
                     let diagnostics = ladder_diagnostics(&tasks_file, &plan.plan_id, ladder);
                     plan.diagnostics.extend(diagnostics);
+                }
+                // bug-df9aff: a task that creates a file it may not write, and
+                // one whose tests import what another task writes without
+                // waiting for it.
+                for (task, file) in
+                    roko_cli::plan_generate::creates_without_write(&tasks_file, workdir)
+                {
+                    plan.diagnostics.push(Diagnostic {
+                        severity: Severity::Warning,
+                        rule_id: "PLAN_052".to_string(),
+                        plan_id: Some(plan.plan_id.clone()),
+                        task_id: Some(task.clone()),
+                        message: format!(
+                            "task '{task}' creates `{file}`, but its allowed_tools do not include \
+                             write_file, so no try can create it"
+                        ),
+                    });
+                }
+                for (task, dependency, module) in
+                    roko_cli::plan_generate::missing_dependencies(&tasks_file, workdir)
+                {
+                    plan.diagnostics.push(Diagnostic {
+                        severity: Severity::Warning,
+                        rule_id: "PLAN_053".to_string(),
+                        plan_id: Some(plan.plan_id.clone()),
+                        task_id: Some(task.clone()),
+                        message: format!(
+                            "task '{task}' uses `{module}` (its tests import it, or it names what \
+                             the plan's tests import from it), which task '{dependency}' writes, \
+                             but it does not depend on '{dependency}', so it can run first"
+                        ),
+                    });
                 }
                 let diagnostics = speed_priority_diagnostics(&tasks_file, &plan.plan_id);
                 plan.diagnostics.extend(diagnostics);
@@ -545,6 +577,148 @@ fn negates_a_grep(command: &str) -> bool {
     })
 }
 
+/// bug-59ed90: a check of a plan that hides its test runner's output, so
+/// when it fails neither the retry nor the person sees why.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HiddenOutputCheck {
+    /// The task it checks; `None` for a whole-plan `[[meta.verify]]` step.
+    pub task_id: Option<String>,
+    /// Which check it is: `verify step 1`, `[task.accept] runner 1`,
+    /// `[[meta.verify]] step 1`.
+    pub label: String,
+    /// The check's command.
+    pub command: String,
+    /// What it does with its runner's output.
+    pub hidden: HiddenRunnerOutput,
+}
+
+impl HiddenOutputCheck {
+    /// Whether it is a `[task.accept]` runner, whose output roko shows and
+    /// whose passing tests roko counts itself.
+    fn is_accept_runner(&self) -> bool {
+        self.label.starts_with("[task.accept]")
+    }
+
+    /// What is wrong with it and what to write instead (PLAN_050).
+    pub fn message(&self) -> String {
+        let owner = match &self.task_id {
+            Some(task_id) => format!("task '{task_id}' {}", self.label),
+            None => self.label.clone(),
+        };
+        let mut message = format!(
+            "{owner} `{}` {}, so when it fails neither the retry nor the person sees why",
+            self.command,
+            self.hidden.describe()
+        );
+        if self.hidden.counts {
+            message.push_str(
+                "; a test count also fails correct work that writes a different number of tests",
+            );
+        }
+        if self.is_accept_runner() {
+            let _ = write!(
+                message,
+                "; roko shows a pinned test's output and counts its passing tests itself, so \
+                 the runner is the test command alone: `{}`",
+                self.hidden.runner
+            );
+        } else {
+            let _ = write!(
+                message,
+                "; run `{}` on its own, naming the new tests (or putting a `grep -q` for them \
+                 first) so it fails before the task is done, and give any other check its own \
+                 `&&` command",
+                self.hidden.runner
+            );
+        }
+        message
+    }
+}
+
+/// bug-59ed90: every check of `tasks_file` that hides its test runner's
+/// output ([`hidden_runner_output`]): the tasks' verify steps and
+/// `[task.accept]` runners, and the whole-plan `[[meta.verify]]` steps.
+pub fn hidden_output_checks(tasks_file: &TasksFile) -> Vec<HiddenOutputCheck> {
+    let mut checks = Vec::new();
+    let mut check = |task_id: Option<&str>, label: String, command: &str| {
+        if let Some(hidden) = hidden_runner_output(command) {
+            checks.push(HiddenOutputCheck {
+                task_id: task_id.map(str::to_string),
+                label,
+                command: command.to_string(),
+                hidden,
+            });
+        }
+    };
+    for task in &tasks_file.tasks {
+        for (index, step) in task.verify.iter().enumerate() {
+            check(
+                Some(&task.id),
+                format!("verify step {}", index + 1),
+                &step.command,
+            );
+        }
+        let accepted = task.accept.iter().flat_map(|accept| &accept.files);
+        for (index, file) in accepted.enumerate() {
+            check(
+                Some(&task.id),
+                format!("[task.accept] runner {}", index + 1),
+                &file.runner,
+            );
+        }
+    }
+    for (index, step) in tasks_file.meta.verify.iter().enumerate() {
+        check(
+            None,
+            format!("[[meta.verify]] step {}", index + 1),
+            &step.command,
+        );
+    }
+    checks
+}
+
+/// gap-e2d2e5: the PLAN_051 warning of a plan none of whose verify steps has
+/// a phase that gate learning observes ([`roko_gate::rung_for_verify_phase`])
+/// though one runs tests or compiles: its runs move no gate threshold. It
+/// names the first such step. A plan of custom checks only (a file exists, a
+/// grep) gets none: gate learning has nothing to learn from it.
+fn gate_learning_message(tasks_file: &TasksFile) -> Option<String> {
+    use roko_gate::spec_quality::{VerifyClass, analyze_step};
+
+    let mut steps = tasks_file.tasks.iter().flat_map(|task| {
+        task.verify
+            .iter()
+            .enumerate()
+            .map(move |(index, step)| (task, index, step))
+    });
+    if steps
+        .clone()
+        .any(|(_, _, step)| roko_gate::rung_for_verify_phase(&step.phase).is_some())
+    {
+        return None;
+    }
+    let (task, index, step, does) = steps.find_map(|(task, index, step)| {
+        let does = match analyze_step(&step.command, &BTreeSet::new()).class {
+            VerifyClass::Test => "runs tests",
+            VerifyClass::Compile => "compiles or lints",
+            _ => return None,
+        };
+        Some((task, index, step, does))
+    })?;
+    let phase = match step.phase.trim() {
+        "" => "no phase".to_string(),
+        phase => format!("the phase '{phase}'"),
+    };
+    Some(format!(
+        "no verify step has a phase that gate learning observes, so this plan's runs move no \
+         gate threshold, though task '{}' verify step {} {does} under {phase}; name a step's \
+         phase `test` (or `unit_test`, `acceptance`, `integration`) when it runs tests, \
+         `compile` when it compiles and `clippy` when it lints",
+        task.id,
+        index + 1
+    ))
+}
+
 /// 3206: one PLAN_043 warning per key of `parsed` that `plan run` does not
 /// read, naming its table, so `--strict` rejects it. The parser drops such a
 /// key without a word, which turns a precise spec into a vague one: R3's
@@ -857,6 +1031,28 @@ fn validate_tasks_file(
                         ),
                     });
                 }
+            }
+            // bug-59ed90: a check that hides its test runner's output fails
+            // without saying why, to the retry and to the person.
+            for check in hidden_output_checks(&tasks_file) {
+                diagnostics.push(Diagnostic {
+                    severity: Severity::Warning,
+                    rule_id: "PLAN_050".to_string(),
+                    plan_id: Some(plan_id.clone()),
+                    task_id: check.task_id.clone(),
+                    message: check.message(),
+                });
+            }
+            // gap-e2d2e5: a plan whose verify steps all have phases gate
+            // learning does not observe teaches the gate thresholds nothing.
+            if let Some(message) = gate_learning_message(&tasks_file) {
+                diagnostics.push(Diagnostic {
+                    severity: Severity::Warning,
+                    rule_id: "PLAN_051".to_string(),
+                    plan_id: Some(plan_id.clone()),
+                    task_id: None,
+                    message,
+                });
             }
             // 3208: a verify step names the acceptance criteria it checks.
             for task in &tasks_file.tasks {
@@ -2036,6 +2232,7 @@ fn validate_no_greenfield_duplicates(
 #[cfg(test)]
 mod tests {
     use super::*;
+
     use std::fs;
     use tempfile::TempDir;
 
@@ -2432,6 +2629,175 @@ verify = [{ phase = "structural", command = "! grep -q TODO src/lib.rs" }]
         assert_eq!(negative.len(), 1, "{report:?}");
         assert_eq!(negative[0].severity, Severity::Warning);
         assert_eq!(negative[0].task_id.as_deref(), Some("T1"));
+    }
+
+    /// gap-e2d2e5: a plan none of whose verify steps has a phase gate
+    /// learning observes, though one runs tests, gets one PLAN_051 warning
+    /// that names the step; an `acceptance` phase on that step clears it, and
+    /// a plan of custom checks only gets none.
+    #[test]
+    fn plan_validate_warns_when_no_verify_step_feeds_gate_learning() {
+        let temp = TempDir::new().unwrap();
+        let root = temp.path();
+        let plan = |phase: &str, command: &str| {
+            format!(
+                r#"
+[meta]
+plan = "demo"
+
+[[task]]
+id = "T1"
+title = "Synth voice"
+role = "implementer"
+files = ["synth/voice.py"]
+depends_on = []
+verify = [{{ phase = "structural", command = "test -f synth/voice.py" }}]
+
+[[task]]
+id = "T2"
+title = "Synth envelope"
+role = "implementer"
+files = ["synth/env.py"]
+depends_on = ["T1"]
+verify = [{{ phase = "{phase}", command = "{command}" }}]
+"#
+            )
+        };
+        let warnings = |phase: &str, command: &str| {
+            fs::create_dir_all(root.join("plans/demo")).unwrap();
+            fs::write(root.join("plans/demo/tasks.toml"), plan(phase, command)).unwrap();
+            let report = validate_plans_dir(root.join("plans").as_path(), None).unwrap();
+            report
+                .plans
+                .iter()
+                .flat_map(|plan| &plan.diagnostics)
+                .filter(|diag| diag.rule_id == "PLAN_051")
+                .cloned()
+                .collect::<Vec<_>>()
+        };
+        let unittest = "python3 -m unittest tests.test_env";
+
+        let unobserved = warnings("check", unittest);
+        let [warning] = unobserved.as_slice() else {
+            panic!("one PLAN_051 warning: {unobserved:?}");
+        };
+        assert_eq!(warning.severity, Severity::Warning);
+        assert_eq!(warning.task_id, None);
+        assert!(
+            warning
+                .message
+                .contains("though task 'T2' verify step 1 runs tests under the phase 'check'"),
+            "{}",
+            warning.message
+        );
+        assert!(warnings("acceptance", unittest).is_empty());
+        assert!(warnings("content", "grep -q envelope synth/env.py").is_empty());
+    }
+
+    /// bug-59ed90: a check that pipes, redirects or captures its test
+    /// runner's output is a PLAN_050 warning that names the runner to run on
+    /// its own: fresh-guide's guessed-count check, a pinned test's runner and
+    /// a whole-plan step. Plain and `grep -q`-guarded runners pass.
+    #[test]
+    fn plan_validate_warns_on_a_check_that_hides_its_runner_output() {
+        let temp = TempDir::new().unwrap();
+        let root = temp.path();
+        fs::create_dir_all(root.join("plans/demo")).unwrap();
+        fs::write(
+            root.join("plans/demo/tasks.toml"),
+            r#"
+[meta]
+plan = "demo"
+
+[[meta.verify]]
+phase = "test"
+command = "cargo test 2>&1 | grep -q 'test result: ok'"
+
+[[task]]
+id = "T1"
+title = "Test the new flags"
+role = "implementer"
+files = ["tests/test_cli.py"]
+depends_on = []
+
+[[task.verify]]
+phase = "test"
+command = "python3 -m unittest tests.test_cli 2>&1 | grep -E '^Ran [0-9]+ test' | awk '{if ($2 >= 11) exit 0; else exit 1}'"
+
+[[task.accept.files]]
+src = "accept/test_new_flags.py"
+dest = "tests/test_new_flags.py"
+runner = "python3 -m unittest tests.test_new_flags -v 2>&1 | tail -5"
+count = 5
+
+[[task]]
+id = "T2"
+title = "Count characters"
+role = "implementer"
+files = ["wordy/cli.py", "tests/test_cli.py"]
+depends_on = ["T1"]
+
+[[task.verify]]
+phase = "test"
+command = "python3 -m unittest tests.test_cli.CharsTests"
+
+[[task.verify]]
+phase = "test"
+command = "grep -qw 'def test_chars' tests/test_cli.py && pytest tests/test_cli.py -k chars"
+"#,
+        )
+        .unwrap();
+
+        let report = validate_plans_dir(root.join("plans").as_path(), None).unwrap();
+
+        let hidden = report
+            .plans
+            .iter()
+            .flat_map(|plan| &plan.diagnostics)
+            .filter(|diag| diag.rule_id == "PLAN_050")
+            .collect::<Vec<_>>();
+        assert_eq!(hidden.len(), 3, "{report:?}");
+        assert!(
+            hidden.iter().all(|diag| diag.severity == Severity::Warning),
+            "{hidden:?}"
+        );
+        let find = |owner: &str| {
+            hidden
+                .iter()
+                .find(|diag| diag.message.starts_with(owner))
+                .unwrap_or_else(|| panic!("no warning for {owner}: {hidden:?}"))
+        };
+        let step = find("task 'T1' verify step 1 `python3 -m unittest tests.test_cli 2>&1");
+        assert_eq!(step.task_id.as_deref(), Some("T1"));
+        assert!(
+            step.message.contains(
+                "pipes the output of `python3 -m unittest tests.test_cli` into `grep`, `awk` \
+                 and checks a count on it, so when it fails neither the retry nor the person \
+                 sees why; a test count also fails correct work"
+            ),
+            "{}",
+            step.message
+        );
+        assert!(
+            step.message
+                .contains("run `python3 -m unittest tests.test_cli` on its own"),
+            "{}",
+            step.message
+        );
+        let runner = find(
+            "task 'T1' [task.accept] runner 1 `python3 -m unittest tests.test_new_flags -v 2>&1 | \
+             tail -5` pipes the output of",
+        );
+        assert_eq!(runner.task_id.as_deref(), Some("T1"));
+        assert!(
+            runner.message.contains(
+                "the runner is the test command alone: `python3 -m unittest tests.test_new_flags -v`"
+            ),
+            "{}",
+            runner.message
+        );
+        let whole_plan = find("[[meta.verify]] step 1 `cargo test 2>&1");
+        assert_eq!(whole_plan.task_id, None);
     }
 
     /// 3208: a verify step's `covers` must name one of its task's acceptance

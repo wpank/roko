@@ -9,7 +9,7 @@ goal = "whitepaper"
 size = "M"
 subsystem = ["paper"]
 created = 2026-09-29
-updated = 2026-09-29
+updated = 2026-10-16
 last_verified = 2026-09-29
 last_verified_rev = "b2c14cd4a"
 source = "tmp/cybernetic-harness/workstreams/PLAN.md#e18"
@@ -21,6 +21,8 @@ links = { depends_on = [], blocks = [], related = [], supersedes = [], duplicate
 
 [[verify]]
 command = "test -f tools/paperlint.py && python3 tools/paperlint.py --budget 1.2 --check-identifiers tmp/cybernetic-harness/paper/sections/07-results-regulation.md"
+superseded = "2026-10-16: The 2026-10-02 design-paper rewrite of the research paper (session roko-55, in untracked tmp/; 6f85e5efc records it) dropped the results section 07-results-regulation.md: the design paper reports no results; the old text is archived whole in tmp/cybernetic-harness/paper/archive/2026-10-02-empirical-draft/."
+superseded_by = "6f85e5efc"
 
 [closed]
 at = 2026-09-29

@@ -106,6 +106,7 @@ impl SuiteAuthor for FactoryAuthor {
             live_output: None,
             attempt_key: None,
             knowledge_ids: Vec::new(),
+            allowance: None,
         };
         let dispatch = self.factory.run_shared_agent_bridge(request).await?;
         let usage = dispatch.result.usage;
@@ -439,6 +440,10 @@ async fn run_once(
         .env("CARGO_TARGET_DIR", target)
         .stdin(std::process::Stdio::null())
         .kill_on_drop(true);
+    // The check environment (bug-3c4600); without it the suite does not run.
+    if roko_gate::inherit_gate_env(&mut child, &[]).is_err() {
+        return Run::Broken;
+    }
     match tokio::time::timeout(timeout, child.output()).await {
         Ok(Ok(output)) => {
             let text = format!(
@@ -701,5 +706,36 @@ mod tests {
         assert_eq!(other.calls(), 2);
         assert_eq!(store.meta(&active.suite_id).expect("its meta").uses, 2);
         worktree.remove().expect("remove");
+    }
+
+    /// bug-3c4600: a hidden suite's runs (B1) get the check environment.
+    #[cfg(unix)]
+    #[test]
+    fn hidden_suites_get_the_check_environment() {
+        crate::check_env_probe::run_child("audit::b1::tests::hidden_suite_check_env_child");
+    }
+
+    /// Run by [`hidden_suites_get_the_check_environment`] only.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn hidden_suite_check_env_child() {
+        use crate::check_env_probe::{assert_check_env, begin_child, dump_env_command};
+        let Some(_run) = begin_child() else {
+            return;
+        };
+        let dir = tempfile::tempdir().expect("tempdir");
+        let out = dir.path().join("suite.env");
+
+        let run = run_once(
+            dir.path(),
+            &dump_env_command(&out),
+            Duration::from_secs(30),
+            &dir.path().join("target"),
+            &Layout::Shell,
+        )
+        .await;
+
+        assert_eq!(run, Run::Passed);
+        assert_check_env(&out, "a hidden suite run");
     }
 }

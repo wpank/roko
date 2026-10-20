@@ -60,6 +60,7 @@ graph LR
     plan --- plan_generate[generate]
     plan --- plan_create[create]
     plan --- plan_validate[validate]
+    plan --- plan_import[import]
     plan --- plan_run[run]
     plan --- plan_list[list]
     plan --- plan_index[index]
@@ -703,6 +704,54 @@ Regenerate an existing plan's `tasks.toml` from the source document in its plan 
 
 ```
 roko plan regenerate <plan-dir> [--dry-run]
+```
+
+#### `roko plan import`
+
+Import mori plans as roko plans. Each `.mori/plans/<plan>/` directory becomes `plans/<plan>/`; the command validates
+the plans it writes, as `roko plan validate` does, and exits 1 when one has an error. No model runs, and the mori files
+are only read. Like `roko plan generate`, it takes no workspace lock, so it runs beside `roko serve`: each new plan is
+written beside its place and moved in whole, so serve lists all of it or none of it.
+
+```
+roko plan import --mori <dir>... [--out <dir>] [--set <name>] [--force]
+                 [--no-reviewer] [--no-scribe] [--strict] [--json] [--workdir <path>]
+```
+
+| Arg/Flag | Default | Description |
+|---|---|---|
+| `--mori <dir>...` | required | A mori plan directory, or a directory of them (`.mori/plans`) to import every plan it holds. |
+| `--out <dir>` | `plans/` | Plans directory to write into, inside the workspace. |
+| `--set <name>` | -- | Write the plans into `<out>/<name>/`, a plan set that runs as one (`roko run plans/<name>`). |
+| `--force` | false | Replace plan directories that hold a `tasks.toml` already. This takes the workspace lock, so it refuses while `roko serve` or a run holds the workspace. |
+| `--no-reviewer` / `--no-scribe` | false | Leave out the reviewer task (`review-tasks.toml`) or the docs tasks (`scribe-tasks.toml`). |
+| `--strict` | false | Fail on validation warnings, not only errors. |
+| `--json` | false | Print each import's report and the validation as JSON. |
+
+What maps to what:
+
+| mori | roko |
+|---|---|
+| `[[task]]` | A task: `category = "docs"` is a scribe, anything else an implementer; `complexity_band` fast, standard and complex give the tiers mechanical, focused and integrative. A task that names no file may change its crate's directory; with no crate either, it is a quick-reviewer that runs the checks of the tasks it waits for. |
+| Blocking `verify-tasks.toml` entries | `[[task.verify]]` on each task whose acceptance names their tests or invariant, behind a `grep` for each named test; the rest join `[[meta.verify]]` |
+| Acceptance "Checkpoint: \`cmd\`" and "\`cmd\` exits 0", a task's `command` and `test_fns` | `[[task.verify]]` (mori's own `plans/context/` scripts are skipped) |
+| Acceptance "File exists: path" | One `test -f` step per task, with `expect = "pass_on_base"` when the files are in the workspace already |
+| Acceptance lines a step checks (a checkpoint, a line naming a verify-tasks entry's invariant or tests, a "File exists" line) | Stay in `acceptance`; each step's `covers` names the lines it checks |
+| Acceptance lines no step checks | Move, verbatim, to the end of the task's description, under "Also required, not checked automatically:" (and "(the review task judges these)" when the plan has a reviewer); the report counts them per task ("T1: 3 checked, 2 also required"). Lines past the description's room for its tier go to `mori-also-required-<task>.txt` beside the plan, which the task reads |
+| A task with no check | `cargo check -p <crate>`, or a check that its files exist |
+| `verify.sh` `run_check` steps, the rubric's commands | `[[meta.verify]]`; `-p apps/x` becomes `-p x` |
+| Non-blocking `verify-tasks.toml` entries | Listed in the reviewer task's description, as advice |
+| `review-tasks.toml` | One quick-reviewer task after the others, which runs the plan's checks |
+| `scribe-tasks.toml` | Scribe tasks writing `docs/<plan>/`, checked by file, heading and diagram count |
+| `depends_on = ["08e:T9"]` | `depends_on_plan` on the plan beside it named `08e` or `08e-…` |
+| `exclusive_files` (a run-time lock) | Dependencies between tasks that write the same path |
+| A task over its tier's size limits | The smallest tier it fits, up to integrative; more than 10 files are narrowed to their directories (the list goes beside the plan as `mori-files-<task>.txt`), then split into parts; past 6 checks, the `cargo test` checks of one package are joined into one run (`cargo test -p x -- a b`), and the rest join `[[meta.verify]]` |
+| `plan.md`, `rubric.md`, `decomposition.md`, `prd-extract.md`, `testing-backlog.md` | Copied beside `tasks.toml` (`plan.md` without its "Mori Reuse Appendix"); `roko plan prepare`'s `brief.md` is written, listing the rubric and the decomposition |
+| `[meta]` run state, mori's `status = "done"`, hints roko does not act on | Dropped and reported; every task starts ready, and one whose checks already pass settles as already satisfied |
+
+```bash
+roko plan import --mori ../bardo/.mori/plans/08f-sonification-voices
+roko plan import --mori ../bardo/.mori/plans --set bardo --json
 ```
 
 #### `roko plan index`

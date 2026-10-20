@@ -1,5 +1,8 @@
 //! Integration tests for `roko doctor`.
 
+mod common;
+use common::Isolated;
+
 use assert_cmd::Command;
 use predicates::str::contains;
 use roko_fs::{LayoutVersion, RokoLayout};
@@ -24,6 +27,7 @@ fn doctor_json_exits_nonzero_when_workspace_is_not_bootstrapped() {
 
     Command::cargo_bin("roko")
         .unwrap()
+        .isolated()
         .current_dir(temp.path())
         .args(["doctor", "--workdir"])
         .arg(temp.path())
@@ -47,6 +51,7 @@ fn doctor_human_output_succeeds_for_bootstrapped_workspace() {
 
     Command::cargo_bin("roko")
         .unwrap()
+        .isolated()
         .current_dir(temp.path())
         .args(["doctor", "--workdir"])
         .arg(temp.path())
@@ -70,6 +75,7 @@ fn doctor_network_json_produces_summary_and_checks() {
 
     Command::cargo_bin("roko")
         .unwrap()
+        .isolated()
         .current_dir(temp.path())
         .args(["doctor", "network", "--workdir"])
         .arg(temp.path())
@@ -93,6 +99,7 @@ fn doctor_disk_fix_reports_leftover_checkouts() {
     // The exit code follows the disk report, which depends on the machine.
     Command::cargo_bin("roko")
         .unwrap()
+        .isolated()
         .current_dir(temp.path())
         .args(["doctor", "disk", "--fix", "--workdir"])
         .arg(temp.path())
@@ -107,6 +114,7 @@ fn doctor_fix_is_refused_outside_disk() {
 
     Command::cargo_bin("roko")
         .unwrap()
+        .isolated()
         .current_dir(temp.path())
         .args(["doctor", "network", "--fix", "--workdir"])
         .arg(temp.path())

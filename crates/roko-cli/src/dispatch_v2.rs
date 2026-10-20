@@ -154,7 +154,8 @@ pub async fn dispatch_via_model_call_service(prompt: &str) -> AnyhowResult<Dispa
         ),
         None => Arc::new(feedback_service),
     };
-    let cost_table = roko_agent::CostTable::from_config_with_defaults(&model_config.models);
+    let cost_table =
+        roko_agent::CostTable::from_config_with_defaults(&model_config.billed_models());
     let mut service = ModelCallService::new(model.clone())
         .with_config(model_config.clone())
         .with_working_dir(workdir.clone())
@@ -1532,7 +1533,9 @@ impl AgentDispatcherV2 {
         }
         validate_contract_support(request, &target)?;
 
-        let options = self.agent_options(request);
+        let mut options = self.agent_options(request);
+        options.turn_budget = self.turn_budget(request, &target);
+        options.max_budget_usd = spend_limit_usd(request);
         let agent =
             create_agent_for_model(&self.config, &request.model_key, options).map_err(|err| {
                 DispatchV2Error::AgentCreation {
@@ -1751,6 +1754,8 @@ impl AgentDispatcherV2 {
         validate_contract_support(&request, &target)?;
 
         let mut options = self.agent_options(&request);
+        options.turn_budget = self.turn_budget(&request, &target);
+        options.max_budget_usd = spend_limit_usd(&request);
         if let Some(runtime) = mcp_runtime {
             options.pre_discovered_mcp_runtime = Some(runtime);
         }
@@ -1847,6 +1852,21 @@ impl AgentDispatcherV2 {
                 "an attempt timeout is a task outcome; the provider's health is unchanged"
             ),
         }
+    }
+
+    /// `request`'s allowance as the tool loop of `target`'s model sees it:
+    /// each call priced at the rates that price the attempt (bug-4fabd0).
+    fn turn_budget(
+        &self,
+        request: &AgentDispatchRequest,
+        target: &ProviderDispatchSpec,
+    ) -> Option<Arc<dyn roko_agent::tool_loop::TurnBudget>> {
+        let allowance = Arc::clone(request.allowance.as_ref()?);
+        Some(Arc::new(PricedCalls {
+            allowance,
+            snapshot: self.pricing_snapshot_for(request),
+            target: target.clone(),
+        }))
     }
 
     fn agent_options(&self, request: &AgentDispatchRequest) -> AgentOptions {
@@ -2004,7 +2024,7 @@ pub(crate) fn validate_contract_support(
 /// dispatcher, which alone stages or refuses a tool call that acts on the
 /// outside world (9131): a CLI agent, an ACP agent, or an agent runtime such
 /// as Hermes or OpenClaw. Only the API providers run roko's own tool loop.
-fn runs_own_tools(target: &ProviderDispatchSpec) -> bool {
+pub(crate) fn runs_own_tools(target: &ProviderDispatchSpec) -> bool {
     let kind = match &target.runtime {
         ProviderRuntime::Cli(_) => return true,
         ProviderRuntime::AgentResultBridge { provider_kind } => *provider_kind,
@@ -2048,15 +2068,22 @@ enum ProviderHealthOutcome {
 
 impl ProviderHealthOutcome {
     /// Read `result`'s provider-health outcome. Any unsuccessful run that is
-    /// neither an immune denial, a turn cap nor an attempt timeout is a
-    /// provider failure, classified from its text.
+    /// neither an immune denial, a turn cap, a reply cut at the model's
+    /// output limit (bug-f6b99f), a stop of its budget (bug-4fabd0) nor an
+    /// attempt timeout is a provider failure, classified from its text.
     fn of(result: &AgentResult) -> Self {
-        use roko_agent::provider::error_classify::{detect_attempt_timeout, detect_turn_cap};
+        use roko_agent::provider::error_classify::{
+            detect_attempt_timeout, detect_output_limit, detect_turn_cap,
+        };
 
         let text = result.output.body.as_text().unwrap_or_default();
         if result.output.tag("immune_denied") == Some("true") {
             Self::ImmuneDenied
-        } else if result.success || detect_turn_cap(text).is_some() {
+        } else if result.success
+            || detect_turn_cap(text).is_some()
+            || detect_output_limit(text)
+            || result.output.tag("stop_reason") == Some("budget_exhausted")
+        {
             Self::Success
         } else if detect_attempt_timeout(text) {
             Self::AttemptTimeout
@@ -2101,7 +2128,10 @@ async fn record_agent_dispatch_feedback(
     if health_recorded || !outcome.is_provider_outcome() {
         recorder = recorder.without_provider_health();
     }
-    if learning_frozen {
+    // A Graph attempt's verdict settles its knowledge outcome
+    // (bug-0a7ec1): its call's row could only say `partial`, which nothing
+    // ever settled.
+    if learning_frozen || request.attempt_key.is_some() {
         recorder = recorder.without_knowledge_feedback();
     }
     let error_class = match outcome {
@@ -2208,6 +2238,64 @@ pub struct AgentDispatchRequest {
     /// efficiency log (bug-eaa318). Empty for a prompt that carries none.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub knowledge_ids: Vec<String>,
+    /// What the attempt may still spend on model calls (bug-4fabd0): the
+    /// tool loop of a provider whose loop roko runs asks it before each call,
+    /// and stops once it refuses one. `None` leaves the calls unbounded.
+    /// Skipped by serde.
+    #[serde(skip)]
+    pub allowance: Option<Arc<dyn CallAllowance>>,
+}
+
+/// What an attempt may still spend on its model calls, as its dispatch
+/// request carries it (bug-4fabd0). The agent's tool loop asks it before each
+/// model call; [`AgentDispatcherV2`] prices each call at the rates of the
+/// model that served it, as the attempt's settlement does, and reports it.
+pub trait CallAllowance: Send + Sync + fmt::Debug {
+    /// Why the next model call must not start, when it must not.
+    fn refuse_call(&self) -> Option<String>;
+
+    /// A model call finished, costing `cost_usd`; `priced` is false when no
+    /// rate priced it, so what it cost is unknown.
+    fn record_call(&self, cost_usd: f64, priced: bool);
+
+    /// The most the attempt can still spend, in USD, for an agent that runs
+    /// its own loop and keeps a spend limit of its own, as the Claude CLI
+    /// does (gap-e14344); `None` without one.
+    fn spend_limit_usd(&self) -> Option<f64> {
+        None
+    }
+}
+
+/// What `request`'s attempt can still spend, as its agent's own limit: the
+/// Claude CLI stops itself there (`--max-budget-usd`), a second fence behind
+/// roko's check of what it streams (gap-e14344). Read when the agent is made,
+/// just before it starts.
+fn spend_limit_usd(request: &AgentDispatchRequest) -> Option<f64> {
+    request.allowance.as_ref()?.spend_limit_usd()
+}
+
+/// An attempt's [`CallAllowance`] as the tool loop of one model sees it:
+/// each call priced as [`fill_usage_cost_from_pricing`] prices it.
+#[derive(Debug)]
+struct PricedCalls {
+    allowance: Arc<dyn CallAllowance>,
+    snapshot: Option<Arc<PriceSnapshot>>,
+    target: ProviderDispatchSpec,
+}
+
+impl roko_agent::tool_loop::TurnBudget for PricedCalls {
+    fn refuse_turn(&self) -> Option<String> {
+        self.allowance.refuse_call()
+    }
+
+    fn record_turn(&self, usage: &roko_core::Usage) {
+        let mut usage = *usage;
+        let pricing = price_target_usage(&mut usage, &self.target, self.snapshot.as_deref());
+        // A call that used no tokens cost nothing, priced or not.
+        let priced = pricing != CallPricing::Unpriced || usage.has_known_cost();
+        self.allowance
+            .record_call(f64::from(usage.cost_usd), priced);
+    }
 }
 
 impl AgentDispatchRequest {
@@ -2414,18 +2502,39 @@ pub(crate) fn usage_token_counts(usage: &roko_core::Usage) -> TokenCounts {
     }
 }
 
-/// [`fill_usage_cost_from_pricing`] for a dispatch result and its target.
+/// [`price_target_usage`] for a dispatch result and its target.
 fn fill_cost_from_profile(
     result: &mut AgentResult,
     target: &ProviderDispatchSpec,
     snapshot: Option<&PriceSnapshot>,
 ) {
-    fill_usage_cost_from_pricing(
-        &mut result.usage,
-        snapshot,
-        target.model_profile.as_ref(),
-        &target.model_slug,
-    );
+    price_target_usage(&mut result.usage, target, snapshot);
+}
+
+/// Price `usage` of a call to `target` ([`fill_usage_cost_from_pricing`]),
+/// the dated `snapshot` first (decision 2113). An agent roko's own tool loop
+/// runs reports tokens and no dollar amount, so the cost it carries is the
+/// loop's estimate from the model's profile: the snapshot's row prices it
+/// instead when there is one (find-c3da60). The profile is priced as the
+/// target's provider bills it ([`ModelProfile::with_provider_cache_rate`]).
+pub(crate) fn price_target_usage(
+    usage: &mut roko_core::Usage,
+    target: &ProviderDispatchSpec,
+    snapshot: Option<&PriceSnapshot>,
+) -> CallPricing {
+    if !runs_own_tools(target)
+        && snapshot.is_some_and(|snapshot| snapshot.row(&target.model_slug).is_some())
+    {
+        usage.cost_usd = 0.0;
+    }
+    let profile = target
+        .model_profile
+        .clone()
+        .map(|profile| match &target.provider_config {
+            Some(provider) => profile.with_provider_cache_rate(provider),
+            None => profile,
+        });
+    fill_usage_cost_from_pricing(usage, snapshot, profile.as_ref(), &target.model_slug)
 }
 
 /// Back-fill `usage.cost_usd` when the provider did not report a dollar
@@ -2485,17 +2594,7 @@ pub(crate) fn fill_usage_cost_from_pricing(
 /// [`fill_usage_cost_from_pricing`] applies one: the price snapshot's row,
 /// the profile's per-million prices, or the model's built-in pricing. A rate
 /// of 0 is free, and still a rate (backlog 2109).
-pub(crate) fn model_has_price(
-    snapshot: Option<&PriceSnapshot>,
-    profile: Option<&ModelProfile>,
-    model_slug: &str,
-) -> bool {
-    snapshot.is_some_and(|snapshot| snapshot.row(model_slug).is_some())
-        || profile.is_some_and(|profile| {
-            profile.cost_input_per_m.is_some() || profile.cost_output_per_m.is_some()
-        })
-        || roko_core::config::model_registry::builtin_pricing(model_slug).is_some()
-}
+pub(crate) use roko_core::config::model_registry::model_has_price;
 
 /// Whether a call's `usage` is priced, for its cost row (backlog 2109): its
 /// cost is known, or roko has a rate for the model, which prices even a
@@ -3131,6 +3230,7 @@ mod tests {
                 live_output: None,
                 attempt_key: None,
                 knowledge_ids: Vec::new(),
+                allowance: None,
             };
             let error = request.validate().expect_err("invalid identity must fail");
             assert_eq!(error, DispatchV2Error::InvalidAgentId);
@@ -3680,6 +3780,60 @@ mod tests {
         assert!(validate_contract_support(&request, &cli).is_ok());
     }
 
+    /// gap-cf427e: serve refuses a chat host's run, and routing skips a
+    /// ladder rung, by `ProviderConfig::runs_in_own_tool_loop`, read from the
+    /// config alone; dispatch refuses a `stage` contract by the resolved
+    /// runtime ([`runs_own_tools`]). The two agree for every provider kind,
+    /// with or without a CLI command.
+    #[test]
+    fn config_tool_loop_classification_matches_dispatch() {
+        let kinds = [
+            ProviderKind::AnthropicApi,
+            ProviderKind::ClaudeCli,
+            ProviderKind::OpenAiCompat,
+            ProviderKind::CursorAcp,
+            ProviderKind::PerplexityApi,
+            ProviderKind::GeminiApi,
+            ProviderKind::GeminiCli,
+            ProviderKind::CerebrasApi,
+            ProviderKind::CursorCli,
+            ProviderKind::Hermes,
+            ProviderKind::OpenClaw,
+            ProviderKind::CodexCli,
+        ];
+        for kind in kinds {
+            for command in [None, Some("codex"), Some("/opt/bin/claude")] {
+                let provider = ProviderConfig {
+                    kind,
+                    command: command.map(str::to_string),
+                    base_url: Some("http://127.0.0.1:9/v1".to_string()),
+                    api_key_env: Some("PATH".to_string()),
+                    ..ProviderConfig::default()
+                };
+                let mut config = RokoConfig::default();
+                config.providers.clear();
+                config.models.clear();
+                config.providers.insert("p".to_string(), provider.clone());
+                config.models.insert(
+                    "m".to_string(),
+                    ModelProfile {
+                        provider: "p".to_string(),
+                        slug: "m-1".to_string(),
+                        supports_tools: true,
+                        ..ModelProfile::default()
+                    },
+                );
+                let target = ProviderDispatchResolver::new(Arc::new(config)).resolve("m");
+                assert!(target.runtime.is_supported(), "{kind:?} {command:?}");
+                assert_eq!(
+                    runs_own_tools(&target),
+                    !provider.runs_in_own_tool_loop(),
+                    "{kind:?} with command {command:?}"
+                );
+            }
+        }
+    }
+
     /// gap-baab0a: a Codex attempt records the tool policy its contract
     /// asked for and what the broker enforced, with the denial that stopped
     /// it. Other providers record none.
@@ -3769,6 +3923,7 @@ mod tests {
             live_output: None,
             attempt_key: None,
             knowledge_ids: Vec::new(),
+            allowance: None,
         };
         // All provider kinds are now in the contract support whitelist,
         // so OpenClaw with a contract should pass validation.
@@ -3841,6 +3996,7 @@ printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"total_cost
             live_output: None,
             attempt_key: None,
             knowledge_ids: Vec::new(),
+            allowance: None,
         };
         let health_path = tmp.path().join(".roko/learn/provider-health.json");
         let registry = Arc::new(ProviderHealthRegistry::new());
@@ -3984,6 +4140,7 @@ printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"total_cost
             live_output: None,
             attempt_key: None,
             knowledge_ids: Vec::new(),
+            allowance: None,
         }
     }
 
@@ -4496,6 +4653,67 @@ exit 1
         );
     }
 
+    /// find-c3da60: a Cerebras model priced in roko.toml without a cache-read
+    /// rate pays its input rate for cache reads, which Cerebras bills in full,
+    /// not a tenth of it; a call of an agent roko's own tool loop runs is
+    /// priced at the dated snapshot's row, not at the cost the loop estimated
+    /// from the model's profile (decision 2113); and a CLI agent's own cost
+    /// stands.
+    #[test]
+    fn cerebras_cache_reads_cost_the_input_rate() {
+        let snapshot = PriceSnapshot::from_toml(
+            include_str!("../../../config/prices/2026-09-28.toml"),
+            "config/prices/2026-09-28.toml",
+        )
+        .expect("the 2026-09-28 snapshot");
+        let cerebras = ProviderConfig {
+            kind: ProviderKind::OpenAiCompat,
+            base_url: Some("https://api.cerebras.ai/v1".to_string()),
+            ..ProviderConfig::default()
+        };
+        let target = |slug: &str| {
+            let profile = ModelProfile {
+                provider: "cerebras".to_string(),
+                slug: slug.to_string(),
+                cost_input_per_m: Some(0.65),
+                cost_output_per_m: Some(1.0),
+                ..ModelProfile::default()
+            };
+            ProviderDispatchSpec {
+                provider_config: Some(cerebras.clone()),
+                ..cost_test_target(slug, Some(profile))
+            }
+        };
+        let cached = || roko_core::Usage {
+            cache_read_tokens: 1_000_000,
+            ..roko_core::Usage::zero()
+        };
+
+        let mut usage = cached();
+        let pricing = price_target_usage(&mut usage, &target("llama-4-scout"), Some(&snapshot));
+        assert_eq!(pricing, CallPricing::Profile);
+        let cost = f64::from(usage.cost_usd);
+        assert!((cost - 0.65).abs() < 1e-6, "{cost}");
+
+        // What the loop priced at the profile's rates gives way to the row.
+        let mut usage = cached();
+        usage.cost_usd = 0.065;
+        let pricing = price_target_usage(&mut usage, &target("gpt-oss-120b"), Some(&snapshot));
+        assert_eq!(pricing, CallPricing::Snapshot);
+        let cost = f64::from(usage.cost_usd);
+        assert!((cost - 0.35).abs() < 1e-6, "{cost}");
+
+        let mut cli = target("gpt-oss-120b");
+        cli.runtime = ProviderRuntime::AgentResultBridge {
+            provider_kind: ProviderKind::ClaudeCli,
+        };
+        let mut usage = cached();
+        usage.cost_usd = 0.5;
+        let pricing = price_target_usage(&mut usage, &cli, Some(&snapshot));
+        assert_eq!(pricing, CallPricing::Reported);
+        assert!((f64::from(usage.cost_usd) - 0.5).abs() < 1e-6);
+    }
+
     /// backlog 2114: a call to a model the dated price snapshot lists is
     /// priced at the snapshot's rates, even when roko.toml prices it
     /// otherwise; a model the snapshot lacks falls back to its profile.
@@ -4563,6 +4781,86 @@ exit 1
             fill_usage_cost_from_pricing(&mut reported, Some(&snapshot), None, "gpt-oss-120b");
         assert_eq!(pricing, CallPricing::Reported, "a reported cost stands");
         assert!((f64::from(reported.cost_usd) - 0.25).abs() < 1e-6);
+    }
+
+    /// bug-1c0a66: the rates `/api/models` serves (`effective_rates`) price a
+    /// call, cache reads included, at what dispatch charges for it: from a
+    /// snapshot row, from a profile with a cache-read rate and without one,
+    /// from a profile that charges nothing, with a built-in price and
+    /// without one, and from built-in pricing.
+    #[test]
+    fn effective_rates_price_calls_as_dispatch_does() {
+        let snapshot = PriceSnapshot::from_toml(
+            include_str!("../../../config/prices/2026-09-28.toml"),
+            "config/prices/2026-09-28.toml",
+        )
+        .expect("the 2026-09-28 snapshot");
+        let profile =
+            |slug: &str, prices: Option<(f64, f64)>, cache_read: Option<f64>| ModelProfile {
+                provider: "openai".to_string(),
+                slug: slug.to_string(),
+                cost_input_per_m: prices.map(|(input, _)| input),
+                cost_output_per_m: prices.map(|(_, output)| output),
+                cost_cache_read_per_m: cache_read,
+                ..ModelProfile::default()
+            };
+        let cases = [
+            (
+                Some(&snapshot),
+                profile("glm-4.7", Some((9.0, 9.0)), None),
+                "snapshot",
+            ),
+            (
+                None,
+                profile("my-own-model", Some((1.0, 2.0)), None),
+                "profile",
+            ),
+            (
+                None,
+                profile("my-own-model", Some((1.0, 2.0)), Some(0.5)),
+                "profile",
+            ),
+            (
+                None,
+                profile("claude-sonnet-4-6", Some((0.0, 0.0)), None),
+                "builtin",
+            ),
+            (
+                None,
+                profile("my-local-model", Some((0.0, 0.0)), None),
+                "profile",
+            ),
+            (None, profile("claude-sonnet-4-6", None, None), "builtin"),
+        ];
+        for (snapshot, profile, source) in cases {
+            let rates = roko_core::config::model_registry::effective_rates(
+                snapshot,
+                Some(&profile),
+                &profile.slug,
+            )
+            .expect("rates");
+            assert_eq!(rates.source.as_str(), source, "{}", profile.slug);
+            let mut usage = roko_core::Usage::zero();
+            usage.input_tokens = 20_000;
+            usage.output_tokens = 4_000;
+            usage.cache_read_tokens = 300_000;
+            fill_usage_cost_from_pricing(&mut usage, snapshot, Some(&profile), &profile.slug);
+            let served = [
+                (20_000.0, rates.input_per_m),
+                (4_000.0, rates.output_per_m),
+                (300_000.0, rates.cache_read_per_m),
+            ]
+            .iter()
+            .map(|(tokens, rate)| tokens * rate)
+            .sum::<f64>()
+                / 1_000_000.0;
+            let charged = f64::from(usage.cost_usd);
+            assert!(
+                (charged - served).abs() < 1e-6,
+                "{}: dispatch charged {charged}, the rates say {served}",
+                profile.slug
+            );
+        }
     }
 
     /// backlog 2114 (decision 2113): calls are priced from the newest

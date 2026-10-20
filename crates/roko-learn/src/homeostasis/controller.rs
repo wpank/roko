@@ -47,6 +47,11 @@
 //! S06 C2 ("first move in row") holds for convention flip only once M3's
 //! priors tell the two apart.
 //!
+//! M4's audits reach E3 through [`Controller::on_audit`], whenever their
+//! labels land: an audit settles after the pass it checks has resolved, and
+//! may land in a later run (gap-618548). The state keeps E3's last audits,
+//! so they count across runs.
+//!
 //! The controller only proposes θ: it never reads the conductor's ring and
 //! never restarts or fails an attempt. Its one file is its own state,
 //! `.roko/learn/homeostat-state.json`; committing and restoring θ go
@@ -64,8 +69,8 @@ use serde_json::Value;
 use super::catalog::{Effect, Move, Signature, candidates, catalog_move};
 use super::detect::{Baseline, DetectorBank, DetectorTuning, Observation};
 use super::ev::{
-    Drive, Estimate, Ev, EvBands, EvEstimates, EvWindow, Side, drive, estimate_latency_p90_s,
-    estimate_pass_rate, estimate_usd_per_verified_success,
+    Drive, Estimate, Ev, EvBands, EvEstimates, EvWindow, FALSE_GREEN_AUDITS, Side, drive,
+    estimate_latency_p90_s, estimate_pass_rate, estimate_usd_per_verified_success,
 };
 use super::policy::{ChangeKind, SafetyBox, SafetyContext, Verdict, ViabilityPolicy};
 use super::resolution::TaskResolution;
@@ -515,9 +520,21 @@ pub enum ControllerEvent {
     },
 }
 
+/// One audit E3 counts (gap-618548): M4's label of an adaptive-arm pass,
+/// named by the passed attempt's settlement.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AuditFinding {
+    /// The audited attempt's `settlement_id`, `"{attempt_key}#settle"`.
+    pub settlement_id: String,
+    /// The audit found the pass a false green: it failed hidden or stronger
+    /// checks.
+    pub false_green: bool,
+}
+
 /// Everything the controller keeps across restarts, in
 /// `.roko/learn/homeostat-state.json`. The estimators and detectors refill
-/// from the resolutions that follow a restart.
+/// from the resolutions that follow a restart, except E3's audits, which
+/// are sparse and land late, and which the state keeps.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ControllerState {
     /// [`STATE_SCHEMA`].
@@ -568,6 +585,11 @@ pub struct ControllerState {
     pub holdout_resolutions: u64,
     /// Unix ms of the latest resolution.
     pub now_ms: Option<i64>,
+    /// E3's window: the last [`FALSE_GREEN_AUDITS`] audits of adaptive-arm
+    /// passes, oldest first, whichever run their labels landed in
+    /// (gap-618548).
+    #[serde(default)]
+    pub audits: Vec<AuditFinding>,
 }
 
 impl ControllerState {
@@ -597,6 +619,7 @@ impl ControllerState {
             holdout_spend_usd: 0.0,
             holdout_resolutions: 0,
             now_ms: None,
+            audits: Vec::new(),
         }
     }
 }
@@ -653,6 +676,11 @@ impl Controller {
             confirm_k: config.confirm_k,
             ..DetectorTuning::default()
         };
+        // E3's audits carry over; the other estimators refill.
+        let mut window = EvWindow::new(config.window as usize);
+        for finding in &state.audits {
+            window.push_audit(finding.false_green);
+        }
         Self {
             config: config.clone(),
             safety: SafetyBox::new(state.theta0.clone(), ladders.clone(), &policy),
@@ -663,7 +691,7 @@ impl Controller {
             knowledge_loop_live: false,
             guided_needs_lcb: false,
             prior: Box::new(CatalogPrior),
-            window: EvWindow::new(config.window as usize),
+            window,
             bands: EvBands::new(&policy.ev),
             detectors: DetectorBank::new(baseline, &policy.ev, &tuning),
             latched: Vec::new(),
@@ -857,6 +885,32 @@ impl Controller {
     pub fn set_detector_tuning(&mut self, tuning: DetectorTuning) {
         self.tuning = tuning;
         self.detectors = DetectorBank::new(self.baseline, &self.policy.ev, &tuning);
+    }
+
+    /// Count M4's audit of the adaptive-arm pass that settled as
+    /// `settlement_id` in E3's window (S06 §4.2, gap-618548): `false_green`
+    /// when it failed hidden or stronger checks. The label lands after the
+    /// pass resolved, in its run or a later one, so it changes no closed
+    /// episode, band or change: the next resolution reads E3 with it. The
+    /// state keeps it for the runs that follow. A settlement already counted
+    /// counts once. Returns whether it was counted.
+    pub fn on_audit(&mut self, settlement_id: &str, false_green: bool) -> bool {
+        let audits = &mut self.state.audits;
+        if audits
+            .iter()
+            .any(|finding| finding.settlement_id == settlement_id)
+        {
+            return false;
+        }
+        audits.push(AuditFinding {
+            settlement_id: settlement_id.to_string(),
+            false_green,
+        });
+        if audits.len() > FALSE_GREEN_AUDITS {
+            audits.remove(0);
+        }
+        self.window.push_audit(false_green);
+        true
     }
 
     /// A person switched the mode; M1 never switches its own.
@@ -2160,5 +2214,50 @@ mod tests {
         // E1 is still breached, so the search makes its next move.
         let kinds: Vec<ChangeKind> = changes(&dwell).iter().map(|change| change.kind).collect();
         assert_eq!(kinds, [ChangeKind::Search]);
+    }
+
+    /// gap-618548: M4's audit of a pass counts in E3 when its label lands,
+    /// after the pass resolved, once per settlement. The state keeps E3's
+    /// last [`FALSE_GREEN_AUDITS`] audits, so the controller of a later run
+    /// reads the same E3.
+    #[test]
+    fn audits_reach_e3_when_their_labels_land_and_carry_across_runs() {
+        let mut m1 = controller(HomeostasisMode::Shadow);
+        let _ = m1.on_resolution(&resolution(1, true, 300, 60));
+        assert!(!m1.estimates().false_green.is_measured());
+
+        assert!(m1.on_audit("r:p:t1:1#settle", true));
+        assert!(!m1.on_audit("r:p:t1:1#settle", true), "once");
+        let e3 = m1.estimates().false_green;
+        // Beta(1, 9) and one false green: Beta(2, 9).
+        let mean = e3.value.expect("E3 is measured");
+        assert!((mean - 2.0 / 11.0).abs() < 1e-12, "{e3:?}");
+
+        // A later run's controller loads the audit with the state.
+        let temp = tempfile::tempdir().expect("tempdir");
+        let path = Controller::state_path(temp.path());
+        m1.save(&path).expect("save the state");
+        let fresh = controller(HomeostasisMode::Shadow);
+        let (loaded, _) = Controller::load(
+            &path,
+            &fresh.config,
+            policy(),
+            fresh.state().theta0.clone(),
+            fresh.ladders.clone(),
+            BASELINE,
+            7,
+        );
+        assert_eq!(loaded.state().audits, m1.state().audits);
+        assert_eq!(loaded.estimates().false_green.value, Some(mean));
+
+        // E3 looks back over the last thirty audits only.
+        let mut window = loaded;
+        for n in 2..=31 {
+            assert!(window.on_audit(&format!("r:p:t{n}:1#settle"), false));
+        }
+        let audits = &window.state().audits;
+        assert_eq!(audits.len(), FALSE_GREEN_AUDITS);
+        assert_eq!(audits[0].settlement_id, "r:p:t2:1#settle");
+        assert!(audits.iter().all(|finding| !finding.false_green));
     }
 }

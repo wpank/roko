@@ -162,16 +162,22 @@ def test_network_rules_build_the_profile_and_refuse_unknown_ones(tmp_path):
     loop = sandbox.profile([], sandbox.loopback(8080), [sockets])
     assert loop.endswith(' (deny network-outbound) (allow network-outbound (remote ip "localhost:8080"))'
                          f' (allow network-outbound (subpath "{os.path.realpath(tmp_path)}/odd \\"dir\\""))')
-    assert sandbox.profile([secret_file]) == sandbox.profile([secret_file], None, [sockets])  # no rule, no network
-    # `kind` names the confinement this host applies; "+net" only where a network rule does.
-    assert sandbox.kind((), None) == "none" and sandbox.kind([secret_file]) == sandbox.KIND
-    assert sandbox.command(["true"], deny=()) == ["true"]
+    # No rule (None) adds no network clause, so its sockets add nothing; "none" is the default rule (gap-0bd49a).
+    assert sandbox.profile([secret_file], None) == sandbox.profile([secret_file], None, [sockets])
+    assert sandbox.profile([secret_file]) == none and "network-outbound" not in sandbox.profile([secret_file], None)
+    # `kind` names the confinement this host applies; "+net" only where a network rule does, as by default.
+    assert sandbox.kind((), None) == "none" and sandbox.kind([secret_file], None) == sandbox.KIND
+    assert sandbox.kind([secret_file]) == sandbox.kind([secret_file], "none") == sandbox.kind((), "none")
+    assert sandbox.command(["true"], deny=(), network=None) == ["true"]
+    assert sandbox.command(["true"], deny=()) == sandbox.command(["true"], deny=(), network="none")
     if sandbox.KIND == "none":  # nothing applies a rule here, and the record says so
         assert sandbox.kind((), "none") == "none" and sandbox.command(["true"], deny=(), network="none") == ["true"]
     else:
         assert sandbox.kind((), "none") == "sandbox-exec+net" == sandbox.kind([secret_file], "loopback:80")
         assert sandbox.command(["true"], deny=(), network="none") == [sandbox.SANDBOX_EXEC, "-p", sandbox.profile(
             [], "none", (), toolchain.read_only()), "true"]  # the Rust toolchain stays read-only (gap-46fd19)
+        assert sandbox.BACKENDS[sandbox.KIND]([], "none", [], []) == [sandbox.SANDBOX_EXEC, "-p", sandbox.profile(
+            [], "none")]  # the host's backend builds the prefix (the seam a Linux backend plugs into, gap-29ac83)
 
 
 @macos_only
@@ -188,7 +194,8 @@ def test_loopback_rule_admits_only_its_ports_and_sockets(socket_dir):
         assert probe(loop, *everything) == {proxy.target: "connected", other.target: "refused",
                                             inject.target: "connected", elsewhere.target: "refused"}
         assert set(probe(sandbox.command([], deny=(), network="none"), *everything).values()) == {"refused"}
-        assert sandbox.command([], deny=(), sockets=[allowed_dir]) == []  # sockets alone add no network rule
+        assert sandbox.command([], deny=(), network=None, sockets=[allowed_dir]) == []  # sockets alone add no rule
+        assert set(probe(sandbox.command([], deny=()), *everything).values()) == {"refused"}  # "none" by default
         assert [listener.connections for listener in everything] == [2, 1, 2, 1]
 
 
@@ -207,7 +214,7 @@ def test_direct_loop_shell_cannot_reach_the_network(places):
                      bash(f"curl -sS --max-time 5 -d '{{}}' {stub.url}/chat/completions; echo provider_exit=$?",
                           "Call the model myself."),
                      bash(f"ls {run_dir / 'private'}; echo private_exit=$?", "Look for the task files."),
-                     bash(CORRECT, "Implement it."), bash("echo VB_SUBMIT")]
+                     bash(CORRECT, "Implement it."), bash("echo SUBMIT_TASK")]
             return scripted({"": steps})(body)
 
         with StubServer(respond) as stub:
@@ -253,7 +260,7 @@ def test_agent_commands_cannot_touch_the_secret_or_the_key_file(places, tmp_path
     attempt = (f"for f in '{places['secret'].parent}/sec''ret' '{key_file.parent}/ke''ys'; do "
                'chmod 600 "$f"; cat "$f"; done 2>&1; echo tried')
     with StubServer(scripted({"": [bash(attempt, "Take the secret and the key."), bash(CORRECT, "Implement it."),
-                                   bash("echo VB_SUBMIT")]})) as stub:
+                                   bash("echo SUBMIT_TASK")]})) as stub:
         arm_text, count = re.subn(r"(?m)^base_url = .*$", f'base_url = "{stub.url}"',
                                   (layout.ARMS_DIR / "cheap_direct.toml").read_text())
         assert count == 1

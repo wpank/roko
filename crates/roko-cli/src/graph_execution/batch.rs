@@ -7,6 +7,9 @@
 //! delivered into it: [`CliCompletionDeliveryService`] merges the plan
 //! branch's verified tip by plumbing and runs the regression check on the
 //! merge in the repository's regression checkout, never the operator's.
+//! The batch moves to the merge only once that check passed (bug-700d7c), so
+//! an attempt that starts while another plan's check runs starts from checked
+//! work, and a plan whose check failed never reaches the batch.
 //! Deliveries run one at a time, since the
 //! batch has one tip, so a plan sees every plan delivered before it started.
 //!
@@ -17,12 +20,10 @@ use std::path::{Path, PathBuf};
 
 use roko_graph::delivery::{
     CompletionDeliveryReceiptV1, CompletionDeliveryRequest, CompletionDeliveryService,
-    CompletionDeliveryState, DeliveryError, DeliveryReceiptStore,
+    DeliveryError, DeliveryReceiptStore,
 };
 
-use super::delivery::{
-    CliCompletionDeliveryService, DeliveryBackend, GitDeliveryBackend, is_ancestor,
-};
+use super::delivery::{CliCompletionDeliveryService, GitDeliveryBackend, is_ancestor};
 use crate::orchestrator::worktree::format_branch_name;
 use crate::runner::merge::git_output;
 
@@ -35,6 +36,10 @@ pub const RUN_TAG_PREFIX: &str = "roko/run/";
 /// Receipt extension recording what a delivered plan's attempt cleanup did
 /// (gap-415c54): the checkouts it removed and the branches it kept.
 pub const ATTEMPT_CLEANUP_EXTENSION: &str = "roko.attempt_cleanup";
+
+/// Receipt extension marking a partial delivery (bug-74164c): the verified tasks
+/// of a plan that did not finish, whose work it holds.
+pub const PARTIAL_EXTENSION: &str = "roko.partial";
 
 /// What promoting a run's batch did (see [`BatchIntegration::promote`]).
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
@@ -62,6 +67,8 @@ pub struct BatchIntegration {
     /// Where the batch started: the operator's `HEAD` when the run created
     /// it, its tip when a resumed run continued it.
     base_oid: String,
+    /// Whether this run created the branch, rather than continuing it.
+    created: bool,
     store: DeliveryReceiptStore,
     /// Deliveries take turns: each merges into the tip the last one left.
     queue: tokio::sync::Mutex<()>,
@@ -78,6 +85,7 @@ impl BatchIntegration {
     pub async fn open(repo: &Path, run_id: &str) -> Result<Self, String> {
         let branch = format!("{BATCH_BRANCH_PREFIX}{run_id}");
         let branch_ref = format!("refs/heads/{branch}");
+        let mut created = false;
         let base_oid = match commit_of(repo, &branch_ref).await {
             Some(tip) => tip,
             None => {
@@ -98,6 +106,7 @@ impl BatchIntegration {
                 )
                 .await
                 .map_err(|e| format!("could not create {branch}: {e}"))?;
+                created = true;
                 head
             }
         };
@@ -106,6 +115,7 @@ impl BatchIntegration {
             run_id: run_id.to_string(),
             branch,
             base_oid,
+            created,
             store: DeliveryReceiptStore::new(),
             queue: tokio::sync::Mutex::new(()),
         })
@@ -127,6 +137,49 @@ impl BatchIntegration {
     #[must_use]
     pub fn run_id(&self) -> &str {
         &self.run_id
+    }
+
+    /// Delete the batch branch when this run created it and it is still at
+    /// its base, so that a run that left no work leaves no branch behind
+    /// (bug-58329f). A branch that moved, or that an earlier run made, is kept.
+    /// Returns whether it was deleted.
+    pub async fn discard_if_unused(&self) -> bool {
+        let branch_ref = format!("refs/heads/{}", self.branch);
+        if !self.created || !self.receipts().is_empty() {
+            return false;
+        }
+        let deleted = git_output(
+            &self.repo,
+            &[
+                "update-ref",
+                "-m",
+                "roko: the run left no work",
+                "-d",
+                &branch_ref,
+                &self.base_oid,
+            ],
+        )
+        .await
+        .is_ok();
+        if deleted {
+            // Its description goes with it; a branch never described has none.
+            let section = format!("branch.{}", self.branch);
+            let _ = git_output(&self.repo, &["config", "--remove-section", &section]).await;
+        }
+        deleted
+    }
+
+    /// Describe the batch branch as `description`, the run's plans' titles
+    /// (gap-c2efe7), in `branch.<batch>.description`, which `git branch` and hosts
+    /// read. Only a branch this run created; a failure is logged.
+    pub async fn describe(&self, description: &str) {
+        if !self.created || description.trim().is_empty() {
+            return;
+        }
+        let key = format!("branch.{}.description", self.branch);
+        if let Err(error) = git_output(&self.repo, &["config", &key, description.trim()]).await {
+            tracing::warn!(branch = %self.branch, %error, "the batch branch has no description");
+        }
     }
 
     /// The command that takes the batch into the operator's checkout, which
@@ -184,15 +237,31 @@ impl BatchIntegration {
         }
     }
 
+    /// The request that delivers `verified`, the tip of the verified part of
+    /// plan `plan_id`'s work, when the plan did not finish (bug-74164c). Its
+    /// delivery id is not the whole plan's, so delivering the whole plan
+    /// later in the same process is a delivery of its own.
+    #[must_use]
+    pub fn partial_request(&self, plan_id: &str, verified: String) -> CompletionDeliveryRequest {
+        let mut request = self.request(plan_id, verified);
+        request.delivery_id.push_str(":partial");
+        request
+    }
+
     /// Deliver `request` through `service`, which must use this batch's
     /// [`Self::store`], one delivery at a time.
     ///
     /// A `recorded` receipt of the same request, left by an earlier process of
     /// the run, is continued from its next step: a delivered plan is not
-    /// merged again, and one that stopped after its merge only reruns its
-    /// regression check. A recorded failure, or a receipt of another request,
-    /// is delivered afresh. A merge whose regression check failed is taken
-    /// back out of the batch.
+    /// merged again, one that stopped after its merge only reruns its
+    /// regression check, and one whose check passed only moves the batch. A
+    /// recorded failure, or a receipt of another request, is delivered
+    /// afresh.
+    ///
+    /// The batch moves to a merge only once its regression check passed
+    /// (bug-700d7c): while the check runs, plans that start attempts from the
+    /// batch get its old tip, and a merge whose check failed, or was cut short
+    /// by a stop (bug-7b62ff), never reaches it.
     ///
     /// # Errors
     ///
@@ -205,50 +274,22 @@ impl BatchIntegration {
         recorded: Option<CompletionDeliveryReceiptV1>,
     ) -> Result<CompletionDeliveryReceiptV1, DeliveryError> {
         let _turn = self.queue.lock().await;
-        let branch_ref = format!("refs/heads/{}", self.branch);
-        let before = commit_of(&self.repo, &branch_ref).await;
         let resumable = recorded.filter(|receipt| {
             receipt.request.delivery_id == request.delivery_id
                 && receipt.request_fingerprint == request.fingerprint()
                 && !receipt.state.is_failed()
         });
-        let mut receipt = match resumable {
-            None => service.deliver(request).await?,
+        match resumable {
+            None => service.deliver(request).await,
             Some(receipt) => {
                 let delivery_id = receipt.request.delivery_id.clone();
                 if self.store.get(&delivery_id).is_none() {
                     self.store.insert_or_get(&receipt.request)?;
                     self.store.update(&receipt);
                 }
-                service.reconcile(&delivery_id).await?
+                service.reconcile(&delivery_id).await
             }
-        };
-        // The batch holds only plans that passed their regression check: a
-        // merge whose check failed is undone, so no later plan builds on it.
-        if receipt.state == CompletionDeliveryState::RegressionFailed
-            && let (Some(merge), Some(before)) = (receipt.merge_commit.clone(), before)
-            && merge != before
-        {
-            let undone = git_output(
-                &self.repo,
-                &[
-                    "update-ref",
-                    "-m",
-                    "roko: undo a delivery whose regression check failed",
-                    &branch_ref,
-                    &before,
-                    &merge,
-                ],
-            )
-            .await;
-            let note = match undone {
-                Ok(_) => format!("; {} was reset to {before}", self.branch),
-                Err(e) => format!("; {} could not be reset to {before}: {e}", self.branch),
-            };
-            receipt.error = Some(receipt.error.unwrap_or_default() + &note);
-            self.store.update(&receipt);
         }
-        Ok(receipt)
     }
 
     /// Promote the batch into `target` once every plan is delivered: merge
@@ -287,7 +328,7 @@ impl BatchIntegration {
             publish: false,
         };
         let outcome = GitDeliveryBackend::new(self.repo.clone())
-            .merge(&request)
+            .merge_into_target(&request)
             .await;
         let (commit, moved) = match outcome.merge_commit {
             Some(commit) if outcome.merged => (commit, true),
@@ -339,6 +380,20 @@ impl BatchIntegration {
         })
     }
 
+    /// The batch record of plan `plan_id` when it delivered nothing, kept in
+    /// the plan's checkpoint under `roko.batch@1` like [`Self::record`], with
+    /// no delivery `state` (bug-db89d4).
+    #[must_use]
+    pub fn plan_record(&self, plan_id: &str) -> serde_json::Value {
+        serde_json::json!({
+            "run_id": self.run_id,
+            "branch": self.branch,
+            "base_oid": self.base_oid,
+            "plan_id": plan_id,
+            "plan_branch": format_branch_name(plan_id),
+        })
+    }
+
     /// The batch record of a plan's delivery, kept in the plan's checkpoint
     /// under `roko.batch@1`.
     #[must_use]
@@ -353,6 +408,7 @@ impl BatchIntegration {
             "state": receipt.state,
             "merge_commit": receipt.merge_commit,
             "error": receipt.error,
+            "partial": receipt.extensions.contains_key(PARTIAL_EXTENSION),
         })
     }
 }
@@ -362,6 +418,159 @@ impl BatchIntegration {
 /// `None` when no attempt of the plan was accepted.
 pub async fn plan_branch_tip(repo: &Path, plan_id: &str) -> Option<String> {
     commit_of(repo, &format!("refs/heads/{}", format_branch_name(plan_id))).await
+}
+
+/// How many commits [`PlanWork::read`] walks back along a plan branch at
+/// most.
+const MAX_PLAN_WORK_COMMITS: usize = 512;
+
+/// One commit a run accepted onto a plan branch (gap-3b5361): an attempt's
+/// commit, or the commit that folded one in, with the task and the verdict
+/// its trailers name.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AcceptedCommit {
+    /// The commit.
+    pub commit: String,
+    /// The task whose attempt it holds.
+    pub task_id: String,
+    /// The attempt's settled verdict, such as `passed` or `unverified`.
+    pub verdict: String,
+}
+
+impl AcceptedCommit {
+    /// Whether its task's checks passed (bug-db89d4): every verify step
+    /// passed, passed but for failures the run's base already had, or passed
+    /// on work that was already there. An `unverified` task ran none.
+    #[must_use]
+    pub fn verified(&self) -> bool {
+        use roko_graph::cells::task_executor::TaskGateVerdict;
+        matches!(
+            TaskGateVerdict::parse(&self.verdict),
+            Some(
+                TaskGateVerdict::Passed
+                    | TaskGateVerdict::PassedWithPreexistingFailures
+                    | TaskGateVerdict::AlreadySatisfied
+            )
+        )
+    }
+}
+
+/// The work one run accepted onto a plan's branch (bug-db89d4).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PlanWork {
+    /// The commit the run's first accepted commit builds on.
+    pub base: String,
+    /// The run's accepted commits, oldest first, along the branch's first
+    /// parents.
+    pub commits: Vec<AcceptedCommit>,
+}
+
+impl PlanWork {
+    /// What run `run_id` accepted onto plan `plan_id`'s branch in `repo`: the
+    /// branch's commits from its tip back along first parents, as long as
+    /// their trailers name the plan and the run. `None` when the branch does
+    /// not exist or its tip is not the run's.
+    pub async fn read(repo: &Path, plan_id: &str, run_id: &str) -> Option<Self> {
+        let tip = plan_branch_tip(repo, plan_id).await?;
+        let log = git_output(
+            repo,
+            &[
+                "log",
+                "--first-parent",
+                &format!("--max-count={MAX_PLAN_WORK_COMMITS}"),
+                "--format=%H%x1f%P%x1f%B%x1e",
+                &tip,
+            ],
+        )
+        .await
+        .ok()?;
+        let mut commits = Vec::new();
+        let mut base = None;
+        for record in log.split('\x1e') {
+            let mut fields = record.trim_start_matches('\n').splitn(3, '\x1f');
+            let (Some(commit), Some(parents), Some(body)) =
+                (fields.next(), fields.next(), fields.next())
+            else {
+                break;
+            };
+            if trailer(body, "Roko-Plan") != Some(plan_id)
+                || trailer(body, "Roko-Run") != Some(run_id)
+            {
+                break;
+            }
+            let (Some(task_id), Some(verdict)) =
+                (trailer(body, "Roko-Task"), trailer(body, "Roko-Verdict"))
+            else {
+                break;
+            };
+            commits.push(AcceptedCommit {
+                commit: commit.trim().to_string(),
+                task_id: task_id.to_string(),
+                verdict: verdict.to_string(),
+            });
+            base = parents.split_whitespace().next().map(str::to_string);
+        }
+        commits.reverse();
+        Some(Self {
+            base: base?,
+            commits,
+        })
+    }
+
+    /// How many of the commits, oldest first, are verified. A commit after an
+    /// unverified one builds on work no check ran on, so it does not count.
+    #[must_use]
+    pub fn verified_len(&self) -> usize {
+        self.commits
+            .iter()
+            .take_while(|commit| commit.verified())
+            .count()
+    }
+
+    /// The last of the verified commits, if any.
+    #[must_use]
+    pub fn verified_tip(&self) -> Option<&str> {
+        self.commits[..self.verified_len()]
+            .last()
+            .map(|accepted| accepted.commit.as_str())
+    }
+
+    /// The commits after the verified ones: work no check ran on, and work
+    /// built on it.
+    #[must_use]
+    pub fn unverified(&self) -> &[AcceptedCommit] {
+        &self.commits[self.verified_len()..]
+    }
+
+    /// The unverified work as a plan's batch record keeps it (bug-db89d4):
+    /// the commit it ends at, the commit it starts from (the verified work's
+    /// tip, else [`Self::base`]) and its tasks with their verdicts. `None`
+    /// when every commit is verified.
+    #[must_use]
+    pub fn unverified_record(&self) -> Option<serde_json::Value> {
+        let unverified = self.unverified();
+        let last = unverified.last()?;
+        let tasks = unverified
+            .iter()
+            .map(|accepted| {
+                serde_json::json!({ "task_id": accepted.task_id, "verdict": accepted.verdict })
+            })
+            .collect::<Vec<_>>();
+        Some(serde_json::json!({
+            "commit": last.commit,
+            "base": self.verified_tip().unwrap_or(&self.base),
+            "tasks": tasks,
+        }))
+    }
+}
+
+/// The value of the last `<key>: <value>` trailer line in a commit message.
+fn trailer<'a>(message: &'a str, key: &str) -> Option<&'a str> {
+    message
+        .lines()
+        .rev()
+        .find_map(|line| line.strip_prefix(key)?.strip_prefix(':'))
+        .map(str::trim)
 }
 
 /// The run whose batch a resumed run continues: the batch an earlier process
@@ -489,12 +698,16 @@ async fn commit_of(repo: &Path, rev: &str) -> Option<String> {
 mod tests {
     use std::sync::Arc;
     use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::time::Duration;
+
+    use roko_graph::delivery::CompletionDeliveryState;
 
     use super::*;
     use crate::graph_execution::delivery::{
-        DeliveryBackend, DeliveryMergeOutcome, DeliveryPublicationOutcome,
+        DeliveryBackend, DeliveryMergeOutcome, DeliveryMoveOutcome, DeliveryPublicationOutcome,
         DeliveryRegressionOutcome, GitDeliveryBackend,
     };
+    use crate::orchestrator::worktree::{WorktreeConfig, WorktreeManager};
 
     fn git(repo: &Path, args: &[&str]) -> String {
         let output = std::process::Command::new("git")
@@ -836,11 +1049,13 @@ mod tests {
         assert_eq!(merge_command(path, "roko/batch/gone").await, None);
     }
 
-    /// Counts the merges and regression checks it is asked for; both pass.
+    /// Counts the merges, regression checks and target moves it is asked
+    /// for; each succeeds.
     #[derive(Debug, Default)]
     struct CountingBackend {
         merges: AtomicUsize,
         regressions: AtomicUsize,
+        moves: AtomicUsize,
     }
 
     #[async_trait::async_trait]
@@ -850,7 +1065,21 @@ mod tests {
             DeliveryMergeOutcome {
                 merged: true,
                 merge_commit: Some(request.commit_oid.clone()),
+                target_tip: None,
                 summary: "merged".to_string(),
+            }
+        }
+
+        async fn move_target(
+            &self,
+            _request: &CompletionDeliveryRequest,
+            _merge_commit: &str,
+            _target_tip: Option<&str>,
+        ) -> DeliveryMoveOutcome {
+            self.moves.fetch_add(1, Ordering::SeqCst);
+            DeliveryMoveOutcome {
+                moved: true,
+                summary: "moved".to_string(),
             }
         }
 
@@ -865,6 +1094,7 @@ mod tests {
                 summary: "passed".to_string(),
                 evidence_ref: None,
                 checks: Vec::new(),
+                stopped_by: None,
             }
         }
 
@@ -882,8 +1112,10 @@ mod tests {
     }
 
     /// spec-f830c4: a resumed run continues a recorded delivery. One that
-    /// stopped after its merge only reruns its regression check, a delivered
-    /// one does nothing, and a failed one is delivered afresh.
+    /// stopped after its merge only reruns its regression check before it
+    /// moves the batch, one whose check passed only moves the batch
+    /// (bug-700d7c), a delivered one does nothing, and a failed one is
+    /// delivered afresh.
     #[tokio::test]
     async fn a_resumed_delivery_continues_after_its_merge() {
         let repo = repo_with_plan_branches();
@@ -900,10 +1132,11 @@ mod tests {
             receipt
         };
         use CompletionDeliveryState::{Conflict, Delivered, Merged, Queued, RegressionPassed};
-        for (states, merges, regressions) in [
-            (vec![Queued, Merged], 0, 1),
-            (vec![Queued, Merged, RegressionPassed, Delivered], 0, 0),
-            (vec![Queued, Conflict], 1, 1),
+        for (states, merges, regressions, moves) in [
+            (vec![Queued, Merged], 0, 1, 1),
+            (vec![Queued, Merged, RegressionPassed], 0, 0, 1),
+            (vec![Queued, Merged, RegressionPassed, Delivered], 0, 0, 0),
+            (vec![Queued, Conflict], 1, 1, 1),
         ] {
             let batch = BatchIntegration::open(repo.path(), "run-3")
                 .await
@@ -921,12 +1154,140 @@ mod tests {
             assert_eq!(
                 (
                     backend.merges.load(Ordering::SeqCst),
-                    backend.regressions.load(Ordering::SeqCst)
+                    backend.regressions.load(Ordering::SeqCst),
+                    backend.moves.load(Ordering::SeqCst)
                 ),
-                (merges, regressions),
+                (merges, regressions, moves),
                 "{states:?}"
             );
         }
         drop(batch);
+    }
+
+    /// Wait until `path` exists, for at most 60 s.
+    async fn wait_for_file(path: &Path) {
+        for _ in 0..1200 {
+            if path.exists() {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        panic!("{} never appeared", path.display());
+    }
+
+    /// bug-700d7c: a delivery moves the run's batch branch only once the
+    /// plan's whole-plan check passed. While the check runs, the branch is at
+    /// its old tip, so an attempt that another plan starts from it then starts
+    /// there, not from the unchecked merge. A check that fails leaves the
+    /// branch where it was: it never points at the failed merge, so nothing
+    /// can start from it. A check that passes moves the branch to the merge.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn delivery_moves_the_run_branch_only_after_its_check_passes() {
+        let repo = repo_with_plan_branches();
+        let path = repo.path();
+        let scratch = tempfile::tempdir().expect("scratch");
+        let batch = BatchIntegration::open(path, "run-order")
+            .await
+            .expect("batch");
+        let branch_ref = "refs/heads/roko/batch/run-order";
+        let base = git(path, &["rev-parse", branch_ref]);
+        // As in a plan run, an attempt of a plan with no accepted work starts
+        // from the batch branch.
+        let worktrees = WorktreeManager::new(WorktreeConfig {
+            repo_root: path.to_path_buf(),
+            base_branch: batch.branch().to_string(),
+            worktrees_root: scratch.path().join("worktrees"),
+            max_live: None,
+            idle_ttl: Duration::from_secs(3600),
+        });
+
+        // plan-a's check passes, and then plan-b's fails. Each records where
+        // the batch branch is while it runs, and waits until another plan's
+        // attempt has started.
+        let mut delivered = Vec::new();
+        for (attempt, plan, passes) in [(1, "plan-a", true), (2, "plan-b", false)] {
+            let [seen, running, release] = ["seen", "running", "release"]
+                .map(|name| scratch.path().join(format!("{plan}.{name}")));
+            let step = format!(
+                "git rev-parse {branch_ref} > '{seen}' && touch '{running}' && i=0 && \
+                 while [ ! -e '{release}' ] && [ $i -lt 1200 ]; do sleep 0.05; i=$((i+1)); done; \
+                 test -e '{release}' && {verdict}",
+                seen = seen.display(),
+                running = running.display(),
+                release = release.display(),
+                verdict = if passes { "true" } else { "false" },
+            );
+            let backend =
+                GitDeliveryBackend::new(path.to_path_buf()).with_regression_steps(vec![step]);
+            let delivering = service(&batch, backend);
+            let before = git(path, &["rev-parse", branch_ref]);
+            let verified = plan_branch_tip(path, plan).await.expect("plan branch");
+
+            let delivery = batch.deliver(&delivering, batch.request(plan, verified), None);
+            let other_plan = async {
+                wait_for_file(&running).await;
+                let started = worktrees
+                    .create_for_attempt("plan-c", "T1", attempt)
+                    .await
+                    .expect("another plan's attempt starts during the check");
+                std::fs::write(&release, "").expect("let the check end");
+                started
+            };
+            let (receipt, started) = tokio::join!(delivery, other_plan);
+
+            let receipt = receipt.expect("delivery runs");
+            let merge = receipt.merge_commit.clone().expect("the merge");
+            assert_ne!(merge, before, "{plan}");
+            let during = std::fs::read_to_string(&seen).expect("the check ran");
+            assert_eq!(
+                during.trim(),
+                before,
+                "{plan}: the batch moved during its check"
+            );
+            assert_eq!(
+                started.base_commit.as_deref(),
+                Some(before.as_str()),
+                "{plan}: an attempt that started during the check got the unchecked merge"
+            );
+            let after = git(path, &["rev-parse", branch_ref]);
+            if passes {
+                assert_eq!(
+                    receipt.state,
+                    CompletionDeliveryState::Delivered,
+                    "{plan}: {:?}",
+                    receipt.error
+                );
+                assert_eq!(after, merge, "{plan}: a passed check moves the batch");
+                delivered.push(merge);
+            } else {
+                assert_eq!(
+                    receipt.state,
+                    CompletionDeliveryState::RegressionFailed,
+                    "{plan}: {:?}",
+                    receipt.error
+                );
+                assert_eq!(
+                    after, before,
+                    "{plan}: a failed check leaves the batch alone"
+                );
+                let reached = std::process::Command::new("git")
+                    .args(["merge-base", "--is-ancestor", &merge, branch_ref])
+                    .current_dir(path)
+                    .env_remove("GIT_DIR")
+                    .env_remove("GIT_WORK_TREE")
+                    .status()
+                    .expect("git merge-base");
+                assert!(
+                    !reached.success(),
+                    "{plan}: the failed merge is in the batch"
+                );
+            }
+        }
+
+        // Every commit the batch branch ever pointed at is its base or a merge
+        // whose check passed: its reflog never names plan-b's merge.
+        let held = git(path, &["log", "--walk-reflogs", "--format=%H", branch_ref]);
+        let held: Vec<&str> = held.lines().collect();
+        assert_eq!(held, [delivered[0].as_str(), base.as_str()]);
     }
 }

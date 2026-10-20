@@ -9,7 +9,7 @@ goal = "cybernetic"
 size = "M"
 subsystem = ["roko-learn/self-model"]
 created = 2026-10-03
-updated = 2026-10-03
+updated = 2026-10-15
 last_verified = 2026-10-03
 source = "wave-7 follow-up reports 2026-10-03 (PK48 gap-d90ef6)"
 discovered_from = "gap-d90ef6, design finding for S04"
@@ -97,3 +97,5 @@ gap-997366-adjacent work and this wave's entry 4) get confirmed with S04/S09 bef
   n=5, not a worst-case bound — real ECE also depends on how predictions are distributed across bins, so actual
   false-positive rates should be measured empirically (Monte Carlo), not assumed from this back-of-envelope figure
   alone, when choosing and verifying a fix.
+
+2026-10-15 decision (Will delegated it to the coordinator's recommendation, tmp/status-quo/2026-10-15/DECISIONS-2026-10-15.md, decision 9; he can veto it): Fewer bins: the breaker's ECE uses 5 equal-mass bins (a new BREAKER_ECE_BINS = 5, 10 outcomes per bin). BREAKER_WINDOW = 50, BREAKER_ECE = 0.2 and the Brier clause stay as they are, and the promotion gate keeps ECE_BINS = 10. Acceptance for the item's verify test: over 2,000 independent 50-outcome windows of a perfectly calibrated model with forecasts uniform on [0.1, 0.9] (fixed seed), the ECE clause trips in at most 3% of windows. A longer window and a debiased estimator: not now. Why: breaker_tripped computes ece(&recent, ECE_BINS) over the last 50 outcomes (crates/roko-learn/src/self_model/gate.rs:216-226; ECE_BINS = 10 at crates/roko-learn/src/self_model/metrics.rs:15). A Python simulation of that equal-mass ECE for a calibrated model found these false-trip rates per independent window: forecasts uniform on [0.1,0.9], 14.6% at 10 bins vs 1.4% at 5; forecasts in [0.4,0.6], 29.5% vs 5.0%; forecasts in [0.7,0.95], 2.7% vs 0.3%. One new constant is the cheapest reversible fix, and it keeps the breaker's reaction speed (a longer window would slow it). A trip only drops an active model to shadow (next_mode, gate.rs:245-246), and promotion is manual (decision 6102), so the change cannot make routing less safe. If vetoed: With a debiased or null-simulated threshold instead, the item becomes a larger statistics change (trip when ECE exceeds the 99th percentile simulated from the window's own forecasts). With no change, a calibrated active model drops to shadow in about 1 of 7 windows.

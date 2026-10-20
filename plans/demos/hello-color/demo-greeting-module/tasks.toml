@@ -7,6 +7,19 @@ max_parallel = 1
 skip_enrichment = true
 estimated_total_minutes = 2
 
+# The whole-plan check, on the merged result, in place of the Cargo workspace's
+# default, which in the roko repository builds the whole workspace. It runs under
+# `sh`, so it pipes into grep where the task steps use bash's `<<<`.
+[[meta.verify]]
+phase = "unit-tests"
+command = '''grep -Fq '#[test]' demo/hello-color/src/greeting.rs && CARGO_TARGET_DIR="${TMPDIR:-/tmp}/roko-demo-hello-color" cargo test --quiet --manifest-path demo/hello-color/Cargo.toml'''
+fail_msg = "demo/hello-color's unit tests, the greeting test among them, must pass."
+
+[[meta.verify]]
+phase = "runs"
+command = '''out="$(CARGO_TARGET_DIR="${TMPDIR:-/tmp}/roko-demo-hello-color" cargo run --quiet --manifest-path demo/hello-color/Cargo.toml)" && printf '%s\n' "$out" | grep -Fq "Hello, World!"'''
+fail_msg = "demo/hello-color must still print its greeting."
+
 [[task]]
 id = "T01"
 title = "Add a greeting module to hello-color"
@@ -40,8 +53,8 @@ fail_msg = "greeting.rs must define pub fn greeting, and main.rs must declare mo
 
 [[task.verify]]
 phase = "unit-tests"
-command = '''out="$(CARGO_TARGET_DIR="${TMPDIR:-/tmp}/roko-demo-hello-color" cargo test --quiet --manifest-path demo/hello-color/Cargo.toml 2>&1)" && grep -Eq 'test result: ok\. [1-9][0-9]* passed' <<<"$out"'''
-fail_msg = "cargo test must pass at least one test (the greeting unit test)."
+command = '''grep -Fq '#[test]' demo/hello-color/src/greeting.rs && CARGO_TARGET_DIR="${TMPDIR:-/tmp}/roko-demo-hello-color" cargo test --quiet --manifest-path demo/hello-color/Cargo.toml'''
+fail_msg = "greeting.rs must hold its unit test, and cargo test must pass."
 
 [[task.verify]]
 phase = "runs"

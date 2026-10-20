@@ -262,11 +262,12 @@ id = "L-sec"
 name = "section bandit"
 decision_point = "dispatch::prompt_builder::PromptAssembler::assemble (droppable sections)"
 layer = "sections"
-opportunity = "at least one droppable section and the token budget binds"
+opportunity = "at least one droppable section, outside maximize mode, which turns the bandit off"
 default_policy = "include every section by static priority"
 receipt = "included_ids"
 notes = [
     "Built (S02.P1-10). Graph-only (decision 4115): a droppable section is excluded with p in [0.05, 0.2] for its first 100 opportunities, then [0.05, 0.5]; the built-in pinned sections and [sections] pinned never.",
+    "Measured since gap-6f31c3: each sections row carries S03's fields, with the sections a prompt includes under the bandit and under π⁰ on both arms (on the arm that runs π⁰ the bandit's draws are logged, not applied). The bandit leaves sections out whether or not the token budget binds, so S03 §4.2's 'and the token budget binds', written for L-bid, is no part of its opportunity. Its read is its posteriors: a bandit that has learned from no labelled outcome reads as empty state.",
 ]
 
 [[loop.static_findings]]
@@ -413,4 +414,5 @@ receipt = "sham"
 fixed_holdout = 0.5
 notes = [
     "Permanent, zero cost, its own layer (decision 4115). A placebo transition, or a placebo β sequence that excludes 0, trips audit_broken.",
+    "Measured since gap-6f31c3: the census folds its decision rows, one per attempt. Its identical arms give it no influence and a null benefit, which do not move it; an ι_net interval that excludes 0 (or, once β is estimated, a β one) trips audit_broken before any loop is evaluated, and the tick that trips it writes a loop.audit_broken row (`*`).",
 ]

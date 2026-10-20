@@ -14,6 +14,7 @@
 //! - [`checkpoint`] — resumable state (§36.57).
 //! - [`context_factory`] — production [`ToolContext`] builder (T026).
 
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
@@ -332,8 +333,11 @@ pub struct TurnConfig {
     /// Timeout for the first token to arrive. After this, the backend
     /// should return `LlmError::Timeout` rather than waiting indefinitely.
     pub ttft_timeout: Duration,
-    /// Total request timeout including all streaming. The backend must
-    /// complete the stream within this duration or return `LlmError::Timeout`.
+    /// Request timeout. A request that does not stream must complete
+    /// within it. A streamed one must get its response, and each next chunk,
+    /// within it, and ends at [`crate::streaming::MAX_STREAM_DURATION`], so a
+    /// long stream that keeps delivering is not cut (bug-91796d). The backend
+    /// returns `LlmError::Timeout` when either runs out.
     pub request_timeout: Duration,
     /// Stop sequences. Provider-specific; pass through verbatim.
     pub stop_sequences: Vec<String>,
@@ -657,8 +661,9 @@ pub enum StopReason {
     Cancelled,
     /// The backend returned an error (API, parse, or network).
     BackendError(String),
-    /// The cost budget was exhausted (daily or lifetime limit reached).
-    BudgetExhausted,
+    /// The loop's [`TurnBudget`] refused the next model call, for this
+    /// reason.
+    BudgetExhausted(String),
 }
 
 /// Output from a completed [`ToolLoop::run`] or [`ToolLoop::resume`].
@@ -698,6 +703,89 @@ fn trace_turn(iterations: usize) -> u32 {
     capped as u32
 }
 
+/// What one model call streamed, so a call cut off mid-stream, or one whose
+/// stream reported no usage, still counts the usage the provider bills for
+/// it (bug-72d775).
+#[derive(Debug, Default)]
+struct StreamTally {
+    /// Non-empty output deltas: text, reasoning and tool-call arguments.
+    deltas: u64,
+    /// Their bytes.
+    bytes: u64,
+    /// The usage the stream last reported.
+    reported: Option<Usage>,
+    /// The model the stream last named.
+    model: Option<String>,
+}
+
+impl StreamTally {
+    fn see(&mut self, event: &StreamEvent) {
+        if event.model.is_some() {
+            self.model.clone_from(&event.model);
+        }
+        let output = match &event.kind {
+            StreamEventKind::TextDelta(text) | StreamEventKind::ReasoningDelta(text) => text,
+            StreamEventKind::ToolCallDelta { json_fragment, .. } => json_fragment,
+            StreamEventKind::Usage(usage) => {
+                self.reported = Some(*usage);
+                return;
+            }
+            _ => return,
+        };
+        if !output.is_empty() {
+            self.deltas += 1;
+            self.bytes += output.len() as u64;
+        }
+    }
+
+    /// The usage of a call that streamed this, in reply to a request of
+    /// about `input_tokens`, and where it came from; `None` when the call
+    /// streamed nothing.
+    ///
+    /// The output is the reported output when the stream reported at least
+    /// what it streamed, else an estimate: about four bytes a token, and at
+    /// least one token a delta. A stream that reported no usage is billed
+    /// `input_tokens`, all uncached.
+    fn usage(&self, input_tokens: u64) -> Option<(Usage, crate::usage::UsageSource)> {
+        use crate::usage::UsageSource;
+
+        let clamp = |tokens: u64| u32::try_from(tokens).unwrap_or(u32::MAX);
+        let streamed = clamp(self.deltas.max(self.bytes.div_ceil(4)));
+        match self.reported {
+            Some(reported) if reported.output_tokens >= streamed => {
+                Some((reported, UsageSource::ProviderReported))
+            }
+            Some(reported) => Some((
+                Usage {
+                    output_tokens: streamed,
+                    ..reported
+                },
+                UsageSource::Estimated,
+            )),
+            None if streamed == 0 => None,
+            None => Some((
+                Usage {
+                    input_tokens: clamp(input_tokens),
+                    output_tokens: streamed,
+                    ..Usage::zero()
+                },
+                UsageSource::Estimated,
+            )),
+        }
+    }
+}
+
+/// About how many input tokens a model call with `messages` and `tools` is
+/// billed for: their JSON at four bytes a token.
+fn estimated_input_tokens(messages: &[serde_json::Value], tools: &RenderedTools) -> u64 {
+    let tools = match tools {
+        RenderedTools::JsonArray(tools) => tools.to_string().len(),
+        RenderedTools::SystemPromptBlock(block) => block.len(),
+        RenderedTools::CliFlag(_) => 0,
+    };
+    (prune::estimate_message_tokens(messages) + tools / 4) as u64
+}
+
 /// Previews of a turn's results, one per call in `calls` and in their order:
 /// `dispatch_batch` returns parallel results as they complete, so each call
 /// takes the result that carries its id. A call without one gets a note.
@@ -718,6 +806,23 @@ fn tool_result_previews(
         previews.push(preview);
     }
     previews
+}
+
+/// The stream event that reports `call`'s `result` to a streaming caller:
+/// the text the model reads back, or the error, and whether the call failed
+/// (gap-5fda00).
+fn tool_result_event(call: &ToolCall, result: &roko_core::tool::ToolResult) -> StreamEventKind {
+    use roko_core::tool::ToolResult;
+
+    let (output, is_error) = match result {
+        ToolResult::Ok { .. } => (result.text_content(), false),
+        ToolResult::Err(err) => (format!("error: {err}"), true),
+    };
+    StreamEventKind::ToolResult {
+        id: call.id.clone(),
+        output,
+        is_error,
+    }
 }
 
 fn tool_result_preview(result: &roko_core::tool::ToolResult) -> String {
@@ -747,15 +852,63 @@ fn truncate_preview(text: &str, max_chars: usize) -> String {
 
 // ─── ToolLoop ────────────────────────────────────────────────────────
 
-/// Multi-turn tool-calling loop (§36.f).
-///
-/// Drives the `prompt -> LLM -> tool_calls -> dispatch -> results -> LLM`
-/// cycle until the LLM stops calling tools, the iteration cap is
-/// reached, the cancel token fires, or the backend errors.
 /// Shared budget guard that can be attached to a [`ToolLoop`] to enforce
 /// budget constraints before each LLM invocation.
 pub type SharedBudgetTracker = Arc<parking_lot::Mutex<BudgetTracker>>;
 
+/// What a [`ToolLoop`]'s model calls may spend (LIFE-03). The loop asks
+/// before each model call and reports each call's usage after it.
+pub trait TurnBudget: Send + Sync + std::fmt::Debug {
+    /// Why the next model call must not start, when it must not: the loop
+    /// then stops with [`StopReason::BudgetExhausted`] and this reason.
+    fn refuse_turn(&self) -> Option<String>;
+
+    /// Record the usage of a model call that finished, priced by the loop's
+    /// model profile when that has rates.
+    fn record_turn(&self, usage: &Usage);
+}
+
+/// A daily and lifetime [`BudgetTracker`]: no model call starts once it is
+/// exhausted.
+impl TurnBudget for parking_lot::Mutex<BudgetTracker> {
+    fn refuse_turn(&self) -> Option<String> {
+        let tracker = self.lock();
+        (tracker.check() == BudgetStatus::Exhausted).then(|| {
+            format!(
+                "budget exhausted: daily ${:.2} / ${:.2} (lifetime ${:.2})",
+                tracker.daily_cost_usd,
+                tracker.config.max_daily_inference_usd,
+                tracker.lifetime_cost_usd,
+            )
+        })
+    }
+
+    fn record_turn(&self, usage: &Usage) {
+        let mut tracker = self.lock();
+        let turn = TurnCostRecord {
+            turn_id: format!("turn-{}", tracker.total_turns),
+            model: String::new(),
+            input_tokens: u64::from(usage.input_tokens),
+            output_tokens: u64::from(usage.output_tokens),
+            cache_read_tokens: u64::from(usage.cache_read_tokens),
+            estimated_cost_usd: f64::from(usage.cost_usd),
+            cognitive_tier: CognitiveTier::Gamma,
+            t0_suppressed: false,
+            timestamp: std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_secs())
+                .unwrap_or(0),
+        };
+        tracker.record_turn(&turn);
+    }
+}
+
+/// Multi-turn tool-calling loop (§36.f).
+///
+/// Drives the `prompt -> LLM -> tool_calls -> dispatch -> results -> LLM`
+/// cycle until the LLM stops calling tools, the iteration cap is
+/// reached, the cancel token fires, the budget refuses the next call, or
+/// the backend errors.
 #[derive(Clone)]
 pub struct ToolLoop {
     translator: Arc<dyn Translator>,
@@ -767,8 +920,8 @@ pub struct ToolLoop {
     model_profile: Option<ModelProfile>,
     retry_policy: RetryPolicy,
     monitor: Option<MetacognitiveMonitor>,
-    /// Optional budget tracker checked before each LLM call (LIFE-03).
-    budget: Option<SharedBudgetTracker>,
+    /// Optional budget checked before each LLM call (LIFE-03).
+    budget: Option<Arc<dyn TurnBudget>>,
     /// Optional callback fired after each tool-dispatch iteration.
     on_turn: Option<OnTurnCallback>,
     /// Few-shot example messages inserted between system and user prompt.
@@ -862,9 +1015,27 @@ impl ToolLoop {
     /// terminates with [`StopReason::BudgetExhausted`]. After each
     /// successful LLM call, the turn cost is recorded into the tracker.
     #[must_use]
-    pub fn with_budget(mut self, budget: SharedBudgetTracker) -> Self {
+    pub fn with_budget(self, budget: SharedBudgetTracker) -> Self {
+        self.with_turn_budget(budget)
+    }
+
+    /// Ask `budget` before each model call, and tell it each call's usage
+    /// after it ([`TurnBudget`]). A call it refuses is not made: the loop
+    /// stops with [`StopReason::BudgetExhausted`].
+    #[must_use]
+    pub fn with_turn_budget(mut self, budget: Arc<dyn TurnBudget>) -> Self {
         self.budget = Some(budget);
         self
+    }
+
+    /// [`Self::with_turn_budget`] when `budget` is set, as an agent's options
+    /// carry it; the loop unchanged otherwise.
+    #[must_use]
+    pub fn with_optional_turn_budget(self, budget: Option<Arc<dyn TurnBudget>>) -> Self {
+        match budget {
+            Some(budget) => self.with_turn_budget(budget),
+            None => self,
+        }
     }
 
     /// Attach a callback fired after each tool-dispatch iteration.
@@ -1192,35 +1363,63 @@ impl ToolLoop {
             }
 
             // LIFE-03: Budget check before each LLM invocation.
-            if let Some(ref budget) = self.budget {
-                let guard = budget.lock();
-                if guard.check() == BudgetStatus::Exhausted {
-                    let cp = Checkpoint::new(iterations, all_calls.clone(), messages)
-                        .with_session(session.clone());
-                    return ToolLoopOutput {
-                        final_text: String::new(),
-                        iterations,
-                        tool_calls: all_calls,
-                        total_usage,
-                        stop_reason: StopReason::BudgetExhausted,
-                        checkpoint: Some(cp),
-                        turn_traces,
-                        mcp_errors: Vec::new(),
-                    };
-                }
+            if let Some(reason) = self.budget.as_ref().and_then(|budget| budget.refuse_turn()) {
+                tracing::info!(
+                    iteration = iterations,
+                    %reason,
+                    "tool_loop: the budget refused the next model call; stopping"
+                );
+                let cp = Checkpoint::new(iterations, all_calls.clone(), messages)
+                    .with_session(session.clone());
+                return ToolLoopOutput {
+                    final_text: String::new(),
+                    iterations,
+                    tool_calls: all_calls,
+                    total_usage,
+                    stop_reason: StopReason::BudgetExhausted(reason),
+                    checkpoint: Some(cp),
+                    turn_traces,
+                    mcp_errors: Vec::new(),
+                };
             }
 
             // Send current conversation to the backend. When a streaming
             // event channel is active, use `stream_turn` so incremental
             // events are forwarded to the caller before the response is
             // assembled.
+            let mut ended_on_stream = HashSet::new();
+            let mut streamed = None;
             let response = if let Some(ref tx) = event_tx {
                 match self
                     .send_turn_streaming(&messages, &rendered_tools, &session, tx)
                     .await
                 {
-                    Ok(r) => r,
-                    Err(e) => {
+                    Ok((r, ended, tally)) => {
+                        ended_on_stream = ended;
+                        streamed = Some(tally);
+                        r
+                    }
+                    Err((e, tally)) => {
+                        // The provider bills a call cut off mid-stream for
+                        // what it streamed: count it, priced, so the budget
+                        // and the spend stay true (bug-72d775).
+                        let input_tokens = estimated_input_tokens(&messages, &rendered_tools);
+                        if let Some((mut usage, usage_source)) = tally.usage(input_tokens) {
+                            self.price_turn(&mut usage);
+                            total_usage.add(&usage);
+                            if let Some(budget) = &self.budget {
+                                budget.record_turn(&usage);
+                            }
+                            turn_traces.push(ToolLoopTurnTrace {
+                                turn: trace_turn(iterations),
+                                tool_calls: Vec::new(),
+                                tool_results: Vec::new(),
+                                reasoning: None,
+                                usage,
+                                model: tally.model,
+                                usage_source,
+                            });
+                        }
                         let cp = Checkpoint::new(iterations, all_calls.clone(), messages)
                             .with_session(session.clone());
                         return ToolLoopOutput {
@@ -1260,45 +1459,26 @@ impl ToolLoop {
             merge_session_state(&mut session, self.backend.extract_session(&response));
             let turn_reasoning = response.extract_reasoning();
             let turn_model = response.extract_model();
-            let turn_usage_source = response.usage_source();
+            let mut turn_usage_source = response.usage_source();
             let mut turn_usage = response.extract_usage();
-
-            // Compute cost from model profile pricing when the provider did not
-            // report a dollar amount (all OpenAI-compat backends).
-            if let Some(profile) = self.model_profile.as_ref() {
-                turn_usage.fill_cost_from_pricing(
-                    profile.cost_input_per_m,
-                    profile.cost_output_per_m,
-                    profile.cost_cache_read_per_m,
-                    profile.cost_cache_write_per_m,
-                );
+            // A stream that reported no usage still streamed what the
+            // provider bills: estimate it, as for a call cut off (bug-72d775).
+            if turn_usage_source == crate::usage::UsageSource::Unknown
+                && let Some((usage, source)) = streamed.and_then(|tally| {
+                    tally.usage(estimated_input_tokens(&messages, &rendered_tools))
+                })
+            {
+                turn_usage = usage;
+                turn_usage_source = source;
             }
+
+            self.price_turn(&mut turn_usage);
 
             total_usage.add(&turn_usage);
 
             // LIFE-03: Record turn cost in budget tracker after LLM call.
-            if let Some(ref budget) = self.budget {
-                let mut guard = budget.lock();
-                let model_name = self
-                    .model_profile
-                    .as_ref()
-                    .map(|p| p.slug.clone())
-                    .unwrap_or_default();
-                let cost_record = TurnCostRecord {
-                    turn_id: format!("turn-{iterations}"),
-                    model: model_name,
-                    input_tokens: u64::from(turn_usage.input_tokens),
-                    output_tokens: u64::from(turn_usage.output_tokens),
-                    cache_read_tokens: u64::from(turn_usage.cache_read_tokens),
-                    estimated_cost_usd: f64::from(turn_usage.cost_usd),
-                    cognitive_tier: CognitiveTier::Gamma,
-                    t0_suppressed: false,
-                    timestamp: std::time::SystemTime::now()
-                        .duration_since(std::time::UNIX_EPOCH)
-                        .map(|d| d.as_secs())
-                        .unwrap_or(0),
-                };
-                guard.record_turn(&cost_record);
+            if let Some(budget) = &self.budget {
+                budget.record_turn(&turn_usage);
             }
 
             // Parse tool calls from the response.
@@ -1412,23 +1592,36 @@ impl ToolLoop {
                         "tool_loop: closing text is empty after tool work; \
                          the verify steps judge the work"
                     );
+                } else if hit_length_limit && !all_calls.is_empty() {
+                    tracing::warn!(
+                        iterations,
+                        tool_calls = all_calls.len(),
+                        output_tokens = turn_usage.output_tokens,
+                        "tool_loop: the closing text ran past the model's output limit \
+                         (finish_reason=length) after tool work; the verify steps judge the work"
+                    );
                 }
 
                 // A run that made no tool call and wrote no text produced
                 // nothing: it fails as a provider error that retry, failover
                 // and the ladder understand, whatever the finish reason
                 // (backlog 1102). A blank closing turn after tool work stays
-                // `Stop`: the work is in the tree.
+                // `Stop`: the work is in the tree. So does a closing turn cut
+                // at the output limit after tool work: the verify steps judge
+                // what it left (bug-f6b99f). A cut with no tool work behind it
+                // fails as the model's own limit, which dispatch counts
+                // against the model (`error_classify::detect_output_limit`).
                 let stop_reason = if blank && all_calls.is_empty() {
                     StopReason::BackendError(format!(
                         "empty_response: the model returned no text and no tool call \
                          (finish_reason={})",
                         finish_reason_raw.as_deref().unwrap_or("none")
                     ))
-                } else if hit_length_limit {
-                    StopReason::BackendError(
-                        "model hit output token limit (finish_reason=length)".to_string(),
-                    )
+                } else if hit_length_limit && all_calls.is_empty() {
+                    StopReason::BackendError(format!(
+                        "{} (finish_reason=length)",
+                        crate::provider::error_classify::OUTPUT_LIMIT_MARKER
+                    ))
                 } else {
                     StopReason::Stop
                 };
@@ -1460,9 +1653,35 @@ impl ToolLoop {
                 tool_name_hashes = ?tool_name_hashes,
                 "tool_loop: dispatching tool calls"
             );
+            // A streaming caller sees each call end before it runs and its
+            // result once it has, as a CLI provider reports them: the live
+            // output shows the call as a tool step (gap-5fda00). A call its
+            // stream already ended is not sent again; an OpenAI-compatible
+            // stream ends none.
+            if let Some(tx) = &event_tx {
+                for call in calls
+                    .iter()
+                    .filter(|call| !ended_on_stream.contains(&call.id))
+                {
+                    let _ = tx
+                        .send(StreamEvent::now(StreamEventKind::ToolCallEnd {
+                            id: call.id.clone(),
+                            name: call.name.clone(),
+                            args: call.arguments.clone(),
+                        }))
+                        .await;
+                }
+            }
             let current_calls = calls.clone();
             let results = self.dispatcher.dispatch_batch(calls, ctx).await;
             let results = self.screen_untrusted_results(results).await;
+            if let Some(tx) = &event_tx {
+                for (call, result) in &results {
+                    let _ = tx
+                        .send(StreamEvent::now(tool_result_event(call, result)))
+                        .await;
+                }
+            }
             all_calls.extend(current_calls.clone());
             let tool_results = tool_result_previews(&current_calls, &results);
 
@@ -1634,30 +1853,63 @@ impl ToolLoop {
         Err(LlmError::RetriesExhausted)
     }
 
+    /// Price `usage` from the model profile's rates when the provider did
+    /// not report a dollar amount (all OpenAI-compat backends).
+    fn price_turn(&self, usage: &mut Usage) {
+        if let Some(profile) = self.model_profile.as_ref() {
+            usage.fill_cost_from_pricing(
+                profile.cost_input_per_m,
+                profile.cost_output_per_m,
+                profile.cost_cache_read_per_m,
+                profile.cost_cache_write_per_m,
+            );
+        }
+    }
+
     /// Send a turn through `stream_turn`, forwarding each event to `tx`
-    /// and collecting the final response via [`collect_stream_to_response`].
+    /// and collecting the final response via [`collect_stream_to_response`],
+    /// with the ids of the tool calls the stream ended (`ToolCallEnd`) and a
+    /// tally of what it streamed. A turn that fails comes back with what it
+    /// streamed before it failed.
     async fn send_turn_streaming(
         &self,
         messages: &[serde_json::Value],
         tools: &RenderedTools,
         session: &SessionState,
         tx: &mpsc::Sender<StreamEvent>,
-    ) -> Result<BackendResponse, LlmError> {
+    ) -> Result<(BackendResponse, HashSet<String>, StreamTally), (LlmError, StreamTally)> {
         use futures::StreamExt;
 
         let config = self.turn_config();
         let stream = self
             .backend
             .stream_turn(messages, tools, session, &config)
-            .await?;
+            .await
+            .map_err(|error| (error, StreamTally::default()))?;
 
         // Tee: forward every event to the caller channel while also
-        // collecting into a vec for `collect_stream_to_response`.
+        // collecting into a vec for `collect_stream_to_response`. The ids
+        // of the calls the stream ended, and a tally of what it streamed,
+        // come back with the response or the error.
         let tx = tx.clone();
+        let ended = Arc::new(std::sync::Mutex::new(HashSet::new()));
+        let ended_on_stream = Arc::clone(&ended);
+        let tally = Arc::new(std::sync::Mutex::new(StreamTally::default()));
+        let tally_on_stream = Arc::clone(&tally);
         let tee_stream = stream.then(move |result| {
             let tx = tx.clone();
+            let ended = Arc::clone(&ended_on_stream);
+            let tally = Arc::clone(&tally_on_stream);
             async move {
                 if let Ok(ref event) = result {
+                    if let StreamEventKind::ToolCallEnd { id, .. } = &event.kind
+                        && let Ok(mut ended) = ended.lock()
+                    {
+                        ended.insert(split_stream_key(id).1);
+                    }
+                    if let Ok(mut seen) = tally.lock() {
+                        seen.see(event);
+                    }
                     let _ = tx.send(event.clone()).await;
                 }
                 result
@@ -1665,7 +1917,20 @@ impl ToolLoop {
         });
 
         let request_start = std::time::Instant::now();
-        collect_stream_to_response(Box::pin(tee_stream), request_start).await
+        let collected = collect_stream_to_response(Box::pin(tee_stream), request_start).await;
+        let streamed = tally
+            .lock()
+            .map(|mut seen| std::mem::take(&mut *seen))
+            .unwrap_or_default();
+        let response = match collected {
+            Ok(response) => response,
+            Err(error) => return Err((error, streamed)),
+        };
+        let ended = ended
+            .lock()
+            .map(|mut ended| std::mem::take(&mut *ended))
+            .unwrap_or_default();
+        Ok((response, ended, streamed))
     }
 }
 
@@ -2658,6 +2923,70 @@ mod tests {
         }
     }
 
+    /// bug-f6b99f: a closing turn cut at the output limit after tool work
+    /// ends the run as `Stop`, so the verify steps judge the work it left; a
+    /// cut with no tool work fails with the output-limit marker.
+    #[tokio::test]
+    async fn a_closing_turn_cut_at_the_output_limit_after_tool_work_is_stop() {
+        struct ToolThenCutBackend {
+            calls: AtomicUsize,
+            tool_first: bool,
+        }
+
+        #[async_trait]
+        impl LlmBackend for ToolThenCutBackend {
+            async fn send_turn(
+                &self,
+                _messages: &[serde_json::Value],
+                _tools: &RenderedTools,
+                _session: &SessionState,
+            ) -> Result<BackendResponse, LlmError> {
+                let first = self.calls.fetch_add(1, Ordering::SeqCst) == 0;
+                let response = if first && self.tool_first {
+                    serde_json::json!({
+                        "tool_calls": [{"id": "call-1", "name": "echo", "arguments": {}}]
+                    })
+                } else {
+                    serde_json::json!({
+                        "message": {"content": "The filter is done; in summary, the"},
+                        "stop_reason": "length"
+                    })
+                };
+                Ok(BackendResponse::Json(response))
+            }
+        }
+
+        let run = |tool_first: bool| async move {
+            let backend = Arc::new(ToolThenCutBackend {
+                calls: AtomicUsize::new(0),
+                tool_first,
+            });
+            make_tool_loop(backend, 25)
+                .run(
+                    "system",
+                    "user",
+                    &test_tools(),
+                    &ToolContext::testing("/tmp"),
+                )
+                .await
+        };
+        let after_tools = run(true).await;
+        assert_eq!(after_tools.stop_reason, StopReason::Stop);
+        assert_eq!(after_tools.tool_calls.len(), 1);
+
+        let no_tools = run(false).await;
+        match &no_tools.stop_reason {
+            StopReason::BackendError(message) => {
+                assert!(
+                    crate::provider::error_classify::detect_output_limit(message),
+                    "{message}"
+                );
+                assert!(message.contains("finish_reason=length"), "{message}");
+            }
+            other => panic!("expected an output-limit failure, got {other:?}"),
+        }
+    }
+
     /// A blank closing turn after tool work still ends the run as `Stop`:
     /// the work is in the tree and the verify steps judge it.
     #[tokio::test]
@@ -2917,6 +3246,316 @@ mod tests {
         let cp = out.checkpoint.expect("checkpoint should be present");
         assert_eq!(cp.iterations, 25);
         assert_eq!(cp.tool_calls.len(), 25);
+    }
+
+    /// Calls a tool on every turn, reporting 100 input and 10 output tokens,
+    /// and counts the turns it answered.
+    #[derive(Default)]
+    struct MeteredToolCallBackend {
+        calls: AtomicUsize,
+    }
+
+    #[async_trait]
+    impl LlmBackend for MeteredToolCallBackend {
+        async fn send_turn(
+            &self,
+            _messages: &[serde_json::Value],
+            _tools: &RenderedTools,
+            _session: &SessionState,
+        ) -> Result<BackendResponse, LlmError> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            Ok(BackendResponse::Json(serde_json::json!({
+                "tool_calls": [{"id": "c1", "name": "echo", "arguments": {}}],
+                "usage": {"prompt_tokens": 100, "completion_tokens": 10}
+            })))
+        }
+    }
+
+    /// A budget that allows `allowed` model calls and keeps each call's
+    /// usage.
+    #[derive(Debug, Default)]
+    struct CallCountBudget {
+        allowed: usize,
+        recorded: parking_lot::Mutex<Vec<Usage>>,
+    }
+
+    impl TurnBudget for CallCountBudget {
+        fn refuse_turn(&self) -> Option<String> {
+            (self.recorded.lock().len() >= self.allowed)
+                .then(|| format!("{} model calls allowed", self.allowed))
+        }
+
+        fn record_turn(&self, usage: &Usage) {
+            self.recorded.lock().push(*usage);
+        }
+    }
+
+    /// bug-4fabd0: the loop asks its budget before each model call and tells
+    /// it each call's usage; a call it refuses is never made, and the loop
+    /// stops resumably with the budget's reason.
+    #[tokio::test]
+    async fn a_refused_turn_stops_the_loop_before_its_model_call() {
+        let backend = Arc::new(MeteredToolCallBackend::default());
+        let budget = Arc::new(CallCountBudget {
+            allowed: 3,
+            ..CallCountBudget::default()
+        });
+        let tl =
+            make_tool_loop(backend.clone(), 25).with_optional_turn_budget(Some(budget.clone()));
+        let ctx = ToolContext::testing("/tmp");
+
+        let out = tl.run("system", "user", &test_tools(), &ctx).await;
+
+        assert_eq!(
+            out.stop_reason,
+            StopReason::BudgetExhausted("3 model calls allowed".to_string())
+        );
+        assert_eq!(backend.calls.load(Ordering::SeqCst), 3);
+        assert_eq!(out.iterations, 3);
+        let recorded = budget.recorded.lock();
+        assert_eq!(recorded.len(), 3);
+        assert!(
+            recorded.iter().all(|usage| usage.input_tokens == 100),
+            "{recorded:?}"
+        );
+        assert_eq!(out.total_usage.input_tokens, 300);
+        assert_eq!(out.checkpoint.expect("resumable").iterations, 3);
+    }
+
+    /// LIFE-03's daily tracker is one such budget: an exhausted day makes no
+    /// model call.
+    #[tokio::test]
+    async fn an_exhausted_tracker_makes_no_model_call() {
+        let backend = Arc::new(MeteredToolCallBackend::default());
+        let tracker = Arc::new(parking_lot::Mutex::new(BudgetTracker::new(
+            crate::lifecycle::BudgetConfig {
+                max_daily_inference_usd: 1.0,
+                ..crate::lifecycle::BudgetConfig::default()
+            },
+        )));
+        tracker.lock().daily_cost_usd = 1.5;
+        let tl = make_tool_loop(backend.clone(), 25).with_budget(tracker);
+        let ctx = ToolContext::testing("/tmp");
+
+        let out = tl.run("system", "user", &test_tools(), &ctx).await;
+
+        match &out.stop_reason {
+            StopReason::BudgetExhausted(reason) => {
+                assert!(reason.contains("daily $1.50 / $1.00"), "{reason}");
+            }
+            other => panic!("expected BudgetExhausted, got {other:?}"),
+        }
+        assert_eq!(backend.calls.load(Ordering::SeqCst), 0);
+    }
+
+    /// Streams a usage report first when it has one, as the Anthropic API
+    /// reports a message's input at its start, then `deltas` one-token
+    /// reasoning deltas, and then breaks off, or, unless `cut`, ends as a
+    /// stream closed without a finish reason or usage ends.
+    struct CutStreamBackend {
+        reported: Option<Usage>,
+        deltas: usize,
+        cut: bool,
+    }
+
+    #[async_trait]
+    impl LlmBackend for CutStreamBackend {
+        async fn send_turn(
+            &self,
+            _messages: &[serde_json::Value],
+            _tools: &RenderedTools,
+            _session: &SessionState,
+        ) -> Result<BackendResponse, LlmError> {
+            Err(LlmError::Backend("this backend only streams".to_string()))
+        }
+
+        async fn stream_turn(
+            &self,
+            _messages: &[serde_json::Value],
+            _tools: &RenderedTools,
+            _session: &SessionState,
+            _config: &TurnConfig,
+        ) -> Result<futures::stream::BoxStream<'static, Result<StreamEvent, LlmError>>, LlmError>
+        {
+            let reported = self
+                .reported
+                .map(|usage| Ok(StreamEvent::now(StreamEventKind::Usage(usage))));
+            let deltas = (0..self.deltas).map(|_| {
+                Ok(StreamEvent::now(StreamEventKind::ReasoningDelta(
+                    "tok".to_string(),
+                )))
+            });
+            let end = if self.cut {
+                Err(LlmError::Network(
+                    "read chunk failed: connection reset".to_string(),
+                ))
+            } else {
+                Ok(StreamEvent::now(StreamEventKind::Done {
+                    finish_reason: crate::streaming::UNKNOWN_FINISH_REASON.to_string(),
+                }))
+            };
+            let events: Vec<_> = reported
+                .into_iter()
+                .chain(deltas)
+                .chain(std::iter::once(end))
+                .collect();
+            Ok(Box::pin(futures::stream::iter(events)))
+        }
+    }
+
+    /// A streamed run of `backend` under `profile`'s prices: its output,
+    /// the usage its budget recorded and how many events it forwarded.
+    async fn run_cut_stream(
+        backend: CutStreamBackend,
+        profile: ModelProfile,
+    ) -> (ToolLoopOutput, Vec<Usage>, usize) {
+        let budget = Arc::new(CallCountBudget {
+            allowed: 10,
+            ..CallCountBudget::default()
+        });
+        let tl = make_tool_loop(Arc::new(backend), 25)
+            .with_model_profile(profile)
+            .with_optional_turn_budget(Some(budget.clone()));
+        let (tx, mut rx) = mpsc::channel(64);
+        let forwarded = tokio::spawn(async move {
+            let mut count = 0_usize;
+            while rx.recv().await.is_some() {
+                count += 1;
+            }
+            count
+        });
+        let out = tl
+            .run_streaming(
+                "system",
+                "user",
+                &test_tools(),
+                &ToolContext::testing("/tmp"),
+                tx,
+            )
+            .await;
+        let forwarded = forwarded.await.expect("the events drain");
+        let recorded = budget.recorded.lock().clone();
+        (out, recorded, forwarded)
+    }
+
+    /// bug-72d775: the provider bills a model call cut off mid-stream for
+    /// what it streamed. glm-4.7 calls that streamed about 4,000 reasoning
+    /// deltas each and then broke were recorded at 0 tokens and $0, so the
+    /// spend and the caps undercounted. Such a call, and one whose stream
+    /// reported no usage, now counts in the loop's usage, its budget and its
+    /// trace, priced, as an estimate.
+    #[tokio::test]
+    async fn a_call_cut_off_mid_stream_records_what_it_streamed() {
+        use crate::agent::Agent;
+        use crate::usage::UsageSource;
+
+        let priced = ModelProfile {
+            cost_input_per_m: Some(0.6),
+            cost_output_per_m: Some(2.2),
+            ..test_model_profile(128_000)
+        };
+
+        // No usage report: the input and the output are estimated.
+        let backend = CutStreamBackend {
+            reported: None,
+            deltas: 8_000,
+            cut: true,
+        };
+        let (out, recorded, forwarded) = run_cut_stream(backend, priced.clone()).await;
+        assert_eq!(forwarded, 8_000);
+        match &out.stop_reason {
+            StopReason::BackendError(message) => {
+                assert!(message.contains("read chunk failed"), "{message}");
+            }
+            other => panic!("expected a backend error, got {other:?}"),
+        }
+        let usage = out.total_usage;
+        assert_eq!(usage.output_tokens, 8_000);
+        assert!(usage.input_tokens > 0, "{usage:?}");
+        let expected = (f64::from(usage.input_tokens) * 0.6 + 8_000.0 * 2.2) / 1_000_000.0;
+        assert!(
+            (f64::from(usage.cost_usd) - expected).abs() < 1e-6,
+            "{usage:?}, expected ${expected}"
+        );
+        assert_eq!(recorded, vec![usage]);
+        assert_eq!(out.turn_traces.len(), 1);
+        assert_eq!(out.turn_traces[0].usage, usage);
+        assert_eq!(out.turn_traces[0].usage_source, UsageSource::Estimated);
+
+        // A reported input stands; the output is estimated from the stream.
+        let backend = CutStreamBackend {
+            reported: Some(Usage {
+                input_tokens: 1_200,
+                cache_read_tokens: 800,
+                ..Usage::zero()
+            }),
+            deltas: 100,
+            cut: true,
+        };
+        let (out, recorded, _) = run_cut_stream(backend, priced.clone()).await;
+        let usage = out.total_usage;
+        assert_eq!(usage.input_tokens, 1_200);
+        assert_eq!(usage.cache_read_tokens, 800);
+        assert_eq!(usage.output_tokens, 100);
+        assert!(usage.cost_usd > 0.0, "{usage:?}");
+        assert_eq!(recorded, vec![usage]);
+        assert_eq!(out.turn_traces[0].usage_source, UsageSource::Estimated);
+
+        // A call that broke before it streamed anything shows no usage.
+        let backend = CutStreamBackend {
+            reported: None,
+            deltas: 0,
+            cut: true,
+        };
+        let (out, recorded, _) = run_cut_stream(backend, priced.clone()).await;
+        assert_eq!(out.total_usage, Usage::default());
+        assert!(recorded.is_empty());
+        assert!(out.turn_traces.is_empty());
+
+        // A stream that closed without a finish reason or usage: the call
+        // ends (here as `empty_response`), and its usage is estimated too.
+        let backend = CutStreamBackend {
+            reported: None,
+            deltas: 8_000,
+            cut: false,
+        };
+        let (out, recorded, _) = run_cut_stream(backend, priced.clone()).await;
+        match &out.stop_reason {
+            StopReason::BackendError(message) => {
+                assert!(message.starts_with("empty_response"), "{message}");
+            }
+            other => panic!("expected empty_response, got {other:?}"),
+        }
+        assert_eq!(out.total_usage.output_tokens, 8_000);
+        assert!(out.total_usage.cost_usd > 0.0, "{:?}", out.total_usage);
+        assert_eq!(recorded, vec![out.total_usage]);
+        assert_eq!(out.turn_traces[0].usage_source, UsageSource::Estimated);
+
+        // The agent's result carries the estimate, which a plan attempt
+        // records as its cost.
+        let backend = CutStreamBackend {
+            reported: None,
+            deltas: 8_000,
+            cut: true,
+        };
+        let agent =
+            ToolLoopAgent::new(make_tool_loop(Arc::new(backend), 25).with_model_profile(priced));
+        let input = roko_core::Signal::builder(roko_core::Kind::Prompt)
+            .body(roko_core::Body::text("fix the filter"))
+            .build();
+        let (tx, mut rx) = mpsc::channel(64);
+        let drain = tokio::spawn(async move { while rx.recv().await.is_some() {} });
+        let result = agent
+            .run_streaming(&input, &roko_core::Context::now(), tx)
+            .await;
+        drain.await.expect("the events drain");
+        assert!(!result.success);
+        assert_eq!(result.usage.output_tokens, 8_000);
+        assert!(result.usage.cost_usd > 0.0, "{:?}", result.usage);
+        assert_eq!(
+            result.usage_obs.map(|usage| usage.source),
+            Some(UsageSource::Estimated)
+        );
     }
 
     #[tokio::test]

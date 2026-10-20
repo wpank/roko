@@ -1,0 +1,87 @@
+[meta]
+done = 0
+plan = "serve-route-spec"
+status = "ready"
+total = 1
+
+[[task]]
+acceptance = [
+    "AC1: GET /api/learn/econ/prices on an empty workspace with the default config returns HTTP 200 and JSON with a string `price_snapshot_id` starting `prices-`, a non-empty string `fetched_at` and a non-empty `rows` array.",
+    "AC2: GET /api/learn/econ/prices when `[pricing] snapshot` names a snapshot that does not exist returns HTTP 500 with a JSON body.",
+    "AC3: openapi.rs documents `/learn/econ/prices` under the `learning` tag with `doc_get!`, and `cargo test -p roko-serve econ_prices_route` passes.",
+]
+allowed_tools = [
+    "read_file",
+    "grep",
+    "edit_file",
+    "write_file",
+]
+denied_tools = []
+depends_on = []
+description = """
+Add a read-only handler `econ_prices` to the learning router in crates/roko-serve/src/routes/learning/mod.rs. Register it as `.route("/learn/econ/prices", get(econ_prices))` next to `.route("/learn/reflexes", get(reflexes))` (line 57). The router is nested under /api, so the path is /api/learn/econ/prices.
+
+Handler signature: `async fn econ_prices(State(state): State<Arc<AppState>>) -> Result<Json<Value>, ApiError>`. Call `state.load_roko_config()`, then clone `config.pricing` and `state.workdir`. Inside `tokio::task::spawn_blocking`, call `roko_core::pricing_snapshot::PriceSnapshot::for_workspace(&pricing, &workdir)`. If that returns Err, return `ApiError::internal(format!("load the price snapshot: {err}"))`, which answers 500 with a JSON body. Handle a JoinError the same way the `reflexes` handler does (line 220). If it returns Ok, build the same JSON as `prices_json` in crates/roko-cli/src/commands/learn_self_model.rs (lines 715-721): `json!({"price_snapshot_id": snapshot.id(), "fetched_at": snapshot.fetched_at(), "rows": snapshot.rows()})`. roko-serve cannot depend on roko-cli, so build the JSON inline. Add a doc comment saying that `GET /api/learn/econ/prices` mirrors `roko learn econ prices --json`.
+
+OpenAPI: in crates/roko-serve/src/openapi.rs, add `econ_prices` to the paths list next to `reflexes` (line 430). Add `doc_get!(econ_prices, "/learn/econ/prices", "learning");` next to `doc_get!(reflexes, "/learn/reflexes", "learning");` (line 1764).
+
+Add two tests to the existing `#[cfg(test)] mod tests` in learning/mod.rs. Follow the pattern of `cascade_alias_is_served_under_api_grouping` (lines 995-1044): build the state with `test_state()`, the router with `build_router` and auth disabled, then send a request with `oneshot`.
+1. `econ_prices_route_returns_snapshot`: with the default config and an empty tempdir workspace, GET /api/learn/econ/prices returns 200. In the body, `price_snapshot_id` is a string starting with `prices-`, `fetched_at` is a non-empty string, and `rows` is a non-empty array (the built-in snapshot).
+2. `econ_prices_route_returns_500_for_unknown_snapshot`: build an AppState the way `test_state` does, but with `RokoConfig` whose `pricing.snapshot = "prices-1900-01-01"`. The tempdir has no such file. The GET returns 500 and the body parses as JSON.
+"""
+files = [
+    "crates/roko-serve/src/routes/learning/mod.rs",
+    "crates/roko-serve/src/openapi.rs",
+]
+goal = "GET /api/learn/econ/prices on roko serve returns the workspace's active price snapshot as {price_snapshot_id, fetched_at, rows}, or HTTP 500 with a JSON error when the snapshot cannot be loaded."
+id = "T1"
+max_loc = 150
+non_goals = [
+    "Do not modify roko-cli or roko-core; build the JSON in the serve handler instead of calling prices_json.",
+    "Do not add write or refresh endpoints for price snapshots.",
+    "Do not change the existing /learn/reflexes or /learning/* routes.",
+]
+open_questions = []
+role = "implementer"
+status = "ready"
+tier = "integrative"
+title = "Serve GET /api/learn/econ/prices with OpenAPI entry and route tests"
+
+[task.context]
+anti_patterns = [
+    "Do NOT call PriceSnapshot::shared: it caches per process and hides load errors as None.",
+    "Do NOT add a roko-cli dependency to roko-serve.",
+    "Do NOT read the snapshot on the async thread; use spawn_blocking as reflexes does.",
+]
+symbols = [
+    "PriceSnapshot::for_workspace — loads the configured, newest or built-in snapshot",
+    "AppState::load_roko_config — live RokoConfig; `.pricing` is a PricingConfig with a `snapshot: String` field",
+    "ApiError::internal — 500 JSON error response",
+    "doc_get! — OpenAPI GET path macro in openapi.rs (see line 1764)",
+]
+
+[[task.context.read_files]]
+lines = "1-231"
+path = "crates/roko-serve/src/routes/learning/mod.rs"
+why = "Router registration (line 57) and the reflexes handler's spawn_blocking and ApiError pattern to copy."
+
+[[task.context.read_files]]
+lines = "975-1044"
+path = "crates/roko-serve/src/routes/learning/mod.rs"
+why = "test_state fixture and an existing oneshot route test to copy."
+
+[[task.context.read_files]]
+lines = "269-328"
+path = "crates/roko-core/src/pricing_snapshot.rs"
+why = "PriceSnapshot::for_workspace signature and the id/fetched_at/rows accessors."
+
+[[task.verify]]
+command = """grep -q 'fn econ_prices_route_returns_snapshot' crates/roko-serve/src/routes/learning/mod.rs && grep -q 'fn econ_prices_route_returns_500_for_unknown_snapshot' crates/roko-serve/src/routes/learning/mod.rs && grep -q '"/learn/econ/prices", "learning"' crates/roko-serve/src/openapi.rs && cargo test -p roko-serve econ_prices_route"""
+covers = [
+    "AC1",
+    "AC2",
+    "AC3",
+]
+expect = "fail_on_base"
+fail_msg = "The econ prices route tests or the OpenAPI entry are missing, or the tests failed"
+phase = "test"

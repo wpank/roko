@@ -358,16 +358,7 @@ fn claim(marker: &Path) -> std::io::Result<bool> {
 
 /// Append `record` to the workspace's `.roko/state/effects.jsonl`.
 fn append_record(workdir: &Path, record: &EffectRecord) -> std::io::Result<()> {
-    let path = effect_records_path(workdir);
-    if let Some(dir) = path.parent() {
-        std::fs::create_dir_all(dir)?;
-    }
-    let line = serde_json::to_string(record)?;
-    let mut file = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(path)?;
-    writeln!(file, "{line}")
+    roko_core::io::append_jsonl(&effect_records_path(workdir), record)
 }
 
 /// `text` with secrets scrubbed, cut to its last [`MAX_RECORDED_BYTES`].

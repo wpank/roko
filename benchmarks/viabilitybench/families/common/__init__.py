@@ -20,8 +20,9 @@ The modules and their public names:
 - `canary`: the per-release canary GUID that shows an agent read a hidden file. `RELEASE_CANARY`, `CANARY_RE`,
   `new_canary`, `mark`, `mark_file`, `strip`, `find`, `find_in_diff`, `find_in_tree`, `CanaryError`.
 - `mutate`: surface renames, so the instances of one family differ. `choose`, `rename_text`, `rename_tree`.
-- `sandbox`: runs the agent's code, when a truth suite runs it, with the secret file and the private task directory
-  out of reach, and the Rust toolchain read-only. `command`, `denied`, `profile`, `KIND`.
+- `sandbox`: runs the agent's code, when a truth suite runs it, with the secret file, the private task directory and
+  what the census names with `--deny` (the results root) out of reach, no network, and the Rust toolchain read-only.
+  `command`, `denied`, `add_deny_argument`, `profile`, `KIND`.
 - `toolchain`: the host's Rust toolchain, for an environment with a HOME of its own (F7). `find`, `read_only`,
   `Toolchain`.
 
@@ -29,6 +30,8 @@ Each module's docstring fixes its signatures and contracts. Change them only tog
 them. `VERSION` belongs in each family's `verifier_version`, so a change here shows up in the records.
 """
 
-VERSION = "common-1.3.0"  # 1.3.0: `sandbox` keeps the Rust toolchain read-only (gap-46fd19); 1.2.0: the suites run
-# agent code through `sandbox` (gap-8c3752); 1.1.0: test_edits and file_hashes skip bytecode and pytest caches
-# (bug-993e7e)
+VERSION = "common-1.5.0"  # 1.5.0: `sandbox.denied` adds a suite's `--deny` paths (`add_deny_argument`), by which
+# the census denies agent code the whole results root (bug-42b214); 1.4.0: `sandbox` denies the network unless a rule
+# admits loopback ports, so the suites run agent code with no network (gap-0bd49a); 1.3.0: `sandbox` keeps the Rust toolchain read-only (gap-46fd19);
+# 1.2.0: the suites run agent code through `sandbox` (gap-8c3752); 1.1.0: test_edits and file_hashes skip bytecode
+# and pytest caches (bug-993e7e)

@@ -99,7 +99,7 @@ fail_msg = "roko-cli must compile after adding check_workspace_map"
 
 [[task.verify]]
 phase = "test"
-command = "cargo test -p roko-cli -- doctor 2>&1 | tail -5"
+command = "cargo test -p roko-cli -- doctor"
 fail_msg = "roko-cli doctor tests must pass after adding check_workspace_map"
 
 # ── T02: Add ignored-tests ledger check to `roko doctor` ─────────────────────
@@ -195,5 +195,5 @@ fail_msg = "roko-cli must compile after adding check_ignored_tests_ledger"
 
 [[task.verify]]
 phase = "test"
-command = "cargo test -p roko-cli -- doctor 2>&1 | tail -5"
+command = "cargo test -p roko-cli -- doctor"
 fail_msg = "roko-cli doctor tests must pass after adding check_ignored_tests_ledger"

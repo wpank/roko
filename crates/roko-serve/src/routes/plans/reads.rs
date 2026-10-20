@@ -330,122 +330,22 @@ pub(super) async fn plan_costs(
 
 // ── Cost estimation ─────────────────────────────────────────────────
 
-/// `POST /api/plans/:id/estimate` — estimate cost and time for plan execution.
-///
-/// Reads historical efficiency events to build per-task estimates based on
-/// past performance for similar roles and models.
+/// `POST /api/plans/:id/estimate`: the cost and time of the plan's remaining
+/// tasks (gap-6605f7). Each task is priced on the rung dispatch would start it
+/// on, from what similar tasks' recent attempts used, with its likely and
+/// worst case; the runtime works it out (`roko_learn::task_estimate`).
 pub(super) async fn plan_estimate(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
 ) -> Result<Json<Value>, ApiError> {
-    let plan = resolve_plan(&state, &id).await?;
-
-    // Load historical efficiency data.
-    let efficiency_path = state
-        .workdir
-        .join(".roko")
-        .join("learn")
-        .join("efficiency.jsonl");
-    let historical = load_efficiency_history(&efficiency_path).await;
-
-    // Compute per-task estimates.
-    let mut task_estimates = Vec::new();
-    let mut total_input_tokens: u64 = 0;
-    let mut total_output_tokens: u64 = 0;
-    let mut total_cost_usd: f64 = 0.0;
-    let mut total_duration_secs: f64 = 0.0;
-
-    for task in &plan.tasks {
-        if task.completed {
-            continue;
-        }
-        // Find similar historical tasks (by matching plan role or averaging all).
-        let (est_input, est_output, est_cost, est_duration) =
-            estimate_task_from_history(&historical);
-
-        total_input_tokens += est_input;
-        total_output_tokens += est_output;
-        total_cost_usd += est_cost;
-        total_duration_secs += est_duration;
-
-        task_estimates.push(json!({
-            "task_id": task.id,
-            "description": task.description,
-            "estimated_input_tokens": est_input,
-            "estimated_output_tokens": est_output,
-            "estimated_cost_usd": format!("{:.4}", est_cost),
-            "estimated_duration_secs": format!("{:.0}", est_duration),
-        }));
-    }
-
-    let completed = plan.tasks.iter().filter(|t| t.completed).count();
-
-    Ok(Json(json!({
-        "plan_id": id,
-        "total_tasks": plan.tasks.len(),
-        "completed_tasks": completed,
-        "remaining_tasks": plan.tasks.len() - completed,
-        "estimate": {
-            "total_input_tokens": total_input_tokens,
-            "total_output_tokens": total_output_tokens,
-            "total_cost_usd": format!("{:.4}", total_cost_usd),
-            "total_duration_secs": format!("{:.0}", total_duration_secs),
-        },
-        "per_task": task_estimates,
-        "confidence": if historical.is_empty() { "low" } else { "medium" },
-        "note": if historical.is_empty() {
-            "No historical data available; using default estimates"
-        } else {
-            "Based on historical efficiency events"
-        },
-    })))
-}
-
-/// A simplified efficiency record parsed from the JSONL log.
-pub(super) struct HistoricalEfficiency {
-    pub(super) input_tokens: u64,
-    pub(super) output_tokens: u64,
-    pub(super) cost_usd: f64,
-    pub(super) duration_secs: f64,
-}
-
-/// Load efficiency history from the JSONL log file.
-pub(super) async fn load_efficiency_history(path: &std::path::Path) -> Vec<HistoricalEfficiency> {
-    let content = match tokio::fs::read_to_string(path).await {
-        Ok(c) => c,
-        Err(_) => return Vec::new(),
-    };
-
-    content
-        .lines()
-        .filter_map(|line| {
-            let v: Value = serde_json::from_str(line).ok()?;
-            Some(HistoricalEfficiency {
-                input_tokens: v.get("input_tokens")?.as_u64()?,
-                output_tokens: v.get("output_tokens")?.as_u64()?,
-                cost_usd: v.get("cost_usd").and_then(|c| c.as_f64()).unwrap_or(0.0),
-                duration_secs: v
-                    .get("wall_clock_ms")
-                    .and_then(|d| d.as_f64())
-                    .unwrap_or(30_000.0)
-                    / 1000.0,
-            })
-        })
-        .collect()
-}
-
-/// Estimate a single task from historical averages, with fallback defaults.
-pub(super) fn estimate_task_from_history(history: &[HistoricalEfficiency]) -> (u64, u64, f64, f64) {
-    if history.is_empty() {
-        // Default estimates for a single agent task.
-        return (8_000, 4_000, 0.05, 60.0);
-    }
-
-    let n = history.len() as f64;
-    let avg_input = (history.iter().map(|h| h.input_tokens).sum::<u64>() as f64 / n) as u64;
-    let avg_output = (history.iter().map(|h| h.output_tokens).sum::<u64>() as f64 / n) as u64;
-    let avg_cost = history.iter().map(|h| h.cost_usd).sum::<f64>() / n;
-    let avg_duration = history.iter().map(|h| h.duration_secs).sum::<f64>() / n;
-
-    (avg_input, avg_output, avg_cost, avg_duration)
+    validate_path_segment(&id, "plan id")?;
+    let estimate = state
+        .runtime
+        .estimate_plan(&state.workdir, &id)
+        .await
+        .map_err(|e| ApiError::internal(format!("estimate plan '{id}': {e}")))?
+        .ok_or_else(|| ApiError::not_found(format!("plan '{id}' not found")))?;
+    let body = serde_json::to_value(estimate)
+        .map_err(|e| ApiError::internal(format!("estimate plan '{id}': {e}")))?;
+    Ok(Json(body))
 }

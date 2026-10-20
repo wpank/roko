@@ -184,6 +184,9 @@ pub struct PromptContext {
     pub plan_brief: String,
     /// The arms of the attempt's chain ([`DispatchContext::arm_set`]).
     pub arm_set: Option<Arc<ArmSet>>,
+    /// Whether the θ the attempt runs keeps the knowledge section
+    /// ([`DispatchContext::knowledge_section`], M1's B4).
+    pub knowledge_section: bool,
 }
 
 impl PromptContext {
@@ -300,23 +303,43 @@ impl PromptContext {
             concurrent_plans: ctx.concurrent_plans.clone(),
             plan_brief,
             arm_set: ctx.arm_set.clone(),
+            knowledge_section: ctx.knowledge_section,
         }
     }
 
     /// Whether the attempt's arm set withholds the loop that fills the source
-    /// section `section` (S02 L7, decision 4115): `knowledge` for L-know and
-    /// `playbooks` for L-play, on their default arm or the all-off arm.
-    /// Maximize mode, and dispatch without an arm set, withhold nothing.
+    /// section `section` ([`arm_withholds`]).
     fn withholds(&self, section: &str) -> bool {
-        let layer = match section {
-            "knowledge" => "knowledge",
-            "playbooks" => "playbooks",
-            _ => return false,
-        };
-        self.arm_set
-            .as_deref()
-            .is_some_and(|arms| arms.takes_default(layer))
+        arm_withholds(self.arm_set.as_deref(), section)
     }
+
+    /// Whether the θ the attempt runs leaves the source section `section`
+    /// out of the prompt ([`theta_withholds`]).
+    fn harness_withholds(&self, section: &str) -> bool {
+        theta_withholds(self.knowledge_section, section)
+    }
+}
+
+/// Whether `arm_set`, the arms of an attempt's chain, withholds the loop that
+/// fills the source section `section` (S02 L7, decision 4115): `knowledge`
+/// for L-know and `playbooks` for L-play, on their default arm or the all-off
+/// arm. Maximize mode, and dispatch without an arm set, withhold nothing.
+fn arm_withholds(arm_set: Option<&ArmSet>, section: &str) -> bool {
+    let layer = match section {
+        "knowledge" => KNOWLEDGE_LAYER,
+        "playbooks" => PLAYBOOKS_LAYER,
+        _ => return false,
+    };
+    arm_set.is_some_and(|arms| arms.takes_default(layer))
+}
+
+/// Whether a θ whose `knowledge_section` is `knowledge_section` leaves the
+/// source section `section` out of the prompt (M1's B4, gap-6bb6d8):
+/// `knowledge` while it is off, as [`arm_withholds`] leaves it out on
+/// L-know's default arm. The controller decides that, not L-know, so its
+/// items are logged as θ's exclusion, never as the arm's.
+fn theta_withholds(knowledge_section: bool, section: &str) -> bool {
+    section == "knowledge" && !knowledge_section
 }
 
 fn declared_impact_context(task: &TaskDef, bounded_context_only: bool) -> String {
@@ -986,12 +1009,25 @@ pub struct PromptDiagnostics {
     /// `sections` arm runs the default policy.
     #[serde(default)]
     pub section_decisions: Vec<SectionDecision>,
+    /// The section bandit's draws on a chain whose `sections` arm runs the
+    /// default policy (the default or all-off arm), outside maximize mode:
+    /// what it would have left out, which the prompt does not apply. The
+    /// sections decision row logs them as L-sec's learned proposal (S03
+    /// §4.4; gap-6f31c3). Empty wherever `section_decisions` is not.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub section_proposals: Vec<SectionDecision>,
     /// What each content reader loaded for the prompt, when it had an
     /// opportunity (gap-a13544): the decision records mark a reader that
     /// loaded none of its state as cut and one that loaded an older part of
     /// it as stale.
     #[serde(default)]
     pub reads: Vec<ReaderRead>,
+    /// The θ the attempt runs had the knowledge section off (M1's B4,
+    /// gap-6bb6d8): the knowledge entries it retrieved reached neither the
+    /// prompt nor what learners credit, and its knowledge decision is the
+    /// controller's, not L-know's.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub knowledge_section_off: bool,
 }
 
 /// What a content reader loaded for one prompt (S03 §4.4's ε_read;
@@ -1273,6 +1309,17 @@ impl PromptItem {
     }
 }
 
+/// How many stored knowledge entries and playbooks an attempt's prompt
+/// carries from its readers ([`PromptAssembler::carried_content`];
+/// gap-dd89ff).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) struct CarriedContent {
+    /// The stored knowledge entries.
+    pub(crate) knowledge: u32,
+    /// The playbooks.
+    pub(crate) playbooks: u32,
+}
+
 /// The canonical section the knowledge, episode, playbook and
 /// section-effectiveness sources render into: their bodies are its domain
 /// notes.
@@ -1285,6 +1332,14 @@ const RUNNER_CONTEXT_SECTION: &str = "context_layer";
 /// The arm-set layer of the section bandit (L-sec).
 const SECTIONS_LAYER: &str = "sections";
 
+/// The arm-set layer of L-know, whose default arm withholds the knowledge
+/// section (S02 L7).
+pub(crate) const KNOWLEDGE_LAYER: &str = "knowledge";
+
+/// The arm-set layer of L-play, whose default arm withholds the playbooks
+/// section (S02 L7).
+pub(crate) const PLAYBOOKS_LAYER: &str = "playbooks";
+
 /// The `sections` assignment of the chain `arms` names, when its prompts run
 /// the section bandit (S02 L9): on its learned arm, outside maximize mode.
 /// `None` outside Graph dispatch, in maximize mode, and when the arm runs the
@@ -1292,6 +1347,21 @@ const SECTIONS_LAYER: &str = "sections";
 fn section_draw(arms: Option<&ArmSet>) -> Option<&Assignment> {
     let arms = arms.filter(|arms| arms.condition_id != MAXIMIZE_CONDITION)?;
     if arms.takes_default(SECTIONS_LAYER) {
+        return None;
+    }
+    arms.get(SECTIONS_LAYER)
+}
+
+/// The `sections` assignment of the chain `arms` names when its arm runs the
+/// default policy (the default or all-off arm), outside maximize mode. The
+/// prompt keeps every section there, and the section bandit's draws are only
+/// its proposal, which the sections decision row logs beside π⁰'s (S03 §4.4:
+/// both proposals on both arms; gap-6f31c3). `None` outside Graph dispatch,
+/// in maximize mode, and on the learned arm, whose draws the prompt applies
+/// ([`section_draw`]).
+fn section_proposal_draw(arms: Option<&ArmSet>) -> Option<&Assignment> {
+    let arms = arms.filter(|arms| arms.condition_id != MAXIMIZE_CONDITION)?;
+    if !arms.takes_default(SECTIONS_LAYER) {
         return None;
     }
     arms.get(SECTIONS_LAYER)
@@ -1503,9 +1573,10 @@ fn sha256_hex(text: &str) -> String {
     format!("{:x}", sha2::Sha256::digest(text.as_bytes()))
 }
 
-/// Pluggable prompt context provider.
+/// Pluggable prompt context provider: a reader of learned content, which reads
+/// the stores under the attempt's `workdir` when it has no cache.
 trait PromptSectionSource: Send + Sync + std::fmt::Debug {
-    fn collect(&self, task: &TaskDef, ctx: &PromptContext) -> Vec<PromptSection>;
+    fn collect(&self, task: &TaskDef, workdir: &Path) -> Vec<PromptSection>;
 }
 
 /// Reads durable `.roko` knowledge stores and prior episodes.
@@ -1522,14 +1593,6 @@ struct WorkdirKnowledgeSource {
 /// When `cache` is present, searches the pre-loaded playbook vec.
 #[derive(Debug, Clone)]
 struct WorkdirPlaybookSource {
-    cache: Option<Arc<PromptCache>>,
-}
-
-/// Applies learned section-effectiveness priority adjustments.
-///
-/// When `cache` is present, reads from the pre-loaded registry.
-#[derive(Debug, Clone)]
-struct SectionEffectivenessSource {
     cache: Option<Arc<PromptCache>>,
 }
 
@@ -1748,11 +1811,6 @@ pub struct PromptAssembler {
     sources: Vec<Arc<dyn PromptSectionSource>>,
     /// Requested allocation strategy from `[prompt]` configuration.
     composition_strategy: CompositionStrategy,
-    /// Learned section-effectiveness registry for the compose builder.
-    ///
-    /// When present, the canonical compose path adjusts section priorities
-    /// based on historical effectiveness data.
-    section_effectiveness: Option<roko_learn::section_effect::SectionEffectivenessRegistry>,
     /// The section bandit (S02 L9) the run's prompts draw from: the prompt
     /// cache's snapshot, so every draw of a run reads the state it started
     /// with. `None` reads it per prompt ([`Self::resolve_section_bandit`]).
@@ -1771,10 +1829,8 @@ impl PromptAssembler {
             sources: vec![
                 Arc::new(WorkdirKnowledgeSource { cache: None }),
                 Arc::new(WorkdirPlaybookSource { cache: None }),
-                Arc::new(SectionEffectivenessSource { cache: None }),
             ],
             composition_strategy: CompositionStrategy::Auto,
-            section_effectiveness: None,
             section_bandit: None,
             pinned_sections: Vec::new(),
         }
@@ -1786,7 +1842,6 @@ impl PromptAssembler {
     /// reading from the filesystem, eliminating per-task I/O.
     #[must_use]
     pub fn with_cache(cache: Arc<PromptCache>) -> Self {
-        let effectiveness = cache.effectiveness.clone();
         let section_bandit = Arc::new(cache.section_bandit.clone());
         Self {
             token_budget: DEFAULT_TOKEN_BUDGET,
@@ -1794,13 +1849,9 @@ impl PromptAssembler {
                 Arc::new(WorkdirKnowledgeSource {
                     cache: Some(Arc::clone(&cache)),
                 }),
-                Arc::new(WorkdirPlaybookSource {
-                    cache: Some(Arc::clone(&cache)),
-                }),
-                Arc::new(SectionEffectivenessSource { cache: Some(cache) }),
+                Arc::new(WorkdirPlaybookSource { cache: Some(cache) }),
             ],
             composition_strategy: CompositionStrategy::Auto,
-            section_effectiveness: Some(effectiveness),
             section_bandit: Some(section_bandit),
             pinned_sections: Vec::new(),
         }
@@ -1813,7 +1864,6 @@ impl PromptAssembler {
             token_budget: 8_000,
             sources: Vec::new(),
             composition_strategy: CompositionStrategy::Auto,
-            section_effectiveness: None,
             section_bandit: None,
             pinned_sections: Vec::new(),
         }
@@ -1847,26 +1897,38 @@ impl PromptAssembler {
         self
     }
 
-    /// Resolve the section-effectiveness registry for the compose builder.
-    ///
-    /// If the assembler was constructed with a cache (via [`with_cache`]), the
-    /// cached registry is returned. Otherwise, loads it from disk using the
-    /// standard `.roko/learn/` path under `workdir`. Returns `None` for
-    /// minimal assemblers (no sources, no workdir lookup).
-    fn resolve_section_effectiveness(
-        &self,
-        workdir: &Path,
-    ) -> Option<roko_learn::section_effect::SectionEffectivenessRegistry> {
-        if let Some(ref registry) = self.section_effectiveness {
-            return Some(registry.clone());
-        }
-        // Fallback: load from disk (matches the non-cached SectionEffectivenessSource path).
-        // For minimal assemblers (no sources), skip the disk load entirely.
-        if self.sources.is_empty() {
-            return None;
-        }
-        let path = workdir.join(roko_learn::section_effect::DEFAULT_SECTION_EFFECTS_PATH);
-        Some(roko_learn::section_effect::SectionEffectivenessRegistry::load_or_new(&path))
+    /// What the prompt [`Self::assemble`] builds for `task` under `ctx`
+    /// carries from the knowledge and playbook readers (gap-dd89ff): the
+    /// stored entries and playbooks each reader picks for it, at most three
+    /// that clear the task's topic floor, whose exposure rows the prompt
+    /// writes, less a section the chain's arm set or the attempt's θ withholds.
+    /// The token budget and the section bandit act on the composed prompt and
+    /// can still leave the section out. The self-model reads this before
+    /// routing, when the prompt is not built yet; its reads of the loops'
+    /// fault flags are the attempt's decision, as planning's are.
+    pub(crate) fn carried_content(&self, task: &TaskDef, ctx: &DispatchContext) -> CarriedContent {
+        super::attempt_decision(ctx, || {
+            let mut carried = CarriedContent::default();
+            let sections = self
+                .sources
+                .iter()
+                .flat_map(|source| source.collect(task, &ctx.workdir));
+            for section in sections {
+                if arm_withholds(ctx.arm_set.as_deref(), &section.name)
+                    || theta_withholds(ctx.knowledge_section, &section.name)
+                {
+                    continue;
+                }
+                for item in &section.items {
+                    match item.kind {
+                        ExposureItemKind::Knowledge => carried.knowledge += 1,
+                        ExposureItemKind::Playbook => carried.playbooks += 1,
+                        _ => {}
+                    }
+                }
+            }
+            carried
+        })
     }
 
     /// The section bandit a prompt draws from: the cache's snapshot, else the
@@ -1911,7 +1973,7 @@ impl PromptAssembler {
         // for diagnostics.
         let mut source_sections: Vec<PromptSection> = Vec::new();
         for source in &self.sources {
-            source_sections.extend(source.collect(task, ctx));
+            source_sections.extend(source.collect(task, &ctx.workdir));
         }
         // What each content reader loaded, whether or not its section stays
         // in (gap-a13544).
@@ -1921,7 +1983,13 @@ impl PromptAssembler {
             .collect();
         // S02 L7: a loop the attempt's arm set withholds still retrieves, so
         // its items are known, but its section stays out of the prompt and
-        // its ids out of what learners credit.
+        // its ids out of what learners credit. M1's B4 leaves the knowledge
+        // section out the same way while the θ the attempt runs turns it off
+        // (gap-6bb6d8); its items are θ's exclusion, not the arm's.
+        let (harness_withheld, source_sections): (Vec<PromptSection>, Vec<PromptSection>) =
+            source_sections
+                .into_iter()
+                .partition(|section| ctx.harness_withholds(&section.name));
         let (withheld_sections, source_sections): (Vec<PromptSection>, Vec<PromptSection>) =
             source_sections
                 .into_iter()
@@ -1943,7 +2011,7 @@ impl PromptAssembler {
             if !sec.body.is_empty()
                 && matches!(
                     sec.name.as_str(),
-                    "knowledge" | "episode_knowledge" | "playbooks" | "section_effectiveness"
+                    "knowledge" | "episode_knowledge" | "playbooks"
                 )
             {
                 code_context.push(sec.body.clone());
@@ -2007,7 +2075,6 @@ impl PromptAssembler {
         // token budget. The manifest is the authoritative scoring receipt:
         // every entry carries the source Signal's content hash and the exact
         // score result used by selection.
-        let section_effectiveness = self.resolve_section_effectiveness(&ctx.workdir);
         let group_context = load_group_context(&ctx.workdir, &ctx.role, task);
         let has_mcp = task.mcp_servers.as_ref().is_some_and(|s| !s.is_empty());
         let mut spec = RoleSystemPromptSpec::new(role, task_context, tools_csv)
@@ -2019,11 +2086,7 @@ impl PromptAssembler {
         let composer = PromptComposer::new()
             .with_strategy(self.composition_strategy)
             .with_foraging(default_forager());
-        let mut canonical_sections = if let Some(registry) = section_effectiveness.as_ref() {
-            spec.build_sections_with_section_effectiveness(registry)
-        } else {
-            spec.build_sections()
-        };
+        let mut canonical_sections = spec.build_sections();
         // P1-20: Apply model-aware attention-curve-driven dynamic placement.
         // Non-critical sections are reassigned to higher-attention prompt
         // edges (start/end) based on information density relative to the
@@ -2070,6 +2133,18 @@ impl PromptAssembler {
         // bandit leaves droppable sections out at logged odds, before the
         // composer sees them. Pinned sections are never offered to it.
         let section_decisions = match section_draw(ctx.arm_set.as_deref()) {
+            Some(assignment) => draw_sections(
+                &self.resolve_section_bandit(&ctx.workdir),
+                assignment,
+                &canonical_sections,
+                &self.pinned_sections,
+            ),
+            None => Vec::new(),
+        };
+        // On the arm that runs π⁰ the bandit still draws, so the decision
+        // row can log its proposal (gap-6f31c3); the prompt keeps every
+        // section.
+        let section_proposals = match section_proposal_draw(ctx.arm_set.as_deref()) {
             Some(assignment) => draw_sections(
                 &self.resolve_section_bandit(&ctx.workdir),
                 assignment,
@@ -2190,6 +2265,13 @@ impl PromptAssembler {
                 .flat_map(|section| &section.items)
                 .map(|item| item_diagnostic(item, SOURCE_SECTION, withheld)),
         );
+        let theta = Some(ExcludedReason::HarnessPolicy);
+        items.extend(
+            harness_withheld
+                .iter()
+                .flat_map(|section| &section.items)
+                .map(|item| item_diagnostic(item, SOURCE_SECTION, theta)),
+        );
         let diagnostics = PromptDiagnostics {
             included_sections,
             dropped_sections,
@@ -2202,7 +2284,9 @@ impl PromptAssembler {
             experiment_assignments: experiment_assignment_diagnostics,
             items,
             section_decisions,
+            section_proposals,
             reads,
+            knowledge_section_off: !ctx.knowledge_section,
         };
 
         // ── User prompt (unchanged) ────────────────────────────────────────
@@ -2302,7 +2386,7 @@ impl PromptAssembler {
 }
 
 impl PromptSectionSource for WorkdirKnowledgeSource {
-    fn collect(&self, task: &TaskDef, ctx: &PromptContext) -> Vec<PromptSection> {
+    fn collect(&self, task: &TaskDef, workdir: &Path) -> Vec<PromptSection> {
         let mut sections = Vec::new();
         if let Some(cache) = &self.cache {
             if let Some(section) = collect_neuro_knowledge_cached(task, &cache.neuro_entries) {
@@ -2312,10 +2396,10 @@ impl PromptSectionSource for WorkdirKnowledgeSource {
                 sections.push(section);
             }
         } else {
-            if let Some(section) = collect_neuro_knowledge(task, ctx) {
+            if let Some(section) = collect_neuro_knowledge(task, workdir) {
                 sections.push(section);
             }
-            if let Some(section) = collect_episode_knowledge(task, ctx) {
+            if let Some(section) = collect_episode_knowledge(task, workdir) {
                 sections.push(section);
             }
         }
@@ -2324,68 +2408,29 @@ impl PromptSectionSource for WorkdirKnowledgeSource {
 }
 
 impl PromptSectionSource for WorkdirPlaybookSource {
-    fn collect(&self, task: &TaskDef, ctx: &PromptContext) -> Vec<PromptSection> {
+    fn collect(&self, task: &TaskDef, workdir: &Path) -> Vec<PromptSection> {
         if let Some(cache) = &self.cache {
             collect_playbooks_cached(task, &cache.playbooks)
                 .into_iter()
                 .collect()
         } else {
-            collect_playbooks(task, ctx).into_iter().collect()
+            collect_playbooks(task, workdir).into_iter().collect()
         }
     }
 }
 
-impl PromptSectionSource for SectionEffectivenessSource {
-    fn collect(&self, _task: &TaskDef, ctx: &PromptContext) -> Vec<PromptSection> {
-        let registry = if let Some(cache) = &self.cache {
-            &cache.effectiveness
-        } else {
-            let path = ctx
-                .workdir
-                .join(roko_learn::section_effect::DEFAULT_SECTION_EFFECTS_PATH);
-            // load_or_new handles missing files gracefully (returns empty registry).
-            let loaded =
-                roko_learn::section_effect::SectionEffectivenessRegistry::load_or_new(&path);
-            return render_effectiveness_section(&loaded, &ctx.role);
-        };
-        render_effectiveness_section(registry, &ctx.role)
-    }
-}
-
-fn render_effectiveness_section(
-    registry: &roko_learn::section_effect::SectionEffectivenessRegistry,
-    role: &str,
-) -> Vec<PromptSection> {
-    let positive = registry.positive_lift_sections(role);
-    if positive.is_empty() {
-        return Vec::new();
-    }
-    let mut body = String::from(
-        "# Prompt section effectiveness\nHistorically high-signal prompt sections for this role:\n",
-    );
-    for effect in positive.into_iter().take(5) {
-        body.push_str(&format!(
-            "- {} (lift {:+.2}, weight {:.2})\n",
-            effect.section_name,
-            effect.lift(),
-            effect.lift_weight()
-        ));
-    }
-    vec![PromptSection::new("section_effectiveness", body, 7)]
-}
-
-fn collect_neuro_knowledge(task: &TaskDef, ctx: &PromptContext) -> Option<PromptSection> {
+fn collect_neuro_knowledge(task: &TaskDef, workdir: &Path) -> Option<PromptSection> {
     // The uncached path ranks the hot entries as a plan run's cache does
     // (backlog 4211).
-    let entries = roko_neuro::KnowledgeStore::for_workdir(&ctx.workdir)
+    let entries = roko_neuro::KnowledgeStore::for_workdir(workdir)
         .hot_entries()
         .ok()?;
     collect_neuro_knowledge_cached(task, &entries)
 }
 
-fn collect_episode_knowledge(task: &TaskDef, ctx: &PromptContext) -> Option<PromptSection> {
+fn collect_episode_knowledge(task: &TaskDef, workdir: &Path) -> Option<PromptSection> {
     let mut episodes: Vec<roko_learn::episode_logger::Episode> = Vec::new();
-    for path in episode_paths(&ctx.workdir) {
+    for path in episode_paths(workdir) {
         let Ok(text) = std::fs::read_to_string(&path) else {
             continue;
         };
@@ -2426,10 +2471,10 @@ fn cited_episode_id(episode: &roko_learn::episode_logger::Episode) -> &str {
     }
 }
 
-fn collect_playbooks(task: &TaskDef, ctx: &PromptContext) -> Option<PromptSection> {
-    let root = roko_core::Workspace::open(&ctx.workdir)
+fn collect_playbooks(task: &TaskDef, workdir: &Path) -> Option<PromptSection> {
+    let root = roko_core::Workspace::open(workdir)
         .map(|ws| ws.playbooks_dir())
-        .unwrap_or_else(|_| ctx.workdir.join(".roko").join("learn").join("playbooks"));
+        .unwrap_or_else(|_| workdir.join(".roko").join("learn").join("playbooks"));
     let playbooks: Vec<roko_learn::playbook::Playbook> = std::fs::read_dir(&root)
         .ok()?
         .filter_map(Result::ok)
@@ -2730,7 +2775,7 @@ fn harmful_playbook() -> roko_learn::playbook::Playbook {
 /// Distinct topic terms ([`task_topic_terms`]) a knowledge entry, a playbook
 /// or an episode must share with a task to reach its prompt (backlogs 4211,
 /// 4212, 4213).
-const MIN_TOPIC_OVERLAP: usize = 2;
+pub(crate) const MIN_TOPIC_OVERLAP: usize = 2;
 
 /// The least confidence of a knowledge entry a prompt shows (backlog 4211).
 const MIN_KNOWLEDGE_CONFIDENCE: f64 = 0.3;
@@ -2778,13 +2823,20 @@ const GENERIC_TOPIC_TERMS: &[&str] = &[
 /// knowledge, episodes and playbooks (backlogs 4211-4213) and group
 /// knowledge (gap-a40021). The others choose by another signal on purpose:
 /// error patterns are keyed to the task and its verify commands (backlogs
-/// 4209, 4210), and sections are cut by the token budget.
-fn task_topic_terms(task: &TaskDef) -> HashSet<String> {
+/// 4209, 4210), and sections are cut by the token budget. A verified pass's
+/// playbook is keyed by them too (gap-89f985).
+pub(crate) fn task_topic_terms(task: &TaskDef) -> HashSet<String> {
     let mut text = vec![task.title.clone()];
     text.extend(task.description.clone());
     text.extend(task.acceptance.iter().cloned());
     text.extend(task.files.iter().flat_map(|file| file_topic_words(file)));
-    let mut terms = query_words(&text.join(" "));
+    topic_terms(&text.join(" "))
+}
+
+/// The topic terms of `text`: its words ([`query_words`]) longer than two
+/// characters, less stopwords, generic path pieces and generic verbs.
+pub(crate) fn topic_terms(text: &str) -> HashSet<String> {
+    let mut terms = query_words(text);
     terms.retain(|word| {
         word.len() > 2
             && !QUERY_STOPWORDS.contains(&word.as_str())
@@ -3110,10 +3162,6 @@ fn render_gate_feedback(feedback: &GateFeedback) -> String {
         buf.push_str(diagnosis);
         buf.push_str("\n\n");
     }
-    let has_structured = !feedback.compile_errors.is_empty()
-        || !feedback.test_failures.is_empty()
-        || !feedback.clippy_warnings.is_empty();
-
     if !feedback.compile_errors.is_empty() {
         buf.push_str("## Compile errors\n");
         for err in &feedback.compile_errors {
@@ -3132,9 +3180,14 @@ fn render_gate_feedback(feedback: &GateFeedback) -> String {
             buf.push_str(&format!("- {w}\n"));
         }
     }
-    // When no structured errors were parsed but raw output exists, include
-    // a bounded excerpt so the agent still sees what went wrong.
-    if !has_structured && !feedback.raw_output.is_empty() {
+    // Unless compile errors explain the failure, include a bounded excerpt
+    // of the raw output: a failing test's lines name it, but only the output
+    // says what it expected and got (bug-59ed90), and a step's `fail_msg` can
+    // look like a failing test line itself.
+    if feedback.compile_errors.is_empty() && !feedback.raw_output.is_empty() {
+        if !buf.ends_with("\n\n") {
+            buf.push('\n');
+        }
         buf.push_str("## Raw gate output\n```\n");
         // Limit to ~2 KB to avoid blowing the prompt budget.
         let raw_excerpt: String = feedback.raw_output.chars().take(2048).collect();
@@ -3221,6 +3274,7 @@ mod tests {
             concurrent_plans: Vec::new(),
             attempt_key: None,
             arm_set: None,
+            knowledge_section: true,
             self_model_rung: None,
             skip_enrichment: false,
         }
@@ -3599,7 +3653,8 @@ mod tests {
         assert!(!rendered.contains("must remain hidden"));
         assert!(load_group_context(temp.path(), "outsider", &task()).is_empty());
 
-        let ordinary = collect_neuro_knowledge(&task(), &prompt_ctx).expect("public knowledge");
+        let ordinary =
+            collect_neuro_knowledge(&task(), &prompt_ctx.workdir).expect("public knowledge");
         assert!(ordinary.body.contains("public wiring knowledge"));
         assert!(!ordinary.body.contains("visible wiring group knowledge"));
     }
@@ -4330,15 +4385,36 @@ mod tests {
         assert!((decision.propensity - decision.p_exclude).abs() < 1e-12);
 
         // Maximize mode, and the bandit's default arm, leave nothing out.
-        let default_arm = (0..1_000)
+        // On the default arm the bandit still draws, and the diagnostics
+        // keep its draws as its proposal (gap-6f31c3): one that would leave
+        // `conventions` out leaves the prompt whole.
+        let prompt = assemble(arms_of(&ArmMode::Maximize, 0));
+        assert!(prompt.diagnostics.section_decisions.is_empty());
+        assert!(prompt.diagnostics.section_proposals.is_empty());
+        assert!(prompt.system_prompt.contains("Keep changes minimal"));
+        let proposed = |prompt: &AssembledPrompt| -> (Vec<String>, bool) {
+            let proposals = &prompt.diagnostics.section_proposals;
+            let drawn = proposals.iter().map(|draw| draw.section.clone()).collect();
+            let left_out = proposals
+                .iter()
+                .any(|draw| draw.section == "conventions" && draw.excluded);
+            (drawn, left_out)
+        };
+        let prompt = (0..1_000)
             .map(|index| arms_of(&ArmMode::Normal, index))
-            .find(|arms| arms.takes_default("sections"))
-            .expect("a chain on the default arm");
-        for arms in [arms_of(&ArmMode::Maximize, 0), default_arm] {
-            let prompt = assemble(arms);
-            assert!(prompt.diagnostics.section_decisions.is_empty());
-            assert!(prompt.system_prompt.contains("Keep changes minimal"));
-        }
+            .filter(|arms| arms.takes_default("sections"))
+            .map(&mut assemble)
+            .find(|prompt| proposed(prompt).1)
+            .expect("a default-arm chain whose bandit proposes leaving conventions out");
+        assert!(prompt.diagnostics.section_decisions.is_empty());
+        let drawn = proposed(&prompt).0;
+        assert!(
+            drawn.iter().any(|section| section == "conventions"),
+            "{drawn:?}"
+        );
+        assert!(prompt.system_prompt.contains("Keep changes minimal"));
+        let item = prompt_item(&prompt, Section, "conventions");
+        assert_eq!((item.included, item.excluded_reason), (true, None));
     }
 
     #[test]
@@ -4373,6 +4449,46 @@ mod tests {
             p.system_prompt.contains("mod::test_foo"),
             "retry should contain test failure"
         );
+    }
+
+    /// bug-59ed90: a failed test step's output reaches the retry, even when a
+    /// line of it (the step's `fail_msg`, a pytest summary) reads as a failing
+    /// test; compile errors stay on their own.
+    #[test]
+    fn retry_prompt_keeps_a_failed_tests_output() {
+        let unittest = "verify[1:test] (`python3 -m unittest tests.test_cli`): the new flag \
+             tests failed\n\
+             FAIL: test_json_flag_for_stdin (tests.test_cli.CliTests.test_json_flag_for_stdin)\n\
+             Traceback (most recent call last):\n\
+             AssertionError: {'count': 1} != {'count': 3}\n\
+             Ran 8 tests in 0.003s\n\
+             FAILED (failures=1)";
+        let pytest = "verify[1:test] (`pytest tests/test_cli.py`): exit code: 1\n\
+             >       assert counts == {\"a.txt\": 3}\n\
+             E       AssertionError: assert {'a.txt': 1} == {'a.txt': 3}\n\
+             FAILED tests/test_cli.py::test_json_files - AssertionError: assert {'a.txt': 1}";
+        for (raw, cause) in [
+            (unittest, "AssertionError: {'count': 1} != {'count': 3}"),
+            (
+                pytest,
+                "E       AssertionError: assert {'a.txt': 1} == {'a.txt': 3}",
+            ),
+        ] {
+            let feedback = GateFeedback::from_raw(raw).expect("feedback");
+            assert!(!feedback.test_failures.is_empty(), "{feedback:?}");
+            let rendered = render_gate_feedback(&feedback);
+            assert!(rendered.contains("\n\n## Raw gate output"), "{rendered}");
+            assert!(rendered.contains(cause), "{rendered}");
+        }
+
+        let compile = GateFeedback::from_raw(
+            "verify[0:compile] (`cargo check`): exit code: 101\n\
+             error[E0425]: cannot find value `x` in this scope\n --> src/lib.rs:3:5",
+        )
+        .expect("feedback");
+        let rendered = render_gate_feedback(&compile);
+        assert!(rendered.contains("## Compile errors"), "{rendered}");
+        assert!(!rendered.contains("## Raw gate output"), "{rendered}");
     }
 
     /// gap-c8bfc8: QuickReviewer and AutoFixer get no cross-plan context, yet
@@ -4833,6 +4949,39 @@ covers = ["AC1"]
         );
     }
 
+    /// bug-dd4524: the section bandit replaced the old section-effectiveness
+    /// reader, so a plan prompt carries no `# Prompt section effectiveness`
+    /// block even in a workspace holding a stale `section-effects.json`
+    /// that nothing writes any more.
+    #[test]
+    fn prompt_has_no_section_effectiveness_block_from_a_stale_file() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        // The path the retired reader used (bug-dd4524): a literal here, not
+        // the constant, so this test still builds the stale file even once
+        // nothing in `crates/roko-cli/src/dispatch/` names that constant.
+        let path = temp.path().join(".roko/learn/section-effects.json");
+        let mut registry = roko_learn::section_effect::SectionEffectivenessRegistry::new();
+        // A clear positive lift for "implementer" (the test task's role):
+        // the old reader rendered the block whenever this was non-empty.
+        for _ in 0..10 {
+            registry.record_outcome("workspace_map", "implementer", true, true);
+            registry.record_outcome("workspace_map", "implementer", false, false);
+        }
+        registry
+            .save(&path)
+            .expect("save stale section-effects.json");
+
+        let prompt = assemble_cached(&task(), temp.path());
+
+        assert!(
+            !prompt
+                .system_prompt
+                .contains("# Prompt section effectiveness"),
+            "{}",
+            prompt.system_prompt
+        );
+    }
+
     #[test]
     fn scan_crate_descriptions_empty_for_missing_dir() {
         let crates = scan_crate_descriptions(Path::new("/nonexistent"));
@@ -4887,6 +5036,7 @@ covers = ["AC1"]
             concurrent_plans: Vec::new(),
             plan_brief: String::new(),
             arm_set: None,
+            knowledge_section: true,
         };
         let ctx_str = build_runner_context(&t, &pctx).expect("runner context");
         assert!(ctx_str.contains("# Files in scope"));

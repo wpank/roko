@@ -6,7 +6,9 @@
 //! and state rules live in one place for every consumer (S04 §5). Units carry one gate
 //! verdict, so L1 learns a single `gate` rung until units carry per-rung outcomes. The model
 //! counts gate labels toward its cold start and shadow period: S05's VS labels join later
-//! (decision 6102, 1b).
+//! (decision 6102, 1b). An attempt the cost model's rows do not support is forecast from a
+//! bounded prior around the arm's observed level (bug-f6682e), and an arm the cost model has not
+//! observed is priced from the snapshot (bug-09173e).
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -14,7 +16,7 @@ use std::path::{Path, PathBuf};
 use roko_core::pricing_snapshot::PriceSnapshot;
 use serde::{Deserialize, Serialize};
 
-use super::cost::CostModel;
+use super::cost::{CostModel, TYPICAL_ATTEMPT};
 use super::features::{
     FEATURE_SCHEMA, FeatureVector, PassEma, TaskFeatures, feature_vector, price_tier,
 };
@@ -22,6 +24,7 @@ use super::logit::{FALSE_GREEN_PRIOR, GateForecaster};
 use super::prior::HierarchicalBeta;
 use super::recal::Recalibrator;
 use super::{ArmKey, CandidateForecast, PredictorVersion, Unit};
+use crate::telemetry::ForecastBasis;
 
 /// The predictor's class, which its version hashes.
 pub const MODEL_CLASS: &str = "m3-l1";
@@ -53,6 +56,10 @@ pub struct SelfModel {
     pub price_snapshot_id: String,
     /// Each priced model's tier at that snapshot.
     price_tiers: BTreeMap<String, String>,
+    /// What a typical attempt costs at that snapshot, which an arm the cost model has not
+    /// observed is forecast around (bug-09173e). Rebuilt from the snapshot, never saved.
+    #[serde(skip)]
+    attempt_prices: AttemptPrices,
     /// L0.
     prior: HierarchicalBeta,
     /// L1 and the false-green head.
@@ -65,6 +72,41 @@ pub struct SelfModel {
     history: PassEma,
     /// Labelled outcomes learned under this version.
     pub outcomes: usize,
+}
+
+/// What a [`TYPICAL_ATTEMPT`] costs at a price snapshot, in USD: on each model it prices, and
+/// the median over them, which stands in for a model it does not price (bug-09173e).
+#[derive(Debug, Clone, Default, PartialEq)]
+struct AttemptPrices {
+    by_model: BTreeMap<String, f64>,
+    median: f64,
+}
+
+impl AttemptPrices {
+    /// The prices at `snapshot`.
+    fn of(snapshot: &PriceSnapshot) -> Self {
+        let by_model: BTreeMap<String, f64> = snapshot
+            .rows()
+            .iter()
+            .map(|row| (row.slug.clone(), row.price(&TYPICAL_ATTEMPT).api_equiv_usd))
+            .collect();
+        let mut prices: Vec<f64> = by_model.values().copied().collect();
+        prices.sort_by(f64::total_cmp);
+        let middle = prices.len() / 2;
+        let median = if prices.is_empty() {
+            0.0
+        } else if prices.len().is_multiple_of(2) {
+            f64::midpoint(prices[middle - 1], prices[middle])
+        } else {
+            prices[middle]
+        };
+        Self { by_model, median }
+    }
+
+    /// A typical attempt's price on `model`: its own, else the median.
+    fn of_model(&self, model: &str) -> f64 {
+        self.by_model.get(model).copied().unwrap_or(self.median)
+    }
 }
 
 /// What [`SelfModel::load_or_new`] found.
@@ -101,6 +143,7 @@ impl SelfModel {
             version: predictor_version(MODEL_CLASS, FEATURE_SCHEMA, snapshot.id()),
             price_snapshot_id: snapshot.id().to_string(),
             price_tiers,
+            attempt_prices: AttemptPrices::of(snapshot),
             prior: HierarchicalBeta::new(),
             gates: GateForecaster::default(),
             costs: CostModel::default(),
@@ -130,19 +173,36 @@ impl SelfModel {
             .collect()
     }
 
-    /// The forecast for `arm` on `task`.
+    /// The forecast for `arm` on `task`. A first try takes L0's per-arm rate, also once the
+    /// model is warm (gap-3f36a6): the ladder runs a higher rung only after failures, so in its
+    /// data, and in an active self-model's, the arm and the attempt order move together, and
+    /// L1 credits the order. Warm on ladder data it forecast mid's first try at 0.01 though mid
+    /// passed 20/20; once mid started tasks it gave cheap's first try 0.95 after seven failures.
+    /// L1 forecasts retries and climbs. Its task features, the lessons a prompt carries
+    /// included, wait on an arm-by-order fix to inform a first try (gap-e464e6).
     fn forecast_arm(&self, task: &TaskFeatures, arm: &ArmKey) -> CandidateForecast {
         let l0 = self.prior.forecast(&arm.model, &task.family, &task.role);
+        let l0_lcb = l0.lcb.min(l0.p);
         let cold_start = self.cold_start();
-        let (p_gate, p_gate_lcb, p_fg) = if cold_start {
-            (l0.p, l0.lcb, FALSE_GREEN_PRIOR)
+        let (p_gate, p_gate_lcb, p_fg, basis) = if cold_start {
+            (l0.p, l0_lcb, FALSE_GREEN_PRIOR, ForecastBasis::Prior)
         } else {
             let x = self.features(task, arm);
             let gate = self.gates.forecast(&x, l0.p, &[GATE_RUNG]);
-            let p_gate = self.recal.apply(gate.p_gate);
-            (p_gate, gate.p_gate_lcb.min(p_gate), gate.p_fg)
+            if task.attempt <= 1 {
+                (l0.p, l0_lcb, gate.p_fg, ForecastBasis::Prior)
+            } else {
+                let p_gate = self.recal.apply(gate.p_gate);
+                (
+                    p_gate,
+                    gate.p_gate_lcb.min(p_gate),
+                    gate.p_fg,
+                    ForecastBasis::Logit,
+                )
+            }
         };
-        let costs = self.costs.forecast(&cost_features(task, arm));
+        let price = self.attempt_prices.of_model(&arm.model);
+        let costs = self.costs.forecast(arm, &cost_features(task, arm), price);
         CandidateForecast {
             arm: arm.clone(),
             p_gate,
@@ -154,6 +214,9 @@ impl SelfModel {
             lat_q50_s: costs.lat_q50_s,
             lat_q90_s: costs.lat_q90_s,
             cold_start,
+            basis,
+            cost_prior: costs.cost_prior,
+            latency_prior: costs.latency_prior,
         }
     }
 
@@ -230,10 +293,10 @@ impl SelfModel {
         std::fs::rename(&temporary, path)
     }
 
-    /// The model saved at `path`, when it is of the version a fresh model at `snapshot` has.
-    /// A missing file gives a fresh model. A file of another version, or one that does not
-    /// parse, is set aside (renamed with its version) rather than merged, and a fresh model
-    /// starts.
+    /// The model saved at `path`, when it is of the version a fresh model at `snapshot` has,
+    /// priced at `snapshot` again. A missing file gives a fresh model. A file of another
+    /// version, or one that does not parse, is set aside (renamed with its version) rather than
+    /// merged, and a fresh model starts.
     pub fn load_or_new(
         path: &Path,
         snapshot: &PriceSnapshot,
@@ -251,7 +314,11 @@ impl SelfModel {
             .filter(|state| state.schema_version == STATE_SCHEMA);
         match saved {
             Some(state) if state.model.version == fresh.version => {
-                Ok((state.model, StateLoad::Loaded))
+                let model = Self {
+                    attempt_prices: fresh.attempt_prices,
+                    ..state.model
+                };
+                Ok((model, StateLoad::Loaded))
             }
             other => {
                 let label =
@@ -288,7 +355,8 @@ impl From<&Unit> for TaskFeatures {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::self_model::{Label, LabelSource};
+    use crate::self_model::features::FEATURE_SCHEMA_VERSION;
+    use crate::self_model::{Label, LabelSource, TestRng};
     use crate::telemetry::{AttemptKey, CostSource};
 
     fn snapshot() -> PriceSnapshot {
@@ -367,7 +435,8 @@ mod tests {
         let version = predictor_version(MODEL_CLASS, FEATURE_SCHEMA, snapshot.id());
         assert_eq!(model.version, version);
         assert!(model.version.0.starts_with("m3-l1-"));
-        let next_schema = predictor_version(MODEL_CLASS, "m3-features/2", snapshot.id());
+        let next_schema = format!("m3-features/{}", FEATURE_SCHEMA_VERSION + 1);
+        let next_schema = predictor_version(MODEL_CLASS, &next_schema, snapshot.id());
         assert_ne!(
             next_schema, version,
             "a new feature schema is a new predictor"
@@ -394,6 +463,72 @@ mod tests {
         // The cost model learned the attempts' cost.
         let cost = after_passes.cost_q50;
         assert!((cost - 0.015).abs() < 0.002, "{cost}");
+    }
+
+    /// gap-3f36a6: the ladder runs a higher rung only after failures, so in its data the arm
+    /// and the attempt order move together: cheap fails tries 1 and 2, mid passes try 3. Warm
+    /// on 40 such outcomes, the forecast for a first try must still credit the arm, not the
+    /// order, and start the task on mid, never on the rung that never ran.
+    #[test]
+    fn ladder_ordered_outcomes_do_not_confound_the_start_forecast() {
+        use crate::self_model::cascade::{BREAK_EVEN_MARGIN, start_rung};
+
+        let ladder = [
+            ArmKey::roko("cerebras", "gpt-oss-120b"),
+            ArmKey::roko("zai", "glm-4.7"),
+            ArmKey::roko("openai", "gpt-5.4-mini"),
+        ];
+        let mut model = SelfModel::new(&snapshot());
+        for index in 0..40 {
+            let (arm, attempt, passed) = match index % 3 {
+                0 => (&ladder[0], 1, false),
+                1 => (&ladder[0], 2, false),
+                _ => (&ladder[1], 3, true),
+            };
+            let mut tried = unit(&arm.model, &format!("T{}", index / 3), attempt, passed);
+            tried.arm = arm.clone();
+            tried.prior_failure = attempt > 1;
+            model.observe(&tried, 1.0);
+        }
+        assert!(!model.cold_start());
+
+        let first = model.forecast(&task(), &ladder);
+        let (cheap, mid) = (first[0].p_vs, first[1].p_vs);
+        assert!(mid >= 0.7, "P(mid, first try) {mid}: {first:?}");
+        assert!(cheap <= 0.2, "P(cheap, first try) {cheap}: {first:?}");
+        assert_eq!(start_rung(&first, BREAK_EVEN_MARGIN), Some(1), "{first:?}");
+        let (prior, logit) = (ForecastBasis::Prior, ForecastBasis::Logit);
+        assert!(
+            first.iter().all(|forecast| forecast.basis == prior),
+            "{first:?}"
+        );
+        // Mid's own third try keeps L1's forecast, which the order features belong to.
+        let third = TaskFeatures {
+            attempt: 3,
+            has_prior_failure: true,
+            ..task()
+        };
+        let retry = model.forecast(&third, &ladder[1..2]);
+        assert_eq!(retry[0].basis, logit, "{retry:?}");
+
+        // Then the self-model starts eleven tasks on mid, as an active one does, and they pass:
+        // L1 learns "a first try passes" from mid and credited it to cheap's first try (0.95
+        // after seven failures in learning-research's active run) and, freshly warm, dipped
+        // mid's to 0.11. Every first try still takes L0's per-arm rate.
+        for index in 0..11 {
+            let mut started = unit("glm-4.7", &format!("M{index}"), 1, true);
+            started.arm = ladder[1].clone();
+            model.observe(&started, 1.0);
+        }
+        let first = model.forecast(&task(), &ladder);
+        let (cheap, mid) = (first[0].p_vs, first[1].p_vs);
+        assert!(mid >= 0.7, "P(mid, first try) {mid}: {first:?}");
+        assert!(cheap <= 0.2, "P(cheap, first try) {cheap}: {first:?}");
+        assert!(
+            first.iter().all(|forecast| forecast.basis == prior),
+            "{first:?}"
+        );
+        assert_eq!(start_rung(&first, BREAK_EVEN_MARGIN), Some(1), "{first:?}");
     }
 
     #[test]
@@ -469,5 +604,124 @@ mod tests {
         assert_eq!(fresh.outcomes, 0);
         let (_, missing) = SelfModel::load_or_new(&path, &newer).expect("no state");
         assert_eq!(missing, StateLoad::Fresh);
+    }
+
+    /// bug-09173e: an arm the model has not observed is forecast from its price, not from the
+    /// cost model's vague prior, whose q90 reached 6e26 USD and seconds. On a fresh model each
+    /// rung's cost q90 is finite and under ten times the snapshot's price of a typical attempt
+    /// on its model, its latency q90 under ten minutes, and the forecast says both are the
+    /// prior's. After the round-v6 evidence's six outcomes on two of the rungs, those two
+    /// forecast from what they cost, and the third, never run, still reads as its price, with
+    /// the observed attempts' latency.
+    #[test]
+    fn cost_forecast_q90_is_bounded_without_observations() {
+        let snapshot = snapshot();
+        let typical = |slug: &str| {
+            let price = snapshot.price(slug, &TYPICAL_ATTEMPT);
+            price.expect("a priced model").api_equiv_usd
+        };
+        let rungs = [
+            ArmKey::roko("cerebras", "gpt-oss-120b"),
+            ArmKey::roko("zai", "glm-4.7"),
+            ArmKey::roko("openai", "gpt-5.4-mini"),
+        ];
+        let mut model = SelfModel::new(&snapshot);
+        for forecast in model.forecast(&task(), &rungs) {
+            let price = typical(&forecast.arm.model);
+            assert!(
+                forecast.cost_prior && forecast.latency_prior,
+                "{forecast:?}"
+            );
+            assert!((forecast.cost_q50 - price).abs() < 1e-12, "{forecast:?}");
+            let cost_q90 = forecast.cost_q90;
+            assert!(
+                cost_q90.is_finite() && cost_q90 < 10.0 * price,
+                "{forecast:?}"
+            );
+            let lat_q90 = forecast.lat_q90_s;
+            assert!(lat_q90.is_finite() && lat_q90 < 600.0, "{forecast:?}");
+        }
+
+        // The evidence's six outcomes: five quick ones on gpt-oss-120b, a slow one on glm-4.7.
+        let ran = [
+            ("cerebras", "gpt-oss-120b", 0.020, 7.0, false),
+            ("cerebras", "gpt-oss-120b", 0.028, 10.0, false),
+            ("cerebras", "gpt-oss-120b", 0.023, 8.0, true),
+            ("cerebras", "gpt-oss-120b", 0.019, 9.0, false),
+            ("cerebras", "gpt-oss-120b", 0.025, 11.0, false),
+            ("zai", "glm-4.7", 0.0075, 55.0, true),
+        ];
+        for (index, (provider, slug, cost, latency, passed)) in ran.into_iter().enumerate() {
+            let mut unit = unit(slug, &format!("T{index}"), 1, passed);
+            unit.arm = ArmKey::roko(provider, slug);
+            unit.api_equiv_usd = Some(cost);
+            unit.latency_s = Some(latency);
+            model.observe_with(&unit, &task(), 1.0);
+        }
+        let forecasts = model.forecast(&task(), &rungs);
+        for forecast in &forecasts[..2] {
+            assert!(
+                !forecast.cost_prior && !forecast.latency_prior,
+                "{forecast:?}"
+            );
+        }
+        let never = &forecasts[2];
+        let price = typical("gpt-5.4-mini");
+        assert!(never.cost_prior && never.latency_prior, "{never:?}");
+        assert!((never.cost_q50 - price).abs() < 1e-12, "{never:?}");
+        assert!(never.cost_q90 < 10.0 * price, "{never:?}");
+        // Its latency prior sits at the six attempts' geometric mean, about 12 s.
+        let logs: f64 = ran
+            .iter()
+            .map(|&(_, _, _, latency, _)| f64::ln(latency))
+            .sum();
+        let geometric_mean = (logs / 6.0).exp();
+        assert!((never.lat_q50_s - geometric_mean).abs() < 1e-6, "{never:?}");
+        assert!(never.lat_q90_s < 10.0 * never.lat_q50_s, "{never:?}");
+    }
+
+    /// bug-f6682e: an arm the model has observed on one family is forecast on another from what
+    /// it costs and takes, not from the regressions' vague prior along the new family, whose q90
+    /// ran to $472 for an arm that costs $0.02 and to 2.4 h for one that takes 30 s. After 20
+    /// attempts of gpt-oss-120b on focused tasks, at about $0.02 (log sd 0.5) and 30 s (log sd
+    /// 0.3), its forecast on an integrative task has a finite q90 within ten times its q50, at
+    /// the geometric mean of its attempts' cost and latency, within a factor of two of $0.02 and
+    /// 30 s, and says both are a prior. Its forecast on a focused task is still the regression's.
+    #[test]
+    fn cost_forecast_q90_is_bounded_on_an_unseen_family() {
+        let arms = [ArmKey::roko("cerebras", "gpt-oss-120b")];
+        let mut model = SelfModel::new(&snapshot());
+        let mut rng = TestRng::new(29);
+        let (mut cost_logs, mut latency_logs) = (0.0, 0.0);
+        for index in 0..20 {
+            let mut unit = unit("gpt-oss-120b", &format!("T{index}"), 1, index % 3 != 0);
+            let cost = (0.02_f64.ln() + 0.5 * rng.normal()).exp();
+            let latency = (30.0_f64.ln() + 0.3 * rng.normal()).exp();
+            (cost_logs, latency_logs) = (cost_logs + cost.ln(), latency_logs + latency.ln());
+            unit.api_equiv_usd = Some(cost);
+            unit.latency_s = Some(latency);
+            model.observe_with(&unit, &task(), 1.0);
+        }
+        let (cost, latency) = ((cost_logs / 20.0).exp(), (latency_logs / 20.0).exp());
+
+        let focused = model.forecast(&task(), &arms).remove(0);
+        assert!(!focused.cost_prior && !focused.latency_prior, "{focused:?}");
+        assert!(focused.cost_q90 < 10.0 * focused.cost_q50, "{focused:?}");
+
+        let integrative = TaskFeatures {
+            family: "integrative".to_string(),
+            tier: "integrative".to_string(),
+            ..task()
+        };
+        let unseen = model.forecast(&integrative, &arms).remove(0);
+        assert!(unseen.cost_prior && unseen.latency_prior, "{unseen:?}");
+        let (q50, q90) = (unseen.cost_q50, unseen.cost_q90);
+        assert!(q90.is_finite() && q90 <= 10.0 * q50, "{unseen:?}");
+        assert!((q50 - cost).abs() < 1e-12, "{unseen:?}");
+        assert!((0.01..=0.04).contains(&q50), "{unseen:?}");
+        let (q50, q90) = (unseen.lat_q50_s, unseen.lat_q90_s);
+        assert!(q90.is_finite() && q90 <= 10.0 * q50, "{unseen:?}");
+        assert!((q50 - latency).abs() < 1e-9, "{unseen:?}");
+        assert!((15.0..=60.0).contains(&q50), "{unseen:?}");
     }
 }

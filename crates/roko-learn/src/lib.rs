@@ -143,6 +143,8 @@ pub mod section_outcome;
 /// M3: the calibrated self-model that forecasts each arm's pass, false-green, cost and latency.
 pub mod self_model;
 pub mod skill_library;
+/// Cost and time estimates for plan tasks on the model ladder, from similar tasks' recent attempts.
+pub mod task_estimate;
 pub mod task_metric;
 pub mod telemetry;
 /// Turn caps and attempt timeouts per task tier, learned from settled attempts.

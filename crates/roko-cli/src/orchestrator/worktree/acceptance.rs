@@ -165,7 +165,8 @@ impl WorktreeManager {
 
     /// Make attempt checkout `id` on `branch` from `base`, and record that
     /// run `run_id` made it. A checkout of `id` that `run_id` made, kept by
-    /// an earlier process of the run, is re-attached instead.
+    /// an earlier process of the run, is re-attached instead; one another run
+    /// kept is set aside first ([`Self::set_aside_kept_checkout`]).
     pub(super) async fn create_attempt_locked(
         &self,
         id: &str,
@@ -186,6 +187,10 @@ impl WorktreeManager {
             );
             return Ok(handle);
         }
+        if let Some(run_id) = run_id {
+            self.set_aside_kept_checkout(id, branch, run_id, lifecycle)
+                .await?;
+        }
         let handle = self.create_locked(id, branch, base, lifecycle).await?;
         if let Some(run_id) = run_id {
             let recorded = read_gitdir(&handle.path)
@@ -202,6 +207,107 @@ impl WorktreeManager {
             }
         }
         Ok(handle)
+    }
+
+    /// Set aside attempt checkout `id`, which another run made and kept (a
+    /// failed attempt's, for post-mortem), so that run `run_id` can make its
+    /// own (bug-06bd18). One plan executor runs per workspace (the runner
+    /// lock), so the run that made it is not running. Its branch becomes
+    /// `<branch>-<run>` and the checkout moves to `<id>-<run>` with `git
+    /// worktree move`, its uncommitted work with it: nothing is deleted. A
+    /// path that fails a re-attach's identity checks is left alone, and the
+    /// create refuses it as before.
+    async fn set_aside_kept_checkout(
+        &self,
+        id: &str,
+        branch: &str,
+        run_id: &str,
+        lifecycle: &OperationLifecycle,
+    ) -> Result<(), WorktreeError> {
+        let path = self.path_for(id);
+        if self.active.lock().contains_key(id) || std::fs::symlink_metadata(&path).is_err() {
+            return Ok(());
+        }
+        let kept_by = self.checkout_run(id);
+        if kept_by.as_deref() == Some(run_id) {
+            return Ok(());
+        }
+        // The identity checks of a re-attach prove it is the attempt's own
+        // checkout; this run does not take it over.
+        match self.try_reattach_locked_with_branch(id, branch).await {
+            Ok(Some(_)) => {}
+            Ok(None) => return Ok(()),
+            Err(error) => {
+                tracing::warn!(
+                    id,
+                    %error,
+                    "left the attempt checkout another run kept where it is: it is not provably \
+                     that attempt's own"
+                );
+                return Ok(());
+            }
+        }
+        self.active.lock().remove(id);
+
+        let tag = kept_by
+            .as_deref()
+            .map(|run| {
+                run.chars()
+                    .filter(char::is_ascii_alphanumeric)
+                    .take(8)
+                    .collect::<String>()
+            })
+            .filter(|tag| !tag.is_empty())
+            .unwrap_or_else(|| "kept".to_string());
+        let mut suffix = format!("-{tag}");
+        for n in 2.. {
+            let taken = std::fs::symlink_metadata(self.path_for(&format!("{id}{suffix}"))).is_ok()
+                || self
+                    .git_ref_oid(&format!("refs/heads/{branch}{suffix}"), false)
+                    .await?
+                    .is_some();
+            if !taken {
+                break;
+            }
+            suffix = format!("-{tag}-{n}");
+        }
+        let aside_id = format!("{id}{suffix}");
+        let aside_branch = format!("{branch}{suffix}");
+        let aside_path = self.path_for(&aside_id);
+        let repo = self.config.repo_root.as_path();
+        ensure_git_success(
+            self.mutation_at(repo, &["branch", "-m", branch, &aside_branch], lifecycle)
+                .await?,
+        )?;
+        let (from, to) = (path.to_string_lossy(), aside_path.to_string_lossy());
+        let moved = self
+            .mutation_at(repo, &["worktree", "move", &from, &to], lifecycle)
+            .await
+            .and_then(ensure_git_success);
+        if let Err(error) = moved {
+            // The checkout stays where it was, on its own branch again.
+            let restored = self
+                .mutation_at(repo, &["branch", "-m", &aside_branch, branch], lifecycle)
+                .await
+                .and_then(ensure_git_success);
+            if let Err(restore_error) = restored {
+                tracing::error!(
+                    id,
+                    %aside_branch,
+                    error = %restore_error,
+                    "could not give a kept attempt checkout its branch back"
+                );
+            }
+            return Err(error);
+        }
+        tracing::warn!(
+            id,
+            set_aside_as = %aside_id,
+            kept_by = kept_by.as_deref().unwrap_or("unknown"),
+            run_id,
+            "set aside the attempt checkout another run kept; this run makes its own"
+        );
+        Ok(())
     }
 
     /// The run recorded as having made attempt checkout `id`.

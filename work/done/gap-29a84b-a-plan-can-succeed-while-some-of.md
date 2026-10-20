@@ -9,7 +9,7 @@ goal = "truth"
 size = "M"
 subsystem = ["roko-cli/graph_execution", "roko-cli/plan_validate"]
 created = 2026-09-29
-updated = 2026-09-29
+updated = 2026-10-16
 last_verified = 2026-09-29
 last_verified_rev = "c651ddc57"
 source = "tmp/cybernetic-harness/workstreams/PLAN.md#e2"
@@ -24,6 +24,8 @@ command = "grep -rqw 'fn plan_with_unverified_task_does_not_succeed' crates/roko
 
 [[verify]]
 command = "grep -rqw 'fn task_without_verify_is_rejected_in_strict_mode' crates/roko-cli/src/ && cargo test -p roko-cli --lib task_without_verify_is_rejected_in_strict_mode"
+superseded = "2026-10-16: 42fbf09f2 made a verify-less task of any role a PLAN_037 error in every mode and removed the strict-mode test task_without_verify_is_rejected_in_strict_mode; verify 1 still checks the plan-level rule."
+superseded_by = "42fbf09f2"
 
 [closed]
 at = 2026-09-29

@@ -236,6 +236,43 @@ fn cli_parses_config_preset_model_with_name() {
 }
 
 #[test]
+fn cli_parses_config_preset_chat_host() {
+    let cli = Cli::try_parse_from([
+        "roko",
+        "config",
+        "preset",
+        "chat-host",
+        "--dry-run",
+        "--allow-without-data-llm",
+    ])
+    .expect("parse config preset chat-host");
+    assert!(matches!(
+        cli.command,
+        Some(Command::Config {
+            cmd: ConfigCmd::Preset {
+                cmd: ConfigPresetCmd::ChatHost {
+                    dry_run: true,
+                    yes: false,
+                    allow_without_data_llm: true,
+                    data_llm_model: None,
+                    ..
+                },
+            },
+        })
+    ));
+    let both = Cli::try_parse_from([
+        "roko",
+        "config",
+        "preset",
+        "chat-host",
+        "--allow-without-data-llm",
+        "--data-llm-model",
+        "gpt-4o-mini",
+    ]);
+    assert!(both.is_err(), "a data model and no data model conflict");
+}
+
+#[test]
 fn cli_parses_config_preset_budget_global() {
     let cli = Cli::try_parse_from(["roko", "config", "preset", "budget", "--global"])
         .expect("parse config preset budget --global");
@@ -1000,6 +1037,7 @@ fn mutating_plan_commands_rebuild_indexes_but_dry_runs_do_not() {
         Cli::try_parse_from(["roko", "plan", "create", "my-plan", "--title", "My Plan"]).unwrap(),
         Cli::try_parse_from(["roko", "plan", "generate", "fix", "the", "bug"]).unwrap(),
         Cli::try_parse_from(["roko", "plan", "regenerate", "plans/my-plan"]).unwrap(),
+        Cli::try_parse_from(["roko", "plan", "import", "--mori", ".mori/plans"]).unwrap(),
     ];
     for cli in mutating {
         let Some(Command::Plan { cmd }) = cli.command else {

@@ -24,15 +24,15 @@
 //! ```
 
 pub mod discord;
-pub mod mattermost;
 pub mod matrix;
+pub mod mattermost;
 pub mod slack;
 pub mod telegram;
 pub mod whatsapp;
 
 pub use discord::DiscordBridge;
-pub use mattermost::MattermostBridge;
 pub use matrix::MatrixBridge;
+pub use mattermost::MattermostBridge;
 pub use slack::SlackBridge;
 pub use telegram::TelegramBridge;
 pub use whatsapp::WhatsAppBridge;
@@ -111,7 +111,14 @@ mod tests {
 
     #[test]
     fn factory_produces_all_known_kinds() {
-        for kind in &["discord", "slack", "matrix", "whatsapp", "mattermost", "telegram"] {
+        for kind in &[
+            "discord",
+            "slack",
+            "matrix",
+            "whatsapp",
+            "mattermost",
+            "telegram",
+        ] {
             let cfg = make_config(kind);
             let bridge = platform_bridge_for_config(&cfg)
                 .unwrap_or_else(|e| panic!("factory failed for `{kind}`: {e}"));
@@ -127,7 +134,14 @@ mod tests {
 
     #[test]
     fn factory_requires_token_for_all_kinds() {
-        for kind in &["discord", "slack", "matrix", "whatsapp", "mattermost", "telegram"] {
+        for kind in &[
+            "discord",
+            "slack",
+            "matrix",
+            "whatsapp",
+            "mattermost",
+            "telegram",
+        ] {
             let cfg = PlatformConfig {
                 id: format!("{kind}-no-tok"),
                 kind: kind.to_string(),

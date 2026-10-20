@@ -282,6 +282,14 @@ impl RokoError {
         Self::Cancelled(reason.into())
     }
 
+    /// The reason of a [`Self::Cancelled`] error that was turned into text,
+    /// such as a graph node's error, or `None` for any other error's text: the
+    /// work was stopped, not failed (bug-1d09e8).
+    #[must_use]
+    pub fn cancelled_reason(text: &str) -> Option<&str> {
+        text.strip_prefix("cancelled: ")
+    }
+
     /// Construct a permission-denied error.
     #[must_use]
     pub fn permission_denied(msg: impl Into<String>) -> Self {
@@ -988,6 +996,28 @@ mod tests {
         assert_eq!(RokoError::timeout("x", 1).log_level(), "warn");
         assert_eq!(RokoError::cancelled("ctrl-c").log_level(), "info");
         assert_eq!(RokoError::invalid("bad").log_level(), "error");
+    }
+
+    /// bug-1d09e8: a cancellation is told apart once it is only text, as a
+    /// graph node keeps its error; no other error's text passes for one.
+    #[test]
+    fn a_cancellation_is_told_apart_by_its_text() {
+        let text = RokoError::cancelled("its plan run is stopping").to_string();
+        assert_eq!(
+            RokoError::cancelled_reason(&text),
+            Some("its plan run is stopping")
+        );
+        for other in [
+            RokoError::timeout("cancelled: x", 1),
+            RokoError::invalid("cancelled: x"),
+            RokoError::user("the task was cancelled"),
+        ] {
+            assert_eq!(
+                RokoError::cancelled_reason(&other.to_string()),
+                None,
+                "{other}"
+            );
+        }
     }
 
     #[test]

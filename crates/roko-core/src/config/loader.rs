@@ -1441,6 +1441,8 @@ const DYNAMIC_MAP_SECTIONS: &[&str] = &[
     "gates.max_output_tokens",
     "gates.packs",
     "retrieval.role_token_budgets",
+    "routing.ladder.max_turns",
+    "routing.ladder.max_usd",
     "tools.profiles",
 ];
 
@@ -1855,7 +1857,13 @@ fn build_schema_tree() -> toml::Value {
     // roko.toml.
     config.routing.disabled_providers = vec![String::new()];
     config.routing.fallback_models = vec![String::new()];
+    // The ladder's try allowances map rung names to turns and USD (dynamic
+    // map sections, gap-3e770b).
+    let ladder = &mut config.routing.ladder;
+    ladder.max_turns.insert("_schema_sentinel".to_string(), 0);
+    ladder.max_usd.insert("_schema_sentinel".to_string(), 0.0);
     config.gates.env_passthrough = vec![String::new()];
+    config.gates.strip_env = vec![String::new()];
     // Populate Optional/skip_serializing_if GitHubConfig fields so they
     // appear in the serialized schema tree and are not stripped.
     config.github.owner = Some(String::new());
@@ -1868,6 +1876,7 @@ fn build_schema_tree() -> toml::Value {
     // `every_accepted_config_field_is_in_the_schema_tree` fails when the
     // tree lacks one.
     config.gates.max_rung = Some(0);
+    config.gates.cargo_jobs = Some(0);
     // `max_output_tokens` maps roles to output-token caps (a dynamic map
     // section).
     config
@@ -1920,6 +1929,7 @@ fn build_schema_tree() -> toml::Value {
     auth.privy_app_id = Some(String::new());
     auth.privy_workspace_id = Some(String::new());
     auth.privy_allowed_roles = vec![String::new()];
+    auth.privy_allowed_users = vec![String::new()];
     config.server.auth_token = Some(String::new());
     let deploy = &mut config.deploy;
     deploy.railway_api_token = Some(String::new());

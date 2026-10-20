@@ -6,14 +6,15 @@
 //! [`GatePayload`] if present (for `working_dir` and environment).
 //!
 //! The command does not inherit roko's whole environment, which holds the
-//! provider keys roko loads from its `.env` files: it gets the allowlisted
-//! variables described in [`crate::gate_env`] plus the payload's explicit
-//! ones.
+//! provider keys roko loads from its `.env` files: it gets the check
+//! environment described in [`crate::gate_env`] (allowlisted variables, no
+//! GitHub login, no cargo target dir outside its directory) plus the
+//! payload's explicit ones.
 
 use crate::compile_errors::{
     GateFailureClassification, classify_step_failure, render_failure_classification,
 };
-use crate::gate_env::{inherit_gate_env, inherit_gate_env_from};
+use crate::gate_env::{check_env_error, inherit_gate_env, inherit_gate_env_from};
 use crate::payload::GatePayload;
 use async_trait::async_trait;
 use roko_core::{Context, Signal, Verdict, Verify};
@@ -24,6 +25,47 @@ use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::Command;
 use tokio::sync::mpsc;
 use tokio::time::timeout;
+
+/// The stream of a command a line of its output came from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OutputStream {
+    /// Standard output.
+    Stdout,
+    /// Standard error.
+    Stderr,
+}
+
+impl OutputStream {
+    /// `stdout` or `stderr`.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Stdout => "stdout",
+            Self::Stderr => "stderr",
+        }
+    }
+}
+
+/// One line a command wrote, without its newline, and the stream it wrote it
+/// to ([`ShellGate::with_output_sink`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OutputLine {
+    /// The stream.
+    pub stream: OutputStream,
+    /// The line.
+    pub line: String,
+}
+
+impl OutputLine {
+    /// `line`, written to `stream`.
+    #[must_use]
+    pub fn new(stream: OutputStream, line: &str) -> Self {
+        Self {
+            stream,
+            line: line.to_string(),
+        }
+    }
+}
 
 /// A gate that runs a fixed shell command; pass = exit code 0.
 ///
@@ -41,6 +83,8 @@ pub struct ShellGate {
     /// Optional sender for live line-by-line output streaming.
     /// Each line from stdout/stderr is forwarded as it arrives.
     line_sink: Option<mpsc::UnboundedSender<String>>,
+    /// Like `line_sink`, with the stream each line came from.
+    output_sink: Option<mpsc::UnboundedSender<OutputLine>>,
     /// Variables inherited in place of roko's own environment, still
     /// filtered by the gate policy. `None` uses roko's environment.
     parent_env: Option<Vec<(String, OsString)>>,
@@ -59,8 +103,19 @@ impl ShellGate {
             name,
             phase: None,
             line_sink: None,
+            output_sink: None,
             parent_env: None,
         }
+    }
+
+    /// A gate that runs `command` as a plan's verify steps run.
+    ///
+    /// It runs under `bash -o pipefail`, with any reader that may stop
+    /// reading early drained so its writer is not cut off by a broken pipe
+    /// ([`crate::verify_shell`], bug-11901c).
+    #[must_use]
+    pub fn verify_step(command: &str) -> Self {
+        Self::new("bash", crate::verify_shell::bash_args(command))
     }
 
     /// Override the timeout in milliseconds (default: 5 minutes).
@@ -105,6 +160,14 @@ impl ShellGate {
     #[must_use]
     pub fn with_line_sink(mut self, sink: mpsc::UnboundedSender<String>) -> Self {
         self.line_sink = Some(sink);
+        self
+    }
+
+    /// Attach a sink that gets each line of stdout and stderr as it arrives,
+    /// with the stream it came from.
+    #[must_use]
+    pub fn with_output_sink(mut self, sink: mpsc::UnboundedSender<OutputLine>) -> Self {
+        self.output_sink = Some(sink);
         self
     }
 
@@ -154,12 +217,25 @@ impl Verify for ShellGate {
         let passthrough = payload
             .as_ref()
             .map_or(&[][..], |p| p.env_passthrough.as_slice());
-        match &self.parent_env {
-            Some(vars) => inherit_gate_env_from(&mut cmd, vars.iter().cloned(), passthrough),
-            None => inherit_gate_env(&mut cmd, passthrough),
-        }
+        // The directory goes first: the check environment keeps a cargo
+        // target dir only inside it (bug-be2a53).
         if let Some(ref p) = payload {
             cmd.current_dir(&p.working_dir);
+        }
+        let prepared = match &self.parent_env {
+            Some(vars) => inherit_gate_env_from(&mut cmd, vars.iter().cloned(), passthrough),
+            None => inherit_gate_env(&mut cmd, passthrough),
+        };
+        if let Err(error) = prepared {
+            #[allow(clippy::cast_possible_truncation)]
+            let elapsed = started.elapsed().as_millis() as u64;
+            let reason = check_env_error(&error);
+            let classification = self.classify_failure(&reason, reason.clone(), elapsed);
+            return Verdict::fail(&self.name, reason)
+                .with_error_digest(render_failure_classification(&classification))
+                .with_duration(elapsed);
+        }
+        if let Some(ref p) = payload {
             if let Some(ref tgt) = p.target_dir {
                 cmd.env("CARGO_TARGET_DIR", tgt);
             }
@@ -189,9 +265,10 @@ impl Verify for ShellGate {
         let stdout_pipe = child.stdout.take();
         let stderr_pipe = child.stderr.take();
         let line_sink = self.line_sink.clone();
+        let output_sink = self.output_sink.clone();
 
         // Stream stdout and stderr line-by-line, forwarding each line through
-        // the optional sink for live TUI display while accumulating the full
+        // the optional sinks for live display while accumulating the full
         // output for the final verdict.
         let stream_output = async {
             let mut stdout_buf = String::new();
@@ -199,6 +276,7 @@ impl Verify for ShellGate {
 
             let stdout_task = {
                 let sink = line_sink.clone();
+                let output = output_sink.clone();
                 async move {
                     if let Some(pipe) = stdout_pipe {
                         let reader = BufReader::new(pipe);
@@ -206,6 +284,9 @@ impl Verify for ShellGate {
                         while let Ok(Some(line)) = lines.next_line().await {
                             if let Some(ref sink) = sink {
                                 let _ = sink.send(line.clone());
+                            }
+                            if let Some(ref output) = output {
+                                let _ = output.send(OutputLine::new(OutputStream::Stdout, &line));
                             }
                             stdout_buf.push_str(&line);
                             stdout_buf.push('\n');
@@ -222,6 +303,9 @@ impl Verify for ShellGate {
                     while let Ok(Some(line)) = lines.next_line().await {
                         if let Some(ref line_sink) = line_sink {
                             let _ = line_sink.send(line.clone());
+                        }
+                        if let Some(ref output) = output_sink {
+                            let _ = output.send(OutputLine::new(OutputStream::Stderr, &line));
                         }
                         stderr_buf.push_str(&line);
                         stderr_buf.push('\n');
@@ -358,6 +442,32 @@ mod tests {
         assert!(!crate::compile_errors::verdict_timed_out(&v));
     }
 
+    /// gap-f45a6d: the output sink gets each line as it is written, with the
+    /// stream it came from.
+    #[tokio::test]
+    async fn output_sink_tags_each_line_with_its_stream() {
+        let (sink, mut lines) = mpsc::unbounded_channel();
+        let gate = ShellGate::new("sh", vec!["-c".into(), "echo out; echo err >&2".into()])
+            .with_output_sink(sink);
+
+        let v = gate.verify(&empty_signal(), &Context::at(0)).await;
+        drop(gate);
+
+        assert!(v.passed);
+        let mut got = Vec::new();
+        while let Some(line) = lines.recv().await {
+            got.push(line);
+        }
+        got.sort_by_key(|line| line.stream.as_str());
+        assert_eq!(
+            got,
+            [
+                OutputLine::new(OutputStream::Stderr, "err"),
+                OutputLine::new(OutputStream::Stdout, "out"),
+            ]
+        );
+    }
+
     #[tokio::test]
     async fn echo_command_captures_output() {
         let gate = ShellGate::new("echo", vec!["hello from gate".into()]);
@@ -466,6 +576,86 @@ mod tests {
             assert!(detail.contains(kept), "{kept} missing:\n{detail}");
         }
         assert!(detail.lines().any(|line| line.starts_with("PATH=/")));
+    }
+
+    /// bug-3c4600: a verify step or rung runs without GitHub tokens, the
+    /// person's `gh` login or a key roko loaded, and with the names
+    /// `[gates] env_passthrough` lists.
+    #[cfg(unix)]
+    #[test]
+    fn verify_steps_get_the_check_environment() {
+        crate::check_env_probe::run_child("shell::tests::verify_step_check_env_child");
+    }
+
+    /// Run by [`verify_steps_get_the_check_environment`] only.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn verify_step_check_env_child() {
+        use crate::check_env_probe::{PASSED, assert_check_env, begin_child, dump_env_command};
+        let Some(_run) = begin_child() else {
+            return;
+        };
+        let dir = tempfile::tempdir().expect("tempdir");
+        let out = dir.path().join("step.env");
+        let payload = GatePayload::in_dir(dir.path()).with_env_passthrough([PASSED]);
+        let signal = Signal::builder(Kind::Task)
+            .body(Body::from_json(&payload).expect("payload serializes"))
+            .build();
+        let gate = ShellGate::verify_step(&dump_env_command(&out));
+
+        let v = gate.verify(&signal, &Context::at(0)).await;
+
+        assert!(v.passed, "{}", v.reason);
+        assert_check_env(&out, "a verify step");
+    }
+
+    /// Tells [`verify_step_fail_closed_child`] where its step would leave a
+    /// mark.
+    const FAIL_CLOSED_CHILD: &str = "ROKO_SHELL_GATE_FAIL_CLOSED_CHILD";
+
+    /// bug-3c4600: a verify step whose check environment cannot be set up
+    /// (no temp directory for its empty `GH_CONFIG_DIR`) fails, saying why,
+    /// and does not run. The temp directory is set for a child test process.
+    #[cfg(unix)]
+    #[test]
+    fn a_verify_step_without_its_environment_does_not_run() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let marker = dir.path().join("ran");
+        let output = std::process::Command::new(std::env::current_exe().expect("test binary"))
+            .args([
+                "--exact",
+                "shell::tests::verify_step_fail_closed_child",
+                "--nocapture",
+            ])
+            .env(FAIL_CLOSED_CHILD, &marker)
+            .env("TMPDIR", dir.path().join("gone"))
+            .output()
+            .expect("run the child test");
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(output.status.success(), "{stdout}\n{stderr}");
+        assert!(
+            stdout.contains("1 passed"),
+            "the child test did not run: {stdout}"
+        );
+        assert!(!marker.exists(), "the step ran");
+    }
+
+    /// Run by [`a_verify_step_without_its_environment_does_not_run`] only.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn verify_step_fail_closed_child() {
+        let Some(marker) = std::env::var_os(FAIL_CLOSED_CHILD) else {
+            return;
+        };
+        let marker = std::path::Path::new(&marker);
+        let gate = ShellGate::verify_step(&format!("touch '{}'", marker.display()));
+
+        let v = gate.verify(&empty_signal(), &Context::at(0)).await;
+
+        assert!(!v.passed, "the step passed");
+        assert!(v.reason.contains("the check did not run"), "{}", v.reason);
+        assert!(v.reason.contains("GH_CONFIG_DIR"), "{}", v.reason);
     }
 
     #[cfg(unix)]

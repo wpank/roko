@@ -34,9 +34,10 @@ flowchart LR
 - **Use the agents you already pay for.** Roko is vendor-neutral. It drives the Claude Code, Codex,
   Cursor and Gemini CLIs as workers, and calls Anthropic, Gemini, Cerebras, Perplexity or any
   OpenAI-compatible API, local models included. One plan can mix all of them.
-- **Learns which agent to trust with what.** Routing comes from what has actually passed in your
-  own work. Each task goes to the cheapest model and vendor likely to succeed, and moves up to a
-  stronger one only when it fails.
+- **Learns which agent to trust with what.** A forecaster learns from your own verified results
+  which model and vendor pass which kinds of task. Each task starts on the cheapest model on your
+  ladder that its size calls for and moves up only when it fails; once the forecaster proves
+  calibrated and you switch it on, it starts each task on the cheapest model likely to pass.
 - **Done means checked.** A task is finished when its checks pass, not when an agent says so. The
   checks are fixed before the agent starts and kept out of its reach, and the merged result is
   checked again.
@@ -46,7 +47,8 @@ flowchart LR
   router. Each learning loop is measured against a held-out control and switched off if it doesn't
   help, and Roko changes its own configuration only after regression checks, with rollback.
 - **Parallel without the mess.** Tasks run as a dependency graph, each in its own worktree. Tasks
-  that touch the same files never overlap, and finished work merges through a queue.
+  that touch the same files never overlap, and finished plans merge into one run branch, which
+  keeps a plan only if the whole-plan check passes on the merge.
 - **Built to run unattended.** Plans checkpoint after every task, resume after any interruption, and
   stay inside the budgets you set per turn, task, plan and day.
 
@@ -59,10 +61,10 @@ enough to verify, with Claude Code as one of its workers.
 | | Claude Code alone | Roko |
 |---|---|---|
 | Unit of work | A session | A plan: a versioned graph of tasks, each with its own check |
-| Models | Claude | Any vendor, routed per task by what has passed before |
+| Models | Claude | Any vendor, per task: the cheapest suitable model first, a stronger one after failures |
 | "Done" means | The agent, a hook or you decide | The task's checks pass, then the whole plan's |
 | How far to trust it | Your own review | A false-pass rate measured by random audits |
-| Parallel work | Subagents within a session | A scheduled graph across isolated worktrees, merged through a queue |
+| Parallel work | Subagents within a session | A scheduled graph across isolated worktrees, merged into one run branch and checked as a whole |
 | Interruptions | Resume the conversation | Resume the plan from its last checkpoint |
 | Over time | Memory files | Routing, playbooks and knowledge learned from verified results |
 
@@ -86,7 +88,8 @@ enough to verify, with Claude Code as one of its workers.
 - **Isolation.** Every task works in its own git worktree. A git guard blocks destructive commands,
   agents can't read your key files, and checks run in a clean environment.
 - **Self-correction.** A failed check comes back to the agent as parsed errors. Repeated failures
-  escalate the model, then split or replan the task.
+  move the task up to a stronger model, and a task that still fails at the top of its ladder goes to
+  a person, who decides whether to split or replan it.
 - **Durability.** Checkpoints after every task, resume after any interruption, a stall watchdog,
   automatic provider failover, and spending limits per turn, task, plan and day.
 
@@ -98,8 +101,9 @@ enough to verify, with Claude Code as one of its workers.
   diffed: deleted tests, weakened asserts or edits to the checks fail it.
 - **A gate ladder.** Compile, lint, test, public API, generated tests, property tests and
   integration, scaled to each task's risk, with thresholds that adapt from history.
-- **Whole-plan checks.** Finished tasks merge into one branch, the integrated result is checked as a
-  whole, and a merge that breaks it is backed out.
+- **Whole-plan checks.** Each plan's verified tasks land on the plan's own branch. Finished plans
+  merge into the run branch one at a time, each merge is checked as a whole in a separate checkout,
+  and the run branch keeps a plan only if that check passes. You take the result with one merge.
 - **Random audits.** A random sample of passed tasks is re-verified against hidden tests, which
   gives a measured false-pass rate.
 
@@ -109,13 +113,17 @@ enough to verify, with Claude Code as one of its workers.
   lineage graph you can replay (`roko replay <hash>`).
 - **Memory.** Verified lessons, error patterns and playbooks go into a durable knowledge store and
   come back in future prompts.
-- **Learned routing.** The router learns from settled verdicts which model and vendor to trust with
-  which kind of task, and starts each task on the cheapest one likely to pass.
+- **Learned routing.** A router and an outcome forecaster learn from settled verdicts which model
+  and vendor to trust with which kind of task. The forecaster predicts each model's chance of a
+  verified pass, its cost and its latency, and is scored against the results; once you switch it
+  on, it starts each task on the cheapest model likely to pass, for as long as its forecasts stay
+  calibrated.
 - **Prompt experiments.** Prompt variants compete on real task outcomes.
-- **Self-regulation.** Roko holds pass rate, cost per verified task, false-pass rate and latency
-  within bounds and retunes itself when they drift. It commits a change to itself only after
-  regression checks, with rollback, and it switches off any learning loop that doesn't beat a
-  held-out control.
+- **Self-regulation.** Roko tracks pass rate, cost per verified task, false-pass rate and latency
+  against the bounds in its policy file and works out which setting change would bring one back
+  inside them. Once you switch the controller on, it makes that change one notch at a time and
+  keeps it only if it helps. It commits a change to itself only after regression checks, with
+  rollback, and it switches off any learning loop that doesn't beat a held-out control.
 
 ### Connect
 
@@ -184,7 +192,8 @@ without it, force one rebuild with `touch crates/roko-serve/build.rs`.
 
 ### 2. Set up a workspace
 
-Run `roko init` at the root of an existing Rust or Go project:
+Put your API keys in `~/.roko/.env` first (`roko setup` creates the file), then run `roko init`
+at the root of your project:
 
 ```bash
 cd path/to/your-project
@@ -192,11 +201,22 @@ roko init
 roko config providers list
 ```
 
-`roko init` writes `roko.toml` and a `.roko/` state directory. If the `claude` CLI is on your
-`PATH`, it becomes the provider, and `roko config providers list` shows it. For any other provider,
-`roko config providers available` lists each kind and the credentials it needs. Add the provider
-under `[providers.<name>]` in `roko.toml` and point the `[models.*]` entries at it (see
-[Configuration](#configuration)).
+`roko init` writes `roko.toml` and a `.roko/` state directory. Its model ladder climbs only the
+models this machine runs, cheapest first: Cerebras gpt-oss-120b (`CEREBRAS_API_KEY`), Z.ai GLM-4.7
+(`ZAI_API_KEY`) or Moonshot Kimi K2.6 (`MOONSHOT_API_KEY`), OpenAI gpt-5.4-mini (`OPENAI_API_KEY`) or
+Claude Haiku 4.5 (`ANTHROPIC_API_KEY`), then Claude Sonnet through the `claude` CLI or the Anthropic
+API. `OPENROUTER_API_KEY` fills every rung. A run a chat host such as Hermes starts needs an API
+model, so a key gets one on the ladder even next to the `claude` CLI. `roko init --model <model>`
+runs every task on one model instead. For any other provider, `roko config providers available`
+lists each kind and the credentials it needs; add it under `[providers.<name>]` in `roko.toml` and
+point the `[models.*]` entries and ladder rungs at it (see [Configuration](#configuration)).
+`roko doctor` names any ladder rung that cannot run on this machine, and why.
+
+`roko init` also writes gate rungs for the project it finds: `cargo check`, `cargo test` and an
+optional clippy rung for a Cargo project; `go build`, `go test` and `go vet` for Go; the package's
+`typecheck`, `test` and `lint` scripts for a Node project; pytest, or unittest when pytest is not
+installed and the tests use only unittest, for Python; `forge build` and `forge test` for Foundry.
+`--profile <name>` picks another profile's rungs.
 
 ### 3. Run a prompt
 
@@ -212,19 +232,16 @@ roko run "add a unit test for the config parser"
 - A larger prompt first has the agent write a plan, then runs that plan the way `roko plan run`
   does.
 
-In a directory with neither build file, add a rung to `roko.toml` before running a prompt, or the
-run stops with `no gate can verify this change`:
+In a project `roko init` wrote no rung for, add one to `roko.toml` before running a prompt, or
+the run ends `unverified`:
 
 ```toml
 [[gates.rungs]]
 name = "test"
-command = "npm test"
+command = "make test"
 timeout_secs = 300
 required = true
 ```
-
-`roko init --profile rust` writes compile, test and lint rungs for a Cargo workspace.
-`roko init --profile typescript` writes `tsc` and `npm test` rungs.
 
 ### 4. Run a plan
 
@@ -263,9 +280,10 @@ query -> score -> route -> compose -> act -> verify -> write -> react
 
 A plan run loads `tasks.toml` into the Graph engine (`crates/roko-graph`), the only plan executor.
 For each task, roko assembles a prompt from the role template and the task's declared context
-(`crates/roko-compose`). It dispatches the prompt to the model the router picks (`crates/roko-agent`,
-`crates/roko-learn`), and it accepts the result only when the gates and the task's own `verify`
-commands pass (`crates/roko-gate`). Checkpoints, activity logs and costs go to
+(`crates/roko-compose`). It dispatches the prompt to the task's model: a `--model` pin or the
+task's model hint, else its rung on the model ladder, else the learned router's pick
+(`crates/roko-agent`, `crates/roko-learn`). It accepts the result only when the gates and the
+task's own `verify` commands pass (`crates/roko-gate`). Checkpoints, activity logs and costs go to
 `.roko/state/graph/<plan>/`. Each agent turn is recorded as an episode in `.roko/episodes.jsonl`.
 
 ### Full planning pipeline
@@ -349,11 +367,12 @@ roko supports 12 provider kinds:
 | OpenClaw | CLI / ACP | OpenClaw inference runtime |
 
 `roko config providers available` lists the credentials each kind needs, and
-`roko config models list` shows the configured models. The cascade router picks a model per task
-from the task's tier and recorded outcomes. `roko config models route <model> --explain` shows its
-reasoning for one model, and `roko learn route` shows its learned state. [`examples/`](examples/)
-has sample `roko-*.toml` provider configurations (Gemini, GLM, Kimi, LM Studio, Ollama, OpenRouter,
-Perplexity, and a multi-provider setup).
+`roko config models list` shows the configured models. The model ladder (`[routing.ladder]`) picks
+each plan task's starting model from its tier, and the cascade router learns from recorded outcomes
+and picks when no ladder rung applies. `roko config models route <model> --explain` shows the
+router's reasoning for one model, and `roko learn route` shows its learned state.
+[`examples/`](examples/) has sample `roko-*.toml` provider configurations (Gemini, GLM, Kimi,
+LM Studio, Ollama, OpenRouter, Perplexity, and a multi-provider setup).
 
 ## Architecture
 
@@ -371,7 +390,7 @@ Substrate. Missing or unknown safety contracts fail closed, so an unsupported to
 |-------|-------------|
 | `roko-core` | Signal type, kernel traits, config schema, tool system, errors |
 | `roko-graph` | Graph engine: the DAG of Cells that executes plans, with checkpoints and cost state |
-| `roko-cli` | CLI binary, plan loading and Graph plan execution, merge queue, worktree manager, ratatui TUI |
+| `roko-cli` | CLI binary, plan loading and Graph plan execution, plan delivery, worktree manager, ratatui TUI |
 | `roko-agent` | Provider adapters, dispatcher, pools, tool loop, MCP client, safety layer |
 | `roko-gate` | Gate implementations, the 7-rung pipeline, adaptive thresholds |
 | `roko-compose` | Prompt assembly, role templates, token budgeting |

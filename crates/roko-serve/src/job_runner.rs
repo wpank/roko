@@ -659,6 +659,8 @@ async fn prepare_coding_plan(
                     .unwrap_or_else(|| workspace_plans_dir(&state.workdir)),
                 artifacts: collect_plan_artifact_paths(&targets),
                 plan_targets: targets,
+                cost_usd: 0.0,
+                source_checks: None,
             });
         }
         warn!(
@@ -710,6 +712,8 @@ async fn synthesize_coding_plan(
         plans_root,
         plan_targets: vec![plan_dir],
         artifacts: vec![plan_md, tasks_toml],
+        cost_usd: 0.0,
+        source_checks: None,
     })
 }
 

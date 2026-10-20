@@ -85,6 +85,8 @@ pub mod audit;
 /// Criterion benchmark regression detection: parse JSON output, compare against baselines.
 pub mod benchmark_gate;
 mod cancel_safe_command;
+#[cfg(all(test, unix))]
+mod check_env_probe;
 pub mod citation_gate;
 pub mod clippy_gate;
 pub mod code_exec;
@@ -145,6 +147,7 @@ pub mod symbol_gate;
 pub mod test_gate;
 pub mod verdict_publisher;
 pub mod verify_chain_gate;
+pub mod verify_shell;
 
 pub use acceptance_contract::{
     AcceptanceContract, AcceptanceDecision, AcceptanceIssue, AcceptanceOutcome, GateRequirement,
@@ -156,6 +159,9 @@ pub use adaptive_threshold::{AdaptiveThresholds, RungStats, TOTAL_RUNGS};
 pub use agent_judge::AgentJudgeOracle;
 pub use artifact_store::ArtifactStore;
 pub use benchmark_gate::{BenchmarkComparison, BenchmarkRegressionGate};
+/// Run a check command in a process group of its own that dies with its
+/// future (bug-7b62ff).
+pub use cancel_safe_command::output as output_in_own_group;
 pub use citation_gate::{
     Citation, CitationResolver, HttpCitationResolver, Resolution, check_citations,
     extract_citations,
@@ -188,7 +194,9 @@ pub use feedback::{FeedbackItem, GateFeedback, Severity, feedback_for_agent};
 pub use forensic::{
     ArtifactMetadata, CausalChain, ForensicError, ForensicReplayBuilder, TurnRecord,
 };
-pub use gate_env::{inherit_gate_env, inherit_gate_env_from};
+pub use gate_env::{
+    check_env_error, inherit_gate_env, inherit_gate_env_from, inherit_gate_env_std,
+};
 pub use gate_pipeline::{ComposedGatePipeline, GateComposition, GatePipeline};
 pub use gate_service::GateService;
 pub use generated::{GateGenerator, GeneratedCheck};
@@ -200,7 +208,8 @@ pub use process_reward::{
 };
 pub use ratchet::GateRatchet;
 pub use registry::{
-    GateKind, GateRegistry, GateSpec, GateStatus, is_deterministic_gate, rung_for_gate_name,
+    GateKind, GateRegistry, GateSpec, GateStatus, TEST_PHASE_NAMES, is_deterministic_gate,
+    rung_for_gate_name, rung_for_verify_phase,
 };
 pub use review_verdict::{
     ParsedReviewVerdict, ReviewParseSource, ReviewVerdict, ReviewVerdictContext,
@@ -211,7 +220,7 @@ pub use rung_dispatch::{
     run_diff_gate, run_rung,
 };
 pub use rung_selector::{PlanComplexity, Rung, RungCaps, is_selected, select_rungs};
-pub use shell::ShellGate;
+pub use shell::{OutputLine, OutputStream, ShellGate};
 #[cfg(feature = "spc")]
 pub use spc::{
     BocpdDetector, ChangePoint, ControlStatus, CusumDetector, CusumShift, EwmaControlChart,

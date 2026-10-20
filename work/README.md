@@ -28,8 +28,17 @@ The tool is `python3 tools/work.py` (run it from the repo root; `--help` lists e
    `--size`; `close` copies them into `[closed]`.
 4. **Work in your own worktree and branch**, never in the main checkout:
    `git worktree add ../roko-work-<id> -b work/<id>` (from the current working branch). If you were started in
-   a worktree already, `git switch -c work/<id>` there. Rust: `export CARGO_TARGET_DIR=<main checkout>/target`
-   to reuse the warm build cache (builds queue on cargo's lock, so run at most 4-5 Rust workers at once).
+   a worktree already, `git switch -c work/<id>` there. Rust: give this worktree its own `target/`. Never
+   export a `CARGO_TARGET_DIR` that points at another checkout's: cargo names a workspace crate's build alike
+   in every checkout, and treats a cached build as fresh for any checkout whose sources are all older than it —
+   even one that never produced it. A shared target dir can therefore let a check pass code that does not
+   compile; that is bug-be2a53 (fixed on the gate side for roko's own checks, `work/done/`), and it still applies
+   in full to a worker's own manual `cargo` commands, which no gate stands between. To start warm instead of
+   cold, clone a recent build with an APFS copy-on-write copy — `cp -c -R <recent>/target ./target`, after
+   checking there is enough free disk — and delete the clone once the work is done; a safe, automatic version of
+   this is gap-7c3e13 (still open). Run cargo through the shared limiter when the round has one set up
+   (`tmp/hermes-roko-v5/tooling/heavy.sh cargo cargo <command…>`), and either way run at most 4-5 Rust workers at
+   once: with separate target dirs this bounds machine load, not cargo's lock on one shared dir.
    Portal (`apps/portal`): symlink `node_modules` from the main checkout instead of installing.
 5. **Read the item fully.** If its body lacks the sections of the template below, or is too thin to act on,
    rewrite it first from the code and the documents named in `source` / `discovered_from`, keeping the old
@@ -164,6 +173,8 @@ command = "cargo test -p roko-serve --test job_lifecycle -- --include-ignored te
 
 [[verify]]                        # required to close as done: fails now, passes once fixed
 command = "grep -rqw 'fn cancel_from_assigned_state' crates/roko-serve/ && cargo test -p roko-serve --test job_lifecycle cancel_from_assigned_state"
+# superseded = "2026-10-16: …"    # done items only, set by `work.py retire-verify`: see "Retired verify commands"
+# superseded_by = "7898493f2"     # the commit or item id that made the check obsolete
 
 [closed]                          # filled when status leaves open: evidence of the transition
 # at = 2026-10-02, commit = "abc1234", run_id = "graph-…", by = "plan:…#T03", evidence = "…"
@@ -202,6 +213,36 @@ make it pass while the bug is still there:
 Prefer a named test that the fix adds, guarded as above, plus a static check where one is distinctive.
 `python3 tools/work.py check --lint` flags the first three.
 
+A verify's static part is everything before its first heavy step: `cargo`, `npm`/`npx`/`pnpm`/`node`, `roko` or
+`target/…`, `curl`/`gh`, `docker`/`podman`/`make`, a `deploy/*.sh` script, or a command run with the built binary
+named in its environment (`VB_REQUIRE_REAL_ROKO=1`, `ROKO_BIN=…`). The step counts wherever the shell runs it: in a
+loop, a subshell or `$(…)`, or behind `VAR=value`, `env -i`, `timeout -k 5 60`, `nice -n 10` or `xargs -n 1`.
+`close`, `sync` and every `--static-only` run execute only the static part, so put the cheap checks first.
+
+### Retired verify commands
+
+A done item's `[[verify]]` records what proved the fix when it closed. A later change can delete or replace what it
+checks (a feature removed, a document rewritten), and then the command fails although nothing regressed. Do not
+delete or edit the command, and do not reopen the item: retire the verify.
+
+```bash
+python3 tools/work.py retire-verify <id> --index N --reason "why it can no longer pass" --by <commit or item id>
+```
+
+- `--index` counts the item's `[[verify]]` tables from 1, in file order (`show <id>` numbers them).
+- It refuses unless the item is `done` and that verify fails now. A failing static part settles it; otherwise the
+  whole command runs (`--static-only` refuses instead of running a cargo, npm or network step). A verify that reads
+  untracked files (`tmp/`) gives its real answer only in the main checkout.
+- It adds two keys to that table and changes nothing else but `updated`: `superseded = "<date>: <reason>"` (the day it
+  was retired) and `superseded_by`, the commit (default: HEAD) or the item whose work made the check obsolete.
+- `verify` prints `RETIRED <id>` for that entry instead of running it and does not count it as a failure. It lists
+  apart the items whose every verify is retired, because nothing checks them any more.
+- `check` requires both keys, well formed, on a retired entry, and refuses a retired entry on an item that is not
+  closed: an open item's verify always runs.
+
+When code only moved, retire the stale verify and add a new `[[verify]]` table that checks the new place, so the item
+keeps a live check. When the fix itself broke, the verify is not stale: that is a regression (see the closure rules).
+
 ### IDs
 
 `<prefix>-<first 6 hex of sha256("<kind>|<title>|<created>|<source>")>`; on collision use 8 hex.
@@ -214,7 +255,9 @@ Hash IDs never collide across parallel agents or worktrees, unlike counters. Fil
   declaring `closes = ["<id>"]` succeeded (record `run_id`). `tools/work.py close` fills `[closed]` and refuses
   if the static part of the verify command fails.
 - `wontfix` / `superseded` require a reason in `[closed].evidence` (and `links.duplicate_of` or a pointer).
-- A `done` item whose verify command later fails is reopened as `kind = "regression"` linking the old item.
+- A `done` item whose verify command later fails is reopened as `kind = "regression"` linking the old item, unless
+  the check broke rather than the fix: when a later change removed or replaced what the verify checks, retire it
+  instead (see "Retired verify commands"). `work.py verify --closed-since <date>` is the regression sweep.
 - `triage = "unverified"` items (bulk imports) are listed in `TRIAGE.md` until someone checks them against the
   code and sets `triage = "verified"` and `last_verified`.
 - Moving or renaming files is never closure: the `status` field is. The file follows its status: `close` moves a done item to `done/` and a won't-fix or superseded one to `closed/`, `park` and `unpark` move it to and from `parked/`, and `work.py tidy` moves any item that sits in the wrong folder (for example one closed by an older `work.py` on a branch). `check` reports a misplaced item.
@@ -226,8 +269,11 @@ their files. Three layers prevent that.
 
 1. **Close at the source.** When work finishes, the item is closed in the same flow:
    - workers close their item as step 8 above;
-   - any commit whose message says `Closes: <id>` (or `Fixes:` / `Resolves:`) is picked up by
-     `python3 tools/work.py sync`, which closes the item with that commit as evidence;
+   - any commit with a trailer line `Closes: <id>` (or `Fixes:` / `Resolves:`), or whose subject starts with a
+     closing keyword (`close <id>, …`, also behind a type prefix: `work: close <id>`), is picked up by
+     `python3 tools/work.py sync`, which closes the item with that commit as evidence. A mention anywhere else
+     in the message, such as "fixed <id>'s Tools line" or "this does not close <id>" in the body, closes nothing
+     (bug-586260); `touched` and `drift` still report it;
    - a plan task with `closes = ["<id>"]` that passes its gates is picked up by `sync` from the Graph checkpoint
      (`.roko/state/graph/<plan>/checkpoint.json`), with the `run_id` as evidence.
    `sync` will not close an item whose verify command fails; it reports a conflict instead. The orchestrator

@@ -2,7 +2,7 @@
 //! read, write and validate a plan's source.
 
 use super::*;
-use crate::runtime::RunOrigin;
+use crate::runtime::{ProgressReporter, RunOrigin};
 
 #[derive(Deserialize, Validate)]
 pub(super) struct CreatePlanRequest {
@@ -208,9 +208,9 @@ impl RequestPayload for GenerateRequest {
 /// before the background work starts so the portal's generate hook can use it
 /// immediately.
 ///
-/// The operation ends `Completed { result: {"slug", "task_count"} }` only when
-/// plan `slug` loads afterwards. A generation that fails, or that finishes
-/// without writing that plan, ends it `Failed { error }`.
+/// The operation ends `Completed { result: {"slug", "task_count", "cost_usd"} }`
+/// only when plan `slug` loads afterwards. A generation that fails, or that
+/// finishes without writing that plan, ends it `Failed { error }`.
 ///
 /// The operation handle is registered in `state.operations` before the spawned
 /// task can finish (a oneshot start signal gates the task exactly as
@@ -222,7 +222,7 @@ pub(super) async fn generate_plan(
 ) -> Result<impl IntoResponse, ApiError> {
     // `validate_payload` guarantees a non-blank prompt.
     let prompt_text = body.prompt.clone().unwrap_or_default();
-    let (op_id, slug) = start_plan_generation(&state, prompt_text, &RunOrigin::Http).await;
+    let (op_id, slug) = start_plan_generation(&state, prompt_text, &RunOrigin::Http, None).await;
 
     Ok((
         axum::http::StatusCode::ACCEPTED,
@@ -235,13 +235,19 @@ pub(super) async fn generate_plan(
 /// plan's slug: the route and the MCP `plan_generate` tool (9115) share it.
 /// The slug comes from the request; the planner gets a chat host's request
 /// fenced as untrusted data ([`RunOrigin::request_text`], 9117).
+///
+/// With a `title` (gap-c2efe7), the slug comes from the title, and the written
+/// plan's `[meta] title` is it.
 pub(crate) async fn start_plan_generation(
     state: &Arc<AppState>,
     prompt_text: String,
     origin: &RunOrigin,
+    title: Option<String>,
 ) -> (String, String) {
-    let slug = derive_unique_slug(&state.workdir, &prompt_text).await;
+    let slug = derive_unique_slug(&state.workdir, title.as_deref().unwrap_or(&prompt_text)).await;
     let prompt_text = origin.request_text(&prompt_text).into_owned();
+    // bug-7a08a8: a chat host's plan runs with nobody to answer its questions.
+    let for_chat_host = origin.is_chat();
 
     let op_id = uuid::Uuid::new_v4().to_string();
     let bus = state.event_bus.clone();
@@ -254,6 +260,9 @@ pub(crate) async fn start_plan_generation(
     // Gate the task on a start signal so the handle is always registered before
     // the task can write back its result (mirrors `spawn_background_run`).
     let (start_tx, start_rx) = tokio::sync::oneshot::channel::<()>();
+    // gap-11d870: the generation reports what it is doing, and the
+    // operation's status shows its latest report.
+    let (progress_tx, progress_rx) = tokio::sync::watch::channel(Value::Null);
 
     let handle = tokio::spawn({
         let op_id = op_id.clone();
@@ -287,34 +296,60 @@ pub(crate) async fn start_plan_generation(
                      '{slug_for_task}'"
                 )
             };
-            let generated = match runtime
-                .generate_plan_from_prompt(&workdir, &slug_for_task, &prompt_text)
-                .await
-            {
+            let report: ProgressReporter = Arc::new(move |progress| {
+                progress_tx.send_replace(progress);
+            });
+            let generation = runtime
+                .generate_plan_reporting(
+                    &workdir,
+                    &slug_for_task,
+                    &prompt_text,
+                    for_chat_host,
+                    report,
+                )
+                .await;
+            let generated = match generation {
                 Ok(gen_result) if gen_result.plan_targets.is_empty() => Err(no_plan()),
-                Ok(_) => match runtime.load_plan_summary(&workdir, &slug_for_task).await {
-                    Ok(Some(summary)) => Ok(summary.task_count),
-                    Ok(None) => Err(no_plan()),
-                    Err(err) => Err(format!(
-                        "plan '{slug_for_task}' does not load after generation: {err}"
-                    )),
-                },
+                Ok(gen_result) => {
+                    name_generated_plan(&workdir, &slug_for_task, title.as_deref());
+                    match runtime.load_plan_summary(&workdir, &slug_for_task).await {
+                        Ok(Some(summary)) => Ok((
+                            summary.task_count,
+                            gen_result.cost_usd,
+                            gen_result.source_checks,
+                        )),
+                        Ok(None) => Err(no_plan()),
+                        Err(err) => Err(format!(
+                            "plan '{slug_for_task}' does not load after generation: {err}"
+                        )),
+                    }
+                }
                 Err(err) => Err(format!("plan generation failed for {slug_for_task}: {err}")),
             };
 
             match generated {
-                Ok(task_count) => {
-                    let result_json = serde_json::to_string(
-                        &json!({ "slug": slug_for_task, "task_count": task_count }),
-                    )
-                    .unwrap_or_default();
-
-                    // Update the handle to Completed.
-                    if let Some(h) = state_for_task.operations.write().await.get_mut(&op_id) {
-                        h.status = crate::state::OperationStatus::Completed {
-                            result: Some(result_json),
-                        };
+                Ok((task_count, cost_usd, source_checks)) => {
+                    // bug-a0432b: the result says what writing the plan cost,
+                    // and gap-dc5d7c what became of the request's checks.
+                    let mut result = json!({
+                        "slug": slug_for_task,
+                        "task_count": task_count,
+                        "cost_usd": cost_usd,
+                    });
+                    if let Some(source_checks) = source_checks {
+                        result["source_checks"] = source_checks;
                     }
+                    let result_json = serde_json::to_string(&result).unwrap_or_default();
+
+                    // Completed, in the handle and the kept record (bug-a0f01e).
+                    crate::operations::finish_operation(
+                        &state_for_task,
+                        &op_id,
+                        crate::state::OperationStatus::Completed {
+                            result: Some(result_json),
+                        },
+                    )
+                    .await;
 
                     {
                         use roko_core::DashboardEvent;
@@ -339,12 +374,15 @@ pub(crate) async fn start_plan_generation(
                         message: error_msg.clone(),
                     });
 
-                    // Update the handle to Failed.
-                    if let Some(h) = state_for_task.operations.write().await.get_mut(&op_id) {
-                        h.status = crate::state::OperationStatus::Failed {
+                    // Failed, in the handle and the kept record (bug-a0f01e).
+                    crate::operations::finish_operation(
+                        &state_for_task,
+                        &op_id,
+                        crate::state::OperationStatus::Failed {
                             error: error_msg.clone(),
-                        };
-                    }
+                        },
+                    )
+                    .await;
 
                     {
                         use roko_core::DashboardEvent;
@@ -373,6 +411,8 @@ pub(crate) async fn start_plan_generation(
         kind,
         status: OperationStatus::Running,
         handle,
+        started: std::time::Instant::now(),
+        progress: Some(progress_rx),
     };
 
     state.operations.write().await.insert(op_id.clone(), op);
@@ -503,11 +543,14 @@ pub(super) async fn revise_plan(
                             "diff": dto.diff,
                         }))
                         .unwrap_or_default();
-                        if let Some(h) = state_for_task.operations.write().await.get_mut(&op_id) {
-                            h.status = crate::state::OperationStatus::Completed {
+                        crate::operations::finish_operation(
+                            &state_for_task,
+                            &op_id,
+                            crate::state::OperationStatus::Completed {
                                 result: Some(result_json),
-                            };
-                        }
+                            },
+                        )
+                        .await;
                         ("plan_revise.completed", true)
                     } else {
                         // Rejected by validation.
@@ -515,11 +558,14 @@ pub(super) async fn revise_plan(
                             "plan revision rejected: {} error(s)",
                             dto.validation.errors.len()
                         );
-                        if let Some(h) = state_for_task.operations.write().await.get_mut(&op_id) {
-                            h.status = crate::state::OperationStatus::Failed {
+                        crate::operations::finish_operation(
+                            &state_for_task,
+                            &op_id,
+                            crate::state::OperationStatus::Failed {
                                 error: error_msg.clone(),
-                            };
-                        }
+                            },
+                        )
+                        .await;
                         bus.publish(ServerEvent::Error { message: error_msg });
                         ("plan_revise.failed", false)
                     };
@@ -545,11 +591,14 @@ pub(super) async fn revise_plan(
                 Ok(None) => {
                     // Plan disappeared between the pre-check and now.
                     let error_msg = format!("plan '{plan_id_for_task}' not found during revision");
-                    if let Some(h) = state_for_task.operations.write().await.get_mut(&op_id) {
-                        h.status = crate::state::OperationStatus::Failed {
+                    crate::operations::finish_operation(
+                        &state_for_task,
+                        &op_id,
+                        crate::state::OperationStatus::Failed {
                             error: error_msg.clone(),
-                        };
-                    }
+                        },
+                    )
+                    .await;
                     {
                         use roko_core::DashboardEvent;
                         state_for_task.state_hub.publish_batch(vec![
@@ -574,11 +623,14 @@ pub(super) async fn revise_plan(
                     bus.publish(ServerEvent::Error {
                         message: error_msg.clone(),
                     });
-                    if let Some(h) = state_for_task.operations.write().await.get_mut(&op_id) {
-                        h.status = crate::state::OperationStatus::Failed {
+                    crate::operations::finish_operation(
+                        &state_for_task,
+                        &op_id,
+                        crate::state::OperationStatus::Failed {
                             error: error_msg.clone(),
-                        };
-                    }
+                        },
+                    )
+                    .await;
                     {
                         use roko_core::DashboardEvent;
                         state_for_task.state_hub.publish_batch(vec![
@@ -606,6 +658,8 @@ pub(super) async fn revise_plan(
         kind,
         status: OperationStatus::Running,
         handle,
+        started: std::time::Instant::now(),
+        progress: None,
     };
 
     state.operations.write().await.insert(op_id.clone(), op);
@@ -821,6 +875,95 @@ pub(crate) fn slug_from_title(title: &str) -> String {
     slug.trim_end_matches('-').to_string()
 }
 
+/// Set plan `slug`'s `[meta] title` to `title` (gap-c2efe7), in the `tasks.toml`
+/// its generation wrote: the line after its `plan = …` key, replacing a
+/// `title` the planner wrote. Every view names a plan by that title first
+/// (bug-ce2967). The overview `plan.md` roko wrote for the plan takes the
+/// title too (bug-1602d4), so the document agrees with it. Nothing to do
+/// without a title; a plan that cannot be named keeps none, which is logged.
+fn name_generated_plan(workdir: &std::path::Path, slug: &str, title: Option<&str>) {
+    let Some(title) = title else {
+        return;
+    };
+    if let Err(error) = write_plan_title(workdir, slug, title) {
+        tracing::warn!(plan = slug, %error, "the generated plan keeps no title");
+        return;
+    }
+    let plan_md = plans_dir(workdir).join(slug).join("plan.md");
+    if let Some(retitled) = std::fs::read_to_string(&plan_md)
+        .ok()
+        .and_then(|text| retitle_overview(&text, title))
+        && let Err(error) = std::fs::write(&plan_md, retitled)
+    {
+        tracing::warn!(plan = slug, %error, "the plan's overview keeps its old title");
+    }
+}
+
+/// `plan_md` titled `title`, when it is the overview roko wrote
+/// ([`crate::runtime::PLAN_OVERVIEW_INTRO`]): its frontmatter `title:` and its
+/// first `#` heading, which stays the body's first `#` line. `None` for a
+/// `plan.md` the planner wrote, which keeps its own title.
+fn retitle_overview(plan_md: &str, title: &str) -> Option<String> {
+    if !plan_md.contains(crate::runtime::PLAN_OVERVIEW_INTRO) {
+        return None;
+    }
+    let title = title.split_whitespace().collect::<Vec<_>>().join(" ");
+    let mut in_frontmatter = false;
+    let mut headed = false;
+    let mut lines = Vec::new();
+    for (index, line) in plan_md.lines().enumerate() {
+        let trimmed = line.trim();
+        if index == 0 && trimmed == "---" {
+            in_frontmatter = true;
+        } else if in_frontmatter && trimmed == "---" {
+            in_frontmatter = false;
+        } else if in_frontmatter && trimmed.starts_with("title:") {
+            // A JSON string is a YAML scalar whatever the title holds.
+            let scalar = serde_json::to_string(&title).unwrap_or_default();
+            lines.push(format!("title: {scalar}"));
+            continue;
+        } else if !in_frontmatter && !headed && trimmed.starts_with('#') {
+            headed = true;
+            lines.push(format!("# {title}"));
+            continue;
+        }
+        lines.push(line.to_string());
+    }
+    Some(lines.join("\n") + "\n")
+}
+
+/// [`name_generated_plan`]'s edit of plan `slug`'s `tasks.toml`.
+fn write_plan_title(workdir: &std::path::Path, slug: &str, title: &str) -> anyhow::Result<()> {
+    let path = plans_dir(workdir).join(slug).join("tasks.toml");
+    let text = std::fs::read_to_string(&path)?;
+    let line = format!("title = {}", toml::Value::String(title.to_string()));
+    let mut lines: Vec<String> = Vec::new();
+    let mut in_meta = false;
+    let mut named = false;
+    for current in text.lines() {
+        let trimmed = current.trim_start();
+        if trimmed.starts_with('[') {
+            in_meta = trimmed.starts_with("[meta]");
+        }
+        let is_key = |key: &str| {
+            trimmed
+                .strip_prefix(key)
+                .is_some_and(|rest| rest.trim_start().starts_with('='))
+        };
+        if in_meta && is_key("title") {
+            continue;
+        }
+        lines.push(current.to_string());
+        if in_meta && !named && is_key("plan") {
+            lines.push(line.clone());
+            named = true;
+        }
+    }
+    anyhow::ensure!(named, "{} has no [meta] plan key", path.display());
+    std::fs::write(&path, lines.join("\n") + "\n")?;
+    Ok(())
+}
+
 /// Derive a unique plan slug for a free-text prompt.
 ///
 /// Takes the first line of the prompt (up to 80 chars) as the title, converts
@@ -855,4 +998,85 @@ pub(super) async fn derive_unique_slug(workdir: &std::path::Path, prompt: &str) 
         }
     }
     base // unreachable in practice
+}
+
+#[cfg(test)]
+mod title_tests {
+    use super::*;
+
+    /// gap-c2efe7: a title given to plan generation becomes the written
+    /// plan's `[meta] title`, the line after its `plan` key, in place of one
+    /// the planner wrote; no title leaves the file as it was.
+    #[test]
+    fn a_generated_plan_takes_the_given_title() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let plan_dir = plans_dir(dir.path()).join("named");
+        std::fs::create_dir_all(&plan_dir).expect("plan dir");
+        let tasks = plan_dir.join("tasks.toml");
+        let written = "[meta]\nplan = \"named\"\ntitle = \"The planner's\"\ntotal = 1\n\n\
+                       [[task]]\nid = \"T1\"\ntitle = \"A task\"\n";
+        std::fs::write(&tasks, written).expect("tasks.toml");
+
+        name_generated_plan(dir.path(), "named", None);
+        assert_eq!(
+            std::fs::read_to_string(&tasks).expect("tasks.toml"),
+            written
+        );
+
+        name_generated_plan(dir.path(), "named", Some("Count \"vowels\""));
+        let named = std::fs::read_to_string(&tasks).expect("tasks.toml");
+        let parsed: toml::Value = toml::from_str(&named).expect("still TOML");
+        assert_eq!(parsed["meta"]["title"].as_str(), Some("Count \"vowels\""));
+        assert_eq!(parsed["task"][0]["title"].as_str(), Some("A task"));
+        assert_eq!(named.matches("title = ").count(), 2, "{named}");
+    }
+
+    /// bug-1602d4: naming a generated plan titles the overview `plan.md`
+    /// roko wrote for it too, its frontmatter and its first heading, which
+    /// stays the body's first `#` line, so plan listings show the name. A
+    /// `plan.md` the planner wrote keeps its own title.
+    #[test]
+    fn a_named_plan_retitles_its_overview() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let write_plan = |slug: &str, plan_md: &str| {
+            let plan_dir = plans_dir(dir.path()).join(slug);
+            std::fs::create_dir_all(&plan_dir).expect("plan dir");
+            std::fs::write(
+                plan_dir.join("tasks.toml"),
+                format!("[meta]\nplan = \"{slug}\"\ntotal = 1\n\n[[task]]\nid = \"T1\"\n"),
+            )
+            .expect("tasks.toml");
+            std::fs::write(plan_dir.join("plan.md"), plan_md).expect("plan.md");
+            plan_dir.join("plan.md")
+        };
+        let overview = write_plan(
+            "word-count-demo",
+            &format!(
+                "---\nplan: word-count-demo\ntitle: word-count-demo\n---\n\n\
+                 # word-count-demo\n\n{}\n\n## Request\n\nA chat host asked for this plan.\n\n\
+                 ## Tasks\n\n### Wave 1\n\n- **T1: Count words** (implementer, focused)\n",
+                crate::runtime::PLAN_OVERVIEW_INTRO
+            ),
+        );
+        let own = "---\nplan: planner-titled\ntitle: Planner title\n---\n\n# Planner title\n\n\
+                   The planner's own words.\n";
+        let planner = write_plan("planner-titled", own);
+
+        name_generated_plan(dir.path(), "word-count-demo", Some("Word count demo"));
+        name_generated_plan(dir.path(), "planner-titled", Some("Word count demo"));
+
+        let retitled = std::fs::read_to_string(&overview).expect("plan.md");
+        assert!(
+            retitled.starts_with("---\nplan: word-count-demo\ntitle: \"Word count demo\"\n---\n"),
+            "{retitled}"
+        );
+        let body = retitled
+            .splitn(3, "---\n")
+            .nth(2)
+            .expect("a body after the frontmatter");
+        let first_heading = body.lines().find(|line| line.trim_start().starts_with('#'));
+        assert_eq!(first_heading, Some("# Word count demo"), "{retitled}");
+        assert!(retitled.contains("### Wave 1"), "{retitled}");
+        assert_eq!(std::fs::read_to_string(&planner).expect("plan.md"), own);
+    }
 }

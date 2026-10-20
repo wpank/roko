@@ -1,5 +1,7 @@
 # 212 — Stamp run_id into Snapshots and All Persisted Events
 
+> **Status 2026-10-15: DONE (superseded design).** Verified at `7b6a5af44` by the status-quo assessment (`tmp/status-quo/2026-10-15/backlog/B-top-level-and-regressions.md`): Runner-v2 deleted 6b5da8616; Graph WorkspaceEventLog stamps one run_id on every line (crates/roko-cli/src/graph_execution/event_log.rs:8-15, plan_runner.rs:1010)
+
 > **Status: SOURCE-DONE; CLI/REPAIR CHECKPOINT VERIFIED, LIVE-RUN PROOF OPEN** (2026-08-31;
 > PR #73, expanded by `5f689d66e` + `85c052fc9`). The implementation chose a stronger direct field
 > contract: every `RunnerEvent`

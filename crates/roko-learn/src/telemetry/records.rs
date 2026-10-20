@@ -1223,6 +1223,10 @@ pub enum ExcludedReason {
     TokenBudget,
     /// The attempt's arm withholds it (S02, S03).
     WithheldArm,
+    /// The θ the attempt runs leaves its section out: M1's B4 knob
+    /// `knowledge_section` is off (S06 §4.3; gap-6bb6d8). The controller
+    /// decided, not the section's loop, so no arm of that loop is credited.
+    HarnessPolicy,
     /// A bandit left it out.
     BanditExcluded,
     /// A screen removed it.
@@ -1668,6 +1672,11 @@ pub struct RunProvenanceManifest {
     /// (`roko plan budget raise`, backlog 2118).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub budget_raises: Vec<BudgetRaise>,
+    /// Times the process running the run was found gone before the run ended
+    /// (a machine restart or a crash), oldest first; each closed the run
+    /// `interrupted` (bug-dceafd). A resume reopens the run but keeps them.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub interruptions: Vec<RunInterruption>,
     /// Where the run's request came from, when a server started it: `http`,
     /// or `mcp:<client>` for a chat host (backlog 9116).
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1693,6 +1702,7 @@ impl RunProvenanceManifest {
             experiment: ExperimentProvenance::default(),
             workspace: WorkspaceProvenance::default(),
             budget_raises: Vec::new(),
+            interruptions: Vec::new(),
             origin: None,
             closed: None,
         }
@@ -1810,6 +1820,23 @@ pub struct BudgetRaise {
     pub by: String,
 }
 
+/// The process running a run found gone before the run ended (bug-dceafd).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct RunInterruption {
+    /// ISO-8601 UTC time of the run's last sign of life: the latest write to
+    /// its records before the process was found gone.
+    pub at: String,
+    /// ISO-8601 UTC time the process was found gone.
+    pub detected_at: String,
+    /// The invocation whose process was gone ([`RunInvocation::inv`]).
+    pub inv: u32,
+    /// That process's id.
+    pub pid: u32,
+    /// What happened, in words a host can show its person.
+    pub reason: String,
+}
+
 /// Terminal counts of a run.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
@@ -1913,6 +1940,17 @@ pub struct PredictionPredictor {
     pub features_hash: String,
 }
 
+/// Which layer of the self-model forecast a candidate's pass probability (gap-3f36a6).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ForecastBasis {
+    /// L0, the per-arm hierarchical prior: while the model is cold, and for every first try.
+    #[default]
+    Prior,
+    /// L1, the logit over the task's and the arm's features.
+    Logit,
+}
+
 /// One candidate arm's forecast. Probabilities are in [0, 1], costs in USD at the price
 /// snapshot, latencies in seconds; an unknown value is `null`, never 0.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -1943,6 +1981,19 @@ pub struct PredictionCandidate {
     /// P(the attempt is retried), when the predictor gives one.
     #[serde(default)]
     pub p_retry: Option<f64>,
+    /// The cost quantiles are the predictor's bounded prior, as its observations do not support
+    /// the attempt: at the arm's observed costs, as for an arm on a task family it has not run
+    /// (bug-f6682e), else at the price snapshot's price (bug-09173e).
+    #[serde(default)]
+    pub cost_prior: bool,
+    /// The latency quantiles are its bounded prior: at the arm's observed latencies, else the
+    /// observed attempts'.
+    #[serde(default)]
+    pub latency_prior: bool,
+    /// The layer that forecast `p_gate`, `prior` or `logit`; rows written before gap-3f36a6
+    /// have none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub basis: Option<ForecastBasis>,
 }
 
 /// What the predictor would do for the attempt, so that a shadow pick can be scored against the

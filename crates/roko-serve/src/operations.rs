@@ -5,12 +5,21 @@
 //! ended (`Completed` or `Failed`; a panic counts as failed), and only then
 //! publishes `OperationCompleted`, so a client reacting to that event never
 //! reads a stale `running` status.
+//!
+//! [`finish_operation`] records how any operation ended, in its handle and in
+//! `.roko/state/operations.jsonl`, which keeps the newest
+//! [`FINISHED_OPERATIONS_KEPT`] finished operations. The handle is collected
+//! a minute after its work ends and lost on a restart; the kept record is not,
+//! so the status routes still say how the operation ended
+//! ([`finished_operation`]).
 
 use std::panic::AssertUnwindSafe;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use futures::FutureExt;
-use serde_json::Value;
+use serde::{Deserialize, Serialize};
+use serde_json::{Value, json};
 
 use crate::events::ServerEvent;
 use crate::runtime::RunResult;
@@ -59,6 +68,8 @@ pub(crate) async fn spawn_operation<F>(
             kind,
             status: OperationStatus::Running,
             handle,
+            started: std::time::Instant::now(),
+            progress: None,
         },
     );
 }
@@ -81,9 +92,127 @@ async fn record_outcome(state: &AppState, id: &str, outcome: OperationOutcome) {
         },
         Err(error) => OperationStatus::Failed { error },
     };
+    finish_operation(state, id, status).await;
+}
+
+/// How many finished operations `.roko/state/operations.jsonl` keeps.
+pub(crate) const FINISHED_OPERATIONS_KEPT: usize = 500;
+
+/// The size at which the kept log rotates, in MB; the count cap keeps it
+/// well below this.
+const FINISHED_OPERATIONS_MAX_MB: u64 = 16;
+
+/// A finished operation as `.roko/state/operations.jsonl` keeps it.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub(crate) struct FinishedOperation {
+    pub(crate) id: String,
+    pub(crate) kind: String,
+    pub(crate) status: OperationStatus,
+    /// The last progress its producer reported (gap-11d870).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) progress: Option<Value>,
+    pub(crate) finished_at: chrono::DateTime<chrono::Utc>,
+}
+
+/// End operation `id` with `status`, a terminal one: in the kept record of
+/// finished operations, which outlives the handle's collection and a
+/// restart (bug-a0f01e), and then in its handle, so a status read from the
+/// handle is already kept. An operation that was never registered keeps
+/// nothing.
+pub(crate) async fn finish_operation(state: &AppState, id: &str, status: OperationStatus) {
+    let finished = {
+        let operations = state.operations.read().await;
+        let Some(operation) = operations.get(id) else {
+            return;
+        };
+        FinishedOperation {
+            id: id.to_string(),
+            kind: operation.kind.clone(),
+            status: status.clone(),
+            progress: latest_progress(operation),
+            finished_at: chrono::Utc::now(),
+        }
+    };
+    let path = finished_operations_path(state);
+    let kept = tokio::task::spawn_blocking(move || {
+        keep_finished(&path, &finished, FINISHED_OPERATIONS_KEPT)
+    })
+    .await;
+    if let Err(error) = kept
+        .map_err(std::io::Error::other)
+        .and_then(|result| result)
+    {
+        tracing::warn!(operation = id, %error, "the finished operation is not kept");
+    }
     if let Some(operation) = state.operations.write().await.get_mut(id) {
         operation.status = status;
     }
+}
+
+/// The kept record of finished operation `id`: the latest, should it have
+/// ended twice. `None` when none is kept.
+pub(crate) fn finished_operation(state: &AppState, id: &str) -> Option<FinishedOperation> {
+    let text = std::fs::read_to_string(finished_operations_path(state)).ok()?;
+    text.lines()
+        .rev()
+        .filter_map(|line| serde_json::from_str::<FinishedOperation>(line).ok())
+        .find(|finished| finished.id == id)
+}
+
+/// The latest progress `operation`'s producer reported, when it reports any.
+pub(crate) fn latest_progress(operation: &OperationHandle) -> Option<Value> {
+    let progress = operation.progress.as_ref()?.borrow().clone();
+    (!progress.is_null()).then_some(progress)
+}
+
+/// An operation's status as `GET /api/operations/{id}` reports it:
+/// `{id, kind, status, result?, error?, elapsed_secs?, progress?}`, with the
+/// stored result parsed back into JSON.
+pub(crate) fn status_json(
+    id: &str,
+    kind: &str,
+    status: &OperationStatus,
+    elapsed_secs: Option<u64>,
+    progress: Option<Value>,
+) -> Value {
+    let mut response = json!({ "id": id, "kind": kind });
+    match status {
+        OperationStatus::Running => response["status"] = json!("running"),
+        OperationStatus::Completed { result } => {
+            response["status"] = json!("completed");
+            if let Some(result) = result
+                .as_deref()
+                .and_then(|result| serde_json::from_str::<Value>(result).ok())
+            {
+                response["result"] = result;
+            }
+        }
+        OperationStatus::Failed { error } => {
+            response["status"] = json!("failed");
+            response["error"] = json!(error);
+        }
+    }
+    if let Some(elapsed_secs) = elapsed_secs {
+        response["elapsed_secs"] = json!(elapsed_secs);
+    }
+    if let Some(progress) = progress {
+        response["progress"] = progress;
+    }
+    response
+}
+
+/// Where finished operations are kept.
+fn finished_operations_path(state: &AppState) -> PathBuf {
+    state.layout.state_dir().join("operations.jsonl")
+}
+
+/// Append `finished` to the kept log at `path`, then keep its newest `kept`
+/// records.
+fn keep_finished(path: &Path, finished: &FinishedOperation, kept: usize) -> std::io::Result<()> {
+    let line = serde_json::to_vec(finished)?;
+    roko_fs::log_rotation::append_jsonl_line_sync(path, &line, FINISHED_OPERATIONS_MAX_MB)?;
+    roko_fs::log_rotation::compact_jsonl_to_latest_sync(path, kept)?;
+    Ok(())
 }
 
 #[cfg(test)]
@@ -135,6 +264,8 @@ mod tests {
                 plan_targets: vec![plans_root.join(slug)],
                 plans_root,
                 artifacts: Vec::new(),
+                cost_usd: 0.0,
+                source_checks: None,
             })
         }
 
@@ -305,6 +436,89 @@ mod tests {
             let reported = get_json(&app, &format!("/api/operations/{id}")).await;
             assert_eq!(reported["status"], "completed", "{uri}: {reported}");
         }
+    }
+
+    /// bug-a0f01e: a finished operation's status outlives its handle. Once
+    /// handle GC has dropped it, and after a restart, `GET
+    /// /api/operations/{id}` still says how it ended: its result, or its error.
+    #[tokio::test]
+    async fn a_finished_operation_survives_collection_and_a_restart() {
+        let dir = tempdir().expect("tempdir");
+        let state = state_with(dir.path(), Arc::new(NoOpRuntime));
+        spawn_operation(&state, "ok".into(), "test:ok".into(), "test", async {
+            Ok::<_, String>(Some(json!({ "answer": 42 })))
+        })
+        .await;
+        spawn_operation(&state, "err".into(), "test:err".into(), "test", async {
+            Err::<Option<Value>, _>("boom".to_string())
+        })
+        .await;
+        for id in ["ok", "err"] {
+            wait_terminal(&state, id).await;
+        }
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while !state.operations.read().await.is_empty() {
+                state.gc_completed_handles().await;
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("handle GC drops both handles");
+
+        let reported = |state: Arc<AppState>| async move {
+            let app = build_router(
+                state,
+                &[],
+                ServeAuthConfig {
+                    enabled: false,
+                    ..ServeAuthConfig::default()
+                },
+            );
+            (
+                get_json(&app, "/api/operations/ok").await,
+                get_json(&app, "/api/operations/err").await,
+            )
+        };
+        let collected = reported(Arc::clone(&state)).await;
+        drop(state);
+        let restarted = reported(state_with(dir.path(), Arc::new(NoOpRuntime))).await;
+        for (ok, err) in [collected, restarted] {
+            assert_eq!(ok["status"], "completed", "{ok}");
+            assert_eq!(ok["kind"], "test:ok", "{ok}");
+            assert_eq!(ok["result"]["answer"], 42, "{ok}");
+            assert_eq!(err["status"], "failed", "{err}");
+            assert_eq!(err["error"], "boom", "{err}");
+        }
+    }
+
+    /// bug-a0f01e: the kept record of finished operations holds only its
+    /// newest entries.
+    #[test]
+    fn the_kept_record_holds_only_the_newest_operations() {
+        let dir = tempdir().expect("tempdir");
+        let path = dir.path().join("operations.jsonl");
+        for id in ["a", "b", "c"] {
+            let finished = FinishedOperation {
+                id: id.to_string(),
+                kind: "test".to_string(),
+                status: OperationStatus::Failed {
+                    error: id.to_string(),
+                },
+                progress: None,
+                finished_at: chrono::Utc::now(),
+            };
+            keep_finished(&path, &finished, 2).expect("kept");
+        }
+        let ids: Vec<String> = std::fs::read_to_string(&path)
+            .expect("kept record")
+            .lines()
+            .map(|line| {
+                serde_json::from_str::<FinishedOperation>(line)
+                    .expect("a finished operation")
+                    .id
+            })
+            .collect();
+        assert_eq!(ids, ["b", "c"]);
     }
 
     /// POST `body` to `uri`, expect 202 Accepted, and return the operation id.

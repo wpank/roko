@@ -8,7 +8,7 @@ severity = "p2"
 goal = "visibility"
 subsystem = ["roko-serve/operations"]
 created = 2026-09-28
-updated = 2026-10-02
+updated = 2026-10-16
 last_verified = 2026-10-01
 last_verified_rev = "ebdc0f5d5"
 source = "local-audit-2026-09-26"
@@ -18,6 +18,9 @@ links = { depends_on = [], blocks = [], related = [], supersedes = [], duplicate
 
 [[verify]]
 command = "grep -rqw 'fn every_producer_records_terminal_status' crates/roko-serve/ && cargo test -p roko-serve operations::tests::every_producer_records_terminal_status"
+
+[[verify]]
+command = "grep -rqw 'fn a_finished_operation_survives_collection_and_a_restart' crates/roko-serve/ && cargo test -p roko-serve --lib -- a_finished_operation_survives_collection_and_a_restart"
 +++
 
 Nine handlers register an entry in `AppState.operations` (dream `routes/dream.rs:107`, research `:257`, PRDs `prds.rs:534/709/947`, templates `:207`, plans `:948/:1591`, inference batch `gateway.rs:728`), but only the inference batch ever sets `Completed` (`gateway.rs:708`).
@@ -44,3 +47,13 @@ Re-verified 2026-09-29 at d9e79e9d8. Beyond the plan-generation producer, plan 0
   produces yet; (3) the inference batch (`routes/gateway.rs`) still registers its handle after spawning and records
   only `Completed`; `plan_generate` and `plan_revise` keep their own recording.
 - 2026-10-02 (roko-7d): the workflow-audit migration (merge bfd36512f) removed the PRD pipeline, `roko do` and `roko develop`; `roko run` is the one entry point and plans come from a prompt. `routes/prds.rs` and its three producers (`prd_draft`, `prd_consolidate`, `prd_plan`) were deleted, so they drop out of this item.
+- 2026-10-16 (roko-planner, work/bug-a0f01e): parts (1) and (3) done. (1) `operations::finish_operation` ends every
+  operation, in its handle and in `.roko/state/operations.jsonl`, which keeps the newest 500 finished operations
+  (id, kind, status with result or error, the last progress, finished_at). `GET /api/operations/{id}`, `/mcp`
+  `run_status` and `GET /api/inference/batch/{id}` read it once handle GC (every 60 s) has dropped the handle or a
+  restart has lost it. Every producer ends through it: `spawn_operation`, plan generation and plan revision. (3) The
+  inference batch runs through `spawn_operation`, so its handle is registered before the batch can finish and a
+  panic ends it failed. Tests: `a_finished_operation_survives_collection_and_a_restart`,
+  `the_kept_record_holds_only_the_newest_operations`, `plan_generation_status_outlives_its_handle`,
+  `run_status_answers_for_a_collected_operation`. Still open: (2) a `Cancelled` status, which nothing produces yet
+  (left on purpose until something does). An operation still running when the server stops keeps no record.

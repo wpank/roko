@@ -266,7 +266,8 @@ fn process_is_alive(pid: u32) -> bool {
 /// StateHub.
 ///
 /// The phase is `dispatch` while an agent runs, `gate` while a task's verify
-/// steps run, and `idle` otherwise; [`finish`](Self::finish) makes it
+/// steps run, `check` while a plan's whole-plan check runs (gap-6b6ec1), and
+/// `idle` otherwise; [`finish`](Self::finish) makes it
 /// `completed`, `failed` or `cancelled`. Graph runs publish no merge events,
 /// so there is no `merge` phase. The fold takes no `RunCompleted` event as
 /// the end of the run: `roko serve` runs share one hub, so the event may
@@ -284,6 +285,8 @@ pub struct GraphRunStatus {
     finished_tasks: BTreeSet<(String, String)>,
     /// Tasks whose verify steps started since their last agent dispatch.
     gating_tasks: BTreeSet<(String, String)>,
+    /// Plans whose whole-plan check is running a step.
+    checking_plans: BTreeSet<String>,
     active_agents: BTreeSet<String>,
     plan_id: String,
     last_event: String,
@@ -305,6 +308,7 @@ impl GraphRunStatus {
             running_tasks: BTreeSet::new(),
             finished_tasks: BTreeSet::new(),
             gating_tasks: BTreeSet::new(),
+            checking_plans: BTreeSet::new(),
             active_agents: BTreeSet::new(),
             plan_id: String::new(),
             last_event: "none".to_string(),
@@ -380,6 +384,14 @@ impl GraphRunStatus {
             DashboardEvent::GateResult {
                 plan_id, task_id, ..
             } => ("gate_result", plan_id.as_str(), task_id.as_str()),
+            DashboardEvent::PlanCheckStarted { plan_id, .. } => {
+                self.checking_plans.insert(plan_id.clone());
+                ("plan_check_started", plan_id.as_str(), "")
+            }
+            DashboardEvent::PlanCheckFinished { plan_id, .. } => {
+                self.checking_plans.remove(plan_id);
+                ("plan_check_finished", plan_id.as_str(), "")
+            }
             _ => return false,
         };
         if !plan_id.is_empty() {
@@ -416,6 +428,7 @@ impl GraphRunStatus {
             Some(outcome) => outcome,
             None if !self.active_agents.is_empty() => "dispatch",
             None if !self.gating_tasks.is_empty() => "gate",
+            None if !self.checking_plans.is_empty() => "check",
             None => "idle",
         }
     }
@@ -448,18 +461,20 @@ impl GraphRunStatus {
 }
 
 /// The terminal phase for a `RunCompleted` outcome label, in the vocabulary
-/// the Runner-v2 status file used.
+/// the Runner-v2 status file used, plus `unverified` for a run whose plans
+/// ran no check (bug-db89d4).
 fn terminal_phase(outcome: &str) -> &'static str {
     match outcome {
         "succeeded" | "completed" => "completed",
         "cancelled" | "canceled" => "cancelled",
+        "unverified" => "unverified",
         _ => "failed",
     }
 }
 
 /// Whether `phase` says the run ended (see [`terminal_phase`]).
 fn is_terminal_phase(phase: &str) -> bool {
-    matches!(phase, "completed" | "failed" | "cancelled")
+    matches!(phase, "completed" | "failed" | "cancelled" | "unverified")
 }
 
 /// Keeps `<state_dir>/status.json` current for one Graph run.
@@ -657,6 +672,7 @@ mod tests {
 
     fn run_completed(outcome: &str) -> DashboardEvent {
         DashboardEvent::RunCompleted {
+            run_id: None,
             outcome: outcome.to_string(),
             duration_ms: 9,
             cleanup_degraded: false,
@@ -747,6 +763,35 @@ mod tests {
             plan_id: "p1".to_string(),
             task_id: "T1".to_string(),
             outcome: "passed".to_string(),
+        });
+        assert_eq!(status.phase(), "idle");
+        // gap-6b6ec1: the plan's whole-plan check is a phase of its own.
+        assert!(status.apply(&DashboardEvent::PlanCheckStarted {
+            plan_id: "p1".to_string(),
+            stage: "regression".to_string(),
+            step: 1,
+            steps: 1,
+            name: "cargo clippy".to_string(),
+            command: "cargo clippy --workspace".to_string(),
+            scope: "workspace".to_string(),
+            packages: Vec::new(),
+            source: "cargo-default".to_string(),
+        }));
+        assert_eq!(status.phase(), "check");
+        assert_eq!(status.to_file().last_event, "plan_check_started");
+        status.apply(&DashboardEvent::PlanCheckFinished {
+            plan_id: "p1".to_string(),
+            stage: "regression".to_string(),
+            step: 1,
+            steps: 1,
+            name: "cargo clippy".to_string(),
+            scope: "workspace".to_string(),
+            packages: Vec::new(),
+            passed: true,
+            exit_code: Some(0),
+            reason: None,
+            stopped_by: None,
+            elapsed_ms: 61_000,
         });
         assert_eq!(status.phase(), "idle");
         status.apply(&DashboardEvent::PlanCompleted {

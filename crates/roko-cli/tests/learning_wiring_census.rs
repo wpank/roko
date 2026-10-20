@@ -47,6 +47,7 @@ const CENSUS_COMPONENTS: &[&str] = &[
     "sink.routing",
     "sink.knowledge_ingestion",
     "sink.playbook_outcome",
+    "sink.playbook_producer",
     "sink.error_pattern",
     "sink.section_effect",
     "store.attempt_log",
@@ -250,6 +251,7 @@ async fn production_census(
         cascade_router,
         journal.as_ref(),
         factory.error_pattern_store(),
+        None,
         None,
     );
     GraphTaskDispatcher::new(Arc::new(factory), shared_config, workdir.to_path_buf())

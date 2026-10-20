@@ -9,7 +9,9 @@ use serde::Serialize;
 
 use super::acceptance::CHECKOUT_RUN_FILE;
 use super::creation_journal::{OperationLifecycle, retain_lock_if_cleanup_unproved};
-use super::git_ops::{await_owned_operation, is_stale_lock, read_gitdir};
+use super::git_ops::{
+    ISOLATION_DIRS, await_owned_operation, ensure_git_success, is_stale_lock, read_gitdir,
+};
 use super::{
     REPOSITORY_MUTATION_LOCK, STUCK_MUTATION_LOCK_AGE_SECS, WorktreeError, WorktreeHealth,
     WorktreeIsolationStatus, WorktreeManager,
@@ -346,6 +348,115 @@ impl WorktreeManager {
         }
 
         Ok(String::from_utf8_lossy(&output.stdout).into_owned())
+    }
+}
+
+impl WorktreeManager {
+    /// Remove the checkouts plan `plan_id`'s attempts got in this process that
+    /// hold no work (bug-58329f): no change, and no commit since they were made, as
+    /// when an attempt failed before its agent did anything. Each one's branch
+    /// goes too while it is still at that commit, which other branches hold.
+    /// A checkout an acceptance took is left to
+    /// [`WorktreeManager::release_accepted`]; one with work stays, for
+    /// post-mortem and for a resume to continue (bug-056b40), and `roko doctor
+    /// disk --fix` removes it once its run ended for good (gap-f67a72).
+    /// Returns the checkouts removed.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the repository's mutation lock cannot be taken;
+    /// nothing is removed then.
+    pub async fn remove_idle_attempts(&self, plan_id: &str) -> Result<Vec<PathBuf>, WorktreeError> {
+        let ids = self
+            .attempt_checkouts
+            .lock()
+            .remove(plan_id)
+            .unwrap_or_default();
+        let accepted = self
+            .accepted_attempts
+            .lock()
+            .get(plan_id)
+            .map(|attempts| {
+                attempts
+                    .iter()
+                    .map(|attempt| attempt.handle.id.clone())
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        let idle = ids
+            .into_iter()
+            .filter(|id| !accepted.contains(id))
+            .collect::<Vec<_>>();
+        if idle.is_empty() {
+            return Ok(Vec::new());
+        }
+        let operation = Arc::clone(&self.operations).lock_owned().await;
+        let manager = self.clone();
+        await_owned_operation(operation, move |lifecycle| async move {
+            let repository_lock = manager.acquire_repository_mutation_lock()?;
+            let mut removed = Vec::new();
+            for id in &idle {
+                match manager.remove_idle_locked(id, &lifecycle).await {
+                    Ok(Some(path)) => removed.push(path),
+                    Ok(None) => {}
+                    Err(error) => {
+                        tracing::warn!(id, %error, "kept an attempt checkout");
+                    }
+                }
+            }
+            retain_lock_if_cleanup_unproved(repository_lock, &lifecycle);
+            Ok(removed)
+        })
+        .await
+    }
+
+    /// Body of [`WorktreeManager::remove_idle_attempts`] for checkout `id`,
+    /// run while holding the manager's operation and the repository's
+    /// mutation lock. Returns its path when it held no work and was removed.
+    async fn remove_idle_locked(
+        &self,
+        id: &str,
+        lifecycle: &OperationLifecycle,
+    ) -> Result<Option<PathBuf>, WorktreeError> {
+        let Some(handle) = self.get(id) else {
+            return Ok(None);
+        };
+        // A checkout whose base is unknown cannot be told empty.
+        let Some(base) = handle.base_commit.clone() else {
+            return Ok(None);
+        };
+        let head = self
+            .git_probe_stdout_at(&handle.path, &["rev-parse", "--verify", "HEAD^{commit}"])
+            .await?;
+        if head != base {
+            return Ok(None);
+        }
+        // Besides the work it does not hold, the checkout holds only roko's
+        // own config copies.
+        for dir in ISOLATION_DIRS {
+            let copy = handle.path.join(dir);
+            let tracked = self
+                .git_probe_output_at(&handle.path, &["cat-file", "-e", &format!("HEAD:{dir}")])
+                .await?
+                .status
+                .success();
+            if !tracked && copy.is_dir() {
+                std::fs::remove_dir_all(&copy)?;
+            }
+        }
+        match self.remove_locked(id, lifecycle).await {
+            Ok(()) => {}
+            Err(WorktreeError::DirtyWorktree { .. }) => return Ok(None),
+            Err(error) => return Err(error),
+        }
+        let branch_ref = format!("refs/heads/{}", handle.branch);
+        if self.git_ref_oid(&branch_ref, false).await?.as_deref() == Some(base.as_str()) {
+            ensure_git_success(
+                self.git_mutation_output(&["update-ref", "-d", &branch_ref, &base], lifecycle)
+                    .await?,
+            )?;
+        }
+        Ok(Some(handle.path))
     }
 }
 

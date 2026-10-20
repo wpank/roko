@@ -1,6 +1,7 @@
 //! `roko learn self-model fit|replay` and `roko learn econ prices` (S04 T07 and T07b; backlog
-//! 6124). Every command only reads: `fit` scores the self-model over the logs and saves nothing,
-//! `replay` writes only under `--out`, and `econ prices` lists the price snapshot.
+//! 6124). Every command only reads: `fit` scores the self-model over the logs, joins the runs'
+//! shadow forecasts to their verdicts and saves nothing, `replay` writes only under `--out`, and
+//! `econ prices` lists the price snapshot.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
@@ -19,10 +20,8 @@ use roko_learn::self_model::baselines::{
     StaticArm,
 };
 use roko_learn::self_model::features::TaskFeatures;
-use roko_learn::self_model::gate::{
-    CalibrationGate, CalibrationWindow, GateReport, WINDOW, WindowOutcome,
-};
-use roko_learn::self_model::ingest::{self, DataAudit};
+use roko_learn::self_model::gate::{CalibrationGate, CalibrationWindow, GateReport, WindowOutcome};
+use roko_learn::self_model::ingest::{self, DataAudit, ForecastJoin};
 use roko_learn::self_model::legacy;
 use roko_learn::self_model::metrics::{
     ECE_BINS, Scored, auroc, base_rate, brier, brier_skill, calibration_in_the_large, ece,
@@ -45,7 +44,8 @@ const DEFAULT_POLICIES: [&str; 7] = [
 #[derive(Debug, Subcommand)]
 pub(crate) enum SelfModelCmd {
     /// Fit the self-model over the logs (the S01 runs and the legacy efficiency and episode
-    /// logs), and print the data audit and its prequential scores. Nothing is saved.
+    /// logs), and print the data audit, its prequential scores, and how the runs' shadow
+    /// forecasts join their routed attempts and verdicts. Nothing is saved.
     Fit {
         /// Read the logs and dispatch nothing: the one mode there is.
         #[arg(long)]
@@ -121,7 +121,9 @@ pub(crate) fn cmd_self_model(cli: &Cli, cmd: SelfModelCmd, json: bool) -> Result
                 bail!("only `--offline` fits exist: the fit reads the logs and dispatches nothing");
             }
             let layout = from.map_or_else(|| RokoLayout::for_project(&workdir), RokoLayout::new);
-            let report = fit_offline(&layout, &snapshot)?;
+            // The gate a plan run scores with: `[self_model] n_min` is its W (gap-4c531f).
+            let gate = CalibrationGate::of(&config.self_model);
+            let report = fit_offline(&layout, &snapshot, gate)?;
             if json {
                 println!("{}", serde_json::to_string(&report)?);
             } else {
@@ -182,10 +184,14 @@ pub(crate) struct FitReport {
     pub(crate) price_snapshot_id: String,
     /// Every training unit, forecast before the model learned it.
     pub(crate) prequential: Prequential,
+    /// W, the calibration gate's window: `[self_model] n_min` (gap-4c531f).
+    pub(crate) window: usize,
     /// `insufficient_n` below the gate's window, else `eligible` or `not_eligible`.
     pub(crate) calibration: &'static str,
     /// The calibration gate's report on the last window, once there is one.
     pub(crate) gate: Option<GateReport>,
+    /// How the runs' shadow forecasts join their routed attempts and verdicts (S04 §7.4).
+    pub(crate) forecast_join: ForecastReport,
 }
 
 /// A fit's data audit: each source's counts, and the units left once the legacy logs' copies
@@ -225,10 +231,49 @@ pub(crate) struct Prequential {
     pub(crate) auroc: Option<f64>,
 }
 
+/// A fit's forecast join (gap-96547f): the share of routed attempts the self-model forecast,
+/// and the share of its forecasts joined to a labelled verdict, with the counts behind both.
+#[derive(Debug, Serialize)]
+pub(crate) struct ForecastReport {
+    /// `insufficient_n` when no run holds a forecast, else `measured`.
+    pub(crate) status: &'static str,
+    /// Routed attempts forecast, over the runs with a forecast.
+    pub(crate) coverage: Option<f64>,
+    /// Forecasts joined to a labelled verdict.
+    pub(crate) join_share: Option<f64>,
+    /// The counts behind the shares.
+    #[serde(flatten)]
+    pub(crate) counts: ForecastJoin,
+}
+
+impl ForecastReport {
+    /// The report on `counts`.
+    fn of(counts: ForecastJoin) -> Self {
+        let status = if counts.forecasts == 0 {
+            "insufficient_n"
+        } else {
+            "measured"
+        };
+        Self {
+            status,
+            coverage: counts.coverage(),
+            join_share: counts.join_share(),
+            counts,
+        }
+    }
+}
+
 /// Fit a fresh self-model over the logs under `layout`, scoring every training unit before the
-/// model learns it. Reads only: the fitted state is not saved.
-pub(crate) fn fit_offline(layout: &RokoLayout, snapshot: &PriceSnapshot) -> Result<FitReport> {
+/// model learns it and the last window of them with `gate`, and join the runs' shadow forecasts
+/// to their verdicts. Reads only: the fitted state is not saved.
+pub(crate) fn fit_offline(
+    layout: &RokoLayout,
+    snapshot: &PriceSnapshot,
+    gate: CalibrationGate,
+) -> Result<FitReport> {
     let runs = ingest::read_runs(&layout.runs_dir()).context("read the S01 runs")?;
+    let forecasts =
+        ingest::read_forecast_join(&layout.runs_dir()).context("read the S01 runs' forecasts")?;
     let logs = legacy::read_files(&layout.efficiency_path(), &layout.episodes_path())
         .context("read the legacy logs")?;
     let held: BTreeSet<(&str, &str)> = runs.units.iter().map(plan_task).collect();
@@ -238,7 +283,7 @@ pub(crate) fn fit_offline(layout: &RokoLayout, snapshot: &PriceSnapshot) -> Resu
         .filter(|unit| !held.contains(&plan_task(unit)))
         .collect();
     let mut model = SelfModel::new(snapshot);
-    let mut window = CalibrationWindow::new(model.version.clone());
+    let mut window = CalibrationWindow::new(model.version.clone()).keeping(gate.keeps());
     let mut scored = Vec::new();
     for unit in runs.units.iter().chain(fresh.iter().copied()) {
         let Some(passed) = unit.label.y_gate.filter(|_| !unit.failover) else {
@@ -251,6 +296,8 @@ pub(crate) fn fit_offline(layout: &RokoLayout, snapshot: &PriceSnapshot) -> Resu
         };
         let w = unit.label.weight;
         scored.push(Scored::weighted(p, passed, w));
+        // The fit routes nothing, so it scores as a shadow window does: the routed pass rate
+        // is unknown and fails no bound (bug-92cc56).
         let outcome = WindowOutcome {
             p,
             y: passed,
@@ -260,8 +307,8 @@ pub(crate) fn fit_offline(layout: &RokoLayout, snapshot: &PriceSnapshot) -> Resu
         window.push(&model.version, outcome);
         model.observe_with(unit, &task, w);
     }
-    let gate = (scored.len() >= WINDOW).then(|| CalibrationGate::default().evaluate(&window));
-    let calibration = match &gate {
+    let report = (scored.len() >= gate.window).then(|| gate.evaluate(&window));
+    let calibration = match &report {
         None => "insufficient_n",
         Some(report) if report.eligible => "eligible",
         Some(_) => "not_eligible",
@@ -288,8 +335,10 @@ pub(crate) fn fit_offline(layout: &RokoLayout, snapshot: &PriceSnapshot) -> Resu
             calibration_in_the_large: calibration_in_the_large(&scored),
             auroc: auroc(&scored),
         },
+        window: gate.window,
         calibration,
-        gate,
+        gate: report,
+        forecast_join: ForecastReport::of(forecasts),
     })
 }
 
@@ -335,8 +384,8 @@ pub(crate) fn render_fit(report: &FitReport) -> String {
         None => {
             let _ = writeln!(
                 out,
-                "calibration: {} (n = {} < {WINDOW})",
-                report.calibration, scores.n
+                "calibration: {} (n = {} < {})",
+                report.calibration, scores.n, report.window
             );
         }
         Some(gate) if gate.reasons.is_empty() => {
@@ -346,6 +395,32 @@ pub(crate) fn render_fit(report: &FitReport) -> String {
             let reasons = gate.reasons.join("; ");
             let _ = writeln!(out, "calibration: {} ({reasons})", report.calibration);
         }
+    }
+    let join = &report.forecast_join;
+    let counts = &join.counts;
+    if counts.forecasts == 0 {
+        let _ = writeln!(
+            out,
+            "forecasts: {} (no predictions.jsonl row in {} runs)",
+            join.status, counts.runs
+        );
+    } else {
+        let _ = writeln!(
+            out,
+            "forecasts ({} of {} runs): {} of {} routed attempts forecast (coverage {}), {} of {} \
+             joined to a labelled verdict (join share {}); unjoined: {} without a verdict, {} \
+             with an unlabelled verdict",
+            counts.runs_forecast,
+            counts.runs,
+            counts.routed_forecast,
+            counts.routed,
+            number(join.coverage),
+            counts.joined,
+            counts.forecasts,
+            number(join.join_share),
+            counts.no_verdict,
+            counts.unlabelled
+        );
     }
     out
 }
@@ -760,9 +835,12 @@ mod tests {
     }
 
     /// 6124: the legacy fixture alone holds nine training units, too few for the calibration
-    /// gate's window, and the fit says so.
+    /// gate's window, and the fit says so. gap-4c531f: `[self_model] n_min = 9` lowers the bar
+    /// to them, and the gate scores all nine.
     #[test]
     fn learn_self_model_fit_reports_insufficient_n() {
+        use roko_core::config::self_model::SelfModelConfig;
+
         let workspace = tempfile::tempdir().expect("tempdir");
         let layout = RokoLayout::for_project(workspace.path());
         std::fs::create_dir_all(layout.learn_dir()).expect("create .roko/learn");
@@ -773,11 +851,12 @@ mod tests {
             .expect("copy the episode log");
         let snapshot = PriceSnapshot::builtin().expect("the built-in snapshot");
 
-        let report = fit_offline(&layout, &snapshot).expect("fit");
+        let report = fit_offline(&layout, &snapshot, CalibrationGate::default()).expect("fit");
         assert_eq!(report.data_audit.runs.rows, 0);
         assert_eq!(report.data_audit.legacy.labelled, 9);
         assert_eq!(report.data_audit.duplicates, 0);
         assert_eq!(report.prequential.n, 9);
+        assert_eq!(report.window, 100);
         assert_eq!(report.calibration, "insufficient_n");
         assert!(report.gate.is_none());
         let json = serde_json::to_string(&report).expect("serialize the report");
@@ -785,6 +864,140 @@ mod tests {
         let text = render_fit(&report);
         assert!(text.contains("label sources: gate_passed 4, pre_gate_success 5"));
         assert!(text.contains("calibration: insufficient_n (n = 9 < 100)"));
+
+        let settings = SelfModelConfig {
+            n_min: 9,
+            ..SelfModelConfig::default()
+        };
+        let report = fit_offline(&layout, &snapshot, CalibrationGate::of(&settings)).expect("fit");
+        assert_eq!(report.window, 9);
+        assert_ne!(report.calibration, "insufficient_n");
+        let scored = report.gate.as_ref().map(|gate| (gate.window, gate.n));
+        assert_eq!(scored, Some((9, 9)));
+    }
+
+    /// gap-96547f: the fit joins each run's shadow forecasts to its routed attempts and their
+    /// verdicts. In a run with 4 routed attempts, of which the self-model forecast 3 and 2 of
+    /// those settled with a label, it reports coverage 0.75 and join share 2/3: the third
+    /// forecast's attempt has no verdict, and once it settles unverified, a verdict without a
+    /// label. With no forecast the join is `insufficient_n`.
+    #[test]
+    fn fit_reports_the_forecast_join_share() {
+        use roko_learn::routing_log::RoutingDecisionLog;
+        use roko_learn::telemetry::records::{
+            AttemptPredictionRecord, PredictionDecision, PredictionPredictor,
+        };
+        use roko_learn::telemetry::{
+            AttemptIdentity, AttemptKey, AttemptOpenRecord, AttemptOutcome, AttemptVerdictRecord,
+            TelemetryWriter, TelemetryWriterConfig,
+        };
+
+        let workspace = tempfile::tempdir().expect("tempdir");
+        let layout = RokoLayout::for_project(workspace.path());
+        let snapshot = PriceSnapshot::builtin().expect("the built-in snapshot");
+        let empty = fit_offline(&layout, &snapshot, CalibrationGate::default()).expect("fit");
+        assert_eq!(empty.forecast_join.status, "insufficient_n");
+        assert_eq!(empty.forecast_join.join_share, None);
+        assert!(render_fit(&empty).contains("forecasts: insufficient_n"));
+
+        let identity =
+            |task: &str| AttemptIdentity::new(&AttemptKey::new("run-f", "plan-f", task, 1));
+        let route = |task: &str| -> RoutingDecisionLog {
+            let row = serde_json::json!({
+                "task_id": task,
+                "selected_model": "gpt-oss-120b",
+                "candidates": [],
+                "attempt_key": identity(task).attempt_key,
+            });
+            serde_json::from_value(row).expect("a route decision")
+        };
+        let prediction = |task: &str| {
+            let predictor = PredictionPredictor {
+                version: "m3-l1-00000000".to_string(),
+                class: "m3-l1".to_string(),
+                mode: "shadow".to_string(),
+                trained_on_n: 0,
+                features_schema: 1,
+                features_hash: "b3:0".to_string(),
+            };
+            let decision = PredictionDecision {
+                would_choose: None,
+                default: None,
+                action: "dispatch".to_string(),
+            };
+            AttemptPredictionRecord::new(identity(task), predictor, Vec::new(), decision)
+        };
+        let verdict = |task: &str, outcome| {
+            let mut verdict = AttemptVerdictRecord::settle(identity(task), outcome, true);
+            verdict.executed.provider = Some("cerebras".to_string());
+            verdict.executed.model_requested = Some("gpt-oss-120b".to_string());
+            verdict
+        };
+        // T1 to T4 route, and the self-model forecast T1 to T3. T1 passes and T2 fails, both
+        // labelled; T3 has not settled; T4 passes.
+        let run_dir = layout.run_dir("run-f");
+        std::fs::create_dir_all(&run_dir).expect("the run's directory");
+        let config = TelemetryWriterConfig::default();
+        let writer = TelemetryWriter::spawn(&run_dir, config).expect("the run's writer");
+        let attempts = [
+            ("T1", true, Some(AttemptOutcome::Passed)),
+            ("T2", true, Some(AttemptOutcome::GateFailed)),
+            ("T3", true, None),
+            ("T4", false, Some(AttemptOutcome::Passed)),
+        ];
+        for (task, forecast, outcome) in attempts {
+            assert!(writer.submit(AttemptOpenRecord::new(identity(task), 0)));
+            if forecast {
+                assert!(writer.submit(prediction(task)));
+            }
+            assert!(writer.submit(route(task)));
+            if let Some(outcome) = outcome {
+                assert!(writer.submit(verdict(task, outcome)));
+            }
+        }
+        writer.close();
+
+        let report = fit_offline(&layout, &snapshot, CalibrationGate::default()).expect("fit");
+        let join = &report.forecast_join;
+        assert_eq!(join.status, "measured");
+        assert_eq!(join.coverage, Some(0.75));
+        assert_eq!(join.join_share, Some(2.0 / 3.0));
+        let counts = &join.counts;
+        let routed = (
+            counts.runs,
+            counts.runs_forecast,
+            counts.routed,
+            counts.routed_forecast,
+        );
+        assert_eq!(routed, (1, 1, 4, 3));
+        let joined = (
+            counts.forecasts,
+            counts.joined,
+            counts.no_verdict,
+            counts.unlabelled,
+        );
+        assert_eq!(joined, (3, 2, 1, 0));
+        let json = serde_json::to_value(&report).expect("serialize the report");
+        assert_eq!(json["forecast_join"]["coverage"], 0.75);
+        assert_eq!(json["forecast_join"]["no_verdict"], 1);
+        let text = render_fit(&report);
+        let coverage = "3 of 4 routed attempts forecast (coverage 0.750)";
+        assert!(text.contains(coverage), "{text}");
+        let share = "2 of 3 joined to a labelled verdict (join share 0.667)";
+        assert!(text.contains(share), "{text}");
+
+        // T3 settles unverified: a verdict without a label.
+        let writer = TelemetryWriter::spawn(&run_dir, config).expect("the run's writer");
+        assert!(writer.submit(verdict("T3", AttemptOutcome::Unverified)));
+        writer.close();
+        let counts = fit_offline(&layout, &snapshot, CalibrationGate::default())
+            .expect("fit")
+            .forecast_join
+            .counts;
+        assert_eq!(
+            (counts.joined, counts.no_verdict, counts.unlabelled),
+            (2, 0, 1)
+        );
     }
 
     /// 6124: two replays of the matrix fixture with seed 7 write identical bytes.

@@ -211,8 +211,8 @@ impl GraphTaskDispatcher {
     /// `settled` is the attempt's settlement ([`AttemptContext::settle`]).
     /// Learners read only its learning label (S01 §4.1): the router, through
     /// the facade's routing sink, the playbooks, the daimon, the prompt
-    /// experiments and durable knowledge, which only a pass grows
-    /// ([`FeedbackEvent::TaskVerified`]). An attempt without a label
+    /// experiments, and durable knowledge and new playbooks, which only a
+    /// pass grows ([`FeedbackEvent::TaskVerified`]). An attempt without a label
     /// (unverified, provider or harness failures) updates none of them. The
     /// analysis rows record every attempt under its attempt key: the
     /// episode, with the bounded class-prefixed failure reason and the
@@ -337,13 +337,33 @@ impl GraphTaskDispatcher {
             // verify step passed (`TaskGateVerdict::Passed`), or failed only
             // on tests that failed before the run too
             // (`PassedWithPreexistingFailures`). Only those grow durable
-            // knowledge.
+            // knowledge and playbooks.
             if learning == Some(true) {
+                let mut topic_terms: Vec<String> =
+                    crate::dispatch::prompt_builder::task_topic_terms(task)
+                        .into_iter()
+                        .collect();
+                topic_terms.sort_unstable();
+                // The calls its live output showed (gap-89f985): a playbook's
+                // steps, when the attempt teaches one.
+                let tool_calls = settled
+                    .live_tool_calls
+                    .finish_with_targets()
+                    .await
+                    .into_iter()
+                    .map(|(call, target)| crate::runtime_feedback::AttemptToolCall {
+                        name: call.name,
+                        target,
+                        succeeded: call.succeeded,
+                    })
+                    .collect();
                 let verified = crate::runtime_feedback::VerifiedAttempt {
                     plan_id: spec.plan_id.clone(),
                     task_id: task.id.clone(),
                     attempt_id: attempt_key.to_string(),
                     title: task.title.clone(),
+                    description: task.description.clone().unwrap_or_default(),
+                    topic_terms,
                     task_type: task.tier.clone(),
                     role: role.to_string(),
                     model: model_slug.clone(),
@@ -357,6 +377,8 @@ impl GraphTaskDispatcher {
                         })
                         .collect(),
                     knowledge_ids: diagnostics.knowledge_ids.clone(),
+                    playbook_ids: diagnostics.playbook_ids.clone(),
+                    tool_calls,
                     agent_output: dispatch
                         .result
                         .output
@@ -622,6 +644,18 @@ impl GraphTaskDispatcher {
             }
         }
 
+        // ── W07a: Knowledge outcome (bug-0a7ec1) ─────────────────────────
+        //
+        // The knowledge entries the prompt included take the attempt's
+        // learning label. An attempt without one records none, nor does a
+        // frozen run (decision 2218).
+        if let Some(passed) = learning
+            && !self.learning_frozen()
+        {
+            self.record_knowledge_outcome(settled, dispatch_plan, passed)
+                .await;
+        }
+
         // ── W07b: Section bandit settlement (S02 L9) ─────────────────────
         //
         // Each droppable section the prompt drew for is one more opportunity
@@ -662,6 +696,49 @@ impl GraphTaskDispatcher {
             )
             .await;
         }
+    }
+
+    /// Settle the knowledge outcome of the attempt `settled`, whose prompt
+    /// `plan` assembled, on its learning label, `passed` (bug-0a7ec1): one
+    /// `success` or `failure` row in the workspace's
+    /// `learn/knowledge-feedback.jsonl` for the entries the prompt included,
+    /// with the run id and the attempt key, and a score of ±1 for each. The
+    /// provider bridge writes no `partial` row for an attempt's call, which
+    /// left every outcome unsettled. A failed write is logged.
+    async fn record_knowledge_outcome(
+        &self,
+        settled: &SettledAttempt,
+        plan: &crate::dispatch::RunnerDispatchPlan,
+        passed: bool,
+    ) {
+        let included = super::decision_log::included_knowledge_ids(plan);
+        if included.is_empty() {
+            return;
+        }
+        let learn_dir = roko_fs::RokoLayout::for_project(&self.workdir).learn_dir();
+        let run_id = settled.key().run_id;
+        let attempt_key = settled.attempt_key().to_string();
+        let outcome = if passed {
+            roko_learn::KnowledgeOutcome::Success
+        } else {
+            roko_learn::KnowledgeOutcome::Failure
+        };
+        let written = tokio::task::spawn_blocking(move || {
+            let service = roko_learn::FeedbackService::new(learn_dir);
+            service.record_attempt_knowledge_outcome(&run_id, &attempt_key, &included, outcome)?;
+            service.flush()
+        })
+        .await;
+        let error = match written {
+            Ok(Ok(())) => return,
+            Ok(Err(error)) => error.to_string(),
+            Err(error) => error.to_string(),
+        };
+        tracing::warn!(
+            attempt_key = %settled.attempt_key(),
+            %error,
+            "graph knowledge outcome write failed (best-effort)"
+        );
     }
 
     /// Publish an attempt's settlement through the feedback facade as
@@ -714,7 +791,16 @@ impl GraphTaskDispatcher {
         // raises the plan's budget alerts it crossed (backlog 2116).
         self.announce_budget_alerts(&spec.plan_id);
         self.credit_reflex_rule(spec, task, settled).await;
-        self.note_ladder_outcome(spec, task, settled);
+        let standing = self
+            .gate_retry_context
+            .ladder_standing(&spec.plan_id, &task.id);
+        let exhausted = self.note_ladder_outcome(spec, task, settled);
+        // The hub hears how the try ended once it counts (gap-4e852d), then
+        // that it exhausted the ladder (gap-22c4b1).
+        self.publish_attempt_settled(spec, task, settled, standing);
+        if exhausted {
+            self.publish_ladder_exhausted(spec, task, &settled.verdict);
+        }
         let Some(facade) = &self.feedback.feedback_facade else {
             return;
         };

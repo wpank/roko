@@ -126,6 +126,44 @@ pub(crate) enum PlanCmd {
         #[arg(long)]
         workdir: Option<PathBuf>,
     },
+    /// Import mori plans (`.mori/plans/<plan>/`) as roko plans: tasks with
+    /// roles, checks from `verify-tasks.toml` and the acceptance criteria,
+    /// the whole-plan check from `verify.sh` and the rubric, and the review
+    /// and docs tasks. No model runs and the mori files are only read; the
+    /// plans written are validated.
+    Import {
+        /// A mori plan directory, or a directory of them (`.mori/plans`) to
+        /// import every plan it holds.
+        #[arg(long, required = true, num_args = 1.., value_name = "DIR")]
+        mori: Vec<PathBuf>,
+        /// Plans directory to write into (default: `plans/` in the
+        /// workspace).
+        #[arg(long, value_name = "DIR")]
+        out: Option<PathBuf>,
+        /// Write the plans into `<out>/<SET>/`, a plan set that runs as one.
+        #[arg(long, value_name = "SET")]
+        set: Option<String>,
+        /// Replace plan directories that hold a `tasks.toml` already. This
+        /// takes the workspace lock, which a running roko serve holds; a
+        /// fresh import takes none.
+        #[arg(long)]
+        force: bool,
+        /// Do not make a reviewer task of `review-tasks.toml`.
+        #[arg(long)]
+        no_reviewer: bool,
+        /// Do not make docs tasks of `scribe-tasks.toml`.
+        #[arg(long)]
+        no_scribe: bool,
+        /// Fail on validation warnings, not only errors.
+        #[arg(long)]
+        strict: bool,
+        /// Output machine-readable JSON instead of text.
+        #[arg(long)]
+        json: bool,
+        /// Working directory.
+        #[arg(long)]
+        workdir: Option<PathBuf>,
+    },
     /// Rebuild or verify the deterministic plans index.
     Index {
         /// Verify exact generated content without writing any files.
@@ -352,6 +390,10 @@ The legacy Runner-v2 engine has been removed. --engine legacy is accepted but ex
         /// slug, and writes the plan to `plans/<slug>/tasks.toml`.
         #[arg(long, value_name = "IDS")]
         from_backlog: Option<String>,
+        /// Stop writing a plan once its planner calls have cost this much, in
+        /// USD (default: `[authoring] max_generation_usd`; 0 sets no cap).
+        #[arg(long, value_name = "USD")]
+        max_usd: Option<f64>,
     },
     /// Pause the plan run in this workspace: no new plan, task or retry
     /// starts until resume, and running attempts finish. Prints the run's
@@ -1146,6 +1188,54 @@ pub(crate) async fn cmd_plan(cli: &Cli, cmd: PlanCmd) -> Result<i32> {
             }
             Ok(EXIT_SUCCESS)
         }
+        PlanCmd::Import {
+            mori,
+            out,
+            set,
+            force,
+            no_reviewer,
+            no_scribe,
+            strict,
+            json,
+            workdir,
+        } => {
+            let workdir = workdir.unwrap_or_else(|| resolve_workdir(cli));
+            let out = match out {
+                Some(out) if out.is_absolute() => out,
+                Some(out) => workdir.join(out),
+                None => workdir.join("plans"),
+            };
+            let plans_root = match set {
+                Some(set) => out.join(set),
+                None => out,
+            };
+            // A fresh import needs no workspace lock, so it runs beside roko
+            // serve; --force does (bug-dfe4c5).
+            let _lock = roko_cli::plan_import::import_lock(&workdir, force)?;
+            let options = roko_cli::plan_import::MoriImportOptions {
+                reviewer: !no_reviewer,
+                scribe: !no_scribe,
+            };
+            let imported = roko_cli::plan_import::import_mori_plans(
+                &mori,
+                &workdir,
+                &plans_root,
+                options,
+                force,
+            )?;
+            let json = json || cli.json;
+            let code = cmd_plan_import_report(&imported, &workdir, strict, json, cli.quiet)?;
+            if !json
+                && !cli.quiet
+                && let Some(serve) = roko_cli::doctor::serve_holding_workspace(&workdir)
+            {
+                println!(
+                    "roko serve (PID {}) runs in this workspace and lists the new plans",
+                    serve.pid
+                );
+            }
+            Ok(code)
+        }
         PlanCmd::Run {
             plans_dir,
             engine,
@@ -1390,6 +1480,7 @@ pub(crate) async fn cmd_plan(cli: &Cli, cmd: PlanCmd) -> Result<i32> {
             from_notes,
             tag,
             from_backlog,
+            max_usd,
         } => {
             let workdir = std::env::current_dir().context("resolve cwd")?;
             // Plan generation is read-only on workspace state: it reads source
@@ -1443,6 +1534,7 @@ pub(crate) async fn cmd_plan(cli: &Cli, cmd: PlanCmd) -> Result<i32> {
                     let request = roko_cli::plan_generate::PlanRequest {
                         model: Some(model_key.as_str()),
                         effort: Some("high"),
+                        max_usd,
                         ..roko_cli::plan_generate::PlanRequest::new(
                             roko_cli::plan_generate::PlanSource::Text {
                                 text: &spec.source_text,
@@ -1453,12 +1545,18 @@ pub(crate) async fn cmd_plan(cli: &Cli, cmd: PlanCmd) -> Result<i32> {
                         )
                     };
                     match roko_cli::plan_generate::generate_plan(request).await {
-                        Ok((_, outcome)) if outcome.artifact_valid => {
+                        Ok(_) => {
                             tracing::info!(id, %slug, "plan generated");
                             results.push((*id, slug, "generated"));
                         }
-                        Ok(_) => {
-                            tracing::warn!(id, %slug, "plan generated but validation failed");
+                        // bug-7a08a8: a written plan that cannot run.
+                        Err(err)
+                            if err
+                                .downcast_ref::<roko_cli::plan_generate::PlanFailsValidation>()
+                                .is_some() =>
+                        {
+                            let error = format!("{err:#}");
+                            tracing::warn!(id, %slug, %error, "plan generated but validation failed");
                             results.push((*id, slug, "validation-failed"));
                         }
                         Err(err) => {
@@ -1535,6 +1633,7 @@ pub(crate) async fn cmd_plan(cli: &Cli, cmd: PlanCmd) -> Result<i32> {
                     let request = roko_cli::plan_generate::PlanRequest {
                         model: Some(model_key.as_str()),
                         effort: Some("high"),
+                        max_usd,
                         ..roko_cli::plan_generate::PlanRequest::new(
                             roko_cli::plan_generate::PlanSource::Text {
                                 text: &combined,
@@ -1614,6 +1713,7 @@ pub(crate) async fn cmd_plan(cli: &Cli, cmd: PlanCmd) -> Result<i32> {
                 context: Some(context_block.as_str()),
                 model: Some(model_key.as_str()),
                 effort: Some("high"),
+                max_usd,
                 ..roko_cli::plan_generate::PlanRequest::new(
                     roko_cli::plan_generate::PlanSource::Text {
                         text: &source_text,
@@ -1623,15 +1723,10 @@ pub(crate) async fn cmd_plan(cli: &Cli, cmd: PlanCmd) -> Result<i32> {
                     &workdir,
                 )
             };
-            let (_, outcome) = roko_cli::plan_generate::generate_plan(request).await?;
-            if outcome.artifact_valid {
-                Ok(EXIT_SUCCESS)
-            } else {
-                tracing::error!(
-                    "plan generate: the generated plans failed validation (see warnings above)"
-                );
-                Ok(1)
-            }
+            // A plan that fails validation is an error that names each one
+            // (bug-7a08a8).
+            roko_cli::plan_generate::generate_plan(request).await?;
+            Ok(EXIT_SUCCESS)
         }
         PlanCmd::Regenerate { plan_dir, dry_run } => {
             let workdir = std::env::current_dir().context("resolve cwd")?;
@@ -1687,20 +1782,15 @@ pub(crate) async fn cmd_plan(cli: &Cli, cmd: PlanCmd) -> Result<i32> {
                     &workdir,
                 )
             };
-            let (_, outcome) = roko_cli::plan_generate::generate_plan(request).await?;
-            if outcome.artifact_valid {
-                let after = std::fs::read_to_string(&tasks_path).unwrap_or_default();
-                print_plan_diff(
-                    &roko_cli::plan_authoring::plan_diff(&before, &after),
-                    cli.json,
-                )?;
-                Ok(EXIT_SUCCESS)
-            } else {
-                tracing::error!(
-                    "plan regenerate: the regenerated plan failed validation (see warnings above)"
-                );
-                Ok(1)
-            }
+            // A plan that fails validation is an error that names each one
+            // (bug-7a08a8).
+            roko_cli::plan_generate::generate_plan(request).await?;
+            let after = std::fs::read_to_string(&tasks_path).unwrap_or_default();
+            print_plan_diff(
+                &roko_cli::plan_authoring::plan_diff(&before, &after),
+                cli.json,
+            )?;
+            Ok(EXIT_SUCCESS)
         }
         PlanCmd::Revise { plan, feedback } => cmd_plan_revise(cli, &plan, &feedback).await,
         PlanCmd::Queue { cmd } => cmd_plan_queue(cli, cmd).await,
@@ -1843,6 +1933,7 @@ pub(crate) async fn cmd_plan(cli: &Cli, cmd: PlanCmd) -> Result<i32> {
                     from_notes: false,
                     tag: None,
                     from_backlog: None,
+                    max_usd: None,
                 },
             ))
             .await
@@ -2006,6 +2097,7 @@ async fn cmd_plan_dir_status(
                 "delivery": delivery.as_ref().map(|delivery| serde_json::json!({
                     "branch": delivery.branch,
                     "merge_commit": delivery.merge_commit,
+                    "partial": delivery.partial,
                     "merge_command": merge_command,
                     // The whole-plan checks the delivery ran (backlog 3111).
                     "checks": delivery
@@ -2032,8 +2124,14 @@ async fn cmd_plan_dir_status(
         }
         if let Some(delivery) = &delivery {
             println!(
-                "delivered:       {} at {}",
-                delivery.branch, delivery.merge_commit
+                "delivered:       {} at {}{}",
+                delivery.branch,
+                delivery.merge_commit,
+                if delivery.partial {
+                    " (partial: only the verified tasks of a plan that did not finish)"
+                } else {
+                    ""
+                }
             );
             if let Some(command) = &merge_command {
                 println!("take it with:    {command}");
@@ -2340,6 +2438,7 @@ pub(crate) async fn cmd_plan_dry_run(
                 .and_then(|content| roko_cli::orchestrator::parse_frontmatter(&content))
         })
         .collect();
+    let plan_checks = dry_run_plan_checks(workdir, &plans).await;
 
     let mut plan_summaries: Vec<serde_json::Value> = Vec::new();
     let mut total_tasks: usize = 0;
@@ -2377,6 +2476,7 @@ pub(crate) async fn cmd_plan_dry_run(
             "priority": frontmatter.as_ref().and_then(|f| f.priority),
             "tags": frontmatter.as_ref().map(|f| &f.tags),
             "tasks": task_details,
+            "plan_check": plan_checks.get(&plan.id),
             "checkpoint": match checkpoint {
                 Ok(preview) => serde_json::to_value(preview)?,
                 Err(error) => json!({ "error": format!("{error:#}") }),
@@ -2444,6 +2544,9 @@ pub(crate) async fn cmd_plan_dry_run(
                 }
                 Err(error) => println!("     checkpoint: unknown ({error:#})"),
             }
+            for command in plan_checks.get(&plan.id).into_iter().flatten() {
+                println!("     plan check: {command}");
+            }
         }
 
         if total_estimated_minutes > 0 {
@@ -2454,6 +2557,34 @@ pub(crate) async fn cmd_plan_dry_run(
     }
 
     Ok(EXIT_SUCCESS)
+}
+
+/// The commands of each plan's whole-plan check (gap-60233f), as a run of
+/// `plans` in `workdir` would end with: its `[meta] verify`, else in a Cargo
+/// workspace the default over the crates it affects (bug-a7e018).
+async fn dry_run_plan_checks(
+    workdir: &Path,
+    plans: &[roko_cli::runner::plan_loader::Plan],
+) -> HashMap<String, Vec<String>> {
+    use roko_cli::graph_execution::plan_set::{CargoWorkspace, PlanFootprint};
+
+    let rust_workspace = workdir.join("Cargo.toml").is_file();
+    let cargo = if rust_workspace && plans.iter().any(|plan| plan.tasks.meta.verify.is_empty()) {
+        CargoWorkspace::load(workdir).await
+    } else {
+        None
+    };
+    plans
+        .iter()
+        .map(|plan| {
+            let footprint =
+                rust_workspace.then(|| PlanFootprint::of(plan, workdir, cargo.as_ref()));
+            let steps =
+                roko_cli::graph_execution::plan_verify::plan_verify_steps(plan, footprint.as_ref());
+            let commands = steps.into_iter().map(|step| step.command).collect();
+            (plan.id.clone(), commands)
+        })
+        .collect()
 }
 
 /// 3228: `roko plan revise`: revise the plan with the planner model
@@ -2707,6 +2838,75 @@ struct ValidateJson<'a> {
     workspace_rungs: Option<&'a plan_validate::WorkspaceRungs>,
 }
 
+/// The workspace's own `roko.toml`, when it has one.
+fn workspace_roko_toml(workdir: &Path) -> Result<Option<RokoConfig>> {
+    let config_path = workdir.join("roko.toml");
+    if !config_path.is_file() {
+        return Ok(None);
+    }
+    let config_text = std::fs::read_to_string(&config_path)
+        .with_context(|| format!("read {}", config_path.display()))?;
+    let config: RokoConfig = toml::from_str(&config_text)
+        .map_err(|error| anyhow!(error))
+        .with_context(|| format!("parse {}", config_path.display()))?;
+    Ok(Some(config))
+}
+
+/// `roko plan import --mori`'s output: what each import did, then the
+/// validation of the plans it wrote, each validated as `plan validate`
+/// would (gap-624658). Exits 1 on an error, or on a warning with `strict`.
+fn cmd_plan_import_report(
+    imported: &[roko_cli::plan_import::ImportedPlan],
+    workdir: &Path,
+    strict: bool,
+    json_output: bool,
+    quiet: bool,
+) -> Result<i32> {
+    let models = workspace_roko_toml(workdir)?
+        .as_ref()
+        .map(crate::commands::config_cmd::configured_models);
+    let mut validation = plan_validate::ValidationReport {
+        plans: Vec::new(),
+        totals: plan_validate::Totals::default(),
+    };
+    for plan in imported {
+        let report = plan_validate::validate_plans_dir_with_workdir(
+            &plan.dir,
+            models.as_ref(),
+            Some(workdir),
+        )?;
+        validation.totals.errors += report.totals.errors;
+        validation.totals.warnings += report.totals.warnings;
+        validation.totals.plans_checked += report.totals.plans_checked;
+        validation.plans.extend(report.plans);
+    }
+    if json_output {
+        #[derive(serde::Serialize)]
+        struct ImportJson<'a> {
+            imports: Vec<&'a roko_cli::plan_import::MoriImportReport>,
+            validation: &'a plan_validate::ValidationReport,
+        }
+        let output = ImportJson {
+            imports: imported.iter().map(|plan| &plan.report).collect(),
+            validation: &validation,
+        };
+        println!("{}", serde_json::to_string_pretty(&output)?);
+    } else {
+        if !quiet {
+            for plan in imported {
+                let dir = plan.dir.strip_prefix(workdir).unwrap_or(&plan.dir);
+                print!(
+                    "{}",
+                    roko_cli::plan_import::render_report(&plan.report, dir)
+                );
+            }
+            println!();
+        }
+        println!("{}", plan_validate::render_text(&validation));
+    }
+    Ok(validation.exit_code(strict))
+}
+
 pub(crate) fn cmd_plan_validate(
     dir: &Path,
     workdir: &Path,
@@ -2715,17 +2915,7 @@ pub(crate) fn cmd_plan_validate(
     spec_quality: bool,
     dynamic: Option<roko_cli::spec_red_on_base::RedOnBaseOptions>,
 ) -> Result<i32> {
-    let config_path = workdir.join("roko.toml");
-    let config = if config_path.is_file() {
-        let config_text = std::fs::read_to_string(&config_path)
-            .with_context(|| format!("read {}", config_path.display()))?;
-        let config: RokoConfig = toml::from_str(&config_text)
-            .map_err(|error| anyhow!(error))
-            .with_context(|| format!("parse {}", config_path.display()))?;
-        Some(config)
-    } else {
-        None
-    };
+    let config = workspace_roko_toml(workdir)?;
     let models = config
         .as_ref()
         .map(crate::commands::config_cmd::configured_models);
@@ -3187,23 +3377,9 @@ async fn cmd_plan_run_engine(
     let interrupt = PlanRunInterruptHandle::default();
     let _signals = install_plan_run_signal_handlers(interrupt.clone())?;
 
-    // Standalone `roko plan run` opens no listener, so the bind is always
-    // loopback-only. Pass `effective(true)` so a `trusted` config setting is
-    // honoured here even though there is no HTTP server running.
-    let live_agent_output = {
-        let core = roko_core::config::loader::load_config_unified(workdir)
-            .map(|cfg| cfg.serve.live_agent_output)
-            .unwrap_or_default()
-            .effective(true);
-        match core {
-            roko_core::config::serve::LiveAgentOutput::Trusted => {
-                roko_cli::graph_task_dispatch::LiveAgentOutput::Trusted
-            }
-            roko_core::config::serve::LiveAgentOutput::ToolSteps => {
-                roko_cli::graph_task_dispatch::LiveAgentOutput::ToolSteps
-            }
-        }
-    };
+    // Standalone `roko plan run` opens no listener, so a `trusted` config
+    // setting is honoured as on a loopback-only server.
+    let live_agent_output = roko_cli::graph_task_dispatch::LiveAgentOutput::for_local_run(workdir);
 
     // A `roko dashboard` in another terminal follows this run live through
     // the hub socket, as it follows a server's runs (gap-6533bf). Binding is

@@ -7,6 +7,9 @@
 //!   - Ollama running locally on port 11434
 //!   - `ollama pull llama3.2` completed
 
+mod common;
+use common::Isolated;
+
 use assert_cmd::Command;
 use std::fs;
 use std::time::Duration;
@@ -51,6 +54,7 @@ timeout_ms = 5000
 /// Helper: build a `roko` command targeting `workdir` with a generous timeout.
 fn roko_cmd(workdir: &std::path::Path) -> Command {
     let mut cmd = Command::cargo_bin("roko").expect("roko binary");
+    cmd.isolated();
     cmd.timeout(Duration::from_secs(90));
     cmd.current_dir(workdir);
     cmd

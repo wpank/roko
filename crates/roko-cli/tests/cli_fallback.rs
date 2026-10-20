@@ -10,6 +10,8 @@
 
 mod common;
 
+use common::Isolated;
+
 use assert_cmd::Command;
 use common::*;
 use predicates::str::contains;
@@ -148,6 +150,7 @@ fn every_top_level_command_has_help_output() {
     for cmd in TOP_LEVEL_COMMANDS {
         let assert = Command::cargo_bin("roko")
             .unwrap_or_else(|e| panic!("roko binary not found: {e}"))
+            .isolated()
             .args([cmd, "--help"])
             .assert();
         let output = assert.get_output();
@@ -176,6 +179,7 @@ fn every_nested_command_has_help_output() {
 
         let assert = Command::cargo_bin("roko")
             .unwrap_or_else(|e| panic!("roko binary not found: {e}"))
+            .isolated()
             .args(&full_args)
             .assert();
         let output = assert.get_output();
@@ -198,6 +202,7 @@ fn every_nested_command_has_help_output() {
 fn root_help_lists_all_top_level_commands() {
     let assert = Command::cargo_bin("roko")
         .unwrap()
+        .isolated()
         .arg("--help")
         .assert()
         .success();
@@ -220,6 +225,7 @@ fn init_creates_workspace_artifacts() {
     let tmp = TempDir::new().expect("tempdir");
     Command::cargo_bin("roko")
         .unwrap()
+        .isolated()
         .current_dir(tmp.path())
         .arg("init")
         .arg(tmp.path())
@@ -243,6 +249,44 @@ fn init_creates_workspace_artifacts() {
     );
 }
 
+/// gap-cad57a: `roko init` writes M1's shipped viability policy to
+/// `.roko/policy/viability.toml` for a person to edit, the policy M1 runs on
+/// in shadow until one does, and never overwrites a policy already there.
+#[test]
+fn init_writes_the_default_viability_policy() {
+    use roko_learn::homeostasis::policy::{
+        DEFAULT_VIABILITY_POLICY, PolicyOrigin, ViabilityPolicy,
+    };
+
+    let tmp = TempDir::new().expect("tempdir");
+    let init = || {
+        Command::cargo_bin("roko")
+            .unwrap()
+            .isolated()
+            .current_dir(tmp.path())
+            .arg("init")
+            .arg(tmp.path())
+            .assert()
+            .success();
+    };
+    init();
+    let roko = tmp.path().join(".roko");
+    let path = ViabilityPolicy::path_in(&roko);
+    let text = fs::read_to_string(&path).expect("init wrote the policy");
+    assert_eq!(text, DEFAULT_VIABILITY_POLICY);
+    let (policy, origin) = ViabilityPolicy::load_or_shipped(&roko).expect("the policy loads");
+    assert_eq!(policy, ViabilityPolicy::shipped_default());
+    assert_eq!(origin, PolicyOrigin::Shipped);
+
+    // A person's edit survives another `roko init`, and makes it theirs.
+    let edited = text.replace("policy_version = 1", "policy_version = 2");
+    fs::write(&path, &edited).expect("edit the policy");
+    init();
+    assert_eq!(fs::read_to_string(&path).expect("read it back"), edited);
+    let (_, origin) = ViabilityPolicy::load_or_shipped(&roko).expect("the edited policy loads");
+    assert_eq!(origin, PolicyOrigin::Person);
+}
+
 // -----------------------------------------------------------------------
 // 3. status --surfaces produces parseable output
 // -----------------------------------------------------------------------
@@ -254,6 +298,7 @@ fn status_surfaces_produces_output() {
 
     let assert = Command::cargo_bin("roko")
         .unwrap()
+        .isolated()
         .current_dir(tmp.path())
         .args(["status", "--surfaces", "--workdir"])
         .arg(tmp.path())
@@ -279,6 +324,7 @@ fn status_surfaces_json_produces_valid_json() {
 
     let assert = Command::cargo_bin("roko")
         .unwrap()
+        .isolated()
         .current_dir(tmp.path())
         .args(["--json", "status", "--surfaces", "--workdir"])
         .arg(tmp.path())
@@ -307,6 +353,7 @@ fn status_works_offline_with_filesystem() {
     // status should succeed reading from .roko/ without any server
     let assert = Command::cargo_bin("roko")
         .unwrap()
+        .isolated()
         .current_dir(tmp.path())
         .args(["status", "--workdir"])
         .arg(tmp.path())
@@ -371,6 +418,7 @@ max_retries = 0
     // plan list reads from filesystem, not serve
     let assert = Command::cargo_bin("roko")
         .unwrap()
+        .isolated()
         .current_dir(tmp.path())
         .args(["plan", "list", "--workdir"])
         .arg(tmp.path())
@@ -399,6 +447,7 @@ fn removed_commands_print_their_replacement() {
     ] {
         let assert = Command::cargo_bin("roko")
             .unwrap()
+            .isolated()
             .current_dir(tmp.path())
             .args(args)
             .assert()
@@ -419,6 +468,7 @@ fn config_show_works_offline() {
 
     let assert = Command::cargo_bin("roko")
         .unwrap()
+        .isolated()
         .current_dir(tmp.path())
         .args(["config", "show", "--workdir"])
         .arg(tmp.path())
@@ -455,6 +505,7 @@ fn doctor_works_offline() {
     // empty key, so we accept both exit 0 (all ok) and exit 1 (warnings only).
     let assert = Command::cargo_bin("roko")
         .unwrap()
+        .isolated()
         .current_dir(tmp.path())
         .args(["doctor", "--workdir"])
         .arg(tmp.path())
@@ -474,6 +525,7 @@ fn dashboard_text_fallback_works_offline() {
 
     let assert = Command::cargo_bin("roko")
         .unwrap()
+        .isolated()
         .current_dir(tmp.path())
         .args(["dashboard", "--text", "--workdir"])
         .arg(tmp.path())
@@ -495,6 +547,7 @@ fn dashboard_text_fallback_works_offline() {
 fn every_top_level_command_has_description_in_root_help() {
     let assert = Command::cargo_bin("roko")
         .unwrap()
+        .isolated()
         .arg("--help")
         .assert()
         .success();
@@ -539,6 +592,7 @@ fn subcommand_help_has_description_and_usage() {
 
         let assert = Command::cargo_bin("roko")
             .unwrap()
+            .isolated()
             .args(&full_args)
             .assert()
             .success();

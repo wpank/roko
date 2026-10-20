@@ -333,6 +333,19 @@ impl SharedAgentFactory {
         self
     }
 
+    /// Keep only the ladder rungs whose agents run in roko's own tool loop
+    /// ([`RoutingLadder::in_own_tool_loop`]), for a run whose tasks hold
+    /// their outbound tool calls for approval, as a chat host's run does
+    /// (gap-cf427e); with no rung left the router picks.
+    #[must_use]
+    pub fn keep_tool_loop_rungs(mut self) -> Self {
+        if let Some(ladder) = self.dispatcher.routing_ladder().cloned() {
+            self.dispatcher
+                .replace_routing_ladder(ladder.in_own_tool_loop(&self.config));
+        }
+        self
+    }
+
     /// Use a caller-owned provider health registry for all subsequent
     /// dispatches from this factory.
     ///

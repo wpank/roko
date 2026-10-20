@@ -39,6 +39,7 @@ pub mod fast_lane;
 pub mod identity_map;
 pub mod learning_commit;
 pub mod loop_audit;
+pub mod plan_check_events;
 pub mod plan_runner;
 pub mod plan_set;
 pub mod plan_verify;
@@ -51,8 +52,9 @@ pub mod workspaces;
 // Re-export primary public types for convenient access.
 pub use control_adapter::{GraphCommandEffect, GraphExecutionControlAdapter};
 pub use delivery::{
-    CliCompletionDeliveryService, DELIVERY_CHECKPOINT_KEY, DeliveryBackend, DeliveryMergeOutcome,
-    DeliveryPublicationOutcome, DeliveryRegressionOutcome, GitDeliveryBackend,
+    CliCompletionDeliveryService, DELIVERY_CHECKPOINT_KEY, DeliveryBackend, DeliveryEvents,
+    DeliveryMergeOutcome, DeliveryMoveOutcome, DeliveryPublicationOutcome,
+    DeliveryRegressionOutcome, GitDeliveryBackend,
 };
 pub use event_log::{EventTap, RunEventLog, Tapped};
 pub use identity_map::{GraphIdentityMap, NodeIdentity};

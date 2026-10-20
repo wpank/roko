@@ -1470,21 +1470,16 @@ impl RoutingLadder {
         for issue in ladder.issues() {
             tracing::warn!(%issue, "routing ladder is misconfigured");
         }
-        let models = config.effective_models();
         let mut runnable = HashMap::new();
-        let mut seen = HashSet::new();
-        for rung in ladder.all_rungs() {
-            if !seen.insert(rung.model.as_str()) {
-                continue;
-            }
-            match rung_dispatch_model(config, &models, &rung.model, &available) {
+        for rung in ladder_report_with(config, available) {
+            match rung.dispatch {
                 Ok(model) => {
-                    runnable.insert(rung.model.clone(), model);
+                    runnable.insert(rung.model, model);
                 }
                 Err(reason) => tracing::info!(
-                    rung = %rung.name,
+                    rung = %rung.rung,
                     model = %rung.model,
-                    reason,
+                    %reason,
                     "routing ladder: skipping a rung this workspace cannot run"
                 ),
             }
@@ -1586,6 +1581,38 @@ impl RoutingLadder {
         Some(self)
     }
 
+    /// This ladder without the rungs whose agents run their own tools (CLI,
+    /// ACP and agent-runtime providers), each logged. A task that holds its
+    /// tool calls that act on the outside world for approval, as every task
+    /// of a chat host's run does (decision 9107), can run only in roko's own
+    /// tool loop, so such a run climbs only the other rungs (gap-cf427e).
+    /// `None` when no rung is left, which leaves routing to the router.
+    #[must_use]
+    pub fn in_own_tool_loop(mut self, config: &Arc<RokoConfig>) -> Option<Self> {
+        let resolver = crate::dispatch_v2::ProviderDispatchResolver::new(Arc::clone(config));
+        self.runnable.retain(|rung_model, model| {
+            let target = resolver.resolve(model);
+            if !crate::dispatch_v2::runs_own_tools(&target) {
+                return true;
+            }
+            tracing::info!(
+                model = %rung_model,
+                provider = %target.provider_id,
+                "routing ladder: skipping a rung whose agent runs its own tools; this run's tasks \
+                 hold their outbound tool calls for approval, which only roko's tool loop can do"
+            );
+            false
+        });
+        if self.runnable.is_empty() {
+            tracing::warn!(
+                "routing ladder: no rung runs in roko's own tool loop; the router picks, and \
+                 failover passes over agents that run their own tools"
+            );
+            return None;
+        }
+        Some(self)
+    }
+
     /// How many runnable rungs sit above rung `index` on `role`'s ladder.
     #[must_use]
     pub fn runnable_above(&self, role: &str, index: usize) -> usize {
@@ -1621,33 +1648,98 @@ impl RoutingLadder {
     }
 }
 
+/// One rung model of a ladder, as [`ladder_report`] finds it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LadderRungReport {
+    /// Rung name (`"cheap"`).
+    pub rung: String,
+    /// Rung model as configured.
+    pub model: String,
+    /// The model name dispatch runs for it, or why the rung cannot run here.
+    pub dispatch: Result<String, String>,
+}
+
+/// Each rung model of `config.routing.ladder` (its own rungs, then its
+/// roles'; a model twice only once), with the model name dispatch runs for
+/// it or why it cannot run in this workspace, decided as a run binds the
+/// ladder ([`RoutingLadder::from_config`]). Empty when the ladder is off.
+/// `roko doctor` and `roko init` show it, because a run only logs the rungs
+/// it skips.
+#[must_use]
+pub fn ladder_report(config: &RokoConfig) -> Vec<LadderRungReport> {
+    ladder_report_with(config, |key| config.provider_available_for_model_key(key))
+}
+
+fn ladder_report_with(
+    config: &RokoConfig,
+    available: impl Fn(&str) -> bool,
+) -> Vec<LadderRungReport> {
+    let ladder = &config.routing.ladder;
+    if !ladder.enabled {
+        return Vec::new();
+    }
+    let models = config.effective_models();
+    let builtins = builtin_rungs_allowed(config);
+    let mut seen = HashSet::new();
+    ladder
+        .all_rungs()
+        .filter(|rung| seen.insert(rung.model.as_str()))
+        .map(|rung| LadderRungReport {
+            rung: rung.name.clone(),
+            model: rung.model.clone(),
+            dispatch: rung_dispatch_model(config, &models, &rung.model, builtins, &available),
+        })
+        .collect()
+}
+
+/// Whether a ladder rung may run a built-in model, one no `[models.*]` entry
+/// defines: only where it cannot take a task off a model the workspace chose
+/// (reg-e2038b). That is when the workspace's ladder is its own (rungs other
+/// than roko's default ladder, or role ladders), or when it configures no
+/// model at all (no `[models.*]` entry, and `[agent] default_model` left at
+/// roko's default). Otherwise the default ladder's `gpt-5.4-mini` would run a
+/// workspace's tasks on OpenAI whenever a key is set, past the models it
+/// configured. A `--model` pin and a task's `model_hint` win over the ladder
+/// anyway.
+fn builtin_rungs_allowed(config: &RokoConfig) -> bool {
+    let ladder = &config.routing.ladder;
+    let own_ladder = ladder.rungs != LadderConfig::default().rungs || !ladder.roles.is_empty();
+    let own_model = !config.effective_models().is_empty()
+        || config.agent.default_model.trim() != RokoConfig::default().agent.default_model.trim();
+    own_ladder || !own_model
+}
+
 /// The model name dispatch runs for a rung's model, or why the rung cannot
-/// run. The model must name a `[models.*]` entry (by key, else by slug)
-/// that can call tools, whose provider is not in
+/// run. The model must name a `[models.*]` entry (by key, else by slug), or
+/// else, where `builtins` allows it ([`builtin_rungs_allowed`]), a built-in
+/// model, that can call tools, whose provider is not in
 /// `routing.disabled_providers` and is `available`.
 fn rung_dispatch_model(
     config: &RokoConfig,
     models: &IndexMap<String, ModelProfile>,
     model: &str,
+    builtins: bool,
     available: impl Fn(&str) -> bool,
-) -> Result<String, &'static str> {
+) -> Result<String, String> {
     let model = model.trim();
-    let (key, profile) = models
+    let Some((key, profile)) = models
         .get_key_value(model)
         .or_else(|| models.iter().find(|(_, profile)| profile.slug == model))
-        .ok_or("no [models.*] entry has this key or slug")?;
+    else {
+        return builtin_rung_model(config, model, builtins, available);
+    };
     if profile.is_embedding_model || !profile.supports_tools {
-        return Err("the model cannot call tools");
+        return Err("the model cannot call tools".to_string());
     }
     if config
         .routing
         .disabled_providers
         .contains(&profile.provider)
     {
-        return Err("its provider is in routing.disabled_providers");
+        return Err("its provider is in routing.disabled_providers".to_string());
     }
     if !available(key) {
-        return Err("its provider has no credentials or command");
+        return Err("its provider has no credentials or command".to_string());
     }
     // Dispatch reads a model name as a `[models.*]` key before a slug, so the
     // slug selects this entry only when no other entry uses it as a key or
@@ -1659,6 +1751,73 @@ fn rung_dispatch_model(
             .filter(|(other_key, _)| *other_key != key)
             .all(|(other_key, other)| other_key.as_str() != slug && other.slug.trim() != slug);
     Ok(if slug_is_unique { slug } else { key.as_str() }.to_string())
+}
+
+/// The model name dispatch runs for a rung model that no `[models.*]` entry
+/// has by key or slug: a built-in model (`gpt-5.4-mini`, or an alias such as
+/// `sonnet`), run under that name, which dispatch resolves to the provider
+/// of its kind that holds its key (bug-4e336b). A workspace whose ladder
+/// names a built-in then needs no `[models.*]` table for it, only the key.
+fn builtin_rung_model(
+    config: &RokoConfig,
+    model: &str,
+    allowed: bool,
+    available: impl Fn(&str) -> bool,
+) -> Result<String, String> {
+    let Some(builtin) = roko_core::config::model_registry::builtin_model(model) else {
+        return Err(
+            "no [models.*] entry has this key or slug, and roko has no built-in model of this \
+             name"
+                .to_string(),
+        );
+    };
+    if !allowed {
+        return Err(
+            "no [models.*] entry has this key or slug; it names a built-in model, which a rung \
+             of roko's default ladder runs only in a workspace that configures no model of its \
+             own, so its tasks stay on the models it configured; give it a [models.*] entry to \
+             run it here"
+                .to_string(),
+        );
+    }
+    if !builtin.supports_tools {
+        return Err("the model cannot call tools".to_string());
+    }
+    // A budget cap counts a call only at a known price, so a rung never
+    // runs a built-in that roko cannot price (gap-c8f388).
+    if roko_core::config::model_registry::builtin_pricing(builtin.slug).is_none() {
+        return Err(
+            "roko has no price for this built-in model, so a budget cap could not count its \
+             calls; give it a [models.*] entry with cost_input_per_m and cost_output_per_m"
+                .to_string(),
+        );
+    }
+    let resolved = roko_core::agent::resolve_model(config, model);
+    if resolved.slug != builtin.slug {
+        // A `[models.*]` slug that starts with the name selects that entry.
+        return Err(format!(
+            "dispatch resolves it to `{}`, not to the built-in model; name that [models.*] \
+             entry's key",
+            resolved.slug
+        ));
+    }
+    let provider = resolved
+        .profile
+        .map(|profile| profile.provider)
+        .unwrap_or_default();
+    if config.routing.disabled_providers.contains(&provider) {
+        return Err("its provider is in routing.disabled_providers".to_string());
+    }
+    if !available(model) {
+        let key = resolved
+            .provider_config
+            .and_then(|provider| provider.api_key_env)
+            .unwrap_or_else(|| builtin.api_key_env.to_string());
+        return Err(format!(
+            "a built-in model whose provider has no API key: set {key}"
+        ));
+    }
+    Ok(model.to_string())
 }
 
 // ─── Tests ─────────────────────────────────────────────────────────────
@@ -1724,6 +1883,7 @@ mod tests {
             concurrent_plans: Vec::new(),
             attempt_key: None,
             arm_set: None,
+            knowledge_section: true,
             self_model_rung: None,
             skip_enrichment: false,
         }
@@ -2129,10 +2289,9 @@ mod tests {
         }
         t.tier = "mechanical".into();
 
-        // No rung that can run, no ladder model configured, or the ladder
-        // turned off: no ladder, and the router decides as before.
+        // No rung that can run, or the ladder turned off: no ladder, and
+        // the router decides as before.
         assert!(RoutingLadder::from_config_with(&ladder_config(), |_| false).is_none());
-        assert!(RoutingLadder::from_config_with(&RokoConfig::default(), |_| true).is_none());
         let mut off = ladder_config();
         off.routing.ladder.enabled = false;
         assert!(RoutingLadder::from_config_with(&off, |_| true).is_none());
@@ -2149,6 +2308,146 @@ mod tests {
         forced.force_backend = Some("gpt-5".into());
         let choice = ladder_route(everywhere, &t, &forced);
         assert_eq!(routed(&choice), ("gpt-5", ModelChoiceSource::Override));
+    }
+
+    /// bug-4e336b: a rung that names a built-in model, such as the default
+    /// ladder's `gpt-5.4-mini`, runs without a `[models.*]` entry once its
+    /// provider is available, under the name dispatch resolves. The report
+    /// says why each other rung cannot run.
+    #[test]
+    fn ladder_binds_builtin_rungs_and_reports_the_rest() {
+        let config = RokoConfig::default();
+        let report = ladder_report_with(&config, |_| true);
+        let dispatch = |report: &[LadderRungReport], rung: &str| {
+            report
+                .iter()
+                .find(|report| report.rung == rung)
+                .map(|report| report.dispatch.clone())
+                .expect("a rung")
+        };
+        assert_eq!(dispatch(&report, "strong"), Ok("gpt-5.4-mini".to_string()));
+        assert_eq!(
+            dispatch(&report, "top"),
+            Ok("claude-sonnet-4-6".to_string())
+        );
+        let cheap = dispatch(&report, "cheap").unwrap_err();
+        assert!(cheap.contains("no built-in model"), "{cheap}");
+        let start = ladder(&config, |_| true)
+            .start("implementer", TaskTier::Mechanical, None)
+            .expect("a rung runs");
+        assert_eq!(
+            (start.name.as_str(), start.model.as_str()),
+            ("strong", "gpt-5.4-mini")
+        );
+
+        // Without its key the rung is skipped, and the reason names the key.
+        let report = ladder_report_with(&config, |_| false);
+        let strong = dispatch(&report, "strong").unwrap_err();
+        assert!(strong.contains("OPENAI_API_KEY"), "{strong}");
+        assert!(RoutingLadder::from_config_with(&config, |_| false).is_none());
+
+        // A built-in that cannot call tools, or whose provider is disabled,
+        // is no rung either.
+        let mut config = RokoConfig::from_toml(
+            "[providers.openai]\nkind = \"openai_compat\"\n\
+             base_url = \"https://api.openai.com/v1\"\napi_key_env = \"OPENAI_API_KEY\"\n",
+        )
+        .expect("parse");
+        config.routing.ladder.rungs = [("cheap", "sonar"), ("strong", "gpt-5.4-mini")]
+            .into_iter()
+            .map(|(name, model)| roko_core::config::routing::LadderRung {
+                name: name.to_string(),
+                model: model.to_string(),
+            })
+            .collect();
+        config.routing.disabled_providers = vec!["openai".to_string()];
+        let report = ladder_report_with(&config, |_| true);
+        assert_eq!(
+            dispatch(&report, "cheap"),
+            Err("the model cannot call tools".to_string())
+        );
+        let strong = dispatch(&report, "strong").unwrap_err();
+        assert!(strong.contains("disabled_providers"), "{strong}");
+        config.routing.ladder.enabled = false;
+        assert!(ladder_report_with(&config, |_| true).is_empty());
+    }
+
+    /// reg-e2038b: a workspace that configures its own model, here only a
+    /// fake `claude_cli` one as roko-cli's integration fixtures do, keeps
+    /// every task on it. The default ladder's built-in rungs never bind
+    /// there, even with every provider available (`OPENAI_API_KEY` set). A
+    /// workspace with a ladder of its own still gets the built-ins it names.
+    #[test]
+    fn explicit_models_win_over_builtin_rungs() {
+        let fixture = "[agent]\ndefault_model = \"fake\"\n\n\
+                       [providers.fake]\nkind = \"claude_cli\"\ncommand = \"/bin/false\"\n\n\
+                       [models.fake]\nprovider = \"fake\"\nslug = \"claude-sonnet-4-6\"\n";
+        let dispatch = |report: &[LadderRungReport], rung: &str| {
+            report
+                .iter()
+                .find(|report| report.rung == rung)
+                .map(|report| report.dispatch.clone())
+                .expect("a rung")
+        };
+
+        let config = RokoConfig::from_toml(fixture).expect("parse");
+        let report = ladder_report_with(&config, |_| true);
+        let strong = dispatch(&report, "strong").unwrap_err();
+        assert!(
+            strong.contains("configures no model of its own"),
+            "{strong}"
+        );
+        // The top rung names the fixture's model by slug, so it runs there.
+        assert_eq!(
+            dispatch(&report, "top"),
+            Ok("claude-sonnet-4-6".to_string())
+        );
+        assert!(
+            report
+                .iter()
+                .filter_map(|rung| rung.dispatch.as_ref().ok())
+                .all(|model| model == "claude-sonnet-4-6"),
+            "{report:?}"
+        );
+        let mut t = task();
+        for tier in TaskTier::ALL {
+            t.tier = tier.label().into();
+            let choice = ladder_route(ladder(&config, |_| true), &t, &ctx());
+            assert_eq!(choice.model.slug, "claude-sonnet-4-6", "{tier}");
+        }
+        // A fixture model whose slug no rung names leaves no rung, and the
+        // router keeps the workspace's default model.
+        let other = fixture.replace("claude-sonnet-4-6", "fake-model");
+        let config = RokoConfig::from_toml(&other).expect("parse");
+        assert!(RoutingLadder::from_config_with(&config, |_| true).is_none());
+        // `[agent] default_model` alone is a model choice too.
+        let mut config = RokoConfig::default();
+        config.agent.default_model = "gpt-5.5".to_string();
+        let report = ladder_report_with(&config, |_| true);
+        assert!(dispatch(&report, "strong").is_err(), "{report:?}");
+
+        // A ladder of the workspace's own runs the built-ins it names.
+        let own = format!(
+            "{fixture}\n[routing.ladder]\n\n[[routing.ladder.rungs]]\nname = \"cheap\"\n\
+             model = \"gpt-5.4-mini\"\n\n[[routing.ladder.rungs]]\nname = \"top\"\nmodel = \"fake\"\n"
+        );
+        let config = RokoConfig::from_toml(&own).expect("parse");
+        let report = ladder_report_with(&config, |_| true);
+        assert_eq!(dispatch(&report, "cheap"), Ok("gpt-5.4-mini".to_string()));
+    }
+
+    /// gap-c8f388: a rung that names a built-in model binds only at a known
+    /// price, so a budget cap counts its calls; every built-in has one.
+    #[test]
+    fn every_builtin_model_has_a_price() {
+        use roko_core::config::model_registry::{BUILTIN_MODELS, builtin_pricing};
+        for builtin in BUILTIN_MODELS {
+            assert!(
+                builtin_pricing(builtin.slug).is_some(),
+                "built-in model {} has no price",
+                builtin.slug
+            );
+        }
     }
 
     /// gap-460230: each ladder step climbs one runnable rung above the
@@ -2859,6 +3158,7 @@ mod tests {
 
         let gate = |eligible, breaker_tripped| GateReport {
             predictor_version: PredictorVersion("m3-l1-test".to_string()),
+            window: 100,
             n: 100,
             ece: Some(0.03),
             cal_in_large: Some(0.01),
@@ -2922,7 +3222,10 @@ mod tests {
         let opportunity = row.audit.opportunity.as_ref().expect("L-M3's opportunity");
         assert!(opportunity.eligible, "{opportunity:?}");
 
-        // With ε the propensities compose over the four runnable rungs and sum to 1.
+        // With ε the propensities compose over the four runnable rungs and sum to 1, whatever
+        // the attempt's ε draw. The UTC day keys that draw (bug-3e2d76): on some days it
+        // explores, and an exploring draw may land on the self-model's own pick, so the chosen
+        // model shows only that a draw landing elsewhere explored.
         let p = |row: &RoutingDecisionLog, model: &str| {
             let candidate = row.candidates.iter().find(|c| c.model == model);
             candidate.and_then(|c| c.p)
@@ -2934,12 +3237,30 @@ mod tests {
         let total: f64 = row.candidates.iter().filter_map(|c| c.p).sum();
         assert!((total - 1.0).abs() < 1e-9, "p sums to {total}");
         assert_eq!(row.propensity, p(&row, &choice.model.slug));
-        let source = if choice.model.slug == "claude-sonnet-4-6" {
-            DecisionSource::SelfModel
-        } else {
-            DecisionSource::Explore
-        };
-        assert_eq!(row.source, Some(source));
+        let explored = row.source == Some(DecisionSource::Explore);
+        assert!(
+            explored || row.source == Some(DecisionSource::SelfModel),
+            "{:?}",
+            row.source
+        );
+        assert!(
+            explored || choice.model.slug == "claude-sonnet-4-6",
+            "only an exploring draw leaves the pick: {}",
+            choice.model.slug
+        );
+
+        // An exploring draw's row is ε's wherever the draw lands, the self-model's pick
+        // included: at ε = 1 every attempt's draw explores, each rung at P = 1/4.
+        let always = router.clone().with_explore_epsilon(1.0);
+        for attempt in 1..=32 {
+            let mut inputs = inputs.clone();
+            inputs.attempt_key = Some(AttemptKey::new("gr-m3", "p", "t", attempt));
+            let (choice, row) = always.decide(&inputs).unwrap();
+            let landed = choice.model.slug.as_str();
+            let explore = Some(DecisionSource::Explore);
+            assert_eq!(row.source, explore, "attempt {attempt} on {landed}");
+            assert_eq!(row.propensity, Some(0.25), "attempt {attempt} on {landed}");
+        }
 
         // A chain the route layer holds out runs the ladder's own rung, a⁰, at P = h.
         let held_out = Assignment {

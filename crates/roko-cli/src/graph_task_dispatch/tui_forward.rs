@@ -8,13 +8,15 @@ impl GraphTaskDispatcher {
     ///
     /// Called after `run_shared_agent_bridge` returns. Each event in the
     /// dispatch result is mapped to the corresponding `TuiBridge` method
-    /// which publishes a `DashboardEvent` through the StateHub.
+    /// which publishes a `DashboardEvent` through the StateHub, numbered as
+    /// attempt `attempt` of the task (bug-369c21).
     pub(super) fn forward_dispatch_events_to_tui(
         &self,
         spec: &TaskExecutionSpec,
         task: &TaskDef,
         dispatch: &crate::dispatch_v2::AgentResultDispatch,
         ctx: &CellContext,
+        attempt: u32,
     ) {
         let Some(tui) = &self.tui_bridge else {
             return;
@@ -35,10 +37,10 @@ impl GraphTaskDispatcher {
         for event in &dispatch.events {
             match event {
                 roko_agent::AgentRuntimeEvent::MessageDelta { text } => {
-                    tui.agent_text_delta(&agent_id, plan_id, task_id, 0, text);
+                    tui.agent_text_delta(&agent_id, plan_id, task_id, attempt, text);
                 }
                 roko_agent::AgentRuntimeEvent::ToolCall { id, name } => {
-                    tui.tool_call(&agent_id, plan_id, task_id, 0, id, name);
+                    tui.tool_call(&agent_id, plan_id, task_id, attempt, id, name);
                 }
                 roko_agent::AgentRuntimeEvent::ToolOutput { id, output } => {
                     // Truncate tool output for the TUI to avoid overwhelming
@@ -58,14 +60,14 @@ impl GraphTaskDispatcher {
                     } else {
                         output.clone()
                     };
-                    tui.tool_output(&agent_id, plan_id, task_id, 0, id, &truncated);
+                    tui.tool_output(&agent_id, plan_id, task_id, attempt, id, &truncated);
                 }
                 _ => {}
             }
         }
 
         // Emit agent completed event.
-        tui.agent_completed(&agent_id, plan_id, task_id, 0);
+        tui.agent_completed(&agent_id, plan_id, task_id, attempt);
     }
 }
 
@@ -82,11 +84,14 @@ impl GraphTaskDispatcher {
 /// - `Unscreened(ToolResult)` → unscreened `tool_result` record with output
 ///   truncated the same way `forward_dispatch_events_to_tui` truncates it
 /// - All other `Unscreened` variants, and `Queued`, are silently ignored.
+///
+/// Every record carries `attempt`, the attempt's ordinal (bug-0b7c81).
 pub(super) fn forward_live_event_to_tui(
     tui: &TuiBridge,
     agent_id: &str,
     plan_id: &str,
     task_id: &str,
+    attempt: u32,
     event: roko_agent::live_output::LiveAgentEvent,
 ) {
     use roko_agent::StreamEventKind;
@@ -96,7 +101,7 @@ pub(super) fn forward_live_event_to_tui(
 
     match event {
         LiveAgentEvent::ToolStep { id, name, target } => {
-            tui.tool_step(agent_id, plan_id, task_id, 0, &id, &name, &target);
+            tui.tool_step(agent_id, plan_id, task_id, attempt, &id, &name, &target);
         }
         LiveAgentEvent::Unscreened(kind) => match kind {
             StreamEventKind::TextDelta(text) => {
@@ -104,7 +109,7 @@ pub(super) fn forward_live_event_to_tui(
                     agent_id,
                     plan_id,
                     task_id,
-                    0,
+                    attempt,
                     "text",
                     serde_json::json!({"text": text}),
                 );
@@ -114,7 +119,7 @@ pub(super) fn forward_live_event_to_tui(
                     agent_id,
                     plan_id,
                     task_id,
-                    0,
+                    attempt,
                     "reasoning",
                     serde_json::json!({"text": text}),
                 );
@@ -136,7 +141,7 @@ pub(super) fn forward_live_event_to_tui(
                     agent_id,
                     plan_id,
                     task_id,
-                    0,
+                    attempt,
                     "tool_start",
                     serde_json::json!({
                         "tool_id": id,
@@ -163,7 +168,7 @@ pub(super) fn forward_live_event_to_tui(
                     agent_id,
                     plan_id,
                     task_id,
-                    0,
+                    attempt,
                     "tool_result",
                     serde_json::json!({"tool_id": id, "output": truncated}),
                 );

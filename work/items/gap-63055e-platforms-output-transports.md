@@ -9,7 +9,7 @@ goal = "features"
 hold = "Set aside per tldr/05 §3; Will chose hold over park on 2026-09-29 (dec-e70592). Remove this line to revive."
 subsystem = ["roko-runtime/platforms"]
 created = 2026-09-07
-updated = 2026-09-29
+updated = 2026-10-17
 last_verified = 2026-09-29
 last_verified_rev = "d9e79e9d8"
 source = "tmp/backlog/archive/224-platforms-and-transports.md#224 — Platforms & Output Transports"
@@ -32,3 +32,7 @@ How to verify: Check: `[platforms.*]` config section exists in `roko.toml` schem
 Verified 2026-09-28: the scaffolding exists, but no platform works end to end. Commit 9c6ec420c added [platforms]/[channels] config (crates/roko-core/src/config/platforms.rs, channels.rs), a ChatBridge trait with a platform registry (crates/roko-runtime/src/platforms.rs:289, :442), and adapters for Slack, Telegram, Discord, WhatsApp, Matrix and Mattermost. The adapters are stubs: telegram.rs:1 says so, and send_message returns a fake `telegram-stub-...` ID (:94-97). No roko-serve or roko-cli code constructs or starts an adapter. Subsystem corrected to roko-runtime/platforms, since the roko-mcp-slack crate is gone. Severity lowered p1 to p2 because this is a new product surface, not the core loop.
 
 Re-verified 2026-09-29: still open, and the scaffolding recorded on 2026-09-28 is not compiled. crates/roko-runtime/src/lib.rs has no `mod platforms`, `mod adapters` or `mod channel_binding`, and crates/roko-core/src/config/mod.rs has no `mod platforms` or `mod channels`, so the ChatBridge trait, the six adapters and the [[platforms]] config are dead files that may not build. A fix must first wire these modules into their crates.
+
+2026-10-15 (status-quo decision 12, tmp/status-quo/2026-10-15/DECISIONS-2026-10-15.md): stays held. The files this item anchors (crates/roko-runtime/src/platforms.rs, channel_binding.rs, adapters/) are not declared in crates/roko-runtime/src/lib.rs at b42578bab, so they are never compiled; gap-7ebc4f parks them behind an off-by-default `channels` feature so they build and test on demand. Reviving this item starts from that feature.
+
+2026-10-17 (gap-7ebc4f): parked, still not wired. `crates/roko-runtime/src/lib.rs` now declares `platforms`, `adapters` and `channel_binding` behind roko-runtime's `channels` feature. The feature is off by default and also turns on roko-core's `channels`, which declares `config::platforms` and `config::channels`. Apart from rustfmt and two clippy fixes (each adapter's `platform_id` returns `&'static str`, and `PlatformCapabilities` derives `Default`), the files compiled as they were. Their tests pass with `cargo test -p roko-runtime --features channels --lib` (platforms 18, adapters 45, channel_binding 4) and `cargo test -p roko-core --features channels --lib -- config::channels config::platforms` (14). A default build still leaves them out, and nothing in serve or the CLI uses them. gap-092d24 tracks the seven other channel-layer orphans in roko-runtime (`delivery.rs`, `message_formatter.rs`, …) and roko-serve's `routes/platforms.rs`; bug-2d3249 tracks the adapters' byte-120 preview slice, which panics on multibyte text.

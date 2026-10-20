@@ -19,7 +19,7 @@ what has run, is tracked in `work/items/` under epic `spec-567e52`.
 
 - **Source only.** This tree holds generators, verifiers, the driver and analysis code. Raw results live outside
   the repo in `$VB_RESULTS` (default `~/.roko-bench/viability`), and task workdirs in `$VB_WORK` (default
-  `~/vb-work`). Each pilot's small summary bundle (records, metrics, ledger and report page; no transcripts or
+  `~/workspaces`). Each pilot's small summary bundle (records, metrics, ledger and report page; no transcripts or
   archives) is committed under `reports/`.
 - **Stdlib-only Python 3.11 or newer** for everything the benchmark runs: families, verifiers, driver and
   analysis. pytest is a dev-only dependency, pinned in `requirements.lock`. The one exception (decision 3336): the
@@ -104,15 +104,30 @@ $PY benchmarks/viabilitybench/driver/vb.py run --experiment PILOT-A --stream pil
   attempt starts. Per task: 30 turns, 300K input tokens and 20 minutes. The runaway detector stops a task at 30 model
   calls, 5 identical commands in a row, or its dollar cap. Caps are checked before each call, so none is exceeded; a
   capped task ends `aborted_cap` (or `timeout`) with VS = 0.
-- **Isolation.** Each (task, seed) gets a fresh workdir under `$VB_WORK` (default `~/vb-work/<run_id>/`). The task
-  manifest, which holds the canary, and the pristine bundle live in the run's `private/` directory, never in a
-  workdir. Agent processes get an allowlisted environment (`agent_env.py`): no `VB_*` variables, no provider keys, a
-  per-task HOME. The truth suites and the census's visible re-run run the agent's code through
-  `families/common/sandbox.py`. On macOS, `sandbox-exec` denies that code the secret file and the task's private
-  directory. Elsewhere there is no confinement yet, and the run record says so (`vs.sandbox`, gap-8c3752). Agents can
-  read the driver's own start-up environment (`ps -E`, `/proc`), so once its checks pass,
-  `vb run` starts itself again with an allowlisted environment (`agent_env.exec_scrubbed`). Every other process of
-  your user stays readable (`ps -E -ax`), so run the benchmark from a session that exports no credential.
+- **Isolation.** Each (task, seed) gets a fresh workdir under `$VB_WORK` (default `~/workspaces/`). It, its agent's
+  HOME and the run's directory above them are named by random ids, so no path an agent sees names its instance
+  (family and ladder level) or its run (bug-3c921e); the record's `provenance.alias` and the manifest's `work_dir` map
+  them back. Nothing an agent sees names the benchmark either (bug-d68575): its PATH's `.local/bin`, its git identity
+  (`agent <agent@example.invalid>`), its repo's pristine commit (`Initial commit`), the direct loop's `SUBMIT_TASK`,
+  Roko's `plan-<hash>` plan and key placeholder, the visible-verify wrapper's `run-shell` files and the proxies'
+  answers are neutral, since the benchmark's repository is public. The task manifest, which holds the canary, and
+  the pristine bundle live in the run's `private/` directory, never in a workdir. Agent processes get an allowlisted
+  environment (`agent_env.py`): no `VB_*` variables, no provider keys, a per-task HOME. On macOS every agent process
+  is denied the secret file, the key file and the whole results root: its own run directory, whose proxy logs name
+  the running task's key and whose order and records give its position (bug-d308f7), and every other run there,
+  whose ids, archived final trees, records and `private/` are other runs' (bug-935cfa). So `vb run` refuses a results
+  root that holds the repository, the Rust toolchain, the agents' Python or your home. Off macOS nothing applies that
+  deny list (`sandbox.KIND` "none", gap-29ac83), so there an agent can read the results root, its task key included.
+  The truth suites and the census's visible re-run run the agent's code through `families/common/sandbox.py`. On
+  macOS, `sandbox-exec` denies that code what agent processes are denied, the secret file, the key file and the whole
+  results root with the task's private directory in it (the census hands the suite the root as `--deny`;
+  bug-42b214), and the network. So the census's
+  exports are in the work directory (`<work_dir>/<alias>.census`), and the audit battery's re-runs over a run
+  directory deny the results root it lies in. Elsewhere there is no confinement yet, and the run record says so
+  (`vs.sandbox`, gap-8c3752). Agents can read the driver's
+  own start-up environment (`ps -E`, `/proc`), so once its checks pass, `vb run` starts itself again with an
+  allowlisted environment (`agent_env.exec_scrubbed`). Every other process of your user stays readable (`ps -E -ax`,
+  or `sysctl` from inside the sandbox), so run the benchmark from a session that exports no credential.
 - **Rust toolchain** (F7, gap-46fd19; Will's decision of 2026-10-02). A per-task HOME hides `~/.rustup`, so
   `families/common/toolchain.py` resolves the host's toolchain in the operator's environment (`rustup show home`,
   `rustup which cargo`). Agent processes, the census and `ci/verify_verifiers.py` get the toolchain's own bin
@@ -120,13 +135,22 @@ $PY benchmarks/viabilitybench/driver/vb.py run --experiment PILOT-A --stream pil
   and a `CARGO_HOME` under their own HOME, so cargo's registry cache is per run. Every sandbox keeps `RUSTUP_HOME`
   and the operator's `CARGO_HOME` read-only.
 - **Network** (gap-0bd49a). On macOS every agent process runs under a network rule of `sandbox.py`, and is denied the
-  secret file, the key file and the run's private task directories. The direct loop's shell gets no network at all,
-  since the driver makes every model call. The Roko arm's process tree, whose tools run the agent's commands, reaches
-  only the loopback port of the endpoint Roko calls (the metering proxy's) and Unix sockets in its workspace. The
-  Claude Code arm reaches the network only through an egress proxy of its own (`driver/egress.py`), which admits the
-  targets of `[cli] egress_allow` (default `api.anthropic.com:443`) and logs every request to `egress.jsonl`. The
-  record names the rule and the confinement that applied (`provenance.network_policy`), and for Claude Code every
-  refused request. Off macOS the rule is not applied, and the record says "none" (gap-29ac83).
+  secret file, the key file and the results root (bug-d308f7, bug-935cfa). The direct loop's shell gets no network at
+  all, since the driver makes every model call. The Roko and mini-swe-agent arms' process trees, whose tools run the
+  agent's commands, reach only the loopback port of the endpoint they call (the metering proxy's), and Roko's also
+  Unix sockets in its workspace. Since an agent's shell can then call the proxy itself, the proxy forwards only plain
+  chat completions with the arm's own models and function tools (gap-bccf58). It refuses a server-side search or fetch
+  tool, another model and another path, so the agent cannot have the provider search the web for it, and the census
+  flags any task with such a refusal. The Claude Code and Codex arms, and the roko_plan arm's planner, reach the network
+  only through an egress proxy of their own (`driver/egress.py`), which admits the targets of `[cli] egress_allow`
+  (default `api.anthropic.com:443`) and logs every request to `egress.jsonl`. The census shares the sandbox: the
+  truth suites, its visible re-run and the audit battery run the agent's code with no network at all, the sandbox's
+  default rule, and so does the plan slice's census. The record names the rule and the confinement that applied to
+  the agent (`provenance.network_policy`, with every refused egress request) and to the census
+  (`provenance.census_network_policy`; the truth suite's own report is `vs.sandbox`), and what the metering proxy
+  forwarded, with the task's refused calls (`provenance.proxy_policy`). Off macOS no rule is applied,
+  and the record says "none" (gap-29ac83). Two things the sandbox does not confine: a system service the code asks
+  over Mach IPC, and the start-up environment of any other process of your user, which `sysctl` still reads.
 - **Label.** The driver commits the final tree as c_i with `families/common/repo.export_tree`, never with git in the
   agent's repo, then archives it (a git bundle, a tarball and the diff). The census (`census.py`) re-runs the visible
   checks on a clean export with the test files restored, runs the family's `hidden.py --secret-file` and the integrity
@@ -165,6 +189,16 @@ $PY benchmarks/viabilitybench/driver/vb.py run --experiment PILOT-A --stream pil
   need `driver/fingerprint.py` and its golden vectors, which this tree does not have.
 - **The metering and fault proxy** (`faultproxy.py`, S08 §4.11) meters every model call independently of the
   client and injects provider faults. The Roko arm reads its log, `proxy.jsonl`, when the run directory holds one.
+  It forwards only `POST /chat/completions` with the run's models and no server-side tool or search option
+  (gap-bccf58: z.ai's `web_search` tool, Moonshot's `$web_search`, OpenAI's search models and `web_search_options`,
+  each provider's own search and fetch endpoints). An arm file's `[providers.<name>] proxy_allow` can admit a
+  server-side tool a harness needs; none does. What it answers itself, a refusal or an injected fault, is in a
+  provider's words and names neither the task, the run, a cap nor that a fault was injected (bug-fd8200), with the
+  status and `Retry-After` it always had; why it answered is in its log (`refused`, `detail`, `fault_injected`). An
+  injected fault answers as its upstream does (bug-2224eb): in that provider's error shape and words
+  (`faultproxy.UPSTREAM_ERRORS`: Cerebras's flat object, z.ai's business code, Moonshot's types, OpenAI's), with the
+  headers of the upstream's last forwarded answer and fresh ids in their form; gap-db8dab holds the captures that
+  would settle what the providers' documents leave open.
 - **Disturbances** (`vb run --disturbance SPEC.toml`, `disturb.py`, S08 §4.6) apply H6's hooks to stream positions.
   `flaky_verify` routes every arm's visible checks through the visible-verify wrapper (`vb_verify.py`), which fails
   some of them at random; the census's own rerun never meets a flake. `model_swap` has the metering proxy serve

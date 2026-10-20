@@ -10,7 +10,7 @@ goal = "features"
 hold = "Set aside per tldr/05 §3; Will chose hold over park on 2026-09-29 (dec-e70592). Remove this line to revive."
 subsystem = ["roko-cli/runner"]
 created = 2026-09-07
-updated = 2026-09-29
+updated = 2026-10-15
 last_verified = 2026-09-29
 last_verified_rev = "a17d9d766"
 source = "tmp/backlog/archive/178-conductor-supervisor-loop.md#178 — Conductor Supervisor Loop (Live Intervention)"
@@ -199,3 +199,5 @@ How to verify: Check: Conductor supervision tick reads signals from the ring buf
 Verified 2026-09-28: still true, worse than recorded - the Runner-v2 supervision tick (whose actions only logged, gap-fab31c) was deleted and the Graph engine has no conductor tick at all (see spec-a0403b); the only Graph-side conductor hook is the post-settlement ConductorSink (graph_execution/feedback.rs:602).
 - 2026-10-01 (coordinator): gap-1a7f9c wires Graph gate verdicts to the conductor's watchers. With only Continue/Restart/Fail, a gate-driven Restart cancels the task's next attempt within 5 s: it can end a stuck task early under max_retries and kill an attempt the ladder escalated, and learn_restart_outcome scores the restart on provider success, not on verify (wk-honestbench). So gap-1a7f9c lands gate-driven Restarts as advisory only on the Graph path. This item should supply the real reaction (Nudge with the repeated diagnostic, or escalation), switch those decisions back on, and score restarts on verify.
 - 2026-10-01 (coordinator): assigned by mistake while this item was on hold (dec-e70592). wk-scheduler built step 1 (the Nudge, Restart, ForceAdvance ladder in roko-conductor, `escalation.rs`, 12 tests; `[conductor] compile_fail_threshold` now read) on `work/gap-ebd656` at 5d2c600d2 (code a12c004a3), not merged. The hold stays; revive from that branch if Will lifts it.
+
+2026-10-15 (status-quo finding 21, tmp/status-quo/2026-10-15/NEW-FINDINGS.md): re-checked at b42578bab — the supervisor's Nudge and ForceAdvance are still not carried out (crates/roko-cli/src/graph_task_dispatch/supervision.rs:21, :553), and the 'two plan failures call a person' breaker is unfed (crates/roko-conductor/src/circuit_breaker.rs:214, test callers only). Split/replan (ReplanController has no caller) is filed separately as gap-de1e18, p3; the breaker is in gap-de1e18's plan. This item stays held (decision 12 keeps the conductor tick held).

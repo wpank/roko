@@ -1,4 +1,4 @@
-Status: draft · budget none · owner spec-ce1484
+Status: reviewed · budget none · owner spec-ce1484
 
 # Roko: A Cybernetic Harness for Multi-Agent Orchestration
 
@@ -39,8 +39,8 @@ well" is always design rationale ("is built so that", "is designed to", "aims to
 
 Slower loops set the references and settings of faster ones; faster loops leave records that slower ones read.
 Planning is the feedforward half: it writes each task's checks before the work starts. **The executable verdict is
-the one fact every loop reads.** In prose, use the names in the second column; L0–L4 are compact labels for tables and
-figures, or for prose after the name.
+the one fact that every loop above the tool-call loop reads.** In prose, use the names in the second column; L0–L4
+are compact labels for tables and figures, or for prose after the name.
 
 | Level | Name in prose | Clock | Goal |
 |---|---|---|---|
@@ -74,9 +74,10 @@ Read the sections in this order; the PDF joins them the same way.
 - **Budgets** are in words and total 6,500 for §0–§10. `paperlint` reads the File and Budget columns of this table,
   and each file's status header repeats its budget.
 - **Other files:** `references.bib` (the bibliography), `evidence/` (frozen inputs, with `SHA256SUMS` and a
-  provenance table), `figures/` (the two figures; `figures/README.md` says how each is made),
-  `data/citation-content-audit.json` (what each cited work was checked against, and the verdict),
-  [`REVIEW.md`](REVIEW.md) (the review record) and `build.sh` (the PDF build).
+  provenance table), `figures/` (the two figures; `figures/README.md` says how each is made), `data/` (two
+  records of the text before the 2026-10-02 rewrite, kept as history: `citation-content-audit.json`, what each work
+  it cited was checked against, and `mechanisms.toml`, its status matrix), [`REVIEW.md`](REVIEW.md) (the review
+  record, including the citation check of the current text) and `build.sh` (the PDF build).
 - **Writers' working notes** (the research paper this whitepaper condenses, its fact sheets and each section's claims
   ledger) are kept outside the repository. The published text cites only the bibliography, tracked files, commits and
   frozen evidence.

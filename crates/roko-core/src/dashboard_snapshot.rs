@@ -94,6 +94,10 @@ pub enum DashboardEvent {
     /// per-plan completion so cancellation and hard deadlines can converge all
     /// live dashboard projections in one idempotent event.
     RunCompleted {
+        /// The run that ended, when the publisher knows it (gap-6f0eca), so a
+        /// client can match the end to the run it started.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        run_id: Option<String>,
         outcome: String,
         duration_ms: u64,
         #[serde(default)]
@@ -137,7 +141,8 @@ pub enum DashboardEvent {
         old_phase: String,
         new_phase: String,
     },
-    /// An agent was spawned.
+    /// An agent was spawned. Every attempt at a task keeps the task's agent
+    /// id; `attempt` tells the attempts apart (bug-369c21).
     AgentSpawned {
         agent_id: String,
         /// Plan this agent is working on.
@@ -146,7 +151,9 @@ pub enum DashboardEvent {
         /// Task this agent is working on.
         #[serde(default)]
         task_id: String,
-        /// Dispatch attempt number (1-based).
+        /// Dispatch attempt number (1-based): the attempt key's ordinal of a
+        /// Graph task's attempt. 0 from an emitter that does not number
+        /// attempts.
         #[serde(default)]
         attempt: u32,
         role: String,
@@ -156,6 +163,271 @@ pub enum DashboardEvent {
         /// emitter does not know it.
         #[serde(default)]
         provider: String,
+    },
+    /// The router picked the model for a Graph attempt (gap-2a3298): the
+    /// route row `decisions.jsonl` keeps, as it happens. Published before
+    /// the attempt's `agent_spawned`, and again with `source: "failover"`
+    /// when failover passes the planned model over for another one. It says
+    /// where the attempt runs on the model ladder and why, and what the
+    /// self-model forecast for it (gap-aaaaae).
+    RouteDecided {
+        plan_id: String,
+        task_id: String,
+        /// The attempt, from 1.
+        #[serde(default)]
+        attempt: u32,
+        /// The model the route picked.
+        model: String,
+        /// The provider it runs on; empty when the route does not say.
+        #[serde(default)]
+        provider: String,
+        /// The routing stage that decided (`routing_stage`), or `failover`.
+        #[serde(default)]
+        stage: String,
+        /// Why, as the route row words it (`routing_reason`), or which
+        /// model failover passed over and why.
+        #[serde(default)]
+        reason: String,
+        /// Who produced the pick: `router`, `ladder`, `task_hint`,
+        /// `override`, `fallback`, `default`, `explore`, `control`,
+        /// `self_model`, or `failover`.
+        #[serde(default)]
+        source: String,
+        /// The candidates the route weighed, the picked model first and the
+        /// rest by score, at most [`ROUTE_EVENT_CANDIDATES`].
+        #[serde(default)]
+        candidates: Vec<RouteCandidate>,
+        /// Where the attempt runs on the model ladder and why, and the
+        /// self-model's forecast of it, as the event's own fields (`rung`,
+        /// `ladder_step`, `ladder_reason`, `forecast`). Boxed, so every
+        /// other event stays small.
+        #[serde(flatten)]
+        ladder: Box<RouteLadder>,
+    },
+    /// What a Graph attempt's prompt carried (gap-5f6d0b): the stored
+    /// lessons (knowledge entries), playbooks and earlier episodes it used,
+    /// what it retrieved and left out and why, and its sections. Published
+    /// after the attempt's `route_decided`. `exposures.jsonl` keeps the same
+    /// items with their ranks and scores.
+    PromptAssembled {
+        plan_id: String,
+        task_id: String,
+        /// The attempt, from 1.
+        attempt: u32,
+        /// The knowledge entries the prompt carried.
+        #[serde(default)]
+        knowledge_ids: Vec<String>,
+        /// The playbooks it carried.
+        #[serde(default)]
+        playbook_ids: Vec<String>,
+        /// The earlier episodes it cited.
+        #[serde(default)]
+        episode_ids: Vec<String>,
+        /// What it retrieved and left out: knowledge entries, playbooks,
+        /// episodes and sections.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        left_out: Vec<PromptLeftOut>,
+        /// The sections it carried.
+        #[serde(default)]
+        included_sections: Vec<String>,
+        /// The sections it dropped, for whatever reason.
+        #[serde(default)]
+        dropped_sections: Vec<String>,
+        /// Its estimated size in tokens.
+        #[serde(default)]
+        estimated_tokens: u32,
+    },
+    /// What a failed check of a Graph attempt leaves for the task's next
+    /// attempt (gap-655ea5): the diagnosis its prompt leads with, the
+    /// failing steps and the key error lines. Published as the feedback is
+    /// kept, before the next attempt's `route_decided`; `retry-feedback.json`
+    /// keeps it for a resumed run.
+    RetryFeedback {
+        plan_id: String,
+        task_id: String,
+        /// The attempt that failed, from 1.
+        attempt: u32,
+        /// The attempt the feedback is for, from 1.
+        next_attempt: u32,
+        /// What failed: `verify` (the task's verify steps),
+        /// `pre_verify:<check>` (the screen before them), `plan-branch` (its
+        /// work conflicts with the plan's accepted work),
+        /// `scratch-copy-back` or `review`.
+        check: String,
+        /// The failing steps, one line each, such as ``verify[0:test]
+        /// (`cargo test`): exit code: 101``.
+        #[serde(default)]
+        failing_steps: Vec<String>,
+        /// The diagnosis the next attempt's prompt leads with: a cheap
+        /// model's reading of the failure, or the check's own.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        diagnosis: Option<String>,
+        /// The key error lines the prompt lists: compile errors, failed
+        /// tests and warnings.
+        #[serde(default)]
+        errors: Vec<String>,
+    },
+    /// A Graph task's attempt settled (gap-4e852d): how it ended, who it is
+    /// charged to, where it ran on the model ladder and why, the task's
+    /// standing once it counts, and what it used. One per attempt, after its
+    /// verdict is written to the run's `attempts.jsonl`.
+    AttemptSettled {
+        plan_id: String,
+        task_id: String,
+        /// The attempt, from 1.
+        #[serde(default)]
+        attempt: u32,
+        /// How it ended, where it ran on the ladder and what it used, as the
+        /// event's own fields. Boxed, so every other event stays small.
+        #[serde(flatten)]
+        settled: Box<AttemptSettlement>,
+    },
+    /// A Graph task failed on the top rung it can climb with no retries left
+    /// (gap-22c4b1): nothing retries it, and a person should split or replan
+    /// it. Published after that attempt's `attempt_settled`, beside the
+    /// `ladder_exhausted:<plan>/<task>` diagnosis.
+    LadderExhausted {
+        plan_id: String,
+        task_id: String,
+        /// The attempt that exhausted it, from 1.
+        #[serde(default)]
+        attempt: u32,
+        /// The rung it failed on.
+        #[serde(default)]
+        rung: Option<String>,
+        /// The model that rung ran.
+        #[serde(default)]
+        model: String,
+        /// Rungs the task climbed above its start rung.
+        #[serde(default)]
+        escalations: u32,
+        /// What to do about it.
+        #[serde(default)]
+        suggestion: String,
+    },
+    /// A Graph task's `confirm` rung asked its person whether the outcome is
+    /// what they asked for; the task waits until they answer or the rung
+    /// times out (gap-7c6663). MCP `confirm_answer` names the attempt key.
+    ConfirmWaiting {
+        plan_id: String,
+        task_id: String,
+        /// The attempt, from 1.
+        #[serde(default)]
+        attempt: u32,
+        /// The attempt key the answer names.
+        attempt_key: String,
+        /// The rung, as its gate results name it (`rung[<name>]`).
+        rung: String,
+        /// What the person is asked.
+        question: String,
+        /// How long the rung waits for an answer, in seconds.
+        timeout_secs: u64,
+        /// When the rung stops waiting (RFC 3339).
+        deadline_at: String,
+    },
+    /// A `confirm` rung's wait ended (gap-7c6663).
+    ConfirmResolved {
+        plan_id: String,
+        task_id: String,
+        /// The attempt, from 1.
+        #[serde(default)]
+        attempt: u32,
+        /// The attempt key the answer named.
+        attempt_key: String,
+        /// The rung, as its gate results name it.
+        rung: String,
+        /// `approved`, `rejected` (or another word the person answered with),
+        /// `timed_out`, or `stopped` when the run began to stop.
+        outcome: String,
+        /// The person's note, when they gave one.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        note: Option<String>,
+    },
+    /// A run's agent proposed a call that acts on the outside world (a send,
+    /// a post, a payment), and roko held it for a person's approval instead
+    /// of running it (gap-f439c1). MCP `effect_decide` names the effect id.
+    /// It names no run: a run's event log keeps it by its plan, since a run
+    /// of several plans holds each plan's effects under that plan's own run.
+    EffectStaged {
+        effect_id: String,
+        #[serde(default)]
+        plan_id: String,
+        #[serde(default)]
+        task_id: String,
+        /// The attempt, from 1; 0 when the call named none.
+        #[serde(default)]
+        attempt: u32,
+        /// The tool, as the agent called it.
+        tool: String,
+        /// The MCP server of an MCP tool; empty otherwise.
+        #[serde(default)]
+        server: String,
+        /// When the agent proposed the call (RFC 3339).
+        #[serde(default)]
+        proposed_at: String,
+    },
+    /// A held effect was decided (gap-f439c1).
+    EffectDecided {
+        effect_id: String,
+        #[serde(default)]
+        plan_id: String,
+        #[serde(default)]
+        task_id: String,
+        #[serde(default)]
+        tool: String,
+        #[serde(default)]
+        server: String,
+        /// `applied`, `rejected`, `failed` (it ran and its checks did not
+        /// pass), or `ambiguous` (it may have run).
+        outcome: String,
+        /// Who decided.
+        #[serde(default)]
+        decided_by: String,
+    },
+    /// A verified Graph attempt taught the knowledge store something
+    /// (gap-7576c7): its stated lesson admitted or confirmed, the entries its
+    /// prompt surfaced reinforced, tiers promoted. Published only when the
+    /// ingestion changed something.
+    KnowledgeWritten {
+        plan_id: String,
+        task_id: String,
+        /// How admission handled the attempt's lesson: `light_admitted`,
+        /// `full_admitted`, `full_deferred`, `full_rejected`,
+        /// `full_suppressed`, `deferred`, `duplicate` (it confirmed a stored
+        /// entry), or `no_candidate` (the attempt stated no lesson).
+        admission: String,
+        /// The entry admitted or confirmed, when one was.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        entry_id: Option<String>,
+        /// Entries the attempt's prompt surfaced that its passed gates
+        /// reinforced.
+        #[serde(default)]
+        reinforced: u32,
+        /// Entries promoted to a higher tier.
+        #[serde(default)]
+        promoted: u32,
+        /// The lesson admitted or confirmed, at most 160 characters.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        lesson: Option<String>,
+    },
+    /// A verified Graph attempt wrote L-play's playbook store (gap-89f985):
+    /// its tool calls became a new playbook, or one more success of the
+    /// stored playbook whose topic and steps they match. Published only when
+    /// the store changed.
+    PlaybookWritten {
+        plan_id: String,
+        task_id: String,
+        /// `created` (a new playbook) or `credited` (a stored one gained the
+        /// success).
+        admission: String,
+        /// The playbook created or credited.
+        playbook_id: String,
+        /// Its goal, at most 160 characters.
+        #[serde(default)]
+        goal: String,
+        /// Its steps.
+        #[serde(default)]
+        steps: u32,
     },
     /// Incremental agent output.
     AgentOutput {
@@ -181,12 +453,22 @@ pub enum DashboardEvent {
         #[serde(default)]
         output_text: Option<String>,
     },
-    /// A single line of gate output for live streaming.
+    /// A single line of gate output for live streaming. A Graph task's verify
+    /// steps publish each line as their command writes it (gap-f45a6d),
+    /// bounded per step; a line from roko itself (`stream: "roko"`) says how
+    /// many it did not stream.
     GateOutputLine {
         plan_id: String,
         task_id: String,
+        /// The attempt, from 1; 0 when the publisher does not say.
+        #[serde(default)]
+        attempt: u32,
         gate: String,
         line: String,
+        /// `stdout` or `stderr`, `roko` for roko's own note; empty when the
+        /// publisher does not say.
+        #[serde(default)]
+        stream: String,
     },
     /// The plan transitioned between phases.
     PhaseTransition {
@@ -385,6 +667,114 @@ pub enum DashboardEvent {
         task_id: String,
         /// Human-readable rung label (e.g. "compile", "clippy", "test").
         rung_name: String,
+    },
+    /// A step of a plan's whole-plan check started (gap-6b6ec1): its
+    /// `[meta] verify`, or the default check of a Cargo workspace, which runs
+    /// once the plan's tasks passed and can build the whole workspace for
+    /// many minutes. A `plan_check_heartbeat` follows every 15 s while the
+    /// step runs, and a `plan_check_finished` ends it.
+    PlanCheckStarted {
+        plan_id: String,
+        /// Where the check runs: `regression` (the delivery's post-merge
+        /// check, in the regression checkout) or `in_place` (the working tree
+        /// the plan's tasks edited).
+        stage: String,
+        /// The step, from 1.
+        step: u32,
+        /// How many steps the check has.
+        steps: u32,
+        /// What the step runs, in a word or two: `cargo clippy`, `cargo
+        /// test`, or the program it starts.
+        name: String,
+        /// The step's command.
+        command: String,
+        /// What the step builds: `workspace` (every Cargo package),
+        /// `packages` (the ones `packages` names), or `command` (no Cargo
+        /// build it names).
+        scope: String,
+        /// The Cargo packages of a `packages` step.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        packages: Vec<String>,
+        /// Where the check came from: `authored` (`[meta] verify`) or
+        /// `cargo-default`.
+        source: String,
+    },
+    /// A whole-plan check step is still running (gap-6b6ec1).
+    PlanCheckHeartbeat {
+        plan_id: String,
+        stage: String,
+        step: u32,
+        steps: u32,
+        name: String,
+        scope: String,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        packages: Vec<String>,
+        /// Milliseconds since the step started.
+        elapsed_ms: u64,
+    },
+    /// A whole-plan check step ended (gap-6b6ec1).
+    PlanCheckFinished {
+        plan_id: String,
+        stage: String,
+        step: u32,
+        steps: u32,
+        name: String,
+        scope: String,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        packages: Vec<String>,
+        /// Whether the step passed. A failed step ends the check.
+        passed: bool,
+        /// The step's exit code; `None` when it did not exit.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        exit_code: Option<i32>,
+        /// Why a step that did not exit ended, such as `timed out after
+        /// 600 s`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        reason: Option<String>,
+        /// What stopped the step before it ended, such as `cancel` or
+        /// `SIGINT`, when the run was asked to stop (bug-7b62ff): the check
+        /// was stopped, it did not fail.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        stopped_by: Option<String>,
+        /// Milliseconds the step ran.
+        elapsed_ms: u64,
+    },
+    /// A plan's delivery started (gap-4f6cbe): its verified work is merged
+    /// into `target`, the run's batch branch, and the plan's regression
+    /// check then runs on the merge. A `delivery_finished` ends it.
+    DeliveryStarted {
+        plan_id: String,
+        /// The delivery's id, `<run>:<plan>`; the delivery of the verified
+        /// part of a plan that did not finish ends in `:partial`.
+        delivery_id: String,
+        /// The branch the work is merged into.
+        target: String,
+        /// The branch the work is on, `roko/plan/<plan>`.
+        branch: String,
+        /// The commit delivered: the verified tip of `branch`.
+        commit: String,
+    },
+    /// A plan's delivery ended (gap-4f6cbe).
+    DeliveryFinished {
+        plan_id: String,
+        delivery_id: String,
+        target: String,
+        /// How it ended: `delivered`; `conflict` (the merge failed);
+        /// `regression_failed` (the check on the merge failed);
+        /// `cancelled` (a stop cut the check short: the delivery stopped,
+        /// it did not fail); or `terminal_failed` (it could not finish).
+        state: String,
+        /// The merge, once it was made. A run's batch takes a
+        /// `regression_failed` or `cancelled` merge back out of `target`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        merge_commit: Option<String>,
+        /// Why it was not delivered.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        reason: Option<String>,
+        /// What stopped a `cancelled` delivery, such as `cancel` or
+        /// `SIGINT`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        stopped_by: Option<String>,
     },
     /// Daimon affect state updated after a task turn.
     AffectUpdated {
@@ -626,6 +1016,187 @@ pub type PlanState = PlanDisplayState;
 
 /// Phase of a plan-set member that has not started yet.
 pub const PLAN_SET_PENDING_PHASE: &str = "pending";
+
+/// Most candidates a [`DashboardEvent::RouteDecided`] carries.
+pub const ROUTE_EVENT_CANDIDATES: usize = 5;
+
+/// One candidate a route weighed, as [`DashboardEvent::RouteDecided`]
+/// carries it.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct RouteCandidate {
+    /// The model.
+    pub model: String,
+    /// The provider it runs on.
+    #[serde(default)]
+    pub provider: String,
+    /// The stage's score for it.
+    #[serde(default)]
+    pub score: f64,
+    /// The probability the route's policy gave it, when it says.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub p: Option<f64>,
+    /// Whether the guards let the policy pick it.
+    #[serde(default)]
+    pub eligible: bool,
+    /// Why it could not be picked.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ineligible_reason: Option<String>,
+}
+
+/// One item a prompt retrieved and left out, as
+/// [`DashboardEvent::PromptAssembled`] carries it.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PromptLeftOut {
+    /// What it is: `knowledge`, `playbook`, `episode` or `section`.
+    pub kind: String,
+    /// Its id: a knowledge entry, playbook or episode id, or a section name.
+    pub id: String,
+    /// Why: `withheld_arm` (the attempt's control arm withholds its source),
+    /// `bandit_excluded` (the section bandit left its section out),
+    /// `token_budget` (its section did not fit), `role_filter` or
+    /// `screened`.
+    pub reason: String,
+}
+
+/// Where a Graph attempt runs on the model ladder and why, and the
+/// self-model's forecast of it, as [`DashboardEvent::RouteDecided`] carries
+/// them (gap-aaaaae).
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct RouteLadder {
+    /// The `[routing.ladder]` rung the attempt runs on; `None` when the
+    /// ladder did not route it, as for a pinned model.
+    pub rung: Option<String>,
+    /// Rungs the task has climbed above its start rung.
+    pub ladder_step: u32,
+    /// Why this try runs where it does: `start` (the task's first try),
+    /// `retry` (another try on the rung its last try ran on), `climb` (its
+    /// first try on a higher rung), `failover` (failover moved it to another
+    /// model) or `pinned` (a pin chose its model). Empty from an emitter
+    /// that does not say.
+    pub ladder_reason: String,
+    /// The self-model's forecast of the attempt, when it made one (M3); it
+    /// never changes the route in shadow mode.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub forecast: Option<RouteForecast>,
+}
+
+/// How a Graph attempt ended, where it ran on the model ladder and what it
+/// used, as [`DashboardEvent::AttemptSettled`] carries it (gap-4e852d).
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct AttemptSettlement {
+    /// The `[routing.ladder]` rung it ran on; `None` when the ladder did
+    /// not route it.
+    #[serde(default)]
+    pub rung: Option<String>,
+    /// Rungs the task has climbed above its start rung once this try
+    /// counts; for a pass, the rungs it had climbed when it ran.
+    #[serde(default)]
+    pub escalations: u32,
+    /// The task's agent-blamed failures on the rung its next try runs
+    /// on: 0 after a pass or a climb. A rung gives 2 tries.
+    #[serde(default)]
+    pub failures_on_rung: u32,
+    /// Whether this try moved the task up a rung: its next try runs
+    /// higher.
+    #[serde(default)]
+    pub climbed: bool,
+    /// Why it ran where it did: `start`, `retry`, `climb`, `failover`
+    /// or `pinned`, as its `route_decided` says.
+    #[serde(default)]
+    pub reason: String,
+    /// How it ended: `passed`, `gate_failed`, `turn_cap` (a turn cap,
+    /// or the rung's spend allowance), `timeout`, `provider_error`,
+    /// `budget_exhausted`, `cancelled`, and so on.
+    #[serde(default)]
+    pub verdict: String,
+    /// Who it is charged to: `none`, `agent`, `infra` or `harness`.
+    /// Only an agent-blamed failure counts toward a climb.
+    #[serde(default)]
+    pub blame: String,
+    /// The check that failed it (`verify:0/test`), when one did.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub failed_check: Option<String>,
+    /// The first line of why it failed (`turn_cap: agent turn cap
+    /// reached (turns=15, cap=15)`), when it did.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub detail: Option<String>,
+    /// The model that ran.
+    #[serde(default)]
+    pub model: String,
+    /// The provider it ran on.
+    #[serde(default)]
+    pub provider: String,
+    /// Its tokens.
+    #[serde(default)]
+    pub usage: AttemptTokens,
+    /// What it cost in USD, as the plan's budget counted it; `None` when
+    /// unknown.
+    #[serde(default)]
+    pub cost_usd: Option<f64>,
+    /// From the attempt's start to its verdict, in ms.
+    #[serde(default)]
+    pub duration_ms: Option<u64>,
+    /// Whether its failure exhausted the ladder: no rung or retry left.
+    #[serde(default)]
+    pub exhausted: bool,
+}
+
+/// The tokens of one attempt, as [`DashboardEvent::AttemptSettled`]
+/// carries them (gap-4e852d); a count the provider did not report is
+/// `None`, never 0.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AttemptTokens {
+    /// Uncached input.
+    #[serde(rename = "in", default)]
+    pub input: Option<u64>,
+    /// Output, reasoning included.
+    #[serde(rename = "out", default)]
+    pub output: Option<u64>,
+    /// Input read from the prompt cache.
+    #[serde(default)]
+    pub cache_read: Option<u64>,
+    /// Reasoning tokens, already inside `out`.
+    #[serde(default)]
+    pub reasoning: Option<u64>,
+}
+
+/// The self-model's forecast of a Graph attempt, as
+/// [`DashboardEvent::RouteDecided`] carries it (M3, gap-aaaaae).
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct RouteForecast {
+    /// The routing mode the self-model ran in: `shadow` or `active`.
+    #[serde(default)]
+    pub mode: String,
+    /// What it would do: `dispatch`, `climb`, `skip`, `retry`,
+    /// `refine_spec` or `abandon`.
+    #[serde(default)]
+    pub action: String,
+    /// The model it would choose; `None` when it would dispatch nothing.
+    #[serde(default)]
+    pub would_choose: Option<String>,
+    /// Its forecast for each candidate, the likeliest verified success
+    /// first, at most [`ROUTE_EVENT_CANDIDATES`].
+    #[serde(default)]
+    pub candidates: Vec<ForecastCandidate>,
+}
+
+/// One candidate of a [`RouteForecast`].
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct ForecastCandidate {
+    /// The model.
+    pub model: String,
+    /// The provider it runs on.
+    #[serde(default)]
+    pub provider: String,
+    /// P(verified success): every check passes and the pass is not a false
+    /// green.
+    #[serde(default)]
+    pub p_vs: f64,
+    /// The median cost of an attempt, in USD at the run's price snapshot.
+    #[serde(default)]
+    pub cost_q50: f64,
+}
 
 /// One plan announced by [`DashboardEvent::PlanSetLoaded`].
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -991,7 +1562,9 @@ pub struct AgentTopologyEdge {
     pub edge_type: String,
 }
 
-/// One bucket of aggregated efficiency telemetry.
+/// One bucket of aggregated efficiency telemetry: a span of time, or one plan
+/// run in the trend a Graph run publishes as it ends (gap-de0e96), whose
+/// buckets carry the run's fields.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct EfficiencyBucket {
     /// Bucket start timestamp in UTC.
@@ -1012,6 +1585,21 @@ pub struct EfficiencyBucket {
     /// Average latency in milliseconds for turns in the bucket.
     #[serde(default)]
     pub latency_ms_avg: f64,
+    /// The plan run a run trend's bucket is.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub run_id: Option<String>,
+    /// The run's cost in USD, unrounded: model calls and helper calls.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cost_usd: Option<f64>,
+    /// The run's tasks.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tasks: Option<u64>,
+    /// The run's tasks that passed every verify step.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub verified_tasks: Option<u64>,
+    /// `cost_usd` per verified task; absent when no task passed its checks.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cost_per_verified_usd: Option<f64>,
 }
 
 impl Default for EfficiencyBucket {
@@ -1023,6 +1611,11 @@ impl Default for EfficiencyBucket {
             tokens_out: 0,
             cost_usd_cents: 0,
             latency_ms_avg: 0.0,
+            run_id: None,
+            cost_usd: None,
+            tasks: None,
+            verified_tasks: None,
+            cost_per_verified_usd: None,
         }
     }
 }
@@ -1257,12 +1850,18 @@ pub const TASK_OUTCOME_BLOCKED: &str = "blocked";
 /// failed: it did not finish.
 pub const TASK_OUTCOME_INTERRUPTED: &str = "interrupted";
 
+/// Outcome of a task that a stop cut off: its run was cancelled while it ran,
+/// or the operator stopped it (bug-1d09e8). Counted as neither done nor
+/// failed: a cancel is the person's choice, and a resume runs the task again.
+pub const TASK_OUTCOME_CANCELLED: &str = "cancelled";
+
 /// How a `TaskCompleted` outcome counts in the dashboard.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TaskOutcomeClass {
     /// The task completed and passed its verify steps.
     Passed,
-    /// The task failed, errored, was cancelled or halted.
+    /// The task failed, errored, halted, or was interrupted by a run that
+    /// ended other than by cancellation.
     Failed,
     /// The task completed although its verification failed.
     AcceptedWithFailures,
@@ -1276,17 +1875,20 @@ pub enum TaskOutcomeClass {
     /// The task will not run: a task it depends on failed, or it did not
     /// start (gap-f59fe9). Neither done nor failed.
     Blocked,
+    /// A stop cut the task off: its run was cancelled while it ran, or the
+    /// operator stopped it (bug-1d09e8). Neither done nor failed.
+    Cancelled,
 }
 
 /// Classify a `TaskCompleted` outcome string.
 ///
 /// Only an outcome that names a pass (`passed`,
 /// `passed_with_preexisting_failures`, or a legacy `success` or `succeeded`)
-/// counts as passed. A skipped task is not a pass, a blocked task is neither
-/// done nor failed, a failure (an interrupted or cancelled task included) is
-/// failed, and any other outcome, `unverified` included, is unverified. Accepted-with-failures, already-satisfied,
-/// blocked and the passes are matched exactly before failures: two of them
-/// contain "fail".
+/// counts as passed. A skipped task is not a pass, a blocked or cancelled task
+/// is neither done nor failed, a failure (an interrupted task included) is
+/// failed, and any other outcome, `unverified` included, is unverified.
+/// Accepted-with-failures, already-satisfied, blocked and the passes are
+/// matched exactly before failures: two of them contain "fail".
 #[must_use]
 pub fn classify_task_outcome(outcome: &str) -> TaskOutcomeClass {
     let lower = outcome.to_ascii_lowercase();
@@ -1304,7 +1906,9 @@ pub fn classify_task_outcome(outcome: &str) -> TaskOutcomeClass {
         || lower.starts_with("success")
     {
         TaskOutcomeClass::Passed
-    } else if ["fail", "error", "cancel", "halt", "interrupt"]
+    } else if lower.contains("cancel") {
+        TaskOutcomeClass::Cancelled
+    } else if ["fail", "error", "halt", "interrupt"]
         .iter()
         .any(|word| lower.contains(word))
     {
@@ -1688,7 +2292,7 @@ impl DashboardSnapshot {
                     step(&mut plan.tasks_skipped);
                 }
             }
-            TaskOutcomeClass::Blocked => {}
+            TaskOutcomeClass::Blocked | TaskOutcomeClass::Cancelled => {}
         }
     }
 
@@ -1814,6 +2418,7 @@ impl DashboardSnapshot {
                 cleanup_degraded,
                 surviving_agent_ids,
                 surviving_agent_pids,
+                ..
             } => {
                 // Preserve the first terminal duration for this invocation.
                 // Duplicate terminal publications and event-log replay must
@@ -1836,9 +2441,10 @@ impl DashboardSnapshot {
                 }
                 // A task still running when the run ends did not finish: it
                 // ends with the run, cancelled or interrupted, never passed
-                // (bug-60ccba).
+                // (bug-60ccba). Only an interrupted one counts as failed
+                // (bug-1d09e8).
                 let task_outcome = if outcome == "cancelled" {
-                    "cancelled"
+                    TASK_OUTCOME_CANCELLED
                 } else {
                     TASK_OUTCOME_INTERRUPTED
                 };
@@ -2438,6 +3044,79 @@ impl DashboardSnapshot {
                     format!("rung={rung_name}"),
                 );
             }
+            DashboardEvent::PlanCheckStarted {
+                plan_id,
+                step,
+                steps,
+                command,
+                ..
+            } => {
+                self.push_event_log(
+                    ts,
+                    "plan_check_started".to_string(),
+                    plan_id.clone(),
+                    String::new(),
+                    format!("plan check {step}/{steps}: {command}"),
+                );
+            }
+            // The step's start and end are logged; a host shows its clock.
+            DashboardEvent::PlanCheckHeartbeat { .. } => {}
+            DashboardEvent::PlanCheckFinished {
+                plan_id,
+                step,
+                steps,
+                name,
+                passed,
+                stopped_by,
+                elapsed_ms,
+                ..
+            } => {
+                let verdict = match (passed, stopped_by) {
+                    (true, _) => "passed",
+                    (false, Some(_)) => "stopped",
+                    (false, None) => "failed",
+                };
+                self.push_event_log(
+                    ts,
+                    "plan_check_finished".to_string(),
+                    plan_id.clone(),
+                    String::new(),
+                    format!(
+                        "plan check {step}/{steps} {verdict}: {name} after {} s",
+                        elapsed_ms / 1_000
+                    ),
+                );
+            }
+            DashboardEvent::DeliveryStarted {
+                plan_id, target, ..
+            } => {
+                self.push_event_log(
+                    ts,
+                    "delivery_started".to_string(),
+                    plan_id.clone(),
+                    String::new(),
+                    format!("delivering into {target}"),
+                );
+            }
+            DashboardEvent::DeliveryFinished {
+                plan_id,
+                target,
+                state,
+                reason,
+                ..
+            } => {
+                let message = match reason {
+                    Some(reason) => format!("delivery into {target} {state}: {reason}"),
+                    None => format!("delivery into {target} {state}"),
+                };
+                self.push_event_log(
+                    ts,
+                    "delivery_finished".to_string(),
+                    plan_id.clone(),
+                    String::new(),
+                    message,
+                );
+            }
             DashboardEvent::AffectUpdated {
                 pleasure,
                 arousal,
@@ -2515,6 +3194,211 @@ impl DashboardSnapshot {
             // S10's calibration view reads the export from the event stream
             // (6134); the snapshot keeps none of it.
             DashboardEvent::SelfModelCalibration { .. } => {}
+            DashboardEvent::ConfirmWaiting {
+                plan_id,
+                task_id,
+                question,
+                deadline_at,
+                ..
+            } => {
+                self.push_event_log(
+                    ts,
+                    "confirm_waiting".to_string(),
+                    plan_id.clone(),
+                    task_id.clone(),
+                    format!("waits for a person until {deadline_at}: {question}"),
+                );
+            }
+            DashboardEvent::ConfirmResolved {
+                plan_id,
+                task_id,
+                outcome,
+                ..
+            } => {
+                self.push_event_log(
+                    ts,
+                    "confirm_resolved".to_string(),
+                    plan_id.clone(),
+                    task_id.clone(),
+                    format!("confirmation {outcome}"),
+                );
+            }
+            DashboardEvent::EffectStaged {
+                plan_id,
+                task_id,
+                tool,
+                server,
+                effect_id,
+                ..
+            } => {
+                let on = if server.is_empty() {
+                    String::new()
+                } else {
+                    format!(" on {server}")
+                };
+                self.push_event_log(
+                    ts,
+                    "effect_staged".to_string(),
+                    plan_id.clone(),
+                    task_id.clone(),
+                    format!("{tool}{on} held for approval as {effect_id}"),
+                );
+            }
+            DashboardEvent::EffectDecided {
+                plan_id,
+                task_id,
+                effect_id,
+                outcome,
+                ..
+            } => {
+                self.push_event_log(
+                    ts,
+                    "effect_decided".to_string(),
+                    plan_id.clone(),
+                    task_id.clone(),
+                    format!("{effect_id}: {outcome}"),
+                );
+            }
+            DashboardEvent::KnowledgeWritten {
+                plan_id,
+                task_id,
+                admission,
+                reinforced,
+                promoted,
+                lesson,
+                ..
+            } => {
+                let lesson = lesson
+                    .as_deref()
+                    .map_or_else(String::new, |lesson| format!(": {lesson}"));
+                self.push_event_log(
+                    ts,
+                    "knowledge_written".to_string(),
+                    plan_id.clone(),
+                    task_id.clone(),
+                    format!("{admission}, {reinforced} reinforced, {promoted} promoted{lesson}"),
+                );
+            }
+            DashboardEvent::PlaybookWritten {
+                plan_id,
+                task_id,
+                admission,
+                playbook_id,
+                goal,
+                steps,
+            } => {
+                self.push_event_log(
+                    ts,
+                    "playbook_written".to_string(),
+                    plan_id.clone(),
+                    task_id.clone(),
+                    format!("{admission} {playbook_id} ({steps} steps): {goal}"),
+                );
+            }
+            DashboardEvent::RouteDecided {
+                plan_id,
+                task_id,
+                attempt,
+                model,
+                source,
+                ..
+            } => {
+                let by = if source.is_empty() { "route" } else { source };
+                self.push_event_log(
+                    ts,
+                    "route_decided".to_string(),
+                    plan_id.clone(),
+                    task_id.clone(),
+                    format!("attempt {attempt}: {model} ({by})"),
+                );
+            }
+            DashboardEvent::PromptAssembled {
+                plan_id,
+                task_id,
+                attempt,
+                knowledge_ids,
+                playbook_ids,
+                episode_ids,
+                left_out,
+                ..
+            } => {
+                self.push_event_log(
+                    ts,
+                    "prompt_assembled".to_string(),
+                    plan_id.clone(),
+                    task_id.clone(),
+                    format!(
+                        "attempt {attempt}: {} lesson(s), {} playbook(s), {} episode(s) in its \
+                         prompt; {} left out",
+                        knowledge_ids.len(),
+                        playbook_ids.len(),
+                        episode_ids.len(),
+                        left_out.len()
+                    ),
+                );
+            }
+            DashboardEvent::RetryFeedback {
+                plan_id,
+                task_id,
+                attempt,
+                next_attempt,
+                check,
+                diagnosis,
+                errors,
+                ..
+            } => {
+                let gets = diagnosis
+                    .as_deref()
+                    .or_else(|| errors.first().map(String::as_str))
+                    .unwrap_or("its output");
+                self.push_event_log(
+                    ts,
+                    "retry_feedback".to_string(),
+                    plan_id.clone(),
+                    task_id.clone(),
+                    format!(
+                        "attempt {attempt} failed {check}; attempt {next_attempt} gets: {gets}"
+                    ),
+                );
+            }
+            DashboardEvent::AttemptSettled {
+                plan_id,
+                task_id,
+                attempt,
+                settled,
+            } => {
+                let on = settled
+                    .rung
+                    .as_deref()
+                    .map_or_else(String::new, |rung| format!(" on {rung}"));
+                self.push_event_log(
+                    ts,
+                    "attempt_settled".to_string(),
+                    plan_id.clone(),
+                    task_id.clone(),
+                    format!(
+                        "attempt {attempt}{on} ({}): {}",
+                        settled.model, settled.verdict
+                    ),
+                );
+            }
+            DashboardEvent::LadderExhausted {
+                plan_id,
+                task_id,
+                rung,
+                model,
+                suggestion,
+                ..
+            } => {
+                let rung = rung.as_deref().unwrap_or("-");
+                self.push_event_log(
+                    ts,
+                    "ladder_exhausted".to_string(),
+                    plan_id.clone(),
+                    task_id.clone(),
+                    format!("failed on its top rung {rung} ({model}): {suggestion}"),
+                );
+            }
             // S10's Loop Health view reads health from the event stream; the
             // snapshot keeps no loop state, and logs only the transitions.
             DashboardEvent::LoopHealth { .. } => {}
@@ -5022,6 +5906,7 @@ mod tests {
         );
         snap.apply_with_ts(
             &DashboardEvent::RunCompleted {
+                run_id: None,
                 outcome: "cancelled".into(),
                 duration_ms: 5_000,
                 cleanup_degraded: false,
@@ -5037,9 +5922,42 @@ mod tests {
         assert_eq!(snap.plans["b"].finished_at_ms, None);
     }
 
+    /// gap-6f0eca: a run's end names the run when its publisher knows it, and an
+    /// older end without a run id still reads.
+    #[test]
+    fn run_completed_carries_its_run_id() {
+        let named = DashboardEvent::RunCompleted {
+            run_id: Some("run-1".into()),
+            outcome: "succeeded".into(),
+            duration_ms: 5,
+            cleanup_degraded: false,
+            surviving_agent_ids: Vec::new(),
+            surviving_agent_pids: Vec::new(),
+        };
+        let json = serde_json::to_value(&named).expect("serialize");
+        assert_eq!(json["type"], "run_completed");
+        assert_eq!(json["run_id"], "run-1");
+        let back: DashboardEvent = serde_json::from_value(json).expect("deserialize");
+        assert_eq!(back, named);
+
+        let older: DashboardEvent = serde_json::from_value(serde_json::json!({
+            "type": "run_completed",
+            "outcome": "failed",
+            "duration_ms": 1,
+        }))
+        .expect("an end without a run id");
+        assert!(matches!(
+            older,
+            DashboardEvent::RunCompleted { run_id: None, .. }
+        ));
+        let unnamed = serde_json::to_value(&older).expect("serialize");
+        assert!(unnamed.get("run_id").is_none(), "{unnamed}");
+    }
+
     /// bug-60ccba: a run that ends while tasks still run ends them too, at its
     /// time and never as passed: interrupted, or cancelled when the run was
-    /// cancelled. A task that finished keeps its outcome and time.
+    /// cancelled, which is not a failure (bug-1d09e8). A task that finished
+    /// keeps its outcome and time.
     #[test]
     fn run_completed_ends_running_tasks() {
         let started = |task_id: &str| DashboardEvent::TaskStarted {
@@ -5049,6 +5967,7 @@ mod tests {
             phase: "implement".into(),
         };
         let run_completed = |outcome: &str| DashboardEvent::RunCompleted {
+            run_id: None,
             outcome: outcome.into(),
             duration_ms: 2_000,
             cleanup_degraded: false,
@@ -5091,12 +6010,17 @@ mod tests {
         assert_eq!(t1.outcome.as_deref(), Some(TASK_OUTCOME_PASSED));
         assert_eq!(t1.finished_at_ms, Some(2_000));
 
-        // A cancelled run's running tasks end cancelled.
+        // A cancelled run's running tasks end cancelled, and no failure is
+        // counted.
         let mut snap = DashboardSnapshot::default();
         snap.apply_with_ts(&started("t1"), 1_000);
         snap.apply_with_ts(&run_completed("cancelled"), 2_000);
-        assert_eq!(snap.tasks["p1/t1"].outcome.as_deref(), Some("cancelled"));
-        assert_eq!(snap.stats.tasks_failed, 1);
+        assert_eq!(
+            snap.tasks["p1/t1"].outcome.as_deref(),
+            Some(TASK_OUTCOME_CANCELLED)
+        );
+        assert_eq!(snap.stats.tasks_failed, 0);
+        assert_eq!(snap.stats.tasks_active, 0);
     }
 
     #[test]
@@ -5318,8 +6242,10 @@ mod tests {
         snap.apply(&DashboardEvent::GateOutputLine {
             plan_id: "plan-a".into(),
             task_id: "task-1".into(),
+            attempt: 1,
             gate: "compile".into(),
             line: "Checking roko-core".into(),
+            stream: "stderr".into(),
         });
         assert_eq!(
             snap.gate_output_lines.back().map(String::as_str),
@@ -5427,7 +6353,7 @@ mod tests {
     #[test]
     fn classify_task_outcome_counts_only_verified_passes() {
         use TaskOutcomeClass::{
-            AcceptedWithFailures, AlreadySatisfied, Failed, Passed, Skipped, Unverified,
+            AcceptedWithFailures, AlreadySatisfied, Cancelled, Failed, Passed, Skipped, Unverified,
         };
         for (outcome, class) in [
             (TASK_OUTCOME_PASSED, Passed),
@@ -5442,7 +6368,9 @@ mod tests {
             ("failed", Failed),
             ("gate_failed", Failed),
             ("error", Failed),
-            ("cancelled", Failed),
+            (TASK_OUTCOME_INTERRUPTED, Failed),
+            (TASK_OUTCOME_CANCELLED, Cancelled),
+            ("canceled", Cancelled),
             (TASK_OUTCOME_ACCEPTED_WITH_FAILURES, AcceptedWithFailures),
         ] {
             assert_eq!(classify_task_outcome(outcome), class, "{outcome}");

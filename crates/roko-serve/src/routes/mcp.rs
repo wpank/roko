@@ -227,12 +227,14 @@ fn tools() -> Vec<(Value, &'static str)> {
                 "run_prompt",
                 "Have Roko do a piece of work as one gated task, as `roko run` does: an \
                  agent works in Roko's workspace and the workspace's checks verify the \
-                 result. Paid: it spends model budget, at most max_usd. Answers at once \
-                 with the run's id; follow it with run_status.",
+                 result, or queue it behind the run in progress. Paid: it spends model \
+                 budget, at most max_usd. Answers at once with the run's id and whether it \
+                 is running or queued (with its position); follow it with run_status.",
                 json!({
                     "type": "object",
                     "properties": {
                         "prompt": { "type": "string", "description": "The work to do" },
+                        "title": title_schema(),
                         "domain": {
                             "type": "string",
                             "description": "The kind of work, such as code, research or docs"
@@ -282,7 +284,8 @@ fn tools() -> Vec<(Value, &'static str)> {
                 json!({
                     "type": "object",
                     "properties": {
-                        "prompt": { "type": "string", "description": "What the plan is for" }
+                        "prompt": { "type": "string", "description": "What the plan is for" },
+                        "title": title_schema()
                     },
                     "required": ["prompt"],
                     "additionalProperties": false
@@ -323,7 +326,8 @@ fn tools() -> Vec<(Value, &'static str)> {
             read_only_tool(
                 "confirm_pending",
                 "The outcomes a Roko run's tasks wait for their person to confirm: for each, \
-                 the task, the attempt, the question to ask and a short summary of the work. \
+                 the task, the attempt, the question to ask, a short summary of the work and \
+                 when the rung stops waiting (deadline_at; the task then ends unverified). \
                  Ask the person, then answer with confirm_answer.",
                 json!({
                     "type": "object",
@@ -442,6 +446,20 @@ fn starts_paid_work() -> Value {
 }
 
 /// The schema of a run's `max_usd`, its spending cap.
+/// The most characters of a run's title a tool takes (gap-c2efe7).
+const MAX_TITLE_CHARS: usize = 120;
+
+/// The `title` argument of the tools that start work (gap-c2efe7).
+fn title_schema() -> Value {
+    json!({
+        "type": "string",
+        "maxLength": MAX_TITLE_CHARS,
+        "description": "A short name for the work, for people: the run's title, its branch's \
+                        description and its commit's subject. Default: the request's first \
+                        sentence"
+    })
+}
+
 fn max_usd_schema() -> Value {
     json!({
         "type": "number",
@@ -516,6 +534,7 @@ async fn call_tool(
                 domain: optional_domain(&arguments)?,
                 max_usd: Some(run_cap(state, &arguments)?),
                 origin: mcp_origin(auth),
+                title: optional_title(&arguments)?,
                 ..PromptPlanOptions::default()
             };
             start_prompt_run(state, prompt, options).await
@@ -529,7 +548,8 @@ async fn call_tool(
         }
         "plan_generate" => {
             let prompt = required_str(&arguments, name, "prompt")?.to_string();
-            Ok(generate_plan(state, prompt, &mcp_origin(auth)).await)
+            let title = optional_title(&arguments)?;
+            Ok(generate_plan(state, prompt, &mcp_origin(auth), title).await)
         }
         "run_cancel" => {
             let run_id = required_str(&arguments, name, "run_id")?;
@@ -586,13 +606,14 @@ async fn call_tool(
     };
     Ok(match outcome {
         Ok(value) => tool_result(&value),
-        Err(error) => tool_error(&error.message),
+        Err(error) => tool_failure(&error),
     })
 }
 
 /// The confirmations (9137) the tasks of run `run_id` wait for: their review
 /// holds whose `kind` is `confirm`, oldest first, with what a host shows its
-/// user.
+/// user, and how long the rung waits for an answer: `timeout_secs` and the
+/// `deadline_at` it gives from `held_at` (gap-25d9cc).
 fn confirm_holds(workdir: &std::path::Path, run_id: &str) -> Vec<Value> {
     let root = roko_fs::RokoLayout::for_project(workdir)
         .state_dir()
@@ -615,11 +636,32 @@ fn confirm_holds(workdir: &std::path::Path, run_id: &str) -> Vec<Value> {
                 "question": hold["question"],
                 "summary": hold["summary"],
                 "held_at": hold["held_at"],
+                "timeout_secs": hold["timeout_secs"],
+                "deadline_at": confirm_deadline(&hold),
             })
         })
         .collect();
     holds.sort_by(|a, b| a["held_at"].as_str().cmp(&b["held_at"].as_str()));
     holds
+}
+
+/// When the confirm rung that wrote `hold` stops waiting and the task ends
+/// unverified: its `held_at` plus its `timeout_secs`, in RFC 3339; null when
+/// the hold names neither (gap-25d9cc).
+fn confirm_deadline(hold: &Value) -> Value {
+    let held_at = hold["held_at"]
+        .as_str()
+        .and_then(|at| chrono::DateTime::parse_from_rfc3339(at).ok());
+    let timeout = hold["timeout_secs"]
+        .as_u64()
+        .and_then(|secs| i64::try_from(secs).ok())
+        .and_then(chrono::TimeDelta::try_seconds);
+    match (held_at, timeout) {
+        (Some(held_at), Some(timeout)) => held_at
+            .checked_add_signed(timeout)
+            .map_or(Value::Null, |deadline| json!(deadline.to_rfc3339())),
+        _ => Value::Null,
+    }
 }
 
 /// A `confirm_answer` call's arguments.
@@ -762,6 +804,22 @@ fn mcp_origin(auth: Option<&AuthContext>) -> RunOrigin {
 }
 
 /// The optional `domain` argument, as the task domain its label names.
+/// The `title` argument (gap-c2efe7), when given and not blank.
+fn optional_title(arguments: &Value) -> Result<Option<String>, JsonRpcError> {
+    match arguments.get("title") {
+        None | Some(Value::Null) => Ok(None),
+        Some(Value::String(title)) if title.chars().count() > MAX_TITLE_CHARS => {
+            Err(JsonRpcError::invalid_params(format!(
+                "title is longer than {MAX_TITLE_CHARS} characters"
+            )))
+        }
+        Some(Value::String(title)) => {
+            Ok(Some(title.trim().to_string()).filter(|title| !title.is_empty()))
+        }
+        Some(_) => Err(JsonRpcError::invalid_params("title must be a string")),
+    }
+}
+
 fn optional_domain(arguments: &Value) -> Result<Option<TaskDomain>, JsonRpcError> {
     match arguments.get("domain") {
         None | Some(Value::Null) => Ok(None),
@@ -805,32 +863,71 @@ async fn run_or_operation(state: &Arc<AppState>, id: &str) -> Result<Value, ApiE
 }
 
 /// The state of operation `id` as `run_status` reports a run's: `running`,
-/// then `succeeded` with its result or `failed` with its error.
+/// then `succeeded` with its result or `failed` with its error. A running
+/// operation says how long it has run, and one that reports progress
+/// carries its latest report, and keeps it once it ends (gap-11d870). A
+/// finished one whose handle is gone is read from the kept record of
+/// finished operations (bug-a0f01e).
 async fn operation_state(state: &AppState, id: &str) -> Option<Value> {
-    let operations = state.operations.read().await;
-    let operation = operations.get(id)?;
-    let (run_state, result, error) = match &operation.status {
+    let held = state.operations.read().await.get(id).map(|operation| {
+        let elapsed_secs = matches!(operation.status, OperationStatus::Running)
+            .then(|| operation.started.elapsed().as_secs());
+        (
+            operation.kind.clone(),
+            operation.status.clone(),
+            elapsed_secs,
+            crate::operations::latest_progress(operation),
+        )
+    });
+    let (kind, status, elapsed_secs, progress) = match held {
+        Some(held) => held,
+        None => {
+            let finished = crate::operations::finished_operation(state, id)?;
+            (finished.kind, finished.status, None, finished.progress)
+        }
+    };
+    let (run_state, result, error) = match &status {
         OperationStatus::Running => (RunState::Running, None, None),
         OperationStatus::Completed { result } => (RunState::Succeeded, result.as_deref(), None),
         OperationStatus::Failed { error } => (RunState::Failed, None, Some(error.as_str())),
     };
     let result = result.and_then(|result| serde_json::from_str::<Value>(result).ok());
-    Some(json!({
+    let mut summary = json!({
         "run_id": id,
-        "kind": operation.kind,
+        "kind": kind,
         "state": run_state.as_str(),
         "active": !run_state.is_terminal(),
         "result": result,
         "error": error,
-    }))
+    });
+    if let Some(elapsed_secs) = elapsed_secs {
+        summary["elapsed_secs"] = json!(elapsed_secs);
+    }
+    if let Some(progress) = progress {
+        summary["progress"] = progress;
+    }
+    Some(summary)
 }
 
 /// Refuse a run a chat host starts while the workspace has no data-model
-/// boundary and does not allow running without one (9117): the host reads
-/// why, before anything is queued.
+/// boundary and does not allow running without one (9117), while no model
+/// its tasks can be routed to runs in roko's own tool loop (gap-cf427e), or
+/// while none of those has a price its `max_usd` could count (gap-8548e3):
+/// the host reads why, before anything is queued and before the plan is
+/// looked up. The error's details carry the machine-readable codes,
+/// `refusal` (the first) and `refusals` (all that apply).
 fn refuse_unscreened_run(state: &AppState) -> Result<(), ApiError> {
-    match state.load_roko_config().chat_run_refusal() {
-        Some(reason) => Err(ApiError::forbidden(reason)),
+    let config = state.load_roko_config();
+    let prices =
+        roko_core::pricing_snapshot::PriceSnapshot::shared(&config.pricing, &state.workdir);
+    match config.chat_run_refusal(prices.as_deref()) {
+        Some(refusal) => Err(ApiError {
+            details: Some(Box::new(json!({
+                "refusal": refusal.code(),
+                "refusals": refusal.codes(),
+            }))),
+            ..ApiError::forbidden(refusal.message)
+        }),
         None => Ok(()),
     }
 }
@@ -844,10 +941,19 @@ async fn start_prompt_run(
     options: PromptPlanOptions,
 ) -> Result<Value, ApiError> {
     refuse_unscreened_run(state)?;
-    let run_id = super::run::start_gated_run(state, prompt, None, options).await?;
+    let started = super::run::start_gated_run(state, prompt, None, options).await?;
+    let run_id = started.run_id;
+    // While another run holds the workspace, the run waits in the run queue
+    // (gap-9a8d66).
+    let run_state = if started.queued.is_some() {
+        RunState::Queued
+    } else {
+        RunState::Running
+    };
     Ok(json!({
         "run_id": run_id,
-        "state": RunState::Running.as_str(),
+        "state": run_state.as_str(),
+        "position": started.queued,
         "links": {
             "summary": format!("/api/runs/{run_id}/summary"),
             "status": format!("/api/run/{run_id}/status"),
@@ -891,8 +997,14 @@ async fn start_plan(
 /// id, which `run_status` follows, and the plan's id, which `plan_run` takes
 /// once the plan is written. The planner gets `prompt` fenced as a request
 /// from `origin`, a chat host (9117).
-async fn generate_plan(state: &Arc<AppState>, prompt: String, origin: &RunOrigin) -> Value {
-    let (operation_id, plan_id) = super::plans::start_plan_generation(state, prompt, origin).await;
+async fn generate_plan(
+    state: &Arc<AppState>,
+    prompt: String,
+    origin: &RunOrigin,
+    title: Option<String>,
+) -> Value {
+    let (operation_id, plan_id) =
+        super::plans::start_plan_generation(state, prompt, origin, title).await;
     json!({
         "run_id": operation_id,
         "plan_id": plan_id,
@@ -905,15 +1017,25 @@ async fn generate_plan(state: &Arc<AppState>, prompt: String, origin: &RunOrigin
 }
 
 /// The `run_cancel` tool: stop run `run_id`, a gated prompt run or a live or
-/// queued plan run, as `POST /api/plans/{id}/cancel` stops a plan run.
+/// queued plan run, as `POST /api/plans/{id}/cancel` stops a plan run. A run
+/// whose roko process stopped while it ran is over already: the answer says
+/// `interrupted` and why (bug-dceafd).
 async fn cancel_run(state: &Arc<AppState>, run_id: &str) -> Result<Value, ApiError> {
+    let mut answer = json!({ "run_id": run_id, "state": RunState::Cancelled.as_str() });
     match super::run::cancel_background_run(state, run_id).await {
         Some(stopped) => stopped.map_err(ApiError::conflict)?,
+        // A prompt run still waiting in the run queue (gap-9a8d66).
+        None if super::run::cancel_queued_prompt_run(state, run_id).await => {}
         None => {
-            super::plans::cancel_plan_run(state, run_id).await?;
+            let cancelled = super::plans::cancel_plan_run(state, run_id).await?;
+            for field in ["state", "reason"] {
+                if let Some(value) = cancelled.get(field) {
+                    answer[field] = value.clone();
+                }
+            }
         }
     }
-    Ok(json!({ "run_id": run_id, "state": RunState::Cancelled.as_str() }))
+    Ok(answer)
 }
 
 /// A tool's result: its JSON as text, as every MCP client reads it, and as
@@ -934,6 +1056,20 @@ fn tool_error(message: &str) -> Value {
     })
 }
 
+/// The failure `error` of a tool, for the calling model to read, and for a
+/// host as `structuredContent.error`: its `code` (`not_found`, `forbidden`,
+/// …), its `message`, and its machine-readable `data` when it has some, such
+/// as a refused chat run's `refusal` (gap-cf427e).
+fn tool_failure(error: &ApiError) -> Value {
+    let mut failure = tool_error(&error.message);
+    let mut detail = json!({ "code": error.code, "message": error.message });
+    if let Some(data) = error.details.as_deref() {
+        detail["data"] = data.clone();
+    }
+    failure["structuredContent"] = json!({ "error": detail });
+    failure
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -952,12 +1088,94 @@ mod tests {
     }
 
     /// A workspace config with auth off, whose chat runs may start without
-    /// the data-model boundary.
+    /// the data-model boundary, and whose tasks run on a model roko's own
+    /// tool loop runs (gap-cf427e).
     fn open_config() -> RokoConfig {
+        let mut config = cli_only_config();
+        config.serve.mcp.allow_without_data_llm = true;
+        add_tool_loop_model(&mut config);
+        config
+    }
+
+    /// A workspace config with auth off whose only provider is the Claude
+    /// CLI, which every model routing names runs on. The providers keys in
+    /// the environment would synthesize are configured without a key, so
+    /// none of them can run a task.
+    fn cli_only_config() -> RokoConfig {
+        use roko_core::agent::ProviderKind;
+        use roko_core::config::schema::{ModelProfile, ProviderConfig};
+
         let mut config = RokoConfig::default();
         config.serve.auth = no_auth();
-        config.serve.mcp.allow_without_data_llm = true;
+        config.providers.clear();
+        config.models.clear();
+        config.routing.fallback_models.clear();
+        config.agent.fallback_model = None;
+        config.agent.default_model = "cli-sonnet".to_string();
+        config.providers.insert(
+            "claude_cli".to_string(),
+            ProviderConfig {
+                kind: ProviderKind::ClaudeCli,
+                command: Some("claude".to_string()),
+                ..ProviderConfig::default()
+            },
+        );
+        for (id, kind) in [
+            ("anthropic", ProviderKind::AnthropicApi),
+            ("openai", ProviderKind::OpenAiCompat),
+            ("gemini", ProviderKind::GeminiApi),
+            ("perplexity", ProviderKind::PerplexityApi),
+        ] {
+            let keyless = ProviderConfig {
+                kind,
+                api_key_env: Some("ROKO_TEST_MCP_KEY_NEVER_SET".to_string()),
+                ..ProviderConfig::default()
+            };
+            config.providers.insert(id.to_string(), keyless);
+        }
+        config.models.insert(
+            "cli-sonnet".to_string(),
+            ModelProfile {
+                provider: "claude_cli".to_string(),
+                slug: "claude-sonnet-4-6".to_string(),
+                supports_tools: true,
+                ..ModelProfile::default()
+            },
+        );
         config
+    }
+
+    /// Add `api-model`, on an OpenAI-compatible API whose key `config`'s
+    /// `[agent] env` sets, so roko's own tool loop can run it, with a price, so
+    /// a chat run's `max_usd` can count its calls (gap-8548e3).
+    fn add_tool_loop_model(config: &mut RokoConfig) {
+        use roko_core::agent::ProviderKind;
+        use roko_core::config::schema::{ModelProfile, ProviderConfig};
+
+        config.providers.insert(
+            "api".to_string(),
+            ProviderConfig {
+                kind: ProviderKind::OpenAiCompat,
+                base_url: Some("http://127.0.0.1:9/v1".to_string()),
+                api_key_env: Some("ROKO_TEST_MCP_API_KEY".to_string()),
+                ..ProviderConfig::default()
+            },
+        );
+        config.agent.env = Some(vec![(
+            "ROKO_TEST_MCP_API_KEY".to_string(),
+            "test-key".to_string(),
+        )]);
+        config.models.insert(
+            "api-model".to_string(),
+            ModelProfile {
+                provider: "api".to_string(),
+                slug: "api-model-1".to_string(),
+                supports_tools: true,
+                cost_input_per_m: Some(1.0),
+                cost_output_per_m: Some(2.0),
+                ..ModelProfile::default()
+            },
+        );
     }
 
     /// The server state and full router over `runtime` in a fresh workspace
@@ -1176,6 +1394,7 @@ mod tests {
                 completed: false,
                 status: "ready".to_string(),
                 superseded_by: None,
+                fixture: false,
                 old_format: false,
                 last_error: None,
                 group: None,
@@ -1234,6 +1453,63 @@ mod tests {
             crate::runtime::DashboardInfo {
                 rendered: String::new(),
             }
+        }
+    }
+
+    /// gap-c2efe7: `run_prompt` and `plan_generate` take an optional `title`, which a
+    /// prompt run's options carry; a title over 120 characters, or one that
+    /// is not a string, is refused.
+    #[tokio::test]
+    async fn mcp_run_prompt_takes_a_title() {
+        let runtime = Arc::new(HeldPlans::new());
+        let (_dir, _state, open) = state_and_router(runtime.clone(), open_config());
+
+        let list = json!({ "jsonrpc": "2.0", "id": 1, "method": "tools/list" });
+        let (_, body) = post_mcp(&open, &list, &[]).await;
+        let tools = body["result"]["tools"].as_array().expect("a tool list");
+        for name in ["run_prompt", "plan_generate"] {
+            let tool = tools
+                .iter()
+                .find(|tool| tool["name"] == name)
+                .expect("the tool is listed");
+            assert_eq!(
+                tool["inputSchema"]["properties"]["title"]["type"], "string",
+                "{tool}"
+            );
+        }
+
+        let named = call(
+            2,
+            "run_prompt",
+            json!({ "prompt": "Add a flag. Then a test.", "title": " Version flag ", "max_usd": 1.0 }),
+        );
+        let (_, body) = post_mcp(&open, &named, &[]).await;
+        assert!(
+            body["result"]["structuredContent"]["run_id"].is_string(),
+            "{body}"
+        );
+        eventually("the prompt run starts", || {
+            !runtime.prompts.lock().expect("lock prompt runs").is_empty()
+        })
+        .await;
+        let title = runtime.prompts.lock().expect("lock prompt runs")[0]
+            .title
+            .clone();
+        assert_eq!(title.as_deref(), Some("Version flag"));
+
+        for (id, title) in [(3, json!("x".repeat(121))), (4, json!(7))] {
+            let refused = call(
+                id,
+                "run_prompt",
+                json!({ "prompt": "Add a flag.", "title": title, "max_usd": 1.0 }),
+            );
+            let (_, body) = post_mcp(&open, &refused, &[]).await;
+            assert!(
+                body["error"]["message"]
+                    .as_str()
+                    .is_some_and(|m| m.contains("title")),
+                "{body}"
+            );
         }
     }
 
@@ -1298,6 +1574,219 @@ mod tests {
         runtime.gate.add_permits(1);
     }
 
+    /// A runtime whose prompt runs record their options, then wait for a
+    /// permit from `gate` before they succeed; whose plan runs record theirs
+    /// and succeed at once; and that reports `holder` as holding the
+    /// workspace's runner lock outside the server.
+    struct HeldPrompts {
+        prompts: std::sync::Mutex<Vec<PromptPlanOptions>>,
+        plans: std::sync::Mutex<Vec<crate::runtime::PlanRunOptions>>,
+        gate: tokio::sync::Semaphore,
+        holder: std::sync::Mutex<Option<String>>,
+    }
+
+    impl HeldPrompts {
+        fn new() -> Self {
+            Self {
+                prompts: std::sync::Mutex::default(),
+                plans: std::sync::Mutex::default(),
+                gate: tokio::sync::Semaphore::new(0),
+                holder: std::sync::Mutex::default(),
+            }
+        }
+
+        /// The run ids the prompt runs ran under, in the order they started.
+        fn prompt_ids(&self) -> Vec<String> {
+            let prompts = self.prompts.lock().expect("lock prompt runs");
+            prompts
+                .iter()
+                .map(|options| options.run_id.clone().unwrap_or_default())
+                .collect()
+        }
+
+        fn plan_ids(&self) -> Vec<String> {
+            let plans = self.plans.lock().expect("lock plan runs");
+            plans
+                .iter()
+                .map(|options| options.run_id.clone().unwrap_or_default())
+                .collect()
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl crate::runtime::CliRuntime for HeldPrompts {
+        async fn run_once(
+            &self,
+            _workdir: &std::path::Path,
+            _prompt: &str,
+        ) -> anyhow::Result<crate::runtime::RunResult> {
+            anyhow::bail!("HeldPrompts runs gated prompts and plans only")
+        }
+
+        async fn load_plan_summary(
+            &self,
+            workdir: &std::path::Path,
+            plan_id: &str,
+        ) -> anyhow::Result<Option<crate::plan_types::PlanSummaryDto>> {
+            crate::runtime::CliRuntime::load_plan_summary(&HeldPlans::new(), workdir, plan_id).await
+        }
+
+        async fn run_prompt_plan(
+            &self,
+            _workdir: &std::path::Path,
+            _prompt: &str,
+            options: PromptPlanOptions,
+        ) -> anyhow::Result<crate::runtime::PromptPlanResult> {
+            let run_id = options.run_id.clone().unwrap_or_default();
+            self.prompts.lock().expect("lock prompt runs").push(options);
+            self.gate
+                .acquire()
+                .await
+                .expect("the gate stays open")
+                .forget();
+            Ok(crate::runtime::PromptPlanResult {
+                run_id,
+                verdict: RunState::Succeeded,
+                success: true,
+                output_text: None,
+                cost_usd: None,
+            })
+        }
+
+        async fn run_plan_with_options(
+            &self,
+            _workdir: &std::path::Path,
+            _plan_target: &std::path::Path,
+            options: crate::runtime::PlanRunOptions,
+        ) -> anyhow::Result<crate::runtime::PlanExecutionResult> {
+            self.plans.lock().expect("lock plan runs").push(options);
+            Ok(crate::runtime::PlanExecutionResult {
+                success: true,
+                output_text: None,
+                gate_results: Vec::new(),
+            })
+        }
+
+        fn runner_lock_holder(&self, _workdir: &std::path::Path) -> Option<String> {
+            self.holder.lock().expect("lock the holder").clone()
+        }
+
+        fn session_status(&self, workdir: std::path::PathBuf) -> crate::runtime::SessionStatusInfo {
+            crate::runtime::CliRuntime::session_status(&HeldPlans::new(), workdir)
+        }
+
+        fn dashboard_scaffold(&self, workdir: &std::path::Path) -> crate::runtime::DashboardInfo {
+            crate::runtime::CliRuntime::dashboard_scaffold(&HeldPlans::new(), workdir)
+        }
+    }
+
+    /// Wait until `ready` holds, for up to 5 s.
+    async fn eventually(what: &str, ready: impl Fn() -> bool) {
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while !ready() {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .unwrap_or_else(|_| panic!("{what}"));
+    }
+
+    /// gap-9a8d66, bug-09e21e: a second `run_prompt` while a run holds the
+    /// workspace waits in the run queue, which it shares with plan runs, and
+    /// starts when the runs before it end; it never fails because the
+    /// workspace is busy after its id was handed out. `run_status` answers
+    /// for a queued run, `run_cancel` takes one out of the queue and its id
+    /// still answers, and a run outside the server holding the workspace
+    /// refuses a prompt run before it gets an id.
+    #[tokio::test]
+    async fn a_second_prompt_run_waits_or_is_refused_up_front() {
+        let runtime = Arc::new(HeldPrompts::new());
+        let (_dir, state, open) = state_and_router(runtime.clone(), open_config());
+        let prompt =
+            |id: u64, text: &str| call(id, "run_prompt", json!({ "prompt": text, "max_usd": 1.0 }));
+        let structured = |body: &Value| body["result"]["structuredContent"].clone();
+
+        let (_, body) = post_mcp(&open, &prompt(1, "add a --json flag"), &[]).await;
+        let first = structured(&body);
+        assert_eq!(first["state"], "running", "{body}");
+        assert!(first["position"].is_null(), "{body}");
+        let first_id = first["run_id"].as_str().expect("a run id").to_string();
+        eventually("the first run starts", || runtime.prompt_ids().len() == 1).await;
+
+        let (_, body) = post_mcp(&open, &prompt(2, "add a categories command"), &[]).await;
+        let second = structured(&body);
+        assert_eq!(second["state"], "queued", "{body}");
+        assert_eq!(second["position"], 1, "{body}");
+        let second_id = second["run_id"].as_str().expect("a run id").to_string();
+        let status = call(3, "run_status", json!({ "run_id": second_id }));
+        let (_, body) = post_mcp(&open, &status, &[]).await;
+        assert_eq!(structured(&body)["state"], "queued", "{body}");
+        assert_eq!(structured(&body)["position"], 1, "{body}");
+
+        // Plan runs wait in the same order.
+        let plan = call(4, "plan_run", json!({ "plan_id": "alpha", "max_usd": 1.0 }));
+        let (_, body) = post_mcp(&open, &plan, &[]).await;
+        assert_eq!(structured(&body)["state"], "queued", "{body}");
+        assert_eq!(structured(&body)["position"], 2, "{body}");
+        let plan_id = structured(&body)["run_id"]
+            .as_str()
+            .expect("a run id")
+            .to_string();
+
+        let (_, body) = post_mcp(&open, &prompt(5, "add a report"), &[]).await;
+        assert_eq!(structured(&body)["position"], 3, "{body}");
+        let third_id = structured(&body)["run_id"]
+            .as_str()
+            .expect("a run id")
+            .to_string();
+        let cancel = call(6, "run_cancel", json!({ "run_id": third_id }));
+        let (_, body) = post_mcp(&open, &cancel, &[]).await;
+        assert_eq!(structured(&body)["state"], "cancelled", "{body}");
+        let status = call(7, "run_status", json!({ "run_id": third_id }));
+        let (_, body) = post_mcp(&open, &status, &[]).await;
+        assert_eq!(structured(&body)["state"], "cancelled", "{body}");
+        assert_eq!(state.queued_runs(), 2);
+
+        // The first run ends: the oldest queued run, the second prompt, starts
+        // under the id it was handed; the plan run starts after it.
+        runtime.gate.add_permits(1);
+        eventually("the second run starts", || runtime.prompt_ids().len() == 2).await;
+        assert_eq!(runtime.prompt_ids(), [first_id.clone(), second_id.clone()]);
+        assert!(
+            runtime.plan_ids().is_empty(),
+            "the plan run waits for the second prompt"
+        );
+        runtime.gate.add_permits(1);
+        eventually("the plan run starts", || runtime.plan_ids().len() == 1).await;
+        assert_eq!(runtime.plan_ids(), [plan_id]);
+        for run_id in [&first_id, &second_id] {
+            let status = call(8, "run_status", json!({ "run_id": run_id }));
+            let (_, body) = post_mcp(&open, &status, &[]).await;
+            assert_eq!(structured(&body)["state"], "succeeded", "{body}");
+        }
+
+        // A run outside the server holds the workspace: refused before any id.
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while state.live_plan_runs().await > 0 || state.queued_runs() > 0 {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("the plan run ends");
+        *runtime.holder.lock().expect("lock the holder") =
+            Some("a roko plan runner (PID 42)".to_string());
+        let (_, body) = post_mcp(&open, &prompt(9, "add a flag"), &[]).await;
+        assert_eq!(body["result"]["isError"], true, "{body}");
+        let reason = body["result"]["content"][0]["text"]
+            .as_str()
+            .unwrap_or_default();
+        assert!(
+            reason.contains("outside this server") && reason.contains("PID 42"),
+            "{body}"
+        );
+        assert_eq!(runtime.prompt_ids().len(), 2);
+    }
+
     /// 9116: `run_prompt` and `plan_run` over `/mcp` must name a spending cap
     /// above 0 and at most `[serve.mcp] max_run_usd`. A call without one, or
     /// with one above the maximum, is refused before any run starts; a valid
@@ -1358,6 +1847,35 @@ mod tests {
         runtime.gate.add_permits(1);
     }
 
+    /// gap-5fda00: a prompt run the `run_prompt` tool starts publishes the
+    /// live agent output the server's plan runs do: the runtime gets the
+    /// server's effective setting.
+    #[tokio::test]
+    async fn prompt_runs_take_the_live_output_setting() {
+        use roko_core::config::serve::LiveAgentOutput;
+
+        let runtime = Arc::new(HeldPlans::new());
+        let mut config = open_config();
+        config.serve.mcp.max_run_usd = 3.0;
+        let (_dir, state, open) = state_and_router(runtime.clone(), config);
+        state.configure_live_agent_output(LiveAgentOutput::Trusted);
+
+        let prompt = json!({ "prompt": "fix the parser", "max_usd": 1.0 });
+        let (_, body) = post_mcp(&open, &call(1, "run_prompt", prompt), &[]).await;
+        assert_eq!(body["result"]["isError"], false, "{body}");
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while runtime.prompts.lock().expect("lock prompt runs").is_empty() {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("the run starts");
+
+        let prompts = runtime.prompts.lock().expect("lock prompt runs").clone();
+        assert_eq!(prompts[0].live_agent_output, Some(LiveAgentOutput::Trusted));
+        runtime.gate.add_permits(1);
+    }
+
     /// 9117: without the data-model boundary a chat host's run is refused,
     /// with a reason the host can read, and nothing starts; once
     /// `[agent.data_llm]` is set it starts.
@@ -1386,12 +1904,187 @@ mod tests {
         assert!(state.active_runs.read().await.is_empty());
         assert!(state.active_plans.read().await.is_empty());
 
-        config.agent.data_llm = Some(roko_core::config::DataLlmConfig::default());
+        // A data model roko calls over an API, with its key set.
+        config.agent.data_llm = Some(roko_core::config::DataLlmConfig {
+            model: "api-model".to_string(),
+            ..roko_core::config::DataLlmConfig::default()
+        });
         state.store_roko_config(config);
         let prompt = json!({ "prompt": "fix the parser", "max_usd": 1.0 });
         let (_, body) = post_mcp(&open, &call(3, "run_prompt", prompt), &[]).await;
         assert_eq!(body["result"]["isError"], false, "{body}");
         runtime.gate.add_permits(1);
+    }
+
+    /// gap-8548e3: a chat host's run is held to its `max_usd`, so it is
+    /// refused before anything is queued while no model it can run on has a
+    /// price, with `no_price` as its machine-readable refusal, and runs once
+    /// one has.
+    #[tokio::test]
+    async fn chat_run_refused_without_a_priced_model() {
+        let mut config = cli_only_config();
+        config.serve.mcp.allow_without_data_llm = true;
+        add_tool_loop_model(&mut config);
+        let unpriced = config.models.get_mut("api-model").expect("api-model");
+        unpriced.cost_input_per_m = None;
+        unpriced.cost_output_per_m = None;
+        let runtime = Arc::new(crate::runtime::NoOpRuntime);
+        let (_dir, state, open) = state_and_router(runtime, config.clone());
+
+        let probe = json!({ "plan_id": "roko-doctor-probe-1a2b", "max_usd": 0.01 });
+        let (_, body) = post_mcp(&open, &call(1, "plan_run", probe.clone()), &[]).await;
+        let error = &body["result"]["structuredContent"]["error"];
+        assert_eq!(error["code"], "forbidden", "{body}");
+        assert_eq!(error["data"]["refusal"], "no_price", "{body}");
+        assert_eq!(error["data"]["refusals"], json!(["no_price"]));
+        let text = body["result"]["content"][0]["text"]
+            .as_str()
+            .unwrap_or_default();
+        assert!(text.contains("(api-model)"), "{text}");
+        assert!(text.contains("cost_input_per_m"), "{text}");
+        assert!(state.active_plans.read().await.is_empty());
+
+        add_tool_loop_model(&mut config);
+        state.store_roko_config(config);
+        let (_, body) = post_mcp(&open, &call(2, "plan_run", probe), &[]).await;
+        let error = &body["result"]["structuredContent"]["error"];
+        assert_eq!(error["code"], "not_found", "{body}");
+    }
+
+    /// gap-cf427e: a chat host's run stages its outbound tool calls, which a
+    /// CLI agent cannot, so a workspace whose only provider is a CLI agent
+    /// refuses `run_prompt` and `plan_run` before anything is queued, with
+    /// the machine-readable `refusal` under `structuredContent.error.data`.
+    /// The doctor's probe, a `plan_run` of a plan that does not exist, gets
+    /// the refusal first, and "not found" once a model roko's own tool loop
+    /// runs is configured.
+    #[tokio::test]
+    async fn chat_run_refused_without_a_tool_loop_model() {
+        let mut config = cli_only_config();
+        config.serve.mcp.allow_without_data_llm = true;
+        let runtime = Arc::new(crate::runtime::NoOpRuntime);
+        let (_dir, state, open) = state_and_router(runtime, config.clone());
+
+        let calls = [
+            (
+                "run_prompt",
+                json!({ "prompt": "fix the parser", "max_usd": 1.0 }),
+            ),
+            (
+                "plan_run",
+                json!({ "plan_id": "roko-doctor-probe-1a2b", "max_usd": 0.01 }),
+            ),
+        ];
+        for (id, (name, arguments)) in (1..).zip(calls.clone()) {
+            let (_, body) = post_mcp(&open, &call(id, name, arguments), &[]).await;
+            let result = &body["result"];
+            assert_eq!(result["isError"], true, "{body}");
+            let error = &result["structuredContent"]["error"];
+            assert_eq!(error["code"], "forbidden", "{body}");
+            assert_eq!(error["data"]["refusal"], "no_tool_loop_model", "{body}");
+            assert_eq!(error["data"]["refusals"], json!(["no_tool_loop_model"]));
+            let text = result["content"][0]["text"].as_str().unwrap_or_default();
+            assert_eq!(error["message"], text, "{body}");
+            assert!(text.contains("roko's own tool loop"), "{text}");
+            assert!(
+                text.contains("runs on claude_cli, an agent that runs its own tools"),
+                "{text}"
+            );
+            assert!(text.contains("has no [models.*] entry"), "{text}");
+            assert!(!text.to_lowercase().contains("not found"), "{text}");
+            assert!(!text.to_lowercase().starts_with("no "), "{text}");
+        }
+        assert!(state.active_runs.read().await.is_empty());
+        assert!(state.active_plans.read().await.is_empty());
+
+        // Without the boundary as well, both blockers apply, the boundary
+        // first and in the words older hosts match.
+        let mut unscreened = config.clone();
+        unscreened.serve.mcp.allow_without_data_llm = false;
+        state.store_roko_config(unscreened);
+        let (_, body) = post_mcp(&open, &call(3, calls[1].0, calls[1].1.clone()), &[]).await;
+        let data = &body["result"]["structuredContent"]["error"]["data"];
+        assert_eq!(data["refusal"], "no_data_boundary", "{body}");
+        assert_eq!(
+            data["refusals"],
+            json!(["no_data_boundary", "no_tool_loop_model"])
+        );
+        let text = body["result"]["content"][0]["text"]
+            .as_str()
+            .unwrap_or_default();
+        assert!(text.contains("data-model boundary"), "{text}");
+
+        // With a model roko's own tool loop runs, the probe's plan is simply
+        // not found.
+        add_tool_loop_model(&mut config);
+        state.store_roko_config(config);
+        let (_, body) = post_mcp(&open, &call(4, calls[1].0, calls[1].1.clone()), &[]).await;
+        assert_eq!(body["result"]["isError"], true, "{body}");
+        let error = &body["result"]["structuredContent"]["error"];
+        assert_eq!(error["code"], "not_found", "{body}");
+        assert!(error.get("data").is_none(), "{body}");
+        let text = body["result"]["content"][0]["text"]
+            .as_str()
+            .unwrap_or_default();
+        assert!(text.contains("not found"), "{text}");
+    }
+
+    /// gap-25d9cc: `confirm_pending` lists each confirmation with the rung's
+    /// `timeout_secs` and the `deadline_at` it gives from `held_at`, so a host
+    /// can say how long its person has before the task ends unverified; a hold
+    /// without a timeout has no deadline.
+    #[tokio::test]
+    async fn confirm_pending_reports_the_rungs_deadline() {
+        let (dir, open) = router(no_auth());
+        let holds = roko_fs::RokoLayout::for_project(dir.path())
+            .state_dir()
+            .join("review-holds")
+            .join("p1");
+        std::fs::create_dir_all(&holds).expect("the holds directory");
+        let hold = |task: &str, timeout: Value| {
+            json!({
+                "schema_version": 1,
+                "kind": "confirm",
+                "plan_id": "p1",
+                "task_id": task,
+                "title": "Write the report",
+                "run_id": "run-1",
+                "attempt_key": format!("run-1:p1:{task}:1"),
+                "question": "Is this what you asked for?",
+                "summary": "REPORT.md: …",
+                "timeout_secs": timeout,
+                "held_at": "2026-10-13T14:28:53.126917+00:00",
+            })
+        };
+        for (task, timeout) in [("T1", json!(1800)), ("T2", Value::Null)] {
+            std::fs::write(
+                holds.join(format!("{task}.json")),
+                hold(task, timeout).to_string(),
+            )
+            .expect("write the hold");
+        }
+
+        let pending = call(1, "confirm_pending", json!({ "run_id": "run-1" }));
+        let (_, body) = post_mcp(&open, &pending, &[]).await;
+        let items = body["result"]["structuredContent"]["pending"]
+            .as_array()
+            .expect("the pending list")
+            .clone();
+        let item = |task: &str| {
+            items
+                .iter()
+                .find(|item| item["task_id"] == task)
+                .expect("the task's hold")
+                .clone()
+        };
+        let timed = item("T1");
+        assert_eq!(timed["timeout_secs"], 1800, "{body}");
+        assert_eq!(
+            timed["deadline_at"], "2026-10-13T14:58:53.126917+00:00",
+            "{body}"
+        );
+        let untimed = item("T2");
+        assert!(untimed["deadline_at"].is_null(), "{body}");
     }
 
     /// A runtime that holds one staged effect, `effect-1`, until it is
@@ -1494,5 +2187,37 @@ mod tests {
         let (_, body) = post_mcp(&router, &call(3, "effect_decide", decide), &[]).await;
         assert_eq!(body["result"]["isError"], true, "{body}");
         assert_eq!(*runtime.applied.lock().expect("applied"), 1);
+    }
+
+    /// bug-a0f01e: `run_status` of an operation whose handle was collected
+    /// answers how it ended, from the kept record of finished operations.
+    #[tokio::test]
+    async fn run_status_answers_for_a_collected_operation() {
+        let (_dir, state, _router) =
+            state_and_router(Arc::new(crate::runtime::NoOpRuntime), RokoConfig::default());
+        crate::operations::spawn_operation(
+            &state,
+            "op-1".into(),
+            "test:op".into(),
+            "test",
+            async { Ok::<_, String>(Some(json!({ "answer": 42 }))) },
+        )
+        .await;
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while state.operations.read().await.contains_key("op-1") {
+                state.gc_completed_handles().await;
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("handle GC drops the finished operation");
+
+        let summary = operation_state(&state, "op-1")
+            .await
+            .expect("the kept record answers");
+        assert_eq!(summary["state"], "succeeded", "{summary}");
+        assert_eq!(summary["active"], false, "{summary}");
+        assert_eq!(summary["result"]["answer"], 42, "{summary}");
+        assert!(operation_state(&state, "op-2").await.is_none());
     }
 }

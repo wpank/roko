@@ -11,8 +11,8 @@ use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 use roko_core::dashboard_snapshot::{
-    TASK_OUTCOME_ACCEPTED_WITH_FAILURES, TASK_OUTCOME_ALREADY_SATISFIED, TASK_OUTCOME_PASSED,
-    TASK_OUTCOME_PASSED_WITH_PREEXISTING_FAILURES, TASK_OUTCOME_UNVERIFIED,
+    TASK_OUTCOME_ACCEPTED_WITH_FAILURES, TASK_OUTCOME_ALREADY_SATISFIED, TASK_OUTCOME_CANCELLED,
+    TASK_OUTCOME_PASSED, TASK_OUTCOME_PASSED_WITH_PREEXISTING_FAILURES, TASK_OUTCOME_UNVERIFIED,
 };
 use roko_core::{LensScope, ObservableEvent, Signal, TelemetryEventSink};
 use roko_graph::cells::task_executor::TaskGateVerdict;
@@ -272,6 +272,13 @@ impl GraphTuiBridge {
         changes
     }
 
+    /// Report a task that a stop cut off, as `cancelled` rather than failed
+    /// (bug-1d09e8).
+    pub fn task_cancelled(&self, plan_id: &str, task_id: &str) {
+        self.tui
+            .task_completed(plan_id, task_id, TASK_OUTCOME_CANCELLED);
+    }
+
     /// Report a task that will not run (gap-f59fe9): blocked by the failed
     /// task `blocked_by`, or not started for `reason`.
     pub fn task_blocked(
@@ -300,6 +307,13 @@ impl GraphTuiBridge {
     /// `LoopHealth` and `LoopTransition` (5126).
     pub fn publish_event(&self, event: roko_core::DashboardEvent) {
         self.tui.publish_event(event);
+    }
+
+    /// The bridge this one publishes through, for a publisher that outlives
+    /// a borrow of it, such as a delivery's check events (gap-6b6ec1).
+    #[must_use]
+    pub fn tui(&self) -> &TuiBridge {
+        &self.tui
     }
 }
 

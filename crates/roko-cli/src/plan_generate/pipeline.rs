@@ -12,17 +12,18 @@
 //! This code lived in `prd.rs` until the PRD pipeline was removed on
 //! 2026-10-02 (tmp/workflow-audit).
 
-use super::{accept_blocks, dry_run_fs};
+use super::{accept_blocks, dry_run_fs, overview, runnable, source_checks};
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::time::Instant;
 
 use crate::agent_config::command_from_config;
 use crate::agent_exec::{
-    AgentCrashClass, AgentExecOpts, classify_agent_crash, persist_capture_episode,
-    run_agent_capture_silent_with_usage,
+    AgentCrashClass, AgentExecOpts, classify_agent_crash, persist_capture_episode_distilled_by,
+    run_agent_capture_silent_with_usage, timed_out_after_secs,
 };
-use crate::model_selection::resolve_planner_model;
+use crate::model_selection::{resolve_chat_host_planner_model, resolve_planner_model};
 use crate::plan_authoring::AuthoringSpend;
 use crate::runner::tui_bridge::TuiBridge;
 use crate::task_parser::{META_KEYS, TASK_KEYS, TasksFile, VERIFY_KEYS, suggest_field_correction};
@@ -130,8 +131,35 @@ pub fn plan_source_document(plan_dir: &Path) -> Result<PathBuf> {
 const FAILURE_OUTPUT_CHARS: usize = 2000;
 /// Characters of the model's output that a non-retriable agent error quotes.
 const AGENT_ERROR_PREVIEW_CHARS: usize = 500;
-/// Characters of the model's last output that a retry prompt quotes.
-const RETRY_OUTPUT_CHARS: usize = 2000;
+/// Where, under the workspace's `.roko/`, a generation keeps the planner's
+/// replies that held no plan that validates, one directory per plan slug
+/// (bug-f0d60c).
+const REJECTED_DRAFTS_DIR: &str = "plan-drafts";
+/// Characters of a validation error that a progress report quotes.
+const PROGRESS_REASON_CHARS: usize = 200;
+
+/// The turns every planner call may take, generating or revising a plan
+/// (bug-09cc5f). Planning is Delta work (`OperatingFrequency::select` puts
+/// plan regeneration there): a planner reading a large repository used up
+/// the Claude CLI's default of `OperatingFrequency::Theta` turns, 10, before
+/// it wrote the plan.
+pub(crate) const PLANNER_MAX_TURNS: u32 =
+    roko_core::operating_frequency::OperatingFrequency::Delta.turn_limit();
+
+/// What a failed planner call printed, as a line to add to its error: the
+/// provider's own message is what says a key is wrong or a server is
+/// unreachable (bug-59ed90). Empty when it printed nothing.
+fn agent_said(output: &str) -> String {
+    let output = output.trim();
+    if output.is_empty() {
+        String::new()
+    } else {
+        format!(
+            "\nThe planner said: {}",
+            crate::run::truncate(output, AGENT_ERROR_PREVIEW_CHARS)
+        )
+    }
+}
 
 /// Default model escalation chain: haiku -> sonnet -> opus.
 ///
@@ -247,6 +275,23 @@ pub struct PlanRequest<'a> {
     pub effort: Option<&'a str>,
     /// Where each agent call's spend is published.
     pub live: Option<TuiBridge>,
+    /// Nobody reviews the plan before it runs: a chat host asked for it, or
+    /// `roko run` runs it next (bug-7a08a8). The planner decides every open
+    /// choice itself, and an open question that carries its own answer is
+    /// written into its task, since an open question keeps a plan from
+    /// running (PLAN_045).
+    pub unattended: bool,
+    /// A chat host asked for the plan (bug-a0432b): only a model roko's own
+    /// tool loop runs writes it, as only such models run a chat host's tasks
+    /// (gap-cf427e), so the host's request never runs on the person's own CLI
+    /// agent.
+    pub for_chat_host: bool,
+    /// Where generation reports what it is doing as it moves on
+    /// (gap-11d870), for a caller that shows it while the plan is written.
+    pub progress: Option<PlanProgressSink>,
+    /// What the planner calls may cost together, in USD (gap-18bfa2); 0
+    /// sets no cap. `None` is `[authoring] max_generation_usd`.
+    pub max_usd: Option<f64>,
 }
 
 impl<'a> PlanRequest<'a> {
@@ -264,8 +309,164 @@ impl<'a> PlanRequest<'a> {
             model: None,
             effort: None,
             live: None,
+            unattended: false,
+            for_chat_host: false,
+            progress: None,
+            max_usd: None,
         }
     }
+}
+
+/// What [`generate_plan`] is doing, reported to [`PlanRequest::progress`]
+/// each time it moves on (gap-11d870). roko serve shows it in the
+/// operation's status, so a host can say what is happening instead of
+/// only "running".
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+pub struct PlanProgress {
+    /// `planning`: the planner's first call. `retrying`: a planner call
+    /// failed (it crashed, or timed out) and runs again. `fixing`: the reply
+    /// held no plan that validates, so the planner is asked again.
+    /// `regenerating`: the planner rewrites a valid plan once to improve it.
+    /// `writing`: the plan's files are written. `recording`: the
+    /// generation's learning episode is recorded; its distillation runs
+    /// after the generation ends.
+    pub stage: &'static str,
+    /// This stage's attempt, from 1.
+    pub attempt: u32,
+    /// The most attempts this stage makes.
+    pub attempts: u32,
+    /// Why the stage runs: what failed, or what the plan lacked.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+    /// The model the stage's planner call runs on.
+    pub model: String,
+    /// The planner calls made so far, a running one included.
+    pub calls: u32,
+    /// What the planner calls that returned cost together, in USD.
+    pub cost_usd: f64,
+    /// What they may cost together (gap-18bfa2); none when uncapped.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_usd: Option<f64>,
+}
+
+/// Where [`generate_plan`] reports its [`PlanProgress`].
+pub type PlanProgressSink = Arc<dyn Fn(&PlanProgress) + Send + Sync>;
+
+/// A generated plan that was written but cannot run: `roko plan validate`
+/// finds errors in it (bug-7a08a8). [`generate_plan`] returns it as its
+/// error, so no caller reports such a plan as written and ready.
+#[derive(Debug)]
+pub struct PlanFailsValidation {
+    /// Where the plan was written.
+    pub plan_dir: PathBuf,
+    /// One line per error, as `PLAN_045 task 'T2': …`.
+    pub errors: Vec<String>,
+    /// What writing the plan cost, in USD (bug-a0432b).
+    pub cost_usd: f64,
+}
+
+impl std::fmt::Display for PlanFailsValidation {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "the plan was written to {}, but it cannot run: {} error(s)",
+            self.plan_dir.display(),
+            self.errors.len()
+        )?;
+        for error in &self.errors {
+            write!(f, "\n- {error}")?;
+        }
+        Ok(())
+    }
+}
+
+impl std::error::Error for PlanFailsValidation {}
+
+/// What an unattended plan's planner reads after the request (bug-7a08a8).
+const UNATTENDED_PLANNER_NOTE: &str = "Nobody will review this plan or answer questions \
+     about it before it runs. Decide every choice the request leaves open yourself, write each \
+     decision into the task it affects (its description or an acceptance criterion, starting \
+     with \"Assumption:\"), and leave every task's `open_questions` empty.";
+
+/// Words that start an open question's own answer, as in "…? Assumption: …".
+const ANSWER_MARKERS: &[&str] = &[
+    "assumption:",
+    "assume:",
+    "assuming:",
+    "default:",
+    "decision:",
+];
+
+/// Whether an open question carries its own answer after one of
+/// [`ANSWER_MARKERS`].
+fn has_own_answer(question: &str) -> bool {
+    let lower = question.to_ascii_lowercase();
+    ANSWER_MARKERS.iter().any(|marker| {
+        lower
+            .find(marker)
+            .is_some_and(|at| !lower[at + marker.len()..].trim().is_empty())
+    })
+}
+
+/// The plan `plan` (a tasks.toml) with each open question that carries its own
+/// answer moved into its task's description, and one `task <id>: <question>`
+/// line per question moved (bug-7a08a8). A question with no answer stays, and
+/// keeps the plan from running (PLAN_045).
+fn fold_answered_questions(plan: &str) -> Result<(String, Vec<String>)> {
+    let mut root: toml::Value = toml::from_str(plan).context("parse the plan")?;
+    let mut folded = Vec::new();
+    let tasks = root.get_mut("task").and_then(toml::Value::as_array_mut);
+    for task in tasks
+        .into_iter()
+        .flatten()
+        .filter_map(toml::Value::as_table_mut)
+    {
+        let questions: Vec<String> = task
+            .get("open_questions")
+            .and_then(toml::Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter_map(toml::Value::as_str)
+            .map(str::trim)
+            .filter(|question| !question.is_empty())
+            .map(str::to_string)
+            .collect();
+        let (answered, open): (Vec<String>, Vec<String>) = questions
+            .into_iter()
+            .partition(|question| has_own_answer(question));
+        if answered.is_empty() {
+            continue;
+        }
+        let id = task
+            .get("id")
+            .and_then(toml::Value::as_str)
+            .unwrap_or("?")
+            .to_string();
+        let mut description = task
+            .get("description")
+            .and_then(toml::Value::as_str)
+            .unwrap_or_default()
+            .trim_end()
+            .to_string();
+        description.push_str("\n\nDecided while planning, with nobody to ask:");
+        for question in answered {
+            description.push_str("\n- ");
+            description.push_str(&question);
+            folded.push(format!("task {id}: {question}"));
+        }
+        task.insert("description".to_string(), toml::Value::String(description));
+        if open.is_empty() {
+            task.remove("open_questions");
+        } else {
+            let open = open.into_iter().map(toml::Value::String).collect();
+            task.insert("open_questions".to_string(), toml::Value::Array(open));
+        }
+    }
+    if folded.is_empty() {
+        return Ok((plan.to_string(), folded));
+    }
+    let plan = toml::to_string_pretty(&root).context("write the plan back")?;
+    Ok((plan, folded))
 }
 
 /// How much of its source a planner reads inline, and how many repository
@@ -453,6 +654,150 @@ fn spec_regeneration_prompt(task_prompt: &str, plan: &str, scores: &SpecScores) 
         scores.min,
         scores.weak.join("\n")
     )
+}
+
+/// bug-59ed90: the checks of a candidate `tasks.toml` that hide their test
+/// runner's output, one PLAN_050 line each; none when it does not parse.
+fn hidden_output_lines(candidate: &str) -> Vec<String> {
+    TasksFile::parse_str(candidate).map_or_else(
+        |_| Vec::new(),
+        |tasks_file| {
+            crate::plan_validate::hidden_output_checks(&tasks_file)
+                .iter()
+                .map(|check| format!("- {}", check.message()))
+                .collect()
+        },
+    )
+}
+
+/// The prompt that asks the planner once more for a plan whose checks hide
+/// their test runner's output (bug-59ed90): the original request, the plan it
+/// wrote, and each such check.
+fn hidden_output_regeneration_prompt(task_prompt: &str, plan: &str, hidden: &[String]) -> String {
+    format!(
+        "{task_prompt}\n\n---\n\nThese checks of your plan below hide their test runner's \
+         output, so when one fails neither the retry nor the person can see why:\n{}\n\n\
+         ```toml\n{plan}\n```\n\n\
+         Rewrite each of those checks to run its test command on its own, with no pipe, \
+         redirection or test count around it. To make one fail before its task is done, name \
+         the new tests in the command (and in the task's description), or put a `grep -q` for \
+         them before it. Keep the rest of the plan as it is. Output the complete plan as a \
+         single ```toml fenced block, followed only by the ```accept:accept/<file> blocks of \
+         the tests it pins.",
+        hidden.join("\n")
+    )
+}
+
+/// The prompt that asks the planner again when its `reply` held no plan that
+/// validates (bug-f0d60c): the original request with its source, the reply
+/// quoted up to `reply_chars` characters, and what was wrong with it. A retry
+/// that saw only the error, the reply's first 2,000 characters and a one-task
+/// template rebuilt a smaller plan from the template, and the source's
+/// acceptance checks were lost.
+fn extraction_retry_prompt(
+    task_prompt: &str,
+    kind: &str,
+    reply: &str,
+    error: &str,
+    reply_chars: usize,
+) -> String {
+    let quoted = crate::run::truncate(reply, reply_chars);
+    let cut = if quoted.len() < reply.len() {
+        format!("\n[reply truncated at {reply_chars} chars]")
+    } else {
+        String::new()
+    };
+    format!(
+        "{task_prompt}\n\n---\n\nYour reply below held no plan that validates:\n{error}\n\n\
+         ````text\n{quoted}{cut}\n````\n\n\
+         Fix only what the errors name. Keep every task and every verify step of your reply, \
+         and every requirement and acceptance criterion of the {kind} above: do not shorten \
+         the plan or start again from a smaller one. Output the complete plan as a single \
+         ```toml fenced block, followed only by the ```accept:accept/<file> blocks of the \
+         tests it pins. The meta field is `plan`, not `name`."
+    )
+}
+
+/// Keep the planner's `reply`, rejected for `error`, as `rejected-<n>.md` in
+/// `.roko/plan-drafts/<slug>/` of `workdir` (bug-f0d60c), so what a retry
+/// changed can be read afterwards. The first draft a generation keeps
+/// replaces the drafts an earlier generation of the slug kept. A draft that
+/// cannot be written is only logged.
+fn keep_rejected_draft(
+    workdir: &Path,
+    slug: &str,
+    n: u32,
+    reply: &str,
+    error: &str,
+) -> Option<PathBuf> {
+    let dir = workdir.join(".roko").join(REJECTED_DRAFTS_DIR).join(slug);
+    if n == 1
+        && let Ok(entries) = std::fs::read_dir(&dir)
+    {
+        for entry in entries.flatten() {
+            if entry.file_name().to_string_lossy().starts_with("rejected-") {
+                let _ = std::fs::remove_file(entry.path());
+            }
+        }
+    }
+    let path = dir.join(format!("rejected-{n}.md"));
+    let text = format!(
+        "# Rejected draft {n} of plan `{slug}`\n\n\
+         It held no plan that validates:\n\n{error}\n\n\
+         ## The planner's reply\n\n{reply}\n"
+    );
+    match std::fs::create_dir_all(&dir).and_then(|()| atomic_write_str(&path, &text)) {
+        Ok(()) => Some(path),
+        Err(error) => {
+            tracing::warn!(
+                path = %path.display(),
+                %error,
+                "plan generate: could not keep a rejected draft"
+            );
+            None
+        }
+    }
+}
+
+/// Repair a generated draft's mechanical defects before it is checked
+/// (gap-b95913), rather than send it back to the planner for them: its
+/// `meta.total` becomes its number of tasks, each task keeps its first
+/// `policy.max_read_files_per_task` `read_files`, and its line ranges in files
+/// no earlier task changes fit those files
+/// ([`crate::plan_policy::fit_ranges_to_files`]). Returns one line per repair.
+fn repair_generated_draft(
+    plan: &mut TasksFile,
+    policy: crate::plan_policy::PlanExecutionPolicy,
+    workdir: &Path,
+) -> Vec<String> {
+    let mut repairs = Vec::new();
+    let total = u32::try_from(plan.tasks.len()).unwrap_or(u32::MAX);
+    if plan.meta.total != total {
+        repairs.push(format!(
+            "meta.total {} became {total}, its number of tasks",
+            plan.meta.total
+        ));
+        plan.meta.total = total;
+    }
+    let keep = policy.max_read_files_per_task;
+    for task in &mut plan.tasks {
+        if let Some(context) = task.context.as_mut()
+            && context.read_files.len() > keep
+        {
+            let dropped: Vec<String> = context
+                .read_files
+                .drain(keep..)
+                .map(|read_file| read_file.path)
+                .collect();
+            repairs.push(format!(
+                "{}: kept its first {keep} read_files and dropped {}",
+                task.id,
+                dropped.join(", ")
+            ));
+        }
+    }
+    repairs.extend(crate::plan_policy::fit_ranges_to_files(plan, workdir));
+    repairs
 }
 
 /// A plan source, read for the planner.
@@ -673,6 +1018,17 @@ fn write_regenerated_plan(
     Ok(())
 }
 
+/// Why a planner call failed, for [`PlanProgress::reason`]: the time limit it
+/// ran into, or its crash class's hint (gap-11d870).
+fn planner_call_failure(class: AgentCrashClass, output: &str) -> String {
+    match timed_out_after_secs(output) {
+        Some(limit) => {
+            format!("the planner call ran into roko's {limit} s limit for one call and was stopped")
+        }
+        None => format!("the planner call failed: {}", class.recovery_hint()),
+    }
+}
+
 /// Generate one plan from `request`'s source. The planner model writes a
 /// tasks.toml, which is repaired, validated and checked against the
 /// generated-plan policy (retrying, and escalating the model, when it fails)
@@ -689,6 +1045,10 @@ pub async fn generate_plan(request: PlanRequest<'_>) -> Result<(PathBuf, Generat
         model,
         effort,
         live,
+        unattended,
+        for_chat_host,
+        progress,
+        max_usd,
     } = request;
     let requested_plans_root = requested_plans_root.or(match source {
         PlanSource::Regenerate(plan_dir) => plan_dir.parent(),
@@ -716,13 +1076,98 @@ pub async fn generate_plan(request: PlanRequest<'_>) -> Result<(PathBuf, Generat
         let spend = AuthoringSpend::generation(workdir_ref, slug, live);
 
         let resolved = crate::load_resolved_config(workdir_ref)?;
+        // gap-18bfa2: what the planner calls may cost together. Once they
+        // have, no further call is made.
+        let cap = max_usd
+            .unwrap_or_else(|| {
+                roko_core::config::loader::load_config_unified(workdir_ref).map_or(
+                    roko_core::config::schema::DEFAULT_MAX_GENERATION_USD,
+                    |config| config.authoring.max_generation_usd,
+                )
+            })
+            .max(0.0);
+        let capped = (cap > 0.0).then_some(cap);
+        let cap_reached = || {
+            capped.filter(|cap| spend.spent_usd() >= *cap).map(|cap| {
+                format!(
+                    "plan generation reached its spend cap: its {} planner call(s) cost \
+                     ${:.4} of ${cap:.2}",
+                    spend.calls(),
+                    spend.spent_usd()
+                )
+            })
+        };
+        // An improvement the cap leaves out is said, and skipped.
+        let skip_for_cap = |improvement: &str| match cap_reached() {
+            Some(reached) => {
+                eprintln!("  {reached}, so the planner is not asked to {improvement}");
+                true
+            }
+            None => false,
+        };
         // Generated `rung` hints must name a rung of this ladder.
         let ladder = crate::plan_validate::workspace_ladder(workdir_ref);
         // Callers that pass no model (the serve runtime) plan with the
         // planner model.
         let planner_model = match model {
             Some(model) => model.to_string(),
+            None if for_chat_host => {
+                resolve_chat_host_planner_model(workdir_ref, "a chat host's request")?
+            }
             None => resolve_planner_model(workdir_ref, None, "plan generation")?,
+        };
+        // bug-a0432b: a chat host's plan writing is distilled by its planner,
+        // and its retries escalate only to a model roko's own tool loop runs.
+        let distiller = for_chat_host.then_some(planner_model.as_str());
+        let tool_loop_models = if for_chat_host {
+            roko_core::config::loader::load_config_unified(workdir_ref)
+                .map(|config| config.tool_loop_models())
+                .unwrap_or_default()
+        } else {
+            Vec::new()
+        };
+        // gap-11d870: say what the generation is doing each time it moves
+        // on. A stage that makes a planner call counts that call.
+        let last_stage = std::sync::Mutex::new(None::<PlanProgress>);
+        let emit = |stage: PlanProgress| {
+            if let Some(progress) = &progress {
+                progress(&stage);
+            }
+            *last_stage
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(stage);
+        };
+        let report = |stage: &'static str,
+                      (attempt, attempts): (u32, u32),
+                      reason: Option<String>,
+                      model: &str| {
+            let calling = !matches!(stage, "writing" | "recording");
+            emit(PlanProgress {
+                stage,
+                attempt,
+                attempts,
+                reason,
+                model: model.to_string(),
+                calls: spend.calls() + u32::from(calling),
+                cost_usd: spend.spent_usd(),
+                max_usd: capped,
+            });
+        };
+        // bug-1602d4: the stage again once its planner call has ended, with
+        // the call counted and its spend in, rather than only when the next
+        // stage starts.
+        let report_spend = || {
+            let last = last_stage
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .clone();
+            if let Some(stage) = last {
+                emit(PlanProgress {
+                    calls: spend.calls(),
+                    cost_usd: spend.spent_usd(),
+                    ..stage
+                });
+            }
         };
         let system = augment_generator_system_prompt(
             crate::plan_generate::build_generator_system_prompt(workdir_ref),
@@ -733,8 +1178,10 @@ pub async fn generate_plan(request: PlanRequest<'_>) -> Result<(PathBuf, Generat
         let plans_root = requested_plans_root.map_or_else(
             || workspace_plans_dir(workdir_ref),
             |root| {
-                root.strip_prefix(&workdir)
-                    .map_or_else(|_| root.to_path_buf(), |relative| workdir_ref.join(relative))
+                root.strip_prefix(&workdir).map_or_else(
+                    |_| root.to_path_buf(),
+                    |relative| workdir_ref.join(relative),
+                )
             },
         );
         // A regenerated plan keeps its directory, whatever its slug.
@@ -815,6 +1262,32 @@ pub async fn generate_plan(request: PlanRequest<'_>) -> Result<(PathBuf, Generat
             extra.push_str("\n\n---\n\n");
             extra.push_str(&patterns);
         }
+        // gap-dc5d7c: the checks the source states, each to be kept as a
+        // verify step or dropped with a reason.
+        let mut checks = source_checks::source_checks(&source.content);
+        // gap-ecafde: what this machine can run; bug-8fe462: the commands
+        // that run checks stated as unittest ids, wildcards expanded.
+        let probe = runnable::Probe::default();
+        source_checks::attach_runs(&mut checks, workdir_ref, &probe);
+        if !checks.is_empty() {
+            tracing::info!(
+                slug,
+                checks = checks.len(),
+                "plan generate: source checks in the planner prompt"
+            );
+            extra.push_str("\n\n---\n\n");
+            extra.push_str(&source_checks::planner_block(&checks, &source.kind));
+        }
+        // gap-ecafde: the test runners this machine has, which a check must
+        // use to be able to pass.
+        if let Some(runners) = runnable::runners_block(workdir_ref, &probe) {
+            extra.push_str("\n\n---\n\n");
+            extra.push_str(&runners);
+        }
+        if unattended {
+            extra.push_str("\n\n---\n\n");
+            extra.push_str(UNATTENDED_PLANNER_NOTE);
+        }
 
         // A planner with a large context window sees the whole source
         // (gap-2623b2); the old fixed caps are the floor.
@@ -832,7 +1305,10 @@ pub async fn generate_plan(request: PlanRequest<'_>) -> Result<(PathBuf, Generat
             command_from_config(workdir_ref).unwrap_or_else(|| "claude".to_string());
         let plan_started = Instant::now();
         eprintln!("  Generating plan: {slug}");
-        let call = run_agent_capture_silent_with_usage(AgentExecOpts {
+        // Every planner call is the strategist with read-only tools under the
+        // planner's own turn cap (bug-09cc5f); the calls after this one change
+        // its prompt, and a validation retry its model.
+        let planner_call = AgentExecOpts {
             prompt: &task_prompt,
             workdir: workdir_ref,
             model: effective_model,
@@ -842,9 +1318,12 @@ pub async fn generate_plan(request: PlanRequest<'_>) -> Result<(PathBuf, Generat
             env_vars: &resolved.config.agent.env,
             role: Some("strategist"),
             allowed_tools: Some("Read,Grep,Glob"),
-        })
-        .await?;
+            max_turns: Some(PLANNER_MAX_TURNS),
+        };
+        report("planning", (1, 1), None, planner_model.as_str());
+        let call = run_agent_capture_silent_with_usage(planner_call).await?;
         spend.record(&call).await;
+        report_spend();
         let (exit_code, output) = (call.exit_code, call.output);
         let agent_ms = t_phase.elapsed().as_millis();
         let t_phase = Instant::now();
@@ -862,7 +1341,7 @@ pub async fn generate_plan(request: PlanRequest<'_>) -> Result<(PathBuf, Generat
         // ── Crash classification and retry for non-zero exit codes ──────
         let (_exit_code, output) = if exit_code != 0 {
             let crash_class = classify_agent_crash(&output);
-            let _ = persist_capture_episode(
+            let _ = persist_capture_episode_distilled_by(
                 workdir_ref,
                 &plan_agent_command,
                 effective_model,
@@ -873,15 +1352,30 @@ pub async fn generate_plan(request: PlanRequest<'_>) -> Result<(PathBuf, Generat
                 false,
                 plan_started.elapsed().as_millis() as u64,
                 None,
+                distiller,
             )
             .await;
 
             // Auth errors: fail fast with actionable message.
             if matches!(crash_class, AgentCrashClass::AuthenticationError) {
                 return Err(anyhow!(
-                    "plan generation agent auth failure (exit code {exit_code}): {}\n\
-                     Hint: Check ANTHROPIC_API_KEY or your provider config in roko.toml",
-                    crash_class.recovery_hint()
+                    "plan generation agent auth failure (exit code {exit_code}): {}{}\n\
+                     Hint: check the API key of the planner model `{planner_model}`'s provider \
+                     in roko.toml or ~/.roko/.env",
+                    crash_class.recovery_hint(),
+                    agent_said(&output)
+                ));
+            }
+
+            // bug-09cc5f: a planner that used every turn it had is not asked
+            // again; the same prompt under the same cap would most likely
+            // stop there too.
+            if matches!(crash_class, AgentCrashClass::TurnCapReached) {
+                return Err(anyhow!(
+                    "plan generation stopped: the planner ran out of turns before it wrote the \
+                     plan. Hint: {}{}",
+                    crash_class.recovery_hint(),
+                    agent_said(&output)
                 ));
             }
 
@@ -896,19 +1390,36 @@ pub async fn generate_plan(request: PlanRequest<'_>) -> Result<(PathBuf, Generat
                 ));
             }
 
-            // Retriable errors (rate limit, network, unknown): retry with
-            // exponential back-off. Unknown crashes (signal/OOM/transient)
-            // get 2 attempts; rate-limit / network get 3.
-            let max_crash_retries: u32 = if matches!(crash_class, AgentCrashClass::Unknown) {
-                2
-            } else {
-                3
+            // Retriable errors (rate limit, network, timeout, unknown): retry
+            // with exponential back-off. Unknown crashes (signal/OOM/transient)
+            // get 2 attempts; rate-limit / network get 3. A call that ran into
+            // the time limit gets 1: each attempt can take that long again
+            // (gap-11d870).
+            let max_crash_retries: u32 = match crash_class {
+                AgentCrashClass::Timeout => 1,
+                AgentCrashClass::Unknown => 2,
+                _ => 3,
             };
             let mut last_exit_code = exit_code;
             let mut last_output = output;
 
             for attempt in 1..=max_crash_retries {
                 let retry_class = classify_agent_crash(&last_output);
+                if let Some(reached) = cap_reached() {
+                    return Err(anyhow!(
+                        "{reached}, so it stopped before retrying a planner call that failed: \
+                         {}{}\nHint: raise `[authoring] max_generation_usd`, or pass \
+                         `--max-usd` to `roko plan generate`",
+                        retry_class.recovery_hint(),
+                        agent_said(&last_output)
+                    ));
+                }
+                report(
+                    "retrying",
+                    (attempt + 1, max_crash_retries + 1),
+                    Some(planner_call_failure(retry_class, &last_output)),
+                    planner_model.as_str(),
+                );
                 // Exponential back-off: 1 s, 2 s, 4 s …
                 let backoff_secs = 1u64 << (attempt - 1).min(3);
                 eprintln!(
@@ -919,19 +1430,9 @@ pub async fn generate_plan(request: PlanRequest<'_>) -> Result<(PathBuf, Generat
                     max_crash_retries + 1,
                 );
                 tokio::time::sleep(std::time::Duration::from_secs(backoff_secs)).await;
-                let retry = run_agent_capture_silent_with_usage(AgentExecOpts {
-                    prompt: &task_prompt,
-                    workdir: workdir_ref,
-                    model: effective_model,
-                    effort: Some(planner_effort),
-                    system_prompt: Some(&system),
-                    resume_session: None,
-                    env_vars: &resolved.config.agent.env,
-                    role: Some("strategist"),
-                    allowed_tools: Some("Read,Grep,Glob"),
-                })
-                .await?;
+                let retry = run_agent_capture_silent_with_usage(planner_call).await?;
                 spend.record(&retry).await;
+                report_spend();
                 last_exit_code = retry.exit_code;
                 last_output = retry.output;
                 if last_exit_code == 0 {
@@ -942,11 +1443,20 @@ pub async fn generate_plan(request: PlanRequest<'_>) -> Result<(PathBuf, Generat
 
             if last_exit_code != 0 {
                 let final_class = classify_agent_crash(&last_output);
+                if let Some(limit) = timed_out_after_secs(&last_output) {
+                    return Err(anyhow!(
+                        "plan generation stopped after {} planner calls: the last ran into \
+                         roko's {limit} s limit for one call and was stopped. Hint: {}",
+                        max_crash_retries + 1,
+                        final_class.recovery_hint(),
+                    ));
+                }
                 return Err(anyhow!(
                     "plan generation agent failed after {} attempts \
-                     (last exit code {last_exit_code}): {}",
+                     (last exit code {last_exit_code}): {}{}",
                     max_crash_retries + 1,
-                    final_class.recovery_hint()
+                    final_class.recovery_hint(),
+                    agent_said(&last_output)
                 ));
             }
 
@@ -955,7 +1465,7 @@ pub async fn generate_plan(request: PlanRequest<'_>) -> Result<(PathBuf, Generat
             (exit_code, output)
         };
         if output.trim().is_empty() {
-            let _ = persist_capture_episode(
+            let _ = persist_capture_episode_distilled_by(
                 workdir_ref,
                 &plan_agent_command,
                 effective_model,
@@ -966,6 +1476,7 @@ pub async fn generate_plan(request: PlanRequest<'_>) -> Result<(PathBuf, Generat
                 false,
                 plan_started.elapsed().as_millis() as u64,
                 None,
+                distiller,
             )
             .await;
             return Err(anyhow!(
@@ -977,155 +1488,180 @@ pub async fn generate_plan(request: PlanRequest<'_>) -> Result<(PathBuf, Generat
         // Write files from agent output (strategist can't write files directly).
         // Try fenced ```toml block first, then ```tasks.toml, then unfenced TOML.
         //
-        // If extraction or validation fails, retry up to 2 times with a
-        // stricter prompt requesting only the TOML block.
-        let extract_and_validate =
-            |raw: &str| -> std::result::Result<String, String> {
-                let toml_content = extract_fenced_block(raw, "toml")
-                    .or_else(|| extract_fenced_block(raw, "tasks.toml"))
-                    .or_else(|| extract_toml_content_fallback(raw));
-                tracing::info!(
-                    has_toml_block = toml_content.is_some(),
-                    toml_block_len = toml_content.map(|s| s.len()).unwrap_or(0),
-                    "plan generate: fenced block extraction"
-                );
-                let toml_content = toml_content
-                    .ok_or_else(|| "no TOML block found in agent output".to_string())?;
+        // If extraction or validation fails, retry up to 2 times with the
+        // request, the reply and its errors (bug-f0d60c).
+        let extract_and_validate = |raw: &str| -> std::result::Result<String, String> {
+            let toml_content = extract_fenced_block(raw, "toml")
+                .or_else(|| extract_fenced_block(raw, "tasks.toml"))
+                .or_else(|| extract_toml_content_fallback(raw));
+            tracing::info!(
+                has_toml_block = toml_content.is_some(),
+                toml_block_len = toml_content.map(|s| s.len()).unwrap_or(0),
+                "plan generate: fenced block extraction"
+            );
+            let toml_content =
+                toml_content.ok_or_else(|| "no TOML block found in agent output".to_string())?;
 
-                // Fast structural pre-check: verify required sections are present
-                // before attempting a full TOML parse.
-                if !toml_content.contains("[meta]") {
-                    return Err(
-                        "TOML block is missing the required [meta] section".to_string(),
-                    );
+            // Fast structural pre-check: verify required sections are present
+            // before attempting a full TOML parse.
+            if !toml_content.contains("[meta]") {
+                return Err("TOML block is missing the required [meta] section".to_string());
+            }
+            if !toml_content.contains("[[task]]") {
+                return Err("TOML block is missing required [[task]] entries".to_string());
+            }
+
+            let validated = validate_and_fix_generated_plan(
+                toml_content,
+                slug,
+                &resolved.config.models,
+                resolved.config.agent.model.as_deref(),
+                &ladder,
+            )
+            .map_err(|e| format!("{e:#}"))?;
+            let mut parsed = TasksFile::parse_str(&validated).map_err(|error| {
+                format!("generated plan failed runtime parsing after repair: {error:#}")
+            })?;
+            let policy = crate::plan_policy::PlanExecutionPolicy::generated_for_environment(
+                template_kind.max_task_count(),
+            );
+            // gap-b95913: what the planner need not be asked to fix; and
+            // gap-dc5d7c: a step that covers a source check by its id names
+            // a criterion of its task that states the check.
+            let mut repairs = repair_generated_draft(&mut parsed, policy, workdir_ref);
+            repairs.extend(source_checks::normalize_covers(&mut parsed, &checks));
+            // gap-ecafde: a pytest step without pytest runs as unittest, and a
+            // test file a task's check needs joins its files.
+            repairs.extend(runnable::repair(&mut parsed, workdir_ref, &probe));
+            // bug-df9aff: a task that creates a file may write it, and a task
+            // waits for the tasks that write the modules its tests import.
+            repairs.extend(runnable::repair_write_tools(&mut parsed, workdir_ref));
+            repairs.extend(runnable::repair_dependencies(&mut parsed, workdir_ref));
+            // bug-8fe462: a step that cannot run, over checks roko has the
+            // commands for, runs those commands.
+            let stuck = runnable::problems(&parsed, workdir_ref, &probe);
+            repairs.extend(source_checks::apply_runs(&mut parsed, &checks, &stuck));
+            let validated = if repairs.is_empty() {
+                validated
+            } else {
+                for repair in &repairs {
+                    eprintln!("  Repaired the draft: {repair}");
                 }
-                if !toml_content.contains("[[task]]") {
-                    return Err(
-                        "TOML block is missing required [[task]] entries".to_string(),
-                    );
-                }
-
-                let validated = validate_and_fix_generated_plan(
-                    toml_content,
-                    slug,
-                    &resolved.config.models,
-                    resolved.config.agent.model.as_deref(),
-                    &ladder,
-                )
-                .map_err(|e| format!("{e:#}"))?;
-                let parsed = TasksFile::parse_str(&validated).map_err(|error| {
-                    format!("generated plan failed runtime parsing after repair: {error:#}")
-                })?;
-                let policy = crate::plan_policy::PlanExecutionPolicy::generated_for_environment(
-                    template_kind.max_task_count(),
-                );
-                let policy_issues = crate::plan_policy::validate_plan_budgets(&parsed, policy);
-                if !policy_issues.is_empty() {
-                    return Err(format!(
-                        "generated plan violates the `{}` structural budget:\n{}",
-                        template_kind.label(),
-                        policy_issues
-                            .iter()
-                            .map(|issue| format!("  - {issue}"))
-                            .collect::<Vec<_>>()
-                            .join("\n")
-                    ));
-                }
-                // 3225 (decision 3203): a task over its tier's size limits is
-                // a spec defect the planner fixes before a cheap model meets
-                // it. Its tier is never raised here, since that would move
-                // the work to a pricier rung without the planner choosing to.
-                let size_issues = crate::plan_policy::validate_tier_sizes(&parsed, policy);
-                if !size_issues.is_empty() {
-                    return Err(format!(
-                        "generated plan has tasks over their tier's size limits; split each \
-                         on independent outputs with disjoint files, or raise its tier:\n{}",
-                        size_issues
-                            .iter()
-                            .map(|issue| format!("  - {issue}"))
-                            .collect::<Vec<_>>()
-                            .join("\n")
-                    ));
-                }
-
-                // Run the same context check that plan_loader.rs enforces at
-                // load time so the written tasks.toml is guaranteed to pass.
-                // PLAN_ARTIFACT_MISSING is suppressed because tasks.toml has
-                // not been written yet.
-                let mut ctx_violations = crate::plan_policy::validate_plan_context(
-                    &parsed,
-                    workdir_ref,
-                    &plan_dir,
-                    crate::plan_policy::PlanExecutionPolicy::for_environment(),
-                );
-                ctx_violations.retain(|v| v.code != "PLAN_ARTIFACT_MISSING");
-
-                if ctx_violations.is_empty() {
-                    return Ok(validated);
-                }
-
-                // Collect paths flagged as PLAN_CONTEXT_MISSING and drop them
-                // so the written tasks.toml always passes the loader's check.
-                let missing_paths: HashSet<String> = ctx_violations
-                    .iter()
-                    .filter(|v| v.code == "PLAN_CONTEXT_MISSING")
-                    .filter_map(|v| {
-                        v.message
-                            .strip_prefix("declared context file `")
-                            .and_then(|s| s.find('`').map(|end| s[..end].to_string()))
-                    })
-                    .collect();
-
-                if missing_paths.is_empty() {
-                    // Violations are not PLAN_CONTEXT_MISSING — cannot auto-fix.
-                    return Err(format!(
-                        "generated plan violates execution context policy:\n{}",
-                        ctx_violations
-                            .iter()
-                            .map(|v| format!("  - {v}"))
-                            .collect::<Vec<_>>()
-                            .join("\n")
-                    ));
-                }
-
-                // Drop the unreachable entries and re-serialize.
-                let mut fixed = parsed.clone();
-                for task in &mut fixed.tasks {
-                    if let Some(ctx) = task.context.as_mut() {
-                        ctx.read_files.retain(|f| !missing_paths.contains(&f.path));
-                    }
-                }
-                let re_serialized = toml::to_string_pretty(&fixed).map_err(|e| {
-                    format!("re-serialize after dropping missing read_files: {e}")
-                })?;
-                let re_parsed = TasksFile::parse_str(&re_serialized).map_err(|e| {
-                    format!("re-parse after dropping missing read_files: {e}")
-                })?;
-
-                // Second context check — must be clean now.
-                let mut remaining = crate::plan_policy::validate_plan_context(
-                    &re_parsed,
-                    workdir_ref,
-                    &plan_dir,
-                    crate::plan_policy::PlanExecutionPolicy::for_environment(),
-                );
-                remaining.retain(|v| v.code != "PLAN_ARTIFACT_MISSING");
-
-                if remaining.is_empty() {
-                    Ok(re_serialized)
-                } else {
-                    Err(format!(
-                        "generated plan still violates execution context policy \
-                         after dropping {} missing read_files:\n{}",
-                        missing_paths.len(),
-                        remaining
-                            .iter()
-                            .map(|v| format!("  - {v}"))
-                            .collect::<Vec<_>>()
-                            .join("\n")
-                    ))
-                }
+                tracing::info!(?repairs, "plan generate: repaired the draft");
+                toml::to_string_pretty(&parsed)
+                    .map_err(|error| format!("re-serialize the repaired draft: {error}"))?
             };
+            let policy_issues = crate::plan_policy::validate_plan_budgets(&parsed, policy);
+            if !policy_issues.is_empty() {
+                return Err(format!(
+                    "generated plan violates the `{}` structural budget:\n{}",
+                    template_kind.label(),
+                    policy_issues
+                        .iter()
+                        .map(|issue| format!("  - {issue}"))
+                        .collect::<Vec<_>>()
+                        .join("\n")
+                ));
+            }
+            // 3225 (decision 3203): a task over its tier's size limits is
+            // a spec defect the planner fixes before a cheap model meets
+            // it. Its tier is never raised here, since that would move
+            // the work to a pricier rung without the planner choosing to.
+            let size_issues = crate::plan_policy::validate_tier_sizes(&parsed, policy);
+            if !size_issues.is_empty() {
+                return Err(format!(
+                    "generated plan has tasks over their tier's size limits; split each \
+                     on independent outputs with disjoint files, or raise its tier:\n{}",
+                    size_issues
+                        .iter()
+                        .map(|issue| format!("  - {issue}"))
+                        .collect::<Vec<_>>()
+                        .join("\n")
+                ));
+            }
+
+            // Run the same context check that plan_loader.rs enforces at
+            // load time so the written tasks.toml is guaranteed to pass.
+            // PLAN_ARTIFACT_MISSING is suppressed because tasks.toml has
+            // not been written yet.
+            let mut ctx_violations = crate::plan_policy::validate_plan_context(
+                &parsed,
+                workdir_ref,
+                &plan_dir,
+                crate::plan_policy::PlanExecutionPolicy::for_environment(),
+            );
+            ctx_violations.retain(|v| v.code != "PLAN_ARTIFACT_MISSING");
+
+            if ctx_violations.is_empty() {
+                return Ok(validated);
+            }
+
+            // Collect paths flagged as PLAN_CONTEXT_MISSING and drop them
+            // so the written tasks.toml always passes the loader's check.
+            let missing_paths: HashSet<String> = ctx_violations
+                .iter()
+                .filter(|v| v.code == "PLAN_CONTEXT_MISSING")
+                .filter_map(|v| {
+                    v.message
+                        .strip_prefix("declared context file `")
+                        .and_then(|s| s.find('`').map(|end| s[..end].to_string()))
+                })
+                .collect();
+
+            // bug-1c75cc: a range that starts inside its file but ends past
+            // its end (a planner counting the empty line after the final
+            // newline) is clamped to the file instead of costing the plan.
+            let mut fixed = parsed.clone();
+            let clamped = clamp_context_ranges_past_eof(&mut fixed, workdir_ref);
+
+            if missing_paths.is_empty() && clamped == 0 {
+                // Nothing here can be repaired.
+                return Err(format!(
+                    "generated plan violates execution context policy:\n{}",
+                    ctx_violations
+                        .iter()
+                        .map(|v| format!("  - {v}"))
+                        .collect::<Vec<_>>()
+                        .join("\n")
+                ));
+            }
+
+            // Drop the unreachable entries and re-serialize.
+            for task in &mut fixed.tasks {
+                if let Some(ctx) = task.context.as_mut() {
+                    ctx.read_files.retain(|f| !missing_paths.contains(&f.path));
+                }
+            }
+            let re_serialized = toml::to_string_pretty(&fixed)
+                .map_err(|e| format!("re-serialize after dropping missing read_files: {e}"))?;
+            let re_parsed = TasksFile::parse_str(&re_serialized)
+                .map_err(|e| format!("re-parse after dropping missing read_files: {e}"))?;
+
+            // Second context check — must be clean now.
+            let mut remaining = crate::plan_policy::validate_plan_context(
+                &re_parsed,
+                workdir_ref,
+                &plan_dir,
+                crate::plan_policy::PlanExecutionPolicy::for_environment(),
+            );
+            remaining.retain(|v| v.code != "PLAN_ARTIFACT_MISSING");
+
+            if remaining.is_empty() {
+                Ok(re_serialized)
+            } else {
+                Err(format!(
+                    "generated plan still violates execution context policy \
+                     after dropping {} missing read_files and clamping {clamped} line \
+                     ranges:\n{}",
+                    missing_paths.len(),
+                    remaining
+                        .iter()
+                        .map(|v| format!("  - {v}"))
+                        .collect::<Vec<_>>()
+                        .join("\n")
+                ))
+            }
+        };
 
         // 3218: a spec hard fail (a verify step that can never fail, a missing
         // context file, ...) is a validation failure, so the retries below
@@ -1140,8 +1676,25 @@ pub async fn generate_plan(request: PlanRequest<'_>) -> Result<(PathBuf, Generat
         // the serve route needs this future to be Send.
         let accept_for: std::sync::Mutex<HashMap<String, Vec<accept_blocks::AcceptBlock>>> =
             std::sync::Mutex::default();
+        // bug-7a08a8: the open questions an unattended plan's planner answered
+        // itself, moved into their tasks, by the plan they were moved in.
+        let folded_for: std::sync::Mutex<HashMap<String, Vec<String>>> =
+            std::sync::Mutex::default();
         let try_extract_and_validate = |raw: &str| -> std::result::Result<String, String> {
             let validated = extract_and_validate(raw)?;
+            let validated = if unattended {
+                let (plan, folded) =
+                    fold_answered_questions(&validated).map_err(|error| format!("{error:#}"))?;
+                if !folded.is_empty() {
+                    folded_for
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .insert(plan.clone(), folded);
+                }
+                plan
+            } else {
+                validated
+            };
             let accept = accept_blocks::extract(raw)?;
             accept_blocks::check_sources(&validated, &accept, &plan_dir)?;
             match spec_scores(&validated, workdir_ref, &spec_config) {
@@ -1165,9 +1718,42 @@ pub async fn generate_plan(request: PlanRequest<'_>) -> Result<(PathBuf, Generat
             }
         };
 
+        // gap-dc5d7c: what became of the source's checks in a candidate
+        // plan; gap-ecafde: which of its verify steps cannot pass as written.
+        let assess = |candidate: &str| {
+            TasksFile::parse_str(candidate).ok().map(|plan| {
+                let unrunnable = runnable::problems(&plan, workdir_ref, &probe);
+                let coverage = source_checks::SourceCoverage::of(&checks, &plan, &unrunnable);
+                (coverage, unrunnable)
+            })
+        };
+        // How far a candidate falls short: the source checks it does not
+        // keep, then its steps that cannot pass (everything when it does not
+        // parse). Fewer is better, checks first.
+        let missing_of = |candidate: &str| {
+            assess(candidate).map_or((checks.len(), usize::MAX), |(coverage, unrunnable)| {
+                (coverage.unkept(), unrunnable.len())
+            })
+        };
+
         // First attempt uses the output we already have.
         let mut validated_toml = try_extract_and_validate(&output);
+        // bug-f0d60c: each reply that held no plan that validates is kept.
+        let mut rejected_drafts = 0u32;
+        let mut keep_draft = |reply: &str, error: &str| {
+            rejected_drafts += 1;
+            if let Some(path) =
+                keep_rejected_draft(workdir_ref, slug, rejected_drafts, reply, error)
+            {
+                eprintln!("  Kept the rejected draft in {}", path.display());
+            }
+        };
+        if let Err(error) = &validated_toml {
+            keep_draft(&output, error);
+        }
 
+        // gap-18bfa2: why the retries stopped early, if the cap stopped them.
+        let mut stopped_at_cap: Option<String> = None;
         // Retry up to 2 times on extraction/validation failure, escalating
         // to a higher-tier model when TOML validation keeps failing.
         if validated_toml.is_err() {
@@ -1177,19 +1763,23 @@ pub async fn generate_plan(request: PlanRequest<'_>) -> Result<(PathBuf, Generat
 
             for attempt in 1..=max_retries {
                 let t_retry = Instant::now();
+                if let Some(reached) = cap_reached() {
+                    eprintln!("  {reached}; not asking the planner again");
+                    stopped_at_cap = Some(reached);
+                    break;
+                }
 
                 // Escalate model on format/validation failures (not auth/network),
                 // only ever upward from the planner model, and only to a model
                 // this workspace configures.
-                let current_model = escalated_model
-                    .as_deref()
-                    .or(effective_model);
+                let current_model = escalated_model.as_deref().or(effective_model);
                 if resolved.config.agent.escalation.escalate_model {
                     if let Some(next) = next_tier_model(
                         current_model,
                         &resolved.config.agent.tier_models,
                         &resolved.config.models,
-                    ) {
+                    ) && (!for_chat_host || tool_loop_models.contains(&next))
+                    {
                         tracing::info!(
                             from = current_model.unwrap_or("<default>"),
                             to = next.as_str(),
@@ -1213,77 +1803,56 @@ pub async fn generate_plan(request: PlanRequest<'_>) -> Result<(PathBuf, Generat
                     "plan generate: TOML extraction/validation failed, retrying"
                 );
                 eprintln!(
-                    "⚠️  Plan TOML extraction failed (attempt {}/{}), retrying with stricter prompt…",
+                    "⚠️  The planner's reply held no plan that validates (attempt {}/{}); asking \
+                     again with its errors…",
                     attempt,
                     max_retries + 1,
                 );
                 let error = validated_toml.as_ref().unwrap_err();
-                let head = crate::run::truncate(&last_output, RETRY_OUTPUT_CHARS);
-                let truncated_output = if head.len() < last_output.len() {
-                    format!("{head}…(truncated)")
-                } else {
-                    last_output.clone()
-                };
-                let retry_prompt = format!(
-                    "Previous attempt produced invalid TOML. Error: {error}\n\n\
-                     Invalid output (truncated):\n```\n{truncated_output}\n```\n\n\
-                     Please regenerate a valid tasks.toml. Your response must be a single \
-                     ```toml fenced block, followed only by an ```accept:accept/<file> block for \
-                     each test its [task.accept] entries name.\n\n\
-                     MINIMUM REQUIRED STRUCTURE:\n\
-                     ```toml\n\
-                     [meta]\n\
-                     plan = \"{slug}\"\n\
-                     total = 1\n\
-                     done = 0\n\
-                     status = \"ready\"\n\
-                     # max_parallel is omitted: tasks that do not depend on each other run together\n\n\
-                     [[task]]\n\
-                     id = \"T1\"\n\
-                     title = \"Task title\"\n\
-                     description = \"What this task does.\"\n\
-                     status = \"ready\"\n\
-                     tier = \"focused\"\n\
-                     max_loc = 50\n\
-                     files = [\"crates/roko-core/src/lib.rs\"]\n\
-                     allowed_tools = [\"read_file\", \"grep\"]\n\
-                     denied_tools = []\n\
-                     depends_on = []\n\
-                     role = \"implementer\"\n\
-                     ```\n\n\
-                     Do NOT include Rust code, markdown prose, or explanations outside the TOML block.\n\
-                     Note: the meta field is `plan`, not `name`."
+                report(
+                    "fixing",
+                    (attempt, max_retries),
+                    Some(format!(
+                        "the reply held no plan that validates: {}",
+                        crate::run::truncate(error, PROGRESS_REASON_CHARS)
+                    )),
+                    retry_model.unwrap_or(planner_model.as_str()),
+                );
+                let retry_prompt = extraction_retry_prompt(
+                    &task_prompt,
+                    &source.kind,
+                    &last_output,
+                    error,
+                    budget.source_chars,
                 );
                 let retry_result = run_agent_capture_silent_with_usage(AgentExecOpts {
                     prompt: &retry_prompt,
-                    workdir: workdir_ref,
                     model: retry_model,
-                    effort: Some(planner_effort),
-                    system_prompt: Some(&system),
-                    resume_session: None,
-                    env_vars: &resolved.config.agent.env,
-                    role: Some("strategist"),
-                    allowed_tools: Some("Read,Grep,Glob"),
+                    ..planner_call
                 })
                 .await;
                 if let Ok(retry) = &retry_result {
                     spend.record(retry).await;
+                    report_spend();
                 }
 
                 match retry_result.map(|retry| (retry.exit_code, retry.output)) {
                     Ok((0, retry_output)) if !retry_output.trim().is_empty() => {
-                        last_output = retry_output.clone();
                         validated_toml = try_extract_and_validate(&retry_output);
-                        if validated_toml.is_ok() {
-                            tracing::info!(
-                                attempt,
-                                model = retry_model.unwrap_or("<default>"),
-                                retry_ms = t_retry.elapsed().as_millis() as u64,
-                                "plan generate: retry succeeded"
-                            );
-                            eprintln!("✅ Retry {attempt} succeeded");
-                            break;
+                        match &validated_toml {
+                            Ok(_) => {
+                                tracing::info!(
+                                    attempt,
+                                    model = retry_model.unwrap_or("<default>"),
+                                    retry_ms = t_retry.elapsed().as_millis() as u64,
+                                    "plan generate: retry succeeded"
+                                );
+                                eprintln!("✅ Retry {attempt} succeeded");
+                                break;
+                            }
+                            Err(error) => keep_draft(&retry_output, error),
                         }
+                        last_output = retry_output;
                     }
                     // Non-zero exit (auth/network errors) — do NOT escalate model,
                     // just log and retry with the same model.
@@ -1311,43 +1880,137 @@ pub async fn generate_plan(request: PlanRequest<'_>) -> Result<(PathBuf, Generat
             }
         }
 
+        // bug-59ed90: a check that hides its test runner's output fails
+        // without saying why, so the planner is asked once more to rewrite
+        // such checks, and the plan that hides fewer is kept.
+        if let Ok(candidate) = &validated_toml {
+            let hidden = hidden_output_lines(candidate);
+            if !hidden.is_empty() && !skip_for_cap("rewrite the checks that hide their output") {
+                eprintln!(
+                    "  {} check(s) hide their test runner's output; asking the planner once more",
+                    hidden.len()
+                );
+                report(
+                    "regenerating",
+                    (1, 1),
+                    Some(format!(
+                        "{} check(s) hide their test runner's output",
+                        hidden.len()
+                    )),
+                    planner_model.as_str(),
+                );
+                let prompt = hidden_output_regeneration_prompt(&task_prompt, candidate, &hidden);
+                let retry = run_agent_capture_silent_with_usage(AgentExecOpts {
+                    prompt: &prompt,
+                    ..planner_call
+                })
+                .await;
+                if let Ok(retry) = &retry {
+                    spend.record(retry).await;
+                    report_spend();
+                }
+                if let Ok(retry) = retry
+                    && retry.exit_code == 0
+                    && let Ok(better) = try_extract_and_validate(&retry.output)
+                    && hidden_output_lines(&better).len() < hidden.len()
+                    && missing_of(&better) <= missing_of(candidate)
+                {
+                    validated_toml = Ok(better);
+                }
+            }
+        }
+
+        // gap-dc5d7c: a plan that does not keep some of the source's
+        // checks (no step checks them, or only a grep or a build does, and no
+        // reason says why no command can) is sent back once, naming them,
+        // and the plan that keeps more is kept. gap-ecafde: so is a plan with
+        // a verify step that cannot pass as written.
+        let mut checks_regenerated = false;
+        if let Ok(candidate) = &validated_toml
+            && let Some((coverage, unrunnable)) = assess(candidate)
+            && (coverage.unkept() > 0 || !unrunnable.is_empty())
+            && !skip_for_cap("keep the source checks it left out")
+        {
+            let missing = (coverage.unkept(), unrunnable.len());
+            let why = match missing {
+                (0, stuck) => format!("{stuck} verify step(s) cannot pass as written"),
+                (unkept, 0) => format!(
+                    "{unkept} of the source's {} checks are not kept as verify steps",
+                    checks.len()
+                ),
+                (unkept, stuck) => format!(
+                    "{unkept} of the source's {} checks are not kept as verify steps, and \
+                     {stuck} step(s) cannot pass as written",
+                    checks.len()
+                ),
+            };
+            eprintln!("  {why}; asking the planner once more");
+            report("regenerating", (1, 1), Some(why), planner_model.as_str());
+            let prompt =
+                source_checks::regeneration_prompt(&task_prompt, candidate, &coverage, &unrunnable);
+            let retry = run_agent_capture_silent_with_usage(AgentExecOpts {
+                prompt: &prompt,
+                ..planner_call
+            })
+            .await;
+            if let Ok(retry) = &retry {
+                spend.record(retry).await;
+                report_spend();
+            }
+            checks_regenerated = true;
+            if let Ok(retry) = retry
+                && retry.exit_code == 0
+                && let Ok(better) = try_extract_and_validate(&retry.output)
+                && missing_of(&better) < missing
+                && hidden_output_lines(&better).len() <= hidden_output_lines(candidate).len()
+            {
+                validated_toml = Ok(better);
+            }
+        }
+
         // 3218: score the plan. A weak one (a mean below `[spec_quality]
         // allow_threshold`, or a task below `block_threshold`) is regenerated
         // once with each weak task's missing rules, and the better plan is
-        // kept: no hard fail and a higher mean.
+        // kept: no hard fail, a higher mean and no more checks that hide
+        // their runner's output (bug-59ed90).
         let mut spec_quality = None;
         if let Ok(candidate) = &validated_toml
             && let Some(scores) = spec_scores(candidate, workdir_ref, &spec_config)
         {
             let mut kept = (candidate.clone(), scores);
             let weak = kept.1.is_weak(&spec_config);
-            if weak {
+            if weak && !skip_for_cap("raise the plan's spec quality") {
                 eprintln!(
                     "  Spec quality is low (mean {:.1}, lowest task {:.1}); asking the planner \
                      once more",
                     kept.1.mean, kept.1.min
                 );
+                report(
+                    "regenerating",
+                    (1, 1),
+                    Some(format!(
+                        "the plan's spec quality is low (mean {:.1}, lowest task {:.1})",
+                        kept.1.mean, kept.1.min
+                    )),
+                    planner_model.as_str(),
+                );
                 let prompt = spec_regeneration_prompt(&task_prompt, &kept.0, &kept.1);
                 let retry = run_agent_capture_silent_with_usage(AgentExecOpts {
                     prompt: &prompt,
-                    workdir: workdir_ref,
-                    model: effective_model,
-                    effort: Some(planner_effort),
-                    system_prompt: Some(&system),
-                    resume_session: None,
-                    env_vars: &resolved.config.agent.env,
-                    role: Some("strategist"),
-                    allowed_tools: Some("Read,Grep,Glob"),
+                    ..planner_call
                 })
                 .await;
                 if let Ok(retry) = &retry {
                     spend.record(retry).await;
+                    report_spend();
                 }
                 if let Ok(retry) = retry
                     && retry.exit_code == 0
                     && let Ok(better) = try_extract_and_validate(&retry.output)
                     && let Some(better_scores) = spec_scores(&better, workdir_ref, &spec_config)
                     && better_scores.mean > kept.1.mean
+                    && hidden_output_lines(&better).len() <= hidden_output_lines(&kept.0).len()
+                    && missing_of(&better) <= missing_of(&kept.0)
                 {
                     kept = (better, better_scores);
                 }
@@ -1357,8 +2020,42 @@ pub async fn generate_plan(request: PlanRequest<'_>) -> Result<(PathBuf, Generat
             validated_toml = Ok(kept.0);
         }
 
+        // gap-dc5d7c: what became of each of the source's checks; and
+        // gap-ecafde: each step that still cannot pass as written.
+        let assessed = validated_toml.as_ref().ok().and_then(|plan| assess(plan));
+        if let Some((_, unrunnable)) = &assessed {
+            for step in unrunnable {
+                eprintln!(
+                    "warning: {} step {} cannot pass as written: {}",
+                    step.task, step.step, step.why
+                );
+            }
+        }
+        let source_coverage = assessed
+            .map(|(coverage, _)| coverage)
+            .filter(|_| !checks.is_empty());
+        if let Some(coverage) = &source_coverage {
+            println!("📋 {}", coverage.summary_line());
+            for line in coverage.detail_lines() {
+                println!("   {line}");
+            }
+        }
+
         if let Ok(validated_toml) = validated_toml {
+            report(
+                "writing",
+                (1, 1),
+                source_coverage
+                    .as_ref()
+                    .map(source_checks::SourceCoverage::summary_line),
+                planner_model.as_str(),
+            );
             let accept = accept_for
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .remove(&validated_toml)
+                .unwrap_or_default();
+            let folded = folded_for
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .remove(&validated_toml)
@@ -1387,12 +2084,18 @@ pub async fn generate_plan(request: PlanRequest<'_>) -> Result<(PathBuf, Generat
                         plan_dir.display()
                     );
                 } else {
-                    // Write minimal plan.md so plan discovery tools can find
-                    // this directory.
-                    let minimal_plan_md = format!(
-                        "---\nplan: {slug}\ntitle: {slug}\n---\n\n# {slug}\n\nGenerated plan.\n"
+                    // gap-11d870: the planner wrote no plan.md, so the plan
+                    // gets an overview written from its tasks.
+                    let plan_md = TasksFile::parse_str(&validated_toml).map_or_else(
+                        |_| {
+                            format!(
+                                "---\nplan: {slug}\ntitle: {slug}\n---\n\n# {slug}\n\n\
+                                 Generated plan.\n"
+                            )
+                        },
+                        |tasks| overview::overview_plan_md(slug, &source.content, &tasks),
                     );
-                    atomic_write_str(&plan_dir.join("plan.md"), &minimal_plan_md)
+                    atomic_write_str(&plan_dir.join("plan.md"), &plan_md)
                         .with_context(|| format!("write plan.md to {}", plan_dir.display()))?;
                 }
             }
@@ -1401,6 +2104,9 @@ pub async fn generate_plan(request: PlanRequest<'_>) -> Result<(PathBuf, Generat
             // plan already had stays unless the planner wrote it again.
             accept_blocks::write(&plan_dir, &accept)
                 .with_context(|| format!("write the accept tests to {}", plan_dir.display()))?;
+            for question in &folded {
+                println!("📋 Decided while planning, with nobody to ask: {question}");
+            }
         } else {
             // All attempts (initial + retries) failed to produce valid TOML.
             let final_err = validated_toml.unwrap_err();
@@ -1412,7 +2118,7 @@ pub async fn generate_plan(request: PlanRequest<'_>) -> Result<(PathBuf, Generat
             } else {
                 ""
             };
-            let _ = persist_capture_episode(
+            let _ = persist_capture_episode_distilled_by(
                 workdir_ref,
                 &plan_agent_command,
                 effective_model,
@@ -1423,16 +2129,38 @@ pub async fn generate_plan(request: PlanRequest<'_>) -> Result<(PathBuf, Generat
                 false,
                 plan_started.elapsed().as_millis() as u64,
                 None,
+                distiller,
             )
             .await;
             eprintln!("--- Raw model output (first {FAILURE_OUTPUT_CHARS} chars) ---");
             eprintln!("{}", crate::run::truncate(&output, FAILURE_OUTPUT_CHARS));
             eprintln!("--- End raw model output ---");
+            // A dry run's drafts went with its scratch copy of the workspace.
+            let drafts = if rejected_drafts > 0 && !dry_run {
+                format!(
+                    "\nThe rejected drafts are in {}.",
+                    workdir_ref
+                        .join(".roko")
+                        .join(REJECTED_DRAFTS_DIR)
+                        .join(slug)
+                        .display()
+                )
+            } else {
+                String::new()
+            };
+            if let Some(reached) = stopped_at_cap {
+                return Err(anyhow!(
+                    "{reached}, and no draft validated, so no plan was written.\n\
+                     Last error: {final_err}\n\
+                     hint: raise `[authoring] max_generation_usd`, or pass `--max-usd` to `roko \
+                     plan generate`.{drafts}"
+                ));
+            }
             return Err(anyhow!(
                 "Plan generation failed after retries: no valid tasks.toml was produced.\n\
                  Last error: {final_err}\n\
                  The agent output ({} bytes) did not contain a parseable ```toml block.\n\
-                 hint: Try again, or create plans/{slug}/tasks.toml manually.{toml_hint}",
+                 hint: Try again, or create plans/{slug}/tasks.toml manually.{toml_hint}{drafts}",
                 output.len()
             ));
         }
@@ -1448,15 +2176,19 @@ pub async fn generate_plan(request: PlanRequest<'_>) -> Result<(PathBuf, Generat
         let changed = dry_run_fs::changed_tasks_files(&plans_root, &tasks_before);
         let mut artifact_valid = true;
         let mut validation_report: Option<ArtifactValidationReport> = None;
+        // bug-7a08a8: why the written plan cannot run, one line each.
+        let mut invalid: Vec<String> = Vec::new();
 
         if dry_run {
             if changed.is_empty() {
                 artifact_valid = false;
+                invalid.push("no tasks.toml was written".to_string());
                 eprintln!("warning: dry-run plan generation did not produce any tasks.toml files");
             } else {
                 for path in &changed {
                     if let Err(err) = dry_run_fs::validate_and_print_preview(path) {
                         artifact_valid = false;
+                        invalid.push(format!("{}: {err:#}", path.display()));
                         eprintln!(
                             "warning: dry-run validation failed for {}: {err:#}",
                             path.display()
@@ -1469,9 +2201,8 @@ pub async fn generate_plan(request: PlanRequest<'_>) -> Result<(PathBuf, Generat
         }
 
         let task_count = generated_task_count(&generated_changed)?;
-        let max_tasks = crate::plan_policy::effective_generated_task_limit(
-            template_kind.max_task_count(),
-        );
+        let max_tasks =
+            crate::plan_policy::effective_generated_task_limit(template_kind.max_task_count());
         if task_count > max_tasks {
             eprintln!(
                 "⚠️  Generated {task_count} tasks, which exceeds the `{}` template budget of {}",
@@ -1495,13 +2226,38 @@ pub async fn generate_plan(request: PlanRequest<'_>) -> Result<(PathBuf, Generat
                         report.totals.errors, report.totals.warnings, slug
                     );
                 }
+                invalid.extend(
+                    report
+                        .plans
+                        .iter()
+                        .flat_map(|plan| &plan.diagnostics)
+                        .filter(|diagnostic| {
+                            diagnostic.severity == crate::plan_validate::Severity::Error
+                        })
+                        .map(|diagnostic| {
+                            format!("{} {}", diagnostic.rule_id, diagnostic.message)
+                                .replace('\n', "\n  ")
+                        }),
+                );
+                // bug-59ed90: a check the planner left hiding its runner's
+                // output is said out loud, so the person can fix it first.
+                for diagnostic in report
+                    .plans
+                    .iter()
+                    .flat_map(|plan| &plan.diagnostics)
+                    .filter(|diagnostic| diagnostic.rule_id == "PLAN_050")
+                {
+                    eprintln!("warning: PLAN_050 {}", diagnostic.message);
+                }
                 validation_report = serde_json::to_value(&report).ok();
                 if validation_report.is_none() {
                     artifact_valid = false;
+                    invalid.push("its validation report could not be recorded".to_string());
                 }
             }
             Err(err) => {
                 artifact_valid = false;
+                invalid.push(format!("it could not be validated: {err:#}"));
                 eprintln!(
                     "warning: artifact validation could not be completed for {}: {err:#}",
                     slug
@@ -1526,9 +2282,12 @@ pub async fn generate_plan(request: PlanRequest<'_>) -> Result<(PathBuf, Generat
             artifact_valid,
             validation_report,
             spec_quality,
+            source_checks: source_coverage.map(|coverage| coverage.record(checks_regenerated)),
+            cost_usd: spend.spent_usd(),
         };
 
-        let _ = persist_capture_episode(
+        report("recording", (1, 1), None, planner_model.as_str());
+        let _ = persist_capture_episode_distilled_by(
             workdir_ref,
             &plan_agent_command,
             effective_model,
@@ -1539,12 +2298,26 @@ pub async fn generate_plan(request: PlanRequest<'_>) -> Result<(PathBuf, Generat
             outcome.fully_successful(),
             plan_started.elapsed().as_millis() as u64,
             None,
+            distiller,
         )
         .await;
 
+        // bug-7a08a8: a plan that cannot run is an error, which names why, so
+        // no caller reports it as written and ready.
+        if !outcome.artifact_valid {
+            let plan_dir = plan_dir
+                .strip_prefix(workdir_ref)
+                .map_or_else(|_| plan_dir.clone(), Path::to_path_buf);
+            return Err(PlanFailsValidation {
+                plan_dir,
+                errors: invalid,
+                cost_usd: outcome.cost_usd,
+            }
+            .into());
+        }
+
         Ok((
-            requested_plans_root
-                .map_or_else(|| workspace_plans_dir(&workdir), Path::to_path_buf),
+            requested_plans_root.map_or_else(|| workspace_plans_dir(&workdir), Path::to_path_buf),
             outcome,
         ))
     }
@@ -2081,9 +2854,64 @@ pub fn slugify(title: &str) -> String {
     }
 }
 
+/// Clamp each `read_files` line range in `tasks` that starts inside its file
+/// but ends past the file's last line (bug-1c75cc), and return how many it
+/// clamped. Paths resolve against `workspace_root`, as `validate_plan_context`
+/// resolves them; a range it cannot read or parse, or one that starts past the
+/// end, is left for that check to refuse. Only generation repairs ranges:
+/// hand-written plans stay strict.
+fn clamp_context_ranges_past_eof(
+    tasks: &mut crate::task_parser::TasksFile,
+    workspace_root: &std::path::Path,
+) -> usize {
+    let mut clamped = 0;
+    for task in &mut tasks.tasks {
+        let Some(context) = task.context.as_mut() else {
+            continue;
+        };
+        for read_file in &mut context.read_files {
+            let Some(range) = read_file.lines.as_deref() else {
+                continue;
+            };
+            let Ok((start, Some(end))) = crate::plan_policy::parse_line_range(range, usize::MAX)
+            else {
+                continue;
+            };
+            let Ok(content) = std::fs::read_to_string(workspace_root.join(&read_file.path)) else {
+                continue;
+            };
+            let line_count = content.lines().count();
+            if start >= 1 && start <= line_count && end > line_count {
+                read_file.lines = Some(format!("{start}-{line_count}"));
+                clamped += 1;
+            }
+        }
+    }
+    clamped
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// bug-59ed90: a failed planner call's error carries what it printed,
+    /// which is where a provider says its key is wrong or it is unreachable.
+    #[test]
+    fn a_failed_planner_call_says_what_the_planner_printed() {
+        assert_eq!(agent_said("  \n"), "");
+        assert_eq!(
+            agent_said("error: 401 Unauthorized: invalid api key\n"),
+            "\nThe planner said: error: 401 Unauthorized: invalid api key"
+        );
+        let long = "y".repeat(AGENT_ERROR_PREVIEW_CHARS + 50);
+        assert_eq!(
+            agent_said(&long),
+            format!(
+                "\nThe planner said: {}",
+                "y".repeat(AGENT_ERROR_PREVIEW_CHARS)
+            )
+        );
+    }
 
     /// bug-d3c72e: a failed plan generation prints the head of the model's
     /// output. Cutting it at byte 2000 panicked when that byte fell inside a
@@ -2099,7 +2927,6 @@ mod tests {
         assert!(printed.ends_with('é'));
         let preview = crate::run::truncate(&output, AGENT_ERROR_PREVIEW_CHARS);
         assert_eq!(preview, "x".repeat(AGENT_ERROR_PREVIEW_CHARS));
-        assert_eq!(crate::run::truncate(&output, RETRY_OUTPUT_CHARS), printed);
         assert_eq!(crate::run::truncate("short", FAILURE_OUTPUT_CHARS), "short");
     }
 
@@ -2145,18 +2972,24 @@ mod tests {
             artifact_valid: true,
             validation_report: None,
             spec_quality: None,
+            source_checks: None,
+            cost_usd: 0.0,
         };
         let partial = GenerationOutcome {
             process_success: true,
             artifact_valid: false,
             validation_report: None,
             spec_quality: None,
+            source_checks: None,
+            cost_usd: 0.0,
         };
         let failure = GenerationOutcome {
             process_success: false,
             artifact_valid: true,
             validation_report: None,
             spec_quality: None,
+            source_checks: None,
+            cost_usd: 0.0,
         };
 
         assert!(success.fully_successful());
@@ -2582,6 +3415,991 @@ mod tests {
             scored.min <= scored.mean && scored.mean < 100.0,
             "{scored:?}"
         );
+    }
+
+    /// gap-18bfa2: once a generation's planner calls have cost its cap, it
+    /// makes no further call. A retry it needs stops it, with an error that
+    /// names the cap; an improvement it would ask for is skipped and the plan
+    /// in hand is written. Each stage reports the cap.
+    #[cfg(unix)]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn plan_generation_stops_at_its_spend_cap() {
+        // Any call costs more than this cap.
+        const CAP: f64 = 1e-9;
+
+        let temp = tempfile::tempdir().expect("tempdir");
+        let workdir = temp.path();
+        let bin = tempfile::tempdir().expect("tempdir");
+        let calls = write_scripted_planner(
+            workdir,
+            bin.path(),
+            &["```text\nNo plan yet.\n```\n", WIDGET_PLAN],
+            "allow_threshold = 0.0\nblock_threshold = 0.0\n",
+        );
+        let (sink, stages) = recorded_progress();
+        let request = PlanRequest {
+            model: Some("planner"),
+            progress: Some(sink),
+            max_usd: Some(CAP),
+            ..PlanRequest::new(WIDGET_REQUEST, "widget", workdir)
+        };
+        let error = generate_plan(request)
+            .await
+            .expect_err("the retry is over the cap");
+        let message = format!("{error:#}");
+        assert!(message.contains("reached its spend cap"), "{message}");
+        assert!(message.contains("no plan was written"), "{message}");
+        let log = std::fs::read_to_string(&calls).expect("planner call log");
+        assert_eq!(log.lines().count(), 1, "the first call, and no retry");
+        assert!(!workdir.join("plans/widget").exists());
+        let stages = stages.lock().expect("stages");
+        assert!(
+            stages.iter().all(|stage| stage.max_usd == Some(CAP)),
+            "{stages:?}"
+        );
+
+        // A weak plan is written as it is, without the regeneration.
+        let temp = tempfile::tempdir().expect("tempdir");
+        let workdir = temp.path();
+        let bin = tempfile::tempdir().expect("tempdir");
+        let calls = write_scripted_planner(
+            workdir,
+            bin.path(),
+            &[WIDGET_PLAN],
+            "allow_threshold = 100.0\n",
+        );
+        let request = PlanRequest {
+            model: Some("planner"),
+            max_usd: Some(CAP),
+            ..PlanRequest::new(WIDGET_REQUEST, "widget", workdir)
+        };
+        let (_, outcome) = generate_plan(request)
+            .await
+            .expect("the plan in hand is written");
+        let log = std::fs::read_to_string(&calls).expect("planner call log");
+        assert_eq!(log.lines().count(), 1, "no regeneration over the cap");
+        assert!(outcome.cost_usd > CAP, "{outcome:?}");
+        assert!(workdir.join("plans/widget/tasks.toml").is_file());
+    }
+
+    /// gap-b95913: a draft whose `meta.total` is 0, whose task reads four
+    /// files, and whose range starts past the end of its file is repaired,
+    /// not sent back: the plan is written after one planner call.
+    #[cfg(unix)]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn generated_draft_repairs_total_ranges_and_read_files() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let workdir = temp.path();
+        std::fs::create_dir_all(workdir.join("docs")).expect("docs");
+        for name in ["a", "b", "c", "d"] {
+            std::fs::write(workdir.join(format!("docs/{name}.md")), "line\n".repeat(71))
+                .expect("a doc");
+        }
+        let draft = WIDGET_PLAN.replace("total = 1", "total = 0").replace(
+            "read_files = []",
+            "read_files = [\n\
+             { path = \"docs/a.md\", lines = \"200-400\", why = \"the spec\" },\n\
+             { path = \"docs/b.md\", why = \"the second part\" },\n\
+             { path = \"docs/c.md\", why = \"the third part\" },\n\
+             { path = \"docs/d.md\", why = \"the last part\" },\n]",
+        );
+        assert!(draft.contains("total = 0") && draft.contains("docs/d.md"));
+        let bin = tempfile::tempdir().expect("tempdir");
+        let calls = write_scripted_planner(
+            workdir,
+            bin.path(),
+            &[&draft],
+            "allow_threshold = 0.0\nblock_threshold = 0.0\n",
+        );
+        let request = PlanRequest {
+            model: Some("planner"),
+            ..PlanRequest::new(WIDGET_REQUEST, "widget", workdir)
+        };
+        generate_plan(request)
+            .await
+            .expect("generate the widget plan");
+        let log = std::fs::read_to_string(&calls).expect("planner call log");
+        assert_eq!(log.lines().count(), 1, "the draft, repaired; no retry");
+
+        let written =
+            TasksFile::parse(&workdir.join("plans/widget/tasks.toml")).expect("the widget plan");
+        assert_eq!(written.meta.total, 1);
+        let read_files = &written.tasks[0]
+            .context
+            .as_ref()
+            .expect("the task's context")
+            .read_files;
+        let paths: Vec<&str> = read_files.iter().map(|file| file.path.as_str()).collect();
+        assert_eq!(paths, ["docs/a.md", "docs/b.md", "docs/c.md"]);
+        assert_eq!(read_files[0].lines, None, "the range past the end is gone");
+    }
+
+    /// gap-ecafde: a check that cannot pass as written is repaired, or sent
+    /// back. A test file a task's own check needs joins the task's files; a
+    /// check that names a test its file does not define goes back to the
+    /// planner once, named, and the plan whose checks can all pass is
+    /// written.
+    #[cfg(unix)]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn generation_flags_verify_steps_that_cannot_pass() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let workdir = temp.path();
+        std::fs::create_dir_all(workdir.join("tests")).expect("tests");
+        std::fs::write(
+            workdir.join("tests/test_widget.py"),
+            "import unittest\n\nclass WidgetTest(unittest.TestCase):\n    \
+             def test_spins(self):\n        pass\n",
+        )
+        .expect("a test module");
+        let plan = |test: &str| {
+            WIDGET_PLAN.replace(
+                "\"test -f src/widget.rs\"",
+                &format!(
+                    "\"grep -q 'def test_stops' tests/test_stops.py && python3 -m unittest \
+                     tests.test_stops\"\n\n[[task.verify]]\nphase = \"test\"\n\
+                     command = \"python3 -m unittest tests.test_widget.WidgetTest.{test}\""
+                ),
+            )
+        };
+        let (wobbles, spins) = (plan("test_wobbles"), plan("test_spins"));
+        let bin = tempfile::tempdir().expect("tempdir");
+        let calls = write_scripted_planner(
+            workdir,
+            bin.path(),
+            &[&wobbles, &spins],
+            "allow_threshold = 0.0\nblock_threshold = 0.0\n",
+        );
+        let request = PlanRequest {
+            model: Some("planner"),
+            ..PlanRequest::new(WIDGET_REQUEST, "widget", workdir)
+        };
+        generate_plan(request)
+            .await
+            .expect("generate the widget plan");
+        let log = std::fs::read_to_string(&calls).expect("planner call log");
+        assert_eq!(
+            log.lines().count(),
+            2,
+            "the plan, then the plan whose checks can pass"
+        );
+        let again = std::fs::read_to_string(bin.path().join("prompt-1.txt")).expect("the retry");
+        assert!(
+            again.contains(
+                "- T1 step 2: it names `test_wobbles`, which `tests/test_widget.py` does not \
+                 define and no task writes"
+            ),
+            "{again}"
+        );
+        let written =
+            TasksFile::parse(&workdir.join("plans/widget/tasks.toml")).expect("the widget plan");
+        let task = &written.tasks[0];
+        assert!(
+            task.files.iter().any(|file| file == "tests/test_stops.py"),
+            "{:?}",
+            task.files
+        );
+        assert_eq!(
+            task.verify[1].command,
+            "python3 -m unittest tests.test_widget.WidgetTest.test_spins"
+        );
+    }
+
+    /// bug-df9aff: G1's plan, written by a planner, comes out with every
+    /// task able to create its module and the render task after the three
+    /// whose modules its tests import, with no second call.
+    #[cfg(unix)]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn generated_g1_tasks_may_write_and_wait_for_their_imports() {
+        let (temp, plan) = super::super::runnable::tests::g1_plan();
+        let workdir = temp.path();
+        let toml = toml::to_string_pretty(&plan).expect("the G1 plan as TOML");
+        let bin = tempfile::tempdir().expect("tempdir");
+        let calls = write_scripted_planner(
+            workdir,
+            bin.path(),
+            &[&toml],
+            "allow_threshold = 0.0\nblock_threshold = 0.0\n",
+        );
+        let request = PlanRequest {
+            model: Some("planner"),
+            ..PlanRequest::new(WIDGET_REQUEST, "g1", workdir)
+        };
+        generate_plan(request).await.expect("generate the G1 plan");
+        let log = std::fs::read_to_string(&calls).expect("planner call log");
+        assert_eq!(log.lines().count(), 1, "roko repairs the plan itself");
+        let written = TasksFile::parse(&workdir.join("plans/g1/tasks.toml")).expect("the plan");
+        for task in &written.tasks {
+            let tools = task.allowed_tools.clone().unwrap_or_default();
+            assert!(
+                tools.iter().any(|tool| tool == "write_file"),
+                "{}: {tools:?}",
+                task.id
+            );
+        }
+        let render = written
+            .tasks
+            .iter()
+            .find(|task| task.id == "T4")
+            .expect("the render task");
+        assert_eq!(render.depends_on, ["T1", "T2", "T3"]);
+    }
+
+    /// bug-8fe462: a spec that states checks as unittest wildcards gets
+    /// their real tests. The planner is given the command for each, and a
+    /// step it wrote with invented test names runs the real ones instead,
+    /// without asking it again.
+    #[cfg(unix)]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn wildcard_spec_checks_become_runnable_steps() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let workdir = temp.path();
+        std::fs::create_dir_all(workdir.join("tests")).expect("tests");
+        for (file, body) in [
+            (
+                "tests/test_osc.py",
+                "class NoiseTest(unittest.TestCase):\n    def test_white_noise_is_centred(self):\n",
+            ),
+            (
+                "tests/test_svf.py",
+                "class SVFTest(unittest.TestCase):\n    \
+                 def test_lowpass_attenuates_highs(self):\n        pass\n    \
+                 def test_lowpass_passes_lows(self):\n        pass\n",
+            ),
+        ] {
+            std::fs::write(workdir.join(file), format!("import unittest\n\n{body}"))
+                .expect("a test module");
+        }
+        let source = PlanSource::Text {
+            text: "# Synth\n\n## Verification\n\n| INV | Test | Constraint |\n|---|---|---|\n\
+                   | INV-4 | `tests.test_osc.NoiseTest.*` | white noise is centred |\n\
+                   | INV-5 | `tests.test_svf.SVFTest.test_lowpass_*` | LP 400 Hz |\n",
+            kind: "file",
+        };
+        let invented = "[meta]\nplan = \"synth\"\ntotal = 1\ndone = 0\nstatus = \"ready\"\n\n\
+            [[task]]\nid = \"T1\"\ntitle = \"Add the noise and the filter\"\n\
+            description = \"Create synth/osc.py and synth/svf.py.\"\nstatus = \"ready\"\n\
+            role = \"implementer\"\ntier = \"focused\"\n\
+            files = [\"synth/osc.py\", \"synth/svf.py\"]\ndepends_on = []\n\n\
+            [task.context]\nread_files = []\n\n\
+            [[task.verify]]\nphase = \"test\"\n\
+            command = \"python3 -m unittest tests.test_osc.NoiseTest.test_white_noise\"\n\
+            covers = [\"SC1\"]\n\n\
+            [[task.verify]]\nphase = \"test\"\n\
+            command = \"python3 -m unittest tests.test_svf.SVFTest.test_lowpass_400hz\"\n\
+            covers = [\"SC2\"]\n";
+        let bin = tempfile::tempdir().expect("tempdir");
+        let calls = write_scripted_planner(
+            workdir,
+            bin.path(),
+            &[invented],
+            "allow_threshold = 0.0\nblock_threshold = 0.0\n",
+        );
+        let request = PlanRequest {
+            model: Some("planner"),
+            ..PlanRequest::new(source, "synth", workdir)
+        };
+        let (_, outcome) = generate_plan(request)
+            .await
+            .expect("generate the synth plan");
+        let log = std::fs::read_to_string(&calls).expect("planner call log");
+        assert_eq!(log.lines().count(), 1, "roko fixes the steps itself");
+        let asked = std::fs::read_to_string(bin.path().join("prompt-0.txt")).expect("first call");
+        assert!(
+            asked.contains("(run: `python3 -m unittest tests.test_osc.NoiseTest`)"),
+            "{asked}"
+        );
+
+        let written =
+            TasksFile::parse(&workdir.join("plans/synth/tasks.toml")).expect("the synth plan");
+        let commands: Vec<&str> = written.tasks[0]
+            .verify
+            .iter()
+            .map(|step| step.command.as_str())
+            .collect();
+        assert_eq!(
+            commands,
+            [
+                "python3 -m unittest tests.test_osc.NoiseTest",
+                "python3 -m unittest tests.test_svf.SVFTest.test_lowpass_attenuates_highs \
+                 tests.test_svf.SVFTest.test_lowpass_passes_lows",
+            ]
+        );
+        let checks = outcome
+            .source_checks
+            .expect("the source's checks are reported");
+        assert_eq!(
+            (checks.kept, checks.cannot_run, checks.total),
+            (2, 0, 2),
+            "{checks:?}"
+        );
+    }
+
+    /// gap-dc5d7c: generation from a file with a Verification section lists
+    /// its checks for the planner. A plan that checks one only with a file
+    /// test, leaves one out and drops one with a reason that restates it is
+    /// sent back once; the plan that keeps every check is written, and each
+    /// check is reported: kept, by the task and the criterion that keep it
+    /// (a step that covers a check by its id gets a criterion that states
+    /// it), or dropped, with the planner's reason.
+    #[cfg(unix)]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn from_file_generation_reports_dropped_source_checks() {
+        let source = PlanSource::Text {
+            text: "# Widget\n\nAdd a widget module.\n\n## Verification\n\n\
+                   - `src/widget.rs` exists\n- the widget spins\n- a person enjoys the widget\n",
+            kind: "file",
+        };
+        let plan = |acceptance: &str, verify: &str, dropped: &str| {
+            format!(
+                "[meta]\nplan = \"widget\"\ntotal = 1\ndone = 0\nstatus = \"ready\"\n{dropped}\n\
+                 [[task]]\nid = \"T1\"\ntitle = \"Add the widget module\"\n\
+                 description = \"Create src/widget.rs.\"\nstatus = \"ready\"\n\
+                 role = \"implementer\"\ntier = \"focused\"\nfiles = [\"src/widget.rs\"]\n\
+                 depends_on = []\nacceptance = [{acceptance}]\n\n\
+                 [task.context]\nread_files = []\n{verify}"
+            )
+        };
+        let step = |command: &str, covers: &str| {
+            format!(
+                "\n[[task.verify]]\nphase = \"test\"\ncommand = \"{command}\"\n\
+                 covers = [\"{covers}\"]\n"
+            )
+        };
+        let first = plan(
+            "\"AC1: SC1: src/widget.rs exists\"",
+            &step("test -f src/widget.rs", "AC1"),
+            "dropped_checks = [\"SC3: a person enjoys the widget\"]",
+        );
+        let second = plan(
+            "\"AC1: SC2: the widget spins\"",
+            &format!(
+                "{}{}",
+                step(
+                    "python3 -m unittest tests.test_widget.WidgetTest.test_module",
+                    "SC1"
+                ),
+                step(
+                    "python3 -m unittest tests.test_widget.WidgetTest.test_spins",
+                    "AC1"
+                ),
+            ),
+            "dropped_checks = [\"SC3: needs a person to judge it\"]",
+        );
+        let temp = tempfile::tempdir().expect("tempdir");
+        let workdir = temp.path();
+        let bin = tempfile::tempdir().expect("tempdir");
+        let calls = write_scripted_planner(
+            workdir,
+            bin.path(),
+            &[&first, &second],
+            "allow_threshold = 0.0\nblock_threshold = 0.0\n",
+        );
+        let request = PlanRequest {
+            model: Some("planner"),
+            ..PlanRequest::new(source, "widget", workdir)
+        };
+        let (_, outcome) = generate_plan(request)
+            .await
+            .expect("generate the widget plan");
+        let log = std::fs::read_to_string(&calls).expect("planner call log");
+        assert_eq!(
+            log.lines().count(),
+            2,
+            "the plan, then the plan that keeps every check"
+        );
+        let asked = std::fs::read_to_string(bin.path().join("prompt-0.txt")).expect("first call");
+        assert!(asked.contains("## Source checks"), "{asked}");
+        assert!(
+            asked.contains("- SC3: a person enjoys the widget"),
+            "{asked}"
+        );
+        let again = std::fs::read_to_string(bin.path().join("prompt-1.txt")).expect("the retry");
+        for expected in [
+            "keeps 0 of the 3 source checks",
+            "- SC2: the widget spins",
+            "- SC3: a person enjoys the widget",
+            "(T1 runs only `test -f src/widget.rs`)",
+        ] {
+            assert!(again.contains(expected), "{expected}: {again}");
+        }
+
+        let checks = outcome
+            .source_checks
+            .expect("the source's checks are reported");
+        assert_eq!(
+            (
+                checks.total,
+                checks.kept,
+                checks.shallow,
+                checks.dropped,
+                checks.missing
+            ),
+            (3, 2, 0, 1, 0),
+            "{checks:?}"
+        );
+        assert!(checks.regenerated);
+        let criterion = |index: usize| {
+            let check = &checks.checks[index];
+            (
+                check.status.as_str(),
+                check.task.as_deref(),
+                check.criterion.as_deref(),
+            )
+        };
+        assert_eq!(criterion(0), ("kept", Some("T1"), Some("AC2")));
+        assert_eq!(criterion(1), ("kept", Some("T1"), Some("AC1")));
+        let person = &checks.checks[2];
+        assert_eq!(person.status, "dropped");
+        assert_eq!(person.reason.as_deref(), Some("needs a person to judge it"));
+        let written = std::fs::read_to_string(workdir.join("plans/widget/tasks.toml"))
+            .expect("the widget plan");
+        for expected in [
+            "AC2: SC1: `src/widget.rs` exists",
+            "covers = [\"AC2\"]",
+            "SC3: needs a person to judge it",
+        ] {
+            assert!(written.contains(expected), "{expected}: {written}");
+        }
+    }
+
+    /// bug-f0d60c: a reply that holds no plan that validates is retried with
+    /// the request, its source document included, the whole reply and its
+    /// error, and no one-task template; the rejected reply is kept with its
+    /// error.
+    #[cfg(unix)]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn extraction_retry_keeps_the_source_document() {
+        // A source with no check headings, so no source check asks for a
+        // third call (gap-dc5d7c).
+        let source = PlanSource::Text {
+            text: "# Widget\n\nAdd a widget module: `widget::spin(3)` returns three turns.\n",
+            kind: "file",
+        };
+        // Longer than the 2,000 characters a retry used to quote, with a key
+        // given twice.
+        let draft = format!(
+            "{WIDGET_PLAN}phase = \"check\"\n# {}\n# the end of the draft\n",
+            "padding ".repeat(400)
+        );
+        let temp = tempfile::tempdir().expect("tempdir");
+        let workdir = temp.path();
+        let bin = tempfile::tempdir().expect("tempdir");
+        let calls = write_scripted_planner(
+            workdir,
+            bin.path(),
+            &[&draft, WIDGET_PLAN],
+            "allow_threshold = 0.0\nblock_threshold = 0.0\n",
+        );
+        let request = PlanRequest {
+            model: Some("planner"),
+            ..PlanRequest::new(source, "widget", workdir)
+        };
+        generate_plan(request)
+            .await
+            .expect("generate the widget plan");
+        let log = std::fs::read_to_string(&calls).expect("planner call log");
+        assert_eq!(log.lines().count(), 2, "the rejected draft, then the retry");
+        assert!(workdir.join("plans/widget/tasks.toml").is_file());
+
+        let first = std::fs::read_to_string(bin.path().join("prompt-0.txt")).expect("first call");
+        let retry = std::fs::read_to_string(bin.path().join("prompt-1.txt")).expect("retry");
+        for expected in [
+            "`widget::spin(3)` returns three turns",
+            "# the end of the draft",
+            "generated plan has invalid TOML",
+        ] {
+            assert!(retry.contains(expected), "{expected}: {retry}");
+        }
+        assert!(!retry.contains("MINIMUM REQUIRED STRUCTURE"), "{retry}");
+        // The system prompt's example names the file; the retry adds no
+        // mention of its own.
+        let named = |text: &str| text.matches("crates/roko-core/src/lib.rs").count();
+        assert_eq!(named(&retry), named(&first));
+
+        let drafts = workdir.join(".roko/plan-drafts/widget");
+        let kept = std::fs::read_to_string(drafts.join("rejected-1.md")).expect("the draft");
+        assert!(kept.contains("generated plan has invalid TOML"), "{kept}");
+        assert!(kept.contains("# the end of the draft"), "{kept}");
+        assert!(!drafts.join("rejected-2.md").exists());
+    }
+
+    /// bug-59ed90: a plan whose check pipes its test runner's output away is
+    /// sent back to the planner once, naming the check and the runner. The
+    /// rewritten plan is kept when it hides less; a planner that keeps the
+    /// pipe is not asked again, and its plan is written as it is.
+    #[cfg(unix)]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn generation_asks_once_more_when_a_check_hides_its_runner_output() {
+        let plain = WIDGET_PLAN.replace(
+            "\"test -f src/widget.rs\"",
+            "\"python3 -m unittest tests.test_widget\"",
+        );
+        let hidden = WIDGET_PLAN.replace(
+            "\"test -f src/widget.rs\"",
+            "\"python3 -m unittest tests.test_widget 2>&1 | grep -q OK\"",
+        );
+        assert_ne!(plain, hidden);
+
+        for (replies, kept) in [
+            (vec![hidden.as_str(), plain.as_str()], plain.as_str()),
+            (vec![hidden.as_str()], hidden.as_str()),
+        ] {
+            let temp = tempfile::tempdir().expect("tempdir");
+            let workdir = temp.path();
+            let bin = tempfile::tempdir().expect("tempdir");
+            let calls = write_scripted_planner(
+                workdir,
+                bin.path(),
+                &replies,
+                "allow_threshold = 0.0\nblock_threshold = 0.0\n",
+            );
+            let request = PlanRequest {
+                model: Some("planner"),
+                ..PlanRequest::new(WIDGET_REQUEST, "widget", workdir)
+            };
+            generate_plan(request)
+                .await
+                .expect("generate the widget plan");
+            let written = std::fs::read_to_string(workdir.join("plans/widget/tasks.toml"))
+                .expect("the widget plan");
+            let pipes = written.contains("| grep -q OK");
+            assert_eq!(pipes, kept.contains("| grep -q OK"), "{written}");
+            let log = std::fs::read_to_string(&calls).expect("planner call log");
+            assert_eq!(log.lines().count(), 2, "the plan, then one rewrite");
+            let ask = std::fs::read_to_string(bin.path().join("prompt-1.txt")).expect("ask");
+            assert!(ask.contains("hide their test runner's output"), "{ask}");
+            assert!(
+                ask.contains(
+                    "task 'T1' verify step 1 `python3 -m unittest tests.test_widget 2>&1 | grep \
+                     -q OK` pipes the output of `python3 -m unittest tests.test_widget` into \
+                     `grep`"
+                ),
+                "{ask}"
+            );
+        }
+    }
+
+    /// bug-7a08a8: an unattended plan's planner is told nobody answers its
+    /// questions, and a question it answered itself goes into its task
+    /// instead of keeping the plan from running; an unanswered one stays.
+    #[cfg(unix)]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn an_unattended_plan_decides_its_answered_questions() {
+        let answered = WIDGET_PLAN.replace(
+            "depends_on = []\n",
+            "depends_on = []\nopen_questions = [\"Should the widget module be public? \
+             Assumption: yes, it is declared pub.\"]\n",
+        );
+        assert_ne!(answered, WIDGET_PLAN);
+
+        let temp = tempfile::tempdir().expect("tempdir");
+        let workdir = temp.path();
+        let bin = tempfile::tempdir().expect("tempdir");
+        write_scripted_planner(
+            workdir,
+            bin.path(),
+            &[&answered],
+            "allow_threshold = 0.0\nblock_threshold = 0.0\n",
+        );
+        let request = PlanRequest {
+            model: Some("planner"),
+            unattended: true,
+            ..PlanRequest::new(WIDGET_REQUEST, "widget", workdir)
+        };
+        generate_plan(request)
+            .await
+            .expect("an answered question no longer keeps the plan from running");
+        let written = std::fs::read_to_string(workdir.join("plans/widget/tasks.toml"))
+            .expect("the widget plan");
+        assert!(!written.contains("open_questions"), "{written}");
+        assert!(
+            written.contains("Decided while planning, with nobody to ask:"),
+            "{written}"
+        );
+        assert!(
+            written.contains("Should the widget module be public? Assumption: yes"),
+            "{written}"
+        );
+        let prompt = std::fs::read_to_string(bin.path().join("prompt-0.txt")).expect("prompt");
+        assert!(
+            prompt.contains("Nobody will review this plan or answer questions"),
+            "{prompt}"
+        );
+
+        let mixed = answered.replace(
+            "open_questions = [",
+            "open_questions = [\"Which colour should it be?\", ",
+        );
+        let (folded, moved) = fold_answered_questions(&mixed).expect("fold the questions");
+        assert_eq!(moved.len(), 1, "{moved:?}");
+        assert!(
+            moved[0].starts_with("task T1: Should the widget"),
+            "{moved:?}"
+        );
+        let tasks = TasksFile::parse_str(&folded).expect("the folded plan parses");
+        assert_eq!(
+            tasks.tasks[0].spec.open_questions,
+            ["Which colour should it be?"]
+        );
+    }
+
+    /// bug-7a08a8: a written plan that cannot run ends the generation with an
+    /// error that names why (an open question nobody answered, PLAN_045), so
+    /// no caller reports it as written and ready. The plan stays on disk.
+    #[cfg(unix)]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn generation_fails_when_the_written_plan_cannot_run() {
+        let open = WIDGET_PLAN.replace(
+            "depends_on = []\n",
+            "depends_on = []\nopen_questions = [\"Which colour should the widget be?\"]\n",
+        );
+        for unattended in [false, true] {
+            let temp = tempfile::tempdir().expect("tempdir");
+            let workdir = temp.path();
+            let bin = tempfile::tempdir().expect("tempdir");
+            write_scripted_planner(
+                workdir,
+                bin.path(),
+                &[&open],
+                "allow_threshold = 0.0\nblock_threshold = 0.0\n",
+            );
+            let request = PlanRequest {
+                model: Some("planner"),
+                unattended,
+                ..PlanRequest::new(WIDGET_REQUEST, "widget", workdir)
+            };
+            let error = generate_plan(request)
+                .await
+                .expect_err("an open question keeps the plan from running");
+            let failure = error
+                .downcast_ref::<PlanFailsValidation>()
+                .unwrap_or_else(|| panic!("a validation failure: {error:#}"));
+            assert_eq!(failure.plan_dir, Path::new("plans/widget"), "{failure}");
+            assert!(
+                failure
+                    .errors
+                    .iter()
+                    .any(|line| line.starts_with("PLAN_045 task 'T1' has open questions")),
+                "{failure}"
+            );
+            let message = failure.to_string();
+            assert!(
+                message.starts_with(
+                    "the plan was written to plans/widget, but it cannot run: 1 error(s)"
+                ),
+                "{message}"
+            );
+            assert!(
+                message.contains("Which colour should the widget be?"),
+                "{message}"
+            );
+            assert!(workdir.join("plans/widget/tasks.toml").exists());
+        }
+    }
+
+    /// bug-a0432b: a chat host's plan is written only by a model roko's own
+    /// tool loop runs. In a workspace whose models all run on CLI agents it is
+    /// refused with the reason a chat host's run gets, and the CLI planner is
+    /// never called.
+    #[cfg(unix)]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_chat_host_plan_is_never_written_on_a_cli_agent() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let workdir = temp.path();
+        let bin = tempfile::tempdir().expect("tempdir");
+        let calls = write_fake_planner(workdir, bin.path(), WIDGET_PLAN);
+        // No built-in ladder rung may qualify through a key in the
+        // environment, so the test never reaches a real provider.
+        let config = workdir.join("roko.toml");
+        let mut toml = std::fs::read_to_string(&config).expect("roko.toml");
+        toml.push_str("\n[routing.ladder]\nenabled = false\n");
+        std::fs::write(&config, toml).expect("roko.toml");
+        let request = PlanRequest {
+            for_chat_host: true,
+            unattended: true,
+            ..PlanRequest::new(WIDGET_REQUEST, "widget", workdir)
+        };
+        let error = generate_plan(request)
+            .await
+            .expect_err("no model roko's own tool loop runs is set up");
+        let message = format!("{error:#}");
+        assert!(
+            message.contains("no model can write the plan for a chat host's request"),
+            "{message}"
+        );
+        assert!(
+            message.contains("needs a model that runs in roko's own tool loop"),
+            "{message}"
+        );
+        assert!(!calls.exists(), "the CLI planner was called");
+        assert!(!workdir.join("plans/widget").exists());
+    }
+
+    /// A sink that keeps every stage a generation reports.
+    #[cfg(unix)]
+    fn recorded_progress() -> (PlanProgressSink, Arc<std::sync::Mutex<Vec<PlanProgress>>>) {
+        let stages = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let sink: PlanProgressSink = Arc::new({
+            let stages = Arc::clone(&stages);
+            move |stage: &PlanProgress| {
+                stages.lock().expect("stages").push(stage.clone());
+            }
+        });
+        (sink, stages)
+    }
+
+    /// gap-11d870: a planner call stopped at roko's time limit is a timeout,
+    /// not a crash "for an unknown reason": it is retried once, the
+    /// progress says why, and the error names the limit.
+    #[cfg(unix)]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_timed_out_planner_call_is_reported_as_a_timeout() {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let temp = tempfile::tempdir().expect("tempdir");
+        let workdir = temp.path();
+        let bin = tempfile::tempdir().expect("tempdir");
+        let calls = write_fake_planner(workdir, bin.path(), WIDGET_PLAN);
+        // The adapters' words for an agent they stopped at its time limit.
+        let planner = bin.path().join("planner.sh");
+        std::fs::write(
+            &planner,
+            format!(
+                "#!/bin/sh\ncat >/dev/null\necho call >> '{}'\n\
+                 echo 'timed out after 300000 ms' >&2\nexit 1\n",
+                calls.display()
+            ),
+        )
+        .expect("timing-out planner");
+        std::fs::set_permissions(&planner, std::fs::Permissions::from_mode(0o755))
+            .expect("make the script executable");
+        let (sink, stages) = recorded_progress();
+        let request = PlanRequest {
+            model: Some("planner"),
+            progress: Some(sink),
+            ..PlanRequest::new(WIDGET_REQUEST, "widget", workdir)
+        };
+        let error = generate_plan(request)
+            .await
+            .expect_err("every planner call times out");
+        let message = format!("{error:#}");
+        assert!(
+            message.contains("stopped after 2 planner calls")
+                && message.contains("roko's 300 s limit for one call"),
+            "{message}"
+        );
+        assert!(!message.contains("unknown reason"), "{message}");
+        let log = std::fs::read_to_string(&calls).expect("planner call log");
+        assert_eq!(log.lines().count(), 2, "the call, then one retry");
+
+        let stages = stages.lock().expect("stages");
+        let names: Vec<&str> = stages.iter().map(|stage| stage.stage).collect();
+        // Each stage is reported again once its call has ended (bug-1602d4).
+        assert_eq!(
+            names,
+            ["planning", "planning", "retrying", "retrying"],
+            "{stages:?}"
+        );
+        let retry = &stages[2];
+        assert_eq!((retry.attempt, retry.attempts, retry.calls), (2, 2, 2));
+        assert!(
+            retry
+                .reason
+                .as_deref()
+                .is_some_and(|reason| reason.contains("roko's 300 s limit for one call")),
+            "{retry:?}"
+        );
+    }
+
+    /// bug-09cc5f: every planner call runs under the planner's own turn cap,
+    /// above the Claude CLI's default of `OperatingFrequency::Theta` turns,
+    /// which a planner reading a large repository used up before it wrote
+    /// the plan. The first call and the retry after a reply that holds no
+    /// plan both start the CLI with it.
+    #[cfg(unix)]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn planner_call_gets_a_turn_cap_above_the_default() {
+        let default = roko_core::operating_frequency::OperatingFrequency::Theta.turn_limit();
+        assert!(
+            PLANNER_MAX_TURNS > default,
+            "{PLANNER_MAX_TURNS} <= {default}"
+        );
+
+        let temp = tempfile::tempdir().expect("tempdir");
+        let workdir = temp.path();
+        let bin = tempfile::tempdir().expect("tempdir");
+        let calls = write_scripted_planner(
+            workdir,
+            bin.path(),
+            &["```text\nThe plan needs more reading.\n```\n", WIDGET_PLAN],
+            "allow_threshold = 0.0\nblock_threshold = 0.0\n",
+        );
+        let request = PlanRequest {
+            model: Some("planner"),
+            ..PlanRequest::new(WIDGET_REQUEST, "widget", workdir)
+        };
+        generate_plan(request)
+            .await
+            .expect("generate the widget plan");
+        let log = std::fs::read_to_string(&calls).expect("planner call log");
+        assert_eq!(
+            log.lines().count(),
+            2,
+            "the reply without a plan, then a retry"
+        );
+        for call in 0..2 {
+            let args = std::fs::read_to_string(bin.path().join(format!("prompt-{call}.txt")))
+                .expect("the call's arguments");
+            let cap = args
+                .lines()
+                .skip_while(|line| *line != "--max-turns")
+                .nth(1);
+            assert_eq!(
+                cap,
+                Some(PLANNER_MAX_TURNS.to_string().as_str()),
+                "call {call}: {args}"
+            );
+        }
+    }
+
+    /// bug-09cc5f: a planner call that ran out of turns says so, where it
+    /// read "Agent crashed for an unknown reason", and is not asked again:
+    /// the same prompt under the same cap would most likely stop there too.
+    #[cfg(unix)]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_planner_out_of_turns_is_not_asked_again() {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let temp = tempfile::tempdir().expect("tempdir");
+        let workdir = temp.path();
+        let bin = tempfile::tempdir().expect("tempdir");
+        let calls = write_fake_planner(workdir, bin.path(), WIDGET_PLAN);
+        // What the Claude CLI prints when it stops at `--max-turns`.
+        let planner = bin.path().join("planner.sh");
+        std::fs::write(
+            &planner,
+            format!(
+                "#!/bin/sh\ncat >/dev/null\necho call >> '{}'\n\
+                 echo '{{\"type\":\"result\",\"subtype\":\"error_max_turns\",\
+                 \"is_error\":true,\"num_turns\":{}}}'\nexit 1\n",
+                calls.display(),
+                PLANNER_MAX_TURNS + 1
+            ),
+        )
+        .expect("planner out of turns");
+        std::fs::set_permissions(&planner, std::fs::Permissions::from_mode(0o755))
+            .expect("make the script executable");
+        let request = PlanRequest {
+            model: Some("planner"),
+            ..PlanRequest::new(WIDGET_REQUEST, "widget", workdir)
+        };
+        let error = generate_plan(request)
+            .await
+            .expect_err("the planner runs out of turns");
+        let message = format!("{error:#}");
+        assert!(
+            message.contains("the planner ran out of turns before it wrote the plan"),
+            "{message}"
+        );
+        assert!(
+            message.contains(&format!(
+                "agent turn cap reached (turns={}, cap={PLANNER_MAX_TURNS})",
+                PLANNER_MAX_TURNS + 1
+            )),
+            "{message}"
+        );
+        assert!(!message.contains("unknown reason"), "{message}");
+        let log = std::fs::read_to_string(&calls).expect("planner call log");
+        assert_eq!(log.lines().count(), 1, "the call, and no retry");
+        assert!(!workdir.join("plans/widget").exists());
+    }
+
+    /// gap-11d870: a plan whose reply holds no plan.md block gets an
+    /// overview written from its tasks: the request, the tasks wave by wave
+    /// and their checks, where it used to say only "Generated plan.". The
+    /// generation reports each stage as it moves on.
+    #[cfg(unix)]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_plan_without_a_plan_md_block_gets_an_overview() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let workdir = temp.path();
+        let bin = tempfile::tempdir().expect("tempdir");
+        write_fake_planner(workdir, bin.path(), WIDGET_PLAN);
+        let (sink, stages) = recorded_progress();
+        let request = PlanRequest {
+            model: Some("planner"),
+            progress: Some(sink),
+            ..PlanRequest::new(WIDGET_REQUEST, "widget", workdir)
+        };
+        generate_plan(request)
+            .await
+            .expect("generate the widget plan");
+
+        let plan_md =
+            std::fs::read_to_string(workdir.join("plans/widget/plan.md")).expect("plan.md");
+        assert!(!plan_md.contains("Generated plan."), "{plan_md}");
+        for expected in [
+            "---\nplan: widget\ntitle: Widget\n---\n",
+            "> Add a widget module.",
+            "### Wave 1",
+            "- **T1: Add the widget module** (implementer, focused)",
+            "  - Goal: Create src/widget.rs.",
+            "  - Check (check): `test -f src/widget.rs`",
+        ] {
+            assert!(
+                plan_md.contains(expected),
+                "{expected:?} not in:\n{plan_md}"
+            );
+        }
+
+        let stages = stages.lock().expect("stages");
+        let names: Vec<&str> = stages.iter().map(|stage| stage.stage).collect();
+        // `planning` is reported again once its call has ended (bug-1602d4).
+        assert_eq!(
+            names,
+            ["planning", "planning", "writing", "recording"],
+            "{stages:?}"
+        );
+        assert_eq!(stages[0].calls, 1, "{stages:?}");
+        assert_eq!(stages[0].model, "planner", "{stages:?}");
+        assert_eq!(stages[3].calls, 1, "{stages:?}");
+    }
+
+    /// bug-1602d4: a planner call's spend is reported as soon as the call
+    /// ends, as the same stage with the call counted, not first when the
+    /// plan is being written, a moment before the generation completes.
+    #[cfg(unix)]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn plan_writing_reports_its_spend_as_each_call_ends() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let workdir = temp.path();
+        let bin = tempfile::tempdir().expect("tempdir");
+        write_fake_planner(workdir, bin.path(), WIDGET_PLAN);
+        let (sink, stages) = recorded_progress();
+        let request = PlanRequest {
+            model: Some("planner"),
+            progress: Some(sink),
+            ..PlanRequest::new(WIDGET_REQUEST, "widget", workdir)
+        };
+        let (_, outcome) = generate_plan(request)
+            .await
+            .expect("generate the widget plan");
+        assert!(outcome.cost_usd > 0.0, "{outcome:?}");
+
+        let stages = stages.lock().expect("stages");
+        let (started, ended) = (&stages[0], &stages[1]);
+        assert_eq!(
+            (started.stage, started.calls),
+            ("planning", 1),
+            "{stages:?}"
+        );
+        assert!(started.cost_usd.abs() < 1e-12, "{stages:?}");
+        assert_eq!((ended.stage, ended.calls), ("planning", 1), "{stages:?}");
+        assert!(
+            (ended.cost_usd - outcome.cost_usd).abs() < 1e-9,
+            "{stages:?} vs {outcome:?}"
+        );
+        assert_eq!(stages[2].stage, "writing", "{stages:?}");
     }
 
     /// 3221: the planner can write its acceptance tests into the plan. A
@@ -3557,6 +5375,94 @@ command = "true"
             .and_then(|s| s.find('`').map(|end| s[..end].to_string()))
             .expect("PLAN_CONTEXT_MISSING message format must be parseable");
         assert_eq!(path, "src/missing.rs");
+    }
+
+    /// bug-1c75cc: a generated plan whose read_files range ends one line past
+    /// the end of its file gets the range clamped to the file; a range that
+    /// starts past the end is left for the check to refuse.
+    #[test]
+    fn generated_plan_context_range_past_eof_is_clamped() {
+        use crate::plan_policy::{PlanExecutionPolicy, validate_plan_context};
+        use tempfile::tempdir;
+
+        let dir = tempdir().unwrap();
+        let plan_dir = dir.path().join("my-plan");
+        std::fs::create_dir_all(&plan_dir).unwrap();
+        std::fs::create_dir(dir.path().join("src")).unwrap();
+        let sixteen: String = (1..=16).map(|n| format!("// line {n}\n")).collect();
+        std::fs::write(dir.path().join("src/lib.rs"), sixteen).unwrap();
+
+        let toml_src = r#"
+[meta]
+plan = "my-plan"
+total = 2
+done = 0
+status = "ready"
+max_parallel = 1
+
+[[task]]
+id = "T1"
+title = "one past the end"
+role = "implementer"
+status = "ready"
+tier = "focused"
+files = ["src/lib.rs"]
+
+[task.context]
+[[task.context.read_files]]
+path = "src/lib.rs"
+lines = "1-17"
+why = "the whole file, counted with the empty line after the final newline"
+
+[[task.verify]]
+phase = "structural"
+command = "true"
+
+[[task]]
+id = "T2"
+title = "past the end entirely"
+role = "implementer"
+status = "ready"
+tier = "focused"
+files = ["src/lib.rs"]
+
+[task.context]
+[[task.context.read_files]]
+path = "src/lib.rs"
+lines = "20-25"
+why = "starts past the end"
+
+[[task.verify]]
+phase = "structural"
+command = "true"
+"#;
+        let mut tasks_file =
+            crate::task_parser::TasksFile::parse_str(toml_src).expect("test TOML must parse");
+        let ranges = |tasks: &crate::task_parser::TasksFile| {
+            validate_plan_context(tasks, dir.path(), &plan_dir, PlanExecutionPolicy::normal())
+                .into_iter()
+                .filter(|v| v.code == "PLAN_CONTEXT_RANGE")
+                .map(|v| v.to_string())
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(ranges(&tasks_file).len(), 2, "{:?}", ranges(&tasks_file));
+
+        assert_eq!(
+            clamp_context_ranges_past_eof(&mut tasks_file, dir.path()),
+            1
+        );
+        let t1 = &tasks_file.tasks[0].context.as_ref().unwrap().read_files[0];
+        assert_eq!(t1.lines.as_deref(), Some("1-16"));
+        let t2 = &tasks_file.tasks[1].context.as_ref().unwrap().read_files[0];
+        assert_eq!(
+            t2.lines.as_deref(),
+            Some("20-25"),
+            "a range past the end stays"
+        );
+
+        let remaining = ranges(&tasks_file);
+        assert_eq!(remaining.len(), 1, "{remaining:?}");
+        assert!(remaining[0].contains("20-25"), "{remaining:?}");
     }
 
     /// Verify that after dropping PLAN_CONTEXT_MISSING paths from a TasksFile

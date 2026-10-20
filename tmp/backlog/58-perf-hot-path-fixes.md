@@ -1,5 +1,7 @@
 # 58 — Performance Hot-Path Fixes
 
+> **Status 2026-10-15: DONE.** Verified at `7b6a5af44` by the status-quo assessment (`tmp/status-quo/2026-10-15/backlog/B-top-level-and-regressions.md`): spawn_blocking crates/roko-compose/src/prompt_assembly_service.rs:405; in-memory cascade router crates/roko-serve/src/dispatch.rs:2836-2845; Arc<RokoConfig> crates/roko-agent/src/model_call_service.rs:95,493,1953; fix 4 moot: effect_driver.rs/count_changed_files deleted in 8b4e3dfd3
+
 > **Status: SOURCE-IMPLEMENTED / FINAL RELEASE LANE OPEN** (2026-08-31,
 > `88c724744`). All four hot-path changes are present in the dev-audit integration. The later
 > cache lane (`97f897200` + `8c82c5b1b`) keeps cleanup off dispatch and retains warm targets unless

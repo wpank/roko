@@ -9,7 +9,7 @@ size = "M"
 goal = "release"
 subsystem = ["ci"]
 created = 2026-09-28
-updated = 2026-09-29
+updated = 2026-10-15
 last_verified = 2026-09-29
 last_verified_rev = "641a030ff"
 source = "local-audit-2026-09-26"
@@ -247,3 +247,5 @@ Verified 2026-09-28 with a read-only `gh run list --branch main`: worse than sta
 Update 2026-09-28, root cause on main: main's `Cargo.toml` lists `demo/speed-test` as a workspace member, but `demo/speed-test/Cargo.toml` exists only on the working branch (added in 9c6ec420c), so every cargo-based job fails when the workspace loads. Merging the branch fixes that. Before it did, `deploy-fly.yml` and `docker-publish.yml` were guarded by `ALLOW_PUBLIC_DEPLOY` (b02812036), so the first green main cannot deploy or publish the Privy hole (bug-7eef96).
 
 Re-checked 2026-09-29 (static, no GitHub API): main is still 244f564e1 and still lists demo/speed-test as a workspace member without the crate, so the merge that fixes the cargo jobs has not happened. No required-checks list has been published yet.
+
+2026-10-15 (Will, 2026-10-15; tmp/status-quo/2026-10-15/DECISIONS-2026-10-15.md), decision 11: after the route-snapshot fix, push a branch and open a PR so CI runs on HEAD; merge when green apart from the filed CI-hidden failures, which the PR lists; then require checks on main.

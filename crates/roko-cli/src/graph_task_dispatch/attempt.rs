@@ -45,6 +45,7 @@ use super::audit_select::AuditSelector;
 use super::failover::FailoverChain;
 use super::served_model::{ServedModel, is_cli_backend};
 use super::*;
+use crate::audit::labels::{VsLearner, VsLearners};
 
 /// `run_seed` of the arm-set draws (`telemetry::assign`): 0 until runs
 /// record an experiment seed (S01 `experiment.seed`), as the route's
@@ -176,7 +177,7 @@ impl RunAttempts {
         };
         let written = serde_json::to_string(&kept)
             .map_err(std::io::Error::other)
-            .and_then(|line| append_line(path, &line));
+            .and_then(|line| roko_core::io::append_jsonl_line(path, &line));
         if let Err(error) = written {
             tracing::warn!(
                 path = %path.display(),
@@ -223,20 +224,6 @@ fn read_arm_sets(path: &Path) -> Vec<KeptArmSet> {
         .lines()
         .filter_map(|line| serde_json::from_str(line).ok())
         .collect()
-}
-
-/// Append `line` to the file at `path`, making its directory.
-fn append_line(path: &Path, line: &str) -> std::io::Result<()> {
-    use std::io::Write as _;
-
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
-    let mut file = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(path)?;
-    writeln!(file, "{line}")
 }
 
 impl Drop for RunAttempts {
@@ -463,6 +450,7 @@ impl AttemptBook {
             harness: None,
             trust_exclusions: None,
             verify_depth: None,
+            forecast: std::sync::OnceLock::new(),
             run,
         }
     }
@@ -510,6 +498,9 @@ pub(super) struct AttemptContext {
     /// DP3's verify depth for the attempt, for its verdict (gap-595e28);
     /// `None` until verification reaches DP3.
     verify_depth: Option<VerifyDepthRecord>,
+    /// The self-model's forecast of the attempt, as its route event carries
+    /// it (gap-aaaaae); unset until the self-model forecasts it.
+    forecast: std::sync::OnceLock<roko_core::dashboard_snapshot::RouteForecast>,
     run: Arc<RunAttempts>,
 }
 
@@ -593,6 +584,20 @@ impl AttemptContext {
         self.ladder = Some((ladder, last_chance));
     }
 
+    /// The rung the attempt runs on and the rungs its task climbed, as
+    /// [`Self::record_ladder`] recorded them; `(None, 0)` off the ladder.
+    pub(super) fn ladder_place(&self) -> (Option<String>, u32) {
+        self.ladder
+            .as_ref()
+            .map_or((None, 0), |(ladder, _)| (ladder.rung.clone(), ladder.step))
+    }
+
+    /// The self-model's forecast of the attempt, once it made one
+    /// (gap-aaaaae).
+    pub(super) fn forecast(&self) -> Option<&roko_core::dashboard_snapshot::RouteForecast> {
+        self.forecast.get()
+    }
+
     /// Queue the attempt's route decision, with its chain's arms, for the
     /// run's `decisions.jsonl` (S01 P0-8); the writer stamps its sequence
     /// number.
@@ -639,6 +644,14 @@ impl AttemptContext {
         self.harness.as_ref().map(|decision| &decision.applied)
     }
 
+    /// Whether the attempt's prompt carries the knowledge section (M1's B4,
+    /// gap-6bb6d8): the `knowledge_section` of the θ it runs, and on without
+    /// an M1 sink, as θ₀ has it.
+    pub(super) fn knowledge_section(&self) -> bool {
+        self.harness_params()
+            .is_none_or(|theta| theta.knowledge_section)
+    }
+
     /// M1's decision for the attempt, with θ₀ beside the θ it runs; `None`
     /// without an M1 sink.
     pub(super) fn harness_decision(
@@ -677,6 +690,10 @@ impl AttemptContext {
         &self,
         prediction: roko_learn::telemetry::records::AttemptPredictionRecord,
     ) {
+        // The attempt's route event carries it (gap-aaaaae).
+        let _ = self
+            .forecast
+            .set(super::decision_log::route_forecast(&prediction));
         if let Some(audit) = &self.run.audit {
             audit.note_prediction(&prediction.identity.attempt_key, &prediction.prediction_id);
         }
@@ -785,6 +802,7 @@ impl AttemptContext {
             reflex_rule: self.reflex_rule,
             live_tool_calls: self.live_tool_calls,
             harness: self.harness,
+            bound: None,
         }
     }
 }
@@ -858,6 +876,35 @@ impl Settlement {
         }
     }
 
+    /// An attempt its plan budget stopped before a model call the budget
+    /// could not pay for, for `reason` (bug-4fabd0): the harness stopped it,
+    /// so it teaches nothing.
+    pub(super) fn budget_exhausted(reason: &str) -> Self {
+        Self {
+            outcome: AttemptOutcome::BudgetExhausted,
+            gate_verdict: None,
+            first_token_seen: true,
+            failure_reason: Some(super::turn_policy::attempt_failure_reason("budget", reason)),
+            rung: None,
+        }
+    }
+
+    /// A try that spent its rung's allowance, for `reason` (gap-3e770b): the
+    /// agent's failure on the rung, as a turn-cap stop is, so it counts
+    /// toward a climb. Its reason's class says it was the spend.
+    pub(super) fn allowance_spent(reason: &str) -> Self {
+        Self {
+            outcome: AttemptOutcome::TurnCap,
+            gate_verdict: None,
+            first_token_seen: true,
+            failure_reason: Some(super::turn_policy::attempt_failure_reason(
+                super::try_allowance::RUNG_ALLOWANCE,
+                reason,
+            )),
+            rung: None,
+        }
+    }
+
     /// An attempt the stall watchdog cancelled, failed with `message`: a
     /// timeout, whatever its message says (bug-4c553b). After its first token
     /// the timeout is the agent's, before it the provider's.
@@ -927,6 +974,9 @@ pub(super) struct SettledAttempt {
     /// M1's decision for the attempt, whose θ caps the task's climb after
     /// it (8124); `None` without an M1 sink.
     pub(super) harness: Option<Arc<crate::runtime_feedback::homeostasis::HarnessDecision>>,
+    /// The bound the try reached, in words, when it ended at its rung's
+    /// bound and the task's checks judged the work it left (gap-2c9412).
+    pub(super) bound: Option<String>,
 }
 
 impl SettledAttempt {
@@ -986,9 +1036,16 @@ impl GraphTaskDispatcher {
             self.load_audit_trust();
             let selector =
                 AuditSelector::for_config(&self.config.audit, &self.config.gates, &self.workdir)?;
-            // DP5: audited VS labels teach the run's self-model (7134).
-            let learner = self.feedback.self_model.clone();
-            let learner = learner.map(|model| model as Arc<dyn crate::audit::labels::VsLearner>);
+            // DP5: audited VS labels teach the run's self-model (7134), and
+            // M1's E3 counts them (gap-618548).
+            let mut learners: Vec<Arc<dyn VsLearner>> = Vec::new();
+            if let Some(model) = self.feedback.self_model.clone() {
+                learners.push(model);
+            }
+            if let Some(sink) = self.feedback.homeostasis.clone() {
+                learners.push(sink);
+            }
+            let learner = VsLearners::of(learners);
             let selector = selector.with_phase_b(self.audit_phase_b());
             // Its workers' model calls write cost and efficiency rows (gap-dd9c2e).
             let selector = selector.with_call_log(self.audit_call_log());

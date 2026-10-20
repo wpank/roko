@@ -26,6 +26,12 @@ use serde::{Deserialize, Deserializer, Serialize};
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TaskMeta {
     pub plan: String,
+    /// The plan's name for people (gap-c2efe7): its run's title, its batch
+    /// branch's description, and the subject of a one-task plan's accepted
+    /// commit. Never part of an agent's prompt. Unset, the plan is named by
+    /// its id.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
     #[serde(default)]
     pub iteration: u32,
     #[serde(default)]
@@ -81,6 +87,12 @@ pub struct TaskMeta {
     /// domain decides.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub outbound: Option<roko_core::tool::OutboundPolicy>,
+    /// The checks of the plan's source that it does not keep as verify
+    /// steps, each `"SC<n>: <why>"` (gap-dc5d7c). Plan generation numbers
+    /// the source's checks and asks the planner to keep each one or say
+    /// here why not.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub dropped_checks: Vec<String>,
 }
 
 /// When a plan's verified tasks wait for a person's approval before their
@@ -1088,6 +1100,7 @@ pub const VERIFY_KEYS: &[&str] = &[
 /// counts SQ12 (`roko_gate::spec_quality`, sq-3).
 pub const META_KEYS: &[&str] = &[
     "plan",
+    "title",
     "iteration",
     "total",
     "done",
@@ -1102,6 +1115,7 @@ pub const META_KEYS: &[&str] = &[
     "approval",
     "allow_unverified",
     "outbound",
+    "dropped_checks",
     // Read by `plan validate` and the spec-quality score.
     "queue_kind",
     "queue_schema",
@@ -3016,6 +3030,7 @@ depends_on = []
         let mut tasks = TasksFile {
             meta: TaskMeta {
                 plan: "test".into(),
+                title: None,
                 iteration: 0,
                 total: 21,
                 done: 0,
@@ -3030,6 +3045,7 @@ depends_on = []
                 approval: None,
                 allow_unverified: false,
                 outbound: None,
+                dropped_checks: Vec::new(),
             },
             tasks: Vec::new(),
         };
@@ -4094,6 +4110,7 @@ files = ["README.md"]
         };
         let meta = TaskMeta {
             plan: "keys".into(),
+            title: Some("Keys".into()),
             iteration: 1,
             total: 1,
             done: 0,
@@ -4108,6 +4125,7 @@ files = ["README.md"]
             approval: Some(ApprovalMode::PerTask),
             allow_unverified: true,
             outbound: Some(roko_core::tool::OutboundPolicy::Stage),
+            dropped_checks: Vec::new(),
         };
 
         let task = TaskDef::from(raw.clone());
@@ -4296,7 +4314,7 @@ expect = "pass_on_base"
             Some("verify".to_string())
         );
         // A typo-table correction counts only for a key of the table checked.
-        assert_eq!(suggest_field_correction("file", META_KEYS), None);
+        assert_eq!(suggest_field_correction("desc", META_KEYS), None);
         // Unknown field with no close match returns None.
         assert_eq!(suggest_field_correction("zzzzunknown", TASK_KEYS), None);
     }

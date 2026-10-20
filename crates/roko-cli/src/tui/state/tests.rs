@@ -252,6 +252,7 @@ depends_on = ["plan-b:T1"]
             completed: false,
             status: "ready".into(),
             superseded_by: None,
+            fixture: false,
             old_format: false,
             last_error: None,
             group: None,
@@ -265,6 +266,7 @@ depends_on = ["plan-b:T1"]
             completed: false,
             status: "ready".into(),
             superseded_by: None,
+            fixture: false,
             old_format: false,
             last_error: None,
             group: None,
@@ -278,6 +280,7 @@ depends_on = ["plan-b:T1"]
             completed: false,
             status: "ready".into(),
             superseded_by: None,
+            fixture: false,
             old_format: false,
             last_error: None,
             group: None,
@@ -734,6 +737,7 @@ fn plan_task_counts_uses_summary_progress_without_snapshot() {
         completed: false,
         status: "ready".into(),
         superseded_by: None,
+        fixture: false,
         old_format: false,
         last_error: None,
         group: None,
@@ -753,6 +757,7 @@ fn plan_task_counts_prefers_snapshot_task_statuses() {
         completed: false,
         status: "ready".into(),
         superseded_by: None,
+        fixture: false,
         old_format: false,
         last_error: None,
         group: None,
@@ -1190,6 +1195,7 @@ fn update_from_dashboard_snapshot_populates_connected_learning_state() {
             tokens_out: 60,
             cost_usd_cents: 30,
             latency_ms_avg: 600.0,
+            ..CoreEfficiencyBucket::default()
         }],
         ..Default::default()
     };

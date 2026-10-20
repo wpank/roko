@@ -273,6 +273,10 @@ pub struct TaskOutcomeSummary {
     /// budget or a fail-fast stop, each with that reason.
     #[serde(default)]
     pub not_started: BTreeMap<String, String>,
+    /// Tasks a stop cut off while they ran: the run was cancelled, or the
+    /// operator stopped them (bug-1d09e8). Not failed.
+    #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
+    pub cancelled: BTreeSet<String>,
 }
 
 /// Value stored under [`INTERRUPTED_ATTEMPT_EXTENSION`]: the tasks whose
@@ -1228,6 +1232,30 @@ impl PreparedGraphCheckpoint {
                 .extensions
                 .insert(key.to_string(), host_extension(key, value)?);
         }
+        Ok(())
+    }
+
+    /// Record what the plan's run left on its plan branch, `work`, under
+    /// [`BATCH_EXTENSION`] (bug-db89d4): beside this run's delivery record
+    /// when it has one, else in `record`, which names the run's batch. The
+    /// next terminal write persists it.
+    pub fn record_batch_work(
+        &mut self,
+        record: serde_json::Value,
+        work: serde_json::Value,
+    ) -> Result<()> {
+        let mut value = self
+            .manifest
+            .extensions
+            .get(BATCH_EXTENSION)
+            .map(|extension| extension.value.clone())
+            .filter(|recorded| recorded["run_id"] == record["run_id"])
+            .unwrap_or(record);
+        value["work"] = work;
+        self.manifest.extensions.insert(
+            BATCH_EXTENSION.to_string(),
+            host_extension(BATCH_EXTENSION, value)?,
+        );
         Ok(())
     }
 
@@ -2231,6 +2259,9 @@ pub struct RecordedBatchDelivery {
     pub checks: Vec<DeliveryCheck>,
     /// The log holding everything those checks wrote, when it was written.
     pub check_log: Option<String>,
+    /// Whether it delivered only the verified tasks of a plan that did not
+    /// finish (bug-74164c).
+    pub partial: bool,
 }
 
 /// Where plan `plan_id`'s work went: the batch branch and commit its
@@ -2257,6 +2288,7 @@ pub fn recorded_batch_delivery(workdir: &Path, plan_id: &str) -> Option<Recorded
         check_log: receipt["regression_evidence_ref"]
             .as_str()
             .map(str::to_string),
+        partial: batch["partial"].as_bool().unwrap_or(false),
     })
 }
 
@@ -4873,6 +4905,7 @@ depends_on = ["T1"]
                 merge_commit: "a".repeat(40),
                 checks: Vec::new(),
                 check_log: None,
+                partial: false,
             })
         );
         assert_eq!(recorded_batch_delivery(dir.path(), "p-conflict"), None);
